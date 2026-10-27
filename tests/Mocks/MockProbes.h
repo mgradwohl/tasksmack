@@ -822,6 +822,28 @@ class MockProcessActions : public Platform::IProcessActions
         return m_OpenFileLocationCount;
     }
 
+    /// What runProgram() returns (#3065).
+    void setRunProgramResult(Platform::ProcessActionResult result)
+    {
+        m_RunProgramResult = std::move(result);
+    }
+
+    [[nodiscard]] Platform::ProcessActionResult runProgram(const Platform::RunProgramRequest& request) override
+    {
+        m_LastRunProgram = request;
+        ++m_RunProgramCount;
+        return m_RunProgramResult;
+    }
+
+    [[nodiscard]] int runProgramCount() const
+    {
+        return m_RunProgramCount;
+    }
+    [[nodiscard]] const Platform::RunProgramRequest& lastRunProgram() const
+    {
+        return m_LastRunProgram;
+    }
+
     /// What createDump() returns (#807).
     void setDumpResult(Platform::ProcessDumpResult result)
     {
@@ -996,6 +1018,9 @@ class MockProcessActions : public Platform::IProcessActions
     Platform::ProcessActionResult m_SyscallTraceResult = Platform::ProcessActionResult::ok();
     int m_OpenFileLocationCount = 0;
     Platform::ProcessActionResult m_OpenFileLocationResult = Platform::ProcessActionResult::ok();
+    int m_RunProgramCount = 0;
+    Platform::RunProgramRequest m_LastRunProgram;
+    Platform::ProcessActionResult m_RunProgramResult = Platform::ProcessActionResult::ok();
 };
 
 // =============================================================================

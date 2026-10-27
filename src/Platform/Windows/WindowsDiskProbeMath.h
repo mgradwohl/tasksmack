@@ -108,29 +108,58 @@ advanceDiskBusy(DiskBusyClock& clock, std::int64_t elapsed100ns, std::int64_t id
     return clock.lastBusy100ns;
 }
 
-/// How often WindowsDiskProbe re-enumerates physical disks when nothing has failed, so a disk
-/// added after start-up appears and one removed cleanly disappears (#1159).
+/// How often WindowsDiskProbe re-enumerates physical disks when nothing has failed and it has no
+/// device notifications (their registration failed), so a disk added after start-up appears and
+/// one removed cleanly disappears (#1159).
 inline constexpr std::chrono::seconds DISK_REENUMERATE_INTERVAL{30};
+
+/// How often it re-enumerates when nothing has failed and its device notifications are registered
+/// (#3151): a disk or volume arriving or leaving asks for the rescan, so this is only the safety net
+/// for a notification that never came, or a drive letter changed with no volume arriving. Each
+/// rescan refreshes PDH's whole object list, 60-130 ms of the disk sampler's CPU.
+inline constexpr std::chrono::minutes DISK_REENUMERATE_SAFETY_INTERVAL{5};
+
+/// How long after the first disk or volume arrival or removal since the last rescan the rescan
+/// waits (#3151). A disk's interface arrives before its volumes are mounted and lettered, and PDH's
+/// PhysicalDisk instance name ("2 F:") carries those letters, so a rescan at once could list the
+/// disk unlettered until the next one. Measured from the first notification, so a burst of them
+/// (the disk, then each of its volumes) is one rescan and a stream of them can't put it off.
+inline constexpr std::chrono::seconds DISK_DEVICE_CHANGE_SETTLE_DELAY{2};
 
 /// The shortest gap between re-enumerations after a disk failed (#1159). A removed disk is
 /// dropped on the next read, but a disk that opens yet fails every IOCTL_DISK_PERFORMANCE read
 /// would otherwise re-run the PDH enumeration and reopen every drive on every refresh.
 inline constexpr std::chrono::seconds DISK_REENUMERATE_AFTER_FAILURE_INTERVAL{5};
 
-/// Whether WindowsDiskProbe should rebuild its disk list before this read (#1159).
+/// The interval for shouldReenumerate() when nothing has failed or changed (#3151): the long
+/// safety interval while device notifications say when the disks change, else the periodic one.
+[[nodiscard]] constexpr std::chrono::steady_clock::duration diskReenumerateInterval(bool deviceNotificationsRegistered) noexcept
+{
+    return deviceNotificationsRegistered ? std::chrono::steady_clock::duration{DISK_REENUMERATE_SAFETY_INTERVAL}
+                                         : std::chrono::steady_clock::duration{DISK_REENUMERATE_INTERVAL};
+}
+
+/// Whether WindowsDiskProbe should rebuild its disk list after this read (#1159, #3151).
 ///
 /// The list used to be fixed at construction, so a removed disk failed IOCTL_DISK_PERFORMANCE on
-/// every refresh forever and a newly attached one never appeared. Re-enumerate after a disk
-/// failed, at most once per DISK_REENUMERATE_AFTER_FAILURE_INTERVAL, and otherwise once
-/// `interval` has elapsed since the last enumeration.
+/// every refresh forever and a newly attached one never appeared. Re-enumerate:
+/// - once DISK_DEVICE_CHANGE_SETTLE_DELAY has passed since @p deviceChangedAt, the time the probe
+///   first saw a disk or volume arrive or leave since the last enumeration (none: nothing changed);
+/// - after a disk failed, at most once per DISK_REENUMERATE_AFTER_FAILURE_INTERVAL;
+/// - and otherwise once `interval` (diskReenumerateInterval()) has elapsed since the last one.
 [[nodiscard]] inline bool shouldReenumerate(std::chrono::steady_clock::time_point now,
                                             std::chrono::steady_clock::time_point lastEnumeration,
                                             bool anyFailure,
-                                            std::chrono::steady_clock::duration interval) noexcept
+                                            std::chrono::steady_clock::duration interval,
+                                            std::optional<std::chrono::steady_clock::time_point> deviceChangedAt = std::nullopt) noexcept
 {
     // A clock that went backwards (it cannot, for steady_clock, but a caller's fake clock can)
     // re-enumerates rather than waiting out an interval that never elapses.
     if (now < lastEnumeration)
+    {
+        return true;
+    }
+    if (deviceChangedAt.has_value() && (now < *deviceChangedAt || now - *deviceChangedAt >= DISK_DEVICE_CHANGE_SETTLE_DELAY))
     {
         return true;
     }

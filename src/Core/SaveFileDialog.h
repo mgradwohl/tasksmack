@@ -46,6 +46,13 @@ void showSaveFileDialog(SDL_Window* window, std::vector<FileFilter> filters, con
 /// @p callback is caught and logged, as for the save dialog.
 void showFolderDialog(SDL_Window* window, const std::string& defaultLocation, SaveFileCallback callback);
 
+/// Shows the open-file dialog (SDL_ShowOpenFileDialog; on Linux, the desktop portal's chooser) for one
+/// existing file, modal for @p window when the platform allows (may be null), starting in
+/// @p defaultLocation. As showFolderDialog(): returns at once, and @p callback gets SaveFileResult::path,
+/// the file chosen (empty when cancelled), later, maybe on another thread, exactly once. Run new task's
+/// Browse... (#3065).
+void showOpenFileDialog(SDL_Window* window, const std::string& defaultLocation, SaveFileCallback callback);
+
 /// The user's Documents folder with a trailing separator, else their home folder, else empty.
 [[nodiscard]] std::string defaultSaveFolder();
 

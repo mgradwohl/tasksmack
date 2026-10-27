@@ -878,6 +878,25 @@ TEST_F(UserConfigSaveLoadFixture, EmptyProcessTableLayoutRoundTrips)
     EXPECT_TRUE(config.settings().processTableLayout.empty());
 }
 
+// ========== Group by (#3068) ==========
+
+TEST_F(UserConfigSaveLoadFixture, GroupByRoundTripsAndNoneWritesNothing)
+{
+    auto& config = UserConfig::get();
+
+    config.settings().processGroupBy = ProcessGrouping::GroupBy::Container;
+    config.save();
+    config.settings().processGroupBy = ProcessGrouping::GroupBy::None;
+    config.load();
+    EXPECT_EQ(config.settings().processGroupBy, ProcessGrouping::GroupBy::Container);
+
+    config.settings().processGroupBy = ProcessGrouping::GroupBy::None;
+    config.save();
+    std::ifstream file(config.configPath());
+    const std::string text((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    EXPECT_FALSE(text.contains("group_by")) << text;
+}
+
 // ========== Pinned processes (#3061) ==========
 
 TEST_F(UserConfigSaveLoadFixture, PinnedProcessesRoundTrip)
@@ -912,6 +931,31 @@ TEST_F(UserConfigSaveLoadFixture, APinnedListIsTakenInFiltered)
     auto& config = UserConfig::get();
     config.load();
     EXPECT_EQ(config.settings().pinnedProcesses, (std::vector<std::string>{"game", "server"}));
+}
+
+// ========== Run new task's recent commands (#3065) ==========
+
+TEST_F(UserConfigSaveLoadFixture, RecentCommandsRoundTripNewestFirst)
+{
+    auto& config = UserConfig::get();
+
+    config.settings().recentCommands = {"foot --title Rescue", "konsole"};
+    config.save();
+    config.settings().recentCommands.clear();
+    config.load();
+    EXPECT_EQ(config.settings().recentCommands, (std::vector<std::string>{"foot --title Rescue", "konsole"}));
+}
+
+TEST_F(UserConfigSaveLoadFixture, ARecentCommandListIsTakenInFiltered)
+{
+    {
+        std::ofstream file(m_TempDir / "config.toml");
+        ASSERT_TRUE(file.is_open());
+        file << "config_version = 2\n[run_task]\nrecent = [\"konsole\", 7, \"  \", \"htop\", \"konsole\"]\n";
+    }
+    auto& config = UserConfig::get();
+    config.load();
+    EXPECT_EQ(config.settings().recentCommands, (std::vector<std::string>{"konsole", "htop"}));
 }
 
 // ========== chartAntiAliasing Persistence (perf-plan #843 phase 1) ==========
@@ -1060,6 +1104,7 @@ TEST_F(UserConfigSaveLoadFixture, LoadMissingFileLeavesEverySettingAtItsDocument
     // all, so a new setting stops this test compiling until its default is asserted below.
     const auto& [themeId,
                  fontSize,
+                 processGroupBy,
                  processColumns,
                  processMeters,
                  processTableLayout,
@@ -1084,6 +1129,7 @@ TEST_F(UserConfigSaveLoadFixture, LoadMissingFileLeavesEverySettingAtItsDocument
                  highlightNewProcesses,
                  cpuDetailsExpanded,
                  dumpFolder,
+                 recentCommands,
                  forceNativeWindowDecorationsOnWayland] = config.settings();
 
     EXPECT_EQ(themeId, "arctic-fire");
@@ -1097,8 +1143,9 @@ TEST_F(UserConfigSaveLoadFixture, LoadMissingFileLeavesEverySettingAtItsDocument
         const ProcessRowMeter::Style meter = ProcessRowMeter::defaultOn(col) ? ProcessRowMeter::Style::Bar : ProcessRowMeter::Style::Off;
         EXPECT_EQ(processMeters.style(col), meter) << getColumnInfo(col).configKey;
     }
-    EXPECT_TRUE(processTableLayout.empty()); // ImGui's own default widths, order and sort (CPU %, descending)
-    EXPECT_TRUE(pinnedProcesses.empty());    // #3061
+    EXPECT_TRUE(processTableLayout.empty());                   // ImGui's own default widths, order and sort (CPU %, descending)
+    EXPECT_TRUE(pinnedProcesses.empty());                      // #3061
+    EXPECT_EQ(processGroupBy, ProcessGrouping::GroupBy::None); // #3068
     EXPECT_EQ(refreshIntervalMs, Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS);
     EXPECT_EQ(refreshIntervalMs, 1000);
     EXPECT_EQ(maxHistorySeconds, Domain::Sampling::HISTORY_SECONDS_DEFAULT);
@@ -1121,7 +1168,8 @@ TEST_F(UserConfigSaveLoadFixture, LoadMissingFileLeavesEverySettingAtItsDocument
     EXPECT_TRUE(showProcessIcons);
     EXPECT_TRUE(highlightNewProcesses); // #3060
     EXPECT_TRUE(cpuDetailsExpanded);
-    EXPECT_TRUE(dumpFolder.empty()); // the temp folder
+    EXPECT_TRUE(dumpFolder.empty());     // the temp folder
+    EXPECT_TRUE(recentCommands.empty()); // #3065
     EXPECT_FALSE(forceNativeWindowDecorationsOnWayland);
 }
 

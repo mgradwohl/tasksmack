@@ -144,6 +144,7 @@ class ShellLayer : public Core::Layer
     SystemMetricsPanel& m_SystemMetricsPanel = m_Panels.systemMetrics();
     ServicesPanel& m_ServicesPanel = m_Panels.services();
     StartupPanel& m_StartupPanel = m_Panels.startup();
+    ConnectionsPanel& m_ConnectionsPanel = m_Panels.connections(); // #3066
     SystemInfoPanel& m_SystemInfoPanel = m_Panels.systemInfo();
 
     // Frame timing / FPS display

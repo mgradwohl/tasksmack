@@ -269,6 +269,58 @@ TEST(ShouldReenumerateTest, DefaultIntervalIsAboutThirtySeconds)
     EXPECT_EQ(DISK_REENUMERATE_INTERVAL, std::chrono::seconds{30});
 }
 
+// The device-notification rescan (#3151): a disk or volume arriving or leaving asks for a rescan,
+// so the periodic one is only a long safety net.
+
+TEST(ShouldReenumerateTest, NotificationsStretchTheIntervalToTheSafetyNet)
+{
+    EXPECT_EQ(DISK_REENUMERATE_SAFETY_INTERVAL, std::chrono::minutes{5});
+    EXPECT_EQ(diskReenumerateInterval(true), std::chrono::steady_clock::duration{DISK_REENUMERATE_SAFETY_INTERVAL});
+    EXPECT_EQ(diskReenumerateInterval(false), std::chrono::steady_clock::duration{DISK_REENUMERATE_INTERVAL});
+    static_assert(DISK_REENUMERATE_SAFETY_INTERVAL > DISK_REENUMERATE_INTERVAL);
+}
+
+TEST(ShouldReenumerateTest, NoChangeNoFailureWaitsOutTheSafetyInterval)
+{
+    const auto interval = diskReenumerateInterval(true);
+    EXPECT_FALSE(shouldReenumerate(FAKE_START + std::chrono::seconds{30}, FAKE_START, false, interval, std::nullopt));
+    EXPECT_FALSE(shouldReenumerate(FAKE_START + interval - std::chrono::milliseconds{1}, FAKE_START, false, interval, std::nullopt));
+    EXPECT_TRUE(shouldReenumerate(FAKE_START + interval, FAKE_START, false, interval, std::nullopt));
+}
+
+TEST(ShouldReenumerateTest, ADeviceChangeRescansOnceItHasSettled)
+{
+    const auto interval = diskReenumerateInterval(true);
+    const FakeTime changed = FAKE_START + std::chrono::minutes{1};
+    EXPECT_FALSE(shouldReenumerate(changed, FAKE_START, false, interval, changed));
+    EXPECT_FALSE(
+        shouldReenumerate(changed + DISK_DEVICE_CHANGE_SETTLE_DELAY - std::chrono::milliseconds{1}, FAKE_START, false, interval, changed));
+    EXPECT_TRUE(shouldReenumerate(changed + DISK_DEVICE_CHANGE_SETTLE_DELAY, FAKE_START, false, interval, changed));
+    EXPECT_TRUE(shouldReenumerate(changed + std::chrono::minutes{1}, FAKE_START, false, interval, changed));
+}
+
+TEST(ShouldReenumerateTest, ADeviceChangeIsNotHeldToTheAfterFailureInterval)
+{
+    // A change right after a rescan still rescans once it settles, sooner than a failure may.
+    static_assert(DISK_DEVICE_CHANGE_SETTLE_DELAY < DISK_REENUMERATE_AFTER_FAILURE_INTERVAL);
+    EXPECT_TRUE(
+        shouldReenumerate(FAKE_START + DISK_DEVICE_CHANGE_SETTLE_DELAY, FAKE_START, false, diskReenumerateInterval(true), FAKE_START));
+}
+
+TEST(ShouldReenumerateTest, AFailureStillRescansWithNotificationsRegistered)
+{
+    const auto interval = diskReenumerateInterval(true);
+    EXPECT_FALSE(shouldReenumerate(FAKE_START + std::chrono::seconds{1}, FAKE_START, true, interval, std::nullopt));
+    EXPECT_TRUE(shouldReenumerate(FAKE_START + DISK_REENUMERATE_AFTER_FAILURE_INTERVAL, FAKE_START, true, interval, std::nullopt));
+}
+
+TEST(ShouldReenumerateTest, ADeviceChangeTimedAfterNowRescans)
+{
+    // A fake clock that went back past the change re-enumerates rather than waiting forever.
+    EXPECT_TRUE(shouldReenumerate(
+        FAKE_START + std::chrono::seconds{10}, FAKE_START, false, diskReenumerateInterval(true), FAKE_START + std::chrono::seconds{20}));
+}
+
 TEST(FailureLogLimiterTest, FirstFailureWarnsLaterFailuresDoNot)
 {
     FailureLogLimiter limiter;

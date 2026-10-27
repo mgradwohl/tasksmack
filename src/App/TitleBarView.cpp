@@ -71,72 +71,29 @@ void drawChromeGlyphMatched(
 
     if (ImGui::BeginPopup(SYSTEM_MENU_ID))
     {
-        // Restore (only enabled when maximized)
-        if (isMaximized)
+        // What the window can't do now is greyed out, by the rule the native Windows menu uses too (#3161).
+        const SystemMenuItems items = systemMenuItems(isMaximized);
+        constexpr bool SELECTED = false;
+        if (ImGui::MenuItem(ICON_FA_WINDOW_RESTORE "  Restore", nullptr, SELECTED, items.restore))
         {
-            if (ImGui::MenuItem(ICON_FA_WINDOW_RESTORE "  Restore"))
-            {
-                chosen = Action::Restore;
-            }
+            chosen = Action::Restore;
         }
-        else
-        {
-            ImGui::BeginDisabled();
-            ImGui::MenuItem(ICON_FA_WINDOW_RESTORE "  Restore");
-            ImGui::EndDisabled();
-        }
-
-        // Move (disabled when maximized)
-        if (isMaximized)
-        {
-            ImGui::BeginDisabled();
-            ImGui::MenuItem(ICON_FA_ARROW_RIGHT "  Move");
-            ImGui::EndDisabled();
-        }
-        else
-        {
-            // Move mode not implemented - would require special hit test mode
-            static_cast<void>(ImGui::MenuItem(ICON_FA_ARROW_RIGHT "  Move"));
-        }
-
-        // Size (disabled when maximized)
-        if (isMaximized)
-        {
-            ImGui::BeginDisabled();
-            ImGui::MenuItem(ICON_FA_EXPAND "  Size");
-            ImGui::EndDisabled();
-        }
-        else
-        {
-            // Size mode not implemented - would require special hit test mode
-            static_cast<void>(ImGui::MenuItem(ICON_FA_EXPAND "  Size"));
-        }
-
-        // Minimize
-        if (ImGui::MenuItem(ICON_FA_WINDOW_MINIMIZE "  Minimize"))
+        // Move and Size modes are not implemented: they would need a special hit-test mode.
+        static_cast<void>(ImGui::MenuItem(ICON_FA_ARROW_RIGHT "  Move", nullptr, SELECTED, items.move));
+        static_cast<void>(ImGui::MenuItem(ICON_FA_EXPAND "  Size", nullptr, SELECTED, items.size));
+        if (ImGui::MenuItem(ICON_FA_WINDOW_MINIMIZE "  Minimize", nullptr, SELECTED, items.minimize))
         {
             chosen = Action::Minimize;
         }
-
-        // Maximize (only enabled when not maximized)
-        if (!isMaximized)
+        if (ImGui::MenuItem(ICON_FA_WINDOW_MAXIMIZE "  Maximize", nullptr, SELECTED, items.maximize))
         {
-            if (ImGui::MenuItem(ICON_FA_WINDOW_MAXIMIZE "  Maximize"))
-            {
-                chosen = Action::Maximize;
-            }
-        }
-        else
-        {
-            ImGui::BeginDisabled();
-            ImGui::MenuItem(ICON_FA_WINDOW_MAXIMIZE "  Maximize");
-            ImGui::EndDisabled();
+            chosen = Action::Maximize;
         }
 
         ImGui::Separator();
 
         // Close with shortcut hint
-        if (ImGui::MenuItem(ICON_FA_XMARK "  Close", "Alt+F4"))
+        if (ImGui::MenuItem(ICON_FA_XMARK "  Close", "Alt+F4", SELECTED, items.close))
         {
             chosen = Action::Close;
         }

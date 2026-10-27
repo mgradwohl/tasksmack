@@ -1,6 +1,7 @@
 #pragma once
 
 #include "App/TitleBarGeometry.h"
+#include "App/TitleBarView.h"
 #include "App/WindowInteraction.h"
 #include "Core/Layer.h"
 #include "UI/IconLoader.h"
@@ -129,8 +130,12 @@ class TitleBarLayer : public Core::Layer
     /// Widens the window's SDL minimum size to the bar's @p contentWidth and the panels' content.
     void updateMinimumWindowSize(float contentWidth);
 #ifdef _WIN32
-    /// The native Windows system menu at the cursor (the icon's click).
-    static void showNativeSystemMenu();
+    /// The native Windows system menu at the cursor (the icon's click), its items enabled for a
+    /// window that is @p maximized or not (TitleBarView::systemMenuItems()). Returns the window
+    /// command chosen, for renderTitleBar() to carry out as the title-bar buttons do, client-side
+    /// maximize included (#3161); None when the menu was dismissed or the choice was posted to the OS
+    /// as WM_SYSCOMMAND (Move, Size).
+    [[nodiscard]] static TitleBarView::Action showNativeSystemMenu(bool maximized);
 #endif
     void setupHitTest();
 

@@ -5,6 +5,7 @@
 #include "LinuxCoreDump.h"
 #include "LinuxProcessActionsDetail.h"
 #include "LinuxProcessControl.h"
+#include "Platform/CommandWords.h"
 #include "Platform/IProcessActions.h"
 #include "PosixGuards.h"
 #include "ProcPrivileges.h"
@@ -435,6 +436,8 @@ ProcessActionCapabilities LinuxProcessActions::actionCapabilities() const
 #else
     capabilities.canOpenFileLocation = !m_TraceTools.folderOpenerPath.empty();
 #endif
+    capabilities.canRunProgram = true; // Run new task (#3065)
+    capabilities.canRunProgramAsAdministrator = ::geteuid() == 0 || !m_TraceTools.elevatorPath.empty();
     return capabilities;
 }
 
@@ -450,11 +453,14 @@ SyscallTrace::Tools LinuxProcessActions::discoverSyscallTraceTools()
     tools.terminal = SyscallTrace::selectTerminal(environmentValue("TERMINAL"), find);
     tools.coreDumperPath = find("gcore").value_or(std::string{});
     tools.folderOpenerPath = find("xdg-open").value_or(std::string{});
-    spdlog::debug("System call tracing: strace {}, terminal {}; dump files: gcore {}; file locations: xdg-open {}",
+    tools.elevatorPath = find("pkexec").value_or(std::string{});
+    spdlog::debug("System call tracing: strace {}, terminal {}; dump files: gcore {}; file locations: xdg-open {}; run as "
+                  "administrator: pkexec {}",
                   tools.tracerPath.empty() ? std::string("not found") : tools.tracerPath,
                   tools.terminal ? tools.terminal->path : std::string("not found"),
                   tools.coreDumperPath.empty() ? std::string("not found") : tools.coreDumperPath,
-                  tools.folderOpenerPath.empty() ? std::string("not found") : tools.folderOpenerPath);
+                  tools.folderOpenerPath.empty() ? std::string("not found") : tools.folderOpenerPath,
+                  tools.elevatorPath.empty() ? std::string("not found") : tools.elevatorPath);
     return tools;
 }
 
@@ -596,6 +602,51 @@ ProcessActionResult LinuxProcessActions::openFileLocation(const ProcessTarget& t
     }
     spdlog::info("Opened {} on {} (PID {})", opener, argv[1], target.pid);
     return ProcessActionResult::ok(std::move(note));
+}
+
+ProcessActionResult LinuxProcessActions::runProgram(const RunProgramRequest& request)
+{
+    const std::expected<std::vector<std::string>, std::string> words = CommandWords::split(request.commandLine);
+    if (!words.has_value())
+    {
+        return ProcessActionResult::error(words.error());
+    }
+    if (words->empty())
+    {
+        return ProcessActionResult::error("Type the program to run");
+    }
+    // The program as execvp would find it, looked up here so a typo is said at once rather than lost in
+    // the detached child.
+    const std::optional<std::string> program = SyscallTrace::findExecutable(words->front(), environmentValue("PATH"), isExecutableFile);
+    if (!program.has_value())
+    {
+        return ProcessActionResult::error(std::format("{} wasn't found, or isn't a program", words->front()));
+    }
+    std::vector<std::string> argv = *words;
+    argv.front() = *program;
+
+    const bool root = ::geteuid() == 0;
+    // As administrator: through pkexec, which asks for the password itself; already root, as it is.
+    if (request.asAdministrator && !root)
+    {
+        if (m_TraceTools.elevatorPath.empty())
+        {
+            return ProcessActionResult::error("pkexec isn't installed, so nothing can be run as administrator");
+        }
+        argv.insert(argv.begin(), m_TraceTools.elevatorPath);
+    }
+    // Root for another user (sudo, pkexec) and not asked for administrator: as that user, in their
+    // session (#2461), so the program isn't root's by accident.
+    const std::optional<DetachedSpawn::RunAs> user = request.asAdministrator ? std::nullopt : SessionUser::invokingUserSession();
+    const auto spawned = user.has_value() ? DetachedSpawn::spawnDetached(argv, *user) : DetachedSpawn::spawnDetached(argv);
+    if (!spawned.has_value())
+    {
+        std::string message = DetachedSpawn::spawnFailureMessage(spawned.error(), argv.front());
+        spdlog::warn("Run new task: {}", message);
+        return ProcessActionResult::error(std::move(message));
+    }
+    spdlog::info("Run new task: started {}{}", *program, request.asAdministrator ? " as administrator" : "");
+    return ProcessActionResult::ok();
 }
 
 ProcessDumpResult

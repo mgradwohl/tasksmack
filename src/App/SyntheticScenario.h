@@ -36,6 +36,7 @@
 #include "Platform/IProcessProbe.h"
 #include "Platform/IProcessSecurity.h"
 #include "Platform/IProcessThreads.h"
+#include "Platform/ISystemConnections.h"
 #include "Platform/ISystemProbe.h"
 #include "Platform/IUdpTrafficCollector.h"
 #include "Platform/Synthetic/SyntheticWorkload.h"
@@ -125,6 +126,8 @@ class Scenario
 [[nodiscard]] std::unique_ptr<Platform::IProcessModulesReader> makeProcessModulesReader(const Scenario* scenario);
 /// The threads reader (#3069): the platform's, or under a scenario one that lists nothing.
 [[nodiscard]] std::unique_ptr<Platform::IProcessThreadsReader> makeProcessThreadsReader(const Scenario* scenario);
+/// The Connections tab's reader (#3066): the platform's, or under a scenario one that lists nothing.
+[[nodiscard]] std::unique_ptr<Platform::ISystemConnectionsReader> makeSystemConnectionsReader(const Scenario* scenario);
 /// With a scenario, a reader that reports no open-files support, for the same reason (#183).
 [[nodiscard]] std::unique_ptr<Platform::IProcessOpenFilesReader> makeProcessOpenFilesReader(const Scenario* scenario);
 /// With a scenario, a reader that reports no security support, for the same reason (#1526).

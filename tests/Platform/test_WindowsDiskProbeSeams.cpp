@@ -1,11 +1,13 @@
 /// @file test_WindowsDiskProbeSeams.cpp
 /// @brief WindowsDiskProbe against fake PDH, drive-open and DeviceIoControl calls (#1719): the
 /// localized PhysicalDisk object name (#2994), the logical-drive fallback, a disk whose IOCTL_DISK_PERFORMANCE read fails, open failures
-/// with their warn-once logging, rescans and the busy-time clock. No drive is opened: the fake "drives" are event handles, and the fake
-/// DeviceIoControl answers IOCTL_DISK_PERFORMANCE only.
+/// with their warn-once logging, rescans and the busy-time clock, and the device notifications that say when to rescan (#3151). No drive
+/// is opened: the fake "drives" are event handles, the fake DeviceIoControl answers IOCTL_DISK_PERFORMANCE only, and a test simulates a
+/// disk arriving by calling the callback the probe registered.
 
 #include "Platform/StorageTypes.h"
 #include "Platform/Windows/WindowsDiskProbe.h"
+#include "Platform/Windows/WindowsDiskProbeMath.h"
 #include "Platform/Windows/WindowsHandles.h"
 
 #include <gtest/gtest.h>
@@ -16,6 +18,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <set>
@@ -32,6 +35,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <cfgmgr32.h>
 #include <pdh.h>
 #include <pdhmsg.h>
 #include <winioctl.h>
@@ -45,6 +49,21 @@ namespace
 {
 
 using namespace std::chrono_literals;
+
+// GUID_DEVINTERFACE_DISK and GUID_DEVINTERFACE_VOLUME (winioctl.h)
+constexpr GUID DISK_INTERFACE{
+    .Data1 = 0x53f56307, .Data2 = 0xb6bf, .Data3 = 0x11d0, .Data4 = {0x94, 0xf2, 0x00, 0xa0, 0xc9, 0x1e, 0xfb, 0x8b}};
+constexpr GUID VOLUME_INTERFACE{
+    .Data1 = 0x53f5630d, .Data2 = 0xb6bf, .Data3 = 0x11d0, .Data4 = {0x94, 0xf2, 0x00, 0xa0, 0xc9, 0x1e, 0xfb, 0x8b}};
+
+/// One CM_Register_Notification the probe made: what it asked for, and how to call it back.
+struct Registration
+{
+    GUID interfaceClass{};
+    PVOID context = nullptr;
+    PCM_NOTIFY_CALLBACK callback = nullptr;
+    HCMNOTIFICATION handle = nullptr;
+};
 
 struct OpenDrive
 {
@@ -67,6 +86,10 @@ struct FakeDisks // NOLINT(clang-analyzer-optin.performance.Padding)
     bool failSizing = false;
     bool failItems = false;
     int refreshes = 0;
+    int failRegistration = -1;        // The registration (0 the first) that fails; -1 for none
+    bool notifyDuringRefresh = false; // A disk arrives while PdhEnumObjectsW runs
+    std::vector<Registration> registrations;
+    std::vector<HCMNOTIFICATION> unregistered;
     std::set<int> failOpen;
     std::set<int> failProbe;
     std::set<int> failRead;
@@ -121,11 +144,31 @@ PDH_STATUS WINAPI fakeLookupPerfName(LPCWSTR machine, DWORD index, LPWSTR name, 
     return ERROR_SUCCESS;
 }
 
+/// A disk (or volume) arriving or leaving, or @p action whatever it is: the callback registered for
+/// @p interfaceClass is called, as CfgMgr32 would call it on its own thread.
+void notify(CM_NOTIFY_ACTION action, const GUID& interfaceClass = DISK_INTERFACE)
+{
+    for (const Registration& registration : fake().registrations)
+    {
+        if (registration.interfaceClass == interfaceClass &&
+            std::ranges::find(fake().unregistered, registration.handle) == fake().unregistered.end())
+        {
+            EXPECT_EQ(registration.callback(registration.handle, registration.context, action, nullptr, 0),
+                      static_cast<DWORD>(ERROR_SUCCESS));
+        }
+    }
+}
+
 PDH_STATUS WINAPI
 fakeEnumObjects(LPCWSTR /*source*/, LPCWSTR /*machine*/, PZZWSTR /*list*/, LPDWORD /*size*/, DWORD /*detail*/, BOOL refresh)
 {
     ++fake().refreshes;
     EXPECT_TRUE(refresh != FALSE);
+    if (fake().notifyDuringRefresh)
+    {
+        fake().notifyDuringRefresh = false;
+        notify(CM_NOTIFY_ACTION_DEVICEINTERFACEARRIVAL);
+    }
     return fake().failRefresh ? static_cast<PDH_STATUS>(PDH_CSTATUS_NO_MACHINE) : static_cast<PDH_STATUS>(PDH_MORE_DATA);
 }
 
@@ -229,6 +272,30 @@ UINT WINAPI fakeGetDriveType(LPCWSTR root)
     return it != fake().driveTypes.end() ? it->second : static_cast<UINT>(DRIVE_NO_ROOT_DIR);
 }
 
+CONFIGRET WINAPI fakeRegisterNotification(PCM_NOTIFY_FILTER filter, PVOID context, PCM_NOTIFY_CALLBACK callback, PHCMNOTIFICATION handle)
+{
+    auto& f = fake();
+    EXPECT_EQ(filter->cbSize, sizeof(CM_NOTIFY_FILTER));
+    EXPECT_EQ(filter->FilterType, CM_NOTIFY_FILTER_TYPE_DEVICEINTERFACE);
+    EXPECT_EQ(filter->Flags, 0U);
+    if (static_cast<int>(f.registrations.size()) == f.failRegistration)
+    {
+        f.failRegistration = -1;
+        return CR_FAILURE;
+    }
+    // Any distinct non-null value: the probe only hands it back to unregister it.
+    *handle = reinterpret_cast<HCMNOTIFICATION>(static_cast<std::uintptr_t>(f.registrations.size() + 1));
+    f.registrations.push_back(
+        Registration{.interfaceClass = filter->u.DeviceInterface.ClassGuid, .context = context, .callback = callback, .handle = *handle});
+    return CR_SUCCESS;
+}
+
+CONFIGRET WINAPI fakeUnregisterNotification(HCMNOTIFICATION handle)
+{
+    fake().unregistered.push_back(handle);
+    return CR_SUCCESS;
+}
+
 /// The fake monotonic clock, apart from FakeDisks so reading it cannot throw.
 std::chrono::steady_clock::time_point& fakeClock() noexcept
 {
@@ -251,6 +318,8 @@ std::chrono::steady_clock::time_point fakeNow() noexcept
     fns.drive.deviceIoControl = &fakeDeviceIoControl;
     fns.drive.getLogicalDrives = &fakeGetLogicalDrives;
     fns.drive.getDriveTypeW = &fakeGetDriveType;
+    fns.devices.registerNotification = &fakeRegisterNotification;
+    fns.devices.unregisterNotification = &fakeUnregisterNotification;
     fns.now = &fakeNow;
     return fns;
 }
@@ -417,7 +486,7 @@ TEST_F(WindowsDiskProbeSeamsTest, PhysicalDiskIsEnumeratedByItsLocalizedName)
     EXPECT_EQ(fake().enumeratedAs, (std::vector<std::wstring>(2, fake().objectName)));
     EXPECT_EQ(fake().lookups, 1);
 
-    fakeClock() += 30s;
+    fakeClock() += DISK_REENUMERATE_SAFETY_INTERVAL;
     (void) probe.read(); // Rescans
     EXPECT_EQ(fake().enumeratedAs, (std::vector<std::wstring>(4, fake().objectName)));
     EXPECT_EQ(fake().lookups, 1) << "the name is looked up once";
@@ -452,7 +521,7 @@ TEST_F(WindowsDiskProbeSeamsTest, FailedLookupOnALocalizedSystemFallsBackUntilAR
     EXPECT_EQ(logged("debug", "enumerating PhysicalDisk ('PhysicalDisk') failed"), 1U);
 
     fake().failLookup = false;
-    fakeClock() += 30s;
+    fakeClock() += DISK_REENUMERATE_SAFETY_INTERVAL;
     (void) probe.read(); // Rescans, and finds the name this time
     EXPECT_EQ(fake().lookups, 2);
     const SystemDiskCounters measured = probe.read();
@@ -516,9 +585,12 @@ TEST_F(WindowsDiskProbeSeamsTest, FailingDiskIsDroppedByTheNextRescan)
     EXPECT_TRUE(probe.capabilities().hasReadWriteBytes);
 }
 
-TEST_F(WindowsDiskProbeSeamsTest, PeriodicRescanFindsANewDisk)
+TEST_F(WindowsDiskProbeSeamsTest, WithoutNotificationsAPeriodicRescanFindsANewDisk)
 {
+    // CM_Register_Notification failed: the probe rescans every 30 s, as before #3151.
+    fake().failRegistration = 0;
     WindowsDiskProbe probe(fakeFunctions());
+    EXPECT_TRUE(fake().registrations.empty());
     fake().instances.insert(fake().instances.begin() + 2, L"2 F:");
 
     fakeClock() += 29s;
@@ -535,7 +607,7 @@ TEST_F(WindowsDiskProbeSeamsTest, RescanWhoseEnumerationFailsKeepsTheCurrentDisk
     {
         fake().failRefresh = failing == 0;
         fake().failItems = failing == 1;
-        fakeClock() += 30s;
+        fakeClock() += DISK_REENUMERATE_SAFETY_INTERVAL;
         (void) probe.read();
         EXPECT_EQ(names(probe.read()), (std::vector<std::string>{"0 C:", "1 D: E:"})) << failing;
     }
@@ -547,7 +619,7 @@ TEST_F(WindowsDiskProbeSeamsTest, OpenFailureAndUnparseableNameWarnOnceAcrossRes
     fake().instances.insert(fake().instances.begin(), L"bogus");
     WindowsDiskProbe probe(fakeFunctions());
 
-    fakeClock() += 30s;
+    fakeClock() += DISK_REENUMERATE_SAFETY_INTERVAL;
     (void) probe.read(); // Rescans
     EXPECT_EQ(fake().refreshes, 2);
     EXPECT_EQ(logged("warning", "CreateFileW failed for \\\\.\\PhysicalDrive1"), 1U);
@@ -556,12 +628,12 @@ TEST_F(WindowsDiskProbeSeamsTest, OpenFailureAndUnparseableNameWarnOnceAcrossRes
     EXPECT_EQ(logged("debug", "'bogus'"), 1U);
 
     fake().failOpen.clear();
-    fakeClock() += 30s;
+    fakeClock() += DISK_REENUMERATE_SAFETY_INTERVAL;
     (void) probe.read();
     EXPECT_EQ(names(probe.read()), (std::vector<std::string>{"0 C:", "1 D: E:"}));
 
     fake().failOpen = {1};
-    fakeClock() += 30s;
+    fakeClock() += DISK_REENUMERATE_SAFETY_INTERVAL;
     (void) probe.read();
     EXPECT_EQ(logged("warning", "CreateFileW failed for \\\\.\\PhysicalDrive1"), 2U) << "an opened drive warns again";
 }
@@ -603,6 +675,154 @@ TEST_F(WindowsDiskProbeSeamsTest, NegativeCountersReadAsZero)
     EXPECT_EQ(disk.ioTimeMs, 3U);
 }
 
+// =============================================================================
+// Device notifications (#3151): a rescan refreshes PDH's whole object list (60-130 ms of CPU), so it
+// runs when a disk or volume arrives or leaves, not every 30 s.
+// =============================================================================
+
+TEST_F(WindowsDiskProbeSeamsTest, RegistersForDiskAndVolumeArrivalsAndUnregistersOnDestruction)
+{
+    {
+        const WindowsDiskProbe probe(fakeFunctions());
+        ASSERT_EQ(fake().registrations.size(), 2U);
+        EXPECT_TRUE(fake().registrations[0].interfaceClass == DISK_INTERFACE);
+        EXPECT_TRUE(fake().registrations[1].interfaceClass == VOLUME_INTERFACE);
+        EXPECT_NE(fake().registrations[0].context, nullptr);
+        EXPECT_TRUE(fake().unregistered.empty());
+    }
+    // Both, newest first: CM_Unregister_Notification waits for a callback still running, so none can
+    // touch the probe once it is gone.
+    EXPECT_EQ(fake().unregistered, (std::vector<HCMNOTIFICATION>{fake().registrations[1].handle, fake().registrations[0].handle}));
+}
+
+TEST_F(WindowsDiskProbeSeamsTest, WithoutANotificationNoRescanRunsUntilTheSafetyInterval)
+{
+    WindowsDiskProbe probe(fakeFunctions());
+    fake().instances.insert(fake().instances.begin() + 2, L"2 F:"); // Attached with no notification
+    ASSERT_EQ(fake().refreshes, 1);
+
+    // Every second for the whole safety interval but its last second: no rescan.
+    const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(DISK_REENUMERATE_SAFETY_INTERVAL).count();
+    for (long long second = 1; second < seconds; ++second)
+    {
+        fakeClock() += 1s;
+        ASSERT_EQ(probe.read().disks.size(), 2U) << second;
+    }
+    EXPECT_EQ(fake().refreshes, 1) << "no 30 s rescan while the notifications are registered";
+
+    fakeClock() += 1s;
+    (void) probe.read(); // The safety rescan, after the read
+    EXPECT_EQ(fake().refreshes, 2);
+    EXPECT_EQ(names(probe.read()), (std::vector<std::string>{"0 C:", "1 D: E:", "2 F:"}));
+}
+
+TEST_F(WindowsDiskProbeSeamsTest, ADiskArrivalRescansOnceItsVolumesHaveSettled)
+{
+    WindowsDiskProbe probe(fakeFunctions());
+    fakeClock() += 1min;
+    (void) probe.read();
+    ASSERT_EQ(fake().refreshes, 1);
+
+    fake().instances.insert(fake().instances.begin() + 2, L"2 F:");
+    notify(CM_NOTIFY_ACTION_DEVICEINTERFACEARRIVAL);
+    fakeClock() += 1s;
+    EXPECT_EQ(probe.read().disks.size(), 2U);
+    EXPECT_EQ(fake().refreshes, 1) << "the rescan waits for the disk's volumes to be lettered";
+
+    fakeClock() += DISK_DEVICE_CHANGE_SETTLE_DELAY - 1ms;
+    (void) probe.read();
+    EXPECT_EQ(fake().refreshes, 1);
+
+    fakeClock() += 1ms;
+    EXPECT_EQ(probe.read().disks.size(), 2U) << "the rescan runs after the read";
+    EXPECT_EQ(fake().refreshes, 2);
+    EXPECT_EQ(names(probe.read()), (std::vector<std::string>{"0 C:", "1 D: E:", "2 F:"}));
+
+    fakeClock() += 1min;
+    (void) probe.read();
+    EXPECT_EQ(fake().refreshes, 2) << "one notification, one rescan";
+}
+
+TEST_F(WindowsDiskProbeSeamsTest, ABurstOfNotificationsIsOneRescan)
+{
+    // A disk, then each of its volumes: one rescan, timed from the first.
+    WindowsDiskProbe probe(fakeFunctions());
+    notify(CM_NOTIFY_ACTION_DEVICEINTERFACEARRIVAL);
+    (void) probe.read();
+    fakeClock() += 1s;
+    notify(CM_NOTIFY_ACTION_DEVICEINTERFACEARRIVAL, VOLUME_INTERFACE);
+    notify(CM_NOTIFY_ACTION_DEVICEINTERFACEARRIVAL, VOLUME_INTERFACE);
+    (void) probe.read();
+    EXPECT_EQ(fake().refreshes, 1);
+
+    fakeClock() += DISK_DEVICE_CHANGE_SETTLE_DELAY - 1s; // The settle delay since the first
+    (void) probe.read();
+    EXPECT_EQ(fake().refreshes, 2);
+    fakeClock() += 1min;
+    (void) probe.read();
+    EXPECT_EQ(fake().refreshes, 2);
+}
+
+TEST_F(WindowsDiskProbeSeamsTest, RemovalAndVolumeChangesRescanButOtherActionsDoNot)
+{
+    WindowsDiskProbe probe(fakeFunctions());
+    notify(CM_NOTIFY_ACTION_DEVICEQUERYREMOVE); // Not an interface arriving or leaving
+    (void) probe.read();
+    fakeClock() += 1min;
+    (void) probe.read();
+    EXPECT_EQ(fake().refreshes, 1);
+
+    fake().instances = {L"0 C:", L"_Total"}; // Disk 1 left cleanly
+    notify(CM_NOTIFY_ACTION_DEVICEINTERFACEREMOVAL);
+    (void) probe.read();
+    fakeClock() += DISK_DEVICE_CHANGE_SETTLE_DELAY;
+    (void) probe.read();
+    EXPECT_EQ(fake().refreshes, 2);
+    EXPECT_EQ(names(probe.read()), (std::vector<std::string>{"0 C:"}));
+
+    fake().instances = {L"0 C:", L"1 D:", L"_Total"}; // Disk 1 is back, and a volume on it is lettered
+    notify(CM_NOTIFY_ACTION_DEVICEINTERFACEARRIVAL, VOLUME_INTERFACE);
+    (void) probe.read();
+    fakeClock() += DISK_DEVICE_CHANGE_SETTLE_DELAY;
+    (void) probe.read();
+    EXPECT_EQ(fake().refreshes, 3);
+    EXPECT_EQ(names(probe.read()), (std::vector<std::string>{"0 C:", "1 D:"}));
+}
+
+TEST_F(WindowsDiskProbeSeamsTest, ANotificationDuringARescanAsksForAnother)
+{
+    // The flag is taken before the rescan, so a disk arriving while PDH enumerates isn't lost.
+    WindowsDiskProbe probe(fakeFunctions());
+    notify(CM_NOTIFY_ACTION_DEVICEINTERFACEARRIVAL);
+    (void) probe.read();
+    fake().notifyDuringRefresh = true;
+    fakeClock() += DISK_DEVICE_CHANGE_SETTLE_DELAY;
+    (void) probe.read();
+    ASSERT_EQ(fake().refreshes, 2);
+
+    (void) probe.read(); // Takes the change made during that rescan
+    EXPECT_EQ(fake().refreshes, 2);
+    fakeClock() += DISK_DEVICE_CHANGE_SETTLE_DELAY;
+    (void) probe.read();
+    EXPECT_EQ(fake().refreshes, 3);
+}
+
+TEST_F(WindowsDiskProbeSeamsTest, AFailedRegistrationUnregistersTheOtherAndRescansEvery30Seconds)
+{
+    fake().failRegistration = 1; // The disks' succeeds, the volumes' fails
+    WindowsDiskProbe probe(fakeFunctions());
+    ASSERT_EQ(fake().registrations.size(), 1U);
+    EXPECT_EQ(fake().unregistered, (std::vector<HCMNOTIFICATION>{fake().registrations[0].handle})) << "both or neither";
+    EXPECT_EQ(logged("info", "CM_Register_Notification failed"), 1U);
+
+    fakeClock() += DISK_REENUMERATE_INTERVAL - 1s;
+    (void) probe.read();
+    EXPECT_EQ(fake().refreshes, 1);
+    fakeClock() += 1s;
+    (void) probe.read();
+    EXPECT_EQ(fake().refreshes, 2);
+}
+
 TEST_F(WindowsDiskProbeSeamsTest, SystemFunctionsAreAllSet)
 {
     const WindowsDiskProbeFunctions fns = WindowsDiskProbe::systemFunctions();
@@ -613,6 +833,8 @@ TEST_F(WindowsDiskProbeSeamsTest, SystemFunctionsAreAllSet)
     EXPECT_NE(fns.drive.deviceIoControl, nullptr);
     EXPECT_NE(fns.drive.getLogicalDrives, nullptr);
     EXPECT_NE(fns.drive.getDriveTypeW, nullptr);
+    EXPECT_NE(fns.devices.registerNotification, nullptr);
+    EXPECT_NE(fns.devices.unregisterNotification, nullptr);
     EXPECT_NE(fns.now, nullptr);
 }
 

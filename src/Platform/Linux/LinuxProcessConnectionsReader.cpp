@@ -40,38 +40,8 @@ namespace
 
 using Posix::FdGuard;
 
-/// One of the four socket tables: what to dump over netlink, and the /proc/[pid]/net file that holds it.
-struct SocketTable
-{
-    ConnectionProtocol protocol;
-    ConnectionFamily family;
-    int ipProtocol;
-    int addressFamily;
-    const char* procFile;
-};
-
-constexpr std::array<SocketTable, 4> SOCKET_TABLES{{
-    {.protocol = ConnectionProtocol::Tcp,
-     .family = ConnectionFamily::IPv4,
-     .ipProtocol = IPPROTO_TCP,
-     .addressFamily = AF_INET,
-     .procFile = "net/tcp"},
-    {.protocol = ConnectionProtocol::Tcp,
-     .family = ConnectionFamily::IPv6,
-     .ipProtocol = IPPROTO_TCP,
-     .addressFamily = AF_INET6,
-     .procFile = "net/tcp6"},
-    {.protocol = ConnectionProtocol::Udp,
-     .family = ConnectionFamily::IPv4,
-     .ipProtocol = IPPROTO_UDP,
-     .addressFamily = AF_INET,
-     .procFile = "net/udp"},
-    {.protocol = ConnectionProtocol::Udp,
-     .family = ConnectionFamily::IPv6,
-     .ipProtocol = IPPROTO_UDP,
-     .addressFamily = AF_INET6,
-     .procFile = "net/udp6"},
-}};
+using InetSockets::SOCKET_TABLES;
+using InetSockets::SocketTable;
 
 [[nodiscard]] constexpr ConnectionsReadStatus statusFromErrno(int err) noexcept
 {

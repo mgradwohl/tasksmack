@@ -1,0 +1,15 @@
+{
+  "https://cdn.jsdelivr.net/npm/docsify-copy-code@3.0.2/dist/docsify-copy-code.min.js": "sha384-xvU4Qmx14Fe/3hDKuOUUQ8eOzoa7OVTL0vp3amTSv2KY8lCjlrga7DoqecFFOT7j",
+  "https://cdn.jsdelivr.net/npm/docsify-mermaid@2.0.1/dist/docsify-mermaid.js": "sha384-U2Wy2Wa3grc0soLXlky3iZWvD6N5p3o+Udi8RpPWlbscpUEfi7RuQHzMmSstkHou",
+  "https://cdn.jsdelivr.net/npm/docsify@5.0.0/dist/docsify.min.js": "sha384-w6yZXzkazsxmservgGooUY9zjEHzIFHubRNZMLJ3enj/JD+Z8BvAGBqdrjfnLNhu",
+  "https://cdn.jsdelivr.net/npm/docsify@5.0.0/dist/plugins/search.min.js": "sha384-wZGyhbW44GtFpUJG1z6siOX84RFRDAht5UTeOlV/LlRP6T2GXj3LrLwcUHTyzfby",
+  "https://cdn.jsdelivr.net/npm/docsify@5.0.0/dist/themes/addons/vue.min.css": "sha384-Juf4pwILpOysilbsFQxO8a3Ct3yDvSPolGmartfG+QQRLj6m7c1mYWV38WDI1N93",
+  "https://cdn.jsdelivr.net/npm/docsify@5.0.0/dist/themes/core.min.css": "sha384-u1ltA0BWEetQbGokjUjglT9sN702RQwy8JESh3Ha4GNlyzMU57usk6duY0/BOTMj",
+  "https://cdn.jsdelivr.net/npm/mermaid@12.2.0/dist/mermaid.min.js": "sha384-8xUhuLNMjW/cI2Dacg3DR4WliYznvIg0LVG1stctThKD/YVrJFI9TNCFxft5NYgp",
+  "https://cdn.jsdelivr.net/npm/prismjs@1.30.0/components/prism-bash.min.js": "sha384-9WmlN8ABpoFSSHvBGGjhvB3E/D8UkNB9HpLJjBQFC2VSQsM1odiQDv4NbEo+7l15",
+  "https://cdn.jsdelivr.net/npm/prismjs@1.30.0/components/prism-c.min.js": "sha384-gaD4ncierlmWk42Z3BmTp37/z+Dqt8V4Wf74UjTvFeo+M+SgnEI6Ysd98pWhksQv",
+  "https://cdn.jsdelivr.net/npm/prismjs@1.30.0/components/prism-clike.min.js": "sha384-7LHwxHIDSHTBleLmgDWZbC/IMJsfYfFVOihKhvsrxYW4j47YQcRwZja4ToFE3bA8",
+  "https://cdn.jsdelivr.net/npm/prismjs@1.30.0/components/prism-cmake.min.js": "sha384-N/R9aEWuB6s4BOuh/QelSwBnfARmerMJJI8ffDEpotQfjjUiRUBlEM/uZzItj0pi",
+  "https://cdn.jsdelivr.net/npm/prismjs@1.30.0/components/prism-cpp.min.js": "sha384-NiOrAquf32LSG3Vuig99LKS03EZPUuM8a51NOp+XXsqx08hUVo3wbNWALY7K/2J8",
+  "https://cdn.jsdelivr.net/npm/prismjs@1.30.0/components/prism-powershell.min.js": "sha384-xbI9krqyYp4npK9Cn94XyNoSR+TYZKddrk0NUVZ44zZ+OVpKz/LL0U1PB0MjR7Vx"
+}

@@ -152,6 +152,17 @@
       datasourceTemplate: 'github-tags',
     },
 
+    // ── docs/index.html: the docs site's jsDelivr pins (#3167) ──────────────
+    //    docsify and its plugins, mermaid and prismjs, each pinned in its URL. Each tag also carries an
+    //    SRI hash from docs/cdn-integrity.json: a bump fails pre-commit's check-docs-sri until
+    //    `python -I tools/docs-sri.py --update` is run on the branch and committed.
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^docs/index\\.html$/'],
+      matchStrings: ['https://cdn\\.jsdelivr\\.net/npm/(?<depName>[a-z0-9][a-z0-9._-]*)@(?<currentValue>\\d+\\.\\d+\\.\\d+)/'],
+      datasourceTemplate: 'npm',
+    },
+
     // ── LLVM toolchain: Windows exact semver pin plus the Linux major-only pins. Every
     //    update to this whole group requires dashboard approval (see packageRules below) --
     //    not just major bumps -- because Windows resolves the pinned version through
@@ -536,6 +547,15 @@
   ],
 
   packageRules: [
+    {
+      // The docs site's CDN pins (#3167): one PR per package, with majors behind dashboard approval like
+      // the other majors here (docsify 5, docsify-copy-code 3 and mermaid 12 each need the docs browser
+      // tests, #2967). Every update also needs its SRI hashes regenerated (see the customManager).
+      matchFileNames: ['docs/index.html'],
+      matchDatasources: ['npm'],
+      matchUpdateTypes: ['major'],
+      dependencyDashboardApproval: true,
+    },
     {
       // Bundle every functional LLVM pin location in the repo into one PR so they can't drift
       // out of sync with each other: the Windows exact-semver pins (ci.yml, heavy-checks.yml,
