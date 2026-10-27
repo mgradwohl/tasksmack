@@ -545,7 +545,10 @@ jobs:
     # of setup/build time) -- shared 4-vCPU hosted runners are simply slower per-repetition
     # than the wall-clock budget this job originally had. Raised with real margin rather than
     # tuned to the exact observed runtime, since --benchmark_min_time and per-benchmark cost
-    # can shift over time.
+    # can shift over time. Measured on 2026-10-22..26 (#3052): setup about 2 minutes and the suite
+    # a steady 23.0-23.5 minutes, so the build gets about 19; the full-tree build it used to do took
+    # 7-9 minutes warm and 23-28 with a cold ccache (evicted) or on release/0.9 (68% hits against
+    # main's cache), which is what timed out. The Build step now builds only the benchmark binary.
     timeout-minutes: 45
     permissions:
       contents: read
@@ -585,8 +588,13 @@ jobs:
         # doesn't change the generated code, so the timings are unaffected.
         run: cmake --preset benchmark -DPython3_EXECUTABLE="$(which python)" -DTASKSMACK_ENABLE_PCH=OFF
 
+      # Only the benchmark binary (#3052). The preset's default target also built TaskSmack, the
+      # UI training driver and every test suite, five large links, and TaskSmackTests alone is
+      # about 450 compiles (it builds the app's sources a second time) against the app's ~145. With
+      # a cold or diverged ccache that whole build took 23-28 minutes, while the app's objects were
+      # done after 6. The benchmark binary is the same either way: the same objects, flags and link.
       - name: Build
-        run: cmake --build --preset benchmark
+        run: cmake --build --preset benchmark --target TaskSmackBenchmarks
 
       - name: Run benchmarks
         run: |

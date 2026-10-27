@@ -68,6 +68,24 @@ def run_bash(script: str, directory: Path, env: dict[str, str]) -> subprocess.Co
     )
 
 
+class HeavyChecksBenchmarkBuildTests(unittest.TestCase):
+    """#3052: benchmark-regression builds only the binary it runs, not the preset's whole tree."""
+
+    WORKFLOW = WORKFLOWS / "heavy-checks.yml"
+    JOB = "benchmark-regression"
+
+    def test_the_build_is_the_benchmark_target_alone(self):
+        build = find_step(self.WORKFLOW, "Build", job=self.JOB)
+        # The default target also built TaskSmack, the UI training driver and every test suite, which
+        # pushed the job past its timeout on a cold or diverged ccache.
+        self.assertEqual(build.run, "cmake --build --preset benchmark --target TaskSmackBenchmarks")
+
+    def test_the_suite_runs_the_binary_that_preset_built(self):
+        # bench.sh runs build/<preset>/bin/TaskSmackBenchmarks: the preset must be the one built.
+        run = find_step(self.WORKFLOW, "Run benchmarks", job=self.JOB)
+        self.assertIn("./tools/bench.sh benchmark ", run.run)
+
+
 class RenovateDryRunTests(unittest.TestCase):
     """#2527: RENOVATE_DRY_RUN=disabled still made every run a dry run, so no dependency PR opened."""
 

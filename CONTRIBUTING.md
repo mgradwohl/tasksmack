@@ -1404,7 +1404,8 @@ python3 tools/check-benchmark-regression.py --baseline perf-data/linux-baseline.
 
 PR CI (`ci.yml`'s Linux Release job) only *builds* `TaskSmackBenchmarks` -- it never runs it -- so a
 change that breaks the benchmark build fails the PR (#1348). Timing runs and the regression gate below
-live only in `heavy-checks.yml`.
+live only in `heavy-checks.yml`. That job builds only `TaskSmackBenchmarks` too, not the preset's whole
+tree, so with a cold ccache the build and the 23-minute suite still fit its 45-minute timeout (#3052).
 
 `heavy-checks.yml`'s `benchmark-regression` job runs nightly and on pushes to `main` that touch the code the
 benchmarks measure, gating against
