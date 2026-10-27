@@ -92,7 +92,10 @@ ProcessActionCapabilities BrokeredProcessActions::actionCapabilities() const
 {
     ProcessActionCapabilities capabilities = m_Inner->actionCapabilities();
     capabilities.canAuthorizeInteractively = (m_Broker != nullptr);
-    if (m_Broker != nullptr && m_Broker->connected() && capabilities.canSetIoPriority)
+    // The connection as last seen, not looked at here (#3182): Process Details asks every frame, on the
+    // UI thread, so this makes no pipe or socket call. A helper that has just exited is found gone by
+    // the sampler's next read, or by the action's own retry, which then offers Authenticate and retry.
+    if (capabilities.canSetIoPriority && m_Broker != nullptr && m_Broker->lastSeenConnected())
     {
         capabilities.canSetRealtimeIoPriority = true; // the helper, as root, has CAP_SYS_NICE
     }

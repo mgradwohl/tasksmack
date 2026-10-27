@@ -163,7 +163,7 @@ class ProcessActionsBlockRenderTest : public ::testing::Test
 
     struct Harness
     {
-        TestMocks::MockProcessActions mock;
+        TestMocks::MockAffinityLayoutActions mock; // counts the Set affinity dialog's layout reads (#3182)
         ProcessActionsView actionsView;
         ProcessPriorityView priorityView;
         std::string name = "victim";
@@ -482,7 +482,10 @@ TEST_F(ProcessActionsBlockRenderTest, SetAffinityFromTheCardOpensTheDialogAndApp
     ImGui::ActivateItemByID(ImHashStr(Detail::SET_AFFINITY_LABEL, 0, actions->ID));
     static_cast<void>(runFrame(body));
     ASSERT_TRUE(runFrame(body));
+    // The CPU layout is read on its worker (#3182): the boxes are there once it has arrived.
+    h.actionsView.waitForAffinityLayoutForTesting();
     ProcessAffinityDialog& dialog = h.actionsView.affinityDialog();
+    EXPECT_FALSE(dialog.awaitingLayout());
     EXPECT_EQ(dialog.target().pid, TARGET.pid);
     EXPECT_EQ(dialog.choice(), current);
 
@@ -505,10 +508,87 @@ TEST_F(ProcessActionsBlockRenderTest, SetAffinityFromTheCardOpensTheDialogAndApp
     ImGui::ActivateItemByID(ImHashStr(Detail::SET_AFFINITY_LABEL, 0, actionsWindow()->ID));
     static_cast<void>(runFrame(body));
     ASSERT_TRUE(runFrame(body));
+    EXPECT_FALSE(dialog.awaitingLayout()) << "the layout read for the first opening serves the second";
     h.actionsView.onSelectionChanged();
     static_cast<void>(runFrame(body));
     EXPECT_FALSE(runFrame(body));
     EXPECT_EQ(h.mock.setAffinityCount(), 1);
+    EXPECT_EQ(h.mock.affinityLayoutCount(), 1) << "read once, for both openings";
+    EXPECT_NE(h.mock.affinityLayoutThread(), std::this_thread::get_id()) << "read on its worker, never the UI thread";
+}
+
+// #3182: Set affinity... pressed before the CPU layout has been read opens the dialog at once, saying it
+// is reading it; the boxes are arranged by the layout when it arrives. Never read on the UI thread.
+TEST_F(ProcessActionsBlockRenderTest, SetAffinityBeforeTheLayoutIsReadOpensTheDialogAwaitingIt)
+{
+    Harness h;
+    Platform::CpuAffinityLayout layout;
+    layout.online = Platform::CpuAffinity::fromMask(0b1111U);
+    h.mock.setAffinityLayout(layout);
+    h.mock.holdAffinityLayout();
+    Platform::ProcessActionCapabilities caps = ALL_ACTIONS;
+    caps.canSetAffinity = true;
+    const Platform::CpuAffinity current = Platform::CpuAffinity::fromMask(0b1U);
+    std::string text;
+    const auto body = [&]
+    {
+        ImGui::LogToBuffer();
+        ProcessActionsBlock::Context context = h.context(caps);
+        context.currentAffinity = &current;
+        (void) ProcessActionsBlock::render(context, layoutFor(caps, 1600.0F, 600.0F), infoCardHeight(6.0F));
+        h.actionsView.renderConfirmation(&h.mock, TARGET);
+        text = GImGui->LogBuffer.c_str();
+        ImGui::LogFinish();
+    };
+    ASSERT_FALSE(runFrame(body));
+    ImGui::ActivateItemByID(ImHashStr(Detail::SET_AFFINITY_LABEL, 0, actionsWindow()->ID));
+    static_cast<void>(runFrame(body));
+    ASSERT_TRUE(runFrame(body)) << "up at once, without waiting for the read";
+    const ProcessAffinityDialog& dialog = h.actionsView.affinityDialog();
+    EXPECT_TRUE(dialog.awaitingLayout());
+    EXPECT_TRUE(text.contains("Reading this PC's CPU layout...")) << text;
+
+    h.mock.releaseAffinityLayout();
+    h.actionsView.waitForAffinityLayoutForTesting();
+    ASSERT_TRUE(runFrame(body));
+    EXPECT_FALSE(dialog.awaitingLayout());
+    EXPECT_EQ(dialog.cpuCount(), 4U);
+    EXPECT_EQ(dialog.choice(), current);
+    EXPECT_FALSE(text.contains("Reading this PC's CPU layout...")) << text;
+    EXPECT_EQ(h.mock.affinityLayoutCount(), 1);
+}
+
+// #3182: the update path starts the layout's read early, so Set affinity... finds it read and the dialog
+// opens with its boxes; without actions there is nothing to read.
+TEST_F(ProcessActionsBlockRenderTest, TheUpdatePathReadsTheLayoutBeforeSetAffinityIsPressed)
+{
+    Harness h;
+    Platform::CpuAffinityLayout layout;
+    layout.online = Platform::CpuAffinity::fromMask(0b111U);
+    h.mock.setAffinityLayout(layout);
+    h.actionsView.updateAffinityLayout(nullptr);
+    EXPECT_EQ(h.mock.affinityLayoutCount(), 0);
+    for (int frame = 0; frame < 3; ++frame)
+    {
+        h.actionsView.updateAffinityLayout(&h.mock); // each frame's update: one read in all
+    }
+    h.actionsView.waitForAffinityLayoutForTesting(); // no dialog awaits it: kept for the press
+
+    Platform::ProcessActionCapabilities caps = ALL_ACTIONS;
+    caps.canSetAffinity = true;
+    const auto body = [&]
+    {
+        (void) ProcessActionsBlock::render(h.context(caps), layoutFor(caps, 1600.0F, 600.0F), infoCardHeight(6.0F));
+        h.actionsView.renderConfirmation(&h.mock, TARGET);
+    };
+    ASSERT_FALSE(runFrame(body));
+    ImGui::ActivateItemByID(ImHashStr(Detail::SET_AFFINITY_LABEL, 0, actionsWindow()->ID));
+    static_cast<void>(runFrame(body));
+    ASSERT_TRUE(runFrame(body));
+    const ProcessAffinityDialog& dialog = h.actionsView.affinityDialog();
+    EXPECT_FALSE(dialog.awaitingLayout()) << "read already: the boxes are there on the first frame";
+    EXPECT_EQ(dialog.cpuCount(), 3U);
+    EXPECT_EQ(h.mock.affinityLayoutCount(), 1);
 }
 
 // #1395: confirming the dialog acts on the process and the card shows the result in its line; cancelling it

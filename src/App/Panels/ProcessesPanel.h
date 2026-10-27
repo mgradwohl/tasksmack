@@ -398,6 +398,9 @@ class ProcessesPanel : public Panel
         {
             std::unique_ptr<Platform::IProcessActions> actions;
             Platform::ProcessActionCapabilities actionCapabilities; ///< actions->actionCapabilities(), asked on the hook's thread
+            /// actions->affinityLayout() where they can set affinity, read once on the hook's thread (#3182):
+            /// the Set affinity dialog's groups and core kinds, never read on the UI thread.
+            Platform::CpuAffinityLayout affinityLayout;
             std::shared_ptr<Platform::IUdpTrafficCollector> udpCollector;
             std::unique_ptr<Platform::IProcessIconSource> icons;
         };
@@ -488,6 +491,7 @@ class ProcessesPanel : public Panel
     // Actions block. Created at attach, like that panel's: this panel is part of the composition root.
     std::unique_ptr<Platform::IProcessActions> m_ProcessActions;
     Platform::ProcessActionCapabilities m_ActionCapabilities;
+    Platform::CpuAffinityLayout m_AffinityLayout; // The Set affinity dialog's, read on the sampler thread (#3182)
 
     // The opt-in UDP event trace (#1492), shared with the probe the model owns. Started at attach
     // when Settings has it on, and on UdpEventTraceChangedEvent; stopped when it is turned off and at

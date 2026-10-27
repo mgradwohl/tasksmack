@@ -36,6 +36,20 @@ class ProcessAffinityDialog
               std::size_t cpuCount,
               const Platform::CpuAffinityLayout& layout = {});
 
+    /// open(), before the CPU layout has been read (#3182): the dialog opens at once and says it is
+    /// reading it, with no boxes and Apply disabled, until setLayout() arranges them as open() would have.
+    void openAwaitingLayout(Platform::ProcessTarget target, std::string name, const Platform::CpuAffinity& current, std::size_t cpuCount);
+
+    /// Arranges the boxes of a dialog opened with openAwaitingLayout() by @p layout; nothing when none
+    /// is awaited.
+    void setLayout(const Platform::CpuAffinityLayout& layout);
+
+    /// Whether the dialog was opened before its layout was read and hasn't been given it yet.
+    [[nodiscard]] bool awaitingLayout() const noexcept
+    {
+        return m_AwaitingLayout;
+    }
+
     /// Whether the dialog has been asked for or is open: the panel asks for no other row action meanwhile.
     [[nodiscard]] bool isPending() const noexcept
     {
@@ -94,8 +108,17 @@ class ProcessAffinityDialog
     }
 
   private:
+    /// The boxes: @p layout's CPUs (or 0 to @p cpuCount - 1) and any other @p current names, ticked as
+    /// @p current has them, in @p layout's sections.
+    void arrange(const Platform::CpuAffinity& current, std::size_t cpuCount, const Platform::CpuAffinityLayout& layout);
+    /// The CPU boxes, All and None, and the line under them that counts the CPUs chosen.
+    void renderChoices();
+
     Platform::ProcessTarget m_Target{.pid = -1, .startTimeTicks = 0};
     std::string m_Name;
+    // What openAwaitingLayout() was given, kept for setLayout() to arrange the boxes from.
+    Platform::CpuAffinity m_AwaitedCurrent;
+    std::size_t m_AwaitedCpuCount = 0;
     // A byte per CPU up to the highest offered, 1 = ticked (ImGui::Checkbox takes a bool, set below);
     // a CPU not offered (a gap in the online set) is never ticked.
     std::vector<std::uint8_t> m_Chosen;
@@ -103,8 +126,9 @@ class ProcessAffinityDialog
     std::size_t m_OfferedCount = 0;
     std::vector<AffinityDialogSection> m_Sections;
     std::size_t m_GroupCount = 0;    // Processor groups, for the CPU sets note
-    bool m_AppliedAsCpuSets = false; // Platform::CpuAffinityLayout::appliedAsCpuSets
     ImVec2 m_LastWorkSize;           // For UI::Widgets::centerNextDialog()
+    bool m_AppliedAsCpuSets = false; // Platform::CpuAffinityLayout::appliedAsCpuSets
+    bool m_AwaitingLayout = false;   // Opened by openAwaitingLayout(), and no setLayout() since (#3182)
     bool m_ShowRequested = false;
     bool m_DismissRequested = false;
     bool m_Open = false; // As of the last render()

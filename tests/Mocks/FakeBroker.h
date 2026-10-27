@@ -41,9 +41,23 @@ class FakeBroker final : public Platform::IPrivilegedBroker
         m_Connected = connected;
     }
 
+    /// Counted: the UI thread's reads must not call it, as a real broker's looks at the channel (#3182).
     [[nodiscard]] bool connected() const noexcept override
     {
+        ++m_ConnectedCalls;
         return m_Connected;
+    }
+
+    /// As connected(), uncounted: the fake has no channel to look at, so the two never differ.
+    [[nodiscard]] bool lastSeenConnected() const noexcept override
+    {
+        return m_Connected;
+    }
+
+    /// How many times connected() was called.
+    [[nodiscard]] int connectedCallCount() const noexcept
+    {
+        return m_ConnectedCalls;
     }
 
     /// Whether the helper could read other users' processes (#2550): true unless a test says not.
@@ -168,6 +182,7 @@ class FakeBroker final : public Platform::IPrivilegedBroker
     std::string m_ConnectFailure;
     int m_ConnectCount = 0;
     int m_IdleCallCount = 0;
+    mutable std::atomic<int> m_ConnectedCalls{0};
     std::atomic<bool> m_Connected{true};
     std::atomic<std::uint64_t> m_SessionsStarted{0};
     std::atomic<bool> m_ReadsOtherUsers{true};

@@ -135,6 +135,9 @@ void ProcessDetailsPanel::updateWithSamples(std::span<const Domain::ProcessSampl
 
     // Fade out action result message
     m_ActionsView.tick(deltaTime);
+    // The Set affinity dialog's CPU layout (#3182): read once on its worker, started here, before any
+    // selection, so the dialog normally finds it read. Never read on the UI thread.
+    m_ActionsView.updateAffinityLayout(m_ActionCapabilities.canSetAffinity ? m_ProcessActions.get() : nullptr);
 
     // The Services section wants the service list kept current only while it was drawn open on the last
     // frame (#1880): not while collapsed, on another Details tab, or with this tab hidden.
@@ -355,8 +358,9 @@ void ProcessDetailsPanel::renderContent()
 
     // What the actions can do, as of this frame: not all of it is fixed at construction. Once the
     // privileged helper connects (an "Authenticate and retry"), BrokeredProcessActions can set the
-    // Realtime I/O class, so the I/O slider gains its Realtime stops (#2407). A struct copy and an
-    // atomic read.
+    // Realtime I/O class, so the I/O slider gains its Realtime stops (#2407). A struct built from what
+    // the actions know already and one atomic read of the helper's connection as its broker last saw it:
+    // no pipe or socket call here (IPrivilegedBroker::lastSeenConnected(), #3182).
     if (m_ProcessActions)
     {
         m_ActionCapabilities = m_ProcessActions->actionCapabilities();

@@ -580,6 +580,7 @@ set(COMMON_TEST_SOURCES
     App/test_UdpTraceSwitch.cpp # the UDP event trace started and stopped on a worker (#3155)
     App/test_CoalescingWriter.cpp
     App/test_LazyBackgroundRead.cpp
+    App/test_AffinityLayoutRead.cpp # the Set affinity dialog's CPU layout, read once on a worker (#3182)
     App/test_ProcessSecurityViewRender.cpp
     App/test_ServiceActionsView.cpp
     App/test_ServicesViewRender.cpp

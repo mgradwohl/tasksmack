@@ -1435,8 +1435,10 @@ TEST(PipeBrokerTest, ConnectsToTheHelperAndCallsThroughIt)
     }
     InProcessHelper helper(serving(CountingHandler{}.handler(), WAIT));
     PipeBroker broker(helper.launcher());
+    EXPECT_FALSE(broker.lastSeenConnected());
     const auto connected = broker.connectWithin({}, WAIT);
     ASSERT_TRUE(connected.has_value()) << connected.error();
+    EXPECT_TRUE(broker.lastSeenConnected()) << "as connect() left it (#3182)";
     EXPECT_TRUE(broker.connected());
     EXPECT_TRUE(broker.connectWithin({}, WAIT).has_value()) << "connected already: no second helper";
 
@@ -1531,7 +1533,10 @@ TEST(PipeBrokerTest, AHelperThatExitsIsNoLongerConnected)
     ASSERT_TRUE(broker.connectWithin({}, WAIT).has_value());
     ASSERT_TRUE(helper.ended());
     EXPECT_EQ(end->load(), static_cast<int>(BrokerPipeServer::SessionEnd::Idle));
+    // Not looked at yet: the UI thread's read (#3182) still has it connected until connected() finds out.
+    EXPECT_TRUE(broker.lastSeenConnected());
     EXPECT_FALSE(broker.connected());
+    EXPECT_FALSE(broker.lastSeenConnected()) << "as connected() found it";
     EXPECT_EQ(broker.call(killRequest(), {}).error_or(""), "not connected");
 }
 

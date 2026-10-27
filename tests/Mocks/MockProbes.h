@@ -38,9 +38,11 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <stop_token>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -1021,6 +1023,83 @@ class MockProcessActions : public Platform::IProcessActions
     int m_RunProgramCount = 0;
     Platform::RunProgramRequest m_LastRunProgram;
     Platform::ProcessActionResult m_RunProgramResult = Platform::ProcessActionResult::ok();
+};
+
+/// MockProcessActions whose affinityLayout() (#3182) returns a set layout, counts its calls and notes the
+/// thread of the last one, and can be held until released (a test then sees the read pending) or made
+/// to throw. Thread-safe: the read runs on a worker while the test's thread looks on.
+class MockAffinityLayoutActions : public MockProcessActions
+{
+  public:
+    /// What affinityLayout() returns.
+    void setAffinityLayout(Platform::CpuAffinityLayout layout)
+    {
+        const std::scoped_lock lock(m_Layout->mutex);
+        m_Layout->layout = std::move(layout);
+    }
+
+    /// affinityLayout() waits until releaseAffinityLayout().
+    void holdAffinityLayout()
+    {
+        const std::scoped_lock lock(m_Layout->mutex);
+        m_Layout->held = true;
+    }
+
+    void releaseAffinityLayout()
+    {
+        {
+            const std::scoped_lock lock(m_Layout->mutex);
+            m_Layout->held = false;
+        }
+        m_Layout->wake.notify_all();
+    }
+
+    /// affinityLayout() throws, as a read that failed would.
+    void throwFromAffinityLayout()
+    {
+        const std::scoped_lock lock(m_Layout->mutex);
+        m_Layout->throws = true;
+    }
+
+    [[nodiscard]] Platform::CpuAffinityLayout affinityLayout() const override
+    {
+        std::unique_lock lock(m_Layout->mutex);
+        ++m_Layout->calls;
+        m_Layout->thread = std::this_thread::get_id();
+        m_Layout->wake.wait(lock, [state = m_Layout.get()] { return !state->held; });
+        if (m_Layout->throws)
+        {
+            throw std::runtime_error("no CPU layout");
+        }
+        return m_Layout->layout;
+    }
+
+    [[nodiscard]] int affinityLayoutCount() const
+    {
+        const std::scoped_lock lock(m_Layout->mutex);
+        return m_Layout->calls;
+    }
+
+    /// The thread the last affinityLayout() ran on.
+    [[nodiscard]] std::thread::id affinityLayoutThread() const
+    {
+        const std::scoped_lock lock(m_Layout->mutex);
+        return m_Layout->thread;
+    }
+
+  private:
+    struct LayoutState
+    {
+        std::mutex mutex;
+        std::condition_variable wake;
+        Platform::CpuAffinityLayout layout;
+        std::thread::id thread;
+        int calls = 0;
+        bool held = false;
+        bool throws = false;
+    };
+    // Shared, so the mock stays copyable.
+    std::shared_ptr<LayoutState> m_Layout = std::make_shared<LayoutState>();
 };
 
 // =============================================================================

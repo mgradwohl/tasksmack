@@ -170,6 +170,37 @@ TEST(BrokeredProcessActionsTest, TheRealtimeIoClassIsOfferedWhileTheHelperRuns)
     EXPECT_TRUE(f.actions->actionCapabilities().canSetRealtimeIoPriority);
 }
 
+// #3182: the capabilities are asked for every frame on the UI thread, so they read the helper's connection
+// as the broker last saw it, never connected(), which peeks at the pipe or polls the socket.
+TEST(BrokeredProcessActionsTest, TheCapabilitiesNeverLookAtTheHelpersChannel)
+{
+    const Fixture f(/*connected=*/true);
+    for (int frame = 0; frame < 100; ++frame)
+    {
+        EXPECT_TRUE(f.actions->actionCapabilities().canSetRealtimeIoPriority);
+    }
+    f.broker->setConnected(false); // a worker's connected() or call found the helper gone
+    EXPECT_FALSE(f.actions->actionCapabilities().canSetRealtimeIoPriority);
+    EXPECT_EQ(f.broker->connectedCallCount(), 0);
+
+    // An action still looks, on the worker it runs on, before it retries through the helper.
+    f.inner->setKillResult(ProcessActionResult::denied("Permission denied"));
+    EXPECT_FALSE(f.actions->kill(TARGET).success);
+    EXPECT_EQ(f.broker->connectedCallCount(), 1);
+}
+
+// Where the platform can't set an I/O priority at all (Windows), the connection isn't even read.
+TEST(BrokeredProcessActionsTest, WithoutIoPriorityTheRealtimeClassIsNeverOffered)
+{
+    auto owned = std::make_unique<TestMocks::MockProcessActions>();
+    owned->setCapabilities({.canTerminate = true, .canKill = true, .canSetPriority = true});
+    const auto broker = std::make_shared<Mocks::FakeBroker>(/*connected=*/true);
+    const BrokeredProcessActions actions(std::move(owned), broker);
+    EXPECT_FALSE(actions.actionCapabilities().canSetRealtimeIoPriority);
+    EXPECT_TRUE(actions.actionCapabilities().canAuthorizeInteractively);
+    EXPECT_EQ(broker->connectedCallCount(), 0);
+}
+
 TEST(BrokeredProcessActionsTest, ReadsAndOtherCallsAreTheInProcessOnes)
 {
     const Fixture f(/*connected=*/true);

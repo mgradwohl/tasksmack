@@ -1042,8 +1042,13 @@ void ProcessesPanel::onAttach()
         // Asked here, on this thread, before the actions move: the initializers run in order.
         const Platform::ProcessActionCapabilities actionCapabilities =
             platform.actions ? platform.actions->actionCapabilities() : Platform::ProcessActionCapabilities{};
+        // The Set affinity dialog's CPU layout, read here once (#3182): GetLogicalProcessorInformationEx or
+        // sysfs, which the UI thread never calls. It doesn't change while TaskSmack runs.
+        Platform::CpuAffinityLayout affinityLayout =
+            (platform.actions && actionCapabilities.canSetAffinity) ? platform.actions->affinityLayout() : Platform::CpuAffinityLayout{};
         PlatformHandoff::Contents contents{.actions = std::move(platform.actions),
                                            .actionCapabilities = actionCapabilities,
+                                           .affinityLayout = std::move(affinityLayout),
                                            .udpCollector = std::move(platform.udpCollector),
                                            .icons = std::move(platform.icons)};
         {
@@ -1109,6 +1114,7 @@ void ProcessesPanel::adoptPlatform()
     // The row menu's actions (#1209), with what this platform can do, so it offers nothing it can't.
     m_ProcessActions = std::move(contents->actions);
     m_ActionCapabilities = contents->actionCapabilities;
+    m_AffinityLayout = std::move(contents->affinityLayout);
     // The UDP event trace's collector (#1492), started by the hook if Settings had it on; the toggle
     // and detach go through this panel from here.
     m_UdpCollector = std::move(contents->udpCollector);
@@ -3225,8 +3231,9 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
                                   proc.name,
                                   proc.cpuAffinity,
                                   static_cast<std::size_t>(std::thread::hardware_concurrency()),
-                                  // Read once, on the click: the groups and core kinds to arrange the boxes by (#1881)
-                                  m_ProcessActions ? m_ProcessActions->affinityLayout() : Platform::CpuAffinityLayout{});
+                                  // The groups and core kinds to arrange the boxes by (#1881): read once, on the
+                                  // sampler thread with the actions, never here (#3182)
+                                  m_AffinityLayout);
         }
     }
     // One process's dump file (#807), as Task Manager's row menu offers it; never for a selection.

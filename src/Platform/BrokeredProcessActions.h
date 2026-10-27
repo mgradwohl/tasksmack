@@ -58,7 +58,8 @@ class BrokeredProcessActions final : public IProcessActions
     BrokeredProcessActions(std::unique_ptr<IProcessActions> inner, std::shared_ptr<IPrivilegedBroker> broker);
 
     /// The in-process capabilities, plus canAuthorizeInteractively; and the Realtime I/O class while
-    /// the helper runs, which can set it.
+    /// the helper runs, which can set it, as the broker last saw it (IPrivilegedBroker::lastSeenConnected(),
+    /// #3182). Cheap for the UI thread every frame: no pipe or socket call.
     [[nodiscard]] ProcessActionCapabilities actionCapabilities() const override;
 
     [[nodiscard]] ProcessActionResult terminate(const ProcessTarget& target) override;

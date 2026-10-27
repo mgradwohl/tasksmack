@@ -289,6 +289,11 @@ bool LearnedReadsBroker::connected() const noexcept
     return m_Inner->connected();
 }
 
+bool LearnedReadsBroker::lastSeenConnected() const noexcept
+{
+    return m_Inner->lastSeenConnected();
+}
+
 std::expected<void, std::string> LearnedReadsBroker::connect(const std::stop_token& stopToken)
 {
     return m_Inner->connect(stopToken);

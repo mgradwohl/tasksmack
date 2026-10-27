@@ -14,6 +14,7 @@
 
 #include <cstddef>
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace App
@@ -173,6 +174,46 @@ TEST(ProcessAffinityDialogTest, ACpuNotOfferedIsNeverTicked)
     EXPECT_EQ(dialog.choice(), Platform::CpuAffinity::fromMask(0b1011U));
 }
 
+// #3182: opened before the CPU layout has been read, the dialog has no boxes and nothing to apply; the
+// layout, once it arrives, arranges them as open() would have, ticked as the process's affinity was.
+TEST(ProcessAffinityDialogTest, OpenedAwaitingItsLayoutItArrangesTheBoxesWhenItArrives)
+{
+    ProcessAffinityDialog dialog;
+    dialog.openAwaitingLayout({.pid = 42, .startTimeTicks = 7}, "server", Platform::CpuAffinity::fromMask(0b0001U), 8);
+    EXPECT_TRUE(dialog.awaitingLayout());
+    EXPECT_TRUE(dialog.isPending());
+    EXPECT_EQ(dialog.target().pid, 42);
+    EXPECT_EQ(dialog.name(), "server");
+    EXPECT_TRUE(dialog.sections().empty());
+    EXPECT_EQ(dialog.cpuCount(), 0U);
+    EXPECT_FALSE(dialog.canApply());
+    dialog.chooseAll(true);
+    EXPECT_TRUE(dialog.choice().empty()) << "no boxes to tick yet";
+
+    dialog.setLayout(hybridLayout());
+    EXPECT_FALSE(dialog.awaitingLayout());
+    ASSERT_EQ(dialog.sections().size(), 2U);
+    EXPECT_EQ(dialog.cpuCount(), 8U);
+    EXPECT_EQ(dialog.choice(), Platform::CpuAffinity::fromMask(0b0001U));
+
+    // Arranged once: a layout handed over again changes nothing.
+    dialog.setLayout(Platform::CpuAffinityLayout{});
+    EXPECT_EQ(dialog.sections().size(), 2U);
+    EXPECT_EQ(dialog.cpuCount(), 8U);
+}
+
+// Opened again with its layout known, a dialog that was awaiting one no longer is: a late layout is ignored.
+TEST(ProcessAffinityDialogTest, OpeningWithALayoutEndsTheWait)
+{
+    ProcessAffinityDialog dialog;
+    dialog.openAwaitingLayout({.pid = 42, .startTimeTicks = 7}, "server", Platform::CpuAffinity::fromMask(0b1U), 8);
+    dialog.open({.pid = 43, .startTimeTicks = 8}, "other", Platform::CpuAffinity::fromMask(0b11U), 4);
+    EXPECT_FALSE(dialog.awaitingLayout());
+    dialog.setLayout(hybridLayout());
+    EXPECT_EQ(dialog.cpuCount(), 4U);
+    EXPECT_EQ(dialog.choice(), Platform::CpuAffinity::fromMask(0b11U));
+}
+
 class ProcessAffinityDialogRenderTest : public ::testing::Test
 {
   protected:
@@ -214,6 +255,23 @@ class ProcessAffinityDialogRenderTest : public ::testing::Test
         ASSERT_NE(modal, nullptr);
         const ImGuiID id = ImHashStr(label, 0, modal->ID);
         ImGui::ActivateItemByID(filled ? ImHashStr("##filled", 0, id) : id);
+    }
+
+    /// frame(), with the text it drew in @p text.
+    static std::optional<Platform::CpuAffinity> frameText(ProcessAffinityDialog& dialog, std::string& text)
+    {
+        std::optional<Platform::CpuAffinity> applied;
+        ImGui::NewFrame();
+        ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
+        ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
+        ImGui::Begin("Processes", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
+        ImGui::LogToBuffer();
+        applied = dialog.render();
+        text = GImGui->LogBuffer.c_str();
+        ImGui::LogFinish();
+        ImGui::End();
+        ImGui::Render();
+        return applied;
     }
 
   private:
@@ -337,6 +395,45 @@ TEST_F(ProcessAffinityDialogRenderTest, EscapeCancelsAndHandsOnNothing)
     }
     EXPECT_FALSE(dialog.isPending());
     EXPECT_FALSE(ImGui::IsPopupOpen(POPUP_ID, ImGuiPopupFlags_AnyPopupId));
+}
+
+// #3182: opened before its CPU layout has been read, the dialog is up at once and says it is reading it,
+// with no boxes and Apply doing nothing; once the layout arrives, the boxes are drawn and Apply applies.
+TEST_F(ProcessAffinityDialogRenderTest, AwaitingItsLayoutItSaysSoThenDrawsTheBoxes)
+{
+    ProcessAffinityDialog dialog;
+    dialog.openAwaitingLayout({.pid = 42, .startTimeTicks = 7}, "server", Platform::CpuAffinity::fromMask(0b1U), 4);
+    std::string text;
+    EXPECT_FALSE(frameText(dialog, text).has_value());
+    EXPECT_FALSE(frameText(dialog, text).has_value());
+    ASSERT_TRUE(ImGui::IsPopupOpen(POPUP_ID, ImGuiPopupFlags_AnyPopupId));
+    EXPECT_TRUE(text.contains("Reading this PC's CPU layout...")) << text;
+    EXPECT_FALSE(text.contains("None")) << "no All and None, no boxes: " << text;
+    EXPECT_FALSE(text.contains("Choose at least one CPU")) << "nothing to choose yet: " << text;
+
+    press("Apply", true);
+    for (int i = 0; i < 3; ++i)
+    {
+        EXPECT_FALSE(frameText(dialog, text).has_value()) << "nothing to apply yet";
+    }
+    EXPECT_TRUE(dialog.isPending());
+
+    Platform::CpuAffinityLayout layout;
+    layout.online = Platform::CpuAffinity::fromMask(0b1111U);
+    dialog.setLayout(layout);
+    EXPECT_FALSE(frameText(dialog, text).has_value());
+    EXPECT_FALSE(text.contains("Reading this PC's CPU layout...")) << text;
+    EXPECT_TRUE(text.contains("1 of 4 CPUs")) << text;
+
+    dialog.choose(2, true);
+    press("Apply", true);
+    std::optional<Platform::CpuAffinity> applied;
+    for (int i = 0; i < 3 && !applied.has_value(); ++i)
+    {
+        applied = frameText(dialog, text);
+    }
+    ASSERT_TRUE(applied.has_value());
+    EXPECT_EQ(applied.value_or(Platform::CpuAffinity{}), Platform::CpuAffinity::fromMask(0b101U));
 }
 
 TEST_F(ProcessAffinityDialogRenderTest, SectionsDrawAndApplyHandsOnASectionsChoice)

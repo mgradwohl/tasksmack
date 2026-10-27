@@ -1140,8 +1140,10 @@ TEST(PkexecBrokerTest, ConnectsToTheHelperAndTerminatesAProcessThroughIt)
 
     PkexecBroker broker(TASKSMACK_HELPER_PATH, {}, HelperSandbox::Mode::Enforce); // the helper itself, without pkexec
     EXPECT_FALSE(broker.connected());
+    EXPECT_FALSE(broker.lastSeenConnected());
     const auto connected = broker.connect(std::stop_token{});
     ASSERT_TRUE(connected.has_value()) << connected.error();
+    EXPECT_TRUE(broker.lastSeenConnected()) << "as connect() left it (#3182)";
     EXPECT_TRUE(broker.connected());
     EXPECT_TRUE(broker.connect(std::stop_token{}).has_value()); // already connected: nothing to do
 
@@ -1459,6 +1461,8 @@ TEST(PkexecBrokerTest, AHelperThatExitsIsNoLongerConnected)
     const pid_t helper = helperChild();
     ASSERT_GT(helper, 0);
     ASSERT_EQ(::kill(helper, SIGKILL), 0);
+    // Not looked at yet: the UI thread's read (#3182) still has it connected until connected() finds out.
+    EXPECT_TRUE(broker.lastSeenConnected());
     bool gone = false;
     for (int attempt = 0; attempt < 200 && !gone; ++attempt) // up to 2 s for the kernel to close its end
     {
@@ -1469,6 +1473,7 @@ TEST(PkexecBrokerTest, AHelperThatExitsIsNoLongerConnected)
         }
     }
     EXPECT_TRUE(gone);
+    EXPECT_FALSE(broker.lastSeenConnected()) << "as connected() found it";
     ASSERT_TRUE(broker.connect(std::stop_token{}).has_value()) << "a fresh helper starts";
     EXPECT_TRUE(broker.connected());
     const auto reply = broker.call(Broker::FirmwareFileRequest{.file = Broker::FirmwareFile::ProductUuid}, std::stop_token{});

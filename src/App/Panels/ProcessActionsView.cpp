@@ -111,12 +111,21 @@ void ProcessActionsView::renderSetAffinityButton(const Platform::IProcessActions
     if (pressed && !noTarget)
     {
         // The process is captured now; the dialog acts only on it (renderAffinityDialog()).
-        m_AffinityDialog.open(target,
-                              processName,
-                              currentAffinity != nullptr ? *currentAffinity : Platform::CpuAffinity{},
-                              static_cast<std::size_t>(std::thread::hardware_concurrency()),
-                              // Read once, on the press: the groups and core kinds to arrange the boxes by (#1881)
-                              actions != nullptr ? actions->affinityLayout() : Platform::CpuAffinityLayout{});
+        const Platform::CpuAffinity current = currentAffinity != nullptr ? *currentAffinity : Platform::CpuAffinity{};
+        const auto cpuCount = static_cast<std::size_t>(std::thread::hardware_concurrency());
+        // The groups and core kinds to arrange the boxes by (#1881), read once on a worker, never here
+        // (#3182): started now at the latest. Until it has arrived, the dialog says it is reading it.
+        m_AffinityLayout.start(actions);
+        const Platform::CpuAffinityLayout* layout = m_AffinityLayout.layout();
+        if (layout == nullptr && actions != nullptr)
+        {
+            m_AffinityDialog.openAwaitingLayout(target, processName, current, cpuCount);
+        }
+        else
+        {
+            // Null actions have no layout to wait for.
+            m_AffinityDialog.open(target, processName, current, cpuCount, layout != nullptr ? *layout : Platform::CpuAffinityLayout{});
+        }
     }
     ImGui::SetItemTooltip("Choose the CPUs this process may run on");
 }
@@ -127,6 +136,7 @@ void ProcessActionsView::renderAffinityDialog(Platform::IProcessActions* actions
     {
         m_AffinityDialog.dismiss(); // another process is shown now: never act on the old one
     }
+    takeAffinityLayout(false); // a layout that arrived since the update path ran (#3182)
     const std::optional<Platform::CpuAffinity> cpus = m_AffinityDialog.render();
     if (!cpus.has_value())
     {

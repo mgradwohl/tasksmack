@@ -650,8 +650,10 @@ TEST(HelperLauncherTest, AHelperApprovedForAnotherAccountTakesReadAsAdministrato
     HelperLauncher::LearnedReadsBroker broker(
         std::make_unique<PipeBroker>(session.launcher(), HelperLauncher::readsOtherUsers(TokenElevationTypeLimited)));
     EXPECT_TRUE(broker.readsOtherUsers()) << "a split-token administrator's helper is expected to run as its user";
+    EXPECT_FALSE(broker.lastSeenConnected());
     const auto connected = broker.connect({});
     ASSERT_TRUE(connected.has_value()) << connected.error();
+    EXPECT_TRUE(broker.lastSeenConnected()) << "the inner broker's, as connect() left it (#3182)";
     EXPECT_TRUE(broker.connected());
     EXPECT_TRUE(broker.readsOtherUsers()) << "the handshake doesn't say which account the helper runs as";
 
@@ -788,7 +790,10 @@ TEST(HelperLauncherTest, OnlyTheHelpersOwnRefusalTeachesTheBroker)
     EXPECT_TRUE(broker.readsOtherUsers());
     EXPECT_TRUE(broker.connected());
 
+    EXPECT_TRUE(broker.lastSeenConnected()); // the inner broker's (#3182)
+
     inner.setConnected(false);
+    EXPECT_FALSE(broker.lastSeenConnected());
     EXPECT_FALSE(broker.connected());
     EXPECT_FALSE(broker.call(Broker::ModulesRequest{.target = THEIRS}, {}).has_value());
     EXPECT_TRUE(broker.readsOtherUsers());
