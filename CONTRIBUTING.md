@@ -27,8 +27,10 @@ from `docs/index.html`. CI checks it two ways, both in `ci.yml`'s `docs-hygiene`
 - `tools/md-link-audit.sh` checks that every Markdown link's and image's target exists in the tree.
 - `tools/docs-site-smoke.py` serves `docs/` under `/tasksmack/`, as GitHub Pages does, and drives it in
   headless Chromium (#2967). It checks the root URL, a FAQ link and its section, the sidebar,
-  every section link on the sidebar's pages, the screenshots, and the 404 page's recovery. Run it after
-  changing `docs/index.html`, the sidebar, or how pages link to each other:
+  every section link on the sidebar's pages, the screenshots, and the 404 page's recovery. On a pull
+  request it runs only when the change touches `docs/`, the test or its lockfile (the change
+  classifier's `docs_site` output, #3103); pushes to `main` and release branches always run it. Run it
+  after changing `docs/index.html`, the sidebar, or how pages link to each other:
 
 ```bash
 python -m pip install --require-hashes -r requirements-docs-site.txt

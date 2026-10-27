@@ -55,6 +55,7 @@ jobs:
       linux_only: ${{ steps.set_output.outputs.linux_only }}
       windows_only: ${{ steps.set_output.outputs.windows_only }}
       automation_only: ${{ steps.set_output.outputs.automation_only }}
+      docs_site: ${{ steps.set_output.outputs.docs_site }}
     steps:
       # The merge commit GitHub builds (refs/pull/N/merge) and its two parents, so HEAD^1..HEAD is
       # exactly what the pull request changes on the base branch it would merge into.
@@ -79,7 +80,7 @@ jobs:
           # Every output, in the classifier's order, with its safe value (the one that runs every job
           # the output can skip). Keep it in step with OUTPUTS in tools/ci-change-classifier.py;
           # tests/tools/test_ci_change_classifier.py checks that it is.
-          SAFE_OUTPUTS='docs_only=false linux_only=false windows_only=false automation_only=false'
+          SAFE_OUTPUTS='docs_only=false linux_only=false windows_only=false automation_only=false docs_site=true'
           read -r -a safe <<<"$SAFE_OUTPUTS"
 
           report() {
@@ -252,6 +253,9 @@ jobs:
       build_type: unity
 
   docs-hygiene:
+    # The classifier's docs_site output decides whether the browser test runs (#3103). A failed detect
+    # job skips this job, which CI Success counts as a failure, so no change goes untested by mistake.
+    needs: [detect-docs-only]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -264,8 +268,11 @@ jobs:
 
       # The audit checks link targets in the source tree; this drives the Docsify site itself, served
       # under /tasksmack/ as GitHub Pages serves it, in headless Chromium (#2967): routes, section
-      # anchors, screenshots, the 404 page's recovery, JavaScript errors.
+      # anchors, screenshots, the 404 page's recovery, JavaScript errors. Only when the change touches
+      # the site, the test or its lockfile (docs_site, #3103): Playwright and Chromium cost about a
+      # minute on every other run. Push, schedule and manual runs always run it (safe values).
       - name: Setup Python for the docs site check
+        if: needs.detect-docs-only.outputs.docs_site == 'true'
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.14'
@@ -273,11 +280,13 @@ jobs:
           cache-dependency-path: 'requirements-docs-site.txt'
 
       - name: Install Playwright and Chromium
+        if: needs.detect-docs-only.outputs.docs_site == 'true'
         run: |
           python -m pip install --require-hashes --only-binary=:all: -r requirements-docs-site.txt
           python -m playwright install --with-deps --only-shell chromium
 
       - name: Browser smoke test of the docs site
+        if: needs.detect-docs-only.outputs.docs_site == 'true'
         run: python tools/docs-site-smoke.py
 
   # An automation-only pull request (tools/ci-change-classifier.py's automation_only, #3104) skips
@@ -690,6 +699,7 @@ jobs:
           LINUX_ONLY:     ${{ needs.detect-docs-only.outputs.linux_only }}
           WINDOWS_ONLY:   ${{ needs.detect-docs-only.outputs.windows_only }}
           AUTOMATION_ONLY: ${{ needs.detect-docs-only.outputs.automation_only }}
+          DOCS_SITE:      ${{ needs.detect-docs-only.outputs.docs_site }}
           AUTOMATION_RESULT: ${{ needs.automation-checks.result }}
           EVENT_NAME:     ${{ github.event_name }}
           SCHEDULE:       ${{ github.event.schedule }}
@@ -715,7 +725,7 @@ jobs:
             # The detect job always writes every output. An unset or odd one, both skips at once,
             # or an automation-only skip outside a pull request is a broken classification: fail
             # rather than trust it.
-            for flag in DOCS_ONLY LINUX_ONLY WINDOWS_ONLY AUTOMATION_ONLY; do
+            for flag in DOCS_ONLY LINUX_ONLY WINDOWS_ONLY AUTOMATION_ONLY DOCS_SITE; do
               if [[ "${!flag}" != 'true' && "${!flag}" != 'false' ]]; then
                 echo "❌ Change detection output ${flag,,} is '${!flag}', not true or false"
                 failed=true
@@ -727,6 +737,11 @@ jobs:
             fi
             if [[ "$AUTOMATION_ONLY" == 'true' && "$EVENT_NAME" != 'pull_request' ]]; then
               echo "❌ Change detection said automation_only for a ${EVENT_NAME} run"
+              failed=true
+            fi
+            # Outside a pull request every output has its safe value, so the docs site test runs (#3103).
+            if [[ "$DOCS_SITE" != 'true' && "$EVENT_NAME" != 'pull_request' ]]; then
+              echo "❌ Change detection skipped the docs site test for a ${EVENT_NAME} run"
               failed=true
             fi
           fi

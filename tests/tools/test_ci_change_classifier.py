@@ -43,16 +43,23 @@ sys.modules["ci_change_classifier"] = classifier  # dataclasses looks the module
 _spec.loader.exec_module(classifier)
 
 NAMES = [output.name for output in classifier.OUTPUTS]
-SAFE = {name: False for name in NAMES}
+# The job-skipping flags the CASES table covers; docs_site (#3103) has its own table below.
+FLAGS = [name for name in NAMES if name != "docs_site"]
+# Every output's safe value: each *_only flag false, docs_site true (the docs site test runs).
+SAFE = {**{name: False for name in FLAGS}, "docs_site": True}
 
 
 def expect(**true_flags: bool) -> dict[str, bool]:
-    values = dict(SAFE)
+    """A classification that skips something: the flags given are true, the rest false, docs_site too
+    unless given (the constants below are for changes outside the docs site, but DOCS_ONLY's)."""
+    values = {name: False for name in NAMES}
     values.update(true_flags)
     return values
 
 
-DOCS_ONLY = expect(docs_only=True)
+DOCS_ONLY = expect(docs_only=True, docs_site=True)
+# A change to a build input outside the docs site: every C++ job runs, the docs site test doesn't.
+BUILD_INPUT = expect()
 LINUX_ONLY = expect(linux_only=True)
 WINDOWS_ONLY = expect(windows_only=True)
 AUTOMATION_ONLY = expect(automation_only=True)
@@ -183,10 +190,14 @@ def parse(text: str) -> dict[str, bool]:
 
 
 class ClassificationTable(unittest.TestCase):
+    def flags(self, paths: list[str]) -> dict[str, bool]:
+        values = classifier.classify(paths)
+        return {name: values[name] for name in FLAGS}
+
     def test_cases(self) -> None:
         for description, paths, expected in CASES:
             with self.subTest(description, paths=paths):
-                self.assertEqual(classifier.classify(paths), expected)
+                self.assertEqual(self.flags(paths), {name: expected[name] for name in FLAGS})
 
     def test_each_automation_file_alone(self) -> None:
         for path in classifier.AUTOMATION:
@@ -196,7 +207,7 @@ class ClassificationTable(unittest.TestCase):
     def test_command_line_prints_every_output_in_order(self) -> None:
         code, out, err = run_classifier("--paths", ".github/workflows/renovate.yml")
         self.assertEqual(code, 0)
-        self.assertEqual(out, "docs_only=false\nlinux_only=false\nwindows_only=false\nautomation_only=true\n")
+        self.assertEqual(out, "docs_only=false\nlinux_only=false\nwindows_only=false\nautomation_only=true\ndocs_site=false\n")
         self.assertIn("automation", err)
         self.assertIn(".github/workflows/renovate.yml", err)
 
@@ -207,6 +218,34 @@ class ClassificationTable(unittest.TestCase):
 
     def test_safe_values_run_everything(self) -> None:
         self.assertEqual(classifier.safe_values(), SAFE)
+
+
+# (what the case covers, changed paths, docs_site): whether docs-hygiene runs the browser test (#3103).
+DOCS_SITE_CASES = [
+    ("a docs page", ["docs/guide/user-guide.md"], True),
+    ("the site's index.html", ["docs/index.html"], True),
+    ("a screenshot", ["docs/images/screenshots/linux/overview-live.webp"], True),
+    ("the smoke test", ["tools/docs-site-smoke.py"], True),
+    ("its lockfile", ["requirements-docs-site.txt"], True),
+    ("its requirements input", ["requirements-docs-site.in"], True),
+    ("a site page among source changes", ["src/main.cpp", "docs/_sidebar.md"], True),
+    ("the README (not on the site)", ["README.md"], False),
+    ("CONTRIBUTING (not on the site)", ["CONTRIBUTING.md"], False),
+    ("source only", ["src/main.cpp"], False),
+    ("automation only", [".github/workflows/renovate.yml"], False),
+    ("a docs-like name elsewhere", ["tools/docs-site-smoke.py.bak", "xdocs/a.md"], False),
+    # the safe value, whatever the paths
+    ("ci.yml (full validation)", [".github/workflows/ci.yml"], True),
+    ("the classifier (full validation)", ["tools/ci-change-classifier.py"], True),
+    ("empty change", [], True),
+]
+
+
+class DocsSite(unittest.TestCase):
+    def test_cases(self) -> None:
+        for description, paths, expected in DOCS_SITE_CASES:
+            with self.subTest(description, paths=paths):
+                self.assertEqual(classifier.classify(paths)["docs_site"], expected)
 
 
 class Globs(unittest.TestCase):
@@ -290,15 +329,15 @@ class GitDiffInput(unittest.TestCase):
 
     def test_deleted_source_is_a_build_input(self) -> None:
         (self.repo / "src/Core/A.cpp").unlink()
-        self.assertEqual(self.classify_change(), SAFE)
+        self.assertEqual(self.classify_change(), BUILD_INPUT)
 
     def test_rename_out_of_the_build_counts_its_old_path(self) -> None:
         git(self.repo, "mv", "src/Core/A.cpp", "A.md")
-        self.assertEqual(self.classify_change(), SAFE)
+        self.assertEqual(self.classify_change(), BUILD_INPUT)
 
     def test_rename_into_the_build_counts_its_new_path(self) -> None:
         git(self.repo, "mv", "README.md", "src/Core/README.cpp")
-        self.assertEqual(self.classify_change(), SAFE)
+        self.assertEqual(self.classify_change(), BUILD_INPUT)
 
     def test_rename_between_automation_files(self) -> None:
         git(self.repo, "mv", ".github/labeler.yml", ".github/dependabot.yml")
@@ -306,12 +345,12 @@ class GitDiffInput(unittest.TestCase):
 
     def test_rename_of_an_allowlisted_file_to_an_unlisted_name(self) -> None:
         git(self.repo, "mv", ".github/labeler.yml", ".github/labeler.yaml")
-        self.assertEqual(self.classify_change(), SAFE)
+        self.assertEqual(self.classify_change(), BUILD_INPUT)
 
     def test_unusual_file_names(self) -> None:
         write(self.repo, "docs/a file with spaces & ünïcode.md")
         write(self.repo, ".github/workflows/renovate.yml", "changed\n")
-        self.assertEqual(self.classify_change(), AUTOMATION_ONLY)
+        self.assertEqual(self.classify_change(), {**AUTOMATION_ONLY, "docs_site": True})  # a docs/ page
 
     def test_empty_change_is_full_validation(self) -> None:
         self.assertEqual(self.classify_change(), SAFE)
@@ -540,7 +579,7 @@ class DetectStep(unittest.TestCase):
 
     def test_source_change(self) -> None:
         self.merge("src/Core/A.cpp")
-        self.assertEqual(self.run_step()[1], self.text(SAFE))
+        self.assertEqual(self.run_step()[1], self.text(BUILD_INPUT))
 
     def test_docs_change(self) -> None:
         self.merge("README.md", "docs/guide.md")
@@ -638,6 +677,7 @@ FULL_PR = {
     "LINUX_ONLY": "false",
     "WINDOWS_ONLY": "false",
     "AUTOMATION_ONLY": "false",
+    "DOCS_SITE": "false",
     "AUTOMATION_RESULT": "skipped",
     "EVENT_NAME": "pull_request",
     "SCHEDULE": "",
@@ -664,11 +704,12 @@ SKIPPED_CPP = {
     "ASAN_UBSAN_RESULT": "skipped",
 }
 AUTOMATION_PR = {**FULL_PR, **SKIPPED_CPP, "AUTOMATION_ONLY": "true", "AUTOMATION_RESULT": "success"}
-DOCS_PR = {**FULL_PR, **SKIPPED_CPP, "DOCS_ONLY": "true"}
+DOCS_PR = {**FULL_PR, **SKIPPED_CPP, "DOCS_ONLY": "true", "DOCS_SITE": "true"}
 PUSH_MAIN = {
     **FULL_PR,
     "EVENT_NAME": "push",
     "REF": "refs/heads/main",
+    "DOCS_SITE": "true",
     "LINUX_TIDY_MODE": "",
     "LINUX_TIDY_OUTCOME": "",
     "STATIC_ANALYSIS_WINDOWS_RESULT": "skipped",
@@ -700,6 +741,9 @@ GATE_CASES = [
                                     "LINUX_ONLY": "", "WINDOWS_ONLY": "", "AUTOMATION_ONLY": ""}, False),
     ("an output missing", {**AUTOMATION_PR, "AUTOMATION_ONLY": ""}, False),
     ("an output not boolean", {**FULL_PR, "LINUX_ONLY": "maybe"}, False),
+    ("docs_site missing", {**FULL_PR, "DOCS_SITE": ""}, False),
+    ("docs_site not boolean", {**DOCS_PR, "DOCS_SITE": "yes"}, False),
+    ("the docs site test skipped on a push (#3103)", {**PUSH_MAIN, "DOCS_SITE": "false"}, False),
 ]
 
 
