@@ -125,6 +125,10 @@ struct SystemSnapshot
     double loadAvg1 = 0.0;
     double loadAvg5 = 0.0;
     double loadAvg15 = 0.0;
+    // Pressure stall information (Linux PSI, #3062): what the probe read this sample, when it reads it.
+    Platform::ResourcePressure cpuPressure;
+    Platform::ResourcePressure memoryPressure;
+    Platform::ResourcePressure ioPressure;
 
     // CPU frequency in MHz
     std::uint64_t cpuFreqMHz = 0;

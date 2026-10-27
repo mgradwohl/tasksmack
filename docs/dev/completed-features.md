@@ -32,7 +32,7 @@ This is the canonical inventory of user-visible and engineering features current
 | GPU | Per-device utilization, memory, temperature, power, clocks, fan, encoder/decoder data when exposed by the backend |
 | Battery and power | Charge, power flow, time remaining/time to full, and health when a battery is present |
 | NPU | Utilization and memory of NPUs and other compute accelerators (Windows DXCore; Linux accel subsystem), kept apart from the GPU figures |
-| Linux-only metrics | Load averages, I/O wait and steal time |
+| Linux-only metrics | Load averages, pressure stall information (CPU, memory and I/O, #3062), I/O wait and steal time |
 
 ## User Experience and Configuration
 

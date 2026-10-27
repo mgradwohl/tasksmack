@@ -715,6 +715,9 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters,
     snap.loadAvg1 = counters.loadAvg1;
     snap.loadAvg5 = counters.loadAvg5;
     snap.loadAvg15 = counters.loadAvg15;
+    snap.cpuPressure = counters.cpuPressure;
+    snap.memoryPressure = counters.memoryPressure;
+    snap.ioPressure = counters.ioPressure;
     snap.cpuFreqMHz = counters.cpuFreqMHz;
 
     // Per-interface network - always populate metadata, compute rates only with previous data
