@@ -59,8 +59,12 @@ jobs:
   coverage:
     if: github.event_name != 'workflow_dispatch' || inputs.scope != 'benchmark'
     runs-on: ubuntu-24.04
-    # It takes 13-21 minutes now; at 20 about one run in three was cancelled (#2859).
-    timeout-minutes: 35
+    # It takes 13-21 minutes warm; at 20 about one run in three was cancelled (#2859). A cold ccache
+    # takes much longer: a change to the coverage compile flags (#3160's -runtime-counter-relocation)
+    # rebuilt everything in 25-33 minutes, and on main (run 40528105962) the tests started at 33:14
+    # and were cancelled at 35, which saved no cache, so every re-run started cold again. 45, as
+    # win-coverage and benchmark-regression have, lets a cold build finish and save the cache.
+    timeout-minutes: 45
     permissions:
       contents: read
     steps:
