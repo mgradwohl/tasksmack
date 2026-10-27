@@ -164,6 +164,59 @@ std::uint64_t selectionKey(const Platform::SystemConnection& connection) noexcep
     return hash;
 }
 
+namespace
+{
+
+/// One table row for @p row (table row @p i): its selectable, then its cells. The holder to select when it
+/// was clicked, if any.
+[[nodiscard]] std::optional<ConnectionsViewAction>
+renderConnectionRow(const ConnectionRow& row, int i, const UI::ColorScheme& scheme, ConnectionsViewState& state)
+{
+    std::optional<ConnectionsViewAction> action;
+    const std::uint64_t key = selectionKey(row.connection);
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    ImGui::PushID(i);
+    const bool selected = state.selectedKey == key;
+    if (ImGui::Selectable("##row", selected, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowDoubleClick))
+    {
+        state.selectedKey = key;
+        // Selecting a row selects its holder (#3066); a double-click shows it in Process Details.
+        if (row.connection.pid != 0)
+        {
+            action = ConnectionsViewAction{.pid = row.connection.pid,
+                                           .startTimeTicks = row.connection.startTimeTicks,
+                                           .showDetails = ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)};
+        }
+    }
+    ImGui::PopID();
+    ImGui::SameLine(0.0F, 0.0F);
+    if (row.connection.pid == 0)
+    {
+        ImGui::PushStyleColor(ImGuiCol_Text, scheme.textMuted);
+    }
+    UI::Widgets::cellText(row.process);
+    if (row.connection.pid == 0)
+    {
+        ImGui::PopStyleColor();
+        ImGui::SetItemTooltip("No process TaskSmack can see holds this socket: it is closing (TIME_WAIT), or it belongs to "
+                              "another user's process, which only an administrator can see.");
+    }
+    ImGui::TableNextColumn();
+    UI::Widgets::cellText(row.pid);
+    ImGui::TableNextColumn();
+    UI::Widgets::cellText(row.protocol);
+    ImGui::TableNextColumn();
+    UI::Widgets::cellText(row.local);
+    ImGui::TableNextColumn();
+    UI::Widgets::cellText(row.remote);
+    ImGui::TableNextColumn();
+    UI::Widgets::cellText(row.state);
+    return action;
+}
+
+} // namespace
+
 std::optional<ConnectionsViewAction>
 renderConnectionsView(const Domain::ConnectionsPublication* publication, bool hasConnections, ConnectionsViewState& state)
 {
@@ -238,46 +291,10 @@ renderConnectionsView(const Domain::ConnectionsPublication* publication, bool ha
     {
         for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i)
         {
-            const ConnectionRow& row = state.rows[state.visible[static_cast<std::size_t>(i)]];
-            const std::uint64_t key = selectionKey(row.connection);
-            ImGui::TableNextRow();
-            ImGui::TableNextColumn();
-            ImGui::PushID(i);
-            const bool selected = state.selectedKey == key;
-            if (ImGui::Selectable("##row", selected, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowDoubleClick))
+            if (auto clicked = renderConnectionRow(state.rows[state.visible[static_cast<std::size_t>(i)]], i, scheme, state))
             {
-                state.selectedKey = key;
-                // Selecting a row selects its holder (#3066); a double-click shows it in Process Details.
-                if (row.connection.pid != 0)
-                {
-                    action = ConnectionsViewAction{.pid = row.connection.pid,
-                                                   .startTimeTicks = row.connection.startTimeTicks,
-                                                   .showDetails = ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)};
-                }
+                action = clicked;
             }
-            ImGui::PopID();
-            ImGui::SameLine(0.0F, 0.0F);
-            if (row.connection.pid == 0)
-            {
-                ImGui::PushStyleColor(ImGuiCol_Text, scheme.textMuted);
-            }
-            UI::Widgets::cellText(row.process);
-            if (row.connection.pid == 0)
-            {
-                ImGui::PopStyleColor();
-                ImGui::SetItemTooltip("No process TaskSmack can see holds this socket: it is closing (TIME_WAIT), or it belongs to "
-                                      "another user's process, which only an administrator can see.");
-            }
-            ImGui::TableNextColumn();
-            UI::Widgets::cellText(row.pid);
-            ImGui::TableNextColumn();
-            UI::Widgets::cellText(row.protocol);
-            ImGui::TableNextColumn();
-            UI::Widgets::cellText(row.local);
-            ImGui::TableNextColumn();
-            UI::Widgets::cellText(row.remote);
-            ImGui::TableNextColumn();
-            UI::Widgets::cellText(row.state);
         }
     }
     ImGui::EndTable();
