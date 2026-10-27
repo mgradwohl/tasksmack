@@ -16,6 +16,7 @@
 #include "App/Panels/ProcessDisplayFreeze.h"
 #include "App/Panels/ProcessDumpView.h"
 #include "App/Panels/ProcessFilterCache.h"
+#include "App/Panels/ProcessGrouping.h"
 #include "App/Panels/ProcessLookup.h"
 #include "App/Panels/ProcessPins.h"
 #include "App/Panels/ProcessRowFormat.h"
@@ -962,6 +963,7 @@ void ProcessesPanel::onAttach()
     m_ColumnSettings.keepUnhideableColumnsVisible(); // Whatever the settings were given (#1209)
     m_MeterSettings = UserConfig::get().settings().processMeters;
     m_Pins = ProcessPins::Pins(UserConfig::get().settings().pinnedProcesses); // #3061
+    m_GroupBy = UserConfig::get().settings().processGroupBy;                  // #3068
 
     // m_RefreshInterval starts at the SamplingConfig default, and the model at its built-in history
     // length; ShellLayer raises the configured values as events on its first update (#1079).
@@ -1599,8 +1601,10 @@ void ProcessesPanel::renderContent()
     // "Authenticate and retry" beside a refused action's line (#2308) takes its room from the status.
     const bool offerRetry = offersAuthenticateAndRetry();
     const float retryButtonWidth = offerRetry ? ImGui::CalcTextSize(AuthorizeWording::RETRY_LABEL).x + (style.FramePadding.x * 2.0F) : 0.0F;
-    const float controlsWidth = columnsButtonWidth + style.ItemSpacing.x + listSegmentWidth + treeSegmentWidth + foldButtonsWidth +
-                                (offerRetry ? retryButtonWidth + style.ItemSpacing.x : 0.0F);
+    // Group by (#3068): "Group: None", sized for its widest label so the row doesn't shift.
+    const float groupComboWidth = ImGui::CalcTextSize("Group: Container").x + ImGui::GetFrameHeight() + (style.FramePadding.x * 2.0F);
+    const float controlsWidth = groupComboWidth + style.ItemSpacing.x + columnsButtonWidth + style.ItemSpacing.x + listSegmentWidth +
+                                treeSegmentWidth + foldButtonsWidth + (offerRetry ? retryButtonWidth + style.ItemSpacing.x : 0.0F);
 
     // An action's result takes no more room than the count text it stands in for, ellipsized with
     // the full text as its tooltip, so a long platform error cannot push the controls off-screen.
@@ -1675,6 +1679,30 @@ void ProcessesPanel::renderContent()
         }
         ImGui::SetItemTooltip("%s", AuthorizeWording::RETRY_TOOLTIP);
     }
+
+    // Group by (#3068): processes under group header rows with Σ totals.
+    ImGui::SameLine();
+    {
+        ImGui::SetNextItemWidth(groupComboWidth);
+        const std::string preview = std::format("Group: {}", ProcessGrouping::groupByLabel(m_GroupBy));
+        const UI::Widgets::FrameOutlineScope frameOutline;
+        if (ImGui::BeginCombo("##GroupBy", preview.c_str()))
+        {
+            for (const ProcessGrouping::GroupBy mode : {ProcessGrouping::GroupBy::None,
+                                                        ProcessGrouping::GroupBy::Unit,
+                                                        ProcessGrouping::GroupBy::Container,
+                                                        ProcessGrouping::GroupBy::App})
+            {
+                const std::string label(ProcessGrouping::groupByLabel(mode));
+                if (ImGui::Selectable(label.c_str(), mode == m_GroupBy))
+                {
+                    setGroupBy(mode);
+                }
+            }
+            ImGui::EndCombo();
+        }
+    }
+    ImGui::SetItemTooltip("Group processes by systemd unit, container or app, each group under a row with its totals");
 
     // Column chooser, beside ImGui's own header right-click menu (#1209)
     ImGui::SameLine();
@@ -1941,6 +1969,8 @@ void ProcessesPanel::renderContent()
                 }
 
                 const ProcessColumn sortCol = *sortColOpt;
+                m_SortColumn = sortCol; // Group by orders its groups by this column's totals (#3068)
+                m_SortAscending = ascending;
 
                 // Sort m_CachedSortedIndices (a copy of natural order), leaving m_CachedFilteredIndices
                 // in natural order for the next sort to start from.
@@ -1966,8 +1996,12 @@ void ProcessesPanel::renderContent()
         m_IconView.setEnabled(UserConfig::get().settings().showProcessIcons);
         m_IconView.beginFrame();
 
-        // Render process rows - tree view or flat list
-        if (m_TreeViewEnabled)
+        // Render process rows - grouped (#3068), tree view or flat list
+        if (m_GroupBy != ProcessGrouping::GroupBy::None)
+        {
+            renderGroupedRows(currentSnapshots);
+        }
+        else if (m_TreeViewEnabled)
         {
             // Render tree view (tree is rebuilt in onUpdate on refresh timer)
             renderTreeView(currentSnapshots, m_CachedSortedIndices);
@@ -2387,10 +2421,15 @@ void ProcessesPanel::renderNameCell(const Domain::ProcessSnapshot& proc,
     const float treeEmPx = ImGui::GetFontSize();
     const float reservedForControls = expanderSlotWidth + (ProcessTreeIndent::MIN_NAME_WIDTH_EM * treeEmPx);
     const float cellWidth = ImGui::GetContentRegionAvail().x;
-    const float indentPerLevel = ProcessTreeIndent::uniformIndentPerLevel(
-        ProcessTreeIndent::INDENT_PER_LEVEL_EM * treeEmPx, m_TreeRowsCache.maxDepth(), cellWidth, reservedForControls);
+    const float indentPerLevel =
+        ProcessTreeIndent::uniformIndentPerLevel(ProcessTreeIndent::INDENT_PER_LEVEL_EM * treeEmPx,
+                                                 m_GroupBy != ProcessGrouping::GroupBy::None ? 1 : m_TreeRowsCache.maxDepth(),
+                                                 cellWidth,
+                                                 reservedForControls);
+    // A group's members are indented one level under its header (#3068).
+    const bool grouped = m_GroupBy != ProcessGrouping::GroupBy::None;
     const float indentWidth =
-        m_TreeViewEnabled ? ProcessTreeIndent::clampedIndent(depth, indentPerLevel, cellWidth, reservedForControls) : 0.0F;
+        (m_TreeViewEnabled || grouped) ? ProcessTreeIndent::clampedIndent(depth, indentPerLevel, cellWidth, reservedForControls) : 0.0F;
     if (m_TreeViewEnabled && depth > 0)
     {
         drawTreeGuideLines(depth, indentPerLevel, expanderWidth);
@@ -2733,6 +2772,13 @@ void ProcessesPanel::setTreeView(bool enabled)
     }
     m_TreeViewEnabled = enabled;
     m_NameWidthSyncPending = true;
+    if (m_TreeViewEnabled && m_GroupBy != ProcessGrouping::GroupBy::None)
+    {
+        // Tree and Group by are separate views (#3068): Tree sets the group back to None.
+        m_GroupBy = ProcessGrouping::GroupBy::None;
+        UserConfig::get().settings().processGroupBy = m_GroupBy;
+        m_GroupsBuiltFor.reset();
+    }
     if (m_TreeViewEnabled)
     {
         // Keep the layout as it stands now, in list view, so a layout saved later still carries the
@@ -2760,7 +2806,20 @@ void ProcessesPanel::collectVisibleRows(const std::vector<Domain::ProcessSnapsho
     {
         shapes->clear();
     }
-    if (m_TreeViewEnabled)
+    if (m_GroupBy != ProcessGrouping::GroupBy::None)
+    {
+        // The members of the open groups, in the order drawn; the header rows aren't processes (#3068).
+        rebuildGroupsIfStale(snapshots);
+        visible.reserve(m_GroupedRows.size());
+        for (const GroupedRow& row : m_GroupedRows)
+        {
+            if (!row.header)
+            {
+                visible.push_back(row.procIdx);
+            }
+        }
+    }
+    else if (m_TreeViewEnabled)
     {
         const auto& rows = m_TreeRowsCache.rows(treeRowsKey(), snapshots, m_CachedSortedIndices, activeCollapsedKeys());
         visible.reserve(rows.size());
@@ -3179,6 +3238,166 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
             requestTreeAction(can.canTerminate ? Detail::ProcessAction::Terminate : Detail::ProcessAction::Kill, proc);
         }
         ImGui::PopStyleColor();
+    }
+}
+
+void ProcessesPanel::setGroupBy(ProcessGrouping::GroupBy groupBy)
+{
+    if (groupBy == m_GroupBy)
+    {
+        return;
+    }
+    m_GroupBy = groupBy;
+    UserConfig::get().settings().processGroupBy = groupBy; // saved with the other settings
+    m_GroupsBuiltFor.reset();
+    if (groupBy != ProcessGrouping::GroupBy::None && m_TreeViewEnabled)
+    {
+        // A group's members are listed flat under its header: back to the List view, as its control does.
+        m_TreeViewEnabled = false;
+        m_NameWidthSyncPending = true;
+        m_SortPending = true;
+    }
+    spdlog::debug("ProcessesPanel: grouped by {}", ProcessGrouping::groupByLabel(groupBy));
+}
+
+void ProcessesPanel::rebuildGroupsIfStale(const std::vector<Domain::ProcessSnapshot>& snapshots)
+{
+    const GroupsKey key{.displayVersion = m_DisplayVersion,
+                        .filterGeneration = m_FilterGeneration,
+                        .sortGeneration = m_SortGeneration,
+                        .collapseGeneration = m_GroupCollapseGeneration,
+                        .groupBy = m_GroupBy};
+    if (m_GroupsBuiltFor == key)
+    {
+        return;
+    }
+    m_GroupsBuiltFor = key;
+    // The sorted, filtered rows (pinned first, #3061) gathered by group; an exited row (#3060) is listed
+    // under its group but not counted in the totals.
+    m_Groups = ProcessGrouping::buildGroups(snapshots, m_CachedSortedIndices, m_GroupBy, m_LiveRowCount, m_SortColumn, m_SortAscending);
+    m_GroupedRows.clear();
+    m_GroupedRows.reserve(m_CachedSortedIndices.size() + m_Groups.size());
+    for (std::size_t g = 0; g < m_Groups.size(); ++g)
+    {
+        m_GroupedRows.push_back({.header = true, .group = g, .procIdx = 0});
+        if (m_CollapsedGroups.contains(m_Groups[g].key))
+        {
+            continue;
+        }
+        for (const std::size_t member : m_Groups[g].members)
+        {
+            m_GroupedRows.push_back({.header = false, .group = g, .procIdx = member});
+        }
+    }
+}
+
+void ProcessesPanel::renderGroupedRows(const std::vector<Domain::ProcessSnapshot>& snapshots)
+{
+    rebuildGroupsIfStale(snapshots);
+    ImGuiListClipper clipper;
+    clipper.Begin(static_cast<int>(m_GroupedRows.size()));
+    while (clipper.Step())
+    {
+        for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i)
+        {
+            const GroupedRow& row = m_GroupedRows[static_cast<std::size_t>(i)];
+            if (row.header)
+            {
+                renderGroupHeaderRow(row.group);
+            }
+            else if (row.procIdx < snapshots.size())
+            {
+                renderProcessRow(snapshots[row.procIdx],
+                                 {.procIdx = row.procIdx, .depth = 1, .hasChildren = false, .isExpanded = false, .isContext = false});
+            }
+        }
+    }
+}
+
+void ProcessesPanel::renderGroupHeaderRow(std::size_t groupIndex)
+{
+    const ProcessGrouping::Group& group = m_Groups[groupIndex];
+    const bool collapsed = m_CollapsedGroups.contains(group.key);
+    ImGui::TableNextRow();
+    ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg1, ImGui::GetColorU32(ImGuiCol_TableHeaderBg));
+    int colIdx = 0;
+    for (const ProcessColumn col : allProcessColumns())
+    {
+        const bool columnVisible = ImGui::TableSetColumnIndex(colIdx);
+        ++colIdx;
+        if (col == ProcessColumn::PID)
+        {
+            // The row-wide click target, entered even when PID is scrolled out of view, as a process row's is.
+            ImGui::PushID(static_cast<int>(groupIndex));
+            if (ImGui::Selectable("##group", false, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap))
+            {
+                if (collapsed)
+                {
+                    m_CollapsedGroups.erase(group.key);
+                }
+                else
+                {
+                    m_CollapsedGroups.insert(group.key);
+                }
+                ++m_GroupCollapseGeneration;
+            }
+            ImGui::SetItemTooltip("%s", collapsed ? "Expand" : "Collapse");
+            ImGui::PopID();
+            continue;
+        }
+        if (!columnVisible)
+        {
+            continue;
+        }
+        if (col == ProcessColumn::Name)
+        {
+            const std::string label = std::format("{} {} ({})",
+                                                  collapsed ? ICON_FA_CARET_RIGHT : ICON_FA_CARET_DOWN,
+                                                  group.key.empty() ? ProcessGrouping::UNGROUPED_LABEL : std::string_view(group.key),
+                                                  group.members.size());
+            static_cast<void>(
+                UI::Widgets::cellText(label,
+                                      ImGui::CalcTextSize(label.c_str()).x,
+                                      {.rightAligned = false, .clippedTooltip = true, .layoutFullText = false, .trailingReservePx = 0.0F}));
+            continue;
+        }
+        const std::optional<double> total = ProcessGrouping::totalFor(group.totals, col);
+        if (!total.has_value())
+        {
+            continue;
+        }
+        // Marked with Σ: a rollup must never read as one process's figure (#838).
+        std::string text;
+        switch (col)
+        {
+        case ProcessColumn::CpuPercent:
+        case ProcessColumn::MemPercent:
+        case ProcessColumn::GpuPercent:
+        case ProcessColumn::NpuPercent:
+            text = UI::Format::formatPercent(*total);
+            break;
+        case ProcessColumn::IoRead:
+        case ProcessColumn::IoWrite:
+        case ProcessColumn::NetSent:
+        case ProcessColumn::NetReceived:
+            text = UI::Format::formatBytesPerSec(*total);
+            break;
+        case ProcessColumn::Threads:
+        case ProcessColumn::Handles:
+            text = UI::Format::formatIntLocalized(static_cast<std::int64_t>(*total));
+            break;
+        case ProcessColumn::CpuTime:
+            text = UI::Format::formatDuration(*total);
+            break;
+        case ProcessColumn::Power:
+            text = UI::Format::formatWatts(*total);
+            break;
+        default:
+            text = UI::Format::formatBytes(*total);
+            break;
+        }
+        text.insert(0, "\xCE\xA3 "); // U+03A3
+        renderRightAlignedText(text, ImGui::CalcTextSize(text.c_str()).x);
     }
 }
 

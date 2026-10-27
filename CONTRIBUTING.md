@@ -38,6 +38,18 @@ python -m playwright install --with-deps --only-shell chromium   # --with-deps n
 python tools/docs-site-smoke.py   # --offline skips fetching the latest release page; --headed shows the browser
 ```
 
+The site's scripts and stylesheet come from jsDelivr, each pinned to a version in its URL and carrying a
+Subresource Integrity hash (#3167). The hashes live in `docs/cdn-integrity.json`. Pre-commit's
+`check-docs-sri` hook, `tools/docs-sri.py --check`, fails when a tag's hash doesn't match it or a URL
+changed. After changing a version, by hand or on a Renovate branch, regenerate both and commit them:
+
+```bash
+python -I tools/docs-sri.py --update   # downloads each pinned file, hashes it, rewrites the tags
+```
+
+Renovate tracks the pins (a `customManagers` entry for `docs/index.html`, majors behind dashboard
+approval). The browser enforces the hashes, so a stale one breaks the page and fails the smoke test.
+
 Link sections as GitHub renders them (`faq.md#why-doesnt-the-network-total-match-the-sum-of-the-interfaces`):
 the site gives each heading GitHub's anchor as well as Docsify's own.
 
@@ -2726,7 +2738,7 @@ We use GitHub Actions for our CI workflows. They are categorized as follows:
 - **`arm64.yml`**: Linux aarch64 (`ubuntu-24.04-arm`) and Windows ARM64 (`windows-11-arm`, plain ARM64, not ARM64EC) debug build and full `ctest`, through `reusable-build-test.yml` (#2214). It runs on pushes to `main` and `release/*`, nightly and on manual dispatch, and on a pull request only when the PR carries the `ci:arm64` label (adding the label starts a run). It is not part of `CI Success` or any required check, and without the label its jobs are skipped before a runner is assigned. Windows ARM64 installs the native `LLVM-<ver>-woa64.exe` (`setup-windows-llvm`, pinned by SHA-256; Chocolatey only has the x64 installer) and runs the display suites on `mmozeiko/build-mesa`'s ARM64 llvmpipe (`setup-mesa-llvmpipe`, pinned by SHA-256, test-only). `release.yml` builds and ships the ARM64 packages with its own matrix; this workflow is the PR and nightly test leg. On `windows-11-arm` the PowerShell script tests (`pwsh-script` label) run in a second `ctest` with `--repeat until-pass:2`, because pwsh itself crashes there now and then ("Internal CLR error", #2832); nothing else is retried.
 - **`manual-build.yml`**: Manual dispatch entry point to trigger a specific OS and build type build from the GitHub UI without opening a PR.
 
-CI caches (#1406): ccache and the FetchContent source cache (`.github/actions/fetchcontent-cache`) are **saved only by runs on `main`** in every workflow, `release.yml` included (tag runs only restore); pull requests restore main's entries and never save their own, which keeps the repository under its Actions cache limit (20 GB since 2026-10-26). Runs on a `release/*` branch save none either, so its pull requests read `main`'s entries (the default branch's), like every other PR. One job per OS saves the FetchContent cache: Windows debug, and the Linux release build after its benchmark-enabled configure, so the saved sources include Google Benchmark. The FetchContent key hashes only what declares or patches dependencies: `cmake/Dependencies.cmake`, `cmake/patches/**`, and the `FetchContent_Declare(...)` blocks of `tests/CMakeLists.txt` and `benchmarks/CMakeLists.txt` (not those whole files, which change whenever a test is added, #1582). `cache-prune.yml` runs after each `main` run of a cache-saving workflow (listed under `cache-prune.yml` below) and deletes all but the newest entry of each ccache, FetchContent, configure-check, clang-tidy result and CodeQL TRAP cache family, so `main` stays under the quota and least-recently-used eviction never removes a live entry (#1583). The TRAP caches (one of about 640 MB per analyzed `main` commit) weren't pruned until #3101; their pile-up kept the repository over its limit, and the eviction removed `main`'s nightly clang-tidy result caches within hours of each save. clang-tidy doesn't compile through ccache; the debug jobs' tidy runs simply reuse the build's configured tree, and `static-analysis.yml` configures with the same flags (`TASKSMACK_ENABLE_PCH=OFF`, plus the Windows flags below) so every run computes the same result-cache keys. The Windows debug build configures with `-DTASKSMACK_ENABLE_IPO=OFF -DTASKSMACK_ENABLE_GHASH=ON -DCMAKE_CXX_SCAN_FOR_MODULES=OFF` (CI only; the presets keep ThinLTO in Debug), which cut its five links from about 50-70 s each to 1-5 s and drops ~530 `clang-scan-deps` runs per build. Its ccache is 750 MB with `inode_cache` on. The other ccache limits are sized from measured working sets (#3100): one full build fills about 614 MB (Linux Debug), 560 MB (ASan+UBSan), 641 MB (coverage) and 445 MB (TSan), so Linux Debug on x64 and ARM64, ASan+UBSan and coverage get 1250 MB (main's tree plus a pull request's changes), TSan 750 MB, and the rest (Release, IWYU, Windows coverage, benchmarks, packaging, the Wayland matrix) keep 500 MB. At most one entry per family survives pruning, so the ccache total is about 8 GB of the repository's 20 GB Actions cache limit, beside the CodeQL TRAP, LLVM and FetchContent caches; and every build job's post step prints `ccache -s -vv` (hits, misses and why calls were uncacheable); with `TASKSMACK_ENABLE_PCH=OFF`, as CI configures, the dependencies' own precompiled headers (SDL3's) are off too, since ccache can't cache a compile that uses one (#1875). Each build job's summary also gets a build profile from `.ninja_log` (`tools/ninja-build-profile.py`): time per edge kind and the slowest links.
+CI caches (#1406): ccache and the FetchContent source cache (`.github/actions/fetchcontent-cache`) are **saved only by runs on `main`** in every workflow, `release.yml` included (tag runs only restore); pull requests restore main's entries and never save their own, which keeps the repository under its Actions cache limit (20 GB since 2026-10-26). Runs on a `release/*` branch save none either, so its pull requests read `main`'s entries (the default branch's), like every other PR. One job per OS saves the FetchContent cache: Windows debug, and the Linux release build after its benchmark-enabled configure, so the saved sources include Google Benchmark. The FetchContent key hashes only what declares or patches dependencies: `cmake/Dependencies.cmake`, `cmake/patches/**`, and the `FetchContent_Declare(...)` blocks of `tests/CMakeLists.txt` and `benchmarks/CMakeLists.txt` (not those whole files, which change whenever a test is added, #1582). `cache-prune.yml` runs after each `main` run of a cache-saving workflow (listed under `cache-prune.yml` below) and deletes all but the newest entry of each ccache, FetchContent, configure-check, clang-tidy result and CodeQL TRAP cache family, so `main` stays under the quota and least-recently-used eviction never removes a live entry (#1583). The TRAP caches (one of about 640 MB per analyzed `main` commit) weren't pruned until #3101; their pile-up kept the repository over its limit, and the eviction removed `main`'s nightly clang-tidy result caches within hours of each save. clang-tidy doesn't compile through ccache; the debug jobs' tidy runs simply reuse the build's configured tree, and `static-analysis.yml` configures with the same flags (`TASKSMACK_ENABLE_PCH=OFF`, plus the Windows flags below) so every run computes the same result-cache keys. The Windows debug build configures with `-DTASKSMACK_ENABLE_IPO=OFF -DTASKSMACK_ENABLE_GHASH=ON -DCMAKE_CXX_SCAN_FOR_MODULES=OFF` (CI only; the presets keep ThinLTO in Debug), which cut its five links from about 50-70 s each to 1-5 s and drops ~530 `clang-scan-deps` runs per build. Its ccache is 750 MB with `inode_cache` on. The other ccache limits are sized from measured working sets (#3100): one full build fills about 614 MB (Linux Debug), 560 MB (ASan+UBSan), 641 MB (coverage) and 445 MB (TSan), so Linux Debug on x64 and ARM64, ASan+UBSan and coverage get 1250 MB (main's tree plus a pull request's changes), TSan 750 MB, and the rest (Release, IWYU, benchmarks, packaging, the Wayland matrix) keep 500 MB. Windows coverage gets 1250 MB too, with `inode_cache` on (#3148): at 500 MB it ran full with about 500 cleanups a build and 18-23% hits, and its `win-coverage` preset builds without ThinLTO or module scanning, like the Windows debug build. At most one entry per family survives pruning, so the ccache total is about 9 GB of the repository's 20 GB Actions cache limit, beside the CodeQL TRAP, LLVM and FetchContent caches; and every build job's post step prints `ccache -s -vv` (hits, misses and why calls were uncacheable); with `TASKSMACK_ENABLE_PCH=OFF`, as CI configures, the dependencies' own precompiled headers (SDL3's) are off too, since ccache can't cache a compile that uses one (#1875). Each build job's summary also gets a build profile from `.ninja_log` (`tools/ninja-build-profile.py`): time per edge kind and the slowest links.
 
 ### Security & Fuzzing
 - **`codeql.yml`**: Runs GitHub's CodeQL engine to trace execution and analyze the C/C++ codebase for semantic security vulnerabilities (pushes/PRs to `main` and `release/*`, weekly). It traces only the app's own compiles (TaskSmack's objects; the tests, the PGO UI training driver and the third-party libraries are not extracted), and its required `Analyze C++` check is skipped, which passes it, for docs-only pull requests (#1786).
@@ -2742,7 +2754,7 @@ CI caches (#1406): ccache and the FetchContent source cache (`.github/actions/fe
 ### Code Quality & Hygiene
 - **`pre-commit.yml`**: Runs the `pre-commit` framework (via Python) across all files to enforce syntax hygiene, formatting, and file-level rules configured in `.pre-commit-config.yaml` (pushes and PRs to `main` and `release/*`).
 - **`static-analysis.yml`**: Manual full `clang-tidy` run on Linux and on Windows, both blocking (manual dispatch only; `ci.yml`'s nightly schedule runs the full analysis on `main`).
-- **`heavy-checks.yml`**: Runs expensive verifications that shouldn't block PR feedback loops, such as generating Coverage reports (nightly, manual dispatch, and pushes to `main` that touch code the benchmarks measure -- `src/Domain`, `src/UI`, `src/Platform`, `ProcessDetailsHistory` -- or the benchmarks, their baseline and tools). The coverage jobs report **line** coverage from `coverage/coverage.lcov` against a floor: the Linux job fails below 95% (#1891), the Windows job warns below 85%; `codecov.yml`'s `auto` target is the per-change ratchet (#1543). A manual dispatch with `scope: benchmark` runs only the benchmark-regression job. The Linux coverage job also runs `tools/check-prereqs.sh` on a fresh image.
+- **`heavy-checks.yml`**: Runs expensive verifications that shouldn't block PR feedback loops, such as generating Coverage reports (nightly, manual dispatch, and pushes to `main` that touch code the benchmarks measure -- `src/Domain`, `src/UI`, `src/Platform`, `ProcessDetailsHistory` -- or the benchmarks, their baseline and tools). The coverage jobs report **line** coverage from `coverage/coverage.lcov` against a floor: the Linux job fails below 95% (#1891), the Windows job warns below 85%; `codecov.yml`'s `auto` target is the per-change ratchet (#1543). A manual dispatch with `scope: benchmark` runs only the benchmark-regression job, and one with `scope: coverage` only the two coverage jobs (#3148). The Linux coverage job also runs `tools/check-prereqs.sh` on a fresh image.
 
 ### Release & Operations
 - **`release.yml`**: Handles compiling production binaries, packaging them (Windows `.zip` and NSIS installer; Linux `.tar.gz` and `.deb`; x64 and ARM64), and publishing GitHub Releases (draft first, published last) on `v*.*.*` tags on `main` or on the `release/X.Y` branch the tag names; a `workflow_dispatch` run is a dry run by default (see [Cutting a Release](#cutting-a-release)).
@@ -2914,17 +2926,34 @@ That single push runs two independent workflows:
   part-way leaves a draft, never a public release with missing assets; re-running reuses that
   draft and overwrites its assets. Then `verify-published-release` downloads the published assets
   and checks them again (see [Release Artifact Validation](#release-artifact-validation)). The
-  maintainer's approved release notes then replace the
-  placeholder: `gh release edit vX.Y.Z --notes-file <notes.md>`. Keep a pointer to the User
-  Guide's [Verifying a Release](docs/guide/user-guide.md#verifying-a-release) in them, as the
-  placeholder has.
+  placeholder doesn't stay: `changelog.yml`'s `release-notes` job replaces it automatically once the
+  release is published (below, #3144).
   See [Release Artifacts](#release-artifacts) for what it contains and [Release
   Reproducibility](#release-reproducibility) for the determinism policy. Watch it under
   **Actions → Release**.
 - **`changelog.yml`** generates the tag's `CHANGELOG.md` section from its own branch history and
   opens a `chore/changelog-vX.Y.Z-to-release-X.Y → release/X.Y` pull request and a
   `chore/changelog-vX.Y.Z-to-main → main` one; each must be merged separately -- see
-  [Changelog](#changelog) below. Watch it under **Actions → Changelog**.
+  [Changelog](#changelog) below. Its `release-notes` job fills in the release page (#3144): it waits
+  up to two hours for `release.yml` to publish the release, then, only while the body still starts with
+  "Release notes follow.", replaces it with `tools/compose-release-notes.py`'s notes:
+  - `# TaskSmack vX.Y.Z`;
+  - the "Which file should I download?" guide, from
+    [`.github/release-notes/download-guide.md`](.github/release-notes/download-guide.md) with the
+    version filled in. Its line about the files you don't need names `SHA256SUMS` and
+    `SHA256SUMS.bundle` when the release has them, and the per-file `.bundle` files otherwise;
+  - `## Changes`: the same git-cliff section as `CHANGELOG.md`, without its `## [X.Y.Z]` line and with
+    its headings one level down. If the notes would pass 120,000 bytes (GitHub refuses a body over
+    125,000 characters, #2801), the list is cut and links to the full section in `CHANGELOG.md`;
+  - the placeholder's own "Verifying downloads" block, unchanged.
+
+  Notes that no longer start with the placeholder are left as they are, so hand-written notes are
+  never overwritten. To replace the generated ones with a hand-written summary (as v0.9.0 and v0.9.1
+  had), run `gh release edit vX.Y.Z --notes-file <notes.md>` afterwards, keeping the download guide
+  and a pointer to the User Guide's [Verifying a Release](docs/guide/user-guide.md#verifying-a-release).
+  If `release.yml` fails or takes longer than the wait, the job fails saying so; re-run it once the
+  release is published. A tag on `release/X.Y` runs that branch's `changelog.yml`, so the branch
+  needs this job too; the composer and the guide are read from `main`.
 
 ### Release Artifacts
 
@@ -3246,6 +3275,7 @@ and:
 4. Runs git-cliff (pinned to a fixed version in `changelog.yml`, with `main`'s `cliff.toml`) over that range and prepends the `[X.Y.Z]` section after the header of each target branch's current `CHANGELOG.md`, so every branch's copy of the section is identical.
 5. Opens one pull request per target (`chore/changelog-vX.Y.Z-to-release-X.Y → release/X.Y`, `chore/changelog-vX.Y.Z-to-main → main`), labeled `documentation`. If a PR can't be created, the workflow fails with an error that links the compare page for opening it by hand. A rerun reuses the open PR, and a target whose `CHANGELOG.md` already carries the section is skipped.
 6. Merge each PR once CI passes. If the release branch is cut after its tag (`release/0.9` was, after `v0.9.0`), label `main`'s changelog PR `backport:X.Y` so the branch gets the section too.
+7. Separately, the `release-notes` job puts the same section on the GitHub release, under the download guide, once `release.yml` has published it, as long as the release still has the placeholder body (see [Cutting a Release](#cutting-a-release), #3144).
 
 You can watch the progress under **Actions → Changelog** in the GitHub UI.
 

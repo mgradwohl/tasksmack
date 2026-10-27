@@ -916,12 +916,19 @@ void TitleBarLayer::renderTitleBar()
     }
     updateMinimumWindowSize(drawn.contentWidth);
 
-    switch (drawn.action)
+#ifdef _WIN32
+    // The icon opens the native system menu, and what it chose is carried out below, as the buttons'
+    // actions are (#3161).
+    const TitleBarView::Action action =
+        drawn.action == TitleBarView::Action::IconClicked
+            ? showNativeSystemMenu(window.isMaximized()) // LCOV_EXCL_LINE - the modal native menu, which a test can't dismiss (#2039)
+            : drawn.action;
+#else
+    const TitleBarView::Action action = drawn.action;
+#endif
+    switch (action)
     {
     case TitleBarView::Action::IconClicked:
-#ifdef _WIN32
-        showNativeSystemMenu(); // LCOV_EXCL_LINE - opens the modal native system menu, which a test can't dismiss (#2039)
-#endif
         break; // Linux: the view opened its own menu
     case TitleBarView::Action::Close:
         window.requestClose();
@@ -1000,30 +1007,49 @@ void TitleBarLayer::updateMinimumWindowSize(float contentWidth)
 
 #ifdef _WIN32
 // LCOV_EXCL_START - TrackPopupMenu runs a modal menu loop until the user picks or dismisses (#2039)
-void TitleBarLayer::showNativeSystemMenu()
+TitleBarView::Action TitleBarLayer::showNativeSystemMenu(bool maximized)
 {
-    // Show native Windows system menu
     auto* sdlWindow = Core::Application::get().getWindow().getHandle();
     SDL_PropertiesID const props = SDL_GetWindowProperties(sdlWindow);
     auto* hwnd = static_cast<HWND>(SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
-
-    if (hwnd != nullptr)
+    HMENU systemMenu = hwnd != nullptr ? GetSystemMenu(hwnd, FALSE) : nullptr;
+    if (systemMenu == nullptr)
     {
-        HMENU systemMenu = GetSystemMenu(hwnd, FALSE);
-        if (systemMenu != nullptr)
-        {
-            // Get cursor position for menu display
-            POINT pt;
-            GetCursorPos(&pt);
-
-            // Track the menu command
-            int const cmd = TrackPopupMenu(systemMenu, TPM_RETURNCMD | TPM_LEFTBUTTON, pt.x, pt.y, 0, hwnd, nullptr);
-            if (cmd != 0)
-            {
-                PostMessageW(hwnd, WM_SYSCOMMAND, static_cast<WPARAM>(cmd), 0);
-            }
-        }
+        return TitleBarView::Action::None;
     }
+
+    // Windows enables the items from the OS's own maximized state, which a client-side maximize
+    // doesn't set: it offered Maximize, not Restore, on a maximized window (#3161). Set them as the
+    // Linux menu has them.
+    const TitleBarView::SystemMenuItems items = TitleBarView::systemMenuItems(maximized);
+    const auto enable = [systemMenu](UINT command, bool enabled)
+    {
+        // Returns the item's previous state, or -1 for a menu without it; either way there is nothing to do.
+        static_cast<void>(EnableMenuItem(systemMenu, command, MF_BYCOMMAND | (enabled ? MF_ENABLED : MF_GRAYED)));
+    };
+    enable(SC_RESTORE, items.restore);
+    enable(SC_MOVE, items.move);
+    enable(SC_SIZE, items.size);
+    enable(SC_MINIMIZE, items.minimize);
+    enable(SC_MAXIMIZE, items.maximize);
+    enable(SC_CLOSE, items.close);
+
+    // At the cursor, which is on the icon that was clicked.
+    POINT pt{};
+    GetCursorPos(&pt);
+    const int cmd = TrackPopupMenu(systemMenu, TPM_RETURNCMD | TPM_LEFTBUTTON, pt.x, pt.y, 0, hwnd, nullptr);
+    if (cmd == 0)
+    {
+        return TitleBarView::Action::None; // dismissed
+    }
+    const TitleBarView::Action action =
+        TitleBarView::actionForSystemCommand(Core::WindowGeometry::decodeSystemCommand(static_cast<UINT_PTR>(cmd)));
+    if (action == TitleBarView::Action::None)
+    {
+        // Move and Size: Windows' own keyboard move and size loops.
+        PostMessageW(hwnd, WM_SYSCOMMAND, static_cast<WPARAM>(cmd), 0);
+    }
+    return action;
 }
 // LCOV_EXCL_STOP
 #endif

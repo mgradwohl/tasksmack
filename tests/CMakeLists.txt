@@ -223,6 +223,11 @@ if(TASKSMACK_BASH AND NOT WIN32)
     set_tests_properties(MdLinkAuditScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}" TIMEOUT 60)
 endif()
 
+# tools/docs-sri.py: the docs site's jsDelivr pins carry SRI hashes matching docs/cdn-integrity.json (#3167).
+# Pure Python and offline, so on every platform.
+add_test(NAME DocsSriScript COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_docs_sri.py)
+set_tests_properties(DocsSriScript PROPERTIES TIMEOUT 60)
+
 # tools/profile-heap.sh refuses a --bench-filter that matches no benchmark before starting heaptrack (#2987).
 # Stub binaries; the script is Linux-only, so the test is too.
 if(TASKSMACK_BASH AND NOT WIN32)
@@ -280,6 +285,10 @@ add_test(NAME CoverageMismatchesScript
 add_test(NAME CheckCachePruneTriggersScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_check_cache_prune_triggers.py)
 
+# tools/compose-release-notes.py writes a release's notes over release.yml's placeholder (#3144).
+add_test(NAME ComposeReleaseNotesScript
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_compose_release_notes.py)
+
 # tools/check-cflite-paths.py keeps the ClusterFuzzLite baseline build's paths equal to PR fuzzing's (#2533).
 add_test(NAME CheckCflitePathsScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_check_cflite_paths.py)
@@ -297,8 +306,8 @@ add_test(NAME StartupWiringScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_startup_wiring.py)
 
 # The run: scripts of renovate.yml's dry-run choice (#2527), sanitizers.yml's job summary (#2532),
-# main-health.yml's per-job check (#2313), release.yml's Windows digest comparison (#2952) and
-# codeql.yml's src/ filter (#2992), read from the workflows and run with bash (pwsh for release.yml's)
+# main-health.yml's per-job check (#2313), release.yml's Windows digest comparison (#2952),
+# codeql.yml's src/ filter (#2992) and changelog.yml's release notes (#3144), read from the workflows and run with bash (pwsh for release.yml's)
 # against stubs and fixtures (#2478). The Main Health and CodeQL cases also need jq on bash's PATH, and
 # the release.yml cases pwsh on PATH; each is skipped without.
 if(TASKSMACK_BASH)
@@ -454,6 +463,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessLookup.cpp # Open file location and Search online (#3064)
     App/test_ProcessPins.cpp # pinned processes (#3061)
     App/test_Connections.cpp # the Connections tab (#3066)
+    App/test_ProcessGrouping.cpp # Group by (#3068)
     App/test_ProcessTreeFlatten.cpp
     App/test_ProcessTreeIndent.cpp
     App/test_ProcessTableFlags.cpp

@@ -2,11 +2,13 @@
 /// @brief The custom title bar, headless (#1547): its buttons sit where the layout says (so the drag
 /// area leaves them out), each reports its action for TitleBarLayer to carry out, Maximize becomes
 /// Restore on a maximized window, the icon is drawn and bounded only when there is one, the Linux
-/// system menu reports its window commands, and the bar reports the width it needs.
+/// system menu reports its window commands, and the bar reports the width it needs. Also the system
+/// menu's item rule and the native Windows menu's command mapping, which need no ImGui (#3161).
 
 #include "App/TitleBarButtons.h"
 #include "App/TitleBarGeometry.h"
 #include "App/TitleBarView.h"
+#include "Core/WindowGeometry.h"
 #include "UI/IconLoader.h"
 #include "UI/IconsFontAwesome6.h"
 
@@ -296,6 +298,45 @@ TEST_F(TitleBarViewRenderTest, TheSystemMenuOfANormalWindowOffersMaximizeAndClos
     ASSERT_NE(menu, nullptr);
     ImGui::ActivateItemByID(ImHashStr(ICON_FA_XMARK "  Close", 0, menu->ID));
     EXPECT_EQ(frame().action, Action::Close);
+}
+
+// #3161: the item rule both menus follow -- the Linux one drawn above, and the native Windows one,
+// which Windows would otherwise enable from an OS maximized state a client-side maximize never sets.
+TEST(TitleBarSystemMenuTest, AMaximizedWindowsMenuOffersRestoreButNotMaximizeMoveOrSize)
+{
+    EXPECT_EQ(
+        TitleBarView::systemMenuItems(true),
+        (TitleBarView::SystemMenuItems{.restore = true, .move = false, .size = false, .minimize = true, .maximize = false, .close = true}));
+}
+
+TEST(TitleBarSystemMenuTest, ANormalWindowsMenuOffersMaximizeMoveAndSizeButNotRestore)
+{
+    EXPECT_EQ(
+        TitleBarView::systemMenuItems(false),
+        (TitleBarView::SystemMenuItems{.restore = false, .move = true, .size = true, .minimize = true, .maximize = true, .close = true}));
+}
+
+// #3161: what the native Windows menu chose is carried out as the title-bar buttons are, so Restore
+// and Maximize are the client-side ones; Move and Size go to the OS.
+TEST(TitleBarSystemMenuTest, TheNativeMenusWindowCommandsAreTheButtonsActions)
+{
+    using Core::WindowGeometry::decodeSystemCommand;
+    using Core::WindowGeometry::SystemCommand;
+    EXPECT_EQ(TitleBarView::actionForSystemCommand(SystemCommand::Restore), Action::Restore);
+    EXPECT_EQ(TitleBarView::actionForSystemCommand(SystemCommand::Maximize), Action::Maximize);
+    EXPECT_EQ(TitleBarView::actionForSystemCommand(SystemCommand::Minimize), Action::Minimize);
+    EXPECT_EQ(TitleBarView::actionForSystemCommand(SystemCommand::Close), Action::Close);
+    // As TrackPopupMenu() returns them: SC_RESTORE, SC_MAXIMIZE.
+    EXPECT_EQ(TitleBarView::actionForSystemCommand(decodeSystemCommand(0xF120U)), Action::Restore);
+    EXPECT_EQ(TitleBarView::actionForSystemCommand(decodeSystemCommand(0xF030U)), Action::Maximize);
+}
+
+TEST(TitleBarSystemMenuTest, TheNativeMenusMoveAndSizeAreLeftToTheOs)
+{
+    using Core::WindowGeometry::SystemCommand;
+    EXPECT_EQ(TitleBarView::actionForSystemCommand(SystemCommand::Move), Action::None);
+    EXPECT_EQ(TitleBarView::actionForSystemCommand(SystemCommand::Size), Action::None);
+    EXPECT_EQ(TitleBarView::actionForSystemCommand(SystemCommand::Other), Action::None);
 }
 
 TEST_F(TitleBarViewRenderTest, TheAppButtonsSayWhatTheyDoOnHover)

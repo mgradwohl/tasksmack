@@ -1,5 +1,6 @@
 #include "UserConfig.h"
 
+#include "App/Panels/ProcessGrouping.h"
 #include "App/Panels/ProcessPins.h"
 #include "App/Panels/ProcessRowMeter.h"
 #include "App/Panels/ProcessTableSettings.h"
@@ -357,6 +358,11 @@ void readSettings(const toml::table& config, UserSettings& settings)
     }
     // Pinned processes (#3061): the strings of the list, filtered as Pins takes them in (empty, over-long,
     // repeated and past ProcessPins::MAX_PINS left out); anything that isn't a string is skipped.
+    // Group by (#3068): an unknown value is None.
+    if (auto groupBy = config["process_table"]["group_by"].value<std::string>())
+    {
+        settings.processGroupBy = ProcessGrouping::groupByFromConfig(*groupBy);
+    }
     if (const auto* pinned = config["process_table"]["pinned"].as_array())
     {
         std::vector<std::string> names;
@@ -424,6 +430,10 @@ void readSettings(const toml::table& config, UserSettings& settings)
 [[nodiscard]] toml::table processTableTable(const UserSettings& settings)
 {
     toml::table table{{"layout", settings.processTableLayout}};
+    if (settings.processGroupBy != ProcessGrouping::GroupBy::None)
+    {
+        table.insert("group_by", std::string(ProcessGrouping::groupByConfigValue(settings.processGroupBy)));
+    }
     if (!settings.pinnedProcesses.empty())
     {
         toml::array pinned;
