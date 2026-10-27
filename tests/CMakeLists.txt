@@ -223,6 +223,11 @@ if(TASKSMACK_BASH AND NOT WIN32)
     set_tests_properties(MdLinkAuditScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}" TIMEOUT 60)
 endif()
 
+# tools/docs-sri.py: the docs site's jsDelivr pins carry SRI hashes matching docs/cdn-integrity.json (#3167).
+# Pure Python and offline, so on every platform.
+add_test(NAME DocsSriScript COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_docs_sri.py)
+set_tests_properties(DocsSriScript PROPERTIES TIMEOUT 60)
+
 # tools/profile-heap.sh refuses a --bench-filter that matches no benchmark before starting heaptrack (#2987).
 # Stub binaries; the script is Linux-only, so the test is too.
 if(TASKSMACK_BASH AND NOT WIN32)
