@@ -1433,9 +1433,16 @@ difference as a regression on every run (#683). Hosted runners also land on two 
 committed CI baseline is a capture from the slower class: a run on the faster class can only look like an
 improvement, never a false regression (#682). The two classes don't slow every benchmark alike (#2336):
 allocator- and memory-bound benchmarks vary more, so `--threshold-overrides FILE` gives the benchmarks a
-JSON file lists their own threshold, each with a required `reason`. `perf-data/linux-ci-thresholds.json`
-sets those. Add an entry only with the captures that justify it, and remove it when a baseline refresh
-makes it unnecessary. Without the flag every benchmark uses `--threshold`.
+JSON file lists their own threshold, each with a required `reason`. An entry can set its own noise floor
+instead, or as well, as `min_abs_delta_ns`: that is for a sub-nanosecond benchmark that an unrelated
+change's code layout moves by a few cycles. `BM_Format_ChooseByteUnit` read 0.43-0.87ns, then 3.1ns and
+2.9ns on two builds and 0.74ns on the next with no change to the code it times (#3126). That's +320% and
++2.4ns, over the 1.0ns floor, so it has a 3ns floor of its own: 0.7ns -> 3.1ns passes, 0.7ns -> 4ns and
+2ns -> 12ns still fail, and every other benchmark keeps 1.0ns, so 10ns -> 40ns, or 0.7ns -> 3.1ns
+anywhere else, still fails. A global 3ns floor would have let a 2.6ns benchmark double unnoticed.
+`perf-data/linux-ci-thresholds.json` sets those. Add an entry only with the captures that justify it, and
+remove it when a baseline refresh makes it unnecessary. Without the flag every benchmark uses
+`--threshold` and `--min-abs-delta-ns`.
 
 **Refreshing `perf-data/linux-ci-baseline.json`** (only needed when hosted-runner hardware
 changes, e.g. a `ubuntu-24.04` image update measurably shifts baseline timings, or after a
