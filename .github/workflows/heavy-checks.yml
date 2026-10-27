@@ -60,7 +60,7 @@ jobs:
     if: github.event_name != 'workflow_dispatch' || inputs.scope != 'benchmark'
     runs-on: ubuntu-24.04
     # It takes 13-21 minutes now; at 20 about one run in three was cancelled (#2859).
-    timeout-minutes: 50
+    timeout-minutes: 35
     permissions:
       contents: read
     steps:
