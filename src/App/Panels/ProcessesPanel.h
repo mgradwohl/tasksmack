@@ -22,6 +22,7 @@
 #include "App/Panels/ProcessTableNavigation.h"
 #include "App/Panels/ProcessTreeFlatten.h"
 #include "App/Panels/RunTaskDialog.h"
+#include "App/Panels/UdpTraceSwitch.h"
 #include "App/ProcessColumnConfig.h"
 #include "App/SelectOverride.h"
 #include "Core/Event.h"
@@ -492,7 +493,11 @@ class ProcessesPanel : public Panel
     // when Settings has it on, and on UdpEventTraceChangedEvent; stopped when it is turned off and at
     // detach. Null where the platform has none.
     std::shared_ptr<Platform::IUdpTrafficCollector> m_UdpCollector;
+    // Starts and stops it on a worker when the toggle changes (#3155), never on the UI thread.
+    UdpTraceSwitch m_UdpSwitch;
     void applyUdpEventTrace(bool enabled);
+    /// Logs a switch that failed to run (it threw, or had no thread).
+    static void logUdpSwitch(const std::optional<UdpTraceSwitch::Outcome>& outcome);
     // The icon beside each name (#1800): its source is created at attach, with the probe.
     ProcessIconView m_IconView;
     // The action awaiting confirmation: one target from a row (or F9), several from the selection

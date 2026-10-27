@@ -61,8 +61,11 @@ jobs:
     runs-on: ${{ inputs.os }}
     # clang-tidy runs after the tests in the same job; a full-tree run (a CMake, tidy-config or
     # workflow change) adds up to ~15 min on a cold result cache. The ARM64 runners (arm64.yml,
-    # #2214) get 60: their builds start from a cold ccache until main has saved one.
-    timeout-minutes: ${{ inputs.clang_tidy && 55 || (endsWith(inputs.os, '-arm') && 60 || 35) }}
+    # #2214) get 60: their builds start from a cold ccache until main has saved one. The rest get 45:
+    # a new compiler misses the whole ccache, and the LLVM 23 move (#946) built Linux Release in
+    # 32 minutes at 13.5% hits, leaving its tests a minute or two of a 35-minute limit. A job
+    # cancelled at its limit saves no cache, so every later run would start cold again.
+    timeout-minutes: ${{ inputs.clang_tidy && 55 || (endsWith(inputs.os, '-arm') && 60 || 45) }}
     permissions:
       contents: read
       checks: write

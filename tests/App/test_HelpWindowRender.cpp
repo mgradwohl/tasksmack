@@ -5,6 +5,7 @@
 /// AboutLayer draw them.
 
 #include "App/AboutDialog.h"
+#include "App/HelpContent.h"
 #include "App/HelpWindow.h"
 #include "App/KeyboardShortcuts.h"
 #include "UI/IconLoader.h"
@@ -14,7 +15,9 @@
 #include <imgui_internal.h> // FindWindowByName(), ImHashStr(), ActivateItemByID(): the window, its filter and its link
 
 #include <cstddef>
+#include <string>
 #include <string_view>
+#include <vector>
 
 namespace App
 {
@@ -51,9 +54,16 @@ class HelpWindowRenderTest : public ::testing::Test
         ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
         ImGui::Begin("Main", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
         ImGui::End();
-        if (HelpWindow::render(m_State) == HelpWindow::Action::OpenAbout)
+        switch (HelpWindow::render(m_State))
         {
+        case HelpWindow::Action::OpenAbout:
             m_AboutRequested = true;
+            break;
+        case HelpWindow::Action::OpenLink: // HelpLayer opens it on its worker (#3155)
+            m_LinksOpened.emplace_back(m_State.linkUrl);
+            break;
+        case HelpWindow::Action::None:
+            break;
         }
         (void) AboutDialog::render(m_AboutRequested, m_AboutCloseRequested, m_Icon); // No link is pressed here
         m_AboutOpen = ImGui::IsPopupOpen(AboutDialog::POPUP_ID);                     // Inside the frame: it needs a current window
@@ -107,6 +117,7 @@ class HelpWindowRenderTest : public ::testing::Test
     static constexpr int SETTLE_FRAMES = 6;
 
     HelpWindow::State m_State;
+    std::vector<std::string> m_LinksOpened; ///< The URLs render() returned, in order
     bool m_AboutRequested = false;
     bool m_AboutCloseRequested = false;
     bool m_AboutOpen = false; ///< About's popup was open at the end of the last frame
@@ -186,6 +197,34 @@ TEST_F(HelpWindowRenderTest, AboutLinkOpensAbout)
     runFrames(3);
     EXPECT_TRUE(m_AboutOpen);
     EXPECT_TRUE(m_State.open); // Help stays open behind About
+}
+
+// #3155: a "More help" link is returned for HelpLayer to open on its worker, never opened on the UI
+// thread here; while that open still runs (linksBusy) the links are disabled, so a second click opens
+// nothing more.
+TEST_F(HelpWindowRenderTest, ALinkIsReturnedToOpenAndWaitsWhileOneIsOpening)
+{
+    openAndSettle();
+    const ImGuiWindow* body = helpBody();
+    ASSERT_NE(body, nullptr);
+    const ImGuiID guide = ImHashStr(HelpContent::USER_GUIDE_LINK_LABEL, 0, body->ID);
+    ImGui::ActivateItemByID(guide);
+    runFrames(2);
+    ASSERT_EQ(m_LinksOpened.size(), 1U);
+    EXPECT_EQ(m_LinksOpened.front(), HelpContent::USER_GUIDE_URL);
+    EXPECT_TRUE(m_State.linkUrl.empty()) << "only on the frame it was clicked";
+
+    m_State.linksBusy = true; // HelpLayer: the open still runs
+    ImGui::ActivateItemByID(ImHashStr(HelpContent::ISSUES_LINK_LABEL, 0, body->ID));
+    runFrames(2);
+    EXPECT_EQ(m_LinksOpened.size(), 1U) << "disabled while one is opening";
+
+    m_State.linksBusy = false; // done: the links work again
+    ImGui::ActivateItemByID(ImHashStr(HelpContent::ISSUES_LINK_LABEL, 0, body->ID));
+    runFrames(2);
+    ASSERT_EQ(m_LinksOpened.size(), 2U);
+    EXPECT_EQ(m_LinksOpened.back(), HelpContent::ISSUES_URL);
+    EXPECT_TRUE(m_State.open); // a link leaves Help open
 }
 
 TEST_F(HelpWindowRenderTest, RequestingItAgainKeepsItsFilter)

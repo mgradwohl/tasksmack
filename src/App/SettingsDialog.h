@@ -53,6 +53,9 @@ struct State
     bool showProcessIcons = true;      ///< The programs' icons beside process names (#1800)
     bool highlightNewProcesses = true; ///< Tint the rows of processes that just started, and keep those that just exited (#3060)
     bool udpEventTrace = false;        ///< Windows only (#1492); shown and saved there
+    /// Set by SettingsLayer while Edit Config File's or Open Themes Folder's open still runs on its worker
+    /// (#3155): both buttons are disabled until it is done, so a double click opens one window.
+    bool openingPath = false;
 
     // Previews for stored values that aren't among the options ("Custom (750 ms)"), built on open.
     std::string customThemePreview;

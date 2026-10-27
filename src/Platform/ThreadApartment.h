@@ -39,4 +39,31 @@ class MultiThreadedApartment
     bool m_Entered = false;
 };
 
+/// Puts the calling thread in a single-threaded COM apartment of its own for this object's lifetime:
+/// what ShellExecuteW asks of its caller, since the shell extensions it may load are COM objects that
+/// expect one (#3155: links and folders are opened on a worker, not the UI thread). Windows only; a
+/// no-op elsewhere. Made around the call that needs it, and never throws.
+class SingleThreadedApartment
+{
+  public:
+    SingleThreadedApartment() noexcept;
+    ~SingleThreadedApartment();
+
+    SingleThreadedApartment(const SingleThreadedApartment&) = delete;
+    SingleThreadedApartment& operator=(const SingleThreadedApartment&) = delete;
+    SingleThreadedApartment(SingleThreadedApartment&&) = delete;
+    SingleThreadedApartment& operator=(SingleThreadedApartment&&) = delete;
+
+    /// Whether the thread is in an STA because of this object (or was in one already, one more
+    /// reference): false where there is no COM (Linux), and where the thread was in the MTA already,
+    /// which is left alone.
+    [[nodiscard]] bool entered() const noexcept
+    {
+        return m_Entered;
+    }
+
+  private:
+    bool m_Entered = false;
+};
+
 } // namespace Platform

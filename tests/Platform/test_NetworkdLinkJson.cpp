@@ -49,6 +49,15 @@ TEST(NetworkdLinkJsonTest, DecodesStringEscapes)
     EXPECT_EQ(value.value_or(Value{}).string, "a\"b\\c/d\n\t\xC3\xA9\xF0\x9F\x98\x80"); // é and 😀 as UTF-8
 }
 
+// One \uXXXX escape per UTF-8 length (1, 2, 3 and 4 bytes, the last a surrogate pair), so every branch of the
+// decoder runs in every run: NetworkTextProperties' random escapes only sometimes pick an ASCII one (#3165).
+TEST(NetworkdLinkJsonTest, DecodesUnicodeEscapesOfEveryLength)
+{
+    const std::optional<Value> value = parse(R"("\u0041\u00e9\u20ac\ud83d\ude00")");
+    ASSERT_TRUE(value.has_value());
+    EXPECT_EQ(value.value_or(Value{}).string, "A\xC3\xA9\xE2\x82\xAC\xF0\x9F\x98\x80"); // A, é, € and 😀 as UTF-8
+}
+
 TEST(NetworkdLinkJsonTest, RefusesWhatIsNotOneJsonDocument)
 {
     for (const char* text : {"",

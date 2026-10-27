@@ -1035,8 +1035,11 @@ TEST_F(ProcessActionsBlockRenderTest, CreateDumpFromTheCardConfirmsWritesAndName
 
     ImGui::ActivateItemByID(ImHashStr(DumpDetail::CREATE_DUMP_LABEL, 0, actionsWindow()->ID));
     (void) runFrame(body);
+    // The folder is checked on the confirm's worker (#3155): taken in here, or by a frame.
+    static_cast<void>(h.actionsView.dumpView().takeConfirmCheck(&h.mock, true));
     (void) runFrame(body);
     EXPECT_TRUE(h.actionsView.dumpView().confirmPending());
+    EXPECT_FALSE(h.actionsView.dumpView().checkingFolder());
     EXPECT_TRUE(text.contains("A full memory dump of victim (PID 1001)")) << text;
     EXPECT_EQ(h.mock.createDumpCount(), 0); // nothing until confirmed
     // F9 waits while a dump's dialog is up.
@@ -1092,6 +1095,9 @@ TEST_F(ProcessActionsBlockRenderTest, TheDumpConfirmWarnsOfLowSpaceAndOffersAFol
     (void) runFrame(body);
     ImGui::ActivateItemByID(ImHashStr(DumpDetail::CREATE_DUMP_LABEL, 0, actionsWindow()->ID));
     (void) runFrame(body);
+    // The folder and its drive are read on the confirm's worker (#3155): taken in here, or by a frame,
+    // so the mock's count is read after the worker wrote it.
+    static_cast<void>(h.actionsView.dumpView().takeConfirmCheck(&h.mock, true));
     (void) runFrame(body);
     ASSERT_TRUE(h.actionsView.dumpView().confirmPending());
     EXPECT_EQ(h.mock.dumpSpaceCount(), 1);
@@ -1163,6 +1169,8 @@ void* folderDialogOwner()
     }
     ImGui::ActivateItemByID(ImHashStr(DumpDetail::CREATE_DUMP_LABEL, 0, actions->ID));
     frame();
+    // The folder is checked on the confirm's worker (#3155), and Save dump to... waits for it.
+    static_cast<void>(actionsView.dumpView().takeConfirmCheck(&mock, true));
     frame();
     const ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
     EXPECT_NE(modal, nullptr);

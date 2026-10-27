@@ -76,7 +76,8 @@ void ProcessActionsView::renderCreateDumpButton(Platform::IProcessActions* actio
     if (pressed && !disabled)
     {
         // The process is captured now; the confirm and the dump act only on it.
-        m_DumpView.request(target, processName, DumpDetail::rememberedDumpDirectory(), actions);
+        // The remembered folder is checked on the confirm's worker, never here (#3155).
+        m_DumpView.requestInRememberedFolder(target, processName, DumpDetail::rememberedDumpFolder(), actions);
     }
     ImGui::SetItemTooltip("%s", DumpDetail::CREATE_DUMP_TOOLTIP);
 }

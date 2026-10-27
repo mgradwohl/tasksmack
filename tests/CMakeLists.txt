@@ -576,6 +576,8 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessCrashHistoryView.cpp
     App/test_ProcessOpenFilesViewRender.cpp
     App/test_BackgroundTask.cpp
+    App/test_BackgroundOpen.cpp # links, files and folders opened on a worker (#3155)
+    App/test_UdpTraceSwitch.cpp # the UDP event trace started and stopped on a worker (#3155)
     App/test_CoalescingWriter.cpp
     App/test_LazyBackgroundRead.cpp
     App/test_ProcessSecurityViewRender.cpp

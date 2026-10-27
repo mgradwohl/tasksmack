@@ -1178,6 +1178,20 @@ void UserConfig::flushPendingSave()
     m_Writer.flush();
 }
 
+bool UserConfig::writeIfMissing(const UserSettings& settings)
+{
+    std::error_code ec;
+    if (std::filesystem::exists(m_ConfigPath, ec))
+    {
+        return true;
+    }
+    if (writeSettings(settings))
+    {
+        spdlog::info("Saved config to {} to open it", Core::pathToUtf8(m_ConfigPath));
+    }
+    return std::filesystem::exists(m_ConfigPath, ec);
+}
+
 bool UserConfig::writeInBackground(const UserSettings& settings)
 {
     if (!writeSettings(settings))

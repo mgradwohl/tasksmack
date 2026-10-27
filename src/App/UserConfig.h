@@ -195,6 +195,12 @@ class UserConfig
     /// Waits until every saveInBackground() so far is written.
     void flushPendingSave();
 
+    /// For a worker, never the UI thread (#3155): writes @p settings, as save() does, only when there is
+    /// no config file yet (a first run), so "Edit Config File" has a file to open (#2145). Settings'
+    /// open worker calls it with a copy of the settings taken on the UI thread. Serialized with every
+    /// other write by the write lock. @return Whether the file is there afterwards.
+    [[nodiscard]] bool writeIfMissing(const UserSettings& settings);
+
     /// Get current settings
     [[nodiscard]] auto settings() const -> const UserSettings&
     {

@@ -433,15 +433,31 @@ class SubReadTimer
 
 WindowsSystemProbe::~WindowsSystemProbe() = default;
 
-WindowsSystemProbe::WindowsSystemProbe() : WindowsSystemProbe(readBaseCpuMHz(), ProcessorPerformanceCounter::open())
+namespace
 {
+/// pdh.dll's counter, for the default probe's second read() (#3154).
+[[nodiscard]] std::unique_ptr<ProcessorPerformanceCounter> openSystemProcessorPerformance()
+{
+    auto counter = ProcessorPerformanceCounter::open();
     // Opening the counter connected PDH, which may have loaded perf providers holding COM objects (#1898).
     Windows::keepComForPerfProviders();
+    return counter;
 }
+} // namespace
+
+WindowsSystemProbe::WindowsSystemProbe()
+    : WindowsSystemProbe(readBaseCpuMHz(), DeferredProcessorPerformance{.open = &openSystemProcessorPerformance})
+{}
 
 WindowsSystemProbe::WindowsSystemProbe(std::uint64_t baseCpuMHz, std::unique_ptr<ProcessorPerformanceCounter> processorPerformance)
     : WindowsSystemProbe(baseCpuMHz, std::move(processorPerformance), systemFunctions())
 {}
+
+WindowsSystemProbe::WindowsSystemProbe(std::uint64_t baseCpuMHz, DeferredProcessorPerformance processorPerformance)
+    : WindowsSystemProbe(baseCpuMHz, nullptr, systemFunctions())
+{
+    m_OpenProcessorPerformance = processorPerformance.open;
+}
 
 WindowsSystemProbeFunctions WindowsSystemProbe::systemFunctions()
 {
@@ -812,8 +828,23 @@ void WindowsSystemProbe::readCpuFreq(SystemCounters& counters)
 {
     // The current clock, as Linux reports it under the same hasCpuFreq: the base clock scaled by
     // "% Processor Performance" (#1184). The base clock alone until PDH has a rate, or without PDH.
-    const std::optional<double> performancePercent =
-        (m_ProcessorPerformance != nullptr) ? m_ProcessorPerformance->read() : std::optional<double>{};
+    std::optional<double> performancePercent;
+    if (m_OpenProcessorPerformance != nullptr)
+    {
+        // A deferred counter is opened on the second read, so the first, the system sampler's seed,
+        // never waits on PDH's first-use load (#3154). The opening collection only primes the rate,
+        // so this read reports the base clock too, and the next one the current clock.
+        if (m_FirstReadDone)
+        {
+            const ProcessorPerformanceOpener openCounter = std::exchange(m_OpenProcessorPerformance, nullptr);
+            m_ProcessorPerformance = openCounter();
+        }
+    }
+    else if (m_ProcessorPerformance != nullptr)
+    {
+        performancePercent = m_ProcessorPerformance->read();
+    }
+    m_FirstReadDone = true;
     counters.cpuFreqMHz = currentCpuFrequencyMHz(m_BaseCpuMHz, performancePercent);
     // Load average is not available on Windows (leave at 0)
 }

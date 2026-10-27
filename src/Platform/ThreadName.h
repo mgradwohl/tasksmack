@@ -78,6 +78,13 @@ inline constexpr std::string_view BATCH_ACTION_THREAD_NAME = "ts-batch-action";
 inline constexpr std::string_view PROCESS_ACTION_THREAD_NAME = "ts-proc-action";
 /// The worker that shows the dump confirm's "Save dump to..." folder dialog while it is up (#2001).
 inline constexpr std::string_view FOLDER_DIALOG_THREAD_NAME = "ts-folder-pick";
+/// The worker that reads the dump confirm's folder and free space when it opens or its folder changes
+/// (#3155), so a folder on an unplugged drive or an offline share never stalls the UI thread.
+inline constexpr std::string_view DUMP_CHECK_THREAD_NAME = "ts-dump-check";
+/// The worker that opens one link, file or folder with the system's handler at a time (#3155):
+/// ShellExecuteW on Windows, xdg-open on Linux, either of which can wait on a shell extension, COM or
+/// the network.
+inline constexpr std::string_view SYSTEM_OPEN_THREAD_NAME = "ts-sys-open";
 /// The thread that starts TaskSmack's Windows administrator helper, and sits behind its UAC prompt for
 /// as long as that is up (PipeBroker::launch(), #2549; named in #2768).
 inline constexpr std::string_view HELPER_LAUNCH_THREAD_NAME = "ts-uac-launch";
@@ -85,6 +92,9 @@ inline constexpr std::string_view HELPER_LAUNCH_THREAD_NAME = "ts-uac-launch";
 inline constexpr std::string_view ICON_READ_THREAD_NAME = "ts-icon-read";
 /// The thread that consumes the opt-in UDP event trace on Windows (#1492) while it runs.
 inline constexpr std::string_view UDP_TRACE_THREAD_NAME = "ts-udp-trace";
+/// The worker that starts or stops the UDP event trace's session when its Settings toggle changes
+/// (#3155): the stale-session sweep, the session's start, and the stop's join of the consumer thread.
+inline constexpr std::string_view UDP_TRACE_SWITCH_THREAD_NAME = "ts-udp-switch";
 
 /// `name` cut to at most `maxLength` bytes, never in the middle of a UTF-8 sequence.
 [[nodiscard]] inline std::string truncateThreadName(std::string_view name, std::size_t maxLength = MAX_LINUX_THREAD_NAME_LENGTH)

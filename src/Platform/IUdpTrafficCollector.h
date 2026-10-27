@@ -28,8 +28,10 @@ enum class UdpCollectorStartResult : std::uint8_t
 /// Per-process UDP byte counters from an opt-in kernel trace (#1492; Windows: an ETW real-time
 /// session on Microsoft-Windows-Kernel-Network). Owned by App, which creates it with
 /// Platform::makeUdpTrafficCollector() and starts or stops it as the Settings toggle says; the process
-/// probe shares it and folds its counters into readSocketTraffic(). start() and stop() are for the
-/// thread that owns the toggle; isDelivering() and sample() may be called from any thread.
+/// probe shares it and folds its counters into readSocketTraffic(). start() and stop() may block (a
+/// stop joins the consumer thread), so App calls them off the UI thread: from the sampler's start hook,
+/// then one at a time on its switch's worker (App::UdpTraceSwitch, #3155). isDelivering() and sample()
+/// may be called from any thread.
 class IUdpTrafficCollector
 {
   public:

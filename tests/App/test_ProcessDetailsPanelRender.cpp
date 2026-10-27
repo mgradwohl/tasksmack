@@ -986,6 +986,7 @@ class ProcessDetailsDialogsTest : public ProcessDetailsPanelRenderTest
     void openDumpConfirm()
     {
         dumpView().request({.pid = PID, .startTimeTicks = START_TICKS}, "server", std::filesystem::path("dumps"), m_Mock);
+        static_cast<void>(dumpView().takeConfirmCheck(m_Mock, true)); // its folder, checked on the worker (#3155)
         static_cast<void>(renderAndCapture(*m_Panel));
         static_cast<void>(renderAndCapture(*m_Panel));
         ASSERT_TRUE(topModalTitle().starts_with("Create a dump file of server (PID 4242)?")) << topModalTitle();

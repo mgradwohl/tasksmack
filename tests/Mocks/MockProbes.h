@@ -916,7 +916,7 @@ class MockProcessActions : public Platform::IProcessActions
     {
         m_DumpSpace = space;
     }
-    /// Called on the UI thread, when the dump's confirm opens or its folder changes.
+    /// Called on the confirm's check worker (#3155), when the dump's confirm opens or its folder changes.
     [[nodiscard]] Platform::DumpSpace dumpSpace(const Platform::ProcessTarget& target, const std::filesystem::path& directory) override
     {
         m_LastTarget = target;

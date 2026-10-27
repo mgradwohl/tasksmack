@@ -79,7 +79,7 @@ class AboutDialogRenderTest : public ::testing::Test
         ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
         ImGui::Begin("Main", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
         ImGui::End();
-        measured.activatedUrl = AboutDialog::render(m_OpenRequested, m_CloseRequested, m_Icon);
+        measured.activatedUrl = AboutDialog::render(m_OpenRequested, m_CloseRequested, m_Icon, m_LinksBusy);
         measured.open = ImGui::IsPopupOpen(AboutDialog::POPUP_ID);
         if (const ImGuiWindow* modal = ImGui::GetTopMostPopupModal(); modal != nullptr)
         {
@@ -192,7 +192,8 @@ class AboutDialogRenderTest : public ::testing::Test
 
     bool m_OpenRequested = false;
     bool m_CloseRequested = false;
-    UI::Texture m_Icon; // Invalid: no GL context here, so the header keeps the icon's space empty
+    bool m_LinksBusy = false; ///< As AboutLayer passes it: a link's open still runs on its worker (#3155)
+    UI::Texture m_Icon;       // Invalid: no GL context here, so the header keeps the icon's space empty
 
   private:
     ImGuiContext* m_Context = nullptr;
@@ -383,6 +384,30 @@ TEST_F(AboutDialogRenderTest, HasTheHelpWindowsUserGuideAndReportAProblemLinks)
         EXPECT_TRUE(runFrame().activatedUrl.empty()); // Once per press
     }
     EXPECT_TRUE(runFrame().open); // A link leaves the dialog open
+}
+
+// #3155: AboutLayer opens a link on a worker; while that open still runs the links are disabled, so a
+// second click (a double click's) opens nothing more. Once it is done they work again.
+TEST_F(AboutDialogRenderTest, TheLinksWaitWhileOneIsOpening)
+{
+    ASSERT_TRUE(openAndSettle().open);
+    m_LinksBusy = true;
+    static_cast<void>(runFrame());
+    pressLink(HelpContent::USER_GUIDE_URL);
+    for (int frame = 0; frame < 3; ++frame)
+    {
+        EXPECT_TRUE(runFrame().activatedUrl.empty()) << "disabled while one is opening";
+    }
+
+    m_LinksBusy = false;
+    static_cast<void>(runFrame());
+    pressLink(HelpContent::USER_GUIDE_URL);
+    std::string activated;
+    for (int frame = 0; frame < 2 && activated.empty(); ++frame)
+    {
+        activated = runFrame().activatedUrl;
+    }
+    EXPECT_EQ(activated, HelpContent::USER_GUIDE_URL);
 }
 
 TEST_F(AboutDialogRenderTest, NothingIsActivatedWithoutAPress)
