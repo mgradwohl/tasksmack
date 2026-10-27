@@ -46,7 +46,7 @@ On Windows, the installer (`.exe`) asks for administrator rights, installs TaskS
 
 On Linux, `uname -m` prints `x86_64` or `aarch64`. On Windows, **Settings → System → About** shows "x64-based processor" or "ARM-based processor". On Windows on Arm, OpenGL comes from Microsoft's "OpenCL, OpenGL, and Vulkan Compatibility Pack" (in the Microsoft Store), which many such PCs come with; without it TaskSmack stops at startup with a message naming the OpenGL version it found (see [Graphics](#graphics)).
 
-On Linux, the `.deb` also installs TaskSmack's privileged helper, `/usr/libexec/tasksmack/tasksmack-helper`, and its polkit action (`/usr/share/polkit-1/actions/app.tasksmack.TaskSmack.helper.policy`). After asking for an administrator's password, process actions' **Authenticate and retry** and Process Details' and System Information's **Authenticate to read** use them to act on or read another user's process, or to read root-only system facts; the `.deb` recommends `pkexec`, which starts the helper. The `.tar.gz` has neither, so a copy run from it works in every other way but doesn't offer those buttons. TaskSmack run as root doesn't offer them either, since it needs no helper. (The Services tab's **Authenticate and retry** goes through systemd and polkit directly, so it doesn't need the helper.) See [Acting on another user's process](faq.md#process-io-fds-or-network-show-na-on-linux).
+On Linux, the `.deb` also installs TaskSmack's privileged helper, `/usr/libexec/tasksmack/tasksmack-helper`, and its polkit action (`/usr/share/polkit-1/actions/app.tasksmack.TaskSmack.helper.policy`). After asking for an administrator's password, process actions' **Authenticate and retry** and Process Details' and System Information's **Authenticate to read** use them to act on or read another user's process, or to read root-only system facts; the `.deb` recommends `pkexec`, which starts the helper. The `.tar.gz` has neither, so a copy run from it works in every other way but doesn't offer those buttons. The `.tar.gz` also brings no dependencies of its own: it needs the shared libraries the `.deb` depends on, which a desktop install already has but a minimal one (a server, a container) may not. On Ubuntu or Debian: `sudo apt install libx11-6 libxext6 libgl1 libegl1 libglx0 libopengl0 libsystemd0`. Without them the program stops at once, naming the missing library (for example `libOpenGL.so.0`). TaskSmack run as root doesn't offer them either, since it needs no helper. (The Services tab's **Authenticate and retry** goes through systemd and polkit directly, so it doesn't need the helper.) See [Acting on another user's process](faq.md#process-io-fds-or-network-show-na-on-linux).
 
 On Windows, acting on or reading another account's or an elevated process as an administrator (**Retry as administrator**, **Read as administrator**) needs TaskSmack installed where only an administrator can change it, such as `C:\Program Files\TaskSmack`, where the installer puts it. A copy unpacked from the `.zip` into a folder you own works in every other way, but doesn't offer those buttons. The buttons also need the administrator helper, `TaskSmackHelper.exe`, which ships only in the Authenticode-signed installers and `.zip`s, x64 and ARM64, from v0.9.1 ([#2302](https://github.com/mgradwohl/tasksmack/issues/2302)); no earlier release includes it. See [Acting as an administrator on Windows](faq.md#acting-as-an-administrator-on-windows).
 
@@ -58,8 +58,11 @@ workflow, and you can check that a download came from it in two ways. Either one
 
 **With the GitHub CLI** (releases after v0.9.0): the workflow records a GitHub
 [artifact attestation](https://docs.github.com/actions/security-for-github-actions/using-artifact-attestations)
-(SLSA build provenance) for every file. With [`gh`](https://cli.github.com/) installed and signed in
-(`gh auth login`), run this on the downloaded file:
+(SLSA build provenance) for every file. With [`gh`](https://cli.github.com/) 2.49 or later installed and signed in
+(`gh auth login`), run this on the downloaded file. Check `gh --version` first: some distributions
+package an older `gh` without the `attestation` command (Ubuntu's is 2.46), which then prints its list
+of commands instead of a result. That isn't a failed check; install `gh` from
+[GitHub's packages](https://github.com/cli/cli#installation), or use cosign below:
 
 ```bash
 gh attestation verify <asset> --repo mgradwohl/tasksmack
