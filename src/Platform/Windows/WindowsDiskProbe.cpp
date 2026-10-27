@@ -5,6 +5,7 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <memory>
@@ -18,6 +19,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <cfgmgr32.h>
 #include <pdh.h>
 #include <pdhmsg.h>
 #include <winioctl.h>
@@ -30,7 +32,9 @@
 #include "WindowsDiskProbeMath.h"
 #include "WindowsHandles.h"
 
+#include <cstddef>
 #include <cstdint>
+#include <initializer_list>
 #include <ratio>
 #include <string>
 #include <unordered_map>
@@ -45,6 +49,62 @@ struct WindowsDiskProbe::Impl
 {
     explicit Impl(const WindowsDiskProbeFunctions& functions) : fns(functions)
     {}
+
+    /// The disk and volume notification registrations (#3151), unregistered on destruction.
+    ///
+    /// CM_Unregister_Notification waits for any callback still running ("CM_Unregister_Notification waits
+    /// for pending callbacks to finish", its documentation's remarks), and none starts after it returns,
+    /// so once this is destroyed no callback can touch the flag it was given. Impl declares it after that
+    /// flag, so it is destroyed first. Never destroyed from a callback, which is the deadlock those
+    /// remarks warn of: the callback only sets the flag.
+    class DeviceNotifications
+    {
+      public:
+        DeviceNotifications() = default;
+        ~DeviceNotifications()
+        {
+            reset();
+        }
+        DeviceNotifications(const DeviceNotifications&) = delete;
+        DeviceNotifications& operator=(const DeviceNotifications&) = delete;
+        DeviceNotifications(DeviceNotifications&&) = delete;
+        DeviceNotifications& operator=(DeviceNotifications&&) = delete;
+
+        /// Own @p handle, to be unregistered through @p unregister. Holds CAPACITY handles; the probe
+        /// never adds more.
+        void add(HCMNOTIFICATION handle, decltype(&::CM_Unregister_Notification) unregister) noexcept
+        {
+            m_Unregister = unregister;
+            if (m_Count < m_Handles.size())
+            {
+                m_Handles[m_Count++] = handle;
+            }
+        }
+
+        [[nodiscard]] bool empty() const noexcept
+        {
+            return m_Count == 0;
+        }
+
+        /// Unregister every handle, newest first; each call returns once that registration's
+        /// callbacks have finished. Its result goes unchecked: every handle here came from a
+        /// registration that succeeded, and a destructor would have no recourse anyway.
+        void reset() noexcept
+        {
+            while (m_Count > 0)
+            {
+                (void) m_Unregister(m_Handles[--m_Count]);
+            }
+        }
+
+        /// The disk interface's registration and the volume interface's.
+        static constexpr std::size_t CAPACITY = 2;
+
+      private:
+        std::array<HCMNOTIFICATION, CAPACITY> m_Handles{};
+        std::size_t m_Count = 0;
+        decltype(&::CM_Unregister_Notification) m_Unregister = nullptr;
+    };
 
     WindowsDiskProbeFunctions fns; // Every OS call goes through these (#1719)
 
@@ -78,9 +138,21 @@ struct WindowsDiskProbe::Impl
     // so a lookup that failed is tried again by the next rescan. Sampler thread only.
     std::wstring physicalDiskObject;
 
+    // Set by the notification callback, on a CfgMgr32 thread-pool thread, when a disk or volume
+    // arrives or leaves; read() takes it on the sampler thread (#3151).
+    std::atomic<bool> deviceChanged{false};
+    // When read() first took a device change since the last rescan; the rescan waits
+    // DISK_DEVICE_CHANGE_SETTLE_DELAY from it. Sampler thread only.
+    std::optional<std::chrono::steady_clock::time_point> deviceChangedAt;
+    // Last, so it is destroyed first: unregistering waits for any callback still setting
+    // deviceChanged, and none runs after it (see DeviceNotifications).
+    DeviceNotifications notifications;
+
     void enumerate();
     /// The name to enumerate PhysicalDisk by: the localized one, or the English one if it can't be found.
     [[nodiscard]] std::wstring physicalDiskObjectName();
+    /// Register for disk and volume interface arrivals and removals; on any failure, none (#3151).
+    void registerDeviceNotifications();
 };
 
 namespace
@@ -91,6 +163,30 @@ namespace
 constexpr DWORD PHYSICAL_DISK_OBJECT_INDEX = 234;
 /// For a system whose localized name can't be looked up; an English system's name is this.
 constexpr const wchar_t* PHYSICAL_DISK_OBJECT_ENGLISH = L"PhysicalDisk";
+
+// GUID_DEVINTERFACE_DISK and GUID_DEVINTERFACE_VOLUME (winioctl.h), spelled out so no translation
+// unit needs <initguid.h>. A disk's interface says it arrived or left; its volumes' say when it is
+// partitioned and lettered, which PDH's instance name ("1 D: E:") carries (#3151).
+constexpr GUID DISK_INTERFACE_GUID{
+    .Data1 = 0x53f56307, .Data2 = 0xb6bf, .Data3 = 0x11d0, .Data4 = {0x94, 0xf2, 0x00, 0xa0, 0xc9, 0x1e, 0xfb, 0x8b}};
+constexpr GUID VOLUME_INTERFACE_GUID{
+    .Data1 = 0x53f5630d, .Data2 = 0xb6bf, .Data3 = 0x11d0, .Data4 = {0x94, 0xf2, 0x00, 0xa0, 0xc9, 0x1e, 0xfb, 0x8b}};
+
+/// The CM_Register_Notification callback, on a CfgMgr32 thread-pool thread: it only sets the
+/// probe's flag, never logging or rescanning there, and read() takes the flag (#3151). @p context
+/// is that std::atomic<bool>, which outlives every callback (Impl::DeviceNotifications).
+DWORD CALLBACK onDeviceInterfaceChange(HCMNOTIFICATION /*notification*/,
+                                       PVOID context,
+                                       CM_NOTIFY_ACTION action,
+                                       PCM_NOTIFY_EVENT_DATA /*eventData*/,
+                                       DWORD /*eventDataSize*/) noexcept
+{
+    if (action == CM_NOTIFY_ACTION_DEVICEINTERFACEARRIVAL || action == CM_NOTIFY_ACTION_DEVICEINTERFACEREMOVAL)
+    {
+        static_cast<std::atomic<bool>*>(context)->store(true, std::memory_order_release);
+    }
+    return ERROR_SUCCESS;
+}
 
 /// The name PDH has, in the system's language, for the counter object at @p index; nothing if the
 /// lookup fails. Every PDH name fits PDH_MAX_COUNTER_NAME, so the first call normally fills the buffer.
@@ -189,12 +285,40 @@ std::wstring WindowsDiskProbe::Impl::physicalDiskObjectName()
     return physicalDiskObject;
 }
 
+void WindowsDiskProbe::Impl::registerDeviceNotifications()
+{
+    for (const GUID& interfaceClass : {DISK_INTERFACE_GUID, VOLUME_INTERFACE_GUID})
+    {
+        CM_NOTIFY_FILTER filter{};
+        filter.cbSize = sizeof(filter);
+        filter.FilterType = CM_NOTIFY_FILTER_TYPE_DEVICEINTERFACE;
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access) - FilterType selects DeviceInterface
+        filter.u.DeviceInterface.ClassGuid = interfaceClass;
+        HCMNOTIFICATION handle = nullptr;
+        const CONFIGRET result = fns.devices.registerNotification(&filter, &deviceChanged, &onDeviceInterfaceChange, &handle);
+        if (result != CR_SUCCESS)
+        {
+            // Both or neither: without the disks' own, a new disk would wait out the safety interval.
+            notifications.reset();
+            spdlog::info("WindowsDiskProbe: CM_Register_Notification failed (CONFIGRET {}); rescanning disks every {} s",
+                         result,
+                         DISK_REENUMERATE_INTERVAL.count());
+            return;
+        }
+        notifications.add(handle, fns.devices.unregisterNotification);
+    }
+    spdlog::debug("WindowsDiskProbe: rescanning disks when a disk or volume arrives or leaves");
+}
+
 /// (Re)build the disk list (#1159). It used to be built once, at construction, so a removed
 /// disk failed every refresh forever and a disk attached later never appeared. The new list is
 /// built aside and swapped in; if PDH itself fails, the current list is kept.
 void WindowsDiskProbe::Impl::enumerate()
 {
     lastEnumeration = fns.now();
+    // This rescan answers every device change read() has taken; one arriving from now on sets the
+    // flag again, and the next read() takes it (#3151).
+    deviceChangedAt.reset();
     std::vector<OpenDisk> found;
     bool enumerated = false;
 
@@ -322,19 +446,25 @@ WindowsDiskProbeFunctions WindowsDiskProbe::systemFunctions()
     fns.drive.deviceIoControl = &DeviceIoControl;
     fns.drive.getLogicalDrives = &GetLogicalDrives;
     fns.drive.getDriveTypeW = &GetDriveTypeW;
+    fns.devices.registerNotification = &CM_Register_Notification;
+    fns.devices.unregisterNotification = &CM_Unregister_Notification;
     fns.now = &std::chrono::steady_clock::now;
     return fns;
 }
 
 WindowsDiskProbe::WindowsDiskProbe(const WindowsDiskProbeFunctions& functions) : m_Impl(std::make_unique<Impl>(functions))
 {
+    // Before the first enumeration, so a disk that arrives during it still asks for a rescan. On the
+    // thread that builds the probe, the disk sampler's (#2731); the callbacks run on CfgMgr32's.
+    m_Impl->registerDeviceNotifications();
     m_Impl->enumerate();
     spdlog::debug("WindowsDiskProbe: initialized with {} disks", m_Impl->disks.size());
 }
 
 // Impl::OpenDisk owns its HANDLE via RAII (closes on destruction), so destroying
 // m_Impl -- and with it the vector<OpenDisk> -- is the single teardown point; no
-// manual CloseHandle loop here, which would otherwise double-close each handle.
+// manual CloseHandle loop here, which would otherwise double-close each handle. Impl's
+// DeviceNotifications, its last member, unregisters first, waiting for any callback in flight.
 WindowsDiskProbe::~WindowsDiskProbe() = default;
 
 SystemDiskCounters WindowsDiskProbe::read()
@@ -346,9 +476,23 @@ SystemDiskCounters WindowsDiskProbe::read()
     // drive) would land between that timestamp and the disks' busy-time readings and swing
     // utilisation up on that sample and down on the next (#1108, #1159). Done here, it delays only
     // the end of this read; a removed disk is also dropped before the next read rather than during it.
-    if (m_Impl && shouldReenumerate(m_Impl->fns.now(), m_Impl->lastEnumeration, m_Impl->lastReadHadFailure, DISK_REENUMERATE_INTERVAL))
+    if (!m_Impl)
     {
-        m_Impl->enumerate();
+        return result;
+    }
+    Impl& impl = *m_Impl;
+    const auto now = impl.fns.now();
+    // A disk or volume arrived or left (#3151). The rescan waits from the first change it hasn't
+    // answered, so the disk's volumes are lettered by then; later ones until it runs are the same rescan.
+    if (impl.deviceChanged.exchange(false, std::memory_order_acq_rel) && !impl.deviceChangedAt.has_value())
+    {
+        impl.deviceChangedAt = now;
+        spdlog::debug("WindowsDiskProbe: a disk or volume arrived or left; rescanning in {} s", DISK_DEVICE_CHANGE_SETTLE_DELAY.count());
+    }
+    if (shouldReenumerate(
+            now, impl.lastEnumeration, impl.lastReadHadFailure, diskReenumerateInterval(!impl.notifications.empty()), impl.deviceChangedAt))
+    {
+        impl.enumerate();
     }
     return result;
 }
