@@ -2,8 +2,9 @@
 /// @brief Tests for the pure window-geometry decisions in Core/WindowGeometry.h: which rectangle is
 /// persisted as the window's normal geometry (#1121), and how a restored rectangle is fitted to the
 /// connected displays (#1128), when an OS maximize is replaced by the client-side one (#1208), and how
-/// the normal rectangle is tracked through maximizes and restores from any source (#1250); and when a
-/// shell minimize of a client-side maximized window restores it instead (#1279).
+/// the normal rectangle is tracked through maximizes and restores from any source (#1250); when a
+/// shell minimize of a client-side maximized window restores it instead (#1279); and which shell
+/// window commands the client-side maximized window carries out itself (#3161).
 
 #include "Core/WindowConstants.h"
 #include "Core/WindowGeometry.h"
@@ -97,6 +98,78 @@ TEST(WindowGeometryTest, SetWindowLongPtrReturningZeroWithoutAnErrorSucceeded)
     constexpr std::intptr_t PREVIOUS_PROC = 0x1234'5670;
     EXPECT_FALSE(windowLongPtrSetFailed(PREVIOUS_PROC, 0));
     EXPECT_FALSE(windowLongPtrSetFailed(PREVIOUS_PROC, 1400));
+}
+
+// ---- decodeSystemCommand (#3161) ----
+
+TEST(WindowGeometryTest, SystemCommandsDecodeFromTheirWin32Values)
+{
+    EXPECT_EQ(decodeSystemCommand(0xF120U), SystemCommand::Restore);  // SC_RESTORE
+    EXPECT_EQ(decodeSystemCommand(0xF010U), SystemCommand::Move);     // SC_MOVE
+    EXPECT_EQ(decodeSystemCommand(0xF000U), SystemCommand::Size);     // SC_SIZE
+    EXPECT_EQ(decodeSystemCommand(0xF020U), SystemCommand::Minimize); // SC_MINIMIZE
+    EXPECT_EQ(decodeSystemCommand(0xF030U), SystemCommand::Maximize); // SC_MAXIMIZE
+    EXPECT_EQ(decodeSystemCommand(0xF060U), SystemCommand::Close);    // SC_CLOSE
+}
+
+TEST(WindowGeometryTest, SystemCommandsIgnoreTheLowFourBitsWindowsUses)
+{
+    // A move from the title bar arrives as SC_MOVE | HTCAPTION (0xF012), a maximize from a caption
+    // double-click as SC_MAXIMIZE | HTCAPTION.
+    EXPECT_EQ(decodeSystemCommand(0xF012U), SystemCommand::Move);
+    EXPECT_EQ(decodeSystemCommand(0xF032U), SystemCommand::Maximize);
+    EXPECT_EQ(decodeSystemCommand(0xF12FU), SystemCommand::Restore);
+}
+
+TEST(WindowGeometryTest, OtherSystemCommandsAreOther)
+{
+    EXPECT_EQ(decodeSystemCommand(0xF100U), SystemCommand::Other); // SC_KEYMENU
+    EXPECT_EQ(decodeSystemCommand(0xF140U), SystemCommand::Other); // SC_SCREENSAVE
+    EXPECT_EQ(decodeSystemCommand(0U), SystemCommand::Other);
+}
+
+// ---- shellCommandCarriedOutClientSide (#3161) ----
+
+TEST(WindowGeometryTest, RestoreOfAClientSideMaximizedWindowIsCarriedOutClientSide)
+{
+    // The OS sees a normal window and ignores its Restore, so the window restores itself.
+    EXPECT_TRUE(shellCommandCarriedOutClientSide(SystemCommand::Restore, MaximizeState::ClientSide, false));
+}
+
+TEST(WindowGeometryTest, RestoreIsTheOssWhenTheWindowIsNotMaximizedClientSide)
+{
+    EXPECT_FALSE(shellCommandCarriedOutClientSide(SystemCommand::Restore, MaximizeState::Normal, false)); // nothing to restore
+    EXPECT_FALSE(shellCommandCarriedOutClientSide(SystemCommand::Restore, MaximizeState::System, false)); // the OS's maximize
+}
+
+TEST(WindowGeometryTest, MaximizeOfAWindowTheOsHasNotMaximizedIsCarriedOutClientSide)
+{
+    // Not an OS maximize the window would have to adopt (#1208); a second one keeps the restore target.
+    EXPECT_TRUE(shellCommandCarriedOutClientSide(SystemCommand::Maximize, MaximizeState::Normal, false));
+    EXPECT_TRUE(shellCommandCarriedOutClientSide(SystemCommand::Maximize, MaximizeState::ClientSide, false));
+    EXPECT_FALSE(shellCommandCarriedOutClientSide(SystemCommand::Maximize, MaximizeState::System, false));
+}
+
+TEST(WindowGeometryTest, TheShellsCommandsOfAMinimizedWindowAreTheOss)
+{
+    // The taskbar brings a minimized window back with Restore, to the geometry it had: a window
+    // maximized client-side before it was minimized comes back maximized.
+    for (const MaximizeState state : {MaximizeState::Normal, MaximizeState::ClientSide, MaximizeState::System})
+    {
+        EXPECT_FALSE(shellCommandCarriedOutClientSide(SystemCommand::Restore, state, true));
+        EXPECT_FALSE(shellCommandCarriedOutClientSide(SystemCommand::Maximize, state, true));
+    }
+}
+
+TEST(WindowGeometryTest, OtherShellCommandsAreTheOss)
+{
+    // Minimize is shellMinimizeRestores()'s; Move, Size and Close are carried out by the OS.
+    for (const SystemCommand command :
+         {SystemCommand::Other, SystemCommand::Move, SystemCommand::Size, SystemCommand::Minimize, SystemCommand::Close})
+    {
+        EXPECT_FALSE(shellCommandCarriedOutClientSide(command, MaximizeState::ClientSide, false));
+        EXPECT_FALSE(shellCommandCarriedOutClientSide(command, MaximizeState::Normal, false));
+    }
 }
 
 // ---- shouldAdoptSystemMaximize (#1208) ----
