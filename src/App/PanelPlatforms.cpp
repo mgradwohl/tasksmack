@@ -113,7 +113,8 @@ ProcessDetailsReaders makeProcessDetailsReaders(const Synthetic::Scenario* scena
             .security = Synthetic::makeProcessSecurityReader(scenario),
             .openFiles = (scenario == nullptr)
                            ? Platform::withPrivilegedBroker(Synthetic::makeProcessOpenFilesReader(scenario), sharedPrivilegedBroker())
-                           : Synthetic::makeProcessOpenFilesReader(scenario)};
+                           : Synthetic::makeProcessOpenFilesReader(scenario),
+            .threads = Synthetic::makeProcessThreadsReader(scenario)};
 }
 
 ServicesPanelPlatform makeServicesPanelPlatform(const Synthetic::Scenario* /*scenario*/)
