@@ -197,7 +197,11 @@ jobs:
   win-coverage:
     if: github.event_name != 'workflow_dispatch' || inputs.scope != 'benchmark'
     runs-on: windows-2025
-    timeout-minutes: 35
+    # 35 minutes left under 3 of headroom (#3148): on main (run 40468810077) "Generate coverage report",
+    # which configures, builds, runs the tests and writes the reports (tools/coverage.ps1), took 1909 s
+    # (31.8 min) of the job's 32.6, and a slower runner was cancelled at the limit. 45, as
+    # benchmark-regression has.
+    timeout-minutes: 45
     permissions:
       contents: read
     env:
