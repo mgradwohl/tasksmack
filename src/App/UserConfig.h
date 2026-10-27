@@ -16,6 +16,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace App
 {
@@ -46,6 +47,10 @@ struct UserSettings
     // Process table column widths, order and sort, as ImGui's own "[Table]" settings text (#952).
     // Opaque to TaskSmack: it is filtered by ProcessTableSettings::sanitize() and handed to ImGui.
     std::string processTableLayout;
+
+    // Pinned processes (#3061), by name: kept at the top of the Processes table and through its filter,
+    // [process_table] pinned. Written only when there are any.
+    std::vector<std::string> pinnedProcesses;
 
     // Sampling / refresh interval (milliseconds)
     // Applied to all background samplers (process + system) for consistent cadence.

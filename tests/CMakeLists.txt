@@ -452,6 +452,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessColumnConfig.cpp
     App/test_ProcessSortUtils.cpp
     App/test_ProcessLookup.cpp # Open file location and Search online (#3064)
+    App/test_ProcessPins.cpp # pinned processes (#3061)
     App/test_ProcessTreeFlatten.cpp
     App/test_ProcessTreeIndent.cpp
     App/test_ProcessTableFlags.cpp
