@@ -3,6 +3,7 @@
 #include "App/Panels/ProcessPins.h"
 #include "App/Panels/ProcessRowMeter.h"
 #include "App/Panels/ProcessTableSettings.h"
+#include "App/Panels/RunTaskHistory.h"
 #include "App/UserConfigHelpers.h"
 #include "Core/ConfigDirOverride.h"
 #include "Core/Utf8Path.h"
@@ -337,6 +338,19 @@ void readSettings(const toml::table& config, UserSettings& settings)
 
     // The dump folder (#2001): a path, so no longer than the longest Windows allows (32767 UTF-16
     // units, at most 3 UTF-8 bytes each). Whether it still exists is checked where it is used.
+    // Run new task's recent commands (#3065): the strings of the list, as RunTaskHistory takes them in.
+    if (const auto* recent = config["run_task"]["recent"].as_array())
+    {
+        std::vector<std::string> commands;
+        for (const auto& node : *recent)
+        {
+            if (auto command = node.value<std::string>())
+            {
+                commands.push_back(std::move(*command));
+            }
+        }
+        settings.recentCommands = RunTaskHistory::sanitize(commands);
+    }
     if (auto folder = config["dumps"]["folder"].value<std::string>())
     {
         constexpr std::size_t MAX_DUMP_FOLDER_BYTES = std::size_t{32767} * 3U;
@@ -507,7 +521,7 @@ void readSettings(const toml::table& config, UserSettings& settings)
         windowTable.insert("scale", static_cast<double>(*settings.windowScale));
     }
 
-    return toml::table{
+    toml::table table{
         {"sampling",
          toml::table{
              {"interval_ms", Domain::Sampling::clampRefreshInterval(settings.refreshIntervalMs)},
@@ -538,6 +552,16 @@ void readSettings(const toml::table& config, UserSettings& settings)
         {"process_table", processTableTable(settings)},
         {"dumps", toml::table{{"folder", settings.dumpFolder}}},
     };
+    if (!settings.recentCommands.empty()) // only when there are any, so a first run's file is unchanged
+    {
+        toml::array recent;
+        for (const std::string& command : settings.recentCommands)
+        {
+            recent.push_back(command);
+        }
+        table.insert("run_task", toml::table{{"recent", std::move(recent)}});
+    }
+    return table;
 }
 
 } // namespace

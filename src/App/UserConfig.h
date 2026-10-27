@@ -128,6 +128,10 @@ struct UserSettings
     // with the confirm's "Save dump to...". Empty, or a folder that no longer exists: the temp folder.
     std::string dumpFolder;
 
+    // Run new task's recent command lines (#3065), newest first, [run_task] recent. Written only when
+    // there are any.
+    std::vector<std::string> recentCommands;
+
     // Opt-in escape hatch (default off -- the custom title bar is the default
     // everywhere): use native OS/compositor window decorations instead of the custom
     // borderless title bar. Only has an effect on native Wayland; read once at startup

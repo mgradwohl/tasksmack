@@ -183,6 +183,7 @@ set(TASKSMACK_SOURCES
     src/App/Panels/ProcessActionConfirm.cpp
     src/App/Panels/ProcessBatchPriorityDialog.cpp
     src/App/Panels/ProcessAffinityDialog.cpp
+    src/App/Panels/RunTaskDialog.cpp # Run new task (#3065)
     src/App/Panels/ProcessActionsView.cpp
     src/App/Panels/ProcessDumpView.cpp
     src/App/Panels/ProcessActionsBlock.cpp

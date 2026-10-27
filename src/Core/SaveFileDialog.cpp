@@ -124,6 +124,15 @@ void showFolderDialog(SDL_Window* window, const std::string& defaultLocation, Sa
         &onDialogClosed, request.release(), window, defaultLocation.empty() ? nullptr : defaultLocation.c_str(), false);
 }
 
+void showOpenFileDialog(SDL_Window* window, const std::string& defaultLocation, SaveFileCallback callback)
+{
+    auto request = std::make_unique<DialogRequest>();
+    request->callback = std::move(callback);
+    // From here SDL owns the request, as for the save dialog. No filters: any file can be a program.
+    SDL_ShowOpenFileDialog(
+        &onDialogClosed, request.release(), window, nullptr, 0, defaultLocation.empty() ? nullptr : defaultLocation.c_str(), false);
+}
+
 std::string defaultSaveFolder()
 {
     if (const char* documents = SDL_GetUserFolder(SDL_FOLDER_DOCUMENTS); documents != nullptr && *documents != '\0')

@@ -20,6 +20,7 @@
 #include "App/Panels/ProcessSelection.h"
 #include "App/Panels/ProcessTableNavigation.h"
 #include "App/Panels/ProcessTreeFlatten.h"
+#include "App/Panels/RunTaskDialog.h"
 #include "App/ProcessColumnConfig.h"
 #include "App/SelectOverride.h"
 #include "Core/Event.h"
@@ -515,6 +516,7 @@ class ProcessesPanel : public Panel
     // confirmation above sets it.
     ProcessBatchPriorityDialog m_BatchPriorityDialog;
     ProcessAffinityDialog m_AffinityDialog; // The row menu's Set affinity... (#1887)
+    RunTaskDialog m_RunTaskDialog;          // The toolbar's Run new task... (#3065)
     // The row menu's Create dump file... (#807). Declared after m_ProcessActions, which its worker uses
     // until it finishes, so it is destroyed (cancelling and waiting for a dump in flight) first.
     ProcessDumpView m_DumpView;
@@ -826,6 +828,8 @@ class ProcessesPanel : public Panel
     /// The row menu's Set affinity... dialog (#1887), its own confirmation; on Apply, sets the chosen
     /// CPUs on the process it was opened for, by identity, and shows the result in the toolbar.
     void renderAffinityDialog();
+    /// Run new task (#3065): the dialog while open, and the program it asks for started on the row action worker.
+    void renderRunTaskDialog();
 
     /// The confirmation dialog for a row-menu action, and the action once confirmed.
     void renderRowActionConfirm();

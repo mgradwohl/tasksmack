@@ -914,6 +914,31 @@ TEST_F(UserConfigSaveLoadFixture, APinnedListIsTakenInFiltered)
     EXPECT_EQ(config.settings().pinnedProcesses, (std::vector<std::string>{"game", "server"}));
 }
 
+// ========== Run new task's recent commands (#3065) ==========
+
+TEST_F(UserConfigSaveLoadFixture, RecentCommandsRoundTripNewestFirst)
+{
+    auto& config = UserConfig::get();
+
+    config.settings().recentCommands = {"foot --title Rescue", "konsole"};
+    config.save();
+    config.settings().recentCommands.clear();
+    config.load();
+    EXPECT_EQ(config.settings().recentCommands, (std::vector<std::string>{"foot --title Rescue", "konsole"}));
+}
+
+TEST_F(UserConfigSaveLoadFixture, ARecentCommandListIsTakenInFiltered)
+{
+    {
+        std::ofstream file(m_TempDir / "config.toml");
+        ASSERT_TRUE(file.is_open());
+        file << "config_version = 2\n[run_task]\nrecent = [\"konsole\", 7, \"  \", \"htop\", \"konsole\"]\n";
+    }
+    auto& config = UserConfig::get();
+    config.load();
+    EXPECT_EQ(config.settings().recentCommands, (std::vector<std::string>{"konsole", "htop"}));
+}
+
 // ========== chartAntiAliasing Persistence (perf-plan #843 phase 1) ==========
 
 TEST(UserSettingsTest, ChartAntiAliasingDefaultsToTrue)
@@ -1084,6 +1109,7 @@ TEST_F(UserConfigSaveLoadFixture, LoadMissingFileLeavesEverySettingAtItsDocument
                  highlightNewProcesses,
                  cpuDetailsExpanded,
                  dumpFolder,
+                 recentCommands,
                  forceNativeWindowDecorationsOnWayland] = config.settings();
 
     EXPECT_EQ(themeId, "arctic-fire");
@@ -1121,7 +1147,8 @@ TEST_F(UserConfigSaveLoadFixture, LoadMissingFileLeavesEverySettingAtItsDocument
     EXPECT_TRUE(showProcessIcons);
     EXPECT_TRUE(highlightNewProcesses); // #3060
     EXPECT_TRUE(cpuDetailsExpanded);
-    EXPECT_TRUE(dumpFolder.empty()); // the temp folder
+    EXPECT_TRUE(dumpFolder.empty());     // the temp folder
+    EXPECT_TRUE(recentCommands.empty()); // #3065
     EXPECT_FALSE(forceNativeWindowDecorationsOnWayland);
 }
 

@@ -33,6 +33,8 @@
 #include "App/Panels/ProcessTreeFlatten.h"
 #include "App/Panels/ProcessTreeIndent.h"
 #include "App/Panels/ProcessTypeColor.h"
+#include "App/Panels/RunTaskDialog.h"
+#include "App/Panels/RunTaskHistory.h"
 #include "App/PlatformOpen.h"
 #include "App/ProcessColumnConfig.h"
 #include "App/SelectOverride.h"
@@ -1599,7 +1601,11 @@ void ProcessesPanel::renderContent()
     // "Authenticate and retry" beside a refused action's line (#2308) takes its room from the status.
     const bool offerRetry = offersAuthenticateAndRetry();
     const float retryButtonWidth = offerRetry ? ImGui::CalcTextSize(AuthorizeWording::RETRY_LABEL).x + (style.FramePadding.x * 2.0F) : 0.0F;
-    const float controlsWidth = columnsButtonWidth + style.ItemSpacing.x + listSegmentWidth + treeSegmentWidth + foldButtonsWidth +
+    // Run new task (#3065), an icon button before Columns, where the platform can start programs.
+    const bool offerRunTask = m_ActionCapabilities.canRunProgram;
+    const float runTaskButtonWidth = offerRunTask ? ImGui::CalcTextSize(ICON_FA_ROCKET).x + (style.FramePadding.x * 2.0F) : 0.0F;
+    const float controlsWidth = (offerRunTask ? runTaskButtonWidth + style.ItemSpacing.x : 0.0F) + columnsButtonWidth +
+                                style.ItemSpacing.x + listSegmentWidth + treeSegmentWidth + foldButtonsWidth +
                                 (offerRetry ? retryButtonWidth + style.ItemSpacing.x : 0.0F);
 
     // An action's result takes no more room than the count text it stands in for, ellipsized with
@@ -1676,6 +1682,18 @@ void ProcessesPanel::renderContent()
         ImGui::SetItemTooltip("%s", AuthorizeWording::RETRY_TOOLTIP);
     }
 
+    if (offerRunTask)
+    {
+        ImGui::SameLine();
+        ImGui::BeginDisabled(rowActionRunning());
+        if (ImGui::Button(ICON_FA_ROCKET "###RunNewTask", ImVec2(runTaskButtonWidth, 0.0F)))
+        {
+            m_RunTaskDialog.open(UserConfig::get().settings().recentCommands, m_ActionCapabilities.canRunProgramAsAdministrator);
+        }
+        ImGui::EndDisabled();
+        ImGui::SetItemTooltip("Run new task: start a program, optionally as administrator");
+    }
+
     // Column chooser, beside ImGui's own header right-click menu (#1209)
     ImGui::SameLine();
     // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage) - constexpr literal
@@ -1715,6 +1733,7 @@ void ProcessesPanel::renderContent()
     renderBatchPriorityDialog();
     // The row menu's Set affinity... (#1887), applied on its own Apply.
     renderAffinityDialog();
+    renderRunTaskDialog();
 
     // A row menu's Suspend, Resume, Terminate or Kill, confirmed as in the Actions block (#1209), or a
     // batch priority change (#1484)
@@ -2899,7 +2918,7 @@ void ProcessesPanel::applyKeyboardInput(const std::vector<Domain::ProcessSnapsho
     // A batch priority change (#1484), in its dialog or its confirmation, is a row action too.
     // So is a dump's confirm, progress or result (#807), and a batch still running on its worker (#2142).
     const bool rowActionPending = m_ShowRowActionConfirm || m_RowAction.pending() || m_BatchPriorityDialog.isPending() ||
-                                  m_AffinityDialog.isPending() || m_DumpView.active() || rowActionRunning();
+                                  m_AffinityDialog.isPending() || m_RunTaskDialog.isOpen() || m_DumpView.active() || rowActionRunning();
     if (killRequested && m_Selection.size() > 1)
     {
         // Only while at least one selected row is visible: with every selected row filtered out, F9
@@ -3304,6 +3323,25 @@ void ProcessesPanel::showBatchOutcome(ProcessBatch::BatchRunOutcome outcome)
     {
         requestRefresh(); // Show the processes acted on without waiting for the next sample
     }
+}
+
+void ProcessesPanel::renderRunTaskDialog()
+{
+    const std::optional<Platform::RunProgramRequest> request = m_RunTaskDialog.render();
+    if (!request.has_value())
+    {
+        return;
+    }
+    // Remembered whether or not it starts: a typo is easier to fix from the list than to retype.
+    UserConfig::get().settings().recentCommands =
+        RunTaskHistory::remember(UserConfig::get().settings().recentCommands, request->commandLine);
+    std::string shown = runTaskShortName(request->commandLine);
+    runRowAction(
+        std::format("Starting {}...", shown),
+        [actions = m_ProcessActions.get(), request = *request] { return actions->runProgram(request); },
+        [shown = std::move(shown), admin = request->asAdministrator](const Platform::ProcessActionResult& result)
+        { return runTaskResultMessage(shown, admin, result); },
+        std::nullopt); // its own pkexec prompt when elevated: nothing the helper does
 }
 
 void ProcessesPanel::renderAffinityDialog()

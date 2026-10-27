@@ -2666,5 +2666,53 @@ TEST_F(ProcessesPanelExitingRowsTest, WithTheSettingOffAnExitedProcessLeavesAtOn
     panel->onDetach();
 }
 
+// #3065: the toolbar's Run new task opens its dialog, and Run starts the command through the platform's
+// actions on the row action worker, remembers it, and says so in the toolbar.
+TEST_F(ProcessesPanelRenderTest, RunNewTaskStartsTheCommandAndRemembersIt)
+{
+    UserConfig::get().settings().recentCommands = {"htop"};
+    TestMocks::MockProcessActions* actions = nullptr;
+    auto panel = std::make_unique<ProcessesPanel>(
+        [&actions]
+        {
+            auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+            probe->withProcess(TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0));
+            auto mock = std::make_unique<TestMocks::MockProcessActions>();
+            mock->setCapabilities({.canRunProgram = true, .canRunProgramAsAdministrator = true});
+            actions = mock.get();
+            return ProcessesPanelPlatform{.probe = std::move(probe), .actions = std::move(mock), .icons = nullptr};
+        });
+    attachAndSeed(*panel);
+    Core::ActiveTabChangedEvent shown("Processes");
+    panel->onEvent(shown);
+    for (int frame = 0; frame < LOAD_FRAMES && panel->processCount() < 1; ++frame)
+    {
+        static_cast<void>(renderAndCapture(*panel));
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    static_cast<void>(renderAndCapture(*panel));
+    ASSERT_NE(actions, nullptr);
+
+    const ImGuiWindow* shell = ImGui::FindWindowByName("Shell");
+    ASSERT_NE(shell, nullptr);
+    ImGui::ActivateItemByID(ImHashStr(ICON_FA_ROCKET "###RunNewTask", 0, shell->ID));
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    const ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
+    ASSERT_NE(modal, nullptr) << "Run new task didn't open its dialog";
+    EXPECT_TRUE(renderAndCapture(*panel).contains("Run as administrator"));
+
+    // The last command, htop, is filled in: Run starts it.
+    ImGui::ActivateItemByID(ImHashStr("##filled", 0, ImHashStr("Run", 0, ImGui::GetTopMostPopupModal()->ID)));
+    EXPECT_TRUE(updateUntilBatchResult(*panel, "Started htop"));
+    EXPECT_EQ(actions->runProgramCount(), 1);
+    EXPECT_EQ(actions->lastRunProgram().commandLine, "htop");
+    EXPECT_FALSE(actions->lastRunProgram().asAdministrator);
+    EXPECT_EQ(UserConfig::get().settings().recentCommands, (std::vector<std::string>{"htop"}));
+    panel->onDetach();
+    UserConfig::get().settings().recentCommands.clear();
+}
+
 } // namespace
 } // namespace App

@@ -452,6 +452,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessColumnConfig.cpp
     App/test_ProcessSortUtils.cpp
     App/test_ProcessLookup.cpp # Open file location and Search online (#3064)
+    App/test_RunTask.cpp # Run new task (#3065)
     App/test_ProcessPins.cpp # pinned processes (#3061)
     App/test_ProcessTreeFlatten.cpp
     App/test_ProcessTreeIndent.cpp
@@ -854,6 +855,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessActionConfirm.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessBatchPriorityDialog.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessAffinityDialog.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/RunTaskDialog.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessActionsView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessDumpView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessActionsBlock.cpp

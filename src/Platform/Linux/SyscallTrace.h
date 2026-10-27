@@ -116,6 +116,9 @@ struct Tools
     /// Absolute path to xdg-open, which openFileLocation() opens the executable's folder with when no file
     /// manager answers ShowItems (#3064), or empty.
     std::string folderOpenerPath;
+    /// Absolute path to pkexec, which runProgram() starts a program through when it is to run as
+    /// administrator (#3065), or empty.
+    std::string elevatorPath;
 };
 
 /// Where @p name would be run from: @p name itself when it contains a '/', otherwise the first
