@@ -162,7 +162,8 @@ TEST(CpuDetailsTextTest, PressureIsListedWhereThePlatformReadsIt)
     snap.cpuPressure = {};
     snap.memoryPressure = {};
     snap.ioPressure = {};
-    const Row* unread = findRow(buildRows(linux), "Pressure");
+    const auto unreadRows = buildRows(linux); // kept: findRow() points into it
+    const Row* unread = findRow(unreadRows, "Pressure");
     ASSERT_NE(unread, nullptr);
     EXPECT_FALSE(unread->available) << "a failed read is unavailable, not zeros";
 }
