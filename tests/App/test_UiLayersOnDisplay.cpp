@@ -5,9 +5,10 @@
 /// Close stops the app. Also the UI scale after a display change and after a start minimized (#3150),
 /// the minimum window size the bar sets from its contents, the drags and resizes the bar runs
 /// client-side, from every edge and corner (#2717); the window menu's and the shell's Restore and
-/// Maximize (#3161); and the whole shell as main.cpp composes it -- its real panels, each main tab, F1
-/// and the config it saves on exit -- and a first launch from an empty config directory, whose saved
-/// config.toml is a golden file (#2727).
+/// Maximize (#3161); the hidden states Windows reports only to the window (#3152); and the whole
+/// shell as main.cpp composes it -- its real panels, each main tab, F1 and the config it saves on
+/// exit -- and a first launch from an empty config directory, whose saved config.toml is a golden
+/// file (#2727).
 ///
 /// Needs a display with a GL 3.3 core context (Xvfb in Linux CI, where TASKSMACK_REQUIRE_DISPLAY=1
 /// turns a missing one into a failure); skipped elsewhere, like the ApplicationTest suite.
@@ -76,10 +77,17 @@
 #include <vector>
 
 #ifdef _WIN32
+// clang-format off
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <dwmapi.h> // DwmSetWindowAttribute(DWMWA_CLOAK) (#3152)
+// clang-format on
+
+#include <chrono>  // VisibilityDriverLayer's cloak wait (#3152)
+#include <cstring> // sendDisplayState()
+#include <span>    // sendDisplayState()
 #endif
 
 namespace
@@ -3337,6 +3345,243 @@ TEST_F(UiLayersOnDisplayTest, TheShellsRestoreAndMaximizeAreTheClientSideOnes)
     EXPECT_TRUE(observed.backMaximized) << "the taskbar's SC_RESTORE of the minimized window didn't bring it back maximized";
     EXPECT_TRUE(sameRect(observed.restoredAgain, observed.normal))
         << "restored to " << describeRect(observed.restoredAgain) << ", was " << describeRect(observed.normal);
+}
+#endif
+
+#ifdef _WIN32
+/// What the visibility driver saw (#3152).
+struct VisibilityObserved
+{
+    int frames = 0;
+    bool shownAtStart = false;       ///< Not hidden once the display is reported on
+    bool hiddenWhenLocked = false;   ///< WM_WTSSESSION_CHANGE WTS_SESSION_LOCK hid it before SendMessage returned...
+    bool stillHiddenLater = false;   ///< ...and it stayed hidden through the frames that followed
+    bool shownWhenUnlocked = false;  ///< WTS_SESSION_UNLOCK showed it again at once...
+    bool exposedAfterUnlock = false; ///< ...with an SDL_EVENT_WINDOW_EXPOSED to wake the hidden-rate wait
+    bool hiddenWhenDisplayOff = false;
+    bool shownWhenDisplayOn = false;
+    bool cloakUnavailable = false; ///< DwmSetWindowAttribute(DWMWA_CLOAK) failed: the cloak checks were skipped
+    bool hiddenWhenCloaked = false;
+    bool shownSoonAfterUncloak = false; ///< Within UNCLOAK_FOUND_WITHIN_MS, under one re-check interval
+    bool timedOut = false;
+};
+
+/// GUID_SESSION_DISPLAY_STATUS (<winnt.h>), spelled out as Window.cpp does.
+constexpr GUID TEST_SESSION_DISPLAY_STATUS{
+    .Data1 = 0x2b84c20e, .Data2 = 0xad23, .Data3 = 0x4ddf, .Data4 = {0x93, 0xdb, 0x05, 0xff, 0xbd, 0x7e, 0xfc, 0xa5}};
+
+/// Send @p hwnd the power-setting notification Windows sends when the session's display turns off
+/// (PowerMonitorOff) or on (PowerMonitorOn): WM_POWERBROADCAST PBT_POWERSETTINGCHANGE, to this window alone.
+void sendDisplayState(HWND hwnd, DWORD state)
+{
+    // POWERBROADCAST_SETTING ends in UCHAR Data[1], which Windows extends to DataLength bytes: lay
+    // the header and the DWORD state out in a buffer big enough for both.
+    constexpr std::size_t DATA_OFFSET = offsetof(POWERBROADCAST_SETTING, Data);
+    alignas(POWERBROADCAST_SETTING) std::array<std::byte, std::max(sizeof(POWERBROADCAST_SETTING), DATA_OFFSET + sizeof(DWORD))> buffer{};
+    POWERBROADCAST_SETTING header{};
+    header.PowerSetting = TEST_SESSION_DISPLAY_STATUS;
+    header.DataLength = sizeof(DWORD);
+    std::memcpy(buffer.data(), &header, DATA_OFFSET);
+    std::memcpy(std::span(buffer).subspan(DATA_OFFSET).data(), &state, sizeof(state));
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast,performance-no-ptr-to-int) - PBT_POWERSETTINGCHANGE's lParam is a POWERBROADCAST_SETTING*
+    SendMessageW(hwnd, WM_POWERBROADCAST, PBT_POWERSETTINGCHANGE, reinterpret_cast<LPARAM>(buffer.data()));
+}
+
+/// Pushed after UILayer and TitleBarLayer: tells the real window what Windows tells it when the
+/// session locks and unlocks and when the display turns off and on -- synthetic messages to this
+/// window alone, through its subclass procedure, so nothing is locked or turned off -- then cloaks
+/// and uncloaks the window itself (DWMWA_CLOAK, as another virtual desktop does), and records when
+/// Window::isHidden() said the window was hidden.
+class VisibilityDriverLayer : public Core::Layer
+{
+  public:
+    explicit VisibilityDriverLayer(VisibilityObserved& observed) : Layer("VisibilityDriver"), m_Observed(observed)
+    {}
+
+    void onSDLEvent(SDL_Event* event) override
+    {
+        if (m_AwaitingExpose && event->type == SDL_EVENT_WINDOW_EXPOSED)
+        {
+            m_Observed.exposedAfterUnlock = true;
+        }
+    }
+
+    void onRender() override
+    {
+        Core::AnimationRequest::request(Core::AnimationRequest::FULL_RATE); // keep frames coming
+        const int frame = ++m_Observed.frames;
+        if (frame > MAX_FRAMES)
+        {
+            m_Observed.timedOut = true;
+            Core::Application::get().stop();
+            return;
+        }
+        if (frame < m_NextFrame)
+        {
+            return;
+        }
+        const Core::Window& window = Core::Application::get().getWindow();
+        auto* const hwnd = static_cast<HWND>(
+            SDL_GetPointerProperty(SDL_GetWindowProperties(window.getHandle()), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
+        if (hwnd == nullptr)
+        {
+            ADD_FAILURE() << "the window has no HWND";
+            Core::Application::get().stop();
+            return;
+        }
+        const auto next = [this, frame](Phase phase, int frames)
+        {
+            m_Phase = phase;
+            m_NextFrame = frame + frames;
+        };
+        switch (m_Phase)
+        {
+        case Phase::Lock:
+            // Whatever the runner's own display reports at startup, start from a display that is on.
+            sendDisplayState(hwnd, PowerMonitorOn);
+            m_Observed.shownAtStart = !window.isHidden();
+            SendMessageW(hwnd, WM_WTSSESSION_CHANGE, WTS_SESSION_LOCK, 0);
+            m_Observed.hiddenWhenLocked = window.isHidden();
+            next(Phase::Unlock, HIDDEN_STEP);
+            break;
+        case Phase::Unlock:
+            m_Observed.stillHiddenLater = window.isHidden();
+            m_AwaitingExpose = true;
+            SendMessageW(hwnd, WM_WTSSESSION_CHANGE, WTS_SESSION_UNLOCK, 0);
+            m_Observed.shownWhenUnlocked = !window.isHidden();
+            next(Phase::DisplayOff, STEP);
+            break;
+        case Phase::DisplayOff:
+            m_AwaitingExpose = false;
+            sendDisplayState(hwnd, PowerMonitorOff);
+            m_Observed.hiddenWhenDisplayOff = window.isHidden();
+            next(Phase::DisplayOn, HIDDEN_STEP);
+            break;
+        case Phase::DisplayOn:
+            sendDisplayState(hwnd, PowerMonitorOn);
+            m_Observed.shownWhenDisplayOn = !window.isHidden();
+            next(Phase::Cloak, STEP);
+            break;
+        case Phase::Cloak:
+        {
+            const BOOL cloak = TRUE;
+            if (FAILED(DwmSetWindowAttribute(hwnd, DWMWA_CLOAK, &cloak, sizeof(cloak))))
+            {
+                m_Observed.cloakUnavailable = true;
+                next(Phase::Stop, 1);
+                break;
+            }
+            m_CloakedAt = SDL_GetTicks();
+            next(Phase::AwaitCloaked, 1);
+            break;
+        }
+        case Phase::AwaitCloaked:
+            // No message says the window was cloaked: the frame loop's slow re-check finds it.
+            if (window.isHidden() || SDL_GetTicks() - m_CloakedAt > CLOAK_FOUND_WITHIN_MS)
+            {
+                m_Observed.hiddenWhenCloaked = window.isHidden();
+                const BOOL uncloak = FALSE;
+                static_cast<void>(DwmSetWindowAttribute(hwnd, DWMWA_CLOAK, &uncloak, sizeof(uncloak)));
+                m_UncloakedAt = SDL_GetTicks();
+                next(Phase::AfterUncloak, 1);
+            }
+            else
+            {
+                next(Phase::AwaitCloaked, 1);
+            }
+            break;
+        case Phase::AfterUncloak:
+            // The loop re-checks a cloaked window on every frame, not once per interval, so it finds the
+            // window shown again well within one.
+            if (!window.isHidden() || SDL_GetTicks() - m_UncloakedAt > UNCLOAK_FOUND_WITHIN_MS)
+            {
+                m_Observed.shownSoonAfterUncloak = !window.isHidden();
+                next(Phase::Stop, STEP);
+            }
+            else
+            {
+                next(Phase::AfterUncloak, 1);
+            }
+            break;
+        case Phase::Stop:
+            Core::Application::get().stop();
+            break;
+        }
+    }
+
+  private:
+    /// The steps, in order; each waits m_NextFrame before running.
+    enum class Phase : std::uint8_t
+    {
+        Lock,
+        Unlock,
+        DisplayOff,
+        DisplayOn,
+        Cloak,
+        AwaitCloaked,
+        AfterUncloak,
+        Stop,
+    };
+
+    static constexpr int SETTLE = 10;     // frames before the first step: fonts, layout and minimum size settle
+    static constexpr int STEP = 10;       // frames between steps on the shown window
+    static constexpr int HIDDEN_STEP = 3; // fewer on a hidden one, whose frames come at the hidden rate
+    static constexpr int MAX_FRAMES = 600;
+    // Twice WINDOW_CLOAK_RECHECK_INTERVAL, plus a hidden-rate frame or two.
+    static constexpr Uint64 CLOAK_FOUND_WITHIN_MS = (2 * static_cast<Uint64>(Core::WINDOW_CLOAK_RECHECK_INTERVAL.count())) + 500U;
+    // Under one WINDOW_CLOAK_RECHECK_INTERVAL: a few hidden-rate frames.
+    static constexpr Uint64 UNCLOAK_FOUND_WITHIN_MS = (static_cast<Uint64>(Core::WINDOW_CLOAK_RECHECK_INTERVAL.count()) * 3U) / 4U;
+
+    VisibilityObserved& m_Observed;
+    Uint64 m_CloakedAt = 0;   // SDL_GetTicks() when the window was cloaked...
+    Uint64 m_UncloakedAt = 0; // ...and uncloaked
+    int m_NextFrame = SETTLE;
+    Phase m_Phase = Phase::Lock;
+    bool m_AwaitingExpose = false; // the unlock was sent: count the expose it pushes
+};
+
+// #3152: SDL 3.4 reports no hidden state but minimized on Windows, so the window's subclass procedure
+// reads the session's lock and unlock, its display turning off and on, and DWM's cloak, and
+// Window::isHidden() -- what Application::run() paces drawing by -- reports each, then shows the
+// window again at once when it ends, waking the hidden-rate wait with an expose.
+TEST_F(UiLayersOnDisplayTest, ALockedSessionAnOffDisplayAndACloakHideTheWindowUntilTheyEnd)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "UiLayersOnDisplayVisibilityTest";
+    spec.VSync = false;
+    VisibilityObserved observed;
+    try
+    {
+        Core::Application app(spec);
+        app.pushLayer<UI::UILayer>();
+        app.pushLayer<App::TitleBarLayer>();
+        app.pushLayer<VisibilityDriverLayer>(observed);
+        app.run();
+    }
+    catch (const std::exception& e)
+    {
+        FAIL() << "Application failed after the display probe passed: " << e.what();
+    }
+
+    EXPECT_FALSE(observed.timedOut);
+    EXPECT_TRUE(observed.shownAtStart);
+    EXPECT_TRUE(observed.hiddenWhenLocked) << "WTS_SESSION_LOCK didn't hide the window";
+    EXPECT_TRUE(observed.stillHiddenLater) << "the locked window was shown again before the unlock";
+    EXPECT_TRUE(observed.shownWhenUnlocked) << "WTS_SESSION_UNLOCK left the window hidden";
+    EXPECT_TRUE(observed.exposedAfterUnlock) << "the unlock pushed no SDL_EVENT_WINDOW_EXPOSED to wake the frame loop";
+    EXPECT_TRUE(observed.hiddenWhenDisplayOff) << "PowerMonitorOff didn't hide the window";
+    EXPECT_TRUE(observed.shownWhenDisplayOn) << "PowerMonitorOn left the window hidden";
+    if (observed.cloakUnavailable)
+    {
+        GTEST_SKIP() << "DWM can't cloak the window here, so the cloak checks were skipped";
+    }
+    EXPECT_TRUE(observed.hiddenWhenCloaked) << "the frame loop never found the cloaked window hidden";
+    EXPECT_TRUE(observed.shownSoonAfterUncloak) << "the uncloaked window stayed hidden";
 }
 #endif
 /// What the UI-layer driver saw.

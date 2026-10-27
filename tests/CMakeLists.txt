@@ -376,6 +376,7 @@ set(COMMON_TEST_SOURCES
     Core/test_WindowEventRouting.cpp
     Core/test_WindowEvents.cpp
     Core/test_WindowGeometry.cpp
+    Core/test_WindowVisibility.cpp
     Domain/test_History.cpp
     Domain/test_SharedHistory.cpp
     Domain/test_ProcessConnections.cpp

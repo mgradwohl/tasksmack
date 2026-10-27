@@ -666,6 +666,8 @@ function(tasksmack_apply_windows_platform target)
         crypt32 # WindowsSystemInfoProbe: a driver signer's certificate name (#1661)
         advapi32 # WindowsEtwNetCollector: the opt-in UDP event trace (StartTraceW, ProcessTrace, ...) (#1492)
         bcrypt # BrokerPipe: the broker pipe's random name (BCryptGenRandom) (#2311)
+        dwmapi # Core/Window: whether DWM has cloaked the window (DWMWA_CLOAKED) (#3152)
+        wtsapi32 # Core/Window: the session's lock and disconnect notifications (#3152)
     )
 endfunction()
 

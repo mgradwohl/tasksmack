@@ -6,6 +6,7 @@
 #include "Core/VideoBackend.h"
 #include "Core/WindowConstants.h"
 #include "Core/WindowGeometry.h"
+#include "Core/WindowVisibility.h"
 #include "Core/X11WindowManager.h"
 
 #include <SDL3/SDL.h>
@@ -25,10 +26,16 @@
 #include <vector>
 
 #ifdef _WIN32
+// clang-format off
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <dwmapi.h>   // DwmGetWindowAttribute(DWMWA_CLOAKED) (#3152)
+#include <wtsapi32.h> // WTSRegisterSessionNotification() (#3152)
+// clang-format on
+
+#include <chrono>
 #endif
 
 namespace Core
@@ -173,15 +180,34 @@ void setWindowIcon(HWND hwnd, WPARAM iconType, HANDLE icon)
     return {hIconSmall, hIconBig};
 }
 
-// Window properties on the borderless window's HWND: the Window its subclass procedure reports a shell
-// minimize to, and the window procedure SDL installed, which it passes every message on to (#1279).
+// Window properties on the window's HWND: the Window its subclass procedure reports to, the window
+// procedure SDL installed, which it passes every message on to (#1279), and the display-state
+// notification registerVisibilityNotifications() registered (#3152).
 constexpr const wchar_t* WINDOW_PROP = L"TaskSmack.Core.Window";
 constexpr const wchar_t* SDL_WINDOW_PROC_PROP = L"TaskSmack.Core.SdlWindowProc";
+constexpr const wchar_t* DISPLAY_NOTIFICATION_PROP = L"TaskSmack.Core.DisplayNotification";
 // WindowGeometry decodes WM_SYSCOMMAND without <windows.h> (#3161); its values must be Win32's.
 static_assert(WindowGeometry::WIN32_SC_MASK == 0xFFF0U);
 static_assert(WindowGeometry::WIN32_SC_SIZE == SC_SIZE && WindowGeometry::WIN32_SC_MOVE == SC_MOVE);
 static_assert(WindowGeometry::WIN32_SC_MINIMIZE == SC_MINIMIZE && WindowGeometry::WIN32_SC_MAXIMIZE == SC_MAXIMIZE);
 static_assert(WindowGeometry::WIN32_SC_CLOSE == SC_CLOSE && WindowGeometry::WIN32_SC_RESTORE == SC_RESTORE);
+// So does WindowVisibility, for WM_WTSSESSION_CHANGE and WM_POWERBROADCAST (#3152).
+static_assert(WindowVisibility::WIN32_WTS_CONSOLE_CONNECT == WTS_CONSOLE_CONNECT);
+static_assert(WindowVisibility::WIN32_WTS_CONSOLE_DISCONNECT == WTS_CONSOLE_DISCONNECT);
+static_assert(WindowVisibility::WIN32_WTS_REMOTE_CONNECT == WTS_REMOTE_CONNECT);
+static_assert(WindowVisibility::WIN32_WTS_REMOTE_DISCONNECT == WTS_REMOTE_DISCONNECT);
+static_assert(WindowVisibility::WIN32_WTS_SESSION_LOCK == WTS_SESSION_LOCK);
+static_assert(WindowVisibility::WIN32_WTS_SESSION_UNLOCK == WTS_SESSION_UNLOCK);
+static_assert(WindowVisibility::WIN32_PBT_POWERSETTINGCHANGE == PBT_POWERSETTINGCHANGE);
+static_assert(WindowVisibility::WIN32_POWER_MONITOR_OFF == PowerMonitorOff);
+static_assert(WindowVisibility::WIN32_POWER_MONITOR_ON == PowerMonitorOn);
+static_assert(WindowVisibility::WIN32_POWER_MONITOR_DIM == PowerMonitorDim);
+
+// GUID_SESSION_DISPLAY_STATUS (<winnt.h>): whether the display of the window's own session is on.
+// Spelled out, as the SDK only declares it without <initguid.h>. Not GUID_CONSOLE_DISPLAY_STATE,
+// the physical console's display, which can be off while a remote session shows the window.
+constexpr GUID SESSION_DISPLAY_STATUS{
+    .Data1 = 0x2b84c20e, .Data2 = 0xad23, .Data3 = 0x4ddf, .Data4 = {0x93, 0xdb, 0x05, 0xff, 0xbd, 0x7e, 0xfc, 0xa5}};
 
 [[nodiscard]] HWND nativeWindowHandle(SDL_Window* window)
 {
@@ -189,16 +215,71 @@ static_assert(WindowGeometry::WIN32_SC_CLOSE == SC_CLOSE && WindowGeometry::WIN3
     return static_cast<HWND>(SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
 }
 
-// The borderless window's subclass procedure. The shell sends the window's commands as
-// WM_SYSCOMMAND, which Window::handleShellCommand() may carry out itself: Win+Down's minimize of a
+// The Window the subclass procedure reports to, or nullptr once ~Window() has unhooked it.
+[[nodiscard]] Window* subclassedWindow(HWND hwnd) noexcept
+{
+    return static_cast<Window*>(GetPropW(hwnd, WINDOW_PROP));
+}
+
+// Report a message that changes the window's visibility to it (#3152), after SDL's procedure has
+// handled it: a session lock, unlock, disconnect or connect, the session's display turning off or on,
+// and an activation or focus change, which re-checks whether DWM has cloaked it.
+void reportVisibilityMessage(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) noexcept
+{
+    Window* const window = subclassedWindow(hwnd);
+    if (window == nullptr)
+    // LCOV_EXCL_START - only once ~Window() has unhooked a subclass something else keeps calling (#2039)
+    {
+        return;
+    }
+    // LCOV_EXCL_STOP
+    try
+    {
+        switch (message)
+        {
+        case WM_WTSSESSION_CHANGE:
+            window->handleSessionChange(WindowVisibility::decodeSessionChange(wParam));
+            break;
+        case WM_POWERBROADCAST:
+            if (wParam == PBT_POWERSETTINGCHANGE && lParam != 0)
+            {
+                // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast,performance-no-int-to-ptr) - PBT_POWERSETTINGCHANGE's lParam is a POWERBROADCAST_SETTING*
+                const auto* const setting = reinterpret_cast<const POWERBROADCAST_SETTING*>(lParam);
+                if (IsEqualGUID(setting->PowerSetting, SESSION_DISPLAY_STATUS) != FALSE)
+                {
+                    // Data is declared as UCHAR[1]; DataLength says how many bytes it really holds.
+                    const std::span<const UCHAR> data(&setting->Data[0], setting->DataLength);
+                    window->handleDisplayStateChange(WindowVisibility::decodeDisplayState(std::as_bytes(data)));
+                }
+            }
+            break;
+        case WM_ACTIVATE:
+        case WM_ACTIVATEAPP:
+        case WM_SETFOCUS:
+        case WM_KILLFOCUS:
+            window->refreshCloaked();
+            break;
+        default:
+            break;
+        }
+    }
+    catch (...) // NOLINT(bugprone-empty-catch) -- intentional: no exception may cross back into the OS
+    // LCOV_EXCL_START - a guard; the handlers have no failure a test can force (#2039)
+    {}
+    // LCOV_EXCL_STOP
+}
+
+// The window's subclass procedure. The shell sends the window's commands as WM_SYSCOMMAND, which
+// Window::handleShellCommand() may carry out itself on the borderless window: Win+Down's minimize of a
 // client-side maximized window restores it instead (#1279), and Restore and Maximize are the
 // client-side ones, which the OS doesn't know about (#3161). A command carried out there is dropped;
-// everything else goes to SDL's procedure unchanged.
-LRESULT CALLBACK shellCommandWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
+// everything else goes to SDL's procedure unchanged, and a message that changes the window's
+// visibility is then reported to the Window too (#3152), since SDL reports none of them on Windows.
+LRESULT CALLBACK windowSubclassProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
     if (message == WM_SYSCOMMAND)
     {
-        if (auto* window = static_cast<Window*>(GetPropW(hwnd, WINDOW_PROP)); window != nullptr)
+        if (Window* const window = subclassedWindow(hwnd); window != nullptr && window->isBorderless())
         {
             bool handled = false;
             try
@@ -226,7 +307,9 @@ LRESULT CALLBACK shellCommandWindowProc(HWND hwnd, UINT message, WPARAM wParam, 
         return DefWindowProcW(hwnd, message, wParam, lParam);
     }
     // LCOV_EXCL_STOP
-    return CallWindowProcW(sdlWindowProc, hwnd, message, wParam, lParam);
+    const LRESULT result = CallWindowProcW(sdlWindowProc, hwnd, message, wParam, lParam);
+    reportVisibilityMessage(hwnd, message, wParam, lParam);
+    return result;
 }
 
 // Replace the window procedure, checked as the Win32 documentation prescribes: SetWindowLongPtr()
@@ -238,15 +321,46 @@ LRESULT CALLBACK shellCommandWindowProc(HWND hwnd, UINT message, WPARAM wParam, 
     return !WindowGeometry::windowLongPtrSetFailed(previous, GetLastError());
 }
 
-// Put shellCommandWindowProc() in front of SDL's window procedure. SDL only replaces the procedure of
-// a window it did not create, so the subclass stays in place until unhookShellCommands().
-void hookShellCommands(SDL_Window* sdlWindow, Window* window)
+// Ask Windows for the messages that say the window can't be seen (#3152): the session's lock,
+// unlock, disconnect and connect, and its display turning off and on, whose current state Windows
+// sends straight away. Only once the subclass procedure is in place to read them.
+void registerVisibilityNotifications(HWND hwnd)
+{
+    if (WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION) == FALSE)
+    // LCOV_EXCL_START - Windows refusing the process's own window the notification; no test can force it (#2039)
+    {
+        spdlog::warn("WTSRegisterSessionNotification failed (error {}); a locked session keeps the normal frame rate (#3152)",
+                     GetLastError());
+    }
+    // LCOV_EXCL_STOP
+    HPOWERNOTIFY notification = RegisterPowerSettingNotification(hwnd, &SESSION_DISPLAY_STATUS, DEVICE_NOTIFY_WINDOW_HANDLE);
+    if (notification == nullptr)
+    // LCOV_EXCL_START - as above (#2039)
+    {
+        spdlog::warn("RegisterPowerSettingNotification failed (error {}); a display that is off keeps the normal frame rate (#3152)",
+                     GetLastError());
+        return;
+    }
+    // LCOV_EXCL_STOP
+    if (SetPropW(hwnd, DISPLAY_NOTIFICATION_PROP, notification) == 0)
+    // LCOV_EXCL_START - Windows refusing a property on the process's own window; no test can force it (#2039)
+    {
+        // Nowhere to keep it for unhookWindowMessages(): don't leave it registered.
+        UnregisterPowerSettingNotification(notification);
+    }
+    // LCOV_EXCL_STOP
+}
+
+// Put windowSubclassProc() in front of SDL's window procedure, then register for the visibility
+// notifications it reads. SDL only replaces the procedure of a window it did not create, so the
+// subclass stays in place until unhookWindowMessages().
+void hookWindowMessages(SDL_Window* sdlWindow, Window* window)
 {
     HWND hwnd = nativeWindowHandle(sdlWindow);
     if (hwnd == nullptr)
     // LCOV_EXCL_START - SDL gives every window it creates on Windows an HWND (#2039)
     {
-        spdlog::warn("Failed to get Win32 window handle; Win+Down will minimize the maximized window (#1279)");
+        spdlog::warn("Failed to get Win32 window handle; the shell's window commands and the hidden states are the OS's (#1279, #3152)");
         return;
     }
     // LCOV_EXCL_STOP
@@ -256,26 +370,30 @@ void hookShellCommands(SDL_Window* sdlWindow, Window* window)
     if (sdlWindowProc == nullptr || SetPropW(hwnd, SDL_WINDOW_PROC_PROP, sdlWindowProc) == 0 || SetPropW(hwnd, WINDOW_PROP, window) == 0)
     // LCOV_EXCL_START - Windows refusing a property on the process's own window; no test can force it (#2039)
     {
-        spdlog::warn("Failed to subclass the window; Win+Down will minimize the maximized window (#1279)");
+        spdlog::warn("Failed to subclass the window; the shell's window commands and the hidden states are the OS's (#1279, #3152)");
         RemovePropW(hwnd, SDL_WINDOW_PROC_PROP);
         RemovePropW(hwnd, WINDOW_PROP);
         return;
     }
     // LCOV_EXCL_STOP
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - SetWindowLongPtr takes the window procedure as LONG_PTR
-    if (!replaceWindowProc(hwnd, reinterpret_cast<LONG_PTR>(&shellCommandWindowProc)))
+    if (!replaceWindowProc(hwnd, reinterpret_cast<LONG_PTR>(&windowSubclassProc)))
     // LCOV_EXCL_START - Windows refusing SetWindowLongPtr on the process's own window; no test can force it (#2039)
     {
         // SDL's procedure is still in place and nothing reads the properties; don't leave them behind.
-        spdlog::warn("Failed to subclass the window (error {}); Win+Down will minimize the maximized window (#1279)", GetLastError());
+        spdlog::warn(
+            "Failed to subclass the window (error {}); the shell's window commands and the hidden states are the OS's (#1279, #3152)",
+            GetLastError());
         RemovePropW(hwnd, SDL_WINDOW_PROC_PROP);
         RemovePropW(hwnd, WINDOW_PROP);
+        return;
     }
     // LCOV_EXCL_STOP
+    registerVisibilityNotifications(hwnd);
 }
 
-// Undo hookShellCommands() before SDL destroys the window.
-void unhookShellCommands(SDL_Window* sdlWindow)
+// Undo hookWindowMessages() before SDL destroys the window.
+void unhookWindowMessages(SDL_Window* sdlWindow)
 {
     HWND hwnd = nativeWindowHandle(sdlWindow);
     if (hwnd == nullptr)
@@ -284,11 +402,19 @@ void unhookShellCommands(SDL_Window* sdlWindow)
         return;
     }
     // LCOV_EXCL_STOP
-    // The Window is going away: stop reporting to it, whatever happens below.
-    RemovePropW(hwnd, WINDOW_PROP);
+    // The Window is going away: stop reporting to it, whatever happens below, and end the
+    // notifications only its subclass procedure reads.
+    if (RemovePropW(hwnd, WINDOW_PROP) != nullptr)
+    {
+        WTSUnRegisterSessionNotification(hwnd);
+    }
+    if (HANDLE notification = RemovePropW(hwnd, DISPLAY_NOTIFICATION_PROP); notification != nullptr)
+    {
+        UnregisterPowerSettingNotification(static_cast<HPOWERNOTIFY>(notification));
+    }
     HANDLE sdlWindowProc = GetPropW(hwnd, SDL_WINDOW_PROC_PROP);
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - GWLP_WNDPROC holds the window procedure as LONG_PTR
-    if (sdlWindowProc == nullptr || GetWindowLongPtrW(hwnd, GWLP_WNDPROC) != reinterpret_cast<LONG_PTR>(&shellCommandWindowProc))
+    if (sdlWindowProc == nullptr || GetWindowLongPtrW(hwnd, GWLP_WNDPROC) != reinterpret_cast<LONG_PTR>(&windowSubclassProc))
     {
         // Not hooked, or something subclassed the window after us and still calls our procedure,
         // which keeps forwarding to SDL's.
@@ -311,6 +437,14 @@ void unhookShellCommands(SDL_Window* sdlWindow)
     }
     // LCOV_EXCL_STOP
     RemovePropW(hwnd, SDL_WINDOW_PROC_PROP);
+}
+
+// Whether DWM has cloaked the window: on another virtual desktop, or hidden by the shell (#3152).
+// False when DWM can't say.
+[[nodiscard]] bool isCloakedByDwm(HWND hwnd) noexcept
+{
+    DWORD cloaked = 0;
+    return SUCCEEDED(DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked != 0;
 }
 } // namespace
 #endif
@@ -426,11 +560,9 @@ Window::Window(WindowSpecification spec) : m_Spec(std::move(spec))
 
     // The custom title bar's maximize is client-side, which the shell does not know about: catch its
     // Win+Down minimize so it restores the window like a native maximized one (#1279), and its
-    // Restore and Maximize so they are the client-side ones (#3161).
-    if (m_Spec.Borderless)
-    {
-        hookShellCommands(m_Handle, this);
-    }
+    // Restore and Maximize so they are the client-side ones (#3161). And SDL reports no hidden state
+    // but minimized on Windows: catch the messages that say the window can't be seen (#3152).
+    hookWindowMessages(m_Handle, this);
 #endif
 }
 
@@ -439,7 +571,7 @@ Window::~Window()
 #ifdef _WIN32
     if (m_Handle != nullptr)
     {
-        unhookShellCommands(m_Handle);
+        unhookWindowMessages(m_Handle);
     }
     if (m_IconSmall != nullptr)
     // LCOV_EXCL_START - the icon resource is linked into TaskSmack.exe only, so no test window has icons (#2039)
@@ -1209,6 +1341,78 @@ bool Window::isOccluded() const noexcept
     // SDL sets the flag on SDL_EVENT_WINDOW_OCCLUDED and clears it on SDL_EVENT_WINDOW_EXPOSED.
     return (SDL_GetWindowFlags(m_Handle) & SDL_WINDOW_OCCLUDED) != 0;
 }
+
+bool Window::isHidden() const noexcept
+{
+    return WindowVisibility::isHidden(isMinimized(), isOccluded(), m_VisibilitySignals);
+}
+
+// NOLINTNEXTLINE(readability-convert-member-functions-to-static) - reads this window's cloak on Windows; empty elsewhere
+void Window::pollVisibility()
+{
+#ifdef _WIN32
+    if (m_Handle != nullptr && WindowVisibility::cloakRecheckDue(m_VisibilitySignals.cloaked,
+                                                                 std::chrono::steady_clock::now() - m_LastCloakCheck,
+                                                                 WINDOW_CLOAK_RECHECK_INTERVAL))
+    {
+        refreshCloaked();
+    }
+#endif
+}
+
+#ifdef _WIN32
+void Window::handleSessionChange(const WindowVisibility::SessionChange change)
+{
+    setVisibilitySignals(WindowVisibility::applySessionChange(m_VisibilitySignals, change));
+    // Ask DWM too: the window may have been cloaked or uncloaked while the session was away.
+    refreshCloaked();
+}
+
+void Window::handleDisplayStateChange(const WindowVisibility::DisplayState state)
+{
+    setVisibilitySignals(WindowVisibility::applyDisplayState(m_VisibilitySignals, state));
+}
+
+void Window::refreshCloaked()
+{
+    if (m_Handle == nullptr)
+    {
+        return;
+    }
+    m_LastCloakCheck = std::chrono::steady_clock::now();
+    if (HWND hwnd = nativeWindowHandle(m_Handle); hwnd != nullptr)
+    {
+        WindowVisibility::Signals signals = m_VisibilitySignals;
+        signals.cloaked = isCloakedByDwm(hwnd);
+        setVisibilitySignals(signals);
+    }
+}
+
+void Window::setVisibilitySignals(const WindowVisibility::Signals signals)
+{
+    if (signals == m_VisibilitySignals)
+    {
+        return;
+    }
+    const bool wasHidden = isHidden();
+    m_VisibilitySignals = signals;
+    spdlog::debug("Window visibility (#3152): cloaked={} locked={} disconnected={} displayOff={}",
+                  signals.cloaked,
+                  signals.sessionLocked,
+                  signals.sessionDisconnected,
+                  signals.displayOff);
+    if (wasHidden && !isHidden() && m_Handle != nullptr)
+    {
+        // SDL's Windows backend reports no event for this, so a frame loop waiting out the hidden
+        // rate's sleep would draw only when the sleep ends. The expose wakes it at once, as SDL's own
+        // does where it reports the window occluded and then shown again.
+        SDL_Event event{};
+        event.type = SDL_EVENT_WINDOW_EXPOSED;
+        event.window.windowID = SDL_GetWindowID(m_Handle);
+        static_cast<void>(SDL_PushEvent(&event));
+    }
+}
+#endif
 
 GraphicsHostInfo Window::queryGraphicsHostInfo() const
 {

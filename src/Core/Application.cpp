@@ -771,9 +771,11 @@ void Application::run()
             ++resizeTraceStats.skippedRenderFrames;
         }
 
-        // Minimized or covered (#1125): nothing on screen to animate, so no paced frames and the
-        // longer hidden idle sleep.
-        const bool isHidden = m_Window->isMinimized() || m_Window->isOccluded();
+        // Minimized, covered (#1125), or on Windows cloaked, behind a locked or disconnected session or
+        // on a display that is off (#3152): nothing on screen to animate, so no paced frames and the
+        // longer hidden idle sleep. Only drawing slows; the samplers keep the Settings interval (#2731).
+        m_Window->pollVisibility();
+        const bool isHidden = m_Window->isHidden();
 
         // isHidden, not only minimized: an occluded window that gets a move/resize event must not render
         // at the display rate through the interaction grace period either (#1125).

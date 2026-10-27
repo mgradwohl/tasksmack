@@ -233,7 +233,7 @@ Only Linux and Windows are implemented. Windows builds target Windows 10 version
 
 `Core::Application` drains SDL3 events, updates layers, renders one frame, and presents it. Panels react to application events and ImGui input rather than polling SDL directly. Resize handling batches queued events before rendering and updates the viewport from framebuffer-size events.
 
-The application throttles idle and minimized rendering; it never throttles sampling, which keeps the Settings interval (#2731). Domain and Platform code remain graphics-agnostic.
+The application throttles idle and hidden rendering; it never throttles sampling, which keeps the Settings interval (#2731). Hidden is `Window::isHidden()` (the pure `Core::WindowVisibility::isHidden()`): minimized, `SDL_WINDOW_OCCLUDED` (#1125), or, on Windows, where SDL reports no occlusion, cloaked by DWM (another virtual desktop), behind a locked or disconnected session (`WM_WTSSESSION_CHANGE`) or on a display that is off (`GUID_SESSION_DISPLAY_STATUS`), all read by the window's subclass procedure; the cloak is re-checked on activation and focus changes and every `WINDOW_CLOAK_RECHECK_INTERVAL` (#3152). Domain and Platform code remain graphics-agnostic.
 
 Custom title-bar behavior is intentionally platform-specific:
 
