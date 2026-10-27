@@ -14,6 +14,9 @@
 #     certificate with CN=Matt Gradwohl that the build machine trusts has it too;
 #   - timestamped, so it stays valid after the certificate expires;
 #   - from the same subject for both.
+# Other files are checked the same way (#2302): TASKSMACK_VERIFY_NAMES lists the file names to find under
+# the folder instead, each exactly once, each checked as above and all from one subject. release.yml checks
+# the NSIS installer itself so, and the installed TaskSmack.exe, TaskSmackHelper.exe and Uninstall.exe.
 # Artifact Signing certificates last about three days and rotate, so the publisher is matched by name,
 # issuer and extended key usage, never by a thumbprint or serial number: the two files may carry
 # different certificates if a rotation falls between them, as long as both name the same subject. The
@@ -28,7 +31,7 @@
 # extracted contents before publishing, as the tests run it on a folder:
 #   cmake -DTASKSMACK_VERIFY_DIR=<folder> [-DTASKSMACK_EXPECTED_SIGNER=<CN>]
 #         [-DTASKSMACK_EXPECTED_ISSUER=<pattern>] [-DTASKSMACK_EXPECTED_EKU=<pattern>]
-#         -P cmake/VerifyWindowsSignatures.cmake
+#         [-DTASKSMACK_VERIFY_NAMES=<name>;<name>...] -P cmake/VerifyWindowsSignatures.cmake
 # The two patterns are PowerShell -like wildcards (* ? [AE] [0-9]), matched against the whole issuer
 # name and against each extended key usage OID. Left empty, each takes its default, so a pin can't be
 # dropped by mistake.
@@ -40,10 +43,11 @@
 
 # Prints "STATUS <name> <status> <timestamped> <signer CN>" per signature, then "OK" or "FAIL <reason>".
 # $Signatures are Get-AuthenticodeSignature's results, or objects with the same Path, Status,
-# SignerCertificate (an X509Certificate2) and TimeStamperCertificate.
+# SignerCertificate (an X509Certificate2) and TimeStamperCertificate. ExpectedCount is how many there must
+# be: by default two, TaskSmack.exe's and TaskSmackHelper.exe's.
 set(_ts_check [=[
 function Test-TaskSmackSignatures {
-    param($Signatures, [string]$ExpectedSigner, [string]$ExpectedIssuer, [string]$ExpectedEku)
+    param($Signatures, [string]$ExpectedSigner, [string]$ExpectedIssuer, [string]$ExpectedEku, [int]$ExpectedCount = 2)
     $why = $null
     $Signatures = @($Signatures)
     foreach ($x in $Signatures) {
@@ -74,10 +78,18 @@ function Test-TaskSmackSignatures {
             elseif (-not $stamped) { $why = $name + "'s signature has no timestamp" }
         }
     }
-    if (-not $why -and $Signatures.Count -ne 2) { $why = 'expected two signatures, got ' + $Signatures.Count }
-    if (-not $why -and $Signatures[0].SignerCertificate.Subject -ne $Signatures[1].SignerCertificate.Subject) {
-        $why = "TaskSmack.exe and TaskSmackHelper.exe aren't signed by the same subject (" +
-            $Signatures[0].SignerCertificate.Subject + ' and ' + $Signatures[1].SignerCertificate.Subject + ')'
+    if (-not $why -and $Signatures.Count -ne $ExpectedCount) {
+        $why = 'expected ' + $ExpectedCount + ' signatures, got ' + $Signatures.Count
+    }
+    if (-not $why) {
+        foreach ($x in @($Signatures | Select-Object -Skip 1)) {
+            if ($x.SignerCertificate.Subject -ne $Signatures[0].SignerCertificate.Subject) {
+                $why = (Split-Path -Leaf $Signatures[0].Path) + ' and ' + (Split-Path -Leaf $x.Path) +
+                    " aren't signed by the same subject (" + $Signatures[0].SignerCertificate.Subject + ' and ' +
+                    $x.SignerCertificate.Subject + ')'
+                break
+            }
+        }
     }
     if ($why) { Write-Output ('FAIL ' + $why) } else { Write-Output 'OK' }
 }
@@ -104,6 +116,11 @@ endif()
 if(NOT DEFINED TASKSMACK_EXPECTED_EKU OR TASKSMACK_EXPECTED_EKU STREQUAL "")
     set(TASKSMACK_EXPECTED_EKU "1.3.6.1.4.1.311.97.*")
 endif()
+if(NOT DEFINED TASKSMACK_VERIFY_NAMES OR TASKSMACK_VERIFY_NAMES STREQUAL "")
+    set(TASKSMACK_VERIFY_NAMES "TaskSmack.exe;TaskSmackHelper.exe")
+endif()
+list(LENGTH TASKSMACK_VERIFY_NAMES _ts_expected_count)
+list(JOIN TASKSMACK_VERIFY_NAMES ", " _ts_names_text)
 
 # PowerShell's single-quoted string: a quote is doubled.
 function(_ts_quote text out)
@@ -112,7 +129,11 @@ function(_ts_quote text out)
 endfunction()
 
 set(_ts_paths "")
-foreach(_ts_name IN ITEMS TaskSmack.exe TaskSmackHelper.exe)
+foreach(_ts_name IN LISTS TASKSMACK_VERIFY_NAMES)
+    # A file name, matched literally by the glob below.
+    if(_ts_name MATCHES "[][*?/]" OR _ts_name MATCHES "\\\\")
+        message(FATAL_ERROR "VerifyWindowsSignatures: '${_ts_name}' in TASKSMACK_VERIFY_NAMES isn't a plain file name")
+    endif()
     file(GLOB_RECURSE _ts_found LIST_DIRECTORIES false "${_ts_dir}/${_ts_name}")
     list(LENGTH _ts_found _ts_count)
     if(NOT _ts_count EQUAL 1)
@@ -131,7 +152,8 @@ find_program(_ts_powershell NAMES pwsh powershell REQUIRED)
 string(CONCAT _ts_script
     "$ErrorActionPreference='Stop'\n${_ts_check}\n"
     "Test-TaskSmackSignatures -Signatures @(@(${_ts_list}) | ForEach-Object { Get-AuthenticodeSignature -LiteralPath $_ }) "
-    "-ExpectedSigner ${_ts_expected} -ExpectedIssuer ${_ts_issuer} -ExpectedEku ${_ts_eku}")
+    "-ExpectedSigner ${_ts_expected} -ExpectedIssuer ${_ts_issuer} -ExpectedEku ${_ts_eku} "
+    "-ExpectedCount ${_ts_expected_count}")
 execute_process(
     COMMAND "${_ts_powershell}" -NoProfile -NonInteractive -Command "${_ts_script}"
     OUTPUT_VARIABLE _ts_output
@@ -147,21 +169,25 @@ string(REPLACE "\n" ";" _ts_lines "${_ts_output}")
 set(_ts_statuses 0)
 set(_ts_verdict "")
 foreach(_ts_line IN LISTS _ts_lines)
-    if(_ts_line MATCHES "^STATUS TaskSmack(Helper)?\\.exe ")
+    if(_ts_line MATCHES "^STATUS ")
         math(EXPR _ts_statuses "${_ts_statuses} + 1")
     elseif(_ts_line MATCHES "^(OK|FAIL .*)$")
         set(_ts_verdict "${_ts_line}")
     endif()
 endforeach()
 if(_ts_verdict MATCHES "^FAIL (.*)$")
-    message(FATAL_ERROR "VerifyWindowsSignatures: ${CMAKE_MATCH_1}. TaskSmackHelper.exe ships only signed by "
-                        "${TASKSMACK_EXPECTED_SIGNER} through Azure Artifact Signing (#2302, #2990): sign "
-                        "TaskSmack.exe and TaskSmackHelper.exe before packaging, or configure with "
-                        "-DTASKSMACK_PACKAGE_WINDOWS_HELPER=OFF.\n${_ts_output}")
+    if(TASKSMACK_VERIFY_NAMES STREQUAL "TaskSmack.exe;TaskSmackHelper.exe")
+        message(FATAL_ERROR "VerifyWindowsSignatures: ${CMAKE_MATCH_1}. TaskSmackHelper.exe ships only signed by "
+                            "${TASKSMACK_EXPECTED_SIGNER} through Azure Artifact Signing (#2302, #2990): sign "
+                            "TaskSmack.exe and TaskSmackHelper.exe before packaging, or configure with "
+                            "-DTASKSMACK_PACKAGE_WINDOWS_HELPER=OFF.\n${_ts_output}")
+    endif()
+    message(FATAL_ERROR "VerifyWindowsSignatures: ${CMAKE_MATCH_1}. ${_ts_names_text} must be signed by "
+                        "${TASKSMACK_EXPECTED_SIGNER} through Azure Artifact Signing (#2302, #2990).\n${_ts_output}")
 endif()
-if(NOT _ts_statuses EQUAL 2 OR NOT _ts_verdict STREQUAL "OK")
-    message(FATAL_ERROR "VerifyWindowsSignatures: couldn't read both signatures:\n${_ts_output}${_ts_error}")
+if(NOT _ts_statuses EQUAL _ts_expected_count OR NOT _ts_verdict STREQUAL "OK")
+    message(FATAL_ERROR "VerifyWindowsSignatures: couldn't read all ${_ts_expected_count} signatures:\n${_ts_output}${_ts_error}")
 endif()
-message(STATUS "VerifyWindowsSignatures: TaskSmack.exe and TaskSmackHelper.exe are signed and timestamped by "
+message(STATUS "VerifyWindowsSignatures: ${_ts_names_text} are signed and timestamped by "
                "${TASKSMACK_EXPECTED_SIGNER}, with certificates issued by ${TASKSMACK_EXPECTED_ISSUER} that "
                "carry ${TASKSMACK_EXPECTED_EKU}")
