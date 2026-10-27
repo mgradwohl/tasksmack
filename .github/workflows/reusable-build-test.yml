@@ -282,6 +282,20 @@ jobs:
           TASKSMACK_REQUIRE_SDBUS: '1'
         run: xvfb-run -a -s "-screen 0 1920x1080x24 -noreset" ctest --preset ${{ inputs.build_type }} -j "$(nproc)" --schedule-random --output-on-failure --timeout 60 --output-junit test-results.xml
 
+      # tasksmack-helper's privilege drop and seccomp filter, as root (#3058). TasksmackHelperRootTest skips
+      # unless it runs as root, and the runner's passwordless sudo is the only root CI has: without this
+      # step the helper's drop to 65534 with four capabilities ran only when the maintainer ran it by hand.
+      # A skip fails the step as well, so a root run that quietly skips can't pass.
+      - name: Helper root test (Linux)
+        if: runner.os == 'Linux' && inputs.build && inputs.build_type == 'debug'
+        run: |
+          set -o pipefail
+          sudo -E build/debug/tests/TaskSmackTests --gtest_filter='TasksmackHelperRootTest.*' 2>&1 | tee helper-root-test.log
+          if grep -q '\[  SKIPPED \]' helper-root-test.log || ! grep -q '\[  PASSED  \] 1 test' helper-root-test.log; then
+            echo "::error title=Helper root test::TasksmackHelperRootTest didn't run and pass as root"
+            exit 1
+          fi
+
       # Build-only check that the benchmark target still compiles and links (#1348: a PR removed
       # a function bench_Format.cpp still used, and nothing on the PR built benchmarks). The
       # timing run and regression gate stay in heavy-checks.yml. Runs after the tests so a
