@@ -421,6 +421,8 @@ set(COMMON_TEST_SOURCES
     UI/test_NowBarsRender.cpp
     # ImPlot lines sample ImGui's baked line texture (#2744)
     UI/test_PlotLineTexture.cpp
+    # Chart fills draw at their colour's alpha, FillAlpha applied once (ImPlot v1.1, #3166)
+    UI/test_PlotShadedFill.cpp
     UI/test_ChartWidgetsEdgeCases.cpp
     UI/test_HistoryCsv.cpp
     UI/test_HistoryChartCsvRender.cpp
