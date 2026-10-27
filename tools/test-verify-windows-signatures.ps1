@@ -155,6 +155,44 @@ try {
     Assert-Verdict 'A configured usage' (Invoke-Check (New-Signature TaskSmack.exe $azure) (New-Signature TaskSmackHelper.exe $azure) -Eku '1.2.3.4') `
         "FAIL TaskSmack.exe's signer certificate has no 1.2.3.4 extended key usage*"
 
+    # ── Other sets of files (TASKSMACK_VERIFY_NAMES, #2302): the installer, and the installed files ──
+    function Invoke-SetCheck {
+        param([object[]]$Signatures, [int]$Count)
+        $lines = @(Test-TaskSmackSignatures -Signatures $Signatures -ExpectedSigner $defaults.TASKSMACK_EXPECTED_SIGNER `
+                -ExpectedIssuer $defaults.TASKSMACK_EXPECTED_ISSUER -ExpectedEku $defaults.TASKSMACK_EXPECTED_EKU -ExpectedCount $Count)
+        Assert-True (@($lines | Where-Object { $_ -like 'STATUS *' }).Count -eq $Signatures.Count) "No status line per file: $($lines -join ' | ')"
+        $lines[-1]
+    }
+    Assert-Verdict 'The installer alone' (Invoke-SetCheck @(New-Signature TaskSmack-1.0.0-win64.exe $azure) 1) 'OK'
+    $installed = @((New-Signature TaskSmack.exe $azure), (New-Signature TaskSmackHelper.exe $rotated), (New-Signature Uninstall.exe $azure))
+    Assert-Verdict 'The installed files, across a rotation' (Invoke-SetCheck $installed 3) 'OK'
+    Assert-Verdict 'An unsigned uninstaller' (Invoke-SetCheck @($installed[0], $installed[1], (New-Signature Uninstall.exe $null -Status NotSigned)) 3) `
+        "FAIL Uninstall.exe isn't Authenticode-signed (NotSigned)"
+    Assert-Verdict 'An uninstaller from another subject' (Invoke-SetCheck @($installed[0], $installed[1], (New-Signature Uninstall.exe $otherSubject)) 3) `
+        "FAIL TaskSmack.exe and Uninstall.exe aren't signed by the same subject*"
+    Assert-Verdict 'One file missing from the set' (Invoke-SetCheck @($installed[0], $installed[1]) 3) 'FAIL expected 3 signatures, got 2'
+
+    # ── The script itself, on files that aren't signed: each listed name is found and refused ───────
+    function Invoke-Gate {
+        param([string]$Dir, [string]$Names)
+        $output = & $cmake "-DTASKSMACK_VERIFY_DIR=$Dir" "-DTASKSMACK_VERIFY_NAMES=$Names" -P $verifyScript 2>&1 | Out-String
+        [pscustomobject]@{ Code = $LASTEXITCODE; Output = ($output -replace '\s+', ' ') }
+    }
+    $folder = Join-Path $root 'installed'
+    New-Item -ItemType Directory -Path (Join-Path $folder 'sub') | Out-Null
+    Set-Content -LiteralPath (Join-Path $folder 'Uninstall.exe') -Value 'not a signed file'
+    Set-Content -LiteralPath (Join-Path $folder 'sub/TaskSmack.exe') -Value 'not a signed file'
+    $gate = Invoke-Gate $folder 'Uninstall.exe'
+    Assert-True ($gate.Code -ne 0 -and $gate.Output -match "Uninstall\.exe isn't Authenticode-signed \(" -and
+        $gate.Output -match 'Uninstall\.exe must be signed by Matt Gradwohl') "An unsigned Uninstall.exe: [$($gate.Code)] $($gate.Output)"
+    Write-Host '  The script, an unsigned Uninstall.exe: refused'
+    $gate = Invoke-Gate $folder 'Uninstall.exe;TaskSmackHelper.exe'
+    Assert-True ($gate.Code -ne 0 -and $gate.Output -match 'expected one TaskSmackHelper\.exe under .*, found 0') "A missing file: [$($gate.Code)] $($gate.Output)"
+    Write-Host '  The script, a listed file missing: refused'
+    $gate = Invoke-Gate $folder 'Task*.exe'
+    Assert-True ($gate.Code -ne 0 -and $gate.Output -match "'Task\*\.exe' in TASKSMACK_VERIFY_NAMES isn't a plain file name") "A wildcard name: [$($gate.Code)] $($gate.Output)"
+    Write-Host '  The script, a wildcard in a name: refused'
+
     Write-Host 'VerifyWindowsSignatures.cmake check tests passed'
 }
 finally {

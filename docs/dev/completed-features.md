@@ -84,6 +84,6 @@ This is the canonical inventory of user-visible and engineering features current
 | Chart rendering | Shared `HistoryChart` RAII helper drives every ImPlot history chart; Render Metrics overlay (Ctrl+Shift+M) reports per-chart vertices and CPU time with CSV export, plus frame-level vertex/index/draw-call totals |
 | Build analysis | Clang time-trace collection and unity-build presets |
 | Optimization | PCH, compiler caching, IPO/LTO, CPU compatibility presets, PGO workflows |
-| Packaging | Linux `.deb`/`.tar.gz` (`.rpm` when built locally with `rpmbuild`), Windows `.zip`, each for x64 and ARM64; generated version resources, SPDX-JSON SBOM |
+| Packaging | Linux `.deb`/`.tar.gz` (`.rpm` when built locally with `rpmbuild`), Windows `.zip` and NSIS installer (signed, with a signed uninstaller), each for x64 and ARM64; generated version resources, SPDX-JSON SBOM |
 | CI and security | Linux/Windows builds, coverage thresholds, CodeQL, OSV, dependency review, Scorecard, sanitizer and static-analysis workflows |
 | Releases | Strict SemVer tags drive packaging and a git-cliff changelog pull request |
