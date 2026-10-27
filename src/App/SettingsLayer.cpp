@@ -59,13 +59,17 @@ void SettingsLayer::startOpen(std::function<void()> prepare, std::filesystem::pa
     // ShellExecuteW or xdg-open, and what must be on disk first, on the worker: never on the UI thread
     // (#3155). Its result is ignored here, as before: the opener logs a failure. The job holds a copy of
     // the test seam (empty outside the tests) and picks the opener itself.
-    // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks) - the std::functions moved into the job are owned by it, not leaked
+    // The analyzer reports the job's capture list (the std::functions moved into it) as a leak; the
+    // job, which BackgroundTask owns, owns them. A block, not NOLINTNEXTLINE: the report's line is the
+    // capture list's, inside the call.
+    // NOLINTBEGIN(clang-analyzer-cplusplus.NewDeleteLeaks)
     static_cast<void>(m_Open.start(
         [prepare = std::move(prepare), path = std::move(path), seam = m_OpenPath]
         {
             prepare();
             return seam ? seam(path) : App::PlatformOpen::openWithSystemHandler(path);
         }));
+    // NOLINTEND(clang-analyzer-cplusplus.NewDeleteLeaks)
 }
 
 void SettingsLayer::waitForPendingOpen()
