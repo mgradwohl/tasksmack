@@ -16,9 +16,20 @@
 - release.yml create-release "Verify the package set" and build-windows "Stage the installer's first
   pass": the NSIS installers are part of the exact release set, and the installer's first pass is handed
   on with exactly one of each file (#2302).
+- release.yml create-release "Write SHA256SUMS" and "Verify the release's file set": one `sha256sum`-format
+  SHA256SUMS lists every release file, and the signed set holds it and SHA256SUMS.bundle but no per-file
+  Sigstore bundle (#3145); verify-published-release "Verify SHA256SUMS and every asset against it" pins
+  cosign to the run's own ref and fails a download that doesn't match SHA256SUMS (`cosign` is a stub).
 - codeql.yml "Keep results under src/": a result is kept when any of its locations, code-flow steps
   or related locations is under src/, so a taint flow from src/ into a third-party sink survives;
   only results with no src/ location at all are dropped (#2992).
+- release.yml sign-windows and sign-windows-installer "Register the PowerShell Gallery if the runner has
+  none": runs just before the signing action, whose Install-Module needs PSGallery, and registers the
+  default gallery only when it's missing (#3109). Run with pwsh against stub repository cmdlets.
+- changelog.yml release-notes "Wait for the release to be published" and "Replace the placeholder
+  notes": the job waits out a missing or draft release and fails once its limit passes, then replaces
+  release.yml's placeholder body with tools/compose-release-notes.py's notes and never edits notes
+  someone wrote (#3144). `gh` is a stub; the composer and the guide's template are the real ones.
 
 Each step is read from the workflow file itself (tests/tools/workflow_steps.py), its `${{ }}`
 expressions replaced by fixed values, and run with bash (pwsh for the pwsh step). Needs bash; the
@@ -28,6 +39,7 @@ without them.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -40,7 +52,7 @@ import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from workflow_steps import find_step, substitute  # noqa: E402
+from workflow_steps import find_step, step_names, substitute  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
 WORKFLOWS = REPO / ".github" / "workflows"
@@ -719,6 +731,193 @@ class ReleasePackageSetTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
                 self.assertIn(f"< TaskSmack-1.2.3-{missing}", result.stderr)
 
+    def test_a_sigstore_bundle_fails(self):
+        result = self.check([*self.PACKAGES, "win64.zip.bundle"])
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("> TaskSmack-1.2.3-win64.zip.bundle", result.stderr)
+
+
+class ReleaseSha256SumsTests(unittest.TestCase):
+    """release.yml create-release "Write SHA256SUMS" and "Verify the release's file set" (#3145): one
+    `sha256sum`-format SHA256SUMS lists every release file, and the published set is those files,
+    SHA256SUMS and its one Sigstore bundle, with no per-file bundle."""
+
+    LABEL = "v1.2.3"
+    FILES = (
+        "TaskSmack-1.2.3-Linux.deb",
+        "TaskSmack-1.2.3-win64.zip",
+        "TaskSmack-1.2.3-windows-arm64-build-inputs.json",
+        "tasksmack-v1.2.3-source-sbom.spdx.json",
+    )
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.dist = self.tmp / "dist"
+        self.dist.mkdir()
+        release = WORKFLOWS / "release.yml"
+        self.write = find_step(release, "Write SHA256SUMS", job="create-release").run
+        verify = find_step(release, "Verify the release's file set", job="create-release")
+        self.verify = verify.run
+        self.verify_env = {
+            name: substitute(value, {"steps.version.outputs.label": self.LABEL}) for name, value in verify.env.items()
+        }
+        for index, name in enumerate(self.FILES):
+            # Different sizes and bytes, a CRLF and a trailing newline among them, so a text-mode hash would differ.
+            (self.dist / name).write_bytes(f"{name}\r\n".encode() * (index + 1))
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def write_sums(self) -> subprocess.CompletedProcess:
+        result = run_bash(self.write, self.tmp, {})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return result
+
+    def signed_set(self):
+        """dist/ as it is after signing: the files, SHA256SUMS and a stand-in SHA256SUMS.bundle."""
+        self.write_sums()
+        (self.dist / "SHA256SUMS.bundle").write_text("{}", encoding="utf-8")
+
+    def verify_set(self) -> subprocess.CompletedProcess:
+        return run_bash(self.verify, self.tmp, self.verify_env)
+
+    def test_sha256sums_lists_every_file_in_sha256sum_format(self):
+        self.write_sums()
+        data = (self.dist / "SHA256SUMS").read_bytes()
+        self.assertNotIn(b"\r", data)
+        self.assertTrue(data.endswith(b"\n"))
+        expected = "".join(
+            f"{hashlib.sha256((self.dist / name).read_bytes()).hexdigest()}  {name}\n" for name in sorted(self.FILES)
+        )
+        self.assertEqual(data.decode("utf-8"), expected)
+
+    def test_sha256sums_fails_on_an_empty_dist(self):
+        for name in self.FILES:
+            (self.dist / name).unlink()
+        result = run_bash(self.write, self.tmp, {})
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertFalse((self.dist / "SHA256SUMS").exists())
+
+    def test_the_signed_set_passes(self):
+        self.signed_set()
+        result = self.verify_set()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("SHA256SUMS.bundle", result.stdout)
+
+    def test_a_leftover_per_file_bundle_fails(self):
+        self.signed_set()
+        (self.dist / "TaskSmack-1.2.3-win64.zip.bundle").write_text("{}", encoding="utf-8")
+        result = self.verify_set()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("per-file Sigstore bundle", result.stderr)
+        self.assertIn("TaskSmack-1.2.3-win64.zip.bundle", result.stderr)
+
+    def test_a_missing_sha256sums_bundle_fails(self):
+        self.signed_set()
+        (self.dist / "SHA256SUMS.bundle").unlink()
+        result = self.verify_set()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("dist/SHA256SUMS.bundle is missing", result.stderr)
+
+    def test_a_missing_sbom_fails(self):
+        (self.dist / "tasksmack-v1.2.3-source-sbom.spdx.json").unlink()
+        self.signed_set()
+        result = self.verify_set()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("source-sbom.spdx.json is missing", result.stderr)
+
+    def test_a_file_sha256sums_does_not_list_fails(self):
+        self.signed_set()
+        (self.dist / "TaskSmack-1.2.3-Linux.tar.gz").write_bytes(b"late")
+        result = self.verify_set()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("> TaskSmack-1.2.3-Linux.tar.gz", result.stderr)
+
+    def test_a_file_changed_after_sha256sums_fails(self):
+        self.signed_set()
+        (self.dist / "TaskSmack-1.2.3-win64.zip").write_bytes(b"changed")
+        result = self.verify_set()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("doesn't match its SHA256SUMS line", result.stderr)
+
+
+class PublishedSha256SumsTests(unittest.TestCase):
+    """release.yml verify-published-release "Verify SHA256SUMS and every asset against it" (#3145): cosign
+    checks SHA256SUMS.bundle pinned to the run's own ref, then every download must match its line.
+    `cosign` is a shell function that records its arguments, so the real one never runs."""
+
+    FILES = ("TaskSmack-1.2.3-Linux.deb", "TaskSmack-1.2.3-win64.zip", "tasksmack-v1.2.3-source-sbom.spdx.json")
+    COSIGN_STUB = 'cosign() { printf "%s\\n" "$@" > cosign-args.txt; return "${COSIGN_EXIT:-0}"; }\n'
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.published = self.tmp / "published"
+        self.published.mkdir()
+        release = WORKFLOWS / "release.yml"
+        self.script = self.COSIGN_STUB + find_step(
+            release, "Verify SHA256SUMS and every asset against it", job="verify-published-release"
+        ).run
+        lines = []
+        for name in self.FILES:
+            data = f"{name}\n".encode()
+            (self.published / name).write_bytes(data)
+            lines.append(f"{hashlib.sha256(data).hexdigest()}  {name}\n")
+        (self.published / "SHA256SUMS").write_text("".join(lines), encoding="utf-8", newline="\n")
+        (self.published / "SHA256SUMS.bundle").write_text("{}", encoding="utf-8")
+        self.summary = self.tmp / "summary.md"
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def run_step(self, **env) -> subprocess.CompletedProcess:
+        return run_bash(
+            self.script,
+            self.tmp,
+            {
+                "GITHUB_REF": "refs/tags/v1.2.3",
+                "GITHUB_STEP_SUMMARY": posix(self.summary),
+                "COSIGN_IDENTITY_REGEXP": r"^https://github\.com/mgradwohl/tasksmack/\.github/workflows/release\.yml@refs/tags/.+$",
+                "COSIGN_OIDC_ISSUER": "https://token.actions.githubusercontent.com",
+                **env,
+            },
+        )
+
+    def test_a_signed_matching_download_passes_pinned_to_the_tag(self):
+        result = self.run_step()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        args = (self.tmp / "cosign-args.txt").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(args[:3], ["verify-blob", "--bundle", "published/SHA256SUMS.bundle"])
+        self.assertEqual(args[-1], "published/SHA256SUMS")
+        identity = args[args.index("--certificate-identity-regexp") + 1]
+        self.assertEqual(
+            identity, r"^https://github\.com/mgradwohl/tasksmack/\.github/workflows/release\.yml@refs/tags/v1\.2\.3$"
+        )
+        self.assertIn("passed (3 assets", self.summary.read_text(encoding="utf-8"))
+
+    def test_a_failed_signature_fails(self):
+        result = self.run_step(COSIGN_EXIT="1")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("Sigstore signature of `SHA256SUMS`: **FAILED**", self.summary.read_text(encoding="utf-8"))
+
+    def test_a_changed_asset_fails(self):
+        (self.published / "TaskSmack-1.2.3-win64.zip").write_bytes(b"tampered")
+        result = self.run_step()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("Assets against `SHA256SUMS`: **FAILED**", self.summary.read_text(encoding="utf-8"))
+
+    def test_an_unlisted_or_missing_asset_fails(self):
+        (self.published / "TaskSmack-1.2.3-win64.zip.bundle").write_text("{}", encoding="utf-8")
+        result = self.run_step()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("> TaskSmack-1.2.3-win64.zip.bundle", result.stderr)
+        (self.published / "TaskSmack-1.2.3-win64.zip.bundle").unlink()
+        (self.published / "TaskSmack-1.2.3-Linux.deb").unlink()
+        result = self.run_step()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("< TaskSmack-1.2.3-Linux.deb", result.stderr)
+
 
 @unittest.skipUnless(PWSH, "pwsh is not on PATH")
 class StageInstallerFirstPassTests(unittest.TestCase):
@@ -791,6 +990,223 @@ class HeavyChecksCodecovUploadTests(unittest.TestCase):
                 # Without an `if:`, the implicit success() skipped the upload once the test or
                 # coverage-floor step had failed, so Codecov kept an older measurement.
                 self.assertEqual(step.condition, self.CONDITION)
+
+
+class SigningGalleryRegistrationTests(unittest.TestCase):
+    """#3109: azure/artifact-signing-action's `Install-Module -Repository PSGallery` failed on a runner
+    whose PowerShell had no PSGallery, so each signing job registers it first when it's missing."""
+
+    WORKFLOW = WORKFLOWS / "release.yml"
+    JOBS = ("sign-windows", "sign-windows-installer")
+    REGISTER = "Register the PowerShell Gallery if the runner has none"
+    SIGN = "Sign with Azure Artifact Signing"
+    GUARD = "if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) {"
+
+    def test_each_signing_job_registers_the_gallery_just_before_the_signing_action(self):
+        for job in self.JOBS:
+            with self.subTest(job=job):
+                names = step_names(self.WORKFLOW, job)
+                self.assertIn(self.REGISTER, names)
+                self.assertEqual(names.index(self.SIGN), names.index(self.REGISTER) + 1)
+                sign = find_step(self.WORKFLOW, self.SIGN, job=job)
+                self.assertTrue(sign.uses.startswith("azure/artifact-signing-action@"), sign.uses)
+
+    def test_the_register_step_is_the_guarded_default_registration(self):
+        for job in self.JOBS:
+            with self.subTest(job=job):
+                step = find_step(self.WORKFLOW, self.REGISTER, job=job)
+                self.assertEqual(step.shell, "pwsh")
+                self.assertEqual(step.condition, "")
+                self.assertEqual(step.env, {})
+                lines = step.run.splitlines()
+                self.assertEqual(lines[0], self.GUARD)
+                self.assertEqual(lines[1].strip(), "Register-PSRepository -Default")
+                # Both jobs run the same script.
+                self.assertEqual(step.run, find_step(self.WORKFLOW, self.REGISTER, job=self.JOBS[0]).run)
+
+    def run_step(self, registered: bool) -> subprocess.CompletedProcess:
+        """The step's script under pwsh, with Get-PSRepository and Register-PSRepository stubbed by
+        functions (which PowerShell resolves before cmdlets) that log their calls."""
+        script = find_step(self.WORKFLOW, self.REGISTER, job=self.JOBS[0]).run
+        stubs = (
+            f"$script:registered = ${str(registered).lower()}\n"
+            "function Get-PSRepository {\n"
+            "  param([string]$Name, $ErrorAction)\n"
+            "  Write-Host \"stub: Get-PSRepository $Name\"\n"
+            "  if ($script:registered) { return [pscustomobject]@{ Name = 'PSGallery' } }\n"
+            "  if ($ErrorAction -eq 'Stop') { throw 'no PSGallery' }\n"
+            "}\n"
+            "function Register-PSRepository {\n"
+            "  param([switch]$Default)\n"
+            "  Write-Host \"stub: Register-PSRepository -Default:$Default\"\n"
+            "  $script:registered = $true\n"
+            "}\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "step.ps1"
+            path.write_text(stubs + script + "\n", encoding="utf-8")
+            return subprocess.run(
+                # GitHub's `shell: pwsh` wrapper: -command ". '{0}'" with $ErrorActionPreference = 'stop'.
+                [PWSH, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
+                 f"$ErrorActionPreference = 'stop'; . '{path}'"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+                timeout=60,
+            )
+
+    @unittest.skipUnless(PWSH, "needs pwsh")
+    def test_a_runner_without_the_gallery_registers_it(self):
+        result = self.run_step(registered=False)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("stub: Register-PSRepository -Default:True", result.stdout)
+        self.assertIn("PSGallery was not registered: registered the default repository.", result.stdout)
+
+    @unittest.skipUnless(PWSH, "needs pwsh")
+    def test_a_runner_with_the_gallery_registers_nothing(self):
+        result = self.run_step(registered=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("Register-PSRepository", result.stdout)
+        self.assertIn("PSGallery is already registered: nothing to do.", result.stdout)
+
+
+# Stands in for the release-notes job's gh calls (#3144). `release view` answers isDraft from the next
+# line of $FIXTURES/states (missing, draft or published; the last line repeats) and body/assets from
+# $FIXTURES/release.json; `release edit` copies the notes file to $FIXTURES/edited.md. Every call is
+# logged to $FIXTURES/calls.log.
+RELEASE_GH_STUB = r"""#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$FIXTURES/calls.log"
+case "$1 $2" in
+  "release view")
+    if [[ "$*" == *"--json isDraft"* ]]; then
+      count=$(grep -c 'isDraft' "$FIXTURES/calls.log")
+      state=$(sed -n "${count}p" "$FIXTURES/states")
+      [[ -n "$state" ]] || state=$(tail -n1 "$FIXTURES/states")
+      case "$state" in
+        missing) echo "release not found" >&2; exit 1 ;;
+        error) echo "HTTP 502: Bad Gateway" >&2; exit 1 ;;
+        draft) echo true ;;
+        published) echo false ;;
+      esac
+    else
+      cat "$FIXTURES/release.json"
+    fi ;;
+  "release edit")
+    while [[ $# -gt 0 ]]; do
+      if [[ "$1" == --notes-file ]]; then cp "$2" "$FIXTURES/edited.md"; fi
+      shift
+    done ;;
+  *) echo "gh stub: unexpected command $*" >&2; exit 2 ;;
+esac
+"""
+
+
+class ChangelogReleaseNotesTests(unittest.TestCase):
+    """#3144: v0.9.1 shipped with release.yml's "Release notes follow." placeholder until its notes
+    were applied by hand. changelog.yml's release-notes job waits for the release to be published,
+    then replaces the placeholder with tools/compose-release-notes.py's notes, and leaves notes
+    someone wrote alone."""
+
+    WORKFLOW = WORKFLOWS / "changelog.yml"
+    JOB = "release-notes"
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.fixtures = self.tmp / "fixtures"
+        self.fixtures.mkdir()
+        (self.fixtures / "calls.log").write_text("", encoding="utf-8")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def run_step(self, name: str, env: dict[str, str]) -> subprocess.CompletedProcess:
+        step = find_step(self.WORKFLOW, name, job=self.JOB)
+        stub = self.tmp / "gh"
+        stub.write_text(RELEASE_GH_STUB, encoding="utf-8", newline="\n")
+        script = (
+            # GitHub's bash: -e -o pipefail. gh and python3 are shell functions, so the real gh can never
+            # answer and python3 is this interpreter (Git Bash's may be the Store alias), and the step
+            # runs from the checkout's root as on the runner.
+            "set -eo pipefail\n"
+            f'gh() {{ "$BASH" "{posix(stub)}" "$@"; }}\n'
+            f'python3() {{ "{posix(Path(sys.executable))}" "$@"; }}\n'
+            "sleep() { :; }\n"
+            f'cd "{posix(REPO)}"\n' + step.run
+        )
+        values = {"runner.temp": posix(self.tmp), "github.token": "not-a-token"}
+        step_env = {key: substitute(value, values).strip("'") for key, value in step.env.items()}
+        return run_bash(
+            script,
+            self.tmp,
+            {**step_env, **env, "FIXTURES": posix(self.fixtures), "TAG_NAME": "v0.10.0", "RUNNER_TEMP": posix(self.tmp)},
+        )
+
+    def calls(self) -> list[str]:
+        return (self.fixtures / "calls.log").read_text(encoding="utf-8").splitlines()
+
+    def wait(self, *states: str, minutes: str = "5") -> subprocess.CompletedProcess:
+        (self.fixtures / "states").write_text("\n".join(states) + "\n", encoding="utf-8")
+        return self.run_step("Wait for the release to be published", {"WAIT_MINUTES": minutes, "POLL_SECONDS": "0"})
+
+    def test_the_job_waits_then_composes_with_least_privilege(self):
+        self.assertEqual(
+            step_names(self.WORKFLOW, self.JOB),
+            ["Generate the tag's changelog section", "Wait for the release to be published",
+             "Replace the placeholder notes"],
+        )
+        text = self.WORKFLOW.read_text(encoding="utf-8")
+        job = text[text.index("\n  release-notes:\n"):]
+        block = job[job.index("    permissions:\n"):job.index("    steps:\n")].splitlines()[1:]
+        self.assertEqual([line.split("#")[0].strip() for line in block], ["contents: write", "pull-requests: read"])
+        self.assertIn("persist-credentials: false", job)
+        # The changelog job's git-cliff and range, without the file header the composer would drop anyway.
+        cliff = find_step(self.WORKFLOW, "Generate the tag's changelog section", job=self.JOB)
+        self.assertEqual(cliff.uses, "orhun/git-cliff-action@a9a95522b26fe6403f7bb24031f21fb573d0f5ff # v4")
+        self.assertIn("args: --verbose --strip header ${{ needs.targets.outputs.previous }}..${{ github.ref_name }}", job)
+
+    def test_a_draft_or_missing_release_is_waited_for(self):
+        result = self.wait("missing", "error", "draft", "draft", "published")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("is not created yet; checking again", result.stdout)
+        self.assertIn("is unreadable (HTTP 502: Bad Gateway); checking again", result.stdout)
+        self.assertIn("is still a draft; checking again", result.stdout)
+        self.assertIn("The release for 'v0.10.0' is published.", result.stdout)
+        self.assertEqual(len(self.calls()), 5)
+
+    def test_a_release_never_published_fails_the_wait(self):
+        result = self.wait("draft", minutes="0")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("::error title=Release not published::The release for 'v0.10.0' is still a draft after 0 minutes", result.stdout)
+
+    def write_release(self, body: str) -> None:
+        section = "## [0.10.0] - 2026-11-20\n### Fixed\n\n- A fix\n"
+        (self.tmp / "changelog-section.md").write_text(section, encoding="utf-8")
+        assets = [{"name": name} for name in ("TaskSmack-0.10.0-win64.zip", "SHA256SUMS", "SHA256SUMS.bundle")]
+        (self.fixtures / "release.json").write_text(json.dumps({"body": body, "assets": assets}), encoding="utf-8")
+
+    def test_the_placeholder_is_replaced(self):
+        verify = "## Verifying downloads\n\nCheck `SHA256SUMS`."
+        self.write_release("Release notes follow.\n\n" + verify + "\n")
+        result = self.run_step("Replace the placeholder notes", {})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Replaced the placeholder notes of the 'v0.10.0' release.", result.stdout)
+        self.assertIn("release edit v0.10.0 --notes-file", self.calls()[-1])
+        notes = (self.fixtures / "edited.md").read_text(encoding="utf-8")
+        self.assertTrue(notes.startswith("# TaskSmack v0.10.0\n\n## Which file should I download?\n"))
+        self.assertIn("## Changes\n\n#### Fixed\n\n- A fix\n", notes)
+        self.assertIn("`SHA256SUMS`, `SHA256SUMS.bundle`, `*-build-inputs.json`", notes)
+        self.assertTrue(notes.endswith(verify + "\n"))
+
+    def test_hand_written_notes_are_never_edited(self):
+        self.write_release("# TaskSmack v0.10.0\n\nThe maintainer's notes.\n")
+        result = self.run_step("Replace the placeholder notes", {})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("release notes already set; left as is", result.stdout)
+        self.assertFalse(any(call.startswith("release edit") for call in self.calls()), self.calls())
+        self.assertFalse((self.fixtures / "edited.md").exists())
 
 
 if __name__ == "__main__":

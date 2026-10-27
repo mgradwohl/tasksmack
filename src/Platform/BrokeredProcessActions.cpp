@@ -32,6 +32,24 @@
 namespace Platform
 {
 
+Broker::Signal brokerSignalFor(ProcessSignal signal) noexcept
+{
+    switch (signal)
+    {
+    case ProcessSignal::Hangup:
+        return Broker::Signal::Hangup;
+    case ProcessSignal::Interrupt:
+        return Broker::Signal::Interrupt;
+    case ProcessSignal::Quit:
+        return Broker::Signal::Quit;
+    case ProcessSignal::User1:
+        return Broker::Signal::User1;
+    case ProcessSignal::User2:
+        return Broker::Signal::User2;
+    }
+    return Broker::Signal::Hangup; // unreachable: every signal is above
+}
+
 Broker::Request brokerRequestFor(const AuthorizedAction& action)
 {
     using Kind = AuthorizedAction::Kind;
@@ -51,6 +69,8 @@ Broker::Request brokerRequestFor(const AuthorizedAction& action)
         return Broker::IoPriorityRequest{.target = action.target, .ioClass = action.ioClass, .level = action.level};
     case Kind::SetAffinity:
         return Broker::AffinityRequest{.target = action.target, .cpus = action.cpus};
+    case Kind::SendSignal:
+        return Broker::SignalRequest{.target = action.target, .signal = brokerSignalFor(action.signal)};
     }
     return Broker::SignalRequest{.target = action.target, .signal = Broker::Signal::Terminate}; // unreachable: every kind is above
 }
@@ -114,6 +134,11 @@ ProcessActionResult BrokeredProcessActions::stop(const ProcessTarget& target)
 ProcessActionResult BrokeredProcessActions::resume(const ProcessTarget& target)
 {
     return retried(m_Inner->resume(target), {.kind = AuthorizedAction::Kind::Resume, .target = target});
+}
+
+ProcessActionResult BrokeredProcessActions::sendSignal(const ProcessTarget& target, ProcessSignal signal)
+{
+    return retried(m_Inner->sendSignal(target, signal), {.kind = AuthorizedAction::Kind::SendSignal, .target = target, .signal = signal});
 }
 
 ProcessActionResult BrokeredProcessActions::setPriority(const ProcessTarget& target, std::int32_t nice)

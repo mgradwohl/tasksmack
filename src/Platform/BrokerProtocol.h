@@ -54,7 +54,7 @@ namespace Platform::Broker
 /// 5: ReadProcessCounters can also ask for each process's socket inodes, for network attribution (#2728).
 /// 6: ListHiddenProcesses, the /proc/<pid> files of processes hidepid hides from TaskSmack (#2728).
 /// 7: ServiceAction, a systemd unit started, stopped or given a start type over the helper's bus (#2728).
-inline constexpr std::uint16_t PROTOCOL_VERSION = 7;
+inline constexpr std::uint16_t PROTOCOL_VERSION = 8;
 /// The largest frame either side accepts, header included.
 inline constexpr std::size_t MAX_MESSAGE_BYTES = std::size_t{8} << 20U;
 /// The most processes one ReadProcessCounters asks about (#2728); a sampler with more asks for the first.
@@ -119,6 +119,11 @@ enum class Signal : std::uint8_t
     Kill,
     Suspend,
     Resume,
+    Hangup, ///< protocol v8 (#3063): the signals ProcessSignal names
+    Interrupt,
+    Quit,
+    User1,
+    User2,
 };
 
 struct Hello
@@ -928,7 +933,7 @@ namespace Detail
     const ProcessTarget target = reader.target();
     const std::uint8_t value = reader.u8();
     Signal signal = Signal::Terminate;
-    if (value <= static_cast<std::uint8_t>(Signal::Resume))
+    if (value <= static_cast<std::uint8_t>(Signal::User2))
     {
         signal = static_cast<Signal>(value); // cast only once it is known to be in range
     }

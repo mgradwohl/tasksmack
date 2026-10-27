@@ -130,7 +130,8 @@ class Window
     void applySavedGeometry(std::optional<std::pair<int, int>> position, bool maximized, std::optional<float> savedScale);
 
     /// The window's UI scale in window units (WindowGeometry::windowUnitScale(): display scale over
-    /// pixel density) on the display it is on now; 1.0 at 100 % on Windows. 0 when unknown.
+    /// pixel density) on the display it is on now; 1.0 at 100 % on Windows. 0 when unknown, and while
+    /// the window is minimized, whose pixel density measures no real size (#3150).
     [[nodiscard]] auto getUnitScale() const noexcept -> float;
 
     /// The display the window is on, or 0 when unknown. Cheap enough to poll every frame, so a
@@ -187,6 +188,13 @@ class Window
     /// keyboard state on Windows; does nothing elsewhere.
     /// @return Whether the window was restored, so a minimize not yet carried out should be dropped.
     bool restoreForShellMinimize();
+    /// A window command from the shell reached the window (Win32 WM_SYSCOMMAND), before it is carried
+    /// out. Minimize is restoreForShellMinimize()'s (#1279). Restore of a client-side maximized window
+    /// and Maximize of one the OS hasn't maximized are carried out here, as restore() and maximize(),
+    /// since the OS doesn't know about the client-side maximize (#3161); see
+    /// WindowGeometry::shellCommandCarriedOutClientSide(). Everything else is left to the OS.
+    /// @return Whether the command was carried out here, so the OS must not carry it out too.
+    bool handleShellCommand(WindowGeometry::SystemCommand command);
     /// Reads whether {a Windows key, the Down arrow} are held, for restoreForShellMinimize().
     using ShellRestoreKeysReader = auto (*)() noexcept -> std::pair<bool, bool>;
     /// Replace how this window reads the Win+Down key state; nullptr restores the real keyboard

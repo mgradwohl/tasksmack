@@ -14,6 +14,9 @@ name: Changelog
 #     releases plus what it inherited at the cut.
 # A tag on neither branch aborts. When a release branch is cut after its tag (release/0.9 was,
 # after v0.9.0), label main's changelog PR `backport:X.Y` so the branch gets the section too.
+#
+# The release-notes job also puts that section on the GitHub release once release.yml has published
+# it, under a download guide, in place of release.yml's placeholder body (#3144).
 on:
   push:
     tags:
@@ -240,3 +243,104 @@ jobs:
           fi
         env:
           GH_TOKEN: ${{ secrets.CHANGELOG_TOKEN || secrets.GITHUB_TOKEN }}
+
+  release-notes:
+    # Replaces release.yml's placeholder body ("Release notes follow." and the "Verifying downloads"
+    # block) with the download guide, this tag's git-cliff section and that same block (#3144), so a
+    # release never stays on the placeholder. A body that no longer starts with the placeholder holds
+    # notes someone wrote, and is left alone; the maintainer can still replace these ones afterwards.
+    #
+    # Here rather than in release.yml: this workflow already finds the tag's previous tag on its own
+    # branch history and runs the pinned git-cliff, and a notes failure can't turn a release run red
+    # after it has published. The two workflows start together on the tag push, so this job waits for
+    # release.yml to publish (v0.9.1's did 37 minutes in). A `release: published` trigger can't do it:
+    # release.yml publishes with GITHUB_TOKEN, whose events start no workflows.
+    #
+    # The composer and the guide's template are read from main, like cliff.toml, so a tag on a release
+    # branch gets the same guide; the guide's bundle line follows the release's own assets (#3145).
+    name: Fill the release notes
+    needs: [targets]
+    runs-on: ubuntu-24.04
+    # The wait's own limit (WAIT_MINUTES) comes first; this is the backstop.
+    timeout-minutes: 140
+    env:
+      TAG_NAME: ${{ github.ref_name }}
+    permissions:
+      contents: write  # gh release view (a draft) and gh release edit, with GITHUB_TOKEN
+      pull-requests: read  # git-cliff's GitHub lookups (each entry's PR author), as in the changelog job
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # git-cliff reads the previous tag..tag range, which needs every tag and its history.
+          fetch-depth: 0
+          ref: main
+          persist-credentials: false
+
+      - name: Generate the tag's changelog section
+        uses: orhun/git-cliff-action@a9a95522b26fe6403f7bb24031f21fb573d0f5ff # v4
+        with:
+          # The version, config and range the changelog job uses, so the notes list what its
+          # CHANGELOG.md section does. --strip header leaves out the file's header.
+          version: v2.14.2
+          config: cliff.toml
+          args: --verbose --strip header ${{ needs.targets.outputs.previous }}..${{ github.ref_name }}
+        env:
+          OUTPUT: ${{ runner.temp }}/changelog-section.md
+          GITHUB_REPO: ${{ github.repository }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Wait for the release to be published
+        # release.yml creates the release as a draft and publishes it once every asset is checked.
+        # Re-checked every POLL_SECONDS for up to WAIT_MINUTES. If release.yml fails, or takes
+        # longer, this fails saying so; re-run this job once the release is published.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WAIT_MINUTES: '120'
+          POLL_SECONDS: '60'
+        run: |
+          deadline=$(( SECONDS + WAIT_MINUTES * 60 ))
+          err=$(mktemp)
+          while :; do
+            # `gh release view` finds drafts by tag too (the REST releases/tags endpoint doesn't).
+            if is_draft=$(gh release view "$TAG_NAME" --json isDraft --jq '.isDraft' 2> "$err"); then
+              if [[ "$is_draft" == "false" ]]; then
+                echo "The release for '$TAG_NAME' is published."
+                exit 0
+              fi
+              state="still a draft"
+            elif grep -qi 'release not found' "$err"; then
+              state="not created yet"
+            else
+              # A transient API error: report it and keep waiting.
+              message=$(< "$err")
+              state="unreadable (${message//$'\n'/ })"
+            fi
+            if (( SECONDS >= deadline )); then
+              echo "::error title=Release not published::The release for '$TAG_NAME' is $state after $WAIT_MINUTES minutes, so its notes were not filled. Once release.yml has published it, re-run this job."
+              exit 1
+            fi
+            echo "The release for '$TAG_NAME' is $state; checking again in ${POLL_SECONDS}s."
+            sleep "$POLL_SECONDS"
+          done
+
+      - name: Replace the placeholder notes
+        # tools/compose-release-notes.py writes the notes only while the body still starts with
+        # "Release notes follow."; otherwise it says so and nothing is edited.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SECTION: ${{ runner.temp }}/changelog-section.md
+        run: |
+          release="$RUNNER_TEMP/release.json"
+          notes="$RUNNER_TEMP/release-notes.md"
+          rm -f "$notes"
+          gh release view "$TAG_NAME" --json body,assets > "$release"
+          python3 tools/compose-release-notes.py \
+            --version "${TAG_NAME#v}" \
+            --template .github/release-notes/download-guide.md \
+            --changelog "$SECTION" \
+            --release-json "$release" \
+            --output "$notes"
+          if [[ -f "$notes" ]]; then
+            gh release edit "$TAG_NAME" --notes-file "$notes"
+            echo "Replaced the placeholder notes of the '$TAG_NAME' release."
+          fi

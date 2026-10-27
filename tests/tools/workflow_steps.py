@@ -20,6 +20,8 @@ class Step:
     env: dict[str, str] = field(default_factory=dict)
     run: str = ""
     condition: str = ""  # its `if:`, as written; empty when it has none
+    uses: str = ""  # its `uses:`, as written (comment included); empty when it has none
+    shell: str = ""  # its `shell:`; empty when it has none
 
 
 def _indent(line: str) -> int:
@@ -56,6 +58,14 @@ def _job_lines(lines: list[str], job: str) -> tuple[int, int]:
     raise LookupError(f"no job named {job!r}")
 
 
+def step_names(workflow: Path, job: str) -> list[str]:
+    """The names of `job`'s steps in `workflow`, in order; raises LookupError when there is no such job."""
+    lines = workflow.read_text(encoding="utf-8").splitlines()
+    first, last = _job_lines(lines, job)
+    header = re.compile(r"^\s*- name:\s*(.*?)\s*$")
+    return [match.group(1) for line in lines[first:last] if (match := header.match(line))]
+
+
 def find_step(workflow: Path, name: str, job: str | None = None) -> Step:
     """The step named `name` in `workflow`, only within `job` when given (two jobs can each have a
     step of the same name); raises LookupError when there is none."""
@@ -87,8 +97,8 @@ def find_step(workflow: Path, name: str, job: str | None = None) -> Step:
                 if value not in ("|", "|-"):
                     step.run = value
                 continue
-            if key == "if":
-                step.condition = value
+            if key in ("if", "uses", "shell"):
+                setattr(step, {"if": "condition"}.get(key, key), value)
                 index += 1
                 continue
             if key == "env":

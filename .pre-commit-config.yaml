@@ -58,6 +58,14 @@ repos:
         language: python
         files: '^(AGENTS\.md|CLAUDE\.md|\.github/skills/code-review/SKILL\.md|\.claude/skills/tasksmack-review/SKILL\.md|tools/check-guidance-sync\.py)$'
         pass_filenames: false
+      # The docs site's jsDelivr pins carry SRI hashes matching docs/cdn-integrity.json (#3167): a version
+      # bump fails here until `python -I tools/docs-sri.py --update` regenerates them.
+      - id: check-docs-sri
+        name: Check the docs site's CDN integrity hashes
+        entry: python -I -X utf8 tools/docs-sri.py --check
+        language: python
+        files: '^(docs/index\.html|docs/cdn-integrity\.json|tools/docs-sri\.py)$'
+        pass_filenames: false
       # Cache pruning coverage (#2410): every workflow that saves Actions caches must trigger
       # cache-prune.yml, or its superseded entries pile up toward the repo's cache quota.
       - id: check-cache-prune-triggers

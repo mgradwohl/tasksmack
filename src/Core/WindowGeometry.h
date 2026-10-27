@@ -11,7 +11,6 @@
 #include "Core/WindowConstants.h"
 
 #include <algorithm>
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -192,6 +191,88 @@ enum class MaximizeState : std::uint8_t
 [[nodiscard]] constexpr bool windowLongPtrSetFailed(std::intptr_t previous, std::uint32_t lastError) noexcept
 {
     return previous == 0 && lastError != 0;
+}
+
+/// The window commands of the system menu (Win32 WM_SYSCOMMAND) that TaskSmack tells apart (#3161).
+enum class SystemCommand : std::uint8_t
+{
+    Other, ///< Anything else (the keyboard menu, the screen saver, ...): always the OS's
+    Restore,
+    Move,
+    Size,
+    Minimize,
+    Maximize,
+    Close,
+};
+
+/// Win32's SC_* command values and the mask over their low four bits, which Windows uses internally
+/// (<winuser.h>). Kept here, free of <windows.h>, so decodeSystemCommand() is tested on every
+/// platform; Window.cpp checks them against the real ones.
+inline constexpr std::uintptr_t WIN32_SC_MASK = 0xFFF0U;
+inline constexpr std::uintptr_t WIN32_SC_SIZE = 0xF000U;
+inline constexpr std::uintptr_t WIN32_SC_MOVE = 0xF010U;
+inline constexpr std::uintptr_t WIN32_SC_MINIMIZE = 0xF020U;
+inline constexpr std::uintptr_t WIN32_SC_MAXIMIZE = 0xF030U;
+inline constexpr std::uintptr_t WIN32_SC_CLOSE = 0xF060U;
+inline constexpr std::uintptr_t WIN32_SC_RESTORE = 0xF120U;
+
+/// The command in a WM_SYSCOMMAND's wParam, or the native system menu's TrackPopupMenu() result,
+/// with the low four bits masked off before comparing, as Win32 prescribes (#3161).
+[[nodiscard]] constexpr auto decodeSystemCommand(std::uintptr_t command) noexcept -> SystemCommand
+{
+    switch (command & WIN32_SC_MASK)
+    {
+    case WIN32_SC_RESTORE:
+        return SystemCommand::Restore;
+    case WIN32_SC_MOVE:
+        return SystemCommand::Move;
+    case WIN32_SC_SIZE:
+        return SystemCommand::Size;
+    case WIN32_SC_MINIMIZE:
+        return SystemCommand::Minimize;
+    case WIN32_SC_MAXIMIZE:
+        return SystemCommand::Maximize;
+    case WIN32_SC_CLOSE:
+        return SystemCommand::Close;
+    default:
+        return SystemCommand::Other;
+    }
+}
+
+/// Whether the borderless window carries out a Restore or Maximize from the shell itself, instead of
+/// passing it on to the OS (#3161).
+///
+/// A client-side maximize has no OS maximized state, so the OS took the window's Restore -- from the
+/// native system menu, or any other sender of WM_SYSCOMMAND -- for a restore of a normal window and
+/// did nothing, and carried out a Maximize as an OS maximize the window then had to adopt (#1208).
+/// So Restore of a client-side maximized window is Window::restore(), and Maximize of a window the
+/// OS hasn't maximized is Window::maximize(), as the title-bar buttons do. A minimized window is left
+/// to the OS: the taskbar brings it back with Restore, to the geometry it had, still maximized if it
+/// was. An OS maximize (System) is the OS's to restore, and Minimize is shellMinimizeRestores()'s.
+///
+/// @param command    The command (decodeSystemCommand()).
+/// @param state      How the window is maximized (NormalGeometryTracker::state()).
+/// @param minimized  Whether the window is minimized right now.
+[[nodiscard]] constexpr bool shellCommandCarriedOutClientSide(SystemCommand command, MaximizeState state, bool minimized) noexcept
+{
+    if (minimized)
+    {
+        return false;
+    }
+    switch (command)
+    {
+    case SystemCommand::Restore:
+        return state == MaximizeState::ClientSide;
+    case SystemCommand::Maximize:
+        return state != MaximizeState::System;
+    case SystemCommand::Other:
+    case SystemCommand::Move:
+    case SystemCommand::Size:
+    case SystemCommand::Minimize:
+    case SystemCommand::Close:
+        return false;
+    }
+    return false;
 }
 
 /// Tracks the window's normal (restored) rectangle through every maximize and restore, whoever
@@ -453,16 +534,33 @@ inline constexpr float MAX_WINDOW_SCALE = 16.0F;
     return scale > 0.0F && scale <= MAX_WINDOW_SCALE;
 }
 
+/// Smallest and largest pixel density (framebuffer pixels per window unit) windowUnitScale() takes
+/// from SDL. A real window's density is 1 on Windows and X11 and the display's scale on native
+/// Wayland and macOS, and no desktop runs below 50 % or above 800 %. A value outside these bounds
+/// measures a window with no real size instead: SDL computes the density as the framebuffer's width
+/// over the window's, and a window minimized before its first frame reported 0.197 on Windows, which
+/// made the UI scale 8.88 at 175 % (#3150).
+inline constexpr float MIN_PIXEL_DENSITY = 0.5F;
+inline constexpr float MAX_PIXEL_DENSITY = 8.0F;
+
+/// Whether @p pixelDensity is one a real window can have (see MIN_PIXEL_DENSITY). False for NaN.
+[[nodiscard]] constexpr bool isPlausiblePixelDensity(float pixelDensity) noexcept
+{
+    return pixelDensity >= MIN_PIXEL_DENSITY && pixelDensity <= MAX_PIXEL_DENSITY;
+}
+
 /// The UI scale in window units: SDL's display scale divided by the window's pixel density.
 ///
 /// On Windows and X11 window coordinates are physical pixels (density 1), so this is the display's
 /// scale (1.75 at 175 %). On native Wayland and macOS the window is created with
 /// SDL_WINDOW_HIGH_PIXEL_DENSITY, window coordinates are already logical and the pixel density
 /// carries the scale, so this is 1 (#1096). A density that is not a usable number (0 on failure,
-/// NaN) falls back to the display scale alone. UI::windowUnitScale() forwards here.
+/// NaN) or not a plausible one (isPlausiblePixelDensity(): a minimized or zero-sized window, #3150)
+/// falls back to the display scale alone, which is right wherever the density should be 1.
+/// UI::windowUnitScale() forwards here.
 [[nodiscard]] inline float windowUnitScale(float displayScale, float pixelDensity) noexcept
 {
-    if (!std::isfinite(pixelDensity) || pixelDensity <= 0.0F)
+    if (!isPlausiblePixelDensity(pixelDensity))
     {
         return displayScale;
     }

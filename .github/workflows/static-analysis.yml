@@ -55,7 +55,7 @@ jobs:
       # its clang-tidy run analyzes (#2047), so both compute the same per-file result-cache keys
       # from the same compile commands.
       - name: Configure
-        run: cmake --preset debug -DPython3_EXECUTABLE="$(which python)" -DTASKSMACK_ENABLE_CCACHE=OFF -DTASKSMACK_ENABLE_PCH=OFF
+        run: cmake --preset debug -DPython3_EXECUTABLE="$(which python)" -DTASKSMACK_ENABLE_CCACHE=OFF -DTASKSMACK_ENABLE_PCH=OFF -DTASKSMACK_ENABLE_IPO=OFF -DCMAKE_CXX_SCAN_FOR_MODULES=OFF
 
       - name: Build GLAD
         run: cmake --build --preset debug --target glad_gl_core_33

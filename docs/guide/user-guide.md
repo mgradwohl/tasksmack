@@ -9,7 +9,7 @@ TaskSmack is a system monitor and task manager for Linux and Windows, built with
 - **Deep process inspection.** Security context (capabilities, seccomp and LSM labels on Linux; token integrity on Windows), modules, open files, per-process connections, crash history, and dumps (gcore on Linux; snapshot minidumps on Windows).
 - **GPU, NPU and power per process.** GPU use on NVIDIA, AMD and Intel, NPU use where the platform reports it, and per-process power on Linux, in the same table as CPU and memory.
 - **A System Information report.** Firmware, memory modules, storage, sensors, drivers and recent crashes, plus boot performance, BitLocker and HVCI status on Windows, exportable as text or JSON.
-- **Open source and verifiable.** MIT-licensed, and every release asset, x64 and ARM64, is signed with Sigstore and ships with an SBOM and build provenance (see [Verifying a Release](#verifying-a-release)).
+- **Open source and verifiable.** MIT-licensed, and every release asset, x64 and ARM64, is listed in a Sigstore-signed `SHA256SUMS` and ships with an SBOM and build provenance (see [Verifying a Release](#verifying-a-release)).
 
 ---
 
@@ -56,13 +56,42 @@ Every file on a release (each architecture's `.deb`, `.tar.gz`, `.zip` and Windo
 manifests and the source SBOM) is built and published by TaskSmack's `release` GitHub Actions
 workflow, and you can check that a download came from it in two ways. Either one is enough.
 
+**With cosign and `SHA256SUMS`:** each release has a `SHA256SUMS` file listing the SHA-256 of every
+other file on it, and `SHA256SUMS.bundle`, its [Sigstore](https://www.sigstore.dev/) signature, made
+with keyless OIDC signing by the release workflow. Download both into the folder holding the files
+you downloaded, check the signature with [cosign](https://github.com/sigstore/cosign), which needs
+no GitHub account, then check your files against the list:
+
+```bash
+cosign verify-blob \
+  --bundle SHA256SUMS.bundle \
+  --certificate-identity-regexp '^https://github\.com/mgradwohl/tasksmack/\.github/workflows/release\.yml@refs/tags/.+$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  SHA256SUMS
+sha256sum -c --ignore-missing SHA256SUMS
+```
+
+The two `--certificate-*` flags pin verification to TaskSmack's actual release workflow and to
+GitHub's OIDC issuer, so a signature from any other source fails to verify. A successful check
+prints `Verified OK`, then `<file>: OK` for each file you downloaded (`--ignore-missing` skips the
+ones you didn't). On Windows, run the same `cosign verify-blob` (cosign publishes a
+`cosign-windows-amd64.exe`), then this in PowerShell from that folder:
+
+```powershell
+Get-Content SHA256SUMS | ForEach-Object { $h, $n = $_ -split '  ', 2; if (Test-Path -LiteralPath $n) { "${n}: $(if ((Get-FileHash -LiteralPath $n -Algorithm SHA256).Hash -eq $h) { 'OK' } else { 'FAILED' })" } }
+```
+
+Each file you downloaded should show `OK`. Releases up to v0.9.x have no `SHA256SUMS`, but a
+`<filename>.bundle` beside each file instead: check one with the same `cosign verify-blob` command,
+giving `--bundle` the file's own bundle and the file in place of `SHA256SUMS`.
+
 **With the GitHub CLI** (releases after v0.9.0): the workflow records a GitHub
 [artifact attestation](https://docs.github.com/actions/security-for-github-actions/using-artifact-attestations)
 (SLSA build provenance) for every file. With [`gh`](https://cli.github.com/) 2.49 or later installed and signed in
 (`gh auth login`), run this on the downloaded file. Check `gh --version` first: some distributions
 package an older `gh` without the `attestation` command (Ubuntu's is 2.46), which then prints its list
 of commands instead of a result. That isn't a failed check; install `gh` from
-[GitHub's packages](https://github.com/cli/cli#installation), or use cosign below:
+[GitHub's packages](https://github.com/cli/cli#installation), or use cosign above:
 
 ```bash
 gh attestation verify <asset> --repo mgradwohl/tasksmack
@@ -70,24 +99,8 @@ gh attestation verify <asset> --repo mgradwohl/tasksmack
 
 A successful check prints `Verification succeeded!` and the workflow run that built the file. To
 also require that it was the release workflow, rather than any workflow in the repository, add
-`--signer-workflow mgradwohl/tasksmack/.github/workflows/release.yml`.
-
-**With cosign:** every file is also signed with [Sigstore](https://www.sigstore.dev/) via keyless
-OIDC signing. Each asset has a matching `<filename>.bundle` alongside it on the same release —
-download both, then verify with [cosign](https://github.com/sigstore/cosign), which needs no GitHub
-account:
-
-```bash
-cosign verify-blob \
-  --bundle <asset>.bundle \
-  --certificate-identity-regexp '^https://github\.com/mgradwohl/tasksmack/\.github/workflows/release\.yml@refs/tags/.+$' \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  <asset>
-```
-
-Replace the filename with whichever asset you downloaded. The two `--certificate-*` flags pin
-verification to TaskSmack's actual release workflow and to GitHub's OIDC issuer, so a signature
-from any other source fails to verify. A successful check prints `Verified OK`.
+`--signer-workflow mgradwohl/tasksmack/.github/workflows/release.yml`. `SHA256SUMS` has an
+attestation too.
 
 **The Windows executables' Authenticode signature** (releases from v0.9.1): `TaskSmack.exe` and
 `TaskSmackHelper.exe` in each Windows `.zip` are also signed with Authenticode, so Windows itself can
@@ -105,8 +118,8 @@ signing certificates last only a few days and are renewed automatically, so the 
 changes from release to release; check the signer's name, not its thumbprint. A new release may
 still get a SmartScreen warning until it has built up download reputation.
 
-If a release asset has **no matching `.bundle` file**, either `gh attestation verify` or
-`cosign verify-blob` **fails**, or a Windows executable's signature isn't `Valid` from Matt Gradwohl,
+If a release asset has **no line in `SHA256SUMS`**, `cosign verify-blob`, the checksum check or
+`gh attestation verify` **fails**, or a Windows executable's signature isn't `Valid` from Matt Gradwohl,
 do not trust that asset — treat it as potentially tampered with.
 Re-download from the [Releases page](https://github.com/mgradwohl/tasksmack/releases/latest) rather
 than a mirror, and if the problem persists, report it per
@@ -217,7 +230,9 @@ A cell reading **-** is a value of 0 (or one that doesn't apply). A cell reading
 
 **Hold Ctrl to freeze** the table, as in Windows Task Manager. With the pointer over the process table (or after clicking in it), hold **Ctrl** and the rows stop updating and stop re-sorting, so the process you are aiming at stays under the pointer while you click it. A **Paused (Ctrl)** label appears beside the process count (just a pause icon when the window is too narrow for the words; hover it for the explanation), and releasing Ctrl resumes live updates at once. The freeze applies only to what the table shows: sampling carries on underneath, so charts and Process Details have no gaps, and the values shown while frozen are the last ones adopted, not live readings. Selecting a process, opening Process Details and process actions all work while frozen; an action on a process that has exited in the meantime fails just as it would without the freeze. Ctrl does not freeze while you are typing in the filter box, while TaskSmack's window is not focused, or when it is part of a shortcut such as Ctrl+= or Ctrl+Shift+M.
 
-**Row menu.** Right-click a row for **Details** (opens the Process Details tab), **Pin to top** (or **Unpin**), **Copy PID**, **Copy Name** and **Copy Command Line**, then **Open file location** and **Search online** for the row it was opened on, then the process actions this platform offers: **Suspend...** and **Resume...**, **Set affinity...** and **Create dump file...** (one process only), and **Terminate...** and **Kill...** (F9), then **End process tree** for a process with child processes, which ends it and every process it started, children first, behind one confirmation that names them. On a multi-selection the actions apply to every selected process, and **Set priority for N processes...** is added; see [Process Actions](#process-actions).
+**Row menu.** Right-click a row for **Details** (opens the Process Details tab), **Pin to top** (or **Unpin**), **Copy PID**, **Copy Name** and **Copy Command Line**, then **Open file location** and **Search online** for the row it was opened on, then the process actions this platform offers: **Suspend...** and **Resume...**, **Set affinity...** and **Create dump file...** (one process only), and **Terminate...** and **Kill...** (F9), on Linux **Send signal** (one process: **SIGHUP** to reload a daemon, **SIGINT** as Ctrl+C sends, **SIGQUIT** to exit with a core dump, **SIGUSR1** and **SIGUSR2** for a program's own handlers, each confirmed with what it usually does, and through the helper for another user's process), then **End process tree** for a process with child processes, which ends it and every process it started, children first, behind one confirmation that names them. On a multi-selection the actions apply to every selected process, and **Set priority for N processes...** is added; see [Process Actions](#process-actions).
+
+**Group** (beside **Columns**) gathers the processes under group rows: **Unit** (the systemd unit each process's cgroup names on Linux, or the first service it hosts on Windows), **Container**, or **App** (the desktop app, Flatpak or Snap a process was launched as, from its systemd scope or service: `app-gnome-firefox-4521.scope` is `firefox`). Each group row shows its name and process count, and in the columns that add up (CPU %, Memory %, memory, Private, Swap, threads, handles, CPU time, disk and network rates, power, GPU and NPU) its totals, marked **Σ** so a total never reads as one process's figure. Click a group row to collapse or expand it. Groups are sorted by their totals in the sorted column (by name, A to Z, between equal totals), the processes inside each group by the column too, and processes in no group come last under **Ungrouped**. Grouping is a mode of the List view: choosing a group switches Tree off, and choosing Tree sets the group back to **None**. The choice is saved in `config.toml` (`[process_table] group_by`).
 
 **Run new task** (the rocket button beside **Columns**) starts a program, as Task Manager's File > Run new task does. It is how you get a terminal or your desktop shell back when the shell has hung. Type the program and its arguments, pick one of the last ten you ran from the arrow beside the box, or choose a file with **Browse...**, then press **Run** or Enter. No shell runs the command: words are split as a shell splits them, and quotes keep spaces in a word, but `$VARIABLES`, `~` and wildcards are passed on as typed. A program TaskSmack can't find on your `PATH` is reported straight away. On Linux, **Run as administrator** starts it through `pkexec`, which asks for an administrator's password. Most programs with windows won't open that way, because `pkexec` doesn't pass on your display. When TaskSmack itself runs as root through `sudo` or `pkexec`, a program run without that tick starts as you, in your session. The recent commands are saved in `config.toml` (`[run_task] recent`).
 
@@ -642,6 +657,7 @@ Right-click any process row for Suspend, Resume, Terminate and Kill, and for one
 | Kill (SIGKILL / force) | ✅ | ✅ |
 | Suspend (SIGSTOP) | ✅ | ✅ (NtSuspendProcess) |
 | Resume (SIGCONT) | ✅ | ✅ (NtResumeProcess) |
+| Send signal: SIGHUP, SIGINT, SIGQUIT, SIGUSR1, SIGUSR2 (row menu, one process) | ✅ | ❌ (no Windows equivalent) |
 | Change priority: Process Details, or several selected processes from the row menu | ✅ (nice value) | ✅ (priority class) |
 | Change I/O priority (ionice class and level), Process Details only | ✅ | ❌ |
 | Trace system calls (strace), Process Details only | ✅ (needs `strace` and a terminal emulator) | ❌ |
