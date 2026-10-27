@@ -576,7 +576,7 @@ jobs:
           # Same key as sanitizers.yml's asan-ubsan job, so this PR-only job restores the cache
           # main's runs save (it never saves one itself).
           key: linux-asan-ubsan-llvm${{ env.LLVM_VERSION }}
-          max-size: 500M
+          max-size: 1250M  # one full ASan+UBSan build is about 560 MB (#3100); same key as sanitizers.yml
           # Pull requests restore main's cache but never save their own: a PR-ref entry is
           # readable only by that PR and pushed main's entries out of the 10 GB quota (#1406).
           # Main runs drop entries this build didn't touch, so the saved cache tracks the tree.
