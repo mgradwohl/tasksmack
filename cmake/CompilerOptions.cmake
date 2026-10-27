@@ -72,6 +72,12 @@ if(TASKSMACK_ENABLE_COVERAGE)
         # that needs the counters relocated at run time.
         if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
             add_compile_options("SHELL:-mllvm -runtime-counter-relocation")
+            # Atomic counter updates (#3165): the samplers call the same functions from several threads,
+            # and plain increments lose updates under contention. A line whose count is derived by
+            # subtracting one counter from another then came out 0, or wrapped negative (24 to 34 such
+            # lines a run), so the same source's coverage moved by a few lines between runs and flipped
+            # main around the 95% floor.
+            add_compile_options(-fprofile-update=atomic)
         endif()
     else()
         message(WARNING "Code coverage is only supported with Clang. Disabling coverage.")
