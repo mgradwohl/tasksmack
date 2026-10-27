@@ -2784,5 +2784,63 @@ TEST_F(ProcessesPanelRenderTest, GroupByContainerShowsHeadersWithTotalsAndCollap
     panel->onDetach(); // TearDown restores the settings
 }
 
+// #3067: the toolbar's Find handles opens its dialog; a query typed there searches every process's open
+// files on the dialog's worker and lists each process holding a match, with the count in the status line.
+TEST_F(ProcessesPanelRenderTest, FindHandlesListsTheProcessesHoldingAFile)
+{
+    auto panel = std::make_unique<ProcessesPanel>(
+        []
+        {
+            auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+            probe->withProcess(TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0))
+                .withProcess(TestMocks::makeProcessCounters(42, "soffice", 'S', 30, 10, 200, std::uint64_t{4} << 20U, 1));
+            auto files = std::make_unique<TestMocks::MockProcessOpenFilesReader>();
+            files->setResult({.status = Platform::OpenFilesReadStatus::Ok,
+                              .files = {{.descriptor = 7, .kind = Platform::OpenFileKind::File, .path = "/home/me/Report.ods"},
+                                        {.descriptor = 8, .kind = Platform::OpenFileKind::File, .path = "/home/me/notes.txt"}}});
+            return ProcessesPanelPlatform{.probe = std::move(probe),
+                                          .actions = std::make_unique<TestMocks::MockProcessActions>(),
+                                          .icons = nullptr,
+                                          .openFiles = std::move(files)};
+        });
+    attachAndSeed(*panel);
+    Core::ActiveTabChangedEvent shown("Processes");
+    panel->onEvent(shown);
+    renderUntilLoaded(*panel);
+
+    const ImGuiWindow* shell = ImGui::FindWindowByName("Shell");
+    ASSERT_NE(shell, nullptr);
+    ImGui::ActivateItemByID(ImHashStr(ICON_FA_MAGNIFYING_GLASS "###FindHandles", 0, shell->ID));
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    ASSERT_NE(ImGui::GetTopMostPopupModal(), nullptr) << "Find handles didn't open its dialog";
+    EXPECT_TRUE(renderAndCapture(*panel).contains("Type a name and press Find."));
+
+    // The query box has the keyboard when the dialog opens: type, then Enter searches.
+    for (const char* character : {"r", "e", "p", "o", "r", "t"})
+    {
+        ImGui::GetIO().AddInputCharactersUTF8(character);
+        static_cast<void>(renderAndCapture(*panel));
+    }
+    ImGui::GetIO().AddKeyEvent(ImGuiKey_Enter, true);
+    static_cast<void>(renderAndCapture(*panel));
+    ImGui::GetIO().AddKeyEvent(ImGuiKey_Enter, false);
+    std::string text;
+    for (int frame = 0; frame < LOAD_FRAMES; ++frame)
+    {
+        text = renderAndCapture(*panel);
+        if (text.contains("2 processes searched"))
+        {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    EXPECT_TRUE(text.contains("2 processes searched \xC2\xB7 2 found")) << text;
+    EXPECT_TRUE(text.contains("/home/me/Report.ods")) << text;
+    EXPECT_TRUE(text.contains("soffice")) << text;
+    EXPECT_FALSE(text.contains("notes.txt")) << text;
+    panel->onDetach();
+}
+
 } // namespace
 } // namespace App

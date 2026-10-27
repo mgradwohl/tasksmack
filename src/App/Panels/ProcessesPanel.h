@@ -3,6 +3,7 @@
 #include "App/KeyboardShortcuts.h"
 #include "App/Panel.h"
 #include "App/Panels/ExitingProcessRows.h"
+#include "App/Panels/FindHandlesDialog.h"
 #include "App/Panels/ProcessActionRun.h"
 #include "App/Panels/ProcessAffinityDialog.h"
 #include "App/Panels/ProcessBatchAction.h"
@@ -33,6 +34,8 @@
 #include "Domain/SamplingConfig.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessIconSource.h"
+#include "Platform/IProcessModules.h"
+#include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/IUdpTrafficCollector.h"
 #include "Platform/ProcessTypes.h"
@@ -125,6 +128,11 @@ struct ProcessesPanelPlatform
     std::shared_ptr<Platform::IUdpTrafficCollector> udpCollector{};
     /// The icons beside the names (#1800); nullptr: every process shows the generic icon.
     std::unique_ptr<Platform::IProcessIconSource> icons;
+    /// Find handles' readers (#3067), the ones Process Details uses; null where there are none (most tests).
+    // NOLINTNEXTLINE(readability-redundant-member-init) - lets the tests' designated initializers leave it out
+    std::unique_ptr<Platform::IProcessOpenFilesReader> openFiles{};
+    // NOLINTNEXTLINE(readability-redundant-member-init) - lets the tests' designated initializers leave it out
+    std::unique_ptr<Platform::IProcessModulesReader> modules{};
 };
 
 class ProcessesPanel : public Panel
@@ -399,6 +407,9 @@ class ProcessesPanel : public Panel
             Platform::ProcessActionCapabilities actionCapabilities; ///< actions->actionCapabilities(), asked on the hook's thread
             std::shared_ptr<Platform::IUdpTrafficCollector> udpCollector;
             std::unique_ptr<Platform::IProcessIconSource> icons;
+            std::unique_ptr<Platform::IProcessOpenFilesReader> openFiles; ///< Find handles' readers (#3067)
+            std::unique_ptr<Platform::IProcessModulesReader> modules;
+            FindHandlesDialog::Capabilities findCapabilities; ///< Asked on the hook's thread
         };
         std::mutex mutex;
         std::optional<Contents> contents; ///< guarded by mutex; empty once taken
@@ -518,6 +529,7 @@ class ProcessesPanel : public Panel
     ProcessBatchPriorityDialog m_BatchPriorityDialog;
     ProcessAffinityDialog m_AffinityDialog; // The row menu's Set affinity... (#1887)
     RunTaskDialog m_RunTaskDialog;          // The toolbar's Run new task... (#3065)
+    FindHandlesDialog m_FindHandlesDialog;  // The toolbar's Find handles (#3067), with its own readers and worker
     // The row menu's Create dump file... (#807). Declared after m_ProcessActions, which its worker uses
     // until it finishes, so it is destroyed (cancelling and waiting for a dump in flight) first.
     ProcessDumpView m_DumpView;
@@ -865,6 +877,9 @@ class ProcessesPanel : public Panel
     void renderAffinityDialog();
     /// Run new task (#3065): the dialog while open, and the program it asks for started on the row action worker.
     void renderRunTaskDialog();
+    /// Find handles (#3067): the dialog while open, searching @p snapshots' processes; a clicked result
+    /// selects its process, and a double-click shows it in Process Details.
+    void renderFindHandlesDialog(const std::vector<Domain::ProcessSnapshot>& snapshots);
 
     /// The confirmation dialog for a row-menu action, and the action once confirmed.
     void renderRowActionConfirm();

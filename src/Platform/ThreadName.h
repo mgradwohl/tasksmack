@@ -48,6 +48,8 @@ inline constexpr std::string_view IO_PRIORITY_READ_THREAD_NAME = "ts-ioprio-read
 inline constexpr std::string_view ENVIRONMENT_READ_THREAD_NAME = "ts-env-read";
 /// The thread that types and names a Windows process's File handles for one read (#183).
 inline constexpr std::string_view OPEN_FILES_NAMER_THREAD_NAME = "ts-files-name";
+/// The worker that runs one Find handles search over every process at a time (#3067), on request.
+inline constexpr std::string_view FIND_HANDLES_THREAD_NAME = "ts-find-handles";
 /// The worker that reads the System Information page's static facts (#1399), once or on Refresh.
 inline constexpr std::string_view SYSTEM_INFO_READ_THREAD_NAME = "ts-sysinfo-read";
 /// The worker that writes the System Information page's "Save report..." file (#2986), one report at a

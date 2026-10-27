@@ -464,6 +464,7 @@ set(COMMON_TEST_SOURCES
     App/test_RunTask.cpp # Run new task (#3065)
     App/test_ProcessPins.cpp # pinned processes (#3061)
     App/test_Connections.cpp # the Connections tab (#3066)
+    Domain/test_HandleSearch.cpp # Find handles (#3067)
     App/test_ProcessGrouping.cpp # Group by (#3068)
     App/test_ProcessTreeFlatten.cpp
     App/test_ProcessTreeIndent.cpp
@@ -870,6 +871,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessBatchPriorityDialog.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessAffinityDialog.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/RunTaskDialog.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/FindHandlesDialog.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessActionsView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessDumpView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessActionsBlock.cpp
@@ -961,6 +963,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/Domain/StorageModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/StartupModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/ConnectionsModel.cpp
+    ${CMAKE_SOURCE_DIR}/src/Domain/HandleSearch.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/SensorModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/SensorTracker.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/SystemInfoModel.cpp

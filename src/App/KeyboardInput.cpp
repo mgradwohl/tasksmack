@@ -140,6 +140,11 @@ bool pollSelectAll()
     return ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_A);
 }
 
+bool pollFindHandles()
+{
+    return ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_F);
+}
+
 float tableScrollViewHeight()
 {
     const ImGuiTable* table = ImGui::GetCurrentTable();
