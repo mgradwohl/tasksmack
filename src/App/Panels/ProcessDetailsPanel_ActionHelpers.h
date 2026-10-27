@@ -149,9 +149,13 @@ inline constexpr float AUTHORIZE_RESULT_SECONDS = 30.0F;
     case ProcessAction::SignalQuit:
     case ProcessAction::SignalUser1:
     case ProcessAction::SignalUser2:
-        authorized.kind = Kind::SendSignal;
-        authorized.signal = *signalFor(action);
-        return authorized;
+        if (const std::optional<Platform::ProcessSignal> signal = signalFor(action))
+        {
+            authorized.kind = Kind::SendSignal;
+            authorized.signal = *signal;
+            return authorized;
+        }
+        break;
     case ProcessAction::None:
         break;
     }
@@ -299,7 +303,11 @@ dispatchProcessAction(Platform::IProcessActions& actions, ProcessAction action, 
     case ProcessAction::SignalQuit:
     case ProcessAction::SignalUser1:
     case ProcessAction::SignalUser2:
-        return actions.sendSignal(target, *signalFor(action));
+        if (const std::optional<Platform::ProcessSignal> signal = signalFor(action))
+        {
+            return actions.sendSignal(target, *signal);
+        }
+        break;
     case ProcessAction::None:
         break;
     }
