@@ -5,7 +5,7 @@
   "https://cdn.jsdelivr.net/npm/docsify@5.0.0/dist/plugins/search.min.js": "sha384-wZGyhbW44GtFpUJG1z6siOX84RFRDAht5UTeOlV/LlRP6T2GXj3LrLwcUHTyzfby",
   "https://cdn.jsdelivr.net/npm/docsify@5.0.0/dist/themes/addons/vue.min.css": "sha384-Juf4pwILpOysilbsFQxO8a3Ct3yDvSPolGmartfG+QQRLj6m7c1mYWV38WDI1N93",
   "https://cdn.jsdelivr.net/npm/docsify@5.0.0/dist/themes/core.min.css": "sha384-u1ltA0BWEetQbGokjUjglT9sN702RQwy8JESh3Ha4GNlyzMU57usk6duY0/BOTMj",
-  "https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js": "sha384-rbtjAdnIQE/aQJGEgXrVUlMibdfTSa4PQju4HDhN3sR2PmaKFzhEafuePsl9H/9I",
+  "https://cdn.jsdelivr.net/npm/mermaid@12.2.0/dist/mermaid.min.js": "sha384-8xUhuLNMjW/cI2Dacg3DR4WliYznvIg0LVG1stctThKD/YVrJFI9TNCFxft5NYgp",
   "https://cdn.jsdelivr.net/npm/prismjs@1.30.0/components/prism-bash.min.js": "sha384-9WmlN8ABpoFSSHvBGGjhvB3E/D8UkNB9HpLJjBQFC2VSQsM1odiQDv4NbEo+7l15",
   "https://cdn.jsdelivr.net/npm/prismjs@1.30.0/components/prism-c.min.js": "sha384-gaD4ncierlmWk42Z3BmTp37/z+Dqt8V4Wf74UjTvFeo+M+SgnEI6Ysd98pWhksQv",
   "https://cdn.jsdelivr.net/npm/prismjs@1.30.0/components/prism-clike.min.js": "sha384-7LHwxHIDSHTBleLmgDWZbC/IMJsfYfFVOihKhvsrxYW4j47YQcRwZja4ToFE3bA8",
