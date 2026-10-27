@@ -36,7 +36,7 @@ TEST(WindowsDiskProbeTest, ConstructsSuccessfully)
 TEST(WindowsDiskProbeTest, CapabilitiesReportedCorrectly)
 {
     const WindowsDiskProbe probe;
-    auto caps = probe.capabilities();
+    const auto caps = probe.capabilities();
 
     EXPECT_TRUE(caps.hasDiskStats);
     EXPECT_TRUE(caps.hasDeviceInfo);
@@ -55,7 +55,7 @@ TEST(WindowsDiskProbeTest, CapabilitiesReportedCorrectly)
 TEST(WindowsDiskProbeTest, ReadReturnsValidCounters)
 {
     WindowsDiskProbe probe;
-    auto counters = probe.read();
+    const auto counters = probe.read();
 
     // Should find at least one disk on a typical Windows system
     // We'll be lenient and just check the structure is valid
@@ -65,7 +65,7 @@ TEST(WindowsDiskProbeTest, ReadReturnsValidCounters)
 TEST(WindowsDiskProbeTest, DiskCountersHaveValidNames)
 {
     WindowsDiskProbe probe;
-    auto counters = probe.read();
+    const auto counters = probe.read();
 
     for (const auto& disk : counters.disks)
     {
@@ -80,11 +80,11 @@ TEST(WindowsDiskProbeTest, DiskCountersAreMonotonic)
 {
     WindowsDiskProbe probe;
 
-    auto counters1 = probe.read();
+    const auto counters1 = probe.read();
 
     std::this_thread::sleep_for(std::chrono::milliseconds(1100));
 
-    auto counters2 = probe.read();
+    const auto counters2 = probe.read();
 
     // WindowsDiskProbe sources DiskCounters from IOCTL_DISK_PERFORMANCE, which reports
     // genuinely cumulative counters (bytes/ops/time since the disk's counters started being
@@ -111,7 +111,7 @@ TEST(WindowsDiskProbeTest, DiskCountersAreMonotonic)
 TEST(WindowsDiskProbeTest, SectorSizeIsValid)
 {
     WindowsDiskProbe probe;
-    auto counters = probe.read();
+    const auto counters = probe.read();
 
     for (const auto& disk : counters.disks)
     {
@@ -123,7 +123,7 @@ TEST(WindowsDiskProbeTest, SectorSizeIsValid)
 TEST(WindowsDiskProbeTest, TotalCountersAggregate)
 {
     WindowsDiskProbe probe;
-    auto counters = probe.read();
+    const auto counters = probe.read();
 
     const uint64_t totalReads = counters.totalReadsCompleted();
     const uint64_t totalWrites = counters.totalWritesCompleted();
@@ -157,8 +157,8 @@ TEST(WindowsDiskProbeTest, ConsecutiveReadsAreConsistent)
 {
     WindowsDiskProbe probe;
 
-    auto counters1 = probe.read();
-    auto counters2 = probe.read();
+    const auto counters1 = probe.read();
+    const auto counters2 = probe.read();
 
     // Device list should be stable between consecutive reads
     EXPECT_EQ(counters1.disks.size(), counters2.disks.size());
@@ -167,7 +167,7 @@ TEST(WindowsDiskProbeTest, ConsecutiveReadsAreConsistent)
 TEST(WindowsDiskProbeTest, PhysicalDeviceFlagIsSet)
 {
     WindowsDiskProbe probe;
-    auto counters = probe.read();
+    const auto counters = probe.read();
 
     for (const auto& disk : counters.disks)
     {
@@ -219,7 +219,7 @@ TEST(WindowsDiskProbeTest, FallbackToLogicalDrivesWorks)
 {
     // This test verifies that even if PDH fails, we still enumerate drives
     WindowsDiskProbe probe;
-    auto counters = probe.read();
+    const auto counters = probe.read();
 
     // Should return at least the C: drive on any Windows system
     // But we'll be lenient and just verify no crash occurs

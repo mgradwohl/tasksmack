@@ -131,7 +131,7 @@ DWORD WINAPI failingModuleFileName(HMODULE /*module*/, LPWSTR /*buffer*/, DWORD 
 
 [[nodiscard]] std::wstring freshName()
 {
-    auto name = BrokerPipe::makePipeName();
+    const auto name = BrokerPipe::makePipeName();
     EXPECT_TRUE(name.has_value());
     return name.value_or(L"");
 }
@@ -216,13 +216,13 @@ TEST(HelperLauncherTest, TaskSmackNamesItselfAsTheHelperReadsIt)
 
     const auto image = BrokerHelper::imageOf(GetCurrentProcess());
     ASSERT_TRUE(image.has_value());
-    EXPECT_EQ(lowerCased(fake.file), lowerCased(BrokerHelper::besidePath(*image, L"TaskSmackHelper.exe")));
+    EXPECT_EQ(lowerCased(fake.file), lowerCased(BrokerHelper::besidePath(image.value_or(L""), L"TaskSmackHelper.exe")));
 
     const auto read = readAsTheHelper(fake.parameters);
     ASSERT_TRUE(read.has_value()) << read.error();
     const auto ticks = BrokerHelper::startTicksOf(GetCurrentProcess());
     ASSERT_TRUE(ticks.has_value());
-    EXPECT_EQ(read->parentStartTicks, *ticks);
+    EXPECT_EQ(read->parentStartTicks, ticks.value_or(0));
 }
 
 TEST(HelperLauncherTest, TheParametersAreTheHelpersCommandLineAndReadBackExactly)
@@ -481,7 +481,7 @@ TEST(HelperLauncherTest, AHelperThatRefusedItsParentSaysSo)
 {
     UniqueHandle token;
     EXPECT_NE(OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, token.put()), FALSE);
-    auto sid = BrokerPipe::userSidOfToken(token.get());
+    const auto sid = BrokerPipe::userSidOfToken(token.get());
     EXPECT_TRUE(sid.has_value());
     return sid.value_or(BrokerPipe::Sid{});
 }

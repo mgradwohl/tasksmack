@@ -331,11 +331,11 @@ TEST(WindowsProcessIdentity, RealCallsConfirmThisProcessAndRefuseAnotherStartTim
     ASSERT_TRUE(start.has_value());
     const auto pid = static_cast<std::int32_t>(GetCurrentProcessId());
 
-    const auto self = openProcessVerified({}, {.pid = pid, .startTimeTicks = *start}, 0);
+    const auto self = openProcessVerified({}, {.pid = pid, .startTimeTicks = start.value_or(0)}, 0);
     ASSERT_TRUE(self.has_value()) << "error " << self.error().win32Error;
     EXPECT_EQ(GetProcessId(self->get()), GetCurrentProcessId());
 
-    const auto other = openProcessVerified({}, {.pid = pid, .startTimeTicks = *start + 1}, 0);
+    const auto other = openProcessVerified({}, {.pid = pid, .startTimeTicks = start.value_or(0) + 1}, 0);
     ASSERT_FALSE(other.has_value());
     EXPECT_EQ(other.error().kind, IdentityFailureKind::Mismatch);
 }
@@ -363,7 +363,8 @@ TEST(WindowsProcessIdentity, RealCallsRefuseAnExitedChildStillHeldOpen)
 
     const std::optional<std::uint64_t> start = startTicksOf(child.get());
     ASSERT_TRUE(start.has_value());
-    const auto exited = openProcessVerified({}, {.pid = static_cast<std::int32_t>(info.dwProcessId), .startTimeTicks = *start}, 0);
+    const auto exited =
+        openProcessVerified({}, {.pid = static_cast<std::int32_t>(info.dwProcessId), .startTimeTicks = start.value_or(0)}, 0);
     ASSERT_FALSE(exited.has_value());
     EXPECT_EQ(exited.error().kind, IdentityFailureKind::Exited);
 }

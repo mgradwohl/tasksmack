@@ -29,9 +29,9 @@ TEST(WindowsPDHGPUProbeTest, ConstructionDoesNotThrow)
 TEST(WindowsPDHGPUProbeTest, BasicOperationsDoNotThrow)
 {
     PDHGPUProbe probe;
-    EXPECT_NO_THROW([[maybe_unused]] auto available = probe.isAvailable());
-    EXPECT_NO_THROW([[maybe_unused]] auto process = probe.readProcessGPUCounters());
-    EXPECT_NO_THROW([[maybe_unused]] auto caps = probe.capabilities());
+    EXPECT_NO_THROW([[maybe_unused]] const auto available = probe.isAvailable());
+    EXPECT_NO_THROW([[maybe_unused]] const auto process = probe.readProcessGPUCounters());
+    EXPECT_NO_THROW([[maybe_unused]] const auto caps = probe.capabilities());
 }
 
 TEST(WindowsPDHGPUProbeTest, IsAvailableReturnsBool)
@@ -78,12 +78,12 @@ TEST(WindowsPDHGPUProbeTest, MoveConstructionAndAssignmentTransferState)
 
     PDHGPUProbe moved(std::move(probe));
     EXPECT_EQ(moved.isAvailable(), availableBeforeMove);
-    EXPECT_NO_THROW([[maybe_unused]] auto process = moved.readProcessGPUCounters());
+    EXPECT_NO_THROW([[maybe_unused]] const auto process = moved.readProcessGPUCounters());
 
     PDHGPUProbe assigned;
     assigned = std::move(moved);
     EXPECT_EQ(assigned.isAvailable(), availableBeforeMove);
-    EXPECT_NO_THROW([[maybe_unused]] auto process = assigned.readProcessGPUCounters());
+    EXPECT_NO_THROW([[maybe_unused]] const auto process = assigned.readProcessGPUCounters());
 }
 
 // =============================================================================
@@ -234,7 +234,7 @@ fakeGetFormattedCounterArray(PDH_HCOUNTER counter, DWORD format, LPDWORD bufferS
         return ERROR_SUCCESS;
     }
 
-    if (auto more = g_scenario->extraMoreDataRounds.find(counter); more != g_scenario->extraMoreDataRounds.end() && more->second > 0)
+    if (const auto more = g_scenario->extraMoreDataRounds.find(counter); more != g_scenario->extraMoreDataRounds.end() && more->second > 0)
     {
         --more->second;
         // Each forced retry advertises a larger requirement than the last, simulating

@@ -321,7 +321,7 @@ TEST(DXGIGPUProbeTest, ConstructsSuccessfully)
 TEST(DXGIGPUProbeTest, EnumerateGPUsReturnsWellFormedData)
 {
     DXGIGPUProbe probe;
-    auto gpus = probe.enumerateGPUs();
+    const auto gpus = probe.enumerateGPUs();
 
     std::unordered_set<std::string> ids;
     for (const auto& gpu : gpus)
@@ -335,8 +335,8 @@ TEST(DXGIGPUProbeTest, EnumerateGPUsReturnsWellFormedData)
 TEST(DXGIGPUProbeTest, ReadGPUCountersMatchesEnumeration)
 {
     DXGIGPUProbe probe;
-    auto gpus = probe.enumerateGPUs();
-    auto counters = probe.readGPUCounters();
+    const auto gpus = probe.enumerateGPUs();
+    const auto counters = probe.readGPUCounters();
 
     EXPECT_EQ(gpus.size(), counters.size());
     for (const auto& counter : counters)
