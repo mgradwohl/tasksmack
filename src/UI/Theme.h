@@ -60,6 +60,10 @@ struct ColorScheme
     ImVec4 coreEfficiency;
     ImVec4 coreLowPower;
 
+    // The Processes table's tint for a process that just started (#3060), drawn at a low, fading
+    // opacity behind the row (fallback: text_success).
+    ImVec4 processNew;
+
     // Processes table inline meters (#1528): the heat gradient a cell's bar runs along as its value
     // rises, alpha included so the text stays readable on it ([process_meter] low / high; fallbacks:
     // text_warning at up to 0.15 alpha and text_error at up to 0.30, lowered until text_primary keeps

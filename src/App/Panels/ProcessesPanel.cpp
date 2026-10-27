@@ -2089,7 +2089,7 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, const
         if (const std::optional<float> alpha = NewProcessHighlight::alpha(proc.startTimeEpoch, m_HighlightNowEpochSeconds);
             alpha.has_value())
         {
-            ImVec4 tint = UI::Theme::get().scheme().textSuccess;
+            ImVec4 tint = UI::Theme::get().scheme().processNew; // the theme's, else its success colour
             tint.w = *alpha;
             ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg1, ImGui::GetColorU32(tint));
         }

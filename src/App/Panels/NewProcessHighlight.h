@@ -4,6 +4,7 @@
 // System Informer highlight new processes: short-lived processes are otherwise easy to miss. Pure, so
 // tested without ImGui (test_NewProcessHighlight.cpp).
 
+#include <algorithm>
 #include <cstdint>
 #include <optional>
 
@@ -25,11 +26,7 @@ inline constexpr float MAX_ALPHA = 0.28F;
     {
         return std::nullopt;
     }
-    double age = nowEpochSeconds - static_cast<double>(startEpochSeconds);
-    if (age < 0.0)
-    {
-        age = 0.0;
-    }
+    const double age = std::max(0.0, nowEpochSeconds - static_cast<double>(startEpochSeconds));
     if (age >= DURATION_SECONDS)
     {
         return std::nullopt;
