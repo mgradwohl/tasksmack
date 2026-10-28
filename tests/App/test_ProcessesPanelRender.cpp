@@ -14,6 +14,7 @@
 /// UI state (#2731): tab changes and the frame rate never change it.
 
 #include "App/Panels/AuthorizeWording.h"
+#include "App/Panels/NiceStep.h"
 #include "App/Panels/ProcessColumnAvailability.h"
 #include "App/Panels/ProcessDumpView.h"
 #include "App/Panels/ProcessRowFormat.h"
@@ -26,6 +27,7 @@
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Domain/GPUModel.h"
+#include "Domain/PriorityConfig.h"
 #include "Domain/ProcessModel.h"
 #include "Domain/SamplingConfig.h"
 #include "Domain/ServiceModel.h"
@@ -2847,6 +2849,40 @@ TEST_F(ProcessesPanelRenderTest, TheGroupControlLeavesTreeViewAndGroupedRowsNavi
         EXPECT_EQ(text.contains("worker"), open) << text;
     }
     panel->onDetach(); // TearDown restores the settings
+}
+
+// #3097: F7 sets the selected process's priority one step higher at once (no confirm), on the row action
+// worker, and says so in the toolbar; F8 one step lower.
+TEST_F(ProcessesPanelRenderTest, F7AndF8StepTheSelectedProcessesPriorityAtOnce)
+{
+    SelectionSink events;
+    TestMocks::MockProcessActions* actions = nullptr;
+    const auto panel = attachedPanelWithActions(events.sink(), actions);
+    renderUntilLoaded(*panel);
+    ASSERT_NE(actions, nullptr);
+    pressKey(*panel, ImGuiKey_DownArrow);
+    const std::int32_t pid = panel->selectedPid();
+    ASSERT_GT(pid, 0);
+
+    for (const NiceStep::Direction direction : {NiceStep::Direction::Raise, NiceStep::Direction::Lower})
+    {
+        const int before = actions->setPriorityCount();
+        panel->requestPriorityStep(direction);
+        static_cast<void>(renderAndCapture(*panel));
+        panel->waitForRowActionForTesting();
+        const std::string text = renderAndCapture(*panel);
+        EXPECT_EQ(actions->setPriorityCount(), before + 1);
+        EXPECT_EQ(actions->lastSetPriorityPid(), pid);
+        // The mock's processes are at nice 0, with no class read.
+        EXPECT_EQ(actions->lastSetPriorityNice(), NiceStep::next(0, Domain::Priority::PriorityClass::None, direction).value_or(99));
+        EXPECT_TRUE(text.contains("Priority of")) << text;
+    }
+
+    // No selection: nothing happens.
+    panel->requestPriorityStep(NiceStep::Direction::Raise);
+    panel->expireFrameRequests(); // the frame ended before the table took it
+    static_cast<void>(renderAndCapture(*panel));
+    EXPECT_EQ(actions->setPriorityCount(), 2);
 }
 
 } // namespace

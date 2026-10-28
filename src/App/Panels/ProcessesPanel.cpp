@@ -6,6 +6,7 @@
 #include "App/Panels/ExitingProcessRows.h"
 #include "App/Panels/GpuSection.h"
 #include "App/Panels/NewProcessHighlight.h"
+#include "App/Panels/NiceStep.h"
 #include "App/Panels/ProcessActionConfirm.h"
 #include "App/Panels/ProcessActionsView.h"
 #include "App/Panels/ProcessAffinityDialog.h"
@@ -2963,7 +2964,8 @@ void ProcessesPanel::applyKeyboardInput(const std::vector<Domain::ProcessSnapsho
                                         bool selectAllRequested)
 {
     namespace Nav = ProcessTableNavigation;
-    if (command == Nav::NavCommand::None && !killRequested && !selectAllRequested)
+    const std::optional<NiceStep::Direction> priorityStep = std::exchange(m_PriorityStepRequest, std::nullopt);
+    if (command == Nav::NavCommand::None && !killRequested && !selectAllRequested && !priorityStep.has_value())
     {
         return; // The common frame: no key, so the visible order is not even looked at
     }
@@ -3027,6 +3029,33 @@ void ProcessesPanel::applyKeyboardInput(const std::vector<Domain::ProcessSnapsho
             }
         }
     }
+    // F7 / F8 (#3097): the one highlighted row's priority a step higher or lower, at once, as htop does.
+    if (priorityStep.has_value() && m_Selection.size() == 1 && m_ActionCapabilities.canSetPriority && !rowActionPending && m_ProcessActions)
+    {
+        const ProcessSelection::Identity selectedId = *m_Selection.selected().begin();
+        if (const std::optional<std::size_t> row = Nav::indexOfKey<ProcessSelection::Identity>(ids, selectedId); row.has_value())
+        {
+            const Domain::ProcessSnapshot& proc = snapshots[visible[*row]];
+            if (const std::optional<std::int32_t> nice = NiceStep::next(proc.nice, proc.priorityClass, *priorityStep); nice.has_value())
+            {
+                runRowAction(
+                    std::format("Setting the priority of {}...", proc.name),
+                    [actions = m_ProcessActions.get(), selectedId, nice = *nice] { return actions->setPriority(selectedId, nice); },
+                    [name = proc.name, pid = proc.pid, nice = *nice](const Platform::ProcessActionResult& result)
+                    { return NiceStep::resultMessage(name, pid, nice, result); },
+                    Platform::AuthorizedAction{.kind = Platform::AuthorizedAction::Kind::SetPriority, .target = selectedId, .nice = *nice});
+            }
+            else
+            {
+                showBatchOutcome({.message = {.ok = false,
+                                              .text = std::format("{} is already at the {} priority",
+                                                                  proc.name,
+                                                                  *priorityStep == NiceStep::Direction::Raise ? "highest" : "lowest")},
+                                  .anySucceeded = false});
+            }
+        }
+    }
+
     // No movement key this frame (e.g. a bare F9): nothing below may select or scroll, so a refused F9
     // leaves the table exactly as it was.
     if (command == Nav::NavCommand::None)

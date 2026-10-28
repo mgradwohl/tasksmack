@@ -24,6 +24,8 @@ TEST(KeyboardShortcutsTest, EachFunctionKeyMapsToItsAction)
     EXPECT_EQ(actionFor(FunctionKey::F2, idle), ShortcutAction::OpenSettings);
     EXPECT_EQ(actionFor(FunctionKey::F5, idle), ShortcutAction::ToggleTreeView);
     EXPECT_EQ(actionFor(FunctionKey::F9, idle), ShortcutAction::KillSelected);
+    EXPECT_EQ(actionFor(FunctionKey::F7, idle), ShortcutAction::RaisePriority);
+    EXPECT_EQ(actionFor(FunctionKey::F8, idle), ShortcutAction::LowerPriority);
     EXPECT_EQ(actionFor(FunctionKey::F10, idle), ShortcutAction::Quit);
 }
 
@@ -105,6 +107,8 @@ TEST(KeyboardShortcutsTest, TabShortcutsGoToTheTabOnShow)
     EXPECT_EQ(tabShortcutTarget(ShortcutAction::ToggleTreeView, "Processes"), ShortcutTarget::Processes);
     EXPECT_EQ(tabShortcutTarget(ShortcutAction::ToggleTreeView, "ProcessDetails"), ShortcutTarget::None);
     EXPECT_EQ(tabShortcutTarget(ShortcutAction::ToggleTreeView, "SystemOverview"), ShortcutTarget::None);
+    EXPECT_EQ(tabShortcutTarget(ShortcutAction::RaisePriority, "Processes"), ShortcutTarget::Processes); // F7/F8 (#3097)
+    EXPECT_EQ(tabShortcutTarget(ShortcutAction::LowerPriority, "ProcessDetails"), ShortcutTarget::None);
     EXPECT_EQ(tabShortcutTarget(ShortcutAction::KillSelected, "Processes"), ShortcutTarget::Processes);
     EXPECT_EQ(tabShortcutTarget(ShortcutAction::KillSelected, "ProcessDetails"), ShortcutTarget::ProcessDetails);
     EXPECT_EQ(tabShortcutTarget(ShortcutAction::KillSelected, "SystemOverview"), ShortcutTarget::None); // No selection

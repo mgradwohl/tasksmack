@@ -22,6 +22,8 @@ enum class FunctionKey : std::uint8_t
     F1,
     F2,
     F5,
+    F7,
+    F8,
     F9,
     F10,
 };
@@ -33,6 +35,8 @@ enum class ShortcutAction : std::uint8_t
     ShowHelp,       ///< F1: the Help window, which lists these shortcuts (#172); About is reached from it
     OpenSettings,   ///< F2: the Settings dialog
     ToggleTreeView, ///< F5: Processes list <-> tree (Processes tab only)
+    RaisePriority,  ///< F7: the selected process one priority step higher (Processes tab only, #3097)
+    LowerPriority,  ///< F8: the selected process one priority step lower (Processes tab only, #3097)
     KillSelected,   ///< F9: the Kill confirm dialog for the selected process(es); never kills directly
     Quit,           ///< F10: the window's normal close request, so settings are saved
 };
@@ -48,10 +52,18 @@ struct FunctionKeyBinding
 
 /// The function-key map, in key order. The single source for the shell's dispatch and for the
 /// shortcut list in the Help window.
-inline constexpr std::array<FunctionKeyBinding, 5> FUNCTION_KEY_BINDINGS{{
+inline constexpr std::array<FunctionKeyBinding, 7> FUNCTION_KEY_BINDINGS{{
     {.key = FunctionKey::F1, .action = ShortcutAction::ShowHelp, .keyLabel = "F1", .description = "Help: shortcuts, columns and tabs"},
     {.key = FunctionKey::F2, .action = ShortcutAction::OpenSettings, .keyLabel = "F2", .description = "Settings"},
     {.key = FunctionKey::F5, .action = ShortcutAction::ToggleTreeView, .keyLabel = "F5", .description = "List / tree view"},
+    {.key = FunctionKey::F7,
+     .action = ShortcutAction::RaisePriority,
+     .keyLabel = "F7",
+     .description = "Higher priority for the selected process (nice -1, or the next class up)"},
+    {.key = FunctionKey::F8,
+     .action = ShortcutAction::LowerPriority,
+     .keyLabel = "F8",
+     .description = "Lower priority for the selected process (nice +1, or the next class down)"},
     {.key = FunctionKey::F9,
      .action = ShortcutAction::KillSelected,
      .keyLabel = "F9",
@@ -131,10 +143,16 @@ struct ShortcutHelpEntry
 
 /// Every keyboard shortcut, for the Help window (#172): the function keys above, then the Processes
 /// table's navigation (ProcessTableNavigation.h), Process Details' keys and the older chords.
-inline constexpr std::array<ShortcutHelpEntry, 18> SHORTCUT_HELP{{
+inline constexpr std::array<ShortcutHelpEntry, 20> SHORTCUT_HELP{{
     {.keys = "F1", .description = "Help: shortcuts, columns and tabs", .area = ShortcutArea::Global},
     {.keys = "F2", .description = "Settings", .area = ShortcutArea::Global},
     {.keys = "F5", .description = "List / tree view", .area = ShortcutArea::Processes},
+    {.keys = "F7",
+     .description = "Higher priority for the selected process (nice -1, or the next class up)",
+     .area = ShortcutArea::Processes},
+    {.keys = "F8",
+     .description = "Lower priority for the selected process (nice +1, or the next class down)",
+     .area = ShortcutArea::Processes},
     {.keys = "F9", .description = "Kill the selected process(es) (asks first)", .area = ShortcutArea::Processes},
     {.keys = "F10", .description = "Quit", .area = ShortcutArea::Global},
     {.keys = "Up / Down, k / j", .description = "Previous / next row", .area = ShortcutArea::Processes},
@@ -169,7 +187,7 @@ enum class ShortcutTarget : std::uint8_t
 /// Anything else, or another tab (the System tab has no selection): None.
 [[nodiscard]] constexpr ShortcutTarget tabShortcutTarget(ShortcutAction action, std::string_view activeTab) noexcept
 {
-    if (action == ShortcutAction::ToggleTreeView)
+    if (action == ShortcutAction::ToggleTreeView || action == ShortcutAction::RaisePriority || action == ShortcutAction::LowerPriority)
     {
         return (activeTab == "Processes") ? ShortcutTarget::Processes : ShortcutTarget::None;
     }

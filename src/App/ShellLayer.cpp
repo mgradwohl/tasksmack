@@ -14,6 +14,7 @@
 #include "KeyboardShortcuts.h"
 #include "MainTabBarView.h"
 #include "PanelPlatforms.h"
+#include "Panels/NiceStep.h"
 #include "Panels/ProcessDetailsPanel.h"
 #include "Panels/ProcessIconView.h"
 #include "Panels/ProcessesPanel.h"
@@ -722,6 +723,8 @@ void ShellLayer::handleGlobalShortcut(KeyboardShortcuts::ShortcutAction action)
         break;
     }
     case ShortcutAction::ToggleTreeView:
+    case ShortcutAction::RaisePriority:
+    case ShortcutAction::LowerPriority:
     case ShortcutAction::KillSelected:
         break; // Tab-sensitive: handleTabShortcut(), after the tab bar
     case ShortcutAction::Quit:
@@ -744,6 +747,14 @@ void ShellLayer::handleTabShortcut(KeyboardShortcuts::ShortcutAction action)
         if (action == KeyboardShortcuts::ShortcutAction::ToggleTreeView)
         {
             m_ProcessesPanel.toggleTreeView();
+        }
+        else if (action == KeyboardShortcuts::ShortcutAction::RaisePriority)
+        {
+            m_ProcessesPanel.requestPriorityStep(NiceStep::Direction::Raise);
+        }
+        else if (action == KeyboardShortcuts::ShortcutAction::LowerPriority)
+        {
+            m_ProcessesPanel.requestPriorityStep(NiceStep::Direction::Lower);
         }
         else
         {
