@@ -5,6 +5,7 @@
 // layer turns them into labelled rows (App/Panels/SystemInfoSections.h).
 
 #include "Platform/IServiceProbe.h"
+#include "Platform/ImageSignature.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -487,16 +488,9 @@ struct DevicesInfo
 };
 
 /// A Windows driver image's signature (#1661), from WinVerifyTrust: embedded in the file, or its hash in a
-/// signed catalog. Checked without the network: no revocation check, cached URLs only.
-enum class DriverSignature : std::uint8_t
-{
-    NotChecked, ///< Not read: Linux, no image path, or the check was skipped
-    Embedded,   ///< A trusted signature in the file itself
-    Catalog,    ///< A trusted catalog holds the file's hash (most inbox drivers)
-    Unsigned,   ///< No signature, embedded or in a catalog
-    Untrusted,  ///< Signed, but the signature doesn't verify (bad digest, distrusted, expired...)
-    Unknown,    ///< The check itself failed; signatureNote says why
-};
+/// signed catalog. Checked without the network: no revocation check, cached URLs only. The same check as a
+/// process image's (#3070), so the same type (ImageSignature.h).
+using DriverSignature = ImageSignature;
 
 /// One kernel driver (#1521): a Windows driver service that is running (or, #1661, one that should have
 /// started and didn't), or a loaded Linux kernel module.

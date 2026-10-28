@@ -26,10 +26,6 @@
 #include <winver.h>
 #include <winioctl.h>
 #include <usbioctl.h> // the hub connection IOCTLs: a USB device's link speed (#1642)
-#include <wincrypt.h>
-#include <wintrust.h>
-#include <softpub.h>  // WINTRUST_ACTION_GENERIC_VERIFY_V2, DRIVER_ACTION_VERIFY
-#include <mscat.h>    // CryptCATAdmin*: a driver's catalog (#1661)
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wlanguage-extension-token"
 #include <d3d12.h>    // the device maxD3D12FeatureLevel() creates (#1636); d3d12.dll is loaded at run time
@@ -43,8 +39,6 @@
 #pragma comment(lib, "secur32.lib")
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "version.lib")
-#pragma comment(lib, "wintrust.lib")
-#pragma comment(lib, "crypt32.lib")
 
 #include "ComPtr.h"
 #include "ComScope.h"
@@ -56,7 +50,6 @@
 #include "WinString.h"
 #include "WindowsBootPerformance.h"
 #include "WindowsCommitPaging.h"
-#include "WindowsConversions.h"
 #include "WindowsCrashEvents.h"
 #include "WindowsDevices.h"
 #include "WindowsDriverNodes.h"
@@ -69,6 +62,7 @@
 #include "WindowsPlatformSecurity.h"
 #include "WindowsPublicIp.h"
 #include "WindowsServiceConfig.h"
+#include "WindowsSignatureCheck.h"
 #include "WindowsStorage.h"
 #include "WindowsThermalZones.h"
 
@@ -798,201 +792,6 @@ constexpr PROPERTYKEY FRIENDLY_NAME_KEY{
 #pragma clang diagnostic pop
 // NOLINTEND(cppcoreguidelines-pro-type-reinterpret-cast)
 
-/// FormatMessage's text for a Win32 error or HRESULT, else (a driver's exit code is often an NTSTATUS)
-/// ntdll's for an NTSTATUS. Empty when neither has one.
-[[nodiscard]] std::string errorMessage(std::uint32_t code)
-{
-    const auto format = [code](DWORD source, HMODULE module)
-    {
-        std::array<wchar_t, 512> text{};
-        const DWORD length =
-            FormatMessageW(source | FORMAT_MESSAGE_IGNORE_INSERTS, module, code, 0, text.data(), static_cast<DWORD>(text.size()), nullptr);
-        return length == 0 ? std::string{} : WinString::wideToUtf8(std::wstring_view(text.data(), length));
-    };
-    std::string text = format(FORMAT_MESSAGE_FROM_SYSTEM, nullptr);
-    if (text.empty())
-    {
-        if (const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll"); ntdll != nullptr)
-        {
-            text = format(FORMAT_MESSAGE_FROM_HMODULE, ntdll);
-        }
-    }
-    return text;
-}
-
-[[nodiscard]] std::optional<WindowsDrivers::FileStamp> fileStamp(const std::string& path)
-{
-    WIN32_FILE_ATTRIBUTE_DATA data{};
-    if (GetFileAttributesExW(WinString::utf8ToWide(path).c_str(), GetFileExInfoStandard, &data) == FALSE)
-    {
-        return std::nullopt;
-    }
-    constexpr unsigned HIGH_SHIFT = 32;
-    return WindowsDrivers::FileStamp{
-        .lastWriteTime = Windows::fileTimeTicks(data.ftLastWriteTime),
-        .size = (std::uint64_t{data.nFileSizeHigh} << HIGH_SHIFT) | data.nFileSizeLow,
-    };
-}
-
-/// WinVerifyTrust's settings for a quiet, offline check: no UI, no revocation, no URL fetched (cached only).
-[[nodiscard]] WINTRUST_DATA offlineTrustData()
-{
-    WINTRUST_DATA data{};
-    data.cbStruct = sizeof(data);
-    data.dwUIChoice = WTD_UI_NONE;
-    data.fdwRevocationChecks = WTD_REVOKE_NONE;
-    data.dwStateAction = WTD_STATEACTION_IGNORE;
-    data.dwProvFlags = WTD_CACHE_ONLY_URL_RETRIEVAL | WTD_REVOCATION_CHECK_NONE;
-    return data;
-}
-
-/// The leaf signing certificate's simple name ("Microsoft Windows") from a verified WinVerifyTrust state.
-[[nodiscard]] std::string signerName(HANDLE state)
-{
-    CRYPT_PROVIDER_DATA* provider = WTHelperProvDataFromStateData(state);
-    if (provider == nullptr)
-    {
-        return {};
-    }
-    const CRYPT_PROVIDER_SGNR* signer = WTHelperGetProvSignerFromChain(provider, 0, FALSE, 0);
-    if (signer == nullptr || signer->csCertChain == 0 || signer->pasCertChain == nullptr || signer->pasCertChain->pCert == nullptr)
-    {
-        return {};
-    }
-    std::array<wchar_t, 256> name{};
-    const DWORD length = CertGetNameStringW(
-        signer->pasCertChain->pCert, CERT_NAME_SIMPLE_DISPLAY_TYPE, 0, nullptr, name.data(), static_cast<DWORD>(name.size()));
-    return length > 1 ? WinString::wideToUtf8(std::wstring_view(name.data(), length - 1)) : std::string{}; // length counts the NUL
-}
-
-/// WinVerifyTrust without an interactive user (INVALID_HANDLE_VALUE as the window: no UI at all), and the
-/// signer's name when the signature is trusted. The verification state is always closed.
-[[nodiscard]] WindowsDrivers::TrustCheck verifyTrust(WINTRUST_DATA& data)
-{
-    GUID action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
-    // NOLINTNEXTLINE(performance-no-int-to-ptr) - WinVerifyTrust's documented "no interactive user" window
-    auto* const noUser = static_cast<HWND>(INVALID_HANDLE_VALUE);
-    data.dwStateAction = WTD_STATEACTION_VERIFY;
-    WindowsDrivers::TrustCheck check{.result = WinVerifyTrust(noUser, &action, &data), .signer = {}};
-    if (check.result == 0)
-    {
-        check.signer = signerName(data.hWVTStateData);
-    }
-    data.dwStateAction = WTD_STATEACTION_CLOSE;
-    WinVerifyTrust(noUser, &action, &data);
-    return check;
-}
-
-/// The file's own Authenticode signature.
-[[nodiscard]] WindowsDrivers::TrustCheck verifyEmbeddedSignature(const std::string& path)
-{
-    const std::wstring wide = WinString::utf8ToWide(path);
-    WINTRUST_FILE_INFO file{};
-    file.cbStruct = sizeof(file);
-    file.pcwszFilePath = wide.c_str();
-    WINTRUST_DATA data = offlineTrustData();
-    data.dwUnionChoice = WTD_CHOICE_FILE;
-    data.pFile = &file; // NOLINT(cppcoreguidelines-pro-type-union-access) - the member dwUnionChoice selects
-    return verifyTrust(data);
-}
-
-/// The HRESULT for the calling thread's last Win32 error.
-[[nodiscard]] std::int32_t lastErrorResult()
-{
-    return HRESULT_FROM_WIN32(GetLastError());
-}
-
-/// A catalog admin context and the catalog found through it, released in that order.
-struct CatalogAdmin
-{
-    HCATADMIN handle = nullptr;
-    HCATINFO catalog = nullptr;
-
-    CatalogAdmin() = default;
-    CatalogAdmin(const CatalogAdmin&) = delete;
-    CatalogAdmin& operator=(const CatalogAdmin&) = delete;
-    CatalogAdmin(CatalogAdmin&&) = delete;
-    CatalogAdmin& operator=(CatalogAdmin&&) = delete;
-    ~CatalogAdmin()
-    {
-        if (catalog != nullptr)
-        {
-            CryptCATAdminReleaseCatalogContext(handle, catalog, 0);
-        }
-        if (handle != nullptr)
-        {
-            CryptCATAdminReleaseContext(handle, 0);
-        }
-    }
-};
-
-/// The signature of the system catalog that holds the file's hash: its SHA-256 hash (current catalogs),
-/// else its SHA-1 hash (older ones). nullopt when no catalog holds either.
-[[nodiscard]] std::optional<WindowsDrivers::TrustCheck> verifyCatalogSignature(const std::string& path)
-{
-    const std::wstring wide = WinString::utf8ToWide(path);
-    const Windows::UniqueHandle file(CreateFileW(
-        wide.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr));
-    if (!file)
-    {
-        return WindowsDrivers::TrustCheck{.result = lastErrorResult(), .signer = {}};
-    }
-    const GUID subsystem = DRIVER_ACTION_VERIFY;
-    for (const wchar_t* algorithm : {BCRYPT_SHA256_ALGORITHM, BCRYPT_SHA1_ALGORITHM})
-    {
-        CatalogAdmin catalogAdmin;
-        if (CryptCATAdminAcquireContext2(&catalogAdmin.handle, &subsystem, algorithm, nullptr, 0) == FALSE)
-        {
-            return WindowsDrivers::TrustCheck{.result = lastErrorResult(), .signer = {}};
-        }
-        HCATADMIN admin = catalogAdmin.handle;
-        const LARGE_INTEGER start{};
-        DWORD hashSize = 0;
-        if (SetFilePointerEx(file.get(), start, nullptr, FILE_BEGIN) == FALSE ||
-            (CryptCATAdminCalcHashFromFileHandle2(admin, file.get(), &hashSize, nullptr, 0) == FALSE && hashSize == 0))
-        {
-            return WindowsDrivers::TrustCheck{.result = lastErrorResult(), .signer = {}};
-        }
-        std::vector<BYTE> hash(hashSize);
-        if (SetFilePointerEx(file.get(), start, nullptr, FILE_BEGIN) == FALSE ||
-            CryptCATAdminCalcHashFromFileHandle2(admin, file.get(), &hashSize, hash.data(), 0) == FALSE)
-        {
-            return WindowsDrivers::TrustCheck{.result = lastErrorResult(), .signer = {}};
-        }
-        catalogAdmin.catalog = CryptCATAdminEnumCatalogFromHash(admin, hash.data(), hashSize, 0, nullptr);
-        if (catalogAdmin.catalog == nullptr)
-        {
-            continue; // not in a catalog under this algorithm's hash
-        }
-        CATALOG_INFO info{};
-        info.cbStruct = sizeof(info);
-        if (CryptCATCatalogInfoFromContext(catalogAdmin.catalog, &info, 0) == FALSE)
-        {
-            return WindowsDrivers::TrustCheck{.result = lastErrorResult(), .signer = {}};
-        }
-        std::wstring memberTag; // the catalog names its members by their hash, in upper-case hex
-        memberTag.reserve(static_cast<std::size_t>(hashSize) * 2);
-        for (const BYTE byte : hash)
-        {
-            memberTag += std::format(L"{:02X}", byte);
-        }
-        WINTRUST_CATALOG_INFO member{};
-        member.cbStruct = sizeof(member);
-        member.pcwszCatalogFilePath = info.wszCatalogFile;
-        member.pcwszMemberTag = memberTag.c_str();
-        member.pcwszMemberFilePath = wide.c_str();
-        member.hMemberFile = file.get();
-        member.pbCalculatedFileHash = hash.data();
-        member.cbCalculatedFileHash = hashSize;
-        member.hCatAdmin = admin;
-        WINTRUST_DATA data = offlineTrustData();
-        data.dwUnionChoice = WTD_CHOICE_CATALOG;
-        data.pCatalog = &member; // NOLINT(cppcoreguidelines-pro-type-union-access) - the member dwUnionChoice selects
-        return verifyTrust(data);
-    }
-    return std::nullopt;
-}
-
 } // namespace
 
 WindowsSystemInfoProbe::WindowsSystemInfoProbe() : WindowsSystemInfoProbe(systemFunctions())
@@ -1183,10 +982,12 @@ WindowsDrivers::Functions WindowsSystemInfoProbe::driverFunctions()
         .listDriverServices = &listDriverServices,
         .windowsDirectory = &windowsDirectory,
         .readFileVersion = &readFileVersion,
-        .errorMessage = &errorMessage,
-        .fileStamp = &fileStamp,
-        .verifyEmbeddedSignature = &verifyEmbeddedSignature,
-        .verifyCatalogSignature = &verifyCatalogSignature,
+        // The image signature check the process probe's Signature column shares (#3070): a driver's exit
+        // code is often an NTSTATUS, which signatureErrorMessage() names from ntdll's messages.
+        .errorMessage = Windows::systemSignatureFunctions().errorMessage,
+        .fileStamp = Windows::systemSignatureFunctions().fileStamp,
+        .verifyEmbeddedSignature = Windows::systemSignatureFunctions().verifyEmbeddedSignature,
+        .verifyCatalogSignature = Windows::systemSignatureFunctions().verifyCatalogSignature,
     };
 }
 

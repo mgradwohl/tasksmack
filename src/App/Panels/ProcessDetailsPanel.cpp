@@ -3,6 +3,7 @@
 #include "App/Panel.h"
 #include "App/PanelPlatforms.h"
 #include "App/Panels/ProcessArchitectureNote.h"
+#include "App/Panels/ProcessSignatureText.h"
 #include "App/Panels/ProcessStateColor.h"
 #include "App/Panels/ProcessTypeColor.h"
 #include "App/SelectOverride.h"
@@ -23,6 +24,7 @@
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessSecurity.h"
 #include "Platform/IServiceProbe.h"
+#include "Platform/ImageSignature.h"
 #include "ProcessActionsBlock.h"
 #include "ProcessActionsView.h"
 #include "ProcessConnectionsView.h"
@@ -664,6 +666,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
             "Priority",
             "Policy",
             "Publisher",
+            "Signature",
             "Type",
             "Container",
             "Affinity",
@@ -706,11 +709,11 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
         // leave it out free of -Wmissing-designated-field-initializers.
         std::string_view tooltip{}; // NOLINT(readability-redundant-member-init)
     };
-    // At most nine rows a table (Publisher, Affinity, Services, Policy, Type, Container and Architecture are optional),
-    // held in place.
+    // At most ten rows a table (Started by, Publisher, Signature, Services, Affinity, Policy, Type, Container and
+    // Architecture are optional), held in place.
     struct InfoRows
     {
-        std::array<InfoRow, 9> rows{};
+        std::array<InfoRow, 10> rows{};
         std::size_t count = 0;
 
         void add(InfoRow row) noexcept
@@ -799,6 +802,12 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
         }
         // An empty affinity was not read (another user's process), as the Affinity column says.
         fresh.affinity = proc.cpuAffinity.empty() ? std::string("N/A") : UI::Format::formatCpuAffinity(proc.cpuAffinity.words());
+        if (m_ProcessCapabilities.hasSignature)
+        {
+            // The Processes table's Signature column (#3070), with what it means on hover.
+            fresh.signature = ProcessSignatureText::detailsValue(proc.signature, proc.signatureText);
+            fresh.signatureTooltip = Platform::signatureTooltip(proc.signature);
+        }
         fresh.keepAlive = ownedSnapshot ? m_CachedSnapshot : nullptr;
         fresh.key = ownedSnapshot ? &proc : nullptr;
         text = std::move(fresh);
@@ -821,6 +830,14 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     if (!proc.publisher.empty())
     {
         identityRows.add({.label = "Publisher", .value = proc.publisher, .color = theme.scheme().textMuted});
+    }
+    if (m_ProcessCapabilities.hasSignature)
+    {
+        // Who Windows verifies signed the executable (#3070), unlike the Publisher the file names itself.
+        identityRows.add({.label = "Signature",
+                          .value = text.signature,
+                          .color = ProcessSignatureText::textColor(proc.signature.signature, theme.scheme()),
+                          .tooltip = text.signatureTooltip});
     }
     if (!proc.services.empty())
     {

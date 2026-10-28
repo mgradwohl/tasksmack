@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Platform/CpuAffinity.h"
+#include "Platform/ImageSignature.h"
 #include "Platform/SchedPolicy.h"
 
 #include <cstdint>
@@ -111,6 +112,9 @@ struct ProcessCounters
 
     // Publisher / vendor info (optional, Windows-only via PE version info)
     std::string publisher; // CompanyName from PE file version info (empty if not available)
+    // The image's Authenticode signature (#3070; Windows, ProcessCapabilities::hasSignature): checked in the
+    // background, so NotChecked until the answer is in. Unlike the publisher, it can't be written by anyone.
+    SignatureCheck signature;
 
     // Container (optional, Linux-only from /proc/[pid]/cgroup; see CgroupContainer.h)
     // "<runtime>:<short id or name>", e.g. "docker:1a2b3c4d5e6f" (empty if in none)
@@ -248,6 +252,7 @@ struct ProcessCapabilities
     bool hasProcessType = false;        // Whether process type classification is available (Windows: App/Background/Windows)
     bool hasArchitecture = false;       // Whether ProcessCounters::architecture is filled (#2394)
     bool hasSchedPolicy = false;        // Whether ProcessCounters::schedPolicy is filled (#3086)
+    bool hasSignature = false;          // Whether ProcessCounters::signature is filled (#3070; Windows: WinVerifyTrust)
     bool hasGdiObjects = false;         // Whether GDI object count is available (Windows-only via GetGuiResources)
     bool hasReducedPrivileges = false;  // True when the process lacks the privileges to read some data, or act
                                         // on other users' processes (not necessarily curable by elevation: sudo

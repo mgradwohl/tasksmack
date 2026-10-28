@@ -355,8 +355,10 @@ class ProcessDetailsPanel : public Panel
         std::string handles;
         std::string cpuTime;
         std::string priority;
-        std::string state;    ///< The State with its Status: "Sleeping · Suspended" (#1878)
-        std::string affinity; ///< The CPUs it may run on, as the Affinity column writes them (#1878)
+        std::string state;            ///< The State with its Status: "Sleeping · Suspended" (#1878)
+        std::string affinity;         ///< The CPUs it may run on, as the Affinity column writes them (#1878)
+        std::string signature;        ///< The Signature column's text, with the check mark when verified (#3070)
+        std::string signatureTooltip; ///< How it is signed, or why not (Platform::signatureTooltip())
     } m_BasicInfoText;
     // The Overview's state for the shared chart-height rule (#959); the Network and GPU tabs' are
     // m_Charts'.

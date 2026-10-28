@@ -128,6 +128,22 @@ TEST(ProcessColumnAvailabilityTest, PolicyFollowsItsCapabilityAndIsHiddenByDefau
     EXPECT_EQ(columnAlignment(ProcessColumn::Policy), ColumnAlign::Left);
 }
 
+TEST(ProcessColumnAvailabilityTest, SignatureFollowsItsCapabilityAndIsHiddenByDefault)
+{
+    // #3070: Windows checks each image with WinVerifyTrust; Linux shows dashes and the header's note.
+    Platform::ProcessCapabilities caps;
+    EXPECT_FALSE(isSupported(ProcessColumn::Signature, caps));
+    EXPECT_FALSE(rowFormatOptions(caps).hasSignature);
+    EXPECT_EQ(unavailableValuesNote(ProcessColumn::Signature, caps), ProcessColumnAvailability::UNSUPPORTED_COLUMN_NOTE);
+    caps.hasSignature = true;
+    EXPECT_TRUE(isSupported(ProcessColumn::Signature, caps));
+    EXPECT_TRUE(rowFormatOptions(caps).hasSignature);
+    EXPECT_TRUE(ProcessRowFormat::buildRowFormatCache(Domain::ProcessSnapshot{}, rowFormatOptions(caps)).signatureSupported);
+    EXPECT_FALSE(ProcessColumnAvailability::defaultVisible(ProcessColumn::Signature, caps)) << "off by default";
+    EXPECT_EQ(getColumnInfo(ProcessColumn::Signature).configKey, "signature");
+    EXPECT_EQ(columnAlignment(ProcessColumn::Signature), ColumnAlign::Left);
+}
+
 TEST(ProcessColumnAvailabilityTest, ServicesFollowTheirCapability)
 {
     // #1886: Linux reads the systemd service; Windows (until #1880) shows dashes and the header's note.

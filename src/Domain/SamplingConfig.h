@@ -83,6 +83,17 @@ inline constexpr int BATTERY_INFO_REFRESH_SECONDS = 300;
 // new name within this long.
 inline constexpr int ACCOUNT_NAME_CACHE_TTL_SECONDS = 300;
 
+// The pause WindowsProcessProbe's signature worker (ts-sig-check, #3070) takes after checking each
+// process image's Authenticode signature (milliseconds). A check costs about 5-35 ms a file (a 100 MB
+// unsigned one, hashed whole for the catalog lookup, about 300 ms), and the first sample asks for every
+// distinct image at once: the pause keeps that burst a gentle background trickle. Never a sample's cost.
+inline constexpr int SIGNATURE_CHECK_PAUSE_MS = 25;
+
+// How many distinct image files (by path, size and last write time) the signature worker keeps answers
+// for, and how many paths it tracks (#3070): far more than a machine runs at once, so a long session's
+// churn of short-lived executables can't grow either without end.
+inline constexpr int SIGNATURE_CACHE_MAX_FILES = 4096;
+
 // A system-probe sub-read -- the CPU times, memory, the PDH clock counter, the interface table -- that
 // takes this long or longer is logged by name at debug level (#2731), so an overrun names "pdh-freq"
 // or "ifTable" rather than "system". The fastest Settings interval: a sub-read that long overruns it

@@ -117,11 +117,11 @@ TEST(ProcessColumnConfigTest, NoHeaderIsASingleLetterOrContainsPlus)
 TEST(ProcessColumnConfigTest, ConfigKeysAreUnchanged)
 {
     constexpr auto expected = std::to_array<std::string_view>({
-        "pid",        "name",         "user",        "ppid",        "publisher", "container", "services",    "state",         "status",
-        "type",       "architecture", "cpu_percent", "mem_percent", "resident",  "virtual",   "shared",      "peak_resident", "private",
-        "swap",       "nice",         "policy",      "affinity",    "threads",   "handles",   "gdi_objects", "cpu_time",      "start_time",
-        "io_read",    "io_write",     "page_faults", "net_sent",    "net_recv",  "power",     "gpu_percent", "gpu_memory",    "gpu_engine",
-        "gpu_device", "npu_percent",  "npu_memory",  "npu_engine",  "command",
+        "pid",        "name",       "user",         "ppid",        "publisher",   "signature", "container", "services",    "state",
+        "status",     "type",       "architecture", "cpu_percent", "mem_percent", "resident",  "virtual",   "shared",      "peak_resident",
+        "private",    "swap",       "nice",         "policy",      "affinity",    "threads",   "handles",   "gdi_objects", "cpu_time",
+        "start_time", "io_read",    "io_write",     "page_faults", "net_sent",    "net_recv",  "power",     "gpu_percent", "gpu_memory",
+        "gpu_engine", "gpu_device", "npu_percent",  "npu_memory",  "npu_engine",  "command",
     });
     ASSERT_EQ(expected.size(), processColumnCount());
     for (const auto col : allProcessColumns())
@@ -236,12 +236,13 @@ TEST(ProcessColumnConfigTest, ToIndexReturnsCorrectValues)
     EXPECT_EQ(toIndex(ProcessColumn::PID), 0);
     EXPECT_EQ(toIndex(ProcessColumn::Name), 1);
     EXPECT_EQ(toIndex(ProcessColumn::Publisher), 4);     // Windows publisher — after User(2) and PPID(3)
-    EXPECT_EQ(toIndex(ProcessColumn::Container), 5);     // Linux container (#805)
-    EXPECT_EQ(toIndex(ProcessColumn::Services), 6);      // Services (#1886) — last of the identity columns
-    EXPECT_EQ(toIndex(ProcessColumn::Type), 9);          // Process type — after State(7) and Status(8)
-    EXPECT_EQ(toIndex(ProcessColumn::Architecture), 10); // Architecture (#2394) — after Type
-    EXPECT_EQ(toIndex(ProcessColumn::Policy), 20);       // Scheduling policy (#3086) — after Priority(19)
-    EXPECT_EQ(toIndex(ProcessColumn::GdiObjects), 24);   // GDI count — after Handles(23); Private and Swap (#1885) sit before them
+    EXPECT_EQ(toIndex(ProcessColumn::Signature), 5);     // Its verified signer (#3070) — beside the publisher it vouches for
+    EXPECT_EQ(toIndex(ProcessColumn::Container), 6);     // Linux container (#805)
+    EXPECT_EQ(toIndex(ProcessColumn::Services), 7);      // Services (#1886) — last of the identity columns
+    EXPECT_EQ(toIndex(ProcessColumn::Type), 10);         // Process type — after State(8) and Status(9)
+    EXPECT_EQ(toIndex(ProcessColumn::Architecture), 11); // Architecture (#2394) — after Type
+    EXPECT_EQ(toIndex(ProcessColumn::Policy), 21);       // Scheduling policy (#3086) — after Priority(20)
+    EXPECT_EQ(toIndex(ProcessColumn::GdiObjects), 25);   // GDI count — after Handles(24); Private and Swap (#1885) sit before them
 }
 
 TEST(ProcessColumnConfigTest, ToIndexIsMonotonic)
@@ -503,6 +504,7 @@ TEST(ProcessColumnConfigTest, TextColumnsAreLeftAlignedAndStateIsCentred)
     for (const ProcessColumn col : {ProcessColumn::Name,
                                     ProcessColumn::User,
                                     ProcessColumn::Publisher,
+                                    ProcessColumn::Signature,
                                     ProcessColumn::Services,
                                     ProcessColumn::Status,
                                     ProcessColumn::Type,
