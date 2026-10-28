@@ -920,6 +920,116 @@ TEST_F(ProcessesPanelRenderTest, KillFromTheRowMenuIsConfirmedThenSentForThatPro
     panel->onDetach();
 }
 
+/// As attachedPanelWithActions(), with @p caps for the mock actions and the tree view on when @p tree.
+[[nodiscard]] std::unique_ptr<ProcessesPanel>
+panelWithCapabilities(const Platform::ProcessActionCapabilities& caps, bool tree, TestMocks::MockProcessActions*& actions)
+{
+    auto panel = std::make_unique<ProcessesPanel>(
+        [&actions, caps]
+        {
+            auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+            probe->withProcess(TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0))
+                .withProcess(TestMocks::makeProcessCounters(100, "server", 'R', 200, 50, 1000, std::uint64_t{8} << 20U, 1))
+                .withProcess(TestMocks::makeProcessCounters(101, "worker", 'S', 30, 10, 1100, std::uint64_t{2} << 20U, 100));
+            auto mock = std::make_unique<TestMocks::MockProcessActions>();
+            mock->setCapabilities(caps);
+            actions = mock.get();
+            return ProcessesPanelPlatform{.probe = std::move(probe), .actions = std::move(mock), .icons = nullptr};
+        },
+        [](Core::Event&) {});
+    attachAndSeed(*panel);
+    Core::ActiveTabChangedEvent shown("Processes");
+    panel->onEvent(shown);
+    if (tree && !panel->treeViewEnabled())
+    {
+        panel->toggleTreeView();
+    }
+    return panel;
+}
+
+// #3221: Open file location runs on the row action worker, for the row the menu was opened on, through
+// the platform's actions (here the mock's: no file manager is started).
+TEST_F(ProcessesPanelRenderTest, OpenFileLocationFromTheRowMenuRunsForThatProcess)
+{
+    TestMocks::MockProcessActions* actions = nullptr;
+    const auto panel = panelWithCapabilities({.canOpenFileLocation = true}, false, actions);
+    ASSERT_NE(actions, nullptr);
+    renderUntilLoaded(*panel);
+    ASSERT_TRUE(openARowMenu(*panel).has_value());
+    pressPopupItem(*panel, ICON_FA_FOLDER_OPEN " Open file location###OpenFileLocation");
+    static_cast<void>(renderAndCapture(*panel));
+    panel->waitForRowActionForTesting();
+    EXPECT_EQ(actions->openFileLocationCount(), 1);
+    // Its result line counts down with the frames after it.
+    panel->onUpdate(1.0F / 60.0F);
+    static_cast<void>(renderAndCapture(*panel));
+    panel->onDetach();
+}
+
+// #3221: a selection requested by PID (a demo script's, #2827) is applied once its process is listed.
+TEST_F(ProcessesPanelRenderTest, ARequestedSelectionSelectsItsProcessOnceListed)
+{
+    const auto panel = attachedPanel([](Core::Event& /*event*/) {}); // the selection's event, unread here
+    panel->requestSelection(SelectOverride::Target{.pid = 100, .name = {}});
+    updateUntilLoaded(*panel);
+    for (int frame = 0; frame < 5 && panel->selectedPid() != 100; ++frame)
+    {
+        panel->onUpdate(1.0F / 60.0F);
+        static_cast<void>(renderAndCapture(*panel));
+    }
+    EXPECT_EQ(panel->selectedPid(), 100);
+    panel->onDetach();
+}
+
+// #3221: Terminate from the row menu is confirmed first, and End process tree on a process with
+// children asks once for it and everything it started.
+TEST_F(ProcessesPanelRenderTest, TerminateAndEndProcessTreeFromTheRowMenuAreConfirmedFirst)
+{
+    TestMocks::MockProcessActions* actions = nullptr;
+    const auto panel = panelWithCapabilities({.canTerminate = true, .canKill = true}, true, actions);
+    ASSERT_NE(actions, nullptr);
+    renderUntilLoaded(*panel);
+
+    ASSERT_TRUE(openARowMenu(*panel).has_value());
+    const char* terminate = Detail::actionLabel(Detail::ProcessAction::Terminate);
+    pressPopupItem(*panel, std::format("{} {}...###{}", ICON_FA_XMARK, terminate, terminate));
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    const ImGuiWindow* confirm = ImGui::GetTopMostPopupModal();
+    ASSERT_NE(confirm, nullptr) << "Terminate is confirmed";
+    EXPECT_TRUE(std::string_view(confirm->Name).starts_with(terminate)) << confirm->Name;
+    EXPECT_EQ(actions->terminateCount(), 0);
+    pressModalButton(*panel, "Cancel");
+
+    // The tree view's first row is init, the parent of the others.
+    const std::optional<std::int32_t> menuPid = openARowMenu(*panel);
+    ASSERT_EQ(menuPid, 1);
+    pressPopupItem(*panel, ICON_FA_SITEMAP " End process tree###EndProcessTree");
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    const ImGuiWindow* tree = ImGui::GetTopMostPopupModal();
+    ASSERT_NE(tree, nullptr) << "the tree is confirmed";
+    EXPECT_EQ(actions->terminateCount(), 0) << "asked, not done";
+    panel->onDetach();
+}
+
+// #3221: a panel that was never attached has no snapshot to find, no first sample to wait for, and no
+// reduced privileges to report.
+TEST_F(ProcessesPanelRenderTest, APanelThatWasNeverAttachedHasNothingToReport)
+{
+    const ProcessesPanel panel(
+        []
+        { return ProcessesPanelPlatform{.probe = std::make_unique<TestMocks::MockProcessProbe>(), .actions = nullptr, .icons = nullptr}; },
+        [](Core::Event&) {});
+    EXPECT_FALSE(panel.findSnapshot(1).has_value());
+    EXPECT_FALSE(panel.hasReducedPrivileges());
+    ProcessesPanel unattached(
+        []
+        { return ProcessesPanelPlatform{.probe = std::make_unique<TestMocks::MockProcessProbe>(), .actions = nullptr, .icons = nullptr}; },
+        [](Core::Event&) {});
+    EXPECT_FALSE(unattached.waitForFirstSample(std::chrono::milliseconds(1)));
+}
+
 // #1891: an action result too long for the toolbar is cut off with an ellipsis, and hovering it shows
 // the whole message in a tooltip.
 TEST_F(ProcessesPanelRenderTest, AClippedActionResultShowsInFullOnHover)

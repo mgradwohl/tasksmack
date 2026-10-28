@@ -5,6 +5,7 @@
 /// button with native decorations; and the window's minimum size handed to the host from the panels'
 /// measurements.
 
+#include "App/SelectOverride.h"
 #include "App/ShellHost.h"
 #include "App/ShellLayer.h"
 #include "App/StatusBarView.h"
@@ -225,6 +226,57 @@ TEST_F(ShellLayerRenderTest, TheStatusBarsSettingsButtonRaisesOpenSettingsWithNa
     frame();
     frame();
     EXPECT_EQ(count(Core::EventType::OpenSettings), 1);
+}
+
+// #3221: the status bar's Help button raises Help, as F1 does.
+TEST_F(ShellLayerRenderTest, TheStatusBarsHelpButtonRaisesOpenHelp)
+{
+    makeShell(false);
+    frame();
+
+    const ImGuiWindow* status = ImGui::FindWindowByName("##StatusBar");
+    ASSERT_NE(status, nullptr);
+    ImGui::ActivateItemByID(ImHashStr(StatusBarView::HELP_LABEL, 0, status->ID));
+    frame();
+    frame();
+    EXPECT_EQ(count(Core::EventType::OpenHelp), 1);
+}
+
+// #3221: F6 to F9 on the Processes tab and F9 on Process Details go to the panel showing it, and
+// nothing else is raised: each opens that panel's own menu or confirm, never acts at once. The panels
+// here aren't attached, so each request is dropped at the frame's end.
+TEST_F(ShellLayerRenderTest, TheTabShortcutsGoToThePanelShowingThem)
+{
+    makeShell(false);
+    frame();
+    for (const ImGuiKey key : {ImGuiKey_F6, ImGuiKey_F7, ImGuiKey_F8, ImGuiKey_F9})
+    {
+        pressKey(key);
+    }
+    ASSERT_TRUE(m_Shell->requestMainTab("ProcessDetails"));
+    frame();
+    frame();
+    pressKey(ImGuiKey_F9);
+    EXPECT_EQ(count(Core::EventType::OpenHelp), 0);
+    EXPECT_EQ(count(Core::EventType::OpenSettings), 0);
+    EXPECT_EQ(m_Log.closeRequests, 0);
+}
+
+// #3221: a tab no name matches isn't requested. The selection, tab and section requests a demo script
+// makes (#2827) are handed to their panels, unattached here, and the frames after draw with them pending;
+// none of them is the startup selection the screenshot hook waits for.
+TEST_F(ShellLayerRenderTest, RequestsForATabSelectionOrSectionReachTheirPanels)
+{
+    makeShell(false);
+    frame();
+    EXPECT_FALSE(m_Shell->requestMainTab("No Such Tab"));
+    m_Shell->requestSelection(SelectOverride::Target{.pid = 4242, .name = {}});
+    m_Shell->requestDetailsTab(SelectOverride::DetailsTab::Gpu);
+    m_Shell->requestMachineTab(SelectOverride::MachineTab::Cores);
+    m_Shell->requestDetailsSection(SelectOverride::DetailsSection::Modules);
+    frame();
+    frame();
+    EXPECT_FALSE(m_Shell->startupSelectionPending()) << "the demo's requests aren't the startup selection the screenshot waits for";
 }
 
 TEST_F(ShellLayerRenderTest, TheWindowsMinimumSizeFollowsThePanelsMeasurements)
