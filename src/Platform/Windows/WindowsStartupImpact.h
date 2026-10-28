@@ -41,7 +41,7 @@ namespace Platform::WindowsStartupImpact
 inline constexpr int FIRST_FILE = 1;
 inline constexpr int LAST_FILE = 5;
 /// A StartupInfo file is a few hundred KB; anything past this isn't one and isn't read.
-inline constexpr std::size_t MAX_FILE_BYTES = 16U * 1024U * 1024U;
+inline constexpr std::size_t MAX_FILE_BYTES = std::size_t{16} * 1024U * 1024U;
 
 inline constexpr std::uint32_t ERROR_FILE_NOT_FOUND_CODE = 2;
 inline constexpr std::uint32_t ERROR_PATH_NOT_FOUND_CODE = 3;
