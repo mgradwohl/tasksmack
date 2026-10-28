@@ -54,16 +54,21 @@ enum class Direction : std::uint8_t
     {
         return direction == Direction::Lower ? std::optional<std::int32_t>(P::classNice(P::PriorityClass::High)) : std::nullopt;
     }
-    const auto* const found = std::ranges::find(CLASSES, current);
-    if (found == CLASSES.end())
+    // An index, not the iterator itself: std::array's iterator is a pointer in libc++ and a class in MSVC's STL.
+    const auto index = static_cast<std::size_t>(std::ranges::distance(CLASSES.begin(), std::ranges::find(CLASSES, current)));
+    if (index >= CLASSES.size())
     {
         return std::nullopt;
     }
+    const auto at = [&CLASSES](std::size_t i)
+    {
+        return P::classNice(*std::next(CLASSES.begin(), static_cast<std::ptrdiff_t>(i)));
+    };
     if (direction == Direction::Raise)
     {
-        return std::next(found) != CLASSES.end() ? std::optional<std::int32_t>(P::classNice(*std::next(found))) : std::nullopt;
+        return index + 1 < CLASSES.size() ? std::optional<std::int32_t>(at(index + 1)) : std::nullopt;
     }
-    return found != CLASSES.begin() ? std::optional<std::int32_t>(P::classNice(*std::prev(found))) : std::nullopt;
+    return index > 0 ? std::optional<std::int32_t>(at(index - 1)) : std::nullopt;
 }
 
 /// The toolbar's line for a step: "Priority of foo (PID 42) set to Below Normal (nice: 10)", or the
