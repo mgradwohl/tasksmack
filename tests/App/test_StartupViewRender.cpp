@@ -1,10 +1,11 @@
 /// @file test_StartupViewRender.cpp
 /// @brief The Startup tab's table (#801), headless: the unsupported message (the Linux stub's
 /// capabilities), the loading state, rows for a publication (a missing target among them), the
-/// filter, and the pure row order and labels.
+/// filter, the pure row order and labels, and the Startup impact column and its tooltip (#3073).
 
 #include "App/Panels/StartupActionsView.h"
 #include "App/Panels/StartupView.h"
+#include "Domain/StartupImpact.h"
 #include "Domain/StartupModel.h"
 #include "Platform/IStartupActions.h"
 #include "Platform/IStartupProbe.h"
@@ -67,6 +68,7 @@ entry(const char* name, const char* publisher, StartupLocation location, bool en
             .hasDisabledTime = true,
             .hasPublisher = true,
             .canResolveShortcuts = true,
+            .hasImpact = true,
             .unavailableReason = {}};
 }
 
@@ -549,6 +551,130 @@ TEST_F(StartupViewRenderTest, SelectionIsByTheRegisteredNameAndPackage)
     EXPECT_TRUE(text.contains("Video"));
     state.selectedFamily = "Contoso.Other_abc";
     EXPECT_TRUE(captureFrame(publication, state, &actions).contains("Select a startup app"));
+}
+
+// ========== Startup impact (#3073) ==========
+
+/// makePublication() with each entry's impact: Discord High (2 processes), OneDrive None (disabled),
+/// SecurityHealth Low, Stale Not measured (its program is missing).
+[[nodiscard]] Domain::StartupPublication makeImpactPublication()
+{
+    auto publication = makePublication();
+    publication.impacts = {
+        {.cpuUs = 2'345'678, .diskBytes = 12'000'000, .processCount = 2, .rating = Domain::StartupImpact::High},
+        {.rating = Domain::StartupImpact::None},
+        {.cpuUs = 26'041, .diskBytes = 204'800, .processCount = 1, .rating = Domain::StartupImpact::Low},
+        {},
+    };
+    publication.impactSignInUnixSeconds = 1792774334;
+    return publication;
+}
+
+TEST(StartupViewTest, ImpactLabelsAreTaskManagersWords)
+{
+    EXPECT_EQ(startupImpactLabel(Domain::StartupImpact::High), "High");
+    EXPECT_EQ(startupImpactLabel(Domain::StartupImpact::Medium), "Medium");
+    EXPECT_EQ(startupImpactLabel(Domain::StartupImpact::Low), "Low");
+    EXPECT_EQ(startupImpactLabel(Domain::StartupImpact::NotMeasured), "Not measured");
+    EXPECT_EQ(startupImpactLabel(Domain::StartupImpact::None), "None");
+}
+
+TEST(StartupViewTest, ImpactTooltipGivesTheMeasuredFiguresOrWhyThereAreNone)
+{
+    const Domain::StartupEntryImpact high{
+        .cpuUs = 2'345'678, .diskBytes = 12'000'000, .processCount = 2, .rating = Domain::StartupImpact::High};
+    const std::string measured = startupImpactTooltip(high, 1792774334, "");
+    EXPECT_TRUE(measured.starts_with("At the sign-in at 2026-10-2")) << measured; // local time
+    EXPECT_TRUE(measured.contains("\nCPU time: 2")) << measured;
+    EXPECT_TRUE(measured.contains(" ms\nDisk I/O: ")) << measured;
+    EXPECT_TRUE(measured.contains("2 processes: the program and those it started")) << measured;
+    EXPECT_TRUE(measured.contains("High: over 1 s of CPU or 3 MB of disk I/O. Low: under 300 ms of CPU and 300 KB of disk I/O."));
+
+    const Domain::StartupEntryImpact one{.cpuUs = 1000, .diskBytes = 0, .processCount = 1, .rating = Domain::StartupImpact::Low};
+    const std::string single = startupImpactTooltip(one, 0, "");
+    EXPECT_TRUE(single.starts_with("At the last sign-in:")) << single;
+    EXPECT_FALSE(single.contains("processes")) << "one process: nothing to add";
+
+    EXPECT_EQ(startupImpactTooltip({.rating = Domain::StartupImpact::None}, 1792774334, ""),
+              "Disabled: it doesn't start when you sign in.");
+    EXPECT_EQ(startupImpactTooltip({}, 0, "Windows hasn't measured a sign-in for this account yet"),
+              "Not measured: Windows hasn't measured a sign-in for this account yet.");
+    EXPECT_EQ(startupImpactTooltip({}, 0, ""), "Not measured: Windows has no figures for its program at the last sign-in.");
+    const std::string absent = startupImpactTooltip({}, 1792774334, "");
+    EXPECT_TRUE(absent.starts_with("Not measured: its program didn't run during the measurement of the sign-in at 2026-10-2")) << absent;
+}
+
+TEST(StartupViewTest, ImpactRowsSortByRatingThenCpuTime)
+{
+    const auto publication = makeImpactPublication();
+    // Ascending: None (OneDrive), Not measured (Stale), Low (SecurityHealth), High (Discord).
+    EXPECT_EQ(buildStartupRows(publication.entries, "", StartupColumn::Impact, true, publication.impacts),
+              (std::vector<std::size_t>{1, 3, 2, 0}));
+    EXPECT_EQ(buildStartupRows(publication.entries, "", StartupColumn::Impact, false, publication.impacts),
+              (std::vector<std::size_t>{0, 2, 3, 1}));
+
+    // Within a rating, by CPU time, then disk I/O; an entry past the impacts is Not measured.
+    const std::vector<Domain::StartupEntryImpact> impacts = {
+        {.cpuUs = 5'000'000, .diskBytes = 0, .processCount = 1, .rating = Domain::StartupImpact::High},
+        {.cpuUs = 2'000'000, .diskBytes = 9, .processCount = 1, .rating = Domain::StartupImpact::High},
+        {.cpuUs = 2'000'000, .diskBytes = 1, .processCount = 1, .rating = Domain::StartupImpact::High},
+    };
+    EXPECT_EQ(buildStartupRows(publication.entries, "", StartupColumn::Impact, false, impacts), (std::vector<std::size_t>{0, 1, 2, 3}));
+    EXPECT_EQ(buildStartupRows(publication.entries, "", StartupColumn::Impact, true, impacts), (std::vector<std::size_t>{3, 2, 1, 0}));
+    // No impacts at all (a platform without them): every entry ties, in the model's name order.
+    EXPECT_EQ(buildStartupRows(publication.entries, "", StartupColumn::Impact, true), (std::vector<std::size_t>{0, 1, 2, 3}));
+}
+
+TEST_F(StartupViewRenderTest, ImpactColumnShowsEachEntrysRating)
+{
+    const auto publication = makeImpactPublication();
+    StartupViewState state;
+    const std::string text = captureFrame(publication, state);
+    EXPECT_TRUE(text.contains("Startup impact"));
+    EXPECT_TRUE(text.contains("High"));
+    EXPECT_TRUE(text.contains("Low"));
+    EXPECT_TRUE(text.contains("None"));
+    EXPECT_TRUE(text.contains("Not measured"));
+}
+
+TEST_F(StartupViewRenderTest, ImpactColumnIsLeftOutWithoutImpactData)
+{
+    // The Linux probe's capabilities: no impact data, so no column (and nothing drawn for it).
+    const auto publication = makeImpactPublication();
+    StartupViewState state;
+    std::string text;
+    static_cast<void>(runFrame(
+        [&]
+        {
+            ImGui::LogToBuffer();
+            const StartupViewContent content = renderStartupView(&publication, enumerateOnly(), state);
+            text = GImGui->LogBuffer.c_str();
+            ImGui::LogFinish();
+            return content;
+        }));
+    EXPECT_FALSE(text.contains("Startup impact"));
+    EXPECT_FALSE(text.contains("Not measured"));
+    EXPECT_TRUE(text.contains("Discord"));
+}
+
+TEST_F(StartupViewRenderTest, HoveringTheImpactCellShowsTheMeasuredFigures)
+{
+    const auto publication = makeImpactPublication();
+    StartupViewState state;
+    // The default order lists Discord first: High, from two processes.
+    const ImVec2 impact = firstRowCentre(publication, state, nullptr, static_cast<int>(StartupColumn::Impact));
+    ASSERT_GT(impact.y, 0.0F);
+    const std::string text = hoverUntil(publication, state, impact, "CPU time:");
+    EXPECT_TRUE(text.contains("CPU time:")) << text;
+    EXPECT_TRUE(text.contains("Disk I/O:"));
+    EXPECT_TRUE(text.contains("2 processes"));
+    EXPECT_FALSE(text.contains("Program: ")) << "the impact tooltip stands in for the entry's";
+
+    // Elsewhere on the row, the entry's own tooltip.
+    const ImVec2 name = firstRowCentre(publication, state);
+    const std::string nameText = hoverUntil(publication, state, name, "Program: ");
+    EXPECT_TRUE(nameText.contains("Program: ")) << nameText;
+    EXPECT_FALSE(nameText.contains("CPU time:"));
 }
 
 } // namespace

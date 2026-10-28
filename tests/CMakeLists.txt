@@ -397,6 +397,7 @@ set(COMMON_TEST_SOURCES
     Domain/test_ProcessModelAllocationFailure.cpp
     Domain/test_StorageModel.cpp
     Domain/test_StartupModel.cpp
+    Domain/test_StartupImpact.cpp  # the Startup impact rating and its thresholds (#3073)
     Domain/test_SensorModel.cpp
     Domain/test_SystemInfoModel.cpp
     Domain/test_CrashHistory.cpp
@@ -513,6 +514,7 @@ set(COMMON_TEST_SOURCES
     Platform/test_DriversInfo.cpp
     Platform/test_CrashesInfo.cpp
     Platform/test_WindowsSystemInfoReaders.cpp
+    Platform/test_StartupImpact.cpp  # a startup entry's share of a sign-in measurement (#3073)
     Platform/test_ProcMapsParser.cpp
     Platform/test_SmapsRollupParser.cpp
     Platform/test_ProcFdParser.cpp
@@ -648,6 +650,7 @@ set(WINDOWS_MATH_TEST_SOURCES
     Platform/WindowsMath/test_WindowsEnergyMeterMath.cpp  # EMI metadata and measurement blocks, package channel names (#2587)
     Platform/WindowsMath/test_WindowsProcessProbeMath.cpp
     Platform/WindowsMath/test_WindowsStartupProbeMath.cpp
+    Platform/WindowsMath/test_WindowsStartupImpact.cpp  # the WDI StartupInfo sign-in measurements (#3073)
     Platform/WindowsMath/test_WindowsOsInfoMath.cpp
     Platform/WindowsMath/test_WindowsStorageSmartMath.cpp  # ATA SMART pages, thresholds and return status as AtaHealth (#2588)
     Platform/WindowsMath/test_WindowsServiceActionsMath.cpp

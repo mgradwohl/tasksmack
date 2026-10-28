@@ -34,6 +34,7 @@
 #include "ComScope.h"
 #include "WinString.h"
 #include "WindowsConversions.h"
+#include "WindowsStartupImpact.h"
 #include "WindowsStartupProbeMath.h"
 
 #include <algorithm>
@@ -1068,8 +1069,19 @@ StartupCapabilities WindowsStartupProbe::capabilities() const
         .hasDisabledTime = true,
         .hasPublisher = true,
         .canResolveShortcuts = true,
+        .hasImpact = true,
         .unavailableReason = {},
     };
+}
+
+StartupImpactReading WindowsStartupProbe::readImpact()
+{
+    StartupImpactReading reading = WindowsStartupImpact::readNewestSignIn(WindowsStartupImpact::systemFunctions());
+    if (!reading.unavailableReason.empty())
+    {
+        spdlog::debug("Startup impact: {}", reading.unavailableReason);
+    }
+    return reading;
 }
 
 std::vector<StartupEntry> WindowsStartupProbe::enumerate()

@@ -110,6 +110,8 @@ class WindowsStartupProbe : public IStartupProbe
 
     [[nodiscard]] StartupCapabilities capabilities() const override;
     [[nodiscard]] std::vector<StartupEntry> enumerate() override;
+    /// The newest sign-in's measurement from the user's WDI StartupInfo files (WindowsStartupImpact.h, #3073).
+    [[nodiscard]] StartupImpactReading readImpact() override;
 
   private:
     struct Impl;
