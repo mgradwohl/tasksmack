@@ -2913,9 +2913,11 @@ versions to fetch. Raise one by hand when the project needs a newer feature.
 
 ### Cutting a Release
 
+The release process (stages, feature freeze, candidate, validation) is in
+[docs/dev/release-process.md](docs/dev/release-process.md); this section covers the mechanics.
 Releases ship from release branches (#2741; the rules every agent follows are in
-[AGENTS.md](AGENTS.md)'s "Branches and backports"). `main` carries all development and is never
-frozen for a release. The first release of a minor, `vX.Y.0`, is tagged on the candidate commit the
+[AGENTS.md](AGENTS.md)'s "Branches and backports"). `main` carries all development and is frozen
+only from the feature freeze until the candidate is approved. The first release of a minor, `vX.Y.0`, is tagged on the candidate commit the
 maintainer approves on `main`, and the maintainer cuts `release/X.Y` from that same commit:
 
 ```bash
