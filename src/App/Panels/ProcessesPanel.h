@@ -22,6 +22,7 @@
 #include "App/Panels/ProcessTableNavigation.h"
 #include "App/Panels/ProcessTreeFlatten.h"
 #include "App/Panels/RunTaskDialog.h"
+#include "App/Panels/StuckProcesses.h"
 #include "App/Panels/UdpTraceSwitch.h"
 #include "App/ProcessColumnConfig.h"
 #include "App/SelectOverride.h"
@@ -635,6 +636,7 @@ class ProcessesPanel : public Panel
     // m_CachedRenderSnapshots' (to tell which exited), and those still shown.
     std::shared_ptr<const std::vector<Domain::ProcessSnapshot>> m_PreviousGeneration;
     ExitingProcessRows::Tracker m_ExitingRows;
+    StuckProcesses::Tracker m_StuckProcesses; // Processes in uninterruptible sleep for a while (#3097)
     // What the table draws: m_CachedRenderSnapshots, followed by the exited processes when there are
     // any (ExitingProcessRows::displayRows()). An index at or past m_LiveRowCount is an exited row.
     // m_DisplayVersion changes whenever it is rebuilt; the filter, sort and tree caches are keyed on it.

@@ -36,6 +36,7 @@
 #include "App/Panels/ProcessTypeColor.h"
 #include "App/Panels/RunTaskDialog.h"
 #include "App/Panels/RunTaskHistory.h"
+#include "App/Panels/StuckProcesses.h"
 #include "App/PlatformOpen.h"
 #include "App/ProcessColumnConfig.h"
 #include "App/SelectOverride.h"
@@ -1371,6 +1372,8 @@ void ProcessesPanel::adoptNewerSnapshots()
             (void) m_ExitingRows.onGeneration(*m_PreviousGeneration, *m_CachedRenderSnapshots, Core::Application::getTime());
         }
         m_PreviousGeneration = m_CachedRenderSnapshots;
+        // Processes stuck in uninterruptible sleep, tinted (#3097).
+        m_StuckProcesses.onGeneration(*m_CachedRenderSnapshots, Core::Application::getTime());
         // Selected processes that have exited drop out of the selection (#804): once per generation,
         // one O(1) lookup per process. The primary process stays, so Process Details can show it exited.
         (void) m_Selection.retainPresent(*m_CachedRenderSnapshots);
@@ -2196,6 +2199,14 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, const
         tint.w = ExitingProcessRows::TINT_ALPHA;
         ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg1, ImGui::GetColorU32(tint));
         ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * ExitingProcessRows::CONTENT_ALPHA);
+    }
+    // A process stuck in uninterruptible sleep (#3097): a steady tint in the theme's disk-sleep colour,
+    // ahead of the new-process tint, since it needs the attention more.
+    else if (m_StuckProcesses.stuck(proc.uniqueKey))
+    {
+        ImVec4 tint = UI::Theme::get().scheme().statusDiskSleep;
+        tint.w = StuckProcesses::TINT_ALPHA;
+        ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg1, ImGui::GetColorU32(tint));
     }
     // A process that started a moment ago (#3060): its row tinted, fading out over a few seconds. The
     // wall clock is read once a frame, not per row.

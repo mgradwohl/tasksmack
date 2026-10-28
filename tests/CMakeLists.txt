@@ -606,6 +606,7 @@ set(COMMON_TEST_SOURCES
     Training/test_UiTrainingPlan.cpp
     App/test_ProcessBatchAction.cpp
     App/test_NewProcessHighlight.cpp  # the new-process row tint (#3060)
+    App/test_StuckProcesses.cpp  # the stuck-in-D row tint (#3097)
     App/test_ExitingProcessRows.cpp # exited processes kept as dimmed rows (#3060)
     App/test_ProcessBatchRun.cpp
     App/test_ProcessActionRun.cpp
