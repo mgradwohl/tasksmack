@@ -2849,5 +2849,31 @@ TEST_F(ProcessesPanelRenderTest, TheGroupControlLeavesTreeViewAndGroupedRowsNavi
     panel->onDetach(); // TearDown restores the settings
 }
 
+// #3097: F6 opens the "Sort by" menu of the visible columns; picking Name sorts by it, and picking it
+// again reverses the order.
+TEST_F(ProcessesPanelRenderTest, F6SortMenuPicksTheSortColumnAndPickingItAgainReversesIt)
+{
+    SelectionSink events;
+    const auto panel = attachedPanel(events.sink());
+    renderUntilLoaded(*panel);
+    const auto initBeforeWorker = [&]
+    {
+        const std::string text = renderAndCapture(*panel);
+        return text.find("init") < text.find("worker");
+    };
+    EXPECT_FALSE(initBeforeWorker());         // the default sort: PID, highest first
+    for (const bool expected : {true, false}) // Name A to Z, then Z to A
+    {
+        panel->requestSortMenu();
+        static_cast<void>(renderAndCapture(*panel));
+        static_cast<void>(renderAndCapture(*panel));
+        ASSERT_NE(topPopup(), nullptr) << "F6 didn't open the Sort by menu";
+        EXPECT_TRUE(renderAndCapture(*panel).contains("Sort by"));
+        pressPopupItem(*panel, "Name");
+        static_cast<void>(renderAndCapture(*panel));
+        EXPECT_EQ(initBeforeWorker(), expected);
+    }
+}
+
 } // namespace
 } // namespace App

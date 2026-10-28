@@ -722,6 +722,7 @@ void ShellLayer::handleGlobalShortcut(KeyboardShortcuts::ShortcutAction action)
         break;
     }
     case ShortcutAction::ToggleTreeView:
+    case ShortcutAction::SortMenu:
     case ShortcutAction::KillSelected:
         break; // Tab-sensitive: handleTabShortcut(), after the tab bar
     case ShortcutAction::Quit:
@@ -744,6 +745,10 @@ void ShellLayer::handleTabShortcut(KeyboardShortcuts::ShortcutAction action)
         if (action == KeyboardShortcuts::ShortcutAction::ToggleTreeView)
         {
             m_ProcessesPanel.toggleTreeView();
+        }
+        else if (action == KeyboardShortcuts::ShortcutAction::SortMenu)
+        {
+            m_ProcessesPanel.requestSortMenu();
         }
         else
         {
