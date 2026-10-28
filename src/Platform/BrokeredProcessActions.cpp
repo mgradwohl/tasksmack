@@ -71,6 +71,8 @@ Broker::Request brokerRequestFor(const AuthorizedAction& action)
         return Broker::AffinityRequest{.target = action.target, .cpus = action.cpus};
     case Kind::SendSignal:
         return Broker::SignalRequest{.target = action.target, .signal = brokerSignalFor(action.signal)};
+    case Kind::SetEfficiencyMode:
+        return Broker::EfficiencyModeRequest{.target = action.target, .on = action.efficiencyMode};
     }
     return Broker::SignalRequest{.target = action.target, .signal = Broker::Signal::Terminate}; // unreachable: every kind is above
 }
@@ -158,6 +160,12 @@ ProcessActionResult BrokeredProcessActions::setIoPriority(const ProcessTarget& t
 ProcessActionResult BrokeredProcessActions::setAffinity(const ProcessTarget& target, const CpuAffinity& cpus)
 {
     return retried(m_Inner->setAffinity(target, cpus), {.kind = AuthorizedAction::Kind::SetAffinity, .target = target, .cpus = cpus});
+}
+
+ProcessActionResult BrokeredProcessActions::setEfficiencyMode(const ProcessTarget& target, bool on)
+{
+    return retried(m_Inner->setEfficiencyMode(target, on),
+                   {.kind = AuthorizedAction::Kind::SetEfficiencyMode, .target = target, .efficiencyMode = on});
 }
 
 ProcessActionResult BrokeredProcessActions::runAuthorized(const AuthorizedAction& action, const std::stop_token& stopToken)

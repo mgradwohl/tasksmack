@@ -60,6 +60,10 @@ namespace
     {
         return Broker::ActionResult::from(actions.setAffinity(affinity->target, affinity->cpus));
     }
+    if (const auto* efficiency = std::get_if<Broker::EfficiencyModeRequest>(&request))
+    {
+        return Broker::ActionResult::from(actions.setEfficiencyMode(efficiency->target, efficiency->on));
+    }
     return {.success = false, .errorMessage = "Not an action", .successNote = {}};
 }
 

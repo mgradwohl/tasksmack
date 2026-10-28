@@ -212,14 +212,16 @@ struct AuthorizedAction
         Kill,
         Stop,
         Resume,
-        SetPriority,   ///< nice
-        SetIoPriority, ///< ioClass and level
-        SetAffinity,   ///< cpus
-        SendSignal,    ///< signal (#3063)
+        SetPriority,       ///< nice
+        SetIoPriority,     ///< ioClass and level
+        SetAffinity,       ///< cpus
+        SendSignal,        ///< signal (#3063)
+        SetEfficiencyMode, ///< efficiencyMode (#3071)
     };
     Kind kind = Kind::Terminate;
     ProcessTarget target;
     ProcessSignal signal = ProcessSignal::Hangup;
+    bool efficiencyMode = false; ///< SetEfficiencyMode: on (true) or off
     std::int32_t nice = 0;
     IoPriorityClass ioClass = IoPriorityClass::BestEffort;
     std::int32_t level = 4;
@@ -271,6 +273,9 @@ struct ProcessActionCapabilities
     /// canRunProgramAsAdministrator says so (Linux: pkexec is installed, or TaskSmack runs as root).
     bool canRunProgram = false;
     bool canRunProgramAsAdministrator = false;
+    /// setEfficiencyMode(): Efficiency mode on or off, as Task Manager's (#3071; Windows: EcoQoS power
+    /// throttling and the Idle priority class). False on Linux, where the UI offers no such toggle.
+    bool canSetEfficiencyMode = false;
 };
 
 /// Interface for platform-specific process actions.
@@ -420,7 +425,19 @@ class IProcessActions
         return ProcessActionResult::error("Sending this signal isn't available on this system");
     }
 
-    /// Retries @p request (a signal, priority, I/O priority or affinity change) as an administrator,
+    /// Turns Efficiency mode on (@p on) or off for the process (#3071), as Task Manager's toggle: on runs it
+    /// at the lowest priority on the power-saving scheduler (Windows: EcoQoS and the Idle priority class);
+    /// off hands that back and restores the priority it had before. Refused, as every action is, unless the
+    /// process at the target's PID is the target, and for a protected or critical system process. The
+    /// default refuses it, matching canSetEfficiencyMode's default (false).
+    [[nodiscard]] virtual ProcessActionResult setEfficiencyMode(const ProcessTarget& target, bool on)
+    {
+        static_cast<void>(target);
+        static_cast<void>(on);
+        return ProcessActionResult::error("Efficiency mode isn't available on this system");
+    }
+
+    /// Retries @p request (a signal, priority, I/O priority, affinity or Efficiency mode change) as an administrator,
     /// asking for the password first if need be (#2308): what "Authenticate and retry" does after a
     /// permissionDenied failure. Blocks for as long as the prompt is up, so it runs on a worker, never
     /// the UI thread. The default refuses it, matching ProcessActionCapabilities'

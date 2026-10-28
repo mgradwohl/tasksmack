@@ -837,6 +837,9 @@ class ProcessesPanel : public Panel
 
     /// "Open file location" (#3064): the row's executable in the file manager, on the row action worker.
     void openRowFileLocation(const Domain::ProcessSnapshot& proc);
+    /// The row menu's Efficiency mode item (#3071) for @p proc, in Efficiency mode now when @p on: turning
+    /// it on is confirmed first, as Task Manager does; turning it off runs at once on the row action worker.
+    void toggleRowEfficiencyMode(const Domain::ProcessSnapshot& proc, bool on);
     /// "Search online" (#3064): a web search for the row's name only, opened on the row action worker.
     void searchRowOnline(const Domain::ProcessSnapshot& proc);
     /// Group by (#3068): sets the mode, switching Tree view off for a group, and saves it in the settings.

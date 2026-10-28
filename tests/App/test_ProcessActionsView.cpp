@@ -725,6 +725,78 @@ class NoTraceActions : public Platform::IProcessActions
     }
 };
 
+// --- Efficiency mode (#3071) ---------------------------------------------------------------------------
+
+TEST(ProcessActionsViewTest, TheEfficiencyModeToggleIsHiddenDisabledOrEnabledAndSaysWhy)
+{
+    const Platform::ProcessActionCapabilities none;
+    const Platform::ProcessActionCapabilities can{.canSetEfficiencyMode = true};
+    using State = Detail::EfficiencyModeToggleState;
+    EXPECT_EQ(Detail::efficiencyModeToggle(none, TARGET_A, false, false).state, State::Hidden) << "Linux: no such toggle";
+    EXPECT_TRUE(Detail::isActionAvailable(can, ProcessAction::EfficiencyModeOn));
+    EXPECT_FALSE(Detail::isActionAvailable(none, ProcessAction::EfficiencyModeOff));
+
+    const auto disabledBecause = [&can](const Platform::ProcessTarget& target, bool running, std::size_t batch, std::string_view why)
+    {
+        const Detail::EfficiencyModeToggle toggle = Detail::efficiencyModeToggle(can, target, false, running, batch);
+        EXPECT_EQ(toggle.state, State::Disabled) << why;
+        EXPECT_TRUE(std::string_view(toggle.tooltip).contains(why)) << toggle.tooltip;
+    };
+    disabledBecause(TARGET_A, false, 3, "one process at a time");
+    disabledBecause({.pid = -1, .startTimeTicks = 0}, false, 0, "Select a process");
+    disabledBecause({.pid = 1001, .startTimeTicks = 0}, false, 0, "can't confirm which process");
+    disabledBecause(TARGET_A, true, 0, "Another action is still running");
+
+    const Detail::EfficiencyModeToggle off = Detail::efficiencyModeToggle(can, TARGET_A, false, false);
+    EXPECT_EQ(off.state, State::Enabled);
+    EXPECT_TRUE(std::string_view(off.tooltip).contains("Idle priority")) << off.tooltip;
+    const Detail::EfficiencyModeToggle on = Detail::efficiencyModeToggle(can, TARGET_A, true, false, 1);
+    EXPECT_EQ(on.state, State::Enabled);
+    EXPECT_TRUE(std::string_view(on.tooltip).contains("Turn Efficiency mode off")) << on.tooltip;
+}
+
+TEST(ProcessActionsViewTest, TurningEfficiencyModeOnAsksFirstAndOffRunsAtOnce)
+{
+    TestMocks::MockProcessActions mock;
+    ProcessActionsView view;
+    view.requestEfficiencyModeToggle(&mock, TARGET_A, "chrome.exe", /*on=*/false);
+    EXPECT_TRUE(view.confirmRequested());
+    EXPECT_EQ(view.pendingAction(), ProcessAction::EfficiencyModeOn);
+    EXPECT_EQ(mock.efficiencyModeCount(), 0) << "asked, not done";
+    view.dispatchConfirmed(&mock);
+    view.waitForActionForTesting();
+    EXPECT_EQ(mock.efficiencyModeCount(), 1);
+    EXPECT_TRUE(mock.lastEfficiencyMode());
+    EXPECT_EQ(view.lastResult().text, "Efficiency mode on for PID 1001");
+
+    view.requestEfficiencyModeToggle(&mock, TARGET_A, "chrome.exe", /*on=*/true);
+    EXPECT_FALSE(view.confirmRequested()) << "turning it off isn't confirmed";
+    view.waitForActionForTesting();
+    EXPECT_EQ(mock.efficiencyModeCount(), 2);
+    EXPECT_FALSE(mock.lastEfficiencyMode());
+    EXPECT_EQ(mock.lastTarget(), TARGET_A);
+    EXPECT_EQ(view.lastResult().text, "Efficiency mode off for PID 1001");
+}
+
+TEST(ProcessActionsViewTest, ARefusedEfficiencyModeOffersAuthenticateAndRetry)
+{
+    TestMocks::MockProcessActions mock;
+    mock.setCapabilities({.canAuthorizeInteractively = true, .canSetEfficiencyMode = true});
+    mock.setEfficiencyModeResult(Platform::ProcessActionResult::denied("Access denied"));
+    ProcessActionsView view;
+    view.requestEfficiencyModeToggle(&mock, TARGET_A, "chrome.exe", /*on=*/true);
+    view.waitForActionForTesting();
+    EXPECT_EQ(view.lastResult().text, "Could not turn Efficiency mode off for PID 1001: Access denied");
+    ASSERT_TRUE(view.offersAuthenticateAndRetry());
+
+    view.retryAuthorizedForTesting();
+    view.waitForActionForTesting();
+    EXPECT_EQ(mock.lastAuthorizedAction().kind, Platform::AuthorizedAction::Kind::SetEfficiencyMode);
+    EXPECT_FALSE(mock.lastAuthorizedAction().efficiencyMode);
+    EXPECT_EQ(mock.lastAuthorizedAction().target, TARGET_A);
+    EXPECT_EQ(view.lastResult().text, "Efficiency mode off for PID 1001");
+}
+
 TEST(ProcessActionsViewTest, TheInterfaceDefaultReportsTracingUnsupported)
 {
     NoTraceActions actions;

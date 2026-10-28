@@ -3216,6 +3216,20 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
         }
         ImGui::EndMenu();
     }
+    // Efficiency mode (#3071), as Task Manager's row menu has it: one process, ticked while it is on.
+    // Turning it on is confirmed; turning it off isn't.
+    const bool on = Detail::isInEfficiencyMode(proc);
+    if (const Detail::EfficiencyModeToggle toggle =
+            Detail::efficiencyModeToggle(can, {.pid = proc.pid, .startTimeTicks = proc.startTimeTicks}, on, !actionsIdle, batchCount);
+        toggle.state != Detail::EfficiencyModeToggleState::Hidden)
+    {
+        ImGui::Separator();
+        if (ImGui::MenuItem(Detail::EFFICIENCY_MODE_LABEL, nullptr, on, toggle.state == Detail::EfficiencyModeToggleState::Enabled))
+        {
+            toggleRowEfficiencyMode(proc, on);
+        }
+        ImGui::SetItemTooltip("%s", toggle.tooltip); // a disabled item still says why
+    }
     // One priority for the whole selection (#1484): picked in its own dialog, then confirmed as a batch.
     // A single process's priority stays in Process Details' Actions block.
     if (ProcessBatch::offersBatchPriority(can, batchCount))
@@ -3493,6 +3507,23 @@ void ProcessesPanel::requestRowAction(Detail::ProcessAction action, const Domain
     m_RowAction.title = Detail::confirmTitle(action, proc.name, proc.pid);
     m_RowAction.question = Detail::confirmBody(action, proc.name, proc.pid);
     m_ShowRowActionConfirm = true;
+}
+
+void ProcessesPanel::toggleRowEfficiencyMode(const Domain::ProcessSnapshot& proc, bool on)
+{
+    if (!on)
+    {
+        requestRowAction(Detail::ProcessAction::EfficiencyModeOn, proc); // confirmed, as Task Manager does
+        return;
+    }
+    // Off at once, for this row's identity: the platform refuses it if the PID has since been reused (#973).
+    const Platform::ProcessTarget target{.pid = proc.pid, .startTimeTicks = proc.startTimeTicks};
+    constexpr Detail::ProcessAction OFF = Detail::ProcessAction::EfficiencyModeOff;
+    runRowAction(
+        std::format("{} PID {}...", Detail::actionProgressLabel(OFF), target.pid),
+        [actions = m_ProcessActions.get(), target] { return Detail::dispatchProcessAction(*actions, OFF, target); },
+        [pid = target.pid](const Platform::ProcessActionResult& result) { return Detail::formatActionResultMessage(OFF, pid, result); },
+        Detail::authorizedActionFor(OFF, target));
 }
 
 void ProcessesPanel::requestSelectionAction(Detail::ProcessAction action)

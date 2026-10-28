@@ -14,6 +14,7 @@
 /// UI state (#2731): tab changes and the frame rate never change it.
 
 #include "App/Panels/AuthorizeWording.h"
+#include "App/Panels/ProcessActionsView.h"
 #include "App/Panels/ProcessColumnAvailability.h"
 #include "App/Panels/ProcessDumpView.h"
 #include "App/Panels/ProcessRowFormat.h"
@@ -737,6 +738,95 @@ TEST_F(ProcessesPanelRenderTest, CreateDumpFromTheRowMenuAsksFirst)
 
     pressModalButton(*panel, "Cancel");
     EXPECT_EQ(actions->createDumpCount(), 0);
+    panel->onDetach();
+}
+
+/// An attached panel reading init (1), server (100) and worker (101), each with Status @p status, over mock
+/// actions that can turn Efficiency mode on and off (#3071); @p actions is left pointing at them.
+[[nodiscard]] std::unique_ptr<ProcessesPanel> efficiencyModePanel(const std::string& status, TestMocks::MockProcessActions*& actions)
+{
+    auto panel = std::make_unique<ProcessesPanel>(
+        [&actions, status]
+        {
+            auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+            for (auto counters : {TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0),
+                                  TestMocks::makeProcessCounters(100, "server", 'R', 200, 50, 1000, std::uint64_t{8} << 20U, 1),
+                                  TestMocks::makeProcessCounters(101, "worker", 'S', 30, 10, 1100, std::uint64_t{2} << 20U, 100)})
+            {
+                counters.status = status;
+                probe->withProcess(counters);
+            }
+            auto mock = std::make_unique<TestMocks::MockProcessActions>();
+            mock->setCapabilities({.canTerminate = true, .canKill = true, .canSetEfficiencyMode = true});
+            actions = mock.get();
+            return ProcessesPanelPlatform{.probe = std::move(probe), .actions = std::move(mock), .icons = nullptr};
+        },
+        [](Core::Event&) {});
+    attachAndSeed(*panel);
+    Core::ActiveTabChangedEvent shown("Processes");
+    panel->onEvent(shown);
+    return panel;
+}
+
+// #3071: the row menu's Efficiency mode, for a process not in it, asks to confirm in Task Manager's words,
+// then turns it on for the process the menu was for.
+TEST_F(ProcessesPanelRenderTest, EfficiencyModeFromTheRowMenuIsConfirmedThenTurnedOn)
+{
+    TestMocks::MockProcessActions* actions = nullptr;
+    const auto panel = efficiencyModePanel("", actions);
+    ASSERT_NE(actions, nullptr);
+    renderUntilLoaded(*panel);
+    const std::optional<std::int32_t> menuPid = openARowMenu(*panel);
+    ASSERT_TRUE(menuPid.has_value());
+
+    pressPopupItem(*panel, App::Detail::EFFICIENCY_MODE_LABEL);
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    const ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
+    ASSERT_NE(modal, nullptr);
+    EXPECT_TRUE(std::string_view(modal->Name).starts_with("Turn on Efficiency mode for")) << modal->Name;
+    EXPECT_EQ(actions->efficiencyModeCount(), 0); // asked, not done
+
+    pressModalButton(*panel, "Turn on Efficiency mode"); // not destructive: a plain button
+    panel->waitForRowActionForTesting();
+    EXPECT_EQ(actions->efficiencyModeCount(), 1);
+    EXPECT_TRUE(actions->lastEfficiencyMode());
+    EXPECT_EQ(actions->lastTarget().pid, menuPid.value_or(-1));
+    EXPECT_TRUE(renderAndCapture(*panel).contains(std::format("Efficiency mode on for PID {}", menuPid.value_or(-1))));
+    panel->onDetach();
+}
+
+// #3071: ticked for a process whose Status says it is in Efficiency mode; pressing it turns it off at once,
+// with no confirm. On a selection of several it is greyed out: one process at a time, as Task Manager.
+TEST_F(ProcessesPanelRenderTest, EfficiencyModeTickedInTheRowMenuIsTurnedOffAtOnceAndOneProcessAtATime)
+{
+    TestMocks::MockProcessActions* actions = nullptr;
+    const auto panel = efficiencyModePanel(std::string(Platform::EFFICIENCY_MODE_STATUS), actions);
+    ASSERT_NE(actions, nullptr);
+    renderUntilLoaded(*panel);
+    const std::optional<std::int32_t> menuPid = openARowMenu(*panel);
+    ASSERT_TRUE(menuPid.has_value());
+
+    pressPopupItem(*panel, App::Detail::EFFICIENCY_MODE_LABEL);
+    static_cast<void>(renderAndCapture(*panel));
+    EXPECT_EQ(ImGui::GetTopMostPopupModal(), nullptr) << "turning it off isn't confirmed";
+    panel->waitForRowActionForTesting();
+    EXPECT_EQ(actions->efficiencyModeCount(), 1);
+    EXPECT_FALSE(actions->lastEfficiencyMode());
+    EXPECT_EQ(actions->lastTarget().pid, menuPid.value_or(-1));
+
+    if (topPopup() != nullptr)
+    {
+        closePopups(*panel);
+    }
+    selectAll(*panel);
+    ASSERT_EQ(panel->selectionCount(), 3U);
+    ASSERT_TRUE(openARowMenu(*panel).has_value());
+    pressPopupItem(*panel, App::Detail::EFFICIENCY_MODE_LABEL);
+    static_cast<void>(renderAndCapture(*panel));
+    panel->waitForRowActionForTesting();
+    EXPECT_EQ(actions->efficiencyModeCount(), 1) << "greyed out for a selection: nothing is sent";
+    EXPECT_EQ(ImGui::GetTopMostPopupModal(), nullptr);
     panel->onDetach();
 }
 

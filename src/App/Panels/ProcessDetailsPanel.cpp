@@ -929,6 +929,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
             .target = selectedTarget(),
             .currentNice = m_HasSnapshot ? std::optional<std::int32_t>{proc.nice} : std::nullopt,
             .currentAffinity = m_HasSnapshot ? &proc.cpuAffinity : nullptr,
+            .efficiencyMode = m_HasSnapshot && Detail::isInEfficiencyMode(proc),
         };
         // Kept for the next frame's row height; a card scrolled out of view reports 0 and keeps its last.
         const ProcessActionsBlock::Heights needed = ProcessActionsBlock::render(actions, controlsLayout, controlsHeight);

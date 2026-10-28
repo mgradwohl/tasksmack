@@ -63,6 +63,13 @@ struct WindowsProcessFunctions
     /// (#2582). The real call unless a table says otherwise, so the guard is never left out; a test
     /// names a PID of its own here, so the guard fires for that PID and for no other (#2785).
     DWORD(WINAPI* getCurrentProcessId)() = &::GetCurrentProcessId;
+    /// GetPriorityClass(), SetPriorityClass() and SetProcessInformation(), for Efficiency mode (#3071):
+    /// the class read before it is lowered to Idle, so turning it off can restore it, and the
+    /// ProcessPowerThrottling (EcoQoS) state. Null, any of them: no Efficiency mode (canSetEfficiencyMode
+    /// false), so a table whose fakes hand out a real handle never reaches the real calls through them.
+    DWORD(WINAPI* getPriorityClass)(HANDLE process) = nullptr;
+    BOOL(WINAPI* setPriorityClass)(HANDLE process, DWORD priorityClass) = nullptr;
+    BOOL(WINAPI* setProcessInformation)(HANDLE process, PROCESS_INFORMATION_CLASS infoClass, LPVOID info, DWORD size) = nullptr;
 };
 
 /// The real Win32 calls.
@@ -121,6 +128,14 @@ class WindowsProcessActions : public IProcessActions
     /// success carries a successNote saying the choice was set as preferred CPUs (#2173).
     [[nodiscard]] ProcessActionResult setAffinity(const ProcessTarget& target, const CpuAffinity& cpus) override;
     [[nodiscard]] CpuAffinityLayout affinityLayout() const override;
+    /// Efficiency mode (#3071), as Task Manager's: on sets ProcessPowerThrottling's execution-speed
+    /// throttling (EcoQoS: the efficient cores, lower clocks) and the Idle priority class, remembering the
+    /// class it had (sharedEfficiencyModePriorities()); off hands power throttling back to Windows and,
+    /// while the process is still at Idle, restores that class, or Normal when it isn't known. Refused for
+    /// PID 4 and for a protected or critical process, through the same identity check and guard as a
+    /// priority change; access denied is permissionDenied, so the elevated helper can retry it. A failure
+    /// to lower the class undoes the throttling, so a refused "on" changes nothing.
+    [[nodiscard]] ProcessActionResult setEfficiencyMode(const ProcessTarget& target, bool on) override;
     /// A full-memory minidump through dbghelp's MiniDumpWriteDump (#807), as Task Manager writes one;
     /// see Windows::writeProcessDump(). Opens the process through the same identity check as every
     /// action, and says why when that is refused: a protected process, one elevated or another user's.

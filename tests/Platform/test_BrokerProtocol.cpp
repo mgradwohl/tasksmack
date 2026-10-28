@@ -73,6 +73,25 @@ TEST(BrokerProtocolTest, ASignalPastTheLastIsRefused)
     EXPECT_FALSE(decodeRequest(bytes).has_value());
 }
 
+// #3071 (v9): Efficiency mode on and off round-trip; its flag is one byte of 0 or 1, and anything else is
+// refused rather than read as on.
+TEST(BrokerProtocolTest, EfficiencyModeRoundTripsAndRefusesAStrayFlag)
+{
+    for (const bool on : {true, false})
+    {
+        const Request request = EfficiencyModeRequest{.target = TARGET, .on = on};
+        EXPECT_EQ(roundTrip(request), request) << on;
+    }
+    std::vector<std::uint8_t> bytes = encodeRequest(1, Request{EfficiencyModeRequest{.target = TARGET, .on = true}});
+    EXPECT_EQ(bytes[6], static_cast<std::uint8_t>(MessageKind::SetEfficiencyMode));
+    ASSERT_EQ(bytes.size(), 4U + HEADER_BYTES + 4U + 8U + 1U); // the target's PID and start time, then the flag
+    bytes.back() = 2;                                          // the flag is the payload's last byte
+    EXPECT_FALSE(decodeRequest(bytes).has_value());
+    bytes.pop_back(); // and a frame without it is short
+    bytes[0] = static_cast<std::uint8_t>(bytes.size() - 4U);
+    EXPECT_FALSE(decodeRequest(bytes).has_value());
+}
+
 TEST(BrokerProtocolTest, EveryRequestRoundTrips)
 {
     EXPECT_EQ(roundTrip(Request{Hello{}}), Request{Hello{}});
@@ -648,6 +667,7 @@ TEST(BrokerProtocolTest, NoResponseDecodesAsARequestAndNoRequestAsAResponse)
         PriorityRequest{.target = TARGET, .nice = 5},
         IoPriorityRequest{.target = TARGET, .ioClass = IoPriorityClass::Idle, .level = 0},
         AffinityRequest{.target = TARGET, .cpus = CpuAffinity::fromMask(1)},
+        EfficiencyModeRequest{.target = TARGET, .on = true},
         EnvironmentRequest{.target = TARGET},
         ModulesRequest{.target = TARGET},
         OpenFilesRequest{.target = TARGET},
@@ -797,6 +817,7 @@ TEST(BrokerProtocolTest, TheFuzzCorpusHasADecodableSeedForEveryMessageKind)
                                    MessageKind::SetIoPriority,
                                    MessageKind::SetAffinity,
                                    MessageKind::ServiceAction,
+                                   MessageKind::SetEfficiencyMode,
                                    MessageKind::ReadEnvironment,
                                    MessageKind::ReadModules,
                                    MessageKind::ReadOpenFiles,

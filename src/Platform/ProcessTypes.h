@@ -5,10 +5,16 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace Platform
 {
+
+/// ProcessCounters::status for a process in Efficiency mode (Windows: EcoQoS, execution-speed power
+/// throttling it has switched on, #186): what the Processes table's Status column shows, and what tells
+/// the Efficiency mode toggle it is on (#3071).
+inline constexpr std::string_view EFFICIENCY_MODE_STATUS = "Efficiency Mode";
 
 /// The OS's own priority class for a process, on a platform that schedules by class (Windows,
 /// GetPriorityClass()), lowest first. None: the platform has no classes (Linux; nice is the

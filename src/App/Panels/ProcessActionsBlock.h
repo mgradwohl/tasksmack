@@ -31,13 +31,13 @@ namespace ProcessActionsBlock
 {
 
 /// Whether there is anything to offer: the platform can run at least one action, set priority, I/O
-/// priority or affinity, write a dump file, or trace system calls (shown even greyed out). Without,
-/// neither card is drawn.
+/// priority, affinity or Efficiency mode, write a dump file, or trace system calls (shown even greyed
+/// out). Without, neither card is drawn.
 [[nodiscard]] constexpr bool hasAnyAction(const Platform::ProcessActionCapabilities& capabilities) noexcept
 {
     return capabilities.canTerminate || capabilities.canKill || capabilities.canStop || capabilities.canContinue ||
            capabilities.canSetPriority || capabilities.canSetIoPriority || capabilities.canSetAffinity || capabilities.canCreateDump ||
-           capabilities.syscallTrace != Platform::SyscallTraceAvailability::Unsupported;
+           capabilities.canSetEfficiencyMode || capabilities.syscallTrace != Platform::SyscallTraceAvailability::Unsupported;
 }
 
 /// What the cards' rows need across, in pixels, at the current font (needs an ImGui frame).
@@ -76,6 +76,7 @@ struct Context
     Platform::ProcessTarget target{.pid = -1, .startTimeTicks = 0};
     std::optional<std::int32_t> currentNice;
     const Platform::CpuAffinity* currentAffinity = nullptr; ///< Ticks the affinity dialog's boxes (#1887); null: every CPU
+    bool efficiencyMode = false;                            ///< The process is in Efficiency mode: its checkbox is ticked (#3071)
 };
 
 /// What each card's content needs down, header and padding included, as render() drew it: for the
