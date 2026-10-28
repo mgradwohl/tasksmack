@@ -6,6 +6,7 @@
 // last/max pair. Recording is a bucket increment: no allocation and no growth however long the
 // sampler runs, and the type is trivially copyable, so a copy to publish it is a memcpy.
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <chrono>
@@ -83,7 +84,7 @@ class TimingHistogram
         {
             return std::chrono::microseconds{0};
         }
-        const double clampedFraction = fraction < 0.0 ? 0.0 : (fraction > 1.0 ? 1.0 : fraction);
+        const double clampedFraction = std::clamp(fraction, 0.0, 1.0);
         // The 1-based rank of the duration asked for: ceil(fraction * count), at least the first.
         const double exactRank = clampedFraction * static_cast<double>(m_Count);
         auto rank = static_cast<std::uint64_t>(exactRank);
@@ -107,7 +108,8 @@ class TimingHistogram
         const std::chrono::microseconds lower = bucketLowerBound(index);
         // lower * ~sqrt(2), in integers: 41/100 of the lower bound again.
         const std::chrono::microseconds middle = lower + ((lower * 41) / 100);
-        return middle < m_Min ? m_Min : (middle > m_Max ? m_Max : middle);
+        // m_Min <= m_Max once a duration is recorded, which the early return above ensures.
+        return std::clamp(middle, m_Min, m_Max);
     }
 
     [[nodiscard]] constexpr const Buckets& buckets() const noexcept
