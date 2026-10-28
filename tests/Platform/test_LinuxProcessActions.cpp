@@ -2380,5 +2380,295 @@ TEST(LinuxProcessActionsTest, RunProgramSaysWhatIsWrongWithTheCommand)
     }
 }
 
+// --- Failures on the way, for each tool (#3221) ------------------------------------------------------
+
+/// An executable file whose interpreter doesn't exist: found and executable, but exec fails (ENOENT).
+[[nodiscard]] std::filesystem::path brokenProgram(const std::filesystem::path& dir, const std::string& name)
+{
+    const std::filesystem::path path = dir / name;
+    {
+        std::ofstream out(path);
+        out << "#!/nonexistent/tasksmack-interpreter\n";
+    }
+    std::filesystem::permissions(path, std::filesystem::perms::owner_all);
+    return path;
+}
+
+/// What waitPidInterrupted() does: its first non-blocking wait fails with ECHILD (TaskSmack lost track
+/// of gcore), its first ones are interrupted (EINTR), or its first blocking ones are.
+struct WaitPlan
+{
+    bool loseFirstPoll = false;
+    int pollInterrupts = 0;
+    int blockingInterrupts = 0;
+};
+
+WaitPlan& waitPlan()
+{
+    static WaitPlan state;
+    return state;
+}
+
+pid_t waitPidInterrupted(pid_t pid, int* status, int options)
+{
+    WaitPlan& next = waitPlan();
+    const bool polling = (options & WNOHANG) != 0;
+    if (polling && next.loseFirstPoll)
+    {
+        next.loseFirstPoll = false;
+        errno = ECHILD;
+        return -1;
+    }
+    int& interrupts = polling ? next.pollInterrupts : next.blockingInterrupts;
+    if (interrupts > 0)
+    {
+        --interrupts;
+        errno = EINTR;
+        return -1;
+    }
+    return ::waitpid(pid, status, options);
+}
+
+[[nodiscard]] LinuxProcessSyscalls syscallsWithInterruptedWaits(const WaitPlan& waits)
+{
+    waitPlan() = waits;
+    LinuxProcessSyscalls syscalls = syscallsWithPtrace(&ptraceAllowed);
+    syscalls.waitPid = &waitPidInterrupted;
+    return syscalls;
+}
+
+// An interrupted wait on gcore is tried again, and of all it wrote on stderr the end is what's kept.
+TEST(LinuxProcessActionsDumpTest, AnInterruptedWaitIsRetriedAndGcoresLastWordsAreKept)
+{
+    const TestSupport::ScopedTempDir work("tasksmack_dump_eintr_tools");
+    const TestSupport::ScopedTempDir dumps("tasksmack_dump_eintr_out");
+    LinuxProcessActions actions(
+        fakeDumpTools(work.path, "head -c 6000 /dev/zero | tr '\\0' x >&2\necho >&2\necho 'last line' >&2\nexit 1\n"),
+        syscallsWithInterruptedWaits({.pollInterrupts = 1}));
+    const std::stop_source stop;
+    const ProcessDumpResult dump = actions.createDump(ownTarget(), dumps.path, stop.get_token());
+    ASSERT_FALSE(dump.has_value());
+    EXPECT_TRUE(dump.error().ends_with("last line")) << dump.error();
+    EXPECT_LT(dump.error().size(), 4096U + 200U) << "only the end of stderr";
+    EXPECT_EQ(waitPlan().pollInterrupts, 0);
+    EXPECT_TRUE(filesIn(dumps.path).empty());
+}
+
+// Once the wait on gcore fails, its group is killed and reaped, and an interrupted reap is tried again.
+TEST(LinuxProcessActionsDumpTest, AFailedWaitOnGcoreRetriesAnInterruptedReap)
+{
+    const TestSupport::ScopedTempDir work("tasksmack_dump_lost_tools");
+    const TestSupport::ScopedTempDir dumps("tasksmack_dump_lost_out");
+    LinuxProcessActions actions(fakeDumpTools(work.path, "exec sleep 30\n"),
+                                syscallsWithInterruptedWaits({.loseFirstPoll = true, .blockingInterrupts = 1}));
+    const std::stop_source stop;
+    const ProcessDumpResult dump = actions.createDump(ownTarget(), dumps.path, stop.get_token());
+    ASSERT_FALSE(dump.has_value());
+    EXPECT_TRUE(dump.error().contains("lost track")) << dump.error();
+    EXPECT_EQ(waitPlan().blockingInterrupts, 0);
+    EXPECT_TRUE(filesIn(dumps.path).empty());
+}
+
+// A cancel kills gcore's group and reaps it, trying an interrupted reap again.
+TEST(LinuxProcessActionsDumpTest, ACancelledDumpRetriesAnInterruptedReap)
+{
+    const TestSupport::ScopedTempDir work("tasksmack_dump_cancel_eintr_tools");
+    const TestSupport::ScopedTempDir dumps("tasksmack_dump_cancel_eintr_out");
+    LinuxProcessActions actions(fakeDumpTools(work.path, "printf 'PART' > \"$2.$3\"\nsleep 30\n"),
+                                syscallsWithInterruptedWaits({.blockingInterrupts = 1}));
+    std::stop_source stop;
+    std::jthread canceller = cancelOncePartialShows(stop, dumps.path, ownTarget().pid);
+    const ProcessDumpResult dump = actions.createDump(ownTarget(), dumps.path, stop.get_token());
+    canceller.join();
+    ASSERT_FALSE(dump.has_value());
+    EXPECT_EQ(dump.error(), "Cancelled; the partial dump file was deleted");
+    EXPECT_EQ(waitPlan().blockingInterrupts, 0);
+    EXPECT_TRUE(filesIn(dumps.path).empty());
+}
+
+TEST(LinuxProcessActionsDumpTest, ADumpSaysWhenGcoreIsGoneOrCantStartOrThePidfdCantOpen)
+{
+    const TestSupport::ScopedTempDir work("tasksmack_dump_nostart_tools");
+    const TestSupport::ScopedTempDir dumps("tasksmack_dump_nostart_out");
+    const std::stop_source stop;
+
+    // Found at construction, removed since.
+    const SyscallTrace::Tools gone = fakeDumpTools(work.path, "exit 0\n");
+    LinuxProcessActions goneActions(gone, syscallsWithPtrace(&ptraceAllowed));
+    std::filesystem::remove(gone.coreDumperPath);
+    const ProcessDumpResult missing = goneActions.createDump(ownTarget(), dumps.path, stop.get_token());
+    ASSERT_FALSE(missing.has_value());
+    EXPECT_TRUE(missing.error().contains("no longer there")) << missing.error();
+
+    // There, but exec fails.
+    const SyscallTrace::Tools broken{.tracerPath = {},
+                                     .terminal = std::nullopt,
+                                     .coreDumperPath = brokenProgram(work.path, "broken-gcore").string(),
+                                     .folderOpenerPath = {},
+                                     .elevatorPath = {}};
+    LinuxProcessActions brokenActions(broken, syscallsWithPtrace(&ptraceAllowed));
+    const ProcessDumpResult unstarted = brokenActions.createDump(ownTarget(), dumps.path, stop.get_token());
+    ASSERT_FALSE(unstarted.has_value());
+    EXPECT_TRUE(unstarted.error().starts_with("Couldn't start")) << unstarted.error();
+    EXPECT_TRUE(filesIn(dumps.path).empty()) << "the reserved name was given back";
+
+    // No pidfd: refused before anything runs.
+    plan() = FaultPlan{};
+    plan().openErrno = ENOSYS;
+    LinuxProcessSyscalls noPidfd = syscallsWithPtrace(&ptraceAllowed);
+    noPidfd.pidfdOpen = &fakePidfdOpen;
+    LinuxProcessActions noPidfdActions(fakeDumpTools(work.path, "exit 0\n"), noPidfd);
+    EXPECT_FALSE(noPidfdActions.createDump(ownTarget(), dumps.path, stop.get_token()).has_value());
+    EXPECT_FALSE(std::filesystem::exists(work.path / "gcore-args.txt")) << "gcore never ran";
+}
+
+TEST(LinuxProcessActionsDumpTest, ADumpSaysWhenItsFileCantBeCreatedOrNamed)
+{
+    const TestSupport::ScopedTempDir work("tasksmack_dump_name_tools");
+    const TestSupport::ScopedTempDir dumps("tasksmack_dump_name_out");
+    const std::stop_source stop;
+
+    // gcore leaves a directory where the core should be: it can't be renamed over the reserved file.
+    LinuxProcessActions dirWriter(fakeDumpTools(work.path, "mkdir \"$2.$3\"\n"), syscallsWithPtrace(&ptraceAllowed));
+    const ProcessDumpResult unnamed = dirWriter.createDump(ownTarget(), dumps.path, stop.get_token());
+    ASSERT_FALSE(unnamed.has_value());
+    EXPECT_TRUE(unnamed.error().starts_with("Couldn't name the dump file")) << unnamed.error();
+    EXPECT_TRUE(filesIn(dumps.path).empty());
+
+    if (::geteuid() == 0)
+    {
+        GTEST_SKIP() << "root writes into a read-only folder";
+    }
+    std::filesystem::permissions(dumps.path, std::filesystem::perms::owner_read | std::filesystem::perms::owner_exec);
+    LinuxProcessActions actions(fakeDumpTools(work.path, "exit 0\n"), syscallsWithPtrace(&ptraceAllowed));
+    const ProcessDumpResult readOnly = actions.createDump(ownTarget(), dumps.path, stop.get_token());
+    std::filesystem::permissions(dumps.path, std::filesystem::perms::owner_all);
+    ASSERT_FALSE(readOnly.has_value());
+    EXPECT_TRUE(readOnly.error().starts_with("Couldn't create the dump file")) << readOnly.error();
+}
+
+TEST(LinuxProcessActionsTest, SyscallTraceSaysWhenStraceIsGoneOrTheTerminalCantStart)
+{
+    const TestSupport::ScopedTempDir dir("tasksmack_trace_gone");
+    const SyscallTrace::Tools tools = fakeTraceTools(dir.path);
+    LinuxProcessActions actions(tools, syscallsWithPtrace(&ptraceAllowed));
+    std::filesystem::remove(tools.tracerPath);
+    const auto gone = actions.launchSyscallTrace(ownTarget());
+    EXPECT_FALSE(gone.success);
+    EXPECT_NE(gone.errorMessage.find("no longer there"), std::string::npos) << gone.errorMessage;
+
+    SyscallTrace::Tools brokenTerminal = fakeTraceTools(dir.path);
+    brokenTerminal.terminal->path = brokenProgram(dir.path, "broken-terminal").string();
+    LinuxProcessActions brokenActions(brokenTerminal, syscallsWithPtrace(&ptraceAllowed));
+    const auto unstarted = brokenActions.launchSyscallTrace(ownTarget());
+    EXPECT_FALSE(unstarted.success);
+    EXPECT_NE(unstarted.errorMessage.find("broken-terminal"), std::string::npos) << unstarted.errorMessage;
+    EXPECT_FALSE(std::filesystem::exists(dir.path / "argv.txt"));
+}
+
+TEST(LinuxProcessActionsTest, RunProgramSaysWhenTheProgramCantStart)
+{
+    if (::geteuid() == 0)
+    {
+        GTEST_SKIP() << "As root for another user, the program would run as them";
+    }
+    const TestSupport::ScopedTempDir dir("tasksmack_run_broken");
+    LinuxProcessActions actions(SyscallTrace::Tools{});
+    const auto result = actions.runProgram({.commandLine = brokenProgram(dir.path, "prog").string(), .asAdministrator = false});
+    EXPECT_FALSE(result.success);
+    EXPECT_NE(result.errorMessage.find("prog"), std::string::npos) << result.errorMessage;
+}
+
+TEST(LinuxProcessActionsTest, OpenFileLocationSaysWhenThePidfdCantOpenOrTheProcessExited)
+{
+    const TestSupport::ScopedTempDir dir("tasksmack_open_pidfd");
+    LinuxProcessSyscalls syscalls = realProcessSyscalls();
+    syscalls.pidfdOpen = &fakePidfdOpen;
+    syscalls.pollPidfd = &fakePollPidfd;
+
+    plan() = FaultPlan{};
+    plan().openErrno = ENOSYS;
+    LinuxProcessActions noPidfd = fileLocationActions(dir.path, true, syscalls);
+    EXPECT_FALSE(noPidfd.openFileLocation(ownTarget()).success);
+    EXPECT_EQ(plan().pollCalls, 0);
+
+    // The poll is interrupted once, then says the process exited: the link read may not be its own.
+    plan() = FaultPlan{};
+    plan().pollEintrs = 1;
+    plan().pollResult = 1;
+    LinuxProcessActions exited = fileLocationActions(dir.path, true, syscalls);
+    const auto result = exited.openFileLocation(ownTarget());
+    EXPECT_FALSE(result.success);
+    EXPECT_EQ(result.errorMessage, "The process exited");
+    EXPECT_EQ(plan().pollCalls, 2);
+    EXPECT_TRUE(showItems().uris.empty());
+}
+
+// A zombie: its pidfd opens, its executable link can't be read any more, and its pidfd says it exited.
+TEST(LinuxProcessActionsTest, OpenFileLocationOfAProcessThatHasExitedSaysSo)
+{
+    const pid_t child = fork();
+    ASSERT_GE(child, 0);
+    if (child == 0)
+    {
+        _exit(0);
+    }
+    // Exited but not reaped: /proc/<pid>/stat stays until the waitpid below.
+    siginfo_t info{};
+    ASSERT_EQ(::waitid(P_PID, static_cast<id_t>(child), &info, WEXITED | WNOWAIT), 0);
+    std::ifstream stat(std::format("/proc/{}/stat", child));
+    const std::string line((std::istreambuf_iterator<char>(stat)), std::istreambuf_iterator<char>());
+    const ProcessTarget zombie{.pid = child, .startTimeTicks = ProcParsing::parseStatStartTime(line).value_or(0)};
+    const TestSupport::ScopedTempDir dir("tasksmack_open_zombie");
+    LinuxProcessActions actions = fileLocationActions(dir.path, true);
+
+    const auto result = actions.openFileLocation(zombie);
+    ::waitpid(child, nullptr, 0);
+
+    EXPECT_FALSE(result.success);
+    EXPECT_TRUE(showItems().uris.empty());
+}
+
+TEST(LinuxProcessActionsTest, OpenFileLocationSaysWhyWhenNeitherTheFileManagerNorXdgOpenCan)
+{
+    if (::geteuid() == 0)
+    {
+        GTEST_SKIP() << "As root for another user, ShowItems isn't tried and xdg-open runs as them";
+    }
+    const TestSupport::ScopedTempDir dir("tasksmack_open_nothing");
+
+    // Any other reason the link can't be read is named.
+    LinuxProcessSyscalls looping = realProcessSyscalls();
+    looping.executableLink = &failingExecutableLink;
+    linkError() = ELOOP;
+    LinuxProcessActions loopActions = fileLocationActions(dir.path, true, looping);
+    const auto unreadable = loopActions.openFileLocation(ownTarget());
+    EXPECT_FALSE(unreadable.success);
+    EXPECT_EQ(unreadable.errorMessage, std::format("Its executable can't be read: {}", std::system_category().message(ELOOP)));
+
+    // No file manager answers and there is no xdg-open.
+    showItems() = ShowItemsFake{.uris = {}, .answers = false};
+    LinuxProcessSyscalls syscalls = realProcessSyscalls();
+    syscalls.showItemInFileManager = &fakeShowItems;
+    LinuxProcessActions noOpener(SyscallTrace::Tools{}, syscalls);
+    const auto nothing = noOpener.openFileLocation(ownTarget());
+    EXPECT_FALSE(nothing.success);
+    if (noOpener.actionCapabilities().canOpenFileLocation) // built with D-Bus: ShowItems was tried
+    {
+        EXPECT_EQ(nothing.errorMessage, "No file manager answered, and xdg-open isn't installed");
+    }
+
+    // An xdg-open that can't start.
+    LinuxProcessActions brokenOpener(SyscallTrace::Tools{.tracerPath = {},
+                                                         .terminal = std::nullopt,
+                                                         .coreDumperPath = {},
+                                                         .folderOpenerPath = brokenProgram(dir.path, "xdg-open").string(),
+                                                         .elevatorPath = {}},
+                                     syscalls);
+    const auto unstarted = brokenOpener.openFileLocation(ownTarget());
+    EXPECT_FALSE(unstarted.success);
+    EXPECT_NE(unstarted.errorMessage.find("xdg-open"), std::string::npos) << unstarted.errorMessage;
+}
+
 } // namespace
 } // namespace Platform
