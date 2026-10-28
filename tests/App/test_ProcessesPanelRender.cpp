@@ -3209,5 +3209,144 @@ TEST_F(ProcessesPanelRenderTest, F6SortMenuPicksTheSortColumnAndPickingItAgainRe
     }
 }
 
+// #3221: F7 on a process already at the highest priority, and F8 on one at the lowest, set nothing and
+// say so in the toolbar. Each process is at the end of both scales, nice and (Windows) class.
+TEST_F(ProcessesPanelRenderTest, F7AndF8AtTheEndOfThePriorityRangeSayWhy)
+{
+    for (const NiceStep::Direction direction : {NiceStep::Direction::Raise, NiceStep::Direction::Lower})
+    {
+        const bool raise = direction == NiceStep::Direction::Raise;
+        TestMocks::MockProcessActions* actions = nullptr;
+        auto panel = std::make_unique<ProcessesPanel>(
+            [&actions, raise]
+            {
+                auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+                for (const std::int32_t pid : {1, 100, 101})
+                {
+                    auto process =
+                        TestMocks::makeProcessCounters(pid, std::format("p{}", pid), 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0);
+                    process.nice = raise ? Domain::Priority::MIN_NICE : Domain::Priority::MAX_NICE;
+                    process.priorityClass = raise ? Platform::PriorityClass::Realtime : Platform::PriorityClass::Idle;
+                    probe->withProcess(process);
+                }
+                auto mock = std::make_unique<TestMocks::MockProcessActions>();
+                mock->setCapabilities({.canSetPriority = true});
+                actions = mock.get();
+                return ProcessesPanelPlatform{.probe = std::move(probe), .actions = std::move(mock), .icons = nullptr};
+            },
+            [](Core::Event& /*event*/) {});
+        attachAndSeed(*panel);
+        Core::ActiveTabChangedEvent shown("Processes");
+        panel->onEvent(shown);
+        renderUntilLoaded(*panel);
+        ASSERT_NE(actions, nullptr);
+        pressKey(*panel, ImGuiKey_DownArrow);
+        ASSERT_GT(panel->selectedPid(), 0);
+
+        panel->requestPriorityStep(direction);
+        static_cast<void>(renderAndCapture(*panel));
+        const std::string text = renderAndCapture(*panel);
+        EXPECT_EQ(actions->setPriorityCount(), 0);
+        EXPECT_TRUE(text.contains(raise ? "is already at the highest priority" : "is already at the lowest priority")) << text;
+        panel->onDetach();
+    }
+}
+
+// #3221: Suspend and Resume from the row menu on a selection ask once for all of it, before anything
+// is sent.
+TEST_F(ProcessesPanelRenderTest, SuspendAndResumeFromTheRowMenuOnASelectionAreConfirmedFirst)
+{
+    for (const Detail::ProcessAction action : {Detail::ProcessAction::Stop, Detail::ProcessAction::Resume})
+    {
+        TestMocks::MockProcessActions* actions = nullptr;
+        auto panel = std::make_unique<ProcessesPanel>(
+            [&actions]
+            {
+                auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+                probe->withProcess(TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0))
+                    .withProcess(TestMocks::makeProcessCounters(100, "server", 'R', 200, 50, 1000, std::uint64_t{8} << 20U, 1))
+                    .withProcess(TestMocks::makeProcessCounters(101, "worker", 'S', 30, 10, 1100, std::uint64_t{2} << 20U, 100));
+                auto mock = std::make_unique<TestMocks::MockProcessActions>();
+                mock->setCapabilities({.canStop = true, .canContinue = true});
+                actions = mock.get();
+                return ProcessesPanelPlatform{.probe = std::move(probe), .actions = std::move(mock), .icons = nullptr};
+            },
+            [](Core::Event& /*event*/) {});
+        attachAndSeed(*panel);
+        Core::ActiveTabChangedEvent shown("Processes");
+        panel->onEvent(shown);
+        renderUntilLoaded(*panel);
+        ASSERT_NE(actions, nullptr);
+        selectAll(*panel);
+        ASSERT_TRUE(openARowMenu(*panel).has_value());
+        pressPopupItem(*panel, std::format("###{}", Detail::actionLabel(action)));
+        static_cast<void>(renderAndCapture(*panel));
+        static_cast<void>(renderAndCapture(*panel));
+        const ImGuiWindow* confirm = ImGui::GetTopMostPopupModal();
+        ASSERT_NE(confirm, nullptr) << Detail::actionLabel(action) << " is confirmed";
+        EXPECT_TRUE(std::string_view(confirm->Name).contains("3 processes")) << confirm->Name;
+        pressModalButton(*panel, "Cancel");
+        panel->onDetach();
+    }
+}
+
+// #3221: a panel that was never attached has no model or sampler: it counts and watches nothing, its
+// interval is the one it was given, and updates and events leave it as it is.
+TEST_F(ProcessesPanelRenderTest, APanelThatWasNeverAttachedIgnoresUpdatesAndEvents)
+{
+    ProcessesPanel panel(
+        []
+        { return ProcessesPanelPlatform{.probe = std::make_unique<TestMocks::MockProcessProbe>(), .actions = nullptr, .icons = nullptr}; },
+        [](Core::Event& /*event*/) {});
+    panel.setSamplingInterval(std::chrono::milliseconds(750), false);
+    EXPECT_EQ(panel.samplingInterval(), std::chrono::milliseconds(750));
+    EXPECT_EQ(panel.processCount(), 0U);
+    panel.watchProcess(42);
+    std::vector<Domain::ProcessSample> samples;
+    EXPECT_FALSE(panel.watchedSamplesSince(0, samples));
+    panel.onUpdate(1.0F / 60.0F);
+    Core::HistoryDurationChangedEvent history(120);
+    panel.onEvent(history);
+    EXPECT_EQ(panel.processCount(), 0U);
+}
+
+// #3221: a group's header totals each column in its own unit, marked with Sigma: rates, counts, power and
+// bytes alike.
+TEST_F(ProcessesPanelRenderTest, GroupHeadersTotalEachColumnInItsUnit)
+{
+    UserConfig::get().settings().processGroupBy = ProcessGrouping::GroupBy::Container;
+    ProcessColumnSettings& columns = UserConfig::get().settings().processColumns;
+    for (const ProcessColumn col :
+         {ProcessColumn::IoRead, ProcessColumn::NetSent, ProcessColumn::Threads, ProcessColumn::Handles, ProcessColumn::Power})
+    {
+        columns.setVisible(col, true);
+    }
+    auto panel = std::make_unique<ProcessesPanel>(
+        []
+        {
+            auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+            auto web = TestMocks::makeProcessCounters(100, "nginx", 'S', 200, 50, 1000, std::uint64_t{8} << 20U, 1);
+            web.container = "docker:1a2b3c4d5e6f";
+            web.threadCount = 4;
+            web.handleCount = 40;
+            probe->withProcess(web);
+            return ProcessesPanelPlatform{
+                .probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>(), .icons = nullptr};
+        },
+        [](Core::Event& /*event*/) {});
+    attachAndSeed(*panel);
+    Core::ActiveTabChangedEvent shown("Processes");
+    panel->onEvent(shown);
+    for (int frame = 0; frame < LOAD_FRAMES && panel->processCount() < 1; ++frame)
+    {
+        static_cast<void>(renderAndCapture(*panel));
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    const std::string text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("docker:1a2b3c4d5e6f (1)")) << text;
+    EXPECT_TRUE(text.contains("\xCE\xA3 4")) << "the threads' total, a count: " << text;
+    panel->onDetach(); // TearDown restores the settings
+}
+
 } // namespace
 } // namespace App
