@@ -2216,7 +2216,8 @@ must not be the thing using the CPU. `tools/measure-idle.sh` (Linux) turns one i
 comparable set of numbers. It launches TaskSmack with `TASKSMACK_TRACE_RESIZE_PERF=1`, waits for the
 main loop and a warm-up (as `tools/profile-perf.sh app` does), samples per-thread CPU, closes the app
 with SIGTERM (a non-zero exit or a SIGKILL fails the run), and prints a table plus one
-machine-readable `RESULT` line. With `--repeat N` it runs that whole cycle N times (a fresh process
+machine-readable `RESULT` line. The frame and loop figures leave out a summary of a window that drew
+no frame (a minimized one), and read `n/a` (`null` in the JSON) when none drew one (#3210). With `--repeat N` it runs that whole cycle N times (a fresh process
 each time) and adds the mean, median and p95 of app CPU, total CPU and fps across the repetitions,
 plus a `SUMMARY` line. Every run also writes JSON (`perf-data/idle-<label>-<timestamp>.json`, or
 `--json <path>`) with each repetition's figures and per-thread rows, the aggregates, and provenance:

@@ -281,9 +281,12 @@ struct ResizePerfTraceStats
 /// Logs one summary line: avg/max figures describe the interval since the last
 /// resetIntervalCounters()/`= {}` reset, while p95/p99 are computed over the rolling
 /// PERCENTILE_WINDOW_SIZE-sample window, which can span several such intervals within the same
-/// idle/interaction state (see the class comment on ResizePerfTraceStats). A no-op when no
-/// samples have been recorded this interval (hasSamples() is false), so callers can invoke this
-/// unconditionally at interaction boundaries and shutdown.
+/// idle/interaction state (see the class comment on ResizePerfTraceStats). A figure with no
+/// samples this interval (frames=0, loopIntervals=0 or batches=0) reports its p95/p99 as 0, the
+/// same as its avg and max (#3210): the rolling window outlives the interval, so without that a
+/// window that drew nothing, such as a minimized one, repeated the last drawn window's tail. A
+/// no-op when no samples have been recorded this interval (hasSamples() is false), so callers can
+/// invoke this unconditionally at interaction boundaries and shutdown.
 inline void logResizePerfTraceSummary(const ResizePerfTraceStats& stats, const std::string_view reason)
 {
     if (!stats.hasSamples())
@@ -298,25 +301,30 @@ inline void logResizePerfTraceSummary(const ResizePerfTraceStats& stats, const s
 
     // p95/p99 answer "did we miss the frame budget at the tail", which avg/max can't: avg
     // hides a rare-but-real stall, and max is a single outlier that one slow sample can spike.
-    const double drainP95 = computePercentile(stats.drainSamplesMs, 0.95);
-    const double drainP99 = computePercentile(stats.drainSamplesMs, 0.99);
-    const double updateP95 = computePercentile(stats.updateSamplesMs, 0.95);
-    const double updateP99 = computePercentile(stats.updateSamplesMs, 0.99);
-    const double renderP95 = computePercentile(stats.renderSamplesMs, 0.95);
-    const double renderP99 = computePercentile(stats.renderSamplesMs, 0.99);
-    const double postP95 = computePercentile(stats.postRenderSamplesMs, 0.95);
-    const double postP99 = computePercentile(stats.postRenderSamplesMs, 0.99);
-    const double swapP95 = computePercentile(stats.swapSamplesMs, 0.95);
-    const double swapP99 = computePercentile(stats.swapSamplesMs, 0.99);
+    // Over the rolling window, but only for a figure with samples this interval (#3210).
+    const auto percentile = [](const std::vector<double>& samples, const std::uint32_t intervalCount, const double fraction) -> double
+    {
+        return (intervalCount == 0) ? 0.0 : computePercentile(samples, fraction);
+    };
+    const double drainP95 = percentile(stats.drainSamplesMs, stats.eventBatches, 0.95);
+    const double drainP99 = percentile(stats.drainSamplesMs, stats.eventBatches, 0.99);
+    const double updateP95 = percentile(stats.updateSamplesMs, stats.frames, 0.95);
+    const double updateP99 = percentile(stats.updateSamplesMs, stats.frames, 0.99);
+    const double renderP95 = percentile(stats.renderSamplesMs, stats.frames, 0.95);
+    const double renderP99 = percentile(stats.renderSamplesMs, stats.frames, 0.99);
+    const double postP95 = percentile(stats.postRenderSamplesMs, stats.frames, 0.95);
+    const double postP99 = percentile(stats.postRenderSamplesMs, stats.frames, 0.99);
+    const double swapP95 = percentile(stats.swapSamplesMs, stats.frames, 0.95);
+    const double swapP99 = percentile(stats.swapSamplesMs, stats.frames, 0.99);
     // update+render+post+swap: the figure #843's "p99 frame time <= 16.6ms (60fps)" success
     // criterion actually refers to -- per-phase percentiles can each look fine individually
     // while their sum still misses the frame budget.
-    const double totalP95 = computePercentile(stats.totalFrameSamplesMs, 0.95);
-    const double totalP99 = computePercentile(stats.totalFrameSamplesMs, 0.99);
+    const double totalP95 = percentile(stats.totalFrameSamplesMs, stats.frames, 0.95);
+    const double totalP99 = percentile(stats.totalFrameSamplesMs, stats.frames, 0.99);
     // Deliver-to-deliver cadence (frame end to frame end, skipped renders included): the figure
     // that shows a pacing or drain stall the per-frame work figures above can't.
-    const double loopP95 = computePercentile(stats.loopIntervalSamplesMs, 0.95);
-    const double loopP99 = computePercentile(stats.loopIntervalSamplesMs, 0.99);
+    const double loopP95 = percentile(stats.loopIntervalSamplesMs, stats.loopIntervals, 0.95);
+    const double loopP99 = percentile(stats.loopIntervalSamplesMs, stats.loopIntervals, 0.99);
 
     spdlog::info("ResizePerf[{}]: batches={} events={} resizeEvents={} inputEvents={} maxBatchEvents={} "
                  "p0Hits={} skippedFrames={} maxSingleEvent={:.3f} ms "
