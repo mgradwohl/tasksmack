@@ -31,13 +31,14 @@ namespace ProcessActionsBlock
 {
 
 /// Whether there is anything to offer: the platform can run at least one action, set priority, I/O
-/// priority, affinity or Efficiency mode, write a dump file, or trace system calls (shown even greyed
-/// out). Without, neither card is drawn.
+/// priority, affinity or Efficiency mode, write a dump file, analyze a wait chain, or trace system calls
+/// (shown even greyed out). Without, neither card is drawn.
 [[nodiscard]] constexpr bool hasAnyAction(const Platform::ProcessActionCapabilities& capabilities) noexcept
 {
     return capabilities.canTerminate || capabilities.canKill || capabilities.canStop || capabilities.canContinue ||
            capabilities.canSetPriority || capabilities.canSetIoPriority || capabilities.canSetAffinity || capabilities.canCreateDump ||
-           capabilities.canSetEfficiencyMode || capabilities.syscallTrace != Platform::SyscallTraceAvailability::Unsupported;
+           capabilities.canSetEfficiencyMode || capabilities.canAnalyzeWaitChain ||
+           capabilities.syscallTrace != Platform::SyscallTraceAvailability::Unsupported;
 }
 
 /// What the cards' rows need across, in pixels, at the current font (needs an ImGui frame).

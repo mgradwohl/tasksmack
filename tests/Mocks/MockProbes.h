@@ -1007,6 +1007,54 @@ class MockProcessActions : public Platform::IProcessActions
         return m_LastFolderOwner;
     }
 
+    /// What readWaitChains() returns (#3084).
+    void setWaitChainResult(Platform::WaitChainReadResult result)
+    {
+        m_WaitChainResult = std::move(result);
+    }
+    /// readWaitChains() blocks until releaseWaitChains() (or its stop token: then it reports itself
+    /// Cancelled), then returns setWaitChainResult()'s: for tests of the dialog's pending state.
+    void holdWaitChains()
+    {
+        m_WaitChainGate = std::make_shared<DumpGate>();
+    }
+    /// Lets a read held by holdWaitChains() finish. Safe from the test's thread while the worker waits.
+    void releaseWaitChains()
+    {
+        if (m_WaitChainGate == nullptr)
+        {
+            return;
+        }
+        {
+            const std::scoped_lock lock(m_WaitChainGate->mutex);
+            m_WaitChainGate->released = true;
+        }
+        m_WaitChainGate->wake.notify_all();
+    }
+    /// Runs on the wait chain dialog's worker; what it records is read by a test only after the worker's
+    /// result was taken in (the future's get() orders the two).
+    [[nodiscard]] Platform::WaitChainReadResult readWaitChains(const Platform::ProcessTarget& target,
+                                                               const std::stop_token& stopToken) override
+    {
+        m_LastTarget = target;
+        ++m_WaitChainCount;
+        if (const std::shared_ptr<DumpGate> gate = m_WaitChainGate; gate != nullptr)
+        {
+            std::unique_lock lock(gate->mutex);
+            if (!gate->wake.wait(lock, stopToken, [&gate] { return gate->released; }))
+            {
+                Platform::WaitChainReadResult cancelled;
+                cancelled.status = Platform::WaitChainReadStatus::Cancelled;
+                return cancelled;
+            }
+        }
+        return m_WaitChainResult;
+    }
+    [[nodiscard]] int waitChainCount() const
+    {
+        return m_WaitChainCount;
+    }
+
   private:
     Platform::ProcessActionCapabilities m_Capabilities;
     Platform::DumpSpace m_DumpSpace;
@@ -1027,6 +1075,9 @@ class MockProcessActions : public Platform::IProcessActions
     };
     std::shared_ptr<DumpGate> m_DumpGate;
     int m_CreateDumpCount = 0;
+    Platform::WaitChainReadResult m_WaitChainResult;
+    std::shared_ptr<DumpGate> m_WaitChainGate; ///< holdWaitChains()'s latch (#3084)
+    int m_WaitChainCount = 0;
     std::filesystem::path m_LastDumpDirectory;
     Platform::ProcessActionResult m_TerminateResult = Platform::ProcessActionResult::ok();
     Platform::ProcessActionResult m_KillResult = Platform::ProcessActionResult::ok();

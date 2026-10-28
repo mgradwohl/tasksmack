@@ -836,6 +836,14 @@ TEST(BrokeredProcessActionsTest, TraceDumpAndFolderCallsAreTheInProcessOnes)
     EXPECT_EQ(f.inner->lastFolderInitial(), std::filesystem::path("/home"));
     EXPECT_EQ(f.inner->lastFolderOwner(), &owner);
 
+    // A wait chain read (#3084) is the in-process one too, refusal and all: the helper serves none.
+    WaitChainReadResult denied;
+    denied.status = WaitChainReadStatus::PermissionDenied;
+    f.inner->setWaitChainResult(denied);
+    EXPECT_EQ(f.actions->readWaitChains(TARGET, std::stop_token{}).status, WaitChainReadStatus::PermissionDenied);
+    EXPECT_EQ(f.inner->waitChainCount(), 1);
+    EXPECT_EQ(f.inner->lastTarget(), TARGET);
+
     EXPECT_TRUE(f.broker->requests().empty()); // none of these goes through the helper
 }
 
@@ -910,6 +918,13 @@ TEST(BrokeredProcessActionsTest, OverActionsWithOnlyTheDefaultsTheDefaultsShowTh
 
     const CpuAffinityLayout layout = actions.affinityLayout();
     EXPECT_TRUE(layout.groupSizes.empty());
+
+    // Analyze wait chain (#3084): not offered, and unsupported, never asked of the helper.
+    EXPECT_FALSE(actions.actionCapabilities().canAnalyzeWaitChain);
+    const WaitChainReadResult chains = actions.readWaitChains(TARGET, std::stop_token{});
+    EXPECT_EQ(chains.status, WaitChainReadStatus::Unsupported);
+    EXPECT_EQ(chains.detail, WAIT_CHAIN_UNSUPPORTED_MESSAGE);
+    EXPECT_TRUE(chains.threads.empty());
 
     RequiredOnlyActions plain;
     const ProcessActionResult authorized = plain.runAuthorized({.kind = AuthorizedAction::Kind::Kill, .target = TARGET}, std::stop_token{});

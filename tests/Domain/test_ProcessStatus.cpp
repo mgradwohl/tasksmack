@@ -5,6 +5,7 @@
 /// is correctly passed through from platform probes to domain snapshots.
 
 #include "Domain/ProcessModel.h"
+#include "Domain/ProcessStatusText.h"
 #include "Mocks/MockProbes.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/ProcessTypes.h"
@@ -193,6 +194,43 @@ TEST(ProcessStatusTest, StatusChangesAreDetected)
     auto snaps3 = model.snapshots();
     ASSERT_EQ(snaps3.size(), 1);
     EXPECT_EQ(snaps3[0].status, "Efficiency Mode");
+}
+
+// #3084: a process whose window has stopped answering reads "Not responding", ahead of any other status;
+// a suspended one stays "Suspended", since that is why its windows don't answer.
+TEST(ProcessStatusTest, NotRespondingLeadsTheStatusUnlessTheProcessIsSuspended)
+{
+    EXPECT_EQ(Domain::processStatusText("", true), "Not responding");
+    EXPECT_EQ(Domain::processStatusText("Efficiency Mode", true), "Not responding \xC2\xB7 Efficiency Mode");
+    EXPECT_EQ(Domain::processStatusText("Suspended", true), "Suspended");
+    EXPECT_EQ(Domain::processStatusText("Efficiency Mode", false), "Efficiency Mode");
+    EXPECT_EQ(Domain::processStatusText("", false), "");
+}
+
+TEST(ProcessStatusTest, NotRespondingIsPublishedWithTheStatusAndClearsWhenItAnswersAgain)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* probeRaw = probe.get();
+    Platform::ProcessCounters counter = makeProcessCounters(103, "hung_app");
+    counter.notResponding = true;
+    probe->setCounters({counter});
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    EXPECT_TRUE(snaps[0].notResponding);
+    EXPECT_EQ(snaps[0].status, "Not responding");
+
+    counter.notResponding = false;
+    probeRaw->setCounters({counter});
+    probeRaw->setTotalCpuTime(110000);
+    model.refresh();
+    snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    EXPECT_FALSE(snaps[0].notResponding);
+    EXPECT_TRUE(snaps[0].status.empty());
 }
 
 } // namespace

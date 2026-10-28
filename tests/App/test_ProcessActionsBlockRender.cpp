@@ -1215,6 +1215,70 @@ TEST_F(ProcessActionsBlockRenderTest, CreateDumpFromTheCardConfirmsWritesAndName
     EXPECT_FALSE(h.actionsView.dumpView().active());
 }
 
+// #3084: Analyze wait chain... where the platform can read one, at its own width; pressing it opens the wait
+// chain dialog for the process shown, which reads its chains on its worker and shows them.
+TEST_F(ProcessActionsBlockRenderTest, AnalyzeWaitChainFromTheCardOpensTheDialogForTheProcess)
+{
+    Harness h;
+    Platform::ProcessActionCapabilities caps = ALL_ACTIONS;
+    std::string text;
+    const auto body = [&]
+    {
+        ImGui::LogToBuffer();
+        (void) ProcessActionsBlock::render(h.context(caps), layoutFor(caps, 1600.0F, 600.0F), infoCardHeight(6.0F));
+        h.actionsView.renderConfirmation(&h.mock, TARGET);
+        text = GImGui->LogBuffer.c_str();
+        ImGui::LogFinish();
+    };
+
+    ASSERT_FALSE(runFrame(body));
+    EXPECT_FALSE(text.contains("Analyze wait chain")) << "not offered where the platform can't: " << text;
+    float without = 0.0F;
+    float with = 0.0F;
+    float button = 0.0F;
+    (void) runFrame(
+        [&]
+        {
+            without = ProcessActionsBlock::measure(caps).buttons;
+            Platform::ProcessActionCapabilities waitCaps = caps;
+            waitCaps.canAnalyzeWaitChain = true;
+            with = ProcessActionsBlock::measure(waitCaps).buttons;
+            button = ProcessActionsView::analyzeWaitChainButtonWidth(waitCaps);
+        });
+    EXPECT_FLOAT_EQ(ProcessActionsView::analyzeWaitChainButtonWidth(caps), 0.0F);
+    EXPECT_GT(button, 0.0F);
+    EXPECT_FLOAT_EQ(with, std::max(without, button));
+
+    caps.canAnalyzeWaitChain = true;
+    EXPECT_TRUE(ProcessActionsBlock::hasAnyAction(Platform::ProcessActionCapabilities{.canAnalyzeWaitChain = true}));
+    Platform::WaitChainReadResult read;
+    read.status = Platform::WaitChainReadStatus::Ok;
+    read.threadCount = 1;
+    Platform::ThreadWaitChain running;
+    running.tid = 55;
+    Platform::WaitChainNode self;
+    self.type = Platform::WaitObjectType::Thread;
+    self.status = Platform::WaitNodeStatus::Running;
+    running.nodes = {self};
+    read.threads.push_back(running);
+    h.mock.setWaitChainResult(read);
+    ASSERT_FALSE(runFrame(body));
+    EXPECT_TRUE(text.contains("Analyze wait chain...")) << text;
+
+    ImGui::ActivateItemByID(ImHashStr(WaitChainDetail::ANALYZE_WAIT_CHAIN_LABEL, 0, actionsWindow()->ID));
+    (void) runFrame(body);
+    EXPECT_TRUE(h.actionsView.waitChainDialog().isOpen());
+    EXPECT_EQ(h.actionsView.waitChainDialog().target(), TARGET);
+    h.actionsView.waitChainDialog().update(true);
+    (void) runFrame(body);
+    (void) runFrame(body);
+    EXPECT_TRUE(text.contains("Thread 55: Running")) << text;
+    EXPECT_EQ(h.mock.waitChainCount(), 1);
+    EXPECT_EQ(h.mock.lastTarget(), TARGET);
+    h.actionsView.shutdownWaitChainDialog();
+    EXPECT_FALSE(h.actionsView.waitChainDialog().isOpen());
+}
+
 // #2001: the dump's confirm warns when the folder's drive is too full, and offers Save dump to... where
 // the platform has a folder dialog; pressing it opens that dialog and leaves the confirm up.
 TEST_F(ProcessActionsBlockRenderTest, TheDumpConfirmWarnsOfLowSpaceAndOffersAFolder)

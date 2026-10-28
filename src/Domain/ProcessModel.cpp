@@ -15,6 +15,7 @@
 #include "ProcessServices.h"
 #include "ProcessSnapshot.h"
 #include "ProcessState.h"
+#include "ProcessStatusText.h"
 #include "SamplingConfig.h"
 #include "ServiceModel.h"
 #include "SharedHistory.h"
@@ -1310,7 +1311,8 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
     snapshot.user = current.user;
     snapshot.realUser = current.realUser;
     snapshot.displayState = translateState(current.state);
-    snapshot.status = current.status;             // Pass through status from platform probe
+    snapshot.status = processStatusText(current.status, current.notResponding); // The probe's, and Not responding (#3084)
+    snapshot.notResponding = current.notResponding;
     snapshot.publisher = current.publisher;       // Pass through publisher from platform probe
     snapshot.container = current.container;       // Pass through container from platform probe
     snapshot.services = current.services;         // and its services (#1886)

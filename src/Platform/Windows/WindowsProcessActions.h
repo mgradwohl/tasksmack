@@ -148,6 +148,9 @@ class WindowsProcessActions : public IProcessActions
     [[nodiscard]] DumpSpace dumpSpace(const ProcessTarget& target, const std::filesystem::path& directory) override;
     /// IFileOpenDialog with FOS_PICKFOLDERS (Windows::pickFolder()).
     [[nodiscard]] FolderChoice chooseDumpFolder(const std::filesystem::path& initial, void* ownerWindow) override;
+    /// The Wait Chain Traversal API on each of the process's threads (#3084; Windows::readWaitChains()),
+    /// as TaskSmack's user, through the same identity check as every action.
+    [[nodiscard]] WaitChainReadResult readWaitChains(const ProcessTarget& target, const std::stop_token& stopToken) override;
 
   private:
     /// Helper to terminate a process with given exit code

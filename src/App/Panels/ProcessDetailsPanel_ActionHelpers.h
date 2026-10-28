@@ -49,7 +49,8 @@ enum class ProcessAction : std::uint8_t
 /// Whether @p snapshot's process is in Efficiency mode, as its Status says (#3071): what checks the toggle.
 [[nodiscard]] inline bool isInEfficiencyMode(const Domain::ProcessSnapshot& snapshot) noexcept
 {
-    return snapshot.status == Platform::EFFICIENCY_MODE_STATUS;
+    // Last in the Status, after "Not responding" when its window has hung too (#3084)
+    return snapshot.status.ends_with(Platform::EFFICIENCY_MODE_STATUS);
 }
 
 /// The signal a Signal* action sends (#3063), or nullopt for the other actions.

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Platform/CpuAffinity.h"
+#include "Platform/WaitChain.h"
 
 #include <cstdint>
 #include <expected>
@@ -278,6 +279,9 @@ struct ProcessActionCapabilities
     /// setEfficiencyMode(): Efficiency mode on or off, as Task Manager's (#3071; Windows: EcoQoS power
     /// throttling and the Idle priority class). False on Linux, where the UI offers no such toggle.
     bool canSetEfficiencyMode = false;
+    /// readWaitChains(): what each of a process's threads waits on, as Task Manager's "Analyze wait chain"
+    /// (#3084; Windows: the Wait Chain Traversal API). False on Linux, where the UI offers no such item.
+    bool canAnalyzeWaitChain = false;
     /// closeConnection(): shut down one of a process's sockets (#3066; Linux: pidfd_getfd() and shutdown()).
     bool canCloseConnections = false;
 };
@@ -451,6 +455,25 @@ class IProcessActions
         static_cast<void>(target);
         static_cast<void>(socketInode);
         return ProcessActionResult::error("Closing a connection isn't available on this system");
+    }
+
+    /// Reads what each thread of the target waits on (#3084), as Task Manager's "Analyze wait chain": per
+    /// thread, the chain from the thread through the object it waits on to the thread or process that owns
+    /// it, and whether the chain is a cycle (a deadlock). Bounded: at most WAIT_CHAIN_MAX_THREADS threads,
+    /// WAIT_CHAIN_MAX_NODES nodes each, and WAIT_CHAIN_TIME_BUDGET_MS in all. Blocking (each thread's chain
+    /// may wait on another process), so it is called on a worker thread, never the UI thread; once
+    /// @p stopToken is requested it stops before the next thread. Only reads: it changes nothing. Refused,
+    /// as every action is, unless the process at the target's PID is the target. The default refuses it as
+    /// unsupported, matching canAnalyzeWaitChain's default (false).
+    [[nodiscard]] virtual WaitChainReadResult readWaitChains(const ProcessTarget& target, const std::stop_token& stopToken)
+    {
+        static_cast<void>(target);
+        static_cast<void>(stopToken);
+        return {.threads = {},
+                .detail = WAIT_CHAIN_UNSUPPORTED_MESSAGE,
+                .threadCount = 0,
+                .status = WaitChainReadStatus::Unsupported,
+                .threadsTruncated = false};
     }
 
     /// Retries @p request (a signal, priority, I/O priority, affinity or Efficiency mode change) as an administrator,

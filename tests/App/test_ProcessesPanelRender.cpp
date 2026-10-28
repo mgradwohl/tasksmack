@@ -832,6 +832,66 @@ TEST_F(ProcessesPanelRenderTest, EfficiencyModeTickedInTheRowMenuIsTurnedOffAtOn
     panel->onDetach();
 }
 
+// #3084: the row menu's Analyze wait chain... opens the wait chain dialog for the process the menu was for,
+// which reads its chains on its worker, says so meanwhile, then shows them.
+TEST_F(ProcessesPanelRenderTest, AnalyzeWaitChainFromTheRowMenuReadsThatProcesssChains)
+{
+    TestMocks::MockProcessActions* actions = nullptr;
+    auto panel = std::make_unique<ProcessesPanel>(
+        [&actions]
+        {
+            auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+            for (auto counters : {TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0),
+                                  TestMocks::makeProcessCounters(100, "server", 'R', 200, 50, 1000, std::uint64_t{8} << 20U, 1),
+                                  TestMocks::makeProcessCounters(101, "worker", 'S', 30, 10, 1100, std::uint64_t{2} << 20U, 100)})
+            {
+                probe->withProcess(counters);
+            }
+            auto mock = std::make_unique<TestMocks::MockProcessActions>();
+            mock->setCapabilities({.canTerminate = true, .canKill = true, .canAnalyzeWaitChain = true});
+            Platform::WaitChainReadResult read;
+            read.status = Platform::WaitChainReadStatus::Ok;
+            read.threadCount = 1;
+            Platform::ThreadWaitChain chain;
+            chain.tid = 4321;
+            Platform::WaitChainNode self;
+            self.type = Platform::WaitObjectType::Thread;
+            self.status = Platform::WaitNodeStatus::Blocked;
+            Platform::WaitChainNode lock;
+            lock.type = Platform::WaitObjectType::SendMessageCall;
+            lock.status = Platform::WaitNodeStatus::Blocked;
+            chain.nodes = {self, lock};
+            read.threads.push_back(chain);
+            mock->setWaitChainResult(read);
+            mock->holdWaitChains();
+            actions = mock.get();
+            return ProcessesPanelPlatform{.probe = std::move(probe), .actions = std::move(mock), .icons = nullptr};
+        },
+        [](Core::Event&) {});
+    attachAndSeed(*panel);
+    Core::ActiveTabChangedEvent shown("Processes");
+    panel->onEvent(shown);
+    ASSERT_NE(actions, nullptr);
+    renderUntilLoaded(*panel);
+    const std::optional<std::int32_t> menuPid = openARowMenu(*panel);
+    ASSERT_TRUE(menuPid.has_value());
+
+    pressPopupItem(*panel, WaitChainDetail::ANALYZE_WAIT_CHAIN_LABEL);
+    static_cast<void>(renderAndCapture(*panel));
+    const std::string pending = renderAndCapture(*panel);
+    EXPECT_TRUE(pending.contains(WaitChainDetail::READING_TEXT)) << pending;
+    EXPECT_TRUE(panel->waitChainDialogForTesting().isOpen());
+    EXPECT_EQ(panel->waitChainDialogForTesting().target().pid, menuPid.value_or(-1));
+
+    actions->releaseWaitChains();
+    panel->waitChainDialogForTesting().update(true);
+    const std::string read = renderAndCapture(*panel);
+    EXPECT_TRUE(read.contains("Thread 4321: waiting on SendMessage to a window")) << read;
+    EXPECT_EQ(actions->waitChainCount(), 1);
+    EXPECT_EQ(actions->lastTarget().pid, menuPid.value_or(-1));
+    panel->onDetach();
+}
+
 TEST_F(ProcessesPanelRenderTest, KillFromTheRowMenuIsConfirmedThenSentForThatProcess)
 {
     TestMocks::MockProcessActions* actions = nullptr;

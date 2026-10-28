@@ -151,6 +151,9 @@ struct ProcessSnapshot
     bool handleCountAvailable = true; // handleCount
     bool ioAvailable = true;          // ioReadBytesPerSec / ioWriteBytesPerSec
     bool networkAvailable = true;     // netSentBytesPerSec / netReceivedBytesPerSec
+    // A top-level window has stopped answering its messages (Windows, #3084): `status` then says
+    // "Not responding" (processStatusText()). Always false on Linux.
+    bool notResponding = false;
 
     // Strings at the end (reduce padding and improve cache for hot integer/float fields)
     std::string name;

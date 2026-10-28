@@ -37,6 +37,7 @@
 #include "App/Panels/ProcessTreeFlatten.h"
 #include "App/Panels/ProcessTreeIndent.h"
 #include "App/Panels/ProcessTypeColor.h"
+#include "App/Panels/ProcessWaitChainDialog.h"
 #include "App/Panels/RunTaskDialog.h"
 #include "App/Panels/RunTaskHistory.h"
 #include "App/Panels/StuckProcesses.h"
@@ -1222,6 +1223,8 @@ void ProcessesPanel::onDetach()
     m_IconView.detach();
     // A dump still being written is cancelled and waited for, while its actions are still here (#807).
     m_DumpView.shutdown();
+    // So is a wait chain read, and its End process (#3084).
+    m_WaitChainDialog.shutdown();
     // So is a batch still running (#2142): stopped before its next process.
     m_BatchRun.shutdown();
     // And a single-process action (#2305): one platform call, waited for while its actions are here --
@@ -1853,6 +1856,8 @@ void ProcessesPanel::renderContent()
     renderRowActionConfirm();
     // The row menu's Create dump file... (#807): its confirm, then its progress and result.
     m_DumpView.render(m_ProcessActions.get());
+    // The row menu's Analyze wait chain... (#3084): read on its worker, then the chains.
+    m_WaitChainDialog.render();
 
     // The row menu (#1209), for the process m_RowMenuTarget holds. One popup at panel level rather
     // than one per row, opened by ID from the row (m_RowMenuPopupId, this same ID stack).
@@ -3120,10 +3125,11 @@ void ProcessesPanel::applyKeyboardInput(const std::vector<Domain::ProcessSnapsho
     // With several rows selected (#804), F9 asks to kill all of them, in the batch confirm; with one,
     // the one highlighted row, when it is visible.
     // A batch priority change (#1484), in its dialog or its confirmation, is a row action too.
-    // So is a dump's confirm, progress or result (#807), and a batch still running on its worker (#2142).
+    // So is a dump's confirm, progress or result (#807), and a batch still running on its worker (#2142),
+    // and the wait chain dialog (#3084), which has an End process confirmation of its own.
     const bool rowActionPending = m_ShowRowActionConfirm || m_RowAction.pending() || m_BatchPriorityDialog.isPending() ||
                                   m_AffinityDialog.isPending() || m_RunTaskDialog.isOpen() || m_FindHandlesDialog.isOpen() ||
-                                  m_DumpView.active() || rowActionRunning();
+                                  m_DumpView.active() || m_WaitChainDialog.isOpen() || rowActionRunning();
     if (killRequested && m_Selection.size() > 1)
     {
         // Only while at least one selected row is visible: with every selected row filtered out, F9
@@ -3490,6 +3496,20 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
                                                  m_ProcessActions.get());
         }
         ImGui::SetItemTooltip("%s", DumpDetail::CREATE_DUMP_TOOLTIP);
+    }
+    // What its threads wait on (#3084), as Task Manager's row menu offers it; one process. It only reads, so
+    // it waits on no row action.
+    if (WaitChainDetail::offersAnalyzeWaitChain(can, batchCount))
+    {
+        if (!can.canSetAffinity && !DumpDetail::offersCreateDump(can, batchCount)) // else it shares their group
+        {
+            ImGui::Separator();
+        }
+        if (ImGui::MenuItem(WaitChainDetail::ANALYZE_WAIT_CHAIN_LABEL))
+        {
+            m_WaitChainDialog.open(m_ProcessActions.get(), {.pid = proc.pid, .startTimeTicks = proc.startTimeTicks}, proc.name, m_OwnPid);
+        }
+        ImGui::SetItemTooltip("%s", WaitChainDetail::ANALYZE_WAIT_CHAIN_TOOLTIP);
     }
     if (can.canTerminate || can.canKill)
     {
