@@ -4,6 +4,7 @@
 #include "Platform/IStartupActions.h"
 #include "Platform/IStartupProbe.h"
 #include "Platform/Linux/LinuxStartup.h"
+#include "Platform/Linux/SystemdUnitFile.h"
 #include "Platform/Linux/XdgAutostart.h"
 #include "Platform/ScopedTempDir.h"
 
@@ -310,6 +311,83 @@ TEST_F(LinuxStartupTest, ANameThatIsntAnAutostartFileIsRefused)
     EXPECT_FALSE(actions.setEnabled(entry, false).ok);
     EXPECT_FALSE(std::filesystem::exists(m_Dirs.user / "missing.desktop"));
     EXPECT_FALSE(LinuxStartupActions(XdgAutostart::Dirs{}).capabilities().canSetEnabled) << "no HOME: nowhere to write";
+}
+
+// #3082: a unit file's description, first ExecStart (prefixes dropped), a timer's schedule and unit.
+TEST(SystemdUnitFileTest, ReadsWhatTheStartupTabShows)
+{
+    const SystemdUnitFile::Unit service =
+        SystemdUnitFile::parse("# a comment\n[Unit]\nDescription=Sync daemon\nAfter=network.target\n\n[Service]\nType=simple\n"
+                               "ExecStart=-/usr/bin/syncd --quiet\nExecStart=/usr/bin/other\n[Install]\nWantedBy=default.target\n");
+    EXPECT_EQ(service.description, "Sync daemon");
+    EXPECT_EQ(service.execStart, "/usr/bin/syncd --quiet");
+    EXPECT_TRUE(service.schedule.empty());
+
+    const SystemdUnitFile::Unit timer =
+        SystemdUnitFile::parse("[Unit]\nDescription=Nightly backup\n[Timer]\nOnCalendar=daily\nPersistent=true\nUnit=backup-job.service\n");
+    EXPECT_EQ(timer.schedule, "OnCalendar=daily");
+    EXPECT_EQ(timer.timerUnit, "backup-job.service");
+    EXPECT_TRUE(SystemdUnitFile::parse("").description.empty());
+}
+
+TEST(SystemdUnitFileTest, TheDirectoriesFollowXdgConfigHome)
+{
+    const SystemdUserDirs defaults = systemdUserDirs("/home/u", "");
+    EXPECT_EQ(defaults.user, std::filesystem::path("/home/u/.config/systemd/user"));
+    EXPECT_EQ(defaults.system, (std::vector<std::filesystem::path>{"/etc/systemd/user"}));
+    EXPECT_EQ(defaults.unitPath.front(), defaults.user);
+    EXPECT_EQ(systemdUserDirs("/home/u", "/cfg").user, std::filesystem::path("/cfg/systemd/user"));
+    EXPECT_TRUE(systemdUserDirs("", "relative").user.empty());
+}
+
+// #3082: enabled user units (services and timers) are listed read-only beside the autostart files; the user's
+// link to a unit wins over the same unit enabled for every user; a timer shows the command its service runs.
+TEST_F(LinuxStartupTest, ListsTheEnabledSystemdUserUnitsReadOnly)
+{
+    const std::filesystem::path user = m_Root.path / "home/.config/systemd/user";
+    const std::filesystem::path system = m_Root.path / "etc/systemd/user";
+    const std::filesystem::path lib = m_Root.path / "usr/lib/systemd/user";
+    writeText(lib / "syncd.service", "[Unit]\nDescription=Sync daemon\n[Service]\nExecStart=/bin/sh -c true\n");
+    writeText(lib / "backup.timer", "[Unit]\nDescription=Nightly backup\n[Timer]\nOnCalendar=daily\n");
+    writeText(lib / "backup.service", "[Service]\nExecStart=/nonexistent/backup --all\n");
+    std::filesystem::create_directories(user / "default.target.wants");
+    std::filesystem::create_directories(user / "timers.target.wants");
+    std::filesystem::create_directories(system / "default.target.wants");
+    std::filesystem::create_symlink(lib / "syncd.service", user / "default.target.wants/syncd.service");
+    std::filesystem::create_symlink(lib / "backup.timer", user / "timers.target.wants/backup.timer");
+    std::filesystem::create_symlink(lib / "syncd.service", system / "default.target.wants/syncd.service");
+    writeText(system / "default.target.wants/agent.service", "[Service]\nExecStart=/bin/sh\n");
+
+    LinuxStartupProbe probe(
+        m_Dirs, "GNOME", SEARCH_PATH, SystemdUserDirs{.user = user, .system = {system}, .unitPath = {user, system, lib}});
+    const std::vector<StartupEntry> entries = probe.enumerate();
+    ASSERT_EQ(entries.size(), 3U);
+
+    const StartupEntry* syncd = find(entries, "syncd.service");
+    ASSERT_NE(syncd, nullptr);
+    EXPECT_EQ(syncd->name, "Sync daemon");
+    EXPECT_EQ(syncd->command, "/bin/sh -c true");
+    EXPECT_EQ(syncd->executablePath, "/bin/sh");
+    EXPECT_EQ(syncd->location, StartupLocation::SystemdUserUnit) << "the user's link wins";
+    EXPECT_TRUE(syncd->enabled);
+    EXPECT_FALSE(syncd->notSwitchableReason.empty()) << "read-only for now";
+    EXPECT_EQ(syncd->target, StartupTargetState::Present);
+
+    const StartupEntry* backup = find(entries, "backup.timer");
+    ASSERT_NE(backup, nullptr);
+    EXPECT_EQ(backup->name, "Nightly backup (timer, OnCalendar=daily)");
+    EXPECT_EQ(backup->command, "/nonexistent/backup --all") << "the command its service runs";
+    EXPECT_EQ(backup->target, StartupTargetState::Missing);
+
+    const StartupEntry* agent = find(entries, "agent.service");
+    ASSERT_NE(agent, nullptr);
+    EXPECT_EQ(agent->name, "agent");
+    EXPECT_EQ(agent->location, StartupLocation::SystemdSystemUnit);
+    EXPECT_EQ(agent->scope, StartupScope::Machine);
+
+    // The actions refuse a unit: it isn't an autostart file.
+    LinuxStartupActions actions(m_Dirs);
+    EXPECT_FALSE(actions.setEnabled(*syncd, false).ok);
 }
 
 } // namespace

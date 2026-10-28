@@ -203,6 +203,10 @@ std::string_view startupLocationLabel(Platform::StartupLocation location) noexce
         return "Autostart (your folder)";
     case XdgAutostartSystem:
         return "Autostart (system)";
+    case SystemdUserUnit:
+        return "systemd user unit";
+    case SystemdSystemUnit:
+        return "systemd user unit (all users)";
     default:
         return "";
     }
