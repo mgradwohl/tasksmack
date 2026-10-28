@@ -101,6 +101,29 @@ constexpr const char* FULL_STAT_LINE =
     "1234 (my (odd) name) S 1 1234 1234 34816 1234 4194560 1000 2000 0 0 10 5 0 0 20 -5 3 0 98765 12345678 400 "
     "18446744073709551615 1 1 0 0 0 0 0 0 0 0 0 0 17 3 0 0 0 0 0 0 0 0 0 0 0 0 0\n";
 
+// #3086: rt_priority (40) and policy (41), on a full line; a line that stops at rss still parses, with the
+// policy unknown.
+TEST(ProcStatFieldsTest, ReadsThePolicyAndRealTimePriorityWhenTheLineHasThem)
+{
+    const auto normal = ProcParsing::parseStatFields(FULL_STAT_LINE);
+    ASSERT_TRUE(normal.has_value());
+    EXPECT_TRUE(normal->hasPolicy);
+    EXPECT_EQ(normal->policy, 0U);
+    EXPECT_EQ(normal->rtPriority, 0U);
+
+    const auto fifo = ProcParsing::parseStatFields("77 (audio) S 1 77 77 0 -1 4194560 10 0 0 0 1 1 0 0 -51 0 2 0 500 1000 10 "
+                                                   "18446744073709551615 1 1 0 0 0 0 0 0 0 0 0 0 17 1 50 1 0 0 0\n");
+    ASSERT_TRUE(fifo.has_value());
+    EXPECT_TRUE(fifo->hasPolicy);
+    EXPECT_EQ(fifo->policy, 1U);
+    EXPECT_EQ(fifo->rtPriority, 50U);
+
+    const auto shortLine = ProcParsing::parseStatFields("9 (x) S 1 9 9 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 5 100 2\n");
+    ASSERT_TRUE(shortLine.has_value());
+    EXPECT_FALSE(shortLine->hasPolicy);
+    EXPECT_EQ(shortLine->rssPages, 2);
+}
+
 TEST(ProcStatFieldsTest, ReadsEveryFieldTheProbeUses)
 {
     const auto parsed = ProcParsing::parseStatFields(FULL_STAT_LINE);
