@@ -141,6 +141,21 @@ bool pollSelectAll()
     return ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_A);
 }
 
+bool pollIncrementalSearch()
+{
+    return ImGui::IsKeyChordPressed(ImGuiKey_Slash) || ImGui::IsKeyChordPressed(ImGuiKey_KeypadDivide);
+}
+
+bool pollFocusFilter()
+{
+    return ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_F);
+}
+
+bool pollFindHandles()
+{
+    return ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_F);
+}
+
 float tableScrollViewHeight()
 {
     const ImGuiTable* table = ImGui::GetCurrentTable();

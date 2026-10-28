@@ -38,6 +38,14 @@ class Layer
     virtual void onPostRender()
     {}
 
+    /// Called instead of a frame while the window is hidden and the frame loop draws nothing
+    /// (#3156): once per wake of its event wait, at least every WINDOW_HIDDEN_WAIT_TIMEOUT. For
+    /// the little that can't wait for the next frame, such as taking in published samples that
+    /// would otherwise be dropped. No ImGui frame is open: nothing may draw, and onUpdate()'s
+    /// per-frame work waits for the next frame.
+    virtual void onHiddenUpdate()
+    {}
+
     /// Handle Core::Event broadcasts (window and application events; raw input arrives through
     /// onSDLEvent). Application::raiseEvent() calls layers top of the stack first. A dispatch
     /// handler that returns true marks the event handled and stops it reaching the layers below,

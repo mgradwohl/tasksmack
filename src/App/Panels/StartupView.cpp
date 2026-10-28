@@ -4,6 +4,7 @@
 #include "App/Panels/ProcessTableLayout.h"
 #include "App/Panels/StartupActionsView.h"
 #include "Domain/ProcessIconCache.h"
+#include "Domain/StartupImpact.h"
 #include "Domain/StartupModel.h"
 #include "Platform/AsciiCase.h"
 #include "Platform/IStartupProbe.h"
@@ -38,6 +39,26 @@ constexpr const char* FILTER_HINT = ICON_FA_MAGNIFYING_GLASS "  Filter startup a
 using Platform::compareIgnoreCase;
 using Platform::containsIgnoreCase;
 
+/// An entry's impact, or Not measured when @p impacts doesn't reach it.
+[[nodiscard]] Domain::StartupEntryImpact impactAt(std::span<const Domain::StartupEntryImpact> impacts, std::size_t index) noexcept
+{
+    return index < impacts.size() ? impacts[index] : Domain::StartupEntryImpact{};
+}
+
+/// Startup impact's order (#3073): the rating, then CPU time, then disk I/O.
+[[nodiscard]] std::strong_ordering compareImpact(const Domain::StartupEntryImpact& a, const Domain::StartupEntryImpact& b) noexcept
+{
+    if (const std::strong_ordering order = a.rating <=> b.rating; order != 0)
+    {
+        return order;
+    }
+    if (const std::strong_ordering order = a.cpuUs <=> b.cpuUs; order != 0)
+    {
+        return order;
+    }
+    return a.diskBytes <=> b.diskBytes;
+}
+
 [[nodiscard]] std::strong_ordering compareBy(const Platform::StartupEntry& a, const Platform::StartupEntry& b, StartupColumn column)
 {
     switch (column)
@@ -57,6 +78,7 @@ using Platform::containsIgnoreCase;
         return a.location <=> b.location;
     case StartupColumn::Command:
         return compareIgnoreCase(a.command, b.command);
+    case StartupColumn::Impact: // by buildStartupRows, which has the impacts
     case StartupColumn::Name:
     default:
         return compareIgnoreCase(a.name, b.name);
@@ -147,7 +169,7 @@ void rebuildRowsIfStale(const Domain::StartupPublication& publication, StartupVi
             state.iconKeys.push_back(Domain::iconFileKey(startupIconPath(entry)));
         }
     }
-    state.rows = buildStartupRows(publication.entries, state.filter, state.sortColumn, state.ascending);
+    state.rows = buildStartupRows(publication.entries, state.filter, state.sortColumn, state.ascending, publication.impacts);
     state.rowsVersion = publication.version;
     state.rowsFilter = state.filter;
     state.rowsColumn = state.sortColumn;
@@ -184,6 +206,59 @@ std::string_view startupLocationLabel(Platform::StartupLocation location) noexce
     default:
         return "";
     }
+}
+
+std::string_view startupImpactLabel(Domain::StartupImpact impact) noexcept
+{
+    using enum Domain::StartupImpact;
+    switch (impact)
+    {
+    case None:
+        return "None";
+    case Low:
+        return "Low";
+    case Medium:
+        return "Medium";
+    case High:
+        return "High";
+    case NotMeasured:
+    default:
+        return "Not measured";
+    }
+}
+
+std::string
+startupImpactTooltip(const Domain::StartupEntryImpact& impact, std::uint64_t signInUnixSeconds, std::string_view unavailableReason)
+{
+    if (impact.rating == Domain::StartupImpact::None)
+    {
+        return "Disabled: it doesn't start when you sign in.";
+    }
+    const std::string signIn = UI::Format::formatEpochDateTime(signInUnixSeconds);
+    if (impact.rating == Domain::StartupImpact::NotMeasured)
+    {
+        if (!unavailableReason.empty())
+        {
+            return "Not measured: " + std::string(unavailableReason) + ".";
+        }
+        if (signIn.empty())
+        {
+            return "Not measured: Windows has no figures for its program at the last sign-in.";
+        }
+        return "Not measured: its program didn't run during the measurement of the sign-in at " + signIn +
+               " (or TaskSmack couldn't tell which program it starts).";
+    }
+    constexpr double US_PER_MS = 1000.0;
+    std::string text = signIn.empty() ? std::string("At the last sign-in:") : "At the sign-in at " + signIn + ":";
+    text += "\nCPU time: " + UI::Format::formatFixedLocalized(static_cast<double>(impact.cpuUs) / US_PER_MS, 0, " ms");
+    text += "\nDisk I/O: " + UI::Format::formatBytes(static_cast<double>(impact.diskBytes));
+    if (impact.processCount > 1)
+    {
+        text += "\n" + std::to_string(impact.processCount) + " processes: the program and those it started";
+    }
+    text += "\n\nHigh: over 1 s of CPU or 3 MB of disk I/O. Low: under 300 ms of CPU and 300 KB of disk I/O. "
+            "Medium: in between. Task Manager's thresholds.";
+    return text;
 }
 
 std::string_view startupScopeLabel(Platform::StartupScope scope) noexcept
@@ -265,8 +340,11 @@ std::string_view startupIconPath(const Platform::StartupEntry& entry) noexcept
     return entry.executablePath;
 }
 
-std::vector<std::size_t>
-buildStartupRows(std::span<const Platform::StartupEntry> entries, std::string_view filter, StartupColumn column, bool ascending)
+std::vector<std::size_t> buildStartupRows(std::span<const Platform::StartupEntry> entries,
+                                          std::string_view filter,
+                                          StartupColumn column,
+                                          bool ascending,
+                                          std::span<const Domain::StartupEntryImpact> impacts)
 {
     std::vector<std::size_t> rows;
     rows.reserve(entries.size());
@@ -283,7 +361,9 @@ buildStartupRows(std::span<const Platform::StartupEntry> entries, std::string_vi
     std::ranges::stable_sort(rows,
                              [&](std::size_t a, std::size_t b)
                              {
-                                 const std::strong_ordering order = compareBy(entries[a], entries[b], column);
+                                 const std::strong_ordering order = (column == StartupColumn::Impact)
+                                                                      ? compareImpact(impactAt(impacts, a), impactAt(impacts, b))
+                                                                      : compareBy(entries[a], entries[b], column);
                                  if (order != 0)
                                  {
                                      return ascending ? (order < 0) : (order > 0);
@@ -331,13 +411,18 @@ void renderFilterBar(const Domain::StartupPublication& publication, StartupViewS
 
 /// The table's columns, in StartupColumn order, each tagged with its StartupColumn as the user ID the
 /// sort specs report; the header row is frozen while scrolling.
-void setupStartupColumns()
+void setupStartupColumns(const Platform::StartupCapabilities& capabilities)
 {
     const float em = ImGui::GetFontSize();
     ImGui::TableSetupScrollFreeze(1, 1);
     ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_None, em * 14.0F, static_cast<ImGuiID>(StartupColumn::Name));
     ImGui::TableSetupColumn("Publisher", ImGuiTableColumnFlags_None, em * 12.0F, static_cast<ImGuiID>(StartupColumn::Publisher));
     ImGui::TableSetupColumn("Enabled", ImGuiTableColumnFlags_DefaultSort, em * 11.0F, static_cast<ImGuiID>(StartupColumn::Enabled));
+    // Highest first on the first click. Where the platform has no impact data (Linux) the column is
+    // left out altogether, not offered in the header menu.
+    const ImGuiTableColumnFlags impactFlags =
+        ImGuiTableColumnFlags_PreferSortDescending | (capabilities.hasImpact ? ImGuiTableColumnFlags_None : ImGuiTableColumnFlags_Disabled);
+    ImGui::TableSetupColumn("Startup impact", impactFlags, em * 8.0F, static_cast<ImGuiID>(StartupColumn::Impact));
     ImGui::TableSetupColumn("Scope", ImGuiTableColumnFlags_None, em * 6.0F, static_cast<ImGuiID>(StartupColumn::Scope));
     ImGui::TableSetupColumn("Location", ImGuiTableColumnFlags_None, em * 12.0F, static_cast<ImGuiID>(StartupColumn::Location));
     ImGui::TableSetupColumn("Command", ImGuiTableColumnFlags_None, em * 30.0F, static_cast<ImGuiID>(StartupColumn::Command));
@@ -371,8 +456,33 @@ struct RowExtras
 {
     StartupActionsView* actions = nullptr;
     ProcessIconView* icons = nullptr;
+    /// The entry's Startup impact (#3073) and the publication it is from, for its tooltip; null where
+    /// the platform has no impact data.
+    const Domain::StartupEntryImpact* impact = nullptr;
+    const Domain::StartupPublication* publication = nullptr;
     std::uint64_t iconKey = 0;
 };
+
+/// The Startup impact cell (#3073): the rating, muted when there is none to give.
+[[nodiscard]] bool renderImpactCell(const Domain::StartupEntryImpact& impact, const UI::ColorScheme& scheme)
+{
+    const bool rated = impact.rating != Domain::StartupImpact::None && impact.rating != Domain::StartupImpact::NotMeasured;
+    ImGui::PushStyleColor(ImGuiCol_Text, rated ? scheme.textPrimary : scheme.textMuted);
+    const bool tooltip = UI::Widgets::cellText(startupImpactLabel(impact.rating)).tooltipShown;
+    ImGui::PopStyleColor();
+    return tooltip;
+}
+
+/// The Startup impact cell's tooltip, in place of the entry's while the pointer is over that cell.
+void renderImpactTooltip(const Domain::StartupEntryImpact& impact, const Domain::StartupPublication& publication)
+{
+    const std::string text = startupImpactTooltip(impact, publication.impactSignInUnixSeconds, publication.impactUnavailableReason);
+    ImGui::BeginTooltip();
+    ImGui::PushTextWrapPos(ImGui::GetFontSize() * 30.0F);
+    ImGui::TextUnformatted(text.c_str(), text.c_str() + text.size());
+    ImGui::PopTextWrapPos();
+    ImGui::EndTooltip();
+}
 
 /// The Name cell: the entry's icon (#1800), then a row-wide selectable (left or right click selects
 /// it) and the name, in the warning colour when the program is missing and cut short with an ellipsis
@@ -459,6 +569,11 @@ void renderStartupRow(const Platform::StartupEntry& entry,
         ImGui::PopStyleColor();
     }
     ImGui::TableNextColumn();
+    if (extras.impact != nullptr)
+    {
+        cellTooltip |= renderImpactCell(*extras.impact, scheme);
+    }
+    ImGui::TableNextColumn();
     cellTooltip |= UI::Widgets::cellText(startupScopeLabel(entry.scope)).tooltipShown;
     ImGui::TableNextColumn();
     cellTooltip |= UI::Widgets::cellText(startupLocationLabel(entry.location)).tooltipShown;
@@ -466,7 +581,15 @@ void renderStartupRow(const Platform::StartupEntry& entry,
     cellTooltip |= renderCommandCell(entry, missing, scheme);
     if (rowTooltipDue && !cellTooltip)
     {
-        renderStartupTooltip(entry);
+        if (extras.impact != nullptr && extras.publication != nullptr &&
+            ImGui::TableGetHoveredColumn() == static_cast<int>(StartupColumn::Impact))
+        {
+            renderImpactTooltip(*extras.impact, *extras.publication);
+        }
+        else
+        {
+            renderStartupTooltip(entry);
+        }
     }
 }
 
@@ -493,7 +616,12 @@ void renderStartupRows(const Domain::StartupPublication& publication,
             const std::string_view key = startupEntryKey(entry);
             ImGui::PushID(entry.packageFamily.c_str());
             ImGui::PushID(key.data(), key.data() + key.size());
-            const RowExtras extras{.actions = actions, .icons = icons, .iconKey = state.iconKeys[index]};
+            const RowExtras extras{.actions = actions,
+                                   .icons = icons,
+                                   .impact = (capabilities.hasImpact && index < publication.impacts.size()) ? &publication.impacts[index]
+                                                                                                            : nullptr,
+                                   .publication = &publication,
+                                   .iconKey = state.iconKeys[index]};
             renderStartupRow(entry, state.enabledLabels[index], capabilities, scheme, state, extras);
             ImGui::PopID();
             ImGui::PopID();
@@ -542,11 +670,11 @@ StartupViewContent renderStartupView(const Domain::StartupPublication* publicati
                                             ImGuiTableFlags_Sortable | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter |
                                             ImGuiTableFlags_BordersV | ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX |
                                             ImGuiTableFlags_SizingFixedFit;
-    if (!ImGui::BeginTable("##StartupTable", 6, TABLE_FLAGS))
+    if (!ImGui::BeginTable("##StartupTable", 7, TABLE_FLAGS))
     {
         return StartupViewContent::Table;
     }
-    setupStartupColumns();
+    setupStartupColumns(capabilities);
     applySortSpecs(state);
     rebuildRowsIfStale(*publication, state); // a header click may have changed the order
     renderStartupRows(*publication, capabilities, state, scheme, actions, icons);

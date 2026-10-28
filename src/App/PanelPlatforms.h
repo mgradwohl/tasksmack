@@ -36,7 +36,8 @@ class Scenario;
 /// factories below then run on their sampler threads and find it made. Nothing in a synthetic run.
 void preparePanelPlatforms(const Synthetic::Scenario* scenario);
 
-/// The Processes panel's probe, actions, UDP collector and icon source: @p scenario's, or the platform's.
+/// The Processes panel's probe, actions, UDP collector, icon source and Find handles' readers: @p scenario's,
+/// or the platform's.
 /// Called on the Processes panel's sampler thread, from its start hook (#2731).
 [[nodiscard]] ProcessesPanelPlatform makeProcessesPanelPlatform(const Synthetic::Scenario* scenario);
 

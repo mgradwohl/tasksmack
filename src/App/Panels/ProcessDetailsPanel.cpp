@@ -143,6 +143,22 @@ void ProcessDetailsPanel::updateWithSamples(std::span<const Domain::ProcessSampl
     // frame (#1880): not while collapsed, on another Details tab, or with this tab hidden.
     m_ServicesSectionOpen = std::exchange(m_ServicesDrawnOpen, false);
 
+    takeSamples(samples);
+    if (m_SelectedPid == -1)
+    {
+        return;
+    }
+
+    if (m_HasSnapshot && !m_ProcessExited)
+    {
+        m_SmoothedUsage.update(*m_CachedSnapshot, m_CachedRateReadings, deltaTime, m_RefreshInterval);
+    }
+
+    updateOnDemandReads(deltaTime);
+}
+
+void ProcessDetailsPanel::takeSamples(std::span<const Domain::ProcessSample> samples)
+{
     if (m_SelectedPid == -1)
     {
         m_HasSnapshot = false;
@@ -191,12 +207,10 @@ void ProcessDetailsPanel::updateWithSamples(std::span<const Domain::ProcessSampl
             m_ProcessExited = true;
         }
     }
+}
 
-    if (m_HasSnapshot && !m_ProcessExited)
-    {
-        m_SmoothedUsage.update(*m_CachedSnapshot, m_CachedRateReadings, deltaTime, m_RefreshInterval);
-    }
-
+void ProcessDetailsPanel::updateOnDemandReads(float deltaTime)
+{
     // The Environment section's on-demand read (#179): here in the update path, never in render(), and
     // only when the section was drawn open last frame and a read is due (ProcessEnvironmentView::update()),
     // for the selected process alone, identified by PID and start time so a reused PID is not read.

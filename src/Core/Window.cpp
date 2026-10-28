@@ -1344,7 +1344,17 @@ bool Window::isOccluded() const noexcept
 
 bool Window::isHidden() const noexcept
 {
-    return WindowVisibility::isHidden(isMinimized(), isOccluded(), m_VisibilitySignals);
+    return hiddenState() != WindowVisibility::HiddenState::Shown;
+}
+
+WindowVisibility::HiddenState Window::hiddenState() const noexcept
+{
+    if (m_HiddenForTesting)
+    {
+        return WindowVisibility::HiddenState::Hidden;
+    }
+    // Native Wayland reports no end to a minimize: SDL clears the flag at the next activating configure.
+    return WindowVisibility::classifyHidden(isMinimized(), !VideoBackend::isWayland(), isOccluded(), m_VisibilitySignals);
 }
 
 // NOLINTNEXTLINE(readability-convert-member-functions-to-static) - reads this window's cloak on Windows; empty elsewhere

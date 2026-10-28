@@ -182,6 +182,13 @@ inline constexpr int SERVICES_DATA_MAX_AGE_MS = 3 * SERVICES_REFRESH_MS;
 inline constexpr int STARTUP_REFRESH_MS = 5000;
 static_assert(STARTUP_REFRESH_MS <= REFRESH_INTERVAL_MAX_MS);
 
+// How often the Startup tab re-reads the last sign-in's startup measurement, for its Startup impact
+// column (seconds) (#3073) - fixed, not configurable. Read with the first sample after the tab first
+// shows, then on the Startup sampler at most this often. The figures change once per sign-in, but
+// Windows writes a sign-in's file some minutes after it, so a TaskSmack started at sign-in picks it up
+// within this long. Each read parses up to five files of a few hundred KB.
+inline constexpr int STARTUP_IMPACT_REFRESH_SECONDS = 600;
+
 // -----------------------------------------------------------------------------
 // Instance Enumeration Caches (User-Configurable via TOML)
 // -----------------------------------------------------------------------------

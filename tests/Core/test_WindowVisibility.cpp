@@ -15,6 +15,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <initializer_list>
 #include <span>
 
 namespace Core::WindowVisibility
@@ -60,6 +61,58 @@ TEST(WindowVisibilityTest, EachWindowsSignalHidesTheWindowOnItsOwn)
         EXPECT_TRUE(anyHides(each));
         EXPECT_TRUE(isHidden(false, false, each));
         EXPECT_TRUE(isHidden(true, false, each));
+    }
+}
+
+// ---- classifyHidden (#3156) ----
+
+TEST(WindowVisibilityTest, AShownWindowClassifiesAsShown)
+{
+    EXPECT_EQ(classifyHidden(false, true, false, Signals{}), HiddenState::Shown);
+    EXPECT_EQ(classifyHidden(false, false, false, Signals{}), HiddenState::Shown);
+}
+
+TEST(WindowVisibilityTest, AHiddenStateThatEndsWithAnEventClassifiesAsHidden)
+{
+    EXPECT_EQ(classifyHidden(true, true, false, Signals{}), HiddenState::Hidden);  // minimized, end reported
+    EXPECT_EQ(classifyHidden(false, true, true, Signals{}), HiddenState::Hidden);  // occluded
+    EXPECT_EQ(classifyHidden(false, false, true, Signals{}), HiddenState::Hidden); // occluded on native Wayland
+    for (const Signals& each : {Signals{.sessionLocked = true}, Signals{.sessionDisconnected = true}, Signals{.displayOff = true}})
+    {
+        EXPECT_EQ(classifyHidden(false, true, false, each), HiddenState::Hidden);
+        // Minimized on native Wayland too: the lock's end is still reported.
+        EXPECT_EQ(classifyHidden(true, false, false, each), HiddenState::Hidden);
+    }
+}
+
+TEST(WindowVisibilityTest, ACloakClassifiesAsCloakedWhateverElseHidesTheWindow)
+{
+    const Signals cloaked{.cloaked = true};
+    EXPECT_EQ(classifyHidden(false, true, false, cloaked), HiddenState::Cloaked);
+    EXPECT_EQ(classifyHidden(true, true, true, cloaked), HiddenState::Cloaked);
+    EXPECT_EQ(classifyHidden(false, true, false, Signals{.cloaked = true, .sessionLocked = true}), HiddenState::Cloaked);
+}
+
+TEST(WindowVisibilityTest, ANativeWaylandMinimizeAloneIsUnconfirmed)
+{
+    EXPECT_EQ(classifyHidden(true, false, false, Signals{}), HiddenState::MinimizedUnconfirmed);
+}
+
+TEST(WindowVisibilityTest, ClassifyHiddenAgreesWithIsHidden)
+{
+    for (const bool minimized : {false, true})
+    {
+        for (const bool reported : {false, true})
+        {
+            for (const bool occluded : {false, true})
+            {
+                for (const Signals& each : {Signals{}, Signals{.cloaked = true}, Signals{.displayOff = true}})
+                {
+                    EXPECT_EQ(classifyHidden(minimized, reported, occluded, each) != HiddenState::Shown,
+                              isHidden(minimized, occluded, each));
+                }
+            }
+        }
     }
 }
 

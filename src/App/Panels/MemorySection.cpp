@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <format>
@@ -47,6 +48,21 @@ constexpr const char* SWAP_LABEL = "Swap";
 constexpr const char* PEAK_LABEL = "Peak Used";
 constexpr const char* COMMIT_LABEL = "Commit";
 constexpr const char* COMPRESSED_LABEL = "Compressed";
+// The compression ratio's line, on the right-hand axis (SECONDARY_AXIS_MARK, #1206).
+constexpr const char* RATIO_LABEL = "Compression \u2192";
+
+/// The ratio axis's tick labels: "3\u00d7".
+// NOLINTNEXTLINE(misc-const-correctness) - ImPlotFormatter's user-data parameter
+int formatRatioAxis(double value, char* buff, int size, void* /*userData*/)
+{
+    if (size <= 1)
+    {
+        return 0;
+    }
+    const auto result = std::format_to_n(buff, size - 1, "{:.0f}\u00d7", value);
+    *result.out = '\0';
+    return static_cast<int>(result.size);
+}
 
 /// "2.9×"
 [[nodiscard]] std::string ratioText(double ratio)
@@ -221,6 +237,17 @@ void renderMemorySection(RenderContext& ctx, std::span<const double> timestamps,
         return UI::Format::bytesUsedTotalPercentCompact(bytes, snap.memoryTotalBytes, pct);
     };
 
+    // Compressed swap's ratio over the window (#3087), a line on its own right-hand axis, only while
+    // something compressed was stored in it (NaN elsewhere).
+    const auto ratioData = UI::Widgets::tailAlignedSpan(ctx.publication->compressionRatioHistory, alignedCount).values;
+    double peakRatio = 0.0;
+    for (const float ratio : ratioData)
+    {
+        peakRatio = ratio > 0.0F ? std::max(peakRatio, static_cast<double>(ratio)) : peakRatio;
+    }
+    const bool drawRatio = peakRatio > 0.0 && ratioData.size() == timeData.size();
+    const ImVec4 ratioColor = theme.scheme().chartPageFaults; // an accent no other Memory series uses
+
     const auto memoryPlot = [&]
     {
         const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
@@ -229,6 +256,10 @@ void renderMemorySection(RenderContext& ctx, std::span<const double> timestamps,
             ctx.chartDataGeneration));
         if (chart.active())
         {
+            if (drawRatio)
+            {
+                UI::Widgets::setupSecondaryRateAxis(std::max(2.0, std::ceil(peakRatio * 1.15)), formatRatioAxis, ratioColor);
+            }
             UI::Widgets::drawCollectingHint(alignedCount); // The same "no data yet" state on every chart (#1013)
             if (!memData.empty())
             {
@@ -275,6 +306,19 @@ void renderMemorySection(RenderContext& ctx, std::span<const double> timestamps,
                     {ImPlotProp_LineColor, theme.scheme().chartPeakLine, ImPlotProp_LineWeight, UI::Widgets::lineWeight(1.5F)});
             }
 
+            if (drawRatio)
+            {
+                ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
+                plotSeries(RATIO_LABEL,
+                           timeData.data(),
+                           ratioData.data(),
+                           UI::Format::checkedCount(ratioData.size()),
+                           ratioColor,
+                           std::nullopt,
+                           seriesStyle(SeriesRole::Secondary, 2));
+                ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
+            }
+
             if (ImPlot::IsPlotHovered())
             {
                 const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
@@ -299,6 +343,14 @@ void renderMemorySection(RenderContext& ctx, std::span<const double> timestamps,
                             .label = SWAP_LABEL,
                             .color = theme.scheme().chartSwap,
                             .value = UI::Format::formatPercent(static_cast<double>(swapData[*idxVal])),
+                        });
+                    }
+                    if (drawRatio && *idxVal < ratioData.size() && ratioData[*idxVal] > 0.0F)
+                    {
+                        rows.push_back({
+                            .label = RATIO_LABEL,
+                            .color = ratioColor,
+                            .value = ratioText(static_cast<double>(ratioData[*idxVal])) + std::string(UI::Widgets::SECONDARY_AXIS_MARK),
                         });
                     }
                     if (peakMemPercent > 0.0)
@@ -392,7 +444,7 @@ void renderMemorySection(RenderContext& ctx, std::span<const double> timestamps,
         extras.at(extraCount++) = UI::Widgets::ValueStripEntry{
             .label = COMPRESSED_LABEL,
             .value = compressedValue,
-            .color = ImVec4(0.0F, 0.0F, 0.0F, 0.0F),
+            .color = drawRatio ? ratioColor : ImVec4(0.0F, 0.0F, 0.0F, 0.0F), // the ratio line's swatch when it is drawn
             .tooltip = compressedTooltip.c_str(),
         };
     }

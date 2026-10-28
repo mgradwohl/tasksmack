@@ -4,7 +4,9 @@
 #include "App/Panel.h"
 #include "App/PanelPlatforms.h"
 #include "App/Panels/ExitingProcessRows.h"
+#include "App/Panels/FindHandlesDialog.h"
 #include "App/Panels/GpuSection.h"
+#include "App/Panels/IncrementalSearch.h"
 #include "App/Panels/NewProcessHighlight.h"
 #include "App/Panels/ProcessActionConfirm.h"
 #include "App/Panels/ProcessActionsView.h"
@@ -50,6 +52,7 @@
 #include "Domain/BackgroundSampler.h"
 #include "Domain/DeferredProbe.h"
 #include "Domain/GPUModel.h"
+#include "Domain/HandleSearch.h"
 #include "Domain/Numeric.h"
 #include "Domain/PriorityConfig.h"
 #include "Domain/ProcessModel.h"
@@ -1045,6 +1048,8 @@ void ProcessesPanel::onAttach()
         // Asked here, on this thread, before the actions move: the initializers run in order.
         const Platform::ProcessActionCapabilities actionCapabilities =
             platform.actions ? platform.actions->actionCapabilities() : Platform::ProcessActionCapabilities{};
+        const FindHandlesDialog::Capabilities findCapabilities =
+            FindHandlesDialog::capabilitiesOf(platform.openFiles.get(), platform.modules.get());
         // The Set affinity dialog's CPU layout, read here once (#3182): GetLogicalProcessorInformationEx or
         // sysfs, which the UI thread never calls. It doesn't change while TaskSmack runs.
         Platform::CpuAffinityLayout affinityLayout =
@@ -1053,7 +1058,10 @@ void ProcessesPanel::onAttach()
                                            .actionCapabilities = actionCapabilities,
                                            .affinityLayout = std::move(affinityLayout),
                                            .udpCollector = std::move(platform.udpCollector),
-                                           .icons = std::move(platform.icons)};
+                                           .icons = std::move(platform.icons),
+                                           .openFiles = std::move(platform.openFiles),
+                                           .modules = std::move(platform.modules),
+                                           .findCapabilities = findCapabilities};
         {
             const std::scoped_lock lock(handoff->mutex);
             handoff->contents = std::move(contents);
@@ -1123,6 +1131,8 @@ void ProcessesPanel::adoptPlatform()
     m_UdpCollector = std::move(contents->udpCollector);
     // The icons beside the names (#1800), loaded on their own worker as rows are first drawn.
     m_IconView.attach(std::move(contents->icons));
+    // Find handles (#3067): its readers, searched on the dialog's own worker.
+    m_FindHandlesDialog.setReaders(std::move(contents->openFiles), std::move(contents->modules), contents->findCapabilities);
 }
 
 void ProcessesPanel::applyStartupColumnDefaults()
@@ -1461,6 +1471,21 @@ void ProcessesPanel::renderContent()
         KeyboardInput::claimNavigationKeys(ImGui::GetID("##ProcessTableKeys"), m_TreeViewEnabled);
         navCommand = KeyboardInput::pollNavigationCommand(m_TreeViewEnabled);
         selectAllRequested = KeyboardInput::pollSelectAll(); // Ctrl+A (#804)
+        if (KeyboardInput::pollIncrementalSearch())          // "/" (#3097): the Find box, empty, with the keyboard
+        {
+            m_IncrementalSearchOpen = true;
+            m_IncrementalSearchFocus = true;
+            m_IncrementalSearchMissed = false;
+            m_IncrementalSearchText.clear();
+        }
+        if (KeyboardInput::pollFocusFilter()) // Ctrl+F: the filter box takes the keyboard
+        {
+            m_FocusFilter = true;
+        }
+        if (KeyboardInput::pollFindHandles() && m_FindHandlesDialog.available()) // Ctrl+Shift+F (#3067)
+        {
+            m_FindHandlesDialog.open();
+        }
     }
 
     // Get thread-safe copy of snapshots — only when data has actually changed (version-cached).
@@ -1533,6 +1558,10 @@ void ProcessesPanel::renderContent()
 
     {
         const UI::Widgets::FrameOutlineScope frameOutline;
+        if (std::exchange(m_FocusFilter, false))
+        {
+            ImGui::SetKeyboardFocusHere();
+        }
         ImGui::InputTextWithHint("##search", FILTER_HINT, &m_SearchBuffer);
     }
     ImGui::PopStyleColor();
@@ -1550,6 +1579,7 @@ void ProcessesPanel::renderContent()
             ImGui::SetTooltip("Clear filter");
         }
     }
+    renderIncrementalSearchBox();
 
     // Filter snapshots based on search — cached to avoid O(n) rebuild every 60fps frame.
     // Filtered indices, running count, and summary string are only recomputed when snapshot
@@ -1632,8 +1662,12 @@ void ProcessesPanel::renderContent()
     // Run new task (#3065), an icon button before Columns, where the platform can start programs.
     const bool offerRunTask = m_ActionCapabilities.canRunProgram;
     const float runTaskButtonWidth = offerRunTask ? ImGui::CalcTextSize(ICON_FA_ROCKET).x + (style.FramePadding.x * 2.0F) : 0.0F;
+    // Find handles (#3067), an icon button beside it, where this run can read processes' files.
+    const bool offerFindHandles = m_FindHandlesDialog.available();
+    const float findButtonWidth = offerFindHandles ? ImGui::CalcTextSize(ICON_FA_MAGNIFYING_GLASS).x + (style.FramePadding.x * 2.0F) : 0.0F;
     const float controlsWidth = groupComboWidth + style.ItemSpacing.x + (offerRunTask ? runTaskButtonWidth + style.ItemSpacing.x : 0.0F) +
-                                columnsButtonWidth + style.ItemSpacing.x + listSegmentWidth + treeSegmentWidth + foldButtonsWidth +
+                                (offerFindHandles ? findButtonWidth + style.ItemSpacing.x : 0.0F) + columnsButtonWidth +
+                                style.ItemSpacing.x + listSegmentWidth + treeSegmentWidth + foldButtonsWidth +
                                 (offerRetry ? retryButtonWidth + style.ItemSpacing.x : 0.0F);
 
     // An action's result takes no more room than the count text it stands in for, ellipsized with
@@ -1744,6 +1778,15 @@ void ProcessesPanel::renderContent()
         ImGui::EndDisabled();
         ImGui::SetItemTooltip("Run new task: start a program, optionally as administrator");
     }
+    if (offerFindHandles)
+    {
+        ImGui::SameLine();
+        if (ImGui::Button(ICON_FA_MAGNIFYING_GLASS "###FindHandles", ImVec2(findButtonWidth, 0.0F)))
+        {
+            m_FindHandlesDialog.open();
+        }
+        ImGui::SetItemTooltip("Find handles (Ctrl+Shift+F): which processes have a file, folder or library open");
+    }
 
     // Column chooser, beside ImGui's own header right-click menu (#1209)
     ImGui::SameLine();
@@ -1785,6 +1828,7 @@ void ProcessesPanel::renderContent()
     // The row menu's Set affinity... (#1887), applied on its own Apply.
     renderAffinityDialog();
     renderRunTaskDialog();
+    renderFindHandlesDialog(currentSnapshots);
 
     // A row menu's Suspend, Resume, Terminate or Kill, confirmed as in the Actions block (#1209), or a
     // batch priority change (#1484)
@@ -3024,7 +3068,7 @@ void ProcessesPanel::applyKeyboardInput(const std::vector<Domain::ProcessSnapsho
                                         bool selectAllRequested)
 {
     namespace Nav = ProcessTableNavigation;
-    if (command == Nav::NavCommand::None && !killRequested && !selectAllRequested)
+    if (command == Nav::NavCommand::None && !killRequested && !selectAllRequested && m_IncrementalSearchStep == IncrementalSearchStep::None)
     {
         return; // The common frame: no key, so the visible order is not even looked at
     }
@@ -3061,8 +3105,8 @@ void ProcessesPanel::applyKeyboardInput(const std::vector<Domain::ProcessSnapsho
     // So is a dump's confirm, progress or result (#807), and a batch still running on its worker (#2142),
     // and the wait chain dialog (#3084), which has an End process confirmation of its own.
     const bool rowActionPending = m_ShowRowActionConfirm || m_RowAction.pending() || m_BatchPriorityDialog.isPending() ||
-                                  m_AffinityDialog.isPending() || m_RunTaskDialog.isOpen() || m_DumpView.active() ||
-                                  m_WaitChainDialog.isOpen() || rowActionRunning();
+                                  m_AffinityDialog.isPending() || m_RunTaskDialog.isOpen() || m_FindHandlesDialog.isOpen() ||
+                                  m_DumpView.active() || m_WaitChainDialog.isOpen() || rowActionRunning();
     if (killRequested && m_Selection.size() > 1)
     {
         // Only while at least one selected row is visible: with every selected row filtered out, F9
@@ -3090,6 +3134,32 @@ void ProcessesPanel::applyKeyboardInput(const std::vector<Domain::ProcessSnapsho
             }
         }
     }
+    // "/" incremental search (#3097): the row whose name matches, from the selected one, selected alone
+    // and scrolled to as a keyboard move is; the Find box says when there is none.
+    if (const IncrementalSearchStep step = std::exchange(m_IncrementalSearchStep, IncrementalSearchStep::None);
+        step != IncrementalSearchStep::None)
+    {
+        std::vector<std::string_view> names;
+        names.reserve(visible.size());
+        for (const std::size_t idx : visible)
+        {
+            names.emplace_back(snapshots[idx].name);
+        }
+        const std::optional<std::size_t> match =
+            IncrementalSearch::findMatch(names, current, m_IncrementalSearchText, step == IncrementalSearchStep::Next);
+        m_IncrementalSearchMissed = !match.has_value() && !m_IncrementalSearchText.empty();
+        if (match.has_value())
+        {
+            m_Selection.selectOnly(ids[*match]);
+            if (match != current)
+            {
+                selectProcess(snapshots[visible[*match]]);
+            }
+            m_ScrollSelectedIntoView = true;
+            m_ScrollTargetRow = *match;
+        }
+    }
+
     // No movement key this frame (e.g. a bare F9): nothing below may select or scroll, so a refused F9
     // leaves the table exactly as it was.
     if (command == Nav::NavCommand::None)
@@ -3141,6 +3211,47 @@ void ProcessesPanel::applyKeyboardInput(const std::vector<Domain::ProcessSnapsho
     if (const std::optional<std::size_t> next = Nav::stepSelection(current, command, visible.size(), page); next.has_value())
     {
         selectRow(*next);
+    }
+}
+
+void ProcessesPanel::renderIncrementalSearchBox()
+{
+    if (!m_IncrementalSearchOpen)
+    {
+        return;
+    }
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 16.0F);
+    if (std::exchange(m_IncrementalSearchFocus, false))
+    {
+        ImGui::SetKeyboardFocusHere();
+    }
+    bool entered = false;
+    {
+        const UI::Widgets::FrameOutlineScope frameOutline;
+        entered = ImGui::InputTextWithHint(
+            "##IncrementalSearch", ICON_FA_MAGNIFYING_GLASS " Find a name", &m_IncrementalSearchText, ImGuiInputTextFlags_EnterReturnsTrue);
+    }
+    if (ImGui::IsItemEdited())
+    {
+        m_IncrementalSearchStep = IncrementalSearchStep::Refine;
+    }
+    if (entered)
+    {
+        m_IncrementalSearchStep = IncrementalSearchStep::Next;
+        m_IncrementalSearchFocus = true; // Enter leaves the box: keep typing or pressing Enter in it
+    }
+    if (ImGui::IsItemDeactivated() && ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+    {
+        m_IncrementalSearchOpen = false;
+        m_IncrementalSearchMissed = false;
+        return;
+    }
+    ImGui::SetItemTooltip("Jumps to the next process whose name contains this. Enter: the next match. Esc: close.");
+    if (m_IncrementalSearchMissed)
+    {
+        ImGui::SameLine();
+        ImGui::TextColored(UI::Theme::get().scheme().textError, "No match");
     }
 }
 
@@ -3710,6 +3821,32 @@ void ProcessesPanel::renderRunTaskDialog()
         [shown = std::move(shown), admin = request->asAdministrator](const Platform::ProcessActionResult& result)
         { return runTaskResultMessage(shown, admin, result); },
         std::nullopt); // its own pkexec prompt when elevated: nothing the helper does
+}
+
+void ProcessesPanel::renderFindHandlesDialog(const std::vector<Domain::ProcessSnapshot>& snapshots)
+{
+    const std::optional<FindHandlesAction> action = m_FindHandlesDialog.render(
+        [&snapshots]
+        {
+            std::vector<Domain::HandleSearch::SearchProcess> processes;
+            processes.reserve(snapshots.size());
+            for (const Domain::ProcessSnapshot& snapshot : snapshots)
+            {
+                processes.push_back({.target = ProcessSelection::identityOf(snapshot), .name = snapshot.name});
+            }
+            return processes;
+        });
+    if (!action.has_value())
+    {
+        return;
+    }
+    m_Selection.selectOnly(action->target);
+    selectProcess(action->target);
+    if (action->showDetails)
+    {
+        Core::ShowProcessDetailsEvent event;
+        raiseEvent(event);
+    }
 }
 
 void ProcessesPanel::renderAffinityDialog()

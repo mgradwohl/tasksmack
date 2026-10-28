@@ -22,4 +22,18 @@ constexpr int WINDOW_MAX_DIMENSION = 16'384;
 /// cloakRecheckDue()). Wall-clock time, never a frame count.
 constexpr std::chrono::milliseconds WINDOW_CLOAK_RECHECK_INTERVAL{1000};
 
+/// The longest the frame loop waits for an event while the window is hidden and draws no frames
+/// (#3156; FramePacing::computeHiddenWait()). Restore, expose, input and quit events end the wait at
+/// once, so this only bounds the work each wake does without frames: the shown-window cloak re-check
+/// above (hence no longer than its interval), and the layers' onHiddenUpdate(), which takes Process
+/// Details' watched samples before the process model's ring of them wraps (ShellPanels.cpp).
+constexpr std::chrono::milliseconds WINDOW_HIDDEN_WAIT_TIMEOUT{1000};
+static_assert(WINDOW_HIDDEN_WAIT_TIMEOUT <= WINDOW_CLOAK_RECHECK_INTERVAL);
+
+/// The longest the frame loop waits while the window is cloaked (#3156). Nothing reports the cloak
+/// ending, so each wake asks DWM again (Window::pollVisibility()): going back to the window's virtual
+/// desktop draws within this, as it did at the hidden rate's 5 fps before. A wake that draws nothing
+/// costs one DwmGetWindowAttribute() call.
+constexpr std::chrono::milliseconds WINDOW_CLOAKED_POLL_INTERVAL{200};
+
 } // namespace Core

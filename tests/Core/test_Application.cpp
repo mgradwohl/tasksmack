@@ -23,8 +23,10 @@
 #include "Core/PathService.h"
 #include "Core/ResizePerfOperation.h"
 #include "Core/ResizePerfTrace.h"
+#include "Core/WindowConstants.h"
 #include "Core/WindowEvents.h"
 #include "Core/WindowSizeTestUtils.h"
+#include "Core/WindowVisibility.h"
 
 #include <SDL3/SDL.h>
 #include <gtest/gtest.h>
@@ -41,6 +43,7 @@
 #include <cstdlib>
 #include <exception>
 #include <functional>
+#include <initializer_list>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -1569,13 +1572,52 @@ TEST(FramePacingTest, ConsecutiveSkipCountResetsOnAFrameAndHoldsThroughADeferred
     EXPECT_EQ(nextConsecutiveSkippedRenders(1, false, false), 1U);
 }
 
-TEST(FramePacingTest, RegularFrameRendersUnlessAlreadyDrawnSkippedOrDeferredByAWake)
+TEST(FramePacingTest, RegularFrameRendersUnlessAlreadyDrawnSkippedDeferredByAWakeOrHidden)
 {
     using Core::FramePacing::computeShouldRenderRegularFrame;
-    EXPECT_TRUE(computeShouldRenderRegularFrame(false, false, false));
-    EXPECT_FALSE(computeShouldRenderRegularFrame(true, false, false));
-    EXPECT_FALSE(computeShouldRenderRegularFrame(false, true, false));
-    EXPECT_FALSE(computeShouldRenderRegularFrame(false, false, true));
+    EXPECT_TRUE(computeShouldRenderRegularFrame(false, false, false, false));
+    EXPECT_FALSE(computeShouldRenderRegularFrame(true, false, false, false));
+    EXPECT_FALSE(computeShouldRenderRegularFrame(false, true, false, false));
+    EXPECT_FALSE(computeShouldRenderRegularFrame(false, false, true, false));
+    // #3156: a hidden window that draws no frames at all.
+    EXPECT_FALSE(computeShouldRenderRegularFrame(false, false, false, true));
+}
+
+// #3156: a hidden window draws no frames and waits for the event that shows it again, a cloaked one
+// polling sooner; before the first frame, and on a native Wayland minimize, frames go on.
+TEST(FramePacingTest, AHiddenWindowDrawsNoFramesOnceItHasDrawnOne)
+{
+    using Core::FramePacing::computeHiddenWait;
+    using Core::WindowVisibility::HiddenState;
+    constexpr int EVENT_WAIT_MS = 1000;
+    constexpr int CLOAKED_POLL_MS = 200;
+
+    const auto hidden = computeHiddenWait(HiddenState::Hidden, true, EVENT_WAIT_MS, CLOAKED_POLL_MS);
+    EXPECT_TRUE(hidden.drawsNoFrames);
+    EXPECT_EQ(hidden.timeoutMs, EVENT_WAIT_MS);
+
+    const auto cloaked = computeHiddenWait(HiddenState::Cloaked, true, EVENT_WAIT_MS, CLOAKED_POLL_MS);
+    EXPECT_TRUE(cloaked.drawsNoFrames);
+    EXPECT_EQ(cloaked.timeoutMs, CLOAKED_POLL_MS);
+
+    EXPECT_FALSE(computeHiddenWait(HiddenState::Shown, true, EVENT_WAIT_MS, CLOAKED_POLL_MS).drawsNoFrames);
+    EXPECT_FALSE(computeHiddenWait(HiddenState::MinimizedUnconfirmed, true, EVENT_WAIT_MS, CLOAKED_POLL_MS).drawsNoFrames);
+
+    // Started hidden: the first frame publishes the Settings interval, so it is drawn whatever the state.
+    for (const HiddenState state : {HiddenState::Shown, HiddenState::Hidden, HiddenState::Cloaked, HiddenState::MinimizedUnconfirmed})
+    {
+        EXPECT_FALSE(computeHiddenWait(state, false, EVENT_WAIT_MS, CLOAKED_POLL_MS).drawsNoFrames) << static_cast<int>(state);
+    }
+}
+
+// #3156: the hidden waits are short enough for what has to keep happening without frames: the shown
+// window's cloak re-check every WINDOW_CLOAK_RECHECK_INTERVAL, and a cloaked window's return noticed
+// sooner than that.
+TEST(FramePacingTest, TheHiddenWaitsAreNoLongerThanTheCloakRecheck)
+{
+    EXPECT_LE(Core::WINDOW_HIDDEN_WAIT_TIMEOUT, Core::WINDOW_CLOAK_RECHECK_INTERVAL);
+    EXPECT_LT(Core::WINDOW_CLOAKED_POLL_INTERVAL, Core::WINDOW_HIDDEN_WAIT_TIMEOUT);
+    EXPECT_GT(Core::WINDOW_CLOAKED_POLL_INTERVAL.count(), 0);
 }
 
 namespace
@@ -1703,7 +1745,7 @@ TEST(FramePacingTest, KeyDuringIdleWaitShowsInTheFirstFrameAfterTheWake)
         {
             idleWakeEvent = KEY; // the wait wakes on the key and takes it off the queue
         }
-        if (Core::FramePacing::computeShouldRenderRegularFrame(idleWakeEvent.has_value(), false, false))
+        if (Core::FramePacing::computeShouldRenderRegularFrame(idleWakeEvent.has_value(), false, false, false))
         {
             framesShowingKey.push_back(keyHandled);
         }
@@ -1904,7 +1946,7 @@ TEST(FramePacingTest, KeyQueuedDuringATimedOutIdleWaitShowsInTheNextFrame)
                 idleWakeEvent = wakeEvent;
             }
         }
-        if (Core::FramePacing::computeShouldRenderRegularFrame(idleWakeEvent.has_value(), false, false))
+        if (Core::FramePacing::computeShouldRenderRegularFrame(idleWakeEvent.has_value(), false, false, false))
         {
             framesShowingKey.push_back(keyHandled);
         }

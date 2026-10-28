@@ -6,6 +6,8 @@
 // CONTRIBUTING.md's "extract the pure decision logic into a small header" pattern (also used by
 // App/TitleBarGeometry.h).
 
+#include "Core/WindowVisibility.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -180,11 +182,14 @@ nextConsecutiveSkippedRenders(std::uint32_t consecutiveSkippedRenders, bool skip
 /// already rendered one, nor when P3 skips it, nor when the idle wait woke on an event
 /// (@p idleWaitWokeOnEvent): that event goes through the next iteration's drain first, so the frame
 /// after a wake shows its effect (#1409). Rendering straight after the wake drew the old state and
-/// left the event for the drain after it.
-[[nodiscard]] constexpr auto
-computeShouldRenderRegularFrame(bool idleWaitWokeOnEvent, bool didImmediateResizeRedraw, bool skipRenderThisFrame) noexcept -> bool
+/// left the event for the drain after it. Nor while the hidden window draws no frames at all
+/// (@p hiddenDrawsNoFrames, computeHiddenWait(), #3156).
+[[nodiscard]] constexpr auto computeShouldRenderRegularFrame(bool idleWaitWokeOnEvent,
+                                                             bool didImmediateResizeRedraw,
+                                                             bool skipRenderThisFrame,
+                                                             bool hiddenDrawsNoFrames) noexcept -> bool
 {
-    return !idleWaitWokeOnEvent && !didImmediateResizeRedraw && !skipRenderThisFrame;
+    return !idleWaitWokeOnEvent && !didImmediateResizeRedraw && !skipRenderThisFrame && !hiddenDrawsNoFrames;
 }
 
 /// Whether to sleep (rather than render immediately) when the event queue is empty.
@@ -312,6 +317,47 @@ computeShouldRenderRegularFrame(bool idleWaitWokeOnEvent, bool didImmediateResiz
     const auto periodMs = static_cast<double>(computeIdleSleepMs(isHidden, idleFrameSleepMs, minimizedFrameSleepMs));
     const double elapsedMs = std::max(0.0, secondsSinceFrameStart) * 1000.0;
     return static_cast<int>(std::ceil(std::max(0.0, periodMs - elapsedMs)));
+}
+
+/// What the loop does while the window is hidden (#3156): computeHiddenWait()'s result.
+struct HiddenWait
+{
+    /// How long the event wait may last before the loop wakes on its own, in milliseconds. Only
+    /// meaningful when drawsNoFrames is set.
+    int timeoutMs = 0;
+    /// No frame at all: the loop waits for an event, at most timeoutMs, instead of drawing.
+    bool drawsNoFrames = false;
+};
+
+/// Whether the loop draws no frames while the window is in @p hidden (Window::hiddenState()), and
+/// how long it then waits for an event (#3156). Hidden windows that are shown again with an event
+/// wait up to @p eventWaitMs; a cloaked one, whose end no event reports, up to @p cloakedPollMs, so
+/// the loop's re-check (Window::pollVisibility()) notices it soon. Every wake also runs the layers'
+/// onHiddenUpdate(), so neither may be long: see WINDOW_HIDDEN_WAIT_TIMEOUT.
+///
+/// Frames go on, at the hidden rate as before (computeIdleWaitMs()), in two cases:
+/// - before the first frame (@p firstFrameDrawn false): the first update publishes the loaded
+///   settings, the refresh interval among them (ShellLayer), so an app started minimized must draw
+///   once to sample at the Settings interval (#2731);
+/// - a native Wayland minimize, whose end may go unreported (HiddenState::MinimizedUnconfirmed).
+[[nodiscard]] constexpr auto
+computeHiddenWait(WindowVisibility::HiddenState hidden, bool firstFrameDrawn, int eventWaitMs, int cloakedPollMs) noexcept -> HiddenWait
+{
+    if (!firstFrameDrawn)
+    {
+        return {};
+    }
+    switch (hidden)
+    {
+    case WindowVisibility::HiddenState::Hidden:
+        return {.timeoutMs = eventWaitMs, .drawsNoFrames = true};
+    case WindowVisibility::HiddenState::Cloaked:
+        return {.timeoutMs = cloakedPollMs, .drawsNoFrames = true};
+    case WindowVisibility::HiddenState::Shown:
+    case WindowVisibility::HiddenState::MinimizedUnconfirmed:
+        break;
+    }
+    return {};
 }
 
 /// How waitForIdleEvent() ended.

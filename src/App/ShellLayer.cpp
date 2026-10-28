@@ -435,6 +435,14 @@ void ShellLayer::onSDLEvent(SDL_Event* event)
     }
 }
 
+void ShellLayer::onHiddenUpdate()
+{
+    // Nothing else of onUpdate() has to happen without frames (#3156): the startup settings and notice
+    // wait for the first frame, which the loop always draws; the panels adopt the newest publication
+    // when they next draw; and the rest follows input, which a hidden window doesn't get.
+    m_Panels.updateWhileHidden();
+}
+
 void ShellLayer::onUpdate(float deltaTime)
 {
     // Publish the loaded settings on the first update, after all layers are stacked, through the

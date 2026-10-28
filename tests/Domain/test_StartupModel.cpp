@@ -1,13 +1,17 @@
 /// @file test_StartupModel.cpp
 /// @brief Domain::StartupModel with a mock probe (#801): publication versions, name order, immutable
-/// generations, and the unsupported probe.
+/// generations, the unsupported probe, and each entry's Startup impact and its read cadence (#3073).
 
+#include "Domain/SamplingConfig.h"
+#include "Domain/StartupImpact.h"
 #include "Domain/StartupModel.h"
 #include "Mocks/MockStartupProbe.h"
 #include "Platform/IStartupProbe.h"
 
 #include <gtest/gtest.h>
 
+#include <chrono>
+#include <cstdint>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -106,6 +110,146 @@ TEST(StartupModelTest, UnsupportedProbeReportsNoEnumeration)
 TEST(StartupModelTest, NullProbeThrows)
 {
     EXPECT_THROW(StartupModel(nullptr), std::invalid_argument);
+}
+
+// ========== Startup impact (#3073) ==========
+
+[[nodiscard]] Platform::StartupCapabilities withImpact()
+{
+    return {.canEnumerate = true,
+            .hasEnabledState = true,
+            .hasDisabledTime = true,
+            .hasPublisher = true,
+            .canResolveShortcuts = true,
+            .hasImpact = true,
+            .unavailableReason = {}};
+}
+
+/// A sign-in at which Busy.exe used 2 s of CPU and Quiet.exe 1 ms.
+[[nodiscard]] Platform::StartupImpactReading signIn(std::uint64_t busyCpuUs = 2'000'000)
+{
+    Platform::StartupImpactReading reading;
+    reading.processes = {
+        {.path = R"(C:\Apps\Busy.exe)",
+         .pid = 10,
+         .parentPid = 1,
+         .startTicks = 5,
+         .parentStartTicks = 1,
+         .cpuUs = busyCpuUs,
+         .diskBytes = 0},
+        {.path = R"(C:\Apps\Quiet.exe)", .pid = 11, .parentPid = 1, .startTicks = 6, .parentStartTicks = 1, .cpuUs = 1000, .diskBytes = 0},
+    };
+    reading.signInUnixSeconds = 1792774334;
+    reading.windowSeconds = 90;
+    return reading;
+}
+
+[[nodiscard]] Platform::StartupEntry program(const char* name, bool enabled = true)
+{
+    auto startup = entry(name, enabled);
+    startup.executablePath = std::string(R"(C:\Apps\)") + name + ".exe";
+    return startup;
+}
+
+/// A fake clock the test moves.
+struct ImpactClock
+{
+    StartupModel::Clock::time_point now;
+
+    [[nodiscard]] StartupModel::NowFunction function()
+    {
+        return [this]
+        {
+            return now;
+        };
+    }
+};
+
+TEST(StartupModelTest, PublishesEachEntrysImpactByIndex)
+{
+    auto probe = std::make_unique<Mocks::MockStartupProbe>(withImpact());
+    probe->setEntries({program("Quiet"), program("Busy"), program("Off", false), program("Absent")});
+    probe->setImpact(signIn());
+    StartupModel model(std::move(probe));
+
+    model.sample();
+
+    const auto publication = model.publication();
+    ASSERT_EQ(publication->entries.size(), 4U);
+    ASSERT_EQ(publication->impacts.size(), 4U);
+    // Name order: Absent, Busy, Off, Quiet -- and the impacts follow it.
+    EXPECT_EQ(publication->entries[1].name, "Busy");
+    EXPECT_EQ(publication->impacts[0].rating, StartupImpact::NotMeasured);
+    EXPECT_EQ(publication->impacts[1].rating, StartupImpact::High);
+    EXPECT_EQ(publication->impacts[1].cpuUs, 2'000'000U);
+    EXPECT_EQ(publication->impacts[2].rating, StartupImpact::None);
+    EXPECT_EQ(publication->impacts[3].rating, StartupImpact::Low);
+    EXPECT_EQ(publication->impactSignInUnixSeconds, 1792774334U);
+    EXPECT_TRUE(publication->impactUnavailableReason.empty());
+}
+
+TEST(StartupModelTest, ReadsTheSignInMeasurementOnlyEverySoOften)
+{
+    auto probe = std::make_unique<Mocks::MockStartupProbe>(withImpact());
+    auto* raw = probe.get();
+    raw->setEntries({program("Busy")});
+    raw->setImpact(signIn());
+    ImpactClock clock;
+    StartupModel model(std::move(probe), clock.function());
+
+    model.sample();
+    EXPECT_EQ(raw->impactReadCount(), 1);
+    const auto first = model.publication();
+
+    // A new measurement appears; samples within the refresh interval keep the one read.
+    raw->setImpact(signIn(1000));
+    clock.now += std::chrono::seconds(Sampling::STARTUP_IMPACT_REFRESH_SECONDS - 1);
+    model.sample();
+    EXPECT_EQ(raw->enumerateCount(), 2);
+    EXPECT_EQ(raw->impactReadCount(), 1);
+    EXPECT_EQ(model.publication()->impacts[0].rating, StartupImpact::High);
+
+    clock.now += std::chrono::seconds(1);
+    model.sample();
+    EXPECT_EQ(raw->impactReadCount(), 2);
+    EXPECT_EQ(model.publication()->impacts[0].rating, StartupImpact::Low);
+    // A held generation never changes.
+    EXPECT_EQ(first->impacts[0].rating, StartupImpact::High);
+}
+
+TEST(StartupModelTest, AnUnreadableMeasurementLeavesEveryEntryNotMeasuredWithTheReason)
+{
+    auto probe = std::make_unique<Mocks::MockStartupProbe>(withImpact());
+    probe->setEntries({program("Busy"), program("Off", false)});
+    Platform::StartupImpactReading unreadable;
+    unreadable.unavailableReason = "Windows hasn't measured a sign-in for this account yet";
+    probe->setImpact(unreadable);
+    StartupModel model(std::move(probe));
+
+    model.sample();
+
+    const auto publication = model.publication();
+    ASSERT_EQ(publication->impacts.size(), 2U);
+    EXPECT_EQ(publication->impacts[0].rating, StartupImpact::NotMeasured);
+    EXPECT_EQ(publication->impacts[1].rating, StartupImpact::None);
+    EXPECT_EQ(publication->impactSignInUnixSeconds, 0U);
+    EXPECT_EQ(publication->impactUnavailableReason, "Windows hasn't measured a sign-in for this account yet");
+}
+
+TEST(StartupModelTest, WithoutImpactDataNothingIsReadOrPublished)
+{
+    // The Linux probe's capabilities: no impact data, so the column is hidden and nothing is read.
+    auto probe = std::make_unique<Mocks::MockStartupProbe>();
+    auto* raw = probe.get();
+    raw->setEntries({program("Busy")});
+    raw->setImpact(signIn());
+    StartupModel model(std::move(probe));
+
+    model.sample();
+
+    EXPECT_EQ(raw->impactReadCount(), 0);
+    EXPECT_TRUE(model.publication()->impacts.empty());
+    EXPECT_FALSE(model.capabilities().hasImpact);
 }
 
 } // namespace

@@ -189,6 +189,41 @@ TEST_F(ProcessDetailsPanelRenderTest, NothingSelectedSaysSo)
     EXPECT_TRUE(renderAndCapture(*panel).contains("No process selected"));
 }
 
+// #3156: while the hidden window draws no frames, ShellPanels::updateWhileHidden() hands the selected
+// process's samples to takeSamples() alone. Each one reaches the pane, as through updateWithSamples(),
+// so the next frame draws them; an exit is noticed the same way.
+TEST_F(ProcessDetailsPanelRenderTest, SamplesTakenWithoutAFrameAreTheOnesTheNextFrameShows)
+{
+    const auto panel = activePanel();
+    const std::vector before{sampleAt(0.0, 10.0)};
+    panel->takeSamples(before); // nothing selected yet: nothing taken
+    EXPECT_EQ(panel->lastSampleVersion(), 0U);
+    EXPECT_EQ(panel->displayedSnapshot(), nullptr);
+
+    panel->setSelectedPid(PID, START_TICKS);
+    for (int second = 0; second < 5; ++second)
+    {
+        const std::vector samples{sampleAt(static_cast<double>(second), 10.0 + second)};
+        panel->takeSamples(samples);
+    }
+    EXPECT_EQ(panel->lastSampleVersion(), 5U);
+    ASSERT_NE(panel->displayedSnapshot(), nullptr);
+    EXPECT_DOUBLE_EQ(panel->displayedSnapshot()->cpuTimeSeconds, 4.0);
+    EXPECT_TRUE(panel->showsRunningProcess());
+
+    // The next frame has nothing new to take, and draws the charts from what was taken.
+    panel->updateWithSamples({}, 1.0F);
+    static_cast<void>(renderAndCapture(*panel));
+    const std::string text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("CPU")) << text;
+    EXPECT_GE(ImPlot::GetCurrentContext()->Plots.GetBufSize(), 2);
+
+    const std::vector exited{emptySampleAt(5.0)};
+    panel->takeSamples(exited);
+    EXPECT_EQ(panel->lastSampleVersion(), 6U);
+    EXPECT_FALSE(panel->showsRunningProcess());
+}
+
 TEST_F(ProcessDetailsPanelRenderTest, ASelectedProcessShowsItsOverview)
 {
     const auto panel = activePanel();

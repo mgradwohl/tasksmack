@@ -2041,8 +2041,8 @@ ImGui's rolling average over the last 60 frames, and the status bar's FPS readou
 half a second. Over a steady stretch, 1000 / mean `MsBetweenPresents` should agree with them; if it
 does not, the app is not presenting every frame it counts. Expected cadences are those in the FAQ
 and above: near 50 ms at idle (the idle period, or a chart's animation period while it moves), a
-whole number of refreshes near 16.7 ms while interacting on a 60 Hz display, and about 200 ms
-minimized. For tails, set `TASKSMACK_TRACE_RESIZE_PERF=1` during the capture and compare the
+whole number of refreshes near 16.7 ms while interacting on a 60 Hz display, and no frames at all
+while minimized or otherwise hidden (#3156; about 200 ms on a native Wayland minimize). For tails, set `TASKSMACK_TRACE_RESIZE_PERF=1` during the capture and compare the
 `loop` p95/p99 with `MsBetweenPresents`' p95/p99. A `MsBetweenDisplayChange` tail, or `NA` rows,
 where `MsBetweenPresents` is even means the frames were produced on time but reached the screen
 late or not at all, which no in-app counter can show.
@@ -2180,7 +2180,8 @@ bookkeeping and scheduling outside measured phases); it is not assumed to be CPU
 The loop closes at the next loop boundary, so end-of-loop summary logging is included.
 `ResizePerfFrameGap` measures consecutive swap completions, including intervening sleeps
 and skipped-render loops; the first frame has no fabricated gap. These measures include
-intentional 50/200 ms idle/minimized waits, unlike the 16.6 ms phase-sum target.
+intentional 50 ms idle waits (200 ms for a hidden window that still draws), unlike the 16.6 ms
+phase-sum target.
 `ResizePerfWallSummary` retains their run-wide maxima and threshold counts.
 
 Startup/shutdown `ResizePerfAnchor` records PID/UI TID, full configure-time build identity,
@@ -2289,9 +2290,11 @@ of up to 200 samples); max is the largest per-interval max among them.
 
 The warm-up keeps startup and tab-switch frames out of that 200-sample rolling window before
 sampling starts. The default is 15 s, enough at idle frame rates (20–60 fps). A minimized window
-presents only about 5 fps (`MINIMIZED_FRAME_SLEEP_MS = 200`), so it needs about 45 s to refill the
-window; with fewer than 100 samples, nearest-rank p99 also just equals the max. The script uses 45 s
-by default when `--label` contains `minimized`, and `--warmup` overrides either default.
+presents no frames at all (#3156), so a minimized run has CPU figures and no frame figures; only a
+native Wayland minimize, whose end SDL can't see, still presents about 5 fps
+(`MINIMIZED_FRAME_SLEEP_MS = 200`) and needs about 45 s to refill the window. With fewer than 100
+samples, nearest-rank p99 also just equals the max. The script uses 45 s by default when `--label`
+contains `minimized`, and `--warmup` overrides either default.
 
 **Scenario matrix:** run each for 30 s at the default 1 s refresh, window left alone, after a
 warm-up on that tab:
@@ -2301,7 +2304,7 @@ warm-up on that tab:
 | Overview | System charts: CPU, memory, battery, threads/faults |
 | Processes | The process table and process enumeration |
 | CPU Cores | One chart per logical CPU |
-| Minimized (optional) | The hidden-window pacing path; should be close to the sampler threads alone. Use `--label minimized` (45 s warm-up) and minimize the window in `--setup-cmd` |
+| Minimized (optional) | The hidden-window path, which draws no frames (#3156); should be close to the sampler threads alone. Use `--label minimized` (45 s warm-up) and minimize the window in `--setup-cmd` |
 
 Compare like with like: the same machine, preset, window size and refresh interval, and the same
 scenario. Run each scenario more than once; one run on a shared desktop is noisy.
