@@ -61,6 +61,12 @@ struct ConnectionRow
 [[nodiscard]] std::vector<std::size_t>
 orderConnectionRows(const std::vector<ConnectionRow>& rows, std::string_view filter, ConnectionsColumn column, bool ascending);
 
+/// Why @p connection can't be closed (#3066), or empty when it can. Only a TCP connection that has, or is
+/// making, a peer can be shut down, and only through the process holding it: a listening socket is no
+/// connection, UDP has none to end, and a socket TaskSmack sees no holder for (TIME_WAIT, another user's)
+/// has nobody to ask.
+[[nodiscard]] std::string_view closeConnectionRefusal(const Platform::SystemConnection& connection);
+
 /// A socket's identity across generations: its protocol, family and both endpoints.
 [[nodiscard]] std::uint64_t selectionKey(const Platform::SystemConnection& connection) noexcept;
 
@@ -119,6 +125,9 @@ struct ConnectionsViewState
     bool sortAscending = true;
     bool orderDirty = true;
     std::optional<std::uint64_t> selectedKey; ///< The selected socket (selectionKey()), kept across generations
+    /// The row the row menu was opened on, copied on the right-click: the table re-sorts every sample, so
+    /// the row under the pointer can change while the menu is up (as the Processes table's, #1365).
+    std::optional<ConnectionRow> menuRow;
 };
 
 /// What the user did in the table this frame.
@@ -126,7 +135,8 @@ struct ConnectionsViewAction
 {
     std::int32_t pid = 0;
     std::uint64_t startTimeTicks = 0;
-    bool showDetails = false; ///< Double-clicked: show the holder in Process Details too
+    bool showDetails = false;           ///< Double-clicked: show the holder in Process Details too
+    std::optional<ConnectionRow> close; ///< The row menu's "Close connection..." was chosen for this socket (#3066)
 };
 
 /// Draws the table for @p publication (null: nothing sampled yet). Returns the holder of a row clicked
@@ -135,7 +145,11 @@ struct ConnectionsViewAction
 /// order up to date with @p publication at @p now (seconds on a steady clock).
 void refreshConnectionRows(const Domain::ConnectionsPublication& publication, ConnectionsViewState& state, double now);
 
-[[nodiscard]] std::optional<ConnectionsViewAction>
-renderConnectionsView(const Domain::ConnectionsPublication* publication, bool hasConnections, ConnectionsViewState& state);
+/// With @p canClose (the platform can close connections, #3066), a right-click opens the row menu with
+/// "Close connection...".
+[[nodiscard]] std::optional<ConnectionsViewAction> renderConnectionsView(const Domain::ConnectionsPublication* publication,
+                                                                         bool hasConnections,
+                                                                         ConnectionsViewState& state,
+                                                                         bool canClose = false);
 
 } // namespace App
