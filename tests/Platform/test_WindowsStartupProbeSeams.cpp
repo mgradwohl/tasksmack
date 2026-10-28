@@ -83,7 +83,9 @@ struct FakeKey
     std::vector<FakeValue> values;
     LSTATUS openError = ERROR_SUCCESS;
     bool infoFails = false;
-    std::vector<DWORD> enumFails; ///< Value indexes RegEnumValueW fails for (ERROR_MORE_DATA).
+    std::vector<DWORD> enumFails;    ///< Value indexes RegEnumValueW fails for (ERROR_MORE_DATA).
+    std::vector<DWORD> enumKeyFails; ///< Subkey indexes RegEnumKeyExW fails for (ERROR_MORE_DATA, #3221).
+    bool opensToNoHandle = false;    ///< RegOpenKeyExW succeeds but gives no handle (#3221).
 };
 
 /// One installed package (#1798): GetPackagesByPackageFamily lists fullName under family, and
@@ -94,6 +96,8 @@ struct FakePackage
     std::wstring fullName;
     std::wstring folder;
     bool pathFailsAfterSizing = false; ///< GetPackagePathByFullName sizes the folder, then fails.
+    bool pathSizedEmpty = false;       ///< GetPackagePathByFullName sizes the folder as no characters (#3221).
+    bool listedWithoutName = false;    ///< GetPackagesByPackageFamily lists it with a null name (#3221).
 };
 
 /// The fake registry, known folders and packages. Index + 1 into keys is a fake HKEY's value. Reset per test.
@@ -104,6 +108,8 @@ struct FakeSystem
     std::vector<std::pair<std::wstring, std::wstring>> resources; ///< SHLoadIndirectString source and text.
     int packageLookups = 0;                                       ///< GetPackagePathByFullName calls.
     std::wstring familyFailingAfterSizing;                        ///< GetPackagesByPackageFamily sizes it, then fails.
+    std::wstring familySizedEmpty;                                ///< GetPackagesByPackageFamily asks for a buffer for no packages (#3221).
+    bool knownFolderWithoutPath = false;                          ///< SHGetKnownFolderPath succeeds without a path (#3221).
     std::wstring userFolder;                                      ///< FOLDERID_Startup; the call fails when empty
     std::wstring commonFolder;                                    ///< FOLDERID_CommonStartup; the call fails when empty
     int opened = 0;                                               ///< Open minus closed.
@@ -162,6 +168,11 @@ LSTATUS WINAPI fakeOpen(HKEY root, LPCWSTR subkey, DWORD /*options*/, REGSAM acc
     if (it->openError != ERROR_SUCCESS)
     {
         return it->openError;
+    }
+    if (it->opensToNoHandle)
+    {
+        *result = nullptr;
+        return ERROR_SUCCESS;
     }
     // NOLINTNEXTLINE(performance-no-int-to-ptr): a fake handle
     *result = reinterpret_cast<HKEY>(static_cast<std::size_t>(it - keys.begin()) + 1);
@@ -264,6 +275,10 @@ LSTATUS WINAPI fakeClose(HKEY /*key*/)
 HRESULT WINAPI fakeKnownFolder(const GUID& id, DWORD /*flags*/, HANDLE /*token*/, PWSTR* path)
 {
     *path = nullptr;
+    if (fake().knownFolderWithoutPath)
+    {
+        return S_OK;
+    }
     const std::wstring& folder = IsEqualGUID(id, FOLDERID_Startup) != FALSE ? fake().userFolder : fake().commonFolder;
     if (folder.empty())
     {
@@ -288,6 +303,10 @@ LSTATUS WINAPI fakeEnumKey(HKEY key,
     if (index >= children.size())
     {
         return ERROR_NO_MORE_ITEMS;
+    }
+    if (std::ranges::contains(keyOf(key).enumKeyFails, index))
+    {
+        return ERROR_MORE_DATA;
     }
     const std::wstring& child = children[index];
     if (*nameChars <= child.size())
@@ -317,6 +336,12 @@ LONG WINAPI fakePackagesByFamily(PCWSTR family, UINT32* count, PWSTR* fullNames,
     {
         needed += static_cast<UINT32>(package->fullName.size() + 1);
     }
+    if (fake().familySizedEmpty == family)
+    {
+        *count = 0;
+        *bufferChars = 0;
+        return ERROR_INSUFFICIENT_BUFFER;
+    }
     if (matches.empty())
     {
         *count = 0;
@@ -339,7 +364,7 @@ LONG WINAPI fakePackagesByFamily(PCWSTR family, UINT32* count, PWSTR* fullNames,
     {
         const std::wstring& name = matches[index]->fullName;
         std::memcpy(next, name.c_str(), (name.size() + 1) * sizeof(wchar_t));
-        fullNames[index] = next;
+        fullNames[index] = matches[index]->listedWithoutName ? nullptr : next;
         next += name.size() + 1;
         ++index;
     }
@@ -354,6 +379,11 @@ LONG WINAPI fakePackagePath(PCWSTR fullName, UINT32* pathChars, PWSTR path)
     if (it == fake().packages.end() || it->folder.empty())
     {
         return ERROR_NOT_FOUND;
+    }
+    if (it->pathSizedEmpty)
+    {
+        *pathChars = 0;
+        return ERROR_INSUFFICIENT_BUFFER;
     }
     const auto needed = static_cast<UINT32>(it->folder.size() + 1);
     if (path == nullptr || *pathChars < needed)
@@ -967,6 +997,72 @@ TEST_F(WindowsStartupProbeSeamsTest, PackagedTasksThatCantBeResolvedAreSkipped)
     EXPECT_EQ(entries[0].registrationName, "Bare");
     EXPECT_EQ(entries[0].name, "Bare") << "neither the task's nor the package's name loads";
     EXPECT_EQ(entries[0].packageFamily, "Contoso.Quirks_q1");
+}
+
+// #3221: the odd answers the registry, known-folder and package APIs can give each list nothing, and
+// close every key they open: a key that opens to no handle, a subkey that can't be enumerated, a
+// known folder with no path, numbers of the wrong size, a family sized as no packages, a package
+// listed without a name, and a package folder sized as no characters.
+TEST_F(WindowsStartupProbeSeamsTest, OddAnswersFromTheRegistryAndPackageApisListNothing)
+{
+    fake().knownFolderWithoutPath = true;
+    addKey(HKEY_CURRENT_USER, RUN_KEY).opensToNoHandle = true;
+
+    const std::vector<FakeValue> enabled = {{.name = L"State", .type = REG_DWORD, .data = dwordData(2)}};
+    // A State of two bytes, and a REG_QWORD one of four: neither is a number, so neither is a task.
+    addTaskKey(L"Contoso.Short_s1", L"Word", {{.name = L"State", .type = REG_DWORD, .data = {2, 0}}});
+    addTaskKey(L"Contoso.Short_s1",
+               L"Qword",
+               {{.name = L"State", .type = REG_QWORD, .data = dwordData(2)},
+                {.name = L"LastDisabledTime", .type = REG_QWORD, .data = dwordData(1)}});
+    // A family whose task subkey can't be enumerated, and one whose key opens to no handle.
+    addTaskKey(L"Contoso.Unlisted_u1", L"Task", enabled);
+    ensureUserKey(std::format(L"{}\\Contoso.Unlisted_u1", Math::PACKAGED_TASKS_KEY)).enumKeyFails = {0};
+    addTaskKey(L"Contoso.NoHandle_n1", L"Task", enabled);
+    ensureUserKey(std::format(L"{}\\Contoso.NoHandle_n1", Math::PACKAGED_TASKS_KEY)).opensToNoHandle = true;
+
+    // Recorded tasks whose packages can't be found or read.
+    const std::filesystem::path folder = makeFolder(L"package");
+    writeFile(folder / L"AppxManifest.xml",
+              manifestXml(
+                  R"(<uap5:Extension Category="windows.startupTask"><uap5:StartupTask TaskId="Task" Enabled="true" /></uap5:Extension>)"));
+    addTaskKey(L"Contoso.SizedEmpty_e1", L"Task", enabled);
+    fake().familySizedEmpty = L"Contoso.SizedEmpty_e1";
+    addTaskKey(L"Contoso.Unnamed_m1", L"Task", enabled);
+    fake().packages.push_back({.family = L"Contoso.Unnamed_m1",
+                               .fullName = L"Contoso.Unnamed_1.0.0.0_x64__m1",
+                               .folder = folder.wstring(),
+                               .listedWithoutName = true});
+    addTaskKey(L"Contoso.NoFolder_f1", L"Task", enabled);
+    fake().packages.push_back({.family = L"Contoso.NoFolder_f1",
+                               .fullName = L"Contoso.NoFolder_1.0.0.0_x64__f1",
+                               .folder = folder.wstring(),
+                               .pathSizedEmpty = true});
+
+    WindowsStartupProbe probe(fakeFunctions());
+    EXPECT_TRUE(probe.enumerate().empty());
+}
+
+TEST(WindowsPackageManifestTest, EmptyElementsTasksOutsideAnApplicationAndCdataNames)
+{
+    const auto parsed = Windows::parsePackageManifest(R"(<?xml version="1.0" encoding="utf-8"?>
+<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+         xmlns:uap5="http://schemas.microsoft.com/appx/manifest/uap/windows10/5">
+  <Properties><DisplayName><![CDATA[Contoso & Co]]></DisplayName></Properties>
+  <Extensions>
+    <uap5:Extension Category="windows.startupTask" Executable="loose.exe">
+      <uap5:StartupTask TaskId="Loose" Enabled="true"></uap5:StartupTask>
+    </uap5:Extension>
+    <uap5:Extension Category="windows.startupTask" />
+  </Extensions>
+  <Applications><Application Id="App" Executable="app.exe" /></Applications>
+</Package>)");
+    ASSERT_TRUE(parsed.has_value());
+    const Windows::PackageManifest manifest = parsed.value_or(Windows::PackageManifest{});
+    EXPECT_EQ(manifest.displayName, "Contoso & Co") << "a CDATA section is text too";
+    ASSERT_EQ(manifest.startupTasks.size(), 1U);
+    EXPECT_EQ(manifest.startupTasks[0].taskId, "Loose");
+    EXPECT_EQ(manifest.startupTasks[0].executable, "loose.exe") << "its extension's, with no Application around it";
 }
 
 TEST_F(WindowsStartupProbeSeamsTest, ARunValueOfOnlySpacesNamesNoProgram)
