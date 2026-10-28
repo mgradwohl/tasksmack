@@ -1131,6 +1131,19 @@ scripts pass the instrumented app binary (`build/<preset>/bin/TaskSmack`) to `ll
 `-object`, so every file the tests never execute (the ImGui panels and layers, `Theme.cpp`,
 `main.cpp`, ...) shows up at 0% instead of silently dropping out of the denominator (#1131).
 
+The LCOV report Codecov receives (`coverage/coverage.lcov`) leaves out two kinds of line that no test can
+cover; the HTML report and the `llvm-cov` summary still count them (#2039, #3221):
+
+- Lines marked `LCOV_EXCL_START` ... `LCOV_EXCL_STOP` or `LCOV_EXCL_LINE`, each with a one-line reason: a
+  modal shell dialog, a real `ShellExecuteW` launch, SDL or OpenGL setup failing, or a guard that the type's
+  invariants make unreachable. Mark only code a test truly can't reach; anything a test or a seam could
+  drive gets a test instead.
+- Defaulted comparisons (`operator==` / `operator<=>` ... `= default;`): clang folds one branch of the
+  synthesized compare, so the line stays partly covered whatever a test does.
+
+`tools/lcov-exclude.py` (Linux) and `Remove-ExcludedLcovLine` in `tools/coverage.ps1` (Windows) apply the
+same rules; change both together.
+
 ```bash
 # Linux
 ./tools/coverage.sh

@@ -188,8 +188,10 @@ $LLVM_PROFDATA merge -sparse "${profiles[@]}" -o "${BUILD_DIR}/default.profdata"
 # Files excluded from coverage: generated/third-party paths and test sources only (benchmarks/ holds
 # test-support headers the tests include, #1395). ImGui panel code
 # (Widgets.h, the panel headers) is deliberately NOT excluded any more (#1131): untested code has
-# to count against the total. tools/coverage.ps1 also drops LCOV_EXCL-marked lines, which mark only
-# Windows-only code (#2039); this script honours no markers, so every Linux line counts.
+# to count against the total. The LCOV report Codecov gets leaves out the lines no test can run: those
+# marked LCOV_EXCL_START/STOP or LCOV_EXCL_LINE, each with its reason (#2039, #3221), and defaulted
+# comparison operators, which clang never covers fully. tools/lcov-exclude.py drops them here and
+# tools/coverage.ps1 does the same on Windows; the HTML report and the summary below still count them.
 COV_IGNORE_REGEX='.*/(build|_deps|tests|benchmarks|\.cache)/.*'
 
 # llvm-cov only reports files compiled into the binaries it is given, so with TaskSmackTests
@@ -225,6 +227,8 @@ $LLVM_COV export \
     -format=lcov \
     -ignore-filename-regex="${COV_IGNORE_REGEX}" \
     > "${COVERAGE_DIR}/coverage.lcov"
+dropped_lines="$("$PYTHON_EXE" -I -X utf8 "${SCRIPT_DIR}/lcov-exclude.py" "${COVERAGE_DIR}/coverage.lcov")"
+echo "Left ${dropped_lines} structurally untestable line(s) out of the LCOV report (#2039, #3221)."
 
 # Step 6: Generate summary
 echo "==> Coverage Summary:"
