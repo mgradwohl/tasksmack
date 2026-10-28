@@ -3,6 +3,7 @@
 #ifdef _WIN32
 
 #include "Domain/PriorityConfig.h"
+#include "Platform/IProcessActions.h"
 #include "Platform/ProcessTypes.h"
 
 // clang-format off
@@ -15,9 +16,14 @@
 #include <windows.h>
 // clang-format on
 
+#include <cstddef>
 #include <cstdint>
 #include <format>
+#include <map>
+#include <mutex>
+#include <optional>
 #include <string>
+#include <utility>
 
 namespace Platform
 {
@@ -153,6 +159,8 @@ enum class GuardedAction : std::uint8_t
     Priority, ///< SetPriorityClass
     Affinity, ///< SetProcessAffinityMask or SetProcessDefaultCpuSets
     Suspend,  ///< NtSuspendProcess (#2582)
+    /// SetProcessInformation(ProcessPowerThrottling) and SetPriorityClass (#3071)
+    EfficiencyMode,
 };
 
 /// What TaskSmack won't do, worded to follow "TaskSmack won't".
@@ -166,6 +174,8 @@ enum class GuardedAction : std::uint8_t
         return "change its CPU affinity";
     case GuardedAction::Suspend:
         return "suspend it";
+    case GuardedAction::EfficiencyMode:
+        return "change its Efficiency mode";
     case GuardedAction::End:
         break;
     }
@@ -210,7 +220,7 @@ inline constexpr int32_t SYSTEM_PROCESS_PID = 4;
 /// when it refuses the open, from re-prioritising or re-pinning (#2602).
 [[nodiscard]] inline std::string protectedProcessRefusal(int32_t pid, GuardedAction action = GuardedAction::End)
 {
-    if (action == GuardedAction::Priority || action == GuardedAction::Affinity)
+    if (action == GuardedAction::Priority || action == GuardedAction::Affinity || action == GuardedAction::EfficiencyMode)
     {
         return std::format("Process {} is a protected process (a system or anti-malware service); Windows won't let even an "
                            "administrator {}",
@@ -312,6 +322,8 @@ inline constexpr std::uint32_t NT_STATUS_PROCESS_IS_TERMINATING = 0xC000010AU;
         return affinityAccessDeniedMessage(pid);
     case GuardedAction::Suspend:
         return std::format("Access denied: can't suspend process {}. It may run elevated or as another user.", pid);
+    case GuardedAction::EfficiencyMode:
+        return std::format("Access denied: can't change the Efficiency mode of process {}. It may run elevated or as another user.", pid);
     case GuardedAction::End:
         break;
     }
@@ -359,6 +371,106 @@ inline constexpr std::uint32_t NT_STATUS_PROCESS_IS_TERMINATING = 0xC000010AU;
     default:
         return std::format("Failed to set the CPU affinity of process {}: error {}", pid, error);
     }
+}
+
+/// Why SetProcessInformation(ProcessPowerThrottling) failed with @p error, turning Efficiency mode on
+/// (@p on) or off for @p pid (#3071). Nothing was changed.
+[[nodiscard]] inline std::string efficiencyModeFailure(uint32_t error, int32_t pid, bool on)
+{
+    return std::format("Failed to turn Efficiency mode {} for process {}: error {}", on ? "on" : "off", pid, error);
+}
+
+/// Why SetPriorityClass failed with @p error for Efficiency mode (#3071): turning it on (@p on), the power
+/// throttling was undone again, so nothing changed; turning it off, the throttling is off but the priority
+/// it had before wasn't restored.
+[[nodiscard]] inline std::string efficiencyModePriorityFailure(uint32_t error, int32_t pid, bool on)
+{
+    if (on)
+    {
+        return std::format("Could not lower the priority of process {} to Idle: error {}; Efficiency mode was not turned on", pid, error);
+    }
+    return std::format("Efficiency mode was turned off for process {}, but its priority could not be restored: error {}", pid, error);
+}
+
+/// The priority class to set when Efficiency mode is turned off (#3071), from the class @p remembered when
+/// it was turned on (nullopt: unknown) and the process's class now, @p current (0: unreadable). Efficiency
+/// mode left it at Idle: back to the remembered class, or Normal when that isn't known. At any other
+/// class someone changed it since, so it is left as it is (nullopt).
+[[nodiscard]] constexpr std::optional<uint32_t> priorityClassToRestore(std::optional<uint32_t> remembered, uint32_t current) noexcept
+{
+    if (current != 0 && current != IDLE_PRIORITY_CLASS)
+    {
+        return std::nullopt;
+    }
+    return remembered.value_or(static_cast<uint32_t>(NORMAL_PRIORITY_CLASS));
+}
+
+/// The priority classes Efficiency mode replaced with Idle, per process (#3071), so turning it off
+/// restores each. One for the whole TaskSmack process (sharedEfficiencyModePriorities()): the Processes
+/// table and Process Details each have their own WindowsProcessActions, and either may turn off what the
+/// other turned on. Thread-safe: actions run on the panels' workers. At most MAX_REMEMBERED processes;
+/// past that the lowest PID's is dropped, and that process goes back to Normal instead.
+class EfficiencyModePriorities
+{
+  public:
+    static constexpr std::size_t MAX_REMEMBERED = 1024;
+
+    /// Efficiency mode was turned on for @p target, whose class was @p priorityClass (0: unreadable, not
+    /// remembered). A class other than Idle replaces any remembered before; Idle (Efficiency mode turned
+    /// on again, or a process already put at Idle) keeps one already remembered.
+    void remember(const ProcessTarget& target, uint32_t priorityClass)
+    {
+        if (priorityClass == 0)
+        {
+            return;
+        }
+        const Key key{target.pid, target.startTimeTicks};
+        const std::scoped_lock lock(m_Mutex);
+        if (!m_Classes.contains(key) && m_Classes.size() >= MAX_REMEMBERED)
+        {
+            m_Classes.erase(m_Classes.begin());
+        }
+        if (priorityClass == IDLE_PRIORITY_CLASS)
+        {
+            m_Classes.try_emplace(key, priorityClass);
+        }
+        else
+        {
+            m_Classes.insert_or_assign(key, priorityClass);
+        }
+    }
+
+    /// The class remembered for @p target, forgotten now (Efficiency mode is being turned off), or nullopt.
+    [[nodiscard]] std::optional<uint32_t> take(const ProcessTarget& target)
+    {
+        const std::scoped_lock lock(m_Mutex);
+        const auto found = m_Classes.find(Key{target.pid, target.startTimeTicks});
+        if (found == m_Classes.end())
+        {
+            return std::nullopt;
+        }
+        const uint32_t priorityClass = found->second;
+        m_Classes.erase(found);
+        return priorityClass;
+    }
+
+    [[nodiscard]] std::size_t size() const
+    {
+        const std::scoped_lock lock(m_Mutex);
+        return m_Classes.size();
+    }
+
+  private:
+    using Key = std::pair<int32_t, uint64_t>; // PID, start time
+    mutable std::mutex m_Mutex;
+    std::map<Key, uint32_t> m_Classes;
+};
+
+/// The one EfficiencyModePriorities every WindowsProcessActions in this process shares.
+[[nodiscard]] inline EfficiencyModePriorities& sharedEfficiencyModePriorities()
+{
+    static EfficiencyModePriorities priorities;
+    return priorities;
 }
 
 } // namespace Platform

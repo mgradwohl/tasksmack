@@ -89,7 +89,35 @@ struct StartupCapabilities
     bool hasDisabledTime = false;     ///< disabledAtUnixSeconds can be set.
     bool hasPublisher = false;        ///< publisher can be set.
     bool canResolveShortcuts = false; ///< Startup folder shortcuts' targets can be read.
+    /// readImpact() can give the processes the last sign-in measured (#3073; Windows). False: the
+    /// Startup impact column is hidden.
+    bool hasImpact = false;
     /// Why canEnumerate is false, for the UI to show. Empty when canEnumerate is true.
+    std::string unavailableReason;
+};
+
+/// One process a sign-in's startup measurement recorded (#3073): what it cost from when it started
+/// until the measurement ended. A process is identified by its PID and start time together, since
+/// PIDs are reused; its parent likewise.
+struct StartupImpactProcess
+{
+    std::string path; ///< The program's full path, as Windows recorded it ("C:\Program Files\A\a.exe").
+    std::uint32_t pid = 0;
+    std::uint32_t parentPid = 0;
+    std::uint64_t startTicks = 0;       ///< When it started: 100 ns ticks since 1970-01-01 UTC.
+    std::uint64_t parentStartTicks = 0; ///< When its parent started, in the same ticks.
+    std::uint64_t cpuUs = 0;            ///< CPU time, microseconds.
+    std::uint64_t diskBytes = 0;        ///< Disk I/O, bytes read and written.
+};
+
+/// The newest sign-in's startup measurement (#3073): every process that started during it. Empty
+/// processes with an unavailableReason when there is none to read.
+struct StartupImpactReading
+{
+    std::vector<StartupImpactProcess> processes; ///< Ordered by startTicks, oldest first.
+    std::uint64_t signInUnixSeconds = 0;         ///< When the measurement began (its first process); 0 when unknown.
+    std::uint32_t windowSeconds = 0;             ///< How long the measurement ran; 0 when unknown.
+    /// Why there is no measurement, for the column's tooltip. Empty when processes were read.
     std::string unavailableReason;
 };
 
@@ -111,6 +139,15 @@ class IStartupProbe
     /// Every startup entry, from every location that could be read. A location that can't be read
     /// (missing key, denied) contributes nothing; the others are still listed.
     [[nodiscard]] virtual std::vector<StartupEntry> enumerate() = 0;
+
+    /// The newest sign-in's startup measurement (#3073), when capabilities().hasImpact. It changes
+    /// only once per sign-in, so StartupModel reads it at Sampling::STARTUP_IMPACT_REFRESH_SECONDS,
+    /// not with every enumerate(). A platform without one gives none, with no reason (the column is
+    /// hidden there).
+    [[nodiscard]] virtual StartupImpactReading readImpact()
+    {
+        return {};
+    }
 };
 
 /// The probe for a platform without a startup implementation (and the synthetic runs' stand-in): no

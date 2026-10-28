@@ -175,7 +175,7 @@ struct PowerThrottlingMasks
     }
     if (powerThrottling.has_value() && (powerThrottling->controlMask & powerThrottling->stateMask & POWER_THROTTLING_EXECUTION_SPEED) != 0)
     {
-        return "Efficiency Mode";
+        return EFFICIENCY_MODE_STATUS;
     }
     if (!extendedBasicFlags.has_value() && !powerThrottling.has_value())
     {
@@ -206,10 +206,14 @@ struct DetailRefreshPlan
 ///    TTL (4-15 s) later, without reading every process's class every sample. The class stays the
 ///    source of the value: a few system processes (csrss.exe, smss.exe) run at a base priority
 ///    their Normal class doesn't give.
+///  - The light details too when the base priority changes: Efficiency mode sets the Idle class with
+///    EcoQoS and restores the class without it (#3071), so the Status it shows, and the Efficiency mode
+///    toggle checked from it, follow on the next sample as the priority does.
 [[nodiscard]] constexpr DetailRefreshPlan planDetailRefresh(bool firstSeen, bool lightDue, bool heavyDue, bool basePriorityChanged) noexcept
 {
     const bool heavy = firstSeen || heavyDue;
-    return DetailRefreshPlan{.light = firstSeen || lightDue, .heavy = heavy, .priority = heavy || basePriorityChanged};
+    return DetailRefreshPlan{
+        .light = firstSeen || lightDue || basePriorityChanged, .heavy = heavy, .priority = heavy || basePriorityChanged};
 }
 
 /// Mark which of one process's readings the Windows probe took (#1285, the Windows half of #1110).

@@ -487,6 +487,37 @@ TEST_F(SystemSectionsRenderTest, MemorySectionStripShowsCompressedSwapWhileSomet
     EXPECT_EQ(renderAndCapture(render).find("Compressed"), std::string::npos);
 }
 
+// #3087: with a compression ratio in the window, the Memory chart draws it as its own line on a
+// right-hand axis, after the RAM and swap series; with none, there is no such line.
+TEST_F(SystemSectionsRenderTest, MemorySectionDrawsTheCompressionRatioLineOnlyWhenThereIsOne)
+{
+    Domain::SystemPublication publication = memoryPublication();
+    publication.compressionRatioHistory = viewOf(constant(2.5F));
+    publication.snapshot.hasZram = true;
+    publication.snapshot.zramOriginalBytes = 5ULL << 30U;
+    publication.snapshot.zramCompressedBytes = 2ULL << 30U;
+    publication.snapshot.compressionRatio = Domain::compressionRatio(publication.snapshot);
+    MemorySection::SmoothedMemory smoothed;
+    MemorySection::RenderContext ctx{.publication = &publication, .smoothedMemory = &smoothed};
+    MemorySection::updateSmoothedMemory(smoothed, publication.snapshot, 0.0F, REFRESH);
+    const auto render = [&]
+    {
+        MemorySection::renderMemorySection(ctx, publication.timestamps, UI::Widgets::historyFrameNowSeconds(), 3);
+    };
+    runFrame(render);
+    runFrame(render);
+    const auto plots = plotsDrawn();
+    ASSERT_EQ(plots.size(), 1U);
+    EXPECT_EQ(plots[0], (SeriesLabels{"Used", "Cached", "Swap", "Peak Used", "Compression \u2192"}));
+
+    publication.compressionRatioHistory = {};
+    runFrame(render);
+    runFrame(render);
+    const auto without = plotsDrawn();
+    ASSERT_EQ(without.size(), 1U);
+    EXPECT_EQ(without[0], (SeriesLabels{"Used", "Cached", "Swap", "Peak Used"}));
+}
+
 TEST(MemorySectionCompressedTest, TooltipBreaksDownEachKindAndTheRatiosRange)
 {
     Domain::SystemSnapshot snap;

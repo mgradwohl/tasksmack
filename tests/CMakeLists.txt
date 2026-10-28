@@ -397,6 +397,7 @@ set(COMMON_TEST_SOURCES
     Domain/test_ProcessModelAllocationFailure.cpp
     Domain/test_StorageModel.cpp
     Domain/test_StartupModel.cpp
+    Domain/test_StartupImpact.cpp  # the Startup impact rating and its thresholds (#3073)
     Domain/test_SensorModel.cpp
     Domain/test_SystemInfoModel.cpp
     Domain/test_CrashHistory.cpp
@@ -404,6 +405,8 @@ set(COMMON_TEST_SOURCES
     Domain/test_ServiceModel.cpp
     Domain/test_ProcessServices.cpp
     Domain/test_BackgroundSampler.cpp
+    Domain/test_TimingHistogram.cpp
+    Domain/test_SamplerTimingBoard.cpp
     Domain/test_PriorityConfig.cpp
     Domain/test_SamplingConfig.cpp
     Domain/test_HistorySeries.cpp
@@ -422,6 +425,8 @@ set(COMMON_TEST_SOURCES
     UI/test_NowBarsRender.cpp
     # ImPlot lines sample ImGui's baked line texture (#2744)
     UI/test_PlotLineTexture.cpp
+    # Chart fills draw at their colour's alpha, FillAlpha applied once (ImPlot v1.1, #3166)
+    UI/test_PlotShadedFill.cpp
     UI/test_ChartWidgetsEdgeCases.cpp
     UI/test_HistoryCsv.cpp
     UI/test_HistoryChartCsvRender.cpp
@@ -465,6 +470,7 @@ set(COMMON_TEST_SOURCES
     App/test_RunTask.cpp # Run new task (#3065)
     App/test_ProcessPins.cpp # pinned processes (#3061)
     App/test_Connections.cpp # the Connections tab (#3066)
+    Domain/test_HandleSearch.cpp # Find handles (#3067)
     App/test_ProcessGrouping.cpp # Group by (#3068)
     App/test_ProcessTreeFlatten.cpp
     App/test_ProcessTreeIndent.cpp
@@ -513,6 +519,7 @@ set(COMMON_TEST_SOURCES
     Platform/test_DriversInfo.cpp
     Platform/test_CrashesInfo.cpp
     Platform/test_WindowsSystemInfoReaders.cpp
+    Platform/test_StartupImpact.cpp  # a startup entry's share of a sign-in measurement (#3073)
     Platform/test_ProcMapsParser.cpp
     Platform/test_SmapsRollupParser.cpp
     Platform/test_ProcFdParser.cpp
@@ -607,6 +614,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessBatchAction.cpp
     App/test_NewProcessHighlight.cpp  # the new-process row tint (#3060)
     App/test_StuckProcesses.cpp  # the stuck-in-D row tint (#3097)
+    App/test_IncrementalSearch.cpp  # the Processes table's "/" search (#3097)
     App/test_ExitingProcessRows.cpp # exited processes kept as dimmed rows (#3060)
     App/test_ProcessBatchRun.cpp
     App/test_ProcessActionRun.cpp
@@ -648,6 +656,7 @@ set(WINDOWS_MATH_TEST_SOURCES
     Platform/WindowsMath/test_WindowsEnergyMeterMath.cpp  # EMI metadata and measurement blocks, package channel names (#2587)
     Platform/WindowsMath/test_WindowsProcessProbeMath.cpp
     Platform/WindowsMath/test_WindowsStartupProbeMath.cpp
+    Platform/WindowsMath/test_WindowsStartupImpact.cpp  # the WDI StartupInfo sign-in measurements (#3073)
     Platform/WindowsMath/test_WindowsOsInfoMath.cpp
     Platform/WindowsMath/test_WindowsStorageSmartMath.cpp  # ATA SMART pages, thresholds and return status as AtaHealth (#2588)
     Platform/WindowsMath/test_WindowsServiceActionsMath.cpp
@@ -875,6 +884,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessBatchPriorityDialog.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessAffinityDialog.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/RunTaskDialog.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/FindHandlesDialog.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessActionsView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessDumpView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessActionsBlock.cpp
@@ -966,12 +976,14 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/Domain/StorageModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/StartupModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/ConnectionsModel.cpp
+    ${CMAKE_SOURCE_DIR}/src/Domain/HandleSearch.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/SensorModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/SensorTracker.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/SystemInfoModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/CrashHistory.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/ServiceModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/BackgroundSampler.cpp
+    ${CMAKE_SOURCE_DIR}/src/Domain/SamplerTimingBoard.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/ThreadName.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/ThreadApartment.cpp # the sampler thread's COM apartment (#2731)
     ${CMAKE_SOURCE_DIR}/src/Platform/BrokeredProcessActions.cpp
@@ -1147,12 +1159,17 @@ target_compile_definitions(TaskSmackTests PRIVATE TASKSMACK_APP_TEST_FIXTURES_DI
 # real-display tests then run UILayer with the app's fonts, title font, chrome icon font and window icon
 # instead of ImGui's built-in font and no icon ("Failed to load icon ... tests/assets/icons"), so the title
 # bar is drawn and pressed as users see it (#1954).
-add_custom_command(TARGET TaskSmackTests POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/assets/fonts" "$<TARGET_FILE_DIR:TaskSmackTests>/assets/fonts"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/assets/icons" "$<TARGET_FILE_DIR:TaskSmackTests>/assets/icons"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/assets/themes" "$<TARGET_FILE_DIR:TaskSmackTests>/assets/themes"
+# One target copies them, and both test binaries (in the same directory) depend on it: a POST_BUILD copy
+# on each raced when Ninja linked the two at once, and Windows failed the build on a file the other copy
+# held open ("Permission denied", #3208). copy_directory_if_different keeps an up-to-date build cheap.
+add_custom_target(TaskSmackTestAssets
+    COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different "${CMAKE_SOURCE_DIR}/assets/fonts" "$<TARGET_FILE_DIR:TaskSmackTests>/assets/fonts"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different "${CMAKE_SOURCE_DIR}/assets/icons" "$<TARGET_FILE_DIR:TaskSmackTests>/assets/icons"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different "${CMAKE_SOURCE_DIR}/assets/themes" "$<TARGET_FILE_DIR:TaskSmackTests>/assets/themes"
     COMMENT "Copying assets (fonts, icons, themes) beside the test binaries"
+    VERBATIM
 )
+add_dependencies(TaskSmackTests TaskSmackTestAssets)
 
 if(WIN32)
     # The same Windows definitions and system libraries as the app's targets, from the one list in
@@ -1252,13 +1269,9 @@ target_compile_definitions(TaskSmackAppTests PRIVATE TASKSMACK_SOURCE_THEMES_DIR
                                                      # test_UiLayersOnDisplay.cpp's first-run golden config.toml (#2727)
                                                      TASKSMACK_APP_TEST_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/App/fixtures")
 # The real-display tests are in this binary: the same assets beside it (see TaskSmackTests above), so
-# building this target alone still runs them with the app's fonts and icon (#1954).
-add_custom_command(TARGET TaskSmackAppTests POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/assets/fonts" "$<TARGET_FILE_DIR:TaskSmackAppTests>/assets/fonts"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/assets/icons" "$<TARGET_FILE_DIR:TaskSmackAppTests>/assets/icons"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/assets/themes" "$<TARGET_FILE_DIR:TaskSmackAppTests>/assets/themes"
-    COMMENT "Copying assets (fonts, icons, themes) beside TaskSmackAppTests"
-)
+# building this target alone still runs them with the app's fonts and icon (#1954). It sits in the same
+# directory as TaskSmackTests, so it shares that copy rather than racing it (#3208).
+add_dependencies(TaskSmackAppTests TaskSmackTestAssets)
 # The UI scenarios (#2711) run on a synthetic machine, the same on every runner; TASKSMACK_SYNTHETIC is read
 # once per process, and each suite is its own process. TASKSMACK_UI_CAPTURE_DIR, when set, passes through.
 # The on-display suites open real windows and, since #2717, drive every resize edge live: 35-40 s on a

@@ -633,6 +633,71 @@ TEST_F(ProcessActionsBlockRenderTest, ConfirmingActsAndShowsTheResultAndCancelli
     EXPECT_TRUE(text.contains(h.actionsView.lastResult().text)) << text;
 }
 
+// #3071: where the platform has Efficiency mode, the Actions card draws its checkbox, ticked while the process
+// is in it, and measures it. Ticking it asks to confirm and the confirm turns it on; unticking it turns it off
+// at once. Where the platform has none, nothing is drawn or measured.
+TEST_F(ProcessActionsBlockRenderTest, TheEfficiencyModeCheckboxAsksToTurnItOnAndTurnsItOffAtOnce)
+{
+    constexpr Platform::ProcessActionCapabilities CAPS{
+        .canTerminate = true, .canKill = true, .canSetPriority = true, .canSetEfficiencyMode = true};
+    Harness h;
+    bool on = false;
+    std::string text;
+    const auto body = [&]
+    {
+        ImGui::LogToBuffer();
+        ProcessActionsBlock::Context context = h.context(CAPS);
+        context.efficiencyMode = on;
+        (void) ProcessActionsBlock::render(context, layoutFor(CAPS, 1600.0F, 600.0F), infoCardHeight(6.0F));
+        h.actionsView.renderConfirmation(&h.mock, TARGET);
+        text = GImGui->LogBuffer.c_str();
+        ImGui::LogFinish();
+    };
+    float toggleWidth = 0.0F;
+    float buttons = 0.0F;
+    float withoutToggle = -1.0F;
+    (void) runFrame(
+        [&]
+        {
+            toggleWidth = ProcessActionsView::efficiencyModeToggleWidth(CAPS);
+            buttons = ProcessActionsBlock::measure(CAPS).buttons;
+            withoutToggle = ProcessActionsView::efficiencyModeToggleWidth(ALL_ACTIONS);
+        });
+    EXPECT_GT(toggleWidth, 0.0F);
+    EXPECT_GE(buttons, toggleWidth);
+    EXPECT_FLOAT_EQ(withoutToggle, 0.0F);
+    EXPECT_TRUE(ProcessActionsBlock::hasAnyAction(Platform::ProcessActionCapabilities{.canSetEfficiencyMode = true}));
+
+    (void) runFrame(body);
+    (void) runFrame(body);
+    EXPECT_TRUE(text.contains("Efficiency mode")) << text;
+    const ImGuiWindow* card = actionsWindow();
+    ASSERT_NE(card, nullptr);
+    ImGui::ActivateItemByID(ImHashStr(Detail::EFFICIENCY_MODE_LABEL, 0, card->ID));
+    (void) runFrame(body);
+    ASSERT_TRUE(runFrame(body));
+    const ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
+    ASSERT_NE(modal, nullptr);
+    EXPECT_TRUE(std::string_view(modal->Name).starts_with("Turn on Efficiency mode for victim (PID 1001)?")) << modal->Name;
+    EXPECT_EQ(h.mock.efficiencyModeCount(), 0); // asked, not done
+    ImGui::ActivateItemByID(ImHashStr("Turn on Efficiency mode", 0, modal->ID));
+    (void) runFrame(body);
+    h.actionsView.waitForActionForTesting(); // on the action worker (#2305)
+    (void) runFrame(body);
+    EXPECT_EQ(h.mock.efficiencyModeCount(), 1);
+    EXPECT_TRUE(h.mock.lastEfficiencyMode());
+    EXPECT_TRUE(text.contains("Efficiency mode on for PID 1001")) << text;
+
+    on = true; // the process's Status says so from the next sample
+    (void) runFrame(body);
+    ImGui::ActivateItemByID(ImHashStr(Detail::EFFICIENCY_MODE_LABEL, 0, actionsWindow()->ID));
+    EXPECT_FALSE(runFrame(body)) << "turning it off isn't confirmed";
+    h.actionsView.waitForActionForTesting();
+    EXPECT_EQ(h.mock.efficiencyModeCount(), 2);
+    EXPECT_FALSE(h.mock.lastEfficiencyMode());
+    EXPECT_EQ(h.mock.lastTarget(), TARGET);
+}
+
 // #1395: each action button explains itself on hover; Kill names its key.
 TEST_F(ProcessActionsBlockRenderTest, TheActionButtonsExplainThemselvesOnHover)
 {

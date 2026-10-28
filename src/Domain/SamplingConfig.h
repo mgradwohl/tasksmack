@@ -89,6 +89,11 @@ inline constexpr int ACCOUNT_NAME_CACHE_TTL_SECONDS = 300;
 // on its own.
 inline constexpr int SYSTEM_PROBE_SLOW_SUB_READ_MS = REFRESH_INTERVAL_MIN_MS;
 
+// How often each BackgroundSampler logs its timing summary (passes, p50/p95/max per samplable, named
+// by its thread) at debug level while it runs (#3153); it logs one more when it stops. Five minutes
+// keeps a long run's log readable: a handful of lines per sampler per half hour.
+inline constexpr int SAMPLER_TIMING_SUMMARY_PERIOD_MS = 5 * 60 * 1000;
+
 // Cache TTL for inode-to-PID mapping (milliseconds) - Linux only
 // buildInodeToPidMap() scans /proc/[pid]/fd/* for all processes to resolve socket
 // inodes to owning PIDs. At 1Hz sampling this scan adds measurable latency on busy
@@ -176,6 +181,13 @@ inline constexpr int SERVICES_DATA_MAX_AGE_MS = 3 * SERVICES_REFRESH_MS;
 // Within the BackgroundSampler's interval range, which clamps anything longer.
 inline constexpr int STARTUP_REFRESH_MS = 5000;
 static_assert(STARTUP_REFRESH_MS <= REFRESH_INTERVAL_MAX_MS);
+
+// How often the Startup tab re-reads the last sign-in's startup measurement, for its Startup impact
+// column (seconds) (#3073) - fixed, not configurable. Read with the first sample after the tab first
+// shows, then on the Startup sampler at most this often. The figures change once per sign-in, but
+// Windows writes a sign-in's file some minutes after it, so a TaskSmack started at sign-in picks it up
+// within this long. Each read parses up to five files of a few hundred KB.
+inline constexpr int STARTUP_IMPACT_REFRESH_SECONDS = 600;
 
 // -----------------------------------------------------------------------------
 // Instance Enumeration Caches (User-Configurable via TOML)

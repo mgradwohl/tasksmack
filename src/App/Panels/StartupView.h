@@ -4,6 +4,7 @@
 // and its sampler, so the drawing runs headless in TaskSmackTests without a Platform probe. The pure
 // helpers (labels, row order) make no ImGui calls.
 
+#include "Domain/StartupImpact.h"
 #include "Domain/StartupModel.h"
 #include "Platform/IStartupProbe.h"
 
@@ -23,6 +24,7 @@ enum class StartupColumn : std::uint8_t
     Name,
     Publisher,
     Enabled,
+    Impact, ///< Startup impact (#3073); hidden where the platform has no impact data
     Scope,
     Location,
     Command,
@@ -34,6 +36,17 @@ enum class StartupColumn : std::uint8_t
 /// "Enabled", "Disabled since <local date>", or "Disabled" when no time is recorded; "Enabled by
 /// policy" or "Disabled by policy" when a policy sets it (#1873).
 [[nodiscard]] std::string startupEnabledLabel(const Platform::StartupEntry& entry);
+
+/// The Startup impact column's text (#3073): "High", "Medium", "Low", "Not measured", or "None" for a
+/// disabled entry, as Task Manager shows it.
+[[nodiscard]] std::string_view startupImpactLabel(Domain::StartupImpact impact) noexcept;
+
+/// The Startup impact cell's tooltip (#3073), one line per fact: for a measured entry, its CPU time and
+/// disk I/O at the sign-in that began at @p signInUnixSeconds, how many processes they add up, and the
+/// thresholds its rating comes from; for one not measured, why (@p unavailableReason when the
+/// measurement couldn't be read); for a disabled one, that it doesn't start.
+[[nodiscard]] std::string
+startupImpactTooltip(const Domain::StartupEntryImpact& impact, std::uint64_t signInUnixSeconds, std::string_view unavailableReason);
 
 /// The name that identifies @p entry within its location (#1873): the name it is registered under,
 /// else (an entry from a probe that gives none) the name shown.
@@ -58,9 +71,14 @@ enum class StartupColumn : std::uint8_t
 /// insensitive; empty matches all), ordered by `column`. By Enabled, the enabled entries come first
 /// (last when descending) and each group is sorted A to Z by name (case-insensitively; the exact name
 /// and then the location break ties) in either direction. Other columns' ties keep the name order
-/// the model sorted.
-[[nodiscard]] std::vector<std::size_t>
-buildStartupRows(std::span<const Platform::StartupEntry> entries, std::string_view filter, StartupColumn column, bool ascending);
+/// the model sorted. By Startup impact (#3073), from None through Not measured, Low and Medium to High,
+/// and within a rating by CPU time, then disk I/O; @p impacts is by index into @p entries, and an entry
+/// past its end counts as Not measured.
+[[nodiscard]] std::vector<std::size_t> buildStartupRows(std::span<const Platform::StartupEntry> entries,
+                                                        std::string_view filter,
+                                                        StartupColumn column,
+                                                        bool ascending,
+                                                        std::span<const Domain::StartupEntryImpact> impacts = {});
 
 /// What the view drew this frame.
 enum class StartupViewContent : std::uint8_t
