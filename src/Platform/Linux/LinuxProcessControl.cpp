@@ -37,6 +37,7 @@
 #include <signal.h>
 #include <sys/poll.h>
 #include <sys/resource.h>
+#include <sys/socket.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -379,6 +380,53 @@ int realIoprioGet(pid_t pid)
     return -1;
 #endif
 }
+int realPidfdGetfd(int pidfd, int targetFd)
+{
+#if defined(SYS_pidfd_getfd)
+    return static_cast<int>(::syscall(SYS_pidfd_getfd, pidfd, targetFd, 0U));
+#else
+    static_cast<void>(pidfd);
+    static_cast<void>(targetFd);
+    errno = ENOSYS;
+    return -1;
+#endif
+}
+
+int realShutdownSocket(int fd)
+{
+    return ::shutdown(fd, SHUT_RDWR);
+}
+
+std::expected<int, int> realSocketDescriptor(std::int32_t pid, std::uint64_t inode)
+{
+    const std::string wanted = std::format("socket:[{}]", inode);
+    const std::filesystem::path fdDir = std::filesystem::path("/proc") / std::to_string(pid) / "fd";
+    std::error_code ec;
+    std::filesystem::directory_iterator it(fdDir, ec);
+    if (ec)
+    {
+        return std::unexpected(ec.value());
+    }
+    // Incremented with an error code: a range-for would throw if the listing failed part-way.
+    for (; !ec && it != std::filesystem::directory_iterator{}; it.increment(ec))
+    {
+        std::error_code linkError;
+        const std::filesystem::path target = std::filesystem::read_symlink(it->path(), linkError);
+        if (linkError || target.native() != wanted)
+        {
+            continue;
+        }
+        int fd = -1;
+        const std::string name = it->path().filename().string();
+        const auto [ptr, parseError] = std::from_chars(name.data(), name.data() + name.size(), fd);
+        if (parseError == std::errc{} && ptr == name.data() + name.size())
+        {
+            return fd;
+        }
+    }
+    return std::unexpected(ec ? ec.value() : ENOENT);
+}
+
 } // namespace
 
 LinuxProcessSyscalls realProcessSyscalls() noexcept
@@ -392,7 +440,10 @@ LinuxProcessSyscalls realProcessSyscalls() noexcept
             .setAffinity = &realSetAffinity,
             .listThreads = &realListThreads,
             .isThreadOf = &realIsThreadOf,
-            .waitPid = &realWaitPid};
+            .waitPid = &realWaitPid,
+            .pidfdGetfd = &realPidfdGetfd,
+            .shutdownSocket = &realShutdownSocket,
+            .socketDescriptor = &realSocketDescriptor};
 }
 
 LinuxProcessControl::LinuxProcessControl() : LinuxProcessControl(realProcessSyscalls())
@@ -409,6 +460,18 @@ LinuxProcessControl::LinuxProcessControl(const LinuxProcessSyscalls& syscalls)
     if (m_Syscalls.isThreadOf == nullptr)
     {
         m_Syscalls.isThreadOf = &realIsThreadOf;
+    }
+    if (m_Syscalls.pidfdGetfd == nullptr)
+    {
+        m_Syscalls.pidfdGetfd = &realPidfdGetfd;
+    }
+    if (m_Syscalls.shutdownSocket == nullptr)
+    {
+        m_Syscalls.shutdownSocket = &realShutdownSocket;
+    }
+    if (m_Syscalls.socketDescriptor == nullptr)
+    {
+        m_Syscalls.socketDescriptor = &realSocketDescriptor;
     }
 }
 
@@ -428,6 +491,7 @@ ProcessActionCapabilities LinuxProcessControl::actionCapabilities() const
         .canSetAffinity = m_Syscalls.setAffinity != nullptr, // sched_setaffinity(2) (#1887)
         .syscallTrace = SyscallTraceAvailability::Unsupported,
         .canCreateDump = false,
+        .canCloseConnections = true, // pidfd_getfd() and shutdown() (#3066)
     };
 }
 
@@ -881,6 +945,65 @@ IoPriorityReadResult LinuxProcessControl::getIoPriority(const ProcessTarget& tar
         return std::unexpected(std::format("Process {} has an I/O priority TaskSmack does not recognise ({})", target.pid, raw));
     }
     return *decoded;
+}
+
+ProcessActionResult LinuxProcessControl::closeConnection(const ProcessTarget& target, std::uint64_t socketInode)
+{
+    if (target.pid <= 0)
+    {
+        return ProcessActionResult::error("Invalid PID");
+    }
+    if (socketInode == 0)
+    {
+        return ProcessActionResult::error("No process holds this socket, so there is nothing to close");
+    }
+    // As sendSignalNumber(): the pidfd first, then the identity check, so the descriptor copied below can only
+    // come from the target, never from a process that took its PID since.
+    const PidfdOpen opened = openPidfd(m_Syscalls, target.pid);
+    if (opened.fd < 0)
+    {
+        return ProcessActionResult::error(opened.refusal);
+    }
+    const FdGuard pidfd(opened.fd);
+    ProcessActionResult identity = verifyIdentity(target);
+    if (!identity.success)
+    {
+        return identity;
+    }
+    const std::expected<int, int> descriptor = m_Syscalls.socketDescriptor(target.pid, socketInode);
+    if (!descriptor.has_value())
+    {
+        if (descriptor.error() == ENOENT)
+        {
+            return ProcessActionResult::error(std::format("PID {} no longer holds this socket", target.pid));
+        }
+        const std::string message = std::system_category().message(descriptor.error());
+        return isPermissionError(descriptor.error()) ? ProcessActionResult::denied(message) : ProcessActionResult::error(message);
+    }
+    // A copy of the process's descriptor, in this process: shutting it down acts on the one socket both refer to,
+    // and the process's own descriptor stays open, reporting an error on its next use.
+    const int copy = m_Syscalls.pidfdGetfd(pidfd.get(), *descriptor);
+    if (copy < 0)
+    {
+        const int err = errno;
+        if (err == ENOSYS)
+        {
+            return ProcessActionResult::error("Closing a connection needs Linux 5.6 or later (pidfd_getfd)");
+        }
+        const std::string message = std::system_category().message(err);
+        // EPERM: no ptrace access to another user's process, which the helper has (CAP_SYS_PTRACE).
+        return isPermissionError(err) ? ProcessActionResult::denied(message) : ProcessActionResult::error(message);
+    }
+    const FdGuard copyGuard(copy);
+    if (m_Syscalls.shutdownSocket(copy) != 0)
+    {
+        const int err = errno;
+        // ENOTCONN: a listening or unconnected socket, which has no connection to shut down.
+        return ProcessActionResult::error(err == ENOTCONN ? std::string("This socket isn't connected, so there is no connection to close")
+                                                          : std::system_category().message(err));
+    }
+    spdlog::info("Closed socket {} of PID {}", socketInode, target.pid);
+    return ProcessActionResult::ok();
 }
 
 ProcessActionResult LinuxProcessControl::sendSignalNumber(const ProcessTarget& target, int signal, std::string_view signalName) const

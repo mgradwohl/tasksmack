@@ -220,6 +220,11 @@ constexpr std::array ALLOWED{
 #ifdef SYS_pidfd_send_signal
     SYS_pidfd_send_signal,
 #endif
+// Close connection (#3066): a copy of the process's socket descriptor, shut down and closed at once
+#ifdef SYS_pidfd_getfd
+    SYS_pidfd_getfd,
+#endif
+    SYS_shutdown,
     SYS_setpriority,
     SYS_getpriority,
     SYS_ioprio_set,

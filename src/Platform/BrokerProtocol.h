@@ -56,7 +56,8 @@ namespace Platform::Broker
 /// 7: ServiceAction, a systemd unit started, stopped or given a start type over the helper's bus (#2728).
 /// 8: Signal gains Hangup, Interrupt, Quit, User1 and User2 (#3063).
 /// 9: SetEfficiencyMode, Efficiency mode turned on or off for a process (#3071).
-inline constexpr std::uint16_t PROTOCOL_VERSION = 9;
+/// 10: CloseConnection, one of a process's sockets shut down (#3066).
+inline constexpr std::uint16_t PROTOCOL_VERSION = 10;
 /// The largest frame either side accepts, header included.
 inline constexpr std::size_t MAX_MESSAGE_BYTES = std::size_t{8} << 20U;
 /// The most processes one ReadProcessCounters asks about (#2728); a sampler with more asks for the first.
@@ -92,6 +93,7 @@ enum class MessageKind : std::uint16_t // NOLINT(performance-enum-size): 16 bits
     SetAffinity = 19,
     ServiceAction = 20,         ///< Start, stop or restart a service, or set its start type (#2728)
     SetEfficiencyMode = 21,     ///< Efficiency mode on or off for a process (#3071)
+    CloseConnection = 22,       ///< One of a process's sockets shut down, by inode (#3066)
     ReadEnvironment = 32,       ///< Another user's process's environment, for Process Details (#2309)
     ReadModules = 33,           ///< Its loaded modules (#2309)
     ReadOpenFiles = 34,         ///< Its open files (#2309)
@@ -182,6 +184,15 @@ struct EfficiencyModeRequest
     ProcessTarget target;
     bool on = false;
     friend bool operator==(const EfficiencyModeRequest&, const EfficiencyModeRequest&) = default;
+};
+
+/// Shut down one of a process's sockets (#3066, protocol v10): IProcessActions::closeConnection(). The inode names
+/// the socket; the helper finds it among the target's descriptors after the identity check.
+struct CloseConnectionRequest
+{
+    ProcessTarget target;
+    std::uint64_t socketInode = 0;
+    friend bool operator==(const CloseConnectionRequest&, const CloseConnectionRequest&) = default;
 };
 
 /// Read a process's environment (#2309): the helper reads it with its capabilities, after the same identity check.
@@ -512,7 +523,8 @@ using Request = std::variant<Hello,
                              ProcessCountersRequest,
                              HiddenProcessesRequest,
                              ServiceActionRequest,
-                             EfficiencyModeRequest>;
+                             EfficiencyModeRequest,
+                             CloseConnectionRequest>;
 using Response = std::variant<HelloReply,
                               ActionResult,
                               ErrorReply,
@@ -843,6 +855,14 @@ namespace Detail
     return MessageKind::SetEfficiencyMode;
 }
 
+/// CloseConnection (#3066): the target, then the socket's inode.
+[[nodiscard]] inline MessageKind encodePayload(Writer& writer, const CloseConnectionRequest& close)
+{
+    writer.target(close.target);
+    writer.u64(close.socketInode);
+    return MessageKind::CloseConnection;
+}
+
 /// The reads that name only their target.
 [[nodiscard]] inline MessageKind encodePayload(Writer& writer, const EnvironmentRequest& environment)
 {
@@ -1118,6 +1138,11 @@ namespace Detail
         return Detail::finish<Request>(reader, id, Detail::decodeAffinityRequest(reader));
     case MessageKind::SetEfficiencyMode:
         return Detail::finish<Request>(reader, id, EfficiencyModeRequest{.target = reader.target(), .on = reader.flag()});
+    case MessageKind::CloseConnection:
+    {
+        const ProcessTarget target = reader.target();
+        return Detail::finish<Request>(reader, id, CloseConnectionRequest{.target = target, .socketInode = reader.u64()});
+    }
     case MessageKind::ReadEnvironment:
         return Detail::finish<Request>(reader, id, EnvironmentRequest{.target = reader.target()});
     case MessageKind::ReadModules:
@@ -1895,6 +1920,7 @@ namespace Detail
     case MessageKind::ListHiddenProcesses:
     case MessageKind::ServiceAction:
     case MessageKind::SetEfficiencyMode:
+    case MessageKind::CloseConnection:
         break;
     }
     return std::unexpected("Not a response");

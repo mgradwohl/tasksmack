@@ -13,6 +13,7 @@
 #include "Platform/Linux/LinuxCoreDump.h"
 #include "Platform/Linux/LinuxProcessActions.h"
 #include "Platform/Linux/LinuxProcessControl.h"
+#include "Platform/Linux/PosixGuards.h"
 #include "Platform/Linux/ProcParsing.h"
 #include "Platform/Linux/ProcPrivileges.h"
 #include "Platform/Linux/SyscallTrace.h"
@@ -46,6 +47,8 @@
 #include <signal.h> // NOLINT(modernize-deprecated-headers) - POSIX signal.h provides kill(), csignal does not
 #include <sys/poll.h>
 #include <sys/resource.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -2378,6 +2381,57 @@ TEST(LinuxProcessActionsTest, RunProgramSaysWhatIsWrongWithTheCommand)
         EXPECT_FALSE(noPkexec.success);
         EXPECT_FALSE(actions.actionCapabilities().canRunProgramAsAdministrator);
     }
+}
+
+// #3066: Close connection on this process's own socket: the descriptor is found by inode, copied with
+// pidfd_getfd() and shut down, so the other end of the pair reads end-of-file at once; this process's own
+// descriptor stays open.
+TEST(LinuxProcessActionsTest, CloseConnectionShutsDownTheSocketTheProcessHolds)
+{
+    std::array<int, 2> pair{-1, -1};
+    ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, pair.data()), 0);
+    const Posix::FdGuard first(pair[0]);
+    const Posix::FdGuard second(pair[1]);
+    struct stat info{};
+    ASSERT_EQ(::fstat(pair[0], &info), 0);
+
+    LinuxProcessControl control;
+    EXPECT_TRUE(control.actionCapabilities().canCloseConnections);
+    const ProcessActionResult result = control.closeConnection(ownTarget(), info.st_ino);
+    if (!result.success && result.errorMessage.contains("Linux 5.6"))
+    {
+        GTEST_SKIP() << "pidfd_getfd() needs Linux 5.6";
+    }
+    ASSERT_TRUE(result.success) << result.errorMessage;
+    std::array<char, 1> byte{};
+    EXPECT_EQ(::recv(pair[1], byte.data(), byte.size(), MSG_DONTWAIT), 0) << "the peer sees the connection end";
+    EXPECT_GE(::fcntl(pair[0], F_GETFD), 0) << "the process's own descriptor stays open";
+
+    // A socket the process doesn't hold, and no socket at all, are refused.
+    const ProcessActionResult notHeld = control.closeConnection(ownTarget(), 1);
+    EXPECT_FALSE(notHeld.success);
+    EXPECT_TRUE(notHeld.errorMessage.contains("no longer holds")) << notHeld.errorMessage;
+    EXPECT_FALSE(control.closeConnection(ownTarget(), 0).success);
+}
+
+// #3066: pidfd_getfd() refused (another user's process, without CAP_SYS_PTRACE) is a permission refusal, so
+// BrokeredProcessActions retries it through the helper.
+TEST(LinuxProcessActionsTest, CloseConnectionWithoutPtraceAccessIsAPermissionRefusal)
+{
+    LinuxProcessSyscalls syscalls = realProcessSyscalls();
+    syscalls.socketDescriptor = [](std::int32_t, std::uint64_t) -> std::expected<int, int>
+    {
+        return 5;
+    };
+    syscalls.pidfdGetfd = [](int, int)
+    {
+        errno = EPERM;
+        return -1;
+    };
+    LinuxProcessControl control(syscalls);
+    const ProcessActionResult result = control.closeConnection(ownTarget(), 42);
+    EXPECT_FALSE(result.success);
+    EXPECT_TRUE(result.permissionDenied);
 }
 
 } // namespace

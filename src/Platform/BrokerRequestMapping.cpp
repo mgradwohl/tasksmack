@@ -60,6 +60,10 @@ namespace
     {
         return Broker::ActionResult::from(actions.setAffinity(affinity->target, affinity->cpus));
     }
+    if (const auto* close = std::get_if<Broker::CloseConnectionRequest>(&request))
+    {
+        return Broker::ActionResult::from(actions.closeConnection(close->target, close->socketInode));
+    }
     if (const auto* efficiency = std::get_if<Broker::EfficiencyModeRequest>(&request))
     {
         return Broker::ActionResult::from(actions.setEfficiencyMode(efficiency->target, efficiency->on));

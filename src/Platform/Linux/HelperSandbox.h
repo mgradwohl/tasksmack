@@ -6,7 +6,9 @@
 // helper never does: writing or creating files, exec, loading code (no PROT_EXEC mappings), ptrace and
 // process_vm_*, sockets other than its broker socket (fd 0), open_by_handle_at, mounts, namespaces, BPF,
 // io_uring, keyrings and changing its IDs or capabilities. Its own job stays allowed: reading /proc, the
-// journal, coredumps and firmware files, pidfd_send_signal, setpriority, ioprio_set and sched_setaffinity.
+// journal, coredumps and firmware files, pidfd_send_signal, setpriority, ioprio_set and sched_setaffinity, and
+// for Close connection (#3066) pidfd_getfd and shutdown: the copied descriptor is shut down and closed at once,
+// but code running in the helper could copy another process's descriptors with it, as CAP_SYS_PTRACE allows.
 //
 // What it can't take away is the helper's job itself: with CAP_SYS_PTRACE a read-only open of
 // /proc/<pid>/mem still reads another process's memory, and the renice, I/O priority and affinity calls
