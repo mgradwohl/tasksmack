@@ -92,8 +92,12 @@ echo "==> Running tests..."
 cd "$BUILD_DIR"
 rm -rf -- *.profraw default.profdata coverage-root
 
-# Set profraw output location
-export LLVM_PROFILE_FILE="${BUILD_DIR}/coverage-%p.profraw"
+# Set profraw output location. Continuous mode (%c, #3221): each process maps its profile at startup and
+# writes its counters through the mapping, so a forked child that ends in _exit() or execve() -- DetachedSpawn's
+# children, before the program they start -- still has its counts kept, in its parent's file (a fork shares the
+# mapping). Without it those children's lines read as never run, though the tests run them. The coverage build
+# has the runtime counter relocation continuous mode needs on Linux (cmake/CompilerOptions.cmake, #3160).
+export LLVM_PROFILE_FILE="${BUILD_DIR}/coverage-%c%p.profraw"
 
 # Set LD_LIBRARY_PATH so dlopen("libnvidia-ml.so.1") and dlopen("librocm_smi64.so.6")
 # resolve to the mock shared libraries. CTest sets this automatically via the
