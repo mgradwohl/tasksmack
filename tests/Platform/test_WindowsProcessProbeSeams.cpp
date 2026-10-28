@@ -1580,6 +1580,23 @@ TEST_F(WindowsProcessProbeSeamTest, ADeniedStartTraceLeavesTheCountersTcpOnly)
     EXPECT_EQ(probe.readSocketTraffic().sockets.size(), 3U); // TCP only
 }
 
+// #3221: each detail read given no process handle reads nothing, and calls none of its functions (all
+// null here); the Idle process is a Windows process whatever else is known of it.
+TEST(WindowsProcessDetailReadsTest, NoProcessHandleReadsNothing)
+{
+    const WindowsProcessProbeFunctions::Token token{};
+    const WindowsProcessProbeFunctions::Process process{};
+    EXPECT_TRUE(WindowsProcessDetailReads::owner(token, nullptr).empty());
+    AccountNameCache names(std::chrono::minutes(1));
+    EXPECT_TRUE(WindowsProcessDetailReads::owner(token, nullptr, names, std::chrono::steady_clock::now()).empty());
+    EXPECT_TRUE(WindowsProcessDetailReads::imagePath(process, nullptr).empty());
+    EXPECT_TRUE(WindowsProcessDetailReads::commandLine(process, nullptr).empty());
+    EXPECT_TRUE(WindowsProcessDetailReads::publisher(L"").empty());
+    ProcessImage cached;
+    EXPECT_TRUE(WindowsProcessDetailReads::image(process, nullptr, cached).path.empty());
+    EXPECT_EQ(WindowsProcessDetailReads::processType(process, nullptr, 0, ""), "Windows Process");
+}
+
 } // namespace
 } // namespace Platform
 // NOLINTEND(misc-include-cleaner,cppcoreguidelines-pro-type-reinterpret-cast,performance-no-int-to-ptr,cppcoreguidelines-pro-type-union-access,readability-non-const-parameter)

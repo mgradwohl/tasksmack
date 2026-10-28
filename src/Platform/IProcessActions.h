@@ -218,11 +218,13 @@ struct AuthorizedAction
         SetAffinity,       ///< cpus
         SendSignal,        ///< signal (#3063)
         SetEfficiencyMode, ///< efficiencyMode (#3071)
+        CloseConnection,   ///< socketInode (#3066)
     };
     Kind kind = Kind::Terminate;
     ProcessTarget target;
     ProcessSignal signal = ProcessSignal::Hangup;
-    bool efficiencyMode = false; ///< SetEfficiencyMode: on (true) or off
+    bool efficiencyMode = false;   ///< SetEfficiencyMode: on (true) or off
+    std::uint64_t socketInode = 0; ///< CloseConnection: the socket, by inode
     std::int32_t nice = 0;
     IoPriorityClass ioClass = IoPriorityClass::BestEffort;
     std::int32_t level = 4;
@@ -280,6 +282,8 @@ struct ProcessActionCapabilities
     /// readWaitChains(): what each of a process's threads waits on, as Task Manager's "Analyze wait chain"
     /// (#3084; Windows: the Wait Chain Traversal API). False on Linux, where the UI offers no such item.
     bool canAnalyzeWaitChain = false;
+    /// closeConnection(): shut down one of a process's sockets (#3066; Linux: pidfd_getfd() and shutdown()).
+    bool canCloseConnections = false;
 };
 
 /// Interface for platform-specific process actions.
@@ -439,6 +443,18 @@ class IProcessActions
         static_cast<void>(target);
         static_cast<void>(on);
         return ProcessActionResult::error("Efficiency mode isn't available on this system");
+    }
+
+    /// Shuts down the socket with inode @p socketInode that the process holds (#3066), as Process Explorer's and
+    /// TCPView's Close Connection: both directions, so the peer sees the connection end, and the process gets an
+    /// error on its next use of it. The process's own descriptor stays open. The same identity check as
+    /// terminate(); a socket the process doesn't hold is refused. The default refuses it, matching
+    /// canCloseConnections' default (false).
+    [[nodiscard]] virtual ProcessActionResult closeConnection(const ProcessTarget& target, std::uint64_t socketInode)
+    {
+        static_cast<void>(target);
+        static_cast<void>(socketInode);
+        return ProcessActionResult::error("Closing a connection isn't available on this system");
     }
 
     /// Reads what each thread of the target waits on (#3084), as Task Manager's "Analyze wait chain": per

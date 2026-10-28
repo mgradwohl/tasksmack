@@ -562,6 +562,54 @@ TEST_F(ProcessDetailsChartsRenderTest, AMissingInputDrawsNothing)
     EXPECT_TRUE(plotsDrawn().empty());
 }
 
+// #3221: as AMissingInputDrawsNothing, for a missing history or snapshot rather than smoothed figures.
+TEST_F(ProcessDetailsChartsRenderTest, AMissingHistoryOrSnapshotDrawsNothing)
+{
+    for (const bool withoutHistory : {true, false})
+    {
+        ChartInputs inputs(busyPoint);
+        if (withoutHistory)
+        {
+            inputs.ctx.history = nullptr;
+        }
+        else
+        {
+            inputs.ctx.snapshot = nullptr;
+        }
+        ProcessDetailsCharts charts;
+        renderOverview(charts, inputs.ctx);
+        runFrame([&] { charts.renderNetworkTab(inputs.ctx); });
+        runFrame([&] { charts.renderGpuTab(inputs.ctx); });
+        runFrame([&] { charts.renderNpuTab(inputs.ctx); });
+        EXPECT_TRUE(plotsDrawn().empty()) << (withoutHistory ? "no history" : "no snapshot");
+    }
+}
+
+// #3221: a PSS and USS read the OS refused (another user's process, #2309) say "not readable" on the
+// Memory strip, rather than being left out as figures never read are.
+TEST_F(ProcessDetailsChartsRenderTest, AMemoryRollupTheOsRefusedSaysNotReadable)
+{
+    ChartInputs inputs(busyPoint);
+    inputs.snapshot.memoryRollupDenied = true;
+    ProcessDetailsCharts charts;
+    UI::Widgets::PlotFillState fillState;
+    std::string text;
+    for (int frame = 0; frame < 2; ++frame)
+    {
+        runFrame(
+            [&]
+            {
+                ImGui::LogToBuffer();
+                UI::Widgets::FillPlotLayout fill(fillState);
+                const UI::Widgets::AlignedChartStack alignedCharts("##ProcOverviewCharts");
+                charts.renderOverviewCharts(inputs.ctx, fill);
+                text = GImGui->LogBuffer.c_str();
+                ImGui::LogFinish();
+            });
+    }
+    EXPECT_TRUE(text.contains("not readable")) << text;
+}
+
 TEST_F(ProcessDetailsChartsRenderTest, NetworkTabDrawsIoThenNetwork)
 {
     ChartInputs inputs(busyPoint);

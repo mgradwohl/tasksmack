@@ -2,10 +2,16 @@
 # bench.sh — Run TaskSmack benchmarks with consistent settings.
 #
 # Usage:
-#   ./tools/bench.sh [preset] [-- <extra args>]
+#   ./tools/bench.sh [--core performance|any] [preset] [-- <extra args>]
 #   ./tools/bench.sh -h | --help              # print this help
 #
 # preset defaults to 'benchmark'.
+# --core (#3198, as bench.ps1's -Core): "performance" pins the run to one logical CPU of the fastest
+# class with taskset, avoiding CPU 0 and its SMT sibling (CPU 0 takes most interrupts) unless nothing
+# else is left; "any" leaves placement to the scheduler. The default is "performance" on a hybrid CPU
+# (Intel P and E cores, Arm big.LITTLE: more than one cpu_capacity or cpuinfo_max_freq in sysfs) and
+# "any" elsewhere. Without the sysfs files or taskset the run isn't pinned, with a warning. The
+# manifest records where the run went (placement) and the system CPU load just before and after it.
 # Produces JSON output at perf-data/<preset>-<timestamp>.json (-2, -3, ... appended when a run in
 # the same second already wrote that name; a user or host name in the preset becomes "user" /
 # "host" in the file names), holding every repetition plus the
@@ -19,6 +25,9 @@
 #                            relative path or bare name is relative to the current directory and
 #                            is never looked up on PATH
 #   TASKSMACK_BENCH_OUT_DIR  output directory (default perf-data/)
+#   TASKSMACK_BENCH_SYSFS_CPU  the CPUs' sysfs directory (default /sys/devices/system/cpu)
+#   TASKSMACK_BENCH_PROC_STAT  the file the load is read from (default /proc/stat)
+#   TASKSMACK_BENCH_LOAD_SAMPLE_MS  how long each load sample lasts (default 500)
 #
 # Exits with the benchmark binary's own exit code if it fails or crashes; any partial output is
 # still redacted (or deleted when it cannot be) and the manifest records the exit code. An extra
@@ -29,6 +38,7 @@
 #   ./tools/bench.sh                          # benchmark preset, default flags
 #   ./tools/bench.sh debug                    # debug preset (slower, useful for profiling)
 #   ./tools/bench.sh -- --benchmark_filter=ProcessModel
+#   ./tools/bench.sh --core any               # not pinned, even on a hybrid CPU
 #   ./tools/bench.sh benchmark -- --benchmark_filter=ProcessModel
 #
 # Compare a run against the baseline:
@@ -55,6 +65,19 @@ fi
 source "${SCRIPT_DIR}/common.sh"
 
 # ---------- defaults ---------------------------------------------------------
+# --core MODE / --core=MODE before the preset (#3198).
+CORE=""
+while [[ $# -gt 0 ]]; do
+    case "${1}" in
+        --core) CORE="${2:-}"; shift $(( $# > 1 ? 2 : 1 )) ;;
+        --core=*) CORE="${1#--core=}"; shift ;;
+        *) break ;;
+    esac
+    if [[ "${CORE}" != "performance" && "${CORE}" != "any" ]]; then
+        echo "--core takes 'performance' or 'any', not '${CORE}'." >&2
+        exit 2
+    fi
+done
 PRESET="${1:-benchmark}"
 if [[ "${PRESET}" == "--" ]]; then
     PRESET="benchmark"
@@ -153,11 +176,32 @@ BENCH_ARGS=(
 
 echo "Running benchmarks (preset=${PRESET}) → ${OUT_FILE}"
 echo "Binary: ${BENCH_BIN}"
+
+# Core placement (#3198): the logical CPU to pin the run to, or none. Only the benchmark runs under
+# taskset; the script's own work (git, hashing, the manifest) isn't confined to one core. A failure to
+# decide is a warning and an unpinned run with no placement recorded.
+PLACEMENT_FILE="$(mktemp "${TMPDIR:-/tmp}/tasksmack-bench-placement.XXXXXX")"
+trap 'rm -f "${PLACEMENT_FILE}"' EXIT
+PIN_CPU=""
+if ! PIN_CPU="$("${PY}" "${SCRIPT_DIR}/bench-manifest.py" --select-core ${CORE:+"${CORE}"} --placement-out "${PLACEMENT_FILE}")"; then
+    echo "WARNING: choosing a core failed, so the run is not pinned and no placement is recorded." >&2
+    PIN_CPU=""
+    rm -f "${PLACEMENT_FILE}"
+fi
+PLACEMENT_ARGS=()
+if [[ -s "${PLACEMENT_FILE}" ]]; then
+    PLACEMENT_ARGS=(--placement "${PLACEMENT_FILE}")
+fi
+LAUNCH=("${BENCH_BIN}")
+if [[ -n "${PIN_CPU}" ]]; then
+    LAUNCH=(taskset -c "${PIN_CPU}" "${BENCH_BIN}")
+fi
 echo
 
 # Provenance is captured before the benchmark starts (#1445 review): git state, build
 # configuration and the binary's hash describe what was launched, even if the checkout, the build
-# or the binary changes during the run. Only the exit code is added afterwards. The manifest is
+# or the binary changes during the run. Only the exit code and the load after the run are added
+# afterwards. The manifest is
 # finalized before the result is redacted. Python is already a build prerequisite (GLAD loader
 # generation). A manifest failure is held until the result has been redacted, then fails the
 # script.
@@ -168,12 +212,13 @@ MANIFEST_EXIT=0
     --binary "${BENCH_BIN}" \
     --preset "${PRESET}" \
     --repo-root "${REPO_ROOT}" \
+    ${PLACEMENT_ARGS[@]+"${PLACEMENT_ARGS[@]}"} \
     -- "${BENCH_ARGS[@]}" || MANIFEST_EXIT=$?
 
 # Capture the exit code instead of letting `set -e` abort here, so a failed run's partial output
 # is still redacted (or deleted) before the script fails (#1423).
 BENCH_EXIT=0
-"${BENCH_BIN}" "${BENCH_ARGS[@]}" || BENCH_EXIT=$?
+"${LAUNCH[@]}" "${BENCH_ARGS[@]}" || BENCH_EXIT=$?
 
 if [[ ${MANIFEST_EXIT} -eq 0 ]]; then
     "${PY}" "${SCRIPT_DIR}/bench-manifest.py" --manifest "${MANIFEST_FILE}" --finalize \

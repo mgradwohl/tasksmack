@@ -13,6 +13,9 @@
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
+#include "Platform/IServiceActions.h"
+#include "Platform/IServiceProbe.h"
+#include "Platform/ISystemInfoProbe.h"
 
 #include <gtest/gtest.h>
 
@@ -90,6 +93,15 @@ TEST(BrokerProtocolTest, EfficiencyModeRoundTripsAndRefusesAStrayFlag)
     bytes.pop_back(); // and a frame without it is short
     bytes[0] = static_cast<std::uint8_t>(bytes.size() - 4U);
     EXPECT_FALSE(decodeRequest(bytes).has_value());
+}
+
+// #3066: CloseConnection carries its target and the socket's inode, the full 64 bits.
+TEST(BrokerProtocolTest, CloseConnectionRoundTrips)
+{
+    const Request request{CloseConnectionRequest{.target = TARGET, .socketInode = 0xFEDCBA9876543210ULL}};
+    EXPECT_EQ(roundTrip(request), request);
+    const std::vector<std::uint8_t> bytes = encodeRequest(3, request);
+    EXPECT_EQ(Detail::readFrame(bytes).value_or(Detail::Frame{}).kind, MessageKind::CloseConnection);
 }
 
 TEST(BrokerProtocolTest, EveryRequestRoundTrips)
@@ -818,6 +830,7 @@ TEST(BrokerProtocolTest, TheFuzzCorpusHasADecodableSeedForEveryMessageKind)
                                    MessageKind::SetAffinity,
                                    MessageKind::ServiceAction,
                                    MessageKind::SetEfficiencyMode,
+                                   MessageKind::CloseConnection,
                                    MessageKind::ReadEnvironment,
                                    MessageKind::ReadModules,
                                    MessageKind::ReadOpenFiles,
@@ -841,6 +854,299 @@ TEST(BrokerProtocolTest, TheFuzzCorpusHasADecodableSeedForEveryMessageKind)
                                    MessageKind::Error})
     {
         EXPECT_TRUE(seeded.contains(kind)) << "no seed for kind " << static_cast<int>(kind);
+    }
+}
+
+/// @p base equals itself, and each of @p change, which alters one field of a copy, makes the copy
+/// unequal: so == compares every field, and each comparison in it is seen both equal and not (#3221).
+template<typename Message, typename... Change> void expectEveryFieldCompared(const Message& base, Change... change)
+{
+    EXPECT_TRUE(base == base);
+    std::size_t field = 0;
+    const auto differs = [&base, &field](const auto& alter)
+    {
+        Message other = base;
+        alter(other);
+        EXPECT_FALSE(base == other) << "field " << field;
+        ++field;
+    };
+    (differs(change), ...);
+}
+
+// The replies whose == is written out, not defaulted (a defaulted one compares its members in order).
+TEST(BrokerProtocolTest, ResultRepliesCompareByEveryField)
+{
+    expectEveryFieldCompared(
+        ServiceActionReply{
+            .result = {.ok = true, .message = "m", .cancelled = false, .needsAuthorization = false, .authorizationUnavailable = false}},
+        [](ServiceActionReply& m) { m.result.ok = false; },
+        [](ServiceActionReply& m) { m.result.message = "n"; },
+        [](ServiceActionReply& m) { m.result.cancelled = true; },
+        [](ServiceActionReply& m) { m.result.needsAuthorization = true; },
+        [](ServiceActionReply& m) { m.result.authorizationUnavailable = true; });
+    expectEveryFieldCompared(
+        MemoryRollupReply{.result = MemoryRollup{.pssBytes = 1, .ussBytes = 2, .swapPssBytes = 3}},
+        [](MemoryRollupReply& m) { m.result->pssBytes = 9; },
+        [](MemoryRollupReply& m) { m.result->ussBytes = 9; },
+        [](MemoryRollupReply& m) { m.result->swapPssBytes = 9; });
+}
+
+TEST(BrokerProtocolTest, ListRepliesCompareByEveryFieldOfEveryEntry)
+{
+    ModulesReply modules;
+    modules.result = {
+        .status = ModulesReadStatus::Ok,
+        .modules = {ProcessModule{.path = "a.dll", .baseAddress = 1, .sizeBytes = 2, .version = ModuleVersion{}, .deleted = false}},
+        .detail = "d",
+        .truncated = false};
+    expectEveryFieldCompared(
+        modules,
+        [](ModulesReply& m) { m.result.status = ModulesReadStatus::Failed; },
+        [](ModulesReply& m) { m.result.detail = "e"; },
+        [](ModulesReply& m) { m.result.truncated = true; },
+        [](ModulesReply& m) { m.result.modules[0].path = "b.dll"; },
+        [](ModulesReply& m) { m.result.modules[0].baseAddress = 9; },
+        [](ModulesReply& m) { m.result.modules[0].sizeBytes = 9; },
+        [](ModulesReply& m) { m.result.modules[0].version.reset(); },
+        [](ModulesReply& m) { m.result.modules[0].deleted = true; });
+
+    OpenFilesReply files;
+    files.result.status = OpenFilesReadStatus::Ok;
+    files.result.files = {OpenFile{.descriptor = 3, .kind = OpenFileKind::File, .path = "/f", .flags = 2U, .deleted = false}};
+    files.result.detail = "d";
+    expectEveryFieldCompared(
+        files,
+        [](OpenFilesReply& m) { m.result.status = OpenFilesReadStatus::Failed; },
+        [](OpenFilesReply& m) { m.result.detail = "e"; },
+        [](OpenFilesReply& m) { m.result.truncated = true; },
+        [](OpenFilesReply& m) { m.result.namesIncomplete = true; },
+        [](OpenFilesReply& m) { m.result.hexDescriptors = true; },
+        [](OpenFilesReply& m) { m.result.files[0].descriptor = 4; },
+        [](OpenFilesReply& m) { m.result.files[0].kind = OpenFileKind::Pipe; },
+        [](OpenFilesReply& m) { m.result.files[0].path = "/g"; },
+        [](OpenFilesReply& m) { m.result.files[0].flags.reset(); },
+        [](OpenFilesReply& m) { m.result.files[0].deleted = true; });
+
+    ProcessConnection connection;
+    connection.local.port = 80;
+    connection.remote.port = 5000;
+    connection.state = ConnectionState::Established;
+    expectEveryFieldCompared(
+        ConnectionsReply{.result = {.status = ConnectionsReadStatus::Ok, .connections = {connection}, .detail = "d"}},
+        [](ConnectionsReply& m) { m.result.status = ConnectionsReadStatus::Failed; },
+        [](ConnectionsReply& m) { m.result.detail = "e"; },
+        [](ConnectionsReply& m) { m.result.connections[0].protocol = ConnectionProtocol::Udp; },
+        [](ConnectionsReply& m) { m.result.connections[0].family = ConnectionFamily::IPv6; },
+        [](ConnectionsReply& m) { m.result.connections[0].local.address[0] = 1; },
+        [](ConnectionsReply& m) { m.result.connections[0].local.port = 81; },
+        [](ConnectionsReply& m) { m.result.connections[0].remote.address[0] = 1; },
+        [](ConnectionsReply& m) { m.result.connections[0].remote.port = 5001; },
+        [](ConnectionsReply& m) { m.result.connections[0].state = ConnectionState::Unknown; });
+}
+
+TEST(BrokerProtocolTest, CrashesRepliesCompareByEveryFieldOfEveryEvent)
+{
+    CrashesReply crashes;
+    crashes.info = {.available = true,
+                    .family = OsFamily::Linux,
+                    .listed = true,
+                    .accessDenied = false,
+                    .unavailableReason = "r",
+                    .capped = false,
+                    .journalRead = true,
+                    .journalUnavailableReason = "j",
+                    .otherUsersHidden = false,
+                    .events = {}};
+    CrashEvent event;
+    event.unixSeconds = 1;
+    event.application = "a";
+    event.pid = 2U;
+    event.uid = 3U;
+    event.coreBytes = 4;
+    event.coreKept = true;
+    event.signal = "SIGSEGV";
+    event.executable = "/bin/a";
+    crashes.info.events.push_back(event);
+    expectEveryFieldCompared(
+        crashes,
+        [](CrashesReply& m) { m.info.available = false; },
+        [](CrashesReply& m) { m.info.family = OsFamily::Windows; },
+        [](CrashesReply& m) { m.info.listed = false; },
+        [](CrashesReply& m) { m.info.accessDenied = true; },
+        [](CrashesReply& m) { m.info.unavailableReason = "s"; },
+        [](CrashesReply& m) { m.info.capped = true; },
+        [](CrashesReply& m) { m.info.journalRead = false; },
+        [](CrashesReply& m) { m.info.journalUnavailableReason = "k"; },
+        [](CrashesReply& m) { m.info.otherUsersHidden = true; },
+        [](CrashesReply& m) { m.info.events[0].unixSeconds = 9; },
+        [](CrashesReply& m) { m.info.events[0].application = "b"; },
+        [](CrashesReply& m) { m.info.events[0].pid.reset(); },
+        [](CrashesReply& m) { m.info.events[0].uid.reset(); },
+        [](CrashesReply& m) { m.info.events[0].coreBytes = 9; },
+        [](CrashesReply& m) { m.info.events[0].coreKept = false; },
+        [](CrashesReply& m) { m.info.events[0].signal = "SIGABRT"; },
+        [](CrashesReply& m) { m.info.events[0].executable = "/bin/b"; });
+}
+
+// #3221: a reader that has already failed reads no text or blob, and a blob past its limit fails it.
+TEST(BrokerProtocolTest, AFailedReaderReadsNoTextOrBlobAndABlobPastItsLimitFails)
+{
+    const std::vector<std::uint8_t> twoBytes{1, 2};
+    Detail::Reader text(twoBytes);
+    static_cast<void>(text.u32()); // past the end: the reader fails
+    EXPECT_FALSE(text.ok());
+    EXPECT_TRUE(text.text().empty());
+    EXPECT_FALSE(text.ok());
+
+    Detail::Reader blob(twoBytes);
+    static_cast<void>(blob.u32());
+    EXPECT_TRUE(blob.blob(16).empty());
+    EXPECT_FALSE(blob.ok());
+
+    Detail::Writer writer;
+    writer.blob(std::vector<std::uint8_t>(8, 0xAB), 8);
+    const std::vector<std::uint8_t> eight = writer.frame(MessageKind::Error, 1);
+    Detail::Reader tooBig(std::span(eight).subspan(4 + HEADER_BYTES));
+    EXPECT_TRUE(tooBig.blob(7).empty()); // eight bytes against a limit of seven
+    EXPECT_FALSE(tooBig.ok());
+
+    // A length within the limit for more bytes than are left, and a text longer than any may be.
+    Detail::Writer shortBlob;
+    shortBlob.u32(8);
+    shortBlob.u32(0);
+    const std::vector<std::uint8_t> four = shortBlob.frame(MessageKind::Error, 1);
+    Detail::Reader cut(std::span(four).subspan(4 + HEADER_BYTES));
+    EXPECT_TRUE(cut.blob(16).empty());
+    EXPECT_FALSE(cut.ok());
+
+    Detail::Writer longText;
+    longText.u32(static_cast<std::uint32_t>(MAX_STRING_BYTES + 1));
+    const std::vector<std::uint8_t> declared = longText.frame(MessageKind::Error, 1);
+    Detail::Reader tooLong(std::span(declared).subspan(4 + HEADER_BYTES));
+    EXPECT_TRUE(tooLong.text().empty());
+    EXPECT_FALSE(tooLong.ok());
+}
+
+// #3221: a message whose payload ends before its fields do is refused as malformed, as a request and as
+// a response, and a list request whose entries run out is too.
+TEST(BrokerProtocolTest, APayloadThatEndsEarlyIsAMalformedMessage)
+{
+    Detail::Writer shortSignal;
+    shortSignal.i32(TARGET.pid); // the start time and the signal are missing
+    const auto request = decodeRequest(shortSignal.frame(MessageKind::Signal, 1));
+    ASSERT_FALSE(request.has_value());
+    EXPECT_EQ(request.error(), "A malformed message");
+
+    Detail::Writer shortReply;
+    shortReply.u8(1); // HelloReply's version is two bytes
+    const auto response = decodeResponse(shortReply.frame(MessageKind::HelloReply, 1));
+    ASSERT_FALSE(response.has_value());
+    EXPECT_EQ(response.error(), "A malformed message");
+
+    Detail::Writer fewerPids;
+    fewerPids.u32(3);
+    fewerPids.i32(1); // one PID of the three it says
+    EXPECT_FALSE(decodeRequest(fewerPids.frame(MessageKind::ListHiddenProcesses, 1)).has_value());
+
+    // And bytes left over after the last field are refused the same way.
+    Detail::Writer trailing;
+    trailing.u16(PROTOCOL_VERSION);
+    trailing.u8(0);
+    trailing.u8(0); // one byte more than a Hello has
+    const auto extra = decodeRequest(trailing.frame(MessageKind::Hello, 1));
+    ASSERT_FALSE(extra.has_value());
+    EXPECT_EQ(extra.error(), "A malformed message");
+}
+
+// #3221: the flags each encoder writes as set read back set, so neither value of any of them is lost.
+TEST(BrokerProtocolTest, EveryFlagAnEncoderWritesRoundTripsSet)
+{
+    OpenFilesReply files;
+    files.result.status = OpenFilesReadStatus::Ok;
+    files.result.truncated = true;
+    files.result.hexDescriptors = true;
+    const Response openFiles = roundTrip(Response{files});
+    ASSERT_TRUE(std::holds_alternative<OpenFilesReply>(openFiles));
+    EXPECT_TRUE(std::get<OpenFilesReply>(openFiles).result.truncated);
+    EXPECT_TRUE(std::get<OpenFilesReply>(openFiles).result.hexDescriptors);
+
+    for (const ServiceActionResult& outcome :
+         {ServiceActionResult{
+              .ok = false, .message = "m", .cancelled = false, .needsAuthorization = true, .authorizationUnavailable = false},
+          ServiceActionResult{
+              .ok = false, .message = "m", .cancelled = false, .needsAuthorization = false, .authorizationUnavailable = true},
+          ServiceActionResult{
+              .ok = false, .message = "m", .cancelled = true, .needsAuthorization = false, .authorizationUnavailable = false}})
+    {
+        const Response service = roundTrip(Response{ServiceActionReply{.result = outcome}});
+        ASSERT_TRUE(std::holds_alternative<ServiceActionReply>(service));
+        EXPECT_EQ(std::get<ServiceActionReply>(service), ServiceActionReply{.result = outcome});
+    }
+
+    CrashesReply crashes;
+    crashes.info.accessDenied = true;
+    crashes.info.otherUsersHidden = true;
+    const Response crashed = roundTrip(Response{crashes});
+    ASSERT_TRUE(std::holds_alternative<CrashesReply>(crashed));
+    EXPECT_TRUE(std::get<CrashesReply>(crashed).info.accessDenied);
+    EXPECT_TRUE(std::get<CrashesReply>(crashed).info.otherUsersHidden);
+}
+
+// #3221: the reply lists' caps and enums, refused when the count or a value is past them.
+TEST(BrokerProtocolTest, ReplyListsPastTheirCapsOrWithAStrayFamilyAreRefused)
+{
+    Detail::Writer counters;
+    counters.u32(static_cast<std::uint32_t>(MAX_COUNTER_TARGETS + 1));
+    EXPECT_FALSE(decodeResponse(counters.frame(MessageKind::ProcessCountersResult, 1)).has_value());
+
+    Detail::Writer hidden;
+    hidden.u8(0);
+    hidden.u32(static_cast<std::uint32_t>(MAX_HIDDEN_PROCESSES + 1));
+    EXPECT_FALSE(decodeResponse(hidden.frame(MessageKind::HiddenProcessesResult, 1)).has_value());
+
+    // One entry that says it has more socket inodes than a whole reply may carry.
+    Detail::Writer inodes;
+    inodes.u32(1);
+    inodes.target(TARGET);
+    inodes.u8(4); // its sockets were read
+    inodes.i32(0);
+    inodes.u64(0);
+    inodes.u64(0);
+    inodes.u32(static_cast<std::uint32_t>(MAX_COUNTER_SOCKET_INODES + 1));
+    EXPECT_FALSE(decodeResponse(inodes.frame(MessageKind::ProcessCountersResult, 1)).has_value());
+
+    // Status, an empty detail and a count, then the connection's protocol and family.
+    constexpr std::size_t FAMILY = 4 + HEADER_BYTES + 1 + 4 + 4 + 1;
+    std::vector<std::uint8_t> connections = encodeResponse(
+        1, ConnectionsReply{.result = {.status = ConnectionsReadStatus::Ok, .connections = {ProcessConnection{}}, .detail = {}}});
+    ASSERT_TRUE(decodeResponse(connections).has_value());
+    connections[FAMILY] = static_cast<std::uint8_t>(static_cast<std::uint8_t>(ConnectionFamily::IPv6) + 1);
+    EXPECT_FALSE(decodeResponse(connections).has_value());
+}
+
+// #3221: the requests the newest kinds name aren't responses, and a kind neither side knows is neither.
+TEST(BrokerProtocolTest, TheNewerRequestKindsAndAnUnknownKindAreNotResponses)
+{
+    for (const Request& request : {Request{ProcessCountersRequest{.targets = {TARGET}, .withSockets = false}},
+                                   Request{HiddenProcessesRequest{.visiblePids = {1}}},
+                                   Request{ServiceActionRequest{.action = ServiceAction::Start, .unit = "cron.service"}}})
+    {
+        const auto decoded = decodeResponse(encodeRequest(3, request));
+        ASSERT_FALSE(decoded.has_value()) << request.index();
+        EXPECT_EQ(decoded.error(), "Not a response");
+    }
+    Detail::Writer empty;
+    const std::vector<std::uint8_t> unknown = empty.frame(static_cast<MessageKind>(999), 1);
+    EXPECT_FALSE(decodeResponse(unknown).has_value());
+    EXPECT_FALSE(decodeRequest(unknown).has_value());
+}
+
+// #3221: a list's room is a frame's whole, less its length, header and the reply's fixed fields.
+TEST(BrokerProtocolTest, AListsRoomIsTheFrameLessItsFixedBytes)
+{
+    for (const std::size_t fixed : {std::size_t{0}, std::size_t{1} + 4})
+    {
+        EXPECT_EQ(Detail::listRoom(fixed), MAX_MESSAGE_BYTES - (4 + HEADER_BYTES) - fixed);
     }
 }
 

@@ -12,6 +12,10 @@ Usage:
     bench-manifest.py --manifest OUT --result RESULT_JSON --binary BIN --preset P \
         --repo-root DIR -- <benchmark args...>          (snapshot before the run, exit_code null)
     bench-manifest.py --manifest OUT --finalize --exit-code N   (after the run)
+    bench-manifest.py --select-core [MODE] --placement-out FILE  (where to pin the run, #3198)
+
+The snapshot records the placement --select-core wrote (--placement FILE) and the system load just
+before the run; --finalize adds the load just after it.
 """
 
 from __future__ import annotations
@@ -24,9 +28,11 @@ import json
 import os
 import platform
 import re
+import shutil
 import socket
 import subprocess
 import sys
+import time
 from collections.abc import Mapping
 from pathlib import Path, PurePath
 
@@ -423,7 +429,7 @@ IDENTITY_EXEMPT = frozenset(
         "machine.os_name",
         "machine.os_version",
         "machine.arch",
-        # bench.ps1's core placement (#3163); bench.sh does not record placement yet.
+        # The core placement (#3163, #3198).
         "placement.core",
         "placement.core_class",
         "placement.affinity_mask",
@@ -551,6 +557,187 @@ def report_aggregates_only(args: list[str], environ: Mapping[str, str]) -> bool:
     return value
 
 
+# Core placement and system load (#3198), as bench.ps1 records them (#3163). On a hybrid CPU (Intel
+# P and E cores, Arm big.LITTLE) a whole run can land on efficiency cores and come out 2-3x slower
+# on every benchmark; pinned to one performance core, runs agree within about 10%. bench.sh asks
+# --select-core where to pin and runs the benchmark under taskset; --system-load samples the load.
+SYSFS_CPU_ROOT = Path("/sys/devices/system/cpu")
+PROC_STAT = Path("/proc/stat")
+LOAD_SAMPLE_MS = 500
+
+
+def _read_int(path: Path) -> int | None:
+    try:
+        return int(path.read_text(encoding="ascii").strip())
+    except (OSError, ValueError):
+        return None
+
+
+def parse_cpu_list(text: str) -> set[int]:
+    """A kernel CPU list ("0-3,8,10-11") as a set; empty for an empty or malformed list."""
+    cpus: set[int] = set()
+    for part in text.strip().split(","):
+        if not part:
+            continue
+        low, _, high = part.partition("-")
+        if not low.isdigit() or (high and not high.isdigit()):
+            return set()
+        cpus.update(range(int(low), int(high or low) + 1))
+    return cpus
+
+
+def cpu_classes(root: Path = SYSFS_CPU_ROOT) -> dict[int, int] | None:
+    """Each logical CPU's class, ranked from 0 (the slowest) like Windows' EfficiencyClass: its
+    cpu_capacity (Arm, and x86 hybrids on recent kernels), else its cpufreq/cpuinfo_max_freq. None
+    when neither can be read for every CPU, or there are no CPUs."""
+    cpus = sorted(int(entry.name[3:]) for entry in root.glob("cpu[0-9]*") if entry.name[3:].isdigit())
+    for source in ("cpu_capacity", "cpufreq/cpuinfo_max_freq"):
+        values = {cpu: _read_int(root / f"cpu{cpu}" / source) for cpu in cpus}
+        if cpus and all(value is not None for value in values.values()):
+            ranks = {value: rank for rank, value in enumerate(sorted(set(values.values())))}
+            return {cpu: ranks[value] for cpu, value in values.items()}
+    return None
+
+
+def smt_siblings(cpu: int, root: Path = SYSFS_CPU_ROOT) -> set[int]:
+    """The logical CPUs sharing @p cpu's core (itself included), from topology/thread_siblings_list."""
+    try:
+        siblings = parse_cpu_list((root / f"cpu{cpu}" / "topology" / "thread_siblings_list").read_text(encoding="ascii"))
+    except OSError:
+        siblings = set()
+    return siblings | {cpu}
+
+
+def select_core(classes: dict[int, int] | None, requested: str, allowed: set[int] | None, cpu0_siblings: set[int]) -> dict:
+    """Where the run goes, as bench.ps1's Select-BenchCore decides it. Returns:
+    - core: the mode asked for, or the default: "performance" on a hybrid CPU (more than one class),
+      "any" otherwise;
+    - core_class: the pinned CPU's class, or "any" when the run is not pinned;
+    - hybrid: True / False, or None when the classes are unknown;
+    - logical_cpu: the CPU to pin to, or None;
+    - warning: why "performance" could not pin, or None.
+    "performance" takes a CPU of the top class this process may use, preferring one whose core doesn't
+    hold CPU 0 (which takes most interrupts), then any but CPU 0, and CPU 0 only when it is the last
+    one left; among those, the highest-numbered."""
+    known = bool(classes)
+    hybrid = len(set(classes.values())) > 1 if known else None
+    mode = requested or ("performance" if hybrid else "any")
+    choice = {"core": mode, "core_class": "any", "hybrid": hybrid, "logical_cpu": None, "warning": None}
+    if mode != "performance":
+        if not known and not requested:
+            choice["warning"] = (
+                "The CPU classes could not be read, so the run is not pinned (--core any). On a hybrid CPU it may land on efficiency cores."
+            )
+        return choice
+    if not known:
+        choice["warning"] = "The CPU classes could not be read, so --core performance does nothing and the run is not pinned."
+        return choice
+    if not hybrid:
+        return choice
+    top = max(classes.values())
+    usable = [cpu for cpu, rank in classes.items() if rank == top and (allowed is None or cpu in allowed)]
+    candidates = (
+        [cpu for cpu in usable if cpu not in cpu0_siblings] or [cpu for cpu in usable if cpu != 0] or usable
+    )
+    if not candidates:
+        choice["warning"] = f"No CPU of the top class ({top}) is in this process's affinity, so the run is not pinned."
+        return choice
+    choice["core_class"] = top
+    choice["logical_cpu"] = max(candidates)
+    return choice
+
+
+def affinity_mask(cpus: set[int] | None) -> str | None:
+    """A CPU set as a hex mask ("0x2000"), or None."""
+    if not cpus:
+        return None
+    return hex(sum(1 << cpu for cpu in cpus))
+
+
+def read_cpu_times(path: Path = PROC_STAT) -> tuple[int, int] | None:
+    """The idle (idle + iowait) and total jiffies of all CPUs, from /proc/stat's "cpu" line."""
+    try:
+        with path.open(encoding="ascii") as stat:
+            fields = stat.readline().split()
+    except OSError:
+        return None
+    if len(fields) < 5 or fields[0] != "cpu" or not all(field.isdigit() for field in fields[1:]):
+        return None
+    values = [int(field) for field in fields[1:]]
+    # guest and guest_nice (fields 9 and 10) are already counted in user and nice.
+    total = sum(values[:8])
+    return values[3] + (values[4] if len(values) > 4 else 0), total
+
+
+def cpu_load_percent(before: tuple[int, int], after: tuple[int, int]) -> float | None:
+    """The busy share of all CPUs between two read_cpu_times() samples, 0-100 to one decimal, or None
+    when no time passed."""
+    idle = after[0] - before[0]
+    total = after[1] - before[1]
+    if total <= 0:
+        return None
+    return round(min(100.0, max(0.0, 100.0 * (total - idle) / total)), 1)
+
+
+def measure_system_load(milliseconds: int, path: Path = PROC_STAT) -> float | None:
+    """The system CPU load over the next @p milliseconds, or None when /proc/stat can't be read."""
+    before = read_cpu_times(path)
+    if before is None:
+        return None
+    time.sleep(milliseconds / 1000.0)
+    after = read_cpu_times(path)
+    return cpu_load_percent(before, after) if after is not None else None
+
+
+def sysfs_cpu_root() -> Path:
+    """The sysfs CPU directory; the script tests point TASKSMACK_BENCH_SYSFS_CPU at a fake one."""
+    return Path(os.environ.get("TASKSMACK_BENCH_SYSFS_CPU") or SYSFS_CPU_ROOT)
+
+
+def proc_stat() -> Path:
+    return Path(os.environ.get("TASKSMACK_BENCH_PROC_STAT") or PROC_STAT)
+
+
+def load_sample_ms() -> int:
+    """How long each load sample lasts; the script tests shorten it with TASKSMACK_BENCH_LOAD_SAMPLE_MS."""
+    value = os.environ.get("TASKSMACK_BENCH_LOAD_SAMPLE_MS", "")
+    return int(value) if value.isdigit() else LOAD_SAMPLE_MS
+
+
+def write_placement(requested: str, out: Path) -> int:
+    """--select-core: decides where the run goes (select_core()), writes the manifest's placement to
+    @p out, says where on stderr and prints the logical CPU to pin to on stdout (nothing for none)."""
+    allowed = os.sched_getaffinity(0) if hasattr(os, "sched_getaffinity") else None
+    root = sysfs_cpu_root()
+    choice = select_core(cpu_classes(root), requested, allowed, smt_siblings(0, root))
+    if choice["logical_cpu"] is not None and shutil.which("taskset") is None:
+        choice["warning"] = f"taskset isn't installed (util-linux), so the run is not pinned to logical CPU {choice['logical_cpu']}."
+        choice["core_class"] = "any"
+        choice["logical_cpu"] = None
+    pinned = {choice["logical_cpu"]} if choice["logical_cpu"] is not None else allowed
+    placement = {
+        "core": choice["core"],
+        "core_class": choice["core_class"],
+        "hybrid": choice["hybrid"],
+        "logical_cpu": choice["logical_cpu"],
+        "affinity_mask": affinity_mask(pinned),
+    }
+    out.write_text(json.dumps(placement, indent=2) + "\n", encoding="utf-8")
+    if choice["warning"]:
+        print(f"WARNING: {choice['warning']}", file=sys.stderr)
+    if choice["logical_cpu"] is not None:
+        where = f"logical CPU {choice['logical_cpu']} (class {choice['core_class']})"
+    elif choice["hybrid"] is False:
+        where = "any (not a hybrid CPU)"
+    else:
+        where = "any (not pinned)"
+    mask = f", affinity {placement['affinity_mask']}" if placement["affinity_mask"] else ""
+    print(f"Cores: --core {choice['core']} -> {where}{mask}", file=sys.stderr)
+    if choice["logical_cpu"] is not None:
+        sys.stdout.write(str(choice["logical_cpu"]))
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--manifest", type=Path)
@@ -566,8 +753,17 @@ def main() -> int:
     parser.add_argument("--finalize", action="store_true")
     parser.add_argument("--repo-root", type=Path)
     parser.add_argument("--generator", default="tools/bench.sh")
+    # Core placement (#3198): --select-core prints the logical CPU to pin to (nothing for none) and writes
+    # the placement to --placement-out; the snapshot reads it back with --placement.
+    parser.add_argument("--select-core", nargs="?", const="", choices=("", "performance", "any"))
+    parser.add_argument("--placement-out", type=Path)
+    parser.add_argument("--placement", type=Path)
     parser.add_argument("bench_args", nargs=argparse.REMAINDER)
     options = parser.parse_args()
+    if options.select_core is not None:
+        if options.placement_out is None:
+            parser.error("--select-core needs --placement-out")
+        return write_placement(options.select_core, options.placement_out)
     if options.preset_stem is not None:
         _, user, hosts = identity_strings()
         # UTF-8 bytes whatever stdout's encoding (a CP1252 console would raise on a non-ASCII
@@ -582,6 +778,11 @@ def main() -> int:
     if options.finalize:
         manifest = json.loads(options.manifest.read_text(encoding="utf-8"))
         manifest["exit_code"] = options.exit_code
+        load = manifest.get("system_load")
+        if isinstance(load, dict):
+            load["after_percent"] = measure_system_load(load["sample_ms"], proc_stat())
+            if load.get("before_percent") is not None:
+                print(f"System CPU load: {load['before_percent']}% before the run, {load['after_percent']}% after")
         options.manifest.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         return 0
     missing = [name for name in ("result", "binary", "preset", "repo_root") if getattr(options, name) is None]
@@ -610,6 +811,16 @@ def main() -> int:
         },
         "machine": machine_class(),
     }
+    if options.placement is not None:
+        manifest["placement"] = json.loads(options.placement.read_text(encoding="utf-8"))
+        # The system CPU load just before and just after the run, each over sample_ms: pinning doesn't
+        # help a run that shares the machine with a build (#3163). Sampled last before the launch.
+        sample_ms = load_sample_ms()
+        manifest["system_load"] = {
+            "sample_ms": sample_ms,
+            "before_percent": measure_system_load(sample_ms, proc_stat()),
+            "after_percent": None,
+        }
     manifest = hide_manifest_identity(manifest, prefixes, user, hosts)
     options.manifest.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return 0

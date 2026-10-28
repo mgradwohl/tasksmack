@@ -23,6 +23,60 @@ namespace UI::Widgets
 namespace
 {
 
+constexpr double INFINITE = std::numeric_limits<double>::infinity();
+
+// #3221: each guard of the charts' sizing and easing arithmetic, given the one value it refuses.
+TEST(ChartArithmeticEdgeTest, UnusableInputsTakeTheirFallbacks)
+{
+    EXPECT_EQ(axisEaseHeightsPerSecond(10.0, 20.0, INFINITE), INFINITE) << "an infinite frame time";
+    EXPECT_EQ(axisEaseHeightsPerSecond(10.0, INFINITE, 0.1), INFINITE) << "an infinite bound";
+
+    // A NaN spacing counts as none, and an em that isn't positive and finite as one pixel.
+    const float noSpacing = fittedNowBarWidth(16.0F, 3, 0.0F, 400.0F);
+    EXPECT_FLOAT_EQ(fittedNowBarWidth(16.0F, 3, std::numeric_limits<float>::quiet_NaN(), 400.0F), noSpacing);
+    for (const float em : {0.0F, std::numeric_limits<float>::quiet_NaN()})
+    {
+        const float width = fittedNowBarWidth(em, 3, 2.0F, 10.0F);
+        EXPECT_GE(width, 1.0F);
+        EXPECT_LE(width, nowBarWidth(em));
+    }
+
+    EXPECT_EQ(plotPointBudget(200.0F, 1.0F, 0), 0) << "no budget to scale";
+    EXPECT_DOUBLE_EQ(minMaxBucketWidth(300.0, 0), 0.0) << "no buckets";
+    EXPECT_DOUBLE_EQ(minMaxBucketWidth(-1.0, 10), 0.0) << "a negative span";
+
+    // An aligned reduction needs room for two points and between one and MAX_ALIGNED_KEY_SERIES keyed series.
+    EXPECT_TRUE(alignedReductionApplies(100, 10, 2));
+    EXPECT_FALSE(alignedReductionApplies(100, 1, 2));
+    EXPECT_FALSE(alignedReductionApplies(100, 10, 0));
+    EXPECT_FALSE(alignedReductionApplies(100, 10, MAX_ALIGNED_KEY_SERIES + 1));
+}
+
+// #3221: a hold to now with no axis, or with a value series that doesn't match it, holds nothing.
+TEST(ChartArithmeticEdgeTest, AHoldWithNoAxisOrMismatchedSeriesHoldsNothing)
+{
+    EXPECT_DOUBLE_EQ(maxHoldSecondsForAxis(static_cast<const double*>(nullptr), 3), HOLD_FALLBACK_SECONDS);
+    std::vector<double> x{-2.0, -1.0};
+    std::vector<double> y{1.0};
+    holdLastValueToNow(x, y, HOLD_FALLBACK_SECONDS);
+    EXPECT_EQ(x.size(), 2U);
+    EXPECT_EQ(y.size(), 1U);
+}
+
+// #3221: markers on an infinite interval are none, and a role past the known ones has the plain style.
+TEST(ChartArithmeticEdgeTest, AnInfiniteMarkerIntervalPlacesNoneAndAnUnknownRoleIsPlain)
+{
+    const std::array<double, 3> x{0.0, 1.0, 2.0};
+    const std::array<double, 3> y{1.0, 2.0, 3.0};
+    int calls = 0;
+    EXPECT_EQ(forEachMarkerSample(x.data(), y.data(), 3, 0.0, INFINITE, 0.0, [&calls](int) { ++calls; }), 0);
+    EXPECT_EQ(calls, 0);
+
+    const SeriesStyle plain = seriesStyle(static_cast<SeriesRole>(0xFF));
+    EXPECT_FALSE(plain.fill);
+    EXPECT_EQ(plain.marker, ImPlotMarker_None);
+}
+
 constexpr double NOT_A_NUMBER = std::numeric_limits<double>::quiet_NaN();
 
 TEST(ChartReductionEdgeTest, NothingToReduceIsNoPoints)
