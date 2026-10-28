@@ -109,13 +109,13 @@ static_assert(sizeof(InetDiagRequest) == sizeof(nlmsghdr) + sizeof(inet_diag_req
               "InetDiagRequest must be tightly packed for netlink protocol");
 
 /// Parse rtattr chain following inet_diag_msg to extract tcp_info byte counters
-void parseTcpInfo(const inet_diag_msg* diagMsg, std::size_t msgLen, SocketStats& stats)
+bool parseTcpInfo(const inet_diag_msg* diagMsg, std::size_t msgLen, SocketStats& stats)
 {
     // Defensive check: ensure msgLen is at least sizeof(inet_diag_msg) before subtraction
     // to avoid underflow (e.g., from truncated/malformed netlink messages)
     if (msgLen < sizeof(inet_diag_msg))
     {
-        return;
+        return false;
     }
 
     // Calculate where attributes start (after the inet_diag_msg)
@@ -125,7 +125,7 @@ void parseTcpInfo(const inet_diag_msg* diagMsg, std::size_t msgLen, SocketStats&
     // Ensure we have room for attributes
     if (attrLen < sizeof(rtattr))
     {
-        return;
+        return false;
     }
 
     // Walk through the attributes
@@ -152,19 +152,23 @@ void parseTcpInfo(const inet_diag_msg* diagMsg, std::size_t msgLen, SocketStats&
             // Check we have enough data for the byte counter fields
             // bytes_acked and bytes_received were added in Linux 4.2
             // They're at offset ~144 bytes into tcp_info
+            bool found = false;
             if (infoLen >= (offsetof(tcp_info, tcpi_bytes_received) + sizeof(tcpInfo.tcpi_bytes_received)))
             {
                 stats.bytesReceived = tcpInfo.tcpi_bytes_received;
+                found = true;
             }
             if (infoLen >= (offsetof(tcp_info, tcpi_bytes_acked) + sizeof(tcpInfo.tcpi_bytes_acked)))
             {
                 stats.bytesSent = tcpInfo.tcpi_bytes_acked;
+                found = true;
             }
-            break;
+            return found;
         }
     }
 #pragma clang diagnostic pop
     // NOLINTEND(cppcoreguidelines-pro-type-reinterpret-cast)
+    return false;
 }
 
 /// Parse a single inet_diag_msg response into SocketStats
@@ -181,7 +185,7 @@ void parseSocketMessageImpl(const void* msg, std::size_t len, std::vector<Socket
     stats.inode = diagMsg->idiag_inode;
 
     // Parse tcp_info from the INET_DIAG_INFO attribute to get byte counters
-    parseTcpInfo(diagMsg, len, stats);
+    static_cast<void>(parseTcpInfo(diagMsg, len, stats)); // a socket without tcp_info keeps 0 bytes
 
     if (stats.inode != 0)
     {
@@ -464,6 +468,14 @@ void parseInetSocketMessage(const void* msg, std::size_t len, int protocol, int 
     std::memcpy(socket.remote.address.data(), static_cast<const void*>(diagMsg.id.idiag_dst), addressBytes);
     socket.local.port = ntohs(diagMsg.id.idiag_sport);
     socket.remote.port = ntohs(diagMsg.id.idiag_dport);
+    // TCP's byte counters (#3079), from the INET_DIAG_INFO attribute dumpInetSockets() asks for.
+    if (protocol == IPPROTO_TCP)
+    {
+        SocketStats counters;
+        socket.hasByteCounters = parseTcpInfo(static_cast<const inet_diag_msg*>(msg), len, counters);
+        socket.bytesSent = counters.bytesSent;
+        socket.bytesReceived = counters.bytesReceived;
+    }
     results.push_back(socket);
 }
 
@@ -483,13 +495,15 @@ InetDumpOutcome dumpInetSockets(
     INetlinkTransport& transport, std::uint32_t sequence, int protocol, int family, std::vector<InetSockets::RawInetSocket>& results)
 {
     alignas(alignof(nlmsghdr)) std::array<std::byte, NETLINK_BUFFER_SIZE> buffer{};
-    // No extensions: the endpoints, state and inode are all in the inet_diag_msg header.
+    // The endpoints, state and inode are in the inet_diag_msg header; TCP also asks for INET_DIAG_INFO, tcp_info's
+    // byte counters, for the Connections tab's rates (#3079).
+    const auto extensions = static_cast<std::uint8_t>(protocol == IPPROTO_TCP ? (1U << (INET_DIAG_INFO - 1)) : 0U);
     return runInetDiagDump(transport,
                            buffer,
                            sequence,
                            protocol,
                            family,
-                           0,
+                           extensions,
                            [&](const void* message, std::size_t length)
                            { parseInetSocketMessage(message, length, protocol, family, results); });
 }

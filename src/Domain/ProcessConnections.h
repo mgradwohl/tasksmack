@@ -220,4 +220,31 @@ namespace Domain::Connections
     return a.port <=> b.port;
 }
 
+/// A socket's identity across readings: its protocol, family and both endpoints (FNV-1a over them; a collision
+/// only mixes up a highlight or a rate for a moment). The Connections tab keys its selection, its new and closed
+/// highlights (#3066) and its rates (#3079) on it.
+[[nodiscard]] constexpr std::uint64_t socketKey(const Platform::ProcessConnection& connection) noexcept
+{
+    std::uint64_t hash = 14695981039346656037ULL;
+    const auto mix = [&hash](std::uint64_t value)
+    {
+        for (int i = 0; i < 8; ++i)
+        {
+            hash ^= (value >> (i * 8)) & 0xFFU;
+            hash *= 1099511628211ULL;
+        }
+    };
+    mix(static_cast<std::uint64_t>(connection.protocol));
+    mix(static_cast<std::uint64_t>(connection.family));
+    for (const Platform::ConnectionEndpoint* endpoint : {&connection.local, &connection.remote})
+    {
+        for (const std::uint8_t byte : endpoint->address)
+        {
+            mix(byte);
+        }
+        mix(endpoint->port);
+    }
+    return hash;
+}
+
 } // namespace Domain::Connections

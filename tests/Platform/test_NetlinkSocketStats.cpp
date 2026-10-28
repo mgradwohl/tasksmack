@@ -878,6 +878,28 @@ TEST(DumpInetSocketsTest, ReadsEndpointsStateAndInodeOfEachSocketWithoutExtensio
     EXPECT_EQ(sockets[0].remote.port, 443);
     EXPECT_EQ(InetSockets::toConnection(sockets[1]).state, ConnectionState::Listen);
     EXPECT_EQ(sockets[1].remote.port, 0);
+    EXPECT_FALSE(sockets[0].hasByteCounters) << "no INET_DIAG_INFO attribute, no counters";
+}
+
+// #3079: a TCP dump's INET_DIAG_INFO attribute carries tcp_info's byte counters into each socket.
+TEST(DumpInetSocketsTest, ReadsTcpByteCountersFromTheInfoAttribute)
+{
+    ScriptedNetlinkTransport transport;
+    const std::array<TestSupport::FakeSocket, 1> fakes{TestSupport::FakeSocket{.inode = 77, .bytesReceived = 4096, .bytesSent = 1024}};
+    transport.onRequest = [&](const ScriptedNetlinkTransport::Request& request)
+    {
+        ScriptedNetlinkTransport::Reply reply;
+        reply.emplace_back(TestSupport::socketsDatagram(fakes, request.sequence, ScriptedNetlinkTransport::PORT_ID));
+        reply.emplace_back(doneDatagram(request.sequence, ScriptedNetlinkTransport::PORT_ID));
+        return reply;
+    };
+    std::vector<InetSockets::RawInetSocket> sockets;
+    EXPECT_EQ(dumpInetSockets(transport, 3, IPPROTO_TCP, AF_INET, sockets), InetDumpOutcome::Complete);
+    ASSERT_EQ(sockets.size(), 1U);
+    EXPECT_EQ(sockets[0].inode, 77U);
+    EXPECT_TRUE(sockets[0].hasByteCounters);
+    EXPECT_EQ(sockets[0].bytesSent, 1024U);
+    EXPECT_EQ(sockets[0].bytesReceived, 4096U);
 }
 
 TEST(DumpInetSocketsTest, ReadsIPv6UdpSockets)

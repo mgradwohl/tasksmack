@@ -30,19 +30,24 @@ enum class ConnectionsColumn : std::uint8_t
     Local,
     Remote,
     State,
+    Sent,     ///< Bytes sent per second (#3079)
+    Received, ///< Bytes received per second (#3079)
 };
 
 /// One socket as the table shows it: the raw connection (for sorting) and its text.
 struct ConnectionRow
 {
     Platform::SystemConnection connection;
-    std::string process;  ///< The holder's name, or "Unknown" (a holder TaskSmack can't see, TIME_WAIT)
-    std::string pid;      ///< Empty without a holder
-    std::string protocol; ///< "TCP", "UDP6"
-    std::string local;    ///< "10.0.0.5:52144", "[::1]:631"
-    std::string remote;   ///< "142.250.80.46:443", or "*" for none
-    std::string state;    ///< "Established", "Listen"
-    bool closed = false;  ///< Gone since the last read: shown dimmed for a moment (ConnectionChangeTracker)
+    std::string process;         ///< The holder's name, or "Unknown" (a holder TaskSmack can't see, TIME_WAIT)
+    std::string pid;             ///< Empty without a holder
+    std::string protocol;        ///< "TCP", "UDP6"
+    std::string local;           ///< "10.0.0.5:52144", "[::1]:631"
+    std::string remote;          ///< "142.250.80.46:443", or "*" for none
+    std::string state;           ///< "Established", "Listen"
+    bool closed = false;         ///< Gone since the last read: shown dimmed for a moment (ConnectionChangeTracker)
+    Domain::ConnectionRate rate; ///< Sent and received per second (#3079); unknown for UDP and a socket's first reading
+    std::string sent;            ///< "12.3 KiB/s", or empty while the rate is unknown
+    std::string received;
 };
 
 /// Formats @p publication's sockets, in its order.

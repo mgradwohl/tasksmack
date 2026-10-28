@@ -6,6 +6,7 @@
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Domain/ConnectionsModel.h"
+#include "Domain/ProcessConnections.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/ISystemConnections.h"
 
@@ -22,6 +23,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -272,6 +274,81 @@ TEST(ConnectionsViewTest, RowsHoldTheClosedSocketsUntilTheyExpire)
     refreshConnectionRows(pub, state, 2.0 + ConnectionChanges::CLOSED_SECONDS);
     EXPECT_EQ(state.rows.size(), 3U);
     EXPECT_EQ(state.visible.size(), 3U);
+}
+
+[[nodiscard]] SystemConnection withBytes(SystemConnection c, std::uint64_t sent, std::uint64_t received)
+{
+    c.bytesSent = sent;
+    c.bytesReceived = received;
+    c.hasByteCounters = true;
+    return c;
+}
+
+// #3079: a rate needs two readings of the same socket's counters, going up; UDP (no counters), a new socket and
+// a counter that went backwards have none.
+TEST(ConnectionRatesTest, RatesComeFromTwoReadingsOfTheSameSocket)
+{
+    const SystemConnection tcp =
+        socket(300, "firefox", ConnectionProtocol::Tcp, {10, 0, 0, 5}, 52144, {142, 250, 80, 46}, 443, ConnectionState::Established);
+    const SystemConnection fresh =
+        socket(301, "curl", ConnectionProtocol::Tcp, {10, 0, 0, 5}, 52200, {1, 1, 1, 1}, 443, ConnectionState::Established);
+    const SystemConnection udp =
+        socket(200, "avahi-daemon", ConnectionProtocol::Udp, {0, 0, 0, 0}, 5353, {0, 0, 0, 0}, 0, ConnectionState::Unknown);
+    std::unordered_map<std::uint64_t, Domain::ConnectionBytes> previous;
+    previous[Domain::Connections::socketKey(tcp.connection)] = {.sent = 1000, .received = 5000};
+    const std::vector<SystemConnection> now{withBytes(tcp, 3000, 9000), withBytes(fresh, 10, 10), udp};
+    const std::vector<Domain::ConnectionRate> rates = Domain::connectionRates(now, previous, 2.0);
+    ASSERT_EQ(rates.size(), 3U);
+    EXPECT_TRUE(rates[0].known);
+    EXPECT_DOUBLE_EQ(rates[0].sentPerSec, 1000.0);
+    EXPECT_DOUBLE_EQ(rates[0].receivedPerSec, 2000.0);
+    EXPECT_FALSE(rates[1].known);                                                            // first reading
+    EXPECT_FALSE(rates[2].known);                                                            // no counters
+    EXPECT_FALSE(Domain::connectionRates({withBytes(tcp, 10, 10)}, previous, 2.0)[0].known); // went backwards
+    EXPECT_FALSE(Domain::connectionRates(now, previous, 0.0)[0].known);                      // no time passed
+}
+
+// #3079: the model keeps each reading's counters for the next, and the view shows the rates, sortable.
+TEST(ConnectionRatesTest, TheModelPublishesRatesFromItsSecondSampleAndTheViewSortsByThem)
+{
+    auto list = std::make_shared<std::vector<SystemConnection>>();
+    class SharedReader final : public Platform::ISystemConnectionsReader
+    {
+      public:
+        explicit SharedReader(std::shared_ptr<std::vector<SystemConnection>> sockets) : m_Sockets(std::move(sockets))
+        {}
+        [[nodiscard]] bool hasConnections() const override
+        {
+            return true;
+        }
+        [[nodiscard]] Platform::SystemConnectionsRead read() override
+        {
+            return {.status = Platform::SystemConnectionsStatus::Ok, .connections = *m_Sockets, .detail = {}};
+        }
+
+      private:
+        std::shared_ptr<std::vector<SystemConnection>> m_Sockets;
+    };
+    const SystemConnection a =
+        socket(300, "firefox", ConnectionProtocol::Tcp, {10, 0, 0, 5}, 52144, {142, 250, 80, 46}, 443, ConnectionState::Established);
+    const SystemConnection b =
+        socket(301, "curl", ConnectionProtocol::Tcp, {10, 0, 0, 5}, 52200, {1, 1, 1, 1}, 443, ConnectionState::Established);
+    *list = {withBytes(a, 0, 0), withBytes(b, 0, 0)};
+    Domain::ConnectionsModel model(std::make_unique<SharedReader>(list));
+    model.sample();
+    EXPECT_FALSE(model.publication()->rates.at(0).known);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    *list = {withBytes(a, 100, 100), withBytes(b, 100000, 100000)};
+    model.sample();
+    const auto pub = model.publication();
+    ASSERT_EQ(pub->rates.size(), 2U);
+    EXPECT_TRUE(pub->rates[0].known);
+    EXPECT_TRUE(pub->rates[1].known);
+
+    const std::vector<ConnectionRow> rows = buildConnectionRows(*pub);
+    EXPECT_FALSE(rows[0].sent.empty());
+    const std::vector<std::size_t> bySent = orderConnectionRows(rows, "", ConnectionsColumn::Sent, false);
+    EXPECT_EQ(rows[bySent.front()].process, "curl"); // the busier socket first
 }
 
 class ConnectionsPanelRenderTest : public ::testing::Test
