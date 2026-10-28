@@ -28,8 +28,8 @@ condenses what an agent needs every session; read those for the rest.
 
 ## Branches and backports (#2741)
 
-Release branches from v0.9 on. Once the first one exists this replaces the freeze under "Release gating" below:
-`main` is never frozen again, and `RELEASE_FREEZE` stays unset.
+Release branches from v0.9 on. `main` is frozen only from the feature freeze until the maintainer approves the
+candidate (see "Release process" below), and `RELEASE_FREEZE` stays unset.
 
 | Branch | What lands there | Milestones | Releases |
 |---|---|---|---|
@@ -55,31 +55,22 @@ Release branches from v0.9 on. Once the first one exists this replaces the freez
 - **Branch life:** a release branch retires once the next minor ships, unless the maintainer keeps it for security
   fixes.
 
-## Release gating (keeping later work out of a release)
+## Release process
 
-**Only until `release/0.9` exists** (the maintainer cuts it right after v0.9.0, #2741); from then on "Branches and
-backports" above applies and `main` is never frozen.
+Every release follows [docs/dev/release-process.md](docs/dev/release-process.md) (maintainer, 2026-10-28). Stages
+1–3 (foundation, fixes, features) run in parallel; the freeze, review, docs, candidate and release follow in order.
+The rules agents act on:
 
-A release is tagged on the **exact candidate commit the maintainer approves** on the release tracker, not on main's
-head. `release.yml` and `changelog.yml` only need the tagged commit to be on main's history, so anything merged after
-the candidate is left out by construction. Two rules decide what may merge before then. Both lanes follow them for
-every merge and every auto-merge they enable, including dependency PRs (Renovate, Dependabot).
-
-- **Before the freeze** (the next release is planned but no candidate is approved yet):
-  - **Merge freely:** PRs on the release's milestone, and any PR that changes no shipped code: docs, tests, agent
-    guidance, test-only CI. "Shipped code" is `src/`, the build and packaging files under `cmake/` and the
-    `CMakeLists.txt` files, and `release.yml`.
-  - **Hold:** product code from a later milestone. Keep it open with auto-merge off until the release is tagged.
-- **During the freeze** (from the maintainer approving a candidate until the tag is pushed): the maintainer sets the
-  repository variable `RELEASE_FREEZE` to the release milestone (`gh variable set RELEASE_FREEZE --body v0.9.0`) and
-  deletes it after tagging.
-  - **Check first:** before merging a PR or enabling auto-merge, run `gh variable get RELEASE_FREEZE`.
-  - **If it's set,** only PRs on that milestone merge. Turn auto-merge off on any other PR whose auto-merge is on,
-    and don't approve Renovate dashboard updates.
-  - **Validation finds a bug:** the fix goes on the release milestone and merges, and the maintainer approves a new
-    candidate commit.
-- **Who controls what:** agents never set, change or delete `RELEASE_FREEZE`, and never move an issue or PR onto
-  the release milestone to get it past the freeze. Both are the maintainer's calls.
+- **Feature freeze:** an event, not a date. It starts when every feature on the milestone is merged, moved or cut,
+  and the maintainer posts "feature freeze" on the release tracker. Agents report readiness; only the maintainer
+  declares it.
+- **After the freeze until candidate approval:** merge only fixes, review findings, regressions from this cycle,
+  docs, tests, release mechanics and security updates. Keep every next-milestone PR open with auto-merge off,
+  including Renovate and Dependabot, until `release/X.Y` is cut.
+- **Late features** go to the next minor by default. Agents never move an issue or PR onto a release milestone to
+  get it in; scope is the maintainer's call.
+- **Candidate:** tag only a fully green, approved commit. Nothing joins the scope after approval.
+- **Who controls what:** agents never declare the freeze, approve a candidate, cut a release branch or push a tag.
 
 ## Code review
 
