@@ -1121,6 +1121,16 @@ if(UNIX AND NOT APPLE)
     tasksmack_apply_default_warnings(TaskSmackROCmMock)
     tasksmack_apply_text_encoding(TaskSmackROCmMock)
 
+    # The mocks stay uninstrumented, like the Theme stub: they are test code, outside the report. Each
+    # instrumented library would carry its own profile runtime, which in continuous mode (%c, #3221)
+    # maps the same profile file as the test binary, and the test died of SIGBUS once one was loaded.
+    if(TASKSMACK_ENABLE_COVERAGE)
+        foreach(mock TaskSmackNVMLMock TaskSmackROCmMock)
+            target_compile_options(${mock} PRIVATE ${TASKSMACK_NO_COVERAGE_FLAGS})
+            target_link_options(${mock} PRIVATE ${TASKSMACK_NO_COVERAGE_FLAGS})
+        endforeach()
+    endif()
+
     add_dependencies(TaskSmackTests TaskSmackNVMLMock TaskSmackROCmMock)
     target_compile_definitions(TaskSmackTests PRIVATE
         TASKSMACK_TEST_GPU_MOCK_DIR="${CMAKE_CURRENT_BINARY_DIR}/mocks"
