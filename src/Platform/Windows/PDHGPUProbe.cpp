@@ -171,9 +171,11 @@ std::vector<ProcessGPUCounters> PDHGPUProbe::readProcessGPUCounters()
     // Read counter values from the three wildcard counter arrays.
     // The scratch buffer is reused across reads, so each array must be fully
     // processed before the next read.
-    if (auto* items = m_Impl->readCounterArray(m_Impl->utilizationCounter, PDH_FMT_DOUBLE | PDH_FMT_NOCAP100, itemCount))
+    auto* utilizationItems = m_Impl->readCounterArray(m_Impl->utilizationCounter, PDH_FMT_DOUBLE | PDH_FMT_NOCAP100, itemCount);
+    m_Impl->noteListed(m_Impl->utilizationPositional, itemCount);
+    if (utilizationItems != nullptr)
     {
-        const std::span itemSpan{items, itemCount};
+        const std::span itemSpan{utilizationItems, itemCount};
         for (std::size_t idx = 0; idx < itemSpan.size(); ++idx)
         {
             const auto& item = itemSpan[idx];
@@ -202,6 +204,7 @@ std::vector<ProcessGPUCounters> PDHGPUProbe::readProcessGPUCounters()
     const auto accumulateMemory = [&](PDH_HCOUNTER counter, auto& posCache, auto memberSelector)
     {
         auto* items = m_Impl->readCounterArray(counter, PDH_FMT_LARGE, itemCount);
+        m_Impl->noteListed(posCache, itemCount);
         if (items == nullptr)
         {
             return;
@@ -256,6 +259,8 @@ std::vector<ProcessGPUCounters> PDHGPUProbe::readProcessGPUCounters()
 
         result.push_back(std::move(counter));
     }
+
+    m_Impl->pruneInstanceCache(); // the instances of processes that exited since (#3215)
 
     if (!result.empty())
     {
@@ -319,6 +324,7 @@ void PDHGPUProbe::readAdapterUtilization()
     std::unordered_set<std::string> unreadLuids; // Adapters with engine items, none of them readable
     DWORD itemCount = 0;
     auto* items = m_Impl->readCounterArray(m_Impl->utilizationCounter, PDH_FMT_DOUBLE | PDH_FMT_NOCAP100, itemCount);
+    m_Impl->noteListed(m_Impl->utilizationPositional, itemCount);
     if (!m_Impl->lastArrayReadOk)
     {
         // The array itself was not read: nothing is known about any adapter -- unread, a gap, not an
@@ -357,6 +363,7 @@ void PDHGPUProbe::readAdapterUtilization()
     }
     m_Impl->adapterUtilizationUnread = std::move(unreadLuids);
     m_Impl->adapterUtilizationCurrent = true;
+    m_Impl->pruneInstanceCache(); // the instances of processes that exited since (#3215)
 }
 
 std::unordered_map<std::string, double> PDHGPUProbe::adapterUtilization() const
