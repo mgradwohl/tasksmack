@@ -3,6 +3,7 @@
 #include "Platform/IStartupActions.h"
 #include "Platform/IStartupProbe.h"
 #include "Platform/Linux/DesktopEntryIcons.h"
+#include "Platform/Linux/SystemdUnitFile.h"
 #include "Platform/Linux/XdgAutostart.h"
 
 #include <algorithm>
@@ -199,12 +200,117 @@ constexpr std::uintmax_t MAX_FILE_BYTES = std::uintmax_t{64} * 1024U;
 
 } // namespace
 
-LinuxStartupProbe::LinuxStartupProbe() : LinuxStartupProbe(dirsFromEnvironment(), environment("XDG_CURRENT_DESKTOP"), environment("PATH"))
+SystemdUserDirs systemdUserDirs(std::string_view home, std::string_view xdgConfigHome)
+{
+    SystemdUserDirs dirs;
+    if (!xdgConfigHome.empty() && xdgConfigHome.front() == '/')
+    {
+        dirs.user = std::filesystem::path(xdgConfigHome) / "systemd" / "user";
+    }
+    else if (!home.empty() && home.front() == '/')
+    {
+        dirs.user = std::filesystem::path(home) / ".config" / "systemd" / "user";
+    }
+    dirs.system = {"/etc/systemd/user"};
+    if (!dirs.user.empty())
+    {
+        dirs.unitPath.push_back(dirs.user);
+    }
+    dirs.unitPath.insert(dirs.unitPath.end(), {"/etc/systemd/user", "/usr/local/lib/systemd/user", "/usr/lib/systemd/user"});
+    return dirs;
+}
+
+LinuxStartupProbe::LinuxStartupProbe()
+    : LinuxStartupProbe(dirsFromEnvironment(),
+                        environment("XDG_CURRENT_DESKTOP"),
+                        environment("PATH"),
+                        systemdUserDirs(environment("HOME"), environment("XDG_CONFIG_HOME")))
 {}
 
 LinuxStartupProbe::LinuxStartupProbe(XdgAutostart::Dirs dirs, std::string currentDesktops, std::string searchPath)
-    : m_Dirs(std::move(dirs)), m_CurrentDesktops(std::move(currentDesktops)), m_SearchPath(std::move(searchPath))
+    : LinuxStartupProbe(std::move(dirs), std::move(currentDesktops), std::move(searchPath), SystemdUserDirs{})
 {}
+
+LinuxStartupProbe::LinuxStartupProbe(XdgAutostart::Dirs dirs, std::string currentDesktops, std::string searchPath, SystemdUserDirs systemd)
+    : m_Dirs(std::move(dirs)),
+      m_Systemd(std::move(systemd)),
+      m_CurrentDesktops(std::move(currentDesktops)),
+      m_SearchPath(std::move(searchPath))
+{}
+
+void LinuxStartupProbe::addSystemdUnits(std::vector<StartupEntry>& entries) const
+{
+    // Each unit name once: a user's link wins over the same unit enabled for every user.
+    struct Found
+    {
+        std::filesystem::path link;
+        bool system = false;
+    };
+    std::map<std::string, Found> units;
+    const auto scan = [&units](const std::filesystem::path& dir, bool system)
+    {
+        for (const char* wants : {"default.target.wants", "graphical-session.target.wants", "timers.target.wants"})
+        {
+            std::error_code ec;
+            std::filesystem::directory_iterator it(dir / wants, ec);
+            for (; !ec && it != std::filesystem::directory_iterator{}; it.increment(ec))
+            {
+                const std::string name = it->path().filename().string();
+                if (name.ends_with(".service") || name.ends_with(".timer"))
+                {
+                    units.try_emplace(name, Found{.link = it->path(), .system = system});
+                }
+            }
+        }
+    };
+    if (!m_Systemd.user.empty())
+    {
+        scan(m_Systemd.user, false);
+    }
+    for (const std::filesystem::path& dir : m_Systemd.system)
+    {
+        scan(dir, true);
+    }
+    for (const auto& [name, found] : units)
+    {
+        const bool timer = name.ends_with(".timer");
+        const SystemdUnitFile::Unit unit = SystemdUnitFile::parse(readFile(found.link).value_or(std::string{}));
+        // A timer starts its service: Unit=, else the timer's own name with .service.
+        std::string command = unit.execStart;
+        if (timer)
+        {
+            const std::string service =
+                unit.timerUnit.empty() ? name.substr(0, name.size() - std::string_view(".timer").size()) + ".service" : unit.timerUnit;
+            for (const std::filesystem::path& dir : m_Systemd.unitPath)
+            {
+                if (const std::optional<std::string> text = readFile(dir / service))
+                {
+                    command = SystemdUnitFile::parse(*text).execStart;
+                    break;
+                }
+            }
+        }
+        StartupEntry entry;
+        const std::string stem = name.substr(0, name.rfind('.'));
+        entry.name = unit.description.empty() ? stem : unit.description;
+        if (timer && !unit.schedule.empty())
+        {
+            entry.name += " (timer, " + unit.schedule + ")";
+        }
+        entry.programName = entry.name;
+        entry.registrationName = name;
+        entry.command = command;
+        entry.executablePath = command.substr(0, command.find(' '));
+        entry.sourcePath = found.link.string();
+        entry.location = found.system ? StartupLocation::SystemdSystemUnit : StartupLocation::SystemdUserUnit;
+        entry.scope = found.system ? StartupScope::Machine : StartupScope::User;
+        entry.enabled = true; // linked into a .wants directory: that is what "enabled" is
+        entry.notSwitchableReason = found.system ? "Enabled for every user in /etc/systemd/user"
+                                                 : "A systemd unit: switch it with systemctl --user disable " + name;
+        entry.target = entry.executablePath.empty() ? StartupTargetState::Unresolved : targetState(entry.executablePath);
+        entries.push_back(std::move(entry));
+    }
+}
 
 StartupCapabilities LinuxStartupProbe::capabilities() const
 {
@@ -280,6 +386,7 @@ std::vector<StartupEntry> LinuxStartupProbe::enumerate()
         entry.target = targetState(entry.executablePath);
         entries.push_back(std::move(entry));
     }
+    addSystemdUnits(entries); // #3082
     return entries;
 }
 

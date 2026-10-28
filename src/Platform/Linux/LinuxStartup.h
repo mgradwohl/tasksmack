@@ -8,7 +8,9 @@
 #include "Platform/IStartupProbe.h"
 #include "Platform/Linux/XdgAutostart.h"
 
+#include <filesystem>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace Platform
@@ -16,6 +18,18 @@ namespace Platform
 
 /// Lists the autostart entries: one per file name, the user's directory's file winning over a system
 /// one, as the session itself picks them.
+/// Where the systemd user units the Startup tab lists are (#3082).
+struct SystemdUserDirs
+{
+    std::filesystem::path user;                  ///< ~/.config/systemd/user; empty to skip the user's units
+    std::vector<std::filesystem::path> system;   ///< /etc/systemd/user: units enabled for every user
+    std::vector<std::filesystem::path> unitPath; ///< Where a timer's service is looked for, in order
+};
+
+/// The directories for this user: $XDG_CONFIG_HOME (or ~/.config)/systemd/user, /etc/systemd/user, and the
+/// packages' /usr/local/lib/systemd/user and /usr/lib/systemd/user for the unit files themselves.
+[[nodiscard]] SystemdUserDirs systemdUserDirs(std::string_view home, std::string_view xdgConfigHome);
+
 class LinuxStartupProbe final : public IStartupProbe
 {
   public:
@@ -24,12 +38,18 @@ class LinuxStartupProbe final : public IStartupProbe
     /// Test seam: these directories, @p currentDesktops for OnlyShowIn and NotShowIn, and @p searchPath
     /// (a $PATH) to find an Exec's program on.
     LinuxStartupProbe(XdgAutostart::Dirs dirs, std::string currentDesktops, std::string searchPath);
+    /// Test seam with @p systemd's directories too (#3082); the three-argument form lists no systemd units.
+    LinuxStartupProbe(XdgAutostart::Dirs dirs, std::string currentDesktops, std::string searchPath, SystemdUserDirs systemd);
 
     [[nodiscard]] StartupCapabilities capabilities() const override;
     [[nodiscard]] std::vector<StartupEntry> enumerate() override;
 
   private:
+    /// The systemd user units enabled to start with the session or on a timer (#3082), read-only.
+    void addSystemdUnits(std::vector<StartupEntry>& entries) const;
+
     XdgAutostart::Dirs m_Dirs;
+    SystemdUserDirs m_Systemd;
     std::string m_CurrentDesktops;
     std::string m_SearchPath; ///< $PATH, to find an Exec's program
 };
