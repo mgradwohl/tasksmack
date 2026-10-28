@@ -12,6 +12,7 @@
 #include "App/Panels/ProcessDumpView.h"
 #include "App/Panels/ProcessIoPriorityView.h"
 #include "App/Panels/ProcessPriorityView.h"
+#include "App/Panels/ProcessSignatureText.h"
 #include "App/SelectOverride.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
@@ -25,6 +26,7 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IServiceProbe.h"
 #include "Platform/ISystemInfoProbe.h"
+#include "Platform/ImageSignature.h"
 #include "Platform/ProcessTypes.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
@@ -299,6 +301,46 @@ TEST_F(ProcessDetailsPanelRenderTest, TheOptionalRowsShowWhenTheProcessHasThem)
     EXPECT_TRUE(text.contains("docker:1a2b3c4d5e6f")) << text;
     EXPECT_TRUE(text.contains("Services")) << text;
     EXPECT_TRUE(text.contains("nginx.service")) << text;
+}
+
+// #3070: where the platform checks signatures (Windows) the Identity card has a Signature row, as the
+// Processes table's Signature column writes it: the check mark and the verified signer, or why not, and
+// "Not checked yet" before the check is in. Where it doesn't (Linux), there is no row.
+TEST_F(ProcessDetailsPanelRenderTest, TheSignatureRowShowsTheVerifiedSignerOrWhyNot)
+{
+    const auto render = [](ProcessDetailsPanel& panel, Platform::SignatureCheck check, double second)
+    {
+        Domain::ProcessSample sample = sampleAt(second, 10.0);
+        auto snapshot = std::make_shared<Domain::ProcessSnapshot>(*sample.snapshot);
+        snapshot->signatureText = Platform::signatureLabel(check);
+        snapshot->signature = std::move(check);
+        sample.snapshot = std::move(snapshot);
+        const std::vector samples{sample};
+        panel.updateWithSamples(samples, 1.0F);
+        static_cast<void>(renderAndCapture(panel));
+        return renderAndCapture(panel);
+    };
+    const auto panel = activePanel();
+    Platform::ProcessCapabilities caps;
+    caps.hasSignature = true;
+    panel->setProcessCapabilities(caps);
+    panel->setSelectedPid(PID, START_TICKS);
+
+    std::string text = render(*panel, {.signature = Platform::ImageSignature::Catalog, .note = {}, .signer = "Microsoft Windows"}, 1.0);
+    EXPECT_TRUE(text.contains("Signature")) << text;
+    EXPECT_TRUE(text.contains(std::string(ProcessSignatureText::VERIFIED_MARK) + " Microsoft Windows")) << text;
+
+    text = render(*panel, {.signature = Platform::ImageSignature::Untrusted, .note = "bad digest", .signer = {}}, 2.0);
+    EXPECT_TRUE(text.contains("Invalid")) << text;
+    EXPECT_FALSE(text.contains(std::string(ProcessSignatureText::VERIFIED_MARK) + " ")) << text;
+
+    text = render(*panel, {}, 3.0);
+    EXPECT_TRUE(text.contains("Not checked yet")) << text;
+
+    panel->setProcessCapabilities({});
+    text = render(*panel, {.signature = Platform::ImageSignature::Unsigned, .note = {}, .signer = {}}, 4.0);
+    EXPECT_FALSE(text.contains("Signature")) << text;
+    EXPECT_FALSE(text.contains("Unsigned")) << text;
 }
 
 // #1878: what the Processes table shows is on Process Details too: Status joined to State, Affinity in

@@ -20,6 +20,7 @@
 #include "App/Panels/ProcessDumpView.h"
 #include "App/Panels/ProcessRowFormat.h"
 #include "App/Panels/ProcessRowMeter.h"
+#include "App/Panels/ProcessSignatureText.h"
 #include "App/Panels/ProcessTreeIndent.h"
 #include "App/Panels/ProcessesPanel.h"
 #include "App/ProcessColumnConfig.h"
@@ -39,6 +40,7 @@
 #include "Platform/GPUTypes.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IServiceProbe.h"
+#include "Platform/ImageSignature.h"
 #include "Platform/ProcessTypes.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
@@ -1590,6 +1592,111 @@ TEST_F(ProcessesPanelRenderTest, TheArchitectureColumnShowsEachProcesssArchitect
     EXPECT_TRUE(text.contains(ProcessRowFormat::UNAVAILABLE_CELL_TEXT)) << "worker's isn't read:\n" << text;
     panel->onDetach();
     UserConfig::get().settings().processColumns.setVisible(ProcessColumn::Architecture, false);
+}
+
+// #3070: the Signature column shows a check mark and the signer for a verified image, Unsigned and
+// Invalid for the rest, "Not checked" for a check that failed, and the dash while one is to come; hovering
+// a cell says how it is signed. Where the probe checks no signatures (Linux) every row is the dash.
+TEST_F(ProcessesPanelRenderTest, TheSignatureColumnShowsTheVerifiedSignerOrWhyNot)
+{
+    UserConfig::get().settings().processColumns.setVisible(ProcessColumn::Signature, true);
+    auto panel = std::make_unique<ProcessesPanel>(
+        []
+        {
+            auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+            Platform::ProcessCounters system =
+                TestMocks::makeProcessCounters(100, "explorer", 'R', 200, 50, 1000, std::uint64_t{8} << 20U, 1);
+            system.signature = {.signature = Platform::ImageSignature::Catalog, .note = {}, .signer = "Microsoft Windows"};
+            Platform::ProcessCounters homebrew =
+                TestMocks::makeProcessCounters(101, "homebrew", 'S', 30, 10, 1100, std::uint64_t{2} << 20U, 100);
+            homebrew.signature = {.signature = Platform::ImageSignature::Unsigned, .note = {}, .signer = {}};
+            Platform::ProcessCounters tampered =
+                TestMocks::makeProcessCounters(102, "tampered", 'S', 30, 10, 1200, std::uint64_t{2} << 20U, 100);
+            tampered.signature = {.signature = Platform::ImageSignature::Untrusted, .note = "bad digest", .signer = {}};
+            Platform::ProcessCounters locked =
+                TestMocks::makeProcessCounters(103, "locked", 'S', 30, 10, 1300, std::uint64_t{2} << 20U, 100);
+            locked.signature = {.signature = Platform::ImageSignature::Unknown, .note = "Access is denied", .signer = {}};
+            probe->withProcess(std::move(system))
+                .withProcess(std::move(homebrew))
+                .withProcess(std::move(tampered))
+                .withProcess(std::move(locked))
+                .withProcess(TestMocks::makeProcessCounters(104, "pending", 'S', 30, 10, 1400, std::uint64_t{2} << 20U, 100));
+            Platform::ProcessCapabilities caps = probe->capabilities();
+            caps.hasSignature = true;
+            probe->setCapabilities(caps);
+            return ProcessesPanelPlatform{
+                .probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>(), .icons = nullptr};
+        },
+        std::function<void(Core::Event&)>{});
+    attachAndSeed(*panel);
+    Core::ActiveTabChangedEvent shown("Processes");
+    panel->onEvent(shown);
+    renderUntilLoaded(*panel);
+    const std::string text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("Signature")) << text;
+    EXPECT_TRUE(text.contains(std::string(ProcessSignatureText::VERIFIED_MARK))) << text;
+    EXPECT_TRUE(text.contains("Microsoft Windows")) << text;
+    EXPECT_TRUE(text.contains("Unsigned")) << text;
+    EXPECT_TRUE(text.contains("Invalid")) << text;
+    EXPECT_TRUE(text.contains("Not checked")) << text;
+    EXPECT_TRUE(text.contains(ProcessRowFormat::UNAVAILABLE_CELL_TEXT)) << "pending isn't checked yet:\n" << text;
+
+    // Hovering the column's cells shows each one's detail (the tooltip waits for the mouse to rest, so the
+    // hover delays are zeroed and the column swept).
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.HoverStationaryDelay = 0.0F;
+    style.HoverDelayShort = 0.0F;
+    style.HoverDelayNormal = 0.0F;
+    const ImGuiTable* table = nullptr;
+    int signatureColumn = -1;
+    for (int t = 0; t < GImGui->Tables.GetMapSize() && signatureColumn < 0; ++t)
+    {
+        const ImGuiTable* candidate = GImGui->Tables.TryGetMapData(t);
+        for (int c = 0; candidate != nullptr && c < candidate->ColumnsCount; ++c)
+        {
+            if (std::string_view(ImGui::TableGetColumnName(candidate, c)) == "Signature")
+            {
+                table = candidate;
+                signatureColumn = c;
+                break;
+            }
+        }
+    }
+    ASSERT_NE(table, nullptr) << "no table with a Signature column";
+    const ImGuiTableColumn& column = table->Columns[signatureColumn];
+    const float x = column.MinX + 8.0F; // inside each cell's text, however short
+    bool verifiedTip = false;
+    bool invalidTip = false;
+    ImGuiIO& io = ImGui::GetIO();
+    const int steps = static_cast<int>(table->InnerRect.GetHeight() / 4.0F);
+    for (int step = 0; step < steps && !(verifiedTip && invalidTip); ++step)
+    {
+        io.AddMousePosEvent(x, table->InnerRect.Min.y + 2.0F + (static_cast<float>(step) * 4.0F));
+        for (int settle = 0; settle < 3; ++settle)
+        {
+            const std::string hovered = renderAndCapture(*panel);
+            verifiedTip = verifiedTip || hovered.contains("Verified:");
+            invalidTip = invalidTip || hovered.contains("bad digest");
+        }
+    }
+    EXPECT_TRUE(verifiedTip) << "the verified cell's tooltip";
+    EXPECT_TRUE(invalidTip) << "the invalid cell's tooltip, with its reason";
+    panel->onDetach();
+    UserConfig::get().settings().processColumns.setVisible(ProcessColumn::Signature, false);
+}
+
+TEST_F(ProcessesPanelRenderTest, TheSignatureColumnIsTheDashWhereSignaturesArentChecked)
+{
+    UserConfig::get().settings().processColumns.setVisible(ProcessColumn::Signature, true);
+    const auto panel = attachedPanel(); // the mock probe checks none, as on Linux
+    renderUntilLoaded(*panel);
+    EXPECT_FALSE(panel->processCapabilities().hasSignature);
+    const std::string text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("Signature")) << text;
+    EXPECT_TRUE(text.contains(ProcessRowFormat::UNAVAILABLE_CELL_TEXT)) << text;
+    EXPECT_FALSE(text.contains("Unsigned")) << text;
+    panel->onDetach();
+    UserConfig::get().settings().processColumns.setVisible(ProcessColumn::Signature, false);
 }
 
 // #1879: where the probe fills neither (Windows; the mock reports neither), the Private and Swap columns

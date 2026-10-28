@@ -3,6 +3,7 @@
 #include "Domain/PriorityConfig.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Platform/CpuAffinity.h"
+#include "Platform/ImageSignature.h"
 #include "UI/Format.h"
 
 #include <gtest/gtest.h>
@@ -11,6 +12,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace App
@@ -72,7 +74,8 @@ using Domain::ProcessSnapshot;
     snap.publisher = s;
     snap.container = s;
     snap.processType = s;
-    snap.architecture = s; // #2394
+    snap.architecture = s;                                                                      // #2394
+    snap.signature = {.signature = Platform::ImageSignature::Catalog, .note = {}, .signer = s}; // #3070
 
     // Same size (1) for both, so the generic per-column loop below exercises the
     // "compare first engine name" branch, not the "compare engine count" branch -
@@ -218,6 +221,35 @@ TEST(ProcessSortUtilsTest, NpuColumnsSortByTheNpuFigures)
     EXPECT_TRUE(ProcessSortUtils::compareColumnKey(fewer, more, ProcessColumn::NpuEngine, true));
     EXPECT_FALSE(ProcessSortUtils::compareColumnKey(fewer, fewer, ProcessColumn::NpuEngine, true));
     EXPECT_FALSE(ProcessSortUtils::compareColumnKey(ProcessSnapshot{}, ProcessSnapshot{}, ProcessColumn::NpuEngine, false));
+}
+
+// #3070: verified signatures first, by signer, then Unsigned, Invalid and unchecked; descending reverses it.
+TEST(ProcessSortUtilsTest, SignatureSortsVerifiedBySignerThenTheRest)
+{
+    const auto withSignature = [](std::int32_t pid, Platform::ImageSignature kind, std::string signer)
+    {
+        ProcessSnapshot snap = makeSnapshot(false);
+        snap.pid = pid;
+        snap.uniqueKey = static_cast<std::uint64_t>(pid);
+        snap.signature = {.signature = kind, .note = {}, .signer = std::move(signer)};
+        return snap;
+    };
+    std::vector<ProcessSnapshot> rows{
+        withSignature(1, Platform::ImageSignature::NotChecked, {}),
+        withSignature(2, Platform::ImageSignature::Unsigned, {}),
+        withSignature(3, Platform::ImageSignature::Embedded, "Microsoft Windows"),
+        withSignature(4, Platform::ImageSignature::Untrusted, {}),
+        withSignature(5, Platform::ImageSignature::Catalog, "Intel Corporation"),
+    };
+    std::ranges::sort(rows,
+                      [](const auto& a, const auto& b) { return ProcessSortUtils::compareByColumn(a, b, ProcessColumn::Signature, true); });
+    std::vector<std::int32_t> order;
+    for (const ProcessSnapshot& row : rows)
+    {
+        order.push_back(row.pid);
+    }
+    EXPECT_EQ(order, (std::vector<std::int32_t>{5, 3, 2, 4, 1}));
+    EXPECT_TRUE(ProcessSortUtils::compareByColumn(rows[4], rows[0], ProcessColumn::Signature, false));
 }
 
 TEST(ProcessSortUtilsTest, GdiObjectsUnavailableSortsBeforeAvailable)

@@ -27,6 +27,7 @@
 #include "App/Panels/ProcessRowMeterView.h"
 #include "App/Panels/ProcessRowSelection.h"
 #include "App/Panels/ProcessSelection.h"
+#include "App/Panels/ProcessSignatureText.h"
 #include "App/Panels/ProcessSortUtils.h"
 #include "App/Panels/ProcessStateColor.h"
 #include "App/Panels/ProcessTableFlags.h"
@@ -63,6 +64,7 @@
 #include "Platform/CpuAffinity.h"
 #include "Platform/CurrentProcess.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/ImageSignature.h"
 #include "Platform/ProcessTypes.h"
 #include "Platform/ThreadName.h"
 #include "UI/CellText.h"
@@ -698,6 +700,47 @@ void schedPolicyCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& 
     }
 }
 
+/// The image's Authenticode signature (#3070), left-aligned: a check mark (in the success colour) and the
+/// signer when Windows verifies it, "Unsigned" or "Invalid" in the warning and error colours, "Not
+/// checked" muted when the check failed. Hovering it says how it is signed, or why not. The unavailable
+/// dash where this system doesn't check signatures (Linux), and while this process's check is to come.
+void signatureCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& fmt, const ProcessCellWidths& widths)
+{
+    if (!fmt.signatureSupported)
+    {
+        renderUnavailableTextCell(ProcessRowFormat::UNSUPPORTED_CELL_REASON, widths.unavailableText);
+        return;
+    }
+    if (proc.signatureText.empty())
+    {
+        renderUnavailableTextCell(Platform::SIGNATURE_NOT_CHECKED_NOTE, widths.unavailableText);
+        return;
+    }
+    const UI::ColorScheme& scheme = UI::Theme::get().scheme();
+    ImGui::BeginGroup();
+    if (Platform::isVerifiedSignature(proc.signature.signature))
+    {
+        const std::string_view mark = ProcessSignatureText::VERIFIED_MARK;
+        ImGui::PushStyleColor(ImGuiCol_Text, scheme.textSuccess);
+        ImGui::TextUnformatted(mark.data(), mark.data() + mark.size());
+        ImGui::PopStyleColor();
+        ImGui::SameLine(0.0F, ImGui::GetStyle().ItemInnerSpacing.x);
+    }
+    ImGui::PushStyleColor(ImGuiCol_Text, ProcessSignatureText::textColor(proc.signature.signature, scheme));
+    renderCellText(
+        proc.signatureText, cachedTextWidth(proc.signatureText, fmt.signatureWidth), /*rightAligned=*/false, /*clippedTooltip=*/false);
+    ImGui::PopStyleColor();
+    ImGui::EndGroup();
+    if (ImGui::BeginItemTooltip())
+    {
+        const std::string tooltip = Platform::signatureTooltip(proc.signature);
+        ImGui::PushTextWrapPos(ImGui::GetFontSize() * HEADER_TOOLTIP_WRAP_EM);
+        ImGui::TextUnformatted(tooltip.c_str());
+        ImGui::PopTextWrapPos();
+        ImGui::EndTooltip();
+    }
+}
+
 /// One CELL_RENDERERS entry: the column it draws (checked against its index
 /// below) and its renderer, or nullptr for a column renderProcessRow() draws.
 struct ProcessCellEntry
@@ -719,6 +762,7 @@ constexpr std::array<ProcessCellEntry, processColumnCount()> CELL_RENDERERS = {{
      .render = &leftAlignedOrBlankCell<&Domain::ProcessSnapshot::publisher,
                                        &RowFormatCache::publisherWidth,
                                        &RowFormatCache::publisherSupported>},
+    {.column = ProcessColumn::Signature, .render = &signatureCell},
     {.column = ProcessColumn::Container,
      .render = &leftAlignedOrBlankCell<&Domain::ProcessSnapshot::container,
                                        &RowFormatCache::containerWidth,

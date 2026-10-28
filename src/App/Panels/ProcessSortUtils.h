@@ -3,6 +3,7 @@
 #include "App/ProcessColumnConfig.h"
 #include "Domain/PriorityConfig.h"
 #include "Domain/ProcessSnapshot.h"
+#include "Platform/ImageSignature.h"
 #include "Platform/SchedPolicy.h"
 
 #include <algorithm>
@@ -142,6 +143,11 @@ compareColumnKey(const Domain::ProcessSnapshot& a, const Domain::ProcessSnapshot
         return compareEngines(a.npuEngines, b.npuEngines, ascending);
     case ProcessColumn::Publisher:
         return compare(a.publisher, b.publisher);
+    case ProcessColumn::Signature: // Verified by signer, then Unsigned, Invalid, Not checked (#3070)
+    {
+        const std::strong_ordering order = Platform::compareSignature(a.signature, b.signature);
+        return ascending ? order < 0 : order > 0;
+    }
     case ProcessColumn::Container:
         return compare(a.container, b.container);
     case ProcessColumn::Services:

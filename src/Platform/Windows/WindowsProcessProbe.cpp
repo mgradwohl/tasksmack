@@ -44,6 +44,8 @@
 #include "WindowsProcAddress.h"
 #include "WindowsProcessMachine.h"
 #include "WindowsProcessMachineMath.h"
+#include "WindowsSignatureCheck.h"
+#include "WindowsSignatureWorker.h"
 #include "WindowsTcpRows.h"
 
 #include <algorithm>
@@ -901,6 +903,21 @@ void WindowsProcessDetailReads::hungWindowProcesses(std::vector<std::uint32_t>& 
     pids.erase(duplicates.begin(), duplicates.end());
 }
 
+namespace
+{
+
+/// The signature worker's thread in background mode (#3070): lowest CPU, I/O and memory priority, so
+/// hashing an image file for its check yields to everything else on the machine.
+void enterBackgroundMode()
+{
+    if (SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN) == FALSE)
+    {
+        spdlog::debug("WindowsProcessProbe: the signature worker stays at normal priority (error {})", GetLastError());
+    }
+}
+
+} // namespace
+
 WindowsProcessProbeFunctions WindowsProcessProbe::systemFunctions()
 {
     return {
@@ -939,6 +956,14 @@ WindowsProcessProbeFunctions WindowsProcessProbe::systemFunctions()
                 .processMachine = &Windows::processMachine,
             },
         .energyMeter = Windows::EnergyMeterFunctions{},
+        .signature = Windows::systemSignatureFunctions(),
+        .signatureWorker =
+            {
+                .pause = std::chrono::milliseconds{Domain::Sampling::SIGNATURE_CHECK_PAUSE_MS},
+                .maxCachedFiles = static_cast<std::size_t>(Domain::Sampling::SIGNATURE_CACHE_MAX_FILES),
+                .maxPaths = static_cast<std::size_t>(Domain::Sampling::SIGNATURE_CACHE_MAX_FILES),
+                .onWorkerStart = &enterBackgroundMode,
+            },
     };
 }
 
@@ -971,6 +996,12 @@ WindowsProcessProbe::WindowsProcessProbe(const WindowsProcessProbeFunctions& fun
     calculateDetailTTLsFromTotalRAM(m_LightDetailTTL, m_HeavyDetailTTL);
     spdlog::debug(
         "Detail cache TTLs tuned for total physical RAM: light={}ms, heavy={}ms", m_LightDetailTTL.count(), m_HeavyDetailTTL.count());
+
+    // The image signature worker (#3070); its thread starts with the first image it is asked to check.
+    if (functions.signature.has_value())
+    {
+        m_Signatures = std::make_unique<WindowsSignature::SignatureWorker>(*functions.signature, functions.signatureWorker);
+    }
 
     // The EMI energy meters behind per-process power (#2587), enumerated and opened once, on their own
     // one-shot worker: the SetupAPI enumeration can stall on a slow ACPI call, which must hold up
@@ -1244,6 +1275,7 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid,
         counters.cpuAffinity = cache.cpuAffinity;
         counters.nice = cache.nice;
         counters.priorityClass = cache.priorityClass;
+        updateSignature(cache, counters); // The worker's answer, once in (#3070)
     }
 
     const DetailRefreshPlan plan =
@@ -1314,6 +1346,10 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid,
         const ProcessImage& image = readProcessImage(m_Fns.process, hProcess.get(), cache.image);
         imagePathUtf8 = image.path;
         counters.publisher = image.publisher;
+        if (canCache)
+        {
+            updateSignature(cache, counters); // Asks for the image's check once its path is known (#3070)
+        }
         counters.user = getProcessOwner(m_Fns.token, hProcess.get(), &m_AccountNames, now);
 
         // The command line, as Linux shows it (#1156); the image path where it can't be read.
@@ -1378,6 +1414,27 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid,
     }
 
     return true;
+}
+
+void WindowsProcessProbe::updateSignature(DetailCacheEntry& cache, ProcessCounters& counters)
+{
+    if (m_Signatures == nullptr || !cache.image.read || cache.image.path.empty())
+    {
+        return;
+    }
+    if (!cache.signature.has_value())
+    {
+        if (!cache.signatureRequested)
+        {
+            m_Signatures->request(cache.image.path);
+            cache.signatureRequested = true;
+        }
+        cache.signature = m_Signatures->find(cache.image.path); // nullopt until the worker has checked it
+    }
+    if (cache.signature.has_value())
+    {
+        counters.signature = *cache.signature;
+    }
 }
 
 CpuAffinity WindowsProcessProbe::readCpuAffinity(HANDLE hProcess, std::span<const std::byte> threadRecords)
@@ -1481,7 +1538,9 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
         .hasServices = false,    // Matched by PID from the service list, by Domain::ProcessModel (#1880)
         .hasProcessType = true,  // Classified from path + GetGuiResources
         .hasArchitecture = true, // ProcessMachineTypeInfo, else IsWow64Process2 (#2394)
-        .hasGdiObjects = true,   // From GetGuiResources(GR_GDIOBJECTS)
+        // WinVerifyTrust on each image, embedded and through the catalogs, on the signature worker (#3070)
+        .hasSignature = m_Signatures != nullptr,
+        .hasGdiObjects = true, // From GetGuiResources(GR_GDIOBJECTS)
         // Non-admin + EStats access-denied: network data unavailable due to privilege. Never true
         // together with hasNetworkCounters: a non-elevated process never uses EStats.
         .hasReducedPrivileges = denial.reducedPrivileges,

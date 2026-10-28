@@ -86,6 +86,7 @@ TEST(ThreadNameTest, EveryTaskSmackThreadNameFitsLinuxLimit)
         Platform::PROCESS_ACTION_THREAD_NAME,
         Platform::HELPER_LAUNCH_THREAD_NAME,
         Platform::SETTINGS_SAVE_THREAD_NAME,
+        Platform::SIGNATURE_CHECK_THREAD_NAME,
     };
     for (const std::string_view name : NAMES)
     {

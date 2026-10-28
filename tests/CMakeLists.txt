@@ -505,6 +505,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessColumnAvailability.cpp
     App/test_ProcessStateColor.cpp
     App/test_ProcessTypeColor.cpp
+    App/test_ProcessSignatureText.cpp # the Signature column's and row's colours and words (#3070)
     App/test_ProcessArchitectureNote.cpp
     App/test_ProcessCellWidths.cpp
     App/test_ProcessFilterCache.cpp
@@ -690,6 +691,8 @@ set(WINDOWS_MATH_TEST_SOURCES
     Platform/WindowsMath/test_WindowsProcessDumpMath.cpp
     Platform/WindowsMath/test_WindowsProcessMachineMath.cpp
     Platform/WindowsMath/test_WindowsWaitChainMath.cpp # Analyze wait chain's decoding (#3084)
+    Platform/WindowsMath/test_WindowsImageSignature.cpp # image signatures: wording, order, cache key, check (#3070)
+    Platform/WindowsMath/test_WindowsSignatureWorker.cpp # the probe's signature worker through fakes (#3070)
 )
 list(APPEND COMMON_TEST_SOURCES ${WINDOWS_MATH_TEST_SOURCES})
 set(WINDOWS_PLATFORM_TEST_SOURCES
@@ -707,6 +710,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsProcessActions.cpp
     Platform/test_WindowsProcessActionsSeams.cpp
     Platform/test_WindowsWaitChain.cpp  # Analyze wait chain: the WCT session through fakes, and one real child (#3084)
+    Platform/test_WindowsSignatureCheck.cpp  # WinVerifyTrust, embedded and catalog, through fakes and on notepad.exe (#3070)
     Platform/test_WindowsDebugPrivilege.cpp
     Platform/test_WindowsElevation.cpp
     Platform/test_BrokerPipe.cpp  # the privileged broker's named-pipe transport (#2311)
