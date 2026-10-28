@@ -1456,8 +1456,12 @@ void ProcessesPanel::renderContent()
     {
         KeyboardInput::claimNavigationKeys(ImGui::GetID("##ProcessTableKeys"), m_TreeViewEnabled);
         navCommand = KeyboardInput::pollNavigationCommand(m_TreeViewEnabled);
-        selectAllRequested = KeyboardInput::pollSelectAll();                     // Ctrl+A (#804)
-        if (KeyboardInput::pollFindHandles() && m_FindHandlesDialog.available()) // Ctrl+F (#3067)
+        selectAllRequested = KeyboardInput::pollSelectAll(); // Ctrl+A (#804)
+        if (KeyboardInput::pollFocusFilter())                // Ctrl+F: the filter box takes the keyboard
+        {
+            m_FocusFilter = true;
+        }
+        if (KeyboardInput::pollFindHandles() && m_FindHandlesDialog.available()) // Ctrl+Shift+F (#3067)
         {
             m_FindHandlesDialog.open();
         }
@@ -1533,6 +1537,10 @@ void ProcessesPanel::renderContent()
 
     {
         const UI::Widgets::FrameOutlineScope frameOutline;
+        if (std::exchange(m_FocusFilter, false))
+        {
+            ImGui::SetKeyboardFocusHere();
+        }
         ImGui::InputTextWithHint("##search", FILTER_HINT, &m_SearchBuffer);
     }
     ImGui::PopStyleColor();
@@ -1755,7 +1763,7 @@ void ProcessesPanel::renderContent()
         {
             m_FindHandlesDialog.open();
         }
-        ImGui::SetItemTooltip("Find handles (Ctrl+F): which processes have a file, folder or library open");
+        ImGui::SetItemTooltip("Find handles (Ctrl+Shift+F): which processes have a file, folder or library open");
     }
 
     // Column chooser, beside ImGui's own header right-click menu (#1209)

@@ -585,6 +585,7 @@ class ProcessesPanel : public Panel
 
     // Search/filter state - using std::string for dynamic sizing
     std::string m_SearchBuffer;
+    bool m_FocusFilter = false; ///< Ctrl+F was pressed: the filter box takes the keyboard on its next draw
 
     // Tree view state
     bool m_TreeViewEnabled = false;

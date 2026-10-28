@@ -1,7 +1,7 @@
 #pragma once
 
 // Find handles (#3067): "which process is holding this file?". A dialog from the Processes toolbar (or
-// Ctrl+F there) that searches every process's open files and loaded modules for a name, on its own
+// Ctrl+Shift+F there) that searches every process's open files and loaded modules for a name, on its own
 // worker (Domain/HandleSearch.h), and lists each process and what it holds. Processes this run may not
 // read (another user's) can be searched again as an administrator, after one password prompt.
 

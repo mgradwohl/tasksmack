@@ -2817,10 +2817,20 @@ TEST_F(ProcessesPanelRenderTest, FindHandlesListsTheProcessesHoldingAFile)
 
     const ImGuiWindow* shell = ImGui::FindWindowByName("Shell");
     ASSERT_NE(shell, nullptr);
-    ImGui::ActivateItemByID(ImHashStr(ICON_FA_MAGNIFYING_GLASS "###FindHandles", 0, shell->ID));
+    // Ctrl+Shift+F over the table opens it, as the toolbar's magnifier button does.
+    ImGuiIO& io = ImGui::GetIO();
+    io.AddMousePosEvent(DISPLAY_WIDTH * 0.5F, DISPLAY_HEIGHT * 0.5F); // hovered: the table's keys are armed
+    io.AddKeyEvent(ImGuiMod_Ctrl, true);
+    io.AddKeyEvent(ImGuiMod_Shift, true);
+    io.AddKeyEvent(ImGuiKey_F, true);
+    static_cast<void>(renderAndCapture(*panel));
+    io.AddKeyEvent(ImGuiKey_F, false);
+    io.AddKeyEvent(ImGuiMod_Shift, false);
+    io.AddKeyEvent(ImGuiMod_Ctrl, false);
     static_cast<void>(renderAndCapture(*panel));
     static_cast<void>(renderAndCapture(*panel));
-    ASSERT_NE(ImGui::GetTopMostPopupModal(), nullptr) << "Find handles didn't open its dialog";
+    ASSERT_NE(ImGui::GetTopMostPopupModal(), nullptr) << "Ctrl+Shift+F didn't open Find handles";
+    ASSERT_NE(shell, nullptr);
     EXPECT_TRUE(renderAndCapture(*panel).contains("Type a name and press Find."));
 
     // The query box has the keyboard when the dialog opens: type, then Enter searches.
@@ -2847,6 +2857,33 @@ TEST_F(ProcessesPanelRenderTest, FindHandlesListsTheProcessesHoldingAFile)
     EXPECT_TRUE(text.contains("soffice")) << text;
     EXPECT_FALSE(text.contains("notes.txt")) << text;
     panel->onDetach();
+}
+
+// Ctrl+F over the table puts the cursor in the filter box: what's typed next filters the rows.
+TEST_F(ProcessesPanelRenderTest, CtrlFPutsTheCursorInTheFilter)
+{
+    SelectionSink events;
+    const auto panel = attachedPanel(events.sink());
+    renderUntilLoaded(*panel);
+    ImGuiIO& io = ImGui::GetIO();
+    io.AddMousePosEvent(DISPLAY_WIDTH * 0.5F, DISPLAY_HEIGHT * 0.5F); // hovered: the table's keys are armed
+    io.AddKeyEvent(ImGuiMod_Ctrl, true);
+    io.AddKeyEvent(ImGuiKey_F, true);
+    static_cast<void>(renderAndCapture(*panel));
+    io.AddKeyEvent(ImGuiKey_F, false);
+    io.AddKeyEvent(ImGuiMod_Ctrl, false);
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    EXPECT_EQ(ImGui::GetTopMostPopupModal(), nullptr); // not Find handles
+    for (const char* character : {"w", "o", "r", "k"})
+    {
+        io.AddInputCharactersUTF8(character);
+        static_cast<void>(renderAndCapture(*panel));
+    }
+    static_cast<void>(renderAndCapture(*panel));
+    const std::string text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("worker")) << text;
+    EXPECT_FALSE(text.contains("server")) << text;
 }
 
 } // namespace
