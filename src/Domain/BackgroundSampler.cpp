@@ -3,7 +3,9 @@
 #include "Domain/ISamplable.h"
 #include "Platform/ThreadApartment.h"
 #include "Platform/ThreadName.h"
+#include "SamplerTimingBoard.h"
 #include "SamplingConfig.h"
+#include "TimingHistogram.h"
 
 #include <spdlog/spdlog.h>
 
@@ -13,7 +15,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <format>
 #include <functional>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -43,6 +47,7 @@ void recordTiming(SampleTiming& timing, std::chrono::steady_clock::duration dura
 {
     timing.lastDuration = toMicroseconds(duration);
     timing.maxDuration = std::max(timing.maxDuration, timing.lastDuration);
+    timing.histogram.record(timing.lastDuration);
     ++timing.samples;
     if (duration > interval)
     {
@@ -50,7 +55,35 @@ void recordTiming(SampleTiming& timing, std::chrono::steady_clock::duration dura
     }
 }
 
+/// One timing as formatTimingSummary() lists it, appended to @p out.
+void appendTiming(std::string& out, const SampleTiming& timing)
+{
+    const TimingHistogram& histogram = timing.histogram;
+    std::format_to(std::back_inserter(out),
+                   "{} n={} mean={} p50={} p95={} max={} overruns={}",
+                   timing.name,
+                   histogram.count(),
+                   histogram.mean().count(),
+                   histogram.percentile(0.50).count(),
+                   histogram.percentile(0.95).count(),
+                   histogram.max().count(),
+                   timing.overruns);
+}
+
 } // namespace
+
+std::string formatTimingSummary(std::string_view sampler, std::string_view event, const SamplerMetrics& metrics)
+{
+    std::string line = std::format(
+        "BackgroundSampler {}: {} after {} passes, {} backoffs; timings in us: ", sampler, event, metrics.pass.samples, metrics.backoffs);
+    appendTiming(line, metrics.pass);
+    for (const SampleTiming& timing : metrics.samplables)
+    {
+        line += "; ";
+        appendTiming(line, timing);
+    }
+    return line;
+}
 
 void BackgroundSampler::logLoopException(std::string_view message,
                                          std::chrono::steady_clock::time_point now,
@@ -142,7 +175,8 @@ BackgroundSampler::BackgroundSampler(SamplerConfig config)
                .firstSampleAfterInterval = config.firstSampleAfterInterval,
                .threadName = std::move(config.threadName),
                .onThreadStart = std::move(config.onThreadStart),
-               .multiThreadedApartment = config.multiThreadedApartment}
+               .multiThreadedApartment = config.multiThreadedApartment,
+               .timingSummaryPeriod = config.timingSummaryPeriod}
 {
     spdlog::debug("BackgroundSampler: created with {}ms interval", m_Config.interval.count());
 }
@@ -211,7 +245,7 @@ void BackgroundSampler::start()
                         apartment.emplace();
                     }
                     runStartHook(hook, name);
-                    samplerLoop(st);
+                    samplerLoop(st, name);
                 }
                 catch (...)
                 {
@@ -255,34 +289,45 @@ void BackgroundSampler::stop()
 
 void BackgroundSampler::logStopSummary() const noexcept
 {
-    // Called from stop(), so from the destructor too: nothing here may throw. No copy of metrics()
-    // (its vector and strings allocate): only the scalars the line needs, under the lock, and only
-    // when the line would be logged. spdlog formats into allocated buffers, and none of its calls are
-    // noexcept, so all of it is guarded.
+    // Named by its thread, so each sampler's line can be told apart in the log (#3153). Called from
+    // stop(), so from the destructor too: a failed copy of the name loses only the line.
     try
     {
         if (!spdlog::should_log(spdlog::level::debug))
         {
             return;
         }
-        SampleTiming pass;
-        std::uint64_t backoffs = 0;
+        std::string name;
         {
-            const std::scoped_lock lock(m_MetricsMutex);
-            pass.samples = m_Metrics.pass.samples;
-            pass.lastDuration = m_Metrics.pass.lastDuration;
-            pass.maxDuration = m_Metrics.pass.maxDuration;
-            pass.overruns = m_Metrics.pass.overruns;
-            backoffs = m_Metrics.backoffs;
+            const std::scoped_lock lock(m_ConfigMutex);
+            name = m_Config.threadName;
         }
-        spdlog::debug("BackgroundSampler: stopped after {} passes; pass last/max {}/{} us, {} overruns, {} backoffs",
-                      pass.samples,
-                      pass.lastDuration.count(),
-                      pass.maxDuration.count(),
-                      pass.overruns,
-                      backoffs);
+        logTimingSummary(name, "stopped");
     }
     catch (...) // NOLINT(bugprone-empty-catch) - a lost shutdown log line must not terminate the app
+    {}
+}
+
+void BackgroundSampler::logTimingSummary(std::string_view name, std::string_view event) const noexcept
+{
+    // Called from stop(), so from the destructor too, and from the sampler thread after a pass: nothing
+    // here may throw. No copy of metrics() (its vector and strings allocate): the line is formatted
+    // under the lock, and only when it would be logged. spdlog formats into allocated buffers, and none
+    // of its calls are noexcept, so all of it is guarded.
+    try
+    {
+        if (!spdlog::should_log(spdlog::level::debug))
+        {
+            return;
+        }
+        std::string line;
+        {
+            const std::scoped_lock lock(m_MetricsMutex);
+            line = formatTimingSummary(name, event, m_Metrics);
+        }
+        spdlog::debug("{}", line);
+    }
+    catch (...) // NOLINT(bugprone-empty-catch) - a lost summary line must not terminate the app
     {}
 }
 
@@ -327,7 +372,8 @@ SamplerMetrics BackgroundSampler::metrics() const
     return m_Metrics;
 }
 
-void BackgroundSampler::recordPass(const std::vector<Entry>& entries,
+void BackgroundSampler::recordPass(std::string_view name,
+                                   const std::vector<Entry>& entries,
                                    const std::vector<std::optional<std::chrono::steady_clock::duration>>& durations,
                                    std::chrono::steady_clock::duration passDuration,
                                    std::chrono::milliseconds interval,
@@ -336,6 +382,9 @@ void BackgroundSampler::recordPass(const std::vector<Entry>& entries,
     const bool overran = passDuration > interval;
     std::size_t slowest = entries.size();
     auto slowestDuration = std::chrono::steady_clock::duration::min();
+    TimingHistogram passHistogram;
+    std::uint64_t passOverruns = 0;
+    std::uint64_t backoffs = 0;
     {
         const std::scoped_lock lock(m_MetricsMutex);
         // Everything that allocates (the resize, the name copies) comes before any timing is recorded,
@@ -371,6 +420,17 @@ void BackgroundSampler::recordPass(const std::vector<Entry>& entries,
         {
             ++m_Metrics.backoffs;
         }
+        passHistogram = m_Metrics.pass.histogram;
+        passOverruns = m_Metrics.pass.overruns;
+        backoffs = m_Metrics.backoffs;
+    }
+    // Published outside the metrics lock, a fixed-size copy: what the Render Metrics overlay shows (#3153).
+    SamplerTimingBoard::global().publish(name, passHistogram, passOverruns, backoffs);
+
+    if (now >= m_NextTimingSummaryTime)
+    {
+        logTimingSummary(name, "running");
+        m_NextTimingSummaryTime = now + m_TimingSummaryPeriod;
     }
 
     if (!overran)
@@ -393,6 +453,7 @@ void BackgroundSampler::recordPass(const std::vector<Entry>& entries,
 }
 
 BackgroundSampler::PassTiming BackgroundSampler::runPass(const std::stop_token& stopToken,
+                                                         std::string_view name,
                                                          bool samplePass,
                                                          std::chrono::steady_clock::time_point startTime,
                                                          ExceptionLogThrottle& exceptionLog)
@@ -451,7 +512,7 @@ BackgroundSampler::PassTiming BackgroundSampler::runPass(const std::stop_token& 
     const PassTiming timing{.duration = passEnd - startTime, .interval = interval()};
     if (!currentSamplables.empty())
     {
-        recordPass(currentSamplables, durations, timing.duration, timing.interval, passEnd);
+        recordPass(name, currentSamplables, durations, timing.duration, timing.interval, passEnd);
     }
 
     if (!hadException)
@@ -461,7 +522,7 @@ BackgroundSampler::PassTiming BackgroundSampler::runPass(const std::stop_token& 
     return timing;
 }
 
-void BackgroundSampler::samplerLoop(const std::stop_token& stopToken)
+void BackgroundSampler::samplerLoop(const std::stop_token& stopToken, std::string_view name)
 {
     spdlog::debug("BackgroundSampler: thread started");
     ExceptionLogThrottle exceptionLog;
@@ -469,7 +530,9 @@ void BackgroundSampler::samplerLoop(const std::stop_token& stopToken)
     {
         const std::scoped_lock lock(m_ConfigMutex);
         skipFirstSample = m_Config.firstSampleAfterInterval;
+        m_TimingSummaryPeriod = m_Config.timingSummaryPeriod;
     }
+    m_NextTimingSummaryTime = std::chrono::steady_clock::now() + m_TimingSummaryPeriod;
 
     while (!stopToken.stop_requested())
     {
@@ -480,7 +543,7 @@ void BackgroundSampler::samplerLoop(const std::stop_token& stopToken)
         PassTiming timing;
         try
         {
-            timing = runPass(stopToken, samplePass, startTime, exceptionLog);
+            timing = runPass(stopToken, name, samplePass, startTime, exceptionLog);
         }
         // The pass's own bookkeeping failed -- a std::bad_alloc copying the registrations, sizing the
         // durations or recording the metrics; each sample() has its own catch in runPass() (#2317).

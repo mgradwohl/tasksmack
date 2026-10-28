@@ -404,6 +404,8 @@ set(COMMON_TEST_SOURCES
     Domain/test_ServiceModel.cpp
     Domain/test_ProcessServices.cpp
     Domain/test_BackgroundSampler.cpp
+    Domain/test_TimingHistogram.cpp
+    Domain/test_SamplerTimingBoard.cpp
     Domain/test_PriorityConfig.cpp
     Domain/test_SamplingConfig.cpp
     Domain/test_HistorySeries.cpp
@@ -975,6 +977,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/Domain/CrashHistory.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/ServiceModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/BackgroundSampler.cpp
+    ${CMAKE_SOURCE_DIR}/src/Domain/SamplerTimingBoard.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/ThreadName.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/ThreadApartment.cpp # the sampler thread's COM apartment (#2731)
     ${CMAKE_SOURCE_DIR}/src/Platform/BrokeredProcessActions.cpp

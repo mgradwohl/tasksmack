@@ -1,5 +1,6 @@
 #include "RenderMetrics.h"
 
+#include "Domain/SamplerTimingBoard.h"
 #include "UI/FrameOutline.h"
 #include "UI/LineLayout.h"
 
@@ -127,6 +128,17 @@ void RenderMetrics::renderOverlay(bool* open)
         chartMicros += sample.micros;
     }
     ImGui::Text("Charts: %d vertices, %.0f us CPU (%zu charts)", chartVertices, chartMicros, m_LastFrame.size());
+
+    // Each sampler's pass timing since it last started (#3153), as the samplers published it after
+    // their latest pass: the overlay reads the board, never a sampler. Foldable, to give the chart
+    // table below its room back.
+    if (ImGui::CollapsingHeader("Samplers", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        for (const Domain::SamplerTimingRow& row : Domain::SamplerTimingBoard::global().snapshot())
+        {
+            ImGui::TextUnformatted(Domain::formatSamplerTimingRow(row).c_str());
+        }
+    }
 
     // Free-form label identifying what's currently being profiled (e.g. "idle",
     // "process-list-1000-rows"), included in every exported CSV row so pasted exports from
