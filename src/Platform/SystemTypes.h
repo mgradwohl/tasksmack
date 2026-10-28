@@ -95,6 +95,17 @@ struct MemoryCounters
     uint64_t commitChargeBytes = 0;
     uint64_t commitLimitBytes = 0;
     uint64_t commitPeakBytes = 0;
+
+    // Compressed swap (#3087), Linux. zram: every /sys/block/zramN/mm_stat, summed. zswap: /proc/meminfo's
+    // Zswapped (pages held, before compression) and Zswap (the pool's compressed size), kernel 5.19+.
+    // hasZram: at least one zram device was read this sample. hasZswap: zswap holds something.
+    bool hasZram = false;
+    uint64_t zramOriginalBytes = 0;   ///< Data stored in zram, before compression
+    uint64_t zramCompressedBytes = 0; ///< Its compressed size
+    uint64_t zramMemoryUsedBytes = 0; ///< RAM the devices take: compressed data plus allocator overhead
+    bool hasZswap = false;
+    uint64_t zswapOriginalBytes = 0;   ///< Zswapped
+    uint64_t zswapCompressedBytes = 0; ///< Zswap
 };
 
 /// Combined system counters snapshot.

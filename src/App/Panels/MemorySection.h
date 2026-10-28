@@ -58,6 +58,14 @@ void updateSmoothedMemory(SmoothedMemory& smoothed,
 /// (Windows); empty when the snapshot has no commit charge.
 [[nodiscard]] std::string commitStripTooltip(const Domain::SystemSnapshot& snap);
 
+/// The value strip's Compressed entry (#3087): "2.9× (1.2 GiB in 410 MiB)", compressed swap's ratio and
+/// sizes, zram and zswap together; empty while nothing compressed is stored.
+[[nodiscard]] std::string compressedStripValue(const Domain::SystemSnapshot& snap);
+
+/// The Compressed entry's hover text: each kind's sizes and ratio, zram's RAM use, and the ratio's range
+/// over @p ratioHistory (the chart's window; NaN where nothing was stored); empty with no entry.
+[[nodiscard]] std::string compressedStripTooltip(const Domain::SystemSnapshot& snap, std::span<const float> ratioHistory);
+
 /// Render the Memory & Swap history chart with now bars
 /// @param ctx Render context with model, history config, and smoothed values
 /// @param timestamps History timestamps from system model

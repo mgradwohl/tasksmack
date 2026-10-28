@@ -191,6 +191,11 @@ static_assert(STARTUP_REFRESH_MS <= REFRESH_INTERVAL_MAX_MS);
 // library when something changed, so this costs a directory scan per interval.
 inline constexpr int GPU_RESCAN_INTERVAL_SECONDS = 10;
 
+// zram device re-enumeration interval (seconds) - fixed, not configurable (#3087)
+// How often the Linux system probe lists /sys/block for zram devices (zramctl or a swap service adding
+// or removing one). Each sample reads the known devices' mm_stat; only the listing waits for this.
+inline constexpr int ZRAM_RESCAN_INTERVAL_SECONDS = 10;
+
 // Oldest per-process GPU publication ProcessModel still merges (#1417). The GPU sampler reads the
 // per-process GPU counters and publishes them; the process sampler, on its own cadence, merges the
 // newest publication. Normally that is at most one system-sampler interval old (capped at

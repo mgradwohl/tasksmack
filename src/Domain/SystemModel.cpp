@@ -160,6 +160,7 @@ void SystemModel::applyHistoryCapacity()
     m_MemoryHistory.setCapacity(capacity);
     m_MemoryCachedHistory.setCapacity(capacity);
     m_SwapHistory.setCapacity(capacity);
+    m_CompressionRatioHistory.setCapacity(capacity);
     m_BatteryChargeHistory.setCapacity(capacity);
     m_NetRxHistory.setCapacity(capacity);
     m_NetTxHistory.setCapacity(capacity);
@@ -194,6 +195,7 @@ void SystemModel::trimHistory(double nowSeconds) noexcept
                                                                 m_MemoryHistory,
                                                                 m_MemoryCachedHistory,
                                                                 m_SwapHistory,
+                                                                m_CompressionRatioHistory,
                                                                 m_BatteryChargeHistory,
                                                                 m_NetRxHistory,
                                                                 m_NetTxHistory);
@@ -273,6 +275,7 @@ void SystemModel::stageHistoryAppend(
                           &m_MemoryHistory,
                           &m_MemoryCachedHistory,
                           &m_SwapHistory,
+                          &m_CompressionRatioHistory,
                           &m_BatteryChargeHistory,
                           &m_NetRxHistory,
                           &m_NetTxHistory})
@@ -332,6 +335,8 @@ void SystemModel::commitHistoryAppend(PendingHistory& pending,
     m_MemoryHistory.push(Numeric::clampPercentToFloat(snap.memoryUsedPercent));
     m_MemoryCachedHistory.push(Numeric::clampPercentToFloat(snap.memoryCachedPercent));
     m_SwapHistory.push(Numeric::clampPercentToFloat(snap.swapUsedPercent));
+    // Compressed swap's ratio (#3087): NaN, a gap, while nothing compressed is stored.
+    m_CompressionRatioHistory.push(snap.compressionRatio > 0.0 ? static_cast<float>(snap.compressionRatio) : NO_READING);
     // Battery charge % (0-100), or NaN -- a gap, like every other unread value -- when there is no
     // battery or it gave no reading (the probe's -1). It used to be -1 here, which every reader had to
     // know to convert (#2159).
@@ -587,6 +592,7 @@ void SystemModel::publish()
         publication->memoryHistory = m_MemoryHistory.view();
         publication->memoryCachedHistory = m_MemoryCachedHistory.view();
         publication->swapHistory = m_SwapHistory.view();
+        publication->compressionRatioHistory = m_CompressionRatioHistory.view();
         publication->batteryChargeHistory = m_BatteryChargeHistory.view();
         publication->netRxHistory = m_NetRxHistory.view();
         publication->netTxHistory = m_NetTxHistory.view();
@@ -702,6 +708,16 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters,
         snap.commitLimitBytes = counters.memory.commitLimitBytes;
         snap.commitPeakBytes = counters.memory.commitPeakBytes;
     }
+
+    // Compressed swap (#3087)
+    snap.hasZram = counters.memory.hasZram;
+    snap.zramOriginalBytes = counters.memory.zramOriginalBytes;
+    snap.zramCompressedBytes = counters.memory.zramCompressedBytes;
+    snap.zramMemoryUsedBytes = counters.memory.zramMemoryUsedBytes;
+    snap.hasZswap = counters.memory.hasZswap;
+    snap.zswapOriginalBytes = counters.memory.zswapOriginalBytes;
+    snap.zswapCompressedBytes = counters.memory.zswapCompressedBytes;
+    snap.compressionRatio = compressionRatio(snap);
 
     // Uptime
     snap.uptimeSeconds = counters.uptimeSeconds;
