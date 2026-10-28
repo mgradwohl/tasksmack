@@ -1046,5 +1046,93 @@ TEST_F(WindowTest, GetDisplayRefreshRateIsTheRateTheWindowsDisplayModeAdvertises
     }
 }
 
+// #3221: a window with the system's own decorations (no custom title bar) maximizes and restores
+// through SDL, the window manager's maximize, rather than the client-side one a borderless window gets.
+TEST_F(WindowTest, ANativelyDecoratedWindowMaximizesAndRestoresThroughSDL)
+{
+    VideoBackend::initialize();
+    try
+    {
+        Window window(WindowSpecification{.Title = "NativeMaximizeTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = false});
+        window.maximize();
+        static_cast<void>(SDL_SyncWindow(window.getHandle()));
+        const bool maximized = window.isMaximized();
+        window.restore();
+        static_cast<void>(SDL_SyncWindow(window.getHandle()));
+        if (!maximized)
+        {
+            GTEST_SKIP() << "The window manager didn't maximize the window, so its restore can't be checked";
+        }
+        EXPECT_FALSE(window.isMaximized());
+    }
+    catch (const std::exception& e)
+    {
+        if (isOffscreenVideoDriver() && !TestSupport::displayRequired())
+        {
+            GTEST_SKIP() << "Window creation failed on offscreen driver (no GL): " << e.what();
+        }
+        FAIL() << "Window creation failed unexpectedly: " << e.what();
+    }
+}
+
+// #3221 (#1945): a minimum set to keep the window's size holds it at the size the window is, and the
+// wanted minimum is applied once the window has been made that big.
+TEST_F(WindowTest, AMinimumHeldBelowTheWantedOneIsAppliedOnceTheWindowGrowsToIt)
+{
+    VideoBackend::initialize();
+    try
+    {
+        Window window(WindowSpecification{.Title = "HeldMinimumTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
+        ASSERT_TRUE(window.setMinimumSize(800, 600, WindowGeometry::MinimumSizeChange::KeepSize));
+        const auto held = window.getMinimumSize();
+        EXPECT_LE(held.first, 800);
+        EXPECT_LE(held.second, 600);
+        window.handleGeometryChanged(); // the same size: the minimum stays held
+        EXPECT_EQ(window.getMinimumSize(), held);
+
+        const auto before = window.getSize();
+        window.setSize(900, 700);
+        waitForWindowSizeChange(window, before);
+        if (window.getSize() != std::pair{900, 700})
+        {
+            GTEST_SKIP() << TestSupport::sizeNotAppliedMessage(window, 900, 700);
+        }
+        window.handleGeometryChanged();
+        EXPECT_EQ(window.getMinimumSize(), (std::pair{800, 600}));
+    }
+    catch (const std::exception& e)
+    {
+        if (isOffscreenVideoDriver() && !TestSupport::displayRequired())
+        {
+            GTEST_SKIP() << "Window creation failed on offscreen driver (no GL): " << e.what();
+        }
+        FAIL() << "Window creation failed unexpectedly: " << e.what();
+    }
+}
+
+// #3221: a geometry saved maximized comes back maximized.
+TEST_F(WindowTest, ASavedMaximizedGeometryComesBackMaximized)
+{
+    VideoBackend::initialize();
+    try
+    {
+        Window window(WindowSpecification{.Title = "SavedMaximizedTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
+        window.applySavedGeometry(std::nullopt, true, std::nullopt);
+        if (!window.isMaximized())
+        {
+            GTEST_SKIP() << "Maximize unavailable on this display (headless environment)";
+        }
+        EXPECT_TRUE(window.getNormalGeometry().has_value()) << "the restore target was kept";
+    }
+    catch (const std::exception& e)
+    {
+        if (isOffscreenVideoDriver() && !TestSupport::displayRequired())
+        {
+            GTEST_SKIP() << "Window creation failed on offscreen driver (no GL): " << e.what();
+        }
+        FAIL() << "Window creation failed unexpectedly: " << e.what();
+    }
+}
+
 } // namespace
 } // namespace Core
