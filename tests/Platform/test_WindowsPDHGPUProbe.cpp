@@ -1248,6 +1248,140 @@ TEST_F(WindowsPDHGPUProbeInjectedTest, AZeroByteMoreDataAnswerIsAnEmptySuccessfu
     EXPECT_TRUE(probe.adapterUtilizationCurrent());
 }
 
+// #3215: a churning set of GPU-using processes, as on an idle Windows machine where processes start and
+// exit all the time. Each pass lists LIVE processes, each with ENGINES engine instances and one memory
+// instance, and replaces the CHURN oldest with new PIDs.
+struct GpuProcessChurn
+{
+    static constexpr int LIVE = 20;
+    static constexpr int ENGINES = 8;
+    static constexpr int CHURN = 2;
+
+    int firstPid = 1000;
+
+    [[nodiscard]] static std::wstring engineName(int pid, int engine)
+    {
+        return L"pid_" + std::to_wstring(pid) + L"_luid_0x00000000_0x0000D1B5_phys_0_eng_" + std::to_wstring(engine) + L"_engtype_3D";
+    }
+
+    [[nodiscard]] static std::wstring memoryName(int pid)
+    {
+        return L"pid_" + std::to_wstring(pid) + L"_luid_0x00000000_0x0000D1B5_phys_0";
+    }
+
+    /// This pass's items, then the next pass's processes.
+    void fill(FakeScenario& scenario, const Impl& impl)
+    {
+        std::vector<FakeItem> engines;
+        std::vector<FakeItem> memory;
+        for (int pid = firstPid; pid < firstPid + LIVE; ++pid)
+        {
+            for (int engine = 0; engine < ENGINES; ++engine)
+            {
+                engines.push_back({.name = engineName(pid, engine), .doubleValue = 1.0});
+            }
+            memory.push_back({.name = memoryName(pid), .largeValue = 4096});
+        }
+        scenario.items[impl.utilizationCounter] = std::move(engines);
+        if (impl.dedicatedMemoryCounter != nullptr)
+        {
+            scenario.items[impl.dedicatedMemoryCounter] = memory;
+            scenario.items[impl.sharedMemoryCounter] = std::move(memory);
+        }
+        firstPid += CHURN;
+    }
+
+    /// Distinct instance names one pass lists, for @p role.
+    [[nodiscard]] static std::size_t liveNames(PDHGPUProbe::Role role)
+    {
+        return static_cast<std::size_t>(LIVE * ENGINES) + (role == PDHGPUProbe::Role::Process ? static_cast<std::size_t>(LIVE) : 0U);
+    }
+};
+
+TEST_F(WindowsPDHGPUProbeInjectedTest, ExitedProcessesInstanceNamesAreDroppedFromTheProcessQuerysCache)
+{
+    auto impl = makeInjectedImpl(PDHGPUProbe::Role::Process);
+    const Impl& state = *impl;
+    PDHGPUProbe probe(std::move(impl));
+    GpuProcessChurn churn;
+    std::size_t largest = 0;
+    std::vector<ProcessGPUCounters> last;
+    for (int pass = 0; pass < 300; ++pass) // 600 processes started and exited
+    {
+        churn.fill(*m_Scenario, state);
+        last = probe.readProcessGPUCounters();
+        largest = std::max(largest, probe.instanceCacheStats().cachedEntries);
+    }
+    // The names listed now, the slack, and one pass's new names: not every name ever seen (over 5,500).
+    const std::size_t bound = GpuProcessChurn::liveNames(PDHGPUProbe::Role::Process) + Impl::INSTANCE_CACHE_SLACK +
+                              (static_cast<std::size_t>(GpuProcessChurn::CHURN) * (GpuProcessChurn::ENGINES + 1));
+    EXPECT_LE(largest, bound);
+    EXPECT_EQ(probe.instanceCacheStats().clears, 0U) << "the size cap is never reached";
+
+    // Every live process is still read, with its own figures.
+    ASSERT_EQ(last.size(), static_cast<std::size_t>(GpuProcessChurn::LIVE));
+    for (const auto& counter : last)
+    {
+        EXPECT_GE(counter.pid, churn.firstPid - GpuProcessChurn::CHURN);
+        EXPECT_DOUBLE_EQ(counter.gpuUtilPercent, 1.0);
+        EXPECT_EQ(counter.gpuMemoryBytes, 4096U);
+    }
+}
+
+TEST_F(WindowsPDHGPUProbeInjectedTest, ExitedProcessesInstanceNamesAreDroppedFromTheAdapterQuerysCache)
+{
+    auto impl = makeInjectedImpl(PDHGPUProbe::Role::Adapter);
+    const Impl& state = *impl;
+    PDHGPUProbe probe(std::move(impl));
+    GpuProcessChurn churn;
+    std::size_t largest = 0;
+    for (int pass = 0; pass < 300; ++pass)
+    {
+        churn.fill(*m_Scenario, state);
+        static_cast<void>(probe.readProcessGPUCounters());
+        largest = std::max(largest, probe.instanceCacheStats().cachedEntries);
+    }
+    const std::size_t bound = GpuProcessChurn::liveNames(PDHGPUProbe::Role::Adapter) + Impl::INSTANCE_CACHE_SLACK +
+                              (static_cast<std::size_t>(GpuProcessChurn::CHURN) * GpuProcessChurn::ENGINES);
+    EXPECT_LE(largest, bound);
+    // Twenty processes on each of the adapter's eight engines, 1% apiece.
+    const auto utilization = probe.adapterUtilization();
+    ASSERT_EQ(utilization.size(), 1U);
+    EXPECT_DOUBLE_EQ(utilization.begin()->second, 20.0);
+}
+
+// A failed read lists nothing, which is not the same as no instances: the names already parsed stay, so
+// the next good read of the same instances finds them all again by position (#3215).
+TEST_F(WindowsPDHGPUProbeInjectedTest, AFailedArrayReadKeepsTheParsedInstanceNames)
+{
+    auto impl = makeInjectedImpl(PDHGPUProbe::Role::Process);
+    const Impl& state = *impl;
+    PDHGPUProbe probe(std::move(impl));
+    GpuProcessChurn churn;
+    for (int pass = 0; pass < 200; ++pass)
+    {
+        churn.fill(*m_Scenario, state);
+        static_cast<void>(probe.readProcessGPUCounters());
+    }
+    const std::size_t before = probe.instanceCacheStats().cachedEntries;
+    EXPECT_GE(before, GpuProcessChurn::liveNames(PDHGPUProbe::Role::Process));
+
+    for (PDH_HCOUNTER counter : {state.utilizationCounter, state.dedicatedMemoryCounter, state.sharedMemoryCounter})
+    {
+        m_Scenario->hardFailureStatus[counter] = static_cast<PDH_STATUS>(PDH_INVALID_DATA);
+    }
+    static_cast<void>(probe.readProcessGPUCounters());
+    EXPECT_EQ(probe.instanceCacheStats().cachedEntries, before);
+
+    m_Scenario->hardFailureStatus.clear();
+    churn.firstPid -= GpuProcessChurn::CHURN; // the same processes as the last good read
+    churn.fill(*m_Scenario, state);
+    const auto statsBefore = probe.instanceCacheStats();
+    const auto counters = probe.readProcessGPUCounters();
+    EXPECT_EQ(counters.size(), static_cast<std::size_t>(GpuProcessChurn::LIVE));
+    EXPECT_EQ(probe.instanceCacheStats().misses, statsBefore.misses) << "every name was still parsed";
+}
+
 TEST(AddEngineUtilizationTest, InstancesOfOneEngineAddUpAndEnginesStayApart)
 {
     std::vector<std::pair<std::string, double>> byEngine;

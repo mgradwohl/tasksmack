@@ -27,6 +27,7 @@
 // clang-format on
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <charconv>
 #include <chrono>
@@ -34,6 +35,7 @@
 #include <cstdint>
 #include <exception>
 #include <functional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -364,6 +366,11 @@ struct PDHGPUProbe::Impl
 
     /// Guard against unbounded instance-name cache growth from PID churn over long sessions.
     static constexpr std::size_t MAX_INSTANCE_CACHE_ENTRIES = 16384;
+    /// How many more names instanceCache may hold than the last reads listed before
+    /// pruneInstanceCache() drops the ones no longer listed (#3215). Every GPU-using process that
+    /// exits leaves its engine and memory instances' names behind, about 450 bytes each and some
+    /// twenty per process; without this they stayed until MAX_INSTANCE_CACHE_ENTRIES, megabytes later.
+    static constexpr std::size_t INSTANCE_CACHE_SLACK = 256;
 
     // Wildcard counter paths. PDH expands the '*' instance wildcard on every collect.
     static constexpr const wchar_t* UTILIZATION_COUNTER_PATH = L"\\GPU Engine(*)\\Utilization Percentage";
@@ -664,6 +671,10 @@ struct PDHGPUProbe::Impl
     {
         std::vector<std::wstring> names;
         std::vector<CachedInstance> cached;
+        /// Items the last successful read of this counter's array listed: names[0, listed) are the
+        /// instances that exist now (a slot past names' end, or skipped for its status, holds none
+        /// or an older name). A failed read leaves it, so a pruning after one keeps what was there.
+        std::size_t listed = 0;
     };
 
     PositionalCache utilizationPositional;
@@ -704,6 +715,42 @@ struct PDHGPUProbe::Impl
         posCache.names[index] = name;
         posCache.cached[index] = parsed;
         return posCache.cached[index];
+    }
+
+    /// Records how many items the read just made of @p posCache's counter listed, when it succeeded
+    /// (lastArrayReadOk: an empty array included); a failed read leaves the count from the last one.
+    void noteListed(PositionalCache& posCache, DWORD itemCount) noexcept
+    {
+        if (lastArrayReadOk)
+        {
+            posCache.listed = itemCount;
+        }
+    }
+
+    /// Drops the instanceCache entries for instances no read lists any more -- those of processes
+    /// that have exited -- once there are INSTANCE_CACHE_SLACK more entries than the last reads
+    /// listed (#3215). Keeps every name a positional cache lists, so the next read of the same
+    /// instances is still a positional hit, and a reordered one a hash-map hit. Call after a read.
+    void pruneInstanceCache()
+    {
+        const std::array<const PositionalCache*, 3> positional{&utilizationPositional, &dedicatedMemoryPositional, &sharedMemoryPositional};
+        std::size_t listed = 0;
+        for (const PositionalCache* posCache : positional)
+        {
+            listed += std::min(posCache->listed, posCache->names.size());
+        }
+        if (instanceCache.size() <= listed + INSTANCE_CACHE_SLACK)
+        {
+            return;
+        }
+        std::unordered_set<std::wstring_view, WideStringHash> live;
+        live.reserve(listed);
+        for (const PositionalCache* posCache : positional)
+        {
+            const auto names = std::span(posCache->names).first(std::min(posCache->listed, posCache->names.size()));
+            live.insert(names.begin(), names.end());
+        }
+        std::erase_if(instanceCache, [&live](const auto& entry) { return !live.contains(entry.first); });
     }
 
     /// @brief Read all expanded instances of a wildcard counter into the reused scratch buffer
