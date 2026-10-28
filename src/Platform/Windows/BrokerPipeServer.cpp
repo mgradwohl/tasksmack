@@ -40,9 +40,10 @@ namespace
 
 bool isActionWindowsDoes(const Broker::Request& request) noexcept
 {
-    // Every signal: Terminate, Kill, and since #2582 Suspend and Resume (NtSuspendProcess, NtResumeProcess).
+    // Every signal: Terminate, Kill, and since #2582 Suspend and Resume (NtSuspendProcess, NtResumeProcess); and
+    // Efficiency mode (#3071).
     return std::holds_alternative<Broker::SignalRequest>(request) || std::holds_alternative<Broker::PriorityRequest>(request) ||
-           std::holds_alternative<Broker::AffinityRequest>(request);
+           std::holds_alternative<Broker::AffinityRequest>(request) || std::holds_alternative<Broker::EfficiencyModeRequest>(request);
 }
 
 bool isRead(const Broker::Request& request) noexcept
@@ -51,7 +52,7 @@ bool isRead(const Broker::Request& request) noexcept
     // sorted here too, or a one-action session (#2550) and the over-the-shoulder read filter
     // (BrokerHelper::readsOnlyOwnProcesses) might let it through: revisit both, then this count.
     // ServiceActionRequest is an action Windows' helper doesn't do (an ErrorReply), so it is neither here.
-    static_assert(std::variant_size_v<Broker::Request> == 15, "sort the new request kind into an action or a read");
+    static_assert(std::variant_size_v<Broker::Request> == 16, "sort the new request kind into an action or a read");
     return std::holds_alternative<Broker::EnvironmentRequest>(request) || std::holds_alternative<Broker::ModulesRequest>(request) ||
            std::holds_alternative<Broker::OpenFilesRequest>(request) || std::holds_alternative<Broker::ConnectionsRequest>(request) ||
            std::holds_alternative<Broker::MemoryRollupRequest>(request) || std::holds_alternative<Broker::FirmwareFileRequest>(request) ||

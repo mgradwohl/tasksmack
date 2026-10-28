@@ -230,12 +230,13 @@ TEST(PlanDetailRefreshTest, NothingDueAndNoPriorityChangeNeedsNoHandle)
     EXPECT_FALSE(planDetailRefresh(false, false, false, false).any());
 }
 
-TEST(PlanDetailRefreshTest, BasePriorityChangeRereadsOnlyThePriorityClass)
+TEST(PlanDetailRefreshTest, BasePriorityChangeRereadsThePriorityClassAndStatusOnly)
 {
-    // #1156: a Set Priority shows on the next sample, not up to a heavy TTL later.
+    // #1156: a Set Priority shows on the next sample, not up to a heavy TTL later; and so does the
+    // Efficiency Mode status that turning Efficiency mode on or off changes with it (#3071).
     const auto plan = planDetailRefresh(false, false, false, true);
     EXPECT_TRUE(plan.priority);
-    EXPECT_FALSE(plan.light);
+    EXPECT_TRUE(plan.light);
     EXPECT_FALSE(plan.heavy);
 }
 

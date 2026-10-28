@@ -323,7 +323,9 @@ guardRefusal(const WindowsProcessFunctions& fns, HANDLE process, const ProcessTa
 {
     std::string refusal;
     BOOL critical = FALSE;
-    if ((action == GuardedAction::End || action == GuardedAction::Suspend) && isProtected(fns, process))
+    const bool refusesProtected =
+        action == GuardedAction::End || action == GuardedAction::Suspend || action == GuardedAction::EfficiencyMode;
+    if (refusesProtected && isProtected(fns, process))
     {
         refusal = protectedProcessRefusal(target.pid, action);
     }
@@ -347,6 +349,24 @@ guardRefusal(const WindowsProcessFunctions& fns, HANDLE process, const ProcessTa
     return ProcessActionResult::error(std::move(refusal));
 }
 
+/// Whether the table has every call Efficiency mode makes (#3071).
+[[nodiscard]] bool hasEfficiencyMode(const WindowsProcessFunctions& fns) noexcept
+{
+    return fns.getPriorityClass != nullptr && fns.setPriorityClass != nullptr && fns.setProcessInformation != nullptr;
+}
+
+/// Sets @p process's execution-speed power throttling (EcoQoS) on, or hands it back to Windows (off: no
+/// mechanism controlled), through the seam; FALSE with GetLastError() set when refused.
+[[nodiscard]] BOOL setExecutionSpeedThrottling(const WindowsProcessFunctions& fns, HANDLE process, bool on)
+{
+    PROCESS_POWER_THROTTLING_STATE state{};
+    state.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+    const ULONG mask = on ? PROCESS_POWER_THROTTLING_EXECUTION_SPEED : 0U;
+    state.ControlMask = mask;
+    state.StateMask = mask;
+    return fns.setProcessInformation(process, ProcessPowerThrottling, &state, sizeof(state));
+}
+
 } // namespace
 
 WindowsProcessFunctions realWindowsProcessFunctions() noexcept
@@ -365,6 +385,9 @@ WindowsProcessFunctions realWindowsProcessFunctions() noexcept
         .ntSuspendProcess = Windows::ntSuspendProcess(),
         .ntResumeProcess = Windows::ntResumeProcess(),
         .getCurrentProcessId = &GetCurrentProcessId,
+        .getPriorityClass = &GetPriorityClass,
+        .setPriorityClass = &SetPriorityClass,
+        .setProcessInformation = &SetProcessInformation,
     };
 }
 
@@ -388,10 +411,11 @@ ProcessActionCapabilities WindowsProcessActions::actionCapabilities() const
         // SetProcessAffinityMask, or CPU sets across processor groups (#1881); needs the groups' sizes
         .canSetAffinity = !m_GroupSizes.empty(),
         .syscallTrace = SyscallTraceAvailability::Unsupported,
-        .canCreateDump = HAS_DUMPS,         // MiniDumpWriteDump, dbghelp.dll loaded on the first dump (#807)
-        .canChooseDumpFolder = HAS_DUMPS,   // IFileOpenDialog with FOS_PICKFOLDERS (#2001)
-        .dumpsFromSnapshot = HAS_DUMPS,     // PssCaptureSnapshot, else from the running process (#2001)
-        .canAuthorizeInteractively = false, // BrokeredProcessActions sets it when TaskSmackHelper.exe can be used (#2550)
+        .canCreateDump = HAS_DUMPS,                       // MiniDumpWriteDump, dbghelp.dll loaded on the first dump (#807)
+        .canChooseDumpFolder = HAS_DUMPS,                 // IFileOpenDialog with FOS_PICKFOLDERS (#2001)
+        .dumpsFromSnapshot = HAS_DUMPS,                   // PssCaptureSnapshot, else from the running process (#2001)
+        .canAuthorizeInteractively = false,               // BrokeredProcessActions sets it when TaskSmackHelper.exe can be used (#2550)
+        .canSetEfficiencyMode = hasEfficiencyMode(m_Fns), // EcoQoS and the Idle class, as Task Manager (#3071)
     };
 }
 
@@ -605,6 +629,78 @@ ProcessActionResult WindowsProcessActions::setPriority(const ProcessTarget& targ
     }
 
     spdlog::info("Successfully set priority (nice={}) for PID {}", clampedNice, target.pid);
+    return ProcessActionResult::ok();
+}
+
+ProcessActionResult WindowsProcessActions::setEfficiencyMode(const ProcessTarget& target, bool on)
+{
+    if (!hasEfficiencyMode(m_Fns))
+    {
+        return ProcessActionResult::error(
+            std::format("Efficiency mode is not available on this Windows; nothing sent to process {}", target.pid));
+    }
+    spdlog::debug("Turning Efficiency mode {} for PID {}", on ? "on" : "off", target.pid);
+    if (auto refused = systemPidResult(target, GuardedAction::EfficiencyMode))
+    {
+        return std::move(*refused);
+    }
+    // PROCESS_SET_INFORMATION for both calls; openVerified() adds PROCESS_QUERY_LIMITED_INFORMATION, which
+    // GetPriorityClass() needs.
+    VerifiedProcess process = openForAction(m_Fns,
+                                            target,
+                                            PROCESS_SET_INFORMATION,
+                                            [&target](DWORD error, bool isProtected)
+                                            { return actionOpenFailure(error, target.pid, GuardedAction::EfficiencyMode, isProtected); });
+    if (!process.result.success)
+    {
+        spdlog::warn("{}", process.result.errorMessage);
+        return std::move(process.result);
+    }
+    // Idle starves a critical process as surely as a priority change does (#2556), and a protected one is
+    // never touched.
+    if (auto refused = guardRefusal(m_Fns, process.handle.get(), target, GuardedAction::EfficiencyMode))
+    {
+        return std::move(*refused);
+    }
+
+    const DWORD current = m_Fns.getPriorityClass(process.handle.get()); // 0 when it can't be read
+    if (setExecutionSpeedThrottling(m_Fns, process.handle.get(), on) == FALSE)
+    {
+        const DWORD error = GetLastError();
+        return callFailure(
+            m_Fns, process.handle.get(), target, GuardedAction::EfficiencyMode, error, efficiencyModeFailure(error, target.pid, on));
+    }
+    EfficiencyModePriorities& priorities = sharedEfficiencyModePriorities();
+    if (on)
+    {
+        if (m_Fns.setPriorityClass(process.handle.get(), IDLE_PRIORITY_CLASS) == FALSE)
+        {
+            const DWORD error = GetLastError();
+            static_cast<void>(setExecutionSpeedThrottling(m_Fns, process.handle.get(), false)); // a refused "on" changes nothing
+            return callFailure(m_Fns,
+                               process.handle.get(),
+                               target,
+                               GuardedAction::EfficiencyMode,
+                               error,
+                               efficiencyModePriorityFailure(error, target.pid, true));
+        }
+        priorities.remember(target, current);
+        spdlog::info("Turned Efficiency mode on for PID {} (priority class was 0x{:X})", target.pid, current);
+        return ProcessActionResult::ok();
+    }
+
+    const std::optional<std::uint32_t> restore = priorityClassToRestore(priorities.take(target), current);
+    if (restore.has_value() && m_Fns.setPriorityClass(process.handle.get(), *restore) == FALSE)
+    {
+        const DWORD error = GetLastError();
+        return callFailure(m_Fns,
+                           process.handle.get(),
+                           target,
+                           GuardedAction::EfficiencyMode,
+                           error,
+                           efficiencyModePriorityFailure(error, target.pid, false));
+    }
+    spdlog::info("Turned Efficiency mode off for PID {}", target.pid);
     return ProcessActionResult::ok();
 }
 

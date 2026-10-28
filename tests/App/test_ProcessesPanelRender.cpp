@@ -14,6 +14,7 @@
 /// UI state (#2731): tab changes and the frame rate never change it.
 
 #include "App/Panels/AuthorizeWording.h"
+#include "App/Panels/ProcessActionsView.h"
 #include "App/Panels/ProcessColumnAvailability.h"
 #include "App/Panels/ProcessDumpView.h"
 #include "App/Panels/ProcessRowFormat.h"
@@ -737,6 +738,95 @@ TEST_F(ProcessesPanelRenderTest, CreateDumpFromTheRowMenuAsksFirst)
 
     pressModalButton(*panel, "Cancel");
     EXPECT_EQ(actions->createDumpCount(), 0);
+    panel->onDetach();
+}
+
+/// An attached panel reading init (1), server (100) and worker (101), each with Status @p status, over mock
+/// actions that can turn Efficiency mode on and off (#3071); @p actions is left pointing at them.
+[[nodiscard]] std::unique_ptr<ProcessesPanel> efficiencyModePanel(const std::string& status, TestMocks::MockProcessActions*& actions)
+{
+    auto panel = std::make_unique<ProcessesPanel>(
+        [&actions, status]
+        {
+            auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+            for (auto counters : {TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0),
+                                  TestMocks::makeProcessCounters(100, "server", 'R', 200, 50, 1000, std::uint64_t{8} << 20U, 1),
+                                  TestMocks::makeProcessCounters(101, "worker", 'S', 30, 10, 1100, std::uint64_t{2} << 20U, 100)})
+            {
+                counters.status = status;
+                probe->withProcess(counters);
+            }
+            auto mock = std::make_unique<TestMocks::MockProcessActions>();
+            mock->setCapabilities({.canTerminate = true, .canKill = true, .canSetEfficiencyMode = true});
+            actions = mock.get();
+            return ProcessesPanelPlatform{.probe = std::move(probe), .actions = std::move(mock), .icons = nullptr};
+        },
+        [](Core::Event&) {});
+    attachAndSeed(*panel);
+    Core::ActiveTabChangedEvent shown("Processes");
+    panel->onEvent(shown);
+    return panel;
+}
+
+// #3071: the row menu's Efficiency mode, for a process not in it, asks to confirm in Task Manager's words,
+// then turns it on for the process the menu was for.
+TEST_F(ProcessesPanelRenderTest, EfficiencyModeFromTheRowMenuIsConfirmedThenTurnedOn)
+{
+    TestMocks::MockProcessActions* actions = nullptr;
+    const auto panel = efficiencyModePanel("", actions);
+    ASSERT_NE(actions, nullptr);
+    renderUntilLoaded(*panel);
+    const std::optional<std::int32_t> menuPid = openARowMenu(*panel);
+    ASSERT_TRUE(menuPid.has_value());
+
+    pressPopupItem(*panel, App::Detail::EFFICIENCY_MODE_LABEL);
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    const ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
+    ASSERT_NE(modal, nullptr);
+    EXPECT_TRUE(std::string_view(modal->Name).starts_with("Turn on Efficiency mode for")) << modal->Name;
+    EXPECT_EQ(actions->efficiencyModeCount(), 0); // asked, not done
+
+    pressModalButton(*panel, "Turn on Efficiency mode"); // not destructive: a plain button
+    panel->waitForRowActionForTesting();
+    EXPECT_EQ(actions->efficiencyModeCount(), 1);
+    EXPECT_TRUE(actions->lastEfficiencyMode());
+    EXPECT_EQ(actions->lastTarget().pid, menuPid.value_or(-1));
+    EXPECT_TRUE(renderAndCapture(*panel).contains(std::format("Efficiency mode on for PID {}", menuPid.value_or(-1))));
+    panel->onDetach();
+}
+
+// #3071: ticked for a process whose Status says it is in Efficiency mode; pressing it turns it off at once,
+// with no confirm. On a selection of several it is greyed out: one process at a time, as Task Manager.
+TEST_F(ProcessesPanelRenderTest, EfficiencyModeTickedInTheRowMenuIsTurnedOffAtOnceAndOneProcessAtATime)
+{
+    TestMocks::MockProcessActions* actions = nullptr;
+    const auto panel = efficiencyModePanel(std::string(Platform::EFFICIENCY_MODE_STATUS), actions);
+    ASSERT_NE(actions, nullptr);
+    renderUntilLoaded(*panel);
+    const std::optional<std::int32_t> menuPid = openARowMenu(*panel);
+    ASSERT_TRUE(menuPid.has_value());
+
+    pressPopupItem(*panel, App::Detail::EFFICIENCY_MODE_LABEL);
+    static_cast<void>(renderAndCapture(*panel));
+    EXPECT_EQ(ImGui::GetTopMostPopupModal(), nullptr) << "turning it off isn't confirmed";
+    panel->waitForRowActionForTesting();
+    EXPECT_EQ(actions->efficiencyModeCount(), 1);
+    EXPECT_FALSE(actions->lastEfficiencyMode());
+    EXPECT_EQ(actions->lastTarget().pid, menuPid.value_or(-1));
+
+    if (topPopup() != nullptr)
+    {
+        closePopups(*panel);
+    }
+    selectAll(*panel);
+    ASSERT_EQ(panel->selectionCount(), 3U);
+    ASSERT_TRUE(openARowMenu(*panel).has_value());
+    pressPopupItem(*panel, App::Detail::EFFICIENCY_MODE_LABEL);
+    static_cast<void>(renderAndCapture(*panel));
+    panel->waitForRowActionForTesting();
+    EXPECT_EQ(actions->efficiencyModeCount(), 1) << "greyed out for a selection: nothing is sent";
+    EXPECT_EQ(ImGui::GetTopMostPopupModal(), nullptr);
     panel->onDetach();
 }
 
@@ -2789,6 +2879,108 @@ TEST_F(ProcessesPanelRenderTest, GroupByContainerShowsHeadersWithTotalsAndCollap
     EXPECT_EQ(UserConfig::get().settings().processGroupBy, ProcessGrouping::GroupBy::None);
     EXPECT_TRUE(text.contains("Group: None")) << text;
     panel->onDetach(); // TearDown restores the settings
+}
+
+// #3067: the toolbar's Find handles opens its dialog; a query typed there searches every process's open
+// files on the dialog's worker and lists each process holding a match, with the count in the status line.
+TEST_F(ProcessesPanelRenderTest, FindHandlesListsTheProcessesHoldingAFile)
+{
+    auto panel = std::make_unique<ProcessesPanel>(
+        []
+        {
+            auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+            probe->withProcess(TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0))
+                .withProcess(TestMocks::makeProcessCounters(42, "soffice", 'S', 30, 10, 200, std::uint64_t{4} << 20U, 1));
+            auto files = std::make_unique<TestMocks::MockProcessOpenFilesReader>();
+            Platform::OpenFilesReadResult held;
+            held.status = Platform::OpenFilesReadStatus::Ok;
+            for (const char* path : {"/home/me/Report.ods", "/home/me/notes.txt"})
+            {
+                Platform::OpenFile open;
+                open.kind = Platform::OpenFileKind::File;
+                open.path = path;
+                held.files.push_back(std::move(open));
+            }
+            files->setResult(std::move(held));
+            return ProcessesPanelPlatform{.probe = std::move(probe),
+                                          .actions = std::make_unique<TestMocks::MockProcessActions>(),
+                                          .icons = nullptr,
+                                          .openFiles = std::move(files)};
+        });
+    attachAndSeed(*panel);
+    Core::ActiveTabChangedEvent shown("Processes");
+    panel->onEvent(shown);
+    renderUntilLoaded(*panel);
+
+    const ImGuiWindow* shell = ImGui::FindWindowByName("Shell");
+    ASSERT_NE(shell, nullptr);
+    // Ctrl+Shift+F over the table opens it, as the toolbar's magnifier button does.
+    ImGuiIO& io = ImGui::GetIO();
+    io.AddMousePosEvent(DISPLAY_WIDTH * 0.5F, DISPLAY_HEIGHT * 0.5F); // hovered: the table's keys are armed
+    io.AddKeyEvent(ImGuiMod_Ctrl, true);
+    io.AddKeyEvent(ImGuiMod_Shift, true);
+    io.AddKeyEvent(ImGuiKey_F, true);
+    static_cast<void>(renderAndCapture(*panel));
+    io.AddKeyEvent(ImGuiKey_F, false);
+    io.AddKeyEvent(ImGuiMod_Shift, false);
+    io.AddKeyEvent(ImGuiMod_Ctrl, false);
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    ASSERT_NE(ImGui::GetTopMostPopupModal(), nullptr) << "Ctrl+Shift+F didn't open Find handles";
+    ASSERT_NE(shell, nullptr);
+    EXPECT_TRUE(renderAndCapture(*panel).contains("Type a name and press Find."));
+
+    // The query box has the keyboard when the dialog opens: type, then Enter searches.
+    for (const char* character : {"r", "e", "p", "o", "r", "t"})
+    {
+        ImGui::GetIO().AddInputCharactersUTF8(character);
+        static_cast<void>(renderAndCapture(*panel));
+    }
+    ImGui::GetIO().AddKeyEvent(ImGuiKey_Enter, true);
+    static_cast<void>(renderAndCapture(*panel));
+    ImGui::GetIO().AddKeyEvent(ImGuiKey_Enter, false);
+    std::string text;
+    for (int frame = 0; frame < LOAD_FRAMES; ++frame)
+    {
+        text = renderAndCapture(*panel);
+        if (text.contains("2 processes searched"))
+        {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    EXPECT_TRUE(text.contains("2 processes searched \xC2\xB7 2 found")) << text;
+    EXPECT_TRUE(text.contains("/home/me/Report.ods")) << text;
+    EXPECT_TRUE(text.contains("soffice")) << text;
+    EXPECT_FALSE(text.contains("notes.txt")) << text;
+    panel->onDetach();
+}
+
+// Ctrl+F over the table puts the cursor in the filter box: what's typed next filters the rows.
+TEST_F(ProcessesPanelRenderTest, CtrlFPutsTheCursorInTheFilter)
+{
+    SelectionSink events;
+    const auto panel = attachedPanel(events.sink());
+    renderUntilLoaded(*panel);
+    ImGuiIO& io = ImGui::GetIO();
+    io.AddMousePosEvent(DISPLAY_WIDTH * 0.5F, DISPLAY_HEIGHT * 0.5F); // hovered: the table's keys are armed
+    io.AddKeyEvent(ImGuiMod_Ctrl, true);
+    io.AddKeyEvent(ImGuiKey_F, true);
+    static_cast<void>(renderAndCapture(*panel));
+    io.AddKeyEvent(ImGuiKey_F, false);
+    io.AddKeyEvent(ImGuiMod_Ctrl, false);
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    EXPECT_EQ(ImGui::GetTopMostPopupModal(), nullptr); // not Find handles
+    for (const char* character : {"w", "o", "r", "k"})
+    {
+        io.AddInputCharactersUTF8(character);
+        static_cast<void>(renderAndCapture(*panel));
+    }
+    static_cast<void>(renderAndCapture(*panel));
+    const std::string text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("worker")) << text;
+    EXPECT_FALSE(text.contains("server")) << text;
 }
 
 // #3186: the Group control picks a mode (leaving Tree view, which grouping replaces); the keyboard and

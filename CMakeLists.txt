@@ -184,6 +184,7 @@ set(TASKSMACK_SOURCES
     src/App/Panels/ProcessBatchPriorityDialog.cpp
     src/App/Panels/ProcessAffinityDialog.cpp
     src/App/Panels/RunTaskDialog.cpp # Run new task (#3065)
+    src/App/Panels/FindHandlesDialog.cpp # Find handles (#3067)
     src/App/Panels/ProcessActionsView.cpp
     src/App/Panels/ProcessDumpView.cpp
     src/App/Panels/ProcessActionsBlock.cpp
@@ -223,6 +224,7 @@ set(TASKSMACK_SOURCES
     src/Domain/GPUModel.cpp
     src/Domain/StartupModel.cpp
     src/Domain/ConnectionsModel.cpp # the Connections tab (#3066)
+    src/Domain/HandleSearch.cpp # Find handles (#3067)
     src/Domain/ServiceModel.cpp
     src/Domain/SensorModel.cpp
     src/Domain/SensorTracker.cpp

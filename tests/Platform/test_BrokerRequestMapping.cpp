@@ -111,6 +111,26 @@ TEST(BrokerRequestMappingTest, PriorityIoPriorityAndAffinityReachTheirActions)
     EXPECT_EQ(actions.lastTarget(), TARGET);
 }
 
+// #3071: a SetEfficiencyMode request reaches setEfficiencyMode() with its target and whether it is on.
+TEST(BrokerRequestMappingTest, EfficiencyModeReachesItsAction)
+{
+    TestMocks::MockProcessActions actions;
+    for (const bool on : {true, false})
+    {
+        const Broker::Response response = BrokerServer::handleRequest(Broker::EfficiencyModeRequest{.target = TARGET, .on = on}, actions);
+        EXPECT_TRUE(actionResult(response).success) << on;
+        EXPECT_EQ(actions.lastEfficiencyMode(), on);
+        EXPECT_EQ(actions.lastTarget(), TARGET);
+    }
+    EXPECT_EQ(actions.efficiencyModeCount(), 2);
+
+    actions.setEfficiencyModeResult(Platform::ProcessActionResult::error("Process 4242 is a critical system process"));
+    const Broker::ActionResult refused =
+        actionResult(BrokerServer::handleRequest(Broker::EfficiencyModeRequest{.target = TARGET, .on = true}, actions));
+    EXPECT_FALSE(refused.success);
+    EXPECT_EQ(refused.errorMessage, "Process 4242 is a critical system process");
+}
+
 TEST(BrokerRequestMappingTest, AFailedActionCarriesItsMessage)
 {
     TestMocks::MockProcessActions actions;
