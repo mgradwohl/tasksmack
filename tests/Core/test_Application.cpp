@@ -45,6 +45,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <exception>
+#include <format>
 #include <functional>
 #include <initializer_list>
 #include <limits>
@@ -710,23 +711,32 @@ void ThrowingOnAttachLayer::onDetach()
 /// What StaticFrameLayer saw.
 struct StaticFrameObserved
 {
-    int framesInWindow = 0;             ///< Frames drawn in the quiet COUNT_SECONDS window
-    int attempts = 0;                   ///< Publications made before one brought its own frame
-    std::uint64_t publishToFrameMs = 0; ///< From the counted publication to the next frame's start
-    std::uint64_t wakesTaken = 0;       ///< Publication wakes the loop's drain took for it
-    bool published = false;             ///< A publication's frame came before the floor's
+    int quietFrames = 0;                ///< Frames in the COUNT_SECONDS window with no SDL event or wake before them
+    int eventFrames = 0;                ///< Frames in the window that an SDL event brought (they don't count against the floor)
+    int graceFrames = 0;                ///< Frames in the window that a move/resize grace paced, with no event before them
+    std::string eventsInWindow;         ///< The SDL event types behind those, for the failure message
+    int attempts = 0;                   ///< Publications started
+    std::string attemptLog;             ///< How each attempt went, for the failure message
+    std::uint64_t publishToFrameMs = 0; ///< From the counted publication's commit to the next frame's start
+    std::uint64_t wakesTaken = 0;       ///< Publication wakes the loop's drain took for the counted attempt
+    bool counted = false;               ///< An attempt had no other event in its way
+    bool published = false;             ///< The counted attempt's publication brought its frame, well before the floor's
     bool timedOut = false;
 };
 
 /// #3156 stage 2: a static tab, one whose frames ask for no motion. Once the startup events and graces
-/// are over, it counts the frames in a quiet COUNT_SECONDS: about the static floor's two a second, not
-/// the 20 fps idle rate. Then a real Domain::BackgroundSampler publishes: its one pass, started by this
-/// frame, samples PUBLISH_DELAY_MS into the floor wait that follows, and wakes the loop as every pass
-/// does. The next frame must come at once, well before the floor would have drawn it, and the loop
-/// must have taken a publication wake for it.
+/// are over, it counts the frames in COUNT_SECONDS that nothing but the loop's own timing brought -- no
+/// SDL event and no publication wake before them -- which must come at about the static floor's two a
+/// second, not the 20 fps idle rate. Frames an SDL event brought are counted apart and their event
+/// types reported: on a shared CI display, other tests' windows coming and going send focus and
+/// pointer events, and each of those rightly draws a frame.
 ///
-/// An attempt counts only when no other frame came between its publication and the frame it brought:
-/// a stray window event on a desktop can draw a frame first. It tries again after a fresh quiet frame.
+/// Then a real Domain::BackgroundSampler publishes: armed on a quiet frame (one the floor brought, so
+/// no other wake is queued), its one pass samples PUBLISH_DELAY_MS into the floor wait that follows and
+/// wakes the loop, as every pass does. The next frame must come at once, well before the floor would
+/// have drawn it, with a publication wake taken. An attempt counts only when no SDL event came between
+/// its arming and that frame (like KeyDuringIdleWaitLayer's); an excluded one is stopped, its own late
+/// wake is let through, and a new one is armed on the next quiet frame.
 /// The sampler is stopped in onDetach(), before ~Application() destroys the window (#1502).
 class StaticFrameLayer : public Core::Layer
 {
@@ -734,8 +744,8 @@ class StaticFrameLayer : public Core::Layer
     static constexpr double SETTLE_SECONDS = 1.5;
     static constexpr double COUNT_SECONDS = 3.0;
     static constexpr int PUBLISH_DELAY_MS = 100;
-    static constexpr int MAX_ATTEMPTS = 5;
-    static constexpr double TIMEOUT_SECONDS = 30.0;
+    static constexpr int MAX_ATTEMPTS = 8;
+    static constexpr double TIMEOUT_SECONDS = 40.0;
 
     explicit StaticFrameLayer(StaticFrameObserved& observed) : Layer("StaticFrame"), m_Observed(observed)
     {}
@@ -745,13 +755,32 @@ class StaticFrameLayer : public Core::Layer
         m_Publisher.reset(); // stops and joins the sampler
     }
 
+    void onSDLEvent(SDL_Event* event) override
+    {
+        ++m_EventsSinceFrame;
+        m_EventTypesSinceFrame += std::format("{}0x{:x}", m_EventTypesSinceFrame.empty() ? "" : " ", event->type);
+    }
+
     void onUpdate(float /*deltaTime*/) override
     {
+        const Core::Application& app = Core::Application::get();
         const double now = Core::Application::getTime();
         if (m_Start < 0.0)
         {
             m_Start = now;
         }
+        const std::uint64_t wakes = Core::ApplicationTestAccessor::publicationWakesTaken(app);
+        const bool wokenByPublication = wakes != m_WakesAtLastFrame;
+        const int events = std::exchange(m_EventsSinceFrame, 0);
+        const std::string eventTypes = std::exchange(m_EventTypesSinceFrame, {});
+        m_WakesAtLastFrame = wakes;
+        // A move or resize event's grace (0.35 s) paces the frames after it at the idle rate on purpose,
+        // with no event before each: those frames aren't the floor's either. The wait that brought this
+        // frame was decided after the last one, so a grace running at either counts.
+        const bool graceNow = app.isInteractionRedrawActive();
+        const bool inGrace = graceNow || std::exchange(m_GraceAtLastFrame, graceNow);
+        const bool quiet = events == 0 && !wokenByPublication && !inGrace;
+
         const double running = now - m_Start;
         if (running > TIMEOUT_SECONDS)
         {
@@ -765,19 +794,36 @@ class StaticFrameLayer : public Core::Layer
         }
         if (running < SETTLE_SECONDS + COUNT_SECONDS)
         {
-            ++m_Observed.framesInWindow;
+            if (quiet)
+            {
+                ++m_Observed.quietFrames;
+            }
+            else if (events > 0 || wokenByPublication)
+            {
+                ++m_Observed.eventFrames;
+                m_Observed.eventsInWindow += std::format("[{}{}] ", eventTypes, wokenByPublication ? " wake" : "");
+            }
+            else
+            {
+                ++m_Observed.graceFrames;
+            }
             return;
         }
         if (m_Publisher != nullptr)
         {
-            checkPublication(Core::Application::get());
+            checkPublication(app, events, eventTypes, wakes, inGrace);
         }
-        if (m_Observed.published || m_Observed.attempts >= MAX_ATTEMPTS)
+        if (m_Observed.counted || m_Observed.attempts >= MAX_ATTEMPTS)
         {
             Core::Application::get().stop();
             return;
         }
-        publish(Core::Application::get());
+        // Arm only on a frame the floor brought: then no wake is queued, and the next frame is the
+        // floor's, PUBLISH_DELAY_MS after the publication at the earliest... unless the publication wakes it.
+        if (m_Publisher == nullptr && quiet)
+        {
+            publish(wakes);
+        }
     }
 
   private:
@@ -802,40 +848,68 @@ class StaticFrameLayer : public Core::Layer
 
     /// Starts a sampler whose first pass publishes PUBLISH_DELAY_MS from now, into the wait after this
     /// frame. Its next pass is far off.
-    void publish(const Core::Application& app)
+    void publish(std::uint64_t wakes)
     {
         ++m_Observed.attempts;
-        m_WakesBefore = Core::ApplicationTestAccessor::publicationWakesTaken(app);
+        m_WakesBefore = wakes;
+        m_ArmedAtNs = SDL_GetTicksNS();
         m_Model = std::make_shared<DelayedPublication>();
         m_Publisher = std::make_unique<Domain::BackgroundSampler>(Domain::SamplerConfig{.interval = std::chrono::milliseconds(5000)});
         m_Publisher->addSamplable(m_Model, "delayed");
         m_Publisher->start();
     }
 
-    /// The first frame after a publication started: did the publication bring it?
-    void checkPublication(const Core::Application& app)
+    /// The first frame after an arming: did the publication bring it, or did something else?
+    void checkPublication(const Core::Application& app, int events, const std::string& eventTypes, std::uint64_t wakes, bool inGrace)
     {
         const std::uint64_t frameNs = SDL_GetTicksNS();
         const std::uint64_t publishedAt = m_Model->publishedAtNs();
-        m_Publisher.reset(); // stops the sampler: one publication an attempt
-        if (publishedAt == 0)
+        const std::uint64_t wakesTaken = wakes - m_WakesBefore;
+        const bool waitWoke = Core::ApplicationTestAccessor::lastIdleWaitWoke(app);
+        const bool waitPolled = Core::ApplicationTestAccessor::lastIdleWaitPolledEvent(app);
+        // An excluded attempt's sampler is mid-sample: stopping it waits for that, and its wake, pushed as
+        // the pass ends, draws one more frame, which isn't quiet, so nothing is armed on it.
+        m_Publisher.reset();
+        const std::uint64_t armedToFrameMs = (frameNs - m_ArmedAtNs) / 1'000'000U;
+        const std::uint64_t publishToFrameMs = publishedAt != 0 ? (frameNs - publishedAt) / 1'000'000U : 0U;
+        m_Observed.attemptLog += std::format("#{}: armed->frame {} ms, published {}, publish->frame {} ms, wakes taken {}, events [{}], "
+                                             "idle wait woke {} polled {}, grace {}, hidden {}; ",
+                                             m_Observed.attempts,
+                                             armedToFrameMs,
+                                             publishedAt != 0,
+                                             publishToFrameMs,
+                                             wakesTaken,
+                                             eventTypes,
+                                             waitWoke,
+                                             waitPolled,
+                                             inGrace,
+                                             app.getWindow().isHidden());
+        if (events > 0 || inGrace)
         {
-            return; // another event drew this frame first: try again
+            return; // an SDL event, or a move/resize grace, drew this frame or shared it: not this test's to judge
         }
-        const std::uint64_t wakes = Core::ApplicationTestAccessor::publicationWakesTaken(app) - m_WakesBefore;
-        const std::uint64_t publishToFrameMs = (frameNs - publishedAt) / 1'000'000U;
+        if (waitPolled)
+        {
+            // The wake was queued but the wait timed out first: on X11 the cross-thread wake goes through
+            // the display server, which under load can deliver it late (#1450). Not a counted attempt;
+            // a wake that never wakes the wait leaves every attempt here, and the test fails.
+            return;
+        }
+        m_Observed.counted = true;
+        m_Observed.publishToFrameMs = publishToFrameMs;
+        m_Observed.wakesTaken = wakesTaken;
         // Well before the floor's frame, which was due STATIC_FRAME_FLOOR_INTERVAL - PUBLISH_DELAY_MS later.
-        if (wakes >= 1 && publishToFrameMs < 250U)
-        {
-            m_Observed.published = true;
-            m_Observed.publishToFrameMs = publishToFrameMs;
-            m_Observed.wakesTaken = wakes;
-        }
+        m_Observed.published = publishedAt != 0 && wakesTaken >= 1 && publishToFrameMs < 250U;
     }
 
     StaticFrameObserved& m_Observed;
     double m_Start = -1.0;
+    int m_EventsSinceFrame = 0;
+    std::string m_EventTypesSinceFrame;
+    std::uint64_t m_WakesAtLastFrame = 0;
+    bool m_GraceAtLastFrame = false;
     std::uint64_t m_WakesBefore = 0;
+    std::uint64_t m_ArmedAtNs = 0;
     std::shared_ptr<DelayedPublication> m_Model;
     std::unique_ptr<Domain::BackgroundSampler> m_Publisher;
 };
@@ -1209,15 +1283,29 @@ TEST(ApplicationTest, AStaticFrameDrawsAtTheFloorAndAPublicationDrawsAtOnce)
         FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
 
-    EXPECT_FALSE(observed.timedOut);
-    // The floor is 2 fps: about 6 frames in 3 s. The idle rate would have drawn about 60.
+    EXPECT_FALSE(observed.timedOut) << "attempts: " << observed.attemptLog;
+    // The floor is 2 fps: about 6 frames in 3 s that nothing else brought. The idle rate would have drawn
+    // about 60. A frame an SDL event brings is right to draw, so it is reported, not counted.
     const double floorFps = 1000.0 / static_cast<double>(Core::STATIC_FRAME_FLOOR_INTERVAL.count());
     const double expected = floorFps * StaticFrameLayer::COUNT_SECONDS;
-    EXPECT_GE(observed.framesInWindow, static_cast<int>(expected / 2.0)) << "the floor still draws";
-    EXPECT_LE(observed.framesInWindow, static_cast<int>(expected * 2.0)) << "a static frame drew faster than the floor";
-    EXPECT_TRUE(observed.published) << "none of " << observed.attempts << " publications brought a frame before the floor's";
-    EXPECT_LT(observed.publishToFrameMs, 250U);
-    EXPECT_GE(observed.wakesTaken, 1U);
+    const std::string frames = std::format("{} quiet frames, {} paced by a move/resize grace, {} brought by events: {}",
+                                           observed.quietFrames,
+                                           observed.graceFrames,
+                                           observed.eventFrames,
+                                           observed.eventsInWindow);
+    // In the test report whether it passes or not: evidence of what draws frames on the CI displays.
+    RecordProperty("StaticFrames", frames);
+    RecordProperty("StaticFrameAttempts", observed.attemptLog);
+    // An event's frame restarts the floor's period, so the floor's frames and the others together are at
+    // least the floor's rate.
+    EXPECT_GE(observed.quietFrames + observed.eventFrames + observed.graceFrames, static_cast<int>(expected / 2.0))
+        << "the floor still draws; " << frames;
+    EXPECT_LE(observed.quietFrames, static_cast<int>(expected * 1.5)) << "a static frame drew faster than the floor; " << frames;
+    ASSERT_TRUE(observed.counted) << "every one of " << observed.attempts
+                                  << " publications had an SDL event or a late wake in its way: " << observed.attemptLog;
+    EXPECT_TRUE(observed.published) << "the publication didn't bring its frame before the floor's: " << observed.attemptLog;
+    EXPECT_LT(observed.publishToFrameMs, 250U) << observed.attemptLog;
+    EXPECT_GE(observed.wakesTaken, 1U) << observed.attemptLog;
 }
 
 TEST(ApplicationTest, PushMultipleLayers)
