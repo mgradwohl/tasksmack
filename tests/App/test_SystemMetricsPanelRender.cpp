@@ -1345,6 +1345,27 @@ TEST_F(SystemMetricsPanelRenderTest, EachDomainSeedsOnItsOwnNamedSamplerThread)
     panel->onDetach();
 }
 
+// #3221: a factory the test leaves out is no such device, never the platform's probe: with the system
+// factory alone the panel attaches and seeds. Before it is attached there is no first sample to wait
+// for, and each sampler's interval is the refresh setting.
+TEST_F(SystemMetricsPanelRenderTest, FactoriesLeftOutAreNoDevice)
+{
+    const auto panel = std::make_unique<SystemMetricsPanel>(SystemMetricsProbeFactories{
+        .system = [] { return SystemModelProbes{.system = mockSystem(), .power = nullptr}; }, .disk = {}, .gpu = {}});
+    EXPECT_FALSE(panel->waitForFirstSample(std::chrono::milliseconds(1))) << "not attached";
+    const SystemMetricsPanel::SamplerIntervals unattached = panel->samplerIntervals();
+    EXPECT_EQ(unattached.system, panel->samplingInterval());
+    EXPECT_EQ(unattached.storage, unattached.system);
+    EXPECT_EQ(unattached.gpu, unattached.system);
+
+    attachAndSeed(*panel);
+    EXPECT_EQ(panel->hostname(), "testhost");
+    panel->onDetach();
+
+    SystemMetricsPanel noFactories{SystemMetricsProbeFactories{}};
+    EXPECT_FALSE(noFactories.waitForFirstSample(std::chrono::milliseconds(1)));
+}
+
 // #2731: a disk probe that stalls (a PDH rescan held up by a driver or PnP event) holds up the storage
 // sampler alone. The system seed arrives, and the system sampler keeps its cadence, while the disk read
 // is still blocked; waitForFirstSample() waits for the stalled model too, so the test seam still sees
