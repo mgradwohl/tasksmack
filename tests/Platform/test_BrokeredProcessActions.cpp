@@ -720,6 +720,41 @@ TEST(BrokeredProcessActionsTest, AnOtherSignalRefusedInProcessIsRetriedThroughTh
               (Broker::Request{Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Hangup}}));
 }
 
+// #3071: Efficiency mode on a process TaskSmack may not change (elevated, another user's) is retried through
+// the helper as a SetEfficiencyMode request carrying on or off; one changed in process never reaches it.
+TEST(BrokeredProcessActionsTest, EfficiencyModeRefusedInProcessIsRetriedThroughTheHelper)
+{
+    Fixture f(/*connected=*/true);
+    EXPECT_TRUE(f.actions->setEfficiencyMode(TARGET, true).success);
+    EXPECT_TRUE(f.inner->lastEfficiencyMode());
+    EXPECT_TRUE(f.broker->requests().empty()) << "changed in process: the helper isn't asked";
+
+    f.inner->setEfficiencyModeResult(ProcessActionResult::denied("Access denied"));
+    EXPECT_TRUE(f.actions->setEfficiencyMode(TARGET, false).success);
+    EXPECT_EQ(f.inner->efficiencyModeCount(), 2);
+    EXPECT_FALSE(f.inner->lastEfficiencyMode());
+    const std::vector<Broker::Request> requests = f.broker->requests();
+    ASSERT_EQ(requests.size(), 1U);
+    EXPECT_EQ(requests[0], (Broker::Request{Broker::EfficiencyModeRequest{.target = TARGET, .on = false}}));
+
+    EXPECT_EQ((brokerRequestFor({.kind = AuthorizedAction::Kind::SetEfficiencyMode, .target = TARGET, .efficiencyMode = true})),
+              (Broker::Request{Broker::EfficiencyModeRequest{.target = TARGET, .on = true}}));
+}
+
+// #3071: "Authenticate and retry" after a refused Efficiency mode starts the helper and sends it the change.
+TEST(BrokeredProcessActionsTest, RunAuthorizedTurnsEfficiencyModeOnThroughTheHelper)
+{
+    const Fixture f(/*connected=*/false);
+    const ProcessActionResult result = f.actions->runAuthorized(
+        {.kind = AuthorizedAction::Kind::SetEfficiencyMode, .target = TARGET, .efficiencyMode = true}, std::stop_token{});
+    EXPECT_TRUE(result.success) << result.errorMessage;
+    EXPECT_EQ(f.broker->connectCount(), 1);
+    const std::vector<Broker::Request> requests = f.broker->requests();
+    ASSERT_EQ(requests.size(), 1U);
+    EXPECT_EQ(requests.front(), (Broker::Request{Broker::EfficiencyModeRequest{.target = TARGET, .on = true}}));
+    EXPECT_EQ(f.inner->efficiencyModeCount(), 0);
+}
+
 TEST(BrokeredProcessActionsTest, AnAffinityTheProcessAcceptsNeverReachesTheHelper)
 {
     const Fixture f(/*connected=*/true);
@@ -835,6 +870,13 @@ TEST(BrokeredProcessActionsTest, OverActionsWithOnlyTheDefaultsTheDefaultsShowTh
     EXPECT_FALSE(affinity.success);
     EXPECT_EQ(affinity.errorMessage, "Setting CPU affinity isn't available on this system");
     EXPECT_FALSE(affinity.permissionDenied);
+
+    // Efficiency mode (#3071): not offered, and refused as unavailable, never retried through the helper.
+    EXPECT_FALSE(actions.actionCapabilities().canSetEfficiencyMode);
+    const ProcessActionResult efficiency = actions.setEfficiencyMode(TARGET, true);
+    EXPECT_FALSE(efficiency.success);
+    EXPECT_EQ(efficiency.errorMessage, "Efficiency mode isn't available on this system");
+    EXPECT_FALSE(efficiency.permissionDenied);
 
     const ProcessDumpResult dump = actions.createDump(TARGET, "/tmp", std::stop_token{});
     ASSERT_FALSE(dump.has_value());

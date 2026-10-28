@@ -1,14 +1,18 @@
 /// @file test_RenderMetricsOverlay.cpp
 /// @brief RenderMetrics::renderOverlay() run headless (#1395): opening and closing the overlay turns
-/// capture on and off (closing drops every captured frame), the window lists the last frame's charts,
-/// and an overlay left beyond the edge of a main window that shrank is pulled back inside it.
+/// capture on and off (closing drops every captured frame), the window lists the last frame's charts
+/// and each sampler's published pass timing (#3153), and an overlay left beyond the edge of a main window that shrank is pulled back inside
+/// it.
 
+#include "Domain/SamplerTimingBoard.h"
+#include "Domain/TimingHistogram.h"
 #include "UI/RenderMetrics.h"
 
 #include <gtest/gtest.h>
 #include <imgui.h>
 #include <imgui_internal.h>
 
+#include <chrono>
 #include <string>
 
 namespace UI
@@ -111,6 +115,23 @@ TEST_F(RenderMetricsOverlayTest, OpeningEnablesCaptureAndClosingDropsTheFrames)
     frame(&open);
     EXPECT_FALSE(metrics.enabled());
     EXPECT_TRUE(metrics.lastFrame().empty());
+}
+
+TEST_F(RenderMetricsOverlayTest, ListsEachSamplersPublishedPassTiming)
+{
+    // What a sampler published after its latest pass (#3153): the overlay reads the board, never a
+    // sampler, and gives each one's passes and distribution on a line.
+    Domain::TimingHistogram pass;
+    pass.record(std::chrono::milliseconds(3));
+    pass.record(std::chrono::milliseconds(5));
+    Domain::SamplerTimingBoard::global().publish("ts-test-overlay", pass, 1, 0);
+    const Domain::SamplerTimingRow expected{.sampler = "ts-test-overlay", .pass = pass, .overruns = 1, .backoffs = 0};
+
+    bool open = true;
+    frame(&open);
+    const std::string text = frameAndCapture(&open);
+    EXPECT_NE(text.find("Samplers"), std::string::npos) << text;
+    EXPECT_NE(text.find(Domain::formatSamplerTimingRow(expected)), std::string::npos) << text;
 }
 
 TEST_F(RenderMetricsOverlayTest, FitsAndStaysInsideAMainWindowThatShrinks)

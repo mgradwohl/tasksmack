@@ -36,7 +36,8 @@ void ProcessActionsView::renderControls(Platform::IProcessActions* actions,
                                         const Platform::ProcessActionCapabilities& capabilities,
                                         const std::string& processName,
                                         const Platform::ProcessTarget& target,
-                                        const Platform::CpuAffinity* currentAffinity)
+                                        const Platform::CpuAffinity* currentAffinity,
+                                        bool efficiencyMode)
 {
     // No name, PID or header of its own: the view sits in the Overview's Actions block, under that
     // block's header and beside the Identity block that names the process (#1493). Its result line
@@ -45,7 +46,45 @@ void ProcessActionsView::renderControls(Platform::IProcessActions* actions,
     renderSyscallTraceButton(actions, capabilities, target, anyButton);
     const bool anyBeforeAffinity = anyButton || capabilities.syscallTrace != Platform::SyscallTraceAvailability::Unsupported;
     renderSetAffinityButton(actions, capabilities, processName, target, currentAffinity, anyBeforeAffinity);
-    renderCreateDumpButton(actions, capabilities, processName, target, anyBeforeAffinity || capabilities.canSetAffinity);
+    const bool anyBeforeDump = anyBeforeAffinity || capabilities.canSetAffinity;
+    renderCreateDumpButton(actions, capabilities, processName, target, anyBeforeDump);
+    renderEfficiencyModeToggle(
+        actions, capabilities, processName, target, efficiencyMode, anyBeforeDump || DumpDetail::offersCreateDump(capabilities, 0));
+}
+
+void ProcessActionsView::renderEfficiencyModeToggle(Platform::IProcessActions* actions,
+                                                    const Platform::ProcessActionCapabilities& capabilities,
+                                                    const std::string& processName,
+                                                    const Platform::ProcessTarget& target,
+                                                    bool on,
+                                                    bool afterButtons)
+{
+    const Detail::EfficiencyModeToggle toggle = Detail::efficiencyModeToggle(capabilities, target, on, m_ActionRun.busy());
+    if (toggle.state == Detail::EfficiencyModeToggleState::Hidden)
+    {
+        return;
+    }
+    // As the trace, affinity and dump buttons: on the row when it fits, else on a row of its own.
+    if (afterButtons)
+    {
+        const float rowEnd = ImGui::GetItemRectMax().x;
+        const float regionEnd = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+        if (rowEnd + ImGui::GetStyle().ItemSpacing.x + efficiencyModeToggleWidth(capabilities) <= regionEnd)
+        {
+            ImGui::SameLine();
+        }
+    }
+    const bool disabled = toggle.state == Detail::EfficiencyModeToggleState::Disabled;
+    bool checked = on;
+    ImGui::BeginDisabled(disabled);
+    const bool clicked = ImGui::Checkbox(Detail::EFFICIENCY_MODE_LABEL, &checked);
+    ImGui::EndDisabled();
+    if (clicked && !disabled)
+    {
+        // The process is captured now; the confirm (or, turning it off, the action) is for it alone.
+        requestEfficiencyModeToggle(actions, target, processName, on);
+    }
+    ImGui::SetItemTooltip("%s", toggle.tooltip); // a disabled checkbox still says why
 }
 
 void ProcessActionsView::renderCreateDumpButton(Platform::IProcessActions* actions,
@@ -300,6 +339,17 @@ float ProcessActionsView::createDumpButtonWidth(const Platform::ProcessActionCap
                                                           ImGui::GetStyle().FramePadding.x);
 }
 
+float ProcessActionsView::efficiencyModeToggleWidth(const Platform::ProcessActionCapabilities& capabilities)
+{
+    if (!capabilities.canSetEfficiencyMode)
+    {
+        return 0.0F;
+    }
+    // A checkbox: its square box, the inner spacing, then its label (to the "###").
+    return ImGui::GetFrameHeight() + ImGui::GetStyle().ItemInnerSpacing.x +
+           ImGui::CalcTextSize(Detail::EFFICIENCY_MODE_LABEL, nullptr, /*hide_text_after_double_hash=*/true).x;
+}
+
 float ProcessActionsView::buttonsRowWidth(const Platform::ProcessActionCapabilities& capabilities)
 {
     std::size_t count = 0;
@@ -309,10 +359,13 @@ float ProcessActionsView::buttonsRowWidth(const Platform::ProcessActionCapabilit
     }
     const float actionRow =
         ProcessDetailsLayout::computeActionButtonRowWidth(actionButtonWidth(capabilities), count, ImGui::GetStyle().ItemSpacing.x);
-    // The trace, affinity and dump buttons each take a row of their own when they don't fit after the others.
-    return ProcessDetailsLayout::computeActionButtonsWidth(
-        actionRow,
-        std::max({syscallTraceButtonWidth(capabilities), setAffinityButtonWidth(capabilities), createDumpButtonWidth(capabilities)}));
+    // The trace, affinity and dump buttons and the Efficiency mode checkbox each take a row of their own
+    // when they don't fit after the others.
+    return ProcessDetailsLayout::computeActionButtonsWidth(actionRow,
+                                                           std::max({syscallTraceButtonWidth(capabilities),
+                                                                     setAffinityButtonWidth(capabilities),
+                                                                     createDumpButtonWidth(capabilities),
+                                                                     efficiencyModeToggleWidth(capabilities)}));
 }
 
 bool ProcessActionsView::renderButtons(const Platform::ProcessActionCapabilities& capabilities,

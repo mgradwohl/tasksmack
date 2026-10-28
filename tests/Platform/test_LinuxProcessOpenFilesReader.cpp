@@ -3,8 +3,11 @@
 /// target text, fdinfo files) read through the procRoot seam -- typing, flags, sorting, the identity
 /// check, a missing process, an fd/ directory that cannot be opened -- and the real /proc/self.
 
+#include "Domain/HandleSearch.h"
+#include "Domain/PublicationSlot.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessOpenFiles.h"
+#include "Platform/Linux/LinuxProcessModulesReader.h"
 #include "Platform/Linux/LinuxProcessOpenFilesReader.h"
 #include "Platform/Linux/ProcParsing.h"
 #include "Platform/ScopedTempDir.h"
@@ -17,9 +20,12 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <memory>
 #include <optional>
+#include <stop_token>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include <unistd.h>
 
@@ -161,6 +167,49 @@ TEST(LinuxProcessOpenFilesReaderRealTest, ReadsThisProcess)
     // The stat stream above is still open.
     EXPECT_TRUE(
         std::ranges::any_of(result.files, [](const OpenFile& f) { return f.path == "/proc/" + std::to_string(::getpid()) + "/stat"; }));
+}
+
+// #3067: Find handles over the real readers finds this process holding a temp file it has open, and the C
+// library it has loaded.
+TEST(LinuxProcessOpenFilesReaderRealTest, FindHandlesFindsThisProcessHoldingAFile)
+{
+    std::ifstream stat("/proc/self/stat");
+    const std::string line((std::istreambuf_iterator<char>(stat)), std::istreambuf_iterator<char>());
+    const std::optional<std::uint64_t> startTicks = ProcParsing::parseStatStartTime(line);
+    ASSERT_TRUE(startTicks.has_value());
+    const TestSupport::ScopedTempDir dir{"ts_test_find_handles"};
+    const std::filesystem::path held = dir.path / "Locked-By-FindHandles-3067.txt";
+    std::ofstream file(held);
+    ASSERT_TRUE(file.is_open());
+
+    LinuxProcessOpenFilesReader openFiles;
+    LinuxProcessModulesReader modules;
+    const std::vector<Domain::HandleSearch::SearchProcess> self{
+        {.target = {.pid = static_cast<std::int32_t>(::getpid()), .startTimeTicks = startTicks.value_or(0)}, .name = "TaskSmackTests"}};
+    Domain::PublicationSlot<Domain::HandleSearch::SearchPublication> slot;
+    const std::stop_source stop;
+    Domain::HandleSearch::run(self,
+                              {.openFiles = &openFiles, .modules = &modules},
+                              false,
+                              Domain::HandleSearch::startFor("locked-by-findhandles", self.size(), 1),
+                              slot,
+                              stop.get_token());
+    std::shared_ptr<const Domain::HandleSearch::SearchPublication> found = slot.load();
+    ASSERT_NE(found, nullptr);
+    EXPECT_TRUE(found->done);
+    ASSERT_EQ(found->matches.size(), 1U);
+    EXPECT_EQ(found->matches[0].path, held.string());
+    EXPECT_EQ(found->matches[0].kind, Domain::HandleSearch::HandleKind::File);
+
+    Domain::HandleSearch::run(self,
+                              {.openFiles = &openFiles, .modules = &modules},
+                              false,
+                              Domain::HandleSearch::startFor("libc.so", self.size(), 10),
+                              slot,
+                              stop.get_token());
+    found = slot.load();
+    EXPECT_TRUE(std::ranges::any_of(
+        found->matches, [](const Domain::HandleSearch::HandleMatch& m) { return m.kind == Domain::HandleSearch::HandleKind::Library; }));
 }
 
 } // namespace

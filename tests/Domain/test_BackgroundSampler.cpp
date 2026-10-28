@@ -12,12 +12,16 @@
 #include "AllocationFailureHook.h"
 #include "Domain/BackgroundSampler.h"
 #include "Domain/ISamplable.h"
+#include "Domain/SamplerTimingBoard.h"
 #include "Domain/SamplingConfig.h"
 #include "Platform/ThreadName.h"
 
 #include <gtest/gtest.h>
+#include <spdlog/logger.h>
+#include <spdlog/sinks/ostream_sink.h>
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -27,10 +31,13 @@
 #include <memory>
 #include <mutex>
 #include <new> // IWYU pragma: keep - std::bad_alloc, used where the allocator hook is built
+#include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #if defined(_WIN32)
@@ -1442,4 +1449,151 @@ TEST(BackgroundSamplerTest, AFailedAllocationInThePassBookkeepingIsContained)
     // durations: each was failed.
     EXPECT_GE(failures, 7);
 #endif
+}
+
+namespace
+{
+
+/// Swaps the default logger for one that records every line at @p level (debug unless told), for a
+/// test that checks what a sampler logs (#3153); restores the previous one when it goes. Read text()
+/// only after the sampler has stopped: the sampler thread writes the stream while it runs.
+class SamplerLogCapture
+{
+  public:
+    explicit SamplerLogCapture(spdlog::level::level_enum level = spdlog::level::debug) : m_Previous(spdlog::default_logger())
+    {
+        // _mt: the sampler thread logs through it.
+        auto logger = std::make_shared<spdlog::logger>(std::string(LOGGER_NAME), std::make_shared<spdlog::sinks::ostream_sink_mt>(m_Log));
+        logger->set_level(level);
+        spdlog::set_default_logger(std::move(logger));
+    }
+
+    // NOLINTNEXTLINE(bugprone-exception-escape) - spdlog swapping the default logger may theoretically throw; a test helper
+    ~SamplerLogCapture()
+    {
+        spdlog::set_default_logger(m_Previous);
+        spdlog::drop(std::string(LOGGER_NAME));
+    }
+
+    SamplerLogCapture(const SamplerLogCapture&) = delete;
+    SamplerLogCapture& operator=(const SamplerLogCapture&) = delete;
+    SamplerLogCapture(SamplerLogCapture&&) = delete;
+    SamplerLogCapture& operator=(SamplerLogCapture&&) = delete;
+
+    [[nodiscard]] std::string text() const
+    {
+        return m_Log.str();
+    }
+
+  private:
+    static constexpr std::string_view LOGGER_NAME = "sampler-timing-test";
+    std::ostringstream m_Log;
+    std::shared_ptr<spdlog::logger> m_Previous;
+};
+
+} // namespace
+
+TEST(BackgroundSamplerTest, TheTimingSummaryNamesItsSamplerAndEachTimingsDistribution)
+{
+    // Known durations, formatted as the log lines give them (#3153): microseconds, with the
+    // percentiles from the histogram's buckets clamped to each timing's shortest and longest.
+    Domain::SamplerMetrics metrics;
+    metrics.backoffs = 1;
+    metrics.pass.samples = 2;
+    metrics.pass.overruns = 1;
+    metrics.pass.histogram.record(100us);
+    metrics.pass.histogram.record(300us);
+    Domain::SampleTiming storage{.name = "storage", .samples = 2};
+    storage.histogram.record(50us);
+    storage.histogram.record(50us);
+    metrics.samplables.push_back(storage);
+
+    EXPECT_EQ(Domain::formatTimingSummary("ts-sampler-disk", "stopped", metrics),
+              "BackgroundSampler ts-sampler-disk: stopped after 2 passes, 1 backoffs; timings in us: "
+              "pass n=2 mean=200 p50=100 p95=300 max=300 overruns=1; storage n=2 mean=50 p50=50 p95=50 max=50 overruns=0");
+}
+
+TEST(BackgroundSamplerTest, TheStopSummaryNamesItsSampler)
+{
+    // Before #3153 every sampler's stop line read "BackgroundSampler: stopped after ..." and the five
+    // could only be told apart by their figures. Now each is named by its thread.
+    const SamplerLogCapture log;
+    const auto samplable = std::make_shared<MockSamplable>();
+    {
+        Domain::BackgroundSampler sampler(Domain::SamplerConfig{.interval = 100ms, .threadName = "ts-test-stop"});
+        sampler.addSamplable(samplable, "probe");
+        sampler.start();
+        samplable->waitForSamples(2);
+        sampler.stop();
+    }
+
+    const std::string text = log.text();
+    EXPECT_NE(text.find("BackgroundSampler ts-test-stop: stopped after "), std::string::npos) << text;
+    EXPECT_NE(text.find("timings in us: pass n="), std::string::npos) << text;
+    EXPECT_NE(text.find("; probe n="), std::string::npos) << text;
+    EXPECT_NE(text.find(" p95="), std::string::npos) << text;
+    // The periodic summary is minutes away: only the stop line was logged.
+    EXPECT_EQ(text.find("ts-test-stop: running after"), std::string::npos) << text;
+}
+
+TEST(BackgroundSamplerTest, TheTimingSummaryIsAlsoLoggedWhileTheSamplerRuns)
+{
+    // Every timingSummaryPeriod, from the sampler thread after a pass (#3153), so a long run's log has
+    // the distribution before shutdown. A 1 ms period here: due after every pass from the second.
+    const SamplerLogCapture log;
+    const auto samplable = std::make_shared<MockSamplable>();
+    Domain::BackgroundSampler sampler(Domain::SamplerConfig{.interval = 100ms, .threadName = "ts-test-period", .timingSummaryPeriod = 1ms});
+    sampler.addSamplable(samplable, "probe");
+    sampler.start();
+    ASSERT_TRUE(waitFor([&] { return sampler.metrics().pass.samples >= 3; }));
+    sampler.stop();
+
+    const std::string text = log.text();
+    EXPECT_NE(text.find("BackgroundSampler ts-test-period: running after "), std::string::npos) << text;
+    EXPECT_NE(text.find("BackgroundSampler ts-test-period: stopped after "), std::string::npos) << text;
+}
+
+TEST(BackgroundSamplerTest, TheTimingSummaryIsNotFormattedWithoutDebugLogging)
+{
+    // At info (a release build's level, and warn by default) neither summary is logged, though the
+    // periodic one falls due after every pass here: the line isn't even formatted (#3153).
+    const SamplerLogCapture log(spdlog::level::info);
+    const auto samplable = std::make_shared<MockSamplable>();
+    Domain::BackgroundSampler sampler(Domain::SamplerConfig{.interval = 100ms, .threadName = "ts-test-quiet", .timingSummaryPeriod = 1ms});
+    sampler.addSamplable(samplable, "probe");
+    sampler.start();
+    ASSERT_TRUE(waitFor([&] { return sampler.metrics().pass.samples >= 3; }));
+    sampler.stop();
+
+    const std::string text = log.text();
+    EXPECT_EQ(text.find("ts-test-quiet: running after"), std::string::npos) << text;
+    EXPECT_EQ(text.find("ts-test-quiet: stopped after"), std::string::npos) << text;
+    EXPECT_GE(sampler.metrics().pass.histogram.count(), 3U); // the timings were still kept
+}
+
+TEST(BackgroundSamplerTest, EveryPassIsCountedInTheHistogramsAndPublishedToTheBoard)
+{
+    // The histograms count what the scalar metrics count, and the board -- what the Render Metrics
+    // overlay reads, never the sampler -- holds the sampler's pass timing after its latest pass (#3153).
+    const auto samplable = std::make_shared<MockSamplable>();
+    Domain::BackgroundSampler sampler(Domain::SamplerConfig{.interval = 100ms, .threadName = "ts-test-board"});
+    sampler.addSamplable(samplable, "probe");
+    sampler.start();
+    ASSERT_TRUE(waitFor([&] { return sampler.metrics().pass.samples >= 2; }));
+    sampler.stop();
+
+    const auto metrics = sampler.metrics();
+    EXPECT_EQ(metrics.pass.histogram.count(), metrics.pass.samples);
+    EXPECT_EQ(metrics.pass.histogram.max(), metrics.pass.maxDuration);
+    ASSERT_EQ(metrics.samplables.size(), 1U);
+    EXPECT_EQ(metrics.samplables[0].histogram.count(), metrics.samplables[0].samples);
+    EXPECT_LE(metrics.samplables[0].histogram.percentile(0.95), metrics.samplables[0].maxDuration);
+
+    const auto rows = Domain::SamplerTimingBoard::global().snapshot();
+    const auto row = std::ranges::find(rows, std::string("ts-test-board"), &Domain::SamplerTimingRow::sampler);
+    ASSERT_NE(row, rows.end());
+    EXPECT_EQ(row->pass.count(), metrics.pass.samples);
+    EXPECT_EQ(row->pass.max(), metrics.pass.maxDuration);
+    EXPECT_EQ(row->overruns, metrics.pass.overruns);
+    EXPECT_EQ(row->backoffs, metrics.backoffs);
 }

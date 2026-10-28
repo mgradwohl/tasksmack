@@ -21,10 +21,11 @@ using KeyboardShortcuts::FunctionKey;
 using ProcessTableNavigation::NavCommand;
 using ProcessTableNavigation::NavKey;
 
-constexpr std::array<std::pair<FunctionKey, ImGuiKey>, 5> FUNCTION_KEYS{{
+constexpr std::array<std::pair<FunctionKey, ImGuiKey>, 6> FUNCTION_KEYS{{
     {FunctionKey::F1, ImGuiKey_F1},
     {FunctionKey::F2, ImGuiKey_F2},
     {FunctionKey::F5, ImGuiKey_F5},
+    {FunctionKey::F6, ImGuiKey_F6},
     {FunctionKey::F9, ImGuiKey_F9},
     {FunctionKey::F10, ImGuiKey_F10},
 }};
@@ -138,6 +139,16 @@ bool pollSelectAll()
 {
     // IsKeyChordPressed() wants exactly these modifiers, so Ctrl+Shift+A and the like are not it.
     return ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_A);
+}
+
+bool pollFocusFilter()
+{
+    return ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_F);
+}
+
+bool pollFindHandles()
+{
+    return ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_F);
 }
 
 float tableScrollViewHeight()

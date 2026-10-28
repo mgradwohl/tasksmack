@@ -41,6 +41,14 @@ void claimNavigationKeys(unsigned int ownerId, bool treeView);
 /// from the filter box, where it selects the typed text.
 [[nodiscard]] bool pollSelectAll();
 
+/// Whether Ctrl+F was pressed this frame, with no other modifier: the Processes filter box takes the
+/// keyboard. Does not repeat. Call only while tableNavigationArmed(), as pollSelectAll().
+[[nodiscard]] bool pollFocusFilter();
+
+/// Whether Ctrl+Shift+F was pressed this frame: the Processes table's Find handles (#3067). Does not
+/// repeat. Call only while tableNavigationArmed(), as pollSelectAll().
+[[nodiscard]] bool pollFindHandles();
+
 /// The height of the current table's scrolling area below its frozen header, for
 /// ProcessTableNavigation::pageStep(). Call inside the table; 0 outside one.
 [[nodiscard]] float tableScrollViewHeight();

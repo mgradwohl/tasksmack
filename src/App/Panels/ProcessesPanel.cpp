@@ -4,6 +4,7 @@
 #include "App/Panel.h"
 #include "App/PanelPlatforms.h"
 #include "App/Panels/ExitingProcessRows.h"
+#include "App/Panels/FindHandlesDialog.h"
 #include "App/Panels/GpuSection.h"
 #include "App/Panels/NewProcessHighlight.h"
 #include "App/Panels/ProcessActionConfirm.h"
@@ -49,6 +50,7 @@
 #include "Domain/BackgroundSampler.h"
 #include "Domain/DeferredProbe.h"
 #include "Domain/GPUModel.h"
+#include "Domain/HandleSearch.h"
 #include "Domain/Numeric.h"
 #include "Domain/PriorityConfig.h"
 #include "Domain/ProcessModel.h"
@@ -121,6 +123,7 @@ constexpr std::string_view LIST_VIEW_LABEL = ICON_FA_LIST " List";
 constexpr std::string_view TREE_VIEW_LABEL = ICON_FA_SITEMAP " Tree";
 constexpr std::string_view COLUMNS_LABEL = ICON_FA_TABLE_COLUMNS " Columns";
 constexpr const char* COLUMNS_POPUP_ID = "##ColumnsMenu";
+constexpr const char* SORT_MENU_POPUP_ID = "##SortMenu"; // F6 (#3097)
 constexpr const char* ROW_MENU_POPUP_ID = "##ProcessRowMenu";
 constexpr const char* FILTER_HINT = ICON_FA_MAGNIFYING_GLASS "  Filter by name or command...";
 // Tree view's Expand all and Collapse all (#838): icon buttons, explained by their tooltips.
@@ -1043,6 +1046,8 @@ void ProcessesPanel::onAttach()
         // Asked here, on this thread, before the actions move: the initializers run in order.
         const Platform::ProcessActionCapabilities actionCapabilities =
             platform.actions ? platform.actions->actionCapabilities() : Platform::ProcessActionCapabilities{};
+        const FindHandlesDialog::Capabilities findCapabilities =
+            FindHandlesDialog::capabilitiesOf(platform.openFiles.get(), platform.modules.get());
         // The Set affinity dialog's CPU layout, read here once (#3182): GetLogicalProcessorInformationEx or
         // sysfs, which the UI thread never calls. It doesn't change while TaskSmack runs.
         Platform::CpuAffinityLayout affinityLayout =
@@ -1051,7 +1056,10 @@ void ProcessesPanel::onAttach()
                                            .actionCapabilities = actionCapabilities,
                                            .affinityLayout = std::move(affinityLayout),
                                            .udpCollector = std::move(platform.udpCollector),
-                                           .icons = std::move(platform.icons)};
+                                           .icons = std::move(platform.icons),
+                                           .openFiles = std::move(platform.openFiles),
+                                           .modules = std::move(platform.modules),
+                                           .findCapabilities = findCapabilities};
         {
             const std::scoped_lock lock(handoff->mutex);
             handoff->contents = std::move(contents);
@@ -1121,6 +1129,8 @@ void ProcessesPanel::adoptPlatform()
     m_UdpCollector = std::move(contents->udpCollector);
     // The icons beside the names (#1800), loaded on their own worker as rows are first drawn.
     m_IconView.attach(std::move(contents->icons));
+    // Find handles (#3067): its readers, searched on the dialog's own worker.
+    m_FindHandlesDialog.setReaders(std::move(contents->openFiles), std::move(contents->modules), contents->findCapabilities);
 }
 
 void ProcessesPanel::applyStartupColumnDefaults()
@@ -1457,6 +1467,14 @@ void ProcessesPanel::renderContent()
         KeyboardInput::claimNavigationKeys(ImGui::GetID("##ProcessTableKeys"), m_TreeViewEnabled);
         navCommand = KeyboardInput::pollNavigationCommand(m_TreeViewEnabled);
         selectAllRequested = KeyboardInput::pollSelectAll(); // Ctrl+A (#804)
+        if (KeyboardInput::pollFocusFilter())                // Ctrl+F: the filter box takes the keyboard
+        {
+            m_FocusFilter = true;
+        }
+        if (KeyboardInput::pollFindHandles() && m_FindHandlesDialog.available()) // Ctrl+Shift+F (#3067)
+        {
+            m_FindHandlesDialog.open();
+        }
     }
 
     // Get thread-safe copy of snapshots — only when data has actually changed (version-cached).
@@ -1529,6 +1547,10 @@ void ProcessesPanel::renderContent()
 
     {
         const UI::Widgets::FrameOutlineScope frameOutline;
+        if (std::exchange(m_FocusFilter, false))
+        {
+            ImGui::SetKeyboardFocusHere();
+        }
         ImGui::InputTextWithHint("##search", FILTER_HINT, &m_SearchBuffer);
     }
     ImGui::PopStyleColor();
@@ -1628,8 +1650,12 @@ void ProcessesPanel::renderContent()
     // Run new task (#3065), an icon button before Columns, where the platform can start programs.
     const bool offerRunTask = m_ActionCapabilities.canRunProgram;
     const float runTaskButtonWidth = offerRunTask ? ImGui::CalcTextSize(ICON_FA_ROCKET).x + (style.FramePadding.x * 2.0F) : 0.0F;
+    // Find handles (#3067), an icon button beside it, where this run can read processes' files.
+    const bool offerFindHandles = m_FindHandlesDialog.available();
+    const float findButtonWidth = offerFindHandles ? ImGui::CalcTextSize(ICON_FA_MAGNIFYING_GLASS).x + (style.FramePadding.x * 2.0F) : 0.0F;
     const float controlsWidth = groupComboWidth + style.ItemSpacing.x + (offerRunTask ? runTaskButtonWidth + style.ItemSpacing.x : 0.0F) +
-                                columnsButtonWidth + style.ItemSpacing.x + listSegmentWidth + treeSegmentWidth + foldButtonsWidth +
+                                (offerFindHandles ? findButtonWidth + style.ItemSpacing.x : 0.0F) + columnsButtonWidth +
+                                style.ItemSpacing.x + listSegmentWidth + treeSegmentWidth + foldButtonsWidth +
                                 (offerRetry ? retryButtonWidth + style.ItemSpacing.x : 0.0F);
 
     // An action's result takes no more room than the count text it stands in for, ellipsized with
@@ -1740,6 +1766,15 @@ void ProcessesPanel::renderContent()
         ImGui::EndDisabled();
         ImGui::SetItemTooltip("Run new task: start a program, optionally as administrator");
     }
+    if (offerFindHandles)
+    {
+        ImGui::SameLine();
+        if (ImGui::Button(ICON_FA_MAGNIFYING_GLASS "###FindHandles", ImVec2(findButtonWidth, 0.0F)))
+        {
+            m_FindHandlesDialog.open();
+        }
+        ImGui::SetItemTooltip("Find handles (Ctrl+Shift+F): which processes have a file, folder or library open");
+    }
 
     // Column chooser, beside ImGui's own header right-click menu (#1209)
     ImGui::SameLine();
@@ -1781,6 +1816,7 @@ void ProcessesPanel::renderContent()
     // The row menu's Set affinity... (#1887), applied on its own Apply.
     renderAffinityDialog();
     renderRunTaskDialog();
+    renderFindHandlesDialog(currentSnapshots);
 
     // A row menu's Suspend, Resume, Terminate or Kill, confirmed as in the Actions block (#1209), or a
     // batch priority change (#1484)
@@ -1982,6 +2018,61 @@ void ProcessesPanel::renderContent()
             const float commandWidth = commandColumn.IsEnabled ? commandColumn.WidthGiven : 0.0F;
             m_OtherColumnsWidth = table->ColumnsGivenWidth - commandWidth;
             m_TableVisibleWidth = table->InnerClipRect.GetWidth();
+        }
+
+        // F6's "Sort by" menu (#3097): the visible sortable columns, the sort column ticked. Picking it
+        // again reverses the order; another column sorts by it in that column's own first direction.
+        // Applied below the menu, so the sort below picks it up this frame.
+        if (m_SortMenuShortcut.take())
+        {
+            ImGui::OpenPopup(SORT_MENU_POPUP_ID);
+        }
+        std::optional<int> sortPick;
+        if (ImGui::IsPopupOpen(SORT_MENU_POPUP_ID))
+        {
+            // Read here, in the table: inside the popup's own window ImGui has no current table.
+            struct SortChoice
+            {
+                int column;
+                const char* name;
+                bool sorted;
+            };
+            std::vector<SortChoice> choices;
+            for (int column = 0; column < ImGui::TableGetColumnCount(); ++column)
+            {
+                const ImGuiTableColumnFlags flags = ImGui::TableGetColumnFlags(column);
+                if ((flags & ImGuiTableColumnFlags_IsEnabled) != 0 && (flags & ImGuiTableColumnFlags_NoSort) == 0)
+                {
+                    choices.push_back({.column = column,
+                                       .name = ImGui::TableGetColumnName(column),
+                                       .sorted = (flags & ImGuiTableColumnFlags_IsSorted) != 0});
+                }
+            }
+            if (ImGui::BeginPopup(SORT_MENU_POPUP_ID))
+            {
+                ImGui::TextDisabled("Sort by");
+                ImGui::Separator();
+                for (const SortChoice& choice : choices)
+                {
+                    if (ImGui::MenuItem(choice.name, nullptr, choice.sorted))
+                    {
+                        sortPick = choice.column;
+                    }
+                }
+                ImGui::EndPopup();
+            }
+        }
+        if (sortPick.has_value())
+        {
+            const ImGuiTableColumnFlags flags = ImGui::TableGetColumnFlags(*sortPick);
+            ImGuiSortDirection direction =
+                (flags & ImGuiTableColumnFlags_PreferSortDescending) != 0 ? ImGuiSortDirection_Descending : ImGuiSortDirection_Ascending;
+            if (const ImGuiTable* table = ImGui::GetCurrentTable(); table != nullptr && (flags & ImGuiTableColumnFlags_IsSorted) != 0)
+            {
+                direction = table->Columns[*sortPick].SortDirection == ImGuiSortDirection_Ascending ? ImGuiSortDirection_Descending
+                                                                                                    : ImGuiSortDirection_Ascending;
+            }
+            ImGui::TableSetColumnSortDirection(*sortPick, direction, false);
         }
 
         // Sorting, in both views: the list shows the sorted indices as they are, and the tree view
@@ -2999,7 +3090,8 @@ void ProcessesPanel::applyKeyboardInput(const std::vector<Domain::ProcessSnapsho
     // A batch priority change (#1484), in its dialog or its confirmation, is a row action too.
     // So is a dump's confirm, progress or result (#807), and a batch still running on its worker (#2142).
     const bool rowActionPending = m_ShowRowActionConfirm || m_RowAction.pending() || m_BatchPriorityDialog.isPending() ||
-                                  m_AffinityDialog.isPending() || m_RunTaskDialog.isOpen() || m_DumpView.active() || rowActionRunning();
+                                  m_AffinityDialog.isPending() || m_RunTaskDialog.isOpen() || m_FindHandlesDialog.isOpen() ||
+                                  m_DumpView.active() || rowActionRunning();
     if (killRequested && m_Selection.size() > 1)
     {
         // Only while at least one selected row is visible: with every selected row filtered out, F9
@@ -3215,6 +3307,20 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
             }
         }
         ImGui::EndMenu();
+    }
+    // Efficiency mode (#3071), as Task Manager's row menu has it: one process, ticked while it is on.
+    // Turning it on is confirmed; turning it off isn't.
+    const bool on = Detail::isInEfficiencyMode(proc);
+    if (const Detail::EfficiencyModeToggle toggle =
+            Detail::efficiencyModeToggle(can, {.pid = proc.pid, .startTimeTicks = proc.startTimeTicks}, on, !actionsIdle, batchCount);
+        toggle.state != Detail::EfficiencyModeToggleState::Hidden)
+    {
+        ImGui::Separator();
+        if (ImGui::MenuItem(Detail::EFFICIENCY_MODE_LABEL, nullptr, on, toggle.state == Detail::EfficiencyModeToggleState::Enabled))
+        {
+            toggleRowEfficiencyMode(proc, on);
+        }
+        ImGui::SetItemTooltip("%s", toggle.tooltip); // a disabled item still says why
     }
     // One priority for the whole selection (#1484): picked in its own dialog, then confirmed as a batch.
     // A single process's priority stays in Process Details' Actions block.
@@ -3495,6 +3601,23 @@ void ProcessesPanel::requestRowAction(Detail::ProcessAction action, const Domain
     m_ShowRowActionConfirm = true;
 }
 
+void ProcessesPanel::toggleRowEfficiencyMode(const Domain::ProcessSnapshot& proc, bool on)
+{
+    if (!on)
+    {
+        requestRowAction(Detail::ProcessAction::EfficiencyModeOn, proc); // confirmed, as Task Manager does
+        return;
+    }
+    // Off at once, for this row's identity: the platform refuses it if the PID has since been reused (#973).
+    const Platform::ProcessTarget target{.pid = proc.pid, .startTimeTicks = proc.startTimeTicks};
+    constexpr Detail::ProcessAction OFF = Detail::ProcessAction::EfficiencyModeOff;
+    runRowAction(
+        std::format("{} PID {}...", Detail::actionProgressLabel(OFF), target.pid),
+        [actions = m_ProcessActions.get(), target] { return Detail::dispatchProcessAction(*actions, OFF, target); },
+        [pid = target.pid](const Platform::ProcessActionResult& result) { return Detail::formatActionResultMessage(OFF, pid, result); },
+        Detail::authorizedActionFor(OFF, target));
+}
+
 void ProcessesPanel::requestSelectionAction(Detail::ProcessAction action)
 {
     // The selected processes still listed, each by PID and start time (#973): one that has exited since
@@ -3602,6 +3725,32 @@ void ProcessesPanel::renderRunTaskDialog()
         [shown = std::move(shown), admin = request->asAdministrator](const Platform::ProcessActionResult& result)
         { return runTaskResultMessage(shown, admin, result); },
         std::nullopt); // its own pkexec prompt when elevated: nothing the helper does
+}
+
+void ProcessesPanel::renderFindHandlesDialog(const std::vector<Domain::ProcessSnapshot>& snapshots)
+{
+    const std::optional<FindHandlesAction> action = m_FindHandlesDialog.render(
+        [&snapshots]
+        {
+            std::vector<Domain::HandleSearch::SearchProcess> processes;
+            processes.reserve(snapshots.size());
+            for (const Domain::ProcessSnapshot& snapshot : snapshots)
+            {
+                processes.push_back({.target = ProcessSelection::identityOf(snapshot), .name = snapshot.name});
+            }
+            return processes;
+        });
+    if (!action.has_value())
+    {
+        return;
+    }
+    m_Selection.selectOnly(action->target);
+    selectProcess(action->target);
+    if (action->showDetails)
+    {
+        Core::ShowProcessDetailsEvent event;
+        raiseEvent(event);
+    }
 }
 
 void ProcessesPanel::renderAffinityDialog()

@@ -24,6 +24,7 @@ TEST(KeyboardShortcutsTest, EachFunctionKeyMapsToItsAction)
     EXPECT_EQ(actionFor(FunctionKey::F2, idle), ShortcutAction::OpenSettings);
     EXPECT_EQ(actionFor(FunctionKey::F5, idle), ShortcutAction::ToggleTreeView);
     EXPECT_EQ(actionFor(FunctionKey::F9, idle), ShortcutAction::KillSelected);
+    EXPECT_EQ(actionFor(FunctionKey::F6, idle), ShortcutAction::SortMenu);
     EXPECT_EQ(actionFor(FunctionKey::F10, idle), ShortcutAction::Quit);
 }
 
@@ -105,6 +106,8 @@ TEST(KeyboardShortcutsTest, TabShortcutsGoToTheTabOnShow)
     EXPECT_EQ(tabShortcutTarget(ShortcutAction::ToggleTreeView, "Processes"), ShortcutTarget::Processes);
     EXPECT_EQ(tabShortcutTarget(ShortcutAction::ToggleTreeView, "ProcessDetails"), ShortcutTarget::None);
     EXPECT_EQ(tabShortcutTarget(ShortcutAction::ToggleTreeView, "SystemOverview"), ShortcutTarget::None);
+    EXPECT_EQ(tabShortcutTarget(ShortcutAction::SortMenu, "Processes"), ShortcutTarget::Processes); // F6 (#3097)
+    EXPECT_EQ(tabShortcutTarget(ShortcutAction::SortMenu, "ProcessDetails"), ShortcutTarget::None);
     EXPECT_EQ(tabShortcutTarget(ShortcutAction::KillSelected, "Processes"), ShortcutTarget::Processes);
     EXPECT_EQ(tabShortcutTarget(ShortcutAction::KillSelected, "ProcessDetails"), ShortcutTarget::ProcessDetails);
     EXPECT_EQ(tabShortcutTarget(ShortcutAction::KillSelected, "SystemOverview"), ShortcutTarget::None); // No selection
@@ -112,7 +115,7 @@ TEST(KeyboardShortcutsTest, TabShortcutsGoToTheTabOnShow)
     EXPECT_EQ(tabShortcutTarget(ShortcutAction::Quit, "ProcessDetails"), ShortcutTarget::None);
 }
 
-// Only F5 and F9 depend on the tab: every other action goes to no panel, on any tab.
+// Only F5, F6 and F9 depend on the tab: every other action goes to no panel, on any tab.
 TEST(KeyboardShortcutsTest, OnlyF5AndF9DependOnTheTab)
 {
     for (const std::string_view tab : {"Processes", "ProcessDetails", "SystemOverview"})

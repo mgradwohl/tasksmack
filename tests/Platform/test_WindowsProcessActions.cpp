@@ -3,7 +3,8 @@
 ///
 /// These tests verify the capabilities reporting and error handling
 /// of process actions. We avoid actually terminating processes to keep
-/// tests safe and non-destructive.
+/// tests safe and non-destructive. Efficiency mode (#3071) is tested through faked calls,
+/// and for real only on a child process the test starts itself.
 
 #include "Domain/PriorityConfig.h"
 #include "Platform/CpuAffinity.h"
@@ -38,8 +39,10 @@
 #include <fstream>
 #include <ios>
 #include <limits>
+#include <optional>
 #include <stop_token>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <thread>
 #include <vector>
@@ -952,6 +955,377 @@ TEST(WindowsProcessActionsTest, AffinityLayoutListsThisMachinesCpus)
     ASSERT_FALSE(layout.groupSizes.empty());
     EXPECT_FALSE(layout.online.empty());
     EXPECT_TRUE(layout.online.test(0));
+}
+
+// =============================================================================
+// Efficiency mode (#3071): through faked Win32 calls, then once against a real suspended child
+// =============================================================================
+
+namespace
+{
+
+/// What the faked Efficiency mode calls do and saw; each test starts from reset(). The handle the open
+/// hands out is a real one to this test process, which only the fakes ever see: nothing here changes
+/// this process's priority or power throttling.
+struct FakeEco
+{
+    struct Throttle
+    {
+        ULONG control = 0;
+        ULONG state = 0;
+        friend bool operator==(const Throttle&, const Throttle&) = default;
+    };
+
+    static inline std::uint64_t creationTicks = 0;
+    static inline DWORD openError = 0;     // OpenProcess fails with this, when not 0
+    static inline DWORD throttleError = 0; // SetProcessInformation fails with this, when not 0
+    static inline DWORD classError = 0;    // SetPriorityClass fails with this, when not 0
+    static inline DWORD openedAccess = 0;
+    static inline DWORD priorityClass = 0; // What GetPriorityClass reports; SetPriorityClass changes it
+    static inline bool critical = false;
+    static inline bool isProtected = false;
+    static inline std::vector<Throttle> throttles;
+    static inline std::vector<DWORD> classesSet;
+
+    static void reset()
+    {
+        creationTicks = 1234;
+        openError = 0;
+        throttleError = 0;
+        classError = 0;
+        openedAccess = 0;
+        priorityClass = NORMAL_PRIORITY_CLASS;
+        critical = false;
+        isProtected = false;
+        throttles.clear();
+        classesSet.clear();
+    }
+
+    static HANDLE WINAPI openProcess(DWORD access, BOOL /*inherit*/, DWORD /*pid*/)
+    {
+        openedAccess = access;
+        if (openError != 0)
+        {
+            SetLastError(openError);
+            return nullptr;
+        }
+        return OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, GetCurrentProcessId());
+    }
+    static BOOL WINAPI
+    getProcessTimes(HANDLE /*process*/, LPFILETIME creation, LPFILETIME /*exit*/, LPFILETIME /*kernel*/, LPFILETIME /*user*/)
+    {
+        creation->dwLowDateTime = static_cast<DWORD>(creationTicks & 0xFFFFFFFFU);
+        creation->dwHighDateTime = static_cast<DWORD>(creationTicks >> 32U);
+        return TRUE;
+    }
+    static BOOL WINAPI isProcessCritical(HANDLE /*process*/, PBOOL isCritical)
+    {
+        *isCritical = critical ? TRUE : FALSE;
+        return TRUE;
+    }
+    static BOOL WINAPI getProcessInformation(HANDLE /*process*/, PROCESS_INFORMATION_CLASS infoClass, LPVOID info, DWORD size)
+    {
+        if (infoClass != ProcessProtectionLevelInfo || size != sizeof(PROCESS_PROTECTION_LEVEL_INFORMATION))
+        {
+            SetLastError(ERROR_INVALID_PARAMETER);
+            return FALSE;
+        }
+        static_cast<PROCESS_PROTECTION_LEVEL_INFORMATION*>(info)->ProtectionLevel =
+            isProtected ? PROTECTION_LEVEL_ANTIMALWARE_LIGHT : PROTECTION_LEVEL_NONE;
+        return TRUE;
+    }
+    static DWORD WINAPI getPriorityClass(HANDLE /*process*/)
+    {
+        return priorityClass;
+    }
+    static BOOL WINAPI setPriorityClass(HANDLE /*process*/, DWORD newClass)
+    {
+        classesSet.push_back(newClass);
+        if (classError != 0)
+        {
+            SetLastError(classError);
+            return FALSE;
+        }
+        priorityClass = newClass;
+        return TRUE;
+    }
+    static BOOL WINAPI setProcessInformation(HANDLE /*process*/, PROCESS_INFORMATION_CLASS infoClass, LPVOID info, DWORD size)
+    {
+        if (infoClass != ProcessPowerThrottling || size != sizeof(PROCESS_POWER_THROTTLING_STATE))
+        {
+            SetLastError(ERROR_INVALID_PARAMETER);
+            return FALSE;
+        }
+        const auto* state = static_cast<const PROCESS_POWER_THROTTLING_STATE*>(info);
+        EXPECT_EQ(state->Version, static_cast<ULONG>(PROCESS_POWER_THROTTLING_CURRENT_VERSION));
+        throttles.push_back({.control = state->ControlMask, .state = state->StateMask});
+        if (throttleError != 0)
+        {
+            SetLastError(throttleError);
+            return FALSE;
+        }
+        return TRUE;
+    }
+
+    [[nodiscard]] static WindowsProcessFunctions functions()
+    {
+        WindowsProcessFunctions fns{};
+        fns.openProcess = &openProcess;
+        fns.getProcessTimes = &getProcessTimes;
+        fns.readGroupSizes = []
+        {
+            return std::vector<std::uint32_t>{8};
+        };
+        fns.isProcessCritical = &isProcessCritical;
+        fns.getProcessInformation = &getProcessInformation;
+        fns.getCurrentProcessId = []
+        {
+            return DWORD{1};
+        }; // never a fake target's
+        fns.getPriorityClass = &getPriorityClass;
+        fns.setPriorityClass = &setPriorityClass;
+        fns.setProcessInformation = &setProcessInformation;
+        return fns;
+    }
+};
+
+constexpr FakeEco::Throttle ECO_ON{.control = PROCESS_POWER_THROTTLING_EXECUTION_SPEED, .state = PROCESS_POWER_THROTTLING_EXECUTION_SPEED};
+constexpr FakeEco::Throttle ECO_HANDED_BACK{.control = 0, .state = 0};
+
+/// The priority classes every WindowsProcessActions shares are process-wide, so each test names its own
+/// fake process (its PID), whose start time is FakeEco's.
+[[nodiscard]] constexpr ProcessTarget ecoTarget(std::int32_t pid)
+{
+    return {.pid = pid, .startTimeTicks = 1234};
+}
+
+class WindowsEfficiencyModeTest : public ::testing::Test
+{
+  protected:
+    void SetUp() override
+    {
+        FakeEco::reset();
+    }
+};
+
+} // namespace
+
+TEST_F(WindowsEfficiencyModeTest, OnSetsEcoQosAndIdleAndOffRestoresTheClassItHad)
+{
+    WindowsProcessActions actions(FakeEco::functions());
+    EXPECT_TRUE(actions.actionCapabilities().canSetEfficiencyMode);
+    FakeEco::priorityClass = ABOVE_NORMAL_PRIORITY_CLASS;
+
+    const auto on = actions.setEfficiencyMode(ecoTarget(7101), true);
+    ASSERT_TRUE(on.success) << on.errorMessage;
+    EXPECT_NE(FakeEco::openedAccess & PROCESS_SET_INFORMATION, 0U);
+    EXPECT_EQ(FakeEco::throttles, (std::vector<FakeEco::Throttle>{ECO_ON}));
+    EXPECT_EQ(FakeEco::classesSet, (std::vector<DWORD>{IDLE_PRIORITY_CLASS}));
+
+    const auto off = actions.setEfficiencyMode(ecoTarget(7101), false);
+    ASSERT_TRUE(off.success) << off.errorMessage;
+    EXPECT_EQ(FakeEco::throttles, (std::vector<FakeEco::Throttle>{ECO_ON, ECO_HANDED_BACK}));
+    EXPECT_EQ(FakeEco::classesSet, (std::vector<DWORD>{IDLE_PRIORITY_CLASS, ABOVE_NORMAL_PRIORITY_CLASS})) << "the class it had";
+}
+
+TEST_F(WindowsEfficiencyModeTest, TheClassIsRememberedForEveryActionsInstanceAndOnlyForThatProcess)
+{
+    // The Processes table and Process Details each have their own actions: one turns it on, the other off.
+    WindowsProcessActions table(FakeEco::functions());
+    WindowsProcessActions details(FakeEco::functions());
+    FakeEco::priorityClass = BELOW_NORMAL_PRIORITY_CLASS;
+    ASSERT_TRUE(table.setEfficiencyMode(ecoTarget(7102), true).success);
+    ASSERT_TRUE(details.setEfficiencyMode(ecoTarget(7102), true).success) << "on again: Idle doesn't replace the class remembered";
+
+    // Another process with the same PID (a reused one) is a different process: it has nothing remembered.
+    FakeEco::creationTicks = 9999;
+    ASSERT_TRUE(details.setEfficiencyMode({.pid = 7102, .startTimeTicks = 9999}, false).success);
+    EXPECT_EQ(FakeEco::classesSet.back(), static_cast<DWORD>(NORMAL_PRIORITY_CLASS));
+
+    FakeEco::creationTicks = 1234;
+    FakeEco::priorityClass = IDLE_PRIORITY_CLASS;
+    ASSERT_TRUE(details.setEfficiencyMode(ecoTarget(7102), false).success);
+    EXPECT_EQ(FakeEco::classesSet.back(), static_cast<DWORD>(BELOW_NORMAL_PRIORITY_CLASS));
+}
+
+TEST_F(WindowsEfficiencyModeTest, OffWithNothingRememberedRestoresNormalFromIdleAndLeavesAnyOtherClass)
+{
+    WindowsProcessActions actions(FakeEco::functions());
+    FakeEco::priorityClass = IDLE_PRIORITY_CLASS; // Task Manager, or the process itself, put it there
+    ASSERT_TRUE(actions.setEfficiencyMode(ecoTarget(7103), false).success);
+    EXPECT_EQ(FakeEco::throttles, (std::vector<FakeEco::Throttle>{ECO_HANDED_BACK}));
+    EXPECT_EQ(FakeEco::classesSet, (std::vector<DWORD>{NORMAL_PRIORITY_CLASS}));
+
+    // Changed since: a class someone chose is left as it is.
+    FakeEco::classesSet.clear();
+    FakeEco::priorityClass = HIGH_PRIORITY_CLASS;
+    ASSERT_TRUE(actions.setEfficiencyMode(ecoTarget(7103), false).success);
+    EXPECT_TRUE(FakeEco::classesSet.empty());
+}
+
+TEST_F(WindowsEfficiencyModeTest, ProtectedCriticalAndSystemProcessesAndAReusedPidAreRefused)
+{
+    WindowsProcessActions actions(FakeEco::functions());
+
+    FakeEco::critical = true;
+    const auto critical = actions.setEfficiencyMode(ecoTarget(7104), true);
+    EXPECT_FALSE(critical.success);
+    EXPECT_FALSE(critical.permissionDenied) << "no administrator makes it safe";
+    EXPECT_NE(critical.errorMessage.find("critical system process"), std::string::npos) << critical.errorMessage;
+    EXPECT_NE(critical.errorMessage.find("Efficiency mode"), std::string::npos) << critical.errorMessage;
+
+    FakeEco::critical = false;
+    FakeEco::isProtected = true;
+    const auto guarded = actions.setEfficiencyMode(ecoTarget(7104), true);
+    EXPECT_FALSE(guarded.success);
+    EXPECT_FALSE(guarded.permissionDenied);
+    EXPECT_NE(guarded.errorMessage.find("protected process"), std::string::npos) << guarded.errorMessage;
+
+    const auto system = actions.setEfficiencyMode({.pid = SYSTEM_PROCESS_PID, .startTimeTicks = 1234}, true);
+    EXPECT_FALSE(system.success);
+    EXPECT_NE(system.errorMessage.find("System process"), std::string::npos) << system.errorMessage;
+
+    FakeEco::isProtected = false;
+    FakeEco::creationTicks = 9999;
+    const auto reused = actions.setEfficiencyMode(ecoTarget(7104), true);
+    EXPECT_FALSE(reused.success);
+    EXPECT_NE(reused.errorMessage.find("different process"), std::string::npos) << reused.errorMessage;
+
+    EXPECT_TRUE(FakeEco::throttles.empty()) << "nothing reached a refused process";
+    EXPECT_TRUE(FakeEco::classesSet.empty());
+}
+
+TEST_F(WindowsEfficiencyModeTest, AccessDeniedIsAPermissionRefusalTheHelperCanRetry)
+{
+    WindowsProcessActions actions(FakeEco::functions());
+    FakeEco::openError = ERROR_ACCESS_DENIED; // elevated, or another user's
+    const auto opened = actions.setEfficiencyMode(ecoTarget(7105), true);
+    EXPECT_FALSE(opened.success);
+    EXPECT_TRUE(opened.permissionDenied);
+    EXPECT_EQ(opened.errorMessage,
+              "Access denied: can't change the Efficiency mode of process 7105. It may run elevated or as another user.");
+
+    FakeEco::openError = 0;
+    FakeEco::throttleError = ERROR_ACCESS_DENIED;
+    const auto refused = actions.setEfficiencyMode(ecoTarget(7105), true);
+    EXPECT_FALSE(refused.success);
+    EXPECT_TRUE(refused.permissionDenied);
+    EXPECT_TRUE(FakeEco::classesSet.empty()) << "the class isn't touched when the throttling is refused";
+
+    FakeEco::openError = ERROR_INVALID_PARAMETER;
+    EXPECT_EQ(actions.setEfficiencyMode(ecoTarget(7105), true).errorMessage, "Process not found - may have already exited");
+}
+
+TEST_F(WindowsEfficiencyModeTest, ARefusedThrottlingOrClassChangeIsReportedAndARefusedOnChangesNothing)
+{
+    WindowsProcessActions actions(FakeEco::functions());
+    FakeEco::throttleError = ERROR_GEN_FAILURE;
+    const auto throttle = actions.setEfficiencyMode(ecoTarget(7106), true);
+    EXPECT_FALSE(throttle.success);
+    EXPECT_FALSE(throttle.permissionDenied);
+    EXPECT_EQ(throttle.errorMessage, std::format("Failed to turn Efficiency mode on for process 7106: error {}", ERROR_GEN_FAILURE));
+
+    FakeEco::throttleError = 0;
+    FakeEco::throttles.clear();
+    FakeEco::classError = ERROR_GEN_FAILURE;
+    const auto on = actions.setEfficiencyMode(ecoTarget(7106), true);
+    EXPECT_FALSE(on.success);
+    EXPECT_NE(on.errorMessage.find("Efficiency mode was not turned on"), std::string::npos) << on.errorMessage;
+    EXPECT_EQ(FakeEco::throttles, (std::vector<FakeEco::Throttle>{ECO_ON, ECO_HANDED_BACK})) << "the throttling is undone";
+
+    FakeEco::priorityClass = IDLE_PRIORITY_CLASS;
+    const auto off = actions.setEfficiencyMode(ecoTarget(7106), false);
+    EXPECT_FALSE(off.success);
+    EXPECT_NE(off.errorMessage.find("its priority could not be restored"), std::string::npos) << off.errorMessage;
+}
+
+TEST_F(WindowsEfficiencyModeTest, WithoutItsCallsThereIsNoEfficiencyModeAndNothingIsOpened)
+{
+    WindowsProcessFunctions fns = FakeEco::functions();
+    fns.setProcessInformation = nullptr;
+    WindowsProcessActions actions(fns);
+    EXPECT_FALSE(actions.actionCapabilities().canSetEfficiencyMode);
+    const auto result = actions.setEfficiencyMode(ecoTarget(7107), true);
+    EXPECT_FALSE(result.success);
+    EXPECT_NE(result.errorMessage.find("not available"), std::string::npos) << result.errorMessage;
+    EXPECT_EQ(FakeEco::openedAccess, 0U);
+
+    EXPECT_TRUE(WindowsProcessActions{}.actionCapabilities().canSetEfficiencyMode) << "the real calls";
+}
+
+TEST(WindowsEfficiencyModeMathTest, TheClassRestoredIsTheOneRememberedWhileTheProcessIsStillAtIdle)
+{
+    EXPECT_EQ(priorityClassToRestore(HIGH_PRIORITY_CLASS, IDLE_PRIORITY_CLASS), std::optional<uint32_t>{HIGH_PRIORITY_CLASS});
+    EXPECT_EQ(priorityClassToRestore(std::nullopt, IDLE_PRIORITY_CLASS), std::optional<uint32_t>{NORMAL_PRIORITY_CLASS});
+    EXPECT_EQ(priorityClassToRestore(HIGH_PRIORITY_CLASS, 0), std::optional<uint32_t>{HIGH_PRIORITY_CLASS}) << "unreadable now";
+    EXPECT_EQ(priorityClassToRestore(std::nullopt, 0), std::optional<uint32_t>{NORMAL_PRIORITY_CLASS});
+    EXPECT_FALSE(priorityClassToRestore(IDLE_PRIORITY_CLASS, BELOW_NORMAL_PRIORITY_CLASS).has_value()) << "changed since";
+}
+
+TEST(WindowsEfficiencyModeMathTest, ThePrioritiesKeepTheFirstRealClassAndStayBounded)
+{
+    EfficiencyModePriorities priorities;
+    const ProcessTarget target{.pid = 10, .startTimeTicks = 20};
+    priorities.remember(target, 0); // unreadable: nothing to remember
+    EXPECT_EQ(priorities.size(), 0U);
+    priorities.remember(target, IDLE_PRIORITY_CLASS);
+    priorities.remember(target, HIGH_PRIORITY_CLASS); // a real class replaces Idle
+    priorities.remember(target, IDLE_PRIORITY_CLASS); // on again: kept
+    EXPECT_EQ(priorities.take(target), std::optional<uint32_t>{HIGH_PRIORITY_CLASS});
+    EXPECT_FALSE(priorities.take(target).has_value()) << "taken once";
+    EXPECT_FALSE(priorities.take({.pid = 10, .startTimeTicks = 21}).has_value());
+
+    for (std::int32_t pid = 1; pid <= static_cast<std::int32_t>(EfficiencyModePriorities::MAX_REMEMBERED) + 5; ++pid)
+    {
+        priorities.remember({.pid = pid, .startTimeTicks = 1}, NORMAL_PRIORITY_CLASS);
+    }
+    EXPECT_EQ(priorities.size(), EfficiencyModePriorities::MAX_REMEMBERED);
+    EXPECT_FALSE(priorities.take({.pid = 1, .startTimeTicks = 1}).has_value()) << "the lowest PID's went first";
+    EXPECT_TRUE(priorities.take({.pid = 1000, .startTimeTicks = 1}).has_value());
+}
+
+TEST(WindowsEfficiencyModeMathTest, TheRefusalsSayWhatWasntChanged)
+{
+    EXPECT_EQ(guardedActionWording(GuardedAction::EfficiencyMode), std::string_view{"change its Efficiency mode"});
+    EXPECT_NE(protectedProcessRefusal(42, GuardedAction::EfficiencyMode).find("won't let even an administrator change its Efficiency mode"),
+              std::string::npos);
+    EXPECT_EQ(efficiencyModeFailure(5, 42, false), "Failed to turn Efficiency mode off for process 42: error 5");
+    EXPECT_EQ(efficiencyModePriorityFailure(5, 42, false),
+              "Efficiency mode was turned off for process 42, but its priority could not be restored: error 5");
+}
+
+// The real calls, on this test's own suspended child only: Idle and EcoQoS on, then both handed back.
+TEST(WindowsProcessActionsTest, EfficiencyModeTurnsAChildsEcoQosAndIdleOnAndOff)
+{
+    const SuspendedChild child;
+    ASSERT_TRUE(child.started());
+    const Windows::UniqueHandle process(
+        OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, static_cast<DWORD>(child.target().pid)));
+    ASSERT_TRUE(process);
+    const auto throttling = [&process]
+    {
+        PROCESS_POWER_THROTTLING_STATE state{};
+        state.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+        EXPECT_NE(GetProcessInformation(process.get(), ProcessPowerThrottling, &state, sizeof(state)), FALSE);
+        return state.ControlMask & state.StateMask & PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+    };
+    const DWORD before = GetPriorityClass(process.get());
+
+    WindowsProcessActions actions;
+    ProcessTarget reused = child.target();
+    reused.startTimeTicks += 1;
+    EXPECT_FALSE(actions.setEfficiencyMode(reused, true).success);
+    EXPECT_EQ(GetPriorityClass(process.get()), before) << "nothing reached the child";
+
+    const auto on = actions.setEfficiencyMode(child.target(), true);
+    ASSERT_TRUE(on.success) << on.errorMessage;
+    EXPECT_EQ(GetPriorityClass(process.get()), static_cast<DWORD>(IDLE_PRIORITY_CLASS));
+    EXPECT_NE(throttling(), 0U);
+
+    const auto off = actions.setEfficiencyMode(child.target(), false);
+    ASSERT_TRUE(off.success) << off.errorMessage;
+    EXPECT_EQ(GetPriorityClass(process.get()), before);
+    EXPECT_EQ(throttling(), 0U);
 }
 
 // =============================================================================

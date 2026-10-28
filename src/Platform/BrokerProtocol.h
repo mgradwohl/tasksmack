@@ -54,7 +54,9 @@ namespace Platform::Broker
 /// 5: ReadProcessCounters can also ask for each process's socket inodes, for network attribution (#2728).
 /// 6: ListHiddenProcesses, the /proc/<pid> files of processes hidepid hides from TaskSmack (#2728).
 /// 7: ServiceAction, a systemd unit started, stopped or given a start type over the helper's bus (#2728).
-inline constexpr std::uint16_t PROTOCOL_VERSION = 8;
+/// 8: Signal gains Hangup, Interrupt, Quit, User1 and User2 (#3063).
+/// 9: SetEfficiencyMode, Efficiency mode turned on or off for a process (#3071).
+inline constexpr std::uint16_t PROTOCOL_VERSION = 9;
 /// The largest frame either side accepts, header included.
 inline constexpr std::size_t MAX_MESSAGE_BYTES = std::size_t{8} << 20U;
 /// The most processes one ReadProcessCounters asks about (#2728); a sampler with more asks for the first.
@@ -89,6 +91,7 @@ enum class MessageKind : std::uint16_t // NOLINT(performance-enum-size): 16 bits
     SetIoPriority = 18,
     SetAffinity = 19,
     ServiceAction = 20,         ///< Start, stop or restart a service, or set its start type (#2728)
+    SetEfficiencyMode = 21,     ///< Efficiency mode on or off for a process (#3071)
     ReadEnvironment = 32,       ///< Another user's process's environment, for Process Details (#2309)
     ReadModules = 33,           ///< Its loaded modules (#2309)
     ReadOpenFiles = 34,         ///< Its open files (#2309)
@@ -171,6 +174,14 @@ struct AffinityRequest
     ProcessTarget target;
     CpuAffinity cpus;
     friend bool operator==(const AffinityRequest&, const AffinityRequest&) = default;
+};
+
+/// Turn Efficiency mode on or off for a process (#3071, protocol v9): IProcessActions::setEfficiencyMode().
+struct EfficiencyModeRequest
+{
+    ProcessTarget target;
+    bool on = false;
+    friend bool operator==(const EfficiencyModeRequest&, const EfficiencyModeRequest&) = default;
 };
 
 /// Read a process's environment (#2309): the helper reads it with its capabilities, after the same identity check.
@@ -500,7 +511,8 @@ using Request = std::variant<Hello,
                              CrashesRequest,
                              ProcessCountersRequest,
                              HiddenProcessesRequest,
-                             ServiceActionRequest>;
+                             ServiceActionRequest,
+                             EfficiencyModeRequest>;
 using Response = std::variant<HelloReply,
                               ActionResult,
                               ErrorReply,
@@ -823,6 +835,14 @@ namespace Detail
     return MessageKind::SetIoPriority;
 }
 
+/// SetEfficiencyMode (#3071): the target, then whether it is turned on (0 or 1).
+[[nodiscard]] inline MessageKind encodePayload(Writer& writer, const EfficiencyModeRequest& efficiency)
+{
+    writer.target(efficiency.target);
+    writer.u8(efficiency.on ? 1U : 0U);
+    return MessageKind::SetEfficiencyMode;
+}
+
 /// The reads that name only their target.
 [[nodiscard]] inline MessageKind encodePayload(Writer& writer, const EnvironmentRequest& environment)
 {
@@ -1096,6 +1116,8 @@ namespace Detail
         return Detail::finish<Request>(reader, id, Detail::decodeIoPriorityRequest(reader));
     case MessageKind::SetAffinity:
         return Detail::finish<Request>(reader, id, Detail::decodeAffinityRequest(reader));
+    case MessageKind::SetEfficiencyMode:
+        return Detail::finish<Request>(reader, id, EfficiencyModeRequest{.target = reader.target(), .on = reader.flag()});
     case MessageKind::ReadEnvironment:
         return Detail::finish<Request>(reader, id, EnvironmentRequest{.target = reader.target()});
     case MessageKind::ReadModules:
@@ -1872,6 +1894,7 @@ namespace Detail
     case MessageKind::ReadProcessCounters:
     case MessageKind::ListHiddenProcesses:
     case MessageKind::ServiceAction:
+    case MessageKind::SetEfficiencyMode:
         break;
     }
     return std::unexpected("Not a response");
