@@ -807,6 +807,91 @@ TEST(BrokerPipeTest, AStoppedReceiveSaysSo)
     EXPECT_EQ(received.error(), BrokerPipe::ReceiveEnd::Stopped);
 }
 
+/// A frame of a megabyte, far more than a pipe's buffer holds: its write waits for a reader (#3221).
+[[nodiscard]] std::vector<std::uint8_t> frameLargerThanThePipesBuffer()
+{
+    constexpr std::size_t BODY = std::size_t{1} << 20U;
+    std::vector<std::uint8_t> frame = lengthPrefix(static_cast<std::uint32_t>(BODY));
+    frame.resize(frame.size() + BODY, 0x5A);
+    return frame;
+}
+
+// #3221: a write that no one reads ends with the timeout, or with a stop, and each says which.
+TEST(BrokerPipeTest, AnUnreadWriteTimesOutOrIsStoppedAndSaysWhich)
+{
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
+    const PipePair pair = connectedPair();
+    ASSERT_TRUE(pair.server && pair.client);
+    const std::vector<std::uint8_t> frame = frameLargerThanThePipesBuffer();
+
+    std::string error;
+    EXPECT_FALSE(BrokerPipe::sendFrame(pair.server.get(), frame, 200ms, {}, error));
+    EXPECT_EQ(error, "the other end didn't read it in time");
+
+    const PipePair stoppedPair = connectedPair();
+    ASSERT_TRUE(stoppedPair.server && stoppedPair.client);
+    std::stop_source stop;
+    stop.request_stop();
+    EXPECT_FALSE(BrokerPipe::sendFrame(stoppedPair.server.get(), frame, WAIT, stop.get_token(), error));
+    EXPECT_EQ(error, "cancelled");
+}
+
+// #3221: a write the other end closes the pipe on before reading it says the other end has gone.
+TEST(BrokerPipeTest, AWriteTheOtherEndClosesOnSaysItHasGone)
+{
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
+    PipePair pair = connectedPair();
+    ASSERT_TRUE(pair.server && pair.client);
+    const std::vector<std::uint8_t> frame = frameLargerThanThePipesBuffer();
+    auto sent = std::async(std::launch::async,
+                           [&frame, pipe = pair.server.get()]
+                           {
+                               std::string error;
+                               const bool ok = BrokerPipe::sendFrame(pipe, frame, WAIT, {}, error);
+                               return std::pair{ok, error};
+                           });
+    // Closed once the write has begun: its first bytes are in the pipe, the rest wait for a reader.
+    const auto start = std::chrono::steady_clock::now();
+    while (BrokerPipe::bytesWaiting(pair.client.get()).value_or(0) == 0 && since(start) < WAIT)
+    {
+        std::this_thread::sleep_for(10ms);
+    }
+    pair.client.reset();
+    const auto [ok, error] = sent.get();
+    EXPECT_FALSE(ok);
+    EXPECT_EQ(error, "the other end has gone");
+}
+
+// #3221: a stop while a frame's body is still arriving ends the receive as stopped, not as a failure.
+TEST(BrokerPipeTest, AReceiveStoppedPartWayThroughABodySaysSo)
+{
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
+    const PipePair pair = connectedPair();
+    ASSERT_TRUE(pair.server && pair.client);
+    std::vector<std::uint8_t> start = lengthPrefix(100);
+    start.resize(start.size() + 10, 0x11); // ten of its hundred bytes
+    ASSERT_TRUE(send(pair.server.get(), start));
+    std::stop_source stop;
+    std::jthread stopper(
+        [&stop]
+        {
+            std::this_thread::sleep_for(100ms);
+            stop.request_stop();
+        });
+    const auto received = BrokerPipe::receiveFrame(pair.client.get(), WAIT, stop.get_token());
+    ASSERT_FALSE(received.has_value());
+    EXPECT_EQ(received.error(), BrokerPipe::ReceiveEnd::Stopped);
+}
+
 TEST(BrokerPipeTest, AClosedPipeIsTheEndOfTheSession)
 {
     if (const auto why = brokerRefusesThisUser())

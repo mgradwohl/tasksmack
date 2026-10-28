@@ -39,6 +39,7 @@
 #include <initializer_list>
 #include <ios>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
@@ -411,6 +412,22 @@ TEST(BrokerHelperTest, SameFileComparesWhatPathsNameNotHowTheyAreSpelled)
     EXPECT_FALSE(BrokerHelper::sameFile(own, imageOf(SuspendedChild().process()))) << "another executable";
     EXPECT_FALSE(BrokerHelper::sameFile(own, (path.parent_path() / L"TaskSmack.exe.missing").wstring()));
     EXPECT_FALSE(BrokerHelper::sameFile(own, L""));
+    EXPECT_FALSE(BrokerHelper::sameFile((path.parent_path() / L"TaskSmack.exe.missing").wstring(), own))
+        << "the first one missing"; // #3221
+}
+
+// #3221: a PID past what a process can have is refused before anything is opened, and a PID no process
+// has is a parent that has exited.
+TEST(BrokerHelperTest, APidOutOfRangeOrOfNoProcessIsRefused)
+{
+    const auto tooLarge = BrokerHelper::openParent(static_cast<DWORD>(std::numeric_limits<std::int32_t>::max()) + 1U, 1);
+    ASSERT_FALSE(tooLarge.has_value());
+    EXPECT_EQ(tooLarge.error(), "TaskSmack's process wasn't named");
+
+    // PIDs are multiples of four, and this one is far past any PID Windows hands out.
+    const auto none = BrokerHelper::openParent(0x7FFFFFFCU, 1);
+    ASSERT_FALSE(none.has_value());
+    EXPECT_EQ(none.error(), "TaskSmack has exited");
 }
 
 // #2770: QueryFullProcessImageNameW fails with ERROR_INSUFFICIENT_BUFFER, and doesn't say the size
@@ -752,6 +769,10 @@ TEST(BrokerHelperTest, ExitStatusesAreSaidInWords)
     EXPECT_TRUE(BrokerHelper::exitMeaning(static_cast<DWORD>(BrokerHelper::Exit::NoParent)).contains("didn't accept TaskSmack"));
     EXPECT_TRUE(BrokerHelper::exitMeaning(static_cast<DWORD>(BrokerHelper::Exit::Usage)).contains("command line"));
     EXPECT_EQ(BrokerHelper::exitMeaning(77), "the helper exited with status 77");
+    // #3221: each of the others has its own words too, none of them the catch-all's.
+    EXPECT_EQ(BrokerHelper::exitMeaning(static_cast<DWORD>(BrokerHelper::Exit::Done)), "the helper ended its session");
+    EXPECT_EQ(BrokerHelper::exitMeaning(static_cast<DWORD>(BrokerHelper::Exit::Failed)), "the helper failed");
+    EXPECT_EQ(BrokerHelper::exitMeaning(static_cast<DWORD>(BrokerHelper::Exit::NoClient)), "the helper couldn't make its pipe");
 }
 
 // --- The watch on the parent ------------------------------------------------------------------------
@@ -1227,6 +1248,33 @@ TEST(BrokerHelperTest, AnOverTheShoulderSessionReadsOnlyTheUsersOwnProcesses)
     ASSERT_TRUE(std::holds_alternative<Broker::ActionResult>(kill));
     EXPECT_TRUE(std::get<Broker::ActionResult>(kill).success);
     EXPECT_EQ(counting.calls->load(), 2);
+}
+
+// #3221: each per-process read of the user's own process reaches the readers, and without a way to
+// tell whose a process is, none does.
+TEST(BrokerHelperTest, AnOverTheShoulderSessionPassesEachReadOfTheUsersOwnProcess)
+{
+    const ProcessTarget mine{.pid = 1, .startTimeTicks = 1};
+    const CountingReads counting;
+    const BrokerPipeServer::RequestHandler handler =
+        BrokerHelper::readsOnlyOwnProcesses(counting.handler(), [](const ProcessTarget&) { return true; });
+    const std::vector<Broker::Request> reads = {Broker::EnvironmentRequest{.target = mine},
+                                                Broker::ModulesRequest{.target = mine},
+                                                Broker::OpenFilesRequest{.target = mine},
+                                                Broker::ConnectionsRequest{.target = mine},
+                                                Broker::MemoryRollupRequest{.target = mine}};
+    for (const Broker::Request& read : reads)
+    {
+        static_cast<void>(handler(read));
+    }
+    EXPECT_EQ(counting.calls->load(), static_cast<int>(reads.size()));
+
+    const CountingReads unknown;
+    const BrokerPipeServer::RequestHandler noOwner = BrokerHelper::readsOnlyOwnProcesses(unknown.handler(), {});
+    const auto refused = noOwner(Broker::ModulesRequest{.target = mine});
+    ASSERT_TRUE(std::holds_alternative<Broker::ModulesReply>(refused));
+    EXPECT_EQ(std::get<Broker::ModulesReply>(refused).result.status, ModulesReadStatus::Failed);
+    EXPECT_EQ(unknown.calls->load(), 0);
 }
 
 TEST(BrokerHelperTest, AnOverTheShoulderSessionEndsOnceItsOneActionIsAnswered)
