@@ -723,6 +723,7 @@ void ShellLayer::handleGlobalShortcut(KeyboardShortcuts::ShortcutAction action)
         break;
     }
     case ShortcutAction::ToggleTreeView:
+    case ShortcutAction::SortMenu:
     case ShortcutAction::RaisePriority:
     case ShortcutAction::LowerPriority:
     case ShortcutAction::KillSelected:
@@ -747,6 +748,10 @@ void ShellLayer::handleTabShortcut(KeyboardShortcuts::ShortcutAction action)
         if (action == KeyboardShortcuts::ShortcutAction::ToggleTreeView)
         {
             m_ProcessesPanel.toggleTreeView();
+        }
+        else if (action == KeyboardShortcuts::ShortcutAction::SortMenu)
+        {
+            m_ProcessesPanel.requestSortMenu();
         }
         else if (action == KeyboardShortcuts::ShortcutAction::RaisePriority)
         {

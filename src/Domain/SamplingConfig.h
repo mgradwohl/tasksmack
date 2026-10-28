@@ -89,6 +89,11 @@ inline constexpr int ACCOUNT_NAME_CACHE_TTL_SECONDS = 300;
 // on its own.
 inline constexpr int SYSTEM_PROBE_SLOW_SUB_READ_MS = REFRESH_INTERVAL_MIN_MS;
 
+// How often each BackgroundSampler logs its timing summary (passes, p50/p95/max per samplable, named
+// by its thread) at debug level while it runs (#3153); it logs one more when it stops. Five minutes
+// keeps a long run's log readable: a handful of lines per sampler per half hour.
+inline constexpr int SAMPLER_TIMING_SUMMARY_PERIOD_MS = 5 * 60 * 1000;
+
 // Cache TTL for inode-to-PID mapping (milliseconds) - Linux only
 // buildInodeToPidMap() scans /proc/[pid]/fd/* for all processes to resolve socket
 // inodes to owning PIDs. At 1Hz sampling this scan adds measurable latency on busy

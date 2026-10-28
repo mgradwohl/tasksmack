@@ -1150,6 +1150,8 @@ TEST(BrokerPipeServeTest, OnlyActionsWindowsDoesAndTheHelloPutOffTheIdleExit)
     // Suspend and Resume are real actions on Windows since #2582 (NtSuspendProcess, NtResumeProcess).
     EXPECT_TRUE(BrokerPipeServer::putsOffTheWindowsIdleExit(Broker::SignalRequest{.target = TARGET, .signal = Signal::Suspend}));
     EXPECT_TRUE(BrokerPipeServer::putsOffTheWindowsIdleExit(Broker::SignalRequest{.target = TARGET, .signal = Signal::Resume}));
+    // And Efficiency mode (#3071).
+    EXPECT_TRUE(BrokerPipeServer::putsOffTheWindowsIdleExit(Broker::EfficiencyModeRequest{.target = TARGET, .on = true}));
     // What Windows always refuses keeps nothing alive.
     EXPECT_FALSE(BrokerPipeServer::putsOffTheWindowsIdleExit(Broker::IoPriorityRequest{}));
     // Nor does a read.
@@ -1159,6 +1161,7 @@ TEST(BrokerPipeServeTest, OnlyActionsWindowsDoesAndTheHelloPutOffTheIdleExit)
     EXPECT_TRUE(BrokerPipeServer::isActionWindowsDoes(Broker::SignalRequest{.target = TARGET, .signal = Signal::Kill}));
     EXPECT_TRUE(BrokerPipeServer::isActionWindowsDoes(Broker::SignalRequest{.target = TARGET, .signal = Signal::Suspend}));
     EXPECT_TRUE(BrokerPipeServer::isActionWindowsDoes(Broker::SignalRequest{.target = TARGET, .signal = Signal::Resume}));
+    EXPECT_TRUE(BrokerPipeServer::isActionWindowsDoes(Broker::EfficiencyModeRequest{.target = TARGET, .on = false}));
     EXPECT_FALSE(BrokerPipeServer::isActionWindowsDoes(Broker::IoPriorityRequest{}));
     EXPECT_FALSE(BrokerPipeServer::isActionWindowsDoes(Broker::Hello{}));
 }
@@ -1312,7 +1315,8 @@ TEST(BrokerPipeServeTest, EveryRequestKindIsTheHelloAnActionOrARead)
     EXPECT_TRUE(BrokerPipeServer::isRead(Broker::HiddenProcessesRequest{.visiblePids = {TARGET.pid}}));
     EXPECT_FALSE(BrokerPipeServer::isRead(Broker::ServiceActionRequest{}));
     EXPECT_FALSE(BrokerPipeServer::isActionWindowsDoes(Broker::ServiceActionRequest{})) << "an ErrorReply";
-    static_assert(std::variant_size_v<Broker::Request> == 15, "a new request kind: add it above");
+    EXPECT_FALSE(BrokerPipeServer::isRead(Broker::EfficiencyModeRequest{.target = TARGET, .on = true})) << "an action (#3071)";
+    static_assert(std::variant_size_v<Broker::Request> == 16, "a new request kind: add it above");
 }
 
 TEST(BrokerPipeServeTest, AOneActionSessionIsntKeptOpenByGreetingAgain)

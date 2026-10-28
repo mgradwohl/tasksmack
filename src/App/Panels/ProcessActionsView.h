@@ -22,6 +22,7 @@
 #include "UI/IconsFontAwesome6.h"
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <format>
 #include <functional>
@@ -55,6 +56,9 @@ namespace Detail
     case ProcessAction::SignalUser1:
     case ProcessAction::SignalUser2:
         return capabilities.canSendSignals;
+    case ProcessAction::EfficiencyModeOn:
+    case ProcessAction::EfficiencyModeOff:
+        return capabilities.canSetEfficiencyMode;
     case ProcessAction::None:
         break;
     }
@@ -151,6 +155,66 @@ struct SyscallTraceButton
                        "Close the window or press Ctrl+C there to stop tracing; the process keeps running."};
 }
 
+/// The Efficiency mode toggle's label (#3071), also its ImGui ID: a checkbox in Process Details' Actions
+/// card, a checked menu item in the Processes table's row menu.
+inline constexpr const char* EFFICIENCY_MODE_LABEL = ICON_FA_LEAF " Efficiency mode###EfficiencyMode";
+
+/// How the Efficiency mode toggle is drawn (#3071).
+enum class EfficiencyModeToggleState : std::uint8_t
+{
+    Hidden,   ///< The platform has no Efficiency mode (Linux, the synthetic scenario): nothing is drawn.
+    Disabled, ///< Drawn greyed out; the tooltip says why.
+    Enabled,
+};
+
+struct EfficiencyModeToggle
+{
+    EfficiencyModeToggleState state = EfficiencyModeToggleState::Hidden;
+    const char* tooltip = "";
+};
+
+/// The Efficiency mode toggle for @p capabilities and @p target (#3071), checked when @p on: hidden where
+/// the platform has none, disabled with the reason for a selection of several processes (@p batchCount,
+/// the row menu's: it is set one process at a time, as in Task Manager), no process, one whose identity
+/// isn't confirmed yet, or while another action runs (@p actionRunning); otherwise enabled, its tooltip
+/// saying what a click does.
+[[nodiscard]] constexpr EfficiencyModeToggle efficiencyModeToggle(const Platform::ProcessActionCapabilities& capabilities,
+                                                                  const Platform::ProcessTarget& target,
+                                                                  bool on,
+                                                                  bool actionRunning,
+                                                                  std::size_t batchCount = 0) noexcept
+{
+    if (!capabilities.canSetEfficiencyMode)
+    {
+        return {.state = EfficiencyModeToggleState::Hidden, .tooltip = ""};
+    }
+    if (batchCount > 1)
+    {
+        return {.state = EfficiencyModeToggleState::Disabled, .tooltip = "Efficiency mode is turned on or off for one process at a time"};
+    }
+    if (target.pid <= 0)
+    {
+        return {.state = EfficiencyModeToggleState::Disabled, .tooltip = "Select a process to put in Efficiency mode"};
+    }
+    if (target.startTimeTicks == 0)
+    {
+        return {.state = EfficiencyModeToggleState::Disabled,
+                .tooltip = "TaskSmack can't confirm which process this is yet, so it won't change its Efficiency mode"};
+    }
+    if (actionRunning)
+    {
+        return {.state = EfficiencyModeToggleState::Disabled, .tooltip = "Another action is still running"};
+    }
+    if (on)
+    {
+        return {.state = EfficiencyModeToggleState::Enabled,
+                .tooltip = "Turn Efficiency mode off: Windows schedules the process as before, and its priority is restored"};
+    }
+    return {.state = EfficiencyModeToggleState::Enabled,
+            .tooltip = "Run the process at Idle priority on Windows' power-saving scheduling (EcoQoS), as Task Manager's "
+                       "Efficiency mode does: it uses less power, and may run slower"};
+}
+
 /// "Opened strace for PID 321 in a new terminal" / "Could not trace PID 321: ...".
 [[nodiscard]] inline ActionResultMessage formatSyscallTraceResult(std::int32_t pid, const Platform::ProcessActionResult& result)
 {
@@ -202,11 +266,16 @@ class ProcessActionsView
     ///
     /// Then "Create dump file..." where the platform can write one (#807), placed the same way; it asks
     /// to confirm a dump of the process captured now, into the temp folder.
+    ///
+    /// Then the Efficiency mode checkbox where the platform has it (#3071), placed the same way and
+    /// checked when @p efficiencyMode: ticking it asks to confirm, as Task Manager does; unticking it
+    /// turns Efficiency mode off at once (requestEfficiencyModeToggle()).
     void renderControls(Platform::IProcessActions* actions,
                         const Platform::ProcessActionCapabilities& capabilities,
                         const std::string& processName,
                         const Platform::ProcessTarget& target,
-                        const Platform::CpuAffinity* currentAffinity = nullptr);
+                        const Platform::CpuAffinity* currentAffinity = nullptr,
+                        bool efficiencyMode = false);
 
     /// Draws the last action's result line, when there is one, with "Authenticate and retry" beside a
     /// permission refusal the platform can retry as an administrator (#2308).
@@ -244,6 +313,10 @@ class ProcessActionsView
     /// Width of the Create dump file... button for @p capabilities at the current font, or 0 where the
     /// platform can't write a dump (#807).
     [[nodiscard]] static float createDumpButtonWidth(const Platform::ProcessActionCapabilities& capabilities);
+
+    /// Width of the Efficiency mode checkbox, box and label, for @p capabilities at the current font, or 0
+    /// where the platform has no Efficiency mode (#3071).
+    [[nodiscard]] static float efficiencyModeToggleWidth(const Platform::ProcessActionCapabilities& capabilities);
 
     /// Submits the confirm dialog while a confirm is pending, and closes it unconfirmed after a
     /// selection change or when @p liveTarget is no longer the captured process; a confirmed action is
@@ -391,13 +464,21 @@ class ProcessActionsView
         const Detail::ProcessAction action = m_ConfirmAction;
         const Platform::ProcessTarget target = m_ConfirmTarget.target;
         cancelConfirm();
-        runAction(
-            actions,
-            std::format("{} PID {}...", Detail::actionProgressLabel(action), target.pid),
-            [actions, action, target] { return Detail::dispatchProcessAction(*actions, action, target); },
-            [action, pid = target.pid](const Platform::ProcessActionResult& result)
-            { return Detail::formatActionResultMessage(action, pid, result); },
-            Detail::authorizedActionFor(action, target));
+        runProcessAction(actions, action, target);
+    }
+
+    /// The Efficiency mode checkbox was clicked for @p target, in Efficiency mode now when @p on (#3071):
+    /// off asks to confirm turning it on, as Task Manager does; on turns it off at once through @p actions
+    /// (null: unavailable), on the action worker, with the result line and a retry as any action's.
+    void
+    requestEfficiencyModeToggle(Platform::IProcessActions* actions, const Platform::ProcessTarget& target, std::string processName, bool on)
+    {
+        if (!on)
+        {
+            requestAction(Detail::ProcessAction::EfficiencyModeOn, target, std::move(processName));
+            return;
+        }
+        runProcessAction(actions, Detail::ProcessAction::EfficiencyModeOff, target);
     }
 
     /// The trace button was pressed: open strace on @p target through @p actions (null gives an
@@ -453,6 +534,19 @@ class ProcessActionsView
   private:
     /// Turns an action's result into the result line.
     using ResultFormat = std::function<Detail::ActionResultMessage(const Platform::ProcessActionResult&)>;
+
+    /// Runs @p action on @p target through @p actions on the action worker, worded as its result line and
+    /// retried as an administrator as any ProcessAction is.
+    void runProcessAction(Platform::IProcessActions* actions, Detail::ProcessAction action, const Platform::ProcessTarget& target)
+    {
+        runAction(
+            actions,
+            std::format("{} PID {}...", Detail::actionProgressLabel(action), target.pid),
+            [actions, action, target] { return Detail::dispatchProcessAction(*actions, action, target); },
+            [action, pid = target.pid](const Platform::ProcessActionResult& result)
+            { return Detail::formatActionResultMessage(action, pid, result); },
+            Detail::authorizedActionFor(action, target));
+    }
 
     /// Runs @p work (a platform call through @p actions) on the action worker, showing @p pending until it
     /// finishes; @p format turns its result into the result line. Null @p actions is the "unavailable"
@@ -563,6 +657,14 @@ class ProcessActionsView
                                 const std::string& processName,
                                 const Platform::ProcessTarget& target,
                                 bool afterButtons);
+    /// The Efficiency mode checkbox (#3071): at the row's end at its own width, as the trace button is,
+    /// checked when @p on; disabled with the reason while it can't be used (Detail::efficiencyModeToggle()).
+    void renderEfficiencyModeToggle(Platform::IProcessActions* actions,
+                                    const Platform::ProcessActionCapabilities& capabilities,
+                                    const std::string& processName,
+                                    const Platform::ProcessTarget& target,
+                                    bool on,
+                                    bool afterButtons);
 
     bool m_ShowConfirmDialog = false;
     bool m_DismissPending = false; // A selection change asked to close a dialog ImGui may still have open

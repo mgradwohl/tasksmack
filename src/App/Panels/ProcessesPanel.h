@@ -3,6 +3,7 @@
 #include "App/KeyboardShortcuts.h"
 #include "App/Panel.h"
 #include "App/Panels/ExitingProcessRows.h"
+#include "App/Panels/FindHandlesDialog.h"
 #include "App/Panels/NiceStep.h"
 #include "App/Panels/ProcessActionRun.h"
 #include "App/Panels/ProcessAffinityDialog.h"
@@ -36,6 +37,8 @@
 #include "Domain/SamplingConfig.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessIconSource.h"
+#include "Platform/IProcessModules.h"
+#include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/IUdpTrafficCollector.h"
 #include "Platform/ProcessTypes.h"
@@ -128,6 +131,11 @@ struct ProcessesPanelPlatform
     std::shared_ptr<Platform::IUdpTrafficCollector> udpCollector{};
     /// The icons beside the names (#1800); nullptr: every process shows the generic icon.
     std::unique_ptr<Platform::IProcessIconSource> icons;
+    /// Find handles' readers (#3067), the ones Process Details uses; null where there are none (most tests).
+    // NOLINTNEXTLINE(readability-redundant-member-init) - lets the tests' designated initializers leave it out
+    std::unique_ptr<Platform::IProcessOpenFilesReader> openFiles{};
+    // NOLINTNEXTLINE(readability-redundant-member-init) - lets the tests' designated initializers leave it out
+    std::unique_ptr<Platform::IProcessModulesReader> modules{};
 };
 
 class ProcessesPanel : public Panel
@@ -365,6 +373,13 @@ class ProcessesPanel : public Panel
         m_PriorityStepRequest = direction;
     }
 
+    /// F6 (#3097): on this frame's render, open the table's "Sort by" menu of its visible columns.
+    /// Lives for this frame only, as requestKillSelected().
+    void requestSortMenu() noexcept
+    {
+        m_SortMenuShortcut.request();
+    }
+
     /// Waits for a single-process row action running on its worker (#2305) and takes its result in, as
     /// the next frame would: for tests, which check the platform call straight after confirming.
     void waitForRowActionForTesting()
@@ -389,6 +404,7 @@ class ProcessesPanel : public Panel
     {
         m_KillShortcut.expire();
         m_PriorityStepRequest.reset();
+        m_SortMenuShortcut.expire();
     }
 
   private:
@@ -415,6 +431,9 @@ class ProcessesPanel : public Panel
             Platform::CpuAffinityLayout affinityLayout;
             std::shared_ptr<Platform::IUdpTrafficCollector> udpCollector;
             std::unique_ptr<Platform::IProcessIconSource> icons;
+            std::unique_ptr<Platform::IProcessOpenFilesReader> openFiles; ///< Find handles' readers (#3067)
+            std::unique_ptr<Platform::IProcessModulesReader> modules;
+            FindHandlesDialog::Capabilities findCapabilities; ///< Asked on the hook's thread
         };
         std::mutex mutex;
         std::optional<Contents> contents; ///< guarded by mutex; empty once taken
@@ -539,6 +558,7 @@ class ProcessesPanel : public Panel
     ProcessBatchPriorityDialog m_BatchPriorityDialog;
     ProcessAffinityDialog m_AffinityDialog; // The row menu's Set affinity... (#1887)
     RunTaskDialog m_RunTaskDialog;          // The toolbar's Run new task... (#3065)
+    FindHandlesDialog m_FindHandlesDialog;  // The toolbar's Find handles (#3067), with its own readers and worker
     // The row menu's Create dump file... (#807). Declared after m_ProcessActions, which its worker uses
     // until it finishes, so it is destroyed (cancelling and waiting for a dump in flight) first.
     ProcessDumpView m_DumpView;
@@ -585,11 +605,26 @@ class ProcessesPanel : public Panel
     // frame it is drawn; the clipper is told to draw that row even when it is off-screen.
     KeyboardShortcuts::FrameRequest m_KillShortcut;
     std::optional<NiceStep::Direction> m_PriorityStepRequest; // F7 / F8 (#3097), taken by the table this frame
+    KeyboardShortcuts::FrameRequest m_SortMenuShortcut;       // F6 (#3097), taken by the table this frame
     bool m_ScrollSelectedIntoView = false;
     std::size_t m_ScrollTargetRow = 0; // Index of the selected row in the visible order
 
     // Search/filter state - using std::string for dynamic sizing
     std::string m_SearchBuffer;
+    // "/" incremental search (#3097): the Find box beside the filter, what it holds, and the jump it asked
+    // for this frame, applied with the keyboard's moves once the visible order is known.
+    enum class IncrementalSearchStep : std::uint8_t
+    {
+        None,
+        Refine, ///< The text changed: the first match from the selected row, itself included
+        Next,   ///< Enter: the match after the selected row
+    };
+    bool m_IncrementalSearchOpen = false;
+    bool m_IncrementalSearchFocus = false;
+    bool m_IncrementalSearchMissed = false; ///< The last jump found no row
+    std::string m_IncrementalSearchText;
+    IncrementalSearchStep m_IncrementalSearchStep = IncrementalSearchStep::None;
+    bool m_FocusFilter = false; ///< Ctrl+F was pressed: the filter box takes the keyboard on its next draw
 
     // Tree view state
     bool m_TreeViewEnabled = false;
@@ -849,6 +884,9 @@ class ProcessesPanel : public Panel
 
     /// "Open file location" (#3064): the row's executable in the file manager, on the row action worker.
     void openRowFileLocation(const Domain::ProcessSnapshot& proc);
+    /// The row menu's Efficiency mode item (#3071) for @p proc, in Efficiency mode now when @p on: turning
+    /// it on is confirmed first, as Task Manager does; turning it off runs at once on the row action worker.
+    void toggleRowEfficiencyMode(const Domain::ProcessSnapshot& proc, bool on);
     /// "Search online" (#3064): a web search for the row's name only, opened on the row action worker.
     void searchRowOnline(const Domain::ProcessSnapshot& proc);
     /// Group by (#3068): sets the mode, switching Tree view off for a group, and saves it in the settings.
@@ -888,6 +926,12 @@ class ProcessesPanel : public Panel
     void renderAffinityDialog();
     /// Run new task (#3065): the dialog while open, and the program it asks for started on the row action worker.
     void renderRunTaskDialog();
+    /// "/" (#3097): the Find box beside the filter while it is open; what is typed, and Enter, ask
+    /// applyKeyboardInput() to jump to the matching row.
+    void renderIncrementalSearchBox();
+    /// Find handles (#3067): the dialog while open, searching @p snapshots' processes; a clicked result
+    /// selects its process, and a double-click shows it in Process Details.
+    void renderFindHandlesDialog(const std::vector<Domain::ProcessSnapshot>& snapshots);
 
     /// The confirmation dialog for a row-menu action, and the action once confirmed.
     void renderRowActionConfirm();

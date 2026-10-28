@@ -404,6 +404,8 @@ set(COMMON_TEST_SOURCES
     Domain/test_ServiceModel.cpp
     Domain/test_ProcessServices.cpp
     Domain/test_BackgroundSampler.cpp
+    Domain/test_TimingHistogram.cpp
+    Domain/test_SamplerTimingBoard.cpp
     Domain/test_PriorityConfig.cpp
     Domain/test_SamplingConfig.cpp
     Domain/test_HistorySeries.cpp
@@ -465,6 +467,7 @@ set(COMMON_TEST_SOURCES
     App/test_RunTask.cpp # Run new task (#3065)
     App/test_ProcessPins.cpp # pinned processes (#3061)
     App/test_Connections.cpp # the Connections tab (#3066)
+    Domain/test_HandleSearch.cpp # Find handles (#3067)
     App/test_ProcessGrouping.cpp # Group by (#3068)
     App/test_ProcessTreeFlatten.cpp
     App/test_ProcessTreeIndent.cpp
@@ -607,6 +610,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessBatchAction.cpp
     App/test_NewProcessHighlight.cpp  # the new-process row tint (#3060)
     App/test_StuckProcesses.cpp  # the stuck-in-D row tint (#3097)
+    App/test_IncrementalSearch.cpp  # the Processes table's "/" search (#3097)
     App/test_NiceStep.cpp  # F7/F8 priority steps (#3097)
     App/test_ExitingProcessRows.cpp # exited processes kept as dimmed rows (#3060)
     App/test_ProcessBatchRun.cpp
@@ -876,6 +880,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessBatchPriorityDialog.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessAffinityDialog.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/RunTaskDialog.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/FindHandlesDialog.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessActionsView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessDumpView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessActionsBlock.cpp
@@ -967,12 +972,14 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/Domain/StorageModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/StartupModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/ConnectionsModel.cpp
+    ${CMAKE_SOURCE_DIR}/src/Domain/HandleSearch.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/SensorModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/SensorTracker.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/SystemInfoModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/CrashHistory.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/ServiceModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/BackgroundSampler.cpp
+    ${CMAKE_SOURCE_DIR}/src/Domain/SamplerTimingBoard.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/ThreadName.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/ThreadApartment.cpp # the sampler thread's COM apartment (#2731)
     ${CMAKE_SOURCE_DIR}/src/Platform/BrokeredProcessActions.cpp

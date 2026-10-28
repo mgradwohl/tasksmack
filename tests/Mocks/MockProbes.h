@@ -586,6 +586,10 @@ class MockProcessActions : public Platform::IProcessActions
     {
         m_SendSignalResult = std::move(result);
     }
+    void setEfficiencyModeResult(Platform::ProcessActionResult result)
+    {
+        m_EfficiencyModeResult = std::move(result);
+    }
 
     void setPriorityResult(Platform::ProcessActionResult result)
     {
@@ -646,6 +650,14 @@ class MockProcessActions : public Platform::IProcessActions
         m_LastSignal = signal;
         ++m_SendSignalCount;
         return m_SendSignalResult;
+    }
+
+    [[nodiscard]] Platform::ProcessActionResult setEfficiencyMode(const Platform::ProcessTarget& target, bool on) override
+    {
+        m_LastTarget = target;
+        m_LastEfficiencyMode = on;
+        ++m_EfficiencyModeCount;
+        return m_EfficiencyModeResult;
     }
 
     [[nodiscard]] Platform::ProcessActionResult setPriority(const Platform::ProcessTarget& target, int32_t nice) override
@@ -761,6 +773,15 @@ class MockProcessActions : public Platform::IProcessActions
     [[nodiscard]] int sendSignalCount() const
     {
         return m_SendSignalCount;
+    }
+    [[nodiscard]] int efficiencyModeCount() const
+    {
+        return m_EfficiencyModeCount;
+    }
+    /// What setEfficiencyMode() was last asked to do: on (true) or off.
+    [[nodiscard]] bool lastEfficiencyMode() const
+    {
+        return m_LastEfficiencyMode;
     }
     [[nodiscard]] Platform::ProcessSignal lastSignal() const
     {
@@ -1006,6 +1027,9 @@ class MockProcessActions : public Platform::IProcessActions
     int m_SendSignalCount = 0;
     Platform::ProcessSignal m_LastSignal = Platform::ProcessSignal::Hangup;
     Platform::ProcessActionResult m_SendSignalResult = Platform::ProcessActionResult::ok();
+    int m_EfficiencyModeCount = 0;
+    bool m_LastEfficiencyMode = false;
+    Platform::ProcessActionResult m_EfficiencyModeResult = Platform::ProcessActionResult::ok();
     int m_SetPriorityCount = 0;
     int m_SetIoPriorityCount = 0;
     int m_SetAffinityCount = 0;

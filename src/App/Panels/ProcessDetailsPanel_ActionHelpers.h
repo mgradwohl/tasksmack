@@ -6,6 +6,7 @@
 
 #include "Domain/ProcessSnapshot.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/ProcessTypes.h"
 
 #include <cstdint>
 #include <format>
@@ -33,7 +34,23 @@ enum class ProcessAction : std::uint8_t
     SignalQuit,
     SignalUser1,
     SignalUser2,
+    // Efficiency mode on and off (#3071, Windows): one action each, so the run, result and retry paths
+    // need no extra parameter. Only "on" is confirmed, as Task Manager does.
+    EfficiencyModeOn,
+    EfficiencyModeOff,
 };
+
+/// Whether @p action turns Efficiency mode on or off (#3071).
+[[nodiscard]] constexpr bool isEfficiencyModeAction(ProcessAction action) noexcept
+{
+    return action == ProcessAction::EfficiencyModeOn || action == ProcessAction::EfficiencyModeOff;
+}
+
+/// Whether @p snapshot's process is in Efficiency mode, as its Status says (#3071): what checks the toggle.
+[[nodiscard]] inline bool isInEfficiencyMode(const Domain::ProcessSnapshot& snapshot) noexcept
+{
+    return snapshot.status == Platform::EFFICIENCY_MODE_STATUS;
+}
 
 /// The signal a Signal* action sends (#3063), or nullopt for the other actions.
 [[nodiscard]] constexpr std::optional<Platform::ProcessSignal> signalFor(ProcessAction action) noexcept
@@ -55,6 +72,8 @@ enum class ProcessAction : std::uint8_t
     case ProcessAction::Kill:
     case ProcessAction::Stop:
     case ProcessAction::Resume:
+    case ProcessAction::EfficiencyModeOn:
+    case ProcessAction::EfficiencyModeOff:
         break;
     }
     return std::nullopt;
@@ -80,6 +99,8 @@ enum class ProcessAction : std::uint8_t
     case ProcessAction::Kill:
     case ProcessAction::Stop:
     case ProcessAction::Resume:
+    case ProcessAction::EfficiencyModeOn:
+    case ProcessAction::EfficiencyModeOff:
         break;
     }
     return "";
@@ -113,6 +134,10 @@ enum class ProcessAction : std::uint8_t
         return "send SIGUSR1 to";
     case ProcessAction::SignalUser2:
         return "send SIGUSR2 to";
+    case ProcessAction::EfficiencyModeOn:
+        return "turn Efficiency mode on for";
+    case ProcessAction::EfficiencyModeOff:
+        return "turn Efficiency mode off for";
     case ProcessAction::None:
         break;
     }
@@ -156,6 +181,11 @@ inline constexpr float AUTHORIZE_RESULT_SECONDS = 30.0F;
             return authorized;
         }
         break;
+    case ProcessAction::EfficiencyModeOn:
+    case ProcessAction::EfficiencyModeOff:
+        authorized.kind = Kind::SetEfficiencyMode;
+        authorized.efficiencyMode = action == ProcessAction::EfficiencyModeOn;
+        return authorized;
     case ProcessAction::None:
         break;
     }
@@ -185,6 +215,10 @@ inline constexpr float AUTHORIZE_RESULT_SECONDS = 30.0F;
         return "Sending SIGUSR1 to";
     case ProcessAction::SignalUser2:
         return "Sending SIGUSR2 to";
+    case ProcessAction::EfficiencyModeOn:
+        return "Turning Efficiency mode on for";
+    case ProcessAction::EfficiencyModeOff:
+        return "Turning Efficiency mode off for";
     case ProcessAction::None:
         break;
     }
@@ -211,6 +245,10 @@ inline constexpr float AUTHORIZE_RESULT_SECONDS = 30.0F;
     case ProcessAction::SignalUser1:
     case ProcessAction::SignalUser2:
         return signalName(action); // "SIGHUP sent to PID 1234"
+    case ProcessAction::EfficiencyModeOn:
+        return "Turn on Efficiency mode"; // the confirm's button, as Task Manager's
+    case ProcessAction::EfficiencyModeOff:
+        return "Turn off Efficiency mode";
     case ProcessAction::None:
         break;
     }
@@ -231,6 +269,10 @@ inline constexpr float AUTHORIZE_RESULT_SECONDS = 30.0F;
     if (signalFor(action).has_value())
     {
         return std::format("Send {} to {} (PID {})?", signalName(action), processName, pid); // #3063
+    }
+    if (isEfficiencyModeAction(action))
+    {
+        return std::format("{} for {} (PID {})?", actionLabel(action), processName, pid); // #3071
     }
     return std::format("{} {} (PID {})?", actionLabel(action), processName, pid);
 }
@@ -263,6 +305,13 @@ inline constexpr float AUTHORIZE_RESULT_SECONDS = 30.0F;
                            processName,
                            pid,
                            signalName(action));
+    case ProcessAction::EfficiencyModeOn:
+        return std::format("{} (PID {}) will run at Idle priority on Windows' power-saving scheduling (EcoQoS): it uses less power "
+                           "and may run slower, and some programs become unstable. Turning Efficiency mode off restores its priority.",
+                           processName,
+                           pid);
+    case ProcessAction::EfficiencyModeOff:
+        return std::format("{} (PID {}) will leave Efficiency mode, and its priority will be restored.", processName, pid);
     case ProcessAction::None:
         break;
     }
@@ -308,6 +357,10 @@ dispatchProcessAction(Platform::IProcessActions& actions, ProcessAction action, 
             return actions.sendSignal(target, *signal);
         }
         break;
+    case ProcessAction::EfficiencyModeOn:
+        return actions.setEfficiencyMode(target, true);
+    case ProcessAction::EfficiencyModeOff:
+        return actions.setEfficiencyMode(target, false);
     case ProcessAction::None:
         break;
     }
@@ -336,6 +389,11 @@ struct ActionResultMessage
 [[nodiscard]] inline ActionResultMessage
 formatActionResultMessage(ProcessAction action, std::int32_t pid, const Platform::ProcessActionResult& result)
 {
+    if (result.success && isEfficiencyModeAction(action))
+    {
+        return {.ok = true,
+                .text = std::format("Efficiency mode {} for PID {}", action == ProcessAction::EfficiencyModeOn ? "on" : "off", pid)};
+    }
     if (result.success)
     {
         return {.ok = true, .text = std::format("{} sent to PID {}", actionLabel(action), pid)};

@@ -123,6 +123,47 @@ TEST(ProcessActionHelpersTest, EachOtherSignalSendsItsSignalAndIsWordedForIt)
     EXPECT_FALSE(signalFor(ProcessAction::Kill).has_value());
 }
 
+// #3071: Efficiency mode on and off reach setEfficiencyMode(), are worded for it, and retry as
+// SetEfficiencyMode; neither is destructive, and only a Windows Status of "Efficiency Mode" reads as on.
+TEST(ProcessActionHelpersTest, EfficiencyModeOnAndOffSetItAndAreWordedForIt)
+{
+    TestMocks::MockProcessActions mock;
+    const Platform::ProcessTarget target{.pid = 321, .startTimeTicks = 1000};
+    for (const auto& [action, on, word] :
+         {std::tuple{ProcessAction::EfficiencyModeOn, true, "on"}, std::tuple{ProcessAction::EfficiencyModeOff, false, "off"}})
+    {
+        EXPECT_TRUE(isEfficiencyModeAction(action));
+        EXPECT_TRUE(dispatchProcessAction(mock, action, target).success) << word;
+        EXPECT_EQ(mock.lastEfficiencyMode(), on);
+        EXPECT_EQ(mock.lastTarget(), target);
+        EXPECT_EQ(confirmTitle(action, "chrome.exe", 321), std::format("Turn {} Efficiency mode for chrome.exe (PID 321)?", word));
+        EXPECT_NE(confirmBody(action, "chrome.exe", 321).find("chrome.exe (PID 321)"), std::string::npos) << word;
+        EXPECT_EQ(std::string(actionProgressLabel(action)), std::format("Turning Efficiency mode {} for", word));
+        EXPECT_EQ(formatActionResultMessage(action, 321, Platform::ProcessActionResult::ok()).text,
+                  std::format("Efficiency mode {} for PID 321", word));
+        EXPECT_EQ(formatActionResultMessage(action, 321, Platform::ProcessActionResult::error("Access denied")).text,
+                  std::format("Could not turn Efficiency mode {} for PID 321: Access denied", word));
+        const auto authorized = authorizedActionFor(action, target);
+        ASSERT_TRUE(authorized.has_value()) << word;
+        EXPECT_EQ(authorized->kind, Platform::AuthorizedAction::Kind::SetEfficiencyMode);
+        EXPECT_EQ(authorized->efficiencyMode, on);
+        EXPECT_EQ(authorized->target, target);
+        EXPECT_FALSE(isDestructiveAction(action));
+        EXPECT_FALSE(signalFor(action).has_value());
+        EXPECT_STREQ(signalName(action), "");
+    }
+    EXPECT_EQ(mock.efficiencyModeCount(), 2);
+    EXPECT_STREQ(actionLabel(ProcessAction::EfficiencyModeOn), "Turn on Efficiency mode"); // the confirm's button
+    EXPECT_FALSE(isEfficiencyModeAction(ProcessAction::Kill));
+
+    Domain::ProcessSnapshot snapshot;
+    EXPECT_FALSE(isInEfficiencyMode(snapshot));
+    snapshot.status = "Efficiency Mode";
+    EXPECT_TRUE(isInEfficiencyMode(snapshot));
+    snapshot.status = "Suspended";
+    EXPECT_FALSE(isInEfficiencyMode(snapshot));
+}
+
 TEST(ProcessActionHelpersTest, ResumeCallsResumeWithPid)
 {
     TestMocks::MockProcessActions mock;

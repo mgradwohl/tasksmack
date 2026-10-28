@@ -125,21 +125,21 @@ Heights render(const Context& context, const ProcessDetailsLayout::TopRowLayout&
                                            childFlags,
                                            [&]
                                            {
-                                               heights.actions =
-                                                   renderRows(fixedHeight,
-                                                              [&]
-                                                              {
-                                                                  // The result line wraps at the card's edge
-                                                                  // instead of running out of it.
-                                                                  ImGui::PushTextWrapPos(0.0F);
-                                                                  context.actionsView->renderControls(context.actions,
-                                                                                                      context.capabilities,
-                                                                                                      *context.processName,
-                                                                                                      context.target,
-                                                                                                      context.currentAffinity);
-                                                                  context.actionsView->renderResultLine();
-                                                                  ImGui::PopTextWrapPos();
-                                                              });
+                                               heights.actions = renderRows(fixedHeight,
+                                                                            [&]
+                                                                            {
+                                                                                // The result line wraps at the card's edge
+                                                                                // instead of running out of it.
+                                                                                ImGui::PushTextWrapPos(0.0F);
+                                                                                context.actionsView->renderControls(context.actions,
+                                                                                                                    context.capabilities,
+                                                                                                                    *context.processName,
+                                                                                                                    context.target,
+                                                                                                                    context.currentAffinity,
+                                                                                                                    context.efficiencyMode);
+                                                                                context.actionsView->renderResultLine();
+                                                                                ImGui::PopTextWrapPos();
+                                                                            });
                                            });
     }
 
