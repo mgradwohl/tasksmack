@@ -37,6 +37,7 @@ body='{"context": {"host_name": "'"${STUB_HOST}"'", "executable": "/some/dir/Tas
   {"name": "BM_X_median", "run_name": "BM_X", "run_type": "aggregate", "aggregate_name": "median", "real_time": 11.0, "time_unit": "ns"}
  ]}'
 if [[ -n "${STUB_SLEEP:-}" ]]; then sleep "${STUB_SLEEP}"; fi
+if [[ -n "${STUB_AFFINITY_OUT:-}" ]]; then grep '^Cpus_allowed_list:' /proc/self/status > "${STUB_AFFINITY_OUT}"; fi
 case "${STUB_OUTPUT}" in
     partial) printf '%s' "${body:0:60}" > "${out}" ;;
     none) ;;
@@ -58,6 +59,8 @@ EXPECTED_KEYS = {
     "build",
     "benchmark",
     "machine",
+    "placement",
+    "system_load",
 }
 SECTION_KEYS = {
     "git": {"commit", "branch", "dirty"},
@@ -76,6 +79,8 @@ SECTION_KEYS = {
     },
     "benchmark": {"args", "raw_repetitions", "report_aggregates_only"},
     "machine": {"label", "cpu_model", "logical_cores", "os_name", "os_version", "arch"},
+    "placement": {"core", "core_class", "hybrid", "logical_cpu", "affinity_mask"},
+    "system_load": {"sample_ms", "before_percent", "after_percent"},
 }
 
 
@@ -239,6 +244,10 @@ class BenchShTest(unittest.TestCase):
             # conversion for native programs, and the Python helpers it starts.
             LC_ALL="C.UTF-8",
             PYTHONUTF8="1",
+            # No CPU classes (#3198): the run isn't pinned, whatever this machine is, unless a test
+            # points this at a fake sysfs tree. Short load samples keep the runs quick.
+            TASKSMACK_BENCH_SYSFS_CPU=posix(self.root / "no-sysfs"),
+            TASKSMACK_BENCH_LOAD_SAMPLE_MS="10",
         )
         env.update(env_extra or {})
         if cdpath is not None:
@@ -734,6 +743,69 @@ class BenchShTest(unittest.TestCase):
         # No field named for a host or user, at any depth. Keys only: a value such as git.branch may
         # say "username" without naming anyone (#2655); the tokens above catch real names in values.
         self.assertEqual([key for key in manifest_keys(manifest) if re.search(r"host_?name|user_?name", key, re.IGNORECASE)], [])
+
+
+    def fake_sysfs(self, name: str, capacities: dict[int, int], siblings: dict[int, str]) -> Path:
+        """A sysfs CPU directory where CPU n has cpu_capacity capacities[n] and SMT siblings siblings[n]."""
+        root = self.root / name
+        for cpu, capacity in capacities.items():
+            (root / f"cpu{cpu}" / "topology").mkdir(parents=True)
+            (root / f"cpu{cpu}" / "cpu_capacity").write_text(f"{capacity}\n", encoding="ascii")
+            (root / f"cpu{cpu}" / "topology" / "thread_siblings_list").write_text(siblings[cpu] + "\n", encoding="ascii")
+        return root
+
+    @unittest.skipUnless(sys.platform.startswith("linux") and shutil.which("taskset") and len(os.sched_getaffinity(0)) >= 3, "needs Linux, taskset and 3 CPUs")
+    def test_a_hybrid_cpu_runs_pinned_to_a_performance_core_apart_from_cpu_0(self):
+        # #3198: CPUs 0 and 1 share a performance core, CPU 2 is an efficiency core: the run goes to
+        # CPU 1, the only performance CPU but 0, and the manifest says so.
+        allowed = sorted(os.sched_getaffinity(0))[:3]
+        if allowed != [0, 1, 2]:
+            self.skipTest(f"CPUs 0-2 aren't all allowed: {allowed}")
+        sysfs = self.fake_sysfs("hybrid", {0: 1024, 1: 1024, 2: 512}, {0: "0-1", 1: "0-1", 2: "2"})
+        affinity = self.root / "affinity.txt"
+        code, output, _, manifests = self.run_bench(
+            "pinned", 0, env_extra={"TASKSMACK_BENCH_SYSFS_CPU": posix(sysfs), "STUB_AFFINITY_OUT": posix(affinity)}
+        )
+        self.assertEqual(code, 0, output)
+        self.assertEqual(affinity.read_text(encoding="ascii").split(), ["Cpus_allowed_list:", "1"])
+        manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
+        self.assertEqual(
+            manifest["placement"],
+            {"core": "performance", "core_class": 1, "hybrid": True, "logical_cpu": 1, "affinity_mask": "0x2"},
+        )
+        self.assertEqual(manifest["system_load"]["sample_ms"], 10)
+        for key in ("before_percent", "after_percent"):
+            value = manifest["system_load"][key]
+            self.assertTrue(value is None or 0.0 <= value <= 100.0, (key, value))
+        self.assertIn("Cores: --core performance -> logical CPU 1 (class 1)", output)
+
+        # --core any: the scheduler's choice, even on a hybrid CPU.
+        code, output, _, manifests = self.run_bench(
+            "any",
+            0,
+            leading=("--core", "any", "fake", "--"),
+            env_extra={"TASKSMACK_BENCH_SYSFS_CPU": posix(sysfs), "STUB_AFFINITY_OUT": posix(affinity)},
+        )
+        self.assertEqual(code, 0, output)
+        self.assertNotEqual(affinity.read_text(encoding="ascii").split(), ["Cpus_allowed_list:", "1"])
+        placement = json.loads(manifests[0].read_text(encoding="utf-8"))["placement"]
+        self.assertEqual((placement["core"], placement["core_class"], placement["logical_cpu"]), ("any", "any", None))
+        self.assertTrue(placement["hybrid"])
+
+    def test_without_cpu_classes_the_run_is_not_pinned_and_says_so(self):
+        code, output, _, manifests = self.run_bench("unpinned", 0)
+        self.assertEqual(code, 0, output)
+        self.assertIn("could not be read", output)
+        placement = json.loads(manifests[0].read_text(encoding="utf-8"))["placement"]
+        self.assertEqual((placement["core"], placement["core_class"], placement["hybrid"], placement["logical_cpu"]), ("any", "any", None, None))
+
+    def test_a_bad_core_option_is_refused_before_anything_runs(self):
+        for leading in (("--core", "fast", "fake", "--"), ("--core=", "fake", "--"), ("--core",)):
+            with self.subTest(leading=leading):
+                code, output, results, manifests = self.run_bench(f"badcore-{len(leading)}-{len(leading[0])}", 0, leading=leading)
+                self.assertEqual(code, 2, output)
+                self.assertIn("--core takes", output)
+                self.assertEqual((results, manifests), ([], []), output)
 
 
 def load_bench_manifest():
@@ -1234,6 +1306,84 @@ class ReportAggregatesOnlyTest(unittest.TestCase):
         self.assertFalse(self.effective(f"{self.FLAG}_x=true"))
         self.assertTrue(self.effective(env={"BENCHMARK_REPORT_AGGREGATES_ONLY": "yes"}))
         self.assertFalse(self.effective(f"{self.FLAG}=0", env={"BENCHMARK_REPORT_AGGREGATES_ONLY": "1"}))
+
+
+class PlacementTest(unittest.TestCase):
+    """tools/bench-manifest.py's core choice and load sampling (#3198), against fake sysfs and /proc/stat."""
+
+    def setUp(self):
+        self.module = load_bench_manifest()
+        self._tmp = tempfile.TemporaryDirectory(prefix="tasksmack-bench-placement-")
+        self.root = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def cpus(self, files: dict[int, dict[str, str]]) -> Path:
+        for cpu, entries in files.items():
+            for name, text in entries.items():
+                path = self.root / f"cpu{cpu}" / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(text + "\n", encoding="ascii")
+        (self.root / "cpufreq").mkdir(exist_ok=True)  # not a CPU
+        return self.root
+
+    def test_classes_rank_cpu_capacity_then_fall_back_to_the_maximum_frequency(self):
+        capacity = self.cpus({0: {"cpu_capacity": "1024"}, 1: {"cpu_capacity": "1024"}, 2: {"cpu_capacity": "438"}})
+        self.assertEqual(self.module.cpu_classes(capacity), {0: 1, 1: 1, 2: 0})
+        for cpu in (0, 1, 2):
+            (self.root / f"cpu{cpu}" / "cpu_capacity").unlink()
+        self.cpus({0: {"cpufreq/cpuinfo_max_freq": "5400000"}, 1: {"cpufreq/cpuinfo_max_freq": "4200000"}, 2: {"cpufreq/cpuinfo_max_freq": "5400000"}})
+        self.assertEqual(self.module.cpu_classes(self.root), {0: 1, 1: 0, 2: 1})
+        (self.root / "cpu1" / "cpufreq" / "cpuinfo_max_freq").write_text("fast\n", encoding="ascii")
+        self.assertIsNone(self.module.cpu_classes(self.root), "one CPU unreadable")
+        self.assertIsNone(self.module.cpu_classes(self.root / "missing"))
+
+    def test_cpu_lists_and_smt_siblings(self):
+        self.assertEqual(self.module.parse_cpu_list("0-3,8,10-11"), {0, 1, 2, 3, 8, 10, 11})
+        self.assertEqual(self.module.parse_cpu_list("x"), set())
+        root = self.cpus({0: {"topology/thread_siblings_list": "0,8"}})
+        self.assertEqual(self.module.smt_siblings(0, root), {0, 8})
+        self.assertEqual(self.module.smt_siblings(5, root), {5}, "no topology: itself")
+
+    def test_the_core_choice_follows_select_bench_core(self):
+        select = self.module.select_core
+        hybrid = {0: 1, 1: 1, 2: 1, 3: 1, 4: 0, 5: 0}
+        # The default on a hybrid CPU: a performance CPU whose core doesn't hold CPU 0, the highest.
+        self.assertEqual(
+            select(hybrid, "", None, {0, 1}),
+            {"core": "performance", "core_class": 1, "hybrid": True, "logical_cpu": 3, "warning": None},
+        )
+        # Only CPU 0's core is fast: its sibling, not CPU 0; then CPU 0 when it's the last one left.
+        self.assertEqual(select({0: 1, 1: 1, 2: 0}, "", None, {0, 1})["logical_cpu"], 1)
+        self.assertEqual(select({0: 1, 1: 0}, "", None, {0})["logical_cpu"], 0)
+        # Outside this process's affinity doesn't count; none left is a warning and no pin.
+        self.assertEqual(select(hybrid, "", {0, 1, 2, 4}, {0, 1})["logical_cpu"], 2)
+        none_left = select(hybrid, "performance", {4, 5}, {0, 1})
+        self.assertEqual((none_left["logical_cpu"], none_left["core_class"]), (None, "any"))
+        self.assertIn("affinity", none_left["warning"])
+        # "any", and a CPU of one class: not pinned, no warning.
+        self.assertEqual(select(hybrid, "any", None, {0})["logical_cpu"], None)
+        uniform = select({0: 0, 1: 0}, "", None, {0})
+        self.assertEqual((uniform["core"], uniform["hybrid"], uniform["logical_cpu"], uniform["warning"]), ("any", False, None, None))
+        self.assertEqual(select({0: 0, 1: 0}, "performance", None, {0})["logical_cpu"], None)
+        # Unknown classes: a warning either way, and "performance" says it did nothing.
+        self.assertIn("not pinned", select(None, "", None, {0})["warning"])
+        self.assertIn("does nothing", select(None, "performance", None, {0})["warning"])
+        self.assertIsNone(select(None, "any", None, {0})["warning"])
+
+    def test_the_load_is_the_busy_share_between_two_proc_stat_reads(self):
+        stat = self.root / "stat"
+        stat.write_text("cpu  100 0 100 700 100 0 0 0 0 0\ncpu0 1 2 3 4\n", encoding="ascii")
+        self.assertEqual(self.module.read_cpu_times(stat), (800, 1000))
+        self.assertEqual(self.module.cpu_load_percent((800, 1000), (1100, 2000)), 70.0)
+        self.assertIsNone(self.module.cpu_load_percent((800, 1000), (800, 1000)), "no time passed")
+        self.assertEqual(self.module.measure_system_load(1, stat), None, "nothing changed between the reads")
+        stat.write_text("intr 5\n", encoding="ascii")
+        self.assertIsNone(self.module.read_cpu_times(stat))
+        self.assertIsNone(self.module.measure_system_load(1, self.root / "missing"))
+        self.assertEqual(self.module.affinity_mask({1, 13}), "0x2002")
+        self.assertIsNone(self.module.affinity_mask(set()))
 
 
 if __name__ == "__main__":

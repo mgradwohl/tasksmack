@@ -1314,7 +1314,7 @@ deleted too, and the script fails.
 On a hybrid CPU (performance and efficiency cores), a whole run can land on efficiency cores and
 come out 2-3x slower on every benchmark, pure arithmetic included (#3163; in #3112 a Core Ultra 7
 255H ran `BM_ChartWidgets_ComputeAlpha` at 11.1 ns on one run and 4.4 ns on the next, same code).
-So on Windows:
+So:
 
 - **`bench.ps1` pins hybrid CPUs.** With `-Core performance`, the default on a CPU whose cores have
   more than one `EfficiencyClass`, it pins the benchmark process (and everything it starts) to one
@@ -1331,7 +1331,13 @@ So on Windows:
   `check-benchmark-regression.py` refuses to compare two runs whose manifests record different
   core classes.
 
-`bench.sh` doesn't pin yet; on a hybrid Linux machine, run it under `taskset -c <cpu>` yourself.
+- **`bench.sh` pins hybrid CPUs too** (#3198). With `--core performance`, the default when the CPUs'
+  `cpu_capacity` (or, without it, `cpufreq/cpuinfo_max_freq`) in `/sys/devices/system/cpu` has more
+  than one value, it runs the benchmark under `taskset -c` on one logical CPU of the fastest class,
+  avoiding CPU 0 and its SMT sibling unless nothing else is left. `--core any` leaves placement to
+  the scheduler. Without those sysfs files, or without `taskset` (util-linux), the run isn't
+  pinned and a warning says so. Its manifest records the same `placement` and `system_load`, the
+  classes ranked from 0 (the slowest) as Windows numbers its `EfficiencyClass`.
 
 Pinning isn't enough when the machine is busy: in #3112 the same binary on the same pinned core
 was 30-50% slower with a build and clangd running (38-78% system CPU) than at 7-63%. For an A/B
@@ -1384,9 +1390,10 @@ manifest's `preset`, so no file name or manifest field carries it:
   build trees, `ipo_source` naming the entry used), `benchmark` (the arguments passed,
   allowlisted or hashed as below), `exit_code`, and
   `machine`, an anonymized machine class (CPU model, logical core count, OS name/version,
-  architecture). `bench.ps1` adds two more (#3163):
-  - `placement`: `core`, the `-Core` mode (`performance` or `any`); `core_class`, the pinned
-    CPU's `EfficiencyClass`, or `any` for an unpinned run; `hybrid`, whether the cores have more
+  architecture), and two more (#3163, #3198):
+  - `placement`: `core`, the `-Core` / `--core` mode (`performance` or `any`); `core_class`, the
+    pinned CPU's `EfficiencyClass` (on Linux its class's rank, 0 the slowest), or `any` for an
+    unpinned run; `hybrid`, whether the cores have more
     than one class (`null` if they couldn't be read); `logical_cpu`, the pinned CPU or `null`;
     and `affinity_mask`, the mask the benchmark ran with, in hex.
   - `system_load`: `before_percent` and `after_percent`, the share of all CPUs busy over
@@ -1470,8 +1477,8 @@ an unpinned one), it refuses with exit code 2 before comparing anything (#3163).
 leave an exit code that's wrong either way: 1 for dozens of regressions that are only the cores,
 or 0 with a real regression hidden by a faster core. Pass `--allow-core-class-mismatch` to
 compare them anyway, with a warning. A run without that field isn't checked, and the output says
-so: the committed baselines have no manifest, and `bench.sh` doesn't record placement. The CI
-gate isn't affected. The comparison also prints each manifest's `system_load`.
+so: the committed baselines have no manifest, nor do runs from before #3163 (Windows) and #3198
+(Linux). The CI gate isn't affected. The comparison also prints each manifest's `system_load`.
 
 ### CI Benchmark Regression Gate
 
