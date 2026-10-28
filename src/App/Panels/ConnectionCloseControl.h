@@ -121,7 +121,7 @@ class ConnectionCloseControl
     /// after the password prompt (IProcessActions::runAuthorized()).
     void retryAuthorized()
     {
-        if (!offersAuthenticateAndRetry())
+        if (!m_Retry.has_value() || busy())
         {
             return;
         }
