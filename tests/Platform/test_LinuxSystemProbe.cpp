@@ -649,6 +649,42 @@ TEST(LinuxSystemProbeTest, CommitChargeComesFromTheMeminfoAlreadyRead)
     EXPECT_FALSE(LinuxSystemProbe(garbled.path).read().memory.hasCommitCharge);
 }
 
+// #3087: zswap's pool from /proc/meminfo, and every zram device's mm_stat under <root>/sys/block, summed.
+TEST(LinuxSystemProbeTest, CompressedSwapComesFromMeminfoAndZramMmStat)
+{
+    ScopedTempDir root("ts_test_sys_compressed");
+    const std::filesystem::path proc = root.path / "proc";
+    std::filesystem::create_directories(proc);
+    std::ofstream(proc / "meminfo") << "MemTotal: 16000000 kB\nSwapTotal: 8000000 kB\nSwapFree: 7000000 kB\n"
+                                       "Zswap:     100000 kB\nZswapped:   300000 kB\n";
+    for (const auto& [name, stat] : {std::pair<const char*, const char*>{"zram0", "4096000 1024000 1200000 0 1300000 10 5 0 0\n"},
+                                     std::pair<const char*, const char*>{"zram1", "1000 500 600 0 600 0 0 0 0\n"}})
+    {
+        std::filesystem::create_directories(root.path / "sys" / "block" / name);
+        std::ofstream(root.path / "sys" / "block" / name / "mm_stat") << stat;
+    }
+    std::filesystem::create_directories(root.path / "sys" / "block" / "sda"); // not zram: left out
+
+    LinuxSystemProbe probe(proc, proc / "no-sys-class-net", root.path / "no-cpu-sysfs", root.path);
+    const MemoryCounters memory = probe.read().memory;
+    EXPECT_TRUE(memory.hasZswap);
+    EXPECT_EQ(memory.zswapCompressedBytes, 100'000ULL * 1024);
+    EXPECT_EQ(memory.zswapOriginalBytes, 300'000ULL * 1024);
+    EXPECT_TRUE(memory.hasZram);
+    EXPECT_EQ(memory.zramOriginalBytes, 4'096'000ULL + 1000);
+    EXPECT_EQ(memory.zramCompressedBytes, 1'024'000ULL + 500);
+    EXPECT_EQ(memory.zramMemoryUsedBytes, 1'200'000ULL + 600);
+
+    // No Zswap lines, an empty pool, and no zram devices: neither is shown.
+    ScopedTempDir none("ts_test_sys_compressed_none");
+    std::filesystem::create_directories(none.path / "proc");
+    std::ofstream(none.path / "proc" / "meminfo") << "MemTotal: 1000 kB\nZswap: 0 kB\nZswapped: 0 kB\n";
+    LinuxSystemProbe empty(none.path / "proc", none.path / "no-net", none.path / "no-cpu", none.path);
+    const MemoryCounters nothing = empty.read().memory;
+    EXPECT_FALSE(nothing.hasZswap);
+    EXPECT_FALSE(nothing.hasZram);
+}
+
 TEST(LinuxSystemProbeTest, CpuDetailsComeFromTheInjectedProcAndCpuSysfsRoots)
 {
     // The CPU Details block's facts are read from the roots the probe was given (#809, #1351)

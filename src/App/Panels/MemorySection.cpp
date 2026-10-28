@@ -1,5 +1,6 @@
 #include "MemorySection.h"
 
+#include "Domain/SystemModel.h"
 #include "Domain/SystemSnapshot.h"
 #include "UI/ChartWidgets.h"
 #include "UI/ChromeWidgets.h"
@@ -16,6 +17,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <format>
 #include <optional>
 #include <span>
 #include <string>
@@ -44,6 +46,13 @@ constexpr const char* CACHED_LABEL = "Cached";
 constexpr const char* SWAP_LABEL = "Swap";
 constexpr const char* PEAK_LABEL = "Peak Used";
 constexpr const char* COMMIT_LABEL = "Commit";
+constexpr const char* COMPRESSED_LABEL = "Compressed";
+
+/// "2.9×"
+[[nodiscard]] std::string ratioText(double ratio)
+{
+    return std::format("{:.1f}\u00d7", ratio);
+}
 
 } // namespace
 
@@ -70,6 +79,68 @@ std::string commitStripTooltip(const Domain::SystemSnapshot& snap)
     {
         text += "\nPeak: ";
         text += UI::Format::formatBytes(static_cast<double>(snap.commitPeakBytes));
+    }
+    return text;
+}
+
+std::string compressedStripValue(const Domain::SystemSnapshot& snap)
+{
+    if (snap.compressionRatio <= 0.0)
+    {
+        return {};
+    }
+    const std::uint64_t original = (snap.hasZram ? snap.zramOriginalBytes : 0) + (snap.hasZswap ? snap.zswapOriginalBytes : 0);
+    const std::uint64_t compressed = (snap.hasZram ? snap.zramCompressedBytes : 0) + (snap.hasZswap ? snap.zswapCompressedBytes : 0);
+    return std::format("{} ({} in {})",
+                       ratioText(snap.compressionRatio),
+                       UI::Format::formatBytes(static_cast<double>(original)),
+                       UI::Format::formatBytes(static_cast<double>(compressed)));
+}
+
+std::string compressedStripTooltip(const Domain::SystemSnapshot& snap, std::span<const float> ratioHistory)
+{
+    if (snap.compressionRatio <= 0.0)
+    {
+        return {};
+    }
+    std::string text = "Swapped-out memory kept compressed in RAM";
+    const auto kind = [&text](const char* name, std::uint64_t original, std::uint64_t compressed)
+    {
+        const double ratio = Domain::compressionRatio(original, compressed);
+        text += std::format("\n{}: {} stored in {}",
+                            name,
+                            UI::Format::formatBytes(static_cast<double>(original)),
+                            UI::Format::formatBytes(static_cast<double>(compressed)));
+        if (ratio > 0.0)
+        {
+            text += std::format(" ({})", ratioText(ratio));
+        }
+    };
+    if (snap.hasZram)
+    {
+        kind("zram", snap.zramOriginalBytes, snap.zramCompressedBytes);
+        text += std::format(", {} of RAM used", UI::Format::formatBytes(static_cast<double>(snap.zramMemoryUsedBytes)));
+    }
+    if (snap.hasZswap)
+    {
+        kind("zswap", snap.zswapOriginalBytes, snap.zswapCompressedBytes);
+    }
+    float low = 0.0F;
+    float high = 0.0F;
+    bool any = false;
+    for (const float ratio : ratioHistory)
+    {
+        if (!(ratio > 0.0F)) // NaN: nothing stored then
+        {
+            continue;
+        }
+        low = any ? std::min(low, ratio) : ratio;
+        high = any ? std::max(high, ratio) : ratio;
+        any = true;
+    }
+    if (any)
+    {
+        text += std::format("\nRatio over the chart: {} to {}", ratioText(static_cast<double>(low)), ratioText(static_cast<double>(high)));
     }
     return text;
 }
@@ -287,7 +358,7 @@ void renderMemorySection(RenderContext& ctx, std::span<const double> timestamps,
     }
 
     // Peak Used is a line with a tooltip row but no bar; list it in the value strip too (#1193).
-    std::array<UI::Widgets::ValueStripEntry, 2> extras{};
+    std::array<UI::Widgets::ValueStripEntry, 3> extras{};
     std::size_t extraCount = 0;
     if (peakMemPercent > 0.0)
     {
@@ -308,6 +379,21 @@ void renderMemorySection(RenderContext& ctx, std::span<const double> timestamps,
             .value = commitStripValue(snap),
             .color = ImVec4(0.0F, 0.0F, 0.0F, 0.0F),
             .tooltip = commitTooltip.c_str(),
+        };
+    }
+    // Compressed swap (#3087, Linux): zram and zswap's ratio and sizes, a reading like Commit, only
+    // while something compressed is stored.
+    const std::string compressedValue = compressedStripValue(snap);
+    const auto& ratioHist = ctx.publication->compressionRatioHistory;
+    const std::string compressedTooltip =
+        compressedStripTooltip(snap, UI::Widgets::tailAlignedSpan(ratioHist, std::min(ratioHist.size(), alignedCount)).values);
+    if (!compressedValue.empty())
+    {
+        extras.at(extraCount++) = UI::Widgets::ValueStripEntry{
+            .label = COMPRESSED_LABEL,
+            .value = compressedValue,
+            .color = ImVec4(0.0F, 0.0F, 0.0F, 0.0F),
+            .tooltip = compressedTooltip.c_str(),
         };
     }
     const std::span<const UI::Widgets::ValueStripEntry> stripExtras(extras.data(), extraCount);

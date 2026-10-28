@@ -68,6 +68,9 @@ class LinuxSystemProbe : public ISystemProbe
     /// @p procRoot/pressure/<resource>, parsed; empty when it can't be read (no PSI, or psi=0).
     [[nodiscard]] static ResourcePressure readResourcePressure(const std::filesystem::path& procRoot, const char* resource);
     static void readCpuFreq(SystemCounters& counters, const std::filesystem::path& cpuSysfsRoot);
+    /// Every zram device's mm_stat, summed into the counters (#3087); the device list is re-read from
+    /// m_SysBlockRoot every ZRAM_RESCAN_INTERVAL_SECONDS.
+    void readZram(SystemCounters& counters);
 
     /// Read network-related counters (bytes, packets, etc.) from /proc/net/dev.
     /// Unlike the other read* helpers, this method is non-static because it
@@ -109,6 +112,7 @@ class LinuxSystemProbe : public ISystemProbe
     std::filesystem::path m_ProcRoot;
     std::filesystem::path m_SysClassNetRoot;
     std::filesystem::path m_CpuSysfsRoot;
+    std::filesystem::path m_SysBlockRoot; // <rootDir>/sys/block, where zram devices are (#3087)
     long m_TicksPerSecond;
     std::size_t m_NumCores;
     bool m_HasPressure = false; // the kernel has PSI enabled: /proc/pressure/cpu reads (#3062)
@@ -127,6 +131,13 @@ class LinuxSystemProbe : public ISystemProbe
     // details above. Not changed after construction, so it needs no lock.
     LinuxCpuDetails::CpuVirtualization m_CpuVirtualization;
     std::size_t m_LastCoreCount = 0;
+
+    // The zram devices' mm_stat paths (#3087) and when /sys/block was last listed; guarded by
+    // m_ZramMutex, since read() may run on several threads.
+    std::mutex m_ZramMutex;
+    std::vector<std::filesystem::path> m_ZramStatPaths;
+    std::chrono::steady_clock::time_point m_ZramScannedAt;
+    bool m_ZramScanned = false;
 
     /// Publish this sample's CPU details and core count (#809), in one critical section, so a
     /// concurrent read() cannot pair this sample's per-core counters with details or a count from

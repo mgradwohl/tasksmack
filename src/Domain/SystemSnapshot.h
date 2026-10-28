@@ -107,6 +107,18 @@ struct SystemSnapshot
     std::uint64_t commitLimitBytes = 0;
     std::uint64_t commitPeakBytes = 0;
 
+    // Compressed swap (#3087, Linux): the zram devices, summed, and the zswap pool, as the counters read
+    // them. compressionRatio is their stored data's original size over its compressed size, both kinds
+    // together; 0 when nothing compressed is stored.
+    bool hasZram = false;
+    std::uint64_t zramOriginalBytes = 0;
+    std::uint64_t zramCompressedBytes = 0;
+    std::uint64_t zramMemoryUsedBytes = 0;
+    bool hasZswap = false;
+    std::uint64_t zswapOriginalBytes = 0;
+    std::uint64_t zswapCompressedBytes = 0;
+    double compressionRatio = 0.0;
+
     // Computed percentages
     double memoryUsedPercent = 0.0;
     double memoryCachedPercent = 0.0;
@@ -158,5 +170,24 @@ struct SystemSnapshot
     // Power/battery status
     PowerStatus power;
 };
+
+/// How many times smaller @p compressedBytes is than the @p originalBytes it stores (#3087); 0 when either
+/// is 0, so nothing stored has no ratio.
+[[nodiscard]] constexpr double compressionRatio(std::uint64_t originalBytes, std::uint64_t compressedBytes) noexcept
+{
+    if (originalBytes == 0 || compressedBytes == 0)
+    {
+        return 0.0;
+    }
+    return static_cast<double>(originalBytes) / static_cast<double>(compressedBytes);
+}
+
+/// @p snap's compressed swap ratio, zram and zswap together.
+[[nodiscard]] constexpr double compressionRatio(const SystemSnapshot& snap) noexcept
+{
+    const std::uint64_t original = (snap.hasZram ? snap.zramOriginalBytes : 0) + (snap.hasZswap ? snap.zswapOriginalBytes : 0);
+    const std::uint64_t compressed = (snap.hasZram ? snap.zramCompressedBytes : 0) + (snap.hasZswap ? snap.zswapCompressedBytes : 0);
+    return compressionRatio(original, compressed);
+}
 
 } // namespace Domain

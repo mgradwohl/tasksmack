@@ -7,6 +7,7 @@
 #include "Domain/SamplingConfig.h"
 #include "LinuxCpuDetails.h"
 #include "Platform/CpuDetails.h"
+#include "Platform/Linux/LinuxCommitPaging.h"
 #include "Platform/Linux/PressureParser.h"
 #include "Platform/SystemTypes.h"
 #include "ProcParsing.h"
@@ -93,6 +94,7 @@ LinuxSystemProbe::LinuxSystemProbe(std::filesystem::path procRoot,
     : m_ProcRoot(std::move(procRoot)),
       m_SysClassNetRoot(std::move(sysClassNetRoot)),
       m_CpuSysfsRoot(std::move(cpuSysfsRoot)),
+      m_SysBlockRoot(rootDir / "sys" / "block"),
       m_TicksPerSecond(sysconf(_SC_CLK_TCK)),
       m_NumCores(checkedPositiveToSizeT(sysconf(_SC_NPROCESSORS_ONLN), 1U))
 {
@@ -151,6 +153,7 @@ SystemCounters LinuxSystemProbe::read()
     readCpuCounters(counters, m_ProcRoot);
     readCpuDetails(counters);
     readMemoryCounters(counters, m_ProcRoot);
+    readZram(counters);
     readUptime(counters, m_ProcRoot);
     readLoadAvg(counters, m_ProcRoot);
     if (m_HasPressure)
@@ -285,6 +288,8 @@ void LinuxSystemProbe::readMemoryCounters(SystemCounters& counters, const std::f
     // SwapFree:        2097152 kB
     // CommitLimit:    10289152 kB
     // Committed_AS:    6543210 kB
+    // Zswap:             81024 kB   (kernel 5.19+, #3087)
+    // Zswapped:         262144 kB
 
     const auto meminfoPath = procRoot / "meminfo";
     const std::string pathStr = meminfoPath.string();
@@ -303,6 +308,8 @@ void LinuxSystemProbe::readMemoryCounters(SystemCounters& counters, const std::f
     constexpr uint64_t KB = 1024;
     bool hasCommitted = false;
     bool hasCommitLimit = false;
+    bool hasZswapPool = false;
+    bool hasZswapped = false;
 
     while (p < end)
     {
@@ -372,12 +379,24 @@ void LinuxSystemProbe::readMemoryCounters(SystemCounters& counters, const std::f
             counters.memory.commitChargeBytes = value * KB;
             hasCommitted = true;
         }
+        else if (key == "Zswap")
+        {
+            counters.memory.zswapCompressedBytes = value * KB;
+            hasZswapPool = true;
+        }
+        else if (key == "Zswapped")
+        {
+            counters.memory.zswapOriginalBytes = value * KB;
+            hasZswapped = true;
+        }
 
         p = (lineEnd < end) ? lineEnd + 1 : end;
     }
 
     // Commit charge (#1627): both lines, or none of it. The kernel keeps no peak.
     counters.memory.hasCommitCharge = hasCommitted && hasCommitLimit;
+    // zswap (#3087): both lines, and something in the pool; an idle or disabled zswap reads 0 and is left out.
+    counters.memory.hasZswap = hasZswapPool && hasZswapped && counters.memory.zswapOriginalBytes > 0;
 }
 
 void LinuxSystemProbe::readUptime(SystemCounters& counters, const std::filesystem::path& procRoot)
@@ -458,6 +477,59 @@ ResourcePressure LinuxSystemProbe::readResourcePressure(const std::filesystem::p
         return {};
     }
     return PressureParser::parse(std::string_view(buf.data(), len));
+}
+
+void LinuxSystemProbe::readZram(SystemCounters& counters)
+{
+    // The lock only guards the cached list and its time: the listing and the reads happen outside it.
+    std::vector<std::filesystem::path> statPaths;
+    bool rescan = false;
+    {
+        const std::scoped_lock lock(m_ZramMutex);
+        const auto now = std::chrono::steady_clock::now();
+        rescan = !m_ZramScanned || now - m_ZramScannedAt >= std::chrono::seconds(Domain::Sampling::ZRAM_RESCAN_INTERVAL_SECONDS);
+        if (rescan)
+        {
+            m_ZramScanned = true;
+            m_ZramScannedAt = now;
+        }
+        else
+        {
+            statPaths = m_ZramStatPaths;
+        }
+    }
+    if (rescan)
+    {
+        std::error_code ec;
+        std::filesystem::directory_iterator blocks(m_SysBlockRoot, ec);
+        // Incremented with an error code: a range-for would throw if the listing failed part-way.
+        for (; !ec && blocks != std::filesystem::directory_iterator{}; blocks.increment(ec))
+        {
+            if (blocks->path().filename().string().starts_with("zram"))
+            {
+                statPaths.push_back(blocks->path() / "mm_stat");
+            }
+        }
+        const std::scoped_lock lock(m_ZramMutex);
+        m_ZramStatPaths = statPaths;
+    }
+    for (const std::filesystem::path& path : statPaths)
+    {
+        constexpr std::size_t BUF_SIZE = 512;
+        std::array<char, BUF_SIZE> buf{};
+        const std::size_t len = readProcFile(path.c_str(), buf.data(), BUF_SIZE);
+        if (len == 0)
+        {
+            continue; // removed since the listing, or not initialised (no disksize)
+        }
+        if (const auto device = LinuxCommitPaging::parseZramMmStat(std::string_view(buf.data(), len)); device.has_value())
+        {
+            counters.memory.hasZram = true;
+            counters.memory.zramOriginalBytes += device->originalBytes;
+            counters.memory.zramCompressedBytes += device->compressedBytes;
+            counters.memory.zramMemoryUsedBytes += device->memoryUsedBytes;
+        }
+    }
 }
 
 void LinuxSystemProbe::readPressure(SystemCounters& counters, const std::filesystem::path& procRoot)
