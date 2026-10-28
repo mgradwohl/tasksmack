@@ -1153,12 +1153,17 @@ target_compile_definitions(TaskSmackTests PRIVATE TASKSMACK_APP_TEST_FIXTURES_DI
 # real-display tests then run UILayer with the app's fonts, title font, chrome icon font and window icon
 # instead of ImGui's built-in font and no icon ("Failed to load icon ... tests/assets/icons"), so the title
 # bar is drawn and pressed as users see it (#1954).
-add_custom_command(TARGET TaskSmackTests POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/assets/fonts" "$<TARGET_FILE_DIR:TaskSmackTests>/assets/fonts"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/assets/icons" "$<TARGET_FILE_DIR:TaskSmackTests>/assets/icons"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/assets/themes" "$<TARGET_FILE_DIR:TaskSmackTests>/assets/themes"
+# One target copies them, and both test binaries (in the same directory) depend on it: a POST_BUILD copy
+# on each raced when Ninja linked the two at once, and Windows failed the build on a file the other copy
+# held open ("Permission denied", #3208). copy_directory_if_different keeps an up-to-date build cheap.
+add_custom_target(TaskSmackTestAssets
+    COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different "${CMAKE_SOURCE_DIR}/assets/fonts" "$<TARGET_FILE_DIR:TaskSmackTests>/assets/fonts"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different "${CMAKE_SOURCE_DIR}/assets/icons" "$<TARGET_FILE_DIR:TaskSmackTests>/assets/icons"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different "${CMAKE_SOURCE_DIR}/assets/themes" "$<TARGET_FILE_DIR:TaskSmackTests>/assets/themes"
     COMMENT "Copying assets (fonts, icons, themes) beside the test binaries"
+    VERBATIM
 )
+add_dependencies(TaskSmackTests TaskSmackTestAssets)
 
 if(WIN32)
     # The same Windows definitions and system libraries as the app's targets, from the one list in
@@ -1258,13 +1263,9 @@ target_compile_definitions(TaskSmackAppTests PRIVATE TASKSMACK_SOURCE_THEMES_DIR
                                                      # test_UiLayersOnDisplay.cpp's first-run golden config.toml (#2727)
                                                      TASKSMACK_APP_TEST_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/App/fixtures")
 # The real-display tests are in this binary: the same assets beside it (see TaskSmackTests above), so
-# building this target alone still runs them with the app's fonts and icon (#1954).
-add_custom_command(TARGET TaskSmackAppTests POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/assets/fonts" "$<TARGET_FILE_DIR:TaskSmackAppTests>/assets/fonts"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/assets/icons" "$<TARGET_FILE_DIR:TaskSmackAppTests>/assets/icons"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/assets/themes" "$<TARGET_FILE_DIR:TaskSmackAppTests>/assets/themes"
-    COMMENT "Copying assets (fonts, icons, themes) beside TaskSmackAppTests"
-)
+# building this target alone still runs them with the app's fonts and icon (#1954). It sits in the same
+# directory as TaskSmackTests, so it shares that copy rather than racing it (#3208).
+add_dependencies(TaskSmackAppTests TaskSmackTestAssets)
 # The UI scenarios (#2711) run on a synthetic machine, the same on every runner; TASKSMACK_SYNTHETIC is read
 # once per process, and each suite is its own process. TASKSMACK_UI_CAPTURE_DIR, when set, passes through.
 # The on-display suites open real windows and, since #2717, drive every resize edge live: 35-40 s on a
