@@ -18,6 +18,7 @@
 #   [process_columns]: columns you showed (true) or hid (false); a column not listed follows the defaults, which hide one this system can't fill
 #   [process_meters]: what a column draws behind its value: "off", "bar" or "sparkline" (recent history); Columns > Show meter
 #   [process_table] layout: saved column widths, order and sort (written by TaskSmack; delete it to reset)
+#   [updates] check_daily: ask GitHub once a day whether a newer TaskSmack release exists (true/false, default false: nothing is sent); last_check, latest_version, latest_url and dismissed_version are written by TaskSmack
 #   Themes: built-in themes in assets/themes. Add custom .toml themes beside this config under a 'themes' folder.
 
 config_version = 2
@@ -65,6 +66,13 @@ cpu_details_expanded = true
 highlight_new_processes = true
 show_privilege_notice = true
 show_process_icons = true
+
+[updates]
+check_daily = false
+dismissed_version = ''
+last_check = 0
+latest_url = ''
+latest_version = ''
 
 [window]
 force_native_decorations_on_wayland = false
