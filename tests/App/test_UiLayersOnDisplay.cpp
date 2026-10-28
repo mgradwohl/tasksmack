@@ -894,6 +894,161 @@ TEST_F(UiLayersOnDisplayTest, TitleBarMouseAndKeyEventsDoWhatTheySay)
     EXPECT_TRUE(observed.systemMenuOpened); // Ctrl+Space opens the window menu
 }
 
+/// What the ignored-events driver saw (#3221).
+struct IgnoredEventsObserved
+{
+    bool maximizedAfterIgnoredDoubleClicks = true;
+    bool positionKeptAfterOtherWindowsPress = false;
+    bool systemMenuOpenedByAltSpace = false;
+    int frames = 0;
+    bool timedOut = false;
+};
+
+/// Pushed after UILayer and TitleBarLayer: pushes the title bar the events it must leave alone -- a
+/// double-click for another window, one below the bar and one on the window's top edge, and a press for
+/// another window -- then Alt+Space, which opens the window menu (#3221).
+class IgnoredEventsDriverLayer : public Core::Layer
+{
+  public:
+    explicit IgnoredEventsDriverLayer(IgnoredEventsObserved& observed) : Layer("IgnoredEventsDriver"), m_Observed(observed)
+    {}
+
+    void onRender() override
+    {
+        Core::AnimationRequest::request(Core::AnimationRequest::FULL_RATE); // keep frames coming
+        const int frame = ++m_Observed.frames;
+        if (frame > MAX_FRAMES)
+        {
+            m_Observed.timedOut = true;
+            Core::Application::get().stop();
+            return;
+        }
+        if (frame < m_NextFrame)
+        {
+            return;
+        }
+        const Core::Window& window = Core::Application::get().getWindow();
+        const auto [width, height] = window.getSize();
+        const SDL_WindowID thisWindow = SDL_GetWindowID(window.getHandle());
+        const float middleX = static_cast<float>(width) * 0.5F; // clear of the buttons and the icon
+        constexpr float TITLE_Y = 16.0F;
+        constexpr float BELOW_BAR_Y = 120.0F; // the content, well below the title bar
+        constexpr float TOP_EDGE_Y = 1.0F;    // the top resize border, inside the bar's height
+        switch (m_Phase)
+        {
+        case Phase::DoubleClicks:
+            for (const auto& [windowId, y] :
+                 {std::pair{thisWindow + 1000, TITLE_Y}, std::pair{thisWindow, BELOW_BAR_Y}, std::pair{thisWindow, TOP_EDGE_Y}})
+            {
+                pushButton(windowId, middleX, y, true, 2);
+                pushButton(windowId, middleX, y, false, 2);
+            }
+            m_Phase = Phase::OtherWindowsPress;
+            m_NextFrame = frame + STEP;
+            break;
+        case Phase::OtherWindowsPress:
+            m_Observed.maximizedAfterIgnoredDoubleClicks = window.isMaximized();
+            m_Position = window.getPosition();
+            pushButton(thisWindow + 1000, middleX, TITLE_Y, true, 1); // no drag begins for another window's press
+            m_Phase = Phase::Release;
+            m_NextFrame = frame + 2;
+            break;
+        case Phase::Release:
+            pushButton(thisWindow + 1000, middleX, TITLE_Y, false, 1);
+            m_Phase = Phase::AltSpace;
+            m_NextFrame = frame + STEP;
+            break;
+        case Phase::AltSpace:
+            m_Observed.positionKeptAfterOtherWindowsPress = window.getPosition() == m_Position;
+            pushKey(thisWindow, SDLK_SPACE, SDL_SCANCODE_SPACE, SDL_KMOD_LALT); // Alt+Space: the window menu
+            m_Phase = Phase::CheckMenu;
+            m_NextFrame = frame + STEP;
+            break;
+        case Phase::CheckMenu:
+            m_Observed.systemMenuOpenedByAltSpace = !GImGui->OpenPopupStack.empty();
+            Core::Application::get().stop();
+            break;
+        }
+    }
+
+  private:
+    static void pushButton(SDL_WindowID windowId, float x, float y, bool down, int clicks)
+    {
+        SDL_Event event{};
+        event.type = down ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
+        event.button.windowID = windowId;
+        event.button.button = SDL_BUTTON_LEFT;
+        event.button.down = down;
+        event.button.clicks = static_cast<Uint8>(clicks);
+        event.button.x = x;
+        event.button.y = y;
+        static_cast<void>(SDL_PushEvent(&event));
+    }
+
+    static void pushKey(SDL_WindowID windowId, SDL_Keycode key, SDL_Scancode scancode, SDL_Keymod mod)
+    {
+        SDL_Event event{};
+        event.type = SDL_EVENT_KEY_DOWN;
+        event.key.windowID = windowId;
+        event.key.key = key;
+        event.key.scancode = scancode;
+        event.key.mod = mod;
+        event.key.down = true;
+        static_cast<void>(SDL_PushEvent(&event));
+    }
+
+    enum class Phase : std::uint8_t
+    {
+        DoubleClicks,
+        OtherWindowsPress,
+        Release,
+        AltSpace,
+        CheckMenu,
+    };
+
+    static constexpr int SETTLE = 10;
+    static constexpr int STEP = 10;
+    static constexpr int MAX_FRAMES = 600;
+
+    IgnoredEventsObserved& m_Observed;
+    Phase m_Phase = Phase::DoubleClicks;
+    int m_NextFrame = SETTLE;
+    std::pair<int, int> m_Position;
+};
+
+// #3221: the title bar acts only on its own window's events and only over its own empty area: a
+// double-click for another window, below the bar or on the top resize edge doesn't maximize, and a press
+// for another window starts no drag. Alt+Space opens the window menu, as Ctrl+Space does.
+TEST_F(UiLayersOnDisplayTest, TitleBarIgnoresEventsThatArentForItsEmptyArea)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "UiLayersOnDisplayIgnoredEventsTest";
+    spec.VSync = false;
+    IgnoredEventsObserved observed;
+    try
+    {
+        Core::Application app(spec);
+        app.pushLayer<UI::UILayer>();
+        app.pushLayer<App::TitleBarLayer>();
+        app.pushLayer<IgnoredEventsDriverLayer>(observed);
+        app.run();
+    }
+    catch (const std::exception& e)
+    {
+        FAIL() << "Application failed after the display probe passed: " << e.what();
+    }
+
+    EXPECT_FALSE(observed.timedOut);
+    EXPECT_FALSE(observed.maximizedAfterIgnoredDoubleClicks);
+    EXPECT_TRUE(observed.positionKeptAfterOtherWindowsPress);
+    EXPECT_TRUE(observed.systemMenuOpenedByAltSpace);
+}
+
 /// What the About driver saw.
 struct AboutObserved
 {
