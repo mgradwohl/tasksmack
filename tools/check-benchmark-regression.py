@@ -60,8 +60,9 @@ would let a 2.6ns benchmark double unnoticed. With "min_abs_delta_ns": 3 it pass
 benchmark keeps the 1.0ns floor, so 10ns -> 40ns, or 0.7ns -> 3.1ns anywhere else, still fails.
 An entry for a benchmark the baseline does not have is reported and otherwise ignored.
 
-Core placement (#3163): tools/bench.ps1's manifest records the EfficiencyClass of the core a run
-was pinned to ("placement": {"core_class": 1, ...}), or "any" when it was not pinned. A run on a
+Core placement (#3163, #3198): the manifests of tools/bench.ps1 and tools/bench.sh record the
+class of the core a run was pinned to ("placement": {"core_class": 1, ...}): Windows' EfficiencyClass,
+or on Linux the rank of the CPU's capacity, 0 the slowest; or "any" when it was not pinned. A run on a
 hybrid CPU's efficiency cores is 2-3x slower on every benchmark, pure arithmetic included, so a
 comparison across core classes reports dozens of regressions (or improvements) that are only the
 cores. When both runs' manifests record a core class and the classes differ, the comparison is
@@ -70,7 +71,7 @@ a warning for a deliberate cross-class comparison. It refuses rather than warns 
 would sit above an exit code that is wrong either way: 1 for regressions that are not in the
 code, or 0 for real ones hidden by a faster core. Each run's manifest is the
 <result>.manifest.json sidecar next to it, or the one --baseline-manifest / --current-manifest
-names. A run without one (the committed baselines, bench.sh's runs, older runs) is not checked,
+names. A run without one (the committed baselines, runs from before #3163 and #3198) is not checked,
 and the output says so. The system CPU load each manifest recorded before and after its run is
 printed, for reading a noisy comparison.
 
@@ -243,7 +244,7 @@ def load_run_manifest(path: Path) -> dict:
 
 def core_class(manifest: dict | None) -> int | str | None:
     """The core class a run's manifest records: the pinned core's EfficiencyClass (an int), "any"
-    for an unpinned run, or None when the manifest has no placement (bench.sh, older runs).
+    for an unpinned run, or None when the manifest has no placement (older runs).
 
     Raises ValueError for a placement that is not the documented shape, so a corrupted manifest
     cannot silently skip the check.
@@ -428,7 +429,8 @@ def main() -> int:
         if not args.allow_core_class_mismatch:
             print(
                 f"ERROR: the runs used different core classes: {mismatch} Re-run with the same "
-                "tools/bench.ps1 -Core setting (the default pins a hybrid CPU's runs to a performance "
+                "tools/bench.ps1 -Core / tools/bench.sh --core setting (the default pins a hybrid CPU's runs to a "
+                "performance "
                 "core), or pass --allow-core-class-mismatch to compare them anyway.",
                 file=sys.stderr,
             )
