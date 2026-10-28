@@ -377,6 +377,7 @@ set(COMMON_TEST_SOURCES
     Core/test_WindowEvents.cpp
     Core/test_WindowGeometry.cpp
     Core/test_WindowVisibility.cpp
+    Core/test_FrameWake.cpp # the publication wake and a static frame's wait (#3156)
     Domain/test_History.cpp
     Domain/test_SharedHistory.cpp
     Domain/test_ProcessConnections.cpp
@@ -462,6 +463,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessIconView.cpp
     App/test_StartupServicesIcons.cpp
     UI/test_DpiScale.cpp
+    UI/test_ImGuiTimers.cpp # the frames ImGui's own timers need on a static tab (#3156)
     UI/test_FontFileCache.cpp
     UI/test_TabularDigits.cpp
     App/test_ProcessColumnConfig.cpp

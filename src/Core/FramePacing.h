@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 
 namespace Core::FramePacing
 {
@@ -299,24 +300,70 @@ nextConsecutiveSkippedRenders(std::uint32_t consecutiveSkippedRenders, bool skip
     return std::max(0.0, currentSeconds - previousSeconds);
 }
 
-/// Idle-sleep duration: a longer sleep while hidden -- minimized or occluded (#1125), nothing
-/// visible to update -- than the normal idle rate.
-[[nodiscard]] inline auto computeIdleSleepMs(bool isHidden, int idleFrameSleepMs, int minimizedFrameSleepMs) -> int
+/// What the last frame left for the idle path to decide on: computeIdlePeriodMs()'s state.
+struct IdleFrameState
 {
-    return isHidden ? minimizedFrameSleepMs : idleFrameSleepMs;
+    /// The highest rate the last frame's motion asked for (Core::AnimationRequest::consume(), 0 = none).
+    double requestedFps = 0.0;
+    /// The soonest frame deadline the last frame asked for, in seconds after it started
+    /// (Core::AnimationRequest::consumeFrameWithin(), infinity = none).
+    double frameWithinSeconds = std::numeric_limits<double>::infinity();
+    /// Hidden, and still drawing: before the first frame, or a native Wayland minimize
+    /// (computeHiddenWait()). A hidden window that draws nothing doesn't take the idle path.
+    bool isHidden = false;
+    /// An input grace (#843) or a move/resize grace is still running.
+    bool graceActive = false;
+};
+
+/// The idle path's periods, in milliseconds: computeIdlePeriodMs()'s constants.
+struct IdleFramePeriods
+{
+    int idleMs = 0;        ///< Motion, or a grace: the 20 fps idle rate (#843)
+    int hiddenMs = 0;      ///< Hidden but still drawing: the hidden rate (#1125)
+    int staticFloorMs = 0; ///< Nothing changes: the slow floor (STATIC_FRAME_FLOOR_INTERVAL, #3156)
+};
+
+/// The time from one idle frame's start to the next (#843, #1125, #3156):
+/// - hidden but still drawing: the hidden rate;
+/// - the last frame asked for motion that needs more frames than the floor gives, or an input or
+///   move/resize grace still runs: the idle rate, as before, so a chart's cadence and the frames that
+///   finish reacting to input don't change. A request the floor already meets (at most 1000 /
+///   staticFloorMs fps: the tail of an ease) asks for nothing more;
+/// - otherwise the frame was static: the slow floor. Input, a publication (Domain::PublicationWake)
+///   and the event that shows the window wake the wait sooner.
+///
+/// Whichever applies, no later than the soonest frame deadline the frame asked for, rounded up to whole
+/// milliseconds so it isn't undershot, but no sooner than the idle rate.
+[[nodiscard]] inline auto computeIdlePeriodMs(const IdleFrameState& state, const IdleFramePeriods& periods) noexcept -> int
+{
+    int periodMs = periods.staticFloorMs;
+    if (state.isHidden)
+    {
+        periodMs = periods.hiddenMs;
+    }
+    else if (state.graceActive || (state.requestedFps * static_cast<double>(periods.staticFloorMs)) > 1000.0)
+    {
+        periodMs = periods.idleMs;
+    }
+    // A NaN or infinite deadline fails the comparison: no deadline. A deadline brings the frame no sooner
+    // than the idle rate would have, so content that asks for one every frame costs what every frame
+    // cost before, and never spins the loop.
+    if (const double deadlineMs = state.frameWithinSeconds * 1000.0; deadlineMs < static_cast<double>(periodMs))
+    {
+        periodMs = std::max(periods.idleMs, static_cast<int>(std::ceil(std::max(0.0, deadlineMs))));
+    }
+    return periodMs;
 }
 
-/// How long to wait before the next idle frame: until computeIdleSleepMs() after the previous frame
-/// *started*, not that long after it ended. A fixed post-frame sleep added the frame's own render time
-/// on top, so the nominal 20 FPS idle rate was really about 17 (#1276), slower than
+/// How long to wait before the next idle frame: until @p periodMs (computeIdlePeriodMs()) after the
+/// previous frame *started*, not that long after it ended. A fixed post-frame sleep added the frame's
+/// own render time on top, so the nominal 20 FPS idle rate was really about 17 (#1276), slower than
 /// computeAnimationRate() assumes when it leaves motion of up to 20 FPS to the idle path.
 /// Rounded up to whole milliseconds (SDL_WaitEventTimeout's unit) so the deadline isn't undershot.
-[[nodiscard]] inline auto computeIdleWaitMs(bool isHidden, int idleFrameSleepMs, int minimizedFrameSleepMs, double secondsSinceFrameStart)
-    -> int
+[[nodiscard]] inline auto computeIdleWaitMs(int periodMs, double secondsSinceFrameStart) noexcept -> int
 {
-    const auto periodMs = static_cast<double>(computeIdleSleepMs(isHidden, idleFrameSleepMs, minimizedFrameSleepMs));
     const double elapsedMs = std::max(0.0, secondsSinceFrameStart) * 1000.0;
-    return static_cast<int>(std::ceil(std::max(0.0, periodMs - elapsedMs)));
+    return static_cast<int>(std::ceil(std::max(0.0, static_cast<double>(periodMs) - elapsedMs)));
 }
 
 /// What the loop does while the window is hidden (#3156): computeHiddenWait()'s result.

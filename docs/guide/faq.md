@@ -213,6 +213,7 @@ System-wide and per-interface throughput should still appear.
 
 TaskSmack only draws as many frames as the screen needs. The FPS readout, in the bottom-right corner of the status bar while the Render Metrics overlay is on (**Ctrl+Shift+M**), shows the rate it is drawing at, averaged over half a second:
 
+- **Nothing moving, about 2 FPS or a little more:** on a tab with no chart or bar moving, such as Processes, TaskSmack draws a frame when new data arrives (each sample, at the refresh interval you set) and otherwise twice a second. A blinking text cursor, a tooltip and a progress bar get the frames they need.
 - **Idle, about 20 FPS or less:** nothing on screen moves faster than that rate draws smoothly. With the default 300-second history, the charts scroll only a few pixels a second, and the small moves of the now-bars and chart scales on an idle machine ease at this rate too.
 - **Brief bursts, up to about 60 FPS:** a new sample changed a value a lot, so a now-bar or a chart's scale moves quickly while it eases to it, or a chart with a short history window scrolls quickly.
 - **Moving the mouse or typing:** frames are capped at about 60 FPS. The cap is a whole number of display refreshes, never slower than 60 on a display refreshing at 60 Hz or faster, for example 60 at 60 or 120 Hz, 75 at 75 Hz, 72 at 144 Hz and 82.5 at 165 Hz, so motion stays even with vsync. A slower display caps at its own refresh rate (30 FPS on a 30 Hz display).

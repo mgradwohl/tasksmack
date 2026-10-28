@@ -10,6 +10,7 @@
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Core/Layer.h"
+#include "Domain/PublicationWake.h"
 
 #include <spdlog/spdlog.h>
 
@@ -112,6 +113,7 @@ void ElevationNoticeLayer::startAdministrator()
         {
             m_AdministratorResult = broker->holdForSession(stopToken);
             m_AdministratorDone.store(true, std::memory_order_release);
+            Domain::PublicationWake::notify(); // the notice shows the answer at once (#3156)
         });
 }
 

@@ -36,4 +36,12 @@ static_assert(WINDOW_HIDDEN_WAIT_TIMEOUT <= WINDOW_CLOAK_RECHECK_INTERVAL);
 /// costs one DwmGetWindowAttribute() call.
 constexpr std::chrono::milliseconds WINDOW_CLOAKED_POLL_INTERVAL{200};
 
+/// The slow floor of a shown window whose last frame asked for no motion (#3156 stage 2): the longest
+/// the frame loop waits between two frames when nothing on screen changes. It draws again sooner for
+/// input, for a publication (Domain::PublicationWake), and for a frame deadline its content asked for
+/// (AnimationRequest::requestFrameWithin()). The floor is only a backstop, for a Dear ImGui timer or a
+/// time-driven text that asks for nothing: 2 fps, against the 20 fps idle rate before. Wall-clock time,
+/// never a frame count.
+constexpr std::chrono::milliseconds STATIC_FRAME_FLOOR_INTERVAL{500};
+
 } // namespace Core

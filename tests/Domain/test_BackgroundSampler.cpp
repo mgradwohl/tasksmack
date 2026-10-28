@@ -12,6 +12,7 @@
 #include "AllocationFailureHook.h"
 #include "Domain/BackgroundSampler.h"
 #include "Domain/ISamplable.h"
+#include "Domain/PublicationWake.h"
 #include "Domain/SamplerTimingBoard.h"
 #include "Domain/SamplingConfig.h"
 #include "Platform/ThreadName.h"
@@ -1596,4 +1597,106 @@ TEST(BackgroundSamplerTest, EveryPassIsCountedInTheHistogramsAndPublishedToTheBo
     EXPECT_EQ(row->pass.max(), metrics.pass.maxDuration);
     EXPECT_EQ(row->overruns, metrics.pass.overruns);
     EXPECT_EQ(row->backoffs, metrics.backoffs);
+}
+
+// =============================================================================
+// The publication wake (#3156): a pass that sampled, and the start hook that seeded, tell the frame
+// loop there is new data to show.
+// =============================================================================
+
+namespace
+{
+
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables) - the hook takes a plain function
+std::atomic<int> g_PublicationWakes{0};
+
+void countPublicationWake() noexcept
+{
+    g_PublicationWakes.fetch_add(1);
+}
+
+/// Installs countPublicationWake() as the publication hook for one test, starting the count at 0.
+class PublicationWakeCounter
+{
+  public:
+    PublicationWakeCounter() noexcept
+    {
+        g_PublicationWakes = 0;
+        static_cast<void>(Domain::PublicationWake::setHandler(&countPublicationWake));
+    }
+
+    ~PublicationWakeCounter()
+    {
+        static_cast<void>(Domain::PublicationWake::setHandler(nullptr));
+    }
+
+    PublicationWakeCounter(const PublicationWakeCounter&) = delete;
+    PublicationWakeCounter& operator=(const PublicationWakeCounter&) = delete;
+    PublicationWakeCounter(PublicationWakeCounter&&) = delete;
+    PublicationWakeCounter& operator=(PublicationWakeCounter&&) = delete;
+
+    [[nodiscard]] static int wakes() noexcept
+    {
+        return g_PublicationWakes.load();
+    }
+};
+
+} // namespace
+
+TEST(BackgroundSamplerTest, EveryPassThatSampledWakesTheFrameLoopOnceAfterItsSamples)
+{
+    const PublicationWakeCounter counter;
+    auto first = std::make_shared<MockSamplable>();
+    auto second = std::make_shared<MockSamplable>();
+    Domain::SamplerConfig config;
+    config.interval = 100ms;
+    Domain::BackgroundSampler sampler(config);
+    sampler.addSamplable(first);
+    sampler.addSamplable(second);
+    sampler.start();
+    second->waitForSamples(3);
+    // The third pass's wake comes after its samples.
+    EXPECT_TRUE(waitFor([] { return PublicationWakeCounter::wakes() >= 3; }));
+    sampler.stop();
+    // One wake a pass, not one a samplable: two samplables, as many wakes as passes that sampled (the
+    // first samplable is in every one of them; a stop can end a pass before the second).
+    EXPECT_EQ(PublicationWakeCounter::wakes(), first->getSampleCount());
+}
+
+TEST(BackgroundSamplerTest, APassThatSampledNothingDoesNotWakeTheFrameLoop)
+{
+    const PublicationWakeCounter counter;
+    Domain::SamplerConfig config;
+    config.interval = 100ms;
+    Domain::BackgroundSampler sampler(config);
+    {
+        auto released = std::make_shared<MockSamplable>();
+        sampler.addSamplable(released);
+    } // its owner released it: every pass skips it
+    sampler.start();
+    std::this_thread::sleep_for(350ms); // three passes or so
+    sampler.stop();
+    EXPECT_EQ(PublicationWakeCounter::wakes(), 0);
+}
+
+TEST(BackgroundSamplerTest, TheStartHooksSeedWakesTheFrameLoopBeforeTheFirstPass)
+{
+    const PublicationWakeCounter counter;
+    std::atomic<bool> seeded{false};
+    auto samplable = std::make_shared<MockSamplable>();
+    Domain::SamplerConfig config;
+    config.interval = 5000ms; // no pass samples during the test
+    config.firstSampleAfterInterval = true;
+    config.onThreadStart = [&seeded]
+    {
+        seeded = true;
+    };
+    Domain::BackgroundSampler sampler(config);
+    sampler.addSamplable(samplable);
+    sampler.start();
+    EXPECT_TRUE(waitFor([] { return PublicationWakeCounter::wakes() >= 1; }));
+    sampler.stop();
+    EXPECT_TRUE(seeded.load());
+    EXPECT_EQ(samplable->getSampleCount(), 0);
+    EXPECT_EQ(PublicationWakeCounter::wakes(), 1);
 }

@@ -27,6 +27,8 @@
 #include "Core/WindowEvents.h"
 #include "Core/WindowSizeTestUtils.h"
 #include "Core/WindowVisibility.h"
+#include "Domain/BackgroundSampler.h"
+#include "Domain/ISamplable.h"
 
 #include <SDL3/SDL.h>
 #include <gtest/gtest.h>
@@ -36,6 +38,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -93,6 +96,12 @@ struct ApplicationTestAccessor
     [[nodiscard]] static bool lastIdleWaitPolledEvent(const Application& app)
     {
         return app.m_LastIdleWaitPolledEvent;
+    }
+
+    /// Publication wakes run()'s drain has taken (#3156).
+    [[nodiscard]] static std::uint64_t publicationWakesTaken(const Application& app)
+    {
+        return app.m_PublicationWakesTaken;
     }
 };
 } // namespace Core
@@ -698,6 +707,139 @@ void ThrowingOnAttachLayer::onDetach()
     g_DetachOrder.push_back(getName());
 }
 
+/// What StaticFrameLayer saw.
+struct StaticFrameObserved
+{
+    int framesInWindow = 0;             ///< Frames drawn in the quiet COUNT_SECONDS window
+    int attempts = 0;                   ///< Publications made before one brought its own frame
+    std::uint64_t publishToFrameMs = 0; ///< From the counted publication to the next frame's start
+    std::uint64_t wakesTaken = 0;       ///< Publication wakes the loop's drain took for it
+    bool published = false;             ///< A publication's frame came before the floor's
+    bool timedOut = false;
+};
+
+/// #3156 stage 2: a static tab, one whose frames ask for no motion. Once the startup events and graces
+/// are over, it counts the frames in a quiet COUNT_SECONDS: about the static floor's two a second, not
+/// the 20 fps idle rate. Then a real Domain::BackgroundSampler publishes: its one pass, started by this
+/// frame, samples PUBLISH_DELAY_MS into the floor wait that follows, and wakes the loop as every pass
+/// does. The next frame must come at once, well before the floor would have drawn it, and the loop
+/// must have taken a publication wake for it.
+///
+/// An attempt counts only when no other frame came between its publication and the frame it brought:
+/// a stray window event on a desktop can draw a frame first. It tries again after a fresh quiet frame.
+/// The sampler is stopped in onDetach(), before ~Application() destroys the window (#1502).
+class StaticFrameLayer : public Core::Layer
+{
+  public:
+    static constexpr double SETTLE_SECONDS = 1.5;
+    static constexpr double COUNT_SECONDS = 3.0;
+    static constexpr int PUBLISH_DELAY_MS = 100;
+    static constexpr int MAX_ATTEMPTS = 5;
+    static constexpr double TIMEOUT_SECONDS = 30.0;
+
+    explicit StaticFrameLayer(StaticFrameObserved& observed) : Layer("StaticFrame"), m_Observed(observed)
+    {}
+
+    void onDetach() override
+    {
+        m_Publisher.reset(); // stops and joins the sampler
+    }
+
+    void onUpdate(float /*deltaTime*/) override
+    {
+        const double now = Core::Application::getTime();
+        if (m_Start < 0.0)
+        {
+            m_Start = now;
+        }
+        const double running = now - m_Start;
+        if (running > TIMEOUT_SECONDS)
+        {
+            m_Observed.timedOut = true;
+            Core::Application::get().stop();
+            return;
+        }
+        if (running < SETTLE_SECONDS)
+        {
+            return;
+        }
+        if (running < SETTLE_SECONDS + COUNT_SECONDS)
+        {
+            ++m_Observed.framesInWindow;
+            return;
+        }
+        if (m_Publisher != nullptr)
+        {
+            checkPublication(Core::Application::get());
+        }
+        if (m_Observed.published || m_Observed.attempts >= MAX_ATTEMPTS)
+        {
+            Core::Application::get().stop();
+            return;
+        }
+        publish(Core::Application::get());
+    }
+
+  private:
+    /// The model a sampler publishes: its sample takes PUBLISH_DELAY_MS, then commits (records the time).
+    class DelayedPublication : public Domain::ISamplable
+    {
+      public:
+        void sample() override
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(PUBLISH_DELAY_MS));
+            m_PublishedAtNs.store(SDL_GetTicksNS());
+        }
+
+        [[nodiscard]] std::uint64_t publishedAtNs() const noexcept
+        {
+            return m_PublishedAtNs.load();
+        }
+
+      private:
+        std::atomic<std::uint64_t> m_PublishedAtNs{0};
+    };
+
+    /// Starts a sampler whose first pass publishes PUBLISH_DELAY_MS from now, into the wait after this
+    /// frame. Its next pass is far off.
+    void publish(const Core::Application& app)
+    {
+        ++m_Observed.attempts;
+        m_WakesBefore = Core::ApplicationTestAccessor::publicationWakesTaken(app);
+        m_Model = std::make_shared<DelayedPublication>();
+        m_Publisher = std::make_unique<Domain::BackgroundSampler>(Domain::SamplerConfig{.interval = std::chrono::milliseconds(5000)});
+        m_Publisher->addSamplable(m_Model, "delayed");
+        m_Publisher->start();
+    }
+
+    /// The first frame after a publication started: did the publication bring it?
+    void checkPublication(const Core::Application& app)
+    {
+        const std::uint64_t frameNs = SDL_GetTicksNS();
+        const std::uint64_t publishedAt = m_Model->publishedAtNs();
+        m_Publisher.reset(); // stops the sampler: one publication an attempt
+        if (publishedAt == 0)
+        {
+            return; // another event drew this frame first: try again
+        }
+        const std::uint64_t wakes = Core::ApplicationTestAccessor::publicationWakesTaken(app) - m_WakesBefore;
+        const std::uint64_t publishToFrameMs = (frameNs - publishedAt) / 1'000'000U;
+        // Well before the floor's frame, which was due STATIC_FRAME_FLOOR_INTERVAL - PUBLISH_DELAY_MS later.
+        if (wakes >= 1 && publishToFrameMs < 250U)
+        {
+            m_Observed.published = true;
+            m_Observed.publishToFrameMs = publishToFrameMs;
+            m_Observed.wakesTaken = wakes;
+        }
+    }
+
+    StaticFrameObserved& m_Observed;
+    double m_Start = -1.0;
+    std::uint64_t m_WakesBefore = 0;
+    std::shared_ptr<DelayedPublication> m_Model;
+    std::unique_ptr<Domain::BackgroundSampler> m_Publisher;
+};
+
 } // namespace
 
 // =============================================================================
@@ -1044,6 +1186,40 @@ TEST(ApplicationTest, KeyDuringIdleWaitIsDispatchedBeforeTheNextFrame)
     }
 }
 
+// #3156 stage 2: a static tab draws at the slow floor, not at the 20 fps idle rate, and a publication
+// (what a sampler sends after its pass) draws a frame at once.
+TEST(ApplicationTest, AStaticFrameDrawsAtTheFloorAndAPublicationDrawsAtOnce)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "StaticFrameTest";
+    StaticFrameObserved observed;
+    try
+    {
+        Core::Application app(spec);
+        app.pushLayer<StaticFrameLayer>(observed);
+        app.run();
+    }
+    catch (const std::exception& e)
+    {
+        FAIL() << "Application creation failed after the display probe passed: " << e.what();
+    }
+
+    EXPECT_FALSE(observed.timedOut);
+    // The floor is 2 fps: about 6 frames in 3 s. The idle rate would have drawn about 60.
+    const double floorFps = 1000.0 / static_cast<double>(Core::STATIC_FRAME_FLOOR_INTERVAL.count());
+    const double expected = floorFps * StaticFrameLayer::COUNT_SECONDS;
+    EXPECT_GE(observed.framesInWindow, static_cast<int>(expected / 2.0)) << "the floor still draws";
+    EXPECT_LE(observed.framesInWindow, static_cast<int>(expected * 2.0)) << "a static frame drew faster than the floor";
+    EXPECT_TRUE(observed.published) << "none of " << observed.attempts << " publications brought a frame before the floor's";
+    EXPECT_LT(observed.publishToFrameMs, 250U);
+    EXPECT_GE(observed.wakesTaken, 1U);
+}
+
 TEST(ApplicationTest, PushMultipleLayers)
 {
     if (!hasDisplay())
@@ -1314,7 +1490,9 @@ TEST(FramePacingTest, HiddenWindowsGetNoPacedFrames)
     // idle sleep instead.
     EXPECT_DOUBLE_EQ(Core::FramePacing::computeFrameRateCap(60.0, false, true, 60.0), 0.0);
     EXPECT_DOUBLE_EQ(Core::FramePacing::computeFrameRateCap(60.0, true, true, 60.0), 0.0);
-    EXPECT_EQ(Core::FramePacing::computeIdleSleepMs(true, 50, 200), 200);
+    EXPECT_EQ(Core::FramePacing::computeIdlePeriodMs({.requestedFps = 60.0, .isHidden = true},
+                                                     {.idleMs = 50, .hiddenMs = 200, .staticFloorMs = 500}),
+              200);
     // Visible, the animation rate applies.
     EXPECT_DOUBLE_EQ(Core::FramePacing::computeFrameRateCap(33.0, false, false, 60.0), 33.0);
     EXPECT_DOUBLE_EQ(Core::FramePacing::computeFrameRateCap(0.0, false, false, 60.0), 0.0);
@@ -1984,18 +2162,13 @@ TEST(FramePacingTest, IdleWaitIsMeasuredFromTheFrameStart)
 {
     // #1276: the idle wait runs to 50 ms after the previous frame started, so an 8 ms frame waits 42
     // ms and the idle rate really is 20 FPS (a fixed 50 ms after the frame gave about 17).
-    EXPECT_EQ(Core::FramePacing::computeIdleWaitMs(false, 50, 200, 0.008), 42);
-    EXPECT_EQ(Core::FramePacing::computeIdleWaitMs(false, 50, 200, 0.0), 50);
-    EXPECT_EQ(Core::FramePacing::computeIdleWaitMs(false, 50, 200, 0.0081), 42); // rounded up, never short
-    EXPECT_EQ(Core::FramePacing::computeIdleWaitMs(false, 50, 200, 0.075), 0);   // a slow frame: no wait
-    EXPECT_EQ(Core::FramePacing::computeIdleWaitMs(true, 50, 200, 0.008), 192);  // hidden: 5 FPS period
-    EXPECT_EQ(Core::FramePacing::computeIdleWaitMs(false, 50, 200, -1.0), 50);   // a clock step back
-}
-
-TEST(FramePacingTest, IdleSleepMsUsesMinimizedDurationWhenHidden)
-{
-    EXPECT_EQ(Core::FramePacing::computeIdleSleepMs(true, 50, 200), 200);
-    EXPECT_EQ(Core::FramePacing::computeIdleSleepMs(false, 50, 200), 50);
+    EXPECT_EQ(Core::FramePacing::computeIdleWaitMs(50, 0.008), 42);
+    EXPECT_EQ(Core::FramePacing::computeIdleWaitMs(50, 0.0), 50);
+    EXPECT_EQ(Core::FramePacing::computeIdleWaitMs(50, 0.0081), 42);  // rounded up, never short
+    EXPECT_EQ(Core::FramePacing::computeIdleWaitMs(50, 0.075), 0);    // a slow frame: no wait
+    EXPECT_EQ(Core::FramePacing::computeIdleWaitMs(200, 0.008), 192); // hidden: 5 FPS period
+    EXPECT_EQ(Core::FramePacing::computeIdleWaitMs(500, 0.008), 492); // a static frame: the floor (#3156)
+    EXPECT_EQ(Core::FramePacing::computeIdleWaitMs(50, -1.0), 50);    // a clock step back
 }
 
 // =============================================================================
