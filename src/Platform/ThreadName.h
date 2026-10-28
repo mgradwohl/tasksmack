@@ -93,6 +93,8 @@ inline constexpr std::string_view DUMP_CHECK_THREAD_NAME = "ts-dump-check";
 /// ShellExecuteW on Windows, xdg-open on Linux, either of which can wait on a shell extension, COM or
 /// the network.
 inline constexpr std::string_view SYSTEM_OPEN_THREAD_NAME = "ts-sys-open";
+/// The worker that runs the opt-in update check's one HTTPS request at a time (#3093).
+inline constexpr std::string_view UPDATE_CHECK_THREAD_NAME = "ts-update-check";
 /// The thread that starts TaskSmack's Windows administrator helper, and sits behind its UAC prompt for
 /// as long as that is up (PipeBroker::launch(), #2549; named in #2768).
 inline constexpr std::string_view HELPER_LAUNCH_THREAD_NAME = "ts-uac-launch";

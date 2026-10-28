@@ -5,6 +5,7 @@
 #include "App/Panels/ProcessRowMeter.h"
 #include "App/ProcessColumnConfig.h"
 #include "Domain/SamplingConfig.h"
+#include "Domain/UpdateCheck.h"
 #include "Platform/ThreadName.h"
 #include "UI/Theme.h"
 
@@ -136,6 +137,13 @@ struct UserSettings
     // Run new task's recent command lines (#3065), newest first, [run_task] recent. Written only when
     // there are any.
     std::vector<std::string> recentCommands;
+
+    // The opt-in update check (#3093), [updates]: "Check for updates daily" (check_daily, off by
+    // default, and then TaskSmack sends nothing), when the last check started (last_check, Unix
+    // seconds), the latest release it saw (latest_version, latest_url) and the version whose notice the
+    // user dismissed (dismissed_version). Kept so a restart neither checks again within a day nor
+    // forgets the notice.
+    Domain::UpdateCheck::Persisted updates;
 
     // Opt-in escape hatch (default off -- the custom title bar is the default
     // everywhere): use native OS/compositor window decorations instead of the custom

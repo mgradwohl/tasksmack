@@ -189,6 +189,16 @@ static_assert(STARTUP_REFRESH_MS <= REFRESH_INTERVAL_MAX_MS);
 // within this long. Each read parses up to five files of a few hundred KB.
 inline constexpr int STARTUP_IMPACT_REFRESH_SECONDS = 600;
 
+// The opt-in update check (#3093) - fixed, not configurable. With "Check for updates daily" on,
+// TaskSmack asks GitHub's releases API for the latest release at most once per this many hours,
+// measured on the wall clock from the last check, which config.toml keeps across restarts. A failed
+// check counts as a check. Settings' "Check now" is the only way to ask sooner.
+inline constexpr int UPDATE_CHECK_INTERVAL_HOURS = 24;
+
+// How long that request may take (milliseconds): each of its steps (name lookup, connect, send,
+// receive) gets at most this long. A check that runs out of time is a failed check, logged at debug.
+inline constexpr int UPDATE_CHECK_TIMEOUT_MS = 10000;
+
 // -----------------------------------------------------------------------------
 // Instance Enumeration Caches (User-Configurable via TOML)
 // -----------------------------------------------------------------------------

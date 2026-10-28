@@ -415,6 +415,7 @@ set(COMMON_TEST_SOURCES
     Domain/test_SensorModel.cpp
     Domain/test_SystemInfoModel.cpp
     Domain/test_CrashHistory.cpp
+    Domain/test_UpdateCheck.cpp # the update check's versions, reply reader and schedule (#3093)
     Domain/test_StorageModelAllocationFailure.cpp
     Domain/test_ServiceModel.cpp
     Domain/test_ProcessServices.cpp
@@ -620,6 +621,7 @@ set(COMMON_TEST_SOURCES
     App/test_PowerStatusText.cpp
     App/test_ElevationNoticeText.cpp
     App/test_StatusBarText.cpp
+    App/test_UpdateChecker.cpp # the update check's worker, with a fake client and clock (#3093)
     App/test_StatusBarViewRender.cpp
     App/test_FontSizeChange.cpp
     App/test_KeyboardShortcuts.cpp
@@ -745,6 +747,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsHandles.cpp
     Platform/test_WindowsNetworkAdapters.cpp
     Platform/test_WindowsPublicIp.cpp
+    Platform/test_WindowsHttpsClient.cpp # what WinHTTP's client refuses before sending anything (#3093)
     Platform/test_WinString.cpp
 )
 set(WINDOWS_INTEGRATION_TEST_SOURCES
@@ -1001,6 +1004,9 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/Domain/SensorTracker.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/SystemInfoModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/CrashHistory.cpp
+    ${CMAKE_SOURCE_DIR}/src/Domain/UpdateCheck.cpp
+    # The update check's worker (#3093), with a fake client (test_UpdateChecker.cpp)
+    ${CMAKE_SOURCE_DIR}/src/App/UpdateChecker.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/ServiceModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/BackgroundSampler.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/SamplerTimingBoard.cpp

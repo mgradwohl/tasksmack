@@ -92,6 +92,35 @@ TEST(StatusBarTextTest, ReadoutGoesFirst)
     EXPECT_EQ(fit.segmentsShown, 2U);
 }
 
+// #3093: the update notice comes after the status text and before the readout: it goes when the readout
+// has gone and still doesn't fit, and before either segment.
+constexpr float NOTICE_PX = 200.0F;
+
+TEST(StatusBarTextTest, TheUpdateNoticeFitsBetweenTheStatusAndTheReadout)
+{
+    // 195 for the text, then 8 + 200 for the notice (403), then 8 + 110 for the readout (521).
+    const auto all = fitStatusBar(SEGMENTS, SEPARATOR_PX, READOUT_PX, GAP_PX, 521.0F, NOTICE_PX);
+    EXPECT_TRUE(all.showNotice);
+    EXPECT_TRUE(all.showReadout);
+
+    const auto noReadout = fitStatusBar(SEGMENTS, SEPARATOR_PX, READOUT_PX, GAP_PX, 520.0F, NOTICE_PX);
+    EXPECT_TRUE(noReadout.showNotice);
+    EXPECT_FALSE(noReadout.showReadout);
+
+    const auto exactly = fitStatusBar(SEGMENTS, SEPARATOR_PX, 0.0F, GAP_PX, 403.0F, NOTICE_PX);
+    EXPECT_TRUE(exactly.showNotice);
+    const auto short1 = fitStatusBar(SEGMENTS, SEPARATOR_PX, 0.0F, GAP_PX, 402.0F, NOTICE_PX);
+    EXPECT_FALSE(short1.showNotice);
+    EXPECT_EQ(short1.segmentsShown, 2U); // the status stays
+
+    // A notice that doesn't fit takes the readout with it (the readout is lower); with a segment dropped, no
+    // notice.
+    EXPECT_FALSE(fitStatusBar(SEGMENTS, SEPARATOR_PX, READOUT_PX, GAP_PX, 402.0F, NOTICE_PX).showReadout);
+    EXPECT_TRUE(fitStatusBar(SEGMENTS, SEPARATOR_PX, READOUT_PX, GAP_PX, 402.0F, 0.0F).showReadout);
+    EXPECT_FALSE(fitStatusBar(SEGMENTS, SEPARATOR_PX, READOUT_PX, GAP_PX, 194.0F, 1.0F).showNotice);
+    EXPECT_FALSE(fitStatusBar(SEGMENTS, SEPARATOR_PX, READOUT_PX, GAP_PX, 1200.0F, 0.0F).showNotice);
+}
+
 TEST(StatusBarTextTest, IntervalGoesBeforeTheProcessCount)
 {
     const auto fit = fitStatusBar(SEGMENTS, SEPARATOR_PX, READOUT_PX, GAP_PX, 194.0F);
