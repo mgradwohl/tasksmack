@@ -260,7 +260,7 @@ std::optional<FindHandlesAction> FindHandlesDialog::renderResults(const SearchPu
             ImGui::TableNextColumn();
             UI::Widgets::cellText(std::to_string(match.target.pid));
             ImGui::TableNextColumn();
-            UI::Widgets::cellText(std::string(Domain::HandleSearch::kindLabel(match.kind)));
+            UI::Widgets::cellText(Domain::HandleSearch::kindLabel(match.kind));
             ImGui::TableNextColumn();
             if (match.deleted)
             {
