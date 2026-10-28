@@ -186,6 +186,7 @@ set(TASKSMACK_SOURCES
     src/App/Panels/RunTaskDialog.cpp # Run new task (#3065)
     src/App/Panels/ProcessActionsView.cpp
     src/App/Panels/ProcessDumpView.cpp
+    src/App/Panels/ProcessWaitChainDialog.cpp # Analyze wait chain (#3084)
     src/App/Panels/ProcessActionsBlock.cpp
     src/App/Panels/ProcessPriorityView.cpp
     src/App/Panels/ProcessIoPriorityView.cpp
@@ -306,6 +307,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsProcessDump.cpp
     src/Platform/Windows/WindowsProcessMachine.cpp # the machine a process runs as: dumps and the Architecture column (#2394)
     src/Platform/Windows/WindowsProcessIdentity.cpp
+    src/Platform/Windows/WindowsWaitChain.cpp # Analyze wait chain: GetThreadWaitChain on each thread (#3084)
     src/Platform/Windows/WindowsFolderPicker.cpp
     src/Platform/Windows/WindowsProcessConnections.cpp
     src/Platform/Windows/WindowsProcessEnvironmentReader.cpp # a process's environment block, out of its PEB (#2569)
@@ -402,6 +404,7 @@ set(TASKSMACK_HEADERS
     src/Platform/BrokerSessionRules.h
     src/Platform/BrokerRequestMapping.h
     src/Platform/IProcessActions.h
+    src/Platform/WaitChain.h
     src/Platform/IProcessEnvironment.h
     src/Platform/IProcessIconSource.h
     src/Platform/IconImageFile.h
@@ -504,6 +507,8 @@ elseif(WIN32)
         src/Platform/Windows/BrokerHelper.h
         src/Platform/Windows/WindowsProcessDump.h
         src/Platform/Windows/WindowsProcessIdentity.h
+        src/Platform/Windows/WindowsWaitChain.h
+        src/Platform/Windows/WindowsWaitChainMath.h
         src/Platform/Windows/WindowsProcessDumpMath.h
         src/Platform/Windows/WindowsProcessMachine.h
         src/Platform/Windows/WindowsProcessMachineMath.h
@@ -886,7 +891,8 @@ if(WIN32)
     target_include_directories(TaskSmackHelper PRIVATE ${TaskSmack_SOURCE_DIR}/src ${TaskSmack_BINARY_DIR}/generated)
     # Only what the helper calls (#2557), not the app's whole list. No dump writer and no COM folder
     # picker: WindowsProcessActions.cpp leaves its dump members to IProcessActions' refusals without them.
-    target_compile_definitions(TaskSmackHelper PRIVATE TASKSMACK_NO_PROCESS_DUMPS)
+    # No wait chain reader either (#3084): the helper serves none, so WindowsWaitChain.cpp isn't built in.
+    target_compile_definitions(TaskSmackHelper PRIVATE TASKSMACK_NO_PROCESS_DUMPS TASKSMACK_NO_WAIT_CHAINS)
     target_link_libraries(TaskSmackHelper PRIVATE spdlog::spdlog_header_only
         advapi32 # tokens, security descriptors and AccessCheck (BrokerHelper, BrokerPipe)
         bcrypt # BCryptGenRandom (BrokerPipe)

@@ -44,6 +44,9 @@ struct ProcessCounters
     // Windows' System Idle Process (PID 0): its userTime/systemTime are the CPUs' idle time, not work.
     // Package energy attribution leaves it out (#2587); Linux lists no such process.
     bool cpuTimeIsIdle = false;
+    // A top-level window of the process has stopped answering its messages (Windows: IsHungAppWindow,
+    // #3084): Task Manager's "Not responding". Always false on Linux. Domain words it into the Status.
+    bool notResponding = false;
     std::string status;    // Process status (e.g., "Suspended", "Efficiency Mode")
     std::int32_t nice = 0; // Nice value (-20 to 19 on Linux)
     // Windows: the class nice stands for, which nice alone can't name (Realtime and High both sit

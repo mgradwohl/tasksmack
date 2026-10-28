@@ -98,6 +98,10 @@ struct WindowsProcessProbeFunctions
         /// The machine Windows runs as (Windows::nativeMachine()), read once at construction, against which
         /// a process's architecture is emulated or not (#2394). Nullable: every process's is then named alone.
         std::uint16_t (*nativeMachine)() = nullptr;
+        /// The processes with a top-level window that has stopped answering (#3084), sorted and unique,
+        /// into its argument (WindowsProcessDetailReads::hungWindowProcesses()): once a sample. Nullable:
+        /// no process is ever Not responding.
+        void (*hungWindowProcesses)(std::vector<std::uint32_t>& pids) = nullptr;
     } system;
 
     struct Token
@@ -169,6 +173,12 @@ const ProcessImage& image(const WindowsProcessProbeFunctions::Process& fns, HAND
 /// "App", "Background Process" or "Windows Process" (hQuery may be null: the USER objects aren't counted).
 [[nodiscard]] std::string_view
 processType(const WindowsProcessProbeFunctions::Process& fns, HANDLE hQuery, DWORD pid, std::string_view imagePath);
+/// The processes with a top-level window that has stopped answering its messages (#3084), sorted and
+/// unique, into @p pids: one EnumWindows pass over the desktop's top-level windows, IsHungAppWindow on
+/// each visible one, and a ghost window (DWM's "(Not Responding)" stand-in) followed back to the hung
+/// window it replaced. Every sample, not on a detail TTL: a hang is news the moment it starts. Its cost
+/// is the desktop's window count, not the process count.
+void hungWindowProcesses(std::vector<std::uint32_t>& pids);
 } // namespace WindowsProcessDetailReads
 
 /// Windows implementation of IProcessProbe.
@@ -356,9 +366,10 @@ class WindowsProcessProbe : public IProcessProbe
     std::vector<ProcessorGroupLayout> m_ProcessorGroups;
     bool m_ActiveMasksRead = false; // The last readActiveProcessorMasks() succeeded
     std::chrono::steady_clock::time_point m_NextActiveMasksRead;
-    bool m_ThreadsMaySpanGroups = true;      // threadsMaySpanGroups() for this Windows build
-    std::vector<std::byte> m_SnapshotBuffer; // Reused buffer for NtQuerySystemInformation snapshots
-    AccountNameCache m_AccountNames;         // Owners' account names by SID, for the heavy reads (#2982)
+    bool m_ThreadsMaySpanGroups = true;          // threadsMaySpanGroups() for this Windows build
+    std::vector<std::byte> m_SnapshotBuffer;     // Reused buffer for NtQuerySystemInformation snapshots
+    std::vector<std::uint32_t> m_HungWindowPids; // This sample's processes with a hung window (#3084), sorted; reused
+    AccountNameCache m_AccountNames;             // Owners' account names by SID, for the heavy reads (#2982)
 
     // The EMI package energy meters (#2587). The opener thread stores the opened meter under the
     // mutex and then raises m_HasPackageEnergy; readPackageEnergy() (const, on the sampler thread)

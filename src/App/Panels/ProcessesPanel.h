@@ -21,6 +21,7 @@
 #include "App/Panels/ProcessSelection.h"
 #include "App/Panels/ProcessTableNavigation.h"
 #include "App/Panels/ProcessTreeFlatten.h"
+#include "App/Panels/ProcessWaitChainDialog.h"
 #include "App/Panels/RunTaskDialog.h"
 #include "App/Panels/StuckProcesses.h"
 #include "App/Panels/UdpTraceSwitch.h"
@@ -369,6 +370,12 @@ class ProcessesPanel : public Panel
         m_RowActionRun.update(/*wait=*/true);
     }
 
+    /// The row menu's wait chain dialog (#3084), for tests: open after Analyze wait chain... is chosen.
+    [[nodiscard]] ProcessWaitChainDialog& waitChainDialogForTesting() noexcept
+    {
+        return m_WaitChainDialog;
+    }
+
     /// Whether the toolbar offers "Authenticate and retry" after a refused row action (#2308).
     [[nodiscard]] bool offersAuthenticateAndRetry() const noexcept
     {
@@ -539,6 +546,9 @@ class ProcessesPanel : public Panel
     // The row menu's Create dump file... (#807). Declared after m_ProcessActions, which its worker uses
     // until it finishes, so it is destroyed (cancelling and waiting for a dump in flight) first.
     ProcessDumpView m_DumpView;
+    // The row menu's Analyze wait chain... (#3084). Declared after m_ProcessActions, which its workers use
+    // until they finish, so it is destroyed (stopping and waiting for them) first.
+    ProcessWaitChainDialog m_WaitChainDialog;
     // A confirmed batch action or batch priority change, run on its worker (#2142). Declared after
     // m_ProcessActions, which the worker uses, so it is destroyed (stopping and waiting for it) first.
     ProcessBatch::BatchRun m_BatchRun;

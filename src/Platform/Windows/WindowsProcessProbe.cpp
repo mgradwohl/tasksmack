@@ -732,6 +732,49 @@ const ProcessImage& readProcessImage(const ProcessFunctions& fns, HANDLE hProces
     return std::chrono::steady_clock::now();
 }
 
+/// user32's HungWindowFromGhostWindow: the hung window a ghost window stands in for. Not in the SDK's
+/// headers, so looked up once; null where this Windows has none (the ghost is then not followed).
+using HungWindowFromGhostFn = HWND(WINAPI*)(HWND);
+
+[[nodiscard]] HungWindowFromGhostFn hungWindowFromGhost()
+{
+    static const auto fn = Windows::getProcAddress<HungWindowFromGhostFn>(GetModuleHandleW(L"user32.dll"), "HungWindowFromGhostWindow");
+    return fn;
+}
+
+/// EnumWindows' callback for hungWindowProcesses(): records the process of each visible top-level window
+/// that has stopped answering (IsHungAppWindow). Once Windows has hidden a hung window behind its ghost
+/// (the "(Not Responding)" stand-in DWM draws in its place, class "Ghost"), only the ghost is visible:
+/// the window it stands in for is the hung one.
+BOOL CALLBACK collectHungWindowProcess(HWND window, LPARAM param)
+{
+    // Only what is on screen: a hidden window on a thread that doesn't pump messages (a service's, a
+    // background helper's) would otherwise read as hung, though no user is waiting on it.
+    if (IsWindowVisible(window) == FALSE)
+    {
+        return TRUE;
+    }
+    HWND hung = (IsHungAppWindow(window) != FALSE) ? window : nullptr;
+    if (hung == nullptr)
+    {
+        constexpr int CLASS_CHARS = 8; // "Ghost" and its NUL, with room to tell a longer name apart
+        std::array<wchar_t, CLASS_CHARS> className{};
+        const auto fromGhost = hungWindowFromGhost();
+        // GetClassNameW truncates a longer name and always ends it with a NUL.
+        if (fromGhost != nullptr && GetClassNameW(window, className.data(), CLASS_CHARS) > 0 &&
+            std::wstring_view(className.data()) == L"Ghost")
+        {
+            hung = fromGhost(window);
+        }
+    }
+    DWORD pid = 0;
+    if (hung != nullptr && GetWindowThreadProcessId(hung, &pid) != 0 && pid != 0)
+    {
+        reinterpret_cast<std::vector<std::uint32_t>*>(param)->push_back(pid); // NOLINT(performance-no-int-to-ptr) - EnumWindows' LPARAM
+    }
+    return TRUE;
+}
+
 /// Each thread's group affinity (GetThreadGroupAffinity), from the process's
 /// SYSTEM_THREAD_INFORMATION records in the snapshot (#1247). Incomplete if any thread has exited,
 /// can't be opened or read, or the records are missing: groupMasksFromThreads() then reports the
@@ -848,6 +891,16 @@ std::string_view WindowsProcessDetailReads::processType(const WindowsProcessProb
     return classifyProcessType(fns, hQuery, pid, imagePath);
 }
 
+void WindowsProcessDetailReads::hungWindowProcesses(std::vector<std::uint32_t>& pids)
+{
+    pids.clear();
+    // The callback never stops the walk; a failure leaves what was collected, read as "none hung" for the rest.
+    static_cast<void>(EnumWindows(&collectHungWindowProcess, reinterpret_cast<LPARAM>(&pids)));
+    std::ranges::sort(pids);
+    const auto duplicates = std::ranges::unique(pids);
+    pids.erase(duplicates.begin(), duplicates.end());
+}
+
 WindowsProcessProbeFunctions WindowsProcessProbe::systemFunctions()
 {
     return {
@@ -861,6 +914,7 @@ WindowsProcessProbeFunctions WindowsProcessProbe::systemFunctions()
                 .windowsBuildNumber = &windowsBuildNumber,
                 .steadyNow = &steadyNow,
                 .nativeMachine = &Windows::nativeMachine,
+                .hungWindowProcesses = &WindowsProcessDetailReads::hungWindowProcesses,
             },
         .token =
             {
@@ -1003,6 +1057,14 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
     // once so every process in this sample agrees with it.
     const bool perProcessNetworkCounters = m_HasNetworkCounters.load(std::memory_order_relaxed);
 
+    // Which processes' windows have stopped answering (#3084): one window walk for the whole sample,
+    // then a binary search per process, which an empty list (the usual case) answers at once.
+    m_HungWindowPids.clear();
+    if (m_Fns.system.hungWindowProcesses != nullptr)
+    {
+        m_Fns.system.hungWindowProcesses(m_HungWindowPids);
+    }
+
     for (std::size_t offset = 0; (offset + sizeof(SystemProcessInfo)) <= snapshotBytes;)
     {
         // Safe and necessary: parsing the OS-defined SYSTEM_PROCESS_INFORMATION layout out of the
@@ -1073,6 +1135,7 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
             counters.state = deriveProcessState(threads, pid == 0);
         }
         counters.cpuTimeIsIdle = (pid == 0); // The Idle pseudo-process's time is the CPUs' idle time (#2587)
+        counters.notResponding = std::ranges::binary_search(m_HungWindowPids, pid);
 
         std::wstring_view imageName;
         if (info->imageName.Buffer != nullptr && info->imageName.Length != 0)

@@ -79,6 +79,9 @@ inline constexpr std::string_view PROCESS_ACTION_THREAD_NAME = "ts-proc-action";
 /// The one-shot worker that reads the CPU layout Process Details' Set affinity dialog groups its boxes by
 /// (#3182): GetLogicalProcessorInformationEx on Windows, sysfs on Linux, read once and kept.
 inline constexpr std::string_view AFFINITY_LAYOUT_READ_THREAD_NAME = "ts-cpu-layout";
+/// The worker that reads one Analyze wait chain dialog's chains at a time (#3084): GetThreadWaitChain on
+/// each thread, which can wait on another process.
+inline constexpr std::string_view WAIT_CHAIN_READ_THREAD_NAME = "ts-wct-read";
 /// The worker that shows the dump confirm's "Save dump to..." folder dialog while it is up (#2001).
 inline constexpr std::string_view FOLDER_DIALOG_THREAD_NAME = "ts-folder-pick";
 /// The worker that reads the dump confirm's folder and free space when it opens or its folder changes
