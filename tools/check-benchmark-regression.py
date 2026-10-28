@@ -10,7 +10,8 @@ Usage:
 Exit codes:
     0  No matched benchmark exceeds both its threshold and its floor, and coverage meets --min-coverage
     1  One or more benchmarks regressed beyond the threshold, or coverage is too low
-    2  Usage error, invalid input, or no comparable benchmarks at all
+    2  Usage error, invalid input, no comparable benchmarks at all, or runs on different core
+       classes (see "Core placement" below)
 
 The threshold is a percentage: a benchmark that is more than THRESHOLD% slower than the
 baseline is considered a regression. Improvements are always accepted.
@@ -58,6 +59,20 @@ would let a 2.6ns benchmark double unnoticed. With "min_abs_delta_ns": 3 it pass
 3.1ns (+2.4ns) and still fails at 0.7ns -> 4.0ns (+3.3ns) or 2ns -> 12ns, and every other
 benchmark keeps the 1.0ns floor, so 10ns -> 40ns, or 0.7ns -> 3.1ns anywhere else, still fails.
 An entry for a benchmark the baseline does not have is reported and otherwise ignored.
+
+Core placement (#3163): tools/bench.ps1's manifest records the EfficiencyClass of the core a run
+was pinned to ("placement": {"core_class": 1, ...}), or "any" when it was not pinned. A run on a
+hybrid CPU's efficiency cores is 2-3x slower on every benchmark, pure arithmetic included, so a
+comparison across core classes reports dozens of regressions (or improvements) that are only the
+cores. When both runs' manifests record a core class and the classes differ, the comparison is
+refused with exit code 2 before anything is compared; --allow-core-class-mismatch turns that into
+a warning for a deliberate cross-class comparison. It refuses rather than warns because a warning
+would sit above an exit code that is wrong either way: 1 for regressions that are not in the
+code, or 0 for real ones hidden by a faster core. Each run's manifest is the
+<result>.manifest.json sidecar next to it, or the one --baseline-manifest / --current-manifest
+names. A run without one (the committed baselines, bench.sh's runs, older runs) is not checked,
+and the output says so. The system CPU load each manifest recorded before and after its run is
+printed, for reading a noisy comparison.
 
 The JSON format is Google Benchmark's --benchmark_format=json output.
 """
@@ -213,6 +228,54 @@ def load_threshold_overrides(path: Path) -> dict[str, dict[str, float]]:
     return overrides
 
 
+def manifest_sidecar(result: Path) -> Path:
+    """The manifest bench.sh / bench.ps1 write next to a result: <stem>.manifest.json."""
+    return result.with_name(f"{result.stem}.manifest.json")
+
+
+def load_run_manifest(path: Path) -> dict:
+    """The manifest at path as a JSON object. Raises OSError, json.JSONDecodeError or ValueError."""
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("expected a JSON object")
+    return data
+
+
+def core_class(manifest: dict | None) -> int | str | None:
+    """The core class a run's manifest records: the pinned core's EfficiencyClass (an int), "any"
+    for an unpinned run, or None when the manifest has no placement (bench.sh, older runs).
+
+    Raises ValueError for a placement that is not the documented shape, so a corrupted manifest
+    cannot silently skip the check.
+    """
+    if manifest is None or "placement" not in manifest:
+        return None
+    placement = manifest["placement"]
+    if not isinstance(placement, dict) or "core_class" not in placement:
+        raise ValueError("'placement' must be an object with a 'core_class'")
+    value = placement["core_class"]
+    if value == "any" or (isinstance(value, int) and not isinstance(value, bool) and value >= 0):
+        return value
+    raise ValueError(f"'placement.core_class' must be \"any\" or an EfficiencyClass >= 0, not {value!r}")
+
+
+def describe_core_class(value: int | str) -> str:
+    return "not pinned (any core)" if value == "any" else f"pinned to EfficiencyClass {value}"
+
+
+def describe_load(manifest: dict | None) -> str | None:
+    """A manifest's system CPU load before/after its run, e.g. "12.5% before, 40.0% after"."""
+    if manifest is None or not isinstance(manifest.get("system_load"), dict):
+        return None
+    load = manifest["system_load"]
+
+    def percent(key: str) -> str:
+        value = load.get(key)
+        return f"{value:.1f}%" if is_valid_time(value) else "unknown"
+
+    return f"{percent('before_percent')} before, {percent('after_percent')} after"
+
+
 def finite_percentage(min_value: float, max_value: float | None = None):
     """argparse type factory: a finite float within [min_value, max_value].
 
@@ -276,6 +339,26 @@ def main() -> int:
             "for the benchmarks it names (default: none, every benchmark uses the flags' values)"
         ),
     )
+    parser.add_argument(
+        "--baseline-manifest",
+        type=Path,
+        default=None,
+        help="The baseline run's manifest (default: the <baseline>.manifest.json next to it, if any)",
+    )
+    parser.add_argument(
+        "--current-manifest",
+        type=Path,
+        default=None,
+        help="The current run's manifest (default: the <current>.manifest.json next to it, if any)",
+    )
+    parser.add_argument(
+        "--allow-core-class-mismatch",
+        action="store_true",
+        help=(
+            "Compare runs whose manifests record different core classes, with a warning, instead "
+            "of refusing (exit 2)"
+        ),
+    )
     args = parser.parse_args()
 
     if not args.baseline.exists():
@@ -302,6 +385,56 @@ def main() -> int:
         except (OSError, json.JSONDecodeError, ValueError) as exc:
             print(f"ERROR: invalid threshold overrides: {exc}", file=sys.stderr)
             return 2
+
+    # ── Core placement (#3163) ────────────────────────────────────────────────
+    # An explicitly named manifest must exist and parse; a sidecar is optional, but one that is
+    # there and unreadable is still an error, so a corrupted manifest cannot skip the check.
+    manifests: dict[str, dict | None] = {}
+    for side, explicit, result in (
+        ("baseline", args.baseline_manifest, args.baseline),
+        ("current", args.current_manifest, args.current),
+    ):
+        path = explicit if explicit is not None else manifest_sidecar(result)
+        if not path.exists():
+            if explicit is not None:
+                print(f"ERROR: {side} manifest not found: {path}", file=sys.stderr)
+                return 2
+            manifests[side] = None
+            continue
+        try:
+            manifests[side] = load_run_manifest(path)
+            core_class(manifests[side])
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            print(f"ERROR: invalid {side} manifest {path}: {exc}", file=sys.stderr)
+            return 2
+
+    base_class = core_class(manifests["baseline"])
+    cur_class = core_class(manifests["current"])
+    placement_warning = None
+    if base_class is None or cur_class is None:
+        missing = [side for side, value in (("baseline", base_class), ("current", cur_class)) if value is None]
+        placement_note = (
+            f"not checked (no core class recorded for the {' and '.join(missing)} "
+            f"run{'s' if len(missing) > 1 else ''})"
+        )
+    elif base_class == cur_class:
+        placement_note = f"both runs {describe_core_class(cur_class)}"
+    else:
+        mismatch = (
+            f"the baseline run was {describe_core_class(base_class)} and the current run "
+            f"{describe_core_class(cur_class)}. On a hybrid CPU an efficiency core is 2-3x slower "
+            "on every benchmark, so the comparison would measure the cores, not the code."
+        )
+        if not args.allow_core_class_mismatch:
+            print(
+                f"ERROR: the runs used different core classes: {mismatch} Re-run with the same "
+                "tools/bench.ps1 -Core setting (the default pins a hybrid CPU's runs to a performance "
+                "core), or pass --allow-core-class-mismatch to compare them anyway.",
+                file=sys.stderr,
+            )
+            return 2
+        placement_note = "MISMATCH, compared anyway (--allow-core-class-mismatch)"
+        placement_warning = f"WARNING: the runs used different core classes: {mismatch}"
 
     own_thresholds = {name for name, limits in overrides.items() if "threshold" in limits}
     own_floors = {name for name, limits in overrides.items() if "min_abs_delta_ns" in limits}
@@ -339,6 +472,13 @@ def main() -> int:
     print(f"Regression threshold: {args.threshold:.1f}%")
     print(f"Absolute noise floor: {args.min_abs_delta_ns:.2f}ns")
     print(f"Minimum required coverage: {args.min_coverage:.1f}%")
+    print(f"Core placement: {placement_note}")
+    for side in ("baseline", "current"):
+        load = describe_load(manifests[side])
+        if load is not None:
+            print(f"System CPU load, {side} run: {load}")
+    if placement_warning is not None:
+        print(placement_warning)
     if overrides:
         print(f"Per-benchmark thresholds ({len(overrides)}, from {args.threshold_overrides}):")
         for name in sorted(overrides):

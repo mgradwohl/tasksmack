@@ -423,6 +423,10 @@ IDENTITY_EXEMPT = frozenset(
         "machine.os_name",
         "machine.os_version",
         "machine.arch",
+        # bench.ps1's core placement (#3163); bench.sh does not record placement yet.
+        "placement.core",
+        "placement.core_class",
+        "placement.affinity_mask",
     }
 )
 

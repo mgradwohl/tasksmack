@@ -180,6 +180,8 @@ Each process's name has its program's icon beside it, as in Task Manager, and so
 
 A process that has just started has its row tinted green, fading out over five seconds, so a short-lived process is seen even if it exits before you look. A process that has just exited stays for about two seconds as a dimmed row tinted red, where it was in the list or tree. It can't be selected or acted on, and it isn't counted in the process total. Turn both off with **Highlight new and exited processes** in Settings.
 
+A process stuck in uninterruptible sleep (state **Disk Sleep**, D) for two seconds or more has its row tinted in the State column's disk-sleep colour, as htop highlights D state. Such a process is usually waiting on a hung network mount or a failing disk, and can't be ended until the wait finishes. Processes pass through Disk Sleep for a moment on most disk reads, so those aren't tinted. This tint stays on whatever the Highlight setting says.
+
 - **User** — the account the process runs as
 - **Publisher** (Windows, hidden by default) — the company named in the executable's version information
 - **Status** (hidden by default) — on Windows, **Suspended** for a frozen process (such as a suspended Store app) or **Efficiency Mode** for one running with EcoQoS, as Task Manager's Efficiency mode sets it; **Suspended** on Linux for a process its cgroup has frozen. Process Details' **State** row shows it after the state.

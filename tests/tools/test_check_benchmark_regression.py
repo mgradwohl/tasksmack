@@ -67,9 +67,12 @@ class CheckBenchmarkRegressionTest(unittest.TestCase):
         current_extra: list[dict] | None = None,
         baseline_extra: list[dict] | None = None,
         overrides: object = None,
+        baseline_manifest: object = None,
+        current_manifest: object = None,
     ):
         """overrides, when given, is written as the --threshold-overrides file: a str verbatim,
-        anything else as JSON."""
+        anything else as JSON. baseline_manifest / current_manifest, when given, are written the
+        same way as each run's <name>.manifest.json sidecar."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             current_path = write_run(tmp_path, "current.json", current)
@@ -78,6 +81,12 @@ class CheckBenchmarkRegressionTest(unittest.TestCase):
             baseline_path = write_run(tmp_path, "baseline.json", baseline)
             if baseline_extra:
                 add_records(baseline_path, baseline_extra)
+            for stem, manifest in (("baseline", baseline_manifest), ("current", current_manifest)):
+                if manifest is not None:
+                    text = manifest if isinstance(manifest, str) else json.dumps(manifest)
+                    (tmp_path / f"{stem}.manifest.json").write_text(text, encoding="utf-8")
+            # A {tmp} in an extra argument names a file in the run's directory.
+            extra = tuple(argument.replace("{tmp}", tmp) for argument in extra)
             if overrides is not None:
                 overrides_path = tmp_path / "overrides.json"
                 text = overrides if isinstance(overrides, str) else json.dumps(overrides)
@@ -435,6 +444,133 @@ class CheckBenchmarkRegressionTest(unittest.TestCase):
                 code, output = self.run_gate({"BM_Memory": 100.0}, {"BM_Memory": 100.0}, overrides=overrides)
                 self.assertEqual(code, 2, output)
                 self.assertIn("invalid threshold overrides", output)
+
+    # ── #3163: runs on different core classes ─────────────────────────────────────────────
+    @staticmethod
+    def manifest(core_class: object, *, before: object = 10.0, after: object = 12.0) -> dict:
+        """A bench.ps1 manifest's placement and system_load, as far as the gate reads them."""
+        return {
+            "generator": "tools/bench.ps1",
+            "placement": {"core": "performance", "core_class": core_class, "hybrid": True, "logical_cpu": 13, "affinity_mask": "0x2000"},
+            "system_load": {"sample_ms": 500, "before_percent": before, "after_percent": after},
+        }
+
+    # #3112: the same code, one run on efficiency cores, came out 2-3x slower everywhere.
+    E_CORE_BASELINE = {"BM_Format_ChooseByteUnit": 0.9, "BM_ChartWidgets_ComputeAlpha": 11.1, "BM_PerCoreSparklines": 272000.0}
+    P_CORE_CURRENT = {"BM_Format_ChooseByteUnit": 0.5, "BM_ChartWidgets_ComputeAlpha": 4.4, "BM_PerCoreSparklines": 108000.0}
+
+    def test_different_core_classes_are_refused(self):
+        cases = {
+            "pinned to different classes": (0, 1),
+            "unpinned baseline, pinned current": ("any", 1),
+            "pinned baseline, unpinned current": (1, "any"),
+        }
+        for label, (base_class, cur_class) in cases.items():
+            with self.subTest(label):
+                # Slower in the current run: without the check this would be three regressions.
+                code, output = self.run_gate(
+                    self.P_CORE_CURRENT,
+                    self.E_CORE_BASELINE,
+                    baseline_manifest=self.manifest(base_class),
+                    current_manifest=self.manifest(cur_class),
+                )
+                self.assertEqual(code, 2, output)
+                self.assertIn("different core classes", output)
+                self.assertIn("--allow-core-class-mismatch", output)
+                self.assertNotIn("Regressions", output)
+
+    def test_the_flag_compares_different_core_classes_with_a_warning(self):
+        code, output = self.run_gate(
+            self.P_CORE_CURRENT,
+            self.E_CORE_BASELINE,
+            "--allow-core-class-mismatch",
+            baseline_manifest=self.manifest(1),
+            current_manifest=self.manifest(0),
+        )
+        self.assertEqual(code, 1, output)  # compared: the E-core run's slowdowns are regressions
+        self.assertIn("WARNING: the runs used different core classes", output)
+        self.assertIn("baseline run was pinned to EfficiencyClass 1 and the current run pinned to EfficiencyClass 0", output)
+        self.assertIn("Core placement: MISMATCH", output)
+
+    def test_the_same_core_class_is_compared(self):
+        for core_class in (1, "any"):
+            with self.subTest(core_class=core_class):
+                code, output = self.run_gate(
+                    {"BM_X": 100.0},
+                    {"BM_X": 101.0},
+                    baseline_manifest=self.manifest(core_class),
+                    current_manifest=self.manifest(core_class),
+                )
+                self.assertEqual(code, 0, output)
+                self.assertIn("Core placement: both runs", output)
+
+    def test_runs_without_a_core_class_are_not_checked(self):
+        # The committed baselines have no manifest; bench.sh's manifests have no placement.
+        no_placement = {"generator": "tools/bench.sh", "machine": {"label": "x"}}
+        cases = {
+            "no manifests": (None, None, "baseline and current runs"),
+            "baseline without a manifest": (None, self.manifest(1), "baseline run)"),
+            "current without placement": (self.manifest(0), no_placement, "current run)"),
+        }
+        for label, (base_manifest, cur_manifest, missing) in cases.items():
+            with self.subTest(label):
+                code, output = self.run_gate(
+                    {"BM_X": 100.0}, {"BM_X": 100.0}, baseline_manifest=base_manifest, current_manifest=cur_manifest
+                )
+                self.assertEqual(code, 0, output)
+                self.assertIn(f"Core placement: not checked (no core class recorded for the {missing}", output)
+
+    def test_explicit_manifests_are_used(self):
+        mismatched = self.run_gate(
+            {"BM_X": 100.0},
+            {"BM_X": 100.0},
+            "--baseline-manifest",
+            "{tmp}/b.manifest.json",
+            "--current-manifest",
+            "{tmp}/c.manifest.json",
+        )
+        # Named but missing: a usage error, not a skipped check.
+        self.assertEqual(mismatched[0], 2, mismatched[1])
+        self.assertIn("baseline manifest not found", mismatched[1])
+        # A named manifest wins over the sidecar: the sidecars differ (0 and 1), but the baseline
+        # is read from the current run's manifest, so both say 1.
+        code, output = self.run_gate(
+            {"BM_X": 100.0},
+            {"BM_X": 100.0},
+            "--baseline-manifest",
+            "{tmp}/current.manifest.json",
+            baseline_manifest=self.manifest(0),
+            current_manifest=self.manifest(1),
+        )
+        self.assertEqual(code, 0, output)
+        self.assertIn("Core placement: both runs pinned to EfficiencyClass 1", output)
+
+    def test_an_invalid_manifest_is_a_usage_error(self):
+        cases = {
+            "not JSON": "{",
+            "not an object": "[]",
+            "placement not an object": {"placement": "fast"},
+            "no core class": {"placement": {"core": "performance"}},
+            "bool core class": {"placement": {"core_class": True}},
+            "negative core class": {"placement": {"core_class": -1}},
+            "string core class": {"placement": {"core_class": "1"}},
+        }
+        for label, manifest in cases.items():
+            with self.subTest(label):
+                code, output = self.run_gate({"BM_X": 100.0}, {"BM_X": 100.0}, current_manifest=manifest)
+                self.assertEqual(code, 2, output)
+                self.assertIn("invalid current manifest", output)
+
+    def test_the_system_load_is_reported(self):
+        code, output = self.run_gate(
+            {"BM_X": 100.0},
+            {"BM_X": 100.0},
+            baseline_manifest=self.manifest(1, before=7.0, after=63.5),
+            current_manifest=self.manifest(1, before=38.0, after=None),
+        )
+        self.assertEqual(code, 0, output)
+        self.assertIn("System CPU load, baseline run: 7.0% before, 63.5% after", output)
+        self.assertIn("System CPU load, current run: 38.0% before, unknown after", output)
 
 
 if __name__ == "__main__":

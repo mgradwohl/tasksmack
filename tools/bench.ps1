@@ -19,6 +19,11 @@
     the exit code. An extra --benchmark_out or --benchmark_out_format argument is refused with exit
     code 2 before the benchmark starts.
 
+    On a hybrid CPU the run is pinned to one performance core by default (-Core). The system CPU
+    load is sampled for 500 ms just before and just after the run and recorded in the manifest;
+    the TASKSMACK_BENCH_LOAD_SAMPLE_MS environment variable changes the sample length (the script
+    tests shorten it).
+
     Compare a run against a baseline with tools/check-benchmark-regression.py.
 .PARAMETER Preset
     The CMake preset whose build holds the benchmark binary. Defaults to win-benchmark.
@@ -31,6 +36,16 @@
 .PARAMETER OutputDirectory
     Overrides perf-data/. Defaults to the TASKSMACK_BENCH_OUT_DIR environment variable when it is
     set, as in bench.sh.
+.PARAMETER Core
+    Which cores the benchmark runs on (#3163). "performance" pins the benchmark process, and every
+    process it starts, to one logical CPU of the highest EfficiencyClass, never logical CPU 0 (it
+    takes most interrupts) unless nothing else is left. "any" leaves placement to the scheduler.
+    Defaults to "performance" on a hybrid CPU (cores of more than one EfficiencyClass), where a
+    whole run can otherwise land on efficiency cores and come out 2-3x slower, and to "any"
+    elsewhere; on a CPU with one class "performance" changes nothing. The classes are read with
+    GetLogicalProcessorInformationEx; where that fails the run is not pinned and a warning says
+    so. The manifest records the choice, the affinity mask and the system CPU load just before
+    and after the run.
 .PARAMETER ExtraArgs
     Arguments passed to the benchmark binary (e.g. --benchmark_filter=Foo). A "--" separator before
     them works when the script is called from PowerShell (& tools/bench.ps1 win-benchmark -- ...),
@@ -39,6 +54,8 @@
     pwsh tools/bench.ps1
 .EXAMPLE
     pwsh tools/bench.ps1 win-benchmark --benchmark_filter=ProcessModel
+.EXAMPLE
+    pwsh tools/bench.ps1 win-benchmark -Core any --benchmark_filter=ProcessModel
 .EXAMPLE
     python tools/check-benchmark-regression.py --baseline perf-data/win-baseline.json --current perf-data/win-benchmark-<timestamp>.json
 #>
@@ -52,6 +69,10 @@ param(
     [string]$BenchmarkBinary = $env:TASKSMACK_BENCH_BIN,
 
     [string]$OutputDirectory = $env:TASKSMACK_BENCH_OUT_DIR,
+
+    # No default here: unset means "performance on a hybrid CPU, any elsewhere" (Select-BenchCore).
+    [ValidateSet('performance', 'any')]
+    [string]$Core,
 
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$ExtraArgs = @()
@@ -478,6 +499,226 @@ function Get-MachineLabel {
     return "$cpu / $($Machine.logical_cores) logical cores / $($Machine.os_name) $($Machine.os_version)".TrimEnd()
 }
 
+# Core placement and system load (#3163). On a hybrid CPU a whole run can land on efficiency cores
+# and come out 2-3x slower on every benchmark, pure arithmetic included; pinned to one performance
+# core the same comparison agreed within about 10%. The two Win32 calls are compiled on first use,
+# not when the script starts, and only on Windows.
+$script:BenchNativeSource = @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+
+namespace TaskSmackBench
+{
+    public static class Native
+    {
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool GetLogicalProcessorInformationEx(int relationship, IntPtr buffer, ref uint length);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool GetSystemTimes(out long idle, out long kernel, out long user);
+
+        // The raw SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX records for RelationProcessorCore (0), one per
+        // physical core; ConvertFrom-ProcessorCoreBuffer reads them.
+        public static byte[] ProcessorCores()
+        {
+            const int relationProcessorCore = 0;
+            const int errorInsufficientBuffer = 122;
+            uint length = 0;
+            if (GetLogicalProcessorInformationEx(relationProcessorCore, IntPtr.Zero, ref length)) return new byte[0];
+            int error = Marshal.GetLastWin32Error();
+            if (error != errorInsufficientBuffer) throw new Win32Exception(error);
+            IntPtr buffer = Marshal.AllocHGlobal((int)length);
+            try
+            {
+                if (!GetLogicalProcessorInformationEx(relationProcessorCore, buffer, ref length)) throw new Win32Exception(Marshal.GetLastWin32Error());
+                byte[] bytes = new byte[length];
+                Marshal.Copy(buffer, bytes, 0, (int)length);
+                return bytes;
+            }
+            finally { Marshal.FreeHGlobal(buffer); }
+        }
+
+        // Idle, kernel (idle included) and user time of all CPUs, in 100 ns units.
+        public static long[] SystemTimes()
+        {
+            long idle, kernel, user;
+            if (!GetSystemTimes(out idle, out kernel, out user)) throw new Win32Exception(Marshal.GetLastWin32Error());
+            return new long[] { idle, kernel, user };
+        }
+    }
+}
+'@
+
+# How long each system-load sample lasts, just before and just after the run. The script tests
+# shorten it with TASKSMACK_BENCH_LOAD_SAMPLE_MS.
+$script:LoadSampleMilliseconds = 500
+
+function Initialize-BenchNative {
+    if (-not ('TaskSmackBench.Native' -as [type])) { Add-Type -TypeDefinition $script:BenchNativeSource }
+}
+
+function ConvertFrom-ProcessorCoreBuffer {
+    # The physical cores in a GetLogicalProcessorInformationEx(RelationProcessorCore) buffer: each
+    # one's EfficiencyClass (higher is faster), processor group and logical processor numbers in
+    # that group. A record is SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX: Relationship (4 bytes), Size
+    # (4), then PROCESSOR_RELATIONSHIP: Flags (1), EfficiencyClass (1), Reserved (20), GroupCount
+    # (2), and GROUP_AFFINITY entries from byte 32 (a pointer-sized Mask, then the WORD Group). A
+    # core never spans groups, so its first entry holds all of it. Records of other kinds are
+    # skipped by their Size. Throws on a truncated or malformed buffer.
+    param([byte[]]$Buffer, [int]$PointerSize = [IntPtr]::Size)
+    $cores = [System.Collections.Generic.List[object]]::new()
+    $offset = 0
+    while ($offset -lt $Buffer.Length) {
+        if ($offset + 8 -gt $Buffer.Length) { throw "Truncated processor information at byte $offset" }
+        $relationship = [BitConverter]::ToInt32($Buffer, $offset)
+        $size = [BitConverter]::ToInt32($Buffer, $offset + 4)
+        if ($size -lt 8 -or $offset + $size -gt $Buffer.Length) { throw "Malformed processor information at byte $offset (size $size)" }
+        if ($relationship -eq 0) {
+            if ($size -lt 32 + $PointerSize + 2) { throw "Processor core record at byte $offset is too short (size $size)" }
+            $maskAt = $offset + 32
+            if ([BitConverter]::ToUInt16($Buffer, $offset + 30) -ge 1) {
+                $mask = if ($PointerSize -eq 8) { [BitConverter]::ToUInt64($Buffer, $maskAt) } else { [uint64][BitConverter]::ToUInt32($Buffer, $maskAt) }
+                $processors = [int[]]@(for ($bit = 0; $bit -lt $PointerSize * 8; $bit++) { if (($mask -band ([uint64]1 -shl $bit)) -ne 0) { $bit } })
+                $cores.Add([pscustomobject]@{
+                        EfficiencyClass = [int]$Buffer[$offset + 9]
+                        Group           = [int][BitConverter]::ToUInt16($Buffer, $maskAt + $PointerSize)
+                        Processors      = $processors
+                    })
+            }
+        }
+        $offset += $size
+    }
+    return , $cores.ToArray()
+}
+
+function Get-ProcessorCores {
+    # This machine's physical cores (ConvertFrom-ProcessorCoreBuffer), or $null where they cannot
+    # be read: outside Windows, or when the call or the compile fails.
+    if (-not $IsWindows) { return $null }
+    try {
+        Initialize-BenchNative
+        return , (ConvertFrom-ProcessorCoreBuffer ([TaskSmackBench.Native]::ProcessorCores()))
+    }
+    catch {
+        Write-Verbose "Reading the processor cores failed: $_"
+        return $null
+    }
+}
+
+function ConvertFrom-AffinityPointer {
+    # A Process.ProcessorAffinity value as an unsigned mask.
+    param([IntPtr]$Pointer)
+    $mask = [BitConverter]::ToUInt64([BitConverter]::GetBytes($Pointer.ToInt64()), 0)
+    if ([IntPtr]::Size -eq 4) { $mask = $mask -band [uint64][uint32]::MaxValue }
+    return $mask
+}
+
+function ConvertTo-AffinityPointer {
+    param([uint64]$Mask)
+    return [IntPtr][BitConverter]::ToInt64([BitConverter]::GetBytes($Mask), 0)
+}
+
+function Get-ProcessAffinityMask {
+    # The logical CPUs this process may run on (its processor group's mask), or $null.
+    try { return ConvertFrom-AffinityPointer ([System.Diagnostics.Process]::GetCurrentProcess().ProcessorAffinity) }
+    catch {
+        Write-Verbose "Reading the process affinity failed: $_"
+        return $null
+    }
+}
+
+function Format-AffinityMask {
+    param($Mask)
+    if ($null -eq $Mask) { return $null }
+    return '0x{0:x}' -f [uint64]$Mask
+}
+
+function Select-BenchCore {
+    # Where the run goes (#3163), from the physical cores (ConvertFrom-ProcessorCoreBuffer's
+    # shape, or $null when they could not be read), the -Core choice ('' when not given) and the
+    # CPUs this process may use. Returns:
+    #  - Core: the mode asked for, or the default: "performance" on a hybrid CPU (more than one
+    #    EfficiencyClass), "any" otherwise;
+    #  - CoreClass: the EfficiencyClass of the pinned CPU, or "any" when the run is not pinned;
+    #  - Hybrid: $true / $false, or $null when the cores are unknown;
+    #  - LogicalCpu and Mask: the logical CPU to pin to and its affinity mask, or $null for none;
+    #  - Warning: why "performance" could not pin, or $null.
+    # "performance" takes a logical CPU of the highest EfficiencyClass in processor group 0
+    # (Process.ProcessorAffinity sets the process's primary group, which is group 0 on any machine
+    # with 64 logical CPUs or fewer), preferring a core that does not hold logical CPU 0,
+    # which takes most interrupts (an SMT sibling of CPU 0 shares its core), then any CPU but 0,
+    # and CPU 0 only when it is the last one left; among those, the highest-numbered. On a CPU of
+    # one class it changes nothing.
+    param([AllowNull()][object[]]$Cores, [AllowEmptyString()][string]$Requested, [AllowNull()]$AllowedMask)
+    $known = $null -ne $Cores -and $Cores.Count -gt 0
+    $hybrid = if ($known) { @($Cores | ForEach-Object { $_.EfficiencyClass } | Sort-Object -Unique).Count -gt 1 } else { $null }
+    $mode = if ($Requested) { $Requested } elseif ($hybrid) { 'performance' } else { 'any' }
+    $choice = [pscustomobject]@{ Core = $mode; CoreClass = 'any'; Hybrid = $hybrid; LogicalCpu = $null; Mask = $null; Warning = $null }
+    if ($mode -ne 'performance') {
+        if (-not $known -and -not $Requested) { $choice.Warning = 'The processor cores could not be read, so the run is not pinned (-Core any). On a hybrid CPU it may land on efficiency cores.' }
+        return $choice
+    }
+    if (-not $known) {
+        $choice.Warning = 'The processor cores could not be read, so -Core performance does nothing and the run is not pinned.'
+        return $choice
+    }
+    if (-not $hybrid) { return $choice }
+    $allowed = if ($null -eq $AllowedMask) { [uint64]::MaxValue } else { [uint64]$AllowedMask }
+    $usable = { param([int]$Cpu) $Cpu -lt 64 -and ($allowed -band ([uint64]1 -shl $Cpu)) -ne 0 }
+    $top = [int]($Cores | Measure-Object -Property EfficiencyClass -Maximum).Maximum
+    $topCores = @($Cores | Where-Object { $_.EfficiencyClass -eq $top -and $_.Group -eq 0 })
+    $apart = @($topCores | Where-Object { $_.Processors -notcontains 0 } | ForEach-Object { $_.Processors } | Where-Object { & $usable $_ })
+    $notZero = @($topCores | ForEach-Object { $_.Processors } | Where-Object { $_ -ne 0 -and (& $usable $_) })
+    $any = @($topCores | ForEach-Object { $_.Processors } | Where-Object { & $usable $_ })
+    $candidates = @(if ($apart.Count) { $apart } elseif ($notZero.Count) { $notZero } else { $any })
+    if (-not $candidates.Count) {
+        $choice.Warning = "No logical CPU of EfficiencyClass $top is in this process's affinity (processor group 0), so the run is not pinned."
+        return $choice
+    }
+    $cpu = [int]($candidates | Measure-Object -Maximum).Maximum
+    $choice.CoreClass = $top
+    $choice.LogicalCpu = $cpu
+    $choice.Mask = [uint64]1 -shl $cpu
+    return $choice
+}
+
+function Get-CpuLoadPercent {
+    # The busy share of all CPUs between two GetSystemTimes samples (idle, kernel, user; kernel
+    # time includes idle time), 0-100 to one decimal, or $null when no time passed.
+    param([long[]]$Before, [long[]]$After)
+    $idle = $After[0] - $Before[0]
+    $total = ($After[1] - $Before[1]) + ($After[2] - $Before[2])
+    if ($total -le 0) { return $null }
+    return [math]::Round([math]::Min(100.0, [math]::Max(0.0, 100.0 * ($total - $idle) / $total)), 1)
+}
+
+function Measure-SystemCpuLoad {
+    # The system CPU load over the next $Milliseconds, or $null outside Windows or on a failure.
+    param([int]$Milliseconds = $script:LoadSampleMilliseconds)
+    if (-not $IsWindows) { return $null }
+    try {
+        Initialize-BenchNative
+        $before = [TaskSmackBench.Native]::SystemTimes()
+        Start-Sleep -Milliseconds $Milliseconds
+        return Get-CpuLoadPercent $before ([TaskSmackBench.Native]::SystemTimes())
+    }
+    catch {
+        Write-Verbose "Sampling the system CPU load failed: $_"
+        return $null
+    }
+}
+
+function Get-PlacementDescription {
+    # The console line for a run's placement.
+    param($Choice, $Mask)
+    $where = if ($null -ne $Choice.LogicalCpu) { "logical CPU $($Choice.LogicalCpu) (EfficiencyClass $($Choice.CoreClass))" }
+    elseif ($Choice.Hybrid -eq $false) { 'any (not a hybrid CPU)' }
+    else { 'any (not pinned)' }
+    $affinity = if ($null -ne $Mask) { ", affinity $(Format-AffinityMask $Mask)" } else { '' }
+    return "Cores: -Core $($Choice.Core) -> $where$affinity"
+}
+
 # Manifest fields the identity pass leaves alone (#1445 review): validated, categorical values
 # that cannot carry a user or host name but can coincide with one (a host named "Linux", a user
 # named "clang"), and the flag hashes. Every other string is free-form input and is scrubbed: the
@@ -494,7 +735,8 @@ $script:IdentityExempt = @(
     'binary.sha256',
     'build.generator', 'build.compiler_id', 'build.compiler_version', 'build.ipo', 'build.ipo_source', 'build.cxx_flags_sha256', 'build.cxx_flags_config_sha256', 'build.cxx_flags_source',
     'benchmark.raw_repetitions', 'benchmark.report_aggregates_only',
-    'machine.label', 'machine.logical_cores', 'machine.os_name', 'machine.os_version', 'machine.arch'
+    'machine.label', 'machine.logical_cores', 'machine.os_name', 'machine.os_version', 'machine.arch',
+    'placement.core', 'placement.core_class', 'placement.affinity_mask'
 )
 
 function Hide-ManifestIdentity {
@@ -581,6 +823,22 @@ function New-BenchManifest {
             report_aggregates_only = $aggregatesOnly
         }
         machine        = Get-MachineClass
+        # Where the run went (#3163): the -Core mode, the pinned CPU's EfficiencyClass ("any" when
+        # not pinned), whether the CPU is hybrid, the logical CPU and the affinity mask it ran with.
+        placement      = [ordered]@{
+            core          = $coreChoice.Core
+            core_class    = $coreChoice.CoreClass
+            hybrid        = $coreChoice.Hybrid
+            logical_cpu   = $coreChoice.LogicalCpu
+            affinity_mask = Format-AffinityMask $runMask
+        }
+        # The system CPU load just before and just after the run, each over sample_ms: pinning does
+        # not help a run that shares the machine with a build (#3163). Filled in around the launch.
+        system_load    = [ordered]@{
+            sample_ms      = $loadSampleMs
+            before_percent = $null
+            after_percent  = $null
+        }
     }
     return Hide-ManifestIdentity $manifest
 }
@@ -638,32 +896,81 @@ $benchArgs = @(
 
 Write-Host "Running benchmarks (preset=$Preset) -> $outFile"
 Write-Host "Binary: $benchBin"
-Write-Host ""
+
+# Core placement (#3163): on a hybrid CPU the run is pinned to one performance core by default.
+# This process is pinned only around the launch, so the benchmark and anything it starts inherit
+# the affinity while the script's own work (git, hashing, the manifest) is not confined to one
+# core, and its affinity is put back afterwards (it may be an interactive session that ran
+# `& bench.ps1`). A failure to pin is a warning and an unpinned run, recorded as such.
+$loadSampleMs = $script:LoadSampleMilliseconds
+if ($env:TASKSMACK_BENCH_LOAD_SAMPLE_MS -match '^[0-9]+$') { $loadSampleMs = [int]$env:TASKSMACK_BENCH_LOAD_SAMPLE_MS }
+$processMask = Get-ProcessAffinityMask
+$coreChoice = Select-BenchCore -Cores (Get-ProcessorCores) -Requested $Core -AllowedMask $processMask
+$runMask = if ($null -ne $coreChoice.Mask) { $coreChoice.Mask } else { $processMask }
 
 # Provenance is captured before the benchmark starts (#1445 review): git state, build
 # configuration and the binary's hash describe what was launched, even if the checkout, the build
-# or the binary changes during the run. Only the exit code is added afterwards. The manifest is
-# finalized before the result is redacted. A manifest failure is held until the result has been
-# redacted, then fails the script. Kept in step with bench.sh.
+# or the binary changes during the run. Only the exit code and the load after the run are added
+# afterwards. The manifest is finalized before the result is redacted. A manifest failure is held
+# until the result has been redacted, then fails the script. Kept in step with bench.sh.
 $manifestError = $null
 $manifest = $null
 try {
     $manifest = New-BenchManifest
-    Save-BenchManifest $manifest
+    # Sampled last before the launch (#3163).
+    $manifest.system_load.before_percent = Measure-SystemCpuLoad $loadSampleMs
 }
 catch { $manifestError = $_ }
 
-& $benchBin @benchArgs
-# $ErrorActionPreference does not cover a native command's exit code (#1423): read it explicitly.
-$benchExit = $LASTEXITCODE
-if ($null -eq $benchExit) { $benchExit = 0 }
+$savedAffinity = $null
+try {
+    if ($null -ne $coreChoice.Mask) {
+        try {
+            $self = [System.Diagnostics.Process]::GetCurrentProcess()
+            $original = $self.ProcessorAffinity
+            $self.ProcessorAffinity = ConvertTo-AffinityPointer $coreChoice.Mask
+            $savedAffinity = $original
+        }
+        catch {
+            $coreChoice.Warning = "Pinning to logical CPU $($coreChoice.LogicalCpu) failed, so the run is not pinned: $_"
+            $coreChoice.CoreClass = 'any'
+            $coreChoice.LogicalCpu = $null
+            $coreChoice.Mask = $null
+            $runMask = $processMask
+            if ($null -ne $manifest) {
+                $manifest.placement.core_class = 'any'
+                $manifest.placement.logical_cpu = $null
+                $manifest.placement.affinity_mask = Format-AffinityMask $runMask
+            }
+        }
+    }
+    if ($coreChoice.Warning) { Write-Warning $coreChoice.Warning }
+    Write-Host (Get-PlacementDescription $coreChoice $runMask)
+    Write-Host ""
+    if ($null -ne $manifest -and -not $manifestError) {
+        try { Save-BenchManifest $manifest }
+        catch { $manifestError = $_ }
+    }
+
+    & $benchBin @benchArgs
+    # $ErrorActionPreference does not cover a native command's exit code (#1423): read it explicitly.
+    $benchExit = $LASTEXITCODE
+    if ($null -eq $benchExit) { $benchExit = 0 }
+}
+finally {
+    if ($null -ne $savedAffinity) { [System.Diagnostics.Process]::GetCurrentProcess().ProcessorAffinity = $savedAffinity }
+}
 
 if ($null -ne $manifest -and -not $manifestError) {
     try {
         $manifest.exit_code = $benchExit
+        $manifest.system_load.after_percent = Measure-SystemCpuLoad $loadSampleMs
         Save-BenchManifest $manifest
     }
     catch { $manifestError = $_ }
+}
+if ($null -ne $manifest -and $null -ne $manifest.system_load.before_percent) {
+    Write-Host "System CPU load: $($manifest.system_load.before_percent)% before the run, $($manifest.system_load.after_percent)% after"
 }
 
 if ($benchExit -ne 0) {
