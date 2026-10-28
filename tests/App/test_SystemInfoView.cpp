@@ -3375,5 +3375,135 @@ TEST_F(SystemInfoViewRenderTest, MountPointNamingTheUserDrawsRedactedUntilIdenti
     EXPECT_TRUE(shown.contains("/media/alice/USB")) << shown;
 }
 
+// --- #3221: the arms of the section builders' choices that no test above takes ---------------------
+
+TEST(SystemInfoSectionsTest, PagingRowsForAListThatIsntReadOrHasUnnamedFiles)
+{
+    Platform::CommitPagingInfo windows;
+    windows.family = Platform::OsFamily::Windows;
+    windows.pageSizeBytes = 1000; // not a whole number of KiB
+    const Section unread = SystemInfo::buildCommitPagingSection(windows);
+    ASSERT_NE(findRow(unread, "Page files"), nullptr);
+    EXPECT_EQ(findRow(unread, "Page files")->unavailableReason, "The page file list couldn't be read");
+    ASSERT_NE(findRow(unread, "Page size"), nullptr);
+    EXPECT_EQ(findRow(unread, "Page size")->value, SystemInfo::formatMemoryCapacity(1000));
+
+    windows.pageFilesRead = true;
+    windows.pageFiles = {Platform::PageFile{.path = {}, .kind = {}, .sizeBytes = 1, .usedBytes = 0, .peakBytes = 0, .priority = 0}};
+    const Section unnamed = SystemInfo::buildCommitPagingSection(windows); // findRow points into it
+    EXPECT_NE(findRow(unnamed, "Page file 1"), nullptr);
+
+    Platform::CommitPagingInfo swapInfo;
+    swapInfo.family = Platform::OsFamily::Linux;
+    swapInfo.pageFilesRead = true;
+    swapInfo.pageFiles = {Platform::PageFile{.path = {}, .kind = {}, .sizeBytes = 1, .usedBytes = 0, .peakBytes = 0, .priority = 5}};
+    swapInfo.hugePagesRead = true; // none reserved, of no reported size
+    const Section swap = SystemInfo::buildCommitPagingSection(swapInfo);
+    ASSERT_NE(findRow(swap, "Swap device 1"), nullptr);
+    EXPECT_TRUE(findRow(swap, "Swap device 1")->value.ends_with(", priority 5")) << "no kind before the priority";
+    ASSERT_NE(findRow(swap, "Huge pages"), nullptr);
+    EXPECT_EQ(findRow(swap, "Huge pages")->value, "None reserved");
+
+    const std::string uncompressed =
+        SystemInfo::formatZramDevice({.name = "zram0", .originalBytes = 1024, .compressedBytes = 0, .memoryUsedBytes = 0});
+    EXPECT_TRUE(uncompressed.contains("stored in")) << uncompressed;
+    EXPECT_FALSE(uncompressed.contains(":1)")) << "no ratio without a compressed size";
+}
+
+TEST(SystemInfoSectionsTest, ADomainAndTheAuthenticateRowsOnlyWhereSomethingNeedsAdmin)
+{
+    Platform::OsInfo os = windowsOs();
+    os.joinedToDomain = true;
+    const Section joined = SystemInfo::buildOsSection(os, 1'700'000'000); // findRow points into it
+    const Row* domain = findRow(joined, "Domain");
+    ASSERT_NE(domain, nullptr);
+    EXPECT_TRUE(domain->isIdentifier);
+
+    Platform::FirmwareInfo firmware;
+    firmware.smbiosVersionNeedsAdmin = true; // the identifiers themselves are readable
+    const Section versionNeedsAdmin = SystemInfo::buildFirmwareSection(firmware, true);
+    EXPECT_NE(findRow(versionNeedsAdmin, "Readable by root only"), nullptr);
+    firmware.smbiosVersionNeedsAdmin = false;
+    const Section readable = SystemInfo::buildFirmwareSection(firmware, true);
+    EXPECT_EQ(findRow(readable, "Readable by root only"), nullptr);
+
+    const Platform::MemoryModulesInfo memory; // its table is readable
+    const Section modules = SystemInfo::buildMemorySection(memory, true);
+    EXPECT_EQ(findRow(modules, "Readable by root only"), nullptr);
+}
+
+TEST(SystemInfoSectionsTest, VolumesAndAdaptersThatArentListedOrHaveNoSize)
+{
+    Platform::Volume sized;
+    sized.mountPoint = "/data";
+    sized.fileSystem = "ext4";
+    sized.sizeRead = true; // read, but zero bytes: no share of it is used
+    EXPECT_FALSE(SystemInfo::formatVolume(sized).contains("free of")) << SystemInfo::formatVolume(sized);
+
+    Platform::StorageInfo storage;
+    storage.family = Platform::OsFamily::Windows;
+    const Section drives = SystemInfo::buildStorageSection(storage); // findRow points into it
+    const Row* volumes = findRow(drives, "Volumes");
+    ASSERT_NE(volumes, nullptr);
+    EXPECT_EQ(volumes->unavailableReason, "GetLogicalDriveStringsW failed");
+
+    Platform::GraphicsInfo graphics;
+    graphics.family = Platform::OsFamily::Windows;
+    const Section unlisted = SystemInfo::buildGraphicsSection(graphics, {});
+    const Row* unread = findRow(unlisted, "GPU");
+    ASSERT_NE(unread, nullptr);
+    EXPECT_EQ(unread->unavailableReason, "A DXGI factory couldn't be created");
+    graphics.adaptersRead = true;
+    const Section noAdapters = SystemInfo::buildGraphicsSection(graphics, {});
+    const Row* none = findRow(noAdapters, "GPU");
+    ASSERT_NE(none, nullptr);
+    EXPECT_EQ(none->value, "None found");
+}
+
+TEST(SystemInfoSectionsTest, ADisplayWithoutAModeOrScaleAndAMonitorWithoutAHeightOrDepth)
+{
+    Core::DisplayInfo display;
+    display.name = "Display 1";
+    Platform::Monitor monitor;
+    monitor.widthMm = 600; // no height: no physical size
+    monitor.colorSpace = "BT.2020 PQ";
+    monitor.hdr = true; // and no bit depth
+    EXPECT_EQ(SystemInfo::formatDisplay(display, &monitor), "Display 1, HDR (BT.2020 PQ)");
+}
+
+TEST(SystemInfoSectionsTest, BootRowsWithoutAReasonOrATotal)
+{
+    const Section notRead = SystemInfo::buildBootPerformanceSection({}); // findRow points into it
+    const Row* unread = findRow(notRead, "Last boot");
+    ASSERT_NE(unread, nullptr);
+    EXPECT_FALSE(unread->available());
+    EXPECT_FALSE(unread->unavailableReason.empty()) << "the general reason, with none of the probe's";
+
+    Platform::BootPerformanceInfo linuxBoot;
+    linuxBoot.timingsRead = true;
+    linuxBoot.finished = true; // but no total measured
+    linuxBoot.family = Platform::OsFamily::Linux;
+    const Section linuxSection = SystemInfo::buildBootPerformanceSection(linuxBoot);
+    const Row* total = findRow(linuxSection, "Last boot");
+    ASSERT_NE(total, nullptr);
+    EXPECT_FALSE(total->available());
+
+    Platform::BootPerformanceInfo windows;
+    windows.timingsRead = true;
+    windows.family = Platform::OsFamily::Windows;
+    const Section windowsSection = SystemInfo::buildBootPerformanceSection(windows);
+    const Row* windowsTotal = findRow(windowsSection, "Last boot");
+    ASSERT_NE(windowsTotal, nullptr);
+    EXPECT_FALSE(windowsTotal->available());
+}
+
+TEST(SystemInfoSectionsTest, ReportPathsWithoutAFolderOrWithADotOnlyInTheFolder)
+{
+    EXPECT_EQ(SystemInfo::withReportExtension("report", SystemInfo::ReportFormat::Json), "report.json");
+    EXPECT_EQ(SystemInfo::withReportExtension("my.reports/report", SystemInfo::ReportFormat::Text), "my.reports/report.txt");
+    EXPECT_EQ(SystemInfo::numberedReportPath("report.txt", 2), "report (2).txt");
+    EXPECT_EQ(SystemInfo::numberedReportPath("report", 3), "report (3)");
+}
+
 } // namespace
 } // namespace App
