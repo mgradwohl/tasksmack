@@ -41,6 +41,10 @@ void claimNavigationKeys(unsigned int ownerId, bool treeView);
 /// from the filter box, where it selects the typed text.
 [[nodiscard]] bool pollSelectAll();
 
+/// Whether / (or the keypad's /) was pressed this frame with no modifier: the Processes table's
+/// incremental search (#3097). Does not repeat. Call only while tableNavigationArmed(), as pollSelectAll().
+[[nodiscard]] bool pollIncrementalSearch();
+
 /// The height of the current table's scrolling area below its frozen header, for
 /// ProcessTableNavigation::pageStep(). Call inside the table; 0 outside one.
 [[nodiscard]] float tableScrollViewHeight();

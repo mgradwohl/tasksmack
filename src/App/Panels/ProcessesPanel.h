@@ -578,6 +578,19 @@ class ProcessesPanel : public Panel
 
     // Search/filter state - using std::string for dynamic sizing
     std::string m_SearchBuffer;
+    // "/" incremental search (#3097): the Find box beside the filter, what it holds, and the jump it asked
+    // for this frame, applied with the keyboard's moves once the visible order is known.
+    enum class IncrementalSearchStep : std::uint8_t
+    {
+        None,
+        Refine, ///< The text changed: the first match from the selected row, itself included
+        Next,   ///< Enter: the match after the selected row
+    };
+    bool m_IncrementalSearchOpen = false;
+    bool m_IncrementalSearchFocus = false;
+    bool m_IncrementalSearchMissed = false; ///< The last jump found no row
+    std::string m_IncrementalSearchText;
+    IncrementalSearchStep m_IncrementalSearchStep = IncrementalSearchStep::None;
 
     // Tree view state
     bool m_TreeViewEnabled = false;
@@ -876,6 +889,9 @@ class ProcessesPanel : public Panel
     void renderAffinityDialog();
     /// Run new task (#3065): the dialog while open, and the program it asks for started on the row action worker.
     void renderRunTaskDialog();
+    /// "/" (#3097): the Find box beside the filter while it is open; what is typed, and Enter, ask
+    /// applyKeyboardInput() to jump to the matching row.
+    void renderIncrementalSearchBox();
 
     /// The confirmation dialog for a row-menu action, and the action once confirmed.
     void renderRowActionConfirm();
