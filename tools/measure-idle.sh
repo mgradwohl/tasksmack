@@ -40,7 +40,9 @@
 # the two time ranges are visible instead of assumed equal. They differ by up to one summary
 # interval at each end. Percentiles are the worst of those summaries (each summary's p95/p99 is
 # over a rolling window of up to 200 samples, which also reaches back before the span when the
-# warm-up is short); max is the largest per-interval max among them.
+# warm-up is short); max is the largest per-interval max among them. A summary of a window that
+# drew no frame (frames=0 loopIntervals=0, as when the window is minimized) is left out of the
+# frame and loop figures, which read n/a (null in the JSON) when no summary drew one (#3210).
 #
 # Options:
 #   --preset <preset>     CMake preset whose bin/TaskSmack is measured. Default: profile.
@@ -532,31 +534,12 @@ run_once() {
 
     # ResizePerf summaries logged while sampling → fps, frame p95/p99/max, loop p95/p99.
     local frame_stats summaries fps frame_p95 frame_p99 frame_max loop_p95 loop_p99
-    frame_stats="$(sed -n "$((log_start_line + 1)),${log_end_line}p" "${APP_LOG}" | awk '
-        /ResizePerf\[/ {
-            lines++
-            for (i = 1; i <= NF; i++) {
-                # loopIntervals=N precedes "loop avg/..." on the line: N weights that avg.
-                if ($i ~ /^loopIntervals=/) { pending = substr($i, 15) + 0; intervals += pending }
-                if ($i ~ /^avg\/p95\/p99\/max=/ && i > 1 && ($(i - 1) == "frame" || $(i - 1) == "loop")) {
-                    split(substr($i, index($i, "=") + 1), v, "/")
-                    if ($(i - 1) == "frame") {
-                        if (v[2] > fp95) fp95 = v[2]; if (v[3] > fp99) fp99 = v[3]; if (v[4] > fmax) fmax = v[4]
-                    } else {
-                        loopms += v[1] * pending
-                        if (v[2] > lp95) lp95 = v[2]; if (v[3] > lp99) lp99 = v[3]
-                    }
-                }
-            }
-        }
-        END {
-            fps = (loopms > 0) ? intervals * 1000 / loopms : 0
-            printf "%d %.2f %.3f %.3f %.3f %.3f %.3f\n", lines, fps, fp95, fp99, fmax, lp95, lp99
-        }
-    ')"
+    # A window that drew no frame (minimized) is left out of the frame and loop figures, which read
+    # n/a when no summary drew one (#3210); resize-perf-summary.awk says how.
+    frame_stats="$(sed -n "$((log_start_line + 1)),${log_end_line}p" "${APP_LOG}" | awk -f "${SCRIPT_DIR}/resize-perf-summary.awk")"
     read -r summaries fps frame_p95 frame_p99 frame_max loop_p95 loop_p99 <<<"${frame_stats}"
     if [[ "${summaries}" -eq 0 ]]; then
-        echo "WARNING: no ResizePerf summaries were logged while sampling (they are logged every 5 s at idle); frame figures are 0." >&2
+        echo "WARNING: no ResizePerf summaries were logged while sampling (they are logged every 5 s at idle); frame figures are n/a." >&2
     fi
 
     # The span the summaries cover: each periodic summary describes the time since the previous one
@@ -794,9 +777,9 @@ json_str() {
     s="$(printf '%s' "${s}" | tr -d '\000-\037')"
     printf '"%s"' "${s}"
 }
-# A JSON number (or null for an empty value).
+# A JSON number (or null for an empty value, or a figure resize-perf-summary.awk printed as n/a).
 json_num() {
-    if [[ -z "$1" ]]; then printf 'null'; else printf '%s' "$1"; fi
+    if [[ -z "$1" || "$1" == "n/a" ]]; then printf 'null'; else printf '%s' "$1"; fi
 }
 json_stats() { printf '{ "mean": %s, "median": %s, "p95": %s, "min": %s, "max": %s }' "$@"; }
 
@@ -841,7 +824,7 @@ json_stats() { printf '{ "mean": %s, "median": %s, "p95": %s, "min": %s, "max": 
         printf '    {\n'
         printf '      "rep": %s, "totalCpu": %s, "appCpu": %s, "mesaCpu": %s, "fps": %s,\n' "${rep}" "${total}" "${app}" "${mesa}" "${fps}"
         printf '      "frameP95Ms": %s, "frameP99Ms": %s, "frameMaxMs": %s, "loopP95Ms": %s, "loopP99Ms": %s,\n' \
-            "${fp95}" "${fp99}" "${fmax}" "${lp95}" "${lp99}"
+            "$(json_num "${fp95}")" "$(json_num "${fp99}")" "$(json_num "${fmax}")" "$(json_num "${lp95}")" "$(json_num "${lp99}")"
         printf '      "resizePerfSummaries": %s, "cpuStart": %s, "cpuEnd": %s, "traceStart": %s, "traceEnd": %s, "traceSpanSeconds": %s,\n' \
             "${summaries}" "${cstart}" "${cend}" "${tstart}" "${tend}" "${tspan}"
         printf '      "appLog": %s,\n' "$(json_str "${applog#"${REPO_ROOT}"/}")"

@@ -2417,6 +2417,57 @@ TEST_F(ResizePerfOperationTest, SummaryWithoutLoopIntervalsReportsZeroes)
     EXPECT_TRUE(m_Output.str().contains("loopIntervals=0 loop avg/p95/p99/max=0.000/0.000/0.000/0.000 ms")) << m_Output.str();
 }
 
+TEST_F(ResizePerfOperationTest, SummaryOfAWindowWithoutFramesReportsZeroPercentilesNotThePreviousWindows)
+{
+    // #3210: a 5 s window that drew nothing (a minimized app) printed the previous window's loop and
+    // frame p95/p99, from the rolling windows, beside an avg and max of 0.
+    Core::ResizePerfTraceStats stats;
+    for (int i = 1; i <= 40; ++i)
+    {
+        stats.recordEventBatch(1, 0, 2.0, 1.0, false);
+        stats.recordFrame(false, 1.0, 2.0, 3.0, 4.0);
+        stats.recordLoopInterval(64.0);
+    }
+    Core::logResizePerfTraceSummary(stats, "test-drawn");
+    stats.resetIntervalCounters();
+    // The next window only drains events: no frame, so no loop interval.
+    stats.recordEventBatch(1, 0, 3.0, 1.0, false);
+    Core::logResizePerfTraceSummary(stats, "test-empty");
+
+    const auto output = m_Output.str();
+    const auto emptyAt = output.find("ResizePerf[test-empty]:");
+    ASSERT_NE(emptyAt, std::string::npos) << output;
+    const auto drawn = output.substr(0, emptyAt);
+    const auto empty = output.substr(emptyAt);
+    EXPECT_TRUE(drawn.contains("loopIntervals=40 loop avg/p95/p99/max=64.000/64.000/64.000/64.000 ms")) << drawn;
+    EXPECT_TRUE(drawn.contains("frame avg/p95/p99/max=10.000/10.000/10.000/10.000 ms")) << drawn;
+
+    EXPECT_TRUE(empty.contains("frames=0 resizeFrames=0 frame avg/p95/p99/max=0.000/0.000/0.000/0.000 ms")) << empty;
+    EXPECT_TRUE(empty.contains("loopIntervals=0 loop avg/p95/p99/max=0.000/0.000/0.000/0.000 ms")) << empty;
+    EXPECT_TRUE(empty.contains("update avg/p95/p99/max=0.000/0.000/0.000/0.000 ms")) << empty;
+    EXPECT_TRUE(empty.contains("render avg/p95/p99/max=0.000/0.000/0.000/0.000 ms")) << empty;
+    EXPECT_TRUE(empty.contains("post avg/p95/p99/max=0.000/0.000/0.000/0.000 ms")) << empty;
+    EXPECT_TRUE(empty.contains("swap avg/p95/p99/max=0.000/0.000/0.000/0.000 ms")) << empty;
+    // The drain did run this window, so its percentiles still come from the rolling window.
+    EXPECT_TRUE(empty.contains("drain avg/p95/p99/max=3.000/2.000/3.000/3.000 ms")) << empty;
+    // The rolling windows themselves survive the periodic reset, for the next drawn window.
+    EXPECT_EQ(stats.loopIntervalSamplesMs.size(), 40U);
+}
+
+TEST_F(ResizePerfOperationTest, SummaryOfAWindowWithoutEventBatchesReportsZeroDrainPercentiles)
+{
+    Core::ResizePerfTraceStats stats;
+    stats.recordEventBatch(1, 0, 5.0, 1.0, false);
+    stats.recordFrame(false, 1.0, 0.0, 0.0, 0.0);
+    stats.resetIntervalCounters();
+    stats.recordFrame(false, 1.0, 0.0, 0.0, 0.0);
+    Core::logResizePerfTraceSummary(stats, "test-no-drain");
+    const auto output = m_Output.str();
+    EXPECT_TRUE(output.contains("batches=0 ")) << output;
+    EXPECT_TRUE(output.contains("drain avg/p95/p99/max=0.000/0.000/0.000/0.000 ms")) << output;
+    EXPECT_TRUE(output.contains("frame avg/p95/p99/max=1.000/1.000/1.000/1.000 ms")) << output;
+}
+
 TEST_F(ResizePerfOperationTest, SlowVoidOperationReportsCounterBoundsWithoutInventingGpuStatus)
 {
     const auto frequency = SDL_GetPerformanceFrequency();
