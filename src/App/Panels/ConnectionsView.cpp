@@ -8,6 +8,7 @@
 #include "Platform/ISystemConnections.h"
 #include "UI/CellText.h"
 #include "UI/EmptyState.h"
+#include "UI/Format.h"
 #include "UI/FrameOutline.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
@@ -43,6 +44,20 @@ constexpr const char* FILTER_HINT = ICON_FA_FILTER "  Filter by process, address
     return none ? std::string("*") : Domain::Connections::formatEndpoint(family, endpoint);
 }
 
+/// Rates in order, an unknown rate below every known one.
+[[nodiscard]] std::strong_ordering compareRates(bool aKnown, double a, bool bKnown, double b) noexcept
+{
+    if (aKnown != bKnown)
+    {
+        return aKnown ? std::strong_ordering::greater : std::strong_ordering::less;
+    }
+    if (a < b)
+    {
+        return std::strong_ordering::less;
+    }
+    return b < a ? std::strong_ordering::greater : std::strong_ordering::equal;
+}
+
 [[nodiscard]] std::strong_ordering compareOn(ConnectionsColumn column, const ConnectionRow& a, const ConnectionRow& b) noexcept
 {
     const Platform::ProcessConnection& ca = a.connection.connection;
@@ -61,6 +76,10 @@ constexpr const char* FILTER_HINT = ICON_FA_FILTER "  Filter by process, address
         return Domain::Connections::compareEndpoints(ca.family, ca.remote, cb.family, cb.remote);
     case ConnectionsColumn::State:
         return Domain::Connections::stateSortRank(ca.state) <=> Domain::Connections::stateSortRank(cb.state);
+    case ConnectionsColumn::Sent:
+        return compareRates(a.rate.known, a.rate.sentPerSec, b.rate.known, b.rate.sentPerSec);
+    case ConnectionsColumn::Received:
+        return compareRates(a.rate.known, a.rate.receivedPerSec, b.rate.known, b.rate.receivedPerSec);
     }
     return std::strong_ordering::equal;
 }
@@ -162,9 +181,11 @@ std::vector<ConnectionRow> buildConnectionRows(const Domain::ConnectionsPublicat
 {
     std::vector<ConnectionRow> rows;
     rows.reserve(publication.connections.size());
-    for (const Platform::SystemConnection& c : publication.connections)
+    for (std::size_t index = 0; index < publication.connections.size(); ++index)
     {
+        const Platform::SystemConnection& c = publication.connections[index];
         const Platform::ProcessConnection& conn = c.connection;
+        const Domain::ConnectionRate rate = index < publication.rates.size() ? publication.rates[index] : Domain::ConnectionRate{};
         // "Unknown" without a holder; "?" for a holder whose name couldn't be read.
         std::string process = c.processName.empty() ? std::string("?") : c.processName;
         if (c.pid == 0)
@@ -177,7 +198,10 @@ std::vector<ConnectionRow> buildConnectionRows(const Domain::ConnectionsPublicat
                         .protocol = std::string(Domain::Connections::protocolLabel(conn.protocol, conn.family)),
                         .local = endpointText(conn.family, conn.local),
                         .remote = endpointText(conn.family, conn.remote),
-                        .state = std::string(Domain::Connections::stateLabel(conn.protocol, conn.state))});
+                        .state = std::string(Domain::Connections::stateLabel(conn.protocol, conn.state)),
+                        .rate = rate,
+                        .sent = rate.known ? UI::Format::formatBytesPerSec(rate.sentPerSec) : std::string(),
+                        .received = rate.known ? UI::Format::formatBytesPerSec(rate.receivedPerSec) : std::string()});
     }
     return rows;
 }
@@ -216,28 +240,7 @@ orderConnectionRows(const std::vector<ConnectionRow>& rows, std::string_view fil
 
 std::uint64_t selectionKey(const Platform::SystemConnection& connection) noexcept
 {
-    // FNV-1a over the fields that tell one socket from another; a collision only moves a highlight.
-    std::uint64_t hash = 14695981039346656037ULL;
-    const auto mix = [&hash](std::uint64_t value)
-    {
-        for (int i = 0; i < 8; ++i)
-        {
-            hash ^= (value >> (i * 8)) & 0xFFU;
-            hash *= 1099511628211ULL;
-        }
-    };
-    const Platform::ProcessConnection& c = connection.connection;
-    mix(static_cast<std::uint64_t>(c.protocol));
-    mix(static_cast<std::uint64_t>(c.family));
-    for (const Platform::ConnectionEndpoint* endpoint : {&c.local, &c.remote})
-    {
-        for (const std::uint8_t byte : endpoint->address)
-        {
-            mix(byte);
-        }
-        mix(endpoint->port);
-    }
-    return hash;
+    return Domain::Connections::socketKey(connection.connection);
 }
 
 namespace
@@ -305,6 +308,20 @@ renderConnectionRow(const ConnectionRow& row, int i, const UI::ColorScheme& sche
     UI::Widgets::cellText(row.remote);
     ImGui::TableNextColumn();
     UI::Widgets::cellText(row.closed ? std::string("Closed") : row.state);
+    // Sent and received per second (#3079): a dash where the platform has no counters (UDP) or on a socket's
+    // first reading.
+    for (const std::string* rate : {&row.sent, &row.received})
+    {
+        ImGui::TableNextColumn();
+        if (rate->empty())
+        {
+            ImGui::TextDisabled("\xE2\x80\x94");
+        }
+        else
+        {
+            UI::Widgets::cellText(*rate);
+        }
+    }
     if (row.closed)
     {
         ImGui::PopStyleVar();
@@ -356,7 +373,7 @@ renderConnectionsView(const Domain::ConnectionsPublication* publication, bool ha
                                             ImGuiTableFlags_Sortable | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter |
                                             ImGuiTableFlags_BordersV | ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX |
                                             ImGuiTableFlags_SizingFixedFit;
-    if (!ImGui::BeginTable("##ConnectionsTable", 6, TABLE_FLAGS))
+    if (!ImGui::BeginTable("##ConnectionsTable", 8, TABLE_FLAGS))
     {
         return std::nullopt;
     }
@@ -372,6 +389,8 @@ renderConnectionsView(const Domain::ConnectionsPublication* publication, bool ha
     column("Local address", ImGuiTableColumnFlags_None, em * 16.0F, ConnectionsColumn::Local);
     column("Remote address", ImGuiTableColumnFlags_None, em * 16.0F, ConnectionsColumn::Remote);
     column("State", ImGuiTableColumnFlags_None, em * 8.0F, ConnectionsColumn::State);
+    column("Sent/s", ImGuiTableColumnFlags_PreferSortDescending, em * 7.0F, ConnectionsColumn::Sent);
+    column("Received/s", ImGuiTableColumnFlags_PreferSortDescending, em * 7.0F, ConnectionsColumn::Received);
     ImGui::TableHeadersRow();
     if (ImGuiTableSortSpecs* specs = ImGui::TableGetSortSpecs(); specs != nullptr && specs->SpecsDirty)
     {

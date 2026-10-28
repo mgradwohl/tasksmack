@@ -69,6 +69,10 @@ struct RawInetSocket
     std::uint8_t state = 0; ///< include/net/tcp_states.h (TCP_ESTABLISHED = 1 ... TCP_NEW_SYN_RECV = 12)
     ConnectionEndpoint local;
     ConnectionEndpoint remote;
+    // tcp_info's byte counters (#3079): TCP from the netlink dump only, Linux 4.2+; the /proc/net fallback has none.
+    std::uint64_t bytesSent = 0;     ///< tcpi_bytes_acked
+    std::uint64_t bytesReceived = 0; ///< tcpi_bytes_received
+    bool hasByteCounters = false;
 };
 
 /// The platform-neutral state for a kernel TCP state number (include/net/tcp_states.h). UDP uses the

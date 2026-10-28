@@ -24,6 +24,11 @@ struct SystemConnection
     std::int32_t pid = 0;             ///< 0 when no process TaskSmack can see holds it (TIME_WAIT, another user's)
     std::uint64_t startTimeTicks = 0; ///< The holder's start time, with pid its identity; 0 when unknown
     std::string processName;          ///< The holder's name (comm), or empty
+    // The socket's byte counters since it opened (#3079), where the platform has them: TCP on Linux (tcp_info's
+    // bytes_acked and bytes_received). The model turns two readings into rates.
+    std::uint64_t bytesSent = 0;
+    std::uint64_t bytesReceived = 0;
+    bool hasByteCounters = false;
 };
 
 /// What came of one read.
