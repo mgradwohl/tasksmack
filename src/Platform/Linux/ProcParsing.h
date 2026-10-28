@@ -237,6 +237,9 @@ struct StatFields
     std::uint64_t startTime = 0;    ///< (22) starttime, clock ticks after boot
     std::uint64_t virtualBytes = 0; ///< (23) vsize
     std::int64_t rssPages = 0;      ///< (24) rss
+    std::uint32_t rtPriority = 0;   ///< (40) rt_priority: 1-99 under SCHED_FIFO or SCHED_RR, else 0 (#3086)
+    std::uint32_t policy = 0;       ///< (41) policy: SCHED_OTHER 0, FIFO 1, RR 2, BATCH 3, IDLE 5, DEADLINE 6 (#3086)
+    bool hasPolicy = false;         ///< Fields 40 and 41 were on the line (kernel 2.5.19+ always; a short test line not)
 };
 
 namespace Detail
@@ -331,7 +334,32 @@ enum class StatParseExtent : std::uint8_t
     {
         return true;
     }
-    return parseStatNum(p, end, out.virtualBytes) && parseStatNum(p, end, out.rssPages);
+    if (!parseStatNum(p, end, out.virtualBytes) || !parseStatNum(p, end, out.rssPages))
+    {
+        return false;
+    }
+    // Fields 25-39 are stepped over to reach rt_priority (40) and policy (41) (#3086). They are optional:
+    // a line that stops sooner is still a valid reading through rss, with the policy left unknown.
+    std::uint64_t skipped = 0;
+    for (int field = 25; field <= 37; ++field) // rsslim .. cnswap, all unsigned
+    {
+        if (!parseStatNum(p, end, skipped))
+        {
+            return true;
+        }
+    }
+    std::int64_t exitSignal = 0;
+    std::int64_t processor = 0;
+    std::uint32_t rtPriority = 0;
+    std::uint32_t policy = 0;
+    if (parseStatNum(p, end, exitSignal) && parseStatNum(p, end, processor) && parseStatNum(p, end, rtPriority) &&
+        parseStatNum(p, end, policy))
+    {
+        out.rtPriority = rtPriority;
+        out.policy = policy;
+        out.hasPolicy = true;
+    }
+    return true;
 }
 
 } // namespace Detail

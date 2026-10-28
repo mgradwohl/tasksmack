@@ -3,9 +3,11 @@
 #include "App/ProcessColumnConfig.h"
 #include "Domain/PriorityConfig.h"
 #include "Domain/ProcessSnapshot.h"
+#include "Platform/SchedPolicy.h"
 
 #include <algorithm>
 #include <cctype>
+#include <compare>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -148,6 +150,11 @@ compareColumnKey(const Domain::ProcessSnapshot& a, const Domain::ProcessSnapshot
         return compare(a.processType, b.processType);
     case ProcessColumn::Architecture:
         return compare(a.architecture, b.architecture);
+    case ProcessColumn::Policy: // By policy (Idle .. FIFO), then real-time priority (#3086)
+    {
+        const std::strong_ordering order = Platform::compareSchedPolicy(a.schedPolicy, a.rtPriority, b.schedPolicy, b.rtPriority);
+        return ascending ? order < 0 : order > 0;
+    }
     case ProcessColumn::GdiObjects:
         return compare(a.gdiObjectCount, b.gdiObjectCount);
     default:

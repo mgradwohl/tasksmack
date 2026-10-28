@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Platform/CpuAffinity.h"
+#include "Platform/SchedPolicy.h"
 #include "PriorityConfig.h"
 
 #include <cstddef>
@@ -164,6 +165,9 @@ struct ProcessSnapshot
     std::string services;     // Services it runs, comma-joined: "sshd.service", "Dhcp, EventLog" (#1886, #1880)
     std::string processType;  // Process type: "App", "Background Process", "Windows Process" (Windows-only)
     std::string architecture; // Architecture it runs as: "x64", "ARM64", "x64 (emulated)", "x86 (WOW64)" (#2394; empty if unread)
+    Platform::SchedPolicy schedPolicy = Platform::SchedPolicy::Unknown; // Its CPU scheduling policy (#3086)
+    std::uint32_t rtPriority = 0;                                       // Its real-time priority under FIFO or RR
+    std::string schedPolicyText; // Platform::schedPolicyLabel(): "Normal", "FIFO 50"; empty if unread. Built per sample, not per frame
 
     // The services the process runs, by name (#1880): Windows, those the service list gives its PID (in
     // the list's name order); Linux, the systemd unit its cgroup names (#1886). Empty for none, or on
