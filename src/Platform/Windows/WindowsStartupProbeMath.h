@@ -93,8 +93,10 @@ struct ApprovedKey
     case StartupLocation::RunOnceUser:
     case StartupLocation::RunOnceMachine:
     case StartupLocation::PackagedApp:
-    case StartupLocation::XdgAutostartUser: // Linux's (#2541)
+    case StartupLocation::XdgAutostartUser: // Linux's (#2541, #3082)
     case StartupLocation::XdgAutostartSystem:
+    case StartupLocation::SystemdUserUnit:
+    case StartupLocation::SystemdSystemUnit:
         break;
     }
     return std::nullopt;
@@ -274,8 +276,10 @@ startupDisplayName(std::string_view fileDescription, std::string_view executable
     case StartupLocation::StartupFolderUser:
     case StartupLocation::StartupFolderCommon:
     case StartupLocation::PackagedApp:
-    case StartupLocation::XdgAutostartUser: // Linux's (#2541)
+    case StartupLocation::XdgAutostartUser: // Linux's (#2541, #3082)
     case StartupLocation::XdgAutostartSystem:
+    case StartupLocation::SystemdUserUnit:
+    case StartupLocation::SystemdSystemUnit:
         break;
     }
     return std::string(programName);

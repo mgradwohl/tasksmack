@@ -23,6 +23,8 @@ enum class StartupLocation : std::uint8_t
     XdgAutostartUser,    ///< Linux: a file in ~/.config/autostart only (#2541)
     XdgAutostartSystem,  ///< Linux: a file in /etc/xdg/autostart (or another $XDG_CONFIG_DIRS), which the
                          ///< user's copy of the same name, when there is one, switches
+    SystemdUserUnit,     ///< Linux: a .service or .timer enabled in ~/.config/systemd/user (#3082)
+    SystemdSystemUnit,   ///< Linux: a user .service or .timer enabled for every user, in /etc/systemd/user (#3082)
 };
 
 /// Whether an entry starts for the current user only or for every user of the machine.
