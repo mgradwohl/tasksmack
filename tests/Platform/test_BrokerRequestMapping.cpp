@@ -131,6 +131,18 @@ TEST(BrokerRequestMappingTest, EfficiencyModeReachesItsAction)
     EXPECT_EQ(refused.errorMessage, "Process 4242 is a critical system process");
 }
 
+// #3066: a CloseConnection request reaches closeConnection() with its target and socket inode.
+TEST(BrokerRequestMappingTest, CloseConnectionReachesItsAction)
+{
+    TestMocks::MockProcessActions actions;
+    const Broker::Response response =
+        BrokerServer::handleRequest(Broker::CloseConnectionRequest{.target = TARGET, .socketInode = 81234}, actions);
+    EXPECT_TRUE(actionResult(response).success);
+    EXPECT_EQ(actions.closeConnectionCount(), 1);
+    EXPECT_EQ(actions.lastSocketInode(), 81234U);
+    EXPECT_EQ(actions.lastTarget(), TARGET);
+}
+
 TEST(BrokerRequestMappingTest, AFailedActionCarriesItsMessage)
 {
     TestMocks::MockProcessActions actions;

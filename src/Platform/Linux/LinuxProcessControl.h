@@ -59,6 +59,14 @@ struct LinuxProcessSyscalls
     /// manager took it. Left null, the real call is made (none without sd-bus, which is a false); tests
     /// fake it so no file manager opens. LinuxProcessActions only (#3064).
     bool (*showItemInFileManager)(const std::string& uri) = nullptr;
+    /// Close connection (#3066): pidfd_getfd(pidfd, targetFd, 0), a copy of the process's descriptor in this
+    /// process; ENOSYS before Linux 5.6. Left null, the real call is made.
+    int (*pidfdGetfd)(int pidfd, int targetFd) = nullptr;
+    /// shutdown(fd, SHUT_RDWR). Left null, the real call is made.
+    int (*shutdownSocket)(int fd) = nullptr;
+    /// The descriptor under /proc/<pid>/fd that is "socket:[inode]", or the errno that stopped the search (ENOENT
+    /// when none is; EACCES for another user's process). Left null, the real /proc is read.
+    std::expected<int, int> (*socketDescriptor)(std::int32_t pid, std::uint64_t inode) = nullptr;
 };
 
 /// The real system calls.
@@ -99,6 +107,7 @@ class LinuxProcessControl : public IProcessActions
     [[nodiscard]] ProcessActionResult stop(const ProcessTarget& target) override;
     [[nodiscard]] ProcessActionResult resume(const ProcessTarget& target) override;
     [[nodiscard]] ProcessActionResult sendSignal(const ProcessTarget& target, ProcessSignal signal) override;
+    [[nodiscard]] ProcessActionResult closeConnection(const ProcessTarget& target, std::uint64_t socketInode) override;
     [[nodiscard]] ProcessActionResult setPriority(const ProcessTarget& target, int32_t nice) override;
     [[nodiscard]] ProcessActionResult setIoPriority(const ProcessTarget& target, IoPriorityClass ioClass, int32_t level) override;
     [[nodiscard]] IoPriorityReadResult getIoPriority(const ProcessTarget& target) override;

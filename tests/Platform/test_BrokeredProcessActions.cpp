@@ -741,6 +741,24 @@ TEST(BrokeredProcessActionsTest, EfficiencyModeRefusedInProcessIsRetriedThroughT
               (Broker::Request{Broker::EfficiencyModeRequest{.target = TARGET, .on = true}}));
 }
 
+// #3066: closing another user's process's socket, refused in process, is retried through the helper as a
+// CloseConnection request carrying the inode; one closed in process never reaches it.
+TEST(BrokeredProcessActionsTest, CloseConnectionRefusedInProcessIsRetriedThroughTheHelper)
+{
+    Fixture f(/*connected=*/true);
+    EXPECT_TRUE(f.actions->closeConnection(TARGET, 555).success);
+    EXPECT_TRUE(f.broker->requests().empty()) << "closed in process: the helper isn't asked";
+
+    f.inner->setCloseConnectionResult(ProcessActionResult::denied("Operation not permitted"));
+    EXPECT_TRUE(f.actions->closeConnection(TARGET, 556).success);
+    EXPECT_EQ(f.inner->closeConnectionCount(), 2);
+    const std::vector<Broker::Request> requests = f.broker->requests();
+    ASSERT_EQ(requests.size(), 1U);
+    EXPECT_EQ(requests[0], (Broker::Request{Broker::CloseConnectionRequest{.target = TARGET, .socketInode = 556}}));
+    EXPECT_EQ((brokerRequestFor({.kind = AuthorizedAction::Kind::CloseConnection, .target = TARGET, .socketInode = 9})),
+              (Broker::Request{Broker::CloseConnectionRequest{.target = TARGET, .socketInode = 9}}));
+}
+
 // #3071: "Authenticate and retry" after a refused Efficiency mode starts the helper and sends it the change.
 TEST(BrokeredProcessActionsTest, RunAuthorizedTurnsEfficiencyModeOnThroughTheHelper)
 {

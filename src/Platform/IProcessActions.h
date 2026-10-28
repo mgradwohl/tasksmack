@@ -217,11 +217,13 @@ struct AuthorizedAction
         SetAffinity,       ///< cpus
         SendSignal,        ///< signal (#3063)
         SetEfficiencyMode, ///< efficiencyMode (#3071)
+        CloseConnection,   ///< socketInode (#3066)
     };
     Kind kind = Kind::Terminate;
     ProcessTarget target;
     ProcessSignal signal = ProcessSignal::Hangup;
-    bool efficiencyMode = false; ///< SetEfficiencyMode: on (true) or off
+    bool efficiencyMode = false;   ///< SetEfficiencyMode: on (true) or off
+    std::uint64_t socketInode = 0; ///< CloseConnection: the socket, by inode
     std::int32_t nice = 0;
     IoPriorityClass ioClass = IoPriorityClass::BestEffort;
     std::int32_t level = 4;
@@ -276,6 +278,8 @@ struct ProcessActionCapabilities
     /// setEfficiencyMode(): Efficiency mode on or off, as Task Manager's (#3071; Windows: EcoQoS power
     /// throttling and the Idle priority class). False on Linux, where the UI offers no such toggle.
     bool canSetEfficiencyMode = false;
+    /// closeConnection(): shut down one of a process's sockets (#3066; Linux: pidfd_getfd() and shutdown()).
+    bool canCloseConnections = false;
 };
 
 /// Interface for platform-specific process actions.
@@ -435,6 +439,18 @@ class IProcessActions
         static_cast<void>(target);
         static_cast<void>(on);
         return ProcessActionResult::error("Efficiency mode isn't available on this system");
+    }
+
+    /// Shuts down the socket with inode @p socketInode that the process holds (#3066), as Process Explorer's and
+    /// TCPView's Close Connection: both directions, so the peer sees the connection end, and the process gets an
+    /// error on its next use of it. The process's own descriptor stays open. The same identity check as
+    /// terminate(); a socket the process doesn't hold is refused. The default refuses it, matching
+    /// canCloseConnections' default (false).
+    [[nodiscard]] virtual ProcessActionResult closeConnection(const ProcessTarget& target, std::uint64_t socketInode)
+    {
+        static_cast<void>(target);
+        static_cast<void>(socketInode);
+        return ProcessActionResult::error("Closing a connection isn't available on this system");
     }
 
     /// Retries @p request (a signal, priority, I/O priority, affinity or Efficiency mode change) as an administrator,

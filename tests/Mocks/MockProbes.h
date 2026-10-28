@@ -652,6 +652,30 @@ class MockProcessActions : public Platform::IProcessActions
         return m_SendSignalResult;
     }
 
+    void setCloseConnectionResult(Platform::ProcessActionResult result)
+    {
+        m_CloseConnectionResult = std::move(result);
+    }
+
+    /// closeConnection() (#3066): records the target and socket, counts the call, returns the set result.
+    [[nodiscard]] Platform::ProcessActionResult closeConnection(const Platform::ProcessTarget& target, std::uint64_t socketInode) override
+    {
+        m_LastTarget = target;
+        m_LastSocketInode = socketInode;
+        ++m_CloseConnectionCount;
+        return m_CloseConnectionResult;
+    }
+
+    [[nodiscard]] int closeConnectionCount() const
+    {
+        return m_CloseConnectionCount;
+    }
+
+    [[nodiscard]] std::uint64_t lastSocketInode() const
+    {
+        return m_LastSocketInode;
+    }
+
     [[nodiscard]] Platform::ProcessActionResult setEfficiencyMode(const Platform::ProcessTarget& target, bool on) override
     {
         m_LastTarget = target;
@@ -1028,6 +1052,9 @@ class MockProcessActions : public Platform::IProcessActions
     Platform::ProcessSignal m_LastSignal = Platform::ProcessSignal::Hangup;
     Platform::ProcessActionResult m_SendSignalResult = Platform::ProcessActionResult::ok();
     int m_EfficiencyModeCount = 0;
+    int m_CloseConnectionCount = 0;
+    std::uint64_t m_LastSocketInode = 0;
+    Platform::ProcessActionResult m_CloseConnectionResult = Platform::ProcessActionResult::ok();
     bool m_LastEfficiencyMode = false;
     Platform::ProcessActionResult m_EfficiencyModeResult = Platform::ProcessActionResult::ok();
     int m_SetPriorityCount = 0;

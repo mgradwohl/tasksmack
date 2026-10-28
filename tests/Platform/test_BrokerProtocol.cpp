@@ -92,6 +92,15 @@ TEST(BrokerProtocolTest, EfficiencyModeRoundTripsAndRefusesAStrayFlag)
     EXPECT_FALSE(decodeRequest(bytes).has_value());
 }
 
+// #3066: CloseConnection carries its target and the socket's inode, the full 64 bits.
+TEST(BrokerProtocolTest, CloseConnectionRoundTrips)
+{
+    const Request request{CloseConnectionRequest{.target = TARGET, .socketInode = 0xFEDCBA9876543210ULL}};
+    EXPECT_EQ(roundTrip(request), request);
+    const std::vector<std::uint8_t> bytes = encodeRequest(3, request);
+    EXPECT_EQ(Detail::readFrame(bytes).value_or(Detail::Frame{}).kind, MessageKind::CloseConnection);
+}
+
 TEST(BrokerProtocolTest, EveryRequestRoundTrips)
 {
     EXPECT_EQ(roundTrip(Request{Hello{}}), Request{Hello{}});
@@ -818,6 +827,7 @@ TEST(BrokerProtocolTest, TheFuzzCorpusHasADecodableSeedForEveryMessageKind)
                                    MessageKind::SetAffinity,
                                    MessageKind::ServiceAction,
                                    MessageKind::SetEfficiencyMode,
+                                   MessageKind::CloseConnection,
                                    MessageKind::ReadEnvironment,
                                    MessageKind::ReadModules,
                                    MessageKind::ReadOpenFiles,
