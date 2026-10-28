@@ -185,5 +185,90 @@ TEST_F(RunTaskDialogTest, BrowsePutsTheChosenFileInAsOneWord)
     EXPECT_EQ(run.value_or(Platform::RunProgramRequest{}).commandLine, "'/opt/My App/run'");
 }
 
+// #3186: the arrow beside the command line lists the recent commands; picking one fills the line in.
+TEST_F(RunTaskDialogTest, PickingARecentCommandFillsTheLineIn)
+{
+    RunTaskDialog dialog([](const std::function<void(std::string)>&) {});
+    dialog.open({"htop", "foot --title Rescue"}, false);
+    static_cast<void>(frame(dialog));
+    static_cast<void>(frame(dialog)); // the modal is up from its second frame
+    static_cast<void>(press(dialog, "##recentButton"));
+    static_cast<void>(frame(dialog));
+    ImGuiContext& g = *GImGui;
+    ASSERT_GE(g.OpenPopupStack.Size, 2) << "the recent commands didn't open";
+    const ImGuiWindow* recent = g.OpenPopupStack.back().Window;
+    ASSERT_NE(recent, nullptr);
+    ImGui::ActivateItemByID(ImHashStr("foot --title Rescue", 0, recent->ID));
+    static_cast<void>(frame(dialog));
+    static_cast<void>(frame(dialog));
+    for (int i = 0; i < 4; ++i) // the picked command focuses the command line; let it settle
+    {
+        static_cast<void>(frame(dialog));
+    }
+
+    const std::optional<Platform::RunProgramRequest> run = press(dialog, "Run", true);
+    ASSERT_TRUE(run.has_value());
+    EXPECT_EQ(run.value_or(Platform::RunProgramRequest{}).commandLine, "foot --title Rescue");
+}
+
+// #3186: the command line has the keyboard when the dialog opens, and Enter there runs it.
+TEST_F(RunTaskDialogTest, EnterInTheCommandLineRunsIt)
+{
+    RunTaskDialog dialog([](const std::function<void(std::string)>&) {});
+    dialog.open({"htop"}, false);
+    for (int i = 0; i < 3; ++i)
+    {
+        static_cast<void>(frame(dialog));
+    }
+    ImGui::GetIO().AddKeyEvent(ImGuiKey_Enter, true);
+    std::optional<Platform::RunProgramRequest> run = frame(dialog);
+    ImGui::GetIO().AddKeyEvent(ImGuiKey_Enter, false);
+    for (int i = 0; i < 3 && !run.has_value(); ++i)
+    {
+        run = frame(dialog);
+    }
+    ASSERT_TRUE(run.has_value());
+    EXPECT_EQ(run.value_or(Platform::RunProgramRequest{}).commandLine, "htop");
+    static_cast<void>(frame(dialog));
+    EXPECT_FALSE(dialog.isOpen());
+}
+
+// #3186: Escape closes the dialog without running anything (the first one leaves the command line, which
+// has the keyboard when the dialog opens).
+TEST_F(RunTaskDialogTest, EscapeClosesWithoutRunning)
+{
+    RunTaskDialog dialog([](const std::function<void(std::string)>&) {});
+    dialog.open({"htop"}, false);
+    for (int i = 0; i < 3; ++i)
+    {
+        static_cast<void>(frame(dialog));
+    }
+    ASSERT_TRUE(dialog.isOpen());
+    for (int press = 0; press < 2 && dialog.isOpen(); ++press)
+    {
+        ImGui::GetIO().AddKeyEvent(ImGuiKey_Escape, true);
+        EXPECT_FALSE(frame(dialog).has_value());
+        ImGui::GetIO().AddKeyEvent(ImGuiKey_Escape, false);
+        EXPECT_FALSE(frame(dialog).has_value());
+    }
+    static_cast<void>(frame(dialog));
+    EXPECT_FALSE(dialog.isOpen());
+}
+
+// #3186: the app's own Browse... with no Application (a headless run) chooses nothing, and the command
+// line keeps what it had.
+TEST_F(RunTaskDialogTest, TheAppsBrowseChoosesNothingWithoutAWindow)
+{
+    RunTaskDialog dialog;
+    dialog.open({"htop"}, false);
+    static_cast<void>(frame(dialog));
+    static_cast<void>(frame(dialog));
+    static_cast<void>(press(dialog, ICON_FA_FOLDER_OPEN " Browse..."));
+    static_cast<void>(frame(dialog));
+    const std::optional<Platform::RunProgramRequest> run = press(dialog, "Run", true);
+    ASSERT_TRUE(run.has_value());
+    EXPECT_EQ(run.value_or(Platform::RunProgramRequest{}).commandLine, "htop");
+}
+
 } // namespace
 } // namespace App

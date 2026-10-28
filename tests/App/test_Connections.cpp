@@ -19,8 +19,10 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace App
@@ -134,6 +136,10 @@ TEST(ConnectionsViewTest, FilterMatchesProcessPidAddressOrStateAndSortOrders)
     EXPECT_EQ(rows[byLocal.front()].local, "0.0.0.0:5353"); // numerically first
     const std::vector<std::size_t> byPidDescending = orderConnectionRows(rows, "", ConnectionsColumn::Pid, false);
     EXPECT_EQ(rows[byPidDescending.front()].pid, "300");
+    // #3186: the other columns sort too.
+    EXPECT_EQ(rows[orderConnectionRows(rows, "", ConnectionsColumn::Protocol, false).front()].protocol, "UDP");
+    EXPECT_EQ(rows[orderConnectionRows(rows, "", ConnectionsColumn::Remote, false).front()].remote, "142.250.80.46:443");
+    EXPECT_EQ(rows[orderConnectionRows(rows, "", ConnectionsColumn::State, true).front()].state, "ESTABLISHED");
 }
 
 TEST(ConnectionsViewTest, ASocketKeepsItsSelectionKeyAcrossReads)
@@ -145,6 +151,56 @@ TEST(ConnectionsViewTest, ASocketKeepsItsSelectionKeyAcrossReads)
 }
 
 // ---- The panel, on display -------------------------------------------------------------------------
+
+/// Reads back the sockets it was given, or a failure with @p detail when that is set.
+class ListReader final : public Platform::ISystemConnectionsReader
+{
+  public:
+    explicit ListReader(std::vector<SystemConnection> sockets, std::string failure = {})
+        : m_Sockets(std::move(sockets)), m_Failure(std::move(failure))
+    {}
+    [[nodiscard]] bool hasConnections() const override
+    {
+        return true;
+    }
+    [[nodiscard]] Platform::SystemConnectionsRead read() override
+    {
+        if (!m_Failure.empty())
+        {
+            return {.status = Platform::SystemConnectionsStatus::Failed, .connections = {}, .detail = m_Failure};
+        }
+        return {.status = Platform::SystemConnectionsStatus::Ok, .connections = m_Sockets, .detail = {}};
+    }
+
+  private:
+    std::vector<SystemConnection> m_Sockets;
+    std::string m_Failure;
+};
+
+// #3186: a model needs a reader.
+TEST(ConnectionsModelTest, ANullReaderIsRefused)
+{
+    EXPECT_THROW(Domain::ConnectionsModel(nullptr), std::invalid_argument);
+}
+
+// #3186: one holder name's sockets order by PID, then protocol, then local endpoint.
+TEST(ConnectionsModelTest, SameNameSocketsOrderByPidProtocolThenLocalEndpoint)
+{
+    Domain::ConnectionsModel model(std::make_unique<ListReader>(std::vector<SystemConnection>{
+        socket(9, "svc", ConnectionProtocol::Tcp, {10, 0, 0, 1}, 80, {0, 0, 0, 0}, 0, ConnectionState::Listen),
+        socket(3, "svc", ConnectionProtocol::Udp, {10, 0, 0, 1}, 53, {0, 0, 0, 0}, 0, ConnectionState::Unknown),
+        socket(3, "svc", ConnectionProtocol::Tcp, {10, 0, 0, 2}, 22, {0, 0, 0, 0}, 0, ConnectionState::Listen),
+        socket(3, "svc", ConnectionProtocol::Tcp, {10, 0, 0, 1}, 22, {0, 0, 0, 0}, 0, ConnectionState::Listen)}));
+    model.sample();
+    const auto pub = model.publication();
+    ASSERT_EQ(pub->connections.size(), 4U);
+    EXPECT_EQ(pub->connections[0].pid, 3);
+    EXPECT_EQ(pub->connections[0].connection.protocol, ConnectionProtocol::Tcp);
+    EXPECT_EQ(pub->connections[0].connection.local.address[3], 1);
+    EXPECT_EQ(pub->connections[1].connection.local.address[3], 2);
+    EXPECT_EQ(pub->connections[2].connection.protocol, ConnectionProtocol::Udp);
+    EXPECT_EQ(pub->connections[3].pid, 9);
+}
 
 class ConnectionsPanelRenderTest : public ::testing::Test
 {
@@ -262,6 +318,66 @@ TEST_F(ConnectionsPanelRenderTest, AnUnsupportedReaderSaysSoAndNeverSamples)
     EXPECT_TRUE(frame(panel).contains("Connections aren't available"));
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     EXPECT_EQ(reads->load(), 0);
+    panel.onDetach();
+}
+
+// #3186: a failed read says so with the kernel's message; a new refresh rate, and showing the tab again,
+// reach the running sampler; a double-click asks for Process Details.
+TEST_F(ConnectionsPanelRenderTest, AFailedReadSaysWhyAndADoubleClickShowsDetails)
+{
+    ConnectionsPanel failing([] { return std::make_unique<ListReader>(std::vector<SystemConnection>{}, "Permission denied"); },
+                             [](Core::Event&) {});
+    failing.onAttach();
+    show(failing, "Connections");
+    const std::string failed = frameUntil(failing, "couldn't be read");
+    EXPECT_TRUE(failed.contains("Connections couldn't be read")) << failed;
+    EXPECT_TRUE(failed.contains("Permission denied")) << failed;
+    failing.onDetach();
+
+    auto reads = std::make_shared<std::atomic<int>>(0);
+    int detailsShown = 0;
+    ConnectionsPanel panel([reads] { return std::make_unique<FakeReader>(reads); },
+                           [&detailsShown](Core::Event& event)
+                           {
+                               if (dynamic_cast<Core::ShowProcessDetailsEvent*>(&event) != nullptr)
+                               {
+                                   ++detailsShown;
+                               }
+                           });
+    panel.onAttach();
+    show(panel, "Connections");
+    static_cast<void>(frameUntil(panel, "firefox"));
+    Core::RefreshRateChangedEvent faster(250);
+    panel.onEvent(faster);
+
+    // Hidden, then shown again: the running sampler reads at once.
+    show(panel, "Processes");
+    static_cast<void>(frame(panel));
+    const int before = reads->load();
+    show(panel, "Connections");
+    const auto giveUp = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (reads->load() == before && std::chrono::steady_clock::now() < giveUp)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    EXPECT_GT(reads->load(), before);
+
+    ImVec2 row(-1.0F, -1.0F);
+    static_cast<void>(frame(panel, &row));
+    ASSERT_GT(row.y, 0.0F);
+    ImGuiIO& io = ImGui::GetIO();
+    io.AddMousePosEvent(row.x, row.y);
+    static_cast<void>(frame(panel));
+    for (int click = 0; click < 2; ++click)
+    {
+        io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
+        static_cast<void>(frame(panel));
+        io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
+        static_cast<void>(frame(panel));
+    }
+    io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
+    static_cast<void>(frame(panel));
+    EXPECT_GE(detailsShown, 1);
     panel.onDetach();
 }
 

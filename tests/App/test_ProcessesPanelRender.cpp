@@ -2791,5 +2791,63 @@ TEST_F(ProcessesPanelRenderTest, GroupByContainerShowsHeadersWithTotalsAndCollap
     panel->onDetach(); // TearDown restores the settings
 }
 
+// #3186: the Group control picks a mode (leaving Tree view, which grouping replaces); the keyboard and
+// Ctrl+A walk the grouped rows; a header clicked twice collapses its group and opens it again.
+TEST_F(ProcessesPanelRenderTest, TheGroupControlLeavesTreeViewAndGroupedRowsNavigate)
+{
+    SelectionSink events;
+    const auto panel = attachedPanel(events.sink());
+    renderUntilLoaded(*panel);
+    const ImGuiWindow* shell = ImGui::FindWindowByName("Shell");
+    ASSERT_NE(shell, nullptr);
+    ImGui::ActivateItemByID(ImHashStr(ICON_FA_SITEMAP " Tree", 0, shell->ID));
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+
+    ImGui::ActivateItemByID(ImHashStr("##GroupBy", 0, shell->ID));
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    pressPopupItem(*panel, "Unit");
+    std::string text = renderAndCapture(*panel);
+    EXPECT_EQ(UserConfig::get().settings().processGroupBy, ProcessGrouping::GroupBy::Unit);
+    EXPECT_TRUE(text.contains("Group: Unit")) << text;
+    EXPECT_TRUE(text.contains("Ungrouped (3)")) << text; // none of the mock processes has a unit
+
+    // The keyboard moves through the processes under the headers, and Ctrl+A selects all of them.
+    pressKey(*panel, ImGuiKey_DownArrow);
+    ASSERT_FALSE(events.selected.empty());
+    pressKey(*panel, ImGuiKey_DownArrow);
+    EXPECT_EQ(events.selected.size(), 2U);
+    selectAll(*panel);
+    EXPECT_EQ(panel->selectionCount(), 3U);
+
+    // The header row, clicked once, collapses its group; clicked again, opens it.
+    const ImGuiTable* table = nullptr;
+    for (int i = 0; i < GImGui->Tables.GetMapSize(); ++i)
+    {
+        if (const ImGuiTable* t = GImGui->Tables.TryGetMapData(i); t != nullptr && t->ColumnsCount >= 5)
+        {
+            table = t;
+        }
+    }
+    ASSERT_NE(table, nullptr);
+    const float rowHeight = ImGui::GetTextLineHeight() + (ImGui::GetStyle().CellPadding.y * 2.0F);
+    const ImVec2 header((table->Columns[1].MinX + table->Columns[1].MaxX) * 0.5F, table->OuterRect.Min.y + (rowHeight * 1.5F));
+    ImGuiIO& io = ImGui::GetIO();
+    for (const bool open : {false, true})
+    {
+        io.AddMousePosEvent(header.x, header.y);
+        static_cast<void>(renderAndCapture(*panel));
+        io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
+        static_cast<void>(renderAndCapture(*panel));
+        io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
+        static_cast<void>(renderAndCapture(*panel));
+        io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
+        text = renderAndCapture(*panel);
+        EXPECT_EQ(text.contains("worker"), open) << text;
+    }
+    panel->onDetach(); // TearDown restores the settings
+}
+
 } // namespace
 } // namespace App

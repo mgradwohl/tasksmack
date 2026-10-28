@@ -8,7 +8,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace App
@@ -108,6 +110,73 @@ TEST(ProcessGroupingTest, ConfigValuesRoundTrip)
         EXPECT_EQ(ProcessGrouping::groupByFromConfig(ProcessGrouping::groupByConfigValue(mode)), mode);
     }
     EXPECT_EQ(ProcessGrouping::groupByFromConfig("bogus"), GroupBy::None);
+}
+
+// #3186: every summable column reads its own total, and the rest have none.
+TEST(ProcessGroupingTest, EverySummableColumnHasItsTotal)
+{
+    ProcessGrouping::Totals t;
+    t.cpuPercent = 1.0;
+    t.memoryPercent = 2.0;
+    t.resident = 3;
+    t.privateBytes = 4;
+    t.swap = 5;
+    t.threads = 6;
+    t.handles = 7;
+    t.cpuTimeSeconds = 8.0;
+    t.ioRead = 9.0;
+    t.ioWrite = 10.0;
+    t.netSent = 11.0;
+    t.netReceived = 12.0;
+    t.powerWatts = 13.0;
+    t.gpuPercent = 14.0;
+    t.gpuMemory = 15;
+    t.npuPercent = 16.0;
+    t.npuMemory = 17;
+    const std::vector<std::pair<ProcessColumn, double>> expected{
+        {ProcessColumn::CpuPercent, 1.0},
+        {ProcessColumn::MemPercent, 2.0},
+        {ProcessColumn::Resident, 3.0},
+        {ProcessColumn::Private, 4.0},
+        {ProcessColumn::Swap, 5.0},
+        {ProcessColumn::Threads, 6.0},
+        {ProcessColumn::Handles, 7.0},
+        {ProcessColumn::CpuTime, 8.0},
+        {ProcessColumn::IoRead, 9.0},
+        {ProcessColumn::IoWrite, 10.0},
+        {ProcessColumn::NetSent, 11.0},
+        {ProcessColumn::NetReceived, 12.0},
+        {ProcessColumn::Power, 13.0},
+        {ProcessColumn::GpuPercent, 14.0},
+        {ProcessColumn::GpuMemory, 15.0},
+        {ProcessColumn::NpuPercent, 16.0},
+        {ProcessColumn::NpuMemory, 17.0},
+    };
+    for (const auto& [column, value] : expected)
+    {
+        const std::optional<double> total = ProcessGrouping::totalFor(t, column);
+        ASSERT_TRUE(total.has_value()) << static_cast<int>(column);
+        EXPECT_DOUBLE_EQ(total.value_or(0.0), value) << static_cast<int>(column);
+    }
+    EXPECT_FALSE(ProcessGrouping::totalFor(t, ProcessColumn::Name).has_value());
+    EXPECT_FALSE(ProcessGrouping::totalFor(t, ProcessColumn::Virtual).has_value());
+}
+
+// #3186: the Group control's labels, a unit that isn't an app's, and an index past the snapshots.
+TEST(ProcessGroupingTest, LabelsNonAppUnitsAndStaleIndices)
+{
+    EXPECT_EQ(ProcessGrouping::groupByLabel(GroupBy::None), "None");
+    EXPECT_EQ(ProcessGrouping::groupByLabel(GroupBy::Unit), "Unit");
+    EXPECT_EQ(ProcessGrouping::groupByLabel(GroupBy::Container), "Container");
+    EXPECT_EQ(ProcessGrouping::groupByLabel(GroupBy::App), "App");
+    EXPECT_EQ(ProcessGrouping::appFromUnit("app-gnome-firefox-4521.slice"), "");
+    EXPECT_EQ(ProcessGrouping::appFromUnit("sshd.service"), "");
+
+    const std::vector<Domain::ProcessSnapshot> snapshots{proc("nginx", "", "docker:1", 1.0, 10)};
+    const std::vector<ProcessGrouping::Group> groups =
+        ProcessGrouping::buildGroups(snapshots, {0, 7}, GroupBy::Container, snapshots.size(), ProcessColumn::CpuPercent, false);
+    ASSERT_EQ(groups.size(), 1U);
+    EXPECT_EQ(groups[0].members, (std::vector<std::size_t>{0}));
 }
 
 } // namespace
