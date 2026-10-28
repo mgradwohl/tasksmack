@@ -38,12 +38,13 @@ struct StartupImpactTotals
     {
         path.remove_suffix(1);
     }
-    for (const std::string_view prefix : {std::string_view{"\\\\?\\"}, std::string_view{"\\??\\"}})
+    for (const std::string_view prefix : {std::string_view{R"(\\?\)"}, std::string_view{R"(\??\)"}})
     {
         if (path.starts_with(prefix))
         {
             path.remove_prefix(prefix.size());
-            if (path.size() > 4 && equalsIgnoreCase(path.substr(0, 4), "UNC\\"))
+            // A slice, not substr(): substr's out-of-range throw would escape this noexcept function.
+            if (path.size() > 4 && equalsIgnoreCase(std::string_view{path.begin(), path.begin() + 4}, R"(UNC\)"))
             {
                 path.remove_prefix(3); // "UNC\server\..." -> "\server\..."
             }
