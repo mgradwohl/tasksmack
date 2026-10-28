@@ -2,6 +2,8 @@
 
 #include "ISamplable.h"
 #include "Platform/ThreadName.h"
+#include "SamplingConfig.h"
+#include "TimingHistogram.h"
 
 #include <atomic>
 #include <chrono>
@@ -50,6 +52,10 @@ struct SamplerConfig
     /// UI thread's STA where every later call would marshal through the UI's message loop (#2731).
     /// Elsewhere nothing. Off for samplers whose probes bring their own apartment (a ComScope).
     bool multiThreadedApartment = false;
+
+    /// How often the sampler thread logs its timing summary while it runs, at debug level, after a
+    /// pass (#3153); it logs one more at stop(). The tests shorten it.
+    std::chrono::milliseconds timingSummaryPeriod{Sampling::SAMPLER_TIMING_SUMMARY_PERIOD_MS};
 };
 
 /// How long samples take, for one samplable or for a whole sampling pass (#1416).
@@ -60,6 +66,9 @@ struct SampleTiming
     std::chrono::microseconds maxDuration{0};  ///< The slowest sample since start()
     std::uint64_t samples = 0;                 ///< Samples timed since start()
     std::uint64_t overruns = 0;                ///< Samples that took longer than the sampling interval
+    /// Every sample's duration since start(): count, mean and percentiles in fixed memory (#3153)
+    // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
+    TimingHistogram histogram{};
 };
 
 /// A BackgroundSampler's timing since start(): per samplable and per pass (#1416).
@@ -69,6 +78,11 @@ struct SamplerMetrics
     std::vector<SampleTiming> samplables; ///< In addSamplable() order
     std::uint64_t backoffs = 0;           ///< Passes that overran the interval, so the next waited longer (see nextSampleTime())
 };
+
+/// The timing summary a sampler logs (#3153): the sampler's name (its thread name), the event ("stopped",
+/// "running"), the passes and backoffs, then the pass and each samplable as
+/// `name n=.. mean=.. p50=.. p95=.. max=.. overruns=..`, durations in microseconds.
+[[nodiscard]] std::string formatTimingSummary(std::string_view sampler, std::string_view event, const SamplerMetrics& metrics);
 
 /// When the pass after one that started at `passStart` and took `passDuration` should start (#1416).
 ///
@@ -122,7 +136,9 @@ class BackgroundSampler
     void setInterval(std::chrono::milliseconds interval);
 
     /// Sample durations and overruns since start() (thread-safe copy; #1416). The same figures the
-    /// stop summary logs; read by the tests that check the pass timing and the overrun backoff.
+    /// timing summary logs (#3153); read by the tests that check the pass timing and the overrun backoff.
+    /// Every pass also publishes the pass timing to SamplerTimingBoard::global(), which is what a
+    /// debug surface reads.
     [[nodiscard]] SamplerMetrics metrics() const;
 
   private:
@@ -150,11 +166,12 @@ class BackgroundSampler
     /// Runs the owner's start hook (SamplerConfig::onThreadStart), if any, on the sampler thread before
     /// its first pass, timing it and containing what it throws (#2731). Never throws.
     static void runStartHook(const std::function<void()>& hook, std::string_view threadName) noexcept;
-    void samplerLoop(const std::stop_token& stopToken);
+    void samplerLoop(const std::stop_token& stopToken, std::string_view name);
     /// One sampling pass: every samplable's sample() (each failure caught and logged), then the pass's
     /// metrics. Throws (std::bad_alloc) only from the pass's own bookkeeping, which samplerLoop()
     /// contains (#2317). `samplePass` false: the pass samples nothing and only waits.
     [[nodiscard]] PassTiming runPass(const std::stop_token& stopToken,
+                                     std::string_view name,
                                      bool samplePass,
                                      std::chrono::steady_clock::time_point startTime,
                                      ExceptionLogThrottle& exceptionLog);
@@ -162,11 +179,17 @@ class BackgroundSampler
     /// the catch handlers that keep exceptions from escaping the thread (#2317).
     static void
     logLoopException(std::string_view message, std::chrono::steady_clock::time_point now, ExceptionLogThrottle& throttle) noexcept;
-    /// stop()'s debug summary line. Never throws (stop() runs from the destructor), and does nothing
-    /// unless debug logging is on.
+    /// stop()'s timing summary, named by the sampler's thread (#3153). Never throws (stop() runs from
+    /// the destructor), and does nothing unless debug logging is on.
     void logStopSummary() const noexcept;
-    /// Fold one pass's timings into m_Metrics, and log a sustained overrun (rate-limited).
-    void recordPass(const std::vector<Entry>& entries,
+    /// The timing summary (formatTimingSummary()) for sampler `name`, at debug level: from stop() and
+    /// every timingSummaryPeriod from the sampler thread. Never throws (stop() runs from the
+    /// destructor), and does nothing unless debug logging is on.
+    void logTimingSummary(std::string_view name, std::string_view event) const noexcept;
+    /// Fold one pass's timings into m_Metrics, publish the pass timing to the board, log the periodic
+    /// timing summary when it is due, and log a sustained overrun (rate-limited).
+    void recordPass(std::string_view name,
+                    const std::vector<Entry>& entries,
                     const std::vector<std::optional<std::chrono::steady_clock::duration>>& durations,
                     std::chrono::steady_clock::duration passDuration,
                     std::chrono::milliseconds interval,
@@ -186,9 +209,11 @@ class BackgroundSampler
     bool m_IntervalChanged = false;
 
     mutable std::mutex m_MetricsMutex;
-    SamplerMetrics m_Metrics;                                   // guarded by m_MetricsMutex
-    std::chrono::steady_clock::time_point m_NextOverrunLogTime; // sampler thread only
-    std::uint64_t m_OverrunsSinceLog = 0;                       // sampler thread only
+    SamplerMetrics m_Metrics;                                      // guarded by m_MetricsMutex
+    std::chrono::steady_clock::time_point m_NextOverrunLogTime;    // sampler thread only
+    std::uint64_t m_OverrunsSinceLog = 0;                          // sampler thread only
+    std::chrono::steady_clock::time_point m_NextTimingSummaryTime; // sampler thread only
+    std::chrono::milliseconds m_TimingSummaryPeriod{0};            // sampler thread only
 };
 
 } // namespace Domain

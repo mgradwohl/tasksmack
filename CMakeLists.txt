@@ -217,6 +217,7 @@ set(TASKSMACK_SOURCES
     src/Domain/ProcessModel.cpp
     src/Domain/ProcessRowHistory.cpp
     src/Domain/BackgroundSampler.cpp
+    src/Domain/SamplerTimingBoard.cpp # per-sampler pass timing for the Render Metrics overlay (#3153)
     src/Domain/SystemModel.cpp
     src/Domain/StorageModel.cpp
     src/Domain/GPUModel.cpp
