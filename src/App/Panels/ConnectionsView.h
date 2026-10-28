@@ -65,7 +65,7 @@ orderConnectionRows(const std::vector<ConnectionRow>& rows, std::string_view fil
 /// making, a peer can be shut down, and only through the process holding it: a listening socket is no
 /// connection, UDP has none to end, and a socket TaskSmack sees no holder for (TIME_WAIT, another user's)
 /// has nobody to ask.
-[[nodiscard]] std::string closeConnectionRefusal(const Platform::SystemConnection& connection);
+[[nodiscard]] std::string_view closeConnectionRefusal(const Platform::SystemConnection& connection);
 
 /// A socket's identity across generations: its protocol, family and both endpoints.
 [[nodiscard]] std::uint64_t selectionKey(const Platform::SystemConnection& connection) noexcept;

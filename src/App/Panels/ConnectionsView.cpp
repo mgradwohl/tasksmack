@@ -239,7 +239,7 @@ orderConnectionRows(const std::vector<ConnectionRow>& rows, std::string_view fil
     return order;
 }
 
-std::string closeConnectionRefusal(const Platform::SystemConnection& connection)
+std::string_view closeConnectionRefusal(const Platform::SystemConnection& connection)
 {
     using Platform::ConnectionState;
     if (connection.connection.protocol != Platform::ConnectionProtocol::Tcp)
@@ -461,7 +461,7 @@ renderConnectionsView(const Domain::ConnectionsPublication* publication, bool ha
     {
         if (state.menuRow.has_value())
         {
-            const std::string refusal = closeConnectionRefusal(state.menuRow->connection);
+            const std::string refusal(closeConnectionRefusal(state.menuRow->connection));
             if (ImGui::MenuItem(ICON_FA_XMARK "  Close connection...", nullptr, false, refusal.empty()))
             {
                 action = ConnectionsViewAction{.pid = state.menuRow->connection.pid,
