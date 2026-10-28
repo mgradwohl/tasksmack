@@ -41,6 +41,10 @@ void claimNavigationKeys(unsigned int ownerId, bool treeView);
 /// from the filter box, where it selects the typed text.
 [[nodiscard]] bool pollSelectAll();
 
+/// Whether / (or the keypad's /) was pressed this frame with no modifier: the Processes table's
+/// incremental search (#3097). Does not repeat. Call only while tableNavigationArmed(), as pollSelectAll().
+[[nodiscard]] bool pollIncrementalSearch();
+
 /// Whether Ctrl+F was pressed this frame, with no other modifier: the Processes filter box takes the
 /// keyboard. Does not repeat. Call only while tableNavigationArmed(), as pollSelectAll().
 [[nodiscard]] bool pollFocusFilter();

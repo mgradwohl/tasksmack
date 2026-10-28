@@ -6,6 +6,7 @@
 #include "App/Panels/ExitingProcessRows.h"
 #include "App/Panels/FindHandlesDialog.h"
 #include "App/Panels/GpuSection.h"
+#include "App/Panels/IncrementalSearch.h"
 #include "App/Panels/NewProcessHighlight.h"
 #include "App/Panels/ProcessActionConfirm.h"
 #include "App/Panels/ProcessActionsView.h"
@@ -1467,7 +1468,14 @@ void ProcessesPanel::renderContent()
         KeyboardInput::claimNavigationKeys(ImGui::GetID("##ProcessTableKeys"), m_TreeViewEnabled);
         navCommand = KeyboardInput::pollNavigationCommand(m_TreeViewEnabled);
         selectAllRequested = KeyboardInput::pollSelectAll(); // Ctrl+A (#804)
-        if (KeyboardInput::pollFocusFilter())                // Ctrl+F: the filter box takes the keyboard
+        if (KeyboardInput::pollIncrementalSearch())          // "/" (#3097): the Find box, empty, with the keyboard
+        {
+            m_IncrementalSearchOpen = true;
+            m_IncrementalSearchFocus = true;
+            m_IncrementalSearchMissed = false;
+            m_IncrementalSearchText.clear();
+        }
+        if (KeyboardInput::pollFocusFilter()) // Ctrl+F: the filter box takes the keyboard
         {
             m_FocusFilter = true;
         }
@@ -1568,6 +1576,7 @@ void ProcessesPanel::renderContent()
             ImGui::SetTooltip("Clear filter");
         }
     }
+    renderIncrementalSearchBox();
 
     // Filter snapshots based on search — cached to avoid O(n) rebuild every 60fps frame.
     // Filtered indices, running count, and summary string are only recomputed when snapshot
@@ -3054,7 +3063,7 @@ void ProcessesPanel::applyKeyboardInput(const std::vector<Domain::ProcessSnapsho
                                         bool selectAllRequested)
 {
     namespace Nav = ProcessTableNavigation;
-    if (command == Nav::NavCommand::None && !killRequested && !selectAllRequested)
+    if (command == Nav::NavCommand::None && !killRequested && !selectAllRequested && m_IncrementalSearchStep == IncrementalSearchStep::None)
     {
         return; // The common frame: no key, so the visible order is not even looked at
     }
@@ -3119,6 +3128,32 @@ void ProcessesPanel::applyKeyboardInput(const std::vector<Domain::ProcessSnapsho
             }
         }
     }
+    // "/" incremental search (#3097): the row whose name matches, from the selected one, selected alone
+    // and scrolled to as a keyboard move is; the Find box says when there is none.
+    if (const IncrementalSearchStep step = std::exchange(m_IncrementalSearchStep, IncrementalSearchStep::None);
+        step != IncrementalSearchStep::None)
+    {
+        std::vector<std::string_view> names;
+        names.reserve(visible.size());
+        for (const std::size_t idx : visible)
+        {
+            names.emplace_back(snapshots[idx].name);
+        }
+        const std::optional<std::size_t> match =
+            IncrementalSearch::findMatch(names, current, m_IncrementalSearchText, step == IncrementalSearchStep::Next);
+        m_IncrementalSearchMissed = !match.has_value() && !m_IncrementalSearchText.empty();
+        if (match.has_value())
+        {
+            m_Selection.selectOnly(ids[*match]);
+            if (match != current)
+            {
+                selectProcess(snapshots[visible[*match]]);
+            }
+            m_ScrollSelectedIntoView = true;
+            m_ScrollTargetRow = *match;
+        }
+    }
+
     // No movement key this frame (e.g. a bare F9): nothing below may select or scroll, so a refused F9
     // leaves the table exactly as it was.
     if (command == Nav::NavCommand::None)
@@ -3170,6 +3205,47 @@ void ProcessesPanel::applyKeyboardInput(const std::vector<Domain::ProcessSnapsho
     if (const std::optional<std::size_t> next = Nav::stepSelection(current, command, visible.size(), page); next.has_value())
     {
         selectRow(*next);
+    }
+}
+
+void ProcessesPanel::renderIncrementalSearchBox()
+{
+    if (!m_IncrementalSearchOpen)
+    {
+        return;
+    }
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 16.0F);
+    if (std::exchange(m_IncrementalSearchFocus, false))
+    {
+        ImGui::SetKeyboardFocusHere();
+    }
+    bool entered = false;
+    {
+        const UI::Widgets::FrameOutlineScope frameOutline;
+        entered = ImGui::InputTextWithHint(
+            "##IncrementalSearch", ICON_FA_MAGNIFYING_GLASS " Find a name", &m_IncrementalSearchText, ImGuiInputTextFlags_EnterReturnsTrue);
+    }
+    if (ImGui::IsItemEdited())
+    {
+        m_IncrementalSearchStep = IncrementalSearchStep::Refine;
+    }
+    if (entered)
+    {
+        m_IncrementalSearchStep = IncrementalSearchStep::Next;
+        m_IncrementalSearchFocus = true; // Enter leaves the box: keep typing or pressing Enter in it
+    }
+    if (ImGui::IsItemDeactivated() && ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+    {
+        m_IncrementalSearchOpen = false;
+        m_IncrementalSearchMissed = false;
+        return;
+    }
+    ImGui::SetItemTooltip("Jumps to the next process whose name contains this. Enter: the next match. Esc: close.");
+    if (m_IncrementalSearchMissed)
+    {
+        ImGui::SameLine();
+        ImGui::TextColored(UI::Theme::get().scheme().textError, "No match");
     }
 }
 

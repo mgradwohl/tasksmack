@@ -3041,6 +3041,52 @@ TEST_F(ProcessesPanelRenderTest, TheGroupControlLeavesTreeViewAndGroupedRowsNavi
     panel->onDetach(); // TearDown restores the settings
 }
 
+// #3097: "/" over the table opens the Find box; typing jumps the selection to the first matching row,
+// Enter to the next; a name nothing has says so; Escape closes the box.
+TEST_F(ProcessesPanelRenderTest, SlashFindsAProcessByNameAndEnterGoesToTheNext)
+{
+    SelectionSink events;
+    const auto panel = attachedPanel(events.sink());
+    renderUntilLoaded(*panel);
+    pressKey(*panel, ImGuiKey_Slash);
+    static_cast<void>(renderAndCapture(*panel));
+    ImGuiIO& io = ImGui::GetIO();
+    for (const char* character : {"e", "r"}) // "server" and "worker"
+    {
+        io.AddInputCharactersUTF8(character);
+        static_cast<void>(renderAndCapture(*panel));
+    }
+    static_cast<void>(renderAndCapture(*panel));
+    const std::int32_t first = panel->selectedPid();
+    EXPECT_TRUE(first == 100 || first == 101) << first;
+
+    io.AddKeyEvent(ImGuiKey_Enter, true);
+    static_cast<void>(renderAndCapture(*panel));
+    io.AddKeyEvent(ImGuiKey_Enter, false);
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    const std::int32_t second = panel->selectedPid();
+    EXPECT_TRUE(second == 100 || second == 101) << second;
+    EXPECT_NE(second, first);
+
+    for (const char* character : {"z", "z"})
+    {
+        io.AddInputCharactersUTF8(character);
+        static_cast<void>(renderAndCapture(*panel));
+    }
+    static_cast<void>(renderAndCapture(*panel));
+    EXPECT_TRUE(renderAndCapture(*panel).contains("No match"));
+    EXPECT_EQ(panel->selectedPid(), second); // the selection stays where it was
+
+    io.AddKeyEvent(ImGuiKey_Escape, true);
+    static_cast<void>(renderAndCapture(*panel));
+    io.AddKeyEvent(ImGuiKey_Escape, false);
+    static_cast<void>(renderAndCapture(*panel));
+    const std::string closed = renderAndCapture(*panel);
+    EXPECT_FALSE(closed.contains("No match")) << closed;
+    EXPECT_FALSE(closed.contains("Find a name")) << closed;
+}
+
 // #3097: F6 opens the "Sort by" menu of the visible columns; picking Name sorts by it, and picking it
 // again reverses the order.
 TEST_F(ProcessesPanelRenderTest, F6SortMenuPicksTheSortColumnAndPickingItAgainReversesIt)
