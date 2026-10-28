@@ -525,6 +525,7 @@ set(COMMON_TEST_SOURCES
     Platform/test_ProcFdParser.cpp
     Platform/test_ProcStatusSecurityParser.cpp
     Platform/test_ProcessIdentity.cpp
+    Platform/test_SchedPolicy.cpp # scheduling policy labels and order (#3086)
     Platform/test_ProcessName.cpp
     Platform/test_ProcessEnvironment.cpp
     Platform/test_CpuAffinity.cpp

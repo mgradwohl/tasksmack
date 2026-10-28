@@ -3642,6 +3642,26 @@ TEST(ProcessModelTest, TheArchitectureIsPassedThroughToTheSnapshot)
     EXPECT_EQ(snaps[0].architecture, "x86 (WOW64)");
 }
 
+TEST(ProcessModelTest, TheSchedulingPolicyReachesTheSnapshotWithItsLabel)
+{
+    // #3086: the policy and real-time priority pass through, and the label is built once, here.
+    auto probe = std::make_unique<MockProcessProbe>();
+    Platform::ProcessCounters counter = makeCounter(100, "pipewire", 'S', 1000, 500);
+    counter.schedPolicy = Platform::SchedPolicy::Fifo;
+    counter.rtPriority = 50;
+    probe->setCounters({counter});
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    const auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    EXPECT_EQ(snaps[0].schedPolicy, Platform::SchedPolicy::Fifo);
+    EXPECT_EQ(snaps[0].rtPriority, 50U);
+    EXPECT_EQ(snaps[0].schedPolicyText, "FIFO 50");
+}
+
 TEST(ProcessModelTest, WhenProbeReturnsBackgroundProcessType_ThenSnapshotContainsIt)
 {
     auto probe = std::make_unique<MockProcessProbe>();

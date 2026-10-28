@@ -168,6 +168,7 @@ struct RowFormatOptions
     bool hasServices = true; ///< The Services column (#1880): ProcessCapabilities::hasServices
     bool hasProcessType = true;
     bool hasArchitecture = true; // #2394
+    bool hasSchedPolicy = true;  // #3086
 };
 
 /// The first line of a Services cell's tooltip (#1880), above the names one per line: "1 service",
@@ -338,6 +339,7 @@ struct RowFormatCache
     LazyTextWidth servicesWidth; // of the snapshot's services text
     LazyTextWidth processTypeWidth;
     LazyTextWidth architectureWidth; // #2394
+    LazyTextWidth schedPolicyWidth;  // #3086
 
     // Whether this system can fill the free-text columns drawn straight from the snapshot (#1210):
     // where it cannot, the cell is the unavailable dash rather than blank. Copied from the
@@ -348,6 +350,7 @@ struct RowFormatCache
     bool servicesSupported = true;
     bool processTypeSupported = true;
     bool architectureSupported = true; // #2394
+    bool schedPolicySupported = true;  // #3086
     bool gpuSupported = true;          // GPU Engine and GPU Device; GPU % and GPU Memory carry their own tone
     bool npuSupported = true;          // NPU Engine (#1799); NPU % and NPU Memory carry their own tone
     bool gpuReadFailed = false;        // Supported, but this generation's per-process GPU read failed (#1210)
@@ -376,6 +379,7 @@ struct RowFormatCache
     fmt.servicesSupported = options.hasServices;
     fmt.processTypeSupported = options.hasProcessType;
     fmt.architectureSupported = options.hasArchitecture;
+    fmt.schedPolicySupported = options.hasSchedPolicy;
     fmt.gpuSupported = options.hasPerProcessGpu;
     fmt.npuSupported = options.hasPerProcessNpu; // Apart from the GPU's (#1827)
     fmt.gpuReadFailed = options.hasPerProcessGpu && options.gpuReadFailed;

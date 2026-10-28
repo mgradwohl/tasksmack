@@ -477,6 +477,10 @@ TEST(LinuxProcessProbeTest, EnumerateFindsOurOwnProcess)
     EXPECT_GE(it->systemTime, 0ULL);
     EXPECT_GT(it->startTimeTicks, 0ULL);
     EXPECT_GE(it->threadCount, 1); // At least one thread (main)
+    // #3086: the scheduling policy is read from the same stat line; this test runs under the default
+    // (or SCHED_BATCH / SCHED_IDLE where a CI harness lowers it), never as unknown.
+    EXPECT_NE(it->schedPolicy, SchedPolicy::Unknown);
+    EXPECT_TRUE(probe.capabilities().hasSchedPolicy);
 
     // Verify handle count (file descriptors) is populated for our own process
     // We can read our own /proc/[pid]/fd directory

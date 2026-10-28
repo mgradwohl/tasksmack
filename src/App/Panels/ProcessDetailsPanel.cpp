@@ -662,6 +662,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
             "Handles",
             "CPU Time",
             "Priority",
+            "Policy",
             "Publisher",
             "Type",
             "Container",
@@ -705,10 +706,11 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
         // leave it out free of -Wmissing-designated-field-initializers.
         std::string_view tooltip{}; // NOLINT(readability-redundant-member-init)
     };
-    // At most eight rows a table (Publisher, Affinity, Services, Type, Container and Architecture are optional), held in place.
+    // At most nine rows a table (Publisher, Affinity, Services, Policy, Type, Container and Architecture are optional),
+    // held in place.
     struct InfoRows
     {
-        std::array<InfoRow, 8> rows{};
+        std::array<InfoRow, 9> rows{};
         std::size_t count = 0;
 
         void add(InfoRow row) noexcept
@@ -839,6 +841,15 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     runtimeRows.add({.label = handleLabel, .value = text.handles, .color = theme.scheme().textPrimary});
     runtimeRows.add({.label = "CPU Time", .value = text.cpuTime, .color = theme.scheme().textPrimary});
     runtimeRows.add({.label = "Priority", .value = text.priority, .color = theme.scheme().textPrimary});
+    if (!proc.schedPolicyText.empty())
+    {
+        // The Processes table's Policy column (#3086), Linux.
+        runtimeRows.add({.label = "Policy",
+                         .value = proc.schedPolicyText,
+                         .color = theme.scheme().textPrimary,
+                         .tooltip = "The CPU scheduling policy: Normal (SCHED_OTHER), Batch, Idle, Deadline, or real time (FIFO or RR) "
+                                    "with its priority, 1 to 99, where higher runs first"});
+    }
     if (!proc.processType.empty())
     {
         // The same colour as the table's Type column (#1180)

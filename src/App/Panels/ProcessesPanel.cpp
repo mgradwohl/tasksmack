@@ -679,6 +679,24 @@ void architectureCell(const Domain::ProcessSnapshot& proc, const RowFormatCache&
     }
 }
 
+/// The process's scheduling policy (#3086), left-aligned: "Normal", "FIFO 50"; the unavailable dash where
+/// this system doesn't read policies (Windows), or this process's couldn't be read.
+void schedPolicyCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& fmt, const ProcessCellWidths& widths)
+{
+    if (!fmt.schedPolicySupported)
+    {
+        renderUnavailableTextCell(ProcessRowFormat::UNSUPPORTED_CELL_REASON, widths.unavailableText);
+    }
+    else if (!proc.schedPolicyText.empty())
+    {
+        renderLeftAlignedText(proc.schedPolicyText, fmt.schedPolicyWidth);
+    }
+    else
+    {
+        renderUnavailableTextCell(ProcessRowFormat::UNREADABLE_CELL_REASON, widths.unavailableText);
+    }
+}
+
 /// One CELL_RENDERERS entry: the column it draws (checked against its index
 /// below) and its renderer, or nullptr for a column renderProcessRow() draws.
 struct ProcessCellEntry
@@ -722,6 +740,7 @@ constexpr std::array<ProcessCellEntry, processColumnCount()> CELL_RENDERERS = {{
     {.column = ProcessColumn::Swap, .render = &unitAlignedCell<&RowFormatCache::swap, &ProcessCellWidths::unitBytes>},
     // Scheduling
     {.column = ProcessColumn::Priority, .render = &priorityCell},
+    {.column = ProcessColumn::Policy, .render = &schedPolicyCell},
     {.column = ProcessColumn::Affinity, .render = &rightAlignedCell<&RowFormatCache::affinity>},
     {.column = ProcessColumn::Threads, .render = &rightAlignedCell<&RowFormatCache::threads>},
     {.column = ProcessColumn::Handles, .render = &rightAlignedCell<&RowFormatCache::handles>},

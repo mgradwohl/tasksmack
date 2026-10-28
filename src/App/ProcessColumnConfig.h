@@ -43,6 +43,7 @@ enum class ProcessColumn : std::uint8_t
     Swap,
     // Scheduling - how is it scheduled?
     Priority,
+    Policy, // The CPU scheduling policy, "Normal" or "FIFO 50" (Linux, #3086)
     Affinity,
     Threads,
     Handles,
@@ -100,6 +101,7 @@ enum class ProcessColumn : std::uint8_t
             ProcessColumn::Swap,
             // Scheduling
             ProcessColumn::Priority,
+            ProcessColumn::Policy,
             ProcessColumn::Affinity,
             ProcessColumn::Threads,
             ProcessColumn::Handles,
@@ -206,6 +208,8 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
         // Priority (human-readable label derived from nice value)
         // Note: configKey remains "nice" for backward compatibility with user config files
         {.name="Priority", .menuName="Priority", .configKey="nice", .defaultWidth=85.0F, .defaultVisible=false, .canHide=true, .description="Process priority: Windows priority class (Realtime, High, Above Normal, Normal, Below Normal, Idle), or the nice value's level elsewhere"},
+        // Scheduling policy (Linux, #3086)
+        {.name="Policy", .menuName="Scheduling Policy", .configKey="policy", .defaultWidth=80.0F, .defaultVisible=false, .canHide=true, .description="The CPU scheduling policy (Linux): Normal (SCHED_OTHER), Batch, Idle, Deadline, or real time with its priority, FIFO 50 or RR 10"},
         // Affinity
         {.name="Affinity", .menuName="CPU Affinity", .configKey="affinity", .defaultWidth=100.0F, .defaultVisible=false, .canHide=true, .description="CPU cores this process can run on"},
         // Threads
@@ -289,6 +293,7 @@ enum class ColumnAlign : std::uint8_t
     case ProcessColumn::Status:
     case ProcessColumn::Type:
     case ProcessColumn::Architecture:
+    case ProcessColumn::Policy:
     case ProcessColumn::GpuEngine:
     case ProcessColumn::GpuDevice:
     case ProcessColumn::NpuEngine:

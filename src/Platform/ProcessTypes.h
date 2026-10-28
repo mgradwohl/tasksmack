@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Platform/CpuAffinity.h"
+#include "Platform/SchedPolicy.h"
 
 #include <cstdint>
 #include <optional>
@@ -49,6 +50,10 @@ struct ProcessCounters
     // Windows: the class nice stands for, which nice alone can't name (Realtime and High both sit
     // below HIGH_THRESHOLD, #1280). None on Linux, or when the class was not read.
     PriorityClass priorityClass = PriorityClass::None;
+    // The CPU scheduling policy and its real-time priority (#3086): Linux's /proc/[pid]/stat fields 41
+    // and 40. Unknown where it isn't read (Windows).
+    SchedPolicy schedPolicy = SchedPolicy::Unknown;
+    std::uint32_t rtPriority = 0;
 
     std::uint64_t startTimeTicks = 0; // For PID reuse detection (raw platform ticks)
     std::uint64_t startTimeEpoch = 0; // Process start time (Unix epoch seconds)
@@ -239,6 +244,7 @@ struct ProcessCapabilities
                                         // Domain::ProcessModel once a service list with PIDs is attached (#1880)
     bool hasProcessType = false;        // Whether process type classification is available (Windows: App/Background/Windows)
     bool hasArchitecture = false;       // Whether ProcessCounters::architecture is filled (#2394)
+    bool hasSchedPolicy = false;        // Whether ProcessCounters::schedPolicy is filled (#3086)
     bool hasGdiObjects = false;         // Whether GDI object count is available (Windows-only via GetGuiResources)
     bool hasReducedPrivileges = false;  // True when the process lacks the privileges to read some data, or act
                                         // on other users' processes (not necessarily curable by elevation: sudo

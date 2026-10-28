@@ -13,6 +13,7 @@
 #include "Platform/IProcessProbe.h"
 #include "Platform/PlatformConfig.h"
 #include "Platform/ProcessArchitecture.h"
+#include "Platform/SchedPolicy.h"
 #include "UserNameLookup.h"
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
@@ -532,6 +533,7 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
                                .hasContainer = true,                           // From /proc/[pid]/cgroup paths
                                .hasServices = true,                            // The systemd service, from the same paths (#1886)
                                .hasArchitecture = true,                        // The ELF header of /proc/[pid]/exe (#2394)
+                               .hasSchedPolicy = true,                         // /proc/[pid]/stat fields 40-41 (#3086)
                                .hasReducedPrivileges = missingPrivileges != 0, // Data or actions limited (#2303)
                                .networkCountersBlocked = false,                // Linux gaps are privilege gaps (#1358)
                                .hasSharedMemory = true,                        // From /proc/[pid]/statm
@@ -610,6 +612,9 @@ bool LinuxProcessProbe::applyStat(std::string_view stat, int32_t pid, ProcessCou
     counters.virtualBytes = fields->virtualBytes;
     counters.rssBytes = toU64PositiveOr(fields->rssPages, 0ULL) * m_PageSize;
     counters.nice = clampToI32(fields->nice);
+    // The scheduling policy and real-time priority (#3086), on the same line.
+    counters.schedPolicy = fields->hasPolicy ? schedPolicyFromLinux(fields->policy) : SchedPolicy::Unknown;
+    counters.rtPriority = fields->hasPolicy ? fields->rtPriority : 0;
     counters.pageFaultCount = fields->minorFaults + fields->majorFaults; // Total page faults (minor + major)
 
     return true;
