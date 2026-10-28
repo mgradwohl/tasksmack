@@ -159,7 +159,7 @@ class SignatureCache
   public:
     static constexpr std::size_t UNBOUNDED = std::numeric_limits<std::size_t>::max();
 
-    explicit SignatureCache(std::size_t maxEntries = UNBOUNDED) noexcept : m_MaxEntries(maxEntries)
+    explicit SignatureCache(std::size_t maxEntries = UNBOUNDED) : m_MaxEntries(maxEntries)
     {}
 
     [[nodiscard]] std::optional<SignatureCheck> find(const std::string& path, const FileStamp& stamp) const

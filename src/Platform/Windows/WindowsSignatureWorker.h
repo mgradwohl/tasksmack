@@ -188,7 +188,7 @@ class SignatureWorker
                 m_Queue.pop_front();
                 m_Checking = true;
             }
-            std::string key = pathKey(path);
+            const std::string key = pathKey(path);
             SignatureCheck check;
             try
             {
