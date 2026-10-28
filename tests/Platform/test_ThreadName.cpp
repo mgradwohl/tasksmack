@@ -82,6 +82,7 @@ TEST(ThreadNameTest, EveryTaskSmackThreadNameFitsLinuxLimit)
         Platform::DUMP_CHECK_THREAD_NAME,
         Platform::SYSTEM_OPEN_THREAD_NAME,
         Platform::AFFINITY_LAYOUT_READ_THREAD_NAME,
+        Platform::WAIT_CHAIN_READ_THREAD_NAME,
         Platform::PROCESS_ACTION_THREAD_NAME,
         Platform::HELPER_LAUNCH_THREAD_NAME,
         Platform::SETTINGS_SAVE_THREAD_NAME,

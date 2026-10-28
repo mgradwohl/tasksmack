@@ -897,6 +897,52 @@ TEST_F(WindowsProcessProbeSeamTest, EachStatusReadStandsWithoutTheOther)
     EXPECT_EQ(sampleOne().status, "Suspended");
 }
 
+// #3084: a process with a hung window is Not responding, from the one window walk a sample makes; the others
+// aren't, and without the walk (null) none is. The Status the probe read stays as it was: Domain words it.
+TEST_F(WindowsProcessProbeSeamTest, AProcessWithAHungWindowIsNotRespondingFromTheSamplesWindowWalk)
+{
+    EXPECT_FALSE(sampleOne().notResponding) << "no walk: never Not responding";
+
+    static int walks = 0;
+    walks = 0;
+    WindowsProcessProbeFunctions functions = fakeFunctions();
+    functions.system.hungWindowProcesses = [](std::vector<std::uint32_t>& pids)
+    {
+        ++walks;
+        pids = {3, PID, PID + 1000}; // sorted, as the real walk leaves them
+    };
+    WindowsProcessProbe probe(functions);
+    const std::vector<ProcessCounters> processes = probe.enumerate();
+    EXPECT_TRUE(find(processes).notResponding);
+    EXPECT_EQ(find(processes).status, "Efficiency Mode");
+    EXPECT_EQ(walks, 1) << "one walk a sample, whatever the process count";
+    for (const ProcessCounters& other : processes)
+    {
+        if (other.pid != static_cast<std::int32_t>(PID))
+        {
+            EXPECT_FALSE(other.notResponding) << other.pid;
+        }
+    }
+
+    functions.system.hungWindowProcesses = [](std::vector<std::uint32_t>& pids)
+    {
+        pids.clear();
+    };
+    WindowsProcessProbe answering(functions);
+    EXPECT_FALSE(find(answering.enumerate()).notResponding);
+}
+
+// The real walk, over this desktop's windows: sorted and unique, whatever it finds (this test hangs nothing).
+TEST(WindowsHungWindowsTest, TheRealWalkIsSortedAndUnique)
+{
+    std::vector<std::uint32_t> pids{42, 7, 7};
+    WindowsProcessDetailReads::hungWindowProcesses(pids);
+    EXPECT_TRUE(std::ranges::is_sorted(pids));
+    EXPECT_EQ(std::ranges::adjacent_find(pids), pids.end());
+    EXPECT_EQ(std::ranges::find(pids, 42U), pids.end()) << "what was in the vector before is cleared";
+    EXPECT_EQ(WindowsProcessProbe::systemFunctions().system.hungWindowProcesses, &WindowsProcessDetailReads::hungWindowProcesses);
+}
+
 TEST_F(WindowsProcessProbeSeamTest, AnUnreadableStatusKeepsTheLastOneRead)
 {
     WindowsProcessProbe probe(fakeFunctions());

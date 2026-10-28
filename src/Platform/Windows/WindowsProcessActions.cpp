@@ -3,6 +3,7 @@
 #include "Domain/PriorityConfig.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/WaitChain.h"
 #include "WindowsAffinityMath.h"
 #include "WindowsFolderPicker.h"
 #include "WindowsHandles.h"
@@ -11,6 +12,9 @@
 #include "WindowsProcessDump.h"
 #include "WindowsProcessDumpMath.h"
 #include "WindowsProcessIdentity.h"
+#ifndef TASKSMACK_NO_WAIT_CHAINS
+#include "WindowsWaitChain.h"
+#endif
 
 #include <spdlog/spdlog.h>
 
@@ -48,6 +52,14 @@ namespace Platform
 constexpr bool HAS_DUMPS = false;
 #else
 constexpr bool HAS_DUMPS = true;
+#endif
+
+// The same for wait chains (#3084): the helper never serves one, so it is built with
+// TASKSMACK_NO_WAIT_CHAINS and WindowsWaitChain.cpp stays out of the elevated image.
+#ifdef TASKSMACK_NO_WAIT_CHAINS
+constexpr bool HAS_WAIT_CHAINS = false;
+#else
+constexpr bool HAS_WAIT_CHAINS = true;
 #endif
 
 // NOLINTBEGIN(misc-include-cleaner) - Windows APIs; Win32 types come from windows.h sub-headers
@@ -416,6 +428,7 @@ ProcessActionCapabilities WindowsProcessActions::actionCapabilities() const
         .dumpsFromSnapshot = HAS_DUMPS,                   // PssCaptureSnapshot, else from the running process (#2001)
         .canAuthorizeInteractively = false,               // BrokeredProcessActions sets it when TaskSmackHelper.exe can be used (#2550)
         .canSetEfficiencyMode = hasEfficiencyMode(m_Fns), // EcoQoS and the Idle class, as Task Manager (#3071)
+        .canAnalyzeWaitChain = HAS_WAIT_CHAINS,           // GetThreadWaitChain, as Task Manager's Analyze wait chain (#3084)
     };
 }
 
@@ -884,5 +897,15 @@ FolderChoice WindowsProcessActions::chooseDumpFolder(const std::filesystem::path
 }
 // NOLINTEND(misc-include-cleaner)
 #endif // TASKSMACK_NO_PROCESS_DUMPS
+
+WaitChainReadResult WindowsProcessActions::readWaitChains(const ProcessTarget& target, const std::stop_token& stopToken)
+{
+#ifdef TASKSMACK_NO_WAIT_CHAINS
+    return IProcessActions::readWaitChains(target, stopToken);
+#else
+    // As TaskSmack's user, with the system's calls: the same identity check every action makes (#2149).
+    return Windows::readWaitChains(Windows::WaitChainFunctions{}, target, stopToken);
+#endif
+}
 
 } // namespace Platform

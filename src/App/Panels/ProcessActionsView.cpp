@@ -2,12 +2,14 @@
 
 #include "AuthorizeWording.h"
 #include "Platform/CpuAffinity.h"
+#include "Platform/CurrentProcess.h"
 #include "Platform/IProcessActions.h"
 #include "ProcessActionConfirm.h"
 #include "ProcessAffinityDialog.h"
 #include "ProcessDetailsLayout.h"
 #include "ProcessDetailsPanel_ActionHelpers.h"
 #include "ProcessDumpView.h"
+#include "ProcessWaitChainDialog.h"
 #include "UI/Theme.h"
 #include "UI/Widgets.h"
 
@@ -48,8 +50,47 @@ void ProcessActionsView::renderControls(Platform::IProcessActions* actions,
     renderSetAffinityButton(actions, capabilities, processName, target, currentAffinity, anyBeforeAffinity);
     const bool anyBeforeDump = anyBeforeAffinity || capabilities.canSetAffinity;
     renderCreateDumpButton(actions, capabilities, processName, target, anyBeforeDump);
-    renderEfficiencyModeToggle(
-        actions, capabilities, processName, target, efficiencyMode, anyBeforeDump || DumpDetail::offersCreateDump(capabilities, 0));
+    const bool anyBeforeWaitChain = anyBeforeDump || DumpDetail::offersCreateDump(capabilities, 0);
+    renderAnalyzeWaitChainButton(actions, capabilities, processName, target, anyBeforeWaitChain);
+    renderEfficiencyModeToggle(actions,
+                               capabilities,
+                               processName,
+                               target,
+                               efficiencyMode,
+                               anyBeforeWaitChain || WaitChainDetail::offersAnalyzeWaitChain(capabilities, 0));
+}
+
+void ProcessActionsView::renderAnalyzeWaitChainButton(Platform::IProcessActions* actions,
+                                                      const Platform::ProcessActionCapabilities& capabilities,
+                                                      const std::string& processName,
+                                                      const Platform::ProcessTarget& target,
+                                                      bool afterButtons)
+{
+    if (!WaitChainDetail::offersAnalyzeWaitChain(capabilities, 0))
+    {
+        return;
+    }
+    // As the trace, affinity and dump buttons: on the row at its own width when it fits, else on a row of its own.
+    const float width = analyzeWaitChainButtonWidth(capabilities);
+    if (afterButtons)
+    {
+        const float rowEnd = ImGui::GetItemRectMax().x;
+        const float regionEnd = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+        if (rowEnd + ImGui::GetStyle().ItemSpacing.x + width <= regionEnd)
+        {
+            ImGui::SameLine();
+        }
+    }
+    const bool disabled = target.pid <= 0;
+    ImGui::BeginDisabled(disabled);
+    const bool pressed = ImGui::Button(WaitChainDetail::ANALYZE_WAIT_CHAIN_LABEL, ImVec2(width, 0.0F));
+    ImGui::EndDisabled();
+    if (pressed && !disabled)
+    {
+        // The process is captured now; the dialog reads and names only it.
+        m_WaitChainDialog->open(actions, target, processName, Platform::currentProcessId());
+    }
+    ImGui::SetItemTooltip("%s", WaitChainDetail::ANALYZE_WAIT_CHAIN_TOOLTIP);
 }
 
 void ProcessActionsView::renderEfficiencyModeToggle(Platform::IProcessActions* actions,
@@ -339,6 +380,17 @@ float ProcessActionsView::createDumpButtonWidth(const Platform::ProcessActionCap
                                                           ImGui::GetStyle().FramePadding.x);
 }
 
+float ProcessActionsView::analyzeWaitChainButtonWidth(const Platform::ProcessActionCapabilities& capabilities)
+{
+    if (!WaitChainDetail::offersAnalyzeWaitChain(capabilities, 0))
+    {
+        return 0.0F;
+    }
+    return ProcessDetailsLayout::computeActionButtonWidth(
+        ImGui::CalcTextSize(WaitChainDetail::ANALYZE_WAIT_CHAIN_LABEL, nullptr, /*hide_text_after_double_hash=*/true).x,
+        ImGui::GetStyle().FramePadding.x);
+}
+
 float ProcessActionsView::efficiencyModeToggleWidth(const Platform::ProcessActionCapabilities& capabilities)
 {
     if (!capabilities.canSetEfficiencyMode)
@@ -365,6 +417,7 @@ float ProcessActionsView::buttonsRowWidth(const Platform::ProcessActionCapabilit
                                                            std::max({syscallTraceButtonWidth(capabilities),
                                                                      setAffinityButtonWidth(capabilities),
                                                                      createDumpButtonWidth(capabilities),
+                                                                     analyzeWaitChainButtonWidth(capabilities),
                                                                      efficiencyModeToggleWidth(capabilities)}));
 }
 

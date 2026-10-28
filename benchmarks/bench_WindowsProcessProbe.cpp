@@ -15,7 +15,9 @@
 //    call, as samples that far apart would see it: 0 keeps every cache warm (snapshot + parse), 1000
 //    is the default refresh interval (the light details read every sample, the heavy ones every
 //    fourth on a 16 GB+ machine), 60000 expires every TTL every call (light and heavy read for every
-//    process each sample).
+//    process each sample). Each of these includes the Not responding window walk (#3084).
+//  - HungWindowScan: that walk alone (WindowsProcessDetailReads::hungWindowProcesses()), once a sample:
+//    EnumWindows, and IsHungAppWindow on each visible top-level window.
 //  - Detail_<read>: each read of the heavy detail pass alone (WindowsProcessDetailReads, the probe's
 //    own functions, through its system seams), once over every process this user can open with
 //    PROCESS_QUERY_LIMITED_INFORMATION, with the handles opened once beforehand, so each benchmark
@@ -311,6 +313,30 @@ void BM_WindowsProcessProbe_EnumerateAtInterval(benchmark::State& state)
     state.counters["processes"] = benchmark::Counter(static_cast<double>(counters.size()));
 }
 BENCHMARK(BM_WindowsProcessProbe_EnumerateAtInterval)->ArgName("ms")->Arg(0)->Arg(1000)->Arg(60000)->Unit(benchmark::kMicrosecond);
+
+/// EnumWindows' callback that counts the top-level windows, for HungWindowScan's counter.
+BOOL CALLBACK countWindow(HWND /*window*/, LPARAM count)
+{
+    ++*reinterpret_cast<std::size_t*>(count); // NOLINT(performance-no-int-to-ptr) - EnumWindows' LPARAM
+    return TRUE;
+}
+
+/// The Not responding walk enumerate() makes once a sample (#3084): every top-level window, IsHungAppWindow
+/// on the visible ones. Its windows counter is the desktop's top-level window count, which it scales with.
+void BM_WindowsProcessProbe_HungWindowScan(benchmark::State& state)
+{
+    std::vector<std::uint32_t> pids;
+    for (auto _ : state)
+    {
+        Platform::WindowsProcessDetailReads::hungWindowProcesses(pids);
+        benchmark::DoNotOptimize(pids.data());
+    }
+    std::size_t windows = 0;
+    static_cast<void>(EnumWindows(&countWindow, reinterpret_cast<LPARAM>(&windows)));
+    state.counters["windows"] = benchmark::Counter(static_cast<double>(windows));
+    state.counters["hung"] = benchmark::Counter(static_cast<double>(pids.size()));
+}
+BENCHMARK(BM_WindowsProcessProbe_HungWindowScan)->Unit(benchmark::kMicrosecond);
 
 /// One process this user can open, with what the heavy reads take from earlier ones: its image path
 /// (for the publisher and the classification) and whether GetGuiResources reads it (whether the

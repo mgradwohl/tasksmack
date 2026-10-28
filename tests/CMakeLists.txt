@@ -569,6 +569,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessActionsView.cpp
     App/test_AuthorizeWording.cpp
     App/test_ProcessDumpView.cpp
+    App/test_ProcessWaitChainDialog.cpp # Analyze wait chain's dialog (#3084)
     App/test_ProcessActionConfirmPopup.cpp
     App/test_ProcessActionsBlockRender.cpp
     App/test_ProcessPriorityView.cpp
@@ -670,6 +671,7 @@ set(WINDOWS_MATH_TEST_SOURCES
     Platform/WindowsMath/test_WindowsConversions.cpp
     Platform/WindowsMath/test_WindowsProcessDumpMath.cpp
     Platform/WindowsMath/test_WindowsProcessMachineMath.cpp
+    Platform/WindowsMath/test_WindowsWaitChainMath.cpp # Analyze wait chain's decoding (#3084)
 )
 list(APPEND COMMON_TEST_SOURCES ${WINDOWS_MATH_TEST_SOURCES})
 set(WINDOWS_PLATFORM_TEST_SOURCES
@@ -686,6 +688,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsSystemProbeNetwork.cpp
     Platform/test_WindowsProcessActions.cpp
     Platform/test_WindowsProcessActionsSeams.cpp
+    Platform/test_WindowsWaitChain.cpp  # Analyze wait chain: the WCT session through fakes, and one real child (#3084)
     Platform/test_WindowsDebugPrivilege.cpp
     Platform/test_WindowsElevation.cpp
     Platform/test_BrokerPipe.cpp  # the privileged broker's named-pipe transport (#2311)
@@ -889,6 +892,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/Panels/FindHandlesDialog.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessActionsView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessDumpView.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessWaitChainDialog.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessActionsBlock.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessPriorityView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessIoPriorityView.cpp

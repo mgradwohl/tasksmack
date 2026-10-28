@@ -16,6 +16,7 @@
 #include "App/Panels/ProcessActionRun.h"
 #include "App/Panels/ProcessAffinityDialog.h"
 #include "App/Panels/ProcessDumpView.h"
+#include "App/Panels/ProcessWaitChainDialog.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
 #include "ProcessDetailsPanel_ActionHelpers.h"
@@ -26,6 +27,7 @@
 #include <cstdint>
 #include <format>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -267,6 +269,9 @@ class ProcessActionsView
     /// Then "Create dump file..." where the platform can write one (#807), placed the same way; it asks
     /// to confirm a dump of the process captured now, into the temp folder.
     ///
+    /// Then "Analyze wait chain..." where the platform can read one (#3084), placed the same way; it opens
+    /// the wait chain dialog for the process captured now, which reads its chains on a worker.
+    ///
     /// Then the Efficiency mode checkbox where the platform has it (#3071), placed the same way and
     /// checked when @p efficiencyMode: ticking it asks to confirm, as Task Manager does; unticking it
     /// turns Efficiency mode off at once (requestEfficiencyModeToggle()).
@@ -314,6 +319,10 @@ class ProcessActionsView
     /// platform can't write a dump (#807).
     [[nodiscard]] static float createDumpButtonWidth(const Platform::ProcessActionCapabilities& capabilities);
 
+    /// Width of the Analyze wait chain... button for @p capabilities at the current font, or 0 where the
+    /// platform can't read a wait chain (#3084).
+    [[nodiscard]] static float analyzeWaitChainButtonWidth(const Platform::ProcessActionCapabilities& capabilities);
+
     /// Width of the Efficiency mode checkbox, box and label, for @p capabilities at the current font, or 0
     /// where the platform has no Efficiency mode (#3071).
     [[nodiscard]] static float efficiencyModeToggleWidth(const Platform::ProcessActionCapabilities& capabilities);
@@ -325,19 +334,33 @@ class ProcessActionsView
     /// is scrolled out of view, and F9 must still open its Kill confirm then (#1493).
     /// The affinity dialog (#1887) runs here too, and is closed unapplied when @p liveTarget is no
     /// longer the process it was opened for; and the dump's confirm, progress and result (#807), its
-    /// confirm closed unconfirmed the same way.
+    /// confirm closed unconfirmed the same way. And the wait chain dialog (#3084), which names its own
+    /// process, so it stays up whatever is selected.
     void renderConfirmation(Platform::IProcessActions* actions, const Platform::ProcessTarget& liveTarget)
     {
         m_ActionRun.update(); // a confirmed action, trace launch or affinity change that has finished (#2305)
         renderConfirmDialog(actions, liveTarget);
         renderAffinityDialog(actions, liveTarget);
         m_DumpView.render(actions, &liveTarget);
+        m_WaitChainDialog->render();
     }
 
     /// The dump's state (#807), for tests.
     [[nodiscard]] ProcessDumpView& dumpView() noexcept
     {
         return m_DumpView;
+    }
+
+    /// The wait chain dialog (#3084), for tests: open after Analyze wait chain... is pressed.
+    [[nodiscard]] ProcessWaitChainDialog& waitChainDialog() noexcept
+    {
+        return *m_WaitChainDialog;
+    }
+
+    /// Before the panel's IProcessActions goes away: a wait chain read still running is stopped and waited for.
+    void shutdownWaitChainDialog()
+    {
+        m_WaitChainDialog->shutdown();
     }
 
     /// The affinity dialog, for tests: open after Set affinity... is pressed.
@@ -657,6 +680,13 @@ class ProcessActionsView
                                 const std::string& processName,
                                 const Platform::ProcessTarget& target,
                                 bool afterButtons);
+    /// Analyze wait chain... (#3084): at the row's end at its own width, as the trace button is. A press
+    /// opens the wait chain dialog for @p target, read through @p actions.
+    void renderAnalyzeWaitChainButton(Platform::IProcessActions* actions,
+                                      const Platform::ProcessActionCapabilities& capabilities,
+                                      const std::string& processName,
+                                      const Platform::ProcessTarget& target,
+                                      bool afterButtons);
     /// The Efficiency mode checkbox (#3071): at the row's end at its own width, as the trace button is,
     /// checked when @p on; disabled with the reason while it can't be used (Detail::efficiencyModeToggle()).
     void renderEfficiencyModeToggle(Platform::IProcessActions* actions,
@@ -689,6 +719,10 @@ class ProcessActionsView
     // Create dump file... (#807). Its worker uses the panel's IProcessActions until it finishes: the
     // panel declares this view after its actions, so the view (and its destructor's wait) goes first.
     ProcessDumpView m_DumpView;
+    // Analyze wait chain... (#3084). Its workers use the panel's IProcessActions until they finish, as the dump's does.
+    // Held by pointer: the dialog's End process finish refers to the dialog itself, so it never moves, while
+    // this view stays movable as the panel that holds it is.
+    std::unique_ptr<ProcessWaitChainDialog> m_WaitChainDialog = std::make_unique<ProcessWaitChainDialog>();
     float m_ResultSecondsLeft = 0.0F;
     // The confirmed action, trace launch or affinity change in flight (#2305). Its worker calls the
     // panel's IProcessActions until it finishes: last, so it is destroyed (and waited for) first, and the

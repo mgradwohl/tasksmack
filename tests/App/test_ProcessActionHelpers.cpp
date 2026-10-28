@@ -162,6 +162,11 @@ TEST(ProcessActionHelpersTest, EfficiencyModeOnAndOffSetItAndAreWordedForIt)
     EXPECT_TRUE(isInEfficiencyMode(snapshot));
     snapshot.status = "Suspended";
     EXPECT_FALSE(isInEfficiencyMode(snapshot));
+    // Still in Efficiency mode while its window has hung (#3084)
+    snapshot.status = "Not responding \xC2\xB7 Efficiency Mode";
+    EXPECT_TRUE(isInEfficiencyMode(snapshot));
+    snapshot.status = "Not responding";
+    EXPECT_FALSE(isInEfficiencyMode(snapshot));
 }
 
 TEST(ProcessActionHelpersTest, ResumeCallsResumeWithPid)

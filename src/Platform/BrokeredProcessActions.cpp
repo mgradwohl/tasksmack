@@ -12,6 +12,7 @@
 #include "Platform/IProcessProbe.h"
 #include "Platform/IUdpTrafficCollector.h"
 #include "Platform/ProcessTypes.h"
+#include "Platform/WaitChain.h"
 
 #include <algorithm>
 #include <chrono>
@@ -218,6 +219,11 @@ DumpSpace BrokeredProcessActions::dumpSpace(const ProcessTarget& target, const s
 FolderChoice BrokeredProcessActions::chooseDumpFolder(const std::filesystem::path& initial, void* ownerWindow)
 {
     return m_Inner->chooseDumpFolder(initial, ownerWindow);
+}
+
+WaitChainReadResult BrokeredProcessActions::readWaitChains(const ProcessTarget& target, const std::stop_token& stopToken)
+{
+    return m_Inner->readWaitChains(target, stopToken);
 }
 
 CpuAffinityLayout BrokeredProcessActions::affinityLayout() const
