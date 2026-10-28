@@ -205,7 +205,8 @@ void DemoLayer::onUpdate(float /*deltaTime*/)
     // The next step comes on time, not at the loop's slow floor (#3156).
     if (m_Next < m_Steps.size())
     {
-        Core::AnimationRequest::requestFrameWithin(static_cast<double>(m_Steps[m_Next].timeMs) / DemoOverride::MILLIS_PER_SECOND - elapsed);
+        const double nextStepSeconds = static_cast<double>(m_Steps[m_Next].timeMs) / DemoOverride::MILLIS_PER_SECOND;
+        Core::AnimationRequest::requestFrameWithin(nextStepSeconds - elapsed);
     }
 }
 

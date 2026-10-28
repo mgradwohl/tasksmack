@@ -14,7 +14,6 @@
 
 #include <atomic>
 #include <chrono>
-#include <cstddef>
 #include <limits>
 #include <thread>
 #include <vector>
@@ -24,7 +23,6 @@ namespace
 
 using Core::FramePacing::computeIdlePeriodMs;
 using Core::FramePacing::IdleFramePeriods;
-using Core::FramePacing::IdleFrameState;
 
 constexpr IdleFramePeriods PERIODS{.idleMs = 50, .hiddenMs = 200, .staticFloorMs = 500};
 constexpr double INF = std::numeric_limits<double>::infinity();
@@ -275,8 +273,10 @@ TEST(WakeCoalescerTest, NoPublicationIsLeftWithoutAWake)
             drain();
         });
     {
+        constexpr int PUBLISHERS = 4;
         std::vector<std::jthread> publishers;
-        for (int t = 0; t < 4; ++t)
+        publishers.reserve(PUBLISHERS);
+        for (int t = 0; t < PUBLISHERS; ++t)
         {
             publishers.emplace_back(
                 [&]

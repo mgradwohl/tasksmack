@@ -1646,8 +1646,8 @@ class PublicationWakeCounter
 TEST(BackgroundSamplerTest, EveryPassThatSampledWakesTheFrameLoopOnceAfterItsSamples)
 {
     const PublicationWakeCounter counter;
-    auto first = std::make_shared<MockSamplable>();
-    auto second = std::make_shared<MockSamplable>();
+    const auto first = std::make_shared<MockSamplable>();
+    const auto second = std::make_shared<MockSamplable>();
     Domain::SamplerConfig config;
     config.interval = 100ms;
     Domain::BackgroundSampler sampler(config);
@@ -1670,7 +1670,7 @@ TEST(BackgroundSamplerTest, APassThatSampledNothingDoesNotWakeTheFrameLoop)
     config.interval = 100ms;
     Domain::BackgroundSampler sampler(config);
     {
-        auto released = std::make_shared<MockSamplable>();
+        const auto released = std::make_shared<MockSamplable>();
         sampler.addSamplable(released);
     } // its owner released it: every pass skips it
     sampler.start();
@@ -1683,7 +1683,7 @@ TEST(BackgroundSamplerTest, TheStartHooksSeedWakesTheFrameLoopBeforeTheFirstPass
 {
     const PublicationWakeCounter counter;
     std::atomic<bool> seeded{false};
-    auto samplable = std::make_shared<MockSamplable>();
+    const auto samplable = std::make_shared<MockSamplable>();
     Domain::SamplerConfig config;
     config.interval = 5000ms; // no pass samples during the test
     config.firstSampleAfterInterval = true;

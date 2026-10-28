@@ -118,7 +118,8 @@ namespace Detail
 
 /// Whether a window drawn this frame is hidden for its first frames or still auto-fitting, or a table
 /// drawn this frame still auto-fits a column: the next frame shows them as they settle.
-[[nodiscard]] inline bool layoutNeedsAnotherFrame(const ImGuiContext& g)
+/// Not const: ImPool::TryGetMapData() isn't, though it only reads.
+[[nodiscard]] inline bool layoutNeedsAnotherFrame(ImGuiContext& g)
 {
     for (const ImGuiWindow* window : g.Windows)
     {
@@ -149,7 +150,7 @@ namespace Detail
 /// The timers of the current ImGui context, after this frame's widgets (before ImGui::Render()).
 [[nodiscard]] inline ImGuiTimerState currentImGuiTimerState()
 {
-    const ImGuiContext& g = *ImGui::GetCurrentContext();
+    ImGuiContext& g = *ImGui::GetCurrentContext(); // non-const for layoutNeedsAnotherFrame()
     const bool textInputActive = g.ActiveId != 0 && g.InputTextState.ID == g.ActiveId;
     return ImGuiTimerState{
         .cursorBlinkSeconds = static_cast<double>(g.InputTextState.CursorAnim),
