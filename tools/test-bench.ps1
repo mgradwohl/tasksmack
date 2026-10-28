@@ -143,6 +143,17 @@ if os.environ.get("STUB_OUTPUT") != "none":
 if os.environ.get("STUB_MUTATE"):
     with open(os.environ["STUB_MUTATE"], "a", encoding="ascii") as stream:
         stream.write("@rem rebuilt during the run\r\n")
+if os.environ.get("STUB_AFFINITY"):
+    # The affinity the stub inherited through cmd.exe from bench.ps1 (#3163).
+    import ctypes
+    from ctypes import wintypes
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32.GetProcessAffinityMask.argtypes = [wintypes.HANDLE, ctypes.POINTER(ctypes.c_size_t), ctypes.POINTER(ctypes.c_size_t)]
+    process_mask, system_mask = ctypes.c_size_t(), ctypes.c_size_t()
+    kernel32.GetProcessAffinityMask(kernel32.GetCurrentProcess(), ctypes.byref(process_mask), ctypes.byref(system_mask))
+    with open(os.environ["STUB_AFFINITY"], "w", encoding="ascii") as stream:
+        stream.write(f"0x{process_mask.value:x}")
 sys.exit(int(os.environ.get("STUB_EXIT") or 0))
 '@
         $stubHost = $python
@@ -166,6 +177,7 @@ if ($env:STUB_SLEEP_MS) { Start-Sleep -Milliseconds ([int]$env:STUB_SLEEP_MS) }
 if ($env:STUB_OUTPUT -eq 'partial') { $body = $body.Substring(0, 60) }
 if ($env:STUB_OUTPUT -ne 'none') { Set-Content -LiteralPath $out -Value $body -Encoding utf8 }
 if ($env:STUB_MUTATE) { Add-Content -LiteralPath $env:STUB_MUTATE -Value '@rem rebuilt during the run' -Encoding ascii }
+if ($env:STUB_AFFINITY) { Set-Content -LiteralPath $env:STUB_AFFINITY -NoNewline -Encoding ascii -Value ('0x{0:x}' -f [Diagnostics.Process]::GetCurrentProcess().ProcessorAffinity.ToInt64()) }
 exit [int]$env:STUB_EXIT
 '@
         $stubHost = $hostExe
@@ -182,7 +194,8 @@ exit [int]$env:STUB_EXIT
         param([hashtable]$Variables, [scriptblock]$Body)
         # BENCHMARK_REPORT_AGGREGATES_ONLY is cleared: a caller's own setting would change what the
         # runs report (#1445 review). The saved values are restored afterwards.
-        $all = @{ TASKSMACK_STUB_HOST = $stubHost; TASKSMACK_STUB_HOST_ARGS = $stubHostArgs; TASKSMACK_STUB_SCRIPT = $stubScript; STUB_SLEEP_MS = $null; BENCHMARK_REPORT_AGGREGATES_ONLY = $null }
+        # The system-load samples around each run (#3163) are shortened from 500 ms to 20 ms.
+        $all = @{ TASKSMACK_STUB_HOST = $stubHost; TASKSMACK_STUB_HOST_ARGS = $stubHostArgs; TASKSMACK_STUB_SCRIPT = $stubScript; STUB_SLEEP_MS = $null; BENCHMARK_REPORT_AGGREGATES_ONLY = $null; TASKSMACK_BENCH_LOAD_SAMPLE_MS = '20' }
         foreach ($name in $Variables.Keys) { $all[$name] = $Variables[$name] }
         # $null removes a variable: PowerShell passes a plain $null to a .NET string parameter as '',
         # which newer .NET keeps as an empty variable (and Google Benchmark reads an empty
@@ -280,6 +293,12 @@ exit [int]$env:STUB_EXIT
         # stub exits 0 with output that cannot be redacted.
         @{ Name = 'separator'; StubExit = '0'; StubOutput = 'partial'
             Command = "& $(& $quote $benchScript) -BenchmarkBinary $(& $quote $stub) -OutputDirectory $(& $quote (Join-Path $root 'separator')) -- '--benchmark_filter=BM_X'" }
+        # #3163: -Core performance pins the stub (through cmd.exe) to one core on a hybrid CPU, and
+        # -Core any leaves it alone; the stub writes the affinity it inherited.
+        @{ Name = 'core-performance'; StubExit = '0'; StubOutput = 'full'; StubAffinity = (Join-Path $root 'core-performance.affinity')
+            Command = "& $(& $quote $benchScript) fake-preset -Core performance -BenchmarkBinary $(& $quote $stub) -OutputDirectory $(& $quote (Join-Path $root 'core-performance')) '--benchmark_filter=BM_X'" }
+        @{ Name = 'core-any'; StubExit = '0'; StubOutput = 'full'; StubAffinity = (Join-Path $root 'core-any.affinity')
+            Command = "& $(& $quote $benchScript) fake-preset -Core any -BenchmarkBinary $(& $quote $stub) -OutputDirectory $(& $quote (Join-Path $root 'core-any')) '--benchmark_filter=BM_X'" }
     )
     $presetIdentities = [ordered]@{ user = [Environment]::UserName; host = [Environment]::MachineName.Split('.')[0] }
     foreach ($kind in @($presetIdentities.Keys)) {
@@ -308,6 +327,9 @@ $outcomes = foreach ($scenario in (Get-Content -LiteralPath $Scenarios -Raw | Co
     $env:STUB_EXIT = $scenario.StubExit
     $env:STUB_OUTPUT = $scenario.StubOutput
     $env:STUB_MUTATE = if ($scenario.PSObject.Properties['StubMutate']) { $scenario.StubMutate } else { $null }
+    $env:STUB_AFFINITY = if ($scenario.PSObject.Properties['StubAffinity']) { $scenario.StubAffinity } else { $null }
+    # bench.ps1 pins this host around the launch on a hybrid CPU and must put it back (#3163).
+    $hostAffinity = [Diagnostics.Process]::GetCurrentProcess().ProcessorAffinity
     $PSNativeCommandUseErrorActionPreference = [bool]($scenario.PSObject.Properties['Promote'] -and $scenario.Promote)
     $here = Get-Location
     $path = $env:PATH
@@ -323,7 +345,8 @@ $outcomes = foreach ($scenario in (Get-Content -LiteralPath $Scenarios -Raw | Co
     }
     catch { $exitCode = 1; $log = "$($_ | Out-String)" }
     finally { Set-Location $here; $env:PATH = $path }
-    [pscustomobject]@{ Name = $scenario.Name; ExitCode = $exitCode; Log = $log }
+    $restored = [Diagnostics.Process]::GetCurrentProcess().ProcessorAffinity -eq $hostAffinity
+    [pscustomobject]@{ Name = $scenario.Name; ExitCode = $exitCode; Log = $log; AffinityRestored = $restored }
 }
 $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encoding utf8
 '@
@@ -365,6 +388,7 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
     foreach ($outcome in (Get-Content -LiteralPath $scenarioResults -Raw -Encoding utf8 | ConvertFrom-Json)) {
         $files = Get-RunFiles (Join-Path $root $outcome.Name)
         $outcomes[$outcome.Name] = [pscustomobject]@{ ExitCode = [int]$outcome.ExitCode; Log = $outcome.Log; Result = $files.Result; Manifest = $files.Manifest }
+        Assert-True ([bool]$outcome.AffinityRestored) "Scenario $($outcome.Name) left the calling PowerShell host's processor affinity changed:`n$($outcome.Log)"
     }
     Assert-True ($outcomes.Count -eq $scenarios.Count) "The shared host ran $($outcomes.Count) of $($scenarios.Count) scenarios"
 
@@ -415,7 +439,7 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
 
     $manifestText = Get-Content -LiteralPath $ok.Manifest[0].FullName -Raw
     $manifest = $manifestText | ConvertFrom-Json
-    $expectedKeys = @('schema_version', 'generator', 'created_utc', 'preset', 'result_file', 'exit_code', 'git', 'binary', 'build', 'benchmark', 'machine')
+    $expectedKeys = @('schema_version', 'generator', 'created_utc', 'preset', 'result_file', 'exit_code', 'git', 'binary', 'build', 'benchmark', 'machine', 'placement', 'system_load')
     $actualKeys = @($manifest.PSObject.Properties.Name)
     Assert-True ((Compare-Object $expectedKeys $actualKeys) -eq $null) "Manifest keys: $($actualKeys -join ', ')"
     foreach ($section in @{
@@ -424,6 +448,8 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
             build     = @('build_type', 'generator', 'compiler', 'compiler_id', 'compiler_version', 'cxx_flags_sha256', 'cxx_flags_config_sha256', 'cxx_flags_source', 'ipo', 'ipo_source')
             benchmark = @('args', 'raw_repetitions', 'report_aggregates_only')
             machine   = @('label', 'cpu_model', 'logical_cores', 'os_name', 'os_version', 'arch')
+            placement = @('core', 'core_class', 'hybrid', 'logical_cpu', 'affinity_mask')
+            system_load = @('sample_ms', 'before_percent', 'after_percent')
         }.GetEnumerator()) {
         $keys = @($manifest.($section.Key).PSObject.Properties.Name)
         Assert-True ((Compare-Object $section.Value $keys) -eq $null) "Manifest $($section.Key) keys: $($keys -join ', ')"
@@ -571,6 +597,48 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
     $bareManifest = Get-Content -LiteralPath $bare.Manifest[0].FullName -Raw | ConvertFrom-Json
     $stubHash = (Get-FileHash -LiteralPath $stub -Algorithm SHA256).Hash.ToLowerInvariant()
     Assert-True ($bareManifest.binary.sha256 -eq $stubHash -and $bareManifest.exit_code -eq 0) "The manifest must hash the binary that ran: $($bareManifest.binary.sha256) vs $stubHash"
+
+    # ── #3163: core placement and system load in the manifest ──────────────────────────────────
+    # What this machine's cores say the runs should have done: pinned to one logical CPU of the
+    # highest EfficiencyClass on a hybrid CPU, left alone elsewhere.
+    $hostCores = Get-ProcessorCores
+    $hostMask = Get-ProcessAffinityMask
+    $expectedPin = Select-BenchCore -Cores $hostCores -Requested 'performance' -AllowedMask $hostMask
+    Assert-True ($null -ne $hostCores -or -not $IsWindows) 'GetLogicalProcessorInformationEx must be readable on Windows'
+    foreach ($name in @('ok', 'core-performance', 'core-any')) {
+        $run = $outcomes[$name]
+        Assert-True ($run.ExitCode -eq 0 -and $run.Manifest.Count -eq 1) "$name run failed:`n$($run.Log)"
+        $placed = Get-Content -LiteralPath $run.Manifest[0].FullName -Raw | ConvertFrom-Json
+        Assert-True ($placed.placement.affinity_mask -cmatch '^0x[0-9a-f]+$') "$name affinity mask: $($placed.placement.affinity_mask)"
+        Assert-True ($placed.system_load.sample_ms -eq 20) "${name}: TASKSMACK_BENCH_LOAD_SAMPLE_MS must set the sample length: $($placed.system_load | ConvertTo-Json -Compress)"
+        foreach ($key in @('before_percent', 'after_percent')) {
+            $value = $placed.system_load.$key
+            Assert-True ($(if ($IsWindows) { $value -is [double] -or $value -is [long] -or $value -is [int] } else { $null -eq $value })) "$name system_load.${key}: [$value]"
+            if ($null -ne $value) { Assert-True ($value -ge 0 -and $value -le 100) "$name system_load.$key out of range: $value" }
+        }
+        Assert-True ($placed.placement.hybrid -eq $expectedPin.Hybrid) "$name hybrid: [$($placed.placement.hybrid)], expected [$($expectedPin.Hybrid)]"
+        Assert-True ($run.Log -like '*Cores: -Core *') "$name must print its placement:`n$($run.Log)"
+    }
+    $pinnedRun = Get-Content -LiteralPath $outcomes['core-performance'].Manifest[0].FullName -Raw | ConvertFrom-Json
+    $stubAffinity = (Get-Content -LiteralPath (Join-Path $root 'core-performance.affinity') -Raw).Trim()
+    if ($null -ne $expectedPin.Mask) {
+        $expectedMask = Format-AffinityMask $expectedPin.Mask
+        Assert-True ($pinnedRun.placement.core -ceq 'performance' -and $pinnedRun.placement.core_class -eq $expectedPin.CoreClass -and $pinnedRun.placement.logical_cpu -eq $expectedPin.LogicalCpu -and $pinnedRun.placement.affinity_mask -ceq $expectedMask) "Pinned placement: $($pinnedRun.placement | ConvertTo-Json -Compress); expected CPU $($expectedPin.LogicalCpu), class $($expectedPin.CoreClass)"
+        # The benchmark process (behind cmd.exe) inherited the pin.
+        Assert-True ($stubAffinity -ceq $expectedMask) "The stub ran with affinity $stubAffinity, not the pinned $expectedMask"
+        Assert-True ($pinnedRun.placement.logical_cpu -ne 0 -or @($hostCores | Where-Object { $_.EfficiencyClass -eq $expectedPin.CoreClass } | ForEach-Object { $_.Processors }).Count -eq 1) 'Logical CPU 0 must be avoided'
+        # The default on this (hybrid) machine is the same pin.
+        $defaultRun = Get-Content -LiteralPath $ok.Manifest[0].FullName -Raw | ConvertFrom-Json
+        Assert-True ($defaultRun.placement.core -ceq 'performance' -and $defaultRun.placement.logical_cpu -eq $expectedPin.LogicalCpu) "The default on a hybrid CPU must be -Core performance: $($defaultRun.placement | ConvertTo-Json -Compress)"
+    }
+    else {
+        # One class of core (or unknown cores): -Core performance changes nothing.
+        Assert-True ($pinnedRun.placement.core -ceq 'performance' -and $pinnedRun.placement.core_class -ceq 'any' -and $null -eq $pinnedRun.placement.logical_cpu) "Placement without a pin: $($pinnedRun.placement | ConvertTo-Json -Compress)"
+        Assert-True ($stubAffinity -ceq (Format-AffinityMask $hostMask)) "The stub's affinity $stubAffinity changed without a hybrid CPU"
+    }
+    $anyRun = Get-Content -LiteralPath $outcomes['core-any'].Manifest[0].FullName -Raw | ConvertFrom-Json
+    Assert-True ($anyRun.placement.core -ceq 'any' -and $anyRun.placement.core_class -ceq 'any' -and $null -eq $anyRun.placement.logical_cpu -and $anyRun.placement.affinity_mask -ceq (Format-AffinityMask $hostMask)) "-Core any placement: $($anyRun.placement | ConvertTo-Json -Compress)"
+    Assert-True ((Get-Content -LiteralPath (Join-Path $root 'core-any.affinity') -Raw).Trim() -ceq (Format-AffinityMask $hostMask)) '-Core any must leave the benchmark''s affinity alone'
 
     # ── #1445 review: concurrent runs claim distinct output names, never an earlier one's ─────
     foreach ($entry in @($processes | Where-Object { $_.Name -like 'racer *' })) {
@@ -1055,6 +1123,97 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
         $hiddenKernel = (Hide-ManifestIdentity $kernel -Homes @() -User $case[2] -Hosts $case[3]).machine
         Assert-True ($hiddenKernel.os_version -ceq $case[4] -and $hiddenKernel.label -ceq "Some CPU / 8 logical cores / $($case[0]) $($case[4])") "OS version [$($case[1])]: $($hiddenKernel.os_version) | $($hiddenKernel.label)"
     }
+
+    # ── #3163: reading the cores, choosing one, and the load ───────────────────────────────────
+    function New-CoreRecord {
+        # One SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX record for a core (Relationship 0), or of
+        # another kind with -Relationship, laid out for -PointerSize as Windows writes it.
+        param([int]$EfficiencyClass, [int[]]$Processors, [int]$Group = 0, [int]$PointerSize = 8, [int]$Relationship = 0)
+        $size = 32 + $(if ($PointerSize -eq 8) { 16 } else { 12 })
+        $bytes = [byte[]]::new($size)
+        [BitConverter]::GetBytes([int]$Relationship).CopyTo($bytes, 0)
+        [BitConverter]::GetBytes([int]$size).CopyTo($bytes, 4)
+        $bytes[9] = [byte]$EfficiencyClass
+        [BitConverter]::GetBytes([uint16]1).CopyTo($bytes, 30)
+        $mask = [uint64]0
+        foreach ($cpu in $Processors) { $mask = $mask -bor ([uint64]1 -shl $cpu) }
+        if ($PointerSize -eq 8) { [BitConverter]::GetBytes($mask).CopyTo($bytes, 32) } else { [BitConverter]::GetBytes([uint32]$mask).CopyTo($bytes, 32) }
+        [BitConverter]::GetBytes([uint16]$Group).CopyTo($bytes, 32 + $PointerSize)
+        return $bytes
+    }
+    function New-Cores {
+        # Cores from (EfficiencyClass, logical CPUs[, group]) tuples, through the buffer reader.
+        param([object[]]$Layout, [int]$PointerSize = 8)
+        $buffer = [byte[]]@(foreach ($core in $Layout) { New-CoreRecord -EfficiencyClass $core[0] -Processors $core[1] -Group $(if ($core.Count -gt 2) { $core[2] } else { 0 }) -PointerSize $PointerSize })
+        return , (ConvertFrom-ProcessorCoreBuffer $buffer -PointerSize $PointerSize)
+    }
+
+    # The buffer reader: classes, groups and CPUs, other record kinds skipped, both pointer sizes.
+    foreach ($pointerSize in 8, 4) {
+        $buffer = [byte[]]@(
+            New-CoreRecord -EfficiencyClass 1 -Processors 0, 1 -PointerSize $pointerSize
+            New-CoreRecord -EfficiencyClass 0 -Processors 2 -PointerSize $pointerSize -Relationship 2  # a cache record
+            New-CoreRecord -EfficiencyClass 0 -Processors 31 -Group 1 -PointerSize $pointerSize
+        )
+        $read = ConvertFrom-ProcessorCoreBuffer $buffer -PointerSize $pointerSize
+        Assert-True ($read.Count -eq 2) "Pointer size ${pointerSize}: $($read.Count) cores read, expected 2"
+        Assert-True ($read[0].EfficiencyClass -eq 1 -and $read[0].Group -eq 0 -and (@($read[0].Processors) -join ',') -eq '0,1') "Pointer size ${pointerSize}: first core $($read[0] | ConvertTo-Json -Compress)"
+        Assert-True ($read[1].EfficiencyClass -eq 0 -and $read[1].Group -eq 1 -and (@($read[1].Processors) -join ',') -eq '31') "Pointer size ${pointerSize}: second core $($read[1] | ConvertTo-Json -Compress)"
+    }
+    $high = ConvertFrom-ProcessorCoreBuffer (New-CoreRecord -EfficiencyClass 2 -Processors 63)
+    Assert-True ((@($high[0].Processors) -join ',') -eq '63' -and $high[0].EfficiencyClass -eq 2) "Logical CPU 63: $($high[0] | ConvertTo-Json -Compress)"
+    Assert-True ((ConvertFrom-ProcessorCoreBuffer ([byte[]]@())).Count -eq 0) 'An empty buffer holds no cores'
+    $whole = New-CoreRecord -EfficiencyClass 1 -Processors 0
+    foreach ($length in 6, ($whole.Count - 1)) {
+        $threw = $false
+        try { $null = ConvertFrom-ProcessorCoreBuffer ([byte[]]$whole[0..($length - 1)]) } catch { $threw = $true }
+        Assert-True $threw "A buffer truncated to $length bytes must throw"
+    }
+
+    # Choosing the core. #3112's Core Ultra 7 255H: P-cores (class 1) at 0, 1 and 10-13, E and
+    # LP-E cores (class 0) elsewhere, no SMT.
+    $arrowLake = New-Cores (@(@(1, @(0)), @(1, @(1))) + @(foreach ($cpu in 2..9) { , @(0, @($cpu)) }) + @(foreach ($cpu in 10..13) { , @(1, @($cpu)) }) + @(@(0, @(14)), @(0, @(15))))
+    $allMask = [uint64]0xffff
+    foreach ($case in @(
+            @{ Name = 'hybrid default'; Cores = $arrowLake; Requested = ''; Core = 'performance'; Class = 1; Cpu = 13; Hybrid = $true }
+            @{ Name = 'hybrid performance'; Cores = $arrowLake; Requested = 'performance'; Core = 'performance'; Class = 1; Cpu = 13; Hybrid = $true }
+            @{ Name = 'hybrid any'; Cores = $arrowLake; Requested = 'any'; Core = 'any'; Class = 'any'; Cpu = $null; Hybrid = $true }
+            # CPU 13 outside this process's affinity: the next P-core.
+            @{ Name = 'affinity excludes 13'; Cores = $arrowLake; Requested = ''; Allowed = $allMask -band (-bnot ([uint64]1 -shl 13)); Core = 'performance'; Class = 1; Cpu = 12; Hybrid = $true }
+            # Only P-cores 0 and 1 allowed: 1, not 0.
+            @{ Name = 'only 0 and 1 allowed'; Cores = $arrowLake; Requested = ''; Allowed = [uint64]3; Core = 'performance'; Class = 1; Cpu = 1; Hybrid = $true }
+            # Only P-core 0 allowed: 0 is the last one left.
+            @{ Name = 'only 0 allowed'; Cores = $arrowLake; Requested = ''; Allowed = [uint64]1; Core = 'performance'; Class = 1; Cpu = 0; Hybrid = $true }
+            # No P-core allowed: a warning, no pin.
+            @{ Name = 'only E-cores allowed'; Cores = $arrowLake; Requested = ''; Allowed = [uint64]0x3fc; Core = 'performance'; Class = 'any'; Cpu = $null; Hybrid = $true; Warns = $true }
+            # SMT: the P-core holding CPU 0 also holds CPU 1, so the other P-core is taken.
+            @{ Name = 'SMT apart from CPU 0'; Cores = (New-Cores @(@(1, @(0, 1)), @(1, @(2, 3)), @(0, @(4)), @(0, @(5)))); Requested = ''; Core = 'performance'; Class = 1; Cpu = 3; Hybrid = $true }
+            @{ Name = 'SMT, only CPU 0''s core'; Cores = (New-Cores @(@(1, @(0, 1)), @(0, @(2)), @(0, @(3)))); Requested = ''; Core = 'performance'; Class = 1; Cpu = 1; Hybrid = $true }
+            # Three classes (LP-E, E, P): the highest.
+            @{ Name = 'three classes'; Cores = (New-Cores @(@(0, @(0)), @(1, @(1)), @(2, @(2)), @(2, @(3)), @(1, @(4)))); Requested = ''; Core = 'performance'; Class = 2; Cpu = 3; Hybrid = $true }
+            # The top class only in processor group 1, which ProcessorAffinity cannot reach.
+            @{ Name = 'top class in group 1'; Cores = (New-Cores @(@(0, @(0)), @(0, @(1)), @(1, @(0), 1))); Requested = ''; Core = 'performance'; Class = 'any'; Cpu = $null; Hybrid = $true; Warns = $true }
+            # One class: nothing changes, whatever -Core says.
+            @{ Name = 'uniform default'; Cores = (New-Cores @(@(0, @(0, 1)), @(0, @(2, 3)))); Requested = ''; Core = 'any'; Class = 'any'; Cpu = $null; Hybrid = $false }
+            @{ Name = 'uniform performance'; Cores = (New-Cores @(@(0, @(0, 1)), @(0, @(2, 3)))); Requested = 'performance'; Core = 'performance'; Class = 'any'; Cpu = $null; Hybrid = $false }
+            # Cores unknown: a warning unless -Core any was asked for.
+            @{ Name = 'unknown default'; Cores = $null; Requested = ''; Core = 'any'; Class = 'any'; Cpu = $null; Hybrid = $null; Warns = $true }
+            @{ Name = 'unknown performance'; Cores = $null; Requested = 'performance'; Core = 'performance'; Class = 'any'; Cpu = $null; Hybrid = $null; Warns = $true }
+            @{ Name = 'unknown any'; Cores = $null; Requested = 'any'; Core = 'any'; Class = 'any'; Cpu = $null; Hybrid = $null }
+        )) {
+        $allowed = if ($case.ContainsKey('Allowed')) { $case.Allowed } else { $allMask }
+        $got = Select-BenchCore -Cores $case.Cores -Requested $case.Requested -AllowedMask $allowed
+        $expectedMask = if ($null -ne $case.Cpu) { [uint64]1 -shl $case.Cpu } else { $null }
+        $caseOk = $got.Core -ceq $case.Core -and "$($got.CoreClass)" -ceq "$($case.Class)" -and $got.LogicalCpu -eq $case.Cpu -and $got.Mask -eq $expectedMask -and $got.Hybrid -eq $case.Hybrid -and [bool]$got.Warning -eq [bool]$case['Warns']
+        Assert-True $caseOk "Select-BenchCore ($($case.Name)): $($got | ConvertTo-Json -Compress)"
+    }
+    Assert-True ((Format-AffinityMask ([uint64]1 -shl 63)) -ceq '0x8000000000000000' -and $null -eq (Format-AffinityMask $null)) 'Format-AffinityMask'
+    Assert-True ((ConvertFrom-AffinityPointer (ConvertTo-AffinityPointer ([uint64]1 -shl 63))) -eq ([uint64]1 -shl 63) -or [IntPtr]::Size -eq 4) 'An affinity mask with bit 63 survives the IntPtr round trip'
+
+    # The load from two GetSystemTimes samples: kernel time includes idle time.
+    Assert-True ((Get-CpuLoadPercent @(100, 1000, 1000) @(150, 1100, 1100)) -eq 75.0) 'Load: 50 idle of 200'
+    Assert-True ((Get-CpuLoadPercent @(0, 0, 0) @(300, 300, 0)) -eq 0.0) 'Load: all idle'
+    Assert-True ($null -eq (Get-CpuLoadPercent @(5, 5, 5) @(5, 5, 5))) 'Load: no time passed'
 
     Write-Host 'bench.ps1 tests passed'
 }

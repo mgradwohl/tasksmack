@@ -1309,6 +1309,46 @@ file is still redacted (or deleted when it is too truncated to parse), so it nev
 name, but it is not reported as usable; output that cannot be redacted after a successful exit is
 deleted too, and the script fails.
 
+### Benchmarking on a Hybrid CPU or a Shared Desktop
+
+On a hybrid CPU (performance and efficiency cores), a whole run can land on efficiency cores and
+come out 2-3x slower on every benchmark, pure arithmetic included (#3163; in #3112 a Core Ultra 7
+255H ran `BM_ChartWidgets_ComputeAlpha` at 11.1 ns on one run and 4.4 ns on the next, same code).
+So on Windows:
+
+- **`bench.ps1` pins hybrid CPUs.** With `-Core performance`, the default on a CPU whose cores have
+  more than one `EfficiencyClass`, it pins the benchmark process (and everything it starts) to one
+  logical CPU of the highest class. It never takes logical CPU 0, which handles most interrupts,
+  unless nothing else is left. `-Core any` leaves placement to the scheduler, as before. On a CPU
+  with one class of core, nothing changes. If the classes can't be read
+  (`GetLogicalProcessorInformationEx`), the run isn't pinned and a warning says so.
+- **No EcoQoS.** `TaskSmackBenchmarks.exe` opts itself out of Windows power throttling at
+  startup (`SetProcessInformation(ProcessPowerThrottling)`, execution speed on). Otherwise a
+  console run started from a background shell can be treated as low-QoS. A failure is reported
+  once on stderr.
+- **The manifest says where the run went.** It records the placement and the system CPU load just
+  before and just after the run (see `placement` and `system_load` below).
+  `check-benchmark-regression.py` refuses to compare two runs whose manifests record different
+  core classes.
+
+`bench.sh` doesn't pin yet; on a hybrid Linux machine, run it under `taskset -c <cpu>` yourself.
+
+Pinning isn't enough when the machine is busy: in #3112 the same binary on the same pinned core
+was 30-50% slower with a build and clangd running (38-78% system CPU) than at 7-63%. For an A/B
+comparison on a shared desktop:
+
+1. **Pin both sides to the same core.** Use the default `-Core performance` for both, never one
+   pinned run against one unpinned.
+2. **Interleave the runs:** A, B, A, B, not all of A and then all of B. Load that comes and goes
+   then hits both sides alike.
+3. **Keep the best of N.** Run each side at least twice and compare the faster median of each
+   benchmark. Noise from other work only ever adds time.
+4. **Check the load.** Read `system_load` in each manifest (the comparison prints it). A run that
+   started or ended with the machine busy is worth repeating.
+
+A short filter with fewer, shorter repetitions is enough for a focused comparison, for example
+`pwsh tools/bench.ps1 win-benchmark --benchmark_filter=ChartGeometry --benchmark_repetitions=5 --benchmark_min_time=0.3s`.
+
 ### Benchmark Output
 
 Each `bench.sh` / `bench.ps1` run writes two files to `perf-data/`. The result name is claimed
@@ -1344,7 +1384,14 @@ manifest's `preset`, so no file name or manifest field carries it:
   build trees, `ipo_source` naming the entry used), `benchmark` (the arguments passed,
   allowlisted or hashed as below), `exit_code`, and
   `machine`, an anonymized machine class (CPU model, logical core count, OS name/version,
-  architecture).
+  architecture). `bench.ps1` adds two more (#3163):
+  - `placement`: `core`, the `-Core` mode (`performance` or `any`); `core_class`, the pinned
+    CPU's `EfficiencyClass`, or `any` for an unpinned run; `hybrid`, whether the cores have more
+    than one class (`null` if they couldn't be read); `logical_cpu`, the pinned CPU or `null`;
+    and `affinity_mask`, the mask the benchmark ran with, in hex.
+  - `system_load`: `before_percent` and `after_percent`, the share of all CPUs busy over
+    `sample_ms` (500 ms) just before and just after the run, or `null` where it couldn't be
+    sampled.
   - The benchmark arguments are recorded as written only when they are Google Benchmark options
     whose values are safe by construction: numbers (`--benchmark_repetitions`,
     `--benchmark_min_time`, `--benchmark_min_warmup_time`, `--v`), booleans (the aggregates,
@@ -1374,7 +1421,8 @@ manifest's `preset`, so no file name or manifest field carries it:
     whatever its length, so a home of `/ab` too; never a root or a bare drive -- and the
     host name (short and FQDN) and user name (3+ characters, standing alone between separators)
     with `<host>` and `<user>`. Validated categorical fields (OS name/version, architecture,
-    compiler id/version, generator, the flag hashes, a standard build type -- Debug, Release, RelWithDebInfo,
+    compiler id/version, generator, the flag hashes, the placement's `core`, `core_class` and
+    `affinity_mask`, a standard build type -- Debug, Release, RelWithDebInfo,
     MinSizeRel --, schema fields, numbers and booleans) are left alone, so a host named `Linux` or
     a user named `clang` cannot rewrite them; a custom build type is scrubbed, its own `-`, `.`
     and `_` bounding a name too (`ASan-benchuser` becomes `ASan-<user>`). The OS version is
@@ -1390,7 +1438,8 @@ manifest's `preset`, so no file name or manifest field carries it:
 For the script tests, the `TASKSMACK_BENCH_BIN` / `TASKSMACK_BENCH_OUT_DIR` environment variables
 point either script at a stub binary and a scratch directory (`tools/test-bench.ps1`,
 `tests/tools/test_bench_sh.py`); `bench.ps1`'s `-BenchmarkBinary <path>` / `-OutputDirectory <dir>`
-do the same and win over the variables.
+do the same and win over the variables. `TASKSMACK_BENCH_LOAD_SAMPLE_MS` shortens `bench.ps1`'s
+system-load samples for them.
 A relative binary path, a bare name included, is relative to the current directory (the
 PowerShell location for `bench.ps1`) and is never looked up on `PATH`: the file that is checked
 and hashed is the one that runs. They are also the only way to move the output: an extra `--benchmark_out` or
@@ -1413,6 +1462,16 @@ python tools/check-benchmark-regression.py --baseline perf-data/win-baseline.jso
 # Compare Linux runs
 python3 tools/check-benchmark-regression.py --baseline perf-data/linux-baseline.json --current perf-data/benchmark-<timestamp>.json
 ```
+
+The comparison reads each run's `<result>.manifest.json` next to it, or the one
+`--baseline-manifest` / `--current-manifest` names. When both record a `placement.core_class`
+and the classes differ (an efficiency core against a performance core, or a pinned run against
+an unpinned one), it refuses with exit code 2 before comparing anything (#3163). A warning would
+leave an exit code that's wrong either way: 1 for dozens of regressions that are only the cores,
+or 0 with a real regression hidden by a faster core. Pass `--allow-core-class-mismatch` to
+compare them anyway, with a warning. A run without that field isn't checked, and the output says
+so: the committed baselines have no manifest, and `bench.sh` doesn't record placement. The CI
+gate isn't affected. The comparison also prints each manifest's `system_load`.
 
 ### CI Benchmark Regression Gate
 
