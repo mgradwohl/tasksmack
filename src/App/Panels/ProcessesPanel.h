@@ -355,6 +355,13 @@ class ProcessesPanel : public Panel
         m_KillShortcut.request();
     }
 
+    /// F6 (#3097): on this frame's render, open the table's "Sort by" menu of its visible columns.
+    /// Lives for this frame only, as requestKillSelected().
+    void requestSortMenu() noexcept
+    {
+        m_SortMenuShortcut.request();
+    }
+
     /// Waits for a single-process row action running on its worker (#2305) and takes its result in, as
     /// the next frame would: for tests, which check the platform call straight after confirming.
     void waitForRowActionForTesting()
@@ -378,6 +385,7 @@ class ProcessesPanel : public Panel
     void expireFrameRequests() noexcept
     {
         m_KillShortcut.expire();
+        m_SortMenuShortcut.expire();
     }
 
   private:
@@ -573,6 +581,7 @@ class ProcessesPanel : public Panel
     // Keyboard navigation (#160) and F9 (#170). A move scrolls the newly selected row into view on the
     // frame it is drawn; the clipper is told to draw that row even when it is off-screen.
     KeyboardShortcuts::FrameRequest m_KillShortcut;
+    KeyboardShortcuts::FrameRequest m_SortMenuShortcut; // F6 (#3097), taken by the table this frame
     bool m_ScrollSelectedIntoView = false;
     std::size_t m_ScrollTargetRow = 0; // Index of the selected row in the visible order
 

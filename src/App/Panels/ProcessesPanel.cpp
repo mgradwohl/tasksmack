@@ -122,6 +122,7 @@ constexpr std::string_view LIST_VIEW_LABEL = ICON_FA_LIST " List";
 constexpr std::string_view TREE_VIEW_LABEL = ICON_FA_SITEMAP " Tree";
 constexpr std::string_view COLUMNS_LABEL = ICON_FA_TABLE_COLUMNS " Columns";
 constexpr const char* COLUMNS_POPUP_ID = "##ColumnsMenu";
+constexpr const char* SORT_MENU_POPUP_ID = "##SortMenu"; // F6 (#3097)
 constexpr const char* ROW_MENU_POPUP_ID = "##ProcessRowMenu";
 constexpr const char* FILTER_HINT = ICON_FA_MAGNIFYING_GLASS "  Filter by name or command...";
 // Tree view's Expand all and Collapse all (#838): icon buttons, explained by their tooltips.
@@ -1991,6 +1992,61 @@ void ProcessesPanel::renderContent()
             const float commandWidth = commandColumn.IsEnabled ? commandColumn.WidthGiven : 0.0F;
             m_OtherColumnsWidth = table->ColumnsGivenWidth - commandWidth;
             m_TableVisibleWidth = table->InnerClipRect.GetWidth();
+        }
+
+        // F6's "Sort by" menu (#3097): the visible sortable columns, the sort column ticked. Picking it
+        // again reverses the order; another column sorts by it in that column's own first direction.
+        // Applied below the menu, so the sort below picks it up this frame.
+        if (m_SortMenuShortcut.take())
+        {
+            ImGui::OpenPopup(SORT_MENU_POPUP_ID);
+        }
+        std::optional<int> sortPick;
+        if (ImGui::IsPopupOpen(SORT_MENU_POPUP_ID))
+        {
+            // Read here, in the table: inside the popup's own window ImGui has no current table.
+            struct SortChoice
+            {
+                int column;
+                const char* name;
+                bool sorted;
+            };
+            std::vector<SortChoice> choices;
+            for (int column = 0; column < ImGui::TableGetColumnCount(); ++column)
+            {
+                const ImGuiTableColumnFlags flags = ImGui::TableGetColumnFlags(column);
+                if ((flags & ImGuiTableColumnFlags_IsEnabled) != 0 && (flags & ImGuiTableColumnFlags_NoSort) == 0)
+                {
+                    choices.push_back({.column = column,
+                                       .name = ImGui::TableGetColumnName(column),
+                                       .sorted = (flags & ImGuiTableColumnFlags_IsSorted) != 0});
+                }
+            }
+            if (ImGui::BeginPopup(SORT_MENU_POPUP_ID))
+            {
+                ImGui::TextDisabled("Sort by");
+                ImGui::Separator();
+                for (const SortChoice& choice : choices)
+                {
+                    if (ImGui::MenuItem(choice.name, nullptr, choice.sorted))
+                    {
+                        sortPick = choice.column;
+                    }
+                }
+                ImGui::EndPopup();
+            }
+        }
+        if (sortPick.has_value())
+        {
+            const ImGuiTableColumnFlags flags = ImGui::TableGetColumnFlags(*sortPick);
+            ImGuiSortDirection direction =
+                (flags & ImGuiTableColumnFlags_PreferSortDescending) != 0 ? ImGuiSortDirection_Descending : ImGuiSortDirection_Ascending;
+            if (const ImGuiTable* table = ImGui::GetCurrentTable(); table != nullptr && (flags & ImGuiTableColumnFlags_IsSorted) != 0)
+            {
+                direction = table->Columns[*sortPick].SortDirection == ImGuiSortDirection_Ascending ? ImGuiSortDirection_Descending
+                                                                                                    : ImGuiSortDirection_Ascending;
+            }
+            ImGui::TableSetColumnSortDirection(*sortPick, direction, false);
         }
 
         // Sorting, in both views: the list shows the sorted indices as they are, and the tree view
