@@ -114,6 +114,20 @@ TEST(ProcessColumnAvailabilityTest, ArchitectureFollowsItsCapabilityAndIsHiddenB
     EXPECT_EQ(columnAlignment(ProcessColumn::Architecture), ColumnAlign::Left);
 }
 
+TEST(ProcessColumnAvailabilityTest, PolicyFollowsItsCapabilityAndIsHiddenByDefault)
+{
+    // #3086: Linux reads it from /proc/[pid]/stat; Windows shows dashes and the header's note.
+    Platform::ProcessCapabilities caps;
+    EXPECT_FALSE(isSupported(ProcessColumn::Policy, caps));
+    EXPECT_FALSE(rowFormatOptions(caps).hasSchedPolicy);
+    caps.hasSchedPolicy = true;
+    EXPECT_TRUE(isSupported(ProcessColumn::Policy, caps));
+    EXPECT_TRUE(rowFormatOptions(caps).hasSchedPolicy);
+    EXPECT_FALSE(ProcessColumnAvailability::defaultVisible(ProcessColumn::Policy, caps));
+    EXPECT_EQ(getColumnInfo(ProcessColumn::Policy).configKey, "policy");
+    EXPECT_EQ(columnAlignment(ProcessColumn::Policy), ColumnAlign::Left);
+}
+
 TEST(ProcessColumnAvailabilityTest, ServicesFollowTheirCapability)
 {
     // #1886: Linux reads the systemd service; Windows (until #1880) shows dashes and the header's note.

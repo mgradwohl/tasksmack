@@ -21,11 +21,13 @@ using KeyboardShortcuts::FunctionKey;
 using ProcessTableNavigation::NavCommand;
 using ProcessTableNavigation::NavKey;
 
-constexpr std::array<std::pair<FunctionKey, ImGuiKey>, 6> FUNCTION_KEYS{{
+constexpr std::array<std::pair<FunctionKey, ImGuiKey>, 8> FUNCTION_KEYS{{
     {FunctionKey::F1, ImGuiKey_F1},
     {FunctionKey::F2, ImGuiKey_F2},
     {FunctionKey::F5, ImGuiKey_F5},
     {FunctionKey::F6, ImGuiKey_F6},
+    {FunctionKey::F7, ImGuiKey_F7},
+    {FunctionKey::F8, ImGuiKey_F8},
     {FunctionKey::F9, ImGuiKey_F9},
     {FunctionKey::F10, ImGuiKey_F10},
 }};

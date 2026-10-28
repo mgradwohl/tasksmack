@@ -525,6 +525,7 @@ set(COMMON_TEST_SOURCES
     Platform/test_ProcFdParser.cpp
     Platform/test_ProcStatusSecurityParser.cpp
     Platform/test_ProcessIdentity.cpp
+    Platform/test_SchedPolicy.cpp # scheduling policy labels and order (#3086)
     Platform/test_ProcessName.cpp
     Platform/test_ProcessEnvironment.cpp
     Platform/test_CpuAffinity.cpp
@@ -616,6 +617,7 @@ set(COMMON_TEST_SOURCES
     App/test_NewProcessHighlight.cpp  # the new-process row tint (#3060)
     App/test_StuckProcesses.cpp  # the stuck-in-D row tint (#3097)
     App/test_IncrementalSearch.cpp  # the Processes table's "/" search (#3097)
+    App/test_NiceStep.cpp  # F7/F8 priority steps (#3097)
     App/test_ExitingProcessRows.cpp # exited processes kept as dimmed rows (#3060)
     App/test_ProcessBatchRun.cpp
     App/test_ProcessActionRun.cpp

@@ -4,6 +4,7 @@
 #include "App/Panel.h"
 #include "App/Panels/ExitingProcessRows.h"
 #include "App/Panels/FindHandlesDialog.h"
+#include "App/Panels/NiceStep.h"
 #include "App/Panels/ProcessActionRun.h"
 #include "App/Panels/ProcessAffinityDialog.h"
 #include "App/Panels/ProcessBatchAction.h"
@@ -364,6 +365,15 @@ class ProcessesPanel : public Panel
         m_KillShortcut.request();
     }
 
+    /// F7 / F8 (#3097): on this frame's render, set the selected process's priority one step higher or
+    /// lower at once, through the row action worker (and the helper's Authenticate and retry when
+    /// refused). Only with one visible selected row, where the platform can set priorities, and no row
+    /// action pending. Lives for this frame only, as requestKillSelected().
+    void requestPriorityStep(NiceStep::Direction direction) noexcept
+    {
+        m_PriorityStepRequest = direction;
+    }
+
     /// F6 (#3097): on this frame's render, open the table's "Sort by" menu of its visible columns.
     /// Lives for this frame only, as requestKillSelected().
     void requestSortMenu() noexcept
@@ -400,6 +410,7 @@ class ProcessesPanel : public Panel
     void expireFrameRequests() noexcept
     {
         m_KillShortcut.expire();
+        m_PriorityStepRequest.reset();
         m_SortMenuShortcut.expire();
     }
 
@@ -603,7 +614,8 @@ class ProcessesPanel : public Panel
     // Keyboard navigation (#160) and F9 (#170). A move scrolls the newly selected row into view on the
     // frame it is drawn; the clipper is told to draw that row even when it is off-screen.
     KeyboardShortcuts::FrameRequest m_KillShortcut;
-    KeyboardShortcuts::FrameRequest m_SortMenuShortcut; // F6 (#3097), taken by the table this frame
+    std::optional<NiceStep::Direction> m_PriorityStepRequest; // F7 / F8 (#3097), taken by the table this frame
+    KeyboardShortcuts::FrameRequest m_SortMenuShortcut;       // F6 (#3097), taken by the table this frame
     bool m_ScrollSelectedIntoView = false;
     std::size_t m_ScrollTargetRow = 0; // Index of the selected row in the visible order
 

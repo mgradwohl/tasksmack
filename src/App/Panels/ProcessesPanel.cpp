@@ -8,6 +8,7 @@
 #include "App/Panels/GpuSection.h"
 #include "App/Panels/IncrementalSearch.h"
 #include "App/Panels/NewProcessHighlight.h"
+#include "App/Panels/NiceStep.h"
 #include "App/Panels/ProcessActionConfirm.h"
 #include "App/Panels/ProcessActionsView.h"
 #include "App/Panels/ProcessAffinityDialog.h"
@@ -679,6 +680,24 @@ void architectureCell(const Domain::ProcessSnapshot& proc, const RowFormatCache&
     }
 }
 
+/// The process's scheduling policy (#3086), left-aligned: "Normal", "FIFO 50"; the unavailable dash where
+/// this system doesn't read policies (Windows), or this process's couldn't be read.
+void schedPolicyCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& fmt, const ProcessCellWidths& widths)
+{
+    if (!fmt.schedPolicySupported)
+    {
+        renderUnavailableTextCell(ProcessRowFormat::UNSUPPORTED_CELL_REASON, widths.unavailableText);
+    }
+    else if (!proc.schedPolicyText.empty())
+    {
+        renderLeftAlignedText(proc.schedPolicyText, fmt.schedPolicyWidth);
+    }
+    else
+    {
+        renderUnavailableTextCell(ProcessRowFormat::UNREADABLE_CELL_REASON, widths.unavailableText);
+    }
+}
+
 /// One CELL_RENDERERS entry: the column it draws (checked against its index
 /// below) and its renderer, or nullptr for a column renderProcessRow() draws.
 struct ProcessCellEntry
@@ -722,6 +741,7 @@ constexpr std::array<ProcessCellEntry, processColumnCount()> CELL_RENDERERS = {{
     {.column = ProcessColumn::Swap, .render = &unitAlignedCell<&RowFormatCache::swap, &ProcessCellWidths::unitBytes>},
     // Scheduling
     {.column = ProcessColumn::Priority, .render = &priorityCell},
+    {.column = ProcessColumn::Policy, .render = &schedPolicyCell},
     {.column = ProcessColumn::Affinity, .render = &rightAlignedCell<&RowFormatCache::affinity>},
     {.column = ProcessColumn::Threads, .render = &rightAlignedCell<&RowFormatCache::threads>},
     {.column = ProcessColumn::Handles, .render = &rightAlignedCell<&RowFormatCache::handles>},
@@ -1755,7 +1775,8 @@ void ProcessesPanel::renderContent()
             for (const ProcessGrouping::GroupBy mode : {ProcessGrouping::GroupBy::None,
                                                         ProcessGrouping::GroupBy::Unit,
                                                         ProcessGrouping::GroupBy::Container,
-                                                        ProcessGrouping::GroupBy::App})
+                                                        ProcessGrouping::GroupBy::App,
+                                                        ProcessGrouping::GroupBy::User})
             {
                 const std::string label(ProcessGrouping::groupByLabel(mode));
                 if (ImGui::Selectable(label.c_str(), mode == m_GroupBy))
@@ -1766,7 +1787,7 @@ void ProcessesPanel::renderContent()
             ImGui::EndCombo();
         }
     }
-    ImGui::SetItemTooltip("Group processes by systemd unit, container or app, each group under a row with its totals");
+    ImGui::SetItemTooltip("Group processes by systemd unit, container, app or user, each group under a row with its totals");
     if (offerRunTask)
     {
         ImGui::SameLine();
@@ -3068,7 +3089,9 @@ void ProcessesPanel::applyKeyboardInput(const std::vector<Domain::ProcessSnapsho
                                         bool selectAllRequested)
 {
     namespace Nav = ProcessTableNavigation;
-    if (command == Nav::NavCommand::None && !killRequested && !selectAllRequested && m_IncrementalSearchStep == IncrementalSearchStep::None)
+    const std::optional<NiceStep::Direction> priorityStep = std::exchange(m_PriorityStepRequest, std::nullopt);
+    if (command == Nav::NavCommand::None && !killRequested && !selectAllRequested && !priorityStep.has_value() &&
+        m_IncrementalSearchStep == IncrementalSearchStep::None)
     {
         return; // The common frame: no key, so the visible order is not even looked at
     }
@@ -3134,6 +3157,33 @@ void ProcessesPanel::applyKeyboardInput(const std::vector<Domain::ProcessSnapsho
             }
         }
     }
+    // F7 / F8 (#3097): the one highlighted row's priority a step higher or lower, at once, as htop does.
+    if (priorityStep.has_value() && m_Selection.size() == 1 && m_ActionCapabilities.canSetPriority && !rowActionPending && m_ProcessActions)
+    {
+        const ProcessSelection::Identity selectedId = *m_Selection.selected().begin();
+        if (const std::optional<std::size_t> row = Nav::indexOfKey<ProcessSelection::Identity>(ids, selectedId); row.has_value())
+        {
+            const Domain::ProcessSnapshot& proc = snapshots[visible[*row]];
+            if (const std::optional<std::int32_t> nice = NiceStep::next(proc.nice, proc.priorityClass, *priorityStep); nice.has_value())
+            {
+                runRowAction(
+                    std::format("Setting the priority of {}...", proc.name),
+                    [actions = m_ProcessActions.get(), selectedId, nice = *nice] { return actions->setPriority(selectedId, nice); },
+                    [name = proc.name, pid = proc.pid, nice = *nice](const Platform::ProcessActionResult& result)
+                    { return NiceStep::resultMessage(name, pid, nice, result); },
+                    Platform::AuthorizedAction{.kind = Platform::AuthorizedAction::Kind::SetPriority, .target = selectedId, .nice = *nice});
+            }
+            else
+            {
+                showBatchOutcome({.message = {.ok = false,
+                                              .text = std::format("{} is already at the {} priority",
+                                                                  proc.name,
+                                                                  *priorityStep == NiceStep::Direction::Raise ? "highest" : "lowest")},
+                                  .anySucceeded = false});
+            }
+        }
+    }
+
     // "/" incremental search (#3097): the row whose name matches, from the selected one, selected alone
     // and scrolled to as a keyboard move is; the Find box says when there is none.
     if (const IncrementalSearchStep step = std::exchange(m_IncrementalSearchStep, IncrementalSearchStep::None);
