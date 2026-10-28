@@ -380,8 +380,6 @@ int realIoprioGet(pid_t pid)
     return -1;
 #endif
 }
-} // namespace
-
 int realPidfdGetfd(int pidfd, int targetFd)
 {
 #if defined(SYS_pidfd_getfd)
@@ -428,6 +426,8 @@ std::expected<int, int> realSocketDescriptor(std::int32_t pid, std::uint64_t ino
     }
     return std::unexpected(ec ? ec.value() : ENOENT);
 }
+
+} // namespace
 
 LinuxProcessSyscalls realProcessSyscalls() noexcept
 {
