@@ -40,6 +40,7 @@ struct SystemPublication
     HistoryView<float> memoryHistory;
     HistoryView<float> memoryCachedHistory;
     HistoryView<float> swapHistory;
+    HistoryView<float> compressionRatioHistory; // zram + zswap original / compressed (#3087); NaN when nothing is stored
     HistoryView<float> batteryChargeHistory;
     HistoryView<float> netRxHistory;
     HistoryView<float> netTxHistory;
@@ -157,6 +158,7 @@ class SystemModel : public ISamplable
     SharedHistoryBuffer<float> m_MemoryHistory;
     SharedHistoryBuffer<float> m_MemoryCachedHistory;
     SharedHistoryBuffer<float> m_SwapHistory;
+    SharedHistoryBuffer<float> m_CompressionRatioHistory;
     SharedHistoryBuffer<float> m_BatteryChargeHistory;
     SharedHistoryBuffer<float> m_NetRxHistory;
     SharedHistoryBuffer<float> m_NetTxHistory;

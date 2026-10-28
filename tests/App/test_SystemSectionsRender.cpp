@@ -457,6 +457,61 @@ TEST_F(SystemSectionsRenderTest, MemorySectionStripShowsCommitChargeOnlyWhenTheS
     EXPECT_EQ(hidden.find(value), std::string::npos) << hidden;
 }
 
+// #3087: compressed swap in the value strip, only while something compressed is stored.
+TEST_F(SystemSectionsRenderTest, MemorySectionStripShowsCompressedSwapWhileSomethingIsStored)
+{
+    Domain::SystemPublication publication = memoryPublication();
+    publication.snapshot.hasZram = true;
+    publication.snapshot.zramOriginalBytes = 3ULL << 30U;
+    publication.snapshot.zramCompressedBytes = 1ULL << 30U;
+    publication.snapshot.compressionRatio = Domain::compressionRatio(publication.snapshot);
+    MemorySection::SmoothedMemory smoothed;
+    MemorySection::RenderContext ctx{.publication = &publication, .smoothedMemory = &smoothed};
+    MemorySection::updateSmoothedMemory(smoothed, publication.snapshot, 0.0F, REFRESH);
+    const auto render = [&]
+    {
+        MemorySection::renderMemorySection(ctx, publication.timestamps, UI::Widgets::historyFrameNowSeconds(), 3);
+    };
+    runFrame(render);
+    runFrame(render);
+    const std::string value = MemorySection::compressedStripValue(publication.snapshot);
+    EXPECT_EQ(value,
+              "3.0\u00d7 (" + UI::Format::formatBytes(static_cast<double>(3ULL << 30U)) + " in " +
+                  UI::Format::formatBytes(static_cast<double>(1ULL << 30U)) + ")");
+    const std::string text = renderAndCapture(render);
+    EXPECT_NE(text.find("Compressed"), std::string::npos) << text;
+    EXPECT_NE(text.find(value), std::string::npos) << text;
+
+    publication.snapshot.compressionRatio = 0.0; // nothing stored
+    EXPECT_TRUE(MemorySection::compressedStripValue(publication.snapshot).empty());
+    EXPECT_EQ(renderAndCapture(render).find("Compressed"), std::string::npos);
+}
+
+TEST(MemorySectionCompressedTest, TooltipBreaksDownEachKindAndTheRatiosRange)
+{
+    Domain::SystemSnapshot snap;
+    EXPECT_TRUE(MemorySection::compressedStripTooltip(snap, {}).empty());
+    snap.hasZram = true;
+    snap.zramOriginalBytes = 4000;
+    snap.zramCompressedBytes = 1000;
+    snap.zramMemoryUsedBytes = 1200;
+    snap.hasZswap = true;
+    snap.zswapOriginalBytes = 3000;
+    snap.zswapCompressedBytes = 1500;
+    snap.compressionRatio = Domain::compressionRatio(snap);
+    EXPECT_DOUBLE_EQ(snap.compressionRatio, 7000.0 / 2500.0);
+    const std::vector<float> history{std::numeric_limits<float>::quiet_NaN(), 2.5F, 3.5F, 2.8F};
+    const std::string text = MemorySection::compressedStripTooltip(snap, history);
+    EXPECT_NE(text.find("zram: "), std::string::npos) << text;
+    EXPECT_NE(text.find("(4.0\u00d7)"), std::string::npos) << text;
+    EXPECT_NE(text.find("of RAM used"), std::string::npos) << text;
+    EXPECT_NE(text.find("zswap: "), std::string::npos) << text;
+    EXPECT_NE(text.find("(2.0\u00d7)"), std::string::npos) << text;
+    EXPECT_NE(text.find("Ratio over the chart: 2.5\u00d7 to 3.5\u00d7"), std::string::npos) << text;
+    EXPECT_DOUBLE_EQ(Domain::compressionRatio(0, 10), 0.0);
+    EXPECT_DOUBLE_EQ(Domain::compressionRatio(10, 0), 0.0);
+}
+
 TEST(MemorySectionCommitTest, TooltipHasThePeakOnlyWhenThePlatformKeepsOne)
 {
     Domain::SystemSnapshot snap;

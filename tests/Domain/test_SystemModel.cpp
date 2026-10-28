@@ -490,6 +490,43 @@ TEST(SystemModelTest, CommitChargeIsLeftOutWithoutTheCapabilityOrAReading)
     EXPECT_FALSE(noLimit.hasCommitCharge);
 }
 
+// #3087: zram and zswap pass through to the snapshot with their combined ratio, and the ratio's
+// history is NaN (a gap) while nothing compressed is stored.
+TEST(SystemModelTest, CompressedSwapPassesThroughWithItsRatioAndHistory)
+{
+    auto probe = std::make_unique<MockSystemProbe>();
+    auto* rawProbe = probe.get();
+    auto mem = makeMemoryCounters(16ULL << 30U, 8ULL << 30U);
+    rawProbe->setCounters(makeSystemCounters(makeCpuCounters(0, 0, 0, 1000), mem));
+    Domain::SystemModel model(std::move(probe));
+    model.refresh(); // the seed: no history yet
+    rawProbe->setCounters(makeSystemCounters(makeCpuCounters(0, 0, 0, 1500), mem));
+    model.refresh();
+    EXPECT_DOUBLE_EQ(model.snapshot().compressionRatio, 0.0);
+
+    mem.hasZram = true;
+    mem.zramOriginalBytes = 3000;
+    mem.zramCompressedBytes = 1000;
+    mem.zramMemoryUsedBytes = 1100;
+    mem.hasZswap = true;
+    mem.zswapOriginalBytes = 1000;
+    mem.zswapCompressedBytes = 1000;
+    rawProbe->setCounters(makeSystemCounters(makeCpuCounters(0, 0, 0, 2000), mem));
+    model.refresh();
+    const auto snap = model.snapshot();
+    EXPECT_TRUE(snap.hasZram);
+    EXPECT_EQ(snap.zramMemoryUsedBytes, 1100U);
+    EXPECT_TRUE(snap.hasZswap);
+    EXPECT_DOUBLE_EQ(snap.compressionRatio, 2.0); // 4000 stored in 2000
+
+    const auto publication = model.publication();
+    ASSERT_NE(publication, nullptr);
+    const auto& history = publication->compressionRatioHistory;
+    ASSERT_GE(history.size(), 2U);
+    EXPECT_TRUE(std::isnan(history[history.size() - 2]));
+    EXPECT_FLOAT_EQ(history[history.size() - 1], 2.0F);
+}
+
 TEST(SystemModelTest, SwapZeroWhenNoSwap)
 {
     auto probe = std::make_unique<MockSystemProbe>();
