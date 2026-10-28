@@ -53,6 +53,10 @@ void preparePanelPlatforms(const Synthetic::Scenario* scenario);
 /// never reach real /proc entries), or the platform's.
 [[nodiscard]] ProcessDetailsReaders makeProcessDetailsReaders(const Synthetic::Scenario* scenario);
 
+/// The Connections tab's process actions, for Close connection (#3066): the scenario's, or the platform's,
+/// which an administrator can finish through the helper.
+[[nodiscard]] std::unique_ptr<Platform::IProcessActions> makeConnectionsPanelActions(const Synthetic::Scenario* scenario);
+
 /// The Services tab's probe and actions: the platform's, in every run.
 [[nodiscard]] ServicesPanelPlatform makeServicesPanelPlatform(const Synthetic::Scenario* scenario);
 

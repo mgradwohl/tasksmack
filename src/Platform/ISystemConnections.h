@@ -29,6 +29,8 @@ struct SystemConnection
     std::uint64_t bytesSent = 0;
     std::uint64_t bytesReceived = 0;
     bool hasByteCounters = false;
+    /// The socket's inode, which names it to closeConnection() (#3066; Linux); 0 when unknown.
+    std::uint64_t socketInode = 0;
 };
 
 /// What came of one read.
