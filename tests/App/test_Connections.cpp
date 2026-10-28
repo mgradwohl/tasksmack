@@ -202,6 +202,78 @@ TEST(ConnectionsModelTest, SameNameSocketsOrderByPidProtocolThenLocalEndpoint)
     EXPECT_EQ(pub->connections[3].pid, 9);
 }
 
+// #3066: the first generation lights nothing; a socket that appears after it is tinted, fading out over
+// NEW_SECONDS; one that goes is kept, marked closed, for CLOSED_SECONDS, unless it opens again.
+TEST(ConnectionChangeTrackerTest, NewSocketsFadeAndClosedOnesStayAMoment)
+{
+    Domain::ConnectionsPublication first;
+    first.version = 1;
+    first.connections = sampleSockets();
+    std::vector<ConnectionRow> rows = buildConnectionRows(first);
+    ConnectionChangeTracker tracker;
+    tracker.onGeneration(rows, 10.0);
+    for (const ConnectionRow& row : rows)
+    {
+        EXPECT_FALSE(tracker.newAlpha(selectionKey(row.connection), 10.0).has_value());
+    }
+
+    // firefox's connection closes; sshd starts listening.
+    Domain::ConnectionsPublication second = first;
+    second.version = 2;
+    second.connections.erase(second.connections.begin() + 1);
+    second.connections.push_back(socket(400, "sshd", ConnectionProtocol::Tcp, {0, 0, 0, 0}, 22, {0, 0, 0, 0}, 0, ConnectionState::Listen));
+    rows = buildConnectionRows(second);
+    tracker.onGeneration(rows, 11.0);
+    const std::uint64_t sshd = selectionKey(rows.back().connection);
+    ASSERT_TRUE(tracker.newAlpha(sshd, 11.0).has_value());
+    EXPECT_FLOAT_EQ(tracker.newAlpha(sshd, 11.0).value_or(0.0F), ConnectionChanges::NEW_MAX_ALPHA);
+    EXPECT_LT(tracker.newAlpha(sshd, 13.5).value_or(1.0F), ConnectionChanges::NEW_MAX_ALPHA);
+    const std::vector<ConnectionRow> closed = tracker.closedRows();
+    ASSERT_EQ(closed.size(), 1U);
+    EXPECT_TRUE(closed[0].closed);
+    EXPECT_EQ(closed[0].process, "firefox");
+
+    EXPECT_FALSE(tracker.expire(12.0)); // the closed row stays CLOSED_SECONDS
+    EXPECT_TRUE(tracker.expire(11.0 + ConnectionChanges::CLOSED_SECONDS));
+    EXPECT_TRUE(tracker.closedRows().empty());
+    static_cast<void>(tracker.expire(11.0 + ConnectionChanges::NEW_SECONDS));
+    EXPECT_FALSE(tracker.newAlpha(sshd, 11.0 + ConnectionChanges::NEW_SECONDS).has_value());
+
+    // A socket that closes and opens again with the same endpoints is just live.
+    tracker.onGeneration(buildConnectionRows(first), 20.0);
+    tracker.onGeneration(rows, 21.0);
+    tracker.onGeneration(buildConnectionRows(first), 22.0);
+    for (const ConnectionRow& row : tracker.closedRows())
+    {
+        EXPECT_NE(row.process, "firefox");
+    }
+}
+
+// #3066: the table's rows are the generation's sockets, then the closed ones still shown; the count
+// leaves the closed ones out, and they go once CLOSED_SECONDS have passed.
+TEST(ConnectionsViewTest, RowsHoldTheClosedSocketsUntilTheyExpire)
+{
+    ConnectionsViewState state;
+    Domain::ConnectionsPublication pub;
+    pub.version = 1;
+    pub.connections = sampleSockets();
+    refreshConnectionRows(pub, state, 1.0);
+    EXPECT_EQ(state.rows.size(), 4U);
+    EXPECT_EQ(state.liveCount, 4U);
+
+    pub.version = 2;
+    pub.connections.pop_back();
+    refreshConnectionRows(pub, state, 2.0);
+    EXPECT_EQ(state.liveCount, 3U);
+    ASSERT_EQ(state.rows.size(), 4U);
+    EXPECT_TRUE(state.rows.back().closed);
+    EXPECT_EQ(state.visible.size(), 4U);
+
+    refreshConnectionRows(pub, state, 2.0 + ConnectionChanges::CLOSED_SECONDS);
+    EXPECT_EQ(state.rows.size(), 3U);
+    EXPECT_EQ(state.visible.size(), 3U);
+}
+
 class ConnectionsPanelRenderTest : public ::testing::Test
 {
   protected:

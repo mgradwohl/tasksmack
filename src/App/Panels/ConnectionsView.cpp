@@ -18,9 +18,11 @@
 #include <compare>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -63,13 +65,27 @@ constexpr const char* FILTER_HINT = ICON_FA_FILTER "  Filter by process, address
     return std::strong_ordering::equal;
 }
 
-/// Brings state.rows and state.visible up to date with @p publication, the filter and the sort.
-void refreshRows(const Domain::ConnectionsPublication& publication, ConnectionsViewState& state)
+} // namespace
+
+void refreshConnectionRows(const Domain::ConnectionsPublication& publication, ConnectionsViewState& state, double now)
 {
+    bool rebuild = false;
     if (state.builtVersion != publication.version)
     {
         state.rows = buildConnectionRows(publication);
+        state.liveCount = state.rows.size();
+        state.changes.onGeneration(state.rows, now);
         state.builtVersion = publication.version;
+        rebuild = true;
+    }
+    if (state.changes.expire(now))
+    {
+        rebuild = true;
+    }
+    if (rebuild)
+    {
+        state.rows.resize(state.liveCount);
+        std::ranges::move(state.changes.closedRows(), std::back_inserter(state.rows));
         state.orderDirty = true;
     }
     if (state.orderDirty || state.filterKey != state.filter)
@@ -80,7 +96,67 @@ void refreshRows(const Domain::ConnectionsPublication& publication, ConnectionsV
     }
 }
 
-} // namespace
+void ConnectionChangeTracker::onGeneration(const std::vector<ConnectionRow>& current, double now)
+{
+    std::unordered_map<std::uint64_t, ConnectionRow> live;
+    live.reserve(current.size());
+    for (const ConnectionRow& row : current)
+    {
+        const std::uint64_t key = selectionKey(row.connection);
+        if (m_Seeded && !m_Live.contains(key))
+        {
+            m_FirstSeen.emplace(key, now);
+        }
+        live.emplace(key, row);
+    }
+    if (m_Seeded)
+    {
+        for (auto& [key, row] : m_Live)
+        {
+            if (!live.contains(key))
+            {
+                row.closed = true;
+                m_Closed.push_back({.row = std::move(row), .closedAt = now});
+            }
+        }
+        // A socket open again with the same endpoints is live, not closed.
+        std::erase_if(m_Closed, [&live](const Closed& closed) { return live.contains(selectionKey(closed.row.connection)); });
+    }
+    m_Live = std::move(live);
+    m_Seeded = true;
+}
+
+bool ConnectionChangeTracker::expire(double now)
+{
+    std::erase_if(m_FirstSeen, [now](const auto& entry) { return now - entry.second >= ConnectionChanges::NEW_SECONDS; });
+    return std::erase_if(m_Closed, [now](const Closed& closed) { return now - closed.closedAt >= ConnectionChanges::CLOSED_SECONDS; }) > 0;
+}
+
+std::optional<float> ConnectionChangeTracker::newAlpha(std::uint64_t key, double now) const
+{
+    const auto found = m_FirstSeen.find(key);
+    if (found == m_FirstSeen.end())
+    {
+        return std::nullopt;
+    }
+    const double age = std::max(0.0, now - found->second);
+    if (age >= ConnectionChanges::NEW_SECONDS)
+    {
+        return std::nullopt;
+    }
+    return ConnectionChanges::NEW_MAX_ALPHA * static_cast<float>(1.0 - (age / ConnectionChanges::NEW_SECONDS));
+}
+
+std::vector<ConnectionRow> ConnectionChangeTracker::closedRows() const
+{
+    std::vector<ConnectionRow> rows;
+    rows.reserve(m_Closed.size());
+    for (const Closed& closed : m_Closed)
+    {
+        rows.push_back(closed.row);
+    }
+    return rows;
+}
 
 std::vector<ConnectionRow> buildConnectionRows(const Domain::ConnectionsPublication& publication)
 {
@@ -170,15 +246,32 @@ namespace
 /// One table row for @p row (table row @p i): its selectable, then its cells. The holder to select when it
 /// was clicked, if any.
 [[nodiscard]] std::optional<ConnectionsViewAction>
-renderConnectionRow(const ConnectionRow& row, int i, const UI::ColorScheme& scheme, ConnectionsViewState& state)
+renderConnectionRow(const ConnectionRow& row, int i, const UI::ColorScheme& scheme, ConnectionsViewState& state, double now)
 {
     std::optional<ConnectionsViewAction> action;
     const std::uint64_t key = selectionKey(row.connection);
     ImGui::TableNextRow();
+    // A socket that just closed: dimmed with a steady tint, not selectable; one that just opened: tinted,
+    // fading out (#3066), in the colours the Processes table uses for exited and new processes.
+    if (row.closed)
+    {
+        ImVec4 tint = scheme.processExiting;
+        tint.w = ConnectionChanges::CLOSED_TINT_ALPHA;
+        ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg1, ImGui::GetColorU32(tint));
+        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * ConnectionChanges::CLOSED_CONTENT_ALPHA);
+    }
+    else if (const std::optional<float> alpha = state.changes.newAlpha(key, now); alpha.has_value())
+    {
+        ImVec4 tint = scheme.processNew;
+        tint.w = *alpha;
+        ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg1, ImGui::GetColorU32(tint));
+    }
     ImGui::TableNextColumn();
     ImGui::PushID(i);
-    const bool selected = state.selectedKey == key;
-    if (ImGui::Selectable("##row", selected, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowDoubleClick))
+    const bool selected = !row.closed && state.selectedKey == key;
+    const ImGuiSelectableFlags flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowDoubleClick |
+                                       (row.closed ? ImGuiSelectableFlags_Disabled : ImGuiSelectableFlags_None);
+    if (ImGui::Selectable("##row", selected, flags))
     {
         state.selectedKey = key;
         // Selecting a row selects its holder (#3066); a double-click shows it in Process Details.
@@ -211,7 +304,11 @@ renderConnectionRow(const ConnectionRow& row, int i, const UI::ColorScheme& sche
     ImGui::TableNextColumn();
     UI::Widgets::cellText(row.remote);
     ImGui::TableNextColumn();
-    UI::Widgets::cellText(row.state);
+    UI::Widgets::cellText(row.closed ? std::string("Closed") : row.state);
+    if (row.closed)
+    {
+        ImGui::PopStyleVar();
+    }
     return action;
 }
 
@@ -247,9 +344,13 @@ renderConnectionsView(const Domain::ConnectionsPublication* publication, bool ha
         ImGui::InputTextWithHint("##ConnectionsFilter", FILTER_HINT, &state.filter);
     }
     ImGui::PopStyleColor();
-    refreshRows(*publication, state);
+    const double now = ImGui::GetTime();
+    refreshConnectionRows(*publication, state, now);
     ImGui::SameLine();
-    ImGui::TextColored(scheme.textMuted, "%zu of %zu connections", state.visible.size(), state.rows.size());
+    // Counted without the closed sockets still shown.
+    const auto shownLive =
+        static_cast<std::size_t>(std::ranges::count_if(state.visible, [&state](std::size_t index) { return index < state.liveCount; }));
+    ImGui::TextColored(scheme.textMuted, "%zu of %zu connections", shownLive, state.liveCount);
 
     constexpr ImGuiTableFlags TABLE_FLAGS = ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable |
                                             ImGuiTableFlags_Sortable | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter |
@@ -282,7 +383,7 @@ renderConnectionsView(const Domain::ConnectionsPublication* publication, bool ha
         }
         specs->SpecsDirty = false;
     }
-    refreshRows(*publication, state); // a header click may have changed the order
+    refreshConnectionRows(*publication, state, now); // a header click may have changed the order
 
     std::optional<ConnectionsViewAction> action;
     ImGuiListClipper clipper;
@@ -291,7 +392,7 @@ renderConnectionsView(const Domain::ConnectionsPublication* publication, bool ha
     {
         for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i)
         {
-            if (const auto clicked = renderConnectionRow(state.rows[state.visible[static_cast<std::size_t>(i)]], i, scheme, state))
+            if (const auto clicked = renderConnectionRow(state.rows[state.visible[static_cast<std::size_t>(i)]], i, scheme, state, now))
             {
                 action = clicked;
             }
