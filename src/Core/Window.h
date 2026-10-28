@@ -156,10 +156,20 @@ class Window
     /// pinned SDL's X11 backend sets it only together with minimized (_NET_WM_STATE_HIDDEN), and
     /// Windows doesn't report it, so there it adds nothing beyond isMinimized(); see isHidden().
     [[nodiscard]] bool isOccluded() const noexcept;
-    /// Whether nothing of the window can be seen, so the frame loop draws at the hidden rate (#1125):
+    /// Whether nothing of the window can be seen, so the frame loop draws no frames (#1125, #3156):
     /// minimized, occluded, or, on Windows, cloaked (another virtual desktop), behind a locked or
     /// disconnected session, or on a display that is off (#3152). WindowVisibility::isHidden().
     [[nodiscard]] bool isHidden() const noexcept;
+    /// How the hidden window will be shown again, for how the frame loop waits while it draws
+    /// nothing (#3156): WindowVisibility::classifyHidden(). Shown exactly when isHidden() is false.
+    [[nodiscard]] WindowVisibility::HiddenState hiddenState() const noexcept;
+    /// Report the window hidden (HiddenState::Hidden) whatever its real state, until called with
+    /// false. A test seam (#3156): Xvfb has no window manager to minimize the window, so on Linux
+    /// CI the frame loop's hidden path is reached only this way.
+    void setHiddenForTesting(bool hidden) noexcept
+    {
+        m_HiddenForTesting = hidden;
+    }
     /// Re-check what no window message reports, once per frame-loop iteration: on Windows, whether
     /// DWM has cloaked the window, when WindowVisibility::cloakRecheckDue() says so. Does nothing
     /// elsewhere. Cheap: at most one DwmGetWindowAttribute() call.
@@ -263,6 +273,7 @@ class Window
     SDL_GLContext m_GLContext = nullptr;
     GraphicsHostInfo m_GLInfo; // the OpenGL strings, captured once the context exists
     bool m_ShouldClose = false;
+    bool m_HiddenForTesting = false; // see setHiddenForTesting()
     // The Windows signals isHidden() adds to minimized and occluded (#3152); all false elsewhere.
     WindowVisibility::Signals m_VisibilitySignals;
 

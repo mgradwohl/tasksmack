@@ -5,7 +5,8 @@
 /// Close stops the app. Also the UI scale after a display change and after a start minimized (#3150),
 /// the minimum window size the bar sets from its contents, the drags and resizes the bar runs
 /// client-side, from every edge and corner (#2717); the window menu's and the shell's Restore and
-/// Maximize (#3161); the hidden states Windows reports only to the window (#3152); and the whole
+/// Maximize (#3161); the hidden states Windows reports only to the window (#3152), in which, as when
+/// minimized, the loop draws no frames but wakes at once to be shown again (#3156); and the whole
 /// shell as main.cpp composes it -- its real panels, each main tab, F1 and the config it saves on
 /// exit -- and a first launch from an empty config directory, whose saved config.toml is a golden
 /// file (#2727).
@@ -37,6 +38,7 @@
 #include "Core/Window.h"
 #include "Core/WindowConstants.h"
 #include "Core/WindowGeometry.h"
+#include "Domain/SamplingConfig.h"
 #include "ScratchConfigDir.h"
 #include "UI/DpiScale.h"
 #include "UI/IconTextureCache.h"
@@ -58,6 +60,8 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -72,6 +76,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -85,9 +90,10 @@
 #include <dwmapi.h> // DwmSetWindowAttribute(DWMWA_CLOAK) (#3152)
 // clang-format on
 
-#include <chrono>  // VisibilityDriverLayer's cloak wait (#3152)
 #include <cstring> // sendDisplayState()
 #include <span>    // sendDisplayState()
+#else
+#include <unistd.h> // getpid(): the hidden-shell test selects this process (#3156)
 #endif
 
 namespace
@@ -501,18 +507,30 @@ struct MinimizedStartObserved
 /// Pushed after UILayer, in an app whose window was minimized before UILayer attached: queues the
 /// SDL_EVENT_WINDOW_DISPLAY_CHANGED SDL sends at startup while the window is still minimized, which
 /// measured the minimized window's pixel density and rebuilt the fonts at about 5x (#3150), then
-/// restores the window and records the scale UILayer settles on.
+/// restores the window and records the scale UILayer settles on. The loop draws the first frame of
+/// a window started minimized, but none after it until the restore (#3156), so the restore is made
+/// when the display change reaches the layers, after UILayer has noted it, not on a later frame.
 class MinimizedStartDriverLayer : public Core::Layer
 {
   public:
     explicit MinimizedStartDriverLayer(MinimizedStartObserved& observed) : Layer("MinimizedStartDriver"), m_Observed(observed)
     {}
 
+    void onSDLEvent(SDL_Event* event) override
+    {
+        if (m_PushedDisplayChange && !m_RestoreRequested && event->type == SDL_EVENT_WINDOW_DISPLAY_CHANGED)
+        {
+            m_Observed.scaleWhileMinimized = UI::Theme::get().displayScale();
+            Core::Application::get().getWindow().restore();
+            m_RestoreRequested = true;
+        }
+    }
+
     void onRender() override
     {
         Core::AnimationRequest::request(Core::AnimationRequest::FULL_RATE); // keep frames coming
         const int frame = ++m_Observed.frames;
-        Core::Window& window = Core::Application::get().getWindow();
+        const Core::Window& window = Core::Application::get().getWindow();
         if (frame == 1)
         {
             m_Observed.minimizedAtFirstFrame = window.isMinimized();
@@ -520,11 +538,10 @@ class MinimizedStartDriverLayer : public Core::Layer
             event.type = SDL_EVENT_WINDOW_DISPLAY_CHANGED;
             event.window.windowID = SDL_GetWindowID(window.getHandle());
             SDL_PushEvent(&event);
+            m_PushedDisplayChange = true;
         }
-        else if (frame == 1 + STEP)
+        else if (m_RestoreRequested && m_RestoreFrame == 0)
         {
-            m_Observed.scaleWhileMinimized = UI::Theme::get().displayScale();
-            window.restore();
             m_RestoreFrame = frame;
         }
         else if (m_RestoreFrame != 0 && !window.isMinimized())
@@ -547,11 +564,13 @@ class MinimizedStartDriverLayer : public Core::Layer
     }
 
   private:
-    static constexpr int STEP = 3;         // a minimized window renders at about 5 fps
+    static constexpr int STEP = 3;         // frames after the restore for the rebuild to land
     static constexpr int MAX_FRAMES = 300; // the restore and the rebuild normally land within a few frames
 
     MinimizedStartObserved& m_Observed;
-    int m_RestoreFrame = 0;
+    int m_RestoreFrame = 0; // the first frame after the restore was asked for
+    bool m_PushedDisplayChange = false;
+    bool m_RestoreRequested = false;
 };
 
 TEST_F(UiLayersOnDisplayTest, AWindowMinimizedBeforeItsFirstFrameGetsTheDisplayScaleBackOnRestore)
@@ -3349,15 +3368,18 @@ TEST_F(UiLayersOnDisplayTest, TheShellsRestoreAndMaximizeAreTheClientSideOnes)
 #endif
 
 #ifdef _WIN32
-/// What the visibility driver saw (#3152).
+/// What the visibility driver saw (#3152, #3156).
 struct VisibilityObserved
 {
     int frames = 0;
+    int framesWhileHidden = 0;       ///< Frames drawn while Window::isHidden() said hidden: none (#3156)
+    int hiddenUpdates = 0;           ///< Layer::onHiddenUpdate() calls, the loop's wakes without a frame
     bool shownAtStart = false;       ///< Not hidden once the display is reported on
     bool hiddenWhenLocked = false;   ///< WM_WTSSESSION_CHANGE WTS_SESSION_LOCK hid it before SendMessage returned...
-    bool stillHiddenLater = false;   ///< ...and it stayed hidden through the frames that followed
-    bool shownWhenUnlocked = false;  ///< WTS_SESSION_UNLOCK showed it again at once...
-    bool exposedAfterUnlock = false; ///< ...with an SDL_EVENT_WINDOW_EXPOSED to wake the hidden-rate wait
+    bool stillHiddenLater = false;   ///< ...and it stayed hidden through the wait that followed
+    bool shownWhenUnlocked = false;  ///< WTS_SESSION_UNLOCK showed it again...
+    bool exposedAfterUnlock = false; ///< ...with an SDL_EVENT_WINDOW_EXPOSED to wake the hidden wait...
+    Uint64 unlockToFrameMs = 0;      ///< ...and the next frame came this soon after the unlock was posted
     bool hiddenWhenDisplayOff = false;
     bool shownWhenDisplayOn = false;
     bool cloakUnavailable = false; ///< DwmSetWindowAttribute(DWMWA_CLOAK) failed: the cloak checks were skipped
@@ -3387,16 +3409,41 @@ void sendDisplayState(HWND hwnd, DWORD state)
     SendMessageW(hwnd, WM_POWERBROADCAST, PBT_POWERSETTINGCHANGE, reinterpret_cast<LPARAM>(buffer.data()));
 }
 
+/// The window's HWND, or nullptr.
+[[nodiscard]] HWND hwndOf(const Core::Window& window)
+{
+    return static_cast<HWND>(
+        SDL_GetPointerProperty(SDL_GetWindowProperties(window.getHandle()), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
+}
+
 /// Pushed after UILayer and TitleBarLayer: tells the real window what Windows tells it when the
 /// session locks and unlocks and when the display turns off and on -- synthetic messages to this
 /// window alone, through its subclass procedure, so nothing is locked or turned off -- then cloaks
 /// and uncloaks the window itself (DWMWA_CLOAK, as another virtual desktop does), and records when
-/// Window::isHidden() said the window was hidden.
+/// Window::isHidden() said the window was hidden. A hidden window draws no frames (#3156), so each
+/// hidden step runs from onHiddenUpdate(), on the loop's wake, and the frame after it checks that
+/// the window was shown again. The unlock is posted from another thread while the loop waits, as
+/// Windows posts it, so the next frame proves its expose woke the wait rather than the wait's timeout.
 class VisibilityDriverLayer : public Core::Layer
 {
   public:
     explicit VisibilityDriverLayer(VisibilityObserved& observed) : Layer("VisibilityDriver"), m_Observed(observed)
     {}
+
+    ~VisibilityDriverLayer() override
+    {
+        joinPoster();
+    }
+
+    VisibilityDriverLayer(const VisibilityDriverLayer&) = delete;
+    VisibilityDriverLayer& operator=(const VisibilityDriverLayer&) = delete;
+    VisibilityDriverLayer(VisibilityDriverLayer&&) = delete;
+    VisibilityDriverLayer& operator=(VisibilityDriverLayer&&) = delete;
+
+    void onDetach() override
+    {
+        joinPoster();
+    }
 
     void onSDLEvent(SDL_Event* event) override
     {
@@ -3410,6 +3457,11 @@ class VisibilityDriverLayer : public Core::Layer
     {
         Core::AnimationRequest::request(Core::AnimationRequest::FULL_RATE); // keep frames coming
         const int frame = ++m_Observed.frames;
+        const Core::Window& window = Core::Application::get().getWindow();
+        if (window.isHidden())
+        {
+            ++m_Observed.framesWhileHidden;
+        }
         if (frame > MAX_FRAMES)
         {
             m_Observed.timedOut = true;
@@ -3420,9 +3472,7 @@ class VisibilityDriverLayer : public Core::Layer
         {
             return;
         }
-        const Core::Window& window = Core::Application::get().getWindow();
-        auto* const hwnd = static_cast<HWND>(
-            SDL_GetPointerProperty(SDL_GetWindowProperties(window.getHandle()), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
+        auto* const hwnd = hwndOf(window);
         if (hwnd == nullptr)
         {
             ADD_FAILURE() << "the window has no HWND";
@@ -3442,23 +3492,21 @@ class VisibilityDriverLayer : public Core::Layer
             m_Observed.shownAtStart = !window.isHidden();
             SendMessageW(hwnd, WM_WTSSESSION_CHANGE, WTS_SESSION_LOCK, 0);
             m_Observed.hiddenWhenLocked = window.isHidden();
-            next(Phase::Unlock, HIDDEN_STEP);
+            m_Phase = Phase::Locked; // onHiddenUpdate() takes it from here
             break;
-        case Phase::Unlock:
-            m_Observed.stillHiddenLater = window.isHidden();
-            m_AwaitingExpose = true;
-            SendMessageW(hwnd, WM_WTSSESSION_CHANGE, WTS_SESSION_UNLOCK, 0);
+        case Phase::AwaitUnlock:
+            // The first frame since the unlock was posted: the wake it caused drew it.
             m_Observed.shownWhenUnlocked = !window.isHidden();
+            m_Observed.unlockToFrameMs = SDL_GetTicks() - m_UnlockPostedAt.load();
             next(Phase::DisplayOff, STEP);
             break;
         case Phase::DisplayOff:
             m_AwaitingExpose = false;
             sendDisplayState(hwnd, PowerMonitorOff);
             m_Observed.hiddenWhenDisplayOff = window.isHidden();
-            next(Phase::DisplayOn, HIDDEN_STEP);
+            m_Phase = Phase::DisplayIsOff; // onHiddenUpdate() takes it from here
             break;
-        case Phase::DisplayOn:
-            sendDisplayState(hwnd, PowerMonitorOn);
+        case Phase::AfterDisplayOn:
             m_Observed.shownWhenDisplayOn = !window.isHidden();
             next(Phase::Cloak, STEP);
             break;
@@ -3476,14 +3524,12 @@ class VisibilityDriverLayer : public Core::Layer
             break;
         }
         case Phase::AwaitCloaked:
-            // No message says the window was cloaked: the frame loop's slow re-check finds it.
-            if (window.isHidden() || SDL_GetTicks() - m_CloakedAt > CLOAK_FOUND_WITHIN_MS)
+            // No message says the window was cloaked: frames go on until the loop's slow re-check finds
+            // it, and onHiddenUpdate() takes it from there. One that never does is uncloaked here.
+            if (SDL_GetTicks() - m_CloakedAt > CLOAK_FOUND_WITHIN_MS)
             {
-                m_Observed.hiddenWhenCloaked = window.isHidden();
-                const BOOL uncloak = FALSE;
-                static_cast<void>(DwmSetWindowAttribute(hwnd, DWMWA_CLOAK, &uncloak, sizeof(uncloak)));
-                m_UncloakedAt = SDL_GetTicks();
-                next(Phase::AfterUncloak, 1);
+                uncloak(hwnd);
+                next(Phase::Stop, STEP);
             }
             else
             {
@@ -3491,48 +3537,120 @@ class VisibilityDriverLayer : public Core::Layer
             }
             break;
         case Phase::AfterUncloak:
-            // The loop re-checks a cloaked window on every frame, not once per interval, so it finds the
+            // The loop re-checks a cloaked window on every wake, not once per interval, so it finds the
             // window shown again well within one.
-            if (!window.isHidden() || SDL_GetTicks() - m_UncloakedAt > UNCLOAK_FOUND_WITHIN_MS)
-            {
-                m_Observed.shownSoonAfterUncloak = !window.isHidden();
-                next(Phase::Stop, STEP);
-            }
-            else
-            {
-                next(Phase::AfterUncloak, 1);
-            }
+            m_Observed.shownSoonAfterUncloak = !window.isHidden() && SDL_GetTicks() - m_UncloakedAt <= UNCLOAK_FOUND_WITHIN_MS;
+            next(Phase::Stop, STEP);
             break;
         case Phase::Stop:
             Core::Application::get().stop();
+            break;
+        case Phase::Locked:
+        case Phase::DisplayIsOff:
+            break; // hidden: no frame should come
+        }
+    }
+
+    void onHiddenUpdate() override
+    {
+        if (++m_Observed.hiddenUpdates > MAX_HIDDEN_UPDATES)
+        {
+            m_Observed.timedOut = true;
+            Core::Application::get().stop();
+            return;
+        }
+        const Core::Window& window = Core::Application::get().getWindow();
+        auto* const hwnd = hwndOf(window);
+        if (hwnd == nullptr)
+        {
+            return; // onRender() reports it
+        }
+        switch (m_Phase)
+        {
+        case Phase::Locked:
+            // A whole hidden wait has passed: still hidden, so no frame came.
+            m_Observed.stillHiddenLater = window.isHidden();
+            m_AwaitingExpose = true;
+            m_Poster = std::thread(
+                [this, hwnd]
+                {
+                    std::this_thread::sleep_for(POST_DELAY);
+                    m_UnlockPostedAt.store(SDL_GetTicks());
+                    PostMessageW(hwnd, WM_WTSSESSION_CHANGE, WTS_SESSION_UNLOCK, 0);
+                });
+            m_Phase = Phase::AwaitUnlock;
+            m_NextFrame = 0;
+            break;
+        case Phase::DisplayIsOff:
+            sendDisplayState(hwnd, PowerMonitorOn);
+            m_Phase = Phase::AfterDisplayOn;
+            m_NextFrame = 0;
+            break;
+        case Phase::AwaitCloaked:
+            // The loop found the cloak and stopped drawing.
+            m_Observed.hiddenWhenCloaked = window.isHidden();
+            uncloak(hwnd);
+            m_Phase = Phase::AfterUncloak;
+            m_NextFrame = 0;
+            break;
+        case Phase::Lock:
+        case Phase::AwaitUnlock: // a wake before the unlock arrived: it is still to come
+        case Phase::DisplayOff:
+        case Phase::AfterDisplayOn:
+        case Phase::Cloak:
+        case Phase::AfterUncloak:
+        case Phase::Stop:
             break;
         }
     }
 
   private:
-    /// The steps, in order; each waits m_NextFrame before running.
+    /// The steps, in order. A frame runs a shown step once m_NextFrame comes; onHiddenUpdate() runs
+    /// a hidden one (Locked, DisplayIsOff, and AwaitCloaked once the cloak is found). AwaitUnlock's
+    /// frame is the first after the posted unlock.
     enum class Phase : std::uint8_t
     {
         Lock,
-        Unlock,
+        Locked,
+        AwaitUnlock,
         DisplayOff,
-        DisplayOn,
+        DisplayIsOff,
+        AfterDisplayOn,
         Cloak,
         AwaitCloaked,
         AfterUncloak,
         Stop,
     };
 
-    static constexpr int SETTLE = 10;     // frames before the first step: fonts, layout and minimum size settle
-    static constexpr int STEP = 10;       // frames between steps on the shown window
-    static constexpr int HIDDEN_STEP = 3; // fewer on a hidden one, whose frames come at the hidden rate
+    void uncloak(HWND hwnd)
+    {
+        const BOOL cloaked = FALSE;
+        static_cast<void>(DwmSetWindowAttribute(hwnd, DWMWA_CLOAK, &cloaked, sizeof(cloaked)));
+        m_UncloakedAt = SDL_GetTicks();
+    }
+
+    void joinPoster()
+    {
+        if (m_Poster.joinable())
+        {
+            m_Poster.join();
+        }
+    }
+
+    static constexpr int SETTLE = 10; // frames before the first step: fonts, layout and minimum size settle
+    static constexpr int STEP = 10;   // frames between steps on the shown window
     static constexpr int MAX_FRAMES = 600;
-    // Twice WINDOW_CLOAK_RECHECK_INTERVAL, plus a hidden-rate frame or two.
+    static constexpr int MAX_HIDDEN_UPDATES = 30; // about 30 s of hidden waits
+    // How long after the loop's wake the unlock is posted: well inside the next hidden wait.
+    static constexpr std::chrono::milliseconds POST_DELAY{100};
+    // Twice WINDOW_CLOAK_RECHECK_INTERVAL, plus a frame or two.
     static constexpr Uint64 CLOAK_FOUND_WITHIN_MS = (2 * static_cast<Uint64>(Core::WINDOW_CLOAK_RECHECK_INTERVAL.count())) + 500U;
-    // Under one WINDOW_CLOAK_RECHECK_INTERVAL: a few hidden-rate frames.
+    // Under one WINDOW_CLOAK_RECHECK_INTERVAL: a few cloaked polls.
     static constexpr Uint64 UNCLOAK_FOUND_WITHIN_MS = (static_cast<Uint64>(Core::WINDOW_CLOAK_RECHECK_INTERVAL.count()) * 3U) / 4U;
 
     VisibilityObserved& m_Observed;
+    std::thread m_Poster; // posts the unlock while the loop waits
+    std::atomic<Uint64> m_UnlockPostedAt{0};
     Uint64 m_CloakedAt = 0;   // SDL_GetTicks() when the window was cloaked...
     Uint64 m_UncloakedAt = 0; // ...and uncloaked
     int m_NextFrame = SETTLE;
@@ -3543,7 +3661,8 @@ class VisibilityDriverLayer : public Core::Layer
 // #3152: SDL 3.4 reports no hidden state but minimized on Windows, so the window's subclass procedure
 // reads the session's lock and unlock, its display turning off and on, and DWM's cloak, and
 // Window::isHidden() -- what Application::run() paces drawing by -- reports each, then shows the
-// window again at once when it ends, waking the hidden-rate wait with an expose.
+// window again at once when it ends, waking the hidden wait with an expose. While any of them hides
+// the window, the loop draws no frames at all (#3156).
 TEST_F(UiLayersOnDisplayTest, ALockedSessionAnOffDisplayAndACloakHideTheWindowUntilTheyEnd)
 {
     if (!hasDisplay())
@@ -3569,11 +3688,16 @@ TEST_F(UiLayersOnDisplayTest, ALockedSessionAnOffDisplayAndACloakHideTheWindowUn
     }
 
     EXPECT_FALSE(observed.timedOut);
+    EXPECT_EQ(observed.framesWhileHidden, 0) << "the hidden window still drew frames";
+    EXPECT_GT(observed.hiddenUpdates, 0);
     EXPECT_TRUE(observed.shownAtStart);
     EXPECT_TRUE(observed.hiddenWhenLocked) << "WTS_SESSION_LOCK didn't hide the window";
     EXPECT_TRUE(observed.stillHiddenLater) << "the locked window was shown again before the unlock";
     EXPECT_TRUE(observed.shownWhenUnlocked) << "WTS_SESSION_UNLOCK left the window hidden";
     EXPECT_TRUE(observed.exposedAfterUnlock) << "the unlock pushed no SDL_EVENT_WINDOW_EXPOSED to wake the frame loop";
+    // Well under the hidden wait's timeout: the expose woke the wait.
+    EXPECT_LT(observed.unlockToFrameMs, static_cast<Uint64>(Core::WINDOW_HIDDEN_WAIT_TIMEOUT.count()) / 2U)
+        << "the first frame after the unlock waited out the hidden wait";
     EXPECT_TRUE(observed.hiddenWhenDisplayOff) << "PowerMonitorOff didn't hide the window";
     EXPECT_TRUE(observed.shownWhenDisplayOn) << "PowerMonitorOn left the window hidden";
     if (observed.cloakUnavailable)
@@ -3984,6 +4108,272 @@ TEST_F(UiLayersOnDisplayTest, TheShellsShortcutsAndTheDetailsRequestDoWhatTheySa
     EXPECT_FALSE(observed.metricsOffAfterSecondToggle); // ...and off again
     EXPECT_TRUE(observed.fontGrew);                     // Ctrl+= one preset larger
     EXPECT_TRUE(observed.fontShrankBack);               // Ctrl+- back
+}
+
+/// What HiddenShellDriverLayer saw (#3156).
+struct HiddenShellObserved
+{
+    int frames = 0;
+    int framesWhileHidden = 0;           ///< Frames drawn while the window reported hidden: none
+    int hiddenUpdates = 0;               ///< Layer::onHiddenUpdate() calls, the loop's wakes without a frame
+    std::uint64_t versionWhenHidden = 0; ///< Process Details' lastSampleVersion() at the first hidden wake...
+    std::uint64_t versionWhenShown = 0;  ///< ...and when the show was sent, with no frame in between
+    Uint64 showToFrameMs = 0;            ///< From the show, sent while the loop waited, to the next frame
+    bool watching = false;               ///< Process Details had taken a sample before the hide
+    bool hideUnavailable = false;        ///< The window never reported hidden: nothing to check
+    bool hiddenAtFirstWake = false;
+    bool drewAfterShow = false;
+    bool timedOut = false;
+};
+
+/// This process's PID, for Process Details to watch.
+[[nodiscard]] std::int32_t ownPid()
+{
+#ifdef _WIN32
+    return static_cast<std::int32_t>(GetCurrentProcessId());
+#else
+    return static_cast<std::int32_t>(getpid());
+#endif
+}
+
+/// Pushed last over the whole shell: selects this process in Process Details at the fastest refresh
+/// interval, hides the window -- minimized on Windows; elsewhere through Window::setHiddenForTesting(),
+/// since Xvfb has no window manager to minimize it -- and records that no frame is drawn while it is
+/// hidden, that Process Details still takes the selected process's samples on the loop's wakes, and
+/// that a show sent from another thread while the loop waits brings the next frame at once: the
+/// taskbar's SC_RESTORE on Windows, an SDL user event elsewhere, on which this layer clears the seam.
+class HiddenShellDriverLayer : public Core::Layer
+{
+  public:
+    HiddenShellDriverLayer(HiddenShellObserved& observed, const App::ShellLayer& shell)
+        : Layer("HiddenShellDriver"), m_Observed(observed), m_Shell(shell)
+    {}
+
+    ~HiddenShellDriverLayer() override
+    {
+        joinShower();
+    }
+
+    HiddenShellDriverLayer(const HiddenShellDriverLayer&) = delete;
+    HiddenShellDriverLayer& operator=(const HiddenShellDriverLayer&) = delete;
+    HiddenShellDriverLayer(HiddenShellDriverLayer&&) = delete;
+    HiddenShellDriverLayer& operator=(HiddenShellDriverLayer&&) = delete;
+
+    void onDetach() override
+    {
+        joinShower();
+    }
+
+    void onSDLEvent(SDL_Event* event) override
+    {
+        if (event->type == SDL_EVENT_USER && m_Phase == Phase::AwaitShow)
+        {
+            Core::Application::get().getWindow().setHiddenForTesting(false);
+        }
+    }
+
+    void onRender() override
+    {
+        Core::AnimationRequest::request(Core::AnimationRequest::FULL_RATE); // keep frames coming
+        const int frame = ++m_Observed.frames;
+        Core::Window& window = Core::Application::get().getWindow();
+        if (frame > MAX_FRAMES)
+        {
+            m_Observed.timedOut = true;
+            Core::Application::get().stop();
+            return;
+        }
+        switch (m_Phase)
+        {
+        case Phase::Settle:
+            if (frame >= SETTLE)
+            {
+                Core::RefreshRateChangedEvent fastest(Domain::Sampling::REFRESH_INTERVAL_MIN_MS);
+                Core::Application::get().raiseEvent(fastest);
+                Core::ProcessSelectedEvent selected(ownPid(), 0);
+                Core::Application::get().raiseEvent(selected);
+                m_Phase = Phase::AwaitWatching;
+                m_Deadline = frame + WATCH_WAIT_FRAMES;
+            }
+            break;
+        case Phase::AwaitWatching:
+            // The pane takes every generation published since the selection, the process listed or not.
+            m_Observed.watching = m_Shell.processDetailsPanelForTesting().lastSampleVersion() > 0;
+            if (m_Observed.watching || frame >= m_Deadline)
+            {
+                hide(window);
+                m_Phase = Phase::Hidden;
+                m_Deadline = frame + HIDE_WAIT_FRAMES;
+            }
+            break;
+        case Phase::Hidden:
+            if (window.isHidden())
+            {
+                ++m_Observed.framesWhileHidden;
+            }
+            else if (frame >= m_Deadline)
+            {
+                m_Observed.hideUnavailable = true;
+                Core::Application::get().stop();
+            }
+            break;
+        case Phase::AwaitShow:
+            if (window.isHidden())
+            {
+                ++m_Observed.framesWhileHidden;
+                break;
+            }
+            m_Observed.drewAfterShow = true;
+            m_Observed.showToFrameMs = SDL_GetTicks() - m_ShowSentAt.load();
+            m_Phase = Phase::Stop;
+            m_Deadline = frame + STEP;
+            break;
+        case Phase::Stop:
+            if (frame >= m_Deadline)
+            {
+                Core::Application::get().stop();
+            }
+            break;
+        }
+    }
+
+    void onHiddenUpdate() override
+    {
+        const int wake = ++m_Observed.hiddenUpdates;
+        if (wake > MAX_HIDDEN_UPDATES)
+        {
+            m_Observed.timedOut = true;
+            Core::Application::get().stop();
+            return;
+        }
+        if (m_Phase != Phase::Hidden)
+        {
+            return;
+        }
+        const Core::Window& window = Core::Application::get().getWindow();
+        const std::uint64_t version = m_Shell.processDetailsPanelForTesting().lastSampleVersion();
+        if (wake == 1)
+        {
+            m_Observed.hiddenAtFirstWake = window.isHidden();
+            m_Observed.versionWhenHidden = version;
+            return;
+        }
+        // Hidden for a whole wait at least, and two more generations taken in (or long enough to have).
+        if (version < m_Observed.versionWhenHidden + 2 && wake < SHOW_AFTER_WAKES)
+        {
+            return;
+        }
+        m_Observed.versionWhenShown = version;
+        m_Phase = Phase::AwaitShow;
+        m_Shower = std::thread(
+            [this, handle = window.getHandle()]
+            {
+                std::this_thread::sleep_for(SEND_DELAY);
+                m_ShowSentAt.store(SDL_GetTicks());
+#ifdef _WIN32
+                // As the taskbar restores a minimized window: to this window alone.
+                auto* const hwnd =
+                    static_cast<HWND>(SDL_GetPointerProperty(SDL_GetWindowProperties(handle), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
+                PostMessageW(hwnd, WM_SYSCOMMAND, SC_RESTORE, 0);
+#else
+                static_cast<void>(handle);
+                SDL_Event event{};
+                event.type = SDL_EVENT_USER;
+                static_cast<void>(SDL_PushEvent(&event));
+#endif
+            });
+    }
+
+  private:
+    enum class Phase : std::uint8_t
+    {
+        Settle,
+        AwaitWatching,
+        Hidden,
+        AwaitShow,
+        Stop,
+    };
+
+    static void hide(Core::Window& window)
+    {
+#ifdef _WIN32
+        // No Win+Down, whatever the real keyboard is doing: the minimize must not restore (#1279).
+        window.setShellRestoreKeysReader([] noexcept { return std::pair{false, false}; });
+        window.minimize();
+#else
+        window.setHiddenForTesting(true);
+#endif
+    }
+
+    void joinShower()
+    {
+        if (m_Shower.joinable())
+        {
+            m_Shower.join();
+        }
+    }
+
+    static constexpr int SETTLE = 20; // frames before the selection: the panels attach and sample once
+    static constexpr int STEP = 5;    // frames drawn after the show before stopping
+    static constexpr int WATCH_WAIT_FRAMES = 600;
+    static constexpr int HIDE_WAIT_FRAMES = 60;
+    static constexpr int MAX_FRAMES = 2000;
+    static constexpr int SHOW_AFTER_WAKES = 10;
+    static constexpr int MAX_HIDDEN_UPDATES = 40; // about 40 s of hidden waits
+    // How long after the loop's wake the show is sent: well inside the next hidden wait.
+    static constexpr std::chrono::milliseconds SEND_DELAY{100};
+
+    HiddenShellObserved& m_Observed;
+    const App::ShellLayer& m_Shell;
+    std::thread m_Shower; // sends the show while the loop waits
+    std::atomic<Uint64> m_ShowSentAt{0};
+    int m_Deadline = 0;
+    Phase m_Phase = Phase::Settle;
+};
+
+// #3156: a hidden window draws no frames at all, where it drew about 5 a second. The loop waits for
+// the event that shows it again, which brings the next frame at once, and the samplers keep the
+// Settings interval meanwhile: Process Details still takes each generation of the selected process
+// on the loop's wakes, so its charts have no gap after a long minimize.
+TEST_F(UiLayersOnDisplayTest, AHiddenWindowDrawsNoFramesKeepsItsSamplesAndDrawsAtOnceWhenShown)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+    Core::ApplicationSpecification spec;
+    spec.Name = "UiLayersOnDisplayHiddenShellTest";
+    spec.VSync = false;
+    HiddenShellObserved observed;
+    try
+    {
+        Core::Application app(spec);
+        app.pushLayer<UI::UILayer>();
+        auto& titleBar = app.pushLayer<App::TitleBarLayer>();
+        auto& shell = app.pushLayer<App::ShellLayer>();
+        shell.setTitleBar(&titleBar);
+        app.pushLayer<HiddenShellDriverLayer>(observed, shell);
+        app.run();
+    }
+    catch (const std::exception& e)
+    {
+        FAIL() << "Application failed after the display probe passed: " << e.what();
+    }
+
+    if (observed.hideUnavailable)
+    {
+        GTEST_SKIP() << "The window didn't minimize on this display, so there was nothing to check";
+    }
+    EXPECT_FALSE(observed.timedOut);
+    EXPECT_TRUE(observed.watching) << "Process Details took no sample of the selected process before the hide";
+    EXPECT_TRUE(observed.hiddenAtFirstWake);
+    EXPECT_EQ(observed.framesWhileHidden, 0) << "the hidden window still drew frames";
+    EXPECT_GE(observed.hiddenUpdates, 2);
+    EXPECT_GT(observed.versionWhenShown, observed.versionWhenHidden) << "Process Details took no sample while the window was hidden";
+    EXPECT_TRUE(observed.drewAfterShow) << "no frame after the show";
+    // Well under the hidden wait's timeout: the show woke the wait.
+    EXPECT_LT(observed.showToFrameMs, static_cast<Uint64>(Core::WINDOW_HIDDEN_WAIT_TIMEOUT.count()) / 2U)
+        << "the first frame after the show waited out the hidden wait";
 }
 
 /// The tab IDs pressed, in order, then back to the first (TabLabel.h, ShellLayer.cpp's labels).

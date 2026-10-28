@@ -152,8 +152,9 @@ class ProcessModel : public ISamplable
     [[nodiscard]] ProcessRowHistory::MetricSet rowHistoryMetrics() const noexcept;
 
     /// How many of the watched process's samples are kept for watchedSamplesSince(): every generation
-    /// for 6.4 s at the fastest refresh interval, so a reader that polls once per UI frame -- 200 ms
-    /// apart while minimised -- misses none unless the UI stalls for longer than that.
+    /// for 6.4 s at the fastest refresh interval, so a reader that polls once per UI frame -- or once
+    /// per wake, at most 1 s apart, while the hidden window draws no frames (#3156) -- misses none
+    /// unless the UI stalls for longer than that.
     static constexpr std::size_t WATCHED_SAMPLE_CAPACITY = 64;
 
     /// Keep a sample of process @p pid from every generation published from now on, for

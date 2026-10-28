@@ -125,6 +125,13 @@ class ProcessDetailsPanel : public Panel
     /// shown, shared rather than copied (#1172).
     void updateWithSamples(std::span<const Domain::ProcessSample> samples, float deltaTime);
 
+    /// Take the selected process's new samples into its history, and nothing else: the part of
+    /// updateWithSamples() that can't wait for a frame. Called while the window is hidden and draws
+    /// no frames (#3156, ShellPanels::updateWhileHidden()), so a long minimize loses no generation
+    /// from the charts when the model's ring of them would wrap; smoothing and the on-demand reads
+    /// wait for the next frame.
+    void takeSamples(std::span<const Domain::ProcessSample> samples);
+
     /// The newest generation taken in since the selection (0 = none): what to pass to
     /// Domain::ProcessModel::watchedSamplesSince(). Reset to 0 when the selection changes.
     [[nodiscard]] std::uint64_t lastSampleVersion() const
@@ -294,6 +301,10 @@ class ProcessDetailsPanel : public Panel
     /// The selected process as an action target: its PID and, once a snapshot has confirmed it,
     /// its start time, so a reuse of the PID is refused rather than acted on (#973).
     [[nodiscard]] Platform::ProcessTarget selectedTarget() const;
+    /// updateWithSamples()'s on-demand section reads (Environment, Connections, Modules, Threads,
+    /// Security, Open files, I/O priority, Recent crashes), each started only when due.
+    void updateOnDemandReads(float deltaTime);
+
     /// Appends one history point for @p snapshot at @p sampleTimeSeconds, after a gap point when
     /// @p gapBefore (see Detail::takeSamples()). @p rateReadings says which of its I/O and network rates
     /// are readings, by the sample's own generation (Detail::rateReadings()); the others are gaps.

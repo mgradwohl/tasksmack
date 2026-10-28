@@ -51,6 +51,8 @@ class ShellLayer : public Core::Layer
     void onAttach() override;
     void onDetach() override;
     void onUpdate(float deltaTime) override;
+    /// While the hidden window draws no frames (#3156): ShellPanels::updateWhileHidden().
+    void onHiddenUpdate() override;
     void onRender() override;
     void onEvent(Core::Event& event) override;
     void onSDLEvent(SDL_Event* event) override;
@@ -73,6 +75,12 @@ class ShellLayer : public Core::Layer
     [[nodiscard]] const ProcessesPanel& processesPanelForTesting() const noexcept
     {
         return m_ProcessesPanel;
+    }
+
+    /// The Process Details tab's panel, for tests that check what it took in while hidden (#3156).
+    [[nodiscard]] const ProcessDetailsPanel& processDetailsPanelForTesting() const noexcept
+    {
+        return m_ProcessDetailsPanel;
     }
 
     /// Whether a startup selection is still waiting to take effect: TASKSMACK_TAB's tab not yet shown,

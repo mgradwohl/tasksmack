@@ -3,8 +3,11 @@
 #include "App/PanelPlatforms.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
+#include "Core/WindowConstants.h"
 #include "Domain/CrashHistory.h"
+#include "Domain/ProcessModel.h"
 #include "Domain/ProcessSnapshot.h"
+#include "Domain/SamplingConfig.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "ProcessColumnConfig.h"
 #include "SelectOverride.h"
@@ -13,6 +16,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -139,6 +143,24 @@ void ShellPanels::update(float deltaTime)
         }
     }
     // Drop this frame's references now: the panel keeps the one it shows.
+    m_PendingSamples.clear();
+}
+
+// A hidden window's loop wakes at least every WINDOW_HIDDEN_WAIT_TIMEOUT, and must take the watched
+// process's samples before the model's ring of them, one per refresh, wraps at the fastest interval.
+static_assert(Core::WINDOW_HIDDEN_WAIT_TIMEOUT < std::chrono::milliseconds(Domain::Sampling::REFRESH_INTERVAL_MIN_MS) *
+                                                     static_cast<std::int64_t>(Domain::ProcessModel::WATCHED_SAMPLE_CAPACITY));
+
+void ShellPanels::updateWhileHidden()
+{
+    // The PID watched since the last frame's update(): a selection only changes in a frame.
+    const std::int32_t selectedPid = m_ProcessDetails.selectedPid();
+    m_PendingSamples.clear();
+    if (selectedPid != -1 && selectedPid == m_WatchedPid &&
+        m_Processes.watchedSamplesSince(m_ProcessDetails.lastSampleVersion(), m_PendingSamples))
+    {
+        m_ProcessDetails.takeSamples(m_PendingSamples);
+    }
     m_PendingSamples.clear();
 }
 

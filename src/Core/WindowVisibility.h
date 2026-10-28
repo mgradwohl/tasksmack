@@ -44,6 +44,43 @@ struct Signals
     return minimized || occluded || anyHides(signals);
 }
 
+/// How a hidden window will be shown again, which decides how the frame loop waits while it is
+/// hidden (#3156).
+enum class HiddenState : std::uint8_t
+{
+    Shown,  ///< Not hidden: isHidden() is false
+    Hidden, ///< Minimized, occluded, locked, disconnected or display off: its end comes with an event
+    /// Cloaked: DWM sends nothing when the cloak ends, so the loop must keep asking
+    /// (Window::pollVisibility()) to notice, for example, a return to the window's virtual desktop.
+    Cloaked,
+    /// Minimized on native Wayland and nothing else: xdg-shell reports no minimize, so SDL sets the
+    /// flag when the app asks for one and clears it only at the next activating configure. A window
+    /// shown again without being activated keeps the flag, so the loop keeps drawing at the hidden
+    /// rate rather than not at all.
+    MinimizedUnconfirmed,
+};
+
+/// The HiddenState of a window that is @p minimized and @p occluded as SDL reports it, with
+/// @p signals. @p minimizeEndReported is whether the backend reports the end of a minimize: false
+/// on native Wayland only. Hidden whenever isHidden() is, and Shown otherwise. A cloak comes first:
+/// whatever else ends with an event, the cloak still needs polling after it.
+[[nodiscard]] constexpr HiddenState classifyHidden(bool minimized, bool minimizeEndReported, bool occluded, const Signals& signals) noexcept
+{
+    if (signals.cloaked)
+    {
+        return HiddenState::Cloaked;
+    }
+    if (occluded || anyHides(signals))
+    {
+        return HiddenState::Hidden;
+    }
+    if (minimized)
+    {
+        return minimizeEndReported ? HiddenState::Hidden : HiddenState::MinimizedUnconfirmed;
+    }
+    return HiddenState::Shown;
+}
+
 // ---- Session changes: WM_WTSSESSION_CHANGE ----
 
 /// WM_WTSSESSION_CHANGE's wParam values this module reads (<winuser.h>).

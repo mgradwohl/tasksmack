@@ -13,8 +13,10 @@
 #endif
 #include "Core/VideoBackend.h"
 #include "Core/Window.h"
+#include "Core/WindowConstants.h"
 #include "Core/WindowEventRouting.h"
 #include "Core/WindowEvents.h"
+#include "Core/WindowVisibility.h"
 #include "Core/X11ConnectionLoss.h"
 #include "Platform/ThreadName.h"
 #include "version.h"
@@ -89,10 +91,14 @@ constexpr double MAX_FRAME_RATE = 60.0;
 // The refresh rate assumed when SDL does not report the display's (#1126).
 constexpr double FALLBACK_REFRESH_HZ = 60.0;
 
-// When the window is minimized there is nothing visible to render, so the sleep
-// is extended to ~5 fps. Any event (e.g. SDL_EVENT_WINDOW_RESTORED) wakes
-// immediately, so restore latency is unaffected.
+// The hidden rate, ~5 fps, for the hidden window that still draws (FramePacing::computeHiddenWait):
+// before the first frame, and on a native Wayland minimize. Any other hidden window draws no frames
+// at all (#3156). Any event (e.g. SDL_EVENT_WINDOW_RESTORED) wakes immediately, so restore latency
+// is unaffected.
 constexpr int MINIMIZED_FRAME_SLEEP_MS = 200;
+// How long the no-frames wait of a hidden window lasts at most (#3156): see WindowConstants.h.
+constexpr int HIDDEN_WAIT_TIMEOUT_MS = static_cast<int>(WINDOW_HIDDEN_WAIT_TIMEOUT.count());
+constexpr int CLOAKED_POLL_INTERVAL_MS = static_cast<int>(WINDOW_CLOAKED_POLL_INTERVAL.count());
 
 // During interactive move/resize, event delivery can be bursty depending on
 // compositor/window-manager behavior. Keep redraw active for a short grace
@@ -464,6 +470,9 @@ void Application::run()
     // The event that woke the idle wait, taken off the queue by SDL_WaitEventTimeout(): the next
     // iteration's drain dispatches it before anything else, and before that iteration renders (#1409).
     std::optional<SDL_Event> idleWakeEvent;
+    // Whether a frame has been drawn yet: until then a hidden window draws at the hidden rate, so the
+    // first update publishes the loaded settings even in an app started minimized (#3156).
+    bool drewFirstFrame = false;
     // P3 skips in a row, for the FramePacing::MAX_CONSECUTIVE_SKIPPED_RENDERS bound (#1410).
     std::uint32_t consecutiveSkippedRenders = 0;
     // When the input redraw grace ends (FramePacing::computeInputRedrawUntil, #843): until then the
@@ -472,6 +481,30 @@ void Application::run()
     double inputRedrawUntil = 0.0;
     std::uint64_t loopStart = 0;
     ResizePerfLoopTiming loopTiming;
+    // Wait up to @p timeoutMs for an event, timing the wait for the trace when @p traced. Wait with a
+    // real SDL_Event, not nullptr: the event that wakes the loop is taken off the queue here and handed
+    // to the next iteration's drain, which dispatches it before rendering (#1409). With nullptr the
+    // event stayed queued and the frame after the wait rendered straight after the wake, showing the
+    // state from before the input. A wait that times out polls once more (#1450): a wake from another
+    // thread can reach it late, with the event already queued, and that event is a wake too.
+    const auto waitForEvent = [&idleWakeEvent, &loopTiming](int timeoutMs, bool traced) -> FramePacing::IdleWaitOutcome
+    {
+        const auto waitStart = traced ? SDL_GetPerformanceCounter() : 0;
+        SDL_Event wakeEvent;
+        const auto outcome = FramePacing::waitForIdleEvent(
+            wakeEvent,
+            [timeoutMs](SDL_Event& event) { return SDL_WaitEventTimeout(&event, timeoutMs); },
+            [](SDL_Event& event) { return SDL_PollEvent(&event); });
+        if (outcome != FramePacing::IdleWaitOutcome::TimedOut)
+        {
+            idleWakeEvent = wakeEvent;
+        }
+        if (traced)
+        {
+            loopTiming.waitMs = resizePerfElapsedMs(waitStart, SDL_GetPerformanceCounter());
+        }
+        return outcome;
+    };
     const auto finishTracedLoop = [&](std::uint64_t end)
     {
         if (loopStart == 0)
@@ -772,10 +805,14 @@ void Application::run()
         }
 
         // Minimized, covered (#1125), or on Windows cloaked, behind a locked or disconnected session or
-        // on a display that is off (#3152): nothing on screen to animate, so no paced frames and the
-        // longer hidden idle sleep. Only drawing slows; the samplers keep the Settings interval (#2731).
+        // on a display that is off (#3152): nothing on screen, so no frames at all once the first is
+        // drawn (#3156); the loop waits for the event that shows the window again. Only drawing stops:
+        // the samplers keep the Settings interval on their own threads (#2731).
         m_Window->pollVisibility();
-        const bool isHidden = m_Window->isHidden();
+        const WindowVisibility::HiddenState hiddenState = m_Window->hiddenState();
+        const bool isHidden = hiddenState != WindowVisibility::HiddenState::Shown; // Window::isHidden()
+        const FramePacing::HiddenWait hiddenWait =
+            FramePacing::computeHiddenWait(hiddenState, drewFirstFrame, HIDDEN_WAIT_TIMEOUT_MS, CLOAKED_POLL_INTERVAL_MS);
 
         // isHidden, not only minimized: an occluded window that gets a move/resize event must not render
         // at the display rate through the interaction grace period either (#1125).
@@ -824,13 +861,28 @@ void Application::run()
         // - Otherwise, with the event queue empty, decide whether to sleep or render immediately:
         //   - Inside the grace period: skip the sleep and fall through to renderFrame so the
         //     display stays current during burst gaps between resize/move events.
-        //   - Outside the grace period: sleep briefly (~20 fps idle, 5 fps minimized or covered)
-        //     to reduce CPU/GPU usage when the display hasn't changed. Any SDL event wakes the
-        //     sleep immediately, keeping interactive frame rate unaffected. The waking event is
-        //     dispatched before the next frame renders (#1409): see idleWakeEvent.
+        //   - Outside the grace period: sleep briefly (~20 fps idle, 5 fps for a hidden window that
+        //     still draws) to reduce CPU/GPU usage when the display hasn't changed. Any SDL event
+        //     wakes the sleep immediately, keeping interactive frame rate unaffected. The waking
+        //     event is dispatched before the next frame renders (#1409): see idleWakeEvent.
+        // A hidden window that draws nothing (#3156) only waits, for at most hiddenWait.timeoutMs, and
+        // runs the layers' onHiddenUpdate(). After a drain that handled events it doesn't wait: the next
+        // iteration drains again, and waits once the queue is empty. The event that shows the window
+        // again wakes the wait; the next iteration dispatches it and draws.
         const double animationFps = FramePacing::computeAnimationRate(requestedAnimationFps, IDLE_FRAME_RATE, MAX_FRAME_RATE);
         const double frameRateCap = FramePacing::computeFrameRateCap(animationFps, hadEvents || inputGraceActive, isHidden, MAX_FRAME_RATE);
-        if (frameRateCap > 0.0 && !isInteracting)
+        if (hiddenWait.drawsNoFrames)
+        {
+            if (!hadEvents)
+            {
+                static_cast<void>(waitForEvent(hiddenWait.timeoutMs, traceResizePerfThisFrame));
+            }
+            for (const auto& layer : m_LayerStack)
+            {
+                guardLayerCall(layer, "onHiddenUpdate", [&] { layer->onHiddenUpdate(); });
+            }
+        }
+        else if (frameRateCap > 0.0 && !isInteracting)
         {
             const double waitSeconds = FramePacing::computeFrameWaitSeconds(
                 getTime() - lastFrameStart, FramePacing::framePeriodSeconds(m_DisplayRefreshHz, frameRateCap));
@@ -856,36 +908,17 @@ void Application::run()
             {
                 const int sleepMs =
                     FramePacing::computeIdleWaitMs(isHidden, IDLE_FRAME_SLEEP_MS, MINIMIZED_FRAME_SLEEP_MS, getTime() - lastFrameStart);
-                const auto waitStart = traceResizePerfThisFrame ? SDL_GetPerformanceCounter() : 0;
-                // Wait with a real SDL_Event, not nullptr: the event that wakes the loop is taken
-                // off the queue here and handed to the next iteration's drain, which dispatches it
-                // before rendering (#1409). With nullptr the event stayed queued and the frame below
-                // rendered straight after the wake, showing the state from before the input.
-                // A wait that times out polls once more (#1450): a wake from another thread can
-                // reach it late, with the event already queued, and that event is a wake too.
-                SDL_Event wakeEvent;
-                const auto waitOutcome = FramePacing::waitForIdleEvent(
-                    wakeEvent,
-                    [sleepMs](SDL_Event& event) { return SDL_WaitEventTimeout(&event, sleepMs); },
-                    [](SDL_Event& event) { return SDL_PollEvent(&event); });
-                if (waitOutcome != FramePacing::IdleWaitOutcome::TimedOut)
-                {
-                    idleWakeEvent = wakeEvent;
-                }
+                const auto waitOutcome = waitForEvent(sleepMs, traceResizePerfThisFrame);
                 ++m_IdleWaitCount;
                 m_LastIdleWaitWoke = waitOutcome == FramePacing::IdleWaitOutcome::Woke;
                 m_LastIdleWaitPolledEvent = waitOutcome == FramePacing::IdleWaitOutcome::PolledAfterTimeout;
-                if (traceResizePerfThisFrame)
-                {
-                    loopTiming.waitMs = resizePerfElapsedMs(waitStart, SDL_GetPerformanceCounter());
-                }
             }
         }
 
         // A wake on an event skips this render: the next iteration drains the event first, then
         // renders, paced as any input-driven frame (#1153) (#1409).
-        const bool renderRegularFrame =
-            FramePacing::computeShouldRenderRegularFrame(idleWakeEvent.has_value(), didImmediateResizeRedraw, skipRenderThisFrame);
+        const bool renderRegularFrame = FramePacing::computeShouldRenderRegularFrame(
+            idleWakeEvent.has_value(), didImmediateResizeRedraw, skipRenderThisFrame, hiddenWait.drawsNoFrames);
         if (renderRegularFrame)
         {
             lastFrameStart = getTime();
@@ -932,6 +965,7 @@ void Application::run()
         if (renderedFrame)
         {
             requestedAnimationFps = AnimationRequest::consume();
+            drewFirstFrame = true;
         }
         consecutiveSkippedRenders =
             FramePacing::nextConsecutiveSkippedRenders(consecutiveSkippedRenders, skipRenderThisFrame, renderedFrame);

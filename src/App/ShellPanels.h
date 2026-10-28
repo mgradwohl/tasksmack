@@ -95,6 +95,12 @@ class ShellPanels
     /// (#1880).
     void update(float deltaTime);
 
+    /// On each wake of the frame loop while the window is hidden and draws no frames (#3156): only
+    /// the selected process's new samples into Process Details (ProcessDetailsPanel::takeSamples()),
+    /// which the process model keeps for a few dozen generations. Every other hand-off follows what
+    /// the user does in a frame, so it waits for the next one.
+    void updateWhileHidden();
+
     /// Publishes the loaded refresh interval and history window through @p raise, as the first update
     /// does (#1079): the same events the Settings dialog raises, or the synthetic scenario's (#1413).
     static void raiseStartupSettings(const std::function<void(Core::Event&)>& raise);
