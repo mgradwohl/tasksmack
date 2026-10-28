@@ -51,10 +51,14 @@ if (-not $LlvmCov) {
 # Structural exclusions (#2039): lines no test can run on Windows, such as a modal shell dialog, the real
 # ShellExecuteW launch or the WinMain entry point. The source marks them LCOV_EXCL_START ... LCOV_EXCL_STOP
 # (inclusive) or LCOV_EXCL_LINE, each with its reason. llvm-cov has no such markers, so the LCOV report
-# drops them here; the HTML report and the llvm-cov summary still count them. Only Windows-only code
-# (src/Platform/Windows/ and _WIN32 blocks) is marked, and tools/coverage.sh honours no markers.
+# drops them here; the HTML report and the llvm-cov summary still count them. A marker may also say a type's
+# invariants make a guard unreachable (#3221). Defaulted comparison operators (`operator==`/`operator<=>`
+# ... `= default;`) go too: clang folds one branch of the synthesized compare, so the line is never fully
+# covered. tools/coverage.sh applies the same rules through tools/lcov-exclude.py; keep the two in step.
 
-# The 1-based line numbers of @SourcePath inside a marked region.
+$DefaultedComparison = '\boperator\s*(?:==|<=>)\s*\(.*=\s*default\s*;'
+
+# The 1-based line numbers of @SourcePath inside a marked region, or declaring a defaulted comparison.
 function Get-ExcludedLine([string]$SourcePath) {
     $excluded = [System.Collections.Generic.HashSet[int]]::new()
     if (-not [System.IO.File]::Exists($SourcePath)) {
@@ -67,7 +71,7 @@ function Get-ExcludedLine([string]$SourcePath) {
         if ($text.Contains("LCOV_EXCL_START")) {
             $inside = $true
         }
-        if ($inside -or $text.Contains("LCOV_EXCL_LINE")) {
+        if ($inside -or $text.Contains("LCOV_EXCL_LINE") -or $text -match $DefaultedComparison) {
             [void]$excluded.Add($i + 1)
         }
         if ($text.Contains("LCOV_EXCL_STOP")) {
@@ -311,7 +315,7 @@ try {
         | Set-Content -Path $lcovPath -Encoding utf8NoBOM
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     $droppedLines = Remove-ExcludedLcovLine $lcovPath
-    Write-Host "Left $droppedLines structurally untestable line(s) out of the LCOV report (LCOV_EXCL markers, #2039)."
+    Write-Host "Left $droppedLines structurally untestable line(s) out of the LCOV report (#2039, #3221)."
 
     # Step 6: Generate summary
     Write-Host "==> Coverage Summary:"
