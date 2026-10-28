@@ -59,6 +59,28 @@ TEST(ProcessGroupingTest, KeysByMode)
     EXPECT_EQ(ProcessGrouping::groupKey(p, GroupBy::None), "");
 }
 
+// #3076: by user, each user's processes are a group with their totals; a process whose user couldn't be
+// read is Ungrouped, last.
+TEST(ProcessGroupingTest, ByUserTotalsEachUsersProcesses)
+{
+    std::vector<Domain::ProcessSnapshot> snapshots{
+        proc("firefox", "", "", 20.0, 300), proc("sshd", "", "", 1.0, 10), proc("bash", "", "", 2.0, 20), proc("ghost", "", "", 0.5, 5)};
+    snapshots[0].user = "alice";
+    snapshots[1].user = "root";
+    snapshots[2].user = "alice";
+    EXPECT_EQ(ProcessGrouping::groupKey(snapshots[0], GroupBy::User), "alice");
+    EXPECT_EQ(ProcessGrouping::groupByLabel(GroupBy::User), "User");
+    const std::vector<ProcessGrouping::Group> groups =
+        ProcessGrouping::buildGroups(snapshots, {0, 1, 2, 3}, GroupBy::User, snapshots.size(), ProcessColumn::CpuPercent, false);
+    ASSERT_EQ(groups.size(), 3U);
+    EXPECT_EQ(groups[0].key, "alice");
+    EXPECT_EQ(groups[0].totals.processes, 2U);
+    EXPECT_DOUBLE_EQ(groups[0].totals.cpuPercent, 22.0);
+    EXPECT_EQ(groups[0].totals.resident, 320U);
+    EXPECT_EQ(groups[1].key, "root");
+    EXPECT_EQ(groups[2].key, ""); // Ungrouped, last
+}
+
 TEST(ProcessGroupingTest, GroupsTotalTheirRunningMembersAndSortByTotalsWithUngroupedLast)
 {
     const std::vector<Domain::ProcessSnapshot> snapshots{
@@ -105,10 +127,11 @@ TEST(ProcessGroupingTest, EqualTotalsSortByNameAToZEvenWhenDescending)
 
 TEST(ProcessGroupingTest, ConfigValuesRoundTrip)
 {
-    for (const GroupBy mode : {GroupBy::None, GroupBy::Unit, GroupBy::Container, GroupBy::App})
+    for (const GroupBy mode : {GroupBy::None, GroupBy::Unit, GroupBy::Container, GroupBy::App, GroupBy::User})
     {
         EXPECT_EQ(ProcessGrouping::groupByFromConfig(ProcessGrouping::groupByConfigValue(mode)), mode);
     }
+    EXPECT_EQ(ProcessGrouping::groupByConfigValue(GroupBy::User), "user");
     EXPECT_EQ(ProcessGrouping::groupByFromConfig("bogus"), GroupBy::None);
 }
 

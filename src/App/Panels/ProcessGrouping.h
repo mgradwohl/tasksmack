@@ -29,6 +29,7 @@ enum class GroupBy : std::uint8_t
     Unit,      ///< The systemd unit the process's cgroup names (Linux); the first service it hosts (Windows)
     Container, ///< Its container ("docker:1a2b3c4d5e6f")
     App,       ///< The app its unit was launched as: a desktop app, a Flatpak or a Snap
+    User,      ///< The user it runs as: per-user totals, the Users view's read-only first part (#3076)
 };
 
 /// The label of the group for processes in none.
@@ -104,6 +105,8 @@ inline constexpr std::string_view UNGROUPED_LABEL = "Ungrouped";
         return proc.container;
     case GroupBy::App:
         return proc.serviceNames.empty() ? std::string{} : appFromUnit(proc.serviceNames[0]);
+    case GroupBy::User:
+        return proc.user;
     case GroupBy::None:
         break;
     }
@@ -273,6 +276,8 @@ struct Group
         return "Container";
     case GroupBy::App:
         return "App";
+    case GroupBy::User:
+        return "User";
     case GroupBy::None:
         break;
     }
@@ -290,6 +295,8 @@ struct Group
         return "container";
     case GroupBy::App:
         return "app";
+    case GroupBy::User:
+        return "user";
     case GroupBy::None:
         break;
     }
@@ -298,7 +305,7 @@ struct Group
 
 [[nodiscard]] constexpr GroupBy groupByFromConfig(std::string_view value) noexcept
 {
-    for (const GroupBy mode : {GroupBy::Unit, GroupBy::Container, GroupBy::App})
+    for (const GroupBy mode : {GroupBy::Unit, GroupBy::Container, GroupBy::App, GroupBy::User})
     {
         if (value == groupByConfigValue(mode))
         {

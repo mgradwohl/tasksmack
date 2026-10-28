@@ -1717,7 +1717,8 @@ void ProcessesPanel::renderContent()
             for (const ProcessGrouping::GroupBy mode : {ProcessGrouping::GroupBy::None,
                                                         ProcessGrouping::GroupBy::Unit,
                                                         ProcessGrouping::GroupBy::Container,
-                                                        ProcessGrouping::GroupBy::App})
+                                                        ProcessGrouping::GroupBy::App,
+                                                        ProcessGrouping::GroupBy::User})
             {
                 const std::string label(ProcessGrouping::groupByLabel(mode));
                 if (ImGui::Selectable(label.c_str(), mode == m_GroupBy))
@@ -1728,7 +1729,7 @@ void ProcessesPanel::renderContent()
             ImGui::EndCombo();
         }
     }
-    ImGui::SetItemTooltip("Group processes by systemd unit, container or app, each group under a row with its totals");
+    ImGui::SetItemTooltip("Group processes by systemd unit, container, app or user, each group under a row with its totals");
     if (offerRunTask)
     {
         ImGui::SameLine();
