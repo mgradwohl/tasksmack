@@ -81,6 +81,10 @@ class PkexecBroker final : public IPrivilegedBroker
     [[nodiscard]] bool heldForSession() const noexcept override;
 
     [[nodiscard]] bool connected() const noexcept override;
+    [[nodiscard]] bool lastSeenConnected() const noexcept override
+    {
+        return m_Connected.load();
+    }
     [[nodiscard]] std::expected<Broker::Response, std::string> callIfIdle(const Broker::Request& request,
                                                                           std::chrono::milliseconds timeout) override;
     [[nodiscard]] std::expected<Broker::Response, std::string> call(const Broker::Request& request,

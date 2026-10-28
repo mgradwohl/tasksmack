@@ -284,7 +284,7 @@ PipeBroker::launch(const std::wstring& pipeName, const std::stop_token& giveUp, 
              launcher = m_Launcher,
              token = launchStop.get_token(),
              result = std::move(fallback),
-             tooLate = std::move(tooLate)]() mutable
+             tooLate = std::move(tooLate)] mutable
             {
                 static_cast<void>(setCurrentThreadName(HELPER_LAUNCH_THREAD_NAME));
                 try
@@ -337,6 +337,7 @@ PipeBroker::launch(const std::wstring& pipeName, const std::stop_token& giveUp, 
         m_Pending = std::move(pending);
         return std::unexpected(std::string(stopped ? std::string_view(CANCELLED) : PROMPT_TIMED_OUT));
     }
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access) - the wait above returned only once its predicate saw it set, under this lock
     return std::move(*pending->result);
 }
 

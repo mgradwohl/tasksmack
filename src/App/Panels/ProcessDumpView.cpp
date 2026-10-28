@@ -420,7 +420,7 @@ void ProcessDumpView::chooseFolder(Platform::IProcessActions* actions, void* own
         // No folder dialog in the platform layer (Linux): the fallback answers asynchronously, from SDL's
         // event pump or a thread of its own, into the slot the worker would have filled. shutdown() drops
         // that answer rather than waiting for it (BackgroundTask::adopt()).
-        auto promise = std::make_shared<std::promise<Platform::FolderChoice>>();
+        const auto promise = std::make_shared<std::promise<Platform::FolderChoice>>();
         m_FolderPick.adopt(promise->get_future());
         m_FolderDialog(m_Directory,
                        [promise](Platform::FolderChoice choice)

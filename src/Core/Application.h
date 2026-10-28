@@ -65,7 +65,7 @@ class Application
         requires std::is_base_of_v<Layer, T>
     T& pushLayer(Args&&... args) // NOLINT(cpp/unused-local-variable,cpp/unused-static-variable) - args used in std::forward pack expansion
     {
-        auto& layer = m_LayerStack.emplace_back(std::make_unique<T>(std::forward<Args>(args)...));
+        const auto& layer = m_LayerStack.emplace_back(std::make_unique<T>(std::forward<Args>(args)...));
         try
         {
             layer->onAttach();

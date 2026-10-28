@@ -13,7 +13,7 @@ namespace App::ScreenshotOverride
 const std::optional<Request>& active()
 {
     // Read once: a function-local static is initialised exactly once, thread-safely.
-    static const std::optional<Request> request = []() -> std::optional<Request>
+    static const std::optional<Request> request = [] -> std::optional<Request>
     {
         ParseResult parsed = parse(Core::readEnv(ENV_VAR));
         if (!parsed.warning.empty())

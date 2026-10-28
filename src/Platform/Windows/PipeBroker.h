@@ -114,6 +114,10 @@ class PipeBroker final : public IPrivilegedBroker
     void disconnect();
 
     [[nodiscard]] bool connected() const noexcept override;
+    [[nodiscard]] bool lastSeenConnected() const noexcept override
+    {
+        return m_Connected.load();
+    }
     [[nodiscard]] bool readsOtherUsers() const noexcept override
     {
         return m_ReadsOtherUsers;

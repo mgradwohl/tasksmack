@@ -75,6 +75,6 @@ void renderStorageSection(RenderContext& ctx);
 /// @param targetWrite Current write bytes per second, or NaN when unmeasured
 /// @param deltaTimeSeconds Time since last update
 /// @param ctx Render context containing smoothed value pointers
-void updateSmoothedDiskIO(double targetRead, double targetWrite, float deltaTimeSeconds, RenderContext& ctx);
+void updateSmoothedDiskIO(double targetRead, double targetWrite, float deltaTimeSeconds, const RenderContext& ctx);
 
 } // namespace App::StorageSection

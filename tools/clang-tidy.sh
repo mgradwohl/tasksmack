@@ -223,8 +223,8 @@ sanitize_compile_commands() {
 # shellcheck source=tools/common.sh
 source "$SCRIPT_DIR/common.sh"
 
-# Find clang-tidy: the CI-pinned LLVM's (/usr/lib/llvm-22/bin) before an unversioned one on PATH, so
-# a machine with only clang-tidy-22 installed (no unversioned symlink) still finds it.
+# Find clang-tidy: the CI-pinned LLVM's (/usr/lib/llvm-23/bin) before an unversioned one on PATH, so
+# a machine with only clang-tidy-23 installed (no unversioned symlink) still finds it.
 CLANG_TIDY="$(find_llvm_tool clang-tidy || true)"
 if [[ -z "$CLANG_TIDY" ]]; then
     echo "Error: clang-tidy not found. Install via: apt install clang-tidy-$(pinned_llvm_major)" >&2

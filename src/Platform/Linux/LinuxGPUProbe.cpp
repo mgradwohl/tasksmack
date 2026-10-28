@@ -224,7 +224,7 @@ GPUCapabilities LinuxGPUProbe::capabilities() const
     // Phase 4: NVML capabilities
     if (m_NVMLProbe && m_NVMLProbe->isAvailable())
     {
-        auto nvmlCaps = m_NVMLProbe->capabilities();
+        const auto nvmlCaps = m_NVMLProbe->capabilities();
 
         caps.hasTemperature = caps.hasTemperature || nvmlCaps.hasTemperature;
         caps.hasPowerMetrics = caps.hasPowerMetrics || nvmlCaps.hasPowerMetrics;
@@ -240,7 +240,7 @@ GPUCapabilities LinuxGPUProbe::capabilities() const
     // Phase 5: DRM capabilities (Intel)
     if (m_DRMProbe && m_DRMProbe->isAvailable())
     {
-        auto drmCaps = m_DRMProbe->capabilities();
+        const auto drmCaps = m_DRMProbe->capabilities();
 
         caps.hasTemperature = caps.hasTemperature || drmCaps.hasTemperature;
         caps.hasPowerMetrics = caps.hasPowerMetrics || drmCaps.hasPowerMetrics;
@@ -256,7 +256,7 @@ GPUCapabilities LinuxGPUProbe::capabilities() const
     // Phase 6: ROCm capabilities (AMD)
     if (m_ROCmProbe && m_ROCmProbe->isAvailable())
     {
-        auto rocmCaps = m_ROCmProbe->capabilities();
+        const auto rocmCaps = m_ROCmProbe->capabilities();
 
         caps.hasTemperature = caps.hasTemperature || rocmCaps.hasTemperature;
         caps.hasPowerMetrics = caps.hasPowerMetrics || rocmCaps.hasPowerMetrics;

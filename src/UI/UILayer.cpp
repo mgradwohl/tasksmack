@@ -109,7 +109,7 @@ void UILayer::onAttach()
         loadAllFonts(m_FontFiles, assetsDir, displayScale);
 
         // Load themes from TOML files (built-ins)
-        auto themesDir = assetsDir / "themes";
+        const auto themesDir = assetsDir / "themes";
         Theme::get().loadThemes(themesDir);
         spdlog::info("Loaded {} themes", Theme::get().discoveredThemes().size());
 

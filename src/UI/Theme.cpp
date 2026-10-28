@@ -69,7 +69,7 @@ void Theme::loadThemes(const std::filesystem::path& themesDir)
 {
     spdlog::info("Loading themes from: {}", Core::pathToUtf8(themesDir));
 
-    auto discovered = ThemeLoader::discoverThemes(themesDir);
+    const auto discovered = ThemeLoader::discoverThemes(themesDir);
 
     if (discovered.empty())
     {
@@ -84,7 +84,7 @@ void Theme::loadThemes(const std::filesystem::path& themesDir)
     discoveredThemes.reserve(discovered.size());
     loadedSchemes.reserve(discovered.size());
 
-    for (auto& info : discovered)
+    for (const auto& info : discovered)
     {
         if (auto scheme = ThemeLoader::loadTheme(info.path))
         {

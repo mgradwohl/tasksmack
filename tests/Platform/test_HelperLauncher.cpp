@@ -131,7 +131,7 @@ DWORD WINAPI failingModuleFileName(HMODULE /*module*/, LPWSTR /*buffer*/, DWORD 
 
 [[nodiscard]] std::wstring freshName()
 {
-    auto name = BrokerPipe::makePipeName();
+    const auto name = BrokerPipe::makePipeName();
     EXPECT_TRUE(name.has_value());
     return name.value_or(L"");
 }
@@ -216,13 +216,13 @@ TEST(HelperLauncherTest, TaskSmackNamesItselfAsTheHelperReadsIt)
 
     const auto image = BrokerHelper::imageOf(GetCurrentProcess());
     ASSERT_TRUE(image.has_value());
-    EXPECT_EQ(lowerCased(fake.file), lowerCased(BrokerHelper::besidePath(*image, L"TaskSmackHelper.exe")));
+    EXPECT_EQ(lowerCased(fake.file), lowerCased(BrokerHelper::besidePath(image.value_or(L""), L"TaskSmackHelper.exe")));
 
     const auto read = readAsTheHelper(fake.parameters);
     ASSERT_TRUE(read.has_value()) << read.error();
     const auto ticks = BrokerHelper::startTicksOf(GetCurrentProcess());
     ASSERT_TRUE(ticks.has_value());
-    EXPECT_EQ(read->parentStartTicks, *ticks);
+    EXPECT_EQ(read->parentStartTicks, ticks.value_or(0));
 }
 
 TEST(HelperLauncherTest, TheParametersAreTheHelpersCommandLineAndReadBackExactly)
@@ -481,7 +481,7 @@ TEST(HelperLauncherTest, AHelperThatRefusedItsParentSaysSo)
 {
     UniqueHandle token;
     EXPECT_NE(OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, token.put()), FALSE);
-    auto sid = BrokerPipe::userSidOfToken(token.get());
+    const auto sid = BrokerPipe::userSidOfToken(token.get());
     EXPECT_TRUE(sid.has_value());
     return sid.value_or(BrokerPipe::Sid{});
 }
@@ -650,8 +650,10 @@ TEST(HelperLauncherTest, AHelperApprovedForAnotherAccountTakesReadAsAdministrato
     HelperLauncher::LearnedReadsBroker broker(
         std::make_unique<PipeBroker>(session.launcher(), HelperLauncher::readsOtherUsers(TokenElevationTypeLimited)));
     EXPECT_TRUE(broker.readsOtherUsers()) << "a split-token administrator's helper is expected to run as its user";
+    EXPECT_FALSE(broker.lastSeenConnected());
     const auto connected = broker.connect({});
     ASSERT_TRUE(connected.has_value()) << connected.error();
+    EXPECT_TRUE(broker.lastSeenConnected()) << "the inner broker's, as connect() left it (#3182)";
     EXPECT_TRUE(broker.connected());
     EXPECT_TRUE(broker.readsOtherUsers()) << "the handshake doesn't say which account the helper runs as";
 
@@ -788,7 +790,10 @@ TEST(HelperLauncherTest, OnlyTheHelpersOwnRefusalTeachesTheBroker)
     EXPECT_TRUE(broker.readsOtherUsers());
     EXPECT_TRUE(broker.connected());
 
+    EXPECT_TRUE(broker.lastSeenConnected()); // the inner broker's (#3182)
+
     inner.setConnected(false);
+    EXPECT_FALSE(broker.lastSeenConnected());
     EXPECT_FALSE(broker.connected());
     EXPECT_FALSE(broker.call(Broker::ModulesRequest{.target = THEIRS}, {}).has_value());
     EXPECT_TRUE(broker.readsOtherUsers());

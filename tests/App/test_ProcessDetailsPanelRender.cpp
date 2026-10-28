@@ -18,7 +18,9 @@
 #include "Domain/CrashHistory.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Domain/ServiceModel.h"
+#include "Mocks/FakeBroker.h"
 #include "Mocks/MockProbes.h"
+#include "Platform/BrokeredProcessActions.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IServiceProbe.h"
@@ -704,6 +706,38 @@ TEST_F(ProcessDetailsPanelRenderTest, TheIoSliderGainsRealtimeOnceTheActionsCanS
     EXPECT_EQ(picked.ioClass, Platform::IoPriorityClass::Realtime);
     EXPECT_EQ(picked.level, 7);
     EXPECT_EQ(mock->setIoPriorityCount(), 0); // Picking applies nothing
+}
+
+// #3182: the panel asks for the actions' capabilities every frame, on the UI thread. Through the helper's
+// broker that read the helper's connection as last seen, never connected(), which peeks at the pipe or
+// polls the socket: no frame makes a call on the channel, while the Realtime stops still follow the helper.
+TEST_F(ProcessDetailsPanelRenderTest, EveryFramesCapabilitiesReadTheHelpersConnectionWithoutAskingTheBroker)
+{
+    auto inner = std::make_unique<TestMocks::MockProcessActions>();
+    inner->setCapabilities({.canSetPriority = true, .canSetIoPriority = true});
+    inner->setIoPriorityReadResult(Platform::IoPriority{.ioClass = Platform::IoPriorityClass::BestEffort, .level = 0});
+    const auto broker = std::make_shared<Mocks::FakeBroker>(/*connected=*/false);
+    ProcessDetailsPanel panel(Platform::withPrivilegedBroker(std::move(inner), broker));
+    Core::ActiveTabChangedEvent shown("ProcessDetails");
+    panel.onEvent(shown);
+    panel.setSelectedPid(PID, START_TICKS);
+    const std::vector samples{sampleAt(1.0, 10.0)};
+    for (int frame = 0; frame < 5; ++frame)
+    {
+        panel.updateWithSamples(samples, 1.0F);
+        static_cast<void>(renderAndCapture(panel));
+    }
+    EXPECT_TRUE(panel.actionCapabilities().canAuthorizeInteractively);
+    EXPECT_FALSE(panel.actionCapabilities().canSetRealtimeIoPriority);
+
+    broker->setConnected(true); // "Authenticate and retry" started the helper, on a worker
+    for (int frame = 0; frame < 5; ++frame)
+    {
+        panel.updateWithSamples(samples, 1.0F);
+        static_cast<void>(renderAndCapture(panel));
+    }
+    EXPECT_TRUE(panel.actionCapabilities().canSetRealtimeIoPriority);
+    EXPECT_EQ(broker->connectedCallCount(), 0) << "no frame looked at the helper's channel";
 }
 
 TEST_F(ProcessDetailsPanelRenderTest, TheOverviewShowsTheExecutablesRecentCrashes)

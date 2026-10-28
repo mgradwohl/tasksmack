@@ -37,6 +37,8 @@ constexpr const char* APPLY_LABEL = "Apply";
 constexpr const char* CANCEL_LABEL = "Cancel";
 constexpr const char* ALL_LABEL = "All";
 constexpr const char* NONE_LABEL = "None";
+// Shown in place of the boxes, and as Apply's tooltip, until the CPU layout has been read (#3182).
+constexpr const char* READING_LAYOUT_TEXT = "Reading this PC's CPU layout...";
 
 // Floor on the footer's buttons, in ems, as for the other action dialogs (ProcessActionConfirm).
 constexpr float BUTTON_MIN_EM = 11.25F;
@@ -55,6 +57,45 @@ void ProcessAffinityDialog::open(Platform::ProcessTarget target,
 {
     m_Target = target;
     m_Name = std::move(name);
+    m_AwaitingLayout = false;
+    m_AwaitedCurrent = {};
+    arrange(current, cpuCount, layout);
+    m_ShowRequested = true;
+}
+
+void ProcessAffinityDialog::openAwaitingLayout(Platform::ProcessTarget target,
+                                               std::string name,
+                                               const Platform::CpuAffinity& current,
+                                               std::size_t cpuCount)
+{
+    m_Target = target;
+    m_Name = std::move(name);
+    m_AwaitingLayout = true;
+    m_AwaitedCurrent = current;
+    m_AwaitedCpuCount = cpuCount;
+    // No boxes, so nothing to apply, until the layout arrives.
+    m_Chosen.clear();
+    m_Offered.clear();
+    m_OfferedCount = 0;
+    m_Sections.clear();
+    m_GroupCount = 0;
+    m_AppliedAsCpuSets = false;
+    m_ShowRequested = true;
+}
+
+void ProcessAffinityDialog::setLayout(const Platform::CpuAffinityLayout& layout)
+{
+    if (!m_AwaitingLayout)
+    {
+        return;
+    }
+    m_AwaitingLayout = false;
+    arrange(m_AwaitedCurrent, m_AwaitedCpuCount, layout);
+    m_AwaitedCurrent = {};
+}
+
+void ProcessAffinityDialog::arrange(const Platform::CpuAffinity& current, std::size_t cpuCount, const Platform::CpuAffinityLayout& layout)
+{
     const std::vector<std::size_t> offered = affinityDialogOfferedCpus(current, cpuCount, layout);
     m_Chosen.assign(offered.back() + 1, 0); // offered is ascending and never empty
     m_Offered.assign(m_Chosen.size(), 0);
@@ -68,7 +109,6 @@ void ProcessAffinityDialog::open(Platform::ProcessTarget target,
     m_Sections = affinityDialogSections(offered, layout);
     m_GroupCount = layout.groupSizes.size();
     m_AppliedAsCpuSets = layout.appliedAsCpuSets;
-    m_ShowRequested = true;
 }
 
 void ProcessAffinityDialog::choose(std::size_t cpu, bool chosen) noexcept
@@ -169,6 +209,62 @@ std::optional<Platform::CpuAffinity> ProcessAffinityDialog::render()
     }
     ImGui::PopTextWrapPos();
     ImGui::Spacing();
+    if (m_AwaitingLayout)
+    {
+        // The CPU layout is read once, on a worker (#3182): the frame or two before it has arrived.
+        ImGui::TextColored(theme.scheme().textMuted, "%s", READING_LAYOUT_TEXT);
+    }
+    else
+    {
+        renderChoices();
+    }
+
+    const bool anyChosen = canApply();
+    const UI::Widgets::ButtonFills applyFills{
+        .resting = theme.scheme().successButton,
+        .hovered = theme.scheme().successButtonHovered,
+        .pressed = theme.scheme().successButtonActive,
+    };
+    // Apply is disabled while nothing is ticked (#1881), or there are no boxes yet; the line above says why.
+    const char* applyTooltip = anyChosen ? nullptr : "Choose at least one CPU";
+    if (m_AwaitingLayout)
+    {
+        applyTooltip = READING_LAYOUT_TEXT;
+    }
+    const UI::Widgets::DialogFooterButton applyButton{
+        .label = APPLY_LABEL, .fills = &applyFills, .tooltip = applyTooltip, .disabled = !anyChosen};
+    const UI::Widgets::DialogFooterButton cancelButton{.label = CANCEL_LABEL, .fills = nullptr, .tooltip = nullptr};
+    UI::Widgets::DialogFooterAction pressed =
+        UI::Widgets::dialogFooter(applyButton, cancelButton, UI::Widgets::footerButtonWidth({APPLY_LABEL, CANCEL_LABEL}, BUTTON_MIN_EM));
+    if (escaped)
+    {
+        pressed = UI::Widgets::DialogFooterAction::Secondary;
+    }
+    switch (pressed)
+    {
+    case UI::Widgets::DialogFooterAction::Primary:
+        if (anyChosen)
+        {
+            applied = choice();
+            m_Open = false;
+            ImGui::CloseCurrentPopup();
+        }
+        break;
+    case UI::Widgets::DialogFooterAction::Secondary:
+        m_Open = false;
+        ImGui::CloseCurrentPopup();
+        break;
+    case UI::Widgets::DialogFooterAction::None:
+    case UI::Widgets::DialogFooterAction::Leading:
+        break;
+    }
+    ImGui::EndPopup();
+    return applied;
+}
+
+void ProcessAffinityDialog::renderChoices()
+{
+    const auto& theme = UI::Theme::get();
     if (ImGui::SmallButton(ALL_LABEL))
     {
         chooseAll(true);
@@ -244,42 +340,6 @@ std::optional<Platform::CpuAffinity> ProcessAffinityDialog::render()
     {
         ImGui::TextColored(theme.scheme().textMuted, "%zu of %zu CPUs", chosen.count(), m_OfferedCount);
     }
-
-    const UI::Widgets::ButtonFills applyFills{
-        .resting = theme.scheme().successButton,
-        .hovered = theme.scheme().successButtonHovered,
-        .pressed = theme.scheme().successButtonActive,
-    };
-    // Apply is disabled while nothing is ticked; the line above says why (#1881).
-    const UI::Widgets::DialogFooterButton applyButton{
-        .label = APPLY_LABEL, .fills = &applyFills, .tooltip = anyChosen ? nullptr : "Choose at least one CPU", .disabled = !anyChosen};
-    const UI::Widgets::DialogFooterButton cancelButton{.label = CANCEL_LABEL, .fills = nullptr, .tooltip = nullptr};
-    UI::Widgets::DialogFooterAction pressed =
-        UI::Widgets::dialogFooter(applyButton, cancelButton, UI::Widgets::footerButtonWidth({APPLY_LABEL, CANCEL_LABEL}, BUTTON_MIN_EM));
-    if (escaped)
-    {
-        pressed = UI::Widgets::DialogFooterAction::Secondary;
-    }
-    switch (pressed)
-    {
-    case UI::Widgets::DialogFooterAction::Primary:
-        if (anyChosen)
-        {
-            applied = chosen;
-            m_Open = false;
-            ImGui::CloseCurrentPopup();
-        }
-        break;
-    case UI::Widgets::DialogFooterAction::Secondary:
-        m_Open = false;
-        ImGui::CloseCurrentPopup();
-        break;
-    case UI::Widgets::DialogFooterAction::None:
-    case UI::Widgets::DialogFooterAction::Leading:
-        break;
-    }
-    ImGui::EndPopup();
-    return applied;
 }
 
 Detail::ActionResultMessage affinityResultMessage(const std::string& name,

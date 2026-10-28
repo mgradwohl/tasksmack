@@ -824,8 +824,9 @@ TEST_F(ProcessesPanelRenderTest, AClippedActionResultShowsInFullOnHover)
 
 TEST_F(ProcessesPanelRenderTest, SetAffinityFromTheRowMenuAppliesTheDialogsCpus)
 {
-    // Every process may run on CPU 0 only, and the actions can set an affinity (#1887).
-    TestMocks::MockProcessActions* actions = nullptr;
+    // Every process may run on CPU 0 only, and the actions can set an affinity (#1887) on a PC with
+    // two CPUs online, a layout read once on the sampler thread with the actions (#3182).
+    TestMocks::MockAffinityLayoutActions* actions = nullptr;
     auto panel = std::make_unique<ProcessesPanel>(
         [&actions]
         {
@@ -837,8 +838,11 @@ TEST_F(ProcessesPanelRenderTest, SetAffinityFromTheRowMenuAppliesTheDialogsCpus)
                 counters.cpuAffinity = Platform::CpuAffinity::fromMask(0b1U);
                 probe->withProcess(counters);
             }
-            auto mock = std::make_unique<TestMocks::MockProcessActions>();
+            auto mock = std::make_unique<TestMocks::MockAffinityLayoutActions>();
             mock->setCapabilities({.canSetAffinity = true});
+            Platform::CpuAffinityLayout layout;
+            layout.online = Platform::CpuAffinity::fromMask(0b11U);
+            mock->setAffinityLayout(std::move(layout));
             actions = mock.get();
             return ProcessesPanelPlatform{.probe = std::move(probe), .actions = std::move(mock), .icons = nullptr};
         },
@@ -853,8 +857,11 @@ TEST_F(ProcessesPanelRenderTest, SetAffinityFromTheRowMenuAppliesTheDialogsCpus)
 
     pressPopupItem(*panel, ICON_FA_MICROCHIP " Set affinity...###SetAffinity");
     static_cast<void>(renderAndCapture(*panel));
-    static_cast<void>(renderAndCapture(*panel));
+    const std::string text = renderAndCapture(*panel);
     ASSERT_NE(ImGui::GetTopMostPopupModal(), nullptr); // the dialog, with the process's own CPU ticked
+    EXPECT_TRUE(text.contains("1 of 2 CPUs")) << "boxes for the layout's CPUs: " << text;
+    EXPECT_EQ(actions->affinityLayoutCount(), 1) << "read once, with the actions";
+    EXPECT_NE(actions->affinityLayoutThread(), std::this_thread::get_id()) << "on the sampler thread, never the UI thread";
     EXPECT_EQ(actions->setAffinityCount(), 0);
 
     pressModalFilledButton(*panel, "Apply");

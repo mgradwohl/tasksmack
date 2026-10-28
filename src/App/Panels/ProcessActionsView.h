@@ -12,6 +12,7 @@
 // Everything but render() is defined here, free of ImGui, so the confirm and result state can be
 // tested against a mock IProcessActions without an ImGui context (test_ProcessActionsView.cpp).
 
+#include "App/Panels/AffinityLayoutRead.h"
 #include "App/Panels/ProcessActionRun.h"
 #include "App/Panels/ProcessAffinityDialog.h"
 #include "App/Panels/ProcessDumpView.h"
@@ -272,6 +273,22 @@ class ProcessActionsView
         return m_AffinityDialog;
     }
 
+    /// The update path (#3182): starts the one read of @p actions' CPU layout on its worker, early, so
+    /// Set affinity... normally finds it read (null @p actions: none), and hands a layout that has
+    /// arrived to a dialog opened before it did. @p actions must outlive this view.
+    void updateAffinityLayout(const Platform::IProcessActions* actions)
+    {
+        m_AffinityLayout.start(actions);
+        takeAffinityLayout(false);
+    }
+
+    /// Waits for the CPU layout's read, if one was started, and hands the layout to a dialog awaiting it,
+    /// as a later frame would: for tests, which press Set affinity... and then tick its boxes.
+    void waitForAffinityLayoutForTesting()
+    {
+        takeAffinityLayout(true);
+    }
+
     /// Advances the result line's timeout by @p deltaSeconds, clearing the line once it runs out.
     void tick(float deltaSeconds) noexcept
     {
@@ -498,6 +515,17 @@ class ProcessActionsView
             std::nullopt); // a refusal to the administrator isn't offered again
     }
 
+    /// Takes in the CPU layout's read once it has finished, and hands the layout to an affinity dialog
+    /// awaiting it. Never waits, unless @p wait (tests).
+    void takeAffinityLayout(bool wait)
+    {
+        const Platform::CpuAffinityLayout* layout = m_AffinityLayout.layout(wait);
+        if (layout != nullptr && m_AffinityDialog.awaitingLayout())
+        {
+            m_AffinityDialog.setLayout(*layout);
+        }
+    }
+
     void showResult(Detail::ActionResultMessage message) noexcept
     {
         m_LastResult = std::move(message);
@@ -511,8 +539,9 @@ class ProcessActionsView
     bool renderButtons(const Platform::ProcessActionCapabilities& capabilities,
                        const std::string& processName,
                        const Platform::ProcessTarget& target);
-    /// Set affinity... (#1887): at the row's end at its own width, as the trace button is. A press reads
-    /// @p actions' affinityLayout() (null: none) to group the dialog's boxes (#1881).
+    /// Set affinity... (#1887): at the row's end at its own width, as the trace button is. A press opens
+    /// the dialog with @p actions' CPU layout (null: none) to group its boxes by (#1881), as read once on
+    /// its worker; before that has arrived, the dialog opens awaiting it (#3182).
     void renderSetAffinityButton(const Platform::IProcessActions* actions,
                                  const Platform::ProcessActionCapabilities& capabilities,
                                  const std::string& processName,
@@ -552,6 +581,9 @@ class ProcessActionsView
     std::uint64_t m_Generation = 0;         // bumped by onSelectionChanged() (#2389)
     std::uint64_t m_RunGeneration = 0;      // m_Generation when the running action started
     ProcessAffinityDialog m_AffinityDialog; // Set affinity... (#1887)
+    // The dialog's CPU layout, read once on its worker (#3182). Its worker uses the panel's IProcessActions
+    // until it finishes: the panel declares this view after its actions, so its destructor's wait goes first.
+    AffinityLayoutRead m_AffinityLayout;
     // Create dump file... (#807). Its worker uses the panel's IProcessActions until it finishes: the
     // panel declares this view after its actions, so the view (and its destructor's wait) goes first.
     ProcessDumpView m_DumpView;

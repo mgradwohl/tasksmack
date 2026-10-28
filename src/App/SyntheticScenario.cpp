@@ -292,7 +292,7 @@ std::size_t Scenario::historySamples() const noexcept
 const Scenario* activeScenario()
 {
     // Read once: a function-local static is initialised exactly once, thread-safely.
-    static const std::optional<Scenario> scenario = []() -> std::optional<Scenario>
+    static const std::optional<Scenario> scenario = [] -> std::optional<Scenario>
     {
         ParseResult parsed = parseScenario(Core::readEnv(ENV_VAR));
         for (const auto& warning : parsed.warnings)

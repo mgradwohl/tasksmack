@@ -615,25 +615,23 @@ void SystemMetricsPanel::renderContent()
             ImGui::EndTabItem();
         }
 
-        if (CpuCoresSection::showCpuCoresTab(snap.seenCoreIds, static_cast<std::size_t>(snap.coreCount)))
+        if (CpuCoresSection::showCpuCoresTab(snap.seenCoreIds, static_cast<std::size_t>(snap.coreCount)) &&
+            beginTab(ICON_FA_MICROCHIP "  CPU Cores", MachineTab::Cores))
         {
-            if (beginTab(ICON_FA_MICROCHIP "  CPU Cores", MachineTab::Cores))
+            // Build context for CpuCoresSection render function
+            CpuCoresSection::RenderContext cpuCtx{
+                .publication = m_SystemPublication.get(),
+                .chartDataGeneration = m_ChartDataGeneration,
+                .maxHistorySeconds = m_MaxHistorySeconds,
+                .lastDeltaSeconds = m_LastDeltaSeconds,
+                .refreshInterval = m_RefreshInterval,
+                .smoothedPerCore = &m_SmoothedPerCore,
+            };
             {
-                // Build context for CpuCoresSection render function
-                CpuCoresSection::RenderContext cpuCtx{
-                    .publication = m_SystemPublication.get(),
-                    .chartDataGeneration = m_ChartDataGeneration,
-                    .maxHistorySeconds = m_MaxHistorySeconds,
-                    .lastDeltaSeconds = m_LastDeltaSeconds,
-                    .refreshInterval = m_RefreshInterval,
-                    .smoothedPerCore = &m_SmoothedPerCore,
-                };
-                {
-                    const UI::Widgets::TabContentScope content("##CpuCoresContent");
-                    CpuCoresSection::renderCpuCoresSection(cpuCtx);
-                }
-                ImGui::EndTabItem();
+                const UI::Widgets::TabContentScope content("##CpuCoresContent");
+                CpuCoresSection::renderCpuCoresSection(cpuCtx);
             }
+            ImGui::EndTabItem();
         }
 
         // GPU tab - always available; content handles missing GPUs gracefully
@@ -688,38 +686,36 @@ void SystemMetricsPanel::renderContent()
         }
 
         // Network and I/O tab - show if network counters are available
-        if (m_Model != nullptr && m_Model->capabilities().hasNetworkCounters)
+        if (m_Model != nullptr && m_Model->capabilities().hasNetworkCounters &&
+            beginTab(ICON_FA_NETWORK_WIRED "  Network and I/O", MachineTab::Network))
         {
-            if (beginTab(ICON_FA_NETWORK_WIRED "  Network and I/O", MachineTab::Network))
+            // Build context for NetworkSection render functions
+            NetworkSection::RenderContext netCtx{
+                .systemPublication = m_SystemPublication.get(),
+                .storagePublication = m_StoragePublication.get(),
+                .chartDataGeneration = m_ChartDataGeneration,
+                .hasNetworkCounters = m_Model != nullptr && m_Model->capabilities().hasNetworkCounters,
+                .maxHistorySeconds = m_MaxHistorySeconds,
+                .lastDeltaSeconds = m_LastDeltaSeconds,
+                .refreshInterval = m_RefreshInterval,
+                .smoothedDiskReadBytesPerSec = &m_SmoothedSystemIO.readBytesPerSec,
+                .smoothedDiskWriteBytesPerSec = &m_SmoothedSystemIO.writeBytesPerSec,
+                .smoothedDiskInitialized = &m_SmoothedSystemIO.initialized,
+                .smoothedPerDisk = &m_SmoothedPerDisk,
+                .smoothedNetSentBytesPerSec = &m_SmoothedNetwork.sentBytesPerSec,
+                .smoothedNetRecvBytesPerSec = &m_SmoothedNetwork.recvBytesPerSec,
+                .smoothedNetInitialized = &m_SmoothedNetwork.initialized,
+                .selectedNetworkInterface = &m_SelectedNetworkInterface,
+                .showAllInterfaces = &m_ShowAllInterfaces,
+                .interfacesWithTraffic = &m_InterfacesWithTraffic,
+                .fillState = &m_NetworkFill,
+                .cache = &m_NetworkFrameCache,
+            };
             {
-                // Build context for NetworkSection render functions
-                NetworkSection::RenderContext netCtx{
-                    .systemPublication = m_SystemPublication.get(),
-                    .storagePublication = m_StoragePublication.get(),
-                    .chartDataGeneration = m_ChartDataGeneration,
-                    .hasNetworkCounters = m_Model != nullptr && m_Model->capabilities().hasNetworkCounters,
-                    .maxHistorySeconds = m_MaxHistorySeconds,
-                    .lastDeltaSeconds = m_LastDeltaSeconds,
-                    .refreshInterval = m_RefreshInterval,
-                    .smoothedDiskReadBytesPerSec = &m_SmoothedSystemIO.readBytesPerSec,
-                    .smoothedDiskWriteBytesPerSec = &m_SmoothedSystemIO.writeBytesPerSec,
-                    .smoothedDiskInitialized = &m_SmoothedSystemIO.initialized,
-                    .smoothedPerDisk = &m_SmoothedPerDisk,
-                    .smoothedNetSentBytesPerSec = &m_SmoothedNetwork.sentBytesPerSec,
-                    .smoothedNetRecvBytesPerSec = &m_SmoothedNetwork.recvBytesPerSec,
-                    .smoothedNetInitialized = &m_SmoothedNetwork.initialized,
-                    .selectedNetworkInterface = &m_SelectedNetworkInterface,
-                    .showAllInterfaces = &m_ShowAllInterfaces,
-                    .interfacesWithTraffic = &m_InterfacesWithTraffic,
-                    .fillState = &m_NetworkFill,
-                    .cache = &m_NetworkFrameCache,
-                };
-                {
-                    const UI::Widgets::TabContentScope content("##NetworkContent");
-                    NetworkSection::renderNetworkSection(netCtx);
-                }
-                ImGui::EndTabItem();
+                const UI::Widgets::TabContentScope content("##NetworkContent");
+                NetworkSection::renderNetworkSection(netCtx);
             }
+            ImGui::EndTabItem();
         }
 
         ImGui::EndTabBar();
@@ -859,7 +855,7 @@ void SystemMetricsPanel::renderOverview()
     // reports it. Windows does not, and showed a permanently empty series and bar (#1031).
     const bool showIowait = (m_Model != nullptr) && m_Model->capabilities().hasIoWait;
 
-    auto cpuPlot = [&]()
+    const auto cpuPlot = [&]
     {
         // The Total line is drawn from the adopted publication, so its reduction is kept until
         // m_ChartDataGeneration next changes (HistoryChartConfig::dataGeneration, #1139).
@@ -1144,7 +1140,7 @@ void SystemMetricsPanel::renderOverview()
                     Detail::batteryNowBar(snap.power, m_SmoothedPower.batteryChargePercent, batteryLabel, theme.scheme().chartBattery));
             }
 
-            auto plot = [&]()
+            const auto plot = [&]
             {
                 // Primary Y-axis: Power (Watts), pinned to 0 at the bottom, with Battery on Y2. Without
                 // power, Battery is the only series and takes the primary axis as a percentage, so no
@@ -1393,7 +1389,7 @@ void SystemMetricsPanel::renderOverview()
             .marker = ImPlotMarker_None,
             .available = handlesAvailable};
 
-        auto plot = [&]()
+        const auto plot = [&]
         {
             const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
                 UI::Widgets::withHeight(UI::Widgets::rateHistoryConfigWithUpper(

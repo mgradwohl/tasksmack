@@ -166,7 +166,7 @@ ConnectionsReadResult LinuxProcessConnectionsReader::readConnections(const Proce
     // The target's identity, through the same handle: checked before anything is read, and again
     // whenever a read fails or completes, so neither a failure nor a short read of an exiting process
     // passes for the process's sockets.
-    const auto stillTarget = [&dir, &target]()
+    const auto stillTarget = [&dir, &target]
     {
         return ProcParsing::startTimeTicksAt(dir.get()) == target.startTimeTicks;
     };

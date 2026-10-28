@@ -22,8 +22,8 @@ namespace Platform::WindowsPublicIp
 
 /// A resolver to ask, and the lookup's resolvers, name and timeout: shared with the other platform's
 /// lookup (Platform/PublicIpLookup.h, #3117).
-using Resolver = PublicIpLookup::Resolver;
-using Options = PublicIpLookup::Options;
+using PublicIpLookup::Options;
+using PublicIpLookup::Resolver;
 
 namespace Detail
 {

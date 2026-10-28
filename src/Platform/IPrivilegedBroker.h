@@ -32,7 +32,16 @@ class IPrivilegedBroker
 
     /// Whether the helper is running and answered the handshake. False after it exits or the channel
     /// breaks; callers then act in-process, and the UI offers to reconnect.
+    /// Never waits, but looks at the channel: it peeks at the pipe or polls the socket, and lets go of a
+    /// helper that has gone. For a worker, or a call made once; the UI thread's per-frame reads use
+    /// lastSeenConnected().
     [[nodiscard]] virtual bool connected() const noexcept = 0;
+
+    /// What connected() last found, or connect() last made it (#3182): one atomic read, with no system
+    /// call and no lock, for the UI thread, every frame if need be. A helper that has just exited still
+    /// reads as connected until a worker's connected() or call finds it gone, as the sampler's reads
+    /// and the actions' retries do.
+    [[nodiscard]] virtual bool lastSeenConnected() const noexcept = 0;
 
     /// Starts the helper if it isn't running, asking for the administrator's password first, and does
     /// the handshake (#2308). Blocking for as long as the prompt is up: call it from a worker, never

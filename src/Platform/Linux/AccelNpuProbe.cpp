@@ -176,7 +176,7 @@ namespace
 }
 
 /// The vendor from a PCI vendor ID file ("0x8086").
-[[nodiscard]] std::string vendorName(const std::filesystem::path& deviceDir)
+[[nodiscard]] std::string_view vendorName(const std::filesystem::path& deviceDir)
 {
     const std::string id = readLine(deviceDir / "vendor");
     if (id == "0x8086")

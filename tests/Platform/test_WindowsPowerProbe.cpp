@@ -32,7 +32,7 @@ TEST(WindowsPowerProbeTest, ConstructsSuccessfully)
 TEST(WindowsPowerProbeTest, CapabilitiesReportedCorrectly)
 {
     const WindowsPowerProbe probe;
-    auto caps = probe.capabilities();
+    const auto caps = probe.capabilities();
 
     // Windows API has limited capabilities compared to Linux.
     // Charge percent is only reported when a battery exists, but the value may
@@ -56,7 +56,7 @@ TEST(WindowsPowerProbeTest, ReadSucceeds)
     EXPECT_NO_THROW({ counters = probe.read(); });
 
     // Verify basic structure validity
-    auto caps = probe.capabilities();
+    const auto caps = probe.capabilities();
     if (caps.hasBattery)
     {
         // If battery is present, charge percent should be valid range or -1
@@ -79,15 +79,15 @@ TEST(WindowsPowerProbeTest, ReadSucceeds)
 TEST(WindowsPowerProbeTest, MultipleReadsAreConsistent)
 {
     WindowsPowerProbe probe;
-    auto caps = probe.capabilities();
+    const auto caps = probe.capabilities();
 
     if (!caps.hasBattery)
     {
         GTEST_SKIP() << "No battery detected, skipping consistency test";
     }
 
-    auto counters1 = probe.read();
-    auto counters2 = probe.read();
+    const auto counters1 = probe.read();
+    const auto counters2 = probe.read();
 
     // State should be consistent between quick successive reads
     EXPECT_EQ(counters1.state, counters2.state);
@@ -108,8 +108,8 @@ TEST(WindowsPowerProbeTest, MultipleReadsAreConsistent)
 TEST(WindowsPowerProbeTest, BatteryStateIsValid)
 {
     WindowsPowerProbe probe;
-    auto counters = probe.read();
-    auto caps = probe.capabilities();
+    const auto counters = probe.read();
+    const auto caps = probe.capabilities();
 
     if (!caps.hasBattery)
     {
@@ -127,8 +127,8 @@ TEST(WindowsPowerProbeTest, BatteryStateIsValid)
 TEST(WindowsPowerProbeTest, ChargePercentInValidRange)
 {
     WindowsPowerProbe probe;
-    auto counters = probe.read();
-    auto caps = probe.capabilities();
+    const auto counters = probe.read();
+    const auto caps = probe.capabilities();
 
     if (!caps.hasChargePercent)
     {

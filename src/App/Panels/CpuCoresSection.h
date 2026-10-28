@@ -41,6 +41,6 @@ void renderCpuCoresSection(RenderContext& ctx);
 /// Update smoothed values for all CPU cores.
 /// @param snap Current system snapshot
 /// @param ctx Render context (uses refreshInterval and lastDeltaSeconds)
-void updateSmoothedPerCore(const Domain::SystemSnapshot& snap, RenderContext& ctx);
+void updateSmoothedPerCore(const Domain::SystemSnapshot& snap, const RenderContext& ctx);
 
 } // namespace App::CpuCoresSection

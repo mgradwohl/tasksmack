@@ -65,7 +65,7 @@ def find_scan_deps(clang_tidy: str) -> str | None:
     candidates = []
     for tidy in (clang_tidy, os.path.realpath(clang_tidy)):
         folder = os.path.dirname(tidy)
-        suffix = Path(tidy).name.removesuffix(exe).removeprefix("clang-tidy")  # "-22" for clang-tidy-22
+        suffix = Path(tidy).name.removesuffix(exe).removeprefix("clang-tidy")  # "-23" for clang-tidy-23
         candidates += [os.path.join(folder, f"clang-scan-deps{suffix}{exe}"), os.path.join(folder, f"clang-scan-deps{exe}")]
     for candidate in candidates:
         if os.path.isfile(candidate):

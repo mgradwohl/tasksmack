@@ -20,7 +20,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  LLVM_VERSION: '22'
+  LLVM_VERSION: '23'
 
 permissions: {}
 

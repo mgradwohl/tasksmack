@@ -2101,6 +2101,7 @@ inline int formatAxisLocalized(double value, char* buff, int size, void* /*userD
 /// "1.5 GiB/s" (IEC units, matching UI::Format::formatBytes). With a unit in `userData`
 /// (byteAxisUserData()) every tick uses that one unit, so a 0-2 GiB axis reads 0.5 GiB rather than
 /// 512.0 MiB between 0.0 B and 1.0 GiB.
+// NOLINTNEXTLINE(misc-const-correctness) - ImPlotFormatter's user-data parameter
 inline int formatAxisBinaryBytes(double value, char* buff, int size, void* userData, bool perSecond)
 {
     // Clamp tiny values to zero to avoid a "-0.0 B" display
@@ -2279,7 +2280,7 @@ class NowBarList
         return m_Size == 0;
     }
 
-    // NOLINTNEXTLINE(google-explicit-constructor,hicpp-explicit-conversions) - stands in for the vector it replaced
+    // NOLINTNEXTLINE(cppcoreguidelines-explicit-constructor,misc-explicit-constructor) - stands in for the vector it replaced
     operator std::span<const NowBar>() const noexcept
     {
         return {m_Bars.data(), m_Size};

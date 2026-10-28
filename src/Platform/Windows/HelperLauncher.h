@@ -184,6 +184,7 @@ class LearnedReadsBroker final : public IPrivilegedBroker
     explicit LearnedReadsBroker(std::unique_ptr<IPrivilegedBroker> inner, RefusalLasts lasts = RefusalLasts::ForItsHelper);
 
     [[nodiscard]] bool connected() const noexcept override;
+    [[nodiscard]] bool lastSeenConnected() const noexcept override;
     [[nodiscard]] std::expected<void, std::string> connect(const std::stop_token& stopToken) override;
     [[nodiscard]] bool readsOtherUsers() const noexcept override;
     [[nodiscard]] std::uint64_t sessionsStarted() const noexcept override;

@@ -127,7 +127,7 @@ Run these in PowerShell 7. Windows PowerShell (`powershell.exe`) refuses to run
 
 The Windows setup installs only what building, testing and running need:
 - Visual Studio 2022 Build Tools with just the MSVC C++ libraries, and the Windows 11 SDK (10.0.26100) with just its desktop C++ headers and libraries (see [Windows Pre-Requisites](#windows-pre-requisites));
-- LLVM 22 (`-LlvmVersion` must stay on the pinned major), as the only LLVM in `C:\Program Files\LLVM` (see below);
+- LLVM 23 (`-LlvmVersion` must stay on the pinned major), as the only LLVM in `C:\Program Files\LLVM` (see below);
 - CMake, Ninja and Python 3.14.
 
 It then creates `.venv\` with Python 3.14 and installs GLAD's hash-locked build dependencies into it. `-DevTools` adds the optional developer tools: ccache and the development dependencies from `requirements.txt` (pre-commit and the other Python tools). You need those before your first pull request, not to build. clang-tidy and clang-format come with LLVM. CMake configures GLAD with `.venv\Scripts\python.exe` whenever it exists (`.venv/bin/python` on Linux). Re-running the script is safe: winget's "already installed" results count as success, and it skips the Windows SDK when its 10.0.26100 desktop headers and libraries are already there. For LLVM it reads the installer registrations (Settings > Apps) first. An LLVM of the pinned major is left alone, whatever its minor version, and so are several side-by-side LLVM MSIs of that major (it says so). An LLVM of any other major is uninstalled (every registration, with `msiexec /x` for an MSI and the NSIS uninstaller's `/S`), then the pinned version is installed and `clang --version` checked. If any of that fails, the script stops with an error rather than finishing on the wrong LLVM; `-DryRun` prints the uninstall and install commands it would run. `check-prereqs.ps1` reports the LLVM in `LLVM_ROOT` (what the `win-*` presets build with), fails `clang` and `clang++` on an LLVM major other than CI's pinned one, marks the other LLVM tools on another major with `!`, and marks the optional developer tools with `!` when they are missing rather than failing: ccache, clangd and clang-format (found in `LLVM_ROOT\bin`; the LLVM installer does not add itself to `PATH`, which VS Code needs for them), and the Windows Performance Toolkit (`wpr`, `xperf`, `wpa`) for ETW profiling.
@@ -163,9 +163,9 @@ Sandbox options.
 
 ### Linux Pre-Requisites
 
-- **Clang 22 + libc++/libc++abi 22 (matches CI)**
-    - `sudo apt install clang-22 lld-22 libc++-22-dev libc++abi-22-dev`
-    - `<print>` from C++23 requires a C++23-ready standard library (libc++ 22)
+- **Clang 23 + libc++/libc++abi 23 (matches CI)**
+    - `sudo apt install clang-23 lld-23 libc++-23-dev libc++abi-23-dev`
+    - `<print>` from C++23 requires a C++23-ready standard library (libc++ 23)
 - CMake 3.29+ (4.x recommended)
 - Ninja
 - lld (LLVM linker)
@@ -182,9 +182,9 @@ Sandbox options.
 Example (Ubuntu/Debian):
 
 ```bash
-# clang-22 comes from apt.llvm.org, and Ubuntu 24.04's own cmake (3.28) is older than 3.29, so add
+# clang-23 comes from apt.llvm.org, and Ubuntu 24.04's own cmake (3.28) is older than 3.29, so add
 # apt.llvm.org's and Kitware's repositories first (tools/setup-dev.sh does both)
-sudo apt install clang-22 clang-tidy-22 clang-format-22 lld-22 llvm-22 libc++-22-dev libc++abi-22-dev cmake ninja-build ccache
+sudo apt install clang-23 clang-tidy-23 clang-format-23 lld-23 llvm-23 libc++-23-dev libc++abi-23-dev cmake ninja-build ccache
 
 # Python 3.14 (Ubuntu 24.04's python3 is 3.12; tools/setup-dev.sh adds the deadsnakes PPA for it),
 # with GLAD's hash-locked dependencies in the project venv
@@ -209,7 +209,7 @@ sudo apt install libsystemd-dev pkg-config
 
 ### Windows Pre-Requisites
 
-- LLVM/Clang 22 (includes clang-tidy, clang-format, lld, llvm-cov, llvm-profdata)
+- LLVM/Clang 23 (includes clang-tidy, clang-format, lld, llvm-cov, llvm-profdata)
 - `LLVM_ROOT` environment variable set
 - CMake 3.29+
 - Ninja
@@ -999,14 +999,14 @@ If this check passes, `clangd`/`clang-format` should be auto-discovered by the w
 
 clangd reads `compile_commands.json` from the repository root. The `debug` and `win-debug` presets copy it there automatically after each build via the opt-in `TASKSMACK_COPY_COMPILE_COMMANDS` CMake option; other presets leave the source tree untouched. To get the copy behavior with a different preset, configure with `-DTASKSMACK_COPY_COMPILE_COMMANDS=ON`.
 
-Linux note (durable PATH setup): if only versioned LLVM binaries exist (for example `clang-format-22`), register unversioned commands system-wide with `update-alternatives`:
+Linux note (durable PATH setup): if only versioned LLVM binaries exist (for example `clang-format-23`), register unversioned commands system-wide with `update-alternatives`:
 
 ```bash
-sudo update-alternatives --install /usr/bin/clang-format clang-format /usr/bin/clang-format-22 220
-sudo update-alternatives --set clang-format /usr/bin/clang-format-22
+sudo update-alternatives --install /usr/bin/clang-format clang-format /usr/bin/clang-format-23 220
+sudo update-alternatives --set clang-format /usr/bin/clang-format-23
 
-sudo update-alternatives --install /usr/bin/clangd clangd /usr/bin/clangd-22 220
-sudo update-alternatives --set clangd /usr/bin/clangd-22
+sudo update-alternatives --install /usr/bin/clangd clangd /usr/bin/clangd-23 220
+sudo update-alternatives --set clangd /usr/bin/clangd-23
 ```
 
 Then re-run:
@@ -1102,7 +1102,7 @@ sudo apt install iwyu
 - **CI trigger:** The IWYU CI job (`include-analysis`) is manual-only and will not run automatically on PRs. To run it, manually trigger the CI workflow via the Actions tab using "workflow_dispatch".
 - The project includes a `.iwyu.imp` mapping file for project-specific rules.
 - To run via pre-commit: `pre-commit run iwyu --hook-stage manual`.
-- **Version compatibility:** IWYU must be built against Clang 22+. The script checks the version and: **fails hard** in CI or when `--fix` is used (to prevent corrupting includes); **warns and continues** for local dry runs (so you can still see results). The system package (`apt install iwyu`) is typically built against an older Clang and will trigger this warning locally. For reliable local runs, build iwyu from source against Clang 22+: https://github.com/include-what-you-use/include-what-you-use
+- **Version compatibility:** IWYU must be built against Clang 23+. The script checks the version and: **fails hard** in CI or when `--fix` is used (to prevent corrupting includes); **warns and continues** for local dry runs (so you can still see results). The system package (`apt install iwyu`) is typically built against an older Clang and will trigger this warning locally. For reliable local runs, build iwyu from source against Clang 23+: https://github.com/include-what-you-use/include-what-you-use
 
 ### Formatting (required before PRs)
 
@@ -1268,7 +1268,7 @@ targets compile against the header-only toml++, spdlog, Dear ImGui and ImPlot at
 To build and run the targets locally with Clang, from the repo root:
 
 ```bash
-CXX=clang++-22 CXXFLAGS="-O1 -g -fsanitize=address,fuzzer-no-link" \
+CXX=clang++-23 CXXFLAGS="-O1 -g -fsanitize=address,fuzzer-no-link" \
   LIB_FUZZING_ENGINE=-fsanitize=fuzzer OUT=build/fuzz .clusterfuzzlite/build.sh
 mkdir -p build/fuzz/corpus-config && unzip -o build/fuzz/fuzz_user_config_seed_corpus.zip -d build/fuzz/corpus-config
 ./build/fuzz/fuzz_user_config -max_total_time=60 build/fuzz/corpus-config
@@ -2437,7 +2437,7 @@ build/pgo-use/bin/TaskSmack
 
 ```powershell
 # Windows – full workflow
-# Requires LLVM 22: set LLVM_ROOT to your LLVM 22 install directory
+# Requires LLVM 23: set LLVM_ROOT to your LLVM 23 install directory
 # (e.g. C:\Program Files\LLVM) before running.
 pwsh tools/pgo.ps1
 
@@ -2475,9 +2475,9 @@ LLVM_PROFILE_FILE="profiles/tasksmack-%p.profraw" \
     ./build/pgo-generate/bin/TaskSmack
 
 # Phase 2 – merge profraw files
-# Use llvm-profdata from your LLVM 22 install (llvm-profdata-22 on Debian/Ubuntu,
-# or llvm-profdata if LLVM 22 is the default on PATH). tools/pgo.sh does this automatically.
-LLVM_PROFDATA_BIN="$(command -v llvm-profdata-22 || command -v llvm-profdata)"
+# Use llvm-profdata from your LLVM 23 install (llvm-profdata-23 on Debian/Ubuntu,
+# or llvm-profdata if LLVM 23 is the default on PATH). tools/pgo.sh does this automatically.
+LLVM_PROFDATA_BIN="$(command -v llvm-profdata-23 || command -v llvm-profdata)"
 "$LLVM_PROFDATA_BIN" merge -sparse profiles/*.profraw -o profiles/tasksmack.profdata
 
 # Phase 3 – PGO-optimized build (reads profiles/tasksmack.profdata)
@@ -2826,8 +2826,8 @@ opens PRs; the same CI gate applies before merge.
     `cmake/Options.cmake`. Only stable `llvmorg-X.Y.Z` tags count. Before approving, confirm the Windows
     version is installable from both Chocolatey (CI) and WinGet (`tools/setup-dev.ps1`), which can lag
     upstream (#752). These need updating by hand in the same PR (grep for the old major too): the
-    `clang++-22`/`clang-22` names in `CMakePresets.json`'s Linux presets, `release.yml`'s
-    `LLVM_LINUX_EXACT_VERSION`, the "LLVM 22" checks in `tools/pgo.sh`/`tools/pgo.ps1`, `tools/common.sh`'s
+    `clang++-23`/`clang-23` names in `CMakePresets.json`'s Linux presets, `release.yml`'s
+    `LLVM_LINUX_EXACT_VERSION`, the "LLVM 23" checks in `tools/pgo.sh`/`tools/pgo.ps1`, `tools/common.sh`'s
     clang-format version-discovery list, and the two fallback defaults inside `setup-llvm/action.yml`, kept
     for Copilot's review setup, which can call it with an empty input.
   - **Python interpreter** (major.minor, from stable tags only), grouped: `setup-python-glad/action.yml`,
@@ -3178,7 +3178,7 @@ immediately.
 Each platform build job's "Record toolchain versions" step logs the runner image
 (`ubuntu-24.04`/`ubuntu-24.04-arm`/`windows-2025`/`windows-11-arm`), full compiler/linker versions (`clang --version`, `ld.lld
 --version`), CMake, Ninja, and Python versions to that job's log. Linux additionally pins and
-asserts an exact `apt.llvm.org` package version for `clang-22` (`LLVM_LINUX_EXACT_VERSION` in
+asserts an exact `apt.llvm.org` package version for `clang-23` (`LLVM_LINUX_EXACT_VERSION` in
 `release.yml`) rather than accepting whatever the apt repository currently serves for the major
 version — see the comment above that variable for the deliberate-upgrade procedure; the arm64
 runner installs the same package version from apt.llvm.org's `binary-arm64`. Windows already pins

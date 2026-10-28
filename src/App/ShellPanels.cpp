@@ -54,7 +54,7 @@ void ShellPanels::connectModels()
         m_SystemMetrics.setProcessModel(processModel);
 
         // Share GPU model with ProcessModel for per-process GPU data
-        if (auto gpuModel = m_SystemMetrics.gpuModel(); gpuModel != nullptr)
+        if (const auto gpuModel = m_SystemMetrics.gpuModel(); gpuModel != nullptr)
         {
             processModel->setGPUModel(gpuModel);
             // Its probe also decides whether the GPU columns can be filled at all (#1210).

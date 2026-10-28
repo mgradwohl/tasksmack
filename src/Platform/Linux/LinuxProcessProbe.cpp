@@ -126,7 +126,8 @@ constexpr std::size_t MAX_CACHED_CMDLINE_BYTES = std::size_t{64} * 1024;
     {
         return ttl;
     }
-    const std::uint64_t hash = static_cast<std::uint32_t>(static_cast<std::uint32_t>(pid) * MULTIPLICATIVE_HASH); // wraps mod 2^32
+    const std::uint32_t hash32 = static_cast<std::uint32_t>(pid) * MULTIPLICATIVE_HASH; // wraps mod 2^32
+    const std::uint64_t hash = hash32;
     const std::uint64_t share = hash % (static_cast<std::uint64_t>(half.count()) + 1);
     return (ttl - half) + std::chrono::milliseconds{static_cast<std::chrono::milliseconds::rep>(share)};
 }
@@ -187,7 +188,7 @@ std::mutex& getUsernameCacheMutex()
 {
     const std::scoped_lock lock(getUsernameCacheMutex());
     auto& cache = getUsernameCache();
-    auto it = cache.find(uid);
+    const auto it = cache.find(uid);
     if (it != cache.end())
     {
         return it->second;
@@ -433,7 +434,7 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
         // Only attempt I/O counters if we know they're readable
         // Use std::call_once for thread-safe lazy initialization; relaxed ordering is sufficient
         std::call_once(m_IoCountersCheckFlag,
-                       [this]() { m_IoCountersAvailable.store(checkIoCountersAvailability(m_ProcRoot), std::memory_order_relaxed); });
+                       [this] { m_IoCountersAvailable.store(checkIoCountersAvailability(m_ProcRoot), std::memory_order_relaxed); });
         if (m_IoCountersAvailable.load(std::memory_order_relaxed))
         {
             parseProcessIo(pidDirFd.get(), counters);
@@ -487,7 +488,7 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
 {
     // Check I/O counters availability on first call (thread-safe)
     std::call_once(m_IoCountersCheckFlag,
-                   [this]() { m_IoCountersAvailable.store(checkIoCountersAvailability(m_ProcRoot), std::memory_order_release); });
+                   [this] { m_IoCountersAvailable.store(checkIoCountersAvailability(m_ProcRoot), std::memory_order_release); });
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
     const bool hasNetworkCounters = m_HasNetworkCounters;

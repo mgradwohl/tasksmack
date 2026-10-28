@@ -288,7 +288,9 @@ class IProcessActions
     IProcessActions(IProcessActions&&) = default;
     IProcessActions& operator=(IProcessActions&&) = default;
 
-    /// What actions this platform supports.
+    /// What actions this platform supports. Cheap and non-blocking: Process Details asks every frame, on
+    /// the UI thread, so it reports what was found at construction and never reads a file, asks the
+    /// system for a list, or looks at a helper's channel (#3182).
     [[nodiscard]] virtual ProcessActionCapabilities actionCapabilities() const = 0;
 
     /// Send SIGTERM (graceful termination request).
@@ -431,8 +433,9 @@ class IProcessActions
     }
 
     /// The processor groups, the CPUs online and the core kinds, for the Set affinity dialog (#1881).
-    /// Reads the system each call, so call it when the dialog opens, not per frame. The default
-    /// knows nothing (every part empty).
+    /// Reads the system each call (GetLogicalProcessorInformationEx, sysfs), so it is called on a worker,
+    /// once, and kept: the layout doesn't change while TaskSmack runs (#3182). Never on the UI thread. The
+    /// default knows nothing (every part empty).
     [[nodiscard]] virtual CpuAffinityLayout affinityLayout() const
     {
         return {};

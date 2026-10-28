@@ -291,7 +291,7 @@ renderConnectionsView(const Domain::ConnectionsPublication* publication, bool ha
     {
         for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i)
         {
-            if (auto clicked = renderConnectionRow(state.rows[state.visible[static_cast<std::size_t>(i)]], i, scheme, state))
+            if (const auto clicked = renderConnectionRow(state.rows[state.visible[static_cast<std::size_t>(i)]], i, scheme, state))
             {
                 action = clicked;
             }

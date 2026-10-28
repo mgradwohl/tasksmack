@@ -2,6 +2,7 @@
 
 #include "Core/GraphicsHostInfo.h"
 #include "Core/WindowGeometry.h"
+#include "Core/WindowVisibility.h"
 
 #include <SDL3/SDL_rect.h>
 #include <SDL3/SDL_video.h>
@@ -9,6 +10,10 @@
 #include <optional>
 #include <string>
 #include <utility>
+
+#ifdef _WIN32
+#include <chrono> // m_LastCloakCheck
+#endif
 
 namespace Core
 {
@@ -149,8 +154,16 @@ class Window
     /// SDL reports SDL_EVENT_WINDOW_OCCLUDED, cleared on the next SDL_EVENT_WINDOW_EXPOSED. The frame
     /// loop treats it like minimized (#1125). Only Wayland reports an ordinarily covered window: the
     /// pinned SDL's X11 backend sets it only together with minimized (_NET_WM_STATE_HIDDEN), and
-    /// Windows doesn't report it, so there it adds nothing beyond isMinimized().
+    /// Windows doesn't report it, so there it adds nothing beyond isMinimized(); see isHidden().
     [[nodiscard]] bool isOccluded() const noexcept;
+    /// Whether nothing of the window can be seen, so the frame loop draws at the hidden rate (#1125):
+    /// minimized, occluded, or, on Windows, cloaked (another virtual desktop), behind a locked or
+    /// disconnected session, or on a display that is off (#3152). WindowVisibility::isHidden().
+    [[nodiscard]] bool isHidden() const noexcept;
+    /// Re-check what no window message reports, once per frame-loop iteration: on Windows, whether
+    /// DWM has cloaked the window, when WindowVisibility::cloakRecheckDue() says so. Does nothing
+    /// elsewhere. Cheap: at most one DwmGetWindowAttribute() call.
+    void pollVisibility();
     /// The refresh rate of the display the window is on, in Hz, or 0 when SDL does not know it.
     /// Queries SDL; Application caches it and re-reads it when the window changes display (#1126).
     [[nodiscard]] double getDisplayRefreshRate() const noexcept;
@@ -197,6 +210,14 @@ class Window
     /// @return Whether the command was carried out here, so the OS must not carry it out too.
     /// Windows only: only the borderless window's WM_SYSCOMMAND subclass calls it.
     bool handleShellCommand(WindowGeometry::SystemCommand command);
+    /// The window's visibility changed (#3152), as the subclass procedure decoded it from
+    /// WM_WTSSESSION_CHANGE and WM_POWERBROADCAST: the session was locked, unlocked, disconnected or
+    /// connected, or its display turned off or on. Windows only, like the subclass that calls them.
+    void handleSessionChange(WindowVisibility::SessionChange change);
+    void handleDisplayStateChange(WindowVisibility::DisplayState state);
+    /// Ask DWM whether the window is cloaked (DWMWA_CLOAKED), as on activation and focus changes and
+    /// from pollVisibility() (#3152). Windows only.
+    void refreshCloaked();
 #endif
     /// Reads whether {a Windows key, the Down arrow} are held, for restoreForShellMinimize().
     using ShellRestoreKeysReader = auto (*)() noexcept -> std::pair<bool, bool>;
@@ -231,12 +252,19 @@ class Window
     // Hand @p minimum to SDL as the window's minimum size, putting back the size SDL would replace
     // with its stale floating size on native Wayland (#1777). False when SDL rejects it.
     bool applyMinimumSize(std::pair<int, int> minimum);
+#ifdef _WIN32
+    // Take @p signals as the window's visibility signals. When that shows a hidden window again, push
+    // an SDL_EVENT_WINDOW_EXPOSED, so a frame loop waiting at the hidden rate wakes and draws at once.
+    void setVisibilitySignals(WindowVisibility::Signals signals);
+#endif
 
     WindowSpecification m_Spec;
     SDL_Window* m_Handle = nullptr;
     SDL_GLContext m_GLContext = nullptr;
     GraphicsHostInfo m_GLInfo; // the OpenGL strings, captured once the context exists
     bool m_ShouldClose = false;
+    // The Windows signals isHidden() adds to minimized and occluded (#3152); all false elsewhere.
+    WindowVisibility::Signals m_VisibilitySignals;
 
     // How the window is maximized and the rectangle it restores to, through every maximize and
     // restore whoever starts it (#1250). Its state is the only maximized signal for a borderless
@@ -259,6 +287,8 @@ class Window
     // LoadImage(..., IMAGE_ICON, ...) without LR_SHARED returns handles the caller owns.
     void* m_IconSmall = nullptr;
     void* m_IconBig = nullptr;
+    // When refreshCloaked() last asked DWM, for pollVisibility()'s WINDOW_CLOAK_RECHECK_INTERVAL.
+    std::chrono::steady_clock::time_point m_LastCloakCheck;
 #endif
 };
 

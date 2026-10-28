@@ -30,7 +30,7 @@ FetchContent_MakeAvailable(googletest)
 FetchContent_Declare(
     rapidcheck
     GIT_REPOSITORY https://github.com/emil-e/rapidcheck.git
-    GIT_TAG 6e8dadfdafa3a74eabb52ead87f8787f72eccd0b  # master 2026-08-06 - pinned to SHA for supply chain security
+    GIT_TAG 2c3c4365aca21ef4e612768fdc95b1ce8b39a651  # master 2026-10-05 (#348: the <algorithm>/<iterator> includes libc++ 23 no longer pulls in) - pinned to SHA for supply chain security
     GIT_SUBMODULES ""
     SYSTEM  # Treat as system headers to suppress warnings from rapidcheck
     BINARY_DIR "${TASKSMACK_DEPS_BINARY_DIR}/rapidcheck-build"  # per-preset build tree (#1308)
@@ -376,6 +376,7 @@ set(COMMON_TEST_SOURCES
     Core/test_WindowEventRouting.cpp
     Core/test_WindowEvents.cpp
     Core/test_WindowGeometry.cpp
+    Core/test_WindowVisibility.cpp
     Domain/test_History.cpp
     Domain/test_SharedHistory.cpp
     Domain/test_ProcessConnections.cpp
@@ -581,6 +582,7 @@ set(COMMON_TEST_SOURCES
     App/test_UdpTraceSwitch.cpp # the UDP event trace started and stopped on a worker (#3155)
     App/test_CoalescingWriter.cpp
     App/test_LazyBackgroundRead.cpp
+    App/test_AffinityLayoutRead.cpp # the Set affinity dialog's CPU layout, read once on a worker (#3182)
     App/test_ProcessSecurityViewRender.cpp
     App/test_ServiceActionsView.cpp
     App/test_ServicesViewRender.cpp

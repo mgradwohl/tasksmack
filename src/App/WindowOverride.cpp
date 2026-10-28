@@ -14,7 +14,7 @@ namespace App::WindowOverride
 const std::optional<Geometry>& active()
 {
     // Read once: a function-local static is initialised exactly once, thread-safely.
-    static const std::optional<Geometry> geometry = []() -> std::optional<Geometry>
+    static const std::optional<Geometry> geometry = [] -> std::optional<Geometry>
     {
         const ParseResult parsed = parse(Core::readEnv(ENV_VAR));
         if (!parsed.warning.empty())

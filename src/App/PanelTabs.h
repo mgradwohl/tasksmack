@@ -35,7 +35,7 @@ class PanelTabs
         std::function<std::string_view()> text = nullptr;
     };
 
-    explicit PanelTabs(std::initializer_list<Tab> tabs) : m_Tabs(tabs)
+    PanelTabs(std::initializer_list<Tab> tabs) : m_Tabs(tabs)
     {
         if (m_Tabs.empty())
         {

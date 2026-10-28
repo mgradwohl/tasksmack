@@ -36,7 +36,7 @@ param(
     # installs on Windows 10 and Windows 11 before 24H2; 10.0.26100.7705's requires 24H2. The
     # headers and libraries install to Windows Kits\10\{Include,Lib}\10.0.26100.0 either way.
     [string]$WindowsSdkVersion = "10.0.26100.7463",
-    [string]$LlvmVersion = "22.1.8",
+    [string]$LlvmVersion = "23.1.3",
     # Ninja pinned to match what the windows-2025 GitHub Actions runner image ships (confirmed
     # against actions/runner-images' Windows2025-Readme.md), so a fresh dev-box setup and CI land
     # on the same version (CI verifies the image's ninja version in

@@ -858,7 +858,7 @@ void appendMonitorRows(std::string label, const Platform::Monitor& monitor, std:
 }
 
 /// A present TPM: "Present (TPM 2.0)", "Present (TPM 1.2)", or "Present" when the version is unknown.
-[[nodiscard]] std::string tpmPresentText(std::uint32_t versionMajor)
+[[nodiscard]] std::string_view tpmPresentText(std::uint32_t versionMajor)
 {
     switch (versionMajor)
     {

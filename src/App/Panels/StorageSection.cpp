@@ -207,7 +207,7 @@ void renderDiskCell(const std::string& deviceName,
     }
     const float plotHeight = std::max(minDiskPlotHeight(), cellHeight - measuredOverhead);
 
-    auto diskPlotFn = [&]()
+    const auto diskPlotFn = [&]
     {
         // deviceName.c_str() (not a constant "##DiskPlot"), so RenderMetrics records a distinct
         // entry per disk instead of collapsing every disk's plot into one: HistoryChart reads
@@ -286,7 +286,7 @@ float diskGridMinimumHeight(const Domain::StoragePublication* publication, float
            UI::Widgets::computeChartGridMinimumHeight(diskGridConfig(availableWidth, 0.0F, publication->perDiskHistory.size()));
 }
 
-void updateSmoothedDiskIO(double targetRead, double targetWrite, float deltaTimeSeconds, RenderContext& ctx)
+void updateSmoothedDiskIO(double targetRead, double targetWrite, float deltaTimeSeconds, const RenderContext& ctx)
 {
     if (ctx.smoothedReadBytesPerSec == nullptr || ctx.smoothedWriteBytesPerSec == nullptr || ctx.smoothedInitialized == nullptr)
     {
@@ -547,7 +547,7 @@ void renderStorageSection(RenderContext& ctx)
 
         // Shares the tab's height with the network chart above it (#959).
         const float plotHeight = (ctx.fill != nullptr) ? ctx.fill->plotHeight() : HISTORY_PLOT_HEIGHT_DEFAULT;
-        auto diskPlot = [&]()
+        const auto diskPlot = [&]
         {
             const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
                 UI::Widgets::withHeight(UI::Widgets::rateHistoryConfigWithUpper(

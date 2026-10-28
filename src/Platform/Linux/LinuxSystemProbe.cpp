@@ -739,7 +739,7 @@ uint64_t LinuxSystemProbe::getInterfaceLinkSpeed(const std::string& ifaceName, b
     {
         const std::scoped_lock lock(m_InterfaceCacheMutex);
 
-        auto it = m_InterfaceCache.find(ifaceName);
+        const auto it = m_InterfaceCache.find(ifaceName);
         if (it != m_InterfaceCache.end())
         {
             auto& entry = it->second;

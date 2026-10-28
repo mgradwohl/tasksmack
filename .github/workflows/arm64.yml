@@ -33,7 +33,7 @@ concurrency:
 permissions: {}
 
 jobs:
-  # ubuntu-24.04-arm: clang-22/libc++ from apt.llvm.org's arm64 packages (setup-llvm), Xvfb plus
+  # ubuntu-24.04-arm: clang-23/libc++ from apt.llvm.org's arm64 packages (setup-llvm), Xvfb plus
   # Mesa's llvmpipe for the display suites, as on x64.
   build-linux-arm64:
     if: >-

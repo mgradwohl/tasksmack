@@ -122,7 +122,7 @@ struct RenderContext
 
 /// Render the Disk I/O section with history chart.
 /// @param ctx Render context containing models and smoothed values
-void renderDiskIOSection(RenderContext& ctx);
+void renderDiskIOSection(const RenderContext& ctx);
 
 /// Render the Network section with interface selector and throughput charts.
 /// @param ctx Render context containing models and smoothed values

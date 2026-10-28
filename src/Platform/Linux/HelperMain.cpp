@@ -154,7 +154,7 @@ constexpr int EXIT_UNTRUSTED_PEER = 3;
 
 } // namespace
 
-int main(int argc, char** argv)
+int main(int argc, char* const* argv)
 {
     // NOLINTBEGIN(cppcoreguidelines-pro-bounds-pointer-arithmetic) - argv
     const bool enforce = argc == 3 && std::string_view(argv[2]) == Platform::HelperSandbox::ENFORCE_ARGUMENT;

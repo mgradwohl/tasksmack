@@ -372,7 +372,7 @@ Application::~Application()
     // This cleanup is defensive - clear any remaining layers silently.
     // If layers weren't properly detached, their onDetach() may fail trying to access
     // the Application singleton (which is being destroyed).
-    for (auto& layer : std::views::reverse(m_LayerStack))
+    for (const auto& layer : std::views::reverse(m_LayerStack))
     {
         layer->onDetach();
     }
@@ -419,7 +419,7 @@ void Application::run()
 
     double lastTime = getTime();
 
-    const auto computeDeltaTime = [this, &lastTime]() -> float
+    const auto computeDeltaTime = [this, &lastTime] -> float
     {
         const double currentTime = getTime();
         const float deltaTime = FramePacing::frameDeltaSeconds(lastTime, currentTime, MAX_DELTA_TIME);
@@ -429,7 +429,7 @@ void Application::run()
     };
 
     // The display's refresh rate, which frame pacing rounds to (#1126); re-read on a display change.
-    const auto refreshDisplayRate = [this]()
+    const auto refreshDisplayRate = [this]
     {
         const double queried = m_Window->getDisplayRefreshRate();
         const double effective = FramePacing::effectiveRefreshHz(queried, FALLBACK_REFRESH_HZ);
@@ -499,7 +499,7 @@ void Application::run()
     // frame's end (recordResizePerfFrameEnd), and the gap from the previous one is the cadence the
     // user sees, skipped renders included. The previous frame's end is kept in resizeTraceStats, so
     // the `= {}` resets at idle<->interaction transitions drop the interval that spans both states.
-    const auto recordDeliveredFrame = [&]()
+    const auto recordDeliveredFrame = [&]
     {
         resizeTraceStats.recordDeliveredFrameEnd(resizePerfOperations().previousFrameEnd, SDL_GetPerformanceFrequency());
     };
@@ -534,7 +534,7 @@ void Application::run()
         const auto eventDrainStart = std::chrono::steady_clock::now();
         // Handle the next event, false once the queue is empty. The event that woke the previous
         // iteration's idle wait comes first: SDL_WaitEventTimeout() took it off the queue (#1409).
-        const auto pollAndDispatch = [&]() -> bool
+        const auto pollAndDispatch = [&] -> bool
         {
             if (idleWakeEvent.has_value())
             {
@@ -771,9 +771,11 @@ void Application::run()
             ++resizeTraceStats.skippedRenderFrames;
         }
 
-        // Minimized or covered (#1125): nothing on screen to animate, so no paced frames and the
-        // longer hidden idle sleep.
-        const bool isHidden = m_Window->isMinimized() || m_Window->isOccluded();
+        // Minimized, covered (#1125), or on Windows cloaked, behind a locked or disconnected session or
+        // on a display that is off (#3152): nothing on screen to animate, so no paced frames and the
+        // longer hidden idle sleep. Only drawing slows; the samplers keep the Settings interval (#2731).
+        m_Window->pollVisibility();
+        const bool isHidden = m_Window->isHidden();
 
         // isHidden, not only minimized: an occluded window that gets a move/resize event must not render
         // at the display rate through the interaction grace period either (#1125).

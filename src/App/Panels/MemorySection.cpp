@@ -150,7 +150,7 @@ void renderMemorySection(RenderContext& ctx, std::span<const double> timestamps,
         return UI::Format::bytesUsedTotalPercentCompact(bytes, snap.memoryTotalBytes, pct);
     };
 
-    auto memoryPlot = [&]()
+    const auto memoryPlot = [&]
     {
         const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
             UI::Widgets::withHeight(UI::Widgets::percentHistoryConfig("##MemorySwapHistory", axisConfig.xMin, axisConfig.xMax),

@@ -451,7 +451,7 @@ void SystemModel::refresh()
         return;
     }
 
-    auto counters = m_Probe->read();
+    const auto counters = m_Probe->read();
     // Stamped as soon as the counters are read, as StorageModel does: the power read below has
     // its own, variable latency (sysfs, WMI), which would otherwise jitter the rate interval (#1144).
     const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -982,7 +982,7 @@ CpuUsage SystemModel::computeCpuUsage(const Platform::CpuCounters& current, cons
 
     const double totalDeltaDouble = Numeric::toDouble(totalDelta);
 
-    auto percent = [totalDeltaDouble](std::uint64_t curr, std::uint64_t prev) -> double
+    const auto percent = [totalDeltaDouble](std::uint64_t curr, std::uint64_t prev) -> double
     {
         const std::uint64_t delta = Numeric::counterDelta(curr, prev);
         return 100.0 * (Numeric::toDouble(delta) / totalDeltaDouble);

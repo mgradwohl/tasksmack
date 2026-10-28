@@ -1226,7 +1226,7 @@ void UserConfig::applyToApplication() const
 
 void UserConfig::captureFromApplication()
 {
-    auto& theme = UI::Theme::get();
+    const auto& theme = UI::Theme::get();
 
     // Capture current theme and font size
     m_Settings.themeId = theme.currentThemeId();

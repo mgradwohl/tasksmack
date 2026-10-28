@@ -147,13 +147,14 @@ void SystemInfoPanel::onAttach()
         };
     }
     m_Sensors = std::make_shared<Domain::SensorModel>(
-        [makeSensorProbe = std::move(makeSensorProbe)]() -> Domain::SensorModel::Reader
+        [makeSensorProbe = std::move(makeSensorProbe)] -> Domain::SensorModel::Reader
         {
             std::shared_ptr<Platform::ISystemInfoProbe> probe = makeSensorProbe();
             if (!probe)
             {
                 return {};
             }
+            // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks) - the shared_ptr moved into the reader is owned by it, not leaked
             return [probe = std::move(probe)]
             {
                 return probe->readSensors();

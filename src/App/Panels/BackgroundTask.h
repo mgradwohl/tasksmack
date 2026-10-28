@@ -117,7 +117,7 @@ template<typename Result> class BackgroundTask
                                    stopToken = m_Stop.get_token(),
                                    name = m_ThreadName,
                                    failed = m_Failed,
-                                   unknown = m_UnknownDetail]() mutable
+                                   unknown = m_UnknownDetail] mutable
                                   {
                                       // Best effort: a std::async thread may come from a pool (MSVC) and keep the name.
                                       static_cast<void>(Platform::setCurrentThreadName(name));

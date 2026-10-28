@@ -95,7 +95,7 @@ bool Detail::openWithSystemHandler(std::string_view target, const SessionLookup&
     // On a worker (#3155), in an STA for the call, as ShellExecuteW asks of its caller.
     const Platform::SingleThreadedApartment apartment;
     // ShellExecuteW returns > 32 on success
-    auto* const shellResult = ::ShellExecuteW(nullptr, L"open", wideTarget.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    const auto* const shellResult = ::ShellExecuteW(nullptr, L"open", wideTarget.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
     // NOLINTNEXTLINE(performance-no-int-to-ptr) - ShellExecuteW returns HINSTANCE which must be compared as int
     const auto shellCode = reinterpret_cast<INT_PTR>(shellResult);
     if (shellCode <= 32)
@@ -123,7 +123,7 @@ bool Detail::openWithSystemHandler(std::string_view target, const SessionLookup&
     // On a worker (#3155), in an STA for the call, as ShellExecuteW asks of its caller.
     const Platform::SingleThreadedApartment apartment;
     // ShellExecuteW returns > 32 on success
-    auto* const shellResult = ::ShellExecuteW(nullptr, L"open", widePath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    const auto* const shellResult = ::ShellExecuteW(nullptr, L"open", widePath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
     // NOLINTNEXTLINE(performance-no-int-to-ptr) - ShellExecuteW returns HINSTANCE which must be compared as int
     const auto shellCode = reinterpret_cast<INT_PTR>(shellResult);
     if (shellCode <= 32)

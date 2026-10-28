@@ -492,7 +492,7 @@ setUnitStartType(std::string_view name, ServiceStartType startType, bool allowIn
         break;
     }
     // As systemctl does after changing unit files, so systemd sees the new state.
-    const auto reload = [&bus, &stopToken]() -> ServiceActionResult
+    const auto reload = [&bus, &stopToken] -> ServiceActionResult
     {
         BusError error;
         Message call;

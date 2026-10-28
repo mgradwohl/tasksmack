@@ -54,7 +54,7 @@ template<typename T> class HistoryView
     {
         return m_Values;
     }
-    // NOLINTNEXTLINE(google-explicit-constructor,hicpp-explicit-conversions) - a view is a span by design
+    // NOLINTNEXTLINE(cppcoreguidelines-explicit-constructor,misc-explicit-constructor) - a view is a span by design
     operator std::span<const T>() const noexcept
     {
         return m_Values;

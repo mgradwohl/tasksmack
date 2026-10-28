@@ -1007,7 +1007,7 @@ TEST(WindowsNetworkAdaptersReal, ReadsThisMachine)
         }
         const auto isV4 = [](const std::string& gateway)
         {
-            return gateway.find(':') == std::string::npos;
+            return !gateway.contains(':');
         };
         anyGatewayV4 = anyGatewayV4 || (adapter.up && std::ranges::any_of(adapter.gateways, isV4));
     }

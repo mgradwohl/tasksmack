@@ -54,7 +54,7 @@
 #include <sys/poll.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
-#include <sys/types.h>
+#include <sys/types.h> // NOLINT(misc-include-cleaner) - pid_t; clang-tidy 23 maps it to no header
 // NOLINTNEXTLINE(misc-include-cleaner) - WNOHANG, WIFEXITED and WEXITSTATUS, which tidy maps elsewhere (see their uses)
 #include <sys/wait.h>
 #include <sys/xattr.h>
@@ -264,7 +264,7 @@ runCancellable(const LinuxProcessSyscalls& syscalls, const std::vector<std::stri
         args.push_back(const_cast<char*>(arg.c_str())); // NOLINT(cppcoreguidelines-pro-type-const-cast) - posix_spawn's char* const[]
     }
     args.push_back(nullptr);
-    pid_t child = -1;
+    pid_t child = -1; // NOLINT(misc-include-cleaner) - from <sys/types.h>, which clang-tidy 23 doesn't map
     const int spawned = ::posix_spawn(&child, argv.front().c_str(), &actions, &attributes, args.data(), environ);
     ::posix_spawn_file_actions_destroy(&actions);
     ::posix_spawnattr_destroy(&attributes);

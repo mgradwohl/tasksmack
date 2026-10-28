@@ -246,7 +246,7 @@ endif()
 
 # Linux Release builds (the release, release-compatible, optimized, benchmark and pgo-* presets;
 # `release` is what the .deb/.tar.gz are built from) link libc++ and libc++abi statically
-# (TASKSMACK_STATIC_LIBCXX). The apt.llvm.org clang-22 build imports libc++ symbols that the distro
+# (TASKSMACK_STATIC_LIBCXX). The apt.llvm.org clang-23 build imports libc++ symbols that the distro
 # libc++1 on Ubuntu 24.04 (LLVM 18) doesn't have, e.g. std::__1::__hash_memory, so a .deb that
 # depended on the system libc++1 failed to start on a stock system (#1398). Clang's
 # -static-libstdc++ applies to whichever C++ library -stdlib picks, so with -stdlib=libc++ it
