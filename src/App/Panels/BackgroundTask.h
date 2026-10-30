@@ -14,6 +14,10 @@
 //    bad_alloc) is taken in as the Failed result with the unknown-error detail, unread.
 //  - Each start() gets a new stop token; requestStop() is for work that polls it (a dump, a service
 //    action, #1591). The destructor and move assignment request a stop, then wait.
+//  - Once the result is ready, the worker wakes the frame loop (Domain::PublicationWake, #3156), so a
+//    static tab shows it at once rather than at its slow floor. The result goes through a promise the
+//    worker fills before it wakes the loop: a wake from inside the work, before std::async made its
+//    future ready, could bring a frame that polls too early.
 //
 // Typical use:
 //
@@ -25,6 +29,7 @@
 //
 // Free of ImGui; tested in tests/App/test_BackgroundTask.cpp.
 
+#include "Domain/PublicationWake.h"
 #include "Platform/ThreadName.h"
 
 #include <chrono>
@@ -75,6 +80,7 @@ template<typename Result> class BackgroundTask
           m_Failed(other.m_Failed),
           m_UnknownDetail(other.m_UnknownDetail),
           m_Future(std::move(other.m_Future)),
+          m_Worker(std::move(other.m_Worker)),
           m_Stop(std::move(other.m_Stop)),
           m_Adopted(std::exchange(other.m_Adopted, false))
     {}
@@ -90,6 +96,7 @@ template<typename Result> class BackgroundTask
             m_Failed = other.m_Failed;
             m_UnknownDetail = other.m_UnknownDetail;
             m_Future = std::move(other.m_Future);
+            m_Worker = std::move(other.m_Worker);
             m_Stop = std::move(other.m_Stop);
             m_Adopted = std::exchange(other.m_Adopted, false);
         }
@@ -112,8 +119,13 @@ template<typename Result> class BackgroundTask
         m_Adopted = false;
         try
         {
-            m_Future = std::async(std::launch::async,
-                                  [work = std::move(work),
+            std::promise<Result> promise;
+            std::future<Result> result = promise.get_future();
+            // Replacing a finished worker's future waits for its thread, which at most is still waking
+            // the loop: poll() took its result already.
+            m_Worker = std::async(std::launch::async,
+                                  [promise = std::move(promise),
+                                   work = std::move(work),
                                    stopToken = m_Stop.get_token(),
                                    name = m_ThreadName,
                                    failed = m_Failed,
@@ -121,8 +133,26 @@ template<typename Result> class BackgroundTask
                                   {
                                       // Best effort: a std::async thread may come from a pool (MSVC) and keep the name.
                                       static_cast<void>(Platform::setCurrentThreadName(name));
-                                      return runOrFailed(work, stopToken, failed, unknown);
+                                      try
+                                      {
+                                          // The work is moved out and released here, before the result is
+                                          // ready, rather than with the worker's future.
+                                          Result result = [&work, &stopToken, failed, unknown]
+                                          {
+                                              auto ownedWork = std::move(work);
+                                              return runOrFailed(ownedWork, stopToken, failed, unknown);
+                                          }();
+                                          promise.set_value(std::move(result));
+                                      }
+                                      catch (...)
+                                      {
+                                          // Building the Failed result threw (bad_alloc): poll() takes it in
+                                          // unread, as the Failed result with the unknown-error detail.
+                                          promise.set_exception(std::current_exception());
+                                      }
+                                      Domain::PublicationWake::notify(); // the result is ready (#3156)
                                   });
+            m_Future = std::move(result);
         }
         catch (const std::system_error& e)
         {
@@ -187,13 +217,13 @@ template<typename Result> class BackgroundTask
         {
             m_Future = {};
             m_Adopted = false;
-            return;
         }
         try
         {
-            if (m_Future.valid())
+            // The worker's thread, which ends after it fills the result and wakes the loop.
+            if (m_Worker.valid())
             {
-                m_Future.wait();
+                m_Worker.wait();
             }
         }
         catch (...) // NOLINT(bugprone-empty-catch): wait() on a valid future does not throw
@@ -230,9 +260,11 @@ template<typename Result> class BackgroundTask
     std::string_view m_ThreadName;
     FailedFn m_Failed;
     std::string_view m_UnknownDetail;
-    // A future from std::async waits for its thread when destroyed; ~BackgroundTask() waits explicitly
-    // first, after requesting a stop.
+    // The result: the worker's promise, or an adopted answer.
     std::future<Result> m_Future;
+    // The worker's thread. A future from std::async waits for its thread when destroyed;
+    // ~BackgroundTask() waits explicitly first, after requesting a stop.
+    std::future<void> m_Worker;
     std::stop_source m_Stop{std::nostopstate}; // the work in flight's; a new one per start()
     bool m_Adopted = false;                    // m_Future is adopt()'s: answered elsewhere, dropped rather than waited for
 };

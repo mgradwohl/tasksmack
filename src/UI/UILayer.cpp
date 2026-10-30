@@ -9,6 +9,7 @@
 #include "UI/ChartWidgets.h"
 #include "UI/DpiScale.h"
 #include "UI/FontLoading.h"
+#include "UI/ImGuiTimers.h"
 #include "UI/RenderMetrics.h"
 #include "UI/Theme.h"
 #include "UI/ThemeLoader.h"
@@ -323,6 +324,10 @@ void UILayer::endFrame()
         ImGui::PopFont();
         m_PushedFont = nullptr;
     }
+
+    // The frame on which ImGui's next timer shows -- a blink, a hover delay -- for a static tab, which
+    // otherwise waits for input, a publication or the loop's slow floor (#3156).
+    requestFramesForImGuiTimers();
 
     Core::traceResizePerfVoid(Core::ResizePerfOperation::ImGuiFinalize, 0, 0, [] { ImGui::Render(); });
 

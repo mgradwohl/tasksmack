@@ -42,12 +42,13 @@ void ScreenshotLayer::onAttach()
 
 void ScreenshotLayer::onRender()
 {
-    // A sequence needs frames at its rate: idling, the loop renders at 20 fps (Application.cpp), so
-    // from the first capture on it is asked for as a chart asks for its motion. One capture takes
-    // whatever frame comes.
-    if (m_Outcome == Outcome::Pending && m_Settled && m_Request.frames > 1)
+    // A sequence needs frames at its rate: from the first capture on it is asked for as a chart asks for
+    // its motion. Until then, and for one capture, the idle rate, which every frame had before a static
+    // tab dropped to the loop's slow floor (#3156): the settle frames and the capture come as they did.
+    if (m_Outcome == Outcome::Pending)
     {
-        Core::AnimationRequest::request(static_cast<double>(m_Request.fps));
+        const bool sequenceRunning = m_Settled && m_Request.frames > 1;
+        Core::AnimationRequest::request(sequenceRunning ? static_cast<double>(m_Request.fps) : PENDING_FPS);
     }
 }
 

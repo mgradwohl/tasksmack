@@ -3,6 +3,7 @@
 #include "App/BackgroundOpen.h"
 #include "App/NativeWindow.h"
 #include "App/UserConfig.h"
+#include "Core/AnimationRequest.h"
 #include "Core/Application.h"
 #include "Core/SaveFileDialog.h"
 #include "Core/Utf8Path.h"
@@ -670,8 +671,11 @@ void ProcessDumpView::renderProgressDialog()
 
     if (!m_Result.has_value())
     {
-        const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - m_StartedAt);
+        const auto running = std::chrono::steady_clock::now() - m_StartedAt;
+        const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(running);
         ImGui::TextUnformatted(DumpDetail::progressText(m_ProcessName, m_Target.pid, elapsed).c_str());
+        // The seconds count on with no publication or input: a frame when the next one shows (#3156).
+        Core::AnimationRequest::requestFrameWithin(std::chrono::duration<double>(elapsed + std::chrono::seconds(1) - running).count());
         ImGui::TextColored(scheme.textMuted, "%s", m_CancelRequested ? "Cancelling..." : Core::pathToUtf8(m_Directory).c_str());
         ImGui::PopTextWrapPos();
         const UI::Widgets::DialogFooterButton cancelButton{.label = "Cancel",

@@ -118,7 +118,7 @@ class Application
     }
 
     /// The real time between the starts of the last two frames, in seconds: unlike the deltaTime
-    /// layers get in onUpdate(), not capped at 0.1 s, so an FPS readout below 10 FPS is true (#1152).
+    /// layers get in onUpdate(), not capped at 1 s, so an FPS readout below 1 FPS is true (#1152).
     [[nodiscard]] double lastFrameIntervalSeconds() const noexcept
     {
         return m_LastFrameIntervalSeconds;
@@ -135,7 +135,8 @@ class Application
     // noexcept and only consumed internally by run()'s idle-sleep gate). Same pattern as
     // NVMLGPUProbeTestAccessor in Platform/Windows/NVMLGPUProbe.h. Production code never
     // touches this -- only test_Application.cpp uses it. It also reads the idle-wait seam
-    // (m_IdleWaitCount, m_LastIdleWaitWoke, m_LastIdleWaitPolledEvent; #1446, #1450).
+    // (m_IdleWaitCount, m_LastIdleWaitWoke, m_LastIdleWaitPolledEvent; #1446, #1450) and the
+    // publication wakes taken (m_PublicationWakesTaken; #3156).
     friend struct ApplicationTestAccessor;
 
     /// Raise a WindowCloseEvent for a close request and report whether to close: true unless a
@@ -169,6 +170,9 @@ class Application
     /// after it found an event already queued (#1450; both false for a plain timeout). Written only
     /// where the idle wait returns, on the loop thread; nothing in the app reads them.
     std::uint64_t m_IdleWaitCount = 0;
+    /// Read-only test seam (#3156): how many publication wakes (Domain::PublicationWake) run()'s drain
+    /// has taken off the queue. Written on the loop thread only.
+    std::uint64_t m_PublicationWakesTaken = 0;
     bool m_LastIdleWaitWoke = false;
     bool m_LastIdleWaitPolledEvent = false;
 

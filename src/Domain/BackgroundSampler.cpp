@@ -1,6 +1,7 @@
 #include "BackgroundSampler.h"
 
 #include "Domain/ISamplable.h"
+#include "Domain/PublicationWake.h"
 #include "Platform/ThreadApartment.h"
 #include "Platform/ThreadName.h"
 #include "SamplerTimingBoard.h"
@@ -168,6 +169,9 @@ void BackgroundSampler::runStartHook(const std::function<void()>& hook, std::str
         catch (...) // NOLINT(bugprone-empty-catch) - a lost log line must not terminate the app
         {}
     }
+    // The seed published the models' first data, all or what the hook managed: the frame loop shows it
+    // now rather than at the first pass (#3156).
+    PublicationWake::notify();
 }
 
 BackgroundSampler::BackgroundSampler(SamplerConfig config)
@@ -513,6 +517,13 @@ BackgroundSampler::PassTiming BackgroundSampler::runPass(const std::stop_token& 
     if (!currentSamplables.empty())
     {
         recordPass(name, currentSamplables, durations, timing.duration, timing.interval, passEnd);
+    }
+    // The pass committed what it sampled: wake the frame loop to show it (#3156). Once per pass, after
+    // every samplable, so one pass brings one frame; a pass that sampled nothing (all expired, or
+    // stopping) has nothing new to show.
+    if (std::ranges::any_of(durations, [](const auto& duration) { return duration.has_value(); }))
+    {
+        PublicationWake::notify();
     }
 
     if (!hadException)

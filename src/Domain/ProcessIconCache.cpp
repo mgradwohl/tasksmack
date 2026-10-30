@@ -1,6 +1,7 @@
 #include "ProcessIconCache.h"
 
 #include "Domain/LruMap.h"
+#include "Domain/PublicationWake.h"
 #include "Platform/AsciiCase.h"
 #include "Platform/IProcessIconSource.h"
 #include "Platform/ThreadName.h"
@@ -225,6 +226,17 @@ void ProcessIconCache::workerLoop(const std::stop_token& stopToken)
             m_Queue.pop_back();
         }
         load(request);
+        // Once the queue is drained, so a burst of rows first seen together brings one frame, not one an
+        // icon: the frame loop shows the new icons (#3156).
+        bool drained = false;
+        {
+            const std::scoped_lock lock(m_Mutex);
+            drained = m_Queue.empty();
+        }
+        if (drained)
+        {
+            PublicationWake::notify();
+        }
     }
 }
 

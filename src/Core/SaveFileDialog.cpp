@@ -1,5 +1,7 @@
 #include "SaveFileDialog.h"
 
+#include "Domain/PublicationWake.h"
+
 #include <SDL3/SDL_dialog.h>
 #include <SDL3/SDL_error.h>
 #include <SDL3/SDL_filesystem.h>
@@ -94,6 +96,9 @@ void SDLCALL onDialogClosed(void* userdata, const char* const* fileList, int fil
     {
         logDialogFailure("callback threw", "unknown exception");
     }
+    // The callback filled a slot the UI polls, on SDL's dialog thread: wake the frame loop to take it in
+    // (#3156).
+    Domain::PublicationWake::notify();
 }
 
 } // namespace

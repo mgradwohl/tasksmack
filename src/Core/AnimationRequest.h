@@ -20,6 +20,7 @@
 // one). UI thread only.
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 
 namespace Core::AnimationRequest
@@ -107,6 +108,43 @@ inline void requestForEasing(double pixelsPerSecond) noexcept
     const double rate = Detail::requestedRate();
     Detail::requestedRate() = 0.0;
     return rate;
+}
+
+// A frame by a deadline (#3156). A static tab draws only when something changes: on input, on a
+// publication (Domain::PublicationWake) or at the loop's slow floor. Content that changes with time
+// alone but doesn't move -- a result line that times out, a text cursor's blink, a tooltip's hover
+// delay -- asks for the one frame that shows the change, at the time it happens, rather than for a
+// frame rate. requestFrameWithin() while drawing; Application::run() calls consumeFrameWithin() after
+// the frame, beside consume(), and waits no longer than the soonest deadline asked for.
+
+namespace Detail
+{
+[[nodiscard]] inline auto requestedFrameWithin() noexcept -> double&
+{
+    static double seconds = std::numeric_limits<double>::infinity();
+    return seconds;
+}
+} // namespace Detail
+
+/// Ask for a frame no later than @p seconds after this one: call while drawing content that changes
+/// then on its own. Several requests in one frame keep the soonest. A deadline already due (zero or
+/// negative) asks for the next frame as soon as the loop gives one: never sooner than its idle rate
+/// (FramePacing::computeIdlePeriodMs()). NaN asks for nothing.
+inline void requestFrameWithin(double seconds) noexcept
+{
+    if (!std::isnan(seconds))
+    {
+        Detail::requestedFrameWithin() = std::min(Detail::requestedFrameWithin(), std::max(0.0, seconds));
+    }
+}
+
+/// The soonest frame deadline asked for since the last call, in seconds after the frame that asked
+/// (infinity if none), clearing the request.
+[[nodiscard]] inline auto consumeFrameWithin() noexcept -> double
+{
+    const double seconds = Detail::requestedFrameWithin();
+    Detail::requestedFrameWithin() = std::numeric_limits<double>::infinity();
+    return seconds;
 }
 
 } // namespace Core::AnimationRequest

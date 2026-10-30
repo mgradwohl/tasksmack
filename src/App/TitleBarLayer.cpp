@@ -2,6 +2,7 @@
 
 #include "App/TitleBarGeometry.h"
 #include "App/TitleBarView.h"
+#include "Core/AnimationRequest.h"
 #include "Core/Application.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/EnvRead.h"
@@ -476,6 +477,12 @@ void TitleBarLayer::updateWindowInteraction()
             // A quick drag off a maximize can end before the window manager's late restore lands.
             double setPositionMs = 0.0;
             settleRestore(Core::Application::get().getWindow(), setPositionMs);
+            // No event comes when the window manager moves it back: look again when a retry is due
+            // (#3156), rather than at the loop's slow floor.
+            if (m_RestoreSettle.active())
+            {
+                Core::AnimationRequest::requestFrameWithin(RestoreSettle::RETRY_SECONDS);
+            }
         }
         return;
     }
