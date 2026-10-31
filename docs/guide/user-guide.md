@@ -496,7 +496,7 @@ On Linux, the Process Details **Overview** tab also has a collapsible **Threads*
 - **CPU %** is the thread's share of the whole machine since the previous read, on the same scale as the Processes table's CPU %. It shows a dash until a second read has a figure to compare with. **CPU TIME** is the thread's total CPU time, user and kernel together. **NICE** is the thread's own nice value: Linux schedules each thread by its own. **STARTED** is when the thread started, as the Processes table writes a start time: a worker started later than its process shows up here.
 - Rows are sorted by CPU %, busiest first. Click a column header to sort by that column; type in the filter box to show only threads whose name or TID contains the text. More than 12 rows scroll inside the section.
 - TaskSmack reads the threads only for the selected process and only while the section is open, at the refresh interval set in Settings, in the background. A process with more than 4096 threads lists the first 4096, under "Showing the first N threads".
-- On a system that mounts `/proc` with `hidepid`, another user's process shows "Access denied: another user's process". A process that has exited shows "Process exited".
+- On a system that mounts `/proc` with `hidepid`, another user's process shows "Access denied: another user's process", with an **Authenticate to read** button where TaskSmack's helper is installed: after an administrator's password, the helper lists that process's threads, as it reads its connections, modules and open files. A process that has exited shows "Process exited".
 - Suspending, resuming or ending a single thread isn't offered on Linux, which has no safe way to do it to one thread. On Windows the section isn't shown yet.
 
 ### Security

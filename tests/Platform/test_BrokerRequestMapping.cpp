@@ -12,6 +12,7 @@
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
+#include "Platform/IProcessThreads.h"
 #include "Platform/ISystemInfoProbe.h"
 
 #include <gtest/gtest.h>
@@ -457,6 +458,60 @@ TEST(BrokerRequestMappingTest, AnOpenFilesRequestWithoutAReaderIsRefused)
     const Broker::Response response = BrokerServer::handleRequest(Broker::OpenFilesRequest{.target = TARGET}, actions);
     ASSERT_TRUE(std::holds_alternative<Broker::ErrorReply>(response));
     EXPECT_EQ(std::get<Broker::ErrorReply>(response).message, "This helper doesn't list open files");
+}
+
+/// A threads reader that counts its reads and answers one thread, or throws (#3069).
+class FakeThreadsReader final : public IProcessThreadsReader
+{
+  public:
+    explicit FakeThreadsReader(bool throws = false) : m_Throws(throws)
+    {}
+    [[nodiscard]] bool hasThreads() const override
+    {
+        return true;
+    }
+    [[nodiscard]] ThreadsReadResult readThreads(const ProcessTarget& target) override
+    {
+        ++m_Reads;
+        if (m_Throws)
+        {
+            throw std::runtime_error("boom");
+        }
+        ThreadsReadResult result{.status = ThreadsReadStatus::Ok, .threads = {}, .detail = {}};
+        result.threads.push_back(
+            {.tid = target.pid, .name = "main", .state = 'S', .userTicks = 1, .systemTicks = 2, .nice = 0, .startTicks = 3});
+        return result;
+    }
+    int m_Reads = 0;
+
+  private:
+    bool m_Throws = false;
+};
+
+// #3069: another user's process's threads, read by the helper's reader, refused without one.
+TEST(BrokerRequestMappingTest, AThreadsRequestIsReadThroughItsReader)
+{
+    TestMocks::MockProcessActions actions;
+    FakeThreadsReader threads;
+    BrokerServer::Readers readers;
+    readers.threads = &threads;
+    const Broker::Response response = BrokerServer::handleRequest(Broker::ThreadsRequest{.target = TARGET}, actions, readers);
+    ASSERT_TRUE(std::holds_alternative<Broker::ThreadsReply>(response));
+    EXPECT_EQ(threads.m_Reads, 1);
+    const ThreadsReadResult& result = std::get<Broker::ThreadsReply>(response).result;
+    EXPECT_EQ(result.status, ThreadsReadStatus::Ok);
+    ASSERT_EQ(result.threads.size(), 1U);
+    EXPECT_EQ(result.threads[0].tid, TARGET.pid);
+
+    const Broker::Response none = BrokerServer::handleRequest(Broker::ThreadsRequest{.target = TARGET}, actions);
+    ASSERT_TRUE(std::holds_alternative<Broker::ErrorReply>(none));
+    EXPECT_EQ(std::get<Broker::ErrorReply>(none).message, "This helper doesn't list threads");
+
+    FakeThreadsReader throwing(true);
+    readers.threads = &throwing;
+    const Broker::Response failed = BrokerServer::handleRequest(Broker::ThreadsRequest{.target = TARGET}, actions, readers);
+    ASSERT_TRUE(std::holds_alternative<Broker::ThreadsReply>(failed));
+    EXPECT_EQ(std::get<Broker::ThreadsReply>(failed).result.status, ThreadsReadStatus::Failed);
 }
 
 TEST(BrokerRequestMappingTest, AnActionThatThrowsANonStandardExceptionIsAFailedResult)

@@ -1404,7 +1404,9 @@ TEST(BrokerPipeServeTest, EveryRequestKindIsTheHelloAnActionOrARead)
     EXPECT_FALSE(BrokerPipeServer::isRead(Broker::CloseConnectionRequest{.target = TARGET, .socketInode = 1}));
     EXPECT_FALSE(BrokerPipeServer::isActionWindowsDoes(Broker::CloseConnectionRequest{.target = TARGET, .socketInode = 1}))
         << "an ErrorReply (#3066)";
-    static_assert(std::variant_size_v<Broker::Request> == 17, "a new request kind: add it above");
+    EXPECT_TRUE(BrokerPipeServer::isRead(Broker::ThreadsRequest{.target = TARGET}))
+        << "a read Windows' helper answers with an ErrorReply (#3069)";
+    static_assert(std::variant_size_v<Broker::Request> == 18, "a new request kind: add it above");
 }
 
 TEST(BrokerPipeServeTest, AOneActionSessionIsntKeptOpenByGreetingAgain)

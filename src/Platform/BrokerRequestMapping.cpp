@@ -7,6 +7,7 @@
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
+#include "Platform/IProcessThreads.h"
 #include "Platform/IServiceActions.h"
 
 #include <exception>
