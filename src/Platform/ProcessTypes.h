@@ -114,7 +114,8 @@ struct ProcessCounters
     std::string publisher; // CompanyName from PE file version info (empty if not available)
     // The image's Authenticode signature (#3070; Windows, ProcessCapabilities::hasSignature): checked in the
     // background, so NotChecked until the answer is in. Unlike the publisher, it can't be written by anyone.
-    SignatureCheck signature;
+    // Shared, so copying the counters and the snapshots made from them copies no strings (#3244).
+    SharedSignatureCheck signature;
 
     // Container (optional, Linux-only from /proc/[pid]/cgroup; see CgroupContainer.h)
     // "<runtime>:<short id or name>", e.g. "docker:1a2b3c4d5e6f" (empty if in none)

@@ -145,7 +145,7 @@ compareColumnKey(const Domain::ProcessSnapshot& a, const Domain::ProcessSnapshot
         return compare(a.publisher, b.publisher);
     case ProcessColumn::Signature: // Verified by signer, then Unsigned, Invalid, Not checked (#3070)
     {
-        const std::strong_ordering order = Platform::compareSignature(a.signature, b.signature);
+        const std::strong_ordering order = Platform::compareSignature(a.signature.get(), b.signature.get());
         return ascending ? order < 0 : order > 0;
     }
     case ProcessColumn::Container:

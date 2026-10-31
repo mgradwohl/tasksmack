@@ -10,7 +10,6 @@
 #include "Platform/IServiceProbe.h"
 #include "Platform/ImageSignature.h"
 #include "Platform/ProcessTypes.h"
-#include "Platform/SchedPolicy.h"
 #include "PriorityConfig.h"
 #include "ProcessRowHistory.h"
 #include "ProcessServices.h"
@@ -1321,9 +1320,7 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
     snapshot.architecture = current.architecture; // and the architecture it runs as (#2394)
     snapshot.schedPolicy = current.schedPolicy;   // its scheduling policy (#3086)
     snapshot.rtPriority = current.rtPriority;
-    snapshot.schedPolicyText = Platform::schedPolicyLabel(current.schedPolicy, current.rtPriority);
-    snapshot.signature = current.signature; // the image's signature (#3070), and the column's text for it
-    snapshot.signatureText = Platform::signatureLabel(current.signature);
+    snapshot.signature = current.signature;           // the image's signature (#3070)
     snapshot.gdiObjectCount = current.gdiObjectCount; // Pass through GDI object count from platform probe
     snapshot.memoryBytes = current.rssBytes;
     snapshot.virtualBytes = current.virtualBytes;

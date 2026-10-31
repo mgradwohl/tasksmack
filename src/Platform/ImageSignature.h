@@ -11,8 +11,10 @@
 #include <compare>
 #include <cstdint>
 #include <format>
+#include <memory>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace Platform
 {
@@ -38,6 +40,35 @@ struct SignatureCheck
     friend bool operator==(const SignatureCheck&, const SignatureCheck&) = default;
 };
 
+/// A SignatureCheck that the copies of a process's counters and snapshots share (#3244). ProcessModel
+/// hands its snapshots out by value, and a SignatureCheck's two strings made every copy dearer -- a signer
+/// longer than a string's inline buffer, as most are, allocating. Copying this copies a pointer, and one
+/// not checked yet (every process on Linux) holds none. Reads as the SignatureCheck it holds, via get().
+class SharedSignatureCheck
+{
+  public:
+    SharedSignatureCheck() = default;
+    // Implicit on purpose: `counters.signature = check;` reads as for the SignatureCheck it replaces.
+    SharedSignatureCheck(SignatureCheck check) // NOLINT(cppcoreguidelines-explicit-constructor,misc-explicit-constructor)
+        : m_Check(check == SignatureCheck{} ? nullptr : std::make_shared<const SignatureCheck>(std::move(check)))
+    {}
+
+    /// The check, or a NotChecked one when none was made.
+    [[nodiscard]] const SignatureCheck& get() const noexcept
+    {
+        static const SignatureCheck NOT_CHECKED;
+        return m_Check == nullptr ? NOT_CHECKED : *m_Check;
+    }
+
+    friend bool operator==(const SharedSignatureCheck& a, const SharedSignatureCheck& b)
+    {
+        return a.get() == b.get();
+    }
+
+  private:
+    std::shared_ptr<const SignatureCheck> m_Check; // null: not checked
+};
+
 /// What a signature not checked yet says (the Signature cell's dash, Process Details' row): the check runs in
 /// the background, one file at a time, and never comes for a process whose executable path can't be read.
 inline constexpr const char* SIGNATURE_NOT_CHECKED_NOTE =
@@ -53,13 +84,16 @@ inline constexpr const char* SIGNATURE_NOT_CHECKED_NOTE =
 /// The Signature column's text (#3070): the signer of a verified image ("Signed" when its certificate
 /// names no one), "Unsigned", "Invalid", or "Not checked" when the check failed. Empty while not
 /// checked yet: the cell shows the unavailable dash. The UI puts a check mark before a verified signer.
-[[nodiscard]] inline std::string signatureLabel(const SignatureCheck& check)
+/// A view of @p check's signer or of a fixed label, valid while @p check is, so it allocates nothing: the
+/// UI words the signature where it draws it, rather than each snapshot carrying the text for every copy
+/// of the published snapshots to copy (#3244).
+[[nodiscard]] inline std::string_view signatureLabel(const SignatureCheck& check) noexcept
 {
     switch (check.signature)
     {
     case ImageSignature::Embedded:
     case ImageSignature::Catalog:
-        return check.signer.empty() ? std::string("Signed") : check.signer;
+        return check.signer.empty() ? std::string_view("Signed") : std::string_view(check.signer);
     case ImageSignature::Unsigned:
         return "Unsigned";
     case ImageSignature::Untrusted:

@@ -490,10 +490,10 @@ The Process Details **Overview** tab also has a collapsible **Modules** section,
 
 ### Threads
 
-On Linux, the Process Details **Overview** tab also has a collapsible **Threads** section, closed by default, under the Modules section. Open it to list the selected process's threads in a **TID / NAME / STATE / CPU % / CPU TIME / NICE** table, with the count in the section's header ("Threads (12)"):
+On Linux, the Process Details **Overview** tab also has a collapsible **Threads** section, closed by default, under the Modules section. Open it to list the selected process's threads in a **TID / NAME / STATE / CPU % / CPU TIME / NICE / STARTED** table, with the count in the section's header ("Threads (12)"):
 
 - **TID** is the thread's ID, and **NAME** its name (at most 15 characters on Linux; a thread that never named itself has its process's name). **STATE** is Running, Sleeping, Disk Sleep, Stopped, Zombie and so on, as in the Processes table.
-- **CPU %** is the thread's share of the whole machine since the previous read, on the same scale as the Processes table's CPU %. It shows a dash until a second read has a figure to compare with. **CPU TIME** is the thread's total CPU time, user and kernel together. **NICE** is the thread's own nice value: Linux schedules each thread by its own.
+- **CPU %** is the thread's share of the whole machine since the previous read, on the same scale as the Processes table's CPU %. It shows a dash until a second read has a figure to compare with. **CPU TIME** is the thread's total CPU time, user and kernel together. **NICE** is the thread's own nice value: Linux schedules each thread by its own. **STARTED** is when the thread started, as the Processes table writes a start time: a worker started later than its process shows up here.
 - Rows are sorted by CPU %, busiest first. Click a column header to sort by that column; type in the filter box to show only threads whose name or TID contains the text. More than 12 rows scroll inside the section.
 - TaskSmack reads the threads only for the selected process and only while the section is open, at the refresh interval set in Settings, in the background. A process with more than 4096 threads lists the first 4096, under "Showing the first N threads".
 - On a system that mounts `/proc` with `hidepid`, another user's process shows "Access denied: another user's process". A process that has exited shows "Process exited".
