@@ -3071,6 +3071,34 @@ TEST(LinuxProcessProbeTest, ParseProcessStatMalformedContentDoesNotCrash)
     EXPECT_TRUE(result.empty());
 }
 
+// #3221: a stat whose nice or thread count is past int32 is held to its range, and a numeric entry in /proc
+// that isn't a directory (or vanished between the listing and the open) is skipped.
+TEST(LinuxProcessProbeTest, OutOfRangeFieldsAreHeldAndNonDirectoriesSkipped)
+{
+    ScopedTempDir proc("ts_test_proc_clamp");
+    // Thread count 99999999999 (past int32), nice -99999999999 (below it).
+    writeFile(proc.path / "4242" / "stat",
+              "4242 (app) S 1 1 1 0 -1 4194304 0 0 0 0 10 5 0 0 20 -99999999999 99999999999 0 12345 0 0 "
+              "18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n");
+    writeFile(proc.path / "4343" / "stat",
+              "4343 (app) S 1 1 1 0 -1 4194304 0 0 0 0 10 5 0 0 20 99999999999 1 0 12345 0 0 "
+              "18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n");
+    writeFile(proc.path / "4444", "not a process directory\n");
+
+    LinuxProcessProbe probe(proc.path, proc.path / "no-powercap");
+    const auto processes = probe.enumerate();
+    const auto find = [&processes](std::int32_t pid)
+    {
+        return std::ranges::find_if(processes, [pid](const ProcessCounters& p) { return p.pid == pid; });
+    };
+    ASSERT_NE(find(4242), processes.end());
+    EXPECT_EQ(find(4242)->threadCount, std::numeric_limits<std::int32_t>::max());
+    EXPECT_EQ(find(4242)->nice, std::numeric_limits<std::int32_t>::min());
+    ASSERT_NE(find(4343), processes.end());
+    EXPECT_EQ(find(4343)->nice, std::numeric_limits<std::int32_t>::max());
+    EXPECT_EQ(find(4444), processes.end()) << "a file, not a process directory";
+}
+
 } // namespace
 } // namespace Platform
 
