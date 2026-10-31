@@ -45,8 +45,8 @@ namespace
 /// The number at the start of @p text, consumed: digits without a leading zero, fitting 32 bits.
 [[nodiscard]] std::optional<std::uint32_t> takeNumber(std::string_view& text) noexcept
 {
-    const auto digitsEnd = std::ranges::find_if_not(text, isDigit);
-    const auto length = static_cast<std::size_t>(digitsEnd - text.begin());
+    // A position, not the iterator: string_view's is a pointer in libstdc++ and a class in MSVC's STL.
+    const auto length = static_cast<std::size_t>(std::ranges::find_if_not(text, isDigit) - text.begin());
     if (length == 0 || (length > 1 && text.front() == '0'))
     {
         return std::nullopt;
