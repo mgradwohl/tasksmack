@@ -20,6 +20,8 @@
 #include <system_error>
 #include <vector>
 
+#include <unistd.h>
+
 namespace Platform
 {
 namespace
@@ -388,6 +390,85 @@ TEST_F(LinuxStartupTest, ListsTheEnabledSystemdUserUnitsReadOnly)
     // The actions refuse a unit: it isn't an autostart file.
     LinuxStartupActions actions(m_Dirs);
     EXPECT_FALSE(actions.setEnabled(*syncd, false).ok);
+}
+
+/// An entry for @p fileName, as the probe would hand it to setEnabled().
+[[nodiscard]] StartupEntry entryNamed(const std::string& fileName)
+{
+    StartupEntry entry;
+    entry.registrationName = fileName;
+    return entry;
+}
+
+// #3221: setEnabled()'s refusals: no autostart folder, a name that isn't an autostart file, nothing to read, a
+// file without its group, and switching on an entry that names no program anywhere.
+TEST_F(LinuxStartupTest, SwitchingRefusesWhatItCantReadOrWrite)
+{
+    LinuxStartupActions homeless(XdgAutostart::Dirs{.user = {}, .system = {}});
+    EXPECT_FALSE(homeless.capabilities().canSetEnabled);
+    EXPECT_TRUE(homeless.setEnabled(entryNamed("a.desktop"), false).message.contains("no autostart folder"));
+
+    LinuxStartupActions actions(m_Dirs);
+    for (const char* name : {"", "../x.desktop", "notes.txt"})
+    {
+        EXPECT_EQ(actions.setEnabled(entryNamed(name), false).message, "This isn't an autostart file") << name;
+    }
+    EXPECT_TRUE(actions.setEnabled(entryNamed("gone.desktop"), false).message.contains("couldn't be read"));
+
+    writeText(m_Dirs.user / "nogroup.desktop", "Name=No group\nExec=/bin/sh\n");
+    EXPECT_TRUE(actions.setEnabled(entryNamed("nogroup.desktop"), false).message.contains("no [Desktop Entry] group"));
+
+    writeText(m_Dirs.user / "noexec.desktop", "[Desktop Entry]\nName=Stub\nHidden=true\n");
+    EXPECT_TRUE(actions.setEnabled(entryNamed("noexec.desktop"), true).message.contains("no Exec"))
+        << "a stub with no system entry behind it";
+}
+
+// #3221: a folder TaskSmack can't make or write: a file where it should be, a read-only folder, and a copy
+// that can't be removed.
+TEST_F(LinuxStartupTest, AFolderItCantMakeOrWriteSaysWhich)
+{
+    writeText(m_Dirs.system[0] / "tool.desktop", "[Desktop Entry]\nName=Tool\nExec=/bin/sh\n");
+    // A file where the user's autostart folder should be.
+    writeText(m_Dirs.user.parent_path() / "autostart", "in the way\n");
+    LinuxStartupActions actions(m_Dirs);
+    EXPECT_TRUE(actions.setEnabled(entryNamed("tool.desktop"), false).message.contains("couldn't be made"));
+    std::filesystem::remove(m_Dirs.user);
+
+    if (::geteuid() == 0)
+    {
+        GTEST_SKIP() << "root writes into a read-only folder";
+    }
+    std::filesystem::create_directories(m_Dirs.user);
+    std::filesystem::permissions(m_Dirs.user, std::filesystem::perms::owner_read | std::filesystem::perms::owner_exec);
+    EXPECT_TRUE(actions.setEnabled(entryNamed("tool.desktop"), false).message.contains("couldn't be written"));
+    std::filesystem::permissions(m_Dirs.user, std::filesystem::perms::owner_all);
+
+    // A copy that only switched the system entry off, in a folder it can't be removed from.
+    ASSERT_TRUE(actions.setEnabled(entryNamed("tool.desktop"), false).ok);
+    std::filesystem::permissions(m_Dirs.user, std::filesystem::perms::owner_read | std::filesystem::perms::owner_exec);
+    EXPECT_TRUE(actions.setEnabled(entryNamed("tool.desktop"), true).message.contains("couldn't be removed"));
+    std::filesystem::permissions(m_Dirs.user, std::filesystem::perms::owner_all);
+
+    // An unreadable user copy.
+    std::filesystem::permissions(m_Dirs.user / "tool.desktop", std::filesystem::perms::none);
+    EXPECT_TRUE(actions.setEnabled(entryNamed("tool.desktop"), true).message.contains("couldn't be read"));
+    std::filesystem::permissions(m_Dirs.user / "tool.desktop", std::filesystem::perms::owner_all);
+}
+
+// #3221: an Exec with no program is Unresolved; a bare name not on the search path stays as written, Missing.
+TEST_F(LinuxStartupTest, AnExecWithNoProgramIsUnresolvedAndAnUnknownNameMissing)
+{
+    writeText(m_Dirs.user / "empty.desktop", "[Desktop Entry]\nName=Empty\nExec=\n");
+    writeText(m_Dirs.user / "unknown.desktop", "[Desktop Entry]\nName=Unknown\nExec=tasksmack-no-such-tool-3221 --x\n");
+    LinuxStartupProbe probe(m_Dirs, "", SEARCH_PATH);
+    const std::vector<StartupEntry> entries = probe.enumerate();
+    const StartupEntry* empty = find(entries, "empty.desktop");
+    ASSERT_NE(empty, nullptr);
+    EXPECT_EQ(empty->target, StartupTargetState::Unresolved);
+    const StartupEntry* unknown = find(entries, "unknown.desktop");
+    ASSERT_NE(unknown, nullptr);
+    EXPECT_EQ(unknown->executablePath, "tasksmack-no-such-tool-3221");
+    EXPECT_EQ(unknown->target, StartupTargetState::Missing);
 }
 
 } // namespace
