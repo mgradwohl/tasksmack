@@ -275,6 +275,7 @@ set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/LinuxSystemProbe.cpp
     src/Platform/Linux/SystemdUnits.cpp
     src/Platform/Linux/SystemdUnitActions.cpp # start, stop and start types; tasksmack-helper links it too (#2728)
+    src/Platform/Linux/LogindSessions.cpp # the Users tab's sessions (#3076)
     src/Platform/Linux/UDisks2Smart.cpp
     src/Platform/Linux/NetworkManager.cpp
     src/Platform/Linux/Nl80211.cpp # a Wi-Fi link's standard and receive rate (#2591)

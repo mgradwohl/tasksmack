@@ -14,6 +14,7 @@
 
 #include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
+#include "Platform/IUserSessions.h"
 #include "Platform/Linux/LinuxDiskSmart.h"
 #include "Platform/Linux/LinuxNetworkAdapters.h"
 #include "Platform/Linux/SystemdServices.h"
@@ -187,5 +188,23 @@ setUnitStartType(std::string_view name, ServiceStartType startType, bool allowIn
 /// (no D-Bus auto-start). One connection per read; once networkd is found absent or unresponsive, the
 /// rest of the read doesn't ask again. Unprivileged.
 [[nodiscard]] LinuxNetworkAdapters::IndexedDhcpLeaseReader makeNetworkdLeaseReader();
+
+/// logind's sessions (#3076): ListSessions, then each session's properties, in one connection.
+struct LoginSessionsRead
+{
+    bool ok = false;
+    std::string error; ///< Why not, when !ok: no sd-bus in this build, no system bus, logind not answering.
+    std::vector<UserSession> sessions;
+};
+
+/// Reads every logind session (org.freedesktop.login1). @p currentSessionId (XDG_SESSION_ID) marks the
+/// session TaskSmack runs in. Unprivileged.
+[[nodiscard]] LoginSessionsRead readLoginSessions(std::string_view currentSessionId);
+
+/// Locks (Manager.LockSession) or ends (Manager.TerminateSession) logind session @p id. polkit decides:
+/// one's own session needs nothing, another user's an administrator; unless @p allowInteractive no prompt is
+/// shown and that is a refusal with needsAuthorization set (#2304). @p stopToken ends a wait on the prompt.
+[[nodiscard]] ServiceActionResult
+sessionAction(std::string_view id, SessionAction action, bool allowInteractive, const std::stop_token& stopToken = {});
 
 } // namespace Platform::SystemdBus
