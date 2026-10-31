@@ -134,6 +134,23 @@ namespace
     }
 }
 
+/// Process Details' threads (#3069): the reader checks the target's identity itself.
+[[nodiscard]] Broker::Response handleThreads(const Broker::ThreadsRequest& read, const Readers& readers)
+{
+    if (readers.threads == nullptr)
+    {
+        return Broker::ErrorReply{.message = "This helper doesn't list threads"};
+    }
+    try
+    {
+        return Broker::ThreadsReply{.result = readers.threads->readThreads(read.target)};
+    }
+    catch (...)
+    {
+        return Broker::ThreadsReply{.result = {.status = ThreadsReadStatus::Failed, .threads = {}, .detail = {}}};
+    }
+}
+
 /// Process Details' connections (#2309): the reader checks the target's identity itself.
 [[nodiscard]] Broker::Response handleConnections(const Broker::ConnectionsRequest& read, const Readers& readers)
 {
@@ -309,6 +326,10 @@ Broker::Response handleRequest(const Broker::Request& request, IProcessActions& 
     if (const auto* read = std::get_if<Broker::ConnectionsRequest>(&request))
     {
         return handleConnections(*read, readers);
+    }
+    if (const auto* read = std::get_if<Broker::ThreadsRequest>(&request))
+    {
+        return handleThreads(*read, readers);
     }
     if (const auto* read = std::get_if<Broker::MemoryRollupRequest>(&request))
     {

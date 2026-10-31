@@ -28,6 +28,7 @@
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
+#include "Platform/IProcessThreads.h"
 #include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
 #include "Platform/ISystemInfoProbe.h"
@@ -37,6 +38,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string>
@@ -57,7 +59,7 @@ namespace Platform::Broker
 /// 8: Signal gains Hangup, Interrupt, Quit, User1 and User2 (#3063).
 /// 9: SetEfficiencyMode, Efficiency mode turned on or off for a process (#3071).
 /// 10: CloseConnection, one of a process's sockets shut down (#3066).
-inline constexpr std::uint16_t PROTOCOL_VERSION = 10;
+inline constexpr std::uint16_t PROTOCOL_VERSION = 11;
 /// The largest frame either side accepts, header included.
 inline constexpr std::size_t MAX_MESSAGE_BYTES = std::size_t{8} << 20U;
 /// The most processes one ReadProcessCounters asks about (#2728); a sampler with more asks for the first.
@@ -78,6 +80,8 @@ inline constexpr std::size_t MAX_ENVIRONMENT_VARIABLES = std::size_t{1} << 16U;
 inline constexpr std::size_t MAX_MODULES = std::size_t{1} << 16U;
 /// The most sockets a ConnectionsReply carries; a read with more keeps the first.
 inline constexpr std::size_t MAX_CONNECTIONS = std::size_t{1} << 16U;
+/// The most threads a ThreadsReply carries (#3069); a read with more keeps the first.
+inline constexpr std::size_t MAX_THREADS = std::size_t{1} << 16U;
 /// The largest firmware file a FirmwareFileReply carries; SMBIOS tables are a few KiB to some tens.
 inline constexpr std::size_t MAX_FIRMWARE_FILE_BYTES = std::size_t{1} << 20U;
 /// The frame header after the length: version, kind, request id.
@@ -103,6 +107,7 @@ enum class MessageKind : std::uint16_t // NOLINT(performance-enum-size): 16 bits
     ReadCrashes = 38,           ///< Recent crashes, every user's (#2310)
     ReadProcessCounters = 39,   ///< Many processes' FD counts and I/O bytes at once, for the sampler (#2728)
     ListHiddenProcesses = 40,   ///< The processes hidepid hides from TaskSmack, as their /proc files' text (#2728)
+    ReadThreads = 41,           ///< Another user's process's threads, for Process Details (#3069)
     ActionResult = 48,          ///< The answer to a process action
     EnvironmentResult = 49,     ///< The answer to ReadEnvironment
     ModulesResult = 50,         ///< The answer to ReadModules
@@ -114,6 +119,7 @@ enum class MessageKind : std::uint16_t // NOLINT(performance-enum-size): 16 bits
     ProcessCountersResult = 56, ///< The answer to ReadProcessCounters
     HiddenProcessesResult = 57, ///< The answer to ListHiddenProcesses
     ServiceActionResult = 58,   ///< The answer to ServiceAction
+    ThreadsResult = 59,         ///< The answer to ReadThreads
     Error = 63,                 ///< A request the helper refused to read (malformed, or a kind it doesn't do)
 };
 
@@ -279,6 +285,32 @@ struct ConnectionsRequest
 {
     ProcessTarget target;
     friend bool operator==(const ConnectionsRequest&, const ConnectionsRequest&) = default;
+};
+
+/// List a process's threads (#3069), as the helper reads them with its capabilities.
+struct ThreadsRequest
+{
+    ProcessTarget target;
+    friend bool operator==(const ThreadsRequest&, const ThreadsRequest&) = default;
+};
+
+/// The answer to ThreadsRequest: the read's result, as IProcessThreadsReader returns it.
+struct ThreadsReply
+{
+    ThreadsReadResult result;
+
+    friend bool operator==(const ThreadsReply& left, const ThreadsReply& right)
+    {
+        const auto same = [](const ProcessThread& a, const ProcessThread& b)
+        {
+            return a.tid == b.tid && a.name == b.name && a.state == b.state && a.userTicks == b.userTicks &&
+                   a.systemTicks == b.systemTicks && a.nice == b.nice && a.startTicks == b.startTicks;
+        };
+        return left.result.status == right.result.status && left.result.detail == right.result.detail &&
+               left.result.ticksPerSecond == right.result.ticksPerSecond && left.result.truncated == right.result.truncated &&
+               left.result.bootTimeEpoch == right.result.bootTimeEpoch &&
+               std::ranges::equal(left.result.threads, right.result.threads, same);
+    }
 };
 
 /// The answer to ConnectionsRequest: the read's result, as IProcessConnectionsReader returns it.
@@ -524,7 +556,8 @@ using Request = std::variant<Hello,
                              HiddenProcessesRequest,
                              ServiceActionRequest,
                              EfficiencyModeRequest,
-                             CloseConnectionRequest>;
+                             CloseConnectionRequest,
+                             ThreadsRequest>;
 using Response = std::variant<HelloReply,
                               ActionResult,
                               ErrorReply,
@@ -537,7 +570,8 @@ using Response = std::variant<HelloReply,
                               CrashesReply,
                               ProcessCountersReply,
                               HiddenProcessesReply,
-                              ServiceActionReply>;
+                              ServiceActionReply,
+                              ThreadsReply>;
 
 /// A decoded frame: its request id and message.
 template<typename Message> struct Decoded
@@ -888,6 +922,12 @@ namespace Detail
     return MessageKind::ReadConnections;
 }
 
+[[nodiscard]] inline MessageKind encodePayload(Writer& writer, const ThreadsRequest& threads)
+{
+    writer.target(threads.target);
+    return MessageKind::ReadThreads;
+}
+
 [[nodiscard]] inline MessageKind encodePayload(Writer& writer, const MemoryRollupRequest& rollup)
 {
     writer.target(rollup.target);
@@ -1151,6 +1191,8 @@ namespace Detail
         return Detail::finish<Request>(reader, id, OpenFilesRequest{.target = reader.target()});
     case MessageKind::ReadConnections:
         return Detail::finish<Request>(reader, id, ConnectionsRequest{.target = reader.target()});
+    case MessageKind::ReadThreads:
+        return Detail::finish<Request>(reader, id, ThreadsRequest{.target = reader.target()});
     case MessageKind::ReadMemoryRollup:
         return Detail::finish<Request>(reader, id, MemoryRollupRequest{.target = reader.target()});
     case MessageKind::ReadProcessCounters:
@@ -1175,6 +1217,7 @@ namespace Detail
     case MessageKind::ProcessCountersResult:
     case MessageKind::HiddenProcessesResult:
     case MessageKind::ServiceActionResult:
+    case MessageKind::ThreadsResult:
     case MessageKind::Error:
         break;
     }
@@ -1320,6 +1363,36 @@ namespace Detail
         writer.u8(static_cast<std::uint8_t>(connection.state));
     }
     return MessageKind::ConnectionsResult;
+}
+
+/// ThreadsResult: status, detail, ticks per second, boot time, truncated, count; a thread: TID, name, state,
+/// user and system ticks, nice, start ticks. As many threads as fit in one frame (names are at most 15 bytes
+/// on Linux, but the field is a string), saying it was cut past them, as a read past MAX_THREADS does.
+[[nodiscard]] inline MessageKind encodePayload(Writer& writer, const ThreadsReply& threads)
+{
+    constexpr std::size_t ROOM = listRoom(1 + 4 + MAX_STRING_BYTES + 8 + 8 + 1 + 4);
+    const std::size_t count = entriesThatFit(std::span(threads.result.threads),
+                                             MAX_THREADS,
+                                             ROOM,
+                                             [](const ProcessThread& thread) { return 4 + textBytes(thread.name) + 1 + 8 + 8 + 8 + 8; });
+    writer.u8(static_cast<std::uint8_t>(threads.result.status));
+    writer.text(threads.result.detail);
+    writer.u64(static_cast<std::uint64_t>(threads.result.ticksPerSecond));
+    writer.u64(threads.result.bootTimeEpoch);
+    writer.u8((threads.result.truncated || count < threads.result.threads.size()) ? 1 : 0);
+    writer.u32(static_cast<std::uint32_t>(count));
+    for (std::size_t i = 0; i < count; ++i)
+    {
+        const ProcessThread& thread = threads.result.threads[i];
+        writer.u32(static_cast<std::uint32_t>(thread.tid));
+        writer.text(thread.name);
+        writer.u8(static_cast<std::uint8_t>(thread.state));
+        writer.u64(thread.userTicks);
+        writer.u64(thread.systemTicks);
+        writer.u64(static_cast<std::uint64_t>(thread.nice));
+        writer.u64(thread.startTicks);
+    }
+    return MessageKind::ThreadsResult;
 }
 
 /// MemoryRollupResult: 0 when the figures follow, else 1 + the failure; then PSS, USS and swap PSS.
@@ -1599,6 +1672,49 @@ namespace Detail
     for (std::uint32_t i = 0; reader.ok() && i < count; ++i)
     {
         reply.result.files.push_back(decodeOpenFile(reader));
+    }
+    return reply;
+}
+
+/// A ThreadsResult's payload: the status (refused past Failed), detail, ticks per second (refused at 0 or
+/// past INT64_MAX), boot time, truncated, a count (refused past MAX_THREADS), then each thread.
+[[nodiscard]] inline ThreadsReply decodeThreadsReply(Reader& reader)
+{
+    ThreadsReply reply;
+    const std::uint8_t value = reader.u8();
+    if (value <= static_cast<std::uint8_t>(ThreadsReadStatus::Failed))
+    {
+        reply.result.status = static_cast<ThreadsReadStatus>(value);
+    }
+    else
+    {
+        reader.fail();
+    }
+    reply.result.detail = reader.text();
+    const std::uint64_t ticks = reader.u64();
+    if (ticks == 0 || ticks > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))
+    {
+        reader.fail();
+    }
+    reply.result.ticksPerSecond = static_cast<std::int64_t>(ticks);
+    reply.result.bootTimeEpoch = reader.u64();
+    reply.result.truncated = reader.flag();
+    const std::uint32_t count = reader.u32();
+    if (count > MAX_THREADS)
+    {
+        reader.fail();
+    }
+    for (std::uint32_t i = 0; reader.ok() && i < count; ++i)
+    {
+        ProcessThread thread;
+        thread.tid = static_cast<std::int32_t>(reader.u32());
+        thread.name = reader.text();
+        thread.state = static_cast<char>(reader.u8());
+        thread.userTicks = reader.u64();
+        thread.systemTicks = reader.u64();
+        thread.nice = static_cast<std::int64_t>(reader.u64());
+        thread.startTicks = reader.u64();
+        reply.result.threads.push_back(std::move(thread));
     }
     return reply;
 }
@@ -1904,6 +2020,8 @@ namespace Detail
         return Detail::finish<Response>(reader, id, Detail::decodeHiddenProcessesReply(reader));
     case MessageKind::ServiceActionResult:
         return Detail::finish<Response>(reader, id, Detail::decodeServiceActionReply(reader));
+    case MessageKind::ThreadsResult:
+        return Detail::finish<Response>(reader, id, Detail::decodeThreadsReply(reader));
     case MessageKind::Hello:
     case MessageKind::Signal:
     case MessageKind::SetPriority:
@@ -1921,6 +2039,7 @@ namespace Detail
     case MessageKind::ServiceAction:
     case MessageKind::SetEfficiencyMode:
     case MessageKind::CloseConnection:
+    case MessageKind::ReadThreads:
         break;
     }
     return std::unexpected("Not a response");

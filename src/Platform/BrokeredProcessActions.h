@@ -26,6 +26,7 @@
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
+#include "Platform/IProcessThreads.h"
 
 #include <chrono>
 #include <cstddef>
@@ -175,6 +176,24 @@ class BrokeredConnectionsReader final : public IProcessConnectionsReader
     std::shared_ptr<IPrivilegedBroker> m_Broker;
 };
 
+/// Process Details' threads list that an administrator can finish (#3069), as BrokeredConnectionsReader.
+class BrokeredThreadsReader final : public IProcessThreadsReader
+{
+  public:
+    BrokeredThreadsReader(std::unique_ptr<IProcessThreadsReader> inner, std::shared_ptr<IPrivilegedBroker> broker);
+
+    [[nodiscard]] bool hasThreads() const override;
+    [[nodiscard]] ThreadsReadResult readThreads(const ProcessTarget& target) override;
+    [[nodiscard]] bool canReadAuthorized() const override;
+    [[nodiscard]] ThreadsReadResult readAuthorized(const ProcessTarget& target, const std::stop_token& stopToken) override;
+
+  private:
+    [[nodiscard]] ThreadsReadResult viaBroker(const ProcessTarget& target, const std::stop_token& stopToken);
+
+    std::unique_ptr<IProcessThreadsReader> m_Inner;
+    std::shared_ptr<IPrivilegedBroker> m_Broker;
+};
+
 /// The process probe, with Process Details' PSS and USS (#2309) read through the helper while it runs
 /// when the in-process read is refused (another user's process), and each refresh's refused FD counts and
 /// I/O bytes the same way, in one ReadProcessCounters (#2728); the processes hidepid hides from it are
@@ -255,5 +274,7 @@ class BrokeredProcessProbe final : public IProcessProbe
 
 [[nodiscard]] std::unique_ptr<IProcessConnectionsReader> withPrivilegedBroker(std::unique_ptr<IProcessConnectionsReader> reader,
                                                                               std::shared_ptr<IPrivilegedBroker> broker);
+[[nodiscard]] std::unique_ptr<IProcessThreadsReader> withPrivilegedBroker(std::unique_ptr<IProcessThreadsReader> reader,
+                                                                          std::shared_ptr<IPrivilegedBroker> broker);
 
 } // namespace Platform

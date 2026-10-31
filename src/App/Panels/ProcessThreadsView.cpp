@@ -1,5 +1,6 @@
 #include "ProcessThreadsView.h"
 
+#include "AuthenticateToReadButton.h"
 #include "Platform/IProcessThreads.h"
 #include "UI/CellText.h"
 #include "UI/FrameOutline.h"
@@ -53,9 +54,12 @@ void ProcessThreadsView::render(bool hasThreads)
         {
             text += ": " + m_Detail;
         }
-        ImGui::PushStyleColor(ImGuiCol_Text, scheme.textMuted);
+        const bool refused = m_Status == Platform::ThreadsReadStatus::PermissionDenied;
+        ImGui::PushStyleColor(ImGuiCol_Text, refused ? scheme.textWarning : scheme.textMuted);
         ImGui::TextWrapped("%s", text.c_str());
         ImGui::PopStyleColor();
+        // Another user's process: an administrator can read it (#3069).
+        Detail::drawAuthenticateToReadButton(*this);
         return;
     }
     if (m_Truncated)
