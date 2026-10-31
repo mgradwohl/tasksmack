@@ -140,6 +140,110 @@ TEST(HandleSearchTest, KindsFollowTheOpenFileKindAndModulesAreLibraries)
     EXPECT_EQ(kindLabel(HandleKind::Library), "Library");
 }
 
+TEST(HandleSearchTest, EveryKindHasItsLabelAndAnUnclassifiedFileIsOther)
+{
+    EXPECT_EQ(kindOf(Platform::OpenFileKind::Other), HandleKind::Other);
+    EXPECT_EQ(kindLabel(HandleKind::File), "File");
+    EXPECT_EQ(kindLabel(HandleKind::Socket), "Socket");
+    EXPECT_EQ(kindLabel(HandleKind::Pipe), "Pipe");
+    EXPECT_EQ(kindLabel(HandleKind::Device), "Device");
+    EXPECT_EQ(kindLabel(HandleKind::Other), "Other");
+}
+
+TEST(HandleSearchTest, AddProcessKeepsTruncatedOnceEitherReadWasCut)
+{
+    SearchPublication into;
+    Platform::ModulesReadResult cutModules = modules({"/usr/lib/libz.so"});
+    cutModules.truncated = true;
+    addProcess(process(1, "a"), openFiles({}), cutModules, "libz", into);
+    EXPECT_TRUE(into.truncated);
+    ASSERT_EQ(into.matches.size(), 1U);
+
+    // Already truncated: a later process whose reads were whole doesn't clear it.
+    addProcess(process(2, "b"), openFiles({}), modules({}), "libz", into);
+    EXPECT_TRUE(into.truncated);
+
+    SearchPublication filesCut;
+    Platform::OpenFilesReadResult cutFiles = openFiles({file(Platform::OpenFileKind::Socket, "socket:[42]")});
+    cutFiles.truncated = true;
+    addProcess(process(3, "c"), cutFiles, modules({}), "socket", filesCut);
+    EXPECT_TRUE(filesCut.truncated);
+    ASSERT_EQ(filesCut.matches.size(), 1U);
+    EXPECT_EQ(filesCut.matches[0].kind, HandleKind::Socket);
+}
+
+TEST(HandleSearchTest, AddProcessCountsByWhicheverReaderSaidSo)
+{
+    SearchPublication into;
+    // The modules alone read: listed, not counted as a failure.
+    addProcess(process(1, "mods"), filesStatus(Platform::OpenFilesReadStatus::Failed), modules({"/lib/x.so"}), "x.so", into);
+    EXPECT_EQ(into.matches.size(), 1U);
+    EXPECT_EQ(into.failed, 0U);
+
+    // The modules reader saw the exit, the files reader only failed.
+    addProcess(process(2, "gone"),
+               filesStatus(Platform::OpenFilesReadStatus::Failed),
+               modulesStatus(Platform::ModulesReadStatus::ProcessExited),
+               "x",
+               into);
+    EXPECT_EQ(into.exited, 1U);
+
+    // The modules reader was refused, the files reader only failed.
+    addProcess(process(3, "locked"),
+               filesStatus(Platform::OpenFilesReadStatus::Failed),
+               modulesStatus(Platform::ModulesReadStatus::PermissionDenied),
+               "x",
+               into);
+    ASSERT_EQ(into.denied.size(), 1U);
+    EXPECT_EQ(into.denied[0].target.pid, 3);
+
+    // No open-files reader, but the modules read failed: a failure.
+    addProcess(process(4, "odd"),
+               filesStatus(Platform::OpenFilesReadStatus::Unsupported),
+               modulesStatus(Platform::ModulesReadStatus::Failed),
+               "x",
+               into);
+    EXPECT_EQ(into.failed, 1U);
+    EXPECT_EQ(into.searched, 4U);
+}
+
+TEST(HandleSearchTest, RunStopsOnceTheMatchCapIsReached)
+{
+    FakeModules mods;
+    std::vector<std::string> paths(MAX_MATCHES, "/usr/lib/libcap.so");
+    mods.results[1] = modules(std::move(paths));
+    mods.results[2] = modules({"/usr/lib/libcap.so"});
+    const std::vector<SearchProcess> processes{process(1, "full"), process(2, "never")};
+    Domain::PublicationSlot<SearchPublication> slot;
+    const std::stop_source stop;
+    // No open-files reader: the modules alone are searched.
+    run(processes, {.openFiles = nullptr, .modules = &mods}, false, startFor("libcap", processes.size(), 1), slot, stop.get_token());
+
+    const std::shared_ptr<const SearchPublication> last = slot.load();
+    ASSERT_NE(last, nullptr);
+    EXPECT_TRUE(last->done);
+    EXPECT_EQ(last->searched, 1U); // the second process was never read
+    EXPECT_EQ(last->matches.size(), MAX_MATCHES);
+}
+
+TEST(HandleSearchTest, AnAuthorizedRunReadsTheModulesAuthorizedToo)
+{
+    FakeOpenFiles files;
+    files.authorizedFiles[5] = openFiles({});
+    FakeModules mods;
+    mods.results[5] = modules({"/opt/app/libsecret.so"});
+    const std::vector<SearchProcess> processes{process(5, "daemon")};
+    Domain::PublicationSlot<SearchPublication> slot;
+    const std::stop_source stop;
+    run(processes, {.openFiles = &files, .modules = &mods}, true, startFor("secret", processes.size(), 1), slot, stop.get_token());
+
+    const std::shared_ptr<const SearchPublication> last = slot.load();
+    ASSERT_NE(last, nullptr);
+    EXPECT_EQ(files.authorizedReads, 1);
+    ASSERT_EQ(last->matches.size(), 1U);
+    EXPECT_EQ(last->matches[0].kind, HandleKind::Library);
+}
+
 TEST(HandleSearchTest, AddProcessListsMatchingFilesAndModules)
 {
     SearchPublication into;

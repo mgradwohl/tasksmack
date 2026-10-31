@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <initializer_list>
 #include <iterator>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -314,6 +315,55 @@ TEST(SmbiosParserTest, ChassisTypesAndPlatformRoles)
     EXPECT_EQ(platformRoleFromChassis(0x1F), "Mobile");
     EXPECT_EQ(platformRoleFromChassis(0x17), "Server");
     EXPECT_EQ(platformRoleFromChassis(0x02), "");
+}
+
+TEST(SmbiosParserTest, EveryChassisTypeMapsToItsPlatformRole)
+{
+    // DSP0134 7.4.1's chassis types, grouped by the role each implies.
+    for (const std::uint8_t type :
+         std::initializer_list<std::uint8_t>{0x03, 0x04, 0x05, 0x06, 0x07, 0x0D, 0x0F, 0x10, 0x18, 0x22, 0x23, 0x24})
+    {
+        EXPECT_EQ(platformRoleFromChassis(type), "Desktop") << chassisTypeName(type);
+    }
+    for (const std::uint8_t type : std::initializer_list<std::uint8_t>{0x08, 0x09, 0x0A, 0x0B, 0x0E, 0x1E, 0x1F, 0x20})
+    {
+        EXPECT_EQ(platformRoleFromChassis(type), "Mobile") << chassisTypeName(type);
+    }
+    for (const std::uint8_t type : std::initializer_list<std::uint8_t>{0x11, 0x17, 0x19, 0x1C, 0x1D})
+    {
+        EXPECT_EQ(platformRoleFromChassis(type), "Server") << chassisTypeName(type);
+    }
+    // Other, Unknown, Expansion Chassis, SubChassis, Bus Expansion Chassis, Peripheral Chassis, RAID
+    // Chassis, Compact PCI and IoT Gateway imply no role.
+    for (const std::uint8_t type : std::initializer_list<std::uint8_t>{0x01, 0x02, 0x12, 0x13, 0x14, 0x15, 0x16, 0x1A, 0x21})
+    {
+        EXPECT_EQ(platformRoleFromChassis(type), "") << chassisTypeName(type);
+    }
+    EXPECT_EQ(platformRoleFromChassis(0x80 | 0x24), "Desktop"); // the lock bit is ignored here too
+}
+
+TEST(SmbiosParserTest, CleanStringOfOnlyControlsAndSpacesIsEmpty)
+{
+    const ByteVector controls{0x01, ' ', 0x7F, 0x1F, ' '};
+    EXPECT_EQ(cleanString(controls), "");
+    const ByteVector embedded{' ', 'A', 0x09, 'B', 0x7F, ' '};
+    EXPECT_EQ(cleanString(embedded), "A B");
+}
+
+TEST(SmbiosParserTest, FormatReleaseNeedsBothBytesAndASupportedMajor)
+{
+    EXPECT_EQ(formatRelease(std::uint8_t{5}, std::uint8_t{17}), "5.17");
+    EXPECT_EQ(formatRelease(std::nullopt, std::uint8_t{17}), "");
+    EXPECT_EQ(formatRelease(std::uint8_t{5}, std::nullopt), "");
+    EXPECT_EQ(formatRelease(std::uint8_t{0xFF}, std::uint8_t{0xFF}), "");
+}
+
+TEST(SmbiosParserTest, AmazonSizesShorterThanMetalOrNotLettersAreNotBareMetal)
+{
+    EXPECT_FALSE(isAmazonBareMetal("Amazon EC2 t3.xl"));     // shorter than "metal"
+    EXPECT_FALSE(isAmazonBareMetal("Amazon EC2 x2.12345"));  // digits, below 'A'
+    EXPECT_FALSE(isAmazonBareMetal("Amazon EC2 x2.~etal"));  // past 'z'
+    EXPECT_TRUE(isAmazonBareMetal("Amazon EC2 x2.mEtAl-2")); // mixed case, with a suffix
 }
 
 TEST(SmbiosParserTest, EntryPointVersions)

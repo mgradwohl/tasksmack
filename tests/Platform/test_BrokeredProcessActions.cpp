@@ -210,6 +210,36 @@ TEST(BrokeredProcessActionsTest, ReadsAndOtherCallsAreTheInProcessOnes)
     EXPECT_TRUE(f.broker->requests().empty());
 }
 
+TEST(BrokeredProcessActionsTest, EachSignalMapsToTheHelpersSignal)
+{
+    EXPECT_EQ(brokerSignalFor(ProcessSignal::Hangup), Broker::Signal::Hangup);
+    EXPECT_EQ(brokerSignalFor(ProcessSignal::Interrupt), Broker::Signal::Interrupt);
+    EXPECT_EQ(brokerSignalFor(ProcessSignal::Quit), Broker::Signal::Quit);
+    EXPECT_EQ(brokerSignalFor(ProcessSignal::User1), Broker::Signal::User1);
+    EXPECT_EQ(brokerSignalFor(ProcessSignal::User2), Broker::Signal::User2);
+}
+
+TEST(BrokeredProcessActionsTest, OpeningTheFileLocationAndRunningAProgramStayInProcessEvenWhenRefused)
+{
+    // Both run as the user (the file manager; run's own elevation prompt), so a refusal is never retried
+    // through the helper, even while it runs.
+    const Fixture f(/*connected=*/true);
+    f.inner->setOpenFileLocationResult(ProcessActionResult::denied("no access"));
+    f.inner->setRunProgramResult(ProcessActionResult::denied("no access"));
+
+    const ProcessActionResult opened = f.actions->openFileLocation(TARGET);
+    EXPECT_FALSE(opened.success);
+    EXPECT_EQ(f.inner->openFileLocationCount(), 1);
+
+    const ProcessActionResult ran = f.actions->runProgram({.commandLine = "true --flag", .asAdministrator = true});
+    EXPECT_FALSE(ran.success);
+    EXPECT_EQ(f.inner->runProgramCount(), 1);
+    EXPECT_EQ(f.inner->lastRunProgram().commandLine, "true --flag");
+    EXPECT_TRUE(f.inner->lastRunProgram().asAdministrator);
+
+    EXPECT_TRUE(f.broker->requests().empty());
+}
+
 TEST(BrokeredProcessActionsTest, WithoutABrokerTheActionsAreLeftAsTheyAre)
 {
     auto owned = std::make_unique<TestMocks::MockProcessActions>();
