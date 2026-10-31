@@ -272,38 +272,85 @@ TEST(ProcessThreadsViewTest, SortsByStateCpuTimeAndNice)
     EXPECT_EQ(view.rows()[2].thread.tid, 100); // 5
 }
 
-TEST(ProcessThreadsViewRenderTest, DrawsTheCountAndEachThread)
+/// What one frame of @p view draws, its header opened first when @p open.
+[[nodiscard]] std::string drawOnce(ProcessThreadsView& view, bool open = true)
 {
-    ImGuiContext* context = ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
-    io.IniFilename = nullptr;
-    io.DisplaySize = ImVec2(1280.0F, 720.0F);
-    io.DeltaTime = 1.0F / 60.0F;
-    io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures;
-    io.Fonts->AddFontDefault();
+    ImGui::NewFrame();
+    ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
+    ImGui::SetNextWindowSize(io.DisplaySize);
+    ImGui::Begin("Details", nullptr, ImGuiWindowFlags_NoDecoration);
+    ImGui::SetNextItemOpen(open);
+    ImGui::LogToBuffer();
+    view.render(true);
+    std::string captured = GImGui->LogBuffer.c_str();
+    ImGui::LogFinish();
+    ImGui::End();
+    ImGui::Render();
+    return captured;
+}
 
+class ProcessThreadsViewRenderTest : public ::testing::Test
+{
+  protected:
+    void SetUp() override
+    {
+        m_Context = ImGui::CreateContext();
+        ImGuiIO& io = ImGui::GetIO();
+        io.IniFilename = nullptr;
+        io.DisplaySize = ImVec2(1280.0F, 720.0F);
+        io.DeltaTime = 1.0F / 60.0F;
+        io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures;
+        io.Fonts->AddFontDefault();
+    }
+    void TearDown() override
+    {
+        ImGui::DestroyContext(m_Context);
+    }
+
+  private:
+    ImGuiContext* m_Context = nullptr;
+};
+
+TEST_F(ProcessThreadsViewRenderTest, DrawsTheCountAndEachThread)
+{
     ProcessThreadsView view(1);
     view.applyResult(threads({thread(100, "server", 1), thread(105, "pool-1", 2)}), 0.0);
-    std::string captured;
-    for (int frame = 0; frame < 2; ++frame)
-    {
-        ImGui::NewFrame();
-        ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
-        ImGui::SetNextWindowSize(io.DisplaySize);
-        ImGui::Begin("Details", nullptr, ImGuiWindowFlags_NoDecoration);
-        ImGui::SetNextItemOpen(true);
-        ImGui::LogToBuffer();
-        view.render(true);
-        captured = GImGui->LogBuffer.c_str();
-        ImGui::LogFinish();
-        ImGui::End();
-        ImGui::Render();
-    }
+    static_cast<void>(drawOnce(view));
+    const std::string captured = drawOnce(view);
     EXPECT_TRUE(captured.contains("Threads (2)")) << captured;
     EXPECT_TRUE(captured.contains("server")) << captured;
     EXPECT_TRUE(captured.contains("pool-1")) << captured;
     EXPECT_TRUE(captured.contains("Sleeping")) << captured;
-    ImGui::DestroyContext(context);
+}
+
+// #3221: each state the section can be in draws its own line: collapsed nothing, before the first read
+// "Reading...", a failed read its status (with the reason a Failed read gives), a cut-short list how many
+// it shows, and a filter matching nothing says so rather than drawing an empty table.
+TEST_F(ProcessThreadsViewRenderTest, EachStateDrawsItsOwnLine)
+{
+    ProcessThreadsView view(1);
+    EXPECT_FALSE(drawOnce(view, false).contains("Reading...")) << "collapsed: nothing below the header";
+    EXPECT_TRUE(drawOnce(view).contains("Reading..."));
+
+    view.applyResult({.status = ThreadsReadStatus::Failed, .threads = {}, .detail = "I/O error"}, 1.0);
+    const std::string failed = drawOnce(view);
+    EXPECT_TRUE(failed.contains("Could not be read: I/O error")) << failed;
+
+    view.applyResult({.status = ThreadsReadStatus::PermissionDenied, .threads = {}, .detail = {}}, 2.0);
+    const std::string refused = drawOnce(view);
+    EXPECT_TRUE(refused.contains("Access denied: another user's process")) << refused;
+
+    ThreadsReadResult cut = threads({thread(100, "server", 1), thread(105, "pool-1", 2)});
+    cut.truncated = true;
+    view.applyResult(cut, 3.0);
+    const std::string truncated = drawOnce(view);
+    EXPECT_TRUE(truncated.contains("Showing the first 2 threads")) << truncated;
+
+    view.setFilter("no-such-thread");
+    const std::string filtered = drawOnce(view);
+    EXPECT_TRUE(filtered.contains("No threads match the filter")) << filtered;
+    EXPECT_FALSE(filtered.contains("pool-1")) << filtered;
 }
 
 } // namespace
