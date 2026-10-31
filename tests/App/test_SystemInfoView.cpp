@@ -654,6 +654,42 @@ TEST(SystemInfoSectionsTest, AnAudioEndpointOfUnknownFlowIsAnAudioDevice)
     EXPECT_EQ(item->value, "HDMI 0");
 }
 
+// The platform enums are a byte wide, and a probe built from a newer platform layer than these sections
+// can hand over a value they don't name. Each falls back to its "unknown" wording (or none), as the
+// switch's Unknown case does, rather than reading as another value.
+TEST(SystemInfoSectionsTest, AnEnumValueTheSectionsDontNameReadsAsUnknown)
+{
+    constexpr std::uint8_t UNNAMED = 0xFE;
+
+    Platform::DevicesInfo devices;
+    devices.available = true;
+    devices.audio = {{.name = "Line 9", .flow = static_cast<Platform::AudioFlow>(UNNAMED)}};
+    ASSERT_NE(findRow(SystemInfo::buildDevicesSection(devices), "Audio device"), nullptr);
+
+    Platform::CommitPagingInfo paging = linuxPaging();
+    paging.overcommit = static_cast<Platform::OvercommitMode>(UNNAMED);
+    EXPECT_FALSE(findRow(SystemInfo::buildCommitPagingSection(paging), "Overcommit mode")->available());
+
+    Platform::FirmwareInfo mode = firmware();
+    mode.firmwareMode = static_cast<Platform::FirmwareMode>(UNNAMED);
+    EXPECT_FALSE(findRow(SystemInfo::buildFirmwareSection(mode), "Firmware mode")->available());
+
+    EXPECT_EQ(SystemInfo::bitLockerStateText(static_cast<Platform::BitLockerState>(UNNAMED)), "Unknown");
+
+    Platform::PlatformSecurityInfo security;
+    security.available = true;
+    security.secureBoot = static_cast<Platform::SecurityFeatureState>(UNNAMED);
+    security.tpm = static_cast<Platform::SecurityFeatureState>(UNNAMED);
+    const Section section = SystemInfo::buildSecuritySection(security);
+    EXPECT_FALSE(findRow(section, "Secure Boot")->available());
+    EXPECT_FALSE(findRow(section, "TPM")->available());
+
+    Platform::SensorReading reading;
+    reading.kind = static_cast<Platform::SensorKind>(UNNAMED);
+    reading.value = 12.0;
+    EXPECT_TRUE(SystemInfo::formatSensorReading(reading).empty());
+}
+
 TEST(SystemInfoSectionsTest, BootWithAnInitramfsListsTheInitrdPhase)
 {
     Platform::BootPerformanceInfo boot;
