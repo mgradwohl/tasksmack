@@ -1,6 +1,7 @@
 #include "Domain/HandleSearch.h"
 
 #include "Domain/PublicationSlot.h"
+#include "Domain/PublicationWake.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 
@@ -206,12 +207,14 @@ void run(std::span<const SearchProcess> processes,
         {
             sincePublish = 0;
             ++current.version;
+            // No wake: the dialog's progress line can wait for the frame loop's slow floor (#3156).
             slot.commit(std::make_shared<const SearchPublication>(current));
         }
     }
     current.done = true;
     ++current.version;
     slot.commit(std::make_shared<const SearchPublication>(std::move(current)));
+    PublicationWake::notify(); // the finished search shows at once (#3156)
 }
 
 } // namespace Domain::HandleSearch

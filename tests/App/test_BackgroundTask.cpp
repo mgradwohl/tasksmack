@@ -6,6 +6,7 @@
 /// (a promise) dropped rather than waited for.
 
 #include "App/Panels/BackgroundTask.h"
+#include "Domain/PublicationWake.h"
 
 #include <gtest/gtest.h>
 
@@ -274,6 +275,42 @@ TEST(BackgroundTaskTest, WorkInFlightMovesWithTheTask)
     moved.requestStop(); // the moved-to task holds the work's stop source
     gate.set_value();
     EXPECT_EQ(moved.poll(true).value_or(FakeResult{}).value, 1);
+}
+
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables) - the hook takes a plain function
+std::atomic<int> g_Wakes{0};
+
+void countWake() noexcept
+{
+    g_Wakes.fetch_add(1);
+}
+
+// #3156: once the result is ready, the worker wakes the frame loop, so a static tab shows it at once. The
+// wake comes after the result, never before: a frame it brings that polls without waiting finds it.
+TEST(BackgroundTaskTest, TheWorkerWakesTheFrameLoopOnceItsResultIsReady)
+{
+    g_Wakes = 0;
+    static_cast<void>(Domain::PublicationWake::setHandler(&countWake));
+    Task task(THREAD_NAME, &failed);
+    for (int run = 1; run <= 50; ++run)
+    {
+        ASSERT_FALSE(task.start([run] { return FakeResult{.value = run, .error = {}}; }).has_value());
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (g_Wakes.load() < run && std::chrono::steady_clock::now() < deadline)
+        {
+            std::this_thread::yield();
+        }
+        ASSERT_EQ(g_Wakes.load(), run) << "no wake for run " << run;
+        const std::optional<FakeResult> result = task.poll(); // no wait: the frame the wake brings
+        ASSERT_TRUE(result.has_value()) << "the wake came before the result was ready (run " << run << ")";
+        EXPECT_EQ(result.value_or(FakeResult{}).value, run);
+    }
+    // Work that throws wakes the loop too, with its Failed result.
+    ASSERT_FALSE(task.start([]() -> FakeResult { throw std::runtime_error("boom"); }).has_value());
+    task.wait();
+    EXPECT_EQ(g_Wakes.load(), 51);
+    EXPECT_EQ(task.poll().value_or(FakeResult{}).error, "boom");
+    static_cast<void>(Domain::PublicationWake::setHandler(nullptr));
 }
 
 } // namespace

@@ -36,6 +36,10 @@ class ScreenshotLayer : public Core::Layer
     /// frame late, and the Process Details tab a selection opens after that, have drawn by then.
     static constexpr int SETTLE_FRAMES = 5;
 
+    /// The frame rate asked for while a capture is pending, until a sequence's own rate takes over: the
+    /// 20 fps idle rate, which a static tab no longer gets on its own (#3156).
+    static constexpr double PENDING_FPS = 20.0;
+
     /// @p shell: the shell whose startup selections the capture waits for; nullptr when there is none.
     /// Non-owning: the application's layer stack holds both for the application's lifetime.
     ScreenshotLayer(ScreenshotOverride::Request request, const ShellLayer* shell);

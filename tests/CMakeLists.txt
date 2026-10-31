@@ -300,6 +300,10 @@ add_test(NAME MergeGtestResultsScript
 add_test(NAME CoverageMismatchesScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_coverage_mismatches.py)
 
+# tools/lcov-exclude.py leaves the lines no test can run out of the Linux LCOV report (#2039, #3221).
+add_test(NAME LcovExcludeScript
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_lcov_exclude.py)
+
 # tools/check-cache-prune-triggers.py keeps cache-prune.yml's workflow_run list complete (#2410).
 add_test(NAME CheckCachePruneTriggersScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_check_cache_prune_triggers.py)
@@ -370,7 +374,7 @@ endif()
 # The short Python script tests (under 6 s each, even with every script test running at once) get
 # their own limit too, so a busy runner can't trip the CI steps' 60 s --timeout on them (#2054).
 set_tests_properties(BenchmarkRegressionGateScript TidyCacheScript TidyFindingsScript MergeGtestResultsScript
-    CoverageMismatchesScript CheckCachePruneTriggersScript CheckDllLoadsScript CachePruneStaleScript CheckUtf8Script
+    CoverageMismatchesScript LcovExcludeScript CheckCachePruneTriggersScript CheckDllLoadsScript CachePruneStaleScript CheckUtf8Script
     StartupWiringScript PROPERTIES TIMEOUT 120)
 
 # Test sources. Every list is defined on every platform, so the registration check below can see
@@ -396,6 +400,7 @@ set(COMMON_TEST_SOURCES
     Core/test_WindowEvents.cpp
     Core/test_WindowGeometry.cpp
     Core/test_WindowVisibility.cpp
+    Core/test_FrameWake.cpp # the publication wake and a static frame's wait (#3156)
     Domain/test_History.cpp
     Domain/test_SharedHistory.cpp
     Domain/test_ProcessConnections.cpp
@@ -481,6 +486,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessIconView.cpp
     App/test_StartupServicesIcons.cpp
     UI/test_DpiScale.cpp
+    UI/test_ImGuiTimers.cpp # the frames ImGui's own timers need on a static tab (#3156)
     UI/test_FontFileCache.cpp
     UI/test_TabularDigits.cpp
     App/test_ProcessColumnConfig.cpp
@@ -506,6 +512,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessColumnAvailability.cpp
     App/test_ProcessStateColor.cpp
     App/test_ProcessTypeColor.cpp
+    App/test_ProcessSignatureText.cpp # the Signature column's and row's colours and words (#3070)
     App/test_ProcessArchitectureNote.cpp
     App/test_ProcessCellWidths.cpp
     App/test_ProcessFilterCache.cpp
@@ -694,6 +701,8 @@ set(WINDOWS_MATH_TEST_SOURCES
     Platform/WindowsMath/test_WindowsProcessDumpMath.cpp
     Platform/WindowsMath/test_WindowsProcessMachineMath.cpp
     Platform/WindowsMath/test_WindowsWaitChainMath.cpp # Analyze wait chain's decoding (#3084)
+    Platform/WindowsMath/test_WindowsImageSignature.cpp # image signatures: wording, order, cache key, check (#3070)
+    Platform/WindowsMath/test_WindowsSignatureWorker.cpp # the probe's signature worker through fakes (#3070)
 )
 list(APPEND COMMON_TEST_SOURCES ${WINDOWS_MATH_TEST_SOURCES})
 set(WINDOWS_PLATFORM_TEST_SOURCES
@@ -711,6 +720,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsProcessActions.cpp
     Platform/test_WindowsProcessActionsSeams.cpp
     Platform/test_WindowsWaitChain.cpp  # Analyze wait chain: the WCT session through fakes, and one real child (#3084)
+    Platform/test_WindowsSignatureCheck.cpp  # WinVerifyTrust, embedded and catalog, through fakes and on notepad.exe (#3070)
     Platform/test_WindowsDebugPrivilege.cpp
     Platform/test_WindowsElevation.cpp
     Platform/test_BrokerPipe.cpp  # the privileged broker's named-pipe transport (#2311)
@@ -1130,6 +1140,16 @@ if(UNIX AND NOT APPLE)
     )
     tasksmack_apply_default_warnings(TaskSmackROCmMock)
     tasksmack_apply_text_encoding(TaskSmackROCmMock)
+
+    # The mocks stay uninstrumented, like the Theme stub: they are test code, outside the report. Each
+    # instrumented library would carry its own profile runtime, which in continuous mode (%c, #3221)
+    # maps the same profile file as the test binary, and the test died of SIGBUS once one was loaded.
+    if(TASKSMACK_ENABLE_COVERAGE)
+        foreach(mock TaskSmackNVMLMock TaskSmackROCmMock)
+            target_compile_options(${mock} PRIVATE ${TASKSMACK_NO_COVERAGE_FLAGS})
+            target_link_options(${mock} PRIVATE ${TASKSMACK_NO_COVERAGE_FLAGS})
+        endforeach()
+    endif()
 
     add_dependencies(TaskSmackTests TaskSmackNVMLMock TaskSmackROCmMock)
     target_compile_definitions(TaskSmackTests PRIVATE

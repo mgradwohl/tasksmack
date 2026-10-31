@@ -140,6 +140,11 @@ ProcessDetailsReaders makeProcessDetailsReaders(const Synthetic::Scenario* scena
             .threads = Synthetic::makeProcessThreadsReader(scenario)};
 }
 
+std::unique_ptr<Platform::IProcessActions> makeConnectionsPanelActions(const Synthetic::Scenario* scenario)
+{
+    return processActionsFor(scenario);
+}
+
 ServicesPanelPlatform makeServicesPanelPlatform(const Synthetic::Scenario* /*scenario*/)
 {
 #ifdef _WIN32

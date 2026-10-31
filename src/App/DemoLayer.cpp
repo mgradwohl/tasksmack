@@ -7,6 +7,7 @@
 #include "App/ShellLayer.h"
 #include "App/ThemeChange.h"
 #include "App/UserConfig.h"
+#include "Core/AnimationRequest.h"
 #include "Core/Application.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Layer.h"
@@ -200,6 +201,12 @@ void DemoLayer::onUpdate(float /*deltaTime*/)
         spdlog::info("{}: step {} of {}: {}", DemoOverride::ENV_VAR, m_Next + 1, m_Steps.size(), DemoOverride::describe(step));
         issue(step);
         ++m_Next;
+    }
+    // The next step comes on time, not at the loop's slow floor (#3156).
+    if (m_Next < m_Steps.size())
+    {
+        const double nextStepSeconds = static_cast<double>(m_Steps[m_Next].timeMs) / DemoOverride::MILLIS_PER_SECOND;
+        Core::AnimationRequest::requestFrameWithin(nextStepSeconds - elapsed);
     }
 }
 

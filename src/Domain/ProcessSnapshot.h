@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Platform/CpuAffinity.h"
+#include "Platform/ImageSignature.h"
 #include "Platform/SchedPolicy.h"
 #include "PriorityConfig.h"
 
@@ -171,6 +172,9 @@ struct ProcessSnapshot
     Platform::SchedPolicy schedPolicy = Platform::SchedPolicy::Unknown; // Its CPU scheduling policy (#3086)
     std::uint32_t rtPriority = 0;                                       // Its real-time priority under FIFO or RR
     std::string schedPolicyText; // Platform::schedPolicyLabel(): "Normal", "FIFO 50"; empty if unread. Built per sample, not per frame
+    // The image's Authenticode signature (#3070, Windows): how it is signed, by whom, or why not
+    Platform::SignatureCheck signature;
+    std::string signatureText; // Platform::signatureLabel(): the signer, "Unsigned", "Invalid"; empty while not checked. Per sample
 
     // The services the process runs, by name (#1880): Windows, those the service list gives its PID (in
     // the list's name order); Linux, the systemd unit its cgroup names (#1886). Empty for none, or on

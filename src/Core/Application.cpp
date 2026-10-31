@@ -5,6 +5,7 @@
 #include "Core/EnvUtils.h"
 #include "Core/Event.h"
 #include "Core/FramePacing.h"
+#include "Core/FrameWake.h"
 #include "Core/Layer.h"
 #include "Core/ResizePerfOperation.h"
 #include "Core/ResizePerfTrace.h"
@@ -18,6 +19,7 @@
 #include "Core/WindowEvents.h"
 #include "Core/WindowVisibility.h"
 #include "Core/X11ConnectionLoss.h"
+#include "Domain/PublicationWake.h"
 #include "Platform/ThreadName.h"
 #include "version.h"
 
@@ -25,6 +27,7 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <cmath>
@@ -32,6 +35,7 @@
 #include <cstring>
 #include <exception>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <ranges>
@@ -71,7 +75,11 @@ thread_local std::optional<std::reference_wrapper<Application>> g_StackApplicati
 
 // Maximum delta time clamped in the render loop to avoid large jumps after stalls or resize pauses.
 // Animation only: the FPS readout gets the unclamped interval (lastFrameIntervalSeconds(), #1152).
-constexpr float MAX_DELTA_TIME = 0.1F;
+// At least the static floor's period (#3156): a static tab draws only every STATIC_FRAME_FLOOR_INTERVAL,
+// and what counts deltaTime as a clock -- a result line's timeout, an open Process Details section's
+// re-read interval -- must see that time pass, not 0.1 s of it a frame. Easing toward a sample with a
+// longer delta only settles further, as it would have in real time.
+constexpr float MAX_DELTA_TIME = 1.0F;
 
 // When no SDL events arrive, render the next frame this long after the previous one started
 // (FramePacing::computeIdleWaitMs, #1276). This holds the idle render rate at 20 fps, reducing CPU usage when the display
@@ -99,6 +107,10 @@ constexpr int MINIMIZED_FRAME_SLEEP_MS = 200;
 // How long the no-frames wait of a hidden window lasts at most (#3156): see WindowConstants.h.
 constexpr int HIDDEN_WAIT_TIMEOUT_MS = static_cast<int>(WINDOW_HIDDEN_WAIT_TIMEOUT.count());
 constexpr int CLOAKED_POLL_INTERVAL_MS = static_cast<int>(WINDOW_CLOAKED_POLL_INTERVAL.count());
+// The slow floor of a static frame (#3156 stage 2): see WindowConstants.h.
+constexpr int STATIC_FRAME_FLOOR_MS = static_cast<int>(STATIC_FRAME_FLOOR_INTERVAL.count());
+static_assert(STATIC_FRAME_FLOOR_MS > IDLE_FRAME_SLEEP_MS, "the floor is slower than the idle rate it replaces");
+static_assert(static_cast<double>(MAX_DELTA_TIME) * 1000.0 >= STATIC_FRAME_FLOOR_MS, "deltaTime covers a floor frame's real time");
 
 // During interactive move/resize, event delivery can be bursty depending on
 // compositor/window-manager behavior. Keep redraw active for a short grace
@@ -260,6 +272,67 @@ template<typename Call> void guardLayerCall(const std::unique_ptr<Layer>& layer,
         {}
     }
 }
+
+// The publication wake (#3156 stage 2): Domain::PublicationWake's handler while run() runs. A sampler
+// or a background task that publishes calls it from its own thread; it pushes one SDL user event,
+// coalesced (WakeCoalescer), which wakes the loop's idle wait for the frame that shows the new data.
+// Process-wide, as the hook is: one loop runs at a time.
+struct PublicationWakeTarget
+{
+    std::atomic<std::uint32_t> eventType{0}; // 0 while no loop runs, or SDL had no event type to give
+    WakeCoalescer coalescer;
+};
+
+PublicationWakeTarget& publicationWakeTarget() noexcept
+{
+    static PublicationWakeTarget target;
+    return target;
+}
+
+void pushPublicationWake() noexcept
+{
+    PublicationWakeTarget& target = publicationWakeTarget();
+    const std::uint32_t eventType = target.eventType.load();
+    if (eventType == 0)
+    {
+        return;
+    }
+    // SDL_PushEvent() is thread-safe, and wakes a wait in SDL_WaitEventTimeout() on the loop thread.
+    static_cast<void>(target.coalescer.notify(
+        [eventType]
+        {
+            SDL_Event event{};
+            event.type = eventType;
+            return SDL_PushEvent(&event);
+        }));
+}
+
+// Installs the publication wake for one run() of the loop, and removes it however run() ends, before
+// the layers detach and stop their samplers. A notify() already past the hook's load may still push
+// once after that: harmless, since SDL keeps its queue until SDL_Quit(), which runs only after the
+// layers' samplers and tasks have stopped (~Application()).
+class PublicationWakeInstall
+{
+  public:
+    explicit PublicationWakeInstall(std::uint32_t eventType) noexcept
+    {
+        PublicationWakeTarget& target = publicationWakeTarget();
+        target.coalescer.reset();
+        target.eventType.store(eventType);
+        static_cast<void>(Domain::PublicationWake::setHandler(&pushPublicationWake));
+    }
+
+    ~PublicationWakeInstall()
+    {
+        static_cast<void>(Domain::PublicationWake::setHandler(nullptr));
+        publicationWakeTarget().eventType.store(0);
+    }
+
+    PublicationWakeInstall(const PublicationWakeInstall&) = delete;
+    PublicationWakeInstall& operator=(const PublicationWakeInstall&) = delete;
+    PublicationWakeInstall(PublicationWakeInstall&&) = delete;
+    PublicationWakeInstall& operator=(PublicationWakeInstall&&) = delete;
+};
 
 } // namespace
 
@@ -451,6 +524,16 @@ void Application::run()
     };
     refreshDisplayRate();
 
+    // The publication wake (#3156 stage 2): a static frame waits for input, for this or for the slow
+    // floor. Without an event type (SDL has a few thousand), wakes are off and the floor still draws.
+    const std::uint32_t publicationWakeType = SDL_RegisterEvents(1);
+    if (publicationWakeType == 0)
+    {
+        spdlog::warn("Frame pacing: no SDL event type for the publication wake; static tabs redraw at the floor: {}", SDL_GetError());
+    }
+    const PublicationWakeInstall publicationWake(publicationWakeType);
+    WakeCoalescer& wakeCoalescer = publicationWakeTarget().coalescer;
+
     m_InteractionRedrawUntil = 0.0;
 
     ResizePerfTraceStats resizeTraceStats;
@@ -466,6 +549,9 @@ void Application::run()
     // 0 = nothing moved visibly), and when the last frame started: together they pace the next
     // frame (#1037, #1125).
     double requestedAnimationFps = 0.0;
+    // The soonest frame the previous frame's content asked for, in seconds after it started
+    // (Core::AnimationRequest::requestFrameWithin(), infinity = none, #3156).
+    double requestedFrameWithinSeconds = std::numeric_limits<double>::infinity();
     double lastFrameStart = getTime();
     // The event that woke the idle wait, taken off the queue by SDL_WaitEventTimeout(): the next
     // iteration's drain dispatches it before anything else, and before that iteration renders (#1409).
@@ -577,6 +663,14 @@ void Application::run()
             else if (!SDL_PollEvent(&sdlEvent))
             {
                 return false;
+            }
+            // A publication (#3156): no layer handles it. Taken before this iteration draws, so a
+            // publication after this point pushes a new wake, and the frame below shows every one before.
+            if (publicationWakeType != 0 && sdlEvent.type == publicationWakeType)
+            {
+                wakeCoalescer.taken();
+                ++m_PublicationWakesTaken;
+                return true;
             }
             if (WindowEventRouting::isInputEvent(sdlEvent.type))
             {
@@ -813,6 +907,8 @@ void Application::run()
         const bool isHidden = hiddenState != WindowVisibility::HiddenState::Shown; // Window::isHidden()
         const FramePacing::HiddenWait hiddenWait =
             FramePacing::computeHiddenWait(hiddenState, drewFirstFrame, HIDDEN_WAIT_TIMEOUT_MS, CLOAKED_POLL_INTERVAL_MS);
+        // Nothing to redraw while no frames are drawn; the event that shows the window draws the newest data.
+        wakeCoalescer.setPaused(hiddenWait.drawsNoFrames);
 
         // isHidden, not only minimized: an occluded window that gets a move/resize event must not render
         // at the display rate through the interaction grace period either (#1125).
@@ -861,10 +957,13 @@ void Application::run()
         // - Otherwise, with the event queue empty, decide whether to sleep or render immediately:
         //   - Inside the grace period: skip the sleep and fall through to renderFrame so the
         //     display stays current during burst gaps between resize/move events.
-        //   - Outside the grace period: sleep briefly (~20 fps idle, 5 fps for a hidden window that
-        //     still draws) to reduce CPU/GPU usage when the display hasn't changed. Any SDL event
-        //     wakes the sleep immediately, keeping interactive frame rate unaffected. The waking
-        //     event is dispatched before the next frame renders (#1409): see idleWakeEvent.
+        //   - Outside the grace period: sleep (FramePacing::computeIdlePeriodMs) to reduce CPU/GPU usage
+        //     when the display hasn't changed: ~20 fps while something moves slowly or a grace runs, 5 fps
+        //     for a hidden window that still draws, and for a static frame until the slow floor
+        //     (STATIC_FRAME_FLOOR_INTERVAL) or a deadline the frame asked for (#3156). Any SDL event
+        //     wakes the sleep immediately, keeping interactive frame rate unaffected, and so does a
+        //     publication (the wake event above). The waking event is dispatched before the next
+        //     frame renders (#1409): see idleWakeEvent.
         // A hidden window that draws nothing (#3156) only waits, for at most hiddenWait.timeoutMs, and
         // runs the layers' onHiddenUpdate(). After a drain that handled events it doesn't wait: the next
         // iteration drains again, and waits once the queue is empty. The event that shows the window
@@ -906,8 +1005,14 @@ void Application::run()
             // frame's onUpdate result (1-frame lag is intentional and benign).
             if (FramePacing::computeShouldSleepWhenIdle(keepInteractionRedrawActive, geometryChangedLastFrame))
             {
-                const int sleepMs =
-                    FramePacing::computeIdleWaitMs(isHidden, IDLE_FRAME_SLEEP_MS, MINIMIZED_FRAME_SLEEP_MS, getTime() - lastFrameStart);
+                // The first frame comes at the idle rate, as before: it is not a static frame yet.
+                const int periodMs = FramePacing::computeIdlePeriodMs(
+                    {.requestedFps = requestedAnimationFps,
+                     .frameWithinSeconds = requestedFrameWithinSeconds,
+                     .isHidden = isHidden,
+                     .graceActive = keepInteractionRedrawActive || inputGraceActive || !drewFirstFrame},
+                    {.idleMs = IDLE_FRAME_SLEEP_MS, .hiddenMs = MINIMIZED_FRAME_SLEEP_MS, .staticFloorMs = STATIC_FRAME_FLOOR_MS});
+                const int sleepMs = FramePacing::computeIdleWaitMs(periodMs, getTime() - lastFrameStart);
                 const auto waitOutcome = waitForEvent(sleepMs, traceResizePerfThisFrame);
                 ++m_IdleWaitCount;
                 m_LastIdleWaitWoke = waitOutcome == FramePacing::IdleWaitOutcome::Woke;
@@ -965,6 +1070,7 @@ void Application::run()
         if (renderedFrame)
         {
             requestedAnimationFps = AnimationRequest::consume();
+            requestedFrameWithinSeconds = AnimationRequest::consumeFrameWithin();
             drewFirstFrame = true;
         }
         consecutiveSkippedRenders =

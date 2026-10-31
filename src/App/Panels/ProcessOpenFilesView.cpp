@@ -1,6 +1,7 @@
 #include "ProcessOpenFilesView.h"
 
 #include "AuthenticateToReadButton.h"
+#include "Core/AnimationRequest.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "UI/Format.h"
 #include "UI/FrameOutline.h"
@@ -23,6 +24,10 @@ namespace App
 
 namespace
 {
+
+/// The frame rate the indeterminate scan bar animates at: smooth enough for a sweep that moves a bar's
+/// width a second, and only while a scan runs (#3156).
+constexpr double SCANNING_ANIMATION_FPS = 30.0;
 
 /// Draws @p text in the current cell, clipped by the column, with the whole of it in a tooltip when
 /// it does not fit.
@@ -68,6 +73,8 @@ void ProcessOpenFilesView::render(bool hasOpenFiles)
     {
         // Indeterminate: how many handles a scan will type is not known until it ends.
         ImGui::ProgressBar(-1.0F * static_cast<float>(ImGui::GetTime()), ImVec2(-1.0F, 0.0F), "");
+        // The bar moves on its own, and the count with the scan: animate while it runs (#3156).
+        Core::AnimationRequest::request(SCANNING_ANIMATION_FPS);
         mutedWrapped(m_ScanProgress > 0 ? std::format("Scanning... {} handles", m_ScanProgress) : std::string("Scanning..."));
         if (!m_HasRead)
         {

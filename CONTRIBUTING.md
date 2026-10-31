@@ -1131,6 +1131,19 @@ scripts pass the instrumented app binary (`build/<preset>/bin/TaskSmack`) to `ll
 `-object`, so every file the tests never execute (the ImGui panels and layers, `Theme.cpp`,
 `main.cpp`, ...) shows up at 0% instead of silently dropping out of the denominator (#1131).
 
+The LCOV report Codecov receives (`coverage/coverage.lcov`) leaves out two kinds of line that no test can
+cover; the HTML report and the `llvm-cov` summary still count them (#2039, #3221):
+
+- Lines marked `LCOV_EXCL_START` ... `LCOV_EXCL_STOP` or `LCOV_EXCL_LINE`, each with a one-line reason: a
+  modal shell dialog, a real `ShellExecuteW` launch, SDL or OpenGL setup failing, or a guard that the type's
+  invariants make unreachable. Mark only code a test truly can't reach; anything a test or a seam could
+  drive gets a test instead.
+- Defaulted comparisons (`operator==` / `operator<=>` ... `= default;`): clang folds one branch of the
+  synthesized compare, so the line stays partly covered whatever a test does.
+
+`tools/lcov-exclude.py` (Linux) and `Remove-ExcludedLcovLine` in `tools/coverage.ps1` (Windows) apply the
+same rules; change both together.
+
 ```bash
 # Linux
 ./tools/coverage.sh
@@ -2149,7 +2162,8 @@ to the next one's, so it includes the pacing wait, the event drain and any skipp
 between. A render skipped for a drain overrun (`skippedFrames=`) is not an interval of its own; its
 time stays in the interval that spans it. `frame` says how long the work took; `loop` says how
 evenly frames reached the screen (at idle it should sit near the 50 ms idle period, or the
-animation period while a chart moves).
+animation period while a chart moves; on a static tab such as Processes, frames come with each
+sampler publication and otherwise at the 500 ms static floor, #3156).
 
 `frames=`/`batches=` count only the current interval (5s idle / 0.5s interaction), but the
 p95/p99 figures are computed over a rolling window of up to 200 samples that persists across
@@ -2187,7 +2201,8 @@ bookkeeping and scheduling outside measured phases); it is not assumed to be CPU
 The loop closes at the next loop boundary, so end-of-loop summary logging is included.
 `ResizePerfFrameGap` measures consecutive swap completions, including intervening sleeps
 and skipped-render loops; the first frame has no fabricated gap. These measures include
-intentional 50 ms idle waits (200 ms for a hidden window that still draws), unlike the 16.6 ms
+intentional 50 ms idle waits (200 ms for a hidden window that still draws, up to 500 ms for a static
+frame, #3156), unlike the 16.6 ms
 phase-sum target.
 `ResizePerfWallSummary` retains their run-wide maxima and threshold counts.
 
@@ -2310,7 +2325,7 @@ warm-up on that tab:
 | Scenario | What it exercises |
 |---|---|
 | Overview | System charts: CPU, memory, battery, threads/faults |
-| Processes | The process table and process enumeration |
+| Processes | The process table and process enumeration; a static tab, which draws on each publication and at the 2 fps floor (#3156) |
 | CPU Cores | One chart per logical CPU |
 | Minimized (optional) | The hidden-window path, which draws no frames (#3156); should be close to the sampler threads alone. Use `--label minimized` (45 s warm-up) and minimize the window in `--setup-cmd` |
 

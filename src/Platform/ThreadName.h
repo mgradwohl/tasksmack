@@ -63,6 +63,9 @@ inline constexpr std::string_view BATTERY_READ_THREAD_NAME = "ts-battery-read";
 /// The one-shot worker that enumerates and opens the EMI energy meters on Windows (#2587), so the
 /// SetupAPI enumeration, which a slow ACPI call can stall, never runs on the UI thread or in a sample.
 inline constexpr std::string_view ENERGY_METER_OPEN_THREAD_NAME = "ts-emi-open";
+/// The worker that checks process images' Authenticode signatures on Windows, one file at a time, for the
+/// Processes table's Signature column (#3070): WinVerifyTrust costs milliseconds a file, never a sample's.
+inline constexpr std::string_view SIGNATURE_CHECK_THREAD_NAME = "ts-sig-check";
 /// The worker that runs one Services tab action (start, stop, ...) at a time (#1577).
 inline constexpr std::string_view SERVICE_ACTION_THREAD_NAME = "ts-svc-action";
 /// The worker that runs one Startup tab action (enable, disable) at a time (#801).

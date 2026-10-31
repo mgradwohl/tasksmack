@@ -7,10 +7,12 @@
 #include "Domain/SamplingConfig.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/IUdpTrafficCollector.h"
+#include "Platform/ImageSignature.h"
 #include "Platform/ProcessTypes.h"
 #include "Platform/Windows/WindowsEtwNetCollector.h"
 #include "Platform/Windows/WindowsEtwNetMath.h"
 #include "Platform/Windows/WindowsHandles.h"
+#include "Platform/Windows/WindowsImageSignature.h"
 #include "Platform/Windows/WindowsProcessActionsMath.h"
 #include "Platform/Windows/WindowsProcessMachineMath.h"
 #include "Platform/Windows/WindowsProcessProbe.h"
@@ -27,8 +29,10 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -1595,6 +1599,118 @@ TEST(WindowsProcessDetailReadsTest, NoProcessHandleReadsNothing)
     ProcessImage cached;
     EXPECT_TRUE(WindowsProcessDetailReads::image(process, nullptr, cached).path.empty());
     EXPECT_EQ(WindowsProcessDetailReads::processType(process, nullptr, 0, ""), "Windows Process");
+}
+
+// --- Image signature (#3070) ------------------------------------------------------------------------
+
+struct FakeSignatures
+{
+    std::mutex mutex;
+    int stampReads = 0; // guarded
+    int checks = 0;     // guarded
+    std::string lastPath;
+};
+
+FakeSignatures& fakeSignatures()
+{
+    static FakeSignatures state;
+    return state;
+}
+
+WindowsSignature::SignatureFunctions fakeSignatureFunctions()
+{
+    return {
+        .errorMessage = nullptr,
+        .fileStamp = [](const std::string& path) -> std::optional<WindowsSignature::FileStamp>
+        {
+            const std::scoped_lock lock(fakeSignatures().mutex);
+            ++fakeSignatures().stampReads;
+            fakeSignatures().lastPath = path;
+            return WindowsSignature::FileStamp{.lastWriteTime = 1, .size = 2};
+        },
+        .verifyEmbeddedSignature =
+            [](const std::string& /*path*/)
+        {
+            const std::scoped_lock lock(fakeSignatures().mutex);
+            ++fakeSignatures().checks;
+            return WindowsSignature::TrustCheck{.result = 0, .signer = "Contoso Ltd"};
+        },
+        .verifyCatalogSignature = [](const std::string& /*path*/) -> std::optional<WindowsSignature::TrustCheck> { return std::nullopt; },
+    };
+}
+
+/// Samples @p probe until the fake process's signature is in (the worker answers on a later sample).
+ProcessCounters sampleUntilSigned(WindowsProcessProbe& probe)
+{
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    ProcessCounters process;
+    while (std::chrono::steady_clock::now() < deadline)
+    {
+        const std::vector<ProcessCounters> processes = probe.enumerate();
+        const auto it = std::ranges::find(processes, static_cast<std::int32_t>(PID), &ProcessCounters::pid);
+        if (it != processes.end())
+        {
+            process = *it;
+            if (process.signature.signature != ImageSignature::NotChecked)
+            {
+                break;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return process;
+}
+
+TEST_F(WindowsProcessProbeSeamTest, WithoutSignatureCallsNoSignatureIsCheckedOrClaimed)
+{
+    WindowsProcessProbe probe(fakeFunctions());
+    EXPECT_FALSE(probe.capabilities().hasSignature);
+    EXPECT_EQ(find(probe.enumerate()).signature.signature, ImageSignature::NotChecked);
+}
+
+TEST_F(WindowsProcessProbeSeamTest, TheSignatureIsCheckedOffTheSampleAndTakenOnALaterOne)
+{
+    {
+        const std::scoped_lock lock(fakeSignatures().mutex);
+        fakeSignatures().stampReads = 0;
+        fakeSignatures().checks = 0;
+    }
+    WindowsProcessProbeFunctions functions = fakeFunctions();
+    functions.signature = fakeSignatureFunctions();
+    WindowsProcessProbe probe(functions);
+    EXPECT_TRUE(probe.capabilities().hasSignature);
+
+    const ProcessCounters process = sampleUntilSigned(probe);
+    EXPECT_EQ(process.signature.signature, ImageSignature::Embedded);
+    EXPECT_EQ(process.signature.signer, "Contoso Ltd");
+
+    // Kept with the process: later samples, past every TTL, neither ask nor check again.
+    fake().now += std::chrono::hours(1);
+    EXPECT_EQ(find(probe.enumerate()).signature.signer, "Contoso Ltd");
+    {
+        const std::scoped_lock lock(fakeSignatures().mutex);
+        EXPECT_EQ(fakeSignatures().stampReads, 1);
+        EXPECT_EQ(fakeSignatures().checks, 1);
+        EXPECT_EQ(fakeSignatures().lastPath, "C:\\fake\\app.exe");
+    }
+
+    // A reused PID is a new process of the same image: its stamp is read again, its check comes from the cache.
+    fake().processes.front().createTime += 1;
+    EXPECT_EQ(sampleUntilSigned(probe).signature.signer, "Contoso Ltd");
+    const std::scoped_lock lock(fakeSignatures().mutex);
+    EXPECT_EQ(fakeSignatures().stampReads, 2);
+    EXPECT_EQ(fakeSignatures().checks, 1);
+}
+
+TEST_F(WindowsProcessProbeSeamTest, AnUnreadableImagePathIsNeverSentForASignatureCheck)
+{
+    fake().failImagePath = true;
+    WindowsProcessProbeFunctions functions = fakeFunctions();
+    functions.signature = fakeSignatureFunctions();
+    WindowsProcessProbe probe(functions);
+    (void) probe.enumerate();
+    fake().now += std::chrono::hours(1);
+    EXPECT_EQ(find(probe.enumerate()).signature.signature, ImageSignature::NotChecked);
 }
 
 } // namespace

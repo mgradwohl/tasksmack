@@ -1,12 +1,15 @@
 // The Connections tab (#3066): its model, the table's rows, filter and sort, and the panel on display
 // (sampling only while shown; a row click selects its process).
 
+#include "App/Panels/ConnectionCloseControl.h"
 #include "App/Panels/ConnectionsPanel.h"
 #include "App/Panels/ConnectionsView.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Domain/ConnectionsModel.h"
 #include "Domain/ProcessConnections.h"
+#include "Mocks/MockProbes.h"
+#include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/ISystemConnections.h"
 
@@ -14,10 +17,12 @@
 #include <imgui.h>
 #include <imgui_internal.h>
 
+#include <array>
 #include <atomic>
 #include <cfloat>
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -36,6 +41,7 @@ using Platform::ConnectionFamily;
 using Platform::ConnectionProtocol;
 using Platform::ConnectionState;
 using Platform::SystemConnection;
+using TestMocks::MockProcessActions;
 
 [[nodiscard]] SystemConnection socket(std::int32_t pid,
                                       const char* name,
@@ -57,6 +63,7 @@ using Platform::SystemConnection;
     std::ranges::copy(remote, c.connection.remote.address.begin());
     c.connection.remote.port = remotePort;
     c.connection.state = state;
+    c.socketInode = pid == 0 ? 0 : 50000U + static_cast<std::uint64_t>(pid); // TIME_WAIT: no file holds it
     return c;
 }
 
@@ -351,6 +358,190 @@ TEST(ConnectionRatesTest, TheModelPublishesRatesFromItsSecondSampleAndTheViewSor
     EXPECT_EQ(rows[bySent.front()].process, "curl"); // the busier socket first
 }
 
+// --- Close connection (#3066) ------------------------------------------------------------------------
+
+/// @p connection as the table formats it.
+[[nodiscard]] ConnectionRow rowFor(const SystemConnection& connection)
+{
+    Domain::ConnectionsPublication publication;
+    publication.version = 1;
+    publication.status = Platform::SystemConnectionsStatus::Ok;
+    publication.connections = {connection};
+    return buildConnectionRows(publication).front();
+}
+
+[[nodiscard]] SystemConnection firefoxToGoogle()
+{
+    return socket(300, "firefox", ConnectionProtocol::Tcp, {10, 0, 0, 5}, 52144, {142, 250, 80, 46}, 443, ConnectionState::Established);
+}
+
+TEST(ConnectionCloseTest, OnlyAHeldTcpConnectionWithAPeerCanBeClosed)
+{
+    EXPECT_EQ(closeConnectionRefusal(firefoxToGoogle()), "");
+    for (const ConnectionState state : {ConnectionState::SynSent, ConnectionState::SynReceived, ConnectionState::CloseWait})
+    {
+        SystemConnection opening = firefoxToGoogle();
+        opening.connection.state = state;
+        EXPECT_EQ(closeConnectionRefusal(opening), "") << static_cast<int>(state);
+    }
+    SystemConnection udp = firefoxToGoogle();
+    udp.connection.protocol = ConnectionProtocol::Udp;
+    EXPECT_EQ(closeConnectionRefusal(udp), "Only a TCP connection can be closed");
+    SystemConnection listening = firefoxToGoogle();
+    listening.connection.state = ConnectionState::Listen;
+    EXPECT_EQ(closeConnectionRefusal(listening), "A listening socket has no connection to close");
+    for (const ConnectionState state :
+         {ConnectionState::TimeWait, ConnectionState::FinWait1, ConnectionState::Closed, ConnectionState::Unknown})
+    {
+        SystemConnection closing = firefoxToGoogle();
+        closing.connection.state = state;
+        EXPECT_EQ(closeConnectionRefusal(closing), "The connection is already closing") << static_cast<int>(state);
+    }
+    SystemConnection noHolder = firefoxToGoogle();
+    noHolder.pid = 0;
+    SystemConnection noStartTime = firefoxToGoogle();
+    noStartTime.startTimeTicks = 0;
+    SystemConnection noInode = firefoxToGoogle();
+    noInode.socketInode = 0;
+    for (const SystemConnection& nobody : {noHolder, noStartTime, noInode})
+    {
+        EXPECT_EQ(closeConnectionRefusal(nobody), "No process TaskSmack can see holds this socket");
+    }
+}
+
+[[nodiscard]] Platform::ProcessActionCapabilities closingCapabilities(bool authorize)
+{
+    Platform::ProcessActionCapabilities caps;
+    caps.canCloseConnections = true;
+    caps.canAuthorizeInteractively = authorize;
+    return caps;
+}
+
+TEST(ConnectionCloseTest, AConfirmedCloseNamesTheSocketAndReportsTheResult)
+{
+    MockProcessActions actions;
+    actions.setCapabilities(closingCapabilities(false));
+    actions.setCloseConnectionResult(Platform::ProcessActionResult::ok());
+    ConnectionCloseControl control;
+    const ConnectionRow row = rowFor(firefoxToGoogle());
+
+    control.request(row);
+    ASSERT_TRUE(control.pending().has_value());
+    EXPECT_TRUE(control.showConfirm());
+    EXPECT_TRUE(control.question().starts_with("Close the connection firefox (PID 300) has from 10.0.0.5:52144 to 142.250.80.46:443?"))
+        << control.question();
+
+    control.confirm(&actions);
+    EXPECT_FALSE(control.pending().has_value());
+    EXPECT_FALSE(control.showConfirm());
+    control.update(0.0F, true);
+    EXPECT_EQ(actions.closeConnectionCount(), 1);
+    EXPECT_EQ(actions.lastSocketInode(), 50300U);
+    EXPECT_EQ(actions.lastTarget().pid, 300);
+    EXPECT_EQ(actions.lastTarget().startTimeTicks, 1300U);
+    EXPECT_TRUE(control.result().ok);
+    EXPECT_EQ(control.result().text, "Closed firefox's connection to 142.250.80.46:443");
+    EXPECT_TRUE(control.takeClosed());
+    EXPECT_FALSE(control.takeClosed()) << "once";
+    EXPECT_FALSE(control.offersAuthenticateAndRetry());
+
+    // The line goes after a while.
+    control.update(ConnectionCloseControl::RESULT_SECONDS + 1.0F);
+    EXPECT_TRUE(control.result().empty());
+}
+
+TEST(ConnectionCloseTest, ARefusalOffersAuthenticateAndRetryThroughTheHelper)
+{
+    MockProcessActions actions;
+    actions.setCapabilities(closingCapabilities(true));
+    actions.setCloseConnectionResult(Platform::ProcessActionResult::denied("Operation not permitted"));
+    actions.setRunAuthorizedResult(Platform::ProcessActionResult::ok());
+    ConnectionCloseControl control;
+    control.request(rowFor(firefoxToGoogle()));
+    control.confirm(&actions);
+    control.update(0.0F, true);
+    EXPECT_FALSE(control.result().ok);
+    EXPECT_EQ(control.result().text, "Couldn't close firefox's connection to 142.250.80.46:443: Operation not permitted");
+    EXPECT_FALSE(control.takeClosed());
+    ASSERT_TRUE(control.offersAuthenticateAndRetry());
+
+    control.retryAuthorized();
+    control.update(0.0F, true);
+    EXPECT_EQ(actions.runAuthorizedCount(), 1);
+    EXPECT_EQ(actions.lastAuthorizedAction().kind, Platform::AuthorizedAction::Kind::CloseConnection);
+    EXPECT_EQ(actions.lastAuthorizedAction().socketInode, 50300U);
+    EXPECT_EQ(actions.lastAuthorizedAction().target.pid, 300);
+    EXPECT_TRUE(control.result().ok);
+    EXPECT_TRUE(control.takeClosed());
+    EXPECT_FALSE(control.offersAuthenticateAndRetry());
+
+    // Without interactive authorization there is nothing to offer.
+    MockProcessActions plain;
+    plain.setCapabilities(closingCapabilities(false));
+    plain.setCloseConnectionResult(Platform::ProcessActionResult::denied("Operation not permitted"));
+    control.request(rowFor(firefoxToGoogle()));
+    control.confirm(&plain);
+    control.update(0.0F, true);
+    EXPECT_FALSE(control.offersAuthenticateAndRetry());
+}
+
+TEST(ConnectionCloseTest, NothingIsClosedWhenCancelledRefusedOrUnavailable)
+{
+    MockProcessActions actions;
+    actions.setCapabilities(closingCapabilities(false));
+    ConnectionCloseControl control;
+
+    control.request(rowFor(firefoxToGoogle()));
+    control.cancel();
+    EXPECT_FALSE(control.pending().has_value());
+    control.confirm(&actions); // nothing pending
+    control.update(0.0F, true);
+    EXPECT_EQ(actions.closeConnectionCount(), 0);
+    EXPECT_TRUE(control.result().empty());
+
+    SystemConnection listening = firefoxToGoogle();
+    listening.connection.state = ConnectionState::Listen;
+    control.request(rowFor(listening));
+    EXPECT_FALSE(control.pending().has_value()) << "a socket that can't be closed opens no confirm";
+
+    // Actions that can't close connections: said so, nothing called.
+    MockProcessActions unable;
+    control.request(rowFor(firefoxToGoogle()));
+    control.confirm(&unable);
+    EXPECT_EQ(unable.closeConnectionCount(), 0);
+    EXPECT_FALSE(control.result().ok);
+    EXPECT_TRUE(control.result().text.contains("isn't available")) << control.result().text;
+    control.request(rowFor(firefoxToGoogle()));
+    control.confirm(nullptr);
+    EXPECT_TRUE(control.result().text.contains("isn't available"));
+}
+
+/// Right-clicks the firefox row of @p panel's table (the second row by process name: avahi-daemon, cupsd,
+/// firefox, Unknown) and picks the menu's first item, Close connection...
+void closeFirefoxFromTheMenu(ImVec2 firstRow, const std::function<std::string()>& nextFrame)
+{
+    const float rowHeight = ImGui::GetTextLineHeight() + (ImGui::GetStyle().CellPadding.y * 2.0F);
+    ImGuiIO& io = ImGui::GetIO();
+    io.AddMousePosEvent(firstRow.x, firstRow.y + (rowHeight * 2.0F));
+    static_cast<void>(nextFrame());
+    io.AddMouseButtonEvent(ImGuiMouseButton_Right, true);
+    static_cast<void>(nextFrame());
+    io.AddMouseButtonEvent(ImGuiMouseButton_Right, false);
+    static_cast<void>(nextFrame());
+    ASSERT_GT(GImGui->OpenPopupStack.Size, 0) << "the row menu didn't open";
+    const ImGuiWindow* menu = GImGui->OpenPopupStack.back().Window;
+    ASSERT_NE(menu, nullptr);
+    const ImVec2 item(menu->Pos.x + (menu->Size.x * 0.5F),
+                      menu->Pos.y + ImGui::GetStyle().WindowPadding.y + (ImGui::GetTextLineHeight() * 0.5F));
+    io.AddMousePosEvent(item.x, item.y);
+    static_cast<void>(nextFrame());
+    io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
+    static_cast<void>(nextFrame());
+    io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
+    static_cast<void>(nextFrame());
+    io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
+}
+
 class ConnectionsPanelRenderTest : public ::testing::Test
 {
   protected:
@@ -528,6 +719,63 @@ TEST_F(ConnectionsPanelRenderTest, AFailedReadSaysWhyAndADoubleClickShowsDetails
     static_cast<void>(frame(panel));
     EXPECT_GE(detailsShown, 1);
     panel.onDetach();
+}
+
+// #3066: the row menu's Close connection... opens the confirm for the row right-clicked, a confirm closes it
+// through the panel's actions, and the result line says so. Without the capability there is no menu.
+TEST_F(ConnectionsPanelRenderTest, TheRowMenuClosesAConnectionAfterTheConfirm)
+{
+    auto reads = std::make_shared<std::atomic<int>>(0);
+    MockProcessActions* actions = nullptr;
+    ConnectionsPanel panel([reads] { return std::make_unique<FakeReader>(reads); },
+                           [](Core::Event&) {},
+                           [&actions]
+                           {
+                               auto made = std::make_unique<MockProcessActions>();
+                               made->setCapabilities(closingCapabilities(false));
+                               made->setCloseConnectionResult(Platform::ProcessActionResult::ok());
+                               actions = made.get();
+                               return made;
+                           });
+    panel.onAttach();
+    ASSERT_NE(actions, nullptr);
+    show(panel, "Connections");
+    static_cast<void>(frameUntil(panel, "firefox"));
+    ImVec2 row(-1.0F, -1.0F);
+    static_cast<void>(frame(panel, &row));
+    ASSERT_GT(row.y, 0.0F);
+
+    closeFirefoxFromTheMenu(row, [&panel] { return frame(panel); });
+    ASSERT_TRUE(panel.closeControl().pending().has_value());
+    EXPECT_EQ(panel.closeControl().pending()->process, "firefox");
+    const std::string confirm = frame(panel);
+    EXPECT_TRUE(confirm.contains("Close the connection firefox (PID 300)")) << confirm;
+
+    // Confirmed (as the modal's button does), then taken in: the line says it closed.
+    panel.closeControl().confirm(actions);
+    panel.closeControl().update(0.0F, true);
+    EXPECT_EQ(actions->closeConnectionCount(), 1);
+    EXPECT_EQ(actions->lastSocketInode(), 50300U);
+    const std::string done = frame(panel);
+    EXPECT_TRUE(done.contains("Closed firefox's connection to 142.250.80.46:443")) << done;
+    panel.onDetach();
+
+    // No actions that can close connections: right-clicking opens no menu.
+    ConnectionsPanel unable([reads] { return std::make_unique<FakeReader>(reads); }, [](Core::Event&) {});
+    unable.onAttach();
+    show(unable, "Connections");
+    static_cast<void>(frameUntil(unable, "firefox"));
+    static_cast<void>(frame(unable, &row));
+    ImGuiIO& io = ImGui::GetIO();
+    io.AddMousePosEvent(row.x, row.y);
+    static_cast<void>(frame(unable));
+    io.AddMouseButtonEvent(ImGuiMouseButton_Right, true);
+    static_cast<void>(frame(unable));
+    io.AddMouseButtonEvent(ImGuiMouseButton_Right, false);
+    static_cast<void>(frame(unable));
+    EXPECT_EQ(GImGui->OpenPopupStack.Size, 0) << "a row menu opened";
+    EXPECT_FALSE(unable.closeControl().pending().has_value());
+    unable.onDetach();
 }
 
 } // namespace

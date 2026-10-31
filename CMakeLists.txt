@@ -324,6 +324,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsProcessSecurity.cpp
     src/Platform/Windows/WindowsSystemProbe.cpp
     src/Platform/Windows/WindowsSystemInfoProbe.cpp
+    src/Platform/Windows/WindowsSignatureCheck.cpp # images' signatures, embedded and catalog: drivers (#1661), processes (#3070)
     src/Platform/Windows/WindowsCrashEvents.cpp
     src/Platform/Windows/WindowsBootPerformance.cpp
     src/Platform/Windows/WindowsPlatformSecurity.cpp
@@ -437,6 +438,7 @@ set(TASKSMACK_HEADERS
     src/Platform/GPUTypes.h
     src/Platform/PowerTypes.h
     src/Platform/ProcessTypes.h
+    src/Platform/ImageSignature.h
     src/Platform/ProcessArchitecture.h
     src/Platform/CurrentProcess.h
     src/Platform/PublicIpLookup.h
@@ -565,6 +567,9 @@ elseif(WIN32)
         src/Platform/Windows/WindowsDriverNodes.h
         src/Platform/Windows/WindowsDevices.h
         src/Platform/Windows/WindowsDrivers.h
+        src/Platform/Windows/WindowsImageSignature.h
+        src/Platform/Windows/WindowsSignatureCheck.h
+        src/Platform/Windows/WindowsSignatureWorker.h
         src/Platform/Windows/WindowsCrashEvents.h
         src/Platform/Windows/WindowsBootPerformance.h
         src/Platform/Windows/WindowsPlatformSecurity.h
@@ -683,8 +688,8 @@ function(tasksmack_apply_windows_platform target)
         powrprof # CallNtPowerInformation: the rated base CPU clock (#1530)
         setupapi # WindowsBatteryInfo: the battery devices (#1523); WindowsEnergyMeter: the EMI energy meters (#2587)
         wevtapi # WindowsCrashEvents: the Application log's crash and hang events (#1524)
-        wintrust # WindowsSystemInfoProbe: driver images' signatures, embedded and catalog (#1661)
-        crypt32 # WindowsSystemInfoProbe: a driver signer's certificate name (#1661)
+        wintrust # WindowsSignatureCheck: driver (#1661) and process (#3070) images' signatures, embedded and catalog
+        crypt32 # WindowsSignatureCheck: a signer's certificate name (#1661, #3070)
         advapi32 # WindowsEtwNetCollector: the opt-in UDP event trace (StartTraceW, ProcessTrace, ...) (#1492)
         bcrypt # BrokerPipe: the broker pipe's random name (BCryptGenRandom) (#2311)
         dwmapi # Core/Window: whether DWM has cloaked the window (DWMWA_CLOAKED) (#3152)

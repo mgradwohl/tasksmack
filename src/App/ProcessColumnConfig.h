@@ -24,6 +24,7 @@ enum class ProcessColumn : std::uint8_t
     User,
     PPID,
     Publisher, // Software publisher/vendor (Windows-only, empty on Linux)
+    Signature, // The image's verified Authenticode signer, or Unsigned / Invalid (Windows, #3070)
     Container, // Container from cgroups: "docker:1a2b3c4d5e6f" (Linux-only)
     Services,  // Services the process hosts: "Dhcp, EventLog" (#1880)
                // State - what is it doing?
@@ -83,6 +84,7 @@ enum class ProcessColumn : std::uint8_t
             ProcessColumn::User,
             ProcessColumn::PPID,
             ProcessColumn::Publisher,
+            ProcessColumn::Signature,
             ProcessColumn::Container,
             ProcessColumn::Services,
             // State
@@ -171,6 +173,8 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
         {.name="PPID", .menuName="Parent PID", .configKey="ppid", .defaultWidth=60.0F, .defaultVisible=false, .canHide=true, .description="Parent process ID"},
         // Publisher (Windows-only)
         {.name="Publisher", .menuName="Publisher", .configKey="publisher", .defaultWidth=140.0F, .defaultVisible=false, .canHide=true, .description="Software publisher or vendor name from the process executable (Windows only)"},
+        // Signature (Windows, #3070): checked in the background, so a dash until the check is in
+        {.name="Signature", .menuName="Signature", .configKey="signature", .defaultWidth=160.0F, .defaultVisible=false, .canHide=true, .description="The executable's Authenticode signature, verified by Windows (Windows only): a check mark and the signer for a trusted signature, in the file or in a Windows catalog; Unsigned; or Invalid for a signature that doesn't verify. Unlike Publisher, which the file itself states, it can't be forged. Checked offline, without revocation. Hover a cell for the detail"},
         // Container (Linux-only)
         {.name="Container", .menuName="Container", .configKey="container", .defaultWidth=150.0F, .defaultVisible=false, .canHide=true, .description="Container the process runs in, from its cgroup: runtime and short ID (docker, podman, containerd, cri-o, k8s) or name (lxc, nspawn, machine) (Linux only)"},
         // Services (#1880): off by default; while shown, the service list is kept current
@@ -288,6 +292,7 @@ enum class ColumnAlign : std::uint8_t
     case ProcessColumn::Name:
     case ProcessColumn::User:
     case ProcessColumn::Publisher:
+    case ProcessColumn::Signature:
     case ProcessColumn::Container:
     case ProcessColumn::Services:
     case ProcessColumn::Status:

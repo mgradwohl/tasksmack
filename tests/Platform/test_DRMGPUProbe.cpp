@@ -14,8 +14,10 @@
 
 #include "Domain/GPUModel.h"
 #include "Platform/GPUTypes.h"
+#include "Platform/GpuMockLibraryTestUtils.h"
 #include "Platform/Linux/DRMGPUProbe.h"
 #include "Platform/Linux/LinuxGPUProbe.h"
+#include "Platform/ScopedTempDir.h"
 
 #include <algorithm>
 #include <array>
@@ -38,6 +40,7 @@
 #include <utility>
 #include <vector>
 
+#include <dlfcn.h>
 #include <unistd.h>
 
 #if __has_include(<drm/xe_drm.h>) && __has_include(<drm/i915_drm.h>)
@@ -2243,6 +2246,172 @@ TEST_F(DRMGPUProbeEngineTest, TheAmdClientsProbeLabelsItsProcessesWithRocmsIds)
     EXPECT_EQ(second[0].activeEngines, (std::vector<std::string>{"3D", "Video"}));
     EXPECT_TRUE(probe->capabilities().hasPerProcessUtilization);
     EXPECT_FALSE(probe->capabilities().hasTemperature);
+}
+
+/// The NVML or ROCm mock's next init fails while this lives, as on a machine without that library: the
+/// composite is then left with its DRM and accel probes (#3221). The handle keeps the mock loaded, so
+/// the probe's dlopen() finds the same instance; the control is reset on the way out.
+class FailedVendorInit
+{
+  public:
+    FailedVendorInit(const char* library, const char* control) : m_Library(dlopen(library, RTLD_NOW))
+    {
+        if (m_Library != nullptr)
+        {
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) -- dlsym returns void* by POSIX definition
+            m_FailInits = reinterpret_cast<void (*)(unsigned int)>(dlsym(m_Library, control));
+        }
+        if (m_FailInits != nullptr)
+        {
+            m_FailInits(1);
+        }
+    }
+    ~FailedVendorInit()
+    {
+        if (m_FailInits != nullptr)
+        {
+            m_FailInits(0);
+        }
+        if (m_Library != nullptr)
+        {
+            dlclose(m_Library);
+        }
+    }
+    FailedVendorInit(const FailedVendorInit&) = delete;
+    FailedVendorInit& operator=(const FailedVendorInit&) = delete;
+    FailedVendorInit(FailedVendorInit&&) = delete;
+    FailedVendorInit& operator=(FailedVendorInit&&) = delete;
+
+    [[nodiscard]] bool armed() const noexcept
+    {
+        return m_FailInits != nullptr;
+    }
+
+  private:
+    void* m_Library = nullptr;
+    void (*m_FailInits)(unsigned int) = nullptr;
+};
+
+[[nodiscard]] FailedVendorInit failNvmlInit()
+{
+    return {"libnvidia-ml.so.1", "tasksmackNvmlMockFailInits"};
+}
+
+[[nodiscard]] FailedVendorInit failRocmInit()
+{
+    return {"librocm_smi64.so.6", "tasksmackRocmMockFailInits"};
+}
+
+/// An Intel NPU at accelRoot/accel<index>, its device directory at pciRoot/<slot> (#1827).
+void addIntelNpu(const std::filesystem::path& accelRoot, const std::filesystem::path& pciRoot, int index, const std::string& slot)
+{
+    const auto pci = pciRoot / slot;
+    std::filesystem::create_directories(pci);
+    std::filesystem::create_symlink("/nonexistent/drivers/intel_vpu", pci / "driver");
+    std::ofstream(pci / "vendor") << "0x8086\n";
+    std::ofstream(pci / "npu_busy_time_us") << "1000\n";
+    const auto accel = accelRoot / ("accel" + std::to_string(index));
+    std::filesystem::create_directories(accel);
+    std::filesystem::create_directory_symlink(pci, accel / "device");
+}
+
+// #3221: without NVML or ROCm, the composite's capabilities are the Intel card's and the NPUs': the
+// card's temperature and clocks, no fan, power or engines, and per-process NPU memory; two NPUs
+// make it several devices though the one card doesn't. No AMD clients probe at all is fine too.
+TEST_F(DRMGPUProbeEngineTest, TheCompositeWithoutVendorLibrariesHasTheIntelCardsAndTheNpusCapabilities)
+{
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock GPU libraries not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
+    const auto accelRoot = m_SysRoot / "accel-class";
+    addIntelNpu(accelRoot, m_SysRoot / "npu-pci", 0, "0000:00:0b.0");
+    addIntelNpu(accelRoot, m_SysRoot / "npu-pci", 1, "0000:00:0c.0");
+    const auto nvml = failNvmlInit();
+    const auto rocm = failRocmInit();
+    ASSERT_TRUE(nvml.armed());
+    ASSERT_TRUE(rocm.armed());
+
+    LinuxGPUProbe composite(makeProbe(), nullptr, (m_SysRoot / "no-pci").string(), accelRoot.string());
+    const GPUCapabilities caps = composite.capabilities();
+    EXPECT_TRUE(caps.hasTemperature);
+    EXPECT_TRUE(caps.hasClockSpeeds);
+    EXPECT_FALSE(caps.hasPowerMetrics) << "the card has no hwmon energy counter";
+    EXPECT_FALSE(caps.hasFanSpeed);
+    EXPECT_FALSE(caps.hasEngineUtilization);
+    EXPECT_FALSE(caps.hasEncoderDecoder);
+    EXPECT_TRUE(caps.hasPerProcessMetrics);
+    EXPECT_TRUE(caps.hasPerProcessUtilization);
+    EXPECT_TRUE(caps.hasPerProcessNpuMetrics);
+    EXPECT_TRUE(caps.supportsMultiGPU) << "two NPUs";
+
+    const std::vector<GPUInfo> gpus = composite.enumerateGPUs();
+    EXPECT_EQ(gpus.size(), 3U);
+    EXPECT_TRUE(std::ranges::any_of(gpus, [](const GPUInfo& gpu) { return gpu.id == "0000:03:00.0"; }));
+    EXPECT_TRUE(std::ranges::any_of(gpus, [](const GPUInfo& gpu) { return gpu.id == "ACCEL_0000:00:0c.0"; }));
+    const std::vector<GPUCounters> counters = composite.readGPUCounters();
+    EXPECT_TRUE(std::ranges::any_of(counters, [](const GPUCounters& counter) { return counter.gpuId == "ACCEL_0000:00:0b.0"; }));
+    EXPECT_NO_THROW(static_cast<void>(composite.readProcessGPUCounters()));
+    EXPECT_FALSE(composite.rescanGPUs(GPURescan::Quick));
+}
+
+// #3221: with no vendor library, no Intel card and no accel device, the composite lists nothing and
+// claims no capability.
+TEST(LinuxGPUProbeCompositeTest, NothingAvailableListsNothingAndClaimsNothing)
+{
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock GPU libraries not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
+    const TestSupport::ScopedTempDir root("tasksmack_linux_gpu_none");
+    std::filesystem::create_directories(root.path / "drm");
+    const auto nvml = failNvmlInit();
+    const auto rocm = failRocmInit();
+    ASSERT_TRUE(nvml.armed());
+    ASSERT_TRUE(rocm.armed());
+
+    LinuxGPUProbe composite((root.path / "drm").string(), (root.path / "no-pci").string(), (root.path / "no-accel").string());
+    EXPECT_TRUE(composite.enumerateGPUs().empty());
+    EXPECT_TRUE(composite.readGPUCounters().empty());
+    EXPECT_TRUE(composite.readProcessGPUCounters().empty());
+    const GPUCapabilities caps = composite.capabilities();
+    EXPECT_FALSE(caps.hasTemperature);
+    EXPECT_FALSE(caps.hasClockSpeeds);
+    EXPECT_FALSE(caps.hasPerProcessMetrics);
+    EXPECT_FALSE(caps.hasPerProcessNpuMetrics);
+    EXPECT_FALSE(caps.supportsMultiGPU);
+}
+
+// #3221, #2589: without NVML, ROCm's sensors join the Intel card's (its fan and power, which the
+// card lacks), and the amdgpu card's processes come from the clients probe under ROCm's ids.
+TEST_F(DRMGPUProbeEngineTest, TheCompositeWithRocmAndAnIntelCardTakesRocmsSensorsAndTheAmdClients)
+{
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock GPU libraries not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
+    addAmdgpuCard();
+    makeFd(m_ProcRoot, 100, 4, "/dev/dri/renderD130", amdgpuFdinfo(21, 1'000, 0, 0, "drm-memory-vram:\t4096 KiB\n"));
+    const auto nvml = failNvmlInit();
+    ASSERT_TRUE(nvml.armed());
+
+    LinuxGPUProbe composite(makeProbe(), makeAmdClientsProbe(), (m_SysRoot / "no-pci").string(), (m_SysRoot / "no-accel").string());
+    const GPUCapabilities caps = composite.capabilities();
+    EXPECT_TRUE(caps.hasTemperature);
+    EXPECT_TRUE(caps.hasPowerMetrics) << "ROCm's";
+    EXPECT_TRUE(caps.hasFanSpeed) << "ROCm's";
+    EXPECT_TRUE(caps.supportsMultiGPU) << "ROCm's";
+    EXPECT_TRUE(caps.hasPerProcessMetrics);
+    EXPECT_FALSE(caps.hasEngineUtilization);
+    EXPECT_FALSE(caps.hasPerProcessNpuMetrics);
+
+    const std::vector<GPUCounters> counters = composite.readGPUCounters();
+    EXPECT_TRUE(std::ranges::any_of(counters, [](const GPUCounters& counter) { return counter.gpuId == "0000:03:00.0"; }));
+    EXPECT_NO_THROW(static_cast<void>(composite.readProcessGPUCounters()));
+    EXPECT_NO_THROW(static_cast<void>(composite.rescanGPUs(GPURescan::Full)));
 }
 
 TEST_F(DRMGPUProbeEngineTest, TheIntelProbeLeavesAmdgpuCardsAlone)

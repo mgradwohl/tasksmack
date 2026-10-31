@@ -49,6 +49,7 @@
 #include "WindowsEnergyMeter.h"
 #include "WindowsHandles.h"
 #include "WindowsNtQuery.h"
+#include "WindowsSignatureWorker.h"
 
 namespace Platform
 {
@@ -137,6 +138,14 @@ struct WindowsProcessProbeFunctions
     /// one-shot opener thread. Nullable (nullopt): no energy meter is looked for, and power is not
     /// claimed, so a test's fake probe starts no thread and touches no device.
     std::optional<Windows::EnergyMeterFunctions> energyMeter = std::nullopt;
+
+    /// The image signature check behind the Signature column (#3070): WinVerifyTrust, embedded and through
+    /// the catalogs (Windows::systemSignatureFunctions()), run on the probe's ts-sig-check worker, paced by
+    /// signatureWorker. Nullable (nullopt): no signature is checked, hasSignature stays false, and a test's
+    /// fake probe starts no thread.
+    std::optional<WindowsSignature::SignatureFunctions> signature = std::nullopt;
+    // The initializer keeps the tables that leave it out free of -Wmissing-designated-field-initializers.
+    WindowsSignature::WorkerOptions signatureWorker{}; // NOLINT(readability-redundant-member-init)
 };
 
 /// A process's executable path and the publisher named in it, which can't change while the process
@@ -186,7 +195,9 @@ void hungWindowProcesses(std::vector<std::uint32_t>& pids);
 /// (PIDs, names, CPU times, memory, I/O, handle/thread counts, thread states), plus TTL-cached
 /// per-process details (owner, command line, classification, priority) refreshed via short-lived
 /// handles. What can't change while a process runs (its architecture, image path and publisher) is
-/// read once per {pid, start time}.
+/// read once per {pid, start time}. The image's Authenticode signature (#3070) is checked on the probe's
+/// own worker (WindowsSignatureWorker.h), never in a sample: a process is listed at once, its signature
+/// not checked yet until the worker answers on a later sample.
 /// Per-process power (#2587) is the CPU packages' energy from the EMI energy meters
 /// (WindowsEnergyMeter.h), read raw each sample by readPackageEnergy() and shared out by CPU time
 /// in Domain, as Linux's RAPL counter is. The meters are enumerated and opened once, on the
@@ -294,8 +305,11 @@ class WindowsProcessProbe : public IProcessProbe
         std::string status;
         ProcessImage image; // Image path and publisher (#2982): read once, with the first heavy read that succeeds
         std::string processType;
-        std::string architecture;                   // MachineMath::windowsArchitectureLabel() (#2394): read once, it never changes
+        std::string architecture; // MachineMath::windowsArchitectureLabel() (#2394): read once, it never changes
+        // The image's signature (#3070), once the worker has answered; it can't change while the process runs
+        std::optional<SignatureCheck> signature;
         bool architectureRead = false;              // Whether architecture above was read (with the first handle opened)
+        bool signatureRequested = false;            // Whether the worker was asked to check the image (#3070)
         std::optional<std::int32_t> gdiObjectCount; // GetGuiResources (light TTL, #1156)
         // Slow-changing fields cached with light/heavy TTL to avoid redundant Win32 calls.
         CpuAffinity cpuAffinity;       // readCpuAffinity() (heavy TTL)
@@ -307,6 +321,11 @@ class WindowsProcessProbe : public IProcessProbe
         std::chrono::steady_clock::time_point nextHeavyRefresh;
         std::uint64_t generation = 0;
     };
+
+    /// Fill @p counters' signature from @p cache, asking the signature worker for it while it isn't in yet
+    /// (#3070): once the image path is read, the first call requests the check, later ones take the answer
+    /// when the worker has it. No-op without a worker, or before the path is known.
+    void updateSignature(DetailCacheEntry& cache, ProcessCounters& counters);
 
     /// Refresh TTL-cached details for a single process (opens a handle only when a TTL expired, or
     /// the base priority changed: planDetailRefresh()).
@@ -379,7 +398,10 @@ class WindowsProcessProbe : public IProcessProbe
     mutable std::vector<std::uint64_t> m_PackageEnergyUj; // Guarded by m_EnergyMeterMutex; reused scratch
     mutable std::atomic<bool> m_HasPackageEnergy{false};
     mutable std::atomic<bool> m_PackageEnergyReadFailed{false}; // A failed measurement read was logged
-    std::jthread m_EnergyMeterOpener;                           // Last: joined first, while the meter and the mutex are alive
+    // The image signature worker (#3070): null without SignatureFunctions. Its own thread checks; this
+    // probe's sampling thread only queues and takes answers. Stopped and joined before the members above.
+    std::unique_ptr<WindowsSignature::SignatureWorker> m_Signatures;
+    std::jthread m_EnergyMeterOpener; // Last: joined first, while the meter and the mutex are alive
 };
 
 } // namespace Platform

@@ -479,20 +479,25 @@ Window::Window(WindowSpecification spec) : m_Spec(std::move(spec))
 
     m_Handle = SDL_CreateWindow(m_Spec.Title.c_str(), m_Spec.Width, m_Spec.Height, windowFlags);
 
+    // LCOV_EXCL_START - needs SDL or OpenGL setup to fail, which no test display can be made to do (#3221)
     if (m_Handle == nullptr)
     {
         spdlog::critical("Failed to create SDL window: {}", SDL_GetError());
         throw std::runtime_error("Failed to create SDL window");
     }
+    // LCOV_EXCL_STOP
 
     m_GLContext = SDL_GL_CreateContext(m_Handle);
+    // LCOV_EXCL_START - needs SDL or OpenGL setup to fail, which no test display can be made to do (#3221)
     if (m_GLContext == nullptr)
     {
         spdlog::critical("Failed to create OpenGL context: {}", SDL_GetError());
         SDL_DestroyWindow(m_Handle);
         throw std::runtime_error("Failed to create OpenGL context");
     }
+    // LCOV_EXCL_STOP
 
+    // LCOV_EXCL_START - needs SDL or OpenGL setup to fail, which no test display can be made to do (#3221)
     if (!SDL_GL_MakeCurrent(m_Handle, m_GLContext))
     {
         spdlog::critical("Failed to make OpenGL context current: {}", SDL_GetError());
@@ -500,12 +505,14 @@ Window::Window(WindowSpecification spec) : m_Spec(std::move(spec))
         SDL_DestroyWindow(m_Handle);
         throw std::runtime_error("Failed to make OpenGL context current");
     }
+    // LCOV_EXCL_STOP
 
     // Load OpenGL functions using GLAD with SDL's GetProcAddress
     // NOLINT justification: SDL_FunctionPointer and GLADloadfunc have compatible signatures;
     // this is the standard pattern for loading OpenGL functions with SDL3
     const int version =
         gladLoadGL(reinterpret_cast<GLADloadfunc>(SDL_GL_GetProcAddress)); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+    // LCOV_EXCL_START - needs SDL or OpenGL setup to fail, which no test display can be made to do (#3221)
     if (version == 0)
     {
         spdlog::critical("Failed to initialize GLAD");
@@ -513,6 +520,7 @@ Window::Window(WindowSpecification spec) : m_Spec(std::move(spec))
         SDL_DestroyWindow(m_Handle);
         throw std::runtime_error("Failed to initialize GLAD");
     }
+    // LCOV_EXCL_STOP
 
     m_GLInfo.glVendor = glString(GL_VENDOR);
     m_GLInfo.glRenderer = glString(GL_RENDERER);
@@ -525,8 +533,8 @@ Window::Window(WindowSpecification spec) : m_Spec(std::move(spec))
     // SDL can hand back an older context than the one requested (GDI Generic's OpenGL 1.1 on a PC with
     // no GPU driver), and GLAD loads it without complaint: stop here with a message, rather than crash
     // on the first null OpenGL 2.0+ function (#1398).
-    if (!meetsRequiredGLVersion(GLAD_VERSION_MAJOR(version), GLAD_VERSION_MINOR(version)))
     // LCOV_EXCL_START - needs a driver without OpenGL 3.3; the decision itself is tested (test_OpenGLRequirement.cpp)
+    if (!meetsRequiredGLVersion(GLAD_VERSION_MAJOR(version), GLAD_VERSION_MINOR(version)))
     {
         const std::string message = unsupportedGLVersionMessage(m_GLInfo.glVersion, m_GLInfo.glRenderer, m_GLInfo.glVendor);
         spdlog::critical("{}", message);
@@ -661,10 +669,12 @@ void Window::clearCloseRequest() noexcept
 
 void Window::setPosition(int x, int y) const
 {
+    // LCOV_EXCL_START - m_Handle is never null: the constructor throws without it, only the destructor clears it (#3221)
     if (m_Handle == nullptr)
     {
         return;
     }
+    // LCOV_EXCL_STOP
     // Asynchronous: the custom title bar calls this on every drag and left/top-resize step, so it
     // must not wait for the window manager. applySavedGeometry() syncs once where it needs to.
     SDL_SetWindowPosition(m_Handle, x, y);
@@ -672,10 +682,12 @@ void Window::setPosition(int x, int y) const
 
 auto Window::getPosition() const -> std::pair<int, int>
 {
+    // LCOV_EXCL_START - m_Handle is never null: the constructor throws without it, only the destructor clears it (#3221)
     if (m_Handle == nullptr)
     {
         return {0, 0};
     }
+    // LCOV_EXCL_STOP
 
     int x = 0;
     int y = 0;
@@ -699,10 +711,12 @@ bool Window::supportsPositioning() noexcept
 
 void Window::setSize(int width, int height)
 {
+    // LCOV_EXCL_START - m_Handle is never null: the constructor throws without it, only the destructor clears it (#3221)
     if (m_Handle == nullptr)
     {
         return;
     }
+    // LCOV_EXCL_STOP
 
     const int clampedWidth = clampWindowDimension(width);
     const int clampedHeight = clampWindowDimension(height);
@@ -722,10 +736,12 @@ void Window::setSize(int width, int height)
 
 bool Window::setMinimumSize(int width, int height, WindowGeometry::MinimumSizeChange change)
 {
+    // LCOV_EXCL_START - m_Handle is never null: the constructor throws without it, only the destructor clears it (#3221)
     if (m_Handle == nullptr)
     {
         return false;
     }
+    // LCOV_EXCL_STOP
 
     m_WantedMinimum = {width, height};
     if (change == WindowGeometry::MinimumSizeChange::AllowGrow)
@@ -769,10 +785,12 @@ bool Window::applyMinimumSize(std::pair<int, int> minimum)
 
 auto Window::getSize() const noexcept -> std::pair<int, int>
 {
+    // LCOV_EXCL_START - m_Handle is never null: the constructor throws without it, only the destructor clears it (#3221)
     if (m_Handle == nullptr)
     {
         return {m_Spec.Width, m_Spec.Height};
     }
+    // LCOV_EXCL_STOP
 
     int width = 0;
     int height = 0;
@@ -792,10 +810,12 @@ int Window::getHeight() const noexcept
 
 auto Window::getSizeInPixels() const noexcept -> std::pair<int, int>
 {
+    // LCOV_EXCL_START - m_Handle is never null: the constructor throws without it, only the destructor clears it (#3221)
     if (m_Handle == nullptr)
     {
         return {m_Spec.Width, m_Spec.Height};
     }
+    // LCOV_EXCL_STOP
 
     int pixelW = 0;
     int pixelH = 0;
@@ -823,10 +843,12 @@ auto Window::liveRect() const -> WindowGeometry::Rect
 
 bool Window::isNormalNow() const
 {
+    // LCOV_EXCL_START - m_Handle is never null: the constructor throws without it, only the destructor clears it (#3221)
     if (m_Handle == nullptr)
     {
         return false;
     }
+    // LCOV_EXCL_STOP
     // SDL_WINDOW_MAXIMIZED as well as isMaximized(): on a client-side backend isMaximized() reads only
     // the tracker, which has not yet heard of a window-manager maximize while its resize events are
     // being drained.
@@ -836,10 +858,12 @@ bool Window::isNormalNow() const
 
 void Window::handleGeometryChanged()
 {
+    // LCOV_EXCL_START - m_Handle is never null: the constructor throws without it, only the destructor clears it (#3221)
     if (m_Handle == nullptr)
     {
         return;
     }
+    // LCOV_EXCL_STOP
     const bool normalNow = isNormalNow();
     m_Geometry.observe(liveRect(), getUnitScale(), normalNow);
 
@@ -859,10 +883,12 @@ void Window::handleGeometryChanged()
 
 void Window::applySavedGeometry(std::optional<std::pair<int, int>> position, bool maximized, std::optional<float> savedScale)
 {
+    // LCOV_EXCL_START - m_Handle is never null: the constructor throws without it, only the destructor clears it (#3221)
     if (m_Handle == nullptr)
     {
         return;
     }
+    // LCOV_EXCL_STOP
 
     // Usable bounds of every connected display, and which of them is primary.
     std::vector<WindowGeometry::Rect> displays;
@@ -1042,10 +1068,12 @@ auto Window::getUsableDisplaySize() const -> std::optional<std::pair<int, int>>
 
 bool Window::isMaximized() const
 {
+    // LCOV_EXCL_START - m_Handle is never null: the constructor throws without it, only the destructor clears it (#3221)
     if (m_Handle == nullptr)
     {
         return false;
     }
+    // LCOV_EXCL_STOP
 
     // For borderless windows, Windows (and X11/XWayland without EWMH maximize, #1339) fake maximize
     // by resizing to the usable display bounds, so SDL_WINDOW_MAXIMIZED never gets set there and our
@@ -1069,10 +1097,12 @@ bool Window::isMaximized() const
 
 void Window::maximize()
 {
+    // LCOV_EXCL_START - m_Handle is never null: the constructor throws without it, only the destructor clears it (#3221)
     if (m_Handle == nullptr)
     {
         return;
     }
+    // LCOV_EXCL_STOP
 
     // The rectangle being left, taken before anything moves the window. It becomes the restore
     // target only when the window is normal right now: a second maximize() must not replace the
@@ -1153,10 +1183,12 @@ void Window::maximize()
 
 bool Window::adoptSystemMaximize()
 {
+    // LCOV_EXCL_START - m_Handle is never null: the constructor throws without it, only the destructor clears it (#3221)
     if (m_Handle == nullptr)
     {
         return false;
     }
+    // LCOV_EXCL_STOP
 
     // Read the live flags, not the event: a queued MAXIMIZED can be handled after a later OS restore
     // or minimize, which adopting it would undo (#1208).
@@ -1201,20 +1233,24 @@ void Window::handleSystemMaximized(bool adopt)
 
 void Window::handleSystemRestored()
 {
+    // LCOV_EXCL_START - m_Handle is never null: the constructor throws without it, only the destructor clears it (#3221)
     if (m_Handle == nullptr)
     {
         return;
     }
+    // LCOV_EXCL_STOP
     const SDL_WindowFlags flags = SDL_GetWindowFlags(m_Handle);
     m_Geometry.systemRestored((flags & SDL_WINDOW_MAXIMIZED) != 0, (flags & SDL_WINDOW_MINIMIZED) != 0);
 }
 
 bool Window::restoreForShellMinimize()
 {
+    // LCOV_EXCL_START - m_Handle is never null: the constructor throws without it, only the destructor clears it (#3221)
     if (m_Handle == nullptr)
     {
         return false;
     }
+    // LCOV_EXCL_STOP
     const auto [winKeyDown, downKeyDown] = m_ShellRestoreKeysReader != nullptr ? m_ShellRestoreKeysReader() : shellRestoreKeysHeld();
     if (!WindowGeometry::shellMinimizeRestores(m_Geometry.state(), winKeyDown, downKeyDown))
     {
@@ -1234,10 +1270,12 @@ bool Window::restoreForShellMinimize()
 #ifdef _WIN32
 bool Window::handleShellCommand(WindowGeometry::SystemCommand command)
 {
+    // LCOV_EXCL_START - m_Handle is never null: the constructor throws without it, only the destructor clears it (#3221)
     if (m_Handle == nullptr)
     {
         return false;
     }
+    // LCOV_EXCL_STOP
     if (command == WindowGeometry::SystemCommand::Minimize)
     {
         return restoreForShellMinimize();
@@ -1262,10 +1300,12 @@ bool Window::handleShellCommand(WindowGeometry::SystemCommand command)
 
 void Window::restore()
 {
+    // LCOV_EXCL_START - m_Handle is never null: the constructor throws without it, only the destructor clears it (#3221)
     if (m_Handle == nullptr)
     {
         return;
     }
+    // LCOV_EXCL_STOP
 
     // On asynchronous windowing systems (X11) the restore is only a request until the window manager
     // answers. Wait for it before forgetting the normal rectangle: closed in between,
@@ -1315,29 +1355,35 @@ void Window::restore()
 
 void Window::minimize() const
 {
+    // LCOV_EXCL_START - m_Handle is never null: the constructor throws without it, only the destructor clears it (#3221)
     if (m_Handle == nullptr)
     {
         return;
     }
+    // LCOV_EXCL_STOP
 
     SDL_MinimizeWindow(m_Handle);
 }
 
 bool Window::isMinimized() const noexcept
 {
+    // LCOV_EXCL_START - m_Handle is never null: the constructor throws without it, only the destructor clears it (#3221)
     if (m_Handle == nullptr)
     {
         return false;
     }
+    // LCOV_EXCL_STOP
     return (SDL_GetWindowFlags(m_Handle) & SDL_WINDOW_MINIMIZED) != 0;
 }
 
 bool Window::isOccluded() const noexcept
 {
+    // LCOV_EXCL_START - m_Handle is never null: the constructor throws without it, only the destructor clears it (#3221)
     if (m_Handle == nullptr)
     {
         return false;
     }
+    // LCOV_EXCL_STOP
     // SDL sets the flag on SDL_EVENT_WINDOW_OCCLUDED and clears it on SDL_EVENT_WINDOW_EXPOSED.
     return (SDL_GetWindowFlags(m_Handle) & SDL_WINDOW_OCCLUDED) != 0;
 }
@@ -1385,10 +1431,12 @@ void Window::handleDisplayStateChange(const WindowVisibility::DisplayState state
 
 void Window::refreshCloaked()
 {
+    // LCOV_EXCL_START - m_Handle is never null: the constructor throws without it, only the destructor clears it (#3221)
     if (m_Handle == nullptr)
     {
         return;
     }
+    // LCOV_EXCL_STOP
     m_LastCloakCheck = std::chrono::steady_clock::now();
     if (HWND hwnd = nativeWindowHandle(m_Handle); hwnd != nullptr)
     {
@@ -1469,10 +1517,12 @@ GraphicsHostInfo Window::queryGraphicsHostInfo() const
 
 double Window::getDisplayRefreshRate() const noexcept
 {
+    // LCOV_EXCL_START - m_Handle is never null: the constructor throws without it, only the destructor clears it (#3221)
     if (m_Handle == nullptr)
     {
         return 0.0;
     }
+    // LCOV_EXCL_STOP
     const SDL_DisplayID display = SDL_GetDisplayForWindow(m_Handle);
     if (display == 0)
     {
@@ -1493,10 +1543,12 @@ double Window::getDisplayRefreshRate() const noexcept
 
 void Window::setHitTestCallback(SDL_HitTest callback, void* callbackData) const
 {
+    // LCOV_EXCL_START - m_Handle is never null: the constructor throws without it, only the destructor clears it (#3221)
     if (m_Handle == nullptr)
     {
         return;
     }
+    // LCOV_EXCL_STOP
 
     if (!SDL_SetWindowHitTest(m_Handle, callback, callbackData))
     {

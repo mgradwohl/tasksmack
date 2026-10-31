@@ -36,6 +36,7 @@ namespace
 {
 
 constexpr const char* FILTER_HINT = ICON_FA_FILTER "  Filter by process, address, port or state";
+constexpr const char* ROW_MENU_ID = "##ConnectionRowMenu";
 
 /// "*" for an endpoint with no address and no port (a listening or unconnected socket's remote end).
 [[nodiscard]] std::string endpointText(Platform::ConnectionFamily family, const Platform::ConnectionEndpoint& endpoint)
@@ -238,6 +239,32 @@ orderConnectionRows(const std::vector<ConnectionRow>& rows, std::string_view fil
     return order;
 }
 
+std::string_view closeConnectionRefusal(const Platform::SystemConnection& connection)
+{
+    using Platform::ConnectionState;
+    if (connection.connection.protocol != Platform::ConnectionProtocol::Tcp)
+    {
+        return "Only a TCP connection can be closed";
+    }
+    switch (connection.connection.state)
+    {
+    case ConnectionState::Established:
+    case ConnectionState::SynSent:
+    case ConnectionState::SynReceived:
+    case ConnectionState::CloseWait:
+        break;
+    case ConnectionState::Listen:
+        return "A listening socket has no connection to close";
+    default:
+        return "The connection is already closing";
+    }
+    if (connection.pid == 0 || connection.startTimeTicks == 0 || connection.socketInode == 0)
+    {
+        return "No process TaskSmack can see holds this socket";
+    }
+    return {};
+}
+
 std::uint64_t selectionKey(const Platform::SystemConnection& connection) noexcept
 {
     return Domain::Connections::socketKey(connection.connection);
@@ -248,8 +275,8 @@ namespace
 
 /// One table row for @p row (table row @p i): its selectable, then its cells. The holder to select when it
 /// was clicked, if any.
-[[nodiscard]] std::optional<ConnectionsViewAction>
-renderConnectionRow(const ConnectionRow& row, int i, const UI::ColorScheme& scheme, ConnectionsViewState& state, double now)
+[[nodiscard]] std::optional<ConnectionsViewAction> renderConnectionRow(
+    const ConnectionRow& row, int i, const UI::ColorScheme& scheme, ConnectionsViewState& state, double now, std::optional<ImGuiID> menuId)
 {
     std::optional<ConnectionsViewAction> action;
     const std::uint64_t key = selectionKey(row.connection);
@@ -282,8 +309,16 @@ renderConnectionRow(const ConnectionRow& row, int i, const UI::ColorScheme& sche
         {
             action = ConnectionsViewAction{.pid = row.connection.pid,
                                            .startTimeTicks = row.connection.startTimeTicks,
-                                           .showDetails = ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)};
+                                           .showDetails = ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left),
+                                           .close = std::nullopt};
         }
+    }
+    // The row menu (#3066), on a copy of the row taken now: the order may change while it is up.
+    if (menuId.has_value() && !row.closed && ImGui::IsItemClicked(ImGuiMouseButton_Right))
+    {
+        state.selectedKey = key;
+        state.menuRow = row;
+        ImGui::OpenPopup(*menuId);
     }
     ImGui::PopID();
     ImGui::SameLine(0.0F, 0.0F);
@@ -332,7 +367,7 @@ renderConnectionRow(const ConnectionRow& row, int i, const UI::ColorScheme& sche
 } // namespace
 
 std::optional<ConnectionsViewAction>
-renderConnectionsView(const Domain::ConnectionsPublication* publication, bool hasConnections, ConnectionsViewState& state)
+renderConnectionsView(const Domain::ConnectionsPublication* publication, bool hasConnections, ConnectionsViewState& state, bool canClose)
 {
     if (!hasConnections)
     {
@@ -373,6 +408,8 @@ renderConnectionsView(const Domain::ConnectionsPublication* publication, bool ha
                                             ImGuiTableFlags_Sortable | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter |
                                             ImGuiTableFlags_BordersV | ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX |
                                             ImGuiTableFlags_SizingFixedFit;
+    // Got here, outside the table, so the popup the rows open is the one drawn after it.
+    const std::optional<ImGuiID> menuId = canClose ? std::optional<ImGuiID>(ImGui::GetID(ROW_MENU_ID)) : std::nullopt;
     if (!ImGui::BeginTable("##ConnectionsTable", 8, TABLE_FLAGS))
     {
         return std::nullopt;
@@ -411,13 +448,34 @@ renderConnectionsView(const Domain::ConnectionsPublication* publication, bool ha
     {
         for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i)
         {
-            if (const auto clicked = renderConnectionRow(state.rows[state.visible[static_cast<std::size_t>(i)]], i, scheme, state, now))
+            if (const auto clicked =
+                    renderConnectionRow(state.rows[state.visible[static_cast<std::size_t>(i)]], i, scheme, state, now, menuId))
             {
                 action = clicked;
             }
         }
     }
     ImGui::EndTable();
+
+    if (menuId.has_value() && ImGui::BeginPopup(ROW_MENU_ID))
+    {
+        if (state.menuRow.has_value())
+        {
+            const std::string refusal(closeConnectionRefusal(state.menuRow->connection));
+            if (ImGui::MenuItem(ICON_FA_XMARK "  Close connection...", nullptr, false, refusal.empty()))
+            {
+                action = ConnectionsViewAction{.pid = state.menuRow->connection.pid,
+                                               .startTimeTicks = state.menuRow->connection.startTimeTicks,
+                                               .showDetails = false,
+                                               .close = state.menuRow};
+            }
+            if (!refusal.empty())
+            {
+                ImGui::SetItemTooltip("%s", refusal.c_str());
+            }
+        }
+        ImGui::EndPopup();
+    }
     return action;
 }
 
