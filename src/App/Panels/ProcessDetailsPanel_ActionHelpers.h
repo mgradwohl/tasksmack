@@ -307,10 +307,19 @@ inline constexpr float AUTHORIZE_RESULT_SECONDS = 30.0F;
                            pid,
                            signalName(action));
     case ProcessAction::EfficiencyModeOn:
+#ifdef _WIN32
         return std::format("{} (PID {}) will run at Idle priority on Windows' power-saving scheduling (EcoQoS): it uses less power "
                            "and may run slower, and some programs become unstable. Turning Efficiency mode off restores its priority.",
                            processName,
                            pid);
+#else
+        // Linux (#3202): nice 19, and the cgroup's lowest CPU weight where it is alone in its cgroup.
+        return std::format("{} (PID {}) will run at nice 19, the lowest priority, and if it is alone in its cgroup, at the lowest CPU "
+                           "weight: it gets CPU time when other work leaves some, so it may run much slower. Turning Efficiency mode "
+                           "off restores both.",
+                           processName,
+                           pid);
+#endif
     case ProcessAction::EfficiencyModeOff:
         return std::format("{} (PID {}) will leave Efficiency mode, and its priority will be restored.", processName, pid);
     case ProcessAction::None:
