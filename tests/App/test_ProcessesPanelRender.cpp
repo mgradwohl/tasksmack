@@ -1598,6 +1598,51 @@ TEST_F(ProcessesPanelRenderTest, TheArchitectureColumnShowsEachProcesssArchitect
     UserConfig::get().settings().processColumns.setVisible(ProcessColumn::Architecture, false);
 }
 
+// #3086, #3244: the Policy column words each process's scheduling policy from the snapshot's policy and
+// real-time priority where it draws the cell -- "Normal", "Batch", "FIFO 50", "RR 10" -- and shows the dash
+// for one whose policy couldn't be read.
+TEST_F(ProcessesPanelRenderTest, ThePolicyCellIsFormattedWhenDrawnFromTheStoredPolicy)
+{
+    UserConfig::get().settings().processColumns.setVisible(ProcessColumn::Policy, true);
+    auto panel = std::make_unique<ProcessesPanel>(
+        []
+        {
+            auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+            const auto withPolicy = [](std::int32_t pid, const char* name, Platform::SchedPolicy policy, std::uint32_t rtPriority)
+            {
+                Platform::ProcessCounters counters =
+                    TestMocks::makeProcessCounters(pid, name, 'S', 30, 10, 1000, std::uint64_t{2} << 20U, 1);
+                counters.schedPolicy = policy;
+                counters.rtPriority = rtPriority;
+                return counters;
+            };
+            probe->withProcess(withPolicy(100, "shell", Platform::SchedPolicy::Normal, 0))
+                .withProcess(withPolicy(101, "indexer", Platform::SchedPolicy::Batch, 0))
+                .withProcess(withPolicy(102, "pipewire", Platform::SchedPolicy::Fifo, 50))
+                .withProcess(withPolicy(103, "jackd", Platform::SchedPolicy::RoundRobin, 10))
+                .withProcess(withPolicy(104, "unread", Platform::SchedPolicy::Unknown, 0));
+            Platform::ProcessCapabilities caps = probe->capabilities();
+            caps.hasSchedPolicy = true;
+            probe->setCapabilities(caps);
+            return ProcessesPanelPlatform{
+                .probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>(), .icons = nullptr};
+        },
+        std::function<void(Core::Event&)>{});
+    attachAndSeed(*panel);
+    Core::ActiveTabChangedEvent shown("Processes");
+    panel->onEvent(shown);
+    renderUntilLoaded(*panel);
+    const std::string text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("Policy")) << text;
+    EXPECT_TRUE(text.contains("Normal")) << text;
+    EXPECT_TRUE(text.contains("Batch")) << text;
+    EXPECT_TRUE(text.contains("FIFO 50")) << text;
+    EXPECT_TRUE(text.contains("RR 10")) << text;
+    EXPECT_TRUE(text.contains(ProcessRowFormat::UNAVAILABLE_CELL_TEXT)) << "unread's isn't read:\n" << text;
+    panel->onDetach();
+    UserConfig::get().settings().processColumns.setVisible(ProcessColumn::Policy, false);
+}
+
 // #3070: the Signature column shows a check mark and the signer for a verified image, Unsigned and
 // Invalid for the rest, "Not checked" for a check that failed, and the dash while one is to come; hovering
 // a cell says how it is signed. Where the probe checks no signatures (Linux) every row is the dash.
@@ -1610,16 +1655,19 @@ TEST_F(ProcessesPanelRenderTest, TheSignatureColumnShowsTheVerifiedSignerOrWhyNo
             auto probe = std::make_unique<TestMocks::MockProcessProbe>();
             Platform::ProcessCounters system =
                 TestMocks::makeProcessCounters(100, "explorer", 'R', 200, 50, 1000, std::uint64_t{8} << 20U, 1);
-            system.signature = {.signature = Platform::ImageSignature::Catalog, .note = {}, .signer = "Microsoft Windows"};
+            system.signature =
+                Platform::SignatureCheck{.signature = Platform::ImageSignature::Catalog, .note = {}, .signer = "Microsoft Windows"};
             Platform::ProcessCounters homebrew =
                 TestMocks::makeProcessCounters(101, "homebrew", 'S', 30, 10, 1100, std::uint64_t{2} << 20U, 100);
-            homebrew.signature = {.signature = Platform::ImageSignature::Unsigned, .note = {}, .signer = {}};
+            homebrew.signature = Platform::SignatureCheck{.signature = Platform::ImageSignature::Unsigned, .note = {}, .signer = {}};
             Platform::ProcessCounters tampered =
                 TestMocks::makeProcessCounters(102, "tampered", 'S', 30, 10, 1200, std::uint64_t{2} << 20U, 100);
-            tampered.signature = {.signature = Platform::ImageSignature::Untrusted, .note = "bad digest", .signer = {}};
+            tampered.signature =
+                Platform::SignatureCheck{.signature = Platform::ImageSignature::Untrusted, .note = "bad digest", .signer = {}};
             Platform::ProcessCounters locked =
                 TestMocks::makeProcessCounters(103, "locked", 'S', 30, 10, 1300, std::uint64_t{2} << 20U, 100);
-            locked.signature = {.signature = Platform::ImageSignature::Unknown, .note = "Access is denied", .signer = {}};
+            locked.signature =
+                Platform::SignatureCheck{.signature = Platform::ImageSignature::Unknown, .note = "Access is denied", .signer = {}};
             probe->withProcess(std::move(system))
                 .withProcess(std::move(homebrew))
                 .withProcess(std::move(tampered))

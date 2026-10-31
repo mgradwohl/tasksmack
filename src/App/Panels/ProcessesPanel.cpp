@@ -66,6 +66,7 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/ImageSignature.h"
 #include "Platform/ProcessTypes.h"
+#include "Platform/SchedPolicy.h"
 #include "Platform/ThreadName.h"
 #include "UI/CellText.h"
 #include "UI/EmptyState.h"
@@ -689,15 +690,16 @@ void schedPolicyCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& 
     if (!fmt.schedPolicySupported)
     {
         renderUnavailableTextCell(ProcessRowFormat::UNSUPPORTED_CELL_REASON, widths.unavailableText);
+        return;
     }
-    else if (!proc.schedPolicyText.empty())
-    {
-        renderLeftAlignedText(proc.schedPolicyText, fmt.schedPolicyWidth);
-    }
-    else
+    // Worded here, without allocating, from the snapshot's policy (#3244).
+    const Platform::SchedPolicyText label = Platform::schedPolicyText(proc.schedPolicy, proc.rtPriority);
+    if (label.empty())
     {
         renderUnavailableTextCell(ProcessRowFormat::UNREADABLE_CELL_REASON, widths.unavailableText);
+        return;
     }
+    renderLeftAlignedText(label.view(), fmt.schedPolicyWidth);
 }
 
 /// The image's Authenticode signature (#3070), left-aligned: a check mark (in the success colour) and the
@@ -711,14 +713,16 @@ void signatureCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& fm
         renderUnavailableTextCell(ProcessRowFormat::UNSUPPORTED_CELL_REASON, widths.unavailableText);
         return;
     }
-    if (proc.signatureText.empty())
+    const Platform::SignatureCheck& check = proc.signature.get();
+    const std::string_view label = Platform::signatureLabel(check); // a view: allocates nothing (#3244)
+    if (label.empty())
     {
         renderUnavailableTextCell(Platform::SIGNATURE_NOT_CHECKED_NOTE, widths.unavailableText);
         return;
     }
     const UI::ColorScheme& scheme = UI::Theme::get().scheme();
     ImGui::BeginGroup();
-    if (Platform::isVerifiedSignature(proc.signature.signature))
+    if (Platform::isVerifiedSignature(check.signature))
     {
         const std::string_view mark = ProcessSignatureText::VERIFIED_MARK;
         ImGui::PushStyleColor(ImGuiCol_Text, scheme.textSuccess);
@@ -726,14 +730,13 @@ void signatureCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& fm
         ImGui::PopStyleColor();
         ImGui::SameLine(0.0F, ImGui::GetStyle().ItemInnerSpacing.x);
     }
-    ImGui::PushStyleColor(ImGuiCol_Text, ProcessSignatureText::textColor(proc.signature.signature, scheme));
-    renderCellText(
-        proc.signatureText, cachedTextWidth(proc.signatureText, fmt.signatureWidth), /*rightAligned=*/false, /*clippedTooltip=*/false);
+    ImGui::PushStyleColor(ImGuiCol_Text, ProcessSignatureText::textColor(check.signature, scheme));
+    renderCellText(label, cachedTextWidth(label, fmt.signatureWidth), /*rightAligned=*/false, /*clippedTooltip=*/false);
     ImGui::PopStyleColor();
     ImGui::EndGroup();
     if (ImGui::BeginItemTooltip())
     {
-        const std::string tooltip = Platform::signatureTooltip(proc.signature);
+        const std::string tooltip = Platform::signatureTooltip(check);
         ImGui::PushTextWrapPos(ImGui::GetFontSize() * HEADER_TOOLTIP_WRAP_EM);
         ImGui::TextUnformatted(tooltip.c_str());
         ImGui::PopTextWrapPos();

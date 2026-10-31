@@ -32,6 +32,24 @@ TEST(SchedPolicyTest, LabelsNameTheRealTimePriority)
     EXPECT_EQ(schedPolicyLabel(SchedPolicy::Unknown, 0), "");
 }
 
+// #3244: the label is worded where the Policy column draws it, held by value with no allocation; its
+// text is the label's, word for word, up to the largest priority a uint32 holds.
+TEST(SchedPolicyTest, TheHeldTextIsTheLabelWordForWord)
+{
+    EXPECT_EQ(schedPolicyText(SchedPolicy::Normal, 0).view(), "Normal");
+    EXPECT_EQ(schedPolicyText(SchedPolicy::Batch, 0).view(), "Batch");
+    EXPECT_EQ(schedPolicyText(SchedPolicy::Idle, 0).view(), "Idle");
+    EXPECT_EQ(schedPolicyText(SchedPolicy::Deadline, 0).view(), "Deadline");
+    EXPECT_EQ(schedPolicyText(SchedPolicy::Fifo, 1).view(), "FIFO 1");
+    EXPECT_EQ(schedPolicyText(SchedPolicy::Fifo, 99).view(), "FIFO 99");
+    EXPECT_EQ(schedPolicyText(SchedPolicy::RoundRobin, 10).view(), "RR 10");
+    EXPECT_EQ(schedPolicyText(SchedPolicy::Fifo, 4294967295U).view(), "FIFO 4294967295") << "the longest fits";
+    EXPECT_EQ(schedPolicyText(SchedPolicy::RoundRobin, 4294967295U).view(), "RR 4294967295");
+    EXPECT_TRUE(schedPolicyText(SchedPolicy::Unknown, 0).empty());
+    EXPECT_FALSE(schedPolicyText(SchedPolicy::Normal, 0).empty());
+    EXPECT_EQ(schedPolicyLabel(SchedPolicy::Fifo, 4294967295U), "FIFO 4294967295");
+}
+
 TEST(SchedPolicyTest, OrderIsByPolicyThenRealTimePriority)
 {
     EXPECT_TRUE(compareSchedPolicy(SchedPolicy::Idle, 0, SchedPolicy::Normal, 0) < 0);
