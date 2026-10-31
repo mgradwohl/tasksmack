@@ -17,6 +17,7 @@
 #include "Platform/IProcessThreads.h"
 #include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
+#include "Platform/IStartAtLogin.h"
 #include "Platform/IStartupActions.h"
 #include "Platform/IStartupProbe.h"
 #include "Platform/ISystemConnections.h"
@@ -122,6 +123,11 @@ namespace Platform
 /// Windows (WindowsHttpsClient). Null on Linux, which has no HTTPS client yet: the check isn't offered
 /// there, and nothing is sent. Making it opens nothing; each request opens and closes its own session.
 [[nodiscard]] std::shared_ptr<IHttpsClient> makeHttpsClient();
+
+/// Creates the sign-in entry Settings' "Start TaskSmack when I sign in" reads and writes (#3093, part 2):
+/// the HKCU Run key's TaskSmack value on Windows (WindowsStartAtLogin). Null on Linux until its XDG
+/// autostart entry is written (agent:WSL's part): the row is hidden there. Making it reads nothing.
+[[nodiscard]] std::shared_ptr<IStartAtLogin> makeStartAtLogin();
 
 #ifdef _WIN32
 /// Enables SeDebugPrivilege on TaskSmack's own process when it runs elevated (#2128), without which

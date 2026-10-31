@@ -242,6 +242,11 @@ endif()
 add_test(NAME DocsSriScript COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_docs_sri.py)
 set_tests_properties(DocsSriScript PROPERTIES TIMEOUT 60)
 
+# The NSIS uninstaller's start-at-sign-in step (#3093 part 2), cmake/CPackProjectConfig.cmake.in: it deletes
+# the HKCU Run value only when it starts this installation's TaskSmack.exe. Pure Python, on every platform.
+add_test(NAME NsisRunUninstallScript COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_nsis_run_uninstall.py)
+set_tests_properties(NsisRunUninstallScript PROPERTIES TIMEOUT 60)
+
 # tools/profile-heap.sh refuses a --bench-filter that matches no benchmark before starting heaptrack (#2987).
 # Stub binaries; the script is Linux-only, so the test is too.
 if(TASKSMACK_BASH AND NOT WIN32)
@@ -421,6 +426,7 @@ set(COMMON_TEST_SOURCES
     Domain/test_SystemInfoModel.cpp
     Domain/test_CrashHistory.cpp
     Domain/test_UpdateCheck.cpp # the update check's versions, reply reader and schedule (#3093)
+    Domain/test_StartAtLogin.cpp # start at sign-in: the entry's text and what it means for this copy (#3093 part 2)
     Domain/test_StorageModelAllocationFailure.cpp
     Domain/test_ServiceModel.cpp
     Domain/test_ProcessServices.cpp
@@ -629,6 +635,8 @@ set(COMMON_TEST_SOURCES
     App/test_ElevationNoticeText.cpp
     App/test_StatusBarText.cpp
     App/test_UpdateChecker.cpp # the update check's worker, with a fake client and clock (#3093)
+    App/test_StartAtLoginSetting.cpp # start at sign-in's worker, with a fake entry (#3093 part 2)
+    App/test_LaunchOptions.cpp # --minimized on the command line (#3093 part 2)
     App/test_StatusBarViewRender.cpp
     App/test_FontSizeChange.cpp
     App/test_KeyboardShortcuts.cpp
@@ -758,6 +766,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsNetworkAdapters.cpp
     Platform/test_WindowsPublicIp.cpp
     Platform/test_WindowsHttpsClient.cpp # what WinHTTP's client refuses before sending anything (#3093)
+    Platform/test_WindowsStartAtLogin.cpp # the Run value through fakes, and a scratch HKCU key (#3093 part 2)
     Platform/test_WinString.cpp
 )
 set(WINDOWS_INTEGRATION_TEST_SOURCES
@@ -1018,6 +1027,8 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/Domain/UpdateCheck.cpp
     # The update check's worker (#3093), with a fake client (test_UpdateChecker.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/UpdateChecker.cpp
+    # Start at sign-in's worker (#3093 part 2), with a fake entry (test_StartAtLoginSetting.cpp)
+    ${CMAKE_SOURCE_DIR}/src/App/StartAtLoginSetting.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/ServiceModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/BackgroundSampler.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/SamplerTimingBoard.cpp

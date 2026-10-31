@@ -27,6 +27,9 @@ struct ApplicationSpecification
     /// Platform/Domain/Core/UI/App layering: Core must not depend on App. Only has an effect
     /// combined with VideoBackend::isWayland() at window-creation time (see #745).
     bool ForceNativeDecorationsOnWayland = false;
+    /// Create the window hidden (WindowSpecification::Hidden), for main.cpp to show it minimized without
+    /// the focus once it is placed (Window::showMinimizedWithoutFocus(); --minimized, #3093 part 2).
+    bool StartHidden = false;
     /// No window, no OpenGL context and no SDL video subsystem: an event hub and clock for code that
     /// drives the App layer's panels itself, without run() (#880: the headless PGO UI training
     /// driver, training/). getWindow() and run() throw in this mode; hasWindow() says which it is.

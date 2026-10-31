@@ -2,10 +2,13 @@
 
 #include "App/BackgroundOpen.h"
 #include "App/FontSizeChange.h"
+#include "App/PanelPlatforms.h"
 #include "App/PlatformOpen.h"
 #include "App/SelectOverride.h"
 #include "App/SettingsDialog.h"
 #include "App/SettingsLayerDetail.h"
+#include "App/StartAtLoginSetting.h"
+#include "App/SyntheticScenario.h"
 #include "App/ThemeChange.h"
 #include "App/UserConfig.h"
 #include "Core/Application.h"
@@ -13,12 +16,14 @@
 #include "Core/Event.h"
 #include "Core/Layer.h"
 #include "Core/Utf8Path.h"
+#include "Platform/IStartAtLogin.h"
 #include "UI/Theme.h"
 
 #include <spdlog/spdlog.h>
 
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <system_error>
@@ -32,7 +37,10 @@ using Detail::HISTORY_OPTIONS;
 using Detail::pickedOption;
 using Detail::REFRESH_RATE_OPTIONS;
 
-SettingsLayer::SettingsLayer() : Core::Layer("SettingsLayer")
+// The sign-in entry (#3093 part 2) is made here, at construction: making it reads nothing. None in a
+// synthetic or test-hook run.
+SettingsLayer::SettingsLayer()
+    : Core::Layer("SettingsLayer"), m_StartAtLogin(makeStartAtLoginEntry(Synthetic::activeScenario(), SelectOverride::testHookActive()))
 {}
 
 SettingsLayer::SettingsLayer(std::function<void(Core::Event&)> raiseEvent,
@@ -78,6 +86,32 @@ void SettingsLayer::waitForPendingOpen()
     static_cast<void>(m_Open.poll());
 }
 
+void SettingsLayer::setStartAtLoginEntry(std::shared_ptr<Platform::IStartAtLogin> entry)
+{
+    m_StartAtLogin = StartAtLoginSetting(std::move(entry));
+    syncStartAtLogin();
+}
+
+void SettingsLayer::waitForStartAtLoginForTesting()
+{
+    m_StartAtLogin.waitForTesting();
+    syncStartAtLogin();
+}
+
+void SettingsLayer::syncStartAtLogin()
+{
+    static_cast<void>(m_StartAtLogin.poll());
+    m_State.startAtLoginOffered = m_StartAtLogin.offered();
+    m_State.startAtLoginBusy = m_StartAtLogin.busy();
+    m_State.startAtLoginChanging = m_StartAtLogin.changing();
+    // A new status puts the checkbox on it: what the entry is now, after a read, a Save or a Repair.
+    if (m_StartAtLogin.status() != m_State.startAtLoginStatus)
+    {
+        m_State.startAtLoginStatus = m_StartAtLogin.status();
+        m_State.startAtLogin = m_State.startAtLoginStatus.enabled();
+    }
+}
+
 // The user themes directory: the one UILayer scans and merges over the built-ins. The built-in
 // themes live in the install's assets directory, which is read-only and replaced on upgrade, so
 // that is not where users should add themes (#1127). Made by the open worker before it is opened, so
@@ -109,6 +143,7 @@ void SettingsLayer::onRender()
     // A finished open frees the buttons; a failure is in the log, as the opener writes it.
     static_cast<void>(m_Open.poll());
     m_State.openingPath = m_Open.busy();
+    syncStartAtLogin();
     switch (SettingsDialog::render(m_State))
     {
     case SettingsDialog::Action::Save:
@@ -158,6 +193,10 @@ void SettingsLayer::onRender()
         raiseEvent(event);
         break;
     }
+    case SettingsDialog::Action::RepairStartAtLogin:
+        // Now, on the worker (#3093 part 2): the entry is pointed at this copy and read back.
+        m_StartAtLogin.setEnabled(true);
+        break;
     case SettingsDialog::Action::OpenAbout:
     {
         Core::OpenAboutEvent event;
@@ -202,6 +241,10 @@ void SettingsLayer::requestOpen()
 {
     m_State.openRequested = true;
     SettingsDialog::load(m_State, UserConfig::get().settings(), UI::Theme::get().discoveredThemes());
+    // Start at sign-in (#3093 part 2): the checkbox starts on the last status, and the entry is read again
+    // on the worker, in case it changed outside TaskSmack.
+    m_State.startAtLogin = m_State.startAtLoginStatus.enabled();
+    m_StartAtLogin.refresh();
 }
 
 void SettingsLayer::applySettings()
@@ -300,6 +343,13 @@ void SettingsLayer::applySettings()
     {
         settings.updates.enabled = m_State.checkForUpdates;
         spdlog::info("Settings: Check for updates daily changed to {}", settings.updates.enabled);
+    }
+
+    // Start at sign-in (#3093 part 2): the entry is the setting, not config.toml. Turned on or off on its
+    // worker, only when the box was changed from what was read.
+    if (m_StartAtLogin.offered() && m_State.startAtLoginStatus.known() && m_State.startAtLogin != m_State.startAtLoginStatus.enabled())
+    {
+        m_StartAtLogin.setEnabled(m_State.startAtLogin);
     }
 
     // Save to disk, on a worker: the UI thread never writes the file (#2916)

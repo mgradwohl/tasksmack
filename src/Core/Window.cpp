@@ -476,6 +476,10 @@ Window::Window(WindowSpecification spec) : m_Spec(std::move(spec))
     {
         windowFlags |= SDL_WINDOW_BORDERLESS;
     }
+    if (m_Spec.Hidden)
+    {
+        windowFlags |= SDL_WINDOW_HIDDEN; // shown by showMinimizedWithoutFocus() (#3093 part 2)
+    }
 
     m_Handle = SDL_CreateWindow(m_Spec.Title.c_str(), m_Spec.Width, m_Spec.Height, windowFlags);
 
@@ -1351,6 +1355,53 @@ void Window::restore()
     SDL_RestoreWindow(m_Handle);
     syncRestore();
     m_Geometry.restored();
+}
+
+void Window::showMinimizedWithoutFocus()
+{
+    // LCOV_EXCL_START - m_Handle is never null: the constructor throws without it, only the destructor clears it (#3221)
+    if (m_Handle == nullptr)
+    {
+        return;
+    }
+    // LCOV_EXCL_STOP
+
+#ifdef _WIN32
+    // SW_SHOWMINNOACTIVE: shown straight to the taskbar, and never activated, so a start at sign-in doesn't
+    // take the focus from whatever the user is doing. SDL hears of it from the window's own messages
+    // (WM_SHOWWINDOW, WM_WINDOWPOSCHANGED with IsIconic), sent during the call, so its flags follow.
+    if (auto* const hwnd = nativeWindowHandle(m_Handle); hwnd != nullptr)
+    {
+        ShowWindow(hwnd, SW_SHOWMINNOACTIVE);
+        // A process's first ShowWindow can take its launcher's STARTUPINFO show state instead of the one
+        // asked for (STARTF_USESHOWWINDOW: a test runner's, a shortcut's "Run: Normal window"), leaving the
+        // window hidden or shown normally. The second call is always the one asked for.
+        if (IsIconic(hwnd) == FALSE)
+        {
+            spdlog::debug("Window::showMinimizedWithoutFocus: the first show wasn't minimized; minimizing again");
+            ShowWindow(hwnd, SW_SHOWMINNOACTIVE);
+        }
+        // Take in any of SDL's own state that is only updated from the event queue, so the first frame
+        // already finds the window minimized and draws nothing (#3156).
+        SDL_PumpEvents();
+        return;
+    }
+#endif
+    // Shown, if it was created hidden, without being activated, then minimized. The hint is SDL-wide, so
+    // it is put back after.
+    const char* const previous = SDL_GetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN);
+    const std::optional<std::string> saved = previous != nullptr ? std::optional<std::string>(previous) : std::nullopt;
+    SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
+    SDL_MinimizeWindow(m_Handle);
+    SDL_ShowWindow(m_Handle);
+    if (saved.has_value())
+    {
+        SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, saved->c_str());
+    }
+    else
+    {
+        SDL_ResetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN);
+    }
 }
 
 void Window::minimize() const
