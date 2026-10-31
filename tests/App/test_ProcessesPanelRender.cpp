@@ -3663,6 +3663,20 @@ TEST_F(ProcessesPanelRenderTest, TheUdpEventTraceSwitchIsTakenAndPassedOn)
     panel->onDetach();
 }
 
+// Process Details looks its process up in the model's latest snapshot, not the table's cached rows
+// (findSnapshot()): a listed PID is found, an unknown one isn't, and a panel without a model finds none.
+TEST_F(ProcessesPanelRenderTest, FindSnapshotReadsTheModelsLatestSnapshot)
+{
+    const auto panel = attachedPanel();
+    renderUntilLoaded(*panel);
+    const std::optional<Domain::ProcessSnapshot> server = panel->findSnapshot(100);
+    ASSERT_TRUE(server.has_value());
+    EXPECT_EQ(server.value_or(Domain::ProcessSnapshot{}).name, "server");
+    EXPECT_FALSE(panel->findSnapshot(424242).has_value());
+    panel->onDetach();
+    EXPECT_FALSE(panel->findSnapshot(100).has_value()) << "detached: no model";
+}
+
 /// Mock actions that say when they are destroyed.
 class TrackedActions : public TestMocks::MockProcessActions
 {
