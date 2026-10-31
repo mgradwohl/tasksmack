@@ -164,6 +164,13 @@ void SettingsLayer::onRender()
             dir); // a copy, as above
         break;
     }
+    case SettingsDialog::Action::CheckForUpdates:
+    {
+        // The shell's update checker asks at once (#3093); its status comes back as UpdateCheckStatusEvent.
+        Core::CheckForUpdatesEvent event;
+        raiseEvent(event);
+        break;
+    }
     case SettingsDialog::Action::OpenAbout:
     {
         Core::OpenAboutEvent event;
@@ -185,6 +192,15 @@ void SettingsLayer::onEvent(Core::Event& event)
         {
             requestOpen();
             return false; // Don't consume
+        });
+    // What the update check is doing (#3093): whether its rows show, and Check now's state and result line.
+    dispatcher.dispatch<Core::UpdateCheckStatusEvent>(
+        [this](Core::UpdateCheckStatusEvent& e)
+        {
+            m_State.updateCheckOffered = e.offered();
+            m_State.updateChecking = e.checking();
+            m_State.updateSummary = e.summary();
+            return false;
         });
     // TASKSMACK_DEMO's close=dialog (#2827): closes the dialog as Cancel does, on the next render.
     dispatcher.dispatch<Core::CloseDialogEvent>(
@@ -300,6 +316,14 @@ void SettingsLayer::applySettings()
     {
         settings.highlightNewProcesses = m_State.highlightNewProcesses;
         spdlog::info("Settings: Highlight new and exited processes changed to {}", m_State.highlightNewProcesses);
+    }
+
+    // The opt-in update check (#3093): the shell's checker reads the setting each frame, so a check that is
+    // due starts at once, and turning it off stops any further request and hides the notice.
+    if (m_State.checkForUpdates != settings.updates.enabled)
+    {
+        settings.updates.enabled = m_State.checkForUpdates;
+        spdlog::info("Settings: Check for updates daily changed to {}", settings.updates.enabled);
     }
 
     // Save to disk, on a worker: the UI thread never writes the file (#2916)

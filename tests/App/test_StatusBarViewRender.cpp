@@ -187,6 +187,39 @@ TEST_F(StatusBarViewRenderTest, EachIconAndButtonExplainsItselfOnHover)
     EXPECT_TRUE(seen.contains("Help: keyboard shortcuts, columns and tabs (F1)")) << seen;
 }
 
+// #3093: the update notice says which release is out, opens its page when clicked, and its X dismisses
+// it; with no notice neither is there.
+constexpr const char* NOTICE = ICON_FA_ARROW_UP "  TaskSmack v0.10.0 is available###UpdateNotice";
+
+TEST_F(StatusBarViewRenderTest, TheUpdateNoticeOpensItsPageAndCanBeDismissed)
+{
+    EXPECT_FALSE(frame().contains("is available"));
+    press(StatusBarView::UPDATE_NOTICE_ID);
+    static_cast<void>(frame());
+    EXPECT_EQ(m_LastAction, Action::None);
+
+    m_Input.updateNotice = NOTICE;
+    const std::string text = frame();
+    EXPECT_TRUE(text.contains("TaskSmack v0.10.0 is available")) << text;
+    EXPECT_TRUE(text.contains("412 processes")) << text; // beside the status, not instead of it
+    EXPECT_FALSE(text.contains("###UpdateNotice")) << text;
+    press(StatusBarView::UPDATE_NOTICE_ID);
+    static_cast<void>(frame());
+    EXPECT_EQ(m_LastAction, Action::OpenUpdate);
+    press(StatusBarView::DISMISS_UPDATE_LABEL);
+    static_cast<void>(frame());
+    EXPECT_EQ(m_LastAction, Action::DismissUpdate);
+}
+
+TEST_F(StatusBarViewRenderTest, ANarrowWindowLeavesTheUpdateNoticeOutBeforeTheStatus)
+{
+    m_Input.updateNotice = NOTICE;
+    ImGui::GetIO().DisplaySize = ImVec2(420.0F, 400.0F);
+    const std::string text = frame();
+    EXPECT_FALSE(text.contains("is available")) << text;
+    EXPECT_TRUE(text.contains("412 processes")) << text;
+}
+
 // #1395: at the very narrowest the process count itself is cut short with an ellipsis, not drawn past
 // the bar.
 TEST_F(StatusBarViewRenderTest, AtTheNarrowestTheProcessCountIsCutShort)

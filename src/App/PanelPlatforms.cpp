@@ -14,6 +14,7 @@
 #include "Platform/Factory.h"
 #include "Platform/IDiskProbe.h"
 #include "Platform/IGPUProbe.h"
+#include "Platform/IHttpsClient.h"
 #include "Platform/IPrivilegedBroker.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/ISystemInfoProbe.h"
@@ -166,6 +167,16 @@ std::unique_ptr<Platform::ISystemInfoProbe> makeSystemInfoPanelProbe(const Synth
 {
     // The facts readable by root only, through the helper (#2310)
     return Platform::withPrivilegedBroker(Platform::makeSystemInfoProbe(), sharedPrivilegedBroker());
+}
+
+std::shared_ptr<Platform::IHttpsClient> makeUpdateCheckClient(const Synthetic::Scenario* scenario, bool testHookActive)
+{
+    // No request from a made-up machine or an unattended test run (#3093): the check isn't offered there.
+    if (scenario != nullptr || testHookActive)
+    {
+        return nullptr;
+    }
+    return Platform::makeHttpsClient();
 }
 
 std::unique_ptr<Platform::ISystemInfoProbe> makeSensorProbe(const Synthetic::Scenario* /*scenario*/)

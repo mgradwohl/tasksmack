@@ -2,6 +2,7 @@
 
 #include "Platform/IDiskProbe.h"
 #include "Platform/IGPUProbe.h"
+#include "Platform/IHttpsClient.h"
 #include "Platform/IPathProvider.h"
 #include "Platform/IPowerProbe.h"
 #include "Platform/IPrivilegedBroker.h"
@@ -120,6 +121,11 @@ namespace Platform
 /// Program Files. Null on Linux, which has no Task Manager to replace. Cheap: nothing is read until a
 /// worker calls it.
 [[nodiscard]] std::shared_ptr<ITaskManagerReplacement> makeTaskManagerReplacement(std::shared_ptr<IPrivilegedBroker> broker);
+
+/// Creates the HTTPS client the opt-in update check sends its one request with (#3093): WinHTTP on
+/// Windows (WindowsHttpsClient). Null on Linux, which has no HTTPS client yet: the check isn't offered
+/// there, and nothing is sent. Making it opens nothing; each request opens and closes its own session.
+[[nodiscard]] std::shared_ptr<IHttpsClient> makeHttpsClient();
 
 #ifdef _WIN32
 /// The command line's arguments after the program's name, in UTF-8 (GetCommandLineW()): what Windows

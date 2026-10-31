@@ -17,6 +17,7 @@
 #include "Panels/SystemMetricsPanel.h"
 #include "Platform/IDiskProbe.h"
 #include "Platform/IGPUProbe.h"
+#include "Platform/IHttpsClient.h"
 #include "Platform/IPrivilegedBroker.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "TaskManagerReplacementController.h"
@@ -69,6 +70,11 @@ void preparePanelPlatforms(const Synthetic::Scenario* scenario);
 /// The System tab's sensor sampler's own probe (#2737), for readSensors() only: unbrokered, and safe to
 /// build off the UI thread (the sampler's first pass builds it).
 [[nodiscard]] std::unique_ptr<Platform::ISystemInfoProbe> makeSensorProbe(const Synthetic::Scenario* scenario);
+
+/// The HTTPS client the opt-in update check sends its request with (#3093): the platform's (null on Linux,
+/// which has none yet), or null in a synthetic run or while a test hook is set (@p testHookActive), where
+/// the check isn't offered. Making it opens and sends nothing.
+[[nodiscard]] std::shared_ptr<Platform::IHttpsClient> makeUpdateCheckClient(const Synthetic::Scenario* scenario, bool testHookActive);
 
 /// The probe the shared crash history reads (#1675), or null in a synthetic run: no crash history.
 [[nodiscard]] std::shared_ptr<Platform::ISystemInfoProbe> makeCrashHistoryProbe(const Synthetic::Scenario* scenario);

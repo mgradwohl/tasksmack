@@ -203,6 +203,50 @@ class CloseDialogEvent : public Event
     EVENT_CLASS_TYPE(CloseDialog)
 };
 
+/// Settings' "Check now" (#3093): the shell's update checker asks GitHub at once, whatever the daily limit.
+/// Settings raises it only while its "Check for updates daily" box is ticked, so nothing is sent otherwise.
+class CheckForUpdatesEvent : public Event
+{
+  public:
+    CheckForUpdatesEvent() = default;
+
+    EVENT_CLASS_TYPE(CheckForUpdates)
+};
+
+/// What the update check is doing (#3093), raised by the shell when it changes, for Settings: whether the
+/// check is offered here at all, whether one is running (Check now waits for it), and a line about the
+/// last check made this session ("Up to date", "TaskSmack v0.10.0 is available"), or empty.
+class UpdateCheckStatusEvent : public Event
+{
+  public:
+    UpdateCheckStatusEvent(bool offered, bool checking, std::string summary)
+        : m_Summary(std::move(summary)), m_Offered(offered), m_Checking(checking)
+    {}
+
+    /// False where there is no HTTPS client (Linux, for now), and in a synthetic or test-hook run.
+    [[nodiscard]] bool offered() const noexcept
+    {
+        return m_Offered;
+    }
+
+    [[nodiscard]] bool checking() const noexcept
+    {
+        return m_Checking;
+    }
+
+    [[nodiscard]] const std::string& summary() const noexcept
+    {
+        return m_Summary;
+    }
+
+    EVENT_CLASS_TYPE(UpdateCheckStatus)
+
+  private:
+    std::string m_Summary;
+    bool m_Offered;
+    bool m_Checking;
+};
+
 /// Elevation notice dialog request event - emitted at startup when running without elevated privileges.
 /// Carries the missing permissions (Platform::MissingPrivilege bits, #2303) the Linux text names; 0 elsewhere.
 class OpenElevationNoticeEvent : public Event

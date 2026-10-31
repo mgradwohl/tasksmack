@@ -74,6 +74,7 @@ void load(State& state, const UserSettings& settings, std::vector<UI::Discovered
     state.udpEventTrace = settings.udpEventTrace;
     state.showProcessIcons = settings.showProcessIcons;
     state.highlightNewProcesses = settings.highlightNewProcesses;
+    state.checkForUpdates = settings.updates.enabled;
 }
 
 void resetToDefaults(State& state)
@@ -93,6 +94,7 @@ void resetToDefaults(State& state)
     state.udpEventTrace = defaults.udpEventTrace;
     state.showProcessIcons = defaults.showProcessIcons;
     state.highlightNewProcesses = defaults.highlightNewProcesses;
+    state.checkForUpdates = defaults.updates.enabled;
 }
 
 Action render(State& state)
@@ -246,12 +248,14 @@ Action render(State& state)
         const float checkboxRowWidth = std::max({checkboxWidth(PRIVILEGE_NOTICE_LABEL),
                                                  checkboxWidth(PROCESS_ICONS_LABEL),
                                                  checkboxWidth(HIGHLIGHT_NEW_LABEL),
+                                                 state.updateCheckOffered ? checkboxWidth(CHECK_UPDATES_LABEL) : 0.0F,
                                                  Core::VideoBackend::isWayland() ? checkboxWidth(NATIVE_DECORATIONS_LABEL) : 0.0F});
 #else
         const float checkboxRowWidth = std::max({checkboxWidth(PRIVILEGE_NOTICE_LABEL),
                                                  checkboxWidth(PROCESS_ICONS_LABEL),
                                                  checkboxWidth(HIGHLIGHT_NEW_LABEL),
-                                                 checkboxWidth(UDP_EVENT_TRACE_LABEL)});
+                                                 checkboxWidth(UDP_EVENT_TRACE_LABEL),
+                                                 state.updateCheckOffered ? checkboxWidth(CHECK_UPDATES_LABEL) : 0.0F});
 #endif
         const float widestOtherRow = std::max({advancedRowWidth, actionRowWidth, checkboxRowWidth});
 
@@ -496,6 +500,31 @@ Action render(State& state)
         ImGui::Spacing();
         UI::Widgets::outlinedCheckbox(PRIVILEGE_NOTICE_LABEL, &state.showPrivilegeNotice);
         ImGui::SetItemTooltip("At startup, say when TaskSmack can't read every process's details without administrator or root rights");
+
+        // The opt-in update check (#3093), where it is offered: off by default, and then nothing is sent.
+        // Check now asks at once, and only while the box is ticked, so an unticked box always means no request.
+        if (state.updateCheckOffered)
+        {
+            ImGui::Spacing();
+            UI::Widgets::outlinedCheckbox(CHECK_UPDATES_LABEL, &state.checkForUpdates);
+            ImGui::SetItemTooltip("Once a day, ask GitHub for the latest TaskSmack release and say in the status bar when it is "
+                                  "newer, with a link to its page. The request carries TaskSmack's version and nothing else; "
+                                  "nothing is downloaded or installed.");
+            ImGui::TextColored(theme.scheme().textMuted, "%s", CHECK_UPDATES_NOTE);
+            ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textPrimary);
+            ImGui::BeginDisabled(!state.checkForUpdates || state.updateChecking);
+            if (ImGui::Button(CHECK_NOW_LABEL))
+            {
+                action = Action::CheckForUpdates;
+            }
+            ImGui::EndDisabled();
+            ImGui::PopStyleColor();
+            if (!state.updateSummary.empty())
+            {
+                ImGui::SameLine();
+                ImGui::TextUnformatted(state.updateSummary.c_str());
+            }
+        }
 
         // About moved out of F1, which now opens Help (#172); it is reached from here and from Help.
         // Only one modal is open at a time, so this closes Settings, as Cancel does, first.

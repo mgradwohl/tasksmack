@@ -74,6 +74,11 @@ seed_corpus fuzz_networkd_json tests/fuzz/corpus/fuzz_networkd_json/*
 build_fuzzer fuzz_dns_message
 seed_corpus fuzz_dns_message tests/fuzz/corpus/fuzz_dns_message/*
 
+# The update check's release JSON reader and version parser (#3093): the reply GitHub's releases API sends.
+# Seeded with a trimmed /releases/latest reply and a rate-limit answer.
+build_fuzzer fuzz_release_json src/Domain/UpdateCheck.cpp
+seed_corpus fuzz_release_json tests/fuzz/corpus/fuzz_release_json/*
+
 # The .desktop entry parser (#2172): header-only, on files any program the user runs can write.
 build_fuzzer fuzz_desktop_entry
 seed_corpus fuzz_desktop_entry tests/fuzz/corpus/fuzz_desktop_entry/*

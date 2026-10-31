@@ -33,6 +33,10 @@ inline constexpr const char* PROCESS_ICONS_LABEL = "Show process icons";        
 inline constexpr const char* HIGHLIGHT_NEW_LABEL = "Highlight new and exited processes"; // #3060
 // Windows only (#1492): the opt-in UDP event trace.
 inline constexpr const char* UDP_EVENT_TRACE_LABEL = "Count UDP traffic per process";
+// The opt-in update check (#3093): shown where it is offered (not on Linux yet).
+inline constexpr const char* CHECK_UPDATES_LABEL = "Check for updates daily";
+inline constexpr const char* CHECK_UPDATES_NOTE = "Asks GitHub once a day; nothing is downloaded.";
+inline constexpr const char* CHECK_NOW_LABEL = ICON_FA_ARROWS_ROTATE "  Check now";
 
 /// What the dialog keeps while it is open: the controls' values, edited in place until Save.
 struct State
@@ -55,6 +59,13 @@ struct State
     bool showProcessIcons = true;      ///< The programs' icons beside process names (#1800)
     bool highlightNewProcesses = true; ///< Tint the rows of processes that just started, and keep those that just exited (#3060)
     bool udpEventTrace = false;        ///< Windows only (#1492); shown and saved there
+    bool checkForUpdates = false;      ///< "Check for updates daily" (#3093); off by default
+    /// Set by SettingsLayer from the shell's UpdateCheckStatusEvent (#3093), never by load(): whether the
+    /// update check is offered here (its rows are hidden otherwise), whether one is running (Check now is
+    /// disabled until it ends), and the line about the last check this session.
+    bool updateCheckOffered = false;
+    bool updateChecking = false;
+    std::string updateSummary;
     /// Set by SettingsLayer while Edit Config File's or Open Themes Folder's open still runs on its worker
     /// (#3155): both buttons are disabled until it is done, so a double click opens one window.
     bool openingPath = false;
@@ -82,6 +93,7 @@ enum class Action : std::uint8_t
     EditConfig,       ///< Open config.toml in the system's editor
     OpenThemesFolder, ///< Open the user themes folder
     OpenAbout,        ///< Show the About dialog (Settings has closed, without saving)
+    CheckForUpdates,  ///< Check now (#3093): only while "Check for updates daily" is ticked; the dialog stays open
 };
 
 /// Fill @p state from the stored @p settings and the discovered @p themes, as the dialog opens: each

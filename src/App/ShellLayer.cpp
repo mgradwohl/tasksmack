@@ -9,6 +9,7 @@
 #include "Core/WindowConstants.h"
 #include "Core/WindowGeometry.h"
 #include "Domain/ProcessSnapshot.h"
+#include "Domain/UpdateCheck.h"
 #include "FontSizeChange.h"
 #include "KeyboardInput.h"
 #include "KeyboardShortcuts.h"
@@ -19,6 +20,7 @@
 #include "Panels/ProcessIconView.h"
 #include "Panels/ProcessesPanel.h"
 #include "Panels/SystemMetricsPanel.h"
+#include "Platform/IHttpsClient.h"
 #include "Platform/ProcessTypes.h"
 #include "RenderMetricsOverride.h"
 #include "SelectOverride.h"
@@ -36,8 +38,10 @@
 #include "UI/IconsFontAwesome6.h"
 #include "UI/RenderMetrics.h"
 #include "UI/Theme.h"
+#include "UpdateChecker.h"
 #include "UserConfig.h"
 #include "WindowOverride.h"
+#include "version.h"
 
 #include <SDL3/SDL.h>
 #include <imgui.h>
@@ -86,9 +90,12 @@ constexpr const char* SYSTEM_INFO_TAB_LABEL = ICON_FA_SERVER "  System###SystemI
 }
 } // namespace
 
-ShellLayer::ShellLayer(std::unique_ptr<IShellHost> host)
+ShellLayer::ShellLayer(std::unique_ptr<IShellHost> host,
+                       std::shared_ptr<Platform::IHttpsClient> updateClient,
+                       UpdateChecker::Clock updateClock)
     : Layer("ShellLayer"),
       m_Host(std::move(host)),
+      m_Updates(std::move(updateClient), tasksmack::Version::STRING, std::move(updateClock)),
       m_Tabs({{.panel = m_SystemMetricsPanel,
                .eventName = "SystemOverview",
                .label = [this] { return m_CachedSystemTabLabel.c_str(); },
@@ -420,6 +427,13 @@ void ShellLayer::onEvent(Core::Event& event)
             m_RefreshIntervalMs = e.getIntervalMs();
             return false;
         });
+    // Settings' Check now (#3093): the next update starts the check.
+    dispatcher.dispatch<Core::CheckForUpdatesEvent>(
+        [this](Core::CheckForUpdatesEvent& /*e*/)
+        {
+            m_Updates.checkNow();
+            return false;
+        });
 
     // Forward events to all panels; each handles the settings events it needs itself
     m_Tabs.onEvent(event);
@@ -562,6 +576,8 @@ void ShellLayer::onUpdate(float deltaTime)
         m_StatusIntervalText = intervalText.empty() ? std::string{} : ICON_FA_ARROWS_ROTATE "  " + intervalText;
         m_StatusIntervalMs = m_RefreshIntervalMs;
     }
+
+    updateUpdateCheck();
 
     // Ctrl+Shift+M: toggle the Render Metrics overlay (per-chart vertex count and CPU cost)
     if (io.KeyCtrl && io.KeyShift && !io.KeyAlt && ImGui::IsKeyPressed(ImGuiKey_M, false))
@@ -874,7 +890,45 @@ void ShellLayer::renderTabBar()
     }
 }
 
-void ShellLayer::renderStatusBar() const
+void ShellLayer::updateUpdateCheck()
+{
+    auto& config = UserConfig::get();
+    Domain::UpdateCheck::Persisted& state = config.settings().updates;
+    if (m_Updates.update(state))
+    {
+        config.saveInBackground(); // the last check's time and what it saw, never written on this thread (#2916)
+    }
+
+    // The notice's label, rebuilt only when what it offers changes.
+    if (const std::optional<Domain::UpdateCheck::Notice> notice = m_Updates.notice(state); notice.has_value())
+    {
+        if (m_UpdateNoticeLabel.empty() || m_UpdateNoticeUrl != notice->url || m_UpdateNoticeVersion != notice->version)
+        {
+            m_UpdateNoticeLabel =
+                std::string(ICON_FA_ARROW_UP "  ") + Domain::UpdateCheck::noticeText(notice->version) + StatusBarView::UPDATE_NOTICE_ID;
+            m_UpdateNoticeUrl = notice->url;
+            m_UpdateNoticeVersion = notice->version;
+        }
+    }
+    else if (!m_UpdateNoticeLabel.empty())
+    {
+        m_UpdateNoticeLabel.clear();
+        m_UpdateNoticeUrl.clear();
+        m_UpdateNoticeVersion.clear();
+    }
+
+    // Settings' rows and Check now follow the checker; told only when that changes.
+    UpdateStatus status{.summary = m_Updates.summary(), .offered = m_Updates.offered(), .checking = m_Updates.checking()};
+    if (!m_RaisedUpdateStatus.has_value() || m_RaisedUpdateStatus->summary != status.summary ||
+        m_RaisedUpdateStatus->offered != status.offered || m_RaisedUpdateStatus->checking != status.checking)
+    {
+        Core::UpdateCheckStatusEvent event(status.offered, status.checking, status.summary);
+        m_RaisedUpdateStatus = std::move(status);
+        m_Host->raiseEvent(event);
+    }
+}
+
+void ShellLayer::renderStatusBar()
 {
     // Live, not a startup copy: a probe can withdraw a capability after the first sample (#1254).
     // ProcessesPanel keeps it with its cached snapshot generation, so reading it takes no lock.
@@ -898,7 +952,26 @@ void ShellLayer::renderStatusBar() const
         .showControls = !m_Host->isBorderless(),
         .fps = m_ShowRenderMetrics ? std::optional<float>(m_FpsCounter.displayedFps()) : std::nullopt,
         .frameTimeSeconds = m_FpsCounter.displayedFrameTime(),
+        .updateNotice = m_UpdateNoticeLabel.empty() ? nullptr : m_UpdateNoticeLabel.c_str(),
     });
+    // A finished link open frees the notice for the next click.
+    static_cast<void>(m_UpdateLinkOpen.poll());
+    if (action == StatusBarView::Action::OpenUpdate && !m_UpdateNoticeUrl.empty())
+    {
+        // In the browser, on a worker (#3155); a second click while it opens is ignored.
+        static_cast<void>(m_UpdateLinkOpen.start(BackgroundOpen::openUtf8(m_UpdateNoticeUrl)));
+    }
+    else if (action == StatusBarView::Action::DismissUpdate)
+    {
+        auto& config = UserConfig::get();
+        if (UpdateChecker::dismiss(config.settings().updates))
+        {
+            config.saveInBackground();
+        }
+        m_UpdateNoticeLabel.clear(); // gone from this frame on
+        m_UpdateNoticeUrl.clear();
+        m_UpdateNoticeVersion.clear();
+    }
     if (action == StatusBarView::Action::Settings)
     {
         Core::OpenSettingsEvent event;

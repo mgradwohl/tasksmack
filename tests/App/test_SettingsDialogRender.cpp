@@ -446,5 +446,66 @@ TEST(SettingsDialogStateTest, TheUdpTraceIsLoadedAndResetToOff)
     EXPECT_EQ(state.udpEventTrace, UserSettings{}.udpEventTrace);
 }
 
+// #3093: "Check for updates daily" is off by default, loaded from the stored setting and reset to off;
+// what the shell says about the check (offered, running, the last result) is the layer's, so load() and
+// Reset leave it alone.
+TEST(SettingsDialogStateTest, TheUpdateCheckIsLoadedAndResetToOff)
+{
+    EXPECT_FALSE(UserSettings{}.updates.enabled);
+    UserSettings settings;
+    settings.updates.enabled = true;
+    SettingsDialog::State state;
+    state.updateCheckOffered = true;
+    state.updateSummary = "Up to date";
+    SettingsDialog::load(state, settings, themes());
+    EXPECT_TRUE(state.checkForUpdates);
+    SettingsDialog::resetToDefaults(state);
+    EXPECT_FALSE(state.checkForUpdates);
+    EXPECT_TRUE(state.updateCheckOffered);
+    EXPECT_EQ(state.updateSummary, "Up to date");
+}
+
+// #3093: the rows are there only where the check is offered; the checkbox edits the state Save hands the
+// layer.
+TEST_F(SettingsDialogRenderTest, TheUpdateCheckRowsShowOnlyWhereItIsOffered)
+{
+    ASSERT_TRUE(openAndSettle().open);
+    pressInBody(SettingsDialog::CHECK_UPDATES_LABEL);
+    static_cast<void>(runFrame());
+    EXPECT_FALSE(m_State.checkForUpdates); // not drawn, so not pressed
+
+    m_State.updateCheckOffered = true;
+    static_cast<void>(settle());
+    pressInBody(SettingsDialog::CHECK_UPDATES_LABEL);
+    static_cast<void>(runFrame());
+    EXPECT_TRUE(m_State.checkForUpdates);
+    pressInBody(SettingsDialog::CHECK_UPDATES_LABEL);
+    static_cast<void>(runFrame());
+    EXPECT_FALSE(m_State.checkForUpdates);
+}
+
+// #3093: Check now asks only while the box is ticked (an unticked box means no request) and not while a
+// check runs; it is reported to the layer and keeps the dialog open.
+TEST_F(SettingsDialogRenderTest, CheckNowIsReportedOnlyWhileTickedAndIdle)
+{
+    m_State.updateCheckOffered = true;
+    ASSERT_TRUE(openAndSettle().open);
+    pressInBody(SettingsDialog::CHECK_NOW_LABEL);
+    EXPECT_EQ(runFrame().action, Action::None); // unticked: disabled
+
+    m_State.checkForUpdates = true;
+    static_cast<void>(settle());
+    pressInBody(SettingsDialog::CHECK_NOW_LABEL);
+    EXPECT_EQ(runFrame().action, Action::CheckForUpdates);
+    EXPECT_TRUE(settle().open);
+
+    m_State.updateChecking = true;
+    m_State.updateSummary = "Checking for updates\xE2\x80\xA6";
+    static_cast<void>(settle());
+    pressInBody(SettingsDialog::CHECK_NOW_LABEL);
+    EXPECT_EQ(runFrame().action, Action::None); // one at a time
+    EXPECT_TRUE(settle().open);
+}
+
 } // namespace
 } // namespace App
