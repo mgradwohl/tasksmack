@@ -3614,7 +3614,8 @@ TEST(SystemInfoSectionsTest, ValuesForTheLessCommonCombinations)
     network.available = true;
     network.listed = true;
     network.searchDomains = {"corp.example.com", "lab.example.com"};
-    const Row* domains = findRow(SystemInfo::buildNetworkAdaptersSection(network), "Search domains");
+    const Section networkSection = SystemInfo::buildNetworkAdaptersSection(network);
+    const Row* domains = findRow(networkSection, "Search domains");
     ASSERT_NE(domains, nullptr);
     EXPECT_EQ(domains->value, "corp.example.com, lab.example.com");
 
@@ -3632,7 +3633,8 @@ TEST(SystemInfoSectionsTest, ValuesForTheLessCommonCombinations)
     security.family = Platform::OsFamily::Linux;
     security.encryptedVolumesRead = true;
     security.encryptedVolumes = {{.name = {}, .type = "LUKS2", .device = "sda2", .mountPoints = {"/data"}}};
-    const Row* volume = findRow(SystemInfo::buildSecuritySection(security), "Disk encryption (sda2)");
+    const Section securitySection = SystemInfo::buildSecuritySection(security);
+    const Row* volume = findRow(securitySection, "Disk encryption (sda2)");
     ASSERT_NE(volume, nullptr);
     EXPECT_TRUE(volume->valueTooltip.empty());
 
@@ -3644,7 +3646,8 @@ TEST(SystemInfoSectionsTest, ValuesForTheLessCommonCombinations)
     orphan.name = "Orphan keyboard";
     orphan.parent = 5;
     devices.usb = {orphan};
-    const Row* usb = findRow(SystemInfo::buildDevicesSection(devices), "USB 1");
+    const Section deviceSection = SystemInfo::buildDevicesSection(devices);
+    const Row* usb = findRow(deviceSection, "USB 1");
     ASSERT_NE(usb, nullptr);
     EXPECT_FALSE(usb->value.contains("via")) << usb->value;
 
