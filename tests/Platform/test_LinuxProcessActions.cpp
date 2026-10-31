@@ -2930,5 +2930,54 @@ TEST_F(LinuxEfficiencyModeActionTest, ARefusedNiceIsAPermissionRefusalAndTouches
     EXPECT_FALSE(m_Control.setEfficiencyMode(reused, false).success);
 }
 
+TEST_F(LinuxEfficiencyModeActionTest, OffAfterAnOnThatKeptTheWeightPutsBackOnlyTheNice)
+{
+    efficiency().files["cgroup.procs"] = std::to_string(ownTarget().pid) + "\n1\n"; // shared: weight kept
+    ASSERT_TRUE(m_Control.setEfficiencyMode(ownTarget(), true).success);
+    efficiency().files["cgroup.procs"] = std::to_string(ownTarget().pid) + "\n"; // alone by now
+    efficiency().files["cpu.weight"] = "1\n";                                    // and someone set the minimum
+    efficiency().nice = 19;
+    const ProcessActionResult off = m_Control.setEfficiencyMode(ownTarget(), false);
+    ASSERT_TRUE(off.success) << off.errorMessage;
+    EXPECT_TRUE(efficiency().writes.empty()) << "on didn't lower it, so off doesn't raise it";
+}
+
+// The real calls, on a child: nice 19 reaches it, its cgroup (the test's, shared) keeps its weight, and
+// putting nice 0 back needs CAP_SYS_NICE, which a permission refusal the helper can finish says.
+TEST(LinuxEfficiencyModeRealTest, TheRealCallsOnAChildProcess)
+{
+    const SleepingChild child;
+    ASSERT_TRUE(child.started());
+    LinuxProcessControl control;
+    const ProcessActionResult on = control.setEfficiencyMode(child.target(), true);
+    ASSERT_TRUE(on.success) << on.errorMessage;
+    EXPECT_FALSE(on.successNote.empty()) << "a cgroup shared with this test, or none of its own";
+    EXPECT_EQ(realProcessSyscalls().currentNice(child.target().pid), std::optional<std::int32_t>(19));
+
+    const ProcessActionResult off = control.setEfficiencyMode(child.target(), false);
+    if (::geteuid() == 0)
+    {
+        EXPECT_TRUE(off.success) << off.errorMessage;
+    }
+    else
+    {
+        EXPECT_FALSE(off.success);
+        EXPECT_TRUE(off.permissionDenied) << off.errorMessage;
+    }
+}
+
+TEST(LinuxEfficiencyModeRealTest, TheRealCgroupFileCallsStayUnderTheCgroupRoot)
+{
+    const LinuxProcessSyscalls real = realProcessSyscalls();
+    EXPECT_EQ(real.writeCgroupFile("../../etc", "passwd", "x"), EINVAL) << "outside the cgroup root: refused unopened";
+    EXPECT_EQ(real.readCgroupFile("../../etc", "passwd"), std::nullopt);
+    EXPECT_EQ(real.writeCgroupFile("tasksmack-no-such-cgroup-3202", "cpu.weight", "1"), ENOENT);
+    EXPECT_EQ(real.readCgroupFile("tasksmack-no-such-cgroup-3202", "cpu.weight"), std::nullopt);
+    EXPECT_EQ(real.currentNice(std::numeric_limits<std::int32_t>::max()), std::nullopt);
+    const std::optional<std::string> own = real.procCgroup(static_cast<std::int32_t>(::getpid()));
+    ASSERT_TRUE(own.has_value());
+    EXPECT_FALSE(own->empty());
+}
+
 } // namespace
 } // namespace Platform
