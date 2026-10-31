@@ -2,8 +2,9 @@
 
 // One HTTPS GET (#3093): the transport behind the opt-in update check (Domain/UpdateCheck.h). Raw: it
 // sends the request it is given and hands back the status and the body, and decides nothing about them.
-// Windows uses WinHTTP (the system's TLS and proxy settings; WindowsHttpsClient). Linux has none yet,
-// so Platform::makeHttpsClient() gives null there and the update check is not offered.
+// Windows uses WinHTTP (the system's TLS and proxy settings; WindowsHttpsClient); Linux libcurl (LinuxHttpsClient,
+// #3238), and a Linux build without libcurl has none, so Platform::makeHttpsClient() gives null and the update
+// check is not offered.
 //
 // Blocking: called on a worker (App::UpdateChecker), never on the UI thread (#2731).
 

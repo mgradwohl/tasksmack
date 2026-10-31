@@ -797,6 +797,7 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_DetachedSpawn.cpp
     Platform/test_SessionUser.cpp  # whom a run as root opens links and folders as (#2461)
     Platform/test_LinuxStartup.cpp  # the Startup tab on Linux: XDG autostart (#2541)
+    Platform/test_LinuxHttpsClient.cpp  # the update check's HTTPS client on Linux: libcurl (#3238)
     Platform/test_LinuxIoPriority.cpp
     Platform/test_LinuxProcessEnvironmentReader.cpp
     Platform/test_LinuxProcessConnectionsReader.cpp
@@ -1117,7 +1118,7 @@ tasksmack_apply_linux_toolchain(TaskSmackTests)
 if(UNIX AND NOT APPLE)
     # tasksmack_sdbus: libsystemd and TASKSMACK_HAS_SDBUS when found, as for the app (#1525). No X11:
     # Core/X11WindowManager.cpp dlopen()s libX11, as for the app and the benchmarks (#1702).
-    target_link_libraries(TaskSmackTests PRIVATE ${CMAKE_DL_LIBS} tasksmack_sdbus)
+    target_link_libraries(TaskSmackTests PRIVATE ${CMAKE_DL_LIBS} tasksmack_sdbus tasksmack_curl)
 
     add_library(TaskSmackNVMLMock SHARED
         Mocks/NVMLMock.cpp

@@ -274,6 +274,7 @@ set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/LinuxProcessModulesReader.cpp
     src/Platform/Linux/LinuxProcessThreadsReader.cpp # Process Details Threads (#3069)
     src/Platform/Linux/LinuxStartup.cpp # the Startup tab: XDG autostart entries (#2541)
+    src/Platform/Linux/LinuxHttpsClient.cpp # the update check's HTTPS client: libcurl (#3238)
     src/Platform/Linux/LinuxProcessOpenFilesReader.cpp
     src/Platform/Linux/LinuxProcessSecurityReader.cpp
     src/Platform/Linux/LinuxSystemProbe.cpp
@@ -373,6 +374,25 @@ if(UNIX AND NOT APPLE AND TASKSMACK_WITH_SDBUS)
         message(STATUS "libsystemd ${LIBSYSTEMD_VERSION}: systemd is read over D-Bus (Boot performance section)")
     else()
         message(STATUS "libsystemd not found (install libsystemd-dev): the Boot performance section will be unavailable")
+    endif()
+endif()
+
+# libcurl on Linux (#3238): the opt-in update check's HTTPS client (LinuxHttpsClient), a build dependency the
+# .deb then depends on (CPACK_DEBIAN_PACKAGE_SHLIBDEPS). Found with pkg-config, as libsystemd is: without it
+# (or with TASKSMACK_WITH_CURL=OFF) the app still builds and the update check isn't offered.
+option(TASKSMACK_WITH_CURL "Check for updates over HTTPS with libcurl when it is installed (Linux)" ON)
+add_library(tasksmack_curl INTERFACE)
+if(UNIX AND NOT APPLE AND TASKSMACK_WITH_CURL)
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(LIBCURL QUIET IMPORTED_TARGET libcurl)
+    endif()
+    if(LIBCURL_FOUND)
+        target_link_libraries(tasksmack_curl INTERFACE PkgConfig::LIBCURL)
+        target_compile_definitions(tasksmack_curl INTERFACE TASKSMACK_HAS_CURL=1)
+        message(STATUS "libcurl ${LIBCURL_VERSION}: the update check can be offered")
+    else()
+        message(STATUS "libcurl not found (install libcurl4-openssl-dev): the update check will not be offered")
     endif()
 endif()
 
@@ -757,8 +777,8 @@ function(tasksmack_configure_app_target target)
     if(WIN32)
         tasksmack_apply_windows_platform(${target})
     elseif(UNIX AND NOT APPLE)
-        # tasksmack_sdbus: libsystemd and TASKSMACK_HAS_SDBUS when found (#1525)
-        target_link_libraries(${target} PRIVATE dl tasksmack_sdbus)
+        # tasksmack_sdbus: libsystemd and TASKSMACK_HAS_SDBUS when found (#1525); tasksmack_curl: libcurl (#3238)
+        target_link_libraries(${target} PRIVATE dl tasksmack_sdbus tasksmack_curl)
     endif()
 endfunction()
 

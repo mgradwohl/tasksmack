@@ -90,11 +90,12 @@ the user or the person installing or operating it.
 TaskSmack has no telemetry, crash reporting or analytics, and its update check is off unless the user turns
 it on. The only network requests it makes are the ones the user asks for:
 
-- **Check for updates daily** (Settings, Advanced; Windows only for now; off by default). While it is off,
+- **Check for updates daily** (Settings, Advanced; off by default). While it is off,
   TaskSmack sends nothing. While it is on, TaskSmack sends at most one request a day, and one more each time
   **Check now** is clicked: an HTTPS `GET https://api.github.com/repos/mgradwohl/tasksmack/releases/latest`
   with the headers `User-Agent: TaskSmack/<version>` and `Accept: application/vnd.github+json`, through
-  Windows' own HTTP stack (WinHTTP) and proxy settings. No cookies, credentials, identifiers or other data are
+  Windows' own HTTP stack (WinHTTP) and proxy settings, or on Linux libcurl with the system's certificate
+  store and the `https_proxy` environment variable. No cookies, credentials, identifiers or other data are
   sent. GitHub receives the request's IP address and the version in the User-Agent, as it does for any
   visitor; its handling of them is covered by
   [GitHub's privacy statement](https://docs.github.com/site-policy/privacy-policies/github-general-privacy-statement).
