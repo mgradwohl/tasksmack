@@ -20,6 +20,7 @@
 #include "Platform/IHttpsClient.h"
 #include "Platform/IPrivilegedBroker.h"
 #include "Platform/ISystemInfoProbe.h"
+#include "Platform/IUserSessions.h"
 
 #include <memory>
 
@@ -57,6 +58,9 @@ void preparePanelPlatforms(const Synthetic::Scenario* scenario);
 /// The Connections tab's process actions, for Close connection (#3066): the scenario's, or the platform's,
 /// which an administrator can finish through the helper.
 [[nodiscard]] std::unique_ptr<Platform::IProcessActions> makeConnectionsPanelActions(const Synthetic::Scenario* scenario);
+
+/// The Users tab's sessions (#3076): the platform's, or none in a synthetic run, whose processes are made up.
+[[nodiscard]] std::shared_ptr<Platform::IUserSessions> makeUsersPanelSessions(const Synthetic::Scenario* scenario);
 
 /// The Services tab's probe and actions: the platform's, in every run.
 [[nodiscard]] ServicesPanelPlatform makeServicesPanelPlatform(const Synthetic::Scenario* scenario);

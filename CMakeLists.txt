@@ -214,6 +214,8 @@ set(TASKSMACK_SOURCES
     src/App/Panels/StartupView.cpp
     src/App/Panels/ConnectionsPanel.cpp # the Connections tab (#3066)
     src/App/Panels/ConnectionsView.cpp
+    src/App/Panels/UsersPanel.cpp # the Users tab (#3076)
+    src/App/Panels/UsersView.cpp
     src/App/Panels/SystemInfoPanel.cpp
     src/App/Panels/SystemInfoSections.cpp
     src/App/Panels/SystemInfoView.cpp
@@ -226,6 +228,7 @@ set(TASKSMACK_SOURCES
     src/Domain/GPUModel.cpp
     src/Domain/StartupModel.cpp
     src/Domain/ConnectionsModel.cpp # the Connections tab (#3066)
+    src/Domain/UsersModel.cpp # the Users tab (#3076)
     src/Domain/HandleSearch.cpp # Find handles (#3067)
     src/Domain/ServiceModel.cpp
     src/Domain/SensorModel.cpp

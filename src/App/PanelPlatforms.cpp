@@ -18,6 +18,7 @@
 #include "Platform/IPrivilegedBroker.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/ISystemInfoProbe.h"
+#include "Platform/IUserSessions.h"
 #include "SyntheticScenario.h"
 
 #include <memory>
@@ -134,6 +135,15 @@ ProcessDetailsReaders makeProcessDetailsReaders(const Synthetic::Scenario* scena
 std::unique_ptr<Platform::IProcessActions> makeConnectionsPanelActions(const Synthetic::Scenario* scenario)
 {
     return processActionsFor(scenario);
+}
+
+std::shared_ptr<Platform::IUserSessions> makeUsersPanelSessions(const Synthetic::Scenario* scenario)
+{
+    if (scenario != nullptr)
+    {
+        return std::make_shared<Platform::UnsupportedUserSessions>();
+    }
+    return Platform::makeUserSessions();
 }
 
 ServicesPanelPlatform makeServicesPanelPlatform(const Synthetic::Scenario* /*scenario*/)

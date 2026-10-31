@@ -16,6 +16,7 @@
 #include "Panels/StartupPanel.h"
 #include "Panels/SystemInfoPanel.h"
 #include "Panels/SystemMetricsPanel.h"
+#include "Panels/UsersPanel.h"
 
 #include <array>
 #include <cstdint>
@@ -68,15 +69,19 @@ class ShellPanels
     {
         return m_Connections;
     }
+    [[nodiscard]] UsersPanel& users() noexcept
+    {
+        return m_Users;
+    }
     [[nodiscard]] SystemInfoPanel& systemInfo() noexcept
     {
         return m_SystemInfo;
     }
 
-    /// In tab order: System, Processes, Process Details, Services, Startup, Connections, System Information.
-    [[nodiscard]] std::array<Panel*, 7> inTabOrder() noexcept
+    /// In tab order: System, Processes, Process Details, Services, Startup, Connections, Users, System Information.
+    [[nodiscard]] std::array<Panel*, 8> inTabOrder() noexcept
     {
-        return {&m_SystemMetrics, &m_Processes, &m_ProcessDetails, &m_Services, &m_Startup, &m_Connections, &m_SystemInfo};
+        return {&m_SystemMetrics, &m_Processes, &m_ProcessDetails, &m_Services, &m_Startup, &m_Connections, &m_Users, &m_SystemInfo};
     }
 
     /// Before the panels attach: the recent crashes and hangs the System tab's reads fill and Process
@@ -113,6 +118,7 @@ class ShellPanels
     ServicesPanel m_Services;
     StartupPanel m_Startup;
     ConnectionsPanel m_Connections; // #3066
+    UsersPanel m_Users;             // #3076
     SystemInfoPanel m_SystemInfo;
 
     // The PID the process model watches for Process Details, and the scratch buffer its new samples
