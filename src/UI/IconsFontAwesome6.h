@@ -129,12 +129,15 @@ inline constexpr uint32_t ICON_MAX_FA = 0xf8ff;
 // ============================================================================
 // Menu & Navigation Icons
 // ============================================================================
-#define ICON_FA_DOOR_OPEN "\xef\x94\xab" // U+f52b - Exit/door
-#define ICON_FA_WRENCH "\xef\x82\xad"    // U+f0ad - Tools/wrench
-#define ICON_FA_PALETTE "\xef\x94\xbf"   // U+f53f - Theme/palette
-#define ICON_FA_FONT "\xef\x80\xb1"      // U+f031 - Font
-#define ICON_FA_PLUS "\x2b"              // U+002b - Plus sign
-#define ICON_FA_MINUS "\x2d"             // U+002d - Minus sign
+#define ICON_FA_DOOR_OPEN "\xef\x94\xab"          // U+f52b - Exit/door
+#define ICON_FA_RIGHT_FROM_BRACKET "\xef\x8b\xb5" // U+f2f5 - Sign out (#3076)
+#define ICON_FA_USER "\xef\x80\x87"               // U+f007 - A user (#3076)
+#define ICON_FA_USERS "\xef\x83\x80"              // U+f0c0 - Users tab (#3076)
+#define ICON_FA_WRENCH "\xef\x82\xad"             // U+f0ad - Tools/wrench
+#define ICON_FA_PALETTE "\xef\x94\xbf"            // U+f53f - Theme/palette
+#define ICON_FA_FONT "\xef\x80\xb1"               // U+f031 - Font
+#define ICON_FA_PLUS "\x2b"                       // U+002b - Plus sign
+#define ICON_FA_MINUS "\x2d"                      // U+002d - Minus sign
 
 // ============================================================================
 // Device Icons

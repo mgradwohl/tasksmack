@@ -605,7 +605,7 @@ The **Startup** tab lists the programs Windows (or, on Linux, your desktop sessi
 
 ### Connections tab
 
-The **Connections** tab, between Startup and System, lists every TCP and UDP socket on the machine, with the process holding it, in a **Process / PID / Protocol / Local address / Remote address / State** table. It's what Windows' Resource Monitor shows under Network; Process Details' [Connections](#connections) section shows the same for one process.
+The **Connections** tab, between Startup and Users, lists every TCP and UDP socket on the machine, with the process holding it, in a **Process / PID / Protocol / Local address / Remote address / State** table. It's what Windows' Resource Monitor shows under Network; Process Details' [Connections](#connections) section shows the same for one process.
 
 - **Local address** and **Remote address** are the socket's endpoints (`10.0.0.5:52144`, `[::1]:631`). A listening or unconnected socket's remote end is `*`. **State** uses netstat's names (`ESTABLISHED`, `LISTEN`, `TIME_WAIT`); a UDP socket that is only bound is `UNCONN`.
 - **Sent/s** and **Received/s** are how fast each TCP connection is moving data, from the kernel's per-socket byte counters (Linux 4.2 or later) between two readings. They show a dash for UDP sockets, which have no such counters, and for a connection's first reading. Sort by either, highest first, to find the busy connections.
@@ -615,6 +615,17 @@ The **Connections** tab, between Startup and System, lists every TCP and UDP soc
 - A socket that opened since the last read is tinted green, fading out over five seconds. One that closed stays for two seconds, dimmed and tinted red, with **Closed** as its state, and can't be selected. The colours are the ones the Processes table uses for new and exited processes. The count beside the filter leaves closed sockets out. Nothing is tinted when the tab first opens.
 - A socket shows **Unknown** for its process when no process TaskSmack can see holds it: a closing (`TIME_WAIT`) socket, or one belonging to another user's process, which only an administrator can see. Hover it for the reason.
 - TaskSmack reads the sockets only while the tab is shown, at the refresh interval set in Settings, on a background thread. On Linux it lists the sockets of TaskSmack's own network namespace, so a container's sockets aren't listed. They come from the kernel's netlink socket tables, and each socket's process is found from the processes' open files.
+- On Windows the tab says it isn't available yet.
+
+### Users tab
+
+The **Users** tab, between Connections and System, has a row for each signed-in user, as Windows Task Manager's Users tab does: their sessions and the **Σ CPU**, **Σ Memory**, **Σ Disk** (read plus write) and **Σ Network** (sent plus received) of every process running as them, with the process count. The Σ marks a total, never one process's figure. Your own row says **(you)**.
+
+- Expand a user (each starts expanded) to see their sessions, then their processes, busiest first. A session shows where and how it runs, such as `seat0 · tty2 · Wayland` for a desktop or `pts/0 · Console · from 10.0.0.9` for an ssh login, and its status: **Active** for the session in front, **Signed in** for one in the background, **Idle for 12 min**, or **Closing**. TaskSmack's own session says **(this session)**.
+- Click a process to select it (Process Details follows); double-click it to show it in Process Details.
+- Right-click a session for **Lock**, which locks its screen at once, and **Sign out...**, which asks first, naming the user and the session: every program in it ends and unsaved work is lost. Signing out the session TaskSmack runs in closes TaskSmack too, and the confirm says so. Your own sessions need nothing more; another user's ask for an administrator's password, and the line above the table offers **Authenticate and retry** when the first attempt is refused for want of one. The line says what happened, or why it couldn't.
+- Only sign-in sessions are listed: not the login screen's greeter, a lock screen, or the background session systemd keeps for each user. A user with processes but no sign-in (root, a service account) has no row.
+- On Linux the sessions come from systemd-logind, read only while the tab is shown, at the refresh interval set in Settings, on a background thread; the totals come from the Processes tab's own sample, so nothing is read twice. Without systemd-logind (or a build without libsystemd) the tab says why.
 - On Windows the tab says it isn't available yet.
 
 ### System Information
