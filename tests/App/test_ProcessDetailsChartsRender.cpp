@@ -12,6 +12,7 @@
 #include "Domain/ProcessSnapshot.h"
 #include "UI/ChartWidgets.h"
 #include "UI/FillPlotLayout.h"
+#include "UI/IconsFontAwesome6.h"
 #include "UI/RateAxis.h"
 #include "UI/Theme.h"
 
@@ -27,6 +28,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <format>
 #include <functional>
 #include <limits>
 #include <set>
@@ -1649,6 +1651,172 @@ TEST_F(ProcessDetailsChartsRenderTest, AnNpuMemoryBarWithNoReadingIsDrawnUnavail
         }
         EXPECT_EQ(hatchVerticesIn("##ProcNpuUtilCard"), 0) << "read=" << read; // its utilization is still read
     }
+}
+
+// The Power chart (Linux with RAPL) with no history yet: left out while there is no reading now
+// either, and held by an empty plot, under its card, once there is a current reading to show.
+TEST_F(ProcessDetailsChartsRenderTest, APowerChartWithNoHistoryWaitsForAReading)
+{
+    ChartInputs inputs(busyPoint);
+    const Detail::ProcessDetailsHistory empty;
+    inputs.ctx.history = &empty;
+    inputs.ctx.hasPowerUsage = true;
+    ProcessDetailsCharts charts;
+    const auto overview = [&]
+    {
+        UI::Widgets::PlotFillState fillState;
+        UI::Widgets::FillPlotLayout fill(fillState);
+        charts.renderOverviewCharts(inputs.ctx, fill);
+    };
+    EXPECT_FALSE(tabText(overview).contains("Power Usage"));
+    EXPECT_TRUE(plotsDrawn().empty());
+
+    inputs.snapshot.powerWatts = 3.5;
+    resample(inputs);
+    EXPECT_TRUE(tabText(overview).contains("Power Usage"));
+    const auto plots = plotsDrawn();
+    ASSERT_EQ(plots.size(), 1U);
+    EXPECT_EQ(plots[0], SeriesLabels{"Power"}) << "the empty plot's placeholder item";
+}
+
+/// busyPoint() with the I/O counters unread (NaN): the network rates still read.
+[[nodiscard]] Detail::ProcessHistoryPoint ioUnreadPoint(std::size_t i)
+{
+    Detail::ProcessHistoryPoint point = busyPoint(i);
+    point.ioRead = NOT_A_NUMBER;
+    point.ioWrite = NOT_A_NUMBER;
+    return point;
+}
+
+/// busyPoint() with the network rates unread (NaN): the I/O counters still read.
+[[nodiscard]] Detail::ProcessHistoryPoint networkUnreadPoint(std::size_t i)
+{
+    Detail::ProcessHistoryPoint point = busyPoint(i);
+    point.netSent = NOT_A_NUMBER;
+    point.netReceived = NOT_A_NUMBER;
+    return point;
+}
+
+// #1918: on the Network and I/O tab, a chart whose rates this process can't be read for, now or in its
+// history, still draws (its notice over the empty plot) with N/A bars, while the other chart reads.
+TEST_F(ProcessDetailsChartsRenderTest, AChartWhoseRatesCantBeReadSaysSoBesideOneThatCan)
+{
+    {
+        ChartInputs inputs(ioUnreadPoint);
+        inputs.ctx.rateReadings.io = false;
+        resample(inputs);
+        ProcessDetailsCharts charts;
+        const std::string text = tabText([&] { charts.renderNetworkTab(inputs.ctx); });
+        EXPECT_TRUE(text.contains("N/A")) << text;
+        const auto plots = plotsDrawn();
+        ASSERT_EQ(plots.size(), 2U);
+        EXPECT_EQ(plots[1], (SeriesLabels{"Sent", "Received"}));
+    }
+    {
+        ChartInputs inputs(networkUnreadPoint);
+        inputs.ctx.rateReadings.network = false;
+        resample(inputs);
+        ProcessDetailsCharts charts;
+        const std::string text = tabText([&] { charts.renderNetworkTab(inputs.ctx); });
+        EXPECT_TRUE(text.contains("N/A")) << text;
+        const auto plots = plotsDrawn();
+        ASSERT_EQ(plots.size(), 2U);
+        EXPECT_EQ(plots[0], (SeriesLabels{"Read", "Write"}));
+    }
+}
+
+// A process using a GPU now, with no history yet (just selected): both GPU charts are drawn, each
+// held by an empty plot until the first sample.
+TEST_F(ProcessDetailsChartsRenderTest, GpuChartsWithNoHistoryYetAreDrawnEmpty)
+{
+    ChartInputs inputs(busyPoint);
+    const Detail::ProcessDetailsHistory empty;
+    inputs.ctx.history = &empty;
+    ProcessDetailsCharts charts;
+    const std::string text = tabText([&] { charts.renderGpuTab(inputs.ctx); });
+    EXPECT_TRUE(text.contains("GPU Utilization History")) << text;
+    EXPECT_TRUE(text.contains("GPU Memory History")) << text;
+    const auto plots = plotsDrawn();
+    ASSERT_EQ(plots.size(), 2U);
+    EXPECT_EQ(plots[0], SeriesLabels{"Utilization"});
+    EXPECT_EQ(plots[1], SeriesLabels{"GPU Memory"});
+}
+
+TEST_F(ProcessDetailsChartsRenderTest, TheGpuMemoryChartShowsATooltip)
+{
+    const ChartInputs inputs(busyPoint);
+    ProcessDetailsCharts charts;
+    const auto draw = [&]
+    {
+        runFrame([&] { charts.renderGpuTab(inputs.ctx); });
+    };
+    draw();
+    draw();
+    EXPECT_TRUE(hoverPlot(SeriesLabels{"Memory"}, draw));
+    ImGui::GetIO().AddMousePosEvent(-FLT_MAX, -FLT_MAX);
+}
+
+// A GPU's section of the per-GPU breakdown, collapsed by the user: its rows are hidden, the other GPU's
+// still shown.
+TEST_F(ProcessDetailsChartsRenderTest, ACollapsedGpuInTheBreakdownHidesItsRows)
+{
+    ChartInputs inputs(busyPoint);
+    inputs.snapshot.perGpuUsage = {
+        {.gpuId = "0",
+         .gpuName = "Discrete GPU 4090",
+         .isIntegrated = false,
+         .utilPercent = 60.0,
+         .memoryBytes = 2'000'000'000,
+         .dedicatedMemoryBytes = 2'000'000'000,
+         .sharedMemoryBytes = 0,
+         .engines = {"3D"}},
+        {.gpuId = "1",
+         .gpuName = "Integrated GPU 770",
+         .isIntegrated = true,
+         .utilPercent = 5.0,
+         .memoryBytes = 300'000'000,
+         .dedicatedMemoryBytes = 0,
+         .sharedMemoryBytes = 300'000'000,
+         .engines = {"VideoDecode"}},
+    };
+    ProcessDetailsCharts charts;
+    ASSERT_TRUE(tabText([&] { charts.renderGpuTab(inputs.ctx); }).contains("VideoDecode"));
+
+    // The header's open state, as a click on it stores it, in the usage card's window.
+    const ImGuiWindow* found = findCard("##ProcGpuUsageCard");
+    ASSERT_NE(found, nullptr);
+    ImGuiWindow* card = ImGui::FindWindowByID(found->ID);
+    ASSERT_NE(card, nullptr);
+    const std::string label = std::format("{} {} [{}]", ICON_FA_MICROCHIP, "Integrated GPU 770", "Shared Memory");
+    card->StateStorage.SetInt(ImHashStr(label.c_str(), 0, card->ID), 0);
+
+    const std::string text = tabText([&] { charts.renderGpuTab(inputs.ctx); });
+    EXPECT_TRUE(text.contains("Integrated GPU 770")) << "its header stays: " << text;
+    EXPECT_FALSE(text.contains("VideoDecode")) << text;
+    EXPECT_TRUE(text.contains("3D")) << "the other GPU's rows: " << text;
+}
+
+// The NPU usage card for a process whose NPU memory this sample couldn't read: Memory reads N/A, both
+// kinds are still listed beneath it where the total doesn't show them, and the devices and engines rows
+// are left out when the process names none.
+TEST_F(ProcessDetailsChartsRenderTest, TheNpuUsageCardWithUnreadMemoryAndNoDevicesOrEngines)
+{
+    ChartInputs inputs(busyPoint);
+    useTheNpu(inputs);
+    inputs.snapshot.npuDedicatedMemoryBytes = 4'194'304;
+    inputs.snapshot.npuSharedMemoryBytes = 4'194'304;
+    inputs.snapshot.npuMemoryBytes = 8'388'608;
+    inputs.snapshot.npuDevices.clear();
+    inputs.snapshot.npuEngines.clear();
+    inputs.ctx.rateReadings.npuPerProcess = false;
+    resample(inputs);
+    ProcessDetailsCharts charts;
+    const std::string text = tabText([&] { charts.renderNpuTab(inputs.ctx); });
+    EXPECT_TRUE(text.contains("NPU Memory:")) << text;
+    EXPECT_TRUE(text.contains("N/A")) << text;
+    EXPECT_TRUE(text.contains("Dedicated:")) << text;
+    EXPECT_FALSE(text.contains("NPU Device(s):")) << text;
+    EXPECT_FALSE(text.contains("Active Engines:")) << text;
 }
 
 } // namespace
