@@ -146,9 +146,11 @@ LoginSessionsRead readLoginSessions(std::string_view currentSessionId)
         listed.emplace_back(std::move(session), path != nullptr ? path : "");
     }
     read.sessions.reserve(listed.size());
-    for (auto& [session, path] : listed)
+    // No structured bindings here: CodeQL's extractor lost the call in one and reported readSession() and its
+    // helpers as unused (cpp/unused-static-function).
+    for (auto& entry : listed)
     {
-        read.sessions.push_back(readSession(bus.get(), std::move(session), path));
+        read.sessions.push_back(readSession(bus.get(), std::move(entry.first), entry.second));
     }
     read.ok = true;
     return read;
