@@ -3665,6 +3665,61 @@ TEST_F(ProcessesPanelRenderTest, TheUdpEventTraceSwitchIsTakenAndPassedOn)
 
 // Process Details looks its process up in the model's latest snapshot, not the table's cached rows
 // (findSnapshot()): a listed PID is found, an unknown one isn't, and a panel without a model finds none.
+// #3061: a pinned process stays in view under a filter it doesn't match.
+TEST_F(ProcessesPanelRenderTest, APinnedProcessStaysInViewUnderAFilter)
+{
+    UserConfig::get().settings().pinnedProcesses = {"init"};
+    const auto panel = attachedPanel();
+    renderUntilLoaded(*panel);
+    const ImGuiWindow* shell = ImGui::FindWindowByName("Shell");
+    ASSERT_NE(shell, nullptr);
+    ImGui::ActivateItemByID(ImHashStr("##search", 0, shell->ID));
+    static_cast<void>(renderAndCapture(*panel));
+    for (const char* character : {"w", "o", "r", "k"})
+    {
+        ImGui::GetIO().AddInputCharactersUTF8(character);
+        static_cast<void>(renderAndCapture(*panel));
+    }
+    static_cast<void>(renderAndCapture(*panel));
+    const std::string text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("worker")) << text;
+    EXPECT_TRUE(text.contains("init")) << "pinned, so kept: " << text;
+    EXPECT_FALSE(text.contains("server")) << text;
+    panel->onDetach();
+    UserConfig::get().settings().pinnedProcesses.clear();
+}
+
+// A process name longer than ProcessPins::MAX_NAME_BYTES can't be pinned: the row menu's Pin to top is
+// disabled, and choosing it pins nothing.
+TEST_F(ProcessesPanelRenderTest, AnOverlongNameCantBePinned)
+{
+    UserConfig::get().settings().pinnedProcesses.clear();
+    const std::string longName(ProcessPins::MAX_NAME_BYTES + 1, 'n');
+    auto panel = std::make_unique<ProcessesPanel>(
+        [longName]
+        {
+            auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+            probe->withProcess(TestMocks::makeProcessCounters(9, longName, 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0));
+            return ProcessesPanelPlatform{
+                .probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>(), .icons = nullptr};
+        },
+        [](Core::Event& /*event*/) {});
+    attachAndSeed(*panel);
+    Core::ActiveTabChangedEvent shown("Processes");
+    panel->onEvent(shown);
+    for (int frame = 0; frame < LOAD_FRAMES && panel->processCount() < 1; ++frame)
+    {
+        static_cast<void>(renderAndCapture(*panel));
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    static_cast<void>(renderAndCapture(*panel));
+    ASSERT_EQ(openARowMenu(*panel), std::optional<std::int32_t>{9});
+    pressPopupItem(*panel, ICON_FA_THUMBTACK " Pin to top###Pin");
+    static_cast<void>(renderAndCapture(*panel));
+    EXPECT_TRUE(UserConfig::get().settings().pinnedProcesses.empty());
+    panel->onDetach();
+}
+
 TEST_F(ProcessesPanelRenderTest, FindSnapshotReadsTheModelsLatestSnapshot)
 {
     const auto panel = attachedPanel();
