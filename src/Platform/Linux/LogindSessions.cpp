@@ -11,6 +11,7 @@
 
 #include "Platform/Linux/SdBusCall.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <utility>
@@ -146,9 +147,11 @@ LoginSessionsRead readLoginSessions(std::string_view currentSessionId)
         listed.emplace_back(std::move(session), path != nullptr ? path : "");
     }
     read.sessions.reserve(listed.size());
-    for (auto& [session, path] : listed)
+    // An index loop, not structured bindings: CodeQL's extractor lost the call in one and reported readSession()
+    // and its helpers as unused (cpp/unused-static-function).
+    for (std::size_t i = 0; i < listed.size(); ++i)
     {
-        read.sessions.push_back(readSession(bus.get(), std::move(session), path));
+        read.sessions.push_back(readSession(bus.get(), std::move(listed[i].first), listed[i].second));
     }
     read.ok = true;
     return read;
