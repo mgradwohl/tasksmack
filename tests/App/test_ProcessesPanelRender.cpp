@@ -18,11 +18,13 @@
 #include "App/Panels/ProcessActionsView.h"
 #include "App/Panels/ProcessColumnAvailability.h"
 #include "App/Panels/ProcessDumpView.h"
+#include "App/Panels/ProcessPins.h"
 #include "App/Panels/ProcessRowFormat.h"
 #include "App/Panels/ProcessRowMeter.h"
 #include "App/Panels/ProcessSignatureText.h"
 #include "App/Panels/ProcessTreeIndent.h"
 #include "App/Panels/ProcessesPanel.h"
+#include "App/Panels/StuckProcesses.h"
 #include "App/ProcessColumnConfig.h"
 #include "App/SelectOverride.h"
 #include "App/UserConfig.h"
@@ -31,6 +33,7 @@
 #include "Domain/GPUModel.h"
 #include "Domain/PriorityConfig.h"
 #include "Domain/ProcessModel.h"
+#include "Domain/ProcessSnapshot.h"
 #include "Domain/SamplingConfig.h"
 #include "Domain/ServiceModel.h"
 #include "Mocks/FakeClipboard.h"
@@ -42,6 +45,7 @@
 #include "Platform/IServiceProbe.h"
 #include "Platform/ImageSignature.h"
 #include "Platform/ProcessTypes.h"
+#include "Platform/SchedPolicy.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 
@@ -3563,6 +3567,392 @@ TEST_F(ProcessesPanelRenderTest, GroupHeadersTotalEachColumnInItsUnit)
     EXPECT_TRUE(text.contains("docker:1a2b3c4d5e6f (1)")) << text;
     EXPECT_TRUE(text.contains("\xCE\xA3 4")) << "the threads' total, a count: " << text;
     panel->onDetach(); // TearDown restores the settings
+}
+
+/// A panel reading init (1), server (100) and worker (101), with mock actions that have @p caps from the
+/// start (the panel takes the capabilities in when it adopts the platform); @p actions points at them.
+[[nodiscard]] std::unique_ptr<ProcessesPanel> panelWithCapabilities(Platform::ProcessActionCapabilities caps,
+                                                                    TestMocks::MockProcessActions*& actions)
+{
+    auto panel = std::make_unique<ProcessesPanel>(
+        [caps, &actions]
+        {
+            auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+            probe->withProcess(TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0))
+                .withProcess(TestMocks::makeProcessCounters(100, "server", 'R', 200, 50, 1000, std::uint64_t{8} << 20U, 1))
+                .withProcess(TestMocks::makeProcessCounters(101, "worker", 'S', 30, 10, 1100, std::uint64_t{2} << 20U, 100));
+            auto mock = std::make_unique<TestMocks::MockProcessActions>();
+            mock->setCapabilities(caps);
+            actions = mock.get();
+            return ProcessesPanelPlatform{.probe = std::move(probe), .actions = std::move(mock), .icons = nullptr};
+        },
+        [](Core::Event& /*event*/) {});
+    attachAndSeed(*panel);
+    Core::ActiveTabChangedEvent shown("Processes");
+    panel->onEvent(shown);
+    return panel;
+}
+
+// #3063: where the platform can send the other signals (Linux), the row menu's Send signal submenu
+// lists them, and SIGHUP is confirmed, then sent to that process.
+TEST_F(ProcessesPanelRenderTest, SendSignalFromTheRowMenuIsConfirmedThenSent)
+{
+    TestMocks::MockProcessActions* actions = nullptr;
+    const auto panel = panelWithCapabilities({.canKill = true, .canSendSignals = true}, actions);
+    ASSERT_NE(actions, nullptr);
+    renderUntilLoaded(*panel);
+    const std::optional<std::int32_t> menuPid = openARowMenu(*panel);
+    ASSERT_TRUE(menuPid.has_value());
+
+    const ImGuiWindow* menu = topPopup();
+    ASSERT_NE(menu, nullptr);
+    ImGui::ActivateItemByID(ImHashStr(ICON_FA_BOLT " Send signal###SendSignal", 0, menu->ID));
+    static_cast<void>(renderAndCapture(*panel));
+    const std::string text = renderAndCapture(*panel);
+    ASSERT_NE(topPopup(), menu) << "the submenu opened over the row menu";
+    for (const char* name : {"SIGHUP", "SIGINT", "SIGQUIT", "SIGUSR1", "SIGUSR2"})
+    {
+        EXPECT_TRUE(text.contains(name)) << name << "\n" << text;
+    }
+    pressPopupItem(*panel, "SIGHUP...###SIGHUP");
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    ASSERT_NE(ImGui::GetTopMostPopupModal(), nullptr);
+    EXPECT_EQ(actions->sendSignalCount(), 0); // asked, not done
+    pressModalButton(*panel, "SIGHUP");
+    panel->waitForRowActionForTesting();
+    EXPECT_EQ(actions->sendSignalCount(), 1);
+    EXPECT_EQ(actions->lastSignal(), Platform::ProcessSignal::Hangup);
+    panel->onDetach();
+}
+
+// #3061: with ProcessPins::MAX_PINS names pinned already, Pin to top pins nothing more and says why.
+TEST_F(ProcessesPanelRenderTest, PinningPastTheLimitSaysWhy)
+{
+    std::vector<std::string> pinned;
+    pinned.reserve(ProcessPins::MAX_PINS);
+    for (std::size_t i = 0; i < ProcessPins::MAX_PINS; ++i)
+    {
+        pinned.push_back(std::format("pinned-{}", i));
+    }
+    UserConfig::get().settings().pinnedProcesses = pinned;
+    TestMocks::MockProcessActions* actions = nullptr;
+    const auto panel = attachedPanelWithActions([](Core::Event&) {}, actions);
+    renderUntilLoaded(*panel);
+    ASSERT_TRUE(openARowMenu(*panel).has_value());
+    pressPopupItem(*panel, ICON_FA_THUMBTACK " Pin to top###Pin");
+    const std::string text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains(std::format("Can't pin more than {} processes", ProcessPins::MAX_PINS))) << text;
+    EXPECT_EQ(UserConfig::get().settings().pinnedProcesses, pinned) << "nothing more pinned";
+    panel->onDetach();
+    UserConfig::get().settings().pinnedProcesses.clear();
+}
+
+// #1492: the UDP event trace's switch reaches the panel as an application event; the panel turns the
+// trace on and off on the switch's worker, never in the dispatch, and leaves the event for others.
+TEST_F(ProcessesPanelRenderTest, TheUdpEventTraceSwitchIsTakenAndPassedOn)
+{
+    const auto panel = attachedPanel();
+    renderUntilLoaded(*panel);
+    for (const bool enabled : {true, false})
+    {
+        Core::UdpEventTraceChangedEvent changed(enabled);
+        panel->onEvent(changed);
+        EXPECT_FALSE(changed.isHandled()) << "other listeners see it too";
+        panel->onUpdate(1.0F / 60.0F);
+        static_cast<void>(renderAndCapture(*panel));
+    }
+    EXPECT_EQ(panel->processCount(), 3U);
+    panel->onDetach();
+}
+
+// Process Details looks its process up in the model's latest snapshot, not the table's cached rows
+// (findSnapshot()): a listed PID is found, an unknown one isn't, and a panel without a model finds none.
+// #3061: a pinned process stays in view under a filter it doesn't match.
+TEST_F(ProcessesPanelRenderTest, APinnedProcessStaysInViewUnderAFilter)
+{
+    UserConfig::get().settings().pinnedProcesses = {"init"};
+    const auto panel = attachedPanel();
+    renderUntilLoaded(*panel);
+    const ImGuiWindow* shell = ImGui::FindWindowByName("Shell");
+    ASSERT_NE(shell, nullptr);
+    ImGui::ActivateItemByID(ImHashStr("##search", 0, shell->ID));
+    static_cast<void>(renderAndCapture(*panel));
+    for (const char* character : {"w", "o", "r", "k"})
+    {
+        ImGui::GetIO().AddInputCharactersUTF8(character);
+        static_cast<void>(renderAndCapture(*panel));
+    }
+    static_cast<void>(renderAndCapture(*panel));
+    const std::string text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("worker")) << text;
+    EXPECT_TRUE(text.contains("init")) << "pinned, so kept: " << text;
+    EXPECT_FALSE(text.contains("server")) << text;
+    panel->onDetach();
+    UserConfig::get().settings().pinnedProcesses.clear();
+}
+
+// A process name longer than ProcessPins::MAX_NAME_BYTES can't be pinned: the row menu's Pin to top is
+// disabled, and choosing it pins nothing.
+TEST_F(ProcessesPanelRenderTest, AnOverlongNameCantBePinned)
+{
+    UserConfig::get().settings().pinnedProcesses.clear();
+    const std::string longName(ProcessPins::MAX_NAME_BYTES + 1, 'n');
+    const auto panel = std::make_unique<ProcessesPanel>(
+        [longName]
+        {
+            auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+            probe->withProcess(TestMocks::makeProcessCounters(9, longName, 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0));
+            return ProcessesPanelPlatform{
+                .probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>(), .icons = nullptr};
+        },
+        [](Core::Event& /*event*/) {});
+    attachAndSeed(*panel);
+    Core::ActiveTabChangedEvent shown("Processes");
+    panel->onEvent(shown);
+    for (int frame = 0; frame < LOAD_FRAMES && panel->processCount() < 1; ++frame)
+    {
+        static_cast<void>(renderAndCapture(*panel));
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    static_cast<void>(renderAndCapture(*panel));
+    ASSERT_EQ(openARowMenu(*panel), std::optional<std::int32_t>{9});
+    pressPopupItem(*panel, ICON_FA_THUMBTACK " Pin to top###Pin");
+    static_cast<void>(renderAndCapture(*panel));
+    EXPECT_TRUE(UserConfig::get().settings().pinnedProcesses.empty());
+    panel->onDetach();
+}
+
+TEST_F(ProcessesPanelRenderTest, FindSnapshotReadsTheModelsLatestSnapshot)
+{
+    const auto panel = attachedPanel();
+    renderUntilLoaded(*panel);
+    const std::optional<Domain::ProcessSnapshot> server = panel->findSnapshot(100);
+    ASSERT_TRUE(server.has_value());
+    EXPECT_EQ(server.value_or(Domain::ProcessSnapshot{}).name, "server");
+    EXPECT_FALSE(panel->findSnapshot(424242).has_value());
+    panel->onDetach();
+    EXPECT_FALSE(panel->findSnapshot(100).has_value()) << "detached: no model";
+}
+
+/// Mock actions that say when they are destroyed.
+class TrackedActions : public TestMocks::MockProcessActions
+{
+  public:
+    explicit TrackedActions(std::shared_ptr<std::atomic<bool>> destroyed) : m_Destroyed(std::move(destroyed))
+    {}
+    TrackedActions(const TrackedActions&) = delete;
+    TrackedActions& operator=(const TrackedActions&) = delete;
+    TrackedActions(TrackedActions&&) = delete;
+    TrackedActions& operator=(TrackedActions&&) = delete;
+    ~TrackedActions() override
+    {
+        m_Destroyed->store(true);
+    }
+
+  private:
+    std::shared_ptr<std::atomic<bool>> m_Destroyed;
+};
+
+// A panel detached straight after attach, before any frame adopted the platform its sampler built: the
+// handed-over actions are taken from the handoff and kept with the panel's own, so they go with the panel.
+TEST_F(ProcessesPanelRenderTest, APlatformNoFrameAdoptedIsReleasedOnDetach)
+{
+    const auto destroyed = std::make_shared<std::atomic<bool>>(false);
+    auto panel = std::make_unique<ProcessesPanel>(
+        [destroyed]
+        {
+            auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+            probe->withProcess(TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0));
+            return ProcessesPanelPlatform{
+                .probe = std::move(probe), .actions = std::make_unique<TrackedActions>(destroyed), .icons = nullptr};
+        },
+        [](Core::Event& /*event*/) {});
+    attachAndSeed(*panel);
+    EXPECT_FALSE(destroyed->load());
+    panel->onDetach(); // no onUpdate() or frame in between: nothing adopted the handoff
+    EXPECT_FALSE(destroyed->load()) << "taken from the handoff, not dropped with it";
+    panel.reset();
+    EXPECT_TRUE(destroyed->load());
+}
+
+// TASKSMACK_SELECT (#1559) for a process that never appears: after SelectOverride::MAX_SNAPSHOTS
+// snapshots it gives up, selecting nothing, rather than waiting for ever.
+TEST_F(ProcessesPanelRenderTest, AStartupSelectionThatNeverMatchesGivesUp)
+{
+    SelectionSink events;
+    const auto panel = attachedPanel(events.sink());
+    panel->requestStartupSelection(SelectOverride::Target{.pid = 424242, .name = {}, .tab = {}}, true);
+    updateUntilLoaded(*panel);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (panel->startupSelectionPending() && std::chrono::steady_clock::now() < deadline)
+    {
+        panel->requestRefresh(); // a new snapshot, rather than waiting a refresh interval for each
+        panel->onUpdate(1.0F / 60.0F);
+        static_cast<void>(renderAndCapture(*panel));
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    EXPECT_FALSE(panel->startupSelectionPending());
+    EXPECT_EQ(panel->selectionCount(), 0U);
+    EXPECT_EQ(events.showDetails, 0);
+    EXPECT_FALSE(panel->takeStartupDetailsTab().has_value());
+    panel->onDetach();
+}
+
+// #2308: the toolbar's Authenticate and retry button, pressed, runs the refused action again through
+// the helper, as its shortcut does.
+TEST_F(ProcessesPanelRenderTest, TheToolbarsRetryButtonRunsTheRefusedActionAuthorized)
+{
+    TestMocks::MockProcessActions* actions = nullptr;
+    const auto panel = attachedPanelWithActions([](Core::Event&) {}, actions);
+    ASSERT_NE(actions, nullptr);
+    actions->setCapabilities({.canTerminate = true, .canKill = true, .canAuthorizeInteractively = true});
+    actions->setKillResult(Platform::ProcessActionResult::denied("Permission denied - process belongs to another user"));
+    renderUntilLoaded(*panel);
+    ASSERT_TRUE(openARowMenu(*panel).has_value());
+    pressPopupItem(*panel, std::format("{} Kill...###Kill", ICON_FA_SKULL));
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    pressModalFilledButton(*panel, "Kill");
+    panel->waitForRowActionForTesting();
+    ASSERT_TRUE(panel->offersAuthenticateAndRetry());
+    static_cast<void>(renderAndCapture(*panel));
+
+    const ImGuiWindow* shell = ImGui::FindWindowByName("Shell");
+    ASSERT_NE(shell, nullptr);
+    ImGui::ActivateItemByID(ImHashStr(AuthorizeWording::RETRY_LABEL, 0, shell->ID));
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    panel->waitForRowActionForTesting();
+    EXPECT_EQ(actions->runAuthorizedCount(), 1);
+    EXPECT_EQ(actions->lastAuthorizedAction().kind, Platform::AuthorizedAction::Kind::Kill);
+    panel->onDetach();
+}
+
+// #3067: the toolbar's magnifier button opens Find handles, as Ctrl+Shift+F does.
+TEST_F(ProcessesPanelRenderTest, TheToolbarsFindHandlesButtonOpensTheDialog)
+{
+    const auto panel = std::make_unique<ProcessesPanel>(
+        []
+        {
+            auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+            probe->withProcess(TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0));
+            return ProcessesPanelPlatform{.probe = std::move(probe),
+                                          .actions = std::make_unique<TestMocks::MockProcessActions>(),
+                                          .icons = nullptr,
+                                          .openFiles = std::make_unique<TestMocks::MockProcessOpenFilesReader>()};
+        });
+    attachAndSeed(*panel);
+    Core::ActiveTabChangedEvent shown("Processes");
+    panel->onEvent(shown);
+    for (int frame = 0; frame < LOAD_FRAMES && panel->processCount() < 1; ++frame)
+    {
+        static_cast<void>(renderAndCapture(*panel));
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    static_cast<void>(renderAndCapture(*panel));
+    ASSERT_EQ(ImGui::GetTopMostPopupModal(), nullptr);
+
+    const ImGuiWindow* shell = ImGui::FindWindowByName("Shell");
+    ASSERT_NE(shell, nullptr);
+    ImGui::ActivateItemByID(ImHashStr(ICON_FA_MAGNIFYING_GLASS "###FindHandles", 0, shell->ID));
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    ASSERT_NE(ImGui::GetTopMostPopupModal(), nullptr) << "the button didn't open Find handles";
+    EXPECT_TRUE(renderAndCapture(*panel).contains("Type a name and press Find."));
+    panel->onDetach();
+}
+
+// #3086: the Scheduling Policy column shows each process's policy where the platform reads policies
+// (Linux), and the dash for a process whose policy couldn't be read.
+TEST_F(ProcessesPanelRenderTest, ThePolicyColumnShowsEachProcesssPolicyOrTheDash)
+{
+    UserConfig::get().settings().processColumns.setVisible(ProcessColumn::Policy, true);
+    const auto panel = std::make_unique<ProcessesPanel>(
+        []
+        {
+            auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+            Platform::ProcessCounters realTime =
+                TestMocks::makeProcessCounters(100, "server", 'R', 200, 50, 1000, std::uint64_t{8} << 20U, 1);
+            realTime.schedPolicy = Platform::SchedPolicy::Fifo;
+            realTime.rtPriority = 50;
+            probe->withProcess(std::move(realTime))
+                .withProcess(TestMocks::makeProcessCounters(101, "worker", 'S', 30, 10, 1100, std::uint64_t{2} << 20U, 100));
+            Platform::ProcessCapabilities caps = probe->capabilities();
+            caps.hasSchedPolicy = true;
+            probe->setCapabilities(caps);
+            return ProcessesPanelPlatform{
+                .probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>(), .icons = nullptr};
+        },
+        std::function<void(Core::Event&)>{});
+    attachAndSeed(*panel);
+    Core::ActiveTabChangedEvent shown("Processes");
+    panel->onEvent(shown);
+    for (int frame = 0; frame < LOAD_FRAMES && panel->processCount() < 2; ++frame)
+    {
+        static_cast<void>(renderAndCapture(*panel));
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    static_cast<void>(renderAndCapture(*panel));
+    const std::string text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("FIFO 50")) << text;
+    EXPECT_TRUE(text.contains(ProcessRowFormat::UNAVAILABLE_CELL_TEXT)) << "worker's policy wasn't read:\n" << text;
+    panel->onDetach(); // TearDown restores the settings
+}
+
+/// Whether any vertex in the last frame's draw data has colour @p color.
+[[nodiscard]] bool frameDrewColor(ImU32 color)
+{
+    for (const ImDrawList* list : ImGui::GetDrawData()->CmdLists)
+    {
+        for (const ImDrawVert& vertex : list->VtxBuffer)
+        {
+            if (vertex.col == color)
+            {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// #3097: a process that stays in uninterruptible sleep (D) for StuckProcesses::STUCK_SECONDS has its row
+// tinted in the theme's disk-sleep colour; until then it isn't.
+TEST_F(ProcessesPanelRenderTest, AProcessStuckInDiskSleepHasItsRowTinted)
+{
+    const auto panel = std::make_unique<ProcessesPanel>(
+        []
+        {
+            auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+            probe->withProcess(TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0))
+                .withProcess(TestMocks::makeProcessCounters(77, "nfs-reader", 'D', 30, 10, 200, std::uint64_t{2} << 20U, 1));
+            return ProcessesPanelPlatform{
+                .probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>(), .icons = nullptr};
+        },
+        [](Core::Event& /*event*/) {});
+    attachAndSeed(*panel);
+    Core::ActiveTabChangedEvent shown("Processes");
+    panel->onEvent(shown);
+    ImVec4 tint = UI::Theme::get().scheme().statusDiskSleep;
+    tint.w = StuckProcesses::TINT_ALPHA;
+    const ImU32 tintColor = ImGui::GetColorU32(tint);
+    panel->onUpdate(1.0F / 60.0F);
+    static_cast<void>(renderAndCapture(*panel));
+    EXPECT_FALSE(frameDrewColor(tintColor)) << "not stuck yet";
+
+    // New generations until it has been in D long enough.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+    bool tinted = false;
+    while (!tinted && std::chrono::steady_clock::now() < deadline)
+    {
+        panel->requestRefresh();
+        panel->onUpdate(1.0F / 60.0F);
+        static_cast<void>(renderAndCapture(*panel));
+        tinted = frameDrewColor(tintColor);
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    EXPECT_TRUE(tinted);
+    panel->onDetach();
 }
 
 } // namespace
