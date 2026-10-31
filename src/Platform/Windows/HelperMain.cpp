@@ -20,6 +20,7 @@
 #include "Platform/Windows/WindowsProcessConnections.h"
 #include "Platform/Windows/WindowsProcessModules.h"
 #include "Platform/Windows/WindowsProcessOpenFiles.h"
+#include "Platform/Windows/WindowsTaskManagerReplacement.h"
 
 #include <spdlog/spdlog.h>
 
@@ -37,6 +38,7 @@
 #include <cstddef>
 #include <span>
 #include <stop_token>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -108,11 +110,17 @@ int WINAPI wWinMain(HINSTANCE /*instance*/, HINSTANCE /*previous*/, LPWSTR /*com
         Platform::Windows::WindowsProcessModulesReader modules;
         Platform::Windows::WindowsProcessOpenFilesReader openFiles;
         Platform::Windows::WindowsProcessConnectionsReader connections;
+        // Replace Task Manager (#3072): taskmgr.exe's IFEO Debugger, set only to the TaskSmack.exe beside
+        // this helper, the one checkParentIsTaskSmack() confirmed its parent runs.
+        Platform::Windows::WindowsIfeoRegistry ifeo;
+        const std::wstring& taskSmack = self->taskSmackPath;
         const Platform::BrokerServer::Readers readers{
             .environment = nullptr,
             .modules = &modules,
             .openFiles = &openFiles,
             .connections = &connections,
+            .taskManagerReplacement = [&ifeo, &taskSmack](const Platform::Broker::TaskManagerReplacementRequest& request)
+            { return Platform::Windows::handleHelperRequest(request, taskSmack, ifeo, &Helper::sameFile); },
         };
         const Platform::Windows::BrokerPipeServer::RequestHandler handler = [&actions, &readers](const Platform::Broker::Request& request)
         {

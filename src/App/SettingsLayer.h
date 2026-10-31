@@ -3,6 +3,7 @@
 #include "App/BackgroundOpen.h"
 #include "App/SettingsDialog.h"
 #include "App/StartAtLoginSetting.h"
+#include "App/TaskManagerReplacementController.h"
 #include "Core/Event.h"
 #include "Core/Layer.h"
 #include "Platform/IStartAtLogin.h"
@@ -55,6 +56,16 @@ class SettingsLayer : public Core::Layer
     /// Tests: waits for the sign-in entry's read or change still running, and takes it in.
     void waitForStartAtLoginForTesting();
 
+    /// Replace Task Manager's rows (#3072) draw @p controller's view and hand it what they ask for; it is
+    /// read again each time the dialog opens. Null (the default) hides them.
+    void setTaskManagerReplacement(std::shared_ptr<TaskManagerReplacementController> controller);
+
+    /// The dialog's state (tests).
+    [[nodiscard]] const SettingsDialog::State& dialogState() const noexcept
+    {
+        return m_State;
+    }
+
   private:
     /// Takes in the sign-in entry's status for the dialog (#3093 part 2), each frame.
     void syncStartAtLogin();
@@ -71,6 +82,7 @@ class SettingsLayer : public Core::Layer
     std::function<std::filesystem::path()> m_UserConfigDir;       ///< Set by the test seam only; else the Application's
     // Start at sign-in (#3093, part 2): the entry's reads and writes, on its own worker.
     StartAtLoginSetting m_StartAtLogin;
+    std::shared_ptr<TaskManagerReplacementController> m_TaskManager; ///< Replace Task Manager's (#3072), or null
     // The buttons' open, and what it needs on disk first, on a worker (#3155): the buttons are disabled
     // until it is done. Last, so it is destroyed (waited for) first: its job holds a copy of the opener.
     BackgroundOpen m_Open;

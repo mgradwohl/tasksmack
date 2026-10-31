@@ -21,6 +21,7 @@
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/IUserSessions.h"
 #include "SyntheticScenario.h"
+#include "TaskManagerReplacementController.h"
 
 #include <memory>
 #include <utility>
@@ -74,6 +75,15 @@ void preparePanelPlatforms(const Synthetic::Scenario* scenario)
     // Made now, on the UI thread: its owner window handle is an SDL query (mainNativeWindow()), and the
     // factories below, which share it, run on the panels' sampler threads from here on (#2731).
     (void) sharedPrivilegedBroker();
+}
+
+std::shared_ptr<TaskManagerReplacementController> makeTaskManagerReplacementController(const Synthetic::Scenario* scenario)
+{
+    if (scenario != nullptr)
+    {
+        return std::make_shared<TaskManagerReplacementController>(nullptr); // a synthetic run changes nothing real
+    }
+    return std::make_shared<TaskManagerReplacementController>(Platform::makeTaskManagerReplacement(sharedPrivilegedBroker()));
 }
 
 ProcessesPanelPlatform makeProcessesPanelPlatform(const Synthetic::Scenario* scenario)

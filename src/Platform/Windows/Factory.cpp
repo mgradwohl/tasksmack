@@ -23,15 +23,21 @@
 #include "Platform/ISystemConnections.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/ISystemProbe.h"
+#include "Platform/ITaskManagerReplacement.h"
 #include "Platform/IUdpTrafficCollector.h"
 #include "Platform/IUserSessions.h"
+#include "Platform/TaskManagerReplacement.h"
+#include "Platform/TaskManagerReplacementService.h"
+#include "Platform/Windows/BrokerHelper.h"
 #include "Platform/Windows/HelperLauncher.h"
 #include "Platform/Windows/PipeBroker.h"
+#include "WinString.h"
 #include "WindowsDebugPrivilege.h"
 #include "WindowsDiskProbe.h"
 #include "WindowsElevation.h"
 #include "WindowsEtwNetCollector.h"
 #include "WindowsGPUProbe.h"
+#include "WindowsHandles.h"
 #include "WindowsHttpsClient.h"
 #include "WindowsPathProvider.h"
 #include "WindowsPowerProbe.h"
@@ -50,10 +56,27 @@
 #include "WindowsStartupProbe.h"
 #include "WindowsSystemInfoProbe.h"
 #include "WindowsSystemProbe.h"
+#include "WindowsTaskManagerReplacement.h"
+
+// clang-format off
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+// clang-format on
 
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
+#include <cstddef>
 #include <memory>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
 
 namespace Platform
 {
@@ -213,6 +236,125 @@ std::shared_ptr<IStartAtLogin> makeStartAtLogin()
 bool enableDebugPrivilege()
 {
     return Windows::enableDebugPrivilegeIfElevated() == Windows::DebugPrivilegeResult::Enabled;
+}
+
+std::shared_ptr<ITaskManagerReplacement> makeTaskManagerReplacement(const std::shared_ptr<IPrivilegedBroker>& broker)
+{
+    TaskManagerReplacementSetup setup;
+    if (const auto image = Windows::BrokerHelper::ownImage(); image.has_value())
+    {
+        setup.selfPath = WinString::wideToUtf8(*image);
+    }
+    const std::vector<std::string> folders = Windows::installFolders();
+    const std::vector<std::string_view> folderViews(folders.begin(), folders.end());
+    setup.installedCopy = TaskManagerReplacement::isInstalledCopy(setup.selfPath, folderViews);
+    // Reading HKLM needs no rights: a fresh key handle each time, on the worker that asks.
+    setup.readDebugger = []
+    {
+        Windows::WindowsIfeoRegistry registry;
+        return registry.readDebugger();
+    };
+    setup.fileExists = [](std::string_view path)
+    {
+        return Windows::fileExists(path);
+    };
+    if (Windows::isProcessElevated())
+    {
+        // Elevated, TaskSmack writes the key itself, but only from Program Files: Windows starts the
+        // Debugger for whoever opens Task Manager, so it must be a copy only an administrator can change,
+        // which the helper checks for itself (BrokerHelper::checkUnchangeableBy()) and Program Files is.
+        if (setup.installedCopy)
+        {
+            setup.direct = std::make_shared<Windows::WindowsIfeoRegistry>();
+        }
+        else
+        {
+            setup.unavailableReason =
+                "Only a TaskSmack installed in Program Files can replace Task Manager: Windows would start this copy, "
+                "which programs running as you could change, whenever anyone opens Task Manager";
+        }
+    }
+    else if (broker != nullptr)
+    {
+        setup.broker = broker;
+    }
+    else
+    {
+        const auto available = Windows::HelperLauncher::availability();
+        setup.unavailableReason = "Replacing Task Manager needs TaskSmack's administrator helper, which this copy can't use" +
+                                  (available.has_value() ? std::string() : ": " + available.error());
+    }
+    return std::make_shared<TaskManagerReplacementService>(std::move(setup));
+}
+
+namespace
+{
+
+/// What showRunningTaskSmack() looks for, and finds.
+struct RunningWindowSearch
+{
+    DWORD selfPid = 0;
+    HWND found = nullptr;
+};
+
+/// Whether @p window is a visible top-level window titled "TaskSmack" of another TaskSmack.exe.
+[[nodiscard]] bool isOtherTaskSmackWindow(HWND window, DWORD selfPid)
+{
+    if (IsWindowVisible(window) == FALSE)
+    {
+        return false;
+    }
+    // "TaskSmack", or "TaskSmack (Administrator)" for an elevated one (ShellLayer).
+    std::wstring title(64, L'\0');
+    const int length = GetWindowTextW(window, title.data(), static_cast<int>(title.size()));
+    const std::wstring_view text(title.data(), static_cast<std::size_t>(std::max(length, 0)));
+    if (text != L"TaskSmack" && !text.starts_with(L"TaskSmack ("))
+    {
+        return false;
+    }
+    DWORD pid = 0;
+    GetWindowThreadProcessId(window, &pid);
+    if (pid == 0 || pid == selfPid)
+    {
+        return false;
+    }
+    const Windows::UniqueHandle process(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid));
+    if (!process.valid())
+    {
+        return false;
+    }
+    const auto image = Windows::BrokerHelper::imageOf(process.get());
+    return image.has_value() && TaskManagerReplacement::isTaskSmackProgram(WinString::wideToUtf8(*image));
+}
+
+} // namespace
+
+bool showRunningTaskSmack()
+{
+    RunningWindowSearch search{.selfPid = GetCurrentProcessId(), .found = nullptr};
+    EnumWindows(
+        [](HWND window, LPARAM context) -> BOOL
+        {
+            auto* const state = reinterpret_cast<RunningWindowSearch*>(context); // NOLINT(performance-no-int-to-ptr) - EnumWindows' context
+            if (isOtherTaskSmackWindow(window, state->selfPid))
+            {
+                state->found = window;
+                return FALSE; // found: stop
+            }
+            return TRUE;
+        },
+        reinterpret_cast<LPARAM>(&search));
+    if (search.found == nullptr)
+    {
+        return false;
+    }
+    if (IsIconic(search.found) != FALSE)
+    {
+        ShowWindow(search.found, SW_RESTORE);
+    }
+    // This process was just started by the user's own key press, so Windows lets it hand the foreground on.
+    SetForegroundWindow(search.found);
+    return true;
 }
 
 } // namespace Platform

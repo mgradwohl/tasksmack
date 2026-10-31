@@ -288,6 +288,11 @@ add_test(NAME TidyFindingsScript
 add_test(NAME HelperHandshakeScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_helper_handshake.py)
 
+# The NSIS uninstaller's Replace Task Manager step (cmake/CPackProjectConfig.cmake.in, #3072), run against a
+# fake registry: it removes only a TaskSmack's taskmgr.exe IFEO Debugger, and the key only when TaskSmack made it.
+add_test(NAME NsisIfeoUninstallStep
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_nsis_ifeo_uninstall.py)
+
 # tools/ui-compare-report.py turns two refs' UI scenario frames into the ui-compare.sh report (#2712).
 add_test(NAME UiCompareReportScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_ui_compare_report.py)
@@ -565,6 +570,7 @@ set(COMMON_TEST_SOURCES
     Platform/test_BrokerRequestMapping.cpp  # what either helper does with each request (#2517)
     Platform/test_BrokeredProcessActions.cpp
     Platform/test_BrokeredServiceActions.cpp  # service actions through the helper (#2728)
+    Platform/test_TaskManagerReplacement.cpp  # Replace Task Manager's paths, state machine and service (#3072)
     Platform/test_BrokeredSystemInfoProbe.cpp
     Platform/test_ThreadName.cpp
     Platform/test_CurrentProcess.cpp
@@ -631,6 +637,8 @@ set(COMMON_TEST_SOURCES
     App/test_SettingsLayerDetail.cpp
     App/test_SettingsDialogRender.cpp
     App/test_SettingsLayerRender.cpp
+    App/test_TaskManagerReplacementApp.cpp  # Replace Task Manager: the command line, the words, the controller (#3072)
+    App/test_TaskManagerReplacementRender.cpp  # its Settings rows and startup notice, headless (#3072)
     App/test_NetInterfaceUtils.cpp
     App/test_PowerStatusText.cpp
     App/test_ElevationNoticeText.cpp
@@ -729,6 +737,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_BrokerPipe.cpp  # the privileged broker's named-pipe transport (#2311)
     Platform/test_BrokerHelper.cpp  # TaskSmackHelper.exe: its parent checks, its session and the exe itself (#2517)
     Platform/test_HelperLauncher.cpp  # starting the helper with ShellExecuteExW("runas"), through fakes (#2549)
+    Platform/test_WindowsTaskManagerReplacement.cpp  # taskmgr.exe's IFEO key, on a scratch HKCU key, and the helper's checks (#3072)
     Platform/test_WindowsProcessIdentity.cpp
     Platform/test_WindowsProcessConnections.cpp
     Platform/test_WindowsProcessEnvironmentReader.cpp  # the environment block out of a fake process's PEB, and this process's own (#2569)
@@ -1004,6 +1013,10 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/SettingsDialog.cpp
     # The Settings layer around it (#1395), run headless through its seam (test_SettingsLayerRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/SettingsLayer.cpp
+    # Replace Task Manager's controller, rows and startup notice (#3072)
+    ${CMAKE_SOURCE_DIR}/src/App/TaskManagerReplacementController.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/TaskManagerReplacementRows.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/TaskManagerNoticeLayer.cpp
     # The About dialog (#1490), run headless (test_AboutDialogRender.cpp), the layer that opens it on
     # Core::OpenAboutEvent (#1600), and the link opener they call
     ${CMAKE_SOURCE_DIR}/src/App/AboutDialog.cpp
@@ -1044,6 +1057,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/Platform/BrokeredServiceActions.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/BrokeredSystemInfoProbe.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/BrokerRequestMapping.cpp
+    ${CMAKE_SOURCE_DIR}/src/Platform/TaskManagerReplacementService.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/CurrentProcess.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/PublicIpLookup.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/Synthetic/SyntheticProbes.cpp

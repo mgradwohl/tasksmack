@@ -23,6 +23,7 @@
 #include "Platform/ISystemConnections.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/ISystemProbe.h"
+#include "Platform/ITaskManagerReplacement.h"
 #include "Platform/IUdpTrafficCollector.h"
 #include "Platform/IUserSessions.h"
 
@@ -119,6 +120,12 @@ namespace Platform
 /// on Windows; systemd over D-Bus on Linux.
 [[nodiscard]] std::unique_ptr<IServiceActions> makeServiceActions();
 
+/// Replace Task Manager (#3072): taskmgr.exe's IFEO Debugger, read here and changed through @p broker (the
+/// one the panels share, null where there is none), or in-process by an elevated TaskSmack installed in
+/// Program Files. Null on Linux, which has no Task Manager to replace. Cheap: nothing is read until a
+/// worker calls it.
+[[nodiscard]] std::shared_ptr<ITaskManagerReplacement> makeTaskManagerReplacement(const std::shared_ptr<IPrivilegedBroker>& broker);
+
 /// Creates the HTTPS client the opt-in update check sends its one request with (#3093): WinHTTP on
 /// Windows (WindowsHttpsClient). Null on Linux, which has no HTTPS client yet: the check isn't offered
 /// there, and nothing is sent. Making it opens nothing; each request opens and closes its own session.
@@ -130,6 +137,10 @@ namespace Platform
 [[nodiscard]] std::shared_ptr<IStartAtLogin> makeStartAtLogin();
 
 #ifdef _WIN32
+/// Brings the window of another running TaskSmack.exe to the front (#3072): what Ctrl+Shift+Esc does
+/// when TaskSmack replaces Task Manager and one already runs. False when there is none to show.
+bool showRunningTaskSmack();
+
 /// Enables SeDebugPrivilege on TaskSmack's own process when it runs elevated (#2128), without which
 /// even an elevated TaskSmack is refused terminate, set-information and handle-duplication access to
 /// SYSTEM-service processes. Called once at startup (main.cpp), before any probe or action opens a

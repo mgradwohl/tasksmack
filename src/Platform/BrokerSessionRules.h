@@ -22,7 +22,8 @@ namespace Platform::Broker
     return std::holds_alternative<Hello>(request) || std::holds_alternative<SignalRequest>(request) ||
            std::holds_alternative<PriorityRequest>(request) || std::holds_alternative<IoPriorityRequest>(request) ||
            std::holds_alternative<AffinityRequest>(request) || std::holds_alternative<ServiceActionRequest>(request) ||
-           std::holds_alternative<EfficiencyModeRequest>(request) || std::holds_alternative<CloseConnectionRequest>(request);
+           std::holds_alternative<EfficiencyModeRequest>(request) || std::holds_alternative<CloseConnectionRequest>(request) ||
+           std::holds_alternative<TaskManagerReplacementRequest>(request);
 }
 
 /// Where a server's idle timeout reads the time: an empty one is steady_clock. Tests pass a clock they

@@ -1,6 +1,8 @@
 #pragma once
 
 #include "App/SettingsLayerDetail.h"
+#include "App/TaskManagerReplacementController.h"
+#include "App/TaskManagerReplacementRows.h"
 #include "App/UserConfig.h"
 #include "Domain/StartAtLogin.h"
 #include "UI/IconsFontAwesome6.h"
@@ -87,6 +89,13 @@ struct State
     std::string customHistoryPreview;
 
     std::vector<UI::DiscoveredTheme> themes; ///< The theme combo's options
+
+    /// Replace Task Manager (#3072, Windows): the controller's view, set by SettingsLayer every frame; null,
+    /// or unsupported, hides its rows. They act at once, not on Save: each change is an administrator's.
+    const TaskManagerReplacementView* taskManager = nullptr;
+    TaskManagerReplacementRows::RowState taskManagerRow;
+    /// What the rows asked for this frame, for the layer to hand the controller; the layer clears it.
+    TaskManagerRequest taskManagerRequest = TaskManagerRequest::None;
 };
 
 /// What the user asked for this frame, for the layer to carry out.

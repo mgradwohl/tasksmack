@@ -889,10 +889,11 @@ If the saved position is no longer on any connected display (a monitor was unplu
 
 ### Settings dialog
 
-The Settings dialog (the gear icon, or **F2**) has three sections:
+The Settings dialog (the gear icon, or **F2**) has three sections, and a fourth on Windows:
 
 - **Appearance:** **Theme** (Arctic Fire by default), **Font size** (Small, Medium, Large, Extra Large, Huge or Largest; Medium by default), and **Show process icons**, the programs' icons beside process names in the Processes table and Process Details, and beside the names in the Services and Startup tabs (on by default), and **Highlight new and exited processes**, the fading tint on the rows of processes that started in the last five seconds and the dimmed rows of processes that exited in the last two (on by default).
 - **Performance:** **Update interval**, how often values are sampled (100 ms, 250 ms, 500 ms, 1 second, 2 seconds or 5 seconds; 1 second by default), and **History length**, how much the charts keep (1, 2, 5 or 10 minutes; 5 minutes by default). A value set in `config.toml` that isn't one of these shows as "Custom (...)". On Windows, also **Count UDP traffic per process** (off by default; needs TaskSmack running as administrator), which counts UDP in the per-process network columns through a kernel event trace. It takes effect when you click Save. See [Counting UDP on Windows](#counting-udp-on-windows).
+- **Task Manager** (Windows): **Replace Task Manager**, which makes Ctrl+Shift+Esc, and anything else that starts Task Manager, open TaskSmack instead. Unlike the rest of the dialog it takes effect at once, without Save, and it needs administrator rights, so Windows asks first. See [Replacing Task Manager (Windows)](#replacing-task-manager-windows).
 - **Advanced:** **Edit Config File** and **Open Themes Folder**, which open `config.toml` and the user themes folder; **Show limited-data notice**, which turns the startup notice about missing administrator or root rights back on after its "Don't show again" was ticked; and **About TaskSmack**, which closes Settings (without saving) and opens About. It also has **Check for updates daily** and **Check now** (on Linux, in a build with libcurl, as the packages are); see [Update check](#update-check). It has **Start TaskSmack when I sign in**; see [Start at sign-in](#start-at-sign-in). On native Wayland only, it also has **Use native window decorations instead of the custom title bar**, which takes effect after restarting TaskSmack.
 
 **Save** writes your changes to `config.toml` and closes the dialog; **Cancel** (or Escape) closes it without changing anything. **Reset to defaults** sets every control in the dialog back to its default, and Save keeps them.
@@ -900,6 +901,31 @@ The Settings dialog (the gear icon, or **F2**) has three sections:
 Dialogs (Settings, About and the limited-data notice) and the Help window are kept inside the main window. When the font size or display scaling makes the Settings dialog taller than the window, its options scroll and the Cancel and Save buttons stay visible.
 
 To reset all layout and theme settings, delete the `config.toml` file in the user config directory. TaskSmack will recreate it with defaults on the next launch.
+
+### Replacing Task Manager (Windows)
+
+**Settings > Task Manager > Replace Task Manager** makes Windows open TaskSmack wherever it would open Task Manager: Ctrl+Shift+Esc, the taskbar's menu, the Ctrl+Alt+Del screen, or `taskmgr` typed in Run. If TaskSmack is already running, Ctrl+Shift+Esc brings its window to the front instead of starting another.
+
+It works the way Process Explorer's and System Informer's own option does: Windows' **Image File Execution Options** `Debugger` value for `taskmgr.exe` names TaskSmack, so Windows starts TaskSmack in Task Manager's place. That value is machine-wide, so changing it needs administrator rights: when TaskSmack isn't running as administrator it asks its administrator helper, and Windows shows a UAC prompt first. Like the helper, it is offered only for a copy of TaskSmack that only an administrator can change, such as one installed in `C:\Program Files\TaskSmack`, since Windows would start that copy for anyone who opens Task Manager.
+
+The row under the box says what Windows does now:
+
+- **Off:** Task Manager opens.
+- **On (this copy):** this TaskSmack opens.
+- **Points to another TaskSmack:** another copy of TaskSmack opens, or none at all if that copy has moved or been deleted. **Repair** points it at this copy.
+- **Points to another program:** another tool, such as Process Explorer, already replaces Task Manager. Ticking the box asks you to confirm before TaskSmack replaces it; turning it off later gives Task Manager back, not that program. TaskSmack never removes another program's setting.
+
+Turning it off gives Task Manager back. A copy that isn't in Program Files (one unpacked from the `.zip`, say) shows a warning: turn this off before deleting that copy, or Task Manager won't open at all. Uninstalling the installed TaskSmack always turns it off.
+
+At startup TaskSmack checks the setting. If Task Manager starts another TaskSmack that has moved or been deleted (or this copy is the installed one), a notice in the bottom right offers **Repair**, **Turn off** or **Not now**; it blocks nothing else.
+
+To undo it by hand, for example after deleting a portable copy that still had it, run this in an administrator Command Prompt:
+
+```bat
+reg delete "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\taskmgr.exe" /v Debugger /f
+```
+
+If TaskSmack created the `taskmgr.exe` key, it also holds a `TaskSmackCreatedKey` value; `reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\taskmgr.exe"` shows what is left, and when nothing else is there, `reg delete "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\taskmgr.exe" /f` removes the key.
 
 ### Update check
 

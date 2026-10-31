@@ -325,6 +325,68 @@ void markInheritedFdsCloseOnExec(const ChildPlan& plan) noexcept
     return false;
 }
 
+/// The parent's side once the intermediate child is forked: wait for its exec report on @p reportRead
+/// (our copy of the write end already closed), then reap it. A function of its own (#3221): continuous
+/// coverage maps the counters shared across fork(), so in spawnDetached() the lines after the child's
+/// branch, counted as "reached the if, minus took the child's branch", came out 0 though every spawn
+/// runs them; here they have their own counter.
+[[nodiscard]] std::expected<void, SpawnFailure>
+awaitExec(pid_t intermediate, int reportRead, const std::string& program, int (*pollFn)(pollfd*, nfds_t, int))
+{
+    // One deadline bounds the whole wait: the poll for the report (retried on EINTR with only the time
+    // left), then reaping the intermediate child, which exits as soon as it has forked.
+    const auto deadline = std::chrono::steady_clock::now() + SPAWN_TIMEOUT;
+
+    // read() below runs only once the pipe is readable (a report, or end of file), so it never blocks.
+    pollfd pending{.fd = reportRead, .events = POLLIN, .revents = 0};
+    int ready = pollFn(&pending, 1, remainingMs(deadline));
+    while (ready < 0 && errno == EINTR)
+    {
+        ready = pollFn(&pending, 1, remainingMs(deadline));
+    }
+    const int pollError = errno;
+
+    std::optional<SpawnFailure> reported;
+    if (ready > 0)
+    {
+        Report report{};
+        auto got = ::read(reportRead, &report, sizeof(report));
+        while (got < 0 && errno == EINTR)
+        {
+            got = ::read(reportRead, &report, sizeof(report));
+        }
+        // Otherwise end of file: exec succeeded. A short read cannot happen (the report is written whole).
+        if (std::cmp_equal(got, sizeof(report)))
+        {
+            reported = SpawnFailure{.stage = static_cast<SpawnFailure::Stage>(report.stage), .error = report.error};
+        }
+    }
+
+    // The only wait, and it is not on the program. Bounded by the same deadline.
+    if (!reapBy(intermediate, deadline, program))
+    {
+        // Stuck before it could fork the program (or report why it couldn't): nothing was started.
+        return std::unexpected(reported.value_or(SpawnFailure{.stage = SpawnFailure::Stage::Fork, .error = ETIMEDOUT}));
+    }
+    if (reported)
+    {
+        return std::unexpected(*reported);
+    }
+    if (ready < 0)
+    {
+        // As for a timeout: the program may still exec, so it is not reported as failed (the user
+        // would start a second one), and a blocking read() here could hold the UI thread indefinitely.
+        spdlog::warn("DetachedSpawn: poll for the exec report of {} failed ({}); assuming it started",
+                     program,
+                     std::system_category().message(pollError));
+    }
+    else if (ready == 0)
+    {
+        spdlog::warn("DetachedSpawn: {} has not reported its exec after {} ms; assuming it started", program, SPAWN_TIMEOUT.count());
+    }
+    return {};
+}
+
 } // namespace
 
 std::string spawnFailureMessage(const SpawnFailure& failure, const std::string& program)
@@ -476,60 +538,7 @@ std::expected<void, SpawnFailure> Detail::spawnDetached(std::span<const std::str
     // it -- the intermediate exited and the program exec'd (close-on-exec) -- without a failure report.
     reportWrite = FdGuard(-1);
 
-    // One deadline bounds the whole wait: the poll for the report (retried on EINTR with only the time
-    // left), then reaping the intermediate child, which exits as soon as it has forked.
-    const auto deadline = std::chrono::steady_clock::now() + SPAWN_TIMEOUT;
-    const std::string& program = argv.front();
-
-    // read() below runs only once the pipe is readable (a report, or end of file), so it never blocks.
-    const auto pollFn = hooks.poll != nullptr ? hooks.poll : &::poll;
-    pollfd pending{.fd = reportRead.get(), .events = POLLIN, .revents = 0};
-    int ready = pollFn(&pending, 1, remainingMs(deadline));
-    while (ready < 0 && errno == EINTR)
-    {
-        ready = pollFn(&pending, 1, remainingMs(deadline));
-    }
-    const int pollError = errno;
-
-    std::optional<SpawnFailure> reported;
-    if (ready > 0)
-    {
-        Report report{};
-        auto got = ::read(reportRead.get(), &report, sizeof(report));
-        while (got < 0 && errno == EINTR)
-        {
-            got = ::read(reportRead.get(), &report, sizeof(report));
-        }
-        // Otherwise end of file: exec succeeded. A short read cannot happen (the report is written whole).
-        if (std::cmp_equal(got, sizeof(report)))
-        {
-            reported = SpawnFailure{.stage = static_cast<SpawnFailure::Stage>(report.stage), .error = report.error};
-        }
-    }
-
-    // The only wait, and it is not on the program. Bounded by the same deadline.
-    if (!reapBy(intermediate, deadline, program))
-    {
-        // Stuck before it could fork the program (or report why it couldn't): nothing was started.
-        return std::unexpected(reported.value_or(SpawnFailure{.stage = SpawnFailure::Stage::Fork, .error = ETIMEDOUT}));
-    }
-    if (reported)
-    {
-        return std::unexpected(*reported);
-    }
-    if (ready < 0)
-    {
-        // As for a timeout: the program may still exec, so it is not reported as failed (the user
-        // would start a second one), and a blocking read() here could hold the UI thread indefinitely.
-        spdlog::warn("DetachedSpawn: poll for the exec report of {} failed ({}); assuming it started",
-                     program,
-                     std::system_category().message(pollError));
-    }
-    else if (ready == 0)
-    {
-        spdlog::warn("DetachedSpawn: {} has not reported its exec after {} ms; assuming it started", program, SPAWN_TIMEOUT.count());
-    }
-    return {};
+    return awaitExec(intermediate, reportRead.get(), argv.front(), hooks.poll != nullptr ? hooks.poll : &::poll);
 }
 
 } // namespace Platform::DetachedSpawn

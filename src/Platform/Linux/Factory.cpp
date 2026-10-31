@@ -46,6 +46,7 @@
 #include "Platform/ISystemConnections.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/ISystemProbe.h"
+#include "Platform/ITaskManagerReplacement.h"
 #include "Platform/IUdpTrafficCollector.h"
 #include "Platform/IUserSessions.h"
 
@@ -180,6 +181,11 @@ std::unique_ptr<IServiceActions> makeServiceActions()
 {
     // systemd's StartUnit/StopUnit and unit-file calls over D-Bus (#2006 phase 2).
     return std::make_unique<LinuxServiceActions>();
+}
+
+std::shared_ptr<ITaskManagerReplacement> makeTaskManagerReplacement(const std::shared_ptr<IPrivilegedBroker>& /*broker*/)
+{
+    return nullptr; // Linux has no Task Manager to replace (#3072)
 }
 
 std::shared_ptr<IHttpsClient> makeHttpsClient()
