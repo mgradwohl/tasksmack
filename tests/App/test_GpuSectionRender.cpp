@@ -684,9 +684,11 @@ TEST_F(GpuSectionRenderTest, AnUnreadGpuReadingHasAnUnavailableBar)
     }
 }
 
-/// Hovers plot @p index (in ImPlot's order: a GPU's core chart, then its thermal one) near its left
-/// or right edge, draws two frames, and returns the text of the second.
-[[nodiscard]] std::string hoverPlotAndCapture(GpuSection::RenderContext& ctx, int index, bool atLeftEdge)
+/// Hovers plot @p index (in ImPlot's order: a GPU's core chart, then its thermal one) @p fromRight of
+/// its width in from its right edge (the newest sample; the 30 s history fills the right tenth of the
+/// 300 s window), draws two frames, and returns the hover tooltip's text in the second: what follows its
+/// "Age:" line, each row as "Label: value". Empty when no tooltip was drawn.
+[[nodiscard]] std::string hoverPlotAndCapture(GpuSection::RenderContext& ctx, int index, float fromRight)
 {
     ImPlotContext& plots = *ImPlot::GetCurrentContext();
     EXPECT_GT(plots.Plots.GetBufSize(), index);
@@ -695,7 +697,7 @@ TEST_F(GpuSectionRenderTest, AnUnreadGpuReadingHasAnUnavailableBar)
         return {};
     }
     const ImRect rect = plots.Plots.GetByIndex(index)->PlotRect;
-    ImGui::GetIO().AddMousePosEvent(atLeftEdge ? rect.Min.x + 2.0F : rect.Max.x - 2.0F, (rect.Min.y + rect.Max.y) * 0.5F);
+    ImGui::GetIO().AddMousePosEvent(rect.Max.x - 2.0F - (fromRight * rect.GetWidth()), (rect.Min.y + rect.Max.y) * 0.5F);
     std::string text;
     for (int frame = 0; frame < 2; ++frame)
     {
@@ -710,8 +712,14 @@ TEST_F(GpuSectionRenderTest, AnUnreadGpuReadingHasAnUnavailableBar)
         ImGui::End();
         ImGui::Render();
     }
-    return text;
+    const std::size_t age = text.find("Age:");
+    return age == std::string::npos ? std::string{} : text.substr(age);
 }
+
+/// The newest sample, at the right edge.
+constexpr float NEWEST = 0.0F;
+/// About 24 s before the newest sample: inside the 30 s history, before a 5 s series starts.
+constexpr float BEFORE_SHORT_SERIES = 0.08F;
 
 /// Whether ImPlot's hover tooltip window is up.
 [[nodiscard]] bool tooltipShown()
@@ -859,13 +867,15 @@ TEST_F(GpuSectionRenderTest, OptionalSeriesWithNoSamplesAreLeftOut)
     EXPECT_EQ(plots[0], (SeriesLabels{"Utilization", "Memory"}));
     EXPECT_TRUE(plots[1].empty()) << "no thermal series has a sample";
 
-    std::string text = hoverPlotAndCapture(ctx, 0, false);
+    std::string text = hoverPlotAndCapture(ctx, 0, NEWEST);
     EXPECT_TRUE(tooltipShown());
-    EXPECT_TRUE(text.contains("Utilization")) << text;
-    EXPECT_FALSE(text.contains("Encoder")) << text;
+    EXPECT_TRUE(text.contains("Utilization: 42%")) << text;
+    EXPECT_FALSE(text.contains("Encoder:")) << text;
+    EXPECT_FALSE(text.contains("Clock")) << text;
 
-    text = hoverPlotAndCapture(ctx, 1, false);
-    EXPECT_FALSE(text.contains("Fan")) << text;
+    text = hoverPlotAndCapture(ctx, 1, NEWEST);
+    EXPECT_FALSE(text.contains("Fan:")) << text;
+    EXPECT_FALSE(text.contains("Temperature")) << text;
 }
 
 // Series shorter than the time axis end at its newest sample: hovered before they start, the tooltip
@@ -893,16 +903,21 @@ TEST_F(GpuSectionRenderTest, AHoverBeforeAShorterSeriesStartsHasNoRowForIt)
     static_cast<void>(renderAndCapture(ctx));
     ASSERT_EQ(plotsDrawn().size(), 2U);
 
-    std::string text = hoverPlotAndCapture(ctx, 0, true);
+    std::string text = hoverPlotAndCapture(ctx, 0, BEFORE_SHORT_SERIES);
     EXPECT_TRUE(tooltipShown());
-    EXPECT_TRUE(text.contains("Utilization")) << text;
-    EXPECT_TRUE(text.contains("25.0%")) << "Memory as its percentage, with no bytes: " << text;
-    EXPECT_FALSE(text.contains("Encoder")) << text;
-    EXPECT_FALSE(text.contains("Decoder")) << text;
+    EXPECT_TRUE(text.contains("Utilization: 42%")) << text;
+    EXPECT_TRUE(text.contains("Memory: 25%")) << "its percentage, with no bytes: " << text;
+    EXPECT_FALSE(text.contains("Clock")) << text;
+    EXPECT_FALSE(text.contains("Encoder:")) << text;
+    EXPECT_FALSE(text.contains("Decoder:")) << text;
 
-    text = hoverPlotAndCapture(ctx, 1, true);
+    text = hoverPlotAndCapture(ctx, 1, BEFORE_SHORT_SERIES);
     EXPECT_FALSE(text.contains("Temperature")) << text;
-    EXPECT_FALSE(text.contains("Fan")) << text;
+    EXPECT_FALSE(text.contains("Fan:")) << text;
+
+    // At the newest sample every series has a value.
+    text = hoverPlotAndCapture(ctx, 0, NEWEST);
+    EXPECT_TRUE(text.contains("Encoder:")) << text;
 }
 
 // A history whose timestamps have no utilization or memory samples aligned with them yet: nothing is
@@ -923,9 +938,9 @@ TEST_F(GpuSectionRenderTest, AHistoryWithNoAlignedSamplesPlotsNothing)
     EXPECT_TRUE(plots[0].empty());
     EXPECT_TRUE(plots[1].empty());
 
-    static_cast<void>(hoverPlotAndCapture(ctx, 0, false));
+    static_cast<void>(hoverPlotAndCapture(ctx, 0, NEWEST));
     EXPECT_FALSE(tooltipShown());
-    static_cast<void>(hoverPlotAndCapture(ctx, 1, false));
+    static_cast<void>(hoverPlotAndCapture(ctx, 1, NEWEST));
     EXPECT_FALSE(tooltipShown());
 }
 
@@ -944,15 +959,13 @@ TEST_F(GpuSectionRenderTest, AnUnreadFanAndAZeroMemoryTotalReadAsTheyAre)
     static_cast<void>(renderAndCapture(ctx));
     static_cast<void>(renderAndCapture(ctx));
 
-    std::string text = hoverPlotAndCapture(ctx, 0, false);
+    std::string text = hoverPlotAndCapture(ctx, 0, NEWEST);
     EXPECT_TRUE(tooltipShown());
-    EXPECT_TRUE(text.contains("25.0%")) << text;
-    EXPECT_FALSE(text.contains("GiB")) << "no share of a total of 0: " << text;
+    EXPECT_TRUE(text.contains("Memory: 25%")) << "no share of a total of 0: " << text;
 
-    text = hoverPlotAndCapture(ctx, 1, false);
+    text = hoverPlotAndCapture(ctx, 1, NEWEST);
     EXPECT_TRUE(tooltipShown());
-    EXPECT_TRUE(text.contains("Fan")) << text;
-    EXPECT_TRUE(text.contains("N/A")) << text;
+    EXPECT_TRUE(text.contains("Fan: N/A")) << text;
 }
 
 } // namespace
