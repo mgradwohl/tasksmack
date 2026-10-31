@@ -333,6 +333,9 @@ TEST(SmbiosParserTest, EveryChassisTypeMapsToItsPlatformRole)
     {
         EXPECT_EQ(platformRoleFromChassis(type), "Server") << chassisTypeName(type);
     }
+    // The role the function's comment has always named, and no case returned.
+    EXPECT_EQ(platformRoleFromChassis(0x0C), "Docking station") << chassisTypeName(0x0C);
+    EXPECT_EQ(platformRoleFromChassis(0x80 | 0x0C), "Docking station");
     // Other, Unknown, Expansion Chassis, SubChassis, Bus Expansion Chassis, Peripheral Chassis, RAID
     // Chassis, Compact PCI and IoT Gateway imply no role.
     for (const std::uint8_t type : std::initializer_list<std::uint8_t>{0x01, 0x02, 0x12, 0x13, 0x14, 0x15, 0x16, 0x1A, 0x21})
