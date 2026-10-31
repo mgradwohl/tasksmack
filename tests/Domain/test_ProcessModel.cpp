@@ -19,6 +19,7 @@
 #include "Platform/IProcessProbe.h"
 #include "Platform/ImageSignature.h"
 #include "Platform/ProcessTypes.h"
+#include "Platform/SchedPolicy.h"
 
 #include <gtest/gtest.h>
 
@@ -3645,12 +3646,13 @@ TEST(ProcessModelTest, TheArchitectureIsPassedThroughToTheSnapshot)
 
 TEST(ProcessModelTest, TheSignatureReachesTheSnapshotWithItsLabel)
 {
-    // #3070: the probe's signature check passes through, and the column's text is built once, here.
+    // #3070: the probe's signature check passes through; the column's text is worded from it where drawn (#3244).
     auto probe = std::make_unique<MockProcessProbe>();
     Platform::ProcessCounters counter = makeCounter(100, "explorer.exe", 'S', 1000, 500);
-    counter.signature = {.signature = Platform::ImageSignature::Embedded, .note = {}, .signer = "Microsoft Windows"};
+    counter.signature =
+        Platform::SignatureCheck{.signature = Platform::ImageSignature::Embedded, .note = {}, .signer = "Microsoft Windows"};
     Platform::ProcessCounters unsignedCounter = makeCounter(101, "tool.exe", 'S', 1000, 500);
-    unsignedCounter.signature = {.signature = Platform::ImageSignature::Unsigned, .note = {}, .signer = {}};
+    unsignedCounter.signature = Platform::SignatureCheck{.signature = Platform::ImageSignature::Unsigned, .note = {}, .signer = {}};
     Platform::ProcessCounters pending = makeCounter(102, "new.exe", 'S', 1000, 500);
     probe->setCounters({counter, unsignedCounter, pending});
     probe->setTotalCpuTime(100000);
@@ -3664,15 +3666,15 @@ TEST(ProcessModelTest, TheSignatureReachesTheSnapshotWithItsLabel)
     {
         return *std::ranges::find(snaps, pid, &Domain::ProcessSnapshot::pid);
     };
-    EXPECT_EQ(byPid(100).signature.signature, Platform::ImageSignature::Embedded);
-    EXPECT_EQ(byPid(100).signatureText, "Microsoft Windows");
-    EXPECT_EQ(byPid(101).signatureText, "Unsigned");
-    EXPECT_EQ(byPid(102).signatureText, "") << "not checked yet";
+    EXPECT_EQ(byPid(100).signature.get().signature, Platform::ImageSignature::Embedded);
+    EXPECT_EQ(Platform::signatureLabel(byPid(100).signature.get()), "Microsoft Windows");
+    EXPECT_EQ(Platform::signatureLabel(byPid(101).signature.get()), "Unsigned");
+    EXPECT_EQ(Platform::signatureLabel(byPid(102).signature.get()), "") << "not checked yet";
 }
 
 TEST(ProcessModelTest, TheSchedulingPolicyReachesTheSnapshotWithItsLabel)
 {
-    // #3086: the policy and real-time priority pass through, and the label is built once, here.
+    // #3086: the policy and real-time priority pass through; the label is worded from them where drawn (#3244).
     auto probe = std::make_unique<MockProcessProbe>();
     Platform::ProcessCounters counter = makeCounter(100, "pipewire", 'S', 1000, 500);
     counter.schedPolicy = Platform::SchedPolicy::Fifo;
@@ -3687,7 +3689,7 @@ TEST(ProcessModelTest, TheSchedulingPolicyReachesTheSnapshotWithItsLabel)
     ASSERT_EQ(snaps.size(), 1);
     EXPECT_EQ(snaps[0].schedPolicy, Platform::SchedPolicy::Fifo);
     EXPECT_EQ(snaps[0].rtPriority, 50U);
-    EXPECT_EQ(snaps[0].schedPolicyText, "FIFO 50");
+    EXPECT_EQ(Platform::schedPolicyText(snaps[0].schedPolicy, snaps[0].rtPriority).view(), "FIFO 50");
 }
 
 TEST(ProcessModelTest, WhenProbeReturnsBackgroundProcessType_ThenSnapshotContainsIt)
