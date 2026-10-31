@@ -4,6 +4,7 @@
 #include "App/Panels/ProcessThreadsView.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessThreads.h"
+#include "UI/Format.h"
 
 #include <gtest/gtest.h>
 #include <imgui.h>
@@ -130,6 +131,26 @@ TEST(ProcessThreadsViewTest, SortAndFilterByNameOrTid)
     view.setFilter("30");
     ASSERT_EQ(view.filteredRows().size(), 1U);
     EXPECT_EQ(view.rows()[view.filteredRows()[0]].thread.tid, 300);
+}
+
+// #3069: each thread's start as a time, from the boot time the read gave, sortable; the dash without one.
+TEST(ProcessThreadsViewTest, StartedIsTheBootTimePlusTheThreadsStartAndSorts)
+{
+    ProcessThreadsView view(1);
+    ThreadsReadResult read = threads({thread(100, "server", 1, 500), thread(105, "pool", 2, 300)});
+    read.ticksPerSecond = 100;
+    read.bootTimeEpoch = 1'761'900'000;
+    view.applyResult(read, 0.0);
+    view.setSort(Detail::ThreadsColumn::Started, true);
+    ASSERT_EQ(view.rows().size(), 2U);
+    EXPECT_EQ(view.rows()[0].thread.tid, 105) << "started first";
+    EXPECT_EQ(view.rows()[0].started, UI::Format::formatEpochDateTimeShort(1'761'900'003));
+    EXPECT_EQ(view.rows()[1].started, UI::Format::formatEpochDateTimeShort(1'761'900'005));
+
+    read.bootTimeEpoch = 0;
+    view.applyResult(read, 1.0);
+    EXPECT_EQ(view.rows()[0].started, std::string(Detail::THREAD_CPU_UNKNOWN));
+    EXPECT_EQ(Detail::threadStartedText(100, 0, 1000), UI::Format::formatEpochDateTimeShort(1100)) << "a zero tick rate counts as one";
 }
 
 TEST(ProcessThreadsViewTest, AFailedReadShowsItsStatusAndForgetsTheCpuTimes)

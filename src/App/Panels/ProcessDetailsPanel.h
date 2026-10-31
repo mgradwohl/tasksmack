@@ -359,6 +359,7 @@ class ProcessDetailsPanel : public Panel
         std::string affinity;         ///< The CPUs it may run on, as the Affinity column writes them (#1878)
         std::string signature;        ///< The Signature column's text, with the check mark when verified (#3070)
         std::string signatureTooltip; ///< How it is signed, or why not (Platform::signatureTooltip())
+        std::string schedPolicy;      ///< The Policy column's text, "FIFO 50"; empty if unread (#3086)
     } m_BasicInfoText;
     // The Overview's state for the shared chart-height rule (#959); the Network and GPU tabs' are
     // m_Charts'.

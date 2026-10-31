@@ -28,6 +28,7 @@
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/ImageSignature.h"
 #include "Platform/ProcessTypes.h"
+#include "Platform/SchedPolicy.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
 
@@ -312,7 +313,6 @@ TEST_F(ProcessDetailsPanelRenderTest, TheSignatureRowShowsTheVerifiedSignerOrWhy
     {
         Domain::ProcessSample sample = sampleAt(second, 10.0);
         auto snapshot = std::make_shared<Domain::ProcessSnapshot>(*sample.snapshot);
-        snapshot->signatureText = Platform::signatureLabel(check);
         snapshot->signature = std::move(check);
         sample.snapshot = std::move(snapshot);
         const std::vector samples{sample};
@@ -341,6 +341,37 @@ TEST_F(ProcessDetailsPanelRenderTest, TheSignatureRowShowsTheVerifiedSignerOrWhy
     text = render(*panel, {.signature = Platform::ImageSignature::Unsigned, .note = {}, .signer = {}}, 4.0);
     EXPECT_FALSE(text.contains("Signature")) << text;
     EXPECT_FALSE(text.contains("Unsigned")) << text;
+}
+
+// #3086, #3244: the Runtime card's Policy row says the Processes table's Policy column's text, worded from
+// the snapshot's policy and real-time priority, and is left out for a policy that wasn't read.
+TEST_F(ProcessDetailsPanelRenderTest, ThePolicyRowWordsTheSchedulingPolicy)
+{
+    const auto render = [](ProcessDetailsPanel& panel, Platform::SchedPolicy policy, std::uint32_t rtPriority, double second)
+    {
+        Domain::ProcessSample sample = sampleAt(second, 10.0);
+        auto snapshot = std::make_shared<Domain::ProcessSnapshot>(*sample.snapshot);
+        snapshot->schedPolicy = policy;
+        snapshot->rtPriority = rtPriority;
+        sample.snapshot = std::move(snapshot);
+        const std::vector samples{sample};
+        panel.updateWithSamples(samples, 1.0F);
+        static_cast<void>(renderAndCapture(panel));
+        return renderAndCapture(panel);
+    };
+    const auto panel = activePanel();
+    panel->setSelectedPid(PID, START_TICKS);
+
+    std::string text = render(*panel, Platform::SchedPolicy::Fifo, 50, 1.0);
+    EXPECT_TRUE(text.contains("Policy")) << text;
+    EXPECT_TRUE(text.contains("FIFO 50")) << text;
+
+    text = render(*panel, Platform::SchedPolicy::Batch, 0, 2.0);
+    EXPECT_TRUE(text.contains("Batch")) << text;
+    EXPECT_FALSE(text.contains("FIFO 50")) << "a new snapshot's text, not the last one's:\n" << text;
+
+    text = render(*panel, Platform::SchedPolicy::Unknown, 0, 3.0);
+    EXPECT_FALSE(text.contains("Policy")) << text;
 }
 
 // #1878: what the Processes table shows is on Process Details too: Status joined to State, Affinity in

@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -67,6 +68,17 @@ struct LinuxProcessSyscalls
     /// The descriptor under /proc/<pid>/fd that is "socket:[inode]", or the errno that stopped the search (ENOENT
     /// when none is; EACCES for another user's process). Left null, the real /proc is read.
     std::expected<int, int> (*socketDescriptor)(std::int32_t pid, std::uint64_t inode) = nullptr;
+    /// Efficiency mode (#3202): the process's nice (getpriority(PRIO_PROCESS, pid)), nullopt when it can't be
+    /// read. Left null, the real call is made.
+    std::optional<std::int32_t> (*currentNice)(std::int32_t pid) = nullptr;
+    /// /proc/<pid>/cgroup's text, nullopt when it can't be read. Left null, the real /proc is read.
+    std::optional<std::string> (*procCgroup)(std::int32_t pid) = nullptr;
+    /// The text of @p file in cgroup @p cgroup (a path under /sys/fs/cgroup, "" for the root), nullopt when it
+    /// can't be read. Left null, the real file is read.
+    std::optional<std::string> (*readCgroupFile)(const std::string& cgroup, std::string_view file) = nullptr;
+    /// Writes @p value to @p file in cgroup @p cgroup: 0, or the errno that refused it. Left null, the real
+    /// file is written.
+    int (*writeCgroupFile)(const std::string& cgroup, std::string_view file, const std::string& value) = nullptr;
 };
 
 /// The real system calls.
@@ -94,12 +106,12 @@ class LinuxProcessControl : public IProcessActions
     LinuxProcessControl();
     /// Makes its system calls through @p syscalls (tests: calls that fail on demand, #1548).
     explicit LinuxProcessControl(const LinuxProcessSyscalls& syscalls);
-    ~LinuxProcessControl() override = default;
+    ~LinuxProcessControl() override;
 
     LinuxProcessControl(const LinuxProcessControl&) = delete;
     LinuxProcessControl& operator=(const LinuxProcessControl&) = delete;
-    LinuxProcessControl(LinuxProcessControl&&) = default;
-    LinuxProcessControl& operator=(LinuxProcessControl&&) = default;
+    LinuxProcessControl(LinuxProcessControl&&) noexcept;
+    LinuxProcessControl& operator=(LinuxProcessControl&&) noexcept;
 
     [[nodiscard]] ProcessActionCapabilities actionCapabilities() const override;
     [[nodiscard]] ProcessActionResult terminate(const ProcessTarget& target) override;
@@ -112,6 +124,9 @@ class LinuxProcessControl : public IProcessActions
     [[nodiscard]] ProcessActionResult setIoPriority(const ProcessTarget& target, IoPriorityClass ioClass, int32_t level) override;
     [[nodiscard]] IoPriorityReadResult getIoPriority(const ProcessTarget& target) override;
     [[nodiscard]] ProcessActionResult setAffinity(const ProcessTarget& target, const CpuAffinity& cpus) override;
+    /// Efficiency mode (#3202, LinuxEfficiencyMode.h): on, nice 19 for every thread and, where it may and the
+    /// process is alone in its cgroup, the cgroup's cpu.weight at 1; off, what on changed put back.
+    [[nodiscard]] ProcessActionResult setEfficiencyMode(const ProcessTarget& target, bool on) override;
     /// The online CPUs and, on a hybrid CPU, their efficiency classes, from sysfs (#1881).
     [[nodiscard]] CpuAffinityLayout affinityLayout() const override;
 
@@ -125,8 +140,12 @@ class LinuxProcessControl : public IProcessActions
   private:
     [[nodiscard]] ProcessActionResult sendSignalNumber(const ProcessTarget& target, int signal, std::string_view signalName) const;
 
+    /// What Efficiency mode changed for each process it turned on (#3202), for off to put back.
+    struct EfficiencyMemory;
+
     LinuxProcessSyscalls m_Syscalls;
-    bool m_CanSetRealtimeIoPriority = false; // CAP_SYS_NICE or CAP_SYS_ADMIN, read at construction (#1540)
+    bool m_CanSetRealtimeIoPriority = false;        // CAP_SYS_NICE or CAP_SYS_ADMIN, read at construction (#1540)
+    std::unique_ptr<EfficiencyMemory> m_Efficiency; // behind a pointer: its mutex would make this immovable
 };
 
 } // namespace Platform
