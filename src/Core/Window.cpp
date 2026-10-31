@@ -1369,10 +1369,21 @@ void Window::showMinimizedWithoutFocus()
 #ifdef _WIN32
     // SW_SHOWMINNOACTIVE: shown straight to the taskbar, and never activated, so a start at sign-in doesn't
     // take the focus from whatever the user is doing. SDL hears of it from the window's own messages
-    // (WM_SHOWWINDOW, WM_WINDOWPOSCHANGED with IsIconic), as for any minimize, so its flags follow.
+    // (WM_SHOWWINDOW, WM_WINDOWPOSCHANGED with IsIconic), sent during the call, so its flags follow.
     if (auto* const hwnd = nativeWindowHandle(m_Handle); hwnd != nullptr)
     {
         ShowWindow(hwnd, SW_SHOWMINNOACTIVE);
+        // A process's first ShowWindow can take its launcher's STARTUPINFO show state instead of the one
+        // asked for (STARTF_USESHOWWINDOW: a test runner's, a shortcut's "Run: Normal window"), leaving the
+        // window hidden or shown normally. The second call is always the one asked for.
+        if (IsIconic(hwnd) == FALSE)
+        {
+            spdlog::debug("Window::showMinimizedWithoutFocus: the first show wasn't minimized; minimizing again");
+            ShowWindow(hwnd, SW_SHOWMINNOACTIVE);
+        }
+        // Take in any of SDL's own state that is only updated from the event queue, so the first frame
+        // already finds the window minimized and draws nothing (#3156).
+        SDL_PumpEvents();
         return;
     }
 #endif

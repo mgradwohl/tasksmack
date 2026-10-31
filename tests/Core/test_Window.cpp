@@ -211,9 +211,18 @@ TEST_F(WindowTest, AHiddenWindowIsShownMinimizedWithoutFocus)
             .Title = "WindowMinimizedStartTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true, .Hidden = true});
         EXPECT_TRUE((SDL_GetWindowFlags(window.getHandle()) & SDL_WINDOW_HIDDEN) != 0);
         window.showMinimizedWithoutFocus();
-        SDL_PumpEvents();
 #ifdef _WIN32
+        // Waits on the state, bounded, never on a frame count: a slow desktop may answer late.
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+        while (!window.isMinimized() && std::chrono::steady_clock::now() < deadline)
+        {
+            SDL_PumpEvents();
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
         EXPECT_TRUE(window.isMinimized());
+        EXPECT_NE(IsIconic(static_cast<HWND>(
+                      SDL_GetPointerProperty(SDL_GetWindowProperties(window.getHandle()), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr))),
+                  FALSE);
         EXPECT_TRUE((SDL_GetWindowFlags(window.getHandle()) & SDL_WINDOW_HIDDEN) == 0);
 #endif
     }
