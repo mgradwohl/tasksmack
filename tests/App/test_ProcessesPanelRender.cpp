@@ -3683,7 +3683,7 @@ class TrackedActions : public TestMocks::MockProcessActions
 };
 
 // A panel detached straight after attach, before any frame adopted the platform its sampler built: the
-// handed-over actions are released with the panel's own, not left behind in the handoff.
+// handed-over actions are taken from the handoff and kept with the panel's own, so they go with the panel.
 TEST_F(ProcessesPanelRenderTest, APlatformNoFrameAdoptedIsReleasedOnDetach)
 {
     auto destroyed = std::make_shared<std::atomic<bool>>(false);
@@ -3699,6 +3699,8 @@ TEST_F(ProcessesPanelRenderTest, APlatformNoFrameAdoptedIsReleasedOnDetach)
     attachAndSeed(*panel);
     EXPECT_FALSE(destroyed->load());
     panel->onDetach(); // no onUpdate() or frame in between: nothing adopted the handoff
+    EXPECT_FALSE(destroyed->load()) << "taken from the handoff, not dropped with it";
+    panel.reset();
     EXPECT_TRUE(destroyed->load());
 }
 
