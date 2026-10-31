@@ -17,6 +17,7 @@
 #include "Platform/IProcessThreads.h"
 #include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
+#include "Platform/IStartAtLogin.h"
 #include "Platform/IStartupActions.h"
 #include "Platform/IStartupProbe.h"
 #include "Platform/ISystemConnections.h"
@@ -43,6 +44,7 @@
 #include "WindowsProcessSecurity.h"
 #include "WindowsServiceActions.h"
 #include "WindowsServiceProbe.h"
+#include "WindowsStartAtLogin.h"
 #include "WindowsStartupActions.h"
 #include "WindowsStartupProbe.h"
 #include "WindowsSystemInfoProbe.h"
@@ -193,6 +195,12 @@ std::shared_ptr<IHttpsClient> makeHttpsClient()
 {
     // WinHTTP (#3093): the system's TLS and proxy settings. Opens nothing until a request is made.
     return std::make_shared<WindowsHttpsClient>();
+}
+
+std::shared_ptr<IStartAtLogin> makeStartAtLogin()
+{
+    // The HKCU Run key's TaskSmack value (#3093 part 2): per-user, no elevation. Reads nothing until asked.
+    return std::make_shared<WindowsStartAtLogin>();
 }
 
 bool enableDebugPrivilege()

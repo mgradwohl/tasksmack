@@ -25,6 +25,9 @@ struct WindowSpecification
     int Height = 720;
     bool VSync = true;
     bool Borderless = true; // Enable custom title bar by default
+    /// Created hidden (SDL_WINDOW_HIDDEN), for showMinimizedWithoutFocus() to show once it is placed
+    /// (#3093 part 2: --minimized). Never set otherwise: the window shows when created.
+    bool Hidden = false;
 };
 
 class Window
@@ -182,6 +185,11 @@ class Window
     /// (#1519). Queries SDL: call it on the main thread, once per System Information read, not per frame.
     [[nodiscard]] GraphicsHostInfo queryGraphicsHostInfo() const;
     void maximize();
+    /// Show the window minimized, without taking the focus (#3093 part 2: --minimized, the sign-in entry's
+    /// start). Windows: ShowWindow(SW_SHOWMINNOACTIVE) on the window created hidden (WindowSpecification::
+    /// Hidden), so it never appears or activates, and restores to where applySavedGeometry() put it.
+    /// Elsewhere: SDL_MinimizeWindow(), with SDL told not to activate a window it shows. Startup-only.
+    void showMinimizedWithoutFocus();
     /// Replace an OS-initiated maximize (SDL_EVENT_WINDOW_MAXIMIZED: Win+Up, snap to the top edge,
     /// ShowWindow(SW_MAXIMIZE)) with maximize()'s client-side one, which fills the current display's
     /// usable bounds and records the real normal rectangle as the restore target (#1208). Does

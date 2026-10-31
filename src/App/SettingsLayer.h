@@ -2,11 +2,14 @@
 
 #include "App/BackgroundOpen.h"
 #include "App/SettingsDialog.h"
+#include "App/StartAtLoginSetting.h"
 #include "Core/Event.h"
 #include "Core/Layer.h"
+#include "Platform/IStartAtLogin.h"
 
 #include <filesystem>
 #include <functional>
+#include <memory>
 
 namespace App
 {
@@ -45,7 +48,16 @@ class SettingsLayer : public Core::Layer
     /// it in (tests: what the opener was handed is then safe to read).
     void waitForPendingOpen();
 
+    /// Start at sign-in (#3093, part 2): reads and writes @p entry instead (tests' fake; null hides the row).
+    /// The default constructor's is the platform's (PanelPlatforms::makeStartAtLoginEntry()); the test seam's none.
+    void setStartAtLoginEntry(std::shared_ptr<Platform::IStartAtLogin> entry);
+
+    /// Tests: waits for the sign-in entry's read or change still running, and takes it in.
+    void waitForStartAtLoginForTesting();
+
   private:
+    /// Takes in the sign-in entry's status for the dialog (#3093 part 2), each frame.
+    void syncStartAtLogin();
     void requestOpen();
     void applySettings();
     void raiseEvent(Core::Event& event) const;
@@ -57,6 +69,8 @@ class SettingsLayer : public Core::Layer
     std::function<void(Core::Event&)> m_RaiseEvent;               ///< Set by the test seam only; else the Application
     std::function<bool(const std::filesystem::path&)> m_OpenPath; ///< Set by the test seam only; else PlatformOpen
     std::function<std::filesystem::path()> m_UserConfigDir;       ///< Set by the test seam only; else the Application's
+    // Start at sign-in (#3093, part 2): the entry's reads and writes, on its own worker.
+    StartAtLoginSetting m_StartAtLogin;
     // The buttons' open, and what it needs on disk first, on a worker (#3155): the buttons are disabled
     // until it is done. Last, so it is destroyed (waited for) first: its job holds a copy of the opener.
     BackgroundOpen m_Open;

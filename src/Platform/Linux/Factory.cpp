@@ -37,6 +37,7 @@
 #include "Platform/IProcessThreads.h"
 #include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
+#include "Platform/IStartAtLogin.h"
 #include "Platform/IStartupActions.h"
 #include "Platform/IStartupProbe.h"
 #include "Platform/ISystemConnections.h"
@@ -175,6 +176,13 @@ std::unique_ptr<IServiceActions> makeServiceActions()
 std::shared_ptr<IHttpsClient> makeHttpsClient()
 {
     // No HTTPS client on Linux yet (#3093; #3238 adds one): the update check isn't offered there, and nothing is sent.
+    return nullptr;
+}
+
+std::shared_ptr<IStartAtLogin> makeStartAtLogin()
+{
+    // No sign-in entry on Linux yet (#3093 part 2; its XDG autostart entry is agent:WSL's, #3254): Settings
+    // hides the row, and nothing is written.
     return nullptr;
 }
 

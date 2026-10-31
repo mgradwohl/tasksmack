@@ -1,5 +1,8 @@
 #ifdef _WIN32
+// clang-format off
 #include <windows.h>
+#include <shellapi.h> // CommandLineToArgvW: the command line's arguments (#3093 part 2); after windows.h
+// clang-format on
 #endif
 
 #include "App/AboutLayer.h"
@@ -8,6 +11,7 @@
 #include "App/ElevationNoticeLayer.h"
 #include "App/HelpLayer.h"
 #include "App/InstanceLock.h"
+#include "App/LaunchOptions.h"
 #include "App/RenderMetricsOverride.h"
 #include "App/ScreenshotLayer.h"
 #include "App/ScreenshotOverride.h"
@@ -27,6 +31,7 @@
 #include "Core/WindowConstants.h"
 #ifdef _WIN32
 #include "Platform/Factory.h"
+#include "Platform/Windows/WinString.h"
 #endif
 #include "UI/Format.h"
 #include "UI/UILayer.h"
@@ -45,6 +50,7 @@
 #endif
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdio> // NOLINT(misc-include-cleaner) - FILE* is used only in the _WIN32 console-attach branch below
 #include <cstdlib>
 #include <exception>
@@ -54,6 +60,7 @@
 #include <memory>
 #include <optional>
 #include <print>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -83,7 +90,7 @@ auto initializeLocale() -> const Core::LocaleSetup::Summary&
     return summary;
 }
 
-auto runApp() -> int
+auto runApp(const App::LaunchOptions& launch) -> int
 {
     const Core::LocaleSetup::Summary& localeSummary = initializeLocale();
 
@@ -217,6 +224,15 @@ auto runApp() -> int
     {
         spdlog::warn("Locale: {}", warning);
     }
+    // The command line (#3093 part 2): --minimized from the sign-in entry; anything else is ignored.
+    if (launch.minimized)
+    {
+        spdlog::info("Starting minimized (--minimized)");
+    }
+    for (const std::string& ignored : launch.ignored)
+    {
+        spdlog::info("Ignoring the command-line argument {}", ignored);
+    }
     spdlog::debug("Compiler: {} {}", tasksmack::Version::COMPILER_ID, tasksmack::Version::COMPILER_VERSION);
     spdlog::debug("Built: {} {}", tasksmack::Version::BUILD_DATE, tasksmack::Version::BUILD_TIME);
 
@@ -277,6 +293,10 @@ auto runApp() -> int
         std::clamp(windowOverride ? windowOverride->height : settings.windowHeight, Core::WINDOW_MIN_DIMENSION, Core::WINDOW_MAX_DIMENSION);
     appSpec.VSync = true;
     appSpec.ForceNativeDecorationsOnWayland = settings.forceNativeWindowDecorationsOnWayland;
+#ifdef _WIN32
+    // --minimized (#3093 part 2): created hidden, placed, then shown minimized without the focus (below).
+    appSpec.StartHidden = launch.minimized;
+#endif
 
     auto app = std::make_unique<Core::Application>(appSpec);
     Core::Application::setInstance(std::move(app));
@@ -368,6 +388,14 @@ auto runApp() -> int
             screenshotLayer = &appRef.pushLayer<App::ScreenshotLayer>(*screenshot, &shell);
         }
 
+        // --minimized (#3093 part 2), the sign-in entry's start: shown minimized, without taking the focus,
+        // once the window is placed and every layer is attached. It draws no frames until it is restored
+        // (the frame loop's hidden path, #3156).
+        if (launch.minimized)
+        {
+            appRef.getWindow().showMinimizedWithoutFocus();
+        }
+
         // Run the application
         appRef.run();
 
@@ -395,11 +423,11 @@ auto runApp() -> int
 
 /// Runs the app, turning an exception that escapes it into a logged error and a non-zero exit
 /// instead of std::terminate (#1124). On Windows there is no console, so it is also shown.
-auto runAppGuarded() -> int
+auto runAppGuarded(const App::LaunchOptions& launch) -> int
 {
     try
     {
-        return runApp();
+        return runApp(launch);
     }
     catch (const std::exception& e)
     {
@@ -435,6 +463,29 @@ auto runAppGuarded() -> int
     }
 }
 
+#ifdef _WIN32
+// LCOV_EXCL_START - main.cpp runs only in TaskSmack.exe; no test binary links it (#2039)
+/// The command line's arguments, the program's path first, as UTF-8: WinMain's own is the ANSI code
+/// page's, which can't hold every path.
+auto commandLineArguments() -> std::vector<std::string>
+{
+    std::vector<std::string> arguments;
+    int count = 0;
+    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &count);
+    if (argv == nullptr)
+    {
+        return arguments;
+    }
+    for (const wchar_t* const argument : std::span<LPWSTR>(argv, static_cast<std::size_t>(std::max(count, 0))))
+    {
+        arguments.push_back(Platform::WinString::wideToUtf8(argument));
+    }
+    LocalFree(static_cast<HLOCAL>(argv));
+    return arguments;
+}
+// LCOV_EXCL_STOP
+#endif
+
 } // namespace
 
 // Entry points
@@ -443,14 +494,16 @@ auto runAppGuarded() -> int
 // Windows GUI application entry point
 auto WINAPI WinMain(HINSTANCE /*hInstance*/, HINSTANCE /*hPrevInstance*/, LPSTR /*lpCmdLine*/, int /*nShowCmd*/) -> int
 {
-    return runAppGuarded();
+    return runAppGuarded(App::parseLaunchOptions(commandLineArguments()));
 }
 // LCOV_EXCL_STOP
 #else
 // Standard entry point for Linux/macOS
 // NOLINTNEXTLINE(bugprone-exception-escape) - spdlog initialization may theoretically throw; acceptable at program start
-auto main() -> int
+auto main(int argc, char** argv) -> int
 {
-    return runAppGuarded();
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic) - argv is argc C strings, as the C++ standard gives them
+    const std::vector<std::string> arguments(argv, argv + std::max(argc, 0));
+    return runAppGuarded(App::parseLaunchOptions(arguments));
 }
 #endif

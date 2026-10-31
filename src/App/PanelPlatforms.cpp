@@ -17,6 +17,7 @@
 #include "Platform/IHttpsClient.h"
 #include "Platform/IPrivilegedBroker.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IStartAtLogin.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "SyntheticScenario.h"
 
@@ -167,6 +168,16 @@ std::shared_ptr<Platform::IHttpsClient> makeUpdateCheckClient(const Synthetic::S
         return nullptr;
     }
     return Platform::makeHttpsClient();
+}
+
+std::shared_ptr<Platform::IStartAtLogin> makeStartAtLoginEntry(const Synthetic::Scenario* scenario, bool testHookActive)
+{
+    // Never from a made-up machine or an unattended test run (#3093 part 2): the row isn't offered there.
+    if (scenario != nullptr || testHookActive)
+    {
+        return nullptr;
+    }
+    return Platform::makeStartAtLogin();
 }
 
 std::unique_ptr<Platform::ISystemInfoProbe> makeSensorProbe(const Synthetic::Scenario* /*scenario*/)
