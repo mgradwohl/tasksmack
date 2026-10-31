@@ -8,12 +8,17 @@
 #include "App/ElevationNoticeLayer.h"
 #include "App/HelpLayer.h"
 #include "App/InstanceLock.h"
+#include "App/PanelPlatforms.h"
 #include "App/RenderMetricsOverride.h"
 #include "App/ScreenshotLayer.h"
 #include "App/ScreenshotOverride.h"
 #include "App/SettingsLayer.h"
 #include "App/ShellLayer.h"
 #include "App/SyntheticScenario.h"
+#ifdef _WIN32
+#include "App/TaskManagerLaunch.h" // started in place of Task Manager (#3072): Windows only
+#endif
+#include "App/TaskManagerNoticeLayer.h"
 #include "App/TitleBarLayer.h"
 #include "App/UserConfig.h"
 #include "App/WindowOverride.h"
@@ -116,6 +121,12 @@ auto runApp() -> int
     // Load user configuration early so we can apply window geometry before creating the SDL window.
     auto& userConfig = App::UserConfig::get();
 
+    // Started in place of Task Manager (#3072): Windows passes taskmgr.exe's path, and Task Manager's own
+    // arguments after it. TaskSmack takes none, so they are only recognised, and otherwise ignored.
+#ifdef _WIN32
+    const bool asTaskManager = App::TaskManagerLaunch::isTaskManagerLaunch(Platform::commandLineArguments()); // LCOV_EXCL_LINE
+#endif
+
     // One TaskSmack per config directory (#1230): two instances saving the same config.toml could
     // undo each other's settings change. Held until runApp() returns; the OS drops it on any exit.
     // A lock that can't be taken at all (read-only directory, say) doesn't stop TaskSmack starting.
@@ -127,6 +138,14 @@ auto runApp() -> int
     if (const std::optional<int> lockExitCode = App::exitCodeForLockStatus(instanceLock.status()); lockExitCode.has_value())
     {
         spdlog::warn("TaskSmack is already running with the settings in {}; exiting", Core::pathToUtf8(instanceLockPath.parent_path()));
+#ifdef _WIN32
+        // Ctrl+Shift+Esc with TaskSmack in place of Task Manager (#3072): the running one comes to the
+        // front, as Task Manager's own second start does, rather than a message box saying it runs.
+        if (asTaskManager && Platform::showRunningTaskSmack()) // LCOV_EXCL_LINE - TaskSmack.exe only (#2039)
+        {
+            return *lockExitCode;
+        }
+#endif
         SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION,
                                  "TaskSmack",
                                  "TaskSmack is already running.\n\nOnly one TaskSmack can run at a time, so that two can't overwrite "
@@ -217,6 +236,12 @@ auto runApp() -> int
     {
         spdlog::warn("Locale: {}", warning);
     }
+#ifdef _WIN32
+    if (asTaskManager) // LCOV_EXCL_LINE - TaskSmack.exe only (#2039)
+    {
+        spdlog::info("Started in place of Task Manager; its arguments are ignored"); // LCOV_EXCL_LINE
+    }
+#endif
     spdlog::debug("Compiler: {} {}", tasksmack::Version::COMPILER_ID, tasksmack::Version::COMPILER_VERSION);
     spdlog::debug("Built: {} {}", tasksmack::Version::BUILD_DATE, tasksmack::Version::BUILD_TIME);
 
@@ -350,8 +375,12 @@ auto runApp() -> int
         // elevation notice is shown at startup when running without elevated privileges.
         appRef.pushLayer<App::HelpLayer>();
         appRef.pushLayer<App::AboutLayer>();
-        appRef.pushLayer<App::SettingsLayer>();
+        // Replace Task Manager (#3072): one controller for the Settings rows and the startup check, which
+        // reads the registry on its worker and offers a repair when Task Manager starts another TaskSmack.
+        const auto taskManager = App::makeTaskManagerReplacementController(App::Synthetic::activeScenario());
+        appRef.pushLayer<App::SettingsLayer>().setTaskManagerReplacement(taskManager);
         appRef.pushLayer<App::ElevationNoticeLayer>();
+        appRef.pushLayer<App::TaskManagerNoticeLayer>(taskManager);
 
         // The demo script's layer (#2827), after the layers its steps make requests of: a step is issued
         // in its onUpdate(), before any layer renders, so the shell draws it on that same frame.

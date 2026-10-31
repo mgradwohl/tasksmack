@@ -19,6 +19,7 @@
 #include "Platform/IGPUProbe.h"
 #include "Platform/IPrivilegedBroker.h"
 #include "Platform/ISystemInfoProbe.h"
+#include "TaskManagerReplacementController.h"
 
 #include <memory>
 
@@ -78,6 +79,11 @@ void preparePanelPlatforms(const Synthetic::Scenario* scenario);
 /// null in a synthetic run and where there is none (no helper installed, already root). Made on first
 /// use; call it on the UI thread, as its prompt belongs to the main window.
 [[nodiscard]] std::shared_ptr<Platform::IPrivilegedBroker> privilegedBroker(const Synthetic::Scenario* scenario);
+
+/// Replace Task Manager's controller (#3072), shared by the Settings rows and the startup notice: over the
+/// platform's (Windows'), whose changes go through the shared helper; unsupported in a synthetic run and on
+/// Linux. Call it on the UI thread, as privilegedBroker() is.
+[[nodiscard]] std::shared_ptr<TaskManagerReplacementController> makeTaskManagerReplacementController(const Synthetic::Scenario* scenario);
 
 namespace Detail
 {

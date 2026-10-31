@@ -104,6 +104,100 @@ TEST(BrokerProtocolTest, CloseConnectionRoundTrips)
     EXPECT_EQ(Detail::readFrame(bytes).value_or(Detail::Frame{}).kind, MessageKind::CloseConnection);
 }
 
+// #3072 (v11): Replace Task Manager carries its change, the path and the confirmation flag; a path is
+// carried exactly, quotes and all (the helper, not the decoder, refuses what isn't TaskSmack.exe).
+TEST(BrokerProtocolTest, TaskManagerReplacementRoundTrips)
+{
+    for (const Request& request : {
+             Request{TaskManagerReplacementRequest{
+                 .change = TaskManagerChange::Set, .path = R"(C:\Program Files\TaskSmack\TaskSmack.exe)", .replaceOther = false}},
+             Request{
+                 TaskManagerReplacementRequest{.change = TaskManagerChange::Set, .path = R"(C:\Zoë\TaskSmack.exe)", .replaceOther = true}},
+             Request{TaskManagerReplacementRequest{.change = TaskManagerChange::Set, .path = R"(x" & calc.exe ")", .replaceOther = false}},
+             Request{TaskManagerReplacementRequest{.change = TaskManagerChange::Set, .path = {}, .replaceOther = false}},
+             Request{TaskManagerReplacementRequest{.change = TaskManagerChange::Clear, .path = {}, .replaceOther = false}},
+         })
+    {
+        EXPECT_EQ(roundTrip(request), request);
+    }
+    const std::vector<std::uint8_t> bytes =
+        encodeRequest(5, Request{TaskManagerReplacementRequest{.change = TaskManagerChange::Set, .path = "ab", .replaceOther = true}});
+    // The header, then the change, the path's length and bytes, and the flag.
+    const std::vector<std::uint8_t> expected{16, 0, 0, 0, 11, 0, 23, 0, 5, 0, 0, 0, 0, 2, 0, 0, 0, 'a', 'b', 1};
+    EXPECT_EQ(bytes, expected);
+    EXPECT_EQ(Detail::readFrame(bytes).value_or(Detail::Frame{}).kind, MessageKind::TaskManagerReplacement);
+}
+
+// #3072: what the decoder refuses of a TaskManagerReplacement: a change past Clear, a flag that isn't 0 or 1,
+// a Clear that carries a path or the flag (it has neither), a short frame and bytes left over.
+TEST(BrokerProtocolTest, TaskManagerReplacementRefusesWhatIsntExactlyOne)
+{
+    const auto set = [](std::string path, bool replaceOther)
+    {
+        return encodeRequest(1,
+                             Request{TaskManagerReplacementRequest{
+                                 .change = TaskManagerChange::Set, .path = std::move(path), .replaceOther = replaceOther}});
+    };
+    std::vector<std::uint8_t> bytes = set("ab", false);
+    ASSERT_TRUE(decodeRequest(bytes).has_value());
+    constexpr std::size_t CHANGE = 4U + HEADER_BYTES;
+    bytes[CHANGE] = 2; // past Clear
+    EXPECT_FALSE(decodeRequest(bytes).has_value());
+
+    bytes = set("ab", false);
+    bytes.back() = 2; // the flag
+    EXPECT_FALSE(decodeRequest(bytes).has_value());
+
+    bytes = set("ab", false);
+    bytes[CHANGE] = static_cast<std::uint8_t>(TaskManagerChange::Clear); // a Clear with a path
+    EXPECT_FALSE(decodeRequest(bytes).has_value());
+
+    bytes = set("", true);
+    bytes[CHANGE] = static_cast<std::uint8_t>(TaskManagerChange::Clear); // a Clear with the flag
+    EXPECT_FALSE(decodeRequest(bytes).has_value());
+
+    bytes = set("ab", false);
+    bytes.pop_back(); // no flag
+    bytes[0] = static_cast<std::uint8_t>(bytes.size() - 4U);
+    EXPECT_FALSE(decodeRequest(bytes).has_value());
+
+    bytes = set("ab", false);
+    bytes.push_back(0); // a byte left over
+    bytes[0] = static_cast<std::uint8_t>(bytes.size() - 4U);
+    EXPECT_FALSE(decodeRequest(bytes).has_value());
+
+    bytes = set("ab", false);
+    bytes[CHANGE + 1] = 0xFF; // a path longer than the frame
+    EXPECT_FALSE(decodeRequest(bytes).has_value());
+
+    // A path past the string cap is cut by the encoder (so it no longer ends in TaskSmack.exe, which the helper
+    // refuses), and a frame that claims a longer one is refused by the decoder.
+    const auto capped = decodeRequest(set(std::string(MAX_STRING_BYTES + 1, 'a'), false));
+    ASSERT_TRUE(capped.has_value());
+    const auto* cut = std::get_if<TaskManagerReplacementRequest>(&capped->message);
+    ASSERT_NE(cut, nullptr);
+    EXPECT_EQ(cut->path.size(), MAX_STRING_BYTES);
+    std::vector<std::uint8_t> claims(4U + HEADER_BYTES + 1U + 4U + MAX_STRING_BYTES + 1U + 1U, 'a');
+    const auto put32 = [&claims](std::size_t at, std::uint32_t value)
+    {
+        for (std::size_t i = 0; i < 4; ++i)
+        {
+            claims[at + i] = static_cast<std::uint8_t>(value >> (8U * i));
+        }
+    };
+    put32(0, static_cast<std::uint32_t>(claims.size() - 4U));
+    claims[4] = static_cast<std::uint8_t>(PROTOCOL_VERSION);
+    claims[5] = 0;
+    claims[6] = static_cast<std::uint8_t>(MessageKind::TaskManagerReplacement);
+    claims[7] = 0;
+    put32(8, 1);
+    claims[CHANGE] = 0;
+    put32(CHANGE + 1, static_cast<std::uint32_t>(MAX_STRING_BYTES + 1));
+    claims.back() = 0;
+    EXPECT_FALSE(decodeRequest(claims).has_value()) << "a path past the string cap";
+    EXPECT_FALSE(decodeResponse(set("ab", false)).has_value()) << "not a response";
+}
+
 TEST(BrokerProtocolTest, EveryRequestRoundTrips)
 {
     EXPECT_EQ(roundTrip(Request{Hello{}}), Request{Hello{}});
@@ -831,6 +925,7 @@ TEST(BrokerProtocolTest, TheFuzzCorpusHasADecodableSeedForEveryMessageKind)
                                    MessageKind::ServiceAction,
                                    MessageKind::SetEfficiencyMode,
                                    MessageKind::CloseConnection,
+                                   MessageKind::TaskManagerReplacement,
                                    MessageKind::ReadEnvironment,
                                    MessageKind::ReadModules,
                                    MessageKind::ReadOpenFiles,

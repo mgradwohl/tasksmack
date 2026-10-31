@@ -7,9 +7,14 @@
 
 #include "App/SettingsDialog.h"
 #include "App/SettingsLayer.h"
+#include "App/TaskManagerReplacementController.h"
+#include "App/TaskManagerReplacementText.h"
 #include "App/UserConfig.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
+#include "Mocks/FakeTaskManagerReplacement.h"
+#include "Platform/BrokerProtocol.h"
+#include "Platform/TaskManagerReplacement.h"
 
 #include <gtest/gtest.h>
 #include <imgui.h>
@@ -241,6 +246,12 @@ class SettingsLayerRenderTest : public ::testing::Test
     }
 
     static constexpr int SETTLE_FRAMES = 6;
+
+    /// The layer under test (#3072's test sets its Task Manager controller).
+    [[nodiscard]] SettingsLayer& layer()
+    {
+        return *m_Layer;
+    }
 
     Seen m_Seen;
     /// Set before a press: the opener waits for it, as a slow shell extension would (#3155).
@@ -492,6 +503,41 @@ TEST_F(SettingsLayerRenderTest, TheUdpCheckboxPutBackBeforeSaveRaisesNothing)
     EXPECT_TRUE(m_Seen.udpEventTrace.empty()); // unchanged: the trace is left as it is
 }
 #endif
+
+// #3072: Replace Task Manager's rows show only with a controller, it is read again as the dialog opens, and
+// a click on the toggle starts the change at once, on the controller's worker, without Save.
+TEST_F(SettingsLayerRenderTest, ReplaceTaskManagerActsAtOnceThroughItsController)
+{
+    ASSERT_TRUE(openDialog());
+    EXPECT_EQ(layer().dialogState().taskManager, nullptr) << "no controller: no rows";
+    ASSERT_FALSE(closeDialog());
+
+    const auto fake = std::make_shared<Mocks::FakeTaskManagerReplacement>();
+    const auto controller = std::make_shared<TaskManagerReplacementController>(fake);
+    layer().setTaskManagerReplacement(controller);
+    ASSERT_TRUE(openDialog());
+    controller->waitForWork();
+    EXPECT_EQ(fake->reads, 1) << "read as the dialog opened";
+    static_cast<void>(settle());
+    ASSERT_NE(layer().dialogState().taskManager, nullptr);
+
+    const ImGuiWindow* window = body();
+    ASSERT_NE(window, nullptr);
+    ImGui::ActivateItemByID(ImHashStr(TaskManagerReplacementText::TOGGLE_LABEL, 0, ImHashStr("TaskManagerReplacement", 0, window->ID)));
+    static_cast<void>(runFrame());
+    static_cast<void>(runFrame());
+    controller->waitForWork();
+    ASSERT_EQ(fake->changes.size(), 1U);
+    EXPECT_EQ(fake->changes.front().first, Platform::Broker::TaskManagerChange::Set);
+    EXPECT_FALSE(fake->changes.front().second);
+    EXPECT_EQ(layer().dialogState().taskManagerRequest, TaskManagerRequest::None) << "handed on";
+    ASSERT_TRUE(controller->view().info.has_value());
+    EXPECT_EQ(controller->view().info->status.state, Platform::TaskManagerReplacement::State::ThisCopy);
+    EXPECT_TRUE(settle()) << "still open: the change needs no Save";
+
+    layer().setTaskManagerReplacement(nullptr);
+    EXPECT_EQ(layer().dialogState().taskManager, nullptr);
+}
 
 TEST_F(SettingsLayerRenderTest, OpenThemesFolderStillOpensWhenItCantBeCreated)
 {

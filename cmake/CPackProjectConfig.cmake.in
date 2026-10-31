@@ -73,4 +73,37 @@ if(CPACK_GENERATOR STREQUAL "NSIS")
     !uninstfinalize 'copy /b /y "%1" "Uninstall.exe"' = 0
   !endif
 ]=])
+    # Replace Task Manager (#3072): the uninstaller always gives Task Manager back when TaskSmack has it, so
+    # Ctrl+Shift+Esc never starts a TaskSmack.exe that is gone. It removes taskmgr.exe's Image File Execution
+    # Options Debugger only when the value is what TaskSmack writes, a quoted path ending in \TaskSmack.exe
+    # (any TaskSmack's: an installed or a portable one), and never another program's (Process Explorer's).
+    # The key goes too only when TaskSmack created it (its TaskSmackCreatedKey mark) and nothing else is
+    # left in it (/ifempty). In the registry's 64-bit view, where Windows reads it: the uninstaller is
+    # 32-bit, so the view is set for these lines and put back for CPack's own. Its registers are saved.
+    # Checked by tests/tools/test_nsis_ifeo_uninstall.py, which runs these lines against a fake registry.
+    set(CPACK_NSIS_EXTRA_UNINSTALL_COMMANDS [=[
+  ; TaskSmack in place of Task Manager (#3072): BEGIN
+  Push $0
+  Push $1
+  SetRegView 64
+  ClearErrors
+  ReadRegStr $0 HKLM "SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\taskmgr.exe" "Debugger"
+  IfErrors tasksmack_ifeo_done
+  StrCpy $1 $0 "" -15
+  StrCmp $1 '\TaskSmack.exe"' 0 tasksmack_ifeo_done
+  StrCpy $1 $0 1
+  StrCmp $1 '"' 0 tasksmack_ifeo_done
+  DeleteRegValue HKLM "SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\taskmgr.exe" "Debugger"
+  ClearErrors
+  ReadRegDWORD $1 HKLM "SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\taskmgr.exe" "TaskSmackCreatedKey"
+  IfErrors tasksmack_ifeo_done
+  StrCmp $1 "1" 0 tasksmack_ifeo_done
+  DeleteRegValue HKLM "SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\taskmgr.exe" "TaskSmackCreatedKey"
+  DeleteRegKey /ifempty HKLM "SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\taskmgr.exe"
+tasksmack_ifeo_done:
+  SetRegView default
+  Pop $1
+  Pop $0
+  ; TaskSmack in place of Task Manager (#3072): END
+]=])
 endif()

@@ -2,11 +2,13 @@
 
 #include "App/BackgroundOpen.h"
 #include "App/SettingsDialog.h"
+#include "App/TaskManagerReplacementController.h"
 #include "Core/Event.h"
 #include "Core/Layer.h"
 
 #include <filesystem>
 #include <functional>
+#include <memory>
 
 namespace App
 {
@@ -45,6 +47,16 @@ class SettingsLayer : public Core::Layer
     /// it in (tests: what the opener was handed is then safe to read).
     void waitForPendingOpen();
 
+    /// Replace Task Manager's rows (#3072) draw @p controller's view and hand it what they ask for; it is
+    /// read again each time the dialog opens. Null (the default) hides them.
+    void setTaskManagerReplacement(std::shared_ptr<TaskManagerReplacementController> controller);
+
+    /// The dialog's state (tests).
+    [[nodiscard]] const SettingsDialog::State& dialogState() const noexcept
+    {
+        return m_State;
+    }
+
   private:
     void requestOpen();
     void applySettings();
@@ -54,9 +66,10 @@ class SettingsLayer : public Core::Layer
     [[nodiscard]] std::filesystem::path userThemesDir() const;
 
     SettingsDialog::State m_State;
-    std::function<void(Core::Event&)> m_RaiseEvent;               ///< Set by the test seam only; else the Application
-    std::function<bool(const std::filesystem::path&)> m_OpenPath; ///< Set by the test seam only; else PlatformOpen
-    std::function<std::filesystem::path()> m_UserConfigDir;       ///< Set by the test seam only; else the Application's
+    std::shared_ptr<TaskManagerReplacementController> m_TaskManager; ///< Replace Task Manager's (#3072), or null
+    std::function<void(Core::Event&)> m_RaiseEvent;                  ///< Set by the test seam only; else the Application
+    std::function<bool(const std::filesystem::path&)> m_OpenPath;    ///< Set by the test seam only; else PlatformOpen
+    std::function<std::filesystem::path()> m_UserConfigDir;          ///< Set by the test seam only; else the Application's
     // The buttons' open, and what it needs on disk first, on a worker (#3155): the buttons are disabled
     // until it is done. Last, so it is destroyed (waited for) first: its job holds a copy of the opener.
     BackgroundOpen m_Open;

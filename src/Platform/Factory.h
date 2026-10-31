@@ -21,9 +21,12 @@
 #include "Platform/ISystemConnections.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/ISystemProbe.h"
+#include "Platform/ITaskManagerReplacement.h"
 #include "Platform/IUdpTrafficCollector.h"
 
 #include <memory>
+#include <string>
+#include <vector>
 
 namespace Platform
 {
@@ -112,7 +115,21 @@ namespace Platform
 /// on Windows; systemd over D-Bus on Linux.
 [[nodiscard]] std::unique_ptr<IServiceActions> makeServiceActions();
 
+/// Replace Task Manager (#3072): taskmgr.exe's IFEO Debugger, read here and changed through @p broker (the
+/// one the panels share, null where there is none), or in-process by an elevated TaskSmack installed in
+/// Program Files. Null on Linux, which has no Task Manager to replace. Cheap: nothing is read until a
+/// worker calls it.
+[[nodiscard]] std::shared_ptr<ITaskManagerReplacement> makeTaskManagerReplacement(std::shared_ptr<IPrivilegedBroker> broker);
+
 #ifdef _WIN32
+/// The command line's arguments after the program's name, in UTF-8 (GetCommandLineW()): what Windows
+/// passes TaskSmack when it starts it in place of Task Manager (#3072), taskmgr.exe's path first.
+[[nodiscard]] std::vector<std::string> commandLineArguments();
+
+/// Brings the window of another running TaskSmack.exe to the front (#3072): what Ctrl+Shift+Esc does
+/// when TaskSmack replaces Task Manager and one already runs. False when there is none to show.
+bool showRunningTaskSmack();
+
 /// Enables SeDebugPrivilege on TaskSmack's own process when it runs elevated (#2128), without which
 /// even an elevated TaskSmack is refused terminate, set-information and handle-duplication access to
 /// SYSTEM-service processes. Called once at startup (main.cpp), before any probe or action opens a

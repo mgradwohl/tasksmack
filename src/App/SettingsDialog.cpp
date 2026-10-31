@@ -2,6 +2,8 @@
 
 #include "App/DialogGeometry.h"
 #include "App/SettingsLayerDetail.h"
+#include "App/TaskManagerReplacementController.h"
+#include "App/TaskManagerReplacementRows.h"
 #include "App/UserConfig.h"
 #include "UI/ChromeLayout.h"
 #include "UI/ChromeWidgets.h"
@@ -446,6 +448,25 @@ Action render(State& state)
 #endif
 
         UI::Widgets::sectionGap();
+
+        // ========================================
+        // Task Manager Section (#3072, Windows)
+        // ========================================
+        if (state.taskManager != nullptr && state.taskManager->supported)
+        {
+            (void) UI::Widgets::sectionHeader(ICON_FA_LIST, "Task Manager");
+            ImGui::Separator();
+            ImGui::Spacing();
+            // Wrapped at the width the other rows give the dialog, so a long path never widens it.
+            const float wrapWidth = std::max(widestOtherRow, valueColumn + appearanceComboWidth);
+            if (const TaskManagerRequest request =
+                    TaskManagerReplacementRows::renderSettings(*state.taskManager, state.taskManagerRow, wrapWidth);
+                request != TaskManagerRequest::None)
+            {
+                state.taskManagerRequest = request;
+            }
+            UI::Widgets::sectionGap();
+        }
 
         // ========================================
         // Advanced Section

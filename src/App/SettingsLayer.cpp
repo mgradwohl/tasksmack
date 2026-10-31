@@ -6,6 +6,7 @@
 #include "App/SelectOverride.h"
 #include "App/SettingsDialog.h"
 #include "App/SettingsLayerDetail.h"
+#include "App/TaskManagerReplacementController.h"
 #include "App/ThemeChange.h"
 #include "App/UserConfig.h"
 #include "Core/Application.h"
@@ -19,6 +20,7 @@
 
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <system_error>
@@ -109,7 +111,18 @@ void SettingsLayer::onRender()
     // A finished open frees the buttons; a failure is in the log, as the opener writes it.
     static_cast<void>(m_Open.poll());
     m_State.openingPath = m_Open.busy();
-    switch (SettingsDialog::render(m_State))
+    if (m_TaskManager != nullptr)
+    {
+        m_TaskManager->poll();
+        m_State.taskManager = &m_TaskManager->view();
+    }
+    const SettingsDialog::Action action = SettingsDialog::render(m_State);
+    // Replace Task Manager acts at once, on its own worker (#3072): a UAC prompt, then the helper.
+    if (m_TaskManager != nullptr && m_State.taskManagerRequest != TaskManagerRequest::None)
+    {
+        m_TaskManager->request(std::exchange(m_State.taskManagerRequest, TaskManagerRequest::None));
+    }
+    switch (action)
     {
     case SettingsDialog::Action::Save:
         applySettings();
@@ -186,6 +199,17 @@ void SettingsLayer::requestOpen()
 {
     m_State.openRequested = true;
     SettingsDialog::load(m_State, UserConfig::get().settings(), UI::Theme::get().discoveredThemes());
+    if (m_TaskManager != nullptr)
+    {
+        m_TaskManager->refresh(); // another tool may have changed it since
+        m_State.taskManagerRow = {};
+    }
+}
+
+void SettingsLayer::setTaskManagerReplacement(std::shared_ptr<TaskManagerReplacementController> controller)
+{
+    m_TaskManager = std::move(controller);
+    m_State.taskManager = (m_TaskManager != nullptr) ? &m_TaskManager->view() : nullptr;
 }
 
 void SettingsLayer::applySettings()

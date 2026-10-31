@@ -232,6 +232,25 @@ namespace
     }
 }
 
+/// Replace Task Manager (#3072): a helper without the handler (Linux's) answers with an error. The handler
+/// checks the path itself; one that throws is a failed ActionResult.
+[[nodiscard]] Broker::Response handleTaskManagerReplacement(const Broker::TaskManagerReplacementRequest& request, const Readers& readers)
+{
+    if (!readers.taskManagerReplacement)
+    {
+        return Broker::ErrorReply{.message = "This helper doesn't replace Task Manager"};
+    }
+    try
+    {
+        return readers.taskManagerReplacement(request);
+    }
+    catch (const std::exception& error)
+    {
+        return Broker::ActionResult{
+            .success = false, .errorMessage = std::string("Replacing Task Manager failed: ") + error.what(), .successNote = {}};
+    }
+}
+
 /// System Information's privileged firmware facts (#2310): only the files FirmwareFile names, never a path.
 [[nodiscard]] Broker::Response handleFirmwareFile(const Broker::FirmwareFileRequest& read, const Readers& readers)
 {
@@ -329,6 +348,10 @@ Broker::Response handleRequest(const Broker::Request& request, IProcessActions& 
     if (const auto* service = std::get_if<Broker::ServiceActionRequest>(&request))
     {
         return handleServiceAction(*service, readers);
+    }
+    if (const auto* replacement = std::get_if<Broker::TaskManagerReplacementRequest>(&request))
+    {
+        return handleTaskManagerReplacement(*replacement, readers);
     }
     if (std::holds_alternative<Broker::CrashesRequest>(request))
     {
