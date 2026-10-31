@@ -175,6 +175,7 @@ set(TASKSMACK_SOURCES
     src/App/NativeWindow.cpp
     src/App/StatusBarView.cpp
     src/App/UpdateChecker.cpp # the opt-in update check's worker and state (#3093)
+    src/App/StartAtLoginSetting.cpp # Settings' start at sign-in: the entry's worker and status (#3093 part 2)
     src/App/SyntheticScenario.cpp
     src/App/TitleBarLayer.cpp
     src/App/TitleBarView.cpp
@@ -279,6 +280,7 @@ set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/LinuxSystemProbe.cpp
     src/Platform/Linux/SystemdUnits.cpp
     src/Platform/Linux/SystemdUnitActions.cpp # start, stop and start types; tasksmack-helper links it too (#2728)
+    src/Platform/Linux/LogindSessions.cpp # the Users tab's sessions (#3076)
     src/Platform/Linux/UDisks2Smart.cpp
     src/Platform/Linux/NetworkManager.cpp
     src/Platform/Linux/Nl80211.cpp # a Wi-Fi link's standard and receive rate (#2591)
@@ -334,6 +336,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsNetworkAdapters.cpp
     src/Platform/Windows/WindowsPublicIp.cpp
     src/Platform/Windows/WindowsHttpsClient.cpp # the update check's HTTPS GET through WinHTTP (#3093)
+    src/Platform/Windows/WindowsStartAtLogin.cpp # start at sign-in: the HKCU Run key's TaskSmack value (#3093 part 2)
     src/Platform/Windows/WindowsDiskProbe.cpp
     src/Platform/Windows/WindowsPathProvider.cpp
     src/Platform/Windows/WindowsBatteryInfo.cpp
@@ -448,6 +451,10 @@ set(TASKSMACK_HEADERS
     src/Platform/IHttpsClient.h
     src/Domain/UpdateCheck.h
     src/App/UpdateChecker.h
+    src/Platform/IStartAtLogin.h
+    src/Domain/StartAtLogin.h
+    src/App/StartAtLoginSetting.h
+    src/App/LaunchOptions.h
     src/Platform/ThreadName.h
     src/Platform/Synthetic/SyntheticProbes.h
     src/Platform/Synthetic/SyntheticWorkload.h
@@ -583,6 +590,7 @@ elseif(WIN32)
         src/Platform/Windows/WindowsNetworkAdapters.h
         src/Platform/Windows/WindowsPublicIp.h
         src/Platform/Windows/WindowsHttpsClient.h
+        src/Platform/Windows/WindowsStartAtLogin.h
         src/Platform/Windows/ComScope.h
     )
 endif()
@@ -870,6 +878,7 @@ if(UNIX AND NOT APPLE)
         src/Platform/Linux/LinuxProcessEnvironmentReader.cpp
         src/Platform/Linux/LinuxProcessModulesReader.cpp
         src/Platform/Linux/LinuxProcessOpenFilesReader.cpp
+        src/Platform/Linux/LinuxProcessThreadsReader.cpp # Process Details threads of another user's process (#3069)
         src/Platform/Linux/LinuxProcessConnectionsReader.cpp
         src/Platform/Linux/NetlinkSocketStats.cpp
         src/Platform/Linux/SystemdJournal.cpp # every user's crashes for System Information (#2310)

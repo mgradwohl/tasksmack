@@ -12,9 +12,11 @@
 #include "App/UserConfig.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
+#include "Mocks/FakeStartAtLogin.h"
 #include "Mocks/FakeTaskManagerReplacement.h"
 #include "Platform/BrokerProtocol.h"
 #include "Platform/TaskManagerReplacement.h"
+#include "UI/Theme.h"
 
 #include <gtest/gtest.h>
 #include <imgui.h>
@@ -24,6 +26,7 @@
 #include <filesystem>
 #include <fstream>
 #include <future>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <random>
@@ -245,13 +248,13 @@ class SettingsLayerRenderTest : public ::testing::Test
         m_Layer->waitForPendingOpen();
     }
 
-    static constexpr int SETTLE_FRAMES = 6;
-
-    /// The layer under test (#3072's test sets its Task Manager controller).
+    /// The layer, for the tests that hand it a fake sign-in entry (#3093 part 2).
     [[nodiscard]] SettingsLayer& layer()
     {
         return *m_Layer;
     }
+
+    static constexpr int SETTLE_FRAMES = 6;
 
     Seen m_Seen;
     /// Set before a press: the opener waits for it, as a slow shell extension would (#3155).
@@ -554,6 +557,121 @@ TEST_F(SettingsLayerRenderTest, OpenThemesFolderStillOpensWhenItCantBeCreated)
     EXPECT_EQ(m_Seen.opened.front(), m_TempDir / "themes");
     std::error_code ec;
     EXPECT_TRUE(std::filesystem::is_regular_file(m_TempDir / "themes", ec));
+}
+
+// #3093 part 2: start at sign-in, through a fake entry (never the registry).
+class SettingsLayerStartAtLoginTest : public SettingsLayerRenderTest
+{
+  protected:
+    static constexpr const char* THIS_COPY_COMMAND = R"("C:\Program Files\TaskSmack\TaskSmack.exe" --minimized)";
+
+    void SetUp() override
+    {
+        SettingsLayerRenderTest::SetUp();
+        layer().setStartAtLoginEntry(m_Entry);
+    }
+
+    /// Opens the dialog and lets the entry's read come in.
+    void openAndRead()
+    {
+        ASSERT_TRUE(openDialog());
+        layer().waitForStartAtLoginForTesting();
+        static_cast<void>(settle());
+    }
+
+    [[nodiscard]] TestSupport::FakeStartAtLogin::Data data()
+    {
+        return m_Entry->with([](const TestSupport::FakeStartAtLogin::Data& d) { return d; });
+    }
+
+    std::shared_ptr<TestSupport::FakeStartAtLogin> m_Entry = std::make_shared<TestSupport::FakeStartAtLogin>();
+};
+
+// The test seam's layer has no entry: nothing is offered, so nothing can be written.
+TEST_F(SettingsLayerRenderTest, StartAtLoginIsHiddenWithoutAnEntry)
+{
+    ASSERT_TRUE(openDialog());
+    pressInBody(SettingsDialog::START_AT_LOGIN_LABEL);
+    pressSave();
+    EXPECT_FALSE(settle());
+}
+
+// Opening reads the entry; ticking the box and saving writes this copy's quoted path and --minimized,
+// read back after; unticking and saving deletes it; a Save that changes nothing writes nothing.
+TEST_F(SettingsLayerStartAtLoginTest, SaveTurnsTheEntryOnAndOffOnlyWhenChanged)
+{
+    openAndRead();
+    EXPECT_EQ(data().reads, 1);
+    pressInBody(SettingsDialog::START_AT_LOGIN_LABEL); // ticks it
+    pressSave();
+    EXPECT_FALSE(settle());
+    layer().waitForStartAtLoginForTesting();
+    EXPECT_EQ(data().command, std::optional<std::string>(THIS_COPY_COMMAND));
+
+    openAndRead();
+    pressSave(); // nothing changed
+    layer().waitForStartAtLoginForTesting();
+    EXPECT_EQ(data().writes, 1);
+    EXPECT_EQ(data().removes, 0);
+
+    openAndRead();
+    pressInBody(SettingsDialog::START_AT_LOGIN_LABEL); // unticks it
+    pressSave();
+    layer().waitForStartAtLoginForTesting();
+    EXPECT_EQ(data().command, std::nullopt);
+    EXPECT_EQ(data().removes, 1);
+
+    // Nothing of it is kept in config.toml.
+    UserConfig::get().flushPendingSave();
+    std::ifstream file(m_ConfigPath);
+    const std::string text((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    EXPECT_FALSE(text.contains("sign in"));
+    EXPECT_FALSE(text.contains("--minimized"));
+}
+
+// Cancel, or a box put back before Save, leaves the entry as it is.
+TEST_F(SettingsLayerStartAtLoginTest, CancelLeavesTheEntry)
+{
+    openAndRead();
+    pressInBody(SettingsDialog::START_AT_LOGIN_LABEL);
+    EXPECT_FALSE(closeDialog());
+    layer().waitForStartAtLoginForTesting();
+    EXPECT_EQ(data().writes, 0);
+
+    openAndRead();
+    pressInBody(SettingsDialog::START_AT_LOGIN_LABEL);
+    pressInBody(SettingsDialog::START_AT_LOGIN_LABEL);
+    pressSave();
+    layer().waitForStartAtLoginForTesting();
+    EXPECT_EQ(data().writes, 0);
+    EXPECT_EQ(data().removes, 0);
+}
+
+// An entry for another copy (a zip copy that moved) reads as ticked and offers Repair, which rewrites it
+// for this copy at once, with the dialog open; the box follows the new status.
+TEST_F(SettingsLayerStartAtLoginTest, RepairPointsAnotherCopysEntryAtThisOne)
+{
+    m_Entry->with([](TestSupport::FakeStartAtLogin::Data& d) { d.command = R"("E:\Moved\TaskSmack.exe" --minimized)"; });
+    openAndRead();
+    pressInBody(SettingsDialog::REPAIR_START_AT_LOGIN_LABEL);
+    layer().waitForStartAtLoginForTesting();
+    EXPECT_EQ(data().command, std::optional<std::string>(THIS_COPY_COMMAND));
+    EXPECT_TRUE(settle()) << "the dialog stays open";
+    pressSave(); // the box is ticked, as the entry is: nothing more to do
+    layer().waitForStartAtLoginForTesting();
+    EXPECT_EQ(data().writes, 1);
+}
+
+// A failing read leaves the box disabled, so Save can't change an entry it couldn't read.
+TEST_F(SettingsLayerStartAtLoginTest, AFailedReadChangesNothing)
+{
+    m_Entry->with([](TestSupport::FakeStartAtLogin::Data& d) { d.readError = "Access is denied."; });
+    openAndRead();
+    pressInBody(SettingsDialog::START_AT_LOGIN_LABEL);
+    pressSave();
+    layer().waitForStartAtLoginForTesting();
+    EXPECT_EQ(data().writes, 0);
+    EXPECT_EQ(data().removes, 0);
 }
 
 } // namespace

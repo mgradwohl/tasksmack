@@ -45,7 +45,8 @@ HELLO_PAYLOADS = {
     8: lambda version: struct.pack("<HB", version, 0),  # Hello unchanged; Signal adds HUP, INT, QUIT, USR1, USR2 (#3063)
     9: lambda version: struct.pack("<HB", version, 0),  # Hello unchanged; SetEfficiencyMode added (#3071)
     10: lambda version: struct.pack("<HB", version, 0),  # Hello unchanged; CloseConnection added (#3066)
-    11: lambda version: struct.pack("<HB", version, 0),  # Hello unchanged; TaskManagerReplacement added (#3072)
+    11: lambda version: struct.pack("<HB", version, 0),  # Hello unchanged; ReadThreads added (#3069)
+    12: lambda version: struct.pack("<HB", version, 0),  # Hello unchanged; TaskManagerReplacement added (#3072)
 }
 
 

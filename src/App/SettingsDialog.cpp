@@ -5,6 +5,7 @@
 #include "App/TaskManagerReplacementController.h"
 #include "App/TaskManagerReplacementRows.h"
 #include "App/UserConfig.h"
+#include "Domain/StartAtLogin.h"
 #include "UI/ChromeLayout.h"
 #include "UI/ChromeWidgets.h"
 #include "UI/DialogMetrics.h"
@@ -48,6 +49,50 @@ constexpr const char* HISTORY_LABEL = "History length";
 #ifndef _WIN32
 constexpr const char* NATIVE_DECORATIONS_LABEL = "Use native window decorations instead of the custom title bar";
 #endif
+
+/// The "Start TaskSmack when I sign in" rows (#3093, part 2): the checkbox, which Save carries out, the
+/// line saying what the entry is now, Repair when it starts another copy, and the note for a zip copy.
+/// The lines wrap at @p wrapWidth, so a long path doesn't widen the dialog. @return Whether Repair was pressed.
+[[nodiscard]] bool renderStartAtLogin(State& state, float wrapWidth)
+{
+    namespace StartAtLogin = Domain::StartAtLogin;
+    const auto& theme = UI::Theme::get();
+    const StartAtLogin::Status& status = state.startAtLoginStatus;
+    ImGui::Spacing();
+    // Only once the entry is read, and not while it is read or changed: a tick then would be undone by the
+    // status coming in. Not after a failure either: what Save would change is unknown.
+    ImGui::BeginDisabled(!status.known() || state.startAtLoginBusy);
+    UI::Widgets::outlinedCheckbox(START_AT_LOGIN_LABEL, &state.startAtLogin);
+    ImGui::EndDisabled();
+    ImGui::SetItemTooltip("When you sign in, start TaskSmack minimized, without taking the focus. For your account "
+                          "only, and no administrator rights are needed. Takes effect when you click Save.");
+
+    bool repair = false;
+    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + wrapWidth);
+    if (const std::string line = StartAtLogin::statusLine(status, state.startAtLoginChanging); !line.empty())
+    {
+        ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textMuted);
+        ImGui::TextWrapped("%s", line.c_str());
+        ImGui::PopStyleColor();
+    }
+    if (status.state == StartAtLogin::State::OtherCopy)
+    {
+        ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textPrimary);
+        ImGui::BeginDisabled(state.startAtLoginBusy);
+        repair = ImGui::Button(REPAIR_START_AT_LOGIN_LABEL);
+        ImGui::EndDisabled();
+        ImGui::PopStyleColor();
+        ImGui::SetItemTooltip("Point the sign-in entry at this copy of TaskSmack now");
+    }
+    if (StartAtLogin::showPortableNote(status))
+    {
+        ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textMuted);
+        ImGui::TextWrapped("%s", StartAtLogin::PORTABLE_NOTE);
+        ImGui::PopStyleColor();
+    }
+    ImGui::PopTextWrapPos();
+    return repair;
+}
 
 } // namespace
 
@@ -249,13 +294,15 @@ Action render(State& state)
                                                  checkboxWidth(PROCESS_ICONS_LABEL),
                                                  checkboxWidth(HIGHLIGHT_NEW_LABEL),
                                                  state.updateCheckOffered ? checkboxWidth(CHECK_UPDATES_LABEL) : 0.0F,
+                                                 state.startAtLoginOffered ? checkboxWidth(START_AT_LOGIN_LABEL) : 0.0F,
                                                  Core::VideoBackend::isWayland() ? checkboxWidth(NATIVE_DECORATIONS_LABEL) : 0.0F});
 #else
         const float checkboxRowWidth = std::max({checkboxWidth(PRIVILEGE_NOTICE_LABEL),
                                                  checkboxWidth(PROCESS_ICONS_LABEL),
                                                  checkboxWidth(HIGHLIGHT_NEW_LABEL),
                                                  checkboxWidth(UDP_EVENT_TRACE_LABEL),
-                                                 state.updateCheckOffered ? checkboxWidth(CHECK_UPDATES_LABEL) : 0.0F});
+                                                 state.updateCheckOffered ? checkboxWidth(CHECK_UPDATES_LABEL) : 0.0F,
+                                                 state.startAtLoginOffered ? checkboxWidth(START_AT_LOGIN_LABEL) : 0.0F});
 #endif
         const float widestOtherRow = std::max({advancedRowWidth, actionRowWidth, checkboxRowWidth});
 
@@ -524,6 +571,12 @@ Action render(State& state)
                 ImGui::SameLine();
                 ImGui::TextUnformatted(state.updateSummary.c_str());
             }
+        }
+
+        // Start at sign-in (#3093, part 2), where it is offered.
+        if (state.startAtLoginOffered && renderStartAtLogin(state, widestOtherRow))
+        {
+            action = Action::RepairStartAtLogin;
         }
 
         // About moved out of F1, which now opens Help (#172); it is reached from here and from Help.

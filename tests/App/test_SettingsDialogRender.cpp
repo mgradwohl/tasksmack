@@ -7,6 +7,7 @@
 #include "App/SettingsDialog.h"
 #include "App/SettingsLayerDetail.h"
 #include "App/UserConfig.h"
+#include "Domain/StartAtLogin.h"
 #include "UI/DialogMetrics.h"
 #include "UI/Theme.h"
 
@@ -16,6 +17,7 @@
 
 #include <cstddef>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -505,6 +507,122 @@ TEST_F(SettingsDialogRenderTest, CheckNowIsReportedOnlyWhileTickedAndIdle)
     pressInBody(SettingsDialog::CHECK_NOW_LABEL);
     EXPECT_EQ(runFrame().action, Action::None); // one at a time
     EXPECT_TRUE(settle().open);
+}
+
+// #3093 part 2: the sign-in entry is the setting, not config.toml, so load() and Reset to defaults leave
+// its rows' state alone; the layer sets it.
+TEST(SettingsDialogStateTest, StartAtLoginIsTheLayersNotLoadedOrReset)
+{
+    SettingsDialog::State state;
+    state.startAtLoginOffered = true;
+    state.startAtLoginStatus = Domain::StartAtLogin::classify(std::nullopt, R"(C:\TaskSmack.exe)", true, true);
+    state.startAtLogin = true;
+    SettingsDialog::load(state, UserSettings{}, themes());
+    SettingsDialog::resetToDefaults(state);
+    EXPECT_TRUE(state.startAtLoginOffered);
+    EXPECT_TRUE(state.startAtLogin);
+    EXPECT_EQ(state.startAtLoginStatus.state, Domain::StartAtLogin::State::Off);
+}
+
+class SettingsDialogStartAtLoginTest : public SettingsDialogRenderTest
+{
+  protected:
+    static constexpr const char* THIS_COPY = R"(C:\Program Files\TaskSmack\TaskSmack.exe)";
+
+    void show(const std::optional<std::string>& command, bool installed = true)
+    {
+        m_State.startAtLoginOffered = true;
+        m_State.startAtLoginStatus = Domain::StartAtLogin::classify(command, THIS_COPY, installed, true);
+        m_State.startAtLogin = m_State.startAtLoginStatus.enabled();
+    }
+};
+
+// #3093 part 2: the row is there only where it is offered (Windows), and the checkbox edits the state that
+// Save hands the layer once the entry is read.
+TEST_F(SettingsDialogStartAtLoginTest, TheRowShowsOnlyWhereItIsOffered)
+{
+    ASSERT_TRUE(openAndSettle().open);
+    pressInBody(SettingsDialog::START_AT_LOGIN_LABEL);
+    static_cast<void>(runFrame());
+    EXPECT_FALSE(m_State.startAtLogin); // not drawn, so not pressed
+
+    show(std::nullopt);
+    static_cast<void>(settle());
+    pressInBody(SettingsDialog::START_AT_LOGIN_LABEL);
+    EXPECT_EQ(runFrame().action, Action::None) << "Save carries it out";
+    EXPECT_TRUE(m_State.startAtLogin);
+    pressInBody(SettingsDialog::START_AT_LOGIN_LABEL);
+    static_cast<void>(runFrame());
+    EXPECT_FALSE(m_State.startAtLogin);
+}
+
+// #3093 part 2: before the entry is read, while it is read or changed, and after a failure, the box can't
+// be changed: what Save would do is unknown, or about to be undone.
+TEST_F(SettingsDialogStartAtLoginTest, TheCheckboxWaitsForTheEntry)
+{
+    m_State.startAtLoginOffered = true; // State::Unknown
+    ASSERT_TRUE(openAndSettle().open);
+    pressInBody(SettingsDialog::START_AT_LOGIN_LABEL);
+    static_cast<void>(runFrame());
+    EXPECT_FALSE(m_State.startAtLogin);
+
+    show(std::nullopt);
+    m_State.startAtLoginBusy = true;
+    static_cast<void>(settle());
+    pressInBody(SettingsDialog::START_AT_LOGIN_LABEL);
+    static_cast<void>(runFrame());
+    EXPECT_FALSE(m_State.startAtLogin);
+
+    m_State.startAtLoginBusy = false;
+    m_State.startAtLoginStatus = Domain::StartAtLogin::failed("Access is denied.");
+    static_cast<void>(settle());
+    pressInBody(SettingsDialog::START_AT_LOGIN_LABEL);
+    static_cast<void>(runFrame());
+    EXPECT_FALSE(m_State.startAtLogin);
+    EXPECT_TRUE(settle().open);
+}
+
+// #3093 part 2: an entry for another copy is ticked and offers Repair, which the layer carries out at once;
+// the dialog stays open. Not while a change runs.
+TEST_F(SettingsDialogStartAtLoginTest, AnotherCopysEntryOffersRepair)
+{
+    show(std::nullopt);
+    ASSERT_TRUE(openAndSettle().open);
+    pressInBody(SettingsDialog::REPAIR_START_AT_LOGIN_LABEL);
+    EXPECT_EQ(runFrame().action, Action::None) << "no Repair while it is off";
+
+    show(Domain::StartAtLogin::runCommand(R"(E:\Moved\TaskSmack.exe)"));
+    EXPECT_TRUE(m_State.startAtLogin);
+    static_cast<void>(settle());
+    pressInBody(SettingsDialog::REPAIR_START_AT_LOGIN_LABEL);
+    EXPECT_EQ(runFrame().action, Action::RepairStartAtLogin);
+    EXPECT_TRUE(settle().open);
+
+    m_State.startAtLoginBusy = true;
+    static_cast<void>(settle());
+    pressInBody(SettingsDialog::REPAIR_START_AT_LOGIN_LABEL);
+    EXPECT_EQ(runFrame().action, Action::None) << "one change at a time";
+}
+
+// #3093 part 2: a long path in the status line wraps rather than widening the dialog past the window, and
+// the portable copy's note draws too.
+TEST_F(SettingsDialogStartAtLoginTest, ALongPathWrapsInsideTheWindow)
+{
+    ImGui::GetIO().DisplaySize = ImVec2(900.0F, 700.0F);
+    show(std::nullopt);
+    const Measured before = openAndSettle();
+    ASSERT_TRUE(before.open);
+
+    show(Domain::StartAtLogin::runCommand(R"(D:\)" + std::string(300, 'x') + R"(\TaskSmack.exe)"));
+    const Measured other = settle();
+    expectInsideDisplay(other);
+    EXPECT_FLOAT_EQ(other.size.x, before.size.x) << "the path wraps";
+
+    show(Domain::StartAtLogin::runCommand(THIS_COPY), /*installed=*/false);
+    ASSERT_TRUE(Domain::StartAtLogin::showPortableNote(m_State.startAtLoginStatus));
+    const Measured portable = settle();
+    expectInsideDisplay(portable);
+    EXPECT_GT(portable.size.y, before.size.y - 1.0F);
 }
 
 } // namespace

@@ -3,8 +3,8 @@
 // How the Processes table's Signature column and Process Details' Signature row show a process image's
 // Authenticode signature (#3070), shared so the two say and colour it the same way: a check mark before
 // a verified signer, Unsigned in the warning colour, Invalid in the error colour, a check that failed
-// muted. The words themselves are Platform::signatureLabel()'s, built once per sample in Domain. Pure: it
-// reads a ColorScheme and makes no ImGui calls.
+// muted. The words themselves are Platform::signatureLabel()'s, a view of the snapshot's signature worded
+// where it is drawn (#3244). Pure: it reads a ColorScheme and makes no ImGui calls.
 
 #include "Platform/ImageSignature.h"
 #include "UI/IconsFontAwesome6.h"

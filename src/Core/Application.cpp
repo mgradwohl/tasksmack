@@ -416,6 +416,7 @@ Application::Application(ApplicationSpecification spec) : m_Spec(std::move(spec)
         windowSpec.Width = m_Spec.Width;
         windowSpec.Height = m_Spec.Height;
         windowSpec.VSync = m_Spec.VSync;
+        windowSpec.Hidden = m_Spec.StartHidden;
         // Custom title bar by default everywhere; opt-in escape hatch to native OS/compositor
         // decorations on native Wayland only (#745). VideoBackend::initialize() above must run
         // before this check. Decision logic lives in the pure, unit-tested

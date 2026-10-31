@@ -307,10 +307,10 @@ class WindowsProcessProbe : public IProcessProbe
         std::string processType;
         std::string architecture; // MachineMath::windowsArchitectureLabel() (#2394): read once, it never changes
         // The image's signature (#3070), once the worker has answered; it can't change while the process runs
-        std::optional<SignatureCheck> signature;
-        bool architectureRead = false;              // Whether architecture above was read (with the first handle opened)
-        bool signatureRequested = false;            // Whether the worker was asked to check the image (#3070)
-        std::optional<std::int32_t> gdiObjectCount; // GetGuiResources (light TTL, #1156)
+        std::optional<SharedSignatureCheck> signature; // shared with the counters each sample hands out (#3244)
+        bool architectureRead = false;                 // Whether architecture above was read (with the first handle opened)
+        bool signatureRequested = false;               // Whether the worker was asked to check the image (#3070)
+        std::optional<std::int32_t> gdiObjectCount;    // GetGuiResources (light TTL, #1156)
         // Slow-changing fields cached with light/heavy TTL to avoid redundant Win32 calls.
         CpuAffinity cpuAffinity;       // readCpuAffinity() (heavy TTL)
         std::int32_t nice = 0;         // GetPriorityClass → nice value (heavy TTL, or when the base priority changes)

@@ -19,6 +19,7 @@
 #include "LinuxSystemConnectionsReader.h"
 #include "LinuxSystemInfoProbe.h"
 #include "LinuxSystemProbe.h"
+#include "LinuxUserSessions.h"
 #include "PkexecBroker.h"
 #include "Platform/IDiskProbe.h"
 #include "Platform/IGPUProbe.h"
@@ -37,6 +38,7 @@
 #include "Platform/IProcessThreads.h"
 #include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
+#include "Platform/IStartAtLogin.h"
 #include "Platform/IStartupActions.h"
 #include "Platform/IStartupProbe.h"
 #include "Platform/ISystemConnections.h"
@@ -44,6 +46,7 @@
 #include "Platform/ISystemProbe.h"
 #include "Platform/ITaskManagerReplacement.h"
 #include "Platform/IUdpTrafficCollector.h"
+#include "Platform/IUserSessions.h"
 
 #include <memory>
 
@@ -107,6 +110,11 @@ std::unique_ptr<IProcessThreadsReader> makeProcessThreadsReader()
 std::unique_ptr<ISystemConnectionsReader> makeSystemConnectionsReader()
 {
     return std::make_unique<LinuxSystemConnectionsReader>();
+}
+
+std::unique_ptr<IUserSessions> makeUserSessions()
+{
+    return std::make_unique<LinuxUserSessions>();
 }
 
 std::unique_ptr<IProcessOpenFilesReader> makeProcessOpenFilesReader()
@@ -181,6 +189,13 @@ std::shared_ptr<ITaskManagerReplacement> makeTaskManagerReplacement(const std::s
 std::shared_ptr<IHttpsClient> makeHttpsClient()
 {
     // No HTTPS client on Linux yet (#3093; #3238 adds one): the update check isn't offered there, and nothing is sent.
+    return nullptr;
+}
+
+std::shared_ptr<IStartAtLogin> makeStartAtLogin()
+{
+    // No sign-in entry on Linux yet (#3093 part 2; its XDG autostart entry is agent:WSL's, #3254): Settings
+    // hides the row, and nothing is written.
     return nullptr;
 }
 

@@ -1,5 +1,6 @@
 #include "ProcessThreadsView.h"
 
+#include "AuthenticateToReadButton.h"
 #include "Platform/IProcessThreads.h"
 #include "UI/CellText.h"
 #include "UI/FrameOutline.h"
@@ -53,9 +54,12 @@ void ProcessThreadsView::render(bool hasThreads)
         {
             text += ": " + m_Detail;
         }
-        ImGui::PushStyleColor(ImGuiCol_Text, scheme.textMuted);
+        const bool refused = m_Status == Platform::ThreadsReadStatus::PermissionDenied;
+        ImGui::PushStyleColor(ImGuiCol_Text, refused ? scheme.textWarning : scheme.textMuted);
         ImGui::TextWrapped("%s", text.c_str());
         ImGui::PopStyleColor();
+        // Another user's process: an administrator can read it (#3069).
+        Detail::drawAuthenticateToReadButton(*this);
         return;
     }
     if (m_Truncated)
@@ -88,7 +92,7 @@ void ProcessThreadsView::renderTable()
 
     constexpr ImGuiTableFlags TABLE_FLAGS = ImGuiTableFlags_Sortable | ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg |
                                             ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp;
-    if (!ImGui::BeginTable("##ThreadsTable", 6, TABLE_FLAGS, ImVec2(0.0F, tableHeight)))
+    if (!ImGui::BeginTable("##ThreadsTable", 7, TABLE_FLAGS, ImVec2(0.0F, tableHeight)))
     {
         return;
     }
@@ -98,12 +102,13 @@ void ProcessThreadsView::renderTable()
         ImGui::TableSetupColumn(name, ImGuiTableColumnFlags_WidthStretch | flags, weight, static_cast<ImGuiID>(column));
     };
     ImGui::TableSetupScrollFreeze(0, 1);
-    setupColumn("TID", 0.12F, ThreadsColumn::Tid);
-    setupColumn("NAME", 0.30F, ThreadsColumn::Name);
-    setupColumn("STATE", 0.16F, ThreadsColumn::State);
-    setupColumn("CPU %", 0.12F, ThreadsColumn::Cpu, ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_PreferSortDescending);
-    setupColumn("CPU TIME", 0.18F, ThreadsColumn::CpuTime, ImGuiTableColumnFlags_PreferSortDescending);
-    setupColumn("NICE", 0.12F, ThreadsColumn::Nice);
+    setupColumn("TID", 0.10F, ThreadsColumn::Tid);
+    setupColumn("NAME", 0.24F, ThreadsColumn::Name);
+    setupColumn("STATE", 0.13F, ThreadsColumn::State);
+    setupColumn("CPU %", 0.10F, ThreadsColumn::Cpu, ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_PreferSortDescending);
+    setupColumn("CPU TIME", 0.14F, ThreadsColumn::CpuTime, ImGuiTableColumnFlags_PreferSortDescending);
+    setupColumn("NICE", 0.08F, ThreadsColumn::Nice);
+    setupColumn("STARTED", 0.21F, ThreadsColumn::Started); // #3069
     ImGui::TableHeadersRow();
 
     // A header click (or the first frame's default sort): re-sort the rows once, not every frame.
@@ -138,6 +143,8 @@ void ProcessThreadsView::renderTable()
             UI::Widgets::cellText(row.cpuTime);
             ImGui::TableNextColumn();
             UI::Widgets::cellText(row.nice);
+            ImGui::TableNextColumn();
+            UI::Widgets::cellText(row.started);
         }
     }
     ImGui::EndTable();

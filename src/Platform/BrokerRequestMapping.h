@@ -15,6 +15,7 @@
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
+#include "Platform/IProcessThreads.h"
 #include "Platform/IServiceActions.h"
 #include "Platform/ISystemInfoProbe.h"
 
@@ -34,6 +35,7 @@ struct Readers
     IProcessModulesReader* modules = nullptr;
     IProcessOpenFilesReader* openFiles = nullptr;
     IProcessConnectionsReader* connections = nullptr;
+    IProcessThreadsReader* threads = nullptr; ///< Process Details' threads (#3069)
     /// PSS and USS: process ID and start time to the read's result.
     // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
     std::function<MemoryRollupRead(std::int32_t, std::uint64_t)> memoryRollup{};

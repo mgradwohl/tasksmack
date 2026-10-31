@@ -17,6 +17,7 @@
 #include "Platform/IProcessThreads.h"
 #include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
+#include "Platform/IStartAtLogin.h"
 #include "Platform/IStartupActions.h"
 #include "Platform/IStartupProbe.h"
 #include "Platform/ISystemConnections.h"
@@ -24,10 +25,9 @@
 #include "Platform/ISystemProbe.h"
 #include "Platform/ITaskManagerReplacement.h"
 #include "Platform/IUdpTrafficCollector.h"
+#include "Platform/IUserSessions.h"
 
 #include <memory>
-#include <string>
-#include <vector>
 
 namespace Platform
 {
@@ -74,6 +74,10 @@ namespace Platform
 /// Creates the platform-appropriate ISystemConnectionsReader implementation (#3066; Windows: unsupported
 /// until its lane adds one).
 [[nodiscard]] std::unique_ptr<ISystemConnectionsReader> makeSystemConnectionsReader();
+
+/// Creates the platform-appropriate IUserSessions implementation (#3076; Windows: unsupported until its
+/// lane adds WTS sessions).
+[[nodiscard]] std::unique_ptr<IUserSessions> makeUserSessions();
 
 /// Creates the platform-appropriate IProcessOpenFilesReader implementation (#183).
 [[nodiscard]] std::unique_ptr<IProcessOpenFilesReader> makeProcessOpenFilesReader();
@@ -127,11 +131,12 @@ namespace Platform
 /// there, and nothing is sent. Making it opens nothing; each request opens and closes its own session.
 [[nodiscard]] std::shared_ptr<IHttpsClient> makeHttpsClient();
 
-#ifdef _WIN32
-/// The command line's arguments after the program's name, in UTF-8 (GetCommandLineW()): what Windows
-/// passes TaskSmack when it starts it in place of Task Manager (#3072), taskmgr.exe's path first.
-[[nodiscard]] std::vector<std::string> commandLineArguments();
+/// Creates the sign-in entry Settings' "Start TaskSmack when I sign in" reads and writes (#3093, part 2):
+/// the HKCU Run key's TaskSmack value on Windows (WindowsStartAtLogin). Null on Linux until its XDG
+/// autostart entry is written (agent:WSL's part): the row is hidden there. Making it reads nothing.
+[[nodiscard]] std::shared_ptr<IStartAtLogin> makeStartAtLogin();
 
+#ifdef _WIN32
 /// Brings the window of another running TaskSmack.exe to the front (#3072): what Ctrl+Shift+Esc does
 /// when TaskSmack replaces Task Manager and one already runs. False when there is none to show.
 bool showRunningTaskSmack();

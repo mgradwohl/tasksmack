@@ -137,5 +137,17 @@ TEST(FactoryTest, MakeHttpsClientIsWinHttpOnWindowsAndNoneOnLinux)
 #endif
 }
 
+// #3093 part 2: start at sign-in's entry is the HKCU Run key on Windows; Linux has none yet (agent:WSL's
+// XDG autostart entry), so the row is hidden there. Making it reads and writes nothing.
+TEST(FactoryTest, MakeStartAtLoginIsTheRunKeyOnWindowsAndNoneOnLinux)
+{
+    const auto entry = makeStartAtLogin();
+#ifdef _WIN32
+    EXPECT_NE(entry, nullptr);
+#else
+    EXPECT_EQ(entry, nullptr);
+#endif
+}
+
 } // namespace
 } // namespace Platform

@@ -107,3 +107,34 @@ tasksmack_ifeo_done:
   ; TaskSmack in place of Task Manager (#3072): END
 ]=])
 endif()
+
+# Start at sign-in (#3093, part 2): the uninstaller deletes the HKCU Run key's TaskSmack value when it starts
+# this installation's TaskSmack.exe ("$INSTDIR\TaskSmack.exe", quoted, then its arguments), so signing in never
+# runs a TaskSmack that is gone. A value for another copy (a zip one, which still works) or another program
+# is left alone, as is every other value. HKCU is the uninstalling user's: one who elevated with another
+# account's credentials keeps theirs, which Settings then reports and can turn off. Appended, after any other
+# uninstall lines set above, as its own delimited block; its registers are saved. Checked by
+# tests/tools/test_nsis_run_uninstall.py, which runs these lines against a fake registry.
+if(CPACK_GENERATOR STREQUAL "NSIS")
+    string(APPEND CPACK_NSIS_EXTRA_UNINSTALL_COMMANDS [=[
+  ; TaskSmack's start at sign-in (#3093): BEGIN
+  Push $0
+  Push $1
+  Push $2
+  Push $3
+  ClearErrors
+  ReadRegStr $0 HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "TaskSmack"
+  IfErrors tasksmack_run_done
+  StrCpy $2 '"$INSTDIR\TaskSmack.exe"'
+  StrLen $3 $2
+  StrCpy $1 $0 $3
+  StrCmp $1 $2 0 tasksmack_run_done
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "TaskSmack"
+tasksmack_run_done:
+  Pop $3
+  Pop $2
+  Pop $1
+  Pop $0
+  ; TaskSmack's start at sign-in (#3093): END
+]=])
+endif()

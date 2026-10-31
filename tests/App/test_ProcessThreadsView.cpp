@@ -4,6 +4,7 @@
 #include "App/Panels/ProcessThreadsView.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessThreads.h"
+#include "UI/Format.h"
 
 #include <gtest/gtest.h>
 #include <imgui.h>
@@ -11,6 +12,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <stop_token>
 #include <string>
 #include <utility>
 #include <vector>
@@ -40,6 +42,21 @@ class MockThreadsReader final : public Platform::IProcessThreadsReader
     {
         ++reads;
         return result;
+    }
+
+    // "Authenticate to read" (#3069): whether it is offered, and what the administrator's read answers.
+    bool canAuthorize = false;
+    ThreadsReadResult authorizedResult;
+    std::atomic<int> authorizedReads{0};
+
+    [[nodiscard]] bool canReadAuthorized() const override
+    {
+        return canAuthorize;
+    }
+    [[nodiscard]] ThreadsReadResult readAuthorized(const Platform::ProcessTarget& /*target*/, const std::stop_token& /*stopToken*/) override
+    {
+        ++authorizedReads;
+        return authorizedResult;
     }
 };
 
@@ -82,6 +99,35 @@ TEST(ProcessThreadsViewTest, CpuPercentNeedsTwoReadsOfTheSameThread)
     EXPECT_DOUBLE_EQ(view.rows()[0].cpuPercent.value_or(-1.0), 50.0);
     EXPECT_FALSE(view.rows()[1].cpuPercent.has_value());
     EXPECT_FALSE(view.rows()[2].cpuPercent.has_value());
+}
+
+// #3069: another user's process: a refused read offers "Authenticate to read" where the reader can read as an
+// administrator, and the press makes the next update read that way.
+TEST(ProcessThreadsViewTest, ARefusedReadOffersAuthenticateToReadAndThePressReadsAsAdministrator)
+{
+    ProcessThreadsView view(1);
+    MockThreadsReader reader;
+    reader.result = {.status = ThreadsReadStatus::PermissionDenied, .threads = {}, .detail = {}};
+    reader.authorizedResult = threads({thread(100, "main", 1)});
+
+    view.markDrawnOpen();
+    EXPECT_TRUE(view.update(&reader, TARGET, 0.0F, 1000, 0.0));
+    view.finishPendingRead(TARGET, 0.0);
+    EXPECT_FALSE(view.offersAuthenticateToRead()) << "this reader can't read as an administrator";
+
+    reader.canAuthorize = true;
+    view.markDrawnOpen();
+    static_cast<void>(view.update(&reader, TARGET, 0.0F, 1000, 0.1)); // records that it can
+    view.finishPendingRead(TARGET, 0.1);
+    ASSERT_TRUE(view.offersAuthenticateToRead());
+
+    view.requestAuthorizedRead();
+    EXPECT_TRUE(view.update(&reader, TARGET, 0.0F, 1000, 0.2));
+    view.finishPendingRead(TARGET, 0.2);
+    EXPECT_EQ(reader.authorizedReads.load(), 1);
+    EXPECT_EQ(view.status(), ThreadsReadStatus::Ok);
+    ASSERT_EQ(view.rows().size(), 1U);
+    EXPECT_FALSE(view.offersAuthenticateToRead());
 }
 
 TEST(ProcessThreadsViewTest, ReadsOnlyWhileOpenAtTheSettingsInterval)
@@ -130,6 +176,26 @@ TEST(ProcessThreadsViewTest, SortAndFilterByNameOrTid)
     view.setFilter("30");
     ASSERT_EQ(view.filteredRows().size(), 1U);
     EXPECT_EQ(view.rows()[view.filteredRows()[0]].thread.tid, 300);
+}
+
+// #3069: each thread's start as a time, from the boot time the read gave, sortable; the dash without one.
+TEST(ProcessThreadsViewTest, StartedIsTheBootTimePlusTheThreadsStartAndSorts)
+{
+    ProcessThreadsView view(1);
+    ThreadsReadResult read = threads({thread(100, "server", 1, 500), thread(105, "pool", 2, 300)});
+    read.ticksPerSecond = 100;
+    read.bootTimeEpoch = 1'761'900'000;
+    view.applyResult(read, 0.0);
+    view.setSort(Detail::ThreadsColumn::Started, true);
+    ASSERT_EQ(view.rows().size(), 2U);
+    EXPECT_EQ(view.rows()[0].thread.tid, 105) << "started first";
+    EXPECT_EQ(view.rows()[0].started, UI::Format::formatEpochDateTimeShort(1'761'900'003));
+    EXPECT_EQ(view.rows()[1].started, UI::Format::formatEpochDateTimeShort(1'761'900'005));
+
+    read.bootTimeEpoch = 0;
+    view.applyResult(read, 1.0);
+    EXPECT_EQ(view.rows()[0].started, std::string(Detail::THREAD_CPU_UNKNOWN));
+    EXPECT_EQ(Detail::threadStartedText(100, 0, 1000), UI::Format::formatEpochDateTimeShort(1100)) << "a zero tick rate counts as one";
 }
 
 TEST(ProcessThreadsViewTest, AFailedReadShowsItsStatusAndForgetsTheCpuTimes)

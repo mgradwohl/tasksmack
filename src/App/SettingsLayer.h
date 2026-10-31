@@ -2,9 +2,11 @@
 
 #include "App/BackgroundOpen.h"
 #include "App/SettingsDialog.h"
+#include "App/StartAtLoginSetting.h"
 #include "App/TaskManagerReplacementController.h"
 #include "Core/Event.h"
 #include "Core/Layer.h"
+#include "Platform/IStartAtLogin.h"
 
 #include <filesystem>
 #include <functional>
@@ -47,6 +49,13 @@ class SettingsLayer : public Core::Layer
     /// it in (tests: what the opener was handed is then safe to read).
     void waitForPendingOpen();
 
+    /// Start at sign-in (#3093, part 2): reads and writes @p entry instead (tests' fake; null hides the row).
+    /// The default constructor's is the platform's (PanelPlatforms::makeStartAtLoginEntry()); the test seam's none.
+    void setStartAtLoginEntry(std::shared_ptr<Platform::IStartAtLogin> entry);
+
+    /// Tests: waits for the sign-in entry's read or change still running, and takes it in.
+    void waitForStartAtLoginForTesting();
+
     /// Replace Task Manager's rows (#3072) draw @p controller's view and hand it what they ask for; it is
     /// read again each time the dialog opens. Null (the default) hides them.
     void setTaskManagerReplacement(std::shared_ptr<TaskManagerReplacementController> controller);
@@ -58,6 +67,8 @@ class SettingsLayer : public Core::Layer
     }
 
   private:
+    /// Takes in the sign-in entry's status for the dialog (#3093 part 2), each frame.
+    void syncStartAtLogin();
     void requestOpen();
     void applySettings();
     void raiseEvent(Core::Event& event) const;
@@ -66,10 +77,12 @@ class SettingsLayer : public Core::Layer
     [[nodiscard]] std::filesystem::path userThemesDir() const;
 
     SettingsDialog::State m_State;
+    std::function<void(Core::Event&)> m_RaiseEvent;               ///< Set by the test seam only; else the Application
+    std::function<bool(const std::filesystem::path&)> m_OpenPath; ///< Set by the test seam only; else PlatformOpen
+    std::function<std::filesystem::path()> m_UserConfigDir;       ///< Set by the test seam only; else the Application's
+    // Start at sign-in (#3093, part 2): the entry's reads and writes, on its own worker.
+    StartAtLoginSetting m_StartAtLogin;
     std::shared_ptr<TaskManagerReplacementController> m_TaskManager; ///< Replace Task Manager's (#3072), or null
-    std::function<void(Core::Event&)> m_RaiseEvent;                  ///< Set by the test seam only; else the Application
-    std::function<bool(const std::filesystem::path&)> m_OpenPath;    ///< Set by the test seam only; else PlatformOpen
-    std::function<std::filesystem::path()> m_UserConfigDir;          ///< Set by the test seam only; else the Application's
     // The buttons' open, and what it needs on disk first, on a worker (#3155): the buttons are disabled
     // until it is done. Last, so it is destroyed (waited for) first: its job holds a copy of the opener.
     BackgroundOpen m_Open;

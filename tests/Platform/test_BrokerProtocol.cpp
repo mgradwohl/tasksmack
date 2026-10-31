@@ -123,7 +123,7 @@ TEST(BrokerProtocolTest, TaskManagerReplacementRoundTrips)
     const std::vector<std::uint8_t> bytes =
         encodeRequest(5, Request{TaskManagerReplacementRequest{.change = TaskManagerChange::Set, .path = "ab", .replaceOther = true}});
     // The header, then the change, the path's length and bytes, and the flag.
-    const std::vector<std::uint8_t> expected{16, 0, 0, 0, 11, 0, 23, 0, 5, 0, 0, 0, 0, 2, 0, 0, 0, 'a', 'b', 1};
+    const std::vector<std::uint8_t> expected{16, 0, 0, 0, 12, 0, 23, 0, 5, 0, 0, 0, 0, 2, 0, 0, 0, 'a', 'b', 1};
     EXPECT_EQ(bytes, expected);
     EXPECT_EQ(Detail::readFrame(bytes).value_or(Detail::Frame{}).kind, MessageKind::TaskManagerReplacement);
 }
@@ -550,6 +550,42 @@ TEST(BrokerProtocolTest, ModulesAndOpenFilesRoundTrip)
     EXPECT_EQ(roundTrip(filesReply), filesReply);
 }
 
+// #3069: another user's process's threads, as the helper reads them.
+TEST(BrokerProtocolTest, ThreadsRoundTripAndBadRepliesAreRefused)
+{
+    EXPECT_EQ(roundTrip(Request{ThreadsRequest{.target = TARGET}}), Request{ThreadsRequest{.target = TARGET}});
+    ThreadsReadResult threads{.status = ThreadsReadStatus::Ok, .threads = {}, .detail = {}};
+    threads.ticksPerSecond = 100;
+    threads.bootTimeEpoch = 1'761'900'000;
+    threads.truncated = true;
+    threads.threads.push_back(
+        {.tid = 4242, .name = "server", .state = 'S', .userTicks = 5, .systemTicks = 6, .nice = -5, .startTicks = 4242});
+    threads.threads.push_back(
+        {.tid = 4250, .name = "pool) worker", .state = 'R', .userTicks = 300, .systemTicks = 40, .nice = 19, .startTicks = 5000});
+    const Response reply = ThreadsReply{.result = threads};
+    EXPECT_EQ(roundTrip(reply), reply);
+    const Response refused = ThreadsReply{.result = {.status = ThreadsReadStatus::PermissionDenied, .threads = {}, .detail = "no"}};
+    EXPECT_EQ(roundTrip(refused), refused);
+
+    // A status past Failed, or no tick rate, is refused.
+    std::vector<std::uint8_t> badStatus = encodeResponse(1, reply);
+    badStatus[4 + HEADER_BYTES] = static_cast<std::uint8_t>(ThreadsReadStatus::Failed) + 1;
+    EXPECT_FALSE(decodeResponse(badStatus).has_value());
+    ThreadsReadResult noTicks = threads;
+    noTicks.ticksPerSecond = 0;
+    EXPECT_FALSE(decodeResponse(encodeResponse(1, Response{ThreadsReply{.result = noTicks}})).has_value());
+    // So is a count past MAX_THREADS (status, empty detail, ticks, boot time, truncated, then the count).
+    std::vector<std::uint8_t> tooMany =
+        encodeResponse(1, Response{ThreadsReply{.result = {.status = ThreadsReadStatus::Ok, .threads = {}, .detail = {}}}});
+    const std::size_t countAt = 4 + HEADER_BYTES + 1 + 4 + 8 + 8 + 1;
+    const auto huge = static_cast<std::uint32_t>(MAX_THREADS + 1);
+    for (std::size_t i = 0; i < 4; ++i)
+    {
+        tooMany[countAt + i] = static_cast<std::uint8_t>(huge >> (8U * i));
+    }
+    EXPECT_FALSE(decodeResponse(tooMany).has_value());
+}
+
 TEST(BrokerProtocolTest, OpenFilesPastOneFrameAreCutAndSaySo)
 {
     OpenFilesReadResult files;
@@ -759,6 +795,7 @@ TEST(BrokerProtocolTest, NoResponseDecodesAsARequestAndNoRequestAsAResponse)
         MemoryRollupReply{},
         FirmwareFileReply{.status = FirmwareFileStatus::Ok, .bytes = {}},
         CrashesReply{},
+        ThreadsReply{.result = {.status = ThreadsReadStatus::Ok, .threads = {}, .detail = {}}},
     };
     for (const Response& response : responses)
     {
@@ -781,6 +818,7 @@ TEST(BrokerProtocolTest, NoResponseDecodesAsARequestAndNoRequestAsAResponse)
         MemoryRollupRequest{.target = TARGET},
         FirmwareFileRequest{.file = FirmwareFile::ProductUuid},
         CrashesRequest{},
+        ThreadsRequest{.target = TARGET},
     };
     for (const Request& request : requests)
     {
@@ -935,6 +973,7 @@ TEST(BrokerProtocolTest, TheFuzzCorpusHasADecodableSeedForEveryMessageKind)
                                    MessageKind::ReadCrashes,
                                    MessageKind::ReadProcessCounters,
                                    MessageKind::ListHiddenProcesses,
+                                   MessageKind::ReadThreads,
                                    MessageKind::ActionResult,
                                    MessageKind::EnvironmentResult,
                                    MessageKind::ModulesResult,
@@ -946,6 +985,7 @@ TEST(BrokerProtocolTest, TheFuzzCorpusHasADecodableSeedForEveryMessageKind)
                                    MessageKind::ProcessCountersResult,
                                    MessageKind::HiddenProcessesResult,
                                    MessageKind::ServiceActionResult,
+                                   MessageKind::ThreadsResult,
                                    MessageKind::Error})
     {
         EXPECT_TRUE(seeded.contains(kind)) << "no seed for kind " << static_cast<int>(kind);
@@ -1021,6 +1061,26 @@ TEST(BrokerProtocolTest, ListRepliesCompareByEveryFieldOfEveryEntry)
         [](OpenFilesReply& m) { m.result.files[0].path = "/g"; },
         [](OpenFilesReply& m) { m.result.files[0].flags.reset(); },
         [](OpenFilesReply& m) { m.result.files[0].deleted = true; });
+
+    ThreadsReply threads;
+    threads.result.status = ThreadsReadStatus::Ok;
+    threads.result.threads = {
+        ProcessThread{.tid = 1, .name = "a", .state = 'S', .userTicks = 1, .systemTicks = 1, .nice = 0, .startTicks = 1}};
+    threads.result.detail = "d";
+    expectEveryFieldCompared(
+        threads,
+        [](ThreadsReply& m) { m.result.status = ThreadsReadStatus::Failed; },
+        [](ThreadsReply& m) { m.result.detail = "e"; },
+        [](ThreadsReply& m) { m.result.ticksPerSecond = 250; },
+        [](ThreadsReply& m) { m.result.truncated = true; },
+        [](ThreadsReply& m) { m.result.bootTimeEpoch = 9; },
+        [](ThreadsReply& m) { m.result.threads[0].tid = 2; },
+        [](ThreadsReply& m) { m.result.threads[0].name = "b"; },
+        [](ThreadsReply& m) { m.result.threads[0].state = 'R'; },
+        [](ThreadsReply& m) { m.result.threads[0].userTicks = 2; },
+        [](ThreadsReply& m) { m.result.threads[0].systemTicks = 2; },
+        [](ThreadsReply& m) { m.result.threads[0].nice = 5; },
+        [](ThreadsReply& m) { m.result.threads[0].startTicks = 2; });
 
     ProcessConnection connection;
     connection.local.port = 80;

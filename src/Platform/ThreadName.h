@@ -98,6 +98,9 @@ inline constexpr std::string_view DUMP_CHECK_THREAD_NAME = "ts-dump-check";
 inline constexpr std::string_view SYSTEM_OPEN_THREAD_NAME = "ts-sys-open";
 /// The worker that runs the opt-in update check's one HTTPS request at a time (#3093).
 inline constexpr std::string_view UPDATE_CHECK_THREAD_NAME = "ts-update-check";
+/// The worker that reads and writes the sign-in entry for Settings' "Start TaskSmack when I sign in"
+/// (#3093, part 2): the HKCU Run key's TaskSmack value on Windows.
+inline constexpr std::string_view START_AT_LOGIN_THREAD_NAME = "ts-sign-in";
 /// The thread that starts TaskSmack's Windows administrator helper, and sits behind its UAC prompt for
 /// as long as that is up (PipeBroker::launch(), #2549; named in #2768).
 inline constexpr std::string_view HELPER_LAUNCH_THREAD_NAME = "ts-uac-launch";

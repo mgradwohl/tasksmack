@@ -17,6 +17,7 @@
 #include "Platform/IProcessThreads.h"
 #include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
+#include "Platform/IStartAtLogin.h"
 #include "Platform/IStartupActions.h"
 #include "Platform/IStartupProbe.h"
 #include "Platform/ISystemConnections.h"
@@ -24,6 +25,7 @@
 #include "Platform/ISystemProbe.h"
 #include "Platform/ITaskManagerReplacement.h"
 #include "Platform/IUdpTrafficCollector.h"
+#include "Platform/IUserSessions.h"
 #include "Platform/TaskManagerReplacement.h"
 #include "Platform/TaskManagerReplacementService.h"
 #include "Platform/Windows/BrokerHelper.h"
@@ -49,6 +51,7 @@
 #include "WindowsProcessSecurity.h"
 #include "WindowsServiceActions.h"
 #include "WindowsServiceProbe.h"
+#include "WindowsStartAtLogin.h"
 #include "WindowsStartupActions.h"
 #include "WindowsStartupProbe.h"
 #include "WindowsSystemInfoProbe.h"
@@ -63,7 +66,6 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
-#include <shellapi.h>
 // clang-format on
 
 #include <spdlog/spdlog.h>
@@ -71,7 +73,6 @@
 #include <algorithm>
 #include <cstddef>
 #include <memory>
-#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -148,6 +149,12 @@ std::unique_ptr<ISystemConnectionsReader> makeSystemConnectionsReader()
     return std::make_unique<UnsupportedSystemConnectionsReader>();
 }
 
+std::unique_ptr<IUserSessions> makeUserSessions()
+{
+    // The Users tab (#3076) says it isn't available until the Windows lane adds WTS sessions.
+    return std::make_unique<UnsupportedUserSessions>();
+}
+
 std::unique_ptr<IProcessThreadsReader> makeProcessThreadsReader()
 {
     // The Threads section (#3069) is hidden until the Windows lane adds a Toolhelp reader.
@@ -220,6 +227,12 @@ std::shared_ptr<IHttpsClient> makeHttpsClient()
     return std::make_shared<WindowsHttpsClient>();
 }
 
+std::shared_ptr<IStartAtLogin> makeStartAtLogin()
+{
+    // The HKCU Run key's TaskSmack value (#3093 part 2): per-user, no elevation. Reads nothing until asked.
+    return std::make_shared<WindowsStartAtLogin>();
+}
+
 bool enableDebugPrivilege()
 {
     return Windows::enableDebugPrivilegeIfElevated() == Windows::DebugPrivilegeResult::Enabled;
@@ -272,24 +285,6 @@ std::shared_ptr<ITaskManagerReplacement> makeTaskManagerReplacement(const std::s
                                   (available.has_value() ? std::string() : ": " + available.error());
     }
     return std::make_shared<TaskManagerReplacementService>(std::move(setup));
-}
-
-std::vector<std::string> commandLineArguments()
-{
-    int count = 0;
-    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &count);
-    std::vector<std::string> arguments;
-    if (argv != nullptr && count > 1)
-    {
-        const std::span<LPWSTR> all(argv, static_cast<std::size_t>(count));
-        arguments.reserve(all.size() - 1);
-        for (const wchar_t* argument : all.subspan(1))
-        {
-            arguments.push_back(WinString::wideToUtf8(argument));
-        }
-    }
-    LocalFree(static_cast<HLOCAL>(argv));
-    return arguments;
 }
 
 namespace

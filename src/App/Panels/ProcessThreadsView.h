@@ -27,6 +27,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -75,7 +76,20 @@ enum class ThreadsColumn : std::uint8_t
     Cpu,
     CpuTime,
     Nice,
+    Started, ///< When it started (#3069)
 };
+
+/// When a thread that started @p startTicks after boot did, as the Processes table's start time reads, from
+/// the boot time the read gave; the dash when that is unknown.
+[[nodiscard]] inline std::string threadStartedText(std::uint64_t startTicks, std::int64_t ticksPerSecond, std::uint64_t bootTimeEpoch)
+{
+    if (bootTimeEpoch == 0)
+    {
+        return std::string(THREAD_CPU_UNKNOWN);
+    }
+    return UI::Format::formatEpochDateTimeShort(bootTimeEpoch +
+                                                (startTicks / static_cast<std::uint64_t>(std::max<std::int64_t>(ticksPerSecond, 1))));
+}
 
 /// A thread's CPU use between two reads, as a share of the whole machine like the Processes table's CPU %:
 /// @p deltaTicks of CPU time (at @p ticksPerSecond) over @p elapsedSeconds on @p cpuCount CPUs. nullopt
@@ -109,6 +123,7 @@ class ProcessThreadsView
         std::string cpu;     ///< "3.2%", or the dash
         std::string cpuTime; ///< "1m 04s"
         std::string nice;    ///< "0"
+        std::string started; ///< When it started, or the dash (#3069)
     };
 
     /// @p cpuCount is what CPU % is a share of (the machine's CPUs, as the Processes table's CPU %).
@@ -134,6 +149,18 @@ class ProcessThreadsView
         {
             applyResult(*result, nowSeconds);
         }
+        m_Read.setCanAuthorize((reader != nullptr) && reader->canReadAuthorized());
+        // "Authenticate to read" was pressed (#3069): read as an administrator, now, on the worker.
+        if (m_Read.takeAuthorizeRequest() && reader != nullptr && !m_Read.inFlight())
+        {
+            if (auto failed = m_Read.start(target,
+                                           [reader](const Platform::ProcessTarget& t, const std::stop_token& stopToken)
+                                           { return reader->readAuthorized(t, stopToken); }))
+            {
+                applyResult(*failed, nowSeconds);
+            }
+            return true;
+        }
         if (!m_Read.due(deltaSeconds) || reader == nullptr || !reader->hasThreads())
         {
             return false;
@@ -143,6 +170,19 @@ class ProcessThreadsView
             applyResult(*failed, nowSeconds);
         }
         return true;
+    }
+
+    /// Whether the status line offers "Authenticate to read" (#3069): the read was refused for want of
+    /// permission and the reader can read as an administrator.
+    [[nodiscard]] bool offersAuthenticateToRead() const noexcept
+    {
+        return m_HasRead && m_Status == Platform::ThreadsReadStatus::PermissionDenied && m_Read.canAuthorize() && !m_Read.inFlight();
+    }
+
+    /// "Authenticate to read" was pressed: the next update() reads as an administrator.
+    void requestAuthorizedRead() noexcept
+    {
+        m_Read.requestAuthorized();
     }
 
     /// Waits for the read in flight, if any, and takes it in as update() would (tests only).
@@ -209,7 +249,8 @@ class ProcessThreadsView
                               .state = std::string(Domain::processStateName(thread.state)),
                               .cpu = cpu.has_value() ? UI::Format::formatPercent(*cpu) : std::string(Detail::THREAD_CPU_UNKNOWN),
                               .cpuTime = UI::Format::formatDuration(cpuSeconds),
-                              .nice = std::to_string(thread.nice)});
+                              .nice = std::to_string(thread.nice),
+                              .started = Detail::threadStartedText(thread.startTicks, result.ticksPerSecond, result.bootTimeEpoch)});
         }
         m_Previous = std::move(current);
         m_PreviousAt = nowSeconds;
@@ -297,6 +338,8 @@ class ProcessThreadsView
             return a.cpuSeconds <=> b.cpuSeconds;
         case Detail::ThreadsColumn::Nice:
             return a.thread.nice <=> b.thread.nice;
+        case Detail::ThreadsColumn::Started:
+            return a.thread.startTicks <=> b.thread.startTicks;
         case Detail::ThreadsColumn::Tid:
             break;
         }

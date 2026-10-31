@@ -4,6 +4,7 @@
 #include "App/TaskManagerReplacementController.h"
 #include "App/TaskManagerReplacementRows.h"
 #include "App/UserConfig.h"
+#include "Domain/StartAtLogin.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 
@@ -37,6 +38,9 @@ inline constexpr const char* UDP_EVENT_TRACE_LABEL = "Count UDP traffic per proc
 inline constexpr const char* CHECK_UPDATES_LABEL = "Check for updates daily";
 inline constexpr const char* CHECK_UPDATES_NOTE = "Asks GitHub once a day; nothing is downloaded.";
 inline constexpr const char* CHECK_NOW_LABEL = ICON_FA_ARROWS_ROTATE "  Check now";
+// Start at sign-in (#3093, part 2): shown where it is offered (Windows; not on Linux yet).
+inline constexpr const char* START_AT_LOGIN_LABEL = "Start TaskSmack when I sign in";
+inline constexpr const char* REPAIR_START_AT_LOGIN_LABEL = ICON_FA_WRENCH "  Repair##StartAtLogin";
 
 /// What the dialog keeps while it is open: the controls' values, edited in place until Save.
 struct State
@@ -66,6 +70,15 @@ struct State
     bool updateCheckOffered = false;
     bool updateChecking = false;
     std::string updateSummary;
+    /// Start at sign-in (#3093, part 2), all set by SettingsLayer, never by load() or Reset to defaults: the
+    /// entry is the setting, not config.toml. Whether it is offered here (its rows are hidden otherwise), the
+    /// status last read, and whether a read or change runs (the checkbox and Repair wait for it). The checkbox
+    /// starts on the status read; Save turns the entry on or off when it was changed.
+    Domain::StartAtLogin::Status startAtLoginStatus;
+    bool startAtLoginOffered = false;
+    bool startAtLoginBusy = false;
+    bool startAtLoginChanging = false; ///< A change runs: the line says "Updating..."
+    bool startAtLogin = false;
     /// Set by SettingsLayer while Edit Config File's or Open Themes Folder's open still runs on its worker
     /// (#3155): both buttons are disabled until it is done, so a double click opens one window.
     bool openingPath = false;
@@ -89,11 +102,12 @@ struct State
 enum class Action : std::uint8_t
 {
     None,
-    Save,             ///< Write the picked values (the dialog has closed)
-    EditConfig,       ///< Open config.toml in the system's editor
-    OpenThemesFolder, ///< Open the user themes folder
-    OpenAbout,        ///< Show the About dialog (Settings has closed, without saving)
-    CheckForUpdates,  ///< Check now (#3093): only while "Check for updates daily" is ticked; the dialog stays open
+    Save,               ///< Write the picked values (the dialog has closed)
+    EditConfig,         ///< Open config.toml in the system's editor
+    OpenThemesFolder,   ///< Open the user themes folder
+    OpenAbout,          ///< Show the About dialog (Settings has closed, without saving)
+    CheckForUpdates,    ///< Check now (#3093): only while "Check for updates daily" is ticked; the dialog stays open
+    RepairStartAtLogin, ///< Repair (#3093 part 2): point the sign-in entry at this copy now; the dialog stays open
 };
 
 /// Fill @p state from the stored @p settings and the discovered @p themes, as the dialog opens: each

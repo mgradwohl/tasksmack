@@ -14,6 +14,7 @@
 #include "Platform/IProcessActions.h"
 
 #include <cstdint>
+#include <stop_token>
 #include <string>
 #include <vector>
 
@@ -51,6 +52,7 @@ struct ThreadsReadResult
     std::string detail;                ///< For Failed, what failed, if known; else empty.
     std::int64_t ticksPerSecond = 100; ///< What the tick counts are in (sysconf(_SC_CLK_TCK) on Linux)
     bool truncated = false;            ///< The process had more than MAX_THREADS; `threads` holds the first
+    std::uint64_t bootTimeEpoch = 0;   ///< When the machine booted (Unix seconds), for startTicks as a time; 0 when unknown
 };
 
 /// Lists one process's threads on request.
@@ -73,6 +75,21 @@ class IProcessThreadsReader
     /// is checked against the process holding the PID, so a reused PID reports ProcessExited; an
     /// unknown start time (0) is refused with IdentityUnknown.
     [[nodiscard]] virtual ThreadsReadResult readThreads(const ProcessTarget& target) = 0;
+
+    /// Whether readAuthorized() can read as an administrator, after a password prompt (Linux: the
+    /// pkexec-started helper, #3069). The UI then offers "Authenticate to read" on PermissionDenied.
+    [[nodiscard]] virtual bool canReadAuthorized() const
+    {
+        return false;
+    }
+
+    /// Reads @p target's threads as an administrator, asking for the password first if need be (#3069).
+    /// Blocks for as long as the prompt is up, so it runs on a worker. The default reads as readThreads() does.
+    [[nodiscard]] virtual ThreadsReadResult readAuthorized(const ProcessTarget& target, const std::stop_token& stopToken)
+    {
+        static_cast<void>(stopToken);
+        return readThreads(target);
+    }
 };
 
 /// The reader for a run that cannot list another process's threads (synthetic scenarios, Windows for now).
