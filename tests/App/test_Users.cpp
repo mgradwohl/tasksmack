@@ -8,10 +8,13 @@
 #include "App/Panels/UsersView.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
+#include "Domain/ProcessModel.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Domain/UsersModel.h"
+#include "Mocks/MockProbes.h"
 #include "Platform/IServiceActions.h"
 #include "Platform/IUserSessions.h"
+#include "Platform/ProcessTypes.h"
 
 #include <gtest/gtest.h>
 #include <imgui.h>
@@ -438,6 +441,87 @@ TEST_F(UsersPanelRenderTest, UnsupportedFailedAndEmptyReadsSaySo)
     show(nobody, "Processes");
     show(nobody, "Users"); // shown again: the running sampler reads at once
     nobody.onDetach();
+}
+
+// #3221: with the process model attached, each user's processes are listed under their sessions. A
+// double-click on one selects it and opens its Details; the session menu's Lock locks at once, and its
+// result line asks the sampler for the session's new state.
+TEST_F(UsersPanelRenderTest, AUsersProcessesAreListedAndADoubleClickOpensTheirDetails)
+{
+    UserSession desktop = session("2", "alice", 1000);
+    desktop.current = true;
+    auto fake = std::make_shared<FakeSessions>(std::vector<UserSession>{desktop});
+    std::int32_t selectedPid = 0;
+    int detailsShown = 0;
+    UsersPanel panel([fake] { return fake; },
+                     [&selectedPid, &detailsShown](Core::Event& event)
+                     {
+                         if (event.getEventType() == Core::ProcessSelectedEvent::getStaticType())
+                         {
+                             selectedPid = static_cast<Core::ProcessSelectedEvent&>(event).getPid();
+                         }
+                         else if (event.getEventType() == Core::ShowProcessDetailsEvent::getStaticType())
+                         {
+                             ++detailsShown;
+                         }
+                     });
+    auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+    Platform::ProcessCounters server = TestMocks::makeProcessCounters(100, "server", 'R', 200, 50, 1000, std::uint64_t{8} << 20U, 1);
+    server.user = "alice";
+    probe->withProcess(server);
+    const auto processes = std::make_shared<Domain::ProcessModel>(std::move(probe));
+    processes->refresh();
+    panel.setProcessModel(processes);
+    panel.onAttach();
+    show(panel, "Users");
+    const std::string text = frameUntil(panel, "server  (100)");
+    ASSERT_TRUE(text.contains("server  (100)")) << text;
+
+    // Rows: header, alice, her session, her process.
+    ASSERT_GT(s_TableTop, 0.0F);
+    const float rowHeight = ImGui::GetTextLineHeight() + (ImGui::GetStyle().CellPadding.y * 2.0F);
+    ImGuiIO& io = ImGui::GetIO();
+    io.AddMousePosEvent(s_ColumnX, s_TableTop + (rowHeight * 3.5F));
+    static_cast<void>(frame(panel));
+    for (int click = 0; click < 2; ++click)
+    {
+        io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
+        static_cast<void>(frame(panel));
+        io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
+        static_cast<void>(frame(panel));
+    }
+    EXPECT_EQ(selectedPid, 100);
+    EXPECT_EQ(detailsShown, 1) << "the second click of the double-click opens Details";
+
+    // Right-click her session: the menu's first item, Lock, locks it without asking.
+    io.AddMousePosEvent(s_ColumnX, s_TableTop + (rowHeight * 2.5F));
+    static_cast<void>(frame(panel));
+    io.AddMouseButtonEvent(ImGuiMouseButton_Right, true);
+    static_cast<void>(frame(panel));
+    io.AddMouseButtonEvent(ImGuiMouseButton_Right, false);
+    static_cast<void>(frame(panel));
+    ASSERT_GT(GImGui->OpenPopupStack.Size, 0) << "the session menu didn't open";
+    const ImGuiWindow* menu = GImGui->OpenPopupStack.back().Window;
+    ASSERT_NE(menu, nullptr);
+    const float itemHeight = ImGui::GetTextLineHeight() + ImGui::GetStyle().ItemSpacing.y;
+    io.AddMousePosEvent(menu->Pos.x + (menu->Size.x * 0.5F), menu->Pos.y + ImGui::GetStyle().WindowPadding.y + (itemHeight * 0.5F));
+    static_cast<void>(frame(panel));
+    io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
+    static_cast<void>(frame(panel));
+    io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
+    static_cast<void>(frame(panel));
+    io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
+    const int readsBefore = fake->m_Reads.load();
+    EXPECT_TRUE(frameUntil(panel, "Locked").contains("Locked"));
+    EXPECT_EQ(fake->calls(), (std::vector<std::string>{"lock 2"}));
+    const auto giveUp = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (fake->m_Reads.load() == readsBefore && std::chrono::steady_clock::now() < giveUp)
+    {
+        static_cast<void>(frame(panel));
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    EXPECT_GT(fake->m_Reads.load(), readsBefore) << "the done action asks for a fresh read";
+    panel.onDetach();
 }
 
 } // namespace
