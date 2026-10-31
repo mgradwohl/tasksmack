@@ -52,6 +52,7 @@ struct ThreadsReadResult
     std::string detail;                ///< For Failed, what failed, if known; else empty.
     std::int64_t ticksPerSecond = 100; ///< What the tick counts are in (sysconf(_SC_CLK_TCK) on Linux)
     bool truncated = false;            ///< The process had more than MAX_THREADS; `threads` holds the first
+    std::uint64_t bootTimeEpoch = 0;   ///< When the machine booted (Unix seconds), for startTicks as a time; 0 when unknown
 };
 
 /// Lists one process's threads on request.
