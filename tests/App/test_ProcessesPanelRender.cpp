@@ -1601,7 +1601,7 @@ TEST_F(ProcessesPanelRenderTest, TheArchitectureColumnShowsEachProcesssArchitect
 // #3086, #3244: the Policy column words each process's scheduling policy from the snapshot's policy and
 // real-time priority where it draws the cell -- "Normal", "Batch", "FIFO 50", "RR 10" -- and shows the dash
 // for one whose policy couldn't be read.
-TEST_F(ProcessesPanelRenderTest, ThePolicyColumnShowsEachProcesssPolicyOrTheDash)
+TEST_F(ProcessesPanelRenderTest, ThePolicyCellIsFormattedWhenDrawnFromTheStoredPolicy)
 {
     UserConfig::get().settings().processColumns.setVisible(ProcessColumn::Policy, true);
     auto panel = std::make_unique<ProcessesPanel>(
