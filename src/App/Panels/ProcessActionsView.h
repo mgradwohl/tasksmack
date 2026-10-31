@@ -207,6 +207,7 @@ struct EfficiencyModeToggle
     {
         return {.state = EfficiencyModeToggleState::Disabled, .tooltip = "Another action is still running"};
     }
+#ifdef _WIN32
     if (on)
     {
         return {.state = EfficiencyModeToggleState::Enabled,
@@ -215,6 +216,17 @@ struct EfficiencyModeToggle
     return {.state = EfficiencyModeToggleState::Enabled,
             .tooltip = "Run the process at Idle priority on Windows' power-saving scheduling (EcoQoS), as Task Manager's "
                        "Efficiency mode does: it uses less power, and may run slower"};
+#else
+    // Linux (#3202): nice 19 and, where it can, the cgroup's lowest CPU weight.
+    if (on)
+    {
+        return {.state = EfficiencyModeToggleState::Enabled,
+                .tooltip = "Turn Efficiency mode off: the process's priority, and its cgroup's CPU weight, are restored"};
+    }
+    return {.state = EfficiencyModeToggleState::Enabled,
+            .tooltip = "Run the process at nice 19, the lowest priority, as Task Manager's Efficiency mode does on Windows: it "
+                       "yields the CPU to other work, and may run slower"};
+#endif
 }
 
 /// "Opened strace for PID 321 in a new terminal" / "Could not trace PID 321: ...".

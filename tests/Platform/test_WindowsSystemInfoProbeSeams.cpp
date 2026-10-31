@@ -60,6 +60,7 @@ struct FakeOs
     bool wow64Fails = false;
     std::wstring computerName = L"BUILD-BOX";
     bool computerNameFails = false;
+    bool computerNameAsksForNoMoreRoom = false; ///< ERROR_MORE_DATA, yet a size no bigger than the buffer
     std::wstring userName = L"BUILD-BOX\\Tester";
     std::wstring profileDirectory = L"C:\\Users\\tester.old"; ///< Not named after the login (#2197)
     LONG userNameMoreData = 0;                                ///< Calls left that ask for more room than the buffer has (each then fails)
@@ -67,6 +68,7 @@ struct FakeOs
     NET_API_STATUS joinResult = NERR_Success;
     NETSETUP_JOIN_STATUS joinStatus = NetSetupWorkgroupName;
     std::wstring joinName = L"WORKGROUP";
+    bool joinNameNull = false; ///< Success, with no name buffer
     int joinBuffersFreed = 0;
     int localeLength = 6; ///< "en-US" and its terminator; 0 for a failure
     DWORD zoneId = TIME_ZONE_ID_DAYLIGHT;
@@ -152,6 +154,11 @@ BOOL fakeComputerName(LPWSTR buffer, PULONG size)
         SetLastError(ERROR_ACCESS_DENIED);
         return FALSE;
     }
+    if (fake().computerNameAsksForNoMoreRoom)
+    {
+        SetLastError(ERROR_MORE_DATA); // *size left as it was: a retry would get no more room
+        return FALSE;
+    }
     return fillName(fake().computerName, buffer, size);
 }
 
@@ -192,14 +199,14 @@ DWORD fakeJoin(LPCWSTR server, LPWSTR* name, DWORD* status)
     {
         return fake().joinResult;
     }
-    *name = fake().joinName.data();
+    *name = fake().joinNameNull ? nullptr : fake().joinName.data();
     *status = static_cast<DWORD>(fake().joinStatus);
     return NERR_Success;
 }
 
 NET_API_STATUS NET_API_FUNCTION fakeBufferFree(LPVOID buffer)
 {
-    EXPECT_EQ(buffer, static_cast<LPVOID>(fake().joinName.data()));
+    EXPECT_EQ(buffer, fake().joinNameNull ? nullptr : static_cast<LPVOID>(fake().joinName.data()));
     ++fake().joinBuffersFreed;
     return NERR_Success;
 }
@@ -390,6 +397,37 @@ TEST_F(WindowsSystemInfoProbeSeamsTest, VersionValuesFallBackAndFailAlone)
     EXPECT_EQ(info.installUnixSeconds, 1700000000U);
 }
 
+TEST_F(WindowsSystemInfoProbeSeamsTest, AValueOfOnlyTerminatorsReadsAsAbsent)
+{
+    // A REG_SZ holding nothing but NULs is trimmed to nothing, so DisplayVersion falls back to ReleaseId
+    // as if it were missing.
+    fake().versionValues[L"DisplayVersion"] = std::wstring(2, L'\0');
+    const OsInfo info = readOs();
+    EXPECT_EQ(info.version, "2009");
+    EXPECT_EQ(info.build, "26100.4652") << "the other values still read";
+}
+
+TEST_F(WindowsSystemInfoProbeSeamsTest, AMoreDataAnswerThatAsksForNoMoreRoomIsNotRetried)
+{
+    // ERROR_MORE_DATA with a size no bigger than the buffer: a retry would fail the same way, so the
+    // name is left empty at once and the other names still read.
+    fake().computerNameAsksForNoMoreRoom = true;
+    const OsInfo info = readOs();
+    EXPECT_TRUE(info.computerName.empty());
+    EXPECT_EQ(info.userName, "BUILD-BOX\\Tester");
+}
+
+TEST_F(WindowsSystemInfoProbeSeamsTest, AJoinWithNoNameShowsNoneAndFreesNothing)
+{
+    // Success with a workgroup status but no name buffer: nothing is shown, and the null buffer is
+    // still handed to NetApiBufferFree (which accepts it), as the API asks.
+    fake().joinNameNull = true;
+    const OsInfo info = readOs();
+    EXPECT_TRUE(info.domainOrWorkgroup.empty());
+    EXPECT_FALSE(info.joinedToDomain);
+    EXPECT_EQ(fake().joinBuffersFreed, 1);
+}
+
 TEST_F(WindowsSystemInfoProbeSeamsTest, SizedReadsGrowTheirBuffersOnce)
 {
     fake().computerName = std::wstring(MAX_PATH + 40, L'n'); // too long for the first buffer
@@ -443,6 +481,10 @@ TEST_F(WindowsSystemInfoProbeSeamsTest, FirmwareReadsAndFailures)
 
     fake().firmwareType = FirmwareTypeBios;
     EXPECT_EQ(probe.readFirmware().firmwareMode, FirmwareMode::Legacy);
+
+    // Read, but neither UEFI nor BIOS: the mode stays unknown.
+    fake().firmwareType = FirmwareTypeUnknown;
+    EXPECT_EQ(probe.readFirmware().firmwareMode, FirmwareMode::Unknown);
 
     // Nothing read: the section is still there, with nothing in it.
     fake().firmwareTypeRead = FALSE;
@@ -500,6 +542,24 @@ TEST(WindowsSystemInfoProbeLiveTest, ReadsTheProfileFolder)
     const OsInfo info = probe.readOs();
     EXPECT_FALSE(info.homeDirectory.empty());
     EXPECT_NE(info.homeDirectory.back(), '\\');
+}
+
+// The real profile-folder call answers a buffer too small as userName does (#2197): FALSE, with
+// ERROR_MORE_DATA and the room needed, terminator included; given that room, the folder.
+TEST(WindowsSystemInfoProbeLiveTest, TheProfileFolderAsksForMoreRoomThenFits)
+{
+    const SystemInfoFunctions fns = WindowsSystemInfoProbe::systemFunctions();
+    std::wstring buffer(1, L'\0');
+    ULONG size = 1;
+    SetLastError(ERROR_SUCCESS);
+    ASSERT_EQ(fns.profileDirectory(buffer.data(), &size), FALSE);
+    EXPECT_EQ(GetLastError(), static_cast<DWORD>(ERROR_MORE_DATA));
+    ASSERT_GT(size, 1U) << "the room needed: the folder and its terminator";
+
+    buffer.assign(size, L'\0');
+    ULONG room = size;
+    ASSERT_NE(fns.profileDirectory(buffer.data(), &room), FALSE);
+    EXPECT_EQ(room + 1, size) << "the length, without the terminator";
 }
 
 // The real readers the Graphics, Devices and Drivers sections compose, given inputs they can't read:

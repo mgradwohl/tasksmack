@@ -236,6 +236,32 @@ TEST(LinuxProcessStatusTest, ProcessesSharingACgroupShareItsFreezeStateWithinASa
     EXPECT_EQ(statuses(), (Statuses{{4242, ""}, {4343, ""}, {4444, "Suspended"}}));
 }
 
+// #3202: a process at nice 19 is in Efficiency mode, unless it is suspended, which says more.
+TEST(LinuxProcessStatusTest, NiceNineteenIsEfficiencyModeUnlessSuspended)
+{
+    const ScopedTempDir proc("ts_test_proc_efficiency");
+    const ScopedTempDir cgroup("ts_test_cgroup_root_efficiency");
+    const std::vector<std::pair<std::string, std::string>> processes{{"4242", "19"}, {"4343", "0"}, {"4444", "19"}};
+    for (const auto& [pid, nice] : processes)
+    {
+        writeControlFile(proc.path / pid / "stat",
+                         pid + " (app) S 1 1 1 0 -1 4194304 0 0 0 0 10 5 0 0 39 " + nice +
+                             " 1 0 12345 0 0 18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n");
+        writeControlFile(proc.path / pid / "cgroup", pid == "4444" ? "0::/frozen.scope\n" : "0::/app.scope\n");
+    }
+    writeControlFile(cgroup.path / "frozen.scope" / "cgroup.events", "populated 1\nfrozen 1\n");
+    writeControlFile(cgroup.path / "app.scope" / "cgroup.events", "populated 1\nfrozen 0\n");
+
+    LinuxProcessProbe probe(proc.path, proc.path / "no-powercap", cgroup.path);
+    std::vector<std::pair<std::int32_t, std::string>> statuses;
+    for (const ProcessCounters& p : probe.enumerate())
+    {
+        statuses.emplace_back(p.pid, p.status);
+    }
+    std::ranges::sort(statuses);
+    EXPECT_EQ(statuses, (std::vector<std::pair<std::int32_t, std::string>>{{4242, "Efficiency Mode"}, {4343, ""}, {4444, "Suspended"}}));
+}
+
 TEST(PriorityErrorMessageTest, PermissionErrorsGiveTheRightAdvice)
 {
     // EPERM: another user's process. EACCES: raising priority without CAP_SYS_NICE. The advice
