@@ -40,6 +40,7 @@ class LinuxProcessThreadsReaderTest : public ::testing::Test
         write("100/task/100/stat", "100 (server) S 1 100 100 0 -1 4194560 10 0 0 0 5 6 0 0 20 0 2 0 4242 1000 50\n");
         // A worker with a name holding a space and a ')', running, at nice 5.
         write("100/task/105/stat", "105 (pool) worker) R 1 100 100 0 -1 4194560 10 0 0 0 300 40 0 0 25 5 2 0 5000 1000 50\n");
+        write("stat", "cpu  1 2 3 4\nbtime 1761900000\nprocesses 42\n"); // the boot time, for start times (#3069)
     }
 
     void write(const std::string& path, std::string_view contents) const
@@ -67,6 +68,7 @@ TEST_F(LinuxProcessThreadsReaderTest, ReadsEachThreadsStat)
     EXPECT_EQ(result.threads[1].systemTicks, 40U);
     EXPECT_EQ(result.threads[1].nice, 5);
     EXPECT_EQ(result.threads[1].startTicks, 5000U);
+    EXPECT_EQ(result.bootTimeEpoch, 1761900000U);
 }
 
 TEST_F(LinuxProcessThreadsReaderTest, AThreadWhoseStatCantBeReadIsLeftOut)
