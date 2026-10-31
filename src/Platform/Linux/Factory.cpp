@@ -2,6 +2,7 @@
 
 #include "LinuxDiskProbe.h"
 #include "LinuxGPUProbe.h"
+#include "LinuxHttpsClient.h"
 #include "LinuxPathProvider.h"
 #include "LinuxPowerProbe.h"
 #include "LinuxProcessActions.h"
@@ -189,8 +190,12 @@ std::shared_ptr<ITaskManagerReplacement> makeTaskManagerReplacement(const std::s
 
 std::shared_ptr<IHttpsClient> makeHttpsClient()
 {
-    // No HTTPS client on Linux yet (#3093; #3238 adds one): the update check isn't offered there, and nothing is sent.
-    return nullptr;
+    // libcurl (#3238), when the build has it; without it the update check isn't offered, and nothing is sent.
+    if (!LinuxHttpsClient::built())
+    {
+        return nullptr;
+    }
+    return std::make_shared<LinuxHttpsClient>();
 }
 
 std::shared_ptr<IStartAtLogin> makeStartAtLogin()

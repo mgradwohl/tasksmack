@@ -23,6 +23,10 @@
 #include "Platform/ISystemProbe.h"
 // NOLINTEND(misc-include-cleaner)
 
+#ifndef _WIN32
+#include "Platform/Linux/LinuxHttpsClient.h"
+#endif
+
 #include <gtest/gtest.h>
 
 #include <memory>
@@ -125,15 +129,15 @@ TEST(FactoryTest, MakeServiceProbeReturnsNonNull)
     EXPECT_NE(probe, nullptr);
 }
 
-// #3093: the update check's HTTPS client is WinHTTP on Windows; Linux has none yet, so the check isn't
-// offered there and nothing is sent.
-TEST(FactoryTest, MakeHttpsClientIsWinHttpOnWindowsAndNoneOnLinux)
+// #3093: the update check's HTTPS client is WinHTTP on Windows and libcurl on Linux (#3238), where a build
+// without libcurl has none, so the check isn't offered there and nothing is sent.
+TEST(FactoryTest, MakeHttpsClientIsWinHttpOnWindowsAndLibcurlOnLinuxWhenBuilt)
 {
     const auto client = makeHttpsClient();
 #ifdef _WIN32
     EXPECT_NE(client, nullptr);
 #else
-    EXPECT_EQ(client, nullptr);
+    EXPECT_EQ(client != nullptr, LinuxHttpsClient::built());
 #endif
 }
 

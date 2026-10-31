@@ -232,7 +232,7 @@ fi
 
 # ── Step 2: Base build tools ──────────────────────────────────────────────────
 echo "==> Installing base build tools (CMake, Ninja, Python $PYTHON_VERSION, ccache)..."
-run_apt cmake ninja-build "python${PYTHON_VERSION}" "python${PYTHON_VERSION}-venv" ccache libsystemd-dev pkg-config
+run_apt cmake ninja-build "python${PYTHON_VERSION}" "python${PYTHON_VERSION}-venv" ccache libsystemd-dev libcurl4-openssl-dev pkg-config
 
 create_venv "$PYTHON_ENV"
 run_cmd "$PYTHON_ENV/bin/python" -m pip install --upgrade pip
