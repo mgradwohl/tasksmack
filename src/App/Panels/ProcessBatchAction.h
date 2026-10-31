@@ -166,7 +166,11 @@ template<typename SnapshotVector>
     case Detail::ProcessAction::SignalUser2:
         return std::format("{} processes get {}.", count, Detail::signalName(action));
     case Detail::ProcessAction::EfficiencyModeOn:
+#ifdef _WIN32
         return std::format("{} processes will run at Idle priority on Windows' power-saving scheduling (EcoQoS).", count);
+#else
+        return std::format("{} processes will run at nice 19, the lowest priority.", count); // #3202
+#endif
     case Detail::ProcessAction::EfficiencyModeOff:
         return std::format("{} processes will leave Efficiency mode, and their priorities will be restored.", count);
     case Detail::ProcessAction::None:

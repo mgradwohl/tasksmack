@@ -346,6 +346,8 @@ class LinuxProcessProbe : public IProcessProbe
     /// distinct set of cgroups (`factsByCgroup`): processes sharing a cgroup share the answer.
     static void
     readCgroupFacts(int pidDirFd, const std::filesystem::path& cgroupRoot, FactsByCgroup& factsByCgroup, ProcessCounters& counters);
+    /// "Efficiency Mode" as `counters`' status for a process at nice 19, unless it has one already (#3202).
+    static void applyEfficiencyStatus(ProcessCounters& counters);
     /// The same, from the cgroup file's text (empty: unchanged).
     static void applyCgroupFacts(std::string_view cgroups,
                                  const std::filesystem::path& cgroupRoot,

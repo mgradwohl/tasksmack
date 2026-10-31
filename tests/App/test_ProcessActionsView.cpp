@@ -749,7 +749,11 @@ TEST(ProcessActionsViewTest, TheEfficiencyModeToggleIsHiddenDisabledOrEnabledAnd
 
     const Detail::EfficiencyModeToggle off = Detail::efficiencyModeToggle(can, TARGET_A, false, false);
     EXPECT_EQ(off.state, State::Enabled);
+#ifdef _WIN32
     EXPECT_TRUE(std::string_view(off.tooltip).contains("Idle priority")) << off.tooltip;
+#else
+    EXPECT_TRUE(std::string_view(off.tooltip).contains("nice 19")) << off.tooltip; // #3202
+#endif
     const Detail::EfficiencyModeToggle on = Detail::efficiencyModeToggle(can, TARGET_A, true, false, 1);
     EXPECT_EQ(on.state, State::Enabled);
     EXPECT_TRUE(std::string_view(on.tooltip).contains("Turn Efficiency mode off")) << on.tooltip;

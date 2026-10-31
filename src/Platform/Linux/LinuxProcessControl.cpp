@@ -1,8 +1,10 @@
 #include "LinuxProcessControl.h"
 
+#include "CgroupFreezerPath.h"
 #include "Domain/PriorityConfig.h"
 #include "IoPriority.h"
 #include "LinuxCpuDetails.h"
+#include "LinuxEfficiencyMode.h"
 #include "LinuxProcessActionsDetail.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
@@ -22,7 +24,9 @@
 #include <expected>
 #include <filesystem>
 #include <format>
+#include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -427,6 +431,55 @@ std::expected<int, int> realSocketDescriptor(std::int32_t pid, std::uint64_t ino
     return std::unexpected(ec ? ec.value() : ENOENT);
 }
 
+std::optional<std::int32_t> realCurrentNice(std::int32_t pid)
+{
+    errno = 0;
+    const int nice = ::getpriority(PRIO_PROCESS, static_cast<id_t>(pid));
+    if (nice == -1 && errno != 0)
+    {
+        return std::nullopt;
+    }
+    return nice;
+}
+
+std::optional<std::string> realProcCgroup(std::int32_t pid)
+{
+    return readSmallFile(std::format("/proc/{}/cgroup", pid));
+}
+
+/// <cgroupRoot>/<cgroup>/<file>, refused for a cgroup path that would leave the root (CodeQL cpp/path-injection).
+[[nodiscard]] std::optional<std::filesystem::path> cgroupFilePath(const std::string& cgroup, std::string_view file)
+{
+    return CgroupPath::buildContainedCgroupPath("/sys/fs/cgroup", cgroup, file);
+}
+
+std::optional<std::string> realReadCgroupFile(const std::string& cgroup, std::string_view file)
+{
+    const std::optional<std::filesystem::path> path = cgroupFilePath(cgroup, file);
+    return path.has_value() ? readSmallFile(path->string()) : std::nullopt;
+}
+
+int realWriteCgroupFile(const std::string& cgroup, std::string_view file, const std::string& value)
+{
+    const std::optional<std::filesystem::path> path = cgroupFilePath(cgroup, file);
+    if (!path.has_value())
+    {
+        return EINVAL;
+    }
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
+    const FdGuard fd(::open(path->c_str(), O_WRONLY | O_CLOEXEC | O_NOFOLLOW));
+    if (fd.get() < 0)
+    {
+        return errno;
+    }
+    const ssize_t written = ::write(fd.get(), value.data(), value.size()); // NOLINT(misc-include-cleaner) - ssize_t is from <sys/types.h>
+    if (written < 0)
+    {
+        return errno;
+    }
+    return static_cast<std::size_t>(written) == value.size() ? 0 : EIO;
+}
+
 } // namespace
 
 LinuxProcessSyscalls realProcessSyscalls() noexcept
@@ -443,15 +496,51 @@ LinuxProcessSyscalls realProcessSyscalls() noexcept
             .waitPid = &realWaitPid,
             .pidfdGetfd = &realPidfdGetfd,
             .shutdownSocket = &realShutdownSocket,
-            .socketDescriptor = &realSocketDescriptor};
+            .socketDescriptor = &realSocketDescriptor,
+            .currentNice = &realCurrentNice,
+            .procCgroup = &realProcCgroup,
+            .readCgroupFile = &realReadCgroupFile,
+            .writeCgroupFile = &realWriteCgroupFile};
 }
+
+struct LinuxProcessControl::EfficiencyMemory
+{
+    /// What on found before it changed a process: its nice, and its cgroup's weight when it lowered it.
+    struct Before
+    {
+        std::int32_t nice = 0;
+        std::optional<int> cpuWeight;
+    };
+    std::mutex mutex;
+    std::map<std::pair<std::int32_t, std::uint64_t>, Before> byProcess; ///< By PID and start time
+};
+
+LinuxProcessControl::~LinuxProcessControl() = default;
+LinuxProcessControl::LinuxProcessControl(LinuxProcessControl&&) noexcept = default;
+LinuxProcessControl& LinuxProcessControl::operator=(LinuxProcessControl&&) noexcept = default;
 
 LinuxProcessControl::LinuxProcessControl() : LinuxProcessControl(realProcessSyscalls())
 {}
 
 LinuxProcessControl::LinuxProcessControl(const LinuxProcessSyscalls& syscalls)
-    : m_Syscalls(syscalls), m_CanSetRealtimeIoPriority(ownProcessCanSetRealtimeIo())
+    : m_Syscalls(syscalls), m_CanSetRealtimeIoPriority(ownProcessCanSetRealtimeIo()), m_Efficiency(std::make_unique<EfficiencyMemory>())
 {
+    if (m_Syscalls.currentNice == nullptr)
+    {
+        m_Syscalls.currentNice = &realCurrentNice;
+    }
+    if (m_Syscalls.procCgroup == nullptr)
+    {
+        m_Syscalls.procCgroup = &realProcCgroup;
+    }
+    if (m_Syscalls.readCgroupFile == nullptr)
+    {
+        m_Syscalls.readCgroupFile = &realReadCgroupFile;
+    }
+    if (m_Syscalls.writeCgroupFile == nullptr)
+    {
+        m_Syscalls.writeCgroupFile = &realWriteCgroupFile;
+    }
     // A table that fakes only the kernel calls keeps the real thread listing (see LinuxProcessSyscalls).
     if (m_Syscalls.listThreads == nullptr)
     {
@@ -491,7 +580,8 @@ ProcessActionCapabilities LinuxProcessControl::actionCapabilities() const
         .canSetAffinity = m_Syscalls.setAffinity != nullptr, // sched_setaffinity(2) (#1887)
         .syscallTrace = SyscallTraceAvailability::Unsupported,
         .canCreateDump = false,
-        .canCloseConnections = true, // pidfd_getfd() and shutdown() (#3066)
+        .canSetEfficiencyMode = true, // nice 19 and a low cgroup cpu.weight (#3202)
+        .canCloseConnections = true,  // pidfd_getfd() and shutdown() (#3066)
     };
 }
 
@@ -1061,6 +1151,140 @@ ProcessActionResult LinuxProcessControl::sendSignalNumber(const ProcessTarget& t
     spdlog::warn("Failed to send {} to PID {}: {}", signalName, target.pid, errorMsg);
     // EPERM: another user's process, which the privileged helper may signal (#2308).
     return isPermissionError(err) ? ProcessActionResult::denied(errorMsg) : ProcessActionResult::error(errorMsg);
+}
+
+namespace
+{
+
+/// Why Efficiency mode left a process's cgroup weight as it was, for the success line; empty when it lowered it.
+[[nodiscard]] std::string lowerCgroupWeight(const LinuxProcessSyscalls& syscalls,
+                                            std::int32_t pid,
+                                            const std::optional<std::string>& cgroup,
+                                            std::optional<int>& weightBefore)
+{
+    namespace Efficiency = LinuxEfficiency;
+    if (!cgroup.has_value() || cgroup->empty())
+    {
+        return "only its priority was lowered: it isn't in a cgroup of its own";
+    }
+    const std::optional<std::string> procs = syscalls.readCgroupFile(*cgroup, Efficiency::CGROUP_PROCS_FILE);
+    if (!procs.has_value() || !Efficiency::onlyProcessIn(*procs, pid))
+    {
+        return "only its priority was lowered: it shares its cgroup with other processes, which a lower CPU weight would slow too";
+    }
+    const std::optional<std::string> weightText = syscalls.readCgroupFile(*cgroup, Efficiency::CPU_WEIGHT_FILE);
+    const std::optional<int> weight = weightText.has_value() ? Efficiency::parseCpuWeight(*weightText) : std::nullopt;
+    if (!weight.has_value())
+    {
+        return "only its priority was lowered: its cgroup has no CPU controller";
+    }
+    if (*weight == Efficiency::MIN_CPU_WEIGHT)
+    {
+        return {};
+    }
+    if (const int error = syscalls.writeCgroupFile(*cgroup, Efficiency::CPU_WEIGHT_FILE, std::to_string(Efficiency::MIN_CPU_WEIGHT));
+        error != 0)
+    {
+        return std::format("only its priority was lowered: its cgroup's CPU weight can't be changed ({})",
+                           std::system_category().message(error));
+    }
+    weightBefore = *weight;
+    return {};
+}
+
+/// Puts back the cgroup weight Efficiency mode lowered: @p remembered when it lowered it, else the default when
+/// the process is alone in a cgroup at the minimum. Why it couldn't, for the success line; empty otherwise.
+[[nodiscard]] std::string restoreCgroupWeight(const LinuxProcessSyscalls& syscalls,
+                                              std::int32_t pid,
+                                              const std::optional<std::string>& cgroup,
+                                              bool rememberedProcess,
+                                              std::optional<int> rememberedWeight)
+{
+    namespace Efficiency = LinuxEfficiency;
+    if (!cgroup.has_value() || cgroup->empty() || (rememberedProcess && !rememberedWeight.has_value()))
+    {
+        return {};
+    }
+    if (!rememberedProcess)
+    {
+        const std::optional<std::string> procs = syscalls.readCgroupFile(*cgroup, Efficiency::CGROUP_PROCS_FILE);
+        if (!procs.has_value() || !Efficiency::onlyProcessIn(*procs, pid))
+        {
+            return {}; // a shared cgroup's weight isn't this process's to put back
+        }
+    }
+    const std::optional<std::string> weightText = syscalls.readCgroupFile(*cgroup, Efficiency::CPU_WEIGHT_FILE);
+    const std::optional<int> restore =
+        Efficiency::weightToRestore(weightText.has_value() ? Efficiency::parseCpuWeight(*weightText) : std::nullopt, rememberedWeight);
+    if (!restore.has_value())
+    {
+        return {};
+    }
+    if (const int error = syscalls.writeCgroupFile(*cgroup, Efficiency::CPU_WEIGHT_FILE, std::to_string(*restore)); error != 0)
+    {
+        return std::format("its cgroup's CPU weight is still the minimum: it can't be changed ({})", std::system_category().message(error));
+    }
+    return {};
+}
+
+} // namespace
+
+ProcessActionResult LinuxProcessControl::setEfficiencyMode(const ProcessTarget& target, bool on)
+{
+    namespace Efficiency = LinuxEfficiency;
+    if (target.pid <= 0)
+    {
+        return ProcessActionResult::error("Invalid PID");
+    }
+    const std::pair<std::int32_t, std::uint64_t> key{target.pid, target.startTimeTicks};
+    std::optional<EfficiencyMemory::Before> remembered;
+    {
+        const std::scoped_lock lock(m_Efficiency->mutex);
+        if (const auto found = m_Efficiency->byProcess.find(key); found != m_Efficiency->byProcess.end())
+        {
+            remembered = found->second;
+        }
+    }
+    const std::optional<std::int32_t> niceBefore = m_Syscalls.currentNice(target.pid);
+
+    // The nice: nice 19 on, the remembered one (or 0) off unless someone changed it since. setPriority() makes
+    // every check a priority change makes (PID 1 and kernel threads refused, the start time confirmed, every
+    // thread), and a permission refusal from it is one the helper can finish (#2308).
+    std::optional<std::int32_t> nice = Efficiency::EFFICIENCY_NICE;
+    if (!on)
+    {
+        const std::optional<std::int32_t> rememberedNice = remembered.has_value() ? std::optional(remembered->nice) : std::nullopt;
+        nice = niceBefore.has_value() ? Efficiency::niceToRestore(*niceBefore, rememberedNice) : rememberedNice.value_or(0);
+    }
+    ProcessActionResult changed = nice.has_value() ? setPriority(target, *nice) : verifyIdentity(target);
+    if (!changed.success)
+    {
+        return changed;
+    }
+
+    const std::optional<std::string> cgroupText = m_Syscalls.procCgroup(target.pid);
+    const std::optional<std::string> cgroup = cgroupText.has_value() ? Efficiency::unifiedCgroupPath(*cgroupText) : std::nullopt;
+    if (on)
+    {
+        std::optional<int> weightBefore;
+        std::string note = lowerCgroupWeight(m_Syscalls, target.pid, cgroup, weightBefore);
+        {
+            // Turned on twice, the first time's "before" stays what off puts back.
+            const std::scoped_lock lock(m_Efficiency->mutex);
+            static_cast<void>(m_Efficiency->byProcess.try_emplace(
+                key, EfficiencyMemory::Before{.nice = niceBefore.value_or(0), .cpuWeight = weightBefore}));
+        }
+        spdlog::info("Efficiency mode on for PID {}{}", target.pid, note.empty() ? "" : ": " + note);
+        return ProcessActionResult::ok(std::move(note));
+    }
+    std::string note = restoreCgroupWeight(
+        m_Syscalls, target.pid, cgroup, remembered.has_value(), remembered.has_value() ? remembered->cpuWeight : std::nullopt);
+    {
+        const std::scoped_lock lock(m_Efficiency->mutex);
+        m_Efficiency->byProcess.erase(key);
+    }
+    spdlog::info("Efficiency mode off for PID {}{}", target.pid, note.empty() ? "" : ": " + note);
+    return ProcessActionResult::ok(std::move(note));
 }
 
 } // namespace Platform
