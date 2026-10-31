@@ -212,6 +212,66 @@ TEST(ProcessThreadsViewTest, AFailedReadShowsItsStatusAndForgetsTheCpuTimes)
     EXPECT_FALSE(view.rows()[0].cpuPercent.has_value());
 }
 
+TEST(ProcessThreadsViewTest, EachUnsuccessfulReadHasItsOwnStatusLine)
+{
+    EXPECT_EQ(Detail::threadsStatusText(ThreadsReadStatus::PermissionDenied), "Access denied: another user's process");
+    EXPECT_EQ(Detail::threadsStatusText(ThreadsReadStatus::ProcessExited), "Process exited");
+    EXPECT_EQ(Detail::threadsStatusText(ThreadsReadStatus::Unsupported), "Not available on this platform");
+    EXPECT_EQ(Detail::threadsStatusText(ThreadsReadStatus::IdentityUnknown), "Not available for this process");
+    EXPECT_EQ(Detail::threadsStatusText(ThreadsReadStatus::Failed), "Could not be read");
+}
+
+TEST(ProcessThreadsViewTest, CpuPercentNeedsCpusAndTimeGoingForward)
+{
+    EXPECT_FALSE(Detail::threadCpuPercent(5, 100, 1.0, 0).has_value());
+    EXPECT_FALSE(Detail::threadCpuPercent(5, 100, -1.0, 1).has_value());
+    EXPECT_FALSE(Detail::threadCpuPercent(5, -100, 1.0, 1).has_value());
+}
+
+TEST(ProcessThreadsViewTest, AThreadWhoseTicksWentBackwardsHasNoCpuPercent)
+{
+    ProcessThreadsView view(1);
+    view.applyResult(threads({thread(100, "main", 500)}), 0.0);
+    // Fewer ticks than last time for the same thread (same start): nothing to subtract from.
+    view.applyResult(threads({thread(100, "main", 400)}), 1.0);
+    ASSERT_EQ(view.rows().size(), 1U);
+    EXPECT_FALSE(view.rows()[0].cpuPercent.has_value());
+    EXPECT_EQ(view.rows()[0].cpu, Detail::THREAD_CPU_UNKNOWN);
+}
+
+TEST(ProcessThreadsViewTest, SortsByStateCpuTimeAndNice)
+{
+    ProcessThread running = thread(100, "a", 300);
+    running.state = 'R';
+    running.nice = 5;
+    ProcessThread sleeping = thread(101, "b", 100);
+    sleeping.nice = -5;
+    ProcessThread idle = thread(102, "c", 200);
+    idle.nice = 0;
+
+    ProcessThreadsView view(1);
+    view.applyResult(threads({running, sleeping, idle}), 0.0);
+    ASSERT_EQ(view.rows().size(), 3U);
+
+    view.setSort(Detail::ThreadsColumn::State, true);
+    EXPECT_EQ(view.rows()[0].state, "Running");
+    EXPECT_EQ(view.rows()[0].thread.tid, 100);
+    EXPECT_EQ(view.rows()[1].thread.tid, 101) << "equal states keep TID order";
+    EXPECT_EQ(view.rows()[2].thread.tid, 102);
+
+    view.setSort(Detail::ThreadsColumn::CpuTime, true);
+    EXPECT_EQ(view.rows()[0].thread.tid, 101); // 1 s
+    EXPECT_EQ(view.rows()[1].thread.tid, 102); // 2 s
+    EXPECT_EQ(view.rows()[2].thread.tid, 100); // 3 s
+    view.setSort(Detail::ThreadsColumn::CpuTime, false);
+    EXPECT_EQ(view.rows()[0].thread.tid, 100);
+
+    view.setSort(Detail::ThreadsColumn::Nice, true);
+    EXPECT_EQ(view.rows()[0].thread.tid, 101); // -5
+    EXPECT_EQ(view.rows()[1].thread.tid, 102); // 0
+    EXPECT_EQ(view.rows()[2].thread.tid, 100); // 5
+}
+
 TEST(ProcessThreadsViewRenderTest, DrawsTheCountAndEachThread)
 {
     ImGuiContext* context = ImGui::CreateContext();
