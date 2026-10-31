@@ -27,6 +27,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -148,6 +149,18 @@ class ProcessThreadsView
         {
             applyResult(*result, nowSeconds);
         }
+        m_Read.setCanAuthorize((reader != nullptr) && reader->canReadAuthorized());
+        // "Authenticate to read" was pressed (#3069): read as an administrator, now, on the worker.
+        if (m_Read.takeAuthorizeRequest() && reader != nullptr && !m_Read.inFlight())
+        {
+            if (auto failed = m_Read.start(target,
+                                           [reader](const Platform::ProcessTarget& t, const std::stop_token& stopToken)
+                                           { return reader->readAuthorized(t, stopToken); }))
+            {
+                applyResult(*failed, nowSeconds);
+            }
+            return true;
+        }
         if (!m_Read.due(deltaSeconds) || reader == nullptr || !reader->hasThreads())
         {
             return false;
@@ -157,6 +170,19 @@ class ProcessThreadsView
             applyResult(*failed, nowSeconds);
         }
         return true;
+    }
+
+    /// Whether the status line offers "Authenticate to read" (#3069): the read was refused for want of
+    /// permission and the reader can read as an administrator.
+    [[nodiscard]] bool offersAuthenticateToRead() const noexcept
+    {
+        return m_HasRead && m_Status == Platform::ThreadsReadStatus::PermissionDenied && m_Read.canAuthorize() && !m_Read.inFlight();
+    }
+
+    /// "Authenticate to read" was pressed: the next update() reads as an administrator.
+    void requestAuthorizedRead() noexcept
+    {
+        m_Read.requestAuthorized();
     }
 
     /// Waits for the read in flight, if any, and takes it in as update() would (tests only).

@@ -869,6 +869,7 @@ if(UNIX AND NOT APPLE)
         src/Platform/Linux/LinuxProcessEnvironmentReader.cpp
         src/Platform/Linux/LinuxProcessModulesReader.cpp
         src/Platform/Linux/LinuxProcessOpenFilesReader.cpp
+        src/Platform/Linux/LinuxProcessThreadsReader.cpp # Process Details threads of another user's process (#3069)
         src/Platform/Linux/LinuxProcessConnectionsReader.cpp
         src/Platform/Linux/NetlinkSocketStats.cpp
         src/Platform/Linux/SystemdJournal.cpp # every user's crashes for System Information (#2310)

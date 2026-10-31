@@ -129,7 +129,9 @@ ProcessDetailsReaders makeProcessDetailsReaders(const Synthetic::Scenario* scena
             .openFiles = (scenario == nullptr)
                            ? Platform::withPrivilegedBroker(Synthetic::makeProcessOpenFilesReader(scenario), sharedPrivilegedBroker())
                            : Synthetic::makeProcessOpenFilesReader(scenario),
-            .threads = Synthetic::makeProcessThreadsReader(scenario)};
+            .threads = (scenario == nullptr)
+                         ? Platform::withPrivilegedBroker(Synthetic::makeProcessThreadsReader(scenario), sharedPrivilegedBroker())
+                         : Synthetic::makeProcessThreadsReader(scenario)};
 }
 
 std::unique_ptr<Platform::IProcessActions> makeConnectionsPanelActions(const Synthetic::Scenario* scenario)

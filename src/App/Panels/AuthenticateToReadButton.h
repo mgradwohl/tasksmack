@@ -1,6 +1,6 @@
 #pragma once
 
-// The "Authenticate to read" button (#2309) that Process Details' Connections, Modules, Open files and
+// The "Authenticate to read" button (#2309) that Process Details' Connections, Modules, Open files, Threads and
 // Environment sections draw under a read refused for want of permission: the lock and the words
 // (AuthorizeWording.h), its tooltip, and the press handed to the view, which reads as an
 // administrator on its next update() (LazyBackgroundRead::requestAuthorized()). One helper for the

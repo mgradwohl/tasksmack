@@ -12,6 +12,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <stop_token>
 #include <string>
 #include <utility>
 #include <vector>
@@ -41,6 +42,21 @@ class MockThreadsReader final : public Platform::IProcessThreadsReader
     {
         ++reads;
         return result;
+    }
+
+    // "Authenticate to read" (#3069): whether it is offered, and what the administrator's read answers.
+    bool canAuthorize = false;
+    ThreadsReadResult authorizedResult;
+    std::atomic<int> authorizedReads{0};
+
+    [[nodiscard]] bool canReadAuthorized() const override
+    {
+        return canAuthorize;
+    }
+    [[nodiscard]] ThreadsReadResult readAuthorized(const Platform::ProcessTarget& /*target*/, const std::stop_token& /*stopToken*/) override
+    {
+        ++authorizedReads;
+        return authorizedResult;
     }
 };
 
@@ -83,6 +99,35 @@ TEST(ProcessThreadsViewTest, CpuPercentNeedsTwoReadsOfTheSameThread)
     EXPECT_DOUBLE_EQ(view.rows()[0].cpuPercent.value_or(-1.0), 50.0);
     EXPECT_FALSE(view.rows()[1].cpuPercent.has_value());
     EXPECT_FALSE(view.rows()[2].cpuPercent.has_value());
+}
+
+// #3069: another user's process: a refused read offers "Authenticate to read" where the reader can read as an
+// administrator, and the press makes the next update read that way.
+TEST(ProcessThreadsViewTest, ARefusedReadOffersAuthenticateToReadAndThePressReadsAsAdministrator)
+{
+    ProcessThreadsView view(1);
+    MockThreadsReader reader;
+    reader.result = {.status = ThreadsReadStatus::PermissionDenied, .threads = {}, .detail = {}};
+    reader.authorizedResult = threads({thread(100, "main", 1)});
+
+    view.markDrawnOpen();
+    EXPECT_TRUE(view.update(&reader, TARGET, 0.0F, 1000, 0.0));
+    view.finishPendingRead(TARGET, 0.0);
+    EXPECT_FALSE(view.offersAuthenticateToRead()) << "this reader can't read as an administrator";
+
+    reader.canAuthorize = true;
+    view.markDrawnOpen();
+    static_cast<void>(view.update(&reader, TARGET, 0.0F, 1000, 0.1)); // records that it can
+    view.finishPendingRead(TARGET, 0.1);
+    ASSERT_TRUE(view.offersAuthenticateToRead());
+
+    view.requestAuthorizedRead();
+    EXPECT_TRUE(view.update(&reader, TARGET, 0.0F, 1000, 0.2));
+    view.finishPendingRead(TARGET, 0.2);
+    EXPECT_EQ(reader.authorizedReads.load(), 1);
+    EXPECT_EQ(view.status(), ThreadsReadStatus::Ok);
+    ASSERT_EQ(view.rows().size(), 1U);
+    EXPECT_FALSE(view.offersAuthenticateToRead());
 }
 
 TEST(ProcessThreadsViewTest, ReadsOnlyWhileOpenAtTheSettingsInterval)
