@@ -71,11 +71,13 @@ namespace
 {
     std::string out;
     out.reserve(exec.size());
-    for (std::size_t i = 0; i < exec.size(); ++i)
+    std::size_t i = 0;
+    while (i < exec.size())
     {
         if (exec[i] != '\\' || i + 1 == exec.size())
         {
             out += exec[i];
+            ++i;
             continue;
         }
         switch (exec[i + 1])
@@ -96,10 +98,11 @@ namespace
             out += '\\';
             break;
         default:
-            out += exec[i];
-            continue; // not an escape: the next character is read as itself
+            out += exec[i]; // not an escape: the backslash is kept, and the next character read as itself
+            ++i;
+            continue;
         }
-        ++i;
+        i += 2;
     }
     return out;
 }
@@ -146,12 +149,13 @@ std::optional<std::string> commandFromExec(std::string_view exec)
     {
         std::size_t i = 1;
         bool closed = false;
-        for (; i < rest.size(); ++i)
+        while (i < rest.size())
         {
             const char c = rest[i];
             if (c == '\\' && i + 1 < rest.size() && (rest[i + 1] == '\\' || rest[i + 1] == '"' || rest[i + 1] == '`' || rest[i + 1] == '$'))
             {
-                program += rest[++i];
+                program += rest[i + 1];
+                i += 2;
                 continue;
             }
             if (c == '"')
@@ -160,6 +164,7 @@ std::optional<std::string> commandFromExec(std::string_view exec)
                 break;
             }
             program += c;
+            ++i;
         }
         if (!closed)
         {
