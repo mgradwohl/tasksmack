@@ -690,6 +690,46 @@ TEST(SystemInfoSectionsTest, AnEnumValueTheSectionsDontNameReadsAsUnknown)
     EXPECT_TRUE(SystemInfo::formatSensorReading(reading).empty());
 }
 
+// Fields a source can leave empty get a row that still says what it is: an audio endpoint and a driver
+// with no name, a PCI device with no class; a spinning disk says so, and a Linux machine whose journal
+// wasn't read counts core dumps, not crashes.
+TEST(SystemInfoSectionsTest, EmptyNamesAndClassesStillGetALabel)
+{
+    Platform::DevicesInfo devices;
+    devices.available = true;
+    devices.pciRead = true;
+    devices.pci = {Platform::Device{.name = "Mystery controller"}};
+    devices.audio = {{.name = {}, .flow = Platform::AudioFlow::Output}};
+    const Section deviceSection = SystemInfo::buildDevicesSection(devices);
+    ASSERT_NE(findRow(deviceSection, "PCI device"), nullptr);
+    EXPECT_TRUE(findRow(deviceSection, "PCI device")->value.contains("Mystery controller"));
+    ASSERT_NE(findRow(deviceSection, "Audio output"), nullptr);
+    EXPECT_EQ(findRow(deviceSection, "Audio output")->value, "Unnamed endpoint");
+
+    Platform::DriversInfo drivers;
+    drivers.available = true;
+    drivers.family = Platform::OsFamily::Linux;
+    drivers.listed = true;
+    Platform::KernelDriver nameless;
+    nameless.moduleState = "Live";
+    drivers.drivers = {nameless};
+    EXPECT_NE(findRow(SystemInfo::buildDriversSection(drivers), "Unnamed driver"), nullptr);
+
+    Platform::PhysicalDisk disk;
+    disk.bus = "SATA";
+    disk.media = Platform::DiskMedia::Hdd;
+    EXPECT_TRUE(SystemInfo::formatDisk(disk).contains("SATA HDD")) << SystemInfo::formatDisk(disk);
+
+    Platform::CrashesInfo crashes;
+    crashes.available = true;
+    crashes.family = Platform::OsFamily::Linux;
+    crashes.listed = true;
+    crashes.journalRead = false;
+    const Section crashSection = SystemInfo::buildCrashesSection(crashes);
+    ASSERT_FALSE(crashSection.rows.empty());
+    EXPECT_EQ(crashSection.rows.front().value, "No core dumps");
+}
+
 TEST(SystemInfoSectionsTest, BootWithAnInitramfsListsTheInitrdPhase)
 {
     Platform::BootPerformanceInfo boot;
