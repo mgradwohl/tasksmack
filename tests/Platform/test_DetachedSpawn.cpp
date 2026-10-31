@@ -307,6 +307,24 @@ TEST(DetachedSpawnTest, AFailedPollIsTreatedAsATimeoutAndNeverBlocksOnRead)
     EXPECT_LT(elapsed, std::chrono::milliseconds(1000));
 }
 
+/// A poll() whose time runs out with nothing readable, as when the program takes past the deadline to exec.
+int timedOutPoll(pollfd* /*fds*/, nfds_t /*count*/, int /*timeout*/)
+{
+    return 0;
+}
+
+TEST(DetachedSpawnTest, NoReportByTheDeadlineIsAssumedStarted)
+{
+    // A report would be waiting (the program does not exist), but a poll that times out reads nothing:
+    // the program may still exec, so it is not reported as failed and the user doesn't start a second.
+    const ScopedTempDir dir("tasksmack_detached_spawn_polltimeout");
+    const std::vector<std::string> missing{(dir.path / "no-such-terminal").string()};
+    const auto result = Detail::spawnDetached(
+        missing,
+        Detail::SpawnHooks{.useCloseRange = true, .poll = &timedOutPoll, .useProcFdList = true, .setsid = nullptr, .beforeFork = nullptr});
+    EXPECT_TRUE(result.has_value());
+}
+
 TEST(DetachedSpawnTest, LastResortDescriptorWalkLeaksNoDescriptor)
 {
     // Neither close_range() nor /proc/self/fd: every descriptor up to RLIMIT_NOFILE is marked.
