@@ -15,6 +15,7 @@
 #include "LinuxProcessThreadsReader.h"
 #include "LinuxServiceActions.h"
 #include "LinuxServiceProbe.h"
+#include "LinuxStartAtLogin.h"
 #include "LinuxStartup.h"
 #include "LinuxSystemConnectionsReader.h"
 #include "LinuxSystemInfoProbe.h"
@@ -194,9 +195,9 @@ std::shared_ptr<IHttpsClient> makeHttpsClient()
 
 std::shared_ptr<IStartAtLogin> makeStartAtLogin()
 {
-    // No sign-in entry on Linux yet (#3093 part 2; its XDG autostart entry is agent:WSL's, #3254): Settings
-    // hides the row, and nothing is written.
-    return nullptr;
+    // A per-user XDG autostart entry (#3254, #3093 part 2): ~/.config/autostart/tasksmack.desktop. Reads
+    // nothing until asked.
+    return std::make_shared<LinuxStartAtLogin>();
 }
 
 } // namespace Platform

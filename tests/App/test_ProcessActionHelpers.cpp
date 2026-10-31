@@ -17,6 +17,7 @@
 
 #include <cstdint>
 #include <format>
+#include <initializer_list>
 #include <string>
 #include <tuple>
 
@@ -293,6 +294,53 @@ TEST(ProcessActionHelpersTest, OnlyTerminateAndKillAreDestructive)
     EXPECT_FALSE(isDestructiveAction(ProcessAction::Stop));
     EXPECT_FALSE(isDestructiveAction(ProcessAction::Resume));
     EXPECT_FALSE(isDestructiveAction(ProcessAction::None));
+}
+
+// #3063: each signal's verb, as the failure line says it.
+TEST(ProcessActionHelpersTest, EachSignalsVerbSaysWhichSignalWasSent)
+{
+    EXPECT_STREQ(actionVerb(ProcessAction::SignalHangup), "send SIGHUP to");
+    EXPECT_STREQ(actionVerb(ProcessAction::SignalInterrupt), "send SIGINT to");
+    EXPECT_STREQ(actionVerb(ProcessAction::SignalQuit), "send SIGQUIT to");
+    EXPECT_STREQ(actionVerb(ProcessAction::SignalUser1), "send SIGUSR1 to");
+    EXPECT_STREQ(actionVerb(ProcessAction::SignalUser2), "send SIGUSR2 to");
+    EXPECT_EQ(formatActionResultMessage(ProcessAction::SignalUser1, 9, Platform::ProcessActionResult::error("No such process")).text,
+              "Could not send SIGUSR1 to PID 9: No such process");
+}
+
+// #2305: the result line while each action runs.
+TEST(ProcessActionHelpersTest, EachActionHasItsOwnProgressLabel)
+{
+    EXPECT_STREQ(actionProgressLabel(ProcessAction::Terminate), "Terminating");
+    EXPECT_STREQ(actionProgressLabel(ProcessAction::Kill), "Killing");
+    EXPECT_STREQ(actionProgressLabel(ProcessAction::Stop), "Suspending");
+    EXPECT_STREQ(actionProgressLabel(ProcessAction::Resume), "Resuming");
+    EXPECT_STREQ(actionProgressLabel(ProcessAction::SignalHangup), "Sending SIGHUP to");
+    EXPECT_STREQ(actionProgressLabel(ProcessAction::SignalInterrupt), "Sending SIGINT to");
+    EXPECT_STREQ(actionProgressLabel(ProcessAction::SignalQuit), "Sending SIGQUIT to");
+    EXPECT_STREQ(actionProgressLabel(ProcessAction::SignalUser1), "Sending SIGUSR1 to");
+    EXPECT_STREQ(actionProgressLabel(ProcessAction::SignalUser2), "Sending SIGUSR2 to");
+    EXPECT_STREQ(actionProgressLabel(ProcessAction::EfficiencyModeOn), "Turning Efficiency mode on for");
+    EXPECT_STREQ(actionProgressLabel(ProcessAction::EfficiencyModeOff), "Turning Efficiency mode off for");
+    EXPECT_STREQ(actionProgressLabel(ProcessAction::None), "Acting on");
+}
+
+// The actions that aren't signals have no signal, and None has nothing to retry or confirm.
+TEST(ProcessActionHelpersTest, TheOtherActionsHaveNoSignalAndNoneHasNoRetryOrBody)
+{
+    for (const ProcessAction action : {ProcessAction::None,
+                                       ProcessAction::Terminate,
+                                       ProcessAction::Kill,
+                                       ProcessAction::Stop,
+                                       ProcessAction::Resume,
+                                       ProcessAction::EfficiencyModeOn,
+                                       ProcessAction::EfficiencyModeOff})
+    {
+        EXPECT_FALSE(signalFor(action).has_value()) << actionLabel(action);
+        EXPECT_STREQ(signalName(action), "") << actionLabel(action);
+    }
+    EXPECT_FALSE(authorizedActionFor(ProcessAction::None, {.pid = 1, .startTimeTicks = 1000}).has_value());
+    EXPECT_TRUE(confirmBody(ProcessAction::None, "proc", 42).empty());
 }
 
 } // namespace
