@@ -147,6 +147,23 @@ class LcovExcludeTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("without a matching LCOV_EXCL_STOP", result.stderr)
 
+    def test_a_wrapped_64_bit_count_is_a_hit(self) -> None:
+        # llvm-cov can print a wrapped counter (2**64 - 6); coverage.ps1 once failed on it (#3241).
+        source = self.dir / "wrapped.cpp"
+        source.write_text("int a = 0; // LCOV_EXCL_LINE - test\nint b = 0;\n", encoding="utf-8")
+        lcov = self.dir / "coverage.lcov"
+        lcov.write_text(
+            f"SF:{source}\nDA:1,18446744073709551610\nDA:2,1\nBRDA:1,0,0,18446744073709551610\nBRF:1\nBRH:1\n"
+            "LF:2\nLH:2\nend_of_record\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_script(lcov)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        out = self.records(lcov)
+        self.assertEqual([r for r in out if r.startswith(("DA:", "LF:", "LH:", "BRF:", "BRH:"))], ["DA:2,1", "BRF:0", "BRH:0", "LF:1", "LH:1"])
+
     def test_resets_its_counts_per_file(self) -> None:
         first = self.dir / "first.cpp"
         first.write_text("int a = 0; // LCOV_EXCL_LINE - test\nint b = 0;\n", encoding="utf-8")
