@@ -16,6 +16,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <string_view>
 
 namespace Platform::WindowsSignature
 {
@@ -33,6 +34,15 @@ TEST(ImageSignatureTest, TheColumnNamesAVerifiedSignerOrSaysWhyNot)
     EXPECT_EQ(signatureLabel({.signature = ImageSignature::Untrusted, .note = "expired", .signer = {}}), "Invalid");
     EXPECT_EQ(signatureLabel({.signature = ImageSignature::Unknown, .note = "denied", .signer = {}}), "Not checked");
     EXPECT_EQ(signatureLabel({}), "") << "not checked yet: the cell's dash";
+}
+
+// #3244: the column's text is a view of the check's own signer, worded where it is drawn: no copy of it.
+TEST(ImageSignatureTest, TheLabelViewsTheSignerWithoutCopyingIt)
+{
+    const SignatureCheck check{.signature = ImageSignature::Catalog, .note = {}, .signer = "Microsoft Windows Publisher"};
+    const std::string_view label = signatureLabel(check);
+    EXPECT_EQ(label, "Microsoft Windows Publisher");
+    EXPECT_EQ(label.data(), check.signer.data());
 }
 
 TEST(ImageSignatureTest, TheTooltipSaysHowItIsSignedOrWhyNot)

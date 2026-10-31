@@ -53,13 +53,16 @@ inline constexpr const char* SIGNATURE_NOT_CHECKED_NOTE =
 /// The Signature column's text (#3070): the signer of a verified image ("Signed" when its certificate
 /// names no one), "Unsigned", "Invalid", or "Not checked" when the check failed. Empty while not
 /// checked yet: the cell shows the unavailable dash. The UI puts a check mark before a verified signer.
-[[nodiscard]] inline std::string signatureLabel(const SignatureCheck& check)
+/// A view of @p check's signer or of a fixed label, valid while @p check is, so it allocates nothing: the
+/// UI words the signature where it draws it, rather than each snapshot carrying the text for every copy
+/// of the published snapshots to copy (#3244).
+[[nodiscard]] inline std::string_view signatureLabel(const SignatureCheck& check) noexcept
 {
     switch (check.signature)
     {
     case ImageSignature::Embedded:
     case ImageSignature::Catalog:
-        return check.signer.empty() ? std::string("Signed") : check.signer;
+        return check.signer.empty() ? std::string_view("Signed") : std::string_view(check.signer);
     case ImageSignature::Unsigned:
         return "Unsigned";
     case ImageSignature::Untrusted:

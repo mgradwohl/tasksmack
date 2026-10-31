@@ -25,6 +25,7 @@
 #include "Platform/IProcessSecurity.h"
 #include "Platform/IServiceProbe.h"
 #include "Platform/ImageSignature.h"
+#include "Platform/SchedPolicy.h"
 #include "ProcessActionsBlock.h"
 #include "ProcessActionsView.h"
 #include "ProcessConnectionsView.h"
@@ -805,9 +806,10 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
         if (m_ProcessCapabilities.hasSignature)
         {
             // The Processes table's Signature column (#3070), with what it means on hover.
-            fresh.signature = ProcessSignatureText::detailsValue(proc.signature, proc.signatureText);
+            fresh.signature = ProcessSignatureText::detailsValue(proc.signature, Platform::signatureLabel(proc.signature));
             fresh.signatureTooltip = Platform::signatureTooltip(proc.signature);
         }
+        fresh.schedPolicy = Platform::schedPolicyLabel(proc.schedPolicy, proc.rtPriority); // The Policy column's (#3086)
         fresh.keepAlive = ownedSnapshot ? m_CachedSnapshot : nullptr;
         fresh.key = ownedSnapshot ? &proc : nullptr;
         text = std::move(fresh);
@@ -858,11 +860,11 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     runtimeRows.add({.label = handleLabel, .value = text.handles, .color = theme.scheme().textPrimary});
     runtimeRows.add({.label = "CPU Time", .value = text.cpuTime, .color = theme.scheme().textPrimary});
     runtimeRows.add({.label = "Priority", .value = text.priority, .color = theme.scheme().textPrimary});
-    if (!proc.schedPolicyText.empty())
+    if (!text.schedPolicy.empty())
     {
         // The Processes table's Policy column (#3086), Linux.
         runtimeRows.add({.label = "Policy",
-                         .value = proc.schedPolicyText,
+                         .value = text.schedPolicy,
                          .color = theme.scheme().textPrimary,
                          .tooltip = "The CPU scheduling policy: Normal (SCHED_OTHER), Batch, Idle, Deadline, or real time (FIFO or RR) "
                                     "with its priority, 1 to 99, where higher runs first"});

@@ -42,6 +42,7 @@
 #include "Platform/IServiceProbe.h"
 #include "Platform/ImageSignature.h"
 #include "Platform/ProcessTypes.h"
+#include "Platform/SchedPolicy.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 
@@ -1592,6 +1593,51 @@ TEST_F(ProcessesPanelRenderTest, TheArchitectureColumnShowsEachProcesssArchitect
     EXPECT_TRUE(text.contains(ProcessRowFormat::UNAVAILABLE_CELL_TEXT)) << "worker's isn't read:\n" << text;
     panel->onDetach();
     UserConfig::get().settings().processColumns.setVisible(ProcessColumn::Architecture, false);
+}
+
+// #3086, #3244: the Policy column words each process's scheduling policy from the snapshot's policy and
+// real-time priority where it draws the cell -- "Normal", "Batch", "FIFO 50", "RR 10" -- and shows the dash
+// for one whose policy couldn't be read.
+TEST_F(ProcessesPanelRenderTest, ThePolicyColumnShowsEachProcesssPolicyOrTheDash)
+{
+    UserConfig::get().settings().processColumns.setVisible(ProcessColumn::Policy, true);
+    auto panel = std::make_unique<ProcessesPanel>(
+        []
+        {
+            auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+            const auto withPolicy = [](std::int32_t pid, const char* name, Platform::SchedPolicy policy, std::uint32_t rtPriority)
+            {
+                Platform::ProcessCounters counters =
+                    TestMocks::makeProcessCounters(pid, name, 'S', 30, 10, 1000, std::uint64_t{2} << 20U, 1);
+                counters.schedPolicy = policy;
+                counters.rtPriority = rtPriority;
+                return counters;
+            };
+            probe->withProcess(withPolicy(100, "shell", Platform::SchedPolicy::Normal, 0))
+                .withProcess(withPolicy(101, "indexer", Platform::SchedPolicy::Batch, 0))
+                .withProcess(withPolicy(102, "pipewire", Platform::SchedPolicy::Fifo, 50))
+                .withProcess(withPolicy(103, "jackd", Platform::SchedPolicy::RoundRobin, 10))
+                .withProcess(withPolicy(104, "unread", Platform::SchedPolicy::Unknown, 0));
+            Platform::ProcessCapabilities caps = probe->capabilities();
+            caps.hasSchedPolicy = true;
+            probe->setCapabilities(caps);
+            return ProcessesPanelPlatform{
+                .probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>(), .icons = nullptr};
+        },
+        std::function<void(Core::Event&)>{});
+    attachAndSeed(*panel);
+    Core::ActiveTabChangedEvent shown("Processes");
+    panel->onEvent(shown);
+    renderUntilLoaded(*panel);
+    const std::string text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("Policy")) << text;
+    EXPECT_TRUE(text.contains("Normal")) << text;
+    EXPECT_TRUE(text.contains("Batch")) << text;
+    EXPECT_TRUE(text.contains("FIFO 50")) << text;
+    EXPECT_TRUE(text.contains("RR 10")) << text;
+    EXPECT_TRUE(text.contains(ProcessRowFormat::UNAVAILABLE_CELL_TEXT)) << "unread's isn't read:\n" << text;
+    panel->onDetach();
+    UserConfig::get().settings().processColumns.setVisible(ProcessColumn::Policy, false);
 }
 
 // #3070: the Signature column shows a check mark and the signer for a verified image, Unsigned and
