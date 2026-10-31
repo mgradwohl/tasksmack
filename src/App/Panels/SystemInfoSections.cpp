@@ -97,7 +97,7 @@ void appendRowsLinux(const Platform::OsInfo& os, std::vector<Row>& rows)
 /// An audio endpoint's row label.
 [[nodiscard]] constexpr std::string_view audioLabel(Platform::AudioFlow flow) noexcept
 {
-    switch (flow)
+    switch (flow) // LCOV_EXCL_LINE - covers every enum value; only an out-of-range cast reaches its fallback (#3221)
     {
     case Platform::AudioFlow::Output:
         return "Audio output";
@@ -194,7 +194,7 @@ void appendPagingRowsWindows(const Platform::CommitPagingInfo& paging, std::vect
 void appendPagingRowsLinux(const Platform::CommitPagingInfo& paging, std::vector<Row>& rows)
 {
     const char* mode = "";
-    switch (paging.overcommit)
+    switch (paging.overcommit) // LCOV_EXCL_LINE - covers every enum value; only an out-of-range cast reaches its fallback (#3221)
     {
     case Platform::OvercommitMode::Heuristic:
         mode = "Heuristic (0)";
@@ -405,7 +405,7 @@ Section buildFirmwareSection(const Platform::FirmwareInfo& firmware, bool canAut
     rows.push_back(row("BIOS version", firmware.biosVersion));
     rows.push_back(row("BIOS release date", firmware.biosReleaseDate));
     const char* mode = "";
-    switch (firmware.firmwareMode)
+    switch (firmware.firmwareMode) // LCOV_EXCL_LINE - covers every enum value; only an out-of-range cast reaches its fallback (#3221)
     {
     case Platform::FirmwareMode::Uefi:
         mode = "UEFI";
@@ -994,7 +994,7 @@ Section buildGraphicsSection(const Platform::GraphicsInfo& graphics, const Core:
 std::string_view bitLockerStateText(Platform::BitLockerState state) noexcept
 {
     using Platform::BitLockerState;
-    switch (state)
+    switch (state) // LCOV_EXCL_LINE - covers every enum value; only an out-of-range cast reaches its fallback (#3221)
     {
     case BitLockerState::On:
         return "On";
@@ -1084,7 +1084,7 @@ Section buildSecuritySection(const Platform::PlatformSecurityInfo& security)
     const bool windows = security.family == Platform::OsFamily::Windows;
 
     std::string secureBoot;
-    switch (security.secureBoot)
+    switch (security.secureBoot) // LCOV_EXCL_LINE - covers every enum value; only an out-of-range cast reaches its fallback (#3221)
     {
     case SecurityFeatureState::On:
         secureBoot = "On";
@@ -1104,7 +1104,7 @@ Section buildSecuritySection(const Platform::PlatformSecurityInfo& security)
             windows ? "The Secure Boot state isn't in the registry (SecureBoot\\State)" : "The SecureBoot EFI variable couldn't be read"));
 
     std::string tpm;
-    switch (security.tpm)
+    switch (security.tpm) // LCOV_EXCL_LINE - covers every enum value; only an out-of-range cast reaches its fallback (#3221)
     {
     case SecurityFeatureState::On:
         tpm = tpmPresentText(security.tpmVersionMajor);
@@ -1176,7 +1176,7 @@ Section buildSecuritySection(const Platform::PlatformSecurityInfo& security)
 std::string formatSensorReading(const Platform::SensorReading& reading)
 {
     using Platform::SensorKind;
-    switch (reading.kind)
+    switch (reading.kind) // LCOV_EXCL_LINE - covers every enum value; only an out-of-range cast reaches its fallback (#3221)
     {
     case SensorKind::Temperature:
     {
@@ -1206,7 +1206,7 @@ std::string formatSensorReading(const Platform::SensorReading& reading)
     case SensorKind::Power:
         return UI::Format::formatFixedLocalized(reading.value, 1, " W");
     }
-    return {};
+    return {}; // LCOV_EXCL_LINE - covers every enum value; only an out-of-range cast reaches its fallback (#3221)
 }
 
 std::string formatSensorRange(const Platform::SensorReading& reading, const Domain::SensorRange& range)
