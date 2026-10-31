@@ -98,6 +98,45 @@ TEST_F(LinuxProcessThreadsReaderTest, AnEmptyTaskDirectoryIsAnExitedProcess)
     EXPECT_EQ(reader.readThreads(TARGET).status, ThreadsReadStatus::ProcessExited);
 }
 
+// #3221: a task entry that isn't a directory is a failure that says why; one this user can't open is a
+// permission refusal, so the Details tab offers Authenticate to read.
+TEST_F(LinuxProcessThreadsReaderTest, ATaskDirectoryItCantOpenSaysWhy)
+{
+    std::filesystem::remove_all(m_Proc.path / "100" / "task");
+    write("100/task", "");
+    LinuxProcessThreadsReader reader(m_Proc.path.string());
+    const ThreadsReadResult notADirectory = reader.readThreads(TARGET);
+    EXPECT_EQ(notADirectory.status, ThreadsReadStatus::Failed);
+    EXPECT_FALSE(notADirectory.detail.empty());
+
+    if (::geteuid() == 0)
+    {
+        GTEST_SKIP() << "root opens a directory whatever its mode";
+    }
+    std::filesystem::remove(m_Proc.path / "100" / "task");
+    std::filesystem::create_directories(m_Proc.path / "100" / "task");
+    std::filesystem::permissions(m_Proc.path / "100" / "task", std::filesystem::perms::none);
+    const ThreadsReadResult denied = reader.readThreads(TARGET);
+    std::filesystem::permissions(m_Proc.path / "100" / "task", std::filesystem::perms::owner_all);
+    EXPECT_EQ(denied.status, ThreadsReadStatus::PermissionDenied);
+}
+
+// #3221: past MAX_THREADS the list stops and says it was cut short.
+TEST_F(LinuxProcessThreadsReaderTest, AProcessWithMoreThreadsThanTheCapIsTruncated)
+{
+    for (std::size_t i = 0; i <= LinuxProcessThreadsReader::MAX_THREADS; ++i)
+    {
+        const std::string tid = std::to_string(1000 + i);
+        std::filesystem::create_directories(m_Proc.path / "100" / "task" / tid);
+        write("100/task/" + tid + "/stat", tid + " (w) S 1 100 100 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 5000 0 0\n");
+    }
+    LinuxProcessThreadsReader reader(m_Proc.path.string());
+    const ThreadsReadResult result = reader.readThreads(TARGET);
+    ASSERT_EQ(result.status, ThreadsReadStatus::Ok);
+    EXPECT_TRUE(result.truncated);
+    EXPECT_EQ(result.threads.size(), LinuxProcessThreadsReader::MAX_THREADS);
+}
+
 // The real /proc: this test process, with a thread of its own named while it waits.
 TEST(LinuxProcessThreadsReaderRealTest, ListsThisProcessesThreadsByName)
 {
