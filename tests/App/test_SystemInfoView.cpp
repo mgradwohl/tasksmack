@@ -3583,5 +3583,107 @@ TEST(SystemInfoSectionsTest, ReportPathsWithoutAFolderOrWithADotOnlyInTheFolder)
     EXPECT_EQ(SystemInfo::numberedReportPath("report", 3), "report (3)");
 }
 
+// The value texts for combinations the fixtures above don't set.
+TEST(SystemInfoSectionsTest, ValuesForTheLessCommonCombinations)
+{
+    // An SDR monitor names its colour space and depth too.
+    const Platform::GraphicsInfo graphics = windowsGraphics();
+    Platform::Monitor sdr = graphics.monitors[0];
+    sdr.hdr = false;
+    sdr.colorSpace = "sRGB";
+    sdr.bitsPerColor = 8;
+    EXPECT_TRUE(SystemInfo::formatDisplay(windowsHost().displays[0], &sdr).contains("SDR (sRGB, 8-bit)"));
+
+    // Wi-Fi with a signal quality but no dBm figure; a link with only a receive rate.
+    Platform::NetworkAdapter wifi;
+    wifi.wifiLink = Platform::WifiLink{
+        .ssid = "", .frequencyMhz = 0, .bitrateKbps = 0, .signalQuality = 70, .phy = "", .channel = 0, .rxBitrateKbps = 0};
+    EXPECT_EQ(SystemInfo::formatWifiSignal(wifi), "70%");
+    const std::string receiveOnly = SystemInfo::formatWifiLink({.ssid = "",
+                                                                .frequencyMhz = 0,
+                                                                .bitrateKbps = 0,
+                                                                .signalQuality = std::nullopt,
+                                                                .phy = "",
+                                                                .channel = 0,
+                                                                .rxBitrateKbps = 866'700});
+    EXPECT_TRUE(receiveOnly.contains("receive")) << receiveOnly;
+    EXPECT_FALSE(receiveOnly.contains("transmit")) << receiveOnly;
+
+    // Several search domains, in order.
+    Platform::NetworkAdaptersInfo network;
+    network.available = true;
+    network.listed = true;
+    network.searchDomains = {"corp.example.com", "lab.example.com"};
+    const Row* domains = findRow(SystemInfo::buildNetworkAdaptersSection(network), "Search domains");
+    ASSERT_NE(domains, nullptr);
+    EXPECT_EQ(domains->value, "corp.example.com, lab.example.com");
+
+    // A public address read without a source names none in its tooltip.
+    const Platform::PublicIpInfo unnamed{
+        .read = true, .v4 = "203.0.113.7", .v6 = {}, .v4Unavailable = {}, .v6Unavailable = {}, .source = {}};
+    const std::vector<Row> rows = SystemInfo::buildPublicIpRows(true, true, unnamed);
+    ASSERT_FALSE(rows.empty());
+    EXPECT_TRUE(rows[0].available());
+    EXPECT_TRUE(rows[0].valueTooltip.empty());
+
+    // A dm-crypt volume with no mapper name has no "Unlocked as" tooltip.
+    Platform::PlatformSecurityInfo security;
+    security.available = true;
+    security.family = Platform::OsFamily::Linux;
+    security.encryptedVolumesRead = true;
+    security.encryptedVolumes = {{.name = {}, .type = "LUKS2", .device = "sda2", .mountPoints = {"/data"}}};
+    const Row* volume = findRow(SystemInfo::buildSecuritySection(security), "Disk encryption (sda2)");
+    ASSERT_NE(volume, nullptr);
+    EXPECT_TRUE(volume->valueTooltip.empty());
+
+    // A USB device whose hub index is out of range is listed without a "via".
+    Platform::DevicesInfo devices;
+    devices.available = true;
+    devices.usbRead = true;
+    Platform::Device orphan;
+    orphan.name = "Orphan keyboard";
+    orphan.parent = 5;
+    devices.usb = {orphan};
+    const Row* usb = findRow(SystemInfo::buildDevicesSection(devices), "USB 1");
+    ASSERT_NE(usb, nullptr);
+    EXPECT_FALSE(usb->value.contains("via")) << usb->value;
+
+    // A Windows driver: unsigned with no image path says so alone; one in an unknown state isn't called
+    // stopped.
+    Platform::DriversInfo drivers;
+    drivers.available = true;
+    drivers.family = Platform::OsFamily::Windows;
+    drivers.listed = true;
+    Platform::KernelDriver unsignedDriver;
+    unsignedDriver.name = "oddball";
+    unsignedDriver.signature = Platform::DriverSignature::Unsigned;
+    unsignedDriver.state = Platform::ServiceState::Unknown;
+    drivers.drivers = {unsignedDriver};
+    const Section driverSection = SystemInfo::buildDriversSection(drivers);
+    const auto problem = std::ranges::find_if(driverSection.rows, [](const Row& r) { return r.label == "Problem driver"; });
+    ASSERT_NE(problem, driverSection.rows.end());
+    EXPECT_EQ(problem->value, "Unsigned: oddball");
+    EXPECT_EQ(SystemInfo::formatDriverValue(unsignedDriver), "Unsigned");
+
+    // A Linux core dump kept, with its size unread.
+    Platform::CrashEvent core;
+    core.application = "python3";
+    core.coreKept = true;
+    core.signal = "SIGSEGV";
+    const std::string coreText = SystemInfo::formatCrashValue(core);
+    EXPECT_TRUE(coreText.starts_with("python3 dumped core (SIGSEGV)")) << coreText;
+    EXPECT_FALSE(coreText.contains("not kept")) << coreText;
+
+    // Windows' "<login>.<DOMAIN>" profile-folder form is only recognised under Users: a top-level folder
+    // that starts with the login and a dot is left alone.
+    EXPECT_EQ(SystemInfo::redactLoginName("C:\\bob.CORP\\notes.txt", "bob", Platform::OsFamily::Windows), "C:\\bob.CORP\\notes.txt");
+
+    // No OS family read: no Operating system section.
+    Domain::SystemInfoSnapshot noOs;
+    noOs.version = 1;
+    const std::vector<Section> sections = SystemInfo::buildSystemInfoSections(noOs);
+    EXPECT_TRUE(std::ranges::none_of(sections, [](const Section& s) { return s.title == "Operating system"; }));
+}
+
 } // namespace
 } // namespace App
