@@ -1652,16 +1652,19 @@ TEST_F(ProcessesPanelRenderTest, TheSignatureColumnShowsTheVerifiedSignerOrWhyNo
             auto probe = std::make_unique<TestMocks::MockProcessProbe>();
             Platform::ProcessCounters system =
                 TestMocks::makeProcessCounters(100, "explorer", 'R', 200, 50, 1000, std::uint64_t{8} << 20U, 1);
-            system.signature = {.signature = Platform::ImageSignature::Catalog, .note = {}, .signer = "Microsoft Windows"};
+            system.signature =
+                Platform::SignatureCheck{.signature = Platform::ImageSignature::Catalog, .note = {}, .signer = "Microsoft Windows"};
             Platform::ProcessCounters homebrew =
                 TestMocks::makeProcessCounters(101, "homebrew", 'S', 30, 10, 1100, std::uint64_t{2} << 20U, 100);
-            homebrew.signature = {.signature = Platform::ImageSignature::Unsigned, .note = {}, .signer = {}};
+            homebrew.signature = Platform::SignatureCheck{.signature = Platform::ImageSignature::Unsigned, .note = {}, .signer = {}};
             Platform::ProcessCounters tampered =
                 TestMocks::makeProcessCounters(102, "tampered", 'S', 30, 10, 1200, std::uint64_t{2} << 20U, 100);
-            tampered.signature = {.signature = Platform::ImageSignature::Untrusted, .note = "bad digest", .signer = {}};
+            tampered.signature =
+                Platform::SignatureCheck{.signature = Platform::ImageSignature::Untrusted, .note = "bad digest", .signer = {}};
             Platform::ProcessCounters locked =
                 TestMocks::makeProcessCounters(103, "locked", 'S', 30, 10, 1300, std::uint64_t{2} << 20U, 100);
-            locked.signature = {.signature = Platform::ImageSignature::Unknown, .note = "Access is denied", .signer = {}};
+            locked.signature =
+                Platform::SignatureCheck{.signature = Platform::ImageSignature::Unknown, .note = "Access is denied", .signer = {}};
             probe->withProcess(std::move(system))
                 .withProcess(std::move(homebrew))
                 .withProcess(std::move(tampered))

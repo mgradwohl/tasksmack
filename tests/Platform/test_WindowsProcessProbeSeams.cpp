@@ -1651,7 +1651,7 @@ ProcessCounters sampleUntilSigned(WindowsProcessProbe& probe)
         if (it != processes.end())
         {
             process = *it;
-            if (process.signature.signature != ImageSignature::NotChecked)
+            if (process.signature.get().signature != ImageSignature::NotChecked)
             {
                 break;
             }
@@ -1665,7 +1665,7 @@ TEST_F(WindowsProcessProbeSeamTest, WithoutSignatureCallsNoSignatureIsCheckedOrC
 {
     WindowsProcessProbe probe(fakeFunctions());
     EXPECT_FALSE(probe.capabilities().hasSignature);
-    EXPECT_EQ(find(probe.enumerate()).signature.signature, ImageSignature::NotChecked);
+    EXPECT_EQ(find(probe.enumerate()).signature.get().signature, ImageSignature::NotChecked);
 }
 
 TEST_F(WindowsProcessProbeSeamTest, TheSignatureIsCheckedOffTheSampleAndTakenOnALaterOne)
@@ -1681,12 +1681,12 @@ TEST_F(WindowsProcessProbeSeamTest, TheSignatureIsCheckedOffTheSampleAndTakenOnA
     EXPECT_TRUE(probe.capabilities().hasSignature);
 
     const ProcessCounters process = sampleUntilSigned(probe);
-    EXPECT_EQ(process.signature.signature, ImageSignature::Embedded);
-    EXPECT_EQ(process.signature.signer, "Contoso Ltd");
+    EXPECT_EQ(process.signature.get().signature, ImageSignature::Embedded);
+    EXPECT_EQ(process.signature.get().signer, "Contoso Ltd");
 
     // Kept with the process: later samples, past every TTL, neither ask nor check again.
     fake().now += std::chrono::hours(1);
-    EXPECT_EQ(find(probe.enumerate()).signature.signer, "Contoso Ltd");
+    EXPECT_EQ(find(probe.enumerate()).signature.get().signer, "Contoso Ltd");
     {
         const std::scoped_lock lock(fakeSignatures().mutex);
         EXPECT_EQ(fakeSignatures().stampReads, 1);
@@ -1696,7 +1696,7 @@ TEST_F(WindowsProcessProbeSeamTest, TheSignatureIsCheckedOffTheSampleAndTakenOnA
 
     // A reused PID is a new process of the same image: its stamp is read again, its check comes from the cache.
     fake().processes.front().createTime += 1;
-    EXPECT_EQ(sampleUntilSigned(probe).signature.signer, "Contoso Ltd");
+    EXPECT_EQ(sampleUntilSigned(probe).signature.get().signer, "Contoso Ltd");
     const std::scoped_lock lock(fakeSignatures().mutex);
     EXPECT_EQ(fakeSignatures().stampReads, 2);
     EXPECT_EQ(fakeSignatures().checks, 1);
@@ -1710,7 +1710,7 @@ TEST_F(WindowsProcessProbeSeamTest, AnUnreadableImagePathIsNeverSentForASignatur
     WindowsProcessProbe probe(functions);
     (void) probe.enumerate();
     fake().now += std::chrono::hours(1);
-    EXPECT_EQ(find(probe.enumerate()).signature.signature, ImageSignature::NotChecked);
+    EXPECT_EQ(find(probe.enumerate()).signature.get().signature, ImageSignature::NotChecked);
 }
 
 } // namespace

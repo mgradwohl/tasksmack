@@ -10,7 +10,6 @@
 #include "Platform/IServiceProbe.h"
 #include "Platform/ImageSignature.h"
 #include "Platform/ProcessTypes.h"
-#include "Platform/SchedPolicy.h"
 #include "PriorityConfig.h"
 #include "ProcessRowHistory.h"
 #include "ProcessServices.h"

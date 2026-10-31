@@ -45,6 +45,22 @@ TEST(ImageSignatureTest, TheLabelViewsTheSignerWithoutCopyingIt)
     EXPECT_EQ(label.data(), check.signer.data());
 }
 
+// #3244: the counters and snapshots share one check: a copy reads the same one, not a copy of its strings,
+// and a check not made yet reads as NotChecked.
+TEST(ImageSignatureTest, ASharedCheckIsReadByEveryCopy)
+{
+    const SharedSignatureCheck shared = SignatureCheck{.signature = ImageSignature::Embedded, .note = {}, .signer = "Contoso Ltd"};
+    const SharedSignatureCheck copy = shared; // NOLINT(performance-unnecessary-copy-initialization): the copy is the point
+    EXPECT_EQ(&copy.get(), &shared.get());
+    EXPECT_EQ(copy.get().signer, "Contoso Ltd");
+    EXPECT_EQ(copy, shared);
+
+    const SharedSignatureCheck none;
+    EXPECT_EQ(none.get().signature, ImageSignature::NotChecked);
+    EXPECT_EQ(none, SharedSignatureCheck(SignatureCheck{}));
+    EXPECT_NE(none, shared);
+}
+
 TEST(ImageSignatureTest, TheTooltipSaysHowItIsSignedOrWhyNot)
 {
     const std::string embedded = signatureTooltip({.signature = ImageSignature::Embedded, .note = {}, .signer = "Contoso"});

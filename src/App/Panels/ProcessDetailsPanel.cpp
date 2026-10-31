@@ -806,8 +806,8 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
         if (m_ProcessCapabilities.hasSignature)
         {
             // The Processes table's Signature column (#3070), with what it means on hover.
-            fresh.signature = ProcessSignatureText::detailsValue(proc.signature, Platform::signatureLabel(proc.signature));
-            fresh.signatureTooltip = Platform::signatureTooltip(proc.signature);
+            fresh.signature = ProcessSignatureText::detailsValue(proc.signature.get(), Platform::signatureLabel(proc.signature.get()));
+            fresh.signatureTooltip = Platform::signatureTooltip(proc.signature.get());
         }
         fresh.schedPolicy = Platform::schedPolicyLabel(proc.schedPolicy, proc.rtPriority); // The Policy column's (#3086)
         fresh.keepAlive = ownedSnapshot ? m_CachedSnapshot : nullptr;
@@ -838,7 +838,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
         // Who Windows verifies signed the executable (#3070), unlike the Publisher the file names itself.
         identityRows.add({.label = "Signature",
                           .value = text.signature,
-                          .color = ProcessSignatureText::textColor(proc.signature.signature, theme.scheme()),
+                          .color = ProcessSignatureText::textColor(proc.signature.get().signature, theme.scheme()),
                           .tooltip = text.signatureTooltip});
     }
     if (!proc.services.empty())

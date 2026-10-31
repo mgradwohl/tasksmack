@@ -3649,9 +3649,10 @@ TEST(ProcessModelTest, TheSignatureReachesTheSnapshotWithItsLabel)
     // #3070: the probe's signature check passes through; the column's text is worded from it where drawn (#3244).
     auto probe = std::make_unique<MockProcessProbe>();
     Platform::ProcessCounters counter = makeCounter(100, "explorer.exe", 'S', 1000, 500);
-    counter.signature = {.signature = Platform::ImageSignature::Embedded, .note = {}, .signer = "Microsoft Windows"};
+    counter.signature =
+        Platform::SignatureCheck{.signature = Platform::ImageSignature::Embedded, .note = {}, .signer = "Microsoft Windows"};
     Platform::ProcessCounters unsignedCounter = makeCounter(101, "tool.exe", 'S', 1000, 500);
-    unsignedCounter.signature = {.signature = Platform::ImageSignature::Unsigned, .note = {}, .signer = {}};
+    unsignedCounter.signature = Platform::SignatureCheck{.signature = Platform::ImageSignature::Unsigned, .note = {}, .signer = {}};
     Platform::ProcessCounters pending = makeCounter(102, "new.exe", 'S', 1000, 500);
     probe->setCounters({counter, unsignedCounter, pending});
     probe->setTotalCpuTime(100000);
@@ -3665,10 +3666,10 @@ TEST(ProcessModelTest, TheSignatureReachesTheSnapshotWithItsLabel)
     {
         return *std::ranges::find(snaps, pid, &Domain::ProcessSnapshot::pid);
     };
-    EXPECT_EQ(byPid(100).signature.signature, Platform::ImageSignature::Embedded);
-    EXPECT_EQ(Platform::signatureLabel(byPid(100).signature), "Microsoft Windows");
-    EXPECT_EQ(Platform::signatureLabel(byPid(101).signature), "Unsigned");
-    EXPECT_EQ(Platform::signatureLabel(byPid(102).signature), "") << "not checked yet";
+    EXPECT_EQ(byPid(100).signature.get().signature, Platform::ImageSignature::Embedded);
+    EXPECT_EQ(Platform::signatureLabel(byPid(100).signature.get()), "Microsoft Windows");
+    EXPECT_EQ(Platform::signatureLabel(byPid(101).signature.get()), "Unsigned");
+    EXPECT_EQ(Platform::signatureLabel(byPid(102).signature.get()), "") << "not checked yet";
 }
 
 TEST(ProcessModelTest, TheSchedulingPolicyReachesTheSnapshotWithItsLabel)

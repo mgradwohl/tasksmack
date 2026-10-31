@@ -11,8 +11,10 @@
 #include <compare>
 #include <cstdint>
 #include <format>
+#include <memory>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace Platform
 {
@@ -36,6 +38,35 @@ struct SignatureCheck
     std::string signer; ///< Embedded or Catalog: the signing certificate's name ("Microsoft Windows")
 
     friend bool operator==(const SignatureCheck&, const SignatureCheck&) = default;
+};
+
+/// A SignatureCheck that the copies of a process's counters and snapshots share (#3244). ProcessModel
+/// hands its snapshots out by value, and a SignatureCheck's two strings made every copy dearer -- a signer
+/// longer than a string's inline buffer, as most are, allocating. Copying this copies a pointer, and one
+/// not checked yet (every process on Linux) holds none. Reads as the SignatureCheck it holds, via get().
+class SharedSignatureCheck
+{
+  public:
+    SharedSignatureCheck() = default;
+    // Implicit on purpose: `counters.signature = check;` reads as for the SignatureCheck it replaces.
+    SharedSignatureCheck(SignatureCheck check) // NOLINT(cppcoreguidelines-explicit-constructor,misc-explicit-constructor)
+        : m_Check(check == SignatureCheck{} ? nullptr : std::make_shared<const SignatureCheck>(std::move(check)))
+    {}
+
+    /// The check, or a NotChecked one when none was made.
+    [[nodiscard]] const SignatureCheck& get() const noexcept
+    {
+        static const SignatureCheck NOT_CHECKED;
+        return m_Check == nullptr ? NOT_CHECKED : *m_Check;
+    }
+
+    friend bool operator==(const SharedSignatureCheck& a, const SharedSignatureCheck& b)
+    {
+        return a.get() == b.get();
+    }
+
+  private:
+    std::shared_ptr<const SignatureCheck> m_Check; // null: not checked
 };
 
 /// What a signature not checked yet says (the Signature cell's dash, Process Details' row): the check runs in

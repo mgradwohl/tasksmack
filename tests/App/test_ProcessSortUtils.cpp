@@ -74,8 +74,8 @@ using Domain::ProcessSnapshot;
     snap.publisher = s;
     snap.container = s;
     snap.processType = s;
-    snap.architecture = s;                                                                      // #2394
-    snap.signature = {.signature = Platform::ImageSignature::Catalog, .note = {}, .signer = s}; // #3070
+    snap.architecture = s;                                                                                              // #2394
+    snap.signature = Platform::SignatureCheck{.signature = Platform::ImageSignature::Catalog, .note = {}, .signer = s}; // #3070
 
     // Same size (1) for both, so the generic per-column loop below exercises the
     // "compare first engine name" branch, not the "compare engine count" branch -
@@ -231,7 +231,7 @@ TEST(ProcessSortUtilsTest, SignatureSortsVerifiedBySignerThenTheRest)
         ProcessSnapshot snap = makeSnapshot(false);
         snap.pid = pid;
         snap.uniqueKey = static_cast<std::uint64_t>(pid);
-        snap.signature = {.signature = kind, .note = {}, .signer = std::move(signer)};
+        snap.signature = Platform::SignatureCheck{.signature = kind, .note = {}, .signer = std::move(signer)};
         return snap;
     };
     std::vector<ProcessSnapshot> rows{

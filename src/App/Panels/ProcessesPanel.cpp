@@ -713,7 +713,8 @@ void signatureCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& fm
         renderUnavailableTextCell(ProcessRowFormat::UNSUPPORTED_CELL_REASON, widths.unavailableText);
         return;
     }
-    const std::string_view label = Platform::signatureLabel(proc.signature); // a view: allocates nothing (#3244)
+    const Platform::SignatureCheck& check = proc.signature.get();
+    const std::string_view label = Platform::signatureLabel(check); // a view: allocates nothing (#3244)
     if (label.empty())
     {
         renderUnavailableTextCell(Platform::SIGNATURE_NOT_CHECKED_NOTE, widths.unavailableText);
@@ -721,7 +722,7 @@ void signatureCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& fm
     }
     const UI::ColorScheme& scheme = UI::Theme::get().scheme();
     ImGui::BeginGroup();
-    if (Platform::isVerifiedSignature(proc.signature.signature))
+    if (Platform::isVerifiedSignature(check.signature))
     {
         const std::string_view mark = ProcessSignatureText::VERIFIED_MARK;
         ImGui::PushStyleColor(ImGuiCol_Text, scheme.textSuccess);
@@ -729,13 +730,13 @@ void signatureCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& fm
         ImGui::PopStyleColor();
         ImGui::SameLine(0.0F, ImGui::GetStyle().ItemInnerSpacing.x);
     }
-    ImGui::PushStyleColor(ImGuiCol_Text, ProcessSignatureText::textColor(proc.signature.signature, scheme));
+    ImGui::PushStyleColor(ImGuiCol_Text, ProcessSignatureText::textColor(check.signature, scheme));
     renderCellText(label, cachedTextWidth(label, fmt.signatureWidth), /*rightAligned=*/false, /*clippedTooltip=*/false);
     ImGui::PopStyleColor();
     ImGui::EndGroup();
     if (ImGui::BeginItemTooltip())
     {
-        const std::string tooltip = Platform::signatureTooltip(proc.signature);
+        const std::string tooltip = Platform::signatureTooltip(check);
         ImGui::PushTextWrapPos(ImGui::GetFontSize() * HEADER_TOOLTIP_WRAP_EM);
         ImGui::TextUnformatted(tooltip.c_str());
         ImGui::PopTextWrapPos();
