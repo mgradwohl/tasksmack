@@ -1406,7 +1406,11 @@ TEST(BrokerPipeServeTest, EveryRequestKindIsTheHelloAnActionOrARead)
         << "an ErrorReply (#3066)";
     EXPECT_TRUE(BrokerPipeServer::isRead(Broker::ThreadsRequest{.target = TARGET}))
         << "a read Windows' helper answers with an ErrorReply (#3069)";
-    static_assert(std::variant_size_v<Broker::Request> == 18, "a new request kind: add it above");
+    const Broker::TaskManagerReplacementRequest replacement{.change = Broker::TaskManagerChange::Clear, .path = {}, .replaceOther = false};
+    EXPECT_FALSE(BrokerPipeServer::isRead(replacement)) << "an action (#3072): the one action of an over-the-shoulder session";
+    EXPECT_TRUE(BrokerPipeServer::isActionWindowsDoes(replacement));
+    EXPECT_TRUE(BrokerPipeServer::putsOffTheWindowsIdleExit(replacement));
+    static_assert(std::variant_size_v<Broker::Request> == 19, "a new request kind: add it above");
 }
 
 TEST(BrokerPipeServeTest, AOneActionSessionIsntKeptOpenByGreetingAgain)

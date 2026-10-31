@@ -16,10 +16,12 @@
 //
 // Decoding is strict, since the helper reads what an unprivileged process sends: a frame of exactly its
 // length, a known kind, every enum in range, every count within its cap, nothing left over. Anything
-// else is refused as malformed. There is no "run a command" and no path operation, and every process
-// request names its target by PID *and* start time (ProcessTarget), so the helper re-verifies the
-// process and a reused PID can't redirect a request. Its kinds: the handshake, the process actions
-// (#2308), Process Details' reads (#2309) and System Information's root-only facts (#2310).
+// else is refused as malformed. There is no "run a command", and every process request names its target
+// by PID *and* start time (ProcessTarget), so the helper re-verifies the process and a reused PID can't
+// redirect a request. The one path a request carries is Replace Task Manager's (#3072), which the helper
+// takes only when it is the TaskSmack.exe beside it. Its kinds: the handshake, the process actions
+// (#2308), Process Details' reads (#2309), System Information's root-only facts (#2310) and Replace Task
+// Manager (#3072).
 
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
@@ -59,7 +61,9 @@ namespace Platform::Broker
 /// 8: Signal gains Hangup, Interrupt, Quit, User1 and User2 (#3063).
 /// 9: SetEfficiencyMode, Efficiency mode turned on or off for a process (#3071).
 /// 10: CloseConnection, one of a process's sockets shut down (#3066).
-inline constexpr std::uint16_t PROTOCOL_VERSION = 11;
+/// 11: ReadThreads, another user's process's threads for Process Details (#3069).
+/// 12: TaskManagerReplacement, TaskSmack set or cleared as Task Manager's IFEO debugger (#3072).
+inline constexpr std::uint16_t PROTOCOL_VERSION = 12;
 /// The largest frame either side accepts, header included.
 inline constexpr std::size_t MAX_MESSAGE_BYTES = std::size_t{8} << 20U;
 /// The most processes one ReadProcessCounters asks about (#2728); a sampler with more asks for the first.
@@ -95,32 +99,33 @@ enum class MessageKind : std::uint16_t // NOLINT(performance-enum-size): 16 bits
     SetPriority = 17,
     SetIoPriority = 18,
     SetAffinity = 19,
-    ServiceAction = 20,         ///< Start, stop or restart a service, or set its start type (#2728)
-    SetEfficiencyMode = 21,     ///< Efficiency mode on or off for a process (#3071)
-    CloseConnection = 22,       ///< One of a process's sockets shut down, by inode (#3066)
-    ReadEnvironment = 32,       ///< Another user's process's environment, for Process Details (#2309)
-    ReadModules = 33,           ///< Its loaded modules (#2309)
-    ReadOpenFiles = 34,         ///< Its open files (#2309)
-    ReadConnections = 35,       ///< Its TCP and UDP sockets (#2309)
-    ReadMemoryRollup = 36,      ///< Its PSS and USS (#2309)
-    ReadFirmwareFile = 37,      ///< One of System Information's root-only firmware files (#2310)
-    ReadCrashes = 38,           ///< Recent crashes, every user's (#2310)
-    ReadProcessCounters = 39,   ///< Many processes' FD counts and I/O bytes at once, for the sampler (#2728)
-    ListHiddenProcesses = 40,   ///< The processes hidepid hides from TaskSmack, as their /proc files' text (#2728)
-    ReadThreads = 41,           ///< Another user's process's threads, for Process Details (#3069)
-    ActionResult = 48,          ///< The answer to a process action
-    EnvironmentResult = 49,     ///< The answer to ReadEnvironment
-    ModulesResult = 50,         ///< The answer to ReadModules
-    OpenFilesResult = 51,       ///< The answer to ReadOpenFiles
-    ConnectionsResult = 52,     ///< The answer to ReadConnections
-    MemoryRollupResult = 53,    ///< The answer to ReadMemoryRollup
-    FirmwareFileResult = 54,    ///< The answer to ReadFirmwareFile
-    CrashesResult = 55,         ///< The answer to ReadCrashes
-    ProcessCountersResult = 56, ///< The answer to ReadProcessCounters
-    HiddenProcessesResult = 57, ///< The answer to ListHiddenProcesses
-    ServiceActionResult = 58,   ///< The answer to ServiceAction
-    ThreadsResult = 59,         ///< The answer to ReadThreads
-    Error = 63,                 ///< A request the helper refused to read (malformed, or a kind it doesn't do)
+    ServiceAction = 20,          ///< Start, stop or restart a service, or set its start type (#2728)
+    SetEfficiencyMode = 21,      ///< Efficiency mode on or off for a process (#3071)
+    CloseConnection = 22,        ///< One of a process's sockets shut down, by inode (#3066)
+    TaskManagerReplacement = 23, ///< TaskSmack set or cleared as Task Manager's IFEO debugger (#3072)
+    ReadEnvironment = 32,        ///< Another user's process's environment, for Process Details (#2309)
+    ReadModules = 33,            ///< Its loaded modules (#2309)
+    ReadOpenFiles = 34,          ///< Its open files (#2309)
+    ReadConnections = 35,        ///< Its TCP and UDP sockets (#2309)
+    ReadMemoryRollup = 36,       ///< Its PSS and USS (#2309)
+    ReadFirmwareFile = 37,       ///< One of System Information's root-only firmware files (#2310)
+    ReadCrashes = 38,            ///< Recent crashes, every user's (#2310)
+    ReadProcessCounters = 39,    ///< Many processes' FD counts and I/O bytes at once, for the sampler (#2728)
+    ListHiddenProcesses = 40,    ///< The processes hidepid hides from TaskSmack, as their /proc files' text (#2728)
+    ReadThreads = 41,            ///< Another user's process's threads, for Process Details (#3069)
+    ActionResult = 48,           ///< The answer to a process action
+    EnvironmentResult = 49,      ///< The answer to ReadEnvironment
+    ModulesResult = 50,          ///< The answer to ReadModules
+    OpenFilesResult = 51,        ///< The answer to ReadOpenFiles
+    ConnectionsResult = 52,      ///< The answer to ReadConnections
+    MemoryRollupResult = 53,     ///< The answer to ReadMemoryRollup
+    FirmwareFileResult = 54,     ///< The answer to ReadFirmwareFile
+    CrashesResult = 55,          ///< The answer to ReadCrashes
+    ProcessCountersResult = 56,  ///< The answer to ReadProcessCounters
+    HiddenProcessesResult = 57,  ///< The answer to ListHiddenProcesses
+    ServiceActionResult = 58,    ///< The answer to ServiceAction
+    ThreadsResult = 59,          ///< The answer to ReadThreads
+    Error = 63,                  ///< A request the helper refused to read (malformed, or a kind it doesn't do)
 };
 
 /// The signals a Signal request sends.
@@ -199,6 +204,27 @@ struct CloseConnectionRequest
     ProcessTarget target;
     std::uint64_t socketInode = 0;
     friend bool operator==(const CloseConnectionRequest&, const CloseConnectionRequest&) = default;
+};
+
+/// What a TaskManagerReplacementRequest does (#3072).
+enum class TaskManagerChange : std::uint8_t
+{
+    Set,   ///< Task Manager starts the TaskSmack.exe the request names
+    Clear, ///< Task Manager starts itself again: the Debugger TaskSmack set is removed
+};
+
+/// Replace Task Manager (#3072, protocol v12): the Image File Execution Options Debugger of taskmgr.exe set
+/// to @c path, or cleared. The helper sets only a @c path that is the TaskSmack.exe beside it (validated
+/// with TaskManagerReplacement::validateTaskSmackPath() and BrokerHelper::sameFile()), and replaces another
+/// program's Debugger only with @c replaceOther, which TaskSmack sends once the user has confirmed it. A
+/// Clear carries no path and never replaceOther; one that does is refused as malformed. The answer is an
+/// ActionResult.
+struct TaskManagerReplacementRequest
+{
+    TaskManagerChange change = TaskManagerChange::Set;
+    std::string path; ///< UTF-8; empty for a Clear
+    bool replaceOther = false;
+    friend bool operator==(const TaskManagerReplacementRequest&, const TaskManagerReplacementRequest&) = default;
 };
 
 /// Read a process's environment (#2309): the helper reads it with its capabilities, after the same identity check.
@@ -557,7 +583,8 @@ using Request = std::variant<Hello,
                              ServiceActionRequest,
                              EfficiencyModeRequest,
                              CloseConnectionRequest,
-                             ThreadsRequest>;
+                             ThreadsRequest,
+                             TaskManagerReplacementRequest>;
 using Response = std::variant<HelloReply,
                               ActionResult,
                               ErrorReply,
@@ -897,6 +924,15 @@ namespace Detail
     return MessageKind::CloseConnection;
 }
 
+/// TaskManagerReplacement (#3072): the change, the path, then whether another program's Debugger may go.
+[[nodiscard]] inline MessageKind encodePayload(Writer& writer, const TaskManagerReplacementRequest& replacement)
+{
+    writer.u8(static_cast<std::uint8_t>(replacement.change));
+    writer.text(replacement.path);
+    writer.u8(replacement.replaceOther ? 1 : 0);
+    return MessageKind::TaskManagerReplacement;
+}
+
 /// The reads that name only their target.
 [[nodiscard]] inline MessageKind encodePayload(Writer& writer, const EnvironmentRequest& environment)
 {
@@ -1116,6 +1152,27 @@ namespace Detail
     return request;
 }
 
+/// A TaskManagerReplacement payload (#3072): the change (refused past Clear), the path and the flag. A Clear
+/// with a path or replaceOther is refused: it has neither.
+[[nodiscard]] inline TaskManagerReplacementRequest decodeTaskManagerReplacementRequest(Reader& reader)
+{
+    TaskManagerReplacementRequest request;
+    const std::uint8_t change = reader.u8();
+    request.path = reader.text();
+    request.replaceOther = reader.flag();
+    if (change > static_cast<std::uint8_t>(TaskManagerChange::Clear))
+    {
+        reader.fail();
+        return request;
+    }
+    request.change = static_cast<TaskManagerChange>(change);
+    if (request.change == TaskManagerChange::Clear && (!request.path.empty() || request.replaceOther))
+    {
+        reader.fail();
+    }
+    return request;
+}
+
 /// A ListHiddenProcesses payload: the count (refused past MAX_VISIBLE_PIDS), then the visible PIDs.
 [[nodiscard]] inline HiddenProcessesRequest decodeHiddenProcessesRequest(Reader& reader)
 {
@@ -1183,6 +1240,8 @@ namespace Detail
         const ProcessTarget target = reader.target();
         return Detail::finish<Request>(reader, id, CloseConnectionRequest{.target = target, .socketInode = reader.u64()});
     }
+    case MessageKind::TaskManagerReplacement:
+        return Detail::finish<Request>(reader, id, Detail::decodeTaskManagerReplacementRequest(reader));
     case MessageKind::ReadEnvironment:
         return Detail::finish<Request>(reader, id, EnvironmentRequest{.target = reader.target()});
     case MessageKind::ReadModules:
@@ -2039,6 +2098,7 @@ namespace Detail
     case MessageKind::ServiceAction:
     case MessageKind::SetEfficiencyMode:
     case MessageKind::CloseConnection:
+    case MessageKind::TaskManagerReplacement:
     case MessageKind::ReadThreads:
         break;
     }

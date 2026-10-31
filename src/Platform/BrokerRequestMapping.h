@@ -51,6 +51,10 @@ struct Readers
     /// system bus it opened before its sandbox. The reader checks the unit name.
     // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
     std::function<ServiceActionResult(const Broker::ServiceActionRequest&)> serviceAction{};
+    /// Replace Task Manager (#3072): Windows' helper sets or clears taskmgr.exe's IFEO Debugger, for the
+    /// TaskSmack.exe beside it only. A helper without it (Linux's) answers with an error.
+    // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
+    std::function<Broker::ActionResult(const Broker::TaskManagerReplacementRequest&)> taskManagerReplacement{};
     /// System Information's privileged firmware files (#2310)
     // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
     std::function<Broker::FirmwareFileReply(Broker::FirmwareFile)> firmwareFile{};

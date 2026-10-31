@@ -21,6 +21,7 @@
 #include <optional>
 #include <span>
 #include <stdexcept>
+#include <string>
 #include <variant>
 #include <vector>
 
@@ -348,6 +349,37 @@ TEST(BrokerRequestMappingTest, AServiceActionGoesToItsReaderAndAThrowIsAFailedRe
     EXPECT_FALSE(std::get<Broker::ServiceActionReply>(threw).result.ok);
     // A helper without the reader (Windows') answers with an error.
     EXPECT_TRUE(std::holds_alternative<Broker::ErrorReply>(BrokerServer::handleRequest(stop, actions)));
+}
+
+// #3072: Replace Task Manager goes to its handler, which answers with an ActionResult; one that throws is a
+// failed result, and a helper without the handler (Linux's) answers with an error.
+TEST(BrokerRequestMappingTest, ReplaceTaskManagerGoesToItsHandlerAndAThrowIsAFailedResult)
+{
+    TestMocks::MockProcessActions actions;
+    BrokerServer::Readers readers;
+    Broker::TaskManagerReplacementRequest seen;
+    readers.taskManagerReplacement = [&seen](const Broker::TaskManagerReplacementRequest& request)
+    {
+        seen = request;
+        return Broker::ActionResult{.success = true, .errorMessage = {}, .successNote = "on"};
+    };
+    const Broker::TaskManagerReplacementRequest set{
+        .change = Broker::TaskManagerChange::Set, .path = R"(C:\Program Files\TaskSmack\TaskSmack.exe)", .replaceOther = true};
+    const Broker::Response response = BrokerServer::handleRequest(set, actions, readers);
+    ASSERT_TRUE(std::holds_alternative<Broker::ActionResult>(response));
+    EXPECT_TRUE(std::get<Broker::ActionResult>(response).success);
+    EXPECT_EQ(std::get<Broker::ActionResult>(response).successNote, "on");
+    EXPECT_EQ(seen, set);
+
+    readers.taskManagerReplacement = [](const Broker::TaskManagerReplacementRequest&) -> Broker::ActionResult
+    {
+        throw std::runtime_error("boom");
+    };
+    const Broker::Response threw = BrokerServer::handleRequest(set, actions, readers);
+    ASSERT_TRUE(std::holds_alternative<Broker::ActionResult>(threw));
+    EXPECT_FALSE(std::get<Broker::ActionResult>(threw).success);
+    EXPECT_NE(std::get<Broker::ActionResult>(threw).errorMessage.find("boom"), std::string::npos);
+    EXPECT_TRUE(std::holds_alternative<Broker::ErrorReply>(BrokerServer::handleRequest(set, actions)));
 }
 
 // --- #2417: what the helper does when a read or an action throws -------------------------------------

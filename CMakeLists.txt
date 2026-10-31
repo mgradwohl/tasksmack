@@ -161,6 +161,9 @@ set(TASKSMACK_SOURCES
     src/App/RenderMetricsOverride.cpp
     src/App/SettingsDialog.cpp
     src/App/SettingsLayer.cpp
+    src/App/TaskManagerNoticeLayer.cpp # Replace Task Manager's startup check (#3072)
+    src/App/TaskManagerReplacementController.cpp
+    src/App/TaskManagerReplacementRows.cpp
     src/App/SelectOverride.cpp
     src/App/ScreenshotLayer.cpp
     src/App/ScreenshotOverride.cpp
@@ -245,6 +248,7 @@ set(TASKSMACK_SOURCES
     src/Platform/BrokeredServiceActions.cpp  # service actions through the helper, no polkit prompt each (#2728)
     src/Platform/BrokeredSystemInfoProbe.cpp # System Information's root-only facts through the helper (#2310)
     src/Platform/BrokerRequestMapping.cpp    # what either OS's helper does with each request (#2517)
+    src/Platform/TaskManagerReplacementService.cpp # Replace Task Manager's read and change (#3072)
     src/Platform/PublicIpLookup.cpp          # what either OS's public IP lookup does with a reply (#3117)
     # stb_image's implementation, for UI/IconLoader.cpp and the Linux process icons (#1800)
     src/Platform/StbImage.cpp
@@ -318,6 +322,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsProcessMachine.cpp # the machine a process runs as: dumps and the Architecture column (#2394)
     src/Platform/Windows/WindowsProcessIdentity.cpp
     src/Platform/Windows/WindowsWaitChain.cpp # Analyze wait chain: GetThreadWaitChain on each thread (#3084)
+    src/Platform/Windows/WindowsTaskManagerReplacement.cpp # taskmgr.exe's IFEO Debugger (#3072)
     src/Platform/Windows/WindowsFolderPicker.cpp
     src/Platform/Windows/WindowsProcessConnections.cpp
     src/Platform/Windows/WindowsProcessEnvironmentReader.cpp # a process's environment block, out of its PEB (#2569)
@@ -415,6 +420,9 @@ set(TASKSMACK_HEADERS
     src/Platform/IProcessProbe.h
     src/Platform/BrokerProtocol.h
     src/Platform/IPrivilegedBroker.h
+    src/Platform/ITaskManagerReplacement.h
+    src/Platform/TaskManagerReplacement.h
+    src/Platform/TaskManagerReplacementService.h
     src/Platform/BrokerSessionRules.h
     src/Platform/BrokerRequestMapping.h
     src/Platform/IProcessActions.h
@@ -529,6 +537,7 @@ elseif(WIN32)
         src/Platform/Windows/BrokerPipeServer.h
         src/Platform/Windows/PipeBroker.h
         src/Platform/Windows/BrokerHelper.h
+        src/Platform/Windows/WindowsTaskManagerReplacement.h
         src/Platform/Windows/WindowsProcessDump.h
         src/Platform/Windows/WindowsProcessIdentity.h
         src/Platform/Windows/WindowsWaitChain.h
@@ -912,6 +921,7 @@ if(WIN32)
         src/Platform/Windows/WindowsProcessModules.cpp
         src/Platform/Windows/WindowsProcessOpenFiles.cpp
         src/Platform/Windows/WindowsProcessConnections.cpp
+        src/Platform/Windows/WindowsTaskManagerReplacement.cpp # Replace Task Manager's IFEO Debugger (#3072)
         src/Platform/Windows/WinString.cpp
         src/Platform/ThreadName.cpp
         ${TASKSMACK_HELPER_RC_OUT} # version info (#2557): "TaskSmack administrator helper" in its UAC prompt

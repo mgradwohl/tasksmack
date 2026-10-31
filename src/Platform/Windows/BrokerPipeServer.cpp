@@ -40,10 +40,12 @@ namespace
 
 bool isActionWindowsDoes(const Broker::Request& request) noexcept
 {
-    // Every signal: Terminate, Kill, and since #2582 Suspend and Resume (NtSuspendProcess, NtResumeProcess); and
-    // Efficiency mode (#3071).
+    // Every signal: Terminate, Kill, and since #2582 Suspend and Resume (NtSuspendProcess, NtResumeProcess);
+    // Efficiency mode (#3071); and Replace Task Manager (#3072), which isn't a process action but is one the
+    // user chose, so it is the one action of an over-the-shoulder session too.
     return std::holds_alternative<Broker::SignalRequest>(request) || std::holds_alternative<Broker::PriorityRequest>(request) ||
-           std::holds_alternative<Broker::AffinityRequest>(request) || std::holds_alternative<Broker::EfficiencyModeRequest>(request);
+           std::holds_alternative<Broker::AffinityRequest>(request) || std::holds_alternative<Broker::EfficiencyModeRequest>(request) ||
+           std::holds_alternative<Broker::TaskManagerReplacementRequest>(request);
 }
 
 bool isRead(const Broker::Request& request) noexcept
@@ -53,7 +55,8 @@ bool isRead(const Broker::Request& request) noexcept
     // (BrokerHelper::readsOnlyOwnProcesses) might let it through: revisit both, then this count.
     // ServiceActionRequest and CloseConnectionRequest (#3066) are actions Windows' helper doesn't do (an ErrorReply),
     // so they are neither here.
-    static_assert(std::variant_size_v<Broker::Request> == 18, "sort the new request kind into an action or a read");
+    // TaskManagerReplacementRequest (#3072) is an action (isActionWindowsDoes()).
+    static_assert(std::variant_size_v<Broker::Request> == 19, "sort the new request kind into an action or a read");
     return std::holds_alternative<Broker::EnvironmentRequest>(request) || std::holds_alternative<Broker::ModulesRequest>(request) ||
            std::holds_alternative<Broker::OpenFilesRequest>(request) || std::holds_alternative<Broker::ConnectionsRequest>(request) ||
            std::holds_alternative<Broker::MemoryRollupRequest>(request) || std::holds_alternative<Broker::FirmwareFileRequest>(request) ||

@@ -115,6 +115,9 @@ inline constexpr std::string_view UDP_TRACE_THREAD_NAME = "ts-udp-trace";
 /// The worker that starts or stops the UDP event trace's session when its Settings toggle changes
 /// (#3155): the stale-session sweep, the session's start, and the stop's join of the consumer thread.
 inline constexpr std::string_view UDP_TRACE_SWITCH_THREAD_NAME = "ts-udp-switch";
+/// The worker that reads, and changes, whether TaskSmack replaces Task Manager (#3072): a registry read,
+/// or a UAC prompt and the administrator helper's answer.
+inline constexpr std::string_view TASK_MANAGER_THREAD_NAME = "ts-taskmgr";
 
 /// `name` cut to at most `maxLength` bytes, never in the middle of a UTF-8 sequence.
 [[nodiscard]] inline std::string truncateThreadName(std::string_view name, std::size_t maxLength = MAX_LINUX_THREAD_NAME_LENGTH)

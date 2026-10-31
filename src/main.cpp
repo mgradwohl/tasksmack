@@ -12,12 +12,14 @@
 #include "App/HelpLayer.h"
 #include "App/InstanceLock.h"
 #include "App/LaunchOptions.h"
+#include "App/PanelPlatforms.h"
 #include "App/RenderMetricsOverride.h"
 #include "App/ScreenshotLayer.h"
 #include "App/ScreenshotOverride.h"
 #include "App/SettingsLayer.h"
 #include "App/ShellLayer.h"
 #include "App/SyntheticScenario.h"
+#include "App/TaskManagerNoticeLayer.h"
 #include "App/TitleBarLayer.h"
 #include "App/UserConfig.h"
 #include "App/WindowOverride.h"
@@ -134,6 +136,14 @@ auto runApp(const App::LaunchOptions& launch) -> int
     if (const std::optional<int> lockExitCode = App::exitCodeForLockStatus(instanceLock.status()); lockExitCode.has_value())
     {
         spdlog::warn("TaskSmack is already running with the settings in {}; exiting", Core::pathToUtf8(instanceLockPath.parent_path()));
+#ifdef _WIN32
+        // Ctrl+Shift+Esc with TaskSmack in place of Task Manager (#3072): the running one comes to the
+        // front, as Task Manager's own second start does, rather than a message box saying it runs.
+        if (launch.asTaskManager && Platform::showRunningTaskSmack()) // LCOV_EXCL_LINE - TaskSmack.exe only (#2039)
+        {
+            return *lockExitCode;
+        }
+#endif
         SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION,
                                  "TaskSmack",
                                  "TaskSmack is already running.\n\nOnly one TaskSmack can run at a time, so that two can't overwrite "
@@ -232,6 +242,10 @@ auto runApp(const App::LaunchOptions& launch) -> int
     for (const std::string& ignored : launch.ignored)
     {
         spdlog::info("Ignoring the command-line argument {}", ignored);
+    }
+    if (launch.asTaskManager)
+    {
+        spdlog::info("Started in place of Task Manager (#3072); Task Manager's own arguments are not TaskSmack's");
     }
     spdlog::debug("Compiler: {} {}", tasksmack::Version::COMPILER_ID, tasksmack::Version::COMPILER_VERSION);
     spdlog::debug("Built: {} {}", tasksmack::Version::BUILD_DATE, tasksmack::Version::BUILD_TIME);
@@ -370,8 +384,12 @@ auto runApp(const App::LaunchOptions& launch) -> int
         // elevation notice is shown at startup when running without elevated privileges.
         appRef.pushLayer<App::HelpLayer>();
         appRef.pushLayer<App::AboutLayer>();
-        appRef.pushLayer<App::SettingsLayer>();
+        // Replace Task Manager (#3072): one controller for the Settings rows and the startup check, which
+        // reads the registry on its worker and offers a repair when Task Manager starts another TaskSmack.
+        const auto taskManager = App::makeTaskManagerReplacementController(App::Synthetic::activeScenario());
+        appRef.pushLayer<App::SettingsLayer>().setTaskManagerReplacement(taskManager);
         appRef.pushLayer<App::ElevationNoticeLayer>();
+        appRef.pushLayer<App::TaskManagerNoticeLayer>(taskManager);
 
         // The demo script's layer (#2827), after the layers its steps make requests of: a step is issued
         // in its onUpdate(), before any layer renders, so the shell draws it on that same frame.
