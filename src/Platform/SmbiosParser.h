@@ -431,6 +431,8 @@ inline constexpr std::uint8_t CHASSIS_TYPE_MASK = 0x7F;
     case 0x1C: // Blade
     case 0x1D: // Blade Enclosure
         return "Server";
+    case 0x0C: // Docking Station
+        return "Docking station";
     default:
         return {};
     }
