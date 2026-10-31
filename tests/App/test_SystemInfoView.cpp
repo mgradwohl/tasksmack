@@ -698,7 +698,9 @@ TEST(SystemInfoSectionsTest, EmptyNamesAndClassesStillGetALabel)
     Platform::DevicesInfo devices;
     devices.available = true;
     devices.pciRead = true;
-    devices.pci = {Platform::Device{.name = "Mystery controller"}};
+    Platform::Device classless;
+    classless.name = "Mystery controller";
+    devices.pci = {classless};
     devices.audio = {{.name = {}, .flow = Platform::AudioFlow::Output}};
     const Section deviceSection = SystemInfo::buildDevicesSection(devices);
     ASSERT_NE(findRow(deviceSection, "PCI device"), nullptr);
