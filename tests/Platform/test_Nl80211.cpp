@@ -129,6 +129,42 @@ TEST(Nl80211Test, AStationsRatesAndTheirKind)
     EXPECT_FALSE(Nl80211::parseStation(cut, FAMILY).has_value());
 }
 
+// #3221: an EHT rate is EHT whatever else its nest holds, an HT rate HT; an attribute whose length runs
+// past its nest ends the nest there, keeping what came before; a message shorter than its header is none.
+TEST(Nl80211Test, EhtAndHtRatesAndMalformedReplies)
+{
+    const auto stationWith = [](const Bytes& tx)
+    {
+        const Bytes info = attribute(NLA_F_NESTED | NL80211_STA_INFO_TX_BITRATE, tx);
+        return message(FAMILY, NL80211_CMD_NEW_STATION, attribute(NLA_F_NESTED | NL80211_ATTR_STA_INFO, info));
+    };
+    const auto txOf = [](const Bytes& reply)
+    {
+        return Nl80211::parseStation(reply, FAMILY).value_or(Nl80211::Station{}).tx.value_or(Nl80211::Rate{});
+    };
+
+    const Nl80211::Rate eht = txOf(stationWith(concat({attribute(NL80211_RATE_INFO_BITRATE32, value<std::uint32_t>(28'820)),
+                                                       attribute(NL80211_RATE_INFO_EHT_MCS, value<std::uint8_t>(13)),
+                                                       attribute(NL80211_RATE_INFO_HE_MCS, value<std::uint8_t>(11))})));
+    EXPECT_EQ(eht.kind, Nl80211::RateKind::Eht) << "a later HE attribute doesn't lower it";
+    EXPECT_EQ(eht.kbps, 2'882'000U);
+
+    const Nl80211::Rate ht = txOf(stationWith(concat(
+        {attribute(NL80211_RATE_INFO_BITRATE, value<std::uint16_t>(1444)), attribute(NL80211_RATE_INFO_MCS, value<std::uint8_t>(15))})));
+    EXPECT_EQ(ht.kind, Nl80211::RateKind::Ht);
+    EXPECT_EQ(ht.kbps, 144'400U);
+
+    // The second attribute claims 64 bytes the nest doesn't have: parsing stops at it.
+    Bytes overlong = attribute(NL80211_RATE_INFO_MCS, value<std::uint8_t>(7));
+    put<std::uint16_t>(overlong, 64);
+    put<std::uint16_t>(overlong, NL80211_RATE_INFO_BITRATE32);
+    const Nl80211::Rate cut = txOf(stationWith(overlong));
+    EXPECT_EQ(cut.kind, Nl80211::RateKind::Ht);
+    EXPECT_EQ(cut.kbps, 0U);
+
+    EXPECT_FALSE(Nl80211::parseStation(Bytes(NLMSG_HDRLEN, std::byte{0}), FAMILY).has_value()) << "shorter than its header";
+}
+
 TEST(Nl80211Test, EachRateKindNamesItsStandard)
 {
     const auto named = [](Nl80211::RateKind kind, std::uint32_t kbps, std::uint32_t mhz)

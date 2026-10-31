@@ -113,35 +113,38 @@ invokingUserSession(uid_t effectiveUid,
     return runAs;
 }
 
+/// One of this process's environment variables, or nullopt when it isn't set.
+[[nodiscard]] inline std::optional<std::string> processVariable(std::string_view name)
+{
+    // NOLINTNEXTLINE(concurrency-mt-unsafe) - read on the UI thread; nothing sets these
+    const char* const value = std::getenv(std::string(name).c_str());
+    return value != nullptr ? std::optional<std::string>(value) : std::nullopt;
+}
+
+/// @p uid's passwd entry, or nullopt for a user the database doesn't know or one with no home directory.
+[[nodiscard]] inline std::optional<Account> systemAccount(uid_t uid)
+{
+    // The buffer grows for a large LDAP/SSSD entry, rather than opening links as root (#2499).
+    return UserNameLookupDetail::lookUpEntry<passwd>(uid,
+                                                     ::getpwuid_r,
+                                                     [](const passwd& entry) -> std::optional<Account>
+                                                     {
+                                                         if (entry.pw_dir == nullptr)
+                                                         {
+                                                             return std::nullopt;
+                                                         }
+                                                         return Account{.gid = entry.pw_gid,
+                                                                        .name = entry.pw_name != nullptr ? entry.pw_name : "",
+                                                                        .home = entry.pw_dir,
+                                                                        .shell = entry.pw_shell != nullptr ? entry.pw_shell : ""};
+                                                     });
+}
+
 /// invokingUserSession() for this process: its effective uid, environment and passwd database.
 [[nodiscard]] inline std::optional<DetachedSpawn::RunAs> invokingUserSession()
 {
     return invokingUserSession(
-        ::geteuid(),
-        [](std::string_view name) -> std::optional<std::string>
-        {
-            // NOLINTNEXTLINE(concurrency-mt-unsafe) - read on the UI thread; nothing sets these
-            const char* const value = std::getenv(std::string(name).c_str());
-            return value != nullptr ? std::optional<std::string>(value) : std::nullopt;
-        },
-        [](uid_t uid) -> std::optional<Account>
-        {
-            // The buffer grows for a large LDAP/SSSD entry, rather than opening links as root (#2499).
-            return UserNameLookupDetail::lookUpEntry<passwd>(uid,
-                                                             ::getpwuid_r,
-                                                             [](const passwd& entry) -> std::optional<Account>
-                                                             {
-                                                                 if (entry.pw_dir == nullptr)
-                                                                 {
-                                                                     return std::nullopt;
-                                                                 }
-                                                                 return Account{.gid = entry.pw_gid,
-                                                                                .name = entry.pw_name != nullptr ? entry.pw_name : "",
-                                                                                .home = entry.pw_dir,
-                                                                                .shell = entry.pw_shell != nullptr ? entry.pw_shell : ""};
-                                                             });
-        },
-        [](const std::string& path) { return ::access(path.c_str(), F_OK) == 0; });
+        ::geteuid(), &processVariable, &systemAccount, [](const std::string& path) { return ::access(path.c_str(), F_OK) == 0; });
 }
 
 } // namespace Platform::SessionUser
