@@ -3655,7 +3655,7 @@ TEST_F(ProcessesPanelRenderTest, TheUdpEventTraceSwitchIsTakenAndPassedOn)
     {
         Core::UdpEventTraceChangedEvent changed(enabled);
         panel->onEvent(changed);
-        EXPECT_FALSE(changed.handled) << "other listeners see it too";
+        EXPECT_FALSE(changed.isHandled()) << "other listeners see it too";
         panel->onUpdate(1.0F / 60.0F);
         static_cast<void>(renderAndCapture(*panel));
     }
