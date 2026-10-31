@@ -33,6 +33,7 @@
 #include "Domain/GPUModel.h"
 #include "Domain/PriorityConfig.h"
 #include "Domain/ProcessModel.h"
+#include "Domain/ProcessSnapshot.h"
 #include "Domain/SamplingConfig.h"
 #include "Domain/ServiceModel.h"
 #include "Mocks/FakeClipboard.h"
@@ -44,6 +45,7 @@
 #include "Platform/IServiceProbe.h"
 #include "Platform/ImageSignature.h"
 #include "Platform/ProcessTypes.h"
+#include "Platform/SchedPolicy.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 
@@ -3628,6 +3630,7 @@ TEST_F(ProcessesPanelRenderTest, SendSignalFromTheRowMenuIsConfirmedThenSent)
 TEST_F(ProcessesPanelRenderTest, PinningPastTheLimitSaysWhy)
 {
     std::vector<std::string> pinned;
+    pinned.reserve(ProcessPins::MAX_PINS);
     for (std::size_t i = 0; i < ProcessPins::MAX_PINS; ++i)
     {
         pinned.push_back(std::format("pinned-{}", i));
@@ -3695,7 +3698,7 @@ TEST_F(ProcessesPanelRenderTest, AnOverlongNameCantBePinned)
 {
     UserConfig::get().settings().pinnedProcesses.clear();
     const std::string longName(ProcessPins::MAX_NAME_BYTES + 1, 'n');
-    auto panel = std::make_unique<ProcessesPanel>(
+    const auto panel = std::make_unique<ProcessesPanel>(
         [longName]
         {
             auto probe = std::make_unique<TestMocks::MockProcessProbe>();
@@ -3755,7 +3758,7 @@ class TrackedActions : public TestMocks::MockProcessActions
 // handed-over actions are taken from the handoff and kept with the panel's own, so they go with the panel.
 TEST_F(ProcessesPanelRenderTest, APlatformNoFrameAdoptedIsReleasedOnDetach)
 {
-    auto destroyed = std::make_shared<std::atomic<bool>>(false);
+    const auto destroyed = std::make_shared<std::atomic<bool>>(false);
     auto panel = std::make_unique<ProcessesPanel>(
         [destroyed]
         {
@@ -3829,7 +3832,7 @@ TEST_F(ProcessesPanelRenderTest, TheToolbarsRetryButtonRunsTheRefusedActionAutho
 // #3067: the toolbar's magnifier button opens Find handles, as Ctrl+Shift+F does.
 TEST_F(ProcessesPanelRenderTest, TheToolbarsFindHandlesButtonOpensTheDialog)
 {
-    auto panel = std::make_unique<ProcessesPanel>(
+    const auto panel = std::make_unique<ProcessesPanel>(
         []
         {
             auto probe = std::make_unique<TestMocks::MockProcessProbe>();
@@ -3865,7 +3868,7 @@ TEST_F(ProcessesPanelRenderTest, TheToolbarsFindHandlesButtonOpensTheDialog)
 TEST_F(ProcessesPanelRenderTest, ThePolicyColumnShowsEachProcesssPolicyOrTheDash)
 {
     UserConfig::get().settings().processColumns.setVisible(ProcessColumn::Policy, true);
-    auto panel = std::make_unique<ProcessesPanel>(
+    const auto panel = std::make_unique<ProcessesPanel>(
         []
         {
             auto probe = std::make_unique<TestMocks::MockProcessProbe>();
@@ -3917,7 +3920,7 @@ TEST_F(ProcessesPanelRenderTest, ThePolicyColumnShowsEachProcesssPolicyOrTheDash
 // tinted in the theme's disk-sleep colour; until then it isn't.
 TEST_F(ProcessesPanelRenderTest, AProcessStuckInDiskSleepHasItsRowTinted)
 {
-    auto panel = std::make_unique<ProcessesPanel>(
+    const auto panel = std::make_unique<ProcessesPanel>(
         []
         {
             auto probe = std::make_unique<TestMocks::MockProcessProbe>();
