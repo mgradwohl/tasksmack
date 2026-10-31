@@ -1,13 +1,13 @@
 #pragma once
 
 // Settings' "Start TaskSmack when I sign in" (#3093, part 2), run: the decisions are Domain::StartAtLogin's,
-// the reads and writes Platform::IStartAtLogin's (the HKCU Run key on Windows); this owns the worker they
+// the reads and writes Platform::IStartAtLogin's (the HKCU Run key on Windows, an XDG autostart entry on Linux); this owns the worker they
 // run on and the last status it read, and is driven from the UI thread (SettingsLayer). Nothing touches the
 // registry on the UI thread (#2731): refresh() reads on the worker, setEnabled() writes or deletes there and
 // reads the entry back, and poll() takes the status in.
 //
-// The entry is the setting: nothing is kept in config.toml. Without a sign-in entry (Linux for now; a
-// synthetic or test-hook run) nothing is offered, read or written.
+// The entry is the setting: nothing is kept in config.toml. Without a sign-in entry (a synthetic or test-hook
+// run) nothing is offered, read or written.
 //
 // Free of ImGui; tested in tests/App/test_StartAtLoginSetting.cpp with a fake entry.
 
