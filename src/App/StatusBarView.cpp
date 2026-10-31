@@ -155,11 +155,16 @@ Action render(const Input& input)
             }
         }
         const float textBudget = contentRightX - textStartX - buttonsWidth;
+        // The update notice (#3093): its link and its X, after the text when they fit.
+        const float noticeWidth = (input.updateNotice != nullptr)
+                                    ? smallButtonWidth(input.updateNotice) + style.ItemSpacing.x + smallButtonWidth(DISMISS_UPDATE_LABEL)
+                                    : 0.0F;
         const auto fit = StatusBarText::fitStatusBar(std::span<const float>(segmentWidths.data(), segmentCount),
                                                      ImGui::CalcTextSize(StatusBarText::SEPARATOR).x,
                                                      fpsWidth,
                                                      style.ItemSpacing.x,
-                                                     textBudget);
+                                                     textBudget,
+                                                     noticeWidth);
 
         bool drewText = false;
         if (fit.truncateFirst)
@@ -186,6 +191,36 @@ Action render(const Input& input)
             }
             const std::string_view segment = segments.at(i);
             ImGui::TextUnformatted(segment.data(), segment.data() + segment.size());
+            drewText = true;
+        }
+
+        if (fit.showNotice && input.updateNotice != nullptr)
+        {
+            // A link to the release page, in the accent colour, and an X that dismisses it for that version.
+            if (drewText)
+            {
+                ImGui::SameLine();
+            }
+            ImGui::PushStyleColor(ImGuiCol_Text, theme.accentColor(0));
+            const bool open = ImGui::SmallButton(input.updateNotice);
+            ImGui::PopStyleColor();
+            if (open)
+            {
+                action = Action::OpenUpdate;
+            }
+            if (ImGui::IsItemHovered())
+            {
+                ImGui::SetTooltip("Open the release page on GitHub. Nothing is downloaded or installed.");
+            }
+            ImGui::SameLine();
+            if (ImGui::SmallButton(DISMISS_UPDATE_LABEL))
+            {
+                action = Action::DismissUpdate;
+            }
+            if (ImGui::IsItemHovered())
+            {
+                ImGui::SetTooltip("Dismiss: don't mention this version again");
+            }
             drewText = true;
         }
 

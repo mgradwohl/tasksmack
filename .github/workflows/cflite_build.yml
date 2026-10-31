@@ -16,6 +16,7 @@ on:
       - 'src/App/UserConfig.h'
       - 'src/App/UserConfigHelpers.h'
       - 'src/Core/ConfigDirOverride.*'
+      - 'src/Domain/UpdateCheck.*'
       - 'src/Platform/BrokerProtocol.h'
       - 'src/Platform/DnsMessage.h'
       - 'src/Platform/EdidParser.h'

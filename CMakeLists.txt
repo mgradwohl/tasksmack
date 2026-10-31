@@ -171,6 +171,7 @@ set(TASKSMACK_SOURCES
     src/App/PanelPlatforms.cpp
     src/App/NativeWindow.cpp
     src/App/StatusBarView.cpp
+    src/App/UpdateChecker.cpp # the opt-in update check's worker and state (#3093)
     src/App/SyntheticScenario.cpp
     src/App/TitleBarLayer.cpp
     src/App/TitleBarView.cpp
@@ -231,6 +232,7 @@ set(TASKSMACK_SOURCES
     src/Domain/SensorTracker.cpp
     src/Domain/SystemInfoModel.cpp
     src/Domain/CrashHistory.cpp
+    src/Domain/UpdateCheck.cpp # the opt-in update check's decisions (#3093)
     src/Domain/ProcessIconCache.cpp
     src/Platform/CurrentProcess.cpp
     src/Platform/ThreadName.cpp
@@ -326,6 +328,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsThermalZones.cpp
     src/Platform/Windows/WindowsNetworkAdapters.cpp
     src/Platform/Windows/WindowsPublicIp.cpp
+    src/Platform/Windows/WindowsHttpsClient.cpp # the update check's HTTPS GET through WinHTTP (#3093)
     src/Platform/Windows/WindowsDiskProbe.cpp
     src/Platform/Windows/WindowsPathProvider.cpp
     src/Platform/Windows/WindowsBatteryInfo.cpp
@@ -434,6 +437,9 @@ set(TASKSMACK_HEADERS
     src/Platform/ProcessArchitecture.h
     src/Platform/CurrentProcess.h
     src/Platform/PublicIpLookup.h
+    src/Platform/IHttpsClient.h
+    src/Domain/UpdateCheck.h
+    src/App/UpdateChecker.h
     src/Platform/ThreadName.h
     src/Platform/Synthetic/SyntheticProbes.h
     src/Platform/Synthetic/SyntheticWorkload.h
@@ -567,6 +573,7 @@ elseif(WIN32)
         src/Platform/Windows/WindowsThermalZones.h
         src/Platform/Windows/WindowsNetworkAdapters.h
         src/Platform/Windows/WindowsPublicIp.h
+        src/Platform/Windows/WindowsHttpsClient.h
         src/Platform/Windows/ComScope.h
     )
 endif()
@@ -685,6 +692,7 @@ function(tasksmack_apply_windows_platform target)
         bcrypt # BrokerPipe: the broker pipe's random name (BCryptGenRandom) (#2311)
         dwmapi # Core/Window: whether DWM has cloaked the window (DWMWA_CLOAKED) (#3152)
         wtsapi32 # Core/Window: the session's lock and disconnect notifications (#3152)
+        winhttp # WindowsHttpsClient: the opt-in update check's one HTTPS request (#3093)
     )
 endfunction()
 

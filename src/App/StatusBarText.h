@@ -93,6 +93,7 @@ struct StatusBarFit
     std::size_t segmentsShown = 0; ///< Leading segments, in priority order, drawn whole.
     bool truncateFirst = false;    ///< Not even the first fits: draw it cut short with an ellipsis.
     bool showReadout = false;      ///< The right-aligned readout (FPS) fits as well.
+    bool showNotice = false;       ///< The update notice (#3093) fits after the segments.
 };
 
 /// Fit the status text and the right-aligned readout into @p budgetPx, without drawing one over the
@@ -108,8 +109,11 @@ struct StatusBarFit
 /// @param readoutPx        Width of the readout; 0 when there is none to show.
 /// @param gapPx            Least space between the text and the readout.
 /// @param budgetPx         Width from where the text starts to where the readout must end.
-[[nodiscard]] inline StatusBarFit
-fitStatusBar(std::span<const float> segmentWidthsPx, float separatorPx, float readoutPx, float gapPx, float budgetPx) noexcept
+/// @param noticePx         Width of the update notice (#3093), drawn a gap after the segments; 0 when there
+///                         is none. Below the segments in priority and above the readout: shown only when
+///                         every segment is, and the readout then needs room after it as well.
+[[nodiscard]] inline StatusBarFit fitStatusBar(
+    std::span<const float> segmentWidthsPx, float separatorPx, float readoutPx, float gapPx, float budgetPx, float noticePx = 0.0F) noexcept
 {
     const auto clean = [](float value)
     {
@@ -136,8 +140,16 @@ fitStatusBar(std::span<const float> segmentWidthsPx, float separatorPx, float re
         return fit;
     }
 
+    const float notice = clean(noticePx);
+    fit.showNotice = (notice > 0.0F) && (fit.segmentsShown == segmentWidthsPx.size()) && (used + clean(gapPx) + notice <= budget);
+    if (fit.showNotice)
+    {
+        used += clean(gapPx) + notice;
+    }
+
     const float readout = clean(readoutPx);
-    fit.showReadout = (readout > 0.0F) && (fit.segmentsShown == segmentWidthsPx.size()) && (used + clean(gapPx) + readout <= budget);
+    fit.showReadout = (readout > 0.0F) && (fit.segmentsShown == segmentWidthsPx.size()) && (notice == 0.0F || fit.showNotice) &&
+                      (used + clean(gapPx) + readout <= budget);
     return fit;
 }
 

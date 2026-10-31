@@ -125,5 +125,17 @@ TEST(FactoryTest, MakeServiceProbeReturnsNonNull)
     EXPECT_NE(probe, nullptr);
 }
 
+// #3093: the update check's HTTPS client is WinHTTP on Windows; Linux has none yet, so the check isn't
+// offered there and nothing is sent.
+TEST(FactoryTest, MakeHttpsClientIsWinHttpOnWindowsAndNoneOnLinux)
+{
+    const auto client = makeHttpsClient();
+#ifdef _WIN32
+    EXPECT_NE(client, nullptr);
+#else
+    EXPECT_EQ(client, nullptr);
+#endif
+}
+
 } // namespace
 } // namespace Platform

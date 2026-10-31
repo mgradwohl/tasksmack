@@ -22,6 +22,7 @@
 #include "PkexecBroker.h"
 #include "Platform/IDiskProbe.h"
 #include "Platform/IGPUProbe.h"
+#include "Platform/IHttpsClient.h"
 #include "Platform/IPathProvider.h"
 #include "Platform/IPowerProbe.h"
 #include "Platform/IPrivilegedBroker.h"
@@ -169,6 +170,12 @@ std::unique_ptr<IServiceActions> makeServiceActions()
 {
     // systemd's StartUnit/StopUnit and unit-file calls over D-Bus (#2006 phase 2).
     return std::make_unique<LinuxServiceActions>();
+}
+
+std::shared_ptr<IHttpsClient> makeHttpsClient()
+{
+    // No HTTPS client on Linux yet (#3093; #3238 adds one): the update check isn't offered there, and nothing is sent.
+    return nullptr;
 }
 
 } // namespace Platform

@@ -12,6 +12,7 @@
 #include "Core/WindowGeometry.h"
 #include "Domain/Numeric.h"
 #include "Domain/SamplingConfig.h"
+#include "Domain/UpdateCheck.h"
 #include "Platform/ThreadName.h"
 #include "ProcessColumnConfig.h"
 #include "UI/ChartWidgets.h"
@@ -352,6 +353,28 @@ void readSettings(const toml::table& config, UserSettings& settings)
         }
         settings.recentCommands = RunTaskHistory::sanitize(commands);
     }
+    // The opt-in update check (#3093): the setting and what the last check found. The texts are capped
+    // here and checked where they are used (a version that doesn't parse, or a URL that isn't a release
+    // page, shows no notice).
+    if (auto val = config["updates"]["check_daily"].value<bool>())
+    {
+        settings.updates.enabled = *val;
+    }
+    if (auto val = config["updates"]["last_check"].value<std::int64_t>(); val.has_value() && *val >= 0)
+    {
+        settings.updates.lastCheckUnixSeconds = *val;
+    }
+    const auto readUpdateText = [&config](std::string_view key, std::size_t maxBytes, std::string& out)
+    {
+        if (auto text = config["updates"][key].value<std::string>(); text.has_value() && text->size() <= maxBytes)
+        {
+            out = std::move(*text);
+        }
+    };
+    readUpdateText("latest_version", Domain::UpdateCheck::MAX_VERSION_TEXT_BYTES, settings.updates.latestVersion);
+    readUpdateText("latest_url", Domain::UpdateCheck::MAX_URL_BYTES, settings.updates.latestUrl);
+    readUpdateText("dismissed_version", Domain::UpdateCheck::MAX_VERSION_TEXT_BYTES, settings.updates.dismissedVersion);
+
     if (auto folder = config["dumps"]["folder"].value<std::string>())
     {
         constexpr std::size_t MAX_DUMP_FOLDER_BYTES = std::size_t{32767} * 3U;
@@ -561,6 +584,14 @@ void readSettings(const toml::table& config, UserSettings& settings)
         {"process_meters", processMetersTable},
         {"process_table", processTableTable(settings)},
         {"dumps", toml::table{{"folder", settings.dumpFolder}}},
+        {"updates",
+         toml::table{
+             {"check_daily", settings.updates.enabled},
+             {"last_check", settings.updates.lastCheckUnixSeconds},
+             {"latest_version", settings.updates.latestVersion},
+             {"latest_url", settings.updates.latestUrl},
+             {"dismissed_version", settings.updates.dismissedVersion},
+         }},
     };
     if (!settings.recentCommands.empty()) // only when there are any, so a first run's file is unchanged
     {
@@ -971,6 +1002,8 @@ bool UserConfig::writeSettings(const UserSettings& settings)
     text << "#   [process_meters]: what a column draws behind its value: \"off\", \"bar\" or \"sparkline\" (recent history); "
             "Columns > Show meter\n";
     text << "#   [process_table] layout: saved column widths, order and sort (written by TaskSmack; delete it to reset)\n";
+    text << "#   [updates] check_daily: ask GitHub once a day whether a newer TaskSmack release exists (true/false, default "
+            "false: nothing is sent); last_check, latest_version, latest_url and dismissed_version are written by TaskSmack\n";
     text << "#   Themes: built-in themes in assets/themes. Add custom .toml themes beside this config under a 'themes' folder.\n\n";
     text << document;
     // Stream exceptions are off, so a failed insertion (say, allocation) only sets badbit; its

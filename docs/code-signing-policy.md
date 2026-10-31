@@ -87,8 +87,21 @@ All team members use multi-factor authentication for both GitHub and Azure.
 This program will not transfer any information to other networked systems unless specifically requested by
 the user or the person installing or operating it.
 
-TaskSmack has no telemetry, crash reporting, update check or analytics. The only network requests it makes
-are the ones the user asks for:
+TaskSmack has no telemetry, crash reporting or analytics, and its update check is off unless the user turns
+it on. The only network requests it makes are the ones the user asks for:
+
+- **Check for updates daily** (Settings, Advanced; Windows only for now; off by default). While it is off,
+  TaskSmack sends nothing. While it is on, TaskSmack sends at most one request a day, and one more each time
+  **Check now** is clicked: an HTTPS `GET https://api.github.com/repos/mgradwohl/tasksmack/releases/latest`
+  with the headers `User-Agent: TaskSmack/<version>` and `Accept: application/vnd.github+json`, through
+  Windows' own HTTP stack (WinHTTP) and proxy settings. No cookies, credentials, identifiers or other data are
+  sent. GitHub receives the request's IP address and the version in the User-Agent, as it does for any
+  visitor; its handling of them is covered by
+  [GitHub's privacy statement](https://docs.github.com/site-policy/privacy-policies/github-general-privacy-statement).
+  TaskSmack reads the latest release's tag and page from the reply. When the release is newer, the status bar
+  says so and links to its page on github.com, which opens in the default web browser only when clicked.
+  Nothing is downloaded or installed. The time of the last check, the latest version seen and a dismissed
+  version are kept in `config.toml`.
 
 - **Show public IP** (System tab, Network adapters section). Clicking it sends a DNS query for
   `myip.opendns.com` to OpenDNS's resolvers (208.67.222.222 over IPv4 and 2620:119:35::35 over IPv6), which

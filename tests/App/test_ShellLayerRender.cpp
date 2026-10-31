@@ -11,8 +11,10 @@
 #include "App/StatusBarView.h"
 #include "App/UserConfig.h"
 #include "App/WindowOverride.h"
+#include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Core/WindowGeometry.h"
+#include "Platform/IHttpsClient.h"
 
 #include <SDL3/SDL_video.h>
 #include <gtest/gtest.h>
@@ -20,11 +22,14 @@
 #include <imgui_internal.h> // FindWindowByName(), ImHashStr(), ActivateItemByID()
 #include <implot.h>
 
+#include <chrono>
 #include <cstddef>
+#include <expected>
 #include <filesystem>
 #include <memory>
 #include <optional>
 #include <random>
+#include <stop_token>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -387,6 +392,81 @@ TEST_F(ShellLayerDetachTest, AnUnknownNormalRectangleKeepsTheSavedSize)
     EXPECT_EQ(UserConfig::get().settings().windowWidth, 900);
     EXPECT_EQ(UserConfig::get().settings().windowHeight, 650);
     EXPECT_TRUE(UserConfig::get().settings().windowMaximized);
+}
+
+/// The update check's request answered here, never by the network (#3093): a newer release.
+class NewerReleaseClient final : public Platform::IHttpsClient
+{
+  public:
+    [[nodiscard]] std::expected<Platform::HttpsResponse, std::string> get(const Platform::HttpsRequest& /*request*/,
+                                                                          const std::stop_token& /*stop*/) override
+    {
+        return Platform::HttpsResponse{
+            .body = R"({"tag_name":"v99.0.0","html_url":"https://github.com/mgradwohl/tasksmack/releases/tag/v99.0.0"})", .status = 200};
+    }
+};
+
+/// One update and one frame of the shell, and the text the frame drew.
+std::string updateAndCapture(ShellLayer& shell)
+{
+    shell.onUpdate(1.0F / 60.0F);
+    ImGui::NewFrame();
+    ImGui::Begin("##Capture", nullptr, ImGuiWindowFlags_NoSavedSettings);
+    ImGui::LogToBuffer(); // logs what the shell's windows draw while this one is open, as the status bar's test does
+    shell.onRender();
+    std::string captured = GImGui->LogBuffer.c_str();
+    ImGui::LogFinish();
+    ImGui::End();
+    ImGui::Render();
+    return captured;
+}
+
+// #3093: with "Check for updates daily" on, the shell's first update starts the check, the status bar
+// then offers the newer release, Settings is told what the check is doing, and the notice's X dismisses
+// that version for good.
+TEST_F(ShellLayerDetachTest, TheUpdateNoticeShowsAfterACheckAndCanBeDismissed)
+{
+    UserConfig::get().settings().updates.enabled = true;
+    const auto now = std::chrono::system_clock::time_point(std::chrono::seconds(1'761'652'800));
+    m_Shell = std::make_unique<ShellLayer>(
+        std::make_unique<FakeShellHost>(m_Log, false), std::make_shared<NewerReleaseClient>(), [now] { return now; });
+
+    EXPECT_FALSE(updateAndCapture(*m_Shell).contains("is available"));
+    EXPECT_GE(count(Core::EventType::UpdateCheckStatus), 1); // offered, and checking
+    m_Shell->updateCheckerForTesting().waitForCheck();
+    static_cast<void>(updateAndCapture(*m_Shell));
+    const std::string text = updateAndCapture(*m_Shell);
+    EXPECT_TRUE(text.contains("TaskSmack v99.0.0 is available")) << text;
+    EXPECT_EQ(UserConfig::get().settings().updates.latestVersion, "99.0.0");
+    EXPECT_GE(count(Core::EventType::UpdateCheckStatus), 2); // and done
+
+    const ImGuiWindow* status = ImGui::FindWindowByName("##StatusBar");
+    ASSERT_NE(status, nullptr);
+    ImGui::ActivateItemByID(ImHashStr(StatusBarView::DISMISS_UPDATE_LABEL, 0, status->ID));
+    static_cast<void>(updateAndCapture(*m_Shell));
+    static_cast<void>(updateAndCapture(*m_Shell));
+    EXPECT_EQ(UserConfig::get().settings().updates.dismissedVersion, "99.0.0");
+    EXPECT_FALSE(updateAndCapture(*m_Shell).contains("is available"));
+
+    // Check now, from Settings: the next update starts another check.
+    Core::CheckForUpdatesEvent checkNow;
+    m_Shell->onEvent(checkNow);
+    EXPECT_TRUE(m_Shell->updateCheckerForTesting().checking());
+    static_cast<void>(updateAndCapture(*m_Shell));
+    m_Shell->updateCheckerForTesting().waitForCheck();
+    static_cast<void>(updateAndCapture(*m_Shell));
+    EXPECT_FALSE(m_Shell->updateCheckerForTesting().checking());
+}
+
+// #3093: without a client nothing is offered: no notice, whatever config.toml says it saw.
+TEST_F(ShellLayerDetachTest, WithoutAClientNoUpdateNoticeShows)
+{
+    UserConfig::get().settings().updates.enabled = true;
+    UserConfig::get().settings().updates.latestVersion = "99.0.0";
+    UserConfig::get().settings().updates.latestUrl = "https://github.com/mgradwohl/tasksmack/releases/tag/v99.0.0";
+    makeShell(false);
+    EXPECT_FALSE(m_Shell->updateCheckerForTesting().offered());
+    EXPECT_FALSE(updateAndCapture(*m_Shell).contains("is available"));
 }
 
 } // namespace

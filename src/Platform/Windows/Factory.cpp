@@ -2,6 +2,7 @@
 
 #include "Platform/IDiskProbe.h"
 #include "Platform/IGPUProbe.h"
+#include "Platform/IHttpsClient.h"
 #include "Platform/IPathProvider.h"
 #include "Platform/IPowerProbe.h"
 #include "Platform/IPrivilegedBroker.h"
@@ -29,6 +30,7 @@
 #include "WindowsElevation.h"
 #include "WindowsEtwNetCollector.h"
 #include "WindowsGPUProbe.h"
+#include "WindowsHttpsClient.h"
 #include "WindowsPathProvider.h"
 #include "WindowsPowerProbe.h"
 #include "WindowsProcessActions.h"
@@ -185,6 +187,12 @@ std::unique_ptr<IServiceProbe> makeServiceProbe()
 std::unique_ptr<IServiceActions> makeServiceActions()
 {
     return std::make_unique<WindowsServiceActions>(Windows::isProcessElevated());
+}
+
+std::shared_ptr<IHttpsClient> makeHttpsClient()
+{
+    // WinHTTP (#3093): the system's TLS and proxy settings. Opens nothing until a request is made.
+    return std::make_shared<WindowsHttpsClient>();
 }
 
 bool enableDebugPrivilege()

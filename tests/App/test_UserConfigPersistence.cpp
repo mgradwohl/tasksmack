@@ -7,6 +7,7 @@
 #include "App/UserConfigHelpers.h"
 #include "Core/LocaleSetup.h"
 #include "Domain/SamplingConfig.h"
+#include "Domain/UpdateCheck.h"
 #include "Platform/ProcessTypes.h"
 #include "UI/ChartWidgets.h"
 #include "UI/Format.h"
@@ -958,6 +959,47 @@ TEST_F(UserConfigSaveLoadFixture, ARecentCommandListIsTakenInFiltered)
     EXPECT_EQ(config.settings().recentCommands, (std::vector<std::string>{"konsole", "htop"}));
 }
 
+// ========== The opt-in update check (#3093) ==========
+
+TEST_F(UserConfigSaveLoadFixture, TheUpdateCheckRoundTrips)
+{
+    auto& config = UserConfig::get();
+    auto& updates = config.settings().updates;
+    updates.enabled = true;
+    updates.lastCheckUnixSeconds = 1'761'652'800;
+    updates.latestVersion = "0.10.0";
+    updates.latestUrl = "https://github.com/mgradwohl/tasksmack/releases/tag/v0.10.0";
+    updates.dismissedVersion = "0.9.5";
+    config.save();
+    config.settings().updates = {};
+    config.load();
+    const auto& loaded = config.settings().updates;
+    EXPECT_TRUE(loaded.enabled);
+    EXPECT_EQ(loaded.lastCheckUnixSeconds, 1'761'652'800);
+    EXPECT_EQ(loaded.latestVersion, "0.10.0");
+    EXPECT_EQ(loaded.latestUrl, "https://github.com/mgradwohl/tasksmack/releases/tag/v0.10.0");
+    EXPECT_EQ(loaded.dismissedVersion, "0.9.5");
+}
+
+TEST_F(UserConfigSaveLoadFixture, UpdateCheckValuesOutOfRangeAreIgnored)
+{
+    {
+        std::ofstream file(m_TempDir / "config.toml");
+        ASSERT_TRUE(file.is_open());
+        file << "config_version = 2\n[updates]\ncheck_daily = \"yes\"\nlast_check = -5\nlatest_version = \""
+             << std::string(Domain::UpdateCheck::MAX_VERSION_TEXT_BYTES + 1, '1') << "\"\nlatest_url = \""
+             << std::string(Domain::UpdateCheck::MAX_URL_BYTES + 1, 'a') << "\"\ndismissed_version = 7\n";
+    }
+    auto& config = UserConfig::get();
+    config.load();
+    const auto& loaded = config.settings().updates;
+    EXPECT_FALSE(loaded.enabled);
+    EXPECT_EQ(loaded.lastCheckUnixSeconds, 0);
+    EXPECT_TRUE(loaded.latestVersion.empty());
+    EXPECT_TRUE(loaded.latestUrl.empty());
+    EXPECT_TRUE(loaded.dismissedVersion.empty());
+}
+
 // ========== chartAntiAliasing Persistence (perf-plan #843 phase 1) ==========
 
 TEST(UserSettingsTest, ChartAntiAliasingDefaultsToTrue)
@@ -1130,6 +1172,7 @@ TEST_F(UserConfigSaveLoadFixture, LoadMissingFileLeavesEverySettingAtItsDocument
                  cpuDetailsExpanded,
                  dumpFolder,
                  recentCommands,
+                 updates,
                  forceNativeWindowDecorationsOnWayland] = config.settings();
 
     EXPECT_EQ(themeId, "arctic-fire");
@@ -1170,6 +1213,11 @@ TEST_F(UserConfigSaveLoadFixture, LoadMissingFileLeavesEverySettingAtItsDocument
     EXPECT_TRUE(cpuDetailsExpanded);
     EXPECT_TRUE(dumpFolder.empty());     // the temp folder
     EXPECT_TRUE(recentCommands.empty()); // #3065
+    EXPECT_FALSE(updates.enabled);       // #3093: off, and then nothing is sent
+    EXPECT_EQ(updates.lastCheckUnixSeconds, 0);
+    EXPECT_TRUE(updates.latestVersion.empty());
+    EXPECT_TRUE(updates.latestUrl.empty());
+    EXPECT_TRUE(updates.dismissedVersion.empty());
     EXPECT_FALSE(forceNativeWindowDecorationsOnWayland);
 }
 

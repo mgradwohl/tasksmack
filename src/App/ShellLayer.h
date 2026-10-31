@@ -1,5 +1,6 @@
 #pragma once
 
+#include "BackgroundOpen.h"
 #include "Core/Layer.h"
 #include "FpsCounter.h"
 #include "KeyboardShortcuts.h"
@@ -11,6 +12,7 @@
 #include "Panels/StartupPanel.h"
 #include "Panels/SystemInfoPanel.h"
 #include "Panels/SystemMetricsPanel.h"
+#include "Platform/IHttpsClient.h"
 #include "Platform/IPrivilegedBroker.h"
 #include "Platform/ProcessTypes.h"
 #include "SelectOverride.h"
@@ -18,6 +20,7 @@
 #include "ShellPanels.h"
 #include "TabLabel.h"
 #include "TitleBarGeometry.h"
+#include "UpdateChecker.h"
 
 #include <SDL3/SDL_video.h>
 #include <imgui.h>
@@ -39,8 +42,12 @@ class ShellLayer : public Core::Layer
   public:
     /// With the real host: Core::Application and its window (ShellHost.cpp).
     ShellLayer();
-    /// With the given host; a headless test's fake (#1547).
-    explicit ShellLayer(std::unique_ptr<IShellHost> host);
+    /// With the given host; a headless test's fake (#1547). The update check (#3093) sends its request
+    /// through @p updateClient, null for none (then it is not offered), and measures its daily limit on
+    /// @p updateClock (the system clock when empty).
+    explicit ShellLayer(std::unique_ptr<IShellHost> host,
+                        std::shared_ptr<Platform::IHttpsClient> updateClient = nullptr,
+                        UpdateChecker::Clock updateClock = {});
     ~ShellLayer() override = default;
 
     ShellLayer(const ShellLayer&) = delete;
@@ -118,6 +125,19 @@ class ShellLayer : public Core::Layer
     /// with this frame, and the status bar's FPS readout follows the overlay.
     void requestRenderMetrics(bool show) noexcept;
 
+    /// The update check (#3093), for tests that wait for its request or read what it saw.
+    [[nodiscard]] UpdateChecker& updateCheckerForTesting() noexcept
+    {
+        return m_Updates;
+    }
+
+    /// Waits for the update notice's link still being opened on its worker (tests).
+    void waitForUpdateLinkForTesting()
+    {
+        m_UpdateLinkOpen.wait();
+        static_cast<void>(m_UpdateLinkOpen.poll());
+    }
+
     /// Whether the Render Metrics overlay is shown: by the chord, TASKSMACK_RENDER_METRICS or a metrics= step.
     [[nodiscard]] bool renderMetricsShown() const noexcept
     {
@@ -136,13 +156,19 @@ class ShellLayer : public Core::Layer
     void renderTabBar();
     /// The Process Details tab's program icon for this frame, and the label that makes room for it (#1800).
     void updateDetailsTabIcon();
-    void renderStatusBar() const;
+    void renderStatusBar();
+    /// The update check's frame (#3093): takes in a finished check, starts a due one, saves what changed in
+    /// the background, keeps the notice's label, and tells Settings when its status changes.
+    void updateUpdateCheck();
     void applyBaseMinimumWindowSize();
     void applyContentMinimumSize(float widthPx, float heightPx, float estimatedHeightPx);
 
     // Panels
     // The application and window it runs in (#1547). Never null.
     std::unique_ptr<IShellHost> m_Host;
+
+    // The opt-in update check (#3093): its worker and what this session saw. Driven from onUpdate().
+    UpdateChecker m_Updates;
 
     // The six panels and the window-independent wiring between them, shared with the PGO training
     // driver (#2136); named here as before.
@@ -245,6 +271,22 @@ class ShellLayer : public Core::Layer
     // minimum stays tab- and selection-independent.
     std::string m_DetailsTabNoSelectionLabel;
     std::vector<const char*> m_TabBarMinimumLabels;
+
+    // The opt-in update check (#3093) and its notice: the label it was last built for (empty: no notice),
+    // and the status Settings was last told, so it is raised only when it changes.
+    struct UpdateStatus
+    {
+        std::string summary;
+        bool offered = false;
+        bool checking = false;
+    };
+    std::string m_UpdateNoticeLabel;
+    std::string m_UpdateNoticeUrl;
+    std::string m_UpdateNoticeVersion;
+    std::optional<UpdateStatus> m_RaisedUpdateStatus;
+    // The notice's link, opened on a worker (#3155), and the checker's own worker: both waited for when
+    // destroyed, and both own what their jobs use.
+    BackgroundOpen m_UpdateLinkOpen;
 
     // Declared last so panels and cached labels outlive the non-owning registry.
     PanelTabs m_Tabs;

@@ -2,6 +2,7 @@
 
 #include "Platform/IDiskProbe.h"
 #include "Platform/IGPUProbe.h"
+#include "Platform/IHttpsClient.h"
 #include "Platform/IPathProvider.h"
 #include "Platform/IPowerProbe.h"
 #include "Platform/IPrivilegedBroker.h"
@@ -111,6 +112,11 @@ namespace Platform
 /// Creates the platform-appropriate IServiceActions implementation (#1577): the Service Control Manager
 /// on Windows; systemd over D-Bus on Linux.
 [[nodiscard]] std::unique_ptr<IServiceActions> makeServiceActions();
+
+/// Creates the HTTPS client the opt-in update check sends its one request with (#3093): WinHTTP on
+/// Windows (WindowsHttpsClient). Null on Linux, which has no HTTPS client yet: the check isn't offered
+/// there, and nothing is sent. Making it opens nothing; each request opens and closes its own session.
+[[nodiscard]] std::shared_ptr<IHttpsClient> makeHttpsClient();
 
 #ifdef _WIN32
 /// Enables SeDebugPrivilege on TaskSmack's own process when it runs elevated (#2128), without which

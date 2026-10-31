@@ -30,6 +30,11 @@ enum class AccessChip : std::uint8_t
 inline constexpr const char* STANDARD_CHIP_LABEL = ICON_FA_LOCK " Standard##AccessChip";
 inline constexpr const char* ADMINISTRATOR_CHIP_LABEL = ICON_FA_SHIELD_HALVED " Administrator##AccessChip";
 
+/// The update notice's ID (#3093): its label is "<glyph>  TaskSmack vX.Y.Z is available" followed by this,
+/// so the button keeps one ID whatever version it names. Its Dismiss button, beside it.
+inline constexpr const char* UPDATE_NOTICE_ID = "###UpdateNotice";
+inline constexpr const char* DISMISS_UPDATE_LABEL = ICON_FA_XMARK "##DismissUpdate";
+
 /// What the bar shows this frame.
 struct Input
 {
@@ -42,6 +47,9 @@ struct Input
     bool showControls = false;           ///< Settings and Help, when the custom title bar isn't there
     std::optional<float> fps;            ///< The frame-rate readout, while Render Metrics is on
     float frameTimeSeconds = 0.0F;       ///< Shown beside it, in milliseconds
+    /// The update notice's label (#3093), ending in UPDATE_NOTICE_ID; null for none. Clicking it is
+    /// Action::OpenUpdate, its X Action::DismissUpdate.
+    const char* updateNotice = nullptr;
 };
 
 /// What the user asked for this frame.
@@ -50,7 +58,9 @@ enum class Action : std::uint8_t
     None,
     Settings,
     Help,
-    Access, ///< The Standard chip: offer Administrator (the startup notice again)
+    Access,        ///< The Standard chip: offer Administrator (the startup notice again)
+    OpenUpdate,    ///< The update notice (#3093): open its release page
+    DismissUpdate, ///< The notice's X: don't offer that version again
 };
 
 /// Draw the status bar for this frame, fitted to the window: at its narrowest the lower-priority

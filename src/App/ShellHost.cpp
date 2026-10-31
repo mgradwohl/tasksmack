@@ -3,7 +3,10 @@
 #include "Core/Application.h"
 #include "Core/Event.h"
 #include "Core/WindowGeometry.h"
+#include "PanelPlatforms.h"
+#include "SelectOverride.h"
 #include "ShellLayer.h"
+#include "SyntheticScenario.h"
 #include "TitleBarLayer.h"
 #include "WindowOverride.h"
 
@@ -93,7 +96,9 @@ std::unique_ptr<IShellHost> makeApplicationShellHost()
 
 // Here rather than in ShellLayer.cpp, so the headless tests can link ShellLayer.cpp with a fake host
 // and without TitleBarLayer.cpp (#1547).
-ShellLayer::ShellLayer() : ShellLayer(makeApplicationShellHost())
+// The update check's client (#3093) is made here too, at construction: making it opens nothing.
+ShellLayer::ShellLayer()
+    : ShellLayer(makeApplicationShellHost(), makeUpdateCheckClient(Synthetic::activeScenario(), SelectOverride::testHookActive()))
 {}
 
 } // namespace App
