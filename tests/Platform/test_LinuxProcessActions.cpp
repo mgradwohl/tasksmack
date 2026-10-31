@@ -300,6 +300,35 @@ TEST(LinuxProcessActionsTest, SendSignalReachesTheProcessTheStartTimeNames)
     EXPECT_FALSE(init.success) << "init is refused, as for terminate";
 }
 
+// #3221: every signal the menu offers is mapped to its own number. SIGINT and SIGUSR2 end a child with no
+// handler; SIGQUIT's default action dumps core, so it goes only to a reused PID, which refuses it. A value
+// outside the enum is refused before anything is sent.
+TEST(LinuxProcessActionsTest, EverySignalIsSentAsItsOwnNumber)
+{
+    LinuxProcessActions actions;
+    for (const ProcessSignal signal : {ProcessSignal::Interrupt, ProcessSignal::User2})
+    {
+        SleepingChild child;
+        ASSERT_TRUE(child.started());
+        const auto sent = actions.sendSignal(child.target(), signal);
+        EXPECT_TRUE(sent.success) << sent.errorMessage;
+        EXPECT_TRUE(child.exitsSoon()) << "signal " << static_cast<int>(signal) << " with no handler ends the process";
+    }
+
+    SleepingChild child;
+    ASSERT_TRUE(child.started());
+    ProcessTarget reused = child.target();
+    ++reused.startTimeTicks;
+    EXPECT_FALSE(actions.sendSignal(reused, ProcessSignal::Quit).success);
+    EXPECT_TRUE(child.alive()) << "a reused PID never gets the signal";
+
+    constexpr auto NOT_A_SIGNAL = static_cast<ProcessSignal>(0xFF);
+    const auto unknown = actions.sendSignal(child.target(), NOT_A_SIGNAL);
+    EXPECT_FALSE(unknown.success);
+    EXPECT_EQ(unknown.errorMessage, "Unknown signal");
+    EXPECT_TRUE(child.alive());
+}
+
 TEST(LinuxProcessActionsTest, StopNonExistentProcess)
 {
     LinuxProcessActions actions;
@@ -2704,6 +2733,9 @@ TEST(LinuxProcessActionsTest, CloseConnectionShutsDownTheSocketTheProcessHolds)
     EXPECT_FALSE(notHeld.success);
     EXPECT_TRUE(notHeld.errorMessage.contains("no longer holds")) << notHeld.errorMessage;
     EXPECT_FALSE(control.closeConnection(ownTarget(), 0).success);
+    const ProcessActionResult noPid = control.closeConnection({.pid = 0, .startTimeTicks = 0}, info.st_ino);
+    EXPECT_FALSE(noPid.success);
+    EXPECT_EQ(noPid.errorMessage, "Invalid PID");
 }
 
 // #3066: pidfd_getfd() refused (another user's process, without CAP_SYS_PTRACE) is a permission refusal, so
