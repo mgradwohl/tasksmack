@@ -225,7 +225,7 @@ bool enableDebugPrivilege()
     return Windows::enableDebugPrivilegeIfElevated() == Windows::DebugPrivilegeResult::Enabled;
 }
 
-std::shared_ptr<ITaskManagerReplacement> makeTaskManagerReplacement(std::shared_ptr<IPrivilegedBroker> broker)
+std::shared_ptr<ITaskManagerReplacement> makeTaskManagerReplacement(const std::shared_ptr<IPrivilegedBroker>& broker)
 {
     TaskManagerReplacementSetup setup;
     if (const auto image = Windows::BrokerHelper::ownImage(); image.has_value())
@@ -263,7 +263,7 @@ std::shared_ptr<ITaskManagerReplacement> makeTaskManagerReplacement(std::shared_
     }
     else if (broker != nullptr)
     {
-        setup.broker = std::move(broker);
+        setup.broker = broker;
     }
     else
     {

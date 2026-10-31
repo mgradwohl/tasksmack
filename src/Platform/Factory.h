@@ -120,7 +120,7 @@ namespace Platform
 /// one the panels share, null where there is none), or in-process by an elevated TaskSmack installed in
 /// Program Files. Null on Linux, which has no Task Manager to replace. Cheap: nothing is read until a
 /// worker calls it.
-[[nodiscard]] std::shared_ptr<ITaskManagerReplacement> makeTaskManagerReplacement(std::shared_ptr<IPrivilegedBroker> broker);
+[[nodiscard]] std::shared_ptr<ITaskManagerReplacement> makeTaskManagerReplacement(const std::shared_ptr<IPrivilegedBroker>& broker);
 
 /// Creates the HTTPS client the opt-in update check sends its one request with (#3093): WinHTTP on
 /// Windows (WindowsHttpsClient). Null on Linux, which has no HTTPS client yet: the check isn't offered

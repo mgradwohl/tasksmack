@@ -173,7 +173,7 @@ std::unique_ptr<IServiceActions> makeServiceActions()
     return std::make_unique<LinuxServiceActions>();
 }
 
-std::shared_ptr<ITaskManagerReplacement> makeTaskManagerReplacement(std::shared_ptr<IPrivilegedBroker> /*broker*/)
+std::shared_ptr<ITaskManagerReplacement> makeTaskManagerReplacement(const std::shared_ptr<IPrivilegedBroker>& /*broker*/)
 {
     return nullptr; // Linux has no Task Manager to replace (#3072)
 }

@@ -103,8 +103,10 @@ struct Status
     for (std::size_t at = 0; at + EXE.size() <= debugger.size(); ++at)
     {
         const std::size_t end = at + EXE.size();
-        if (equalsIgnoreCase(std::string_view(debugger.data() + at, EXE.size()), EXE) &&
-            (end == debugger.size() || debugger[end] == ' ' || debugger[end] == '\t'))
+        std::string_view word = debugger; // remove_prefix/remove_suffix, not substr(), which can throw: noexcept
+        word.remove_prefix(at);
+        word.remove_suffix(word.size() - EXE.size());
+        if (equalsIgnoreCase(word, EXE) && (end == debugger.size() || debugger[end] == ' ' || debugger[end] == '\t'))
         {
             debugger.remove_suffix(debugger.size() - end);
             return debugger;
@@ -156,7 +158,7 @@ struct Status
         return true;
     }
     constexpr std::string_view FORBIDDEN = "\"<>|?*%/";
-    return FORBIDDEN.find(c) != std::string_view::npos;
+    return FORBIDDEN.contains(c);
 }
 
 /// Why @p path can't be a Debugger TaskSmack writes, or nothing when it can: an absolute path on a drive
@@ -190,7 +192,7 @@ struct Status
     }
     std::string_view rest = path;
     rest.remove_prefix(3);
-    if (rest.find(':') != std::string_view::npos)
+    if (rest.contains(':'))
     {
         return std::unexpected(std::string_view("the path names a stream, not a file"));
     }
@@ -246,7 +248,9 @@ struct Status
         {
             continue;
         }
-        if (equalsIgnoreCase(std::string_view(selfPath.data(), folder.size()), folder) && selfPath[folder.size()] == '\\')
+        std::string_view prefix = selfPath; // remove_suffix, not substr(), which can throw: noexcept
+        prefix.remove_suffix(selfPath.size() - folder.size());
+        if (equalsIgnoreCase(prefix, folder) && selfPath[folder.size()] == '\\')
         {
             return true;
         }
@@ -324,8 +328,9 @@ class IIfeoRegistry
     }
     if (*created)
     {
-        // Best effort: without the mark the key is only left behind, empty, when this is turned off.
-        static_cast<void>(registry.writeCreatedMarker());
+        // Best effort: without the mark the key is only left behind, empty, when this is turned off, so a
+        // failure to write it doesn't stop the replacement.
+        [[maybe_unused]] const std::expected<void, std::string> marked = registry.writeCreatedMarker();
     }
     if (const auto written = registry.writeDebugger(debuggerFor(path)); !written.has_value())
     {
@@ -344,7 +349,8 @@ inline void removeKeyIfTaskSmacks(IIfeoRegistry& registry)
     }
     if (registry.deleteCreatedMarker().has_value())
     {
-        static_cast<void>(registry.deleteKeyIfEmpty());
+        // Best effort: a key that couldn't be deleted is only left behind, empty, which changes nothing.
+        [[maybe_unused]] const std::expected<bool, std::string> deleted = registry.deleteKeyIfEmpty();
     }
 }
 
