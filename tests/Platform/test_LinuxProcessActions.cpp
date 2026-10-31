@@ -11,6 +11,7 @@
 #include "Platform/Linux/FileManagerReveal.h"
 #include "Platform/Linux/IoPriority.h"
 #include "Platform/Linux/LinuxCoreDump.h"
+#include "Platform/Linux/LinuxEfficiencyMode.h"
 #include "Platform/Linux/LinuxProcessActions.h"
 #include "Platform/Linux/LinuxProcessControl.h"
 #include "Platform/Linux/PosixGuards.h"
@@ -33,6 +34,7 @@
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <map>
 #include <optional>
 #include <stop_token>
 #include <string>
@@ -2722,6 +2724,259 @@ TEST(LinuxProcessActionsTest, CloseConnectionWithoutPtraceAccessIsAPermissionRef
     const ProcessActionResult result = control.closeConnection(ownTarget(), 42);
     EXPECT_FALSE(result.success);
     EXPECT_TRUE(result.permissionDenied);
+}
+
+// --- Efficiency mode (#3202) ---------------------------------------------------------------------------
+
+TEST(LinuxEfficiencyModeTest, TheCgroupFilesAndTheRestoreRules)
+{
+    using namespace LinuxEfficiency;
+    EXPECT_EQ(unifiedCgroupPath("12:cpu:/x\n0::/user.slice/app-x.scope\n"), std::optional<std::string>("user.slice/app-x.scope"));
+    EXPECT_EQ(unifiedCgroupPath("0::/\n"), std::optional<std::string>(""));
+    EXPECT_EQ(unifiedCgroupPath("12:cpu:/x\n"), std::nullopt);
+    EXPECT_EQ(parseCpuWeight("100\n"), std::optional<int>(100));
+    EXPECT_EQ(parseCpuWeight("0"), std::nullopt);
+    EXPECT_EQ(parseCpuWeight("10001"), std::nullopt);
+    EXPECT_EQ(parseCpuWeight("max"), std::nullopt);
+    EXPECT_TRUE(onlyProcessIn("4242\n", 4242));
+    EXPECT_FALSE(onlyProcessIn("4242\n4343\n", 4242));
+    EXPECT_FALSE(onlyProcessIn("4343\n", 4242));
+    EXPECT_FALSE(onlyProcessIn("", 4242));
+    EXPECT_FALSE(onlyProcessIn("x\n", 4242));
+    EXPECT_EQ(niceToRestore(19, 5), std::optional<std::int32_t>(5));
+    EXPECT_EQ(niceToRestore(19, std::nullopt), std::optional<std::int32_t>(0));
+    EXPECT_EQ(niceToRestore(10, 5), std::nullopt) << "changed since: left alone";
+    EXPECT_EQ(weightToRestore(1, 80), std::optional<int>(80));
+    EXPECT_EQ(weightToRestore(1, std::nullopt), std::optional<int>(DEFAULT_CPU_WEIGHT));
+    EXPECT_EQ(weightToRestore(50, 80), std::nullopt);
+    EXPECT_EQ(weightToRestore(std::nullopt, 80), std::nullopt);
+    EXPECT_TRUE(isEfficiencyNice(19));
+    EXPECT_FALSE(isEfficiencyNice(10));
+}
+
+/// What the faked nice and cgroup calls see and do, for Efficiency mode.
+struct EfficiencyPlan
+{
+    std::optional<std::int32_t> nice = 5;
+    std::optional<std::string> procCgroup = std::string("0::/user.slice/app-test.scope\n");
+    std::map<std::string, std::string> files{{"cgroup.procs", "self\n"}, {"cpu.weight", "100\n"}};
+    int writeErrno = 0;
+    std::vector<std::pair<std::string, std::string>> writes; ///< {file, value}
+};
+
+EfficiencyPlan& efficiency()
+{
+    static EfficiencyPlan state;
+    return state;
+}
+
+std::optional<std::int32_t> fakeCurrentNice(std::int32_t /*pid*/)
+{
+    return efficiency().nice;
+}
+
+std::optional<std::string> fakeProcCgroup(std::int32_t /*pid*/)
+{
+    return efficiency().procCgroup;
+}
+
+std::optional<std::string> fakeReadCgroupFile(const std::string& cgroup, std::string_view file)
+{
+    if (cgroup != "user.slice/app-test.scope")
+    {
+        return std::nullopt;
+    }
+    const auto found = efficiency().files.find(std::string(file));
+    return found == efficiency().files.end() ? std::nullopt : std::optional(found->second);
+}
+
+int fakeWriteCgroupFile(const std::string& /*cgroup*/, std::string_view file, const std::string& value)
+{
+    if (efficiency().writeErrno != 0)
+    {
+        return efficiency().writeErrno;
+    }
+    efficiency().writes.emplace_back(file, value);
+    efficiency().files[std::string(file)] = value + "\n";
+    return 0;
+}
+
+class LinuxEfficiencyModeActionTest : public ::testing::Test
+{
+  protected:
+    void SetUp() override
+    {
+        plan() = FaultPlan{};
+        efficiency() = EfficiencyPlan{};
+        efficiency().files["cgroup.procs"] = std::to_string(ownTarget().pid) + "\n"; // alone in its cgroup
+    }
+
+    LinuxProcessControl m_Control{LinuxProcessSyscalls{.pidfdOpen = &fakePidfdOpen,
+                                                       .pidfdSendSignal = &fakePidfdSendSignal,
+                                                       .pollPidfd = &fakePollPidfd,
+                                                       .setPriority = &fakeSet,
+                                                       .ioprioSet = &fakeSet,
+                                                       .ioprioGet = &fakeIoprioGet,
+                                                       .setAffinity = &fakeSetAffinity,
+                                                       .currentNice = &fakeCurrentNice,
+                                                       .procCgroup = &fakeProcCgroup,
+                                                       .readCgroupFile = &fakeReadCgroupFile,
+                                                       .writeCgroupFile = &fakeWriteCgroupFile}};
+};
+
+TEST_F(LinuxEfficiencyModeActionTest, OnSetsNice19AndTheMinimumWeightAndOffPutsBothBack)
+{
+    EXPECT_TRUE(m_Control.actionCapabilities().canSetEfficiencyMode);
+    const ProcessActionResult on = m_Control.setEfficiencyMode(ownTarget(), true);
+    ASSERT_TRUE(on.success) << on.errorMessage;
+    EXPECT_TRUE(on.successNote.empty()) << on.successNote;
+    EXPECT_GT(plan().setCalls, 0) << "every thread reniced";
+    EXPECT_EQ(efficiency().writes, (std::vector<std::pair<std::string, std::string>>{{"cpu.weight", "1"}}));
+
+    // Off: the nice it had (5) and the weight (100), the process still at nice 19 and weight 1.
+    efficiency().nice = 19;
+    plan().setCalls = 0;
+    const ProcessActionResult off = m_Control.setEfficiencyMode(ownTarget(), false);
+    ASSERT_TRUE(off.success) << off.errorMessage;
+    EXPECT_GT(plan().setCalls, 0);
+    EXPECT_EQ(efficiency().writes.back(), (std::pair<std::string, std::string>{"cpu.weight", "100"}));
+}
+
+TEST_F(LinuxEfficiencyModeActionTest, OnlyTheNiceChangesWhereTheWeightCantOrShouldnt)
+{
+    // Shared with other processes: their weight would drop too.
+    efficiency().files["cgroup.procs"] = std::to_string(ownTarget().pid) + "\n1\n";
+    ProcessActionResult result = m_Control.setEfficiencyMode(ownTarget(), true);
+    ASSERT_TRUE(result.success);
+    EXPECT_TRUE(result.successNote.contains("shares its cgroup")) << result.successNote;
+    EXPECT_TRUE(efficiency().writes.empty());
+
+    // No CPU controller in its cgroup.
+    efficiency().files["cgroup.procs"] = std::to_string(ownTarget().pid) + "\n";
+    efficiency().files.erase("cpu.weight");
+    result = m_Control.setEfficiencyMode(ownTarget(), true);
+    EXPECT_TRUE(result.successNote.contains("no CPU controller")) << result.successNote;
+
+    // The weight can't be written (the helper's sandbox, another user's cgroup).
+    efficiency().files["cpu.weight"] = "100\n";
+    efficiency().writeErrno = EACCES;
+    result = m_Control.setEfficiencyMode(ownTarget(), true);
+    ASSERT_TRUE(result.success);
+    EXPECT_TRUE(result.successNote.contains("can't be changed")) << result.successNote;
+
+    // In the root cgroup, or in none TaskSmack can read.
+    efficiency().procCgroup = std::string("0::/\n");
+    EXPECT_TRUE(m_Control.setEfficiencyMode(ownTarget(), true).successNote.contains("cgroup of its own"));
+    efficiency().procCgroup = std::nullopt;
+    EXPECT_TRUE(m_Control.setEfficiencyMode(ownTarget(), true).successNote.contains("cgroup of its own"));
+    EXPECT_TRUE(efficiency().writes.empty());
+
+    // Already at the minimum: nothing to write, nothing to say.
+    efficiency().procCgroup = std::string("0::/user.slice/app-test.scope\n");
+    efficiency().writeErrno = 0;
+    efficiency().files["cpu.weight"] = "1\n";
+    result = m_Control.setEfficiencyMode(ownTarget(), true);
+    EXPECT_TRUE(result.successNote.empty()) << result.successNote;
+    EXPECT_TRUE(efficiency().writes.empty());
+}
+
+TEST_F(LinuxEfficiencyModeActionTest, OffWithoutMemoryRestoresTheDefaultsAndLeavesAChangedNiceAlone)
+{
+    // TaskSmack restarted since on: nice 19 goes back to 0, the minimum weight to the default.
+    efficiency().nice = 19;
+    efficiency().files["cpu.weight"] = "1\n";
+    ProcessActionResult off = m_Control.setEfficiencyMode(ownTarget(), false);
+    ASSERT_TRUE(off.success) << off.errorMessage;
+    EXPECT_GT(plan().setCalls, 0);
+    EXPECT_EQ(efficiency().writes.back(), (std::pair<std::string, std::string>{"cpu.weight", "100"}));
+
+    // A nice someone changed since is left alone; a weight not at the minimum too.
+    plan().setCalls = 0;
+    efficiency().writes.clear();
+    efficiency().nice = 10;
+    efficiency().files["cpu.weight"] = "50\n";
+    off = m_Control.setEfficiencyMode(ownTarget(), false);
+    ASSERT_TRUE(off.success) << off.errorMessage;
+    EXPECT_EQ(plan().setCalls, 0);
+    EXPECT_TRUE(efficiency().writes.empty());
+
+    // Shared, and not remembered: the cgroup's weight isn't this process's to put back.
+    efficiency().files["cpu.weight"] = "1\n";
+    efficiency().files["cgroup.procs"] = std::to_string(ownTarget().pid) + "\n1\n";
+    EXPECT_TRUE(m_Control.setEfficiencyMode(ownTarget(), false).success);
+    EXPECT_TRUE(efficiency().writes.empty());
+
+    // A weight that can't be put back is said.
+    efficiency().files["cgroup.procs"] = std::to_string(ownTarget().pid) + "\n";
+    efficiency().writeErrno = EACCES;
+    efficiency().nice = 19;
+    off = m_Control.setEfficiencyMode(ownTarget(), false);
+    ASSERT_TRUE(off.success);
+    EXPECT_TRUE(off.successNote.contains("still the minimum")) << off.successNote;
+}
+
+TEST_F(LinuxEfficiencyModeActionTest, ARefusedNiceIsAPermissionRefusalAndTouchesNoCgroup)
+{
+    plan().setErrno = EPERM;
+    const ProcessActionResult result = m_Control.setEfficiencyMode(ownTarget(), true);
+    EXPECT_FALSE(result.success);
+    EXPECT_TRUE(result.permissionDenied) << result.errorMessage;
+    EXPECT_TRUE(efficiency().writes.empty());
+
+    EXPECT_FALSE(m_Control.setEfficiencyMode({.pid = 0, .startTimeTicks = 1}, true).success);
+    ProcessTarget reused = ownTarget();
+    reused.startTimeTicks += 1;
+    efficiency().nice = 10; // off with a changed nice still confirms the target
+    EXPECT_FALSE(m_Control.setEfficiencyMode(reused, false).success);
+}
+
+TEST_F(LinuxEfficiencyModeActionTest, OffAfterAnOnThatKeptTheWeightPutsBackOnlyTheNice)
+{
+    efficiency().files["cgroup.procs"] = std::to_string(ownTarget().pid) + "\n1\n"; // shared: weight kept
+    ASSERT_TRUE(m_Control.setEfficiencyMode(ownTarget(), true).success);
+    efficiency().files["cgroup.procs"] = std::to_string(ownTarget().pid) + "\n"; // alone by now
+    efficiency().files["cpu.weight"] = "1\n";                                    // and someone set the minimum
+    efficiency().nice = 19;
+    const ProcessActionResult off = m_Control.setEfficiencyMode(ownTarget(), false);
+    ASSERT_TRUE(off.success) << off.errorMessage;
+    EXPECT_TRUE(efficiency().writes.empty()) << "on didn't lower it, so off doesn't raise it";
+}
+
+// The real calls, on a child: nice 19 reaches it, its cgroup (the test's, shared) keeps its weight, and
+// putting nice 0 back needs CAP_SYS_NICE, which a permission refusal the helper can finish says.
+TEST(LinuxEfficiencyModeRealTest, TheRealCallsOnAChildProcess)
+{
+    const SleepingChild child;
+    ASSERT_TRUE(child.started());
+    LinuxProcessControl control;
+    const ProcessActionResult on = control.setEfficiencyMode(child.target(), true);
+    ASSERT_TRUE(on.success) << on.errorMessage;
+    EXPECT_FALSE(on.successNote.empty()) << "a cgroup shared with this test, or none of its own";
+    EXPECT_EQ(realProcessSyscalls().currentNice(child.target().pid), std::optional<std::int32_t>(19));
+
+    const ProcessActionResult off = control.setEfficiencyMode(child.target(), false);
+    if (::geteuid() == 0)
+    {
+        EXPECT_TRUE(off.success) << off.errorMessage;
+    }
+    else
+    {
+        EXPECT_FALSE(off.success);
+        EXPECT_TRUE(off.permissionDenied) << off.errorMessage;
+    }
+}
+
+TEST(LinuxEfficiencyModeRealTest, TheRealCgroupFileCallsStayUnderTheCgroupRoot)
+{
+    const LinuxProcessSyscalls real = realProcessSyscalls();
+    EXPECT_EQ(real.writeCgroupFile("../../etc", "passwd", "x"), EINVAL) << "outside the cgroup root: refused unopened";
+    EXPECT_EQ(real.readCgroupFile("../../etc", "passwd"), std::nullopt);
+    EXPECT_EQ(real.writeCgroupFile("tasksmack-no-such-cgroup-3202", "cpu.weight", "1"), ENOENT);
+    EXPECT_EQ(real.readCgroupFile("tasksmack-no-such-cgroup-3202", "cpu.weight"), std::nullopt);
+    EXPECT_EQ(real.currentNice(std::numeric_limits<std::int32_t>::max()), std::nullopt);
+    const std::optional<std::string> own = real.procCgroup(static_cast<std::int32_t>(::getpid()));
+    ASSERT_TRUE(own.has_value());
+    EXPECT_FALSE(own->empty());
 }
 
 } // namespace

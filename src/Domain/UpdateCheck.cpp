@@ -476,6 +476,67 @@ class JsonReader
     std::size_t m_Pos = 0;
 };
 
+/// Reads one `"name": value` member of the release object at @p reader into @p fields (#3093): the four
+/// names readReleaseFields() keeps are stored when they have the expected type, and any other member,
+/// or one of the four with another type, is skipped and leaves its field unset. A repeated name keeps
+/// its last value. False when the member isn't well formed, which fails the whole reply.
+[[nodiscard]] bool readReleaseMember(JsonReader& reader, ReleaseFields& fields)
+{
+    reader.skipSpace();
+    if (reader.peek() != '"')
+    {
+        return false; // a member starts with its quoted name
+    }
+    const std::optional<std::string> name = reader.readString();
+    reader.skipSpace();
+    if (!name.has_value() || !reader.consume(':'))
+    {
+        return false;
+    }
+    reader.skipSpace();
+
+    // Which field, if any, this name fills: a string one or a boolean one.
+    std::optional<std::string>* text = nullptr;
+    std::optional<bool>* flag = nullptr;
+    if (*name == "tag_name")
+    {
+        text = &fields.tagName;
+    }
+    else if (*name == "html_url")
+    {
+        text = &fields.htmlUrl;
+    }
+    else if (*name == "draft")
+    {
+        flag = &fields.draft;
+    }
+    else if (*name == "prerelease")
+    {
+        flag = &fields.prerelease;
+    }
+
+    if (text != nullptr && reader.peek() == '"')
+    {
+        *text = reader.readString();
+        return text->has_value();
+    }
+    if (flag != nullptr && (reader.peek() == 't' || reader.peek() == 'f'))
+    {
+        *flag = reader.readBool();
+        return flag->has_value();
+    }
+    // Another member, or one of these with another type: skipped, and the field left unset.
+    if (text != nullptr)
+    {
+        text->reset();
+    }
+    if (flag != nullptr)
+    {
+        flag->reset();
+    }
+    return reader.skipValue();
+}
+
 } // namespace
 
 std::string userAgent(std::string_view currentVersion)
@@ -583,79 +644,19 @@ std::optional<ReleaseFields> readReleaseFields(std::string_view json)
     reader.skipSpace();
     if (!reader.consume('{'))
     {
-        return std::nullopt;
+        return std::nullopt; // not an object: GitHub's error pages and rate-limit replies are objects too
     }
     ReleaseFields fields;
     reader.skipSpace();
-    if (!reader.consume('}'))
+    if (!reader.consume('}')) // an empty object reads as no fields
     {
+        // One member at a time, each followed by ',' or the object's closing '}'.
         while (true)
         {
-            reader.skipSpace();
-            if (reader.peek() != '"')
+            if (!readReleaseMember(reader, fields))
             {
                 return std::nullopt;
             }
-            const std::optional<std::string> name = reader.readString();
-            reader.skipSpace();
-            if (!name.has_value() || !reader.consume(':'))
-            {
-                return std::nullopt;
-            }
-            reader.skipSpace();
-
-            std::optional<std::string>* text = nullptr;
-            std::optional<bool>* flag = nullptr;
-            if (*name == "tag_name")
-            {
-                text = &fields.tagName;
-            }
-            else if (*name == "html_url")
-            {
-                text = &fields.htmlUrl;
-            }
-            else if (*name == "draft")
-            {
-                flag = &fields.draft;
-            }
-            else if (*name == "prerelease")
-            {
-                flag = &fields.prerelease;
-            }
-
-            if (text != nullptr && reader.peek() == '"')
-            {
-                *text = reader.readString();
-                if (!text->has_value())
-                {
-                    return std::nullopt;
-                }
-            }
-            else if (flag != nullptr && (reader.peek() == 't' || reader.peek() == 'f'))
-            {
-                *flag = reader.readBool();
-                if (!flag->has_value())
-                {
-                    return std::nullopt;
-                }
-            }
-            else
-            {
-                // Another member, or one of these with another type: skipped, and the field left unset.
-                if (text != nullptr)
-                {
-                    text->reset();
-                }
-                if (flag != nullptr)
-                {
-                    flag->reset();
-                }
-                if (!reader.skipValue())
-                {
-                    return std::nullopt;
-                }
-            }
-
             reader.skipSpace();
             if (reader.consume(','))
             {
@@ -665,9 +666,10 @@ std::optional<ReleaseFields> readReleaseFields(std::string_view json)
             {
                 break;
             }
-            return std::nullopt;
+            return std::nullopt; // neither separator: malformed
         }
     }
+    // Nothing but whitespace may follow the object, so a truncated or concatenated reply is refused.
     reader.skipSpace();
     if (!reader.atEnd())
     {

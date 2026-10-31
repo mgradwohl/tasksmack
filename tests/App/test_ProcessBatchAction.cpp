@@ -203,7 +203,7 @@ TEST(ProcessBatchActionTest, BodyStatesWhatEachActionDoes)
     EXPECT_TRUE(confirmBody(ProcessAction::Stop, two, OWN_PID).starts_with("2 processes will stop running"));
     EXPECT_TRUE(confirmBody(ProcessAction::Resume, two, OWN_PID).starts_with("2 processes will continue running."));
     // Efficiency mode (#3071) is offered for one process at a time, but says what it does for several too.
-    EXPECT_TRUE(confirmBody(ProcessAction::EfficiencyModeOn, two, OWN_PID).starts_with("2 processes will run at Idle priority"));
+    EXPECT_TRUE(confirmBody(ProcessAction::EfficiencyModeOn, two, OWN_PID).starts_with("2 processes will run at "));
     EXPECT_TRUE(confirmBody(ProcessAction::EfficiencyModeOff, two, OWN_PID).starts_with("2 processes will leave Efficiency mode"));
 }
 

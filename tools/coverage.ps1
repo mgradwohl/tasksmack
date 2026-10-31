@@ -87,6 +87,8 @@ function Get-ExcludedLine([string]$SourcePath) {
 # Rewrite the LCOV file at @LcovPath without the marked lines, their branches and the functions that start
 # on them. Each record's LF/LH, BRF/BRH and FNF/FNH lose what was dropped; they are llvm-cov's own counts,
 # not a count of the records, so they are reduced rather than recounted. Returns how many line records it dropped.
+# Execution counts are read as [decimal]: llvm-cov can print a wrapped 64-bit counter (18446744073709551610 is
+# -6), which overflows [long] (#3241); like any nonzero count, it means the line ran.
 function Remove-ExcludedLcovLine([string]$LcovPath) {
     $output = [System.Collections.Generic.List[string]]::new()
     $excluded = $null
@@ -120,7 +122,7 @@ function Remove-ExcludedLcovLine([string]$LcovPath) {
                 $hits, $name = $value -split ",", 2
                 if ($droppedFunctions.Contains($name)) {
                     $dropped.FNF++
-                    if ([long]$hits -gt 0) { $dropped.FNH++ }
+                    if ([decimal]$hits -gt 0) { $dropped.FNH++ }
                     $keep = $false
                 }
             }
@@ -128,7 +130,7 @@ function Remove-ExcludedLcovLine([string]$LcovPath) {
                 $fields = $value -split ","
                 if ($excluded.Contains([int]$fields[0])) {
                     $dropped.BRF++
-                    if ($fields[3] -ne "-" -and [long]$fields[3] -gt 0) { $dropped.BRH++ }
+                    if ($fields[3] -ne "-" -and [decimal]$fields[3] -gt 0) { $dropped.BRH++ }
                     $keep = $false
                 }
             }
@@ -137,7 +139,7 @@ function Remove-ExcludedLcovLine([string]$LcovPath) {
                 if ($excluded.Contains([int]$fields[0])) {
                     $droppedLines++
                     $dropped.LF++
-                    if ([long]$fields[1] -gt 0) { $dropped.LH++ }
+                    if ([decimal]$fields[1] -gt 0) { $dropped.LH++ }
                     $keep = $false
                 }
             }

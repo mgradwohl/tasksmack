@@ -9,6 +9,7 @@
 #include "CgroupService.h"
 #include "Domain/SamplingConfig.h"
 #include "ElfArchitecture.h"
+#include "LinuxEfficiencyMode.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/PlatformConfig.h"
@@ -445,6 +446,7 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
             counters.ioCountersAvailable = false; // not read at all (capabilities() reports hasIoCounters = false)
         }
         readCgroupFacts(pidDirFd.get(), m_CgroupRoot, factsByCgroup, counters); // cgroup freezer status, container
+        applyEfficiencyStatus(counters);
         processes.push_back(std::move(counters));
     }
 
@@ -1105,6 +1107,7 @@ std::optional<ProcessCounters> LinuxProcessProbe::processFromFiles(std::int32_t 
     applyIo(files.io, counters);
     FactsByCgroup factsByCgroup;
     applyCgroupFacts(files.cgroup, m_CgroupRoot, factsByCgroup, counters);
+    applyEfficiencyStatus(counters);
     return counters;
 }
 
@@ -1188,6 +1191,16 @@ void LinuxProcessProbe::readCgroupFacts(int pidDirFd,
         cgroups = std::string_view(fullContents.data(), fullContents.size());
     }
     applyCgroupFacts(cgroups, cgroupRoot, factsByCgroup, counters);
+}
+
+void LinuxProcessProbe::applyEfficiencyStatus(ProcessCounters& counters)
+{
+    // Efficiency mode (#3202): nice 19, which is what turning it on sets (LinuxEfficiencyMode.h). Suspended,
+    // from the cgroup freezer, says more.
+    if (counters.status.empty() && LinuxEfficiency::isEfficiencyNice(counters.nice))
+    {
+        counters.status = std::string(EFFICIENCY_MODE_STATUS);
+    }
 }
 
 void LinuxProcessProbe::applyCgroupFacts(std::string_view cgroups,
