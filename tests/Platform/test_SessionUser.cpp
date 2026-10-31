@@ -7,6 +7,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <map>
 #include <optional>
 #include <string>
@@ -14,6 +15,7 @@
 #include <vector>
 
 #include <sys/types.h>
+#include <unistd.h>
 
 namespace Platform::SessionUser
 {
@@ -95,6 +97,28 @@ TEST(SessionUserTest, ProgramsStartAsTaskSmackWhenThereIsNoOtherUser)
     EXPECT_FALSE(sessionFor(0, {{"SUDO_UID", "1000x"}}).has_value());
     EXPECT_FALSE(sessionFor(0, {{"SUDO_UID", ""}}).has_value());
     EXPECT_FALSE(sessionFor(0, {{"SUDO_UID", "1234"}}).has_value()) << "no such user";
+}
+
+// #3221: the passwd and environment sources invokingUserSession() reads as root, read here as this user.
+TEST(SessionUserTest, TheSystemSourcesReadThisUsersEntryAndVariables)
+{
+    const std::optional<Account> self = systemAccount(::getuid());
+    ASSERT_TRUE(self.has_value()) << "the test's own user is in the passwd database";
+    const Account account = self.value_or(Account{});
+    EXPECT_EQ(account.gid, ::getgid());
+    EXPECT_FALSE(account.name.empty());
+    EXPECT_FALSE(account.home.empty());
+    EXPECT_FALSE(systemAccount(static_cast<uid_t>(-2)).has_value()) << "a UID no entry has";
+
+    ASSERT_EQ(::setenv("TASKSMACK_SESSION_USER_TEST", "value", 1), 0);
+    EXPECT_EQ(processVariable("TASKSMACK_SESSION_USER_TEST"), std::optional<std::string>("value"));
+    ASSERT_EQ(::unsetenv("TASKSMACK_SESSION_USER_TEST"), 0);
+    EXPECT_FALSE(processVariable("TASKSMACK_SESSION_USER_TEST").has_value());
+
+    if (::geteuid() != 0)
+    {
+        EXPECT_FALSE(invokingUserSession().has_value()) << "not root: programs start as TaskSmack";
+    }
 }
 
 } // namespace
