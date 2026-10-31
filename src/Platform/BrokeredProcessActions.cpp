@@ -10,6 +10,7 @@
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
+#include "Platform/IProcessThreads.h"
 #include "Platform/IUdpTrafficCollector.h"
 #include "Platform/ProcessTypes.h"
 #include "Platform/WaitChain.h"
@@ -498,6 +499,69 @@ ConnectionsReadResult BrokeredConnectionsReader::viaBroker(const ProcessTarget& 
         return reply->result;
     }
     return {.status = ConnectionsReadStatus::Failed, .connections = {}, .detail = "The administrator helper gave an unexpected answer"};
+}
+
+std::unique_ptr<IProcessThreadsReader> withPrivilegedBroker(std::unique_ptr<IProcessThreadsReader> reader,
+                                                            std::shared_ptr<IPrivilegedBroker> broker)
+{
+    if (broker == nullptr || reader == nullptr || !reader->hasThreads())
+    {
+        return reader;
+    }
+    return std::make_unique<BrokeredThreadsReader>(std::move(reader), std::move(broker));
+}
+
+BrokeredThreadsReader::BrokeredThreadsReader(std::unique_ptr<IProcessThreadsReader> inner, std::shared_ptr<IPrivilegedBroker> broker)
+    : m_Inner(std::move(inner)), m_Broker(std::move(broker))
+{}
+
+bool BrokeredThreadsReader::hasThreads() const
+{
+    return m_Inner->hasThreads();
+}
+
+ThreadsReadResult BrokeredThreadsReader::readThreads(const ProcessTarget& target)
+{
+    ThreadsReadResult result = m_Inner->readThreads(target);
+    if (result.status != ThreadsReadStatus::PermissionDenied || m_Broker == nullptr || !m_Broker->connected())
+    {
+        return result;
+    }
+    return viaBroker(target, std::stop_token{});
+}
+
+bool BrokeredThreadsReader::canReadAuthorized() const
+{
+    return m_Broker != nullptr && m_Broker->readsOtherUsers();
+}
+
+ThreadsReadResult BrokeredThreadsReader::readAuthorized(const ProcessTarget& target, const std::stop_token& stopToken)
+{
+    if (!canReadAuthorized()) // no helper, or none that could read it (#2550)
+    {
+        return m_Inner->readThreads(target);
+    }
+    if (!m_Broker->connected() && !m_Broker->connect(stopToken).has_value())
+    {
+        return {.status = ThreadsReadStatus::PermissionDenied, .threads = {}, .detail = {}}; // the refusal stands
+    }
+    return viaBroker(target, stopToken);
+}
+
+ThreadsReadResult BrokeredThreadsReader::viaBroker(const ProcessTarget& target, const std::stop_token& stopToken)
+{
+    const std::expected<Broker::Response, std::string> response = m_Broker->call(Broker::ThreadsRequest{.target = target}, stopToken);
+    if (!response.has_value())
+    {
+        return {.status = ThreadsReadStatus::Failed,
+                .threads = {},
+                .detail = "The administrator helper couldn't be asked: " + response.error()};
+    }
+    if (const auto* reply = std::get_if<Broker::ThreadsReply>(&*response))
+    {
+        return reply->result;
+    }
+    return {.status = ThreadsReadStatus::Failed, .threads = {}, .detail = "The administrator helper gave an unexpected answer"};
 }
 
 std::unique_ptr<IProcessProbe> withPrivilegedBroker(std::unique_ptr<IProcessProbe> probe, std::shared_ptr<IPrivilegedBroker> broker)

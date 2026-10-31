@@ -13,6 +13,7 @@
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
+#include "Platform/IProcessThreads.h"
 #include "Platform/IUdpTrafficCollector.h"
 #include "Platform/ProcessTypes.h"
 
@@ -1367,6 +1368,100 @@ TEST(BrokeredProcessProbeTest, TheFactoryWrapsOnlyAProbeThatReadsMemoryRollups)
     auto alone = std::make_unique<RecordingProbe>();
     const IProcessProbe* const rawAlone = alone.get();
     EXPECT_EQ(withPrivilegedBroker(std::unique_ptr<IProcessProbe>(std::move(alone)), nullptr).get(), rawAlone);
+}
+
+// --- BrokeredThreadsReader (#3069) --------------------------------------------------------------------
+
+/// A threads reader answering @p result every time, counting its reads.
+class ScriptedThreadsReader final : public IProcessThreadsReader
+{
+  public:
+    explicit ScriptedThreadsReader(ThreadsReadResult result, bool has = true) : m_Result(std::move(result)), m_Has(has)
+    {}
+    [[nodiscard]] bool hasThreads() const override
+    {
+        return m_Has;
+    }
+    [[nodiscard]] ThreadsReadResult readThreads(const ProcessTarget& /*target*/) override
+    {
+        ++m_Reads;
+        return m_Result;
+    }
+    int m_Reads = 0;
+
+  private:
+    ThreadsReadResult m_Result;
+    bool m_Has = true;
+};
+
+[[nodiscard]] ThreadsReadResult threadsWith(ThreadsReadStatus status)
+{
+    return {.status = status, .threads = {}, .detail = {}};
+}
+
+TEST(BrokeredThreadsReaderTest, ARefusedReadGoesThroughARunningHelperAndOtherwiseWaitsForTheUi)
+{
+    auto broker = std::make_shared<Mocks::FakeBroker>(true);
+    broker->setAnswer([](const Broker::Request&)
+                      { return Broker::Response{Broker::ThreadsReply{.result = threadsWith(ThreadsReadStatus::Ok)}}; });
+    BrokeredThreadsReader reader(std::make_unique<ScriptedThreadsReader>(threadsWith(ThreadsReadStatus::PermissionDenied)), broker);
+    EXPECT_TRUE(reader.hasThreads());
+    EXPECT_EQ(reader.readThreads(TARGET).status, ThreadsReadStatus::Ok);
+    ASSERT_EQ(broker->requests().size(), 1U);
+    EXPECT_EQ(broker->requests().front(), (Broker::Request{Broker::ThreadsRequest{.target = TARGET}}));
+
+    broker->setConnected(false);
+    EXPECT_EQ(reader.readThreads(TARGET).status, ThreadsReadStatus::PermissionDenied);
+    EXPECT_TRUE(reader.canReadAuthorized());
+    EXPECT_EQ(reader.readAuthorized(TARGET, std::stop_token{}).status, ThreadsReadStatus::Ok);
+    EXPECT_EQ(broker->connectCount(), 1);
+
+    // A read the reader makes itself goes nowhere near the helper.
+    BrokeredThreadsReader own(std::make_unique<ScriptedThreadsReader>(threadsWith(ThreadsReadStatus::Ok)), broker);
+    EXPECT_EQ(own.readThreads(TARGET).status, ThreadsReadStatus::Ok);
+    EXPECT_EQ(broker->requests().size(), 2U);
+}
+
+TEST(BrokeredThreadsReaderTest, TheFactoryWrapsOnlyAReaderThatCanReadAndAWithoutHelperRefusalStands)
+{
+    auto broker = std::make_shared<Mocks::FakeBroker>(false);
+    EXPECT_EQ(withPrivilegedBroker(std::unique_ptr<IProcessThreadsReader>{}, broker), nullptr);
+    auto unsupported = std::make_unique<UnsupportedProcessThreadsReader>();
+    const IProcessThreadsReader* const rawUnsupported = unsupported.get();
+    EXPECT_EQ(withPrivilegedBroker(std::unique_ptr<IProcessThreadsReader>(std::move(unsupported)), broker).get(), rawUnsupported);
+    EXPECT_TRUE(
+        withPrivilegedBroker(
+            std::unique_ptr<IProcessThreadsReader>(std::make_unique<ScriptedThreadsReader>(threadsWith(ThreadsReadStatus::Ok))), broker)
+            ->canReadAuthorized());
+
+    auto owned = std::make_unique<ScriptedThreadsReader>(threadsWith(ThreadsReadStatus::PermissionDenied));
+    ScriptedThreadsReader* const inner = owned.get();
+    BrokeredThreadsReader alone(std::move(owned), nullptr);
+    EXPECT_FALSE(alone.canReadAuthorized());
+    EXPECT_EQ(alone.readAuthorized(TARGET, std::stop_token{}).status, ThreadsReadStatus::PermissionDenied);
+    EXPECT_EQ(alone.readThreads(TARGET).status, ThreadsReadStatus::PermissionDenied);
+    EXPECT_EQ(inner->m_Reads, 2);
+
+    broker->setConnectFailure("the password prompt was dismissed");
+    BrokeredThreadsReader dismissed(std::make_unique<ScriptedThreadsReader>(threadsWith(ThreadsReadStatus::PermissionDenied)), broker);
+    EXPECT_EQ(dismissed.readAuthorized(TARGET, std::stop_token{}).status, ThreadsReadStatus::PermissionDenied);
+    EXPECT_TRUE(broker->requests().empty());
+}
+
+TEST(BrokeredThreadsReaderTest, AHelperThatCantAnswerSaysWhy)
+{
+    BrokeredThreadsReader broken(std::make_unique<ScriptedThreadsReader>(threadsWith(ThreadsReadStatus::PermissionDenied)),
+                                 failingBroker("the channel broke"));
+    const ThreadsReadResult failed = broken.readThreads(TARGET);
+    EXPECT_EQ(failed.status, ThreadsReadStatus::Failed);
+    EXPECT_TRUE(failed.detail.contains("the channel broke")) << failed.detail;
+
+    auto odd = std::make_shared<Mocks::FakeBroker>(true);
+    odd->setAnswer([](const Broker::Request&) { return Broker::Response{Broker::ErrorReply{.message = "no"}}; });
+    BrokeredThreadsReader confused(std::make_unique<ScriptedThreadsReader>(threadsWith(ThreadsReadStatus::PermissionDenied)), odd);
+    const ThreadsReadResult unexpected = confused.readThreads(TARGET);
+    EXPECT_EQ(unexpected.status, ThreadsReadStatus::Failed);
+    EXPECT_EQ(unexpected.detail, "The administrator helper gave an unexpected answer");
 }
 
 } // namespace

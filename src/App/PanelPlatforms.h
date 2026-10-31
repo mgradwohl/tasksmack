@@ -19,6 +19,8 @@
 #include "Platform/IGPUProbe.h"
 #include "Platform/IHttpsClient.h"
 #include "Platform/IPrivilegedBroker.h"
+#include "Platform/IProcessActions.h"
+#include "Platform/IStartAtLogin.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/IUserSessions.h"
 
@@ -78,6 +80,11 @@ void preparePanelPlatforms(const Synthetic::Scenario* scenario);
 /// which has none yet), or null in a synthetic run or while a test hook is set (@p testHookActive), where
 /// the check isn't offered. Making it opens and sends nothing.
 [[nodiscard]] std::shared_ptr<Platform::IHttpsClient> makeUpdateCheckClient(const Synthetic::Scenario* scenario, bool testHookActive);
+
+/// The sign-in entry Settings' "Start TaskSmack when I sign in" reads and writes (#3093, part 2): the
+/// platform's (null on Linux, which has none yet), or null in a synthetic run or while a test hook is set
+/// (@p testHookActive), so no unattended run can ever write it. Making it reads nothing.
+[[nodiscard]] std::shared_ptr<Platform::IStartAtLogin> makeStartAtLoginEntry(const Synthetic::Scenario* scenario, bool testHookActive);
 
 /// The probe the shared crash history reads (#1675), or null in a synthetic run: no crash history.
 [[nodiscard]] std::shared_ptr<Platform::ISystemInfoProbe> makeCrashHistoryProbe(const Synthetic::Scenario* scenario);

@@ -32,6 +32,7 @@
 #include "Platform/Linux/LinuxProcessEnvironmentReader.h"
 #include "Platform/Linux/LinuxProcessModulesReader.h"
 #include "Platform/Linux/LinuxProcessOpenFilesReader.h"
+#include "Platform/Linux/LinuxProcessThreadsReader.h"
 #include "Platform/Linux/MemoryRollupRead.h"
 #include "Platform/Linux/ProcessCountersRead.h"
 #include "Platform/Linux/SystemdActions.h"
@@ -205,6 +206,7 @@ int main(int argc, char* const* argv)
         Platform::LinuxProcessEnvironmentReader environment;
         Platform::LinuxProcessModulesReader modules;
         Platform::LinuxProcessOpenFilesReader openFiles;
+        Platform::LinuxProcessThreadsReader threads; // #3069
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
         // Every table from /proc/<pid>/net, never a NETLINK_SOCK_DIAG socket: the seccomp filter allows
         // the helper no socket but its broker's (#2752), and /proc gives the same tables.
@@ -217,6 +219,7 @@ int main(int argc, char* const* argv)
             .modules = &modules,
             .openFiles = &openFiles,
             .connections = &connections,
+            .threads = &threads,
             .memoryRollup = [](std::int32_t pid, std::uint64_t startTimeTicks)
             { return Platform::Linux::readMemoryRollupAt("/proc", pid, startTimeTicks); },
             // Other users' FD counts, I/O bytes and socket inodes, for the sampler (#2728)

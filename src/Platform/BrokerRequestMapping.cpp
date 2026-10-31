@@ -7,6 +7,7 @@
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
+#include "Platform/IProcessThreads.h"
 #include "Platform/IServiceActions.h"
 
 #include <exception>
@@ -131,6 +132,23 @@ namespace
         OpenFilesReadResult failed;
         failed.status = OpenFilesReadStatus::Failed;
         return Broker::OpenFilesReply{.result = std::move(failed)};
+    }
+}
+
+/// Process Details' threads (#3069): the reader checks the target's identity itself.
+[[nodiscard]] Broker::Response handleThreads(const Broker::ThreadsRequest& read, const Readers& readers)
+{
+    if (readers.threads == nullptr)
+    {
+        return Broker::ErrorReply{.message = "This helper doesn't list threads"};
+    }
+    try
+    {
+        return Broker::ThreadsReply{.result = readers.threads->readThreads(read.target)};
+    }
+    catch (...)
+    {
+        return Broker::ThreadsReply{.result = {.status = ThreadsReadStatus::Failed, .threads = {}, .detail = {}}};
     }
 }
 
@@ -309,6 +327,10 @@ Broker::Response handleRequest(const Broker::Request& request, IProcessActions& 
     if (const auto* read = std::get_if<Broker::ConnectionsRequest>(&request))
     {
         return handleConnections(*read, readers);
+    }
+    if (const auto* read = std::get_if<Broker::ThreadsRequest>(&request))
+    {
+        return handleThreads(*read, readers);
     }
     if (const auto* read = std::get_if<Broker::MemoryRollupRequest>(&request))
     {
