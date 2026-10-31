@@ -4,6 +4,7 @@
 
 #include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
+#include "Platform/IUserSessions.h"
 #include "Platform/Linux/SystemdActions.h"
 #include "Platform/Linux/SystemdBus.h"
 
@@ -53,6 +54,9 @@ constexpr const char* SYSTEMD_MANAGER = "org.freedesktop.systemd1.Manager";
 constexpr const char* SYSTEMD_SERVICE = "org.freedesktop.systemd1.Service";
 constexpr const char* SYSTEMD_UNIT = "org.freedesktop.systemd1.Unit";
 constexpr const char* SYSTEMD_JOB = "org.freedesktop.systemd1.Job";
+constexpr const char* LOGIN1 = "org.freedesktop.login1";
+constexpr const char* LOGIN1_PATH = "/org/freedesktop/login1";
+constexpr const char* LOGIN1_MANAGER = "org.freedesktop.login1.Manager";
 
 /// The connection holdSystemBusForActions() opened, which every later action borrows; null until then
 /// (TaskSmack itself opens one per action). tasksmack-helper serves one request at a time, so one thread.
@@ -525,6 +529,40 @@ setUnitStartType(std::string_view name, ServiceStartType startType, bool allowIn
     return reload();
 }
 
+ServiceActionResult sessionAction(std::string_view id, SessionAction action, bool allowInteractive, const std::stop_token& stopToken)
+{
+    Bus bus;
+    if (const auto failed = openForAction(bus, allowInteractive))
+    {
+        return ServiceActionResult::failed(*failed);
+    }
+    // The Manager's calls take the session by ID, and polkit asks about them (org.freedesktop.login1.lock-sessions,
+    // .manage) where the Session object's own Lock and Terminate would ask the same; one's own session is free.
+    const std::string session(id);
+    BusError error;
+    Message call;
+    Message reply;
+    int result = sd_bus_message_new_method_call(
+        bus.get(), call.out(), LOGIN1, LOGIN1_PATH, LOGIN1_MANAGER, action == SessionAction::Lock ? "LockSession" : "TerminateSession");
+    if (result >= 0)
+    {
+        result = sd_bus_message_append(call.get(), "s", session.c_str());
+    }
+    if (result >= 0)
+    {
+        result = callAction(bus.get(), call.get(), stopToken, error, reply);
+    }
+    if (result == -ECANCELED && stopToken.stop_requested())
+    {
+        return ServiceActionResult::stopRequested();
+    }
+    if (result < 0)
+    {
+        return actionFailure(bus.get(), error, result);
+    }
+    return ServiceActionResult::succeeded();
+}
+
 #else
 
 std::optional<std::string> holdSystemBusForActions()
@@ -547,6 +585,12 @@ ServiceActionResult stopUnit(std::string_view /*name*/, const std::stop_token& /
 
 ServiceActionResult
 setUnitStartType(std::string_view /*name*/, ServiceStartType /*startType*/, bool /*allowInteractive*/, const std::stop_token& /*stopToken*/)
+{
+    return ServiceActionResult::failed("This build has no systemd support (it was built without libsystemd)");
+}
+
+ServiceActionResult
+sessionAction(std::string_view /*id*/, SessionAction /*action*/, bool /*allowInteractive*/, const std::stop_token& /*stopToken*/)
 {
     return ServiceActionResult::failed("This build has no systemd support (it was built without libsystemd)");
 }

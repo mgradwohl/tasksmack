@@ -19,6 +19,7 @@
 #include "LinuxSystemConnectionsReader.h"
 #include "LinuxSystemInfoProbe.h"
 #include "LinuxSystemProbe.h"
+#include "LinuxUserSessions.h"
 #include "PkexecBroker.h"
 #include "Platform/IDiskProbe.h"
 #include "Platform/IGPUProbe.h"
@@ -43,6 +44,7 @@
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/ISystemProbe.h"
 #include "Platform/IUdpTrafficCollector.h"
+#include "Platform/IUserSessions.h"
 
 #include <memory>
 
@@ -106,6 +108,11 @@ std::unique_ptr<IProcessThreadsReader> makeProcessThreadsReader()
 std::unique_ptr<ISystemConnectionsReader> makeSystemConnectionsReader()
 {
     return std::make_unique<LinuxSystemConnectionsReader>();
+}
+
+std::unique_ptr<IUserSessions> makeUserSessions()
+{
+    return std::make_unique<LinuxUserSessions>();
 }
 
 std::unique_ptr<IProcessOpenFilesReader> makeProcessOpenFilesReader()

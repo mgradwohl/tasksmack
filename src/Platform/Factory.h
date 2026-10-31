@@ -23,6 +23,7 @@
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/ISystemProbe.h"
 #include "Platform/IUdpTrafficCollector.h"
+#include "Platform/IUserSessions.h"
 
 #include <memory>
 
@@ -71,6 +72,10 @@ namespace Platform
 /// Creates the platform-appropriate ISystemConnectionsReader implementation (#3066; Windows: unsupported
 /// until its lane adds one).
 [[nodiscard]] std::unique_ptr<ISystemConnectionsReader> makeSystemConnectionsReader();
+
+/// Creates the platform-appropriate IUserSessions implementation (#3076; Windows: unsupported until its
+/// lane adds WTS sessions).
+[[nodiscard]] std::unique_ptr<IUserSessions> makeUserSessions();
 
 /// Creates the platform-appropriate IProcessOpenFilesReader implementation (#183).
 [[nodiscard]] std::unique_ptr<IProcessOpenFilesReader> makeProcessOpenFilesReader();

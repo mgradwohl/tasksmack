@@ -23,6 +23,7 @@
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/ISystemProbe.h"
 #include "Platform/IUdpTrafficCollector.h"
+#include "Platform/IUserSessions.h"
 #include "Platform/Windows/HelperLauncher.h"
 #include "Platform/Windows/PipeBroker.h"
 #include "WindowsDebugPrivilege.h"
@@ -121,6 +122,12 @@ std::unique_ptr<ISystemConnectionsReader> makeSystemConnectionsReader()
 {
     // The Connections tab (#3066) says it isn't available until the Windows lane adds a reader.
     return std::make_unique<UnsupportedSystemConnectionsReader>();
+}
+
+std::unique_ptr<IUserSessions> makeUserSessions()
+{
+    // The Users tab (#3076) says it isn't available until the Windows lane adds WTS sessions.
+    return std::make_unique<UnsupportedUserSessions>();
 }
 
 std::unique_ptr<IProcessThreadsReader> makeProcessThreadsReader()
