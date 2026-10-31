@@ -783,7 +783,7 @@ TaskSmack uses TOML-based theme files. Built-in themes are bundled with the appl
 
 See the built-in theme files (shipped alongside the application) for the expected key structure.
 
-TaskSmack currently ships 20 themes. Theme schema details and the current inventory live in [`assets/themes/README.md`](https://github.com/mgradwohl/tasksmack/blob/main/assets/themes/README.md).
+TaskSmack currently ships 22 themes. Theme schema details and the current inventory live in [`assets/themes/README.md`](https://github.com/mgradwohl/tasksmack/blob/main/assets/themes/README.md).
 
 ![Animation: the machine tab's Overview switching through the Windows Dark, Ubuntu Light, Dracula, Nord Light, Gruvbox and Monochrome Light themes](../images/screenshots/linux/themes-live.webp)
 

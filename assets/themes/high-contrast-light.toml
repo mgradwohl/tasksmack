@@ -1,0 +1,162 @@
+[meta]
+name = "High Contrast Light"
+description = "High contrast light palette for accessible reading and chart interpretation"
+author = "TaskSmack"
+version = "1.0"
+[accents]
+colors = [
+    "#005A9C",
+    "#8A4B00",
+    "#00704A",
+    "#8A3F6B",
+    "#725900",
+    "#004A78",
+    "#9C3E00",
+    "#006B70",
+]
+[semantic]
+text_primary = "#0D1A0D"
+text_disabled = "#5A6B5A"
+text_muted = "#6C6C6C"
+text_error = "#D5192E"
+text_warning = "#755000"
+text_success = "#003B11"
+text_info = "#46774A"
+[status]
+running = "#00691A"
+sleeping = "#20672C"
+disk_sleep = "#006919"
+zombie = "#1B5E20"
+stopped = "#00681E"
+idle = "#36633B"
+[charts]
+cpu = "#2D5784"
+memory = "#3B9F42"
+io = "#854712"
+io_write = "#473F1F"
+net_tx = "#7C6446"
+net_rx = "#5394A2"
+cpu_fill = "#2D57844D"
+memory_fill = "#3B9F424D"
+io_fill = "#8547124D"
+io_write_fill = "#473F1F4D"
+net_tx_fill = "#7C64464D"
+net_rx_fill = "#5394A24D"
+peak_line = "#00771FB3"
+cpu_total     = "#2D5784"
+memory_cached = "#087A4B"
+memory_shared = "#5B9B68"
+swap          = "#3E3F6D"
+memory_private = "#437F68"
+memory_swap    = "#616395"
+power         = "#707653"
+battery       = "#095760"
+threads       = "#5B3D5E"
+handles       = "#454034"
+page_faults   = "#606390"
+gdi           = "#256359"
+[charts.gpu]
+utilization = "#603D5C"
+utilization_fill = "#603D5C4D"
+memory = "#437F68"
+memory_fill = "#437F684D"
+temperature = "#958B80"
+power = "#707653"
+encoder = "#658349"
+decoder = "#168459"
+clock = "#009AAE"
+clock_fill = "#009AAECC"
+fan = "#314134"
+[cpu_breakdown]
+user = "#023242"
+system = "#8D4E2B"
+iowait = "#634C3F"
+idle = "#C8E6C9"
+user_fill = "#02324259"
+system_fill = "#8D4E2B59"
+iowait_fill = "#634C3F59"
+idle_fill = "#C8E6C933"
+[priority]
+high   = "#1B5E20"
+normal = "#4CAF50"
+low    = "#81C784"
+badge_text_color = "#1A1A1A"
+[buttons.close]
+hovered = "#CC1A1A"
+active  = "#E63333"
+[buttons.success]
+normal = "#43A047"
+hovered = "#66BB6A"
+active = "#388E3C"
+[ui.window]
+background = "#FFFFFF"
+child_background = "#FFFFFF00"
+popup_background = "#FFFFFFF0"
+border = "#777777FF"
+border_shadow = "#00000000"
+[ui.frame]
+background = "#FAFAFA"
+background_hovered = "#F0F0F0"
+background_active = "#E4E4E4"
+[ui.title]
+background = "#F2F2F2"
+background_active = "#E6E6E6"
+background_collapsed = "#F2F2F280"
+[ui.bars]
+menu = "#F2F2F2"
+status = "#EAEAEA"
+[ui.scrollbar]
+background = "#F5F5F580"
+grab = "#777777"
+grab_hovered = "#555555"
+grab_active = "#333333"
+[ui.controls]
+check_mark = "#0066A1"
+slider_grab = "#0066A1"
+slider_grab_active = "#004B78"
+[ui.button]
+normal = "#D6D6D6"
+hovered = "#C4C4C4"
+active = "#A6D8FF"
+[ui.header]
+normal = "#A6D8FF"
+hovered = "#D4ECFF"
+active = "#0066A180"
+[ui.separator]
+normal = "#77777780"
+hovered = "#555555"
+active = "#333333"
+[ui.resize_grip]
+normal = "#77777733"
+hovered = "#555555"
+active = "#333333"
+[ui.tab]
+normal = "#D6D6D6"
+hovered = "#A6D8FF"
+active = "#FFFFFF"
+active_overline = "#005A9C"
+unfocused = "#EEEEEE"
+unfocused_active = "#FFFFFF"
+unfocused_active_overline = "#005A9C80"
+[ui.docking]
+preview = "#0066A1B3"
+empty_background = "#FFFFFF"
+[ui.plot]
+grid = "#D3D3D3"
+lines = "#111111"
+lines_hovered = "#000000"
+histogram = "#0066A1"
+histogram_hovered = "#004B78"
+[ui.table]
+header_background = "#F0F0F0"
+border_strong = "#777777"
+border_light = "#D3D3D3"
+row_background = "#00000004"
+row_background_alt = "#0000000C"
+[ui.misc]
+text_selected_background = "#A6D8FF80"
+drag_drop_target = "#005A9C"
+nav_highlight = "#005A9C"
+nav_windowing_highlight = "#00000066"
+nav_windowing_dim_background = "#00000033"
+modal_window_dim_background = "#00000099"
