@@ -3,8 +3,7 @@
 // The sign-in entry that starts TaskSmack when the user signs in (#3093, part 2): raw reads and writes,
 // no decisions (those are Domain/StartAtLogin.h's). Windows: the per-user Run key,
 // HKCU\Software\Microsoft\Windows\CurrentVersion\Run, value "TaskSmack" (WindowsStartAtLogin); no elevation.
-// Linux: an XDG autostart entry, agent:WSL's part (#3254), not written yet, so Platform::makeStartAtLogin()
-// gives null there and Settings hides the row.
+// Linux: a per-user XDG autostart entry, ~/.config/autostart/tasksmack.desktop (LinuxStartAtLogin, #3254).
 //
 // Blocking (registry or file calls): used on a worker (App::StartAtLoginSetting), never on the UI thread (#2731).
 

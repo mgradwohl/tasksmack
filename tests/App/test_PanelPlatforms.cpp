@@ -115,16 +115,12 @@ class OwnCrashesOnlyProbe final : public Platform::ISystemInfoProbe
     return broker;
 }
 
-// #3093 part 2: the sign-in entry is the platform's (none on Linux yet), and none while a test hook is set,
-// so an unattended run never writes it. Making it reads and writes nothing.
+// #3093 part 2: the sign-in entry is the platform's (an XDG autostart entry on Linux, #3254), and none while a
+// test hook is set, so an unattended run never writes it. Making it reads and writes nothing.
 TEST(PanelPlatformsTest, TheSignInEntryIsThePlatformsAndNoneUnderATestHook)
 {
     EXPECT_EQ(makeStartAtLoginEntry(nullptr, true), nullptr);
-#ifdef _WIN32
     EXPECT_NE(makeStartAtLoginEntry(nullptr, false), nullptr);
-#else
-    EXPECT_EQ(makeStartAtLoginEntry(nullptr, false), nullptr);
-#endif
 }
 
 TEST(PanelPlatformsTest, TheCrashHistoryReadsEveryUsersCrashesThroughARunningHelper)
