@@ -1778,9 +1778,19 @@ TEST_F(ProcessDetailsChartsRenderTest, ACollapsedGpuInTheBreakdownHidesItsRows)
          .dedicatedMemoryBytes = 0,
          .sharedMemoryBytes = 300'000'000,
          .engines = {"VideoDecode"}},
+        {.gpuId = "2",
+         .gpuName = "Idle GPU 310",
+         .isIntegrated = false,
+         .utilPercent = 0.0,
+         .memoryBytes = 0,
+         .dedicatedMemoryBytes = 0,
+         .sharedMemoryBytes = 0,
+         .engines = {}},
     };
     ProcessDetailsCharts charts;
-    ASSERT_TRUE(tabText([&] { charts.renderGpuTab(inputs.ctx); }).contains("VideoDecode"));
+    const std::string open = tabText([&] { charts.renderGpuTab(inputs.ctx); });
+    ASSERT_TRUE(open.contains("VideoDecode")) << open;
+    EXPECT_TRUE(open.contains("Idle GPU 310")) << "a GPU with no engines active is listed too: " << open;
 
     // The header's open state, as a click on it stores it, in the usage card's window.
     const ImGuiWindow* found = findCard("##ProcGpuUsageCard");
@@ -1817,6 +1827,33 @@ TEST_F(ProcessDetailsChartsRenderTest, TheNpuUsageCardWithUnreadMemoryAndNoDevic
     EXPECT_TRUE(text.contains("Dedicated:")) << text;
     EXPECT_FALSE(text.contains("NPU Device(s):")) << text;
     EXPECT_FALSE(text.contains("Active Engines:")) << text;
+
+    // All of it dedicated: the total already says so, so the kinds aren't listed beneath it.
+    inputs.snapshot.npuDedicatedMemoryBytes = 8'388'608;
+    inputs.snapshot.npuSharedMemoryBytes = 0;
+    resample(inputs);
+    const std::string dedicatedOnly = tabText([&] { charts.renderNpuTab(inputs.ctx); });
+    EXPECT_TRUE(dedicatedOnly.contains("NPU Memory:")) << dedicatedOnly;
+    EXPECT_FALSE(dedicatedOnly.contains("Dedicated:")) << dedicatedOnly;
+}
+
+// A process with no peak memory figure: the memory chart's tooltip has no Peak row.
+TEST_F(ProcessDetailsChartsRenderTest, TheMemoryTooltipWithoutAPeakHasNoPeakRow)
+{
+    ChartInputs inputs(busyPoint);
+    inputs.ctx.peakMemoryBytes = 0.0;
+    ProcessDetailsCharts charts;
+    const auto draw = [&]
+    {
+        renderOverview(charts, inputs.ctx);
+    };
+    draw();
+    draw();
+    const auto plots = plotsDrawn();
+    ASSERT_EQ(plots.size(), 3U);
+    EXPECT_FALSE(plots[1].contains("Peak Memory"));
+    EXPECT_TRUE(hoverPlot(plots[1], draw));
+    ImGui::GetIO().AddMousePosEvent(-FLT_MAX, -FLT_MAX);
 }
 
 } // namespace
