@@ -22,6 +22,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <set>
@@ -681,6 +682,277 @@ TEST_F(GpuSectionRenderTest, AnUnreadGpuReadingHasAnUnavailableBar)
     {
         EXPECT_GT(hatchFor(unreadCase.unread), 0) << unreadCase.bar;
     }
+}
+
+/// Hovers plot @p index (in ImPlot's order: a GPU's core chart, then its thermal one) near its left
+/// or right edge, draws two frames, and returns the text of the second.
+[[nodiscard]] std::string hoverPlotAndCapture(GpuSection::RenderContext& ctx, int index, bool atLeftEdge)
+{
+    ImPlotContext& plots = *ImPlot::GetCurrentContext();
+    EXPECT_GT(plots.Plots.GetBufSize(), index);
+    if (plots.Plots.GetBufSize() <= index)
+    {
+        return {};
+    }
+    const ImRect rect = plots.Plots.GetByIndex(index)->PlotRect;
+    ImGui::GetIO().AddMousePosEvent(atLeftEdge ? rect.Min.x + 2.0F : rect.Max.x - 2.0F, (rect.Min.y + rect.Max.y) * 0.5F);
+    std::string text;
+    for (int frame = 0; frame < 2; ++frame)
+    {
+        ImGui::NewFrame();
+        ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
+        ImGui::SetNextWindowSize(ImVec2(DISPLAY_WIDTH, DISPLAY_HEIGHT));
+        ImGui::Begin("System", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
+        ImGui::LogToBuffer();
+        GpuSection::renderGpuSection(ctx);
+        text = GImGui->LogBuffer.c_str();
+        ImGui::LogFinish();
+        ImGui::End();
+        ImGui::Render();
+    }
+    return text;
+}
+
+/// Whether ImPlot's hover tooltip window is up.
+[[nodiscard]] bool tooltipShown()
+{
+    const ImGuiWindow* tooltip = ImGui::FindWindowByName("##Tooltip_00");
+    return tooltip != nullptr && tooltip->Active;
+}
+
+// An NPU the read returned but the enumeration didn't list (#1799): named from its reading, and an
+// accelerator that counts dedicated memory labels its memory series so.
+TEST_F(GpuSectionRenderTest, AnAcceleratorListedOnlyByItsReadingIsNamedFromIt)
+{
+    Domain::GPUPublication publication;
+    publication.gpuInfoKnown = true;
+    addAccelerator(publication, "npu0", "Contoso NPU");
+    publication.acceleratorInfo.clear();
+    publication.acceleratorSnapshots[0].memoryIsShared = false;
+    GpuSection::RenderContext ctx = context(&publication);
+    ctx.devices = GpuSection::DeviceSet::Accelerators;
+    static_cast<void>(renderAndCapture(ctx));
+    const std::string text = renderAndCapture(ctx);
+
+    EXPECT_TRUE(text.contains("NPU Monitoring (1 device)")) << text;
+    EXPECT_TRUE(text.contains("Contoso NPU [NPU]")) << text;
+    EXPECT_FALSE(text.contains("Kind: NPU")) << "the details line is the enumeration's: " << text;
+    const auto plots = plotsDrawn();
+    ASSERT_EQ(plots.size(), 1U);
+    EXPECT_EQ(plots[0], (SeriesLabels{"Utilization", "Dedicated Memory"}));
+}
+
+// A GPU the read returned but the enumeration didn't list: its header from its reading, and the
+// probe's capabilities, since there is no adapter entry with sensors of its own.
+TEST_F(GpuSectionRenderTest, AGpuListedOnlyByItsReadingIsNamedFromIt)
+{
+    Domain::GPUPublication publication;
+    publication.gpuInfoKnown = true;
+    publication.capabilities = allSensors();
+    addGpu(publication, "gpu0", "Reading-only GPU");
+    publication.gpuInfo.clear();
+    GpuSection::RenderContext ctx = context(&publication);
+    static_cast<void>(renderAndCapture(ctx));
+    const std::string text = renderAndCapture(ctx);
+    EXPECT_TRUE(text.contains("GPU Monitoring (1 GPU)")) << text;
+    EXPECT_TRUE(text.contains("Reading-only GPU")) << text;
+    EXPECT_EQ(plotsDrawn().size(), 2U) << "the probe's sensors apply: core and thermal charts";
+}
+
+// One GPU that missed the read: the sentence is singular.
+TEST_F(GpuSectionRenderTest, OneGpuMissingTheReadIsSaidInTheSingular)
+{
+    Domain::GPUPublication publication;
+    publication.gpuInfoKnown = true;
+    addGpu(publication, "gpu0", "Only GPU");
+    publication.snapshots.clear();
+    GpuSection::RenderContext ctx = context(&publication);
+    const std::string text = renderAndCapture(ctx);
+    EXPECT_TRUE(text.contains("1 GPU was detected, but the latest reading returned no data.")) << text;
+    EXPECT_TRUE(text.contains("No reading")) << text;
+}
+
+// A reading with no published history yet (the history is published after the snapshot): the header
+// and nothing under it, rather than charts of nothing.
+TEST_F(GpuSectionRenderTest, AGpuWithNoPublishedHistoryDrawsOnlyItsHeader)
+{
+    Domain::GPUPublication publication;
+    publication.gpuInfoKnown = true;
+    publication.capabilities = allSensors();
+    addGpu(publication, "gpu0", "Fresh GPU");
+    publication.histories.clear();
+    GpuSection::RenderContext ctx = context(&publication);
+    static_cast<void>(renderAndCapture(ctx));
+    const std::string text = renderAndCapture(ctx);
+    EXPECT_TRUE(text.contains("Fresh GPU")) << text;
+    EXPECT_FALSE(text.contains("GPU Core & Video")) << text;
+    EXPECT_TRUE(plotsDrawn().empty());
+}
+
+// The user's collapse of a GPU's header is kept: no chart is drawn under it.
+TEST_F(GpuSectionRenderTest, ACollapsedGpuHeaderDrawsNoCharts)
+{
+    Domain::GPUPublication publication;
+    publication.gpuInfoKnown = true;
+    publication.capabilities = allSensors();
+    addGpu(publication, "gpu0", "Folded GPU");
+    GpuSection::RenderContext ctx = context(&publication);
+    ASSERT_TRUE(renderAndCapture(ctx).contains("GPU Core & Video"));
+
+    // The header's open state, as a click on it stores it: under the window, the GPU's id scope, and
+    // the label's fixed "###gpuHeader" id.
+    ImGuiWindow* window = ImGui::FindWindowByName("System");
+    ASSERT_NE(window, nullptr);
+    const ImGuiID gpuScope = ImHashStr("gpu0", 0, window->ID);
+    window->StateStorage.SetInt(ImHashStr("###gpuHeader", 0, gpuScope), 0);
+
+    const std::string text = renderAndCapture(ctx);
+    EXPECT_TRUE(text.contains("Folded GPU")) << text;
+    EXPECT_FALSE(text.contains("GPU Core & Video")) << text;
+    EXPECT_FALSE(text.contains("Thermal & Power")) << text;
+}
+
+// A caller that keeps no frame cache or smoothing state: the tab builds a cache for the frame, and
+// smoothing has nowhere to write, so it writes nothing.
+TEST_F(GpuSectionRenderTest, WithoutAFrameCacheTheTabStillDraws)
+{
+    Domain::GPUPublication publication;
+    publication.gpuInfoKnown = true;
+    publication.capabilities = allSensors();
+    addGpu(publication, "gpu0", "Uncached GPU");
+    GpuSection::RenderContext ctx = context(&publication);
+    ctx.cache = nullptr;
+    static_cast<void>(renderAndCapture(ctx));
+    const std::string text = renderAndCapture(ctx);
+    EXPECT_TRUE(text.contains("Uncached GPU")) << text;
+    EXPECT_TRUE(text.contains("GPU Core & Video")) << text;
+    EXPECT_TRUE(m_Cache.drawList.empty()) << "the fixture's cache was not the one used";
+
+    m_Smoothed.clear();
+    GpuSection::RenderContext unsmoothed = context(&publication);
+    unsmoothed.smoothedGPUs = nullptr;
+    GpuSection::updateSmoothedGPU("gpu0", publication.snapshots[0], unsmoothed);
+    EXPECT_TRUE(m_Smoothed.empty());
+}
+
+// A GPU whose probe can report every sensor but whose history has none of the optional series yet:
+// only Utilization and Memory are plotted, the thermal chart is drawn empty, and hovering either
+// chart lists only what has samples.
+TEST_F(GpuSectionRenderTest, OptionalSeriesWithNoSamplesAreLeftOut)
+{
+    Domain::GPUPublication publication;
+    publication.gpuInfoKnown = true;
+    publication.capabilities = allSensors();
+    addGpu(publication, "gpu0", "Quiet GPU");
+    Domain::GPUPublishedHistory& history = publication.histories.at("gpu0");
+    history.gpuClock = {};
+    history.encoder = {};
+    history.decoder = {};
+    history.temperature = {};
+    history.power = {};
+    history.fanSpeed = {};
+    GpuSection::RenderContext ctx = context(&publication);
+    static_cast<void>(renderAndCapture(ctx));
+    static_cast<void>(renderAndCapture(ctx));
+    const auto plots = plotsDrawn();
+    ASSERT_EQ(plots.size(), 2U);
+    EXPECT_EQ(plots[0], (SeriesLabels{"Utilization", "Memory"}));
+    EXPECT_TRUE(plots[1].empty()) << "no thermal series has a sample";
+
+    std::string text = hoverPlotAndCapture(ctx, 0, false);
+    EXPECT_TRUE(tooltipShown());
+    EXPECT_TRUE(text.contains("Utilization")) << text;
+    EXPECT_FALSE(text.contains("Encoder")) << text;
+
+    text = hoverPlotAndCapture(ctx, 1, false);
+    EXPECT_FALSE(text.contains("Fan")) << text;
+}
+
+// Series shorter than the time axis end at its newest sample: hovered before they start, the tooltip
+// has no row for them, while Utilization and Memory (as long as the axis) still have theirs. Without
+// the byte counts, Memory is its percentage alone.
+TEST_F(GpuSectionRenderTest, AHoverBeforeAShorterSeriesStartsHasNoRowForIt)
+{
+    Domain::GPUPublication publication;
+    publication.gpuInfoKnown = true;
+    publication.capabilities = allSensors();
+    addGpu(publication, "gpu0", "Late-sensor GPU");
+    Domain::GPUPublishedHistory& history = publication.histories.at("gpu0");
+    constexpr std::size_t SHORT_POINTS = 5;
+    const std::vector<float> shortSeries(SHORT_POINTS, 30.0F);
+    history.gpuClock = viewOf(std::vector<float>(SHORT_POINTS, 1500.0F));
+    history.encoder = viewOf(shortSeries);
+    history.decoder = viewOf(shortSeries);
+    history.temperature = viewOf(std::vector<float>(SHORT_POINTS, 55.0F));
+    history.power = viewOf(std::vector<float>(SHORT_POINTS, 90.0F));
+    history.fanSpeed = viewOf(shortSeries);
+    history.memoryUsedBytes = {};
+    history.memoryTotalBytes = {};
+    GpuSection::RenderContext ctx = context(&publication);
+    static_cast<void>(renderAndCapture(ctx));
+    static_cast<void>(renderAndCapture(ctx));
+    ASSERT_EQ(plotsDrawn().size(), 2U);
+
+    std::string text = hoverPlotAndCapture(ctx, 0, true);
+    EXPECT_TRUE(tooltipShown());
+    EXPECT_TRUE(text.contains("Utilization")) << text;
+    EXPECT_TRUE(text.contains("25.0%")) << "Memory as its percentage, with no bytes: " << text;
+    EXPECT_FALSE(text.contains("Encoder")) << text;
+    EXPECT_FALSE(text.contains("Decoder")) << text;
+
+    text = hoverPlotAndCapture(ctx, 1, true);
+    EXPECT_FALSE(text.contains("Temperature")) << text;
+    EXPECT_FALSE(text.contains("Fan")) << text;
+}
+
+// A history whose timestamps have no utilization or memory samples aligned with them yet: nothing is
+// plotted, and hovering the empty charts shows no tooltip.
+TEST_F(GpuSectionRenderTest, AHistoryWithNoAlignedSamplesPlotsNothing)
+{
+    Domain::GPUPublication publication;
+    publication.gpuInfoKnown = true;
+    publication.capabilities = allSensors();
+    addGpu(publication, "gpu0", "Starting GPU");
+    Domain::GPUPublishedHistory& history = publication.histories.at("gpu0");
+    history.utilization = {};
+    GpuSection::RenderContext ctx = context(&publication);
+    static_cast<void>(renderAndCapture(ctx));
+    static_cast<void>(renderAndCapture(ctx));
+    const auto plots = plotsDrawn();
+    ASSERT_EQ(plots.size(), 2U);
+    EXPECT_TRUE(plots[0].empty());
+    EXPECT_TRUE(plots[1].empty());
+
+    static_cast<void>(hoverPlotAndCapture(ctx, 0, false));
+    EXPECT_FALSE(tooltipShown());
+    static_cast<void>(hoverPlotAndCapture(ctx, 1, false));
+    EXPECT_FALSE(tooltipShown());
+}
+
+// A fan the GPU couldn't read at the hovered sample (NaN, #1146) reads N/A, and a memory total of 0
+// gives Memory as its percentage rather than a share of nothing.
+TEST_F(GpuSectionRenderTest, AnUnreadFanAndAZeroMemoryTotalReadAsTheyAre)
+{
+    Domain::GPUPublication publication;
+    publication.gpuInfoKnown = true;
+    publication.capabilities = allSensors();
+    addGpu(publication, "gpu0", "Fanless reading");
+    Domain::GPUPublishedHistory& history = publication.histories.at("gpu0");
+    history.fanSpeed = viewOf(constant(std::numeric_limits<float>::quiet_NaN()));
+    history.memoryTotalBytes = viewOf(constant<std::uint64_t>(0));
+    GpuSection::RenderContext ctx = context(&publication);
+    static_cast<void>(renderAndCapture(ctx));
+    static_cast<void>(renderAndCapture(ctx));
+
+    std::string text = hoverPlotAndCapture(ctx, 0, false);
+    EXPECT_TRUE(tooltipShown());
+    EXPECT_TRUE(text.contains("25.0%")) << text;
+    EXPECT_FALSE(text.contains("GiB")) << "no share of a total of 0: " << text;
+
+    text = hoverPlotAndCapture(ctx, 1, false);
+    EXPECT_TRUE(tooltipShown());
+    EXPECT_TRUE(text.contains("Fan")) << text;
+    EXPECT_TRUE(text.contains("N/A")) << text;
 }
 
 } // namespace
