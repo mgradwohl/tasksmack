@@ -4,6 +4,7 @@
 
 #include <cmath>
 #include <cstddef>
+#include <initializer_list>
 #include <limits>
 #include <vector>
 
@@ -343,6 +344,129 @@ TEST(DialogMetricsTest, OrphanFreeWrapChecksEveryParagraph)
     {
         EXPECT_FALSE(endsInOrphan(layoutWrappedParagraph(paragraph, SPACE, width))) << width;
     }
+}
+
+// ---- Unusable inputs, one at a time (#3221) ----
+//
+// Every measured input is guarded the same way: a value that isn't finite, or isn't positive, stands
+// in as the documented fallback. A width of zero arrives before a font is pushed, a NaN from a
+// division by an unmeasured size, and an infinity from an unbounded constraint. Each kind is passed
+// alone, so every half of every guard is checked against the fallback it should take.
+
+constexpr float NOT_A_NUMBER = std::numeric_limits<float>::quiet_NaN();
+constexpr float POSITIVE_INFINITY = std::numeric_limits<float>::infinity();
+
+TEST(DialogMetricsTest, DialogWidthTakesOneEmAndOneEmWideForAnUnusableFontOrWidth)
+{
+    for (const float bad : {NOT_A_NUMBER, POSITIVE_INFINITY, 0.0F, -4.0F})
+    {
+        EXPECT_FLOAT_EQ(computeDialogWidth(bad, 45.0F, 4000.0F), 45.0F) << bad;               // a 1px em
+        EXPECT_FLOAT_EQ(computeDialogWidth(REFERENCE_EM, bad, 4000.0F), REFERENCE_EM) << bad; // one em wide
+    }
+    EXPECT_FLOAT_EQ(computeDialogWidth(REFERENCE_EM, 45.0F, NOT_A_NUMBER), 480.0F);
+    EXPECT_FLOAT_EQ(computeDialogWidth(REFERENCE_EM, 45.0F, POSITIVE_INFINITY), 480.0F);
+}
+
+TEST(DialogMetricsTest, FittedDialogWidthTreatsAnUnusableContentWidthAsNothing)
+{
+    // Nothing to fit: the floor decides.
+    for (const float bad : {NOT_A_NUMBER, POSITIVE_INFINITY, 0.0F, -4.0F})
+    {
+        EXPECT_FLOAT_EQ(computeFittedDialogWidth(bad, 10.0F, 20.0F, 45.0F, 4000.0F), 200.0F) << bad;
+    }
+    EXPECT_FLOAT_EQ(computeFittedDialogWidth(300.0F, 10.0F, 20.0F, 45.0F, 4000.0F), 300.0F);
+}
+
+TEST(DialogMetricsTest, ActionButtonIgnoresEachUnusableInputOnItsOwn)
+{
+    for (const float bad : {NOT_A_NUMBER, POSITIVE_INFINITY, 0.0F, -4.0F})
+    {
+        // An unmeasured label: the padding alone, against the floor.
+        EXPECT_FLOAT_EQ(computeActionButtonWidth(bad, 10.0F, 1.0F), 20.0F) << bad;
+        // An unusable em: one pixel, so 14 + 2 padding against a 20px floor.
+        EXPECT_FLOAT_EQ(computeActionButtonWidth(14.0F, bad, 20.0F), 20.0F) << bad;
+        // No floor: the label and its padding.
+        EXPECT_FLOAT_EQ(computeActionButtonWidth(14.0F, 10.0F, bad), 34.0F) << bad;
+    }
+}
+
+TEST(DialogMetricsTest, ValueColumnAndRightAlignedStartTreatEachUnusableInputAsZero)
+{
+    for (const float bad : {NOT_A_NUMBER, POSITIVE_INFINITY, 0.0F, -4.0F})
+    {
+        EXPECT_FLOAT_EQ(computeValueColumnStart(bad, 16.0F), 16.0F) << bad;
+        EXPECT_FLOAT_EQ(computeValueColumnStart(120.0F, bad), 120.0F) << bad;
+
+        EXPECT_FLOAT_EQ(computeRightAlignedStart(bad, 250.0F, 150.0F), 100.0F) << bad;
+        EXPECT_FLOAT_EQ(computeRightAlignedStart(150.0F, bad, 150.0F), 150.0F) << bad;
+        EXPECT_FLOAT_EQ(computeRightAlignedStart(150.0F, 250.0F, bad), 400.0F) << bad;
+    }
+}
+
+TEST(DialogMetricsTest, FilledWidthTreatsEachUnusableInputAsZero)
+{
+    for (const float bad : {NOT_A_NUMBER, POSITIVE_INFINITY, -4.0F})
+    {
+        // No measured start: the control starts at the dialog's edge and runs to the content edge.
+        EXPECT_FLOAT_EQ(computeFilledControlWidth(272.0F, bad, 21.0F, 547.0F), 568.0F) << bad;
+        // No content padding: the content edge is the other row's width alone.
+        EXPECT_FLOAT_EQ(computeFilledControlWidth(272.0F, 259.0F, bad, 547.0F), 288.0F) << bad;
+    }
+}
+
+TEST(DialogMetricsTest, CappedWidthTreatsEachUnusableInputAsZero)
+{
+    for (const float bad : {NOT_A_NUMBER, POSITIVE_INFINITY, 0.0F, -4.0F})
+    {
+        // Nothing desired: the floor.
+        EXPECT_FLOAT_EQ(computeCappedControlWidth(bad, 100.0F, 16.0F, 1000.0F, 60.0F), 60.0F) << bad;
+        EXPECT_FLOAT_EQ(computeCappedControlWidth(bad, 100.0F, 16.0F, bad, 60.0F), 60.0F) << bad;
+        // No floor: the budget alone caps it, 900 - 100 - 16.
+        EXPECT_FLOAT_EQ(computeCappedControlWidth(5000.0F, 100.0F, 16.0F, 1000.0F, bad), 784.0F) << bad;
+        // No start, or nothing around it: the budget grows by what it would have taken.
+        EXPECT_FLOAT_EQ(computeCappedControlWidth(5000.0F, bad, 16.0F, 1000.0F, 60.0F), 884.0F) << bad;
+        EXPECT_FLOAT_EQ(computeCappedControlWidth(5000.0F, 100.0F, bad, 1000.0F, 60.0F), 800.0F) << bad;
+    }
+    // An infinite viewport is as unknown as a missing one: the desired width, floored.
+    EXPECT_FLOAT_EQ(computeCappedControlWidth(200.0F, 100.0F, 16.0F, POSITIVE_INFINITY, 60.0F), 200.0F);
+}
+
+TEST(DialogMetricsTest, ScrollableBodyTreatsAnUnusableFloorOrReservationAsZero)
+{
+    for (const float bad : {NOT_A_NUMBER, POSITIVE_INFINITY, 0.0F, -4.0F})
+    {
+        EXPECT_FLOAT_EQ(computeScrollableBodyMaxHeight(360.0F, 400.0F, bad), 0.0F) << bad;
+        EXPECT_FLOAT_EQ(computeScrollableBodyMaxHeight(360.0F, bad, 40.0F), 360.0F) << bad;
+    }
+    EXPECT_EQ(computeScrollableBodyMaxHeight(0.0F, 120.0F, 40.0F), std::numeric_limits<float>::max());
+    EXPECT_EQ(computeScrollableBodyMaxHeight(std::numeric_limits<float>::max(), 120.0F, 40.0F), std::numeric_limits<float>::max());
+}
+
+TEST(DialogMetricsTest, OrphanFreeWrapReturnsAnUnusablePreferredWidthUnchanged)
+{
+    const std::vector<std::vector<float>> text{words(5)};
+    EXPECT_TRUE(std::isnan(computeOrphanFreeWrapWidth(text, SPACE, NOT_A_NUMBER, 20.0F, 400.0F)));
+    EXPECT_FLOAT_EQ(computeOrphanFreeWrapWidth(text, SPACE, 0.0F, 20.0F, 400.0F), 0.0F);
+    EXPECT_FLOAT_EQ(computeOrphanFreeWrapWidth(text, SPACE, -46.0F, 20.0F, 400.0F), -46.0F);
+}
+
+TEST(DialogMetricsTest, OrphanFreeWrapTreatsAnUnusableFloorPaddingOrCapAsAbsent)
+{
+    // At 46px five words wrap four and one; growing to 58 fits them on one line.
+    const std::vector<std::vector<float>> text{words(5)};
+    const float reference = computeOrphanFreeWrapWidth(text, SPACE, 46.0F, 0.0F, 400.0F, 0.0F);
+    EXPECT_FLOAT_EQ(reference, 59.0F);
+    for (const float bad : {NOT_A_NUMBER, POSITIVE_INFINITY, -4.0F})
+    {
+        EXPECT_FLOAT_EQ(computeOrphanFreeWrapWidth(text, SPACE, 46.0F, bad, 400.0F, 0.0F), reference) << bad;
+        EXPECT_FLOAT_EQ(computeOrphanFreeWrapWidth(text, SPACE, 46.0F, 0.0F, 400.0F, bad), reference) << bad;
+    }
+    // A negative space is no space: five 10px words fit on one line at 51px (50 + the rounding guard).
+    EXPECT_FLOAT_EQ(computeOrphanFreeWrapWidth(text, 0.0F, 46.0F, 0.0F, 400.0F, 0.0F), 51.0F);
+    EXPECT_FLOAT_EQ(computeOrphanFreeWrapWidth(text, -2.0F, 46.0F, 0.0F, 400.0F, 0.0F), 51.0F);
+    // No cap at all: the growth is still bounded by one space and the widest word.
+    EXPECT_FLOAT_EQ(computeOrphanFreeWrapWidth(text, SPACE, 46.0F, 0.0F, POSITIVE_INFINITY, 0.0F), reference);
+    EXPECT_FLOAT_EQ(computeOrphanFreeWrapWidth(text, SPACE, 46.0F, 0.0F, NOT_A_NUMBER, 0.0F), reference);
 }
 
 } // namespace

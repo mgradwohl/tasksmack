@@ -303,7 +303,7 @@ class TrainingShell : public Core::Layer
     }
 
   private:
-    [[nodiscard]] std::array<App::Panel*, 7> panels() noexcept
+    [[nodiscard]] std::array<App::Panel*, 8> panels() noexcept
     {
         return m_Panels.inTabOrder();
     }
@@ -346,7 +346,9 @@ class TrainingShell : public Core::Layer
                 }
                 if (ImGui::BeginTabItem(labels[i].second, nullptr, flags))
                 {
-                    shown = all[i];
+                    // The training plan has no Connections or Users workload: System Information, its last
+                    // tab, is the shell's last panel, not the one at its index (#3076).
+                    shown = (i + 1 == labels.size()) ? all.back() : all[i];
                     shownId = labels[i].first;
                     ImGui::EndTabItem();
                 }

@@ -72,6 +72,30 @@ struct DRMGPUProbeTestAccessor
     {
         return probe.m_FdinfoReads;
     }
+
+    // The private parsing and lookup helpers, for their branch tests (#3221).
+    [[nodiscard]] static std::optional<std::uint32_t> pciBusFromAddress(std::string_view address)
+    {
+        return DRMGPUProbe::pciBusFromAddress(address);
+    }
+    [[nodiscard]] static std::string readSysfsString(const std::string& path)
+    {
+        return DRMGPUProbe::readSysfsString(path);
+    }
+    [[nodiscard]] static std::optional<std::uint64_t> readSysfsOptionalUint64(const std::string& path)
+    {
+        return DRMGPUProbe::readSysfsOptionalUint64(path);
+    }
+    [[nodiscard]] static std::string findTemperaturePath(const std::string& hwmonPath)
+    {
+        return DRMGPUProbe::findTemperaturePath(hwmonPath);
+    }
+    [[nodiscard]] static bool fdLinksToCard(const std::string& fdinfoPath, const std::string& cardPath)
+    {
+        DRMGPUProbe::DRMCard card;
+        card.cardPath = cardPath;
+        return DRMGPUProbe::fdLinksToCard(fdinfoPath, card);
+    }
 };
 
 namespace
@@ -2822,6 +2846,65 @@ TEST(DRMGPUProbeVramQueryTest, NodeRejectingTheQueryIoctlIsNotKnown)
 {
     EXPECT_FALSE(DRMGPUProbe::queryVramByIoctl("/dev/null", "xe").has_value());
     EXPECT_FALSE(DRMGPUProbe::queryVramByIoctl("/dev/null", "i915").has_value());
+}
+
+// #3221: the private helpers' refusals: a PCI address in any other shape, a sysfs file of whitespace or an
+// out-of-range number, a temperature input whose channel isn't a number, an fd closed since its fdinfo was read.
+TEST(DRMGPUProbeHelpersTest, MalformedInputsAreRefused)
+{
+    using Access = DRMGPUProbeTestAccessor;
+    EXPECT_EQ(Access::pciBusFromAddress("0000:03:00.0"), std::optional<std::uint32_t>(3));
+    EXPECT_EQ(Access::pciBusFromAddress("0000:3a:00.0"), std::optional<std::uint32_t>(0x3a));
+    EXPECT_EQ(Access::pciBusFromAddress("0000:03:00"), std::nullopt) << "too short";
+    EXPECT_EQ(Access::pciBusFromAddress("0000:03-00.0"), std::nullopt) << "no colon between bus and device";
+    EXPECT_EQ(Access::pciBusFromAddress("0000:0g:00.0"), std::nullopt) << "not hex";
+    EXPECT_EQ(Access::pciBusFromAddress("00x0:03:00.0"), std::nullopt) << "a domain that isn't hex";
+    EXPECT_EQ(Access::pciBusFromAddress("0000:03:0z.0"), std::nullopt);
+    EXPECT_EQ(Access::pciBusFromAddress("card0"), std::nullopt) << "no colon at all";
+
+    const TestSupport::ScopedTempDir dir("tasksmack_drm_helpers");
+    std::ofstream(dir.path / "blank") << " \n\t\n";
+    std::ofstream(dir.path / "huge") << "99999999999999999999999\n";
+    std::ofstream(dir.path / "number") << "42\n";
+    EXPECT_EQ(Access::readSysfsString((dir.path / "blank").string()), "");
+    EXPECT_EQ(Access::readSysfsOptionalUint64((dir.path / "huge").string()), std::nullopt) << "out of range";
+    EXPECT_EQ(Access::readSysfsOptionalUint64((dir.path / "number").string()), std::optional<std::uint64_t>(42));
+
+    // hwmon: tempX_input with a channel that isn't a number is skipped; "pkg" is the package sensor.
+    const auto hwmon = dir.path / "hwmon0";
+    std::filesystem::create_directories(hwmon);
+    std::ofstream(hwmon / "tempfoo_input") << "1000\n";
+    std::ofstream(hwmon / "temp2_input") << "45000\n";
+    std::ofstream(hwmon / "temp2_label") << "pkg\n";
+    EXPECT_EQ(Access::findTemperaturePath(hwmon.string()), (hwmon / "temp2_input").string());
+
+    // fdinfo/<fd> whose fd/<fd> link is gone: closed since, so not the card's.
+    std::filesystem::create_directories(dir.path / "proc" / "77" / "fdinfo");
+    EXPECT_FALSE(Access::fdLinksToCard((dir.path / "proc" / "77" / "fdinfo" / "5").string(), (dir.path / "card1").string()));
+}
+
+// #3221: fdinfo memory in each unit, a figure that would overflow or has an unknown unit or no number, and a
+// line with no colon, are read or skipped as such.
+TEST(DRMGPUProbeFdinfoTest, MemoryUnitsAndMalformedLines)
+{
+    const auto parsed = DRMGPUProbe::parseFdinfo("drm-client-id:\t3\n"
+                                                 "a line without a colon\n"
+                                                 "drm-resident-vram0:\t2 GiB\n"
+                                                 "drm-resident-system0:\t3 MiB\n"
+                                                 "drm-resident-gtt:\t7\n",
+                                                 0);
+    ASSERT_TRUE(parsed.has_value());
+    EXPECT_EQ(parsed->client.dedicatedMemoryBytes, std::uint64_t{2} << 30U);
+    EXPECT_EQ(parsed->client.sharedMemoryBytes, (std::uint64_t{3} << 20U) + 7U);
+
+    const auto skipped = DRMGPUProbe::parseFdinfo("drm-client-id:\t4\n"
+                                                  "drm-resident-vram0:\t5 TiB\n"
+                                                  "drm-resident-local0:\t18446744073709551615 KiB\n"
+                                                  "drm-resident-system0:\tKiB\n",
+                                                  0);
+    ASSERT_TRUE(skipped.has_value());
+    EXPECT_EQ(skipped->client.dedicatedMemoryBytes, 0U) << "an unknown unit, and a figure that would overflow";
+    EXPECT_EQ(skipped->client.sharedMemoryBytes, 0U) << "no number";
 }
 
 } // namespace

@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <iostream>
 #include <utility>
 #include <vector>
 
@@ -465,6 +466,32 @@ TEST_F(WindowsProcessConnectionsTest, AFailedTableFailsTheReadWithTheReason)
     EXPECT_EQ(fake().udp4.calls, 0); // stopped at the first failure
 }
 
+TEST_F(WindowsProcessConnectionsTest, ARowWithStateZeroIsListedAsUnknown)
+{
+    // Windows Insider build 26300 (from about 2026-10-29) fills dwState with 0, which is no
+    // MIB_TCP_STATE, for many rows, a fresh listener among them (#3257). The row is still this
+    // process's socket: it is listed, with its endpoints, and its state is Unknown, never a guess
+    // such as Closed or Listen.
+    MIB_TCPROW_OWNER_PID listener = tcp4Row(TARGET_PID, MIB_TCP_STATE_LISTEN, 9090);
+    listener.dwState = 0;
+    MIB_TCP6ROW_OWNER_PID listener6 = tcp6Row(TARGET_PID, MIB_TCP_STATE_LISTEN, 9091, 0);
+    listener6.dwState = 0;
+    fake().tcp4.bytes = makeTable<MIB_TCPTABLE_OWNER_PID>(std::vector{listener});
+    fake().tcp6.bytes = makeTable<MIB_TCP6TABLE_OWNER_PID>(std::vector{listener6});
+
+    const ConnectionsReadResult result = m_Reader.readConnections(TARGET);
+    ASSERT_EQ(result.status, ConnectionsReadStatus::Ok);
+    const ProcessConnection* tcp4 = findLocal(result, ConnectionProtocol::Tcp, 9090);
+    ASSERT_NE(tcp4, nullptr);
+    EXPECT_EQ(tcp4->family, ConnectionFamily::IPv4);
+    EXPECT_EQ(tcp4->local.address, v4({192, 168, 1, 10}));
+    EXPECT_EQ(tcp4->state, ConnectionState::Unknown);
+    const ProcessConnection* tcp6 = findLocal(result, ConnectionProtocol::Tcp, 9091);
+    ASSERT_NE(tcp6, nullptr);
+    EXPECT_EQ(tcp6->family, ConnectionFamily::IPv6);
+    EXPECT_EQ(tcp6->state, ConnectionState::Unknown);
+}
+
 TEST_F(WindowsProcessConnectionsTest, ACountLargerThanTheTableIsClampedToItsRows)
 {
     auto bytes = makeTable<MIB_UDPTABLE_OWNER_PID>(std::vector{udp4Row(TARGET_PID, 5353)});
@@ -587,7 +614,16 @@ TEST(WindowsProcessConnectionsRealTest, FindsALoopbackListenerAndUdpSocketOfThis
     const ProcessConnection* tcp = findLocal(result, ConnectionProtocol::Tcp, tcpPort);
     ASSERT_NE(tcp, nullptr) << "listener on 127.0.0.1:" << tcpPort << " not found";
     EXPECT_EQ(tcp->family, ConnectionFamily::IPv4);
-    EXPECT_EQ(tcp->state, ConnectionState::Listen);
+    // Listen, or Unknown on a host whose TCP table reports state 0 for the listener. Windows Insider
+    // build 26300 does (#3257): GetExtendedTcpTable, GetTcpTable, netstat and Get-NetTCPConnection
+    // all read 0 for it, so it is the host, and the probe shows the row as UNKNOWN rather than
+    // guessing. Any other state is still a wrong mapping and fails.
+    EXPECT_TRUE(tcp->state == ConnectionState::Listen || tcp->state == ConnectionState::Unknown)
+        << "listener state " << static_cast<int>(tcp->state);
+    if (tcp->state == ConnectionState::Unknown)
+    {
+        std::cout << "[   NOTE   ] this host's TCP table reports state 0 for a listening socket (#3257)\n";
+    }
     EXPECT_EQ(tcp->local.address, v4({127, 0, 0, 1}));
 
     const ProcessConnection* bound = findLocal(result, ConnectionProtocol::Udp, udpPort);

@@ -56,6 +56,7 @@ void ShellPanels::connectModels()
     if (const auto processModel = m_Processes.processModel(); processModel != nullptr)
     {
         m_SystemMetrics.setProcessModel(processModel);
+        m_Users.setProcessModel(processModel); // the Users tab's per-user totals (#3076)
 
         // Share GPU model with ProcessModel for per-process GPU data
         if (const auto gpuModel = m_SystemMetrics.gpuModel(); gpuModel != nullptr)

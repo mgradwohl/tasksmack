@@ -250,6 +250,32 @@ TEST(UpdateCheckReplyTest, DecodesEscapesInTheFieldsItReads)
     EXPECT_EQ(fields.htmlUrl, std::optional<std::string>("a/b\xC3\xA9\xF0\x9F\x98\x80"));
 }
 
+TEST(UpdateCheckReplyTest, DecodesAnEscapeAboveTheSurrogatesToThreeBytes)
+{
+    // U+20AC (the euro sign) and U+E000, the first code point past the surrogates: three UTF-8 bytes each.
+    const std::optional<ReleaseFields> fieldsRead = readReleaseFields(R"({"tag_name":"\u20ac\ue000"})");
+    ASSERT_TRUE(fieldsRead.has_value());
+    EXPECT_EQ(fieldsRead.value_or(ReleaseFields{}).tagName, std::optional<std::string>("\xE2\x82\xAC\xEE\x80\x80"));
+}
+
+TEST(UpdateCheckReplyTest, RefusesEscapesCutShortByTheEndOrPairedWithTheWrongHalf)
+{
+    const std::vector<std::string_view> malformed = {
+        R"({"tag_name":"\u12)",           // fewer than four hex digits before the end
+        R"({"tag_name":"\)",              // a backslash at the very end
+        R"({"tag_name":"\ud83d\n"})",     // a high surrogate followed by another escape
+        R"({"tag_name":"\ud83d\u0041"})", // ... by a code point below the low surrogates
+        R"({"tag_name":"\ud83d\ue000"})", // ... by one above them
+        R"({"tag_name":"\ud83d\ud83d"})", // ... by another high surrogate
+        R"({"tag_name":"\ud83d\uZZZZ"})", // ... by no hex digits at all
+        R"({"tag_name":"\ud83d\u00)",     // ... by a low half cut short by the end
+    };
+    for (const std::string_view text : malformed)
+    {
+        EXPECT_FALSE(readReleaseFields(text).has_value()) << text;
+    }
+}
+
 TEST(UpdateCheckReplyTest, AFieldOfTheWrongTypeIsLeftUnsetAndARepeatedOneKeepsItsLast)
 {
     const std::optional<ReleaseFields> wrongRead = readReleaseFields(R"({"tag_name":10,"html_url":null,"draft":"no","prerelease":[true]})");

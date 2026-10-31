@@ -76,6 +76,8 @@ inline constexpr int MAX_TABLE_ATTEMPTS = 4;
 
 /// A MIB_TCP_STATE (MIB_TCP_STATE_CLOSED .. MIB_TCP_STATE_DELETE_TCB) as a Platform::ConnectionState.
 /// DELETE_TCB (a control block being torn down) reads as Closed; anything else unknown as Unknown.
+/// That includes 0, which is no MIB_TCP_STATE but which Windows build 26300 reports for many rows,
+/// listeners among them (#3257): such a row is shown as UNKNOWN, never guessed as Closed or Listen.
 [[nodiscard]] ConnectionState toConnectionState(DWORD mibState) noexcept;
 
 /// A table row's port: the port in network byte order in the DWORD's low 16 bits, as a host-order number.

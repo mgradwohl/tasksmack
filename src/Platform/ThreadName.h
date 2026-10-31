@@ -31,6 +31,10 @@ inline constexpr std::string_view SERVICE_SAMPLER_THREAD_NAME = "ts-sampler-svc"
 inline constexpr std::string_view SENSOR_SAMPLER_THREAD_NAME = "ts-sampler-sens";
 /// The Connections tab's sampler (#3066), running only while the tab is shown.
 inline constexpr std::string_view CONNECTIONS_SAMPLER_THREAD_NAME = "ts-sampler-conn";
+/// The Users tab's sampler (#3076), running only while the tab is shown.
+inline constexpr std::string_view USERS_SAMPLER_THREAD_NAME = "ts-sampler-user";
+/// The worker that runs one Users tab Lock or Sign out at a time (#3076).
+inline constexpr std::string_view SESSION_ACTION_THREAD_NAME = "ts-session-act";
 /// The Startup tab's sampler (#801), running only while the tab is shown.
 inline constexpr std::string_view STARTUP_SAMPLER_THREAD_NAME = "ts-sampler-auto";
 /// The worker that runs one Process Details Connections read at a time (#799).
