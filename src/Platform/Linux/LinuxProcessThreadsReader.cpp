@@ -1,5 +1,6 @@
 #include "LinuxProcessThreadsReader.h"
 
+#include "LinuxOsInfo.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessThreads.h"
 #include "PosixGuards.h"
@@ -131,6 +132,8 @@ ThreadsReadResult LinuxProcessThreadsReader::readThreads(const ProcessTarget& ta
 
     ThreadsReadResult result{.status = ThreadsReadStatus::Ok, .threads = {}, .detail = {}};
     result.ticksPerSecond = std::max<long>(1, ::sysconf(_SC_CLK_TCK));
+    // When the machine booted, so each thread's start (ticks after boot) reads as a time (#3069).
+    result.bootTimeEpoch = LinuxOsInfo::parseBootTime(LinuxOsInfo::readFile(m_ProcRoot + "/stat"));
     std::array<char, 1024> buf{};
     errno = 0;
     while (const dirent* entry = ::readdir(task.get())) // NOLINT(concurrency-mt-unsafe) - this DIR is the worker's own
