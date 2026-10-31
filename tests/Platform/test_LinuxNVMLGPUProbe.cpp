@@ -1766,6 +1766,54 @@ TEST(LinuxNVMLGPUProbeTest, AnAwakeGpuWhosePciInfoQueryFailsIsNotAddressedOnceIt
     EXPECT_EQ(enumerated.size(), 2U);
 }
 
+// #3221: with nvmlDeviceGetIndex failing, a GPU found by its PCI address keeps the position it was
+// found at, and a deferred GPU looked up once awake keeps the index it was deferred with; one whose
+// PCI-info query fails then keeps the PCI identity it had while asleep, so its sleep check still works.
+TEST(LinuxNVMLGPUProbeTest, AGpuDeferredAtLoadKeepsItsIndexAndPciIdentityWhenNvmlCantSayThem)
+{
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock NVML library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
+    const NvmlMockControls controls;
+    ASSERT_TRUE(controls.controlsCountAndIndex());
+    ASSERT_TRUE(controls.controlsPciInfo());
+    const TestSupport::ScopedTempDir pciRoot("tasksmack_nvml_deferred_noindex");
+    const TestSupport::ScopedTempDir procRoot("tasksmack_nvml_deferred_noindex_proc");
+    makePciDevice(pciRoot.path, "0000:01:00.0", "0x10de", "nvidia");
+    makePciDevice(pciRoot.path, "0000:41:00.0", "0x10de", "nvidia", "suspended");
+    std::ofstream(pciRoot.path / "0000:41:00.0" / "device") << "0x2684\n";
+    makeProcGpuInformation(procRoot.path, "0000:41:00.0", "Mock NVIDIA GPU 1 (procfs)", "GPU-proc-uuid-1");
+
+    controls.failGetIndex(true);
+    controls.setFailingPciInfoDevice(1);
+    NVMLGPUProbe probe(pciRoot.path.string(), procRoot.path.string());
+    ASSERT_TRUE(probe.isAvailable());
+    const auto asleep = probe.enumerateGPUs();
+    ASSERT_EQ(asleep.size(), 2U);
+    EXPECT_EQ(asleep[0].id, "mock-nvml-uuid-0");
+    EXPECT_EQ(asleep[0].deviceIndex, 0U); // its position among the addresses
+    EXPECT_EQ(asleep[1].deviceIndex, 1U);
+
+    setRuntimeStatus(pciRoot.path, "0000:41:00.0", "active");
+    EXPECT_TRUE(probe.rescanGPUs(GPURescan::Quick));
+    const auto awake = probe.enumerateGPUs();
+    ASSERT_EQ(awake.size(), 2U);
+    EXPECT_EQ(awake[1].id, "GPU-proc-uuid-1");
+    EXPECT_EQ(awake[1].name, "Mock NVIDIA GPU 1");
+    EXPECT_EQ(awake[1].deviceIndex, 1U);                                                     // the deferred index
+    EXPECT_EQ(awake[1].pciLocation, (PciLocation{.bus = 0x41, .device = 0, .function = 0})); // known while asleep
+    EXPECT_EQ(awake[1].pciDeviceId, 0x2684'10DEU);
+
+    // Asleep again, it is left alone: the kept sysfs identity is what the sleep check reads.
+    setRuntimeStatus(pciRoot.path, "0000:41:00.0", "suspended");
+    const auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 2U);
+    EXPECT_FALSE(counters[0].suspended);
+    EXPECT_TRUE(counters[1].suspended);
+}
+
 // #1270 review: a replacement GPU asleep through a restart, with no UUID in procfs, can only take the
 // identity known at its PCI address. Once it wakes and NVML names a different GPU, it gets nothing of
 // the old one's: its own sensor set is found (here it has the power reading the old GPU lacked).
