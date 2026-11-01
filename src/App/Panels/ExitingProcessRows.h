@@ -37,9 +37,12 @@ class Tracker
 {
   public:
     /// A new generation, @p current, replaced @p previous at @p now: each process of @p previous not in
-    /// @p current exited. Returns whether any was added.
+    /// @p current exited. Returns whether any was added. It first drops those whose time is up at @p now,
+    /// as expire() does: generations are adopted on every tab but the table, which expires them too, is
+    /// drawn only on its own, so the tracker stays bounded while another tab is showing (#3283).
     bool onGeneration(const std::vector<Domain::ProcessSnapshot>& previous, const std::vector<Domain::ProcessSnapshot>& current, double now)
     {
+        (void) expire(now);
         std::unordered_set<std::uint64_t> live;
         live.reserve(current.size());
         for (const Domain::ProcessSnapshot& proc : current)

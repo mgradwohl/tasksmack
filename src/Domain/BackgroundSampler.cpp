@@ -474,6 +474,8 @@ BackgroundSampler::PassTiming BackgroundSampler::runPass(const std::stop_token& 
     // How long each samplable's sample() took this pass, whether it returned or threw; empty for
     // one not called (expired, or the sampler was stopping) (#1416).
     std::vector<std::optional<std::chrono::steady_clock::duration>> durations(currentSamplables.size());
+    // Whether any samplable called may have published something to show (#3285).
+    bool mayHavePublished = false;
     for (std::size_t index = 0; index < currentSamplables.size(); ++index)
     {
         if (stopToken.stop_requested())
@@ -495,6 +497,7 @@ BackgroundSampler::PassTiming BackgroundSampler::runPass(const std::stop_token& 
         {
             samplable->sample();
             durations[index] = std::chrono::steady_clock::now() - sampleStart;
+            mayHavePublished = mayHavePublished || samplable->lastSampleMayHavePublished();
         }
         // A sample that throws still took its time: timed too, so a slow failing model is
         // counted (samples, overruns) and named as the slowest rather than hidden (#1416).
@@ -503,12 +506,14 @@ BackgroundSampler::PassTiming BackgroundSampler::runPass(const std::stop_token& 
             durations[index] = std::chrono::steady_clock::now() - sampleStart;
             logLoopException(ex.what(), startTime, exceptionLog);
             hadException = true;
+            mayHavePublished = true; // it may have committed before it threw
         }
         catch (...)
         {
             durations[index] = std::chrono::steady_clock::now() - sampleStart;
             logLoopException("unknown exception", startTime, exceptionLog);
             hadException = true;
+            mayHavePublished = true; // it may have committed before it threw
         }
     }
 
@@ -520,8 +525,8 @@ BackgroundSampler::PassTiming BackgroundSampler::runPass(const std::stop_token& 
     }
     // The pass committed what it sampled: wake the frame loop to show it (#3156). Once per pass, after
     // every samplable, so one pass brings one frame; a pass that sampled nothing (all expired, or
-    // stopping) has nothing new to show.
-    if (std::ranges::any_of(durations, [](const auto& duration) { return duration.has_value(); }))
+    // stopping) or only through closed gates (#3285) has nothing new to show.
+    if (mayHavePublished)
     {
         PublicationWake::notify();
     }

@@ -1679,6 +1679,52 @@ TEST(BackgroundSamplerTest, APassThatSampledNothingDoesNotWakeTheFrameLoop)
     EXPECT_EQ(PublicationWakeCounter::wakes(), 0);
 }
 
+namespace
+{
+
+/// A samplable that is called but reads nothing, as a closed App::SamplingGate is (#3285).
+class IdleSamplable final : public MockSamplable
+{
+  public:
+    [[nodiscard]] bool lastSampleMayHavePublished() const noexcept override
+    {
+        return false;
+    }
+};
+
+} // namespace
+
+TEST(BackgroundSamplerTest, APassWhoseSamplesPublishedNothingDoesNotWakeTheFrameLoop)
+{
+    const PublicationWakeCounter counter;
+    const auto idle = std::make_shared<IdleSamplable>();
+    Domain::SamplerConfig config;
+    config.interval = 50ms;
+    Domain::BackgroundSampler sampler(config);
+    sampler.addSamplable(idle);
+    sampler.start();
+    idle->waitForSamples(3); // called on every pass...
+    sampler.stop();
+    EXPECT_EQ(PublicationWakeCounter::wakes(), 0); // ...but none of them woke the frame loop
+}
+
+TEST(BackgroundSamplerTest, APassWakesTheFrameLoopIfAnyOfItsSamplesMayHavePublished)
+{
+    const PublicationWakeCounter counter;
+    const auto idle = std::make_shared<IdleSamplable>();
+    const auto reads = std::make_shared<MockSamplable>();
+    Domain::SamplerConfig config;
+    config.interval = 100ms;
+    Domain::BackgroundSampler sampler(config);
+    sampler.addSamplable(idle);
+    sampler.addSamplable(reads);
+    sampler.start();
+    reads->waitForSamples(3);
+    EXPECT_TRUE(waitFor([] { return PublicationWakeCounter::wakes() >= 3; }));
+    sampler.stop();
+    EXPECT_EQ(PublicationWakeCounter::wakes(), reads->getSampleCount());
+}
+
 TEST(BackgroundSamplerTest, TheStartHooksSeedWakesTheFrameLoopBeforeTheFirstPass)
 {
     const PublicationWakeCounter counter;

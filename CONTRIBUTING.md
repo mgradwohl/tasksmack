@@ -3009,7 +3009,8 @@ That single push runs two independent workflows:
   every file's build provenance, and publishes the GitHub Release: it creates the release as a **draft**
   titled `TaskSmack vX.Y.Z` (the form every release since v0.5.0 is named in) with a placeholder body ("Release notes follow." and the verification commands; not GitHub's
   generated notes, which exceed the release-body limit on a big release, #2801), uploads every asset, `SHA256SUMS` and `SHA256SUMS.bundle`, checks the draft's assets match `dist/` by name and
-  size, and only then publishes it (`gh release edit --draft=false --latest`), so a failure
+  size, and only then publishes it (`gh release edit --draft=false`, marked **Latest** only when its tag is the highest
+  published `vX.Y.Z`, so an older line's patch such as v0.9.3 after v0.10.0 doesn't take Latest, #3277), so a failure
   part-way leaves a draft, never a public release with missing assets; re-running reuses that
   draft and overwrites its assets. Then `verify-published-release` downloads the published assets
   and checks them again (see [Release Artifact Validation](#release-artifact-validation)). The
