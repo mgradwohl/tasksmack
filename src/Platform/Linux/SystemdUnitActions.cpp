@@ -202,8 +202,10 @@ int onActionReply(sd_bus_message* message, void* userdata, sd_bus_error* /*retEr
 {
     BusError error;
     MallocString state; // freed even if the copy below throws (#3338)
-    if (sd_bus_get_property_string(bus, SYSTEMD, unitPath.c_str(), SYSTEMD_UNIT, "ActiveState", error.get(), state.out()) < 0 ||
-        state.get() == nullptr)
+    // Its own statement: std::out_ptr() hands the string to state only at the end of the full expression.
+    const int result =
+        sd_bus_get_property_string(bus, SYSTEMD, unitPath.c_str(), SYSTEMD_UNIT, "ActiveState", error.get(), std::out_ptr(state));
+    if (result < 0 || state.get() == nullptr)
     {
         return {};
     }
@@ -215,8 +217,9 @@ int onActionReply(sd_bus_message* message, void* userdata, sd_bus_error* /*retEr
 {
     BusError error;
     MallocString value; // freed even if the copy below throws (#3338)
-    if (sd_bus_get_property_string(bus, SYSTEMD, unitPath.c_str(), SYSTEMD_SERVICE, property, error.get(), value.out()) >= 0 &&
-        value.get() != nullptr)
+    const int result =
+        sd_bus_get_property_string(bus, SYSTEMD, unitPath.c_str(), SYSTEMD_SERVICE, property, error.get(), std::out_ptr(value));
+    if (result >= 0 && value.get() != nullptr) // a statement apart: std::out_ptr() hands it over at the call's end
     {
         return value.get();
     }
@@ -242,7 +245,7 @@ int onActionReply(sd_bus_message* message, void* userdata, sd_bus_error* /*retEr
 {
     BusError error;
     MallocString state;
-    return sd_bus_get_property_string(bus, SYSTEMD, jobPath.c_str(), SYSTEMD_JOB, "State", error.get(), state.out()) < 0;
+    return sd_bus_get_property_string(bus, SYSTEMD, jobPath.c_str(), SYSTEMD_JOB, "State", error.get(), std::out_ptr(state)) < 0;
 }
 
 /// Sends Manager.@p method (StartUnit or StopUnit) for @p name in "replace" mode and waits for @p goal.

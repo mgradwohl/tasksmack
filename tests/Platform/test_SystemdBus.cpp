@@ -12,6 +12,7 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <new>
 #endif
 
@@ -131,8 +132,9 @@ TEST(SystemdBusTest, ReadsANetworkdLeaseOrSaysWhyNot)
 
 #ifdef TASKSMACK_HAS_SDBUS
 
-// #3338: the owners of what sd-bus hands back with malloc free it on every path, a throw while it is held included.
-// Debug builds check nothing leaks by running cleanly; the Sanitizers job's LeakSanitizer fails on a leak.
+// #3338: the owners of what sd-bus hands back with malloc free it on every path, a throw while it is held included,
+// and an owner filled twice frees the first. Only a leak detector sees a leak: the Sanitizers job's LeakSanitizer
+// fails on one, while a plain debug run checks the owners hand back what was put in and don't crash.
 TEST(SdBusOwnersTest, MallocdStringsAndArraysAreFreedWhenACopyThrows)
 {
     const auto fillString = [](char** out)
@@ -150,8 +152,8 @@ TEST(SdBusOwnersTest, MallocdStringsAndArraysAreFreedWhenACopyThrows)
     EXPECT_THROW(
         {
             SystemdBus::Detail::MallocString text;
-            fillString(text.out());
-            ASSERT_NE(text.get(), nullptr);
+            fillString(std::out_ptr(text));
+            EXPECT_NE(text.get(), nullptr);
             throw std::bad_alloc(); // as copying it might
         },
         std::bad_alloc);
@@ -159,7 +161,8 @@ TEST(SdBusOwnersTest, MallocdStringsAndArraysAreFreedWhenACopyThrows)
         {
             SystemdBus::Detail::MallocStrv names;
             fillStrv(names.out());
-            ASSERT_NE(names.get(), nullptr);
+            fillStrv(names.out()); // filled again: the first array is freed
+            EXPECT_NE(names.get(), nullptr);
             EXPECT_STREQ(names.get()[1], "b.service"); // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic) - a C strv
             throw std::bad_alloc();                    // part way through copying its entries
         },

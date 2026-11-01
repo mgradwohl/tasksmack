@@ -12,6 +12,7 @@
 #include "Platform/Linux/SdBusCall.h"
 
 #include <cstdint>
+#include <memory>
 #include <utility>
 #include <vector>
 
@@ -44,8 +45,9 @@ constexpr const char* LOGIN1_SESSION = "org.freedesktop.login1.Session";
 {
     BusError error;
     MallocString value; // freed even if the copy below throws (#3338)
-    if (sd_bus_get_property_string(bus, LOGIN1, path.c_str(), LOGIN1_SESSION, property, error.get(), value.out()) >= 0 &&
-        value.get() != nullptr)
+    // Its own statement: std::out_ptr() hands the string to value only at the end of the full expression.
+    const int result = sd_bus_get_property_string(bus, LOGIN1, path.c_str(), LOGIN1_SESSION, property, error.get(), std::out_ptr(value));
+    if (result >= 0 && value.get() != nullptr)
     {
         return value.get();
     }
