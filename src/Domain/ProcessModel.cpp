@@ -644,6 +644,7 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
         // The writer's reusable PID -> row table (#2981): a stable process set rebuilds it in the
         // slots it already has, where a fresh std::unordered_map allocated a node per process. A PID
         // listed twice maps to its last row, as that map's operator[] assignment did.
+        m_PidIndexRows = nullptr; // these rows aren't published yet, and may never be if this refresh fails (#3334)
         m_PidIndex.rebuild(newSnapshots, &ProcessSnapshot::pid);
 
         for (std::size_t i = 0; i < newSnapshots.size(); ++i)
@@ -754,6 +755,7 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
 
         previousGeneration = std::move(m_Snapshots);      // move out, not destroy -- ownership transfers to the local
         m_Snapshots = std::move(newSnapshotsPublication); // pointer swap only, no allocation or destruction
+        m_PidIndexRows = m_Snapshots.get();               // the index was built for these rows, in this order (#3334)
         m_RowHistory.swap(newRowHistory);                 // the outgoing rings are released after the lock, with newRowHistory
         ++m_SnapshotVersion;
         ++m_SystemHistoryVersion;
@@ -1257,9 +1259,18 @@ bool ProcessModel::appendHeldOverLocked(const Platform::ProcessCounters& current
         std::shared_lock const lock(m_Mutex);
         previousSnapshots = m_Snapshots;
     }
-    // m_PidIndex still maps the last generation's rows: computeSnapshotsLocked() rebuilds it after the loop.
+    // m_PidIndex maps the last generation's rows (computeSnapshotsLocked() rebuilds it after the loop), unless the
+    // refresh before failed after rebuilding it for rows it never published: then it is rebuilt for these (#3334).
+    if (m_PidIndexRows != previousSnapshots.get())
+    {
+        m_PidIndexRows = nullptr;
+        m_PidIndex.rebuild(*previousSnapshots, &ProcessSnapshot::pid);
+        m_PidIndexRows = previousSnapshots.get();
+    }
     const std::size_t row = m_PidIndex.find(current.pid);
-    if (row >= previousSnapshots->size() || (*previousSnapshots)[row].startTimeTicks != current.startTimeTicks)
+    // The whole identity: two processes started in the same clock tick share a start time.
+    if (row >= previousSnapshots->size() || (*previousSnapshots)[row].pid != current.pid ||
+        (*previousSnapshots)[row].startTimeTicks != current.startTimeTicks)
     {
         return false;
     }
