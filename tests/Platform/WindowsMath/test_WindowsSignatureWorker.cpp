@@ -3,8 +3,8 @@
 /// later find(), never by the caller's thread; a path is queued once however many processes run it; a
 /// new process of an image re-reads its stamp, checked again only when the file changed or has no file ID
 /// (#3292); the path table's
-/// bound; a check that throws; and the destructor stopping a queue. Pure (no Windows header), so built
-/// everywhere.
+/// bound, which a table full of queued paths keeps by admitting no more (#3340); a check that throws; and the destructor stopping a queue.
+/// Pure (no Windows header), so built everywhere.
 
 #include "Platform/ImageSignature.h"
 #include "Platform/Windows/WindowsImageSignature.h"
@@ -245,6 +245,43 @@ TEST_F(SignatureWorkerTest, AFullPathTableForgetsAnsweredPathsAndFindAsksAgain)
     ASSERT_TRUE(worker.waitUntilIdle(WAIT));
     EXPECT_TRUE(worker.find("a").has_value());
     EXPECT_EQ(checksOf("a"), 1) << "its file's answer was still cached";
+}
+
+TEST_F(SignatureWorkerTest, ATableFullOfQueuedPathsAdmitsNoMoreUntilTheyAreChecked)
+{
+    for (const char* path : {"a", "b", "c", "d"})
+    {
+        setStamp(path, 1);
+    }
+    setGate(false); // the worker holds a's check: nothing is answered, so nothing can be forgotten
+    WorkerOptions options;
+    options.maxPaths = 2;
+    SignatureWorker worker(fakeFunctions(), options);
+    worker.request("a");
+    worker.request("b");
+    for (int sample = 0; sample < 50; ++sample)
+    {
+        // Full of queued paths (#3340): c and d aren't admitted, however often they're asked for
+        worker.request("c");
+        EXPECT_FALSE(worker.find("d").has_value()) << "not checked yet";
+    }
+    EXPECT_EQ(worker.pathCount(), 2U) << "the table and its queue stay within their bound";
+    setGate(true);
+    ASSERT_TRUE(worker.waitUntilIdle(WAIT));
+    EXPECT_EQ(checksOf("c"), 0) << "never queued";
+    EXPECT_EQ(checksOf("d"), 0);
+    EXPECT_TRUE(worker.find("a").has_value());
+    EXPECT_TRUE(worker.find("b").has_value());
+
+    // Once checks have drained the queue, a later sample's find() admits them.
+    EXPECT_FALSE(worker.find("c").has_value());
+    EXPECT_FALSE(worker.find("d").has_value());
+    ASSERT_TRUE(worker.waitUntilIdle(WAIT));
+    EXPECT_TRUE(worker.find("c").has_value());
+    EXPECT_TRUE(worker.find("d").has_value());
+    EXPECT_EQ(checksOf("c"), 1);
+    EXPECT_EQ(checksOf("d"), 1);
+    EXPECT_EQ(worker.pathCount(), 2U);
 }
 
 TEST_F(SignatureWorkerTest, TheDestructorStopsTheQueueAndAPauseEndsAtTheStop)
