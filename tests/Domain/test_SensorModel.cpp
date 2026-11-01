@@ -226,12 +226,25 @@ TEST(SensorModelTest, PublicationsShareTheHistoriesInsteadOfCopyingThem)
     EXPECT_FLOAT_EQ(before.values[0], 40.0F);
     EXPECT_FLOAT_EQ(before.values[1], 41.0F);
 
-    // Two publications a sample apart read one block: the second didn't copy the history.
-    clock.advance(1000ms);
-    model.sample();
-    const std::shared_ptr<const SensorPublication> next = model.publication();
-    EXPECT_TRUE(next->histories.at(packageKey()).values.sharesStorageWith(after.values));
-    EXPECT_TRUE(next->histories.at(packageKey()).times.sharesStorageWith(after.times));
+    // Publications a sample apart read one block, the second not copying the history: all but the
+    // occasional sample that compacts the block into a new one (about one in as many as it holds).
+    constexpr int PAIRS = 40;
+    int shared = 0;
+    std::shared_ptr<const SensorPublication> previous = model.publication();
+    for (int pair = 0; pair < PAIRS; ++pair)
+    {
+        clock.advance(1000ms);
+        model.sample();
+        const std::shared_ptr<const SensorPublication> next = model.publication();
+        const SensorHistory& was = previous->histories.at(packageKey());
+        const SensorHistory& now = next->histories.at(packageKey());
+        if (now.values.sharesStorageWith(was.values) && now.times.sharesStorageWith(was.times))
+        {
+            ++shared;
+        }
+        previous = next;
+    }
+    EXPECT_GE(shared, PAIRS * 3 / 4) << shared << " of " << PAIRS << " consecutive publications shared their storage";
 }
 
 TEST(SensorModelTest, AFactoryThatMakesNoReaderPublishesNothingAndIsntAskedAgain)
