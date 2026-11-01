@@ -8,7 +8,6 @@
 #pragma comment(lib, "crypt32.lib")
 
 #include "WinString.h"
-#include "WindowsConversions.h"
 #include "WindowsHandles.h"
 #include "WindowsImageSignature.h"
 
@@ -134,20 +133,24 @@ class CatalogAdmin
     HCATINFO m_Catalog = nullptr;
 };
 
+/// Moves @p file's pointer to its start; false (with the last error set) when it can't.
+[[nodiscard]] bool rewind(HANDLE file)
+{
+    const LARGE_INTEGER start{};
+    return SetFilePointerEx(file, start, nullptr, FILE_BEGIN) != FALSE;
+}
+
 /// @p file's hash under @p admin's algorithm, from its start; nullopt (with the last error set) when it
 /// can't be computed.
 [[nodiscard]] std::optional<std::vector<BYTE>> hashFile(const TrustApiFunctions& fns, HCATADMIN admin, HANDLE file)
 {
-    const LARGE_INTEGER start{};
     DWORD hashSize = 0;
-    if (SetFilePointerEx(file, start, nullptr, FILE_BEGIN) == FALSE ||
-        (fns.calcHashFromFileHandle2(admin, file, &hashSize, nullptr, 0) == FALSE && hashSize == 0))
+    if (!rewind(file) || (fns.calcHashFromFileHandle2(admin, file, &hashSize, nullptr, 0) == FALSE && hashSize == 0))
     {
         return std::nullopt;
     }
     std::vector<BYTE> hash(hashSize);
-    if (SetFilePointerEx(file, start, nullptr, FILE_BEGIN) == FALSE ||
-        fns.calcHashFromFileHandle2(admin, file, &hashSize, hash.data(), 0) == FALSE)
+    if (!rewind(file) || fns.calcHashFromFileHandle2(admin, file, &hashSize, hash.data(), 0) == FALSE)
     {
         return std::nullopt;
     }
@@ -157,25 +160,68 @@ class CatalogAdmin
 
 } // namespace
 
-TrustCheck verifyEmbeddedSignature(const TrustApiFunctions& fns, const std::wstring& path)
+std::optional<WindowsSignature::FileStamp> readFileStamp(const TrustApiFunctions& fns, HANDLE file)
 {
-    WINTRUST_FILE_INFO file{};
-    file.cbStruct = sizeof(file);
-    file.pcwszFilePath = path.c_str();
-    WINTRUST_DATA data = offlineTrustData();
-    data.dwUnionChoice = WTD_CHOICE_FILE;
-    data.pFile = &file; // NOLINT(cppcoreguidelines-pro-type-union-access) - the member dwUnionChoice selects
-    return verifyTrust(fns, data);
+    FILE_BASIC_INFO basic{};
+    FILE_STANDARD_INFO standard{};
+    if (fns.getFileInformationByHandleEx(file, FileBasicInfo, &basic, sizeof(basic)) == FALSE ||
+        fns.getFileInformationByHandleEx(file, FileStandardInfo, &standard, sizeof(standard)) == FALSE)
+    {
+        return std::nullopt;
+    }
+    std::optional<WindowsSignature::FileId> fileId;
+    FILE_ID_INFO id{};
+    if (fns.getFileInformationByHandleEx(file, FileIdInfo, &id, sizeof(id)) != FALSE)
+    {
+        fileId = WindowsSignature::makeFileId(id.VolumeSerialNumber,
+                                              std::span<const std::uint8_t, WindowsSignature::FileId::SIZE>(id.FileId.Identifier));
+    }
+    return WindowsSignature::FileStamp{
+        .fileId = fileId,
+        .changeTime = static_cast<std::uint64_t>(basic.ChangeTime.QuadPart),
+        .size = static_cast<std::uint64_t>(standard.EndOfFile.QuadPart),
+    };
 }
 
-std::optional<TrustCheck> verifyCatalogSignature(const TrustApiFunctions& fns, const std::wstring& path)
+std::optional<WindowsSignature::OpenedImage> openImage(const TrustApiFunctions& fns, const std::wstring& path)
 {
-    const UniqueHandle file(CreateFileW(
-        path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr));
+    // Shared for read only: no writer, rename or delete while it's held, and none already open.
+    UniqueHandle file(CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
     if (!file)
+    {
+        return std::nullopt;
+    }
+    const std::optional<WindowsSignature::FileStamp> stamp = readFileStamp(fns, file.get());
+    if (!stamp.has_value())
+    {
+        return std::nullopt;
+    }
+    return WindowsSignature::OpenedImage{.file = file.release(), .stamp = *stamp};
+}
+
+void closeImage(void* file) noexcept
+{
+    UniqueHandle{file}.reset();
+}
+
+TrustCheck verifyEmbeddedSignature(const TrustApiFunctions& fns, const std::wstring& path, HANDLE file)
+{
+    if (!rewind(file))
     {
         return TrustCheck{.result = lastErrorResult(), .signer = {}};
     }
+    WINTRUST_FILE_INFO info{};
+    info.cbStruct = sizeof(info);
+    info.pcwszFilePath = path.c_str();
+    info.hFile = file; // read through the check's handle, not by opening the path again
+    WINTRUST_DATA data = offlineTrustData();
+    data.dwUnionChoice = WTD_CHOICE_FILE;
+    data.pFile = &info; // NOLINT(cppcoreguidelines-pro-type-union-access) - the member dwUnionChoice selects
+    return verifyTrust(fns, data);
+}
+
+std::optional<TrustCheck> verifyCatalogSignature(const TrustApiFunctions& fns, const std::wstring& path, HANDLE file)
+{
     const GUID subsystem = DRIVER_ACTION_VERIFY; // the system catalog database, where Windows' own catalogs are
     for (const wchar_t* algorithm : {BCRYPT_SHA256_ALGORITHM, BCRYPT_SHA1_ALGORITHM})
     {
@@ -184,7 +230,7 @@ std::optional<TrustCheck> verifyCatalogSignature(const TrustApiFunctions& fns, c
         {
             return TrustCheck{.result = lastErrorResult(), .signer = {}};
         }
-        std::optional<std::vector<BYTE>> hash = hashFile(fns, catalogAdmin.handle(), file.get());
+        std::optional<std::vector<BYTE>> hash = hashFile(fns, catalogAdmin.handle(), file);
         if (!hash.has_value())
         {
             return TrustCheck{.result = lastErrorResult(), .signer = {}};
@@ -208,7 +254,7 @@ std::optional<TrustCheck> verifyCatalogSignature(const TrustApiFunctions& fns, c
         member.pcwszCatalogFilePath = info.wszCatalogFile;
         member.pcwszMemberTag = memberTag.c_str();
         member.pcwszMemberFilePath = path.c_str();
-        member.hMemberFile = file.get();
+        member.hMemberFile = file;
         member.pbCalculatedFileHash = hash->data();
         member.cbCalculatedFileHash = hashSize;
         member.hCatAdmin = catalogAdmin.handle();
@@ -218,20 +264,6 @@ std::optional<TrustCheck> verifyCatalogSignature(const TrustApiFunctions& fns, c
         return verifyTrust(fns, data);
     }
     return std::nullopt;
-}
-
-std::optional<WindowsSignature::FileStamp> imageFileStamp(const std::string& path)
-{
-    WIN32_FILE_ATTRIBUTE_DATA data{};
-    if (GetFileAttributesExW(WinString::utf8ToWide(path).c_str(), GetFileExInfoStandard, &data) == FALSE)
-    {
-        return std::nullopt;
-    }
-    constexpr unsigned HIGH_SHIFT = 32;
-    return WindowsSignature::FileStamp{
-        .lastWriteTime = fileTimeTicks(data.ftLastWriteTime),
-        .size = (std::uint64_t{data.nFileSizeHigh} << HIGH_SHIFT) | data.nFileSizeLow,
-    };
 }
 
 std::string signatureErrorMessage(std::uint32_t code)
@@ -258,11 +290,12 @@ WindowsSignature::SignatureFunctions systemSignatureFunctions() noexcept
 {
     return {
         .errorMessage = &signatureErrorMessage,
-        .fileStamp = &imageFileStamp,
-        .verifyEmbeddedSignature = [](const std::string& path)
-        { return verifyEmbeddedSignature(TrustApiFunctions{}, WinString::utf8ToWide(path)); },
-        .verifyCatalogSignature = [](const std::string& path)
-        { return verifyCatalogSignature(TrustApiFunctions{}, WinString::utf8ToWide(path)); },
+        .openImage = [](const std::string& path) { return openImage(TrustApiFunctions{}, WinString::utf8ToWide(path)); },
+        .closeImage = &closeImage,
+        .verifyEmbeddedSignature = [](const std::string& path, void* file)
+        { return verifyEmbeddedSignature(TrustApiFunctions{}, WinString::utf8ToWide(path), file); },
+        .verifyCatalogSignature = [](const std::string& path, void* file)
+        { return verifyCatalogSignature(TrustApiFunctions{}, WinString::utf8ToWide(path), file); },
     };
 }
 

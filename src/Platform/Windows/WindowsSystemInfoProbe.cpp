@@ -985,7 +985,8 @@ WindowsDrivers::Functions WindowsSystemInfoProbe::driverFunctions()
         // The image signature check the process probe's Signature column shares (#3070): a driver's exit
         // code is often an NTSTATUS, which signatureErrorMessage() names from ntdll's messages.
         .errorMessage = Windows::systemSignatureFunctions().errorMessage,
-        .fileStamp = Windows::systemSignatureFunctions().fileStamp,
+        .openImage = Windows::systemSignatureFunctions().openImage,
+        .closeImage = Windows::systemSignatureFunctions().closeImage,
         .verifyEmbeddedSignature = Windows::systemSignatureFunctions().verifyEmbeddedSignature,
         .verifyCatalogSignature = Windows::systemSignatureFunctions().verifyCatalogSignature,
     };
