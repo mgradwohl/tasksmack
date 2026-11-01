@@ -366,6 +366,135 @@ TEST_F(SystemMetricsPanelRenderTest, ARequestedTabWaitsForTheSampleThatDrawsIt)
     panel->onDetach();
 }
 
+// #3289: the empty generation the panel holds before the first sample (version 0) isn't a sample: a request
+// made at startup survives however many frames the first sample takes, more than the frame budget too.
+TEST_F(SystemMetricsPanelRenderTest, ARequestedTabOutlivesASlowFirstSample)
+{
+    const auto gate = std::make_shared<std::latch>(1);
+    const auto panel = std::make_unique<SystemMetricsPanel>(
+        [gate]
+        {
+            gate->wait();
+            return SystemMetricsProbes{.system = mockSystem(), .power = nullptr, .disk = nullptr, .gpu = nullptr};
+        });
+    panel->onAttach();
+    // The factory waits on the gate, and the panel's sampler joins on detach: opened on every way out,
+    // a failure below ends the test instead of hanging it.
+    struct GateOpener
+    {
+        explicit GateOpener(std::shared_ptr<std::latch> gateLatch) : latch(std::move(gateLatch))
+        {}
+        std::shared_ptr<std::latch> latch;
+        bool opened = false;
+        void open()
+        {
+            if (!opened)
+            {
+                latch->count_down();
+                opened = true;
+            }
+        }
+        ~GateOpener()
+        {
+            open();
+        }
+        GateOpener(const GateOpener&) = delete;
+        GateOpener& operator=(const GateOpener&) = delete;
+        GateOpener(GateOpener&&) = delete;
+        GateOpener& operator=(GateOpener&&) = delete;
+    } opener(gate);
+    panel->requestTab(SelectOverride::MachineTab::Cores);
+    bool keptEveryFrame = true;
+    for (int frame = 0; frame < SelectOverride::MAX_MACHINE_TAB_FRAMES + 5 && keptEveryFrame; ++frame)
+    {
+        panel->onUpdate(1.0F / 60.0F);
+        static_cast<void>(renderAndCapture(*panel));
+        keptEveryFrame = panel->requestedTabPending();
+        EXPECT_TRUE(keptEveryFrame) << "dropped before the first sample, frame " << frame;
+    }
+
+    opener.open();
+    ASSERT_TRUE(panel->waitForFirstSample());
+    static_cast<void>(renderAndCapture(*panel));
+    const std::string after = renderAndCapture(*panel);
+    EXPECT_TRUE(after.contains("(4 logical processors)")) << after;
+    EXPECT_FALSE(panel->requestedTabPending());
+    panel->onDetach();
+}
+
+// #3289 review: the GPU and NPU sub-tabs come from the GPU sampler's own seed. With the system sample in and
+// only the GPU factory held, an NPU request outlives the frame budget, then takes the NPU tab once the GPU seed
+// brings its accelerator.
+TEST_F(SystemMetricsPanelRenderTest, AnNpuRequestWaitsForTheGpuSeedNotJustTheSystemSample)
+{
+    const auto gate = std::make_shared<std::latch>(1);
+    struct GateOpener
+    {
+        explicit GateOpener(std::shared_ptr<std::latch> gateLatch) : latch(std::move(gateLatch))
+        {}
+        std::shared_ptr<std::latch> latch;
+        bool opened = false;
+        void open()
+        {
+            if (!opened)
+            {
+                latch->count_down();
+                opened = true;
+            }
+        }
+        ~GateOpener()
+        {
+            open();
+        }
+        GateOpener(const GateOpener&) = delete;
+        GateOpener& operator=(const GateOpener&) = delete;
+        GateOpener(GateOpener&&) = delete;
+        GateOpener& operator=(GateOpener&&) = delete;
+    };
+    const auto panel = std::make_unique<SystemMetricsPanel>(
+        SystemMetricsProbeFactories{.system = [] { return SystemModelProbes{.system = mockSystem(), .power = nullptr}; },
+                                    .disk = {},
+                                    .gpu =
+                                        [gate]
+                                    {
+                                        gate->wait();
+                                        auto gpu = std::make_unique<TestMocks::MockGPUProbe>();
+                                        gpu->withGPU("iGPU", "Intel(R) Arc(TM) 140T GPU", "Intel", true);
+                                        gpu->withAccelerator("NPU", "Intel(R) AI Boost", "GPU_0x00000000_0x00018103");
+                                        return gpu;
+                                    }});
+    panel->onAttach();
+    GateOpener opener(gate);
+    panel->requestTab(SelectOverride::MachineTab::Npu);
+
+    // The system sample arrives; the GPU seed doesn't.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (panel->hostname() != "testhost" && std::chrono::steady_clock::now() < deadline)
+    {
+        panel->onUpdate(1.0F / 60.0F);
+        static_cast<void>(renderAndCapture(*panel));
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    ASSERT_EQ(panel->hostname(), "testhost") << "the system sample never arrived";
+    bool keptEveryFrame = true;
+    for (int frame = 0; frame < SelectOverride::MAX_MACHINE_TAB_FRAMES + 5 && keptEveryFrame; ++frame)
+    {
+        panel->onUpdate(1.0F / 60.0F);
+        static_cast<void>(renderAndCapture(*panel));
+        keptEveryFrame = panel->requestedTabPending();
+        EXPECT_TRUE(keptEveryFrame) << "dropped before the GPU seed, frame " << frame;
+    }
+
+    opener.open();
+    ASSERT_TRUE(panel->waitForFirstSample());
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    const std::string after = renderAndCapture(*panel);
+    EXPECT_FALSE(panel->requestedTabPending());
+    EXPECT_TRUE(after.contains("NPU Monitoring (1 device)")) << after;
+    panel->onDetach();
+}
+
 // #2869: a request for a sub-tab this machine never draws (no NPU) is dropped, with nothing selected,
 // after MAX_MACHINE_TAB_FRAMES frames drawn with a snapshot, so no stale request is left.
 TEST_F(SystemMetricsPanelRenderTest, ARequestedTabThisMachineLacksIsDroppedAfterTheFrameLimit)
