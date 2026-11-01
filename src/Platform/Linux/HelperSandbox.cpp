@@ -418,22 +418,23 @@ constexpr std::array REFUSED{
 #endif
 };
 
-/// No call is in both lists: ALLOWED's rules come first, so a REFUSED entry it also holds would never fire (#3297).
-[[nodiscard]] constexpr bool listsAreDisjoint() noexcept
-{
-    for (const long allowed : ALLOWED)
+// No call is in both lists: ALLOWED's rules come first, so a REFUSED entry it also holds would never fire (#3297).
+static_assert(
+    []
     {
-        for (const long refused : REFUSED)
+        for (const long allowed : ALLOWED)
         {
-            if (allowed == refused)
+            for (const long refused : REFUSED)
             {
-                return false;
+                if (allowed == refused)
+                {
+                    return false;
+                }
             }
         }
-    }
-    return true;
-}
-static_assert(listsAreDisjoint(), "a system call is both allowed and refused");
+        return true;
+    }(),
+    "a system call is both allowed and refused");
 
 #endif // x86-64 or AArch64
 
