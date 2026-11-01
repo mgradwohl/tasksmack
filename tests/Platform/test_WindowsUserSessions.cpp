@@ -3,10 +3,13 @@
 /// WTS calls, the helper's answer to a SessionActionRequest, and a read of this machine's real sessions.
 /// No test here disconnects or signs out a real session: every action goes to the fakes.
 
+#include "Platform/AsciiCase.h"
 #include "Platform/BrokerProtocol.h"
 #include "Platform/IServiceActions.h"
 #include "Platform/IUserSessions.h"
+#include "Platform/ProcessTypes.h"
 #include "Platform/Windows/WindowsConversions.h"
+#include "Platform/Windows/WindowsProcessProbe.h"
 #include "Platform/Windows/WindowsUserSessions.h"
 #include "Platform/Windows/WindowsUserSessionsMath.h"
 
@@ -284,6 +287,17 @@ TEST(WindowsUserSessionsRealTest, ListsThisMachinesSessionsAndFindsItsOwn)
     EXPECT_FALSE(mine->user.empty());
     EXPECT_EQ(mine->sessionClass, "user");
     EXPECT_FALSE(calls.describe(ERROR_ACCESS_DENIED).empty());
+
+    // The Users tab matches a process to its row by domain and user (#3310): the process probe names this
+    // process's owner as WTS names its session's user.
+    WindowsProcessProbe probe;
+    const auto processes = probe.enumerate();
+    const auto ownPid = static_cast<std::int32_t>(GetCurrentProcessId());
+    const auto self = std::ranges::find_if(processes, [ownPid](const ProcessCounters& process) { return process.pid == ownPid; });
+    ASSERT_NE(self, processes.end());
+    EXPECT_TRUE(equalsIgnoreCase(self->user, mine->user)) << self->user << " vs " << mine->user;
+    EXPECT_FALSE(self->userDomain.empty());
+    EXPECT_TRUE(equalsIgnoreCase(self->userDomain, mine->domain)) << self->userDomain << " vs " << mine->domain;
 }
 
 } // namespace

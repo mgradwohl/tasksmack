@@ -102,9 +102,9 @@ using TokenFunctions = WindowsProcessProbeFunctions::Token;
     return std::as_bytes(buffer.subspan(sidBegin - bufferBegin, length));
 }
 
-/// Get the username (owner) of a process. With @p names, a SID it named less than its TTL before
-/// @p now isn't looked up again, and a successful lookup is stored in it (#2982).
-[[nodiscard]] std::string
+/// Get the account (owner) of a process: its user name and domain (#3310). With @p names, a SID it named
+/// less than its TTL before @p now isn't looked up again, and a successful lookup is stored in it (#2982).
+[[nodiscard]] AccountName
 getProcessOwner(const TokenFunctions& fns, HANDLE hProcess, AccountNameCache* names, std::chrono::steady_clock::time_point now)
 {
     if (hProcess == nullptr)
@@ -146,7 +146,7 @@ getProcessOwner(const TokenFunctions& fns, HANDLE hProcess, AccountNameCache* na
     const std::span<const std::byte> sid = (names != nullptr) ? sidBytesIn(tokenInfo, tokenUser.User.Sid) : std::span<const std::byte>{};
     if (names != nullptr && !sid.empty())
     {
-        if (std::optional<std::string> cached = names->find(sid, now))
+        if (std::optional<AccountName> cached = names->find(sid, now))
         {
             return std::move(*cached);
         }
@@ -164,12 +164,12 @@ getProcessOwner(const TokenFunctions& fns, HANDLE hProcess, AccountNameCache* na
         return {};
     }
 
-    std::string user = WinString::wideToUtf8(userName.data());
+    AccountName owner{.user = WinString::wideToUtf8(userName.data()), .domain = WinString::wideToUtf8(domainName.data())};
     if (names != nullptr && !sid.empty())
     {
-        names->store(sid, user, now);
+        names->store(sid, owner, now);
     }
-    return user;
+    return owner;
 }
 
 /// The full path of a process's executable (QueryFullProcessImageNameW). Empty when unreadable.
@@ -853,7 +853,7 @@ readThreadGroupAffinities(const ProcessFunctions& fns, std::span<const std::byte
 
 std::string WindowsProcessDetailReads::owner(const WindowsProcessProbeFunctions::Token& fns, HANDLE hProcess)
 {
-    return getProcessOwner(fns, hProcess, nullptr, {});
+    return getProcessOwner(fns, hProcess, nullptr, {}).user;
 }
 
 std::string WindowsProcessDetailReads::owner(const WindowsProcessProbeFunctions::Token& fns,
@@ -861,7 +861,7 @@ std::string WindowsProcessDetailReads::owner(const WindowsProcessProbeFunctions:
                                              AccountNameCache& names,
                                              std::chrono::steady_clock::time_point now)
 {
-    return getProcessOwner(fns, hProcess, &names, now);
+    return getProcessOwner(fns, hProcess, &names, now).user;
 }
 
 std::wstring WindowsProcessDetailReads::imagePath(const WindowsProcessProbeFunctions::Process& fns, HANDLE hProcess)
@@ -1266,6 +1266,7 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid,
         // Restore the TTL-cached fields. State is not among them: enumerate() derives it from the
         // snapshot every sample (#1156).
         counters.user = cache.user;
+        counters.userDomain = cache.userDomain;
         counters.command = cache.command;
         counters.status = cache.status;
         counters.publisher = cache.image.publisher;
@@ -1350,7 +1351,9 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid,
         {
             updateSignature(cache, counters); // Asks for the image's check once its path is known (#3070)
         }
-        counters.user = getProcessOwner(m_Fns.token, hProcess.get(), &m_AccountNames, now);
+        AccountName owner = getProcessOwner(m_Fns.token, hProcess.get(), &m_AccountNames, now);
+        counters.user = std::move(owner.user);
+        counters.userDomain = std::move(owner.domain);
 
         // The command line, as Linux shows it (#1156); the image path where it can't be read.
         counters.command = getProcessCommandLine(m_Fns.process, hProcess.get());
@@ -1404,6 +1407,7 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid,
     if (plan.heavy)
     {
         cache.user = counters.user;
+        cache.userDomain = counters.userDomain;
         cache.command = counters.command;
         cache.processType = counters.processType;
         cache.cpuAffinity = counters.cpuAffinity;

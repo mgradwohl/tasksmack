@@ -1502,10 +1502,10 @@ TEST(AccountNameCacheTest, AStoredNameIsFoundUntilItsTtlRunsOut)
 {
     AccountNameCache names(NAME_TTL);
     const std::chrono::steady_clock::time_point stored{std::chrono::hours(1)};
-    names.store(sidBytes(1), "alice", stored);
+    names.store(sidBytes(1), {.user = "alice", .domain = {}}, stored);
 
-    EXPECT_EQ(names.find(sidBytes(1), stored), "alice");
-    EXPECT_EQ(names.find(sidBytes(1), stored + NAME_TTL - std::chrono::nanoseconds(1)), "alice");
+    EXPECT_EQ(names.find(sidBytes(1), stored), (AccountName{.user = "alice", .domain = {}}));
+    EXPECT_EQ(names.find(sidBytes(1), stored + NAME_TTL - std::chrono::nanoseconds(1)), (AccountName{.user = "alice", .domain = {}}));
     EXPECT_FALSE(names.find(sidBytes(1), stored + NAME_TTL).has_value()); // Asked again: a rename shows
 }
 
@@ -1513,24 +1513,38 @@ TEST(AccountNameCacheTest, EachSidHasItsOwnName)
 {
     AccountNameCache names(NAME_TTL);
     const std::chrono::steady_clock::time_point now{};
-    names.store(sidBytes(1), "alice", now);
-    names.store(sidBytes(2), "bob", now);
+    names.store(sidBytes(1), {.user = "alice", .domain = {}}, now);
+    names.store(sidBytes(2), {.user = "bob", .domain = {}}, now);
 
-    EXPECT_EQ(names.find(sidBytes(1), now), "alice");
-    EXPECT_EQ(names.find(sidBytes(2), now), "bob");
+    EXPECT_EQ(names.find(sidBytes(1), now), (AccountName{.user = "alice", .domain = {}}));
+    EXPECT_EQ(names.find(sidBytes(2), now), (AccountName{.user = "bob", .domain = {}}));
     EXPECT_FALSE(names.find(sidBytes(3), now).has_value());
     EXPECT_EQ(names.size(), 2U);
+}
+
+// #3310: the domain is kept with the user name, so a cached owner still names its domain.
+TEST(AccountNameCacheTest, TheDomainIsKeptWithTheName)
+{
+    AccountNameCache names(NAME_TTL);
+    const std::chrono::steady_clock::time_point now{};
+    names.store(sidBytes(1), {.user = "alice", .domain = "CORP"}, now);
+    names.store(sidBytes(2), {.user = "alice", .domain = "PC"}, now);
+
+    EXPECT_EQ(names.find(sidBytes(1), now), (AccountName{.user = "alice", .domain = "CORP"}));
+    EXPECT_EQ(names.find(sidBytes(2), now), (AccountName{.user = "alice", .domain = "PC"}));
+    names.store(sidBytes(3), {.user = "", .domain = "PC"}, now); // A domain without a user isn't a name
+    EXPECT_FALSE(names.find(sidBytes(3), now).has_value());
 }
 
 TEST(AccountNameCacheTest, StoringAgainReplacesTheNameAndRestartsItsTtl)
 {
     AccountNameCache names(NAME_TTL);
     const std::chrono::steady_clock::time_point first{};
-    names.store(sidBytes(1), "alice", first);
+    names.store(sidBytes(1), {.user = "alice", .domain = {}}, first);
     const auto second = first + NAME_TTL;
-    names.store(sidBytes(1), "alice2", second);
+    names.store(sidBytes(1), {.user = "alice2", .domain = {}}, second);
 
-    EXPECT_EQ(names.find(sidBytes(1), second + NAME_TTL - std::chrono::seconds(1)), "alice2");
+    EXPECT_EQ(names.find(sidBytes(1), second + NAME_TTL - std::chrono::seconds(1)), (AccountName{.user = "alice2", .domain = {}}));
     EXPECT_EQ(names.size(), 1U);
 }
 
@@ -1538,8 +1552,8 @@ TEST(AccountNameCacheTest, AnEmptySidOrNameIsNotStored)
 {
     AccountNameCache names(NAME_TTL);
     const std::chrono::steady_clock::time_point now{};
-    names.store({}, "alice", now);
-    names.store(sidBytes(1), "", now);
+    names.store({}, {.user = "alice", .domain = {}}, now);
+    names.store(sidBytes(1), AccountName{}, now);
 
     EXPECT_EQ(names.size(), 0U);
     EXPECT_FALSE(names.find(sidBytes(1), now).has_value());
@@ -1554,7 +1568,7 @@ TEST(AccountNameCacheTest, ANewSidInAFullCacheClearsItFirst)
         std::vector<std::byte> sid = sidBytes(0);
         sid.push_back(static_cast<std::byte>(i & 0xFFU));
         sid.push_back(static_cast<std::byte>(i >> 8U));
-        names.store(sid, "user", now);
+        names.store(sid, {.user = "user", .domain = {}}, now);
     }
     ASSERT_EQ(names.size(), AccountNameCache::MAX_ENTRIES);
 
@@ -1562,13 +1576,13 @@ TEST(AccountNameCacheTest, ANewSidInAFullCacheClearsItFirst)
     std::vector<std::byte> first = sidBytes(0);
     first.push_back(std::byte{0});
     first.push_back(std::byte{0});
-    names.store(first, "renamed", now);
+    names.store(first, {.user = "renamed", .domain = {}}, now);
     EXPECT_EQ(names.size(), AccountNameCache::MAX_ENTRIES);
 
     // A new SID clears it, so the bound holds.
-    names.store(sidBytes(1), "alice", now);
+    names.store(sidBytes(1), {.user = "alice", .domain = {}}, now);
     EXPECT_EQ(names.size(), 1U);
-    EXPECT_EQ(names.find(sidBytes(1), now), "alice");
+    EXPECT_EQ(names.find(sidBytes(1), now), (AccountName{.user = "alice", .domain = {}}));
     EXPECT_FALSE(names.find(first, now).has_value());
 }
 

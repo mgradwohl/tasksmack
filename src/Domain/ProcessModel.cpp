@@ -1309,6 +1309,7 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
     snapshot.parentPid = current.parentPid;
     // name and command are set by computeSnapshotsLocked(), from the process's SingleLineMemos.
     snapshot.user = current.user;
+    snapshot.userDomain = current.userDomain;
     snapshot.realUser = current.realUser;
     snapshot.displayState = translateState(current.state);
     snapshot.status = processStatusText(current.status, current.notResponding); // The probe's, and Not responding (#3084)

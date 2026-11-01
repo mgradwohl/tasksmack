@@ -301,6 +301,7 @@ class WindowsProcessProbe : public IProcessProbe
     {
         std::string name; // Cached UTF-8 conversion of the image name (immutable per process)
         std::string user;
+        std::string userDomain;
         std::string command;
         std::string status;
         ProcessImage image; // Image path and publisher (#2982): read once, with the first heavy read that succeeds
