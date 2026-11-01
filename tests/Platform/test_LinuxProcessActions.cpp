@@ -7,6 +7,7 @@
 
 #include "Platform/CommandWords.h"
 #include "Platform/CpuAffinity.h"
+#include "Platform/Factory.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/Linux/FileManagerReveal.h"
 #include "Platform/Linux/IoPriority.h"
@@ -2912,6 +2913,22 @@ int fakeWriteCgroupFile(const std::string& /*cgroup*/, std::string_view file, co
     return 0;
 }
 
+/// The faked calls Efficiency mode makes, as LinuxEfficiencyModeActionTest's objects have them.
+LinuxProcessSyscalls fakeEfficiencySyscalls()
+{
+    return LinuxProcessSyscalls{.pidfdOpen = &fakePidfdOpen,
+                                .pidfdSendSignal = &fakePidfdSendSignal,
+                                .pollPidfd = &fakePollPidfd,
+                                .setPriority = &fakeSet,
+                                .ioprioSet = &fakeSet,
+                                .ioprioGet = &fakeIoprioGet,
+                                .setAffinity = &fakeSetAffinity,
+                                .currentNice = &fakeCurrentNice,
+                                .procCgroup = &fakeProcCgroup,
+                                .readCgroupFile = &fakeReadCgroupFile,
+                                .writeCgroupFile = &fakeWriteCgroupFile};
+}
+
 class LinuxEfficiencyModeActionTest : public ::testing::Test
 {
   protected:
@@ -2922,17 +2939,7 @@ class LinuxEfficiencyModeActionTest : public ::testing::Test
         efficiency().files["cgroup.procs"] = std::to_string(ownTarget().pid) + "\n"; // alone in its cgroup
     }
 
-    LinuxProcessControl m_Control{LinuxProcessSyscalls{.pidfdOpen = &fakePidfdOpen,
-                                                       .pidfdSendSignal = &fakePidfdSendSignal,
-                                                       .pollPidfd = &fakePollPidfd,
-                                                       .setPriority = &fakeSet,
-                                                       .ioprioSet = &fakeSet,
-                                                       .ioprioGet = &fakeIoprioGet,
-                                                       .setAffinity = &fakeSetAffinity,
-                                                       .currentNice = &fakeCurrentNice,
-                                                       .procCgroup = &fakeProcCgroup,
-                                                       .readCgroupFile = &fakeReadCgroupFile,
-                                                       .writeCgroupFile = &fakeWriteCgroupFile}};
+    LinuxProcessControl m_Control{fakeEfficiencySyscalls()};
 };
 
 TEST_F(LinuxEfficiencyModeActionTest, OnSetsNice19AndTheMinimumWeightAndOffPutsBothBack)
@@ -3091,17 +3098,7 @@ TEST_F(LinuxEfficiencyModeActionTest, ARefusedOffSaysWhichNiceTheHelperShouldPut
 TEST_F(LinuxEfficiencyModeActionTest, AnOnThroughOneObjectIsPutBackByAnOffThroughAnother)
 {
     const std::shared_ptr<LinuxProcessControl::EfficiencyMemory> memory = LinuxProcessControl::makeEfficiencyMemory();
-    const LinuxProcessSyscalls fakes{.pidfdOpen = &fakePidfdOpen,
-                                     .pidfdSendSignal = &fakePidfdSendSignal,
-                                     .pollPidfd = &fakePollPidfd,
-                                     .setPriority = &fakeSet,
-                                     .ioprioSet = &fakeSet,
-                                     .ioprioGet = &fakeIoprioGet,
-                                     .setAffinity = &fakeSetAffinity,
-                                     .currentNice = &fakeCurrentNice,
-                                     .procCgroup = &fakeProcCgroup,
-                                     .readCgroupFile = &fakeReadCgroupFile,
-                                     .writeCgroupFile = &fakeWriteCgroupFile};
+    const LinuxProcessSyscalls fakes = fakeEfficiencySyscalls();
     LinuxProcessControl processesTab(fakes, memory);
     LinuxProcessControl processDetails(fakes, memory);
     efficiency().files["cpu.weight"] = "50\n";
@@ -3114,22 +3111,49 @@ TEST_F(LinuxEfficiencyModeActionTest, AnOnThroughOneObjectIsPutBackByAnOffThroug
     EXPECT_EQ(efficiency().writes.back(), (std::pair<std::string, std::string>{"cpu.weight", "50"})) << "and its weight, not 100";
     EXPECT_EQ(processesTab.efficiencyNiceToRestore(ownTarget()), std::nullopt) << "forgotten by both";
 
-    // Its own memory, otherwise: m_Control (the fixture's) never saw these.
-    EXPECT_NE(LinuxProcessControl::sharedEfficiencyMemory(), memory);
+    // An object with a memory of its own (the fixture's) never sees another's on.
+    ASSERT_TRUE(processesTab.setEfficiencyMode(ownTarget(), true).success);
+    EXPECT_EQ(m_Control.efficiencyNiceToRestore(ownTarget()), std::nullopt);
+    EXPECT_EQ(processDetails.efficiencyNiceToRestore(ownTarget()), std::optional<std::int32_t>(19));
 }
 
-// #3330, with the real calls: on through one real object, on a child (raising its nice needs no privilege), and
-// another real object knows what off would put back.
-TEST(LinuxEfficiencyModeRealTest, TheRealObjectsShareWhatOnRemembered)
+// #3330, with the real calls: two real objects sharing a memory (as makeProcessActions() makes them). On through one,
+// on a child (raising its nice needs no privilege), and the other knows what off would put back. A child that has
+// exited is forgotten at the next on, so the memory doesn't grow for TaskSmack's lifetime.
+TEST(LinuxEfficiencyModeRealTest, RealObjectsSharingAMemorySeeEachOthersOnAndForgetAnExitedProcess)
+{
+    const std::shared_ptr<LinuxProcessControl::EfficiencyMemory> memory = LinuxProcessControl::makeEfficiencyMemory();
+    LinuxProcessActions processesTab(memory);
+    LinuxProcessActions processDetails(memory);
+    ProcessTarget exitedTarget;
+    {
+        const SleepingChild first;
+        ASSERT_TRUE(first.started());
+        exitedTarget = first.target();
+        const std::optional<std::int32_t> before = realProcessSyscalls().currentNice(first.target().pid);
+        ASSERT_TRUE(before.has_value());
+        ASSERT_TRUE(processesTab.setEfficiencyMode(first.target(), true).success);
+        EXPECT_EQ(processDetails.efficiencyNiceToRestore(first.target()), before);
+        EXPECT_EQ(processDetails.rememberedEfficiencyCount(), 1U);
+    } // ended and reaped
+    const SleepingChild second;
+    ASSERT_TRUE(second.started());
+    ASSERT_NE(second.target().pid, exitedTarget.pid);
+    ASSERT_TRUE(processDetails.setEfficiencyMode(second.target(), true).success);
+    EXPECT_EQ(processesTab.rememberedEfficiencyCount(), 1U) << "the exited child is forgotten";
+}
+
+// #3330: the wiring itself. Each actions object makeProcessActions() makes (one per panel) shares the memory.
+TEST(LinuxEfficiencyModeRealTest, TheFactorysActionsObjectsShareWhatOnRemembered)
 {
     const SleepingChild child;
     ASSERT_TRUE(child.started());
-    LinuxProcessActions processesTab;
-    LinuxProcessActions processDetails;
+    const std::unique_ptr<IProcessActions> processesTab = makeProcessActions();
+    const std::unique_ptr<IProcessActions> processDetails = makeProcessActions();
     const std::optional<std::int32_t> before = realProcessSyscalls().currentNice(child.target().pid);
     ASSERT_TRUE(before.has_value());
-    ASSERT_TRUE(processesTab.setEfficiencyMode(child.target(), true).success);
-    EXPECT_EQ(processDetails.efficiencyNiceToRestore(child.target()), before);
+    ASSERT_TRUE(processesTab->setEfficiencyMode(child.target(), true).success);
+    EXPECT_EQ(processDetails->efficiencyNiceToRestore(child.target()), before);
 }
 
 // The real calls, on a child: nice 19 reaches it, its cgroup (the test's, shared) keeps its weight, and

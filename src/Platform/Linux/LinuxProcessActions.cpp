@@ -407,13 +407,15 @@ runCancellable(const LinuxProcessSyscalls& syscalls, const std::vector<std::stri
 
 } // namespace
 
-// The real ones share one Efficiency mode memory (#3330): the Processes tab and Process Details each have one of these.
-LinuxProcessActions::LinuxProcessActions()
-    : LinuxProcessActions(discoverSyscallTraceTools(), realProcessSyscalls(), sharedEfficiencyMemory())
+LinuxProcessActions::LinuxProcessActions() : LinuxProcessActions(makeEfficiencyMemory())
+{}
+
+LinuxProcessActions::LinuxProcessActions(std::shared_ptr<LinuxProcessControl::EfficiencyMemory> efficiency)
+    : LinuxProcessActions(discoverSyscallTraceTools(), realProcessSyscalls(), std::move(efficiency))
 {}
 
 LinuxProcessActions::LinuxProcessActions(SyscallTrace::Tools traceTools)
-    : LinuxProcessActions(std::move(traceTools), realProcessSyscalls(), sharedEfficiencyMemory())
+    : LinuxProcessActions(std::move(traceTools), realProcessSyscalls(), makeEfficiencyMemory())
 {}
 
 LinuxProcessActions::LinuxProcessActions(SyscallTrace::Tools traceTools, const LinuxProcessSyscalls& syscalls)

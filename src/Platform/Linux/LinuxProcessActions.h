@@ -35,6 +35,8 @@ class LinuxProcessActions : public LinuxProcessControl
     /// As above, making its system calls through @p syscalls (tests: calls that fail on demand, #1548), with an
     /// Efficiency mode memory of its own.
     LinuxProcessActions(SyscallTrace::Tools traceTools, const LinuxProcessSyscalls& syscalls);
+    /// Finds strace and a terminal as LinuxProcessActions() does, sharing @p efficiency (#3330: makeProcessActions()).
+    explicit LinuxProcessActions(std::shared_ptr<LinuxProcessControl::EfficiencyMemory> efficiency);
     /// As above, sharing @p efficiency (#3330).
     LinuxProcessActions(SyscallTrace::Tools traceTools,
                         const LinuxProcessSyscalls& syscalls,

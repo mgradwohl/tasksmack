@@ -70,7 +70,9 @@ std::shared_ptr<IUdpTrafficCollector> makeUdpTrafficCollector()
 
 std::unique_ptr<IProcessActions> makeProcessActions()
 {
-    return std::make_unique<LinuxProcessActions>();
+    // Every one shares what Efficiency mode's on remembered (#3330): the Processes tab and Process Details each
+    // have one, and an on from either is put back by an off from the other.
+    return std::make_unique<LinuxProcessActions>(LinuxProcessControl::sharedEfficiencyMemory());
 }
 
 std::shared_ptr<IPrivilegedBroker> makePrivilegedBroker(void* /*ownerWindow*/)

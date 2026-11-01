@@ -514,6 +514,9 @@ struct LinuxProcessControl::EfficiencyMemory
     };
     std::mutex mutex;
     std::map<std::pair<std::int32_t, std::uint64_t>, Before> byProcess; ///< By PID and start time
+    /// Held by each setEfficiencyMode() throughout (#3330): an on and an off from two objects sharing this memory
+    /// would otherwise interleave their read, change and record, and lose what on found.
+    std::mutex operation;
 };
 
 LinuxProcessControl::~LinuxProcessControl() = default;
@@ -531,7 +534,7 @@ std::shared_ptr<LinuxProcessControl::EfficiencyMemory> LinuxProcessControl::make
     return std::make_shared<EfficiencyMemory>();
 }
 
-LinuxProcessControl::LinuxProcessControl() : LinuxProcessControl(realProcessSyscalls(), sharedEfficiencyMemory())
+LinuxProcessControl::LinuxProcessControl() : LinuxProcessControl(realProcessSyscalls(), makeEfficiencyMemory())
 {}
 
 LinuxProcessControl::LinuxProcessControl(const LinuxProcessSyscalls& syscalls) : LinuxProcessControl(syscalls, makeEfficiencyMemory())
@@ -1281,6 +1284,7 @@ ProcessActionResult LinuxProcessControl::setEfficiencyMode(const ProcessTarget& 
     {
         return ProcessActionResult::error("Invalid PID");
     }
+    const std::scoped_lock operation(m_Efficiency->operation); // one on or off at a time over the shared memory (#3330)
     const std::pair<std::int32_t, std::uint64_t> key{target.pid, target.startTimeTicks};
     std::optional<EfficiencyMemory::Before> remembered;
     {
@@ -1314,8 +1318,12 @@ ProcessActionResult LinuxProcessControl::setEfficiencyMode(const ProcessTarget& 
         std::optional<int> weightBefore;
         std::string note = lowerCgroupWeight(m_Syscalls, target.pid, cgroup, weightBefore);
         {
-            // Turned on twice, the first time's "before" stays what off puts back.
+            // Turned on twice, the first time's "before" stays what off puts back. Processes that have exited since
+            // their on are forgotten here, so the shared memory doesn't grow for TaskSmack's lifetime (#3330).
             const std::scoped_lock lock(m_Efficiency->mutex);
+            std::erase_if(m_Efficiency->byProcess,
+                          [this, &key](const auto& entry)
+                          { return entry.first != key && !m_Syscalls.currentNice(entry.first.first).has_value(); });
             static_cast<void>(m_Efficiency->byProcess.try_emplace(
                 key, EfficiencyMemory::Before{.nice = niceBefore.value_or(0), .cpuWeight = weightBefore}));
         }
@@ -1330,6 +1338,12 @@ ProcessActionResult LinuxProcessControl::setEfficiencyMode(const ProcessTarget& 
     }
     spdlog::info("Efficiency mode off for PID {}{}", target.pid, note.empty() ? "" : ": " + note);
     return ProcessActionResult::ok(std::move(note));
+}
+
+std::size_t LinuxProcessControl::rememberedEfficiencyCount() const
+{
+    const std::scoped_lock lock(m_Efficiency->mutex);
+    return m_Efficiency->byProcess.size();
 }
 
 std::optional<std::int32_t> LinuxProcessControl::efficiencyNiceToRestore(const ProcessTarget& target) const
