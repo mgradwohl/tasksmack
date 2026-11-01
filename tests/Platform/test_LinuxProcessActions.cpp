@@ -2880,7 +2880,9 @@ struct EfficiencyPlan
     std::optional<std::string> procCgroup = std::string("0::/user.slice/app-test.scope\n");
     std::map<std::string, std::string> files{{"cgroup.procs", "self\n"}, {"cpu.weight", "100\n"}};
     int writeErrno = 0;
-    std::vector<std::pair<std::string, std::string>> writes; ///< {file, value}
+    std::vector<std::pair<std::string, std::string>> writes;  ///< {file, value}
+    std::string readableCgroup = "user.slice/app-test.scope"; ///< The one cgroup whose files exist (#3331)
+    std::string lastWriteCgroup;                              ///< The cgroup the last write went to
 };
 
 EfficiencyPlan& efficiency()
@@ -2901,7 +2903,7 @@ std::optional<std::string> fakeProcCgroup(std::int32_t /*pid*/)
 
 std::optional<std::string> fakeReadCgroupFile(const std::string& cgroup, std::string_view file)
 {
-    if (cgroup != "user.slice/app-test.scope")
+    if (cgroup != efficiency().readableCgroup)
     {
         return std::nullopt;
     }
@@ -2909,8 +2911,9 @@ std::optional<std::string> fakeReadCgroupFile(const std::string& cgroup, std::st
     return found == efficiency().files.end() ? std::nullopt : std::optional(found->second);
 }
 
-int fakeWriteCgroupFile(const std::string& /*cgroup*/, std::string_view file, const std::string& value)
+int fakeWriteCgroupFile(const std::string& cgroup, std::string_view file, const std::string& value)
 {
+    efficiency().lastWriteCgroup = cgroup;
     if (efficiency().writeErrno != 0)
     {
         return efficiency().writeErrno;
@@ -3139,15 +3142,8 @@ TEST_F(LinuxEfficiencyModeActionTest, AnOffThatCantPutTheWeightBackSaysSoAndKeep
     EXPECT_EQ(off.successNote, "its cgroup's CPU weight wasn't put back: it can't be read");
     EXPECT_EQ(m_Control.rememberedEfficiencyCount(), 1U) << "kept for another try";
 
-    // Its cgroup can't be read at all.
-    efficiency().nice = 5; // put back by the off above
-    efficiency().procCgroup = std::nullopt;
-    off = m_Control.setEfficiencyMode(ownTarget(), false);
-    EXPECT_EQ(off.successNote, "its cgroup's CPU weight wasn't put back: its cgroup can't be read");
-    EXPECT_EQ(m_Control.rememberedEfficiencyCount(), 1U);
-
     // The weight can't be written.
-    efficiency().procCgroup = std::string("0::/user.slice/app-test.scope\n");
+    efficiency().nice = 5; // put back by the off above
     efficiency().files["cpu.weight"] = "1\n";
     efficiency().writeErrno = EACCES;
     off = m_Control.setEfficiencyMode(ownTarget(), false);
@@ -3161,6 +3157,51 @@ TEST_F(LinuxEfficiencyModeActionTest, AnOffThatCantPutTheWeightBackSaysSoAndKeep
     EXPECT_TRUE(off.successNote.empty()) << off.successNote;
     EXPECT_EQ(efficiency().writes, (std::vector<std::pair<std::string, std::string>>{{"cpu.weight", "50"}}));
     EXPECT_EQ(m_Control.rememberedEfficiencyCount(), 0U);
+}
+
+// #3331: on lowered its cgroup's weight; the process has moved to another cgroup since. Off puts the weight back on
+// the cgroup on lowered, not on the one the process is in now; and with that one gone, it says so and forgets.
+TEST_F(LinuxEfficiencyModeActionTest, OffPutsTheWeightBackOnTheCgroupOnLoweredNotTheOneItMovedTo)
+{
+    efficiency().files["cpu.weight"] = "50\n";
+    ASSERT_TRUE(m_Control.setEfficiencyMode(ownTarget(), true).success); // app-test.scope: 50 lowered to 1
+    efficiency().nice = 19;
+    efficiency().procCgroup = std::string("0::/user.slice/other.scope\n"); // moved
+    efficiency().writes.clear();
+    ProcessActionResult off = m_Control.setEfficiencyMode(ownTarget(), false);
+    ASSERT_TRUE(off.success) << off.errorMessage;
+    EXPECT_TRUE(off.successNote.empty()) << off.successNote;
+    EXPECT_EQ(efficiency().lastWriteCgroup, "user.slice/app-test.scope") << "the cgroup on lowered";
+    EXPECT_EQ(efficiency().writes, (std::vector<std::pair<std::string, std::string>>{{"cpu.weight", "50"}}));
+
+    // Again, with the old cgroup gone: said, and nothing kept to retry.
+    efficiency().procCgroup = std::string("0::/user.slice/app-test.scope\n");
+    efficiency().nice = 5;
+    efficiency().files["cpu.weight"] = "50\n";
+    ASSERT_TRUE(m_Control.setEfficiencyMode(ownTarget(), true).success);
+    efficiency().nice = 19;
+    efficiency().procCgroup = std::string("0::/user.slice/other.scope\n");
+    efficiency().readableCgroup = "user.slice/other.scope"; // app-test.scope has gone
+    efficiency().writes.clear();
+    off = m_Control.setEfficiencyMode(ownTarget(), false);
+    ASSERT_TRUE(off.success) << off.errorMessage;
+    EXPECT_TRUE(off.successNote.contains("has moved to another cgroup")) << off.successNote;
+    EXPECT_TRUE(efficiency().writes.empty()) << "the cgroup it moved to is left alone";
+    EXPECT_EQ(m_Control.rememberedEfficiencyCount(), 0U);
+
+    // The process's cgroup can't be read now (it hasn't necessarily moved): the cgroup on lowered gets its weight.
+    efficiency().readableCgroup = "user.slice/app-test.scope";
+    efficiency().procCgroup = std::string("0::/user.slice/app-test.scope\n");
+    efficiency().nice = 5;
+    efficiency().files["cpu.weight"] = "50\n";
+    ASSERT_TRUE(m_Control.setEfficiencyMode(ownTarget(), true).success);
+    efficiency().nice = 19;
+    efficiency().procCgroup = std::nullopt;
+    efficiency().writes.clear();
+    off = m_Control.setEfficiencyMode(ownTarget(), false);
+    EXPECT_TRUE(off.successNote.empty()) << off.successNote;
+    EXPECT_EQ(efficiency().lastWriteCgroup, "user.slice/app-test.scope");
+    EXPECT_EQ(efficiency().writes, (std::vector<std::pair<std::string, std::string>>{{"cpu.weight", "50"}}));
 }
 
 // #3330: an on or off for a process that another one, sharing the memory, is still changing is refused rather than

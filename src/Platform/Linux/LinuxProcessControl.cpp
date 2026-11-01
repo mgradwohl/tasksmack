@@ -512,6 +512,9 @@ struct LinuxProcessControl::EfficiencyMemory
     {
         std::int32_t nice = 0;
         std::optional<int> cpuWeight;
+        /// The cgroup whose weight it lowered (#3331): off puts the weight back there, even if the process has
+        /// moved since, and never writes it into the cgroup the process is in now.
+        std::optional<std::string> cgroup;
     };
     using Key = std::pair<std::int32_t, std::uint64_t>; ///< PID and start time
     std::mutex mutex;                                   ///< Held only to read or change the two below, never over a call
@@ -1408,14 +1411,30 @@ ProcessActionResult LinuxProcessControl::setEfficiencyMode(const ProcessTarget& 
             {
                 m_Efficiency->byProcess.erase(exited);
             }
-            static_cast<void>(m_Efficiency->byProcess.try_emplace(
-                key, EfficiencyMemory::Before{.nice = niceBefore.value_or(0), .cpuWeight = weightBefore}));
+            static_cast<void>(
+                m_Efficiency->byProcess.try_emplace(key,
+                                                    EfficiencyMemory::Before{.nice = niceBefore.value_or(0),
+                                                                             .cpuWeight = weightBefore,
+                                                                             .cgroup = weightBefore.has_value() ? cgroup : std::nullopt}));
         }
         spdlog::info("Efficiency mode on for PID {}{}", target.pid, note.empty() ? "" : ": " + note);
         return ProcessActionResult::ok(std::move(note));
     }
-    WeightRestore weight = restoreCgroupWeight(
-        m_Syscalls, target.pid, cgroup, remembered.has_value(), remembered.has_value() ? remembered->cpuWeight : std::nullopt);
+    // The cgroup on lowered, where it lowered one (#3331): a process that has moved since has its old cgroup's weight
+    // put back, and its new cgroup's left alone. Also when the process's cgroup can't be read now.
+    const bool loweredOne = remembered.has_value() && remembered->cgroup.has_value();
+    const bool moved = loweredOne && cgroup.has_value() && *cgroup != *remembered->cgroup;
+    WeightRestore weight = restoreCgroupWeight(m_Syscalls,
+                                               target.pid,
+                                               loweredOne ? remembered->cgroup : cgroup,
+                                               remembered.has_value(),
+                                               remembered.has_value() ? remembered->cpuWeight : std::nullopt);
+    if (moved && weight.unfinished)
+    {
+        // The old cgroup is gone or unreadable: a process that left it won't bring it back, so nothing to retry.
+        weight.unfinished = false;
+        weight.note = "its old cgroup's CPU weight wasn't put back: it has moved to another cgroup, and the old one can't be changed";
+    }
     if (!weight.unfinished)
     {
         // A weight still to put back keeps the memory, so turning it off again tries once more (#3332).
