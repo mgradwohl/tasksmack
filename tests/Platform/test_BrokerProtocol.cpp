@@ -16,6 +16,7 @@
 #include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
 #include "Platform/ISystemInfoProbe.h"
+#include "Platform/IUserSessions.h"
 
 #include <gtest/gtest.h>
 
@@ -173,6 +174,55 @@ TEST(BrokerProtocolTest, TaskManagerReplacementRoundTrips)
                                              0,  'a', 'b', 1};
     EXPECT_EQ(bytes, expected);
     EXPECT_EQ(Detail::readFrame(bytes).value_or(Detail::Frame{}).kind, MessageKind::TaskManagerReplacement);
+}
+
+// #3076 (v13): a session's Disconnect or Sign out carries the action, the session's WTS ID (the full 32 bits)
+// and the sign-in the user confirmed (user, domain, sign-in time), since Windows reuses session IDs; a Lock
+// (Linux's, never the helper's), an action past Disconnect, a short frame and a byte left over are refused.
+TEST(BrokerProtocolTest, SessionActionRoundTripsAndRefusesALock)
+{
+    for (const Request& request : {
+             Request{SessionActionRequest{
+                 .action = SessionAction::SignOut, .sessionId = 2, .user = "alice", .domain = "PC", .logonUsec = 1'700'000'000'000'000ULL}},
+             Request{SessionActionRequest{
+                 .action = SessionAction::Disconnect, .sessionId = 0xFFFFFFFFU, .user = "Zoë", .domain = "CORP", .logonUsec = ~0ULL}},
+             // The helper, not the decoder, refuses session 0 and a request that names no sign-in.
+             Request{SessionActionRequest{.action = SessionAction::SignOut, .sessionId = 0, .user = {}, .domain = {}, .logonUsec = 0}},
+         })
+    {
+        EXPECT_EQ(roundTrip(request), request);
+    }
+    std::vector<std::uint8_t> bytes = encodeRequest(5,
+                                                    Request{SessionActionRequest{.action = SessionAction::Disconnect,
+                                                                                 .sessionId = 0x01020304U,
+                                                                                 .user = "ab",
+                                                                                 .domain = {},
+                                                                                 .logonUsec = 0x0102030405060708ULL}});
+    // The header, then the action, the session's ID, the user, the domain and the sign-in time.
+    const std::vector<std::uint8_t> expected{31, 0,   0,   0, static_cast<std::uint8_t>(PROTOCOL_VERSION),
+                                             0,  24,  0,   5, 0,
+                                             0,  0,   2,   4, 3,
+                                             2,  1,   2,   0, 0,
+                                             0,  'a', 'b', 0, 0,
+                                             0,  0,   8,   7, 6,
+                                             5,  4,   3,   2, 1};
+    EXPECT_EQ(bytes, expected);
+    EXPECT_EQ(Detail::readFrame(bytes).value_or(Detail::Frame{}).kind, MessageKind::SessionAction);
+
+    constexpr std::size_t ACTION = 4U + HEADER_BYTES;
+    bytes[ACTION] = static_cast<std::uint8_t>(SessionAction::Lock);
+    EXPECT_FALSE(decodeRequest(bytes).has_value()) << "a Lock";
+    bytes[ACTION] = static_cast<std::uint8_t>(static_cast<std::uint8_t>(SessionAction::Disconnect) + 1);
+    EXPECT_FALSE(decodeRequest(bytes).has_value()) << "past Disconnect";
+    bytes[ACTION] = static_cast<std::uint8_t>(SessionAction::SignOut);
+    ASSERT_TRUE(decodeRequest(bytes).has_value());
+    bytes.push_back(0); // a byte left over
+    bytes[0] = static_cast<std::uint8_t>(bytes.size() - 4U);
+    EXPECT_FALSE(decodeRequest(bytes).has_value());
+    bytes.resize(bytes.size() - 2); // the sign-in time short by a byte
+    bytes[0] = static_cast<std::uint8_t>(bytes.size() - 4U);
+    EXPECT_FALSE(decodeRequest(bytes).has_value());
+    EXPECT_FALSE(decodeResponse(encodeRequest(1, Request{SessionActionRequest{}})).has_value()) << "not a response";
 }
 
 // #3072: what the decoder refuses of a TaskManagerReplacement: a change past Clear, a flag that isn't 0 or 1,
@@ -1023,6 +1073,7 @@ TEST(BrokerProtocolTest, TheFuzzCorpusHasADecodableSeedForEveryMessageKind)
                                    MessageKind::SetEfficiencyMode,
                                    MessageKind::CloseConnection,
                                    MessageKind::TaskManagerReplacement,
+                                   MessageKind::SessionAction,
                                    MessageKind::ThreadAction,
                                    MessageKind::ReadEnvironment,
                                    MessageKind::ReadModules,

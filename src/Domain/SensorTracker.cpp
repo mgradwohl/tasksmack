@@ -1,6 +1,7 @@
 #include "SensorTracker.h"
 
 #include "Domain/SamplingConfig.h"
+#include "Domain/SharedHistory.h"
 #include "Platform/ISystemInfoProbe.h"
 
 #include <algorithm>
@@ -14,33 +15,53 @@
 namespace Domain
 {
 
-void appendSensorHistory(SensorHistory& history, double value, double nowSeconds, double intervalSeconds, double windowSeconds)
+void appendSensorHistory(SensorSeries& series, double value, double nowSeconds, double intervalSeconds, double windowSeconds)
 {
-    if (!history.times.empty() && nowSeconds <= history.times.back())
+    SharedHistoryBuffer<double>& times = series.m_Times;
+    SharedHistoryBuffer<float>& values = series.m_Values;
+    if (!times.empty() && nowSeconds <= times.latest())
     {
         return; // in time order only
     }
-    if (!history.times.empty() && nowSeconds - history.times.back() > sensorHistoryGapSeconds(intervalSeconds))
+    const double window = Sampling::clampHistorySeconds(windowSeconds);
+    const std::size_t capacity = Sampling::historyCapacityForSeconds(window);
+    times.setCapacity(capacity);
+    values.setCapacity(capacity);
+    const bool paused = !times.empty() && nowSeconds - times.latest() > sensorHistoryGapSeconds(intervalSeconds);
+    // Room for both appends in both series first, so a std::bad_alloc leaves them aligned (#1412).
+    const std::size_t appends = paused ? 2 : 1;
+    times.reserve(appends);
+    values.reserve(appends);
+    if (paused)
     {
         // The reads paused: end the line an interval after its last reading rather than drawing it
         // straight across the pause.
-        history.times.push_back(history.times.back() + intervalSeconds);
-        history.values.push_back(std::numeric_limits<float>::quiet_NaN());
+        times.push(times.latest() + intervalSeconds);
+        values.push(std::numeric_limits<float>::quiet_NaN());
     }
-    history.times.push_back(nowSeconds);
-    history.values.push_back(static_cast<float>(value));
+    times.push(nowSeconds);
+    values.push(static_cast<float>(value));
 
-    const double window = Sampling::clampHistorySeconds(windowSeconds);
+    // Past the capacity the pushes dropped the oldest; past the window, drop those too. The newest is
+    // never older than the cutoff, so at least it stays.
     const double cutoff = nowSeconds - window;
-    const std::size_t capacity = Sampling::historyCapacityForSeconds(window);
-    std::size_t drop = history.times.size() > capacity ? history.times.size() - capacity : 0;
-    while (drop < history.times.size() && history.times[drop] < cutoff)
+    std::size_t drop = 0;
+    while (drop < times.size() && times.ref(drop) < cutoff)
     {
         ++drop;
     }
-    const auto count = static_cast<std::ptrdiff_t>(drop);
-    history.times.erase(history.times.begin(), history.times.begin() + count);
-    history.values.erase(history.values.begin(), history.values.begin() + count);
+    times.discardFront(drop);
+    values.discardFront(drop);
+}
+
+std::map<std::string, SensorHistory> SensorTracker::histories() const
+{
+    std::map<std::string, SensorHistory> views;
+    for (const auto& entry : m_Histories)
+    {
+        views.emplace_hint(views.end(), entry.first, entry.second.view());
+    }
+    return views;
 }
 
 namespace

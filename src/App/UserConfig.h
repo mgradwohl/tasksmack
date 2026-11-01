@@ -145,6 +145,15 @@ struct UserSettings
     // forgets the notice.
     Domain::UpdateCheck::Persisted updates;
 
+    // What the user turned on that lives outside config.toml, remembered so it survives an install (#3276),
+    // [windows]: Start at sign-in (start_at_sign_in; its Run value is the setting) and the build that last
+    // saw that value (start_at_sign_in_seen_by, Domain::StartAtLogin::startupAction()), and Replace Task
+    // Manager (replace_task_manager; taskmgr.exe's IFEO Debugger is the setting). Each is written only while
+    // it is on, so a first run's file and one that never turned them on have no [windows] table.
+    bool startAtSignIn = false;
+    std::string startAtSignInSeenBy;
+    bool replaceTaskManager = false;
+
     // Opt-in escape hatch (default off -- the custom title bar is the default
     // everywhere): use native OS/compositor window decorations instead of the custom
     // borderless title bar. Only has an effect on native Wayland; read once at startup

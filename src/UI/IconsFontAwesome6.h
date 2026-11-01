@@ -131,6 +131,7 @@ inline constexpr uint32_t ICON_MAX_FA = 0xf8ff;
 // ============================================================================
 #define ICON_FA_DOOR_OPEN "\xef\x94\xab"          // U+f52b - Exit/door
 #define ICON_FA_RIGHT_FROM_BRACKET "\xef\x8b\xb5" // U+f2f5 - Sign out (#3076)
+#define ICON_FA_LINK_SLASH "\xef\x84\xa7"         // U+f127 - Disconnect a session (#3076)
 #define ICON_FA_USER "\xef\x80\x87"               // U+f007 - A user (#3076)
 #define ICON_FA_USERS "\xef\x83\x80"              // U+f0c0 - Users tab (#3076)
 #define ICON_FA_WRENCH "\xef\x82\xad"             // U+f0ad - Tools/wrench

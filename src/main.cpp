@@ -387,6 +387,15 @@ auto runApp(const App::LaunchOptions& launch) -> int
         // Replace Task Manager (#3072): one controller for the Settings rows and the startup check, which
         // reads the registry on its worker and offers a repair when Task Manager starts another TaskSmack.
         const auto taskManager = App::makeTaskManagerReplacementController(App::Synthetic::activeScenario());
+        // Whether the user turned it on, remembered in config.toml so the startup check can offer it back
+        // after something turned it off (#3276). Saved on the config worker, never on the UI thread (#2916).
+        taskManager->rememberIntent(userConfig.settings().replaceTaskManager,
+                                    [](bool intended)
+                                    {
+                                        auto& config = App::UserConfig::get();
+                                        config.settings().replaceTaskManager = intended;
+                                        config.saveInBackground();
+                                    });
         appRef.pushLayer<App::SettingsLayer>().setTaskManagerReplacement(taskManager);
         appRef.pushLayer<App::ElevationNoticeLayer>();
         appRef.pushLayer<App::TaskManagerNoticeLayer>(taskManager);

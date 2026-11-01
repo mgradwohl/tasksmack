@@ -6,8 +6,10 @@
 // registry on the UI thread (#2731): refresh() reads on the worker, setEnabled() writes or deletes there and
 // reads the entry back, and poll() takes the status in.
 //
-// The entry is the setting: nothing is kept in config.toml. Without a sign-in entry (a synthetic or test-hook
-// run) nothing is offered, read or written.
+// The entry is the setting. Where an install can remove it (Windows' Run value, #3276), config.toml also
+// remembers that the user turned it on (SettingsLayer keeps that), and the startup check, startupCheck(), writes
+// a missing one back after an install (Domain::StartAtLogin::startupAction()). Without a sign-in entry (a
+// synthetic or test-hook run) nothing is offered, read or written.
 //
 // Free of ImGui; tested in tests/App/test_StartAtLoginSetting.cpp with a fake entry.
 
@@ -17,9 +19,14 @@
 
 #include <memory>
 #include <optional>
+#include <string>
 
 namespace App
 {
+
+/// This build, as config.toml's [windows] start_at_sign_in_seen_by records it (#3276): the version and the
+/// commit, so an install of another build tells apart from a run of the same one.
+[[nodiscard]] std::string buildIdentity();
 
 class StartAtLoginSetting
 {
@@ -31,6 +38,13 @@ class StartAtLoginSetting
     [[nodiscard]] bool offered() const noexcept
     {
         return m_Entry != nullptr;
+    }
+
+    /// Whether a missing entry the user turned on is written back after an install (#3276):
+    /// IStartAtLogin::restoresMissingEntry(), false when not offered.
+    [[nodiscard]] bool restoresMissingEntry() const noexcept
+    {
+        return m_Entry != nullptr && m_Entry->restoresMissingEntry();
     }
 
     /// Whether a read or a change is running, or one waits to start.
@@ -53,6 +67,13 @@ class StartAtLoginSetting
 
     /// Reads the entry again, on the worker (Settings opening). Ignored while busy() or when not offered.
     void refresh();
+
+    /// At startup (#3276), on the worker: takes the uninstaller's mark (IStartAtLogin::takeUninstallMark()),
+    /// reads the entry, and writes it back for this copy, then reads it again, when
+    /// Domain::StartAtLogin::startupAction() says Restore for @p intended (the user turned it on), the mark,
+    /// @p seenBy (the build that last saw it on) and @p thisBuild. The status says whether the mark was there
+    /// (Status::uninstalled). Ignored while busy() or when not offered.
+    void startupCheck(bool intended, std::string seenBy, std::string thisBuild);
 
     /// On: writes the entry to start this copy minimized; Off: deletes it. Either way the entry is read
     /// back after. Also Repair (on, over another copy's entry). One that comes while busy() runs after.

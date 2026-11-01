@@ -3266,6 +3266,7 @@ TEST(SystemInfoSectionsTest, SparklineRangeFitsTheFiniteValues)
     const std::string key = Domain::sensorKey(snap.sensors.devices[0], snap.sensors.devices[0].readings[0]);
     Domain::SensorRange& range = snap.ranges[key];
     const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    Domain::SensorSeries series;
     int sample = 0;
     while (sample < 5)
     {
@@ -3273,9 +3274,10 @@ TEST(SystemInfoSectionsTest, SparklineRangeFitsTheFiniteValues)
         range.min = sample == 0 ? value : std::min(range.min, value);
         range.max = std::max(range.max, value);
         ++range.samples;
-        Domain::appendSensorHistory(snap.histories[key], value, now - 10.0 + (2.0 * sample));
+        Domain::appendSensorHistory(series, value, now - 10.0 + (2.0 * sample));
         ++sample;
     }
+    snap.histories[key] = series.view();
     return snap;
 }
 

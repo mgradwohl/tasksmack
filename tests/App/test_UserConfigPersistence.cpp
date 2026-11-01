@@ -959,6 +959,66 @@ TEST_F(UserConfigSaveLoadFixture, ARecentCommandListIsTakenInFiltered)
     EXPECT_EQ(config.settings().recentCommands, (std::vector<std::string>{"konsole", "htop"}));
 }
 
+// ========== What an install can turn off (#3276) ==========
+
+TEST_F(UserConfigSaveLoadFixture, TheRememberedSettingsRoundTrip)
+{
+    auto& config = UserConfig::get();
+    config.settings().startAtSignIn = true;
+    config.settings().startAtSignInSeenBy = "0.10.0+abc1234";
+    config.settings().replaceTaskManager = true;
+    config.save();
+    config.settings().startAtSignIn = false;
+    config.settings().startAtSignInSeenBy.clear();
+    config.settings().replaceTaskManager = false;
+    config.load();
+    EXPECT_TRUE(config.settings().startAtSignIn);
+    EXPECT_EQ(config.settings().startAtSignInSeenBy, "0.10.0+abc1234");
+    EXPECT_TRUE(config.settings().replaceTaskManager);
+
+    // Turned off, their keys are removed, and a run that loads the file starts with them off.
+    config.settings().startAtSignIn = false;
+    config.settings().startAtSignInSeenBy.clear();
+    config.settings().replaceTaskManager = false;
+    config.save();
+    {
+        std::ifstream file(m_ConfigPath);
+        const std::string text((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+        EXPECT_FALSE(text.contains("start_at_sign_in =")) << text;
+        EXPECT_FALSE(text.contains("start_at_sign_in_seen_by =")) << text;
+        EXPECT_FALSE(text.contains("replace_task_manager =")) << text;
+    }
+    config.settings() = UserSettings{};
+    config.load();
+    EXPECT_FALSE(config.settings().startAtSignIn);
+    EXPECT_TRUE(config.settings().startAtSignInSeenBy.empty());
+    EXPECT_FALSE(config.settings().replaceTaskManager);
+}
+
+TEST_F(UserConfigSaveLoadFixture, NeitherIsWrittenUntilTurnedOn)
+{
+    auto& config = UserConfig::get();
+    config.save();
+    std::ifstream file(m_ConfigPath);
+    const std::string text((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    EXPECT_FALSE(text.contains("\n[windows]")) << "a first run's file, and Linux's, has no [windows] table";
+}
+
+TEST_F(UserConfigSaveLoadFixture, RememberedValuesOfTheWrongTypeOrTooLongAreIgnored)
+{
+    {
+        std::ofstream file(m_TempDir / "config.toml");
+        ASSERT_TRUE(file.is_open());
+        file << "config_version = 2\n[windows]\nstart_at_sign_in = \"yes\"\nreplace_task_manager = 'on'\nstart_at_sign_in_seen_by = \""
+             << std::string(257, 'x') << "\"\n";
+    }
+    auto& config = UserConfig::get();
+    config.load();
+    EXPECT_FALSE(config.settings().startAtSignIn);
+    EXPECT_FALSE(config.settings().replaceTaskManager);
+    EXPECT_TRUE(config.settings().startAtSignInSeenBy.empty());
+}
+
 // ========== The opt-in update check (#3093) ==========
 
 TEST_F(UserConfigSaveLoadFixture, TheUpdateCheckRoundTrips)
@@ -1173,6 +1233,9 @@ TEST_F(UserConfigSaveLoadFixture, LoadMissingFileLeavesEverySettingAtItsDocument
                  dumpFolder,
                  recentCommands,
                  updates,
+                 startAtSignIn,
+                 startAtSignInSeenBy,
+                 replaceTaskManager,
                  forceNativeWindowDecorationsOnWayland] = config.settings();
 
     EXPECT_EQ(themeId, "arctic-fire");
@@ -1218,6 +1281,10 @@ TEST_F(UserConfigSaveLoadFixture, LoadMissingFileLeavesEverySettingAtItsDocument
     EXPECT_TRUE(updates.latestVersion.empty());
     EXPECT_TRUE(updates.latestUrl.empty());
     EXPECT_TRUE(updates.dismissedVersion.empty());
+    // #3276: nothing turned on is remembered until it is turned on.
+    EXPECT_FALSE(startAtSignIn);
+    EXPECT_TRUE(startAtSignInSeenBy.empty());
+    EXPECT_FALSE(replaceTaskManager);
     EXPECT_FALSE(forceNativeWindowDecorationsOnWayland);
 }
 
@@ -2197,6 +2264,8 @@ void expectV080Settings(const UserSettings& settings)
     EXPECT_EQ(settings.cpuDetailsExpanded, defaults.cpuDetailsExpanded);
     EXPECT_EQ(settings.dumpFolder, defaults.dumpFolder);
     EXPECT_EQ(settings.forceNativeWindowDecorationsOnWayland, defaults.forceNativeWindowDecorationsOnWayland);
+    EXPECT_EQ(settings.startAtSignIn, defaults.startAtSignIn);
+    EXPECT_EQ(settings.replaceTaskManager, defaults.replaceTaskManager);
 
     // v0.8.0 saved no Processes table layout (ImGui's .ini was off, and there was no [process_table]):
     // the table opens at its default widths, order and sort, and nothing is handed to ImGui.

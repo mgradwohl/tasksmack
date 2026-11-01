@@ -114,9 +114,42 @@ constexpr DWORD LONGEST_PATH = 32'768;
 
 } // namespace
 
-WindowsStartAtLogin::WindowsStartAtLogin(std::wstring key, std::wstring valueName, Windows::StartAtLoginFunctions api)
-    : m_Key(std::move(key)), m_ValueName(std::move(valueName)), m_Api(api)
+WindowsStartAtLogin::WindowsStartAtLogin(std::wstring key, std::wstring valueName, Windows::StartAtLoginFunctions api, std::wstring markKey)
+    : m_Key(std::move(key)), m_ValueName(std::move(valueName)), m_MarkKey(std::move(markKey)), m_Api(api)
 {}
+
+std::expected<bool, std::string> WindowsStartAtLogin::takeUninstallMark()
+{
+    HKEY rawKey = nullptr;
+    const LSTATUS opened = m_Api.openKey(HKEY_CURRENT_USER, m_MarkKey.c_str(), 0, KEY_QUERY_VALUE | KEY_SET_VALUE, &rawKey);
+    if (opened == ERROR_FILE_NOT_FOUND)
+    {
+        return false; // never uninstalled here
+    }
+    if (opened != ERROR_SUCCESS)
+    {
+        return std::unexpected(std::format("couldn't open the uninstall mark's key: {}", errorText(opened)));
+    }
+    const InjectableKey key(rawKey, InjectedKeyCloser{.close = m_Api.closeKey});
+    DWORD type = 0;
+    DWORD size = 0;
+    const LSTATUS queried = m_Api.queryValue(key.get(), Windows::UNINSTALL_MARK_VALUE, nullptr, &type, nullptr, &size);
+    if (queried == ERROR_FILE_NOT_FOUND)
+    {
+        return false;
+    }
+    if (queried != ERROR_SUCCESS)
+    {
+        return std::unexpected(std::format("couldn't read the uninstall mark: {}", errorText(queried)));
+    }
+    // Whatever its type, it is there: an uninstall ran. Deleted, so it counts once.
+    const LSTATUS deleted = m_Api.deleteValue(key.get(), Windows::UNINSTALL_MARK_VALUE);
+    if (deleted != ERROR_SUCCESS && deleted != ERROR_FILE_NOT_FOUND)
+    {
+        return std::unexpected(std::format("couldn't delete the uninstall mark: {}", errorText(deleted)));
+    }
+    return true;
+}
 
 std::expected<StartAtLoginFacts, std::string> WindowsStartAtLogin::read()
 {

@@ -2,8 +2,10 @@
 
 #include "Platform/BrokerProtocol.h"
 #include "Platform/ITaskManagerReplacement.h"
+#include "Platform/TaskManagerReplacement.h"
 #include "Platform/ThreadName.h"
 
+#include <functional>
 #include <memory>
 #include <optional>
 #include <stop_token>
@@ -42,11 +44,57 @@ void TaskManagerReplacementController::refresh()
     m_View.busy = true;
 }
 
-void TaskManagerReplacementController::request(TaskManagerRequest request)
+void TaskManagerReplacementController::rememberIntent(bool intended, std::function<void(bool)> save)
 {
-    if (m_Service == nullptr || m_Worker.busy() || request == TaskManagerRequest::None)
+    m_View.intended = intended;
+    m_SaveIntent = std::move(save);
+}
+
+void TaskManagerReplacementController::awaitIntentCheck()
+{
+    m_View.intentChecked = false;
+}
+
+void TaskManagerReplacementController::intentChecked(bool uninstalled)
+{
+    if (uninstalled)
+    {
+        setIntended(false); // the user removed TaskSmack: a later install doesn't ask to turn it back on
+    }
+    m_View.intentChecked = true;
+}
+
+void TaskManagerReplacementController::setIntended(bool intended)
+{
+    if (m_View.intended == intended)
     {
         return;
+    }
+    m_View.intended = intended;
+    if (m_SaveIntent)
+    {
+        m_SaveIntent(intended);
+    }
+}
+
+void TaskManagerReplacementController::request(TaskManagerRequest request)
+{
+    if (m_Service == nullptr || request == TaskManagerRequest::None)
+    {
+        return;
+    }
+    if (request == TaskManagerRequest::Forget)
+    {
+        setIntended(false); // nothing to change: it is off already
+        return;
+    }
+    if (m_Worker.busy())
+    {
+        return;
+    }
+    if (request == TaskManagerRequest::TurnOff)
+    {
+        setIntended(false); // what the user asked for, whatever the change does
     }
     const auto change =
         request == TaskManagerRequest::TurnOff ? Platform::Broker::TaskManagerChange::Clear : Platform::Broker::TaskManagerChange::Set;
@@ -86,6 +134,20 @@ void TaskManagerReplacementController::waitForWork()
 void TaskManagerReplacementController::take(Result result)
 {
     m_View.busy = false;
+    // What is remembered follows what a read finds (#3276): this copy is on (turned on here, or before this
+    // was remembered); another program took Task Manager over, which the user chose. Off, or another
+    // TaskSmack, leaves it: the startup notice asks about those.
+    if (!result.info.readFailed)
+    {
+        if (result.info.status.state == Platform::TaskManagerReplacement::State::ThisCopy)
+        {
+            setIntended(true);
+        }
+        else if (result.info.status.state == Platform::TaskManagerReplacement::State::OtherProgram)
+        {
+            setIntended(false);
+        }
+    }
     m_View.info = std::move(result.info);
     ++m_View.readsCompleted;
     if (result.change.has_value())

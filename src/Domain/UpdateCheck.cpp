@@ -689,6 +689,27 @@ bool isReleasePageUrl(std::string_view url)
     {
         return false; // no way out of the releases pages
     }
+    // An escape is two hex digits, and never a dot or a slash: a browser resolves ".%2e" as ".." (#3290), and
+    // %2f or %5c as a path separator, so either could leave the releases pages the check above keeps it in.
+    const auto hex = [](char c)
+    {
+        return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+    };
+    std::size_t percent = rest.find('%');
+    while (percent != std::string_view::npos)
+    {
+        if (percent + 2 >= rest.size() || !hex(rest[percent + 1]) || !hex(rest[percent + 2]))
+        {
+            return false;
+        }
+        const char high = rest[percent + 1];
+        const char low = static_cast<char>(rest[percent + 2] | 0x20); // lower case
+        if ((high == '2' && (low == 'e' || low == 'f')) || (high == '5' && low == 'c'))
+        {
+            return false;
+        }
+        percent = rest.find('%', percent + 3);
+    }
     return std::ranges::all_of(
         rest, [](char c) { return isIdentifierChar(c) || c == '.' || c == '_' || c == '~' || c == '/' || c == '%' || c == '+'; });
 }

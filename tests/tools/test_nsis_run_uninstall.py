@@ -3,7 +3,8 @@
 
 The NSIS uninstaller deletes the HKCU Run key's TaskSmack value when it starts this installation's
 TaskSmack.exe ("$INSTDIR\\TaskSmack.exe", quoted), and leaves a value for another copy or another program,
-and every other value, alone.
+and every other value, alone. An upgrade isn't an uninstall (#3276): run with /TASKSMACK_UPGRADE on its
+command line, as the new version's installer runs it, it keeps the value.
 
 makensis isn't on every machine, and an uninstaller can't be run in a test, so the step's lines (the block
 between its BEGIN and END markers, which CPack appends to CPACK_NSIS_EXTRA_UNINSTALL_COMMANDS) are read out
@@ -19,6 +20,10 @@ REPO = Path(__file__).resolve().parents[2]
 CONFIG = REPO / "cmake" / "CPackProjectConfig.cmake.in"
 RUN = r"Software\Microsoft\Windows\CurrentVersion\Run"
 INSTDIR = r"C:\Program Files\TaskSmack"
+# A user's uninstall: NSIS runs a copy in %TEMP% with the same arguments, then _?=, cut off $CMDLINE.
+USER_UNINSTALL = r'"C:\Users\me\AppData\Local\Temp\~nsuA.tmp\Un_A.exe" /S'
+# The new version's installer upgrading this folder (tests/tools/test_nsis_upgrade.py runs that call).
+UPGRADE = r'"C:\Program Files\TaskSmack\Uninstall.exe" /S /TASKSMACK_UPGRADE'
 BEGIN = "; TaskSmack's start at sign-in (#3093): BEGIN"
 END = "; TaskSmack's start at sign-in (#3093): END"
 
@@ -63,9 +68,16 @@ def tokens(line: str) -> list[str]:
 class Uninstaller:
     """Runs the step's lines as NSIS would: registers, a stack, the error flag and HKCU's values."""
 
-    def __init__(self, hkcu: dict[str, dict[str, str]], instdir: str = INSTDIR) -> None:
+    def __init__(self, hkcu: dict[str, dict[str, str]], instdir: str = INSTDIR, cmdline: str = USER_UNINSTALL) -> None:
         self.hkcu = hkcu
-        self.vars = {"$INSTDIR": instdir, "$0": "zero", "$1": "one", "$2": "two", "$3": "three"}
+        self.vars = {
+            "$CMDLINE": cmdline,
+            "$INSTDIR": instdir,
+            "$0": "zero",
+            "$1": "one",
+            "$2": "two",
+            "$3": "three",
+        }
         self.stack: list[str] = []
         self.error = False
         self.deleted: list[tuple[str, str]] = []
@@ -91,7 +103,7 @@ class Uninstaller:
 
         while pc < len(program):
             steps += 1
-            if steps > 1000:
+            if steps > 10000:
                 raise AssertionError("the step doesn't end")
             words = program[pc]
             if not words or (len(words) == 1 and words[0].endswith(":")):
@@ -133,6 +145,13 @@ class Uninstaller:
                 # NSIS compares ignoring case.
                 same = self.expand(args[0]).lower() == self.expand(args[1]).lower()
                 nxt = jump(args[2]) if same else jump(args[3] if len(args) > 3 else "")
+            elif op == "IntOp":
+                target, a, operator, b = args
+                if operator != "+":
+                    raise AssertionError(f"the interpreter doesn't know IntOp {operator}")
+                self.vars[target] = str(int(self.expand(a)) + int(self.expand(b)))
+            elif op == "Goto":
+                nxt = jump(args[0])
             elif op == "DeleteRegValue":
                 root, key, name = args
                 self.assert_hkcu(root, key)
@@ -150,9 +169,9 @@ class Uninstaller:
             raise AssertionError(f"the step touches {root}\\{key}, not the per-user Run key")
 
 
-def run_step(values: dict[str, str], instdir: str = INSTDIR) -> Uninstaller:
+def run_step(values: dict[str, str], instdir: str = INSTDIR, cmdline: str = USER_UNINSTALL) -> Uninstaller:
     hkcu = {RUN.lower(): {name.lower(): value for name, value in values.items()}}
-    uninstaller = Uninstaller(hkcu, instdir)
+    uninstaller = Uninstaller(hkcu, instdir, cmdline)
     uninstaller.run(step_lines())
     return uninstaller
 
@@ -189,9 +208,14 @@ class RunValueUninstallTest(unittest.TestCase):
         self.assertEqual(u.deleted, [(RUN, "TaskSmack")])
 
     def test_the_registers_are_given_back(self) -> None:
-        for values in ({}, {"TaskSmack": "x"}, {"TaskSmack": rf'"{INSTDIR}\TaskSmack.exe"'}):
-            with self.subTest(values=values):
-                u = run_step(values)
+        for values, cmdline in (
+            ({}, USER_UNINSTALL),
+            ({"TaskSmack": "x"}, USER_UNINSTALL),
+            ({"TaskSmack": rf'"{INSTDIR}\TaskSmack.exe"'}, USER_UNINSTALL),
+            ({"TaskSmack": rf'"{INSTDIR}\TaskSmack.exe"'}, UPGRADE),
+        ):
+            with self.subTest(values=values, cmdline=cmdline):
+                u = run_step(values, cmdline=cmdline)
                 self.assertEqual(
                     {name: u.vars[name] for name in ("$0", "$1", "$2", "$3")},
                     {"$0": "zero", "$1": "one", "$2": "two", "$3": "three"},
@@ -203,6 +227,24 @@ class RunValueUninstallTest(unittest.TestCase):
         written = '"' + INSTDIR + r'\TaskSmack.exe" --minimized'
         u = run_step({"TaskSmack": written})
         self.assertEqual(u.deleted, [(RUN, "TaskSmack")])
+
+
+    def test_an_upgrade_keeps_it(self) -> None:
+        # #3276: the new version's installer runs this uninstaller with /TASKSMACK_UPGRADE when it installs to
+        # the same folder, whose TaskSmack.exe the value starts; anywhere on the command line, any case.
+        written = '"' + INSTDIR + r'\TaskSmack.exe" --minimized'
+        for cmdline in (UPGRADE, r'"C:\Program Files\TaskSmack\Uninstall.exe" /tasksmack_upgrade /S', "/TASKSMACK_UPGRADE"):
+            with self.subTest(cmdline=cmdline):
+                u = run_step({"TaskSmack": written}, cmdline=cmdline)
+                self.assertEqual(u.hkcu[RUN.lower()].get("tasksmack"), written)
+                self.assertEqual(u.deleted, [])
+
+    def test_only_the_whole_flag_is_an_upgrade(self) -> None:
+        written = '"' + INSTDIR + r'\TaskSmack.exe" --minimized'
+        for cmdline in (USER_UNINSTALL, r'"C:\Temp\Un_A.exe"', r'"C:\Temp\Un_A.exe" /TASKSMACK_UPGRAD', ""):
+            with self.subTest(cmdline=cmdline):
+                u = run_step({"TaskSmack": written}, cmdline=cmdline)
+                self.assertEqual(u.deleted, [(RUN, "TaskSmack")])
 
 
 class TokensTest(unittest.TestCase):

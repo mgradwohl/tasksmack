@@ -454,36 +454,38 @@ class ProcessThreadsView
     /// The row menu (#3069), after the table: Suspend, Resume, End.
     void renderRowMenu();
 
+    // Ordered by alignment, largest first (clang-analyzer-optin.performance.Padding), the flags last.
     std::size_t m_CpuCount = 1;
-    bool m_HasRead = false; // a read was taken in since the selection changed
-    Platform::ThreadsReadStatus m_Status = Platform::ThreadsReadStatus::Ok;
-    std::string m_Detail;
-    bool m_Truncated = false;
+    std::size_t m_LabelCount = SIZE_MAX; // the count m_CountLabel shows
+    std::optional<double> m_PreviousAt;  // when the last read's CPU times were taken in
+    Platform::ProcessTarget m_Target{};  // the process shown, as of the last update() (for the thread actions)
     std::vector<Row> m_Rows;
-    std::unordered_map<std::int32_t, Sample> m_Previous; // the last read's CPU time per thread, for CPU %
-    std::optional<double> m_PreviousAt;                  // when it was taken in
-    Detail::ThreadsColumn m_SortColumn = Detail::ThreadsColumn::Cpu;
-    bool m_SortAscending = false;
+    std::vector<std::size_t> m_FilteredRows;
+    std::string m_Detail;
     std::string m_Filter;
     std::string m_FilterKey;
-    std::vector<std::size_t> m_FilteredRows;
-    bool m_FilterDirty = true;
-    std::string m_CountLabel;            // the header with the count: "Threads (12)"
-    std::size_t m_LabelCount = SIZE_MAX; // the count m_CountLabel shows
-    bool m_WindowsPriorities = false;    // the last read's priorities are Windows' (the column says PRIORITY)
-
-    // The thread actions (#3069, Windows): the row menu's thread, its confirm and result line.
-    bool m_CanActOnThreads = false;
-    std::string m_ProcessName;
-    Platform::ProcessTarget m_Target{};
-    std::optional<Platform::ProcessThread> m_MenuThread; // the row the menu is up for, copied as it was clicked
-    bool m_OpenRowMenu = false;                          // the menu opens on the next render
-    ThreadActionControl m_ActionControl;
+    std::string m_CountLabel;                            // the header with the count: "Threads (12)"
+    std::string m_ProcessName;                           // the process's name, for the thread actions' confirm and result line (#3069)
+    std::unordered_map<std::int32_t, Sample> m_Previous; // the last read's CPU time per thread, for CPU %
 
     // The read in flight and its cadence (the Settings interval, set by update()). Destroying the view
     // waits for at most one read.
     Detail::LazyBackgroundRead<Platform::ThreadsReadResult> m_Read{
         Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS, Platform::THREADS_READ_THREAD_NAME, &failedRead};
+
+    // The thread actions (#3069, Windows): the row menu's thread, its confirm and result line.
+    std::optional<Platform::ProcessThread> m_MenuThread; // the row the menu is up for, copied as it was clicked
+    ThreadActionControl m_ActionControl;
+
+    bool m_HasRead = false; // a read was taken in since the selection changed
+    Platform::ThreadsReadStatus m_Status = Platform::ThreadsReadStatus::Ok;
+    bool m_Truncated = false;
+    Detail::ThreadsColumn m_SortColumn = Detail::ThreadsColumn::Cpu;
+    bool m_SortAscending = false;
+    bool m_FilterDirty = true;
+    bool m_WindowsPriorities = false; // the last read's priorities are Windows' (the column says PRIORITY)
+    bool m_CanActOnThreads = false;   // the rows offer Suspend, Resume and End (#3069)
+    bool m_OpenRowMenu = false;       // the row menu opens on the next render
 };
 
 } // namespace App

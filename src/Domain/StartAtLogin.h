@@ -114,6 +114,9 @@ struct Status
     std::string error;        ///< Failed: why, for the line under the checkbox
     State state = State::Unknown;
     bool installed = false; ///< This copy is under Program Files; else Settings says to turn this off before moving it
+    /// The startup check only (#3276): the uninstaller's mark was there, and is cleared. TaskSmack was
+    /// uninstalled since it last ran, so what the user had turned on is forgotten, not written back.
+    bool uninstalled = false;
 
     /// Whether the entry was read: Off, On or another copy's. Only then can the checkbox change it.
     [[nodiscard]] bool known() const noexcept
@@ -189,6 +192,50 @@ classify(const std::optional<std::string>& command, std::string_view executable,
         return "Couldn't read or change it: " + status.error;
     }
     return {};
+}
+
+/// What the startup check does about a missing entry (#3276).
+enum class StartupAction : std::uint8_t
+{
+    None,    ///< Nothing: there is an entry, it was never turned on here, or this copy can't tell
+    Restore, ///< Write it back for this copy: it went with an install (an upgrade to another folder, say)
+    Forget,  ///< Forget it was on: TaskSmack was uninstalled since, or it was removed by hand while this build ran
+};
+
+/// What the startup check does, for a copy whose config says the user turned the entry on (@p intended) and
+/// last saw it on while build @p seenBy ran, now running build @p thisBuild.
+///   - An entry that is there, or one never turned on, is left as it is.
+///   - @p restoresMissing is the platform's say (IStartAtLogin::restoresMissingEntry()): Windows, where an
+///     uninstaller run by an installer removes the Run value; not Linux, where a desktop's startup
+///     settings remove the file to turn it off.
+///   - @p uninstalled: a real uninstall (not an upgrade) left its mark (IStartAtLogin::takeUninstallMark()).
+///     The user removed TaskSmack, which took the entry with it; a later install doesn't bring it back.
+///   - A portable copy never writes it back: the entry was the installed copy's.
+///   - Otherwise a build other than the one that last saw it means an install ran since (an upgrade into
+///     another folder, which uninstalls the old one without the mark), and that is what removed it: it is
+///     written back. The same build means it went while nothing was installed, by hand (the user guide's
+///     `reg delete`), and the user's choice stands.
+[[nodiscard]] constexpr StartupAction startupAction(bool intended,
+                                                    bool uninstalled,
+                                                    std::string_view seenBy,
+                                                    std::string_view thisBuild,
+                                                    bool restoresMissing,
+                                                    bool installed,
+                                                    bool hasEntry) noexcept
+{
+    if (!intended || hasEntry || !restoresMissing)
+    {
+        return StartupAction::None;
+    }
+    if (uninstalled)
+    {
+        return StartupAction::Forget;
+    }
+    if (!installed)
+    {
+        return StartupAction::None;
+    }
+    return (seenBy == thisBuild) ? StartupAction::Forget : StartupAction::Restore;
 }
 
 /// The note for a copy outside Program Files (a zip or portable copy) while it starts at sign-in: the

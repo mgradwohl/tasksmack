@@ -28,6 +28,7 @@
 #include <cstdint>
 #include <cstring>
 #include <format>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -50,8 +51,8 @@ inline constexpr std::size_t PROCESS_CREATE_TIME_OFFSET = 32;
 static_assert(offsetof(SYSTEM_PROCESS_INFORMATION, Reserved1) == 8 && sizeof(SYSTEM_PROCESS_INFORMATION::Reserved1) == 48,
               "SYSTEM_PROCESS_INFORMATION's Reserved1 holds the documented fields up to its kernel time");
 
-/// KTHREAD_STATE (SYSTEM_THREAD_INFORMATION::ThreadState).
-enum class KernelThreadState : std::uint32_t
+/// KTHREAD_STATE's values. SYSTEM_THREAD_INFORMATION::ThreadState is a ULONG: kernelThreadState() converts it.
+enum class KernelThreadState : std::uint8_t
 {
     Initialized = 0,
     Ready = 1,
@@ -64,6 +65,16 @@ enum class KernelThreadState : std::uint32_t
     GateWaitObsolete = 8,
     WaitingForProcessInSwap = 9,
 };
+
+/// @p threadState (SYSTEM_THREAD_INFORMATION::ThreadState) as a KernelThreadState, or nullopt for one this doesn't know.
+[[nodiscard]] constexpr std::optional<KernelThreadState> kernelThreadState(std::uint32_t threadState) noexcept
+{
+    if (threadState > static_cast<std::uint32_t>(KernelThreadState::WaitingForProcessInSwap))
+    {
+        return std::nullopt;
+    }
+    return static_cast<KernelThreadState>(threadState);
+}
 
 /// KWAIT_REASON values that mean the thread is suspended.
 inline constexpr std::uint32_t WAIT_REASON_SUSPENDED_VALUE = 5;
@@ -137,7 +148,12 @@ inline constexpr std::array<std::string_view, 43> WAIT_REASON_NAMES{
 /// suspended, X ended, ? a state this doesn't know.
 [[nodiscard]] constexpr char threadStateLetter(std::uint32_t threadState, std::uint32_t waitReason) noexcept
 {
-    switch (static_cast<KernelThreadState>(threadState))
+    const std::optional<KernelThreadState> state = kernelThreadState(threadState);
+    if (!state.has_value())
+    {
+        return '?';
+    }
+    switch (*state)
     {
     case KernelThreadState::Initialized:
     case KernelThreadState::Ready:
@@ -277,7 +293,7 @@ struct BootTimeBase
     row.systemTicks = thread.kernelTime;
     row.nice = thread.priority;
     row.startTicks = (boot.fileTime != 0 && thread.createTime > boot.fileTime) ? thread.createTime - boot.fileTime : 0;
-    if (static_cast<KernelThreadState>(thread.state) == KernelThreadState::Waiting)
+    if (kernelThreadState(thread.state) == KernelThreadState::Waiting)
     {
         row.waitReason = waitReasonName(thread.waitReason);
     }

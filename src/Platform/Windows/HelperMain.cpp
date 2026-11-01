@@ -22,6 +22,7 @@
 #include "Platform/Windows/WindowsProcessOpenFiles.h"
 #include "Platform/Windows/WindowsProcessThreads.h"
 #include "Platform/Windows/WindowsTaskManagerReplacement.h"
+#include "Platform/Windows/WindowsUserSessions.h"
 
 #include <spdlog/spdlog.h>
 
@@ -120,6 +121,9 @@ int WINAPI wWinMain(HINSTANCE /*instance*/, HINSTANCE /*previous*/, LPWSTR /*com
         // this helper, the one checkParentIsTaskSmack() confirmed its parent runs.
         Platform::Windows::WindowsIfeoRegistry ifeo;
         const std::wstring& taskSmack = self->taskSmackPath;
+        // The Users tab's Disconnect and Sign out of another user's session (#3076): checked against a fresh
+        // WTS list first (not session 0, still there, someone signed in to it).
+        const Platform::Windows::WtsCalls sessions = Platform::Windows::realWtsCalls();
         const Platform::BrokerServer::Readers readers{
             .environment = nullptr,
             .modules = &modules,
@@ -128,6 +132,8 @@ int WINAPI wWinMain(HINSTANCE /*instance*/, HINSTANCE /*previous*/, LPWSTR /*com
             .threads = &threads,
             .taskManagerReplacement = [&ifeo, &taskSmack](const Platform::Broker::TaskManagerReplacementRequest& request)
             { return Platform::Windows::handleHelperRequest(request, taskSmack, ifeo, &Helper::sameFile); },
+            .sessionAction = [&sessions](const Platform::Broker::SessionActionRequest& request)
+            { return Platform::Windows::handleHelperSessionAction(request, sessions); },
         };
         const Platform::Windows::BrokerPipeServer::RequestHandler handler = [&actions, &readers](const Platform::Broker::Request& request)
         {

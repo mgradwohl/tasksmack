@@ -35,6 +35,10 @@ namespace Windows
 /// The Run key, under HKEY_CURRENT_USER, and TaskSmack's value in it.
 inline constexpr const wchar_t* RUN_KEY = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 inline constexpr const wchar_t* RUN_VALUE_NAME = L"TaskSmack";
+/// The mark a real uninstall leaves (#3276), under HKEY_CURRENT_USER: a DWORD the uninstaller writes, and
+/// TaskSmack reads and deletes (takeUninstallMark()). cmake/CPackProjectConfig.cmake.in writes the same names.
+inline constexpr const wchar_t* UNINSTALL_MARK_KEY = L"Software\\TaskSmack";
+inline constexpr const wchar_t* UNINSTALL_MARK_VALUE = L"Uninstalled";
 
 /// The calls WindowsStartAtLogin makes: advapi32's, kernel32's and shell32's, or a test's fakes.
 struct StartAtLoginFunctions
@@ -67,17 +71,29 @@ class WindowsStartAtLogin final : public IStartAtLogin
   public:
     /// @param key        The key, under HKEY_CURRENT_USER: Windows::RUN_KEY, or a test's scratch key.
     /// @param valueName  The value: Windows::RUN_VALUE_NAME.
+    /// @param markKey    The uninstall mark's key, under HKEY_CURRENT_USER: Windows::UNINSTALL_MARK_KEY, or a test's scratch key.
     explicit WindowsStartAtLogin(std::wstring key = Windows::RUN_KEY,
                                  std::wstring valueName = Windows::RUN_VALUE_NAME,
-                                 Windows::StartAtLoginFunctions api = {});
+                                 Windows::StartAtLoginFunctions api = {},
+                                 std::wstring markKey = Windows::UNINSTALL_MARK_KEY);
 
     [[nodiscard]] std::expected<StartAtLoginFacts, std::string> read() override;
     [[nodiscard]] std::expected<void, std::string> write(std::string_view command) override;
     [[nodiscard]] std::expected<void, std::string> remove() override;
 
+    /// An installer's uninstall step can remove the Run value (#3276); Windows' startup settings never do.
+    [[nodiscard]] bool restoresMissingEntry() const noexcept override
+    {
+        return true;
+    }
+
+    /// Reads, then deletes, the uninstaller's mark: Windows::UNINSTALL_MARK_VALUE under @c markKey. Only that value.
+    [[nodiscard]] std::expected<bool, std::string> takeUninstallMark() override;
+
   private:
     std::wstring m_Key;
     std::wstring m_ValueName;
+    std::wstring m_MarkKey;
     Windows::StartAtLoginFunctions m_Api;
 };
 

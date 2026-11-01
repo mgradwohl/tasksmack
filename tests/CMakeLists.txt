@@ -247,6 +247,12 @@ set_tests_properties(DocsSriScript PROPERTIES TIMEOUT 60)
 add_test(NAME NsisRunUninstallScript COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_nsis_run_uninstall.py)
 set_tests_properties(NsisRunUninstallScript PROPERTIES TIMEOUT 60)
 
+# The NSIS installer's upgrade step (#3276), cmake/CPackProjectConfig.cmake.in: it runs the old uninstaller with
+# /TASKSMACK_UPGRADE when it installs to the same folder, and the two steps above then keep their values; run
+# against fakes, through those steps' interpreters. Pure Python, on every platform.
+add_test(NAME NsisUpgradeStep COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_nsis_upgrade.py)
+set_tests_properties(NsisUpgradeStep PROPERTIES TIMEOUT 60)
+
 # tools/profile-heap.sh refuses a --bench-filter that matches no benchmark before starting heaptrack (#2987).
 # Stub binaries; the script is Linux-only, so the test is too.
 if(TASKSMACK_BASH AND NOT WIN32)
@@ -570,6 +576,7 @@ set(COMMON_TEST_SOURCES
     Platform/test_BrokerRequestMapping.cpp  # what either helper does with each request (#2517)
     Platform/test_BrokeredProcessActions.cpp
     Platform/test_BrokeredServiceActions.cpp  # service actions through the helper (#2728)
+    Platform/test_BrokeredUserSessions.cpp  # another user's Windows session through the helper (#3076)
     Platform/test_TaskManagerReplacement.cpp  # Replace Task Manager's paths, state machine and service (#3072)
     Platform/test_BrokeredSystemInfoProbe.cpp
     Platform/test_ThreadName.cpp
@@ -703,6 +710,7 @@ set(WINDOWS_MATH_TEST_SOURCES
     Platform/WindowsMath/test_WindowsOsInfoMath.cpp
     Platform/WindowsMath/test_WindowsStorageSmartMath.cpp  # ATA SMART pages, thresholds and return status as AtaHealth (#2588)
     Platform/WindowsMath/test_WindowsServiceActionsMath.cpp
+    Platform/WindowsMath/test_WindowsUserSessionsMath.cpp # WTS sessions as the Users tab's, and the action checks (#3076)
     Platform/WindowsMath/test_WindowsServiceProbeMath.cpp
     Platform/WindowsMath/test_WindowsSystemProbeMath.cpp
     Platform/WindowsMath/test_WindowsProcessIconMath.cpp
@@ -738,6 +746,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_BrokerHelper.cpp  # TaskSmackHelper.exe: its parent checks, its session and the exe itself (#2517)
     Platform/test_HelperLauncher.cpp  # starting the helper with ShellExecuteExW("runas"), through fakes (#2549)
     Platform/test_WindowsTaskManagerReplacement.cpp  # taskmgr.exe's IFEO key, on a scratch HKCU key, and the helper's checks (#3072)
+    Platform/test_WindowsUserSessions.cpp  # the Users tab's WTS reader and actions through fakes, and this machine's sessions (#3076)
     Platform/test_WindowsProcessIdentity.cpp
     Platform/test_WindowsProcessConnections.cpp
     Platform/test_WindowsProcessEnvironmentReader.cpp  # the environment block out of a fake process's PEB, and this process's own (#2569)
@@ -1057,6 +1066,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/Platform/ThreadApartment.cpp # the sampler thread's COM apartment (#2731)
     ${CMAKE_SOURCE_DIR}/src/Platform/BrokeredProcessActions.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/BrokeredServiceActions.cpp
+    ${CMAKE_SOURCE_DIR}/src/Platform/BrokeredUserSessions.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/BrokeredSystemInfoProbe.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/BrokerRequestMapping.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/TaskManagerReplacementService.cpp

@@ -195,6 +195,58 @@ TEST(SensorModelTest, ALongPauseBreaksTheLine)
     EXPECT_TRUE(std::isnan(history.values[1]));
 }
 
+// #3286: a sample appends to the sensors' histories and publishes views of them, not copies: consecutive
+// publications share each sensor's storage, and one already published keeps what it showed while later
+// samples append and, once the window is full, drop the oldest.
+TEST(SensorModelTest, PublicationsShareTheHistoriesInsteadOfCopyingThem)
+{
+    const FakeClock clock;
+    double celsius = 40.0;
+    SensorModel model([&celsius] { return SensorModel::Reader([&celsius] { return oneTemperature(celsius); }); }, 1000ms, clock.function());
+    model.setHistorySeconds(Sampling::HISTORY_SECONDS_MIN);
+    model.sample();
+    clock.advance(1000ms);
+    celsius = 41.0;
+    model.sample();
+    const std::shared_ptr<const SensorPublication> earlier = model.publication();
+    const SensorHistory& before = earlier->histories.at(packageKey());
+    ASSERT_EQ(before.values.size(), 2U);
+
+    for (int second = 0; second < Sampling::HISTORY_SECONDS_MIN * 3; ++second)
+    {
+        clock.advance(1000ms);
+        celsius = 50.0 + second;
+        model.sample();
+    }
+    const SensorHistory& after = model.publication()->histories.at(packageKey());
+    EXPECT_EQ(after.values.size(), static_cast<std::size_t>(Sampling::HISTORY_SECONDS_MIN) + 1U) << "the window, trimmed";
+
+    // The publication taken earlier still reads exactly what it held.
+    ASSERT_EQ(before.values.size(), 2U);
+    EXPECT_FLOAT_EQ(before.values[0], 40.0F);
+    EXPECT_FLOAT_EQ(before.values[1], 41.0F);
+
+    // Publications a sample apart read one block, the second not copying the history: all but the
+    // occasional sample that compacts the block into a new one (about one in as many as it holds).
+    constexpr int PAIRS = 40;
+    int shared = 0;
+    std::shared_ptr<const SensorPublication> previous = model.publication();
+    for (int pair = 0; pair < PAIRS; ++pair)
+    {
+        clock.advance(1000ms);
+        model.sample();
+        const std::shared_ptr<const SensorPublication> next = model.publication();
+        const SensorHistory& was = previous->histories.at(packageKey());
+        const SensorHistory& now = next->histories.at(packageKey());
+        if (now.values.sharesStorageWith(was.values) && now.times.sharesStorageWith(was.times))
+        {
+            ++shared;
+        }
+        previous = next;
+    }
+    EXPECT_GE(shared, PAIRS * 3 / 4) << shared << " of " << PAIRS << " consecutive publications shared their storage";
+}
+
 TEST(SensorModelTest, AFactoryThatMakesNoReaderPublishesNothingAndIsntAskedAgain)
 {
     int asked = 0;

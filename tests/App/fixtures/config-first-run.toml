@@ -19,6 +19,7 @@
 #   [process_meters]: what a column draws behind its value: "off", "bar" or "sparkline" (recent history); Columns > Show meter
 #   [process_table] layout: saved column widths, order and sort (written by TaskSmack; delete it to reset)
 #   [updates] check_daily: ask GitHub once a day whether a newer TaskSmack release exists (true/false, default false: nothing is sent); last_check, latest_version, latest_url and dismissed_version are written by TaskSmack
+#   [windows] start_at_sign_in, start_at_sign_in_seen_by, replace_task_manager: written by TaskSmack while Start at sign-in or Replace Task Manager is on, so an upgrade that removed one can put it back
 #   Themes: built-in themes in assets/themes. Add custom .toml themes beside this config under a 'themes' folder.
 
 config_version = 2
