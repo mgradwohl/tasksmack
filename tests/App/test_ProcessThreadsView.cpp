@@ -229,6 +229,60 @@ TEST(ProcessThreadsViewTest, AReadersOwnAcquisitionTimeIsKept)
     EXPECT_DOUBLE_EQ(view.rows()[0].cpuPercent.value_or(-1.0), 50.0);
 }
 
+/// A reader that stamps its result from a fake clock as its counters are read, then "takes" @p extraDelay more
+/// (detail reads, as Windows' per-thread opens) before returning: the clock moves on inside the read (#3337).
+class SlowDetailThreadsReader final : public Platform::IProcessThreadsReader
+{
+  public:
+    explicit SlowDetailThreadsReader(FakeClock& clock) : m_Clock(clock)
+    {}
+
+    std::atomic<std::uint64_t> ticks{0};
+    std::atomic<double> extraDelay{0.0};
+
+    [[nodiscard]] bool hasThreads() const override
+    {
+        return true;
+    }
+    [[nodiscard]] ThreadsReadResult readThreads(const Platform::ProcessTarget& /*target*/) override
+    {
+        ThreadsReadResult result = threads({thread(42, "worker", ticks.load())});
+        result.acquiredAtSeconds = m_Clock.now.load(); // the counters' moment
+        m_Clock.now = m_Clock.now.load() + extraDelay.load();
+        return result;
+    }
+
+  private:
+    FakeClock& m_Clock;
+};
+
+// #3337: a reader's stamp, taken when its counters were read, sets the interval however long the rest of the
+// read took: reads stamped at 0 s and 1 s whose details took 0.9 s and then none return 0.1 s apart, and still
+// read as 25 %, not the 100 % (clamped) their return times would give.
+TEST(ProcessThreadsViewTest, ASlowDetailReadAfterTheReadersStampDoesNotSkewCpuPercent)
+{
+    FakeClock clock;
+    SlowDetailThreadsReader reader(clock);
+    ProcessThreadsView view(4, clock.clock());
+    const auto readStamped = [&](std::uint64_t ticks, double stampedAt, double extraDelay)
+    {
+        reader.ticks = ticks;
+        reader.extraDelay = extraDelay;
+        clock.now = stampedAt;
+        view.markDrawnOpen();
+        ASSERT_TRUE(view.update(&reader, TARGET, 1.0F, 1000));
+        view.finishPendingRead(TARGET);
+    };
+
+    readStamped(1000, 0.0, 0.9); // returns at 0.9 s
+    readStamped(1100, 1.0, 0.0); // returns at 1.0 s
+    ASSERT_EQ(view.rows().size(), 1U);
+    EXPECT_DOUBLE_EQ(view.rows()[0].cpuPercent.value_or(-1.0), 25.0);
+    readStamped(1200, 2.0, 0.5); // returns at 2.5 s: still 1 s after the last stamp
+    EXPECT_DOUBLE_EQ(view.rows()[0].cpuPercent.value_or(-1.0), 25.0);
+    EXPECT_EQ(clock.reads.load(), 0) << "a stamped read never falls back to the view's clock";
+}
+
 TEST(ProcessThreadsViewTest, CpuPercentIsAShareOfTheWholeMachine)
 {
     // 50 ticks at 100 a second is 0.5 s of CPU in 1 s, on 2 CPUs: 25 %.

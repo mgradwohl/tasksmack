@@ -26,7 +26,6 @@
 #include "UI/Format.h"
 
 #include <algorithm>
-#include <chrono>
 #include <compare>
 #include <cstddef>
 #include <cstdint>
@@ -155,13 +154,15 @@ class ProcessThreadsView
         std::string started; ///< When it started, or the dash (#3069)
     };
 
-    /// The steady clock a read's acquisition time is taken from, in seconds; called on the worker (#3337).
+    /// The clock a read's acquisition time is taken from, in seconds; called on the worker (#3337). It must be on
+    /// the readers' clock (Platform::threadsReadClockSeconds(), the default), as a reader may stamp its own.
     using Clock = std::function<double()>;
 
     /// @p cpuCount is what CPU % is a share of (the machine's CPUs, as the Processes table's CPU %).
-    /// @p clock stamps each read as it returns, on the worker (the steady clock when empty; tests pass a fake).
+    /// @p clock stamps each read a reader left unstamped as it returns, on the worker (threadsReadClockSeconds()
+    /// when empty; tests pass a fake).
     explicit ProcessThreadsView(std::size_t cpuCount = 1, Clock clock = {})
-        : m_CpuCount(std::max<std::size_t>(cpuCount, 1)), m_Clock(clock ? std::move(clock) : Clock(&steadySeconds))
+        : m_CpuCount(std::max<std::size_t>(cpuCount, 1)), m_Clock(clock ? std::move(clock) : Clock(&Platform::threadsReadClockSeconds))
     {}
 
     /// Draws the section: a collapsing "Threads (N)" header and, while it is open, the filter box and
@@ -414,12 +415,6 @@ class ProcessThreadsView
         std::uint64_t ticks = 0;
         std::uint64_t startTicks = 0;
     };
-
-    /// The steady clock's now, in seconds: the default Clock.
-    [[nodiscard]] static double steadySeconds() noexcept
-    {
-        return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
-    }
 
     /// @p result, with its acquisition time from @p clock when the reader left it unset: on the worker, as the
     /// read returns, so a result taken in late still divides by when its counters were read (#3337).
