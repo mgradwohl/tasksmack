@@ -30,8 +30,9 @@ struct PendingThreadAction
 {
     Platform::ProcessTarget target;
     std::int32_t tid = 0;
-    std::string threadName;  ///< Empty: the thread has none
-    std::string processName; ///< The process's, as Process Details shows it
+    std::uint64_t threadCreateTime = 0; ///< When the thread confirmed was created (ProcessThread::createTime): a reused TID is refused
+    std::string threadName;             ///< Empty: the thread has none
+    std::string processName;            ///< The process's, as Process Details shows it
     Platform::ThreadAction action = Platform::ThreadAction::Suspend;
 };
 
@@ -172,13 +173,14 @@ class ThreadActionControl
         retry.kind = Platform::AuthorizedAction::Kind::ThreadAction;
         retry.target = request.target;
         retry.tid = request.tid;
+        retry.threadCreateTime = request.threadCreateTime;
         retry.threadAction = request.action;
         std::string pendingText =
             std::format("{} {} of {}...", runningVerb(request.action), threadLabel(request.tid, request.threadName), request.processName);
         m_RunRequest = std::move(request);
         static_cast<void>(m_Run.start(
             std::move(pendingText),
-            [actions, retry] { return actions->actOnThread(retry.target, retry.tid, retry.threadAction); },
+            [actions, retry] { return actions->actOnThread(retry.target, retry.tid, retry.threadCreateTime, retry.threadAction); },
             [this, actions, retry](const Platform::ProcessActionResult& result)
             {
                 finish(result);

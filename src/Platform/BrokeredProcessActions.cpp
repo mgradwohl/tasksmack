@@ -78,7 +78,8 @@ Broker::Request brokerRequestFor(const AuthorizedAction& action)
     case Kind::CloseConnection:
         return Broker::CloseConnectionRequest{.target = action.target, .socketInode = action.socketInode};
     case Kind::ThreadAction:
-        return Broker::ThreadActionRequest{.target = action.target, .tid = action.tid, .action = action.threadAction};
+        return Broker::ThreadActionRequest{
+            .target = action.target, .tid = action.tid, .threadCreateTime = action.threadCreateTime, .action = action.threadAction};
     }
     return Broker::SignalRequest{.target = action.target, .signal = Broker::Signal::Terminate}; // unreachable: every kind is above
 }
@@ -174,10 +175,15 @@ ProcessActionResult BrokeredProcessActions::closeConnection(const ProcessTarget&
                    {.kind = AuthorizedAction::Kind::CloseConnection, .target = target, .socketInode = socketInode});
 }
 
-ProcessActionResult BrokeredProcessActions::actOnThread(const ProcessTarget& target, std::int32_t tid, ThreadAction action)
+ProcessActionResult
+BrokeredProcessActions::actOnThread(const ProcessTarget& target, std::int32_t tid, std::uint64_t threadCreateTime, ThreadAction action)
 {
-    return retried(m_Inner->actOnThread(target, tid, action),
-                   {.kind = AuthorizedAction::Kind::ThreadAction, .target = target, .tid = tid, .threadAction = action});
+    return retried(m_Inner->actOnThread(target, tid, threadCreateTime, action),
+                   {.kind = AuthorizedAction::Kind::ThreadAction,
+                    .target = target,
+                    .tid = tid,
+                    .threadCreateTime = threadCreateTime,
+                    .threadAction = action});
 }
 
 ProcessActionResult BrokeredProcessActions::setEfficiencyMode(const ProcessTarget& target, bool on)

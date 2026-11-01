@@ -70,7 +70,7 @@ struct WindowsProcessFunctions
     DWORD(WINAPI* getPriorityClass)(HANDLE process) = nullptr;
     BOOL(WINAPI* setPriorityClass)(HANDLE process, DWORD priorityClass) = nullptr;
     BOOL(WINAPI* setProcessInformation)(HANDLE process, PROCESS_INFORMATION_CLASS infoClass, LPVOID info, DWORD size) = nullptr;
-    /// OpenThread(), GetProcessIdOfThread(), SuspendThread(), ResumeThread() and TerminateThread(), for one
+    /// OpenThread(), GetProcessIdOfThread(), GetThreadTimes(), SuspendThread(), ResumeThread() and TerminateThread(), for one
     /// thread's Suspend, Resume and End (#3069). The thread handle is closed with the real CloseHandle, so a
     /// fake OpenThread hands out a real handle that can change nothing (a thread of the test's own, opened for
     /// query only). Null, any of them: no thread actions (canActOnThreads false).
@@ -79,6 +79,8 @@ struct WindowsProcessFunctions
     DWORD(WINAPI* suspendThread)(HANDLE thread) = nullptr;
     DWORD(WINAPI* resumeThread)(HANDLE thread) = nullptr;
     BOOL(WINAPI* terminateThread)(HANDLE thread, DWORD exitCode) = nullptr;
+    /// GetThreadTimes(): the thread's creation time, checked against the one the user confirmed (#3069).
+    BOOL(WINAPI* getThreadTimes)(HANDLE thread, LPFILETIME creation, LPFILETIME exit, LPFILETIME kernel, LPFILETIME user) = nullptr;
 };
 
 /// The real Win32 calls.
@@ -163,11 +165,13 @@ class WindowsProcessActions : public IProcessActions
     /// One thread's Suspend (SuspendThread), Resume (ResumeThread) or End (TerminateThread) (#3069), as Process
     /// Explorer's Threads tab. Refused before anything is opened for the System process, TaskSmack's own process
     /// and refuseThreadActionsOn()'s (threadActionRefusal()); then through the process's identity check, the
-    /// critical and protected guards for Suspend and End, as the process-level actions, and a check that
-    /// Windows says the thread is the process's (GetProcessIdOfThread on the handle acted through). Access
+    /// critical and protected guards for Suspend and End, as the process-level actions, and checks on the handle acted
+    /// through that Windows says the thread is the process's (GetProcessIdOfThread) and was created at
+    /// @p threadCreateTime (GetThreadTimes): a TID reused since the user confirmed, or an unknown time (0), is refused. Access
     /// denied opening the thread is permissionDenied, so the elevated helper can retry it, unless the process
     /// is protected. Windows counts suspensions: the success note says so when the count isn't the plain one.
-    [[nodiscard]] ProcessActionResult actOnThread(const ProcessTarget& target, std::int32_t tid, ThreadAction action) override;
+    [[nodiscard]] ProcessActionResult
+    actOnThread(const ProcessTarget& target, std::int32_t tid, std::uint64_t threadCreateTime, ThreadAction action) override;
 
     /// Also refuses thread actions on @p pid's threads (#3069): in the elevated helper, the TaskSmack it
     /// serves, whose suspended or ended thread could freeze or corrupt it. 0: none but this process's own.

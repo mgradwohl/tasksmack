@@ -72,7 +72,7 @@ namespace
     // One thread suspended, resumed or ended (#3069): the actions check the thread is the target's.
     if (const auto* thread = std::get_if<Broker::ThreadActionRequest>(&request))
     {
-        return Broker::ActionResult::from(actions.actOnThread(thread->target, thread->tid, thread->action));
+        return Broker::ActionResult::from(actions.actOnThread(thread->target, thread->tid, thread->threadCreateTime, thread->action));
     }
     return {.success = false, .errorMessage = "Not an action", .successNote = {}};
 }

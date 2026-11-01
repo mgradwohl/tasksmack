@@ -163,6 +163,7 @@ TEST(WindowsProcessThreadsMathTest, ARecordBecomesARowWithItsStartCountedFromBoo
     EXPECT_EQ(waiting.systemTicks, 30U);
     EXPECT_EQ(waiting.userTicks, 40U);
     EXPECT_EQ(waiting.startTicks, 123U);
+    EXPECT_EQ(waiting.createTime, boot.fileTime + 123) << "its FILETIME, for a thread action's identity check";
     EXPECT_TRUE(waiting.name.empty()) << "the reader's, from a handle";
 
     const ProcessThread running = toProcessThread({.tid = 78, .state = 2, .waitReason = 6, .createTime = 5}, boot);
@@ -376,6 +377,7 @@ TEST_F(WindowsProcessThreadsReaderTest, ListsEachThreadWithItsNameStateAndSuspen
     EXPECT_EQ(main.userTicks, 30U);
     EXPECT_EQ(main.startTicks, PROCESS_CREATED - bootTimeBase(BOOT_FILETIME).fileTime);
     EXPECT_EQ(main.suspendCount, 0U);
+    EXPECT_EQ(main.createTime, PROCESS_CREATED) << "the identity a thread action checks";
 
     EXPECT_EQ(result.threads[1].state, 'T');
     EXPECT_EQ(result.threads[1].waitReason, "Suspended");

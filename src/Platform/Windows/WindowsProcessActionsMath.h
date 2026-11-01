@@ -325,6 +325,22 @@ threadActionRefusal(std::int32_t pid, std::int32_t tid, ThreadAction action, std
     return std::format("Thread {} belongs to process {}, not process {}; nothing sent", tid, actualPid, pid);
 }
 
+/// Why the thread @p tid of @p pid isn't acted on (#3069): it isn't the thread the user confirmed. @p expected is the
+/// creation time the read gave it (0: unknown), @p actual the one GetThreadTimes() gives the thread opened now (0: it
+/// couldn't be read). Empty when they are the same, known time.
+[[nodiscard]] inline std::string threadIdentityRefusal(std::int32_t tid, std::int32_t pid, std::uint64_t expected, std::uint64_t actual)
+{
+    if (expected == 0 || actual == 0)
+    {
+        return std::format("Cannot confirm the identity of thread {} of process {}; nothing sent", tid, pid);
+    }
+    if (expected != actual)
+    {
+        return std::format("Thread {} of process {} has exited and its ID now belongs to another thread; nothing sent", tid, pid);
+    }
+    return {};
+}
+
 /// Why opening thread @p tid of @p pid for @p action failed with @p error (#3069). @p isProtected: a protected
 /// process refuses even an administrator, so that refusal says so rather than read as a permission failure.
 [[nodiscard]] inline std::string

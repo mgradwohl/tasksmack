@@ -340,7 +340,9 @@ TEST(ThreadActionControlTest, AConfirmedActionRunsOnTheWorkerAndSaysWhatItDid)
     actions.setThreadActionResult(Platform::ProcessActionResult::ok("its suspend count is now 2"));
     ProcessThreadsView view(1);
     MockThreadsReader reader;
-    reader.result = threads({thread(105, "worker", 1)});
+    ProcessThread worker = thread(105, "worker", 1);
+    worker.createTime = 0x01DC'0000'0000'1234ULL;
+    reader.result = threads({worker});
     view.markDrawnOpen();
     static_cast<void>(view.update(&reader, TARGET, 0.0F, 1000, 0.0));
     view.finishPendingRead(TARGET, 0.0);
@@ -356,6 +358,7 @@ TEST(ThreadActionControlTest, AConfirmedActionRunsOnTheWorkerAndSaysWhatItDid)
     EXPECT_EQ(actions.threadActionCount(), 1);
     EXPECT_EQ(actions.lastThreadId(), 105);
     EXPECT_EQ(actions.lastThreadAction(), Platform::ThreadAction::Suspend);
+    EXPECT_EQ(actions.lastThreadCreateTime(), worker.createTime) << "the thread confirmed, so a reused TID is refused";
     EXPECT_EQ(actions.lastTarget(), TARGET);
     EXPECT_TRUE(control.result().ok);
     EXPECT_EQ(control.result().text, "Suspended thread 105 (worker) of server (its suspend count is now 2)");
@@ -374,7 +377,12 @@ TEST(ThreadActionControlTest, ARefusalOffersAuthenticateAndRetryWhichAsksTheHelp
     actions.setCapabilities(threadActionCapabilities(/*canAuthorize=*/true));
     actions.setThreadActionResult(Platform::ProcessActionResult::denied("Access denied: can't end thread 7 of process 100"));
     ThreadActionControl control;
-    control.request({.target = TARGET, .tid = 7, .threadName = {}, .processName = "svc", .action = Platform::ThreadAction::End});
+    control.request({.target = TARGET,
+                     .tid = 7,
+                     .threadCreateTime = 70,
+                     .threadName = {},
+                     .processName = "svc",
+                     .action = Platform::ThreadAction::End});
     control.confirm(&actions);
     control.update(0.0F, true);
     EXPECT_FALSE(control.result().ok);
@@ -388,6 +396,7 @@ TEST(ThreadActionControlTest, ARefusalOffersAuthenticateAndRetryWhichAsksTheHelp
     EXPECT_EQ(sent.kind, Platform::AuthorizedAction::Kind::ThreadAction);
     EXPECT_EQ(sent.target, TARGET);
     EXPECT_EQ(sent.tid, 7);
+    EXPECT_EQ(sent.threadCreateTime, 70U);
     EXPECT_EQ(sent.threadAction, Platform::ThreadAction::End);
     EXPECT_TRUE(control.result().ok);
     EXPECT_EQ(control.result().text, "Ended thread 7 of svc");

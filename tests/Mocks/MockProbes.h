@@ -677,11 +677,14 @@ class MockProcessActions : public Platform::IProcessActions
     }
 
     /// actOnThread() (#3069): records the target, thread and action, counts the call, returns the set result.
-    [[nodiscard]] Platform::ProcessActionResult
-    actOnThread(const Platform::ProcessTarget& target, std::int32_t tid, Platform::ThreadAction action) override
+    [[nodiscard]] Platform::ProcessActionResult actOnThread(const Platform::ProcessTarget& target,
+                                                            std::int32_t tid,
+                                                            std::uint64_t threadCreateTime,
+                                                            Platform::ThreadAction action) override
     {
         m_LastTarget = target;
         m_LastThreadId = tid;
+        m_LastThreadCreateTime = threadCreateTime;
         m_LastThreadAction = action;
         ++m_ThreadActionCount;
         return m_ThreadActionResult;
@@ -695,6 +698,11 @@ class MockProcessActions : public Platform::IProcessActions
     [[nodiscard]] std::int32_t lastThreadId() const
     {
         return m_LastThreadId;
+    }
+
+    [[nodiscard]] std::uint64_t lastThreadCreateTime() const
+    {
+        return m_LastThreadCreateTime;
     }
 
     [[nodiscard]] Platform::ThreadAction lastThreadAction() const
@@ -1139,6 +1147,7 @@ class MockProcessActions : public Platform::IProcessActions
     Platform::ProcessActionResult m_CloseConnectionResult = Platform::ProcessActionResult::ok();
     int m_ThreadActionCount = 0;
     std::int32_t m_LastThreadId = 0;
+    std::uint64_t m_LastThreadCreateTime = 0;
     Platform::ThreadAction m_LastThreadAction = Platform::ThreadAction::Suspend;
     Platform::ProcessActionResult m_ThreadActionResult = Platform::ProcessActionResult::ok();
     bool m_LastEfficiencyMode = false;

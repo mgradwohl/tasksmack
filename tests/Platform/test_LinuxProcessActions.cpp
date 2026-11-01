@@ -237,7 +237,7 @@ TEST(LinuxProcessActionsTest, ThreadActionsArentOffered)
 {
     LinuxProcessActions actions;
     EXPECT_FALSE(actions.actionCapabilities().canActOnThreads);
-    const ProcessActionResult result = actions.actOnThread({.pid = 1, .startTimeTicks = 1}, 1, ThreadAction::End);
+    const ProcessActionResult result = actions.actOnThread({.pid = 1, .startTimeTicks = 1}, 1, 1, ThreadAction::End);
     EXPECT_FALSE(result.success);
     EXPECT_EQ(result.errorMessage, "Acting on one thread isn't available on this system");
     EXPECT_FALSE(result.permissionDenied);

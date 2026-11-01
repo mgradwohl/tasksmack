@@ -56,6 +56,9 @@ struct ProcessThread
     /// Windows: how many suspensions it has that no resume took back; 0 when it has none or that can't be
     /// read, and on Linux (#3069)
     std::uint32_t suspendCount = 0;
+    /// Windows: when it was created, as a FILETIME (100 ns since 1601): the identity a thread action checks, so a
+    /// TID reused since this read is never acted on (#3069). 0 when unknown, and on Linux.
+    std::uint64_t createTime = 0;
 };
 
 /// The outcome of IProcessThreadsReader::readThreads(): a status, and the threads when Ok.

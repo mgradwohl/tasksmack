@@ -5,6 +5,7 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/WaitChain.h"
 #include "WindowsAffinityMath.h"
+#include "WindowsConversions.h"
 #include "WindowsFolderPicker.h"
 #include "WindowsHandles.h"
 #include "WindowsNtQuery.h"
@@ -366,7 +367,7 @@ guardRefusal(const WindowsProcessFunctions& fns, HANDLE process, const ProcessTa
 [[nodiscard]] bool hasThreadActions(const WindowsProcessFunctions& fns) noexcept
 {
     return fns.openThread != nullptr && fns.getProcessIdOfThread != nullptr && fns.suspendThread != nullptr &&
-           fns.resumeThread != nullptr && fns.terminateThread != nullptr;
+           fns.resumeThread != nullptr && fns.terminateThread != nullptr && fns.getThreadTimes != nullptr;
 }
 
 /// Whether the table has every call Efficiency mode makes (#3071).
@@ -413,6 +414,7 @@ WindowsProcessFunctions realWindowsProcessFunctions() noexcept
         .suspendThread = &SuspendThread,
         .resumeThread = &ResumeThread,
         .terminateThread = &TerminateThread,
+        .getThreadTimes = &GetThreadTimes,
     };
 }
 
@@ -913,7 +915,8 @@ FolderChoice WindowsProcessActions::chooseDumpFolder(const std::filesystem::path
 // NOLINTEND(misc-include-cleaner)
 #endif // TASKSMACK_NO_PROCESS_DUMPS
 
-ProcessActionResult WindowsProcessActions::actOnThread(const ProcessTarget& target, std::int32_t tid, ThreadAction action)
+ProcessActionResult
+WindowsProcessActions::actOnThread(const ProcessTarget& target, std::int32_t tid, std::uint64_t threadCreateTime, ThreadAction action)
 {
     const char* verb = threadActionVerb(action);
     spdlog::info("Asked to {} thread {} of process {}", verb, tid, target.pid);
@@ -968,6 +971,19 @@ ProcessActionResult WindowsProcessActions::actOnThread(const ProcessTarget& targ
     if (const DWORD owner = m_Fns.getProcessIdOfThread(thread.get()); std::cmp_not_equal(owner, target.pid))
     {
         std::string refusal = threadNotInProcessRefusal(tid, target.pid, owner);
+        spdlog::warn("{}", refusal);
+        return ProcessActionResult::error(std::move(refusal));
+    }
+    // And the thread the user confirmed: a TID the process reused for a newer thread since the list was read is
+    // refused, as a reused PID is. An unknown confirmed time is refused, never skipped.
+    FILETIME created{};
+    FILETIME exited{};
+    FILETIME kernel{};
+    FILETIME user{};
+    const bool timesRead = m_Fns.getThreadTimes(thread.get(), &created, &exited, &kernel, &user) != FALSE;
+    const std::uint64_t actualCreateTime = timesRead ? Windows::fileTimeTicks(created) : 0;
+    if (std::string refusal = threadIdentityRefusal(tid, target.pid, threadCreateTime, actualCreateTime); !refusal.empty())
+    {
         spdlog::warn("{}", refusal);
         return ProcessActionResult::error(std::move(refusal));
     }

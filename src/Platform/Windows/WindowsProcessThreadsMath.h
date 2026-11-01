@@ -271,6 +271,7 @@ struct BootTimeBase
 {
     ProcessThread row;
     row.tid = thread.tid;
+    row.createTime = thread.createTime;
     row.state = threadStateLetter(thread.state, thread.waitReason);
     row.userTicks = thread.userTime;
     row.systemTicks = thread.kernelTime;

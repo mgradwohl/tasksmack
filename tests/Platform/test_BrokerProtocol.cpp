@@ -109,18 +109,27 @@ TEST(BrokerProtocolTest, ThreadActionRoundTripsAndRefusesWhatIsntOne)
 {
     for (const ThreadAction action : {ThreadAction::Suspend, ThreadAction::Resume, ThreadAction::End})
     {
-        const Request request{ThreadActionRequest{.target = TARGET, .tid = 0x7FFF'FFFC, .action = action}};
+        const Request request{
+            ThreadActionRequest{.target = TARGET, .tid = 0x7FFF'FFFC, .threadCreateTime = 0x01DC'0123'4567'89ABULL, .action = action}};
         EXPECT_EQ(roundTrip(request), request);
     }
     const std::vector<std::uint8_t> bytes = encodeRequest(
-        7, Request{ThreadActionRequest{.target = {.pid = 0x0102, .startTimeTicks = 3}, .tid = 0x0405, .action = ThreadAction::End}});
-    // The header, the target (PID, then start time), the TID and the action.
-    const std::vector<std::uint8_t> expected{
-        25, 0, 0, 0, static_cast<std::uint8_t>(PROTOCOL_VERSION), 0, 25, 0, 7, 0, 0, 0, 2, 1, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 2};
+        7,
+        Request{ThreadActionRequest{
+            .target = {.pid = 0x0102, .startTimeTicks = 3}, .tid = 0x0405, .threadCreateTime = 0x0706, .action = ThreadAction::End}});
+    // The header, the target (PID, then start time), the TID, its creation time and the action.
+    const std::vector<std::uint8_t> expected{33, 0,  0, 0, static_cast<std::uint8_t>(PROTOCOL_VERSION),
+                                             0,  25, 0, 7, 0,
+                                             0,  0,  2, 1, 0,
+                                             0,  3,  0, 0, 0,
+                                             0,  0,  0, 0, 5,
+                                             4,  0,  0, 6, 7,
+                                             0,  0,  0, 0, 0,
+                                             0,  2};
     EXPECT_EQ(bytes, expected);
     EXPECT_EQ(Detail::readFrame(bytes).value_or(Detail::Frame{}).kind, MessageKind::ThreadAction);
 
-    constexpr std::size_t ACTION = 4U + HEADER_BYTES + 4U + 8U + 4U;
+    constexpr std::size_t ACTION = 4U + HEADER_BYTES + 4U + 8U + 4U + 8U;
     std::vector<std::uint8_t> bad = bytes;
     bad[ACTION] = 3; // past End
     EXPECT_FALSE(decodeRequest(bad).has_value());
@@ -609,6 +618,7 @@ TEST(BrokerProtocolTest, ThreadsRoundTripAndBadRepliesAreRefused)
     windows.threads[1].state = 'T';
     windows.threads[1].waitReason = "Suspended";
     windows.threads[1].suspendCount = 3;
+    windows.threads[1].createTime = 0x01DC'0000'0000'0042ULL;
     const Response windowsReply = ThreadsReply{.result = windows};
     EXPECT_EQ(roundTrip(windowsReply), windowsReply);
     const Response refused = ThreadsReply{.result = {.status = ThreadsReadStatus::PermissionDenied, .threads = {}, .detail = "no"}};
@@ -1133,7 +1143,8 @@ TEST(BrokerProtocolTest, ListRepliesCompareByEveryFieldOfEveryEntry)
         [](ThreadsReply& m) { m.result.threads[0].startTicks = 2; },
         [](ThreadsReply& m) { m.result.windowsPriorities = true; },
         [](ThreadsReply& m) { m.result.threads[0].waitReason = "Suspended"; },
-        [](ThreadsReply& m) { m.result.threads[0].suspendCount = 1; });
+        [](ThreadsReply& m) { m.result.threads[0].suspendCount = 1; },
+        [](ThreadsReply& m) { m.result.threads[0].createTime = 7; });
 
     ProcessConnection connection;
     connection.local.port = 80;

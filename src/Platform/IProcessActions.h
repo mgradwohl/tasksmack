@@ -234,9 +234,10 @@ struct AuthorizedAction
     Kind kind = Kind::Terminate;
     ProcessTarget target;
     ProcessSignal signal = ProcessSignal::Hangup;
-    bool efficiencyMode = false;   ///< SetEfficiencyMode: on (true) or off
-    std::uint64_t socketInode = 0; ///< CloseConnection: the socket, by inode
-    std::int32_t tid = 0;          ///< ThreadAction: the thread
+    bool efficiencyMode = false;        ///< SetEfficiencyMode: on (true) or off
+    std::uint64_t socketInode = 0;      ///< CloseConnection: the socket, by inode
+    std::int32_t tid = 0;               ///< ThreadAction: the thread
+    std::uint64_t threadCreateTime = 0; ///< ThreadAction: when the thread confirmed was created (ProcessThread::createTime)
     ThreadAction threadAction = ThreadAction::Suspend;
     std::int32_t nice = 0;
     IoPriorityClass ioClass = IoPriorityClass::BestEffort;
@@ -474,13 +475,16 @@ class IProcessActions
     }
 
     /// Suspends, resumes or ends the thread @p tid of the process (#3069), as Process Explorer's Threads tab does.
-    /// Refused, as every action is, unless the process at the target's PID is the target, and for a thread that
-    /// isn't the target's; never for the System process, a critical process, or TaskSmack's own threads. The
+    /// Refused, as every action is, unless the process at the target's PID is the target; for a thread that isn't the
+    /// target's, or whose creation time isn't @p threadCreateTime (the thread the user confirmed, ProcessThread::createTime:
+    /// a TID reused since, or an unknown 0, is refused); never for the System process, a critical process, or TaskSmack's own threads. The
     /// default refuses it, matching canActOnThreads' default (false).
-    [[nodiscard]] virtual ProcessActionResult actOnThread(const ProcessTarget& target, std::int32_t tid, ThreadAction action)
+    [[nodiscard]] virtual ProcessActionResult
+    actOnThread(const ProcessTarget& target, std::int32_t tid, std::uint64_t threadCreateTime, ThreadAction action)
     {
         static_cast<void>(target);
         static_cast<void>(tid);
+        static_cast<void>(threadCreateTime);
         static_cast<void>(action);
         return ProcessActionResult::error("Acting on one thread isn't available on this system");
     }

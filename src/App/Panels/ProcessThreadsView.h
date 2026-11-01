@@ -260,8 +260,12 @@ class ProcessThreadsView
     /// A row menu's item: @p action on @p thread of the process shown, its confirm opened (#3069).
     void requestThreadAction(const Platform::ProcessThread& thread, Platform::ThreadAction action)
     {
-        m_ActionControl.request(PendingThreadAction{
-            .target = m_Target, .tid = thread.tid, .threadName = thread.name, .processName = m_ProcessName, .action = action});
+        m_ActionControl.request(PendingThreadAction{.target = m_Target,
+                                                    .tid = thread.tid,
+                                                    .threadCreateTime = thread.createTime,
+                                                    .threadName = thread.name,
+                                                    .processName = m_ProcessName,
+                                                    .action = action});
     }
 
     /// Opens the row menu for the thread @p tid of the last read, as a right-click on its row does (tests).
