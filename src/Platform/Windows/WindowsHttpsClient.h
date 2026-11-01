@@ -106,8 +106,11 @@ class WindowsHttpsClient final : public IHttpsClient
 {
   public:
     WindowsHttpsClient() = default;
-    /// With @p functions in place of winhttp.dll's: tests' fakes.
-    explicit WindowsHttpsClient(const WindowsHttpsDetail::WinHttpFunctions& functions) noexcept : m_Fns(functions)
+    /// For tests: @p functions in place of winhttp.dll's (fakes, or the real ones wrapped to count), and
+    /// @p port in place of 443 (a loopback listener's).
+    explicit WindowsHttpsClient(const WindowsHttpsDetail::WinHttpFunctions& functions,
+                                INTERNET_PORT port = INTERNET_DEFAULT_HTTPS_PORT) noexcept
+        : m_Fns(functions), m_Port(port)
     {}
     ~WindowsHttpsClient() override = default;
 
@@ -120,6 +123,7 @@ class WindowsHttpsClient final : public IHttpsClient
 
   private:
     WindowsHttpsDetail::WinHttpFunctions m_Fns;
+    INTERNET_PORT m_Port = INTERNET_DEFAULT_HTTPS_PORT;
 };
 
 } // namespace Platform

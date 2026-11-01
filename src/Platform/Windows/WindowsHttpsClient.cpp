@@ -384,7 +384,7 @@ std::expected<HttpsResponse, std::string> WindowsHttpsClient::get(const HttpsReq
     {
         return lastError("WinHttpOpen");
     }
-    const InternetHandle connection(m_Fns, m_Fns.connect(session.get(), host.c_str(), INTERNET_DEFAULT_HTTPS_PORT, 0));
+    const InternetHandle connection(m_Fns, m_Fns.connect(session.get(), host.c_str(), m_Port, 0));
     if (connection.get() == nullptr)
     {
         return lastError("WinHttpConnect");

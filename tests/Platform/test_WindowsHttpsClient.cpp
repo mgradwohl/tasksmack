@@ -1,8 +1,9 @@
 /// @file test_WindowsHttpsClient.cpp
 /// @brief The update check's WinHTTP client (#3093), without the network: what it refuses before it opens
 /// a session (a stop already requested, a request with no host, path or User-Agent), the factory, the
-/// wording of its errors, and how an asynchronous call's completion is waited for (#3333). No test here sends
-/// a request.
+/// wording of its errors, how an asynchronous call's completion is waited for, a whole request through fake
+/// WinHTTP calls, and real WinHTTP stopped or timed out against a loopback listener that never answers
+/// (#3333). No test reaches past 127.0.0.1.
 
 #include "Platform/Factory.h"
 #include "Platform/IHttpsClient.h"
@@ -17,14 +18,21 @@
 #include <cstdint>
 #include <cstring>
 #include <expected>
+#include <future>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stop_token>
 #include <string>
 #include <thread>
+#include <utility>
+#include <vector>
 
+// clang-format off
+#include <winsock2.h>
 #include <windows.h>
 #include <winhttp.h>
+// clang-format on
 
 namespace Platform
 {
@@ -567,6 +575,228 @@ TEST(WindowsHttpsFakeRequestTest, AFailedCloseNeitherWaitsNorFreesWhatWinHttpMay
     std::memset(fake.readBuffer, 'x', fake.readLength);
     HINTERNET closed = requestHandle();
     fake.deliver(WINHTTP_CALLBACK_STATUS_HANDLE_CLOSING, static_cast<LPVOID>(&closed), sizeof(closed));
+}
+
+// Real WinHTTP (#3333): winhttp.dll's own calls, close counted, against a TCP listener on 127.0.0.1 only
+// (no firewall prompt, nothing leaves the machine). The listener accepts and never answers, so the TLS
+// handshake stalls in a real asynchronous call; only a stop or the deadline can end it, and get() returns
+// only once real WinHTTP has sent HANDLE_CLOSING after the close.
+
+[[nodiscard]] bool isSocket(SOCKET socket) noexcept
+{
+    return socket != INVALID_SOCKET; // NOLINT(modernize-use-integer-sign-comparison) - INVALID_SOCKET is (SOCKET)~0
+}
+
+/// A listener on 127.0.0.1 at a port Windows picks. Holds each connection it accepts open, saying
+/// nothing, or closes it at once.
+class LoopbackListener
+{
+  public:
+    explicit LoopbackListener(bool closeAtOnce) : m_CloseAtOnce(closeAtOnce)
+    {
+        WSADATA data{};
+        m_Started = ::WSAStartup(MAKEWORD(2, 2), &data) == 0;
+        if (!m_Started)
+        {
+            return;
+        }
+        m_Socket = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (!isSocket(m_Socket))
+        {
+            return;
+        }
+        sockaddr_in address{};
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = ::htonl(INADDR_LOOPBACK);
+        address.sin_port = 0;
+        int length = sizeof(address);
+        // NOLINTBEGIN(cppcoreguidelines-pro-type-reinterpret-cast) - Winsock's sockaddr casts
+        if (::bind(m_Socket, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) != 0 || ::listen(m_Socket, SOMAXCONN) != 0 ||
+            ::getsockname(m_Socket, reinterpret_cast<sockaddr*>(&address), &length) != 0)
+        {
+            return;
+        }
+        // NOLINTEND(cppcoreguidelines-pro-type-reinterpret-cast)
+        m_Port = ::ntohs(address.sin_port);
+        m_Thread = std::thread([this] { acceptAll(); });
+    }
+    ~LoopbackListener()
+    {
+        if (isSocket(m_Socket))
+        {
+            ::closesocket(m_Socket); // ends the accept()
+        }
+        if (m_Thread.joinable())
+        {
+            m_Thread.join();
+        }
+        for (const SOCKET accepted : m_Accepted)
+        {
+            ::closesocket(accepted);
+        }
+        if (m_Started)
+        {
+            ::WSACleanup();
+        }
+    }
+    LoopbackListener(const LoopbackListener&) = delete;
+    LoopbackListener& operator=(const LoopbackListener&) = delete;
+    LoopbackListener(LoopbackListener&&) = delete;
+    LoopbackListener& operator=(LoopbackListener&&) = delete;
+
+    /// 0 if it couldn't listen.
+    [[nodiscard]] INTERNET_PORT port() const noexcept
+    {
+        return m_Port;
+    }
+
+  private:
+    void acceptAll()
+    {
+        while (true)
+        {
+            const SOCKET accepted = ::accept(m_Socket, nullptr, nullptr);
+            if (!isSocket(accepted))
+            {
+                return; // the listener closed
+            }
+            if (m_CloseAtOnce)
+            {
+                ::closesocket(accepted);
+            }
+            else
+            {
+                m_Accepted.push_back(accepted); // only this thread, until the join
+            }
+        }
+    }
+
+    bool m_CloseAtOnce;
+    bool m_Started = false;
+    SOCKET m_Socket = INVALID_SOCKET;
+    INTERNET_PORT m_Port = 0;
+    std::vector<SOCKET> m_Accepted;
+    std::thread m_Thread;
+};
+
+/// What the counting wrappers saw: the request handle real WinHTTP opened and how often it was closed.
+struct RealCounts
+{
+    std::atomic<HINTERNET> request = nullptr;
+    std::atomic<int> requestCloses = 0;
+};
+
+RealCounts& realCounts()
+{
+    static RealCounts counts;
+    return counts;
+}
+
+HINTERNET WINAPI
+countingOpenRequest(HINTERNET connection, LPCWSTR verb, LPCWSTR path, LPCWSTR version, LPCWSTR referrer, LPCWSTR* acceptTypes, DWORD flags)
+{
+    HINTERNET request = ::WinHttpOpenRequest(connection, verb, path, version, referrer, acceptTypes, flags);
+    realCounts().request = request;
+    return request;
+}
+
+BOOL WINAPI countingCloseHandle(HINTERNET handle)
+{
+    if (handle != nullptr && handle == realCounts().request.load())
+    {
+        ++realCounts().requestCloses;
+    }
+    return ::WinHttpCloseHandle(handle);
+}
+
+/// winhttp.dll's calls, with the request's open and close counted.
+WindowsHttpsDetail::WinHttpFunctions countingRealFunctions()
+{
+    realCounts().request = nullptr;
+    realCounts().requestCloses = 0;
+    WindowsHttpsDetail::WinHttpFunctions fns;
+    fns.openRequest = &countingOpenRequest;
+    fns.closeHandle = &countingCloseHandle;
+    return fns;
+}
+
+using HttpsResult = std::expected<HttpsResponse, std::string>;
+
+/// One real request on its own thread, which shares ownership of everything it uses: if get() hangs, the
+/// test fails at the watchdog instead of hanging the run, and the stuck thread touches nothing freed.
+struct RealRun
+{
+    std::shared_ptr<LoopbackListener> listener;
+    std::shared_ptr<WindowsHttpsClient> client;
+    std::shared_ptr<std::stop_source> stop = std::make_shared<std::stop_source>();
+    std::future<HttpsResult> result;
+
+    RealRun(bool closeAtOnce, std::chrono::milliseconds timeout) : listener(std::make_shared<LoopbackListener>(closeAtOnce))
+    {
+        client = std::make_shared<WindowsHttpsClient>(countingRealFunctions(), listener->port());
+        HttpsRequest request = validRequest();
+        request.host = "127.0.0.1";
+        request.path = "/";
+        request.timeout = timeout;
+        const auto promise = std::make_shared<std::promise<HttpsResult>>();
+        result = promise->get_future();
+        std::thread([listener = listener, client = client, stop = stop, promise, request = std::move(request)]
+                    { promise->set_value(client->get(request, stop->get_token())); })
+            .detach();
+    }
+
+    /// The result, or nullopt if get() hasn't returned within @p limit.
+    [[nodiscard]] std::optional<HttpsResult> waitFor(std::chrono::milliseconds limit)
+    {
+        if (result.wait_for(limit) != std::future_status::ready)
+        {
+            return std::nullopt;
+        }
+        return result.get();
+    }
+};
+
+constexpr auto WATCHDOG = std::chrono::seconds(5);
+
+TEST(WindowsHttpsRealLoopbackTest, AStopEndsARealStalledRequestPromptly)
+{
+    RealRun run(false, std::chrono::milliseconds(60'000));
+    ASSERT_NE(run.listener->port(), 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    const auto stopped = std::chrono::steady_clock::now();
+    static_cast<void>(run.stop->request_stop());
+    const std::optional<HttpsResult> result = run.waitFor(WATCHDOG);
+    ASSERT_TRUE(result.has_value()) << "get() didn't return within 5 s of the stop: HANDLE_CLOSING never came?";
+    EXPECT_LT(std::chrono::steady_clock::now() - stopped, std::chrono::seconds(2));
+    ASSERT_FALSE(result->has_value());     // NOLINT(bugprone-unchecked-optional-access) - asserted above
+    EXPECT_EQ(result->error(), "Stopped"); // NOLINT(bugprone-unchecked-optional-access) - asserted above
+    EXPECT_EQ(realCounts().requestCloses.load(), 1);
+}
+
+TEST(WindowsHttpsRealLoopbackTest, TheDeadlineEndsARealStalledRequestPromptly)
+{
+    const auto started = std::chrono::steady_clock::now();
+    RealRun run(false, std::chrono::milliseconds(300));
+    ASSERT_NE(run.listener->port(), 0);
+    const std::optional<HttpsResult> result = run.waitFor(WATCHDOG);
+    ASSERT_TRUE(result.has_value()) << "get() didn't return within 5 s of a 300 ms deadline";
+    EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds(2));
+    ASSERT_FALSE(result->has_value());                                     // NOLINT(bugprone-unchecked-optional-access) - asserted above
+    EXPECT_TRUE(result->error().contains("timed out")) << result->error(); // NOLINT(bugprone-unchecked-optional-access) - asserted above
+    EXPECT_EQ(realCounts().requestCloses.load(), 1);
+}
+
+TEST(WindowsHttpsRealLoopbackTest, AConnectionTheServerDropsFailsPromptly)
+{
+    const auto started = std::chrono::steady_clock::now();
+    RealRun run(true, std::chrono::milliseconds(60'000));
+    ASSERT_NE(run.listener->port(), 0);
+    const std::optional<HttpsResult> result = run.waitFor(WATCHDOG);
+    ASSERT_TRUE(result.has_value()) << "get() didn't return within 5 s of the server dropping the connection";
+    EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds(2));
+    ASSERT_FALSE(result->has_value());                                      // NOLINT(bugprone-unchecked-optional-access) - asserted above
+    EXPECT_TRUE(result->error().starts_with("WinHttp")) << result->error(); // NOLINT(bugprone-unchecked-optional-access) - asserted above
+    EXPECT_EQ(realCounts().requestCloses.load(), 1);
 }
 
 } // namespace
