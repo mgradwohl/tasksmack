@@ -142,10 +142,11 @@ class WindowsProcessActions : public IProcessActions
     /// Efficiency mode (#3071), as Task Manager's: on sets ProcessPowerThrottling's execution-speed
     /// throttling (EcoQoS: the efficient cores, lower clocks) and the Idle priority class, remembering the
     /// class it had (sharedEfficiencyModePriorities()); off hands power throttling back to Windows and,
-    /// while the process is still at Idle, restores that class, or Normal when it isn't known. Refused for
-    /// PID 4 and for a protected or critical process, through the same identity check and guard as a
-    /// priority change; access denied is permissionDenied, so the elevated helper can retry it. A failure
-    /// to lower the class undoes the throttling, so a refused "on" changes nothing.
+    /// while the process is still at Idle, restores that class, or Normal when it isn't known, with a
+    /// successNote saying so (#3281). Refused for PID 4 and for a protected or critical process, through
+    /// the same identity check and guard as a priority change; access denied is permissionDenied, so the
+    /// elevated helper can retry it. A failure to lower the class undoes the throttling, so a refused "on"
+    /// changes nothing.
     [[nodiscard]] ProcessActionResult setEfficiencyMode(const ProcessTarget& target, bool on) override;
     /// A full-memory minidump through dbghelp's MiniDumpWriteDump (#807), as Task Manager writes one;
     /// see Windows::writeProcessDump(). Opens the process through the same identity check as every
