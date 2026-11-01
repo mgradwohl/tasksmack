@@ -231,6 +231,8 @@ void ProcessDetailsPanel::updateOnDemandReads(float deltaTime)
     // The Threads section's on-demand read (#3069), on the same terms, at the Settings interval: its CPU %
     // is a live figure.
     const bool canReadThreads = m_HasThreads && m_HasSnapshot && !m_ProcessExited;
+    // Its rows' Suspend, Resume and End (#3069): where the actions can (Windows), for a running process.
+    m_ThreadsView.setThreadActions(canReadThreads && m_ActionCapabilities.canActOnThreads, cachedSnapshot().name);
     static_cast<void>(m_ThreadsView.update(canReadThreads ? m_ThreadsReader.get() : nullptr,
                                            selectedTarget(),
                                            deltaTime,
@@ -395,6 +397,8 @@ void ProcessDetailsPanel::renderContent()
     // progress and then shows its result.
     const Platform::ProcessTarget noTarget{.pid = -1, .startTimeTicks = 0};
     m_ActionsView.renderConfirmation(m_ProcessActions.get(), showsRunningProcess() ? selectedTarget() : noTarget);
+    // The Threads section's thread action confirm (#3069), on the same terms.
+    m_ThreadsView.renderConfirmation(m_ProcessActions.get(), showsRunningProcess() ? selectedTarget() : noTarget);
 }
 
 void ProcessDetailsPanel::renderPane(bool killRequested)
@@ -487,7 +491,7 @@ void ProcessDetailsPanel::renderPane(bool killRequested)
                 // Likewise collapsed by default; hidden only in synthetic runs (#802)
                 openIfRequested(SelectOverride::DetailsSection::Modules, m_HasModules);
                 m_ModulesView.render(m_HasModules);
-                // Likewise collapsed by default; hidden in synthetic runs and, for now, on Windows (#3069)
+                // Likewise collapsed by default; hidden in synthetic runs (#3069)
                 m_ThreadsView.render(m_HasThreads);
                 // Likewise collapsed by default; hidden only in synthetic runs (#1526)
                 openIfRequested(SelectOverride::DetailsSection::Security, m_HasSecurity);

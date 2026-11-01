@@ -20,6 +20,7 @@
 #include "Platform/Windows/WindowsProcessConnections.h"
 #include "Platform/Windows/WindowsProcessModules.h"
 #include "Platform/Windows/WindowsProcessOpenFiles.h"
+#include "Platform/Windows/WindowsProcessThreads.h"
 #include "Platform/Windows/WindowsTaskManagerReplacement.h"
 
 #include <spdlog/spdlog.h>
@@ -104,12 +105,17 @@ int WINAPI wWinMain(HINSTANCE /*instance*/, HINSTANCE /*previous*/, LPWSTR /*com
         // As an elevated TaskSmack does (#2128): without it, services' processes refuse an administrator.
         static_cast<void>(Platform::Windows::enableDebugPrivilegeIfElevated());
         Platform::WindowsProcessActions actions;
+        // No thread of TaskSmack's is suspended, resumed or ended here (#3069), as none of the helper's own is.
+        actions.refuseThreadActionsOn(parsed->parentPid);
         // Process Details' reads of an elevated or another user's process (#2309). Windows has no
         // environment (#179) or PSS/USS reader, and reads firmware and crashes unelevated, so those
         // requests get the mapping's ErrorReply.
         Platform::Windows::WindowsProcessModulesReader modules;
         Platform::Windows::WindowsProcessOpenFilesReader openFiles;
         Platform::Windows::WindowsProcessConnectionsReader connections;
+        // Process Details' threads (#3069). TaskSmack lists them itself, another user's too, so it asks only if
+        // its own read is refused.
+        Platform::Windows::WindowsProcessThreadsReader threads;
         // Replace Task Manager (#3072): taskmgr.exe's IFEO Debugger, set only to the TaskSmack.exe beside
         // this helper, the one checkParentIsTaskSmack() confirmed its parent runs.
         Platform::Windows::WindowsIfeoRegistry ifeo;
@@ -119,6 +125,7 @@ int WINAPI wWinMain(HINSTANCE /*instance*/, HINSTANCE /*previous*/, LPWSTR /*com
             .modules = &modules,
             .openFiles = &openFiles,
             .connections = &connections,
+            .threads = &threads,
             .taskManagerReplacement = [&ifeo, &taskSmack](const Platform::Broker::TaskManagerReplacementRequest& request)
             { return Platform::Windows::handleHelperRequest(request, taskSmack, ifeo, &Helper::sameFile); },
         };

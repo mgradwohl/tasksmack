@@ -49,6 +49,7 @@
 #include "WindowsProcessOpenFiles.h"
 #include "WindowsProcessProbe.h"
 #include "WindowsProcessSecurity.h"
+#include "WindowsProcessThreads.h"
 #include "WindowsServiceActions.h"
 #include "WindowsServiceProbe.h"
 #include "WindowsStartAtLogin.h"
@@ -157,8 +158,8 @@ std::unique_ptr<IUserSessions> makeUserSessions()
 
 std::unique_ptr<IProcessThreadsReader> makeProcessThreadsReader()
 {
-    // The Threads section (#3069) is hidden until the Windows lane adds a Toolhelp reader.
-    return std::make_unique<UnsupportedProcessThreadsReader>();
+    // The SystemProcessInformation snapshot's threads, with each one's description and suspend count (#3069).
+    return std::make_unique<Windows::WindowsProcessThreadsReader>();
 }
 
 std::unique_ptr<IProcessOpenFilesReader> makeProcessOpenFilesReader()

@@ -1,15 +1,16 @@
 #pragma once
 
 // On-demand read of one process's threads (#3069): the Threads section of Process Details. Linux lists
-// /proc/[pid]/task; Windows (the Windows lane's part) would read the Toolhelp thread snapshot.
+// /proc/[pid]/task; Windows reads the threads NtQuerySystemInformation(SystemProcessInformation) lists
+// for the process, and each one's name and suspend count from a handle on it.
 //
 // Not part of the per-sample enumeration: a process's threads are read only for the process Process
 // Details shows, only while its Threads section is open, at the Settings refresh interval. The App
 // composition root creates the reader (Platform::makeProcessThreadsReader()) and hands it to the panel,
 // which never calls the factory.
 //
-// The rows are raw: CPU time in clock ticks, the state letter. CPU %, which needs two reads, and the
-// display text are the view's (App/Panels/ProcessThreadsView.h).
+// The rows are raw: CPU time in clock ticks (100 ns units on Windows), the state letter. CPU %, which needs
+// two reads, and the display text are the view's (App/Panels/ProcessThreadsView.h).
 
 #include "Platform/IProcessActions.h"
 
@@ -25,9 +26,9 @@ namespace Platform
 enum class ThreadsReadStatus : std::uint8_t
 {
     Ok,               ///< Read; `threads` holds them (at least one while the process runs).
-    PermissionDenied, ///< The OS refused (another user's process, where /proc is mounted hidepid).
+    PermissionDenied, ///< The OS refused (another user's process, where /proc is mounted hidepid; never on Windows).
     ProcessExited,    ///< The process is gone, or its PID now belongs to a different process.
-    Unsupported,      ///< This run cannot list another process's threads (synthetic runs, Windows for now).
+    Unsupported,      ///< This run cannot list another process's threads (synthetic runs).
     IdentityUnknown,  ///< The target's start time is unknown (0), so the process could not be confirmed; nothing was read.
     Failed,           ///< Any other error.
 };
@@ -36,12 +37,25 @@ enum class ThreadsReadStatus : std::uint8_t
 struct ProcessThread
 {
     std::int32_t tid = 0;
-    std::string name;              ///< Its name (Linux: comm, at most 15 bytes; a new thread has its process's)
-    char state = '?';              ///< Linux's state letter: R running, S sleeping, D waiting on I/O, T stopped, Z zombie...
+    /// Its name (Linux: comm, at most 15 bytes, a new thread has its process's; Windows: its description,
+    /// empty when it has none or it can't be opened)
+    std::string name;
+    /// The state letter: R running, S sleeping, D waiting on I/O, T stopped, Z zombie... (Windows: derived from
+    /// its scheduler state, T for a suspended thread)
+    char state = '?';
     std::uint64_t userTicks = 0;   ///< CPU time in user mode, in clock ticks (ticksPerSecond in the result)
     std::uint64_t systemTicks = 0; ///< CPU time in the kernel, in clock ticks
-    std::int64_t nice = 0;         ///< Its nice value (-20 to 19): Linux schedules each thread by its own
-    std::uint64_t startTicks = 0;  ///< When it started, in clock ticks after boot
+    /// Its nice value (-20 to 19), as Linux schedules each thread by its own; with the result's
+    /// windowsPriorities, its Windows priority (0 to 31) instead
+    std::int64_t nice = 0;
+    std::uint64_t startTicks = 0; ///< When it started, in clock ticks after boot
+    /// Windows: what a waiting thread waits for, as the kernel names it ("UserRequest", "Suspended"); empty
+    /// when it isn't waiting, and on Linux (#3069)
+    // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
+    std::string waitReason{};
+    /// Windows: how many suspensions it has that no resume took back; 0 when it has none or that can't be
+    /// read, and on Linux (#3069)
+    std::uint32_t suspendCount = 0;
 };
 
 /// The outcome of IProcessThreadsReader::readThreads(): a status, and the threads when Ok.
@@ -53,6 +67,7 @@ struct ThreadsReadResult
     std::int64_t ticksPerSecond = 100; ///< What the tick counts are in (sysconf(_SC_CLK_TCK) on Linux)
     bool truncated = false;            ///< The process had more than MAX_THREADS; `threads` holds the first
     std::uint64_t bootTimeEpoch = 0;   ///< When the machine booted (Unix seconds), for startTicks as a time; 0 when unknown
+    bool windowsPriorities = false;    ///< Each thread's nice holds its Windows priority (0 to 31), not a nice value
 };
 
 /// Lists one process's threads on request.
@@ -92,7 +107,7 @@ class IProcessThreadsReader
     }
 };
 
-/// The reader for a run that cannot list another process's threads (synthetic scenarios, Windows for now).
+/// The reader for a run that cannot list another process's threads (synthetic scenarios).
 class UnsupportedProcessThreadsReader final : public IProcessThreadsReader
 {
   public:

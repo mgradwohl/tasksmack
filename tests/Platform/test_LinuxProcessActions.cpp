@@ -231,6 +231,18 @@ TEST(LinuxProcessActionsTest, CapabilitiesReportedCorrectly)
     EXPECT_TRUE(caps.canSetIoPriority); // ioprio_set() too (#803)
 }
 
+// #3069: no call acts on one thread on Linux (a stop signal stops the whole group), so the Threads section's rows
+// have no menu, and a thread action, asked for anyway, is refused without anything being sent.
+TEST(LinuxProcessActionsTest, ThreadActionsArentOffered)
+{
+    LinuxProcessActions actions;
+    EXPECT_FALSE(actions.actionCapabilities().canActOnThreads);
+    const ProcessActionResult result = actions.actOnThread({.pid = 1, .startTimeTicks = 1}, 1, ThreadAction::End);
+    EXPECT_FALSE(result.success);
+    EXPECT_EQ(result.errorMessage, "Acting on one thread isn't available on this system");
+    EXPECT_FALSE(result.permissionDenied);
+}
+
 // =============================================================================
 // Error Handling Tests
 // =============================================================================

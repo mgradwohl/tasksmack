@@ -746,6 +746,8 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsProcessModules.cpp
     Platform/test_WindowsProcessOpenFiles.cpp
     Platform/test_WindowsProcessSecurity.cpp
+    Platform/test_WindowsThreadActions.cpp  # one thread's Suspend, Resume and End: the guard table through fakes, and a test thread of its own (#3069)
+    Platform/test_WindowsProcessThreads.cpp  # Process Details Threads: the snapshot parse, names, suspend counts, this process's own (#3069)
     Platform/test_WindowsDiskProbe.cpp
     Platform/test_WindowsDiskProbeSeams.cpp
     Platform/test_PerfProviderApartment.cpp
