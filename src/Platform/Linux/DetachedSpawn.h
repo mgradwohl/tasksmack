@@ -38,8 +38,11 @@ struct SpawnFailure
 struct RunAs
 {
     uid_t uid = 0;
-    gid_t gid = 0;                        ///< Also its only supplementary group: the user's others aren't looked up.
+    gid_t gid = 0;
     std::vector<std::string> environment; ///< "NAME=value" entries: the program's whole environment.
+    /// The user's supplementary groups, as a login gives them (#3298; SessionUser looks them up); empty: the
+    /// primary group alone.
+    std::vector<gid_t> groups;
 };
 
 /// A user-facing message for @p failure starting @p program ("Could not start /usr/bin/xterm: ...").

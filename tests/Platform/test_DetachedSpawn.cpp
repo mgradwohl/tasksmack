@@ -513,7 +513,7 @@ TEST(DetachedSpawnTest, AsARunAsTheProgramGetsOnlyItsEnvironment)
     const std::filesystem::path out = dir.path / "env.txt";
     const std::array<std::string, 3> argv{
         "/bin/sh", "-c", std::format("{{ env; id -u; id -g; }} > '{0}.tmp' && mv '{0}.tmp' '{0}'", out.string())};
-    const RunAs self{.uid = ::getuid(), .gid = ::getgid(), .environment = {"ONLY=this", "PATH=/usr/bin:/bin"}};
+    const RunAs self{.uid = ::getuid(), .gid = ::getgid(), .environment = {"ONLY=this", "PATH=/usr/bin:/bin"}, .groups = {}};
     const auto result = spawnDetached(argv, self);
     // NOLINTNEXTLINE(concurrency-mt-unsafe,misc-include-cleaner) - unsetenv() from <stdlib.h>
     ::unsetenv("TASKSMACK_RUNAS_LEAK");
@@ -529,6 +529,43 @@ TEST(DetachedSpawnTest, AsARunAsTheProgramGetsOnlyItsEnvironment)
     EXPECT_EQ(got.back(), std::to_string(::getgid()));
 }
 
+// #3298: run as root (sudo tasksmack), a RunAs's program gets every group the RunAs lists, not only its
+// primary; an empty list gives the primary alone. Only root may set supplementary groups, so this needs root
+// (CI's root coverage pass), and it becomes nobody (65534) to show the switch.
+TEST(DetachedSpawnTest, AsRootARunAsGetsItsWholeGroupListOrThePrimaryAlone)
+{
+    if (::geteuid() != 0)
+    {
+        GTEST_SKIP() << "only root sets supplementary groups";
+    }
+    constexpr uid_t NOBODY = 65534;
+    constexpr gid_t NOGROUP = 65534;
+    const ScopedTempDir dir("tasksmack_detached_runas_groups");
+    std::filesystem::permissions(dir.path, std::filesystem::perms::all); // nobody writes its answer here
+    const auto groupsOf = [&dir](const RunAs& runAs, const char* name) -> std::vector<std::string>
+    {
+        const std::filesystem::path out = dir.path / name;
+        const std::array<std::string, 3> argv{"/bin/sh", "-c", std::format("id -G > '{0}.tmp' && mv '{0}.tmp' '{0}'", out.string())};
+        const auto result = spawnDetached(argv, runAs);
+        EXPECT_TRUE(result.has_value()) << (result.has_value() ? std::string{} : spawnFailureMessage(result.error(), argv[0]));
+        std::vector<std::string> groups;
+        std::istringstream words(waitForFile(out).value_or(""));
+        for (std::string word; words >> word;)
+        {
+            groups.push_back(word);
+        }
+        std::ranges::sort(groups);
+        return groups;
+    };
+    const RunAs withGroups{.uid = NOBODY, .gid = NOGROUP, .environment = {"PATH=/usr/bin:/bin"}, .groups = {NOGROUP, 4, 100}};
+    std::vector<std::string> expected{"100", "4", "65534"};
+    std::ranges::sort(expected);
+    EXPECT_EQ(groupsOf(withGroups, "with-groups.txt"), expected);
+
+    const RunAs primaryOnly{.uid = NOBODY, .gid = NOGROUP, .environment = {"PATH=/usr/bin:/bin"}, .groups = {}};
+    EXPECT_EQ(groupsOf(primaryOnly, "primary-only.txt"), std::vector<std::string>{"65534"});
+}
+
 TEST(DetachedSpawnTest, AUserItCantBecomeIsReportedAndStartsNothing)
 {
     if (::geteuid() == 0)
@@ -538,7 +575,7 @@ TEST(DetachedSpawnTest, AUserItCantBecomeIsReportedAndStartsNothing)
     const ScopedTempDir dir("tasksmack_detached_runas_refused");
     const std::filesystem::path marker = dir.path / "ran";
     const std::array<std::string, 3> argv{"/bin/sh", "-c", std::format("touch '{}'", marker.string())};
-    const RunAs other{.uid = ::getuid() + 1, .gid = ::getgid(), .environment = {}};
+    const RunAs other{.uid = ::getuid() + 1, .gid = ::getgid(), .environment = {}, .groups = {}};
     const auto result = spawnDetached(argv, other);
     ASSERT_FALSE(result.has_value());
     EXPECT_EQ(result.error().stage, SpawnFailure::Stage::SwitchUser);

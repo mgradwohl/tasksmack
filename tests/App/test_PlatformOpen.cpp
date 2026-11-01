@@ -113,8 +113,11 @@ TEST_F(PlatformOpenTest, XdgOpenStartsInTheSessionUsersEnvironment)
     const std::string path = m_Dir.string() + ":/usr/bin:/bin";
     const Detail::SessionLookup session = [&path]
     {
-        return std::optional<Platform::DetachedSpawn::RunAs>{Platform::DetachedSpawn::RunAs{
-            .uid = ::getuid(), .gid = ::getgid(), .environment = {"PATH=" + path, "TASKSMACK_SESSION_MARK=the-users-session"}}};
+        return std::optional<Platform::DetachedSpawn::RunAs>{
+            Platform::DetachedSpawn::RunAs{.uid = ::getuid(),
+                                           .gid = ::getgid(),
+                                           .environment = {"PATH=" + path, "TASKSMACK_SESSION_MARK=the-users-session"},
+                                           .groups = {}}};
     };
     EXPECT_TRUE(Detail::openWithSystemHandler(std::string_view{"https://example.invalid/"}, session));
     ASSERT_EQ(opened(), "https://example.invalid/");

@@ -135,9 +135,10 @@ for run in "TaskSmackTests||" "TaskSmackThemeTests||" "TaskSmackAppTests|-UiScen
     fi
 done
 
-# tasksmack-helper's privilege drop, as root (#3058, #3108): TasksmackHelperRootTest skips unless it
-# runs as root, so with TASKSMACK_COVERAGE_ROOT=1 (CI's coverage job, where sudo needs no password) it
-# runs once more under sudo. The helper drops to 65534 and installs a seccomp filter that refuses
+# tasksmack-helper's privilege drop, and a RunAs's supplementary groups (#3298), as root (#3058, #3108):
+# TasksmackHelperRootTest and DetachedSpawnTest.AsRoot* skip unless they run as root, so with
+# TASKSMACK_COVERAGE_ROOT=1 (CI's coverage job, where sudo needs no password) they
+# run once more under sudo. The helper drops to 65534 and installs a seccomp filter that refuses
 # opening files long before it exits, when LLVM would write its profile, so this run uses continuous
 # mode (%c): each process's profile is opened and mapped at startup, before the drop, and its counters
 # are written through the mapping. Its profiles go to a world-writable folder of their own; the merge
@@ -149,11 +150,11 @@ if [[ "${TASKSMACK_COVERAGE_ROOT:-0}" == 1 ]]; then
     root_status=0
     # shellcheck disable=SC2024 # the log is meant to be the invoking user's file, not root's
     sudo -n env LLVM_PROFILE_FILE="${ROOT_PROFILE_DIR}/coverage-%c%p.profraw" ./tests/TaskSmackTests \
-        --gtest_filter='TasksmackHelperRootTest.*' >"$root_log" 2>&1 || root_status=$?
-    if [[ $root_status -ne 0 ]] || grep -q '\[  SKIPPED \]' "$root_log" || ! grep -q '\[  PASSED  \] 1 test' "$root_log"; then
-        echo "Warning: TasksmackHelperRootTest didn't run and pass as root (exit code ${root_status}); its log:" >&2
+        --gtest_filter='TasksmackHelperRootTest.*:DetachedSpawnTest.AsRoot*' >"$root_log" 2>&1 || root_status=$?
+    if [[ $root_status -ne 0 ]] || grep -q '\[  SKIPPED \]' "$root_log" || ! grep -q '\[  PASSED  \] 2 tests' "$root_log"; then
+        echo "Warning: the root tests (TasksmackHelperRootTest, DetachedSpawnTest.AsRoot*) didn't run and pass as root (exit code ${root_status}); its log:" >&2
         tail -n 30 "$root_log" >&2 || true
-        FAILED_SUITES+=("TaskSmackTests (TasksmackHelperRootTest, as root)")
+        FAILED_SUITES+=("TaskSmackTests (the root tests, as root)")
     fi
     rm -f "$root_log"
 fi
