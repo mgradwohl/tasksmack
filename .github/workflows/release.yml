@@ -2141,8 +2141,9 @@ jobs:
       # The NSIS installer (#2302): a silent round trip on this runner. Its signature is checked, it
       # installs into Program Files with the .zip's files and the uninstaller build-windows-installer
       # embedded, every installed executable is checked like the .zip's, the installed TaskSmack.exe
-      # runs the same smoke check, and the uninstaller removes the folder, the Start menu entries and
-      # the Uninstall registry key again.
+      # runs the same smoke check, the same installer run again over it keeps Replace Task Manager and
+      # Start at sign-in (#3276), and the uninstaller removes the folder, the Start menu entries, the
+      # Uninstall registry key and both of those values again.
       - name: Download the Windows installer
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
@@ -2279,11 +2280,115 @@ jobs:
             -Title "Installed TaskSmack smoke check ($env:RUNNER_ARCH)"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Turn on Replace Task Manager and Start at sign-in for the installed copy
+        # The two values the uninstaller removes (#3247, #3259), written as TaskSmack writes them, for the
+        # installed TaskSmack.exe: taskmgr.exe's Image File Execution Options Debugger, in the 64-bit view,
+        # is the quoted path (TaskManagerReplacement::debuggerFor), with the TaskSmackCreatedKey DWORD 1
+        # when the key had to be created; the HKCU Run value TaskSmack is the quoted path then --minimized
+        # (Domain::StartAtLogin::runCommand). Both REG_SZ. Only on this runner, which is thrown away after
+        # the job. A sentinel value goes into the Uninstall registry key too: the old uninstaller deletes
+        # that key, so its absence after the upgrade proves the upgrade ran the old uninstaller, and the
+        # values didn't survive only because nothing was uninstalled.
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Join-Path $env:TASKSMACK_INSTALL_DIR 'TaskSmack.exe'
+          $hklm = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine, [Microsoft.Win32.RegistryView]::Registry64)
+          $ifeoPath = 'SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\taskmgr.exe'
+          $ifeo = $hklm.OpenSubKey($ifeoPath, $true)
+          $created = $null -eq $ifeo
+          if ($created) { $ifeo = $hklm.CreateSubKey($ifeoPath) }
+          elseif ($null -ne $ifeo.GetValue('Debugger')) { Write-Error "taskmgr.exe's IFEO key already has a Debugger ($($ifeo.GetValue('Debugger')))."; exit 1 }
+          $ifeo.SetValue('Debugger', "`"$exe`"", [Microsoft.Win32.RegistryValueKind]::String)
+          if ($created) { $ifeo.SetValue('TaskSmackCreatedKey', 1, [Microsoft.Win32.RegistryValueKind]::DWord) }
+          $ifeo.Close()
+          $run = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Software\Microsoft\Windows\CurrentVersion\Run')
+          if ($null -ne $run.GetValue('TaskSmack')) { Write-Error "The HKCU Run key already has a TaskSmack value ($($run.GetValue('TaskSmack')))."; exit 1 }
+          $run.SetValue('TaskSmack', "`"$exe`" --minimized", [Microsoft.Win32.RegistryValueKind]::String)
+          $run.Close()
+          $mark = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\TaskSmack')
+          if ($null -ne $mark -and $null -ne $mark.GetValue('Uninstalled')) { Write-Error 'HKCU\Software\TaskSmack already holds the Uninstalled mark.'; exit 1 }
+
+          $uninstallKeys = @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall',
+            'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall', 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall')
+          $before = Get-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'before-install.json') -Raw | ConvertFrom-Json
+          $keys = @($uninstallKeys | ForEach-Object { Get-ChildItem -LiteralPath $_ -ErrorAction SilentlyContinue } |
+            Where-Object { ($_.PSChildName -match 'TaskSmack' -or "$($_.GetValue('DisplayName'))" -match 'TaskSmack') -and @($before.Uninstall) -notcontains $_.Name })
+          if ($keys.Count -ne 1) { Write-Error "Expected one TaskSmack Uninstall registry key, found $($keys.Count)."; exit 1 }
+          New-ItemProperty -LiteralPath $keys[0].PSPath -Name 'TaskSmackCiUpgradeSentinel' -Value 1 -PropertyType DWord | Out-Null
+          "TASKSMACK_IFEO_CREATED=$($created.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Debugger and Run values written for $exe (taskmgr.exe's IFEO key created here: $created); sentinel in $($keys[0].Name)."
+
+      - name: Upgrade silently over the install and check both settings survive
+        # The same installer again, with /S, into the same (default) folder: an upgrade in place. Its install
+        # lines run the installed Uninstall.exe with /S /TASKSMACK_UPGRADE _?=<folder>
+        # (cmake/CPackProjectConfig.cmake.in). With _?= the uninstaller runs where it is rather than from a
+        # copy in %TEMP%, and the installer's ExecWait waits for it, so once the installer process has exited
+        # the old uninstall and the new install are both done, and nothing needs polling. Then: the old
+        # uninstaller ran (the sentinel went with the Uninstall key it deleted), the folder holds the .zip's
+        # files and the expected Uninstall.exe again, with one Uninstall key, both values are exactly as
+        # written, and the uninstall mark (HKCU\Software\TaskSmack Uninstalled), which only a real uninstall
+        # leaves, isn't there.
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $proc = Start-Process -FilePath $env:TASKSMACK_INSTALLER -ArgumentList '/S' -PassThru
+          $null = $proc.Handle  # keep the handle, or ExitCode is empty once it has gone
+          if (-not $proc.WaitForExit(240000)) { Write-Error 'The upgrade didn''t finish within 240 s.'; exit 1 }
+          if ($proc.ExitCode -ne 0) { Write-Error "The upgrade exited with $($proc.ExitCode)."; exit 1 }
+
+          $failed = @()
+          $exe = Join-Path $env:TASKSMACK_INSTALL_DIR 'TaskSmack.exe'
+          if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { $failed += "no TaskSmack.exe in $env:TASKSMACK_INSTALL_DIR" }
+          function Get-Tree([string]$Root) {
+            $tree = @{}
+            Get-ChildItem -LiteralPath $Root -Recurse -File -Force | ForEach-Object {
+              $tree[$_.FullName.Substring($Root.Length).TrimStart('\')] = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
+            }
+            return $tree
+          }
+          $zipTree = Get-Tree (Resolve-Path -LiteralPath $env:TASKSMACK_PKG_ROOT).Path
+          $installedTree = Get-Tree $env:TASKSMACK_INSTALL_DIR
+          $zipTree['Uninstall.exe'] = (Get-FileHash -LiteralPath expected-uninstaller/Uninstall.exe -Algorithm SHA256).Hash
+          foreach ($name in $zipTree.Keys) {
+            if (-not $installedTree.ContainsKey($name)) { $failed += "$name isn't installed after the upgrade" }
+            elseif ($installedTree[$name] -ne $zipTree[$name]) { $failed += "after the upgrade, the installed $name isn't the expected one" }
+          }
+          foreach ($name in $installedTree.Keys) { if (-not $zipTree.ContainsKey($name)) { $failed += "$name is installed after the upgrade but isn't in the .zip" } }
+
+          $uninstallKeys = @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall',
+            'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall', 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall')
+          $before = Get-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'before-install.json') -Raw | ConvertFrom-Json
+          $keys = @($uninstallKeys | ForEach-Object { Get-ChildItem -LiteralPath $_ -ErrorAction SilentlyContinue } |
+            Where-Object { ($_.PSChildName -match 'TaskSmack' -or "$($_.GetValue('DisplayName'))" -match 'TaskSmack') -and @($before.Uninstall) -notcontains $_.Name })
+          if ($keys.Count -ne 1) { $failed += "expected one TaskSmack Uninstall registry key after the upgrade, found $($keys.Count)" }
+          elseif ($null -ne $keys[0].GetValue('TaskSmackCiUpgradeSentinel')) { $failed += "the Uninstall key still holds the sentinel, so the upgrade didn't run the old uninstaller" }
+
+          $hklm = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine, [Microsoft.Win32.RegistryView]::Registry64)
+          $ifeo = $hklm.OpenSubKey('SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\taskmgr.exe')
+          $debugger = if ($ifeo) { $ifeo.GetValue('Debugger', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames) }
+          if ($debugger -cne "`"$exe`"") { $failed += "taskmgr.exe's Debugger is [$debugger] after the upgrade, not [`"$exe`"]" }
+          elseif ($ifeo.GetValueKind('Debugger') -ne [Microsoft.Win32.RegistryValueKind]::String) { $failed += "taskmgr.exe's Debugger is $($ifeo.GetValueKind('Debugger')) after the upgrade, not REG_SZ" }
+          if ($env:TASKSMACK_IFEO_CREATED -eq 'true' -and $ifeo -and $ifeo.GetValue('TaskSmackCreatedKey') -ne 1) { $failed += "taskmgr.exe's TaskSmackCreatedKey mark is gone after the upgrade" }
+          $run = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\Microsoft\Windows\CurrentVersion\Run')
+          $runValue = if ($run) { $run.GetValue('TaskSmack', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames) }
+          if ($runValue -cne "`"$exe`" --minimized") { $failed += "the HKCU Run value TaskSmack is [$runValue] after the upgrade, not [`"$exe`" --minimized]" }
+          elseif ($run.GetValueKind('TaskSmack') -ne [Microsoft.Win32.RegistryValueKind]::String) { $failed += "the HKCU Run value TaskSmack is $($run.GetValueKind('TaskSmack')) after the upgrade, not REG_SZ" }
+          $mark = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\TaskSmack')
+          if ($mark -and $null -ne $mark.GetValue('Uninstalled')) { $failed += 'the upgrade left the uninstall mark HKCU\Software\TaskSmack Uninstalled' }
+          if ($failed.Count) {
+            $failed | ForEach-Object { Write-Host "::error::$_" }
+            exit 1
+          }
+          Write-Host "Upgraded in place: the old uninstaller ran, the files are the .zip's again, and both values are kept ($debugger; $runValue)."
+
       - name: Uninstall silently and check nothing is left
         # The installed Uninstall.exe with /S. NSIS's uninstaller copies itself to %TEMP% and runs from
         # there, so the process started here exits at once; the end state is polled for instead: the
-        # install folder gone, and the Uninstall registry key and the Start menu entries back to what
-        # they were before the install.
+        # install folder gone, the Uninstall registry key and the Start menu entries back to what
+        # they were before the install, the Debugger and Run values the upgrade kept removed, and the
+        # uninstall mark written (#3276).
         shell: pwsh
         timeout-minutes: 5
         run: |
@@ -2294,6 +2399,8 @@ jobs:
           function Get-StartMenuEntries { $startMenus | ForEach-Object { Get-ChildItem -LiteralPath $_ -Recurse -Force -ErrorAction SilentlyContinue } | Where-Object { $_.Name -match 'TaskSmack' } | ForEach-Object FullName }
           function Get-UninstallEntries { $uninstallKeys | ForEach-Object { Get-ChildItem -LiteralPath $_ -ErrorAction SilentlyContinue } | Where-Object { $_.PSChildName -match 'TaskSmack' -or "$($_.GetValue('DisplayName'))" -match 'TaskSmack' } | ForEach-Object Name }
           $before = Get-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'before-install.json') -Raw | ConvertFrom-Json
+          $hklm = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine, [Microsoft.Win32.RegistryView]::Registry64)
+          $ifeoPath = 'SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\taskmgr.exe'
           $uninstaller = Join-Path $env:TASKSMACK_INSTALL_DIR 'Uninstall.exe'
           $proc = Start-Process -FilePath $uninstaller -ArgumentList '/S' -PassThru
           $null = $proc.Handle
@@ -2310,6 +2417,19 @@ jobs:
             if ($keys.Count) { $left += "the Uninstall registry key is still there: $($keys -join ', ')" }
             $entries = @(Get-StartMenuEntries | Where-Object { @($before.StartMenu) -notcontains $_ })
             if ($entries.Count) { $left += "Start menu entries are still there: $($entries -join ', ')" }
+            # A real uninstall (#3276): Replace Task Manager and Start at sign-in, written for this copy by
+            # the step before the upgrade, are removed; taskmgr.exe's key too when it was made for them;
+            # and the uninstall mark is left for the next TaskSmack to start.
+            $ifeo = $hklm.OpenSubKey($ifeoPath)
+            if ($ifeo -and $null -ne $ifeo.GetValue('Debugger')) { $left += "taskmgr.exe's Debugger is still there: $($ifeo.GetValue('Debugger'))" }
+            if ($ifeo -and $env:TASKSMACK_IFEO_CREATED -eq 'true') { $left += "taskmgr.exe's IFEO key, made for TaskSmack, is still there" }
+            if ($ifeo) { $ifeo.Close() }
+            $run = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\Microsoft\Windows\CurrentVersion\Run')
+            if ($run -and $null -ne $run.GetValue('TaskSmack')) { $left += "the HKCU Run value TaskSmack is still there: $($run.GetValue('TaskSmack'))" }
+            if ($run) { $run.Close() }
+            $mark = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\TaskSmack')
+            if (-not $mark -or $mark.GetValue('Uninstalled') -ne 1) { $left += 'the uninstall mark HKCU\Software\TaskSmack Uninstalled = 1 isn''t there' }
+            if ($mark) { $mark.Close() }
             if (-not $left.Count) { break }
             Start-Sleep -Seconds 2
           } while ((Get-Date) -lt $deadline)
