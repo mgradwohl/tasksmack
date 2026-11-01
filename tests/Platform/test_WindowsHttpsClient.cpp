@@ -617,22 +617,30 @@ class LoopbackListener
             return;
         }
         // NOLINTEND(cppcoreguidelines-pro-type-reinterpret-cast)
+        // Non-blocking, so the accept loop polls with a short timeout and sees a stop: a socket is never
+        // closed while that thread is blocked in a call on it.
+        u_long nonBlocking = 1;
+        if (::ioctlsocket(m_Socket, static_cast<long>(FIONBIO), &nonBlocking) != 0)
+        {
+            return;
+        }
         m_Port = ::ntohs(address.sin_port);
         m_Thread = std::thread([this] { acceptAll(); });
     }
     ~LoopbackListener()
     {
-        if (isSocket(m_Socket))
-        {
-            ::closesocket(m_Socket); // ends the accept()
-        }
+        m_Stop = true;
         if (m_Thread.joinable())
         {
-            m_Thread.join();
+            m_Thread.join(); // within one poll interval
         }
         for (const SOCKET accepted : m_Accepted)
         {
             ::closesocket(accepted);
+        }
+        if (isSocket(m_Socket))
+        {
+            ::closesocket(m_Socket);
         }
         if (m_Started)
         {
@@ -653,12 +661,23 @@ class LoopbackListener
   private:
     void acceptAll()
     {
-        while (true)
+        constexpr INT POLL_MS = 10;
+        while (!m_Stop)
         {
+            WSAPOLLFD listening{.fd = m_Socket, .events = POLLRDNORM, .revents = 0};
+            const int ready = ::WSAPoll(&listening, 1, POLL_MS);
+            if (ready < 0)
+            {
+                return;
+            }
+            if (ready == 0)
+            {
+                continue; // nothing to accept yet; look at the stop again
+            }
             const SOCKET accepted = ::accept(m_Socket, nullptr, nullptr);
             if (!isSocket(accepted))
             {
-                return; // the listener closed
+                continue; // WSAEWOULDBLOCK: the connection went before it was accepted
             }
             if (m_CloseAtOnce)
             {
@@ -672,6 +691,7 @@ class LoopbackListener
     }
 
     bool m_CloseAtOnce;
+    std::atomic<bool> m_Stop = false;
     bool m_Started = false;
     SOCKET m_Socket = INVALID_SOCKET;
     INTERNET_PORT m_Port = 0;
@@ -709,12 +729,21 @@ BOOL WINAPI countingCloseHandle(HINTERNET handle)
     return ::WinHttpCloseHandle(handle);
 }
 
-/// winhttp.dll's calls, with the request's open and close counted.
+/// The real WinHttpOpen with no proxy, whatever access type the client asks for: the machine's proxy
+/// settings (WPAD, PAC) never send a loopback test's request elsewhere or slow it. The flags, WINHTTP_FLAG_ASYNC
+/// among them, are the client's.
+HINTERNET WINAPI noProxyOpen(LPCWSTR agent, DWORD /*access*/, LPCWSTR /*proxy*/, LPCWSTR /*bypass*/, DWORD flags)
+{
+    return ::WinHttpOpen(agent, WINHTTP_ACCESS_TYPE_NO_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, flags);
+}
+
+/// winhttp.dll's calls, with no proxy and the request's open and close counted.
 WindowsHttpsDetail::WinHttpFunctions countingRealFunctions()
 {
     realCounts().request = nullptr;
     realCounts().requestCloses = 0;
     WindowsHttpsDetail::WinHttpFunctions fns;
+    fns.open = &noProxyOpen;
     fns.openRequest = &countingOpenRequest;
     fns.closeHandle = &countingCloseHandle;
     return fns;
