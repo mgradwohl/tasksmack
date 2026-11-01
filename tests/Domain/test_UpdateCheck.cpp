@@ -449,6 +449,17 @@ TEST(UpdateCheckReplyTest, OnlyPagesUnderTheReleasesAreLinked)
         "https://evil.example/https://github.com/mgradwohl/tasksmack/releases/tag/v1",
         "HTTPS://GITHUB.COM/mgradwohl/tasksmack/releases/tag/v1",
         "https://github.com/mgradwohl/tasksmack/releases/tag/v1\xC3\xA9",
+        // Escaped dot segments and separators, which a browser resolves (#3290)
+        "https://github.com/mgradwohl/tasksmack/releases/.%2e/.%2e/.%2e/someone/repo",
+        "https://github.com/mgradwohl/tasksmack/releases/%2e%2e/x",
+        "https://github.com/mgradwohl/tasksmack/releases/%2E./x",
+        "https://github.com/mgradwohl/tasksmack/releases/tag%2f..%2fx",
+        "https://github.com/mgradwohl/tasksmack/releases/tag%2F%2E%2E",
+        "https://github.com/mgradwohl/tasksmack/releases/tag%5c..%5cx",
+        // Malformed escapes
+        "https://github.com/mgradwohl/tasksmack/releases/tag/v1%",
+        "https://github.com/mgradwohl/tasksmack/releases/tag/v1%2",
+        "https://github.com/mgradwohl/tasksmack/releases/tag/v1%zz",
     };
     for (const std::string_view url : refused)
     {
