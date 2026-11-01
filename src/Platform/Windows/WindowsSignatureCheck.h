@@ -6,7 +6,8 @@
 // are catalog-signed. Offline: WTD_REVOKE_NONE and WTD_CACHE_ONLY_URL_RETRIEVAL, so a check never goes to
 // the network, and no UI. Milliseconds a file, more for a large one (the whole file is hashed), so it
 // runs on a worker, never the UI thread or a sample: the Drivers section's read and the process probe's
-// signature worker (WindowsSignatureWorker.h).
+// signature worker (WindowsSignatureWorker.h). Both read the file through the one handle openImage()
+// opened and read the stamp through, held for the whole check (#3292).
 //
 // The calls are a table of function pointers, the system's by default, so tests drive the embedded and
 // catalog paths, their failures and the releases with fakes (tests/Platform/test_WindowsSignatureCheck.cpp).
@@ -37,10 +38,11 @@ namespace Platform::Windows
 
 // NOLINTBEGIN(misc-include-cleaner) - Win32 types come from windows.h sub-headers
 
-/// The calls verifyEmbeddedSignature() and verifyCatalogSignature() make: wintrust's and crypt32's, or a
-/// test's fakes. The file itself is opened with CreateFileW either way.
+/// The calls openImage(), verifyEmbeddedSignature() and verifyCatalogSignature() make: kernel32's,
+/// wintrust's and crypt32's, or a test's fakes. The file itself is opened with CreateFileW either way.
 struct TrustApiFunctions
 {
+    BOOL(WINAPI* getFileInformationByHandleEx)(HANDLE, FILE_INFO_BY_HANDLE_CLASS, LPVOID, DWORD) = &::GetFileInformationByHandleEx;
     LONG(WINAPI* winVerifyTrust)(HWND, GUID*, LPVOID) = &::WinVerifyTrust;
     CRYPT_PROVIDER_DATA*(WINAPI* provDataFromStateData)(HANDLE) = &::WTHelperProvDataFromStateData;
     CRYPT_PROVIDER_SGNR*(WINAPI* provSignerFromChain)(CRYPT_PROVIDER_DATA*, DWORD, BOOL, DWORD) = &::WTHelperGetProvSignerFromChain;
@@ -53,17 +55,30 @@ struct TrustApiFunctions
     BOOL(WINAPI* releaseContext)(HCATADMIN, DWORD) = &::CryptCATAdminReleaseContext;
 };
 
-/// WinVerifyTrust's answer for @p path's own (embedded) signature, with the signer's name when trusted.
-/// The verification state is always closed.
-[[nodiscard]] WindowsSignature::TrustCheck verifyEmbeddedSignature(const TrustApiFunctions& fns, const std::wstring& path);
+/// The stamp of the file @p file is open on (#3292): its volume serial and 128-bit file ID (FileIdInfo;
+/// none when the call fails or the ID is all zeros), its ChangeTime (FileBasicInfo) and its size
+/// (FileStandardInfo). nullopt when the change time or the size can't be read.
+[[nodiscard]] std::optional<WindowsSignature::FileStamp> readFileStamp(const TrustApiFunctions& fns, HANDLE file);
 
-/// WinVerifyTrust's answer for the system catalog that holds @p path's hash: its SHA-256 hash (current
-/// catalogs), else its SHA-1 hash (older ones). nullopt when no catalog holds either; a failure's HRESULT
-/// when the file can't be opened or hashed, or the catalogs can't be searched. Every context is released.
-[[nodiscard]] std::optional<WindowsSignature::TrustCheck> verifyCatalogSignature(const TrustApiFunctions& fns, const std::wstring& path);
+/// @p path opened for its check: GENERIC_READ, shared for read only, so while the handle is held nobody
+/// can write the file, rename it, or delete it and put another in its place; with its stamp read through
+/// that handle. nullopt (nothing left open) when it can't be opened, a writer already has it open, or its
+/// stamp can't be read. Close the handle with closeImage().
+[[nodiscard]] std::optional<WindowsSignature::OpenedImage> openImage(const TrustApiFunctions& fns, const std::wstring& path);
 
-/// The file's last write time and size (GetFileAttributesExW); nullopt when it can't be read.
-[[nodiscard]] std::optional<WindowsSignature::FileStamp> imageFileStamp(const std::string& path);
+/// Closes a handle openImage() gave.
+void closeImage(void* file) noexcept;
+
+/// WinVerifyTrust's answer for the own (embedded) signature of @p path, read through @p file (from its
+/// start), with the signer's name when trusted. The verification state is always closed.
+[[nodiscard]] WindowsSignature::TrustCheck verifyEmbeddedSignature(const TrustApiFunctions& fns, const std::wstring& path, HANDLE file);
+
+/// WinVerifyTrust's answer for the system catalog that holds the hash of @p path, hashed through @p file:
+/// its SHA-256 hash (current catalogs), else its SHA-1 hash (older ones). nullopt when no catalog holds
+/// either; a failure's HRESULT when the file can't be hashed, or the catalogs can't be searched. Every
+/// context is released.
+[[nodiscard]] std::optional<WindowsSignature::TrustCheck>
+verifyCatalogSignature(const TrustApiFunctions& fns, const std::wstring& path, HANDLE file);
 
 /// FormatMessage's text for a Win32 error or HRESULT, else ntdll's for an NTSTATUS. Empty when neither has one.
 [[nodiscard]] std::string signatureErrorMessage(std::uint32_t code);

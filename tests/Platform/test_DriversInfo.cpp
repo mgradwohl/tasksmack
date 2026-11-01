@@ -176,6 +176,12 @@ struct FakeSignatures
 
 constexpr std::int32_t ACCESS_DENIED = static_cast<std::int32_t>(0x80070005U); // HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED)
 
+/// An image file's stamp, changed at @p changeTime.
+[[nodiscard]] WindowsDrivers::FileStamp stampAt(std::uint64_t changeTime)
+{
+    return {.fileId = WindowsDrivers::FileId{.volumeSerial = 1, .id = {1}}, .changeTime = changeTime, .size = 1};
+}
+
 /// Every image readable and signed, until a test says otherwise.
 void resetSignatures()
 {
@@ -210,24 +216,25 @@ void resetSignatures()
                 return std::string{};
             }
         },
-        .fileStamp = [](const std::string& path) -> std::optional<WindowsDrivers::FileStamp>
+        .openImage = [](const std::string& path) -> std::optional<WindowsDrivers::OpenedImage>
         {
             if (path.ends_with("Missing.sys"))
             {
                 return std::nullopt;
             }
             const auto found = fakes().stamps.find(path);
-            return found != fakes().stamps.end() ? found->second : WindowsDrivers::FileStamp{.lastWriteTime = 1, .size = 1};
+            return WindowsDrivers::OpenedImage{.file = nullptr, .stamp = found != fakes().stamps.end() ? found->second : stampAt(1)};
         },
+        .closeImage = [](void* /*file*/) {},
         .verifyEmbeddedSignature =
-            [](const std::string& path)
+            [](const std::string& path, void* /*file*/)
         {
             ++fakes().embeddedChecks[path];
             const auto found = fakes().embedded.find(path);
             const std::int32_t result = found != fakes().embedded.end() ? found->second : 0;
             return WindowsDrivers::TrustCheck{.result = result, .signer = result == 0 ? signerOf(path) : std::string{}};
         },
-        .verifyCatalogSignature = [](const std::string& path) -> std::optional<WindowsDrivers::TrustCheck>
+        .verifyCatalogSignature = [](const std::string& path, void* /*file*/) -> std::optional<WindowsDrivers::TrustCheck>
         {
             ++fakes().catalogChecks[path];
             const auto found = fakes().catalog.find(path);
@@ -472,7 +479,7 @@ TEST(WindowsDriversTest, ChecksSignaturesEmbeddedThenCatalog)
     EXPECT_EQ(unchecked.drivers[0].signature, DriverSignature::NotChecked);
 }
 
-TEST(WindowsDriversTest, CachesSignaturesByPathAndFileTime)
+TEST(WindowsDriversTest, CachesSignaturesByPathAndFileStamp)
 {
     resetSignatures();
     g_Services = std::vector<WindowsDrivers::DriverServiceRecord>{
@@ -500,8 +507,8 @@ TEST(WindowsDriversTest, CachesSignaturesByPathAndFileTime)
     EXPECT_EQ(second.drivers[0].signature, DriverSignature::Catalog);
     EXPECT_EQ(second.drivers[1].signature, DriverSignature::Unsigned);
 
-    // A rewritten image (new file time) is checked again, and its new answer replaces the old one.
-    fakes().stamps[imagePath("homebrew")] = {.lastWriteTime = 2, .size = 1};
+    // A rewritten image (new change time) is checked again, and its new answer replaces the old one.
+    fakes().stamps[imagePath("homebrew")] = stampAt(2);
     fakes().embedded[imagePath("homebrew")] = 0;
     DriversInfo third;
     WindowsDrivers::readDrivers(third, fakeFunctions(), &cache);

@@ -1621,21 +1621,24 @@ WindowsSignature::SignatureFunctions fakeSignatureFunctions()
 {
     return {
         .errorMessage = nullptr,
-        .fileStamp = [](const std::string& path) -> std::optional<WindowsSignature::FileStamp>
+        .openImage = [](const std::string& path) -> std::optional<WindowsSignature::OpenedImage>
         {
             const std::scoped_lock lock(fakeSignatures().mutex);
             ++fakeSignatures().stampReads;
             fakeSignatures().lastPath = path;
-            return WindowsSignature::FileStamp{.lastWriteTime = 1, .size = 2};
+            const WindowsSignature::FileId id{.volumeSerial = 1, .id = {1}};
+            return WindowsSignature::OpenedImage{.file = nullptr, .stamp = {.fileId = id, .changeTime = 1, .size = 2}};
         },
+        .closeImage = [](void* /*file*/) {},
         .verifyEmbeddedSignature =
-            [](const std::string& /*path*/)
+            [](const std::string& /*path*/, void* /*file*/)
         {
             const std::scoped_lock lock(fakeSignatures().mutex);
             ++fakeSignatures().checks;
             return WindowsSignature::TrustCheck{.result = 0, .signer = "Contoso Ltd"};
         },
-        .verifyCatalogSignature = [](const std::string& /*path*/) -> std::optional<WindowsSignature::TrustCheck> { return std::nullopt; },
+        .verifyCatalogSignature = [](const std::string& /*path*/, void* /*file*/) -> std::optional<WindowsSignature::TrustCheck>
+        { return std::nullopt; },
     };
 }
 
