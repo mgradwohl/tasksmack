@@ -6,6 +6,12 @@
 // stamp, and checkSignature(), which runs a check through a table of calls. Free of <windows.h>, so it
 // is tested on every platform (tests/Platform/WindowsMath/test_WindowsImageSignature.cpp), Linux's
 // coverage included; WindowsSignatureCheck.cpp supplies the real calls.
+//
+// A check holds the image open from its stamp read to its verdict (#3292): one handle, opened for read and
+// shared for read only, so nobody can write, rename or delete the file in between, and both WinVerifyTrust
+// calls read the file through it. The stamp is the file's identity (volume serial and 128-bit file ID)
+// with its ChangeTime and size, not its path and last write time, which a program running as the user can
+// reset with SetFileTime after swapping in a same-size file.
 
 #include "Platform/AsciiCase.h"
 #include "Platform/ImageSignature.h"
@@ -28,13 +34,51 @@
 namespace Platform::WindowsSignature
 {
 
-/// An image file as the signature cache knows it: a replaced or rebuilt file is checked again.
+/// A file's identity on its machine (FILE_ID_INFO): its volume's serial number and its 128-bit file ID.
+/// Another file put in its place, by a rename, a copy or a delete and re-create, has another ID.
+struct FileId
+{
+    static constexpr std::size_t SIZE = 16;
+    std::uint64_t volumeSerial = 0;
+    std::array<std::uint8_t, SIZE> id{};
+
+    friend bool operator==(const FileId&, const FileId&) = default;
+};
+
+/// The file ID FILE_ID_INFO gives, or nullopt when it is all zeros: a file system that keeps no IDs (FAT,
+/// some network shares) has none to give.
+[[nodiscard]] constexpr std::optional<FileId> makeFileId(std::uint64_t volumeSerial,
+                                                         std::span<const std::uint8_t, FileId::SIZE> id) noexcept
+{
+    if (std::ranges::all_of(id, [](std::uint8_t byte) { return byte == 0; }))
+    {
+        return std::nullopt;
+    }
+    FileId fileId{.volumeSerial = volumeSerial, .id = {}};
+    std::ranges::copy(id, fileId.id.begin());
+    return fileId;
+}
+
+/// An image file as the signature cache knows it (#3292): another file in its place, or the same file
+/// changed in any way, is checked again. Read through the handle the check holds.
 struct FileStamp
 {
-    std::uint64_t lastWriteTime = 0; ///< FILETIME's 100 ns ticks
+    std::optional<FileId> fileId; ///< nullopt when the file system gives none: the answer is never cached
+    /// FILE_BASIC_INFO's ChangeTime, 100 ns ticks: every write, and every change to the file's attributes
+    /// or times, moves it, and SetFileTime can't set it back.
+    std::uint64_t changeTime = 0;
     std::uint64_t size = 0;
 
     friend bool operator==(const FileStamp&, const FileStamp&) = default;
+};
+
+/// An image file held open for its check, and its stamp read through that handle.
+struct OpenedImage
+{
+    /// The open file: on Windows a HANDLE, opened for read and shared for read only, so the file can't be
+    /// written, renamed or deleted while it is held. Opaque here; closed by SignatureFunctions::closeImage.
+    void* file = nullptr;
+    FileStamp stamp;
 };
 
 /// One WinVerifyTrust call's answer.
@@ -44,20 +88,24 @@ struct TrustCheck
     std::string signer;      ///< When trusted: the signing certificate's simple name; empty if unread
 };
 
-/// The calls checkSignature() makes, each taking the image's path as UTF-8.
+/// The calls checkSignature() makes, each taking the image's path as UTF-8. Without any of the last four,
+/// signatures aren't checked.
 struct SignatureFunctions
 {
     /// FormatMessage's text for a Win32 error, NTSTATUS or HRESULT; empty when there is none. Nullable:
     /// a failure is then named by its code.
     std::string (*errorMessage)(std::uint32_t code) = nullptr;
-    /// The file's last write time and size; nullopt when it can't be read. Without it (or either verify
-    /// call) signatures aren't checked.
-    std::optional<FileStamp> (*fileStamp)(const std::string& path) = nullptr;
-    /// WinVerifyTrust's answer for the file's own (embedded) signature: result 0 when it is trusted.
-    TrustCheck (*verifyEmbeddedSignature)(const std::string& path) = nullptr;
-    /// WinVerifyTrust's answer for the catalog that holds the file's hash: result 0 when it is trusted;
-    /// nullopt when no catalog holds it; a failure's HRESULT when the catalogs couldn't be searched.
-    std::optional<TrustCheck> (*verifyCatalogSignature)(const std::string& path) = nullptr;
+    /// The file opened for its check, with its stamp; nullopt when it can't be opened or its stamp read.
+    std::optional<OpenedImage> (*openImage)(const std::string& path) = nullptr;
+    /// Closes what openImage() opened.
+    void (*closeImage)(void* file) = nullptr;
+    /// WinVerifyTrust's answer for the file's own (embedded) signature, read through @p file (the handle
+    /// openImage() gave): result 0 when it is trusted.
+    TrustCheck (*verifyEmbeddedSignature)(const std::string& path, void* file) = nullptr;
+    /// WinVerifyTrust's answer for the catalog that holds the file's hash, hashed through @p file: result 0
+    /// when it is trusted; nullopt when no catalog holds it; a failure's HRESULT when the catalogs couldn't
+    /// be searched.
+    std::optional<TrustCheck> (*verifyCatalogSignature)(const std::string& path, void* file) = nullptr;
 };
 
 /// WinVerifyTrust results (HRESULTs) that the check tells apart.
@@ -149,11 +197,13 @@ struct SignatureVerdict
     return tag;
 }
 
-/// Signature checks by image path and file stamp {path, size, last write time}: a file changed in place
-/// has a new stamp and is checked again. Only definite answers are kept: a check that failed is tried
-/// again on the next request. Bounded at @p maxEntries paths (unbounded by default, as the drivers are
-/// few): storing a new path in a full cache empties it first, as the publisher cache does (#775), so a
-/// long-running session with many distinct executables can't grow it without end. Thread-safe.
+/// Signature checks by image path and file stamp {file ID, change time, size}: another file in the path's
+/// place, or the file changed, has a new stamp and is checked again. A stamp without a file ID is never
+/// kept, nor found: that file is checked every time. Only definite answers are kept: a check that failed
+/// is tried again on the next request. Bounded at @p maxEntries paths (unbounded by default, as the
+/// drivers are few): storing a new path in a full cache empties it first, as the publisher cache does
+/// (#775), so a long-running session with many distinct executables can't grow it without end.
+/// Thread-safe.
 class SignatureCache
 {
   public:
@@ -164,6 +214,10 @@ class SignatureCache
 
     [[nodiscard]] std::optional<SignatureCheck> find(const std::string& path, const FileStamp& stamp) const
     {
+        if (!stamp.fileId.has_value())
+        {
+            return std::nullopt;
+        }
         const std::scoped_lock lock(m_Mutex);
         const auto found = m_Entries.find(path);
         if (found == m_Entries.end() || found->second.stamp != stamp)
@@ -175,6 +229,10 @@ class SignatureCache
 
     void store(const std::string& path, const FileStamp& stamp, SignatureCheck check)
     {
+        if (!stamp.fileId.has_value())
+        {
+            return; // nothing would say it's the same file next time
+        }
         std::unordered_map<std::string, Entry> overflowed; // freed after the lock is released
         const std::scoped_lock lock(m_Mutex);
         if (m_Entries.size() >= m_MaxEntries && !m_Entries.contains(path))
@@ -219,30 +277,54 @@ class SignatureCache
     return (code & SEVERITY_BIT) != 0 ? std::format("error 0x{:08X}", code) : std::format("error {}", code);
 }
 
-/// @p path's signature through @p fns: the embedded signature, else the catalogs; from @p cache (nullable)
-/// when it already holds @p cacheKey with the same file stamp. NotChecked when the table has no signature
-/// calls; Unknown when the file's stamp can't be read (it's gone, or not readable).
+/// Closes an OpenedImage's file when it goes out of scope.
+class ImageCloser
+{
+  public:
+    ImageCloser(void (*close)(void*), void* file) noexcept : m_Close(close), m_File(file)
+    {}
+    ImageCloser(const ImageCloser&) = delete;
+    ImageCloser& operator=(const ImageCloser&) = delete;
+    ImageCloser(ImageCloser&&) = delete;
+    ImageCloser& operator=(ImageCloser&&) = delete;
+    ~ImageCloser()
+    {
+        m_Close(m_File);
+    }
+
+  private:
+    void (*m_Close)(void*);
+    void* m_File;
+};
+
+/// @p path's signature through @p fns: the embedded signature, else the catalogs, both read through the
+/// one handle openImage() gave, held until the verdict is in; from @p cache (nullable) when it already
+/// holds @p cacheKey with the same file stamp. NotChecked when the table has no signature calls; Unknown
+/// when the file can't be opened or its stamp read (it's gone, not readable, or open for writing).
 [[nodiscard]] inline SignatureCheck
 checkSignature(const SignatureFunctions& fns, SignatureCache* cache, const std::string& path, const std::string& cacheKey)
 {
-    if (fns.fileStamp == nullptr || fns.verifyEmbeddedSignature == nullptr || fns.verifyCatalogSignature == nullptr)
+    if (fns.openImage == nullptr || fns.closeImage == nullptr || fns.verifyEmbeddedSignature == nullptr ||
+        fns.verifyCatalogSignature == nullptr)
     {
         return {};
     }
-    const std::optional<FileStamp> stamp = fns.fileStamp(path);
-    if (!stamp.has_value())
+    const std::optional<OpenedImage> image = fns.openImage(path);
+    if (!image.has_value())
     {
         return {.signature = ImageSignature::Unknown, .note = "The image file couldn't be read", .signer = {}};
     }
+    const ImageCloser closer(fns.closeImage, image->file);
+    const FileStamp& stamp = image->stamp;
     if (cache != nullptr)
     {
-        if (std::optional<SignatureCheck> cached = cache->find(cacheKey, *stamp); cached.has_value())
+        if (std::optional<SignatureCheck> cached = cache->find(cacheKey, stamp); cached.has_value())
         {
             return std::move(*cached);
         }
     }
-    TrustCheck embedded = fns.verifyEmbeddedSignature(path);
-    std::optional<TrustCheck> catalog = embedded.result == 0 ? std::nullopt : fns.verifyCatalogSignature(path);
+    TrustCheck embedded = fns.verifyEmbeddedSignature(path, image->file);
+    std::optional<TrustCheck> catalog = embedded.result == 0 ? std::nullopt : fns.verifyCatalogSignature(path, image->file);
     const SignatureVerdict verdict =
         classifySignature(embedded.result, catalog.has_value() ? std::optional<std::int32_t>(catalog->result) : std::nullopt);
     SignatureCheck check{.signature = verdict.signature, .note = {}, .signer = {}};
@@ -260,7 +342,7 @@ checkSignature(const SignatureFunctions& fns, SignatureCache* cache, const std::
     }
     if (cache != nullptr && verdict.signature != ImageSignature::Unknown)
     {
-        cache->store(cacheKey, *stamp, check);
+        cache->store(cacheKey, stamp, check);
     }
     return check;
 }
