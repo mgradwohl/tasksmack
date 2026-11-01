@@ -174,7 +174,8 @@ class MallocStrv
         {
             return;
         }
-        for (char** entry = m_Entries; *entry != nullptr; ++entry) // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic) - a C strv
+        for (char* const* entry = m_Entries; *entry != nullptr;
+             ++entry) // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic) - a C strv
         {
             std::free(*entry); // NOLINT(cppcoreguidelines-no-malloc, cppcoreguidelines-owning-memory) - sd-bus's malloc
         }
