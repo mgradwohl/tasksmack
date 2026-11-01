@@ -1,5 +1,6 @@
 // Find handles (#3067): matching, counting and the walk over every process, against fake readers.
 
+#include "AllocationFailureHook.h"
 #include "Domain/HandleSearch.h"
 #include "Domain/PublicationSlot.h"
 #include "Platform/IProcessActions.h"
@@ -12,8 +13,11 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <new>
+#include <stdexcept>
 #include <stop_token>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -366,6 +370,159 @@ TEST(HandleSearchTest, RunStopsBetweenProcessesWhenAsked)
     EXPECT_TRUE(slot.load()->done);
     EXPECT_EQ(slot.load()->searched, 0U);
     EXPECT_TRUE(files.read.empty());
+}
+
+/// Reads like FakeOpenFiles, but throws on one PID: an exception it chooses, as a reader or an allocation might.
+class ThrowingOpenFiles final : public Platform::IProcessOpenFilesReader
+{
+  public:
+    std::int32_t throwOn = 0;
+    int kind = 0; ///< 0: std::runtime_error, 1: std::bad_alloc, 2: not a std::exception
+
+    [[nodiscard]] bool hasOpenFiles() const override
+    {
+        return true;
+    }
+
+    [[nodiscard]] Platform::OpenFilesReadResult readOpenFiles(const Platform::ProcessTarget& target) override
+    {
+        if (target.pid == throwOn)
+        {
+            if (kind == 1)
+            {
+                throw std::bad_alloc();
+            }
+            if (kind == 2)
+            {
+                throw 42; // NOLINT(hicpp-exception-baseclass) - an exception that isn't a std::exception
+            }
+            throw std::runtime_error("injected reader failure");
+        }
+        return openFiles({file(Platform::OpenFileKind::File, "/tmp/file-" + std::to_string(target.pid))});
+    }
+
+    [[nodiscard]] Platform::OpenFilesReadResult readAuthorized(const Platform::ProcessTarget& target,
+                                                               const std::stop_token& /*stopToken*/) override
+    {
+        return readOpenFiles(target);
+    }
+};
+
+// #3335: a reader that throws, after a progress publication or before the first, or an allocation that fails
+// (std::bad_alloc), or something that isn't a std::exception, ends the walk with a done publication that says
+// why. run() returns instead of letting it escape the worker, and a search after it runs as usual.
+TEST(HandleSearchTest, AReaderOrAllocationFailureEndsTheWalkAsDoneWithItsReason)
+{
+    std::vector<SearchProcess> processes;
+    for (std::int32_t pid = 1; pid <= 20; ++pid)
+    {
+        processes.push_back(process(pid, "p" + std::to_string(pid)));
+    }
+    ThrowingOpenFiles files;
+    Domain::PublicationSlot<SearchPublication> slot;
+    std::stop_source stop;
+
+    files.throwOn = 18; // after the first progress publication (16 processes)
+    run(processes, {.openFiles = &files, .modules = nullptr}, false, startFor("file-1", processes.size(), 1), slot, stop.get_token());
+    std::shared_ptr<const SearchPublication> last = slot.load();
+    ASSERT_NE(last, nullptr);
+    EXPECT_TRUE(last->done);
+    EXPECT_EQ(last->failure, "The search stopped: injected reader failure");
+    EXPECT_EQ(last->searched, 17U) << "what it read before the failure is kept";
+    EXPECT_EQ(last->matches.size(), 9U) << "file-1 and file-10 .. file-17";
+    EXPECT_EQ(last->version, 1U + 2U) << "one progress publication, then the done one";
+
+    files.throwOn = 1; // before any progress publication
+    files.kind = 1;
+    run(processes, {.openFiles = &files, .modules = nullptr}, false, startFor("file", processes.size(), 10), slot, stop.get_token());
+    last = slot.load();
+    ASSERT_TRUE(last->done);
+    EXPECT_TRUE(last->failure.starts_with("The search stopped: ")) << last->failure;
+    EXPECT_GT(last->failure.size(), std::string_view("The search stopped: ").size());
+    EXPECT_EQ(last->searched, 0U);
+    EXPECT_EQ(last->version, 11U);
+
+    files.kind = 2;
+    run(processes, {.openFiles = &files, .modules = nullptr}, false, startFor("file", processes.size(), 20), slot, stop.get_token());
+    EXPECT_EQ(slot.load()->failure, "The search stopped: an unknown error");
+
+    // A search after the failures runs to its end, with no failure.
+    files.throwOn = 0;
+    run(processes, {.openFiles = &files, .modules = nullptr}, false, startFor("file-2", processes.size(), 30), slot, stop.get_token());
+    last = slot.load();
+    EXPECT_TRUE(last->done);
+    EXPECT_TRUE(last->failure.empty()) << last->failure;
+    EXPECT_EQ(last->searched, 20U);
+    EXPECT_EQ(last->matches.size(), 2U) << "file-2 and file-20";
+}
+
+// #3335, with real allocation failures (AllocationFailureHook): each allocation run() makes is failed in turn, the
+// lowered query's, a match's, a progress publication's and the done publication's. run() never lets one out. The
+// slot ends either done, saying why when the walk failed, or, when the done publication itself couldn't be made,
+// at the last one it could, for the dialog's worker-returned flag to end.
+TEST(HandleSearchTest, EveryAllocationRunMakesCanFailWithoutEscaping)
+{
+#if defined(TASKSMACK_NO_ALLOCATOR_HOOK)
+    GTEST_SKIP() << TASKSMACK_NO_ALLOCATOR_HOOK;
+#endif
+    std::vector<SearchProcess> processes;
+    FakeOpenFiles files;
+    for (std::int32_t pid = 1; pid <= 20; ++pid)
+    {
+        processes.push_back(process(pid, "p" + std::to_string(pid)));
+        files.results[pid] = openFiles({file(Platform::OpenFileKind::File, "/tmp/a-much-longer-path-for-the-heap-" + std::to_string(pid))});
+    }
+    int reported = 0;
+    int unpublished = 0;
+    constexpr std::int64_t MAX_ALLOCATIONS = 100'000;
+    for (std::int64_t failAt = 0; failAt < MAX_ALLOCATIONS; ++failAt)
+    {
+        SCOPED_TRACE("failing allocation " + std::to_string(failAt));
+        Domain::PublicationSlot<SearchPublication> slot;
+        // A long query that matches pid 1 and 10..19's paths: the sweep fails match insertion and the copy of a
+        // nonempty match list into a progress publication too.
+        const SearchPublication start = startFor("a-much-longer-path-for-the-heap-1", processes.size(), 1);
+        slot.commit(std::make_shared<const SearchPublication>(start));
+        std::stop_source stop;
+        SearchPublication input = start; // copied before the hook is armed: only run()'s own allocations fail
+        bool fired = false;
+        {
+            const TestSupport::FailAllocationAfter guard(failAt);
+            run(processes, {.openFiles = &files, .modules = nullptr}, false, std::move(input), slot, stop.get_token());
+            fired = !TestSupport::allocationFailurePending();
+        }
+        const std::shared_ptr<const SearchPublication> last = slot.load();
+        ASSERT_NE(last, nullptr);
+        if (!fired)
+        {
+            EXPECT_TRUE(last->done);
+            EXPECT_TRUE(last->failure.empty()) << "nothing failed, nothing to say";
+            EXPECT_EQ(last->matches.size(), 11U) << "the query matches: the sweep went through match insertion";
+            break;
+        }
+        if (last->done)
+        {
+            reported += last->failure.empty() ? 0 : 1;
+        }
+        else
+        {
+            ++unpublished; // the done publication's own allocation failed
+        }
+    }
+    EXPECT_GT(reported, 0) << "a failure in the walk is published as done with its reason";
+    EXPECT_GT(unpublished, 0) << "a failed done publication leaves the last one (the dialog's flag ends the search)";
+}
+
+// #3335: an administrator search after a failed one starts without that failure.
+TEST(HandleSearchTest, AnAdministratorSearchDoesNotCarryTheFirstSearchsFailure)
+{
+    SearchPublication failed = startFor("x", 2, 4);
+    failed.done = true;
+    failed.failure = "The search stopped: injected reader failure";
+    failed.denied.push_back(process(7, "other"));
+    const SearchPublication again = startAuthorizedAfter(failed, 5);
+    EXPECT_TRUE(again.failure.empty()) << again.failure;
+    EXPECT_FALSE(again.done);
 }
 
 TEST(HandleSearchTest, AnAdministratorSearchAddsTheDeniedProcessesToTheFirstResults)

@@ -1,6 +1,7 @@
 #include "FindHandlesDialog.h"
 
 #include "Domain/HandleSearch.h"
+#include "Domain/PublicationWake.h"
 #include "Platform/AsciiCase.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessModules.h"
@@ -17,6 +18,7 @@
 #include <imgui.h>
 
 #include <algorithm>
+#include <atomic>
 #include <compare>
 #include <cstddef>
 #include <cstdint>
@@ -66,15 +68,17 @@ using Domain::HandleSearch::SearchPublication;
 
 } // namespace
 
-std::string findHandlesStatus(const SearchPublication& publication)
+std::string findHandlesStatus(const SearchPublication& publication, bool workerReturned)
 {
     if (publication.version == 0)
     {
         return "Type a name and press Find.";
     }
     const std::size_t found = publication.matches.size();
-    std::string status = publication.done ? std::format("{} processes searched", publication.searched)
-                                          : std::format("Searching... {} of {} processes", publication.searched, publication.total);
+    const bool stoppedUnpublished = !publication.done && workerReturned;
+    std::string status = (publication.done || stoppedUnpublished)
+                           ? std::format("{} processes searched", publication.searched)
+                           : std::format("Searching... {} of {} processes", publication.searched, publication.total);
     status += std::format(" \xC2\xB7 {} found{}", found, publication.truncated ? " (the first ones)" : "");
     if (!publication.denied.empty())
     {
@@ -87,6 +91,14 @@ std::string findHandlesStatus(const SearchPublication& publication)
     if (publication.exited > 0)
     {
         status += std::format(" \xC2\xB7 {} ended first", publication.exited);
+    }
+    if (!publication.failure.empty())
+    {
+        status += " \xC2\xB7 " + publication.failure; // a reader threw or memory ran out (#3335)
+    }
+    else if (stoppedUnpublished)
+    {
+        status += " \xC2\xB7 The search stopped before it finished"; // not even its failure could be published
     }
     return status;
 }
@@ -145,6 +157,11 @@ void FindHandlesDialog::setReaders(std::unique_ptr<Platform::IProcessOpenFilesRe
 
 bool FindHandlesDialog::searching() const noexcept
 {
+    // The flag first: the worker sets it after its last commit, so once it reads true that commit is visible.
+    if (m_WorkerReturned->load(std::memory_order_acquire))
+    {
+        return false;
+    }
     const std::shared_ptr<const SearchPublication> current = m_Slot->load();
     return current != nullptr && current->version > 0 && !current->done;
 }
@@ -162,13 +179,38 @@ void FindHandlesDialog::startSearch(std::vector<Domain::HandleSearch::SearchProc
         .openFiles = m_Capabilities.openFiles ? m_OpenFiles.get() : nullptr,
         .modules = m_Capabilities.modules ? m_Modules.get() : nullptr,
     };
-    m_Worker = std::jthread(
-        [slot = m_Slot, readers, authorized, processes = std::move(processes), start = std::move(start)](
-            const std::stop_token& stopToken) mutable
+    m_WorkerReturned->store(false, std::memory_order_release);
+    try
+    {
+        m_Worker = std::jthread(
+            [slot = m_Slot, returned = m_WorkerReturned, readers, authorized, processes = std::move(processes), start = std::move(start)](
+                const std::stop_token& stopToken) mutable noexcept
+            {
+                static_cast<void>(Platform::setCurrentThreadName(Platform::FIND_HANDLES_THREAD_NAME));
+                Domain::HandleSearch::run(processes, readers, authorized, std::move(start), *slot, stopToken);
+                returned->store(true, std::memory_order_release);
+                Domain::PublicationWake::notify();
+            });
+    }
+    catch (...)
+    {
+        // No thread (std::system_error), or no memory for its state (#3335). The flag first, so even a failure
+        // that can't be published below ends the search; then, if it can, the start published as a failed one.
+        m_WorkerReturned->store(true, std::memory_order_release);
+        try
         {
-            static_cast<void>(Platform::setCurrentThreadName(Platform::FIND_HANDLES_THREAD_NAME));
-            Domain::HandleSearch::run(processes, readers, authorized, std::move(start), *slot, stopToken);
-        });
+            if (const std::shared_ptr<const SearchPublication> begun = m_Slot->load(); begun != nullptr)
+            {
+                SearchPublication failed = *begun;
+                failed.done = true;
+                failed.failure = "The search couldn't start";
+                ++failed.version;
+                m_Slot->commit(std::make_shared<const SearchPublication>(std::move(failed)));
+            }
+        }
+        catch (...) // NOLINT(bugprone-empty-catch) - the flag already ends the search; see above
+        {}
+    }
 }
 
 bool FindHandlesDialog::renderQueryRow()
@@ -318,11 +360,12 @@ std::optional<FindHandlesAction> FindHandlesDialog::render(const ProcessList& pr
         startSearch(std::move(all), false, std::move(start));
     }
 
+    const bool workerReturned = m_WorkerReturned->load(std::memory_order_acquire); // before the load, as in searching()
     const std::shared_ptr<const SearchPublication> current = m_Slot->load();
     const SearchPublication empty;
     const SearchPublication& shown = current != nullptr ? *current : empty;
     action = renderResults(shown);
-    ImGui::TextColored(theme.scheme().textMuted, "%s", findHandlesStatus(shown).c_str());
+    ImGui::TextColored(theme.scheme().textMuted, "%s", findHandlesStatus(shown, workerReturned).c_str());
 
     // Another user's processes: an administrator can search them, after one password prompt.
     if (shown.done && !shown.denied.empty() && m_Capabilities.authorize)

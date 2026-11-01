@@ -13,6 +13,7 @@
 
 #include <imgui.h>
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -34,7 +35,9 @@ struct FindHandlesAction
 };
 
 /// The status line under the results: how far the search has got, what it found, and what it couldn't read.
-[[nodiscard]] std::string findHandlesStatus(const Domain::HandleSearch::SearchPublication& publication);
+/// @p workerReturned: the worker has returned, so a search that isn't done stopped without its last publication
+/// (#3335), and is shown as stopped with its last counts rather than as searching.
+[[nodiscard]] std::string findHandlesStatus(const Domain::HandleSearch::SearchPublication& publication, bool workerReturned);
 
 /// A results column of the Find handles table.
 enum class FindHandlesColumn : std::uint8_t
@@ -107,7 +110,8 @@ class FindHandlesDialog
         return m_Slot->load();
     }
 
-    /// Whether a search is running on the worker.
+    /// Whether a search is running on the worker: one has begun, isn't done, and its worker hasn't returned (a
+    /// search that couldn't even publish its failure still ends, #3335).
     [[nodiscard]] bool searching() const noexcept;
 
   private:
@@ -123,6 +127,8 @@ class FindHandlesDialog
     Capabilities m_Capabilities;
     std::shared_ptr<Domain::PublicationSlot<Domain::HandleSearch::SearchPublication>> m_Slot =
         std::make_shared<Domain::PublicationSlot<Domain::HandleSearch::SearchPublication>>();
+    /// Set by the worker as it returns, whatever it managed to publish (#3335).
+    std::shared_ptr<std::atomic<bool>> m_WorkerReturned = std::make_shared<std::atomic<bool>>(true);
     std::string m_Query;
     std::uint64_t m_OrderVersion = 0; ///< The publication m_Order was built for
     FindHandlesColumn m_SortColumn = FindHandlesColumn::Process;

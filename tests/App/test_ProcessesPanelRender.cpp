@@ -15,6 +15,7 @@
 
 #include "App/Panels/AuthorizeWording.h"
 #include "App/Panels/ExitingProcessRows.h"
+#include "App/Panels/FindHandlesDialog.h"
 #include "App/Panels/NiceStep.h"
 #include "App/Panels/ProcessActionsView.h"
 #include "App/Panels/ProcessColumnAvailability.h"
@@ -32,6 +33,7 @@
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Domain/GPUModel.h"
+#include "Domain/HandleSearch.h"
 #include "Domain/PriorityConfig.h"
 #include "Domain/ProcessModel.h"
 #include "Domain/ProcessSnapshot.h"
@@ -70,6 +72,7 @@
 #include <optional>
 #include <regex>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -3245,6 +3248,86 @@ TEST_F(ProcessesPanelRenderTest, GroupByContainerShowsHeadersWithTotalsAndCollap
 
 // #3067: the toolbar's Find handles opens its dialog; a query typed there searches every process's open
 // files on the dialog's worker and lists each process holding a match, with the count in the status line.
+// #3335: a search whose worker returned without its done publication reads as stopped, with its last counts, not
+// as still searching; one still running reads as searching.
+TEST(FindHandlesStatusTest, AWorkerThatReturnedWithoutItsDonePublicationReadsAsStopped)
+{
+    Domain::HandleSearch::SearchPublication running = Domain::HandleSearch::startFor("x", 10, 3);
+    running.searched = 4;
+    EXPECT_TRUE(App::findHandlesStatus(running, false).starts_with("Searching... 4 of 10 processes"));
+    const std::string stopped = App::findHandlesStatus(running, true);
+    EXPECT_TRUE(stopped.starts_with("4 processes searched")) << stopped;
+    EXPECT_TRUE(stopped.ends_with("The search stopped before it finished")) << stopped;
+    running.done = true;
+    running.failure = "The search stopped: injected";
+    EXPECT_TRUE(App::findHandlesStatus(running, true).ends_with("The search stopped: injected"));
+}
+
+// #3335: a reader that throws on the Find handles worker doesn't terminate TaskSmack: the search ends, the
+// status line says why, and Find is offered again.
+TEST_F(ProcessesPanelRenderTest, AFindHandlesReaderThatThrowsEndsTheSearchAndSaysWhy)
+{
+    class ThrowingOpenFiles final : public Platform::IProcessOpenFilesReader
+    {
+      public:
+        [[nodiscard]] bool hasOpenFiles() const override
+        {
+            return true;
+        }
+        [[nodiscard]] Platform::OpenFilesReadResult readOpenFiles(const Platform::ProcessTarget& /*target*/) override
+        {
+            throw std::runtime_error("injected reader failure");
+        }
+    };
+    auto panel = std::make_unique<ProcessesPanel>(
+        []
+        {
+            auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+            probe->withProcess(TestMocks::makeProcessCounters(42, "soffice", 'S', 30, 10, 200, std::uint64_t{4} << 20U, 1));
+            return ProcessesPanelPlatform{.probe = std::move(probe),
+                                          .actions = std::make_unique<TestMocks::MockProcessActions>(),
+                                          .icons = nullptr,
+                                          .openFiles = std::make_unique<ThrowingOpenFiles>()};
+        });
+    attachAndSeed(*panel);
+    Core::ActiveTabChangedEvent shown("Processes");
+    panel->onEvent(shown);
+    renderUntilLoaded(*panel);
+
+    ImGuiIO& io = ImGui::GetIO();
+    io.AddMousePosEvent(DISPLAY_WIDTH * 0.5F, DISPLAY_HEIGHT * 0.5F);
+    io.AddKeyEvent(ImGuiMod_Ctrl, true);
+    io.AddKeyEvent(ImGuiMod_Shift, true);
+    io.AddKeyEvent(ImGuiKey_F, true);
+    static_cast<void>(renderAndCapture(*panel));
+    io.AddKeyEvent(ImGuiKey_F, false);
+    io.AddKeyEvent(ImGuiMod_Shift, false);
+    io.AddKeyEvent(ImGuiMod_Ctrl, false);
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    ASSERT_NE(ImGui::GetTopMostPopupModal(), nullptr) << "Ctrl+Shift+F didn't open Find handles";
+    ImGui::GetIO().AddInputCharactersUTF8("x");
+    static_cast<void>(renderAndCapture(*panel));
+    ImGui::GetIO().AddKeyEvent(ImGuiKey_Enter, true);
+    static_cast<void>(renderAndCapture(*panel));
+    ImGui::GetIO().AddKeyEvent(ImGuiKey_Enter, false);
+    std::string text;
+    for (int frame = 0; frame < LOAD_FRAMES; ++frame)
+    {
+        text = renderAndCapture(*panel);
+        // Both in one frame: the worker can finish between the query row (Stop) and the status line.
+        if (text.contains("The search stopped") && !text.contains("Stop"))
+        {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    EXPECT_TRUE(text.contains("The search stopped: injected reader failure")) << text;
+    EXPECT_FALSE(text.contains("Searching...")) << "the search ended: " << text;
+    EXPECT_FALSE(text.contains("Stop")) << "Find is offered again, not Stop: " << text;
+    panel->onDetach();
+}
+
 TEST_F(ProcessesPanelRenderTest, FindHandlesListsTheProcessesHoldingAFile)
 {
     auto panel = std::make_unique<ProcessesPanel>(
