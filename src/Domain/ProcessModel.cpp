@@ -1261,14 +1261,28 @@ bool ProcessModel::appendHeldOverLocked(const Platform::ProcessCounters& current
     }
     // m_PidIndex maps the last generation's rows (computeSnapshotsLocked() rebuilds it after the loop), unless the
     // refresh before failed after rebuilding it for rows it never published: then it is rebuilt for these (#3334).
+    std::size_t row = PidIndex::NOT_FOUND;
     if (m_PidIndexRows != previousSnapshots.get())
     {
         m_PidIndexRows = nullptr;
-        m_PidIndex.rebuild(*previousSnapshots, &ProcessSnapshot::pid);
-        m_PidIndexRows = previousSnapshots.get();
+        try
+        {
+            m_PidIndex.rebuild(*previousSnapshots, &ProcessSnapshot::pid);
+            m_PidIndexRows = previousSnapshots.get();
+        }
+        catch (const std::exception&)
+        {
+            // No memory for the table: find the row by walking the rows, as rare as the failed refresh before.
+            const auto found = std::ranges::find(*previousSnapshots, current.pid, &ProcessSnapshot::pid);
+            row = found == previousSnapshots->end() ? PidIndex::NOT_FOUND : static_cast<std::size_t>(found - previousSnapshots->begin());
+        }
     }
-    const std::size_t row = m_PidIndex.find(current.pid);
-    // The whole identity: two processes started in the same clock tick share a start time.
+    if (m_PidIndexRows == previousSnapshots.get())
+    {
+        row = m_PidIndex.find(current.pid);
+    }
+    // The PID check is a backstop: the table maps these rows, so its row holds this PID. Two processes started in
+    // the same clock tick share a start time, so the start time alone doesn't tell them apart.
     if (row >= previousSnapshots->size() || (*previousSnapshots)[row].pid != current.pid ||
         (*previousSnapshots)[row].startTimeTicks != current.startTimeTicks)
     {

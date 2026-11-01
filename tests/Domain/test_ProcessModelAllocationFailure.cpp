@@ -254,13 +254,15 @@ TEST(ProcessModelAllocationFailureTest, AFailedRefreshLeavesNoHeldOverRowOnAnoth
         }
         failedRefreshes += threw ? 1 : 0;
 
+        // A carried record says nothing reliable but its identity: whatever else it holds, A's row is its last one.
         Platform::ProcessCounters heldA = a;
         heldA.heldOver = true;
+        heldA.name = "from the carried record";
         sample({heldA, b});
         const auto rows = model.snapshots();
         ASSERT_EQ(rows.size(), 2U);
         EXPECT_EQ(rows[0].pid, 100);
-        EXPECT_EQ(rows[0].name, "parent") << "A's own last row, not B's";
+        EXPECT_EQ(rows[0].name, "parent") << "A's own last row: not B's, and not rebuilt from the carried record";
         EXPECT_EQ(rows[1].pid, 200);
         EXPECT_EQ(rows[0].childrenIndices, (std::vector<std::size_t>{1})) << "B is under A";
         if (HasFailure())
