@@ -3210,6 +3210,31 @@ TEST_F(LinuxEfficiencyModeActionTest, OffPutsTheWeightBackOnTheCgroupOnLoweredNo
     EXPECT_EQ(efficiency().writes, (std::vector<std::pair<std::string, std::string>>{{"cpu.weight", "50"}}));
 }
 
+// #3332: an off that put the nice back but not the weight keeps the memory; the user then changes the nice and turns
+// Efficiency mode on again. That on records the nice it finds (10), not the spent one (5), and keeps the weight still
+// owed (50): the next off puts back 10 and 50.
+TEST_F(LinuxEfficiencyModeActionTest, AnOnAfterAPartialOffRecordsTheNiceItFindsAndKeepsTheWeightOwed)
+{
+    efficiency().files["cpu.weight"] = "50\n";
+    ASSERT_TRUE(m_Control.setEfficiencyMode(ownTarget(), true).success); // nice 5, weight 50 lowered to 1
+    efficiency().nice = 19;
+    efficiency().writeErrno = EACCES;
+    ASSERT_TRUE(m_Control.setEfficiencyMode(ownTarget(), false).successNote.contains("still the minimum"));
+    EXPECT_EQ(plan().lastSetValue, 5);
+    EXPECT_EQ(m_Control.efficiencyNiceToRestore(ownTarget()), std::nullopt) << "its nice is spent";
+
+    efficiency().writeErrno = 0;
+    efficiency().nice = 10; // the user's change
+    ASSERT_TRUE(m_Control.setEfficiencyMode(ownTarget(), true).success);
+    efficiency().nice = 19;
+    EXPECT_EQ(m_Control.efficiencyNiceToRestore(ownTarget()), std::optional<std::int32_t>(10));
+    efficiency().writes.clear();
+    ASSERT_TRUE(m_Control.setEfficiencyMode(ownTarget(), false).success);
+    EXPECT_EQ(plan().lastSetValue, 10) << "the nice the second on found";
+    EXPECT_EQ(efficiency().writes, (std::vector<std::pair<std::string, std::string>>{{"cpu.weight", "50"}})) << "the weight still owed";
+    EXPECT_EQ(m_Control.rememberedEfficiencyCount(), 0U);
+}
+
 // #3330: an on or off for a process that another one, sharing the memory, is still changing is refused rather than
 // interleaved with it: here Process Details' off arrives while the Processes tab's on is setting the nice.
 TEST_F(LinuxEfficiencyModeActionTest, AnOnOrOffWhileAnotherIsChangingTheProcessIsRefused)
