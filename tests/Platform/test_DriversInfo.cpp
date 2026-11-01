@@ -179,7 +179,7 @@ constexpr std::int32_t ACCESS_DENIED = static_cast<std::int32_t>(0x80070005U); /
 /// An image file's stamp, changed at @p changeTime.
 [[nodiscard]] WindowsDrivers::FileStamp stampAt(std::uint64_t changeTime)
 {
-    return {.fileId = WindowsDrivers::FileId{.volumeSerial = 1, .id = {1}}, .changeTime = changeTime, .size = 1};
+    return {.fileId = WindowsDrivers::FileId{.volumeSerial = 1, .id = {1}}, .changeTime = changeTime, .size = 1, .usn = 1};
 }
 
 /// Every image readable and signed, until a test says otherwise.

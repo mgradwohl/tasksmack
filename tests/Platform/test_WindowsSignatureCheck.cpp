@@ -3,7 +3,8 @@
 /// fake wintrust and crypt32 calls (the offline settings asked for, the signer read only when trusted, the
 /// state always closed, SHA-256 then SHA-1 catalogs, the member tag, every context released, each failure's
 /// HRESULT, both read through the check's own handle); the file stamp through a fake
-/// GetFileInformationByHandleEx and the file opened shared for read only (#3292); then the real calls on a
+/// GetFileInformationByHandleEx and DeviceIoControl (its USN, #3313) and the file opened shared for read
+/// only (#3292); then the real calls on a
 /// signed system binary and on an unsigned file this test writes.
 
 #include "Platform/ImageSignature.h"
@@ -20,9 +21,11 @@
 #include <wintrust.h>
 #include <softpub.h>
 #include <mscat.h>
+#include <winioctl.h>
 // clang-format on
 
 #include <cstddef>
+#include <cstring>
 #include <cwchar>
 #include <filesystem>
 #include <format>
@@ -61,6 +64,13 @@ struct FakeTrust // NOLINT(clang-analyzer-optin.performance.Padding)
     bool zeroId = false;
     LONGLONG changeTime = 1234;
     LONGLONG endOfFile = 4096;
+    // FSCTL_READ_FILE_USN_DATA's answer (#3313)
+    bool noJournal = false;    ///< ERROR_JOURNAL_NOT_ACTIVE, as a volume with no change journal answers
+    WORD usnRecordVersion = 2; ///< 2 (NTFS) or 3 (ReFS); any other is a record the stamp doesn't read
+    USN usn = 77777;
+    DWORD usnRequestMin = 0; ///< What READ_FILE_USN_DATA asked for
+    DWORD usnRequestMax = 0;
+    HANDLE usnFile = nullptr;
     // Seen
     HANDLE verifiedFile = nullptr; ///< WINTRUST_FILE_INFO::hFile, or WINTRUST_CATALOG_INFO::hMemberFile
     HANDLE hashedFile = nullptr;
@@ -249,6 +259,51 @@ BOOL WINAPI fakeFileInfo(HANDLE /*file*/, FILE_INFO_BY_HANDLE_CLASS type, LPVOID
     }
 }
 
+/// Copies @p record to @p out when it fits.
+template<typename Record> BOOL writeUsnRecord(const Record& record, LPVOID out, DWORD outSize, LPDWORD returned)
+{
+    if (outSize < sizeof(record))
+    {
+        SetLastError(ERROR_INSUFFICIENT_BUFFER);
+        return FALSE;
+    }
+    std::memcpy(out, &record, sizeof(record));
+    *returned = sizeof(record);
+    return TRUE;
+}
+
+BOOL WINAPI fakeDeviceIoControl(
+    HANDLE file, DWORD code, LPVOID in, DWORD inSize, LPVOID out, DWORD outSize, LPDWORD returned, LPOVERLAPPED /*overlapped*/)
+{
+    if (code != FSCTL_READ_FILE_USN_DATA || inSize != sizeof(READ_FILE_USN_DATA))
+    {
+        SetLastError(ERROR_INVALID_FUNCTION);
+        return FALSE;
+    }
+    fake().usnFile = file;
+    const auto* request = static_cast<const READ_FILE_USN_DATA*>(in);
+    fake().usnRequestMin = request->MinMajorVersion;
+    fake().usnRequestMax = request->MaxMajorVersion;
+    if (fake().noJournal)
+    {
+        SetLastError(ERROR_JOURNAL_NOT_ACTIVE);
+        return FALSE;
+    }
+    if (fake().usnRecordVersion == 3)
+    {
+        USN_RECORD_V3 record{};
+        record.RecordLength = sizeof(record);
+        record.MajorVersion = 3;
+        record.Usn = fake().usn;
+        return writeUsnRecord(record, out, outSize, returned);
+    }
+    USN_RECORD_V2 record{};
+    record.RecordLength = sizeof(record);
+    record.MajorVersion = fake().usnRecordVersion;
+    record.Usn = fake().usn;
+    return writeUsnRecord(record, out, outSize, returned);
+}
+
 TrustApiFunctions fakeApi()
 {
     return {
@@ -263,6 +318,7 @@ TrustApiFunctions fakeApi()
         .catalogInfoFromContext = &fakeCatalogInfo,
         .releaseCatalogContext = &fakeReleaseCatalog,
         .releaseContext = &fakeReleaseContext,
+        .deviceIoControl = &fakeDeviceIoControl,
     };
 }
 
@@ -329,6 +385,51 @@ TEST_F(WindowsSignatureCheckTest, TheStampIsTheFileIdChangeTimeAndSizeReadThroug
     EXPECT_EQ(stamp->fileId->id[WindowsSignature::FileId::SIZE - 1], WindowsSignature::FileId::SIZE);
     EXPECT_EQ(stamp->changeTime, 1234U) << "ChangeTime, not LastWriteTime (which SetFileTime sets)";
     EXPECT_EQ(stamp->size, 4096U);
+    EXPECT_EQ(stamp->usn, 77777U) << "the change journal's USN (#3313)";
+    EXPECT_EQ(fake().usnFile, handle()) << "read through the check's own handle, not another open";
+    EXPECT_EQ(fake().usnRequestMin, 2U);
+    EXPECT_EQ(fake().usnRequestMax, 3U) << "ReFS gives version 3 records";
+}
+
+TEST_F(WindowsSignatureCheckTest, TheUsnIsReadFromAVersion3Record)
+{
+    fake().usnRecordVersion = 3;
+    fake().usn = 0x123456789A;
+    const std::optional<WindowsSignature::FileStamp> stamp = readFileStamp(fakeApi(), handle());
+    ASSERT_TRUE(stamp.has_value());
+    EXPECT_EQ(stamp->usn, 0x123456789AU);
+}
+
+// #3313: a volume without a change journal (FAT, most network shares, a journal turned off), or a record
+// the stamp can't read, gives USN 0: the stamp is the rest, as before, never a failed check.
+TEST_F(WindowsSignatureCheckTest, AFileWithoutAUsnKeepsTheRestOfItsStamp)
+{
+    fake().noJournal = true;
+    std::optional<WindowsSignature::FileStamp> stamp = readFileStamp(fakeApi(), handle());
+    ASSERT_TRUE(stamp.has_value()) << "no journal is no reason to fail the check";
+    EXPECT_EQ(stamp->usn, 0U);
+    EXPECT_TRUE(stamp->fileId.has_value());
+    EXPECT_EQ(stamp->changeTime, 1234U);
+    EXPECT_EQ(stamp->size, 4096U);
+
+    fake() = FakeTrust{};
+    fake().usnRecordVersion = 4; // not a record FSCTL_READ_FILE_USN_DATA was asked for
+    stamp = readFileStamp(fakeApi(), handle());
+    ASSERT_TRUE(stamp.has_value());
+    EXPECT_EQ(stamp->usn, 0U);
+
+    fake() = FakeTrust{};
+    fake().usn = -1; // never a USN: treated as none
+    stamp = readFileStamp(fakeApi(), handle());
+    ASSERT_TRUE(stamp.has_value());
+    EXPECT_EQ(stamp->usn, 0U);
+
+    closeHandle();
+    fake() = FakeTrust{};
+    fake().noJournal = true;
+    const std::optional<WindowsSignature::OpenedImage> image = openImage(fakeApi(), file());
+    ASSERT_TRUE(image.has_value()) << "opened and checked as before";
+    closeImage(image->file);
 }
 
 TEST_F(WindowsSignatureCheckTest, AFileWithoutAnIdHasAStampWithoutOne)
@@ -576,6 +677,45 @@ TEST(WindowsSignatureCheckRealTest, AFileWrittenInPlaceAndItsWriteTimeSetBackHas
     EXPECT_EQ(after->stamp.fileId, before->stamp.fileId);
     EXPECT_EQ(after->stamp.size, before->stamp.size);
     EXPECT_NE(after->stamp.changeTime, before->stamp.changeTime);
+    EXPECT_NE(after->stamp, before->stamp) << "the cache would check it again";
+    std::error_code ignored;
+    std::filesystem::remove(file, ignored);
+}
+
+// #3313: the same, but its ChangeTime given back too, through SetFileInformationByHandle(FileBasicInfo).
+// ID, ChangeTime and size all match; the USN, which the change journal moves on and user mode can't set,
+// doesn't. Unelevated: the USN is read through the check's own read handle. Skipped where the temp
+// folder's volume keeps no change journal.
+TEST(WindowsSignatureCheckRealTest, AFileWrittenInPlaceAndItsChangeTimeRestoredHasANewUsn)
+{
+    const std::filesystem::path file =
+        std::filesystem::temp_directory_path() / std::format(L"tasksmack-3313-{}-usn.exe", GetCurrentProcessId());
+    std::ofstream(file, std::ios::binary) << "MZ one";
+    const std::optional<WindowsSignature::OpenedImage> before = openImage(TrustApiFunctions{}, file.wstring());
+    ASSERT_TRUE(before.has_value());
+    closeImage(before->file);
+    if (before->stamp.usn == 0)
+    {
+        std::error_code ignored;
+        std::filesystem::remove(file, ignored);
+        GTEST_SKIP() << "the temp folder's volume keeps no change journal";
+    }
+    {
+        const UniqueHandle writer(CreateFileW(file.c_str(), GENERIC_WRITE | FILE_WRITE_ATTRIBUTES, 0, nullptr, OPEN_EXISTING, 0, nullptr));
+        ASSERT_TRUE(writer.valid());
+        FILE_BASIC_INFO basic{};
+        ASSERT_NE(GetFileInformationByHandleEx(writer.get(), FileBasicInfo, &basic, sizeof(basic)), FALSE);
+        DWORD wrote = 0;
+        ASSERT_NE(WriteFile(writer.get(), "MZ two", 6, &wrote, nullptr), FALSE); // the same size
+        ASSERT_NE(SetFileInformationByHandle(writer.get(), FileBasicInfo, &basic, sizeof(basic)), FALSE);
+    }
+    const std::optional<WindowsSignature::OpenedImage> after = openImage(TrustApiFunctions{}, file.wstring());
+    ASSERT_TRUE(after.has_value());
+    closeImage(after->file);
+    EXPECT_EQ(after->stamp.fileId, before->stamp.fileId);
+    EXPECT_EQ(after->stamp.size, before->stamp.size);
+    EXPECT_EQ(after->stamp.changeTime, before->stamp.changeTime) << "the ChangeTime given back";
+    EXPECT_GT(after->stamp.usn, before->stamp.usn);
     EXPECT_NE(after->stamp, before->stamp) << "the cache would check it again";
     std::error_code ignored;
     std::filesystem::remove(file, ignored);

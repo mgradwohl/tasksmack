@@ -128,10 +128,11 @@ FileId idOf(std::uint8_t first)
     return id;
 }
 
-/// The stamp of the file with ID idOf(@p id), changed at @p changeTime and @p size bytes long.
-FileStamp stampOf(std::uint64_t changeTime, std::uint64_t size = 100, std::uint8_t id = 1)
+/// The stamp of the file with ID idOf(@p id), changed at @p changeTime, @p size bytes long, its last
+/// change journal record at @p usn.
+FileStamp stampOf(std::uint64_t changeTime, std::uint64_t size = 100, std::uint8_t id = 1, std::uint64_t usn = 500)
 {
-    return {.fileId = idOf(id), .changeTime = changeTime, .size = size};
+    return {.fileId = idOf(id), .changeTime = changeTime, .size = size, .usn = usn};
 }
 
 TEST(WindowsImageSignatureTest, AFileIdOfAllZerosIsNone)
@@ -156,6 +157,7 @@ TEST(WindowsImageSignatureTest, TheCacheMatchesOnlyTheSameStampAndEmptiesWhenFul
     EXPECT_FALSE(cache.find("a", stampOf(11)).has_value()) << "changed in place";
     EXPECT_FALSE(cache.find("a", stampOf(10, 101)).has_value()) << "another size";
     EXPECT_FALSE(cache.find("a", stampOf(10, 100, 2)).has_value()) << "another file in its place";
+    EXPECT_FALSE(cache.find("a", stampOf(10, 100, 1, 501)).has_value()) << "a new change journal record (#3313)";
     FileStamp otherVolume = stamp;
     otherVolume.fileId->volumeSerial = 8;
     EXPECT_FALSE(cache.find("a", otherVolume).has_value()) << "the same ID on another volume";
@@ -173,13 +175,26 @@ TEST(WindowsImageSignatureTest, TheCacheMatchesOnlyTheSameStampAndEmptiesWhenFul
 TEST(WindowsImageSignatureTest, AStampWithoutAFileIdIsNeverCached)
 {
     SignatureCache cache;
-    const FileStamp noId{.fileId = std::nullopt, .changeTime = 10, .size = 100};
+    const FileStamp noId{.fileId = std::nullopt, .changeTime = 10, .size = 100, .usn = 500};
     cache.store("fat", noId, SignatureCheck{.signature = ImageSignature::Embedded, .note = {}, .signer = "Contoso"});
     EXPECT_EQ(cache.size(), 0U) << "nothing would say it's the same file next time";
     EXPECT_FALSE(cache.find("fat", noId).has_value());
 
     cache.store("fat", stampOf(10), SignatureCheck{.signature = ImageSignature::Embedded, .note = {}, .signer = "Contoso"});
     EXPECT_FALSE(cache.find("fat", noId).has_value()) << "an answer kept for a file with an ID is no answer for one without";
+}
+
+// #3313: a volume with no change journal (or a failed read) gives USN 0. That file is still cached on the
+// rest of its stamp, as before the USN was added, rather than checked every time or failed.
+TEST(WindowsImageSignatureTest, AStampWithoutAUsnIsStillCachedOnTheRest)
+{
+    SignatureCache cache;
+    const FileStamp noJournal = stampOf(10, 100, 1, 0);
+    const SignatureCheck signedCheck{.signature = ImageSignature::Embedded, .note = {}, .signer = "Contoso"};
+    cache.store("nojournal", noJournal, signedCheck);
+    EXPECT_EQ(cache.find("nojournal", noJournal), signedCheck);
+    EXPECT_FALSE(cache.find("nojournal", stampOf(11, 100, 1, 0)).has_value()) << "a new ChangeTime still misses";
+    EXPECT_FALSE(cache.find("nojournal", stampOf(10, 100, 1, 7)).has_value()) << "a journal now: another stamp";
 }
 
 TEST(WindowsImageSignatureTest, AnErrorIsNamedByItsTextOrItsCode)
@@ -326,7 +341,7 @@ TEST_F(CheckSignatureTest, TheFileIsClosedWhenACheckThrows)
     EXPECT_EQ(fakes().closed, 1);
 }
 
-TEST_F(CheckSignatureTest, TheCacheIsKeyedByPathFileIdChangeTimeAndSize)
+TEST_F(CheckSignatureTest, TheCacheIsKeyedByPathFileIdChangeTimeSizeAndUsn)
 {
     fakes().stamps["C:\\App.exe"] = stampOf(1, 10);
     fakes().stamps["c:\\app.exe"] = stampOf(1, 10);
@@ -348,6 +363,9 @@ TEST_F(CheckSignatureTest, TheCacheIsKeyedByPathFileIdChangeTimeAndSize)
     EXPECT_EQ(fakes().embeddedChecks["C:\\App.exe"], 3);
     (void) checkSignature(fns, &cache, "C:\\App.exe", pathKey("C:\\App.exe"));
     EXPECT_EQ(fakes().embeddedChecks["C:\\App.exe"], 3);
+    fakes().stamps["C:\\App.exe"].usn = 501; // a new change journal record (#3313)
+    (void) checkSignature(fns, &cache, "C:\\App.exe", pathKey("C:\\App.exe"));
+    EXPECT_EQ(fakes().embeddedChecks["C:\\App.exe"], 4);
 }
 
 // #3292: a program running as the user swaps a signed file for a same-size one and sets its write time
@@ -375,9 +393,25 @@ TEST_F(CheckSignatureTest, ASwappedSameSizeFileIsCheckedAgain)
     EXPECT_EQ(fakes().embeddedChecks["app.exe"], 4);
 }
 
+// #3313: the same file written in place at the same size, then given its old ChangeTime back through
+// SetFileInformationByHandle(FileBasicInfo), matches on ID, ChangeTime and size; its USN has moved on.
+TEST_F(CheckSignatureTest, ASameSizeRewriteWithItsChangeTimeRestoredIsCheckedAgain)
+{
+    fakes().stamps["app.exe"] = stampOf(5, 4096, 1, 900);
+    fakes().embedded["app.exe"] = 0;
+    SignatureCache cache;
+    const SignatureFunctions fns = fakeFunctions();
+    EXPECT_EQ(checkSignature(fns, &cache, "app.exe", "app.exe").signature, ImageSignature::Embedded);
+
+    fakes().stamps["app.exe"] = stampOf(5, 4096, 1, 1200); // every field but the USN as before
+    fakes().embedded["app.exe"] = TrustResult::NO_SIGNATURE;
+    EXPECT_EQ(checkSignature(fns, &cache, "app.exe", "app.exe").signature, ImageSignature::Unsigned);
+    EXPECT_EQ(fakes().embeddedChecks["app.exe"], 2);
+}
+
 TEST_F(CheckSignatureTest, AFileWithoutAFileIdIsCheckedEveryTime)
 {
-    fakes().stamps["E:\\tool.exe"] = FileStamp{.fileId = std::nullopt, .changeTime = 1, .size = 10};
+    fakes().stamps["E:\\tool.exe"] = FileStamp{.fileId = std::nullopt, .changeTime = 1, .size = 10, .usn = 0};
     fakes().embedded["E:\\tool.exe"] = 0;
     SignatureCache cache;
     const SignatureFunctions fns = fakeFunctions();
