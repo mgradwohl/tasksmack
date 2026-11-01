@@ -233,11 +233,8 @@ void ProcessDetailsPanel::updateOnDemandReads(float deltaTime)
     const bool canReadThreads = m_HasThreads && m_HasSnapshot && !m_ProcessExited;
     // Its rows' Suspend, Resume and End (#3069): where the actions can (Windows), for a running process.
     m_ThreadsView.setThreadActions(canReadThreads && m_ActionCapabilities.canActOnThreads, cachedSnapshot().name);
-    static_cast<void>(m_ThreadsView.update(canReadThreads ? m_ThreadsReader.get() : nullptr,
-                                           selectedTarget(),
-                                           deltaTime,
-                                           static_cast<int>(m_RefreshInterval.count()),
-                                           std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count()));
+    static_cast<void>(m_ThreadsView.update(
+        canReadThreads ? m_ThreadsReader.get() : nullptr, selectedTarget(), deltaTime, static_cast<int>(m_RefreshInterval.count())));
 
     // The Security section's on-demand read (#1526), on the same terms.
     const bool canReadSecurity = m_HasSecurity && m_HasSnapshot && !m_ProcessExited;

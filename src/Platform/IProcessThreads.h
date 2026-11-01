@@ -15,6 +15,7 @@
 #include "Platform/IProcessActions.h"
 
 #include <cstdint>
+#include <optional>
 #include <stop_token>
 #include <string>
 #include <vector>
@@ -71,6 +72,11 @@ struct ThreadsReadResult
     bool truncated = false;            ///< The process had more than MAX_THREADS; `threads` holds the first
     std::uint64_t bootTimeEpoch = 0;   ///< When the machine booted (Unix seconds), for startTicks as a time; 0 when unknown
     bool windowsPriorities = false;    ///< Each thread's nice holds its Windows priority (0 to 31), not a nice value
+    /// When the CPU times were read, in seconds on a steady clock, taken on the reading thread (#3337): what a
+    /// view's CPU % divides by, never when the UI took the result in. Unset when unknown; App's
+    /// ProcessThreadsView stamps it on its worker as the read returns when a reader leaves it unset.
+    // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
+    std::optional<double> acquiredAtSeconds{};
 };
 
 /// Lists one process's threads on request.
