@@ -653,6 +653,29 @@ inline constexpr float MAX_PIXEL_DENSITY = 8.0F;
     return centred;
 }
 
+/// The rectangle a client-side Restore applies (#3336): the saved normal rectangle, fitted to the
+/// displays connected now. The monitor it was saved on can be unplugged while the window is
+/// maximized, and the OS then moves only the maximized window. A rectangle still reachable on some
+/// display (isReachableOn(), as fitRectToDisplays() decides it) is returned exactly as saved, even
+/// when it is larger than that display: Restore puts back what the user had. Only one reachable on
+/// no display is fitted, by fitRectToDisplays(): centred on the display the window is on now (not
+/// the primary), and shrunk only where it is larger than that display.
+///
+/// @param target        The saved normal rectangle (WindowGeometryState::restoreTarget()).
+/// @param displays      Each connected display's usable bounds (SDL_GetDisplayUsableBounds).
+/// @param currentIndex  Index in @p displays of the display the window is on, if known.
+/// @param primaryIndex  Index of the primary display, used when @p currentIndex is not known.
+[[nodiscard]] constexpr auto
+fitRestoreTarget(const Rect& target, std::span<const Rect> displays, std::optional<std::size_t> currentIndex, std::size_t primaryIndex)
+    -> Rect
+{
+    if (displays.empty() || reachableDisplayIndex(target, displays, MIN_VISIBLE_EXTENT).has_value())
+    {
+        return target;
+    }
+    return fitRectToDisplays(target, displays, currentIndex.value_or(primaryIndex), MIN_VISIBLE_EXTENT);
+}
+
 /// @p rect moved, by as little as it takes, to lie wholly inside @p display, and shrunk first to fit
 /// it. For a window with no saved position (#2735): the system placed it at its created size, and a
 /// first launch must not open partly off the display or under the taskbar.

@@ -840,9 +840,6 @@ namespace
     return (error == std::errc{} && end == digits.data() + digits.size() && pid > 0) ? pid : 0;
 }
 
-/// The name each engine class goes by in a process's active engines, as Windows' engine types do.
-constexpr std::array<std::string_view, GPU_ENGINE_CLASS_COUNT> ENGINE_CLASS_NAMES{"3D", "Copy", "Video", "VideoProcessing", "Compute"};
-
 } // namespace
 
 std::optional<DRMGPUProbe::DrmFdinfo> DRMGPUProbe::parseFdinfo(std::string_view text, std::uint64_t monotonicNs)
@@ -1518,91 +1515,33 @@ void DRMGPUProbe::readClientsOnly(DRMCard& card)
 std::vector<ProcessGPUCounters> DRMGPUProbe::readProcessGPUCounters()
 {
     // Each process's share of the clients readGPUCounters() last read (#2589): its memory, the sum of
-    // its clients', and its utilization, the busiest engine class's share of the time since the
-    // previous call, its clients' shares added up (dup'd and inherited fds are one client already).
-    // A client seen for the first time has no baseline yet and counts as idle for one interval.
+    // its clients', and the clients themselves (dup'd and inherited fds are one client already).
+    // Domain derives the process's utilization and active engines from the clients' change between
+    // samples (#3300), as it does the card's; the probe keeps no baseline of its own.
     std::vector<ProcessGPUCounters> processes;
     for (const CardClients& card : m_LastClients)
     {
-        const auto baseline = std::ranges::find(m_ProcessBaseline, card.gpuId, &CardClients::gpuId);
-        std::vector<std::pair<std::int32_t, std::array<double, GPU_ENGINE_CLASS_COUNT>>> shares; // by pid
         for (const GPUEngineClientCounters& client : card.clients)
         {
             if (client.pid <= 0)
             {
                 continue;
             }
-            auto process = std::ranges::find(
-                processes, std::pair(client.pid, card.gpuId), [](const ProcessGPUCounters& p) { return std::pair(p.pid, p.gpuId); });
+            auto process =
+                std::ranges::find_if(processes, [&](const ProcessGPUCounters& p) { return p.pid == client.pid && p.gpuId == card.gpuId; });
             if (process == processes.end())
             {
                 ProcessGPUCounters added;
                 added.pid = client.pid;
                 added.gpuId = card.gpuId;
                 processes.push_back(std::move(added));
-                shares.emplace_back(client.pid, std::array<double, GPU_ENGINE_CLASS_COUNT>{});
                 process = std::prev(processes.end());
             }
             process->gpuMemoryBytes += client.dedicatedMemoryBytes;
             process->gpuSharedMemoryBytes += client.sharedMemoryBytes;
-            if (baseline == m_ProcessBaseline.end())
-            {
-                continue;
-            }
-            const auto before = std::ranges::find(baseline->clients, client.clientId, &GPUEngineClientCounters::clientId);
-            if (before == baseline->clients.end())
-            {
-                continue;
-            }
-            auto& share = std::ranges::find(shares, client.pid, &decltype(shares)::value_type::first)->second;
-            for (std::size_t engineClass = 0; engineClass < GPU_ENGINE_CLASS_COUNT; ++engineClass)
-            {
-                const GPUEngineBusyCounter& now = client.engines.at(engineClass);
-                const GPUEngineBusyCounter& then = before->engines.at(engineClass);
-                // A counter that went back (the drm-usage-stats contract allows it briefly) adds nothing.
-                if (!now.available || !then.available || now.total <= then.total || now.busy < then.busy)
-                {
-                    continue;
-                }
-                share.at(engineClass) += static_cast<double>(now.busy - then.busy) / static_cast<double>(now.total - then.total) /
-                                         static_cast<double>(std::max<std::uint32_t>(now.capacity, 1));
-            }
-        }
-        for (const auto& [pid, share] : shares)
-        {
-            const auto process =
-                std::ranges::find_if(processes, [&](const ProcessGPUCounters& p) { return p.pid == pid && p.gpuId == card.gpuId; });
-            for (std::size_t engineClass = 0; engineClass < GPU_ENGINE_CLASS_COUNT; ++engineClass)
-            {
-                const double percent = std::clamp(share.at(engineClass) * 100.0, 0.0, 100.0);
-                process->gpuUtilPercent = std::max(process->gpuUtilPercent, percent);
-                if (share.at(engineClass) > 0.0)
-                {
-                    process->activeEngines.emplace_back(ENGINE_CLASS_NAMES.at(engineClass));
-                }
-            }
+            process->engineClients.push_back(client);
         }
     }
-    // The baseline keeps a client's highest counters, so one that went back doesn't count its recovery
-    // as busy time (as GPUModel does for the card, #1350).
-    for (CardClients& card : m_LastClients)
-    {
-        const auto baseline = std::ranges::find(m_ProcessBaseline, card.gpuId, &CardClients::gpuId);
-        if (baseline == m_ProcessBaseline.end())
-        {
-            continue;
-        }
-        for (GPUEngineClientCounters& client : card.clients)
-        {
-            const auto before = std::ranges::find(baseline->clients, client.clientId, &GPUEngineClientCounters::clientId);
-            for (std::size_t engineClass = 0; before != baseline->clients.end() && engineClass < GPU_ENGINE_CLASS_COUNT; ++engineClass)
-            {
-                GPUEngineBusyCounter& now = client.engines.at(engineClass);
-                now.busy = std::max(now.busy, before->engines.at(engineClass).busy);
-            }
-        }
-    }
-    m_ProcessBaseline = m_LastClients;
     return processes;
 }
 

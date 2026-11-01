@@ -327,6 +327,12 @@ pwsh tools/coverage.ps1    # Windows; both write coverage/index.html
    for a process (a column, a cell's tooltip, a row-menu action) should also be on its Process Details tab.
    A fact that is in the table but missing from Process Details is probably a bug: file it, or add it in the
    same PR.
+7. **Windows / Linux parity (maintainer rule, from v0.11.0):**
+   - Build a feature for both platforms in the same release whenever both operating systems can support it.
+   - If one platform can't support it, say why in the PR and add a row to the user guide's Platform
+     Differences table.
+   - If one platform comes later, file a parity issue for the other lane before merging, and link it from the
+     PR and from any "not available yet" text. AGENTS.md has the rule.
 
 **CMake layout:** the root `CMakeLists.txt` is declarative; build logic lives in focused modules under `cmake/` — `Options.cmake` (cache options), `CompilerOptions.cmake` (toolchain/warnings/hardening, must precede dependencies), `Dependencies.cmake` (FetchContent + third-party targets), `StaticAnalysis.cmake` (clang-tidy/format targets, included before the Windows `.rc` is appended to sources), `InstallRules.cmake`, and `Packaging.cmake` (CPack). New dependencies go in `cmake/Dependencies.cmake`; new tooling targets in `cmake/StaticAnalysis.cmake`.
 

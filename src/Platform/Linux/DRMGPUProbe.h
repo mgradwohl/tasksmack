@@ -260,9 +260,6 @@ class DRMGPUProbe : public IGPUProbe
         std::vector<GPUEngineClientCounters> clients;
     };
     std::vector<CardClients> m_LastClients;
-    /// Each client's engine counters at the previous readProcessGPUCounters(), by card and client id:
-    /// the baseline its utilization is the change from.
-    std::vector<CardClients> m_ProcessBaseline;
     CardKind m_Kind{CardKind::Intel};
     /// AmdClients: setClientGpuIds()'s (PCI address, GPU id) pairs.
     std::vector<std::pair<std::string, std::string>> m_ClientGpuIds;

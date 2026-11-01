@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace Platform
@@ -130,6 +131,9 @@ enum class GPUEngineClass : std::uint8_t
     Compute,
 };
 inline constexpr std::size_t GPU_ENGINE_CLASS_COUNT = 5;
+/// The name each engine class goes by in a process's active engines, as Windows' engine types do.
+inline constexpr std::array<std::string_view, GPU_ENGINE_CLASS_COUNT> GPU_ENGINE_CLASS_NAMES{
+    "3D", "Copy", "Video", "VideoProcessing", "Compute"};
 
 /// One engine class's cumulative busyness for one DRM client. `busy` and `total` are in one unit, so
 /// their changes between two samples give the share of the time the client kept the class busy:
@@ -253,7 +257,8 @@ struct ProcessGPUCounters
     std::uint64_t gpuMemoryBytes = 0;       // dedicated
     std::uint64_t gpuSharedMemoryBytes = 0; // shared (0 where the platform has no such segment)
 
-    // Utilization attributed to this process (0-100, instantaneous)
+    // Utilization attributed to this process (0-100, instantaneous), from a backend that reports it
+    // itself (NVML, PDH, ROCm). A DRM process reports engineClients instead and leaves this 0.
     double gpuUtilPercent = 0.0;
     double encoderUtilPercent = 0.0;
     double decoderUtilPercent = 0.0;
@@ -261,6 +266,13 @@ struct ProcessGPUCounters
     // Active engines (bitmask or string set)
     // Engines: 3D, Compute, Video Encode, Video Decode, Copy
     std::vector<std::string> activeEngines;
+
+    // The process's DRM clients' cumulative engine busyness, for a GPU whose driver reports no
+    // per-process utilization of its own (Intel i915/xe, amdgpu fdinfo, #2589). When it is non-empty,
+    // Domain derives gpuUtilPercent and activeEngines from the change since the previous sample, as it
+    // derives the card's utilization from GPUCounters::engineClients (#3300). Empty for every backend
+    // that reports its own percentage.
+    std::vector<GPUEngineClientCounters> engineClients;
 };
 
 /// One process's use of one adapter TaskSmack doesn't list (#1826): a software adapter such as the
