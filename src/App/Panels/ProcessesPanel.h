@@ -692,6 +692,7 @@ class ProcessesPanel : public Panel
     // Processes that just exited, kept as dimmed rows for a moment (#3060): the generation before
     // m_CachedRenderSnapshots' (to tell which exited), and those still shown.
     std::shared_ptr<const std::vector<Domain::ProcessSnapshot>> m_PreviousGeneration;
+    double m_PreviousGenerationAdoptedAt = 0.0; ///< When m_PreviousGeneration was adopted (Application::getTime())
     ExitingProcessRows::Tracker m_ExitingRows;
     StuckProcesses::Tracker m_StuckProcesses; // Processes in uninterruptible sleep for a while (#3097)
     // What the table draws: m_CachedRenderSnapshots, followed by the exited processes when there are

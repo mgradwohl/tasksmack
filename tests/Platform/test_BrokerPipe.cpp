@@ -8,6 +8,7 @@
 #include "Platform/IPrivilegedBroker.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessProbe.h"
+#include "Platform/IUserSessions.h"
 #include "Platform/ThreadName.h"
 #include "Platform/Windows/BrokerPipe.h"
 #include "Platform/Windows/BrokerPipeServer.h"
@@ -1410,7 +1411,13 @@ TEST(BrokerPipeServeTest, EveryRequestKindIsTheHelloAnActionOrARead)
     EXPECT_FALSE(BrokerPipeServer::isRead(replacement)) << "an action (#3072): the one action of an over-the-shoulder session";
     EXPECT_TRUE(BrokerPipeServer::isActionWindowsDoes(replacement));
     EXPECT_TRUE(BrokerPipeServer::putsOffTheWindowsIdleExit(replacement));
-    static_assert(std::variant_size_v<Broker::Request> == 19, "a new request kind: add it above");
+    // #3076: Disconnect and Sign out of another user's session are actions the user confirmed.
+    const Broker::SessionActionRequest signOut{
+        .action = Platform::SessionAction::SignOut, .sessionId = 2, .user = "bob", .domain = "PC", .logonUsec = 1};
+    EXPECT_FALSE(BrokerPipeServer::isRead(signOut)) << "an action (#3076)";
+    EXPECT_TRUE(BrokerPipeServer::isActionWindowsDoes(signOut));
+    EXPECT_TRUE(BrokerPipeServer::putsOffTheWindowsIdleExit(signOut));
+    static_assert(std::variant_size_v<Broker::Request> == 20, "a new request kind: add it above");
 }
 
 TEST(BrokerPipeServeTest, AOneActionSessionIsntKeptOpenByGreetingAgain)

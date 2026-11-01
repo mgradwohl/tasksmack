@@ -25,6 +25,22 @@ inline constexpr float TINT_ALPHA = 0.22F;
 /// The opacity the row's text and icons are drawn at, so it reads as gone.
 inline constexpr float CONTENT_ALPHA = 0.55F;
 
+/// A gap longer than this many refresh intervals between two adopted generations means the table wasn't
+/// adopting them (the window was hidden, or Ctrl held the display, #3284)...
+inline constexpr double GAP_INTERVALS = 2.5;
+/// ...and never a shorter one than this, so a frame or two late at a fast refresh still counts as following on.
+inline constexpr double GAP_MIN_SECONDS = 1.0;
+
+/// Whether a generation adopted at @p nowSeconds follows on from the one adopted at @p previousSeconds,
+/// sampled every @p intervalSeconds: then the processes missing from it exited just now. After a longer gap
+/// they exited at some point during it, so none is shown as just exited (#3284): the new generation is only
+/// the next comparison's baseline.
+[[nodiscard]] constexpr bool followsOnFrom(double previousSeconds, double nowSeconds, double intervalSeconds) noexcept
+{
+    const double allowed = GAP_INTERVALS * intervalSeconds;
+    return nowSeconds - previousSeconds <= (allowed > GAP_MIN_SECONDS ? allowed : GAP_MIN_SECONDS);
+}
+
 /// An exited process: its last snapshot, and when it was seen gone.
 struct Exited
 {

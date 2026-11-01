@@ -143,11 +143,85 @@ TEST(UserRowsTest, TheSessionTextSaysWhereHowAndWhatItIsDoing)
     EXPECT_EQ(sessionStatus(idle, now), "Idle") << "a clock that went back";
 }
 
-/// Sessions a test controls: what read() lists and what act() answers, with each call recorded.
+// #3076: Windows' sessions say where they are (the console, a Remote Desktop and its client), the WTS states
+// it adds read as words, and the tooltip names the domain, the sign-in and the session.
+TEST(UserRowsTest, WindowsSessionsSayWhereTheyAreAndWhatTheyAreDoing)
+{
+    UserSession console = session("1", "alice", 0);
+    console.type = "console";
+    EXPECT_EQ(sessionPlace(console), "Console");
+    UserSession rdp = session("3", "bob", 0);
+    rdp.seat = "RDP-Tcp#0";
+    rdp.type = "rdp";
+    rdp.remote = true;
+    rdp.remoteHost = "LAPTOP";
+    EXPECT_EQ(sessionPlace(rdp), "RDP-Tcp#0 \xC2\xB7 Remote Desktop \xC2\xB7 from LAPTOP");
+    UserSession away = session("4", "carol", 0, "disconnected");
+    EXPECT_EQ(sessionPlace(away), "Session 4") << "a disconnected session has no client to say";
+
+    EXPECT_EQ(sessionStatus(away, 0), "Disconnected");
+    EXPECT_EQ(sessionStatus(session("5", "dave", 0, "connecting"), 0), "Connecting");
+
+    EXPECT_EQ(sessionTooltip(session("2", "alice", 1000)), "alice\nSession 2") << "Linux: no domain, no sign-in time";
+    UserSession signedIn = session("1", "alice", 0);
+    signedIn.domain = "PC";
+    signedIn.logonUsec = 1'700'000'000'000'000ULL;
+    const std::string tooltip = sessionTooltip(signedIn);
+    EXPECT_TRUE(tooltip.starts_with("PC\\alice\nSigned in ")) << tooltip;
+    EXPECT_TRUE(tooltip.ends_with("\nSession 1")) << tooltip;
+
+    EXPECT_FALSE(SessionMenu{}.any());
+    EXPECT_TRUE((SessionMenu{.lock = false, .disconnect = true, .signOut = false}.any()));
+}
+
+// #3076: two accounts with one short name (PC\\alice and CORP\\alice) are two rows, each labelled with its
+// domain. A process names only the short name, so neither row gets "alice"'s processes, which can't be told
+// apart; a name only one row has keeps its processes.
+TEST(UserRowsTest, AccountsOfTwoDomainsAreTwoRows)
+{
+    UserSession local = session("1", "alice", 0);
+    local.domain = "PC";
+    UserSession corp = session("2", "alice", 0);
+    corp.domain = "CORP";
+    UserSession bob = session("3", "bob", 0);
+    bob.domain = "PC";
+    UserSession again = session("4", "bob", 0);
+    again.domain = "PC";
+    const std::vector<Domain::ProcessSnapshot> processes{process(10, "alice", 5.0, 100), process(11, "bob", 1.0, 50)};
+    const std::vector<UserRow> rows = buildUserRows({local, corp, bob, again}, processes);
+    ASSERT_EQ(rows.size(), 3U);
+    EXPECT_EQ(rows[0].label, "bob") << "a short name only one row has";
+    EXPECT_EQ(rows[0].key, "PC\\bob");
+    EXPECT_EQ(rows[0].sessions.size(), 2U) << "both of PC\\bob's sessions";
+    EXPECT_EQ(rows[0].processes, (std::vector<std::size_t>{1}));
+    EXPECT_EQ(rows[1].label, "CORP\\alice");
+    EXPECT_EQ(rows[2].label, "PC\\alice");
+    EXPECT_TRUE(rows[1].processes.empty()) << "an alice process could be either alice's";
+    EXPECT_TRUE(rows[2].processes.empty());
+    EXPECT_EQ(rows[1].user, "alice");
+}
+
+// #3076: a Windows session whose user couldn't be read is a row of its own, said to be not readable, with no
+// processes and its reason in the tooltip.
+TEST(UserRowsTest, ASessionNotReadableIsItsOwnRow)
+{
+    UserSession hidden = session("5", "", 0, "disconnected");
+    hidden.unreadable = "Access is denied";
+    const std::vector<UserRow> rows = buildUserRows({hidden, session("1", "alice", 1000)}, {process(10, "", 1.0, 1)});
+    ASSERT_EQ(rows.size(), 2U);
+    EXPECT_EQ(rows[1].label, "Not readable");
+    EXPECT_TRUE(rows[1].user.empty());
+    EXPECT_TRUE(rows[1].processes.empty());
+    EXPECT_EQ(sessionTooltip(hidden), "Its user couldn't be read: Access is denied\nSession 5");
+}
+
+/// Sessions a test controls: what read() lists and what act() answers, with each call recorded. Linux's
+/// actions (Lock and Sign out), or with @p windows Windows' (Disconnect and Sign out).
 class FakeSessions final : public Platform::IUserSessions
 {
   public:
-    explicit FakeSessions(std::vector<UserSession> sessions, bool has = true) : m_Sessions(std::move(sessions)), m_Has(has)
+    explicit FakeSessions(std::vector<UserSession> sessions, bool has = true, bool windows = false)
+        : m_Sessions(std::move(sessions)), m_Has(has), m_Windows(windows)
     {}
     [[nodiscard]] bool hasSessions() const override
     {
@@ -162,16 +236,15 @@ class FakeSessions final : public Platform::IUserSessions
         }
         return {.status = Platform::UserSessionsStatus::Ok, .sessions = m_Sessions, .detail = {}};
     }
-    [[nodiscard]] bool canAct(SessionAction /*action*/) const override
+    [[nodiscard]] bool canAct(SessionAction action) const override
     {
-        return m_Has;
+        return m_Has && (action == SessionAction::SignOut || (action == SessionAction::Disconnect) == m_Windows);
     }
     [[nodiscard]] Platform::ServiceActionResult
     act(std::string_view id, SessionAction action, bool allowInteractive, const std::stop_token& /*stopToken*/) override
     {
         const std::scoped_lock lock(m_Mutex);
-        m_Calls.push_back(std::string(action == SessionAction::Lock ? "lock " : "signout ") + std::string(id) +
-                          (allowInteractive ? " interactive" : ""));
+        m_Calls.push_back(std::string(actionName(action)) + " " + std::string(id) + (allowInteractive ? " interactive" : ""));
         if (id == "5" && !allowInteractive)
         {
             Platform::ServiceActionResult refused = Platform::ServiceActionResult::failed("Requires administrator");
@@ -189,8 +262,23 @@ class FakeSessions final : public Platform::IUserSessions
     std::atomic<int> m_Reads{0};
 
   private:
+    [[nodiscard]] static const char* actionName(SessionAction action)
+    {
+        switch (action)
+        {
+        case SessionAction::Lock:
+            return "lock";
+        case SessionAction::Disconnect:
+            return "disconnect";
+        case SessionAction::SignOut:
+            break;
+        }
+        return "signout";
+    }
+
     std::vector<UserSession> m_Sessions;
     bool m_Has = true;
+    bool m_Windows = false;
     std::mutex m_Mutex;
     std::vector<std::string> m_Calls;
 };
@@ -278,6 +366,63 @@ TEST(SessionActionTest, AnotherUsersSessionOffersAuthenticateAndRetryOnce)
     SessionActionControl none(nullptr);
     none.lock(session("2", "alice", 1000));
     EXPECT_FALSE(none.busy());
+}
+
+// #3076 (Windows): Disconnect asks first, as Sign out does. Another user's session is told its programs keep
+// running; TaskSmack's own, that this screen locks. Refused for want of an administrator, it offers the retry.
+TEST(SessionActionTest, DisconnectAsksFirstAndSaysWhatHappensToTheSession)
+{
+    auto fake = std::make_shared<FakeSessions>(std::vector<UserSession>{}, true, true);
+    SessionActionControl control(fake);
+    UserSession console = session("1", "alice", 0);
+    console.type = "console";
+    console.current = true;
+
+    control.requestDisconnect(console);
+    ASSERT_TRUE(control.pending().has_value());
+    EXPECT_EQ(control.pendingAction(), SessionAction::Disconnect);
+    EXPECT_TRUE(control.showConfirm());
+    EXPECT_TRUE(control.question().starts_with("Disconnect alice from Console?")) << control.question();
+    EXPECT_TRUE(control.question().contains("this screen locks")) << control.question();
+    EXPECT_FALSE(control.question().contains("unsaved work")) << "a Disconnect keeps every program";
+    control.confirm();
+    control.update(0.0F, true);
+    EXPECT_TRUE(control.result().ok);
+    EXPECT_EQ(control.result().text, "Disconnected alice's session");
+
+    control.requestDisconnect(session("5", "bob", 0));
+    EXPECT_TRUE(control.question().contains("Their programs keep running")) << control.question();
+    EXPECT_FALSE(control.question().contains("this screen locks"));
+    control.confirm();
+    control.update(0.0F, true);
+    EXPECT_EQ(control.result().text, "Couldn't disconnect bob's session: Requires administrator");
+    ASSERT_TRUE(control.offersAuthenticateAndRetry());
+    control.retryAuthorized();
+    EXPECT_EQ(control.pendingText(), "Waiting for authorization to disconnect bob's session...");
+    control.update(0.0F, true);
+    EXPECT_EQ(control.result().text, "Disconnected bob's session");
+    EXPECT_EQ(fake->calls(), (std::vector<std::string>{"disconnect 1", "disconnect 5", "disconnect 5 interactive"}));
+
+    // Asking for one while another is pending replaces it; a Sign out asks as before.
+    control.requestDisconnect(session("5", "bob", 0));
+    control.requestSignOut(session("5", "bob", 0));
+    EXPECT_EQ(control.pendingAction(), SessionAction::SignOut);
+    EXPECT_TRUE(control.question().contains("unsaved work is lost"));
+    control.cancel();
+
+    // Inside Remote Desktop, disconnecting TaskSmack's own session closes the connection; it locks no screen.
+    UserSession remote = session("3", "alice", 0);
+    remote.current = true;
+    remote.remote = true;
+    remote.type = "rdp";
+    remote.remoteHost = "LAPTOP";
+    const std::string question = disconnectQuestion(remote);
+    EXPECT_TRUE(question.contains("the Remote Desktop connection closes")) << question;
+    EXPECT_FALSE(question.contains("this screen locks")) << question;
+
+    EXPECT_STREQ(sessionActionWords(SessionAction::Lock).done, "Locked");
+    EXPECT_STREQ(sessionActionWords(SessionAction::Disconnect).title, "Disconnect");
+    EXPECT_STREQ(sessionActionWords(SessionAction::SignOut).title, "Sign out");
 }
 
 class UsersPanelRenderTest : public ::testing::Test
@@ -409,6 +554,99 @@ TEST_F(UsersPanelRenderTest, SamplesOnlyOnceShownListsTheUsersAndTheirSessionsAn
     EXPECT_EQ(fake->calls(), (std::vector<std::string>{"signout 5", "signout 5 interactive"}));
     panel.onDetach();
     EXPECT_TRUE(frame(panel).empty());
+}
+
+// #3076 (Windows): the session menu has Disconnect... and Sign out..., never Lock. Disconnect... opens its own
+// confirm, and is greyed for a session that is already disconnected.
+TEST_F(UsersPanelRenderTest, WindowsSessionMenusOfferDisconnectInLocksPlace)
+{
+    UserSession console = session("1", "alice", 0);
+    console.type = "console";
+    console.current = true;
+    UserSession away = session("4", "bob", 0, "disconnected");
+    auto fake = std::make_shared<FakeSessions>(std::vector<UserSession>{console, away}, true, true);
+    UsersPanel panel([fake] { return fake; }, [](Core::Event&) {});
+    panel.onAttach();
+    show(panel, "Users");
+    const std::string text = frameUntil(panel, "bob");
+    EXPECT_TRUE(text.contains("Console  (this session)")) << text;
+    EXPECT_TRUE(text.contains("Disconnected")) << text;
+
+    // Rows: header, alice, her session, bob, his session.
+    ASSERT_GT(s_TableTop, 0.0F);
+    const float rowHeight = ImGui::GetTextLineHeight() + (ImGui::GetStyle().CellPadding.y * 2.0F);
+    ImGuiIO& io = ImGui::GetIO();
+    const auto openMenuOn = [&](float row)
+    {
+        io.AddMousePosEvent(s_ColumnX, s_TableTop + (rowHeight * row));
+        static_cast<void>(frame(panel));
+        io.AddMouseButtonEvent(ImGuiMouseButton_Right, true);
+        static_cast<void>(frame(panel));
+        io.AddMouseButtonEvent(ImGuiMouseButton_Right, false);
+        return frame(panel);
+    };
+
+    // Resting on her session shows its tooltip: who, and which session.
+    io.AddMousePosEvent(s_ColumnX, s_TableTop + (rowHeight * 2.5F));
+    const std::string hovered = frameUntil(panel, "Session 1");
+    EXPECT_TRUE(hovered.contains("Session 1")) << hovered;
+    io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
+    static_cast<void>(frame(panel));
+
+    const auto clickItem = [&](int item)
+    {
+        const ImGuiWindow* menu = GImGui->OpenPopupStack.back().Window;
+        const float itemHeight = ImGui::GetTextLineHeight() + ImGui::GetStyle().ItemSpacing.y;
+        io.AddMousePosEvent(menu->Pos.x + (menu->Size.x * 0.5F),
+                            menu->Pos.y + ImGui::GetStyle().WindowPadding.y + (itemHeight * (static_cast<float>(item) + 0.5F)));
+        static_cast<void>(frame(panel));
+        io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
+        static_cast<void>(frame(panel));
+        io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
+        static_cast<void>(frame(panel));
+        io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
+    };
+
+    // bob's disconnected session: its Disconnect... is greyed, so a click on it does nothing.
+    const std::string bobsMenu = openMenuOn(4.5F);
+    ASSERT_GT(GImGui->OpenPopupStack.Size, 0) << "the session menu didn't open";
+    EXPECT_TRUE(bobsMenu.contains("Disconnect...")) << bobsMenu;
+    EXPECT_TRUE(bobsMenu.contains("Sign out...")) << bobsMenu;
+    EXPECT_FALSE(bobsMenu.contains("Lock")) << bobsMenu;
+    clickItem(0);
+    EXPECT_FALSE(panel.actions()->pending().has_value()) << "an already disconnected session";
+    // A click away closes the menu.
+    io.AddMousePosEvent(ImGui::GetIO().DisplaySize.x - 4.0F, ImGui::GetIO().DisplaySize.y - 4.0F);
+    static_cast<void>(frame(panel));
+    io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
+    static_cast<void>(frame(panel));
+    io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
+    static_cast<void>(frame(panel));
+
+    // Her own session: Disconnect... opens its confirm, which says this screen locks.
+    static_cast<void>(openMenuOn(2.5F));
+    ASSERT_GT(GImGui->OpenPopupStack.Size, 0) << "the session menu didn't open";
+    clickItem(0);
+    ASSERT_TRUE(panel.actions()->pending().has_value());
+    EXPECT_EQ(panel.actions()->pending()->id, "1");
+    EXPECT_EQ(panel.actions()->pendingAction(), SessionAction::Disconnect);
+    const std::string confirm = frame(panel);
+    EXPECT_TRUE(confirm.contains("Disconnect alice from Console?")) << confirm;
+    EXPECT_TRUE(confirm.contains("this screen locks")) << confirm;
+    panel.actions()->cancel();
+    static_cast<void>(frame(panel));
+
+    // Sign out... (the second item) asks as on Linux.
+    static_cast<void>(openMenuOn(4.5F));
+    ASSERT_GT(GImGui->OpenPopupStack.Size, 0) << "the session menu didn't open";
+    clickItem(1);
+    ASSERT_TRUE(panel.actions()->pending().has_value());
+    EXPECT_EQ(panel.actions()->pendingAction(), SessionAction::SignOut);
+    EXPECT_TRUE(frame(panel).contains("Sign out bob")) << "the Sign out confirm";
+    panel.actions()->confirm();
+    panel.actions()->update(0.0F, true);
+    EXPECT_EQ(fake->calls(), (std::vector<std::string>{"signout 4"}));
+    panel.onDetach();
 }
 
 TEST_F(UsersPanelRenderTest, UnsupportedFailedAndEmptyReadsSaySo)

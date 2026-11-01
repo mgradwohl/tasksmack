@@ -1447,12 +1447,18 @@ void ProcessesPanel::adoptNewerSnapshots()
             m_CachedSnapshotVersion, m_CachedRenderSnapshots, newVersion, &m_CachedCapabilities, &m_CachedGpuSupport, &m_CachedRowHistory))
     {
         m_CachedSnapshotVersion = newVersion;
-        // Which processes exited since the generation before, kept as dimmed rows for a moment (#3060).
-        if (UserConfig::get().settings().highlightNewProcesses && m_PreviousGeneration)
+        // Which processes exited since the generation before, kept as dimmed rows for a moment (#3060): only
+        // when this one follows on from it. After the window was hidden or Ctrl held the display, those missing
+        // exited during the gap, not just now, so they aren't all shown at once (#3284).
+        const double now = Core::Application::getTime();
+        const double intervalSeconds = std::chrono::duration<double>(m_RefreshInterval).count();
+        if (UserConfig::get().settings().highlightNewProcesses && m_PreviousGeneration &&
+            ExitingProcessRows::followsOnFrom(m_PreviousGenerationAdoptedAt, now, intervalSeconds))
         {
-            (void) m_ExitingRows.onGeneration(*m_PreviousGeneration, *m_CachedRenderSnapshots, Core::Application::getTime());
+            (void) m_ExitingRows.onGeneration(*m_PreviousGeneration, *m_CachedRenderSnapshots, now);
         }
         m_PreviousGeneration = m_CachedRenderSnapshots;
+        m_PreviousGenerationAdoptedAt = now;
         // Processes stuck in uninterruptible sleep, tinted (#3097).
         m_StuckProcesses.onGeneration(*m_CachedRenderSnapshots, Core::Application::getTime());
         // Selected processes that have exited drop out of the selection (#804): once per generation,
