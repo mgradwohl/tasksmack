@@ -2718,7 +2718,8 @@ That single push runs two independent workflows:
   provenance, and publishes the GitHub Release: it creates the release as a **draft**
   with a placeholder body ("Release notes follow." and the two verification commands; not GitHub's
   generated notes, which exceed the release-body limit on a big release, #2801), uploads every asset and `.bundle`, checks the draft's assets match `dist/` by name and
-  size, and only then publishes it (`gh release edit --draft=false --latest`), so a failure
+  size, and only then publishes it (`gh release edit --draft=false`, marked **Latest** only when its tag is the highest
+  published `vX.Y.Z`, so an older line's patch such as v0.9.3 after v0.10.0 doesn't take Latest, #3277), so a failure
   part-way leaves a draft, never a public release with missing assets; re-running reuses that
   draft and overwrites its assets. The maintainer's approved release notes then replace the
   placeholder: `gh release edit vX.Y.Z --notes-file <notes.md>`. Keep a pointer to the User

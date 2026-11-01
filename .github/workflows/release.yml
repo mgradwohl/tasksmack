@@ -2261,6 +2261,13 @@ jobs:
       (needs.validate.outputs.signing != 'true' && needs.sign-windows-installer.result == 'skipped')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    # One release publishes at a time, whatever its tag (#3277): "Publish release" compares the tag with the
+    # published ones, so two tags' runs (v0.9.3 and v0.10.0) reading before either publishes would both take
+    # Latest. The workflow's own group is per ref and doesn't serialise them; a run waiting here is queued,
+    # not cancelled.
+    concurrency:
+      group: release-publish
+      cancel-in-progress: false
     permissions:
       contents: write
       actions: read
@@ -2516,4 +2523,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
-        run: gh release edit "$TAG" --draft=false --latest
+        # Latest only for the highest version (#3277): patches are tagged on release/X.Y (#2741), so a
+        # v0.9.x after v0.10.0 must not take Latest from it. The tag is compared with every published
+        # strict-semver tag (this draft isn't listed yet); a pre-release-shaped tag never takes Latest.
+        run: |
+          set -euo pipefail
+          latest=false
+          if [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            published=$(gh release list --exclude-drafts --limit 1000 --json tagName --jq '.[].tagName')
+            highest=$( { grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' <<< "$published" || true; } | sort -V | tail -n 1)
+            if [[ -z "$highest" || "$(printf '%s\n%s\n' "$highest" "$TAG" | sort -V | tail -n 1)" == "$TAG" ]]; then
+              latest=true
+            fi
+          fi
+          echo "Publishing $TAG with --latest=$latest (highest published: ${highest:-none})"
+          gh release edit "$TAG" --draft=false --latest="$latest"
