@@ -243,7 +243,8 @@ namespace Detail
             if (!what.empty())
             {
                 return SelectAction{
-                    .target = {.pid = std::nullopt, .name = std::string(what), .tab = SelectOverride::DetailsTab::Overview}};
+                    .target = {.pid = std::nullopt, .name = std::string(what), .tab = SelectOverride::DetailsTab::Overview},
+                };
             }
             return std::unexpected("selects an empty name");
         }

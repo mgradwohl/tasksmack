@@ -128,13 +128,15 @@ using PciDisplayDevices::PCI_VENDOR_INTEL;
         std::string_view xe;
         GPUEngineClass engineClass;
     };
-    static constexpr std::array<EngineName, GPU_ENGINE_CLASS_COUNT> NAMES{{
-        {.i915 = "render", .xe = "rcs", .engineClass = GPUEngineClass::Render},
-        {.i915 = "copy", .xe = "bcs", .engineClass = GPUEngineClass::Copy},
-        {.i915 = "video", .xe = "vcs", .engineClass = GPUEngineClass::Video},
-        {.i915 = "video-enhance", .xe = "vecs", .engineClass = GPUEngineClass::VideoEnhance},
-        {.i915 = "compute", .xe = "ccs", .engineClass = GPUEngineClass::Compute},
-    }};
+    static constexpr std::array<EngineName, GPU_ENGINE_CLASS_COUNT> NAMES{
+        {
+            {.i915 = "render", .xe = "rcs", .engineClass = GPUEngineClass::Render},
+            {.i915 = "copy", .xe = "bcs", .engineClass = GPUEngineClass::Copy},
+            {.i915 = "video", .xe = "vcs", .engineClass = GPUEngineClass::Video},
+            {.i915 = "video-enhance", .xe = "vecs", .engineClass = GPUEngineClass::VideoEnhance},
+            {.i915 = "compute", .xe = "ccs", .engineClass = GPUEngineClass::Compute},
+        },
+    };
     const auto* const match =
         std::ranges::find_if(NAMES, [name](const EngineName& entry) { return name == entry.i915 || name == entry.xe; });
     if (match != NAMES.end())
@@ -146,15 +148,17 @@ using PciDisplayDevices::PCI_VENDOR_INTEL;
         std::string_view name;
         GPUEngineClass engineClass;
     };
-    static constexpr std::array<AmdgpuName, 7> AMDGPU_NAMES{{
-        {.name = "gfx", .engineClass = GPUEngineClass::Render},
-        {.name = "dma", .engineClass = GPUEngineClass::Copy},
-        {.name = "dec", .engineClass = GPUEngineClass::Video},
-        {.name = "enc", .engineClass = GPUEngineClass::Video},
-        {.name = "enc_1", .engineClass = GPUEngineClass::Video},
-        {.name = "jpeg", .engineClass = GPUEngineClass::Video},
-        {.name = "vpe", .engineClass = GPUEngineClass::VideoEnhance},
-    }};
+    static constexpr std::array<AmdgpuName, 7> AMDGPU_NAMES{
+        {
+            {.name = "gfx", .engineClass = GPUEngineClass::Render},
+            {.name = "dma", .engineClass = GPUEngineClass::Copy},
+            {.name = "dec", .engineClass = GPUEngineClass::Video},
+            {.name = "enc", .engineClass = GPUEngineClass::Video},
+            {.name = "enc_1", .engineClass = GPUEngineClass::Video},
+            {.name = "jpeg", .engineClass = GPUEngineClass::Video},
+            {.name = "vpe", .engineClass = GPUEngineClass::VideoEnhance},
+        },
+    };
     const auto* const amdgpu = std::ranges::find(AMDGPU_NAMES, name, &AmdgpuName::name);
     if (amdgpu == AMDGPU_NAMES.end())
     {

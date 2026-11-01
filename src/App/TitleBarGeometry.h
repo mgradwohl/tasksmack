@@ -314,9 +314,11 @@ inline constexpr ChartBlockLead NETWORK_FIRST_CHART_LEAD{.textLines = 1, .frameR
 /// with its title line and adapter header, is the tallest at every style the theme produces.
 [[nodiscard]] inline auto computeTallestFirstChartBlock(const ChartBlockStyle& style) -> float
 {
-    return std::max({computeChartBlockHeight(style, OVERVIEW_FIRST_CHART_LEAD),
-                     computeChartBlockHeight(style, GPU_FIRST_CHART_LEAD),
-                     computeChartBlockHeight(style, NETWORK_FIRST_CHART_LEAD)});
+    return std::max({
+        computeChartBlockHeight(style, OVERVIEW_FIRST_CHART_LEAD),
+        computeChartBlockHeight(style, GPU_FIRST_CHART_LEAD),
+        computeChartBlockHeight(style, NETWORK_FIRST_CHART_LEAD),
+    });
 }
 
 /// The first-chart part of the minimum window height: the estimated tallest block
@@ -383,8 +385,10 @@ inline constexpr ChartBlockLead NETWORK_FIRST_CHART_LEAD{.textLines = 1, .frameR
     const float base = std::round(static_cast<float>(Core::WINDOW_MIN_DIMENSION) * scale);
     const auto maxDimension = static_cast<float>(Core::WINDOW_MAX_DIMENSION);
     // Narrowing: both operands are clamped to [WINDOW_MIN_DIMENSION, WINDOW_MAX_DIMENSION] first.
-    return {.width = static_cast<int>(std::min(std::max(base, std::ceil(content)), maxDimension)),
-            .height = static_cast<int>(std::min(std::max(base, std::ceil(atLeastZero(contentMinimumHeightPx))), maxDimension))};
+    return {
+        .width = static_cast<int>(std::min(std::max(base, std::ceil(content)), maxDimension)),
+        .height = static_cast<int>(std::min(std::max(base, std::ceil(atLeastZero(contentMinimumHeightPx))), maxDimension)),
+    };
 }
 
 /// The minimum window size held inside the usable bounds of the display the window is on (#1207).

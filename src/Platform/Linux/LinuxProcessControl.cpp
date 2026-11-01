@@ -485,23 +485,25 @@ int realWriteCgroupFile(const std::string& cgroup, std::string_view file, const 
 
 LinuxProcessSyscalls realProcessSyscalls() noexcept
 {
-    return {.pidfdOpen = &realPidfdOpen,
-            .pidfdSendSignal = &realPidfdSendSignal,
-            .pollPidfd = &realPollPidfd,
-            .setPriority = &realSetPriority,
-            .ioprioSet = &realIoprioSet,
-            .ioprioGet = &realIoprioGet,
-            .setAffinity = &realSetAffinity,
-            .listThreads = &realListThreads,
-            .isThreadOf = &realIsThreadOf,
-            .waitPid = &realWaitPid,
-            .pidfdGetfd = &realPidfdGetfd,
-            .shutdownSocket = &realShutdownSocket,
-            .socketDescriptor = &realSocketDescriptor,
-            .currentNice = &realCurrentNice,
-            .procCgroup = &realProcCgroup,
-            .readCgroupFile = &realReadCgroupFile,
-            .writeCgroupFile = &realWriteCgroupFile};
+    return {
+        .pidfdOpen = &realPidfdOpen,
+        .pidfdSendSignal = &realPidfdSendSignal,
+        .pollPidfd = &realPollPidfd,
+        .setPriority = &realSetPriority,
+        .ioprioSet = &realIoprioSet,
+        .ioprioGet = &realIoprioGet,
+        .setAffinity = &realSetAffinity,
+        .listThreads = &realListThreads,
+        .isThreadOf = &realIsThreadOf,
+        .waitPid = &realWaitPid,
+        .pidfdGetfd = &realPidfdGetfd,
+        .shutdownSocket = &realShutdownSocket,
+        .socketDescriptor = &realSocketDescriptor,
+        .currentNice = &realCurrentNice,
+        .procCgroup = &realProcCgroup,
+        .readCgroupFile = &realReadCgroupFile,
+        .writeCgroupFile = &realWriteCgroupFile,
+    };
 }
 
 struct LinuxProcessControl::EfficiencyMemory

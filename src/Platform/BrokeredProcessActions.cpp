@@ -79,7 +79,11 @@ Broker::Request brokerRequestFor(const AuthorizedAction& action)
         return Broker::CloseConnectionRequest{.target = action.target, .socketInode = action.socketInode};
     case Kind::ThreadAction:
         return Broker::ThreadActionRequest{
-            .target = action.target, .tid = action.tid, .threadCreateTime = action.threadCreateTime, .action = action.threadAction};
+            .target = action.target,
+            .tid = action.tid,
+            .threadCreateTime = action.threadCreateTime,
+            .action = action.threadAction,
+        };
     }
     return Broker::SignalRequest{.target = action.target, .signal = Broker::Signal::Terminate}; // unreachable: every kind is above
 }
@@ -179,11 +183,13 @@ ProcessActionResult
 BrokeredProcessActions::actOnThread(const ProcessTarget& target, std::int32_t tid, std::uint64_t threadCreateTime, ThreadAction action)
 {
     return retried(m_Inner->actOnThread(target, tid, threadCreateTime, action),
-                   {.kind = AuthorizedAction::Kind::ThreadAction,
-                    .target = target,
-                    .tid = tid,
-                    .threadCreateTime = threadCreateTime,
-                    .threadAction = action});
+                   {
+                       .kind = AuthorizedAction::Kind::ThreadAction,
+                       .target = target,
+                       .tid = tid,
+                       .threadCreateTime = threadCreateTime,
+                       .threadAction = action,
+                   });
 }
 
 ProcessActionResult BrokeredProcessActions::setEfficiencyMode(const ProcessTarget& target, bool on)
@@ -378,9 +384,11 @@ ModulesReadResult BrokeredModulesReader::viaBroker(const ProcessTarget& target, 
     const std::expected<Broker::Response, std::string> response = m_Broker->call(Broker::ModulesRequest{.target = target}, stopToken);
     if (!response.has_value())
     {
-        return {.status = ModulesReadStatus::Failed,
-                .modules = {},
-                .detail = "The administrator helper couldn't be asked: " + response.error()};
+        return {
+            .status = ModulesReadStatus::Failed,
+            .modules = {},
+            .detail = "The administrator helper couldn't be asked: " + response.error(),
+        };
     }
     if (const auto* reply = std::get_if<Broker::ModulesReply>(&*response))
     {
@@ -504,9 +512,11 @@ ConnectionsReadResult BrokeredConnectionsReader::viaBroker(const ProcessTarget& 
     const std::expected<Broker::Response, std::string> response = m_Broker->call(Broker::ConnectionsRequest{.target = target}, stopToken);
     if (!response.has_value())
     {
-        return {.status = ConnectionsReadStatus::Failed,
-                .connections = {},
-                .detail = "The administrator helper couldn't be asked: " + response.error()};
+        return {
+            .status = ConnectionsReadStatus::Failed,
+            .connections = {},
+            .detail = "The administrator helper couldn't be asked: " + response.error(),
+        };
     }
     if (const auto* reply = std::get_if<Broker::ConnectionsReply>(&*response))
     {
@@ -567,9 +577,11 @@ ThreadsReadResult BrokeredThreadsReader::viaBroker(const ProcessTarget& target, 
     const std::expected<Broker::Response, std::string> response = m_Broker->call(Broker::ThreadsRequest{.target = target}, stopToken);
     if (!response.has_value())
     {
-        return {.status = ThreadsReadStatus::Failed,
-                .threads = {},
-                .detail = "The administrator helper couldn't be asked: " + response.error()};
+        return {
+            .status = ThreadsReadStatus::Failed,
+            .threads = {},
+            .detail = "The administrator helper couldn't be asked: " + response.error(),
+        };
     }
     if (const auto* reply = std::get_if<Broker::ThreadsReply>(&*response))
     {
@@ -656,12 +668,14 @@ BrokeredProcessProbe::HiddenListing BrokeredProcessProbe::listHiddenProcesses(st
     for (const Broker::HiddenProcess& hidden : reply->processes)
     {
         std::optional<ProcessCounters> process = m_Inner->processFromFiles(hidden.target.pid,
-                                                                           ProcFileTexts{.stat = hidden.stat,
-                                                                                         .statm = hidden.statm,
-                                                                                         .status = hidden.status,
-                                                                                         .cmdline = hidden.cmdline,
-                                                                                         .io = hidden.io,
-                                                                                         .cgroup = hidden.cgroup});
+                                                                           ProcFileTexts{
+                                                                               .stat = hidden.stat,
+                                                                               .statm = hidden.statm,
+                                                                               .status = hidden.status,
+                                                                               .cmdline = hidden.cmdline,
+                                                                               .io = hidden.io,
+                                                                               .cgroup = hidden.cgroup,
+                                                                           });
         // The helper's listing names the process its stat was read from; a record from other text isn't it.
         if (process.has_value() && process->startTimeTicks == hidden.target.startTimeTicks)
         {

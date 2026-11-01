@@ -501,11 +501,13 @@ class IProcessActions
     {
         static_cast<void>(target);
         static_cast<void>(stopToken);
-        return {.threads = {},
-                .detail = WAIT_CHAIN_UNSUPPORTED_MESSAGE,
-                .threadCount = 0,
-                .status = WaitChainReadStatus::Unsupported,
-                .threadsTruncated = false};
+        return {
+            .threads = {},
+            .detail = WAIT_CHAIN_UNSUPPORTED_MESSAGE,
+            .threadCount = 0,
+            .status = WaitChainReadStatus::Unsupported,
+            .threadsTruncated = false,
+        };
     }
 
     /// Retries @p request (a signal, priority, I/O priority, affinity or Efficiency mode change) as an administrator,

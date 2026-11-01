@@ -42,9 +42,9 @@ static_assert(Core::isKnownEnvHook(ENV_VAR)); // listed in KNOWN_ENV_HOOKS (#217
 /// What a TASKSMACK_DEMO metrics= step asks for.
 enum class MetricsRequest : std::uint8_t
 {
-    On,    ///< Show the overlay (and so start recording), as Ctrl+Shift+M does
-    Off,   ///< Hide it, as the chord does again
-    Export ///< Write the last completed frame's CSV to the hook's file
+    On,     ///< Show the overlay (and so start recording), as Ctrl+Shift+M does
+    Off,    ///< Hide it, as the chord does again
+    Export, ///< Write the last completed frame's CSV to the hook's file
 };
 
 /// The request @p text names, "on", "off" or "export" in any case; nullopt for anything else.

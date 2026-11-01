@@ -51,7 +51,12 @@ BrokeredUserSessions::askBroker(const UserSession& confirmed, SessionAction acti
     }
     const std::expected<Broker::Response, std::string> response = m_Broker->call(
         Broker::SessionActionRequest{
-            .action = action, .sessionId = *session, .user = confirmed.user, .domain = confirmed.domain, .logonUsec = confirmed.logonUsec},
+            .action = action,
+            .sessionId = *session,
+            .user = confirmed.user,
+            .domain = confirmed.domain,
+            .logonUsec = confirmed.logonUsec,
+        },
         stopToken);
     if (!response.has_value())
     {

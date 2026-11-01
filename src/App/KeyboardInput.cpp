@@ -21,16 +21,18 @@ using KeyboardShortcuts::FunctionKey;
 using ProcessTableNavigation::NavCommand;
 using ProcessTableNavigation::NavKey;
 
-constexpr std::array<std::pair<FunctionKey, ImGuiKey>, 8> FUNCTION_KEYS{{
-    {FunctionKey::F1, ImGuiKey_F1},
-    {FunctionKey::F2, ImGuiKey_F2},
-    {FunctionKey::F5, ImGuiKey_F5},
-    {FunctionKey::F6, ImGuiKey_F6},
-    {FunctionKey::F7, ImGuiKey_F7},
-    {FunctionKey::F8, ImGuiKey_F8},
-    {FunctionKey::F9, ImGuiKey_F9},
-    {FunctionKey::F10, ImGuiKey_F10},
-}};
+constexpr std::array<std::pair<FunctionKey, ImGuiKey>, 8> FUNCTION_KEYS{
+    {
+        {FunctionKey::F1, ImGuiKey_F1},
+        {FunctionKey::F2, ImGuiKey_F2},
+        {FunctionKey::F5, ImGuiKey_F5},
+        {FunctionKey::F6, ImGuiKey_F6},
+        {FunctionKey::F7, ImGuiKey_F7},
+        {FunctionKey::F8, ImGuiKey_F8},
+        {FunctionKey::F9, ImGuiKey_F9},
+        {FunctionKey::F10, ImGuiKey_F10},
+    },
+};
 
 /// A navigation key, its ImGui key, and whether holding it repeats.
 struct NavKeyBinding
@@ -40,19 +42,21 @@ struct NavKeyBinding
     bool repeat;
 };
 
-constexpr std::array<NavKeyBinding, 11> NAV_KEYS{{
-    {.key = NavKey::Up, .imguiKey = ImGuiKey_UpArrow, .repeat = true},
-    {.key = NavKey::Down, .imguiKey = ImGuiKey_DownArrow, .repeat = true},
-    {.key = NavKey::PageUp, .imguiKey = ImGuiKey_PageUp, .repeat = true},
-    {.key = NavKey::PageDown, .imguiKey = ImGuiKey_PageDown, .repeat = true},
-    {.key = NavKey::Home, .imguiKey = ImGuiKey_Home, .repeat = false},
-    {.key = NavKey::End, .imguiKey = ImGuiKey_End, .repeat = false},
-    {.key = NavKey::Left, .imguiKey = ImGuiKey_LeftArrow, .repeat = true},
-    {.key = NavKey::Right, .imguiKey = ImGuiKey_RightArrow, .repeat = true},
-    {.key = NavKey::J, .imguiKey = ImGuiKey_J, .repeat = true},
-    {.key = NavKey::K, .imguiKey = ImGuiKey_K, .repeat = true},
-    {.key = NavKey::G, .imguiKey = ImGuiKey_G, .repeat = false},
-}};
+constexpr std::array<NavKeyBinding, 11> NAV_KEYS{
+    {
+        {.key = NavKey::Up, .imguiKey = ImGuiKey_UpArrow, .repeat = true},
+        {.key = NavKey::Down, .imguiKey = ImGuiKey_DownArrow, .repeat = true},
+        {.key = NavKey::PageUp, .imguiKey = ImGuiKey_PageUp, .repeat = true},
+        {.key = NavKey::PageDown, .imguiKey = ImGuiKey_PageDown, .repeat = true},
+        {.key = NavKey::Home, .imguiKey = ImGuiKey_Home, .repeat = false},
+        {.key = NavKey::End, .imguiKey = ImGuiKey_End, .repeat = false},
+        {.key = NavKey::Left, .imguiKey = ImGuiKey_LeftArrow, .repeat = true},
+        {.key = NavKey::Right, .imguiKey = ImGuiKey_RightArrow, .repeat = true},
+        {.key = NavKey::J, .imguiKey = ImGuiKey_J, .repeat = true},
+        {.key = NavKey::K, .imguiKey = ImGuiKey_K, .repeat = true},
+        {.key = NavKey::G, .imguiKey = ImGuiKey_G, .repeat = false},
+    },
+};
 
 [[nodiscard]] constexpr bool isHorizontal(NavKey key) noexcept
 {

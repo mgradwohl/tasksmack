@@ -163,7 +163,10 @@ void SystemInfoPanel::onAttach()
         m_RefreshInterval);
     m_Sensors->setHistorySeconds(m_HistorySeconds);
     m_SensorSampler = std::make_unique<Domain::BackgroundSampler>(Domain::SamplerConfig{
-        .interval = m_RefreshInterval, .firstSampleAfterInterval = false, .threadName = std::string(Platform::SENSOR_SAMPLER_THREAD_NAME)});
+        .interval = m_RefreshInterval,
+        .firstSampleAfterInterval = false,
+        .threadName = std::string(Platform::SENSOR_SAMPLER_THREAD_NAME),
+    });
     m_SensorSampler->addSamplable(m_Sensors, "sensors");
     m_SensorSampler->start();
 }

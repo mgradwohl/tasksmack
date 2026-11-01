@@ -50,24 +50,26 @@ inline constexpr std::uintmax_t MAX_DESKTOP_FILE_BYTES = std::uintmax_t{256} * 1
 
 /// Programs an Exec line may start that run something else: never index keys, or every Python
 /// process would take the icon of the first application launched through python3.
-inline constexpr std::array<std::string_view, 18> LAUNCHERS{"env",
-                                                            "sh",
-                                                            "bash",
-                                                            "dash",
-                                                            "python",
-                                                            "python3",
-                                                            "perl",
-                                                            "ruby",
-                                                            "java",
-                                                            "node",
-                                                            "gjs",
-                                                            "flatpak",
-                                                            "pkexec",
-                                                            "sudo",
-                                                            "wine",
-                                                            "mono",
-                                                            "dbus-launch",
-                                                            "snap"};
+inline constexpr std::array<std::string_view, 18> LAUNCHERS{
+    "env",
+    "sh",
+    "bash",
+    "dash",
+    "python",
+    "python3",
+    "perl",
+    "ruby",
+    "java",
+    "node",
+    "gjs",
+    "flatpak",
+    "pkexec",
+    "sudo",
+    "wine",
+    "mono",
+    "dbus-launch",
+    "snap",
+};
 
 /// What a desktop entry's [Desktop Entry] group says, as far as icons go.
 struct DesktopEntry

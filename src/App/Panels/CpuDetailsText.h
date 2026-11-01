@@ -119,9 +119,11 @@ struct Inputs
                                 formatPressurePercent(stall->avg300));
         }
     };
-    for (const auto& [name, pressure] : {std::pair<std::string_view, const Platform::ResourcePressure*>{"CPU", &snap.cpuPressure},
-                                         std::pair<std::string_view, const Platform::ResourcePressure*>{"Memory", &snap.memoryPressure},
-                                         std::pair<std::string_view, const Platform::ResourcePressure*>{"I/O", &snap.ioPressure}})
+    for (const auto& [name, pressure] : {
+             std::pair<std::string_view, const Platform::ResourcePressure*>{"CPU", &snap.cpuPressure},
+             std::pair<std::string_view, const Platform::ResourcePressure*>{"Memory", &snap.memoryPressure},
+             std::pair<std::string_view, const Platform::ResourcePressure*>{"I/O", &snap.ioPressure},
+         })
     {
         line(name, "some", pressure->some);
         line(name, "full", pressure->full);
@@ -233,13 +235,15 @@ struct Inputs
     // gone missing in January although the probe kept reading them and the docs kept describing it.
     if (in.hasLoadAvg)
     {
-        rows.push_back({.label = "Load average",
-                        .value = std::format("{} / {} / {}",
-                                             UI::Format::formatFixedLocalized(snap.loadAvg1, 2, ""),
-                                             UI::Format::formatFixedLocalized(snap.loadAvg5, 2, ""),
-                                             UI::Format::formatFixedLocalized(snap.loadAvg15, 2, "")),
-                        .available = true,
-                        .tooltip = "Runnable and uninterruptible tasks, averaged over 1, 5 and 15 minutes"});
+        rows.push_back({
+            .label = "Load average",
+            .value = std::format("{} / {} / {}",
+                                 UI::Format::formatFixedLocalized(snap.loadAvg1, 2, ""),
+                                 UI::Format::formatFixedLocalized(snap.loadAvg5, 2, ""),
+                                 UI::Format::formatFixedLocalized(snap.loadAvg15, 2, "")),
+            .available = true,
+            .tooltip = "Runnable and uninterruptible tasks, averaged over 1, 5 and 15 minutes",
+        });
     }
 
     // Pressure stall information (Linux, #3062): how much of the last 10 s tasks spent waiting for CPU,
@@ -252,13 +256,15 @@ struct Inputs
         };
         if (snap.cpuPressure.read() || snap.memoryPressure.read() || snap.ioPressure.read())
         {
-            rows.push_back({.label = "Pressure",
-                            .value = std::format("CPU {} \xC2\xB7 memory {} \xC2\xB7 I/O {}",
-                                                 some10(snap.cpuPressure),
-                                                 some10(snap.memoryPressure),
-                                                 some10(snap.ioPressure)),
-                            .available = true,
-                            .tooltip = pressureTooltip(snap)});
+            rows.push_back({
+                .label = "Pressure",
+                .value = std::format("CPU {} \xC2\xB7 memory {} \xC2\xB7 I/O {}",
+                                     some10(snap.cpuPressure),
+                                     some10(snap.memoryPressure),
+                                     some10(snap.ioPressure)),
+                .available = true,
+                .tooltip = pressureTooltip(snap),
+            });
         }
         else
         {

@@ -158,8 +158,10 @@ struct BadgeArrowBase
     {
         return {.left = tipX, .right = tipX};
     }
-    return {.left = std::clamp(tipX - arrowHalfBasePx, badgeMinX, badgeMaxX),
-            .right = std::clamp(tipX + arrowHalfBasePx, badgeMinX, badgeMaxX)};
+    return {
+        .left = std::clamp(tipX - arrowHalfBasePx, badgeMinX, badgeMaxX),
+        .right = std::clamp(tipX + arrowHalfBasePx, badgeMinX, badgeMaxX),
+    };
 }
 
 /**
@@ -568,23 +570,35 @@ static_assert(WINDOWS_PRIORITY_SLIDER_ORDER[static_cast<std::size_t>(WINDOWS_NOR
 }
 
 /// Windows' stops: the class name, a label naming it, and its representative nice value's colour.
-inline constexpr std::array<PrioritySliderStop, 5> WINDOWS_PRIORITY_STOPS = {{
-    {.name = windowsPriorityClassName(WindowsPriorityClass::High),
-     .itemLabel = "Priority class: High###priority_class_slider",
-     .colorNice = windowsPriorityClassNice(WindowsPriorityClass::High)},
-    {.name = windowsPriorityClassName(WindowsPriorityClass::AboveNormal),
-     .itemLabel = "Priority class: Above Normal###priority_class_slider",
-     .colorNice = windowsPriorityClassNice(WindowsPriorityClass::AboveNormal)},
-    {.name = windowsPriorityClassName(WindowsPriorityClass::Normal),
-     .itemLabel = "Priority class: Normal###priority_class_slider",
-     .colorNice = windowsPriorityClassNice(WindowsPriorityClass::Normal)},
-    {.name = windowsPriorityClassName(WindowsPriorityClass::BelowNormal),
-     .itemLabel = "Priority class: Below Normal###priority_class_slider",
-     .colorNice = windowsPriorityClassNice(WindowsPriorityClass::BelowNormal)},
-    {.name = windowsPriorityClassName(WindowsPriorityClass::Idle),
-     .itemLabel = "Priority class: Idle###priority_class_slider",
-     .colorNice = windowsPriorityClassNice(WindowsPriorityClass::Idle)},
-}};
+inline constexpr std::array<PrioritySliderStop, 5> WINDOWS_PRIORITY_STOPS = {
+    {
+        {
+            .name = windowsPriorityClassName(WindowsPriorityClass::High),
+            .itemLabel = "Priority class: High###priority_class_slider",
+            .colorNice = windowsPriorityClassNice(WindowsPriorityClass::High),
+        },
+        {
+            .name = windowsPriorityClassName(WindowsPriorityClass::AboveNormal),
+            .itemLabel = "Priority class: Above Normal###priority_class_slider",
+            .colorNice = windowsPriorityClassNice(WindowsPriorityClass::AboveNormal),
+        },
+        {
+            .name = windowsPriorityClassName(WindowsPriorityClass::Normal),
+            .itemLabel = "Priority class: Normal###priority_class_slider",
+            .colorNice = windowsPriorityClassNice(WindowsPriorityClass::Normal),
+        },
+        {
+            .name = windowsPriorityClassName(WindowsPriorityClass::BelowNormal),
+            .itemLabel = "Priority class: Below Normal###priority_class_slider",
+            .colorNice = windowsPriorityClassNice(WindowsPriorityClass::BelowNormal),
+        },
+        {
+            .name = windowsPriorityClassName(WindowsPriorityClass::Idle),
+            .itemLabel = "Priority class: Idle###priority_class_slider",
+            .colorNice = windowsPriorityClassNice(WindowsPriorityClass::Idle),
+        },
+    },
+};
 
 /// Realtime, shown beyond High when a process already has it.
 inline constexpr PrioritySliderStop WINDOWS_REALTIME_STOP{

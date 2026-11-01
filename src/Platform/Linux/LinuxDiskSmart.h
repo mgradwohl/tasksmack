@@ -176,10 +176,12 @@ inline void applySmart(PhysicalDisk& disk, const DriveSmartRead& read)
         }
         else
         {
-            disk.health = NvmeHealth{.criticalWarning = criticalWarningBits(smart.criticalWarnings),
-                                     .availableSparePercent = smart.availableSpare,
-                                     .percentageUsed = smart.percentUsed,
-                                     .mediaErrors = smart.mediaErrors};
+            disk.health = NvmeHealth{
+                .criticalWarning = criticalWarningBits(smart.criticalWarnings),
+                .availableSparePercent = smart.availableSpare,
+                .percentageUsed = smart.percentUsed,
+                .mediaErrors = smart.mediaErrors,
+            };
         }
         temperature = celsiusFromKelvin(static_cast<double>(smart.nvmeTemperatureKelvin));
     }

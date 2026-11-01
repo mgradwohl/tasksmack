@@ -27,11 +27,19 @@ enum class ResizePerfOperation : std::uint8_t
     ImGuiFinalize,
     OpenGLSubmit,
     SwapInterval,
-    Count
+    Count,
 };
 
 inline constexpr std::array<std::string_view, static_cast<std::size_t>(ResizePerfOperation::Count)> RESIZE_PERF_OPERATION_NAMES{
-    "size-commit", "final-size-commit", "window-size", "window-sync", "viewport", "imgui-finalize", "opengl-submit", "swap-interval"};
+    "size-commit",
+    "final-size-commit",
+    "window-size",
+    "window-sync",
+    "viewport",
+    "imgui-finalize",
+    "opengl-submit",
+    "swap-interval",
+};
 
 /// UI-thread-only diagnostics. No clock reads, allocations or logging on the disabled path.
 struct ResizePerfOperations

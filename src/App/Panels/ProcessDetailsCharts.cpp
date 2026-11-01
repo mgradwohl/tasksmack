@@ -255,28 +255,35 @@ void memoryTooltip(const ChartTimeAxis& axis, const MemoryChartData& data)
     std::vector<UI::Widgets::TooltipRow> rows;
     if (*idxVal < data.used.size())
     {
-        rows.push_back({.label = MEM_USED_LABEL,
-                        .color = scheme.chartMemory,
-                        .value = App::Detail::formatBytesWithRamShare(data.used[*idxVal], data.percentPerByte)});
+        rows.push_back({
+            .label = MEM_USED_LABEL,
+            .color = scheme.chartMemory,
+            .value = App::Detail::formatBytesWithRamShare(data.used[*idxVal], data.percentPerByte),
+        });
     }
     if (*idxVal < data.shared.size())
     {
-        rows.push_back({.label = MEM_SHARED_LABEL,
-                        .color = scheme.chartMemoryShared,
-                        .value = App::Detail::formatBytesWithRamShare(data.shared[*idxVal], data.percentPerByte)});
+        rows.push_back({
+            .label = MEM_SHARED_LABEL,
+            .color = scheme.chartMemoryShared,
+            .value = App::Detail::formatBytesWithRamShare(data.shared[*idxVal], data.percentPerByte),
+        });
     }
     if (*idxVal < data.virtualBytes.size())
     {
-        rows.push_back(
-            {.label = MEM_VIRTUAL_LABEL,
-             .color = scheme.chartMemoryVirtual,
-             .value = UI::Widgets::formatSampleOrNA(data.virtualBytes[*idxVal], [](double v) { return UI::Format::formatBytes(v); })});
+        rows.push_back({
+            .label = MEM_VIRTUAL_LABEL,
+            .color = scheme.chartMemoryVirtual,
+            .value = UI::Widgets::formatSampleOrNA(data.virtualBytes[*idxVal], [](double v) { return UI::Format::formatBytes(v); }),
+        });
     }
     if (*idxVal < data.privateBytes.size())
     {
-        rows.push_back({.label = MEM_PRIVATE_LABEL,
-                        .color = scheme.chartMemoryPrivate,
-                        .value = App::Detail::formatBytesWithRamShare(data.privateBytes[*idxVal], data.percentPerByte)});
+        rows.push_back({
+            .label = MEM_PRIVATE_LABEL,
+            .color = scheme.chartMemoryPrivate,
+            .value = App::Detail::formatBytesWithRamShare(data.privateBytes[*idxVal], data.percentPerByte),
+        });
     }
     if (*idxVal < data.swapBytes.size())
     {
@@ -387,12 +394,13 @@ memoryNowBars(const App::Detail::ProcessSmoothedUsage& smoothed, bool showShared
     NowBarList memoryBars;
     // Used and Shared carry their share of RAM in tooltipText (shown on hover and in the value strip);
     // Virtual has none, being mostly reserved address space.
-    memoryBars.push_back(
-        {.valueText = UI::Format::formatBytes(usedNow),
-         .label = MEM_USED_LABEL,
-         .tooltipText = UI::InlineText::format("{}: {}", MEM_USED_LABEL, App::Detail::formatBytesWithRamShare(usedNow, percentPerByte)),
-         .value01 = UI::Widgets::normalizeToUnitInterval(usedNow, memAxisUpper),
-         .color = theme.scheme().chartMemory});
+    memoryBars.push_back({
+        .valueText = UI::Format::formatBytes(usedNow),
+        .label = MEM_USED_LABEL,
+        .tooltipText = UI::InlineText::format("{}: {}", MEM_USED_LABEL, App::Detail::formatBytesWithRamShare(usedNow, percentPerByte)),
+        .value01 = UI::Widgets::normalizeToUnitInterval(usedNow, memAxisUpper),
+        .color = theme.scheme().chartMemory,
+    });
     if (showShared)
     {
         memoryBars.push_back({
@@ -405,11 +413,13 @@ memoryNowBars(const App::Detail::ProcessSmoothedUsage& smoothed, bool showShared
             .stripTooltip = MEM_SHARED_TOOLTIP,
         });
     }
-    memoryBars.push_back({.valueText = UI::Format::formatBytes(smoothed.virtualBytes),
-                          .label = MEM_VIRTUAL_LABEL,
-                          .tooltipText = {},
-                          .value01 = UI::Widgets::normalizeToUnitInterval(smoothed.virtualBytes, virtAxisUpper),
-                          .color = theme.scheme().chartMemoryVirtual});
+    memoryBars.push_back({
+        .valueText = UI::Format::formatBytes(smoothed.virtualBytes),
+        .label = MEM_VIRTUAL_LABEL,
+        .tooltipText = {},
+        .value01 = UI::Widgets::normalizeToUnitInterval(smoothed.virtualBytes, virtAxisUpper),
+        .color = theme.scheme().chartMemoryVirtual,
+    });
 
     return memoryBars;
 }
@@ -440,9 +450,11 @@ void resourceTooltip(const ChartTimeAxis& axis, const ResourceChartData& data)
     std::vector<UI::Widgets::TooltipRow> rows{
         {.label = THREADS_LABEL, .color = theme.scheme().chartThreads, .value = App::Detail::formatCountOrNA(data.threads[*idx])},
         {.label = HANDLE_LABEL, .color = theme.scheme().chartHandles, .value = App::Detail::formatCountOrNA(data.handles[*idx])},
-        {.label = FAULTS_LABEL,
-         .color = theme.scheme().chartPageFaults,
-         .value = UI::Widgets::formatSampleOrNA(data.faults[*idx], [](double v) { return UI::Format::formatCountPerSecond(v); })},
+        {
+            .label = FAULTS_LABEL,
+            .color = theme.scheme().chartPageFaults,
+            .value = UI::Widgets::formatSampleOrNA(data.faults[*idx], [](double v) { return UI::Format::formatCountPerSecond(v); }),
+        },
     };
 #ifdef _WIN32
     if (data.hasGdiSamples)
@@ -532,7 +544,8 @@ resourceNowBars(const App::Detail::ProcessSmoothedUsage& smoothed, const Resourc
         .value01 = smoothed.threadCountAvailable ? UI::Widgets::normalizeToUnitInterval(smoothed.threadCount, bounds.threads) : 0.0,
         .color = theme.scheme().chartThreads,
         .marker = ImPlotMarker_None,
-        .available = smoothed.threadCountAvailable};
+        .available = smoothed.threadCountAvailable,
+    };
     // An unreadable count (#1110) shows N/A, as its line shows a gap.
     const NowBar handlesBar{
         .valueText = App::Detail::countTextOrNA(smoothed.handleCountAvailable, smoothed.handleCount),
@@ -541,15 +554,18 @@ resourceNowBars(const App::Detail::ProcessSmoothedUsage& smoothed, const Resourc
         .value01 = smoothed.handleCountAvailable ? UI::Widgets::normalizeToUnitInterval(smoothed.handleCount, bounds.handles) : 0.0,
         .color = theme.scheme().chartHandles,
         .marker = ImPlotMarker_None,
-        .available = smoothed.handleCountAvailable};
-    const NowBar faultsBar{.valueText = hasPageFaults ? UI::Format::formatCountPerSecond(smoothed.pageFaultsPerSec) : std::string("N/A"),
-                           .label = FAULTS_LABEL,
-                           .tooltipText = {},
-                           .value01 = hasPageFaults ? UI::Widgets::normalizeToUnitInterval(smoothed.pageFaultsPerSec, bounds.faults) : 0.0,
-                           // The line's colour: this bar was chartIo while its line is accentColor(3) (#1004).
-                           .color = theme.scheme().chartPageFaults,
-                           .marker = ImPlotMarker_None,
-                           .available = hasPageFaults};
+        .available = smoothed.handleCountAvailable,
+    };
+    const NowBar faultsBar{
+        .valueText = hasPageFaults ? UI::Format::formatCountPerSecond(smoothed.pageFaultsPerSec) : std::string("N/A"),
+        .label = FAULTS_LABEL,
+        .tooltipText = {},
+        .value01 = hasPageFaults ? UI::Widgets::normalizeToUnitInterval(smoothed.pageFaultsPerSec, bounds.faults) : 0.0,
+        // The line's colour: this bar was chartIo while its line is accentColor(3) (#1004).
+        .color = theme.scheme().chartPageFaults,
+        .marker = ImPlotMarker_None,
+        .available = hasPageFaults,
+    };
 #ifdef _WIN32
     // GDI objects NowBar (Windows-only). A missing reading is NaN: it is skipped by the axis bound and
     // shown as N/A, and a series with no reading at all -- a process TaskSmack cannot open -- is not
@@ -801,21 +817,27 @@ void ProcessDetailsCharts::renderCpuUsageSection(const ProcessChartContext& ctx,
             smoothed));
 
     // Use smoothed values for NowBars for consistent animation
-    const NowBar cpuTotalNow{.valueText = UI::Format::percentOneDecimal(smoothed.cpuPercent),
-                             .label = CPU_TOTAL_LABEL,
-                             .tooltipText = {},
-                             .value01 = UI::Widgets::normalizeToUnitInterval(smoothed.cpuPercent, cpuAxisUpper),
-                             .color = theme.scheme().chartCpuTotal}; // The Total line's colour (#1192)
-    const NowBar cpuUserNow{.valueText = UI::Format::percentOneDecimal(smoothed.cpuUserPercent),
-                            .label = CPU_USER_LABEL,
-                            .tooltipText = {},
-                            .value01 = UI::Widgets::normalizeToUnitInterval(smoothed.cpuUserPercent, cpuAxisUpper),
-                            .color = theme.scheme().cpuUser};
-    const NowBar cpuSystemNow{.valueText = UI::Format::percentOneDecimal(smoothed.cpuSystemPercent),
-                              .label = CPU_SYSTEM_LABEL,
-                              .tooltipText = {},
-                              .value01 = UI::Widgets::normalizeToUnitInterval(smoothed.cpuSystemPercent, cpuAxisUpper),
-                              .color = theme.scheme().cpuSystem};
+    const NowBar cpuTotalNow{
+        .valueText = UI::Format::percentOneDecimal(smoothed.cpuPercent),
+        .label = CPU_TOTAL_LABEL,
+        .tooltipText = {},
+        .value01 = UI::Widgets::normalizeToUnitInterval(smoothed.cpuPercent, cpuAxisUpper),
+        .color = theme.scheme().chartCpuTotal,
+    }; // The Total line's colour (#1192)
+    const NowBar cpuUserNow{
+        .valueText = UI::Format::percentOneDecimal(smoothed.cpuUserPercent),
+        .label = CPU_USER_LABEL,
+        .tooltipText = {},
+        .value01 = UI::Widgets::normalizeToUnitInterval(smoothed.cpuUserPercent, cpuAxisUpper),
+        .color = theme.scheme().cpuUser,
+    };
+    const NowBar cpuSystemNow{
+        .valueText = UI::Format::percentOneDecimal(smoothed.cpuSystemPercent),
+        .label = CPU_SYSTEM_LABEL,
+        .tooltipText = {},
+        .value01 = UI::Widgets::normalizeToUnitInterval(smoothed.cpuSystemPercent, cpuAxisUpper),
+        .color = theme.scheme().cpuSystem,
+    };
 
     const auto cpuPlot = [&]
     {
@@ -838,12 +860,20 @@ void ProcessDetailsCharts::renderCpuUsageSection(const ProcessChartContext& ctx,
             // Total in its line's colour, not a usage-threshold colour, which matched nothing on the chart.
             const std::array rows{
                 UI::Widgets::TooltipRow{
-                    .label = CPU_TOTAL_LABEL, .color = theme.scheme().chartCpuTotal, .value = UI::Format::percentOneDecimal(cpuData[*idx])},
+                    .label = CPU_TOTAL_LABEL,
+                    .color = theme.scheme().chartCpuTotal,
+                    .value = UI::Format::percentOneDecimal(cpuData[*idx]),
+                },
                 UI::Widgets::TooltipRow{
-                    .label = CPU_USER_LABEL, .color = theme.scheme().cpuUser, .value = UI::Format::percentOneDecimal(cpuUserData[*idx])},
-                UI::Widgets::TooltipRow{.label = CPU_SYSTEM_LABEL,
-                                        .color = theme.scheme().cpuSystem,
-                                        .value = UI::Format::percentOneDecimal(cpuSystemData[*idx])},
+                    .label = CPU_USER_LABEL,
+                    .color = theme.scheme().cpuUser,
+                    .value = UI::Format::percentOneDecimal(cpuUserData[*idx]),
+                },
+                UI::Widgets::TooltipRow{
+                    .label = CPU_SYSTEM_LABEL,
+                    .color = theme.scheme().cpuSystem,
+                    .value = UI::Format::percentOneDecimal(cpuSystemData[*idx]),
+                },
             };
             UI::Widgets::renderHistoryTooltip(axis.timeData[*idx], rows);
         }
@@ -1096,9 +1126,17 @@ void ProcessDetailsCharts::renderMemoryUsageSection(const ProcessChartContext& c
         constexpr const char* DENIED_TOOLTIP = "Not readable: this is another user's process. TaskSmack needs administrator rights "
                                                "(or CAP_SYS_PTRACE) to read its PSS and USS";
         memoryExtras.at(memoryExtraCount++) = UI::Widgets::ValueStripEntry{
-            .label = MEM_PSS_LABEL, .value = "not readable", .color = ImVec4(0.0F, 0.0F, 0.0F, 0.0F), .tooltip = DENIED_TOOLTIP};
+            .label = MEM_PSS_LABEL,
+            .value = "not readable",
+            .color = ImVec4(0.0F, 0.0F, 0.0F, 0.0F),
+            .tooltip = DENIED_TOOLTIP,
+        };
         memoryExtras.at(memoryExtraCount++) = UI::Widgets::ValueStripEntry{
-            .label = MEM_USS_LABEL, .value = "not readable", .color = ImVec4(0.0F, 0.0F, 0.0F, 0.0F), .tooltip = DENIED_TOOLTIP};
+            .label = MEM_USS_LABEL,
+            .value = "not readable",
+            .color = ImVec4(0.0F, 0.0F, 0.0F, 0.0F),
+            .tooltip = DENIED_TOOLTIP,
+        };
     }
     const std::span<const UI::Widgets::ValueStripEntry> stripExtras(memoryExtras.data(), memoryExtraCount);
     renderHistoryWithNowBars("ProcessMemoryOverviewLayout",
@@ -1188,12 +1226,14 @@ void ProcessDetailsCharts::renderThreadAndFaultHistory(const ProcessChartContext
         (void) UI::Widgets::sectionHeader(ICON_FA_GEARS, "Resources", {}, alignedCount);
         // The cumulative count, the Processes table's Page Faults column, beside the rate the chart plots:
         // not plotted, so a blank swatch (#1878).
-        const std::array faultsTotal{UI::Widgets::ValueStripEntry{
-            .label = FAULTS_TOTAL_LABEL,
-            .value = UI::Format::formatIntLocalized(ctx.snapshot != nullptr ? ctx.snapshot->pageFaults : std::uint64_t{0}),
-            .color = ImVec4(0.0F, 0.0F, 0.0F, 0.0F),
-            .tooltip = "Page faults since the process started, as the Processes table's Page Faults column",
-        }};
+        const std::array faultsTotal{
+            UI::Widgets::ValueStripEntry{
+                .label = FAULTS_TOTAL_LABEL,
+                .value = UI::Format::formatIntLocalized(ctx.snapshot != nullptr ? ctx.snapshot->pageFaults : std::uint64_t{0}),
+                .color = ImVec4(0.0F, 0.0F, 0.0F, 0.0F),
+                .tooltip = "Page faults since the process started, as the Processes table's Page Faults column",
+            },
+        };
         const std::span<const UI::Widgets::ValueStripEntry> resourceExtras = (ctx.hasPageFaults && ctx.snapshot != nullptr)
                                                                                ? std::span<const UI::Widgets::ValueStripEntry>(faultsTotal)
                                                                                : std::span<const UI::Widgets::ValueStripEntry>{};
@@ -1229,11 +1269,13 @@ void ProcessDetailsCharts::renderPowerUsage(const ProcessChartContext& ctx, UI::
             smoothed),
         UI::Widgets::RATE_AXIS_MIN_SPAN_WATTS);
 
-    const NowBar powerBar{.valueText = UI::Format::formatPowerOrZero(smoothed.powerWatts),
-                          .label = POWER_LABEL,
-                          .tooltipText = {},
-                          .value01 = UI::Widgets::normalizeToUnitInterval(smoothed.powerWatts, powerAxisUpper),
-                          .color = theme.scheme().chartPower};
+    const NowBar powerBar{
+        .valueText = UI::Format::formatPowerOrZero(smoothed.powerWatts),
+        .label = POWER_LABEL,
+        .tooltipText = {},
+        .value01 = UI::Widgets::normalizeToUnitInterval(smoothed.powerWatts, powerAxisUpper),
+        .color = theme.scheme().chartPower,
+    };
 
     const auto plot = [&]
     {
@@ -1261,10 +1303,13 @@ void ProcessDetailsCharts::renderPowerUsage(const ProcessChartContext& ctx, UI::
                          theme.scheme().chartPowerFill);
         if (const auto idx = hoveredSampleIndex(axis.timeData, powerData.size()))
         {
-            const std::array rows{UI::Widgets::TooltipRow{
-                .label = POWER_LABEL,
-                .color = theme.scheme().chartPower,
-                .value = UI::Widgets::formatSampleOrNA(powerData[*idx], [](double v) { return UI::Format::formatPowerOrZero(v); })}};
+            const std::array rows{
+                UI::Widgets::TooltipRow{
+                    .label = POWER_LABEL,
+                    .color = theme.scheme().chartPower,
+                    .value = UI::Widgets::formatSampleOrNA(powerData[*idx], [](double v) { return UI::Format::formatPowerOrZero(v); }),
+                },
+            };
             UI::Widgets::renderHistoryTooltip(axis.timeData[*idx], rows);
         }
     };
@@ -1326,20 +1371,24 @@ void ProcessDetailsCharts::renderIoStats(const ProcessChartContext& ctx, UI::Wid
                               smoothed),
         UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
 
-    const NowBar readBar{.valueText = Detail::rateTextOrNA(ioAvailable, smoothed.ioReadBytesPerSec),
-                         .label = IO_READ_LABEL,
-                         .tooltipText = {},
-                         .value01 = ioAvailable ? UI::Widgets::normalizeToUnitInterval(smoothed.ioReadBytesPerSec, ioAxisUpper) : 0.0,
-                         .color = theme.scheme().chartIo,
-                         .marker = ImPlotMarker_None,
-                         .available = ioAvailable}; // N/A is drawn hatched, not as a 0 bar (#1918)
-    const NowBar writeBar{.valueText = Detail::rateTextOrNA(ioAvailable, smoothed.ioWriteBytesPerSec),
-                          .label = IO_WRITE_LABEL,
-                          .tooltipText = {},
-                          .value01 = ioAvailable ? UI::Widgets::normalizeToUnitInterval(smoothed.ioWriteBytesPerSec, ioAxisUpper) : 0.0,
-                          .color = theme.scheme().chartIoWrite,
-                          .marker = ImPlotMarker_None,
-                          .available = ioAvailable};
+    const NowBar readBar{
+        .valueText = Detail::rateTextOrNA(ioAvailable, smoothed.ioReadBytesPerSec),
+        .label = IO_READ_LABEL,
+        .tooltipText = {},
+        .value01 = ioAvailable ? UI::Widgets::normalizeToUnitInterval(smoothed.ioReadBytesPerSec, ioAxisUpper) : 0.0,
+        .color = theme.scheme().chartIo,
+        .marker = ImPlotMarker_None,
+        .available = ioAvailable,
+    }; // N/A is drawn hatched, not as a 0 bar (#1918)
+    const NowBar writeBar{
+        .valueText = Detail::rateTextOrNA(ioAvailable, smoothed.ioWriteBytesPerSec),
+        .label = IO_WRITE_LABEL,
+        .tooltipText = {},
+        .value01 = ioAvailable ? UI::Widgets::normalizeToUnitInterval(smoothed.ioWriteBytesPerSec, ioAxisUpper) : 0.0,
+        .color = theme.scheme().chartIoWrite,
+        .marker = ImPlotMarker_None,
+        .available = ioAvailable,
+    };
     // Nothing to draw and no reading now: say so over the plot, rather than an empty axis (#1918).
     const char* ioNotice = Detail::rateChartNotice(ioAvailable, readData, writeData, Detail::IO_NOT_AVAILABLE_NOTICE);
 
@@ -1400,20 +1449,24 @@ void ProcessDetailsCharts::renderNetworkStats(const ProcessChartContext& ctx, UI
             smoothed),
         UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
 
-    const NowBar sentBar{.valueText = Detail::rateTextOrNA(netAvailable, smoothed.netSentBytesPerSec),
-                         .label = NET_SENT_LABEL,
-                         .tooltipText = {},
-                         .value01 = netAvailable ? UI::Widgets::normalizeToUnitInterval(smoothed.netSentBytesPerSec, netAxisUpper) : 0.0,
-                         .color = theme.scheme().chartNetTx,
-                         .marker = ImPlotMarker_None,
-                         .available = netAvailable}; // N/A is drawn hatched, not as a 0 bar (#1918)
-    const NowBar recvBar{.valueText = Detail::rateTextOrNA(netAvailable, smoothed.netRecvBytesPerSec),
-                         .label = NET_RECV_LABEL,
-                         .tooltipText = {},
-                         .value01 = netAvailable ? UI::Widgets::normalizeToUnitInterval(smoothed.netRecvBytesPerSec, netAxisUpper) : 0.0,
-                         .color = theme.scheme().chartNetRx,
-                         .marker = ImPlotMarker_None,
-                         .available = netAvailable};
+    const NowBar sentBar{
+        .valueText = Detail::rateTextOrNA(netAvailable, smoothed.netSentBytesPerSec),
+        .label = NET_SENT_LABEL,
+        .tooltipText = {},
+        .value01 = netAvailable ? UI::Widgets::normalizeToUnitInterval(smoothed.netSentBytesPerSec, netAxisUpper) : 0.0,
+        .color = theme.scheme().chartNetTx,
+        .marker = ImPlotMarker_None,
+        .available = netAvailable,
+    }; // N/A is drawn hatched, not as a 0 bar (#1918)
+    const NowBar recvBar{
+        .valueText = Detail::rateTextOrNA(netAvailable, smoothed.netRecvBytesPerSec),
+        .label = NET_RECV_LABEL,
+        .tooltipText = {},
+        .value01 = netAvailable ? UI::Widgets::normalizeToUnitInterval(smoothed.netRecvBytesPerSec, netAxisUpper) : 0.0,
+        .color = theme.scheme().chartNetRx,
+        .marker = ImPlotMarker_None,
+        .available = netAvailable,
+    };
     // Nothing to draw and no reading now: say so over the plot, rather than an empty axis (#1918).
     const char* netNotice = Detail::rateChartNotice(netAvailable, sentData, recvData, Detail::NETWORK_NOT_AVAILABLE_NOTICE);
 
@@ -1691,17 +1744,20 @@ void ProcessDetailsCharts::renderGpuHistoryGraphs(const ProcessChartContext& ctx
     const auto gpuMemVec = tailSpan(history.series(ProcessSeries::GpuMemory), axis.alignedCount);
 
     // GPU Utilization graph (percent metric: locked 0-100 axis with percent formatter)
-    renderUtilizationChartCard({.plotId = "##GPUUtilPlot",
-                                .cardId = "##ProcGpuUtilCard",
-                                .layoutId = "ProcessGPUUtilHistory",
-                                .heading = "GPU Utilization History",
-                                .nowBarColumns = Detail::PROCESS_GPU_NOW_BAR_COLUMNS},
-                               axis,
-                               tailSpan(history.series(ProcessSeries::GpuUtil), axis.alignedCount),
-                               smoothed.gpuUtilAvailable,
-                               smoothed.gpuUtilPercent,
-                               ctx.historyGeneration,
-                               fill);
+    renderUtilizationChartCard(
+        {
+            .plotId = "##GPUUtilPlot",
+            .cardId = "##ProcGpuUtilCard",
+            .layoutId = "ProcessGPUUtilHistory",
+            .heading = "GPU Utilization History",
+            .nowBarColumns = Detail::PROCESS_GPU_NOW_BAR_COLUMNS,
+        },
+        axis,
+        tailSpan(history.series(ProcessSeries::GpuUtil), axis.alignedCount),
+        smoothed.gpuUtilAvailable,
+        smoothed.gpuUtilPercent,
+        ctx.historyGeneration,
+        fill);
 
     // GPU Memory graph. One upper bound for its axis and its bar, so they agree (#1003), from the
     // samples in the window, not the one trimming keeps left of it (#1145), and the bar's smoothed
@@ -1815,17 +1871,20 @@ void ProcessDetailsCharts::renderNpuHistoryGraphs(const ProcessChartContext& ctx
 
     // Every series has one value per timestamp (Detail::ProcessDetailsHistory), as on the GPU tab (#1149).
     const ChartTimeAxis axis = chartTimeAxis(history, ctx.maxHistorySeconds);
-    renderUtilizationChartCard({.plotId = "##NPUUtilPlot",
-                                .cardId = "##ProcNpuUtilCard",
-                                .layoutId = "ProcessNPUUtilHistory",
-                                .heading = "NPU Utilization History",
-                                .nowBarColumns = Detail::PROCESS_NPU_NOW_BAR_COLUMNS},
-                               axis,
-                               tailSpan(history.series(ProcessSeries::NpuUtil), axis.alignedCount),
-                               smoothed.npuUtilAvailable,
-                               smoothed.npuUtilPercent,
-                               ctx.historyGeneration,
-                               fill);
+    renderUtilizationChartCard(
+        {
+            .plotId = "##NPUUtilPlot",
+            .cardId = "##ProcNpuUtilCard",
+            .layoutId = "ProcessNPUUtilHistory",
+            .heading = "NPU Utilization History",
+            .nowBarColumns = Detail::PROCESS_NPU_NOW_BAR_COLUMNS,
+        },
+        axis,
+        tailSpan(history.series(ProcessSeries::NpuUtil), axis.alignedCount),
+        smoothed.npuUtilAvailable,
+        smoothed.npuUtilPercent,
+        ctx.historyGeneration,
+        fill);
 
     const auto dedicated = tailSpan(history.series(ProcessSeries::NpuDedicatedMemory), axis.alignedCount);
     const auto shared = tailSpan(history.series(ProcessSeries::NpuSharedMemory), axis.alignedCount);

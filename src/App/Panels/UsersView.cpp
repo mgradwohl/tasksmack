@@ -112,14 +112,16 @@ std::vector<UserRow> buildUserRows(const std::vector<Platform::UserSession>& ses
         auto [found, added] = byKey.try_emplace(key, rows.size());
         if (added)
         {
-            rows.push_back(UserRow{.user = session.unreadable.empty() ? session.user : std::string{},
-                                   .key = key,
-                                   .label = {},
-                                   .uid = session.uid,
-                                   .sessions = {},
-                                   .totals = {},
-                                   .processes = {},
-                                   .current = false});
+            rows.push_back(UserRow{
+                .user = session.unreadable.empty() ? session.user : std::string{},
+                .key = key,
+                .label = {},
+                .uid = session.uid,
+                .sessions = {},
+                .totals = {},
+                .processes = {},
+                .current = false,
+            });
             domains.push_back(rows.back().user.empty() ? std::string{} : session.domain);
             if (!rows.back().user.empty())
             {
@@ -370,12 +372,14 @@ renderUserChildren(const UserRow& row, UsersViewState& state, std::optional<ImGu
         const std::string label = std::format("{}  ({})", process.name, process.pid);
         if (ImGui::Selectable(label.c_str(), false, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowDoubleClick))
         {
-            action = UsersViewAction{.selectPid = process.pid,
-                                     .selectStartTimeTicks = process.startTimeTicks,
-                                     .showDetails = ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left),
-                                     .lock = std::nullopt,
-                                     .signOut = std::nullopt,
-                                     .disconnect = std::nullopt};
+            action = UsersViewAction{
+                .selectPid = process.pid,
+                .selectStartTimeTicks = process.startTimeTicks,
+                .showDetails = ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left),
+                .lock = std::nullopt,
+                .signOut = std::nullopt,
+                .disconnect = std::nullopt,
+            };
         }
         ImGui::Unindent();
         ImGui::PopID();
@@ -487,12 +491,14 @@ renderUserRow(const UserRow& row, UsersViewState& state, std::optional<ImGuiID> 
     std::optional<UsersViewAction> action;
     if (state.menuSession.has_value())
     {
-        const UsersViewAction none{.selectPid = 0,
-                                   .selectStartTimeTicks = 0,
-                                   .showDetails = false,
-                                   .lock = std::nullopt,
-                                   .signOut = std::nullopt,
-                                   .disconnect = std::nullopt};
+        const UsersViewAction none{
+            .selectPid = 0,
+            .selectStartTimeTicks = 0,
+            .showDetails = false,
+            .lock = std::nullopt,
+            .signOut = std::nullopt,
+            .disconnect = std::nullopt,
+        };
         if (menu.lock && ImGui::MenuItem(ICON_FA_LOCK "  Lock"))
         {
             action = none;

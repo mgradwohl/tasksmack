@@ -824,9 +824,11 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     identityRows.add({.label = "Name", .value = proc.name, .color = theme.scheme().textPrimary});
     identityRows.add({.label = "PID", .value = text.pid, .color = theme.scheme().textPrimary});
     identityRows.add({.label = "Parent PID", .value = text.parentPid, .color = theme.scheme().textPrimary});
-    identityRows.add({.label = "User",
-                      .value = proc.user.empty() ? std::string_view{"-"} : std::string_view{proc.user},
-                      .color = theme.scheme().textPrimary});
+    identityRows.add({
+        .label = "User",
+        .value = proc.user.empty() ? std::string_view{"-"} : std::string_view{proc.user},
+        .color = theme.scheme().textPrimary,
+    });
     if (!proc.realUser.empty())
     {
         // A setuid program run by another user: User is who it runs as, this who started it (#2475).
@@ -840,10 +842,12 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     if (m_ProcessCapabilities.hasSignature)
     {
         // Who Windows verifies signed the executable (#3070), unlike the Publisher the file names itself.
-        identityRows.add({.label = "Signature",
-                          .value = text.signature,
-                          .color = ProcessSignatureText::textColor(proc.signature.get().signature, theme.scheme()),
-                          .tooltip = text.signatureTooltip});
+        identityRows.add({
+            .label = "Signature",
+            .value = text.signature,
+            .color = ProcessSignatureText::textColor(proc.signature.get().signature, theme.scheme()),
+            .tooltip = text.signatureTooltip,
+        });
     }
     if (!proc.services.empty())
     {
@@ -867,11 +871,13 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     if (!text.schedPolicy.empty())
     {
         // The Processes table's Policy column (#3086), Linux.
-        runtimeRows.add({.label = "Policy",
-                         .value = text.schedPolicy,
-                         .color = theme.scheme().textPrimary,
-                         .tooltip = "The CPU scheduling policy: Normal (SCHED_OTHER), Batch, Idle, Deadline, or real time (FIFO or RR) "
-                                    "with its priority, 1 to 99, where higher runs first"});
+        runtimeRows.add({
+            .label = "Policy",
+            .value = text.schedPolicy,
+            .color = theme.scheme().textPrimary,
+            .tooltip = "The CPU scheduling policy: Normal (SCHED_OTHER), Batch, Idle, Deadline, or real time (FIFO or RR) "
+                       "with its priority, 1 to 99, where higher runs first",
+        });
     }
     if (!proc.processType.empty())
     {
@@ -885,10 +891,12 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     if (!proc.architecture.empty())
     {
         // The Processes table's Architecture column (#2394), with what emulation costs on hover.
-        runtimeRows.add({.label = "Architecture",
-                         .value = proc.architecture,
-                         .color = theme.scheme().textPrimary,
-                         .tooltip = ProcessArchitectureNote::architectureNote(proc.architecture)});
+        runtimeRows.add({
+            .label = "Architecture",
+            .value = proc.architecture,
+            .color = theme.scheme().textPrimary,
+            .tooltip = ProcessArchitectureNote::architectureNote(proc.architecture),
+        });
     }
     // Identity and Runtime are cards with their header inside (#1537), both as tall as the taller of
     // the two, so their edges line up -- or as tall as Actions or Priority beside them, if taller.

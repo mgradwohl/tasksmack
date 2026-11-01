@@ -49,19 +49,21 @@ struct KnownTerminal
 
 /// Terminals tried, in order, when $TERMINAL names none that can be found. x-terminal-emulator comes
 /// first: it is Debian/Ubuntu's administrator-chosen default. The rest cover the common desktops.
-inline constexpr std::array<KnownTerminal, 11> FALLBACK_TERMINALS{{
-    {.name = "x-terminal-emulator", .syntax = TerminalSyntax::DashE},
-    {.name = "gnome-terminal", .syntax = TerminalSyntax::DashDash},
-    {.name = "ptyxis", .syntax = TerminalSyntax::DashDash},
-    {.name = "konsole", .syntax = TerminalSyntax::DashE},
-    {.name = "xfce4-terminal", .syntax = TerminalSyntax::DashX},
-    {.name = "mate-terminal", .syntax = TerminalSyntax::DashX},
-    {.name = "kitty", .syntax = TerminalSyntax::Positional},
-    {.name = "alacritty", .syntax = TerminalSyntax::DashE},
-    {.name = "foot", .syntax = TerminalSyntax::Positional},
-    {.name = "wezterm", .syntax = TerminalSyntax::WezTerm},
-    {.name = "xterm", .syntax = TerminalSyntax::DashE},
-}};
+inline constexpr std::array<KnownTerminal, 11> FALLBACK_TERMINALS{
+    {
+        {.name = "x-terminal-emulator", .syntax = TerminalSyntax::DashE},
+        {.name = "gnome-terminal", .syntax = TerminalSyntax::DashDash},
+        {.name = "ptyxis", .syntax = TerminalSyntax::DashDash},
+        {.name = "konsole", .syntax = TerminalSyntax::DashE},
+        {.name = "xfce4-terminal", .syntax = TerminalSyntax::DashX},
+        {.name = "mate-terminal", .syntax = TerminalSyntax::DashX},
+        {.name = "kitty", .syntax = TerminalSyntax::Positional},
+        {.name = "alacritty", .syntax = TerminalSyntax::DashE},
+        {.name = "foot", .syntax = TerminalSyntax::Positional},
+        {.name = "wezterm", .syntax = TerminalSyntax::WezTerm},
+        {.name = "xterm", .syntax = TerminalSyntax::DashE},
+    },
+};
 
 /// Terminals that don't run the command themselves (#2140): they are clients that ask the desktop user's
 /// already-running terminal server, over the session bus, to open a window, and that server forks the

@@ -327,15 +327,19 @@ void renderMemorySection(RenderContext& ctx, std::span<const double> timestamps,
                     std::vector<UI::Widgets::TooltipRow> rows;
                     if (*idxVal < memData.size())
                     {
-                        rows.push_back({.label = USED_LABEL,
-                                        .color = theme.scheme().chartMemory,
-                                        .value = formatRamPercent(static_cast<double>(memData[*idxVal]))});
+                        rows.push_back({
+                            .label = USED_LABEL,
+                            .color = theme.scheme().chartMemory,
+                            .value = formatRamPercent(static_cast<double>(memData[*idxVal])),
+                        });
                     }
                     if (*idxVal < cachedData.size())
                     {
-                        rows.push_back({.label = CACHED_LABEL,
-                                        .color = theme.scheme().chartMemoryCached,
-                                        .value = formatRamPercent(static_cast<double>(cachedData[*idxVal]))});
+                        rows.push_back({
+                            .label = CACHED_LABEL,
+                            .color = theme.scheme().chartMemoryCached,
+                            .value = formatRamPercent(static_cast<double>(cachedData[*idxVal])),
+                        });
                     }
                     if (*idxVal < swapData.size())
                     {
@@ -377,11 +381,13 @@ void renderMemorySection(RenderContext& ctx, std::span<const double> timestamps,
         const auto addBar = [&](const char* label, double smoothedPercent, const UI::InlineText& tooltip, const ImVec4& color)
         {
             const double clamped = std::clamp(smoothedPercent, 0.0, 100.0);
-            memoryBars.push_back({.valueText = UI::Format::formatPercent(clamped),
-                                  .label = label,
-                                  .tooltipText = tooltip,
-                                  .value01 = UI::Format::percent01(clamped),
-                                  .color = color});
+            memoryBars.push_back({
+                .valueText = UI::Format::formatPercent(clamped),
+                .label = label,
+                .tooltipText = tooltip,
+                .value01 = UI::Format::percent01(clamped),
+                .color = color,
+            });
         };
         const auto ramTooltip = [&](const char* label, std::uint64_t bytes, double pct)
         {

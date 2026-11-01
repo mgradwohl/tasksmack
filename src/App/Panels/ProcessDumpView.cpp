@@ -135,12 +135,14 @@ DumpMessage resultMessage(std::string_view processName, std::int32_t pid, const 
 {
     if (!result.has_value())
     {
-        return {.ok = false,
-                .title = "Couldn't create a dump file",
-                .text = std::format("Could not create a dump file of {} (PID {}): {}", processName, pid, result.error()),
-                .file = {},
-                .note = {},
-                .method = {}};
+        return {
+            .ok = false,
+            .title = "Couldn't create a dump file",
+            .text = std::format("Could not create a dump file of {} (PID {}): {}", processName, pid, result.error()),
+            .file = {},
+            .note = {},
+            .method = {},
+        };
     }
     std::string method;
     if (result->fromSnapshot)
@@ -160,13 +162,15 @@ DumpMessage resultMessage(std::string_view processName, std::int32_t pid, const 
                              "no snapshot could be taken ({}).",
                              result->liveReason.empty() ? std::string("unknown reason") : result->liveReason);
     }
-    return {.ok = true,
-            .title = "Dump file created",
-            .text = std::format(
-                "Wrote a dump file of {} (PID {}), {}:", processName, pid, UI::Format::formatBytes(static_cast<double>(result->sizeBytes))),
-            .file = result->file,
-            .note = result->note,
-            .method = std::move(method)};
+    return {
+        .ok = true,
+        .title = "Dump file created",
+        .text = std::format(
+            "Wrote a dump file of {} (PID {}), {}:", processName, pid, UI::Format::formatBytes(static_cast<double>(result->sizeBytes))),
+        .file = result->file,
+        .note = result->note,
+        .method = std::move(method),
+    };
 }
 
 std::string folderDialogFailure(std::string_view error)
@@ -591,10 +595,12 @@ void ProcessDumpView::render(Platform::IProcessActions* actions, const Platform:
     {
         const bool offerFolder = canChooseFolder(actions);
         bool choosePressed = false;
-        const ProcessActionConfirm::LeadingButton chooseButton{.label = offerFolder ? DumpDetail::CHOOSE_FOLDER_LABEL : nullptr,
-                                                               .tooltip = DumpDetail::CHOOSE_FOLDER_TOOLTIP,
-                                                               .busy = choosingFolder() || checkingFolder(),
-                                                               .pressed = &choosePressed};
+        const ProcessActionConfirm::LeadingButton chooseButton{
+            .label = offerFolder ? DumpDetail::CHOOSE_FOLDER_LABEL : nullptr,
+            .tooltip = DumpDetail::CHOOSE_FOLDER_TOOLTIP,
+            .busy = choosingFolder() || checkingFolder(),
+            .pressed = &choosePressed,
+        };
         // The shared confirm dialog under an ID of its own: the panel's own confirm (Kill, Suspend...)
         // is submitted every frame too, and must never see this one open as its own.
         ImGui::PushID("ProcessDump");
@@ -678,10 +684,12 @@ void ProcessDumpView::renderProgressDialog()
         Core::AnimationRequest::requestFrameWithin(std::chrono::duration<double>(elapsed + std::chrono::seconds(1) - running).count());
         ImGui::TextColored(scheme.textMuted, "%s", m_CancelRequested ? "Cancelling..." : Core::pathToUtf8(m_Directory).c_str());
         ImGui::PopTextWrapPos();
-        const UI::Widgets::DialogFooterButton cancelButton{.label = "Cancel",
-                                                           .fills = nullptr,
-                                                           .tooltip = "Stop writing the dump and delete the partial file",
-                                                           .disabled = m_CancelRequested};
+        const UI::Widgets::DialogFooterButton cancelButton{
+            .label = "Cancel",
+            .fills = nullptr,
+            .tooltip = "Stop writing the dump and delete the partial file",
+            .disabled = m_CancelRequested,
+        };
         const float buttonWidth = UI::Widgets::footerButtonWidth({"Cancel"}, DUMP_BUTTON_MIN_EM);
         if (UI::Widgets::dialogFooter(cancelButton, {}, buttonWidth) == UI::Widgets::DialogFooterAction::Primary || escaped)
         {
@@ -711,10 +719,12 @@ void ProcessDumpView::renderProgressDialog()
     if (result.ok)
     {
         // Disabled while an earlier "Open folder" is still being opened (#3155).
-        const UI::Widgets::DialogFooterButton openButton{.label = ICON_FA_FOLDER_OPEN " Open folder",
-                                                         .fills = nullptr,
-                                                         .tooltip = "Show the dump file's folder",
-                                                         .disabled = openingFolder()};
+        const UI::Widgets::DialogFooterButton openButton{
+            .label = ICON_FA_FOLDER_OPEN " Open folder",
+            .fills = nullptr,
+            .tooltip = "Show the dump file's folder",
+            .disabled = openingFolder(),
+        };
         const UI::Widgets::DialogFooterButton closeButton{.label = "Close", .fills = nullptr, .tooltip = nullptr, .disabled = false};
         pressed = UI::Widgets::dialogFooter(
             openButton, closeButton, UI::Widgets::footerButtonWidth({openButton.label, closeButton.label}, DUMP_BUTTON_MIN_EM));

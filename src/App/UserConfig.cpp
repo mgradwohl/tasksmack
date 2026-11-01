@@ -574,28 +574,34 @@ void readSettings(const toml::table& config, UserSettings& settings)
     }
 
     toml::table table{
-        {"sampling",
-         toml::table{
-             {"interval_ms", Domain::Sampling::clampRefreshInterval(settings.refreshIntervalMs)},
-             {"history_max_seconds", Domain::Sampling::clampHistorySeconds(settings.maxHistorySeconds)},
-             {"socket_stats_cache_ttl_ms", Domain::Sampling::clampSocketStatsCacheTtlMs(settings.socketStatsCacheTtlMs)},
-             {"udp_event_trace", settings.udpEventTrace},
-         }},
-        {"metrics",
-         toml::table{
-             {"max_sane_rate_bps", Domain::Sampling::clampMaxSaneRateBps(settings.maxSaneRateBps)},
-         }},
-        {"ui",
-         toml::table{
-             {"chart_smooth_factor", Domain::Sampling::clampChartSmoothFactor(settings.chartSmoothFactor)},
-             {"chart_tau_ms_min", Domain::Sampling::clampChartTauMsMin(settings.chartTauMsMin)},
-             {"chart_tau_ms_max", Domain::Sampling::clampChartTauMsMax(settings.chartTauMsMax)},
-             {"show_privilege_notice", settings.showPrivilegeNotice},
-             {"show_process_icons", settings.showProcessIcons},
-             {"highlight_new_processes", settings.highlightNewProcesses},
-             {"cpu_details_expanded", settings.cpuDetailsExpanded},
-             {"chart_anti_aliasing", settings.chartAntiAliasing},
-         }},
+        {
+            "sampling",
+            toml::table{
+                {"interval_ms", Domain::Sampling::clampRefreshInterval(settings.refreshIntervalMs)},
+                {"history_max_seconds", Domain::Sampling::clampHistorySeconds(settings.maxHistorySeconds)},
+                {"socket_stats_cache_ttl_ms", Domain::Sampling::clampSocketStatsCacheTtlMs(settings.socketStatsCacheTtlMs)},
+                {"udp_event_trace", settings.udpEventTrace},
+            },
+        },
+        {
+            "metrics",
+            toml::table{
+                {"max_sane_rate_bps", Domain::Sampling::clampMaxSaneRateBps(settings.maxSaneRateBps)},
+            },
+        },
+        {
+            "ui",
+            toml::table{
+                {"chart_smooth_factor", Domain::Sampling::clampChartSmoothFactor(settings.chartSmoothFactor)},
+                {"chart_tau_ms_min", Domain::Sampling::clampChartTauMsMin(settings.chartTauMsMin)},
+                {"chart_tau_ms_max", Domain::Sampling::clampChartTauMsMax(settings.chartTauMsMax)},
+                {"show_privilege_notice", settings.showPrivilegeNotice},
+                {"show_process_icons", settings.showProcessIcons},
+                {"highlight_new_processes", settings.highlightNewProcesses},
+                {"cpu_details_expanded", settings.cpuDetailsExpanded},
+                {"chart_anti_aliasing", settings.chartAntiAliasing},
+            },
+        },
         {"theme", toml::table{{"id", settings.themeId}}},
         {"font", toml::table{{"size", fontSizeStr}}},
         {"window", windowTable},
@@ -603,14 +609,16 @@ void readSettings(const toml::table& config, UserSettings& settings)
         {"process_meters", processMetersTable},
         {"process_table", processTableTable(settings)},
         {"dumps", toml::table{{"folder", settings.dumpFolder}}},
-        {"updates",
-         toml::table{
-             {"check_daily", settings.updates.enabled},
-             {"last_check", settings.updates.lastCheckUnixSeconds},
-             {"latest_version", settings.updates.latestVersion},
-             {"latest_url", settings.updates.latestUrl},
-             {"dismissed_version", settings.updates.dismissedVersion},
-         }},
+        {
+            "updates",
+            toml::table{
+                {"check_daily", settings.updates.enabled},
+                {"last_check", settings.updates.lastCheckUnixSeconds},
+                {"latest_version", settings.updates.latestVersion},
+                {"latest_url", settings.updates.latestUrl},
+                {"dismissed_version", settings.updates.dismissedVersion},
+            },
+        },
     };
     // Only while on (#3276), so a first run's file, and every file on Linux, has no [windows] table.
     auto windowsTable = toml::table{};

@@ -501,29 +501,35 @@ std::vector<sock_filter> program([[maybe_unused]] Mode mode, [[maybe_unused]] pi
     // getsockopt: whether a socket listens (SOL_SOCKET, SO_ACCEPTCONN) only, which Close connection asks of the
     // descriptor it copied before shutting it down (#3295); any other option is refused.
     code.blockFor(SYS_getsockopt,
-                  {load(argLow(1)),
-                   jump(BPF_JMP | BPF_JEQ | BPF_K, static_cast<std::uint32_t>(SOL_SOCKET), 0, 3),
-                   load(argLow(2)),
-                   jump(BPF_JMP | BPF_JEQ | BPF_K, static_cast<std::uint32_t>(SO_ACCEPTCONN), 0, 1),
-                   ret(ALLOW),
-                   ret(fail(EPERM))});
+                  {
+                      load(argLow(1)),
+                      jump(BPF_JMP | BPF_JEQ | BPF_K, static_cast<std::uint32_t>(SOL_SOCKET), 0, 3),
+                      load(argLow(2)),
+                      jump(BPF_JMP | BPF_JEQ | BPF_K, static_cast<std::uint32_t>(SO_ACCEPTCONN), 0, 1),
+                      ret(ALLOW),
+                      ret(fail(EPERM)),
+                  });
     // ioctl: isatty()'s terminal query only (spdlog on fd 1).
     code.blockFor(SYS_ioctl,
-                  {load(argLow(1)),
-                   jump(BPF_JMP | BPF_JEQ | BPF_K, TCGETS_REQUEST, 2, 0),
-                   jump(BPF_JMP | BPF_JEQ | BPF_K, TCGETS2_REQUEST, 1, 0),
-                   ret(fail(ENOTTY)),
-                   ret(ALLOW)});
+                  {
+                      load(argLow(1)),
+                      jump(BPF_JMP | BPF_JEQ | BPF_K, TCGETS_REQUEST, 2, 0),
+                      jump(BPF_JMP | BPF_JEQ | BPF_K, TCGETS2_REQUEST, 1, 0),
+                      ret(fail(ENOTTY)),
+                      ret(ALLOW),
+                  });
     // prlimit64: reading its own limits only (pid 0, no new limit).
     code.blockFor(SYS_prlimit64,
-                  {load(argLow(0)),
-                   jump(BPF_JMP | BPF_JEQ | BPF_K, 0, 0, 5),
-                   load(argLow(2)),
-                   jump(BPF_JMP | BPF_JEQ | BPF_K, 0, 0, 3),
-                   load(argHigh(2)),
-                   jump(BPF_JMP | BPF_JEQ | BPF_K, 0, 0, 1),
-                   ret(ALLOW),
-                   ret(fail(EPERM))});
+                  {
+                      load(argLow(0)),
+                      jump(BPF_JMP | BPF_JEQ | BPF_K, 0, 0, 5),
+                      load(argLow(2)),
+                      jump(BPF_JMP | BPF_JEQ | BPF_K, 0, 0, 3),
+                      load(argHigh(2)),
+                      jump(BPF_JMP | BPF_JEQ | BPF_K, 0, 0, 1),
+                      ret(ALLOW),
+                      ret(fail(EPERM)),
+                  });
     // Signals by number only to itself (abort(), raise()): another process is signalled through a
     // pidfd, which the user-space checks guard; kill(-1) with CAP_KILL would reach every process.
     for (const long call : {SYS_kill, SYS_tkill, SYS_tgkill})

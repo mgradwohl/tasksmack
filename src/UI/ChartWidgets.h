@@ -429,8 +429,10 @@ struct StripTextParts
     {
         prefix = prefixLength(seriesLabel);
     }
-    StripTextParts parts{.head = (prefix != 0) ? label.name : std::string_view{},
-                         .tail = std::string_view{tip.data() + prefix, tip.size() - prefix}};
+    StripTextParts parts{
+        .head = (prefix != 0) ? label.name : std::string_view{},
+        .tail = std::string_view{tip.data() + prefix, tip.size() - prefix},
+    };
     if (parts.tail.starts_with(' '))
     {
         parts.tail.remove_prefix(1);
@@ -1559,10 +1561,12 @@ inline void plotLineWithFill(const char* label,
         // Otherwise -- generation 0 -- they are chosen afresh on every call, as before.
         static ReducedPointsCache uncached; // Scratch only: a generation-0 key is never kept
         const ChartDataScope scope = activeChartDataScope();
-        const ReducedPointsCache::Key key{.generation = scope.generation,
-                                          .dataId = seriesFingerprint(yData, count),
-                                          .count = static_cast<std::size_t>(count),
-                                          .maxOut = effectiveMax};
+        const ReducedPointsCache::Key key{
+            .generation = scope.generation,
+            .dataId = seriesFingerprint(yData, count),
+            .count = static_cast<std::size_t>(count),
+            .maxOut = effectiveMax,
+        };
         ReducedPointsCache& cache = (scope.generation != 0) ? seriesReductionCache(scope.plotId, label) : uncached;
         const std::span<const ReducedPoint> points = cache.points(key, reduce);
 
@@ -1620,7 +1624,11 @@ inline constexpr float SECONDARY_SERIES_WEIGHT = 1.5F;
 inline constexpr float REFERENCE_SERIES_WEIGHT = 1.0F;
 /// Marker shapes of a chart's secondary series, in the order they are drawn. Charts have at most four.
 inline constexpr std::array<ImPlotMarker, 4> SECONDARY_SERIES_MARKERS{
-    ImPlotMarker_Circle, ImPlotMarker_Square, ImPlotMarker_Diamond, ImPlotMarker_Up};
+    ImPlotMarker_Circle,
+    ImPlotMarker_Square,
+    ImPlotMarker_Diamond,
+    ImPlotMarker_Up,
+};
 /// Marker shapes of a chart's reference series: line-only, unlike the secondaries' solid shapes.
 inline constexpr std::array<ImPlotMarker, 2> REFERENCE_SERIES_MARKERS{ImPlotMarker_Cross, ImPlotMarker_Plus};
 /// About this many markers per series across a chart's time axis.
@@ -1639,19 +1647,23 @@ inline constexpr float SERIES_MARKER_RADIUS = 3.0F;
     case SeriesRole::Secondary:
     {
         const std::size_t slot = index % SECONDARY_SERIES_MARKERS.size();
-        return SeriesStyle{.fill = false,
-                           .lineWeightPx = SECONDARY_SERIES_WEIGHT,
-                           .marker = SECONDARY_SERIES_MARKERS[slot],
-                           .markerPhase = static_cast<double>(slot) / static_cast<double>(SECONDARY_SERIES_MARKERS.size())};
+        return SeriesStyle{
+            .fill = false,
+            .lineWeightPx = SECONDARY_SERIES_WEIGHT,
+            .marker = SECONDARY_SERIES_MARKERS[slot],
+            .markerPhase = static_cast<double>(slot) / static_cast<double>(SECONDARY_SERIES_MARKERS.size()),
+        };
     }
     case SeriesRole::Reference:
     {
         // Phases offset from the secondaries' (multiples of a quarter) so their markers do not coincide.
         const std::size_t slot = index % REFERENCE_SERIES_MARKERS.size();
-        return SeriesStyle{.fill = false,
-                           .lineWeightPx = REFERENCE_SERIES_WEIGHT,
-                           .marker = REFERENCE_SERIES_MARKERS[slot],
-                           .markerPhase = (static_cast<double>(slot) + 0.25) / static_cast<double>(REFERENCE_SERIES_MARKERS.size())};
+        return SeriesStyle{
+            .fill = false,
+            .lineWeightPx = REFERENCE_SERIES_WEIGHT,
+            .marker = REFERENCE_SERIES_MARKERS[slot],
+            .markerPhase = (static_cast<double>(slot) + 0.25) / static_cast<double>(REFERENCE_SERIES_MARKERS.size()),
+        };
     }
     }
     return SeriesStyle{};
@@ -1923,16 +1935,18 @@ inline void plotSeriesMarkers(const char* label, const TX* xData, const TY* yDat
                         markerX.data(),
                         markerY.data(),
                         UI::Format::checkedCount(markerX.size()),
-                        {ImPlotProp_Marker,
-                         style.marker,
-                         ImPlotProp_MarkerSize,
-                         lineWeight(SERIES_MARKER_RADIUS),
-                         ImPlotProp_MarkerFillColor,
-                         color,
-                         ImPlotProp_MarkerLineColor,
-                         color,
-                         ImPlotProp_LineColor,
-                         color});
+                        {
+                            ImPlotProp_Marker,
+                            style.marker,
+                            ImPlotProp_MarkerSize,
+                            lineWeight(SERIES_MARKER_RADIUS),
+                            ImPlotProp_MarkerFillColor,
+                            color,
+                            ImPlotProp_MarkerLineColor,
+                            color,
+                            ImPlotProp_LineColor,
+                            color,
+                        });
 }
 
 /// Draws a history series as its SeriesRole says (seriesStyle()): a primary with its fill, a
@@ -3397,29 +3411,33 @@ inline void renderNowBarValueStrip(std::span<const NowBar> bars,
             head = parts.head;
             tail = parts.tail;
         }
-        entries.push_back({.head = head,
-                           .tail = tail,
-                           .color = bar.color,
-                           .marker = bar.marker,
-                           .seriesLabel = bar.label,
-                           .compactHead = label.name,
-                           .compactTail = bar.valueText,
-                           .rightAxis = label.rightAxis,
-                           .tooltip = (bar.stripTooltip != nullptr) ? std::string_view(bar.stripTooltip) : std::string_view{},
-                           .side = SeriesLabelAlignment::labelSide(axes, label.rightAxis)});
+        entries.push_back({
+            .head = head,
+            .tail = tail,
+            .color = bar.color,
+            .marker = bar.marker,
+            .seriesLabel = bar.label,
+            .compactHead = label.name,
+            .compactTail = bar.valueText,
+            .rightAxis = label.rightAxis,
+            .tooltip = (bar.stripTooltip != nullptr) ? std::string_view(bar.stripTooltip) : std::string_view{},
+            .side = SeriesLabelAlignment::labelSide(axes, label.rightAxis),
+        });
     }
     for (const ValueStripEntry& entry : extras)
     {
         const SeriesLabelParts label = splitSecondaryAxisMark(entry.label);
-        entries.push_back({.head = label.name,
-                           .tail = entry.value,
-                           .color = entry.color,
-                           .seriesLabel = entry.label,
-                           .compactHead = label.name,
-                           .compactTail = entry.value,
-                           .rightAxis = label.rightAxis,
-                           .tooltip = (entry.tooltip != nullptr) ? std::string_view(entry.tooltip) : std::string_view{},
-                           .side = SeriesLabelAlignment::labelSide(axes, label.rightAxis)});
+        entries.push_back({
+            .head = label.name,
+            .tail = entry.value,
+            .color = entry.color,
+            .seriesLabel = entry.label,
+            .compactHead = label.name,
+            .compactTail = entry.value,
+            .rightAxis = label.rightAxis,
+            .tooltip = (entry.tooltip != nullptr) ? std::string_view(entry.tooltip) : std::string_view{},
+            .side = SeriesLabelAlignment::labelSide(axes, label.rightAxis),
+        });
     }
     if (entries.empty())
     {

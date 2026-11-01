@@ -41,10 +41,11 @@ std::vector<ConnectionRate> connectionRates(const std::vector<Platform::SystemCo
         {
             continue;
         }
-        rates[i] =
-            ConnectionRate{.known = true,
-                           .sentPerSec = static_cast<double>(connection.bytesSent - before->second.sent) / elapsedSeconds,
-                           .receivedPerSec = static_cast<double>(connection.bytesReceived - before->second.received) / elapsedSeconds};
+        rates[i] = ConnectionRate{
+            .known = true,
+            .sentPerSec = static_cast<double>(connection.bytesSent - before->second.sent) / elapsedSeconds,
+            .receivedPerSec = static_cast<double>(connection.bytesReceived - before->second.received) / elapsedSeconds,
+        };
     }
     return rates;
 }

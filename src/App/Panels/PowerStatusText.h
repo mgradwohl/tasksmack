@@ -99,15 +99,16 @@ inline constexpr std::string_view NO_CHARGE_TEXT = "\xE2\x80\x94";
 batteryNowBar(const Domain::PowerStatus& power, double smoothedChargePercent, std::string_view label, const ImVec4& color)
 {
     const bool available = power.chargePercent >= 0;
-    return {.valueText = available ? UI::Format::formatPercent(smoothedChargePercent) : std::string(NO_CHARGE_TEXT),
-            .label = label,
-            .tooltipText = UI::Widgets::tooltipRowText(label, batteryHeaderStatus(power)),
-            // Scaled to the battery axis's top, headroom included, so the bar meets the line.
-            .value01 = available
-                         ? UI::Widgets::normalizeToUnitInterval(smoothedChargePercent, UI::Widgets::PERCENT_AXIS_UPPER_WITH_HEADROOM)
-                         : 0.0,
-            .color = color,
-            .available = available};
+    return {
+        .valueText = available ? UI::Format::formatPercent(smoothedChargePercent) : std::string(NO_CHARGE_TEXT),
+        .label = label,
+        .tooltipText = UI::Widgets::tooltipRowText(label, batteryHeaderStatus(power)),
+        // Scaled to the battery axis's top, headroom included, so the bar meets the line.
+        .value01 =
+            available ? UI::Widgets::normalizeToUnitInterval(smoothedChargePercent, UI::Widgets::PERCENT_AXIS_UPPER_WITH_HEADROOM) : 0.0,
+        .color = color,
+        .available = available,
+    };
 }
 
 } // namespace App::Detail

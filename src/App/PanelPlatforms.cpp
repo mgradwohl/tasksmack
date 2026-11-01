@@ -97,7 +97,8 @@ ProcessesPanelPlatform makeProcessesPanelPlatform(const Synthetic::Scenario* sce
                                        : Synthetic::makeProcessProbe(scenario),
         .actions = processActionsFor(scenario),
         .udpCollector = Synthetic::makeUdpTrafficCollector(scenario),
-        .icons = Synthetic::makeProcessIconSource(scenario)};
+        .icons = Synthetic::makeProcessIconSource(scenario),
+    };
 #ifndef _WIN32
     // Find handles (#3067): the readers Process Details uses, another user's processes through the helper.
     // Not on Windows yet: its open-files reader walks the whole system handle table for each process, so a
@@ -129,23 +130,25 @@ std::unique_ptr<Platform::IGPUProbe> makeGPUModelProbe(const Synthetic::Scenario
 
 ProcessDetailsReaders makeProcessDetailsReaders(const Synthetic::Scenario* scenario)
 {
-    return {.actions = processActionsFor(scenario),
-            .environment = (scenario == nullptr)
-                             ? Platform::withPrivilegedBroker(Synthetic::makeProcessEnvironmentReader(scenario), sharedPrivilegedBroker())
-                             : Synthetic::makeProcessEnvironmentReader(scenario),
-            .connections = (scenario == nullptr)
-                             ? Platform::withPrivilegedBroker(Synthetic::makeProcessConnectionsReader(scenario), sharedPrivilegedBroker())
-                             : Synthetic::makeProcessConnectionsReader(scenario),
-            .modules = (scenario == nullptr)
-                         ? Platform::withPrivilegedBroker(Synthetic::makeProcessModulesReader(scenario), sharedPrivilegedBroker())
-                         : Synthetic::makeProcessModulesReader(scenario),
-            .security = Synthetic::makeProcessSecurityReader(scenario),
-            .openFiles = (scenario == nullptr)
-                           ? Platform::withPrivilegedBroker(Synthetic::makeProcessOpenFilesReader(scenario), sharedPrivilegedBroker())
-                           : Synthetic::makeProcessOpenFilesReader(scenario),
-            .threads = (scenario == nullptr)
-                         ? Platform::withPrivilegedBroker(Synthetic::makeProcessThreadsReader(scenario), sharedPrivilegedBroker())
-                         : Synthetic::makeProcessThreadsReader(scenario)};
+    return {
+        .actions = processActionsFor(scenario),
+        .environment = (scenario == nullptr)
+                         ? Platform::withPrivilegedBroker(Synthetic::makeProcessEnvironmentReader(scenario), sharedPrivilegedBroker())
+                         : Synthetic::makeProcessEnvironmentReader(scenario),
+        .connections = (scenario == nullptr)
+                         ? Platform::withPrivilegedBroker(Synthetic::makeProcessConnectionsReader(scenario), sharedPrivilegedBroker())
+                         : Synthetic::makeProcessConnectionsReader(scenario),
+        .modules = (scenario == nullptr)
+                     ? Platform::withPrivilegedBroker(Synthetic::makeProcessModulesReader(scenario), sharedPrivilegedBroker())
+                     : Synthetic::makeProcessModulesReader(scenario),
+        .security = Synthetic::makeProcessSecurityReader(scenario),
+        .openFiles = (scenario == nullptr)
+                       ? Platform::withPrivilegedBroker(Synthetic::makeProcessOpenFilesReader(scenario), sharedPrivilegedBroker())
+                       : Synthetic::makeProcessOpenFilesReader(scenario),
+        .threads = (scenario == nullptr)
+                     ? Platform::withPrivilegedBroker(Synthetic::makeProcessThreadsReader(scenario), sharedPrivilegedBroker())
+                     : Synthetic::makeProcessThreadsReader(scenario),
+    };
 }
 
 std::unique_ptr<Platform::IProcessActions> makeConnectionsPanelActions(const Synthetic::Scenario* scenario)
@@ -174,8 +177,10 @@ ServicesPanelPlatform makeServicesPanelPlatform(const Synthetic::Scenario* /*sce
 #else
     // A refused action goes to a running helper, and Authenticate and retry starts it (#2728). Windows'
     // helper doesn't do service actions, so Windows keeps its own.
-    return {.probe = Platform::makeServiceProbe(),
-            .actions = Platform::withPrivilegedBroker(Platform::makeServiceActions(), sharedPrivilegedBroker())};
+    return {
+        .probe = Platform::makeServiceProbe(),
+        .actions = Platform::withPrivilegedBroker(Platform::makeServiceActions(), sharedPrivilegedBroker()),
+    };
 #endif
 }
 

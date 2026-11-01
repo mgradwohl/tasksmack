@@ -1008,10 +1008,12 @@ void Application::run()
             {
                 // The first frame comes at the idle rate, as before: it is not a static frame yet.
                 const int periodMs = FramePacing::computeIdlePeriodMs(
-                    {.requestedFps = requestedAnimationFps,
-                     .frameWithinSeconds = requestedFrameWithinSeconds,
-                     .isHidden = isHidden,
-                     .graceActive = keepInteractionRedrawActive || inputGraceActive || !drewFirstFrame},
+                    {
+                        .requestedFps = requestedAnimationFps,
+                        .frameWithinSeconds = requestedFrameWithinSeconds,
+                        .isHidden = isHidden,
+                        .graceActive = keepInteractionRedrawActive || inputGraceActive || !drewFirstFrame,
+                    },
                     {.idleMs = IDLE_FRAME_SLEEP_MS, .hiddenMs = MINIMIZED_FRAME_SLEEP_MS, .staticFloorMs = STATIC_FRAME_FLOOR_MS});
                 const int sleepMs = FramePacing::computeIdleWaitMs(periodMs, getTime() - lastFrameStart);
                 const auto waitOutcome = waitForEvent(sleepMs, traceResizePerfThisFrame);
@@ -1129,7 +1131,9 @@ void Application::renderFrame(
         {
             const auto layerEnd = std::chrono::steady_clock::now();
             updateLayerDurations.emplace_back(LayerPhaseDuration{
-                .name = layer->getName(), .durationMs = std::chrono::duration<double, std::milli>(layerEnd - layerStart).count()});
+                .name = layer->getName(),
+                .durationMs = std::chrono::duration<double, std::milli>(layerEnd - layerStart).count(),
+            });
         }
     }
     const auto updateEnd = tracing ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
@@ -1150,7 +1154,9 @@ void Application::renderFrame(
         {
             const auto layerEnd = std::chrono::steady_clock::now();
             postLayerDurations.emplace_back(LayerPhaseDuration{
-                .name = layer->getName(), .durationMs = std::chrono::duration<double, std::milli>(layerEnd - layerStart).count()});
+                .name = layer->getName(),
+                .durationMs = std::chrono::duration<double, std::milli>(layerEnd - layerStart).count(),
+            });
         }
     }
     const auto postRenderEnd = tracing ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};

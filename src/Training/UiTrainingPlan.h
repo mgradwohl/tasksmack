@@ -68,17 +68,19 @@ struct Workload
     int weight = 0;                          ///< percent of the run's frames
 };
 
-inline constexpr std::array<Workload, 9> WORKLOADS{{
-    {.name = "overview", .tab = Tab::SystemOverview, .weight = 25},
-    {.name = "processes", .tab = Tab::Processes, .weight = 18},
-    {.name = "processes-tree", .tab = Tab::Processes, .treeView = true, .weight = 10},
-    {.name = "details-overview", .tab = Tab::ProcessDetails, .details = DetailsView::Overview, .weight = 14},
-    {.name = "details-gpu", .tab = Tab::ProcessDetails, .details = DetailsView::Gpu, .weight = 4},
-    {.name = "details-network", .tab = Tab::ProcessDetails, .details = DetailsView::Network, .weight = 6},
-    {.name = "services", .tab = Tab::Services, .weight = 8},
-    {.name = "startup", .tab = Tab::Startup, .weight = 7},
-    {.name = "system", .tab = Tab::SystemInfo, .weight = 8},
-}};
+inline constexpr std::array<Workload, 9> WORKLOADS{
+    {
+        {.name = "overview", .tab = Tab::SystemOverview, .weight = 25},
+        {.name = "processes", .tab = Tab::Processes, .weight = 18},
+        {.name = "processes-tree", .tab = Tab::Processes, .treeView = true, .weight = 10},
+        {.name = "details-overview", .tab = Tab::ProcessDetails, .details = DetailsView::Overview, .weight = 14},
+        {.name = "details-gpu", .tab = Tab::ProcessDetails, .details = DetailsView::Gpu, .weight = 4},
+        {.name = "details-network", .tab = Tab::ProcessDetails, .details = DetailsView::Network, .weight = 6},
+        {.name = "services", .tab = Tab::Services, .weight = 8},
+        {.name = "startup", .tab = Tab::Startup, .weight = 7},
+        {.name = "system", .tab = Tab::SystemInfo, .weight = 8},
+    },
+};
 
 /// The registered id of @p tab ("SystemOverview", "Processes", ...), as ActiveTabChangedEvent carries it.
 [[nodiscard]] std::string_view tabId(Tab tab) noexcept;

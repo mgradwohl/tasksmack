@@ -782,11 +782,13 @@ LinuxProcessActions::createDump(const ProcessTarget& target, const std::filesyst
     }
     const std::uintmax_t size = std::filesystem::file_size(file, ec);
     spdlog::info("Wrote a dump of PID {} to {}", target.pid, file.string());
-    return ProcessDump{.file = file,
-                       .sizeBytes = ec ? 0 : static_cast<std::uint64_t>(size),
-                       .note = {},
-                       .fromSnapshot = false,
-                       .liveReason = LinuxCoreDump::LIVE_REASON};
+    return ProcessDump{
+        .file = file,
+        .sizeBytes = ec ? 0 : static_cast<std::uint64_t>(size),
+        .note = {},
+        .fromSnapshot = false,
+        .liveReason = LinuxCoreDump::LIVE_REASON,
+    };
 }
 
 DumpSpace LinuxProcessActions::dumpSpace(const ProcessTarget& target, const std::filesystem::path& directory)

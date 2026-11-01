@@ -31,17 +31,22 @@ struct TabSummary
 };
 
 /// One line for each top-level tab, in the tab bar's order (ShellLayer's tab list).
-inline constexpr std::array<TabSummary, 4> TAB_OVERVIEW{{
+inline constexpr std::array<TabSummary, 4> TAB_OVERVIEW{
     {
-        .name = "Machine (its name)",
-        .summary = "The whole system: CPU, memory, storage, GPU, network and power, live and as history (Overview, CPU Cores, GPU, NPU "
-                   "where there is one, Network and I/O)",
+        {
+            .name = "Machine (its name)",
+            .summary = "The whole system: CPU, memory, storage, GPU, network and power, live and as history (Overview, CPU Cores, GPU, NPU "
+                       "where there is one, Network and I/O)",
+        },
+        {.name = "Processes", .summary = "Every process, as a sortable list or a tree; filter it, pick columns, act on a selection"},
+        {
+            .name = "Process Details",
+            .summary =
+                "The selected process: Overview (identity, runtime, actions, charts), GPU, NPU where there is one, and Network and I/O",
+        },
+        {.name = "Services", .summary = "The system's services and their state (read-only)"},
     },
-    {.name = "Processes", .summary = "Every process, as a sortable list or a tree; filter it, pick columns, act on a selection"},
-    {.name = "Process Details",
-     .summary = "The selected process: Overview (identity, runtime, actions, charts), GPU, NPU where there is one, and Network and I/O"},
-    {.name = "Services", .summary = "The system's services and their state (read-only)"},
-}};
+};
 
 /// Which SHORTCUT_HELP entries a filter keeps, by index.
 using ShortcutMask = std::array<bool, KeyboardShortcuts::SHORTCUT_HELP.size()>;

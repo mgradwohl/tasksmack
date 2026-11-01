@@ -54,28 +54,38 @@ struct FunctionKeyBinding
 
 /// The function-key map, in key order. The single source for the shell's dispatch and for the
 /// shortcut list in the Help window.
-inline constexpr std::array<FunctionKeyBinding, 8> FUNCTION_KEY_BINDINGS{{
-    {.key = FunctionKey::F1, .action = ShortcutAction::ShowHelp, .keyLabel = "F1", .description = "Help: shortcuts, columns and tabs"},
-    {.key = FunctionKey::F2, .action = ShortcutAction::OpenSettings, .keyLabel = "F2", .description = "Settings"},
-    {.key = FunctionKey::F5, .action = ShortcutAction::ToggleTreeView, .keyLabel = "F5", .description = "List / tree view"},
-    {.key = FunctionKey::F6,
-     .action = ShortcutAction::SortMenu,
-     .keyLabel = "F6",
-     .description = "Sort by: pick the sort column (again: reverse it)"},
-    {.key = FunctionKey::F7,
-     .action = ShortcutAction::RaisePriority,
-     .keyLabel = "F7",
-     .description = "Higher priority for the selected process (nice -1, or the next class up)"},
-    {.key = FunctionKey::F8,
-     .action = ShortcutAction::LowerPriority,
-     .keyLabel = "F8",
-     .description = "Lower priority for the selected process (nice +1, or the next class down)"},
-    {.key = FunctionKey::F9,
-     .action = ShortcutAction::KillSelected,
-     .keyLabel = "F9",
-     .description = "Kill the selected process(es) (asks first)"},
-    {.key = FunctionKey::F10, .action = ShortcutAction::Quit, .keyLabel = "F10", .description = "Quit"},
-}};
+inline constexpr std::array<FunctionKeyBinding, 8> FUNCTION_KEY_BINDINGS{
+    {
+        {.key = FunctionKey::F1, .action = ShortcutAction::ShowHelp, .keyLabel = "F1", .description = "Help: shortcuts, columns and tabs"},
+        {.key = FunctionKey::F2, .action = ShortcutAction::OpenSettings, .keyLabel = "F2", .description = "Settings"},
+        {.key = FunctionKey::F5, .action = ShortcutAction::ToggleTreeView, .keyLabel = "F5", .description = "List / tree view"},
+        {
+            .key = FunctionKey::F6,
+            .action = ShortcutAction::SortMenu,
+            .keyLabel = "F6",
+            .description = "Sort by: pick the sort column (again: reverse it)",
+        },
+        {
+            .key = FunctionKey::F7,
+            .action = ShortcutAction::RaisePriority,
+            .keyLabel = "F7",
+            .description = "Higher priority for the selected process (nice -1, or the next class up)",
+        },
+        {
+            .key = FunctionKey::F8,
+            .action = ShortcutAction::LowerPriority,
+            .keyLabel = "F8",
+            .description = "Lower priority for the selected process (nice +1, or the next class down)",
+        },
+        {
+            .key = FunctionKey::F9,
+            .action = ShortcutAction::KillSelected,
+            .keyLabel = "F9",
+            .description = "Kill the selected process(es) (asks first)",
+        },
+        {.key = FunctionKey::F10, .action = ShortcutAction::Quit, .keyLabel = "F10", .description = "Quit"},
+    },
+};
 
 /// The keyboard and dialog state a shortcut is checked against.
 struct InputState
@@ -149,38 +159,48 @@ struct ShortcutHelpEntry
 
 /// Every keyboard shortcut, for the Help window (#172): the function keys above, then the Processes
 /// table's navigation (ProcessTableNavigation.h), Process Details' keys and the older chords.
-inline constexpr std::array<ShortcutHelpEntry, 22> SHORTCUT_HELP{{
-    {.keys = "F1", .description = "Help: shortcuts, columns and tabs", .area = ShortcutArea::Global},
-    {.keys = "F2", .description = "Settings", .area = ShortcutArea::Global},
-    {.keys = "F5", .description = "List / tree view", .area = ShortcutArea::Processes},
-    {.keys = "F6", .description = "Sort by: pick the sort column (again: reverse it)", .area = ShortcutArea::Processes},
-    {.keys = "F7",
-     .description = "Higher priority for the selected process (nice -1, or the next class up)",
-     .area = ShortcutArea::Processes},
-    {.keys = "F8",
-     .description = "Lower priority for the selected process (nice +1, or the next class down)",
-     .area = ShortcutArea::Processes},
-    {.keys = "F9", .description = "Kill the selected process(es) (asks first)", .area = ShortcutArea::Processes},
-    {.keys = "F10", .description = "Quit", .area = ShortcutArea::Global},
-    {.keys = "Up / Down, k / j", .description = "Previous / next row", .area = ShortcutArea::Processes},
-    {.keys = "Page Up / Page Down", .description = "One page up / down", .area = ShortcutArea::Processes},
-    {.keys = "Home / End, g / G", .description = "First / last row", .area = ShortcutArea::Processes},
-    {.keys = "Left / Right", .description = "Tree view: collapse / expand, then parent / first child", .area = ShortcutArea::Processes},
-    {.keys = "Ctrl + click", .description = "Add a row to, or remove it from, the selection", .area = ShortcutArea::Processes},
-    {.keys = "Shift + click",
-     .description = "Select the rows from the last one clicked (Ctrl + Shift adds them)",
-     .area = ShortcutArea::Processes},
-    {.keys = "Ctrl + A", .description = "Select every row shown", .area = ShortcutArea::Processes},
-    {.keys = "/", .description = "Find a process by name: Enter for the next, Esc to close", .area = ShortcutArea::Processes},
-    {.keys = "Hold Ctrl", .description = "Pause updates while held", .area = ShortcutArea::Processes},
-    {.keys = "F9", .description = "Kill the process shown (asks first)", .area = ShortcutArea::ProcessDetails},
-    {.keys = "Left / Right, Page Up / Page Down, Home / End, 0",
-     .description = "Priority slider, when focused: step by 1, step by 5, highest / lowest, normal",
-     .area = ShortcutArea::ProcessDetails},
-    {.keys = "Ctrl + = / Ctrl + -, Ctrl + keypad + / -", .description = "Larger / smaller text", .area = ShortcutArea::Global},
-    {.keys = "Ctrl + Shift + M", .description = "Render metrics overlay", .area = ShortcutArea::Global},
-    {.keys = "Alt + Space / Ctrl + Space", .description = "Window menu", .area = ShortcutArea::Global},
-}};
+inline constexpr std::array<ShortcutHelpEntry, 22> SHORTCUT_HELP{
+    {
+        {.keys = "F1", .description = "Help: shortcuts, columns and tabs", .area = ShortcutArea::Global},
+        {.keys = "F2", .description = "Settings", .area = ShortcutArea::Global},
+        {.keys = "F5", .description = "List / tree view", .area = ShortcutArea::Processes},
+        {.keys = "F6", .description = "Sort by: pick the sort column (again: reverse it)", .area = ShortcutArea::Processes},
+        {
+            .keys = "F7",
+            .description = "Higher priority for the selected process (nice -1, or the next class up)",
+            .area = ShortcutArea::Processes,
+        },
+        {
+            .keys = "F8",
+            .description = "Lower priority for the selected process (nice +1, or the next class down)",
+            .area = ShortcutArea::Processes,
+        },
+        {.keys = "F9", .description = "Kill the selected process(es) (asks first)", .area = ShortcutArea::Processes},
+        {.keys = "F10", .description = "Quit", .area = ShortcutArea::Global},
+        {.keys = "Up / Down, k / j", .description = "Previous / next row", .area = ShortcutArea::Processes},
+        {.keys = "Page Up / Page Down", .description = "One page up / down", .area = ShortcutArea::Processes},
+        {.keys = "Home / End, g / G", .description = "First / last row", .area = ShortcutArea::Processes},
+        {.keys = "Left / Right", .description = "Tree view: collapse / expand, then parent / first child", .area = ShortcutArea::Processes},
+        {.keys = "Ctrl + click", .description = "Add a row to, or remove it from, the selection", .area = ShortcutArea::Processes},
+        {
+            .keys = "Shift + click",
+            .description = "Select the rows from the last one clicked (Ctrl + Shift adds them)",
+            .area = ShortcutArea::Processes,
+        },
+        {.keys = "Ctrl + A", .description = "Select every row shown", .area = ShortcutArea::Processes},
+        {.keys = "/", .description = "Find a process by name: Enter for the next, Esc to close", .area = ShortcutArea::Processes},
+        {.keys = "Hold Ctrl", .description = "Pause updates while held", .area = ShortcutArea::Processes},
+        {.keys = "F9", .description = "Kill the process shown (asks first)", .area = ShortcutArea::ProcessDetails},
+        {
+            .keys = "Left / Right, Page Up / Page Down, Home / End, 0",
+            .description = "Priority slider, when focused: step by 1, step by 5, highest / lowest, normal",
+            .area = ShortcutArea::ProcessDetails,
+        },
+        {.keys = "Ctrl + = / Ctrl + -, Ctrl + keypad + / -", .description = "Larger / smaller text", .area = ShortcutArea::Global},
+        {.keys = "Ctrl + Shift + M", .description = "Render metrics overlay", .area = ShortcutArea::Global},
+        {.keys = "Alt + Space / Ctrl + Space", .description = "Window menu", .area = ShortcutArea::Global},
+    },
+};
 
 /// Which panel a tab-sensitive shortcut goes to.
 enum class ShortcutTarget : std::uint8_t

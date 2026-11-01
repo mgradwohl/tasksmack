@@ -163,10 +163,12 @@ class SystemMetricsPanel : public Panel
     /// (#1370 review). 0 when no tab has a current measurement.
     [[nodiscard]] float firstChartNonPlotHeight(float windowWidth, float fontSize) const noexcept
     {
-        return std::max({UI::Widgets::currentFirstPlotNonPlotHeight(m_OverviewFill.firstPlot, windowWidth, fontSize),
-                         UI::Widgets::currentFirstPlotNonPlotHeight(m_GpuFill.firstPlot, windowWidth, fontSize),
-                         UI::Widgets::currentFirstPlotNonPlotHeight(m_NpuFill.firstPlot, windowWidth, fontSize),
-                         UI::Widgets::currentFirstPlotNonPlotHeight(m_NetworkFill.firstPlot, windowWidth, fontSize)});
+        return std::max({
+            UI::Widgets::currentFirstPlotNonPlotHeight(m_OverviewFill.firstPlot, windowWidth, fontSize),
+            UI::Widgets::currentFirstPlotNonPlotHeight(m_GpuFill.firstPlot, windowWidth, fontSize),
+            UI::Widgets::currentFirstPlotNonPlotHeight(m_NpuFill.firstPlot, windowWidth, fontSize),
+            UI::Widgets::currentFirstPlotNonPlotHeight(m_NetworkFill.firstPlot, windowWidth, fontSize),
+        });
     }
 
     /// NowBar columns every Overview chart reserves: the most bars any of them has, which depends on
