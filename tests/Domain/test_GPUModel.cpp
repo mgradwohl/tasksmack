@@ -1159,6 +1159,26 @@ TEST(GPUModelTest, ProcessUtilizationAProbeReportsItselfPassesThroughUnchanged)
     }
 }
 
+// A replacement probe's first sample has no baseline, even when it reports the same GPU and client
+// ids: the old probe's counters are no baseline for it, whether it replaces the probe directly or
+// after none at all.
+TEST(GPUModelTest, ProcessUtilizationStartsAgainAfterTheProbeIsReplaced)
+{
+    Domain::GPUModel model(drmProcessProbe({drmProcess(100, {engineClient(7, RENDER_CLASS, 800, 1000)})}));
+    const auto start = std::chrono::steady_clock::now();
+    model.refreshAt(start);
+
+    model.setProbe(drmProcessProbe({drmProcess(100, {engineClient(7, RENDER_CLASS, 1'000, 2000)})}));
+    model.refreshAt(start + std::chrono::seconds(1));
+    EXPECT_DOUBLE_EQ(publishedProcess(model, 100).gpuUtilPercent, 0.0) << "not 20% against the old probe's counters";
+    EXPECT_TRUE(publishedProcess(model, 100).activeEngines.empty());
+
+    model.setProbe(nullptr);
+    model.setProbe(drmProcessProbe({drmProcess(100, {engineClient(7, RENDER_CLASS, 1'500, 3000)})}));
+    model.refreshAt(start + std::chrono::seconds(2));
+    EXPECT_DOUBLE_EQ(publishedProcess(model, 100).gpuUtilPercent, 0.0) << "not 50% against the counters before the null probe";
+}
+
 // =============================================================================
 // Multi-GPU Tests
 // =============================================================================

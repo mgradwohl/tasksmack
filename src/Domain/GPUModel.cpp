@@ -379,6 +379,9 @@ void GPUModel::setProbe(std::unique_ptr<Platform::IGPUProbe> probe)
     // and the GPU info and capabilities below are written as a rescan writes them (#2153).
     const std::scoped_lock probeLock(m_ProbeMutex);
     m_Probe = std::move(probe);
+    // The per-process baseline is the old probe's clients: a new probe's first sample has none (#3300),
+    // even if it reports the same GPU and client ids.
+    m_PrevProcessEngineClients.clear();
     if (!m_Probe)
     {
         // No probe (the synthetic scenario has no GPU, #1413) is a known answer, not an unknown one:

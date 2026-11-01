@@ -2259,17 +2259,51 @@ TEST_F(DRMGPUProbeEngineTest, TheAmdClientsProbeLabelsItsProcessesWithRocmsIds)
     EXPECT_EQ(first[0].gpuId, "amd-rocm-1");
     EXPECT_EQ(first[0].gpuMemoryBytes, 4096U * 1024U);
     EXPECT_EQ(first[0].gpuSharedMemoryBytes, 1024U * 1024U);
-
-    // Over 1000 ns: gfx busy 500 (50%), the video engines 200 + 100 (30%): GPU% is the busiest class.
-    now = 11'000;
-    std::ofstream(m_ProcRoot / "100" / "fdinfo" / "4") << amdgpuFdinfo(21, 1'500, 200, 100, "");
-    (void) probe->readGPUCounters();
-    const std::vector<ProcessGPUCounters> second = probe->readProcessGPUCounters();
-    ASSERT_EQ(second.size(), 1U);
-    EXPECT_DOUBLE_EQ(second[0].gpuUtilPercent, 50.0);
-    EXPECT_EQ(second[0].activeEngines, (std::vector<std::string>{"3D", "Video"}));
+    // The client's raw counters, stamped with the clock; Domain derives the utilization (#3300).
+    EXPECT_DOUBLE_EQ(first[0].gpuUtilPercent, 0.0);
+    EXPECT_TRUE(first[0].activeEngines.empty());
+    ASSERT_EQ(first[0].engineClients.size(), 1U);
+    const GPUEngineClientCounters& client = first[0].engineClients[0];
+    EXPECT_EQ(client.clientId, 21U);
+    EXPECT_EQ(client.pid, 100);
+    EXPECT_TRUE(client.engines.at(RENDER).available);
+    EXPECT_EQ(client.engines.at(RENDER).busy, 1'000U);
+    EXPECT_EQ(client.engines.at(RENDER).total, 10'000U);
+    EXPECT_TRUE(client.engines.at(VIDEO).available);
+    EXPECT_EQ(client.engines.at(VIDEO).busy, 0U);
     EXPECT_TRUE(probe->capabilities().hasPerProcessUtilization);
     EXPECT_FALSE(probe->capabilities().hasTemperature);
+}
+
+// #2589, #3300: through GPUModel, an amdgpu card's process gets its share of the engines' time under
+// ROCm's id. Over 1000 ns: gfx busy 500 (50%), the video engines 200 + 100 (30%): GPU% is the busiest
+// class, and both classes are active.
+TEST_F(DRMGPUProbeEngineTest, GPUModelDerivesTheAmdClientsProbesProcessesBusyShare)
+{
+    addAmdgpuCard();
+    makeFd(m_ProcRoot, 100, 4, "/dev/dri/renderD130", amdgpuFdinfo(21, 1'000, 0, 0, ""));
+    const auto now = std::make_shared<std::uint64_t>(10'000);
+    auto probe = makeAmdClientsProbe([now] { return *now; });
+    probe->setClientGpuIds({{AMDGPU_PCI, "amd-rocm-1"}});
+    Domain::GPUModel model(std::move(probe));
+    const auto start = std::chrono::steady_clock::now();
+    model.refreshAt(start);
+    const auto process100 = [&model]
+    {
+        const auto publication = model.processGPUPublication();
+        const auto process = std::ranges::find(publication->counters, 100, &ProcessGPUCounters::pid);
+        return process != publication->counters.end() ? *process : ProcessGPUCounters{};
+    };
+    EXPECT_EQ(process100().gpuId, "amd-rocm-1");
+    EXPECT_DOUBLE_EQ(process100().gpuUtilPercent, 0.0) << "no baseline yet";
+
+    *now = 11'000;
+    std::ofstream(m_ProcRoot / "100" / "fdinfo" / "4") << amdgpuFdinfo(21, 1'500, 200, 100, "");
+    model.refreshAt(start + std::chrono::seconds(1));
+    const ProcessGPUCounters second = process100();
+    EXPECT_EQ(second.gpuId, "amd-rocm-1");
+    EXPECT_DOUBLE_EQ(second.gpuUtilPercent, 50.0);
+    EXPECT_EQ(second.activeEngines, (std::vector<std::string>{"3D", "Video"}));
 }
 
 /// The NVML or ROCm mock's next init fails while this lives, as on a machine without that library: the
