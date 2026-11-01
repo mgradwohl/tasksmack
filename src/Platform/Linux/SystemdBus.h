@@ -134,6 +134,10 @@ struct UnitWait
 /// setUnitStartType() then uses that connection, as root, instead of opening its own. The reason it
 /// couldn't, or nullopt. TaskSmack itself never calls it.
 [[nodiscard]] std::optional<std::string> holdSystemBusForActions();
+/// The held connection's socket (holdSystemBusForActions()), or -1 when none is held: the one descriptor
+/// tasksmack-helper's seccomp filter lets sendmsg() and recvmsg() use, which sd-bus moves every message with
+/// (#3294).
+[[nodiscard]] int heldSystemBusFd() noexcept;
 /// Test seam: closes the held connection, so later actions open their own again.
 void releaseHeldSystemBusForTesting();
 
