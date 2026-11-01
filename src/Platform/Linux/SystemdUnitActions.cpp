@@ -40,6 +40,8 @@ namespace Platform::SystemdBus
 
 using Detail::Bus;
 using Detail::BusError;
+using Detail::MallocString;
+using Detail::MallocStrv;
 using Detail::Message;
 using Detail::openSystemBus;
 using Detail::timedOut;
@@ -199,29 +201,26 @@ int onActionReply(sd_bus_message* message, void* userdata, sd_bus_error* /*retEr
 [[nodiscard]] std::string activeStateOf(sd_bus* bus, const std::string& unitPath)
 {
     BusError error;
-    char* state = nullptr;
-    if (sd_bus_get_property_string(bus, SYSTEMD, unitPath.c_str(), SYSTEMD_UNIT, "ActiveState", error.get(), &state) < 0 ||
-        state == nullptr)
+    MallocString state; // freed even if the copy below throws (#3338)
+    if (sd_bus_get_property_string(bus, SYSTEMD, unitPath.c_str(), SYSTEMD_UNIT, "ActiveState", error.get(), state.out()) < 0 ||
+        state.get() == nullptr)
     {
         return {};
     }
-    std::string text(state);
-    std::free(state); // NOLINT(cppcoreguidelines-no-malloc, cppcoreguidelines-owning-memory) - sd-bus hands back malloc'd strings
-    return text;
+    return state.get();
 }
 
 /// A string property of @p unitPath's Service interface (Type, Result); empty when it can't be read.
 [[nodiscard]] std::string serviceStringOf(sd_bus* bus, const std::string& unitPath, const char* property)
 {
     BusError error;
-    char* value = nullptr;
-    std::string text;
-    if (sd_bus_get_property_string(bus, SYSTEMD, unitPath.c_str(), SYSTEMD_SERVICE, property, error.get(), &value) >= 0 && value != nullptr)
+    MallocString value; // freed even if the copy below throws (#3338)
+    if (sd_bus_get_property_string(bus, SYSTEMD, unitPath.c_str(), SYSTEMD_SERVICE, property, error.get(), value.out()) >= 0 &&
+        value.get() != nullptr)
     {
-        text = value;
+        return value.get();
     }
-    std::free(value); // NOLINT(cppcoreguidelines-no-malloc, cppcoreguidelines-owning-memory) - sd-bus hands back malloc'd strings
-    return text;
+    return {};
 }
 
 /// When @p unitPath's service main process last started (ExecMainStartTimestampMonotonic, in µs); 0 when
@@ -242,10 +241,8 @@ int onActionReply(sd_bus_message* message, void* userdata, sd_bus_error* /*retEr
 [[nodiscard]] bool jobGone(sd_bus* bus, const std::string& jobPath)
 {
     BusError error;
-    char* state = nullptr;
-    const int result = sd_bus_get_property_string(bus, SYSTEMD, jobPath.c_str(), SYSTEMD_JOB, "State", error.get(), &state);
-    std::free(state); // NOLINT(cppcoreguidelines-no-malloc, cppcoreguidelines-owning-memory) - as above
-    return result < 0;
+    MallocString state;
+    return sd_bus_get_property_string(bus, SYSTEMD, jobPath.c_str(), SYSTEMD_JOB, "State", error.get(), state.out()) < 0;
 }
 
 /// Sends Manager.@p method (StartUnit or StopUnit) for @p name in "replace" mode and waits for @p goal.
@@ -339,15 +336,16 @@ int onActionReply(sd_bus_message* message, void* userdata, sd_bus_error* /*retEr
     for (const char* property : {"RequiredBy", "BoundBy", "ConsistsOf", "RequisiteOf"})
     {
         BusError error;
-        char** names = nullptr;
-        if (sd_bus_get_property_strv(bus, SYSTEMD, unitObject.c_str(), SYSTEMD_UNIT, property, error.get(), &names) < 0 || names == nullptr)
+        MallocStrv names; // every entry and the array freed, even if a copy or a call below throws (#3338)
+        if (sd_bus_get_property_strv(bus, SYSTEMD, unitObject.c_str(), SYSTEMD_UNIT, property, error.get(), names.out()) < 0 ||
+            names.get() == nullptr)
         {
             continue;
         }
-        for (char* const* entry = names; *entry != nullptr; ++entry) // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic) - a C strv
+        for (char* const* entry = names.get(); *entry != nullptr;
+             ++entry) // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic) - a C strv
         {
             const std::string dependent(*entry);
-            std::free(*entry); // NOLINT(cppcoreguidelines-no-malloc, cppcoreguidelines-owning-memory) - strv entries are malloc'd
             std::string dependentObject;
             if (!unitPath(bus, dependent, dependentObject).has_value() && SystemdActions::isRunning(activeStateOf(bus, dependentObject)) &&
                 std::ranges::find(running, dependent) == running.end())
@@ -355,7 +353,6 @@ int onActionReply(sd_bus_message* message, void* userdata, sd_bus_error* /*retEr
                 running.push_back(dependent);
             }
         }
-        std::free(static_cast<void*>(names)); // NOLINT(cppcoreguidelines-no-malloc, cppcoreguidelines-owning-memory) - as above
     }
     return running;
 }

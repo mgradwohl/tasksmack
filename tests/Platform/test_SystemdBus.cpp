@@ -7,6 +7,14 @@
 #include "Platform/Linux/LinuxNetworkAdapters.h"
 #include "Platform/Linux/SystemdBus.h"
 
+#ifdef TASKSMACK_HAS_SDBUS
+#include "Platform/Linux/SdBusCall.h"
+
+#include <cstdlib>
+#include <cstring>
+#include <new>
+#endif
+
 #include <gtest/gtest.h>
 
 namespace Platform
@@ -120,6 +128,50 @@ TEST(SystemdBusTest, ReadsANetworkdLeaseOrSaysWhyNot)
     }
     EXPECT_TRUE(read.error.empty());
 }
+
+#ifdef TASKSMACK_HAS_SDBUS
+
+// #3338: the owners of what sd-bus hands back with malloc free it on every path, a throw while it is held included.
+// Debug builds check nothing leaks by running cleanly; the Sanitizers job's LeakSanitizer fails on a leak.
+TEST(SdBusOwnersTest, MallocdStringsAndArraysAreFreedWhenACopyThrows)
+{
+    const auto fillString = [](char** out)
+    {
+        *out = ::strdup("a remote host name longer than small-string storage");
+    };
+    const auto fillStrv = [](char*** out)
+    {
+        // NOLINTNEXTLINE(cppcoreguidelines-no-malloc, cppcoreguidelines-owning-memory) - an sd-bus-style strv
+        auto** names = static_cast<char**>(std::calloc(3, sizeof(char*)));
+        names[0] = ::strdup("a.service"); // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic) - a C strv
+        names[1] = ::strdup("b.service"); // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic) - a C strv
+        *out = names;
+    };
+    EXPECT_THROW(
+        {
+            SystemdBus::Detail::MallocString text;
+            fillString(text.out());
+            ASSERT_NE(text.get(), nullptr);
+            throw std::bad_alloc(); // as copying it might
+        },
+        std::bad_alloc);
+    EXPECT_THROW(
+        {
+            SystemdBus::Detail::MallocStrv names;
+            fillStrv(names.out());
+            ASSERT_NE(names.get(), nullptr);
+            EXPECT_STREQ(names.get()[1], "b.service"); // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic) - a C strv
+            throw std::bad_alloc();                    // part way through copying its entries
+        },
+        std::bad_alloc);
+    // Empty: the calls gave nothing, and there is nothing to free.
+    const SystemdBus::Detail::MallocString none;
+    EXPECT_EQ(none.get(), nullptr);
+    const SystemdBus::Detail::MallocStrv noNames;
+    EXPECT_EQ(noNames.get(), nullptr);
+}
+
+#endif
 
 } // namespace
 } // namespace Platform

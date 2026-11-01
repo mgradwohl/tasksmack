@@ -12,6 +12,7 @@
 #include "Platform/Linux/SystemdBus.h"
 
 #include <cerrno>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <string_view>
@@ -124,6 +125,74 @@ class BusError
 
   private:
     sd_bus_error m_Error{}; // SD_BUS_ERROR_NULL, written as C++
+};
+
+/// Owns a string sd-bus hands back with malloc (sd_bus_get_property_string()'s), given to the call through out(), so
+/// it is freed even when copying it throws (#3338).
+class MallocString
+{
+  public:
+    MallocString() = default;
+    ~MallocString()
+    {
+        std::free(m_Text); // NOLINT(cppcoreguidelines-no-malloc, cppcoreguidelines-owning-memory) - sd-bus's malloc
+    }
+    MallocString(const MallocString&) = delete;
+    MallocString& operator=(const MallocString&) = delete;
+    MallocString(MallocString&&) = delete;
+    MallocString& operator=(MallocString&&) = delete;
+
+    /// Where the call writes the string.
+    [[nodiscard]] char** out() noexcept
+    {
+        return &m_Text;
+    }
+    /// The string, or nullptr when the call gave none.
+    [[nodiscard]] const char* get() const noexcept
+    {
+        return m_Text;
+    }
+
+  private:
+    char* m_Text = nullptr;
+};
+
+/// Owns a NULL-terminated string array sd-bus hands back with malloc (sd_bus_get_property_strv()'s): every entry
+/// and the array, freed even when copying one throws (#3338).
+class MallocStrv
+{
+  public:
+    MallocStrv() = default;
+    ~MallocStrv()
+    {
+        if (m_Entries == nullptr)
+        {
+            return;
+        }
+        for (char** entry = m_Entries; *entry != nullptr; ++entry) // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic) - a C strv
+        {
+            std::free(*entry); // NOLINT(cppcoreguidelines-no-malloc, cppcoreguidelines-owning-memory) - sd-bus's malloc
+        }
+        std::free(static_cast<void*>(m_Entries)); // NOLINT(cppcoreguidelines-no-malloc, cppcoreguidelines-owning-memory) - as above
+    }
+    MallocStrv(const MallocStrv&) = delete;
+    MallocStrv& operator=(const MallocStrv&) = delete;
+    MallocStrv(MallocStrv&&) = delete;
+    MallocStrv& operator=(MallocStrv&&) = delete;
+
+    /// Where the call writes the array.
+    [[nodiscard]] char*** out() noexcept
+    {
+        return &m_Entries;
+    }
+    /// The array, NULL-terminated, or nullptr when the call gave none.
+    [[nodiscard]] char* const* get() const noexcept
+    {
+        return m_Entries;
+    }
+
+  private:
+    char** m_Entries = nullptr;
 };
 
 /// Owns an sd_bus_message.
