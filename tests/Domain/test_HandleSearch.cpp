@@ -479,7 +479,9 @@ TEST(HandleSearchTest, EveryAllocationRunMakesCanFailWithoutEscaping)
     {
         SCOPED_TRACE("failing allocation " + std::to_string(failAt));
         Domain::PublicationSlot<SearchPublication> slot;
-        const SearchPublication start = startFor("a-much-longer-query-than-small-string-storage", processes.size(), 1);
+        // A long query that matches pid 1 and 10..19's paths: the sweep fails match insertion and the copy of a
+        // nonempty match list into a progress publication too.
+        const SearchPublication start = startFor("a-much-longer-path-for-the-heap-1", processes.size(), 1);
         slot.commit(std::make_shared<const SearchPublication>(start));
         std::stop_source stop;
         SearchPublication input = start; // copied before the hook is armed: only run()'s own allocations fail
@@ -495,6 +497,7 @@ TEST(HandleSearchTest, EveryAllocationRunMakesCanFailWithoutEscaping)
         {
             EXPECT_TRUE(last->done);
             EXPECT_TRUE(last->failure.empty()) << "nothing failed, nothing to say";
+            EXPECT_EQ(last->matches.size(), 11U) << "the query matches: the sweep went through match insertion";
             break;
         }
         if (last->done)
