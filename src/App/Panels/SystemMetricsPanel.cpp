@@ -721,8 +721,14 @@ void SystemMetricsPanel::renderContent()
         ImGui::EndTabBar();
 
         // The request's frames are counted only once the first sample is in, when every sub-tab this
-        // machine draws is drawn; a request still waiting then names a sub-tab it never has.
-        if (m_SystemPublication)
+        // machine draws is drawn; a request still waiting then names a sub-tab it never has. The empty
+        // generation the slot starts with (version 0) isn't a sample (#3289); the GPU and NPU sub-tabs come
+        // from the GPU sampler's own seed.
+        const bool systemSampled = m_SystemPublication && m_SystemPublication->version != 0;
+        const std::optional<MachineTab>& requested = m_RequestedTab.tab();
+        const bool fromGpuSampler = requested == MachineTab::Gpu || requested == MachineTab::Npu;
+        const bool gpuSeeded = m_Seeds && m_Seeds->gpu.load(std::memory_order_acquire);
+        if (systemSampled && (!fromGpuSampler || gpuSeeded))
         {
             if (const std::optional<MachineTab> dropped = m_RequestedTab.onFrameEnd(); dropped.has_value())
             {

@@ -267,7 +267,20 @@ std::string_view closeConnectionRefusal(const Platform::SystemConnection& connec
 
 std::uint64_t selectionKey(const Platform::SystemConnection& connection) noexcept
 {
-    return Domain::Connections::socketKey(connection.connection);
+    // The endpoints, and the holder and the socket itself (#3288): sockets on the same endpoints held by different
+    // processes (several on UDP 0.0.0.0:5353, SO_REUSEPORT listeners) are different rows to select and to see
+    // open or close. FNV-1a on from socketKey()'s hash.
+    std::uint64_t hash = Domain::Connections::socketKey(connection.connection);
+    for (const std::uint64_t value :
+         {static_cast<std::uint64_t>(static_cast<std::uint32_t>(connection.pid)), connection.startTimeTicks, connection.socketInode})
+    {
+        for (int shift = 0; shift < 64; shift += 8)
+        {
+            hash ^= (value >> shift) & 0xFFU;
+            hash *= 1099511628211ULL;
+        }
+    }
+    return hash;
 }
 
 namespace
