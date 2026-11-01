@@ -92,7 +92,7 @@ TEST(SamplingGateTest, AClosedGateDoesNotWakeItsSamplersFrameLoop)
 {
     static std::atomic<int> wakes{0};
     wakes = 0;
-    const auto previous = Domain::PublicationWake::setHandler([]() noexcept { wakes.fetch_add(1); });
+    const auto previous = Domain::PublicationWake::setHandler([] noexcept { wakes.fetch_add(1); });
     const auto target = std::make_shared<CountingSamplable>();
     const auto gate = std::make_shared<SamplingGate>(target);
     Domain::SamplerConfig config;
