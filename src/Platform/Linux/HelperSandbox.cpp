@@ -220,7 +220,10 @@ constexpr std::array ALLOWED{
 #ifdef SYS_pidfd_send_signal
     SYS_pidfd_send_signal,
 #endif
-// Close connection (#3066): a copy of the process's socket descriptor, shut down and closed at once
+// Close connection (#3066): a copy of the process's socket descriptor, shut down and closed at once. An accepted
+// risk (#3297): with CAP_SYS_PTRACE kept, code running in the helper through a bug could copy any process's
+// descriptor this way, and write/writev aren't limited to descriptors it opened; the user-space checks (the
+// target's identity, the socket's inode, never a listener) are what keep Close connection to the one socket.
 #ifdef SYS_pidfd_getfd
     SYS_pidfd_getfd,
 #endif
@@ -252,15 +255,13 @@ constexpr std::array ALLOWED{
 /// System calls refused by name with EPERM: what code run in the helper by a bug would want.
 constexpr std::array REFUSED{
     // Escapes through the kept capabilities: file handles (CAP_DAC_READ_SEARCH), another process's
-    // memory or fds (CAP_SYS_PTRACE)
+    // memory (CAP_SYS_PTRACE). pidfd_getfd, which CAP_SYS_PTRACE also opens, is allowed above, for Close
+    // connection.
     SYS_open_by_handle_at,
     SYS_name_to_handle_at,
     SYS_ptrace,
     SYS_process_vm_readv,
     SYS_process_vm_writev,
-#ifdef SYS_pidfd_getfd
-    SYS_pidfd_getfd,
-#endif
     // New code or processes
     SYS_execve,
     SYS_execveat,
@@ -416,6 +417,23 @@ constexpr std::array REFUSED{
     SYS_futimesat,
 #endif
 };
+
+/// No call is in both lists: ALLOWED's rules come first, so a REFUSED entry it also holds would never fire (#3297).
+[[nodiscard]] constexpr bool listsAreDisjoint() noexcept
+{
+    for (const long allowed : ALLOWED)
+    {
+        for (const long refused : REFUSED)
+        {
+            if (allowed == refused)
+            {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+static_assert(listsAreDisjoint(), "a system call is both allowed and refused");
 
 #endif // x86-64 or AArch64
 
