@@ -834,7 +834,7 @@ The following table summarizes capabilities that differ between Windows and Linu
 | Process Details' Threads list | ✅ (`/proc/[pid]/task`; another user's under hidepid: Authenticate to read) | ✅ (`NtQuerySystemInformation`; every process's, no administrator needed) |
 | Suspend / resume / end one thread | ❌ (no way to act on one thread) | ✅ (`SuspendThread`/`ResumeThread`/`TerminateThread`; another user's or an elevated process's: Authenticate and retry) |
 | Process priority | ✅ (nice value, −20 … 19) | ✅ (priority class: High, Above Normal, Normal, Below Normal, Idle; Realtime shown but not settable) |
-| Process I/O priority (ionice class and level) | ✅ (Realtime and other users' processes: `CAP_SYS_NICE` or root) | ❌ (no equivalent) |
+| Process I/O priority (ionice class and level) | ✅ (Realtime and other users' processes: `CAP_SYS_NICE` or root) | ❌ (not yet supported: Windows has a per-process I/O priority, which Process Explorer sets) |
 | Process terminate / kill | ✅ | ✅ |
 | Process suspend / resume | ✅ (SIGSTOP/SIGCONT) | ✅ (NtSuspendProcess/NtResumeProcess) |
 | Efficiency mode on / off | ✅ (nice 19 and the cgroup's lowest CPU weight) | ✅ (EcoQoS power throttling and the Idle priority class, as Task Manager) |
