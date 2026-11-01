@@ -273,6 +273,102 @@ TEST(ProcessModelAllocationFailureTest, AFailedRefreshLeavesNoHeldOverRowOnAnoth
     EXPECT_GT(failedRefreshes, 0) << "some failing allocation throws out of the refresh";
 }
 
+// #3334: the same, with a PID listed twice (reused within one read) and the held-over refresh's own allocations
+// failed in turn too, so the lookup's table rebuild fails and it walks the rows: the held-over process still gets
+// its own row, not the other one on its PID.
+TEST(ProcessModelAllocationFailureTest, AHeldOverLookupThatCantRebuildItsTableFindsItsOwnRowOnAReusedPid)
+{
+#if defined(TASKSMACK_NO_ALLOCATOR_HOOK)
+    GTEST_SKIP() << TASKSMACK_NO_ALLOCATOR_HOOK;
+#endif
+    constexpr std::int64_t MAX_ALLOCATIONS = 100'000;
+    const Platform::ProcessCounters first = TestMocks::makeProcessCounters(100, "first", 'S', 100, 50, 10, 1024, 1);
+    const Platform::ProcessCounters second = TestMocks::makeProcessCounters(100, "second", 'S', 100, 50, 20, 1024, 1);
+    // Enough others that the failed refresh's table is far bigger: rebuilding it for two rows then shrinks it, which
+    // allocates, so failing that allocation sends the lookup down its walk.
+    std::vector<Platform::ProcessCounters> many{first, second};
+    for (std::int32_t pid = 300; pid < 430; ++pid) // 132 rows: a 256-slot table, more than 8x the 16 two rows need
+    {
+        many.push_back(TestMocks::makeProcessCounters(pid, "other", 'S', 100, 50, 30, 1024, 1));
+    }
+    int walkedLookups = 0;
+    for (std::int64_t failRefresh = 0; failRefresh < MAX_ALLOCATIONS; ++failRefresh)
+    {
+        bool refreshFired = false;
+        for (std::int64_t failLookup = 0; failLookup < MAX_ALLOCATIONS; ++failLookup)
+        {
+            SCOPED_TRACE("failing allocation " + std::to_string(failRefresh) + ", then " + std::to_string(failLookup));
+            Domain::ProcessModel::Clock::time_point now;
+            Domain::ProcessModel model(nullptr, [&now] { return now; });
+            std::uint64_t total = 1000;
+            const auto sample = [&](std::vector<Platform::ProcessCounters> counters)
+            {
+                now += std::chrono::seconds(1);
+                total += 1000;
+                model.updateFromCounters(counters, total);
+            };
+            sample({first, second});
+            bool threw = false;
+            {
+                const FailAllocationAfter guard(failRefresh);
+                try
+                {
+                    sample(many); // the table is rebuilt for many more rows, then the refresh fails
+                }
+                catch (const std::bad_alloc&)
+                {
+                    threw = true;
+                }
+                refreshFired = !TestSupport::allocationFailurePending();
+            }
+            if (!refreshFired || !threw)
+            {
+                break; // every failing point of this refresh has been tried, or this one didn't fail it
+            }
+            Platform::ProcessCounters heldSecond = second;
+            heldSecond.heldOver = true;
+            heldSecond.name = "from the carried record";
+            std::vector<Platform::ProcessCounters> next{first, heldSecond};
+            bool lookupThrew = false;
+            bool lookupFired = false;
+            {
+                const FailAllocationAfter guard(failLookup);
+                try
+                {
+                    sample(std::move(next));
+                }
+                catch (const std::bad_alloc&)
+                {
+                    lookupThrew = true;
+                }
+                lookupFired = !TestSupport::allocationFailurePending();
+            }
+            if (!lookupFired)
+            {
+                break;
+            }
+            if (lookupThrew)
+            {
+                continue;
+            }
+            ++walkedLookups;
+            const auto rows = model.snapshots();
+            ASSERT_EQ(rows.size(), 2U);
+            EXPECT_EQ(rows[1].startTimeTicks, 20U);
+            EXPECT_EQ(rows[1].name, "second") << "its own last row, not the other one on PID 100";
+            if (HasFailure())
+            {
+                return;
+            }
+        }
+        if (!refreshFired)
+        {
+            break;
+        }
+    }
+    EXPECT_GT(walkedLookups, 0) << "some held-over refresh survives a failed allocation";
+}
+
 // #2156: changing the history window never allocates for the histories, so it cannot fail part way
 // and leave the five series with different capacities or lengths.
 TEST(ProcessModelAllocationFailureTest, ChangingTheHistoryWindowMakesNoAllocation)

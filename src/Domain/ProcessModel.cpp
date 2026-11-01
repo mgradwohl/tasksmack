@@ -1272,8 +1272,12 @@ bool ProcessModel::appendHeldOverLocked(const Platform::ProcessCounters& current
         }
         catch (const std::exception&)
         {
-            // No memory for the table: find the row by walking the rows, as rare as the failed refresh before.
-            const auto found = std::ranges::find(*previousSnapshots, current.pid, &ProcessSnapshot::pid);
+            // No memory for the table: find the row by walking the rows, as rare as the failed refresh before. By the
+            // whole identity, so a PID listed twice (a reused PID within one read) finds its own row.
+            const auto found =
+                std::ranges::find_if(*previousSnapshots,
+                                     [&current](const ProcessSnapshot& snapshot)
+                                     { return snapshot.pid == current.pid && snapshot.startTimeTicks == current.startTimeTicks; });
             row = found == previousSnapshots->end() ? PidIndex::NOT_FOUND : static_cast<std::size_t>(found - previousSnapshots->begin());
         }
     }
