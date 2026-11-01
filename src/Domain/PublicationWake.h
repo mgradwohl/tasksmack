@@ -3,7 +3,8 @@
 // "New data is published": the wake a publisher sends the frame loop after it commits (#3156).
 //
 // A static tab draws only when something on it changes. The frame loop waits for input, for its slow
-// floor, or for this: every BackgroundSampler pass that sampled calls notify() once it has committed,
+// floor, or for this: every BackgroundSampler pass that sampled something that may have published
+// (ISamplable::lastSampleMayHavePublished(), #3285) calls notify() once it has committed,
 // as does every App background task once its result is ready, so the frame that follows shows it.
 // Publishers call it in those two places, never per panel.
 //
