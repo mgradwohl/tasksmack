@@ -295,6 +295,10 @@ class ProcessModel : public ISamplable
     // scratch, guarded by m_SamplingMutex: kept between refreshes only for its storage, never read
     // outside the tree build and never part of a published snapshot.
     PidIndex m_PidIndex;
+    // The published rows m_PidIndex maps, or nullptr while it maps none of them (#3334): a refresh that failed after
+    // rebuilding it for its unpublished rows leaves it describing those. Compared with the publication a held-over
+    // lookup reads, never dereferenced.
+    const std::vector<ProcessSnapshot>* m_PidIndexRows = nullptr;
     // The processes carried over (ProcessCounters::heldOver) since their counters were read (#3031), with the
     // system CPU total and sample time of that read: their next real read's rates are taken over the whole
     // time since. Empty nearly always; kept apart from PerProcessState so every other process pays nothing.
