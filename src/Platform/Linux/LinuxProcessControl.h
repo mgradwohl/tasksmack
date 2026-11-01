@@ -102,10 +102,22 @@ struct LinuxProcessSyscalls
 class LinuxProcessControl : public IProcessActions
 {
   public:
-    /// Makes the real system calls.
+    /// What Efficiency mode changed for each process it turned on (#3202), for off to put back. Objects that act on
+    /// the same processes share one (#3330): the Processes tab and Process Details each have an actions object,
+    /// and an on from either is put back by an off from the other. One on or off at a time runs over it.
+    struct EfficiencyMemory;
+    /// The memory makeProcessActions() gives every actions object it makes (#3330).
+    [[nodiscard]] static std::shared_ptr<EfficiencyMemory> sharedEfficiencyMemory();
+    /// A memory of its own.
+    [[nodiscard]] static std::shared_ptr<EfficiencyMemory> makeEfficiencyMemory();
+
+    /// Makes the real system calls, with an Efficiency mode memory of its own.
     LinuxProcessControl();
-    /// Makes its system calls through @p syscalls (tests: calls that fail on demand, #1548).
+    /// Makes its system calls through @p syscalls (tests: calls that fail on demand, #1548), with an Efficiency mode
+    /// memory of its own.
     explicit LinuxProcessControl(const LinuxProcessSyscalls& syscalls);
+    /// As above, sharing @p efficiency (makeProcessActions(): sharedEfficiencyMemory()).
+    LinuxProcessControl(const LinuxProcessSyscalls& syscalls, std::shared_ptr<EfficiencyMemory> efficiency);
     ~LinuxProcessControl() override;
 
     LinuxProcessControl(const LinuxProcessControl&) = delete;
@@ -127,6 +139,8 @@ class LinuxProcessControl : public IProcessActions
     /// Efficiency mode (#3202, LinuxEfficiencyMode.h): on, nice 19 for every thread and, where it may and the
     /// process is alone in its cgroup, the cgroup's cpu.weight at 1; off, what on changed put back.
     [[nodiscard]] ProcessActionResult setEfficiencyMode(const ProcessTarget& target, bool on) override;
+    /// How many processes its Efficiency mode memory holds (for tests: one that exited is forgotten, #3330).
+    [[nodiscard]] std::size_t rememberedEfficiencyCount() const;
     /// The nice the on remembered for @p target, while it is still at nice 19 (#3296), for an off the helper finishes.
     [[nodiscard]] std::optional<std::int32_t> efficiencyNiceToRestore(const ProcessTarget& target) const override;
     /// The online CPUs and, on a hybrid CPU, their efficiency classes, from sysfs (#1881).
@@ -142,12 +156,9 @@ class LinuxProcessControl : public IProcessActions
   private:
     [[nodiscard]] ProcessActionResult sendSignalNumber(const ProcessTarget& target, int signal, std::string_view signalName) const;
 
-    /// What Efficiency mode changed for each process it turned on (#3202), for off to put back.
-    struct EfficiencyMemory;
-
     LinuxProcessSyscalls m_Syscalls;
     bool m_CanSetRealtimeIoPriority = false;        // CAP_SYS_NICE or CAP_SYS_ADMIN, read at construction (#1540)
-    std::unique_ptr<EfficiencyMemory> m_Efficiency; // behind a pointer: its mutex would make this immovable
+    std::shared_ptr<EfficiencyMemory> m_Efficiency; // behind a pointer: shared (#3330), and its mutex is immovable
 };
 
 } // namespace Platform

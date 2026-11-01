@@ -28,6 +28,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -95,6 +96,15 @@ struct StatIdentity
 {
     const std::optional<StatIdentity> stat = readStatIdentity(pid);
     return stat.has_value() ? std::optional<std::uint64_t>(stat->startTime) : std::nullopt;
+}
+
+/// Whether /proc has no entry for @p pid (ENOENT): the process has exited, where a failed read of its stat alone
+/// could be any error (#3330).
+[[nodiscard]] bool procEntryGone(std::int32_t pid)
+{
+    struct stat entry{};
+    const std::string path = "/proc/" + std::to_string(pid);
+    return ::stat(path.c_str(), &entry) != 0 && errno == ENOENT;
 }
 
 /// A process TaskSmack and the root helper don't act on, whatever the action (#2447, #2641, #2774).
@@ -512,19 +522,78 @@ struct LinuxProcessControl::EfficiencyMemory
         std::int32_t nice = 0;
         std::optional<int> cpuWeight;
     };
-    std::mutex mutex;
-    std::map<std::pair<std::int32_t, std::uint64_t>, Before> byProcess; ///< By PID and start time
+    using Key = std::pair<std::int32_t, std::uint64_t>; ///< PID and start time
+    std::mutex mutex;                                   ///< Held only to read or change the two below, never over a call
+    std::map<Key, Before> byProcess;
+    /// The processes a setEfficiencyMode() is changing now (#3330): an on and an off from two objects sharing this
+    /// memory would otherwise interleave their read, change and record, and lose what on found. A second one for the
+    /// same process meanwhile is refused rather than waited for.
+    std::set<Key> busy;
 };
+
+namespace
+{
+
+/// setEfficiencyMode()'s claim on one process in a memory's busy set, given back when it returns (#3330).
+class EfficiencyClaim
+{
+  public:
+    EfficiencyClaim(LinuxProcessControl::EfficiencyMemory& memory, LinuxProcessControl::EfficiencyMemory::Key key)
+        : m_Memory(memory), m_Key(key)
+    {
+        const std::scoped_lock lock(m_Memory.mutex);
+        m_Held = m_Memory.busy.insert(m_Key).second;
+    }
+    ~EfficiencyClaim()
+    {
+        if (m_Held)
+        {
+            const std::scoped_lock lock(m_Memory.mutex);
+            m_Memory.busy.erase(m_Key);
+        }
+    }
+    EfficiencyClaim(const EfficiencyClaim&) = delete;
+    EfficiencyClaim& operator=(const EfficiencyClaim&) = delete;
+    EfficiencyClaim(EfficiencyClaim&&) = delete;
+    EfficiencyClaim& operator=(EfficiencyClaim&&) = delete;
+
+    /// False when another on or off for the process holds it.
+    [[nodiscard]] bool held() const noexcept
+    {
+        return m_Held;
+    }
+
+  private:
+    LinuxProcessControl::EfficiencyMemory& m_Memory;
+    LinuxProcessControl::EfficiencyMemory::Key m_Key;
+    bool m_Held = false;
+};
+
+} // namespace
 
 LinuxProcessControl::~LinuxProcessControl() = default;
 LinuxProcessControl::LinuxProcessControl(LinuxProcessControl&&) noexcept = default;
 LinuxProcessControl& LinuxProcessControl::operator=(LinuxProcessControl&&) noexcept = default;
 
-LinuxProcessControl::LinuxProcessControl() : LinuxProcessControl(realProcessSyscalls())
+std::shared_ptr<LinuxProcessControl::EfficiencyMemory> LinuxProcessControl::sharedEfficiencyMemory()
+{
+    static const std::shared_ptr<EfficiencyMemory> shared = makeEfficiencyMemory();
+    return shared;
+}
+
+std::shared_ptr<LinuxProcessControl::EfficiencyMemory> LinuxProcessControl::makeEfficiencyMemory()
+{
+    return std::make_shared<EfficiencyMemory>();
+}
+
+LinuxProcessControl::LinuxProcessControl() : LinuxProcessControl(realProcessSyscalls(), makeEfficiencyMemory())
 {}
 
-LinuxProcessControl::LinuxProcessControl(const LinuxProcessSyscalls& syscalls)
-    : m_Syscalls(syscalls), m_CanSetRealtimeIoPriority(ownProcessCanSetRealtimeIo()), m_Efficiency(std::make_unique<EfficiencyMemory>())
+LinuxProcessControl::LinuxProcessControl(const LinuxProcessSyscalls& syscalls) : LinuxProcessControl(syscalls, makeEfficiencyMemory())
+{}
+
+LinuxProcessControl::LinuxProcessControl(const LinuxProcessSyscalls& syscalls, std::shared_ptr<EfficiencyMemory> efficiency)
+    : m_Syscalls(syscalls), m_CanSetRealtimeIoPriority(ownProcessCanSetRealtimeIo()), m_Efficiency(std::move(efficiency))
 {
     if (m_Syscalls.currentNice == nullptr)
     {
@@ -1268,6 +1337,11 @@ ProcessActionResult LinuxProcessControl::setEfficiencyMode(const ProcessTarget& 
         return ProcessActionResult::error("Invalid PID");
     }
     const std::pair<std::int32_t, std::uint64_t> key{target.pid, target.startTimeTicks};
+    const EfficiencyClaim claim(*m_Efficiency, key); // one on or off at a time per process over the shared memory (#3330)
+    if (!claim.held())
+    {
+        return ProcessActionResult::error("Efficiency mode is already being changed for this process");
+    }
     std::optional<EfficiencyMemory::Before> remembered;
     {
         const std::scoped_lock lock(m_Efficiency->mutex);
@@ -1300,8 +1374,34 @@ ProcessActionResult LinuxProcessControl::setEfficiencyMode(const ProcessTarget& 
         std::optional<int> weightBefore;
         std::string note = lowerCgroupWeight(m_Syscalls, target.pid, cgroup, weightBefore);
         {
-            // Turned on twice, the first time's "before" stays what off puts back.
+            // Turned on twice, the first time's "before" stays what off puts back. Processes that have exited since
+            // their on are forgotten here, so the shared memory doesn't grow for TaskSmack's lifetime (#3330): one
+            // whose PID now holds another process (its start time differs) counts as exited. Read outside the lock.
+            std::vector<EfficiencyMemory::Key> entries;
+            {
+                const std::scoped_lock lock(m_Efficiency->mutex);
+                for (const auto& entry : m_Efficiency->byProcess)
+                {
+                    entries.push_back(entry.first);
+                }
+            }
+            // Kept: this process, and any whose exit isn't certain (a /proc read that failed for another reason).
+            std::erase_if(entries,
+                          [&key](const EfficiencyMemory::Key& entry)
+                          {
+                              if (entry == key)
+                              {
+                                  return true;
+                              }
+                              const std::optional<std::uint64_t> startNow = readStartTicks(entry.first);
+                              const bool gone = !startNow.has_value() && procEntryGone(entry.first);
+                              return !Efficiency::rememberedProcessExited(startNow, gone, entry.second);
+                          });
             const std::scoped_lock lock(m_Efficiency->mutex);
+            for (const EfficiencyMemory::Key& exited : entries)
+            {
+                m_Efficiency->byProcess.erase(exited);
+            }
             static_cast<void>(m_Efficiency->byProcess.try_emplace(
                 key, EfficiencyMemory::Before{.nice = niceBefore.value_or(0), .cpuWeight = weightBefore}));
         }
@@ -1316,6 +1416,12 @@ ProcessActionResult LinuxProcessControl::setEfficiencyMode(const ProcessTarget& 
     }
     spdlog::info("Efficiency mode off for PID {}{}", target.pid, note.empty() ? "" : ": " + note);
     return ProcessActionResult::ok(std::move(note));
+}
+
+std::size_t LinuxProcessControl::rememberedEfficiencyCount() const
+{
+    const std::scoped_lock lock(m_Efficiency->mutex);
+    return m_Efficiency->byProcess.size();
 }
 
 std::optional<std::int32_t> LinuxProcessControl::efficiencyNiceToRestore(const ProcessTarget& target) const
