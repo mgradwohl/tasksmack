@@ -57,6 +57,7 @@
 #include "WindowsSystemInfoProbe.h"
 #include "WindowsSystemProbe.h"
 #include "WindowsTaskManagerReplacement.h"
+#include "WindowsUserSessions.h"
 
 // clang-format off
 #ifndef WIN32_LEAN_AND_MEAN
@@ -151,8 +152,8 @@ std::unique_ptr<ISystemConnectionsReader> makeSystemConnectionsReader()
 
 std::unique_ptr<IUserSessions> makeUserSessions()
 {
-    // The Users tab (#3076) says it isn't available until the Windows lane adds WTS sessions.
-    return std::make_unique<UnsupportedUserSessions>();
+    // The Users tab (#3076): the WTS sessions, with Disconnect and Sign out. Reads nothing until sampled.
+    return std::make_unique<Windows::WindowsUserSessions>();
 }
 
 std::unique_ptr<IProcessThreadsReader> makeProcessThreadsReader()

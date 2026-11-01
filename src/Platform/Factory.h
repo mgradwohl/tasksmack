@@ -75,8 +75,8 @@ namespace Platform
 /// until its lane adds one).
 [[nodiscard]] std::unique_ptr<ISystemConnectionsReader> makeSystemConnectionsReader();
 
-/// Creates the platform-appropriate IUserSessions implementation (#3076; Windows: unsupported until its
-/// lane adds WTS sessions).
+/// Creates the platform-appropriate IUserSessions implementation (#3076): logind's sessions on Linux, the
+/// WTS sessions on Windows (App wraps those in BrokeredUserSessions for another user's session).
 [[nodiscard]] std::unique_ptr<IUserSessions> makeUserSessions();
 
 /// Creates the platform-appropriate IProcessOpenFilesReader implementation (#183).

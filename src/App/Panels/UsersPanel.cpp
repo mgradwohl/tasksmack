@@ -142,8 +142,11 @@ void UsersPanel::renderContent()
         m_Actions->update(ImGui::GetIO().DeltaTime);
     }
     renderActionLine();
-    const bool canAct = m_Sessions != nullptr && m_Sessions->canAct(Platform::SessionAction::SignOut);
-    if (const std::optional<UsersViewAction> action = renderUsersView(m_Publication.get(), m_Model->hasSessions(), canAct, m_ViewState))
+    // Each platform's own items (#3076): Lock on Linux, Disconnect on Windows, Sign out on both.
+    const SessionMenu menu{.lock = m_Sessions != nullptr && m_Sessions->canAct(Platform::SessionAction::Lock),
+                           .disconnect = m_Sessions != nullptr && m_Sessions->canAct(Platform::SessionAction::Disconnect),
+                           .signOut = m_Sessions != nullptr && m_Sessions->canAct(Platform::SessionAction::SignOut)};
+    if (const std::optional<UsersViewAction> action = renderUsersView(m_Publication.get(), m_Model->hasSessions(), menu, m_ViewState))
     {
         if (action->selectPid != 0)
         {
@@ -163,8 +166,12 @@ void UsersPanel::renderContent()
         {
             m_Actions->requestSignOut(*action->signOut);
         }
+        if (m_Actions && action->disconnect.has_value())
+        {
+            m_Actions->requestDisconnect(*action->disconnect);
+        }
     }
-    renderSignOutConfirm();
+    renderConfirm();
 }
 
 void UsersPanel::renderActionLine()
@@ -201,13 +208,16 @@ void UsersPanel::renderActionLine()
     }
 }
 
-void UsersPanel::renderSignOutConfirm()
+void UsersPanel::renderConfirm()
 {
     if (!m_Actions || !m_Actions->pending().has_value())
     {
         return;
     }
-    switch (ProcessActionConfirm::renderLabelled(m_Actions->showConfirm(), "Sign Out", true, "Sign out", m_Actions->question()))
+    // Sign out loses unsaved work, so its button is the destructive one; a Disconnect keeps every program.
+    const bool signOut = m_Actions->pendingAction() == Platform::SessionAction::SignOut;
+    const char* const title = sessionActionWords(m_Actions->pendingAction()).title;
+    switch (ProcessActionConfirm::renderLabelled(m_Actions->showConfirm(), title, signOut, title, m_Actions->question()))
     {
     case ProcessActionConfirm::Outcome::Confirmed:
         m_Actions->confirm();

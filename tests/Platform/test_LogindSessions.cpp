@@ -182,6 +182,10 @@ TEST_F(LogindSessionsTest, LockAndSignOutGoToLogindAndAnotherUsersSessionNeedsTh
     const std::stop_source stop;
 
     EXPECT_TRUE(SystemdBus::sessionAction("2", SessionAction::Lock, false, stop.get_token()).ok);
+    // Disconnect is Windows' (#3076): refused before the bus, never sent as TerminateSession.
+    const ServiceActionResult disconnect = SystemdBus::sessionAction("2", SessionAction::Disconnect, true, stop.get_token());
+    EXPECT_FALSE(disconnect.ok);
+    EXPECT_EQ(disconnect.message, SystemdBus::DISCONNECT_UNSUPPORTED);
     // bob's session: refused without a prompt, with the retry offered; allowed to prompt, it goes through.
     const ServiceActionResult refused = SystemdBus::sessionAction("5", SessionAction::SignOut, false, stop.get_token());
     EXPECT_FALSE(refused.ok);
@@ -204,6 +208,8 @@ TEST_F(LogindSessionsTest, TheLinuxSessionsReadThroughTheBusAndSayWhyWhenLogindI
     unsetenv("XDG_SESSION_ID"); // NOLINT(concurrency-mt-unsafe)
     EXPECT_TRUE(sessions.hasSessions());
     EXPECT_TRUE(sessions.canAct(SessionAction::Lock));
+    EXPECT_TRUE(sessions.canAct(SessionAction::SignOut));
+    EXPECT_FALSE(sessions.canAct(SessionAction::Disconnect)) << "Lock takes its place on Linux";
     const UserSessionsRead read = sessions.read();
     ASSERT_EQ(read.status, UserSessionsStatus::Ok) << read.detail;
     ASSERT_EQ(read.sessions.size(), 2U);
