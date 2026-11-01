@@ -397,6 +397,50 @@ TEST(WindowGeometryTest, FitIsUsableInConstantExpressions)
     EXPECT_EQ(fitted.x, 0);
 }
 
+// ---- fitRestoreTarget (#3336) ----
+
+TEST(WindowGeometryTest, RestoreAfterTheSavedMonitorIsUnpluggedLandsOnTheRemainingDisplay)
+{
+    // The issue's repro: maximized from {2300, 100, 1000, 700} on an external monitor, which is then
+    // unplugged, leaving one display 1920 wide. The window is now on that display.
+    const std::array displays{Rect{.x = 0, .y = 0, .width = 1920, .height = 1040}};
+    const Rect saved{.x = 2300, .y = 100, .width = 1000, .height = 700};
+    const Rect fitted = fitRestoreTarget(saved, displays, 0, 0);
+    EXPECT_EQ(fitted, (Rect{.x = 460, .y = 170, .width = 1000, .height = 700}));
+    EXPECT_TRUE(isReachableOn(fitted, displays[0], MIN_VISIBLE_EXTENT));
+}
+
+TEST(WindowGeometryTest, RestoreWithTheSavedMonitorStillConnectedIsUnchanged)
+{
+    const std::array displays{Rect{.x = 0, .y = 0, .width = 1920, .height = 1040}, Rect{.x = 1920, .y = 0, .width = 1920, .height = 1040}};
+    const Rect saved{.x = 2300, .y = 100, .width = 1000, .height = 700};
+    EXPECT_EQ(fitRestoreTarget(saved, displays, 1, 0), saved);
+}
+
+TEST(WindowGeometryTest, RestoreOnNoDisplayGoesToTheWindowsDisplayNotThePrimary)
+{
+    // A negative-coordinate display to the left of the primary holds the maximized window; the saved
+    // rectangle's monitor, to the right, is gone.
+    const std::array displays{Rect{.x = 0, .y = 0, .width = 1920, .height = 1040}, Rect{.x = -1920, .y = 0, .width = 1920, .height = 1040}};
+    const Rect saved{.x = 2300, .y = 100, .width = 1000, .height = 700};
+    EXPECT_EQ(fitRestoreTarget(saved, displays, 1, 0), (Rect{.x = -1460, .y = 170, .width = 1000, .height = 700}));
+}
+
+TEST(WindowGeometryTest, RestoreWithTheWindowsDisplayUnknownGoesToThePrimary)
+{
+    const std::array displays{Rect{.x = -1920, .y = 0, .width = 1920, .height = 1040}, Rect{.x = 0, .y = 0, .width = 1920, .height = 1040}};
+    const Rect saved{.x = 2300, .y = 100, .width = 1000, .height = 700};
+    EXPECT_EQ(fitRestoreTarget(saved, displays, std::nullopt, 1), (Rect{.x = 460, .y = 170, .width = 1000, .height = 700}));
+}
+
+TEST(WindowGeometryTest, RestoreAfterTheWorkAreaShrankKeepsThePositionAndShrinksTheSize)
+{
+    // Still on its display, whose usable height dropped (a taller taskbar): only the height changes.
+    const std::array displays{Rect{.x = 0, .y = 0, .width = 1920, .height = 600}};
+    const Rect saved{.x = 100, .y = 0, .width = 1000, .height = 700};
+    EXPECT_EQ(fitRestoreTarget(saved, displays, 0, 0), (Rect{.x = 100, .y = 0, .width = 1000, .height = 600}));
+}
+
 // ---- moveInside (#2735) ----
 
 TEST(WindowGeometryTest, AWindowWithNoSavedPositionIsMovedWhollyOntoTheDisplay)
