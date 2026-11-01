@@ -63,6 +63,9 @@ struct WtsSessionFacts
     std::uint64_t logonTime = 0;
     std::uint64_t lastInputTime = 0;
     std::uint64_t currentTime = 0;
+    /// Why WTSSessionInfo couldn't be read (access denied to another user's session, one that ended between
+    /// the list and the query); empty when it was. Then user, domain and the times are unknown, not empty.
+    std::string infoError;
 };
 
 /// The Users tab's state word for WTS state @p state: "active" (sessionStatus()'s Active), "online"
@@ -114,15 +117,29 @@ struct WtsSessionFacts
 }
 
 /// @p facts as the Users tab's session, or nullopt for one that isn't a person's: session 0 (the
-/// services), a listener, or one nobody is signed in to. @p currentSessionId is TaskSmack's own.
+/// services), a listener, or one nobody is signed in to. A session whose details couldn't be read is kept,
+/// as not readable (UserSession::unreadable), rather than taken for one nobody is signed in to.
+/// @p currentSessionId is TaskSmack's own.
 [[nodiscard]] inline std::optional<UserSession> toUserSession(const WtsSessionFacts& facts, std::uint32_t currentSessionId)
 {
-    if (facts.sessionId == SERVICES_SESSION || facts.user.empty() || facts.state == static_cast<std::uint32_t>(WtsState::Listen))
+    if (facts.sessionId == SERVICES_SESSION || facts.state == static_cast<std::uint32_t>(WtsState::Listen))
     {
         return std::nullopt;
     }
+    if (facts.infoError.empty() && facts.user.empty())
+    {
+        return std::nullopt; // read, and nobody is signed in to it
+    }
     UserSession session;
     session.id = std::to_string(facts.sessionId);
+    session.current = facts.sessionId == currentSessionId;
+    if (!facts.infoError.empty())
+    {
+        session.sessionClass = "user";
+        session.state = std::string(stateName(facts.state));
+        session.unreadable = facts.infoError;
+        return session;
+    }
     session.user = facts.user;
     session.domain = facts.domain;
     session.type = sessionType(facts);
@@ -139,7 +156,6 @@ struct WtsSessionFacts
         session.idle = true;
         session.idleSinceUsec = fileTimeToUnixUsec(facts.lastInputTime);
     }
-    session.current = facts.sessionId == currentSessionId;
     return session;
 }
 
@@ -155,14 +171,18 @@ struct WtsSessionFacts
     return value;
 }
 
-/// Whether @p action may be sent to session @p id, given the sessions WTS lists now (@p sessions, read
-/// just before): its numeric ID, or why not. Refused: anything but Disconnect and Sign out (Windows has
-/// no Lock here), an ID that isn't a number, session 0, a session that has ended, one nobody is signed
-/// in to, and a Disconnect of one already disconnected. TaskSmack checks this before its own call, and
-/// the administrator helper again before it acts for TaskSmack, so a request names a live sign-in only.
+/// Whether @p action may be sent to @p confirmed, the session the user confirmed, given the sessions WTS
+/// lists now (@p sessions, read just before): its numeric ID, or why not. Refused: anything but Disconnect
+/// and Sign out (Windows has no Lock here), an ID that isn't a number, session 0, a session that has
+/// ended, one whose details can't be read, one nobody is signed in to, a confirmed session with no
+/// identity (user and sign-in time), an ID that now names another sign-in (Windows reuses session IDs: the
+/// user, domain or sign-in time differ), and a Disconnect of one already disconnected. TaskSmack checks
+/// this before its own call, and the administrator helper again before it acts for TaskSmack, so a request
+/// reaches only the sign-in the user confirmed.
 [[nodiscard]] inline std::expected<std::uint32_t, std::string>
-checkSessionAction(std::string_view id, SessionAction action, std::span<const WtsSessionFacts> sessions)
+checkSessionAction(const UserSession& confirmed, SessionAction action, std::span<const WtsSessionFacts> sessions)
 {
+    const std::string_view id = confirmed.id;
     if (action != SessionAction::Disconnect && action != SessionAction::SignOut)
     {
         return std::unexpected(std::string("Windows has no Lock here; Disconnect takes its place"));
@@ -182,9 +202,22 @@ checkSessionAction(std::string_view id, SessionAction action, std::span<const Wt
     {
         return std::unexpected(std::format("Session {} has ended", sessionId));
     }
+    if (!found->infoError.empty())
+    {
+        return std::unexpected(std::format("Session {}'s user couldn't be read: {}", sessionId, found->infoError));
+    }
     if (found->user.empty() || found->state == static_cast<std::uint32_t>(WtsState::Listen))
     {
         return std::unexpected(std::format("No one is signed in to session {}", sessionId));
+    }
+    if (confirmed.user.empty() || confirmed.logonUsec == 0)
+    {
+        return std::unexpected(std::format("Which sign-in session {} was isn't known, so nothing was done", sessionId));
+    }
+    if (found->user != confirmed.user || found->domain != confirmed.domain || fileTimeToUnixUsec(found->logonTime) != confirmed.logonUsec)
+    {
+        return std::unexpected(
+            std::format("Session {} is now another sign-in than the one confirmed ({}), so nothing was done", sessionId, confirmed.user));
     }
     if (action == SessionAction::Disconnect && found->state == static_cast<std::uint32_t>(WtsState::Disconnected))
     {

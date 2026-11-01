@@ -174,6 +174,47 @@ TEST(UserRowsTest, WindowsSessionsSayWhereTheyAreAndWhatTheyAreDoing)
     EXPECT_TRUE((SessionMenu{.lock = false, .disconnect = true, .signOut = false}.any()));
 }
 
+// #3076: two accounts with one short name (PC\\alice and CORP\\alice) are two rows, each labelled with its
+// domain. A process names only the short name, so neither row gets "alice"'s processes, which can't be told
+// apart; a name only one row has keeps its processes.
+TEST(UserRowsTest, AccountsOfTwoDomainsAreTwoRows)
+{
+    UserSession local = session("1", "alice", 0);
+    local.domain = "PC";
+    UserSession corp = session("2", "alice", 0);
+    corp.domain = "CORP";
+    UserSession bob = session("3", "bob", 0);
+    bob.domain = "PC";
+    UserSession again = session("4", "bob", 0);
+    again.domain = "PC";
+    const std::vector<Domain::ProcessSnapshot> processes{process(10, "alice", 5.0, 100), process(11, "bob", 1.0, 50)};
+    const std::vector<UserRow> rows = buildUserRows({local, corp, bob, again}, processes);
+    ASSERT_EQ(rows.size(), 3U);
+    EXPECT_EQ(rows[0].label, "bob") << "a short name only one row has";
+    EXPECT_EQ(rows[0].key, "PC\\bob");
+    EXPECT_EQ(rows[0].sessions.size(), 2U) << "both of PC\\bob's sessions";
+    EXPECT_EQ(rows[0].processes, (std::vector<std::size_t>{1}));
+    EXPECT_EQ(rows[1].label, "CORP\\alice");
+    EXPECT_EQ(rows[2].label, "PC\\alice");
+    EXPECT_TRUE(rows[1].processes.empty()) << "an alice process could be either alice's";
+    EXPECT_TRUE(rows[2].processes.empty());
+    EXPECT_EQ(rows[1].user, "alice");
+}
+
+// #3076: a Windows session whose user couldn't be read is a row of its own, said to be not readable, with no
+// processes and its reason in the tooltip.
+TEST(UserRowsTest, ASessionNotReadableIsItsOwnRow)
+{
+    UserSession hidden = session("5", "", 0, "disconnected");
+    hidden.unreadable = "Access is denied";
+    const std::vector<UserRow> rows = buildUserRows({hidden, session("1", "alice", 1000)}, {process(10, "", 1.0, 1)});
+    ASSERT_EQ(rows.size(), 2U);
+    EXPECT_EQ(rows[1].label, "Not readable");
+    EXPECT_TRUE(rows[1].user.empty());
+    EXPECT_TRUE(rows[1].processes.empty());
+    EXPECT_EQ(sessionTooltip(hidden), "Its user couldn't be read: Access is denied\nSession 5");
+}
+
 /// Sessions a test controls: what read() lists and what act() answers, with each call recorded. Linux's
 /// actions (Lock and Sign out), or with @p windows Windows' (Disconnect and Sign out).
 class FakeSessions final : public Platform::IUserSessions
@@ -368,6 +409,16 @@ TEST(SessionActionTest, DisconnectAsksFirstAndSaysWhatHappensToTheSession)
     EXPECT_EQ(control.pendingAction(), SessionAction::SignOut);
     EXPECT_TRUE(control.question().contains("unsaved work is lost"));
     control.cancel();
+
+    // Inside Remote Desktop, disconnecting TaskSmack's own session closes the connection; it locks no screen.
+    UserSession remote = session("3", "alice", 0);
+    remote.current = true;
+    remote.remote = true;
+    remote.type = "rdp";
+    remote.remoteHost = "LAPTOP";
+    const std::string question = disconnectQuestion(remote);
+    EXPECT_TRUE(question.contains("the Remote Desktop connection closes")) << question;
+    EXPECT_FALSE(question.contains("this screen locks")) << question;
 
     EXPECT_STREQ(sessionActionWords(SessionAction::Lock).done, "Locked");
     EXPECT_STREQ(sessionActionWords(SessionAction::Disconnect).title, "Disconnect");

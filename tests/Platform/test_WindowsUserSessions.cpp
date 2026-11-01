@@ -6,6 +6,7 @@
 #include "Platform/BrokerProtocol.h"
 #include "Platform/IServiceActions.h"
 #include "Platform/IUserSessions.h"
+#include "Platform/Windows/WindowsConversions.h"
 #include "Platform/Windows/WindowsUserSessions.h"
 #include "Platform/Windows/WindowsUserSessionsMath.h"
 
@@ -14,7 +15,10 @@
 #include <algorithm>
 #include <cstdint>
 #include <expected>
+#include <functional>
+#include <stop_token>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -36,14 +40,37 @@ namespace
 using UserSessionsMath::WtsSessionFacts;
 using UserSessionsMath::WtsState;
 
+/// When the fake's users signed in, as FILETIME ticks: 2023-11-14 21:13:20 UTC.
+constexpr std::uint64_t SIGNED_IN = FILETIME_UNIX_EPOCH + (1'699'996'400ULL * 10'000'000ULL);
+
 [[nodiscard]] WtsSessionFacts facts(std::uint32_t id, WtsState state, std::string user)
 {
     WtsSessionFacts session;
     session.sessionId = id;
     session.state = static_cast<std::uint32_t>(state);
+    session.domain = user.empty() ? std::string{} : std::string("PC");
+    session.logonTime = user.empty() ? 0 : SIGNED_IN;
     session.user = std::move(user);
     session.winStation = id == 0 ? "Services" : "Console";
     return session;
+}
+
+/// The session the user confirmed: PC\@p user, signed in at SIGNED_IN, in session @p id.
+[[nodiscard]] UserSession confirmed(std::string id, std::string user)
+{
+    UserSession session;
+    session.id = std::move(id);
+    session.user = std::move(user);
+    session.domain = "PC";
+    session.logonUsec = UserSessionsMath::fileTimeToUnixUsec(SIGNED_IN);
+    return session;
+}
+
+/// The helper's request for @p confirmed.
+[[nodiscard]] Broker::SessionActionRequest requestFor(SessionAction action, std::uint32_t id, const std::string& user)
+{
+    return Broker::SessionActionRequest{
+        .action = action, .sessionId = id, .user = user, .domain = "PC", .logonUsec = UserSessionsMath::fileTimeToUnixUsec(SIGNED_IN)};
 }
 
 /// WTS as a test sets it up: what it lists, what each action answers, and every action asked of it.
@@ -54,12 +81,17 @@ struct FakeWts
     std::string listFailure;
     std::uint32_t answer = 0; ///< What disconnect and logoff return
     std::vector<std::string> calls;
+    std::function<void()> onList; ///< Runs as the list is read (a test's stop request)
 
     [[nodiscard]] WtsCalls makeCalls()
     {
         return WtsCalls{
             .enumerate = [this] -> std::expected<std::vector<WtsSessionFacts>, std::string>
             {
+                if (onList)
+                {
+                    onList();
+                }
                 if (!listFailure.empty())
                 {
                     return std::unexpected(listFailure);
@@ -87,16 +119,20 @@ struct FakeWts
 TEST(WindowsUserSessionsTest, ReadsTheSignedInSessionsAndSaysWhyAFailedListFailed)
 {
     FakeWts wts;
+    WtsSessionFacts hidden = facts(4, WtsState::Disconnected, "");
+    hidden.infoError = "Access is denied";
+    wts.sessions.push_back(hidden);
     WindowsUserSessions sessions(wts.makeCalls());
     EXPECT_TRUE(sessions.hasSessions());
     const UserSessionsRead read = sessions.read();
     ASSERT_EQ(read.status, UserSessionsStatus::Ok);
-    ASSERT_EQ(read.sessions.size(), 2U) << "session 0 is left out";
+    ASSERT_EQ(read.sessions.size(), 3U) << "session 0 is left out";
     EXPECT_EQ(read.sessions[0].user, "alice");
     EXPECT_TRUE(read.sessions[0].current);
     EXPECT_EQ(read.sessions[1].user, "bob");
     EXPECT_EQ(read.sessions[1].state, "disconnected");
     EXPECT_FALSE(read.sessions[1].current);
+    EXPECT_EQ(read.sessions[2].unreadable, "Access is denied") << "kept, as not readable, not dropped";
 
     wts.listFailure = "Windows couldn't list the sessions: RPC server unavailable";
     const UserSessionsRead failed = sessions.read();
@@ -114,31 +150,75 @@ TEST(WindowsUserSessionsTest, OffersDisconnectAndSignOutButNotLock)
     EXPECT_FALSE(sessions.canAct(SessionAction::Lock));
 }
 
-TEST(WindowsUserSessionsTest, DisconnectAndSignOutReachWtsOnlyForALiveSignedInSession)
+TEST(WindowsUserSessionsTest, DisconnectAndSignOutReachWtsOnlyForTheConfirmedSignIn)
 {
     FakeWts wts;
     WindowsUserSessions sessions(wts.makeCalls());
-    EXPECT_TRUE(sessions.act("1", SessionAction::Disconnect, false, {}).ok);
-    EXPECT_TRUE(sessions.act("3", SessionAction::SignOut, true, {}).ok);
-    // Refused before WTS is asked: session 0, an ended session, a Lock, a disconnected session's Disconnect, no number.
-    for (const auto& [id, action] : std::vector<std::pair<std::string, SessionAction>>{{"0", SessionAction::SignOut},
-                                                                                       {"0", SessionAction::Disconnect},
-                                                                                       {"9", SessionAction::SignOut},
-                                                                                       {"1", SessionAction::Lock},
-                                                                                       {"3", SessionAction::Disconnect},
-                                                                                       {"c1", SessionAction::SignOut}})
+    EXPECT_TRUE(sessions.actOnConfirmed(confirmed("1", "alice"), SessionAction::Disconnect, false, {}).ok);
+    EXPECT_TRUE(sessions.actOnConfirmed(confirmed("3", "bob"), SessionAction::SignOut, true, {}).ok);
+    // Refused before WTS is asked: session 0, an ended session, a Lock, a disconnected session's Disconnect, no
+    // number, and an ID that now names another sign-in (alice's 1 confirmed as bob's).
+    for (const auto& [id, user, action] :
+         std::vector<std::tuple<std::string, std::string, SessionAction>>{{"0", "alice", SessionAction::SignOut},
+                                                                          {"0", "alice", SessionAction::Disconnect},
+                                                                          {"9", "alice", SessionAction::SignOut},
+                                                                          {"1", "alice", SessionAction::Lock},
+                                                                          {"3", "bob", SessionAction::Disconnect},
+                                                                          {"c1", "alice", SessionAction::SignOut},
+                                                                          {"1", "bob", SessionAction::SignOut}})
     {
-        const ServiceActionResult refused = sessions.act(id, action, false, {});
+        const ServiceActionResult refused = sessions.actOnConfirmed(confirmed(id, user), action, false, {});
         EXPECT_FALSE(refused.ok) << id;
         EXPECT_FALSE(refused.needsAuthorization) << id;
     }
+    // By ID alone, nothing is done: an ID can't say it is still the confirmed sign-in.
+    EXPECT_FALSE(sessions.act("1", SessionAction::SignOut, false, {}).ok);
     EXPECT_EQ(wts.calls, (std::vector<std::string>{"disconnect 1", "logoff 3"}));
 
     wts.listFailure = "Windows couldn't list the sessions: x";
-    const ServiceActionResult unlisted = sessions.act("1", SessionAction::SignOut, false, {});
+    const ServiceActionResult unlisted = sessions.actOnConfirmed(confirmed("1", "alice"), SessionAction::SignOut, false, {});
     EXPECT_FALSE(unlisted.ok);
     EXPECT_EQ(unlisted.message, "Windows couldn't list the sessions: x");
     EXPECT_EQ(wts.calls.size(), 2U) << "nothing is sent without a fresh list";
+}
+
+// #3076: alice's session 1 ends while her Sign out is confirmed, and bob signs in to the reused ID: nothing
+// is sent, in TaskSmack or in the helper.
+TEST(WindowsUserSessionsTest, AnIdReusedByAnotherUserIsRefusedInBothPaths)
+{
+    FakeWts wts;
+    wts.sessions[1] = facts(1, WtsState::Active, "bob");
+    WindowsUserSessions sessions(wts.makeCalls());
+    const ServiceActionResult direct = sessions.actOnConfirmed(confirmed("1", "alice"), SessionAction::SignOut, false, {});
+    EXPECT_FALSE(direct.ok);
+    EXPECT_EQ(direct.message, "Session 1 is now another sign-in than the one confirmed (alice), so nothing was done");
+    const ServiceActionResult helper = handleHelperSessionAction(requestFor(SessionAction::SignOut, 1, "alice"), wts.makeCalls());
+    EXPECT_FALSE(helper.ok);
+    EXPECT_EQ(helper.message, direct.message);
+    Broker::SessionActionRequest anonymous = requestFor(SessionAction::SignOut, 1, "bob");
+    anonymous.user.clear();
+    EXPECT_FALSE(handleHelperSessionAction(anonymous, wts.makeCalls()).ok) << "a request naming no user";
+    anonymous = requestFor(SessionAction::SignOut, 1, "bob");
+    anonymous.logonUsec = 0;
+    EXPECT_FALSE(handleHelperSessionAction(anonymous, wts.makeCalls()).ok) << "a request naming no sign-in time";
+    EXPECT_TRUE(wts.calls.empty());
+}
+
+TEST(WindowsUserSessionsTest, AStopBeforeTheListOrTheCallSendsNothing)
+{
+    FakeWts wts;
+    WindowsUserSessions sessions(wts.makeCalls());
+    std::stop_source stopped;
+    stopped.request_stop();
+    EXPECT_TRUE(sessions.actOnConfirmed(confirmed("1", "alice"), SessionAction::SignOut, false, stopped.get_token()).cancelled);
+
+    std::stop_source duringList;
+    wts.onList = [&duringList]
+    {
+        duringList.request_stop();
+    };
+    EXPECT_TRUE(sessions.actOnConfirmed(confirmed("1", "alice"), SessionAction::SignOut, false, duringList.get_token()).cancelled);
+    EXPECT_TRUE(wts.calls.empty());
 }
 
 TEST(WindowsUserSessionsTest, AnotherUsersSessionIsRefusedForAnAdministratorToFinish)
@@ -146,35 +226,33 @@ TEST(WindowsUserSessionsTest, AnotherUsersSessionIsRefusedForAnAdministratorToFi
     FakeWts wts;
     wts.answer = ERROR_ACCESS_DENIED;
     WindowsUserSessions sessions(wts.makeCalls());
-    const ServiceActionResult denied = sessions.act("3", SessionAction::SignOut, false, {});
+    const ServiceActionResult denied = sessions.actOnConfirmed(confirmed("3", "bob"), SessionAction::SignOut, false, {});
     EXPECT_FALSE(denied.ok);
     EXPECT_TRUE(denied.needsAuthorization);
     EXPECT_EQ(denied.message, "Requires administrator");
 
     wts.answer = 7022;
-    const ServiceActionResult other = sessions.act("3", SessionAction::SignOut, false, {});
+    const ServiceActionResult other = sessions.actOnConfirmed(confirmed("3", "bob"), SessionAction::SignOut, false, {});
     EXPECT_FALSE(other.needsAuthorization);
     EXPECT_EQ(other.message, "The session can't be logged off");
 
     WtsCalls undescribed = wts.makeCalls();
     undescribed.describe = nullptr;
     wts.answer = 7023;
-    EXPECT_EQ(actOnSession(undescribed, "3", SessionAction::SignOut).message, "Windows error 7023");
+    EXPECT_EQ(actOnSession(undescribed, confirmed("3", "bob"), SessionAction::SignOut, {}).message, "Windows error 7023");
 }
 
 TEST(WindowsUserSessionsTest, TheHelperChecksTheSessionAndItsRefusalIsntOfferedAgain)
 {
     FakeWts wts;
     const WtsCalls calls = wts.makeCalls();
-    EXPECT_TRUE(handleHelperSessionAction(Broker::SessionActionRequest{.action = SessionAction::SignOut, .sessionId = 3}, calls).ok);
-    const ServiceActionResult zero =
-        handleHelperSessionAction(Broker::SessionActionRequest{.action = SessionAction::SignOut, .sessionId = 0}, calls);
+    EXPECT_TRUE(handleHelperSessionAction(requestFor(SessionAction::SignOut, 3, "bob"), calls).ok);
+    const ServiceActionResult zero = handleHelperSessionAction(requestFor(SessionAction::SignOut, 0, "alice"), calls);
     EXPECT_FALSE(zero.ok);
     EXPECT_EQ(zero.message, "Session 0 runs Windows' services; no one is signed in to it");
-    EXPECT_FALSE(handleHelperSessionAction(Broker::SessionActionRequest{.action = SessionAction::Disconnect, .sessionId = 42}, calls).ok);
+    EXPECT_FALSE(handleHelperSessionAction(requestFor(SessionAction::Disconnect, 42, "alice"), calls).ok);
     wts.answer = ERROR_ACCESS_DENIED;
-    const ServiceActionResult denied =
-        handleHelperSessionAction(Broker::SessionActionRequest{.action = SessionAction::Disconnect, .sessionId = 1}, calls);
+    const ServiceActionResult denied = handleHelperSessionAction(requestFor(SessionAction::Disconnect, 1, "alice"), calls);
     EXPECT_FALSE(denied.ok);
     EXPECT_FALSE(denied.needsAuthorization) << "the helper is the administrator: nothing further could finish it";
     EXPECT_EQ(wts.calls, (std::vector<std::string>{"logoff 3", "disconnect 1"}));

@@ -43,6 +43,14 @@ namespace App
 /// The Disconnect confirm's question for @p session (#3076, Windows).
 [[nodiscard]] inline std::string disconnectQuestion(const Platform::UserSession& session)
 {
+    if (session.current && session.remote)
+    {
+        // Inside Remote Desktop, Disconnect closes the connection rather than locking a screen.
+        return std::format("Disconnect {} from {}?\n\nThis is the session TaskSmack runs in: the Remote Desktop connection closes. "
+                           "Its programs, TaskSmack too, keep running until you reconnect.",
+                           session.user,
+                           sessionPlace(session));
+    }
     if (session.current)
     {
         return std::format("Disconnect {} from {}?\n\nThis is the session TaskSmack runs in: this screen locks. Its programs, "
@@ -235,8 +243,8 @@ class SessionActionControl
                                          : std::format("{} {}'s session...", words.doing, session.user);
         m_RetryAllowed = !allowInteractive; // a refusal to the administrator isn't offered again
         if (std::optional<Platform::ServiceActionResult> failed =
-                m_Worker.start([sessions = m_Sessions, id = session.id, action, allowInteractive](const std::stop_token& stop)
-                               { return sessions->act(id, action, allowInteractive, stop); }))
+                m_Worker.start([sessions = m_Sessions, session, action, allowInteractive](const std::stop_token& stop)
+                               { return sessions->actOnConfirmed(session, action, allowInteractive, stop); }))
         {
             finish(*failed);
         }

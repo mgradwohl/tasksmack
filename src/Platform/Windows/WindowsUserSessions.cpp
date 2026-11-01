@@ -22,9 +22,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <format>
 #include <memory>
 #include <optional>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -54,18 +56,28 @@ struct WtsFree
     return WinString::wideToUtf8(std::wstring_view(text.data(), static_cast<std::size_t>(end - text.begin())));
 }
 
-/// Session @p sessionId's @p infoClass, or null when WTS gives none or fewer than @p minimumBytes.
-[[nodiscard]] std::unique_ptr<void, WtsFree> querySession(DWORD sessionId, WTS_INFO_CLASS infoClass, std::size_t minimumBytes)
+/// Session @p sessionId's @p infoClass, or null when WTS gives none or fewer than @p minimumBytes; then
+/// @p error, when given, is the Win32 error (ERROR_INVALID_DATA for a short answer).
+[[nodiscard]] std::unique_ptr<void, WtsFree>
+querySession(DWORD sessionId, WTS_INFO_CLASS infoClass, std::size_t minimumBytes, DWORD* error = nullptr)
 {
     LPWSTR buffer = nullptr;
     DWORD bytes = 0;
     if (WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, sessionId, infoClass, &buffer, &bytes) == FALSE || buffer == nullptr)
     {
+        if (error != nullptr)
+        {
+            *error = GetLastError();
+        }
         return nullptr;
     }
     std::unique_ptr<void, WtsFree> owned(buffer);
     if (bytes < minimumBytes)
     {
+        if (error != nullptr)
+        {
+            *error = ERROR_INVALID_DATA;
+        }
         return nullptr;
     }
     return owned;
@@ -77,15 +89,25 @@ struct WtsFree
     return time.QuadPart > 0 ? static_cast<std::uint64_t>(time.QuadPart) : 0;
 }
 
-/// Session @p listed with what WTSQuerySessionInformationW adds to it. A session that ended between the
-/// list and the query keeps only the list's facts.
+[[nodiscard]] std::string describeError(std::uint32_t error);
+
+/// Session @p listed with what WTSQuerySessionInformationW adds to it. When its WTSSessionInfo can't be read
+/// (access denied, or it ended between the list and the query), it keeps the list's facts and says why in
+/// infoError, so it isn't taken for a session nobody is signed in to.
 [[nodiscard]] WtsSessionFacts readSession(const WTS_SESSION_INFOW& listed)
 {
     WtsSessionFacts facts;
     facts.sessionId = listed.SessionId;
     facts.state = static_cast<std::uint32_t>(listed.State);
     facts.winStation = listed.pWinStationName != nullptr ? WinString::wideToUtf8(listed.pWinStationName) : std::string{};
-    if (const auto info = querySession(listed.SessionId, WTSSessionInfo, sizeof(WTSINFOW)); info != nullptr)
+    DWORD infoError = 0;
+    const auto info = querySession(listed.SessionId, WTSSessionInfo, sizeof(WTSINFOW), &infoError);
+    if (info == nullptr)
+    {
+        const std::string words = describeError(infoError);
+        facts.infoError = words.empty() ? std::format("Windows error {}", infoError) : words;
+    }
+    else
     {
         const auto* const session = static_cast<const WTSINFOW*>(info.get());
         facts.state = static_cast<std::uint32_t>(session->State);
@@ -200,17 +222,27 @@ UserSessionsRead readUserSessions(const WtsCalls& calls)
     return read;
 }
 
-ServiceActionResult actOnSession(const WtsCalls& calls, std::string_view id, SessionAction action)
+ServiceActionResult
+actOnSession(const WtsCalls& calls, const UserSession& confirmed, SessionAction action, const std::stop_token& stopToken)
 {
+    // A stop (the worker going, TaskSmack closing) before the list or before the call sends nothing.
+    if (stopToken.stop_requested())
+    {
+        return ServiceActionResult::stopRequested();
+    }
     const std::expected<std::vector<WtsSessionFacts>, std::string> listed = calls.enumerate();
     if (!listed.has_value())
     {
         return ServiceActionResult::failed(listed.error());
     }
-    const std::expected<std::uint32_t, std::string> session = UserSessionsMath::checkSessionAction(id, action, *listed);
+    const std::expected<std::uint32_t, std::string> session = UserSessionsMath::checkSessionAction(confirmed, action, *listed);
     if (!session.has_value())
     {
         return ServiceActionResult::failed(session.error());
+    }
+    if (stopToken.stop_requested())
+    {
+        return ServiceActionResult::stopRequested();
     }
     const std::uint32_t error = action == SessionAction::Disconnect ? calls.disconnect(*session) : calls.logoff(*session);
     if (error == 0)
@@ -222,8 +254,15 @@ ServiceActionResult actOnSession(const WtsCalls& calls, std::string_view id, Ses
 
 ServiceActionResult handleHelperSessionAction(const Broker::SessionActionRequest& request, const WtsCalls& calls)
 {
+    // The session TaskSmack's user confirmed, as the request names it: the checks refuse one whose ID now
+    // names another sign-in, or a request that names no user or sign-in time.
+    UserSession confirmed;
+    confirmed.id = std::to_string(request.sessionId);
+    confirmed.user = request.user;
+    confirmed.domain = request.domain;
+    confirmed.logonUsec = request.logonUsec;
     // The helper is elevated, so a refusal from it is never one an administrator could finish.
-    ServiceActionResult result = actOnSession(calls, std::to_string(request.sessionId), request.action);
+    ServiceActionResult result = actOnSession(calls, confirmed, request.action, std::stop_token{});
     result.needsAuthorization = false;
     return result;
 }

@@ -25,6 +25,8 @@ namespace
 constexpr std::uint64_t SECOND = FILETIME_TICKS_PER_SECOND;
 /// 2023-11-14 22:13:20 UTC, as FILETIME ticks.
 constexpr std::uint64_t NOW = FILETIME_UNIX_EPOCH + (1'700'000'000ULL * SECOND);
+/// When the test's users signed in: an hour before NOW.
+constexpr std::uint64_t SIGNED_IN = NOW - (3600 * SECOND);
 
 [[nodiscard]] WtsSessionFacts facts(std::uint32_t id, WtsState state, std::string user, std::string winStation = "Console")
 {
@@ -35,6 +37,18 @@ constexpr std::uint64_t NOW = FILETIME_UNIX_EPOCH + (1'700'000'000ULL * SECOND);
     session.user = std::move(user);
     session.winStation = std::move(winStation);
     session.currentTime = NOW;
+    session.logonTime = session.user.empty() ? 0 : SIGNED_IN;
+    return session;
+}
+
+/// The session the user confirmed: @p user of PC, signed in at SIGNED_IN, in session @p id.
+[[nodiscard]] UserSession confirmed(std::string id, std::string user = "alice", std::string domain = "PC")
+{
+    UserSession session;
+    session.id = std::move(id);
+    session.user = std::move(user);
+    session.domain = std::move(domain);
+    session.logonUsec = fileTimeToUnixUsec(SIGNED_IN);
     return session;
 }
 
@@ -151,12 +165,17 @@ TEST(WindowsUserSessionsMathTest, AnActionIsSentOnlyToALiveSignedInSessionThatIs
         SessionAction action;
         std::optional<std::uint32_t> sent; ///< nullopt: refused
         std::string_view refusal;
+        std::string_view user = "alice"; ///< Whom the user confirmed
     };
     for (const Row& row : {
              Row{.id = "1", .action = SessionAction::SignOut, .sent = 1U, .refusal = {}},
              Row{.id = "1", .action = SessionAction::Disconnect, .sent = 1U, .refusal = {}},
-             Row{.id = "4", .action = SessionAction::SignOut, .sent = 4U, .refusal = {}},
-             Row{.id = "4", .action = SessionAction::Disconnect, .sent = std::nullopt, .refusal = "Session 4 is already disconnected"},
+             Row{.id = "4", .action = SessionAction::SignOut, .sent = 4U, .refusal = {}, .user = "carol"},
+             Row{.id = "4",
+                 .action = SessionAction::Disconnect,
+                 .sent = std::nullopt,
+                 .refusal = "Session 4 is already disconnected",
+                 .user = "carol"},
              Row{.id = "1",
                  .action = SessionAction::Lock,
                  .sent = std::nullopt,
@@ -179,7 +198,7 @@ TEST(WindowsUserSessionsMathTest, AnActionIsSentOnlyToALiveSignedInSessionThatIs
              Row{.id = "", .action = SessionAction::SignOut, .sent = std::nullopt, .refusal = "\"\" isn't a session"},
          })
     {
-        const auto checked = checkSessionAction(row.id, row.action, sessions);
+        const auto checked = checkSessionAction(confirmed(std::string(row.id), std::string(row.user)), row.action, sessions);
         if (row.sent.has_value())
         {
             ASSERT_TRUE(checked.has_value()) << row.id << ": " << checked.error();
@@ -191,7 +210,58 @@ TEST(WindowsUserSessionsMathTest, AnActionIsSentOnlyToALiveSignedInSessionThatIs
             EXPECT_EQ(checked.error(), row.refusal) << row.id;
         }
     }
-    EXPECT_FALSE(checkSessionAction("1", SessionAction::SignOut, {}).has_value()) << "nothing listed: it has ended";
+    EXPECT_FALSE(checkSessionAction(confirmed("1"), SessionAction::SignOut, {}).has_value()) << "nothing listed: it has ended";
+}
+
+// #3076: Windows reuses session IDs. If alice's session 1 ends while her Sign out is being confirmed (or its
+// UAC prompt answered) and bob's sign-in gets ID 1, the action is refused: the ID no longer names the
+// sign-in the user confirmed. So is one in another domain, a later sign-in of the same user, and a request
+// that names no sign-in at all.
+TEST(WindowsUserSessionsMathTest, AnIdReusedByAnotherSignInIsRefused)
+{
+    const std::vector<WtsSessionFacts> bobInOne{facts(1, WtsState::Active, "bob")};
+    const auto reused = checkSessionAction(confirmed("1", "alice"), SessionAction::SignOut, bobInOne);
+    ASSERT_FALSE(reused.has_value());
+    EXPECT_EQ(reused.error(), "Session 1 is now another sign-in than the one confirmed (alice), so nothing was done");
+
+    const std::vector<WtsSessionFacts> aliceInOne{facts(1, WtsState::Active, "alice")};
+    EXPECT_FALSE(checkSessionAction(confirmed("1", "alice", "CORP"), SessionAction::Disconnect, aliceInOne).has_value())
+        << "CORP\\alice isn't PC\\alice";
+    std::vector<WtsSessionFacts> later = aliceInOne;
+    later[0].logonTime = NOW;
+    EXPECT_FALSE(checkSessionAction(confirmed("1"), SessionAction::SignOut, later).has_value()) << "alice signed in again since";
+    EXPECT_TRUE(checkSessionAction(confirmed("1"), SessionAction::SignOut, aliceInOne).has_value()) << "the same sign-in";
+
+    UserSession nobody = confirmed("1");
+    nobody.user.clear();
+    const auto anonymous = checkSessionAction(nobody, SessionAction::SignOut, aliceInOne);
+    ASSERT_FALSE(anonymous.has_value());
+    EXPECT_EQ(anonymous.error(), "Which sign-in session 1 was isn't known, so nothing was done");
+    UserSession whenUnknown = confirmed("1");
+    whenUnknown.logonUsec = 0;
+    EXPECT_FALSE(checkSessionAction(whenUnknown, SessionAction::SignOut, aliceInOne).has_value()) << "no sign-in time";
+}
+
+// #3076: a session whose WTSSessionInfo couldn't be read (access denied to another user's session) is kept,
+// as not readable, and is never taken for one nobody is signed in to; nothing is sent to it.
+TEST(WindowsUserSessionsMathTest, ASessionWhoseDetailsCantBeReadIsKeptAndNotActedOn)
+{
+    WtsSessionFacts hidden = facts(3, WtsState::Disconnected, "", "");
+    hidden.infoError = "Access is denied";
+    const std::optional<UserSession> session = toUserSession(hidden, 1);
+    ASSERT_TRUE(session.has_value());
+    EXPECT_EQ(session.value_or(UserSession{}).id, "3");
+    EXPECT_EQ(session.value_or(UserSession{}).unreadable, "Access is denied");
+    EXPECT_EQ(session.value_or(UserSession{}).state, "disconnected");
+    EXPECT_TRUE(session.value_or(UserSession{}).user.empty());
+    EXPECT_EQ(accountKey(session.value_or(UserSession{})), "?3") << "a row of its own";
+
+    const std::vector<WtsSessionFacts> listed{hidden};
+    const auto refused = checkSessionAction(confirmed("3"), SessionAction::SignOut, listed);
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error(), "Session 3's user couldn't be read: Access is denied");
+    hidden.sessionId = 0;
+    EXPECT_FALSE(toUserSession(hidden, 1).has_value()) << "session 0 is still left out";
 }
 
 TEST(WindowsUserSessionsMathTest, AccessDeniedIsTheOneRefusalAnAdministratorCouldFinish)

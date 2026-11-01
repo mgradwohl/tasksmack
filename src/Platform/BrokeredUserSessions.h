@@ -43,10 +43,18 @@ class BrokeredUserSessions final : public IUserSessions
         return m_Inner->canAct(action);
     }
 
-    /// The inner act(). A refusal an administrator could finish goes to the helper: at once while it runs,
-    /// or, with @p allowInteractive (Authenticate and retry), once connect() has started it.
+    /// The inner act(), by ID: no helper, since the helper acts only on a confirmed sign-in.
     [[nodiscard]] ServiceActionResult
-    act(std::string_view id, SessionAction action, bool allowInteractive, const std::stop_token& stopToken) override;
+    act(std::string_view id, SessionAction action, bool allowInteractive, const std::stop_token& stopToken) override
+    {
+        return m_Inner->act(id, action, allowInteractive, stopToken);
+    }
+
+    /// The inner actOnConfirmed(). A refusal an administrator could finish goes to the helper, naming the
+    /// confirmed sign-in (its user, domain and sign-in time) so the helper acts only on it: at once while the
+    /// helper runs, or, with @p allowInteractive (Authenticate and retry), once connect() has started it.
+    [[nodiscard]] ServiceActionResult
+    actOnConfirmed(const UserSession& confirmed, SessionAction action, bool allowInteractive, const std::stop_token& stopToken) override;
 
     /// What a refusal says when there is no helper to finish it.
     static constexpr std::string_view NO_HELPER = " (run TaskSmack as an administrator to act on another user's session)";
@@ -55,7 +63,7 @@ class BrokeredUserSessions final : public IUserSessions
     /// @p action through the helper: its result; nullopt from a helper that doesn't do session actions;
     /// or why it couldn't be asked.
     [[nodiscard]] std::expected<std::optional<ServiceActionResult>, std::string>
-    askBroker(std::string_view id, SessionAction action, const std::stop_token& stopToken);
+    askBroker(const UserSession& confirmed, SessionAction action, const std::stop_token& stopToken);
 
     std::unique_ptr<IUserSessions> m_Inner;
     std::shared_ptr<IPrivilegedBroker> m_Broker;

@@ -1412,7 +1412,8 @@ TEST(BrokerPipeServeTest, EveryRequestKindIsTheHelloAnActionOrARead)
     EXPECT_TRUE(BrokerPipeServer::isActionWindowsDoes(replacement));
     EXPECT_TRUE(BrokerPipeServer::putsOffTheWindowsIdleExit(replacement));
     // #3076: Disconnect and Sign out of another user's session are actions the user confirmed.
-    const Broker::SessionActionRequest signOut{.action = Platform::SessionAction::SignOut, .sessionId = 2};
+    const Broker::SessionActionRequest signOut{
+        .action = Platform::SessionAction::SignOut, .sessionId = 2, .user = "bob", .domain = "PC", .logonUsec = 1};
     EXPECT_FALSE(BrokerPipeServer::isRead(signOut)) << "an action (#3076)";
     EXPECT_TRUE(BrokerPipeServer::isActionWindowsDoes(signOut));
     EXPECT_TRUE(BrokerPipeServer::putsOffTheWindowsIdleExit(signOut));

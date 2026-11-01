@@ -396,7 +396,8 @@ TEST(BrokerRequestMappingTest, ASessionActionGoesToItsHandlerAndAThrowIsAFailedR
         seen = request;
         return ServiceActionResult::succeeded();
     };
-    const Broker::SessionActionRequest disconnect{.action = SessionAction::Disconnect, .sessionId = 3};
+    const Broker::SessionActionRequest disconnect{
+        .action = SessionAction::Disconnect, .sessionId = 3, .user = "bob", .domain = "PC", .logonUsec = 1'700'000'000'000'000ULL};
     const Broker::Response response = BrokerServer::handleRequest(disconnect, actions, readers);
     ASSERT_TRUE(std::holds_alternative<Broker::ServiceActionReply>(response));
     EXPECT_TRUE(std::get<Broker::ServiceActionReply>(response).result.ok);

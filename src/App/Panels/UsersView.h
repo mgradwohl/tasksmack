@@ -29,19 +29,25 @@ namespace App
 /// One signed-in user: their sessions, and their processes' totals.
 struct UserRow
 {
-    std::string user;
+    std::string user;  ///< The short name the Processes table's User column has; empty for a session not readable
+    std::string key;   ///< What the row groups by (Platform::accountKey()): "PC\\alice" and "CORP\\alice" are two rows
+    std::string label; ///< What the row says: the short name, "CORP\\alice" when two rows share it, or "Not readable"
     std::uint32_t uid = 0;
     std::vector<Platform::UserSession> sessions; ///< In the publication's order
     ProcessGrouping::Totals totals;              ///< Over every process running as them
-    std::vector<std::size_t> processes;          ///< Indices into the process generation, busiest first
-    bool current = false;                        ///< One of their sessions is TaskSmack's own
+    /// Indices into the process generation, busiest first. A process names only its user's short name, so
+    /// when two rows share one (PC\\alice and CORP\\alice) neither gets that name's processes: they can't be
+    /// told apart until the process probe keeps the domain (#3310).
+    std::vector<std::size_t> processes;
+    bool current = false; ///< One of their sessions is TaskSmack's own
 };
 
 /// Whether @p session is a person's sign-in (logind class "user"), not a greeter, lock screen or the user
 /// manager's own background session, which the tab leaves out.
 [[nodiscard]] bool isSignInSession(const Platform::UserSession& session);
 
-/// A row per user with a sign-in session, by user name, each with the processes running as them.
+/// A row per account with a sign-in session (by domain and user name on Windows), sorted by its label, each
+/// with the processes running as them. A session whose user couldn't be read is a row of its own.
 [[nodiscard]] std::vector<UserRow> buildUserRows(const std::vector<Platform::UserSession>& sessions,
                                                  const std::vector<Domain::ProcessSnapshot>& processes);
 

@@ -50,12 +50,15 @@ struct WtsCalls
 /// The sessions through @p calls as the Users tab's (UserSessionsMath::toUserSession()), or Failed with why.
 [[nodiscard]] UserSessionsRead readUserSessions(const WtsCalls& calls);
 
-/// Checks @p action on session @p id against a fresh list through @p calls, then does it: the one path
-/// TaskSmack's own calls and the helper's share.
-[[nodiscard]] ServiceActionResult actOnSession(const WtsCalls& calls, std::string_view id, SessionAction action);
+/// Checks @p action on @p confirmed (the session the user confirmed: its ID, user, domain and sign-in time)
+/// against a fresh list through @p calls, then does it: the one path TaskSmack's own calls and the helper's
+/// share. A stop requested before the list, or before the call, sends nothing (stopRequested()).
+[[nodiscard]] ServiceActionResult
+actOnSession(const WtsCalls& calls, const UserSession& confirmed, SessionAction action, const std::stop_token& stopToken);
 
-/// The administrator helper's answer to @p request (#3076): actOnSession() with @p calls, the helper's own.
-/// A Lock, session 0, an ended session and one nobody is signed in to are refused there.
+/// The administrator helper's answer to @p request (#3076): actOnSession() with @p calls, the helper's own,
+/// for the session the request names. A Lock, session 0, an ended session, one nobody is signed in to, and
+/// an ID that now names another sign-in than the request's user and sign-in time are refused there.
 [[nodiscard]] ServiceActionResult handleHelperSessionAction(const Broker::SessionActionRequest& request, const WtsCalls& calls);
 
 class WindowsUserSessions final : public IUserSessions
@@ -82,12 +85,20 @@ class WindowsUserSessions final : public IUserSessions
         return action == SessionAction::Disconnect || action == SessionAction::SignOut;
     }
 
+    /// By ID alone: refused, since Windows reuses session IDs and an ID can't say it is still the sign-in
+    /// the user confirmed. The Users tab calls actOnConfirmed().
+    [[nodiscard]] ServiceActionResult
+    act(std::string_view /*id*/, SessionAction /*action*/, bool /*allowInteractive*/, const std::stop_token& /*stopToken*/) override
+    {
+        return ServiceActionResult::failed("Which sign-in to act on isn't known, so nothing was done");
+    }
+
     /// @p allowInteractive changes nothing here: Windows has no prompt in-process, and another user's
     /// session goes to the helper (BrokeredUserSessions), whose start is the UAC prompt.
     [[nodiscard]] ServiceActionResult
-    act(std::string_view id, SessionAction action, bool /*allowInteractive*/, const std::stop_token& /*stopToken*/) override
+    actOnConfirmed(const UserSession& confirmed, SessionAction action, bool /*allowInteractive*/, const std::stop_token& stopToken) override
     {
-        return actOnSession(m_Calls, id, action);
+        return actOnSession(m_Calls, confirmed, action, stopToken);
     }
 
   private:

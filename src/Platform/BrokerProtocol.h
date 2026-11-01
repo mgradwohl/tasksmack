@@ -234,13 +234,18 @@ struct TaskManagerReplacementRequest
 
 /// Disconnect or sign out another user's Windows session (#3076, protocol v13): what TaskSmack can't do
 /// without an administrator's rights. Only Disconnect and SignOut are carried (a Lock is refused as
-/// malformed), and the session by its WTS ID. The helper checks it against a fresh list before it acts
-/// (UserSessionsMath::checkSessionAction(): not session 0, still there, someone signed in to it). The
-/// answer is a ServiceActionReply. Linux's helper answers with an error: polkit authorizes there.
+/// malformed). The session is named by its WTS ID and by the sign-in the user confirmed: its user, domain
+/// and sign-in time, since Windows reuses session IDs. The helper checks it against a fresh list before it
+/// acts (UserSessionsMath::checkSessionAction(): not session 0, still there, the same sign-in), and refuses
+/// a request with no user or sign-in time. The answer is a ServiceActionReply. Linux's helper answers with
+/// an error: polkit authorizes there.
 struct SessionActionRequest
 {
     SessionAction action = SessionAction::SignOut;
     std::uint32_t sessionId = 0;
+    std::string user;            ///< The confirmed session's user (UTF-8)
+    std::string domain;          ///< Its domain or computer name
+    std::uint64_t logonUsec = 0; ///< When its user signed in (CLOCK_REALTIME µs)
     friend bool operator==(const SessionActionRequest&, const SessionActionRequest&) = default;
 };
 
@@ -953,11 +958,14 @@ namespace Detail
     return MessageKind::TaskManagerReplacement;
 }
 
-/// SessionAction (#3076): the action, then the session's ID.
+/// SessionAction (#3076): the action, the session's ID, then the confirmed sign-in: user, domain, sign-in time.
 [[nodiscard]] inline MessageKind encodePayload(Writer& writer, const SessionActionRequest& session)
 {
     writer.u8(static_cast<std::uint8_t>(session.action));
     writer.u32(session.sessionId);
+    writer.text(session.user);
+    writer.text(session.domain);
+    writer.u64(session.logonUsec);
     return MessageKind::SessionAction;
 }
 
@@ -1202,12 +1210,16 @@ namespace Detail
 }
 
 /// A SessionAction payload (#3076): the action, refused unless it is SignOut or Disconnect (Lock is
-/// Linux's, which polkit authorizes, never the helper), then the session's ID.
+/// Linux's, which polkit authorizes, never the helper), the session's ID, then the confirmed sign-in's user,
+/// domain and sign-in time (the helper, not the decoder, refuses a missing one).
 [[nodiscard]] inline SessionActionRequest decodeSessionActionRequest(Reader& reader)
 {
     SessionActionRequest request;
     const std::uint8_t action = reader.u8();
     request.sessionId = reader.u32();
+    request.user = reader.text();
+    request.domain = reader.text();
+    request.logonUsec = reader.u64();
     if (action != static_cast<std::uint8_t>(SessionAction::SignOut) && action != static_cast<std::uint8_t>(SessionAction::Disconnect))
     {
         reader.fail();

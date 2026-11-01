@@ -129,23 +129,31 @@ TEST(BrokerProtocolTest, TaskManagerReplacementRoundTrips)
     EXPECT_EQ(Detail::readFrame(bytes).value_or(Detail::Frame{}).kind, MessageKind::TaskManagerReplacement);
 }
 
-// #3076 (v13): a session's Disconnect or Sign out carries the action and the session's WTS ID, the full 32
-// bits; a Lock (Linux's, never the helper's), an action past Disconnect, a short frame and a byte left over
-// are refused.
+// #3076 (v13): a session's Disconnect or Sign out carries the action, the session's WTS ID (the full 32 bits)
+// and the sign-in the user confirmed (user, domain, sign-in time), since Windows reuses session IDs; a Lock
+// (Linux's, never the helper's), an action past Disconnect, a short frame and a byte left over are refused.
 TEST(BrokerProtocolTest, SessionActionRoundTripsAndRefusesALock)
 {
     for (const Request& request : {
-             Request{SessionActionRequest{.action = SessionAction::SignOut, .sessionId = 2}},
-             Request{SessionActionRequest{.action = SessionAction::Disconnect, .sessionId = 0xFFFFFFFFU}},
-             Request{SessionActionRequest{.action = SessionAction::SignOut, .sessionId = 0}}, // the helper, not the decoder, refuses 0
+             Request{SessionActionRequest{
+                 .action = SessionAction::SignOut, .sessionId = 2, .user = "alice", .domain = "PC", .logonUsec = 1'700'000'000'000'000ULL}},
+             Request{SessionActionRequest{
+                 .action = SessionAction::Disconnect, .sessionId = 0xFFFFFFFFU, .user = "Zoë", .domain = "CORP", .logonUsec = ~0ULL}},
+             // The helper, not the decoder, refuses session 0 and a request that names no sign-in.
+             Request{SessionActionRequest{.action = SessionAction::SignOut, .sessionId = 0, .user = {}, .domain = {}, .logonUsec = 0}},
          })
     {
         EXPECT_EQ(roundTrip(request), request);
     }
-    std::vector<std::uint8_t> bytes =
-        encodeRequest(5, Request{SessionActionRequest{.action = SessionAction::Disconnect, .sessionId = 0x01020304U}});
-    // The header, then the action and the session's ID.
-    const std::vector<std::uint8_t> expected{13, 0, 0, 0, 13, 0, 24, 0, 5, 0, 0, 0, 2, 4, 3, 2, 1};
+    std::vector<std::uint8_t> bytes = encodeRequest(5,
+                                                    Request{SessionActionRequest{.action = SessionAction::Disconnect,
+                                                                                 .sessionId = 0x01020304U,
+                                                                                 .user = "ab",
+                                                                                 .domain = {},
+                                                                                 .logonUsec = 0x0102030405060708ULL}});
+    // The header, then the action, the session's ID, the user, the domain and the sign-in time.
+    const std::vector<std::uint8_t> expected{31, 0, 0, 0,   13,  0, 24, 0, 5, 0, 0, 0, 2, 4, 3, 2, 1, 2,
+                                             0,  0, 0, 'a', 'b', 0, 0,  0, 0, 8, 7, 6, 5, 4, 3, 2, 1};
     EXPECT_EQ(bytes, expected);
     EXPECT_EQ(Detail::readFrame(bytes).value_or(Detail::Frame{}).kind, MessageKind::SessionAction);
 
@@ -159,7 +167,7 @@ TEST(BrokerProtocolTest, SessionActionRoundTripsAndRefusesALock)
     bytes.push_back(0); // a byte left over
     bytes[0] = static_cast<std::uint8_t>(bytes.size() - 4U);
     EXPECT_FALSE(decodeRequest(bytes).has_value());
-    bytes.resize(bytes.size() - 2); // the ID short by a byte
+    bytes.resize(bytes.size() - 2); // the sign-in time short by a byte
     bytes[0] = static_cast<std::uint8_t>(bytes.size() - 4U);
     EXPECT_FALSE(decodeRequest(bytes).has_value());
     EXPECT_FALSE(decodeResponse(encodeRequest(1, Request{SessionActionRequest{}})).has_value()) << "not a response";

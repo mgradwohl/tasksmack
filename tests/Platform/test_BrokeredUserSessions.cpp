@@ -61,6 +61,17 @@ class RecordingSessions final : public IUserSessions
     }
 };
 
+/// The session the user confirmed: bob of CORP in session @p id, signed in at 1'700'000'000 s.
+[[nodiscard]] UserSession confirmed(std::string id)
+{
+    UserSession session;
+    session.id = std::move(id);
+    session.user = "bob";
+    session.domain = "CORP";
+    session.logonUsec = 1'700'000'000'000'000ULL;
+    return session;
+}
+
 struct Fixture
 {
     explicit Fixture(bool connected = true, bool withBroker = true)
@@ -103,10 +114,20 @@ TEST(BrokeredUserSessionsTest, ReadsAndCapabilitiesAreTheInnerSessions)
     EXPECT_FALSE(fixture.sessions->canAct(SessionAction::Lock));
 }
 
+// By ID alone (not a confirmed sign-in) an action is the inner sessions', never the helper's.
+TEST(BrokeredUserSessionsTest, AnActionByIdAloneNeverReachesTheHelper)
+{
+    const Fixture fixture;
+    const ServiceActionResult refused = fixture.sessions->act("3", SessionAction::SignOut, true, {});
+    EXPECT_FALSE(refused.ok);
+    EXPECT_TRUE(fixture.broker->requests().empty());
+    EXPECT_EQ(fixture.inner->calls, (std::vector<std::string>{"3 interactive"}));
+}
+
 TEST(BrokeredUserSessionsTest, OnesOwnSessionNeverReachesTheHelper)
 {
     const Fixture fixture;
-    EXPECT_TRUE(fixture.sessions->act("1", SessionAction::Disconnect, false, {}).ok);
+    EXPECT_TRUE(fixture.sessions->actOnConfirmed(confirmed("1"), SessionAction::Disconnect, false, {}).ok);
     EXPECT_TRUE(fixture.broker->requests().empty());
     EXPECT_EQ(fixture.inner->calls, (std::vector<std::string>{"1"}));
 }
@@ -114,52 +135,56 @@ TEST(BrokeredUserSessionsTest, OnesOwnSessionNeverReachesTheHelper)
 TEST(BrokeredUserSessionsTest, ARunningHelperFinishesARefusalAtOnce)
 {
     const Fixture fixture;
-    EXPECT_TRUE(fixture.sessions->act("3", SessionAction::SignOut, false, {}).ok);
+    EXPECT_TRUE(fixture.sessions->actOnConfirmed(confirmed("3"), SessionAction::SignOut, false, {}).ok);
     ASSERT_EQ(fixture.sent().size(), 1U);
-    EXPECT_EQ(fixture.sent()[0], (Broker::SessionActionRequest{.action = SessionAction::SignOut, .sessionId = 3}));
+    // The request names the confirmed sign-in, so the helper acts only on it (#3076).
+    EXPECT_EQ(
+        fixture.sent()[0],
+        (Broker::SessionActionRequest{
+            .action = SessionAction::SignOut, .sessionId = 3, .user = "bob", .domain = "CORP", .logonUsec = 1'700'000'000'000'000ULL}));
     EXPECT_EQ(fixture.broker->connectCount(), 0) << "no prompt: the helper was running";
 
     // The helper's own refusal is the answer.
     fixture.broker->setAnswer([](const Broker::Request& /*request*/) -> std::expected<Broker::Response, std::string>
                               { return Broker::ServiceActionReply{.result = ServiceActionResult::failed("Session 3 has ended")}; });
-    EXPECT_EQ(fixture.sessions->act("3", SessionAction::Disconnect, false, {}).message, "Session 3 has ended");
+    EXPECT_EQ(fixture.sessions->actOnConfirmed(confirmed("3"), SessionAction::Disconnect, false, {}).message, "Session 3 has ended");
 
     // A helper that doesn't do session actions leaves TaskSmack's refusal, retry and all.
     fixture.broker->setAnswer([](const Broker::Request& /*request*/) -> std::expected<Broker::Response, std::string>
                               { return Broker::ErrorReply{.message = "This helper doesn't act on sessions"}; });
-    const ServiceActionResult unhelped = fixture.sessions->act("3", SessionAction::SignOut, false, {});
+    const ServiceActionResult unhelped = fixture.sessions->actOnConfirmed(confirmed("3"), SessionAction::SignOut, false, {});
     EXPECT_FALSE(unhelped.ok);
     EXPECT_TRUE(unhelped.needsAuthorization);
 
     // A helper that broke since connected(): the refusal stands, saying why, with the retry still offered.
     fixture.broker->setAnswer([](const Broker::Request& /*request*/) -> std::expected<Broker::Response, std::string>
                               { return std::unexpected(std::string("the pipe broke")); });
-    const ServiceActionResult broke = fixture.sessions->act("3", SessionAction::SignOut, false, {});
+    const ServiceActionResult broke = fixture.sessions->actOnConfirmed(confirmed("3"), SessionAction::SignOut, false, {});
     EXPECT_TRUE(broke.needsAuthorization);
     EXPECT_EQ(broke.message, "Requires administrator (the administrator helper couldn't be asked: the pipe broke)");
 
     std::stop_source stop;
     stop.request_stop();
-    EXPECT_TRUE(fixture.sessions->act("3", SessionAction::SignOut, false, stop.get_token()).cancelled);
+    EXPECT_TRUE(fixture.sessions->actOnConfirmed(confirmed("3"), SessionAction::SignOut, false, stop.get_token()).cancelled);
 }
 
 TEST(BrokeredUserSessionsTest, WithoutARunningHelperTheRefusalOffersTheRetryWhichStartsIt)
 {
     const Fixture fixture(false);
-    const ServiceActionResult refused = fixture.sessions->act("3", SessionAction::Disconnect, false, {});
+    const ServiceActionResult refused = fixture.sessions->actOnConfirmed(confirmed("3"), SessionAction::Disconnect, false, {});
     EXPECT_FALSE(refused.ok);
     EXPECT_TRUE(refused.needsAuthorization);
     EXPECT_TRUE(fixture.sent().empty());
 
     // Authenticate and retry: the helper starts (its UAC prompt), then acts.
-    EXPECT_TRUE(fixture.sessions->act("3", SessionAction::Disconnect, true, {}).ok);
+    EXPECT_TRUE(fixture.sessions->actOnConfirmed(confirmed("3"), SessionAction::Disconnect, true, {}).ok);
     EXPECT_EQ(fixture.broker->connectCount(), 1);
     ASSERT_EQ(fixture.sent().size(), 1U);
     EXPECT_EQ(fixture.sent()[0].action, SessionAction::Disconnect);
     EXPECT_EQ(fixture.inner->calls, (std::vector<std::string>{"3"})) << "the retry goes straight to the helper";
 
     // Running now, a second retry doesn't prompt again.
-    EXPECT_TRUE(fixture.sessions->act("4", SessionAction::SignOut, true, {}).ok);
+    EXPECT_TRUE(fixture.sessions->actOnConfirmed(confirmed("4"), SessionAction::SignOut, true, {}).ok);
     EXPECT_EQ(fixture.broker->connectCount(), 1);
 }
 
@@ -167,35 +192,37 @@ TEST(BrokeredUserSessionsTest, ARetryThatCantReachTheHelperSaysWhy)
 {
     const Fixture fixture(false);
     fixture.broker->setConnectFailure("The UAC prompt was dismissed");
-    const ServiceActionResult dismissed = fixture.sessions->act("3", SessionAction::SignOut, true, {});
+    const ServiceActionResult dismissed = fixture.sessions->actOnConfirmed(confirmed("3"), SessionAction::SignOut, true, {});
     EXPECT_FALSE(dismissed.ok);
     EXPECT_TRUE(dismissed.authorizationUnavailable);
     EXPECT_EQ(dismissed.message, "Couldn't act as an administrator: The UAC prompt was dismissed");
     std::stop_source stop;
     stop.request_stop();
-    EXPECT_TRUE(fixture.sessions->act("3", SessionAction::SignOut, true, stop.get_token()).cancelled);
+    EXPECT_TRUE(fixture.sessions->actOnConfirmed(confirmed("3"), SessionAction::SignOut, true, stop.get_token()).cancelled);
 
     const Fixture running;
     running.broker->setAnswer([](const Broker::Request& /*request*/) -> std::expected<Broker::Response, std::string>
                               { return std::unexpected(std::string("timed out")); });
-    EXPECT_EQ(running.sessions->act("3", SessionAction::SignOut, true, {}).message, "Couldn't ask the administrator helper: timed out");
-    EXPECT_TRUE(running.sessions->act("3", SessionAction::SignOut, true, stop.get_token()).cancelled);
+    EXPECT_EQ(running.sessions->actOnConfirmed(confirmed("3"), SessionAction::SignOut, true, {}).message,
+              "Couldn't ask the administrator helper: timed out");
+    EXPECT_TRUE(running.sessions->actOnConfirmed(confirmed("3"), SessionAction::SignOut, true, stop.get_token()).cancelled);
     running.broker->setAnswer([](const Broker::Request& /*request*/) -> std::expected<Broker::Response, std::string>
                               { return Broker::ErrorReply{.message = "no"}; });
-    EXPECT_EQ(running.sessions->act("3", SessionAction::SignOut, true, {}).message, "The administrator helper doesn't act on sessions");
-    EXPECT_EQ(running.sessions->act("c1", SessionAction::SignOut, true, {}).message, "Not a session: c1");
-    EXPECT_EQ(running.sessions->act("c1", SessionAction::SignOut, false, {}).message, "Not a session: c1");
+    EXPECT_EQ(running.sessions->actOnConfirmed(confirmed("3"), SessionAction::SignOut, true, {}).message,
+              "The administrator helper doesn't act on sessions");
+    EXPECT_EQ(running.sessions->actOnConfirmed(confirmed("c1"), SessionAction::SignOut, true, {}).message, "Not a session: c1");
+    EXPECT_EQ(running.sessions->actOnConfirmed(confirmed("c1"), SessionAction::SignOut, false, {}).message, "Not a session: c1");
 }
 
 TEST(BrokeredUserSessionsTest, WithoutAHelperARefusalSaysHowToGetTheRights)
 {
     const Fixture fixture(false, false);
-    const ServiceActionResult refused = fixture.sessions->act("3", SessionAction::SignOut, false, {});
+    const ServiceActionResult refused = fixture.sessions->actOnConfirmed(confirmed("3"), SessionAction::SignOut, false, {});
     EXPECT_FALSE(refused.ok);
     EXPECT_FALSE(refused.needsAuthorization) << "nothing could finish it, so no retry is offered";
     EXPECT_EQ(refused.message, std::string("Requires administrator") + std::string(BrokeredUserSessions::NO_HELPER));
-    EXPECT_FALSE(fixture.sessions->act("3", SessionAction::SignOut, true, {}).needsAuthorization);
-    EXPECT_TRUE(fixture.sessions->act("1", SessionAction::SignOut, false, {}).ok);
+    EXPECT_FALSE(fixture.sessions->actOnConfirmed(confirmed("3"), SessionAction::SignOut, true, {}).needsAuthorization);
+    EXPECT_TRUE(fixture.sessions->actOnConfirmed(confirmed("1"), SessionAction::SignOut, false, {}).ok);
 }
 
 } // namespace

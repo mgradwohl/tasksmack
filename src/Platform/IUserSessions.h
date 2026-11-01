@@ -44,7 +44,21 @@ struct UserSession
     std::uint64_t logonUsec = 0;     ///< Windows: when its user signed in (CLOCK_REALTIME µs); 0 when not known
     std::int32_t leaderPid = 0;      ///< The process that opened it (the display manager's helper, sshd's child)
     bool current = false;            ///< The session TaskSmack itself runs in
+    /// Windows: why its user couldn't be read (WTSSessionInfo refused, #3076). The session is still listed, as
+    /// not readable, with no user; nothing is offered on it, since who it belongs to can't be confirmed.
+    std::string unreadable;
 };
+
+/// The account a session's row groups by (#3076): "DOMAIN\\user" where there is a domain (Windows, so PC\\alice
+/// and CORP\\alice are two rows), else the user name; for a session whose user couldn't be read, its own key.
+[[nodiscard]] inline std::string accountKey(const UserSession& session)
+{
+    if (!session.unreadable.empty() || session.user.empty())
+    {
+        return "?" + session.id;
+    }
+    return session.domain.empty() ? session.user : session.domain + "\\" + session.user;
+}
 
 /// What came of one read.
 enum class UserSessionsStatus : std::uint8_t
@@ -101,6 +115,16 @@ class IUserSessions
     act(std::string_view /*id*/, SessionAction /*action*/, bool /*allowInteractive*/, const std::stop_token& /*stopToken*/)
     {
         return ServiceActionResult::failed("Not supported on this platform");
+    }
+
+    /// act() on @p confirmed, the session as the user saw it when they confirmed: what the Users tab calls. A
+    /// platform whose session IDs are reused (Windows) checks that the ID still names that session, by its
+    /// user, domain and sign-in time, and refuses one that doesn't (#3076). The default acts by ID, as logind's
+    /// IDs aren't reused while TaskSmack runs.
+    [[nodiscard]] virtual ServiceActionResult
+    actOnConfirmed(const UserSession& confirmed, SessionAction action, bool allowInteractive, const std::stop_token& stopToken)
+    {
+        return act(confirmed.id, action, allowInteractive, stopToken);
     }
 };
 

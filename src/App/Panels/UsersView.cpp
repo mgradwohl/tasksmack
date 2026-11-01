@@ -22,6 +22,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace App
@@ -75,26 +76,57 @@ std::vector<UserRow> buildUserRows(const std::vector<Platform::UserSession>& ses
                                    const std::vector<Domain::ProcessSnapshot>& processes)
 {
     std::vector<UserRow> rows;
-    std::map<std::string, std::size_t> byUser; // user name -> row
+    std::map<std::string, std::size_t> byKey;      // account key -> row
+    std::map<std::string, std::size_t> namesInUse; // short name -> how many rows have it
     for (const Platform::UserSession& session : sessions)
     {
         if (!isSignInSession(session))
         {
             continue;
         }
-        auto [found, added] = byUser.try_emplace(session.user, rows.size());
+        const std::string key = Platform::accountKey(session);
+        auto [found, added] = byKey.try_emplace(key, rows.size());
         if (added)
         {
-            rows.push_back(
-                UserRow{.user = session.user, .uid = session.uid, .sessions = {}, .totals = {}, .processes = {}, .current = false});
+            rows.push_back(UserRow{.user = session.unreadable.empty() ? session.user : std::string{},
+                                   .key = key,
+                                   .label = {},
+                                   .uid = session.uid,
+                                   .sessions = {},
+                                   .totals = {},
+                                   .processes = {},
+                                   .current = false});
+            if (!rows.back().user.empty())
+            {
+                ++namesInUse[rows.back().user];
+            }
         }
         UserRow& row = rows[found->second];
         row.current = row.current || session.current;
         row.sessions.push_back(session);
     }
+    // A process names only its user's short name: it goes to the one row with that name, never to one of two.
+    std::map<std::string, std::size_t> byName; // short name -> its one row
+    for (std::size_t i = 0; i < rows.size(); ++i)
+    {
+        UserRow& row = rows[i];
+        const bool shared = !row.user.empty() && namesInUse[row.user] > 1;
+        if (row.user.empty())
+        {
+            row.label = "Not readable";
+        }
+        else
+        {
+            row.label = shared ? row.key : row.user;
+        }
+        if (!row.user.empty() && !shared)
+        {
+            byName.emplace(row.user, i);
+        }
+    }
     for (std::size_t i = 0; i < processes.size(); ++i)
     {
-        if (const auto found = byUser.find(processes[i].user); found != byUser.end())
+        if (const auto found = byName.find(processes[i].user); found != byName.end())
         {
             UserRow& row = rows[found->second];
             row.totals.add(processes[i]);
@@ -106,7 +138,7 @@ std::vector<UserRow> buildUserRows(const std::vector<Platform::UserSession>& ses
         std::ranges::stable_sort(row.processes,
                                  [&processes](std::size_t a, std::size_t b) { return processes[a].cpuPercent > processes[b].cpuPercent; });
     }
-    std::ranges::stable_sort(rows, [](const UserRow& a, const UserRow& b) { return Platform::compareIgnoreCase(a.user, b.user) < 0; });
+    std::ranges::stable_sort(rows, [](const UserRow& a, const UserRow& b) { return Platform::compareIgnoreCase(a.label, b.label) < 0; });
     return rows;
 }
 
@@ -175,6 +207,10 @@ std::string sessionStatus(const Platform::UserSession& session, std::uint64_t no
 
 std::string sessionTooltip(const Platform::UserSession& session)
 {
+    if (!session.unreadable.empty())
+    {
+        return "Its user couldn't be read: " + session.unreadable + "\nSession " + session.id;
+    }
     std::string text = session.domain.empty() ? session.user : session.domain + "\\" + session.user;
     if (session.logonUsec != 0)
     {
@@ -230,13 +266,15 @@ renderUserChildren(const UserRow& row, UsersViewState& state, std::optional<ImGu
         ImGui::TableNextColumn();
         ImGui::PushID(session.id.c_str());
         ImGui::Indent();
-        const std::string label = std::string(ICON_FA_DESKTOP "  ") + sessionPlace(session) + (session.current ? "  (this session)" : "");
+        const std::string place = session.unreadable.empty() ? sessionPlace(session) : "Session " + session.id + " (not readable)";
+        const std::string label = std::string(ICON_FA_DESKTOP "  ") + place + (session.current ? "  (this session)" : "");
         ImGui::Selectable(label.c_str(), false, ImGuiSelectableFlags_SpanAllColumns);
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) // built only when shown, not every frame
         {
             ImGui::SetTooltip("%s", sessionTooltip(session).c_str());
         }
-        if (menuId.has_value() && ImGui::IsItemClicked(ImGuiMouseButton_Right))
+        // Nothing is offered on a session not readable: who it belongs to can't be confirmed.
+        if (menuId.has_value() && session.unreadable.empty() && ImGui::IsItemClicked(ImGuiMouseButton_Right))
         {
             state.menuSession = session;
             ImGui::OpenPopup(*menuId);
@@ -289,41 +327,48 @@ renderUserChildren(const UserRow& row, UsersViewState& state, std::optional<ImGu
 
 } // namespace
 
-std::optional<UsersViewAction>
-renderUsersView(const Domain::UsersPublication* publication, bool hasSessions, SessionMenu menu, UsersViewState& state)
+namespace
+{
+
+/// Draws the Users tab's empty state when there is no table to show, and says whether it did: the platform
+/// can't list sessions, nothing has been read yet, the read failed (with why), or nobody is signed in.
+[[nodiscard]] bool renderUsersEmptyState(const Domain::UsersPublication* publication, bool hasSessions, const UsersViewState& state)
 {
     if (!hasSessions)
     {
         UI::Widgets::renderEmptyState(ICON_FA_USERS "  Users aren't available",
                                       "This run of TaskSmack can't list the signed-in users and their sessions.");
-        return std::nullopt;
+        return true;
     }
     if (publication == nullptr || publication->version == 0)
     {
         UI::Widgets::renderEmptyState(ICON_FA_USERS "  Reading users...");
-        return std::nullopt;
+        return true;
     }
     if (publication->status == Platform::UserSessionsStatus::Failed)
     {
         const std::string detail = "The signed-in sessions couldn't be read: " + publication->detail;
         UI::Widgets::renderEmptyState(ICON_FA_TRIANGLE_EXCLAMATION "  Users couldn't be read", detail.c_str());
-        return std::nullopt;
+        return true;
     }
     if (state.rows.empty())
     {
         UI::Widgets::renderEmptyState(ICON_FA_USERS "  No one is signed in");
-        return std::nullopt;
+        return true;
     }
+    return false;
+}
 
-    const auto nowUsec = static_cast<std::uint64_t>(
-        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
-    const std::optional<ImGuiID> menuId = menu.any() ? std::optional<ImGuiID>(ImGui::GetID(SESSION_MENU_ID)) : std::nullopt;
+/// Begins the users table and sets up its seven columns: User (frozen), Status, Processes and the four Σ
+/// totals. False when the table isn't visible, and then nothing is to be drawn or ended.
+[[nodiscard]] bool beginUsersTable()
+{
     constexpr ImGuiTableFlags TABLE_FLAGS = ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable |
                                             ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV |
                                             ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX | ImGuiTableFlags_SizingFixedFit;
     if (!ImGui::BeginTable("##UsersTable", 7, TABLE_FLAGS))
     {
-        return std::nullopt;
+        return false;
     }
     const float em = ImGui::GetFontSize();
     ImGui::TableSetupScrollFreeze(1, 1);
@@ -335,75 +380,121 @@ renderUsersView(const Domain::UsersPublication* publication, bool hasSessions, S
     ImGui::TableSetupColumn("\xCE\xA3 Disk", ImGuiTableColumnFlags_None, em * 7.0F);
     ImGui::TableSetupColumn("\xCE\xA3 Network", ImGuiTableColumnFlags_None, em * 7.0F);
     ImGui::TableHeadersRow();
+    return true;
+}
 
+/// One user's row (a tree node, open by default, with their session count and totals) and, while it is
+/// open, their sessions and processes under it. What the user did in those rows, if anything.
+[[nodiscard]] std::optional<UsersViewAction>
+renderUserRow(const UserRow& row, UsersViewState& state, std::optional<ImGuiID> menuId, std::uint64_t nowUsec)
+{
+    std::optional<UsersViewAction> action;
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    ImGui::PushID(row.key.c_str());
+    const std::string label = std::string(ICON_FA_USER "  ") + row.label + (row.current ? "  (you)" : "");
+    const bool open = ImGui::TreeNodeEx("##user", ImGuiTreeNodeFlags_SpanAllColumns | ImGuiTreeNodeFlags_DefaultOpen, "%s", label.c_str());
+    ImGui::TableNextColumn();
+    const std::size_t count = row.sessions.size();
+    UI::Widgets::cellText(count == 1 ? std::string("1 session") : std::format("{} sessions", count));
+    totalsCells(row.totals);
+    if (open)
+    {
+        action = renderUserChildren(row, state, menuId, nowUsec);
+        ImGui::TreePop();
+    }
+    ImGui::PopID();
+    return action;
+}
+
+/// The session row menu, for the session it was opened on (state.menuSession), with the items @p menu allows:
+/// Lock (Linux), Disconnect... (Windows; greyed for a session already disconnected) and Sign out.... The
+/// action chosen, if any; the panel runs it, asking first where it should.
+[[nodiscard]] std::optional<UsersViewAction> renderSessionMenu(SessionMenu menu, const UsersViewState& state)
+{
+    if (!ImGui::BeginPopup(SESSION_MENU_ID))
+    {
+        return std::nullopt;
+    }
+    std::optional<UsersViewAction> action;
+    if (state.menuSession.has_value())
+    {
+        const UsersViewAction none{.selectPid = 0,
+                                   .selectStartTimeTicks = 0,
+                                   .showDetails = false,
+                                   .lock = std::nullopt,
+                                   .signOut = std::nullopt,
+                                   .disconnect = std::nullopt};
+        if (menu.lock && ImGui::MenuItem(ICON_FA_LOCK "  Lock"))
+        {
+            action = none;
+            action->lock = state.menuSession;
+        }
+        if (menu.lock)
+        {
+            ImGui::SetItemTooltip("Lock the session's screen; its user signs back in to unlock it");
+        }
+        // Windows' Disconnect, in Lock's place (#3076): the session stays signed in, its programs running.
+        const bool disconnected = state.menuSession->state == "disconnected";
+        if (menu.disconnect && ImGui::MenuItem(ICON_FA_LINK_SLASH "  Disconnect...", nullptr, false, !disconnected))
+        {
+            action = none;
+            action->disconnect = state.menuSession;
+        }
+        if (menu.disconnect)
+        {
+            ImGui::SetItemTooltip(disconnected ? "The session is already disconnected"
+                                               : "Detach the session from its screen; its programs keep running until its user "
+                                                 "signs back in");
+        }
+        if (menu.signOut && ImGui::MenuItem(ICON_FA_RIGHT_FROM_BRACKET "  Sign out..."))
+        {
+            action = none;
+            action->signOut = state.menuSession;
+        }
+        if (menu.signOut)
+        {
+            ImGui::SetItemTooltip("End the session and every program in it");
+        }
+    }
+    ImGui::EndPopup();
+    return action;
+}
+
+} // namespace
+
+std::optional<UsersViewAction>
+renderUsersView(const Domain::UsersPublication* publication, bool hasSessions, SessionMenu menu, UsersViewState& state)
+{
+    // Nothing to list (unsupported, not read yet, failed, nobody signed in): the empty state says which.
+    if (renderUsersEmptyState(publication, hasSessions, state))
+    {
+        return std::nullopt;
+    }
+    const auto nowUsec = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+    // The row menu exists only where the platform can act; without one, a right-click opens nothing.
+    const std::optional<ImGuiID> menuId = menu.any() ? std::optional<ImGuiID>(ImGui::GetID(SESSION_MENU_ID)) : std::nullopt;
+    if (!beginUsersTable())
+    {
+        return std::nullopt;
+    }
     std::optional<UsersViewAction> action;
     for (const UserRow& row : state.rows)
     {
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
-        ImGui::PushID(row.user.c_str());
-        const std::string label = std::string(ICON_FA_USER "  ") + row.user + (row.current ? "  (you)" : "");
-        const bool open =
-            ImGui::TreeNodeEx("##user", ImGuiTreeNodeFlags_SpanAllColumns | ImGuiTreeNodeFlags_DefaultOpen, "%s", label.c_str());
-        ImGui::TableNextColumn();
-        const std::size_t count = row.sessions.size();
-        UI::Widgets::cellText(count == 1 ? std::string("1 session") : std::format("{} sessions", count));
-        totalsCells(row.totals);
-        if (open)
+        if (auto clicked = renderUserRow(row, state, menuId, nowUsec))
         {
-            if (const auto clicked = renderUserChildren(row, state, menuId, nowUsec))
-            {
-                action = clicked;
-            }
-            ImGui::TreePop();
+            action = std::move(clicked);
         }
-        ImGui::PopID();
     }
     ImGui::EndTable();
-
-    if (menuId.has_value() && ImGui::BeginPopup(SESSION_MENU_ID))
+    // The menu is drawn after the table so it stays open while the rows are rebuilt under it (#1365).
+    if (menuId.has_value())
     {
-        if (state.menuSession.has_value())
+        if (auto chosen = renderSessionMenu(menu, state))
         {
-            const UsersViewAction none{.selectPid = 0,
-                                       .selectStartTimeTicks = 0,
-                                       .showDetails = false,
-                                       .lock = std::nullopt,
-                                       .signOut = std::nullopt,
-                                       .disconnect = std::nullopt};
-            if (menu.lock && ImGui::MenuItem(ICON_FA_LOCK "  Lock"))
-            {
-                action = none;
-                action->lock = state.menuSession;
-            }
-            if (menu.lock)
-            {
-                ImGui::SetItemTooltip("Lock the session's screen; its user signs back in to unlock it");
-            }
-            // Windows' Disconnect, in Lock's place (#3076): the session stays signed in, its programs running.
-            const bool disconnected = state.menuSession->state == "disconnected";
-            if (menu.disconnect && ImGui::MenuItem(ICON_FA_LINK_SLASH "  Disconnect...", nullptr, false, !disconnected))
-            {
-                action = none;
-                action->disconnect = state.menuSession;
-            }
-            if (menu.disconnect)
-            {
-                ImGui::SetItemTooltip(disconnected ? "The session is already disconnected"
-                                                   : "Detach the session from its screen; its programs keep running until its user "
-                                                     "signs back in");
-            }
-            if (menu.signOut && ImGui::MenuItem(ICON_FA_RIGHT_FROM_BRACKET "  Sign out..."))
-            {
-                action = none;
-                action->signOut = state.menuSession;
-            }
-            if (menu.signOut)
-            {
-                ImGui::SetItemTooltip("End the session and every program in it");
-            }
+            action = std::move(chosen);
         }
-        ImGui::EndPopup();
     }
     return action;
 }

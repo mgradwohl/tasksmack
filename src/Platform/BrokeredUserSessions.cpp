@@ -42,15 +42,17 @@ BrokeredUserSessions::BrokeredUserSessions(std::unique_ptr<IUserSessions> inner,
 {}
 
 std::expected<std::optional<ServiceActionResult>, std::string>
-BrokeredUserSessions::askBroker(std::string_view id, SessionAction action, const std::stop_token& stopToken)
+BrokeredUserSessions::askBroker(const UserSession& confirmed, SessionAction action, const std::stop_token& stopToken)
 {
-    const std::optional<std::uint32_t> session = numericId(id);
+    const std::optional<std::uint32_t> session = numericId(confirmed.id);
     if (!session.has_value())
     {
-        return std::optional<ServiceActionResult>(ServiceActionResult::failed(std::string("Not a session: ") + std::string(id)));
+        return std::optional<ServiceActionResult>(ServiceActionResult::failed("Not a session: " + confirmed.id));
     }
-    const std::expected<Broker::Response, std::string> response =
-        m_Broker->call(Broker::SessionActionRequest{.action = action, .sessionId = *session}, stopToken);
+    const std::expected<Broker::Response, std::string> response = m_Broker->call(
+        Broker::SessionActionRequest{
+            .action = action, .sessionId = *session, .user = confirmed.user, .domain = confirmed.domain, .logonUsec = confirmed.logonUsec},
+        stopToken);
     if (!response.has_value())
     {
         return std::unexpected(response.error());
@@ -62,8 +64,10 @@ BrokeredUserSessions::askBroker(std::string_view id, SessionAction action, const
     return std::nullopt; // an ErrorReply: a helper that doesn't do session actions
 }
 
-ServiceActionResult
-BrokeredUserSessions::act(std::string_view id, SessionAction action, bool allowInteractive, const std::stop_token& stopToken)
+ServiceActionResult BrokeredUserSessions::actOnConfirmed(const UserSession& confirmed,
+                                                         SessionAction action,
+                                                         bool allowInteractive,
+                                                         const std::stop_token& stopToken)
 {
     if (allowInteractive && m_Broker != nullptr)
     {
@@ -81,7 +85,7 @@ BrokeredUserSessions::act(std::string_view id, SessionAction action, bool allowI
                 return failed;
             }
         }
-        const auto helper = askBroker(id, action, stopToken);
+        const auto helper = askBroker(confirmed, action, stopToken);
         if (!helper.has_value() && stopToken.stop_requested())
         {
             return ServiceActionResult::stopRequested();
@@ -97,7 +101,7 @@ BrokeredUserSessions::act(std::string_view id, SessionAction action, bool allowI
         return **helper;
     }
 
-    ServiceActionResult result = m_Inner->act(id, action, allowInteractive, stopToken);
+    ServiceActionResult result = m_Inner->actOnConfirmed(confirmed, action, allowInteractive, stopToken);
     if (result.ok || !result.needsAuthorization)
     {
         return result;
@@ -113,7 +117,7 @@ BrokeredUserSessions::act(std::string_view id, SessionAction action, bool allowI
     {
         return result; // the UI offers Authenticate and retry, which starts the helper
     }
-    const auto helper = askBroker(id, action, stopToken);
+    const auto helper = askBroker(confirmed, action, stopToken);
     if (!helper.has_value() && stopToken.stop_requested())
     {
         return ServiceActionResult::stopRequested();
