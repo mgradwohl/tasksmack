@@ -36,19 +36,30 @@ class SamplingGate final : public Domain::ISamplable
 
     void sample() override
     {
+        m_Forwarded.store(false, std::memory_order_relaxed);
         if (!isOpen())
         {
             return;
         }
         if (const auto target = m_Target.lock())
         {
+            m_Forwarded.store(true, std::memory_order_relaxed); // a target that throws may still have published
             target->sample();
+            m_Forwarded.store(target->lastSampleMayHavePublished(), std::memory_order_relaxed);
         }
+    }
+
+    /// Whether the last sample() reached the target (and the target says it may have published): a
+    /// closed gate published nothing, so its pass doesn't wake the frame loop (#3285).
+    [[nodiscard]] bool lastSampleMayHavePublished() const noexcept override
+    {
+        return m_Forwarded.load(std::memory_order_relaxed);
     }
 
   private:
     std::weak_ptr<Domain::ISamplable> m_Target;
     std::atomic<bool> m_Open{false};
+    std::atomic<bool> m_Forwarded{false}; ///< Written and read on the sampler thread; atomic in case two share it.
 };
 
 } // namespace App
