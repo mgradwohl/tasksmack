@@ -368,6 +368,16 @@ bool sameFile(const std::wstring& first, const std::wstring& second)
            CSTR_EQUAL;
 }
 
+std::optional<std::wstring> finalPath(const std::wstring& path)
+{
+    const auto final = finalPathOf(path);
+    if (!final.has_value())
+    {
+        return std::nullopt;
+    }
+    return withoutExtendedPrefix(*final);
+}
+
 std::expected<void, std::string> checkUnchangeableBy(HANDLE token, std::span<const std::wstring> files)
 {
     if (files.empty())

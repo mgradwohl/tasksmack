@@ -56,6 +56,7 @@
 #include "WindowsStartupProbe.h"
 #include "WindowsSystemInfoProbe.h"
 #include "WindowsSystemProbe.h"
+#include "WindowsTaskManagerInstall.h"
 #include "WindowsTaskManagerReplacement.h"
 
 // clang-format off
@@ -260,15 +261,18 @@ std::shared_ptr<ITaskManagerReplacement> makeTaskManagerReplacement(const std::s
     };
     if (Windows::isProcessElevated())
     {
-        // Elevated, TaskSmack writes the key itself, but only from Program Files: Windows starts the
-        // Debugger for whoever opens Task Manager, so it must be a copy only an administrator can change,
-        // which the helper checks for itself (BrokerHelper::checkUnchangeableBy()) and Program Files is.
-        if (setup.installedCopy)
+        // Elevated, TaskSmack writes the key itself, but only for a copy only an administrator can change:
+        // Windows starts the Debugger for whoever opens Task Manager, elevated after an administrator's
+        // Ctrl+Shift+Esc. Being under Program Files isn't enough (#3280): a folder there may be one its
+        // users can write. So the helper's own check runs (BrokerHelper::checkUnchangeableBy()), against
+        // the user this TaskSmack runs for unelevated, over the exe and every folder above it.
+        if (const auto allowed = Windows::checkDirectWrite(setup.selfPath, folders); allowed.has_value())
         {
             setup.direct = std::make_shared<Windows::WindowsIfeoRegistry>();
         }
         else
         {
+            spdlog::info("Replace Task Manager isn't offered to this elevated copy: {}", allowed.error());
             setup.unavailableReason =
                 "Only a TaskSmack installed in Program Files can replace Task Manager: Windows would start this copy, "
                 "which programs running as you could change, whenever anyone opens Task Manager";

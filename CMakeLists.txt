@@ -324,6 +324,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsProcessIdentity.cpp
     src/Platform/Windows/WindowsWaitChain.cpp # Analyze wait chain: GetThreadWaitChain on each thread (#3084)
     src/Platform/Windows/WindowsTaskManagerReplacement.cpp # taskmgr.exe's IFEO Debugger (#3072)
+    src/Platform/Windows/WindowsTaskManagerInstall.cpp # Program Files, and who can change an elevated copy (#3280)
     src/Platform/Windows/WindowsFolderPicker.cpp
     src/Platform/Windows/WindowsProcessConnections.cpp
     src/Platform/Windows/WindowsProcessEnvironmentReader.cpp # a process's environment block, out of its PEB (#2569)
@@ -558,6 +559,7 @@ elseif(WIN32)
         src/Platform/Windows/PipeBroker.h
         src/Platform/Windows/BrokerHelper.h
         src/Platform/Windows/WindowsTaskManagerReplacement.h
+        src/Platform/Windows/WindowsTaskManagerInstall.h
         src/Platform/Windows/WindowsProcessDump.h
         src/Platform/Windows/WindowsProcessIdentity.h
         src/Platform/Windows/WindowsWaitChain.h

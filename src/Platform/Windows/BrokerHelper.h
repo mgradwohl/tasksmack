@@ -133,6 +133,11 @@ using GetModuleFileNameFn = DWORD(WINAPI*)(HMODULE module, LPWSTR path, DWORD si
 /// symbolic links, junctions and case don't matter. False when either can't be opened.
 [[nodiscard]] bool sameFile(const std::wstring& first, const std::wstring& second);
 
+/// The final path of the file at @p path, without the \\?\ prefix Windows gives it: what it names once
+/// "..", 8.3 short names, symbolic links, junctions and case are resolved, the path checkUnchangeableBy()
+/// checks. nullopt when it can't be opened.
+[[nodiscard]] std::optional<std::wstring> finalPath(const std::wstring& path);
+
 /// Rights over an installed exe that would let a user put another program in its place.
 inline constexpr DWORD FILE_CHANGE_RIGHTS = FILE_WRITE_DATA | FILE_APPEND_DATA | DELETE | WRITE_DAC | WRITE_OWNER;
 /// Rights over the install's folder that would let a user add, remove or rename what is in it.

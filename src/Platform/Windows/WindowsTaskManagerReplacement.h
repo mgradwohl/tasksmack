@@ -5,7 +5,8 @@
 //
 // WindowsIfeoRegistry reads and writes taskmgr.exe's Image File Execution Options key in the registry's
 // 64-bit view. TaskSmack reads it unelevated (reading HKLM needs no rights), on a worker; only the helper,
-// or an elevated TaskSmack installed in Program Files, writes it. The key is a constructor argument so
+// or an elevated TaskSmack in an install only an administrator can change (WindowsTaskManagerInstall.h,
+// #3280), writes it. The key is a constructor argument so
 // the tests point it at a scratch key under HKEY_CURRENT_USER and never touch the real one.
 
 #ifdef _WIN32
@@ -26,7 +27,6 @@
 #include <optional>
 #include <string>
 #include <string_view>
-#include <vector>
 
 namespace Platform::Windows
 {
@@ -66,10 +66,6 @@ using SameFileFn = bool (*)(const std::wstring& first, const std::wstring& secon
                                                        const std::wstring& besideTaskSmack,
                                                        TaskManagerReplacement::IIfeoRegistry& registry,
                                                        SameFileFn sameFile);
-
-/// The folders an installed TaskSmack is under: %ProgramFiles%, %ProgramW6432% and %ProgramFiles(x86)%,
-/// as set, in UTF-8.
-[[nodiscard]] std::vector<std::string> installFolders();
 
 /// Whether @p path (UTF-8) names an existing file.
 [[nodiscard]] bool fileExists(std::string_view path);
