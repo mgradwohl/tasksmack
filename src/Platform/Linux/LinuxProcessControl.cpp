@@ -521,6 +521,9 @@ struct LinuxProcessControl::EfficiencyMemory
     {
         std::int32_t nice = 0;
         std::optional<int> cpuWeight;
+        /// Off ran, put the nice back and left only the weight to put back (#3332): the next on records the nice it
+        /// finds, keeping the weight still owed.
+        bool turnedOff = false;
     };
     using Key = std::pair<std::int32_t, std::uint64_t>; ///< PID and start time
     std::mutex mutex;                                   ///< Held only to read or change the two below, never over a call
@@ -1382,7 +1385,9 @@ ProcessActionResult LinuxProcessControl::setEfficiencyMode(const ProcessTarget& 
     std::optional<std::int32_t> nice = Efficiency::EFFICIENCY_NICE;
     if (!on)
     {
-        const std::optional<std::int32_t> rememberedNice = remembered.has_value() ? std::optional(remembered->nice) : std::nullopt;
+        // A nice an earlier off already put back is spent (#3332): only its weight is still owed.
+        const std::optional<std::int32_t> rememberedNice =
+            remembered.has_value() && !remembered->turnedOff ? std::optional(remembered->nice) : std::nullopt;
         nice = niceBefore.has_value() ? Efficiency::niceToRestore(*niceBefore, rememberedNice) : rememberedNice.value_or(0);
     }
     ProcessActionResult changed = nice.has_value() ? setPriority(target, *nice) : verifyIdentity(target);
@@ -1426,19 +1431,34 @@ ProcessActionResult LinuxProcessControl::setEfficiencyMode(const ProcessTarget& 
             {
                 m_Efficiency->byProcess.erase(exited);
             }
-            static_cast<void>(m_Efficiency->byProcess.try_emplace(
-                key, EfficiencyMemory::Before{.nice = niceBefore.value_or(0), .cpuWeight = weightBefore}));
+            const auto [entry, added] = m_Efficiency->byProcess.try_emplace(
+                key, EfficiencyMemory::Before{.nice = niceBefore.value_or(0), .cpuWeight = weightBefore});
+            if (!added && entry->second.turnedOff)
+            {
+                // After an off that couldn't put the weight back: the nice is the one found now, and the weight
+                // still owed is kept (this on found it at the minimum, so it lowered nothing itself).
+                entry->second.nice = niceBefore.value_or(0);
+                entry->second.cpuWeight = weightBefore.has_value() ? weightBefore : entry->second.cpuWeight;
+                entry->second.turnedOff = false;
+            }
         }
         spdlog::info("Efficiency mode on for PID {}{}", target.pid, note.empty() ? "" : ": " + note);
         return ProcessActionResult::ok(std::move(note));
     }
     WeightRestore weight = restoreCgroupWeight(
         m_Syscalls, target.pid, cgroup, remembered.has_value(), remembered.has_value() ? remembered->cpuWeight : std::nullopt);
-    if (!weight.unfinished)
     {
-        // A weight still to put back keeps the memory, so turning it off again tries once more (#3332).
+        // A weight still to put back keeps the memory, so turning it off again tries once more (#3332); its nice is
+        // spent, which the next on sees.
         const std::scoped_lock lock(m_Efficiency->mutex);
-        m_Efficiency->byProcess.erase(key);
+        if (!weight.unfinished)
+        {
+            m_Efficiency->byProcess.erase(key);
+        }
+        else if (const auto found = m_Efficiency->byProcess.find(key); found != m_Efficiency->byProcess.end())
+        {
+            found->second.turnedOff = true;
+        }
     }
     spdlog::info("Efficiency mode off for PID {}{}", target.pid, weight.note.empty() ? "" : ": " + weight.note);
     return ProcessActionResult::ok(std::move(weight.note));
@@ -1455,7 +1475,8 @@ std::optional<std::int32_t> LinuxProcessControl::efficiencyNiceToRestore(const P
     std::optional<std::int32_t> remembered;
     {
         const std::scoped_lock lock(m_Efficiency->mutex);
-        if (const auto found = m_Efficiency->byProcess.find({target.pid, target.startTimeTicks}); found != m_Efficiency->byProcess.end())
+        if (const auto found = m_Efficiency->byProcess.find({target.pid, target.startTimeTicks});
+            found != m_Efficiency->byProcess.end() && !found->second.turnedOff) // a spent nice isn't one to put back (#3332)
         {
             remembered = found->second.nice;
         }
