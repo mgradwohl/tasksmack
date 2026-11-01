@@ -37,6 +37,7 @@
 #include <format>
 #include <fstream>
 #include <ios>
+#include <memory>
 #include <optional>
 #include <random>
 #include <span>
@@ -48,6 +49,7 @@
 
 #include <knownfolders.h>
 #include <objbase.h> // CoTaskMemAlloc
+#include <sddl.h>
 #include <shlobj.h>
 
 namespace Platform::Windows
@@ -583,6 +585,110 @@ TEST(TaskManagerInstallTest, TheUnelevatedTokenIsNoAdministrators)
     BOOL member = TRUE;
     ASSERT_NE(CheckTokenMembership(token->get(), administrators.data(), &member), FALSE) << GetLastError();
     EXPECT_EQ(member, FALSE) << "Administrators is deny-only, or not there at all";
+}
+
+// #3280 review: the check also refuses an object another user who isn't an administrator may change,
+// one who isn't in the token checked (Alice, whose TaskSmack Bob's administrator credentials elevated).
+
+/// Another user's SID, in no token of this test's.
+constexpr std::wstring_view ALICE = L"S-1-5-21-1111111111-2222222222-3333333333-1001";
+
+/// Frees a security descriptor ConvertStringSecurityDescriptorToSecurityDescriptorW made.
+struct DescriptorFreer
+{
+    void operator()(void* descriptor) const noexcept
+    {
+        LocalFree(descriptor);
+    }
+};
+using OwnedDescriptor = std::unique_ptr<void, DescriptorFreer>;
+
+/// The security descriptor @p sddl describes; null (a test failure) when it doesn't parse.
+[[nodiscard]] OwnedDescriptor descriptorOf(const std::wstring& sddl)
+{
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    if (ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1, &descriptor, nullptr) == FALSE)
+    {
+        ADD_FAILURE() << "couldn't parse " << WinString::wideToUtf8(sddl) << ": " << GetLastError();
+        return OwnedDescriptor(nullptr);
+    }
+    return OwnedDescriptor(descriptor);
+}
+
+/// Program Files' own rights: TrustedInstaller, SYSTEM and Administrators may change it, Users may read
+/// and run it, and what is made inside it inherits more (inherit-only ACEs, which don't apply to it).
+constexpr std::wstring_view PROTECTED_ACES =
+    L"(A;;FA;;;S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464)(A;;FA;;;SY)(A;;FA;;;BA)"
+    L"(A;;0x1200a9;;;BU)(A;OICIIO;GA;;;CO)(A;OICIIO;0x1301bf;;;AU)";
+
+TEST(TaskManagerInstallTest, AnObjectOnlyAdministratorsCanChangePassesTheDescriptorCheck)
+{
+    UniqueHandle own;
+    ASSERT_NE(OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_DUPLICATE, own.put()), FALSE);
+    const auto token = unelevatedTokenOf(own.get());
+    ASSERT_TRUE(token.has_value()) << token.error();
+    for (const std::wstring& owner :
+         {std::wstring(L"BA"), std::wstring(L"SY"), std::wstring(L"S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464")})
+    {
+        const OwnedDescriptor descriptor = descriptorOf(L"O:" + owner + L"G:SYD:PAI" + std::wstring(PROTECTED_ACES));
+        ASSERT_NE(descriptor, nullptr);
+        const auto checked =
+            BrokerHelper::checkDescriptor(token->get(), descriptor.get(), BrokerHelper::FOLDER_CHANGE_RIGHTS, "the folder");
+        EXPECT_TRUE(checked.has_value()) << WinString::wideToUtf8(owner) << ": " << checked.error();
+    }
+    // A deny ACE only takes rights away.
+    const OwnedDescriptor denied = descriptorOf(L"O:BAG:SYD:PAI(D;;FA;;;" + std::wstring(ALICE) + L")" + std::wstring(PROTECTED_ACES));
+    ASSERT_NE(denied, nullptr);
+    EXPECT_TRUE(BrokerHelper::checkDescriptor(token->get(), denied.get(), BrokerHelper::FILE_CHANGE_RIGHTS, "the file").has_value());
+}
+
+TEST(TaskManagerInstallTest, AnObjectAnotherUserCanChangeIsRefusedThoughTheTokenCant)
+{
+    UniqueHandle own;
+    ASSERT_NE(OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_DUPLICATE, own.put()), FALSE);
+    const auto token = unelevatedTokenOf(own.get());
+    ASSERT_TRUE(token.has_value()) << token.error();
+    PSID alice = nullptr;
+    ASSERT_NE(ConvertStringSidToSidW(std::wstring(ALICE).c_str(), &alice), FALSE);
+    const OwnedDescriptor aliceSid(alice);
+    BOOL member = TRUE;
+    ASSERT_NE(CheckTokenMembership(token->get(), alice, &member), FALSE) << GetLastError();
+    ASSERT_EQ(member, FALSE) << "Alice isn't in the token checked";
+    const std::string aliceText = WinString::wideToUtf8(std::wstring(ALICE));
+
+    struct Case
+    {
+        std::wstring sddl;
+        std::string_view expected;
+        std::string_view why;
+    };
+    const std::array<Case, 5> cases{{
+        {.sddl = L"O:BAG:SYD:PAI" + std::wstring(PROTECTED_ACES) + L"(A;;0x1301bf;;;" + std::wstring(ALICE) + L")",
+         .expected = "can change",
+         .why = "Alice has Modify"},
+        {.sddl = L"O:BAG:SYD:PAI" + std::wstring(PROTECTED_ACES) + L"(A;;WD;;;" + std::wstring(ALICE) + L")",
+         .expected = "can change",
+         .why = "Alice may rewrite its rights"},
+        {.sddl = L"O:" + std::wstring(ALICE) + L"G:SYD:PAI" + std::wstring(PROTECTED_ACES), .expected = "owns", .why = "Alice owns it"},
+        {.sddl = L"O:BAG:SYD:PAI" + std::wstring(PROTECTED_ACES) + L"(A;;GW;;;BU)",
+         .expected = "can change",
+         .why = "Users have generic write"},
+        {.sddl = L"O:BAG:SYD:NO_ACCESS_CONTROL", .expected = "can change", .why = "a null DACL lets anyone in, the token too"},
+    }};
+    for (const Case& test : cases)
+    {
+        const OwnedDescriptor descriptor = descriptorOf(test.sddl);
+        ASSERT_NE(descriptor, nullptr) << test.why;
+        const auto checked = BrokerHelper::checkDescriptor(token->get(), descriptor.get(), BrokerHelper::FILE_CHANGE_RIGHTS, "the file");
+        ASSERT_FALSE(checked.has_value()) << test.why;
+        EXPECT_TRUE(checked.error().contains(test.expected)) << test.why << ": " << checked.error();
+        EXPECT_TRUE(checked.error().contains("the file")) << checked.error();
+    }
+    const OwnedDescriptor modify = descriptorOf(cases.front().sddl);
+    ASSERT_NE(modify, nullptr);
+    const auto named = BrokerHelper::checkDescriptor(token->get(), modify.get(), BrokerHelper::FILE_CHANGE_RIGHTS, "the file");
+    ASSERT_FALSE(named.has_value());
+    EXPECT_TRUE(named.error().contains(aliceText)) << "the error names who: " << named.error();
 }
 
 } // namespace

@@ -51,10 +51,11 @@ using KnownFolderPathFn = HRESULT(WINAPI*)(REFKNOWNFOLDERID, DWORD, HANDLE, PWST
 /// SeChangeNotifyPrivilege. @p ownToken needs TOKEN_QUERY | TOKEN_DUPLICATE. The error says what failed.
 [[nodiscard]] std::expected<UniqueHandle, std::string> unelevatedTokenOf(HANDLE ownToken);
 
-/// Whether no one but an administrator can change @p exe: it names itself (no link or junction on the
-/// way, so the path written is the file checked) and BrokerHelper::checkUnchangeableBy() passes for it
-/// with unelevatedTokenOf() this process's token, the exe, its folder and every folder above it. The
-/// helper's check, against the user who would be changing it.
+/// Whether no one but an administrator can change @p exe: BrokerHelper::checkUnchangeableNamed() with
+/// unelevatedTokenOf() this process's token. The helper's check: neither that user nor any other who
+/// isn't an administrator may change the exe, its folder or any folder above it, and @p exe names itself
+/// (no link or junction on the way), all read on the same held handles. Blocking file and security reads:
+/// on a worker.
 [[nodiscard]] std::expected<void, std::string> checkUnchangeableByUnelevatedUser(const std::wstring& exe);
 
 /// checkUnchangeableByUnelevatedUser(), or a test's.

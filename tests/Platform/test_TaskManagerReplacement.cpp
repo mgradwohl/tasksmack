@@ -16,6 +16,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <cstddef>
 #include <expected>
 #include <memory>
 #include <optional>
@@ -492,6 +493,73 @@ TEST(TaskManagerReplacementServiceTest, AnElevatedCopyWritesTheRegistryItself)
     EXPECT_EQ(service.read().status.state, TaskManagerReplacement::State::ThisCopy);
     EXPECT_TRUE(service.change(Broker::TaskManagerChange::Clear, false, std::stop_token{}).success);
     EXPECT_EQ(service.read().status.state, TaskManagerReplacement::State::Off);
+}
+
+// #3280: an elevated copy turns it on only while its install check passes, checked on the worker (each
+// read, and again before each Set), and always may turn it off.
+
+TEST(TaskManagerReplacementServiceTest, AnElevatedCopyItsUsersCouldChangeCanStillTurnItOff)
+{
+    // The upgrade case: this copy turned it on, and now its folder is one its users can write.
+    auto registry = std::make_shared<Mocks::FakeIfeoRegistry>();
+    Mocks::FakeIfeoRegistry::seed(*registry, TaskManagerReplacement::debuggerFor(SELF));
+    auto checks = std::make_shared<int>(0);
+    TaskManagerReplacementSetup setup = setupReading(registry);
+    setup.direct = registry;
+    setup.checkDirectSet = [checks]() -> std::expected<void, std::string>
+    {
+        ++*checks;
+        return std::unexpected(std::string("TaskSmack's user can change it"));
+    };
+    setup.directSetRefusal = "only an install no one else can change";
+    TaskManagerReplacementService service(std::move(setup));
+    EXPECT_EQ(*checks, 0) << "nothing is checked until a worker asks";
+
+    const TaskManagerReplacementInfo info = service.read();
+    EXPECT_EQ(*checks, 1) << "the read checks it";
+    EXPECT_EQ(info.status.state, TaskManagerReplacement::State::ThisCopy);
+    EXPECT_TRUE(info.unavailableReason.empty()) << "turning it off is still offered";
+    EXPECT_EQ(info.turnOnUnavailableReason, "only an install no one else can change");
+
+    const std::size_t before = registry->calls.size();
+    const ProcessActionResult on = service.change(Broker::TaskManagerChange::Set, false, std::stop_token{});
+    EXPECT_FALSE(on.success);
+    EXPECT_EQ(on.errorMessage, "only an install no one else can change");
+    EXPECT_EQ(*checks, 2) << "checked again before the write";
+    EXPECT_EQ(registry->calls.size(), before) << "nothing written";
+
+    const ProcessActionResult off = service.change(Broker::TaskManagerChange::Clear, false, std::stop_token{});
+    EXPECT_TRUE(off.success) << off.errorMessage;
+    EXPECT_EQ(*checks, 2) << "a Clear needs no check";
+    EXPECT_FALSE(registry->debugger().has_value()) << "this copy's Debugger is gone";
+    EXPECT_EQ(service.read().status.state, TaskManagerReplacement::State::Off);
+}
+
+TEST(TaskManagerReplacementServiceTest, AnElevatedCopyThatPassesItsCheckTurnsItOn)
+{
+    auto registry = std::make_shared<Mocks::FakeIfeoRegistry>();
+    auto allowed = std::make_shared<bool>(true);
+    TaskManagerReplacementSetup setup = setupReading(registry);
+    setup.direct = registry;
+    setup.checkDirectSet = [allowed]() -> std::expected<void, std::string>
+    {
+        if (*allowed)
+        {
+            return {};
+        }
+        return std::unexpected(std::string("changed since"));
+    };
+    setup.directSetRefusal = "refused";
+    TaskManagerReplacementService service(std::move(setup));
+    EXPECT_TRUE(service.read().turnOnUnavailableReason.empty());
+    EXPECT_TRUE(service.change(Broker::TaskManagerChange::Set, false, std::stop_token{}).success);
+    EXPECT_EQ(registry->debugger(), TaskManagerReplacement::debuggerFor(SELF));
+
+    // A read that passed is no licence: the folder changed since, and the Set checks for itself.
+    EXPECT_TRUE(service.change(Broker::TaskManagerChange::Clear, false, std::stop_token{}).success);
+    *allowed = false;
+    EXPECT_FALSE(service.change(Broker::TaskManagerChange::Set, false, std::stop_token{}).success);
+    EXPECT_FALSE(registry->debugger().has_value());
 }
 
 TEST(TaskManagerReplacementServiceTest, WithNeitherItSaysWhy)

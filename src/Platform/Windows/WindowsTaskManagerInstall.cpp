@@ -127,18 +127,6 @@ std::expected<UniqueHandle, std::string> unelevatedTokenOf(HANDLE ownToken)
 
 std::expected<void, std::string> checkUnchangeableByUnelevatedUser(const std::wstring& exe)
 {
-    // The path written must be the file checked: through a link or junction, the file is checked where
-    // it really is, but the path Windows starts could later lead somewhere else.
-    const auto final = BrokerHelper::finalPath(exe);
-    if (!final.has_value())
-    {
-        return std::unexpected(std::format("couldn't open {}", WinString::wideToUtf8(exe)));
-    }
-    if (CompareStringOrdinal(final->c_str(), static_cast<int>(final->size()), exe.c_str(), static_cast<int>(exe.size()), TRUE) !=
-        CSTR_EQUAL)
-    {
-        return std::unexpected(std::format("{} is really {}", WinString::wideToUtf8(exe), WinString::wideToUtf8(*final)));
-    }
     UniqueHandle own;
     if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_DUPLICATE, own.put()) == FALSE)
     {
@@ -149,8 +137,10 @@ std::expected<void, std::string> checkUnchangeableByUnelevatedUser(const std::ws
     {
         return std::unexpected(unelevated.error());
     }
-    const std::array<std::wstring, 1> files{exe};
-    return BrokerHelper::checkUnchangeableBy(unelevated->get(), files);
+    // The path written must be the file checked, on the handles the check holds: through a link or
+    // junction, the file would be checked where it really is, but the path Windows starts could later
+    // lead somewhere else.
+    return BrokerHelper::checkUnchangeableNamed(unelevated->get(), exe);
 }
 
 std::expected<void, std::string>

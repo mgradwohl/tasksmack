@@ -7,6 +7,7 @@
 #include "Platform/TaskManagerReplacement.h"
 
 #include <expected>
+#include <optional>
 #include <stop_token>
 #include <string>
 #include <utility>
@@ -24,10 +25,15 @@ TaskManagerReplacementInfo TaskManagerReplacementService::read()
         .readError = {},
         .selfPath = m_Setup.selfPath,
         .unavailableReason = m_Setup.unavailableReason,
+        .turnOnUnavailableReason = {},
         .readFailed = false,
         .otherProgramExists = true,
         .installedCopy = m_Setup.installedCopy,
     };
+    if (const auto refused = directSetRefused(); refused.has_value())
+    {
+        info.turnOnUnavailableReason = *refused;
+    }
     if (!m_Setup.readDebugger)
     {
         info.readFailed = true;
@@ -66,8 +72,17 @@ TaskManagerReplacementService::change(Broker::TaskManagerChange change, bool rep
     }
     if (m_Setup.direct != nullptr)
     {
-        return change == Broker::TaskManagerChange::Set ? TaskManagerReplacement::applySet(*m_Setup.direct, request.path, replaceOther)
-                                                        : TaskManagerReplacement::applyClear(*m_Setup.direct);
+        if (change != Broker::TaskManagerChange::Set)
+        {
+            // Always allowed: applyClear() removes only a TaskSmack's Debugger.
+            return TaskManagerReplacement::applyClear(*m_Setup.direct);
+        }
+        // Checked again here, just before the write, not trusted from the last read.
+        if (const auto refused = directSetRefused(); refused.has_value())
+        {
+            return ProcessActionResult::error(*refused);
+        }
+        return TaskManagerReplacement::applySet(*m_Setup.direct, request.path, replaceOther);
     }
     if (m_Setup.broker != nullptr)
     {
@@ -75,6 +90,19 @@ TaskManagerReplacementService::change(Broker::TaskManagerChange change, bool rep
     }
     return ProcessActionResult::error(m_Setup.unavailableReason.empty() ? std::string("Replacing Task Manager needs administrator rights")
                                                                         : m_Setup.unavailableReason);
+}
+
+std::optional<std::string> TaskManagerReplacementService::directSetRefused() const
+{
+    if (m_Setup.direct == nullptr || !m_Setup.checkDirectSet)
+    {
+        return std::nullopt;
+    }
+    if (const auto allowed = m_Setup.checkDirectSet(); allowed.has_value())
+    {
+        return std::nullopt;
+    }
+    return m_Setup.directSetRefusal.empty() ? std::string("This copy of TaskSmack can't replace Task Manager") : m_Setup.directSetRefusal;
 }
 
 ProcessActionResult TaskManagerReplacementService::changeThroughHelper(const Broker::TaskManagerReplacementRequest& request,
