@@ -98,6 +98,15 @@ struct StatIdentity
     return stat.has_value() ? std::optional<std::uint64_t>(stat->startTime) : std::nullopt;
 }
 
+/// Whether /proc has no entry for @p pid (ENOENT): the process has exited, where a failed read of its stat alone
+/// could be any error (#3330).
+[[nodiscard]] bool procEntryGone(std::int32_t pid)
+{
+    struct stat entry{};
+    const std::string path = "/proc/" + std::to_string(pid);
+    return ::stat(path.c_str(), &entry) != 0 && errno == ENOENT;
+}
+
 /// A process TaskSmack and the root helper don't act on, whatever the action (#2447, #2641, #2774).
 enum class ProtectedProcess : std::uint8_t
 {
@@ -1403,9 +1412,18 @@ ProcessActionResult LinuxProcessControl::setEfficiencyMode(const ProcessTarget& 
                     entries.push_back(entry.first);
                 }
             }
+            // Kept: this process, and any whose exit isn't certain (a /proc read that failed for another reason).
             std::erase_if(entries,
                           [&key](const EfficiencyMemory::Key& entry)
-                          { return entry == key || readStartTicks(entry.first) == std::optional<std::uint64_t>(entry.second); });
+                          {
+                              if (entry == key)
+                              {
+                                  return true;
+                              }
+                              const std::optional<std::uint64_t> startNow = readStartTicks(entry.first);
+                              const bool gone = !startNow.has_value() && procEntryGone(entry.first);
+                              return !Efficiency::rememberedProcessExited(startNow, gone, entry.second);
+                          });
             const std::scoped_lock lock(m_Efficiency->mutex);
             for (const EfficiencyMemory::Key& exited : entries)
             {
