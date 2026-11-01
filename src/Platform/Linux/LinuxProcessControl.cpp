@@ -42,6 +42,7 @@
 #include <sys/poll.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -1047,6 +1048,14 @@ ProcessActionResult LinuxProcessControl::closeConnection(const ProcessTarget& ta
     {
         return ProcessActionResult::error("No process holds this socket, so there is nothing to close");
     }
+    // As every other action (#3295): init's and kernel threads' sockets are left alone, through the helper too.
+    if (const std::optional<ProtectedProcess> reason = protectedProcess(target.pid); reason.has_value())
+    {
+        return ProcessActionResult::error(
+            *reason == ProtectedProcess::Init
+                ? std::string("PID 1 is init, whose connections TaskSmack doesn't close")
+                : std::format("PID {} is a kernel thread, whose connections TaskSmack doesn't close", target.pid));
+    }
     // As sendSignalNumber(): the pidfd first, then the identity check, so the descriptor copied below can only
     // come from the target, never from a process that took its PID since.
     const PidfdOpen opened = openPidfd(m_Syscalls, target.pid);
@@ -1085,10 +1094,26 @@ ProcessActionResult LinuxProcessControl::closeConnection(const ProcessTarget& ta
         return isPermissionError(err) ? ProcessActionResult::denied(message) : ProcessActionResult::error(message);
     }
     const FdGuard copyGuard(copy);
+    // The copy is whatever the process held at that number when it was taken: if it closed the socket since and
+    // a new one took the number, that one isn't shut down in its place (#3295).
+    struct stat copied{};
+    if (::fstat(copy, &copied) != 0 || !S_ISSOCK(copied.st_mode) || copied.st_ino != socketInode)
+    {
+        return ProcessActionResult::error(std::format("PID {} no longer holds this socket", target.pid));
+    }
+    // A listening socket has no connection to close, and shutting one down stops it accepting (a TCP listener is
+    // disconnected, not refused with ENOTCONN), so it's refused whatever the view asked.
+    int listening = 0;
+    socklen_t listeningSize = sizeof(listening);
+    // NOLINTNEXTLINE(misc-include-cleaner) - SOL_SOCKET and SO_ACCEPTCONN are provided by <sys/socket.h>
+    if (::getsockopt(copy, SOL_SOCKET, SO_ACCEPTCONN, &listening, &listeningSize) == 0 && listening != 0)
+    {
+        return ProcessActionResult::error("This socket is listening for connections, so there is no connection to close");
+    }
     if (m_Syscalls.shutdownSocket(copy) != 0)
     {
         const int err = errno;
-        // ENOTCONN: a listening or unconnected socket, which has no connection to shut down.
+        // ENOTCONN: an unconnected socket, which has no connection to shut down.
         return ProcessActionResult::error(err == ENOTCONN ? std::string("This socket isn't connected, so there is no connection to close")
                                                           : std::system_category().message(err));
     }
