@@ -7,6 +7,7 @@
 #include "LinuxPowerProbe.h"
 #include "LinuxProcessActions.h"
 #include "LinuxProcessConnectionsReader.h"
+#include "LinuxProcessControl.h"
 #include "LinuxProcessEnvironmentReader.h"
 #include "LinuxProcessIconSource.h"
 #include "LinuxProcessModulesReader.h"

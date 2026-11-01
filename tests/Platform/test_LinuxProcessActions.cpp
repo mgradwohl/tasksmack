@@ -33,6 +33,7 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <functional>
 #include <iterator>
 #include <limits>
 #include <map>
@@ -42,6 +43,7 @@
 #include <string_view>
 #include <system_error>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <fcntl.h>
@@ -1530,7 +1532,8 @@ struct FaultPlan
     int sendCalls = 0;
     int lastSignal = 0;
     int setCalls = 0;
-    int lastSetValue = 0; ///< What the last setpriority / ioprio_set was given
+    int lastSetValue = 0;            ///< What the last setpriority / ioprio_set was given
+    std::function<void()> duringSet; ///< Run once inside the next setpriority / ioprio_set (#3330)
     int pollCalls = 0;
 };
 
@@ -1575,6 +1578,10 @@ int fakeSet(id_t /*tid*/, int value)
 {
     ++plan().setCalls;
     plan().lastSetValue = value;
+    if (const std::function<void()> during = std::exchange(plan().duringSet, nullptr); during)
+    {
+        during();
+    }
     return plan().setErrno != 0 ? fail(plan().setErrno) : 0;
 }
 
@@ -3115,6 +3122,29 @@ TEST_F(LinuxEfficiencyModeActionTest, AnOnThroughOneObjectIsPutBackByAnOffThroug
     ASSERT_TRUE(processesTab.setEfficiencyMode(ownTarget(), true).success);
     EXPECT_EQ(m_Control.efficiencyNiceToRestore(ownTarget()), std::nullopt);
     EXPECT_EQ(processDetails.efficiencyNiceToRestore(ownTarget()), std::optional<std::int32_t>(19));
+}
+
+// #3330: an on or off for a process that another one, sharing the memory, is still changing is refused rather than
+// interleaved with it: here Process Details' off arrives while the Processes tab's on is setting the nice.
+TEST_F(LinuxEfficiencyModeActionTest, AnOnOrOffWhileAnotherIsChangingTheProcessIsRefused)
+{
+    const std::shared_ptr<LinuxProcessControl::EfficiencyMemory> memory = LinuxProcessControl::makeEfficiencyMemory();
+    LinuxProcessControl processesTab(fakeEfficiencySyscalls(), memory);
+    LinuxProcessControl processDetails(fakeEfficiencySyscalls(), memory);
+    ProcessActionResult meanwhile;
+    plan().duringSet = [&]
+    {
+        meanwhile = processDetails.setEfficiencyMode(ownTarget(), false);
+    };
+    ASSERT_TRUE(processesTab.setEfficiencyMode(ownTarget(), true).success);
+    EXPECT_FALSE(meanwhile.success);
+    EXPECT_EQ(meanwhile.errorMessage, "Efficiency mode is already being changed for this process");
+    EXPECT_EQ(processDetails.rememberedEfficiencyCount(), 1U) << "the on's memory is intact";
+
+    // Once it has returned, the claim is given back: the off runs.
+    efficiency().nice = 19;
+    EXPECT_TRUE(processDetails.setEfficiencyMode(ownTarget(), false).success);
+    EXPECT_EQ(plan().lastSetValue, 5);
 }
 
 // #3330, with the real calls: two real objects sharing a memory (as makeProcessActions() makes them). On through one,
