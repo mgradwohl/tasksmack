@@ -610,7 +610,7 @@ using OwnedDescriptor = std::unique_ptr<void, DescriptorFreer>;
     if (ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1, &descriptor, nullptr) == FALSE)
     {
         ADD_FAILURE() << "couldn't parse " << WinString::wideToUtf8(sddl) << ": " << GetLastError();
-        return OwnedDescriptor(nullptr);
+        return {};
     }
     return OwnedDescriptor(descriptor);
 }

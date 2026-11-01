@@ -501,12 +501,12 @@ TEST(TaskManagerReplacementServiceTest, AnElevatedCopyWritesTheRegistryItself)
 TEST(TaskManagerReplacementServiceTest, AnElevatedCopyItsUsersCouldChangeCanStillTurnItOff)
 {
     // The upgrade case: this copy turned it on, and now its folder is one its users can write.
-    auto registry = std::make_shared<Mocks::FakeIfeoRegistry>();
+    const auto registry = std::make_shared<Mocks::FakeIfeoRegistry>();
     Mocks::FakeIfeoRegistry::seed(*registry, TaskManagerReplacement::debuggerFor(SELF));
-    auto checks = std::make_shared<int>(0);
+    const auto checks = std::make_shared<int>(0);
     TaskManagerReplacementSetup setup = setupReading(registry);
     setup.direct = registry;
-    setup.checkDirectSet = [checks]() -> std::expected<void, std::string>
+    setup.checkDirectSet = [checks] -> std::expected<void, std::string>
     {
         ++*checks;
         return std::unexpected(std::string("TaskSmack's user can change it"));
@@ -537,11 +537,11 @@ TEST(TaskManagerReplacementServiceTest, AnElevatedCopyItsUsersCouldChangeCanStil
 
 TEST(TaskManagerReplacementServiceTest, AnElevatedCopyThatPassesItsCheckTurnsItOn)
 {
-    auto registry = std::make_shared<Mocks::FakeIfeoRegistry>();
-    auto allowed = std::make_shared<bool>(true);
+    const auto registry = std::make_shared<Mocks::FakeIfeoRegistry>();
+    const auto allowed = std::make_shared<bool>(true);
     TaskManagerReplacementSetup setup = setupReading(registry);
     setup.direct = registry;
-    setup.checkDirectSet = [allowed]() -> std::expected<void, std::string>
+    setup.checkDirectSet = [allowed] -> std::expected<void, std::string>
     {
         if (*allowed)
         {

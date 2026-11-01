@@ -216,22 +216,24 @@ TEST_F(TaskManagerReplacementRenderTest, ACopyThatCantChangeItOrIsBusyAsksNothin
 // #3280: an elevated copy someone other than an administrator could change may turn it off, never on.
 TEST_F(TaskManagerReplacementRenderTest, ACopyThatMayOnlyTurnItOffOffersOnlyThat)
 {
-    constexpr std::string_view WHY = "only an install no one else can change";
-    TaskManagerReplacementView on = viewOf(State::ThisCopy);
-    on.info->turnOnUnavailableReason = WHY;
-    EXPECT_EQ(clickInRows(on, TaskManagerReplacementText::TOGGLE_LABEL), TaskManagerRequest::TurnOff);
+    // viewOf() with turning on refused.
+    const auto refused = [](State state, std::string program = {})
+    {
+        TaskManagerReplacementView view = viewOf(state, std::move(program));
+        if (view.info.has_value())
+        {
+            view.info->turnOnUnavailableReason = "only an install no one else can change";
+        }
+        return view;
+    };
+    EXPECT_EQ(clickInRows(refused(State::ThisCopy), TaskManagerReplacementText::TOGGLE_LABEL), TaskManagerRequest::TurnOff);
+    EXPECT_EQ(clickInRows(refused(State::Off), TaskManagerReplacementText::TOGGLE_LABEL), TaskManagerRequest::None);
 
-    TaskManagerReplacementView off = viewOf(State::Off);
-    off.info->turnOnUnavailableReason = WHY;
-    EXPECT_EQ(clickInRows(off, TaskManagerReplacementText::TOGGLE_LABEL), TaskManagerRequest::None);
-
-    TaskManagerReplacementView other = viewOf(State::OtherTaskSmack, R"(D:\Old\TaskSmack.exe)");
-    other.info->turnOnUnavailableReason = WHY;
+    const TaskManagerReplacementView other = refused(State::OtherTaskSmack, R"(D:\Old\TaskSmack.exe)");
     EXPECT_EQ(clickInRows(other, TaskManagerReplacementText::REPAIR_LABEL), TaskManagerRequest::None);
     EXPECT_EQ(clickInRows(other, TaskManagerReplacementText::TOGGLE_LABEL), TaskManagerRequest::TurnOff);
 
-    TaskManagerReplacementView elsewhere = viewOf(State::OtherProgram, R"(C:\Tools\procexp.exe)");
-    elsewhere.info->turnOnUnavailableReason = WHY;
+    const TaskManagerReplacementView elsewhere = refused(State::OtherProgram, R"(C:\Tools\procexp.exe)");
     EXPECT_EQ(clickInRows(elsewhere, TaskManagerReplacementText::TOGGLE_LABEL), TaskManagerRequest::None) << "not even to ask";
 
     m_Notice = {.open = true, .acted = false, .kind = NoticeKind::Repair};

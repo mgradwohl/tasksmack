@@ -248,7 +248,7 @@ std::shared_ptr<ITaskManagerReplacement> makeTaskManagerReplacement(const std::s
     {
         setup.selfPath = WinString::wideToUtf8(*image);
     }
-    const std::vector<std::string> folders = Windows::installFolders();
+    std::vector<std::string> folders = Windows::installFolders();
     const std::vector<std::string_view> folderViews(folders.begin(), folders.end());
     setup.installedCopy = TaskManagerReplacement::isInstalledCopy(setup.selfPath, folderViews);
     // Reading HKLM needs no rights: a fresh key handle each time, on the worker that asks.
@@ -271,7 +271,8 @@ std::shared_ptr<ITaskManagerReplacement> makeTaskManagerReplacement(const std::s
         // over the exe and every folder above it, on the worker that reads or changes it, never here on
         // the startup thread: until a read says it passed, Settings has nothing to turn on.
         setup.direct = std::make_shared<Windows::WindowsIfeoRegistry>();
-        setup.checkDirectSet = [selfPath = setup.selfPath, folders]() -> std::expected<void, std::string>
+        // Init-captures: the closure owns non-const copies, so moving it can't throw.
+        setup.checkDirectSet = [selfPath = setup.selfPath, folders = std::move(folders)] -> std::expected<void, std::string>
         {
             auto allowed = Windows::checkDirectWrite(selfPath, folders);
             if (!allowed.has_value())
