@@ -38,9 +38,10 @@ class LinuxUserSessions final : public IUserSessions
         return {.status = UserSessionsStatus::Ok, .sessions = std::move(read.sessions), .detail = {}};
     }
 
-    [[nodiscard]] bool canAct(SessionAction /*action*/) const override
+    /// Lock and Sign out; Disconnect is Windows' (Lock takes its place here, #3076).
+    [[nodiscard]] bool canAct(SessionAction action) const override
     {
-        return SystemdBus::built();
+        return action != SessionAction::Disconnect && SystemdBus::built();
     }
 
     [[nodiscard]] ServiceActionResult

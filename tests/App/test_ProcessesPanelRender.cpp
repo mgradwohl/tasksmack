@@ -14,6 +14,7 @@
 /// UI state (#2731): tab changes and the frame rate never change it.
 
 #include "App/Panels/AuthorizeWording.h"
+#include "App/Panels/ExitingProcessRows.h"
 #include "App/Panels/NiceStep.h"
 #include "App/Panels/ProcessActionsView.h"
 #include "App/Panels/ProcessColumnAvailability.h"
@@ -3075,6 +3076,36 @@ TEST_F(ProcessesPanelExitingRowsTest, AnExitedProcessStaysUncountedForAMomentThe
     EXPECT_TRUE(renderUntil(
         *panel, [](const ProcessesPanel&, const std::string& frame) { return !frame.contains("worker"); }, std::chrono::seconds(10)))
         << "the exited row never left";
+    panel->onDetach();
+}
+
+// #3284: a process that exited while the table adopted nothing (the window hidden, or Ctrl held) exited at
+// some point in that gap, not just now: the first generation adopted after it shows no exited rows.
+TEST_F(ProcessesPanelExitingRowsTest, AProcessThatExitedDuringAGapIsntShownAsJustExited)
+{
+    UserConfig::get().settings().highlightNewProcesses = true;
+    ExitingProbe* probe = nullptr;
+    const auto panel = exitingPanel(probe);
+    panel->setSamplingInterval(std::chrono::milliseconds(100));
+    renderUntilLoaded(*panel);
+    ASSERT_NE(probe, nullptr);
+
+    // Hidden: the sampler keeps publishing, the panel adopts nothing, for longer than the gap it follows on from.
+    probe->exitProcess(101);
+    std::this_thread::sleep_for(std::chrono::milliseconds(static_cast<int>(ExitingProcessRows::GAP_MIN_SECONDS * 1000.0) + 500));
+
+    std::string text;
+    ASSERT_TRUE(renderUntil(
+        *panel,
+        [&text](const ProcessesPanel& p, const std::string& frame)
+        {
+            text = frame;
+            return p.processCount() == 2;
+        },
+        std::chrono::seconds(30)))
+        << "the sampler never published the generation without worker";
+    text = renderAndCapture(*panel);
+    EXPECT_FALSE(text.contains("worker")) << text;
     panel->onDetach();
 }
 

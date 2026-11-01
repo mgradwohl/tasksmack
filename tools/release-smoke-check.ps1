@@ -13,7 +13,9 @@
     layer detaches and ShellLayer::onDetach() saves config.toml; a run that wrote no frame exits
     non-zero. Fails unless it quits with exit code 0 in the time allowed, on any [critical] or
     [error] log line, unless the log shows OpenGL 3.3+ from llvmpipe (proof the real renderer came
-    up, not an error box), and unless config.toml was saved with its [theme] table.
+    up, not an error box), on a missing assets folder, font or themes folder (warnings the app
+    carries on past, #3278, as tools/release-smoke-check.sh checks), unless a theme loaded, and
+    unless config.toml was saved with its [theme] table.
 
     It runs twice (#2726): from an empty config dir, then from a copy of the config.toml v0.8.0
     saved (tests/App/fixtures/config-v0.8.0.toml), which must be saved in today's format
@@ -175,6 +177,18 @@ foreach ($launch in $launches) {
   }
   if (-not $failure -and -not ($lines -match '\]\s+Entering main loop')) {
     $failure = "$run's log never reached 'Entering main loop' (Application::run): startup never finished"
+  }
+  # The quiet fallbacks (#3278), as tools/release-smoke-check.sh fails on them: AssetPath.cpp,
+  # FontLoading.cpp and Theme.cpp log a missing assets folder, font or themes folder at warn and carry
+  # on, so the [critical]/[error] match above never sees them, and a theme loaded logs at info.
+  $fallbackLines = @($lines | Where-Object {
+      $_ -match 'Assets directory not found|Icon font not found|Could not load Inter font|Failed to load Sixtyfour title font|Sixtyfour title font not found|No themes found'
+    })
+  if (-not $failure -and $fallbackLines.Count -gt 0) {
+    $failure = "$run fell back for missing assets (the package's asset layout is broken):`n$($fallbackLines -join "`n")"
+  }
+  if (-not $failure -and -not ($lines -match '\]\s+Loaded theme: ')) {
+    $failure = "$run's log has no 'Loaded theme:' line: no theme loaded (the themes folder is missing or empty)"
   }
   if (-not $failure -and $runRenderer -notmatch 'llvmpipe') {
     $failure = "Expected the llvmpipe renderer in $run's log, found '$runRenderer'"

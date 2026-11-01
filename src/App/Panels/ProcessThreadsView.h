@@ -1,8 +1,10 @@
 #pragma once
 
 // Process Details' collapsible Threads section (#3069): the selected process's threads in a TID / NAME /
-// STATE / CPU % / CPU TIME / NICE table, sortable by any column (by CPU % by default), filterable by
-// name or TID, with the count in the section's header.
+// STATE / CPU % / CPU TIME / NICE (Windows: PRIORITY) / STARTED table, sortable by any column (by CPU % by
+// default), filterable by name or TID, with the count in the section's header. On Windows each row's menu
+// offers Suspend, Resume and End, each behind a confirm (ThreadActionControl.h); Linux can't do them to one
+// thread, so its rows have no menu.
 //
 // The read cadence is the Modules section's (ProcessModulesView.h), at the Settings refresh interval:
 // CPU % is a live figure, worked out here from two reads' CPU times (the first read shows the dash).
@@ -19,12 +21,14 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessThreads.h"
 #include "Platform/ThreadName.h"
+#include "ThreadActionControl.h"
 #include "UI/Format.h"
 
 #include <algorithm>
 #include <compare>
 #include <cstddef>
 #include <cstdint>
+#include <format>
 #include <optional>
 #include <span>
 #include <stop_token>
@@ -65,6 +69,28 @@ inline constexpr std::string_view THREAD_CPU_UNKNOWN = "\xE2\x80\x94";
         break;
     }
     return "Could not be read";
+}
+
+/// The STATE cell: the state's name, then a suspended thread's suspend count or a waiting one's wait reason
+/// (Windows, #3069): "Stopped (suspend count 2)", "Sleeping (UserRequest)", "Running".
+[[nodiscard]] inline std::string threadStateText(const Platform::ProcessThread& thread)
+{
+    std::string text(Domain::processStateName(thread.state));
+    if (thread.suspendCount > 0)
+    {
+        text += std::format(" (suspend count {})", thread.suspendCount);
+    }
+    else if (!thread.waitReason.empty())
+    {
+        text += std::format(" ({})", thread.waitReason);
+    }
+    return text;
+}
+
+/// Whether the row menu offers Resume for @p thread: it is suspended (#3069).
+[[nodiscard]] constexpr bool threadCanResume(const Platform::ProcessThread& thread) noexcept
+{
+    return thread.suspendCount > 0 || thread.state == 'T';
 }
 
 /// The table's columns, also its sort keys (the ImGui column user IDs).
@@ -119,7 +145,7 @@ class ProcessThreadsView
         std::optional<double> cpuPercent; ///< None on the first read of it
         double cpuSeconds = 0.0;
         std::string tid;
-        std::string state;   ///< "Sleeping"
+        std::string state;   ///< "Sleeping", "Stopped (suspend count 1)"
         std::string cpu;     ///< "3.2%", or the dash
         std::string cpuTime; ///< "1m 04s"
         std::string nice;    ///< "0"
@@ -144,6 +170,13 @@ class ProcessThreadsView
                 int refreshMs,
                 double nowSeconds)
     {
+        m_Target = target;
+        // A thread action's result (#3069); one that succeeded reads the threads again at once, for the new state.
+        m_ActionControl.update(deltaSeconds);
+        if (m_ActionControl.takeActed())
+        {
+            m_Read.rearm();
+        }
         m_Read.setRefreshMs(refreshMs);
         if (auto result = m_Read.takeFinished(target, false))
         {
@@ -196,8 +229,11 @@ class ProcessThreadsView
 
     /// A different process was selected: drop its threads and read afresh when next shown. The sort and
     /// the filter are viewing preferences and stay.
-    void onSelectionChanged() noexcept
+    void onSelectionChanged()
     {
+        m_ActionControl.onSelectionChanged();
+        m_MenuThread.reset();
+        m_OpenRowMenu = false;
         m_Read.reset();
         m_HasRead = false;
         m_Status = Platform::ThreadsReadStatus::Ok;
@@ -210,12 +246,62 @@ class ProcessThreadsView
         m_FilterDirty = true;
     }
 
+    /// Whether the rows offer Suspend, Resume and End (the actions' canActOnThreads: Windows), and the process's
+    /// name the confirm and the result line give. Each frame, before render(); the name is copied only when it changes.
+    void setThreadActions(bool canAct, std::string_view processName)
+    {
+        m_CanActOnThreads = canAct;
+        if (m_ProcessName != processName)
+        {
+            m_ProcessName = processName;
+        }
+    }
+
+    /// A row menu's item: @p action on @p thread of the process shown, its confirm opened (#3069).
+    void requestThreadAction(const Platform::ProcessThread& thread, Platform::ThreadAction action)
+    {
+        m_ActionControl.request(PendingThreadAction{.target = m_Target,
+                                                    .tid = thread.tid,
+                                                    .threadCreateTime = thread.createTime,
+                                                    .threadName = thread.name,
+                                                    .processName = m_ProcessName,
+                                                    .action = action});
+    }
+
+    /// Opens the row menu for the thread @p tid of the last read, as a right-click on its row does (tests).
+    void openRowMenu(std::int32_t tid)
+    {
+        for (const Row& row : m_Rows)
+        {
+            if (row.thread.tid == tid)
+            {
+                m_MenuThread = row.thread;
+                m_OpenRowMenu = true;
+            }
+        }
+    }
+
+    /// Draws a thread action's confirm while one is pending, from the panel's window, every frame (as the
+    /// Actions block's is): so a section collapsed or scrolled away doesn't leave it pending. Closed unconfirmed
+    /// when the process shown is no longer the one it was for (@p liveTarget). @p actions does what is confirmed.
+    void renderConfirmation(Platform::IProcessActions* actions, const Platform::ProcessTarget& liveTarget);
+
+    /// The thread actions' state (tests).
+    [[nodiscard]] ThreadActionControl& actionControl() noexcept
+    {
+        return m_ActionControl;
+    }
+
     /// Takes in a read made at @p nowSeconds: its status and, for Ok, its threads formatted and sorted,
     /// each one's CPU % from its CPU time at the read before (the same thread: same TID and start time).
     void applyResult(const Platform::ThreadsReadResult& result, double nowSeconds)
     {
         m_HasRead = true;
         m_Status = result.status;
+        if (result.status == Platform::ThreadsReadStatus::Ok)
+        {
+            m_WindowsPriorities = result.windowsPriorities;
+        }
         m_Detail = result.detail;
         m_Truncated = result.truncated;
         m_Rows.clear();
@@ -246,7 +332,7 @@ class ProcessThreadsView
                               .cpuPercent = cpu,
                               .cpuSeconds = cpuSeconds,
                               .tid = std::to_string(thread.tid),
-                              .state = std::string(Domain::processStateName(thread.state)),
+                              .state = Detail::threadStateText(thread),
                               .cpu = cpu.has_value() ? UI::Format::formatPercent(*cpu) : std::string(Detail::THREAD_CPU_UNKNOWN),
                               .cpuTime = UI::Format::formatDuration(cpuSeconds),
                               .nice = std::to_string(thread.nice),
@@ -363,28 +449,43 @@ class ProcessThreadsView
     }
 
     void renderTable();
+    /// The result line of the last thread action, with "Authenticate and retry" after a refusal (#3069).
+    void renderActionResult();
+    /// The row menu (#3069), after the table: Suspend, Resume, End.
+    void renderRowMenu();
 
+    // Ordered by alignment, largest first (clang-analyzer-optin.performance.Padding), the flags last.
     std::size_t m_CpuCount = 1;
-    bool m_HasRead = false; // a read was taken in since the selection changed
-    Platform::ThreadsReadStatus m_Status = Platform::ThreadsReadStatus::Ok;
-    std::string m_Detail;
-    bool m_Truncated = false;
+    std::size_t m_LabelCount = SIZE_MAX; // the count m_CountLabel shows
+    std::optional<double> m_PreviousAt;  // when the last read's CPU times were taken in
+    Platform::ProcessTarget m_Target{};  // the process shown, as of the last update() (for the thread actions)
     std::vector<Row> m_Rows;
-    std::unordered_map<std::int32_t, Sample> m_Previous; // the last read's CPU time per thread, for CPU %
-    std::optional<double> m_PreviousAt;                  // when it was taken in
-    Detail::ThreadsColumn m_SortColumn = Detail::ThreadsColumn::Cpu;
-    bool m_SortAscending = false;
+    std::vector<std::size_t> m_FilteredRows;
+    std::string m_Detail;
     std::string m_Filter;
     std::string m_FilterKey;
-    std::vector<std::size_t> m_FilteredRows;
-    bool m_FilterDirty = true;
-    std::string m_CountLabel;            // the header with the count: "Threads (12)"
-    std::size_t m_LabelCount = SIZE_MAX; // the count m_CountLabel shows
+    std::string m_CountLabel;                            // the header with the count: "Threads (12)"
+    std::string m_ProcessName;                           // the process's name, for the thread actions' confirm and result line (#3069)
+    std::unordered_map<std::int32_t, Sample> m_Previous; // the last read's CPU time per thread, for CPU %
 
     // The read in flight and its cadence (the Settings interval, set by update()). Destroying the view
     // waits for at most one read.
     Detail::LazyBackgroundRead<Platform::ThreadsReadResult> m_Read{
         Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS, Platform::THREADS_READ_THREAD_NAME, &failedRead};
+
+    // The thread actions (#3069, Windows): the row menu's thread, its confirm and result line.
+    std::optional<Platform::ProcessThread> m_MenuThread; // the row the menu is up for, copied as it was clicked
+    ThreadActionControl m_ActionControl;
+
+    bool m_HasRead = false; // a read was taken in since the selection changed
+    Platform::ThreadsReadStatus m_Status = Platform::ThreadsReadStatus::Ok;
+    bool m_Truncated = false;
+    Detail::ThreadsColumn m_SortColumn = Detail::ThreadsColumn::Cpu;
+    bool m_SortAscending = false;
+    bool m_FilterDirty = true;
+    bool m_WindowsPriorities = false; // the last read's priorities are Windows' (the column says PRIORITY)
+    bool m_CanActOnThreads = false;   // the rows offer Suspend, Resume and End (#3069)
+    bool m_OpenRowMenu = false;       // the row menu opens on the next render
 };
 
 } // namespace App

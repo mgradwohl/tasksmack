@@ -12,6 +12,7 @@ namespace App
 namespace
 {
 
+using ExitingProcessRows::followsOnFrom;
 using ExitingProcessRows::Tracker;
 
 [[nodiscard]] Domain::ProcessSnapshot proc(std::int32_t pid, std::int32_t parentPid, std::uint64_t startTicks = 100)
@@ -125,6 +126,18 @@ TEST(ExitingProcessRowsTest, AChildThatExitedWithItsParentStaysUnderIt)
     ASSERT_EQ(rows.size(), 3U);
     EXPECT_EQ(rows[0].childrenIndices, (std::vector<std::size_t>{1}));
     EXPECT_EQ(rows[1].childrenIndices, (std::vector<std::size_t>{2}));
+}
+
+// #3284: a generation follows on from the one before within GAP_INTERVALS refreshes, and never less than
+// GAP_MIN_SECONDS; after a longer gap (hidden, or Ctrl held) it doesn't.
+TEST(ExitingProcessRowsTest, AGenerationFollowsOnOnlyAfterAShortGap)
+{
+    EXPECT_TRUE(followsOnFrom(10.0, 11.0, 1.0));
+    EXPECT_TRUE(followsOnFrom(10.0, 12.5, 1.0));
+    EXPECT_FALSE(followsOnFrom(10.0, 12.6, 1.0));
+    EXPECT_TRUE(followsOnFrom(10.0, 10.9, 0.1)) << "a fast refresh still allows GAP_MIN_SECONDS";
+    EXPECT_FALSE(followsOnFrom(10.0, 11.1, 0.1));
+    EXPECT_FALSE(followsOnFrom(10.0, 300.0, 5.0)) << "minimized for minutes";
 }
 
 } // namespace

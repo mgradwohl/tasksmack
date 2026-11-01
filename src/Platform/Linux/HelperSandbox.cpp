@@ -19,6 +19,7 @@
 #include <linux/seccomp.h>
 #include <sys/mman.h>
 #include <sys/prctl.h>
+#include <sys/socket.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -497,6 +498,15 @@ std::vector<sock_filter> program([[maybe_unused]] Mode mode, [[maybe_unused]] pi
             code.returnFor(call, fail(EPERM));
         }
     }
+    // getsockopt: whether a socket listens (SOL_SOCKET, SO_ACCEPTCONN) only, which Close connection asks of the
+    // descriptor it copied before shutting it down (#3295); any other option is refused.
+    code.blockFor(SYS_getsockopt,
+                  {load(argLow(1)),
+                   jump(BPF_JMP | BPF_JEQ | BPF_K, static_cast<std::uint32_t>(SOL_SOCKET), 0, 3),
+                   load(argLow(2)),
+                   jump(BPF_JMP | BPF_JEQ | BPF_K, static_cast<std::uint32_t>(SO_ACCEPTCONN), 0, 1),
+                   ret(ALLOW),
+                   ret(fail(EPERM))});
     // ioctl: isatty()'s terminal query only (spdlog on fd 1).
     code.blockFor(SYS_ioctl,
                   {load(argLow(1)),

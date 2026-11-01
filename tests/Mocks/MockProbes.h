@@ -671,6 +671,45 @@ class MockProcessActions : public Platform::IProcessActions
         return m_CloseConnectionCount;
     }
 
+    void setThreadActionResult(Platform::ProcessActionResult result)
+    {
+        m_ThreadActionResult = std::move(result);
+    }
+
+    /// actOnThread() (#3069): records the target, thread and action, counts the call, returns the set result.
+    [[nodiscard]] Platform::ProcessActionResult actOnThread(const Platform::ProcessTarget& target,
+                                                            std::int32_t tid,
+                                                            std::uint64_t threadCreateTime,
+                                                            Platform::ThreadAction action) override
+    {
+        m_LastTarget = target;
+        m_LastThreadId = tid;
+        m_LastThreadCreateTime = threadCreateTime;
+        m_LastThreadAction = action;
+        ++m_ThreadActionCount;
+        return m_ThreadActionResult;
+    }
+
+    [[nodiscard]] int threadActionCount() const
+    {
+        return m_ThreadActionCount;
+    }
+
+    [[nodiscard]] std::int32_t lastThreadId() const
+    {
+        return m_LastThreadId;
+    }
+
+    [[nodiscard]] std::uint64_t lastThreadCreateTime() const
+    {
+        return m_LastThreadCreateTime;
+    }
+
+    [[nodiscard]] Platform::ThreadAction lastThreadAction() const
+    {
+        return m_LastThreadAction;
+    }
+
     [[nodiscard]] std::uint64_t lastSocketInode() const
     {
         return m_LastSocketInode;
@@ -1106,6 +1145,11 @@ class MockProcessActions : public Platform::IProcessActions
     int m_CloseConnectionCount = 0;
     std::uint64_t m_LastSocketInode = 0;
     Platform::ProcessActionResult m_CloseConnectionResult = Platform::ProcessActionResult::ok();
+    int m_ThreadActionCount = 0;
+    std::int32_t m_LastThreadId = 0;
+    std::uint64_t m_LastThreadCreateTime = 0;
+    Platform::ThreadAction m_LastThreadAction = Platform::ThreadAction::Suspend;
+    Platform::ProcessActionResult m_ThreadActionResult = Platform::ProcessActionResult::ok();
     bool m_LastEfficiencyMode = false;
     Platform::ProcessActionResult m_EfficiencyModeResult = Platform::ProcessActionResult::ok();
     int m_SetPriorityCount = 0;

@@ -159,6 +159,40 @@ TEST(ConnectionsViewTest, ASocketKeepsItsSelectionKeyAcrossReads)
     EXPECT_NE(selectionKey(a[1]), selectionKey(a[0])); // another port
 }
 
+// #3288: sockets on the same endpoints held by different processes (several mDNS listeners on UDP 0.0.0.0:5353)
+// are different rows: each has its own key, so selecting one selects only it, and when one closes it shows as
+// closed and a new one shows as new, the others still open.
+TEST(ConnectionsViewTest, SocketsOnTheSameEndpointsInDifferentProcessesAreDifferentRows)
+{
+    const SystemConnection avahi =
+        socket(200, "avahi-daemon", ConnectionProtocol::Udp, {0, 0, 0, 0}, 5353, {0, 0, 0, 0}, 0, ConnectionState::Unknown);
+    const SystemConnection firefox =
+        socket(300, "firefox", ConnectionProtocol::Udp, {0, 0, 0, 0}, 5353, {0, 0, 0, 0}, 0, ConnectionState::Unknown);
+    EXPECT_NE(selectionKey(avahi), selectionKey(firefox));
+    EXPECT_EQ(Domain::Connections::socketKey(avahi.connection), Domain::Connections::socketKey(firefox.connection))
+        << "the rates (#3079) still key on the endpoints";
+
+    Domain::ConnectionsPublication first;
+    first.version = 1;
+    first.connections = {avahi, firefox};
+    ConnectionChangeTracker tracker;
+    tracker.onGeneration(buildConnectionRows(first), 10.0);
+
+    // firefox's listener closes, chrome's opens on the same endpoints; avahi's stays.
+    const SystemConnection chrome =
+        socket(400, "chrome", ConnectionProtocol::Udp, {0, 0, 0, 0}, 5353, {0, 0, 0, 0}, 0, ConnectionState::Unknown);
+    Domain::ConnectionsPublication second;
+    second.version = 2;
+    second.connections = {avahi, chrome};
+    const std::vector<ConnectionRow> rows = buildConnectionRows(second);
+    tracker.onGeneration(rows, 11.0);
+    const std::vector<ConnectionRow> closed = tracker.closedRows();
+    ASSERT_EQ(closed.size(), 1U);
+    EXPECT_EQ(closed[0].process, "firefox");
+    EXPECT_TRUE(tracker.newAlpha(selectionKey(chrome), 11.0).has_value()) << "chrome's is new";
+    EXPECT_FALSE(tracker.newAlpha(selectionKey(avahi), 11.0).has_value()) << "avahi's was there";
+}
+
 // ---- The panel, on display -------------------------------------------------------------------------
 
 /// Reads back the sockets it was given, or a failure with @p detail when that is set.

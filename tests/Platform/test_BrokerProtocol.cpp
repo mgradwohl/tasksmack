@@ -16,6 +16,7 @@
 #include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
 #include "Platform/ISystemInfoProbe.h"
+#include "Platform/IUserSessions.h"
 
 #include <gtest/gtest.h>
 
@@ -104,6 +105,52 @@ TEST(BrokerProtocolTest, CloseConnectionRoundTrips)
     EXPECT_EQ(Detail::readFrame(bytes).value_or(Detail::Frame{}).kind, MessageKind::CloseConnection);
 }
 
+// #3069 (v14): one thread's Suspend, Resume or End carries its target, the TID and the action, byte for byte.
+TEST(BrokerProtocolTest, ThreadActionRoundTripsAndRefusesWhatIsntOne)
+{
+    for (const ThreadAction action : {ThreadAction::Suspend, ThreadAction::Resume, ThreadAction::End})
+    {
+        const Request request{
+            ThreadActionRequest{.target = TARGET, .tid = 0x7FFF'FFFC, .threadCreateTime = 0x01DC'0123'4567'89ABULL, .action = action}};
+        EXPECT_EQ(roundTrip(request), request);
+    }
+    const std::vector<std::uint8_t> bytes = encodeRequest(
+        7,
+        Request{ThreadActionRequest{
+            .target = {.pid = 0x0102, .startTimeTicks = 3}, .tid = 0x0405, .threadCreateTime = 0x0706, .action = ThreadAction::End}});
+    // The header, the target (PID, then start time), the TID, its creation time and the action.
+    const std::vector<std::uint8_t> expected{33, 0,  0, 0, static_cast<std::uint8_t>(PROTOCOL_VERSION),
+                                             0,  25, 0, 7, 0,
+                                             0,  0,  2, 1, 0,
+                                             0,  3,  0, 0, 0,
+                                             0,  0,  0, 0, 5,
+                                             4,  0,  0, 6, 7,
+                                             0,  0,  0, 0, 0,
+                                             0,  2};
+    EXPECT_EQ(bytes, expected);
+    EXPECT_EQ(Detail::readFrame(bytes).value_or(Detail::Frame{}).kind, MessageKind::ThreadAction);
+
+    constexpr std::size_t ACTION = 4U + HEADER_BYTES + 4U + 8U + 4U + 8U;
+    std::vector<std::uint8_t> bad = bytes;
+    bad[ACTION] = 3; // past End
+    EXPECT_FALSE(decodeRequest(bad).has_value());
+    for (const std::int32_t tid : {0, -1})
+    {
+        EXPECT_FALSE(
+            decodeRequest(encodeRequest(1, Request{ThreadActionRequest{.target = TARGET, .tid = tid, .action = ThreadAction::Suspend}}))
+                .has_value())
+            << tid;
+    }
+    bad = bytes;
+    bad.pop_back(); // short
+    bad[0] = static_cast<std::uint8_t>(bad.size() - 4);
+    EXPECT_FALSE(decodeRequest(bad).has_value());
+    bad = bytes;
+    bad.push_back(0); // left over
+    bad[0] = static_cast<std::uint8_t>(bad.size() - 4);
+    EXPECT_FALSE(decodeRequest(bad).has_value());
+}
+
 // #3072 (v11): Replace Task Manager carries its change, the path and the confirmation flag; a path is
 // carried exactly, quotes and all (the helper, not the decoder, refuses what isn't TaskSmack.exe).
 TEST(BrokerProtocolTest, TaskManagerReplacementRoundTrips)
@@ -123,9 +170,59 @@ TEST(BrokerProtocolTest, TaskManagerReplacementRoundTrips)
     const std::vector<std::uint8_t> bytes =
         encodeRequest(5, Request{TaskManagerReplacementRequest{.change = TaskManagerChange::Set, .path = "ab", .replaceOther = true}});
     // The header, then the change, the path's length and bytes, and the flag.
-    const std::vector<std::uint8_t> expected{16, 0, 0, 0, 12, 0, 23, 0, 5, 0, 0, 0, 0, 2, 0, 0, 0, 'a', 'b', 1};
+    const std::vector<std::uint8_t> expected{16, 0,   0,   0, static_cast<std::uint8_t>(PROTOCOL_VERSION), 0, 23, 0, 5, 0, 0, 0, 0, 2, 0, 0,
+                                             0,  'a', 'b', 1};
     EXPECT_EQ(bytes, expected);
     EXPECT_EQ(Detail::readFrame(bytes).value_or(Detail::Frame{}).kind, MessageKind::TaskManagerReplacement);
+}
+
+// #3076 (v13): a session's Disconnect or Sign out carries the action, the session's WTS ID (the full 32 bits)
+// and the sign-in the user confirmed (user, domain, sign-in time), since Windows reuses session IDs; a Lock
+// (Linux's, never the helper's), an action past Disconnect, a short frame and a byte left over are refused.
+TEST(BrokerProtocolTest, SessionActionRoundTripsAndRefusesALock)
+{
+    for (const Request& request : {
+             Request{SessionActionRequest{
+                 .action = SessionAction::SignOut, .sessionId = 2, .user = "alice", .domain = "PC", .logonUsec = 1'700'000'000'000'000ULL}},
+             Request{SessionActionRequest{
+                 .action = SessionAction::Disconnect, .sessionId = 0xFFFFFFFFU, .user = "Zoë", .domain = "CORP", .logonUsec = ~0ULL}},
+             // The helper, not the decoder, refuses session 0 and a request that names no sign-in.
+             Request{SessionActionRequest{.action = SessionAction::SignOut, .sessionId = 0, .user = {}, .domain = {}, .logonUsec = 0}},
+         })
+    {
+        EXPECT_EQ(roundTrip(request), request);
+    }
+    std::vector<std::uint8_t> bytes = encodeRequest(5,
+                                                    Request{SessionActionRequest{.action = SessionAction::Disconnect,
+                                                                                 .sessionId = 0x01020304U,
+                                                                                 .user = "ab",
+                                                                                 .domain = {},
+                                                                                 .logonUsec = 0x0102030405060708ULL}});
+    // The header, then the action, the session's ID, the user, the domain and the sign-in time.
+    const std::vector<std::uint8_t> expected{31, 0,   0,   0, static_cast<std::uint8_t>(PROTOCOL_VERSION),
+                                             0,  24,  0,   5, 0,
+                                             0,  0,   2,   4, 3,
+                                             2,  1,   2,   0, 0,
+                                             0,  'a', 'b', 0, 0,
+                                             0,  0,   8,   7, 6,
+                                             5,  4,   3,   2, 1};
+    EXPECT_EQ(bytes, expected);
+    EXPECT_EQ(Detail::readFrame(bytes).value_or(Detail::Frame{}).kind, MessageKind::SessionAction);
+
+    constexpr std::size_t ACTION = 4U + HEADER_BYTES;
+    bytes[ACTION] = static_cast<std::uint8_t>(SessionAction::Lock);
+    EXPECT_FALSE(decodeRequest(bytes).has_value()) << "a Lock";
+    bytes[ACTION] = static_cast<std::uint8_t>(static_cast<std::uint8_t>(SessionAction::Disconnect) + 1);
+    EXPECT_FALSE(decodeRequest(bytes).has_value()) << "past Disconnect";
+    bytes[ACTION] = static_cast<std::uint8_t>(SessionAction::SignOut);
+    ASSERT_TRUE(decodeRequest(bytes).has_value());
+    bytes.push_back(0); // a byte left over
+    bytes[0] = static_cast<std::uint8_t>(bytes.size() - 4U);
+    EXPECT_FALSE(decodeRequest(bytes).has_value());
+    bytes.resize(bytes.size() - 2); // the sign-in time short by a byte
+    bytes[0] = static_cast<std::uint8_t>(bytes.size() - 4U);
+    EXPECT_FALSE(decodeRequest(bytes).has_value());
+    EXPECT_FALSE(decodeResponse(encodeRequest(1, Request{SessionActionRequest{}})).has_value()) << "not a response";
 }
 
 // #3072: what the decoder refuses of a TaskManagerReplacement: a change past Clear, a flag that isn't 0 or 1,
@@ -564,6 +661,16 @@ TEST(BrokerProtocolTest, ThreadsRoundTripAndBadRepliesAreRefused)
         {.tid = 4250, .name = "pool) worker", .state = 'R', .userTicks = 300, .systemTicks = 40, .nice = 19, .startTicks = 5000});
     const Response reply = ThreadsReply{.result = threads};
     EXPECT_EQ(roundTrip(reply), reply);
+    // v14 (#3069): Windows' rows, with their priorities, wait reasons and suspend counts.
+    ThreadsReadResult windows = threads;
+    windows.windowsPriorities = true;
+    windows.threads[0].waitReason = "UserRequest";
+    windows.threads[1].state = 'T';
+    windows.threads[1].waitReason = "Suspended";
+    windows.threads[1].suspendCount = 3;
+    windows.threads[1].createTime = 0x01DC'0000'0000'0042ULL;
+    const Response windowsReply = ThreadsReply{.result = windows};
+    EXPECT_EQ(roundTrip(windowsReply), windowsReply);
     const Response refused = ThreadsReply{.result = {.status = ThreadsReadStatus::PermissionDenied, .threads = {}, .detail = "no"}};
     EXPECT_EQ(roundTrip(refused), refused);
 
@@ -574,10 +681,11 @@ TEST(BrokerProtocolTest, ThreadsRoundTripAndBadRepliesAreRefused)
     ThreadsReadResult noTicks = threads;
     noTicks.ticksPerSecond = 0;
     EXPECT_FALSE(decodeResponse(encodeResponse(1, Response{ThreadsReply{.result = noTicks}})).has_value());
-    // So is a count past MAX_THREADS (status, empty detail, ticks, boot time, truncated, then the count).
+    // So is a count past MAX_THREADS (status, empty detail, ticks, boot time, truncated, Windows priorities,
+    // then the count).
     std::vector<std::uint8_t> tooMany =
         encodeResponse(1, Response{ThreadsReply{.result = {.status = ThreadsReadStatus::Ok, .threads = {}, .detail = {}}}});
-    const std::size_t countAt = 4 + HEADER_BYTES + 1 + 4 + 8 + 8 + 1;
+    const std::size_t countAt = 4 + HEADER_BYTES + 1 + 4 + 8 + 8 + 1 + 1;
     const auto huge = static_cast<std::uint32_t>(MAX_THREADS + 1);
     for (std::size_t i = 0; i < 4; ++i)
     {
@@ -819,6 +927,7 @@ TEST(BrokerProtocolTest, NoResponseDecodesAsARequestAndNoRequestAsAResponse)
         FirmwareFileRequest{.file = FirmwareFile::ProductUuid},
         CrashesRequest{},
         ThreadsRequest{.target = TARGET},
+        ThreadActionRequest{.target = TARGET, .tid = 9, .action = ThreadAction::Resume},
     };
     for (const Request& request : requests)
     {
@@ -964,6 +1073,8 @@ TEST(BrokerProtocolTest, TheFuzzCorpusHasADecodableSeedForEveryMessageKind)
                                    MessageKind::SetEfficiencyMode,
                                    MessageKind::CloseConnection,
                                    MessageKind::TaskManagerReplacement,
+                                   MessageKind::SessionAction,
+                                   MessageKind::ThreadAction,
                                    MessageKind::ReadEnvironment,
                                    MessageKind::ReadModules,
                                    MessageKind::ReadOpenFiles,
@@ -1080,7 +1191,11 @@ TEST(BrokerProtocolTest, ListRepliesCompareByEveryFieldOfEveryEntry)
         [](ThreadsReply& m) { m.result.threads[0].userTicks = 2; },
         [](ThreadsReply& m) { m.result.threads[0].systemTicks = 2; },
         [](ThreadsReply& m) { m.result.threads[0].nice = 5; },
-        [](ThreadsReply& m) { m.result.threads[0].startTicks = 2; });
+        [](ThreadsReply& m) { m.result.threads[0].startTicks = 2; },
+        [](ThreadsReply& m) { m.result.windowsPriorities = true; },
+        [](ThreadsReply& m) { m.result.threads[0].waitReason = "Suspended"; },
+        [](ThreadsReply& m) { m.result.threads[0].suspendCount = 1; },
+        [](ThreadsReply& m) { m.result.threads[0].createTime = 7; });
 
     ProcessConnection connection;
     connection.local.port = 80;

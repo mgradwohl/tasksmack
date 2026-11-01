@@ -205,6 +205,16 @@ enum class ProcessSignal : std::uint8_t
     User2,     ///< SIGUSR2
 };
 
+/// What can be done to one thread of a process (#3069): Windows only (ProcessActionCapabilities::canActOnThreads).
+/// Linux has no such call: a stop signal sent to one thread stops its whole thread group, and a fatal one ends the
+/// whole process.
+enum class ThreadAction : std::uint8_t
+{
+    Suspend, ///< SuspendThread: one more suspension; Windows counts them
+    Resume,  ///< ResumeThread: one suspension fewer; the thread runs again once none are left
+    End,     ///< TerminateThread: ended at once, with no chance to clean up
+};
+
 struct AuthorizedAction
 {
     enum class Kind : std::uint8_t
@@ -219,12 +229,16 @@ struct AuthorizedAction
         SendSignal,        ///< signal (#3063)
         SetEfficiencyMode, ///< efficiencyMode (#3071)
         CloseConnection,   ///< socketInode (#3066)
+        ThreadAction,      ///< tid and threadAction (#3069)
     };
     Kind kind = Kind::Terminate;
     ProcessTarget target;
     ProcessSignal signal = ProcessSignal::Hangup;
-    bool efficiencyMode = false;   ///< SetEfficiencyMode: on (true) or off
-    std::uint64_t socketInode = 0; ///< CloseConnection: the socket, by inode
+    bool efficiencyMode = false;        ///< SetEfficiencyMode: on (true) or off
+    std::uint64_t socketInode = 0;      ///< CloseConnection: the socket, by inode
+    std::int32_t tid = 0;               ///< ThreadAction: the thread
+    std::uint64_t threadCreateTime = 0; ///< ThreadAction: when the thread confirmed was created (ProcessThread::createTime)
+    ThreadAction threadAction = ThreadAction::Suspend;
     std::int32_t nice = 0;
     IoPriorityClass ioClass = IoPriorityClass::BestEffort;
     std::int32_t level = 4;
@@ -284,6 +298,9 @@ struct ProcessActionCapabilities
     bool canAnalyzeWaitChain = false;
     /// closeConnection(): shut down one of a process's sockets (#3066; Linux: pidfd_getfd() and shutdown()).
     bool canCloseConnections = false;
+    /// actOnThread(): suspend, resume or end one thread of a process (#3069; Windows: SuspendThread, ResumeThread,
+    /// TerminateThread). False on Linux, where Process Details' Threads section offers no row menu.
+    bool canActOnThreads = false;
 };
 
 /// Interface for platform-specific process actions.
@@ -455,6 +472,21 @@ class IProcessActions
         static_cast<void>(target);
         static_cast<void>(socketInode);
         return ProcessActionResult::error("Closing a connection isn't available on this system");
+    }
+
+    /// Suspends, resumes or ends the thread @p tid of the process (#3069), as Process Explorer's Threads tab does.
+    /// Refused, as every action is, unless the process at the target's PID is the target; for a thread that isn't the
+    /// target's, or whose creation time isn't @p threadCreateTime (the thread the user confirmed, ProcessThread::createTime:
+    /// a TID reused since, or an unknown 0, is refused); never for the System process, a critical process, or TaskSmack's own threads. The
+    /// default refuses it, matching canActOnThreads' default (false).
+    [[nodiscard]] virtual ProcessActionResult
+    actOnThread(const ProcessTarget& target, std::int32_t tid, std::uint64_t threadCreateTime, ThreadAction action)
+    {
+        static_cast<void>(target);
+        static_cast<void>(tid);
+        static_cast<void>(threadCreateTime);
+        static_cast<void>(action);
+        return ProcessActionResult::error("Acting on one thread isn't available on this system");
     }
 
     /// Reads what each thread of the target waits on (#3084), as Task Manager's "Analyze wait chain": per

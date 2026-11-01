@@ -44,6 +44,7 @@
 #include <vector>
 
 #include <fcntl.h>
+#include <netinet/in.h>
 #include <pthread.h>
 #include <sched.h>
 #include <signal.h> // NOLINT(modernize-deprecated-headers) - POSIX signal.h provides kill(), csignal does not
@@ -229,6 +230,18 @@ TEST(LinuxProcessActionsTest, CapabilitiesReportedCorrectly)
     EXPECT_TRUE(caps.canContinue);      // resume is called canContinue in the interface
     EXPECT_TRUE(caps.canSetPriority);   // setpriority() is available on Linux
     EXPECT_TRUE(caps.canSetIoPriority); // ioprio_set() too (#803)
+}
+
+// #3069: no call acts on one thread on Linux (a stop signal stops the whole group), so the Threads section's rows
+// have no menu, and a thread action, asked for anyway, is refused without anything being sent.
+TEST(LinuxProcessActionsTest, ThreadActionsArentOffered)
+{
+    LinuxProcessActions actions;
+    EXPECT_FALSE(actions.actionCapabilities().canActOnThreads);
+    const ProcessActionResult result = actions.actOnThread({.pid = 1, .startTimeTicks = 1}, 1, 1, ThreadAction::End);
+    EXPECT_FALSE(result.success);
+    EXPECT_EQ(result.errorMessage, "Acting on one thread isn't available on this system");
+    EXPECT_FALSE(result.permissionDenied);
 }
 
 // =============================================================================
@@ -2736,6 +2749,70 @@ TEST(LinuxProcessActionsTest, CloseConnectionShutsDownTheSocketTheProcessHolds)
     const ProcessActionResult noPid = control.closeConnection({.pid = 0, .startTimeTicks = 0}, info.st_ino);
     EXPECT_FALSE(noPid.success);
     EXPECT_EQ(noPid.errorMessage, "Invalid PID");
+}
+
+/// The descriptor a fake /proc scan finds, standing in for one the process reused since (#3295).
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables) - a plain function pointer hook can't capture
+int g_ScannedFd = -1;
+
+// #3295: the descriptor copied is checked before it's shut down. One the process closed and reused for another
+// socket since the scan isn't shut down in the picked one's place; a listening socket is refused, as is init.
+TEST(LinuxProcessActionsTest, CloseConnectionShutsDownOnlyTheSocketPickedAndNeverAListener)
+{
+    std::array<int, 2> picked{-1, -1};
+    std::array<int, 2> reused{-1, -1};
+    ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, picked.data()), 0);
+    ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, reused.data()), 0);
+    const Posix::FdGuard pickedA(picked[0]);
+    const Posix::FdGuard pickedB(picked[1]);
+    const Posix::FdGuard reusedA(reused[0]);
+    const Posix::FdGuard reusedB(reused[1]);
+    struct stat pickedInfo{};
+    ASSERT_EQ(::fstat(picked[0], &pickedInfo), 0);
+
+    // The scan found the picked socket's number, but by the copy it holds the other socket.
+    LinuxProcessSyscalls syscalls = realProcessSyscalls();
+    syscalls.socketDescriptor = [](std::int32_t, std::uint64_t) -> std::expected<int, int>
+    {
+        return g_ScannedFd;
+    };
+    g_ScannedFd = reused[0];
+    LinuxProcessControl control(syscalls);
+    const ProcessActionResult moved = control.closeConnection(ownTarget(), pickedInfo.st_ino);
+    if (!moved.success && moved.errorMessage.contains("Linux 5.6"))
+    {
+        GTEST_SKIP() << "pidfd_getfd() needs Linux 5.6";
+    }
+    EXPECT_FALSE(moved.success);
+    EXPECT_TRUE(moved.errorMessage.contains("no longer holds")) << moved.errorMessage;
+    std::array<char, 1> byte{};
+    EXPECT_EQ(::recv(reused[1], byte.data(), byte.size(), MSG_DONTWAIT), -1) << "the other socket is still connected";
+    EXPECT_EQ(errno, EAGAIN);
+
+    // A listening socket: refused, and still accepting afterwards.
+    const Posix::FdGuard listener(::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0));
+    ASSERT_GE(listener.get(), 0);
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    ASSERT_EQ(::bind(listener.get(), reinterpret_cast<const sockaddr*>(&address), sizeof(address)),
+              0); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast) - the sockets API
+    ASSERT_EQ(::listen(listener.get(), 1), 0);
+    struct stat listenerInfo{};
+    ASSERT_EQ(::fstat(listener.get(), &listenerInfo), 0);
+    g_ScannedFd = listener.get();
+    const ProcessActionResult listening = control.closeConnection(ownTarget(), listenerInfo.st_ino);
+    EXPECT_FALSE(listening.success);
+    EXPECT_TRUE(listening.errorMessage.contains("listening")) << listening.errorMessage;
+    int stillListening = 0;
+    socklen_t size = sizeof(stillListening);
+    ASSERT_EQ(::getsockopt(listener.get(), SOL_SOCKET, SO_ACCEPTCONN, &stillListening, &size), 0);
+    EXPECT_NE(stillListening, 0) << "the listener wasn't shut down";
+
+    // Init is refused before anything is looked up.
+    const ProcessActionResult init = control.closeConnection({.pid = 1, .startTimeTicks = 1}, pickedInfo.st_ino);
+    EXPECT_FALSE(init.success);
+    EXPECT_TRUE(init.errorMessage.contains("init")) << init.errorMessage;
 }
 
 // #3066: pidfd_getfd() refused (another user's process, without CAP_SYS_PTRACE) is a permission refusal, so

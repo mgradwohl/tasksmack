@@ -69,6 +69,11 @@ namespace
     {
         return Broker::ActionResult::from(actions.setEfficiencyMode(efficiency->target, efficiency->on));
     }
+    // One thread suspended, resumed or ended (#3069): the actions check the thread is the target's.
+    if (const auto* thread = std::get_if<Broker::ThreadActionRequest>(&request))
+    {
+        return Broker::ActionResult::from(actions.actOnThread(thread->target, thread->tid, thread->threadCreateTime, thread->action));
+    }
     return {.success = false, .errorMessage = "Not an action", .successNote = {}};
 }
 
@@ -269,6 +274,23 @@ namespace
     }
 }
 
+/// A session's Disconnect or Sign out (#3076): a helper without the handler (Linux's) answers with an error.
+[[nodiscard]] Broker::Response handleSessionAction(const Broker::SessionActionRequest& request, const Readers& readers)
+{
+    if (!readers.sessionAction)
+    {
+        return Broker::ErrorReply{.message = "This helper doesn't act on sessions"};
+    }
+    try
+    {
+        return Broker::ServiceActionReply{.result = readers.sessionAction(request)};
+    }
+    catch (const std::exception& error)
+    {
+        return Broker::ServiceActionReply{.result = ServiceActionResult::failed(std::string("The session action failed: ") + error.what())};
+    }
+}
+
 /// System Information's privileged firmware facts (#2310): only the files FirmwareFile names, never a path.
 [[nodiscard]] Broker::Response handleFirmwareFile(const Broker::FirmwareFileRequest& read, const Readers& readers)
 {
@@ -374,6 +396,10 @@ Broker::Response handleRequest(const Broker::Request& request, IProcessActions& 
     if (const auto* replacement = std::get_if<Broker::TaskManagerReplacementRequest>(&request))
     {
         return handleTaskManagerReplacement(*replacement, readers);
+    }
+    if (const auto* session = std::get_if<Broker::SessionActionRequest>(&request))
+    {
+        return handleSessionAction(*session, readers);
     }
     if (std::holds_alternative<Broker::CrashesRequest>(request))
     {

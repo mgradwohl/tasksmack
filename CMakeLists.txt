@@ -246,6 +246,7 @@ set(TASKSMACK_SOURCES
     src/Platform/ThreadApartment.cpp         # a sampler thread's COM apartment (#2731)
     src/Platform/BrokeredProcessActions.cpp  # retries a refused action through the privileged helper (#2308)
     src/Platform/BrokeredServiceActions.cpp  # service actions through the helper, no polkit prompt each (#2728)
+    src/Platform/BrokeredUserSessions.cpp    # another user's Windows session disconnected or signed out by the helper (#3076)
     src/Platform/BrokeredSystemInfoProbe.cpp # System Information's root-only facts through the helper (#2310)
     src/Platform/BrokerRequestMapping.cpp    # what either OS's helper does with each request (#2517)
     src/Platform/TaskManagerReplacementService.cpp # Replace Task Manager's read and change (#3072)
@@ -324,6 +325,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsProcessIdentity.cpp
     src/Platform/Windows/WindowsWaitChain.cpp # Analyze wait chain: GetThreadWaitChain on each thread (#3084)
     src/Platform/Windows/WindowsTaskManagerReplacement.cpp # taskmgr.exe's IFEO Debugger (#3072)
+    src/Platform/Windows/WindowsUserSessions.cpp # the Users tab's WTS sessions, Disconnect and Sign out (#3076)
     src/Platform/Windows/WindowsFolderPicker.cpp
     src/Platform/Windows/WindowsProcessConnections.cpp
     src/Platform/Windows/WindowsProcessEnvironmentReader.cpp # a process's environment block, out of its PEB (#2569)
@@ -331,6 +333,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsProcessModules.cpp
     src/Platform/Windows/WindowsProcessOpenFiles.cpp
     src/Platform/Windows/WindowsProcessSecurity.cpp
+    src/Platform/Windows/WindowsProcessThreads.cpp # Process Details Threads (#3069)
     src/Platform/Windows/WindowsSystemProbe.cpp
     src/Platform/Windows/WindowsSystemInfoProbe.cpp
     src/Platform/Windows/WindowsSignatureCheck.cpp # images' signatures, embedded and catalog: drivers (#1661), processes (#3070)
@@ -574,6 +577,8 @@ elseif(WIN32)
         src/Platform/Windows/WindowsProcessModules.h
         src/Platform/Windows/WindowsProcessOpenFiles.h
         src/Platform/Windows/WindowsProcessSecurity.h
+        src/Platform/Windows/WindowsProcessThreads.h
+        src/Platform/Windows/WindowsProcessThreadsMath.h
         src/Platform/Windows/WindowsSystemProbe.h
         src/Platform/Windows/ProcessorPerformanceCounter.h
         src/Platform/Windows/CpuBaseClock.h
@@ -732,7 +737,7 @@ function(tasksmack_apply_windows_platform target)
         advapi32 # WindowsEtwNetCollector: the opt-in UDP event trace (StartTraceW, ProcessTrace, ...) (#1492)
         bcrypt # BrokerPipe: the broker pipe's random name (BCryptGenRandom) (#2311)
         dwmapi # Core/Window: whether DWM has cloaked the window (DWMWA_CLOAKED) (#3152)
-        wtsapi32 # Core/Window: the session's lock and disconnect notifications (#3152)
+        wtsapi32 # Core/Window: the session's lock and disconnect notifications (#3152); the Users tab's sessions (#3076)
         winhttp # WindowsHttpsClient: the opt-in update check's one HTTPS request (#3093)
     )
 endfunction()
@@ -941,7 +946,9 @@ if(WIN32)
         src/Platform/Windows/WindowsProcessModules.cpp
         src/Platform/Windows/WindowsProcessOpenFiles.cpp
         src/Platform/Windows/WindowsProcessConnections.cpp
+        src/Platform/Windows/WindowsProcessThreads.cpp # Process Details threads of another user's process (#3069)
         src/Platform/Windows/WindowsTaskManagerReplacement.cpp # Replace Task Manager's IFEO Debugger (#3072)
+        src/Platform/Windows/WindowsUserSessions.cpp # another user's session disconnected or signed out (#3076)
         src/Platform/Windows/WinString.cpp
         src/Platform/ThreadName.cpp
         ${TASKSMACK_HELPER_RC_OUT} # version info (#2557): "TaskSmack administrator helper" in its UAC prompt
@@ -961,6 +968,7 @@ if(WIN32)
         iphlpapi # the process's TCP and UDP tables (WindowsProcessConnections)
         ws2_32 # ntohs and the address formatting there
         version # a module's file description and version (WindowsProcessModules)
+        wtsapi32 # the sessions a Disconnect or Sign out names, and the call itself (WindowsUserSessions, #3076)
     )
     # Exploit mitigations for the one image that runs elevated (#2557): Control Flow Guard (the compiler's
     # checks on indirect calls, and the linker's table of their valid targets) and CET shadow-stack

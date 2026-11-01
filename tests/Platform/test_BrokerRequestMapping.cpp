@@ -13,7 +13,9 @@
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/IProcessThreads.h"
+#include "Platform/IServiceActions.h"
 #include "Platform/ISystemInfoProbe.h"
+#include "Platform/IUserSessions.h"
 
 #include <gtest/gtest.h>
 
@@ -143,6 +145,27 @@ TEST(BrokerRequestMappingTest, CloseConnectionReachesItsAction)
     EXPECT_EQ(actions.closeConnectionCount(), 1);
     EXPECT_EQ(actions.lastSocketInode(), 81234U);
     EXPECT_EQ(actions.lastTarget(), TARGET);
+}
+
+// #3069: a ThreadAction request reaches actOnThread() with its target, thread and action; the actions' refusal
+// (a thread that isn't the target's, a critical process's) comes back as it stands.
+TEST(BrokerRequestMappingTest, ThreadActionReachesItsAction)
+{
+    TestMocks::MockProcessActions actions;
+    Broker::Response response = BrokerServer::handleRequest(
+        Broker::ThreadActionRequest{.target = TARGET, .tid = 77, .threadCreateTime = 1234, .action = ThreadAction::End}, actions);
+    EXPECT_TRUE(actionResult(response).success);
+    EXPECT_EQ(actions.threadActionCount(), 1);
+    EXPECT_EQ(actions.lastThreadId(), 77);
+    EXPECT_EQ(actions.lastThreadAction(), ThreadAction::End);
+    EXPECT_EQ(actions.lastThreadCreateTime(), 1234U) << "the confirmed thread's creation time reaches the check";
+    EXPECT_EQ(actions.lastTarget(), TARGET);
+
+    actions.setThreadActionResult(ProcessActionResult::error("Thread 77 belongs to process 9, not process 4242; nothing sent"));
+    response =
+        BrokerServer::handleRequest(Broker::ThreadActionRequest{.target = TARGET, .tid = 77, .action = ThreadAction::Suspend}, actions);
+    EXPECT_FALSE(actionResult(response).success);
+    EXPECT_EQ(actionResult(response).errorMessage, "Thread 77 belongs to process 9, not process 4242; nothing sent");
 }
 
 TEST(BrokerRequestMappingTest, AFailedActionCarriesItsMessage)
@@ -380,6 +403,38 @@ TEST(BrokerRequestMappingTest, ReplaceTaskManagerGoesToItsHandlerAndAThrowIsAFai
     EXPECT_FALSE(std::get<Broker::ActionResult>(threw).success);
     EXPECT_NE(std::get<Broker::ActionResult>(threw).errorMessage.find("boom"), std::string::npos);
     EXPECT_TRUE(std::holds_alternative<Broker::ErrorReply>(BrokerServer::handleRequest(set, actions)));
+}
+
+// #3076: a session's Disconnect or Sign out goes to its handler (Windows' helper), answered with a
+// ServiceActionReply; one that throws is a failed result, and a helper without it (Linux's) answers with an error.
+TEST(BrokerRequestMappingTest, ASessionActionGoesToItsHandlerAndAThrowIsAFailedResult)
+{
+    TestMocks::MockProcessActions actions;
+    BrokerServer::Readers readers;
+    Broker::SessionActionRequest seen;
+    readers.sessionAction = [&seen](const Broker::SessionActionRequest& request)
+    {
+        seen = request;
+        return ServiceActionResult::succeeded();
+    };
+    const Broker::SessionActionRequest disconnect{
+        .action = SessionAction::Disconnect, .sessionId = 3, .user = "bob", .domain = "PC", .logonUsec = 1'700'000'000'000'000ULL};
+    const Broker::Response response = BrokerServer::handleRequest(disconnect, actions, readers);
+    ASSERT_TRUE(std::holds_alternative<Broker::ServiceActionReply>(response));
+    EXPECT_TRUE(std::get<Broker::ServiceActionReply>(response).result.ok);
+    EXPECT_EQ(seen, disconnect);
+
+    readers.sessionAction = [](const Broker::SessionActionRequest&) -> ServiceActionResult
+    {
+        throw std::runtime_error("boom");
+    };
+    const Broker::Response threw = BrokerServer::handleRequest(disconnect, actions, readers);
+    ASSERT_TRUE(std::holds_alternative<Broker::ServiceActionReply>(threw));
+    EXPECT_FALSE(std::get<Broker::ServiceActionReply>(threw).result.ok);
+    EXPECT_EQ(std::get<Broker::ServiceActionReply>(threw).result.message, "The session action failed: boom");
+    const Broker::Response none = BrokerServer::handleRequest(disconnect, actions);
+    ASSERT_TRUE(std::holds_alternative<Broker::ErrorReply>(none));
+    EXPECT_EQ(std::get<Broker::ErrorReply>(none).message, "This helper doesn't act on sessions");
 }
 
 // --- #2417: what the helper does when a read or an action throws -------------------------------------

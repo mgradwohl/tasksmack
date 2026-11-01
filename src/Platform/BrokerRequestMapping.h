@@ -55,6 +55,11 @@ struct Readers
     /// TaskSmack.exe beside it only. A helper without it (Linux's) answers with an error.
     // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
     std::function<Broker::ActionResult(const Broker::TaskManagerReplacementRequest&)> taskManagerReplacement{};
+    /// The Users tab's Disconnect and Sign out of another user's session (#3076): Windows' helper, after it
+    /// checks the session against a fresh list. A helper without it (Linux's: polkit authorizes there)
+    /// answers with an error.
+    // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
+    std::function<ServiceActionResult(const Broker::SessionActionRequest&)> sessionAction{};
     /// System Information's privileged firmware files (#2310)
     // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
     std::function<Broker::FirmwareFileReply(Broker::FirmwareFile)> firmwareFile{};

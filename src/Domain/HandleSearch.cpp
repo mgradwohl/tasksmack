@@ -185,8 +185,15 @@ void run(std::span<const SearchProcess> processes,
     std::size_t sincePublish = 0;
     for (const SearchProcess& process : processes)
     {
-        if (stopToken.stop_requested() || current.matches.size() >= MAX_MATCHES)
+        if (stopToken.stop_requested())
         {
+            break;
+        }
+        if (current.matches.size() >= MAX_MATCHES)
+        {
+            // Processes are left unsearched (#3299): the result is the first matches, not all of them, even when
+            // the last one read added exactly the last match the cap allows.
+            current.truncated = true;
             break;
         }
         // Each reader confirms the process's identity (start time) itself, so a reused PID reads as exited.
