@@ -39,7 +39,7 @@ namespace
             {
                 return std::nullopt;
             }
-            return Account{.gid = 1001, .name = "someone", .home = "/home/someone", .shell = "/bin/bash"};
+            return Account{.gid = 1001, .name = "someone", .home = "/home/someone", .shell = "/bin/bash", .groups = {1001, 27, 998}};
         },
         [](const std::string& path) { return path == "/run/user/1000" || path == "/run/user/1000/bus"; });
 }
@@ -65,6 +65,7 @@ TEST(SessionUserTest, ARunAsRootForAUserOpensAsThatUserInTheirSession)
     const DetachedSpawn::RunAs runAs = session.value_or(DetachedSpawn::RunAs{});
     EXPECT_EQ(runAs.uid, 1000U);
     EXPECT_EQ(runAs.gid, 1001U);
+    EXPECT_EQ(runAs.groups, (std::vector<gid_t>{1001, 27, 998})) << "the user's groups, as a login gives them (#3298)";
     const std::vector<std::string>& environment = runAs.environment;
     EXPECT_TRUE(has(environment, "HOME=/home/someone"));
     EXPECT_TRUE(has(environment, "USER=someone"));
@@ -108,6 +109,10 @@ TEST(SessionUserTest, TheSystemSourcesReadThisUsersEntryAndVariables)
     EXPECT_EQ(account.gid, ::getgid());
     EXPECT_FALSE(account.name.empty());
     EXPECT_FALSE(account.home.empty());
+    // Its groups (#3298): the primary among them, and every group this process runs with that the database lists.
+    EXPECT_TRUE(std::ranges::contains(account.groups, ::getgid()));
+    EXPECT_EQ(userGroups(account.name, account.gid), account.groups);
+    EXPECT_TRUE(userGroups("tasksmack-no-such-user", 4242).size() <= 1U) << "an unknown user is in its primary group at most";
     EXPECT_FALSE(systemAccount(static_cast<uid_t>(-2)).has_value()) << "a UID no entry has";
 
     ASSERT_EQ(::setenv("TASKSMACK_SESSION_USER_TEST", "value", 1), 0);

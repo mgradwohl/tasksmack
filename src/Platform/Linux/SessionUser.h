@@ -11,6 +11,7 @@
 
 #include <array>
 #include <charconv>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <functional>
@@ -19,6 +20,7 @@
 #include <string_view>
 #include <vector>
 
+#include <grp.h>
 #include <pwd.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -33,6 +35,7 @@ struct Account
     std::string name;
     std::string home;
     std::string shell;
+    std::vector<gid_t> groups; ///< Every group the user is in, the primary included (getgrouplist()); empty: unknown
 };
 
 /// Variables kept from TaskSmack's own environment: how to reach the user's display and their locale.
@@ -83,7 +86,7 @@ invokingUserSession(uid_t effectiveUid,
         return std::nullopt;
     }
 
-    DetachedSpawn::RunAs runAs{.uid = static_cast<uid_t>(uid), .gid = user->gid, .environment = {}};
+    DetachedSpawn::RunAs runAs{.uid = static_cast<uid_t>(uid), .gid = user->gid, .environment = {}, .groups = user->groups};
     std::vector<std::string>& environment = runAs.environment;
     environment.push_back("HOME=" + user->home);
     environment.push_back("USER=" + user->name);
@@ -121,23 +124,53 @@ invokingUserSession(uid_t effectiveUid,
     return value != nullptr ? std::optional<std::string>(value) : std::nullopt;
 }
 
-/// @p uid's passwd entry, or nullopt for a user the database doesn't know or one with no home directory.
+/// Every group @p name is in, with @p gid (its primary group) among them, as a login sets them (getgrouplist());
+/// empty when the database can't say.
+[[nodiscard]] inline std::vector<gid_t> userGroups(const std::string& name, gid_t gid)
+{
+    constexpr int MOST_GROUPS = 65536; // NGROUPS_MAX on Linux
+    int count = 32;
+    std::vector<gid_t> groups;
+    while (count > 0 && count <= MOST_GROUPS)
+    {
+        groups.resize(static_cast<std::size_t>(count));
+        int found = count;
+        if (::getgrouplist(name.c_str(), gid, groups.data(), &found) >= 0)
+        {
+            groups.resize(static_cast<std::size_t>(found));
+            return groups;
+        }
+        count = found > count ? found : count * 2; // too few slots: found says how many it needs
+    }
+    return {};
+}
+
+/// @p uid's passwd entry, with its groups, or nullopt for a user the database doesn't know or one with no home
+/// directory.
 [[nodiscard]] inline std::optional<Account> systemAccount(uid_t uid)
 {
     // The buffer grows for a large LDAP/SSSD entry, rather than opening links as root (#2499).
-    return UserNameLookupDetail::lookUpEntry<passwd>(uid,
-                                                     ::getpwuid_r,
-                                                     [](const passwd& entry) -> std::optional<Account>
-                                                     {
-                                                         if (entry.pw_dir == nullptr)
-                                                         {
-                                                             return std::nullopt;
-                                                         }
-                                                         return Account{.gid = entry.pw_gid,
-                                                                        .name = entry.pw_name != nullptr ? entry.pw_name : "",
-                                                                        .home = entry.pw_dir,
-                                                                        .shell = entry.pw_shell != nullptr ? entry.pw_shell : ""};
-                                                     });
+    std::optional<Account> account =
+        UserNameLookupDetail::lookUpEntry<passwd>(uid,
+                                                  ::getpwuid_r,
+                                                  [](const passwd& entry) -> std::optional<Account>
+                                                  {
+                                                      if (entry.pw_dir == nullptr)
+                                                      {
+                                                          return std::nullopt;
+                                                      }
+                                                      return Account{.gid = entry.pw_gid,
+                                                                     .name = entry.pw_name != nullptr ? entry.pw_name : "",
+                                                                     .home = entry.pw_dir,
+                                                                     .shell = entry.pw_shell != nullptr ? entry.pw_shell : "",
+                                                                     .groups = {}};
+                                                  });
+    // Its supplementary groups (#3298): a program started as the user has them all, as in their own session.
+    if (account.has_value() && !account->name.empty())
+    {
+        account->groups = userGroups(account->name, account->gid);
+    }
+    return account;
 }
 
 /// invokingUserSession() for this process: its effective uid, environment and passwd database.

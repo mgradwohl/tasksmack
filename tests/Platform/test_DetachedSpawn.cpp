@@ -513,7 +513,7 @@ TEST(DetachedSpawnTest, AsARunAsTheProgramGetsOnlyItsEnvironment)
     const std::filesystem::path out = dir.path / "env.txt";
     const std::array<std::string, 3> argv{
         "/bin/sh", "-c", std::format("{{ env; id -u; id -g; }} > '{0}.tmp' && mv '{0}.tmp' '{0}'", out.string())};
-    const RunAs self{.uid = ::getuid(), .gid = ::getgid(), .environment = {"ONLY=this", "PATH=/usr/bin:/bin"}};
+    const RunAs self{.uid = ::getuid(), .gid = ::getgid(), .environment = {"ONLY=this", "PATH=/usr/bin:/bin"}, .groups = {}};
     const auto result = spawnDetached(argv, self);
     // NOLINTNEXTLINE(concurrency-mt-unsafe,misc-include-cleaner) - unsetenv() from <stdlib.h>
     ::unsetenv("TASKSMACK_RUNAS_LEAK");
@@ -538,7 +538,7 @@ TEST(DetachedSpawnTest, AUserItCantBecomeIsReportedAndStartsNothing)
     const ScopedTempDir dir("tasksmack_detached_runas_refused");
     const std::filesystem::path marker = dir.path / "ran";
     const std::array<std::string, 3> argv{"/bin/sh", "-c", std::format("touch '{}'", marker.string())};
-    const RunAs other{.uid = ::getuid() + 1, .gid = ::getgid(), .environment = {}};
+    const RunAs other{.uid = ::getuid() + 1, .gid = ::getgid(), .environment = {}, .groups = {}};
     const auto result = spawnDetached(argv, other);
     ASSERT_FALSE(result.has_value());
     EXPECT_EQ(result.error().stage, SpawnFailure::Stage::SwitchUser);

@@ -117,6 +117,8 @@ struct ChildPlan
     bool switchUser = false; ///< RunAs given: become uid/gid before execve() (#2461).
     uid_t uid = 0;
     gid_t gid = 0;
+    const gid_t* groups = nullptr; ///< The supplementary groups to set (#3298), groupCount of them
+    std::size_t groupCount = 0;
 };
 
 /// @p name (a /proc/self/fd entry, NUL-terminated) as a descriptor, or -1 for "." and "..".
@@ -242,7 +244,7 @@ void markInheritedFdsCloseOnExec(const ChildPlan& plan) noexcept
         // undone. Only root may set the supplementary groups: one switching to itself (the tests) keeps its own.
         errno = 0; // an identity check that fails sets none
         // NOLINTNEXTLINE(misc-include-cleaner) - setgroups() is declared in <grp.h>
-        if ((::geteuid() == 0 && ::setgroups(1, &plan.gid) != 0) || ::setgid(plan.gid) != 0 || ::setuid(plan.uid) != 0 ||
+        if ((::geteuid() == 0 && ::setgroups(plan.groupCount, plan.groups) != 0) || ::setgid(plan.gid) != 0 || ::setuid(plan.uid) != 0 ||
             ::getuid() != plan.uid || ::geteuid() != plan.uid || ::getegid() != plan.gid)
         {
             writeReport(plan.reportFd, SpawnFailure::Stage::SwitchUser, errno != 0 ? errno : EPERM);
@@ -483,6 +485,12 @@ std::expected<void, SpawnFailure> Detail::spawnDetached(std::span<const std::str
     sigset_t emptyMask{};
     sigemptyset(&emptyMask);
 
+    // The user's groups, looked up before fork() (getgrouplist() isn't async-signal-safe); none: the primary alone.
+    std::span<const gid_t> groups;
+    if (runAs != nullptr)
+    {
+        groups = runAs->groups.empty() ? std::span<const gid_t>(&runAs->gid, 1) : std::span<const gid_t>(runAs->groups);
+    }
     const ChildPlan plan{
         .path = argPointers.front(),
         .argv = argPointers.data(),
@@ -497,6 +505,8 @@ std::expected<void, SpawnFailure> Detail::spawnDetached(std::span<const std::str
         .switchUser = runAs != nullptr,
         .uid = runAs != nullptr ? runAs->uid : 0,
         .gid = runAs != nullptr ? runAs->gid : 0,
+        .groups = groups.data(),
+        .groupCount = groups.size(),
     };
 
     const auto setsidFn = hooks.setsid != nullptr ? hooks.setsid : &::setsid;
