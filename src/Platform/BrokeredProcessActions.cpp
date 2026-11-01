@@ -229,6 +229,16 @@ ProcessActionResult BrokeredProcessActions::runAuthorized(const AuthorizedAction
     {
         return ProcessActionResult::error("Acting as an administrator isn't available");
     }
+    // An Efficiency mode off with no nice left to put back (someone changed it since the refusal) may need no
+    // administrator now, and only the in-process off puts back the weight and forgets the on (#3296).
+    if (action.kind == AuthorizedAction::Kind::SetEfficiencyMode && !action.efficiencyMode &&
+        !m_Inner->efficiencyNiceToRestore(action.target).has_value())
+    {
+        if (ProcessActionResult inProcess = m_Inner->setEfficiencyMode(action.target, false); !inProcess.permissionDenied)
+        {
+            return inProcess;
+        }
+    }
     if (!m_Broker->connected())
     {
         if (const std::expected<void, std::string> connected = m_Broker->connect(stopToken); !connected.has_value())

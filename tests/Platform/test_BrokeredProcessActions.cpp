@@ -797,19 +797,26 @@ TEST(BrokeredProcessActionsTest, AnEfficiencyOffThroughTheHelperPutsBackTheRemem
     EXPECT_EQ(f.inner->efficiencyModeCount(), 3);
     EXPECT_EQ(authorized.successNote, "its cgroup's CPU weight is still the minimum");
 
-    // An on, and an off with nothing remembered, go as SetEfficiencyMode and aren't followed in process.
+    // An on goes as SetEfficiencyMode and isn't followed in process.
     ASSERT_TRUE(f.actions
                     ->runAuthorized({.kind = AuthorizedAction::Kind::SetEfficiencyMode, .target = TARGET, .efficiencyMode = true},
                                     std::stop_token{})
                     .success);
     EXPECT_EQ(f.broker->requests()[2], (Broker::Request{Broker::EfficiencyModeRequest{.target = TARGET, .on = true}}));
-    f.inner->setEfficiencyNiceToRestore(std::nullopt);
-    ASSERT_TRUE(f.actions
-                    ->runAuthorized({.kind = AuthorizedAction::Kind::SetEfficiencyMode, .target = TARGET, .efficiencyMode = false},
-                                    std::stop_token{})
-                    .success);
-    EXPECT_EQ(f.broker->requests()[3], (Broker::Request{Broker::EfficiencyModeRequest{.target = TARGET, .on = false}}));
     EXPECT_EQ(f.inner->efficiencyModeCount(), 3);
+
+    // No nice left to put back (changed since the refusal): the in-process off is tried first, and when it
+    // succeeds it is the result, the helper unasked; only one still refused goes to the helper as a plain off.
+    f.inner->setEfficiencyNiceToRestore(std::nullopt);
+    const AuthorizedAction off{.kind = AuthorizedAction::Kind::SetEfficiencyMode, .target = TARGET, .efficiencyMode = false};
+    EXPECT_EQ(f.actions->runAuthorized(off, std::stop_token{}).successNote, "its cgroup's CPU weight is still the minimum");
+    EXPECT_EQ(f.broker->requests().size(), 3U);
+    EXPECT_EQ(f.inner->efficiencyModeCount(), 4);
+    f.inner->setEfficiencyModeResult(ProcessActionResult::denied("Permission denied"));
+    ASSERT_TRUE(f.actions->runAuthorized(off, std::stop_token{}).success);
+    ASSERT_EQ(f.broker->requests().size(), 4U);
+    EXPECT_EQ(f.broker->requests()[3], (Broker::Request{Broker::EfficiencyModeRequest{.target = TARGET, .on = false}}));
+    EXPECT_EQ(f.inner->efficiencyModeCount(), 5);
 }
 
 // #3066: closing another user's process's socket, refused in process, is retried through the helper as a
