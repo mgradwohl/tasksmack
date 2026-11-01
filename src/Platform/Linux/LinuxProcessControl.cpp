@@ -520,11 +520,25 @@ LinuxProcessControl::~LinuxProcessControl() = default;
 LinuxProcessControl::LinuxProcessControl(LinuxProcessControl&&) noexcept = default;
 LinuxProcessControl& LinuxProcessControl::operator=(LinuxProcessControl&&) noexcept = default;
 
-LinuxProcessControl::LinuxProcessControl() : LinuxProcessControl(realProcessSyscalls())
+std::shared_ptr<LinuxProcessControl::EfficiencyMemory> LinuxProcessControl::sharedEfficiencyMemory()
+{
+    static const std::shared_ptr<EfficiencyMemory> shared = makeEfficiencyMemory();
+    return shared;
+}
+
+std::shared_ptr<LinuxProcessControl::EfficiencyMemory> LinuxProcessControl::makeEfficiencyMemory()
+{
+    return std::make_shared<EfficiencyMemory>();
+}
+
+LinuxProcessControl::LinuxProcessControl() : LinuxProcessControl(realProcessSyscalls(), sharedEfficiencyMemory())
 {}
 
-LinuxProcessControl::LinuxProcessControl(const LinuxProcessSyscalls& syscalls)
-    : m_Syscalls(syscalls), m_CanSetRealtimeIoPriority(ownProcessCanSetRealtimeIo()), m_Efficiency(std::make_unique<EfficiencyMemory>())
+LinuxProcessControl::LinuxProcessControl(const LinuxProcessSyscalls& syscalls) : LinuxProcessControl(syscalls, makeEfficiencyMemory())
+{}
+
+LinuxProcessControl::LinuxProcessControl(const LinuxProcessSyscalls& syscalls, std::shared_ptr<EfficiencyMemory> efficiency)
+    : m_Syscalls(syscalls), m_CanSetRealtimeIoPriority(ownProcessCanSetRealtimeIo()), m_Efficiency(std::move(efficiency))
 {
     if (m_Syscalls.currentNice == nullptr)
     {

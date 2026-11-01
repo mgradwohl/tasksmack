@@ -3085,6 +3085,53 @@ TEST_F(LinuxEfficiencyModeActionTest, ARefusedOffSaysWhichNiceTheHelperShouldPut
     EXPECT_EQ(m_Control.efficiencyNiceToRestore(ownTarget()), std::nullopt) << "forgotten";
 }
 
+// #3330: the Processes tab and Process Details each have their own actions object. On through one is remembered
+// for an off through the other: objects with faked calls share it when given one memory, and the real ones share
+// the process-wide one.
+TEST_F(LinuxEfficiencyModeActionTest, AnOnThroughOneObjectIsPutBackByAnOffThroughAnother)
+{
+    const std::shared_ptr<LinuxProcessControl::EfficiencyMemory> memory = LinuxProcessControl::makeEfficiencyMemory();
+    const LinuxProcessSyscalls fakes{.pidfdOpen = &fakePidfdOpen,
+                                     .pidfdSendSignal = &fakePidfdSendSignal,
+                                     .pollPidfd = &fakePollPidfd,
+                                     .setPriority = &fakeSet,
+                                     .ioprioSet = &fakeSet,
+                                     .ioprioGet = &fakeIoprioGet,
+                                     .setAffinity = &fakeSetAffinity,
+                                     .currentNice = &fakeCurrentNice,
+                                     .procCgroup = &fakeProcCgroup,
+                                     .readCgroupFile = &fakeReadCgroupFile,
+                                     .writeCgroupFile = &fakeWriteCgroupFile};
+    LinuxProcessControl processesTab(fakes, memory);
+    LinuxProcessControl processDetails(fakes, memory);
+    efficiency().files["cpu.weight"] = "50\n";
+    ASSERT_TRUE(processesTab.setEfficiencyMode(ownTarget(), true).success);
+    efficiency().nice = 19;
+    plan().setCalls = 0;
+    const ProcessActionResult off = processDetails.setEfficiencyMode(ownTarget(), false);
+    ASSERT_TRUE(off.success) << off.errorMessage;
+    EXPECT_EQ(plan().lastSetValue, 5) << "the nice on found, not 0";
+    EXPECT_EQ(efficiency().writes.back(), (std::pair<std::string, std::string>{"cpu.weight", "50"})) << "and its weight, not 100";
+    EXPECT_EQ(processesTab.efficiencyNiceToRestore(ownTarget()), std::nullopt) << "forgotten by both";
+
+    // Its own memory, otherwise: m_Control (the fixture's) never saw these.
+    EXPECT_NE(LinuxProcessControl::sharedEfficiencyMemory(), memory);
+}
+
+// #3330, with the real calls: on through one real object, on a child (raising its nice needs no privilege), and
+// another real object knows what off would put back.
+TEST(LinuxEfficiencyModeRealTest, TheRealObjectsShareWhatOnRemembered)
+{
+    const SleepingChild child;
+    ASSERT_TRUE(child.started());
+    LinuxProcessActions processesTab;
+    LinuxProcessActions processDetails;
+    const std::optional<std::int32_t> before = realProcessSyscalls().currentNice(child.target().pid);
+    ASSERT_TRUE(before.has_value());
+    ASSERT_TRUE(processesTab.setEfficiencyMode(child.target(), true).success);
+    EXPECT_EQ(processDetails.efficiencyNiceToRestore(child.target()), before);
+}
+
 // The real calls, on a child: nice 19 reaches it, its cgroup (the test's, shared) keeps its weight, and
 // putting nice 0 back needs CAP_SYS_NICE, which a permission refusal the helper can finish says.
 TEST(LinuxEfficiencyModeRealTest, TheRealCallsOnAChildProcess)

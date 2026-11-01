@@ -407,14 +407,23 @@ runCancellable(const LinuxProcessSyscalls& syscalls, const std::vector<std::stri
 
 } // namespace
 
-LinuxProcessActions::LinuxProcessActions() : LinuxProcessActions(discoverSyscallTraceTools(), realProcessSyscalls())
+// The real ones share one Efficiency mode memory (#3330): the Processes tab and Process Details each have one of these.
+LinuxProcessActions::LinuxProcessActions()
+    : LinuxProcessActions(discoverSyscallTraceTools(), realProcessSyscalls(), sharedEfficiencyMemory())
 {}
 
-LinuxProcessActions::LinuxProcessActions(SyscallTrace::Tools traceTools) : LinuxProcessActions(std::move(traceTools), realProcessSyscalls())
+LinuxProcessActions::LinuxProcessActions(SyscallTrace::Tools traceTools)
+    : LinuxProcessActions(std::move(traceTools), realProcessSyscalls(), sharedEfficiencyMemory())
 {}
 
 LinuxProcessActions::LinuxProcessActions(SyscallTrace::Tools traceTools, const LinuxProcessSyscalls& syscalls)
-    : LinuxProcessControl(withTraceAndDumpDefaults(syscalls)), m_TraceTools(std::move(traceTools))
+    : LinuxProcessActions(std::move(traceTools), syscalls, makeEfficiencyMemory())
+{}
+
+LinuxProcessActions::LinuxProcessActions(SyscallTrace::Tools traceTools,
+                                         const LinuxProcessSyscalls& syscalls,
+                                         std::shared_ptr<LinuxProcessControl::EfficiencyMemory> efficiency)
+    : LinuxProcessControl(withTraceAndDumpDefaults(syscalls), std::move(efficiency)), m_TraceTools(std::move(traceTools))
 {}
 
 ProcessActionCapabilities LinuxProcessActions::actionCapabilities() const
