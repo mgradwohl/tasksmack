@@ -12,8 +12,11 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <new>
+#include <stdexcept>
 #include <stop_token>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -366,6 +369,90 @@ TEST(HandleSearchTest, RunStopsBetweenProcessesWhenAsked)
     EXPECT_TRUE(slot.load()->done);
     EXPECT_EQ(slot.load()->searched, 0U);
     EXPECT_TRUE(files.read.empty());
+}
+
+/// Reads like FakeOpenFiles, but throws on one PID: an exception it chooses, as a reader or an allocation might.
+class ThrowingOpenFiles final : public Platform::IProcessOpenFilesReader
+{
+  public:
+    std::int32_t throwOn = 0;
+    int kind = 0; ///< 0: std::runtime_error, 1: std::bad_alloc, 2: not a std::exception
+
+    [[nodiscard]] bool hasOpenFiles() const override
+    {
+        return true;
+    }
+
+    [[nodiscard]] Platform::OpenFilesReadResult readOpenFiles(const Platform::ProcessTarget& target) override
+    {
+        if (target.pid == throwOn)
+        {
+            if (kind == 1)
+            {
+                throw std::bad_alloc();
+            }
+            if (kind == 2)
+            {
+                throw 42; // NOLINT(hicpp-exception-baseclass) - an exception that isn't a std::exception
+            }
+            throw std::runtime_error("injected reader failure");
+        }
+        return openFiles({file(Platform::OpenFileKind::File, "/tmp/file-" + std::to_string(target.pid))});
+    }
+
+    [[nodiscard]] Platform::OpenFilesReadResult readAuthorized(const Platform::ProcessTarget& target,
+                                                               const std::stop_token& /*stopToken*/) override
+    {
+        return readOpenFiles(target);
+    }
+};
+
+// #3335: a reader that throws, after a progress publication or before the first, or an allocation that fails
+// (std::bad_alloc), or something that isn't a std::exception, ends the walk with a done publication that says
+// why. run() returns instead of letting it escape the worker, and a search after it runs as usual.
+TEST(HandleSearchTest, AReaderOrAllocationFailureEndsTheWalkAsDoneWithItsReason)
+{
+    std::vector<SearchProcess> processes;
+    for (std::int32_t pid = 1; pid <= 20; ++pid)
+    {
+        processes.push_back(process(pid, "p" + std::to_string(pid)));
+    }
+    ThrowingOpenFiles files;
+    Domain::PublicationSlot<SearchPublication> slot;
+    std::stop_source stop;
+
+    files.throwOn = 18; // after the first progress publication (16 processes)
+    run(processes, {.openFiles = &files, .modules = nullptr}, false, startFor("file-1", processes.size(), 1), slot, stop.get_token());
+    std::shared_ptr<const SearchPublication> last = slot.load();
+    ASSERT_NE(last, nullptr);
+    EXPECT_TRUE(last->done);
+    EXPECT_EQ(last->failure, "The search stopped: injected reader failure");
+    EXPECT_EQ(last->searched, 17U) << "what it read before the failure is kept";
+    EXPECT_EQ(last->matches.size(), 9U) << "file-1 and file-10 .. file-17";
+    EXPECT_EQ(last->version, 1U + 2U) << "one progress publication, then the done one";
+
+    files.throwOn = 1; // before any progress publication
+    files.kind = 1;
+    run(processes, {.openFiles = &files, .modules = nullptr}, false, startFor("file", processes.size(), 10), slot, stop.get_token());
+    last = slot.load();
+    ASSERT_TRUE(last->done);
+    EXPECT_TRUE(last->failure.starts_with("The search stopped: ")) << last->failure;
+    EXPECT_GT(last->failure.size(), std::string_view("The search stopped: ").size());
+    EXPECT_EQ(last->searched, 0U);
+    EXPECT_EQ(last->version, 11U);
+
+    files.kind = 2;
+    run(processes, {.openFiles = &files, .modules = nullptr}, false, startFor("file", processes.size(), 20), slot, stop.get_token());
+    EXPECT_EQ(slot.load()->failure, "The search stopped: an unknown error");
+
+    // A search after the failures runs to its end, with no failure.
+    files.throwOn = 0;
+    run(processes, {.openFiles = &files, .modules = nullptr}, false, startFor("file-2", processes.size(), 30), slot, stop.get_token());
+    last = slot.load();
+    EXPECT_TRUE(last->done);
+    EXPECT_TRUE(last->failure.empty()) << last->failure;
+    EXPECT_EQ(last->searched, 20U);
+    EXPECT_EQ(last->matches.size(), 2U) << "file-2 and file-20";
 }
 
 TEST(HandleSearchTest, AnAdministratorSearchAddsTheDeniedProcessesToTheFirstResults)

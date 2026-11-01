@@ -1,6 +1,7 @@
 #include "FindHandlesDialog.h"
 
 #include "Domain/HandleSearch.h"
+#include "Domain/PublicationWake.h"
 #include "Platform/AsciiCase.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessModules.h"
@@ -17,6 +18,7 @@
 #include <imgui.h>
 
 #include <algorithm>
+#include <atomic>
 #include <compare>
 #include <cstddef>
 #include <cstdint>
@@ -26,6 +28,7 @@
 #include <optional>
 #include <stop_token>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -88,6 +91,10 @@ std::string findHandlesStatus(const SearchPublication& publication)
     {
         status += std::format(" \xC2\xB7 {} ended first", publication.exited);
     }
+    if (!publication.failure.empty())
+    {
+        status += " \xC2\xB7 " + publication.failure; // a reader threw or memory ran out (#3335)
+    }
     return status;
 }
 
@@ -145,6 +152,11 @@ void FindHandlesDialog::setReaders(std::unique_ptr<Platform::IProcessOpenFilesRe
 
 bool FindHandlesDialog::searching() const noexcept
 {
+    // The flag first: the worker sets it after its last commit, so once it reads true that commit is visible.
+    if (m_WorkerReturned->load(std::memory_order_acquire))
+    {
+        return false;
+    }
     const std::shared_ptr<const SearchPublication> current = m_Slot->load();
     return current != nullptr && current->version > 0 && !current->done;
 }
@@ -162,13 +174,28 @@ void FindHandlesDialog::startSearch(std::vector<Domain::HandleSearch::SearchProc
         .openFiles = m_Capabilities.openFiles ? m_OpenFiles.get() : nullptr,
         .modules = m_Capabilities.modules ? m_Modules.get() : nullptr,
     };
-    m_Worker = std::jthread(
-        [slot = m_Slot, readers, authorized, processes = std::move(processes), start = std::move(start)](
-            const std::stop_token& stopToken) mutable
-        {
-            static_cast<void>(Platform::setCurrentThreadName(Platform::FIND_HANDLES_THREAD_NAME));
-            Domain::HandleSearch::run(processes, readers, authorized, std::move(start), *slot, stopToken);
-        });
+    m_WorkerReturned->store(false, std::memory_order_release);
+    SearchPublication failed = start; // what a worker that can't start publishes (#3335)
+    try
+    {
+        m_Worker = std::jthread(
+            [slot = m_Slot, returned = m_WorkerReturned, readers, authorized, processes = std::move(processes), start = std::move(start)](
+                const std::stop_token& stopToken) mutable noexcept
+            {
+                static_cast<void>(Platform::setCurrentThreadName(Platform::FIND_HANDLES_THREAD_NAME));
+                Domain::HandleSearch::run(processes, readers, authorized, std::move(start), *slot, stopToken);
+                returned->store(true, std::memory_order_release);
+                Domain::PublicationWake::notify();
+            });
+    }
+    catch (const std::system_error& error)
+    {
+        failed.done = true;
+        failed.failure = std::format("The search couldn't start: {}", error.what());
+        ++failed.version;
+        m_Slot->commit(std::make_shared<const SearchPublication>(std::move(failed)));
+        m_WorkerReturned->store(true, std::memory_order_release);
+    }
 }
 
 bool FindHandlesDialog::renderQueryRow()
@@ -318,11 +345,18 @@ std::optional<FindHandlesAction> FindHandlesDialog::render(const ProcessList& pr
         startSearch(std::move(all), false, std::move(start));
     }
 
+    const bool workerReturned = m_WorkerReturned->load(std::memory_order_acquire); // before the load, as in searching()
     const std::shared_ptr<const SearchPublication> current = m_Slot->load();
     const SearchPublication empty;
     const SearchPublication& shown = current != nullptr ? *current : empty;
     action = renderResults(shown);
     ImGui::TextColored(theme.scheme().textMuted, "%s", findHandlesStatus(shown).c_str());
+    if (shown.version > 0 && !shown.done && workerReturned)
+    {
+        // Its worker returned without the done publication: not even the failure could be published (#3335).
+        ImGui::SameLine();
+        ImGui::TextColored(theme.scheme().textMuted, "\xC2\xB7 The search stopped before it finished");
+    }
 
     // Another user's processes: an administrator can search them, after one password prompt.
     if (shown.done && !shown.denied.empty() && m_Capabilities.authorize)

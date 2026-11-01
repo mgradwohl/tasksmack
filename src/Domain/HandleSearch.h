@@ -73,6 +73,7 @@ struct SearchPublication
     bool truncated = false;  ///< It stopped at MAX_MATCHES, or a process had more than a read lists.
     bool done = false;       ///< The walk finished (or was stopped).
     bool authorized = false; ///< This search read as an administrator.
+    std::string failure;     ///< Why the walk stopped early, when it failed (#3335); empty otherwise.
 };
 
 /// @p text in lower case (ASCII letters only, so a UTF-8 path keeps its other bytes).
@@ -109,12 +110,14 @@ struct Readers
 /// when an administrator searches the processes the first search was denied (startAuthorizedAfter()).
 /// @p authorized reads each process as an administrator (readAuthorized(): one password prompt for the
 /// walk). Stops between processes when @p stopToken is signalled, publishing what it has as done.
+/// Throws nothing (#3335): a reader that throws, or an allocation that fails, ends the walk with a done
+/// publication that says why (failure), so the worker never takes TaskSmack down.
 void run(std::span<const SearchProcess> processes,
          const Readers& readers,
          bool authorized,
          SearchPublication start,
          PublicationSlot<SearchPublication>& slot,
-         const std::stop_token& stopToken);
+         const std::stop_token& stopToken) noexcept;
 
 /// The first generation of a new search for @p query over @p total processes, at @p version.
 [[nodiscard]] SearchPublication startFor(std::string_view query, std::size_t total, std::uint64_t version);
