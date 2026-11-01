@@ -35,9 +35,9 @@ struct UserRow
     std::uint32_t uid = 0;
     std::vector<Platform::UserSession> sessions; ///< In the publication's order
     ProcessGrouping::Totals totals;              ///< Over every process running as them
-    /// Indices into the process generation, busiest first. A process names only its user's short name, so
-    /// when two rows share one (PC\\alice and CORP\\alice) neither gets that name's processes: they can't be
-    /// told apart until the process probe keeps the domain (#3310).
+    /// Indices into the process generation, busiest first. On Windows a process names its owner's domain too,
+    /// so PC\\alice's and CORP\\alice's processes go to their own rows (#3310). A process that names only a
+    /// short name goes to the one row with that name, and to neither when two rows share it.
     std::vector<std::size_t> processes;
     bool current = false; ///< One of their sessions is TaskSmack's own
 };

@@ -6,14 +6,21 @@
 #include "Platform/BrokerProtocol.h"
 #include "Platform/IServiceActions.h"
 #include "Platform/IUserSessions.h"
+#include "Platform/ProcessTypes.h"
+#include "Platform/Windows/WinString.h"
 #include "Platform/Windows/WindowsConversions.h"
+#include "Platform/Windows/WindowsHandles.h"
+#include "Platform/Windows/WindowsProcessProbe.h"
 #include "Platform/Windows/WindowsUserSessions.h"
 #include "Platform/Windows/WindowsUserSessionsMath.h"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <expected>
 #include <functional>
 #include <stop_token>
@@ -284,6 +291,39 @@ TEST(WindowsUserSessionsRealTest, ListsThisMachinesSessionsAndFindsItsOwn)
     EXPECT_FALSE(mine->user.empty());
     EXPECT_EQ(mine->sessionClass, "user");
     EXPECT_FALSE(calls.describe(ERROR_ACCESS_DENIED).empty());
+}
+
+// The Users tab matches a process to its row by domain and user (#3310): the process probe names this
+// process's owner, user and domain, as its own token's SID names it. Read only; the owner may not be the
+// session's user (runas, UAC with another account's credentials), so it is checked against the token.
+TEST(WindowsUserSessionsRealTest, TheProbeNamesThisProcesssOwnerAndDomain)
+{
+    UniqueHandle token;
+    ASSERT_NE(OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, token.put()), FALSE);
+    DWORD length = 0;
+    GetTokenInformation(token.get(), TokenUser, nullptr, 0, &length);
+    ASSERT_GE(length, sizeof(TOKEN_USER));
+    std::vector<std::byte> buffer(length);
+    ASSERT_NE(GetTokenInformation(token.get(), TokenUser, buffer.data(), length, &length), FALSE);
+    TOKEN_USER tokenUser{};
+    std::memcpy(&tokenUser, buffer.data(), sizeof(TOKEN_USER));
+    std::array<wchar_t, 256> name{};
+    std::array<wchar_t, 256> domain{};
+    auto nameLength = static_cast<DWORD>(name.size());
+    auto domainLength = static_cast<DWORD>(domain.size());
+    SID_NAME_USE use{SidTypeUnknown};
+    ASSERT_NE(LookupAccountSidW(nullptr, tokenUser.User.Sid, name.data(), &nameLength, domain.data(), &domainLength, &use), FALSE);
+    const std::string user = WinString::wideToUtf8(name.data());
+    const std::string userDomain = WinString::wideToUtf8(domain.data());
+
+    WindowsProcessProbe probe;
+    const auto processes = probe.enumerate();
+    const auto ownPid = static_cast<std::int32_t>(GetCurrentProcessId());
+    const auto self = std::ranges::find_if(processes, [ownPid](const ProcessCounters& process) { return process.pid == ownPid; });
+    ASSERT_NE(self, processes.end());
+    EXPECT_EQ(self->user, user);
+    EXPECT_FALSE(self->userDomain.empty());
+    EXPECT_EQ(self->userDomain, userDomain);
 }
 
 } // namespace

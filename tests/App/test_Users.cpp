@@ -23,6 +23,7 @@
 #include <atomic>
 #include <cfloat>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -175,8 +176,8 @@ TEST(UserRowsTest, WindowsSessionsSayWhereTheyAreAndWhatTheyAreDoing)
 }
 
 // #3076: two accounts with one short name (PC\\alice and CORP\\alice) are two rows, each labelled with its
-// domain. A process names only the short name, so neither row gets "alice"'s processes, which can't be told
-// apart; a name only one row has keeps its processes.
+// domain. A process that names only the short name can't be told apart, so neither row gets it; a name only
+// one row has keeps its processes.
 TEST(UserRowsTest, AccountsOfTwoDomainsAreTwoRows)
 {
     UserSession local = session("1", "alice", 0);
@@ -199,6 +200,80 @@ TEST(UserRowsTest, AccountsOfTwoDomainsAreTwoRows)
     EXPECT_TRUE(rows[1].processes.empty()) << "an alice process could be either alice's";
     EXPECT_TRUE(rows[2].processes.empty());
     EXPECT_EQ(rows[1].user, "alice");
+}
+
+/// A Windows process, which names its owner's domain too (#3310).
+[[nodiscard]] Domain::ProcessSnapshot processOf(std::int32_t pid, std::string domain, std::string user, double cpu)
+{
+    Domain::ProcessSnapshot p = process(pid, std::move(user), cpu, 100);
+    p.userDomain = std::move(domain);
+    return p;
+}
+
+// #3310: a Windows process names its owner's domain, so PC\\alice's and CORP\\alice's processes each go to
+// their own row, whatever the case of the names. One with no domain still goes only to a name one row has.
+TEST(UserRowsTest, AProcessWithItsDomainGoesToThatAccountsRow)
+{
+    UserSession local = session("1", "alice", 0);
+    local.domain = "PC";
+    UserSession corp = session("2", "alice", 0);
+    corp.domain = "CORP";
+    UserSession bob = session("3", "bob", 0);
+    bob.domain = "PC";
+    const std::vector<Domain::ProcessSnapshot> processes{
+        processOf(10, "PC", "alice", 5.0),
+        processOf(11, "CORP", "alice", 7.0),
+        processOf(12, "corp", "ALICE", 1.0), // Windows compares account names without case
+        processOf(13, "NT AUTHORITY", "SYSTEM", 50.0),
+        processOf(14, "OTHER", "alice", 9.0), // A third alice, signed in nowhere
+        process(15, "alice", 3.0, 100),       // No domain: either alice's
+        process(16, "bob", 2.0, 100),         // No domain, a name one row has
+        processOf(17, "CORP", "bob", 4.0),    // CORP\\bob isn't PC\\bob
+    };
+    const std::vector<UserRow> rows = buildUserRows({local, corp, bob}, processes);
+    ASSERT_EQ(rows.size(), 3U);
+    EXPECT_EQ(rows[0].key, "PC\\bob");
+    EXPECT_EQ(rows[0].processes, (std::vector<std::size_t>{6}));
+    EXPECT_EQ(rows[1].key, "CORP\\alice");
+    EXPECT_EQ(rows[1].processes, (std::vector<std::size_t>{1, 2})) << "busiest first";
+    EXPECT_EQ(rows[1].totals.processes, 2U);
+    EXPECT_EQ(rows[2].key, "PC\\alice");
+    EXPECT_EQ(rows[2].processes, (std::vector<std::size_t>{0}));
+}
+
+// #3310: a row whose sessions gave no domain takes a process with one when only that row has its name (a
+// session WTS named no domain for can't be told from the process's account). Linux's rows and processes,
+// with no domain on either side, match by name as they did.
+TEST(UserRowsTest, ARowWithNoDomainTakesItsNamesProcesses)
+{
+    const std::vector<Domain::ProcessSnapshot> processes{processOf(10, "PC", "alice", 5.0), process(11, "alice", 1.0, 100)};
+    const std::vector<UserRow> rows = buildUserRows({session("1", "alice", 1000)}, processes);
+    ASSERT_EQ(rows.size(), 1U);
+    EXPECT_EQ(rows[0].processes, (std::vector<std::size_t>{0, 1}));
+
+    UserSession corp = session("2", "alice", 0);
+    corp.domain = "CORP";
+    const std::vector<UserRow> two = buildUserRows({session("1", "alice", 1000), corp}, processes);
+    ASSERT_EQ(two.size(), 2U);
+    EXPECT_TRUE(two[0].processes.empty()) << "alice has two rows: PC\\alice's process could be the bare row's";
+    EXPECT_TRUE(two[1].processes.empty());
+}
+
+// #3310: Windows names ignore case, so a process with a domain falls back to a row with none by its name in
+// any case, and only when no other row has that name in any case. Without a domain (Linux) names keep their case.
+TEST(UserRowsTest, TheNoDomainFallbackIgnoresCase)
+{
+    UserSession corp = session("2", "ALICE", 0);
+    corp.domain = "CORP";
+    const std::vector<UserRow> ambiguous = buildUserRows({session("1", "alice", 1000), corp}, {processOf(10, "PC", "alice", 5.0)});
+    ASSERT_EQ(ambiguous.size(), 2U);
+    EXPECT_TRUE(ambiguous[0].processes.empty()) << "alice and CORP\\ALICE are one name to Windows: either could be PC\\alice";
+    EXPECT_TRUE(ambiguous[1].processes.empty());
+
+    const std::vector<Domain::ProcessSnapshot> processes{processOf(10, "PC", "ALICE", 5.0), process(11, "ALICE", 1.0, 100)};
+    const std::vector<UserRow> sole = buildUserRows({session("1", "alice", 1000)}, processes);
+    ASSERT_EQ(sole.size(), 1U);
+    EXPECT_EQ(sole[0].processes, (std::vector<std::size_t>{0})) << "PC\\ALICE is the sole alice row's; ALICE without a domain isn't";
 }
 
 // #3076: a Windows session whose user couldn't be read is a row of its own, said to be not readable, with no

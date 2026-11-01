@@ -126,6 +126,7 @@ struct FakeWin // NOLINT(clang-analyzer-optin.performance.Padding)
     bool failTokenRead = false;
     bool failLookup = false;
     std::wstring user = L"alice";
+    std::wstring domain = L"PC"; ///< The account's domain LookupAccountSidW gives (#3310)
     std::optional<DWORD> sidRid; ///< The token user SID's last sub-authority; by default one per user name
     int lookupCalls = 0;
     // Process
@@ -353,14 +354,15 @@ BOOL WINAPI fakeGetTokenInformation(HANDLE /*token*/, TOKEN_INFORMATION_CLASS in
 }
 
 BOOL WINAPI fakeLookupAccountSidW(
-    LPCWSTR /*system*/, PSID /*sid*/, LPWSTR name, LPDWORD nameLength, LPWSTR /*domain*/, LPDWORD /*domainLength*/, PSID_NAME_USE /*use*/)
+    LPCWSTR /*system*/, PSID /*sid*/, LPWSTR name, LPDWORD nameLength, LPWSTR domain, LPDWORD domainLength, PSID_NAME_USE /*use*/)
 {
     ++fake().lookupCalls;
-    if (fake().failLookup || *nameLength <= fake().user.size())
+    if (fake().failLookup || *nameLength <= fake().user.size() || *domainLength <= fake().domain.size())
     {
         return FALSE;
     }
     std::memcpy(name, fake().user.c_str(), (fake().user.size() + 1) * sizeof(wchar_t));
+    std::memcpy(domain, fake().domain.c_str(), (fake().domain.size() + 1) * sizeof(wchar_t));
     return TRUE;
 }
 
@@ -759,6 +761,7 @@ TEST_F(WindowsProcessProbeSeamTest, EveryDetailIsReadWhenEveryCallSucceeds)
     const ProcessCounters process = sampleOne();
     EXPECT_EQ(process.name, "app.exe");
     EXPECT_EQ(process.user, "alice");
+    EXPECT_EQ(process.userDomain, "PC"); // Kept beside the user name, for the Users tab (#3310)
     EXPECT_EQ(process.command, "app.exe --flag");
     EXPECT_EQ(process.status, "Efficiency Mode");
     EXPECT_EQ(process.gdiObjectCount, 7);
@@ -1060,9 +1063,11 @@ TEST_F(WindowsProcessProbeSeamTest, ProcessesOfOneAccountAskForItsNameOnce)
     }
     EXPECT_EQ(fake().lookupCalls, 1);
 
-    // Each heavy pass reads the token again, but the name comes from the cache.
+    // Each heavy pass reads the token again, but the name comes from the cache, its domain with it (#3310).
     fake().now += std::chrono::minutes(1);
-    EXPECT_EQ(find(probe.enumerate()).user, "alice");
+    const ProcessCounters again = find(probe.enumerate());
+    EXPECT_EQ(again.user, "alice");
+    EXPECT_EQ(again.userDomain, "PC");
     EXPECT_EQ(fake().lookupCalls, 1);
 }
 

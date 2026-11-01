@@ -948,10 +948,19 @@ struct WindowsProcessMemory
     };
 }
 
+/// An account as LookupAccountSidW names it: its user name and its domain (or computer) name (#3310).
+struct AccountName
+{
+    std::string user;
+    std::string domain; ///< Empty when the lookup gave none
+
+    [[nodiscard]] bool operator==(const AccountName&) const = default;
+};
+
 /// The account names LookupAccountSidW gave, by the SID's bytes (#2982), so a process's owner costs
 /// that call only for a SID not named in the last TTL. LookupAccountSidW asks the LSA, which is most
 /// of the heavy detail pass's cost, while a machine's processes are owned by a handful of accounts.
-///  - Only a lookup that succeeded is stored (the caller's rule; an empty SID or name isn't kept), so a
+///  - Only a lookup that succeeded is stored (the caller's rule; an empty SID or user name isn't kept), so a
 ///    failed one is asked again on the next read.
 ///  - An entry is reused for one TTL from when it was stored, so a renamed account shows its new name
 ///    within that long.
@@ -966,7 +975,7 @@ class AccountNameCache
     {}
 
     /// The name stored for @p sid, if it was stored less than one TTL before @p now.
-    [[nodiscard]] std::optional<std::string> find(std::span<const std::byte> sid, std::chrono::steady_clock::time_point now) const
+    [[nodiscard]] std::optional<AccountName> find(std::span<const std::byte> sid, std::chrono::steady_clock::time_point now) const
     {
         const auto it = m_Names.find(key(sid));
         if (it == m_Names.end() || now >= it->second.expires)
@@ -977,9 +986,9 @@ class AccountNameCache
     }
 
     /// Remember the name a successful lookup gave @p sid at @p now.
-    void store(std::span<const std::byte> sid, std::string name, std::chrono::steady_clock::time_point now)
+    void store(std::span<const std::byte> sid, AccountName name, std::chrono::steady_clock::time_point now)
     {
-        if (sid.empty() || name.empty())
+        if (sid.empty() || name.user.empty())
         {
             return;
         }
@@ -999,7 +1008,7 @@ class AccountNameCache
   private:
     struct Entry
     {
-        std::string name;
+        AccountName name;
         std::chrono::steady_clock::time_point expires;
     };
 
