@@ -3194,6 +3194,27 @@ TEST_F(LinuxEfficiencyModeActionTest, AnOnAfterAPartialOffRecordsTheNiceItFindsA
     EXPECT_EQ(m_Control.rememberedEfficiencyCount(), 0U);
 }
 
+// #3332: a process already at nice 19 before on. The first off puts back 19 but not the weight; a second off, once it
+// can, puts back only the weight: it doesn't take the spent record's nice 19 for Efficiency mode's and move it to 0.
+TEST_F(LinuxEfficiencyModeActionTest, ARetriedOffLeavesAPriorityTheFirstOffAlreadyPutBack)
+{
+    efficiency().nice = 19; // its own nice, before on
+    efficiency().files["cpu.weight"] = "50\n";
+    ASSERT_TRUE(m_Control.setEfficiencyMode(ownTarget(), true).success);
+    efficiency().writeErrno = EACCES;
+    ASSERT_TRUE(m_Control.setEfficiencyMode(ownTarget(), false).successNote.contains("still the minimum"));
+    EXPECT_EQ(plan().lastSetValue, 19) << "its own nice, put back";
+
+    efficiency().writeErrno = 0;
+    efficiency().writes.clear();
+    plan().setCalls = 0;
+    const ProcessActionResult retried = m_Control.setEfficiencyMode(ownTarget(), false);
+    ASSERT_TRUE(retried.success) << retried.errorMessage;
+    EXPECT_EQ(plan().setCalls, 0) << "the priority is left as it is";
+    EXPECT_EQ(efficiency().writes, (std::vector<std::pair<std::string, std::string>>{{"cpu.weight", "50"}}));
+    EXPECT_EQ(m_Control.rememberedEfficiencyCount(), 0U);
+}
+
 // #3330: an on or off for a process that another one, sharing the memory, is still changing is refused rather than
 // interleaved with it: here Process Details' off arrives while the Processes tab's on is setting the nice.
 TEST_F(LinuxEfficiencyModeActionTest, AnOnOrOffWhileAnotherIsChangingTheProcessIsRefused)
