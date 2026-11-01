@@ -2871,6 +2871,12 @@ TEST(LinuxEfficiencyModeTest, TheCgroupFilesAndTheRestoreRules)
     EXPECT_EQ(weightToRestore(std::nullopt, 80), std::nullopt);
     EXPECT_TRUE(isEfficiencyNice(19));
     EXPECT_FALSE(isEfficiencyNice(10));
+
+    // #3330: a remembered process is forgotten only when its exit is certain.
+    EXPECT_FALSE(rememberedProcessExited(500, false, 500)) << "the same process";
+    EXPECT_TRUE(rememberedProcessExited(501, false, 500)) << "its PID now holds another process";
+    EXPECT_TRUE(rememberedProcessExited(std::nullopt, true, 500)) << "its /proc entry is gone";
+    EXPECT_FALSE(rememberedProcessExited(std::nullopt, false, 500)) << "a read that failed otherwise says nothing";
 }
 
 /// What the faked nice and cgroup calls see and do, for Efficiency mode.
