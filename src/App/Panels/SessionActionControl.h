@@ -243,8 +243,10 @@ class SessionActionControl
                                          : std::format("{} {}'s session...", words.doing, session.user);
         m_RetryAllowed = !allowInteractive; // a refusal to the administrator isn't offered again
         if (std::optional<Platform::ServiceActionResult> failed =
-                m_Worker.start([sessions = m_Sessions, session, action, allowInteractive](const std::stop_token& stop)
-                               { return sessions->actOnConfirmed(session, action, allowInteractive, stop); }))
+                // An init-capture, not [session]: a copy-capture of the const reference would make a const
+                // member, so moving the work into its worker (noexcept) would copy the session's strings.
+            m_Worker.start([sessions = m_Sessions, confirmed = session, action, allowInteractive](const std::stop_token& stop)
+                           { return sessions->actOnConfirmed(confirmed, action, allowInteractive, stop); }))
         {
             finish(*failed);
         }
