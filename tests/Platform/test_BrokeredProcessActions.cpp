@@ -772,6 +772,46 @@ TEST(BrokeredProcessActionsTest, EfficiencyModeRefusedInProcessIsRetriedThroughT
               (Broker::Request{Broker::EfficiencyModeRequest{.target = TARGET, .on = true}}));
 }
 
+// #3296: an off refused in process, whose on ran in process, is finished as a priority change to the nice that
+// on found, not as an off the helper would end at nice 0; then the in-process off runs again for the weight and
+// the memory. Without a nice to put back it stays a plain off.
+TEST(BrokeredProcessActionsTest, AnEfficiencyOffThroughTheHelperPutsBackTheRememberedNice)
+{
+    Fixture f(/*connected=*/true);
+    f.inner->setEfficiencyNiceToRestore(10);
+    f.inner->setEfficiencyModeResult(ProcessActionResult::denied("Permission denied"));
+    const ProcessActionResult retried = f.actions->setEfficiencyMode(TARGET, false);
+    EXPECT_TRUE(retried.success) << retried.errorMessage;
+    ASSERT_EQ(f.broker->requests().size(), 1U);
+    EXPECT_EQ(f.broker->requests()[0], (Broker::Request{Broker::PriorityRequest{.target = TARGET, .nice = 10}}));
+    EXPECT_EQ(f.inner->efficiencyModeCount(), 2) << "the refused off, then the one that finishes it";
+    EXPECT_TRUE(retried.successNote.contains("CPU weight wasn't put back: Permission denied")) << retried.successNote;
+
+    // "Authenticate and retry" sends the same, and the finishing off's note is kept.
+    f.inner->setEfficiencyModeResult(ProcessActionResult::ok("its cgroup's CPU weight is still the minimum"));
+    const ProcessActionResult authorized = f.actions->runAuthorized(
+        {.kind = AuthorizedAction::Kind::SetEfficiencyMode, .target = TARGET, .efficiencyMode = false}, std::stop_token{});
+    EXPECT_TRUE(authorized.success) << authorized.errorMessage;
+    ASSERT_EQ(f.broker->requests().size(), 2U);
+    EXPECT_EQ(f.broker->requests()[1], (Broker::Request{Broker::PriorityRequest{.target = TARGET, .nice = 10}}));
+    EXPECT_EQ(f.inner->efficiencyModeCount(), 3);
+    EXPECT_EQ(authorized.successNote, "its cgroup's CPU weight is still the minimum");
+
+    // An on, and an off with nothing remembered, go as SetEfficiencyMode and aren't followed in process.
+    ASSERT_TRUE(f.actions
+                    ->runAuthorized({.kind = AuthorizedAction::Kind::SetEfficiencyMode, .target = TARGET, .efficiencyMode = true},
+                                    std::stop_token{})
+                    .success);
+    EXPECT_EQ(f.broker->requests()[2], (Broker::Request{Broker::EfficiencyModeRequest{.target = TARGET, .on = true}}));
+    f.inner->setEfficiencyNiceToRestore(std::nullopt);
+    ASSERT_TRUE(f.actions
+                    ->runAuthorized({.kind = AuthorizedAction::Kind::SetEfficiencyMode, .target = TARGET, .efficiencyMode = false},
+                                    std::stop_token{})
+                    .success);
+    EXPECT_EQ(f.broker->requests()[3], (Broker::Request{Broker::EfficiencyModeRequest{.target = TARGET, .on = false}}));
+    EXPECT_EQ(f.inner->efficiencyModeCount(), 3);
+}
+
 // #3066: closing another user's process's socket, refused in process, is retried through the helper as a
 // CloseConnection request carrying the inode; one closed in process never reaches it.
 TEST(BrokeredProcessActionsTest, CloseConnectionRefusedInProcessIsRetriedThroughTheHelper)

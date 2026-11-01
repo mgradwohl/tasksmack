@@ -1529,6 +1529,7 @@ struct FaultPlan
     int sendCalls = 0;
     int lastSignal = 0;
     int setCalls = 0;
+    int lastSetValue = 0; ///< What the last setpriority / ioprio_set was given
     int pollCalls = 0;
 };
 
@@ -1569,9 +1570,10 @@ int fakePollPidfd(int /*pidfd*/)
     return plan().pollErrno != 0 ? fail(plan().pollErrno) : plan().pollResult;
 }
 
-int fakeSet(id_t /*tid*/, int /*value*/)
+int fakeSet(id_t /*tid*/, int value)
 {
     ++plan().setCalls;
+    plan().lastSetValue = value;
     return plan().setErrno != 0 ? fail(plan().setErrno) : 0;
 }
 
@@ -3049,6 +3051,38 @@ TEST_F(LinuxEfficiencyModeActionTest, OffAfterAnOnThatKeptTheWeightPutsBackOnlyT
     const ProcessActionResult off = m_Control.setEfficiencyMode(ownTarget(), false);
     ASSERT_TRUE(off.success) << off.errorMessage;
     EXPECT_TRUE(efficiency().writes.empty()) << "on didn't lower it, so off doesn't raise it";
+}
+
+// #3296: the on remembered nice 10 and weight 50, and the off was refused (raising the priority back from
+// nice 19 needs CAP_SYS_NICE). efficiencyNiceToRestore() gives 10 for the helper to set as a priority change;
+// once it has, the in-process off puts back only the weight and forgets the on.
+TEST_F(LinuxEfficiencyModeActionTest, ARefusedOffSaysWhichNiceTheHelperShouldPutBack)
+{
+    efficiency().nice = 10;
+    efficiency().files["cpu.weight"] = "50\n";
+    EXPECT_EQ(m_Control.efficiencyNiceToRestore(ownTarget()), std::nullopt) << "nothing remembered before the on";
+    ASSERT_TRUE(m_Control.setEfficiencyMode(ownTarget(), true).success);
+    efficiency().nice = 19;
+    plan().setErrno = EPERM;
+    const ProcessActionResult refused = m_Control.setEfficiencyMode(ownTarget(), false);
+    ASSERT_TRUE(refused.permissionDenied) << refused.errorMessage;
+    EXPECT_EQ(m_Control.efficiencyNiceToRestore(ownTarget()), std::optional<std::int32_t>(10)) << "a refused off keeps the memory";
+
+    // Someone changed the nice since: off would leave it, so there's nothing to put back.
+    efficiency().nice = 15;
+    EXPECT_EQ(m_Control.efficiencyNiceToRestore(ownTarget()), std::nullopt);
+
+    // The helper set nice 10; the in-process off then puts back only the weight, and forgets the on.
+    plan().setErrno = 0;
+    plan().setCalls = 0;
+    efficiency().nice = 10;
+    efficiency().writes.clear();
+    const ProcessActionResult rest = m_Control.setEfficiencyMode(ownTarget(), false);
+    ASSERT_TRUE(rest.success) << rest.errorMessage;
+    EXPECT_EQ(plan().setCalls, 0);
+    EXPECT_EQ(efficiency().writes, (std::vector<std::pair<std::string, std::string>>{{"cpu.weight", "50"}}));
+    efficiency().nice = 19;
+    EXPECT_EQ(m_Control.efficiencyNiceToRestore(ownTarget()), std::nullopt) << "forgotten";
 }
 
 // The real calls, on a child: nice 19 reaches it, its cgroup (the test's, shared) keeps its weight, and

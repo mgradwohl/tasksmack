@@ -117,7 +117,8 @@ ProcessActionResult BrokeredProcessActions::retried(ProcessActionResult result, 
     {
         return result;
     }
-    const std::expected<Broker::Response, std::string> response = m_Broker->call(brokerRequestFor(action), std::stop_token{});
+    const Broker::Request request = requestFor(action);
+    const std::expected<Broker::Response, std::string> response = m_Broker->call(request, std::stop_token{});
     if (!response.has_value())
     {
         // The helper exited, timed out or broke between connected() and the call (#2414). The refusal
@@ -125,7 +126,37 @@ ProcessActionResult BrokeredProcessActions::retried(ProcessActionResult result, 
         result.errorMessage += " (the administrator helper couldn't be asked: " + response.error() + ")";
         return result;
     }
-    return actionResultOf(response);
+    return finished(actionResultOf(response), action, request);
+}
+
+Broker::Request BrokeredProcessActions::requestFor(const AuthorizedAction& action) const
+{
+    if (action.kind == AuthorizedAction::Kind::SetEfficiencyMode && !action.efficiencyMode)
+    {
+        if (const std::optional<std::int32_t> nice = m_Inner->efficiencyNiceToRestore(action.target); nice.has_value())
+        {
+            return Broker::PriorityRequest{.target = action.target, .nice = *nice};
+        }
+    }
+    return brokerRequestFor(action);
+}
+
+ProcessActionResult
+BrokeredProcessActions::finished(ProcessActionResult result, const AuthorizedAction& action, const Broker::Request& request)
+{
+    if (!result.success || action.kind != AuthorizedAction::Kind::SetEfficiencyMode ||
+        !std::holds_alternative<Broker::PriorityRequest>(request))
+    {
+        return result;
+    }
+    const ProcessActionResult rest = m_Inner->setEfficiencyMode(action.target, false);
+    const std::string note =
+        rest.success ? rest.successNote : "its priority is back, but its cgroup's CPU weight wasn't put back: " + rest.errorMessage;
+    if (!note.empty())
+    {
+        result.successNote += (result.successNote.empty() ? "" : "; ") + note;
+    }
+    return result;
 }
 
 ProcessActionResult BrokeredProcessActions::terminate(const ProcessTarget& target)
@@ -205,7 +236,8 @@ ProcessActionResult BrokeredProcessActions::runAuthorized(const AuthorizedAction
             return ProcessActionResult::error("Couldn't act as an administrator: " + connected.error());
         }
     }
-    return actionResultOf(m_Broker->call(brokerRequestFor(action), stopToken));
+    const Broker::Request request = requestFor(action);
+    return finished(actionResultOf(m_Broker->call(request, stopToken)), action, request);
 }
 
 IoPriorityReadResult BrokeredProcessActions::getIoPriority(const ProcessTarget& target)

@@ -96,6 +96,12 @@ class BrokeredProcessActions final : public IProcessActions
     /// @p result, or, when it is a permission refusal and the helper is running, @p action's result
     /// through the helper.
     [[nodiscard]] ProcessActionResult retried(ProcessActionResult result, const AuthorizedAction& action);
+    /// @p action's request. An Efficiency mode off whose on ran in process is a priority change to the nice that on
+    /// found (#3296): the helper never saw the on, and would otherwise put back nice 0.
+    [[nodiscard]] Broker::Request requestFor(const AuthorizedAction& action) const;
+    /// @p result of @p request, the helper's. After such a priority change, the in-process off runs again: the nice
+    /// is no longer 19, so it puts back only the cgroup weight (the helper writes no files) and forgets the on.
+    [[nodiscard]] ProcessActionResult finished(ProcessActionResult result, const AuthorizedAction& action, const Broker::Request& request);
 
     std::unique_ptr<IProcessActions> m_Inner;
     std::shared_ptr<IPrivilegedBroker> m_Broker;
