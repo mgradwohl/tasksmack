@@ -63,7 +63,13 @@ set(CPACK_GENERATOR "ZIP;TGZ")
 # Platform-specific generators
 if(WIN32)
     list(APPEND CPACK_GENERATOR "NSIS")
-    set(CPACK_NSIS_ENABLE_UNINSTALL_BEFORE_INSTALL ON)
+    # An installed version is uninstalled first by cmake/CPackProjectConfig.cmake.in's install lines, not by
+    # CPack's own .onInit (#3276): those run the old uninstaller with /TASKSMACK_UPGRADE when the new version
+    # goes to the same folder, so Replace Task Manager and Start at sign-in survive the upgrade. CPack's call
+    # (`"<old>\Uninstall.exe" /S _?=<old dir>`) can't be told apart from a user's uninstall. Keep this OFF.
+    set(CPACK_NSIS_ENABLE_UNINSTALL_BEFORE_INSTALL OFF)
+    # The Uninstall key's name, which those install lines read the old version's UninstallString from.
+    set(CPACK_PACKAGE_INSTALL_REGISTRY_KEY "${PROJECT_NAME}")
     set(CPACK_NSIS_MODIFY_PATH ON)
     set(CPACK_NSIS_MUI_ICON "${CMAKE_SOURCE_DIR}/assets/icons/tasksmack.ico")
     # Per machine, in Program Files, by an administrator (#2550): the template's RequestExecutionLevel

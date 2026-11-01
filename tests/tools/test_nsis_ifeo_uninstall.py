@@ -4,6 +4,8 @@
 The NSIS uninstaller always gives Task Manager back when TaskSmack has it: it removes taskmgr.exe's Image
 File Execution Options Debugger when the value is the quoted path of a TaskSmack.exe, never another
 program's, and the key only when TaskSmack created it (its TaskSmackCreatedKey mark) and it is empty.
+An upgrade isn't an uninstall (#3276): run with /TASKSMACK_UPGRADE on its command line, as the new version's
+installer runs it, it keeps the value.
 
 makensis isn't on every machine, and an uninstaller can't be run in a test, so the lines CPack puts in the
 uninstaller's section (CPACK_NSIS_EXTRA_UNINSTALL_COMMANDS) are read out of the file and run here by a
@@ -19,6 +21,12 @@ REPO = Path(__file__).resolve().parents[2]
 CONFIG = REPO / "cmake" / "CPackProjectConfig.cmake.in"
 IFEO = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\taskmgr.exe"
 INSTALLED = r"C:\Program Files\TaskSmack\TaskSmack.exe"
+# A user's uninstall: NSIS copies the uninstaller to %TEMP% and runs that copy with the same arguments, then
+# _?=<folder>, which it cuts off $CMDLINE.
+USER_UNINSTALL = r'"C:\Users\me\AppData\Local\Temp\~nsuA.tmp\Un_A.exe" /S'
+# The new version's installer upgrading this folder (tests/tools/test_nsis_upgrade.py runs that call).
+UPGRADE = r'"C:\Program Files\TaskSmack\Uninstall.exe" /S /TASKSMACK_UPGRADE'
+REGISTERS = {"$0": "zero", "$1": "one", "$2": "two"}
 
 
 def uninstall_lines() -> list[str]:
@@ -79,14 +87,17 @@ class FakeRegistry:
 class Uninstaller:
     """Runs the step's lines as NSIS would, with registers, the error flag and the registry view."""
 
-    def __init__(self, registry: FakeRegistry) -> None:
+    def __init__(self, registry: FakeRegistry, cmdline: str = USER_UNINSTALL) -> None:
         self.registry = registry
-        self.registers = {"$0": "zero", "$1": "one"}
+        self.registers = dict(REGISTERS)
+        self.cmdline = cmdline
         self.stack: list[str] = []
         self.error = False
         self.view = 32  # a 32-bit uninstaller's default
 
     def value(self, word: str) -> str:
+        if word == "$CMDLINE":
+            return self.cmdline
         return self.registers.get(word, word)
 
     def run(self, lines: list[str]) -> None:
@@ -104,7 +115,7 @@ class Uninstaller:
 
         while pc < len(program):
             steps += 1
-            if steps > 1000:
+            if steps > 10000:
                 raise AssertionError("the step doesn't end")
             words = program[pc]
             if not words or (len(words) == 1 and words[0].endswith(":")):
@@ -137,13 +148,19 @@ class Uninstaller:
                 self.error = False
             elif op == "StrCpy":
                 target, source = args[0], self.value(args[1])
-                length = args[2] if len(args) > 2 else ""
-                offset = int(args[3]) if len(args) > 3 else 0
+                length = self.value(args[2]) if len(args) > 2 else ""
+                offset = int(self.value(args[3])) if len(args) > 3 else 0
                 text = source[offset:] if offset >= 0 else source[max(len(source) + offset, 0) :]
                 self.registers[target] = text if length == "" else text[: int(length)]
             elif op == "StrCmp":
                 same = self.value(args[0]).lower() == self.value(args[1]).lower()  # NSIS compares ignoring case
                 nxt = jump(args[2]) if same else jump(args[3] if len(args) > 3 else "")
+            elif op == "IntOp":
+                target, a, operator, b = args
+                assert operator == "+", operator
+                self.registers[target] = str(int(self.value(a)) + int(self.value(b)))
+            elif op == "Goto":
+                nxt = jump(args[0])
             elif op == "DeleteRegValue":
                 root, key, name = args
                 assert root == "HKLM" and self.view == 64, "the 64-bit view, where Windows reads IFEO"
@@ -163,10 +180,10 @@ class Uninstaller:
 
 
 class UninstallStepTest(unittest.TestCase):
-    def uninstall(self, registry: FakeRegistry) -> Uninstaller:
-        uninstaller = Uninstaller(registry)
+    def uninstall(self, registry: FakeRegistry, cmdline: str = USER_UNINSTALL) -> Uninstaller:
+        uninstaller = Uninstaller(registry, cmdline)
         uninstaller.run(uninstall_lines())
-        self.assertEqual(uninstaller.registers, {"$0": "zero", "$1": "one"}, "its registers are put back")
+        self.assertEqual(uninstaller.registers, REGISTERS, "its registers are put back")
         self.assertEqual(uninstaller.stack, [])
         self.assertEqual(uninstaller.view, 32, "CPack's own lines after it keep the 32-bit view")
         return uninstaller
@@ -238,6 +255,35 @@ class UninstallStepTest(unittest.TestCase):
         registry.set(32, IFEO, "TaskSmackCreatedKey", "REG_DWORD", 1)
         self.uninstall(registry)
         self.assertEqual(len(registry.key(32, IFEO)), 2, "Wow6432Node isn't where Windows reads it")
+
+    def test_an_upgrade_keeps_it(self) -> None:
+        # #3276: the new version's installer runs this uninstaller with /TASKSMACK_UPGRADE when it installs to
+        # the same folder, whose TaskSmack.exe the value names; anywhere on the command line, any case.
+        for cmdline in (UPGRADE, r'"C:\Program Files\TaskSmack\Uninstall.exe" /tasksmack_upgrade /S', "/TASKSMACK_UPGRADE"):
+            with self.subTest(cmdline=cmdline):
+                registry = FakeRegistry()
+                registry.set(64, IFEO, "Debugger", "REG_SZ", f'"{INSTALLED}"')
+                registry.set(64, IFEO, "TaskSmackCreatedKey", "REG_DWORD", 1)
+                self.uninstall(registry, cmdline)
+                self.assertEqual(
+                    registry.key(64, IFEO),
+                    {"Debugger": ("REG_SZ", f'"{INSTALLED}"'), "TaskSmackCreatedKey": ("REG_DWORD", 1)},
+                )
+
+    def test_only_the_whole_flag_is_an_upgrade(self) -> None:
+        # A user's uninstall, silent or not, or with anything short of the flag, removes it.
+        for cmdline in (USER_UNINSTALL, r'"C:\Temp\Un_A.exe"', r'"C:\Temp\Un_A.exe" /TASKSMACK_UPGRAD', ""):
+            with self.subTest(cmdline=cmdline):
+                registry = FakeRegistry()
+                registry.set(64, IFEO, "Debugger", "REG_SZ", f'"{INSTALLED}"')
+                self.uninstall(registry, cmdline)
+                self.assertEqual(registry.key(64, IFEO), {})
+
+    def test_a_long_command_line_ends(self) -> None:
+        registry = FakeRegistry()
+        registry.set(64, IFEO, "Debugger", "REG_SZ", f'"{INSTALLED}"')
+        self.uninstall(registry, '"C:\\' + "x" * 900 + '\\Un_A.exe" /S')
+        self.assertEqual(registry.key(64, IFEO), {})
 
     def test_it_is_the_nsis_generators_only(self) -> None:
         text = CONFIG.read_text(encoding="utf-8")
