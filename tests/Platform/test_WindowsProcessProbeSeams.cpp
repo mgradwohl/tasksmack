@@ -1627,7 +1627,7 @@ WindowsSignature::SignatureFunctions fakeSignatureFunctions()
             ++fakeSignatures().stampReads;
             fakeSignatures().lastPath = path;
             const WindowsSignature::FileId id{.volumeSerial = 1, .id = {1}};
-            return WindowsSignature::OpenedImage{.file = nullptr, .stamp = {.fileId = id, .changeTime = 1, .size = 2}};
+            return WindowsSignature::OpenedImage{.file = nullptr, .stamp = {.fileId = id, .changeTime = 1, .size = 2, .usn = 3}};
         },
         .closeImage = [](void* /*file*/) {},
         .verifyEmbeddedSignature =

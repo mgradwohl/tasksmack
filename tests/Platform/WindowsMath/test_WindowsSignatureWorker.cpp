@@ -94,7 +94,7 @@ SignatureFunctions fakeFunctions()
 void setStamp(const std::string& path, std::uint64_t changeTime)
 {
     const std::scoped_lock lock(fakes().mutex);
-    fakes().stamps[path] = FileStamp{.fileId = FileId{.volumeSerial = 1, .id = {1}}, .changeTime = changeTime, .size = 100};
+    fakes().stamps[path] = FileStamp{.fileId = FileId{.volumeSerial = 1, .id = {1}}, .changeTime = changeTime, .size = 100, .usn = 1};
 }
 
 int checksOf(const std::string& path)
@@ -187,7 +187,7 @@ TEST_F(SignatureWorkerTest, AFileWithoutAFileIdIsCheckedForEveryNewProcess)
 {
     {
         const std::scoped_lock lock(fakes().mutex);
-        fakes().stamps["E:\\tool.exe"] = FileStamp{.fileId = std::nullopt, .changeTime = 1, .size = 100}; // FAT
+        fakes().stamps["E:\\tool.exe"] = FileStamp{.fileId = std::nullopt, .changeTime = 1, .size = 100, .usn = 0}; // FAT
     }
     SignatureWorker worker(fakeFunctions(), {});
     for (int process = 1; process <= 2; ++process)

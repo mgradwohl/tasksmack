@@ -10,8 +10,8 @@
 // A check holds the image open from its stamp read to its verdict (#3292): one handle, opened for read and
 // shared for read only, so nobody can write, rename or delete the file in between, and both WinVerifyTrust
 // calls read the file through it. The stamp is the file's identity (volume serial and 128-bit file ID)
-// with its ChangeTime and size, not its path and last write time, which a program running as the user can
-// reset with SetFileTime after swapping in a same-size file.
+// with its ChangeTime, size and change journal USN (#3313), not its path and last write time, which a
+// program running as the user can reset with SetFileTime after swapping in a same-size file.
 
 #include "Platform/AsciiCase.h"
 #include "Platform/ImageSignature.h"
@@ -66,9 +66,17 @@ struct FileStamp
     std::optional<FileId> fileId; ///< nullopt when the file system gives none: the answer is never cached
     /// FILE_BASIC_INFO's ChangeTime, 100 ns ticks: every write, and every change to the file's attributes
     /// or times, moves it, and SetFileTime can't set it back. (SetFileInformationByHandle's FileBasicInfo
-    /// can: a deliberate attacker who writes the file in place and restores this too still matches.)
+    /// can, which is what the USN is for.)
     std::uint64_t changeTime = 0;
     std::uint64_t size = 0;
+    /// The USN of the file's most recent change journal record (FSCTL_READ_FILE_USN_DATA, #3313). Not a
+    /// per-write counter: while a file stays open, NTFS folds repeated changes of one kind into one record.
+    /// But it moves on whenever a new record is written for the file: the first change of each kind on an
+    /// open (a write, then the basic-info change that restores ChangeTime) and the close after them. So
+    /// an in-place rewrite always leaves a newer USN, and user mode can't set it back. 0 when the volume keeps no journal (FAT, most
+    /// network shares, a volume whose journal is off) or the read fails: the stamp is then the other three, as before #3313, and still
+    /// cached.
+    std::uint64_t usn = 0;
 
     friend bool operator==(const FileStamp&, const FileStamp&) = default;
 };
@@ -198,7 +206,7 @@ struct SignatureVerdict
     return tag;
 }
 
-/// Signature checks by image path and file stamp {file ID, change time, size}: another file in the path's
+/// Signature checks by image path and file stamp {file ID, change time, size, USN}: another file in the path's
 /// place, or the file changed, has a new stamp and is checked again. A stamp without a file ID is never
 /// kept, nor found: that file is checked every time. Only definite answers are kept: a check that failed
 /// is tried again on the next request. Bounded at @p maxEntries paths (unbounded by default, as the

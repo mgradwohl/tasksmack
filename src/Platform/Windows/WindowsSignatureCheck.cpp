@@ -2,6 +2,7 @@
 
 // clang-format off
 #include <softpub.h> // WINTRUST_ACTION_GENERIC_VERIFY_V2, DRIVER_ACTION_VERIFY
+#include <winioctl.h> // FSCTL_READ_FILE_USN_DATA, USN_RECORD_V2/V3
 // clang-format on
 
 #pragma comment(lib, "wintrust.lib")
@@ -11,8 +12,11 @@
 #include "WindowsHandles.h"
 #include "WindowsImageSignature.h"
 
+#include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <optional>
 #include <span>
 #include <string>
@@ -158,6 +162,61 @@ class CatalogAdmin
     return hash;
 }
 
+/// The Usn field of the USN record FSCTL_READ_FILE_USN_DATA wrote (@p record, the bytes it returned): a
+/// version 2 record (NTFS) or a version 3 one (ReFS); 0 when it's neither, too short, or not positive.
+[[nodiscard]] std::uint64_t usnOfRecord(std::span<const std::byte> record)
+{
+    USN_RECORD_COMMON_HEADER header{};
+    if (record.size() < sizeof(header))
+    {
+        return 0;
+    }
+    std::memcpy(&header, record.data(), sizeof(header));
+    std::size_t offset = 0;
+    if (header.MajorVersion == 2)
+    {
+        offset = offsetof(USN_RECORD_V2, Usn);
+    }
+    else if (header.MajorVersion == 3)
+    {
+        offset = offsetof(USN_RECORD_V3, Usn);
+    }
+    else
+    {
+        return 0;
+    }
+    USN usn = 0;
+    if (record.size() < offset + sizeof(usn))
+    {
+        return 0;
+    }
+    std::memcpy(&usn, record.subspan(offset).data(), sizeof(usn));
+    return usn > 0 ? static_cast<std::uint64_t>(usn) : 0;
+}
+
+/// The USN of @p file's last change journal record, read through the handle the check holds (#3313);
+/// 0 when the volume keeps no journal (FAT, most network shares, a journal turned off) or the read fails.
+/// FSCTL_READ_FILE_USN_DATA needs no access beyond the open handle, so no elevation.
+[[nodiscard]] std::uint64_t readFileUsn(const TrustApiFunctions& fns, HANDLE file)
+{
+    READ_FILE_USN_DATA request{.MinMajorVersion = 2, .MaxMajorVersion = 3};
+    // A record is its fixed part and the file's name (at most MAX_PATH UTF-16 units).
+    alignas(USN_RECORD_V3) std::array<std::byte, sizeof(USN_RECORD_V3) + (MAX_PATH * sizeof(WCHAR))> record{};
+    DWORD returned = 0;
+    if (fns.deviceIoControl(file,
+                            FSCTL_READ_FILE_USN_DATA,
+                            &request,
+                            sizeof(request),
+                            record.data(),
+                            static_cast<DWORD>(record.size()),
+                            &returned,
+                            nullptr) == FALSE)
+    {
+        return 0;
+    }
+    return usnOfRecord(std::span<const std::byte>(record).first(std::min<std::size_t>(returned, record.size())));
+}
+
 } // namespace
 
 std::optional<WindowsSignature::FileStamp> readFileStamp(const TrustApiFunctions& fns, HANDLE file)
@@ -180,6 +239,7 @@ std::optional<WindowsSignature::FileStamp> readFileStamp(const TrustApiFunctions
         .fileId = fileId,
         .changeTime = static_cast<std::uint64_t>(basic.ChangeTime.QuadPart),
         .size = static_cast<std::uint64_t>(standard.EndOfFile.QuadPart),
+        .usn = readFileUsn(fns, file),
     };
 }
 

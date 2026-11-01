@@ -53,11 +53,13 @@ struct TrustApiFunctions
     BOOL(WINAPI* catalogInfoFromContext)(HCATINFO, CATALOG_INFO*, DWORD) = &::CryptCATCatalogInfoFromContext;
     BOOL(WINAPI* releaseCatalogContext)(HCATADMIN, HCATINFO, DWORD) = &::CryptCATAdminReleaseCatalogContext;
     BOOL(WINAPI* releaseContext)(HCATADMIN, DWORD) = &::CryptCATAdminReleaseContext;
+    BOOL(WINAPI* deviceIoControl)(HANDLE, DWORD, LPVOID, DWORD, LPVOID, DWORD, LPDWORD, LPOVERLAPPED) = &::DeviceIoControl;
 };
 
 /// The stamp of the file @p file is open on (#3292): its volume serial and 128-bit file ID (FileIdInfo;
 /// none when the call fails or the ID is all zeros), its ChangeTime (FileBasicInfo) and its size
-/// (FileStandardInfo). nullopt when the change time or the size can't be read.
+/// (FileStandardInfo) and its change journal USN (FSCTL_READ_FILE_USN_DATA, #3313; 0 when the volume keeps
+/// no journal or the read fails). nullopt when the change time or the size can't be read.
 [[nodiscard]] std::optional<WindowsSignature::FileStamp> readFileStamp(const TrustApiFunctions& fns, HANDLE file);
 
 /// @p path opened for its check: GENERIC_READ, shared for read only, so while the handle is held nobody
