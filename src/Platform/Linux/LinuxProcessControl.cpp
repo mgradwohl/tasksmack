@@ -1318,4 +1318,18 @@ ProcessActionResult LinuxProcessControl::setEfficiencyMode(const ProcessTarget& 
     return ProcessActionResult::ok(std::move(note));
 }
 
+std::optional<std::int32_t> LinuxProcessControl::efficiencyNiceToRestore(const ProcessTarget& target) const
+{
+    std::optional<std::int32_t> remembered;
+    {
+        const std::scoped_lock lock(m_Efficiency->mutex);
+        if (const auto found = m_Efficiency->byProcess.find({target.pid, target.startTimeTicks}); found != m_Efficiency->byProcess.end())
+        {
+            remembered = found->second.nice;
+        }
+    }
+    const std::optional<std::int32_t> current = remembered.has_value() ? m_Syscalls.currentNice(target.pid) : std::nullopt;
+    return current.has_value() ? LinuxEfficiency::niceToRestore(*current, remembered) : std::nullopt;
+}
+
 } // namespace Platform

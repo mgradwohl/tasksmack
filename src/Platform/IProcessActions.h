@@ -462,6 +462,16 @@ class IProcessActions
         return ProcessActionResult::error("Efficiency mode isn't available on this system");
     }
 
+    /// The priority Efficiency mode's off would put back for @p target, as a nice (#3296): the one this object's on
+    /// found, while the process is still at the nice on set. An off refused for want of permission is then finished
+    /// as a priority change to it, which the helper (which never saw the on) can make. nullopt otherwise, and by
+    /// default: such an off is retried as a plain off.
+    [[nodiscard]] virtual std::optional<std::int32_t> efficiencyNiceToRestore(const ProcessTarget& target) const
+    {
+        static_cast<void>(target);
+        return std::nullopt;
+    }
+
     /// Shuts down the socket with inode @p socketInode that the process holds (#3066), as Process Explorer's and
     /// TCPView's Close Connection: both directions, so the peer sees the connection end, and the process gets an
     /// error on its next use of it. The process's own descriptor stays open. The same identity check as

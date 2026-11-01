@@ -127,6 +127,8 @@ class LinuxProcessControl : public IProcessActions
     /// Efficiency mode (#3202, LinuxEfficiencyMode.h): on, nice 19 for every thread and, where it may and the
     /// process is alone in its cgroup, the cgroup's cpu.weight at 1; off, what on changed put back.
     [[nodiscard]] ProcessActionResult setEfficiencyMode(const ProcessTarget& target, bool on) override;
+    /// The nice the on remembered for @p target, while it is still at nice 19 (#3296), for an off the helper finishes.
+    [[nodiscard]] std::optional<std::int32_t> efficiencyNiceToRestore(const ProcessTarget& target) const override;
     /// The online CPUs and, on a hybrid CPU, their efficiency classes, from sysfs (#1881).
     [[nodiscard]] CpuAffinityLayout affinityLayout() const override;
 
