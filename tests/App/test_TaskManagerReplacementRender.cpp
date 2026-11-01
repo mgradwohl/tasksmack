@@ -213,6 +213,35 @@ TEST_F(TaskManagerReplacementRenderTest, ACopyThatCantChangeItOrIsBusyAsksNothin
     EXPECT_EQ(clickInRows(failed, TaskManagerReplacementText::TOGGLE_LABEL), TaskManagerRequest::None);
 }
 
+// #3280: an elevated copy someone other than an administrator could change may turn it off, never on.
+TEST_F(TaskManagerReplacementRenderTest, ACopyThatMayOnlyTurnItOffOffersOnlyThat)
+{
+    // viewOf() with turning on refused.
+    const auto refused = [](State state, std::string program = {})
+    {
+        TaskManagerReplacementView view = viewOf(state, std::move(program));
+        if (view.info.has_value())
+        {
+            view.info->turnOnUnavailableReason = "only an install no one else can change";
+        }
+        return view;
+    };
+    EXPECT_EQ(clickInRows(refused(State::ThisCopy), TaskManagerReplacementText::TOGGLE_LABEL), TaskManagerRequest::TurnOff);
+    EXPECT_EQ(clickInRows(refused(State::Off), TaskManagerReplacementText::TOGGLE_LABEL), TaskManagerRequest::None);
+
+    const TaskManagerReplacementView other = refused(State::OtherTaskSmack, R"(D:\Old\TaskSmack.exe)");
+    EXPECT_EQ(clickInRows(other, TaskManagerReplacementText::REPAIR_LABEL), TaskManagerRequest::None);
+    EXPECT_EQ(clickInRows(other, TaskManagerReplacementText::TOGGLE_LABEL), TaskManagerRequest::TurnOff);
+
+    const TaskManagerReplacementView elsewhere = refused(State::OtherProgram, R"(C:\Tools\procexp.exe)");
+    EXPECT_EQ(clickInRows(elsewhere, TaskManagerReplacementText::TOGGLE_LABEL), TaskManagerRequest::None) << "not even to ask";
+
+    m_Notice = {.open = true, .acted = false, .kind = NoticeKind::Repair};
+    EXPECT_EQ(clickInNotice(other, TaskManagerReplacementText::REPAIR_LABEL), TaskManagerRequest::None);
+    m_Notice = {.open = true, .acted = false, .kind = NoticeKind::Repair};
+    EXPECT_EQ(clickInNotice(other, TaskManagerReplacementText::TURN_OFF_LABEL), TaskManagerRequest::TurnOff);
+}
+
 TEST_F(TaskManagerReplacementRenderTest, APortableCopyIsWarnedAndResultsShow)
 {
     static_cast<void>(settingsFrame(viewOf(State::ThisCopy, {}, /*installed=*/true)));

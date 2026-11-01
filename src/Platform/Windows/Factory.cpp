@@ -57,6 +57,7 @@
 #include "WindowsStartupProbe.h"
 #include "WindowsSystemInfoProbe.h"
 #include "WindowsSystemProbe.h"
+#include "WindowsTaskManagerInstall.h"
 #include "WindowsTaskManagerReplacement.h"
 #include "WindowsUserSessions.h"
 
@@ -74,6 +75,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <expected>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -247,7 +249,7 @@ std::shared_ptr<ITaskManagerReplacement> makeTaskManagerReplacement(const std::s
     {
         setup.selfPath = WinString::wideToUtf8(*image);
     }
-    const std::vector<std::string> folders = Windows::installFolders();
+    std::vector<std::string> folders = Windows::installFolders();
     const std::vector<std::string_view> folderViews(folders.begin(), folders.end());
     setup.installedCopy = TaskManagerReplacement::isInstalledCopy(setup.selfPath, folderViews);
     // Reading HKLM needs no rights: a fresh key handle each time, on the worker that asks.
@@ -262,19 +264,26 @@ std::shared_ptr<ITaskManagerReplacement> makeTaskManagerReplacement(const std::s
     };
     if (Windows::isProcessElevated())
     {
-        // Elevated, TaskSmack writes the key itself, but only from Program Files: Windows starts the
-        // Debugger for whoever opens Task Manager, so it must be a copy only an administrator can change,
-        // which the helper checks for itself (BrokerHelper::checkUnchangeableBy()) and Program Files is.
-        if (setup.installedCopy)
+        // Elevated, TaskSmack writes the key itself. It always may turn it off: a Clear removes only a
+        // TaskSmack's Debugger. It turns it on only for a copy no one but an administrator can change:
+        // Windows starts the Debugger for whoever opens Task Manager, elevated after an administrator's
+        // Ctrl+Shift+Esc, and being under Program Files isn't enough (#3280), since a folder there may be
+        // one its users can write. So the helper's own check runs (BrokerHelper::checkUnchangeableBy())
+        // over the exe and every folder above it, on the worker that reads or changes it, never here on
+        // the startup thread: until a read says it passed, Settings has nothing to turn on.
+        setup.direct = std::make_shared<Windows::WindowsIfeoRegistry>();
+        // Init-captures: the closure owns non-const copies, so moving it can't throw.
+        setup.checkDirectSet = [selfPath = setup.selfPath, folders = std::move(folders)] -> std::expected<void, std::string>
         {
-            setup.direct = std::make_shared<Windows::WindowsIfeoRegistry>();
-        }
-        else
-        {
-            setup.unavailableReason =
-                "Only a TaskSmack installed in Program Files can replace Task Manager: Windows would start this copy, "
-                "which programs running as you could change, whenever anyone opens Task Manager";
-        }
+            auto allowed = Windows::checkDirectWrite(selfPath, folders);
+            if (!allowed.has_value())
+            {
+                spdlog::info("Replace Task Manager can't be turned on from this elevated copy: {}", allowed.error());
+            }
+            return allowed;
+        };
+        setup.directSetRefusal = "Only a TaskSmack installed in Program Files can replace Task Manager: Windows would start this copy, "
+                                 "which programs running as you could change, whenever anyone opens Task Manager";
     }
     else if (broker != nullptr)
     {

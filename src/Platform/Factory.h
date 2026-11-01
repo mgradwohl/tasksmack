@@ -121,9 +121,9 @@ namespace Platform
 [[nodiscard]] std::unique_ptr<IServiceActions> makeServiceActions();
 
 /// Replace Task Manager (#3072): taskmgr.exe's IFEO Debugger, read here and changed through @p broker (the
-/// one the panels share, null where there is none), or in-process by an elevated TaskSmack installed in
-/// Program Files. Null on Linux, which has no Task Manager to replace. Cheap: nothing is read until a
-/// worker calls it.
+/// one the panels share, null where there is none), or in-process by an elevated TaskSmack, which turns it
+/// on only for a copy no one but an administrator can change (#3280). Null on Linux, which has no Task
+/// Manager to replace. Cheap: nothing is read, and no install is checked, until a worker calls it.
 [[nodiscard]] std::shared_ptr<ITaskManagerReplacement> makeTaskManagerReplacement(const std::shared_ptr<IPrivilegedBroker>& broker);
 
 /// Creates the HTTPS client the opt-in update check sends its one request with (#3093): WinHTTP on

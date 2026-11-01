@@ -64,11 +64,14 @@ TaskManagerRequest renderSettings(const TaskManagerReplacementView& view, RowSta
     const Platform::TaskManagerReplacementInfo* const info = (view.info.has_value() && !view.info->readFailed) ? &*view.info : nullptr;
     const State current = (info != nullptr) ? info->status.state : State::Off;
     const bool canChange = info != nullptr && info->unavailableReason.empty();
+    // Turning it on or repairing it may be refused while turning it off isn't (#3280).
+    const bool canTurnOn = canChange && info->turnOnUnavailableReason.empty();
 
     // Checked from the registry, never from the click: the box shows what Task Manager does now, and a
-    // click asks for the change, which the next read then shows.
+    // click asks for the change, which the next read then shows. A checked box's click turns it off.
     bool checked = TaskManagerReplacementText::toggleChecked(current);
-    ImGui::BeginDisabled(!canChange || view.busy || state.confirmingReplaceOther);
+    const bool canToggle = checked ? canChange : canTurnOn;
+    ImGui::BeginDisabled(!canToggle || view.busy || state.confirmingReplaceOther);
     if (UI::Widgets::outlinedCheckbox(TaskManagerReplacementText::TOGGLE_LABEL, &checked))
     {
         const ToggleOutcome outcome = toggleOutcome(current);
@@ -81,7 +84,7 @@ TaskManagerRequest renderSettings(const TaskManagerReplacementView& view, RowSta
 
     if (current == State::OtherTaskSmack)
     {
-        ImGui::BeginDisabled(!canChange || view.busy);
+        ImGui::BeginDisabled(!canTurnOn || view.busy);
         if (ImGui::Button(TaskManagerReplacementText::REPAIR_LABEL))
         {
             request = TaskManagerRequest::Repair;
@@ -97,15 +100,21 @@ TaskManagerRequest renderSettings(const TaskManagerReplacementView& view, RowSta
     {
         wrapped(info->unavailableReason, scheme.textMuted, wrapWidth);
     }
+    else if (info != nullptr && !info->turnOnUnavailableReason.empty())
+    {
+        wrapped(info->turnOnUnavailableReason, scheme.textMuted, wrapWidth);
+    }
 
     if (state.confirmingReplaceOther && info != nullptr && current == State::OtherProgram)
     {
         wrapped(TaskManagerReplacementText::confirmText(info->status.program), scheme.textWarning, wrapWidth);
+        ImGui::BeginDisabled(!canTurnOn);
         if (ImGui::Button(TaskManagerReplacementText::REPLACE_LABEL))
         {
             request = TaskManagerRequest::TurnOnReplacingOther;
             state.confirmingReplaceOther = false;
         }
+        ImGui::EndDisabled();
         ImGui::SameLine();
         if (ImGui::Button(TaskManagerReplacementText::CANCEL_LABEL))
         {
@@ -169,9 +178,15 @@ TaskManagerRequest renderNotice(const TaskManagerReplacementView& view, NoticeSt
             {
                 wrapped(view.info->unavailableReason, scheme.textMuted, wrapWidth);
             }
+            else if (!view.info->turnOnUnavailableReason.empty())
+            {
+                wrapped(view.info->turnOnUnavailableReason, scheme.textMuted, wrapWidth);
+            }
             ImGui::Spacing();
             const bool canChange = view.info->unavailableReason.empty() && !view.busy;
-            ImGui::BeginDisabled(!canChange);
+            // Repair may be refused while Turn off isn't (#3280).
+            const bool canTurnOn = canChange && view.info->turnOnUnavailableReason.empty();
+            ImGui::BeginDisabled(!canTurnOn);
             if (ImGui::Button(TaskManagerReplacementText::REPAIR_LABEL))
             {
                 request = restore ? TaskManagerRequest::TurnOn : TaskManagerRequest::Repair;

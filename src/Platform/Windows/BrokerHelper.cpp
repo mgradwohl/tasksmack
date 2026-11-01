@@ -39,6 +39,7 @@
 #include <vector>
 
 #include <aclapi.h>
+#include <sddl.h>
 #include <winternl.h>
 
 namespace Platform::Windows::BrokerHelper
@@ -144,35 +145,26 @@ template<typename Read> [[nodiscard]] std::optional<std::wstring> readPath(Read 
     return path;
 }
 
-/// The rights @p token's user has over the file or folder at @p path, from AccessCheck against its
-/// owner, group and DACL. The error says why they couldn't be told.
-[[nodiscard]] std::expected<DWORD, std::string> grantedRights(HANDLE token, const std::wstring& path)
+/// Frees what the security calls allocate with LocalAlloc.
+struct LocalFreer
 {
-    PSECURITY_DESCRIPTOR descriptor = nullptr;
-    const DWORD read = GetNamedSecurityInfoW(path.c_str(),
-                                             SE_FILE_OBJECT,
-                                             OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
-                                             nullptr,
-                                             nullptr,
-                                             nullptr,
-                                             nullptr,
-                                             &descriptor);
-    if (read != ERROR_SUCCESS)
+    void operator()(void* memory) const noexcept
     {
-        return std::unexpected(std::format("couldn't read who may change {}: {}", WinString::wideToUtf8(path), lastErrorText(read)));
+        LocalFree(memory);
     }
-    struct Free
-    {
-        void operator()(void* memory) const noexcept
-        {
-            LocalFree(memory);
-        }
-    };
-    const std::unique_ptr<void, Free> owned(descriptor);
-    GENERIC_MAPPING mapping{.GenericRead = FILE_GENERIC_READ,
-                            .GenericWrite = FILE_GENERIC_WRITE,
-                            .GenericExecute = FILE_GENERIC_EXECUTE,
-                            .GenericAll = FILE_ALL_ACCESS};
+};
+
+/// The file rights' generic mapping, for AccessCheck and for an ACE's generic bits.
+constexpr GENERIC_MAPPING FILE_MAPPING{.GenericRead = FILE_GENERIC_READ,
+                                       .GenericWrite = FILE_GENERIC_WRITE,
+                                       .GenericExecute = FILE_GENERIC_EXECUTE,
+                                       .GenericAll = FILE_ALL_ACCESS};
+
+/// The rights @p token's user has under @p descriptor, from AccessCheck against its owner, group and
+/// DACL. The error says why they couldn't be told.
+[[nodiscard]] std::expected<DWORD, std::string> grantedRights(HANDLE token, PSECURITY_DESCRIPTOR descriptor, std::string_view name)
+{
+    GENERIC_MAPPING mapping = FILE_MAPPING;
     // Room for the privileges AccessCheck may name; MAXIMUM_ALLOWED asks for none.
     struct Privileges
     {
@@ -184,24 +176,246 @@ template<typename Read> [[nodiscard]] std::optional<std::wstring> readPath(Read 
     BOOL status = FALSE;
     if (AccessCheck(descriptor, token, MAXIMUM_ALLOWED, &mapping, &privileges.set, &privilegesLength, &granted, &status) == FALSE)
     {
-        return std::unexpected(
-            std::format("couldn't tell who may change {}: {}", WinString::wideToUtf8(path), lastErrorText(GetLastError())));
+        return std::unexpected(std::format("couldn't tell who may change {}: {}", name, lastErrorText(GetLastError())));
     }
     return status != FALSE ? granted : DWORD{0};
 }
 
-/// Whether @p token's user has none of @p rights over @p path; the error names it otherwise.
-[[nodiscard]] std::expected<void, std::string> checkNone(HANDLE token, const std::filesystem::path& path, DWORD rights)
+/// @p sid in its string form, for an error.
+[[nodiscard]] std::string sidText(PSID sid)
 {
-    const auto granted = grantedRights(token, path.wstring());
-    if (!granted.has_value())
+    LPWSTR text = nullptr;
+    if (ConvertSidToStringSidW(sid, &text) == FALSE)
     {
-        return std::unexpected(granted.error());
+        return "a principal";
     }
-    if ((*granted & rights) != 0)
+    const std::unique_ptr<wchar_t, LocalFreer> owned(text);
+    return WinString::wideToUtf8(owned.get());
+}
+
+/// Whether @p sid is one only an administrator acts as: Administrators, SYSTEM or TrustedInstaller, or
+/// OWNER RIGHTS (whose owner is checked on its own, and must be one of those).
+[[nodiscard]] bool isAdministrative(PSID sid)
+{
+    if (sid == nullptr || IsValidSid(sid) == FALSE)
     {
-        return std::unexpected(
-            std::format("TaskSmack's user can change {} (rights 0x{:08X})", WinString::wideToUtf8(path.wstring()), *granted & rights));
+        return false;
+    }
+    for (const WELL_KNOWN_SID_TYPE type : {WinBuiltinAdministratorsSid, WinLocalSystemSid, WinCreatorOwnerRightsSid})
+    {
+        if (IsWellKnownSid(sid, type) != FALSE)
+        {
+            return true;
+        }
+    }
+    // NT SERVICE\TrustedInstaller, which owns Windows' own files.
+    PSID trustedInstaller = nullptr;
+    if (ConvertStringSidToSidW(L"S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464", &trustedInstaller) == FALSE)
+    {
+        return false;
+    }
+    const std::unique_ptr<void, LocalFreer> owned(trustedInstaller);
+    return EqualSid(sid, trustedInstaller) != FALSE;
+}
+
+/// Whether @p descriptor's owner and every ACE that applies to the object itself leave @p rights to
+/// administrators alone (isAdministrative()): whoever the token checked is, no other user, group or
+/// service may change it. Deny ACEs are ignored, which can only make this stricter. An allow ACE of a
+/// kind this doesn't read is a refusal.
+[[nodiscard]] std::expected<void, std::string> checkOnlyAdministrators(PSECURITY_DESCRIPTOR descriptor, DWORD rights, std::string_view name)
+{
+    PSID owner = nullptr;
+    BOOL ownerDefaulted = FALSE;
+    if (GetSecurityDescriptorOwner(descriptor, &owner, &ownerDefaulted) == FALSE || owner == nullptr)
+    {
+        return std::unexpected(std::format("couldn't tell who owns {}", name));
+    }
+    if (!isAdministrative(owner))
+    {
+        return std::unexpected(std::format("{} owns {}, so it can change it", sidText(owner), name));
+    }
+    BOOL present = FALSE;
+    PACL dacl = nullptr;
+    BOOL daclDefaulted = FALSE;
+    if (GetSecurityDescriptorDacl(descriptor, &present, &dacl, &daclDefaulted) == FALSE)
+    {
+        return std::unexpected(std::format("couldn't read who may change {}", name));
+    }
+    if (present == FALSE || dacl == nullptr)
+    {
+        return std::unexpected(std::format("{} has no access list, so anyone can change it", name));
+    }
+    for (DWORD index = 0; index < dacl->AceCount; ++index)
+    {
+        void* ace = nullptr;
+        if (GetAce(dacl, index, &ace) == FALSE)
+        {
+            return std::unexpected(std::format("couldn't read who may change {}", name));
+        }
+        const auto* const header = static_cast<const ACE_HEADER*>(ace);
+        if ((header->AceFlags & INHERIT_ONLY_ACE) != 0)
+        {
+            continue; // only for what is created inside it
+        }
+        switch (header->AceType)
+        {
+        case ACCESS_ALLOWED_ACE_TYPE:
+        case ACCESS_ALLOWED_CALLBACK_ACE_TYPE:
+        {
+            // ACCESS_ALLOWED_CALLBACK_ACE has the same header, mask and SID; its condition only narrows it.
+            auto* const allowed = static_cast<ACCESS_ALLOWED_ACE*>(ace);
+            DWORD mask = allowed->Mask;
+            GENERIC_MAPPING mapping = FILE_MAPPING;
+            MapGenericMask(&mask, &mapping);
+            PSID sid = &allowed->SidStart;
+            if ((mask & rights) != 0 && !isAdministrative(sid))
+            {
+                return std::unexpected(std::format("{} can change {} (rights 0x{:08X})", sidText(sid), name, mask & rights));
+            }
+            break;
+        }
+        case ACCESS_ALLOWED_COMPOUND_ACE_TYPE:
+        case ACCESS_ALLOWED_OBJECT_ACE_TYPE:
+        case ACCESS_ALLOWED_CALLBACK_OBJECT_ACE_TYPE:
+            return std::unexpected(std::format("{} has an access entry this check can't read", name));
+        default:
+            break; // deny, audit and the rest grant nothing
+        }
+    }
+    return {};
+}
+
+/// @p path without its trailing separators, for comparing a folder's names: "C:" for "C:\".
+[[nodiscard]] std::wstring_view withoutTrailingSeparators(std::wstring_view path)
+{
+    while (!path.empty() && (path.back() == L'\\' || path.back() == L'/'))
+    {
+        path.remove_suffix(1);
+    }
+    return path;
+}
+
+/// Whether two paths are the same text, ignoring case as NTFS does and trailing separators.
+[[nodiscard]] bool samePathText(std::wstring_view first, std::wstring_view second)
+{
+    first = withoutTrailingSeparators(first);
+    second = withoutTrailingSeparators(second);
+    return CompareStringOrdinal(first.data(), static_cast<int>(first.size()), second.data(), static_cast<int>(second.size()), TRUE) ==
+           CSTR_EQUAL;
+}
+
+/// @p path opened to read its attributes and security, @p folder with FILE_FLAG_BACKUP_SEMANTICS. Shared
+/// for reading and writing but not deleting, so while it is held no one can rename, move or delete it.
+[[nodiscard]] UniqueHandle openHeld(const std::wstring& path, bool folder)
+{
+    return UniqueHandle(CreateFileW(path.c_str(),
+                                    FILE_READ_ATTRIBUTES | READ_CONTROL,
+                                    FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                    nullptr,
+                                    OPEN_EXISTING,
+                                    folder ? FILE_FLAG_BACKUP_SEMANTICS : FILE_ATTRIBUTE_NORMAL,
+                                    nullptr));
+}
+
+/// The final path of @p handle's file or folder, without the \\?\ prefix.
+[[nodiscard]] std::optional<std::wstring> finalPathOfHandle(HANDLE handle)
+{
+    const auto final = readPath([handle](wchar_t* buffer, DWORD size)
+                                { return GetFinalPathNameByHandleW(handle, buffer, size, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS); });
+    if (!final.has_value())
+    {
+        return std::nullopt;
+    }
+    return withoutExtendedPrefix(*final);
+}
+
+/// Whether neither @p token's user nor anyone but an administrator has @p rights over what @p handle
+/// holds, read from that handle (GetSecurityInfo). @p name is for the error.
+[[nodiscard]] std::expected<void, std::string> checkHeld(HANDLE token, HANDLE handle, DWORD rights, const std::wstring& name)
+{
+    const std::string text = WinString::wideToUtf8(name);
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    const DWORD read = GetSecurityInfo(handle,
+                                       SE_FILE_OBJECT,
+                                       OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                                       nullptr,
+                                       nullptr,
+                                       nullptr,
+                                       nullptr,
+                                       &descriptor);
+    if (read != ERROR_SUCCESS)
+    {
+        return std::unexpected(std::format("couldn't read who may change {}: {}", text, lastErrorText(read)));
+    }
+    const std::unique_ptr<void, LocalFreer> owned(descriptor);
+    return checkDescriptor(token, descriptor, rights, text);
+}
+
+/// checkUnchangeableBy() for one @p file; with @p mustBeNamedSo, its final path must also be @p file.
+/// The file, its folder and each folder above are opened and held (openHeld()) before anything is
+/// checked, each folder's final path must be its name in the file's, and the file's final path is read
+/// again once they are held: so the names compared and the security read are of the same objects, and
+/// none can be swapped for another (a junction, say) in between.
+[[nodiscard]] std::expected<void, std::string> checkOne(HANDLE token, const std::wstring& file, bool mustBeNamedSo)
+{
+    const UniqueHandle held = openHeld(file, false);
+    if (!held)
+    {
+        return std::unexpected(std::format("couldn't open {}: {}", WinString::wideToUtf8(file), lastErrorText(GetLastError())));
+    }
+    const auto final = finalPathOfHandle(held.get());
+    if (!final.has_value())
+    {
+        return std::unexpected(std::format("couldn't tell where {} is", WinString::wideToUtf8(file)));
+    }
+    if (mustBeNamedSo && !samePathText(*final, file))
+    {
+        return std::unexpected(std::format("{} is really {}", WinString::wideToUtf8(file), WinString::wideToUtf8(*final)));
+    }
+    // The folders above it, nearest first, each held while the rest are opened and checked.
+    struct Folder
+    {
+        std::filesystem::path path;
+        UniqueHandle handle;
+    };
+    std::vector<Folder> folders;
+    std::filesystem::path folder = std::filesystem::path(*final).parent_path();
+    while (true)
+    {
+        UniqueHandle handle = openHeld(folder.wstring(), true);
+        if (!handle)
+        {
+            return std::unexpected(
+                std::format("couldn't open {}: {}", WinString::wideToUtf8(folder.wstring()), lastErrorText(GetLastError())));
+        }
+        const auto folderFinal = finalPathOfHandle(handle.get());
+        if (!folderFinal.has_value() || !samePathText(*folderFinal, folder.wstring()))
+        {
+            return std::unexpected(std::format("{} moved while it was checked", WinString::wideToUtf8(folder.wstring())));
+        }
+        folders.push_back({.path = folder, .handle = std::move(handle)});
+        if (!folder.has_relative_path())
+        {
+            break;
+        }
+        folder = folder.parent_path();
+    }
+    const auto again = finalPathOfHandle(held.get());
+    if (!again.has_value() || !samePathText(*again, *final))
+    {
+        return std::unexpected(std::format("{} moved while it was checked", WinString::wideToUtf8(file)));
+    }
+    if (auto checked = checkHeld(token, held.get(), FILE_CHANGE_RIGHTS, *final); !checked.has_value())
+    {
+        return checked;
+    }
+    for (std::size_t index = 0; index < folders.size(); ++index)
+    {
+        const DWORD rights = index == 0 ? FOLDER_CHANGE_RIGHTS : ANCESTOR_CHANGE_RIGHTS;
+        if (auto checked = checkHeld(token, folders[index].handle.get(), rights, folders[index].path.wstring()); !checked.has_value())
+        {
+            return checked;
+        }
     }
     return {};
 }
@@ -368,6 +582,16 @@ bool sameFile(const std::wstring& first, const std::wstring& second)
            CSTR_EQUAL;
 }
 
+std::optional<std::wstring> finalPath(const std::wstring& path)
+{
+    const auto final = finalPathOf(path);
+    if (!final.has_value())
+    {
+        return std::nullopt;
+    }
+    return withoutExtendedPrefix(*final);
+}
+
 std::expected<void, std::string> checkUnchangeableBy(HANDLE token, std::span<const std::wstring> files)
 {
     if (files.empty())
@@ -377,31 +601,31 @@ std::expected<void, std::string> checkUnchangeableBy(HANDLE token, std::span<con
     for (const std::wstring& file : files)
     {
         // The file itself, links resolved: the folders checked are where it really is.
-        const auto final = finalPathOf(file);
-        if (!final.has_value())
-        {
-            return std::unexpected(std::format("couldn't open {}", WinString::wideToUtf8(file)));
-        }
-        const std::filesystem::path path(withoutExtendedPrefix(*final));
-        if (auto checked = checkNone(token, path, FILE_CHANGE_RIGHTS); !checked.has_value())
+        if (auto checked = checkOne(token, file, false); !checked.has_value())
         {
             return checked;
-        }
-        std::filesystem::path folder = path.parent_path();
-        if (auto checked = checkNone(token, folder, FOLDER_CHANGE_RIGHTS); !checked.has_value())
-        {
-            return checked;
-        }
-        while (folder.has_relative_path())
-        {
-            folder = folder.parent_path();
-            if (auto checked = checkNone(token, folder, ANCESTOR_CHANGE_RIGHTS); !checked.has_value())
-            {
-                return checked;
-            }
         }
     }
     return {};
+}
+
+std::expected<void, std::string> checkUnchangeableNamed(HANDLE token, const std::wstring& file)
+{
+    return checkOne(token, file, true);
+}
+
+std::expected<void, std::string> checkDescriptor(HANDLE token, PSECURITY_DESCRIPTOR descriptor, DWORD rights, std::string_view name)
+{
+    const auto granted = grantedRights(token, descriptor, name);
+    if (!granted.has_value())
+    {
+        return std::unexpected(granted.error());
+    }
+    if ((*granted & rights) != 0)
+    {
+        return std::unexpected(std::format("TaskSmack's user can change {} (rights 0x{:08X})", name, *granted & rights));
+    }
+    return checkOnlyAdministrators(descriptor, rights, name);
 }
 
 std::expected<void, std::string> checkUnchangeableByParent(HANDLE parent, std::span<const std::wstring> files)

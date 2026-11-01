@@ -15,7 +15,6 @@
 #include <string_view>
 #include <system_error>
 #include <utility>
-#include <vector>
 
 namespace Platform::Windows
 {
@@ -308,28 +307,6 @@ Broker::ActionResult handleHelperRequest(const Broker::TaskManagerReplacementReq
             ProcessActionResult::error("TaskSmack's helper replaces Task Manager only with the TaskSmack.exe beside it, " + served));
     }
     return Broker::ActionResult::from(TaskManagerReplacement::applySet(registry, request.path, request.replaceOther));
-}
-
-std::vector<std::string> installFolders()
-{
-    std::vector<std::string> folders;
-    for (const wchar_t* name : {L"ProgramFiles", L"ProgramW6432", L"ProgramFiles(x86)"})
-    {
-        std::wstring value(MAX_PATH, L'\0');
-        DWORD length = GetEnvironmentVariableW(name, value.data(), static_cast<DWORD>(value.size()));
-        if (length > value.size())
-        {
-            value.resize(length);
-            length = GetEnvironmentVariableW(name, value.data(), static_cast<DWORD>(value.size()));
-        }
-        if (length == 0 || length >= value.size())
-        {
-            continue;
-        }
-        value.resize(length);
-        folders.push_back(WinString::wideToUtf8(value));
-    }
-    return folders;
 }
 
 bool fileExists(std::string_view path)

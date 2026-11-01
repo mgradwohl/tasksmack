@@ -133,6 +133,11 @@ using GetModuleFileNameFn = DWORD(WINAPI*)(HMODULE module, LPWSTR path, DWORD si
 /// symbolic links, junctions and case don't matter. False when either can't be opened.
 [[nodiscard]] bool sameFile(const std::wstring& first, const std::wstring& second);
 
+/// The final path of the file at @p path, without the \\?\ prefix Windows gives it: what it names once
+/// "..", 8.3 short names, symbolic links, junctions and case are resolved, the path checkUnchangeableBy()
+/// checks. nullopt when it can't be opened.
+[[nodiscard]] std::optional<std::wstring> finalPath(const std::wstring& path);
+
 /// Rights over an installed exe that would let a user put another program in its place.
 inline constexpr DWORD FILE_CHANGE_RIGHTS = FILE_WRITE_DATA | FILE_APPEND_DATA | DELETE | WRITE_DAC | WRITE_OWNER;
 /// Rights over the install's folder that would let a user add, remove or rename what is in it.
@@ -142,13 +147,27 @@ inline constexpr DWORD FOLDER_CHANGE_RIGHTS = FILE_ADD_FILE | FILE_ADD_SUBDIRECT
 /// one's name, and every user may create folders at a drive's root.
 inline constexpr DWORD ANCESTOR_CHANGE_RIGHTS = FILE_DELETE_CHILD | DELETE | WRITE_DAC | WRITE_OWNER;
 
-/// Whether the user of @p token (an impersonation token, identification level is enough) can change
-/// none of @p files: no FILE_CHANGE_RIGHTS over any file, no FOLDER_CHANGE_RIGHTS over the folder of
-/// each, and no ANCESTOR_CHANGE_RIGHTS over any folder above, up to the root. Checked with AccessCheck
-/// against each path's security descriptor, after links are resolved. WRITE_DAC is among the rights,
-/// so an owner's implicit rights count too. Anything that can't be read is a refusal. The error names
-/// the path.
+/// Whether neither the user of @p token (an impersonation token, identification level is enough) nor
+/// anyone but an administrator can change @p descriptor's object, @p rights over it: AccessCheck grants
+/// @p token none of them, its owner is Administrators, SYSTEM or TrustedInstaller, and no allow ACE that
+/// applies to the object itself gives any of them to another user, group or service (#3280: a user
+/// who isn't in @p token, such as the one who asked an administrator to elevate, counts too). @p name
+/// is for the error.
+[[nodiscard]] std::expected<void, std::string>
+checkDescriptor(HANDLE token, PSECURITY_DESCRIPTOR descriptor, DWORD rights, std::string_view name);
+
+/// Whether the user of @p token (an impersonation token, identification level is enough), and anyone
+/// but an administrator, can change none of @p files: checkDescriptor() with FILE_CHANGE_RIGHTS over
+/// each file, FOLDER_CHANGE_RIGHTS over its folder and ANCESTOR_CHANGE_RIGHTS over each folder above, up
+/// to the root, after links are resolved. WRITE_DAC is among the rights, so an owner's implicit rights
+/// count too. The file and every folder are opened and held, unable to be renamed or deleted, and each
+/// folder's final path compared with its name, before the security is read from those same handles. So
+/// nothing can be swapped in between. Anything that can't be read is a refusal. The error names the path.
 [[nodiscard]] std::expected<void, std::string> checkUnchangeableBy(HANDLE token, std::span<const std::wstring> files);
+
+/// checkUnchangeableBy() for @p file, which must also be its own final path, read from the handle the
+/// check holds: so the path a caller writes down is the file checked, with no link or junction on the way.
+[[nodiscard]] std::expected<void, std::string> checkUnchangeableNamed(HANDLE token, const std::wstring& file);
 
 /// checkUnchangeableBy() with @p parent's own token, duplicated for identification: TaskSmack's user.
 [[nodiscard]] std::expected<void, std::string> checkUnchangeableByParent(HANDLE parent, std::span<const std::wstring> files);

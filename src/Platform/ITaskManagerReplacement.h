@@ -26,6 +26,9 @@ struct TaskManagerReplacementInfo
     std::string selfPath;
     /// Why this copy can't change the replacement, or empty when it can.
     std::string unavailableReason;
+    /// Why this copy can't turn it on or repair it, though it can turn it off, or empty when it can (#3280):
+    /// an elevated copy that someone other than an administrator could change.
+    std::string turnOnUnavailableReason;
     /// The value couldn't be read; @c status is then Off.
     bool readFailed = false;
     /// Whether the program the value starts exists (always true when Off or ThisCopy).
