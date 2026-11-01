@@ -4,6 +4,7 @@
 // reads and the sensor sampler (#2737) share. Plain state, no locking: its owner serialises it.
 
 #include "Domain/SamplingConfig.h"
+#include "Domain/SharedHistory.h"
 #include "Platform/ISystemInfoProbe.h"
 
 #include <cstddef>
@@ -33,28 +34,47 @@ struct SensorRange
 /// One sensor's recent readings, for its row's chart (#1522), oldest first, `values` aligned with
 /// `times`: none more than the history window (the Settings history duration, #2796) older than the
 /// newest, and at most Sampling::historyCapacityForSeconds(window) of them. A NaN value marks a break
-/// where the reads paused.
+/// where the reads paused. Immutable views of SensorSeries' samples (#3286): holding one keeps them
+/// as they were, and publishing one copies a shared_ptr, not the history.
 struct SensorHistory
 {
-    std::vector<float> values;
-    std::vector<double> times; ///< When each was read, steady_clock seconds (UI::Widgets::historyFrameNowSeconds()'s clock)
-
-    [[nodiscard]] bool operator==(const SensorHistory&) const = default;
+    HistoryView<float> values;
+    HistoryView<double> times; ///< When each was read, steady_clock seconds (UI::Widgets::historyFrameNowSeconds()'s clock)
 };
+
+class SensorSeries;
 
 /// The interval sensors were read at before they followed the Settings interval (#1522).
 inline constexpr double SENSOR_DEFAULT_INTERVAL_SECONDS = static_cast<double>(Sampling::SYSTEM_INFO_SENSOR_REFRESH_MS) / 1000.0;
 
-/// Appends @p value read at @p nowSeconds to @p history, read every @p intervalSeconds: a NaN break
+/// Appends @p value read at @p nowSeconds to @p series, read every @p intervalSeconds: a NaN break
 /// first when the reads paused (sensorHistoryGapSeconds()), then the oldest dropped past
 /// @p windowSeconds (clamped as Sampling::clampHistorySeconds() clamps it) or past
 /// Sampling::historyCapacityForSeconds() of it. A time not after the newest is ignored, so the history
 /// stays in order.
-void appendSensorHistory(SensorHistory& history,
+void appendSensorHistory(SensorSeries& series,
                          double value,
                          double nowSeconds,
                          double intervalSeconds = SENSOR_DEFAULT_INTERVAL_SECONDS,
                          double windowSeconds = Sampling::HISTORY_SECONDS_DEFAULT);
+
+/// One sensor's history as SensorTracker keeps it: aligned shared series that grow by appending
+/// (appendSensorHistory()), so view() publishes them without copying (#3286).
+class SensorSeries
+{
+  public:
+    /// The samples so far, as an immutable view.
+    [[nodiscard]] SensorHistory view() const
+    {
+        return {.values = m_Values.view(), .times = m_Times.view()};
+    }
+
+  private:
+    friend void appendSensorHistory(SensorSeries& series, double value, double nowSeconds, double intervalSeconds, double windowSeconds);
+
+    SharedHistoryBuffer<float> m_Values;
+    SharedHistoryBuffer<double> m_Times;
+};
 
 /// A pause longer than this many sensor intervals breaks a sensor's history line...
 inline constexpr double SENSOR_HISTORY_GAP_INTERVALS = 3.0;
@@ -107,17 +127,15 @@ class SensorTracker
         return m_Ranges;
     }
 
-    [[nodiscard]] const std::map<std::string, SensorHistory>& histories() const noexcept
-    {
-        return m_Histories;
-    }
+    /// Each sensor's history as an immutable view: O(sensors), whatever the history length (#3286).
+    [[nodiscard]] std::map<std::string, SensorHistory> histories() const;
 
   private:
     /// Drops the ranges and histories of the device keyed @p deviceKey.
     void forgetDevice(std::string_view deviceKey);
 
     std::map<std::string, SensorRange> m_Ranges;
-    std::map<std::string, SensorHistory> m_Histories;
+    std::map<std::string, SensorSeries> m_Histories;
     /// Each device's driver name (without the " #2" that makes it unique on the page) by its
     /// sensorDeviceKey(), as last read: a new name under the same key is a new device (#2495).
     std::map<std::string, std::string, std::less<>> m_DeviceNames;
