@@ -13,11 +13,13 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -79,16 +81,16 @@ template<typename T> [[nodiscard]] float readingOrNaN(const GPUSnapshot& sample,
     return available ? sampleOrNaN(sample, value) : std::numeric_limits<float>::quiet_NaN();
 }
 
-/// A GPU's utilization from its DRM clients' cumulative engine busyness (#1267). Per engine class,
-/// each client in both samples adds the share of the interval it kept the class busy (its busy
-/// change over its total's change, both in one unit); the shares summed over the class's capacity
-/// (engine count) give the class's percent, and the busiest class is the GPU's. A client seen in only
-/// one sample (started or exited in between), or whose counters went backwards, adds nothing; no
-/// clients at all is an idle GPU, 0%.
-[[nodiscard]] double engineUtilizationPercent(std::span<const Platform::GPUEngineClientCounters> current,
-                                              std::span<const Platform::GPUEngineClientCounters> previous)
+/// Per engine class, how busy DRM clients' cumulative engine busyness says the class was (#1267): a
+/// fraction of the class's engines, 0 to about 1. Each client in @p current that is also in
+/// @p previous adds the share of the interval it kept the class busy (its busy change over its
+/// total's change, both in one unit), and the sum is divided by the class's capacity (engine count).
+/// A client seen in only one sample (started or exited in between), or whose counters went
+/// backwards, adds nothing.
+[[nodiscard]] std::array<double, Platform::GPU_ENGINE_CLASS_COUNT>
+engineClassShares(std::span<const Platform::GPUEngineClientCounters> current, std::span<const Platform::GPUEngineClientCounters> previous)
 {
-    double busiest = 0.0;
+    std::array<double, Platform::GPU_ENGINE_CLASS_COUNT> shares{};
     for (std::size_t engineClass = 0; engineClass < Platform::GPU_ENGINE_CLASS_COUNT; ++engineClass)
     {
         double busyShare = 0.0;
@@ -109,10 +111,24 @@ template<typename T> [[nodiscard]] float readingOrNaN(const GPUSnapshot& sample,
             busyShare += Numeric::toDouble(now.busy - then.busy) / Numeric::toDouble(now.total - then.total);
             capacity = std::max(capacity, now.capacity);
         }
-        busiest = std::max(busiest, (busyShare / static_cast<double>(capacity)) * 100.0);
+        shares.at(engineClass) = busyShare / static_cast<double>(capacity);
     }
-    // Clients' reads are moments apart, so the shares of a fully busy class can sum just past 100%.
-    return std::clamp(busiest, 0.0, 100.0);
+    return shares;
+}
+
+/// The busiest class's share in @p shares as a percent. Clients' reads are moments apart, so the
+/// shares of a fully busy class can sum just past 100%: clamped.
+[[nodiscard]] double busiestClassPercent(const std::array<double, Platform::GPU_ENGINE_CLASS_COUNT>& shares)
+{
+    return std::clamp(std::ranges::max(shares) * 100.0, 0.0, 100.0);
+}
+
+/// A GPU's utilization from its DRM clients' cumulative engine busyness (#1267): the busiest engine
+/// class's share, engineClassShares(). No clients at all is an idle GPU, 0%.
+[[nodiscard]] double engineUtilizationPercent(std::span<const Platform::GPUEngineClientCounters> current,
+                                              std::span<const Platform::GPUEngineClientCounters> previous)
+{
+    return busiestClassPercent(engineClassShares(current, previous));
 }
 
 /// Keeps each DRM client's engine busy counter at its high-water mark in the counters stored as the
@@ -120,12 +136,12 @@ template<typename T> [[nodiscard]] float readingOrNaN(const GPUSnapshot& sample,
 /// backwards and asks userspace to keep the previous, larger value until the counter catches up; a
 /// lower baseline would make the next rise, still below the old value, count as real busy time
 /// (#1350 review).
-void carryBusyHighWater(Platform::GPUCounters& current, const Platform::GPUCounters& previous)
+void carryBusyHighWater(std::span<Platform::GPUEngineClientCounters> current, std::span<const Platform::GPUEngineClientCounters> previous)
 {
-    for (auto& client : current.engineClients)
+    for (auto& client : current)
     {
-        const auto before = std::ranges::find(previous.engineClients, client.clientId, &Platform::GPUEngineClientCounters::clientId);
-        if (before == previous.engineClients.end())
+        const auto before = std::ranges::find(previous, client.clientId, &Platform::GPUEngineClientCounters::clientId);
+        if (before == previous.end())
         {
             continue;
         }
@@ -139,6 +155,50 @@ void carryBusyHighWater(Platform::GPUCounters& current, const Platform::GPUCount
             }
         }
     }
+}
+
+/// Each GPU's DRM clients at a per-process read, by GPU id: the baseline the next read's per-process
+/// utilization is the change from (#3300). A client id names one open DRM file on one card only.
+using EngineClientsByGpu = std::unordered_map<std::string, std::vector<Platform::GPUEngineClientCounters>>;
+
+/// Fills in the utilization and active engines of each process in @p processes that carries DRM
+/// clients (#3300), from their change since @p previous: the busiest engine class's share, as the
+/// card's utilization is figured, and every class with any share an active engine. A client matches
+/// its card's previous clients by id, whichever process held it then, and one seen for the first time
+/// counts as idle for one sample. A process without clients (a backend that reports its own
+/// percentage) is left as it is. Returns the next baseline, each client at its busy high-water mark;
+/// the clients are moved out of @p processes, which ProcessModel never reads them from.
+[[nodiscard]] EngineClientsByGpu deriveProcessEngineUtilization(std::vector<Platform::ProcessGPUCounters>& processes,
+                                                                const EngineClientsByGpu& previous)
+{
+    EngineClientsByGpu next;
+    for (auto& process : processes)
+    {
+        if (process.engineClients.empty())
+        {
+            continue;
+        }
+        std::span<const Platform::GPUEngineClientCounters> baseline;
+        if (const auto before = previous.find(process.gpuId); before != previous.end())
+        {
+            baseline = before->second;
+        }
+        const auto shares = engineClassShares(process.engineClients, baseline);
+        process.gpuUtilPercent = busiestClassPercent(shares);
+        for (std::size_t engineClass = 0; engineClass < Platform::GPU_ENGINE_CLASS_COUNT; ++engineClass)
+        {
+            if (shares.at(engineClass) > 0.0)
+            {
+                process.activeEngines.emplace_back(Platform::GPU_ENGINE_CLASS_NAMES.at(engineClass));
+            }
+        }
+        carryBusyHighWater(process.engineClients, baseline);
+        auto& kept = next[process.gpuId];
+        kept.insert(
+            kept.end(), std::make_move_iterator(process.engineClients.begin()), std::make_move_iterator(process.engineClients.end()));
+        process.engineClients.clear();
+    }
+    return next;
 }
 
 /// The GPU clock: NaN when the read failed or returned 0 MHz. A 0 is the probes' "couldn't read it"
@@ -478,7 +538,7 @@ void GPUModel::refreshAt(std::chrono::steady_clock::time_point now)
             auto stored = counter;
             if (const auto before = m_PrevCounters.find(counter.gpuId); before != m_PrevCounters.end())
             {
-                carryBusyHighWater(stored, before->second);
+                carryBusyHighWater(stored.engineClients, before->second.engineClients);
             }
             nextPrevious[counter.gpuId] = std::move(stored);
         }
@@ -791,6 +851,13 @@ void GPUModel::publishProcessGPUData(std::chrono::steady_clock::time_point now)
 
     try
     {
+        // DRM processes' utilization from their clients' change since the previous read (#3300). A
+        // failed read leaves the baseline as it was; a read that returned nothing empties it.
+        std::optional<EngineClientsByGpu> nextEngineClients;
+        if (!reading.failure)
+        {
+            nextEngineClients = deriveProcessEngineUtilization(reading.counters, m_PrevProcessEngineClients);
+        }
         auto publication = std::make_shared<ProcessGPUPublication>();
         publication->version = m_ProcessPublicationVersion + 1;
         publication->captureTime = now;
@@ -817,6 +884,11 @@ void GPUModel::publishProcessGPUData(std::chrono::steady_clock::time_point now)
         const std::uint64_t version = publication->version;
         m_ProcessPublication.commit(std::move(publication));
         m_ProcessPublicationVersion = version;
+        // After the commit, as the card's baseline is kept: a publish that throws leaves the previous one.
+        if (nextEngineClients)
+        {
+            m_PrevProcessEngineClients = std::move(*nextEngineClients);
+        }
     }
     catch (const std::exception& e)
     {

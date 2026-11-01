@@ -2458,9 +2458,9 @@ TEST(DRMGPUProbeFdinfoTest, AmdgpusOlderMemoryKeysCountOnlyWithoutTheResidentOne
         << "the same figure under two names, counted once";
 }
 
-// #2589: each process gets its clients' memory and its share of the engines' time. Process 100 holds two
-// clients, process 200 one.
-TEST_F(DRMGPUProbeEngineTest, EachProcessGetsItsClientsMemoryAndBusyShare)
+// #2589: each process gets its clients' memory and the clients' raw engine counters, from which Domain
+// derives its share of the engines' time (#3300). Process 100 holds two clients, process 200 one.
+TEST_F(DRMGPUProbeEngineTest, EachProcessGetsItsClientsMemoryAndRawEngineCounters)
 {
     const auto fdinfo = [](int clientId, std::uint64_t cycles, std::uint64_t total, std::string_view memory)
     {
@@ -2478,32 +2478,62 @@ TEST_F(DRMGPUProbeEngineTest, EachProcessGetsItsClientsMemoryAndBusyShare)
     EXPECT_EQ(first[0].pid, 100);
     EXPECT_EQ(first[0].gpuMemoryBytes, 2048U * 1024U) << "resident wins over total";
     EXPECT_EQ(first[0].gpuSharedMemoryBytes, 1024U * 1024U);
-    EXPECT_DOUBLE_EQ(first[0].gpuUtilPercent, 0.0) << "no baseline yet";
+    EXPECT_DOUBLE_EQ(first[0].gpuUtilPercent, 0.0) << "Domain derives it";
+    EXPECT_TRUE(first[0].activeEngines.empty());
+    ASSERT_EQ(first[0].engineClients.size(), 2U);
+    const auto client7 = std::ranges::find(first[0].engineClients, 7U, &GPUEngineClientCounters::clientId);
+    ASSERT_NE(client7, first[0].engineClients.end());
+    EXPECT_EQ(client7->pid, 100);
+    EXPECT_TRUE(client7->engines.at(RENDER).available);
+    EXPECT_EQ(client7->engines.at(RENDER).busy, 1'000U);
+    EXPECT_EQ(client7->engines.at(RENDER).total, 10'000U);
+    EXPECT_NE(std::ranges::find(first[0].engineClients, 9U, &GPUEngineClientCounters::clientId), first[0].engineClients.end());
     EXPECT_EQ(first[1].pid, 200);
     EXPECT_EQ(first[1].gpuSharedMemoryBytes, 512U);
+    ASSERT_EQ(first[1].engineClients.size(), 1U);
+    EXPECT_EQ(first[1].engineClients[0].clientId, 8U);
 
-    // Over 1000 cycles: process 100's clients kept the render engine busy 300 + 100 (40%), 200's 200 (20%).
+    // The probe keeps no baseline (#3300): a second read reports the counters as they are now.
     std::ofstream(m_ProcRoot / "100" / "fdinfo" / "4") << fdinfo(7, 1'300, 11'000, "");
-    std::ofstream(m_ProcRoot / "100" / "fdinfo" / "5") << fdinfo(9, 100, 11'000, "");
-    std::ofstream(m_ProcRoot / "200" / "fdinfo" / "4") << fdinfo(8, 200, 11'000, "");
     (void) probe->readGPUCounters();
     std::vector<ProcessGPUCounters> second = probe->readProcessGPUCounters();
-    std::ranges::sort(second, {}, &ProcessGPUCounters::pid);
-    ASSERT_EQ(second.size(), 2U);
-    EXPECT_DOUBLE_EQ(second[0].gpuUtilPercent, 40.0);
-    EXPECT_EQ(second[0].activeEngines, (std::vector<std::string>{"3D"}));
-    EXPECT_DOUBLE_EQ(second[1].gpuUtilPercent, 20.0);
+    const auto p100 = std::ranges::find(second, 100, &ProcessGPUCounters::pid);
+    ASSERT_NE(p100, second.end());
+    EXPECT_DOUBLE_EQ(p100->gpuUtilPercent, 0.0);
+    const auto again7 = std::ranges::find(p100->engineClients, 7U, &GPUEngineClientCounters::clientId);
+    ASSERT_NE(again7, p100->engineClients.end());
+    EXPECT_EQ(again7->engines.at(RENDER).busy, 1'300U);
+    EXPECT_EQ(again7->engines.at(RENDER).total, 11'000U);
+}
 
-    // A counter that goes back adds nothing, and its recovery up to the old value isn't busy time.
-    std::ofstream(m_ProcRoot / "200" / "fdinfo" / "4") << fdinfo(8, 150, 12'000, "");
-    (void) probe->readGPUCounters();
-    (void) probe->readProcessGPUCounters();
-    std::ofstream(m_ProcRoot / "200" / "fdinfo" / "4") << fdinfo(8, 200, 13'000, "");
-    (void) probe->readGPUCounters();
-    std::vector<ProcessGPUCounters> third = probe->readProcessGPUCounters();
-    const auto p200 = std::ranges::find(third, 200, &ProcessGPUCounters::pid);
-    ASSERT_NE(p200, third.end());
-    EXPECT_DOUBLE_EQ(p200->gpuUtilPercent, 0.0);
+// #3300: through GPUModel, each process gets its share of the engines' time from its clients' change
+// between samples. Over 1000 cycles, process 100's clients keep the render engine busy 300 + 100 (40%),
+// 200's 200 (20%).
+TEST_F(DRMGPUProbeEngineTest, GPUModelDerivesEachProcessesBusyShareFromItsClients)
+{
+    makeFd(m_ProcRoot, 100, 4, "/dev/dri/renderD129", xeFdinfo(7, 1'000, 10'000));
+    makeFd(m_ProcRoot, 100, 5, "/dev/dri/renderD129", xeFdinfo(9, 0, 10'000));
+    makeFd(m_ProcRoot, 200, 4, "/dev/dri/renderD129", xeFdinfo(8, 0, 10'000));
+    Domain::GPUModel model(makeProbe());
+    const auto start = std::chrono::steady_clock::now();
+    model.refreshAt(start);
+    const auto share = [&model](std::int32_t pid)
+    {
+        const auto publication = model.processGPUPublication();
+        const auto process = std::ranges::find(publication->counters, pid, &ProcessGPUCounters::pid);
+        return process != publication->counters.end() ? std::optional(*process) : std::nullopt;
+    };
+    ASSERT_TRUE(share(100).has_value());
+    EXPECT_DOUBLE_EQ(share(100).value_or(ProcessGPUCounters{}).gpuUtilPercent, 0.0) << "no baseline yet";
+
+    std::ofstream(m_ProcRoot / "100" / "fdinfo" / "4") << xeFdinfo(7, 1'300, 11'000);
+    std::ofstream(m_ProcRoot / "100" / "fdinfo" / "5") << xeFdinfo(9, 100, 11'000);
+    std::ofstream(m_ProcRoot / "200" / "fdinfo" / "4") << xeFdinfo(8, 200, 11'000);
+    model.refreshAt(start + std::chrono::seconds(1));
+    const ProcessGPUCounters p100 = share(100).value_or(ProcessGPUCounters{});
+    EXPECT_DOUBLE_EQ(p100.gpuUtilPercent, 40.0);
+    EXPECT_EQ(p100.activeEngines, (std::vector<std::string>{"3D"}));
+    EXPECT_DOUBLE_EQ(share(200).value_or(ProcessGPUCounters{}).gpuUtilPercent, 20.0);
 }
 
 TEST_F(DRMGPUProbeEngineTest, I915BusyNanosecondsAgainstTheClock)

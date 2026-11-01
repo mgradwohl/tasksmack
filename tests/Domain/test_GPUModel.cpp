@@ -1024,6 +1024,142 @@ TEST(GPUModelTest, EngineUtilizationIsCappedAtOneHundredPercent)
 }
 
 // =============================================================================
+// Per-process utilization from DRM clients' engine busyness (#3300)
+// =============================================================================
+
+constexpr auto COPY_CLASS = static_cast<std::size_t>(Platform::GPUEngineClass::Copy);
+
+/// A process on GPU0 as the DRM probe reports it: its clients' raw counters, no utilization of its own.
+[[nodiscard]] Platform::ProcessGPUCounters drmProcess(std::int32_t pid, std::vector<Platform::GPUEngineClientCounters> clients)
+{
+    Platform::ProcessGPUCounters process;
+    process.pid = pid;
+    process.gpuId = "GPU0";
+    process.gpuMemoryBytes = 1024;
+    process.engineClients = std::move(clients);
+    return process;
+}
+
+/// A probe with per-process GPU utilization, GPU0, and @p processes.
+[[nodiscard]] std::unique_ptr<MockGPUProbe> drmProcessProbe(std::vector<Platform::ProcessGPUCounters> processes)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessMetrics = true;
+    caps.hasPerProcessUtilization = true;
+    probe->withCapabilities(caps).withGPU("GPU0", "Test GPU", "Intel").withOnlyProcessGPUCounters(std::move(processes));
+    return probe;
+}
+
+/// The published per-process entry for @p pid; a default one (pid 0) when there is none.
+[[nodiscard]] Platform::ProcessGPUCounters publishedProcess(const Domain::GPUModel& model, std::int32_t pid)
+{
+    const auto publication = model.processGPUPublication();
+    const auto it = std::ranges::find(publication->counters, pid, &Platform::ProcessGPUCounters::pid);
+    return it != publication->counters.end() ? *it : Platform::ProcessGPUCounters{};
+}
+
+// Per class, a process's clients' busy shares are summed over the class's engine count; the busiest
+// class is its utilization and every class with any share an active engine.
+TEST(GPUModelTest, ProcessUtilizationIsTheBusiestEngineClassAcrossItsClients)
+{
+    auto copyAndRender = engineClient(2, RENDER_CLASS, 0, 1000);
+    copyAndRender.engines.at(COPY_CLASS) = Platform::GPUEngineBusyCounter{.available = true, .busy = 0, .total = 1000, .capacity = 1};
+    auto probe = drmProcessProbe({drmProcess(100, {engineClient(1, RENDER_CLASS, 0, 1000), copyAndRender}),
+                                  drmProcess(200, {engineClient(3, VIDEO_CLASS, 0, 1000, 2)})});
+    auto* rawProbe = probe.get();
+    Domain::GPUModel model(std::move(probe));
+    const auto start = std::chrono::steady_clock::now();
+    model.refreshAt(start);
+    EXPECT_DOUBLE_EQ(publishedProcess(model, 100).gpuUtilPercent, 0.0) << "no previous sample: idle for one sample";
+    EXPECT_TRUE(publishedProcess(model, 100).activeEngines.empty());
+    EXPECT_EQ(publishedProcess(model, 100).gpuMemoryBytes, 1024U);
+
+    // Process 100: render 100 + 200 of 1000 = 30%, copy 50 of 1000 = 5%. Process 200: video 900 of
+    // 1000 on one of its class's two engines = 45%.
+    copyAndRender = engineClient(2, RENDER_CLASS, 200, 2000);
+    copyAndRender.engines.at(COPY_CLASS) = Platform::GPUEngineBusyCounter{.available = true, .busy = 50, .total = 2000, .capacity = 1};
+    rawProbe->withOnlyProcessGPUCounters({drmProcess(100, {engineClient(1, RENDER_CLASS, 100, 2000), copyAndRender}),
+                                          drmProcess(200, {engineClient(3, VIDEO_CLASS, 900, 2000, 2)})});
+    model.refreshAt(start + std::chrono::seconds(1));
+    const auto p100 = publishedProcess(model, 100);
+    EXPECT_DOUBLE_EQ(p100.gpuUtilPercent, 30.0);
+    EXPECT_EQ(p100.activeEngines, (std::vector<std::string>{"3D", "Copy"}));
+    EXPECT_TRUE(p100.engineClients.empty()) << "the raw clients stay in the model";
+    const auto p200 = publishedProcess(model, 200);
+    EXPECT_DOUBLE_EQ(p200.gpuUtilPercent, 45.0);
+    EXPECT_EQ(p200.activeEngines, (std::vector<std::string>{"Video"}));
+}
+
+// A client seen for the first time has no baseline and counts as idle; one that moved to another
+// process (its parent exited) keeps its baseline, since a client id names one open DRM file.
+TEST(GPUModelTest, ProcessUtilizationCountsANewClientAsIdleAndFollowsAClientToItsNewProcess)
+{
+    auto probe = drmProcessProbe(
+        {drmProcess(100, {engineClient(1, RENDER_CLASS, 0, 1000)}), drmProcess(200, {engineClient(2, RENDER_CLASS, 0, 1000)})});
+    auto* rawProbe = probe.get();
+    Domain::GPUModel model(std::move(probe));
+    const auto start = std::chrono::steady_clock::now();
+    model.refreshAt(start);
+
+    // Client 5 is new (its lifetime busyness isn't this interval's); client 2 now reads through 300.
+    rawProbe->withOnlyProcessGPUCounters(
+        {drmProcess(100, {engineClient(1, RENDER_CLASS, 100, 2000), engineClient(5, RENDER_CLASS, 5'000, 2000)}),
+         drmProcess(300, {engineClient(2, RENDER_CLASS, 250, 2000)})});
+    model.refreshAt(start + std::chrono::seconds(1));
+    EXPECT_DOUBLE_EQ(publishedProcess(model, 100).gpuUtilPercent, 10.0);
+    EXPECT_DOUBLE_EQ(publishedProcess(model, 300).gpuUtilPercent, 25.0);
+    EXPECT_EQ(publishedProcess(model, 200).pid, 0) << "process 200 is gone";
+
+    // Next sample client 5 has its baseline: 100 of 1000.
+    rawProbe->withOnlyProcessGPUCounters(
+        {drmProcess(100, {engineClient(1, RENDER_CLASS, 100, 3000), engineClient(5, RENDER_CLASS, 5'100, 3000)})});
+    model.refreshAt(start + std::chrono::seconds(2));
+    EXPECT_DOUBLE_EQ(publishedProcess(model, 100).gpuUtilPercent, 10.0);
+}
+
+TEST(GPUModelTest, ProcessUtilizationKeepsABusyCounterAtItsHighWaterMarkUntilItCatchesUp)
+{
+    // As for the card (#1350 review): a dip counts nothing, nor does a rise still below the old value.
+    auto probe = drmProcessProbe({drmProcess(100, {engineClient(7, RENDER_CLASS, 800, 1000)})});
+    auto* rawProbe = probe.get();
+    Domain::GPUModel model(std::move(probe));
+    const auto start = std::chrono::steady_clock::now();
+    model.refreshAt(start);
+
+    rawProbe->withOnlyProcessGPUCounters({drmProcess(100, {engineClient(7, RENDER_CLASS, 600, 2000)})}); // dipped
+    model.refreshAt(start + std::chrono::seconds(1));
+    EXPECT_DOUBLE_EQ(publishedProcess(model, 100).gpuUtilPercent, 0.0);
+    EXPECT_TRUE(publishedProcess(model, 100).activeEngines.empty());
+
+    rawProbe->withOnlyProcessGPUCounters({drmProcess(100, {engineClient(7, RENDER_CLASS, 750, 3000)})}); // still below 800
+    model.refreshAt(start + std::chrono::seconds(2));
+    EXPECT_DOUBLE_EQ(publishedProcess(model, 100).gpuUtilPercent, 0.0) << "a rise below the high-water mark is not new busyness";
+
+    rawProbe->withOnlyProcessGPUCounters({drmProcess(100, {engineClient(7, RENDER_CLASS, 1'000, 4000)})}); // 200 past 800
+    model.refreshAt(start + std::chrono::seconds(3));
+    EXPECT_DOUBLE_EQ(publishedProcess(model, 100).gpuUtilPercent, 20.0);
+}
+
+// NVML, PDH and ROCm report a process's utilization themselves and no clients: published as read.
+TEST(GPUModelTest, ProcessUtilizationAProbeReportsItselfPassesThroughUnchanged)
+{
+    auto reported = TestMocks::makeProcessGPUCounters(100, "GPU0");
+    reported.gpuUtilPercent = 37.5;
+    reported.activeEngines = {"3D", "Compute"};
+    auto probe = drmProcessProbe({reported});
+    Domain::GPUModel model(std::move(probe));
+    const auto start = std::chrono::steady_clock::now();
+    for (int sample = 0; sample < 2; ++sample)
+    {
+        model.refreshAt(start + std::chrono::seconds(sample));
+        const auto p100 = publishedProcess(model, 100);
+        EXPECT_DOUBLE_EQ(p100.gpuUtilPercent, 37.5);
+        EXPECT_EQ(p100.activeEngines, (std::vector<std::string>{"3D", "Compute"}));
+    }
+}
+
+// =============================================================================
 // Multi-GPU Tests
 // =============================================================================
 
