@@ -190,8 +190,9 @@ std::shared_ptr<ITaskManagerReplacement> makeTaskManagerReplacement(const std::s
 
 std::shared_ptr<IHttpsClient> makeHttpsClient()
 {
-    // libcurl (#3238), when the build has it; without it the update check isn't offered, and nothing is sent.
-    if (!LinuxHttpsClient::built())
+    // libcurl (#3238), when the build has it and the one loaded can serve a worker thread (usable()); otherwise
+    // the update check isn't offered, and nothing is sent.
+    if (!LinuxHttpsClient::usable())
     {
         return nullptr;
     }

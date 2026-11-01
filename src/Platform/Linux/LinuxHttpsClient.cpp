@@ -12,6 +12,9 @@
 
 #ifdef TASKSMACK_HAS_CURL
 #include <array>
+#include <cerrno>
+#include <chrono>
+#include <ctime>
 #include <format>
 #include <memory>
 #include <mutex>
@@ -21,6 +24,11 @@
 #include <curl/curlver.h>
 #include <curl/easy.h>
 #include <curl/system.h>
+// NOLINTBEGIN(misc-include-cleaner) - POSIX headers: include-cleaner lacks mappings for the signal-mask calls
+#include <csignal>
+
+#include <pthread.h>
+// NOLINTEND(misc-include-cleaner)
 #endif
 
 namespace Platform
@@ -51,6 +59,46 @@ std::optional<std::string> refusal(const HttpsRequest& request)
     if (std::ranges::any_of(request.path, [](char c) { return c == '#' || c == ' ' || c == '\r' || c == '\n' || c == '\0'; }))
     {
         return "The request's path holds a character a URL path can't";
+    }
+    return std::nullopt;
+}
+
+std::optional<std::string> redirectRefusal(std::string_view location)
+{
+    constexpr std::string_view SCHEME = "https://";
+    const auto lower = [](char c)
+    {
+        return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+    };
+    if (location.size() < SCHEME.size() || !std::ranges::equal(location.substr(0, SCHEME.size()), SCHEME, {}, lower))
+    {
+        return "A redirect to anything but https isn't followed";
+    }
+    const std::string_view rest = location.substr(SCHEME.size());
+    const std::size_t authorityEnd = rest.find_first_of("/?#");
+    const std::string_view authority = rest.substr(0, authorityEnd);
+    if (authority.contains('@'))
+    {
+        return "A redirect carrying credentials isn't followed";
+    }
+    std::string_view host = authority;
+    if (const std::size_t colon = authority.rfind(':'); colon != std::string_view::npos)
+    {
+        if (authority.substr(colon + 1) != "443")
+        {
+            return "A redirect to a port other than 443 isn't followed";
+        }
+        host = authority.substr(0, colon);
+    }
+    std::string path(authorityEnd == std::string_view::npos ? std::string_view("/") : rest.substr(authorityEnd));
+    if (path.front() != '/')
+    {
+        path.insert(path.begin(), '/');
+    }
+    if (const std::optional<std::string> refused =
+            refusal({.host = std::string(host), .path = path, .userAgent = "-", .accept = {}, .timeout = {}, .maxBodyBytes = 0}))
+    {
+        return "A redirect to an address the client wouldn't request isn't followed: " + *refused;
     }
     return std::nullopt;
 }
@@ -125,11 +173,79 @@ struct ListDeleter
     }
 };
 
+// NOLINTBEGIN(misc-include-cleaner) - sigset_t and the sig*() calls are POSIX <signal.h>, unmapped
+/// Holds SIGPIPE off this thread for its life: libcurl's own sends don't raise it, but with CURLOPT_NOSIGNAL
+/// it doesn't guard a TLS library's, and the default action would end TaskSmack. One that arrives meanwhile is
+/// taken before the mask is put back, so it never reaches the process.
+class SigpipeBlock
+{
+  public:
+    SigpipeBlock() noexcept
+    {
+        sigset_t pipe{};
+        sigemptyset(&pipe);
+        sigaddset(&pipe, SIGPIPE);
+        sigset_t pending{};
+        sigpending(&pending);
+        m_WasPending = sigismember(&pending, SIGPIPE) == 1;
+        m_Blocked = pthread_sigmask(SIG_BLOCK, &pipe, &m_Previous) == 0;
+    }
+    ~SigpipeBlock()
+    {
+        if (!m_Blocked)
+        {
+            return;
+        }
+        sigset_t pending{};
+        sigpending(&pending);
+        if (!m_WasPending && sigismember(&pending, SIGPIPE) == 1)
+        {
+            sigset_t pipe{};
+            sigemptyset(&pipe);
+            sigaddset(&pipe, SIGPIPE);
+            const timespec now{.tv_sec = 0, .tv_nsec = 0};
+            while (sigtimedwait(&pipe, nullptr, &now) == -1 && errno == EINTR)
+            {
+            }
+        }
+        pthread_sigmask(SIG_SETMASK, &m_Previous, nullptr);
+    }
+    SigpipeBlock(const SigpipeBlock&) = delete;
+    SigpipeBlock& operator=(const SigpipeBlock&) = delete;
+    SigpipeBlock(SigpipeBlock&&) = delete;
+    SigpipeBlock& operator=(SigpipeBlock&&) = delete;
+
+  private:
+    sigset_t m_Previous{};
+    bool m_WasPending = false;
+    bool m_Blocked = false;
+};
+
+// NOLINTEND(misc-include-cleaner)
+
+/// The most redirects one request follows, each checked by redirectRefusal() first.
+constexpr int MAX_REDIRECTS = 5;
+
 } // namespace
 
 bool LinuxHttpsClient::built() noexcept
 {
     return true;
+}
+
+bool LinuxHttpsClient::usable() noexcept
+{
+    const curl_version_info_data* const info = curl_version_info(CURLVERSION_NOW);
+    if (info == nullptr)
+    {
+        return false;
+    }
+#ifdef CURL_VERSION_THREADSAFE
+    const bool threadSafe = (info->features & CURL_VERSION_THREADSAFE) != 0;
+#else
+    const bool threadSafe = false; // headers older than 7.84 can't ask
+#endif
+    return threadSafe && (info->features & CURL_VERSION_ASYNCHDNS) != 0;
 }
 
 std::expected<HttpsResponse, std::string> LinuxHttpsClient::get(const HttpsRequest& request, const std::stop_token& stop)
@@ -142,40 +258,43 @@ std::expected<HttpsResponse, std::string> LinuxHttpsClient::get(const HttpsReque
     {
         return std::unexpected(std::move(*refused));
     }
+    const SigpipeBlock noSigpipe; // before the handle, so it covers the cleanup too
     initialiseCurl();
     const std::unique_ptr<CURL, EasyDeleter> curl(curl_easy_init());
     if (curl == nullptr)
     {
         return std::unexpected(std::string("libcurl couldn't start a request"));
     }
-    const std::string url = "https://" + request.host + request.path;
+    std::string url = "https://" + request.host + request.path;
     // Only the request's own headers: an empty "Accept:" removes libcurl's default "Accept: */*".
     curl_slist* headers = curl_slist_append(nullptr, request.accept.empty() ? "Accept:" : ("Accept: " + request.accept).c_str());
     const std::unique_ptr<curl_slist, ListDeleter> headerList(headers);
     Transfer transfer{.body = {}, .maxBytes = request.maxBodyBytes, .tooLong = false, .stop = &stop};
     std::array<char, CURL_ERROR_SIZE> detail{};
-    const long timeoutMs = std::max<long>(1, static_cast<long>(request.timeout.count()));
+    const auto deadline = std::chrono::steady_clock::now() + request.timeout;
 
     // NOLINTBEGIN(cppcoreguidelines-pro-type-vararg) - curl_easy_setopt is libcurl's variadic C API
     CURL* handle = curl.get();
-    curl_easy_setopt(handle, CURLOPT_URL, url.c_str());
-#if LIBCURL_VERSION_NUM >= 0x075500 // 7.85: the protocol lists as strings
-    curl_easy_setopt(handle, CURLOPT_PROTOCOLS_STR, "https");
-    curl_easy_setopt(handle, CURLOPT_REDIR_PROTOCOLS_STR, "https");
+    // https only, and the request isn't sent if libcurl can't promise it (an older libcurl.so.4 than the
+    // headers, which doesn't know the option).
+#if LIBCURL_VERSION_NUM >= 0x075500 // 7.85: the protocol list as a string
+    const CURLcode httpsOnly = curl_easy_setopt(handle, CURLOPT_PROTOCOLS_STR, "https");
 #else
-    curl_easy_setopt(handle, CURLOPT_PROTOCOLS, static_cast<long>(CURLPROTO_HTTPS));
-    curl_easy_setopt(handle, CURLOPT_REDIR_PROTOCOLS, static_cast<long>(CURLPROTO_HTTPS));
+    const CURLcode httpsOnly = curl_easy_setopt(handle, CURLOPT_PROTOCOLS, static_cast<long>(CURLPROTO_HTTPS));
 #endif
-    curl_easy_setopt(handle, CURLOPT_FOLLOWLOCATION, 1L); // as WinHTTP does, and only ever to https (above)
-    curl_easy_setopt(handle, CURLOPT_MAXREDIRS, 5L);
+    if (httpsOnly != CURLE_OK)
+    {
+        return std::unexpected(std::format("libcurl couldn't be limited to https: {}", curl_easy_strerror(httpsOnly)));
+    }
+    // Redirects are followed here, each checked first (redirectRefusal()): libcurl's own following can't
+    // keep them to port 443.
+    curl_easy_setopt(handle, CURLOPT_FOLLOWLOCATION, 0L);
     curl_easy_setopt(handle, CURLOPT_SSL_VERIFYPEER, 1L);
     curl_easy_setopt(handle, CURLOPT_SSL_VERIFYHOST, 2L);
     curl_easy_setopt(handle, CURLOPT_NETRC, static_cast<long>(CURL_NETRC_IGNORED));
-    curl_easy_setopt(handle, CURLOPT_NOSIGNAL, 1L); // a worker thread: no SIGALRM for name-lookup timeouts
+    curl_easy_setopt(handle, CURLOPT_NOSIGNAL, 1L); // a worker thread: no SIGALRM (usable() requires async DNS)
     curl_easy_setopt(handle, CURLOPT_USERAGENT, request.userAgent.c_str());
     curl_easy_setopt(handle, CURLOPT_HTTPHEADER, headerList.get());
-    curl_easy_setopt(handle, CURLOPT_CONNECTTIMEOUT_MS, timeoutMs);
-    curl_easy_setopt(handle, CURLOPT_TIMEOUT_MS, timeoutMs); // the whole request, as WinHTTP's steps share one budget
     curl_easy_setopt(handle, CURLOPT_WRITEFUNCTION, &onData);
     curl_easy_setopt(handle, CURLOPT_WRITEDATA, &transfer);
     curl_easy_setopt(handle, CURLOPT_NOPROGRESS, 0L);
@@ -184,29 +303,68 @@ std::expected<HttpsResponse, std::string> LinuxHttpsClient::get(const HttpsReque
     curl_easy_setopt(handle, CURLOPT_ERRORBUFFER, detail.data());
     // NOLINTEND(cppcoreguidelines-pro-type-vararg)
 
-    const CURLcode result = curl_easy_perform(handle);
-    if (transfer.tooLong)
+    int redirects = 0;
+    for (;;)
     {
-        return std::unexpected(std::format("The reply was longer than {} bytes", request.maxBodyBytes));
+        // The whole request, every redirect included, shares one budget, as WinHTTP's steps do.
+        const auto left = std::chrono::ceil<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
+        if (left.count() <= 0)
+        {
+            return std::unexpected(std::string("libcurl: Timeout was reached"));
+        }
+        const long leftMs = static_cast<long>(left.count());
+        transfer.body.clear();
+        detail.front() = '\0';
+        // NOLINTBEGIN(cppcoreguidelines-pro-type-vararg) - libcurl's variadic C API
+        curl_easy_setopt(handle, CURLOPT_URL, url.c_str());
+        curl_easy_setopt(handle, CURLOPT_CONNECTTIMEOUT_MS, leftMs);
+        curl_easy_setopt(handle, CURLOPT_TIMEOUT_MS, leftMs);
+        // NOLINTEND(cppcoreguidelines-pro-type-vararg)
+        const CURLcode result = curl_easy_perform(handle);
+        if (transfer.tooLong)
+        {
+            return std::unexpected(std::format("The reply was longer than {} bytes", request.maxBodyBytes));
+        }
+        if (result == CURLE_ABORTED_BY_CALLBACK && stop.stop_requested())
+        {
+            return std::unexpected(std::string("Stopped"));
+        }
+        if (result != CURLE_OK)
+        {
+            const std::string_view why(detail.data());
+            return std::unexpected(why.empty() ? std::format("libcurl: {}", curl_easy_strerror(result))
+                                               : std::format("libcurl: {}: {}", curl_easy_strerror(result), why));
+        }
+        long status = 0;
+        const char* location = nullptr;
+        // NOLINTBEGIN(cppcoreguidelines-pro-type-vararg) - libcurl's variadic C API
+        curl_easy_getinfo(handle, CURLINFO_RESPONSE_CODE, &status);
+        curl_easy_getinfo(handle, CURLINFO_REDIRECT_URL, &location);
+        // NOLINTEND(cppcoreguidelines-pro-type-vararg)
+        if (status < 300 || status > 399 || location == nullptr)
+        {
+            return HttpsResponse{.body = std::move(transfer.body), .status = static_cast<int>(status)};
+        }
+        if (++redirects > MAX_REDIRECTS)
+        {
+            return std::unexpected(std::format("More than {} redirects", MAX_REDIRECTS));
+        }
+        if (std::optional<std::string> refused = LinuxHttpsDetail::redirectRefusal(location))
+        {
+            return std::unexpected(std::move(*refused));
+        }
+        url = location;
     }
-    if (result == CURLE_ABORTED_BY_CALLBACK && stop.stop_requested())
-    {
-        return std::unexpected(std::string("Stopped"));
-    }
-    if (result != CURLE_OK)
-    {
-        const std::string_view why(detail.data());
-        return std::unexpected(why.empty() ? std::format("libcurl: {}", curl_easy_strerror(result))
-                                           : std::format("libcurl: {}: {}", curl_easy_strerror(result), why));
-    }
-    long status = 0;
-    curl_easy_getinfo(handle, CURLINFO_RESPONSE_CODE, &status); // NOLINT(cppcoreguidelines-pro-type-vararg) - libcurl's C API
-    return HttpsResponse{.body = std::move(transfer.body), .status = static_cast<int>(status)};
 }
 
 #else
 
 bool LinuxHttpsClient::built() noexcept
+{
+    return false;
+}
+
+bool LinuxHttpsClient::usable() noexcept
 {
     return false;
 }

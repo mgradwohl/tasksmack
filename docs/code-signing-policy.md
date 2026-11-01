@@ -96,7 +96,8 @@ it on. The only network requests it makes are the ones the user asks for:
   with the headers `User-Agent: TaskSmack/<version>` and `Accept: application/vnd.github+json`, through
   Windows' own HTTP stack (WinHTTP) and proxy settings, or on Linux libcurl with the system's certificate
   store and the `https_proxy` environment variable. No cookies, credentials, identifiers or other data are
-  sent. GitHub receives the request's IP address and the version in the User-Agent, as it does for any
+  sent (a proxy configured with a user name and password in `https_proxy` receives them, as it does from
+  any program using it). GitHub receives the request's IP address and the version in the User-Agent, as it does for any
   visitor; its handling of them is covered by
   [GitHub's privacy statement](https://docs.github.com/site-policy/privacy-policies/github-general-privacy-statement).
   TaskSmack reads the latest release's tag and page from the reply. When the release is newer, the status bar

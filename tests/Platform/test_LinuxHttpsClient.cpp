@@ -10,7 +10,9 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cstdlib>
 #include <memory>
+#include <optional>
 #include <stop_token>
 #include <string>
 
@@ -20,6 +22,39 @@ namespace
 {
 
 using namespace std::chrono_literals;
+
+/// Sets an environment variable for the scope, putting back what was there.
+class ScopedEnv
+{
+  public:
+    ScopedEnv(const char* name, const char* value) : m_Name(name)
+    {
+        if (const char* const before = std::getenv(name); before != nullptr) // NOLINT(concurrency-mt-unsafe) - test thread
+        {
+            m_Before = before;
+        }
+        ::setenv(name, value, 1); // NOLINT(concurrency-mt-unsafe) - test thread
+    }
+    ~ScopedEnv()
+    {
+        if (m_Before.has_value())
+        {
+            ::setenv(m_Name, m_Before->c_str(), 1); // NOLINT(concurrency-mt-unsafe) - test thread
+        }
+        else
+        {
+            ::unsetenv(m_Name); // NOLINT(concurrency-mt-unsafe) - test thread
+        }
+    }
+    ScopedEnv(const ScopedEnv&) = delete;
+    ScopedEnv& operator=(const ScopedEnv&) = delete;
+    ScopedEnv(ScopedEnv&&) = delete;
+    ScopedEnv& operator=(ScopedEnv&&) = delete;
+
+  private:
+    const char* m_Name;
+    std::optional<std::string> m_Before;
+};
 
 [[nodiscard]] HttpsRequest validRequest()
 {
@@ -92,16 +127,44 @@ TEST(LinuxHttpsClientTest, AStopAlreadyRequestedOrARefusedRequestSendsNothing)
     }
 }
 
+// Review of #3269: a redirect is followed only to https on port 443, without credentials, to a host and path the
+// client would request itself; libcurl's own following couldn't keep it to the port.
+TEST(LinuxHttpsClientTest, ARedirectIsFollowedOnlyToHttpsOnPort443)
+{
+    using LinuxHttpsDetail::redirectRefusal;
+    EXPECT_EQ(redirectRefusal("https://api.github.com/repositories/1/releases/latest"), std::nullopt);
+    EXPECT_EQ(redirectRefusal("HTTPS://github.com:443/mgradwohl/tasksmack/releases/tag/v0.10.0"), std::nullopt);
+    EXPECT_EQ(redirectRefusal("https://github.com"), std::nullopt) << "no path: the root";
+    EXPECT_EQ(redirectRefusal("https://github.com?x=1"), std::nullopt);
+    for (const char* refused : {"http://github.com/",
+                                "ftp://github.com/",
+                                "https://github.com:8443/",
+                                "https://github.com:/",
+                                "https://user:pass@github.com/",
+                                "https://evil.example@github.com/",
+                                "https://[::1]/",
+                                "https:///path",
+                                "https://github.com/a b",
+                                "//github.com/",
+                                ""})
+    {
+        EXPECT_NE(redirectRefusal(refused), std::nullopt) << refused;
+    }
+}
+
 // A request to a local port nothing listens on fails in libcurl, quickly and without the network, and says so.
 TEST(LinuxHttpsClientTest, ARequestThatCantConnectSaysWhyAndTheFactoryFollowsTheBuild)
 {
     const std::shared_ptr<IHttpsClient> made = makeHttpsClient();
-    if (!LinuxHttpsClient::built())
+    if (!LinuxHttpsClient::usable())
     {
-        EXPECT_EQ(made, nullptr) << "no libcurl in this build: no update check";
-        GTEST_SKIP() << "built without libcurl";
+        EXPECT_EQ(made, nullptr) << "no libcurl that can serve the worker: no update check";
+        GTEST_SKIP() << (LinuxHttpsClient::built() ? "libcurl isn't thread-safe or has no async resolver" : "built without libcurl");
     }
     ASSERT_NE(made, nullptr);
+    // Straight to the local port, whatever proxy the machine has set (a proxy would answer instead).
+    const ScopedEnv noProxy("NO_PROXY", "*");
+    const ScopedEnv noProxyLower("no_proxy", "*");
     HttpsRequest request = validRequest();
     request.host = "127.0.0.1"; // port 443, where a test machine runs no server
     request.accept.clear();
