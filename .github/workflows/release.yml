@@ -2345,6 +2345,13 @@ jobs:
       (needs.validate.outputs.signing != 'true' && needs.sign-windows-installer.result == 'skipped')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    # One release publishes at a time, whatever its tag (#3277): "Publish release" compares the tag with the
+    # published ones, so two tags' runs (v0.9.3 and v0.10.0) reading before either publishes would both take
+    # Latest. The workflow's own group is per ref and doesn't serialise them; a run waiting here is queued,
+    # not cancelled.
+    concurrency:
+      group: release-publish
+      cancel-in-progress: false
     outputs:
       # `sha256sum` of every file in dist/ (the release's files, SHA256SUMS and SHA256SUMS.bundle), for
       # verify-published-release to compare its downloads with (#2721).
