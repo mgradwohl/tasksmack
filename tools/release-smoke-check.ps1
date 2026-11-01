@@ -182,7 +182,7 @@ foreach ($launch in $launches) {
   # FontLoading.cpp and Theme.cpp log a missing assets folder, font or themes folder at warn and carry
   # on, so the [critical]/[error] match above never sees them, and a theme loaded logs at info.
   $fallbackLines = @($lines | Where-Object {
-      $_ -match 'Assets directory not found|Icon font not found|Could not load Inter font|Sixtyfour title font|No themes found'
+      $_ -match 'Assets directory not found|Icon font not found|Could not load Inter font|Failed to load Sixtyfour title font|Sixtyfour title font not found|No themes found'
     })
   if (-not $failure -and $fallbackLines.Count -gt 0) {
     $failure = "$run fell back for missing assets (the package's asset layout is broken):`n$($fallbackLines -join "`n")"
