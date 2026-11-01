@@ -102,6 +102,16 @@ selected process and a Processes-table column (off by default unless common). An
 table shows for a process should also be on its Process Details tab; one missing there is probably a bug.
 See "Adding New Features" in [.github/copilot-instructions.md](.github/copilot-instructions.md).
 
+Windows/Linux parity (maintainer, 2026-11-01; applies to features from v0.11.0 on):
+- **Both platforms, same release:** a feature ships on Windows and Linux in the same release, wherever both
+  operating systems can support it.
+- **When one platform can't support it** (Replace Task Manager, load average), the PR says why, and the
+  user guide's Platform Differences table gets a row.
+- **When one platform comes later,** the PR files a parity issue for the other lane before it merges, on the
+  same or the next milestone, and links it from the PR and from any "not available yet" text in the app
+  or the guide. A feature merged on one platform with no such issue is the gap the v0.10.0 review found:
+  #3356, #3357 and #3358.
+
 Build (CMake Presets, `cmake --list-presets` for the full set):
 ```bash
 cmake --workflow --preset dev        # Linux: configure+build+test
