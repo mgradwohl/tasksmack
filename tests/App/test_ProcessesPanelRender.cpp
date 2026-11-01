@@ -3305,8 +3305,8 @@ TEST_F(ProcessesPanelRenderTest, AFindHandlesReaderThatThrowsEndsTheSearchAndSay
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     EXPECT_TRUE(text.contains("The search stopped: injected reader failure")) << text;
-    EXPECT_TRUE(text.contains("Find")) << "Find is offered again, not Stop: " << text;
-    EXPECT_FALSE(text.contains("Stop")) << text;
+    EXPECT_FALSE(text.contains("Searching...")) << "the search ended: " << text;
+    EXPECT_FALSE(text.contains("Stop")) << "Find is offered again, not Stop: " << text;
     panel->onDetach();
 }
 

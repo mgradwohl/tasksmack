@@ -170,6 +170,7 @@ SearchPublication startAuthorizedAfter(const SearchPublication& previous, std::u
     start.searched -= std::min(start.searched, previous.denied.size());
     start.denied.clear();
     start.done = false;
+    start.failure.clear(); // a failure of the first search isn't this one's (#3335)
     start.authorized = true;
     return start;
 }

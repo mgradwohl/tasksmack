@@ -28,7 +28,6 @@
 #include <optional>
 #include <stop_token>
 #include <string>
-#include <system_error>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -175,7 +174,6 @@ void FindHandlesDialog::startSearch(std::vector<Domain::HandleSearch::SearchProc
         .modules = m_Capabilities.modules ? m_Modules.get() : nullptr,
     };
     m_WorkerReturned->store(false, std::memory_order_release);
-    SearchPublication failed = start; // what a worker that can't start publishes (#3335)
     try
     {
         m_Worker = std::jthread(
@@ -188,13 +186,24 @@ void FindHandlesDialog::startSearch(std::vector<Domain::HandleSearch::SearchProc
                 Domain::PublicationWake::notify();
             });
     }
-    catch (const std::system_error& error)
+    catch (...)
     {
-        failed.done = true;
-        failed.failure = std::format("The search couldn't start: {}", error.what());
-        ++failed.version;
-        m_Slot->commit(std::make_shared<const SearchPublication>(std::move(failed)));
+        // No thread (std::system_error), or no memory for its state (#3335). The flag first, so even a failure
+        // that can't be published below ends the search; then, if it can, the start published as a failed one.
         m_WorkerReturned->store(true, std::memory_order_release);
+        try
+        {
+            if (const std::shared_ptr<const SearchPublication> begun = m_Slot->load(); begun != nullptr)
+            {
+                SearchPublication failed = *begun;
+                failed.done = true;
+                failed.failure = "The search couldn't start";
+                ++failed.version;
+                m_Slot->commit(std::make_shared<const SearchPublication>(std::move(failed)));
+            }
+        }
+        catch (...) // NOLINT(bugprone-empty-catch) - the flag already ends the search; see above
+        {}
     }
 }
 

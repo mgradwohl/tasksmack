@@ -455,6 +455,18 @@ TEST(HandleSearchTest, AReaderOrAllocationFailureEndsTheWalkAsDoneWithItsReason)
     EXPECT_EQ(last->matches.size(), 2U) << "file-2 and file-20";
 }
 
+// #3335: an administrator search after a failed one starts without that failure.
+TEST(HandleSearchTest, AnAdministratorSearchDoesNotCarryTheFirstSearchsFailure)
+{
+    SearchPublication failed = startFor("x", 2, 4);
+    failed.done = true;
+    failed.failure = "The search stopped: injected reader failure";
+    failed.denied.push_back(process(7, "other"));
+    const SearchPublication again = startAuthorizedAfter(failed, 5);
+    EXPECT_TRUE(again.failure.empty()) << again.failure;
+    EXPECT_FALSE(again.done);
+}
+
 TEST(HandleSearchTest, AnAdministratorSearchAddsTheDeniedProcessesToTheFirstResults)
 {
     FakeOpenFiles files;
