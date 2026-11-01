@@ -60,6 +60,59 @@ std::string errorText(std::string_view step, std::uint32_t error)
     return std::format("{}: {} ({})", step, meaning, error);
 }
 
+void Completion::begin()
+{
+    const std::scoped_lock lock(m_Mutex);
+    m_Completed = false;
+    m_Error = 0;
+    m_Bytes = 0;
+}
+
+void Completion::complete(std::uint32_t error, std::uint32_t bytes)
+{
+    // Notified under the lock: once the waiter sees the change it may destroy this.
+    const std::scoped_lock lock(m_Mutex);
+    m_Completed = true;
+    m_Error = error;
+    m_Bytes = bytes;
+    m_Changed.notify_all();
+}
+
+void Completion::handleClosed()
+{
+    const std::scoped_lock lock(m_Mutex);
+    m_Closed = true;
+    m_Changed.notify_all();
+}
+
+Completion::Wait Completion::wait(const std::stop_token& stop, std::chrono::steady_clock::time_point deadline)
+{
+    std::unique_lock lock(m_Mutex);
+    if (m_Changed.wait_until(lock, stop, deadline, [this] { return m_Completed; }))
+    {
+        return Wait::Completed;
+    }
+    return stop.stop_requested() ? Wait::Stopped : Wait::TimedOut;
+}
+
+void Completion::waitForClose()
+{
+    std::unique_lock lock(m_Mutex);
+    m_Changed.wait(lock, [this] { return m_Closed; });
+}
+
+std::uint32_t Completion::error() const
+{
+    const std::scoped_lock lock(m_Mutex);
+    return m_Error;
+}
+
+std::uint32_t Completion::bytes() const
+{
+    const std::scoped_lock lock(m_Mutex);
+    return m_Bytes;
+}
+
 } // namespace WindowsHttpsDetail
 
 namespace
@@ -92,47 +145,139 @@ class InternetHandle
     HINTERNET m_Handle;
 };
 
-/// The request handle, which a stop may close from another thread: closing it ends a WinHTTP call
-/// blocked on it (ERROR_WINHTTP_OPERATION_CANCELLED), so a stop doesn't wait out the timeouts. The
-/// worker reads the handle for each call; once closed it is null, and a call already given the old value
-/// fails with ERROR_INVALID_HANDLE (only this worker opens WinHTTP handles, so the value isn't reused).
-class CancellableRequest
+/// The request handle in WinHTTP's asynchronous mode (#3333). Only the worker calls WinHTTP with it or
+/// closes it: a stop or the deadline only wakes the worker's wait, and the worker then closes the handle,
+/// which ends the call in flight. WinHttpCloseHandle's documentation allows that for an asynchronous request
+/// and forbids it for a synchronous one
+/// (https://learn.microsoft.com/windows/win32/api/winhttp/nf-winhttp-winhttpclosehandle). After the close
+/// it waits for WINHTTP_CALLBACK_STATUS_HANDLE_CLOSING, the handle's last callback, so the callback's
+/// context (this) and any buffer a read was given outlive WinHTTP's use of them.
+class AsyncRequest
 {
   public:
-    explicit CancellableRequest(HINTERNET handle) noexcept : m_Handle(handle)
+    explicit AsyncRequest(HINTERNET handle) noexcept : m_Handle(handle)
     {}
-    ~CancellableRequest()
+    ~AsyncRequest()
     {
-        cancel();
+        close();
     }
-    CancellableRequest(const CancellableRequest&) = delete;
-    CancellableRequest& operator=(const CancellableRequest&) = delete;
-    CancellableRequest(CancellableRequest&&) = delete;
-    CancellableRequest& operator=(CancellableRequest&&) = delete;
+    AsyncRequest(const AsyncRequest&) = delete;
+    AsyncRequest& operator=(const AsyncRequest&) = delete;
+    AsyncRequest(AsyncRequest&&) = delete;
+    AsyncRequest& operator=(AsyncRequest&&) = delete;
 
-    [[nodiscard]] HINTERNET get() const
+    [[nodiscard]] HINTERNET get() const noexcept
     {
-        const std::scoped_lock lock(m_Mutex);
         return m_Handle;
     }
 
-    /// Closes the handle, once.
-    void cancel() noexcept
+    /// What WinHTTP hands the callback as its context: this.
+    [[nodiscard]] DWORD_PTR context() noexcept
     {
-        HINTERNET handle = nullptr;
+        return reinterpret_cast<DWORD_PTR>(this); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast) - WinHTTP's context is an integer
+    }
+
+    /// Binds this as the handle's context and installs the callback. @return false, with GetLastError()
+    /// set, if either fails: then no callback comes and close() doesn't wait for one.
+    [[nodiscard]] bool attach() noexcept
+    {
+        DWORD_PTR value = context();
+        if (::WinHttpSetOption(m_Handle, WINHTTP_OPTION_CONTEXT_VALUE, &value, sizeof(value)) == FALSE)
         {
-            const std::scoped_lock lock(m_Mutex);
-            handle = std::exchange(m_Handle, nullptr);
+            return false;
         }
-        if (handle != nullptr)
+        if (::WinHttpSetStatusCallback(
+                m_Handle, &AsyncRequest::onStatus, WINHTTP_CALLBACK_FLAG_ALL_COMPLETIONS | WINHTTP_CALLBACK_FLAG_HANDLES, 0) ==
+            WINHTTP_INVALID_STATUS_CALLBACK)
         {
-            ::WinHttpCloseHandle(handle);
+            return false;
+        }
+        m_CallbackSet = true;
+        return true;
+    }
+
+    /// Before each asynchronous call.
+    void begin()
+    {
+        m_Completion.begin();
+    }
+
+    /// Waits for the call @p step just started. A stop or the deadline closes the handle, ending the call,
+    /// and returns only once WinHTTP has let go of it. @return what the call counted (bytes), or why it failed.
+    [[nodiscard]] std::expected<DWORD, std::string>
+    wait(std::string_view step, const std::stop_token& stop, std::chrono::steady_clock::time_point deadline)
+    {
+        switch (m_Completion.wait(stop, deadline))
+        {
+        case WindowsHttpsDetail::Completion::Wait::Completed:
+            break;
+        case WindowsHttpsDetail::Completion::Wait::Stopped:
+            close();
+            return std::unexpected(std::string("Stopped"));
+        case WindowsHttpsDetail::Completion::Wait::TimedOut:
+            close();
+            return std::unexpected(WindowsHttpsDetail::errorText(step, ERROR_WINHTTP_TIMEOUT));
+        }
+        if (const std::uint32_t error = m_Completion.error(); error != 0)
+        {
+            return std::unexpected(WindowsHttpsDetail::errorText(step, error));
+        }
+        return m_Completion.bytes();
+    }
+
+    /// Closes the handle, once, and waits for its last callback if one was installed.
+    void close() noexcept
+    {
+        if (m_Handle == nullptr)
+        {
+            return;
+        }
+        ::WinHttpCloseHandle(std::exchange(m_Handle, nullptr));
+        if (m_CallbackSet)
+        {
+            m_Completion.waitForClose();
         }
     }
 
   private:
-    mutable std::mutex m_Mutex;
+    static void CALLBACK onStatus(HINTERNET /*handle*/, DWORD_PTR context, DWORD status, LPVOID info, DWORD infoLength)
+    {
+        // NOLINTNEXTLINE(performance-no-int-to-ptr, cppcoreguidelines-pro-type-reinterpret-cast) - the context attach() bound
+        auto* const self = reinterpret_cast<AsyncRequest*>(context);
+        if (self == nullptr)
+        {
+            return;
+        }
+        WindowsHttpsDetail::Completion& completion = self->m_Completion;
+        switch (status)
+        {
+        case WINHTTP_CALLBACK_STATUS_SENDREQUEST_COMPLETE:
+        case WINHTTP_CALLBACK_STATUS_HEADERS_AVAILABLE:
+            completion.complete(0, 0);
+            break;
+        case WINHTTP_CALLBACK_STATUS_DATA_AVAILABLE:
+            completion.complete(0, *static_cast<const DWORD*>(info));
+            break;
+        case WINHTTP_CALLBACK_STATUS_READ_COMPLETE:
+            completion.complete(0, infoLength);
+            break;
+        case WINHTTP_CALLBACK_STATUS_REQUEST_ERROR:
+        {
+            const DWORD error = static_cast<const WINHTTP_ASYNC_RESULT*>(info)->dwError;
+            completion.complete(error != 0 ? error : ERROR_WINHTTP_INTERNAL_ERROR, 0);
+            break;
+        }
+        case WINHTTP_CALLBACK_STATUS_HANDLE_CLOSING:
+            completion.handleClosed();
+            break;
+        default:
+            break;
+        }
+    }
+
     HINTERNET m_Handle;
+    bool m_CallbackSet = false;
+    WindowsHttpsDetail::Completion m_Completion;
 };
 
 /// What is left of the request's time, as WinHTTP's millisecond timeout: at least 1 ms.
@@ -165,8 +310,8 @@ std::expected<HttpsResponse, std::string> WindowsHttpsClient::get(const HttpsReq
 
     // LCOV_EXCL_START - a real HTTPS request; no test may make one (#3093)
     const auto deadline = std::chrono::steady_clock::now() + request.timeout;
-    const InternetHandle session(
-        ::WinHttpOpen(agent.c_str(), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0));
+    const InternetHandle session(::WinHttpOpen(
+        agent.c_str(), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, WINHTTP_FLAG_ASYNC));
     if (session.get() == nullptr)
     {
         return lastError("WinHttpOpen");
@@ -176,14 +321,20 @@ std::expected<HttpsResponse, std::string> WindowsHttpsClient::get(const HttpsReq
     {
         return lastError("WinHttpConnect");
     }
-    CancellableRequest handle(::WinHttpOpenRequest(
+    // Before the request handle, so it outlives the handle's last callback: a read in flight when the
+    // handle closes writes into it until then.
+    HttpsResponse response;
+    // After the session and connection, so it closes (and its last callback has come) before they do.
+    AsyncRequest handle(::WinHttpOpenRequest(
         connection.get(), L"GET", path.c_str(), nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE));
     if (handle.get() == nullptr)
     {
         return lastError("WinHttpOpenRequest");
     }
-    // After the handle, so it is gone (and a running callback finished) before the handle closes.
-    const std::stop_callback cancelOnStop(stop, [&handle] { handle.cancel(); });
+    if (!handle.attach())
+    {
+        return lastError("WinHttpSetStatusCallback");
+    }
 
     // Nothing of the user's goes with the request: no cookies, no Windows credentials.
     DWORD disabled = WINHTTP_DISABLE_COOKIES | WINHTTP_DISABLE_AUTHENTICATION;
@@ -191,34 +342,40 @@ std::expected<HttpsResponse, std::string> WindowsHttpsClient::get(const HttpsReq
     {
         return lastError("WinHttpSetOption");
     }
-
-    // Each step may take only what is left of the request's time.
-    const auto limitTo = [&handle](int ms)
-    {
-        return ::WinHttpSetTimeouts(handle.get(), ms, ms, ms, ms) != FALSE;
-    };
-    if (!limitTo(remainingMs(deadline)))
+    // WinHTTP's own timeouts, a backstop to the deadline each wait below keeps.
+    if (const int ms = remainingMs(deadline); ::WinHttpSetTimeouts(handle.get(), ms, ms, ms, ms) == FALSE)
     {
         return lastError("WinHttpSetTimeouts");
     }
+
     std::wstring headers;
     if (!request.accept.empty())
     {
         headers = L"Accept: " + WinString::utf8ToWide(request.accept);
     }
+    handle.begin();
     if (::WinHttpSendRequest(handle.get(),
                              headers.empty() ? WINHTTP_NO_ADDITIONAL_HEADERS : headers.c_str(),
                              headers.empty() ? 0 : static_cast<DWORD>(headers.size()),
                              WINHTTP_NO_REQUEST_DATA,
                              0,
                              0,
-                             0) == FALSE)
+                             handle.context()) == FALSE)
     {
         return lastError("WinHttpSendRequest");
     }
-    if (!limitTo(remainingMs(deadline)) || ::WinHttpReceiveResponse(handle.get(), nullptr) == FALSE)
+    if (const auto sent = handle.wait("WinHttpSendRequest", stop, deadline); !sent.has_value())
+    {
+        return std::unexpected(sent.error());
+    }
+    handle.begin();
+    if (::WinHttpReceiveResponse(handle.get(), nullptr) == FALSE)
     {
         return lastError("WinHttpReceiveResponse");
+    }
+    if (const auto received = handle.wait("WinHttpReceiveResponse", stop, deadline); !received.has_value())
+    {
+        return std::unexpected(received.error());
     }
 
     DWORD status = 0;
@@ -233,40 +390,47 @@ std::expected<HttpsResponse, std::string> WindowsHttpsClient::get(const HttpsReq
         return lastError("WinHttpQueryHeaders");
     }
 
-    HttpsResponse response;
     response.status = static_cast<int>(status);
     while (true)
     {
-        if (!limitTo(remainingMs(deadline)))
-        {
-            return lastError("WinHttpSetTimeouts");
-        }
-        DWORD available = 0;
-        if (::WinHttpQueryDataAvailable(handle.get(), &available) == FALSE)
+        // Asynchronous: the counts come to the callback, not through these calls' out-parameters (null).
+        handle.begin();
+        if (::WinHttpQueryDataAvailable(handle.get(), nullptr) == FALSE)
         {
             return lastError("WinHttpQueryDataAvailable");
         }
-        if (available == 0)
+        const auto available = handle.wait("WinHttpQueryDataAvailable", stop, deadline);
+        if (!available.has_value())
+        {
+            return std::unexpected(available.error());
+        }
+        if (*available == 0)
         {
             break; // the whole body
         }
         const std::size_t had = response.body.size();
-        if (available > request.maxBodyBytes - std::min(had, request.maxBodyBytes))
+        if (*available > request.maxBodyBytes - std::min(had, request.maxBodyBytes))
         {
             return std::unexpected(std::format("The reply is longer than {} bytes", request.maxBodyBytes));
         }
-        response.body.resize(had + available);
-        DWORD read = 0;
-        if (::WinHttpReadData(handle.get(), response.body.data() + had, available, &read) == FALSE)
+        response.body.resize(had + *available);
+        handle.begin();
+        if (::WinHttpReadData(handle.get(), response.body.data() + had, *available, nullptr) == FALSE)
         {
             return lastError("WinHttpReadData");
         }
-        response.body.resize(had + read);
-        if (read == 0)
+        const auto read = handle.wait("WinHttpReadData", stop, deadline);
+        if (!read.has_value())
+        {
+            return std::unexpected(read.error());
+        }
+        response.body.resize(had + *read);
+        if (*read == 0)
         {
             break;
         }
     }
+    handle.close();
     if (stop.stop_requested())
     {
         return std::unexpected(std::string("Stopped"));

@@ -1,7 +1,8 @@
 /// @file test_WindowsHttpsClient.cpp
 /// @brief The update check's WinHTTP client (#3093), without the network: what it refuses before it opens
-/// a session (a stop already requested, a request with no host, path or User-Agent), the factory, and the
-/// wording of its errors. No test here sends a request.
+/// a session (a stop already requested, a request with no host, path or User-Agent), the factory, the
+/// wording of its errors, and how an asynchronous call's completion is waited for (#3333). No test here sends
+/// a request.
 
 #include "Platform/Factory.h"
 #include "Platform/IHttpsClient.h"
@@ -10,10 +11,12 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cstdint>
 #include <expected>
 #include <memory>
 #include <stop_token>
 #include <string>
+#include <thread>
 
 #include <windows.h>
 #include <winhttp.h>
@@ -74,6 +77,73 @@ TEST(WindowsHttpsClientTest, ErrorsSayWhatFailedForTheLog)
     EXPECT_TRUE(WindowsHttpsDetail::errorText("x", ERROR_WINHTTP_OPERATION_CANCELLED).contains("cancelled"));
     EXPECT_TRUE(WindowsHttpsDetail::errorText("x", ERROR_INVALID_HANDLE).contains("cancelled"));
     EXPECT_EQ(WindowsHttpsDetail::errorText("WinHttpOpen", 5), "WinHttpOpen: WinHTTP failed (5)");
+}
+
+// The asynchronous call's completion (#3333): what the status callback reports, from another thread, to the
+// worker waiting for it. No WinHTTP handle is involved.
+using WindowsHttpsDetail::Completion;
+
+constexpr auto FAR_DEADLINE = std::chrono::hours(1);
+
+TEST(WindowsHttpsCompletionTest, ACompletionFromAnotherThreadEndsTheWaitWithItsCount)
+{
+    Completion completion;
+    completion.begin();
+    const std::jthread callback([&completion] { completion.complete(0, 42); });
+    const std::stop_source stop;
+    EXPECT_EQ(completion.wait(stop.get_token(), std::chrono::steady_clock::now() + FAR_DEADLINE), Completion::Wait::Completed);
+    EXPECT_EQ(completion.error(), 0U);
+    EXPECT_EQ(completion.bytes(), 42U);
+}
+
+TEST(WindowsHttpsCompletionTest, AnErrorTheCallbackReportsIsKept)
+{
+    Completion completion;
+    completion.begin();
+    completion.complete(ERROR_WINHTTP_CANNOT_CONNECT, 0);
+    const std::stop_source stop;
+    EXPECT_EQ(completion.wait(stop.get_token(), std::chrono::steady_clock::now() + FAR_DEADLINE), Completion::Wait::Completed);
+    EXPECT_EQ(completion.error(), static_cast<std::uint32_t>(ERROR_WINHTTP_CANNOT_CONNECT));
+}
+
+TEST(WindowsHttpsCompletionTest, BeginForgetsTheLastCallsCompletion)
+{
+    Completion completion;
+    completion.begin();
+    completion.complete(ERROR_WINHTTP_TIMEOUT, 7);
+    completion.begin();
+    EXPECT_EQ(completion.error(), 0U);
+    EXPECT_EQ(completion.bytes(), 0U);
+    const std::stop_source stop;
+    EXPECT_EQ(completion.wait(stop.get_token(), std::chrono::steady_clock::now()), Completion::Wait::TimedOut);
+}
+
+TEST(WindowsHttpsCompletionTest, AStopFromAnotherThreadEndsTheWaitPromptly)
+{
+    Completion completion;
+    completion.begin();
+    std::stop_source stop;
+    const auto started = std::chrono::steady_clock::now();
+    const std::jthread stopper([&stop] { static_cast<void>(stop.request_stop()); });
+    EXPECT_EQ(completion.wait(stop.get_token(), started + FAR_DEADLINE), Completion::Wait::Stopped);
+    EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::minutes(1));
+}
+
+TEST(WindowsHttpsCompletionTest, TheDeadlinePassingEndsTheWait)
+{
+    Completion completion;
+    completion.begin();
+    const std::stop_source stop;
+    EXPECT_EQ(completion.wait(stop.get_token(), std::chrono::steady_clock::now() + std::chrono::milliseconds(10)),
+              Completion::Wait::TimedOut);
+}
+
+TEST(WindowsHttpsCompletionTest, WaitForCloseReturnsOnceTheHandleClosingCallbackCame)
+{
+    Completion completion;
+    const std::jthread callback([&completion] { completion.handleClosed(); });
+    completion.waitForClose();
+    SUCCEED();
 }
 
 } // namespace
