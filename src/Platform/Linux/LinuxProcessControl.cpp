@@ -1388,10 +1388,17 @@ ProcessActionResult LinuxProcessControl::setEfficiencyMode(const ProcessTarget& 
     std::optional<std::int32_t> nice = Efficiency::EFFICIENCY_NICE;
     if (!on)
     {
-        // A nice an earlier off already put back is spent (#3332): only its weight is still owed.
-        const std::optional<std::int32_t> rememberedNice =
-            remembered.has_value() && !remembered->turnedOff ? std::optional(remembered->nice) : std::nullopt;
-        nice = niceBefore.has_value() ? Efficiency::niceToRestore(*niceBefore, rememberedNice) : rememberedNice.value_or(0);
+        if (remembered.has_value() && remembered->turnedOff)
+        {
+            // An earlier off already put the nice back (#3332): only the weight is still owed, so the priority is left
+            // as it is (a process that was at nice 19 before on is still at its own nice) and only the identity checked.
+            nice = std::nullopt;
+        }
+        else
+        {
+            const std::optional<std::int32_t> rememberedNice = remembered.has_value() ? std::optional(remembered->nice) : std::nullopt;
+            nice = niceBefore.has_value() ? Efficiency::niceToRestore(*niceBefore, rememberedNice) : rememberedNice.value_or(0);
+        }
     }
     ProcessActionResult changed = nice.has_value() ? setPriority(target, *nice) : verifyIdentity(target);
     if (!changed.success)
