@@ -224,6 +224,33 @@ TEST(HandleSearchTest, RunStopsOnceTheMatchCapIsReached)
     EXPECT_TRUE(last->done);
     EXPECT_EQ(last->searched, 1U); // the second process was never read
     EXPECT_EQ(last->matches.size(), MAX_MATCHES);
+    // #3299: the first process brought exactly the last match the cap allows, so nothing set truncated while
+    // adding; the processes left unread make the result the first matches, and it says so.
+    EXPECT_TRUE(last->truncated);
+}
+
+// #3299: an administrator search on a result already at the cap searches none of the denied processes; they
+// leave the list unsearched, and the result says it is cut short rather than complete.
+TEST(HandleSearchTest, AnAdministratorSearchOnAFullResultIsMarkedTruncated)
+{
+    FakeOpenFiles files;
+    files.results[1] = openFiles(std::vector<Platform::OpenFile>(MAX_MATCHES, file(Platform::OpenFileKind::File, "/srv/data.db")));
+    files.authorizedFiles[2] = openFiles({file(Platform::OpenFileKind::File, "/srv/data.db-wal")});
+    // postgres is read first (denied), then mine fills the cap.
+    std::vector<SearchProcess> processes{process(2, "postgres"), process(1, "mine")};
+    Domain::PublicationSlot<SearchPublication> slot;
+    std::stop_source stop;
+    run(processes, {.openFiles = &files, .modules = nullptr}, false, startFor("data.db", processes.size(), 1), slot, stop.get_token());
+    const std::shared_ptr<const SearchPublication> first = slot.load();
+    ASSERT_EQ(first->matches.size(), MAX_MATCHES);
+    ASSERT_EQ(first->denied.size(), 1U);
+
+    const std::vector<SearchProcess> denied = first->denied;
+    run(denied, {.openFiles = &files, .modules = nullptr}, true, startAuthorizedAfter(*first, first->version + 1), slot, stop.get_token());
+    const std::shared_ptr<const SearchPublication> second = slot.load();
+    EXPECT_TRUE(second->done);
+    EXPECT_TRUE(second->truncated);
+    EXPECT_EQ(files.authorizedReads, 0);
 }
 
 TEST(HandleSearchTest, AnAuthorizedRunReadsTheModulesAuthorizedToo)
