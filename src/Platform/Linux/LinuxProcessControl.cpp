@@ -1102,11 +1102,17 @@ ProcessActionResult LinuxProcessControl::closeConnection(const ProcessTarget& ta
         return ProcessActionResult::error(std::format("PID {} no longer holds this socket", target.pid));
     }
     // A listening socket has no connection to close, and shutting one down stops it accepting (a TCP listener is
-    // disconnected, not refused with ENOTCONN), so it's refused whatever the view asked.
+    // disconnected, not refused with ENOTCONN), so it's refused whatever the view asked; and so is one whose
+    // listening can't be read, rather than shut down unchecked.
     int listening = 0;
     socklen_t listeningSize = sizeof(listening);
     // NOLINTNEXTLINE(misc-include-cleaner) - SOL_SOCKET and SO_ACCEPTCONN are provided by <sys/socket.h>
-    if (::getsockopt(copy, SOL_SOCKET, SO_ACCEPTCONN, &listening, &listeningSize) == 0 && listening != 0)
+    if (::getsockopt(copy, SOL_SOCKET, SO_ACCEPTCONN, &listening, &listeningSize) != 0)
+    {
+        return ProcessActionResult::error(
+            std::format("Couldn't tell whether this socket is listening: {}", std::system_category().message(errno)));
+    }
+    if (listening != 0)
     {
         return ProcessActionResult::error("This socket is listening for connections, so there is no connection to close");
     }

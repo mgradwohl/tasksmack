@@ -20,6 +20,7 @@
 #include <linux/audit.h>
 #include <linux/filter.h>
 #include <linux/seccomp.h>
+#include <netinet/in.h>
 #include <sys/ioctl.h>
 #include <sys/ipc.h>
 #include <sys/mman.h>
@@ -267,6 +268,35 @@ TEST_F(HelperSandboxTest, TheHeldBusAloneCarriesSendmsgAndRecvmsg)
     {
         ::close(fd);
     }
+}
+
+// #3295: Close connection asks the descriptor it copied whether it listens before shutting it down. That one
+// getsockopt() (SOL_SOCKET, SO_ACCEPTCONN) works under the enforcing filter rather than killing the helper;
+// any other option is refused.
+TEST_F(HelperSandboxTest, OnlyTheListeningQueryOfGetsockoptIsAllowed)
+{
+    std::array<int, 2> fds{-1, -1};
+    ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, fds.data()), 0);
+    const int fd = fds[0];
+    const auto query = [fd](int option) -> int
+    {
+        int value = 0;
+        socklen_t size = sizeof(value);
+        return errorOf(::getsockopt(fd, SOL_SOCKET, option, &value, &size));
+    };
+    EXPECT_EQ(underFilter(HelperSandbox::Mode::Enforce, [&query] { return query(SO_ACCEPTCONN); }), 0);
+    EXPECT_EQ(underFilter(HelperSandbox::Mode::Enforce, [&query] { return query(SO_TYPE); }), EPERM);
+    EXPECT_EQ(underFilter(HelperSandbox::Mode::Enforce,
+                          [fd]
+                          {
+                              int value = 0;
+                              socklen_t size = sizeof(value);
+                              return errorOf(::getsockopt(fd, IPPROTO_TCP, SO_ACCEPTCONN, &value, &size));
+                          }),
+              EPERM)
+        << "the level is checked too";
+    ::close(fds[0]);
+    ::close(fds[1]);
 }
 
 TEST_F(HelperSandboxTest, NoExecutableMemoryByAnotherRoute)
