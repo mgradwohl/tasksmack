@@ -65,6 +65,16 @@ namespace Detail
 {
     return (timer < threshold) ? threshold - timer : std::numeric_limits<double>::infinity();
 }
+
+/// The time until two timers have both reached @p threshold, when what they gate needs both: the later of
+/// the two waits, one already past counting as 0 (#3287), or infinity once both have (nothing left to cross).
+[[nodiscard]] constexpr double untilBothReach(double first, double second, double threshold) noexcept
+{
+    const double firstLeft = (first < threshold) ? threshold - first : 0.0;
+    const double secondLeft = (second < threshold) ? threshold - second : 0.0;
+    const double later = firstLeft > secondLeft ? firstLeft : secondLeft;
+    return later > 0.0 ? later : std::numeric_limits<double>::infinity();
+}
 } // namespace Detail
 
 /// The time until the text cursor next shows or hides, for blink timer @p cursorBlinkSeconds.
@@ -109,9 +119,7 @@ namespace Detail
     if (state.itemHovered)
     {
         // A menu item opens its submenu once hovered, with the mouse still, for MENU_HOVER_OPEN_SECONDS.
-        soonest = std::min(soonest,
-                           std::max(Detail::untilThreshold(state.hoveredIdSeconds, MENU_HOVER_OPEN_SECONDS),
-                                    Detail::untilThreshold(state.mouseStationarySeconds, MENU_HOVER_OPEN_SECONDS)));
+        soonest = std::min(soonest, Detail::untilBothReach(state.hoveredIdSeconds, state.mouseStationarySeconds, MENU_HOVER_OPEN_SECONDS));
     }
     return std::isfinite(soonest) ? soonest + IMGUI_TIMER_MARGIN_SECONDS : soonest;
 }

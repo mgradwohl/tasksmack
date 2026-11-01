@@ -86,6 +86,16 @@ TEST(ImGuiTimersTest, AHoveredItemAsksForTheMenuHoverOpenOnceTheMouseIsStill)
     state.hoveredIdSeconds = 1.0;
     state.mouseStationarySeconds = 1.0;
     EXPECT_EQ(secondsUntilImGuiTimerChange(state), INF);
+
+    // #3287: hovered long enough while still moving, then the mouse stops: the stationary timer alone
+    // decides, and the frame the submenu opens on is asked for.
+    state.hoveredIdSeconds = 0.8;
+    state.mouseStationarySeconds = 0.05;
+    EXPECT_NEAR(secondsUntilImGuiTimerChange(state), MENU_HOVER_OPEN_SECONDS - 0.05 + IMGUI_TIMER_MARGIN_SECONDS, 1e-9);
+    // And the other way round: still long enough, hovered just now.
+    state.hoveredIdSeconds = 0.1;
+    state.mouseStationarySeconds = 2.0;
+    EXPECT_NEAR(secondsUntilImGuiTimerChange(state), MENU_HOVER_OPEN_SECONDS - 0.1 + IMGUI_TIMER_MARGIN_SECONDS, 1e-9);
 }
 
 TEST(ImGuiTimersTest, ASettlingLayoutAsksForTheNextFrame)
