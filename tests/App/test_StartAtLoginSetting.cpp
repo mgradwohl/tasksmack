@@ -15,6 +15,7 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace App
 {
@@ -191,6 +192,140 @@ TEST_F(StartAtLoginSettingTest, PollSaysWhenTheStatusChanged)
     setCommand(THIS_COPY_COMMAND);
     m_Setting.refresh();
     EXPECT_TRUE(pollUntilIdle()) << "Off to On";
+}
+
+// #3276: the startup check, through a fake that restores as Windows' Run value does (never the registry).
+class StartAtLoginStartupCheckTest : public ::testing::Test
+{
+  protected:
+    static constexpr const char* OLD_BUILD = "0.10.0+abc1234";
+    static constexpr const char* THIS_BUILD = "0.10.1+def5678";
+
+    std::shared_ptr<FakeStartAtLogin> m_Entry = std::make_shared<FakeStartAtLogin>(true);
+    StartAtLoginSetting m_Setting{m_Entry};
+
+    [[nodiscard]] FakeStartAtLogin::Data data()
+    {
+        return m_Entry->with([](const FakeStartAtLogin::Data& d) { return d; });
+    }
+
+    void check(bool intended, const char* seenBy)
+    {
+        m_Setting.startupCheck(intended, seenBy, THIS_BUILD);
+        m_Setting.waitForTesting();
+    }
+};
+
+TEST_F(StartAtLoginStartupCheckTest, AnEntryAnInstallRemovedIsWrittenBackForThisCopy)
+{
+    EXPECT_TRUE(m_Setting.restoresMissingEntry());
+    check(true, OLD_BUILD);
+    EXPECT_EQ(data().command, std::optional<std::string>(THIS_COPY_COMMAND));
+    EXPECT_EQ(data().writes, 1);
+    EXPECT_EQ(m_Setting.status().state, State::On) << "read back after the write";
+}
+
+TEST_F(StartAtLoginStartupCheckTest, OnlyReadsWhenThereIsNothingToWriteBack)
+{
+    struct Case
+    {
+        const char* name;
+        std::optional<std::string> command;
+        bool intended;
+        const char* seenBy;
+        bool installed;
+        State state;
+    };
+    const std::vector<Case> cases = {
+        {.name = "never turned on", .command = std::nullopt, .intended = false, .seenBy = "", .installed = true, .state = State::Off},
+        {.name = "removed while this build ran",
+         .command = std::nullopt,
+         .intended = true,
+         .seenBy = THIS_BUILD,
+         .installed = true,
+         .state = State::Off},
+        {.name = "a portable copy",
+         .command = std::nullopt,
+         .intended = true,
+         .seenBy = OLD_BUILD,
+         .installed = false,
+         .state = State::Off},
+        {.name = "there", .command = THIS_COPY_COMMAND, .intended = true, .seenBy = OLD_BUILD, .installed = true, .state = State::On},
+        {.name = "another copy's",
+         .command = R"("E:\Moved\TaskSmack.exe")",
+         .intended = true,
+         .seenBy = OLD_BUILD,
+         .installed = true,
+         .state = State::OtherCopy},
+    };
+    for (const Case& c : cases)
+    {
+        SCOPED_TRACE(c.name);
+        m_Entry->with(
+            [&c](FakeStartAtLogin::Data& d)
+            {
+                d.command = c.command;
+                d.installed = c.installed;
+                d.writes = 0;
+            });
+        check(c.intended, c.seenBy);
+        EXPECT_EQ(data().writes, 0);
+        EXPECT_EQ(data().command, c.command);
+        EXPECT_EQ(m_Setting.status().state, c.state);
+    }
+}
+
+TEST_F(StartAtLoginStartupCheckTest, APlatformThatDoesntRestoreNeverWrites)
+{
+    const auto linuxLike = std::make_shared<FakeStartAtLogin>(false);
+    StartAtLoginSetting setting{linuxLike};
+    EXPECT_FALSE(setting.restoresMissingEntry());
+    setting.startupCheck(true, OLD_BUILD, THIS_BUILD);
+    setting.waitForTesting();
+    EXPECT_EQ(linuxLike->with([](const FakeStartAtLogin::Data& d) { return d.writes; }), 0);
+    EXPECT_EQ(setting.status().state, State::Off);
+}
+
+TEST_F(StartAtLoginStartupCheckTest, AFailedReadOrWriteSaysWhy)
+{
+    m_Entry->with([](FakeStartAtLogin::Data& d) { d.writeError = "couldn't write the Run value: Access is denied."; });
+    check(true, OLD_BUILD);
+    EXPECT_EQ(m_Setting.status().state, State::Failed);
+    EXPECT_EQ(m_Setting.status().error, "couldn't write the Run value: Access is denied.");
+
+    m_Entry->with(
+        [](FakeStartAtLogin::Data& d)
+        {
+            d.writeError.clear();
+            d.readError = "couldn't open the Run key: Access is denied.";
+        });
+    check(true, OLD_BUILD);
+    EXPECT_EQ(m_Setting.status().state, State::Failed);
+    EXPECT_EQ(m_Setting.status().error, "couldn't open the Run key: Access is denied.");
+}
+
+TEST_F(StartAtLoginStartupCheckTest, ItRunsOnTheWorkerAndIsIgnoredWhileBusy)
+{
+    std::promise<void> release;
+    m_Entry->with([future = release.get_future().share()](FakeStartAtLogin::Data& d) { d.hold = future; });
+    m_Setting.refresh();
+    EXPECT_TRUE(m_Setting.busy());
+    m_Setting.startupCheck(true, OLD_BUILD, THIS_BUILD); // ignored: a read runs
+    release.set_value();
+    m_Setting.waitForTesting();
+    EXPECT_EQ(data().writes, 0);
+
+    StartAtLoginSetting none;
+    none.startupCheck(true, OLD_BUILD, THIS_BUILD);
+    EXPECT_FALSE(none.busy());
+    EXPECT_FALSE(none.restoresMissingEntry());
+}
+
+TEST(StartAtLoginBuildTest, TheBuildIsTheVersionAndTheCommit)
+{
+    const std::string build = buildIdentity();
+    EXPECT_NE(build.find('+'), std::string::npos);
+    EXPECT_EQ(build, buildIdentity()) << "the same for the whole run";
 }
 
 } // namespace

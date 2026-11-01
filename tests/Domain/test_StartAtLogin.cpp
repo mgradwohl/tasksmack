@@ -133,6 +133,26 @@ TEST(StartAtLoginTest, EachStateHasItsLine)
               "On: this copy starts minimized when you sign in.");
 }
 
+// #3276: what the startup check does about the entry, for the installed copy.
+TEST(StartAtLoginTest, TheStartupCheckRestoresOnlyAnEntryAnInstallRemoved)
+{
+    constexpr std::string_view BUILD = "0.10.1+def5678";
+    constexpr std::string_view OLD = "0.10.0+abc1234";
+    // Turned on, last seen by another build, and gone: an install removed it, so it is written back.
+    EXPECT_EQ(startupAction(true, OLD, BUILD, true, true, false), StartupAction::Restore);
+    // An intent with no build (an older file, or one edited by hand) is another build's too.
+    EXPECT_EQ(startupAction(true, "", BUILD, true, true, false), StartupAction::Restore);
+    // Gone while this build ran it: deleted by hand, and the user's choice stands.
+    EXPECT_EQ(startupAction(true, BUILD, BUILD, true, true, false), StartupAction::Forget);
+    // Nothing to do: there, never turned on, a platform that doesn't restore (Linux), or a portable copy.
+    EXPECT_EQ(startupAction(true, OLD, BUILD, true, true, true), StartupAction::None);
+    EXPECT_EQ(startupAction(false, OLD, BUILD, true, true, false), StartupAction::None);
+    EXPECT_EQ(startupAction(true, OLD, BUILD, false, true, false), StartupAction::None);
+    EXPECT_EQ(startupAction(true, OLD, BUILD, true, false, false), StartupAction::None);
+    EXPECT_EQ(startupAction(true, BUILD, BUILD, true, false, false), StartupAction::None) << "a portable copy forgets nothing";
+    static_assert(startupAction(true, "a", "b", true, true, false) == StartupAction::Restore);
+}
+
 TEST(StartAtLoginTest, StatusesCompareByEveryField)
 {
     EXPECT_EQ(classify(std::nullopt, INSTALLED, true, true), classify(std::nullopt, INSTALLED, true, true));

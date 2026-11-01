@@ -80,12 +80,27 @@ if(CPACK_GENERATOR STREQUAL "NSIS")
     # The key goes too only when TaskSmack created it (its TaskSmackCreatedKey mark) and nothing else is
     # left in it (/ifempty). In the registry's 64-bit view, where Windows reads it: the uninstaller is
     # 32-bit, so the view is set for these lines and put back for CPack's own. Its registers are saved.
-    # Checked by tests/tools/test_nsis_ifeo_uninstall.py, which runs these lines against a fake registry.
+    # An upgrade isn't an uninstall (#3276): the new version's installer runs this uninstaller with
+    # /TASKSMACK_UPGRADE (the install lines below) when it installs to the same folder, and then the value,
+    # which still names a TaskSmack.exe that is about to be replaced, is kept. Nothing else passes it, so a
+    # user's uninstall (which NSIS re-runs from %TEMP% with _?=, as the installer's own call does) still
+    # removes it. Checked by tests/tools/test_nsis_ifeo_uninstall.py, which runs these lines against a fake
+    # registry, and tests/tools/test_nsis_upgrade.py, which runs them as the installer calls them.
     set(CPACK_NSIS_EXTRA_UNINSTALL_COMMANDS [=[
   ; TaskSmack in place of Task Manager (#3072): BEGIN
   Push $0
   Push $1
+  Push $2
   SetRegView 64
+  ; An upgrade to this folder (#3276): the command line holds /TASKSMACK_UPGRADE, and the value is kept.
+  StrCpy $2 0
+tasksmack_ifeo_upgrade_scan:
+  StrCpy $1 $CMDLINE 18 $2
+  StrCmp $1 "" tasksmack_ifeo_uninstall
+  StrCmp $1 "/TASKSMACK_UPGRADE" tasksmack_ifeo_done
+  IntOp $2 $2 + 1
+  Goto tasksmack_ifeo_upgrade_scan
+tasksmack_ifeo_uninstall:
   ClearErrors
   ReadRegStr $0 HKLM "SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\taskmgr.exe" "Debugger"
   IfErrors tasksmack_ifeo_done
@@ -102,6 +117,7 @@ if(CPACK_GENERATOR STREQUAL "NSIS")
   DeleteRegKey /ifempty HKLM "SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\taskmgr.exe"
 tasksmack_ifeo_done:
   SetRegView default
+  Pop $2
   Pop $1
   Pop $0
   ; TaskSmack in place of Task Manager (#3072): END
@@ -112,9 +128,11 @@ endif()
 # this installation's TaskSmack.exe ("$INSTDIR\TaskSmack.exe", quoted, then its arguments), so signing in never
 # runs a TaskSmack that is gone. A value for another copy (a zip one, which still works) or another program
 # is left alone, as is every other value. HKCU is the uninstalling user's: one who elevated with another
-# account's credentials keeps theirs, which Settings then reports and can turn off. Appended, after any other
-# uninstall lines set above, as its own delimited block; its registers are saved. Checked by
-# tests/tools/test_nsis_run_uninstall.py, which runs these lines against a fake registry.
+# account's credentials keeps theirs, which Settings then reports and can turn off. An upgrade to the same
+# folder keeps it (#3276): the installer runs this uninstaller with /TASKSMACK_UPGRADE, as for Replace Task
+# Manager above. Appended, after any other uninstall lines set above, as its own delimited block; its
+# registers are saved. Checked by tests/tools/test_nsis_run_uninstall.py, which runs these lines against a
+# fake registry, and tests/tools/test_nsis_upgrade.py.
 if(CPACK_GENERATOR STREQUAL "NSIS")
     string(APPEND CPACK_NSIS_EXTRA_UNINSTALL_COMMANDS [=[
   ; TaskSmack's start at sign-in (#3093): BEGIN
@@ -122,6 +140,15 @@ if(CPACK_GENERATOR STREQUAL "NSIS")
   Push $1
   Push $2
   Push $3
+  ; An upgrade to this folder (#3276): the command line holds /TASKSMACK_UPGRADE, and the value is kept.
+  StrCpy $2 0
+tasksmack_run_upgrade_scan:
+  StrCpy $1 $CMDLINE 18 $2
+  StrCmp $1 "" tasksmack_run_uninstall
+  StrCmp $1 "/TASKSMACK_UPGRADE" tasksmack_run_done
+  IntOp $2 $2 + 1
+  Goto tasksmack_run_upgrade_scan
+tasksmack_run_uninstall:
   ClearErrors
   ReadRegStr $0 HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "TaskSmack"
   IfErrors tasksmack_run_done
@@ -136,5 +163,58 @@ tasksmack_run_done:
   Pop $1
   Pop $0
   ; TaskSmack's start at sign-in (#3093): END
+]=])
+endif()
+
+# An upgrade (#3276): before the new files are copied, the installer uninstalls the version that is there
+# (CPack's own uninstall-before-install is off, cmake/Packaging.cmake). It reads that version's
+# UninstallString from the Uninstall key, and runs it silently and in place (/S _?=<its folder>, as CPack's
+# .onInit did, so the installer waits for it). When the new version goes to the same folder it adds
+# /TASKSMACK_UPGRADE, which the uninstall lines above read: taskmgr.exe's Debugger and the Run value name
+# that folder's TaskSmack.exe, which this install puts back, so both are kept. Installed elsewhere, the old
+# version is uninstalled as the user would, and those values, which name a TaskSmack.exe that is gone, are
+# removed (TaskSmack then offers them back, #3276). An UninstallString that isn't an Uninstall.exe that
+# exists is left alone and the install goes on over it; an uninstaller that can't be started stops the
+# install, as CPack's did. The old uninstaller leaves the folder (its _?= run can't delete itself), but it
+# may remove what the install's SetOutPath made, so it is made again. Its registers are saved. Checked by
+# tests/tools/test_nsis_upgrade.py, which runs these lines and then the uninstall lines as they call them.
+if(CPACK_GENERATOR STREQUAL "NSIS")
+    set(CPACK_NSIS_EXTRA_PREINSTALL_COMMANDS [=[
+  ; TaskSmack's upgrade (#3276): BEGIN
+  Push $0
+  Push $1
+  ClearErrors
+  ReadRegStr $0 HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\TaskSmack" "UninstallString"
+  IfErrors tasksmack_upgrade_done
+  StrCpy $1 $0 1
+  StrCmp $1 '"' 0 tasksmack_upgrade_unquoted
+  StrCpy $0 $0 "" 1
+tasksmack_upgrade_unquoted:
+  StrCpy $1 $0 1 -1
+  StrCmp $1 '"' 0 tasksmack_upgrade_path
+  StrCpy $0 $0 -1
+tasksmack_upgrade_path:
+  StrCpy $1 $0 "" -14
+  StrCmp $1 "\Uninstall.exe" 0 tasksmack_upgrade_done
+  IfFileExists $0 0 tasksmack_upgrade_done
+  StrCpy $1 $0 -14
+  ClearErrors
+  StrCmp $1 $INSTDIR 0 tasksmack_upgrade_elsewhere
+  DetailPrint "Upgrading the TaskSmack in $1"
+  ExecWait '"$0" /S /TASKSMACK_UPGRADE _?=$1'
+  Goto tasksmack_upgrade_ran
+tasksmack_upgrade_elsewhere:
+  DetailPrint "Uninstalling the TaskSmack in $1"
+  ExecWait '"$0" /S _?=$1'
+tasksmack_upgrade_ran:
+  IfErrors 0 tasksmack_upgrade_uninstalled
+  MessageBox MB_OK|MB_ICONSTOP "Uninstall failed." /SD IDOK
+  Abort
+tasksmack_upgrade_uninstalled:
+  SetOutPath $INSTDIR
+tasksmack_upgrade_done:
+  Pop $1
+  Pop $0
+  ; TaskSmack's upgrade (#3276): END
 ]=])
 endif()

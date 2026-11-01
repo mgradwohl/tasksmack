@@ -76,6 +76,26 @@ inline constexpr const char* CANCEL_LABEL = "Cancel";
            Platform::TaskManagerReplacement::offersRepair(view.info->status.state, view.info->otherProgramExists, view.info->installedCopy);
 }
 
+/// Whether the startup check offers to turn it back on (#3276): the user turned it on, as config.toml
+/// remembers, and a read finds it off, on the installed copy. An upgrade to another folder, an install of a
+/// build whose uninstaller removed it, or another tool turned it off; asked rather than done, since turning it
+/// on needs administrator rights. A portable copy isn't asked: the installed copy is the one it was for.
+[[nodiscard]] inline bool showsRestoreNotice(const TaskManagerReplacementView& view)
+{
+    return view.supported && view.intended && view.info.has_value() && !view.info->readFailed && view.info->installedCopy &&
+           view.info->status.state == Platform::TaskManagerReplacement::State::Off;
+}
+
+/// Which notice the startup check shows, on a read that came in: the repair, the restore, or none.
+[[nodiscard]] inline NoticeKind noticeKind(const TaskManagerReplacementView& view)
+{
+    if (showsNotice(view))
+    {
+        return NoticeKind::Repair;
+    }
+    return showsRestoreNotice(view) ? NoticeKind::Restore : NoticeKind::None;
+}
+
 /// The startup notice's text.
 [[nodiscard]] inline std::string noticeText(const Platform::TaskManagerReplacementInfo& info)
 {
@@ -84,5 +104,10 @@ inline constexpr const char* CANCEL_LABEL = "Cancel";
     text += " Repair points it at this copy; Turn off gives Task Manager back. Either needs administrator rights.";
     return text;
 }
+
+/// The restore notice's text (#3276).
+inline constexpr std::string_view RESTORE_NOTICE_TEXT =
+    "Replace Task Manager was turned off outside TaskSmack, by an upgrade or another tool, so Task Manager opens again. "
+    "Repair turns it back on for this copy, and needs administrator rights; Turn off leaves it off.";
 
 } // namespace App::TaskManagerReplacementText

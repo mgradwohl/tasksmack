@@ -154,7 +154,17 @@ TaskManagerRequest renderNotice(const TaskManagerReplacementView& view, NoticeSt
         const auto& scheme = UI::Theme::get().scheme();
         if (!state.acted)
         {
-            wrapped(TaskManagerReplacementText::noticeText(*view.info), scheme.textPrimary, wrapWidth);
+            // Restore (#3276): it is off, and the user had turned it on. Repair turns it on; Turn off changes
+            // nothing, needs no rights, and only forgets it.
+            const bool restore = state.kind == NoticeKind::Restore;
+            if (restore)
+            {
+                wrapped(TaskManagerReplacementText::RESTORE_NOTICE_TEXT, scheme.textPrimary, wrapWidth);
+            }
+            else
+            {
+                wrapped(TaskManagerReplacementText::noticeText(*view.info), scheme.textPrimary, wrapWidth);
+            }
             if (!view.info->unavailableReason.empty())
             {
                 wrapped(view.info->unavailableReason, scheme.textMuted, wrapWidth);
@@ -164,14 +174,24 @@ TaskManagerRequest renderNotice(const TaskManagerReplacementView& view, NoticeSt
             ImGui::BeginDisabled(!canChange);
             if (ImGui::Button(TaskManagerReplacementText::REPAIR_LABEL))
             {
-                request = TaskManagerRequest::Repair;
+                request = restore ? TaskManagerRequest::TurnOn : TaskManagerRequest::Repair;
                 state.acted = true;
             }
+            ImGui::EndDisabled();
             ImGui::SameLine();
+            ImGui::BeginDisabled(!canChange && !restore);
             if (ImGui::Button(TaskManagerReplacementText::TURN_OFF_LABEL))
             {
-                request = TaskManagerRequest::TurnOff;
-                state.acted = true;
+                if (restore)
+                {
+                    request = TaskManagerRequest::Forget;
+                    state.open = false;
+                }
+                else
+                {
+                    request = TaskManagerRequest::TurnOff;
+                    state.acted = true;
+                }
             }
             ImGui::EndDisabled();
             ImGui::SameLine();

@@ -20,6 +20,10 @@ namespace TestSupport
 class FakeStartAtLogin final : public Platform::IStartAtLogin
 {
   public:
+    /// @param restoresMissing  What restoresMissingEntry() says: true as Windows' does, false as Linux's.
+    explicit FakeStartAtLogin(bool restoresMissing = false) : m_RestoresMissing(restoresMissing)
+    {}
+
     struct Data
     {
         std::optional<std::string> command;                                     ///< The entry's text; nullopt: none
@@ -80,6 +84,11 @@ class FakeStartAtLogin final : public Platform::IStartAtLogin
         return {};
     }
 
+    [[nodiscard]] bool restoresMissingEntry() const noexcept override
+    {
+        return m_RestoresMissing;
+    }
+
   private:
     void waitForHold()
     {
@@ -97,6 +106,7 @@ class FakeStartAtLogin final : public Platform::IStartAtLogin
 
     std::mutex m_Mutex;
     Data m_Data;
+    bool m_RestoresMissing = false; // set once, before any worker reads it
 };
 
 } // namespace TestSupport

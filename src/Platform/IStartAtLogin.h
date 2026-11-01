@@ -44,6 +44,15 @@ class IStartAtLogin
 
     /// Removes the entry; success when there is none. Nothing else is touched.
     [[nodiscard]] virtual std::expected<void, std::string> remove() = 0;
+
+    /// Whether a missing entry the user had turned on is written back after an install (#3276): on Windows,
+    /// where an installer's uninstall step can remove the Run value and Windows' own startup settings never
+    /// delete it (they disable it elsewhere). Not on Linux, where a desktop's startup settings delete the file
+    /// to turn it off. Answers from what the class is: no read, no I/O.
+    [[nodiscard]] virtual bool restoresMissingEntry() const noexcept
+    {
+        return false;
+    }
 };
 
 } // namespace Platform

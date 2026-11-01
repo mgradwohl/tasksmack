@@ -3,6 +3,7 @@
 #include "Domain/StartAtLogin.h"
 #include "Platform/IStartAtLogin.h"
 #include "Platform/ThreadName.h"
+#include "version.h"
 
 #include <spdlog/spdlog.h>
 
@@ -53,7 +54,38 @@ namespace
     return readStatus(entry);
 }
 
+/// The startup check (#3276): the entry as it stands, written back first when an install removed it.
+[[nodiscard]] StartAtLogin::Status
+checkAtStartup(Platform::IStartAtLogin& entry, bool intended, const std::string& seenBy, const std::string& thisBuild)
+{
+    auto facts = entry.read();
+    if (!facts.has_value())
+    {
+        return StartAtLogin::failed(std::move(facts.error()));
+    }
+    const StartAtLogin::StartupAction action = StartAtLogin::startupAction(
+        intended, seenBy, thisBuild, entry.restoresMissingEntry(), facts->installed, facts->command.has_value());
+    if (action != StartAtLogin::StartupAction::Restore)
+    {
+        return StartAtLogin::classify(facts->command, facts->executable, facts->installed, facts->caseInsensitivePaths);
+    }
+    spdlog::info("Start at sign-in was on, and an install since removed it: turning it back on for {}", facts->executable);
+    if (auto written = entry.write(StartAtLogin::runCommand(facts->executable)); !written.has_value())
+    {
+        return StartAtLogin::failed(std::move(written.error()));
+    }
+    return readStatus(entry);
+}
+
 } // namespace
+
+std::string buildIdentity()
+{
+    std::string identity = tasksmack::Version::STRING;
+    identity += '+';
+    identity += tasksmack::Version::GIT_COMMIT;
+    return identity;
+}
 
 StartAtLoginSetting::StartAtLoginSetting(std::shared_ptr<Platform::IStartAtLogin> entry)
     : m_Entry(std::move(entry)), m_Worker(Platform::START_AT_LOGIN_THREAD_NAME, &StartAtLogin::failed)
@@ -65,6 +97,24 @@ void StartAtLoginSetting::refresh()
     {
         start(std::nullopt);
     }
+}
+
+void StartAtLoginSetting::startupCheck(bool intended, std::string seenBy, std::string thisBuild)
+{
+    if (!offered() || busy())
+    {
+        return;
+    }
+    m_Changing = false; // a read, that may write: the line under the box is the status's
+    // NOLINTBEGIN(clang-analyzer-cplusplus.NewDeleteLeaks) - the job, which BackgroundTask owns, owns its captures
+    if (std::optional<StartAtLogin::Status> notStarted =
+            m_Worker.start([entry = m_Entry, intended, seenBy = std::move(seenBy), thisBuild = std::move(thisBuild)]
+                           { return checkAtStartup(*entry, intended, seenBy, thisBuild); });
+        notStarted.has_value())
+    {
+        m_Status = std::move(*notStarted);
+    }
+    // NOLINTEND(clang-analyzer-cplusplus.NewDeleteLeaks)
 }
 
 void StartAtLoginSetting::setEnabled(bool enabled)

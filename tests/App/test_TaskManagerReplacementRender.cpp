@@ -239,10 +239,10 @@ TEST_F(TaskManagerReplacementRenderTest, TheNoticeOffersRepairTurnOffAndNotNow)
     EXPECT_EQ(clickInNotice(view, TaskManagerReplacementText::REPAIR_LABEL), TaskManagerRequest::Repair);
     EXPECT_TRUE(m_Notice.acted);
 
-    m_Notice = {.open = true, .acted = false};
+    m_Notice = {.open = true, .acted = false, .kind = NoticeKind::Repair};
     EXPECT_EQ(clickInNotice(view, TaskManagerReplacementText::TURN_OFF_LABEL), TaskManagerRequest::TurnOff);
 
-    m_Notice = {.open = true, .acted = false};
+    m_Notice = {.open = true, .acted = false, .kind = NoticeKind::Repair};
     EXPECT_EQ(clickInNotice(view, TaskManagerReplacementText::NOT_NOW_LABEL), TaskManagerRequest::None);
     EXPECT_FALSE(m_Notice.open);
 }
@@ -250,7 +250,7 @@ TEST_F(TaskManagerReplacementRenderTest, TheNoticeOffersRepairTurnOffAndNotNow)
 TEST_F(TaskManagerReplacementRenderTest, TheNoticeShowsTheResultThenCloses)
 {
     TaskManagerReplacementView view = viewOf(State::OtherTaskSmack, R"(D:\Gone\TaskSmack.exe)");
-    m_Notice = {.open = true, .acted = true};
+    m_Notice = {.open = true, .acted = true, .kind = NoticeKind::Repair};
     view.busy = true;
     static_cast<void>(noticeFrame(view));
     EXPECT_NE(noticeWindow(), nullptr);
@@ -319,6 +319,85 @@ TEST_F(TaskManagerReplacementRenderTest, TheLayerLeavesTheNoticeClosedWhenAllIsW
     without.onRender();
     ImGui::Render();
     EXPECT_FALSE(without.noticeState().open);
+}
+
+// #3276: the restore notice. Repair turns it on; Turn off changes nothing, forgets it and closes the notice,
+// even for a copy that can't change it.
+TEST_F(TaskManagerReplacementRenderTest, TheRestoreNoticeOffersToTurnItBackOn)
+{
+    TaskManagerReplacementView view = viewOf(State::Off);
+    view.intended = true;
+    m_Notice = {.open = true, .acted = false, .kind = NoticeKind::Restore};
+    static_cast<void>(noticeFrame(view));
+    EXPECT_NE(noticeWindow(), nullptr);
+    EXPECT_EQ(clickInNotice(view, TaskManagerReplacementText::REPAIR_LABEL), TaskManagerRequest::TurnOn);
+    EXPECT_TRUE(m_Notice.acted) << "its result shows, then Close";
+
+    m_Notice = {.open = true, .acted = false, .kind = NoticeKind::Restore};
+    EXPECT_EQ(clickInNotice(view, TaskManagerReplacementText::TURN_OFF_LABEL), TaskManagerRequest::Forget);
+    EXPECT_FALSE(m_Notice.open) << "nothing to wait for";
+    EXPECT_FALSE(m_Notice.acted);
+
+    m_Notice = {.open = true, .acted = false, .kind = NoticeKind::Restore};
+    EXPECT_EQ(clickInNotice(view, TaskManagerReplacementText::NOT_NOW_LABEL), TaskManagerRequest::None);
+    EXPECT_FALSE(m_Notice.open);
+
+    view.info->unavailableReason = "needs the helper";
+    m_Notice = {.open = true, .acted = false, .kind = NoticeKind::Restore};
+    EXPECT_EQ(clickInNotice(view, TaskManagerReplacementText::REPAIR_LABEL), TaskManagerRequest::None);
+    m_Notice = {.open = true, .acted = false, .kind = NoticeKind::Restore};
+    EXPECT_EQ(clickInNotice(view, TaskManagerReplacementText::TURN_OFF_LABEL), TaskManagerRequest::Forget) << "it needs no rights";
+}
+
+// The layer opens the restore notice on the first read when the user had turned it on and it is off, and its
+// Repair turns it back on through the controller; Turn off would only forget it.
+TEST_F(TaskManagerReplacementRenderTest, TheLayerOffersToTurnBackOnWhatSomethingTurnedOff)
+{
+    const auto fake = std::make_shared<Mocks::FakeTaskManagerReplacement>();
+    fake->state = State::Off;
+    const auto controller = std::make_shared<TaskManagerReplacementController>(fake);
+    int saves = 0;
+    controller->rememberIntent(true, [&saves](bool /*intended*/) { ++saves; });
+    TaskManagerNoticeLayer layer(controller);
+    layer.onAttach();
+    controller->waitForWork();
+    ImGui::NewFrame();
+    layer.onRender();
+    ImGui::Render();
+    EXPECT_TRUE(layer.noticeState().open);
+    EXPECT_EQ(layer.noticeState().kind, NoticeKind::Restore);
+
+    const ImGuiWindow* window = noticeWindow();
+    ASSERT_NE(window, nullptr);
+    ImGui::ActivateItemByID(ImHashStr(TaskManagerReplacementText::REPAIR_LABEL, 0, window->ID));
+    for (int frame = 0; frame < 2; ++frame)
+    {
+        ImGui::NewFrame();
+        layer.onRender();
+        ImGui::Render();
+    }
+    controller->waitForWork();
+    ASSERT_EQ(fake->changes.size(), 1U);
+    EXPECT_EQ(fake->changes.front().first, Platform::Broker::TaskManagerChange::Set);
+    EXPECT_FALSE(fake->changes.front().second) << "never over another program's";
+    EXPECT_EQ(controller->view().info->status.state, State::ThisCopy);
+    EXPECT_TRUE(controller->view().intended);
+    EXPECT_EQ(saves, 0) << "it was remembered on all along";
+}
+
+TEST_F(TaskManagerReplacementRenderTest, TheLayerAsksNothingWhenItWasNeverTurnedOn)
+{
+    const auto fake = std::make_shared<Mocks::FakeTaskManagerReplacement>();
+    fake->state = State::Off;
+    const auto controller = std::make_shared<TaskManagerReplacementController>(fake);
+    TaskManagerNoticeLayer layer(controller);
+    layer.onAttach();
+    controller->waitForWork();
+    ImGui::NewFrame();
+    layer.onRender();
+    ImGui::Render();
+    EXPECT_FALSE(layer.noticeState().open);
+    EXPECT_EQ(layer.noticeState().kind, NoticeKind::None);
 }
 
 } // namespace

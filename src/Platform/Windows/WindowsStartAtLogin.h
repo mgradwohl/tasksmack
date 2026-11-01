@@ -75,6 +75,12 @@ class WindowsStartAtLogin final : public IStartAtLogin
     [[nodiscard]] std::expected<void, std::string> write(std::string_view command) override;
     [[nodiscard]] std::expected<void, std::string> remove() override;
 
+    /// An installer's uninstall step can remove the Run value (#3276); Windows' startup settings never do.
+    [[nodiscard]] bool restoresMissingEntry() const noexcept override
+    {
+        return true;
+    }
+
   private:
     std::wstring m_Key;
     std::wstring m_ValueName;

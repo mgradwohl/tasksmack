@@ -36,10 +36,15 @@ void TaskManagerNoticeLayer::onRender()
     if (!m_Decided && view.readsCompleted > 0)
     {
         m_Decided = true;
-        m_Notice.open = TaskManagerReplacementText::showsNotice(view);
-        if (m_Notice.open && view.info.has_value())
+        m_Notice.kind = TaskManagerReplacementText::noticeKind(view);
+        m_Notice.open = m_Notice.kind != NoticeKind::None;
+        if (m_Notice.kind == NoticeKind::Repair && view.info.has_value())
         {
             spdlog::info("Task Manager starts another TaskSmack ({}): offering to repair it", view.info->status.program);
+        }
+        else if (m_Notice.kind == NoticeKind::Restore)
+        {
+            spdlog::info("Replace Task Manager was on, and something turned it off: offering to turn it back on");
         }
     }
     const TaskManagerRequest request = TaskManagerReplacementRows::renderNotice(view, m_Notice);

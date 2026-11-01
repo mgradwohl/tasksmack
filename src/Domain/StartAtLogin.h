@@ -191,6 +191,34 @@ classify(const std::optional<std::string>& command, std::string_view executable,
     return {};
 }
 
+/// What the startup check does about a missing entry (#3276).
+enum class StartupAction : std::uint8_t
+{
+    None,    ///< Nothing: there is an entry, it was never turned on here, or this copy can't tell
+    Restore, ///< Write it back for this copy: it went with an install (an upgrade to another folder, say)
+    Forget,  ///< Forget it was on: it was removed outside TaskSmack while this build ran, so by the user's choice
+};
+
+/// What the startup check does, for an installed copy whose config says the user turned the entry on
+/// (@p intended) and last saw it on while build @p seenBy ran, now running build @p thisBuild.
+///   - An entry that is there, or one never turned on, is left as it is.
+///   - @p restoresMissing is the platform's say (IStartAtLogin::restoresMissingEntry()): Windows, where an
+///     uninstaller run by an installer removes the Run value; not Linux, where a desktop's startup
+///     settings remove the file to turn it off.
+///   - A portable copy never writes it back: the entry was the installed copy's.
+///   - A build other than the one that last saw it means an install ran since, and that is what removed
+///     it: it is written back. The same build means it went while nothing was installed, by hand (the
+///     user guide's `reg delete`), and the user's choice stands.
+[[nodiscard]] constexpr StartupAction startupAction(
+    bool intended, std::string_view seenBy, std::string_view thisBuild, bool restoresMissing, bool installed, bool hasEntry) noexcept
+{
+    if (!intended || hasEntry || !restoresMissing || !installed)
+    {
+        return StartupAction::None;
+    }
+    return (seenBy == thisBuild) ? StartupAction::Forget : StartupAction::Restore;
+}
+
 /// The note for a copy outside Program Files (a zip or portable copy) while it starts at sign-in: the
 /// entry would start a file that is gone once the copy is moved or deleted.
 inline constexpr const char* PORTABLE_NOTE = "Turn this off before moving or deleting this copy.";

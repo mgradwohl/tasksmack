@@ -959,6 +959,67 @@ TEST_F(UserConfigSaveLoadFixture, ARecentCommandListIsTakenInFiltered)
     EXPECT_EQ(config.settings().recentCommands, (std::vector<std::string>{"konsole", "htop"}));
 }
 
+// ========== What an install can turn off (#3276) ==========
+
+TEST_F(UserConfigSaveLoadFixture, TheRememberedSettingsRoundTrip)
+{
+    auto& config = UserConfig::get();
+    config.settings().startAtSignIn = true;
+    config.settings().startAtSignInSeenBy = "0.10.0+abc1234";
+    config.settings().replaceTaskManager = true;
+    config.save();
+    config.settings().startAtSignIn = false;
+    config.settings().startAtSignInSeenBy.clear();
+    config.settings().replaceTaskManager = false;
+    config.load();
+    EXPECT_TRUE(config.settings().startAtSignIn);
+    EXPECT_EQ(config.settings().startAtSignInSeenBy, "0.10.0+abc1234");
+    EXPECT_TRUE(config.settings().replaceTaskManager);
+
+    // Turned off, they are removed: the file has no [windows] table again.
+    config.settings().startAtSignIn = false;
+    config.settings().startAtSignInSeenBy.clear();
+    config.settings().replaceTaskManager = false;
+    config.save();
+    {
+        std::ifstream file(m_ConfigPath);
+        const std::string text((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+        EXPECT_FALSE(text.contains("\n[windows]")) << text;
+        EXPECT_FALSE(text.contains("start_at_sign_in =")) << text;
+        EXPECT_FALSE(text.contains("replace_task_manager =")) << text;
+    }
+    config.settings().startAtSignIn = true;
+    config.settings().replaceTaskManager = true;
+    config.load();
+    EXPECT_FALSE(config.settings().startAtSignIn);
+    EXPECT_TRUE(config.settings().startAtSignInSeenBy.empty());
+    EXPECT_FALSE(config.settings().replaceTaskManager);
+}
+
+TEST_F(UserConfigSaveLoadFixture, NeitherIsWrittenUntilTurnedOn)
+{
+    auto& config = UserConfig::get();
+    config.save();
+    std::ifstream file(m_ConfigPath);
+    const std::string text((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    EXPECT_FALSE(text.contains("\n[windows]")) << "a first run's file, and Linux's, has no [windows] table";
+}
+
+TEST_F(UserConfigSaveLoadFixture, RememberedValuesOfTheWrongTypeOrTooLongAreIgnored)
+{
+    {
+        std::ofstream file(m_TempDir / "config.toml");
+        ASSERT_TRUE(file.is_open());
+        file << "config_version = 2\n[windows]\nstart_at_sign_in = \"yes\"\nreplace_task_manager = 1\nstart_at_sign_in_seen_by = \""
+             << std::string(257, 'x') << "\"\n";
+    }
+    auto& config = UserConfig::get();
+    config.load();
+    EXPECT_FALSE(config.settings().startAtSignIn);
+    EXPECT_FALSE(config.settings().replaceTaskManager);
+    EXPECT_TRUE(config.settings().startAtSignInSeenBy.empty());
+}
+
 // ========== The opt-in update check (#3093) ==========
 
 TEST_F(UserConfigSaveLoadFixture, TheUpdateCheckRoundTrips)

@@ -14,6 +14,7 @@
 #include "Platform/TaskManagerReplacement.h"
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -29,6 +30,15 @@ enum class TaskManagerRequest : std::uint8_t
     TurnOnReplacingOther, ///< The same, replacing another program's Debugger: the user confirmed it
     TurnOff,              ///< Give Task Manager back
     Repair,               ///< Point a replacement that starts another TaskSmack at this copy
+    Forget,               ///< Change nothing, and forget the user had turned it on (#3276): it stays off
+};
+
+/// Which startup notice shows (#3072, #3276).
+enum class NoticeKind : std::uint8_t
+{
+    None,
+    Repair,  ///< Task Manager starts another TaskSmack that should be this one: Repair or Turn off
+    Restore, ///< The user turned it on, and something turned it off since: Repair (turn it on) or Turn off (forget it)
 };
 
 /// What a click on the Settings toggle asks for, given the state it shows: Off turns it on, either
@@ -69,6 +79,9 @@ struct TaskManagerReplacementView
     bool supported = false;
     /// A read or a change runs.
     bool busy = false;
+    /// The user turned it on, as config.toml remembers (#3276): set by a read that finds this copy, cleared by
+    /// Turn off, Forget, or a read that finds another program.
+    bool intended = false;
 };
 
 class TaskManagerReplacementController
@@ -79,8 +92,14 @@ class TaskManagerReplacementController
 
     /// Starts a read, unless a read or change already runs.
     void refresh();
-    /// Starts @p request's change, then a read, unless a read or change already runs.
+    /// Starts @p request's change, then a read, unless a read or change already runs. Forget changes
+    /// nothing but what is remembered, at once.
     void request(TaskManagerRequest request);
+
+    /// What the user turned on, as config.toml remembers it (#3276): @p intended to start with, and @p save,
+    /// called on the UI thread with the new value each time it changes (main.cpp writes config.toml). The
+    /// startup notice offers to turn it back on when a read finds it off while it is remembered on.
+    void rememberIntent(bool intended, std::function<void(bool)> save);
     /// Takes a finished worker's result in. Each frame, on the UI thread.
     void poll();
 
@@ -100,10 +119,12 @@ class TaskManagerReplacementController
     };
     [[nodiscard]] static Result failed(std::string detail);
     void take(Result result);
+    void setIntended(bool intended);
 
     std::shared_ptr<Platform::ITaskManagerReplacement> m_Service;
     TaskManagerReplacementView m_View;
-    BackgroundTask<Result> m_Worker; // last: destroyed (waited for) first, while the rest is alive
+    std::function<void(bool)> m_SaveIntent; ///< rememberIntent()'s, or empty
+    BackgroundTask<Result> m_Worker;        // last: destroyed (waited for) first, while the rest is alive
 };
 
 } // namespace App

@@ -7,11 +7,13 @@
 
 #include "App/SettingsDialog.h"
 #include "App/SettingsLayer.h"
+#include "App/StartAtLoginSetting.h"
 #include "App/TaskManagerReplacementController.h"
 #include "App/TaskManagerReplacementText.h"
 #include "App/UserConfig.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
+#include "Domain/StartAtLogin.h"
 #include "Mocks/FakeStartAtLogin.h"
 #include "Mocks/FakeTaskManagerReplacement.h"
 #include "Platform/BrokerProtocol.h"
@@ -621,7 +623,7 @@ TEST_F(SettingsLayerStartAtLoginTest, SaveTurnsTheEntryOnAndOffOnlyWhenChanged)
     EXPECT_EQ(data().command, std::nullopt);
     EXPECT_EQ(data().removes, 1);
 
-    // Nothing of it is kept in config.toml.
+    // Nothing of it is kept in config.toml where the platform doesn't write a missing entry back (#3276).
     UserConfig::get().flushPendingSave();
     std::ifstream file(m_ConfigPath);
     const std::string text((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
@@ -672,6 +674,122 @@ TEST_F(SettingsLayerStartAtLoginTest, AFailedReadChangesNothing)
     layer().waitForStartAtLoginForTesting();
     EXPECT_EQ(data().writes, 0);
     EXPECT_EQ(data().removes, 0);
+}
+
+// #3276: where an install can remove the entry (a fake that restores as Windows' Run value does, never the
+// registry), config.toml remembers that it was turned on, and the startup check writes it back.
+class SettingsLayerRememberedStartAtLoginTest : public SettingsLayerRenderTest
+{
+  protected:
+    static constexpr const char* THIS_COPY_COMMAND = R"("C:\Program Files\TaskSmack\TaskSmack.exe" --minimized)";
+
+    void SetUp() override
+    {
+        SettingsLayerRenderTest::SetUp();
+        layer().setStartAtLoginEntry(m_Entry);
+    }
+
+    /// The layer's onAttach(), as main.cpp's pushLayer() runs it, and the startup check's result taken in.
+    void attach()
+    {
+        layer().onAttach();
+        layer().waitForStartAtLoginForTesting();
+    }
+
+    [[nodiscard]] TestSupport::FakeStartAtLogin::Data data()
+    {
+        return m_Entry->with([](const TestSupport::FakeStartAtLogin::Data& d) { return d; });
+    }
+
+    [[nodiscard]] std::string savedFile()
+    {
+        UserConfig::get().flushPendingSave();
+        std::ifstream file(m_ConfigPath);
+        return {std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+    }
+
+    std::shared_ptr<TestSupport::FakeStartAtLogin> m_Entry = std::make_shared<TestSupport::FakeStartAtLogin>(true);
+};
+
+// An upgrade to another folder (or from a build whose uninstaller removed it): turned on, last seen by another
+// build, and gone. The startup check writes it back for this copy, and notes this build saw it.
+TEST_F(SettingsLayerRememberedStartAtLoginTest, StartupWritesBackWhatAnInstallRemoved)
+{
+    UserConfig::get().settings().startAtSignIn = true;
+    UserConfig::get().settings().startAtSignInSeenBy = "0.0.1+older";
+    attach();
+    EXPECT_EQ(data().command, std::optional<std::string>(THIS_COPY_COMMAND));
+    EXPECT_EQ(layer().dialogState().startAtLoginStatus.state, Domain::StartAtLogin::State::On);
+    EXPECT_TRUE(UserConfig::get().settings().startAtSignIn);
+    EXPECT_EQ(UserConfig::get().settings().startAtSignInSeenBy, buildIdentity());
+    EXPECT_TRUE(savedFile().contains("start_at_sign_in_seen_by = '" + buildIdentity() + "'"));
+}
+
+// An entry that is on, from before this was remembered, is noted as on.
+TEST_F(SettingsLayerRememberedStartAtLoginTest, StartupNotesAnEntryThatIsOn)
+{
+    m_Entry->with([](TestSupport::FakeStartAtLogin::Data& d) { d.command = THIS_COPY_COMMAND; });
+    attach();
+    EXPECT_EQ(data().writes, 0);
+    EXPECT_TRUE(UserConfig::get().settings().startAtSignIn);
+    EXPECT_TRUE(savedFile().contains("start_at_sign_in = true"));
+}
+
+// Deleted by hand while this build ran it (the user guide's reg delete): it stays off, and is forgotten.
+TEST_F(SettingsLayerRememberedStartAtLoginTest, StartupLeavesOffWhatWasRemovedByHand)
+{
+    UserConfig::get().settings().startAtSignIn = true;
+    UserConfig::get().settings().startAtSignInSeenBy = buildIdentity();
+    attach();
+    EXPECT_EQ(data().writes, 0);
+    EXPECT_EQ(data().command, std::nullopt);
+    EXPECT_FALSE(UserConfig::get().settings().startAtSignIn);
+    EXPECT_TRUE(UserConfig::get().settings().startAtSignInSeenBy.empty());
+}
+
+// Never turned on: the startup check only reads, and nothing is written to config.toml.
+TEST_F(SettingsLayerRememberedStartAtLoginTest, StartupLeavesAnEntryNeverTurnedOnAlone)
+{
+    attach();
+    EXPECT_EQ(data().reads, 1);
+    EXPECT_EQ(data().writes, 0);
+    EXPECT_FALSE(UserConfig::get().settings().startAtSignIn);
+    EXPECT_FALSE(savedFile().contains("start_at_sign_in ="));
+}
+
+// Settings turning it on and off is remembered too: on, seen by this build; off, forgotten.
+TEST_F(SettingsLayerRememberedStartAtLoginTest, TurningItOnAndOffInSettingsIsRemembered)
+{
+    attach();
+    ASSERT_TRUE(openDialog());
+    layer().waitForStartAtLoginForTesting();
+    static_cast<void>(settle());
+    pressInBody(SettingsDialog::START_AT_LOGIN_LABEL); // ticks it
+    pressSave();
+    layer().waitForStartAtLoginForTesting();
+    EXPECT_EQ(data().command, std::optional<std::string>(THIS_COPY_COMMAND));
+    EXPECT_TRUE(UserConfig::get().settings().startAtSignIn);
+    EXPECT_EQ(UserConfig::get().settings().startAtSignInSeenBy, buildIdentity());
+
+    ASSERT_TRUE(openDialog());
+    layer().waitForStartAtLoginForTesting();
+    static_cast<void>(settle());
+    pressInBody(SettingsDialog::START_AT_LOGIN_LABEL); // unticks it
+    pressSave();
+    layer().waitForStartAtLoginForTesting();
+    EXPECT_EQ(data().command, std::nullopt);
+    EXPECT_FALSE(UserConfig::get().settings().startAtSignIn);
+    EXPECT_FALSE(savedFile().contains("start_at_sign_in ="));
+}
+
+// Where the platform doesn't write it back (Linux), there is no startup check and nothing is remembered.
+TEST_F(SettingsLayerStartAtLoginTest, APlatformThatDoesntRestoreHasNoStartupCheck)
+{
+    UserConfig::get().settings().startAtSignIn = true;
+    layer().onAttach();
+    layer().waitForStartAtLoginForTesting();
+    EXPECT_EQ(data().reads, 0);
+    EXPECT_EQ(data().writes, 0);
 }
 
 } // namespace

@@ -247,6 +247,12 @@ set_tests_properties(DocsSriScript PROPERTIES TIMEOUT 60)
 add_test(NAME NsisRunUninstallScript COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_nsis_run_uninstall.py)
 set_tests_properties(NsisRunUninstallScript PROPERTIES TIMEOUT 60)
 
+# The NSIS installer's upgrade step (#3276), cmake/CPackProjectConfig.cmake.in: it runs the old uninstaller with
+# /TASKSMACK_UPGRADE when it installs to the same folder, and the two steps above then keep their values; run
+# against fakes, through those steps' interpreters. Pure Python, on every platform.
+add_test(NAME NsisUpgradeStep COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_nsis_upgrade.py)
+set_tests_properties(NsisUpgradeStep PROPERTIES TIMEOUT 60)
+
 # tools/profile-heap.sh refuses a --bench-filter that matches no benchmark before starting heaptrack (#2987).
 # Stub binaries; the script is Linux-only, so the test is too.
 if(TASKSMACK_BASH AND NOT WIN32)

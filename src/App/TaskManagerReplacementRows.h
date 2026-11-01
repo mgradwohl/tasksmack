@@ -27,10 +27,13 @@ struct NoticeState
 {
     bool open = false;  ///< Shown: set once, when the first read says so (TaskManagerReplacementText::showsNotice())
     bool acted = false; ///< Repair or Turn off was chosen: the notice shows its result, then Close
+    /// Which notice (#3276): Repair's, or Restore's, whose Repair turns it on and whose Turn off forgets it
+    /// (TaskManagerRequest::Forget) and closes the notice, changing nothing.
+    NoticeKind kind = NoticeKind::Repair;
 };
 
 /// The startup notice, a window of its own at the bottom right that doesn't block anything: the text,
-/// then Repair, Turn off and Not now; once one was chosen, its result and Close. Closing it, by Not now,
+/// then Repair, Turn off and Not now; once one that changes something was chosen, its result and Close. Closing it, by Not now,
 /// Close or its title bar's button, clears @c open.
 [[nodiscard]] TaskManagerRequest renderNotice(const TaskManagerReplacementView& view, NoticeState& state);
 

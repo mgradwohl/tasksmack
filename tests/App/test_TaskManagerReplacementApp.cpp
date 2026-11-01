@@ -145,6 +145,41 @@ TEST(TaskManagerTextTest, TheNoticeShowsOnlyForAnotherTaskSmackThatShouldBeRepai
     EXPECT_EQ(there.find("no longer there"), std::string::npos);
 }
 
+// #3276: the restore notice shows when the user had turned it on and the installed copy finds it off.
+TEST(TaskManagerTextTest, TheRestoreNoticeShowsForAReplacementTurnedOffSinceItWasTurnedOn)
+{
+    TaskManagerReplacementView off = viewOf(State::Off);
+    EXPECT_EQ(TaskManagerReplacementText::noticeKind(off), NoticeKind::None) << "never turned on";
+    off.intended = true;
+    EXPECT_TRUE(TaskManagerReplacementText::showsRestoreNotice(off));
+    EXPECT_EQ(TaskManagerReplacementText::noticeKind(off), NoticeKind::Restore);
+
+    TaskManagerReplacementView portable = viewOf(State::Off, {}, true, false);
+    portable.intended = true;
+    EXPECT_EQ(TaskManagerReplacementText::noticeKind(portable), NoticeKind::None) << "the installed copy's to ask";
+    for (const State state : {State::ThisCopy, State::OtherProgram})
+    {
+        TaskManagerReplacementView view = viewOf(state, R"(C:\Tools\procexp64.exe)");
+        view.intended = true;
+        EXPECT_EQ(TaskManagerReplacementText::noticeKind(view), NoticeKind::None);
+    }
+    TaskManagerReplacementView gone = viewOf(State::OtherTaskSmack, R"(D:\Gone\TaskSmack.exe)", false);
+    gone.intended = true;
+    EXPECT_EQ(TaskManagerReplacementText::noticeKind(gone), NoticeKind::Repair) << "the repair notice comes first";
+
+    TaskManagerReplacementView failed = off;
+    failed.info->readFailed = true;
+    EXPECT_EQ(TaskManagerReplacementText::noticeKind(failed), NoticeKind::None);
+    TaskManagerReplacementView unsupported = off;
+    unsupported.supported = false;
+    EXPECT_EQ(TaskManagerReplacementText::noticeKind(unsupported), NoticeKind::None);
+    TaskManagerReplacementView unread;
+    unread.supported = true;
+    unread.intended = true;
+    EXPECT_EQ(TaskManagerReplacementText::noticeKind(unread), NoticeKind::None);
+    EXPECT_TRUE(TaskManagerReplacementText::RESTORE_NOTICE_TEXT.contains("turned off"));
+}
+
 // ---------------------------------------------------------------------------------------------------------
 // The controller
 // ---------------------------------------------------------------------------------------------------------
@@ -237,6 +272,73 @@ TEST(TaskManagerControllerTest, AFailedChangeIsShownAndNoneIsIgnored)
     EXPECT_FALSE(controller.view().lastChange->success);
     ASSERT_TRUE(controller.view().info.has_value());
     EXPECT_EQ(controller.view().info->status.state, State::Off);
+}
+
+// #3276: what the user turned on is remembered: a read that finds this copy remembers it, Turn off and
+// Forget forget it, a read that finds another program forgets it, and Off or another TaskSmack leave it.
+TEST(TaskManagerControllerTest, WhatTheUserTurnedOnIsRemembered)
+{
+    const auto fake = std::make_shared<FakeReplacement>();
+    TaskManagerReplacementController controller(fake);
+    std::vector<bool> saved;
+    controller.rememberIntent(false, [&saved](bool intended) { saved.push_back(intended); });
+    EXPECT_FALSE(controller.view().intended);
+
+    controller.refresh();
+    controller.waitForWork();
+    EXPECT_TRUE(saved.empty()) << "Off leaves it as it was";
+
+    controller.request(TaskManagerRequest::TurnOn);
+    controller.waitForWork();
+    EXPECT_TRUE(controller.view().intended);
+    EXPECT_EQ(saved, std::vector<bool>{true});
+    controller.refresh();
+    controller.waitForWork();
+    EXPECT_EQ(saved, std::vector<bool>{true}) << "saved only when it changes";
+
+    controller.request(TaskManagerRequest::TurnOff);
+    EXPECT_FALSE(controller.view().intended) << "at once: what the user asked for, whatever the change does";
+    controller.waitForWork();
+    EXPECT_EQ(saved, (std::vector<bool>{true, false}));
+
+    fake->state = State::ThisCopy; // turned on by another TaskSmack, or before this was remembered
+    controller.refresh();
+    controller.waitForWork();
+    EXPECT_TRUE(controller.view().intended);
+    fake->state = State::OtherTaskSmack;
+    controller.refresh();
+    controller.waitForWork();
+    EXPECT_TRUE(controller.view().intended);
+    fake->state = State::OtherProgram; // the user let another tool take it over
+    controller.refresh();
+    controller.waitForWork();
+    EXPECT_FALSE(controller.view().intended);
+    EXPECT_EQ(saved, (std::vector<bool>{true, false, true, false}));
+}
+
+TEST(TaskManagerControllerTest, ForgetChangesNothingButWhatIsRemembered)
+{
+    const auto fake = std::make_shared<FakeReplacement>();
+    TaskManagerReplacementController controller(fake);
+    std::vector<bool> saved;
+    controller.rememberIntent(true, [&saved](bool intended) { saved.push_back(intended); });
+    EXPECT_TRUE(controller.view().intended);
+    controller.request(TaskManagerRequest::Forget);
+    EXPECT_FALSE(controller.view().busy) << "no change, no read";
+    EXPECT_FALSE(controller.view().intended);
+    EXPECT_EQ(saved, std::vector<bool>{false});
+    EXPECT_TRUE(fake->changes.empty());
+    EXPECT_EQ(fake->reads, 0);
+
+    TaskManagerReplacementController unsaved(fake);
+    unsaved.rememberIntent(true, {});
+    unsaved.request(TaskManagerRequest::Forget);
+    EXPECT_FALSE(unsaved.view().intended) << "no save function: still forgotten";
+
+    TaskManagerReplacementController unsupported(nullptr);
+    unsupported.rememberIntent(true, [&saved](bool intended) { saved.push_back(intended); });
+    unsupported.request(TaskManagerRequest::Forget);
+    EXPECT_EQ(saved.size(), 1U) << "an unsupported controller does nothing";
 }
 
 } // namespace

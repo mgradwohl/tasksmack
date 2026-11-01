@@ -17,6 +17,7 @@
 #include "Core/Event.h"
 #include "Core/Layer.h"
 #include "Core/Utf8Path.h"
+#include "Domain/StartAtLogin.h"
 #include "Platform/IStartAtLogin.h"
 #include "UI/Theme.h"
 
@@ -110,7 +111,51 @@ void SettingsLayer::syncStartAtLogin()
     {
         m_State.startAtLoginStatus = m_StartAtLogin.status();
         m_State.startAtLogin = m_State.startAtLoginStatus.enabled();
+        rememberStartAtLoginStatus(m_State.startAtLoginStatus);
     }
+}
+
+void SettingsLayer::rememberStartAtLoginStatus(const Domain::StartAtLogin::Status& status)
+{
+    namespace StartAtLogin = Domain::StartAtLogin;
+    if (status.state == StartAtLogin::State::Unknown || !m_StartAtLogin.restoresMissingEntry())
+    {
+        return;
+    }
+    const bool startupCheck = std::exchange(m_StartupCheckPending, false);
+    if (status.state == StartAtLogin::State::On)
+    {
+        rememberStartAtLogin(true); // on for this copy, now seen by this build
+        return;
+    }
+    // The startup check found it gone, and didn't write it back: removed by hand while this build ran it
+    // (StartAtLogin::startupAction()'s Forget), so it stays off.
+    const UserSettings& settings = UserConfig::get().settings();
+    if (startupCheck && status.state == StartAtLogin::State::Off &&
+        StartAtLogin::startupAction(settings.startAtSignIn, settings.startAtSignInSeenBy, buildIdentity(), true, status.installed, false) ==
+            StartAtLogin::StartupAction::Forget)
+    {
+        spdlog::info("Start at sign-in was turned off outside TaskSmack: leaving it off");
+        rememberStartAtLogin(false);
+    }
+}
+
+void SettingsLayer::rememberStartAtLogin(bool on)
+{
+    if (!m_StartAtLogin.restoresMissingEntry())
+    {
+        return;
+    }
+    auto& config = UserConfig::get();
+    UserSettings& settings = config.settings();
+    std::string seenBy = on ? buildIdentity() : std::string{};
+    if (settings.startAtSignIn == on && settings.startAtSignInSeenBy == seenBy)
+    {
+        return;
+    }
+    settings.startAtSignIn = on;
+    settings.startAtSignInSeenBy = std::move(seenBy);
+    config.saveInBackground(); // on the config worker, never here (#2916)
 }
 
 // The user themes directory: the one UILayer scans and merges over the built-ins. The built-in
@@ -131,6 +176,15 @@ void SettingsLayer::onAttach()
     if (SelectOverride::startupDialog() == SelectOverride::StartupDialog::Settings)
     {
         requestOpen();
+    }
+    // Start at sign-in's startup check (#3276), on its worker: an install that removed the Run value the user
+    // had turned on (an upgrade to another folder, or from a build whose uninstaller removed it) has it
+    // written back. Only where an install can remove it (Windows).
+    if (m_StartAtLogin.restoresMissingEntry() && !m_StartAtLogin.busy())
+    {
+        const UserSettings& settings = UserConfig::get().settings();
+        m_StartupCheckPending = true;
+        m_StartAtLogin.startupCheck(settings.startAtSignIn, settings.startAtSignInSeenBy, buildIdentity());
     }
 }
 
@@ -208,6 +262,7 @@ void SettingsLayer::onRender()
     case SettingsDialog::Action::RepairStartAtLogin:
         // Now, on the worker (#3093 part 2): the entry is pointed at this copy and read back.
         m_StartAtLogin.setEnabled(true);
+        rememberStartAtLogin(true);
         break;
     case SettingsDialog::Action::OpenAbout:
     {
@@ -368,11 +423,12 @@ void SettingsLayer::applySettings()
         spdlog::info("Settings: Check for updates daily changed to {}", settings.updates.enabled);
     }
 
-    // Start at sign-in (#3093 part 2): the entry is the setting, not config.toml. Turned on or off on its
-    // worker, only when the box was changed from what was read.
+    // Start at sign-in (#3093 part 2): the entry is the setting. Turned on or off on its worker, only when the
+    // box was changed from what was read; config.toml only remembers it was turned on (#3276).
     if (m_StartAtLogin.offered() && m_State.startAtLoginStatus.known() && m_State.startAtLogin != m_State.startAtLoginStatus.enabled())
     {
         m_StartAtLogin.setEnabled(m_State.startAtLogin);
+        rememberStartAtLogin(m_State.startAtLogin); // and in config.toml, where an install can remove it (#3276)
     }
 
     // Save to disk, on a worker: the UI thread never writes the file (#2916)
