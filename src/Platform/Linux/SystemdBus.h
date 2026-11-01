@@ -201,9 +201,13 @@ struct LoginSessionsRead
 /// session TaskSmack runs in. Unprivileged.
 [[nodiscard]] LoginSessionsRead readLoginSessions(std::string_view currentSessionId);
 
+/// What sessionAction() says to a Disconnect: Linux offers Lock in its place (#3076).
+inline constexpr std::string_view DISCONNECT_UNSUPPORTED = "Linux has no Disconnect; Lock takes its place";
+
 /// Locks (Manager.LockSession) or ends (Manager.TerminateSession) logind session @p id. polkit decides:
 /// one's own session needs nothing, another user's an administrator; unless @p allowInteractive no prompt is
 /// shown and that is a refusal with needsAuthorization set (#2304). @p stopToken ends a wait on the prompt.
+/// Disconnect is Windows' and refused here (DISCONNECT_UNSUPPORTED), never sent as another call.
 [[nodiscard]] ServiceActionResult
 sessionAction(std::string_view id, SessionAction action, bool allowInteractive, const std::stop_token& stopToken = {});
 

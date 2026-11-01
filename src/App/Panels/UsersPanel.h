@@ -23,7 +23,8 @@ namespace App
 {
 
 /// The Users tab (#3076): each signed-in user with their sessions and their processes' CPU, memory, disk and
-/// network totals, their processes under them; Lock and Sign out from a session's row menu. Owns the
+/// network totals, their processes under them; Lock (Linux) or Disconnect (Windows), and Sign out, from a
+/// session's row menu. Owns the
 /// UsersModel and samples it on its own BackgroundSampler at the Settings refresh interval, only while the tab
 /// is shown, as the Connections tab does; the totals come from the Processes model's published snapshots
 /// (setProcessModel()), so there is no second walk of the processes. Selecting a process row selects it; a
@@ -70,7 +71,7 @@ class UsersPanel : public Panel
     void setActive(bool active);
     void raiseEvent(Core::Event& event);
     void renderActionLine();
-    void renderSignOutConfirm();
+    void renderConfirm(); // Sign out's or Disconnect's
 
     std::function<std::shared_ptr<Platform::IUserSessions>()> m_MakeSessions; ///< Set by the test seam only
     std::function<void(Core::Event&)> m_RaiseEvent;                           ///< Set by the test seam only

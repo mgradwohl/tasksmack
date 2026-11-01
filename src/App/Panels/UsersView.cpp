@@ -32,6 +32,7 @@ namespace
 
 constexpr const char* SESSION_MENU_ID = "##UserSessionMenu";
 constexpr std::uint64_t USEC_PER_MINUTE = 60'000'000;
+constexpr std::uint64_t USEC_PER_SECOND = 1'000'000;
 
 /// "Wayland", "X11", "Console" for logind's session types; the type itself for any other.
 [[nodiscard]] std::string typeName(const std::string& type)
@@ -51,6 +52,14 @@ constexpr std::uint64_t USEC_PER_MINUTE = 60'000'000;
     if (type == "mir")
     {
         return "Mir";
+    }
+    if (type == "console")
+    {
+        return "Console"; // Windows: the machine's own screen
+    }
+    if (type == "rdp")
+    {
+        return "Remote Desktop";
     }
     return type == "unspecified" ? std::string{} : type;
 }
@@ -132,6 +141,14 @@ std::string sessionStatus(const Platform::UserSession& session, std::uint64_t no
     {
         return "Closing";
     }
+    if (session.state == "disconnected")
+    {
+        return "Disconnected"; // Windows: signed in, its programs running, no screen
+    }
+    if (session.state == "connecting")
+    {
+        return "Connecting";
+    }
     if (session.idle)
     {
         if (session.idleSinceUsec == 0 || nowUsec <= session.idleSinceUsec)
@@ -154,6 +171,17 @@ std::string sessionStatus(const Platform::UserSession& session, std::uint64_t no
         return "Active";
     }
     return "Signed in"; // "online": signed in, not the one in front
+}
+
+std::string sessionTooltip(const Platform::UserSession& session)
+{
+    std::string text = session.domain.empty() ? session.user : session.domain + "\\" + session.user;
+    if (session.logonUsec != 0)
+    {
+        text += "\nSigned in " + UI::Format::formatEpochDateTimeShort(session.logonUsec / USEC_PER_SECOND);
+    }
+    text += "\nSession " + session.id;
+    return text;
 }
 
 void refreshUserRows(const Domain::UsersPublication& publication,
@@ -204,6 +232,10 @@ renderUserChildren(const UserRow& row, UsersViewState& state, std::optional<ImGu
         ImGui::Indent();
         const std::string label = std::string(ICON_FA_DESKTOP "  ") + sessionPlace(session) + (session.current ? "  (this session)" : "");
         ImGui::Selectable(label.c_str(), false, ImGuiSelectableFlags_SpanAllColumns);
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) // built only when shown, not every frame
+        {
+            ImGui::SetTooltip("%s", sessionTooltip(session).c_str());
+        }
         if (menuId.has_value() && ImGui::IsItemClicked(ImGuiMouseButton_Right))
         {
             state.menuSession = session;
@@ -236,7 +268,8 @@ renderUserChildren(const UserRow& row, UsersViewState& state, std::optional<ImGu
                                      .selectStartTimeTicks = process.startTimeTicks,
                                      .showDetails = ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left),
                                      .lock = std::nullopt,
-                                     .signOut = std::nullopt};
+                                     .signOut = std::nullopt,
+                                     .disconnect = std::nullopt};
         }
         ImGui::Unindent();
         ImGui::PopID();
@@ -257,12 +290,12 @@ renderUserChildren(const UserRow& row, UsersViewState& state, std::optional<ImGu
 } // namespace
 
 std::optional<UsersViewAction>
-renderUsersView(const Domain::UsersPublication* publication, bool hasSessions, bool canAct, UsersViewState& state)
+renderUsersView(const Domain::UsersPublication* publication, bool hasSessions, SessionMenu menu, UsersViewState& state)
 {
     if (!hasSessions)
     {
         UI::Widgets::renderEmptyState(ICON_FA_USERS "  Users aren't available",
-                                      "TaskSmack lists the signed-in users and their sessions on Linux. Support for Windows is planned.");
+                                      "This run of TaskSmack can't list the signed-in users and their sessions.");
         return std::nullopt;
     }
     if (publication == nullptr || publication->version == 0)
@@ -284,7 +317,7 @@ renderUsersView(const Domain::UsersPublication* publication, bool hasSessions, b
 
     const auto nowUsec = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
-    const std::optional<ImGuiID> menuId = canAct ? std::optional<ImGuiID>(ImGui::GetID(SESSION_MENU_ID)) : std::nullopt;
+    const std::optional<ImGuiID> menuId = menu.any() ? std::optional<ImGuiID>(ImGui::GetID(SESSION_MENU_ID)) : std::nullopt;
     constexpr ImGuiTableFlags TABLE_FLAGS = ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable |
                                             ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV |
                                             ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX | ImGuiTableFlags_SizingFixedFit;
@@ -332,18 +365,43 @@ renderUsersView(const Domain::UsersPublication* publication, bool hasSessions, b
     {
         if (state.menuSession.has_value())
         {
-            if (ImGui::MenuItem(ICON_FA_LOCK "  Lock"))
+            const UsersViewAction none{.selectPid = 0,
+                                       .selectStartTimeTicks = 0,
+                                       .showDetails = false,
+                                       .lock = std::nullopt,
+                                       .signOut = std::nullopt,
+                                       .disconnect = std::nullopt};
+            if (menu.lock && ImGui::MenuItem(ICON_FA_LOCK "  Lock"))
             {
-                action = UsersViewAction{
-                    .selectPid = 0, .selectStartTimeTicks = 0, .showDetails = false, .lock = state.menuSession, .signOut = std::nullopt};
+                action = none;
+                action->lock = state.menuSession;
             }
-            ImGui::SetItemTooltip("Lock the session's screen; its user signs back in to unlock it");
-            if (ImGui::MenuItem(ICON_FA_RIGHT_FROM_BRACKET "  Sign out..."))
+            if (menu.lock)
             {
-                action = UsersViewAction{
-                    .selectPid = 0, .selectStartTimeTicks = 0, .showDetails = false, .lock = std::nullopt, .signOut = state.menuSession};
+                ImGui::SetItemTooltip("Lock the session's screen; its user signs back in to unlock it");
             }
-            ImGui::SetItemTooltip("End the session and every program in it");
+            // Windows' Disconnect, in Lock's place (#3076): the session stays signed in, its programs running.
+            const bool disconnected = state.menuSession->state == "disconnected";
+            if (menu.disconnect && ImGui::MenuItem(ICON_FA_LINK_SLASH "  Disconnect...", nullptr, false, !disconnected))
+            {
+                action = none;
+                action->disconnect = state.menuSession;
+            }
+            if (menu.disconnect)
+            {
+                ImGui::SetItemTooltip(disconnected ? "The session is already disconnected"
+                                                   : "Detach the session from its screen; its programs keep running until its user "
+                                                     "signs back in");
+            }
+            if (menu.signOut && ImGui::MenuItem(ICON_FA_RIGHT_FROM_BRACKET "  Sign out..."))
+            {
+                action = none;
+                action->signOut = state.menuSession;
+            }
+            if (menu.signOut)
+            {
+                ImGui::SetItemTooltip("End the session and every program in it");
+            }
         }
         ImGui::EndPopup();
     }

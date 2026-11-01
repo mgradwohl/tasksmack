@@ -531,6 +531,10 @@ setUnitStartType(std::string_view name, ServiceStartType startType, bool allowIn
 
 ServiceActionResult sessionAction(std::string_view id, SessionAction action, bool allowInteractive, const std::stop_token& stopToken)
 {
+    if (action == SessionAction::Disconnect)
+    {
+        return ServiceActionResult::failed(std::string(DISCONNECT_UNSUPPORTED)); // never TerminateSession in its place
+    }
     Bus bus;
     if (const auto failed = openForAction(bus, allowInteractive))
     {

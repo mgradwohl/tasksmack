@@ -3,7 +3,8 @@
 // The Users tab's table (#3076): a row per signed-in user, as Windows Task Manager's Users tab has, with
 // their process count and the Σ of their processes' CPU, memory, disk and network rates (the Processes
 // table's group totals, ProcessGrouping::Totals), and under it, expanded, their sessions and their
-// processes. A session's row menu offers Lock and Sign out... (UsersPanel runs them).
+// processes. A session's row menu offers what the platform can do (SessionMenu): Lock and Sign out... on
+// Linux, Disconnect... and Sign out... on Windows (UsersPanel runs them).
 //
 // The rows are built from two published generations, the sessions' (UsersModel) and the processes'
 // (ProcessModel), and rebuilt only when either changes. buildUserRows() and the text helpers are pure and
@@ -48,17 +49,35 @@ struct UserRow
 [[nodiscard]] std::string sessionPlace(const Platform::UserSession& session);
 
 /// What a session is doing at @p nowUsec (CLOCK_REALTIME µs): "Active", "Idle for 12 min", "Signed in",
-/// "Closing".
+/// "Closing", and on Windows "Disconnected" and "Connecting".
 [[nodiscard]] std::string sessionStatus(const Platform::UserSession& session, std::uint64_t nowUsec);
+
+/// A session row's tooltip: the user with their domain (Windows), when they signed in, and the session's
+/// ID: "PC\alice\nSigned in 09:12:04\nSession 2".
+[[nodiscard]] std::string sessionTooltip(const Platform::UserSession& session);
+
+/// Which items a session's row menu has: what the platform's IUserSessions::canAct() allows.
+struct SessionMenu
+{
+    bool lock = false;       ///< Linux
+    bool disconnect = false; ///< Windows
+    bool signOut = false;
+
+    [[nodiscard]] bool any() const noexcept
+    {
+        return lock || disconnect || signOut;
+    }
+};
 
 /// What the user did in the table this frame.
 struct UsersViewAction
 {
     std::int32_t selectPid = 0; ///< A process row was clicked: select it (0 for none)
     std::uint64_t selectStartTimeTicks = 0;
-    bool showDetails = false;                     ///< Double-clicked: show it in Process Details too
-    std::optional<Platform::UserSession> lock;    ///< The row menu's Lock
-    std::optional<Platform::UserSession> signOut; ///< The row menu's Sign out...
+    bool showDetails = false;                        ///< Double-clicked: show it in Process Details too
+    std::optional<Platform::UserSession> lock;       ///< The row menu's Lock
+    std::optional<Platform::UserSession> signOut;    ///< The row menu's Sign out...
+    std::optional<Platform::UserSession> disconnect; ///< The row menu's Disconnect... (Windows)
 };
 
 /// The table's state between frames.
@@ -79,9 +98,9 @@ void refreshUserRows(const Domain::UsersPublication& publication,
                      std::uint64_t processesVersion,
                      UsersViewState& state);
 
-/// Draws the table for @p publication (null: nothing sampled yet). With @p canAct, a session's row menu has
-/// Lock and Sign out...
+/// Draws the table for @p publication (null: nothing sampled yet). A session's row menu has @p menu's items,
+/// and none when it has none.
 [[nodiscard]] std::optional<UsersViewAction>
-renderUsersView(const Domain::UsersPublication* publication, bool hasSessions, bool canAct, UsersViewState& state);
+renderUsersView(const Domain::UsersPublication* publication, bool hasSessions, SessionMenu menu, UsersViewState& state);
 
 } // namespace App

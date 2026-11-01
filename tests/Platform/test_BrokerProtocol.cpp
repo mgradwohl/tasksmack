@@ -16,6 +16,7 @@
 #include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
 #include "Platform/ISystemInfoProbe.h"
+#include "Platform/IUserSessions.h"
 
 #include <gtest/gtest.h>
 
@@ -123,9 +124,45 @@ TEST(BrokerProtocolTest, TaskManagerReplacementRoundTrips)
     const std::vector<std::uint8_t> bytes =
         encodeRequest(5, Request{TaskManagerReplacementRequest{.change = TaskManagerChange::Set, .path = "ab", .replaceOther = true}});
     // The header, then the change, the path's length and bytes, and the flag.
-    const std::vector<std::uint8_t> expected{16, 0, 0, 0, 12, 0, 23, 0, 5, 0, 0, 0, 0, 2, 0, 0, 0, 'a', 'b', 1};
+    const std::vector<std::uint8_t> expected{16, 0, 0, 0, 13, 0, 23, 0, 5, 0, 0, 0, 0, 2, 0, 0, 0, 'a', 'b', 1};
     EXPECT_EQ(bytes, expected);
     EXPECT_EQ(Detail::readFrame(bytes).value_or(Detail::Frame{}).kind, MessageKind::TaskManagerReplacement);
+}
+
+// #3076 (v13): a session's Disconnect or Sign out carries the action and the session's WTS ID, the full 32
+// bits; a Lock (Linux's, never the helper's), an action past Disconnect, a short frame and a byte left over
+// are refused.
+TEST(BrokerProtocolTest, SessionActionRoundTripsAndRefusesALock)
+{
+    for (const Request& request : {
+             Request{SessionActionRequest{.action = SessionAction::SignOut, .sessionId = 2}},
+             Request{SessionActionRequest{.action = SessionAction::Disconnect, .sessionId = 0xFFFFFFFFU}},
+             Request{SessionActionRequest{.action = SessionAction::SignOut, .sessionId = 0}}, // the helper, not the decoder, refuses 0
+         })
+    {
+        EXPECT_EQ(roundTrip(request), request);
+    }
+    std::vector<std::uint8_t> bytes =
+        encodeRequest(5, Request{SessionActionRequest{.action = SessionAction::Disconnect, .sessionId = 0x01020304U}});
+    // The header, then the action and the session's ID.
+    const std::vector<std::uint8_t> expected{13, 0, 0, 0, 13, 0, 24, 0, 5, 0, 0, 0, 2, 4, 3, 2, 1};
+    EXPECT_EQ(bytes, expected);
+    EXPECT_EQ(Detail::readFrame(bytes).value_or(Detail::Frame{}).kind, MessageKind::SessionAction);
+
+    constexpr std::size_t ACTION = 4U + HEADER_BYTES;
+    bytes[ACTION] = static_cast<std::uint8_t>(SessionAction::Lock);
+    EXPECT_FALSE(decodeRequest(bytes).has_value()) << "a Lock";
+    bytes[ACTION] = static_cast<std::uint8_t>(static_cast<std::uint8_t>(SessionAction::Disconnect) + 1);
+    EXPECT_FALSE(decodeRequest(bytes).has_value()) << "past Disconnect";
+    bytes[ACTION] = static_cast<std::uint8_t>(SessionAction::SignOut);
+    ASSERT_TRUE(decodeRequest(bytes).has_value());
+    bytes.push_back(0); // a byte left over
+    bytes[0] = static_cast<std::uint8_t>(bytes.size() - 4U);
+    EXPECT_FALSE(decodeRequest(bytes).has_value());
+    bytes.resize(bytes.size() - 2); // the ID short by a byte
+    bytes[0] = static_cast<std::uint8_t>(bytes.size() - 4U);
+    EXPECT_FALSE(decodeRequest(bytes).has_value());
+    EXPECT_FALSE(decodeResponse(encodeRequest(1, Request{SessionActionRequest{}})).has_value()) << "not a response";
 }
 
 // #3072: what the decoder refuses of a TaskManagerReplacement: a change past Clear, a flag that isn't 0 or 1,
@@ -964,6 +1001,7 @@ TEST(BrokerProtocolTest, TheFuzzCorpusHasADecodableSeedForEveryMessageKind)
                                    MessageKind::SetEfficiencyMode,
                                    MessageKind::CloseConnection,
                                    MessageKind::TaskManagerReplacement,
+                                   MessageKind::SessionAction,
                                    MessageKind::ReadEnvironment,
                                    MessageKind::ReadModules,
                                    MessageKind::ReadOpenFiles,

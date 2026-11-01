@@ -20,8 +20,8 @@
 // by PID *and* start time (ProcessTarget), so the helper re-verifies the process and a reused PID can't
 // redirect a request. The one path a request carries is Replace Task Manager's (#3072), which the helper
 // takes only when it is the TaskSmack.exe beside it. Its kinds: the handshake, the process actions
-// (#2308), Process Details' reads (#2309), System Information's root-only facts (#2310) and Replace Task
-// Manager (#3072).
+// (#2308), Process Details' reads (#2309), System Information's root-only facts (#2310), Replace Task
+// Manager (#3072) and the Users tab's Disconnect and Sign out of another user's Windows session (#3076).
 
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
@@ -34,6 +34,7 @@
 #include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
 #include "Platform/ISystemInfoProbe.h"
+#include "Platform/IUserSessions.h"
 
 #include <algorithm>
 #include <array>
@@ -63,7 +64,8 @@ namespace Platform::Broker
 /// 10: CloseConnection, one of a process's sockets shut down (#3066).
 /// 11: ReadThreads, another user's process's threads for Process Details (#3069).
 /// 12: TaskManagerReplacement, TaskSmack set or cleared as Task Manager's IFEO debugger (#3072).
-inline constexpr std::uint16_t PROTOCOL_VERSION = 12;
+/// 13: SessionAction, another user's Windows session disconnected or signed out (#3076).
+inline constexpr std::uint16_t PROTOCOL_VERSION = 13;
 /// The largest frame either side accepts, header included.
 inline constexpr std::size_t MAX_MESSAGE_BYTES = std::size_t{8} << 20U;
 /// The most processes one ReadProcessCounters asks about (#2728); a sampler with more asks for the first.
@@ -103,6 +105,7 @@ enum class MessageKind : std::uint16_t // NOLINT(performance-enum-size): 16 bits
     SetEfficiencyMode = 21,      ///< Efficiency mode on or off for a process (#3071)
     CloseConnection = 22,        ///< One of a process's sockets shut down, by inode (#3066)
     TaskManagerReplacement = 23, ///< TaskSmack set or cleared as Task Manager's IFEO debugger (#3072)
+    SessionAction = 24,          ///< Another user's Windows session disconnected or signed out (#3076)
     ReadEnvironment = 32,        ///< Another user's process's environment, for Process Details (#2309)
     ReadModules = 33,            ///< Its loaded modules (#2309)
     ReadOpenFiles = 34,          ///< Its open files (#2309)
@@ -226,6 +229,22 @@ struct TaskManagerReplacementRequest
     bool replaceOther = false;
     friend bool operator==(const TaskManagerReplacementRequest&, const TaskManagerReplacementRequest&) = default;
 };
+
+// ---- The Users tab's session actions (#3076, protocol v13) ----
+
+/// Disconnect or sign out another user's Windows session (#3076, protocol v13): what TaskSmack can't do
+/// without an administrator's rights. Only Disconnect and SignOut are carried (a Lock is refused as
+/// malformed), and the session by its WTS ID. The helper checks it against a fresh list before it acts
+/// (UserSessionsMath::checkSessionAction(): not session 0, still there, someone signed in to it). The
+/// answer is a ServiceActionReply. Linux's helper answers with an error: polkit authorizes there.
+struct SessionActionRequest
+{
+    SessionAction action = SessionAction::SignOut;
+    std::uint32_t sessionId = 0;
+    friend bool operator==(const SessionActionRequest&, const SessionActionRequest&) = default;
+};
+
+// ---- end of the session actions ----
 
 /// Read a process's environment (#2309): the helper reads it with its capabilities, after the same identity check.
 struct EnvironmentRequest
@@ -584,7 +603,8 @@ using Request = std::variant<Hello,
                              EfficiencyModeRequest,
                              CloseConnectionRequest,
                              ThreadsRequest,
-                             TaskManagerReplacementRequest>;
+                             TaskManagerReplacementRequest,
+                             SessionActionRequest>;
 using Response = std::variant<HelloReply,
                               ActionResult,
                               ErrorReply,
@@ -933,6 +953,14 @@ namespace Detail
     return MessageKind::TaskManagerReplacement;
 }
 
+/// SessionAction (#3076): the action, then the session's ID.
+[[nodiscard]] inline MessageKind encodePayload(Writer& writer, const SessionActionRequest& session)
+{
+    writer.u8(static_cast<std::uint8_t>(session.action));
+    writer.u32(session.sessionId);
+    return MessageKind::SessionAction;
+}
+
 /// The reads that name only their target.
 [[nodiscard]] inline MessageKind encodePayload(Writer& writer, const EnvironmentRequest& environment)
 {
@@ -1173,6 +1201,22 @@ namespace Detail
     return request;
 }
 
+/// A SessionAction payload (#3076): the action, refused unless it is SignOut or Disconnect (Lock is
+/// Linux's, which polkit authorizes, never the helper), then the session's ID.
+[[nodiscard]] inline SessionActionRequest decodeSessionActionRequest(Reader& reader)
+{
+    SessionActionRequest request;
+    const std::uint8_t action = reader.u8();
+    request.sessionId = reader.u32();
+    if (action != static_cast<std::uint8_t>(SessionAction::SignOut) && action != static_cast<std::uint8_t>(SessionAction::Disconnect))
+    {
+        reader.fail();
+        return request;
+    }
+    request.action = static_cast<SessionAction>(action);
+    return request;
+}
+
 /// A ListHiddenProcesses payload: the count (refused past MAX_VISIBLE_PIDS), then the visible PIDs.
 [[nodiscard]] inline HiddenProcessesRequest decodeHiddenProcessesRequest(Reader& reader)
 {
@@ -1242,6 +1286,8 @@ namespace Detail
     }
     case MessageKind::TaskManagerReplacement:
         return Detail::finish<Request>(reader, id, Detail::decodeTaskManagerReplacementRequest(reader));
+    case MessageKind::SessionAction:
+        return Detail::finish<Request>(reader, id, Detail::decodeSessionActionRequest(reader));
     case MessageKind::ReadEnvironment:
         return Detail::finish<Request>(reader, id, EnvironmentRequest{.target = reader.target()});
     case MessageKind::ReadModules:
@@ -2099,6 +2145,7 @@ namespace Detail
     case MessageKind::SetEfficiencyMode:
     case MessageKind::CloseConnection:
     case MessageKind::TaskManagerReplacement:
+    case MessageKind::SessionAction:
     case MessageKind::ReadThreads:
         break;
     }

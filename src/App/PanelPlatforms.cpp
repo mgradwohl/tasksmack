@@ -8,6 +8,9 @@
 #include "Panels/SystemMetricsPanel.h"
 #include "Platform/BrokeredProcessActions.h"
 #include "Platform/BrokeredSystemInfoProbe.h"
+#ifdef _WIN32
+#include "Platform/BrokeredUserSessions.h" // the Users tab's helper decorator: Windows only (#3076)
+#endif
 #ifndef _WIN32
 #include "Platform/BrokeredServiceActions.h" // the services panel's helper decorator: Linux only
 #endif
@@ -156,7 +159,12 @@ std::shared_ptr<Platform::IUserSessions> makeUsersPanelSessions(const Synthetic:
     {
         return std::make_shared<Platform::UnsupportedUserSessions>();
     }
+#ifdef _WIN32
+    // Another user's session needs an administrator (#3076): the helper does it, as polkit does on Linux.
+    return std::make_shared<Platform::BrokeredUserSessions>(Platform::makeUserSessions(), sharedPrivilegedBroker());
+#else
     return Platform::makeUserSessions();
+#endif
 }
 
 ServicesPanelPlatform makeServicesPanelPlatform(const Synthetic::Scenario* /*scenario*/)
