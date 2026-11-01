@@ -31,6 +31,7 @@
 #include <format>
 #include <fstream>
 #include <iterator>
+#include <new>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -51,6 +52,7 @@ struct FakeTrust // NOLINT(clang-analyzer-optin.performance.Padding)
     LONG embeddedResult = 0;
     LONG catalogResult = 0;
     bool noProviderData = false;
+    bool throwReadingSigner = false; ///< WTHelperProvDataFromStateData's stand-in throws, as an allocation might (#3339)
     std::wstring signerName = L"Fake Signer";
     bool failAcquire = false;
     bool failHash = false;
@@ -125,6 +127,10 @@ LONG WINAPI fakeWinVerifyTrust(HWND /*window*/, GUID* /*action*/, LPVOID data)
 
 CRYPT_PROVIDER_DATA* WINAPI fakeProvData(HANDLE /*state*/)
 {
+    if (fake().throwReadingSigner)
+    {
+        throw std::bad_alloc{};
+    }
     return fake().noProviderData ? nullptr : &g_providerData;
 }
 
@@ -531,6 +537,21 @@ TEST_F(WindowsSignatureCheckTest, ASignerThatCantBeReadIsLeftUnnamed)
     EXPECT_TRUE(verifyEmbeddedSignature(fakeApi(), file(), handle()).signer.empty());
     fake().signerName.clear(); // a certificate naming no one: just the NUL
     EXPECT_TRUE(verifyEmbeddedSignature(fakeApi(), file(), handle()).signer.empty());
+}
+
+TEST_F(WindowsSignatureCheckTest, AThrowReadingTheSignerStillClosesTheState)
+{
+    // Between VERIFY and CLOSE the signer's name is read, which allocates: a throw there must not skip
+    // CLOSE (#3339), on the embedded path and on the catalog one.
+    fake().throwReadingSigner = true;
+    EXPECT_THROW((void) verifyEmbeddedSignature(fakeApi(), file(), handle()), std::bad_alloc);
+    EXPECT_EQ(fake().verifyCalls, 1);
+    EXPECT_EQ(fake().closeCalls, 1);
+    EXPECT_THROW((void) verifyCatalogSignature(fakeApi(), file(), handle()), std::bad_alloc);
+    EXPECT_EQ(fake().verifyCalls, 2);
+    EXPECT_EQ(fake().closeCalls, 2);
+    EXPECT_EQ(fake().catalogsReleased, 1) << "the catalog context is released on the way out too";
+    EXPECT_EQ(fake().released, fake().acquired);
 }
 
 TEST_F(WindowsSignatureCheckTest, AHandleThatCantBeRewoundIsAnError)

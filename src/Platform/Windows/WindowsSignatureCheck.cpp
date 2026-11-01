@@ -68,21 +68,46 @@ using WindowsSignature::TrustCheck;
     return WinString::wideToUtf8(std::wstring_view(name.data(), length - 1));
 }
 
+/// Closes a WTD_STATEACTION_VERIFY call's state (WTD_STATEACTION_CLOSE) when it goes out of scope, on every
+/// path out, a throw from reading the signer's name included (#3339).
+class TrustStateCloser
+{
+  public:
+    TrustStateCloser(const TrustApiFunctions& fns, HWND window, GUID& action, WINTRUST_DATA& data) noexcept
+        : m_Fns(&fns), m_Window(window), m_Action(&action), m_Data(&data)
+    {}
+    TrustStateCloser(const TrustStateCloser&) = delete;
+    TrustStateCloser& operator=(const TrustStateCloser&) = delete;
+    TrustStateCloser(TrustStateCloser&&) = delete;
+    TrustStateCloser& operator=(TrustStateCloser&&) = delete;
+    ~TrustStateCloser()
+    {
+        m_Data->dwStateAction = WTD_STATEACTION_CLOSE;
+        (void) m_Fns->winVerifyTrust(m_Window, m_Action, m_Data);
+    }
+
+  private:
+    const TrustApiFunctions* m_Fns;
+    HWND m_Window;
+    GUID* m_Action;
+    WINTRUST_DATA* m_Data;
+};
+
 /// WinVerifyTrust without an interactive user (INVALID_HANDLE_VALUE as the window: no UI at all), and the
-/// signer's name when the signature is trusted. The verification state is always closed.
+/// signer's name when the signature is trusted. The verification state is always closed, even when
+/// reading the name throws.
 [[nodiscard]] TrustCheck verifyTrust(const TrustApiFunctions& fns, WINTRUST_DATA& data)
 {
     GUID action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
     // NOLINTNEXTLINE(performance-no-int-to-ptr) - WinVerifyTrust's documented "no interactive user" window
     auto* const noUser = static_cast<HWND>(INVALID_HANDLE_VALUE);
     data.dwStateAction = WTD_STATEACTION_VERIFY;
+    const TrustStateCloser closer(fns, noUser, action, data);
     TrustCheck check{.result = fns.winVerifyTrust(noUser, &action, &data), .signer = {}};
     if (check.result == 0)
     {
         check.signer = signerName(fns, data.hWVTStateData);
     }
-    data.dwStateAction = WTD_STATEACTION_CLOSE;
-    (void) fns.winVerifyTrust(noUser, &action, &data);
     return check;
 }
 

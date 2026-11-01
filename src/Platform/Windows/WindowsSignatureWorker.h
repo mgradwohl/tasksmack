@@ -12,8 +12,9 @@
 //   the same image costs a file open and stamp read, not another check, and a file replaced or changed is
 //   checked anew. A file with no ID (FAT, some network shares) isn't cached: it is checked every time.
 // - Each path is queued at most once at a time, so thirty svchost.exe processes are one check.
-// - The path table is bounded too: when full, the answers already taken are forgotten (a path still being
-//   polled is requested again by find()).
+// - The path table, and so the queue, is bounded too: when full, the answers already taken are forgotten
+//   (a path still being polled is requested again by find()). When every path in it is still queued, a new
+//   path isn't admitted (#3340): it stays "not checked yet" and find() requests it again on a later sample.
 // - The thread starts with the first request and is stopped and joined by the destructor; a check in
 //   progress finishes first (WinVerifyTrust can't be interrupted), the rest of the queue is dropped.
 //
@@ -70,7 +71,8 @@ class SignatureWorker
     SignatureWorker(SignatureWorker&&) = delete;
     SignatureWorker& operator=(SignatureWorker&&) = delete;
 
-    /// Queues a check of @p path (UTF-8) for a process just seen, unless one is queued already. Its last
+    /// Queues a check of @p path (UTF-8) for a process just seen, unless one is queued already or the table
+    /// is full of queued paths (then it isn't admitted, and find() asks again later). Its last
     /// answer is withdrawn until the check is done: the file may have been replaced since, and the check
     /// (from the cache when the file's stamp is unchanged) says so. Never blocks on a check.
     void request(std::string_view path)
@@ -80,7 +82,7 @@ class SignatureWorker
     }
 
     /// The answer for @p path once checked since the last request(); nullopt while queued or checking.
-    /// A path the table has forgotten (it overflowed) is requested again.
+    /// A path the table has forgotten (it overflowed), or never admitted (it was full), is requested again.
     [[nodiscard]] std::optional<SignatureCheck> find(std::string_view path)
     {
         std::string key = pathKey(path);
@@ -133,6 +135,14 @@ class SignatureWorker
         {
             // Full: forget what has been answered and taken; what is queued stays, its check to come.
             std::erase_if(m_Paths, [](const auto& entry) { return !entry.second.queued; });
+            if (m_Paths.size() >= m_Options.maxPaths)
+            {
+                // Still full, every path queued (#3340): this one isn't admitted, so neither the table nor
+                // the queue grows past the bound. Nothing queued is evicted either (its check still comes).
+                // The path stays "not checked yet", and find() asks again on a later sample, once checks
+                // have drained the queue.
+                return;
+            }
         }
         PathState& state = m_Paths[std::move(key)];
         state.result.reset();
