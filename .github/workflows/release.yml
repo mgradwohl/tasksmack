@@ -42,8 +42,8 @@ env:
   # deliberate, reviewed PR rather than a change in apt repository state
   # between two runs of the same tag. The matrix picks the pin: arm64 legs
   # pass LLVM_LINUX_EXACT_VERSION_ARM64 to setup-llvm, x64 legs the other.
-  LLVM_LINUX_EXACT_VERSION: '1:23.1.5~++20261023090852+395ba2c4d274-1~exp1~20261023090919.90'
-  LLVM_LINUX_EXACT_VERSION_ARM64: '1:23.1.5~++20261023090852+395ba2c4d274-1~exp1~20261023090919.90'
+  LLVM_LINUX_EXACT_VERSION: '1:23.1.5~++20261028083854+a738f2737189-1~exp1~20261028203912.92'
+  LLVM_LINUX_EXACT_VERSION_ARM64: '1:23.1.5~++20261028083854+a738f2737189-1~exp1~20261028203912.92'
 
   # 'true' only for a dispatched run with dry_run left on; a tag push has no inputs, so it is
   # always a real release. Read as $DRY_RUN in scripts and env.DRY_RUN in `if:` conditions.
