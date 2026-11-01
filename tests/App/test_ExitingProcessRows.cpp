@@ -39,6 +39,27 @@ TEST(ExitingProcessRowsTest, AProcessMissingFromTheNewGenerationIsKeptUntilItsTi
     EXPECT_TRUE(tracker.exited().empty());
 }
 
+TEST(ExitingProcessRowsTest, GenerationsAdoptedWithoutExpireStayBounded)
+{
+    // Another tab is showing (#3283): generations keep coming, each with an exit, but the table never
+    // draws, so expire() is never called. Only the exits of the last DURATION_SECONDS are kept.
+    Tracker tracker;
+    constexpr double INTERVAL_SECONDS = 0.5;
+    constexpr int GENERATIONS = 1000;
+    std::vector<Domain::ProcessSnapshot> previous{proc(1, 0)};
+    for (int generation = 0; generation < GENERATIONS; ++generation)
+    {
+        // Each generation, one process starts and the one started the generation before exits.
+        const std::vector<Domain::ProcessSnapshot> current{proc(1, 0), proc(100 + generation, 1)};
+        (void) tracker.onGeneration(previous, current, static_cast<double>(generation) * INTERVAL_SECONDS);
+        previous = current;
+        EXPECT_LE(tracker.exited().size(), static_cast<std::size_t>(ExitingProcessRows::DURATION_SECONDS / INTERVAL_SECONDS));
+    }
+    ASSERT_FALSE(tracker.exited().empty());
+    // The newest exit is the last generation's.
+    EXPECT_EQ(tracker.exited().back().snapshot.pid, 100 + GENERATIONS - 2);
+}
+
 TEST(ExitingProcessRowsTest, APidReusedByANewProcessStillCountsAsAnExit)
 {
     Tracker tracker;

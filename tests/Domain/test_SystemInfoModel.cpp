@@ -33,6 +33,12 @@ namespace Domain
 namespace
 {
 
+/// A published sensor history's values, as a vector to compare with.
+[[nodiscard]] std::vector<float> valuesOf(const SensorHistory& history)
+{
+    return {history.values.begin(), history.values.end()};
+}
+
 /// How FakeSystemInfoProbe::readOs() fails, if at all.
 enum class ReadOsThrows : std::uint8_t
 {
@@ -718,10 +724,10 @@ TEST(SystemInfoModelTest, SensorsSharingALabelKeepTheirOwnRangeAndHistory)
     EXPECT_EQ(first->ranges.at(voltsKey), (SensorRange{.min = 12.0, .max = 12.0, .samples = 1}));
     EXPECT_EQ(first->ranges.at(ampsKey), (SensorRange{.min = 2.0, .max = 2.0, .samples = 1}));
     // Every channel enters its own history, though they were all read at the same time.
-    EXPECT_EQ(first->histories.at(zone0Key).values, std::vector<float>{40.0F});
-    EXPECT_EQ(first->histories.at(zone1Key).values, std::vector<float>{70.0F});
-    EXPECT_EQ(first->histories.at(voltsKey).values, std::vector<float>{12.0F});
-    EXPECT_EQ(first->histories.at(ampsKey).values, std::vector<float>{2.0F});
+    EXPECT_EQ(valuesOf(first->histories.at(zone0Key)), std::vector<float>{40.0F});
+    EXPECT_EQ(valuesOf(first->histories.at(zone1Key)), std::vector<float>{70.0F});
+    EXPECT_EQ(valuesOf(first->histories.at(voltsKey)), std::vector<float>{12.0F});
+    EXPECT_EQ(valuesOf(first->histories.at(ampsKey)), std::vector<float>{2.0F});
 
     sampler->sample();
     sampler->sample();
@@ -731,10 +737,10 @@ TEST(SystemInfoModelTest, SensorsSharingALabelKeepTheirOwnRangeAndHistory)
     EXPECT_EQ(latest->ranges.at(zone1Key), (SensorRange{.min = 70.0, .max = 74.0, .samples = 3}));
     EXPECT_EQ(latest->ranges.at(voltsKey), (SensorRange{.min = 12.0, .max = 12.1, .samples = 2}));
     EXPECT_EQ(latest->ranges.at(ampsKey), (SensorRange{.min = 2.0, .max = 3.0, .samples = 3}));
-    EXPECT_EQ(latest->histories.at(zone0Key).values, (std::vector<float>{40.0F, 41.0F}));
-    EXPECT_EQ(latest->histories.at(zone1Key).values, (std::vector<float>{70.0F, 72.0F, 74.0F}));
-    EXPECT_EQ(latest->histories.at(voltsKey).values, (std::vector<float>{12.0F, 12.1F}));
-    EXPECT_EQ(latest->histories.at(ampsKey).values, (std::vector<float>{2.0F, 2.5F, 3.0F}));
+    EXPECT_EQ(valuesOf(latest->histories.at(zone0Key)), (std::vector<float>{40.0F, 41.0F}));
+    EXPECT_EQ(valuesOf(latest->histories.at(zone1Key)), (std::vector<float>{70.0F, 72.0F, 74.0F}));
+    EXPECT_EQ(valuesOf(latest->histories.at(voltsKey)), (std::vector<float>{12.0F, 12.1F}));
+    EXPECT_EQ(valuesOf(latest->histories.at(ampsKey)), (std::vector<float>{2.0F, 2.5F, 3.0F}));
 }
 
 /// A full sensors read of @p devices (#2495).
@@ -775,17 +781,17 @@ TEST(SystemInfoModelTest, ADeviceTakingAnotherOnesHwmonNumberStartsFresh)
     const std::string coretemp = sensorKey(before->sensors.devices[0], before->sensors.devices[0].readings[0]);
     const std::string hwmon5 = sensorKey(before->sensors.devices[1], before->sensors.devices[1].readings[0]);
     EXPECT_EQ(before->ranges.at(hwmon5), (SensorRange{.min = 40.0, .max = 55.0, .samples = 2}));
-    EXPECT_EQ(before->histories.at(hwmon5).values, (std::vector<float>{40.0F, 55.0F}));
+    EXPECT_EQ(valuesOf(before->histories.at(hwmon5)), (std::vector<float>{40.0F, 55.0F}));
 
     sensors->sample();
     const auto after = sensors->publication();
     ASSERT_EQ(after->sensors.devices[1].name, "mt7921_phy0");
     EXPECT_EQ(sensorKey(after->sensors.devices[1], after->sensors.devices[1].readings[0]), hwmon5) << "the same key";
     EXPECT_EQ(after->ranges.at(hwmon5), (SensorRange{.min = 30.0, .max = 30.0, .samples = 1}));
-    EXPECT_EQ(after->histories.at(hwmon5).values, std::vector<float>{30.0F});
+    EXPECT_EQ(valuesOf(after->histories.at(hwmon5)), std::vector<float>{30.0F});
     // The device that stayed keeps its own.
     EXPECT_EQ(after->ranges.at(coretemp), (SensorRange{.min = 50.0, .max = 52.0, .samples = 3}));
-    EXPECT_EQ(after->histories.at(coretemp).values, (std::vector<float>{50.0F, 52.0F, 51.0F}));
+    EXPECT_EQ(valuesOf(after->histories.at(coretemp)), (std::vector<float>{50.0F, 52.0F, 51.0F}));
 }
 
 // #2495: a device gone from a full sensors list takes its range and history with it, so the maps don't
@@ -825,9 +831,9 @@ TEST(SystemInfoModelTest, ADeviceGoneFromTheSensorsListIsForgotten)
     sensors->sample();
     const auto replugged = sensors->publication();
     EXPECT_EQ(replugged->ranges.at(hwmon3), (SensorRange{.min = 60.0, .max = 60.0, .samples = 1}));
-    EXPECT_EQ(replugged->histories.at(hwmon3).values, std::vector<float>{60.0F});
+    EXPECT_EQ(valuesOf(replugged->histories.at(hwmon3)), std::vector<float>{60.0F});
     EXPECT_EQ(replugged->ranges.at(hwmon5), (SensorRange{.min = 40.0, .max = 45.0, .samples = 3}));
-    EXPECT_EQ(replugged->histories.at(hwmon5).values, (std::vector<float>{40.0F, 45.0F, 42.0F}));
+    EXPECT_EQ(valuesOf(replugged->histories.at(hwmon5)), (std::vector<float>{40.0F, 45.0F, 42.0F}));
 }
 
 // #2340: a source without ids still keeps a voltage and a current that share a label apart.
@@ -848,12 +854,13 @@ TEST(SystemInfoModelTest, SensorKeyWithoutIdsStillTellsKindsApart)
 
 TEST(SystemInfoModelTest, SensorHistoryIsOrderedAndBounded)
 {
-    SensorHistory range;
-    appendSensorHistory(range, 40.0, 100.0);
-    appendSensorHistory(range, 45.0, 100.0); // not after the newest: ignored
-    appendSensorHistory(range, 45.0, 99.0);
-    ASSERT_EQ(range.values.size(), 1U);
-    EXPECT_FLOAT_EQ(range.values[0], 40.0F);
+    SensorSeries series;
+    appendSensorHistory(series, 40.0, 100.0);
+    appendSensorHistory(series, 45.0, 100.0); // not after the newest: ignored
+    appendSensorHistory(series, 45.0, 99.0);
+    const SensorHistory first = series.view();
+    ASSERT_EQ(first.values.size(), 1U);
+    EXPECT_FLOAT_EQ(first.values[0], 40.0F);
 
     // Readings faster than the shortest refresh interval: the capacity, not the window, bounds it, oldest
     // dropped first (#2796).
@@ -862,9 +869,10 @@ TEST(SystemInfoModelTest, SensorHistoryIsOrderedAndBounded)
     std::size_t index = 1;
     while (index <= capacity + 10)
     {
-        appendSensorHistory(range, 40.0 + static_cast<double>(index), 100.0 + (static_cast<double>(index) * BURST), BURST);
+        appendSensorHistory(series, 40.0 + static_cast<double>(index), 100.0 + (static_cast<double>(index) * BURST), BURST);
         ++index;
     }
+    const SensorHistory range = series.view();
     EXPECT_EQ(range.values.size(), capacity);
     EXPECT_EQ(range.times.size(), range.values.size());
     EXPECT_FLOAT_EQ(range.values.back(), 40.0F + static_cast<float>(capacity + 10));
@@ -877,12 +885,12 @@ TEST(SystemInfoModelTest, SensorHistoryFollowsItsWindow)
 {
     const auto readingsKept = [](double windowSeconds)
     {
-        SensorHistory history;
+        SensorSeries series;
         for (int second = 0; second < 2000; ++second)
         {
-            appendSensorHistory(history, 40.0, 1000.0 + second, 1.0, windowSeconds);
+            appendSensorHistory(series, 40.0, 1000.0 + second, 1.0, windowSeconds);
         }
-        return history.values.size();
+        return series.view().values.size();
     };
     EXPECT_EQ(readingsKept(60.0), 61U); // the window's worth, plus the reading at its very start
     EXPECT_EQ(readingsKept(600.0), 601U);
@@ -893,11 +901,12 @@ TEST(SystemInfoModelTest, SensorHistoryFollowsItsWindow)
 TEST(SystemInfoModelTest, APauseBreaksTheSensorHistoryAndOldReadingsAgeOut)
 {
     constexpr double REFRESH = static_cast<double>(Sampling::SYSTEM_INFO_SENSOR_REFRESH_MS) / 1000.0;
-    SensorHistory range;
-    appendSensorHistory(range, 40.0, 1000.0);
-    appendSensorHistory(range, 41.0, 1000.0 + REFRESH);
+    SensorSeries series;
+    appendSensorHistory(series, 40.0, 1000.0);
+    appendSensorHistory(series, 41.0, 1000.0 + REFRESH);
     // The tab was hidden for a minute: a NaN break a refresh after the last reading, then the new one.
-    appendSensorHistory(range, 50.0, 1060.0);
+    appendSensorHistory(series, 50.0, 1060.0);
+    const SensorHistory range = series.view();
     ASSERT_EQ(range.values.size(), 4U);
     EXPECT_TRUE(std::isnan(range.values[2]));
     EXPECT_DOUBLE_EQ(range.times[2], 1000.0 + (2.0 * REFRESH));
@@ -905,10 +914,11 @@ TEST(SystemInfoModelTest, APauseBreaksTheSensorHistoryAndOldReadingsAgeOut)
 
     // Hidden longer than the window: everything before it ages out.
     const double later = 1060.0 + static_cast<double>(Sampling::HISTORY_SECONDS_DEFAULT) + 100.0;
-    appendSensorHistory(range, 55.0, later);
-    ASSERT_EQ(range.values.size(), 1U);
-    EXPECT_FLOAT_EQ(range.values[0], 55.0F);
-    EXPECT_DOUBLE_EQ(range.times[0], later);
+    appendSensorHistory(series, 55.0, later);
+    const SensorHistory aged = series.view();
+    ASSERT_EQ(aged.values.size(), 1U);
+    EXPECT_FLOAT_EQ(aged.values[0], 55.0F);
+    EXPECT_DOUBLE_EQ(aged.times[0], later);
 }
 
 } // namespace

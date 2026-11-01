@@ -12,7 +12,9 @@ namespace App
 /// Replace Task Manager's startup check (#3072): at attach it reads taskmgr.exe's IFEO Debugger on the
 /// controller's worker, and when that first read says Task Manager starts a TaskSmack that isn't this one
 /// and should (TaskManagerReplacementText::showsNotice()), it shows a notice that blocks nothing, offering
-/// Repair (point it at this copy) or Turn off. Asked once per run.
+/// Repair (point it at this copy) or Turn off. When the user had turned it on (config.toml remembers it,
+/// #3276) and it is off, it offers Repair (turn it back on) or Turn off (leave it off, and forget it) instead.
+/// Asked once per run.
 ///
 /// Thread safety: all layer lifecycle methods run on the main thread; the controller's worker shares
 /// only its result.
@@ -23,6 +25,8 @@ class TaskManagerNoticeLayer : public Core::Layer
 
     void onAttach() override;
     void onRender() override;
+    /// A minimized start draws nothing (#3276): the controller's read is still taken in, so what it remembers is up to date.
+    void onHiddenUpdate() override;
 
     [[nodiscard]] const TaskManagerReplacementRows::NoticeState& noticeState() const noexcept
     {

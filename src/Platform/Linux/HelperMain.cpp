@@ -194,7 +194,8 @@ int main(int argc, char* const* argv)
         // An architecture without a filter (not x86-64 or AArch64) keeps working in the log-only stage.
         std::fputs("tasksmack-helper: no seccomp filter for this architecture; serving without one\n", stderr);
     }
-    else if (!Platform::HelperSandbox::installFilter(enforce ? Platform::HelperSandbox::Mode::Enforce : Platform::HelperSandbox::Mode::Log))
+    else if (!Platform::HelperSandbox::installFilter(enforce ? Platform::HelperSandbox::Mode::Enforce : Platform::HelperSandbox::Mode::Log,
+                                                     Platform::SystemdBus::heldSystemBusFd()))
     {
         std::fputs("tasksmack-helper: couldn't install its seccomp filter; not serving\n", stderr);
         return EXIT_FAILED;

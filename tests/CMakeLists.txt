@@ -247,6 +247,12 @@ set_tests_properties(DocsSriScript PROPERTIES TIMEOUT 60)
 add_test(NAME NsisRunUninstallScript COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_nsis_run_uninstall.py)
 set_tests_properties(NsisRunUninstallScript PROPERTIES TIMEOUT 60)
 
+# The NSIS installer's upgrade step (#3276), cmake/CPackProjectConfig.cmake.in: it runs the old uninstaller with
+# /TASKSMACK_UPGRADE when it installs to the same folder, and the two steps above then keep their values; run
+# against fakes, through those steps' interpreters. Pure Python, on every platform.
+add_test(NAME NsisUpgradeStep COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_nsis_upgrade.py)
+set_tests_properties(NsisUpgradeStep PROPERTIES TIMEOUT 60)
+
 # tools/profile-heap.sh refuses a --bench-filter that matches no benchmark before starting heaptrack (#2987).
 # Stub binaries; the script is Linux-only, so the test is too.
 if(TASKSMACK_BASH AND NOT WIN32)
@@ -806,6 +812,7 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_DetachedSpawn.cpp
     Platform/test_SessionUser.cpp  # whom a run as root opens links and folders as (#2461)
     Platform/test_LinuxStartup.cpp  # the Startup tab on Linux: XDG autostart (#2541)
+    Platform/test_LinuxHttpsClient.cpp  # the update check's HTTPS client on Linux: libcurl (#3238)
     Platform/test_LinuxStartAtLogin.cpp  # start at sign-in on Linux: the XDG autostart entry (#3254)
     Platform/test_LinuxIoPriority.cpp
     Platform/test_LinuxProcessEnvironmentReader.cpp
@@ -1132,7 +1139,7 @@ tasksmack_apply_linux_toolchain(TaskSmackTests)
 if(UNIX AND NOT APPLE)
     # tasksmack_sdbus: libsystemd and TASKSMACK_HAS_SDBUS when found, as for the app (#1525). No X11:
     # Core/X11WindowManager.cpp dlopen()s libX11, as for the app and the benchmarks (#1702).
-    target_link_libraries(TaskSmackTests PRIVATE ${CMAKE_DL_LIBS} tasksmack_sdbus)
+    target_link_libraries(TaskSmackTests PRIVATE ${CMAKE_DL_LIBS} tasksmack_sdbus tasksmack_curl)
 
     add_library(TaskSmackNVMLMock SHARED
         Mocks/NVMLMock.cpp

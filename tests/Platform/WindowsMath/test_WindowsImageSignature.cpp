@@ -1,9 +1,10 @@
 /// @file test_WindowsImageSignature.cpp
 /// @brief An image's Authenticode signature (#3070), its pure parts: how the Signature column and Process
 /// Details word, explain and order each result (Platform/ImageSignature.h); and the check itself through
-/// fakes (WindowsImageSignature.h): the embedded and catalog answers combined, the cache keyed by path,
-/// size and last write time (case folded, bounded), a catalog member's tag and an error's text. Pure, so
-/// built everywhere.
+/// fakes (WindowsImageSignature.h): the embedded and catalog answers combined, both read through the
+/// handle the stamp came from and closed after; the cache keyed by path (case folded, bounded), file ID,
+/// change time and size, a swapped same-size file checked again and a file with no ID never cached
+/// (#3292); a catalog member's tag and an error's text. Pure, so built everywhere.
 
 #include "Platform/ImageSignature.h"
 #include "Platform/Windows/WindowsImageSignature.h"
@@ -15,8 +16,10 @@
 #include <cstdint>
 #include <map>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace Platform::WindowsSignature
 {
@@ -117,24 +120,66 @@ TEST(WindowsImageSignatureTest, ACatalogMemberIsTaggedByItsHashInUpperCaseHex)
     EXPECT_EQ(catalogMemberTag({}), "");
 }
 
+/// A file ID whose first byte is @p first, on volume 7.
+FileId idOf(std::uint8_t first)
+{
+    FileId id{.volumeSerial = 7, .id = {}};
+    id.id[0] = first;
+    return id;
+}
+
+/// The stamp of the file with ID idOf(@p id), changed at @p changeTime and @p size bytes long.
+FileStamp stampOf(std::uint64_t changeTime, std::uint64_t size = 100, std::uint8_t id = 1)
+{
+    return {.fileId = idOf(id), .changeTime = changeTime, .size = size};
+}
+
+TEST(WindowsImageSignatureTest, AFileIdOfAllZerosIsNone)
+{
+    std::array<std::uint8_t, FileId::SIZE> bytes{};
+    EXPECT_FALSE(makeFileId(7, bytes).has_value()) << "FAT and some network shares give no ID";
+    bytes[FileId::SIZE - 1] = 0x5A;
+    const std::optional<FileId> id = makeFileId(7, bytes);
+    ASSERT_TRUE(id.has_value());
+    EXPECT_EQ(id->volumeSerial, 7U);
+    EXPECT_EQ(id->id, bytes);
+    EXPECT_NE(makeFileId(8, bytes), id) << "the same ID on another volume is another file";
+}
+
 TEST(WindowsImageSignatureTest, TheCacheMatchesOnlyTheSameStampAndEmptiesWhenFull)
 {
     SignatureCache cache(2);
-    const FileStamp stamp{.lastWriteTime = 10, .size = 100};
+    const FileStamp stamp = stampOf(10);
     const SignatureCheck signedCheck{.signature = ImageSignature::Catalog, .note = {}, .signer = "Microsoft Windows"};
     cache.store("a", stamp, signedCheck);
     EXPECT_EQ(cache.find("a", stamp), signedCheck);
-    EXPECT_FALSE(cache.find("a", FileStamp{.lastWriteTime = 11, .size = 100}).has_value()) << "rewritten in place";
-    EXPECT_FALSE(cache.find("a", FileStamp{.lastWriteTime = 10, .size = 101}).has_value()) << "another size";
+    EXPECT_FALSE(cache.find("a", stampOf(11)).has_value()) << "changed in place";
+    EXPECT_FALSE(cache.find("a", stampOf(10, 101)).has_value()) << "another size";
+    EXPECT_FALSE(cache.find("a", stampOf(10, 100, 2)).has_value()) << "another file in its place";
+    FileStamp otherVolume = stamp;
+    otherVolume.fileId->volumeSerial = 8;
+    EXPECT_FALSE(cache.find("a", otherVolume).has_value()) << "the same ID on another volume";
     EXPECT_FALSE(cache.find("b", stamp).has_value());
 
     cache.store("b", stamp, signedCheck);
-    cache.store("a", FileStamp{.lastWriteTime = 12, .size = 100}, signedCheck); // a path it holds: replaced, not overflowing
+    cache.store("a", stampOf(12), signedCheck); // a path it holds: replaced, not overflowing
     EXPECT_EQ(cache.size(), 2U);
     cache.store("c", stamp, signedCheck); // a third path: the full cache is emptied first
     EXPECT_EQ(cache.size(), 1U);
     EXPECT_TRUE(cache.find("c", stamp).has_value());
     EXPECT_FALSE(cache.find("b", stamp).has_value());
+}
+
+TEST(WindowsImageSignatureTest, AStampWithoutAFileIdIsNeverCached)
+{
+    SignatureCache cache;
+    const FileStamp noId{.fileId = std::nullopt, .changeTime = 10, .size = 100};
+    cache.store("fat", noId, SignatureCheck{.signature = ImageSignature::Embedded, .note = {}, .signer = "Contoso"});
+    EXPECT_EQ(cache.size(), 0U) << "nothing would say it's the same file next time";
+    EXPECT_FALSE(cache.find("fat", noId).has_value());
+
+    cache.store("fat", stampOf(10), SignatureCheck{.signature = ImageSignature::Embedded, .note = {}, .signer = "Contoso"});
+    EXPECT_FALSE(cache.find("fat", noId).has_value()) << "an answer kept for a file with an ID is no answer for one without";
 }
 
 TEST(WindowsImageSignatureTest, AnErrorIsNamedByItsTextOrItsCode)
@@ -163,10 +208,14 @@ TEST(WindowsImageSignatureTest, TheEmbeddedAndCatalogAnswersCombine)
 
 struct Fakes
 {
-    std::map<std::string, FileStamp> stamps;      // a path missing here can't be read
+    std::map<std::string, FileStamp> stamps;      // a path missing here can't be opened
     std::map<std::string, std::int32_t> embedded; // its embedded answer; NO_SIGNATURE by default
     std::map<std::string, std::int32_t> catalogs; // its catalog's answer; missing: in no catalog
     std::map<std::string, int> embeddedChecks;
+    std::map<std::string, int> catalogChecks;
+    int opened = 0;
+    int closed = 0;
+    std::vector<void*> verifiedThrough; // the file each verify call was given
 };
 
 Fakes& fakes()
@@ -175,26 +224,42 @@ Fakes& fakes()
     return state;
 }
 
+int g_openFile = 0; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables) - the fake handle's address
+
 SignatureFunctions fakeFunctions()
 {
     return {
         .errorMessage = [](std::uint32_t code)
         { return code == 0x800B0101U ? std::string("The certificate has expired.") : std::string{}; },
-        .fileStamp = [](const std::string& path) -> std::optional<FileStamp>
+        .openImage = [](const std::string& path) -> std::optional<OpenedImage>
         {
             const auto found = fakes().stamps.find(path);
-            return found != fakes().stamps.end() ? std::optional<FileStamp>(found->second) : std::nullopt;
+            if (found == fakes().stamps.end())
+            {
+                return std::nullopt;
+            }
+            ++fakes().opened;
+            return OpenedImage{.file = &g_openFile, .stamp = found->second};
+        },
+        .closeImage =
+            [](void* file)
+        {
+            EXPECT_EQ(file, &g_openFile);
+            ++fakes().closed;
         },
         .verifyEmbeddedSignature =
-            [](const std::string& path)
+            [](const std::string& path, void* file)
         {
             ++fakes().embeddedChecks[path];
+            fakes().verifiedThrough.push_back(file);
             const auto found = fakes().embedded.find(path);
             const std::int32_t result = found != fakes().embedded.end() ? found->second : TrustResult::NO_SIGNATURE;
             return TrustCheck{.result = result, .signer = result == 0 ? "Embedded Signer" : std::string{}};
         },
-        .verifyCatalogSignature = [](const std::string& path) -> std::optional<TrustCheck>
+        .verifyCatalogSignature = [](const std::string& path, void* file) -> std::optional<TrustCheck>
         {
+            ++fakes().catalogChecks[path];
+            fakes().verifiedThrough.push_back(file);
             const auto found = fakes().catalogs.find(path);
             if (found == fakes().catalogs.end())
             {
@@ -232,12 +297,39 @@ TEST_F(CheckSignatureTest, EachAnswerComesWithItsSignerOrItsReason)
     EXPECT_EQ(gone.signature, ImageSignature::Unknown);
     EXPECT_EQ(gone.note, "The image file couldn't be read");
     EXPECT_EQ(checkSignature(SignatureFunctions{}, nullptr, "emb", "emb").signature, ImageSignature::NotChecked) << "no calls";
+    SignatureFunctions noClose = fns;
+    noClose.closeImage = nullptr;
+    EXPECT_EQ(checkSignature(noClose, nullptr, "emb", "emb").signature, ImageSignature::NotChecked) << "nothing would close it";
+    EXPECT_EQ(fakes().opened, fakes().closed) << "every file opened is closed";
 }
 
-TEST_F(CheckSignatureTest, TheCacheIsKeyedByPathSizeAndLastWriteTime)
+TEST_F(CheckSignatureTest, BothChecksReadTheFileThroughTheHandleItsStampCameFromAndItIsClosedAfter)
 {
-    fakes().stamps["C:\\App.exe"] = FileStamp{.lastWriteTime = 1, .size = 10};
-    fakes().stamps["c:\\app.exe"] = FileStamp{.lastWriteTime = 1, .size = 10};
+    fakes().stamps["cat"] = stampOf(1);
+    fakes().catalogs["cat"] = 0;
+    const SignatureCheck check = checkSignature(fakeFunctions(), nullptr, "cat", "cat");
+    EXPECT_EQ(check.signature, ImageSignature::Catalog);
+    EXPECT_EQ(fakes().verifiedThrough, (std::vector<void*>{&g_openFile, &g_openFile})) << "embedded, then catalog";
+    EXPECT_EQ(fakes().opened, 1);
+    EXPECT_EQ(fakes().closed, 1);
+}
+
+TEST_F(CheckSignatureTest, TheFileIsClosedWhenACheckThrows)
+{
+    fakes().stamps["bad"] = stampOf(1);
+    SignatureFunctions fns = fakeFunctions();
+    fns.verifyCatalogSignature = [](const std::string& /*path*/, void* /*file*/) -> std::optional<TrustCheck>
+    {
+        throw std::runtime_error("the catalogs threw");
+    };
+    EXPECT_THROW((void) checkSignature(fns, nullptr, "bad", "bad"), std::runtime_error);
+    EXPECT_EQ(fakes().closed, 1);
+}
+
+TEST_F(CheckSignatureTest, TheCacheIsKeyedByPathFileIdChangeTimeAndSize)
+{
+    fakes().stamps["C:\\App.exe"] = stampOf(1, 10);
+    fakes().stamps["c:\\app.exe"] = stampOf(1, 10);
     fakes().embedded["C:\\App.exe"] = 0;
     fakes().embedded["c:\\app.exe"] = 0;
     SignatureCache cache;
@@ -246,8 +338,9 @@ TEST_F(CheckSignatureTest, TheCacheIsKeyedByPathSizeAndLastWriteTime)
     (void) checkSignature(fns, &cache, "c:\\app.exe", pathKey("c:\\app.exe"));
     EXPECT_EQ(fakes().embeddedChecks["C:\\App.exe"], 1);
     EXPECT_EQ(fakes().embeddedChecks["c:\\app.exe"], 0) << "the same file in another case: from the cache";
+    EXPECT_EQ(fakes().closed, 2) << "a cached answer closes the file too";
 
-    fakes().stamps["C:\\App.exe"].lastWriteTime = 2; // replaced by an update
+    fakes().stamps["C:\\App.exe"].changeTime = 2; // written in place
     (void) checkSignature(fns, &cache, "C:\\App.exe", pathKey("C:\\App.exe"));
     EXPECT_EQ(fakes().embeddedChecks["C:\\App.exe"], 2);
     fakes().stamps["C:\\App.exe"].size = 11;
@@ -257,9 +350,48 @@ TEST_F(CheckSignatureTest, TheCacheIsKeyedByPathSizeAndLastWriteTime)
     EXPECT_EQ(fakes().embeddedChecks["C:\\App.exe"], 3);
 }
 
+// #3292: a program running as the user swaps a signed file for a same-size one and sets its write time
+// back. The swap is another file (another ID), or the same file written (a new ChangeTime, which
+// SetFileTime can't set): either way the old "Signed" isn't reused.
+TEST_F(CheckSignatureTest, ASwappedSameSizeFileIsCheckedAgain)
+{
+    fakes().stamps["app.exe"] = stampOf(5, 4096, 1);
+    fakes().embedded["app.exe"] = 0;
+    SignatureCache cache;
+    const SignatureFunctions fns = fakeFunctions();
+    EXPECT_EQ(checkSignature(fns, &cache, "app.exe", "app.exe").signature, ImageSignature::Embedded);
+
+    fakes().stamps["app.exe"] = stampOf(6, 4096, 1); // written in place, its write time set back: a new ChangeTime
+    fakes().embedded["app.exe"] = TrustResult::NO_SIGNATURE;
+    EXPECT_EQ(checkSignature(fns, &cache, "app.exe", "app.exe").signature, ImageSignature::Unsigned);
+    EXPECT_EQ(fakes().embeddedChecks["app.exe"], 2);
+
+    fakes().stamps["app.exe"] = stampOf(5, 4096, 1); // the signed file's stamp exactly again...
+    fakes().embedded["app.exe"] = 0;
+    EXPECT_EQ(checkSignature(fns, &cache, "app.exe", "app.exe").signature, ImageSignature::Embedded) << "...checked, not cached";
+    fakes().stamps["app.exe"] = stampOf(5, 4096, 2); // another file renamed over it, with the same times and size
+    fakes().embedded["app.exe"] = TrustResult::NO_SIGNATURE;
+    EXPECT_EQ(checkSignature(fns, &cache, "app.exe", "app.exe").signature, ImageSignature::Unsigned);
+    EXPECT_EQ(fakes().embeddedChecks["app.exe"], 4);
+}
+
+TEST_F(CheckSignatureTest, AFileWithoutAFileIdIsCheckedEveryTime)
+{
+    fakes().stamps["E:\\tool.exe"] = FileStamp{.fileId = std::nullopt, .changeTime = 1, .size = 10};
+    fakes().embedded["E:\\tool.exe"] = 0;
+    SignatureCache cache;
+    const SignatureFunctions fns = fakeFunctions();
+    for (int check = 0; check < 3; ++check)
+    {
+        EXPECT_EQ(checkSignature(fns, &cache, "E:\\tool.exe", "e:\\tool.exe").signature, ImageSignature::Embedded);
+    }
+    EXPECT_EQ(fakes().embeddedChecks["E:\\tool.exe"], 3);
+    EXPECT_EQ(cache.size(), 0U);
+}
+
 TEST_F(CheckSignatureTest, AFailedCheckIsNotCached)
 {
-    fakes().stamps["locked"] = {};
+    fakes().stamps["locked"] = stampOf(1);
     fakes().catalogs["locked"] = static_cast<std::int32_t>(0x80070020U); // a sharing violation
     SignatureCache cache;
     const SignatureFunctions fns = fakeFunctions();

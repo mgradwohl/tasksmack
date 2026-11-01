@@ -411,13 +411,47 @@ std::optional<std::string> holdSystemBusForActions()
     {
         return std::nullopt;
     }
+    // Built rather than sd_bus_open_system()'d, so it can refuse descriptors before it starts: the sandbox lets
+    // recvmsg() read this socket (#3294), and with no SCM_RIGHTS negotiated nothing can arrive on it as an fd.
+    // The address is sd_bus_open_system()'s: $DBUS_SYSTEM_BUS_ADDRESS, else the standard socket.
     auto bus = std::make_unique<Bus>();
-    if (const int result = openSystemBus(*bus); result < 0)
+    const char* address = std::getenv("DBUS_SYSTEM_BUS_ADDRESS"); // NOLINT(concurrency-mt-unsafe) - one thread, before any
+    int result = sd_bus_new(bus->out());
+    if (result >= 0)
+    {
+        result = sd_bus_set_address(bus->get(), address != nullptr ? address : "unix:path=/run/dbus/system_bus_socket");
+    }
+    if (result >= 0)
+    {
+        result = sd_bus_set_bus_client(bus->get(), 1);
+    }
+    if (result >= 0)
+    {
+        result = sd_bus_negotiate_fds(bus->get(), 0);
+    }
+    if (result >= 0)
+    {
+        result = sd_bus_start(bus->get());
+    }
+    // The handshake now, as root and before the sandbox: sd-bus would otherwise finish it on first use.
+    const char* uniqueName = nullptr;
+    if (result >= 0)
+    {
+        result = sd_bus_get_unique_name(bus->get(), &uniqueName);
+    }
+    if (result < 0)
     {
         return std::string("The system bus couldn't be reached: ") + std::strerror(-result); // NOLINT(concurrency-mt-unsafe)
     }
+    (void) sd_bus_set_method_call_timeout(bus->get(), CALL_TIMEOUT_USEC);
     heldBus() = std::move(bus);
     return std::nullopt;
+}
+
+int heldSystemBusFd() noexcept
+{
+    const std::unique_ptr<Bus>& held = heldBus();
+    return held != nullptr ? sd_bus_get_fd(held->get()) : -1;
 }
 
 void releaseHeldSystemBusForTesting()
@@ -568,6 +602,11 @@ ServiceActionResult sessionAction(std::string_view id, SessionAction action, boo
 std::optional<std::string> holdSystemBusForActions()
 {
     return "This build has no systemd support (it was built without libsystemd)";
+}
+
+int heldSystemBusFd() noexcept
+{
+    return -1;
 }
 
 void releaseHeldSystemBusForTesting()

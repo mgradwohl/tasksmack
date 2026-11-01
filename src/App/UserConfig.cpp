@@ -129,6 +129,9 @@ void migrateLegacyProcessColumns(toml::table& document, const toml::table& mine)
 
 constexpr int WINDOW_POS_ABS_MAX = 100'000;
 
+/// The longest [windows] start_at_sign_in_seen_by read (#3276): a version and a commit, with room to spare.
+constexpr std::size_t MAX_BUILD_TEXT_BYTES = 256;
+
 [[nodiscard]] bool isSaneWindowPositionComponent(int value)
 {
     return std::abs(value) <= WINDOW_POS_ABS_MAX;
@@ -375,6 +378,22 @@ void readSettings(const toml::table& config, UserSettings& settings)
     readUpdateText("latest_url", Domain::UpdateCheck::MAX_URL_BYTES, settings.updates.latestUrl);
     readUpdateText("dismissed_version", Domain::UpdateCheck::MAX_VERSION_TEXT_BYTES, settings.updates.dismissedVersion);
 
+    // What the user turned on that an install can turn off (#3276): Start at sign-in, the build that last saw
+    // it, and Replace Task Manager. The build is capped here; it is only compared.
+    if (auto val = config["windows"]["start_at_sign_in"].value<bool>())
+    {
+        settings.startAtSignIn = *val;
+    }
+    if (auto build = config["windows"]["start_at_sign_in_seen_by"].value<std::string>();
+        build.has_value() && build->size() <= MAX_BUILD_TEXT_BYTES)
+    {
+        settings.startAtSignInSeenBy = std::move(*build);
+    }
+    if (auto val = config["windows"]["replace_task_manager"].value<bool>())
+    {
+        settings.replaceTaskManager = *val;
+    }
+
     if (auto folder = config["dumps"]["folder"].value<std::string>())
     {
         constexpr std::size_t MAX_DUMP_FOLDER_BYTES = std::size_t{32767} * 3U;
@@ -593,6 +612,24 @@ void readSettings(const toml::table& config, UserSettings& settings)
              {"dismissed_version", settings.updates.dismissedVersion},
          }},
     };
+    // Only while on (#3276), so a first run's file, and every file on Linux, has no [windows] table.
+    auto windowsTable = toml::table{};
+    if (settings.startAtSignIn)
+    {
+        windowsTable.insert("start_at_sign_in", true);
+        if (!settings.startAtSignInSeenBy.empty())
+        {
+            windowsTable.insert("start_at_sign_in_seen_by", settings.startAtSignInSeenBy);
+        }
+    }
+    if (settings.replaceTaskManager)
+    {
+        windowsTable.insert("replace_task_manager", true);
+    }
+    if (!windowsTable.empty())
+    {
+        table.insert("windows", std::move(windowsTable));
+    }
     if (!settings.recentCommands.empty()) // only when there are any, so a first run's file is unchanged
     {
         toml::array recent;
@@ -1004,6 +1041,8 @@ bool UserConfig::writeSettings(const UserSettings& settings)
     text << "#   [process_table] layout: saved column widths, order and sort (written by TaskSmack; delete it to reset)\n";
     text << "#   [updates] check_daily: ask GitHub once a day whether a newer TaskSmack release exists (true/false, default "
             "false: nothing is sent); last_check, latest_version, latest_url and dismissed_version are written by TaskSmack\n";
+    text << "#   [windows] start_at_sign_in, start_at_sign_in_seen_by, replace_task_manager: written by TaskSmack while "
+            "Start at sign-in or Replace Task Manager is on, so an upgrade that removed one can put it back\n";
     text << "#   Themes: built-in themes in assets/themes. Add custom .toml themes beside this config under a 'themes' folder.\n\n";
     text << document;
     // Stream exceptions are off, so a failed insertion (say, allocation) only sets badbit; its

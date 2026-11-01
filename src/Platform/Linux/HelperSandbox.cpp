@@ -269,10 +269,8 @@ constexpr std::array REFUSED{
     SYS_clone3,
 #endif
     SYS_memfd_create,
-    // Sockets: the broker's is inherited. sendmsg and recvmsg aren't used (send and recv are sendto
-    // and recvfrom), and would carry fds (SCM_RIGHTS).
-    SYS_sendmsg,
-    SYS_recvmsg,
+    // Sockets: the broker's is inherited, and the system bus's held (sendmsg and recvmsg on it only,
+    // below). The batched forms aren't used.
     SYS_sendmmsg,
     SYS_recvmmsg,
     SYS_socket,
@@ -432,7 +430,7 @@ bool supported() noexcept
 #endif
 }
 
-std::vector<sock_filter> program([[maybe_unused]] Mode mode, [[maybe_unused]] pid_t self)
+std::vector<sock_filter> program([[maybe_unused]] Mode mode, [[maybe_unused]] pid_t self, [[maybe_unused]] int busFd)
 {
 #if defined(__x86_64__) || defined(__aarch64__)
     Program code;
@@ -464,6 +462,21 @@ std::vector<sock_filter> program([[maybe_unused]] Mode mode, [[maybe_unused]] pi
     for (const long call : {SYS_sendto, SYS_recvfrom})
     {
         code.blockFor(call, onBrokerSocketOnly());
+    }
+    // The held system bus's socket only (#3294): sd-bus sends and reads every message with sendmsg() and
+    // recvmsg(). It was opened with no descriptor passing negotiated, so nothing arrives on it as an fd.
+    for (const long call : {SYS_sendmsg, SYS_recvmsg})
+    {
+        if (busFd >= 0)
+        {
+            code.blockFor(
+                call,
+                {load(argLow(0)), jump(BPF_JMP | BPF_JEQ | BPF_K, static_cast<std::uint32_t>(busFd), 0, 1), ret(ALLOW), ret(fail(EPERM))});
+        }
+        else
+        {
+            code.returnFor(call, fail(EPERM));
+        }
     }
     // ioctl: isatty()'s terminal query only (spdlog on fd 1).
     code.blockFor(SYS_ioctl,
@@ -513,11 +526,11 @@ void preloadLibraries() noexcept
     }
 }
 
-bool installFilter(Mode mode) noexcept
+bool installFilter(Mode mode, int busFd) noexcept
 {
     try
     {
-        std::vector<sock_filter> code = program(mode, ::getpid());
+        std::vector<sock_filter> code = program(mode, ::getpid(), busFd);
         if (code.empty() || code.size() > USHRT_MAX)
         {
             return false;

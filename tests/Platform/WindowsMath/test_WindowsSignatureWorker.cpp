@@ -1,7 +1,8 @@
 /// @file test_WindowsSignatureWorker.cpp
 /// @brief The process probe's signature worker (#3070) through fake checks: a request is answered on a
 /// later find(), never by the caller's thread; a path is queued once however many processes run it; a
-/// new process of an image re-reads its stamp, checked again only when the file changed; the path table's
+/// new process of an image re-reads its stamp, checked again only when the file changed or has no file ID
+/// (#3292); the path table's
 /// bound; a check that throws; and the destructor stopping a queue. Pure (no Windows header), so built
 /// everywhere.
 
@@ -14,6 +15,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -64,14 +66,16 @@ SignatureFunctions fakeFunctions()
 {
     return {
         .errorMessage = nullptr,
-        .fileStamp = [](const std::string& path) -> std::optional<FileStamp>
+        .openImage = [](const std::string& path) -> std::optional<OpenedImage>
         {
             const std::scoped_lock lock(fakes().mutex);
             const auto found = fakes().stamps.find(path);
-            return found != fakes().stamps.end() ? std::optional<FileStamp>(found->second) : std::nullopt;
+            return found != fakes().stamps.end() ? std::optional<OpenedImage>(OpenedImage{.file = nullptr, .stamp = found->second})
+                                                 : std::nullopt;
         },
+        .closeImage = [](void* /*file*/) {},
         .verifyEmbeddedSignature =
-            [](const std::string& path)
+            [](const std::string& path, void* /*file*/)
         {
             std::unique_lock lock(fakes().mutex);
             fakes().gateChanged.wait(lock, [] { return fakes().gateOpen; });
@@ -83,14 +87,14 @@ SignatureFunctions fakeFunctions()
             }
             return TrustCheck{.result = 0, .signer = "Signer of " + path};
         },
-        .verifyCatalogSignature = [](const std::string& /*path*/) -> std::optional<TrustCheck> { return std::nullopt; },
+        .verifyCatalogSignature = [](const std::string& /*path*/, void* /*file*/) -> std::optional<TrustCheck> { return std::nullopt; },
     };
 }
 
-void setStamp(const std::string& path, std::uint64_t lastWrite)
+void setStamp(const std::string& path, std::uint64_t changeTime)
 {
     const std::scoped_lock lock(fakes().mutex);
-    fakes().stamps[path] = FileStamp{.lastWriteTime = lastWrite, .size = 100};
+    fakes().stamps[path] = FileStamp{.fileId = FileId{.volumeSerial = 1, .id = {1}}, .changeTime = changeTime, .size = 100};
 }
 
 int checksOf(const std::string& path)
@@ -177,6 +181,23 @@ TEST_F(SignatureWorkerTest, ANewProcessReReadsTheStampAndAChangedFileIsCheckedAg
     ASSERT_TRUE(worker.waitUntilIdle(WAIT));
     EXPECT_TRUE(worker.find("tool.exe").has_value());
     EXPECT_EQ(checksOf("tool.exe"), 2);
+}
+
+TEST_F(SignatureWorkerTest, AFileWithoutAFileIdIsCheckedForEveryNewProcess)
+{
+    {
+        const std::scoped_lock lock(fakes().mutex);
+        fakes().stamps["E:\\tool.exe"] = FileStamp{.fileId = std::nullopt, .changeTime = 1, .size = 100}; // FAT
+    }
+    SignatureWorker worker(fakeFunctions(), {});
+    for (int process = 1; process <= 2; ++process)
+    {
+        worker.request("E:\\tool.exe");
+        ASSERT_TRUE(worker.waitUntilIdle(WAIT));
+        EXPECT_TRUE(worker.find("E:\\tool.exe").has_value());
+        EXPECT_EQ(checksOf("E:\\tool.exe"), process);
+    }
+    EXPECT_EQ(worker.cachedFileCount(), 0U);
 }
 
 TEST_F(SignatureWorkerTest, AnUnreadableFileIsAnsweredUnknown)

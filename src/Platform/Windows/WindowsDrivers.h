@@ -54,6 +54,8 @@ struct FileVersionRecord
 
 // The image signature check's types, shared with the Processes table's Signature column (#3070).
 using FileStamp = WindowsSignature::FileStamp;
+using FileId = WindowsSignature::FileId;
+using OpenedImage = WindowsSignature::OpenedImage;
 using SignatureCheck = Platform::SignatureCheck;
 using TrustCheck = WindowsSignature::TrustCheck;
 using SignatureCache = WindowsSignature::SignatureCache;
@@ -70,14 +72,19 @@ struct Functions
     FileVersionRecord (*readFileVersion)(const std::string& path) = nullptr;           ///< Empty fields when it has none
     /// FormatMessage's text for a Win32 error, NTSTATUS or HRESULT; empty when there is none.
     std::string (*errorMessage)(std::uint32_t code) = nullptr;
-    /// The file's last write time and size; nullopt when it can't be read. Without it (or either verify
-    /// call) signatures aren't checked.
-    std::optional<FileStamp> (*fileStamp)(const std::string& path) = nullptr;
-    /// WinVerifyTrust's answer for the file's own (embedded) signature: result 0 when it is trusted.
-    TrustCheck (*verifyEmbeddedSignature)(const std::string& path) = nullptr;
-    /// WinVerifyTrust's answer for the catalog that holds the file's hash: result 0 when it is trusted;
-    /// nullopt when no catalog holds it; a failure's HRESULT when the catalogs couldn't be searched.
-    std::optional<TrustCheck> (*verifyCatalogSignature)(const std::string& path) = nullptr;
+    // The signature check's calls, as WindowsSignature::SignatureFunctions has them (#3292): without any
+    // of the four, signatures aren't checked.
+    /// The file opened for its check, with its stamp; nullopt when it can't be opened or its stamp read.
+    std::optional<OpenedImage> (*openImage)(const std::string& path) = nullptr;
+    /// Closes what openImage() opened.
+    void (*closeImage)(void* file) = nullptr;
+    /// WinVerifyTrust's answer for the file's own (embedded) signature, read through @p file: result 0
+    /// when it is trusted.
+    TrustCheck (*verifyEmbeddedSignature)(const std::string& path, void* file) = nullptr;
+    /// WinVerifyTrust's answer for the catalog that holds the file's hash, hashed through @p file: result
+    /// 0 when it is trusted; nullopt when no catalog holds it; a failure's HRESULT when the catalogs
+    /// couldn't be searched.
+    std::optional<TrustCheck> (*verifyCatalogSignature)(const std::string& path, void* file) = nullptr;
 };
 
 inline constexpr std::uint32_t SERVICE_STOPPED_STATE = 1;    ///< SERVICE_STOPPED
@@ -215,7 +222,8 @@ inline constexpr std::uint32_t NEVER_STARTED_EXIT = 1077;    ///< ERROR_SERVICE_
 {
     const WindowsSignature::SignatureFunctions signatureFns{
         .errorMessage = fns.errorMessage,
-        .fileStamp = fns.fileStamp,
+        .openImage = fns.openImage,
+        .closeImage = fns.closeImage,
         .verifyEmbeddedSignature = fns.verifyEmbeddedSignature,
         .verifyCatalogSignature = fns.verifyCatalogSignature,
     };
