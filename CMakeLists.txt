@@ -125,11 +125,18 @@ if(TASKSMACK_VERSION_SUFFIX STREQUAL "AUTO")
             set(TASKSMACK_RESOLVED_VERSION_SUFFIX "")
         endif()
     endif()
-elseif(TASKSMACK_VERSION_SUFFIX STREQUAL "" OR TASKSMACK_VERSION_SUFFIX MATCHES "^-[0-9A-Za-z-]+(\\.[0-9A-Za-z-]+)*$")
-    set(TASKSMACK_RESOLVED_VERSION_SUFFIX "${TASKSMACK_VERSION_SUFFIX}")
 else()
-    message(FATAL_ERROR "TASKSMACK_VERSION_SUFFIX is '${TASKSMACK_VERSION_SUFFIX}': use AUTO, the empty string, or a "
-                        "SemVer pre-release such as '-dev' or '-rc.1'.")
+    # A SemVer pre-release identifier: a number without a leading zero ("0", "7"), or [0-9A-Za-z-] with at
+    # least one non-digit ("dev", "01alpha", "x-1"). Domain::UpdateCheck::parseVersion() reads the same
+    # rule, so whatever configures is a version the update check can compare; its test
+    # UpdateCheckVersionTest.ReadsTheSuffixesCMakeAccepts runs CMake's cases through it.
+    set(_tasksmack_prerelease_id "(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)")
+    if(NOT TASKSMACK_VERSION_SUFFIX STREQUAL ""
+       AND NOT TASKSMACK_VERSION_SUFFIX MATCHES "^-${_tasksmack_prerelease_id}(\\.${_tasksmack_prerelease_id})*$")
+        message(FATAL_ERROR "TASKSMACK_VERSION_SUFFIX is '${TASKSMACK_VERSION_SUFFIX}': use AUTO, the empty string, or a "
+                            "SemVer pre-release such as '-dev' or '-rc.1' (no numeric identifier with a leading zero).")
+    endif()
+    set(TASKSMACK_RESOLVED_VERSION_SUFFIX "${TASKSMACK_VERSION_SUFFIX}")
 endif()
 set(TASKSMACK_VERSION_FULL "${PROJECT_VERSION}${TASKSMACK_RESOLVED_VERSION_SUFFIX}")
 message(STATUS "TaskSmack version: ${TASKSMACK_VERSION_FULL} (TASKSMACK_VERSION_SUFFIX=${TASKSMACK_VERSION_SUFFIX})")

@@ -194,6 +194,22 @@ TEST(UpdateCheckVersionTest, RefusesMalformedDevSuffixes)
     }
 }
 
+TEST(UpdateCheckVersionTest, ReadsTheSuffixesCMakeAccepts)
+{
+    // CMakeLists.txt's TASKSMACK_VERSION_SUFFIX check and parseVersion() follow one rule (#3371): a
+    // pre-release identifier is a number without a leading zero, or [0-9A-Za-z-] with a non-digit. These
+    // are the cases that check was tried with; a suffix it accepts must give a version the update check
+    // can compare, and one it refuses must not configure at all.
+    for (const std::string_view suffix : {"-dev", "-0", "-7", "-10", "-rc.1", "-dev.0", "-01alpha", "-0a", "-x-1", "--", "-a.b.c"})
+    {
+        EXPECT_TRUE(parseVersion(std::string("0.11.0") + std::string(suffix)).has_value()) << suffix;
+    }
+    for (const std::string_view suffix : {"-01", "-00", "-dev.01", "-rc.007", "-", "-dev.", "-.dev", "-dev..1", "-dev_1", "dev"})
+    {
+        EXPECT_FALSE(parseVersion(std::string("0.11.0") + std::string(suffix)).has_value()) << suffix;
+    }
+}
+
 RC_GTEST_PROP(UpdateCheckVersionPropertiesTest,
               AReleaseRoundTripsThroughItsText,
               (std::uint32_t major, std::uint32_t minor, std::uint32_t patch))
