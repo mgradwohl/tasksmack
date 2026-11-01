@@ -79,6 +79,15 @@ struct AccountLess
     }
 };
 
+/// A short name ordered with ASCII case ignored, for a Windows process's name (#3310).
+struct NameLess
+{
+    [[nodiscard]] bool operator()(std::string_view a, std::string_view b) const noexcept
+    {
+        return Platform::compareIgnoreCase(a, b) < 0;
+    }
+};
+
 } // namespace
 
 bool isSignInSession(const Platform::UserSession& session)
@@ -126,7 +135,17 @@ std::vector<UserRow> buildUserRows(const std::vector<Platform::UserSession>& ses
     // with that name, never to one of two.
     std::map<AccountLess::Names, std::size_t, AccountLess> byAccount; // domain, user -> its row
     std::map<std::string, std::size_t> byName;                        // short name -> its one row
-    std::map<std::string, std::size_t> byNameWithoutDomain;           // the same, for rows with no domain
+    // For a process with a domain, a row with none, when no other row has its name in any case: Windows
+    // names ignore case, so "alice" beside CORP\\ALICE could be either.
+    std::map<std::string_view, std::size_t, NameLess> namesInUseIgnoringCase;
+    for (const UserRow& row : rows)
+    {
+        if (!row.user.empty())
+        {
+            ++namesInUseIgnoringCase[row.user];
+        }
+    }
+    std::map<std::string_view, std::size_t, NameLess> byNameWithoutDomain;
     for (std::size_t i = 0; i < rows.size(); ++i)
     {
         UserRow& row = rows[i];
@@ -150,10 +169,10 @@ std::vector<UserRow> buildUserRows(const std::vector<Platform::UserSession>& ses
         if (!shared)
         {
             byName.emplace(row.user, i);
-            if (domains[i].empty())
-            {
-                byNameWithoutDomain.emplace(row.user, i);
-            }
+        }
+        if (domains[i].empty() && namesInUseIgnoringCase[row.user] == 1)
+        {
+            byNameWithoutDomain.emplace(row.user, i);
         }
     }
     for (std::size_t i = 0; i < processes.size(); ++i)

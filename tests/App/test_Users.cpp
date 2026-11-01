@@ -259,6 +259,23 @@ TEST(UserRowsTest, ARowWithNoDomainTakesItsNamesProcesses)
     EXPECT_TRUE(two[1].processes.empty());
 }
 
+// #3310: Windows names ignore case, so a process with a domain falls back to a row with none by its name in
+// any case, and only when no other row has that name in any case. Without a domain (Linux) names keep their case.
+TEST(UserRowsTest, TheNoDomainFallbackIgnoresCase)
+{
+    UserSession corp = session("2", "ALICE", 0);
+    corp.domain = "CORP";
+    const std::vector<UserRow> ambiguous = buildUserRows({session("1", "alice", 1000), corp}, {processOf(10, "PC", "alice", 5.0)});
+    ASSERT_EQ(ambiguous.size(), 2U);
+    EXPECT_TRUE(ambiguous[0].processes.empty()) << "alice and CORP\\ALICE are one name to Windows: either could be PC\\alice";
+    EXPECT_TRUE(ambiguous[1].processes.empty());
+
+    const std::vector<Domain::ProcessSnapshot> processes{processOf(10, "PC", "ALICE", 5.0), process(11, "ALICE", 1.0, 100)};
+    const std::vector<UserRow> sole = buildUserRows({session("1", "alice", 1000)}, processes);
+    ASSERT_EQ(sole.size(), 1U);
+    EXPECT_EQ(sole[0].processes, (std::vector<std::size_t>{0})) << "PC\\ALICE is the sole alice row's; ALICE without a domain isn't";
+}
+
 // #3076: a Windows session whose user couldn't be read is a row of its own, said to be not readable, with no
 // processes and its reason in the tooltip.
 TEST(UserRowsTest, ASessionNotReadableIsItsOwnRow)
