@@ -581,18 +581,12 @@ TEST(WindowsSystemInfoProbeReadersTest, DriverReadersFailEmpty)
 {
     const WindowsDrivers::Functions drivers = WindowsSystemInfoProbe::driverFunctions();
     const std::string missing = "C:\\TaskSmack-1722-no-such-dir\\no-such-driver.sys";
-    EXPECT_FALSE(drivers.fileStamp(missing).has_value());
+    EXPECT_FALSE(drivers.openImage(missing).has_value());
     const WindowsDrivers::FileVersionRecord version = drivers.readFileVersion(missing);
     EXPECT_TRUE(version.version.empty());
     EXPECT_TRUE(version.company.empty());
-    EXPECT_NE(drivers.verifyEmbeddedSignature(missing).result, 0);
-    const std::optional<WindowsDrivers::TrustCheck> catalog = drivers.verifyCatalogSignature(missing);
-    ASSERT_TRUE(catalog.has_value()) << "a file that can't be opened is an error, not 'in no catalog'";
-    if (catalog.has_value())
-    {
-        EXPECT_EQ(catalog->result, HRESULT_FROM_WIN32(ERROR_PATH_NOT_FOUND));
-        EXPECT_TRUE(catalog->signer.empty());
-    }
+    const WindowsDrivers::SignatureCheck check = WindowsDrivers::checkSignature(drivers, nullptr, missing);
+    EXPECT_EQ(check.signature, DriverSignature::Unknown) << "a file that can't be opened isn't checked, nor 'unsigned'";
 
     // Win32 errors read from the system's messages, an NTSTATUS (a driver's exit code) from ntdll's.
     EXPECT_FALSE(drivers.errorMessage(ERROR_ACCESS_DENIED).empty());
@@ -608,10 +602,15 @@ TEST(WindowsSystemInfoProbeReadersTest, AnUnsignedFileIsInNoCatalog)
     const std::string path = WinString::wideToUtf8(file.wstring());
 
     const WindowsDrivers::Functions drivers = WindowsSystemInfoProbe::driverFunctions();
-    EXPECT_TRUE(drivers.fileStamp(path).has_value());
+    const std::optional<WindowsDrivers::OpenedImage> image = drivers.openImage(path);
+    EXPECT_TRUE(image.has_value());
     EXPECT_TRUE(drivers.readFileVersion(path).version.empty()) << "no version resource";
-    EXPECT_NE(drivers.verifyEmbeddedSignature(path).result, 0);
-    EXPECT_FALSE(drivers.verifyCatalogSignature(path).has_value());
+    if (image.has_value())
+    {
+        EXPECT_NE(drivers.verifyEmbeddedSignature(path, image->file).result, 0);
+        EXPECT_FALSE(drivers.verifyCatalogSignature(path, image->file).has_value());
+        drivers.closeImage(image->file);
+    }
 
     std::error_code ignored;
     std::filesystem::remove(file, ignored);

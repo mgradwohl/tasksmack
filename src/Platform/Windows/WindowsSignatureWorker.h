@@ -8,8 +8,9 @@
 // later sample with find(). Nothing waits for it: a process is published at once, its signature "not
 // checked yet" until the answer is in.
 //
-// - Cached by {path, size, last write time} (SignatureCache, bounded): a second process of the same image
-//   costs a file stamp read, not another check, and a file replaced in place is checked anew.
+// - Cached by path and {file ID, change time, size} (SignatureCache, bounded; #3292): a second process of
+//   the same image costs a file open and stamp read, not another check, and a file replaced or changed is
+//   checked anew. A file with no ID (FAT, some network shares) isn't cached: it is checked every time.
 // - Each path is queued at most once at a time, so thirty svchost.exe processes are one check.
 // - The path table is bounded too: when full, the answers already taken are forgotten (a path still being
 //   polled is requested again by find()).
@@ -46,7 +47,7 @@ struct WorkerOptions
 {
     /// The pause after each file, so a burst of new images (the first sample) is checked at a gentle pace.
     std::chrono::milliseconds pause{0};
-    std::size_t maxCachedFiles = 4096; ///< SignatureCache's bound: distinct {path, stamp} answers kept
+    std::size_t maxCachedFiles = 4096; ///< SignatureCache's bound: the paths whose answers are kept
     std::size_t maxPaths = 4096;       ///< The path table's bound
     /// Called first on the worker's thread (Windows: background priority, so the checks' reads yield to
     /// everything else). Nullable.

@@ -89,7 +89,7 @@ inline constexpr int ACCOUNT_NAME_CACHE_TTL_SECONDS = 300;
 // distinct image at once: the pause keeps that burst a gentle background trickle. Never a sample's cost.
 inline constexpr int SIGNATURE_CHECK_PAUSE_MS = 25;
 
-// How many distinct image files (by path, size and last write time) the signature worker keeps answers
+// How many distinct image files (by path, file ID, change time and size; #3292) the signature worker keeps answers
 // for, and how many paths it tracks (#3070): far more than a machine runs at once, so a long session's
 // churn of short-lived executables can't grow either without end.
 inline constexpr int SIGNATURE_CACHE_MAX_FILES = 4096;

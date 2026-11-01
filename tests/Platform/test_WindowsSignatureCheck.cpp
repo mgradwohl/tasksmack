@@ -2,10 +2,13 @@
 /// @brief Windows' image signature check (#1661, #3070): WinVerifyTrust's embedded and catalog paths through
 /// fake wintrust and crypt32 calls (the offline settings asked for, the signer read only when trusted, the
 /// state always closed, SHA-256 then SHA-1 catalogs, the member tag, every context released, each failure's
-/// HRESULT); then the real calls on a signed system binary and on an unsigned file this test writes.
+/// HRESULT, both read through the check's own handle); the file stamp through a fake
+/// GetFileInformationByHandleEx and the file opened shared for read only (#3292); then the real calls on a
+/// signed system binary and on an unsigned file this test writes.
 
 #include "Platform/ImageSignature.h"
 #include "Platform/Windows/WinString.h"
+#include "Platform/Windows/WindowsHandles.h"
 #include "Platform/Windows/WindowsImageSignature.h"
 #include "Platform/Windows/WindowsSignatureCheck.h"
 
@@ -19,10 +22,12 @@
 #include <mscat.h>
 // clang-format on
 
+#include <cstddef>
 #include <cwchar>
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <iterator>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -49,7 +54,16 @@ struct FakeTrust // NOLINT(clang-analyzer-optin.performance.Padding)
     bool sha256InCatalog = true; ///< Else only the SHA-1 hash is in a catalog
     bool sha1InCatalog = true;
     bool failCatalogInfo = false;
+    // GetFileInformationByHandleEx's answers
+    bool failBasicInfo = false;
+    bool failStandardInfo = false;
+    bool failIdInfo = false;
+    bool zeroId = false;
+    LONGLONG changeTime = 1234;
+    LONGLONG endOfFile = 4096;
     // Seen
+    HANDLE verifiedFile = nullptr; ///< WINTRUST_FILE_INFO::hFile, or WINTRUST_CATALOG_INFO::hMemberFile
+    HANDLE hashedFile = nullptr;
     int verifyCalls = 0;
     int closeCalls = 0;
     int nameReads = 0;
@@ -92,8 +106,10 @@ LONG WINAPI fakeWinVerifyTrust(HWND /*window*/, GUID* /*action*/, LPVOID data)
     if (trust->dwUnionChoice == WTD_CHOICE_CATALOG)
     {
         fake().memberTag = trust->pCatalog->pcwszMemberTag; // NOLINT(cppcoreguidelines-pro-type-union-access)
+        fake().verifiedFile = trust->pCatalog->hMemberFile; // NOLINT(cppcoreguidelines-pro-type-union-access)
         return fake().catalogResult;
     }
+    fake().verifiedFile = trust->pFile->hFile; // NOLINT(cppcoreguidelines-pro-type-union-access)
     return fake().embeddedResult;
 }
 
@@ -135,8 +151,9 @@ BOOL WINAPI fakeAcquire(HCATADMIN* admin, const GUID* /*subsystem*/, PCWSTR algo
     return TRUE;
 }
 
-BOOL WINAPI fakeCalcHash(HCATADMIN /*admin*/, HANDLE /*file*/, DWORD* size, BYTE* hash, DWORD /*flags*/)
+BOOL WINAPI fakeCalcHash(HCATADMIN /*admin*/, HANDLE file, DWORD* size, BYTE* hash, DWORD /*flags*/)
 {
+    fake().hashedFile = file;
     if (fake().failHash)
     {
         SetLastError(ERROR_READ_FAULT);
@@ -187,9 +204,55 @@ BOOL WINAPI fakeReleaseContext(HCATADMIN /*admin*/, DWORD /*flags*/)
     return TRUE;
 }
 
+BOOL WINAPI fakeFileInfo(HANDLE /*file*/, FILE_INFO_BY_HANDLE_CLASS type, LPVOID out, DWORD size)
+{
+    switch (type)
+    {
+    case FileBasicInfo:
+    {
+        if (fake().failBasicInfo || size != sizeof(FILE_BASIC_INFO))
+        {
+            return FALSE;
+        }
+        auto* basic = static_cast<FILE_BASIC_INFO*>(out);
+        basic->LastWriteTime.QuadPart = 1; // what SetFileTime sets: not in the stamp
+        basic->ChangeTime.QuadPart = fake().changeTime;
+        return TRUE;
+    }
+    case FileStandardInfo:
+    {
+        if (fake().failStandardInfo || size != sizeof(FILE_STANDARD_INFO))
+        {
+            return FALSE;
+        }
+        static_cast<FILE_STANDARD_INFO*>(out)->EndOfFile.QuadPart = fake().endOfFile;
+        return TRUE;
+    }
+    case FileIdInfo:
+    {
+        if (fake().failIdInfo || size != sizeof(FILE_ID_INFO))
+        {
+            SetLastError(ERROR_INVALID_PARAMETER);
+            return FALSE;
+        }
+        auto* id = static_cast<FILE_ID_INFO*>(out);
+        id->VolumeSerialNumber = 0xC0FFEE;
+        for (std::size_t i = 0; i < std::size(id->FileId.Identifier); ++i)
+        {
+            id->FileId.Identifier[i] =
+                fake().zeroId ? 0 : static_cast<BYTE>(i + 1); // NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
+        }
+        return TRUE;
+    }
+    default:
+        return FALSE;
+    }
+}
+
 TrustApiFunctions fakeApi()
 {
     return {
+        .getFileInformationByHandleEx = &fakeFileInfo,
         .winVerifyTrust = &fakeWinVerifyTrust,
         .provDataFromStateData = &fakeProvData,
         .provSignerFromChain = &fakeProvSigner,
@@ -222,9 +285,12 @@ class WindowsSignatureCheckTest : public ::testing::Test
         fake() = FakeTrust{};
         m_File = std::filesystem::temp_directory_path() / std::format(L"tasksmack-3070-{}-image.exe", GetCurrentProcessId());
         std::ofstream(m_File, std::ios::binary) << "not really a program";
+        m_Handle.reset(CreateFileW(m_File.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr));
+        ASSERT_TRUE(m_Handle.valid());
     }
     void TearDown() override
     {
+        m_Handle.reset();
         std::error_code ignored;
         std::filesystem::remove(m_File, ignored);
     }
@@ -234,15 +300,106 @@ class WindowsSignatureCheckTest : public ::testing::Test
         return m_File.wstring();
     }
 
+    /// Closes the fixture's own handle on the file, so the test can open it its way.
+    void closeHandle()
+    {
+        m_Handle.reset();
+    }
+
+    /// The test's file, open for read.
+    [[nodiscard]] HANDLE handle() const
+    {
+        return m_Handle.get();
+    }
+
   private:
     std::filesystem::path m_File;
+    UniqueHandle m_Handle;
 };
+
+// --- The file and its stamp (#3292) ----------------------------------------------------------------------
+
+TEST_F(WindowsSignatureCheckTest, TheStampIsTheFileIdChangeTimeAndSizeReadThroughTheHandle)
+{
+    const std::optional<WindowsSignature::FileStamp> stamp = readFileStamp(fakeApi(), handle());
+    ASSERT_TRUE(stamp.has_value());
+    ASSERT_TRUE(stamp->fileId.has_value());
+    EXPECT_EQ(stamp->fileId->volumeSerial, 0xC0FFEEU);
+    EXPECT_EQ(stamp->fileId->id[0], 1U);
+    EXPECT_EQ(stamp->fileId->id[WindowsSignature::FileId::SIZE - 1], WindowsSignature::FileId::SIZE);
+    EXPECT_EQ(stamp->changeTime, 1234U) << "ChangeTime, not LastWriteTime (which SetFileTime sets)";
+    EXPECT_EQ(stamp->size, 4096U);
+}
+
+TEST_F(WindowsSignatureCheckTest, AFileWithoutAnIdHasAStampWithoutOne)
+{
+    fake().failIdInfo = true; // FAT, or a share that doesn't say
+    std::optional<WindowsSignature::FileStamp> stamp = readFileStamp(fakeApi(), handle());
+    ASSERT_TRUE(stamp.has_value()) << "still checked, just never cached";
+    EXPECT_FALSE(stamp->fileId.has_value());
+    EXPECT_EQ(stamp->changeTime, 1234U);
+
+    fake() = FakeTrust{};
+    fake().zeroId = true;
+    stamp = readFileStamp(fakeApi(), handle());
+    ASSERT_TRUE(stamp.has_value());
+    EXPECT_FALSE(stamp->fileId.has_value()) << "an ID of all zeros is none";
+}
+
+TEST_F(WindowsSignatureCheckTest, AStampWithoutItsChangeTimeOrSizeIsNone)
+{
+    fake().failBasicInfo = true;
+    EXPECT_FALSE(readFileStamp(fakeApi(), handle()).has_value());
+    fake() = FakeTrust{};
+    fake().failStandardInfo = true;
+    EXPECT_FALSE(readFileStamp(fakeApi(), handle()).has_value());
+}
+
+TEST_F(WindowsSignatureCheckTest, AnImageIsOpenedSharedForReadOnlyWhileItsHandleIsHeld)
+{
+    closeHandle();
+    std::optional<WindowsSignature::OpenedImage> image = openImage(fakeApi(), file());
+    ASSERT_TRUE(image.has_value());
+    EXPECT_EQ(image->stamp.changeTime, 1234U);
+    // Held: nobody can write it, rename it, or delete it and put another in its place.
+    const UniqueHandle writer(CreateFileW(
+        file().c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr));
+    EXPECT_FALSE(writer.valid());
+    EXPECT_EQ(GetLastError(), static_cast<DWORD>(ERROR_SHARING_VIOLATION));
+    const std::wstring moved = file() + L".moved";
+    EXPECT_EQ(MoveFileExW(file().c_str(), moved.c_str(), 0), FALSE) << "no rename over it while it's held";
+    EXPECT_EQ(DeleteFileW(file().c_str()), FALSE);
+    closeImage(image->file);
+
+    const UniqueHandle afterwards(CreateFileW(file().c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr));
+    EXPECT_TRUE(afterwards.valid()) << "closed: writable again";
+}
+
+TEST_F(WindowsSignatureCheckTest, AnImageThatCantBeOpenedOrStampedIsNone)
+{
+    closeHandle();
+    EXPECT_FALSE(openImage(fakeApi(), L"C:\\TaskSmack-3070-no-such-dir\\none.exe").has_value());
+
+    const UniqueHandle writer(
+        CreateFileW(file().c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr));
+    ASSERT_TRUE(writer.valid());
+    EXPECT_FALSE(openImage(fakeApi(), file()).has_value()) << "open for writing elsewhere: it could change under the check";
+}
+
+TEST_F(WindowsSignatureCheckTest, AnImageWhoseStampCantBeReadIsNone)
+{
+    closeHandle();
+    fake().failBasicInfo = true;
+    EXPECT_FALSE(openImage(fakeApi(), file()).has_value());
+    const UniqueHandle writer(CreateFileW(file().c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr));
+    EXPECT_TRUE(writer.valid()) << "nothing left open";
+}
 
 // --- The embedded path ---------------------------------------------------------------------------------
 
 TEST_F(WindowsSignatureCheckTest, ATrustedEmbeddedSignatureNamesItsSignerOfflineAndClosesItsState)
 {
-    const TrustCheck check = verifyEmbeddedSignature(fakeApi(), L"C:\\fake\\app.exe");
+    const TrustCheck check = verifyEmbeddedSignature(fakeApi(), file(), handle());
     EXPECT_EQ(check.result, 0);
     EXPECT_EQ(check.signer, "Fake Signer");
     EXPECT_EQ(fake().verifyCalls, 1);
@@ -251,12 +408,13 @@ TEST_F(WindowsSignatureCheckTest, ATrustedEmbeddedSignatureNamesItsSignerOffline
     EXPECT_NE(fake().provFlags & WTD_CACHE_ONLY_URL_RETRIEVAL, 0U) << "never goes to the network";
     EXPECT_NE(fake().provFlags & WTD_REVOCATION_CHECK_NONE, 0U);
     EXPECT_EQ(fake().uiChoice, static_cast<DWORD>(WTD_UI_NONE));
+    EXPECT_EQ(fake().verifiedFile, handle()) << "read through the check's handle, not by opening the path again";
 }
 
 TEST_F(WindowsSignatureCheckTest, AnUntrustedSignatureReadsNoSignerButStillClosesItsState)
 {
     fake().embeddedResult = TRUST_E_NOSIGNATURE_RESULT;
-    const TrustCheck check = verifyEmbeddedSignature(fakeApi(), L"C:\\fake\\app.exe");
+    const TrustCheck check = verifyEmbeddedSignature(fakeApi(), file(), handle());
     EXPECT_EQ(check.result, TRUST_E_NOSIGNATURE_RESULT);
     EXPECT_TRUE(check.signer.empty());
     EXPECT_EQ(fake().nameReads, 0);
@@ -266,19 +424,26 @@ TEST_F(WindowsSignatureCheckTest, AnUntrustedSignatureReadsNoSignerButStillClose
 TEST_F(WindowsSignatureCheckTest, ASignerThatCantBeReadIsLeftUnnamed)
 {
     fake().noProviderData = true;
-    EXPECT_TRUE(verifyEmbeddedSignature(fakeApi(), L"x").signer.empty());
+    EXPECT_TRUE(verifyEmbeddedSignature(fakeApi(), file(), handle()).signer.empty());
     fake().noProviderData = false;
     fake().signerName = std::wstring(300, L'n'); // longer than the name buffer: CertGetNameString fails
-    EXPECT_TRUE(verifyEmbeddedSignature(fakeApi(), L"x").signer.empty());
+    EXPECT_TRUE(verifyEmbeddedSignature(fakeApi(), file(), handle()).signer.empty());
     fake().signerName.clear(); // a certificate naming no one: just the NUL
-    EXPECT_TRUE(verifyEmbeddedSignature(fakeApi(), L"x").signer.empty());
+    EXPECT_TRUE(verifyEmbeddedSignature(fakeApi(), file(), handle()).signer.empty());
+}
+
+TEST_F(WindowsSignatureCheckTest, AHandleThatCantBeRewoundIsAnError)
+{
+    const TrustCheck check = verifyEmbeddedSignature(fakeApi(), file(), INVALID_HANDLE_VALUE);
+    EXPECT_EQ(check.result, HRESULT_FROM_WIN32(ERROR_INVALID_HANDLE));
+    EXPECT_EQ(fake().verifyCalls, 0);
 }
 
 // --- The catalog path ----------------------------------------------------------------------------------
 
 TEST_F(WindowsSignatureCheckTest, ACatalogHoldingTheSha256HashIsVerifiedWithItsHexTag)
 {
-    const std::optional<TrustCheck> check = verifyCatalogSignature(fakeApi(), file());
+    const std::optional<TrustCheck> check = verifyCatalogSignature(fakeApi(), file(), handle());
     ASSERT_TRUE(check.has_value());
     EXPECT_EQ(check->result, 0);
     EXPECT_EQ(check->signer, "Fake Signer");
@@ -288,13 +453,15 @@ TEST_F(WindowsSignatureCheckTest, ACatalogHoldingTheSha256HashIsVerifiedWithItsH
     EXPECT_EQ(fake().released, 1);
     EXPECT_EQ(fake().catalogsReleased, 1);
     EXPECT_EQ(fake().closeCalls, 1);
+    EXPECT_EQ(fake().hashedFile, handle()) << "hashed through the check's handle";
+    EXPECT_EQ(fake().verifiedFile, handle()) << "and verified through it";
 }
 
 TEST_F(WindowsSignatureCheckTest, AnOlderCatalogIsFoundByTheSha1HashAndEveryContextIsReleased)
 {
     fake().sha256InCatalog = false;
     fake().catalogResult = static_cast<LONG>(0x800B0101U); // expired
-    const std::optional<TrustCheck> check = verifyCatalogSignature(fakeApi(), file());
+    const std::optional<TrustCheck> check = verifyCatalogSignature(fakeApi(), file(), handle());
     ASSERT_TRUE(check.has_value());
     EXPECT_EQ(check->result, static_cast<LONG>(0x800B0101U));
     EXPECT_TRUE(check->signer.empty());
@@ -309,7 +476,7 @@ TEST_F(WindowsSignatureCheckTest, AFileInNoCatalogIsNullopt)
 {
     fake().sha256InCatalog = false;
     fake().sha1InCatalog = false;
-    EXPECT_FALSE(verifyCatalogSignature(fakeApi(), file()).has_value());
+    EXPECT_FALSE(verifyCatalogSignature(fakeApi(), file(), handle()).has_value());
     EXPECT_EQ(fake().verifyCalls, 0);
     EXPECT_EQ(fake().released, 2);
     EXPECT_EQ(fake().catalogsReleased, 0);
@@ -318,31 +485,30 @@ TEST_F(WindowsSignatureCheckTest, AFileInNoCatalogIsNullopt)
 TEST_F(WindowsSignatureCheckTest, EachCatalogFailureIsItsHresult)
 {
     fake().failAcquire = true;
-    std::optional<TrustCheck> check = verifyCatalogSignature(fakeApi(), file());
+    std::optional<TrustCheck> check = verifyCatalogSignature(fakeApi(), file(), handle());
     ASSERT_TRUE(check.has_value());
     EXPECT_EQ(check->result, HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED));
     EXPECT_EQ(fake().released, 0) << "nothing acquired, nothing released";
 
     fake() = FakeTrust{};
     fake().failHash = true;
-    check = verifyCatalogSignature(fakeApi(), file());
+    check = verifyCatalogSignature(fakeApi(), file(), handle());
     ASSERT_TRUE(check.has_value());
     EXPECT_EQ(check->result, HRESULT_FROM_WIN32(ERROR_READ_FAULT));
     EXPECT_EQ(fake().released, 1);
 
     fake() = FakeTrust{};
     fake().failCatalogInfo = true;
-    check = verifyCatalogSignature(fakeApi(), file());
+    check = verifyCatalogSignature(fakeApi(), file(), handle());
     ASSERT_TRUE(check.has_value());
     EXPECT_EQ(check->result, HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND));
     EXPECT_EQ(fake().catalogsReleased, 1);
     EXPECT_EQ(fake().released, 1);
 
     fake() = FakeTrust{};
-    check = verifyCatalogSignature(fakeApi(), L"C:\\TaskSmack-3070-no-such-dir\\none.exe");
-    ASSERT_TRUE(check.has_value()) << "a file that can't be opened is an error, not 'in no catalog'";
-    EXPECT_EQ(check->result, HRESULT_FROM_WIN32(ERROR_PATH_NOT_FOUND));
-    EXPECT_TRUE(fake().algorithms.empty());
+    check = verifyCatalogSignature(fakeApi(), file(), INVALID_HANDLE_VALUE);
+    ASSERT_TRUE(check.has_value()) << "a file that can't be read is an error, not 'in no catalog'";
+    EXPECT_EQ(check->result, HRESULT_FROM_WIN32(ERROR_INVALID_HANDLE));
 }
 
 // --- The real calls --------------------------------------------------------------------------------------
@@ -374,11 +540,45 @@ TEST(WindowsSignatureCheckRealTest, NotepadIsSignedByMicrosoftAndAFileThisTestWr
     std::filesystem::remove(file, ignored);
 
     const std::string missing = "C:\\TaskSmack-3070-no-such-dir\\none.exe";
-    EXPECT_FALSE(fns.fileStamp(missing).has_value());
+    EXPECT_FALSE(fns.openImage(missing).has_value());
     EXPECT_EQ(WindowsSignature::checkSignature(fns, nullptr, missing, missing).signature, ImageSignature::Unknown);
     EXPECT_FALSE(fns.errorMessage(ERROR_ACCESS_DENIED).empty());
     EXPECT_FALSE(fns.errorMessage(0xC0000034U).empty()); // an NTSTATUS, from ntdll's messages
     EXPECT_TRUE(fns.errorMessage(0x2FFFFFFFU).empty());
+}
+
+// #3292: the real stamp of a file on the system volume (NTFS) has its ID; writing it in place, then setting
+// its write time back with SetFileTime, keeps the ID and the size but moves its ChangeTime.
+TEST(WindowsSignatureCheckRealTest, AFileWrittenInPlaceAndItsWriteTimeSetBackHasANewStamp)
+{
+    const std::filesystem::path file =
+        std::filesystem::temp_directory_path() / std::format(L"tasksmack-3292-{}-stamp.exe", GetCurrentProcessId());
+    std::ofstream(file, std::ios::binary) << "MZ one";
+    const std::optional<WindowsSignature::OpenedImage> before = openImage(TrustApiFunctions{}, file.wstring());
+    ASSERT_TRUE(before.has_value());
+    closeImage(before->file);
+    EXPECT_TRUE(before->stamp.fileId.has_value()) << "NTFS (the temp folder's volume) keeps file IDs";
+    {
+        const UniqueHandle writer(CreateFileW(file.c_str(), GENERIC_WRITE | FILE_WRITE_ATTRIBUTES, 0, nullptr, OPEN_EXISTING, 0, nullptr));
+        ASSERT_TRUE(writer.valid());
+        FILETIME created{};
+        FILETIME accessed{};
+        FILETIME written{};
+        ASSERT_NE(GetFileTime(writer.get(), &created, &accessed, &written), FALSE);
+        Sleep(20); // the clock moves on, so a new ChangeTime can't equal the old one
+        DWORD wrote = 0;
+        ASSERT_NE(WriteFile(writer.get(), "MZ two", 6, &wrote, nullptr), FALSE); // the same size
+        ASSERT_NE(SetFileTime(writer.get(), &created, &accessed, &written), FALSE);
+    }
+    const std::optional<WindowsSignature::OpenedImage> after = openImage(TrustApiFunctions{}, file.wstring());
+    ASSERT_TRUE(after.has_value());
+    closeImage(after->file);
+    EXPECT_EQ(after->stamp.fileId, before->stamp.fileId);
+    EXPECT_EQ(after->stamp.size, before->stamp.size);
+    EXPECT_NE(after->stamp.changeTime, before->stamp.changeTime);
+    EXPECT_NE(after->stamp, before->stamp) << "the cache would check it again";
+    std::error_code ignored;
+    std::filesystem::remove(file, ignored);
 }
 
 } // namespace
