@@ -146,7 +146,11 @@ document.
   - `priority: high` only for crashes, data loss, security, or a broken release;
   - `code-review` on every issue an audit files, so the batch can be triaged with one query
     (`gh issue list --label code-review --search "no:milestone"`);
-  - no milestone. The maintainer sets those, and agents never put an issue on a release milestone.
+  - no milestone for a general audit. The maintainer sets those, and agents never put an issue on a
+    release milestone to get it in. The exception is a release's own code-review sweep (the stage 4 review in
+    `docs/dev/release-process.md`, tracked by a `[RELEASE X.Y] Code-review sweep` issue): its findings go on
+    that release's milestone so blockers are tracked with the release, each saying whether it blocks
+    (maintainer, 2026-10-31).
 - **Skip** style nits that clang-format or clang-tidy already enforce, and anything a section above calls fine.
 - **Running TaskSmack to check a finding:**
   - give it its own `TASKSMACK_CONFIG_DIR`, and launch it at most once;

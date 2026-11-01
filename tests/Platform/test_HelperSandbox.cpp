@@ -41,14 +41,14 @@ namespace
 /// Exit status of a child whose filter didn't go in.
 constexpr int NOT_INSTALLED = 100;
 
-/// Runs @p body in a forked child under the filter in @p mode. @return the child's exit status (body's
-/// return value), or minus the signal that killed it.
-template<typename Body> [[nodiscard]] int underFilter(HelperSandbox::Mode mode, Body body)
+/// Runs @p body in a forked child under the filter in @p mode, with @p busFd as its held system bus. @return
+/// the child's exit status (body's return value), or minus the signal that killed it.
+template<typename Body> [[nodiscard]] int underFilter(HelperSandbox::Mode mode, Body body, int busFd = -1)
 {
     const pid_t pid = ::fork();
     if (pid == 0)
     {
-        if (::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 || !HelperSandbox::installFilter(mode))
+        if (::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 || !HelperSandbox::installFilter(mode, busFd))
         {
             ::_exit(NOT_INSTALLED);
         }
@@ -223,6 +223,50 @@ TEST_F(HelperSandboxTest, OnlyTheBrokerSocketCarriesMessages)
     ::close(fds[1]);
     // ioctl: only isatty()'s query.
     EXPECT_EQ(underFilter(HelperSandbox::Mode::Enforce, [] { return errorOf(::ioctl(STDERR_FILENO, FIOCLEX)); }), ENOTTY);
+}
+
+// #3294: sd-bus sends and reads every message with sendmsg() and recvmsg(), so the held system bus's socket
+// may use them, under both modes, and no other descriptor may: with them refused outright, every service
+// action through the helper failed with EPERM on its first read.
+TEST_F(HelperSandboxTest, TheHeldBusAloneCarriesSendmsgAndRecvmsg)
+{
+    std::array<int, 2> bus{-1, -1};
+    std::array<int, 2> other{-1, -1};
+    ASSERT_EQ(::socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, bus.data()), 0);
+    ASSERT_EQ(::socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, other.data()), 0);
+    const auto exchange = [](int fd) -> int
+    {
+        std::array<char, 1> byte{'x'};
+        iovec io{.iov_base = byte.data(), .iov_len = byte.size()};
+        msghdr message{};
+        message.msg_iov = &io;
+        message.msg_iovlen = 1;
+        if (::sendmsg(fd, &message, 0) != 1)
+        {
+            return errno;
+        }
+        return ::recvmsg(fd, &message, MSG_DONTWAIT) == 1 ? 0 : errno;
+    };
+    for (const HelperSandbox::Mode mode : {HelperSandbox::Mode::Enforce, HelperSandbox::Mode::Log})
+    {
+        ASSERT_EQ(::write(bus[1], "y", 1), 1); // the bus's answer, waiting
+        const int busFd = bus[0];
+        const int otherFd = other[0];
+        EXPECT_EQ(underFilter(mode, [&exchange, busFd] { return exchange(busFd); }, busFd), 0) << "the held bus";
+        EXPECT_EQ(underFilter(mode, [&exchange, otherFd] { return exchange(otherFd); }, busFd), EPERM) << "another socket";
+        EXPECT_EQ(underFilter(mode, [&exchange, busFd] { return exchange(busFd); }), EPERM) << "no bus held";
+        std::array<char, 8> drain{};
+        while (::recv(bus[1], drain.data(), drain.size(), MSG_DONTWAIT) > 0)
+        {
+        }
+        while (::recv(bus[0], drain.data(), drain.size(), MSG_DONTWAIT) > 0)
+        {
+        }
+    }
+    for (const int fd : {bus[0], bus[1], other[0], other[1]})
+    {
+        ::close(fd);
+    }
 }
 
 TEST_F(HelperSandboxTest, NoExecutableMemoryByAnotherRoute)
