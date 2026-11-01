@@ -3124,6 +3124,45 @@ TEST_F(LinuxEfficiencyModeActionTest, AnOnThroughOneObjectIsPutBackByAnOffThroug
     EXPECT_EQ(processDetails.efficiencyNiceToRestore(ownTarget()), std::optional<std::int32_t>(19));
 }
 
+// #3332: an off that can't find, read or write the weight on lowered says so and keeps the memory, so turning it
+// off again (once it can) puts the remembered weight back rather than leaving it at the minimum unannounced.
+TEST_F(LinuxEfficiencyModeActionTest, AnOffThatCantPutTheWeightBackSaysSoAndKeepsTheMemory)
+{
+    efficiency().files["cpu.weight"] = "50\n";
+    ASSERT_TRUE(m_Control.setEfficiencyMode(ownTarget(), true).success); // weight 50 lowered to 1
+    efficiency().nice = 19;
+
+    // Its cgroup's weight can't be read.
+    efficiency().files.erase("cpu.weight");
+    ProcessActionResult off = m_Control.setEfficiencyMode(ownTarget(), false);
+    ASSERT_TRUE(off.success) << off.errorMessage;
+    EXPECT_EQ(off.successNote, "its cgroup's CPU weight wasn't put back: it can't be read");
+    EXPECT_EQ(m_Control.rememberedEfficiencyCount(), 1U) << "kept for another try";
+
+    // Its cgroup can't be read at all.
+    efficiency().nice = 5; // put back by the off above
+    efficiency().procCgroup = std::nullopt;
+    off = m_Control.setEfficiencyMode(ownTarget(), false);
+    EXPECT_EQ(off.successNote, "its cgroup's CPU weight wasn't put back: its cgroup can't be read");
+    EXPECT_EQ(m_Control.rememberedEfficiencyCount(), 1U);
+
+    // The weight can't be written.
+    efficiency().procCgroup = std::string("0::/user.slice/app-test.scope\n");
+    efficiency().files["cpu.weight"] = "1\n";
+    efficiency().writeErrno = EACCES;
+    off = m_Control.setEfficiencyMode(ownTarget(), false);
+    EXPECT_TRUE(off.successNote.contains("still the minimum")) << off.successNote;
+    EXPECT_EQ(m_Control.rememberedEfficiencyCount(), 1U);
+
+    // Once it can: the remembered weight, and the memory goes.
+    efficiency().writeErrno = 0;
+    efficiency().writes.clear();
+    off = m_Control.setEfficiencyMode(ownTarget(), false);
+    EXPECT_TRUE(off.successNote.empty()) << off.successNote;
+    EXPECT_EQ(efficiency().writes, (std::vector<std::pair<std::string, std::string>>{{"cpu.weight", "50"}}));
+    EXPECT_EQ(m_Control.rememberedEfficiencyCount(), 0U);
+}
+
 // #3330: an on or off for a process that another one, sharing the memory, is still changing is refused rather than
 // interleaved with it: here Process Details' off arrives while the Processes tab's on is setting the nice.
 TEST_F(LinuxEfficiencyModeActionTest, AnOnOrOffWhileAnotherIsChangingTheProcessIsRefused)

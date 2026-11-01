@@ -1283,17 +1283,35 @@ namespace
     return {};
 }
 
-/// Puts back the cgroup weight Efficiency mode lowered: @p remembered when it lowered it, else the default when
-/// the process is alone in a cgroup at the minimum. Why it couldn't, for the success line; empty otherwise.
-[[nodiscard]] std::string restoreCgroupWeight(const LinuxProcessSyscalls& syscalls,
-                                              std::int32_t pid,
-                                              const std::optional<std::string>& cgroup,
-                                              bool rememberedProcess,
-                                              std::optional<int> rememberedWeight)
+/// What restoreCgroupWeight() did: why it couldn't put the weight back, for the success line (empty when it did, or
+/// had nothing to do), and whether a weight on lowered is still to be put back (#3332), so off keeps its memory.
+struct WeightRestore
+{
+    std::string note;
+    bool unfinished = false;
+};
+
+/// Puts back the cgroup weight Efficiency mode lowered: @p rememberedWeight when it lowered it, else the default when
+/// the process is alone in a cgroup at the minimum. A weight on lowered that can't be found, read or written is said,
+/// and left unfinished (#3332).
+[[nodiscard]] WeightRestore restoreCgroupWeight(const LinuxProcessSyscalls& syscalls,
+                                                std::int32_t pid,
+                                                const std::optional<std::string>& cgroup,
+                                                bool rememberedProcess,
+                                                std::optional<int> rememberedWeight)
 {
     namespace Efficiency = LinuxEfficiency;
-    if (!cgroup.has_value() || cgroup->empty() || (rememberedProcess && !rememberedWeight.has_value()))
+    const bool lowered = rememberedProcess && rememberedWeight.has_value(); // on lowered it, so it is ours to put back
+    if (rememberedProcess && !rememberedWeight.has_value())
     {
+        return {};
+    }
+    if (!cgroup.has_value() || cgroup->empty())
+    {
+        if (lowered)
+        {
+            return {.note = "its cgroup's CPU weight wasn't put back: its cgroup can't be read", .unfinished = true};
+        }
         return {};
     }
     if (!rememberedProcess)
@@ -1305,15 +1323,21 @@ namespace
         }
     }
     const std::optional<std::string> weightText = syscalls.readCgroupFile(*cgroup, Efficiency::CPU_WEIGHT_FILE);
-    const std::optional<int> restore =
-        Efficiency::weightToRestore(weightText.has_value() ? Efficiency::parseCpuWeight(*weightText) : std::nullopt, rememberedWeight);
+    const std::optional<int> current = weightText.has_value() ? Efficiency::parseCpuWeight(*weightText) : std::nullopt;
+    if (!current.has_value() && lowered)
+    {
+        return {.note = "its cgroup's CPU weight wasn't put back: it can't be read", .unfinished = true};
+    }
+    const std::optional<int> restore = Efficiency::weightToRestore(current, rememberedWeight);
     if (!restore.has_value())
     {
-        return {};
+        return {}; // not the minimum on set: someone changed it since, and it is theirs
     }
     if (const int error = syscalls.writeCgroupFile(*cgroup, Efficiency::CPU_WEIGHT_FILE, std::to_string(*restore)); error != 0)
     {
-        return std::format("its cgroup's CPU weight is still the minimum: it can't be changed ({})", std::system_category().message(error));
+        return {.note = std::format("its cgroup's CPU weight is still the minimum: it can't be changed ({})",
+                                    std::system_category().message(error)),
+                .unfinished = lowered};
     }
     return {};
 }
@@ -1390,14 +1414,16 @@ ProcessActionResult LinuxProcessControl::setEfficiencyMode(const ProcessTarget& 
         spdlog::info("Efficiency mode on for PID {}{}", target.pid, note.empty() ? "" : ": " + note);
         return ProcessActionResult::ok(std::move(note));
     }
-    std::string note = restoreCgroupWeight(
+    WeightRestore weight = restoreCgroupWeight(
         m_Syscalls, target.pid, cgroup, remembered.has_value(), remembered.has_value() ? remembered->cpuWeight : std::nullopt);
+    if (!weight.unfinished)
     {
+        // A weight still to put back keeps the memory, so turning it off again tries once more (#3332).
         const std::scoped_lock lock(m_Efficiency->mutex);
         m_Efficiency->byProcess.erase(key);
     }
-    spdlog::info("Efficiency mode off for PID {}{}", target.pid, note.empty() ? "" : ": " + note);
-    return ProcessActionResult::ok(std::move(note));
+    spdlog::info("Efficiency mode off for PID {}{}", target.pid, weight.note.empty() ? "" : ": " + weight.note);
+    return ProcessActionResult::ok(std::move(weight.note));
 }
 
 std::size_t LinuxProcessControl::rememberedEfficiencyCount() const
