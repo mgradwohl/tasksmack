@@ -68,15 +68,17 @@ using Domain::HandleSearch::SearchPublication;
 
 } // namespace
 
-std::string findHandlesStatus(const SearchPublication& publication)
+std::string findHandlesStatus(const SearchPublication& publication, bool workerReturned)
 {
     if (publication.version == 0)
     {
         return "Type a name and press Find.";
     }
     const std::size_t found = publication.matches.size();
-    std::string status = publication.done ? std::format("{} processes searched", publication.searched)
-                                          : std::format("Searching... {} of {} processes", publication.searched, publication.total);
+    const bool stoppedUnpublished = !publication.done && workerReturned;
+    std::string status = (publication.done || stoppedUnpublished)
+                           ? std::format("{} processes searched", publication.searched)
+                           : std::format("Searching... {} of {} processes", publication.searched, publication.total);
     status += std::format(" \xC2\xB7 {} found{}", found, publication.truncated ? " (the first ones)" : "");
     if (!publication.denied.empty())
     {
@@ -93,6 +95,10 @@ std::string findHandlesStatus(const SearchPublication& publication)
     if (!publication.failure.empty())
     {
         status += " \xC2\xB7 " + publication.failure; // a reader threw or memory ran out (#3335)
+    }
+    else if (stoppedUnpublished)
+    {
+        status += " \xC2\xB7 The search stopped before it finished"; // not even its failure could be published
     }
     return status;
 }
@@ -359,13 +365,7 @@ std::optional<FindHandlesAction> FindHandlesDialog::render(const ProcessList& pr
     const SearchPublication empty;
     const SearchPublication& shown = current != nullptr ? *current : empty;
     action = renderResults(shown);
-    ImGui::TextColored(theme.scheme().textMuted, "%s", findHandlesStatus(shown).c_str());
-    if (shown.version > 0 && !shown.done && workerReturned)
-    {
-        // Its worker returned without the done publication: not even the failure could be published (#3335).
-        ImGui::SameLine();
-        ImGui::TextColored(theme.scheme().textMuted, "\xC2\xB7 The search stopped before it finished");
-    }
+    ImGui::TextColored(theme.scheme().textMuted, "%s", findHandlesStatus(shown, workerReturned).c_str());
 
     // Another user's processes: an administrator can search them, after one password prompt.
     if (shown.done && !shown.denied.empty() && m_Capabilities.authorize)

@@ -1,5 +1,6 @@
 // Find handles (#3067): matching, counting and the walk over every process, against fake readers.
 
+#include "AllocationFailureHook.h"
 #include "Domain/HandleSearch.h"
 #include "Domain/PublicationSlot.h"
 #include "Platform/IProcessActions.h"
@@ -453,6 +454,60 @@ TEST(HandleSearchTest, AReaderOrAllocationFailureEndsTheWalkAsDoneWithItsReason)
     EXPECT_TRUE(last->failure.empty()) << last->failure;
     EXPECT_EQ(last->searched, 20U);
     EXPECT_EQ(last->matches.size(), 2U) << "file-2 and file-20";
+}
+
+// #3335, with real allocation failures (AllocationFailureHook): each allocation run() makes is failed in turn, the
+// lowered query's, a match's, a progress publication's and the done publication's. run() never lets one out. The
+// slot ends either done, saying why when the walk failed, or, when the done publication itself couldn't be made,
+// at the last one it could, for the dialog's worker-returned flag to end.
+TEST(HandleSearchTest, EveryAllocationRunMakesCanFailWithoutEscaping)
+{
+#if defined(TASKSMACK_NO_ALLOCATOR_HOOK)
+    GTEST_SKIP() << TASKSMACK_NO_ALLOCATOR_HOOK;
+#endif
+    std::vector<SearchProcess> processes;
+    FakeOpenFiles files;
+    for (std::int32_t pid = 1; pid <= 20; ++pid)
+    {
+        processes.push_back(process(pid, "p" + std::to_string(pid)));
+        files.results[pid] = openFiles({file(Platform::OpenFileKind::File, "/tmp/a-much-longer-path-for-the-heap-" + std::to_string(pid))});
+    }
+    int reported = 0;
+    int unpublished = 0;
+    constexpr std::int64_t MAX_ALLOCATIONS = 100'000;
+    for (std::int64_t failAt = 0; failAt < MAX_ALLOCATIONS; ++failAt)
+    {
+        SCOPED_TRACE("failing allocation " + std::to_string(failAt));
+        Domain::PublicationSlot<SearchPublication> slot;
+        const SearchPublication start = startFor("a-much-longer-query-than-small-string-storage", processes.size(), 1);
+        slot.commit(std::make_shared<const SearchPublication>(start));
+        std::stop_source stop;
+        SearchPublication input = start; // copied before the hook is armed: only run()'s own allocations fail
+        bool fired = false;
+        {
+            const TestSupport::FailAllocationAfter guard(failAt);
+            run(processes, {.openFiles = &files, .modules = nullptr}, false, std::move(input), slot, stop.get_token());
+            fired = !TestSupport::allocationFailurePending();
+        }
+        const std::shared_ptr<const SearchPublication> last = slot.load();
+        ASSERT_NE(last, nullptr);
+        if (!fired)
+        {
+            EXPECT_TRUE(last->done);
+            EXPECT_TRUE(last->failure.empty()) << "nothing failed, nothing to say";
+            break;
+        }
+        if (last->done)
+        {
+            reported += last->failure.empty() ? 0 : 1;
+        }
+        else
+        {
+            ++unpublished; // the done publication's own allocation failed
+        }
+    }
+    EXPECT_GT(reported, 0) << "a failure in the walk is published as done with its reason";
+    EXPECT_GT(unpublished, 0) << "a failed done publication leaves the last one (the dialog's flag ends the search)";
 }
 
 // #3335: an administrator search after a failed one starts without that failure.

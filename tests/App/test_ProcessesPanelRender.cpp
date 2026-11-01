@@ -15,6 +15,7 @@
 
 #include "App/Panels/AuthorizeWording.h"
 #include "App/Panels/ExitingProcessRows.h"
+#include "App/Panels/FindHandlesDialog.h"
 #include "App/Panels/NiceStep.h"
 #include "App/Panels/ProcessActionsView.h"
 #include "App/Panels/ProcessColumnAvailability.h"
@@ -32,6 +33,7 @@
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Domain/GPUModel.h"
+#include "Domain/HandleSearch.h"
 #include "Domain/PriorityConfig.h"
 #include "Domain/ProcessModel.h"
 #include "Domain/ProcessSnapshot.h"
@@ -3246,6 +3248,21 @@ TEST_F(ProcessesPanelRenderTest, GroupByContainerShowsHeadersWithTotalsAndCollap
 
 // #3067: the toolbar's Find handles opens its dialog; a query typed there searches every process's open
 // files on the dialog's worker and lists each process holding a match, with the count in the status line.
+// #3335: a search whose worker returned without its done publication reads as stopped, with its last counts, not
+// as still searching; one still running reads as searching.
+TEST(FindHandlesStatusTest, AWorkerThatReturnedWithoutItsDonePublicationReadsAsStopped)
+{
+    Domain::HandleSearch::SearchPublication running = Domain::HandleSearch::startFor("x", 10, 3);
+    running.searched = 4;
+    EXPECT_TRUE(App::findHandlesStatus(running, false).starts_with("Searching... 4 of 10 processes"));
+    const std::string stopped = App::findHandlesStatus(running, true);
+    EXPECT_TRUE(stopped.starts_with("4 processes searched")) << stopped;
+    EXPECT_TRUE(stopped.ends_with("The search stopped before it finished")) << stopped;
+    running.done = true;
+    running.failure = "The search stopped: injected";
+    EXPECT_TRUE(App::findHandlesStatus(running, true).ends_with("The search stopped: injected"));
+}
+
 // #3335: a reader that throws on the Find handles worker doesn't terminate TaskSmack: the search ends, the
 // status line says why, and Find is offered again.
 TEST_F(ProcessesPanelRenderTest, AFindHandlesReaderThatThrowsEndsTheSearchAndSaysWhy)
@@ -3298,7 +3315,8 @@ TEST_F(ProcessesPanelRenderTest, AFindHandlesReaderThatThrowsEndsTheSearchAndSay
     for (int frame = 0; frame < LOAD_FRAMES; ++frame)
     {
         text = renderAndCapture(*panel);
-        if (text.contains("The search stopped"))
+        // Both in one frame: the worker can finish between the query row (Stop) and the status line.
+        if (text.contains("The search stopped") && !text.contains("Stop"))
         {
             break;
         }

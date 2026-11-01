@@ -35,7 +35,9 @@ struct FindHandlesAction
 };
 
 /// The status line under the results: how far the search has got, what it found, and what it couldn't read.
-[[nodiscard]] std::string findHandlesStatus(const Domain::HandleSearch::SearchPublication& publication);
+/// @p workerReturned: the worker has returned, so a search that isn't done stopped without its last publication
+/// (#3335), and is shown as stopped with its last counts rather than as searching.
+[[nodiscard]] std::string findHandlesStatus(const Domain::HandleSearch::SearchPublication& publication, bool workerReturned);
 
 /// A results column of the Find handles table.
 enum class FindHandlesColumn : std::uint8_t
