@@ -790,6 +790,37 @@ TEST(BrokeredProcessActionsTest, CloseConnectionRefusedInProcessIsRetriedThrough
               (Broker::Request{Broker::CloseConnectionRequest{.target = TARGET, .socketInode = 9}}));
 }
 
+// #3069: one thread of another user's process, refused in process, is retried through the helper as a
+// ThreadAction carrying the thread and the action; "Authenticate and retry" sends the same.
+TEST(BrokeredProcessActionsTest, AThreadActionRefusedInProcessIsRetriedThroughTheHelper)
+{
+    Fixture f(/*connected=*/true);
+    EXPECT_TRUE(f.actions->actOnThread(TARGET, 41, 500, ThreadAction::Suspend).success);
+    EXPECT_TRUE(f.broker->requests().empty()) << "done in process: the helper isn't asked";
+
+    f.inner->setThreadActionResult(ProcessActionResult::denied("Access denied: can't end thread 42 of process 4242"));
+    EXPECT_TRUE(f.actions->actOnThread(TARGET, 42, 501, ThreadAction::End).success);
+    EXPECT_EQ(f.inner->threadActionCount(), 2);
+    const std::vector<Broker::Request> requests = f.broker->requests();
+    ASSERT_EQ(requests.size(), 1U);
+    EXPECT_EQ(
+        requests[0],
+        (Broker::Request{Broker::ThreadActionRequest{.target = TARGET, .tid = 42, .threadCreateTime = 501, .action = ThreadAction::End}}));
+
+    // A plain refusal (a critical process's thread) isn't one an administrator could do: never retried.
+    f.inner->setThreadActionResult(ProcessActionResult::error("critical"));
+    EXPECT_FALSE(f.actions->actOnThread(TARGET, 43, 502, ThreadAction::Suspend).success);
+    EXPECT_EQ(f.broker->requests().size(), 1U);
+
+    EXPECT_EQ(
+        (brokerRequestFor({.kind = AuthorizedAction::Kind::ThreadAction,
+                           .target = TARGET,
+                           .tid = 9,
+                           .threadCreateTime = 8,
+                           .threadAction = ThreadAction::Resume})),
+        (Broker::Request{Broker::ThreadActionRequest{.target = TARGET, .tid = 9, .threadCreateTime = 8, .action = ThreadAction::Resume}}));
+}
+
 // #3071: "Authenticate and retry" after a refused Efficiency mode starts the helper and sends it the change.
 TEST(BrokeredProcessActionsTest, RunAuthorizedTurnsEfficiencyModeOnThroughTheHelper)
 {

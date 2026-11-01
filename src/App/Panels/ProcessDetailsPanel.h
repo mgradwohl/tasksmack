@@ -422,7 +422,7 @@ class ProcessDetailsPanel : public Panel
     bool m_HasModules = false; // m_ModulesReader can list modules here (Windows, Linux; not synthetic runs)
     ProcessModulesView m_ModulesView;
     std::unique_ptr<Platform::IProcessThreadsReader> m_ThreadsReader; // the Threads section's (#3069)
-    bool m_HasThreads = false; // m_ThreadsReader can list threads here (Linux; not synthetic runs, nor Windows yet)
+    bool m_HasThreads = false; // m_ThreadsReader can list threads here (Linux, Windows; not synthetic runs)
     ProcessThreadsView m_ThreadsView{static_cast<std::size_t>(std::thread::hardware_concurrency())};
 
     // The Overview's Security section (#1526), on the same terms, its reader declared before its view.

@@ -65,7 +65,9 @@ namespace Platform::Broker
 /// 11: ReadThreads, another user's process's threads for Process Details (#3069).
 /// 12: TaskManagerReplacement, TaskSmack set or cleared as Task Manager's IFEO debugger (#3072).
 /// 13: SessionAction, another user's Windows session disconnected or signed out (#3076).
-inline constexpr std::uint16_t PROTOCOL_VERSION = 13;
+/// 14: ThreadAction, one thread suspended, resumed or ended (#3069, Windows); ThreadsResult carries each
+///     thread's wait reason, suspend count and creation time, and whether its priority is Windows' rather than a nice value.
+inline constexpr std::uint16_t PROTOCOL_VERSION = 14;
 /// The largest frame either side accepts, header included.
 inline constexpr std::size_t MAX_MESSAGE_BYTES = std::size_t{8} << 20U;
 /// The most processes one ReadProcessCounters asks about (#2728); a sampler with more asks for the first.
@@ -106,6 +108,7 @@ enum class MessageKind : std::uint16_t // NOLINT(performance-enum-size): 16 bits
     CloseConnection = 22,        ///< One of a process's sockets shut down, by inode (#3066)
     TaskManagerReplacement = 23, ///< TaskSmack set or cleared as Task Manager's IFEO debugger (#3072)
     SessionAction = 24,          ///< Another user's Windows session disconnected or signed out (#3076)
+    ThreadAction = 25,           ///< One thread of a process suspended, resumed or ended (#3069, Windows)
     ReadEnvironment = 32,        ///< Another user's process's environment, for Process Details (#2309)
     ReadModules = 33,            ///< Its loaded modules (#2309)
     ReadOpenFiles = 34,          ///< Its open files (#2309)
@@ -251,6 +254,19 @@ struct SessionActionRequest
 
 // ---- end of the session actions ----
 
+/// Suspend, resume or end one thread of a process (#3069, protocol v14): IProcessActions::actOnThread(). The
+/// helper checks the process's identity, that the thread belongs to it, and the same guards as in TaskSmack
+/// (never the System process's, a critical process's, its own or TaskSmack's threads). The answer is an
+/// ActionResult. The thread's creation time is checked too, so a TID reused since the user confirmed is refused.
+struct ThreadActionRequest
+{
+    ProcessTarget target;
+    std::int32_t tid = 0;
+    std::uint64_t threadCreateTime = 0; ///< The confirmed thread's creation time; the helper refuses another's
+    ThreadAction action = ThreadAction::Suspend;
+    friend bool operator==(const ThreadActionRequest&, const ThreadActionRequest&) = default;
+};
+
 /// Read a process's environment (#2309): the helper reads it with its capabilities, after the same identity check.
 struct EnvironmentRequest
 {
@@ -354,11 +370,12 @@ struct ThreadsReply
         const auto same = [](const ProcessThread& a, const ProcessThread& b)
         {
             return a.tid == b.tid && a.name == b.name && a.state == b.state && a.userTicks == b.userTicks &&
-                   a.systemTicks == b.systemTicks && a.nice == b.nice && a.startTicks == b.startTicks;
+                   a.systemTicks == b.systemTicks && a.nice == b.nice && a.startTicks == b.startTicks && a.waitReason == b.waitReason &&
+                   a.suspendCount == b.suspendCount && a.createTime == b.createTime;
         };
         return left.result.status == right.result.status && left.result.detail == right.result.detail &&
                left.result.ticksPerSecond == right.result.ticksPerSecond && left.result.truncated == right.result.truncated &&
-               left.result.bootTimeEpoch == right.result.bootTimeEpoch &&
+               left.result.bootTimeEpoch == right.result.bootTimeEpoch && left.result.windowsPriorities == right.result.windowsPriorities &&
                std::ranges::equal(left.result.threads, right.result.threads, same);
     }
 };
@@ -609,7 +626,8 @@ using Request = std::variant<Hello,
                              CloseConnectionRequest,
                              ThreadsRequest,
                              TaskManagerReplacementRequest,
-                             SessionActionRequest>;
+                             SessionActionRequest,
+                             ThreadActionRequest>;
 using Response = std::variant<HelloReply,
                               ActionResult,
                               ErrorReply,
@@ -969,6 +987,16 @@ namespace Detail
     return MessageKind::SessionAction;
 }
 
+/// ThreadAction (#3069): the target, the thread's ID and creation time, then the action.
+[[nodiscard]] inline MessageKind encodePayload(Writer& writer, const ThreadActionRequest& thread)
+{
+    writer.target(thread.target);
+    writer.i32(thread.tid);
+    writer.u64(thread.threadCreateTime);
+    writer.u8(static_cast<std::uint8_t>(thread.action));
+    return MessageKind::ThreadAction;
+}
+
 /// The reads that name only their target.
 [[nodiscard]] inline MessageKind encodePayload(Writer& writer, const EnvironmentRequest& environment)
 {
@@ -1229,6 +1257,24 @@ namespace Detail
     return request;
 }
 
+/// A ThreadAction payload (#3069): the target, the TID (refused unless positive), its creation time and the action
+/// (refused past End). An unknown creation time (0) decodes, and the helper's actions refuse it.
+[[nodiscard]] inline ThreadActionRequest decodeThreadActionRequest(Reader& reader)
+{
+    ThreadActionRequest request;
+    request.target = reader.target();
+    request.tid = reader.i32();
+    request.threadCreateTime = reader.u64();
+    const std::uint8_t action = reader.u8();
+    if (request.tid <= 0 || action > static_cast<std::uint8_t>(ThreadAction::End))
+    {
+        reader.fail();
+        return request;
+    }
+    request.action = static_cast<ThreadAction>(action);
+    return request;
+}
+
 /// A ListHiddenProcesses payload: the count (refused past MAX_VISIBLE_PIDS), then the visible PIDs.
 [[nodiscard]] inline HiddenProcessesRequest decodeHiddenProcessesRequest(Reader& reader)
 {
@@ -1300,6 +1346,8 @@ namespace Detail
         return Detail::finish<Request>(reader, id, Detail::decodeTaskManagerReplacementRequest(reader));
     case MessageKind::SessionAction:
         return Detail::finish<Request>(reader, id, Detail::decodeSessionActionRequest(reader));
+    case MessageKind::ThreadAction:
+        return Detail::finish<Request>(reader, id, Detail::decodeThreadActionRequest(reader));
     case MessageKind::ReadEnvironment:
         return Detail::finish<Request>(reader, id, EnvironmentRequest{.target = reader.target()});
     case MessageKind::ReadModules:
@@ -1482,21 +1530,24 @@ namespace Detail
     return MessageKind::ConnectionsResult;
 }
 
-/// ThreadsResult: status, detail, ticks per second, boot time, truncated, count; a thread: TID, name, state,
-/// user and system ticks, nice, start ticks. As many threads as fit in one frame (names are at most 15 bytes
-/// on Linux, but the field is a string), saying it was cut past them, as a read past MAX_THREADS does.
+/// ThreadsResult: status, detail, ticks per second, boot time, truncated, Windows priorities (v14), count; a
+/// thread: TID, name, state, user and system ticks, nice, start ticks, and (v14) wait reason, suspend count and creation time.
+/// As many threads as fit in one frame (names are at most 15 bytes on Linux, but the field is a string),
+/// saying it was cut past them, as a read past MAX_THREADS does.
 [[nodiscard]] inline MessageKind encodePayload(Writer& writer, const ThreadsReply& threads)
 {
-    constexpr std::size_t ROOM = listRoom(1 + 4 + MAX_STRING_BYTES + 8 + 8 + 1 + 4);
-    const std::size_t count = entriesThatFit(std::span(threads.result.threads),
-                                             MAX_THREADS,
-                                             ROOM,
-                                             [](const ProcessThread& thread) { return 4 + textBytes(thread.name) + 1 + 8 + 8 + 8 + 8; });
+    constexpr std::size_t ROOM = listRoom(1 + 4 + MAX_STRING_BYTES + 8 + 8 + 1 + 1 + 4);
+    const std::size_t count = entriesThatFit(
+        std::span(threads.result.threads),
+        MAX_THREADS,
+        ROOM,
+        [](const ProcessThread& thread) { return 4 + textBytes(thread.name) + 1 + 8 + 8 + 8 + 8 + textBytes(thread.waitReason) + 4 + 8; });
     writer.u8(static_cast<std::uint8_t>(threads.result.status));
     writer.text(threads.result.detail);
     writer.u64(static_cast<std::uint64_t>(threads.result.ticksPerSecond));
     writer.u64(threads.result.bootTimeEpoch);
     writer.u8((threads.result.truncated || count < threads.result.threads.size()) ? 1 : 0);
+    writer.u8(threads.result.windowsPriorities ? 1 : 0);
     writer.u32(static_cast<std::uint32_t>(count));
     for (std::size_t i = 0; i < count; ++i)
     {
@@ -1508,6 +1559,9 @@ namespace Detail
         writer.u64(thread.systemTicks);
         writer.u64(static_cast<std::uint64_t>(thread.nice));
         writer.u64(thread.startTicks);
+        writer.text(thread.waitReason);
+        writer.u32(thread.suspendCount);
+        writer.u64(thread.createTime);
     }
     return MessageKind::ThreadsResult;
 }
@@ -1794,7 +1848,7 @@ namespace Detail
 }
 
 /// A ThreadsResult's payload: the status (refused past Failed), detail, ticks per second (refused at 0 or
-/// past INT64_MAX), boot time, truncated, a count (refused past MAX_THREADS), then each thread.
+/// past INT64_MAX), boot time, truncated, Windows priorities, a count (refused past MAX_THREADS), then each thread.
 [[nodiscard]] inline ThreadsReply decodeThreadsReply(Reader& reader)
 {
     ThreadsReply reply;
@@ -1816,6 +1870,7 @@ namespace Detail
     reply.result.ticksPerSecond = static_cast<std::int64_t>(ticks);
     reply.result.bootTimeEpoch = reader.u64();
     reply.result.truncated = reader.flag();
+    reply.result.windowsPriorities = reader.flag();
     const std::uint32_t count = reader.u32();
     if (count > MAX_THREADS)
     {
@@ -1831,6 +1886,9 @@ namespace Detail
         thread.systemTicks = reader.u64();
         thread.nice = static_cast<std::int64_t>(reader.u64());
         thread.startTicks = reader.u64();
+        thread.waitReason = reader.text();
+        thread.suspendCount = reader.u32();
+        thread.createTime = reader.u64();
         reply.result.threads.push_back(std::move(thread));
     }
     return reply;
@@ -2158,6 +2216,7 @@ namespace Detail
     case MessageKind::CloseConnection:
     case MessageKind::TaskManagerReplacement:
     case MessageKind::SessionAction:
+    case MessageKind::ThreadAction:
     case MessageKind::ReadThreads:
         break;
     }

@@ -161,6 +161,8 @@ enum class GuardedAction : std::uint8_t
     Suspend,  ///< NtSuspendProcess (#2582)
     /// SetProcessInformation(ProcessPowerThrottling) and SetPriorityClass (#3071)
     EfficiencyMode,
+    SuspendThread, ///< SuspendThread on one of its threads (#3069)
+    EndThread,     ///< TerminateThread on one of its threads (#3069)
 };
 
 /// What TaskSmack won't do, worded to follow "TaskSmack won't".
@@ -176,6 +178,10 @@ enum class GuardedAction : std::uint8_t
         return "suspend it";
     case GuardedAction::EfficiencyMode:
         return "change its Efficiency mode";
+    case GuardedAction::SuspendThread:
+        return "suspend its threads";
+    case GuardedAction::EndThread:
+        return "end its threads";
     case GuardedAction::End:
         break;
     }
@@ -230,7 +236,7 @@ inline constexpr int32_t SYSTEM_PROCESS_PID = 4;
     return std::format("Process {} is a protected process (a system or anti-malware service), which not even an administrator can {}; "
                        "TaskSmack won't {}",
                        pid,
-                       action == GuardedAction::Suspend ? "suspend" : "end",
+                       (action == GuardedAction::Suspend || action == GuardedAction::SuspendThread) ? "suspend" : "end",
                        guardedActionWording(action));
 }
 
@@ -249,6 +255,150 @@ inline constexpr int32_t SYSTEM_PROCESS_PID = 4;
 [[nodiscard]] inline std::string selfSuspendRefusal(int32_t pid)
 {
     return std::format("Process {} is TaskSmack itself; suspending it would freeze TaskSmack with nothing left to resume it", pid);
+}
+
+/// The verb for one thread's @p action (#3069): "suspend", "resume", "end".
+[[nodiscard]] constexpr const char* threadActionVerb(ThreadAction action) noexcept
+{
+    switch (action)
+    {
+    case ThreadAction::Suspend:
+        return "suspend";
+    case ThreadAction::Resume:
+        return "resume";
+    case ThreadAction::End:
+        break;
+    }
+    return "end";
+}
+
+/// The guard that covers one thread's @p action in its process (#3069): Suspend and End are the process-level
+/// Suspend's and End's (a critical or protected process's threads are never suspended or ended); nullopt for
+/// Resume, which, as the process-level Resume, can't stop Windows.
+[[nodiscard]] constexpr std::optional<GuardedAction> threadActionGuard(ThreadAction action) noexcept
+{
+    switch (action)
+    {
+    case ThreadAction::Suspend:
+        return GuardedAction::SuspendThread;
+    case ThreadAction::End:
+        return GuardedAction::EndThread;
+    case ThreadAction::Resume:
+        break;
+    }
+    return std::nullopt;
+}
+
+/// Why one thread's @p action is refused before anything is opened (#3069), or empty: a TID that can't be
+/// one; the System process's threads (the kernel's, PID 4), for every action; and the threads of
+/// @p ownPid (TaskSmack, or in the elevated helper the helper) and of @p refusedPid (the helper's
+/// TaskSmack; 0: none), whose suspended or ended thread could freeze or corrupt TaskSmack with nothing
+/// left to undo it. PIDs are compared as isSamePid() does. Not permission failures.
+[[nodiscard]] inline std::string
+threadActionRefusal(std::int32_t pid, std::int32_t tid, ThreadAction action, std::uint32_t ownPid, std::uint32_t refusedPid)
+{
+    if (tid <= 0)
+    {
+        return std::format("Thread {} isn't a valid thread ID; nothing sent", tid);
+    }
+    if (pid == SYSTEM_PROCESS_PID)
+    {
+        return std::format("PID 4 is the System process, whose threads are the kernel's; TaskSmack won't {} them",
+                           threadActionVerb(action));
+    }
+    const auto requested = static_cast<std::uint32_t>(pid);
+    if (pid > 0 && (isSamePid(requested, ownPid) || (refusedPid != 0 && isSamePid(requested, refusedPid))))
+    {
+        return std::format("Process {} is TaskSmack itself; TaskSmack won't {} its own threads", pid, threadActionVerb(action));
+    }
+    return {};
+}
+
+/// Why the thread @p tid isn't acted on: Windows says it belongs to @p actualPid, not @p pid (#3069). A TID
+/// reused by another process's thread since the list was read, or one named for the wrong process.
+[[nodiscard]] inline std::string threadNotInProcessRefusal(std::int32_t tid, std::int32_t pid, std::uint32_t actualPid)
+{
+    if (actualPid == 0)
+    {
+        return std::format("Cannot confirm that thread {} belongs to process {}; nothing sent", tid, pid);
+    }
+    return std::format("Thread {} belongs to process {}, not process {}; nothing sent", tid, actualPid, pid);
+}
+
+/// Why the thread @p tid of @p pid isn't acted on (#3069): it isn't the thread the user confirmed. @p expected is the
+/// creation time the read gave it (0: unknown), @p actual the one GetThreadTimes() gives the thread opened now (0: it
+/// couldn't be read). Empty when they are the same, known time.
+[[nodiscard]] inline std::string threadIdentityRefusal(std::int32_t tid, std::int32_t pid, std::uint64_t expected, std::uint64_t actual)
+{
+    if (expected == 0 || actual == 0)
+    {
+        return std::format("Cannot confirm the identity of thread {} of process {}; nothing sent", tid, pid);
+    }
+    if (expected != actual)
+    {
+        return std::format("Thread {} of process {} has exited and its ID now belongs to another thread; nothing sent", tid, pid);
+    }
+    return {};
+}
+
+/// Why opening thread @p tid of @p pid for @p action failed with @p error (#3069). @p isProtected: a protected
+/// process refuses even an administrator, so that refusal says so rather than read as a permission failure.
+[[nodiscard]] inline std::string
+threadOpenFailure(std::uint32_t error, std::int32_t pid, std::int32_t tid, ThreadAction action, bool isProtected)
+{
+    const char* verb = threadActionVerb(action);
+    if (error == ERROR_ACCESS_DENIED && isProtected)
+    {
+        return std::format("Process {} is a protected process (a system or anti-malware service), which not even an administrator can {} a "
+                           "thread of",
+                           pid,
+                           verb);
+    }
+    switch (error)
+    {
+    case ERROR_ACCESS_DENIED:
+        return std::format("Access denied: can't {} thread {} of process {}. It may run elevated or as another user.", verb, tid, pid);
+    case ERROR_INVALID_PARAMETER:
+        return std::format("Thread {} not found - it may have already exited", tid);
+    default:
+        return std::format("Failed to open thread {} of process {}: error {}", tid, pid, error);
+    }
+}
+
+/// Why SuspendThread, ResumeThread or TerminateThread (@p action) failed with @p error on thread @p tid (#3069).
+[[nodiscard]] inline std::string threadCallFailure(std::uint32_t error, std::int32_t pid, std::int32_t tid, ThreadAction action)
+{
+    if (error == ERROR_ACCESS_DENIED)
+    {
+        return std::format("Access denied: can't {} thread {} of process {}", threadActionVerb(action), tid, pid);
+    }
+    return std::format("Failed to {} thread {} of process {}: error {}", threadActionVerb(action), tid, pid, error);
+}
+
+/// The note a successful Suspend or Resume adds to its result line (#3069), from the suspend count before it,
+/// @p previousCount (SuspendThread's and ResumeThread's answer): Windows counts suspensions, so a thread
+/// suspended twice runs again only after two resumes. Empty for End, and for the plain case (a first suspend,
+/// a last resume).
+[[nodiscard]] inline std::string threadActionNote(ThreadAction action, std::uint32_t previousCount)
+{
+    switch (action)
+    {
+    case ThreadAction::Suspend:
+        return previousCount == 0 ? std::string() : std::format("its suspend count is now {}", previousCount + 1);
+    case ThreadAction::Resume:
+        if (previousCount == 0)
+        {
+            return "it wasn't suspended";
+        }
+        if (previousCount == 1)
+        {
+            return {};
+        }
+        return std::format("it needs {} more {} to run again", previousCount - 1, previousCount == 2 ? "resume" : "resumes");
+    case ThreadAction::End:
+        break;
+    }
+    return {};
 }
 
 /// NTSTATUS values NtSuspendProcess and NtResumeProcess return that suspendResumeFailure() words,
@@ -324,6 +474,10 @@ inline constexpr std::uint32_t NT_STATUS_PROCESS_IS_TERMINATING = 0xC000010AU;
         return std::format("Access denied: can't suspend process {}. It may run elevated or as another user.", pid);
     case GuardedAction::EfficiencyMode:
         return std::format("Access denied: can't change the Efficiency mode of process {}. It may run elevated or as another user.", pid);
+    case GuardedAction::SuspendThread:
+        return std::format("Access denied: can't suspend the threads of process {}. It may run elevated or as another user.", pid);
+    case GuardedAction::EndThread:
+        return std::format("Access denied: can't end the threads of process {}. It may run elevated or as another user.", pid);
     case GuardedAction::End:
         break;
     }

@@ -1,7 +1,12 @@
 #include "ProcessThreadsView.h"
 
 #include "AuthenticateToReadButton.h"
+#include "AuthorizeWording.h"
+#include "Platform/IProcessActions.h"
 #include "Platform/IProcessThreads.h"
+#include "ProcessActionConfirm.h"
+#include "ProcessDetailsPanel_ActionHelpers.h"
+#include "ThreadActionControl.h"
 #include "UI/CellText.h"
 #include "UI/FrameOutline.h"
 #include "UI/IconsFontAwesome6.h"
@@ -12,13 +17,23 @@
 #include <algorithm>
 #include <cstddef>
 #include <format>
+#include <optional>
 #include <span>
 #include <string>
+#include <utility>
 
 #include <misc/cpp/imgui_stdlib.h>
 
 namespace App
 {
+
+namespace
+{
+
+/// The row menu's popup ID (#3069), got outside the table so the rows open the popup drawn after it.
+constexpr const char* ROW_MENU_ID = "##ThreadRowMenu";
+
+} // namespace
 
 void ProcessThreadsView::render(bool hasThreads)
 {
@@ -39,6 +54,7 @@ void ProcessThreadsView::render(bool hasThreads)
         return;
     }
     markDrawnOpen();
+    renderActionResult();
 
     const auto& scheme = UI::Theme::get().scheme();
     if (!m_HasRead)
@@ -92,6 +108,8 @@ void ProcessThreadsView::renderTable()
 
     constexpr ImGuiTableFlags TABLE_FLAGS = ImGuiTableFlags_Sortable | ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg |
                                             ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp;
+    // Got here, outside the table, so the popup the rows open is the one renderRowMenu() draws after it.
+    const ImGuiID menuId = ImGui::GetID(ROW_MENU_ID);
     if (!ImGui::BeginTable("##ThreadsTable", 7, TABLE_FLAGS, ImVec2(0.0F, tableHeight)))
     {
         return;
@@ -107,7 +125,8 @@ void ProcessThreadsView::renderTable()
     setupColumn("STATE", 0.13F, ThreadsColumn::State);
     setupColumn("CPU %", 0.10F, ThreadsColumn::Cpu, ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_PreferSortDescending);
     setupColumn("CPU TIME", 0.14F, ThreadsColumn::CpuTime, ImGuiTableColumnFlags_PreferSortDescending);
-    setupColumn("NICE", 0.08F, ThreadsColumn::Nice);
+    // Windows' priorities (0 to 31) aren't nice values (#3069): the same column, its own name.
+    setupColumn(m_WindowsPriorities ? "PRIORITY" : "NICE", 0.08F, ThreadsColumn::Nice);
     setupColumn("STARTED", 0.21F, ThreadsColumn::Started); // #3069
     ImGui::TableHeadersRow();
 
@@ -132,6 +151,20 @@ void ProcessThreadsView::renderTable()
             const Row& row = m_Rows[ordered[static_cast<std::size_t>(i)]];
             ImGui::TableNextRow(ImGuiTableRowFlags_None, rowHeight);
             ImGui::TableNextColumn();
+            if (m_CanActOnThreads)
+            {
+                // The row menu (#3069), on a copy of the thread taken now: the next read may reorder the rows.
+                ImGui::PushID(row.thread.tid);
+                static_cast<void>(
+                    ImGui::Selectable("##row", false, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap));
+                if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+                {
+                    m_MenuThread = row.thread;
+                    ImGui::OpenPopup(menuId);
+                }
+                ImGui::PopID();
+                ImGui::SameLine(0.0F, 0.0F);
+            }
             UI::Widgets::cellText(row.tid);
             ImGui::TableNextColumn();
             UI::Widgets::cellText(row.thread.name);
@@ -148,6 +181,113 @@ void ProcessThreadsView::renderTable()
         }
     }
     ImGui::EndTable();
+    if (m_CanActOnThreads)
+    {
+        if (std::exchange(m_OpenRowMenu, false))
+        {
+            ImGui::OpenPopup(menuId);
+        }
+        renderRowMenu();
+    }
+}
+
+void ProcessThreadsView::renderRowMenu()
+{
+    if (!ImGui::BeginPopup(ROW_MENU_ID))
+    {
+        return;
+    }
+    if (m_MenuThread.has_value())
+    {
+        const Platform::ProcessThread thread = *m_MenuThread; // the item's request may close the menu
+        ImGui::TextDisabled("%s", threadLabel(thread.tid, thread.name).c_str());
+        ImGui::Separator();
+        const bool idle = !m_ActionControl.busy();
+        if (ImGui::MenuItem(ICON_FA_PAUSE "  Suspend thread...", nullptr, false, idle))
+        {
+            requestThreadAction(thread, Platform::ThreadAction::Suspend);
+        }
+        const bool suspended = Detail::threadCanResume(thread);
+        if (ImGui::MenuItem(ICON_FA_PLAY "  Resume thread...", nullptr, false, idle && suspended))
+        {
+            requestThreadAction(thread, Platform::ThreadAction::Resume);
+        }
+        if (!suspended)
+        {
+            ImGui::SetItemTooltip("This thread isn't suspended");
+        }
+        ImGui::Separator();
+        if (ImGui::MenuItem(ICON_FA_SKULL "  End thread...", nullptr, false, idle))
+        {
+            requestThreadAction(thread, Platform::ThreadAction::End);
+        }
+        ImGui::SetItemTooltip("Ends this thread alone, at once: it can corrupt the process");
+    }
+    ImGui::EndPopup();
+}
+
+void ProcessThreadsView::renderActionResult()
+{
+    const auto& scheme = UI::Theme::get().scheme();
+    if (m_ActionControl.busy())
+    {
+        ImGui::TextColored(scheme.textMuted, "%s", m_ActionControl.pendingText().c_str());
+        return;
+    }
+    const Detail::ActionResultMessage& result = m_ActionControl.result();
+    if (result.empty())
+    {
+        return;
+    }
+    // The colour comes from the result's flag, not its text (#1203).
+    ImGui::PushStyleColor(ImGuiCol_Text, result.ok ? scheme.textSuccess : scheme.textError);
+    ImGui::TextWrapped("%s", result.text.c_str());
+    ImGui::PopStyleColor();
+    // A permission refusal an administrator could redo (#2308): the lock and the words, never colour alone.
+    if (m_ActionControl.offersAuthenticateAndRetry())
+    {
+        if (ImGui::SmallButton(AuthorizeWording::RETRY_LABEL))
+        {
+            m_ActionControl.retryAuthorized();
+        }
+        ImGui::SetItemTooltip("%s", AuthorizeWording::RETRY_TOOLTIP);
+    }
+}
+
+void ProcessThreadsView::renderConfirmation(Platform::IProcessActions* actions, const Platform::ProcessTarget& liveTarget)
+{
+    const std::optional<PendingThreadAction>& pending = m_ActionControl.pending();
+    if (!pending.has_value())
+    {
+        return;
+    }
+    const Platform::ThreadAction action = pending->action;
+    const bool dismiss = pending->target != liveTarget; // another process shown now, or none
+    // The shared confirm dialog under an ID of its own, as the dump's is: the Actions block's confirm (Kill,
+    // Suspend...) is submitted from the same window every frame, and must never see this one open as its own.
+    ImGui::PushID("ThreadAction");
+    const ProcessActionConfirm::Outcome outcome = ProcessActionConfirm::renderLabelled(m_ActionControl.showConfirm(),
+                                                                                       threadActionConfirmLabel(action),
+                                                                                       threadActionIsDestructive(action),
+                                                                                       threadActionTitle(action),
+                                                                                       m_ActionControl.question(),
+                                                                                       dismiss);
+    ImGui::PopID();
+    switch (outcome)
+    {
+    case ProcessActionConfirm::Outcome::Confirmed:
+        m_ActionControl.confirm(actions);
+        break;
+    case ProcessActionConfirm::Outcome::Cancelled:
+        m_ActionControl.cancel();
+        break;
+    case ProcessActionConfirm::Outcome::None:
+        if (dismiss)
+        {
+            m_ActionControl.cancel(); // never drawn open: nothing to close
+        }
+        break;
+    }
 }
 
 } // namespace App

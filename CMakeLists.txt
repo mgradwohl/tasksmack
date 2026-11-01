@@ -333,6 +333,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsProcessModules.cpp
     src/Platform/Windows/WindowsProcessOpenFiles.cpp
     src/Platform/Windows/WindowsProcessSecurity.cpp
+    src/Platform/Windows/WindowsProcessThreads.cpp # Process Details Threads (#3069)
     src/Platform/Windows/WindowsSystemProbe.cpp
     src/Platform/Windows/WindowsSystemInfoProbe.cpp
     src/Platform/Windows/WindowsSignatureCheck.cpp # images' signatures, embedded and catalog: drivers (#1661), processes (#3070)
@@ -576,6 +577,8 @@ elseif(WIN32)
         src/Platform/Windows/WindowsProcessModules.h
         src/Platform/Windows/WindowsProcessOpenFiles.h
         src/Platform/Windows/WindowsProcessSecurity.h
+        src/Platform/Windows/WindowsProcessThreads.h
+        src/Platform/Windows/WindowsProcessThreadsMath.h
         src/Platform/Windows/WindowsSystemProbe.h
         src/Platform/Windows/ProcessorPerformanceCounter.h
         src/Platform/Windows/CpuBaseClock.h
@@ -943,6 +946,7 @@ if(WIN32)
         src/Platform/Windows/WindowsProcessModules.cpp
         src/Platform/Windows/WindowsProcessOpenFiles.cpp
         src/Platform/Windows/WindowsProcessConnections.cpp
+        src/Platform/Windows/WindowsProcessThreads.cpp # Process Details threads of another user's process (#3069)
         src/Platform/Windows/WindowsTaskManagerReplacement.cpp # Replace Task Manager's IFEO Debugger (#3072)
         src/Platform/Windows/WindowsUserSessions.cpp # another user's session disconnected or signed out (#3076)
         src/Platform/Windows/WinString.cpp

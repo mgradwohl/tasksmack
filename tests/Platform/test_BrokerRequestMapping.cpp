@@ -147,6 +147,27 @@ TEST(BrokerRequestMappingTest, CloseConnectionReachesItsAction)
     EXPECT_EQ(actions.lastTarget(), TARGET);
 }
 
+// #3069: a ThreadAction request reaches actOnThread() with its target, thread and action; the actions' refusal
+// (a thread that isn't the target's, a critical process's) comes back as it stands.
+TEST(BrokerRequestMappingTest, ThreadActionReachesItsAction)
+{
+    TestMocks::MockProcessActions actions;
+    Broker::Response response = BrokerServer::handleRequest(
+        Broker::ThreadActionRequest{.target = TARGET, .tid = 77, .threadCreateTime = 1234, .action = ThreadAction::End}, actions);
+    EXPECT_TRUE(actionResult(response).success);
+    EXPECT_EQ(actions.threadActionCount(), 1);
+    EXPECT_EQ(actions.lastThreadId(), 77);
+    EXPECT_EQ(actions.lastThreadAction(), ThreadAction::End);
+    EXPECT_EQ(actions.lastThreadCreateTime(), 1234U) << "the confirmed thread's creation time reaches the check";
+    EXPECT_EQ(actions.lastTarget(), TARGET);
+
+    actions.setThreadActionResult(ProcessActionResult::error("Thread 77 belongs to process 9, not process 4242; nothing sent"));
+    response =
+        BrokerServer::handleRequest(Broker::ThreadActionRequest{.target = TARGET, .tid = 77, .action = ThreadAction::Suspend}, actions);
+    EXPECT_FALSE(actionResult(response).success);
+    EXPECT_EQ(actionResult(response).errorMessage, "Thread 77 belongs to process 9, not process 4242; nothing sent");
+}
+
 TEST(BrokerRequestMappingTest, AFailedActionCarriesItsMessage)
 {
     TestMocks::MockProcessActions actions;

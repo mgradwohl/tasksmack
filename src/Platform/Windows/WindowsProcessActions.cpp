@@ -5,6 +5,7 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/WaitChain.h"
 #include "WindowsAffinityMath.h"
+#include "WindowsConversions.h"
 #include "WindowsFolderPicker.h"
 #include "WindowsHandles.h"
 #include "WindowsNtQuery.h"
@@ -335,8 +336,9 @@ guardRefusal(const WindowsProcessFunctions& fns, HANDLE process, const ProcessTa
 {
     std::string refusal;
     BOOL critical = FALSE;
-    const bool refusesProtected =
-        action == GuardedAction::End || action == GuardedAction::Suspend || action == GuardedAction::EfficiencyMode;
+    const bool refusesProtected = action == GuardedAction::End || action == GuardedAction::Suspend ||
+                                  action == GuardedAction::EfficiencyMode || action == GuardedAction::SuspendThread ||
+                                  action == GuardedAction::EndThread;
     if (refusesProtected && isProtected(fns, process))
     {
         refusal = protectedProcessRefusal(target.pid, action);
@@ -359,6 +361,13 @@ guardRefusal(const WindowsProcessFunctions& fns, HANDLE process, const ProcessTa
     }
     spdlog::warn("{}", refusal);
     return ProcessActionResult::error(std::move(refusal));
+}
+
+/// Whether the table has every call one thread's actions make (#3069).
+[[nodiscard]] bool hasThreadActions(const WindowsProcessFunctions& fns) noexcept
+{
+    return fns.openThread != nullptr && fns.getProcessIdOfThread != nullptr && fns.suspendThread != nullptr &&
+           fns.resumeThread != nullptr && fns.terminateThread != nullptr && fns.getThreadTimes != nullptr;
 }
 
 /// Whether the table has every call Efficiency mode makes (#3071).
@@ -400,6 +409,12 @@ WindowsProcessFunctions realWindowsProcessFunctions() noexcept
         .getPriorityClass = &GetPriorityClass,
         .setPriorityClass = &SetPriorityClass,
         .setProcessInformation = &SetProcessInformation,
+        .openThread = &OpenThread,
+        .getProcessIdOfThread = &GetProcessIdOfThread,
+        .suspendThread = &SuspendThread,
+        .resumeThread = &ResumeThread,
+        .terminateThread = &TerminateThread,
+        .getThreadTimes = &GetThreadTimes,
     };
 }
 
@@ -429,6 +444,8 @@ ProcessActionCapabilities WindowsProcessActions::actionCapabilities() const
         .canAuthorizeInteractively = false,               // BrokeredProcessActions sets it when TaskSmackHelper.exe can be used (#2550)
         .canSetEfficiencyMode = hasEfficiencyMode(m_Fns), // EcoQoS and the Idle class, as Task Manager (#3071)
         .canAnalyzeWaitChain = HAS_WAIT_CHAINS,           // GetThreadWaitChain, as Task Manager's Analyze wait chain (#3084)
+        .canCloseConnections = false,
+        .canActOnThreads = hasThreadActions(m_Fns), // SuspendThread, ResumeThread, TerminateThread (#3069)
     };
 }
 
@@ -897,6 +914,111 @@ FolderChoice WindowsProcessActions::chooseDumpFolder(const std::filesystem::path
 }
 // NOLINTEND(misc-include-cleaner)
 #endif // TASKSMACK_NO_PROCESS_DUMPS
+
+ProcessActionResult
+WindowsProcessActions::actOnThread(const ProcessTarget& target, std::int32_t tid, std::uint64_t threadCreateTime, ThreadAction action)
+{
+    const char* verb = threadActionVerb(action);
+    spdlog::info("Asked to {} thread {} of process {}", verb, tid, target.pid);
+    if (!hasThreadActions(m_Fns))
+    {
+        return ProcessActionResult::error("Acting on one thread isn't available on this Windows");
+    }
+    // Before anything is opened: never the kernel's threads, nor TaskSmack's own (or, in the helper, its
+    // TaskSmack's), whose suspended or ended thread would leave nothing to undo it.
+    if (std::string refusal = threadActionRefusal(target.pid, tid, action, m_Fns.getCurrentProcessId(), m_ThreadActionRefusedPid);
+        !refusal.empty())
+    {
+        spdlog::warn("{}", refusal);
+        return ProcessActionResult::error(std::move(refusal));
+    }
+    // The process first, by its identity, so its handle pins it while its thread is checked and acted on.
+    VerifiedProcess process = openForAction(m_Fns,
+                                            target,
+                                            PROCESS_QUERY_LIMITED_INFORMATION,
+                                            [&target, tid, action](DWORD error, bool isProtected)
+                                            {
+                                                return error == ERROR_INVALID_PARAMETER
+                                                         ? std::string("Process not found - may have already exited")
+                                                         : threadOpenFailure(error, target.pid, tid, action, isProtected);
+                                            });
+    if (!process.result.success)
+    {
+        spdlog::warn("{}", process.result.errorMessage);
+        return std::move(process.result);
+    }
+    if (const std::optional<GuardedAction> guard = threadActionGuard(action); guard.has_value())
+    {
+        if (auto refused = guardRefusal(m_Fns, process.handle.get(), target, *guard))
+        {
+            return std::move(*refused);
+        }
+    }
+
+    // THREAD_QUERY_LIMITED_INFORMATION too, for GetProcessIdOfThread.
+    const DWORD access = (action == ThreadAction::End ? THREAD_TERMINATE : THREAD_SUSPEND_RESUME) | THREAD_QUERY_LIMITED_INFORMATION;
+    const Windows::UniqueHandle thread(m_Fns.openThread(access, FALSE, static_cast<DWORD>(tid)));
+    if (!thread)
+    {
+        const DWORD error = GetLastError();
+        const bool isProtectedProcess = error == ERROR_ACCESS_DENIED && isProtected(m_Fns, process.handle.get());
+        std::string message = threadOpenFailure(error, target.pid, tid, action, isProtectedProcess);
+        spdlog::warn("{}", message);
+        return (error == ERROR_ACCESS_DENIED && !isProtectedProcess) ? ProcessActionResult::denied(std::move(message))
+                                                                     : ProcessActionResult::error(std::move(message));
+    }
+    // The handle's own process: a TID reused by another process's thread since the list was read is refused.
+    if (const DWORD owner = m_Fns.getProcessIdOfThread(thread.get()); std::cmp_not_equal(owner, target.pid))
+    {
+        std::string refusal = threadNotInProcessRefusal(tid, target.pid, owner);
+        spdlog::warn("{}", refusal);
+        return ProcessActionResult::error(std::move(refusal));
+    }
+    // And the thread the user confirmed: a TID the process reused for a newer thread since the list was read is
+    // refused, as a reused PID is. An unknown confirmed time is refused, never skipped.
+    FILETIME created{};
+    FILETIME exited{};
+    FILETIME kernel{};
+    FILETIME user{};
+    const bool timesRead = m_Fns.getThreadTimes(thread.get(), &created, &exited, &kernel, &user) != FALSE;
+    const std::uint64_t actualCreateTime = timesRead ? Windows::fileTimeTicks(created) : 0;
+    if (std::string refusal = threadIdentityRefusal(tid, target.pid, threadCreateTime, actualCreateTime); !refusal.empty())
+    {
+        spdlog::warn("{}", refusal);
+        return ProcessActionResult::error(std::move(refusal));
+    }
+
+    if (action == ThreadAction::End)
+    {
+        // TerminateThread: the thread ends at once, with no chance to release what it holds (the confirm says so).
+        constexpr DWORD THREAD_EXIT_CODE = 1;
+        if (m_Fns.terminateThread(thread.get(), THREAD_EXIT_CODE) == FALSE)
+        {
+            const DWORD error = GetLastError();
+            std::string message = threadCallFailure(error, target.pid, tid, action);
+            spdlog::warn("{}", message);
+            return error == ERROR_ACCESS_DENIED ? ProcessActionResult::denied(std::move(message))
+                                                : ProcessActionResult::error(std::move(message));
+        }
+        spdlog::info("Ended thread {} of process {}", tid, target.pid);
+        return ProcessActionResult::ok();
+    }
+    const DWORD previous = (action == ThreadAction::Suspend) ? m_Fns.suspendThread(thread.get()) : m_Fns.resumeThread(thread.get());
+    if (constexpr DWORD CALL_FAILED = ~DWORD{0}; previous == CALL_FAILED) // (DWORD)-1, as both document
+    {
+        const DWORD error = GetLastError();
+        std::string message = threadCallFailure(error, target.pid, tid, action);
+        spdlog::warn("{}", message);
+        return error == ERROR_ACCESS_DENIED ? ProcessActionResult::denied(std::move(message))
+                                            : ProcessActionResult::error(std::move(message));
+    }
+    spdlog::info("{} thread {} of process {} (suspend count was {})",
+                 action == ThreadAction::Suspend ? "Suspended" : "Resumed",
+                 tid,
+                 target.pid,
+                 previous);
+    return ProcessActionResult::ok(threadActionNote(action, previous));
+}
 
 WaitChainReadResult WindowsProcessActions::readWaitChains(const ProcessTarget& target, const std::stop_token& stopToken)
 {
