@@ -13,6 +13,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace App::Detail
 {
@@ -395,14 +396,19 @@ struct ActionResultMessage
 };
 
 /// "Suspend sent to PID 321" / "Could not suspend PID 321: Operation not permitted", as a pure
-/// function of the action, pid, and result.
+/// function of the action, pid, and result. An Efficiency mode success adds the platform's note when it
+/// has one: "Efficiency mode off for PID 321 (its priority was set to Normal, ...)" (#3281).
 [[nodiscard]] inline ActionResultMessage
 formatActionResultMessage(ProcessAction action, std::int32_t pid, const Platform::ProcessActionResult& result)
 {
     if (result.success && isEfficiencyModeAction(action))
     {
-        return {.ok = true,
-                .text = std::format("Efficiency mode {} for PID {}", action == ProcessAction::EfficiencyModeOn ? "on" : "off", pid)};
+        std::string text = std::format("Efficiency mode {} for PID {}", action == ProcessAction::EfficiencyModeOn ? "on" : "off", pid);
+        if (!result.successNote.empty())
+        {
+            text += std::format(" ({})", result.successNote); // its priority set to Normal, not restored (#3281)
+        }
+        return {.ok = true, .text = std::move(text)};
     }
     if (result.success)
     {

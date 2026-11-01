@@ -1262,6 +1262,18 @@ TEST(WindowsEfficiencyModeMathTest, TheClassRestoredIsTheOneRememberedWhileThePr
     EXPECT_FALSE(priorityClassToRestore(IDLE_PRIORITY_CLASS, BELOW_NORMAL_PRIORITY_CLASS).has_value()) << "changed since";
 }
 
+// #3281: an off that finds nothing remembered (the on ran in the helper, or before a restart) puts the
+// process at Normal and says so; one that restored the remembered class, or left a changed one, says nothing.
+TEST(WindowsEfficiencyModeMathTest, AnOffWithNothingRememberedSaysItsPriorityWentToNormal)
+{
+    EXPECT_EQ(efficiencyModeOffNote(std::nullopt, NORMAL_PRIORITY_CLASS),
+              "its priority was set to Normal, as the class it had before Efficiency mode isn't known");
+    EXPECT_TRUE(efficiencyModeOffNote(HIGH_PRIORITY_CLASS, HIGH_PRIORITY_CLASS).empty()) << "restored";
+    EXPECT_TRUE(efficiencyModeOffNote(NORMAL_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS).empty()) << "Normal, as remembered";
+    EXPECT_TRUE(efficiencyModeOffNote(std::nullopt, std::nullopt).empty()) << "changed since: left alone";
+    EXPECT_TRUE(efficiencyModeOffNote(HIGH_PRIORITY_CLASS, std::nullopt).empty());
+}
+
 TEST(WindowsEfficiencyModeMathTest, ThePrioritiesKeepTheFirstRealClassAndStayBounded)
 {
     EfficiencyModePriorities priorities;
@@ -1326,6 +1338,30 @@ TEST(WindowsProcessActionsTest, EfficiencyModeTurnsAChildsEcoQosAndIdleOnAndOff)
     ASSERT_TRUE(off.success) << off.errorMessage;
     EXPECT_EQ(GetPriorityClass(process.get()), before);
     EXPECT_EQ(throttling(), 0U);
+    EXPECT_TRUE(off.successNote.empty()) << "the class it had was restored";
+}
+
+// #3281, on this test's own suspended child only: an on that ran in another process (the helper, or
+// TaskSmack before a restart) left nothing in this process's memory, so the off puts the child at Normal,
+// not the Below normal it had, and the result says so.
+TEST(WindowsProcessActionsTest, EfficiencyModeOffWithNothingRememberedSetsNormalAndSaysSo)
+{
+    const SuspendedChild child;
+    ASSERT_TRUE(child.started());
+    const Windows::UniqueHandle process(
+        OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_INFORMATION, FALSE, static_cast<DWORD>(child.target().pid)));
+    ASSERT_TRUE(process);
+    ASSERT_NE(SetPriorityClass(process.get(), BELOW_NORMAL_PRIORITY_CLASS), FALSE);
+
+    WindowsProcessActions actions;
+    ASSERT_TRUE(actions.setEfficiencyMode(child.target(), true).success);
+    EXPECT_EQ(sharedEfficiencyModePriorities().take(child.target()), std::optional<uint32_t>{BELOW_NORMAL_PRIORITY_CLASS})
+        << "forgotten here, as when the on ran elsewhere";
+
+    const auto off = actions.setEfficiencyMode(child.target(), false);
+    ASSERT_TRUE(off.success) << off.errorMessage;
+    EXPECT_EQ(GetPriorityClass(process.get()), static_cast<DWORD>(NORMAL_PRIORITY_CLASS));
+    EXPECT_EQ(off.successNote, efficiencyModeOffNote(std::nullopt, NORMAL_PRIORITY_CLASS));
 }
 
 // =============================================================================

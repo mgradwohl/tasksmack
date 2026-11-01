@@ -23,6 +23,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace Platform
@@ -559,11 +560,28 @@ inline constexpr std::uint32_t NT_STATUS_PROCESS_IS_TERMINATING = 0xC000010AU;
     return remembered.value_or(static_cast<uint32_t>(NORMAL_PRIORITY_CLASS));
 }
 
+/// The ProcessActionResult::successNote for turning Efficiency mode off (#3281), from the class
+/// @p remembered when it was turned on and the class @p restored (priorityClassToRestore()). With nothing
+/// remembered, because the on ran in another process (TaskSmackHelper.exe, or TaskSmack before a restart),
+/// the process was put at Normal rather than the class it had before, which may differ; the note says so.
+/// Empty otherwise: the remembered class was restored, or the class was left as someone changed it.
+[[nodiscard]] constexpr std::string_view efficiencyModeOffNote(std::optional<uint32_t> remembered,
+                                                               std::optional<uint32_t> restored) noexcept
+{
+    if (remembered.has_value() || !restored.has_value())
+    {
+        return {};
+    }
+    return "its priority was set to Normal, as the class it had before Efficiency mode isn't known";
+}
+
 /// The priority classes Efficiency mode replaced with Idle, per process (#3071), so turning it off
 /// restores each. One for the whole TaskSmack process (sharedEfficiencyModePriorities()): the Processes
 /// table and Process Details each have their own WindowsProcessActions, and either may turn off what the
 /// other turned on. Thread-safe: actions run on the panels' workers. At most MAX_REMEMBERED processes;
-/// past that the lowest PID's is dropped, and that process goes back to Normal instead.
+/// past that the lowest PID's is dropped, and that process goes back to Normal instead. Only this
+/// process's: an on that ran in TaskSmackHelper.exe, or before a restart, isn't here, and the off puts the
+/// process at Normal and says so (efficiencyModeOffNote(), #3281).
 class EfficiencyModePriorities
 {
   public:

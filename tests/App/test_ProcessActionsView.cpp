@@ -782,6 +782,17 @@ TEST(ProcessActionsViewTest, TurningEfficiencyModeOnAsksFirstAndOffRunsAtOnce)
     EXPECT_EQ(view.lastResult().text, "Efficiency mode off for PID 1001");
 }
 
+// #3281: an off that couldn't restore the class it had before says the priority went to Normal.
+TEST(ProcessActionsViewTest, AnEfficiencyModeOffShowsThePlatformsNote)
+{
+    TestMocks::MockProcessActions mock;
+    mock.setEfficiencyModeResult(Platform::ProcessActionResult::ok("its priority was set to Normal"));
+    ProcessActionsView view;
+    view.requestEfficiencyModeToggle(&mock, TARGET_A, "chrome.exe", /*on=*/true);
+    view.waitForActionForTesting();
+    EXPECT_EQ(view.lastResult().text, "Efficiency mode off for PID 1001 (its priority was set to Normal)");
+}
+
 TEST(ProcessActionsViewTest, ARefusedEfficiencyModeOffersAuthenticateAndRetry)
 {
     TestMocks::MockProcessActions mock;
