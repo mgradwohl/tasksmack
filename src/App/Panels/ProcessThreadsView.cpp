@@ -263,12 +263,17 @@ void ProcessThreadsView::renderConfirmation(Platform::IProcessActions* actions, 
     }
     const Platform::ThreadAction action = pending->action;
     const bool dismiss = pending->target != liveTarget; // another process shown now, or none
-    switch (ProcessActionConfirm::renderLabelled(m_ActionControl.showConfirm(),
-                                                 threadActionConfirmLabel(action),
-                                                 threadActionIsDestructive(action),
-                                                 threadActionTitle(action),
-                                                 m_ActionControl.question(),
-                                                 dismiss))
+    // The shared confirm dialog under an ID of its own, as the dump's is: the Actions block's confirm (Kill,
+    // Suspend...) is submitted from the same window every frame, and must never see this one open as its own.
+    ImGui::PushID("ThreadAction");
+    const ProcessActionConfirm::Outcome outcome = ProcessActionConfirm::renderLabelled(m_ActionControl.showConfirm(),
+                                                                                       threadActionConfirmLabel(action),
+                                                                                       threadActionIsDestructive(action),
+                                                                                       threadActionTitle(action),
+                                                                                       m_ActionControl.question(),
+                                                                                       dismiss);
+    ImGui::PopID();
+    switch (outcome)
     {
     case ProcessActionConfirm::Outcome::Confirmed:
         m_ActionControl.confirm(actions);

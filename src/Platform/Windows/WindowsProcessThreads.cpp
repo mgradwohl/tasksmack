@@ -3,6 +3,7 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessThreads.h"
 #include "WinString.h"
+#include "WindowsConversions.h"
 #include "WindowsHandles.h"
 #include "WindowsNtQuery.h"
 #include "WindowsProcAddress.h"
@@ -14,6 +15,7 @@
 #include <cwchar>
 #include <format>
 #include <limits>
+#include <memory>
 #include <span>
 #include <string>
 #include <string_view>
@@ -32,6 +34,17 @@ constexpr std::size_t SNAPSHOT_INITIAL_BYTES = std::size_t{512} * 1024;
 constexpr std::size_t SNAPSHOT_HEADROOM_BYTES = std::size_t{64} * 1024;
 /// Tries at a snapshot that fits before giving up: the process list grows between the calls.
 constexpr int MAX_SNAPSHOT_ATTEMPTS = 4;
+
+/// Frees a string GetThreadDescription allocated, through the injected LocalFree.
+struct LocalStringFree
+{
+    ProcessThreadFunctions::LocalFreeFn free = nullptr;
+
+    void operator()(wchar_t* text) const noexcept
+    {
+        free(text);
+    }
+};
 
 [[nodiscard]] ThreadsReadResult failure(ThreadsReadStatus status, std::string detail = {})
 {
@@ -68,7 +81,9 @@ ProcessThreadFunctions realProcessThreadFunctions() noexcept
             .closeHandle = &CloseHandle,
             .getThreadDescription = getDescription,
             .localFree = &LocalFree,
-            .ntQueryInformationThread = queryThread};
+            .ntQueryInformationThread = queryThread,
+            .getProcessIdOfThread = &GetProcessIdOfThread,
+            .getThreadTimes = &GetThreadTimes};
 }
 
 WindowsProcessThreadsReader::WindowsProcessThreadsReader() : WindowsProcessThreadsReader(realProcessThreadFunctions())
@@ -151,15 +166,16 @@ ThreadsReadResult WindowsProcessThreadsReader::readThreads(const ProcessTarget& 
     for (const SnapshotThread& thread : process.threads)
     {
         ProcessThread row = toProcessThread(thread, boot);
-        readThreadDetails(row);
+        readThreadDetails(row, static_cast<DWORD>(target.pid));
         result.threads.push_back(std::move(row));
     }
     return result;
 }
 
-void WindowsProcessThreadsReader::readThreadDetails(ProcessThread& thread) const
+void WindowsProcessThreadsReader::readThreadDetails(ProcessThread& thread, DWORD pid) const
 {
-    if (m_Api.openThread == nullptr || m_Api.closeHandle == nullptr || thread.tid <= 0)
+    if (m_Api.openThread == nullptr || m_Api.closeHandle == nullptr || m_Api.getProcessIdOfThread == nullptr ||
+        m_Api.getThreadTimes == nullptr || thread.tid <= 0)
     {
         return;
     }
@@ -169,13 +185,26 @@ void WindowsProcessThreadsReader::readThreadDetails(ProcessThread& thread) const
     {
         return; // another user's or a protected process's thread: listed without its name
     }
+    // The thread the snapshot listed: one that exited since may have left its TID to a new thread, of this process
+    // or another, whose name and suspend count would then be shown on the old one's row.
+    FILETIME created{};
+    FILETIME exited{};
+    FILETIME kernel{};
+    FILETIME user{};
+    if (m_Api.getProcessIdOfThread(handle.get()) != pid || m_Api.getThreadTimes(handle.get(), &created, &exited, &kernel, &user) == FALSE ||
+        fileTimeTicks(created) != thread.createTime)
+    {
+        return;
+    }
     if (m_Api.getThreadDescription != nullptr && m_Api.localFree != nullptr)
     {
-        PWSTR description = nullptr;
-        if (SUCCEEDED(m_Api.getThreadDescription(handle.get(), &description)) && description != nullptr)
+        PWSTR raw = nullptr;
+        const HRESULT described = m_Api.getThreadDescription(handle.get(), &raw);
+        // Owned at once, so the conversion below can throw without leaking the LocalAlloc'd string.
+        const std::unique_ptr<wchar_t, LocalStringFree> description(raw, LocalStringFree{.free = m_Api.localFree});
+        if (SUCCEEDED(described) && description != nullptr)
         {
-            thread.name = WinString::wideToUtf8(std::wstring_view(description, std::wcslen(description)));
-            m_Api.localFree(description);
+            thread.name = WinString::wideToUtf8(std::wstring_view(description.get(), std::wcslen(description.get())));
         }
     }
     if (m_Api.ntQueryInformationThread != nullptr)

@@ -430,6 +430,13 @@ class OwnTestThread
     {}
     ~OwnTestThread()
     {
+        // A failed assertion may have left it suspended, which the stop event can't wake: resume it fully first,
+        // so a regression reports a failure instead of hanging here (ResumeThread answers the count it had).
+        DWORD previous = 0;
+        do
+        {
+            previous = ResumeThread(m_Thread);
+        } while (previous != static_cast<DWORD>(-1) && previous > 1);
         SetEvent(m_Stop);
         WaitForSingleObject(m_Thread, INFINITE);
         CloseHandle(m_Thread);

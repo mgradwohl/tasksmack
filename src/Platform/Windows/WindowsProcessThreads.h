@@ -5,9 +5,10 @@
 // against the target's, so a reused PID reads as exited) and each of its threads' ID, scheduler state, wait
 // reason, priority, CPU times and create time, with no handle on the process: so it lists another user's,
 // an elevated or a protected process's threads as well as the user's own, and never needs the helper.
-// Each thread is then opened with THREAD_QUERY_LIMITED_INFORMATION for its description
-// (GetThreadDescription; an empty one is no name) and its suspend count (ThreadSuspendCount); a thread
-// that refuses the open keeps its row without them.
+// Each thread is then opened with THREAD_QUERY_LIMITED_INFORMATION and, once GetProcessIdOfThread and
+// GetThreadTimes say it is still the thread the snapshot listed, read for its description (GetThreadDescription;
+// an empty one is no name) and its suspend count (ThreadSuspendCount); a thread that refuses the open, or whose TID
+// now names another thread, keeps its row without them.
 //
 // The calls it makes are a table, the system's by default, so tests feed it snapshots built in the test
 // and fake thread handles (test_WindowsProcessThreads.cpp). Not thread-safe: one read at a time, as the
@@ -53,6 +54,12 @@ struct ProcessThreadFunctions
     GetThreadDescriptionFn getThreadDescription = nullptr; ///< Null: no names
     LocalFreeFn localFree = nullptr;
     NtQueryInformationThreadFn ntQueryInformationThread = nullptr; ///< Null: no suspend counts
+    using GetProcessIdOfThreadFn = DWORD(WINAPI*)(HANDLE thread);
+    using GetThreadTimesFn = BOOL(WINAPI*)(HANDLE thread, LPFILETIME creation, LPFILETIME exit, LPFILETIME kernel, LPFILETIME user);
+    /// The thread opened is the one the snapshot listed: the process's, created when the snapshot says. Null,
+    /// either: no names or suspend counts, since no thread can be confirmed.
+    GetProcessIdOfThreadFn getProcessIdOfThread = nullptr;
+    GetThreadTimesFn getThreadTimes = nullptr;
 };
 
 /// The real calls, the optional ones looked up once.
@@ -74,8 +81,9 @@ class WindowsProcessThreadsReader final : public IProcessThreadsReader
     [[nodiscard]] ThreadsReadResult readThreads(const ProcessTarget& target) override;
 
   private:
-    /// Fills @p thread's name and suspend count from a handle on it, when it can be opened.
-    void readThreadDetails(ProcessThread& thread) const;
+    /// Fills @p thread's name and suspend count from a handle on it, when it can be opened and is still the thread
+    /// the snapshot listed: @p pid's, created at its createTime (a TID reused since is left without them).
+    void readThreadDetails(ProcessThread& thread, DWORD pid) const;
 
     ProcessThreadFunctions m_Api;
     std::vector<std::byte> m_Snapshot; // reused between reads: a few hundred KiB, grown as the system grows

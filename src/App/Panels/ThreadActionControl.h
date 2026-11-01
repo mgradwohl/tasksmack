@@ -181,10 +181,12 @@ class ThreadActionControl
         static_cast<void>(m_Run.start(
             std::move(pendingText),
             [actions, retry] { return actions->actOnThread(retry.target, retry.tid, retry.threadCreateTime, retry.threadAction); },
-            [this, actions, retry](const Platform::ProcessActionResult& result)
+            [this, actions, retry, generation = m_Generation](const Platform::ProcessActionResult& result)
             {
                 finish(result);
-                if (result.permissionDenied && actions->actionCapabilities().canAuthorizeInteractively)
+                // Never for an action started before the selection changed: the retry would be offered under
+                // another process's Threads section, for a thread of the one no longer shown.
+                if (generation == m_Generation && result.permissionDenied && actions->actionCapabilities().canAuthorizeInteractively)
                 {
                     m_Retry = Retry{.actions = actions, .action = retry};
                     m_ResultSecondsLeft = Detail::AUTHORIZE_RESULT_SECONDS; // time to read it and decide
@@ -238,9 +240,11 @@ class ThreadActionControl
 
     /// A different process was selected: the last result and its retry are dropped. A confirm still up is left
     /// for ProcessThreadsView::renderConfirmation() to close, as its process is no longer the one shown (ImGui
-    /// keeps a modal open until it is closed). An action already running finishes, and says so.
+    /// keeps a modal open until it is closed). An action already running finishes, and says so, but a refusal it
+    /// meets offers no Authenticate and retry.
     void onSelectionChanged()
     {
+        ++m_Generation; // an action still running finishes, but offers no retry (it was for the previous process)
         m_Retry.reset();
         m_Result = {};
         m_ResultSecondsLeft = 0.0F;
@@ -351,6 +355,7 @@ class ThreadActionControl
     Detail::ActionResultMessage m_Result;
     float m_ResultSecondsLeft = 0.0F;
     bool m_Acted = false;
+    std::uint64_t m_Generation = 0; ///< Bumped by each selection change
     // Last, so it is destroyed (stopping and waiting for the worker) before the members its finish uses.
     ProcessActionRun m_Run;
 };

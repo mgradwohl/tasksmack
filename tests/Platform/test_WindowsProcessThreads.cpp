@@ -26,6 +26,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <map>
 #include <optional>
 #include <span>
 #include <string>
@@ -236,6 +237,9 @@ struct FakeWin
     static inline std::int32_t deniedTid = 0;  // OpenThread refuses this one
     static inline std::int32_t unnamedTid = 0; // its description is empty
     static inline std::int32_t suspendedTid = 0;
+    static inline std::int32_t reusedTid = 0;                        // its TID now names a newer thread than the snapshot's
+    static inline std::int32_t otherProcessTid = 0;                  // its TID now names a thread of another process
+    static inline std::map<std::int32_t, std::uint64_t> createTimes; // each thread's, as GetThreadTimes answers
     static inline int opens = 0;
     static inline int closes = 0;
 
@@ -249,6 +253,9 @@ struct FakeWin
         deniedTid = 0;
         unnamedTid = 0;
         suspendedTid = 0;
+        reusedTid = 0;
+        otherProcessTid = 0;
+        createTimes.clear();
         opens = 0;
         closes = 0;
     }
@@ -302,6 +309,18 @@ struct FakeWin
     {
         return static_cast<std::int32_t>(reinterpret_cast<std::uintptr_t>(handle) - 0x10000U);
     }
+    static DWORD WINAPI getProcessIdOfThread(HANDLE thread)
+    {
+        return tidOf(thread) == otherProcessTid ? PID + 1 : PID;
+    }
+    static BOOL WINAPI getThreadTimes(HANDLE thread, LPFILETIME creation, LPFILETIME /*exit*/, LPFILETIME /*kernel*/, LPFILETIME /*user*/)
+    {
+        const std::int32_t tid = tidOf(thread);
+        const std::uint64_t time = createTimes[tid] + (tid == reusedTid ? 1U : 0U);
+        creation->dwLowDateTime = static_cast<DWORD>(time & 0xFFFF'FFFFU);
+        creation->dwHighDateTime = static_cast<DWORD>(time >> 32U);
+        return TRUE;
+    }
     static HRESULT WINAPI getThreadDescription(HANDLE thread, PWSTR* description)
     {
         const std::wstring text = tidOf(thread) == unnamedTid ? std::wstring() : L"worker-" + std::to_wstring(tidOf(thread));
@@ -328,7 +347,9 @@ struct FakeWin
                 .closeHandle = &closeHandle,
                 .getThreadDescription = &getThreadDescription,
                 .localFree = &LocalFree,
-                .ntQueryInformationThread = &queryThread};
+                .ntQueryInformationThread = &queryThread,
+                .getProcessIdOfThread = &getProcessIdOfThread,
+                .getThreadTimes = &getThreadTimes};
     }
 };
 
@@ -347,6 +368,7 @@ class WindowsProcessThreadsReaderTest : public ::testing::Test
                          {.tid = 108, .state = 5, .waitReason = 15},
                          {.tid = 112, .state = 5, .waitReason = 6}}},
         });
+        FakeWin::createTimes = {{100, PROCESS_CREATED}, {104, PROCESS_CREATED + 10'000'000ULL}, {108, 0}, {112, 0}};
     }
 };
 
@@ -389,6 +411,25 @@ TEST_F(WindowsProcessThreadsReaderTest, ListsEachThreadWithItsNameStateAndSuspen
 
     EXPECT_EQ(FakeWin::opens, 4);
     EXPECT_EQ(FakeWin::closes, 3) << "every handle opened is closed";
+}
+
+// #3069: a thread that exited between the snapshot and its open may have left its TID to a newer thread, of this
+// process or another: that one's name and suspend count aren't shown on the old row.
+TEST_F(WindowsProcessThreadsReaderTest, ATidReusedSinceTheSnapshotGetsNoNameOrSuspendCount)
+{
+    FakeWin::suspendedTid = 104;
+    FakeWin::reusedTid = 104;
+    FakeWin::otherProcessTid = 100;
+    WindowsProcessThreadsReader reader(FakeWin::functions());
+    const ThreadsReadResult result = reader.readThreads(TARGET);
+    ASSERT_EQ(result.status, ThreadsReadStatus::Ok);
+    ASSERT_EQ(result.threads.size(), 4U);
+    EXPECT_TRUE(result.threads[0].name.empty()) << "TID 100 is another process's thread now";
+    EXPECT_TRUE(result.threads[1].name.empty()) << "TID 104 names a newer thread";
+    EXPECT_EQ(result.threads[1].suspendCount, 0U) << "nor its suspend count, which would offer Resume";
+    EXPECT_EQ(result.threads[1].state, 'T') << "the snapshot's own figures stay";
+    EXPECT_EQ(result.threads[2].name, "worker-108") << "a thread still the snapshot's keeps its name";
+    EXPECT_EQ(FakeWin::closes, FakeWin::opens) << "every handle opened is closed, the mismatched ones too";
 }
 
 TEST_F(WindowsProcessThreadsReaderTest, AReusedPidOrAGoneProcessReadsAsExited)
@@ -471,6 +512,13 @@ class OwnWaitingThread
     }
     ~OwnWaitingThread()
     {
+        // A failed assertion may have left it suspended, which the stop event can't wake: resume it fully first,
+        // so a regression reports a failure instead of hanging here (ResumeThread answers the count it had).
+        DWORD previous = 0;
+        do
+        {
+            previous = ResumeThread(m_Thread);
+        } while (previous != static_cast<DWORD>(-1) && previous > 1);
         SetEvent(m_Stop);
         WaitForSingleObject(m_Thread, INFINITE);
         CloseHandle(m_Thread);

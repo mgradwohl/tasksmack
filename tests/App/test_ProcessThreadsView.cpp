@@ -1,6 +1,7 @@
 // Process Details' Threads section (#3069): its cadence, CPU % from two reads, sort, filter and statuses
 // against a mock reader, and its real ImGui render, headless.
 
+#include "App/Panels/ProcessActionConfirm.h"
 #include "App/Panels/ProcessThreadsView.h"
 #include "App/Panels/ThreadActionControl.h"
 #include "Mocks/MockProbes.h"
@@ -560,6 +561,73 @@ TEST_F(ProcessThreadsViewRenderTest, TheConfirmAsksItsQuestionAndClosesWhenThePr
     static_cast<void>(drawConfirmOnce(view, &actions, {.pid = 200, .startTimeTicks = 1}));
     EXPECT_FALSE(view.actionControl().pending().has_value());
     EXPECT_EQ(actions.threadActionCount(), 0);
+}
+
+// #3069: the thread confirm has an ID of its own, so the Actions block's confirm, submitted from the same window in
+// the same frame, never takes it for its own: both are drawn, each with its own question.
+TEST_F(ProcessThreadsViewRenderTest, TheThreadConfirmAndTheProcessConfirmDontShareAnId)
+{
+    TestMocks::MockProcessActions actions;
+    actions.setCapabilities(threadActionCapabilities());
+    ProcessThreadsView view(1);
+    view.applyResult(threads({thread(105, "worker", 1)}), 0.0);
+    view.setThreadActions(true, "server");
+    static_cast<void>(view.update(nullptr, TARGET, 0.0F, 1000, 0.0));
+    view.requestThreadAction(view.rows()[0].thread, Platform::ThreadAction::Suspend);
+    bool processConfirm = true;
+
+    std::string captured;
+    for (int frame = 0; frame < 3; ++frame)
+    {
+        ImGuiIO& io = ImGui::GetIO();
+        ImGui::NewFrame();
+        ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
+        ImGui::SetNextWindowSize(io.DisplaySize);
+        ImGui::Begin("Details", nullptr, ImGuiWindowFlags_NoDecoration);
+        ImGui::LogToBuffer();
+        // The Actions block's, as ProcessActionsView submits it, then the Threads section's.
+        static_cast<void>(ProcessActionConfirm::renderLabelled(processConfirm, "Kill", true, "Kill", "Kill server (PID 100)?"));
+        view.renderConfirmation(&actions, TARGET);
+        captured = GImGui->LogBuffer.c_str();
+        ImGui::LogFinish();
+        ImGui::End();
+        ImGui::Render();
+    }
+    EXPECT_TRUE(captured.contains("Kill server (PID 100)?")) << captured;
+    EXPECT_TRUE(captured.contains("Suspend thread 105 (worker) of server (PID 100)?")) << captured;
+    EXPECT_TRUE(view.actionControl().pending().has_value()) << "not taken, nor closed, by the other confirm";
+    EXPECT_EQ(actions.threadActionCount(), 0);
+}
+
+// #3069: an action started before the selection changed finishes, but a refusal it meets offers no Authenticate and
+// retry: it would be offered under another process's Threads section.
+TEST(ThreadActionControlTest, AnActionFromAnEarlierSelectionOffersNoRetry)
+{
+    TestMocks::MockProcessActions actions;
+    actions.setCapabilities(threadActionCapabilities(/*canAuthorize=*/true));
+    actions.setThreadActionResult(Platform::ProcessActionResult::denied("Access denied"));
+    ThreadActionControl control;
+    control.request({.target = TARGET,
+                     .tid = 7,
+                     .threadCreateTime = 70,
+                     .threadName = {},
+                     .processName = "svc",
+                     .action = Platform::ThreadAction::End});
+    control.confirm(&actions);
+    control.onSelectionChanged(); // while it runs
+    control.update(0.0F, true);
+    EXPECT_EQ(actions.threadActionCount(), 1) << "the confirmed action still ran";
+    EXPECT_FALSE(control.offersAuthenticateAndRetry());
+
+    control.request({.target = TARGET,
+                     .tid = 7,
+                     .threadCreateTime = 70,
+                     .threadName = {},
+                     .processName = "svc",
+                     .action = Platform::ThreadAction::End});
+    control.confirm(&actions);
+    control.update(0.0F, true);
+    EXPECT_TRUE(control.offersAuthenticateAndRetry()) << "one started for this selection still does";
 }
 
 TEST_F(ProcessThreadsViewRenderTest, TheResultLineShowsAboveTheTable)
