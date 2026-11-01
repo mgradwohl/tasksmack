@@ -65,7 +65,8 @@ struct FileStamp
 {
     std::optional<FileId> fileId; ///< nullopt when the file system gives none: the answer is never cached
     /// FILE_BASIC_INFO's ChangeTime, 100 ns ticks: every write, and every change to the file's attributes
-    /// or times, moves it, and SetFileTime can't set it back.
+    /// or times, moves it, and SetFileTime can't set it back. (SetFileInformationByHandle's FileBasicInfo
+    /// can: a deliberate attacker who writes the file in place and restores this too still matches.)
     std::uint64_t changeTime = 0;
     std::uint64_t size = 0;
 
