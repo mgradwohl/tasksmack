@@ -433,12 +433,28 @@ TEST(WindowGeometryTest, RestoreWithTheWindowsDisplayUnknownGoesToThePrimary)
     EXPECT_EQ(fitRestoreTarget(saved, displays, std::nullopt, 1), (Rect{.x = 460, .y = 170, .width = 1000, .height = 700}));
 }
 
-TEST(WindowGeometryTest, RestoreAfterTheWorkAreaShrankKeepsThePositionAndShrinksTheSize)
+TEST(WindowGeometryTest, RestoreReachableButLargerThanItsDisplayIsUnchanged)
 {
-    // Still on its display, whose usable height dropped (a taller taskbar): only the height changes.
+    // Restore puts back exactly what the user had while it can be reached, even wider than the
+    // display (the on-display restore test on a 1024-wide Xvfb display).
+    const std::array displays{Rect{.x = 0, .y = 0, .width = 1024, .height = 768}};
+    const Rect saved{.x = -128, .y = 24, .width = 1280, .height = 720};
+    EXPECT_EQ(fitRestoreTarget(saved, displays, 0, 0), saved);
+}
+
+TEST(WindowGeometryTest, RestoreOnNoDisplayShrinksOnlyWhereLargerThanTheWindowsDisplay)
+{
+    // The saved monitor is gone and the remaining display's work area is 600 high: centred on it,
+    // the width kept, the height shrunk to fit.
     const std::array displays{Rect{.x = 0, .y = 0, .width = 1920, .height = 600}};
-    const Rect saved{.x = 100, .y = 0, .width = 1000, .height = 700};
-    EXPECT_EQ(fitRestoreTarget(saved, displays, 0, 0), (Rect{.x = 100, .y = 0, .width = 1000, .height = 600}));
+    const Rect saved{.x = 2300, .y = 100, .width = 1000, .height = 700};
+    EXPECT_EQ(fitRestoreTarget(saved, displays, 0, 0), (Rect{.x = 460, .y = 0, .width = 1000, .height = 600}));
+}
+
+TEST(WindowGeometryTest, RestoreWithNoKnownDisplayIsUnchanged)
+{
+    const Rect saved{.x = 2300, .y = 100, .width = 1000, .height = 700};
+    EXPECT_EQ(fitRestoreTarget(saved, std::span<const Rect>{}, std::nullopt, 0), saved);
 }
 
 // ---- moveInside (#2735) ----
@@ -822,11 +838,13 @@ TEST(WindowGeometryMinimumKeepingSizeTest, AUserResizeToTheWantedMinimumTakesIt)
 
 TEST(WindowGeometryMinimumKeepingSizeTest, ARestoreShrunkToTheWorkAreaLowersTheAppliedMinimum)
 {
-    // #3336: the work area shrank to 600 high while maximized; Restore fits the window to 1000 x 600,
-    // below the 650 minimum. The applied minimum drops to 600 so SDL doesn't clamp it back over the
-    // edge; the wanted minimum (the first argument) is not changed by the call.
+    // #3336: the saved monitor was unplugged while maximized, and the remaining work area is 600 high;
+    // Restore fits the window to 1000 x 600, below the 650 minimum. The applied minimum drops to 600
+    // so SDL doesn't clamp it back over the edge; the wanted minimum (the first argument) is not
+    // changed by the call.
     const std::array displays{Rect{.x = 0, .y = 0, .width = 1920, .height = 600}};
-    const Rect fitted = fitRestoreTarget(Rect{.x = 100, .y = 0, .width = 1000, .height = 700}, displays, 0, 0);
+    const Rect fitted = fitRestoreTarget(Rect{.x = 2300, .y = 100, .width = 1000, .height = 700}, displays, 0, 0);
+    ASSERT_EQ(fitted.height, 600);
     constexpr std::pair WANTED{800, 650};
     const std::pair<int, int> applied = minimumKeepingSize(WANTED, {fitted.width, fitted.height}, WANTED);
     EXPECT_LE(applied.second, fitted.height);

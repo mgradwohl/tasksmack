@@ -655,10 +655,11 @@ inline constexpr float MAX_PIXEL_DENSITY = 8.0F;
 
 /// The rectangle a client-side Restore applies (#3336): the saved normal rectangle, fitted to the
 /// displays connected now. The monitor it was saved on can be unplugged while the window is
-/// maximized, and the OS then moves only the maximized window. This is fitRectToDisplays(), except a
-/// rectangle reachable on no display goes to the display the window is on now, not the primary.
-/// A rectangle still reachable, as when its monitor is connected, is returned unchanged unless it
-/// is larger than its display.
+/// maximized, and the OS then moves only the maximized window. A rectangle still reachable on some
+/// display (isReachableOn(), as fitRectToDisplays() decides it) is returned exactly as saved, even
+/// when it is larger than that display: Restore puts back what the user had. Only one reachable on
+/// no display is fitted, by fitRectToDisplays(): centred on the display the window is on now (not
+/// the primary), and shrunk only where it is larger than that display.
 ///
 /// @param target        The saved normal rectangle (WindowGeometryState::restoreTarget()).
 /// @param displays      Each connected display's usable bounds (SDL_GetDisplayUsableBounds).
@@ -668,6 +669,10 @@ inline constexpr float MAX_PIXEL_DENSITY = 8.0F;
 fitRestoreTarget(const Rect& target, std::span<const Rect> displays, std::optional<std::size_t> currentIndex, std::size_t primaryIndex)
     -> Rect
 {
+    if (displays.empty() || reachableDisplayIndex(target, displays, MIN_VISIBLE_EXTENT).has_value())
+    {
+        return target;
+    }
     return fitRectToDisplays(target, displays, currentIndex.value_or(primaryIndex), MIN_VISIBLE_EXTENT);
 }
 
