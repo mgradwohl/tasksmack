@@ -133,6 +133,9 @@ ThreadsReadResult WindowsProcessThreadsReader::readThreads(const ProcessTarget& 
         return failure(ThreadsReadStatus::Failed,
                        std::format("NtQuerySystemInformation failed: NTSTATUS 0x{:08X}", static_cast<std::uint32_t>(status)));
     }
+    // The CPU times are the snapshot's: stamped now, before the per-thread opens below, whose time varies with
+    // the thread count, so it never stretches or shrinks the interval a CPU % divides by (#3337).
+    const double acquiredAt = threadsReadClockSeconds();
     const std::size_t bytes = std::min<std::size_t>(m_Snapshot.size(), written != 0 ? written : m_Snapshot.size());
     const SnapshotProcess process =
         findProcessThreads(std::span<const std::byte>(m_Snapshot).first(bytes), static_cast<std::uint32_t>(target.pid), MAX_THREADS);
@@ -162,6 +165,7 @@ ThreadsReadResult WindowsProcessThreadsReader::readThreads(const ProcessTarget& 
     result.truncated = process.truncated;
     result.bootTimeEpoch = boot.epochSeconds;
     result.windowsPriorities = true;
+    result.acquiredAtSeconds = acquiredAt;
     result.threads.reserve(process.threads.size());
     for (const SnapshotThread& thread : process.threads)
     {

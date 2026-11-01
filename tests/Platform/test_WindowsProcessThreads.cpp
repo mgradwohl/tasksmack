@@ -242,6 +242,8 @@ struct FakeWin
     static inline std::map<std::int32_t, std::uint64_t> createTimes; // each thread's, as GetThreadTimes answers
     static inline int opens = 0;
     static inline int closes = 0;
+    static inline double snapshotAt = 0.0;           // when the last full snapshot was handed back (#3337)
+    static inline std::optional<double> firstOpenAt; // when the first thread was opened after it
 
     static void reset()
     {
@@ -258,6 +260,8 @@ struct FakeWin
         createTimes.clear();
         opens = 0;
         closes = 0;
+        snapshotAt = 0.0;
+        firstOpenAt.reset();
     }
 
     static LONG NTAPI query(ULONG infoClass, PVOID buffer, ULONG length, PULONG returned)
@@ -286,6 +290,8 @@ struct FakeWin
         }
         std::memcpy(buffer, snapshot.data(), snapshot.size());
         *returned = static_cast<ULONG>(snapshot.size());
+        snapshotAt = threadsReadClockSeconds();
+        firstOpenAt.reset();
         return 0;
     }
 
@@ -293,6 +299,10 @@ struct FakeWin
     static HANDLE WINAPI openThread(DWORD /*access*/, BOOL /*inherit*/, DWORD tid)
     {
         ++opens;
+        if (!firstOpenAt.has_value())
+        {
+            firstOpenAt = threadsReadClockSeconds();
+        }
         if (static_cast<std::int32_t>(tid) == deniedTid)
         {
             SetLastError(ERROR_ACCESS_DENIED);
@@ -470,6 +480,25 @@ TEST_F(WindowsProcessThreadsReaderTest, AFailedQueryIsFailedAndAnUnreadableBootT
     ASSERT_EQ(noBoot.status, ThreadsReadStatus::Ok);
     EXPECT_EQ(noBoot.bootTimeEpoch, 0U) << "STARTED shows the dash";
     EXPECT_EQ(noBoot.threads[0].startTicks, 0U);
+}
+
+// #3337: the read is stamped when its CPU times were read, the snapshot, before the per-thread opens whose time
+// varies: not when the read returns.
+TEST_F(WindowsProcessThreadsReaderTest, TheReadIsStampedAtTheSnapshotBeforeTheThreadDetails)
+{
+    WindowsProcessThreadsReader reader(FakeWin::functions());
+    const double before = threadsReadClockSeconds();
+    const ThreadsReadResult result = reader.readThreads(TARGET);
+    ASSERT_EQ(result.status, ThreadsReadStatus::Ok) << result.detail;
+    ASSERT_TRUE(result.acquiredAtSeconds.has_value());
+    ASSERT_TRUE(FakeWin::firstOpenAt.has_value());
+    const double stamp = result.acquiredAtSeconds.value_or(-1.0);
+    EXPECT_GE(stamp, before);
+    EXPECT_GE(stamp, FakeWin::snapshotAt) << "after the snapshot";
+    EXPECT_LE(stamp, FakeWin::firstOpenAt.value_or(-1.0)) << "before the first thread's details";
+
+    FakeWin::queryStatus = static_cast<LONG>(0xC0000022L);
+    EXPECT_FALSE(reader.readThreads(TARGET).acquiredAtSeconds.has_value()) << "a failed read has no CPU times to stamp";
 }
 
 TEST_F(WindowsProcessThreadsReaderTest, AMalformedSnapshotFails)
