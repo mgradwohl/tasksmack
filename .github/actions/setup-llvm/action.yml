@@ -132,8 +132,8 @@ runs:
         sudo timeout --kill-after=10s 300s ./llvm.sh "$LLVM_VER"
         rm -f llvm.sh
 
-        # Build package list - always include GUI dependencies
-        PACKAGES="libgl1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev libwayland-dev libxkbcommon-dev libc++-${LLVM_VER}-dev libc++abi-${LLVM_VER}-dev libfreetype6-dev libsystemd-dev dbus-daemon pkg-config"
+        # Build package list - always include GUI dependencies; libcurl for the update check's HTTPS client (#3238)
+        PACKAGES="libgl1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev libwayland-dev libxkbcommon-dev libc++-${LLVM_VER}-dev libc++abi-${LLVM_VER}-dev libfreetype6-dev libsystemd-dev libcurl4-openssl-dev dbus-daemon pkg-config"
 
         if [[ "$INSTALL_NINJA" == "true" ]]; then
           PACKAGES="$PACKAGES ninja-build"
