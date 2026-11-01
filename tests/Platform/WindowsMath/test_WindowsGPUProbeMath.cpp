@@ -1022,7 +1022,8 @@ TEST(SeparateOtherAdapterUsageTest, MovesSamplesOfAdaptersNotListedOutOfTheGPUCo
     const std::string npu = "GPU_0x00000000_0x00018103";
     const std::string basicRender = "GPU_0x00000000_0x0001809D";
     std::vector<ProcessGPUCounters> counters(5);
-    counters[0] = {.pid = 10, .gpuId = npu, .gpuSharedMemoryBytes = 8192, .gpuUtilPercent = 80.0, .activeEngines = {"Compute"}};
+    counters[0] = {
+        .pid = 10, .gpuId = npu, .gpuSharedMemoryBytes = 8192, .gpuUtilPercent = 80.0, .activeEngines = {"Compute"}, .engineClients = {}};
     counters[1] = {
         .pid = 10,
         .gpuId = iGPU,
@@ -1030,10 +1031,12 @@ TEST(SeparateOtherAdapterUsageTest, MovesSamplesOfAdaptersNotListedOutOfTheGPUCo
         .gpuSharedMemoryBytes = 512,
         .gpuUtilPercent = 20.0,
         .activeEngines = {"3D"},
+        .engineClients = {},
     };
-    counters[2] = {.pid = 11, .gpuId = npu, .gpuMemoryBytes = 64, .gpuUtilPercent = 60.0, .activeEngines = {"Compute"}};
-    counters[3] = {.pid = 12, .gpuId = basicRender, .gpuUtilPercent = 30.0, .activeEngines = {"3D"}};
-    counters[4] = {.pid = 13, .gpuId = iGPU, .gpuUtilPercent = 5.0, .activeEngines = {"Copy"}};
+    counters[2] = {
+        .pid = 11, .gpuId = npu, .gpuMemoryBytes = 64, .gpuUtilPercent = 60.0, .activeEngines = {"Compute"}, .engineClients = {}};
+    counters[3] = {.pid = 12, .gpuId = basicRender, .gpuUtilPercent = 30.0, .activeEngines = {"3D"}, .engineClients = {}};
+    counters[4] = {.pid = 13, .gpuId = iGPU, .gpuUtilPercent = 5.0, .activeEngines = {"Copy"}, .engineClients = {}};
 
     const std::vector<OtherAdapterProcessUsage> other = separateOtherAdapterUsage(counters, {iGPU});
 
@@ -1119,14 +1122,16 @@ TEST(TagProcessCounterKindsTest, TagsEachSampleWithItsAdaptersKind)
     const std::string npu = "GPU_0x00000000_0x00018103";
     const std::string accelerator = "GPU_0x00000000_0x00000300";
     std::vector<ProcessGPUCounters> counters(4);
-    counters[0] = {.pid = 10, .gpuId = iGPU, .gpuUtilPercent = 20.0, .activeEngines = {"Compute"}};
-    counters[1] = {.pid = 10, .gpuId = npu, .gpuSharedMemoryBytes = 8192, .gpuUtilPercent = 80.0, .activeEngines = {"Compute"}};
-    counters[2] = {.pid = 11, .gpuId = accelerator, .gpuUtilPercent = 5.0, .activeEngines = {}};
+    counters[0] = {.pid = 10, .gpuId = iGPU, .gpuUtilPercent = 20.0, .activeEngines = {"Compute"}, .engineClients = {}};
+    counters[1] = {
+        .pid = 10, .gpuId = npu, .gpuSharedMemoryBytes = 8192, .gpuUtilPercent = 80.0, .activeEngines = {"Compute"}, .engineClients = {}};
+    counters[2] = {.pid = 11, .gpuId = accelerator, .gpuUtilPercent = 5.0, .activeEngines = {}, .engineClients = {}};
     counters[3] = {
         .pid = 12,
         .gpuId = "GPU_0x00000000_0x0000FFFF",
         .kind = DeviceKind::Npu,
         .activeEngines = {},
+        .engineClients = {},
     }; // Not listed: a GPU's by default
 
     tagProcessCounterKinds(counters, {{iGPU, DeviceKind::Gpu}, {npu, DeviceKind::Npu}, {accelerator, DeviceKind::ComputeAccelerator}});
@@ -1148,9 +1153,9 @@ TEST(SeparateOtherAdapterUsageTest, AnEnumeratedNpusSamplesAreKept)
     const std::string npu = "GPU_0x00000000_0x00018103";
     const std::string basicRender = "GPU_0x00000000_0x0001809D";
     std::vector<ProcessGPUCounters> counters(3);
-    counters[0] = {.pid = 10, .gpuId = npu, .gpuUtilPercent = 80.0, .activeEngines = {}};
-    counters[1] = {.pid = 10, .gpuId = iGPU, .gpuUtilPercent = 20.0, .activeEngines = {}};
-    counters[2] = {.pid = 12, .gpuId = basicRender, .gpuUtilPercent = 30.0, .activeEngines = {}};
+    counters[0] = {.pid = 10, .gpuId = npu, .gpuUtilPercent = 80.0, .activeEngines = {}, .engineClients = {}};
+    counters[1] = {.pid = 10, .gpuId = iGPU, .gpuUtilPercent = 20.0, .activeEngines = {}, .engineClients = {}};
+    counters[2] = {.pid = 12, .gpuId = basicRender, .gpuUtilPercent = 30.0, .activeEngines = {}, .engineClients = {}};
     std::vector<GPUInfo> adapters(2);
     adapters[0].luidId = iGPU;
     adapters[1].luidId = npu;

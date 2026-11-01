@@ -17,6 +17,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstddef>
+#include <iterator>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -81,6 +82,54 @@ constexpr float PIXEL_DENSITY_EPSILON = 1e-3F;
 #else
     return {false, false};
 #endif
+}
+
+/// Every connected display's usable bounds, their SDL ids by index, and which of them is primary.
+struct ConnectedDisplays
+{
+    std::vector<WindowGeometry::Rect> Bounds;
+    std::vector<SDL_DisplayID> Ids;
+    std::size_t PrimaryIndex = 0;
+
+    /// Index of @p id in Bounds, if it is a connected display with usable bounds.
+    [[nodiscard]] auto indexOf(SDL_DisplayID id) const -> std::optional<std::size_t>
+    {
+        const auto found = std::ranges::find(Ids, id);
+        if (id == 0 || found == Ids.end())
+        {
+            return std::nullopt;
+        }
+        return static_cast<std::size_t>(std::distance(Ids.begin(), found));
+    }
+};
+
+[[nodiscard]] auto connectedDisplays() -> ConnectedDisplays
+{
+    ConnectedDisplays result;
+    int displayCount = 0;
+    SDL_DisplayID* displayIds = SDL_GetDisplays(&displayCount);
+    if (displayIds == nullptr)
+    {
+        return result;
+    }
+    const SDL_DisplayID primary = SDL_GetPrimaryDisplay();
+    const std::span<const SDL_DisplayID> ids(displayIds, static_cast<std::size_t>(std::max(displayCount, 0)));
+    for (const SDL_DisplayID id : ids)
+    {
+        SDL_Rect bounds{};
+        if (!SDL_GetDisplayUsableBounds(id, &bounds) || bounds.w <= 0 || bounds.h <= 0)
+        {
+            continue;
+        }
+        if (id == primary)
+        {
+            result.PrimaryIndex = result.Bounds.size();
+        }
+        result.Bounds.push_back(WindowGeometry::Rect{.x = bounds.x, .y = bounds.y, .width = bounds.w, .height = bounds.h});
+        result.Ids.push_back(id);
+    }
+    SDL_free(displayIds);
+    return result;
 }
 } // namespace
 
@@ -895,31 +944,10 @@ void Window::applySavedGeometry(std::optional<std::pair<int, int>> position, boo
     // LCOV_EXCL_STOP
 
     // Usable bounds of every connected display, and which of them is primary.
-    std::vector<WindowGeometry::Rect> displays;
-    std::vector<SDL_DisplayID> displayIdsByIndex;
-    std::size_t primaryIndex = 0;
-    int displayCount = 0;
-    SDL_DisplayID* displayIds = SDL_GetDisplays(&displayCount);
-    if (displayIds != nullptr)
-    {
-        const SDL_DisplayID primary = SDL_GetPrimaryDisplay();
-        const std::span<const SDL_DisplayID> ids(displayIds, static_cast<std::size_t>(std::max(displayCount, 0)));
-        for (const SDL_DisplayID id : ids)
-        {
-            SDL_Rect bounds{};
-            if (!SDL_GetDisplayUsableBounds(id, &bounds) || bounds.w <= 0 || bounds.h <= 0)
-            {
-                continue;
-            }
-            if (id == primary)
-            {
-                primaryIndex = displays.size();
-            }
-            displays.push_back(WindowGeometry::Rect{.x = bounds.x, .y = bounds.y, .width = bounds.w, .height = bounds.h});
-            displayIdsByIndex.push_back(id);
-        }
-        SDL_free(displayIds);
-    }
+    const ConnectedDisplays connected = connectedDisplays();
+    const std::vector<WindowGeometry::Rect>& displays = connected.Bounds;
+    const std::vector<SDL_DisplayID>& displayIdsByIndex = connected.Ids;
+    const std::size_t primaryIndex = connected.PrimaryIndex;
     if (displays.empty())
     {
         spdlog::warn("Window::applySavedGeometry: no display bounds available ({}); applying saved geometry unchecked", SDL_GetError());
@@ -1344,8 +1372,35 @@ void Window::restore()
                 // Maximized through the SDL fallback in maximize(), or by the window manager (#1250)
                 SDL_RestoreWindow(m_Handle);
             }
-            SDL_SetWindowPosition(m_Handle, target->x, target->y);
-            SDL_SetWindowSize(m_Handle, target->width, target->height);
+            // The monitor the rectangle was saved on may have been unplugged while maximized (#3336):
+            // fit it to the displays connected now, onto the window's current display if it is on none.
+            const ConnectedDisplays connected = connectedDisplays();
+            const WindowGeometry::Rect fitted = WindowGeometry::fitRestoreTarget(
+                *target, connected.Bounds, connected.indexOf(SDL_GetDisplayForWindow(m_Handle)), connected.PrimaryIndex);
+            if (fitted != *target)
+            {
+                spdlog::info("Window::restore: saved rectangle ({}, {}) {}x{} is on no connected display; restored to ({}, {}) {}x{}",
+                             target->x,
+                             target->y,
+                             target->width,
+                             target->height,
+                             fitted.x,
+                             fitted.y,
+                             fitted.width,
+                             fitted.height);
+                // A size shrunk to the display can be below the minimum SDL holds the window to, which
+                // would clamp it back over the edge. Lower the applied minimum to the fitted size; the
+                // wanted minimum stays, and handleGeometryChanged() raises it again once the window
+                // grows (#1945).
+                if (const std::pair<int, int> minimum =
+                        WindowGeometry::minimumKeepingSize(m_WantedMinimum, {fitted.width, fitted.height}, m_AppliedMinimum);
+                    minimum != m_AppliedMinimum)
+                {
+                    static_cast<void>(applyMinimumSize(minimum));
+                }
+            }
+            SDL_SetWindowPosition(m_Handle, fitted.x, fitted.y);
+            SDL_SetWindowSize(m_Handle, fitted.width, fitted.height);
             syncRestore();
             m_Geometry.restored();
             return;

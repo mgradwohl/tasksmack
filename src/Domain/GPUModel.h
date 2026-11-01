@@ -268,6 +268,9 @@ class GPUModel : public ISamplable
     PublicationSlot<ProcessGPUPublication> m_ProcessPublication;
     std::uint64_t m_ProcessPublicationVersion = 0; // guarded by m_ProbeMutex
     bool m_ProcessReadFailing = false;             // guarded by m_ProbeMutex; logs a failing read once per streak
+    // Each GPU's DRM clients at the last successful per-process read, by GPU id (guarded by m_ProbeMutex):
+    // the baseline a DRM process's utilization is the change from (#3300).
+    std::unordered_map<std::string, std::vector<Platform::GPUEngineClientCounters>> m_PrevProcessEngineClients;
     // The GPU info, its known flag and the capabilities are written only by setProbe() (the constructor's
     // too) and by rescanGPUs() inside refreshAt(), each holding m_ProbeMutex and taking a unique m_Mutex
     // to write. So code holding m_ProbeMutex may read them without m_Mutex; anything else takes m_Mutex shared.
