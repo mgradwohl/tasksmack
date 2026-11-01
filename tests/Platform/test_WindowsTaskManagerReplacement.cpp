@@ -12,6 +12,7 @@
 #include "Platform/Windows/BrokerHelper.h"
 #include "Platform/Windows/BrokerPipe.h"
 #include "Platform/Windows/WinString.h"
+#include "Platform/Windows/WindowsElevation.h"
 #include "Platform/Windows/WindowsHandles.h"
 #include "Platform/Windows/WindowsTaskManagerInstall.h"
 #include "Platform/Windows/WindowsTaskManagerReplacement.h"
@@ -543,10 +544,11 @@ TEST(TaskManagerInstallTest, ACopyOnlyAnAdministratorCanChangeIsAllowed)
 
 TEST(TaskManagerInstallTest, TheElevatedRouteAndTheHelperReachTheSameVerdict)
 {
-    // Unelevated here, so both check this user's own rights: the helper's against its parent's token,
-    // the elevated route's against the token it would run unelevated with.
-    const WritableProgramFiles programFiles;
-    for (const std::wstring& exe : {programFiles.exe().wstring(), (systemFolder() / L"cmd.exe").wstring()})
+    // The helper checks against its parent's token, and its parent is always an unelevated TaskSmack
+    // (an elevated one writes the key itself). This process stands in for that parent, and the elevated
+    // route checks against the token it would run unelevated with: the same user only while this
+    // process is unelevated itself.
+    const auto sameVerdict = [](const std::wstring& exe)
     {
         const std::array<std::wstring, 1> files{exe};
         const auto helper = BrokerHelper::checkUnchangeableByParent(GetCurrentProcess(), files);
@@ -554,7 +556,19 @@ TEST(TaskManagerInstallTest, TheElevatedRouteAndTheHelperReachTheSameVerdict)
         EXPECT_EQ(helper.has_value(), elevated.has_value())
             << WinString::wideToUtf8(exe) << ": the helper says " << (helper.has_value() ? "unchangeable" : helper.error())
             << ", the elevated route " << (elevated.has_value() ? "unchangeable" : elevated.error());
+    };
+    // A copy this user can change: an administrator can too, so both refuse it either way.
+    const WritableProgramFiles programFiles;
+    sameVerdict(programFiles.exe().wstring());
+    if (isProcessElevated())
+    {
+        // An elevated administrator (a CI runner, UAC off) may change System32 itself, so this process
+        // isn't a parent the helper would ever serve: there, the helper's verdict is an administrator's
+        // and the elevated route's a standard user's. ACopyOnlyAnAdministratorCanChangeIsAllowed and
+        // BrokerHelperTest.AnInstallInAFolderOnlyAdministratorsChangePasses check each on its own.
+        GTEST_SKIP() << "this process runs elevated, and the helper serves only an unelevated TaskSmack";
     }
+    sameVerdict((systemFolder() / L"cmd.exe").wstring());
 }
 
 TEST(TaskManagerInstallTest, TheUnelevatedTokenIsNoAdministrators)
