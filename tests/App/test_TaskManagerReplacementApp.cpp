@@ -178,6 +178,10 @@ TEST(TaskManagerTextTest, TheRestoreNoticeShowsForAReplacementTurnedOffSinceItWa
     unread.intended = true;
     EXPECT_EQ(TaskManagerReplacementText::noticeKind(unread), NoticeKind::None);
     EXPECT_TRUE(TaskManagerReplacementText::RESTORE_NOTICE_TEXT.contains("turned off"));
+
+    TaskManagerReplacementView unchecked = off;
+    unchecked.intentChecked = false; // the uninstall mark not checked yet
+    EXPECT_EQ(TaskManagerReplacementText::noticeKind(unchecked), NoticeKind::None);
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -314,6 +318,30 @@ TEST(TaskManagerControllerTest, WhatTheUserTurnedOnIsRemembered)
     controller.waitForWork();
     EXPECT_FALSE(controller.view().intended);
     EXPECT_EQ(saved, (std::vector<bool>{true, false, true, false}));
+}
+
+// #3276: the startup check's word on an uninstall. Until it comes the intent isn't final; an uninstall
+// forgets it, and either answer makes it final.
+TEST(TaskManagerControllerTest, TheIntentWaitsForTheUninstallCheck)
+{
+    const auto fake = std::make_shared<FakeReplacement>();
+    TaskManagerReplacementController controller(fake);
+    std::vector<bool> saved;
+    controller.rememberIntent(true, [&saved](bool intended) { saved.push_back(intended); });
+    EXPECT_TRUE(controller.view().intentChecked) << "final unless a check is awaited";
+    controller.awaitIntentCheck();
+    EXPECT_FALSE(controller.view().intentChecked);
+    controller.intentChecked(false);
+    EXPECT_TRUE(controller.view().intentChecked);
+    EXPECT_TRUE(controller.view().intended) << "no uninstall: kept";
+    EXPECT_TRUE(saved.empty());
+
+    controller.awaitIntentCheck();
+    controller.intentChecked(true);
+    EXPECT_TRUE(controller.view().intentChecked);
+    EXPECT_FALSE(controller.view().intended) << "uninstalled since: forgotten";
+    EXPECT_EQ(saved, std::vector<bool>{false});
+    EXPECT_TRUE(fake->changes.empty()) << "nothing changed in the registry";
 }
 
 TEST(TaskManagerControllerTest, ForgetChangesNothingButWhatIsRemembered)

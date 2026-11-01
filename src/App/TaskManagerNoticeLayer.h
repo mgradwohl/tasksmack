@@ -25,6 +25,8 @@ class TaskManagerNoticeLayer : public Core::Layer
 
     void onAttach() override;
     void onRender() override;
+    /// A minimized start draws nothing (#3276): the controller's read is still taken in, so what it remembers is up to date.
+    void onHiddenUpdate() override;
 
     [[nodiscard]] const TaskManagerReplacementRows::NoticeState& noticeState() const noexcept
     {

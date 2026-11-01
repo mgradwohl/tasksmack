@@ -166,14 +166,46 @@ tasksmack_run_done:
 ]=])
 endif()
 
+# The uninstall mark (#3276): a real uninstall, one no installer ran as an upgrade, writes the HKCU DWORD
+# Software\TaskSmack Uninstalled = 1 for the uninstalling user. config.toml (in %APPDATA%) outlives the
+# uninstall and remembers that the user had turned on Start at sign-in and Replace Task Manager; the next
+# TaskSmack to start reads the mark, deletes it, and forgets those two (and nothing else), so a later fresh
+# install doesn't turn them back on (Platform::Windows::UNINSTALL_MARK_KEY, Domain::StartAtLogin::startupAction).
+# The installer passes /TASKSMACK_UPGRADE to an upgrade in place and /TASKSMACK_MOVE to one into another
+# folder; neither leaves the mark, so the new copy can still write a Run value the move removed back for
+# itself. Appended as its own delimited block; its registers are saved. Checked by
+# tests/tools/test_nsis_upgrade.py.
+if(CPACK_GENERATOR STREQUAL "NSIS")
+    string(APPEND CPACK_NSIS_EXTRA_UNINSTALL_COMMANDS [=[
+  ; TaskSmack's uninstall mark (#3276): BEGIN
+  Push $1
+  Push $2
+  StrCpy $2 0
+tasksmack_mark_scan:
+  StrCpy $1 $CMDLINE 18 $2
+  StrCmp $1 "" tasksmack_mark_write
+  StrCmp $1 "/TASKSMACK_UPGRADE" tasksmack_mark_done
+  StrCpy $1 $CMDLINE 15 $2
+  StrCmp $1 "/TASKSMACK_MOVE" tasksmack_mark_done
+  IntOp $2 $2 + 1
+  Goto tasksmack_mark_scan
+tasksmack_mark_write:
+  WriteRegDWORD HKCU "Software\TaskSmack" "Uninstalled" 1
+tasksmack_mark_done:
+  Pop $2
+  Pop $1
+  ; TaskSmack's uninstall mark (#3276): END
+]=])
+endif()
+
 # An upgrade (#3276): before the new files are copied, the installer uninstalls the version that is there
 # (CPack's own uninstall-before-install is off, cmake/Packaging.cmake). It reads that version's
 # UninstallString from the Uninstall key, and runs it silently and in place (/S _?=<its folder>, as CPack's
 # .onInit did, so the installer waits for it). When the new version goes to the same folder it adds
 # /TASKSMACK_UPGRADE, which the uninstall lines above read: taskmgr.exe's Debugger and the Run value name
-# that folder's TaskSmack.exe, which this install puts back, so both are kept. Installed elsewhere, the old
-# version is uninstalled as the user would, and those values, which name a TaskSmack.exe that is gone, are
-# removed (TaskSmack then offers them back, #3276). An UninstallString that isn't an Uninstall.exe that
+# that folder's TaskSmack.exe, which this install puts back, so both are kept. Installed elsewhere, it adds
+# /TASKSMACK_MOVE instead: those values, which name a TaskSmack.exe that is gone, are removed (TaskSmack then
+# offers them back, #3276), but the uninstall mark isn't left, since this is no uninstall. An UninstallString that isn't an Uninstall.exe that
 # exists is left alone and the install goes on over it; an uninstaller that can't be started stops the
 # install, as CPack's did. The old uninstaller leaves the folder (its _?= run can't delete itself), but it
 # may remove what the install's SetOutPath made, so it is made again. Its registers are saved. Checked by
@@ -205,7 +237,7 @@ tasksmack_upgrade_path:
   Goto tasksmack_upgrade_ran
 tasksmack_upgrade_elsewhere:
   DetailPrint "Uninstalling the TaskSmack in $1"
-  ExecWait '"$0" /S _?=$1'
+  ExecWait '"$0" /S /TASKSMACK_MOVE _?=$1'
 tasksmack_upgrade_ran:
   IfErrors 0 tasksmack_upgrade_uninstalled
   MessageBox MB_OK|MB_ICONSTOP "Uninstall failed." /SD IDOK

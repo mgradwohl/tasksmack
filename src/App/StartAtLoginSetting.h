@@ -68,9 +68,11 @@ class StartAtLoginSetting
     /// Reads the entry again, on the worker (Settings opening). Ignored while busy() or when not offered.
     void refresh();
 
-    /// At startup (#3276), on the worker: reads the entry, and writes it back for this copy, then reads it
-    /// again, when Domain::StartAtLogin::startupAction() says Restore for @p intended (the user turned it on),
-    /// @p seenBy (the build that last saw it on) and @p thisBuild. Ignored while busy() or when not offered.
+    /// At startup (#3276), on the worker: takes the uninstaller's mark (IStartAtLogin::takeUninstallMark()),
+    /// reads the entry, and writes it back for this copy, then reads it again, when
+    /// Domain::StartAtLogin::startupAction() says Restore for @p intended (the user turned it on), the mark,
+    /// @p seenBy (the build that last saw it on) and @p thisBuild. The status says whether the mark was there
+    /// (Status::uninstalled). Ignored while busy() or when not offered.
     void startupCheck(bool intended, std::string seenBy, std::string thisBuild);
 
     /// On: writes the entry to start this copy minimized; Off: deletes it. Either way the entry is read

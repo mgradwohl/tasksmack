@@ -18,9 +18,11 @@
 #include <imgui.h>
 #include <imgui_internal.h> // ImHashStr(), ActivateItemByID(), the windows' list
 
+#include <chrono>
 #include <memory>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 
 namespace App
@@ -383,6 +385,105 @@ TEST_F(TaskManagerReplacementRenderTest, TheLayerOffersToTurnBackOnWhatSomething
     EXPECT_EQ(controller->view().info->status.state, State::ThisCopy);
     EXPECT_TRUE(controller->view().intended);
     EXPECT_EQ(saves, 0) << "it was remembered on all along";
+}
+
+// #3276: Turn off forgets only while the last read says it is off and nothing runs. Turned on since (from
+// Settings, with the notice still open), it is a real TurnOff, with its checks; while a change runs, nothing.
+TEST_F(TaskManagerReplacementRenderTest, TheRestoreNoticesTurnOffTurnsOffWhatWasTurnedOnSince)
+{
+    TaskManagerReplacementView on = viewOf(State::ThisCopy);
+    on.intended = true;
+    m_Notice = {.open = true, .acted = false, .kind = NoticeKind::Restore};
+    EXPECT_EQ(clickInNotice(on, TaskManagerReplacementText::TURN_OFF_LABEL), TaskManagerRequest::TurnOff);
+    EXPECT_TRUE(m_Notice.acted) << "its result shows, then Close";
+
+    on.info->unavailableReason = "needs the helper";
+    m_Notice = {.open = true, .acted = false, .kind = NoticeKind::Restore};
+    EXPECT_EQ(clickInNotice(on, TaskManagerReplacementText::TURN_OFF_LABEL), TaskManagerRequest::None) << "TurnOff's own check";
+
+    TaskManagerReplacementView changing = viewOf(State::Off);
+    changing.intended = true;
+    changing.busy = true; // Settings turning it on right now
+    m_Notice = {.open = true, .acted = false, .kind = NoticeKind::Restore};
+    EXPECT_EQ(clickInNotice(changing, TaskManagerReplacementText::TURN_OFF_LABEL), TaskManagerRequest::None);
+    EXPECT_TRUE(m_Notice.open);
+
+    TaskManagerReplacementView failed = viewOf(State::Off);
+    failed.intended = true;
+    failed.info->readFailed = true;
+    m_Notice = {.open = true, .acted = false, .kind = NoticeKind::Restore};
+    EXPECT_EQ(clickInNotice(failed, TaskManagerReplacementText::TURN_OFF_LABEL), TaskManagerRequest::TurnOff)
+        << "a read that failed doesn't say it is off";
+}
+
+// The layer closes a restore notice nobody acted on once there is nothing to restore: turned on from Settings.
+TEST_F(TaskManagerReplacementRenderTest, TheLayerClosesTheRestoreNoticeOnceItIsOnAgain)
+{
+    const auto fake = std::make_shared<Mocks::FakeTaskManagerReplacement>();
+    fake->state = State::Off;
+    const auto controller = std::make_shared<TaskManagerReplacementController>(fake);
+    controller->rememberIntent(true, {});
+    TaskManagerNoticeLayer layer(controller);
+    layer.onAttach();
+    controller->waitForWork();
+    ImGui::NewFrame();
+    layer.onRender();
+    ImGui::Render();
+    ASSERT_TRUE(layer.noticeState().open);
+
+    controller->request(TaskManagerRequest::TurnOn); // what Settings' toggle hands it
+    controller->waitForWork();
+    ImGui::NewFrame();
+    layer.onRender();
+    ImGui::Render();
+    EXPECT_FALSE(layer.noticeState().open);
+    EXPECT_EQ(noticeWindow(), nullptr);
+}
+
+// The layer decides only once the uninstall mark was checked (#3276): after an uninstall it asks nothing.
+TEST_F(TaskManagerReplacementRenderTest, TheLayerWaitsForTheUninstallCheck)
+{
+    const auto fake = std::make_shared<Mocks::FakeTaskManagerReplacement>();
+    fake->state = State::Off;
+    const auto controller = std::make_shared<TaskManagerReplacementController>(fake);
+    controller->rememberIntent(true, {});
+    controller->awaitIntentCheck();
+    TaskManagerNoticeLayer layer(controller);
+    layer.onAttach();
+    controller->waitForWork();
+    ImGui::NewFrame();
+    layer.onRender();
+    ImGui::Render();
+    EXPECT_FALSE(layer.noticeState().open) << "not decided yet";
+
+    controller->intentChecked(true); // uninstalled since
+    ImGui::NewFrame();
+    layer.onRender();
+    ImGui::Render();
+    EXPECT_FALSE(layer.noticeState().open);
+    EXPECT_EQ(layer.noticeState().kind, NoticeKind::None);
+}
+
+// A minimized start (#3276): the layer takes the controller's read in while hidden, so what it remembers is
+// up to date before anything draws.
+TEST_F(TaskManagerReplacementRenderTest, TheLayerTakesTheReadInWhileHidden)
+{
+    const auto fake = std::make_shared<Mocks::FakeTaskManagerReplacement>();
+    fake->state = State::ThisCopy;
+    const auto controller = std::make_shared<TaskManagerReplacementController>(fake);
+    bool saved = false;
+    controller->rememberIntent(false, [&saved](bool intended) { saved = intended; });
+    TaskManagerNoticeLayer layer(controller);
+    layer.onAttach();
+    for (int wake = 0; wake < 200 && controller->view().busy; ++wake)
+    {
+        layer.onHiddenUpdate();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    EXPECT_FALSE(controller->view().busy);
+    EXPECT_TRUE(saved);
+    TaskManagerNoticeLayer without(nullptr);
+    without.onHiddenUpdate(); // no controller: nothing
 }
 
 TEST_F(TaskManagerReplacementRenderTest, TheLayerAsksNothingWhenItWasNeverTurnedOn)

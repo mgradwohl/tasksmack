@@ -35,6 +35,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -780,6 +781,88 @@ TEST_F(SettingsLayerRememberedStartAtLoginTest, TurningItOnAndOffInSettingsIsRem
     EXPECT_EQ(data().command, std::nullopt);
     EXPECT_FALSE(UserConfig::get().settings().startAtSignIn);
     EXPECT_FALSE(savedFile().contains("start_at_sign_in ="));
+}
+
+// #3276: uninstalled, then installed again. The uninstaller's mark makes the startup check forget both
+// remembered settings instead of writing the Run value back; nothing else in config.toml changes.
+TEST_F(SettingsLayerRememberedStartAtLoginTest, AfterAnUninstallAReinstallTurnsNothingBackOn)
+{
+    auto& settings = UserConfig::get().settings();
+    settings.startAtSignIn = true;
+    settings.startAtSignInSeenBy = "0.0.1+older";
+    settings.replaceTaskManager = true;
+    settings.showProcessIcons = false; // something else the user set, which stays
+    m_Entry->with([](TestSupport::FakeStartAtLogin::Data& d) { d.uninstallMark = true; });
+    attach();
+    EXPECT_EQ(data().writes, 0);
+    EXPECT_EQ(data().command, std::nullopt);
+    EXPECT_FALSE(settings.startAtSignIn);
+    EXPECT_TRUE(settings.startAtSignInSeenBy.empty());
+    EXPECT_FALSE(settings.replaceTaskManager);
+    EXPECT_FALSE(settings.showProcessIcons);
+    const std::string file = savedFile();
+    EXPECT_FALSE(file.contains("start_at_sign_in =")) << file;
+    EXPECT_FALSE(file.contains("replace_task_manager =")) << file;
+}
+
+// The same, as an upgrade: no mark, so the Run value an upgrade into another folder removed is written back.
+TEST_F(SettingsLayerRememberedStartAtLoginTest, AnUpgradeStillWritesItBack)
+{
+    UserConfig::get().settings().startAtSignIn = true;
+    UserConfig::get().settings().startAtSignInSeenBy = "0.0.1+older";
+    UserConfig::get().settings().replaceTaskManager = true;
+    attach();
+    EXPECT_EQ(data().command, std::optional<std::string>(THIS_COPY_COMMAND));
+    EXPECT_TRUE(UserConfig::get().settings().replaceTaskManager) << "the Task Manager notice asks about that one";
+}
+
+// A minimized start draws nothing (#3276): a startup check that finishes after the last frame is still taken
+// in, by onHiddenUpdate(), so what config.toml remembers is written.
+TEST_F(SettingsLayerRememberedStartAtLoginTest, AHiddenWindowStillTakesTheStartupCheckIn)
+{
+    m_Entry->with([](TestSupport::FakeStartAtLogin::Data& d) { d.command = THIS_COPY_COMMAND; });
+    std::promise<void> release;
+    m_Entry->with([future = release.get_future().share()](TestSupport::FakeStartAtLogin::Data& d) { d.hold = future; });
+    layer().onAttach();
+    static_cast<void>(runFrame()); // the last frame before the window is hidden: still reading
+    EXPECT_FALSE(UserConfig::get().settings().startAtSignIn);
+    release.set_value();
+    // Hidden from here on: no frame renders, only onHiddenUpdate() runs, as Application's hidden loop does.
+    for (int wake = 0; wake < 200 && !UserConfig::get().settings().startAtSignIn; ++wake)
+    {
+        layer().onHiddenUpdate();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    EXPECT_TRUE(UserConfig::get().settings().startAtSignIn);
+    EXPECT_EQ(UserConfig::get().settings().startAtSignInSeenBy, buildIdentity());
+}
+
+// The Task Manager controller hears the startup check's word on an uninstall (#3276): its restore notice
+// waits for it, and after an uninstall what it remembered is forgotten.
+TEST_F(SettingsLayerRememberedStartAtLoginTest, TheTaskManagerControllerWaitsForTheUninstallCheck)
+{
+    UserConfig::get().settings().replaceTaskManager = true;
+    m_Entry->with([](TestSupport::FakeStartAtLogin::Data& d) { d.uninstallMark = true; });
+    std::promise<void> release;
+    m_Entry->with([future = release.get_future().share()](TestSupport::FakeStartAtLogin::Data& d) { d.hold = future; });
+    layer().onAttach(); // main.cpp pushes the layer, then hands it the controller
+    const auto fake = std::make_shared<Mocks::FakeTaskManagerReplacement>();
+    const auto controller = std::make_shared<TaskManagerReplacementController>(fake);
+    controller->rememberIntent(true, [](bool intended) { UserConfig::get().settings().replaceTaskManager = intended; });
+    layer().setTaskManagerReplacement(controller);
+    EXPECT_FALSE(controller->view().intentChecked) << "the check still runs";
+    release.set_value();
+    layer().waitForStartAtLoginForTesting();
+    EXPECT_TRUE(controller->view().intentChecked);
+    EXPECT_FALSE(controller->view().intended);
+    EXPECT_FALSE(UserConfig::get().settings().replaceTaskManager);
+
+    // A controller handed over after the check answered hears it at once.
+    const auto late = std::make_shared<TaskManagerReplacementController>(fake);
+    late->rememberIntent(true, {});
+    layer().setTaskManagerReplacement(late);
+    EXPECT_TRUE(late->view().intentChecked);
+    EXPECT_FALSE(late->view().intended);
 }
 
 // Where the platform doesn't write it back (Linux), there is no startup check and nothing is remembered.

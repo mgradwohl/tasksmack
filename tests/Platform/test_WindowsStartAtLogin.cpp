@@ -429,6 +429,58 @@ TEST(WindowsStartAtLoginRealTest, AScratchKeyRoundTrips)
     static_cast<void>(RegDeleteKeyW(HKEY_CURRENT_USER, parent.c_str())); // only when no other run's key is left
 }
 
+// #3276: the uninstall mark, on a scratch key of this test's own under HKCU\Software\TaskSmack.Tests (never
+// HKCU\Software\TaskSmack): none reads as none; the DWORD the uninstaller writes reads as an uninstall once,
+// and is deleted; nothing else in the key is touched.
+TEST(WindowsStartAtLoginRealTest, TheUninstallMarkIsTakenOnce)
+{
+    const std::wstring parent = L"Software\\TaskSmack.Tests";
+    const std::wstring scratch = std::format(L"{}\\UninstallMark-{}", parent, GetCurrentProcessId());
+    ASSERT_NE(scratch, std::wstring(Windows::UNINSTALL_MARK_KEY));
+    static_cast<void>(RegDeleteTreeW(HKEY_CURRENT_USER, scratch.c_str())); // a crashed run's
+    EXPECT_EQ(std::wstring(Windows::UNINSTALL_MARK_KEY), L"Software\\TaskSmack") << "what the NSIS uninstaller writes";
+    EXPECT_EQ(std::wstring(Windows::UNINSTALL_MARK_VALUE), L"Uninstalled");
+
+    const std::wstring runScratch = scratch + L"\\Run"; // never read here
+    WindowsStartAtLogin real(runScratch, Windows::RUN_VALUE_NAME, {}, scratch);
+    auto mark = real.takeUninstallMark();
+    ASSERT_TRUE(mark.has_value()) << mark.error();
+    EXPECT_FALSE(*mark) << "no key yet";
+
+    HKEY key = nullptr;
+    ASSERT_EQ(RegCreateKeyExW(HKEY_CURRENT_USER, scratch.c_str(), 0, nullptr, 0, KEY_SET_VALUE, nullptr, &key, nullptr), ERROR_SUCCESS);
+    const DWORD one = 1;
+    const DWORD other = 7;
+    EXPECT_EQ(RegSetValueExW(key,
+                             Windows::UNINSTALL_MARK_VALUE,
+                             0,
+                             REG_DWORD,
+                             reinterpret_cast<const BYTE*>(&one),
+                             sizeof(one)), // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+              ERROR_SUCCESS);
+    EXPECT_EQ(RegSetValueExW(key,
+                             L"Other",
+                             0,
+                             REG_DWORD,
+                             reinterpret_cast<const BYTE*>(&other),
+                             sizeof(other)), // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+              ERROR_SUCCESS);
+    RegCloseKey(key);
+
+    mark = real.takeUninstallMark();
+    ASSERT_TRUE(mark.has_value()) << mark.error();
+    EXPECT_TRUE(*mark);
+    mark = real.takeUninstallMark();
+    ASSERT_TRUE(mark.has_value()) << mark.error();
+    EXPECT_FALSE(*mark) << "taken once";
+    DWORD size = sizeof(DWORD);
+    EXPECT_EQ(RegGetValueW(HKEY_CURRENT_USER, scratch.c_str(), L"Other", RRF_RT_REG_DWORD, nullptr, nullptr, &size), ERROR_SUCCESS)
+        << "nothing else is touched";
+
+    EXPECT_EQ(RegDeleteTreeW(HKEY_CURRENT_USER, scratch.c_str()), ERROR_SUCCESS);
+    static_cast<void>(RegDeleteKeyW(HKEY_CURRENT_USER, parent.c_str())); // only when no other run's key is left
+}
+
 } // namespace
 } // namespace Platform
 

@@ -50,6 +50,20 @@ void TaskManagerReplacementController::rememberIntent(bool intended, std::functi
     m_SaveIntent = std::move(save);
 }
 
+void TaskManagerReplacementController::awaitIntentCheck()
+{
+    m_View.intentChecked = false;
+}
+
+void TaskManagerReplacementController::intentChecked(bool uninstalled)
+{
+    if (uninstalled)
+    {
+        setIntended(false); // the user removed TaskSmack: a later install doesn't ask to turn it back on
+    }
+    m_View.intentChecked = true;
+}
+
 void TaskManagerReplacementController::setIntended(bool intended)
 {
     if (m_View.intended == intended)

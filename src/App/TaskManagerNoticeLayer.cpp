@@ -25,6 +25,14 @@ void TaskManagerNoticeLayer::onAttach()
     }
 }
 
+void TaskManagerNoticeLayer::onHiddenUpdate()
+{
+    if (m_Controller != nullptr)
+    {
+        m_Controller->poll();
+    }
+}
+
 void TaskManagerNoticeLayer::onRender()
 {
     if (m_Controller == nullptr)
@@ -33,7 +41,8 @@ void TaskManagerNoticeLayer::onRender()
     }
     m_Controller->poll();
     const TaskManagerReplacementView& view = m_Controller->view();
-    if (!m_Decided && view.readsCompleted > 0)
+    // Decided on the first read, once the uninstall mark was checked (#3276): after an uninstall nothing is asked.
+    if (!m_Decided && view.readsCompleted > 0 && view.intentChecked)
     {
         m_Decided = true;
         m_Notice.kind = TaskManagerReplacementText::noticeKind(view);
@@ -46,6 +55,13 @@ void TaskManagerNoticeLayer::onRender()
         {
             spdlog::info("Replace Task Manager was on, and something turned it off: offering to turn it back on");
         }
+    }
+    // The restore notice goes once there is nothing to restore (#3276): turned on from Settings meanwhile, or
+    // forgotten. Not one that was acted on, which shows its result.
+    if (m_Notice.open && !m_Notice.acted && m_Notice.kind == NoticeKind::Restore && !TaskManagerReplacementText::showsRestoreNotice(view) &&
+        !view.busy)
+    {
+        m_Notice.open = false;
     }
     const TaskManagerRequest request = TaskManagerReplacementRows::renderNotice(view, m_Notice);
     m_Controller->request(request);

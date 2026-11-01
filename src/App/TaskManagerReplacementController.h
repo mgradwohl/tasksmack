@@ -82,6 +82,9 @@ struct TaskManagerReplacementView
     /// The user turned it on, as config.toml remembers (#3276): set by a read that finds this copy, cleared by
     /// Turn off, Forget, or a read that finds another program.
     bool intended = false;
+    /// Whether @c intended is final for this run (#3276): false while Start at sign-in's startup check, which
+    /// takes the uninstaller's mark, hasn't answered (awaitIntentCheck()). The restore notice waits for it.
+    bool intentChecked = true;
 };
 
 class TaskManagerReplacementController
@@ -100,6 +103,13 @@ class TaskManagerReplacementController
     /// called on the UI thread with the new value each time it changes (main.cpp writes config.toml). The
     /// startup notice offers to turn it back on when a read finds it off while it is remembered on.
     void rememberIntent(bool intended, std::function<void(bool)> save);
+
+    /// The startup check that takes the uninstaller's mark is running (#3276): @c intentChecked is false, and
+    /// the restore notice waits, until intentChecked() says whether TaskSmack was uninstalled since.
+    void awaitIntentCheck();
+    /// The startup check's answer (#3276): when TaskSmack was uninstalled since it last ran (@p uninstalled),
+    /// what the user had turned on is forgotten, as Forget does. Either way @c intentChecked is true after.
+    void intentChecked(bool uninstalled);
     /// Takes a finished worker's result in. Each frame, on the UI thread.
     void poll();
 

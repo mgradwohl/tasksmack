@@ -225,6 +225,45 @@ TEST_F(StartAtLoginStartupCheckTest, AnEntryAnInstallRemovedIsWrittenBackForThis
     EXPECT_EQ(m_Setting.status().state, State::On) << "read back after the write";
 }
 
+// #3276: a real uninstall's mark. The entry went with TaskSmack: nothing is written back, the status says
+// so, and the mark is cleared, so it counts once.
+TEST_F(StartAtLoginStartupCheckTest, AfterAnUninstallNothingIsWrittenBack)
+{
+    m_Entry->with([](FakeStartAtLogin::Data& d) { d.uninstallMark = true; });
+    check(true, OLD_BUILD);
+    EXPECT_EQ(data().writes, 0);
+    EXPECT_EQ(data().command, std::nullopt);
+    EXPECT_EQ(m_Setting.status().state, State::Off);
+    EXPECT_TRUE(m_Setting.status().uninstalled);
+    EXPECT_FALSE(data().uninstallMark) << "taken";
+
+    check(true, OLD_BUILD); // the next start: no mark, so an upgrade's missing entry is written back again
+    EXPECT_FALSE(m_Setting.status().uninstalled);
+    EXPECT_EQ(data().writes, 1);
+}
+
+TEST_F(StartAtLoginStartupCheckTest, AMarkThatCantBeReadWritesNothingBack)
+{
+    m_Entry->with([](FakeStartAtLogin::Data& d) { d.markError = "couldn't open the uninstall mark's key: Access is denied."; });
+    check(true, OLD_BUILD);
+    EXPECT_EQ(data().writes, 0) << "an uninstall can't be ruled out";
+    EXPECT_EQ(m_Setting.status().state, State::Off);
+    EXPECT_FALSE(m_Setting.status().uninstalled);
+}
+
+TEST_F(StartAtLoginStartupCheckTest, TheMarkIsReportedEvenWhenTheReadFails)
+{
+    m_Entry->with(
+        [](FakeStartAtLogin::Data& d)
+        {
+            d.uninstallMark = true;
+            d.readError = "couldn't open the Run key: Access is denied.";
+        });
+    check(false, "");
+    EXPECT_EQ(m_Setting.status().state, State::Failed);
+    EXPECT_TRUE(m_Setting.status().uninstalled) << "taken, so it must be acted on now";
+}
+
 TEST_F(StartAtLoginStartupCheckTest, OnlyReadsWhenThereIsNothingToWriteBack)
 {
     struct Case

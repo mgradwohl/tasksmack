@@ -53,6 +53,16 @@ class IStartAtLogin
     {
         return false;
     }
+
+    /// Whether TaskSmack was uninstalled since it last ran (#3276), and clears the mark that says so. A real
+    /// uninstall (one no installer ran as an upgrade) leaves it beside the entry, on Windows the HKCU value
+    /// Software\TaskSmack Uninstalled (cmake/CPackProjectConfig.cmake.in); then what the user had turned on is
+    /// forgotten instead of being written back. Blocking (registry calls): on the setting's worker. False
+    /// where there is no uninstaller that leaves one (Linux).
+    [[nodiscard]] virtual std::expected<bool, std::string> takeUninstallMark()
+    {
+        return false;
+    }
 };
 
 } // namespace Platform

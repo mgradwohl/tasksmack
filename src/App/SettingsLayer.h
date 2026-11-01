@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <optional>
 
 namespace App
 {
@@ -44,6 +45,9 @@ class SettingsLayer : public Core::Layer
     void onAttach() override;
     void onUpdate(float deltaTime) override;
     void onRender() override;
+    /// A minimized start draws nothing (#3276): Start at sign-in's startup check and the Task Manager
+    /// controller's reads are still taken in, so what config.toml remembers is up to date.
+    void onHiddenUpdate() override;
     void onEvent(Core::Event& event) override;
 
     /// Waits for an Edit Config File or Open Themes Folder still being opened on the worker, and takes
@@ -76,6 +80,9 @@ class SettingsLayer : public Core::Layer
     /// Notes in config.toml that Start at sign-in is on (seen by this build) or off (#3276), where an install
     /// can remove it (StartAtLoginSetting::restoresMissingEntry()); saved in the background when it changes.
     void rememberStartAtLogin(bool on);
+    /// The startup check's word on an uninstall (#3276): forgets Replace Task Manager after one, and tells the
+    /// Task Manager controller, whose restore notice waits for it.
+    void takeStartupUninstalled(bool uninstalled);
     void requestOpen();
     void applySettings();
     void raiseEvent(Core::Event& event) const;
@@ -89,7 +96,8 @@ class SettingsLayer : public Core::Layer
     std::function<std::filesystem::path()> m_UserConfigDir;       ///< Set by the test seam only; else the Application's
     // Start at sign-in (#3093, part 2): the entry's reads and writes, on its own worker.
     StartAtLoginSetting m_StartAtLogin;
-    bool m_StartupCheckPending = false;                              ///< The startup check's status hasn't come in yet (#3276)
+    bool m_StartupCheckPending = false;       ///< The startup check's status hasn't come in yet (#3276)
+    std::optional<bool> m_StartupUninstalled; ///< Its answer, once in: whether TaskSmack was uninstalled since (#3276)
     std::shared_ptr<TaskManagerReplacementController> m_TaskManager; ///< Replace Task Manager's (#3072), or null
     // The buttons' open, and what it needs on disk first, on a worker (#3155): the buttons are disabled
     // until it is done. Last, so it is destroyed (waited for) first: its job holds a copy of the opener.

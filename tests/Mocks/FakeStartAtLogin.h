@@ -13,6 +13,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace TestSupport
 {
@@ -36,6 +37,9 @@ class FakeStartAtLogin final : public Platform::IStartAtLogin
         int writes = 0;
         int removes = 0;
         bool installed = true;
+        bool uninstallMark = false; ///< A real uninstall's mark (#3276): takeUninstallMark() answers it, and clears it
+        std::string markError;      ///< Non-empty: takeUninstallMark() fails with it
+        int markTakes = 0;
     };
 
     /// Runs @p change on the data under the lock, and returns what it returns.
@@ -82,6 +86,18 @@ class FakeStartAtLogin final : public Platform::IStartAtLogin
         }
         m_Data.command.reset();
         return {};
+    }
+
+    [[nodiscard]] std::expected<bool, std::string> takeUninstallMark() override
+    {
+        waitForHold();
+        const std::scoped_lock lock(m_Mutex);
+        ++m_Data.markTakes;
+        if (!m_Data.markError.empty())
+        {
+            return std::unexpected(m_Data.markError);
+        }
+        return std::exchange(m_Data.uninstallMark, false);
     }
 
     [[nodiscard]] bool restoresMissingEntry() const noexcept override

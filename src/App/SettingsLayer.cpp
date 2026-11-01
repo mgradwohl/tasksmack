@@ -123,20 +123,46 @@ void SettingsLayer::rememberStartAtLoginStatus(const Domain::StartAtLogin::Statu
         return;
     }
     const bool startupCheck = std::exchange(m_StartupCheckPending, false);
+    if (startupCheck)
+    {
+        takeStartupUninstalled(status.uninstalled);
+    }
     if (status.state == StartAtLogin::State::On)
     {
         rememberStartAtLogin(true); // on for this copy, now seen by this build
         return;
     }
-    // The startup check found it gone, and didn't write it back: removed by hand while this build ran it
-    // (StartAtLogin::startupAction()'s Forget), so it stays off.
+    // The startup check found it gone, and didn't write it back: TaskSmack was uninstalled since, or it was
+    // removed by hand while this build ran it (StartAtLogin::startupAction()'s Forget), so it stays off.
     const UserSettings& settings = UserConfig::get().settings();
     if (startupCheck && status.state == StartAtLogin::State::Off &&
-        StartAtLogin::startupAction(settings.startAtSignIn, settings.startAtSignInSeenBy, buildIdentity(), true, status.installed, false) ==
+        StartAtLogin::startupAction(
+            settings.startAtSignIn, status.uninstalled, settings.startAtSignInSeenBy, buildIdentity(), true, status.installed, false) ==
             StartAtLogin::StartupAction::Forget)
     {
         spdlog::info("Start at sign-in was turned off outside TaskSmack: leaving it off");
         rememberStartAtLogin(false);
+    }
+}
+
+void SettingsLayer::takeStartupUninstalled(bool uninstalled)
+{
+    m_StartupUninstalled = uninstalled;
+    if (uninstalled)
+    {
+        // A real uninstall since the last run (#3276): what the user turned on went with it. Only these two
+        // settings are forgotten; the rest of config.toml stays.
+        spdlog::info("TaskSmack was uninstalled since it last ran: forgetting Start at sign-in and Replace Task Manager");
+        auto& config = UserConfig::get();
+        if (config.settings().replaceTaskManager)
+        {
+            config.settings().replaceTaskManager = false;
+            config.saveInBackground();
+        }
+    }
+    if (m_TaskManager != nullptr)
+    {
+        m_TaskManager->intentChecked(uninstalled);
     }
 }
 
@@ -191,6 +217,15 @@ void SettingsLayer::onAttach()
 void SettingsLayer::onUpdate([[maybe_unused]] float deltaTime)
 {
     // No-op
+}
+
+void SettingsLayer::onHiddenUpdate()
+{
+    syncStartAtLogin();
+    if (m_TaskManager != nullptr)
+    {
+        m_TaskManager->poll();
+    }
 }
 
 void SettingsLayer::onRender()
@@ -323,6 +358,15 @@ void SettingsLayer::setTaskManagerReplacement(std::shared_ptr<TaskManagerReplace
 {
     m_TaskManager = std::move(controller);
     m_State.taskManager = (m_TaskManager != nullptr) ? &m_TaskManager->view() : nullptr;
+    // The restore notice waits for the startup check's word on an uninstall (#3276), or has it already.
+    if (m_TaskManager != nullptr && m_StartupUninstalled.has_value())
+    {
+        m_TaskManager->intentChecked(*m_StartupUninstalled);
+    }
+    else if (m_TaskManager != nullptr && m_StartupCheckPending)
+    {
+        m_TaskManager->awaitIntentCheck();
+    }
 }
 
 void SettingsLayer::applySettings()

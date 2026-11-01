@@ -79,11 +79,13 @@ inline constexpr const char* CANCEL_LABEL = "Cancel";
 /// Whether the startup check offers to turn it back on (#3276): the user turned it on, as config.toml
 /// remembers, and a read finds it off, on the installed copy. An upgrade to another folder, an install of a
 /// build whose uninstaller removed it, or another tool turned it off; asked rather than done, since turning it
-/// on needs administrator rights. A portable copy isn't asked: the installed copy is the one it was for.
+/// on needs administrator rights. A portable copy isn't asked: the installed copy is the one it was for. Not
+/// before the uninstall mark was checked (TaskManagerReplacementView::intentChecked): after an uninstall, nothing
+/// is asked.
 [[nodiscard]] inline bool showsRestoreNotice(const TaskManagerReplacementView& view)
 {
-    return view.supported && view.intended && view.info.has_value() && !view.info->readFailed && view.info->installedCopy &&
-           view.info->status.state == Platform::TaskManagerReplacement::State::Off;
+    return view.supported && view.intended && view.intentChecked && view.info.has_value() && !view.info->readFailed &&
+           view.info->installedCopy && view.info->status.state == Platform::TaskManagerReplacement::State::Off;
 }
 
 /// Which notice the startup check shows, on a read that came in: the repair, the restore, or none.

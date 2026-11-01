@@ -179,10 +179,15 @@ TaskManagerRequest renderNotice(const TaskManagerReplacementView& view, NoticeSt
             }
             ImGui::EndDisabled();
             ImGui::SameLine();
-            ImGui::BeginDisabled(!canChange && !restore);
+            // Forget only while the last read says it is off and nothing is changing it: one turned on since
+            // (from Settings, while this stays open) is turned off for real, with TurnOff's checks.
+            const bool offNow =
+                !view.busy && !view.info->readFailed && view.info->status.state == Platform::TaskManagerReplacement::State::Off;
+            const bool forget = restore && offNow;
+            ImGui::BeginDisabled(!canChange && !forget);
             if (ImGui::Button(TaskManagerReplacementText::TURN_OFF_LABEL))
             {
-                if (restore)
+                if (forget)
                 {
                     request = TaskManagerRequest::Forget;
                     state.open = false;

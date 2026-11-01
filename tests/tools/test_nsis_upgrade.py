@@ -5,8 +5,10 @@ Before it copies the new files, the NSIS installer uninstalls the version that i
 uninstall-before-install is off, cmake/Packaging.cmake). When the new version goes to the same folder it
 runs the old uninstaller with /TASKSMACK_UPGRADE, and the uninstaller's lines for Replace Task Manager
 (#3072) and Start at sign-in (#3093) keep taskmgr.exe's Debugger and the Run value: they name that folder's
-TaskSmack.exe, which the install puts back. Installed elsewhere, the old version is uninstalled as a user
-would, and both values go.
+TaskSmack.exe, which the install puts back. Installed elsewhere, it passes /TASKSMACK_MOVE: both values go,
+since they name a TaskSmack.exe that is gone. Only a real uninstall, with neither flag, leaves the uninstall
+mark (the HKCU value Uninstalled under Software, TaskSmack), which makes the next TaskSmack forget what the user had turned on
+rather than write it back after a later fresh install.
 
 makensis isn't on every machine, and an installer can't be run in a test, so the step's lines (the block
 CPack puts in the installer's section, CPACK_NSIS_EXTRA_PREINSTALL_COMMANDS) are read out of the file and
@@ -32,6 +34,9 @@ UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\TaskSmack"
 INSTDIR = r"C:\Program Files\TaskSmack"
 UNINSTALLER = INSTDIR + r"\Uninstall.exe"
 REGISTERS = {"$0": "zero", "$1": "one"}
+MARK_KEY = r"Software\TaskSmack"
+MARK_BEGIN = "; TaskSmack's uninstall mark (#3276): BEGIN"
+MARK_END = "; TaskSmack's uninstall mark (#3276): END"
 
 
 def step_lines() -> list[str]:
@@ -141,6 +146,71 @@ class Installer:
             pc = nxt
 
 
+def mark_lines() -> list[str]:
+    """The uninstall mark's lines, from its BEGIN marker to its END marker."""
+    lines = CONFIG.read_text(encoding="utf-8").splitlines()
+    stripped = [line.strip() for line in lines]
+    if MARK_BEGIN not in stripped or MARK_END not in stripped:
+        raise AssertionError("the uninstall mark's BEGIN and END markers are missing")
+    return lines[stripped.index(MARK_BEGIN) : stripped.index(MARK_END) + 1]
+
+
+class MarkStep:
+    """Runs the uninstall mark's lines: $CMDLINE, two registers, and the HKCU values it may write."""
+
+    def __init__(self, cmdline: str) -> None:
+        self.vars = {"$CMDLINE": cmdline, "$1": "one", "$2": "two"}
+        self.stack: list[str] = []
+        self.hkcu: dict[tuple[str, str], int] = {}
+
+    def value(self, word: str) -> str:
+        return self.vars.get(word, word)
+
+    def run(self, lines: list[str]) -> None:
+        program = [ifeo.tokens(line) for line in lines]
+        labels = {words[0][:-1]: i for i, words in enumerate(program) if len(words) == 1 and words[0].endswith(":")}
+        pc = 0
+        steps = 0
+        while pc < len(program):
+            steps += 1
+            if steps > 10000:
+                raise AssertionError("the step doesn't end")
+            words = program[pc]
+            if not words or (len(words) == 1 and words[0].endswith(":")):
+                pc += 1
+                continue
+            op, args = words[0], words[1:]
+            nxt = pc + 1
+            if op == "Push":
+                self.stack.append(self.value(args[0]))
+            elif op == "Pop":
+                self.vars[args[0]] = self.stack.pop()
+            elif op == "StrCpy":
+                if len(args) == 2:
+                    self.vars[args[0]] = self.value(args[1])
+                else:
+                    text = self.value(args[1])[int(self.value(args[3])) :]
+                    self.vars[args[0]] = text[: int(self.value(args[2]))]
+            elif op == "StrCmp":
+                if self.value(args[0]).lower() == self.value(args[1]).lower():
+                    nxt = labels[args[2]] if args[2] not in ("", "0") else pc + 1
+                elif len(args) > 3 and args[3] not in ("", "0"):
+                    nxt = labels[args[3]]
+            elif op == "IntOp":
+                assert args[2] == "+", args
+                self.vars[args[0]] = str(int(self.value(args[1])) + int(self.value(args[3])))
+            elif op == "Goto":
+                nxt = labels[args[0]]
+            elif op == "WriteRegDWORD":
+                root, key, name, data = args
+                if root != "HKCU" or key != MARK_KEY or name != "Uninstalled":
+                    raise AssertionError(f"the mark goes to HKCU\\{MARK_KEY} Uninstalled, not {root}\\{key} {name}")
+                self.hkcu[(key, name)] = int(data)
+            else:
+                raise AssertionError(f"the interpreter doesn't know {op}")
+            pc = nxt
+
+
 def uninstaller_call(command: str) -> tuple[str, str]:
     """The uninstaller's $CMDLINE and $INSTDIR for the command ExecWait started: NSIS cuts " _?=<dir>", the
     last argument, off the command line and installs nothing from %TEMP%."""
@@ -160,11 +230,16 @@ class Machine:
         self.ifeo.set(64, ifeo.IFEO, "TaskSmackCreatedKey", "REG_DWORD", 1)
         self.run_value = f'"{exe}" --minimized'
         self.hkcu = {run.RUN.lower(): {"tasksmack": self.run_value}}
+        self.mark: dict[tuple[str, str], int] = {}
 
     def uninstall(self, command: str) -> None:
         cmdline, instdir = uninstaller_call(command)
         ifeo.Uninstaller(self.ifeo, cmdline).run(ifeo.uninstall_lines())
         run.Uninstaller(self.hkcu, instdir, cmdline).run(run.step_lines())
+        step = MarkStep(cmdline)
+        step.run(mark_lines())
+        assert step.vars["$1"] == "one" and step.vars["$2"] == "two" and step.stack == [], "its registers are put back"
+        self.mark.update(step.hkcu)
 
     def debugger(self) -> object:
         return (self.ifeo.key(64, ifeo.IFEO) or {}).get("Debugger")
@@ -195,6 +270,7 @@ class UpgradeStepTest(unittest.TestCase):
         machine.uninstall(installer.executed[0])
         self.assertEqual(machine.debugger(), ("REG_SZ", f'"{INSTDIR}\\TaskSmack.exe"'))
         self.assertEqual(machine.run_entry(), machine.run_value)
+        self.assertEqual(machine.mark, {}, "an upgrade is no uninstall")
 
     def test_the_folder_matches_ignoring_case_and_an_unquoted_uninstall_string(self) -> None:
         # CPack writes it quoted; older CMake didn't, and CPack's own .onInit took both.
@@ -205,15 +281,17 @@ class UpgradeStepTest(unittest.TestCase):
     def test_installing_elsewhere_is_an_uninstall(self) -> None:
         elsewhere = r"D:\Apps\TaskSmack"
         installer = install(f'"{UNINSTALLER}"', instdir=elsewhere)
-        self.assertEqual(installer.executed, [f'"{UNINSTALLER}" /S _?={INSTDIR}'])
+        self.assertEqual(installer.executed, [f'"{UNINSTALLER}" /S /TASKSMACK_MOVE _?={INSTDIR}'])
         self.assertEqual(installer.out_paths, [elsewhere])
         self.assert_registers_back(installer)
 
-        # The old folder's TaskSmack.exe is gone: neither value may start it.
+        # The old folder's TaskSmack.exe is gone: neither value may start it. But it is no uninstall: no mark,
+        # so the new copy may write the Run value back for itself.
         machine = Machine(INSTDIR)
         machine.uninstall(installer.executed[0])
         self.assertIsNone(machine.debugger())
         self.assertIsNone(machine.run_entry())
+        self.assertEqual(machine.mark, {})
 
     def test_a_users_uninstall_still_removes_both(self) -> None:
         # What an uninstall from Settings > Apps runs, after NSIS copied it to %TEMP%.
@@ -221,6 +299,23 @@ class UpgradeStepTest(unittest.TestCase):
         machine.uninstall(rf'"C:\Users\me\AppData\Local\Temp\~nsuA.tmp\Un_A.exe" /S _?={INSTDIR}')
         self.assertIsNone(machine.debugger())
         self.assertIsNone(machine.run_entry())
+        # #3276: and leaves the mark, so a later fresh install doesn't turn either back on.
+        self.assertEqual(machine.mark, {(MARK_KEY, "Uninstalled"): 1})
+
+    def test_only_a_real_uninstall_leaves_the_mark(self) -> None:
+        for cmdline, marked in (
+            (r'"C:\Temp\Un_A.exe"', True),
+            (r'"C:\Temp\Un_A.exe" /S', True),
+            (r'"C:\Temp\Un_A.exe" /S /TASKSMACK_UPGRADE', False),
+            (r'"C:\Temp\Un_A.exe" /S /tasksmack_move', False),
+            (r'"C:\Temp\Un_A.exe" /S /TASKSMACK_MOV', True),
+            ("", True),
+        ):
+            with self.subTest(cmdline=cmdline):
+                step = MarkStep(cmdline)
+                step.run(mark_lines())
+                self.assertEqual(step.hkcu, {(MARK_KEY, "Uninstalled"): 1} if marked else {})
+                self.assertEqual((step.vars["$1"], step.vars["$2"], step.stack), ("one", "two", []))
 
     def test_a_first_install_runs_nothing(self) -> None:
         installer = install(None)
