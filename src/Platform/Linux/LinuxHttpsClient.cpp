@@ -81,6 +81,7 @@ struct Transfer
     const std::stop_token* stop = nullptr;
 };
 
+// NOLINTNEXTLINE(misc-const-correctness) - curl_write_callback's signature: char* and void*, not const
 std::size_t onData(char* data, std::size_t size, std::size_t count, void* user)
 {
     auto* transfer = static_cast<Transfer*>(user);
@@ -93,6 +94,7 @@ std::size_t onData(char* data, std::size_t size, std::size_t count, void* user)
     return bytes;
 }
 
+// NOLINTNEXTLINE(misc-const-correctness) - curl_xferinfo_callback's signature: void*, not const
 int onProgress(void* user, curl_off_t /*dlTotal*/, curl_off_t /*dlNow*/, curl_off_t /*ulTotal*/, curl_off_t /*ulNow*/)
 {
     const auto* transfer = static_cast<const Transfer*>(user);
