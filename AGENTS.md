@@ -71,6 +71,8 @@ The rules agents act on:
   get it in; scope is the maintainer's call.
 - **Candidate:** tag only a fully green, approved commit. Nothing joins the scope after approval.
 - **Who controls what:** agents never declare the freeze, approve a candidate, cut a release branch or push a tag.
+- **Versions (#3371):** main is bumped to `X.(Y+1).0` right after `release/X.Y` is cut, patch bumps stay on the
+  release branch, non-release builds read `X.Y.Z-dev`, and the version guard fails if a branch is below a published tag.
 
 ## Code review
 

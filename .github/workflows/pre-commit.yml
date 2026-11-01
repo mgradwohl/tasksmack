@@ -41,3 +41,28 @@ jobs:
 
       - name: Run pre-commit
         run: pre-commit run --all-files --show-diff-on-failure
+
+  # The branch's version is not below a release already published (#3371): main reads the next minor
+  # between releases, and a release/X.Y branch is not below its own latest vX.Y.* tag. The rule is in
+  # tools/check-version-ahead.py's header. It reads the public tags with git ls-remote, so it needs no
+  # token or secret, and it runs for pull requests from forks too.
+  version-ahead:
+    name: Version is not behind the latest release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # A pull request's version lands on its base branch; a push's is on the pushed branch. Both
+      # reach the shell as environment variables, never as inline expressions.
+      - name: Compare PROJECT_VERSION with the published release tags
+        env:
+          BRANCH: ${{ github.base_ref || github.ref_name }}
+        run: |
+          python3 -I tools/check-version-ahead.py --self-test
+          git ls-remote --tags --refs origin 'v*' > "$RUNNER_TEMP/release-tags.txt"
+          python3 -I tools/check-version-ahead.py --branch "$BRANCH" --tags-file "$RUNNER_TEMP/release-tags.txt"

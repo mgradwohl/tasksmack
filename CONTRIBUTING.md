@@ -2989,7 +2989,9 @@ stray dispatch from a branch can't impersonate one.
 # 1. Bump CMakeLists.txt's project(TaskSmack VERSION ...) to the target version in its own PR,
 #    get it reviewed, and merge it: to main for vX.Y.0 (before the branch is cut), to release/X.Y
 #    for a patch release. release.yml's validate job requires this to already match the tag (see
-#    Release Environment below), so it must land *before* step 3.
+#    Release Environment below), so it must land *before* step 3. For vX.Y.0, main normally reads
+#    X.Y.0 already: it's bumped to the next minor right after each release/X.Y cut, and non-release
+#    builds read X.Y.Z-dev (docs/dev/release-process.md, "Versions", #3371).
 
 # 2. Check out the branch the tag goes on, fully up to date with that merged bump: main for vX.Y.0
 #    (the maintainer-approved candidate commit), release/X.Y for a patch release

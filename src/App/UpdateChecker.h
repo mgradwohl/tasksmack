@@ -35,7 +35,7 @@ class UpdateChecker
     using Clock = std::function<std::chrono::system_clock::time_point()>;
 
     /// @param client          The HTTPS client (Platform::makeHttpsClient()), or null: nothing is offered or sent.
-    /// @param currentVersion  The running build's version, tasksmack::Version::STRING ("0.10.0").
+    /// @param currentVersion  The running build's version, tasksmack::Version::FULL ("0.10.0", "0.11.0-dev").
     /// @param clock           The wall clock; std::chrono::system_clock::now when empty (tests pass their own).
     UpdateChecker(std::shared_ptr<Platform::IHttpsClient> client, std::string_view currentVersion, Clock clock = {});
 

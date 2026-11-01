@@ -153,6 +153,47 @@ TEST(UpdateCheckVersionTest, IgnoresTheBuildAndThePrefix)
     EXPECT_EQ(compare(version("1.0.0-B"), version("1.0.0-a")), std::strong_ordering::less); // ASCII order
 }
 
+TEST(UpdateCheckVersionTest, ADevBuildOrdersAboveTheReleasesBeforeItAndBelowItsOwn)
+{
+    // What a build from main between releases reports (#3371): main reads the next minor, with "-dev".
+    const Version dev = version("0.11.0-dev");
+    EXPECT_EQ(dev.text(), "0.11.0-dev");
+    for (const std::string_view older : {"0.9.1", "0.10.0", "0.10.5", "0.11.0-alpha", "0.11.0-beta.2", "0.11.0-ac"})
+    {
+        EXPECT_EQ(compare(dev, version(older)), std::strong_ordering::greater) << older;
+        EXPECT_EQ(compare(version(older), dev), std::strong_ordering::less) << older;
+    }
+    for (const std::string_view newer : {"0.11.0", "0.11.1", "0.12.0", "1.0.0", "0.11.0-dev.1", "0.11.0-rc.1"})
+    {
+        EXPECT_EQ(compare(dev, version(newer)), std::strong_ordering::less) << newer;
+        EXPECT_EQ(compare(version(newer), dev), std::strong_ordering::greater) << newer;
+    }
+    EXPECT_EQ(compare(dev, version("v0.11.0-dev+abcdef12")), std::strong_ordering::equal);
+
+    // The same numbers with and without a pre-release: the release is the higher.
+    EXPECT_EQ(compare(version("0.10.0-dev"), version("0.10.0")), std::strong_ordering::less);
+    EXPECT_EQ(compare(version("0.10.0"), version("0.10.0-dev")), std::strong_ordering::greater);
+}
+
+TEST(UpdateCheckVersionTest, RefusesMalformedDevSuffixes)
+{
+    // A suffix a build could be configured with by mistake is refused, never read as the release it
+    // starts with (UpdateChecker then turns the check off for that build).
+    for (const std::string_view text : {"0.11.0-",
+                                        "0.11.0-dev.",
+                                        "0.11.0-dev..1",
+                                        "0.11.0-dev ",
+                                        "0.11.0 -dev",
+                                        "0.11.0dev",
+                                        "0.11.0_dev",
+                                        "0.11.0-dev_1",
+                                        "0.11.0-d\xC3\xA9v",
+                                        "0.11.0-dev.01"})
+    {
+        EXPECT_FALSE(parseVersion(text).has_value()) << '"' << text << '"';
+    }
+}
+
 RC_GTEST_PROP(UpdateCheckVersionPropertiesTest,
               AReleaseRoundTripsThroughItsText,
               (std::uint32_t major, std::uint32_t minor, std::uint32_t patch))
@@ -184,6 +225,7 @@ RC_GTEST_PROP(UpdateCheckVersionPropertiesTest, AnyTextParsesOrNotWithoutHarm, (
 TEST(UpdateCheckTest, TheUserAgentNamesTheVersion)
 {
     EXPECT_EQ(userAgent("0.10.0"), "TaskSmack/0.10.0");
+    EXPECT_EQ(userAgent("0.11.0-dev"), "TaskSmack/0.11.0-dev");
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -497,6 +539,16 @@ TEST(UpdateCheckOutcomeTest, TheSameOrAnOlderReleaseIsUpToDate)
     EXPECT_EQ(evaluateResponse(200, GITHUB_REPLY, version("0.10.0-rc.1")).kind, Outcome::Kind::Available);
 }
 
+TEST(UpdateCheckOutcomeTest, ADevBuildIsOfferedOnlyTheReleaseItLeadsTo)
+{
+    // GITHUB_REPLY's latest release is v0.10.0.
+    EXPECT_EQ(evaluateResponse(200, GITHUB_REPLY, version("0.11.0-dev")).kind, Outcome::Kind::UpToDate);
+    EXPECT_EQ(evaluateResponse(200, GITHUB_REPLY, version("0.10.1-dev")).kind, Outcome::Kind::UpToDate);
+    const Outcome outcome = evaluateResponse(200, GITHUB_REPLY, version("0.10.0-dev"));
+    EXPECT_EQ(outcome.kind, Outcome::Kind::Available);
+    EXPECT_EQ(outcome.latestVersion, "0.10.0");
+}
+
 TEST(UpdateCheckOutcomeTest, AForeignPageIsReplacedByTheLatestReleasePage)
 {
     const Outcome outcome = evaluateResponse(200, R"({"tag_name":"v9.0.0","html_url":"https://evil.example/"})", version("0.9.0"));
@@ -610,6 +662,16 @@ TEST(UpdateCheckNoticeTest, NothingForTheSameAnOlderOrAnUnreadableRelease)
     EXPECT_FALSE(noticeFor(seen(""), current).has_value());
     EXPECT_FALSE(noticeFor(seen("garbage"), current).has_value());
     EXPECT_FALSE(noticeFor(seen("0.11.0-rc.1"), current).has_value()); // a pre-release, edited in by hand
+}
+
+TEST(UpdateCheckNoticeTest, ADevBuildIsOfferedItsOwnReleaseButNoEarlierOne)
+{
+    const Version dev = version("0.11.0-dev");
+    EXPECT_FALSE(noticeFor(seen("0.10.0"), dev).has_value());
+    EXPECT_FALSE(noticeFor(seen("0.10.5"), dev).has_value());
+    const std::optional<Notice> noticeRead = noticeFor(seen("0.11.0", "https://github.com/mgradwohl/tasksmack/releases/tag/v0.11.0"), dev);
+    ASSERT_TRUE(noticeRead.has_value());
+    EXPECT_EQ(noticeRead.value_or(Notice{}).version, "0.11.0");
 }
 
 TEST(UpdateCheckNoticeTest, ADismissedVersionStaysHiddenUntilANewerOne)
