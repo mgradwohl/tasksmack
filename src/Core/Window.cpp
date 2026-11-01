@@ -1390,6 +1390,15 @@ void Window::restore()
                     fitted.width,
                     fitted.height);
             }
+            // A size shrunk to the display can be below the minimum SDL holds the window to, which would
+            // clamp it back over the edge. Lower the applied minimum to the fitted size; the wanted
+            // minimum stays, and handleGeometryChanged() raises it again once the window grows (#1945).
+            if (const std::pair<int, int> minimum =
+                    WindowGeometry::minimumKeepingSize(m_WantedMinimum, {fitted.width, fitted.height}, m_AppliedMinimum);
+                minimum != m_AppliedMinimum)
+            {
+                static_cast<void>(applyMinimumSize(minimum));
+            }
             SDL_SetWindowPosition(m_Handle, fitted.x, fitted.y);
             SDL_SetWindowSize(m_Handle, fitted.width, fitted.height);
             syncRestore();

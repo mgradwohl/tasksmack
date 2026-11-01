@@ -820,6 +820,21 @@ TEST(WindowGeometryMinimumKeepingSizeTest, AUserResizeToTheWantedMinimumTakesIt)
     EXPECT_EQ(minimumKeepingSize({1809, 1296}, {1900, 1400}, {1809, 900}), (std::pair{1809, 1296}));
 }
 
+TEST(WindowGeometryMinimumKeepingSizeTest, ARestoreShrunkToTheWorkAreaLowersTheAppliedMinimum)
+{
+    // #3336: the work area shrank to 600 high while maximized; Restore fits the window to 1000 x 600,
+    // below the 650 minimum. The applied minimum drops to 600 so SDL doesn't clamp it back over the
+    // edge; the wanted minimum (the first argument) is not changed by the call.
+    const std::array displays{Rect{.x = 0, .y = 0, .width = 1920, .height = 600}};
+    const Rect fitted = fitRestoreTarget(Rect{.x = 100, .y = 0, .width = 1000, .height = 700}, displays, 0, 0);
+    constexpr std::pair WANTED{800, 650};
+    const std::pair<int, int> applied = minimumKeepingSize(WANTED, {fitted.width, fitted.height}, WANTED);
+    EXPECT_LE(applied.second, fitted.height);
+    EXPECT_EQ(applied, (std::pair{800, 600}));
+    // Grown back to the wanted size later, the minimum takes it again.
+    EXPECT_EQ(minimumKeepingSize(WANTED, {1000, 700}, applied), WANTED);
+}
+
 TEST(WindowGeometryMinimumKeepingSizeTest, AnUnknownSizeTakesTheWantedMinimum)
 {
     EXPECT_EQ(minimumKeepingSize({1809, 1296}, {0, 0}, {1809, 1296}), (std::pair{1809, 1296}));
