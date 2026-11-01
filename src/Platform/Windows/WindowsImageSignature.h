@@ -69,10 +69,13 @@ struct FileStamp
     /// can, which is what the USN is for.)
     std::uint64_t changeTime = 0;
     std::uint64_t size = 0;
-    /// The USN of the file's last change journal record (FSCTL_READ_FILE_USN_DATA, #3313): every write
-    /// and every metadata change, a restored ChangeTime included, moves it on, and user mode can't set it
-    /// back. 0 when the volume keeps no journal (FAT, most network shares, a volume whose journal is off)
-    /// or the read fails: the stamp is then the other three, as before #3313, and still cached.
+    /// The USN of the file's most recent change journal record (FSCTL_READ_FILE_USN_DATA, #3313). Not a
+    /// per-write counter: while a file stays open, NTFS folds repeated changes of one kind into one record.
+    /// But it moves on whenever a new record is written for the file: the first change of each kind on an
+    /// open (a write, then the basic-info change that restores ChangeTime) and the close after them. So
+    /// an in-place rewrite always leaves a newer USN, and user mode can't set it back. 0 when the volume keeps no journal (FAT, most
+    /// network shares, a volume whose journal is off) or the read fails: the stamp is then the other three, as before #3313, and still
+    /// cached.
     std::uint64_t usn = 0;
 
     friend bool operator==(const FileStamp&, const FileStamp&) = default;
