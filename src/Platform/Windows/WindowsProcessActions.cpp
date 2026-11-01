@@ -39,6 +39,7 @@
 #include <optional>
 #include <stop_token>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -731,9 +732,9 @@ ProcessActionResult WindowsProcessActions::setEfficiencyMode(const ProcessTarget
                            error,
                            efficiencyModePriorityFailure(error, target.pid, false));
     }
-    std::string note = efficiencyModeOffNote(remembered, restore);
+    const std::string_view note = efficiencyModeOffNote(remembered, restore);
     spdlog::info("Turned Efficiency mode off for PID {}{}", target.pid, note.empty() ? std::string{} : std::format(" ({})", note));
-    return ProcessActionResult::ok(std::move(note));
+    return ProcessActionResult::ok(std::string{note});
 }
 
 // NOLINTEND(misc-include-cleaner)

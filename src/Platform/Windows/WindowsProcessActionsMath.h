@@ -23,6 +23,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace Platform
@@ -564,7 +565,8 @@ inline constexpr std::uint32_t NT_STATUS_PROCESS_IS_TERMINATING = 0xC000010AU;
 /// remembered, because the on ran in another process (TaskSmackHelper.exe, or TaskSmack before a restart),
 /// the process was put at Normal rather than the class it had before, which may differ; the note says so.
 /// Empty otherwise: the remembered class was restored, or the class was left as someone changed it.
-[[nodiscard]] inline std::string efficiencyModeOffNote(std::optional<uint32_t> remembered, std::optional<uint32_t> restored)
+[[nodiscard]] constexpr std::string_view efficiencyModeOffNote(std::optional<uint32_t> remembered,
+                                                               std::optional<uint32_t> restored) noexcept
 {
     if (remembered.has_value() || !restored.has_value())
     {
