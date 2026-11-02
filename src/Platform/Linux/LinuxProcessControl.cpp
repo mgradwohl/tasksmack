@@ -1580,6 +1580,14 @@ ProcessActionResult LinuxProcessControl::setEfficiencyMode(const ProcessTarget& 
                 }
                 entry->second.turnedOff = false;
             }
+            else if (!added && weightBefore.has_value() && !entry->second.cpuWeight.has_value())
+            {
+                // An earlier on lowered no weight (its cgroup shared then, or its identity unread) and this one did:
+                // recorded now, or off would leave it at the minimum (#3331).
+                entry->second.cpuWeight = weightBefore;
+                entry->second.cgroup = cgroup;
+                entry->second.cgroupId = cgroupId;
+            }
         }
         spdlog::info("Efficiency mode on for PID {}{}", target.pid, note.empty() ? "" : ": " + note);
         return ProcessActionResult::ok(std::move(note));
