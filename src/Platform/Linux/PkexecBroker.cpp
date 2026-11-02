@@ -162,9 +162,20 @@ class TtyAgent
                 static_cast<void>(::waitpid(m_Pid, nullptr, 0));
             }
         }
-        if (m_TermiosSaved)
+        if (m_TermiosSaved && ::tcgetpgrp(m_Tty) == ::getpgrp())
         {
+            // Only while still in the foreground, and with SIGTTOU blocked on this thread: from the background,
+            // tcsetattr() would stop the whole process group, the window with it.
+            sigset_t ttou{};
+            sigset_t previous{};
+            sigemptyset(&ttou);
+            sigaddset(&ttou, SIGTTOU);
+            const bool blocked = ::pthread_sigmask(SIG_BLOCK, &ttou, &previous) == 0;
             static_cast<void>(::tcsetattr(m_Tty, TCSANOW, &m_Termios));
+            if (blocked)
+            {
+                static_cast<void>(::pthread_sigmask(SIG_SETMASK, &previous, nullptr));
+            }
         }
         if (m_Tty >= 0)
         {
