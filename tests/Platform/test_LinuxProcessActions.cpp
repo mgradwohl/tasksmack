@@ -2891,6 +2891,7 @@ struct EfficiencyPlan
     std::string lastWriteCgroup;                              ///< The cgroup the last write went to
     std::uint64_t readableCgroupId = 1;                       ///< readableCgroup's identity (#3331)
     int identityErrno = 0;                                    ///< Set: reading a cgroup's identity fails with this (#3331)
+    bool replaceAtWrite = false; ///< The cgroup is replaced at its path just as a checked write opens it (#3331)
 };
 
 EfficiencyPlan& efficiency()
@@ -2932,6 +2933,21 @@ std::expected<std::uint64_t, int> fakeCgroupIdentity(const std::string& cgroup)
     return efficiency().readableCgroupId;
 }
 
+int fakeWriteCgroupFile(const std::string& cgroup, std::string_view file, const std::string& value);
+
+int fakeWriteCgroupFileOf(const std::string& cgroup, std::uint64_t identity, std::string_view file, const std::string& value)
+{
+    if (std::exchange(efficiency().replaceAtWrite, false))
+    {
+        ++efficiency().readableCgroupId;
+    }
+    if (cgroup != efficiency().readableCgroup || identity != efficiency().readableCgroupId)
+    {
+        return ESTALE;
+    }
+    return fakeWriteCgroupFile(cgroup, file, value);
+}
+
 int fakeWriteCgroupFile(const std::string& cgroup, std::string_view file, const std::string& value)
 {
     efficiency().lastWriteCgroup = cgroup;
@@ -2958,7 +2974,8 @@ LinuxProcessSyscalls fakeEfficiencySyscalls()
                                 .procCgroup = &fakeProcCgroup,
                                 .readCgroupFile = &fakeReadCgroupFile,
                                 .writeCgroupFile = &fakeWriteCgroupFile,
-                                .cgroupIdentity = &fakeCgroupIdentity};
+                                .cgroupIdentity = &fakeCgroupIdentity,
+                                .writeCgroupFileOf = &fakeWriteCgroupFileOf};
 }
 
 class LinuxEfficiencyModeActionTest : public ::testing::Test
@@ -3291,6 +3308,31 @@ TEST_F(LinuxEfficiencyModeActionTest, AnOnAfterTheCgroupWasReplacedRecordsTheRep
     EXPECT_EQ(m_Control.rememberedEfficiencyCount(), 0U);
 }
 
+// #3331: the cgroup is replaced at its path after off's identity check but before its write. The write checks the
+// identity on the directory it writes through, so the replacement gets nothing: off says the old cgroup is gone.
+TEST_F(LinuxEfficiencyModeActionTest, ACgroupReplacedBetweenTheCheckAndTheWriteGetsNothing)
+{
+    efficiency().files["cpu.weight"] = "50\n";
+    ASSERT_TRUE(m_Control.setEfficiencyMode(ownTarget(), true).success);
+    efficiency().nice = 19;
+    efficiency().writes.clear();
+    efficiency().replaceAtWrite = true;
+    const ProcessActionResult off = m_Control.setEfficiencyMode(ownTarget(), false);
+    ASSERT_TRUE(off.success) << off.errorMessage;
+    EXPECT_EQ(off.successNote, "its old cgroup's CPU weight wasn't put back: that cgroup is gone");
+    EXPECT_TRUE(efficiency().writes.empty());
+    EXPECT_EQ(m_Control.rememberedEfficiencyCount(), 0U);
+
+    // And on: replaced just as it lowers, the replacement keeps its weight and nothing is recorded to put back.
+    efficiency().nice = 5;
+    efficiency().files["cpu.weight"] = "80\n";
+    efficiency().replaceAtWrite = true;
+    const ProcessActionResult on = m_Control.setEfficiencyMode(ownTarget(), true);
+    ASSERT_TRUE(on.success) << on.errorMessage;
+    EXPECT_EQ(on.successNote, "only its priority was lowered: its cgroup was replaced");
+    EXPECT_TRUE(efficiency().writes.empty());
+}
+
 // #3331: on can't read its cgroup's identity: it lowers no weight (one it couldn't tell apart from a replacement later),
 // only the priority, and says why; off then has no weight to put anywhere.
 TEST_F(LinuxEfficiencyModeActionTest, AnOnThatCantCheckItsCgroupLowersOnlyThePriority)
@@ -3437,6 +3479,24 @@ TEST(LinuxEfficiencyModeRealTest, TheFactorysActionsObjectsShareWhatOnRemembered
     ASSERT_TRUE(before.has_value());
     ASSERT_TRUE(processesTab->setEfficiencyMode(child.target(), true).success);
     EXPECT_EQ(processDetails->efficiencyNiceToRestore(child.target()), before);
+}
+
+// #3331, the real calls on this process's own cgroup, writing nothing: a checked write with another identity is refused
+// (ESTALE) before it opens anything; with the cgroup's own identity it gets past the check, to a file that isn't there.
+TEST(LinuxEfficiencyModeRealTest, TheCheckedWriteRefusesAnotherCgroupsIdentity)
+{
+    const LinuxProcessSyscalls real = realProcessSyscalls();
+    const std::optional<std::string> text = real.procCgroup(static_cast<std::int32_t>(::getpid()));
+    const std::optional<std::string> cgroup = text.has_value() ? LinuxEfficiency::unifiedCgroupPath(*text) : std::nullopt;
+    if (!cgroup.has_value() || cgroup->empty())
+    {
+        GTEST_SKIP() << "not in a cgroup of its own here";
+    }
+    const std::expected<std::uint64_t, int> identity = real.cgroupIdentity(*cgroup);
+    ASSERT_TRUE(identity.has_value()) << identity.error();
+    EXPECT_EQ(real.writeCgroupFileOf(*cgroup, *identity + 1, LinuxEfficiency::CPU_WEIGHT_FILE, "100"), ESTALE);
+    EXPECT_EQ(real.writeCgroupFileOf(*cgroup, *identity, "tasksmack-no-such-file", "1"), ENOENT);
+    EXPECT_EQ(real.writeCgroupFileOf(*cgroup, *identity, "../cpu.weight", "1"), EINVAL) << "a name, never a path";
 }
 
 // The real calls, on a child: nice 19 reaches it, its cgroup (the test's, shared) keeps its weight, and

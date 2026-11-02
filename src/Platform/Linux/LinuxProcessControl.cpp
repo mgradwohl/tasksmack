@@ -506,6 +506,44 @@ int realWriteCgroupFile(const std::string& cgroup, std::string_view file, const 
     return static_cast<std::size_t>(written) == value.size() ? 0 : EIO;
 }
 
+int realWriteCgroupFileOf(const std::string& cgroup, std::uint64_t identity, std::string_view file, const std::string& value)
+{
+    const std::optional<std::filesystem::path> procs = cgroupFilePath(cgroup, LinuxEfficiency::CGROUP_PROCS_FILE);
+    if (!procs.has_value() || file.contains('/'))
+    {
+        return EINVAL;
+    }
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
+    const FdGuard directory(::open(procs->parent_path().c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
+    if (directory.get() < 0)
+    {
+        return errno;
+    }
+    struct stat opened{};
+    if (::fstat(directory.get(), &opened) != 0)
+    {
+        return errno;
+    }
+    if (static_cast<std::uint64_t>(opened.st_ino) != identity)
+    {
+        // Another cgroup at the path now.
+        return ESTALE; // NOLINT(misc-include-cleaner) - <cerrno> has it; include-cleaner maps it to a kernel header
+    }
+    const std::string name(file);
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX openat() is variadic
+    const FdGuard fd(::openat(directory.get(), name.c_str(), O_WRONLY | O_CLOEXEC | O_NOFOLLOW));
+    if (fd.get() < 0)
+    {
+        return errno;
+    }
+    const ssize_t written = ::write(fd.get(), value.data(), value.size()); // NOLINT(misc-include-cleaner) - ssize_t is from <sys/types.h>
+    if (written < 0)
+    {
+        return errno;
+    }
+    return static_cast<std::size_t>(written) == value.size() ? 0 : EIO;
+}
+
 } // namespace
 
 LinuxProcessSyscalls realProcessSyscalls() noexcept
@@ -527,7 +565,8 @@ LinuxProcessSyscalls realProcessSyscalls() noexcept
             .procCgroup = &realProcCgroup,
             .readCgroupFile = &realReadCgroupFile,
             .writeCgroupFile = &realWriteCgroupFile,
-            .cgroupIdentity = &realCgroupIdentity};
+            .cgroupIdentity = &realCgroupIdentity,
+            .writeCgroupFileOf = &realWriteCgroupFileOf};
 }
 
 struct LinuxProcessControl::EfficiencyMemory
@@ -639,6 +678,10 @@ LinuxProcessControl::LinuxProcessControl(const LinuxProcessSyscalls& syscalls, s
     if (m_Syscalls.cgroupIdentity == nullptr)
     {
         m_Syscalls.cgroupIdentity = &realCgroupIdentity;
+    }
+    if (m_Syscalls.writeCgroupFileOf == nullptr)
+    {
+        m_Syscalls.writeCgroupFileOf = &realWriteCgroupFileOf;
     }
     // A table that fakes only the kernel calls keeps the real thread listing (see LinuxProcessSyscalls).
     if (m_Syscalls.listThreads == nullptr)
@@ -1289,6 +1332,7 @@ namespace
 [[nodiscard]] std::string lowerCgroupWeight(const LinuxProcessSyscalls& syscalls,
                                             std::int32_t pid,
                                             const std::optional<std::string>& cgroup,
+                                            std::optional<std::uint64_t> identity,
                                             std::optional<int>& weightBefore)
 {
     namespace Efficiency = LinuxEfficiency;
@@ -1311,8 +1355,15 @@ namespace
     {
         return {};
     }
-    if (const int error = syscalls.writeCgroupFile(*cgroup, Efficiency::CPU_WEIGHT_FILE, std::to_string(Efficiency::MIN_CPU_WEIGHT));
-        error != 0)
+    const std::string minimum = std::to_string(Efficiency::MIN_CPU_WEIGHT);
+    // Into the cgroup whose identity on read, when it read one: one replaced since gets nothing (#3331).
+    const int written = identity.has_value() ? syscalls.writeCgroupFileOf(*cgroup, *identity, Efficiency::CPU_WEIGHT_FILE, minimum)
+                                             : syscalls.writeCgroupFile(*cgroup, Efficiency::CPU_WEIGHT_FILE, minimum);
+    if (written == ESTALE)
+    {
+        return "only its priority was lowered: its cgroup was replaced";
+    }
+    if (const int error = written; error != 0)
     {
         return std::format("only its priority was lowered: its cgroup's CPU weight can't be changed ({})",
                            std::system_category().message(error));
@@ -1336,7 +1387,8 @@ struct WeightRestore
                                                 std::int32_t pid,
                                                 const std::optional<std::string>& cgroup,
                                                 bool rememberedProcess,
-                                                std::optional<int> rememberedWeight)
+                                                std::optional<int> rememberedWeight,
+                                                std::optional<std::uint64_t> identity)
 {
     namespace Efficiency = LinuxEfficiency;
     const bool lowered = rememberedProcess && rememberedWeight.has_value(); // on lowered it, so it is ours to put back
@@ -1371,7 +1423,15 @@ struct WeightRestore
     {
         return {}; // not the minimum on set: someone changed it since, and it is theirs
     }
-    if (const int error = syscalls.writeCgroupFile(*cgroup, Efficiency::CPU_WEIGHT_FILE, std::to_string(*restore)); error != 0)
+    const std::string value = std::to_string(*restore);
+    // Into the cgroup on lowered, checked on the directory written through: one replaced since gets nothing (#3331).
+    const int written = identity.has_value() ? syscalls.writeCgroupFileOf(*cgroup, *identity, Efficiency::CPU_WEIGHT_FILE, value)
+                                             : syscalls.writeCgroupFile(*cgroup, Efficiency::CPU_WEIGHT_FILE, value);
+    if (written == ESTALE)
+    {
+        return {.note = "its old cgroup's CPU weight wasn't put back: that cgroup is gone", .unfinished = false};
+    }
+    if (const int error = written; error != 0)
     {
         return {.note = std::format("its cgroup's CPU weight is still the minimum: it can't be changed ({})",
                                     std::system_category().message(error)),
@@ -1461,7 +1521,7 @@ ProcessActionResult LinuxProcessControl::setEfficiencyMode(const ProcessTarget& 
         }
         else
         {
-            note = lowerCgroupWeight(m_Syscalls, target.pid, cgroup, weightBefore);
+            note = lowerCgroupWeight(m_Syscalls, target.pid, cgroup, cgroupId, weightBefore);
         }
         {
             // Turned on twice, the first time's "before" stays what off puts back. Processes that have exited since
@@ -1558,7 +1618,8 @@ ProcessActionResult LinuxProcessControl::setEfficiencyMode(const ProcessTarget& 
                                                target.pid,
                                                loweredOne ? remembered->cgroup : cgroup,
                                                remembered.has_value(),
-                                               remembered.has_value() ? remembered->cpuWeight : std::nullopt);
+                                               remembered.has_value() ? remembered->cpuWeight : std::nullopt,
+                                               loweredOne ? remembered->cgroupId : std::nullopt);
     if (moved && weight.unfinished)
     {
         // The old cgroup is gone or unreadable: a process that left it won't bring it back, so nothing to retry.
