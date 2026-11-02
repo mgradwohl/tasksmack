@@ -514,7 +514,9 @@ int realWriteCgroupFileOf(const std::string& cgroup, std::uint64_t identity, std
         return EINVAL;
     }
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
-    const FdGuard directory(::open(procs->parent_path().c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
+    // O_PATH: search permission on the directory is all this needs, as a write by path needed; fstat() and openat()
+    // both work on such a descriptor.
+    const FdGuard directory(::open(procs->parent_path().c_str(), O_PATH | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
     if (directory.get() < 0)
     {
         return errno;
