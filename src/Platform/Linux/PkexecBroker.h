@@ -53,13 +53,16 @@ class PkexecBroker final : public IPrivilegedBroker
 
     /// @p launcher is the command the helper is started through, "pkexec" in the app; the tests pass
     /// none and run the helper directly. @p helperPath is the helper to start. @p sandbox is what its
-    /// seccomp filter does with a call it doesn't list (#2752): the tests ask for Enforce. @p ttyAgent, when
-    /// set ("pkttyagent", for a TaskSmack started from a terminal), is the polkit text agent started as the user
-    /// for each password prompt (#3380; see TTY_AGENT_NOTIFY_FD).
+    /// seccomp filter does with a call it doesn't list (#2752): the tests ask for Enforce.
     explicit PkexecBroker(std::string helperPath,
                           std::vector<std::string> launcher = {"pkexec"},
-                          HelperSandbox::Mode sandbox = HelperSandbox::Mode::Log,
-                          std::vector<std::string> ttyAgent = {});
+                          HelperSandbox::Mode sandbox = HelperSandbox::Mode::Log);
+
+    /// Starts @p command, polkit's text agent ("pkttyagent"), as the user for each password prompt (#3380; see
+    /// TTY_AGENT_NOTIFY_FD): only while TaskSmack's process group has its terminal's foreground, so the agent can
+    /// ask there, unless @p requireForegroundTerminal is false (the tests, which have no terminal). Set before the
+    /// broker is shared; empty (the default) starts none.
+    void setTtyAgent(std::vector<std::string> command, bool requireForegroundTerminal = true);
 
     /// The descriptor the text agent is told to close once it has registered (--notify-fd), connect() waiting
     /// for that before it starts pkexec (#3380). pkexec's own text agent, which it starts when no agent is
@@ -123,6 +126,8 @@ class PkexecBroker final : public IPrivilegedBroker
     std::vector<std::string> m_Launcher;
     HelperSandbox::Mode m_Sandbox;
     std::vector<std::string> m_TtyAgent; ///< Empty: none (#3380)
+    bool m_TtyAgentNeedsTerminal = true; ///< Started only with the terminal's foreground
+    std::string m_TtyAgentSubject;       ///< --process's "PID,start time", read once by setTtyAgent()
     mutable std::mutex m_Mutex;
     // Mutable: connected() lets go of a helper that has exited (#2449).
     mutable int m_Fd = -1;

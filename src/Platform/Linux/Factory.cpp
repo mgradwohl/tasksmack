@@ -50,14 +50,12 @@
 #include "Platform/ITaskManagerReplacement.h"
 #include "Platform/IUdpTrafficCollector.h"
 #include "Platform/IUserSessions.h"
-#include "Platform/Linux/HelperSandboxMode.h"
 
+#include <cstdlib>
+#include <filesystem>
 #include <memory>
-#include <string>
-#include <utility>
-#include <vector>
+#include <system_error>
 
-#include <fcntl.h>
 #include <unistd.h>
 
 namespace Platform
@@ -81,6 +79,22 @@ std::unique_ptr<IProcessActions> makeProcessActions()
     return std::make_unique<LinuxProcessActions>(LinuxProcessControl::sharedEfficiencyMemory());
 }
 
+namespace
+{
+
+/// Whether TaskSmack runs under WSL, whose sessions have no polkit agent (#3380).
+[[nodiscard]] bool runningUnderWsl()
+{
+    if (std::getenv("WSL_DISTRO_NAME") != nullptr) // NOLINT(concurrency-mt-unsafe) - read once, at construction
+    {
+        return true;
+    }
+    std::error_code error;
+    return std::filesystem::exists("/proc/sys/fs/binfmt_misc/WSLInterop", error);
+}
+
+} // namespace
+
 std::shared_ptr<IPrivilegedBroker> makePrivilegedBroker(void* /*ownerWindow*/)
 {
     // Root needs no helper, and a refusal to root is nothing an administrator can cure. Without the
@@ -89,16 +103,16 @@ std::shared_ptr<IPrivilegedBroker> makePrivilegedBroker(void* /*ownerWindow*/)
     {
         return nullptr;
     }
-    // Started from a terminal, a text agent of TaskSmack's own asks for the password there: pkexec's built-in one fails
-    // on polkit 127 with "No session for cookie" (#3380). With a desktop agent registered, that one asks instead.
-    std::vector<std::string> ttyAgent;
-    if (const int tty = ::open("/dev/tty", O_RDWR | O_NOCTTY | O_CLOEXEC); tty >= 0) // NOLINT(cppcoreguidelines-pro-type-vararg)
+    auto broker = std::make_shared<PkexecBroker>(PkexecBroker::INSTALLED_HELPER_PATH);
+    // With no desktop polkit agent (WSL has none; nor has a session without a display), pkexec falls back to its
+    // built-in text agent, which fails on polkit 127 with "No session for cookie" (#3380): a text agent of
+    // TaskSmack's own asks in its terminal instead. A desktop session's agent keeps the prompt, in its own dialog.
+    if (runningUnderWsl() ||
+        (std::getenv("DISPLAY") == nullptr && std::getenv("WAYLAND_DISPLAY") == nullptr)) // NOLINT(concurrency-mt-unsafe)
     {
-        ::close(tty);
-        ttyAgent = {"pkttyagent"};
+        broker->setTtyAgent({"pkttyagent"});
     }
-    return std::make_shared<PkexecBroker>(
-        PkexecBroker::INSTALLED_HELPER_PATH, std::vector<std::string>{"pkexec"}, HelperSandbox::Mode::Log, std::move(ttyAgent));
+    return broker;
 }
 
 std::unique_ptr<IProcessIconSource> makeProcessIconSource()

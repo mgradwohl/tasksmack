@@ -3,16 +3,22 @@
 #include "Platform/BrokerProtocol.h"
 #include "Platform/Linux/BrokerSocket.h"
 #include "Platform/Linux/HelperSandboxMode.h"
+#include "Platform/Linux/ProcParsing.h"
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <chrono>
+#include <cstddef>
+#include <cstdint>
 #include <expected>
 #include <format>
 #include <mutex>
 #include <stop_token>
 #include <string>
+#include <string_view>
 #include <system_error>
+#include <thread>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -23,6 +29,7 @@
 #include <spawn.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
+#include <termios.h>
 #include <unistd.h>
 
 extern char**
@@ -45,36 +52,66 @@ constexpr const char* ALREADY_ASKING = "already asking for an administrator's pa
 
 } // namespace
 
-PkexecBroker::PkexecBroker(std::string helperPath,
-                           std::vector<std::string> launcher,
-                           HelperSandbox::Mode sandbox,
-                           std::vector<std::string> ttyAgent)
-    : m_HelperPath(std::move(helperPath)), m_Launcher(std::move(launcher)), m_Sandbox(sandbox), m_TtyAgent(std::move(ttyAgent))
+PkexecBroker::PkexecBroker(std::string helperPath, std::vector<std::string> launcher, HelperSandbox::Mode sandbox)
+    : m_HelperPath(std::move(helperPath)), m_Launcher(std::move(launcher)), m_Sandbox(sandbox)
 {}
 
 namespace
 {
 
-/// polkit's text agent, started as the user for one password prompt and stopped when the prompt is over (#3380). It
-/// registers for TaskSmack's process with --fallback, so a desktop agent already registered keeps the prompt.
+/// This process's start time in clock ticks, for a --process subject that a reused PID can't take; 0 unread.
+[[nodiscard]] std::uint64_t ownStartTicks() noexcept
+{
+    std::array<char, 1024> stat{};
+    const std::size_t length = ProcParsing::readProcFile("/proc/self/stat", stat.data(), stat.size());
+    return ProcParsing::parseStatStartTime(std::string_view(stat.data(), length)).value_or(0);
+}
+
+} // namespace
+
+void PkexecBroker::setTtyAgent(std::vector<std::string> command, bool requireForegroundTerminal)
+{
+    // Read here, outside the lock connect() holds: the polkit subject a reused PID can't take.
+    std::string subject = std::format("{},{}", ::getpid(), ownStartTicks());
+    const std::scoped_lock lock(m_Mutex);
+    m_TtyAgent = std::move(command);
+    m_TtyAgentNeedsTerminal = requireForegroundTerminal;
+    m_TtyAgentSubject = std::move(subject);
+}
+
+namespace
+{
+
+/// polkit's text agent, started as the user for one password prompt and stopped when the prompt is over (#3380).
 class TtyAgent
 {
   public:
-    TtyAgent(const std::vector<std::string>& command, std::chrono::milliseconds registerTimeout)
+    TtyAgent(const std::vector<std::string>& command,
+             const std::string& subject,
+             bool needsTerminal,
+             std::chrono::milliseconds registerTimeout,
+             const std::stop_token& stopToken)
     {
         if (command.empty())
         {
             return;
         }
-        std::array<int, 2> notify{-1, -1};
-        if (::pipe2(notify.data(), O_CLOEXEC) != 0)
+        // It asks on the controlling terminal: only while this process group has its foreground, or it would be
+        // stopped (SIGTTIN/SIGTTOU) with the prompt never shown.
+        if (needsTerminal)
         {
-            return;
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
+            m_Tty = ::open("/dev/tty", O_RDWR | O_NOCTTY | O_CLOEXEC);
+            if (m_Tty < 0 || ::tcgetpgrp(m_Tty) != ::getpgrp())
+            {
+                return;
+            }
+            m_TermiosSaved = ::tcgetattr(m_Tty, &m_Termios) == 0; // put back if it dies mid-prompt with echo off
         }
+        // Built before the pipe, so nothing below it allocates and can leak its descriptors.
         std::vector<std::string> arguments = command;
-        arguments.insert(
-            arguments.end(),
-            {"--process", std::to_string(::getpid()), "--fallback", "--notify-fd", std::to_string(PkexecBroker::TTY_AGENT_NOTIFY_FD)});
+        arguments.insert(arguments.end(),
+                         {"--process", subject, "--fallback", "--notify-fd", std::to_string(PkexecBroker::TTY_AGENT_NOTIFY_FD)});
         std::vector<char*> argv;
         argv.reserve(arguments.size() + 1);
         for (std::string& argument : arguments)
@@ -82,10 +119,16 @@ class TtyAgent
             argv.push_back(argument.data());
         }
         argv.push_back(nullptr);
+
+        std::array<int, 2> notify{-1, -1};
+        if (::pipe2(notify.data(), O_CLOEXEC) != 0)
+        {
+            return;
+        }
         posix_spawn_file_actions_t files{};
-        posix_spawn_file_actions_init(&files);
-        posix_spawn_file_actions_adddup2(&files, notify[1], PkexecBroker::TTY_AGENT_NOTIFY_FD);
-        const int spawned = ::posix_spawnp(&m_Pid, argv.front(), &files, nullptr, argv.data(), environ);
+        bool ready = posix_spawn_file_actions_init(&files) == 0;
+        ready = ready && posix_spawn_file_actions_adddup2(&files, notify[1], PkexecBroker::TTY_AGENT_NOTIFY_FD) == 0;
+        const int spawned = ready ? ::posix_spawnp(&m_Pid, argv.front(), &files, nullptr, argv.data(), environ) : -1;
         posix_spawn_file_actions_destroy(&files);
         ::close(notify[1]);
         if (spawned != 0)
@@ -94,18 +137,38 @@ class TtyAgent
             ::close(notify[0]);
             return;
         }
-        // It closes the descriptor once registered, or exits (no terminal to ask on, another agent kept): either way
-        // the read end sees EOF. pkexec waits for no agent that never comes, so a slow one only delays the prompt.
-        pollfd ready{.fd = notify[0], .events = POLLIN, .revents = 0};
-        static_cast<void>(::poll(&ready, 1, static_cast<int>(registerTimeout.count())));
+        waitForRegistration(notify[0], registerTimeout, stopToken);
         ::close(notify[0]);
     }
     ~TtyAgent()
     {
         if (m_Pid > 0)
         {
+            // A stopped agent acts on no SIGTERM: continued first; one that still hasn't gone in a second is killed.
+            static_cast<void>(::kill(m_Pid, SIGCONT));
             static_cast<void>(::kill(m_Pid, SIGTERM));
-            static_cast<void>(::waitpid(m_Pid, nullptr, 0));
+            bool reaped = false;
+            for (int attempt = 0; attempt < 50 && !reaped; ++attempt)
+            {
+                reaped = ::waitpid(m_Pid, nullptr, WNOHANG) == m_Pid;
+                if (!reaped)
+                {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                }
+            }
+            if (!reaped)
+            {
+                static_cast<void>(::kill(m_Pid, SIGKILL));
+                static_cast<void>(::waitpid(m_Pid, nullptr, 0));
+            }
+        }
+        if (m_TermiosSaved)
+        {
+            static_cast<void>(::tcsetattr(m_Tty, TCSANOW, &m_Termios));
+        }
+        if (m_Tty >= 0)
+        {
+            ::close(m_Tty);
         }
     }
     TtyAgent(const TtyAgent&) = delete;
@@ -114,7 +177,36 @@ class TtyAgent
     TtyAgent& operator=(TtyAgent&&) = delete;
 
   private:
+    /// Until @p notifyFd reads EOF (the agent registered, or exited: no terminal, another agent kept), @p timeout
+    /// passes or @p stopToken is signalled. pkexec waits for no agent, so a slow one only delays the prompt.
+    static void waitForRegistration(int notifyFd, std::chrono::milliseconds timeout, const std::stop_token& stopToken)
+    {
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        constexpr std::chrono::milliseconds SLICE{100}; // how often a stop is noticed
+        while (!stopToken.stop_requested())
+        {
+            const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
+            if (left.count() <= 0)
+            {
+                return;
+            }
+            pollfd readable{.fd = notifyFd, .events = POLLIN, .revents = 0};
+            const int result = ::poll(&readable, 1, static_cast<int>(std::min(left, SLICE).count()));
+            if (result > 0)
+            {
+                return; // EOF (or a byte): registered, or gone
+            }
+            if (result < 0 && errno != EINTR)
+            {
+                return;
+            }
+        }
+    }
+
     pid_t m_Pid = -1;
+    int m_Tty = -1;
+    bool m_TermiosSaved = false;
+    termios m_Termios{};
 };
 
 } // namespace
@@ -221,7 +313,11 @@ std::expected<void, std::string> PkexecBroker::connectWithin(const std::stop_tok
         return std::unexpected(std::format("couldn't make the helper's socket: {}", std::system_category().message(errno)));
     }
     // polkit's text agent, as the user, for this prompt (#3380); stopped when connect() returns.
-    const TtyAgent ttyAgent(m_TtyAgent, std::chrono::duration_cast<std::chrono::milliseconds>(TTY_AGENT_REGISTER_TIMEOUT));
+    const TtyAgent ttyAgent(m_TtyAgent,
+                            m_TtyAgentSubject,
+                            m_TtyAgentNeedsTerminal,
+                            std::chrono::duration_cast<std::chrono::milliseconds>(TTY_AGENT_REGISTER_TIMEOUT),
+                            stopToken);
 
     // The helper's end becomes its stdin; dup2 clears close-on-exec there, and only there.
     posix_spawn_file_actions_t files{};
