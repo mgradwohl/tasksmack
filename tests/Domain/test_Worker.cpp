@@ -3,11 +3,13 @@
 /// does what its Admission policy says and submit() reports it, cancellation reaches the job in flight and
 /// its hook, shutdown drops queued work unrun, and publications arrive in order.
 
+#include "AllocationFailureHook.h"
 #include "Domain/Worker.h"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -21,6 +23,7 @@
 #include <stop_token>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <vector>
 
 namespace Domain
@@ -112,7 +115,7 @@ TEST(WorkerTest, RunsJobsInOrderAndPublishesTheirResults)
 {
     Ran ran;
     TestWorker worker(options(8, Admission::Refuse),
-                      [&ran](TestJob& job, const std::stop_token& /*stop*/, TestWorker::Publisher& out)
+                      [&ran](TestJob& job, const std::stop_token& /*stop*/, TestWorker::JobContext& out)
                       {
                           ran.add(job.id);
                           out.finish(job.id * 0.5);
@@ -137,7 +140,7 @@ TEST(WorkerTest, ABodyThatThrowsFailsTheWorkerWithItsReasonAndTheProcessGoesOn)
 {
     Gate gate;
     TestWorker worker(options(8, Admission::Refuse),
-                      [&gate](TestJob& job, const std::stop_token& stop, TestWorker::Publisher& out)
+                      [&gate](TestJob& job, const std::stop_token& stop, TestWorker::JobContext& out)
                       {
                           static_cast<void>(gate.pass(stop));
                           out.progress(0.25);
@@ -169,7 +172,7 @@ TEST(WorkerTest, ABodyThatThrowsANonStandardExceptionOrBadAllocFailsTheWorker)
 {
     {
         TestWorker worker(options(1, Admission::Refuse),
-                          [](TestJob& /*job*/, const std::stop_token& /*stop*/, TestWorker::Publisher& /*out*/)
+                          [](TestJob& /*job*/, const std::stop_token& /*stop*/, TestWorker::JobContext& /*out*/)
                           {
                               throw 42; // NOLINT(bugprone-std-exception-baseclass) - a non-std exception is the case under test
                           });
@@ -180,7 +183,7 @@ TEST(WorkerTest, ABodyThatThrowsANonStandardExceptionOrBadAllocFailsTheWorker)
     }
     {
         TestWorker worker(options(1, Admission::Refuse),
-                          [](TestJob& /*job*/, const std::stop_token& /*stop*/, TestWorker::Publisher& /*out*/)
+                          [](TestJob& /*job*/, const std::stop_token& /*stop*/, TestWorker::JobContext& /*out*/)
                           { throw std::bad_alloc(); });
         EXPECT_EQ(worker.submit({}), SubmitResult::Queued);
         ASSERT_TRUE(worker.waitUntilIdle(WAIT));
@@ -210,7 +213,7 @@ class FullQueueTest : public ::testing::Test
                 .admission = admission,
                 .sameKey = [](const TestJob& queued, const TestJob& incoming) { return queued.key == incoming.key; },
             },
-            [this](TestJob& job, const std::stop_token& stop, TestWorker::Publisher& /*out*/)
+            [this](TestJob& job, const std::stop_token& stop, TestWorker::JobContext& /*out*/)
             {
                 if (job.id == 0)
                 {
@@ -280,7 +283,7 @@ TEST(WorkerTest, MergeByKeyMergesBeforeTheQueueIsFull)
             .admission = Admission::MergeByKey,
             .sameKey = [](const TestJob& queued, const TestJob& incoming) { return queued.key == incoming.key; },
         },
-        [&gate, &ran](TestJob& job, const std::stop_token& stop, TestWorker::Publisher& /*out*/)
+        [&gate, &ran](TestJob& job, const std::stop_token& stop, TestWorker::JobContext& /*out*/)
         {
             if (job.id == 0)
             {
@@ -298,29 +301,130 @@ TEST(WorkerTest, MergeByKeyMergesBeforeTheQueueIsFull)
     EXPECT_EQ(ran.ids(), (std::vector<int>{0, 2}));
 }
 
-TEST(WorkerTest, CancelCurrentStopsTheJobInFlightCallsTheHookAndTheQueueGoesOn)
+// Admission is transactional because a Job's moves can't throw: Worker static_asserts both, so a Job type whose
+// move could throw (and leave a merged job half-assigned, or the queue over its bound) doesn't compile.
+static_assert(std::is_nothrow_move_constructible_v<TestJob> && std::is_nothrow_move_assignable_v<TestJob>);
+
+TEST(WorkerTest, ASameKeyThatThrowsRefusesAndLeavesTheQueueAsItWas)
 {
-    std::atomic<int> hookCalls{0};
-    std::atomic<bool> sawStop{false};
+    Gate gate;
     Ran ran;
     TestWorker worker(
         {
             .threadName = "ts-test-worker",
             .capacity = 4,
-            .admission = Admission::Refuse,
-            .cancelInFlight = [&hookCalls] { hookCalls.fetch_add(1); },
-        },
-        [&sawStop, &ran](TestJob& job, const std::stop_token& stop, TestWorker::Publisher& out)
-        {
-            if (job.id == 1)
+            .admission = Admission::MergeByKey,
+            .sameKey =
+                [](const TestJob& queued, const TestJob& incoming)
             {
-                Gate never;
-                static_cast<void>(never.pass(stop)); // only a stop ends this
-                sawStop = stop.stop_requested();
+                if (incoming.key == 99)
+                {
+                    throw std::runtime_error("no key");
+                }
+                return queued.key == incoming.key;
+            },
+        },
+        [&gate, &ran](TestJob& job, const std::stop_token& stop, TestWorker::JobContext& /*context*/)
+        {
+            if (job.id == 0)
+            {
+                static_cast<void>(gate.pass(stop));
             }
             ran.add(job.id);
-            out.finish(static_cast<double>(job.id));
         });
+    EXPECT_EQ(worker.submit({.id = 0, .key = 0}), SubmitResult::Queued);
+    ASSERT_TRUE(waitBusy(worker));
+    EXPECT_EQ(worker.submit({.id = 1, .key = 1}), SubmitResult::Queued);
+    EXPECT_EQ(worker.submit({.id = 2, .key = 99}), SubmitResult::Refused);
+    EXPECT_EQ(worker.queued(), 1U);
+    gate.open();
+    ASSERT_TRUE(worker.waitUntilIdle(WAIT));
+    EXPECT_EQ(ran.ids(), (std::vector<int>{0, 1}));
+    EXPECT_EQ(worker.state(), WorkerState::Running);
+}
+
+// Shutdown allocates nothing, so it can't terminate the process when memory has run out: stop() with a job
+// in flight (and its hook armed) and jobs queued, and the destructor of a worker that failed, both run with
+// the next allocation on their thread made to fail. The hook is compiled out on Windows and in sanitizer
+// builds (AllocationFailureHook.h), where these skip; the Linux debug and release builds run them.
+TEST(WorkerTest, StopAllocatesNothingWithAJobInFlightAndJobsQueued)
+{
+#ifdef TASKSMACK_NO_ALLOCATOR_HOOK
+    GTEST_SKIP() << TASKSMACK_NO_ALLOCATOR_HOOK;
+#else
+    std::atomic<int> hookCalls{0};
+    TestWorker worker(options(4, Admission::Refuse),
+                      [&hookCalls](TestJob& /*job*/, const std::stop_token& stop, TestWorker::JobContext& context)
+                      {
+                          auto hook = [&hookCalls] noexcept
+                          {
+                              hookCalls.fetch_add(1);
+                          };
+                          const auto armed = context.armCancel(hook);
+                          Gate never;
+                          static_cast<void>(never.pass(stop));
+                      });
+    EXPECT_EQ(worker.submit({.id = 1}), SubmitResult::Queued);
+    ASSERT_TRUE(waitBusy(worker));
+    EXPECT_EQ(worker.submit({.id = 2}), SubmitResult::Queued);
+    EXPECT_EQ(worker.submit({.id = 3}), SubmitResult::Queued);
+    std::size_t dropped = 0;
+    bool stillPending = false;
+    {
+        const TestSupport::FailAllocationAfter failNext(0);
+        dropped = worker.stop();
+        stillPending = TestSupport::allocationFailurePending();
+    }
+    EXPECT_TRUE(stillPending); // stop() reached no allocation
+    EXPECT_EQ(dropped, 2U);
+    EXPECT_EQ(hookCalls.load(), 1);
+    EXPECT_EQ(worker.state(), WorkerState::Stopped);
+#endif
+}
+
+TEST(WorkerTest, TheDestructorOfAFailedWorkerAllocatesNothing)
+{
+#ifdef TASKSMACK_NO_ALLOCATOR_HOOK
+    GTEST_SKIP() << TASKSMACK_NO_ALLOCATOR_HOOK;
+#else
+    auto worker = std::make_unique<TestWorker>(options(1, Admission::Refuse),
+                                               [](TestJob& /*job*/, const std::stop_token& /*stop*/, TestWorker::JobContext& /*context*/)
+                                               { throw std::runtime_error("the reader broke"); });
+    EXPECT_EQ(worker->submit({}), SubmitResult::Queued);
+    ASSERT_TRUE(worker->waitUntilIdle(WAIT));
+    ASSERT_EQ(worker->state(), WorkerState::Failed);
+    bool stillPending = false;
+    {
+        const TestSupport::FailAllocationAfter failNext(0);
+        worker.reset();
+        stillPending = TestSupport::allocationFailurePending();
+    }
+    EXPECT_TRUE(stillPending);
+#endif
+}
+
+TEST(WorkerTest, CancelCurrentStopsTheJobInFlightCallsItsArmedHookOnceAndTheQueueGoesOn)
+{
+    std::atomic<int> hookCalls{0};
+    std::atomic<bool> sawStop{false};
+    Ran ran;
+    TestWorker worker(options(4, Admission::Refuse),
+                      [&hookCalls, &sawStop, &ran](TestJob& job, const std::stop_token& stop, TestWorker::JobContext& context)
+                      {
+                          if (job.id == 1)
+                          {
+                              auto hook = [&hookCalls] noexcept
+                              {
+                                  hookCalls.fetch_add(1);
+                              };
+                              const auto armed = context.armCancel(hook);
+                              Gate never;
+                              static_cast<void>(never.pass(stop)); // only a stop ends this
+                              sawStop = stop.stop_requested();
+                          }
+                          ran.add(job.id);
+                          context.finish(static_cast<double>(job.id));
+                      });
     worker.cancelCurrent(); // idle: nothing to cancel, so no hook
     EXPECT_EQ(hookCalls.load(), 0);
 
@@ -328,6 +432,7 @@ TEST(WorkerTest, CancelCurrentStopsTheJobInFlightCallsTheHookAndTheQueueGoesOn)
     ASSERT_TRUE(waitBusy(worker));
     EXPECT_EQ(worker.submit({.id = 2}), SubmitResult::Queued);
     worker.cancelCurrent();
+    worker.cancelCurrent(); // a second cancel of the same arming doesn't call the hook again
     ASSERT_TRUE(worker.waitUntilIdle(WAIT));
 
     EXPECT_TRUE(sawStop.load());
@@ -336,8 +441,105 @@ TEST(WorkerTest, CancelCurrentStopsTheJobInFlightCallsTheHookAndTheQueueGoesOn)
     EXPECT_EQ(worker.state(), WorkerState::Running);
     EXPECT_DOUBLE_EQ(worker.latest()->value, 2.0);
 
-    worker.cancelCurrent(); // idle again: the next job's token wasn't signalled early either
+    worker.cancelCurrent(); // idle again, and job 2 armed nothing
     EXPECT_EQ(hookCalls.load(), 1);
+}
+
+TEST(WorkerTest, AHookArmedAfterTheCancelIsCalledAtOnceAndGuardsNest)
+{
+    // Which hook was called first and second (0: none); the worker thread's, read after it is idle.
+    std::array<int, 2> calls{};
+    std::size_t callCount = 0;
+    Gate cancelled;
+    TestWorker worker(options(1, Admission::Refuse),
+                      [&calls, &callCount, &cancelled](TestJob& /*job*/, const std::stop_token& stop, TestWorker::JobContext& context)
+                      {
+                          static_cast<void>(cancelled.pass(stop)); // returns at the cancel
+                          auto outer = [&calls, &callCount] noexcept
+                          {
+                              if (callCount < calls.size())
+                              {
+                                  calls[callCount++] = 1;
+                              }
+                          };
+                          const auto outerArmed = context.armCancel(outer); // cancelled already: called here
+                          {
+                              auto inner = [&calls, &callCount] noexcept
+                              {
+                                  if (callCount < calls.size())
+                                  {
+                                      calls[callCount++] = 2;
+                                  }
+                              };
+                              const auto innerArmed = context.armCancel(inner); // also at once
+                          }
+                      });
+    EXPECT_EQ(worker.submit({}), SubmitResult::Queued);
+    ASSERT_TRUE(waitBusy(worker));
+    worker.cancelCurrent(); // nothing armed yet
+    ASSERT_TRUE(worker.waitUntilIdle(WAIT));
+    EXPECT_EQ(callCount, 2U);
+    EXPECT_EQ(calls, (std::array<int, 2>{1, 2}));
+}
+
+// The hook's target is body-local: it must outlive every call of the hook. A canceller hammers
+// cancelCurrent() while jobs arm, finish and tear down; the hook must never see its target gone. Bounded:
+// 2000 jobs or 1.5 s, whichever comes first.
+TEST(WorkerTest, CancelRacingCompletionNeverCallsAHookAfterItsTargetIsGone)
+{
+    struct Target
+    {
+        std::atomic<bool> alive{true};
+    };
+    std::atomic<int> afterTeardown{0};
+    std::atomic<int> finished{0};
+    TestWorker worker(options(4, Admission::Refuse),
+                      [&afterTeardown, &finished](TestJob& /*job*/, const std::stop_token& /*stop*/, TestWorker::JobContext& context)
+                      {
+                          Target target;
+                          {
+                              auto hook = [&target, &afterTeardown] noexcept
+                              {
+                                  if (!target.alive.load(std::memory_order_relaxed))
+                                  {
+                                      afterTeardown.fetch_add(1, std::memory_order_relaxed);
+                                  }
+                              };
+                              const auto armed = context.armCancel(hook);
+                              std::this_thread::yield(); // some work under the hook
+                          } // disarmed, waiting out a running call, before the target is torn down
+                          target.alive.store(false, std::memory_order_relaxed);
+                          finished.fetch_add(1, std::memory_order_relaxed);
+                      });
+    std::atomic<bool> done{false};
+    std::jthread canceller(
+        [&worker, &done]
+        {
+            while (!done.load())
+            {
+                worker.cancelCurrent();
+            }
+        });
+    constexpr int JOBS = 2000;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{1500};
+    int submitted = 0;
+    while (submitted < JOBS && std::chrono::steady_clock::now() < deadline)
+    {
+        if (worker.submit({.id = submitted}) == SubmitResult::Queued)
+        {
+            ++submitted;
+        }
+        else
+        {
+            std::this_thread::yield();
+        }
+    }
+    EXPECT_TRUE(worker.waitUntilIdle(WAIT));
+    done = true;
+    canceller.join();
+    EXPECT_EQ(afterTeardown.load(), 0);
+    EXPECT_EQ(finished.load(), submitted);
+    EXPECT_EQ(worker.state(), WorkerState::Running);
 }
 
 TEST(WorkerTest, StopCancelsTheJobInFlightAndDropsTheQueueUnrun)
@@ -349,19 +551,19 @@ TEST(WorkerTest, StopCancelsTheJobInFlightAndDropsTheQueueUnrun)
     {
         jobs[i].id = static_cast<int>(i) + 1;
     }
-    auto worker = std::make_unique<TestWorker>(
-        TestWorker::Options{
-            .threadName = "ts-test-worker",
-            .capacity = 4,
-            .admission = Admission::Refuse,
-            .cancelInFlight = [&hookCalls] { hookCalls.fetch_add(1); },
-        },
-        [&ran](TestJob& job, const std::stop_token& stop, TestWorker::Publisher& /*out*/)
-        {
-            Gate never;
-            static_cast<void>(never.pass(stop));
-            ran.add(job.id);
-        });
+    auto worker =
+        std::make_unique<TestWorker>(options(4, Admission::Refuse),
+                                     [&hookCalls, &ran](TestJob& job, const std::stop_token& stop, TestWorker::JobContext& context)
+                                     {
+                                         auto hook = [&hookCalls] noexcept
+                                         {
+                                             hookCalls.fetch_add(1);
+                                         };
+                                         const auto armed = context.armCancel(hook);
+                                         Gate never;
+                                         static_cast<void>(never.pass(stop));
+                                         ran.add(job.id);
+                                     });
     for (const TestJob& job : jobs)
     {
         EXPECT_EQ(worker->submit(job), SubmitResult::Queued);
@@ -387,7 +589,7 @@ TEST(WorkerTest, TheDestructorEndsAWorkerWithQueuedWork)
     const TestJob queued{.id = 2};
     {
         TestWorker worker(options(4, Admission::Refuse),
-                          [&ran](TestJob& job, const std::stop_token& stop, TestWorker::Publisher& /*out*/)
+                          [&ran](TestJob& job, const std::stop_token& stop, TestWorker::JobContext& /*out*/)
                           {
                               Gate never;
                               static_cast<void>(never.pass(stop));
@@ -404,7 +606,7 @@ TEST(WorkerTest, TheDestructorEndsAWorkerWithQueuedWork)
 TEST(WorkerTest, AWorkerNeverSubmittedToStartsNoThreadAndStopsCleanly)
 {
     TestWorker worker(options(1, Admission::Refuse),
-                      [](TestJob& /*job*/, const std::stop_token& /*stop*/, TestWorker::Publisher& /*out*/) {});
+                      [](TestJob& /*job*/, const std::stop_token& /*stop*/, TestWorker::JobContext& /*out*/) {});
     EXPECT_FALSE(worker.busy());
     EXPECT_TRUE(worker.waitUntilIdle(std::chrono::milliseconds{0}));
     EXPECT_EQ(worker.stop(), 0U);
@@ -417,13 +619,16 @@ TEST(WorkerTest, IncrementalPublicationsAreObservedInOrderThenTheFinalOne)
     std::binary_semaphore published{0};
     std::binary_semaphore seen{0};
     TestWorker worker(options(1, Admission::Refuse),
-                      [&published, &seen](TestJob& /*job*/, const std::stop_token& /*stop*/, TestWorker::Publisher& out)
+                      [&published, &seen](TestJob& /*job*/, const std::stop_token& /*stop*/, TestWorker::JobContext& out)
                       {
                           for (int step = 1; step <= STEPS; ++step)
                           {
                               out.progress(static_cast<double>(step) / STEPS);
                               published.release();
-                              seen.acquire(); // the test reads each one before the next
+                              if (!seen.try_acquire_for(WAIT)) // the test reads each one before the next
+                              {
+                                  return; // it gave up (a failed assertion): end, so the worker can be joined
+                              }
                           }
                           out.finish(1.0);
                           published.release();
@@ -449,7 +654,7 @@ TEST(WorkerTest, ACapacityOfZeroHoldsOneJob)
 {
     Gate gate;
     TestWorker worker(options(0, Admission::Refuse),
-                      [&gate](TestJob& job, const std::stop_token& stop, TestWorker::Publisher& /*out*/)
+                      [&gate](TestJob& job, const std::stop_token& stop, TestWorker::JobContext& /*out*/)
                       {
                           if (job.id == 0)
                           {
@@ -482,7 +687,7 @@ TEST(WorkerTest, StressSubmitCancelAndReadStayConsistent)
             .capacity = CAPACITY,
             .admission = Admission::DropOldest,
         },
-        [&ranCount](TestJob& job, const std::stop_token& stop, TestWorker::Publisher& out)
+        [&ranCount](TestJob& job, const std::stop_token& stop, TestWorker::JobContext& out)
         {
             out.progress(static_cast<double>(job.id));
             if (!stop.stop_requested())

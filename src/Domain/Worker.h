@@ -11,14 +11,14 @@
 //  - Bounded admission (#3340): the queue holds at most `capacity` jobs, and each worker states what a
 //    full queue does (Admission). submit() says what it did, so a caller can show "not checked yet".
 //  - Cancellation (#3333): every job gets a stop token of its own, signalled by cancelCurrent(), stop() and
-//    the destructor. A resource that needs its own safe abort (a WinHTTP request) supplies the
-//    cancelInFlight hook, which is only ever called while a job is in flight: the job can't finish, and the
-//    next can't start, until the hook returns.
+//    the destructor. A resource that needs its own safe abort (a WinHTTP request) is guarded by a cancel
+//    hook the body arms for exactly the resource's lifetime (JobContext::armCancel()): the hook is called
+//    only while armed, and disarming waits for a hook that is running, so it never outlives its target.
 //  - Publication: the body publishes immutable snapshots, incremental (progress()) and final (finish()),
 //    through a PublicationSlot; the owner reads latest() on the UI thread, which waits for a pointer swap
 //    at most. Each publication, and a failure, wakes the frame loop (PublicationWake, #3156).
 //  - Shutdown: stop() (and the destructor) cancels the job in flight, waits for it, and drops what is still
-//    queued without running it.
+//    queued without running it. It allocates nothing, so it can't fail when memory has run out.
 //
 // One thread per worker (#2731: each data domain on its own worker), started with the first submit(). No
 // thread pool. Free of the OS but for the thread name; tested in tests/Domain/test_Worker.cpp.
@@ -27,8 +27,11 @@
 //
 //     Domain::Worker<Request, Result> m_Worker{{.threadName = Platform::X_THREAD_NAME, .capacity = 64,
 //                                               .admission = Domain::Admission::Refuse},
-//                                              [](Request& job, const std::stop_token& stop, auto& out) {
-//                                                  out.finish(read(job, stop));
+//                                              [](Request& job, const std::stop_token& stop, auto& context) {
+//                                                  Connection connection(job);
+//                                                  auto abort = [&connection] noexcept { connection.abort(); };
+//                                                  const auto armed = context.armCancel(abort); // until connection goes
+//                                                  context.finish(connection.read(stop));
 //                                              }};
 //     if (m_Worker.submit(request) == Domain::SubmitResult::Refused) showNotYet();
 //     if (auto published = m_Worker.latest(); published->version != m_Seen) show(published->value);
@@ -54,6 +57,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <type_traits>
 #include <utility>
 
 namespace Domain
@@ -75,8 +79,10 @@ enum class SubmitResult : std::uint8_t
     Queued,        ///< Queued at the back.
     Merged,        ///< It replaced a queued job with the same key (MergeByKey).
     DroppedOldest, ///< Queued at the back; the oldest queued job was dropped for it (DropOldest).
-    Refused,       ///< Not admitted: the queue is full, or there was no memory to queue it. Try again later.
-    Closed,        ///< Not admitted: the worker has stopped or failed (state()), and takes no more work.
+    /// Not admitted, and the queue is as it was: it is full, or there was no memory to queue the job, or
+    /// sameKey threw. Try again later.
+    Refused,
+    Closed, ///< Not admitted: the worker has stopped or failed (state()), and takes no more work.
 };
 
 /// Where a worker is in its life. Failed and Stopped are terminal: a worker that should go on is replaced.
@@ -95,22 +101,58 @@ template<typename Snapshot> struct WorkerPublication
     Snapshot value{};
 };
 
-/// @tparam Job       One unit of work, queued by value. Destroyed unrun when dropped.
+/// @tparam Job       One unit of work, queued by value. Destroyed unrun when dropped, possibly under the
+///                   worker's lock, so its destructor must not call back into the worker. Its move
+///                   construction and assignment must not throw: that is what keeps admission transactional.
 /// @tparam Snapshot  What the body publishes for the owner; default-constructible (the value before any).
 template<typename Job, typename Snapshot> class Worker
 {
+    static_assert(std::is_nothrow_move_constructible_v<Job> && std::is_nothrow_move_assignable_v<Job>,
+                  "Domain::Worker moves jobs inside its admission and shutdown paths, which must not throw");
+
+    /// The armed cancel hook: a callable the body owns, and how to call it.
+    struct ArmedHook
+    {
+        void* target = nullptr;
+        void (*call)(void* target) noexcept = nullptr;
+        bool fired = false; ///< Called already: each arming is called at most once.
+    };
+
   public:
     using Publication = WorkerPublication<Snapshot>;
 
-    /// How the body publishes. Only the worker thread holds one, so publications are in order.
-    class Publisher
+    /// Disarms the cancel hook it armed when it goes, waiting for a call of it that is running.
+    class [[nodiscard]] CancelGuard
     {
       public:
-        Publisher(const Publisher&) = delete;
-        Publisher& operator=(const Publisher&) = delete;
-        Publisher(Publisher&&) = delete;
-        Publisher& operator=(Publisher&&) = delete;
-        ~Publisher() = default;
+        ~CancelGuard()
+        {
+            m_Owner->disarm(m_Previous);
+        }
+
+        CancelGuard(const CancelGuard&) = delete;
+        CancelGuard& operator=(const CancelGuard&) = delete;
+        CancelGuard(CancelGuard&&) = delete;
+        CancelGuard& operator=(CancelGuard&&) = delete;
+
+      private:
+        friend class Worker;
+        CancelGuard(Worker& owner, ArmedHook previous) noexcept : m_Owner(&owner), m_Previous(previous)
+        {}
+        Worker* m_Owner;
+        ArmedHook m_Previous; // put back when this goes: guards nest
+    };
+
+    /// What the body has besides its job: publication, and the cancel hook. Only the worker thread holds
+    /// one, so publications are in order.
+    class JobContext
+    {
+      public:
+        JobContext(const JobContext&) = delete;
+        JobContext& operator=(const JobContext&) = delete;
+        JobContext(JobContext&&) = delete;
+        JobContext& operator=(JobContext&&) = delete;
+        ~JobContext() = default;
 
         /// Publishes @p value as the job's progress so far. Throws std::bad_alloc, which fails the worker
         /// like any exception from the body.
@@ -125,9 +167,25 @@ template<typename Job, typename Snapshot> class Worker
             m_Owner->publish(std::move(value), true);
         }
 
+        /// Arms @p hook as the job's cancel hook until the returned guard goes: cancelCurrent(), stop() and
+        /// the destructor call it once, on the cancelling thread, after signalling the job's stop token. If
+        /// the job was cancelled already, it is called here, at once. It runs under the worker's lock, and
+        /// the guard's destructor takes that lock, so declare the guard after what the hook uses: that then
+        /// outlives every call. The hook must be quick and must not call back into the worker.
+        template<typename Hook>
+            requires std::is_nothrow_invocable_v<Hook&>
+        [[nodiscard]] CancelGuard armCancel(Hook& hook) noexcept
+        {
+            return m_Owner->arm(ArmedHook{
+                .target = &hook,
+                .call = [](void* target) noexcept { (*static_cast<Hook*>(target))(); },
+                .fired = false,
+            });
+        }
+
       private:
         friend class Worker;
-        explicit Publisher(Worker& owner) noexcept : m_Owner(&owner)
+        explicit JobContext(Worker& owner) noexcept : m_Owner(&owner)
         {}
         Worker* m_Owner; // the worker this belongs to; outlives it
     };
@@ -135,7 +193,7 @@ template<typename Job, typename Snapshot> class Worker
     /// Runs one job on the worker thread. @p stop is the job's own: signalled by cancelCurrent(), stop() and
     /// the destructor. A stop_callback the body registers on it runs with the worker's lock held, so it must
     /// not call back into the worker.
-    using Body = std::function<void(Job& job, const std::stop_token& stop, Publisher& out)>;
+    using Body = std::function<void(Job& job, const std::stop_token& stop, JobContext& context)>;
 
     struct Options
     {
@@ -146,12 +204,6 @@ template<typename Job, typename Snapshot> class Worker
         /// MergeByKey: whether @p queued and @p incoming are for the same thing. Without it nothing merges.
         // NOLINTNEXTLINE(readability-redundant-member-init) - lets designated initializers leave it out
         std::function<bool(const Job& queued, const Job& incoming)> sameKey{};
-        /// Called by cancelCurrent(), stop() and the destructor while a job is in flight, after its stop token
-        /// is signalled, on the cancelling thread and with the worker's lock held: the job can't finish until
-        /// it returns. For a resource that needs its own abort; it must be quick, never throw, and never call
-        /// back into the worker.
-        // NOLINTNEXTLINE(readability-redundant-member-init) - lets designated initializers leave it out
-        std::function<void()> cancelInFlight{};
     };
 
     /// The failure() text when the reason itself couldn't be copied (no memory).
@@ -180,6 +232,7 @@ template<typename Job, typename Snapshot> class Worker
 
     /// Offers @p job to the queue under the worker's Admission policy; never waits for a job. Starts the
     /// thread on the first call: when it can't start, the worker is Failed and this answers Closed.
+    /// Transactional: a job that isn't admitted leaves the queue as it was.
     [[nodiscard]] SubmitResult submit(Job job) noexcept
     {
         std::optional<Job> dropped; // destroyed after the lock is released
@@ -196,6 +249,7 @@ template<typename Job, typename Snapshot> class Worker
         {
             if (m_Options.admission == Admission::MergeByKey && m_Options.sameKey)
             {
+                // sameKey may throw; nothing has changed until the (non-throwing) move below.
                 const auto same = std::ranges::find_if(m_Queue, [this, &job](const Job& queued) { return m_Options.sameKey(queued, job); });
                 if (same != m_Queue.end())
                 {
@@ -208,7 +262,7 @@ template<typename Job, typename Snapshot> class Worker
             {
                 return SubmitResult::Refused;
             }
-            // Queued first, so a push that throws leaves the queue as it was; then the oldest goes.
+            // Only the push can throw (no memory), and then the queue is as it was; the rest moves.
             m_Queue.push_back(std::move(job));
             if (full)
             {
@@ -220,13 +274,12 @@ template<typename Job, typename Snapshot> class Worker
         }
         catch (...)
         {
-            // No memory to queue it (or to compare keys): not admitted, as a full queue's refusal is.
             return SubmitResult::Refused;
         }
     }
 
-    /// Signals the job in flight's stop token and calls the cancelInFlight hook; the queue goes on. Nothing
-    /// when no job is in flight.
+    /// Signals the job in flight's stop token and calls its armed cancel hook, if any; the queue goes on.
+    /// Nothing when no job is in flight.
     void cancelCurrent() noexcept
     {
         const std::scoped_lock lock(m_Mutex);
@@ -234,17 +287,18 @@ template<typename Job, typename Snapshot> class Worker
     }
 
     /// Ends the worker: cancels the job in flight (cancelCurrent()), waits for it, and drops the queued jobs
-    /// unrun. The state becomes Stopped, unless the worker had failed. Safe to call more than once, from the
-    /// owner's thread; never from the body (it would wait for itself).
+    /// unrun. The state becomes Stopped, unless the worker had failed. Allocates nothing. Safe to call more
+    /// than once, from the owner's thread; never from the body (it would wait for itself).
     /// @return How many queued jobs were dropped.
     std::size_t stop() noexcept
     {
-        std::deque<Job> dropped; // destroyed after the lock is released
+        std::size_t dropped = 0;
         {
             const std::scoped_lock lock(m_Mutex);
             WorkerState running = WorkerState::Running;
             static_cast<void>(m_State.compare_exchange_strong(running, WorkerState::Stopped, std::memory_order_acq_rel));
-            dropped.swap(m_Queue);
+            dropped = m_Queue.size();
+            m_Queue.clear(); // in place: draining into another container could allocate (a debug STL's proxy)
             cancelInFlightLocked();
             static_cast<void>(m_Thread.request_stop());
         }
@@ -253,7 +307,7 @@ template<typename Job, typename Snapshot> class Worker
             m_Thread.join();
         }
         m_Idle.notify_all();
-        return dropped.size();
+        return dropped;
     }
 
     /// The latest publication (version 0 before any); a shared_ptr copy under the slot's swap lock.
@@ -326,6 +380,35 @@ template<typename Job, typename Snapshot> class Worker
         }
     }
 
+    /// JobContext::armCancel(): arms @p hook (calling it at once if the job was cancelled already).
+    [[nodiscard]] CancelGuard arm(ArmedHook hook) noexcept
+    {
+        const std::scoped_lock lock(m_Mutex);
+        const ArmedHook previous = std::exchange(m_Hook, hook);
+        if (m_JobStop.stop_requested())
+        {
+            fireHookLocked();
+        }
+        return CancelGuard(*this, previous);
+    }
+
+    /// CancelGuard's end: puts back the hook armed before. Taking the lock waits for a call that is running.
+    void disarm(ArmedHook previous) noexcept
+    {
+        const std::scoped_lock lock(m_Mutex);
+        m_Hook = previous;
+    }
+
+    /// Calls the armed hook once (under m_Mutex).
+    void fireHookLocked() noexcept
+    {
+        if (m_Hook.call != nullptr && !m_Hook.fired)
+        {
+            m_Hook.fired = true;
+            m_Hook.call(m_Hook.target);
+        }
+    }
+
     /// cancelCurrent() under m_Mutex.
     void cancelInFlightLocked() noexcept
     {
@@ -334,15 +417,7 @@ template<typename Job, typename Snapshot> class Worker
             return;
         }
         static_cast<void>(m_JobStop.request_stop());
-        if (m_Options.cancelInFlight)
-        {
-            try
-            {
-                m_Options.cancelInFlight();
-            }
-            catch (...) // NOLINT(bugprone-empty-catch) - the hook must not throw; the stop token is signalled anyway
-            {}
-        }
+        fireHookLocked();
     }
 
     /// Records @p reason and makes the worker Failed (under m_Mutex). Never throws: a reason that can't be
@@ -394,7 +469,7 @@ template<typename Job, typename Snapshot> class Worker
     /// One job at a time until stopped, or until a body throws.
     void loop(const std::stop_token& stop)
     {
-        Publisher out(*this);
+        JobContext context(*this);
         while (true)
         {
             std::optional<Job> job;
@@ -405,13 +480,13 @@ template<typename Job, typename Snapshot> class Worker
                 {
                     return; // stopped; stop() dropped the queue
                 }
+                m_JobStop = std::stop_source{}; // the only allocation here, before the job is taken
+                jobStop = m_JobStop.get_token();
                 job.emplace(std::move(m_Queue.front()));
                 m_Queue.pop_front();
-                m_JobStop = std::stop_source{};
-                jobStop = m_JobStop.get_token();
                 m_InFlight = true;
             }
-            const bool ran = runJob(*job, jobStop, out);
+            const bool ran = runJob(*job, jobStop, context);
             job.reset(); // the job's resources go before it counts as done
             if (!ran)
             {
@@ -429,13 +504,13 @@ template<typename Job, typename Snapshot> class Worker
     }
 
     /// The no-throw boundary: runs the body on @p job. @return false when it threw, and the worker is Failed.
-    bool runJob(Job& job, const std::stop_token& jobStop, Publisher& out) noexcept
+    bool runJob(Job& job, const std::stop_token& jobStop, JobContext& context) noexcept
     {
         std::string_view reason;
         std::string what; // copied here, on the thread that threw (#1685)
         try
         {
-            m_Body(job, jobStop, out);
+            m_Body(job, jobStop, context);
             return true;
         }
         catch (const std::exception& e)
@@ -463,8 +538,7 @@ template<typename Job, typename Snapshot> class Worker
         return false;
     }
 
-    /// A failed worker's end (under m_Mutex): no job in flight, and the queue dropped. The jobs are moved
-    /// out first only by stop(); here they go at once, under the lock, since the thread is ending.
+    /// A failed worker's end (under m_Mutex): no job in flight, and the queue dropped in place.
     void endLocked() noexcept
     {
         m_InFlight = false;
@@ -482,6 +556,7 @@ template<typename Job, typename Snapshot> class Worker
     std::deque<Job> m_Queue;
     bool m_InFlight = false;    // the thread holds a job it took off the queue
     std::stop_source m_JobStop; // the job in flight's
+    ArmedHook m_Hook;           // the job's cancel hook, while its CancelGuard lives
     std::string m_Failure;      // why it failed
     bool m_FailureUnrecorded = false;
     // Written under m_Mutex, read without it
