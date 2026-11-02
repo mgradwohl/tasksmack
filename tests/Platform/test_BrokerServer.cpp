@@ -24,6 +24,7 @@
 #include "Platform/Linux/ProcParsing.h"
 #include "Platform/Linux/ProcStatusSecurityParser.h"
 #include "Platform/Linux/SystemdBus.h"
+#include "Platform/ScopedTempDir.h"
 
 #include <gtest/gtest.h>
 
@@ -1151,6 +1152,37 @@ TEST(PkexecBrokerTest, ConnectsToTheHelperAndTerminatesAProcessThroughIt)
         actionResultOf(broker.call(Broker::SignalRequest{.target = target, .signal = Broker::Signal::Terminate}, std::stop_token{}));
     EXPECT_TRUE(result.success) << result.errorMessage;
     EXPECT_EQ(child.terminatingSignal(), SIGTERM);
+}
+
+// #3380: polkit's text agent is started as the user for the password prompt: for TaskSmack's process, without
+// replacing a desktop agent, telling connect() through descriptor 3 once it has registered. connect() waits for that
+// (not for its timeout), and stops the agent before returning. One that can't be started changes nothing.
+TEST(PkexecBrokerTest, ATextAgentIsStartedForThePromptAndStoppedAfter)
+{
+    const TestSupport::ScopedTempDir dir{"ts_test_tty_agent"};
+    const std::filesystem::path script = dir.path / "agent.sh";
+    std::ofstream(script) << "echo \"$@\" > '" << (dir.path / "args").string() << "'\n"
+                          << "exec 3>&-\n" // registered
+                          << "trap \"echo stopped > '" << (dir.path / "stopped").string() << "'; exit 0\" TERM\n"
+                          << "while :; do sleep 0.05; done\n";
+
+    const auto started = std::chrono::steady_clock::now();
+    {
+        PkexecBroker broker(TASKSMACK_HELPER_PATH, {}, HelperSandbox::Mode::Enforce, {"/bin/sh", script.string()});
+        const auto connected = broker.connect(std::stop_token{});
+        ASSERT_TRUE(connected.has_value()) << connected.error();
+        EXPECT_LT(std::chrono::steady_clock::now() - started, PkexecBroker::TTY_AGENT_REGISTER_TIMEOUT)
+            << "it waited for the agent to register, not for the timeout";
+        EXPECT_TRUE(std::filesystem::exists(dir.path / "stopped")) << "the agent is stopped once connect() returns";
+    }
+    std::ifstream argsFile(dir.path / "args");
+    std::string args;
+    std::getline(argsFile, args);
+    EXPECT_EQ(args, std::format("--process {} --fallback --notify-fd {}", ::getpid(), PkexecBroker::TTY_AGENT_NOTIFY_FD));
+
+    PkexecBroker noAgent(TASKSMACK_HELPER_PATH, {}, HelperSandbox::Mode::Enforce, {"/nonexistent/pkttyagent"});
+    const auto connected = noAgent.connect(std::stop_token{});
+    EXPECT_TRUE(connected.has_value()) << connected.error();
 }
 
 TEST(PkexecBrokerTest, TheHelperReadsAProcesssEnvironment)

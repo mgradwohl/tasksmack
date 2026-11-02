@@ -53,10 +53,22 @@ class PkexecBroker final : public IPrivilegedBroker
 
     /// @p launcher is the command the helper is started through, "pkexec" in the app; the tests pass
     /// none and run the helper directly. @p helperPath is the helper to start. @p sandbox is what its
-    /// seccomp filter does with a call it doesn't list (#2752): the tests ask for Enforce.
+    /// seccomp filter does with a call it doesn't list (#2752): the tests ask for Enforce. @p ttyAgent, when
+    /// set ("pkttyagent", for a TaskSmack started from a terminal), is the polkit text agent started as the user
+    /// for each password prompt (#3380; see TTY_AGENT_NOTIFY_FD).
     explicit PkexecBroker(std::string helperPath,
                           std::vector<std::string> launcher = {"pkexec"},
-                          HelperSandbox::Mode sandbox = HelperSandbox::Mode::Log);
+                          HelperSandbox::Mode sandbox = HelperSandbox::Mode::Log,
+                          std::vector<std::string> ttyAgent = {});
+
+    /// The descriptor the text agent is told to close once it has registered (--notify-fd), connect() waiting
+    /// for that before it starts pkexec (#3380). pkexec's own text agent, which it starts when no agent is
+    /// registered, runs as root, and polkit 127 checks the password in a helper that answers as the user who
+    /// connects to it; polkitd takes that answer only for an agent the same user registered, so it refuses with
+    /// "No session for cookie" (polkit-org/polkit#686). pkttyagent started as the user is that agent.
+    static constexpr int TTY_AGENT_NOTIFY_FD = 3;
+    /// How long connect() waits for the text agent to register before it starts pkexec anyway.
+    static constexpr std::chrono::seconds TTY_AGENT_REGISTER_TIMEOUT{5};
     ~PkexecBroker() override;
     PkexecBroker(const PkexecBroker&) = delete;
     PkexecBroker& operator=(const PkexecBroker&) = delete;
@@ -110,6 +122,7 @@ class PkexecBroker final : public IPrivilegedBroker
     std::string m_HelperPath;
     std::vector<std::string> m_Launcher;
     HelperSandbox::Mode m_Sandbox;
+    std::vector<std::string> m_TtyAgent; ///< Empty: none (#3380)
     mutable std::mutex m_Mutex;
     // Mutable: connected() lets go of a helper that has exited (#2449).
     mutable int m_Fd = -1;

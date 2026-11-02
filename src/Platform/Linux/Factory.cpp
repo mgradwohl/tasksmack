@@ -50,9 +50,14 @@
 #include "Platform/ITaskManagerReplacement.h"
 #include "Platform/IUdpTrafficCollector.h"
 #include "Platform/IUserSessions.h"
+#include "Platform/Linux/HelperSandboxMode.h"
 
 #include <memory>
+#include <string>
+#include <utility>
+#include <vector>
 
+#include <fcntl.h>
 #include <unistd.h>
 
 namespace Platform
@@ -84,7 +89,16 @@ std::shared_ptr<IPrivilegedBroker> makePrivilegedBroker(void* /*ownerWindow*/)
     {
         return nullptr;
     }
-    return std::make_shared<PkexecBroker>(PkexecBroker::INSTALLED_HELPER_PATH);
+    // Started from a terminal, a text agent of TaskSmack's own asks for the password there: pkexec's built-in one fails
+    // on polkit 127 with "No session for cookie" (#3380). With a desktop agent registered, that one asks instead.
+    std::vector<std::string> ttyAgent;
+    if (const int tty = ::open("/dev/tty", O_RDWR | O_NOCTTY | O_CLOEXEC); tty >= 0) // NOLINT(cppcoreguidelines-pro-type-vararg)
+    {
+        ::close(tty);
+        ttyAgent = {"pkttyagent"};
+    }
+    return std::make_shared<PkexecBroker>(
+        PkexecBroker::INSTALLED_HELPER_PATH, std::vector<std::string>{"pkexec"}, HelperSandbox::Mode::Log, std::move(ttyAgent));
 }
 
 std::unique_ptr<IProcessIconSource> makeProcessIconSource()
