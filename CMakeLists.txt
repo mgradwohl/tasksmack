@@ -326,6 +326,7 @@ set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/LinuxProcessThreadsReader.cpp # Process Details Threads (#3069)
     src/Platform/Linux/LinuxStartup.cpp # the Startup tab: XDG autostart entries (#2541)
     src/Platform/Linux/LinuxHttpsClient.cpp # the update check's HTTPS client: libcurl (#3238)
+    src/Platform/Linux/PolkitTextAgent.cpp # the password prompt where no desktop polkit agent runs: libpolkit-agent-1 (#3380)
     src/Platform/Linux/LinuxStartAtLogin.cpp # start at sign-in: an XDG autostart entry (#3254)
     src/Platform/Linux/LinuxProcessOpenFilesReader.cpp
     src/Platform/Linux/LinuxProcessSecurityReader.cpp
@@ -449,6 +450,27 @@ if(UNIX AND NOT APPLE AND TASKSMACK_WITH_CURL)
         message(STATUS "libcurl ${LIBCURL_VERSION}: the update check can be offered")
     else()
         message(STATUS "libcurl not found (install libcurl4-openssl-dev): the update check will not be offered")
+    endif()
+endif()
+
+# libpolkit-agent-1 on Linux (#3380): polkit's text agent, registered in TaskSmack's own process where no desktop agent
+# runs (WSL, no display), since pkexec's own fails on polkit 127. A build dependency the .deb then depends on
+# (CPACK_DEBIAN_PACKAGE_SHLIBDEPS); without it the app still builds, and pkexec's own agent asks, as before. Its GLib
+# headers are system includes, out of our warnings.
+option(TASKSMACK_WITH_POLKIT_AGENT "Ask for the helper's password with polkit's text agent when no desktop agent runs (Linux)" ON)
+add_library(tasksmack_polkit_agent INTERFACE)
+if(UNIX AND NOT APPLE AND TASKSMACK_WITH_POLKIT_AGENT)
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(POLKIT_AGENT QUIET polkit-agent-1)
+    endif()
+    if(POLKIT_AGENT_FOUND)
+        target_include_directories(tasksmack_polkit_agent SYSTEM INTERFACE ${POLKIT_AGENT_INCLUDE_DIRS})
+        target_link_libraries(tasksmack_polkit_agent INTERFACE ${POLKIT_AGENT_LINK_LIBRARIES})
+        target_compile_definitions(tasksmack_polkit_agent INTERFACE TASKSMACK_HAS_POLKIT_AGENT=1)
+        message(STATUS "libpolkit-agent-1 ${POLKIT_AGENT_VERSION}: TaskSmack can ask for the helper's password itself")
+    else()
+        message(STATUS "libpolkit-agent-1 not found (install libpolkit-agent-1-dev): pkexec's own agent asks for the password")
     endif()
 endif()
 
@@ -840,8 +862,9 @@ function(tasksmack_configure_app_target target)
     if(WIN32)
         tasksmack_apply_windows_platform(${target})
     elseif(UNIX AND NOT APPLE)
-        # tasksmack_sdbus: libsystemd and TASKSMACK_HAS_SDBUS when found (#1525); tasksmack_curl: libcurl (#3238)
-        target_link_libraries(${target} PRIVATE dl tasksmack_sdbus tasksmack_curl)
+        # tasksmack_sdbus: libsystemd and TASKSMACK_HAS_SDBUS when found (#1525); tasksmack_curl: libcurl (#3238);
+        # tasksmack_polkit_agent: libpolkit-agent-1 (#3380)
+        target_link_libraries(${target} PRIVATE dl tasksmack_sdbus tasksmack_curl tasksmack_polkit_agent)
     endif()
 endfunction()
 

@@ -21,6 +21,8 @@
 #include <chrono>
 #include <cstdint>
 #include <expected>
+#include <functional>
+#include <memory>
 #include <mutex>
 #include <stop_token>
 #include <string>
@@ -58,24 +60,14 @@ class PkexecBroker final : public IPrivilegedBroker
                           std::vector<std::string> launcher = {"pkexec"},
                           HelperSandbox::Mode sandbox = HelperSandbox::Mode::Log);
 
-    /// Starts @p command, polkit's text agent ("pkttyagent"), as the user for each password prompt (#3380; see
-    /// TTY_AGENT_NOTIFY_FD): only while TaskSmack's process group has its terminal's foreground, so the agent can
-    /// ask there, unless @p requireForegroundTerminal is false (the tests, which have no terminal). Set before the
-    /// broker is shared; empty (the default) starts none.
-    void setTtyAgent(std::vector<std::string> command,
-                     bool requireForegroundTerminal = true,
-                     std::chrono::milliseconds registerTimeout = TTY_AGENT_REGISTER_TIMEOUT);
-
-    /// The descriptor the text agent is told to close once it has registered (--notify-fd), connect() waiting
-    /// for that before it starts pkexec (#3380). pkexec's own text agent, which it starts when no agent is
-    /// registered, runs as root, and polkit 127 checks the password in a helper that answers as the user who
-    /// connects to it; polkitd takes that answer only for an agent the same user registered, so it refuses with
-    /// "No session for cookie" (polkit-org/polkit#686). pkttyagent started as the user is that agent.
-    static constexpr int TTY_AGENT_NOTIFY_FD = 3;
-    /// With that agent running, pkexec is started with --disable-internal-agent: it would otherwise register its own
-    /// for the same process, fail ("An authentication agent already exists for the given subject") and exit.
-    /// How long connect() waits for the text agent to register before it starts pkexec anyway.
-    static constexpr std::chrono::seconds TTY_AGENT_REGISTER_TIMEOUT{5};
+    /// Registers a polkit agent of TaskSmack's own for the password prompt: a handle that unregisters it when released,
+    /// or null (with the reason) when none could be registered. The app's is PolkitTextAgent (#3380).
+    using TextAgentFactory = std::function<std::shared_ptr<void>(std::string& error)>;
+    /// Registers @p factory's agent for each prompt (#3380), only while TaskSmack's process group has its terminal's
+    /// foreground, where a text agent can ask, unless @p requireForegroundTerminal is false (the tests, which have no
+    /// terminal). With one registered, pkexec is started with --disable-internal-agent: its own would be refused on
+    /// polkit 127. Set before the broker is shared; unset (the default), pkexec's own agent asks, as before.
+    void setTextAgent(TextAgentFactory factory, bool requireForegroundTerminal = true);
     ~PkexecBroker() override;
     PkexecBroker(const PkexecBroker&) = delete;
     PkexecBroker& operator=(const PkexecBroker&) = delete;
@@ -129,10 +121,8 @@ class PkexecBroker final : public IPrivilegedBroker
     std::string m_HelperPath;
     std::vector<std::string> m_Launcher;
     HelperSandbox::Mode m_Sandbox;
-    std::vector<std::string> m_TtyAgent; ///< Empty: none (#3380)
-    bool m_TtyAgentNeedsTerminal = true; ///< Started only with the terminal's foreground
-    std::string m_TtyAgentSubject;       ///< --process's "PID,start time", read once by setTtyAgent()
-    std::chrono::milliseconds m_TtyAgentRegisterTimeout{TTY_AGENT_REGISTER_TIMEOUT};
+    TextAgentFactory m_TextAgent;         ///< Unset: none (#3380)
+    bool m_TextAgentNeedsTerminal = true; ///< Registered only with the terminal's foreground
     mutable std::mutex m_Mutex;
     // Mutable: connected() lets go of a helper that has exited (#2449).
     mutable int m_Fd = -1;

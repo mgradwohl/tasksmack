@@ -3,22 +3,19 @@
 #include "Platform/BrokerProtocol.h"
 #include "Platform/Linux/BrokerSocket.h"
 #include "Platform/Linux/HelperSandboxMode.h"
-#include "Platform/Linux/ProcParsing.h"
+
+#include <spdlog/spdlog.h>
 
 #include <algorithm>
 #include <array>
-#include <cerrno>
 #include <chrono>
-#include <cstddef>
-#include <cstdint>
 #include <expected>
 #include <format>
+#include <memory>
 #include <mutex>
 #include <stop_token>
 #include <string>
-#include <string_view>
 #include <system_error>
-#include <thread>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -29,7 +26,6 @@
 #include <spawn.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
-#include <termios.h>
 #include <unistd.h>
 
 extern char**
@@ -56,202 +52,30 @@ PkexecBroker::PkexecBroker(std::string helperPath, std::vector<std::string> laun
     : m_HelperPath(std::move(helperPath)), m_Launcher(std::move(launcher)), m_Sandbox(sandbox)
 {}
 
-namespace
+void PkexecBroker::setTextAgent(TextAgentFactory factory, bool requireForegroundTerminal)
 {
-
-/// This process's start time in clock ticks, for a --process subject that a reused PID can't take; 0 unread.
-[[nodiscard]] std::uint64_t ownStartTicks() noexcept
-{
-    std::array<char, 1024> stat{};
-    const std::size_t length = ProcParsing::readProcFile("/proc/self/stat", stat.data(), stat.size());
-    return ProcParsing::parseStatStartTime(std::string_view(stat.data(), length)).value_or(0);
-}
-
-} // namespace
-
-void PkexecBroker::setTtyAgent(std::vector<std::string> command, bool requireForegroundTerminal, std::chrono::milliseconds registerTimeout)
-{
-    // Read here, outside the lock connect() holds: the polkit subject a reused PID can't take.
-    std::string subject = std::format("{},{}", ::getpid(), ownStartTicks());
     const std::scoped_lock lock(m_Mutex);
-    m_TtyAgent = std::move(command);
-    m_TtyAgentNeedsTerminal = requireForegroundTerminal;
-    m_TtyAgentSubject = std::move(subject);
-    m_TtyAgentRegisterTimeout = registerTimeout;
+    m_TextAgent = std::move(factory);
+    m_TextAgentNeedsTerminal = requireForegroundTerminal;
 }
 
 namespace
 {
 
-/// polkit's text agent, started as the user for one password prompt and stopped when the prompt is over (#3380).
-class TtyAgent
+/// Whether this process group has its controlling terminal's foreground: a text agent asks there only then, or the
+/// terminal would stop it (SIGTTIN/SIGTTOU) with the prompt never shown (#3380).
+[[nodiscard]] bool ownsTerminalForeground() noexcept
 {
-  public:
-    TtyAgent(const std::vector<std::string>& command,
-             const std::string& subject,
-             bool needsTerminal,
-             std::chrono::milliseconds registerTimeout,
-             const std::stop_token& stopToken)
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
+    const int tty = ::open("/dev/tty", O_RDWR | O_NOCTTY | O_CLOEXEC);
+    if (tty < 0)
     {
-        if (command.empty())
-        {
-            return;
-        }
-        // Built before the terminal and the pipe are opened, so nothing after them allocates and can leak them.
-        std::vector<std::string> arguments = command;
-        arguments.insert(arguments.end(),
-                         {"--process", subject, "--fallback", "--notify-fd", std::to_string(PkexecBroker::TTY_AGENT_NOTIFY_FD)});
-        std::vector<char*> argv;
-        argv.reserve(arguments.size() + 1);
-        for (std::string& argument : arguments)
-        {
-            argv.push_back(argument.data());
-        }
-        argv.push_back(nullptr);
-
-        // Opened after everything that allocates, so a throw can't leak it. The agent asks on the controlling terminal:
-        // only while this process group has its foreground, or it would be stopped (SIGTTIN/SIGTTOU), prompt unseen.
-        if (needsTerminal)
-        {
-            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
-            m_Tty = ::open("/dev/tty", O_RDWR | O_NOCTTY | O_CLOEXEC);
-            if (m_Tty < 0 || ::tcgetpgrp(m_Tty) != ::getpgrp())
-            {
-                return;
-            }
-            m_TermiosSaved = ::tcgetattr(m_Tty, &m_Termios) == 0; // put back if it dies mid-prompt with echo off
-        }
-        std::array<int, 2> notify{-1, -1};
-        if (::pipe2(notify.data(), O_CLOEXEC) != 0)
-        {
-            return;
-        }
-        posix_spawn_file_actions_t files{};
-        bool ready = posix_spawn_file_actions_init(&files) == 0;
-        ready = ready && posix_spawn_file_actions_adddup2(&files, notify[1], PkexecBroker::TTY_AGENT_NOTIFY_FD) == 0;
-        const int spawned = ready ? ::posix_spawnp(&m_Pid, argv.front(), &files, nullptr, argv.data(), environ) : -1;
-        posix_spawn_file_actions_destroy(&files);
-        ::close(notify[1]);
-        if (spawned != 0)
-        {
-            m_Pid = -1;
-            ::close(notify[0]);
-            return;
-        }
-        const bool notified = waitForRegistration(notify[0], registerTimeout, stopToken);
-        ::close(notify[0]);
-        if (!notified)
-        {
-            // Not registered in time (or stopped, or the wait failed): no agent to rely on, so pkexec keeps its own.
-            stop();
-            return;
-        }
-        // The descriptor closes both when it registers and when it exits (no terminal to ask on, another agent kept,
-        // an error), and an exiting process can't be reaped quite yet: one that hasn't gone in 200 ms registered.
-        for (int attempt = 0; attempt < 20; ++attempt)
-        {
-            if (::waitpid(m_Pid, nullptr, WNOHANG) == m_Pid)
-            {
-                m_Pid = -1; // not the one that asks
-                break;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
-    }
-    ~TtyAgent()
-    {
-        stop();
-        if (m_TermiosSaved && ::tcgetpgrp(m_Tty) == ::getpgrp())
-        {
-            // Only while still in the foreground, and with SIGTTOU blocked on this thread: from the background,
-            // tcsetattr() would stop the whole process group, the window with it.
-            sigset_t ttou{};
-            sigset_t previous{};
-            sigemptyset(&ttou);
-            sigaddset(&ttou, SIGTTOU);
-            const bool blocked = ::pthread_sigmask(SIG_BLOCK, &ttou, &previous) == 0;
-            static_cast<void>(::tcsetattr(m_Tty, TCSANOW, &m_Termios));
-            if (blocked)
-            {
-                static_cast<void>(::pthread_sigmask(SIG_SETMASK, &previous, nullptr));
-            }
-        }
-        if (m_Tty >= 0)
-        {
-            ::close(m_Tty);
-        }
-    }
-    /// Whether it is running, registered: pkexec must then not register its own (see connectWithin()).
-    [[nodiscard]] bool running() const noexcept
-    {
-        return m_Pid > 0;
-    }
-    TtyAgent(const TtyAgent&) = delete;
-    TtyAgent& operator=(const TtyAgent&) = delete;
-    TtyAgent(TtyAgent&&) = delete;
-    TtyAgent& operator=(TtyAgent&&) = delete;
-
-  private:
-    /// Stops it, if it runs: a stopped agent acts on no SIGTERM, so it is continued first, and one that still hasn't
-    /// gone in a second is killed. Never waits longer.
-    void stop() noexcept
-    {
-        if (m_Pid <= 0)
-        {
-            return;
-        }
-        static_cast<void>(::kill(m_Pid, SIGCONT));
-        static_cast<void>(::kill(m_Pid, SIGTERM));
-        bool reaped = false;
-        for (int attempt = 0; attempt < 50 && !reaped; ++attempt)
-        {
-            reaped = ::waitpid(m_Pid, nullptr, WNOHANG) == m_Pid;
-            if (!reaped)
-            {
-                std::this_thread::sleep_for(std::chrono::milliseconds(20));
-            }
-        }
-        if (!reaped)
-        {
-            static_cast<void>(::kill(m_Pid, SIGKILL));
-            static_cast<void>(::waitpid(m_Pid, nullptr, 0));
-        }
-        m_Pid = -1;
-    }
-
-    /// Whether @p notifyFd read EOF (the agent registered, or exited: no terminal, another agent kept) before
-    /// @p timeout passed or @p stopToken was signalled; false too when the wait fails. pkexec waits for no agent, so
-    /// a slow one only delays the prompt.
-    [[nodiscard]] static bool waitForRegistration(int notifyFd, std::chrono::milliseconds timeout, const std::stop_token& stopToken)
-    {
-        const auto deadline = std::chrono::steady_clock::now() + timeout;
-        constexpr std::chrono::milliseconds SLICE{100}; // how often a stop is noticed
-        while (!stopToken.stop_requested())
-        {
-            const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
-            if (left.count() <= 0)
-            {
-                return false;
-            }
-            pollfd readable{.fd = notifyFd, .events = POLLIN, .revents = 0};
-            const int result = ::poll(&readable, 1, static_cast<int>(std::min(left, SLICE).count()));
-            if (result > 0)
-            {
-                return true; // EOF (or a byte): registered, or gone
-            }
-            if (result < 0 && errno != EINTR)
-            {
-                return false;
-            }
-        }
         return false;
     }
-
-    pid_t m_Pid = -1;
-    int m_Tty = -1;
-    bool m_TermiosSaved = false;
-    termios m_Termios{};
-};
+    const bool foreground = ::tcgetpgrp(tty) == ::getpgrp();
+    ::close(tty);
+    return foreground;
+}
 
 } // namespace
 
@@ -356,18 +180,27 @@ std::expected<void, std::string> PkexecBroker::connectWithin(const std::stop_tok
     {
         return std::unexpected(std::format("couldn't make the helper's socket: {}", std::system_category().message(errno)));
     }
-    // polkit's text agent, as the user, for this prompt (#3380); stopped when connect() returns.
-    const TtyAgent ttyAgent(m_TtyAgent, m_TtyAgentSubject, m_TtyAgentNeedsTerminal, m_TtyAgentRegisterTimeout, stopToken);
+    // A polkit agent of TaskSmack's own, as the user, for this prompt (#3380); unregistered when connect() returns.
+    std::shared_ptr<void> textAgent;
+    if (m_TextAgent && (!m_TextAgentNeedsTerminal || ownsTerminalForeground()))
+    {
+        std::string why;
+        textAgent = m_TextAgent(why);
+        if (textAgent == nullptr)
+        {
+            spdlog::info("Not registering a polkit text agent: {}", why);
+        }
+    }
 
     // The helper's end becomes its stdin; dup2 clears close-on-exec there, and only there.
     posix_spawn_file_actions_t files{};
     posix_spawn_file_actions_init(&files);
     posix_spawn_file_actions_adddup2(&files, fds[1], STDIN_FILENO);
     std::vector<std::string> arguments = m_Launcher;
-    if (ttyAgent.running() && !m_Launcher.empty())
+    if (textAgent != nullptr && !m_Launcher.empty())
     {
-        // pkexec registers its own text agent for the same process, and exits when it can't, as it can't with ours
-        // registered ("An authentication agent already exists for the given subject"): ours asks instead (#3380).
+        // pkexec registers a text agent of its own for the same process, and exits when it can't, as it can't with ours
+        // registered ("An authentication agent already exists for the given subject"): ours asks (#3380).
         arguments.emplace_back("--disable-internal-agent");
     }
     arguments.push_back(m_HelperPath);

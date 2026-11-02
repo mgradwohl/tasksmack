@@ -21,6 +21,7 @@
 #include "Platform/Linux/HelperPrivileges.h"
 #include "Platform/Linux/HelperSandboxMode.h"
 #include "Platform/Linux/PkexecBroker.h"
+#include "Platform/Linux/PolkitTextAgent.h"
 #include "Platform/Linux/ProcParsing.h"
 #include "Platform/Linux/ProcStatusSecurityParser.h"
 #include "Platform/Linux/SystemdBus.h"
@@ -1154,74 +1155,67 @@ TEST(PkexecBrokerTest, ConnectsToTheHelperAndTerminatesAProcessThroughIt)
     EXPECT_EQ(child.terminatingSignal(), SIGTERM);
 }
 
-// #3380: polkit's text agent is started as the user for the password prompt: for TaskSmack's process (PID and start
-// time), without replacing an agent already registered, telling connect() through descriptor 3 once it has registered.
-// connect() waits for that (not for its timeout), and stops the agent before returning. One that can't be started,
-// exits without registering, or ignores SIGTERM changes nothing, and never holds connect() up for long.
-TEST(PkexecBrokerTest, ATextAgentIsStartedForThePromptAndStoppedAfter)
+// #3380: with a polkit agent of TaskSmack's own registered for the prompt, pkexec is told not to register its own
+// (which polkit 127 refuses, and pkexec then exits); without one, it isn't. The agent is registered for the prompt and
+// released once connect() returns. Here the launcher records its arguments and runs the helper.
+TEST(PkexecBrokerTest, ATextAgentOfItsOwnStandsInForPkexecs)
 {
-    const TestSupport::ScopedTempDir dir{"ts_test_tty_agent"};
-    const auto writeAgent = [&dir](const std::string& name, const std::string& body)
+    const TestSupport::ScopedTempDir dir{"ts_test_text_agent"};
+    const std::filesystem::path launcher = dir.path / "launcher.sh";
+    std::ofstream(launcher) << "echo \"$@\" > '" << (dir.path / "args").string() << "'\n"
+                            << "[ \"$1\" = --disable-internal-agent ] && shift\nexec \"$@\"\n";
+    const auto launcherArgs = [&dir]
     {
-        const std::filesystem::path script = dir.path / name;
-        std::ofstream(script) << body;
-        return script.string();
-    };
-    const std::string agent =
-        writeAgent("agent.sh",
-                   "echo \"$@\" > '" + (dir.path / "args").string() + "'\n" + "trap \"echo stopped > '" + (dir.path / "stopped").string() +
-                       "'; exit 0\" TERM\n" + "exec 3>&-\n" + // registered, with its TERM trap already set
-                       "while :; do sleep 0.05; done\n");
-    const auto connectWith = [](std::vector<std::string> command)
-    {
-        PkexecBroker broker(TASKSMACK_HELPER_PATH, {}, HelperSandbox::Mode::Enforce);
-        broker.setTtyAgent(std::move(command), /*requireForegroundTerminal=*/false);
-        const auto started = std::chrono::steady_clock::now();
-        const auto connected = broker.connect(std::stop_token{});
-        EXPECT_TRUE(connected.has_value()) << connected.error();
-        return std::chrono::steady_clock::now() - started;
-    };
-
-    EXPECT_LT(connectWith({"/bin/sh", agent}), PkexecBroker::TTY_AGENT_REGISTER_TIMEOUT) << "waited for it to register, not the timeout";
-    EXPECT_TRUE(std::filesystem::exists(dir.path / "stopped")) << "the agent is stopped once connect() returns";
-    std::ifstream argsFile(dir.path / "args");
-    std::string args;
-    std::getline(argsFile, args);
-    EXPECT_TRUE(args.starts_with(std::format("--process {},", ::getpid()))) << args;
-    EXPECT_TRUE(args.ends_with(std::format(" --fallback --notify-fd {}", PkexecBroker::TTY_AGENT_NOTIFY_FD))) << args;
-
-    // With it running, the launcher (pkexec) is told not to register its own agent, which would fail on ours and exit;
-    // without one, it isn't. Here the launcher records its arguments and runs the helper.
-    const std::string launcher = writeAgent("launcher.sh",
-                                            "echo \"$@\" > '" + (dir.path / "launcher").string() + "'\n" +
-                                                "[ \"$1\" = --disable-internal-agent ] && shift\nexec \"$@\"\n");
-    const auto launcherArgsWith =
-        [&dir, &launcher](std::vector<std::string> agent, std::chrono::milliseconds timeout = PkexecBroker::TTY_AGENT_REGISTER_TIMEOUT)
-    {
-        PkexecBroker broker(TASKSMACK_HELPER_PATH, {"/bin/sh", launcher}, HelperSandbox::Mode::Enforce);
-        broker.setTtyAgent(std::move(agent), /*requireForegroundTerminal=*/false, timeout);
-        const auto connected = broker.connect(std::stop_token{});
-        EXPECT_TRUE(connected.has_value()) << connected.error();
-        std::ifstream file(dir.path / "launcher");
+        std::ifstream file(dir.path / "args");
         std::string line;
         std::getline(file, line);
         return line;
     };
-    EXPECT_TRUE(launcherArgsWith({"/bin/sh", agent}).starts_with("--disable-internal-agent ")) << "with the agent running";
-    EXPECT_FALSE(launcherArgsWith({"/bin/sh", writeAgent("gone.sh", "exit 1\n")}).contains("--disable-internal-agent"))
-        << "with none running, pkexec's own agent is its fallback";
-    // One that stays alive but never registers (fd 3 left open) is stopped at the timeout, and pkexec keeps its own.
-    const auto started = std::chrono::steady_clock::now();
-    EXPECT_FALSE(launcherArgsWith({"/bin/sh", writeAgent("silent.sh", "while :; do sleep 0.05; done\n")}, std::chrono::milliseconds(300))
-                     .contains("--disable-internal-agent"))
-        << "an agent that never registered isn't relied on";
-    EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds(3)) << "stopped, not waited for";
 
-    // Can't be started; exits without registering; registers but ignores SIGTERM (killed after a second).
-    EXPECT_LT(connectWith({"/nonexistent/pkttyagent"}), std::chrono::seconds(2));
-    EXPECT_LT(connectWith({"/bin/sh", writeAgent("exits.sh", "exit 1\n")}), std::chrono::seconds(2));
-    EXPECT_LT(connectWith({"/bin/sh", writeAgent("stubborn.sh", "trap '' TERM\nexec 3>&-\nwhile :; do sleep 0.05; done\n")}),
-              std::chrono::seconds(3));
+    int registered = 0;
+    std::weak_ptr<void> agent;
+    {
+        PkexecBroker broker(TASKSMACK_HELPER_PATH, {"/bin/sh", launcher.string()}, HelperSandbox::Mode::Enforce);
+        broker.setTextAgent(
+            [&registered, &agent](std::string& /*error*/) -> std::shared_ptr<void>
+            {
+                ++registered;
+                auto handle = std::make_shared<int>(0);
+                agent = handle;
+                return handle;
+            },
+            /*requireForegroundTerminal=*/false);
+        const auto connected = broker.connect(std::stop_token{});
+        ASSERT_TRUE(connected.has_value()) << connected.error();
+        EXPECT_EQ(registered, 1);
+        EXPECT_TRUE(agent.expired()) << "released once connect() returned";
+    }
+    EXPECT_TRUE(launcherArgs().starts_with("--disable-internal-agent ")) << launcherArgs();
+
+    PkexecBroker none(TASKSMACK_HELPER_PATH, {"/bin/sh", launcher.string()}, HelperSandbox::Mode::Enforce);
+    none.setTextAgent(
+        [](std::string& error) -> std::shared_ptr<void>
+        {
+            error = "no controlling terminal";
+            return nullptr;
+        },
+        /*requireForegroundTerminal=*/false);
+    ASSERT_TRUE(none.connect(std::stop_token{}).has_value());
+    EXPECT_FALSE(launcherArgs().contains("--disable-internal-agent")) << "none registered: pkexec's own asks";
+}
+
+// #3380: without a controlling terminal (the tests, CI), polkit's text agent can't be registered, and says why.
+TEST(PolkitTextAgentTest, WithoutATerminalItIsNotRegisteredAndSaysWhy)
+{
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
+    if (const int tty = ::open("/dev/tty", O_RDWR | O_NOCTTY | O_CLOEXEC); tty >= 0)
+    {
+        ::close(tty);
+        GTEST_SKIP() << "this run has a controlling terminal";
+    }
+    std::string error;
+    EXPECT_EQ(PolkitTextAgent::registerForThisProcess(error), nullptr);
+    EXPECT_FALSE(error.empty());
 }
 
 TEST(PkexecBrokerTest, TheHelperReadsAProcesssEnvironment)
