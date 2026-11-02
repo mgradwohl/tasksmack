@@ -1195,10 +1195,11 @@ TEST(PkexecBrokerTest, ATextAgentIsStartedForThePromptAndStoppedAfter)
     const std::string launcher = writeAgent("launcher.sh",
                                             "echo \"$@\" > '" + (dir.path / "launcher").string() + "'\n" +
                                                 "[ \"$1\" = --disable-internal-agent ] && shift\nexec \"$@\"\n");
-    const auto launcherArgsWith = [&dir, &launcher](std::vector<std::string> agent)
+    const auto launcherArgsWith =
+        [&dir, &launcher](std::vector<std::string> agent, std::chrono::milliseconds timeout = PkexecBroker::TTY_AGENT_REGISTER_TIMEOUT)
     {
         PkexecBroker broker(TASKSMACK_HELPER_PATH, {"/bin/sh", launcher}, HelperSandbox::Mode::Enforce);
-        broker.setTtyAgent(std::move(agent), /*requireForegroundTerminal=*/false);
+        broker.setTtyAgent(std::move(agent), /*requireForegroundTerminal=*/false, timeout);
         const auto connected = broker.connect(std::stop_token{});
         EXPECT_TRUE(connected.has_value()) << connected.error();
         std::ifstream file(dir.path / "launcher");
@@ -1209,6 +1210,12 @@ TEST(PkexecBrokerTest, ATextAgentIsStartedForThePromptAndStoppedAfter)
     EXPECT_TRUE(launcherArgsWith({"/bin/sh", agent}).starts_with("--disable-internal-agent ")) << "with the agent running";
     EXPECT_FALSE(launcherArgsWith({"/bin/sh", writeAgent("gone.sh", "exit 1\n")}).contains("--disable-internal-agent"))
         << "with none running, pkexec's own agent is its fallback";
+    // One that stays alive but never registers (fd 3 left open) is stopped at the timeout, and pkexec keeps its own.
+    const auto started = std::chrono::steady_clock::now();
+    EXPECT_FALSE(launcherArgsWith({"/bin/sh", writeAgent("silent.sh", "while :; do sleep 0.05; done\n")}, std::chrono::milliseconds(300))
+                     .contains("--disable-internal-agent"))
+        << "an agent that never registered isn't relied on";
+    EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds(3)) << "stopped, not waited for";
 
     // Can't be started; exits without registering; registers but ignores SIGTERM (killed after a second).
     EXPECT_LT(connectWith({"/nonexistent/pkttyagent"}), std::chrono::seconds(2));

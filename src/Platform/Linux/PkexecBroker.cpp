@@ -69,7 +69,7 @@ namespace
 
 } // namespace
 
-void PkexecBroker::setTtyAgent(std::vector<std::string> command, bool requireForegroundTerminal)
+void PkexecBroker::setTtyAgent(std::vector<std::string> command, bool requireForegroundTerminal, std::chrono::milliseconds registerTimeout)
 {
     // Read here, outside the lock connect() holds: the polkit subject a reused PID can't take.
     std::string subject = std::format("{},{}", ::getpid(), ownStartTicks());
@@ -77,6 +77,7 @@ void PkexecBroker::setTtyAgent(std::vector<std::string> command, bool requireFor
     m_TtyAgent = std::move(command);
     m_TtyAgentNeedsTerminal = requireForegroundTerminal;
     m_TtyAgentSubject = std::move(subject);
+    m_TtyAgentRegisterTimeout = registerTimeout;
 }
 
 namespace
@@ -137,8 +138,14 @@ class TtyAgent
             ::close(notify[0]);
             return;
         }
-        waitForRegistration(notify[0], registerTimeout, stopToken);
+        const bool notified = waitForRegistration(notify[0], registerTimeout, stopToken);
         ::close(notify[0]);
+        if (!notified)
+        {
+            // Not registered in time (or stopped, or the wait failed): no agent to rely on, so pkexec keeps its own.
+            stop();
+            return;
+        }
         // The descriptor closes both when it registers and when it exits (no terminal to ask on, another agent kept,
         // an error), and an exiting process can't be reaped quite yet: one that hasn't gone in 200 ms registered.
         for (int attempt = 0; attempt < 20; ++attempt)
@@ -153,26 +160,7 @@ class TtyAgent
     }
     ~TtyAgent()
     {
-        if (m_Pid > 0)
-        {
-            // A stopped agent acts on no SIGTERM: continued first; one that still hasn't gone in a second is killed.
-            static_cast<void>(::kill(m_Pid, SIGCONT));
-            static_cast<void>(::kill(m_Pid, SIGTERM));
-            bool reaped = false;
-            for (int attempt = 0; attempt < 50 && !reaped; ++attempt)
-            {
-                reaped = ::waitpid(m_Pid, nullptr, WNOHANG) == m_Pid;
-                if (!reaped)
-                {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(20));
-                }
-            }
-            if (!reaped)
-            {
-                static_cast<void>(::kill(m_Pid, SIGKILL));
-                static_cast<void>(::waitpid(m_Pid, nullptr, 0));
-            }
-        }
+        stop();
         if (m_TermiosSaved && ::tcgetpgrp(m_Tty) == ::getpgrp())
         {
             // Only while still in the foreground, and with SIGTTOU blocked on this thread: from the background,
@@ -204,9 +192,37 @@ class TtyAgent
     TtyAgent& operator=(TtyAgent&&) = delete;
 
   private:
-    /// Until @p notifyFd reads EOF (the agent registered, or exited: no terminal, another agent kept), @p timeout
-    /// passes or @p stopToken is signalled. pkexec waits for no agent, so a slow one only delays the prompt.
-    static void waitForRegistration(int notifyFd, std::chrono::milliseconds timeout, const std::stop_token& stopToken)
+    /// Stops it, if it runs: a stopped agent acts on no SIGTERM, so it is continued first, and one that still hasn't
+    /// gone in a second is killed. Never waits longer.
+    void stop() noexcept
+    {
+        if (m_Pid <= 0)
+        {
+            return;
+        }
+        static_cast<void>(::kill(m_Pid, SIGCONT));
+        static_cast<void>(::kill(m_Pid, SIGTERM));
+        bool reaped = false;
+        for (int attempt = 0; attempt < 50 && !reaped; ++attempt)
+        {
+            reaped = ::waitpid(m_Pid, nullptr, WNOHANG) == m_Pid;
+            if (!reaped)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            }
+        }
+        if (!reaped)
+        {
+            static_cast<void>(::kill(m_Pid, SIGKILL));
+            static_cast<void>(::waitpid(m_Pid, nullptr, 0));
+        }
+        m_Pid = -1;
+    }
+
+    /// Whether @p notifyFd read EOF (the agent registered, or exited: no terminal, another agent kept) before
+    /// @p timeout passed or @p stopToken was signalled; false too when the wait fails. pkexec waits for no agent, so
+    /// a slow one only delays the prompt.
+    [[nodiscard]] static bool waitForRegistration(int notifyFd, std::chrono::milliseconds timeout, const std::stop_token& stopToken)
     {
         const auto deadline = std::chrono::steady_clock::now() + timeout;
         constexpr std::chrono::milliseconds SLICE{100}; // how often a stop is noticed
@@ -215,19 +231,20 @@ class TtyAgent
             const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
             if (left.count() <= 0)
             {
-                return;
+                return false;
             }
             pollfd readable{.fd = notifyFd, .events = POLLIN, .revents = 0};
             const int result = ::poll(&readable, 1, static_cast<int>(std::min(left, SLICE).count()));
             if (result > 0)
             {
-                return; // EOF (or a byte): registered, or gone
+                return true; // EOF (or a byte): registered, or gone
             }
             if (result < 0 && errno != EINTR)
             {
-                return;
+                return false;
             }
         }
+        return false;
     }
 
     pid_t m_Pid = -1;
@@ -340,11 +357,7 @@ std::expected<void, std::string> PkexecBroker::connectWithin(const std::stop_tok
         return std::unexpected(std::format("couldn't make the helper's socket: {}", std::system_category().message(errno)));
     }
     // polkit's text agent, as the user, for this prompt (#3380); stopped when connect() returns.
-    const TtyAgent ttyAgent(m_TtyAgent,
-                            m_TtyAgentSubject,
-                            m_TtyAgentNeedsTerminal,
-                            std::chrono::duration_cast<std::chrono::milliseconds>(TTY_AGENT_REGISTER_TIMEOUT),
-                            stopToken);
+    const TtyAgent ttyAgent(m_TtyAgent, m_TtyAgentSubject, m_TtyAgentNeedsTerminal, m_TtyAgentRegisterTimeout, stopToken);
 
     // The helper's end becomes its stdin; dup2 clears close-on-exec there, and only there.
     posix_spawn_file_actions_t files{};

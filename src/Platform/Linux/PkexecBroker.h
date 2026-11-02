@@ -62,7 +62,9 @@ class PkexecBroker final : public IPrivilegedBroker
     /// TTY_AGENT_NOTIFY_FD): only while TaskSmack's process group has its terminal's foreground, so the agent can
     /// ask there, unless @p requireForegroundTerminal is false (the tests, which have no terminal). Set before the
     /// broker is shared; empty (the default) starts none.
-    void setTtyAgent(std::vector<std::string> command, bool requireForegroundTerminal = true);
+    void setTtyAgent(std::vector<std::string> command,
+                     bool requireForegroundTerminal = true,
+                     std::chrono::milliseconds registerTimeout = TTY_AGENT_REGISTER_TIMEOUT);
 
     /// The descriptor the text agent is told to close once it has registered (--notify-fd), connect() waiting
     /// for that before it starts pkexec (#3380). pkexec's own text agent, which it starts when no agent is
@@ -130,6 +132,7 @@ class PkexecBroker final : public IPrivilegedBroker
     std::vector<std::string> m_TtyAgent; ///< Empty: none (#3380)
     bool m_TtyAgentNeedsTerminal = true; ///< Started only with the terminal's foreground
     std::string m_TtyAgentSubject;       ///< --process's "PID,start time", read once by setTtyAgent()
+    std::chrono::milliseconds m_TtyAgentRegisterTimeout{TTY_AGENT_REGISTER_TIMEOUT};
     mutable std::mutex m_Mutex;
     // Mutable: connected() lets go of a helper that has exited (#2449).
     mutable int m_Fd = -1;
