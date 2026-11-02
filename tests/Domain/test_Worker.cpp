@@ -417,6 +417,9 @@ TEST(WorkerTest, AnAllocationFailureInsideTheBodyFailsTheWorkerAndTheProcessGoes
         });
     const TestJob queued{.id = 2};
     EXPECT_EQ(worker->submit({.id = 1}), SubmitResult::Queued);
+    // The thread starts with that submit; job 1 counts as in flight only once the thread has taken it off the
+    // queue (busy() is set with the pop, under the lock). Until then both jobs would be queued.
+    ASSERT_TRUE(waitBusy(*worker));
     EXPECT_EQ(worker->submit(queued), SubmitResult::Queued);
     EXPECT_EQ(worker->queued(), 1U);
     gate.open();
