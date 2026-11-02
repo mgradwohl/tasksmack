@@ -327,6 +327,7 @@ set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/LinuxStartup.cpp # the Startup tab: XDG autostart entries (#2541)
     src/Platform/Linux/LinuxHttpsClient.cpp # the update check's HTTPS client: libcurl (#3238)
     src/Platform/Linux/PolkitTextAgent.cpp # the password prompt where no desktop polkit agent runs: libpolkit-agent-1 (#3380)
+    src/Platform/Linux/PolkitTextAgentRun.cpp # its child side, the only file with polkit's headers (#3380)
     src/Platform/Linux/LinuxStartAtLogin.cpp # start at sign-in: an XDG autostart entry (#3254)
     src/Platform/Linux/LinuxProcessOpenFilesReader.cpp
     src/Platform/Linux/LinuxProcessSecurityReader.cpp

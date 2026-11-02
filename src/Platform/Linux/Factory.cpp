@@ -112,7 +112,7 @@ std::shared_ptr<IPrivilegedBroker> makePrivilegedBroker(void* /*ownerWindow*/)
     if (runningUnderWsl() ||
         (std::getenv("DISPLAY") == nullptr && std::getenv("WAYLAND_DISPLAY") == nullptr)) // NOLINT(concurrency-mt-unsafe)
     {
-        broker->setTextAgent([](std::string& error) -> std::shared_ptr<void> { return PolkitTextAgent::registerForThisProcess(error); });
+        broker->setTextAgent([](std::string& error) -> std::shared_ptr<void> { return PolkitTextAgent::start(error); });
     }
     return broker;
 }

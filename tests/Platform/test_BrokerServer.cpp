@@ -1204,18 +1204,62 @@ TEST(PkexecBrokerTest, ATextAgentOfItsOwnStandsInForPkexecs)
     EXPECT_FALSE(launcherArgs().contains("--disable-internal-agent")) << "none registered: pkexec's own asks";
 }
 
-// #3380: without a controlling terminal (the tests, CI), polkit's text agent can't be registered, and says why.
-TEST(PolkitTextAgentTest, WithoutATerminalItIsNotRegisteredAndSaysWhy)
+// #3380: the agent child's lifecycle, with fakes for TaskSmack-as-agent: one that registers (closes fd 3) and serves
+// is running until destroyed, and destroying it never waits long, even if it ignores SIGTERM; one that exits without
+// registering, or never registers, gives no agent, and the second is stopped at the timeout.
+TEST(PolkitTextAgentTest, TheChildIsAnAgentOnlyOnceRegisteredAndIsAlwaysStoppedQuickly)
+{
+    const auto shell = [](const std::string& script)
+    {
+        return std::vector<std::string>{"/bin/sh", "-c", script};
+    };
+    std::string error;
+    const auto timeStopping = [](std::unique_ptr<PolkitTextAgent> agent)
+    {
+        const auto started = std::chrono::steady_clock::now();
+        agent.reset();
+        return std::chrono::steady_clock::now() - started;
+    };
+
+    auto serving = PolkitTextAgent::startWith(shell("exec 3>&-; while :; do sleep 0.05; done"), std::chrono::seconds(2), error);
+    ASSERT_NE(serving, nullptr) << error;
+    EXPECT_LT(timeStopping(std::move(serving)), std::chrono::milliseconds(800)) << "SIGTERM ends it";
+
+    auto stubborn =
+        PolkitTextAgent::startWith(shell("trap '' TERM; exec 3>&-; while :; do sleep 0.05; done"), std::chrono::seconds(2), error);
+    ASSERT_NE(stubborn, nullptr) << error;
+    EXPECT_LT(timeStopping(std::move(stubborn)), std::chrono::seconds(3)) << "killed after a second, never waited for";
+
+    error.clear();
+    EXPECT_EQ(PolkitTextAgent::startWith(shell("exit 1"), std::chrono::seconds(2), error), nullptr);
+    EXPECT_FALSE(error.empty());
+
+    error.clear();
+    const auto started = std::chrono::steady_clock::now();
+    EXPECT_EQ(PolkitTextAgent::startWith(shell("while :; do sleep 0.05; done"), std::chrono::milliseconds(300), error), nullptr);
+    EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds(3)) << "stopped at the timeout";
+    EXPECT_FALSE(error.empty());
+}
+
+// #3380: the child's side without a controlling terminal (the tests, CI) can't register, and exits with a failure.
+TEST(PolkitTextAgentTest, TheAgentSideWithoutATerminalFails)
 {
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
     if (const int tty = ::open("/dev/tty", O_RDWR | O_NOCTTY | O_CLOEXEC); tty >= 0)
     {
         ::close(tty);
-        GTEST_SKIP() << "this run has a controlling terminal";
+        GTEST_SKIP() << "this run has a controlling terminal: the agent would register and serve";
     }
-    std::string error;
-    EXPECT_EQ(PolkitTextAgent::registerForThisProcess(error), nullptr);
-    EXPECT_FALSE(error.empty());
+    const pid_t child = ::fork();
+    ASSERT_GE(child, 0);
+    if (child == 0)
+    {
+        ::_exit(PolkitTextAgent::runAgent());
+    }
+    int status = 0;
+    ASSERT_EQ(::waitpid(child, &status, 0), child);
+    EXPECT_TRUE(WIFEXITED(status));
+    EXPECT_NE(WEXITSTATUS(status), 0);
 }
 
 TEST(PkexecBrokerTest, TheHelperReadsAProcesssEnvironment)
