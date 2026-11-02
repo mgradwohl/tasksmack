@@ -227,7 +227,7 @@ auto runApp(const App::LaunchOptions& launch) -> int
     }
 #endif
 
-    spdlog::info("{} v{} ({} build)", tasksmack::Version::PROJECT_NAME, tasksmack::Version::STRING, tasksmack::Version::BUILD_TYPE);
+    spdlog::info("{} v{} ({} build)", tasksmack::Version::PROJECT_NAME, tasksmack::Version::FULL, tasksmack::Version::BUILD_TYPE);
     // Set first thing in runApp(), before logging was up, so logged here.
     spdlog::info("{}", Core::LocaleSetup::describe(localeSummary));
     for (const std::string& warning : localeSummary.warnings)

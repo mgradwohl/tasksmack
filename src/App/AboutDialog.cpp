@@ -127,7 +127,7 @@ void renderHeaderText(ImFont* titleFont)
     {
         ImGui::PopFont();
     }
-    const std::string version = std::format("Version {} ({} build)", tasksmack::Version::STRING, tasksmack::Version::BUILD_TYPE);
+    const std::string version = std::format("Version {} ({} build)", tasksmack::Version::FULL, tasksmack::Version::BUILD_TYPE);
     mutedWrapped(version);
     // The name is already the large title above, so the tagline does not repeat it (#1212).
     wrapped("A cross-platform system monitor");

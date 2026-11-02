@@ -96,7 +96,7 @@ checkAtStartup(Platform::IStartAtLogin& entry, bool intended, const std::string&
 
 std::string buildIdentity()
 {
-    std::string identity = tasksmack::Version::STRING;
+    std::string identity = tasksmack::Version::FULL;
     identity += '+';
     identity += tasksmack::Version::GIT_COMMIT;
     return identity;

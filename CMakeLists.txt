@@ -95,6 +95,52 @@ if(GIT_STATUS_RESULT EQUAL 0)
     endif()
 endif()
 
+# The version a build shows (#3371). PROJECT_VERSION stays plain X.Y.Z, since the Windows resource,
+# manifest and installer fields and CPack need numbers; TASKSMACK_VERSION_FULL adds a SemVer
+# pre-release suffix, and is what About, the logs, the update check and its User-Agent use. Main reads
+# X.Y.Z between releases (the next minor, bumped right after each branch cut; see
+# docs/dev/release-process.md), so a build that isn't exactly a release says "-dev": X.Y.Z-dev orders
+# above every X.Y.(Z-1) and below X.Y.Z, so the update check offers X.Y.Z once it ships.
+#   AUTO (the default): "" when the tag v${PROJECT_VERSION} points at HEAD, "-dev" otherwise, and when
+#                       git isn't available.
+#   Any other value wins, the empty string included: release.yml passes -DTASKSMACK_VERSION_SUFFIX=
+#   to every build, dry runs too, so a release and its rehearsal read exactly X.Y.Z with or without tags
+#   in the checkout. A value must be empty or a SemVer pre-release ("-dev", "-rc.1").
+set(TASKSMACK_VERSION_SUFFIX "AUTO" CACHE STRING
+    "Suffix of the version TaskSmack shows: AUTO ('' at tag v<PROJECT_VERSION>, '-dev' elsewhere), '', or '-<prerelease>'")
+if(TASKSMACK_VERSION_SUFFIX STREQUAL "AUTO")
+    set(TASKSMACK_RESOLVED_VERSION_SUFFIX "-dev")
+    execute_process(
+        COMMAND git tag --points-at HEAD
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        OUTPUT_VARIABLE GIT_HEAD_TAGS_OUTPUT
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        RESULT_VARIABLE GIT_HEAD_TAGS_RESULT
+        ERROR_QUIET
+    )
+    if(GIT_HEAD_TAGS_RESULT EQUAL 0)
+        string(REPLACE "\r" "" GIT_HEAD_TAGS_OUTPUT "${GIT_HEAD_TAGS_OUTPUT}")
+        string(REPLACE "\n" ";" GIT_HEAD_TAGS "${GIT_HEAD_TAGS_OUTPUT}")
+        if("v${PROJECT_VERSION}" IN_LIST GIT_HEAD_TAGS)
+            set(TASKSMACK_RESOLVED_VERSION_SUFFIX "")
+        endif()
+    endif()
+else()
+    # A SemVer pre-release identifier: a number without a leading zero ("0", "7"), or [0-9A-Za-z-] with at
+    # least one non-digit ("dev", "01alpha", "x-1"). Domain::UpdateCheck::parseVersion() reads the same
+    # rule, so whatever configures is a version the update check can compare; its test
+    # UpdateCheckVersionTest.ReadsTheSuffixesCMakeAccepts runs CMake's cases through it.
+    set(_tasksmack_prerelease_id "(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)")
+    if(NOT TASKSMACK_VERSION_SUFFIX STREQUAL ""
+       AND NOT TASKSMACK_VERSION_SUFFIX MATCHES "^-${_tasksmack_prerelease_id}(\\.${_tasksmack_prerelease_id})*$")
+        message(FATAL_ERROR "TASKSMACK_VERSION_SUFFIX is '${TASKSMACK_VERSION_SUFFIX}': use AUTO, the empty string, or a "
+                            "SemVer pre-release such as '-dev' or '-rc.1' (no numeric identifier with a leading zero).")
+    endif()
+    set(TASKSMACK_RESOLVED_VERSION_SUFFIX "${TASKSMACK_VERSION_SUFFIX}")
+endif()
+set(TASKSMACK_VERSION_FULL "${PROJECT_VERSION}${TASKSMACK_RESOLVED_VERSION_SUFFIX}")
+message(STATUS "TaskSmack version: ${TASKSMACK_VERSION_FULL} (TASKSMACK_VERSION_SUFFIX=${TASKSMACK_VERSION_SUFFIX})")
+
 # Build date/time embedded in version.h. string(TIMESTAMP) honors the
 # reproducible-builds.org SOURCE_DATE_EPOCH environment variable when it is
 # set, producing an identical value for a given commit instead of true
