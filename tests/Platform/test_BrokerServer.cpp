@@ -1189,6 +1189,26 @@ TEST(PkexecBrokerTest, ATextAgentIsStartedForThePromptAndStoppedAfter)
     EXPECT_TRUE(args.starts_with(std::format("--process {},", ::getpid()))) << args;
     EXPECT_TRUE(args.ends_with(std::format(" --fallback --notify-fd {}", PkexecBroker::TTY_AGENT_NOTIFY_FD))) << args;
 
+    // With it running, the launcher (pkexec) is told not to register its own agent, which would fail on ours and exit;
+    // without one, it isn't. Here the launcher records its arguments and runs the helper.
+    const std::string launcher = writeAgent("launcher.sh",
+                                            "echo \"$@\" > '" + (dir.path / "launcher").string() + "'\n" +
+                                                "[ \"$1\" = --disable-internal-agent ] && shift\nexec \"$@\"\n");
+    const auto launcherArgsWith = [&dir, &launcher](std::vector<std::string> agent)
+    {
+        PkexecBroker broker(TASKSMACK_HELPER_PATH, {"/bin/sh", launcher}, HelperSandbox::Mode::Enforce);
+        broker.setTtyAgent(std::move(agent), /*requireForegroundTerminal=*/false);
+        const auto connected = broker.connect(std::stop_token{});
+        EXPECT_TRUE(connected.has_value()) << connected.error();
+        std::ifstream file(dir.path / "launcher");
+        std::string line;
+        std::getline(file, line);
+        return line;
+    };
+    EXPECT_TRUE(launcherArgsWith({"/bin/sh", agent}).starts_with("--disable-internal-agent ")) << "with the agent running";
+    EXPECT_FALSE(launcherArgsWith({"/bin/sh", writeAgent("gone.sh", "exit 1\n")}).contains("--disable-internal-agent"))
+        << "with none running, pkexec's own agent is its fallback";
+
     // Can't be started; exits without registering; registers but ignores SIGTERM (killed after a second).
     EXPECT_LT(connectWith({"/nonexistent/pkttyagent"}), std::chrono::seconds(2));
     EXPECT_LT(connectWith({"/bin/sh", writeAgent("exits.sh", "exit 1\n")}), std::chrono::seconds(2));

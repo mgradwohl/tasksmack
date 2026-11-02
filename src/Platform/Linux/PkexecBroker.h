@@ -70,6 +70,8 @@ class PkexecBroker final : public IPrivilegedBroker
     /// connects to it; polkitd takes that answer only for an agent the same user registered, so it refuses with
     /// "No session for cookie" (polkit-org/polkit#686). pkttyagent started as the user is that agent.
     static constexpr int TTY_AGENT_NOTIFY_FD = 3;
+    /// With that agent running, pkexec is started with --disable-internal-agent: it would otherwise register its own
+    /// for the same process, fail ("An authentication agent already exists for the given subject") and exit.
     /// How long connect() waits for the text agent to register before it starts pkexec anyway.
     static constexpr std::chrono::seconds TTY_AGENT_REGISTER_TIMEOUT{5};
     ~PkexecBroker() override;

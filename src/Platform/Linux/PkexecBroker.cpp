@@ -139,6 +139,10 @@ class TtyAgent
         }
         waitForRegistration(notify[0], registerTimeout, stopToken);
         ::close(notify[0]);
+        if (::waitpid(m_Pid, nullptr, WNOHANG) == m_Pid)
+        {
+            m_Pid = -1; // it exited (no terminal to ask on, another agent kept, an error): not the one that asks
+        }
     }
     ~TtyAgent()
     {
@@ -181,6 +185,11 @@ class TtyAgent
         {
             ::close(m_Tty);
         }
+    }
+    /// Whether it is running, registered: pkexec must then not register its own (see connectWithin()).
+    [[nodiscard]] bool running() const noexcept
+    {
+        return m_Pid > 0;
     }
     TtyAgent(const TtyAgent&) = delete;
     TtyAgent& operator=(const TtyAgent&) = delete;
@@ -335,6 +344,12 @@ std::expected<void, std::string> PkexecBroker::connectWithin(const std::stop_tok
     posix_spawn_file_actions_init(&files);
     posix_spawn_file_actions_adddup2(&files, fds[1], STDIN_FILENO);
     std::vector<std::string> arguments = m_Launcher;
+    if (ttyAgent.running() && !m_Launcher.empty())
+    {
+        // pkexec registers its own text agent for the same process, and exits when it can't, as it can't with ours
+        // registered ("An authentication agent already exists for the given subject"): ours asks instead (#3380).
+        arguments.emplace_back("--disable-internal-agent");
+    }
     arguments.push_back(m_HelperPath);
     arguments.emplace_back("--broker");
     if (m_Sandbox == HelperSandbox::Mode::Enforce)
