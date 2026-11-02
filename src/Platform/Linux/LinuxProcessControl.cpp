@@ -1492,23 +1492,27 @@ ProcessActionResult LinuxProcessControl::setEfficiencyMode(const ProcessTarget& 
             {
                 m_Efficiency->byProcess.erase(exited);
             }
-            if (staleRecord)
-            {
-                // Its cgroup was replaced at the same path: nothing of that on's is left to put back (#3331).
-                m_Efficiency->byProcess.erase(key);
-            }
+
             const auto [entry, added] =
                 m_Efficiency->byProcess.try_emplace(key,
                                                     EfficiencyMemory::Before{.nice = niceBefore.value_or(0),
                                                                              .cpuWeight = weightBefore,
                                                                              .cgroup = weightBefore.has_value() ? cgroup : std::nullopt,
                                                                              .cgroupId = cgroupId});
-            if (!added && entry->second.turnedOff)
+            if (!added && staleRecord && !entry->second.turnedOff)
+            {
+                // Its cgroup was replaced at the same path (#3331): that cgroup's weight is nothing to put back, the
+                // replacement's (if this on lowered it) is; the nice from before the first on is still owed.
+                entry->second.cpuWeight = weightBefore;
+                entry->second.cgroup = weightBefore.has_value() ? cgroup : std::nullopt;
+                entry->second.cgroupId = weightBefore.has_value() ? cgroupId : std::nullopt;
+            }
+            else if (!added && entry->second.turnedOff)
             {
                 // After an off that couldn't put the weight back: the nice is the one found now, and the weight
                 // still owed (and its cgroup) is kept, unless this on lowered one itself.
                 entry->second.nice = niceBefore.value_or(0);
-                if (weightBefore.has_value())
+                if (weightBefore.has_value() || staleRecord)
                 {
                     entry->second.cpuWeight = weightBefore;
                     entry->second.cgroup = cgroup;

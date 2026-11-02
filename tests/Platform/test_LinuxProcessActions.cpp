@@ -3287,6 +3287,7 @@ TEST_F(LinuxEfficiencyModeActionTest, AnOnAfterTheCgroupWasReplacedRecordsTheRep
     ASSERT_TRUE(off.success) << off.errorMessage;
     EXPECT_TRUE(off.successNote.empty()) << off.successNote;
     EXPECT_EQ(efficiency().writes, (std::vector<std::pair<std::string, std::string>>{{"cpu.weight", "100"}})) << "and put back";
+    EXPECT_EQ(plan().lastSetValue, 5) << "the nice from before the first on, still owed";
     EXPECT_EQ(m_Control.rememberedEfficiencyCount(), 0U);
 }
 
