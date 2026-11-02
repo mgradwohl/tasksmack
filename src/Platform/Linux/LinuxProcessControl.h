@@ -79,6 +79,13 @@ struct LinuxProcessSyscalls
     /// Writes @p value to @p file in cgroup @p cgroup: 0, or the errno that refused it. Left null, the real
     /// file is written.
     int (*writeCgroupFile)(const std::string& cgroup, std::string_view file, const std::string& value) = nullptr;
+    /// Cgroup @p cgroup's directory's inode, or the errno that stopped the read (ENOENT: no cgroup there): which cgroup
+    /// a path names now, so one deleted and made again at the same path isn't taken for the old one (#3331). Left
+    /// null, the real one is read.
+    std::expected<std::uint64_t, int> (*cgroupIdentity)(const std::string& cgroup) = nullptr;
+    /// writeCgroupFile(), only into the cgroup with identity @p identity: the check and the write go through one open
+    /// directory, so a cgroup replaced at the path in between gets nothing (ESTALE) (#3331). Left null, the real one.
+    int (*writeCgroupFileOf)(const std::string& cgroup, std::uint64_t identity, std::string_view file, const std::string& value) = nullptr;
 };
 
 /// The real system calls.
