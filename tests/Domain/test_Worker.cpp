@@ -24,6 +24,7 @@
 #include <string>
 #include <thread>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace Domain
@@ -480,6 +481,98 @@ TEST(WorkerTest, AHookArmedAfterTheCancelIsCalledAtOnceAndGuardsNest)
     ASSERT_TRUE(worker.waitUntilIdle(WAIT));
     EXPECT_EQ(callCount, 2U);
     EXPECT_EQ(calls, (std::array<int, 2>{1, 2}));
+}
+
+TEST(WorkerTest, ACancelWhileAnInnerHookIsArmedReachesTheOuterOneWhenTheInnerGuardGoes)
+{
+    std::atomic<int> outerCalls{0};
+    std::atomic<int> innerCalls{0};
+    std::binary_semaphore insideInner{0};
+    TestWorker worker(options(1, Admission::Refuse),
+                      [&](TestJob& /*job*/, const std::stop_token& stop, TestWorker::JobContext& context)
+                      {
+                          auto outer = [&outerCalls] noexcept
+                          {
+                              outerCalls.fetch_add(1);
+                          };
+                          const auto outerArmed = context.armCancel(outer);
+                          {
+                              auto inner = [&innerCalls] noexcept
+                              {
+                                  innerCalls.fetch_add(1);
+                              };
+                              const auto innerArmed = context.armCancel(inner);
+                              insideInner.release();
+                              Gate never;
+                              static_cast<void>(never.pass(stop)); // the cancel lands here, inner armed
+                          }
+                          // The inner guard went: the outer hook has had the cancel too.
+                      });
+    EXPECT_EQ(worker.submit({}), SubmitResult::Queued);
+    ASSERT_TRUE(insideInner.try_acquire_for(WAIT));
+    worker.cancelCurrent();
+    ASSERT_TRUE(worker.waitUntilIdle(WAIT));
+    EXPECT_EQ(innerCalls.load(), 1);
+    EXPECT_EQ(outerCalls.load(), 1);
+}
+
+TEST(WorkerTest, AConstHookCanBeArmed)
+{
+    std::atomic<int> calls{0};
+    TestWorker worker(options(1, Admission::Refuse),
+                      [&calls](TestJob& /*job*/, const std::stop_token& stop, TestWorker::JobContext& context)
+                      {
+                          const auto hook = [&calls] noexcept
+                          {
+                              calls.fetch_add(1);
+                          };
+                          const auto armed = context.armCancel(hook);
+                          Gate never;
+                          static_cast<void>(never.pass(stop));
+                      });
+    EXPECT_EQ(worker.submit({}), SubmitResult::Queued);
+    ASSERT_TRUE(waitBusy(worker));
+    worker.cancelCurrent();
+    ASSERT_TRUE(worker.waitUntilIdle(WAIT));
+    EXPECT_EQ(calls.load(), 1);
+}
+
+/// A job whose destruction takes a while and says when it is done.
+class SlowToDestroyJob
+{
+  public:
+    explicit SlowToDestroyJob(std::shared_ptr<std::atomic<bool>> destroyed) noexcept : m_Destroyed(std::move(destroyed))
+    {}
+    ~SlowToDestroyJob()
+    {
+        if (m_Destroyed != nullptr) // not a moved-from shell
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds{50});
+            m_Destroyed->store(true);
+        }
+    }
+    SlowToDestroyJob(const SlowToDestroyJob&) = delete;
+    SlowToDestroyJob& operator=(const SlowToDestroyJob&) = delete;
+    SlowToDestroyJob(SlowToDestroyJob&&) noexcept = default;
+    SlowToDestroyJob& operator=(SlowToDestroyJob&&) noexcept = default;
+
+  private:
+    std::shared_ptr<std::atomic<bool>> m_Destroyed;
+};
+
+// A failed worker counts as idle only once the job whose body threw is destroyed, so an owner that waits for
+// it can then release what the job used.
+TEST(WorkerTest, AFailedWorkerIsIdleOnlyAfterTheJobThatThrewIsDestroyed)
+{
+    using SlowWorker = Worker<SlowToDestroyJob, double>;
+    const auto destroyed = std::make_shared<std::atomic<bool>>(false);
+    SlowWorker worker({.threadName = "ts-test-worker", .capacity = 1, .admission = Admission::Refuse},
+                      [](SlowToDestroyJob& /*job*/, const std::stop_token& /*stop*/, SlowWorker::JobContext& /*context*/)
+                      { throw std::runtime_error("the reader broke"); });
+    EXPECT_EQ(worker.submit(SlowToDestroyJob(destroyed)), SubmitResult::Queued);
+    ASSERT_TRUE(worker.waitUntilIdle(WAIT));
+    EXPECT_TRUE(destroyed->load()); // idle came after the job's destructor, not with the failure
+    EXPECT_EQ(worker.state(), WorkerState::Failed);
 }
 
 // The hook's target is body-local: it must outlive every call of the hook. A canceller hammers

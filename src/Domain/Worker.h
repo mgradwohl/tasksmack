@@ -113,8 +113,8 @@ template<typename Job, typename Snapshot> class Worker
     /// The armed cancel hook: a callable the body owns, and how to call it.
     struct ArmedHook
     {
-        void* target = nullptr;
-        void (*call)(void* target) noexcept = nullptr;
+        const void* target = nullptr; ///< The hook, const or not; call() restores its type.
+        void (*call)(const void* target) noexcept = nullptr;
         bool fired = false; ///< Called already: each arming is called at most once.
     };
 
@@ -171,14 +171,22 @@ template<typename Job, typename Snapshot> class Worker
         /// the destructor call it once, on the cancelling thread, after signalling the job's stop token. If
         /// the job was cancelled already, it is called here, at once. It runs under the worker's lock, and
         /// the guard's destructor takes that lock, so declare the guard after what the hook uses: that then
-        /// outlives every call. The hook must be quick and must not call back into the worker.
+        /// outlives every call. The hook must be quick and must not call back into the worker. Guards nest:
+        /// when an inner one goes, the outer hook is armed again, and called at once if the job was
+        /// cancelled meanwhile. @p hook may be const (a const lambda) or not (a mutable one).
         template<typename Hook>
             requires std::is_nothrow_invocable_v<Hook&>
         [[nodiscard]] CancelGuard armCancel(Hook& hook) noexcept
         {
             return m_Owner->arm(ArmedHook{
-                .target = &hook,
-                .call = [](void* target) noexcept { (*static_cast<Hook*>(target))(); },
+                .target = static_cast<const void*>(std::addressof(hook)),
+                .call =
+                    [](const void* target) noexcept
+                {
+                    // Hook is the type it was armed as, const or not; only storage erased the const.
+                    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast) - restores the armed object's own type
+                    (*static_cast<Hook*>(const_cast<void*>(target)))();
+                },
                 .fired = false,
             });
         }
@@ -236,13 +244,63 @@ template<typename Job, typename Snapshot> class Worker
     [[nodiscard]] SubmitResult submit(Job job) noexcept
     {
         std::optional<Job> dropped; // destroyed after the lock is released
+        bool noThread = false;
+        const SubmitResult result = [this, &job, &dropped, &noThread] noexcept
+        {
+            const std::scoped_lock lock(m_Mutex);
+            return admitLocked(job, dropped, noThread);
+        }();
+        if (noThread)
+        {
+            PublicationWake::notify(); // the owner shows the failure, as for every other one
+        }
+        return result;
+    }
+
+    /// Signals the job in flight's stop token and calls its armed cancel hook, if any; the queue goes on.
+    /// Nothing when no job is in flight.
+    void cancelCurrent() noexcept
+    {
         const std::scoped_lock lock(m_Mutex);
+        cancelInFlightLocked();
+    }
+
+    /// Ends the worker: cancels the job in flight (cancelCurrent()), waits for it, and drops the queued jobs
+    /// unrun. The state becomes Stopped, unless the worker had failed. Allocates nothing. Safe to call more
+    /// than once, from the owner's thread; never from the body (it would wait for itself).
+    /// @return How many queued jobs were dropped.
+    std::size_t stop() noexcept
+    {
+        std::size_t dropped = 0;
+        {
+            const std::scoped_lock lock(m_Mutex);
+            WorkerState running = WorkerState::Running;
+            static_cast<void>(m_State.compare_exchange_strong(running, WorkerState::Stopped, std::memory_order_acq_rel));
+            dropped = m_Queue.size();
+            m_Queue.clear(); // in place: draining into another container could allocate (a debug STL's proxy)
+            cancelInFlightLocked();
+            static_cast<void>(m_Thread.request_stop());
+        }
+        if (m_Thread.joinable() && m_Thread.get_id() != std::this_thread::get_id())
+        {
+            m_Thread.join();
+        }
+        m_Idle.notify_all();
+        return dropped;
+    }
+
+  private:
+    /// submit() under m_Mutex. @p dropped takes a job DropOldest drops; @p noThread is set when the thread
+    /// couldn't start, so submit() wakes the frame loop once the lock is released.
+    [[nodiscard]] SubmitResult admitLocked(Job& job, std::optional<Job>& dropped, bool& noThread) noexcept
+    {
         if (m_State.load(std::memory_order_relaxed) != WorkerState::Running)
         {
             return SubmitResult::Closed;
         }
         if (!m_Thread.joinable() && !startThreadLocked())
         {
+            noThread = true;
             return SubmitResult::Closed;
         }
         try
@@ -278,38 +336,7 @@ template<typename Job, typename Snapshot> class Worker
         }
     }
 
-    /// Signals the job in flight's stop token and calls its armed cancel hook, if any; the queue goes on.
-    /// Nothing when no job is in flight.
-    void cancelCurrent() noexcept
-    {
-        const std::scoped_lock lock(m_Mutex);
-        cancelInFlightLocked();
-    }
-
-    /// Ends the worker: cancels the job in flight (cancelCurrent()), waits for it, and drops the queued jobs
-    /// unrun. The state becomes Stopped, unless the worker had failed. Allocates nothing. Safe to call more
-    /// than once, from the owner's thread; never from the body (it would wait for itself).
-    /// @return How many queued jobs were dropped.
-    std::size_t stop() noexcept
-    {
-        std::size_t dropped = 0;
-        {
-            const std::scoped_lock lock(m_Mutex);
-            WorkerState running = WorkerState::Running;
-            static_cast<void>(m_State.compare_exchange_strong(running, WorkerState::Stopped, std::memory_order_acq_rel));
-            dropped = m_Queue.size();
-            m_Queue.clear(); // in place: draining into another container could allocate (a debug STL's proxy)
-            cancelInFlightLocked();
-            static_cast<void>(m_Thread.request_stop());
-        }
-        if (m_Thread.joinable() && m_Thread.get_id() != std::this_thread::get_id())
-        {
-            m_Thread.join();
-        }
-        m_Idle.notify_all();
-        return dropped;
-    }
-
+  public:
     /// The latest publication (version 0 before any); a shared_ptr copy under the slot's swap lock.
     [[nodiscard]] std::shared_ptr<const Publication> latest() const noexcept
     {
@@ -352,15 +379,13 @@ template<typename Job, typename Snapshot> class Worker
         return m_InFlight;
     }
 
-    /// Waits up to @p timeout until no job is queued or in flight (or the worker ended). For tests and
-    /// shutdown paths only: never on the UI thread. @return Whether it got there in time.
+    /// Waits up to @p timeout until no job is queued or in flight: every job taken has been destroyed, and
+    /// every queued one run or dropped. A worker that failed or stopped gets there once its last job is gone,
+    /// not before. For tests and shutdown paths only: never on the UI thread. @return Whether it did in time.
     [[nodiscard]] bool waitUntilIdle(std::chrono::milliseconds timeout)
     {
         std::unique_lock lock(m_Mutex);
-        return m_Idle.wait_for(
-            lock,
-            timeout,
-            [this] { return (m_Queue.empty() && !m_InFlight) || m_State.load(std::memory_order_relaxed) != WorkerState::Running; });
+        return m_Idle.wait_for(lock, timeout, [this] { return m_Queue.empty() && !m_InFlight; });
     }
 
   private:
@@ -393,10 +418,16 @@ template<typename Job, typename Snapshot> class Worker
     }
 
     /// CancelGuard's end: puts back the hook armed before. Taking the lock waits for a call that is running.
+    /// A job cancelled while the inner hook was armed delivers that cancel to the outer one now, once: it
+    /// may be what aborts the job.
     void disarm(ArmedHook previous) noexcept
     {
         const std::scoped_lock lock(m_Mutex);
         m_Hook = previous;
+        if (m_InFlight && m_JobStop.stop_requested())
+        {
+            fireHookLocked();
+        }
     }
 
     /// Calls the armed hook once (under m_Mutex).
@@ -446,7 +477,7 @@ template<typename Job, typename Snapshot> class Worker
         PublicationWake::notify();
     }
 
-    /// The thread. Never throws: the body's exceptions end it in runJob(), with their reason; anything the
+    /// The thread. Never throws: the body's exceptions end it in loop(), with their reason; anything the
     /// loop's own bookkeeping throws (no memory for a job's stop state) ends it here.
     void run(const std::stop_token& stop) noexcept
     {
@@ -486,32 +517,42 @@ template<typename Job, typename Snapshot> class Worker
                 m_Queue.pop_front();
                 m_InFlight = true;
             }
-            const bool ran = runJob(*job, jobStop, context);
-            job.reset(); // the job's resources go before it counts as done
-            if (!ran)
-            {
-                return;
-            }
+            std::string what; // a failure's reason, copied on this thread (#1685)
+            const std::optional<std::string_view> failure = runJob(*job, jobStop, context, what);
+            job.reset(); // the job's resources go before it counts as done, failed or not
             {
                 const std::scoped_lock lock(m_Mutex);
-                m_InFlight = false;
-                if (m_Queue.empty())
+                if (failure.has_value())
                 {
-                    m_Idle.notify_all();
+                    failLocked(*failure);
+                    endLocked();
                 }
+                else
+                {
+                    m_InFlight = false;
+                    if (m_Queue.empty())
+                    {
+                        m_Idle.notify_all();
+                    }
+                }
+            }
+            if (failure.has_value())
+            {
+                PublicationWake::notify(); // the owner shows the failure
+                return;
             }
         }
     }
 
-    /// The no-throw boundary: runs the body on @p job. @return false when it threw, and the worker is Failed.
-    bool runJob(Job& job, const std::stop_token& jobStop, JobContext& context) noexcept
+    /// The no-throw boundary: runs the body on @p job. @return The reason when it threw (pointing into
+    /// @p what, or a fixed text), and nullopt when it returned. The caller fails the worker, after the job is gone.
+    std::optional<std::string_view> runJob(Job& job, const std::stop_token& jobStop, JobContext& context, std::string& what) noexcept
     {
         std::string_view reason;
-        std::string what; // copied here, on the thread that threw (#1685)
         try
         {
             m_Body(job, jobStop, context);
-            return true;
+            return std::nullopt;
         }
         catch (const std::exception& e)
         {
@@ -529,13 +570,7 @@ template<typename Job, typename Snapshot> class Worker
         {
             reason = FAILURE_UNKNOWN;
         }
-        {
-            const std::scoped_lock lock(m_Mutex);
-            failLocked(reason);
-            endLocked();
-        }
-        PublicationWake::notify(); // the owner shows the failure
-        return false;
+        return reason;
     }
 
     /// A failed worker's end (under m_Mutex): no job in flight, and the queue dropped in place.
