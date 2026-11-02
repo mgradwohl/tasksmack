@@ -15,6 +15,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <exception> // NOLINT(misc-include-cleaner) - std::exception, in the tests compiled only where the allocation hook is
 #include <memory>
 #include <mutex>
 #include <new>
@@ -342,6 +343,111 @@ TEST(WorkerTest, ASameKeyThatThrowsRefusesAndLeavesTheQueueAsItWas)
     ASSERT_TRUE(worker.waitUntilIdle(WAIT));
     EXPECT_EQ(ran.ids(), (std::vector<int>{0, 1}));
     EXPECT_EQ(worker.state(), WorkerState::Running);
+}
+
+/// A job whose copy can be made to throw, as a copy that runs out of memory does.
+class ThrowOnCopyJob
+{
+  public:
+    explicit ThrowOnCopyJob(bool throwOnCopy) noexcept : m_ThrowOnCopy(throwOnCopy)
+    {}
+    ~ThrowOnCopyJob() = default;
+    ThrowOnCopyJob(const ThrowOnCopyJob& other) : m_ThrowOnCopy(other.m_ThrowOnCopy)
+    {
+        if (m_ThrowOnCopy)
+        {
+            throw std::bad_alloc();
+        }
+    }
+    ThrowOnCopyJob& operator=(const ThrowOnCopyJob&) = delete;
+    ThrowOnCopyJob(ThrowOnCopyJob&&) noexcept = default;
+    ThrowOnCopyJob& operator=(ThrowOnCopyJob&&) noexcept = default;
+
+  private:
+    bool m_ThrowOnCopy;
+};
+
+TEST(WorkerTest, SubmittingAnLvalueWhoseCopyThrowsAnswersRefusedAndQueuesNothing)
+{
+    using CopyWorker = Worker<ThrowOnCopyJob, double>;
+    std::atomic<int> ran{0};
+    CopyWorker worker({.threadName = "ts-test-worker", .capacity = 4, .admission = Admission::Refuse},
+                      [&ran](ThrowOnCopyJob& /*job*/, const std::stop_token& /*stop*/, CopyWorker::JobContext& /*context*/)
+                      { ran.fetch_add(1); });
+    const ThrowOnCopyJob failing(true);
+    SubmitResult result = SubmitResult::Queued;
+    EXPECT_NO_THROW(result = worker.submit(failing)); // the copy is made inside submit(), not in the caller
+    EXPECT_EQ(result, SubmitResult::Refused);
+    EXPECT_EQ(worker.queued(), 0U);
+    EXPECT_EQ(worker.state(), WorkerState::Running);
+
+    const ThrowOnCopyJob copyable(false);
+    EXPECT_EQ(worker.submit(copyable), SubmitResult::Queued);
+    EXPECT_EQ(worker.submit(ThrowOnCopyJob(true)), SubmitResult::Queued); // an rvalue is moved, never copied
+    ASSERT_TRUE(worker.waitUntilIdle(WAIT));
+    EXPECT_EQ(ran.load(), 2);
+}
+
+// Low memory on the worker thread is contained: an allocation that fails inside the body (here, the one a
+// publication makes) ends the worker Failed with a reason, and the bookkeeping after it (the failure's
+// record, the queue, idle, a later submit(), the destructor) runs without terminating the process. The
+// allocation hook is per thread, so the body arms it. Skipped where the hook is compiled out (Windows,
+// sanitizer builds: AllocationFailureHook.h); the Linux debug and release builds run it.
+TEST(WorkerTest, AnAllocationFailureInsideTheBodyFailsTheWorkerAndTheProcessGoesOn)
+{
+#ifdef TASKSMACK_NO_ALLOCATOR_HOOK
+    GTEST_SKIP() << TASKSMACK_NO_ALLOCATOR_HOOK;
+#else
+    std::atomic<bool> reachedFailure{false};
+    auto worker =
+        std::make_unique<TestWorker>(options(4, Admission::Refuse),
+                                     [&reachedFailure](TestJob& /*job*/, const std::stop_token& /*stop*/, TestWorker::JobContext& context)
+                                     {
+                                         const TestSupport::FailAllocationAfter failNext(0);
+                                         context.progress(0.5); // its make_shared is the allocation that fails
+                                         reachedFailure = !TestSupport::allocationFailurePending();
+                                     });
+    const TestJob queued{.id = 2};
+    EXPECT_EQ(worker->submit({.id = 1}), SubmitResult::Queued);
+    EXPECT_EQ(worker->submit(queued), SubmitResult::Queued);
+    ASSERT_TRUE(worker->waitUntilIdle(WAIT));
+    EXPECT_FALSE(reachedFailure.load()); // the body never got past the failed publication
+    EXPECT_EQ(worker->state(), WorkerState::Failed);
+    EXPECT_FALSE(worker->failure().empty());
+    EXPECT_EQ(worker->latest()->version, 0U); // the failed publication never committed
+    EXPECT_EQ(queued.alive.use_count(), 1);   // the queued job was dropped
+    EXPECT_EQ(worker->submit({.id = 3}), SubmitResult::Closed);
+    worker.reset();
+#endif
+}
+
+// Even the failure's reason can't be copied (the allocation for it fails): the worker still ends Failed,
+// reading the fixed text. Linux only, as above.
+TEST(WorkerTest, AFailureWhoseReasonCannotBeCopiedReadsTheFixedText)
+{
+#ifdef TASKSMACK_NO_ALLOCATOR_HOOK
+    GTEST_SKIP() << TASKSMACK_NO_ALLOCATOR_HOOK;
+#else
+    /// An exception that allocates nothing, with a reason longer than any small-string buffer.
+    struct LongReasonError : std::exception
+    {
+        [[nodiscard]] const char* what() const noexcept override
+        {
+            return "a reason long enough that copying it into a std::string has to allocate on every standard library";
+        }
+    };
+    TestWorker worker(options(1, Admission::Refuse),
+                      [](TestJob& /*job*/, const std::stop_token& /*stop*/, TestWorker::JobContext& /*context*/)
+                      {
+                          // Armed without a guard: it must still be armed when the boundary copies what().
+                          TestSupport::armAllocationFailure(0);
+                          throw LongReasonError{};
+                      });
+    EXPECT_EQ(worker.submit({}), SubmitResult::Queued);
+    ASSERT_TRUE(worker.waitUntilIdle(WAIT));
+    EXPECT_EQ(worker.state(), WorkerState::Failed);
+    EXPECT_EQ(worker.failure(), TestWorker::FAILURE_UNRECORDED);
+#endif
 }
 
 // Shutdown allocates nothing, so it can't terminate the process when memory has run out: stop() with a job

@@ -33,7 +33,7 @@
 //                                                  const auto armed = context.armCancel(abort); // until connection goes
 //                                                  context.finish(connection.read(stop));
 //                                              }};
-//     if (m_Worker.submit(request) == Domain::SubmitResult::Refused) showNotYet();
+//     if (m_Worker.submit(request) == Domain::SubmitResult::Refused) showNotYet(); // copied inside; never throws
 //     if (auto published = m_Worker.latest(); published->version != m_Seen) show(published->value);
 //     if (m_Worker.state() == Domain::WorkerState::Failed) showFailed(m_Worker.failure());
 
@@ -238,23 +238,39 @@ template<typename Job, typename Snapshot> class Worker
     Worker(Worker&&) = delete;
     Worker& operator=(Worker&&) = delete;
 
-    /// Offers @p job to the queue under the worker's Admission policy; never waits for a job. Starts the
-    /// thread on the first call: when it can't start, the worker is Failed and this answers Closed.
-    /// Transactional: a job that isn't admitted leaves the queue as it was.
-    [[nodiscard]] SubmitResult submit(Job job) noexcept
+    /// Offers @p job to the queue under the worker's Admission policy; never waits for a job, and never
+    /// throws. Starts the thread on the first call: when it can't start, the worker is Failed and this
+    /// answers Closed. Transactional: a job that isn't admitted leaves the queue as it was.
+    [[nodiscard]] SubmitResult submit(Job&& job) noexcept
     {
         std::optional<Job> dropped; // destroyed after the lock is released
         bool noThread = false;
         const SubmitResult result = [this, &job, &dropped, &noThread] noexcept
         {
             const std::scoped_lock lock(m_Mutex);
-            return admitLocked(job, dropped, noThread);
+            return admitLocked(std::move(job), dropped, noThread);
         }();
         if (noThread)
         {
             PublicationWake::notify(); // the owner shows the failure, as for every other one
         }
         return result;
+    }
+
+    /// submit() of a copy of @p job, made here, so a copy that throws (no memory) answers Refused, with the
+    /// queue as it was, rather than throwing in the caller. Only for a copyable Job.
+    [[nodiscard]] SubmitResult submit(const Job& job) noexcept
+    {
+        std::optional<Job> copy;
+        try
+        {
+            copy.emplace(job);
+        }
+        catch (...)
+        {
+            return SubmitResult::Refused;
+        }
+        return submit(std::move(*copy));
     }
 
     /// Signals the job in flight's stop token and calls its armed cancel hook, if any; the queue goes on.
@@ -292,7 +308,7 @@ template<typename Job, typename Snapshot> class Worker
   private:
     /// submit() under m_Mutex. @p dropped takes a job DropOldest drops; @p noThread is set when the thread
     /// couldn't start, so submit() wakes the frame loop once the lock is released.
-    [[nodiscard]] SubmitResult admitLocked(Job& job, std::optional<Job>& dropped, bool& noThread) noexcept
+    [[nodiscard]] SubmitResult admitLocked(Job&& job, std::optional<Job>& dropped, bool& noThread) noexcept
     {
         if (m_State.load(std::memory_order_relaxed) != WorkerState::Running)
         {
