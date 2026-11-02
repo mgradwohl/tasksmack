@@ -2440,8 +2440,8 @@ class TimeAxisPool
     struct Slot
     {
         std::vector<double> buffer;
-        int lastFrame = 0;            ///< Frame the buffer was last handed out in
-        Clock::time_point lastUsed{}; ///< That frame's start (m_FrameTime)
+        int lastFrame = 0;          ///< Frame the buffer was last handed out in
+        Clock::time_point lastUsed; ///< That frame's start (m_FrameTime)
     };
 
     /// Frees the trailing buffers not asked for within RELEASE_AFTER of this frame's start. Called at
@@ -2464,7 +2464,7 @@ class TimeAxisPool
     std::vector<Slot> m_Slots;
     std::size_t m_Next = 0;
     int m_Frame = -1;
-    Clock::time_point m_FrameTime{};
+    Clock::time_point m_FrameTime;
 };
 
 /// The time axis for a history chart (see fillTimeAxis()), in a buffer from this frame's
