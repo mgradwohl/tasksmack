@@ -261,6 +261,12 @@ template<typename Job, typename Snapshot> class Worker
     /// queue as it was, rather than throwing in the caller. Only for a copyable Job.
     [[nodiscard]] SubmitResult submit(const Job& job) noexcept
     {
+        // An ended worker answers Closed whatever the copy would do; admitLocked() checks again under the lock,
+        // for an end that comes after this.
+        if (m_State.load(std::memory_order_acquire) != WorkerState::Running)
+        {
+            return SubmitResult::Closed;
+        }
         std::optional<Job> copy;
         try
         {

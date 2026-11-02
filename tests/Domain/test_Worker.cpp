@@ -386,6 +386,12 @@ TEST(WorkerTest, SubmittingAnLvalueWhoseCopyThrowsAnswersRefusedAndQueuesNothing
     EXPECT_EQ(worker.submit(ThrowOnCopyJob(true)), SubmitResult::Queued); // an rvalue is moved, never copied
     ASSERT_TRUE(worker.waitUntilIdle(WAIT));
     EXPECT_EQ(ran.load(), 2);
+
+    // An ended worker answers Closed before any copy is tried, so even a copy that would throw gets Closed.
+    EXPECT_EQ(worker.stop(), 0U);
+    SubmitResult afterStop = SubmitResult::Queued;
+    EXPECT_NO_THROW(afterStop = worker.submit(failing));
+    EXPECT_EQ(afterStop, SubmitResult::Closed);
 }
 
 // Low memory on the worker thread is contained: an allocation that fails inside the body (here, the one a
@@ -399,17 +405,21 @@ TEST(WorkerTest, AnAllocationFailureInsideTheBodyFailsTheWorkerAndTheProcessGoes
     GTEST_SKIP() << TASKSMACK_NO_ALLOCATOR_HOOK;
 #else
     std::atomic<bool> reachedFailure{false};
-    auto worker =
-        std::make_unique<TestWorker>(options(4, Admission::Refuse),
-                                     [&reachedFailure](TestJob& /*job*/, const std::stop_token& /*stop*/, TestWorker::JobContext& context)
-                                     {
-                                         const TestSupport::FailAllocationAfter failNext(0);
-                                         context.progress(0.5); // its make_shared is the allocation that fails
-                                         reachedFailure = !TestSupport::allocationFailurePending();
-                                     });
+    Gate gate; // held until both jobs are submitted, so the second is queued behind the failing one
+    auto worker = std::make_unique<TestWorker>(
+        options(4, Admission::Refuse),
+        [&reachedFailure, &gate](TestJob& /*job*/, const std::stop_token& stop, TestWorker::JobContext& context)
+        {
+            static_cast<void>(gate.pass(stop));
+            const TestSupport::FailAllocationAfter failNext(0);
+            context.progress(0.5); // its make_shared is the allocation that fails
+            reachedFailure = !TestSupport::allocationFailurePending();
+        });
     const TestJob queued{.id = 2};
     EXPECT_EQ(worker->submit({.id = 1}), SubmitResult::Queued);
     EXPECT_EQ(worker->submit(queued), SubmitResult::Queued);
+    EXPECT_EQ(worker->queued(), 1U);
+    gate.open();
     ASSERT_TRUE(worker->waitUntilIdle(WAIT));
     EXPECT_FALSE(reachedFailure.load()); // the body never got past the failed publication
     EXPECT_EQ(worker->state(), WorkerState::Failed);
