@@ -3270,6 +3270,45 @@ TEST_F(LinuxEfficiencyModeActionTest, AnOnWhileAnotherCgroupsWeightIsOwedLowersN
     EXPECT_TRUE(efficiency().writes.empty());
 }
 
+// #3331: on lowered cgroup A; A was replaced at the same path (at weight 100), and Efficiency mode turned on again with
+// no off between. The old record is stale: it is dropped, the replacement lowered and recorded, and off puts its 100 back.
+TEST_F(LinuxEfficiencyModeActionTest, AnOnAfterTheCgroupWasReplacedRecordsTheReplacement)
+{
+    efficiency().files["cpu.weight"] = "50\n";
+    ASSERT_TRUE(m_Control.setEfficiencyMode(ownTarget(), true).success); // A, identity 1: 50 lowered to 1
+    efficiency().readableCgroupId = 2;                                   // replaced at the same path
+    efficiency().files["cpu.weight"] = "100\n";
+    efficiency().nice = 19;
+    efficiency().writes.clear();
+    ASSERT_TRUE(m_Control.setEfficiencyMode(ownTarget(), true).success);
+    EXPECT_EQ(efficiency().writes, (std::vector<std::pair<std::string, std::string>>{{"cpu.weight", "1"}})) << "the replacement, lowered";
+    efficiency().writes.clear();
+    const ProcessActionResult off = m_Control.setEfficiencyMode(ownTarget(), false);
+    ASSERT_TRUE(off.success) << off.errorMessage;
+    EXPECT_TRUE(off.successNote.empty()) << off.successNote;
+    EXPECT_EQ(efficiency().writes, (std::vector<std::pair<std::string, std::string>>{{"cpu.weight", "100"}})) << "and put back";
+    EXPECT_EQ(m_Control.rememberedEfficiencyCount(), 0U);
+}
+
+// #3331: on can't read its cgroup's identity: it lowers no weight (one it couldn't tell apart from a replacement later),
+// only the priority, and says why; off then has no weight to put anywhere.
+TEST_F(LinuxEfficiencyModeActionTest, AnOnThatCantCheckItsCgroupLowersOnlyThePriority)
+{
+    efficiency().files["cpu.weight"] = "50\n";
+    efficiency().identityErrno = EACCES;
+    const ProcessActionResult on = m_Control.setEfficiencyMode(ownTarget(), true);
+    ASSERT_TRUE(on.success) << on.errorMessage;
+    EXPECT_EQ(on.successNote, "only its priority was lowered: its cgroup can't be checked");
+    EXPECT_TRUE(efficiency().writes.empty());
+
+    efficiency().identityErrno = 0;
+    efficiency().nice = 19;
+    const ProcessActionResult off = m_Control.setEfficiencyMode(ownTarget(), false);
+    ASSERT_TRUE(off.success) << off.errorMessage;
+    EXPECT_TRUE(efficiency().writes.empty()) << "no weight was lowered, so none is put back";
+    EXPECT_EQ(plan().lastSetValue, 5);
+}
+
 // #3331: off can't check the cgroup on lowered (no permission now, say). That isn't "gone": the weight may still be
 // owed, so the memory is kept, and an off once it can puts the weight back.
 TEST_F(LinuxEfficiencyModeActionTest, OffThatCantCheckTheCgroupKeepsTheMemory)

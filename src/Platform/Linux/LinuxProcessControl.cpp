@@ -1438,16 +1438,30 @@ ProcessActionResult LinuxProcessControl::setEfficiencyMode(const ProcessTarget& 
         // one of the two unrecorded.
         const bool owedElsewhere =
             remembered.has_value() && remembered->cpuWeight.has_value() && remembered->cgroup.has_value() && remembered->cgroup != cgroup;
-        std::string note = owedElsewhere
-                             ? std::string("only its priority was lowered: its earlier cgroup's CPU weight is still to be put back")
-                             : lowerCgroupWeight(m_Syscalls, target.pid, cgroup, weightBefore);
+        // Which cgroup the path names now, read before anything is lowered (#3331): a weight is only ever lowered
+        // with its cgroup's identity recorded, and a record for a cgroup since replaced at the same path is stale.
         std::optional<std::uint64_t> cgroupId;
-        if (weightBefore.has_value() && cgroup.has_value())
+        bool identityUnknown = false;
+        if (!owedElsewhere && cgroup.has_value() && !cgroup->empty())
         {
-            if (const std::expected<std::uint64_t, int> id = m_Syscalls.cgroupIdentity(*cgroup); id.has_value())
-            {
-                cgroupId = *id;
-            }
+            const std::expected<std::uint64_t, int> id = m_Syscalls.cgroupIdentity(*cgroup);
+            cgroupId = id.has_value() ? std::optional(*id) : std::nullopt;
+            identityUnknown = !id.has_value();
+        }
+        const bool staleRecord = remembered.has_value() && remembered->cgroup == cgroup && remembered->cgroupId.has_value() &&
+                                 cgroupId.has_value() && remembered->cgroupId != cgroupId;
+        std::string note;
+        if (owedElsewhere)
+        {
+            note = "only its priority was lowered: its earlier cgroup's CPU weight is still to be put back";
+        }
+        else if (identityUnknown)
+        {
+            note = "only its priority was lowered: its cgroup can't be checked";
+        }
+        else
+        {
+            note = lowerCgroupWeight(m_Syscalls, target.pid, cgroup, weightBefore);
         }
         {
             // Turned on twice, the first time's "before" stays what off puts back. Processes that have exited since
@@ -1477,6 +1491,11 @@ ProcessActionResult LinuxProcessControl::setEfficiencyMode(const ProcessTarget& 
             for (const EfficiencyMemory::Key& exited : entries)
             {
                 m_Efficiency->byProcess.erase(exited);
+            }
+            if (staleRecord)
+            {
+                // Its cgroup was replaced at the same path: nothing of that on's is left to put back (#3331).
+                m_Efficiency->byProcess.erase(key);
             }
             const auto [entry, added] =
                 m_Efficiency->byProcess.try_emplace(key,
