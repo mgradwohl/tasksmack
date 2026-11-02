@@ -2890,6 +2890,7 @@ struct EfficiencyPlan
     std::string readableCgroup = "user.slice/app-test.scope"; ///< The one cgroup whose files exist (#3331)
     std::string lastWriteCgroup;                              ///< The cgroup the last write went to
     std::uint64_t readableCgroupId = 1;                       ///< readableCgroup's identity (#3331)
+    int identityErrno = 0;                                    ///< Set: reading a cgroup's identity fails with this (#3331)
 };
 
 EfficiencyPlan& efficiency()
@@ -2918,9 +2919,17 @@ std::optional<std::string> fakeReadCgroupFile(const std::string& cgroup, std::st
     return found == efficiency().files.end() ? std::nullopt : std::optional(found->second);
 }
 
-std::optional<std::uint64_t> fakeCgroupIdentity(const std::string& cgroup)
+std::expected<std::uint64_t, int> fakeCgroupIdentity(const std::string& cgroup)
 {
-    return cgroup == efficiency().readableCgroup ? std::optional(efficiency().readableCgroupId) : std::nullopt;
+    if (efficiency().identityErrno != 0)
+    {
+        return std::unexpected(efficiency().identityErrno);
+    }
+    if (cgroup != efficiency().readableCgroup)
+    {
+        return std::unexpected(ENOENT);
+    }
+    return efficiency().readableCgroupId;
 }
 
 int fakeWriteCgroupFile(const std::string& cgroup, std::string_view file, const std::string& value)
@@ -3255,6 +3264,31 @@ TEST_F(LinuxEfficiencyModeActionTest, AnOnWhileAnotherCgroupsWeightIsOwedLowersN
     EXPECT_EQ(on.successNote, "only its priority was lowered: its earlier cgroup's CPU weight is still to be put back");
     EXPECT_TRUE(efficiency().writes.empty()) << "B's weight is left";
     EXPECT_EQ(m_Control.rememberedEfficiencyCount(), 1U) << "A's weight still owed";
+
+    // And on again: still no second cgroup, the first on having cleared nothing that would let it through.
+    EXPECT_EQ(m_Control.setEfficiencyMode(ownTarget(), true).successNote, on.successNote);
+    EXPECT_TRUE(efficiency().writes.empty());
+}
+
+// #3331: off can't check the cgroup on lowered (no permission now, say). That isn't "gone": the weight may still be
+// owed, so the memory is kept, and an off once it can puts the weight back.
+TEST_F(LinuxEfficiencyModeActionTest, OffThatCantCheckTheCgroupKeepsTheMemory)
+{
+    efficiency().files["cpu.weight"] = "50\n";
+    ASSERT_TRUE(m_Control.setEfficiencyMode(ownTarget(), true).success);
+    efficiency().nice = 19;
+    efficiency().identityErrno = EACCES;
+    ProcessActionResult off = m_Control.setEfficiencyMode(ownTarget(), false);
+    ASSERT_TRUE(off.success) << off.errorMessage;
+    EXPECT_TRUE(off.successNote.starts_with("its cgroup's CPU weight wasn't put back: its cgroup can't be checked")) << off.successNote;
+    EXPECT_EQ(m_Control.rememberedEfficiencyCount(), 1U);
+
+    efficiency().identityErrno = 0;
+    efficiency().writes.clear();
+    off = m_Control.setEfficiencyMode(ownTarget(), false);
+    EXPECT_TRUE(off.successNote.empty()) << off.successNote;
+    EXPECT_EQ(efficiency().writes, (std::vector<std::pair<std::string, std::string>>{{"cpu.weight", "50"}}));
+    EXPECT_EQ(m_Control.rememberedEfficiencyCount(), 0U);
 }
 
 // #3332: an off that put the nice back but not the weight keeps the memory; the user then changes the nice and turns
