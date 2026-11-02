@@ -2889,6 +2889,7 @@ struct EfficiencyPlan
     std::vector<std::pair<std::string, std::string>> writes;  ///< {file, value}
     std::string readableCgroup = "user.slice/app-test.scope"; ///< The one cgroup whose files exist (#3331)
     std::string lastWriteCgroup;                              ///< The cgroup the last write went to
+    std::uint64_t readableCgroupId = 1;                       ///< readableCgroup's identity (#3331)
 };
 
 EfficiencyPlan& efficiency()
@@ -2917,6 +2918,11 @@ std::optional<std::string> fakeReadCgroupFile(const std::string& cgroup, std::st
     return found == efficiency().files.end() ? std::nullopt : std::optional(found->second);
 }
 
+std::optional<std::uint64_t> fakeCgroupIdentity(const std::string& cgroup)
+{
+    return cgroup == efficiency().readableCgroup ? std::optional(efficiency().readableCgroupId) : std::nullopt;
+}
+
 int fakeWriteCgroupFile(const std::string& cgroup, std::string_view file, const std::string& value)
 {
     efficiency().lastWriteCgroup = cgroup;
@@ -2942,7 +2948,8 @@ LinuxProcessSyscalls fakeEfficiencySyscalls()
                                 .currentNice = &fakeCurrentNice,
                                 .procCgroup = &fakeProcCgroup,
                                 .readCgroupFile = &fakeReadCgroupFile,
-                                .writeCgroupFile = &fakeWriteCgroupFile};
+                                .writeCgroupFile = &fakeWriteCgroupFile,
+                                .cgroupIdentity = &fakeCgroupIdentity};
 }
 
 class LinuxEfficiencyModeActionTest : public ::testing::Test
@@ -3191,7 +3198,7 @@ TEST_F(LinuxEfficiencyModeActionTest, OffPutsTheWeightBackOnTheCgroupOnLoweredNo
     efficiency().writes.clear();
     off = m_Control.setEfficiencyMode(ownTarget(), false);
     ASSERT_TRUE(off.success) << off.errorMessage;
-    EXPECT_TRUE(off.successNote.contains("has moved to another cgroup")) << off.successNote;
+    EXPECT_EQ(off.successNote, "its old cgroup's CPU weight wasn't put back: that cgroup is gone");
     EXPECT_TRUE(efficiency().writes.empty()) << "the cgroup it moved to is left alone";
     EXPECT_EQ(m_Control.rememberedEfficiencyCount(), 0U);
 
@@ -3208,6 +3215,46 @@ TEST_F(LinuxEfficiencyModeActionTest, OffPutsTheWeightBackOnTheCgroupOnLoweredNo
     EXPECT_TRUE(off.successNote.empty()) << off.successNote;
     EXPECT_EQ(efficiency().lastWriteCgroup, "user.slice/app-test.scope");
     EXPECT_EQ(efficiency().writes, (std::vector<std::pair<std::string, std::string>>{{"cpu.weight", "50"}}));
+}
+
+// #3331: the cgroup on lowered was deleted and another made at its path, at weight 1, perhaps holding other
+// processes. Off writes nothing into it: it says the old cgroup is gone and forgets.
+TEST_F(LinuxEfficiencyModeActionTest, OffWritesNothingIntoAnotherCgroupMadeAtTheSamePath)
+{
+    efficiency().files["cpu.weight"] = "50\n";
+    ASSERT_TRUE(m_Control.setEfficiencyMode(ownTarget(), true).success); // lowered, identity 1
+    efficiency().nice = 19;
+    efficiency().readableCgroupId = 2; // deleted and made again
+    efficiency().files["cpu.weight"] = "1\n";
+    efficiency().writes.clear();
+    const ProcessActionResult off = m_Control.setEfficiencyMode(ownTarget(), false);
+    ASSERT_TRUE(off.success) << off.errorMessage;
+    EXPECT_EQ(off.successNote, "its old cgroup's CPU weight wasn't put back: that cgroup is gone");
+    EXPECT_TRUE(efficiency().writes.empty());
+    EXPECT_EQ(m_Control.rememberedEfficiencyCount(), 0U);
+}
+
+// #3331: an off left cgroup A's weight owed; the process moved to B and Efficiency mode was turned on again. That on
+// lowers no second cgroup (one of the two would go unrecorded): it says only the priority was lowered.
+TEST_F(LinuxEfficiencyModeActionTest, AnOnWhileAnotherCgroupsWeightIsOwedLowersNoSecondOne)
+{
+    efficiency().files["cpu.weight"] = "50\n";
+    ASSERT_TRUE(m_Control.setEfficiencyMode(ownTarget(), true).success); // A: 50 lowered to 1
+    efficiency().nice = 19;
+    efficiency().writeErrno = EACCES;
+    ASSERT_TRUE(m_Control.setEfficiencyMode(ownTarget(), false).successNote.contains("still the minimum"));
+
+    efficiency().writeErrno = 0;
+    efficiency().procCgroup = std::string("0::/user.slice/other.scope\n"); // moved to B
+    efficiency().readableCgroup = "user.slice/other.scope";
+    efficiency().files["cpu.weight"] = "80\n";
+    efficiency().nice = 5;
+    efficiency().writes.clear();
+    const ProcessActionResult on = m_Control.setEfficiencyMode(ownTarget(), true);
+    ASSERT_TRUE(on.success) << on.errorMessage;
+    EXPECT_EQ(on.successNote, "only its priority was lowered: its earlier cgroup's CPU weight is still to be put back");
+    EXPECT_TRUE(efficiency().writes.empty()) << "B's weight is left";
+    EXPECT_EQ(m_Control.rememberedEfficiencyCount(), 1U) << "A's weight still owed";
 }
 
 // #3332: an off that put the nice back but not the weight keeps the memory; the user then changes the nice and turns

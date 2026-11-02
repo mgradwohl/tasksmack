@@ -470,6 +470,17 @@ std::optional<std::string> realReadCgroupFile(const std::string& cgroup, std::st
     return path.has_value() ? readSmallFile(path->string()) : std::nullopt;
 }
 
+std::optional<std::uint64_t> realCgroupIdentity(const std::string& cgroup)
+{
+    const std::optional<std::filesystem::path> procs = cgroupFilePath(cgroup, LinuxEfficiency::CGROUP_PROCS_FILE);
+    struct stat directory{};
+    if (!procs.has_value() || ::stat(procs->parent_path().c_str(), &directory) != 0)
+    {
+        return std::nullopt;
+    }
+    return static_cast<std::uint64_t>(directory.st_ino);
+}
+
 int realWriteCgroupFile(const std::string& cgroup, std::string_view file, const std::string& value)
 {
     const std::optional<std::filesystem::path> path = cgroupFilePath(cgroup, file);
@@ -511,7 +522,8 @@ LinuxProcessSyscalls realProcessSyscalls() noexcept
             .currentNice = &realCurrentNice,
             .procCgroup = &realProcCgroup,
             .readCgroupFile = &realReadCgroupFile,
-            .writeCgroupFile = &realWriteCgroupFile};
+            .writeCgroupFile = &realWriteCgroupFile,
+            .cgroupIdentity = &realCgroupIdentity};
 }
 
 struct LinuxProcessControl::EfficiencyMemory
@@ -524,6 +536,9 @@ struct LinuxProcessControl::EfficiencyMemory
         /// The cgroup whose weight it lowered (#3331): off puts the weight back there, even if the process has
         /// moved since, and never writes it into the cgroup the process is in now.
         std::optional<std::string> cgroup;
+        /// That cgroup's identity (its directory's inode) when on lowered it: off puts nothing into another cgroup
+        /// made at the same path since (#3331).
+        std::optional<std::uint64_t> cgroupId;
         /// Off ran, put the nice back and left only the weight to put back (#3332): the next on records the nice it
         /// finds, keeping the weight still owed.
         bool turnedOff = false;
@@ -616,6 +631,10 @@ LinuxProcessControl::LinuxProcessControl(const LinuxProcessSyscalls& syscalls, s
     if (m_Syscalls.writeCgroupFile == nullptr)
     {
         m_Syscalls.writeCgroupFile = &realWriteCgroupFile;
+    }
+    if (m_Syscalls.cgroupIdentity == nullptr)
+    {
+        m_Syscalls.cgroupIdentity = &realCgroupIdentity;
     }
     // A table that fakes only the kernel calls keeps the real thread listing (see LinuxProcessSyscalls).
     if (m_Syscalls.listThreads == nullptr)
@@ -1411,7 +1430,15 @@ ProcessActionResult LinuxProcessControl::setEfficiencyMode(const ProcessTarget& 
     if (on)
     {
         std::optional<int> weightBefore;
-        std::string note = lowerCgroupWeight(m_Syscalls, target.pid, cgroup, weightBefore);
+        // A weight an earlier off still owes another cgroup (#3331): this on lowers no second one, which would leave
+        // one of the two unrecorded.
+        const bool owedElsewhere = remembered.has_value() && remembered->turnedOff && remembered->cpuWeight.has_value() &&
+                                   remembered->cgroup.has_value() && remembered->cgroup != cgroup;
+        std::string note = owedElsewhere
+                             ? std::string("only its priority was lowered: its earlier cgroup's CPU weight is still to be put back")
+                             : lowerCgroupWeight(m_Syscalls, target.pid, cgroup, weightBefore);
+        const std::optional<std::uint64_t> cgroupId =
+            weightBefore.has_value() && cgroup.has_value() ? m_Syscalls.cgroupIdentity(*cgroup) : std::nullopt;
         {
             // Turned on twice, the first time's "before" stays what off puts back. Processes that have exited since
             // their on are forgotten here, so the shared memory doesn't grow for TaskSmack's lifetime (#3330): one
@@ -1441,10 +1468,12 @@ ProcessActionResult LinuxProcessControl::setEfficiencyMode(const ProcessTarget& 
             {
                 m_Efficiency->byProcess.erase(exited);
             }
-            const auto [entry, added] = m_Efficiency->byProcess.try_emplace(
-                key,
-                EfficiencyMemory::Before{
-                    .nice = niceBefore.value_or(0), .cpuWeight = weightBefore, .cgroup = weightBefore.has_value() ? cgroup : std::nullopt});
+            const auto [entry, added] =
+                m_Efficiency->byProcess.try_emplace(key,
+                                                    EfficiencyMemory::Before{.nice = niceBefore.value_or(0),
+                                                                             .cpuWeight = weightBefore,
+                                                                             .cgroup = weightBefore.has_value() ? cgroup : std::nullopt,
+                                                                             .cgroupId = cgroupId});
             if (!added && entry->second.turnedOff)
             {
                 // After an off that couldn't put the weight back: the nice is the one found now, and the weight
@@ -1454,6 +1483,7 @@ ProcessActionResult LinuxProcessControl::setEfficiencyMode(const ProcessTarget& 
                 {
                     entry->second.cpuWeight = weightBefore;
                     entry->second.cgroup = cgroup;
+                    entry->second.cgroupId = cgroupId;
                 }
                 entry->second.turnedOff = false;
             }
@@ -1465,6 +1495,17 @@ ProcessActionResult LinuxProcessControl::setEfficiencyMode(const ProcessTarget& 
     // put back, and its new cgroup's left alone. Also when the process's cgroup can't be read now.
     const bool loweredOne = remembered.has_value() && remembered->cgroup.has_value();
     const bool moved = loweredOne && cgroup.has_value() && *cgroup != *remembered->cgroup;
+    if (loweredOne && remembered->cgroupId.has_value() && m_Syscalls.cgroupIdentity(*remembered->cgroup) != remembered->cgroupId)
+    {
+        // The cgroup on lowered is gone, or another was made at its path since: nothing of on's to put back (#3331).
+        {
+            const std::scoped_lock lock(m_Efficiency->mutex);
+            m_Efficiency->byProcess.erase(key);
+        }
+        std::string gone = "its old cgroup's CPU weight wasn't put back: that cgroup is gone";
+        spdlog::info("Efficiency mode off for PID {}: {}", target.pid, gone);
+        return ProcessActionResult::ok(std::move(gone));
+    }
     WeightRestore weight = restoreCgroupWeight(m_Syscalls,
                                                target.pid,
                                                loweredOne ? remembered->cgroup : cgroup,
