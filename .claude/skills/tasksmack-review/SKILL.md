@@ -45,6 +45,7 @@ TaskSmack has a strict layered architecture: App → UI → Core → Domain → 
 
 - Verify mutex usage and `std::atomic` correctness in `BackgroundSampler` and snapshot publication paths.
 - Snapshots published to UI must be immutable and versioned; flag shared mutable state crossed between sampler threads and render code.
+- A new background thread uses `Domain::Worker` (`src/Domain/Worker.h`, #3343); a raw `std::jthread` needs a reason.
 
 ### Timing and cadence (#2731)
 
