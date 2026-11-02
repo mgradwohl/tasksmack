@@ -96,19 +96,7 @@ class TtyAgent
         {
             return;
         }
-        // It asks on the controlling terminal: only while this process group has its foreground, or it would be
-        // stopped (SIGTTIN/SIGTTOU) with the prompt never shown.
-        if (needsTerminal)
-        {
-            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
-            m_Tty = ::open("/dev/tty", O_RDWR | O_NOCTTY | O_CLOEXEC);
-            if (m_Tty < 0 || ::tcgetpgrp(m_Tty) != ::getpgrp())
-            {
-                return;
-            }
-            m_TermiosSaved = ::tcgetattr(m_Tty, &m_Termios) == 0; // put back if it dies mid-prompt with echo off
-        }
-        // Built before the pipe, so nothing below it allocates and can leak its descriptors.
+        // Built before the terminal and the pipe are opened, so nothing after them allocates and can leak them.
         std::vector<std::string> arguments = command;
         arguments.insert(arguments.end(),
                          {"--process", subject, "--fallback", "--notify-fd", std::to_string(PkexecBroker::TTY_AGENT_NOTIFY_FD)});
@@ -120,6 +108,18 @@ class TtyAgent
         }
         argv.push_back(nullptr);
 
+        // Opened after everything that allocates, so a throw can't leak it. The agent asks on the controlling terminal:
+        // only while this process group has its foreground, or it would be stopped (SIGTTIN/SIGTTOU), prompt unseen.
+        if (needsTerminal)
+        {
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
+            m_Tty = ::open("/dev/tty", O_RDWR | O_NOCTTY | O_CLOEXEC);
+            if (m_Tty < 0 || ::tcgetpgrp(m_Tty) != ::getpgrp())
+            {
+                return;
+            }
+            m_TermiosSaved = ::tcgetattr(m_Tty, &m_Termios) == 0; // put back if it dies mid-prompt with echo off
+        }
         std::array<int, 2> notify{-1, -1};
         if (::pipe2(notify.data(), O_CLOEXEC) != 0)
         {
@@ -139,9 +139,16 @@ class TtyAgent
         }
         waitForRegistration(notify[0], registerTimeout, stopToken);
         ::close(notify[0]);
-        if (::waitpid(m_Pid, nullptr, WNOHANG) == m_Pid)
+        // The descriptor closes both when it registers and when it exits (no terminal to ask on, another agent kept,
+        // an error), and an exiting process can't be reaped quite yet: one that hasn't gone in 200 ms registered.
+        for (int attempt = 0; attempt < 20; ++attempt)
         {
-            m_Pid = -1; // it exited (no terminal to ask on, another agent kept, an error): not the one that asks
+            if (::waitpid(m_Pid, nullptr, WNOHANG) == m_Pid)
+            {
+                m_Pid = -1; // not the one that asks
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
     }
     ~TtyAgent()

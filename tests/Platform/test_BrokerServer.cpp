@@ -1167,10 +1167,11 @@ TEST(PkexecBrokerTest, ATextAgentIsStartedForThePromptAndStoppedAfter)
         std::ofstream(script) << body;
         return script.string();
     };
-    const std::string agent = writeAgent("agent.sh",
-                                         "echo \"$@\" > '" + (dir.path / "args").string() + "'\n" + "exec 3>&-\n" + // registered
-                                             "trap \"echo stopped > '" + (dir.path / "stopped").string() + "'; exit 0\" TERM\n" +
-                                             "while :; do sleep 0.05; done\n");
+    const std::string agent =
+        writeAgent("agent.sh",
+                   "echo \"$@\" > '" + (dir.path / "args").string() + "'\n" + "trap \"echo stopped > '" + (dir.path / "stopped").string() +
+                       "'; exit 0\" TERM\n" + "exec 3>&-\n" + // registered, with its TERM trap already set
+                       "while :; do sleep 0.05; done\n");
     const auto connectWith = [](std::vector<std::string> command)
     {
         PkexecBroker broker(TASKSMACK_HELPER_PATH, {}, HelperSandbox::Mode::Enforce);
