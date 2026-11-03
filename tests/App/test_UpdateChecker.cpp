@@ -221,6 +221,20 @@ TEST_F(UpdateCheckerTest, UpToDateRecordsTheLatestReleaseAndOffersNothing)
     EXPECT_EQ(checker.summary(), "Up to date: the latest release is v0.10.0");
 }
 
+TEST_F(UpdateCheckerTest, ADevBuildSendsItsFullVersionAndIsNotOfferedAnOlderRelease)
+{
+    // A build from main between releases (#3371): tasksmack::Version::FULL reads "0.11.0-dev".
+    UpdateChecker checker = makeChecker(m_Client, "0.11.0-dev");
+    ASSERT_TRUE(checker.offered());
+    m_State.enabled = true;
+    EXPECT_TRUE(runUpdate(checker));
+    const std::vector<Platform::HttpsRequest> requests = m_Client->requests();
+    ASSERT_EQ(requests.size(), 1U);
+    EXPECT_EQ(requests[0].userAgent, "TaskSmack/0.11.0-dev");
+    EXPECT_EQ(m_State.latestVersion, "0.10.0");
+    EXPECT_FALSE(checker.notice(m_State).has_value());
+}
+
 TEST_F(UpdateCheckerTest, CheckNowGoesAheadOfTheDailyLimit)
 {
     UpdateChecker checker = makeChecker(m_Client);

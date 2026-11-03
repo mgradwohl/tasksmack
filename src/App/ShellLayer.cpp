@@ -97,7 +97,7 @@ ShellLayer::ShellLayer(std::unique_ptr<IShellHost> host,
                        UpdateChecker::Clock updateClock)
     : Layer("ShellLayer"),
       m_Host(std::move(host)),
-      m_Updates(std::move(updateClient), tasksmack::Version::STRING, std::move(updateClock)),
+      m_Updates(std::move(updateClient), tasksmack::Version::FULL, std::move(updateClock)),
       m_Tabs({
           {
               .panel = m_SystemMetricsPanel,

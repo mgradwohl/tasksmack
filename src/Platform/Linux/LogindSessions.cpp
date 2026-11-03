@@ -12,7 +12,7 @@
 #include "Platform/Linux/SdBusCall.h"
 
 #include <cstdint>
-#include <cstdlib>
+#include <memory>
 #include <utility>
 #include <vector>
 
@@ -32,6 +32,7 @@ namespace
 
 using Detail::Bus;
 using Detail::BusError;
+using Detail::MallocString;
 using Detail::Message;
 
 constexpr const char* LOGIN1 = "org.freedesktop.login1";
@@ -43,14 +44,14 @@ constexpr const char* LOGIN1_SESSION = "org.freedesktop.login1.Session";
 [[nodiscard]] std::string sessionString(sd_bus* bus, const std::string& path, const char* property)
 {
     BusError error;
-    char* value = nullptr;
-    std::string text;
-    if (sd_bus_get_property_string(bus, LOGIN1, path.c_str(), LOGIN1_SESSION, property, error.get(), &value) >= 0 && value != nullptr)
+    MallocString value; // freed even if the copy below throws (#3338)
+    // Its own statement: std::out_ptr() hands the string to value only at the end of the full expression.
+    const int result = sd_bus_get_property_string(bus, LOGIN1, path.c_str(), LOGIN1_SESSION, property, error.get(), std::out_ptr(value));
+    if (result >= 0 && value.get() != nullptr)
     {
-        text = value;
+        return value.get();
     }
-    std::free(value); // NOLINT(cppcoreguidelines-no-malloc, cppcoreguidelines-owning-memory) - sd-bus hands back malloc'd strings
-    return text;
+    return {};
 }
 
 /// A trivial property ('b', 'u', 't') of session object @p path into @p value; false when it can't be read.

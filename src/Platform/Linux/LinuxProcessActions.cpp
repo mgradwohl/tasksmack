@@ -28,6 +28,7 @@
 #include <format>
 #include <fstream>
 #include <iterator>
+#include <memory>
 #include <optional>
 #include <span>
 #include <stop_token>
@@ -407,14 +408,25 @@ runCancellable(const LinuxProcessSyscalls& syscalls, const std::vector<std::stri
 
 } // namespace
 
-LinuxProcessActions::LinuxProcessActions() : LinuxProcessActions(discoverSyscallTraceTools(), realProcessSyscalls())
+LinuxProcessActions::LinuxProcessActions() : LinuxProcessActions(makeEfficiencyMemory())
 {}
 
-LinuxProcessActions::LinuxProcessActions(SyscallTrace::Tools traceTools) : LinuxProcessActions(std::move(traceTools), realProcessSyscalls())
+LinuxProcessActions::LinuxProcessActions(std::shared_ptr<LinuxProcessControl::EfficiencyMemory> efficiency)
+    : LinuxProcessActions(discoverSyscallTraceTools(), realProcessSyscalls(), std::move(efficiency))
+{}
+
+LinuxProcessActions::LinuxProcessActions(SyscallTrace::Tools traceTools)
+    : LinuxProcessActions(std::move(traceTools), realProcessSyscalls(), makeEfficiencyMemory())
 {}
 
 LinuxProcessActions::LinuxProcessActions(SyscallTrace::Tools traceTools, const LinuxProcessSyscalls& syscalls)
-    : LinuxProcessControl(withTraceAndDumpDefaults(syscalls)), m_TraceTools(std::move(traceTools))
+    : LinuxProcessActions(std::move(traceTools), syscalls, makeEfficiencyMemory())
+{}
+
+LinuxProcessActions::LinuxProcessActions(SyscallTrace::Tools traceTools,
+                                         const LinuxProcessSyscalls& syscalls,
+                                         std::shared_ptr<LinuxProcessControl::EfficiencyMemory> efficiency)
+    : LinuxProcessControl(withTraceAndDumpDefaults(syscalls), std::move(efficiency)), m_TraceTools(std::move(traceTools))
 {}
 
 ProcessActionCapabilities LinuxProcessActions::actionCapabilities() const

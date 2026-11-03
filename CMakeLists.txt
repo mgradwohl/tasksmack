@@ -17,7 +17,7 @@ endif()
 include(cmake/RCCompiler.cmake)
 
 # Initialize with both C and CXX (required by dependencies like SDL3, GLAD)
-project(TaskSmack VERSION 0.9.0 LANGUAGES C CXX)
+project(TaskSmack VERSION 0.10.0 LANGUAGES C CXX)
 
 # 64-bit targets only (x64, ARM64): nothing builds, tests or ships 32-bit, and the code no longer
 # carries 32-bit branches (#2214). Fail here, before any dependency is configured, rather than
@@ -94,6 +94,52 @@ if(GIT_STATUS_RESULT EQUAL 0)
         endif()
     endif()
 endif()
+
+# The version a build shows (#3371). PROJECT_VERSION stays plain X.Y.Z, since the Windows resource,
+# manifest and installer fields and CPack need numbers; TASKSMACK_VERSION_FULL adds a SemVer
+# pre-release suffix, and is what About, the logs, the update check and its User-Agent use. Main reads
+# X.Y.Z between releases (the next minor, bumped right after each branch cut; see
+# docs/dev/release-process.md), so a build that isn't exactly a release says "-dev": X.Y.Z-dev orders
+# above every X.Y.(Z-1) and below X.Y.Z, so the update check offers X.Y.Z once it ships.
+#   AUTO (the default): "" when the tag v${PROJECT_VERSION} points at HEAD, "-dev" otherwise, and when
+#                       git isn't available.
+#   Any other value wins, the empty string included: release.yml passes -DTASKSMACK_VERSION_SUFFIX=
+#   to every build, dry runs too, so a release and its rehearsal read exactly X.Y.Z with or without tags
+#   in the checkout. A value must be empty or a SemVer pre-release ("-dev", "-rc.1").
+set(TASKSMACK_VERSION_SUFFIX "AUTO" CACHE STRING
+    "Suffix of the version TaskSmack shows: AUTO ('' at tag v<PROJECT_VERSION>, '-dev' elsewhere), '', or '-<prerelease>'")
+if(TASKSMACK_VERSION_SUFFIX STREQUAL "AUTO")
+    set(TASKSMACK_RESOLVED_VERSION_SUFFIX "-dev")
+    execute_process(
+        COMMAND git tag --points-at HEAD
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        OUTPUT_VARIABLE GIT_HEAD_TAGS_OUTPUT
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        RESULT_VARIABLE GIT_HEAD_TAGS_RESULT
+        ERROR_QUIET
+    )
+    if(GIT_HEAD_TAGS_RESULT EQUAL 0)
+        string(REPLACE "\r" "" GIT_HEAD_TAGS_OUTPUT "${GIT_HEAD_TAGS_OUTPUT}")
+        string(REPLACE "\n" ";" GIT_HEAD_TAGS "${GIT_HEAD_TAGS_OUTPUT}")
+        if("v${PROJECT_VERSION}" IN_LIST GIT_HEAD_TAGS)
+            set(TASKSMACK_RESOLVED_VERSION_SUFFIX "")
+        endif()
+    endif()
+else()
+    # A SemVer pre-release identifier: a number without a leading zero ("0", "7"), or [0-9A-Za-z-] with at
+    # least one non-digit ("dev", "01alpha", "x-1"). Domain::UpdateCheck::parseVersion() reads the same
+    # rule, so whatever configures is a version the update check can compare; its test
+    # UpdateCheckVersionTest.ReadsTheSuffixesCMakeAccepts runs CMake's cases through it.
+    set(_tasksmack_prerelease_id "(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)")
+    if(NOT TASKSMACK_VERSION_SUFFIX STREQUAL ""
+       AND NOT TASKSMACK_VERSION_SUFFIX MATCHES "^-${_tasksmack_prerelease_id}(\\.${_tasksmack_prerelease_id})*$")
+        message(FATAL_ERROR "TASKSMACK_VERSION_SUFFIX is '${TASKSMACK_VERSION_SUFFIX}': use AUTO, the empty string, or a "
+                            "SemVer pre-release such as '-dev' or '-rc.1' (no numeric identifier with a leading zero).")
+    endif()
+    set(TASKSMACK_RESOLVED_VERSION_SUFFIX "${TASKSMACK_VERSION_SUFFIX}")
+endif()
+set(TASKSMACK_VERSION_FULL "${PROJECT_VERSION}${TASKSMACK_RESOLVED_VERSION_SUFFIX}")
+message(STATUS "TaskSmack version: ${TASKSMACK_VERSION_FULL} (TASKSMACK_VERSION_SUFFIX=${TASKSMACK_VERSION_SUFFIX})")
 
 # Build date/time embedded in version.h. string(TIMESTAMP) honors the
 # reproducible-builds.org SOURCE_DATE_EPOCH environment variable when it is
@@ -280,6 +326,8 @@ set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/LinuxProcessThreadsReader.cpp # Process Details Threads (#3069)
     src/Platform/Linux/LinuxStartup.cpp # the Startup tab: XDG autostart entries (#2541)
     src/Platform/Linux/LinuxHttpsClient.cpp # the update check's HTTPS client: libcurl (#3238)
+    src/Platform/Linux/PolkitTextAgent.cpp # the password prompt where no desktop polkit agent runs: libpolkit-agent-1 (#3380)
+    src/Platform/Linux/PolkitTextAgentRun.cpp # its child side, the only file with polkit's headers (#3380)
     src/Platform/Linux/LinuxStartAtLogin.cpp # start at sign-in: an XDG autostart entry (#3254)
     src/Platform/Linux/LinuxProcessOpenFilesReader.cpp
     src/Platform/Linux/LinuxProcessSecurityReader.cpp
@@ -403,6 +451,27 @@ if(UNIX AND NOT APPLE AND TASKSMACK_WITH_CURL)
         message(STATUS "libcurl ${LIBCURL_VERSION}: the update check can be offered")
     else()
         message(STATUS "libcurl not found (install libcurl4-openssl-dev): the update check will not be offered")
+    endif()
+endif()
+
+# libpolkit-agent-1 on Linux (#3380): polkit's text agent, registered in TaskSmack's own process where no desktop agent
+# runs (WSL, no display), since pkexec's own fails on polkit 127. A build dependency the .deb then depends on
+# (CPACK_DEBIAN_PACKAGE_SHLIBDEPS); without it the app still builds, and pkexec's own agent asks, as before. Its GLib
+# headers are system includes, out of our warnings.
+option(TASKSMACK_WITH_POLKIT_AGENT "Ask for the helper's password with polkit's text agent when no desktop agent runs (Linux)" ON)
+add_library(tasksmack_polkit_agent INTERFACE)
+if(UNIX AND NOT APPLE AND TASKSMACK_WITH_POLKIT_AGENT)
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(POLKIT_AGENT QUIET polkit-agent-1)
+    endif()
+    if(POLKIT_AGENT_FOUND)
+        target_include_directories(tasksmack_polkit_agent SYSTEM INTERFACE ${POLKIT_AGENT_INCLUDE_DIRS})
+        target_link_libraries(tasksmack_polkit_agent INTERFACE ${POLKIT_AGENT_LINK_LIBRARIES})
+        target_compile_definitions(tasksmack_polkit_agent INTERFACE TASKSMACK_HAS_POLKIT_AGENT=1)
+        message(STATUS "libpolkit-agent-1 ${POLKIT_AGENT_VERSION}: TaskSmack can ask for the helper's password itself")
+    else()
+        message(STATUS "libpolkit-agent-1 not found (install libpolkit-agent-1-dev): pkexec's own agent asks for the password")
     endif()
 endif()
 
@@ -794,8 +863,9 @@ function(tasksmack_configure_app_target target)
     if(WIN32)
         tasksmack_apply_windows_platform(${target})
     elseif(UNIX AND NOT APPLE)
-        # tasksmack_sdbus: libsystemd and TASKSMACK_HAS_SDBUS when found (#1525); tasksmack_curl: libcurl (#3238)
-        target_link_libraries(${target} PRIVATE dl tasksmack_sdbus tasksmack_curl)
+        # tasksmack_sdbus: libsystemd and TASKSMACK_HAS_SDBUS when found (#1525); tasksmack_curl: libcurl (#3238);
+        # tasksmack_polkit_agent: libpolkit-agent-1 (#3380)
+        target_link_libraries(${target} PRIVATE dl tasksmack_sdbus tasksmack_curl tasksmack_polkit_agent)
     endif()
 endfunction()
 

@@ -7,7 +7,8 @@
 // thread, so its rows have no menu.
 //
 // The read cadence is the Modules section's (ProcessModulesView.h), at the Settings refresh interval:
-// CPU % is a live figure, worked out here from two reads' CPU times (the first read shows the dash).
+// CPU % is a live figure, worked out here from two reads' CPU times (the first read shows the dash), over the
+// time between the two reads as the worker took them, never between the frames that took them in (#3337).
 // update() starts a read only while the section was drawn open on the last frame, on a worker thread.
 // render() only draws what the last read returned, formatted once per read.
 //
@@ -29,6 +30,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <format>
+#include <functional>
 #include <optional>
 #include <span>
 #include <stop_token>
@@ -152,8 +154,15 @@ class ProcessThreadsView
         std::string started; ///< When it started, or the dash (#3069)
     };
 
+    /// The clock a read's acquisition time is taken from, in seconds; called on the worker (#3337). It must be on
+    /// the readers' clock (Platform::threadsReadClockSeconds(), the default), as a reader may stamp its own.
+    using Clock = std::function<double()>;
+
     /// @p cpuCount is what CPU % is a share of (the machine's CPUs, as the Processes table's CPU %).
-    explicit ProcessThreadsView(std::size_t cpuCount = 1) : m_CpuCount(std::max<std::size_t>(cpuCount, 1))
+    /// @p clock stamps each read a reader left unstamped as it returns, on the worker (threadsReadClockSeconds()
+    /// when empty; tests pass a fake).
+    explicit ProcessThreadsView(std::size_t cpuCount = 1, Clock clock = {})
+        : m_CpuCount(std::max<std::size_t>(cpuCount, 1)), m_Clock(clock ? std::move(clock) : Clock(&Platform::threadsReadClockSeconds))
     {}
 
     /// Draws the section: a collapsing "Threads (N)" header and, while it is open, the filter box and
@@ -161,14 +170,10 @@ class ProcessThreadsView
     void render(bool hasThreads);
 
     /// The panel's per-frame update, as ProcessModulesView::update(), at @p refreshMs (the Settings
-    /// interval). Never blocks; @p nowSeconds is a steady clock, for CPU %. The caller must keep
-    /// @p reader alive until a read in flight finishes (the destructor waits for it).
+    /// interval). Never blocks. The caller must keep @p reader alive until a read in flight finishes (the
+    /// destructor waits for it).
     /// @return Whether it started a read.
-    bool update(Platform::IProcessThreadsReader* reader,
-                const Platform::ProcessTarget& target,
-                float deltaSeconds,
-                int refreshMs,
-                double nowSeconds)
+    bool update(Platform::IProcessThreadsReader* reader, const Platform::ProcessTarget& target, float deltaSeconds, int refreshMs)
     {
         m_Target = target;
         // A thread action's result (#3069); one that succeeded reads the threads again at once, for the new state.
@@ -180,17 +185,17 @@ class ProcessThreadsView
         m_Read.setRefreshMs(refreshMs);
         if (auto result = m_Read.takeFinished(target, false))
         {
-            applyResult(*result, nowSeconds);
+            applyResult(*result);
         }
         m_Read.setCanAuthorize((reader != nullptr) && reader->canReadAuthorized());
         // "Authenticate to read" was pressed (#3069): read as an administrator, now, on the worker.
         if (m_Read.takeAuthorizeRequest() && reader != nullptr && !m_Read.inFlight())
         {
             if (auto failed = m_Read.start(target,
-                                           [reader](const Platform::ProcessTarget& t, const std::stop_token& stopToken)
-                                           { return reader->readAuthorized(t, stopToken); }))
+                                           [reader, clock = m_Clock](const Platform::ProcessTarget& t, const std::stop_token& stopToken)
+                                           { return stamped(reader->readAuthorized(t, stopToken), clock); }))
             {
-                applyResult(*failed, nowSeconds);
+                applyResult(*failed);
             }
             return true;
         }
@@ -198,9 +203,10 @@ class ProcessThreadsView
         {
             return false;
         }
-        if (auto failed = m_Read.start(target, [reader](const Platform::ProcessTarget& t) { return reader->readThreads(t); }))
+        if (auto failed = m_Read.start(
+                target, [reader, clock = m_Clock](const Platform::ProcessTarget& t) { return stamped(reader->readThreads(t), clock); }))
         {
-            applyResult(*failed, nowSeconds);
+            applyResult(*failed);
         }
         return true;
     }
@@ -219,11 +225,11 @@ class ProcessThreadsView
     }
 
     /// Waits for the read in flight, if any, and takes it in as update() would (tests only).
-    void finishPendingRead(const Platform::ProcessTarget& target, double nowSeconds)
+    void finishPendingRead(const Platform::ProcessTarget& target)
     {
         if (auto result = m_Read.takeFinished(target, true))
         {
-            applyResult(*result, nowSeconds);
+            applyResult(*result);
         }
     }
 
@@ -294,9 +300,11 @@ class ProcessThreadsView
         return m_ActionControl;
     }
 
-    /// Takes in a read made at @p nowSeconds: its status and, for Ok, its threads formatted and sorted,
-    /// each one's CPU % from its CPU time at the read before (the same thread: same TID and start time).
-    void applyResult(const Platform::ThreadsReadResult& result, double nowSeconds)
+    /// Takes in a read: its status and, for Ok, its threads formatted and sorted, each one's CPU % from its CPU
+    /// time at the read before (the same thread: same TID and start time), over the time between the two reads'
+    /// acquisitions (result.acquiredAtSeconds), however late either was taken in (#3337). A read with no
+    /// acquisition time, or one not after the last's, gives no CPU % (the dash).
+    void applyResult(const Platform::ThreadsReadResult& result)
     {
         m_HasRead = true;
         m_Status = result.status;
@@ -314,7 +322,9 @@ class ProcessThreadsView
             m_FilterDirty = true;
             return;
         }
-        const double elapsed = m_PreviousAt.has_value() ? nowSeconds - *m_PreviousAt : 0.0;
+        // Zero or negative (no time between the acquisitions, or either unknown): no CPU %, nothing divided.
+        const double elapsed =
+            (m_PreviousAt.has_value() && result.acquiredAtSeconds.has_value()) ? *result.acquiredAtSeconds - *m_PreviousAt : 0.0;
         const double ticksPerSecond = static_cast<double>(std::max<std::int64_t>(result.ticksPerSecond, 1));
         std::unordered_map<std::int32_t, Sample> current;
         current.reserve(result.threads.size());
@@ -323,8 +333,9 @@ class ProcessThreadsView
         {
             const std::uint64_t ticks = thread.userTicks + thread.systemTicks;
             std::optional<double> cpu;
-            if (const auto previous = m_Previous.find(thread.tid);
-                previous != m_Previous.end() && previous->second.startTicks == thread.startTicks && ticks >= previous->second.ticks)
+            if (const auto previous = m_Previous.find(thread.tid); elapsed > 0.0 && previous != m_Previous.end() &&
+                                                                   previous->second.startTicks == thread.startTicks &&
+                                                                   ticks >= previous->second.ticks)
             {
                 cpu = Detail::threadCpuPercent(ticks - previous->second.ticks, result.ticksPerSecond, elapsed, m_CpuCount);
             }
@@ -343,7 +354,7 @@ class ProcessThreadsView
             });
         }
         m_Previous = std::move(current);
-        m_PreviousAt = nowSeconds;
+        m_PreviousAt = result.acquiredAtSeconds;
         sortRows();
     }
 
@@ -409,6 +420,17 @@ class ProcessThreadsView
         std::uint64_t startTicks = 0;
     };
 
+    /// @p result, with its acquisition time from @p clock when the reader left it unset: on the worker, as the
+    /// read returns, so a result taken in late still divides by when its counters were read (#3337).
+    [[nodiscard]] static Platform::ThreadsReadResult stamped(Platform::ThreadsReadResult result, const Clock& clock)
+    {
+        if (!result.acquiredAtSeconds.has_value())
+        {
+            result.acquiredAtSeconds = clock();
+        }
+        return result;
+    }
+
     [[nodiscard]] static Platform::ThreadsReadResult failedRead(std::string detail)
     {
         return {.status = Platform::ThreadsReadStatus::Failed, .threads = {}, .detail = std::move(detail)};
@@ -461,7 +483,7 @@ class ProcessThreadsView
     // Ordered by alignment, largest first (clang-analyzer-optin.performance.Padding), the flags last.
     std::size_t m_CpuCount = 1;
     std::size_t m_LabelCount = SIZE_MAX; // the count m_CountLabel shows
-    std::optional<double> m_PreviousAt;  // when the last read's CPU times were taken in
+    std::optional<double> m_PreviousAt;  // when the last read's CPU times were read (its acquisition time, #3337)
     Platform::ProcessTarget m_Target{};  // the process shown, as of the last update() (for the thread actions)
     std::vector<Row> m_Rows;
     std::vector<std::size_t> m_FilteredRows;
@@ -471,6 +493,7 @@ class ProcessThreadsView
     std::string m_CountLabel;                            // the header with the count: "Threads (12)"
     std::string m_ProcessName;                           // the process's name, for the thread actions' confirm and result line (#3069)
     std::unordered_map<std::int32_t, Sample> m_Previous; // the last read's CPU time per thread, for CPU %
+    Clock m_Clock;                                       // stamps each read on the worker (#3337)
 
     // The read in flight and its cadence (the Settings interval, set by update()). Destroying the view
     // waits for at most one read.

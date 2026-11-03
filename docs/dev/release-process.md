@@ -93,8 +93,8 @@ local Linux coverage figure (`tools/coverage.sh`) before it merges.
 ### 6. Candidate and validation
 
 1. **Soak:** main green for 24 hours, with every required push check and the nightly jobs passing.
-2. **Candidate:** one exact commit proposed on the tracker, with the version bump merged (`VERSION X.Y.0` in
-   `CMakeLists.txt`).
+2. **Candidate:** one exact commit proposed on the tracker. Main already reads `VERSION X.Y.0` in `CMakeLists.txt`,
+   from the bump right after the last branch cut (see [Versions](#versions)); if it doesn't, merge that bump first.
 3. **Signed dry run on that exact SHA,** with every job green. If it fails: a fix PR, then a new candidate.
 4. **Both lanes validate:**
    - Windows runs the smoke checks, Authenticode, and an installer install, upgrade and uninstall.
@@ -113,6 +113,10 @@ local Linux coverage figure (`tools/coverage.sh`) before it merges.
    ```bash
    git push origin <approved-sha>:refs/heads/release/X.Y
    ```
+
+   Right after the cut, bump main to `X.(Y+1).0`: a PR that changes only `project(TaskSmack VERSION ...)` in
+   `CMakeLists.txt`. From then on main's builds read `X.(Y+1).0-dev`, above every `X.Y.*` patch. Until that bump
+   merges, the version guard shows a notice on main (see [Versions](#versions)).
 
 2. Tag and push. Use an annotated tag; it isn't GPG-signed.
 
@@ -190,6 +194,34 @@ freeze.
   - reproducibility checks;
   - actions pinned by SHA.
 
+## Versions
+
+`project(TaskSmack VERSION X.Y.Z)` in `CMakeLists.txt` is the only version (#3371).
+
+- **Main reads the next minor.** It's bumped to `X.(Y+1).0` right after `release/X.Y` is cut (stage 7), so between
+  releases it's already the version it will ship as.
+- **Patch bumps stay on `release/X.Y`.** `X.Y.(N+1)` is merged there before its candidate, never on main.
+- **The dev marker:** a build that isn't exactly a release says so. The shown version is `TASKSMACK_VERSION_FULL`
+  (About, the log, the update check and its User-Agent):
+  - Builds from `release.yml`, tag runs and dry runs alike, read exactly `X.Y.Z`. Every configure there passes
+    `-DTASKSMACK_VERSION_SUFFIX=`.
+  - A local or CI build reads `X.Y.Z-dev`, unless the tag `vX.Y.Z` points at its commit (`TASKSMACK_VERSION_SUFFIX`
+    is `AUTO` by default).
+  - `X.Y.Z-dev` orders above every earlier release and below `X.Y.Z`, as SemVer pre-releases do. So the update
+    check never offers a dev build an older release, and offers `X.Y.Z` once it ships.
+  - The Windows resource, manifest and installer version fields, and the package names, stay plain `X.Y.Z`: Windows
+    needs numbers there.
+- **The guard:** Pre-commit's "Version is not behind the latest release" job (`tools/check-version-ahead.py`) runs
+  on every pull request and push to main and `release/*`, against the published `vX.Y.Z` tags:
+
+  | Branch | Below the highest tag | Equal | Above |
+  |---|---|---|---|
+  | `main` (highest tag of all) | fails | passes with a notice: main's bump after the cut is due | passes |
+  | `release/X.Y` (highest `vX.Y.*` tag) | fails | passes: the branch between patch releases | passes |
+
+  A `release/X.Y` branch must read `X.Y.*`. It's compared only with its own line's tags, so `release/0.9` stays
+  green after v0.10.0 ships.
+
 ## Patch releases
 
 A patch happens only when a shipped bug warrants one.
@@ -227,6 +259,7 @@ Each step answers something that went wrong in v0.7.0 to v0.9.1.
 | Memory growth showed up only in a long run (#3215). | 0.10 | Stage 1 baselines, compared again in stage 4. |
 | Eight backports were cherry-picked by hand during hardening. | 0.9.1 | Main freezes until approval, so hardening needs no backports. |
 | The SmartScreen submission and the CHANGELOG merges happened ad hoc. | 0.9.1 | Both are listed in stage 7. |
+| Main read 0.9.0 for weeks (#2102 to #3370), below the shipped v0.9.1, so its builds looked like v0.9.0 and were offered "v0.9.1 available" (#3371). | 0.10 | Main is bumped right after each branch cut, non-release builds read `-dev`, and the version guard fails below a published tag. |
 
 ## Sources
 

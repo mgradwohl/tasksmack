@@ -35,6 +35,9 @@
 #include "Platform/Factory.h"
 #include "Platform/Windows/WinString.h"
 #endif
+#if defined(__linux__)
+#include "Platform/Linux/PolkitTextAgent.h" // run as its own polkit text agent (#3380)
+#endif
 #include "UI/Format.h"
 #include "UI/UILayer.h"
 #include "version.h"
@@ -227,7 +230,7 @@ auto runApp(const App::LaunchOptions& launch) -> int
     }
 #endif
 
-    spdlog::info("{} v{} ({} build)", tasksmack::Version::PROJECT_NAME, tasksmack::Version::STRING, tasksmack::Version::BUILD_TYPE);
+    spdlog::info("{} v{} ({} build)", tasksmack::Version::PROJECT_NAME, tasksmack::Version::FULL, tasksmack::Version::BUILD_TYPE);
     // Set first thing in runApp(), before logging was up, so logged here.
     spdlog::info("{}", Core::LocaleSetup::describe(localeSummary));
     for (const std::string& warning : localeSummary.warnings)
@@ -531,6 +534,13 @@ auto main(int argc, char** argv) -> int
 {
     // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic) - argv is argc C strings, as the C++ standard gives them
     const std::vector<std::string> arguments(argv, argv + std::max(argc, 0));
+#if defined(__linux__)
+    // TaskSmack started as its own polkit text agent (#3380), before anything of the app's: no window, no config.
+    if (arguments.size() == 2 && arguments[1] == Platform::PolkitTextAgent::AGENT_ARGUMENT)
+    {
+        return Platform::PolkitTextAgent::runAgent();
+    }
+#endif
     return runAppGuarded(App::parseLaunchOptions(arguments));
 }
 #endif

@@ -264,6 +264,12 @@ class ProcessesPanel : public Panel
         return m_ColumnSettings;
     }
 
+    /// What the table is grouped by (#3068); on Windows, Unit needs the service list (#3386).
+    [[nodiscard]] ProcessGrouping::GroupBy groupBy() const noexcept
+    {
+        return m_GroupBy;
+    }
+
     /// Set the refresh interval the sampler runs at. It is the Settings value, whatever the UI state
     /// (#2731): no tab change, resize, move or minimize rescales or pauses it.
     void setSamplingInterval(std::chrono::milliseconds interval, bool forceSample = true);

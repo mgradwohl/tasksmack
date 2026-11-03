@@ -73,6 +73,216 @@ class MockThreadsReader final : public Platform::IProcessThreadsReader
     return {.tid = tid, .name = name, .state = 'S', .userTicks = ticks, .systemTicks = 0, .nice = 0, .startTicks = start};
 }
 
+/// Takes @p result in as a read whose counters were read at @p acquiredAtSeconds (#3337).
+void apply(ProcessThreadsView& view, ThreadsReadResult result, double acquiredAtSeconds)
+{
+    result.acquiredAtSeconds = acquiredAtSeconds;
+    view.applyResult(result);
+}
+
+/// A reader whose one thread's CPU time is what the test last set, and a fake steady clock the view stamps reads
+/// with (#3337). Both are set before update() starts the worker and read on it, so the thread start orders them.
+class TickingThreadsReader final : public Platform::IProcessThreadsReader
+{
+  public:
+    std::atomic<std::uint64_t> ticks{0};
+    std::atomic<std::uint64_t> startTicks{10};
+
+    [[nodiscard]] bool hasThreads() const override
+    {
+        return true;
+    }
+    [[nodiscard]] ThreadsReadResult readThreads(const Platform::ProcessTarget& /*target*/) override
+    {
+        return threads({thread(42, "worker", ticks.load(), startTicks.load())});
+    }
+};
+
+/// A fake steady clock: what it reads, and how many times the view's worker has read it.
+struct FakeClock
+{
+    std::atomic<double> now{0.0};
+    std::atomic<int> reads{0};
+
+    [[nodiscard]] ProcessThreadsView::Clock clock()
+    {
+        return [this]
+        {
+            const double value = now.load();
+            ++reads;
+            reads.notify_all();
+            return value;
+        };
+    }
+};
+
+/// Drives @p view's real async read with @p clock at @p acquiredAt while the worker reads, then moves it on to
+/// @p adoptedAt before the result is taken in: a view that timed the read by its adoption would see that.
+void readAt(
+    ProcessThreadsView& view, TickingThreadsReader& reader, FakeClock& clock, std::uint64_t ticks, double acquiredAt, double adoptedAt)
+{
+    reader.ticks = ticks;
+    clock.now = acquiredAt;
+    const int readsBefore = clock.reads.load();
+    view.markDrawnOpen();
+    ASSERT_TRUE(view.update(&reader, TARGET, 1.0F, 1000));
+    clock.reads.wait(readsBefore); // the worker has stamped the read
+    clock.now = adoptedAt;
+    view.finishPendingRead(TARGET);
+}
+
+void readAt(ProcessThreadsView& view, TickingThreadsReader& reader, FakeClock& clock, std::uint64_t ticks, double acquiredAt)
+{
+    readAt(view, reader, clock, ticks, acquiredAt, acquiredAt);
+}
+
+// #3337: a read taken in late divides by the time between the two reads' acquisitions, not adoptions: read at
+// 0 s and 1 s, adopted at 0.2 s and 5 s, reads as the same rate as prompt adoption, and so does the next one.
+TEST(ProcessThreadsViewTest, CpuPercentDividesByAcquisitionTimeNotAdoptionTime)
+{
+    // Prompt adoption: read and taken in at 0 s and 1 s. 100 ticks at 100 a second over 1 s on 4 CPUs: 25 %.
+    FakeClock promptClock;
+    TickingThreadsReader promptReader;
+    ProcessThreadsView prompt(4, promptClock.clock());
+    readAt(prompt, promptReader, promptClock, 1000, 0.0);
+    readAt(prompt, promptReader, promptClock, 1100, 1.0);
+    ASSERT_EQ(prompt.rows().size(), 1U);
+    EXPECT_DOUBLE_EQ(prompt.rows()[0].cpuPercent.value_or(-1.0), 25.0);
+
+    // Delayed adoption: the same reads, taken in at 0.2 s and 5 s.
+    FakeClock clock;
+    TickingThreadsReader reader;
+    ProcessThreadsView view(4, clock.clock());
+    readAt(view, reader, clock, 1000, 0.0, 0.2);
+    readAt(view, reader, clock, 1100, 1.0, 5.0);
+    ASSERT_EQ(view.rows().size(), 1U);
+    EXPECT_DOUBLE_EQ(view.rows()[0].cpuPercent.value_or(-1.0), 25.0);
+
+    // The next read 1 s after the last acquisition, taken in promptly: still 25 %, not 100 % (#3337's repro).
+    readAt(view, reader, clock, 1200, 2.0);
+    EXPECT_DOUBLE_EQ(view.rows()[0].cpuPercent.value_or(-1.0), 25.0);
+}
+
+// #3337: two reads acquired at the same instant (or the second before the first) give no CPU %, never a
+// division by zero, and the next read with time between still does; the clamp at 100 % stays.
+TEST(ProcessThreadsViewTest, ZeroOrNegativeAcquisitionIntervalGivesNoCpuPercent)
+{
+    FakeClock clock;
+    TickingThreadsReader reader;
+    ProcessThreadsView view(1, clock.clock());
+
+    readAt(view, reader, clock, 100, 3.0);
+    readAt(view, reader, clock, 150, 3.0);
+    ASSERT_EQ(view.rows().size(), 1U);
+    EXPECT_FALSE(view.rows()[0].cpuPercent.has_value());
+    EXPECT_EQ(view.rows()[0].cpu, Detail::THREAD_CPU_UNKNOWN);
+
+    readAt(view, reader, clock, 160, 2.0);
+    EXPECT_FALSE(view.rows()[0].cpuPercent.has_value()) << "acquired before the last read";
+
+    readAt(view, reader, clock, 210, 3.0); // 50 ticks over 1 s on 1 CPU: 50 %
+    EXPECT_DOUBLE_EQ(view.rows()[0].cpuPercent.value_or(-1.0), 50.0);
+    readAt(view, reader, clock, 1210, 4.0); // 10 s of CPU in 1 s: clamped
+    EXPECT_DOUBLE_EQ(view.rows()[0].cpuPercent.value_or(-1.0), 100.0);
+
+    // A read with no acquisition time at all (a reader's own result taken in directly) gives none either.
+    view.applyResult(threads({thread(42, "worker", 1300)}));
+    EXPECT_FALSE(view.rows()[0].cpuPercent.has_value());
+}
+
+// #3337: a TID reused by a thread that started later, between two reads however late they are taken in, has
+// no CPU % from the old thread's counters.
+TEST(ProcessThreadsViewTest, AReusedTidAcrossDelayedReadsHasNoCpuPercent)
+{
+    FakeClock clock;
+    TickingThreadsReader reader;
+    ProcessThreadsView view(1, clock.clock());
+
+    readAt(view, reader, clock, 500, 0.0);
+    reader.startTicks = 99; // TID 42 now names another thread
+    readAt(view, reader, clock, 600, 1.0);
+    ASSERT_EQ(view.rows().size(), 1U);
+    EXPECT_FALSE(view.rows()[0].cpuPercent.has_value());
+
+    readAt(view, reader, clock, 650, 2.0); // the new thread's second read: 50 %
+    EXPECT_DOUBLE_EQ(view.rows()[0].cpuPercent.value_or(-1.0), 50.0);
+}
+
+// #3337: the reader's own acquisition time, when it gives one, is kept over the view's clock.
+TEST(ProcessThreadsViewTest, AReadersOwnAcquisitionTimeIsKept)
+{
+    MockThreadsReader reader;
+    reader.result = threads({thread(100, "main", 100)});
+    reader.result.acquiredAtSeconds = 7.0;
+    FakeClock clock;
+    clock.now = 50.0;
+    ProcessThreadsView view(1, clock.clock());
+    view.markDrawnOpen();
+    ASSERT_TRUE(view.update(&reader, TARGET, 1.0F, 1000));
+    view.finishPendingRead(TARGET);
+    reader.result = threads({thread(100, "main", 150)});
+    reader.result.acquiredAtSeconds = 8.0; // 50 ticks over 1 s (by the reader's times; the clock says 0 s)
+    view.markDrawnOpen();
+    ASSERT_TRUE(view.update(&reader, TARGET, 1.0F, 1000));
+    view.finishPendingRead(TARGET);
+    ASSERT_EQ(view.rows().size(), 1U);
+    EXPECT_DOUBLE_EQ(view.rows()[0].cpuPercent.value_or(-1.0), 50.0);
+}
+
+/// A reader that stamps its result from a fake clock as its counters are read, then "takes" @p extraDelay more
+/// (detail reads, as Windows' per-thread opens) before returning: the clock moves on inside the read (#3337).
+class SlowDetailThreadsReader final : public Platform::IProcessThreadsReader
+{
+  public:
+    explicit SlowDetailThreadsReader(FakeClock& clock) : m_Clock(clock)
+    {}
+
+    std::atomic<std::uint64_t> ticks{0};
+    std::atomic<double> extraDelay{0.0};
+
+    [[nodiscard]] bool hasThreads() const override
+    {
+        return true;
+    }
+    [[nodiscard]] ThreadsReadResult readThreads(const Platform::ProcessTarget& /*target*/) override
+    {
+        ThreadsReadResult result = threads({thread(42, "worker", ticks.load())});
+        result.acquiredAtSeconds = m_Clock.now.load(); // the counters' moment
+        m_Clock.now = m_Clock.now.load() + extraDelay.load();
+        return result;
+    }
+
+  private:
+    FakeClock& m_Clock;
+};
+
+// #3337: a reader's stamp, taken when its counters were read, sets the interval however long the rest of the
+// read took: reads stamped at 0 s and 1 s whose details took 0.9 s and then none return 0.1 s apart, and still
+// read as 25 %, not the 100 % (clamped) their return times would give.
+TEST(ProcessThreadsViewTest, ASlowDetailReadAfterTheReadersStampDoesNotSkewCpuPercent)
+{
+    FakeClock clock;
+    SlowDetailThreadsReader reader(clock);
+    ProcessThreadsView view(4, clock.clock());
+    const auto readStamped = [&](std::uint64_t ticks, double stampedAt, double extraDelay)
+    {
+        reader.ticks = ticks;
+        reader.extraDelay = extraDelay;
+        clock.now = stampedAt;
+        view.markDrawnOpen();
+        ASSERT_TRUE(view.update(&reader, TARGET, 1.0F, 1000));
+        view.finishPendingRead(TARGET);
+    };
+
+    readStamped(1000, 0.0, 0.9); // returns at 0.9 s
+    readStamped(1100, 1.0, 0.0); // returns at 1.0 s
+    ASSERT_EQ(view.rows().size(), 1U);
+    EXPECT_DOUBLE_EQ(view.rows()[0].cpuPercent.value_or(-1.0), 25.0);
+    readStamped(1200, 2.0, 0.5); // returns at 2.5 s: still 1 s after the last stamp
+    EXPECT_DOUBLE_EQ(view.rows()[0].cpuPercent.value_or(-1.0), 25.0);
+    EXPECT_EQ(clock.reads.load(), 0) << "a stamped read never falls back to the view's clock";
+}
+
 TEST(ProcessThreadsViewTest, CpuPercentIsAShareOfTheWholeMachine)
 {
     // 50 ticks at 100 a second is 0.5 s of CPU in 1 s, on 2 CPUs: 25 %.
@@ -85,7 +295,7 @@ TEST(ProcessThreadsViewTest, CpuPercentIsAShareOfTheWholeMachine)
 TEST(ProcessThreadsViewTest, CpuPercentNeedsTwoReadsOfTheSameThread)
 {
     ProcessThreadsView view(2);
-    view.applyResult(threads({thread(100, "main", 100), thread(101, "worker", 0)}), 10.0);
+    apply(view, threads({thread(100, "main", 100), thread(101, "worker", 0)}), 10.0);
     ASSERT_EQ(view.rows().size(), 2U);
     for (const ProcessThreadsView::Row& row : view.rows())
     {
@@ -95,7 +305,7 @@ TEST(ProcessThreadsViewTest, CpuPercentNeedsTwoReadsOfTheSameThread)
 
     // 2 s later: main used 0 ticks more, worker 200 (2 s of CPU on 2 CPUs: 50 %); TID 102 is new, and
     // TID 100 now names a thread that started later (a reused TID): neither has a CPU % yet.
-    view.applyResult(threads({thread(100, "main", 5, 99), thread(101, "worker", 200), thread(102, "new", 7)}), 12.0);
+    apply(view, threads({thread(100, "main", 5, 99), thread(101, "worker", 200), thread(102, "new", 7)}), 12.0);
     ASSERT_EQ(view.rows().size(), 3U);
     // Sorted by CPU %, highest first, by default.
     EXPECT_EQ(view.rows()[0].thread.tid, 101);
@@ -114,19 +324,19 @@ TEST(ProcessThreadsViewTest, ARefusedReadOffersAuthenticateToReadAndThePressRead
     reader.authorizedResult = threads({thread(100, "main", 1)});
 
     view.markDrawnOpen();
-    EXPECT_TRUE(view.update(&reader, TARGET, 0.0F, 1000, 0.0));
-    view.finishPendingRead(TARGET, 0.0);
+    EXPECT_TRUE(view.update(&reader, TARGET, 0.0F, 1000));
+    view.finishPendingRead(TARGET);
     EXPECT_FALSE(view.offersAuthenticateToRead()) << "this reader can't read as an administrator";
 
     reader.canAuthorize = true;
     view.markDrawnOpen();
-    static_cast<void>(view.update(&reader, TARGET, 0.0F, 1000, 0.1)); // records that it can
-    view.finishPendingRead(TARGET, 0.1);
+    static_cast<void>(view.update(&reader, TARGET, 0.0F, 1000)); // records that it can
+    view.finishPendingRead(TARGET);
     ASSERT_TRUE(view.offersAuthenticateToRead());
 
     view.requestAuthorizedRead();
-    EXPECT_TRUE(view.update(&reader, TARGET, 0.0F, 1000, 0.2));
-    view.finishPendingRead(TARGET, 0.2);
+    EXPECT_TRUE(view.update(&reader, TARGET, 0.0F, 1000));
+    view.finishPendingRead(TARGET);
     EXPECT_EQ(reader.authorizedReads.load(), 1);
     EXPECT_EQ(view.status(), ThreadsReadStatus::Ok);
     ASSERT_EQ(view.rows().size(), 1U);
@@ -139,22 +349,22 @@ TEST(ProcessThreadsViewTest, ReadsOnlyWhileOpenAtTheSettingsInterval)
     MockThreadsReader reader;
     reader.result = threads({thread(100, "main", 1)});
 
-    EXPECT_FALSE(view.update(&reader, TARGET, 10.0F, 1000, 0.0)); // never drawn open: never read
+    EXPECT_FALSE(view.update(&reader, TARGET, 10.0F, 1000)); // never drawn open: never read
     view.markDrawnOpen();
-    EXPECT_TRUE(view.update(&reader, TARGET, 0.0F, 1000, 0.0));
-    view.finishPendingRead(TARGET, 0.0);
+    EXPECT_TRUE(view.update(&reader, TARGET, 0.0F, 1000));
+    view.finishPendingRead(TARGET);
     EXPECT_TRUE(view.hasRead());
     view.markDrawnOpen();
-    EXPECT_FALSE(view.update(&reader, TARGET, 0.5F, 1000, 0.5)); // not yet due at a 1 s interval
+    EXPECT_FALSE(view.update(&reader, TARGET, 0.5F, 1000)); // not yet due at a 1 s interval
     view.markDrawnOpen();
-    EXPECT_TRUE(view.update(&reader, TARGET, 0.6F, 1000, 1.1));
-    view.finishPendingRead(TARGET, 1.1);
+    EXPECT_TRUE(view.update(&reader, TARGET, 0.6F, 1000));
+    view.finishPendingRead(TARGET);
     // A 5 s interval chosen in Settings: the next read waits for it.
     view.markDrawnOpen();
-    EXPECT_FALSE(view.update(&reader, TARGET, 2.0F, 5000, 3.1));
+    EXPECT_FALSE(view.update(&reader, TARGET, 2.0F, 5000));
     view.markDrawnOpen();
-    EXPECT_TRUE(view.update(&reader, TARGET, 3.0F, 5000, 6.1));
-    view.finishPendingRead(TARGET, 6.1);
+    EXPECT_TRUE(view.update(&reader, TARGET, 3.0F, 5000));
+    view.finishPendingRead(TARGET);
     EXPECT_EQ(reader.reads.load(), 3);
 
     view.onSelectionChanged();
@@ -165,7 +375,7 @@ TEST(ProcessThreadsViewTest, ReadsOnlyWhileOpenAtTheSettingsInterval)
 TEST(ProcessThreadsViewTest, SortAndFilterByNameOrTid)
 {
     ProcessThreadsView view(1);
-    view.applyResult(threads({thread(300, "gmain", 1), thread(100, "server", 2), thread(205, "pool-2", 3)}), 0.0);
+    apply(view, threads({thread(300, "gmain", 1), thread(100, "server", 2), thread(205, "pool-2", 3)}), 0.0);
     view.setSort(Detail::ThreadsColumn::Tid, true);
     ASSERT_EQ(view.rows().size(), 3U);
     EXPECT_EQ(view.rows()[0].thread.tid, 100);
@@ -188,7 +398,7 @@ TEST(ProcessThreadsViewTest, StartedIsTheBootTimePlusTheThreadsStartAndSorts)
     ThreadsReadResult read = threads({thread(100, "server", 1, 500), thread(105, "pool", 2, 300)});
     read.ticksPerSecond = 100;
     read.bootTimeEpoch = 1'761'900'000;
-    view.applyResult(read, 0.0);
+    apply(view, read, 0.0);
     view.setSort(Detail::ThreadsColumn::Started, true);
     ASSERT_EQ(view.rows().size(), 2U);
     EXPECT_EQ(view.rows()[0].thread.tid, 105) << "started first";
@@ -196,7 +406,7 @@ TEST(ProcessThreadsViewTest, StartedIsTheBootTimePlusTheThreadsStartAndSorts)
     EXPECT_EQ(view.rows()[1].started, UI::Format::formatEpochDateTimeShort(1'761'900'005));
 
     read.bootTimeEpoch = 0;
-    view.applyResult(read, 1.0);
+    apply(view, read, 1.0);
     EXPECT_EQ(view.rows()[0].started, std::string(Detail::THREAD_CPU_UNKNOWN));
     EXPECT_EQ(Detail::threadStartedText(100, 0, 1000), UI::Format::formatEpochDateTimeShort(1100)) << "a zero tick rate counts as one";
 }
@@ -204,14 +414,14 @@ TEST(ProcessThreadsViewTest, StartedIsTheBootTimePlusTheThreadsStartAndSorts)
 TEST(ProcessThreadsViewTest, AFailedReadShowsItsStatusAndForgetsTheCpuTimes)
 {
     ProcessThreadsView view(1);
-    view.applyResult(threads({thread(100, "main", 1)}), 0.0);
-    view.applyResult({.status = ThreadsReadStatus::PermissionDenied, .threads = {}, .detail = {}}, 1.0);
+    apply(view, threads({thread(100, "main", 1)}), 0.0);
+    apply(view, {.status = ThreadsReadStatus::PermissionDenied, .threads = {}, .detail = {}}, 1.0);
     EXPECT_EQ(view.status(), ThreadsReadStatus::PermissionDenied);
     EXPECT_TRUE(view.rows().empty());
     EXPECT_FALSE(Detail::threadsStatusText(ThreadsReadStatus::PermissionDenied).empty());
     EXPECT_TRUE(Detail::threadsStatusText(ThreadsReadStatus::Ok).empty());
     // The next good read starts CPU % afresh.
-    view.applyResult(threads({thread(100, "main", 50)}), 2.0);
+    apply(view, threads({thread(100, "main", 50)}), 2.0);
     EXPECT_FALSE(view.rows()[0].cpuPercent.has_value());
 }
 
@@ -234,9 +444,9 @@ TEST(ProcessThreadsViewTest, CpuPercentNeedsCpusAndTimeGoingForward)
 TEST(ProcessThreadsViewTest, AThreadWhoseTicksWentBackwardsHasNoCpuPercent)
 {
     ProcessThreadsView view(1);
-    view.applyResult(threads({thread(100, "main", 500)}), 0.0);
+    apply(view, threads({thread(100, "main", 500)}), 0.0);
     // Fewer ticks than last time for the same thread (same start): nothing to subtract from.
-    view.applyResult(threads({thread(100, "main", 400)}), 1.0);
+    apply(view, threads({thread(100, "main", 400)}), 1.0);
     ASSERT_EQ(view.rows().size(), 1U);
     EXPECT_FALSE(view.rows()[0].cpuPercent.has_value());
     EXPECT_EQ(view.rows()[0].cpu, Detail::THREAD_CPU_UNKNOWN);
@@ -253,7 +463,7 @@ TEST(ProcessThreadsViewTest, SortsByStateCpuTimeAndNice)
     idle.nice = 0;
 
     ProcessThreadsView view(1);
-    view.applyResult(threads({running, sleeping, idle}), 0.0);
+    apply(view, threads({running, sleeping, idle}), 0.0);
     ASSERT_EQ(view.rows().size(), 3U);
 
     view.setSort(Detail::ThreadsColumn::State, true);
@@ -296,7 +506,7 @@ TEST(ProcessThreadsViewTest, TheStateCellSaysTheSuspendCountOrTheWaitReason)
     EXPECT_TRUE(Detail::threadCanResume(stoppedUncounted)) << "suspended, its count unreadable";
 
     ProcessThreadsView view(1);
-    view.applyResult(threads({suspended}), 0.0);
+    apply(view, threads({suspended}), 0.0);
     EXPECT_EQ(view.rows()[0].state, "Stopped (suspend count 2)");
 }
 
@@ -345,8 +555,8 @@ TEST(ThreadActionControlTest, AConfirmedActionRunsOnTheWorkerAndSaysWhatItDid)
     worker.createTime = 0x01DC'0000'0000'1234ULL;
     reader.result = threads({worker});
     view.markDrawnOpen();
-    static_cast<void>(view.update(&reader, TARGET, 0.0F, 1000, 0.0));
-    view.finishPendingRead(TARGET, 0.0);
+    static_cast<void>(view.update(&reader, TARGET, 0.0F, 1000));
+    view.finishPendingRead(TARGET);
     view.setThreadActions(true, "server");
 
     view.requestThreadAction(view.rows()[0].thread, Platform::ThreadAction::Suspend);
@@ -367,8 +577,8 @@ TEST(ThreadActionControlTest, AConfirmedActionRunsOnTheWorkerAndSaysWhatItDid)
 
     // The next update reads the threads again at once, for the new state.
     view.markDrawnOpen();
-    EXPECT_TRUE(view.update(&reader, TARGET, 0.0F, 1000, 0.1)) << "re-read without waiting for the interval";
-    view.finishPendingRead(TARGET, 0.1);
+    EXPECT_TRUE(view.update(&reader, TARGET, 0.0F, 1000)) << "re-read without waiting for the interval";
+    view.finishPendingRead(TARGET);
     EXPECT_EQ(reader.reads.load(), 2);
 }
 
@@ -495,7 +705,7 @@ class ProcessThreadsViewRenderTest : public ::testing::Test
 TEST_F(ProcessThreadsViewRenderTest, DrawsTheCountAndEachThread)
 {
     ProcessThreadsView view(1);
-    view.applyResult(threads({thread(100, "server", 1), thread(105, "pool-1", 2)}), 0.0);
+    apply(view, threads({thread(100, "server", 1), thread(105, "pool-1", 2)}), 0.0);
     static_cast<void>(drawOnce(view));
     const std::string captured = drawOnce(view);
     EXPECT_TRUE(captured.contains("Threads (2)")) << captured;
@@ -511,7 +721,7 @@ TEST_F(ProcessThreadsViewRenderTest, WindowsRowsHaveAMenuAndTheirPriorityColumn)
     ProcessThreadsView view(1);
     ThreadsReadResult read = threads({thread(100, "server", 1), thread(105, "pool-1", 2)});
     read.windowsPriorities = true;
-    view.applyResult(read, 0.0);
+    apply(view, read, 0.0);
     view.setThreadActions(true, "server");
     static_cast<void>(drawOnce(view));
     std::string captured = drawOnce(view);
@@ -530,7 +740,7 @@ TEST_F(ProcessThreadsViewRenderTest, WindowsRowsHaveAMenuAndTheirPriorityColumn)
 TEST_F(ProcessThreadsViewRenderTest, LinuxRowsHaveNoMenu)
 {
     ProcessThreadsView view(1);
-    view.applyResult(threads({thread(100, "server", 1)}), 0.0);
+    apply(view, threads({thread(100, "server", 1)}), 0.0);
     view.setThreadActions(false, "server");
     view.openRowMenu(100);
     static_cast<void>(drawOnce(view));
@@ -545,9 +755,9 @@ TEST_F(ProcessThreadsViewRenderTest, TheConfirmAsksItsQuestionAndClosesWhenThePr
     TestMocks::MockProcessActions actions;
     actions.setCapabilities(threadActionCapabilities());
     ProcessThreadsView view(1);
-    view.applyResult(threads({thread(105, "worker", 1)}), 0.0);
+    apply(view, threads({thread(105, "worker", 1)}), 0.0);
     view.setThreadActions(true, "server");
-    static_cast<void>(view.update(nullptr, TARGET, 0.0F, 1000, 0.0)); // the process shown
+    static_cast<void>(view.update(nullptr, TARGET, 0.0F, 1000)); // the process shown
     view.requestThreadAction(view.rows()[0].thread, Platform::ThreadAction::End);
 
     static_cast<void>(drawConfirmOnce(view, &actions, TARGET));
@@ -570,9 +780,9 @@ TEST_F(ProcessThreadsViewRenderTest, TheThreadConfirmAndTheProcessConfirmDontSha
     TestMocks::MockProcessActions actions;
     actions.setCapabilities(threadActionCapabilities());
     ProcessThreadsView view(1);
-    view.applyResult(threads({thread(105, "worker", 1)}), 0.0);
+    apply(view, threads({thread(105, "worker", 1)}), 0.0);
     view.setThreadActions(true, "server");
-    static_cast<void>(view.update(nullptr, TARGET, 0.0F, 1000, 0.0));
+    static_cast<void>(view.update(nullptr, TARGET, 0.0F, 1000));
     view.requestThreadAction(view.rows()[0].thread, Platform::ThreadAction::Suspend);
     bool processConfirm = true;
 
@@ -636,7 +846,7 @@ TEST_F(ProcessThreadsViewRenderTest, TheResultLineShowsAboveTheTable)
     actions.setCapabilities(threadActionCapabilities());
     actions.setThreadActionResult(Platform::ProcessActionResult::error("Thread 105 not found - it may have already exited"));
     ProcessThreadsView view(1);
-    view.applyResult(threads({thread(105, "worker", 1)}), 0.0);
+    apply(view, threads({thread(105, "worker", 1)}), 0.0);
     view.setThreadActions(true, "server");
     view.requestThreadAction(view.rows()[0].thread, Platform::ThreadAction::Resume);
     view.actionControl().confirm(&actions);
@@ -655,17 +865,17 @@ TEST_F(ProcessThreadsViewRenderTest, EachStateDrawsItsOwnLine)
     EXPECT_FALSE(drawOnce(view, false).contains("Reading...")) << "collapsed: nothing below the header";
     EXPECT_TRUE(drawOnce(view).contains("Reading..."));
 
-    view.applyResult({.status = ThreadsReadStatus::Failed, .threads = {}, .detail = "I/O error"}, 1.0);
+    apply(view, {.status = ThreadsReadStatus::Failed, .threads = {}, .detail = "I/O error"}, 1.0);
     const std::string failed = drawOnce(view);
     EXPECT_TRUE(failed.contains("Could not be read: I/O error")) << failed;
 
-    view.applyResult({.status = ThreadsReadStatus::PermissionDenied, .threads = {}, .detail = {}}, 2.0);
+    apply(view, {.status = ThreadsReadStatus::PermissionDenied, .threads = {}, .detail = {}}, 2.0);
     const std::string refused = drawOnce(view);
     EXPECT_TRUE(refused.contains("Access denied: another user's process")) << refused;
 
     ThreadsReadResult cut = threads({thread(100, "server", 1), thread(105, "pool-1", 2)});
     cut.truncated = true;
-    view.applyResult(cut, 3.0);
+    apply(view, cut, 3.0);
     const std::string truncated = drawOnce(view);
     EXPECT_TRUE(truncated.contains("Showing the first 2 threads")) << truncated;
 

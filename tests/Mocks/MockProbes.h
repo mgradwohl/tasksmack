@@ -590,6 +590,11 @@ class MockProcessActions : public Platform::IProcessActions
     {
         m_EfficiencyModeResult = std::move(result);
     }
+    /// What efficiencyNiceToRestore() answers (#3296).
+    void setEfficiencyNiceToRestore(std::optional<std::int32_t> nice)
+    {
+        m_EfficiencyNiceToRestore = nice;
+    }
 
     void setPriorityResult(Platform::ProcessActionResult result)
     {
@@ -721,6 +726,11 @@ class MockProcessActions : public Platform::IProcessActions
         m_LastEfficiencyMode = on;
         ++m_EfficiencyModeCount;
         return m_EfficiencyModeResult;
+    }
+    [[nodiscard]] std::optional<std::int32_t> efficiencyNiceToRestore(const Platform::ProcessTarget& target) const override
+    {
+        static_cast<void>(target);
+        return m_EfficiencyNiceToRestore;
     }
 
     [[nodiscard]] Platform::ProcessActionResult setPriority(const Platform::ProcessTarget& target, int32_t nice) override
@@ -1151,6 +1161,7 @@ class MockProcessActions : public Platform::IProcessActions
     Platform::ThreadAction m_LastThreadAction = Platform::ThreadAction::Suspend;
     Platform::ProcessActionResult m_ThreadActionResult = Platform::ProcessActionResult::ok();
     bool m_LastEfficiencyMode = false;
+    std::optional<std::int32_t> m_EfficiencyNiceToRestore;
     Platform::ProcessActionResult m_EfficiencyModeResult = Platform::ProcessActionResult::ok();
     int m_SetPriorityCount = 0;
     int m_SetIoPriorityCount = 0;

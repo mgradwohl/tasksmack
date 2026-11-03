@@ -297,7 +297,11 @@ jobs:
           dpkg-query -W -f='clang-${{ env.LLVM_VERSION }} package: ${Version}\n' "clang-${{ env.LLVM_VERSION }}"
 
       - name: Configure
-        run: cmake --preset release -DPython3_EXECUTABLE="$(which python)"
+        # Every release build, dry runs included, passes an empty TASKSMACK_VERSION_SUFFIX, so it reads
+        # exactly X.Y.Z (About, logs, the update check) whether or not the checkout has the tag; any
+        # other build reads X.Y.Z-dev (#3371, CMakeLists.txt). Package names use the plain
+        # PROJECT_VERSION either way. All four configure steps here pass it; keep them in step.
+        run: cmake --preset release -DPython3_EXECUTABLE="$(which python)" -DTASKSMACK_VERSION_SUFFIX=
 
       - name: Build
         run: cmake --build --preset release
@@ -370,7 +374,7 @@ jobs:
         # be able to serve a translation unit's compiled output from a prior run instead
         # of actually re-invoking the compiler, or this check would compare a cached
         # object against itself instead of testing real build determinism.
-        run: cmake --preset release -DPython3_EXECUTABLE="$(which python)" -DTASKSMACK_ENABLE_CCACHE=OFF
+        run: cmake --preset release -DPython3_EXECUTABLE="$(which python)" -DTASKSMACK_ENABLE_CCACHE=OFF -DTASKSMACK_VERSION_SUFFIX=
 
       - name: Build
         run: cmake --build --preset release
@@ -516,7 +520,8 @@ jobs:
               "-DTASKSMACK_EXPECTED_SIGNER=$env:WINDOWS_EXPECTED_SIGNER"
             )
           }
-          cmake --preset win-release -DPython3_EXECUTABLE="$env:pythonLocation\python.exe" @signing
+          # The empty suffix: a release reads exactly X.Y.Z (#3371; see build-linux's Configure).
+          cmake --preset win-release -DPython3_EXECUTABLE="$env:pythonLocation\python.exe" '-DTASKSMACK_VERSION_SUFFIX=' @signing
 
       - name: Build
         shell: pwsh
@@ -1195,7 +1200,7 @@ jobs:
               "-DTASKSMACK_EXPECTED_SIGNER=$env:WINDOWS_EXPECTED_SIGNER"
             )
           }
-          cmake --preset win-release -DPython3_EXECUTABLE="$env:pythonLocation\python.exe" -DTASKSMACK_ENABLE_CCACHE=OFF @signing
+          cmake --preset win-release -DPython3_EXECUTABLE="$env:pythonLocation\python.exe" -DTASKSMACK_ENABLE_CCACHE=OFF '-DTASKSMACK_VERSION_SUFFIX=' @signing
 
       - name: Build
         shell: pwsh

@@ -1145,7 +1145,7 @@ tasksmack_apply_linux_toolchain(TaskSmackTests)
 if(UNIX AND NOT APPLE)
     # tasksmack_sdbus: libsystemd and TASKSMACK_HAS_SDBUS when found, as for the app (#1525). No X11:
     # Core/X11WindowManager.cpp dlopen()s libX11, as for the app and the benchmarks (#1702).
-    target_link_libraries(TaskSmackTests PRIVATE ${CMAKE_DL_LIBS} tasksmack_sdbus tasksmack_curl)
+    target_link_libraries(TaskSmackTests PRIVATE ${CMAKE_DL_LIBS} tasksmack_sdbus tasksmack_curl tasksmack_polkit_agent)
 
     add_library(TaskSmackNVMLMock SHARED
         Mocks/NVMLMock.cpp

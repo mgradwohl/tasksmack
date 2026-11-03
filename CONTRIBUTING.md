@@ -860,12 +860,14 @@ column off, since command lines name the machine's users and paths), the startup
 section that pick the view, and `TASKSMACK_SCREENSHOT`, which writes the frame in-app and quits. The
 matrix is Overview in six themes (`windows-dark`, `ubuntu-light`, `dracula`, `nord-light`, `gruvbox`,
 `monochrome-light`), Processes and System Information in the first dark and the first light theme,
-the machine tab's CPU Cores, GPU and Network and I/O sub-tabs (`cores`, `gpu`, `network`, selected by
+the Processes table grouped by service and by user (`processes-grouped-unit`, `processes-grouped-user`,
+#3068; on Windows the unit shot shows the Services column, which is what has TaskSmack read the
+service list Unit groups by; Windows only so far), the machine tab's CPU Cores, GPU and Network and I/O sub-tabs (`cores`, `gpu`, `network`, selected by
 `TASKSMACK_MACHINE_TAB`, #2869), Process Details (overview, GPU, network, and the Overview with its
 Modules, Open files and Connections sections expanded by a one-step `TASKSMACK_DEMO` script:
 `details-modules`, `details-openfiles`, `details-connections`, and on Linux, the only platform that
 reads them, Environment and Security too: `details-environment`, `details-security`) for one process,
-Services, Startup, Settings (`TASKSMACK_OPEN=settings`), About and Help, named `<view>-<theme>.webp`,
+Services, Startup, Users (Windows only so far), Settings (`TASKSMACK_OPEN=settings`), About and Help, named `<view>-<theme>.webp`,
 plus three animated WebPs at 12 fps built from frame sequences:
 `overview-live.webp` (8 s of the Overview), `walk-live.webp` (10 s: `TASKSMACK_DEMO` opens the
 Processes table, selects the process and brings up its Process Details' Network tab) and
@@ -873,8 +875,9 @@ Processes table, selects the process and brings up its Process Details' Network 
 `themes-live` get `[sampling] history_max_seconds = 60` and are captured after 60 s (the hook's
 maximum), so their history charts are full; the other views are captured after 8 s (the GPU and
 network charts need a few samples). The expanded-section shots get their own window size,
-`--section-window` / `-SectionWindow`: 1440x1200 on Linux, where the taller Actions and Priority cards
-push every section below a 900 px fold, and `-Window`'s 1440x900 on Windows.
+`--section-window` / `-SectionWindow`, 1440x1200, since the Actions and Priority cards push every
+section below a 900 px fold; on Windows Open files, the last section, gets `-OpenFilesWindow`'s
+1440x1400, and `-ConnectionsPid` picks a process that holds sockets for `details-connections`.
 `--webp` / `-WebP` converts with `cwebp -q 80` and `img2webp` from libwebp (`sudo apt install
 webp`; Windows: `winget install Google.Libwebp`); without it the PNGs are copied and the frames left
 in the work directory instead. Both scripts print a table of exit code, seconds and bytes per shot
@@ -899,10 +902,14 @@ line is shown in Process Details, so run the binary from a path that names no us
 build's `bin/` at `/srv/tasksmack` inside the namespace, `--exe /srv/tasksmack/TaskSmack --process TaskSmack`).
 
 ```powershell
-# Windows: in a Windows Sandbox (its own processes, user and host name) with a win-release build made
-# inside it (App Control there refuses a binary built on the host), and Mesa's llvmpipe opengl32.dll
-# beside TaskSmack.exe when the Sandbox has no vGPU
-.\tools\screenshots.ps1 -Exe build\win-release\bin\TaskSmack.exe -Out C:\shots\out   # then cwebp/img2webp on the host
+# Windows: in a Windows Sandbox (its own processes, user and host name, WDAGUtilityAccount) with
+# <vGPU>Enable</vGPU> and the release's Authenticode-signed zip mapped in read-only: Smart App Control
+# inside the Sandbox refuses an unsigned TaskSmack.exe, whether built on the host or in the Sandbox.
+# Seed a few HKCU/HKLM Run entries (the Sandbox has no startup apps), start a process that holds a few
+# TCP connections for -ConnectionsPid, and park the Sandbox's pointer in a screen corner
+# (SetCursorPos(0, 0) inside the Sandbox, before each shot), or the host pointer over the Sandbox window
+# hovers a chart and draws its tooltip into the shot.
+.\tools\screenshots.ps1 -Exe C:\shots\TaskSmack.exe -Out C:\shots\out -ConnectionsPid $holder.Id   # then cwebp/img2webp on the host
 ```
 
 The images show the machine they were taken on. Before committing, look at every one for a user name,
@@ -2989,7 +2996,9 @@ stray dispatch from a branch can't impersonate one.
 # 1. Bump CMakeLists.txt's project(TaskSmack VERSION ...) to the target version in its own PR,
 #    get it reviewed, and merge it: to main for vX.Y.0 (before the branch is cut), to release/X.Y
 #    for a patch release. release.yml's validate job requires this to already match the tag (see
-#    Release Environment below), so it must land *before* step 3.
+#    Release Environment below), so it must land *before* step 3. For vX.Y.0, main normally reads
+#    X.Y.0 already: it's bumped to the next minor right after each release/X.Y cut, and non-release
+#    builds read X.Y.Z-dev (docs/dev/release-process.md, "Versions", #3371).
 
 # 2. Check out the branch the tag goes on, fully up to date with that merged bump: main for vX.Y.0
 #    (the maintainer-approved candidate commit), release/X.Y for a patch release

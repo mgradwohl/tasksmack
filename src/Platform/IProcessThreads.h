@@ -14,7 +14,9 @@
 
 #include "Platform/IProcessActions.h"
 
+#include <chrono>
 #include <cstdint>
+#include <optional>
 #include <stop_token>
 #include <string>
 #include <vector>
@@ -61,6 +63,14 @@ struct ProcessThread
     std::uint64_t createTime = 0;
 };
 
+/// The clock ThreadsReadResult::acquiredAtSeconds is on: seconds since std::chrono::steady_clock's epoch (#3337).
+/// A reader that stamps its own result and the view that stamps one a reader left unset both use it, so two
+/// reads' stamps are always comparable.
+[[nodiscard]] inline double threadsReadClockSeconds() noexcept
+{
+    return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
 /// The outcome of IProcessThreadsReader::readThreads(): a status, and the threads when Ok.
 struct ThreadsReadResult
 {
@@ -71,6 +81,13 @@ struct ThreadsReadResult
     bool truncated = false;            ///< The process had more than MAX_THREADS; `threads` holds the first
     std::uint64_t bootTimeEpoch = 0;   ///< When the machine booted (Unix seconds), for startTicks as a time; 0 when unknown
     bool windowsPriorities = false;    ///< Each thread's nice holds its Windows priority (0 to 31), not a nice value
+    /// When the CPU times were read, on threadsReadClockSeconds(), taken on the reading thread (#3337): what a
+    /// view's CPU % divides by, never when the UI took the result in. A reader whose counters come from one
+    /// snapshot before slower detail reads (Windows) stamps it right after the snapshot; unset, the view stamps
+    /// it on its worker as the read returns (Linux, whose per-thread counters are the last thing it reads, and
+    /// the administrator helper's reads, whose reply doesn't carry it).
+    // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
+    std::optional<double> acquiredAtSeconds{};
 };
 
 /// Lists one process's threads on request.

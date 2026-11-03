@@ -71,6 +71,8 @@ The rules agents act on:
   get it in; scope is the maintainer's call.
 - **Candidate:** tag only a fully green, approved commit. Nothing joins the scope after approval.
 - **Who controls what:** agents never declare the freeze, approve a candidate, cut a release branch or push a tag.
+- **Versions (#3371):** main is bumped to `X.(Y+1).0` right after `release/X.Y` is cut, patch bumps stay on the
+  release branch, non-release builds read `X.Y.Z-dev`, and the version guard fails if a branch is below a published tag.
 
 ## Code review
 
@@ -101,6 +103,16 @@ Feature parity: a metric with a system-wide tab should usually also get a Proces
 selected process and a Processes-table column (off by default unless common). And anything the Processes
 table shows for a process should also be on its Process Details tab; one missing there is probably a bug.
 See "Adding New Features" in [.github/copilot-instructions.md](.github/copilot-instructions.md).
+
+Windows/Linux parity (maintainer, 2026-11-01; applies to features from v0.11.0 on):
+- **Both platforms, same release:** a feature ships on Windows and Linux in the same release, wherever both
+  operating systems can support it.
+- **When one platform can't support it** (Replace Task Manager, load average), the PR says why, and the
+  user guide's Platform Differences table gets a row.
+- **When one platform comes later,** the PR files a parity issue for the other lane before it merges, on the
+  same or the next milestone, and links it from the PR and from any "not available yet" text in the app
+  or the guide. A feature merged on one platform with no such issue is the gap the v0.10.0 review found:
+  #3356, #3357 and #3358.
 
 Build (CMake Presets, `cmake --list-presets` for the full set):
 ```bash

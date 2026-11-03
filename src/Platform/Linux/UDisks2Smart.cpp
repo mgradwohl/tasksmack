@@ -32,6 +32,7 @@ namespace Platform::SystemdBus
 
 using Detail::Bus;
 using Detail::BusError;
+using Detail::MallocStrv;
 using Detail::Message;
 using Detail::openSystemBus;
 using Detail::timedOut;
@@ -183,18 +184,17 @@ void readNvmeAttributes(sd_bus* bus, const std::string& drive, LinuxDiskSmart::D
     {
         return result;
     }
-    char** warnings = nullptr;
+    MallocStrv warnings; // every entry and the array freed, even if a copy below throws (#3338)
     BusError warningsError;
-    if (sd_bus_get_property_strv(bus, UDISKS, drive.c_str(), UDISKS_NVME, "SmartCriticalWarning", warningsError.get(), &warnings) >= 0 &&
-        warnings != nullptr)
+    if (sd_bus_get_property_strv(bus, UDISKS, drive.c_str(), UDISKS_NVME, "SmartCriticalWarning", warningsError.get(), warnings.out()) >=
+            0 &&
+        warnings.get() != nullptr)
     {
-        for (char** warning = warnings; *warning != nullptr;
+        for (char* const* warning = warnings.get(); *warning != nullptr;
              ++warning) // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic) - a C strv
         {
             smart.criticalWarnings.emplace_back(*warning);
-            free(*warning); // NOLINT(cppcoreguidelines-no-malloc,cppcoreguidelines-owning-memory) - sd-bus allocates with malloc
         }
-        free(static_cast<void*>(warnings)); // NOLINT(cppcoreguidelines-no-malloc,cppcoreguidelines-owning-memory) - as above
     }
     BusError temperatureError;
     (void) getTrivial(bus, drive, UDISKS_NVME, "SmartTemperature", 'q', smart.nvmeTemperatureKelvin, temperatureError);

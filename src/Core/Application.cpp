@@ -180,7 +180,7 @@ void logResizePerfAnchor()
                  counterAfter,
                  TASKSMACK_GIT_FULL_COMMIT,
                  TASKSMACK_GIT_SOURCE_STATE,
-                 TASKSMACK_VERSION,
+                 TASKSMACK_VERSION_FULL,
                  TASKSMACK_BUILD_TYPE,
                  TASKSMACK_COMPILER_ID,
                  TASKSMACK_COMPILER_VERSION,

@@ -207,6 +207,13 @@ class MockGPUProbe : public Platform::IGPUProbe
         return *this;
     }
 
+    /// Replaces every per-process entry the next readProcessGPUCounters() returns.
+    MockGPUProbe& withOnlyProcessGPUCounters(std::vector<Platform::ProcessGPUCounters> counters)
+    {
+        m_ProcessCounters = std::move(counters);
+        return *this;
+    }
+
     MockGPUProbe& withCapabilities(Platform::GPUCapabilities caps)
     {
         m_Capabilities = caps;

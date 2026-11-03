@@ -118,4 +118,17 @@ inline constexpr std::string_view CGROUP_PROCS_FILE = "cgroup.procs";
     return remembered.value_or(DEFAULT_CPU_WEIGHT);
 }
 
+/// Whether a process On remembered (started at @p rememberedStart) is known to have exited (#3330): its PID's start
+/// time now (@p startNow, nullopt when it couldn't be read) is another process's, or its /proc entry is gone
+/// (@p procEntryGone: ENOENT). A read that failed otherwise says nothing, and the memory is kept.
+[[nodiscard]] constexpr bool
+rememberedProcessExited(std::optional<std::uint64_t> startNow, bool procEntryGone, std::uint64_t rememberedStart) noexcept
+{
+    if (startNow.has_value())
+    {
+        return *startNow != rememberedStart; // a reused PID: the remembered process is gone
+    }
+    return procEntryGone;
+}
+
 } // namespace Platform::LinuxEfficiency

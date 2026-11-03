@@ -5,6 +5,7 @@
 #include "Platform/Linux/SystemdServices.h"
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 
@@ -14,7 +15,6 @@
 
 #include <array>
 #include <chrono>
-#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <string_view>
@@ -43,6 +43,7 @@ bool built() noexcept
 
 using Detail::Bus;
 using Detail::BusError;
+using Detail::MallocString;
 using Detail::Message;
 using Detail::openSystemBus;
 using Detail::timedOut;
@@ -53,21 +54,14 @@ namespace
 /// The Manager's unsigned 64-bit property @p name into @p value; the error text when it fails.
 [[nodiscard]] std::string readManagerUint64(sd_bus* bus, const char* name, std::uint64_t& value)
 {
-    sd_bus_error error{}; // SD_BUS_ERROR_NULL: all null, written as C++ (the macro is a C compound literal)
+    BusError error; // freed even if building the text below throws (#3338)
     const int result = sd_bus_get_property_trivial(
-        bus, "org.freedesktop.systemd1", "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager", name, &error, 't', &value);
-    std::string text;
-    if (result < 0 && timedOut(error, result))
+        bus, "org.freedesktop.systemd1", "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager", name, error.get(), 't', &value);
+    if (result < 0 && timedOut(error.raw(), result))
     {
-        text = "systemd didn't answer in time";
+        return "systemd didn't answer in time";
     }
-    else if (result < 0)
-    {
-        text = (error.message != nullptr) ? error.message
-                                          : std::strerror(-result); // NOLINT(concurrency-mt-unsafe) - read on one worker thread
-    }
-    sd_bus_error_free(&error);
-    return text;
+    return result < 0 ? error.text(result) : std::string{};
 }
 
 } // namespace
@@ -210,13 +204,12 @@ constexpr const char* SYSTEMD_SERVICE = "org.freedesktop.systemd1.Service";
 [[nodiscard]] bool readServiceString(sd_bus* bus, const char* object, const char* name, std::optional<std::string>& value)
 {
     BusError error;
-    char* text = nullptr;
-    const int result = sd_bus_get_property_string(bus, SYSTEMD, object, SYSTEMD_SERVICE, name, error.get(), &text);
+    MallocString text; // freed even if the copy below throws (#3338)
+    const int result = sd_bus_get_property_string(bus, SYSTEMD, object, SYSTEMD_SERVICE, name, error.get(), std::out_ptr(text));
     if (result >= 0)
     {
-        value = (text != nullptr) ? std::string(text) : std::string{};
+        value = (text.get() != nullptr) ? std::string(text.get()) : std::string{};
     }
-    std::free(text); // NOLINT(cppcoreguidelines-no-malloc, cppcoreguidelines-owning-memory) - sd-bus hands back malloc'd strings
     return result >= 0 || !timedOut(error.raw(), result);
 }
 
@@ -381,11 +374,15 @@ ServicesRead readServices(UnitFileCache* cache, std::chrono::steady_clock::time_
             continue;
         }
         BusError error;
-        char* state = nullptr;
-        const int result = sd_bus_get_property_string(
-            bus.get(), SYSTEMD, unit.objectPath.c_str(), "org.freedesktop.systemd1.Unit", "UnitFileState", error.get(), &state);
-        std::string text = result >= 0 && state != nullptr ? std::string(state) : std::string{};
-        std::free(state); // NOLINT(cppcoreguidelines-no-malloc, cppcoreguidelines-owning-memory) - sd-bus hands back malloc'd strings
+        MallocString state; // freed even if the copy below throws (#3338)
+        const int result = sd_bus_get_property_string(bus.get(),
+                                                      SYSTEMD,
+                                                      unit.objectPath.c_str(),
+                                                      "org.freedesktop.systemd1.Unit",
+                                                      "UnitFileState",
+                                                      error.get(),
+                                                      std::out_ptr(state));
+        std::string text = result >= 0 && state.get() != nullptr ? std::string(state.get()) : std::string{};
         if (result < 0 && timedOut(error.raw(), result))
         {
             answering = false;
