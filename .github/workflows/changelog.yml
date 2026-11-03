@@ -31,7 +31,7 @@ permissions: {}
 jobs:
   targets:
     name: Find the tag's branches
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     env:
       TAG_NAME: ${{ github.ref_name }}
@@ -93,7 +93,7 @@ jobs:
   changelog:
     name: Update CHANGELOG.md on ${{ matrix.base }}
     needs: [targets]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     strategy:
       # One base failing (say, a conflicting open PR) must not stop the other's PR.
@@ -260,7 +260,7 @@ jobs:
     # branch gets the same guide; the guide's bundle line follows the release's own assets (#3145).
     name: Fill the release notes
     needs: [targets]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # The wait's own limit (WAIT_MINUTES) comes first; this is the backstop.
     timeout-minutes: 140
     env:

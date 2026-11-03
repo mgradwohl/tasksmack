@@ -58,7 +58,7 @@ permissions: {}
 jobs:
   coverage:
     if: github.event_name != 'workflow_dispatch' || inputs.scope != 'benchmark'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # It takes 13-21 minutes warm; at 20 about one run in three was cancelled (#2859). A cold ccache
     # takes much longer: a change to the coverage compile flags (#3160's -runtime-counter-relocation)
     # rebuilt everything in 25-33 minutes, and on main (run 40528105962) the tests started at 33:14
@@ -372,8 +372,10 @@ jobs:
     if: >-
       github.event_name == 'schedule' ||
       (github.event_name == 'workflow_dispatch' && inputs.scope == 'all')
-    runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    runs-on: ubuntu-26.04
+    # 45, not 25, as in sanitizers.yml (#3395): a new runner image or compiler snapshot leaves the ccache
+    # cold, and the first ubuntu-26.04 dispatch was cancelled in Build at 25 minutes for both presets.
+    timeout-minutes: 45
     permissions:
       contents: read
     strategy:
@@ -570,6 +572,10 @@ jobs:
 
   benchmark-regression:
     if: github.event_name != 'workflow_dispatch' || inputs.scope != 'coverage'
+    # Stays on ubuntu-24.04 while the rest of CI runs on 26.04 (#3395): perf-data/linux-ci-baseline.json
+    # was captured on 24.04 hosted runners, and comparing a 26.04 run against it would read the image
+    # change as regressions. Move it together with a baseline refresh on 26.04 (CONTRIBUTING.md,
+    # "Refreshing perf-data/linux-ci-baseline.json").
     runs-on: ubuntu-24.04
     # 20 minutes was not enough: a live run timed out mid-suite with TaskSmackBenchmarks still
     # executing after ~14 minutes of the ~73-benchmark, 10-repetitions-each suite alone (on top
@@ -700,7 +706,7 @@ jobs:
     if: >-
       github.event_name == 'schedule' ||
       (github.event_name == 'workflow_dispatch' && inputs.scope == 'all')
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 45
     permissions:
       contents: read

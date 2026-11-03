@@ -17,7 +17,7 @@ permissions: {}
 jobs:
   pre-commit:
     name: Run pre-commit checks
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
       contents: read
@@ -48,7 +48,7 @@ jobs:
   # token or secret, and it runs for pull requests from forks too.
   version-ahead:
     name: Version is not behind the latest release
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions:
       contents: read
