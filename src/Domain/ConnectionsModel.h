@@ -6,6 +6,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -51,7 +52,11 @@ struct ConnectionBytes
 class ConnectionsModel : public ISamplable
 {
   public:
-    explicit ConnectionsModel(std::unique_ptr<Platform::ISystemConnectionsReader> reader);
+    using Clock = std::chrono::steady_clock;
+    using NowFunction = std::function<Clock::time_point()>;
+
+    /// @param now Times each reading, for the rates (tests: a fake clock).
+    explicit ConnectionsModel(std::unique_ptr<Platform::ISystemConnectionsReader> reader, NowFunction now = [] { return Clock::now(); });
 
     /// Reads the sockets and publishes them. Thread-safe; samples are serialised.
     void sample() override;
@@ -75,12 +80,14 @@ class ConnectionsModel : public ISamplable
 
   private:
     std::unique_ptr<Platform::ISystemConnectionsReader> m_Reader; // used under m_SampleMutex only
+    NowFunction m_Now;
     bool m_HasConnections = false;
     std::mutex m_SampleMutex;
     std::uint64_t m_LastVersion = 0; // guarded by m_SampleMutex
     // The last reading's byte counters and when it was taken, for the next one's rates (#3079); guarded by m_SampleMutex.
     std::unordered_map<std::uint64_t, ConnectionBytes> m_PreviousBytes;
-    std::chrono::steady_clock::time_point m_PreviousAt;
+    // Both change together, at the end of a sample that can no longer throw (#3400).
+    Clock::time_point m_PreviousAt;
     PublicationSlot<ConnectionsPublication> m_Slot;
 };
 
