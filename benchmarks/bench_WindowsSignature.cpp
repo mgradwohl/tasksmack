@@ -30,6 +30,7 @@
 //    (offline, no revocation check). **Environment-dependent**: the file's size, the disk, the catalog
 //    database, Defender, the machine's load. Warm only: the first check in a process loads wintrust and
 //    opens the catalog database (hundreds of milliseconds), and is made before any of these time.
+//    Timed in real time, so the counters include the file reads and the waits on them, not only CPU.
 //    Each runs few iterations, so a run stays short. Keep them out of any regression threshold, as the
 //    other live-probe benchmarks are.
 //     - VerifyCatalog: one check of a catalog-signed System32 file (notepad.exe, else cmd.exe,
@@ -460,13 +461,13 @@ void BM_WindowsSignature_VerifyCatalog(benchmark::State& state)
 {
     benchmarkVerify(state, catalogFile(), ImageSignature::Catalog);
 }
-BENCHMARK(BM_WindowsSignature_VerifyCatalog)->Iterations(REAL_FILE_ITERATIONS)->Unit(benchmark::kMillisecond);
+BENCHMARK(BM_WindowsSignature_VerifyCatalog)->Iterations(REAL_FILE_ITERATIONS)->UseRealTime()->Unit(benchmark::kMillisecond);
 
 void BM_WindowsSignature_VerifyEmbedded(benchmark::State& state)
 {
     benchmarkVerify(state, embeddedFile(), ImageSignature::Embedded);
 }
-BENCHMARK(BM_WindowsSignature_VerifyEmbedded)->Iterations(REAL_FILE_ITERATIONS)->Unit(benchmark::kMillisecond);
+BENCHMARK(BM_WindowsSignature_VerifyEmbedded)->Iterations(REAL_FILE_ITERATIONS)->UseRealTime()->Unit(benchmark::kMillisecond);
 
 void BM_WindowsSignature_CacheHit(benchmark::State& state)
 {
@@ -508,7 +509,7 @@ void BM_WindowsSignature_CacheHit(benchmark::State& state)
     state.counters["per_file"] =
         benchmark::Counter(static_cast<double>(files.size()), benchmark::Counter::kIsIterationInvariantRate | benchmark::Counter::kInvert);
 }
-BENCHMARK(BM_WindowsSignature_CacheHit)->Unit(benchmark::kMicrosecond);
+BENCHMARK(BM_WindowsSignature_CacheHit)->UseRealTime()->Unit(benchmark::kMicrosecond);
 
 /// The image path of @p pid (UTF-8), or empty when this user can't open it or read it.
 [[nodiscard]] std::string imagePathOf(DWORD pid)
@@ -594,7 +595,7 @@ void BM_WindowsSignature_FirstSampleBurst(benchmark::State& state)
     state.counters["catalog"] = benchmark::Counter(static_cast<double>(catalog));
     state.counters["other"] = benchmark::Counter(static_cast<double>(paths.size() - embedded - catalog));
 }
-BENCHMARK(BM_WindowsSignature_FirstSampleBurst)->Iterations(1)->Unit(benchmark::kMillisecond);
+BENCHMARK(BM_WindowsSignature_FirstSampleBurst)->Iterations(1)->UseRealTime()->Unit(benchmark::kMillisecond);
 
 } // namespace
 
