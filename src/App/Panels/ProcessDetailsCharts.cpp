@@ -460,9 +460,11 @@ void resourceTooltip(const ChartTimeAxis& axis, const ResourceChartData& data)
     if (data.hasGdiSamples)
     {
         const auto gdiValue = App::Detail::seriesValueAt(data.gdi, data.gdiTimeOffset, *idx);
-        rows.push_back({.label = GDI_LABEL,
-                        .color = theme.scheme().chartGdi,
-                        .value = gdiValue ? App::Detail::formatCountOrNA(*gdiValue) : std::string("N/A")});
+        rows.push_back({
+            .label = GDI_LABEL,
+            .color = theme.scheme().chartGdi,
+            .value = gdiValue ? App::Detail::formatCountOrNA(*gdiValue) : std::string("N/A"),
+        });
     }
 #endif
     UI::Widgets::renderHistoryTooltip(axis.timeData[*idx], rows);
@@ -570,14 +572,15 @@ resourceNowBars(const App::Detail::ProcessSmoothedUsage& smoothed, const Resourc
     // GDI objects NowBar (Windows-only). A missing reading is NaN: it is skipped by the axis bound and
     // shown as N/A, and a series with no reading at all -- a process TaskSmack cannot open -- is not
     // drawn (#1000).
-    const NowBar gdiBar{.valueText = App::Detail::countTextOrNA(smoothed.gdiInitialized, smoothed.gdiObjectCount),
-                        .label = GDI_LABEL,
-                        .tooltipText = {}, // The fallback, "GDI Objects: <value>", says it all (#1019)
-                        .value01 =
-                            smoothed.gdiInitialized ? UI::Widgets::normalizeToUnitInterval(smoothed.gdiObjectCount, bounds.threads) : 0.0,
-                        .color = theme.scheme().chartGdi,
-                        .marker = ImPlotMarker_None,
-                        .available = smoothed.gdiInitialized};
+    const NowBar gdiBar{
+        .valueText = App::Detail::countTextOrNA(smoothed.gdiInitialized, smoothed.gdiObjectCount),
+        .label = GDI_LABEL,
+        .tooltipText = {}, // The fallback, "GDI Objects: <value>", says it all (#1019)
+        .value01 = smoothed.gdiInitialized ? UI::Widgets::normalizeToUnitInterval(smoothed.gdiObjectCount, bounds.threads) : 0.0,
+        .color = theme.scheme().chartGdi,
+        .marker = ImPlotMarker_None,
+        .available = smoothed.gdiInitialized,
+    };
 #endif
 
     NowBarList bars;

@@ -76,14 +76,16 @@ ProcessThreadFunctions realProcessThreadFunctions() noexcept
     {
         return ntdllProc<ProcessThreadFunctions::NtQueryInformationThreadFn>("NtQueryInformationThread");
     }();
-    return {.ntQuerySystemInformation = ntQuerySystemInformation(),
-            .openThread = &OpenThread,
-            .closeHandle = &CloseHandle,
-            .getThreadDescription = getDescription,
-            .localFree = &LocalFree,
-            .ntQueryInformationThread = queryThread,
-            .getProcessIdOfThread = &GetProcessIdOfThread,
-            .getThreadTimes = &GetThreadTimes};
+    return {
+        .ntQuerySystemInformation = ntQuerySystemInformation(),
+        .openThread = &OpenThread,
+        .closeHandle = &CloseHandle,
+        .getThreadDescription = getDescription,
+        .localFree = &LocalFree,
+        .ntQueryInformationThread = queryThread,
+        .getProcessIdOfThread = &GetProcessIdOfThread,
+        .getThreadTimes = &GetThreadTimes,
+    };
 }
 
 WindowsProcessThreadsReader::WindowsProcessThreadsReader() : WindowsProcessThreadsReader(realProcessThreadFunctions())

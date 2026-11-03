@@ -192,12 +192,15 @@ ConnectionsReadResult WindowsProcessConnectionsReader::readConnections(const Pro
     // A refused open is PermissionDenied: the tables would list its sockets, but which process holds
     // the PID cannot be confirmed.
     // An exited process whose object is still held open is refused too (its sockets are gone).
-    auto opened = openProcessVerified({.openProcess = m_Api.openProcess,
-                                       .getProcessTimes = m_Api.getProcessTimes,
-                                       .closeHandle = m_Api.closeHandle,
-                                       .getExitCodeProcess = m_Api.getExitCodeProcess},
-                                      target,
-                                      PROCESS_QUERY_LIMITED_INFORMATION);
+    auto opened = openProcessVerified(
+        {
+            .openProcess = m_Api.openProcess,
+            .getProcessTimes = m_Api.getProcessTimes,
+            .closeHandle = m_Api.closeHandle,
+            .getExitCodeProcess = m_Api.getExitCodeProcess,
+        },
+        target,
+        PROCESS_QUERY_LIMITED_INFORMATION);
     if (!opened)
     {
         auto refused = toReadFailure<ConnectionsReadStatus>(opened.error());

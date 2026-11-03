@@ -300,12 +300,14 @@ Action render(State& state)
             Core::VideoBackend::isWayland() ? checkboxWidth(NATIVE_DECORATIONS_LABEL) : 0.0F,
         });
 #else
-        const float checkboxRowWidth = std::max({checkboxWidth(PRIVILEGE_NOTICE_LABEL),
-                                                 checkboxWidth(PROCESS_ICONS_LABEL),
-                                                 checkboxWidth(HIGHLIGHT_NEW_LABEL),
-                                                 checkboxWidth(UDP_EVENT_TRACE_LABEL),
-                                                 state.updateCheckOffered ? checkboxWidth(CHECK_UPDATES_LABEL) : 0.0F,
-                                                 state.startAtLoginOffered ? checkboxWidth(START_AT_LOGIN_LABEL) : 0.0F});
+        const float checkboxRowWidth = std::max({
+            checkboxWidth(PRIVILEGE_NOTICE_LABEL),
+            checkboxWidth(PROCESS_ICONS_LABEL),
+            checkboxWidth(HIGHLIGHT_NEW_LABEL),
+            checkboxWidth(UDP_EVENT_TRACE_LABEL),
+            state.updateCheckOffered ? checkboxWidth(CHECK_UPDATES_LABEL) : 0.0F,
+            state.startAtLoginOffered ? checkboxWidth(START_AT_LOGIN_LABEL) : 0.0F,
+        });
 #endif
         const float widestOtherRow = std::max({advancedRowWidth, actionRowWidth, checkboxRowWidth});
 

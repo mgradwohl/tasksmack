@@ -218,12 +218,16 @@ struct EfficiencyModeToggle
 #ifdef _WIN32
     if (on)
     {
-        return {.state = EfficiencyModeToggleState::Enabled,
-                .tooltip = "Turn Efficiency mode off: Windows schedules the process as before, and its priority is restored"};
+        return {
+            .state = EfficiencyModeToggleState::Enabled,
+            .tooltip = "Turn Efficiency mode off: Windows schedules the process as before, and its priority is restored",
+        };
     }
-    return {.state = EfficiencyModeToggleState::Enabled,
-            .tooltip = "Run the process at Idle priority on Windows' power-saving scheduling (EcoQoS), as Task Manager's "
-                       "Efficiency mode does: it uses less power, and may run slower"};
+    return {
+        .state = EfficiencyModeToggleState::Enabled,
+        .tooltip = "Run the process at Idle priority on Windows' power-saving scheduling (EcoQoS), as Task Manager's "
+                   "Efficiency mode does: it uses less power, and may run slower",
+    };
 #else
     // Linux (#3202): nice 19 and, where it can, the cgroup's lowest CPU weight.
     if (on)

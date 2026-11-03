@@ -168,9 +168,17 @@ constexpr const wchar_t* PHYSICAL_DISK_OBJECT_ENGLISH = L"PhysicalDisk";
 // unit needs <initguid.h>. A disk's interface says it arrived or left; its volumes' say when it is
 // partitioned and lettered, which PDH's instance name ("1 D: E:") carries (#3151).
 constexpr GUID DISK_INTERFACE_GUID{
-    .Data1 = 0x53f56307, .Data2 = 0xb6bf, .Data3 = 0x11d0, .Data4 = {0x94, 0xf2, 0x00, 0xa0, 0xc9, 0x1e, 0xfb, 0x8b}};
+    .Data1 = 0x53f56307,
+    .Data2 = 0xb6bf,
+    .Data3 = 0x11d0,
+    .Data4 = {0x94, 0xf2, 0x00, 0xa0, 0xc9, 0x1e, 0xfb, 0x8b},
+};
 constexpr GUID VOLUME_INTERFACE_GUID{
-    .Data1 = 0x53f5630d, .Data2 = 0xb6bf, .Data3 = 0x11d0, .Data4 = {0x94, 0xf2, 0x00, 0xa0, 0xc9, 0x1e, 0xfb, 0x8b}};
+    .Data1 = 0x53f5630d,
+    .Data2 = 0xb6bf,
+    .Data3 = 0x11d0,
+    .Data4 = {0x94, 0xf2, 0x00, 0xa0, 0xc9, 0x1e, 0xfb, 0x8b},
+};
 
 /// The CM_Register_Notification callback, on a CfgMgr32 thread-pool thread: it only sets the
 /// probe's flag, never logging or rescanning there, and read() takes the flag (#3151). @p context
