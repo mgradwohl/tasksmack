@@ -15,6 +15,7 @@
 // - The path table, and so the queue, is bounded too: when full, the answers already taken are forgotten
 //   (a path still being polled is requested again by find()). When every path in it is still queued, a new
 //   path isn't admitted (#3340): it stays "not checked yet" and find() requests it again on a later sample.
+//   A count of the queued paths says so at once (#3418), so a path turned away costs no sweep of the table.
 // - Those later samples take turns (#3403): the first path turned away is where admission resumes, so a
 //   probe asking for more images than the table holds, in the same order each sample, gets a table's worth
 //   further each sample instead of the first ones over and over. The probe marks each sample with
@@ -132,6 +133,13 @@ class SignatureWorker
         return m_Paths.size();
     }
 
+    /// The paths the table holds queued or being checked, by the worker's count of them (tests, #3418).
+    [[nodiscard]] std::size_t queuedPathCount() const
+    {
+        const std::scoped_lock lock(m_Mutex);
+        return m_QueuedCount;
+    }
+
   private:
     struct PathState
     {
@@ -173,7 +181,12 @@ class SignatureWorker
             if (m_Paths.size() >= m_Options.maxPaths)
             {
                 // Full: forget what has been answered and taken; what is queued stays, its check to come.
-                std::erase_if(m_Paths, [](const auto& entry) { return !entry.second.queued; });
+                // When every path in it is queued there is nothing to forget, and the count says so without
+                // a sweep of the whole table under the lock (#3418).
+                if (m_QueuedCount < m_Paths.size())
+                {
+                    std::erase_if(m_Paths, [](const auto& entry) { return !entry.second.queued; });
+                }
                 if (m_Paths.size() >= m_Options.maxPaths)
                 {
                     // Still full, every path queued (#3340): this one isn't admitted, so neither the table
@@ -199,6 +212,7 @@ class SignatureWorker
         PathState& state = m_Paths[std::move(key)];
         state.result.reset();
         state.queued = true;
+        ++m_QueuedCount; // not queued before: a queued path returned at the top
         m_Queue.emplace_back(path);
         if (!m_Thread.joinable())
         {
@@ -247,11 +261,21 @@ class SignatureWorker
             if (const auto found = m_Paths.find(pathKey(queued)); found != m_Paths.end())
             {
                 found->second.result = SignatureCheck{.signature = ImageSignature::Unknown, .note = std::string(note), .signer = {}};
-                found->second.queued = false;
+                markAnsweredLocked(found->second);
             }
         }
         m_Queue.clear();
         m_Idle.notify_all();
+    }
+
+    /// @p state's check is done (under m_Mutex): it is no longer queued, and the count follows.
+    void markAnsweredLocked(PathState& state)
+    {
+        if (state.queued)
+        {
+            state.queued = false;
+            --m_QueuedCount;
+        }
     }
 
     void run(const std::stop_token& stop)
@@ -289,7 +313,7 @@ class SignatureWorker
                 if (const auto found = m_Paths.find(key); found != m_Paths.end())
                 {
                     found->second.result = std::move(check);
-                    found->second.queued = false;
+                    markAnsweredLocked(found->second);
                 }
                 m_Checking = false;
                 if (m_Queue.empty())
@@ -315,6 +339,7 @@ class SignatureWorker
     // Guarded by m_Mutex
     std::deque<std::string> m_Queue;                    // Paths to check, in request order, each at most once
     std::unordered_map<std::string, PathState> m_Paths; // By pathKey()
+    std::size_t m_QueuedCount = 0;                      // m_Paths' entries with queued set (#3418)
     std::optional<Turn> m_Turn;                         // Set while a path turned away waits its turn (#3403)
     std::uint64_t m_Sample = 0;                         // beginSample() calls: the probe's samples
     bool m_Checking = false;                            // The worker holds a path it has taken off the queue
