@@ -65,7 +65,7 @@ using WindowsSignature::TrustCheck;
     {
         return {}; // length counts the NUL: 1 is the empty name
     }
-    return WinString::wideToUtf8(std::wstring_view(name.data(), length - 1));
+    return fns.wideToUtf8(std::wstring_view(name.data(), length - 1));
 }
 
 /// Closes a WTD_STATEACTION_VERIFY call's state (WTD_STATEACTION_CLOSE) when it goes out of scope, on every

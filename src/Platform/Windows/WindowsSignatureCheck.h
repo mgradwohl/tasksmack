@@ -27,11 +27,13 @@
 #include <mscat.h>
 // clang-format on
 
+#include "WinString.h"
 #include "WindowsImageSignature.h"
 
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 
 namespace Platform::Windows
 {
@@ -54,6 +56,8 @@ struct TrustApiFunctions
     BOOL(WINAPI* releaseCatalogContext)(HCATADMIN, HCATINFO, DWORD) = &::CryptCATAdminReleaseCatalogContext;
     BOOL(WINAPI* releaseContext)(HCATADMIN, DWORD) = &::CryptCATAdminReleaseContext;
     BOOL(WINAPI* deviceIoControl)(HANDLE, DWORD, LPVOID, DWORD, LPVOID, DWORD, LPDWORD, LPOVERLAPPED) = &::DeviceIoControl;
+    /// The signer's name to UTF-8, between VERIFY and CLOSE: it allocates, so tests make it throw (#3339, #3342).
+    std::string (*wideToUtf8)(std::wstring_view) = &WinString::wideToUtf8;
 };
 
 /// The stamp of the file @p file is open on (#3292): its volume serial and 128-bit file ID (FileIdInfo;
