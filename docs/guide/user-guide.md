@@ -238,6 +238,10 @@ A cell reading **-** is a value of 0 (or one that doesn't apply). A cell reading
 
 **Group** (beside **Columns**) gathers the processes under group rows: **Unit** (the systemd unit each process's cgroup names on Linux, or the first service it hosts on Windows), **Container**, **App** (the desktop app, Flatpak or Snap a process was launched as, from its systemd scope or service: `app-gnome-firefox-4521.scope` is `firefox`), or **User** (the account each process runs as, so each user's group row totals that user's CPU, memory, disk and network use). Each group row shows its name and process count, and in the columns that add up (CPU %, Memory %, memory, Private, Swap, threads, handles, CPU time, disk and network rates, power, GPU and NPU) its totals, marked **Σ** so a total never reads as one process's figure. Click a group row to collapse or expand it. Groups are sorted by their totals in the sorted column (by name, A to Z, between equal totals), the processes inside each group by the column too, and processes in no group come last under **Ungrouped**. Grouping is a mode of the List view: choosing a group switches Tree off, and choosing Tree sets the group back to **None**. The choice is saved in `config.toml` (`[process_table] group_by`).
 
+![The Processes tab grouped by Unit on Windows: group rows named after services (AppIDSvc, Appinfo, AppXSvc, BFE and more), each with its process count and Σ totals for CPU %, Mem % and Memory, above the svchost.exe that hosts it, with the Services column shown](../images/screenshots/windows/processes-grouped-unit-windows-dark.webp)
+
+*The Processes table grouped by **Unit** on Windows: each service host under the first service it runs, with the group's Σ totals.*
+
 **Run new task** (the rocket button beside **Columns**) starts a program, as Task Manager's File > Run new task does. It is how you get a terminal or your desktop shell back when the shell has hung. Type the program and its arguments, pick one of the last ten you ran from the arrow beside the box, or choose a file with **Browse...**, then press **Run** or Enter. No shell runs the command: words are split as a shell splits them, and quotes keep spaces in a word, but `$VARIABLES`, `~` and wildcards are passed on as typed. A program TaskSmack can't find on your `PATH` is reported straight away. On Linux, **Run as administrator** starts it through `pkexec`, which asks for an administrator's password. Most programs with windows won't open that way, because `pkexec` doesn't pass on your display. When TaskSmack itself runs as root through `sudo` or `pkexec`, a program run without that tick starts as you, in your session. The recent commands are saved in `config.toml` (`[run_task] recent`).
 
 **Find handles** (Linux for now: the magnifier button beside the rocket, or **Ctrl+Shift+F** over the process table) answers "which process is holding this file?". Type part of a file, folder or library name or path and press **Find** or Enter: TaskSmack searches every process's open files and loaded libraries in the background and lists each process, its PID, what it holds (File, Folder, Library, Socket, Pipe, Device) and the path, sortable by any column. Matching ignores the case of ASCII letters. The line under the list counts the processes searched and the matches found, and how many processes couldn't be read. Those are other users' processes, which only an administrator can read: with the `.deb` (or an `.rpm` built from source), **Authenticate to search them too** asks for an administrator's password once and searches just those. Click a result to select its process; double-click to open it in Process Details. A search stops at 10,000 matches. **Stop** ends one early, and closing the dialog leaves it running, so its results are there when you open the dialog again.
@@ -454,9 +458,9 @@ The Process Details **Overview** tab has a collapsible **Environment** section, 
 
 ### Connections
 
-![Process Details' Overview with the Connections section expanded below the Actions and Priority cards, reading No TCP or UDP sockets for the selected process](../images/screenshots/linux/details-connections-windows-dark.webp)
+![Process Details' Overview with the Connections section expanded below the Actions and Priority cards: 3 connections, a table of PROTO, LOCAL ADDRESS, REMOTE ADDRESS and STATE with three TCP connections to port 443](../images/screenshots/windows/details-connections-windows-dark.webp)
 
-*The **Connections** section opened under the Actions and Priority cards, here for a process that holds no TCP or UDP sockets.*
+*The **Connections** section opened under the Actions and Priority cards, for a process holding three TCP connections.*
 
 The Process Details **Overview** tab also has a collapsible **Connections** section, closed by default, under the Environment section. Open it to list the selected process's TCP and UDP sockets, netstat-style, in a **PROTO / LOCAL ADDRESS / REMOTE ADDRESS / STATE** table with a count above it ("3 connections"):
 
@@ -577,9 +581,9 @@ The **Services** tab lists the system's services (Windows' Service Control Manag
 
 ### Startup
 
-![The Startup tab: a filter box, the startup apps count, the Enable and Disable buttons, and an empty table with Name, Publisher, Enabled, Scope, Location and Command columns](../images/screenshots/windows/startup-windows-dark.webp)
+![The Startup tab: a filter box, the count 3 of 3 startup apps, the Enable and Disable buttons, and a table of Task Manager, Windows Calculator and Windows Security notification icon with their Publisher, Enabled, Startup impact, Scope, Location and Command columns](../images/screenshots/windows/startup-windows-dark.webp)
 
-*The **Startup** tab's filter box, count, **Enable** and **Disable** buttons and columns, on a machine with no startup apps to list.*
+*The **Startup** tab with two current-user Run entries and one all-users entry, each with its **Startup impact** (Not measured here: the machine had no recorded sign-in to rate them from).*
 
 The **Startup** tab lists the programs Windows (or, on Linux, your desktop session) starts when you sign in, and enables or disables them:
 
@@ -620,6 +624,10 @@ The **Connections** tab, between Startup and Users, lists every TCP and UDP sock
 - On Windows the tab says it isn't available yet.
 
 ### Users tab
+
+![The Users tab: one signed-in user, WDAGUtilityAccount (you), with 1 session, 22 processes and its Σ CPU, Σ Memory, Σ Disk and Σ Network, expanded to its session and then its processes](../images/screenshots/windows/users-windows-dark.webp)
+
+*The **Users** tab with its one user expanded: the session, then the user's processes.*
 
 The **Users** tab, between Connections and System, has a row for each signed-in user, as Windows Task Manager's Users tab does: their sessions and the **Σ CPU**, **Σ Memory**, **Σ Disk** (read plus write) and **Σ Network** (sent plus received) of every process running as them, with the process count. The Σ marks a total, never one process's figure. Your own row says **(you)**.
 
@@ -720,7 +728,7 @@ On Windows, **Suspend** stops every thread of the process at once, as Resource M
 
 In Process Details the Overview's Identity, Runtime and Actions sections are bordered cards, each with its title inside, drawn like the cells of the CPU Cores grid. The Actions card sits beside the Identity and Runtime cards, no taller than they are, so the charts keep their height: a row with the Terminate, Kill, Suspend and Resume buttons (on Linux followed by **Trace system calls (strace)**, which takes a row of its own when there is no room for it after them), then **Priority**, the priority slider under it and **Apply** under the slider (on Linux, then **I/O priority**, with its current setting after its **Apply**). The process's current priority is the Runtime card's **Priority** row and the **Priority** label's tooltip, not repeated in the Actions card. A result or error message appears under the last row. When the window is too narrow for three cards side by side, or the card needs more height than Identity and Runtime have (as the priority slider usually does), the Actions card moves onto its own row under them, at its full height. **F9** brings the Overview tab forward to show its Kill confirmation.
 
-![Process Details' Overview sub-tab: the command line and Recent crashes line, the Identity and Runtime cards, the Actions card with Terminate, Kill, Suspend, Resume, Set affinity and Create dump file, the Priority card with its slider and Apply button, and the collapsed Connections, Modules, Security and Open files sections](../images/screenshots/windows/details-overview-windows-dark.webp)
+![Process Details' Overview sub-tab: the command line and Recent crashes line, the Identity and Runtime cards, the Actions card with Terminate, Kill, Suspend, Resume, Set affinity, Create dump file, Analyze wait chain and the Efficiency mode checkbox, the Priority card with its slider and Apply button, and the collapsed Environment, Connections, Modules and Threads sections](../images/screenshots/windows/details-overview-windows-dark.webp)
 
 *Process Details' **Overview**: the command line and **Recent crashes** line, the Identity and Runtime cards, the Actions card and the Priority slider, and the collapsible sections below them.*
 
@@ -893,6 +901,10 @@ TaskSmack reopens at the size and position it had when it was closed, and maximi
 If the saved position is no longer on any connected display (a monitor was unplugged, say), TaskSmack opens centered on the primary display instead, and a saved size larger than the display is shrunk to fit it.
 
 ### Settings dialog
+
+![The Settings dialog over the machine tab: Appearance (Theme, Font size, Show process icons, Highlight new and exited processes), Performance (Update interval, History length, Count UDP traffic per process) and Task Manager (Replace Task Manager) sections, with Reset to defaults, Cancel and Save buttons](../images/screenshots/windows/settings-windows-dark.webp)
+
+*The **Settings** dialog on Windows.*
 
 The Settings dialog (the gear icon, or **F2**) has three sections, and a fourth on Windows:
 
