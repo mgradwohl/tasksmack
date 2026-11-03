@@ -3,7 +3,8 @@
 /// later find(), never by the caller's thread; a path is queued once however many processes run it; a
 /// new process of an image re-reads its stamp, checked again only when the file changed or has no file ID
 /// (#3292); the path table's bound, which a table full of queued paths keeps by admitting no more (#3340),
-/// also while a slow check keeps finishing one file at a time under load (#3342); a check that throws; and
+/// also while a slow check keeps finishing one file at a time under load (#3342); more paths than the
+/// table holds, polled in a fixed order, each checked in turn (#3403); a check that throws; and
 /// the destructor stopping a queue.
 /// Pure (no Windows header), so built everywhere.
 
@@ -420,6 +421,66 @@ TEST_F(SignatureWorkerTest, ASlowCheckThatKeepsMakingProgressKeepsTheTableWithin
     {
         EXPECT_EQ(checksOf(path), 1) << path << " is checked once, its answer then cached";
     }
+}
+
+TEST_F(SignatureWorkerTest, MorePathsThanTheTableHoldsPolledInAFixedOrderAreEachCheckedInTurn)
+{
+    // #3403: a probe that asks for more images than the table holds, every sample in the same order. Admission
+    // resumes each sample where the last one stopped, a table's worth at a time, so the later paths are
+    // checked too rather than the first ones being admitted again each sample, and the table keeps its bound.
+    constexpr std::size_t MAX_PATHS = 4;
+    constexpr std::size_t PATH_COUNT = (4 * MAX_PATHS) + 1; // more than twice the bound: the first ones can't hide it
+    constexpr std::size_t SAMPLES = ((PATH_COUNT + MAX_PATHS - 1) / MAX_PATHS) + 1;
+    std::vector<std::string> paths;
+    for (std::size_t i = 0; i < PATH_COUNT; ++i)
+    {
+        paths.push_back("image-" + std::to_string(i) + ".exe");
+        setStamp(paths.back(), 1);
+    }
+    WorkerOptions options;
+    options.maxPaths = MAX_PATHS;
+    SignatureWorker worker(fakeFunctions(), options);
+    for (std::size_t sample = 1; sample <= SAMPLES; ++sample)
+    {
+        for (const std::string& path : paths)
+        {
+            (void) worker.find(path);
+            EXPECT_LE(worker.pathCount(), MAX_PATHS) << "sample " << sample;
+        }
+        ASSERT_TRUE(worker.waitUntilIdle(WAIT));
+    }
+    for (const std::string& path : paths)
+    {
+        EXPECT_NE(checksOf(path), 0) << path << " is checked within " << SAMPLES << " samples";
+    }
+}
+
+TEST_F(SignatureWorkerTest, APathWaitingItsTurnThatNobodyAsksForAgainDoesNotHoldUpTheOthers)
+{
+    // #3403: the path admission resumes with belongs to a process that has gone. Once the probe has come
+    // round without asking for it, the others are admitted again.
+    for (const char* path : {"a", "gone", "c"})
+    {
+        setStamp(path, 1);
+    }
+    setGate(false);
+    WorkerOptions options;
+    options.maxPaths = 1;
+    SignatureWorker worker(fakeFunctions(), options);
+    worker.request("a");
+    EXPECT_FALSE(worker.find("gone").has_value()) << "turned away: the table is full of a, queued";
+    setGate(true);
+    ASSERT_TRUE(worker.waitUntilIdle(WAIT));
+
+    EXPECT_FALSE(worker.find("c").has_value()) << "not its turn: gone was turned away first";
+    ASSERT_TRUE(worker.waitUntilIdle(WAIT));
+    EXPECT_EQ(checksOf("c"), 0);
+    EXPECT_FALSE(worker.find("c").has_value()) << "the next sample, without gone: c is admitted";
+    ASSERT_TRUE(worker.waitUntilIdle(WAIT));
+    EXPECT_EQ(checksOf("c"), 1);
+    EXPECT_TRUE(worker.find("c").has_value());
+    EXPECT_EQ(checksOf("gone"), 0);
+    EXPECT_EQ(worker.pathCount(), 1U);
 }
 
 TEST_F(SignatureWorkerTest, TheDestructorStopsTheQueueAndAPauseEndsAtTheStop)

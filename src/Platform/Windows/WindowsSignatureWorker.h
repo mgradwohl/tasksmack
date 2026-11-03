@@ -15,6 +15,9 @@
 // - The path table, and so the queue, is bounded too: when full, the answers already taken are forgotten
 //   (a path still being polled is requested again by find()). When every path in it is still queued, a new
 //   path isn't admitted (#3340): it stays "not checked yet" and find() requests it again on a later sample.
+// - Those later samples take turns (#3403): the first path turned away is where admission resumes, so a
+//   probe asking for more images than the table holds, in the same order each sample, gets a table's worth
+//   further each sample instead of the first ones over and over.
 // - The thread starts with the first request and is stopped and joined by the destructor; a check in
 //   progress finishes first (WinVerifyTrust can't be interrupted), the rest of the queue is dropped.
 //
@@ -28,6 +31,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
+#include <cstdint>
 #include <deque>
 #include <exception>
 #include <mutex>
@@ -78,11 +82,12 @@ class SignatureWorker
     void request(std::string_view path)
     {
         const std::scoped_lock lock(m_Mutex);
-        requestLocked(path, pathKey(path));
+        requestLocked(path, pathKey(path), Asker::NewProcess);
     }
 
     /// The answer for @p path once checked since the last request(); nullopt while queued or checking.
-    /// A path the table has forgotten (it overflowed), or never admitted (it was full), is requested again.
+    /// A path the table has forgotten (it overflowed), or never admitted (it was full), is requested again
+    /// on its turn (#3403).
     [[nodiscard]] std::optional<SignatureCheck> find(std::string_view path)
     {
         std::string key = pathKey(path);
@@ -90,7 +95,7 @@ class SignatureWorker
         const auto found = m_Paths.find(key);
         if (found == m_Paths.end())
         {
-            requestLocked(path, std::move(key));
+            requestLocked(path, std::move(key), Asker::LaterSample);
             return std::nullopt;
         }
         return found->second.result;
@@ -124,25 +129,63 @@ class SignatureWorker
         bool queued = false;
     };
 
+    /// Who asks for a path: request(), for a process just seen, or find(), asking again on a later sample.
+    enum class Asker : std::uint8_t
+    {
+        NewProcess,
+        LaterSample,
+    };
+
+    /// Where admission resumes after the table turned a path away (#3403). Two keys, so O(1) memory.
+    struct Turn
+    {
+        std::string resumeAt;                   ///< The first path turned away: the next one admitted
+        std::optional<std::string> firstPassed; ///< The first path passed over while waiting for it
+        bool resumeAsked = false;               ///< resumeAt was asked for since firstPassed last came round
+    };
+
     /// request() under m_Mutex.
-    void requestLocked(std::string_view path, std::string key)
+    void requestLocked(std::string_view path, std::string key, Asker asker)
     {
         if (const auto found = m_Paths.find(key); found != m_Paths.end() && found->second.queued)
         {
             return;
         }
-        if (m_Paths.size() >= m_Options.maxPaths && !m_Paths.contains(key))
+        if (!m_Paths.contains(key))
         {
-            // Full: forget what has been answered and taken; what is queued stays, its check to come.
-            std::erase_if(m_Paths, [](const auto& entry) { return !entry.second.queued; });
-            if (m_Paths.size() >= m_Options.maxPaths)
+            if (asker == Asker::LaterSample && !isTurnLocked(key))
             {
-                // Still full, every path queued (#3340): this one isn't admitted, so neither the table nor
-                // the queue grows past the bound. Nothing queued is evicted either (its check still comes).
-                // The path stays "not checked yet", and find() asks again on a later sample, once checks
-                // have drained the queue.
+                // Not its turn (#3403): the table turned a path away, and that one is admitted first, then
+                // those after it. The probe asks in the same order each sample, so admitting this one now
+                // would hand the table to the first paths in that order every sample, and the later ones
+                // would never be checked. It stays "not checked yet", and comes round again.
                 return;
             }
+            if (m_Paths.size() >= m_Options.maxPaths)
+            {
+                // Full: forget what has been answered and taken; what is queued stays, its check to come.
+                std::erase_if(m_Paths, [](const auto& entry) { return !entry.second.queued; });
+                if (m_Paths.size() >= m_Options.maxPaths)
+                {
+                    // Still full, every path queued (#3340): this one isn't admitted, so neither the table
+                    // nor the queue grows past the bound. Nothing queued is evicted either (its check still
+                    // comes). The path stays "not checked yet", and find() asks again on a later sample,
+                    // once checks have drained the queue; admission resumes with it (#3403).
+                    if (!m_Turn.has_value())
+                    {
+                        m_Turn = Turn{.resumeAt = key, .firstPassed = std::nullopt, .resumeAsked = false};
+                    }
+                    else if (m_Turn->resumeAt == key)
+                    {
+                        m_Turn->resumeAsked = true;
+                    }
+                    return;
+                }
+            }
+        }
+        if (m_Turn.has_value() && m_Turn->resumeAt == key)
+        {
+            m_Turn.reset(); // its turn has come: those after it are admitted as there's room
         }
         PathState& state = m_Paths[std::move(key)];
         state.result.reset();
@@ -162,6 +205,39 @@ class SignatureWorker
             }
         }
         m_Wake.notify_one();
+    }
+
+    /// Whether a later sample's ask for @p key, not in the table, may be admitted now (under m_Mutex): yes
+    /// when no path is waiting its turn, or this is the one; no for the others until it has been. If the
+    /// probe comes round to the first path it passed over without asking for the one waiting (that process
+    /// has gone), the turn is dropped, so admission never waits on a path nobody asks for.
+    [[nodiscard]] bool isTurnLocked(const std::string& key)
+    {
+        if (!m_Turn.has_value() || m_Turn->resumeAt == key)
+        {
+            if (m_Turn.has_value())
+            {
+                m_Turn->resumeAsked = true;
+            }
+            return true;
+        }
+        if (!m_Turn->firstPassed.has_value())
+        {
+            m_Turn->firstPassed = key; // a lap starts here: has resumeAt been asked for when it comes round?
+            m_Turn->resumeAsked = false;
+            return false;
+        }
+        if (*m_Turn->firstPassed != key)
+        {
+            return false;
+        }
+        if (m_Turn->resumeAsked)
+        {
+            m_Turn->resumeAsked = false; // round again: still waiting, for room for it
+            return false;
+        }
+        m_Turn.reset();
+        return true;
     }
 
     /// Answers every queued path as Unknown with @p note, and empties the queue (under m_Mutex).
@@ -240,6 +316,7 @@ class SignatureWorker
     // Guarded by m_Mutex
     std::deque<std::string> m_Queue;                    // Paths to check, in request order, each at most once
     std::unordered_map<std::string, PathState> m_Paths; // By pathKey()
+    std::optional<Turn> m_Turn;                         // Set while a path turned away waits its turn (#3403)
     bool m_Checking = false;                            // The worker holds a path it has taken off the queue
     std::jthread m_Thread;                              // Last: stopped and joined first, while the rest is alive
 };
