@@ -26,6 +26,28 @@
 
 using TestSupport::FailAllocationAfter;
 
+// Outside the anonymous namespace: it's made with std::make_shared (.github/copilot-instructions.md, Testing).
+namespace SnapshotModelsAllocationFailureFakes
+{
+
+/// logind's sessions, read from a list the test changes.
+class ListedSessions final : public Platform::IUserSessions
+{
+  public:
+    std::vector<Platform::UserSession> sessions;
+
+    [[nodiscard]] bool hasSessions() const override
+    {
+        return true;
+    }
+    [[nodiscard]] Platform::UserSessionsRead read() override
+    {
+        return {.status = Platform::UserSessionsStatus::Ok, .sessions = sessions, .detail = {}};
+    }
+};
+
+} // namespace SnapshotModelsAllocationFailureFakes
+
 namespace
 {
 
@@ -170,22 +192,6 @@ TEST(SnapshotModelsAllocationFailureTest, AFailedStartupSampleKeepsTheLastWholeL
         });
 }
 
-/// logind's sessions, read from a list the test changes.
-class ListedSessions final : public Platform::IUserSessions
-{
-  public:
-    std::vector<Platform::UserSession> sessions;
-
-    [[nodiscard]] bool hasSessions() const override
-    {
-        return true;
-    }
-    [[nodiscard]] Platform::UserSessionsRead read() override
-    {
-        return {.status = Platform::UserSessionsStatus::Ok, .sessions = sessions, .detail = {}};
-    }
-};
-
 Platform::UserSession session(const char* id, const char* user)
 {
     Platform::UserSession result;
@@ -206,7 +212,7 @@ TEST(SnapshotModelsAllocationFailureTest, AFailedUsersSampleKeepsTheLastWholeLis
     sweep(
         []
         {
-            auto sessions = std::make_shared<ListedSessions>();
+            auto sessions = std::make_shared<SnapshotModelsAllocationFailureFakes::ListedSessions>();
             sessions->sessions = {session("3", "zoe"), session("2", "alex")};
             auto model = std::make_unique<Domain::UsersModel>(sessions);
             model->sample();
