@@ -23,10 +23,9 @@
 
 using TestSupport::FailAllocationAfter;
 
-namespace
+// Outside the anonymous namespace: it's made with std::make_unique (.github/copilot-instructions.md, Testing).
+namespace ConnectionsModelAllocationFailureFakes
 {
-
-using namespace std::chrono_literals;
 
 /// The sockets the test sets, read as they are.
 class ListedSockets final : public Platform::ISystemConnectionsReader
@@ -46,6 +45,13 @@ class ListedSockets final : public Platform::ISystemConnectionsReader
   private:
     std::shared_ptr<std::vector<Platform::SystemConnection>> m_Sockets;
 };
+
+} // namespace ConnectionsModelAllocationFailureFakes
+
+namespace
+{
+
+using namespace std::chrono_literals;
 
 /// Four TCP sockets held by "a".."d" (the table's order), each having sent and received @p bytes.
 std::vector<Platform::SystemConnection> sockets(std::uint64_t bytes)
@@ -85,7 +91,8 @@ TEST(ConnectionsModelAllocationFailureTest, AFailedSampleLeavesTheNextRatesRight
         SCOPED_TRACE("failing allocation " + std::to_string(failAt));
         auto now = std::make_shared<Domain::ConnectionsModel::Clock::time_point>(std::chrono::hours(1));
         auto listed = std::make_shared<std::vector<Platform::SystemConnection>>(sockets(0));
-        Domain::ConnectionsModel model(std::make_unique<ListedSockets>(listed), [now] { return *now; });
+        Domain::ConnectionsModel model(std::make_unique<ConnectionsModelAllocationFailureFakes::ListedSockets>(listed),
+                                       [now] { return *now; });
         model.sample();
         const auto before = model.publication();
 
