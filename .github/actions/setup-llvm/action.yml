@@ -66,7 +66,7 @@ runs:
     - name: Remove stale Microsoft apt sources
       shell: bash
       run: |
-        # Ubuntu 24.04 GitHub runners ship Microsoft apt repos that intermittently
+        # Ubuntu GitHub runners ship Microsoft apt repos that intermittently
         # return 403 Forbidden, causing apt-get update (called by llvm.sh internally
         # via add-apt-repository) to exit non-zero and abort the step. Remove them
         # before any apt operations so only the repos we need are active.
@@ -113,7 +113,7 @@ runs:
         Acquire::https::Timeout "15";
         APT_CONFIG
         # x64 only: arm64 packages live on ports.ubuntu.com, not archive.ubuntu.com, so the
-        # ubuntu-24.04-arm image's mirror list is left as it is (#2214).
+        # ubuntu-26.04-arm image's mirror list is left as it is (#2214).
         if [[ -f /etc/apt/apt-mirrors.txt && "$(dpkg --print-architecture)" == 'amd64' ]]; then
           echo 'https://archive.ubuntu.com/ubuntu/' |
             sudo tee /etc/apt/apt-mirrors.txt >/dev/null
@@ -133,7 +133,7 @@ runs:
         rm -f llvm.sh
 
         # Build package list - always include GUI dependencies; libcurl for the update check's HTTPS client (#3238)
-        PACKAGES="libgl1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev libwayland-dev libxkbcommon-dev libc++-${LLVM_VER}-dev libc++abi-${LLVM_VER}-dev libfreetype6-dev libsystemd-dev libcurl4-openssl-dev libpolkit-agent-1-dev dbus-daemon pkg-config"
+        PACKAGES="libgl1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev libwayland-dev libxkbcommon-dev libc++-${LLVM_VER}-dev libc++abi-${LLVM_VER}-dev libfreetype-dev libsystemd-dev libcurl4-openssl-dev libpolkit-agent-1-dev dbus-daemon pkg-config"
 
         if [[ "$INSTALL_NINJA" == "true" ]]; then
           PACKAGES="$PACKAGES ninja-build"
