@@ -61,7 +61,7 @@ jobs:
   # find. push/schedule/workflow_dispatch always run the full scan (relevant=true
   # unconditionally) -- only pull_request gets the narrower, diff-based check.
   detect-relevant-changes:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions:
       contents: read
@@ -98,7 +98,7 @@ jobs:
     name: Generate SBOM from source
     needs: detect-relevant-changes
     if: needs.detect-relevant-changes.outputs.relevant == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
       contents: read
@@ -156,7 +156,7 @@ jobs:
     name: OSV Scan Required
     if: always()
     needs: [detect-relevant-changes, generate-sbom, vulnerability-scan]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions: {}
     steps:

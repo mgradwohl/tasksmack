@@ -11,10 +11,11 @@ on:
       os:
         description: 'Runner OS'
         required: true
-        default: 'ubuntu-24.04'
+        default: 'ubuntu-26.04'
         type: choice
         options:
-          - ubuntu-24.04
+          - ubuntu-26.04
+          - ubuntu-24.04 # the release packages' build image (glibc 2.38 floor, #3395)
           - windows-2025
       build_type:
         description: 'Build preset type'
