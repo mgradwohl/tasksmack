@@ -1,8 +1,8 @@
 /// @file test_WindowsSignatureCheck.cpp
 /// @brief Windows' image signature check (#1661, #3070): WinVerifyTrust's embedded and catalog paths through
 /// fake wintrust and crypt32 calls (the offline settings asked for, the signer read only when trusted, the
-/// state always closed, SHA-256 then SHA-1 catalogs, the member tag, every context released, each failure's
-/// HRESULT, both read through the check's own handle); the file stamp through a fake
+/// state always closed, even when a step reading the signer throws (#3339, #3342), SHA-256 then SHA-1 catalogs, the member tag, every
+/// context released, each failure's HRESULT, both read through the check's own handle); the file stamp through a fake
 /// GetFileInformationByHandleEx and DeviceIoControl (its USN, #3313) and the file opened shared for read
 /// only (#3292); then the real calls on a
 /// signed system binary and on an unsigned file this test writes.
@@ -24,17 +24,21 @@
 #include <winioctl.h>
 // clang-format on
 
+#include <array>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <cwchar>
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <ios>
 #include <iterator>
 #include <new>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 namespace Platform::Windows
@@ -46,13 +50,24 @@ using WindowsSignature::TrustCheck;
 
 constexpr LONG TRUST_E_NOSIGNATURE_RESULT = static_cast<LONG>(0x800B0100U);
 
+/// Where reading a trusted signer's name, between VERIFY and CLOSE, throws (#3339, #3342): each step's
+/// stand-in throws std::bad_alloc, as an allocation there might.
+enum class SignerThrow : std::uint8_t
+{
+    None,
+    ProviderData, ///< WTHelperProvDataFromStateData
+    Signer,       ///< WTHelperGetProvSignerFromChain
+    Name,         ///< CertGetNameStringW
+    Conversion,   ///< The name's UTF-8 conversion, after CertGetNameStringW wrote it: #3339's own failure
+};
+
 /// What the fakes answer, and what they were asked.
 struct FakeTrust // NOLINT(clang-analyzer-optin.performance.Padding)
 {
     LONG embeddedResult = 0;
     LONG catalogResult = 0;
     bool noProviderData = false;
-    bool throwReadingSigner = false; ///< WTHelperProvDataFromStateData's stand-in throws, as an allocation might (#3339)
+    SignerThrow throwAt = SignerThrow::None;
     std::wstring signerName = L"Fake Signer";
     bool failAcquire = false;
     bool failHash = false;
@@ -78,7 +93,9 @@ struct FakeTrust // NOLINT(clang-analyzer-optin.performance.Padding)
     HANDLE hashedFile = nullptr;
     int verifyCalls = 0;
     int closeCalls = 0;
+    int openStates = 0; ///< States VERIFY handed out that no CLOSE has been given back
     int nameReads = 0;
+    int conversions = 0;
     int acquired = 0;
     int released = 0;
     int catalogsReleased = 0;
@@ -103,15 +120,29 @@ CRYPT_PROVIDER_DATA g_providerData{};
 int g_adminToken = 0;
 int g_catalogToken = 0;
 
+/// The state VERIFY hands out, which CLOSE must be given back.
+HANDLE stateToken()
+{
+    static int token = 0;
+    return &token;
+}
+
 LONG WINAPI fakeWinVerifyTrust(HWND /*window*/, GUID* /*action*/, LPVOID data)
 {
     auto* trust = static_cast<WINTRUST_DATA*>(data);
     if (trust->dwStateAction == WTD_STATEACTION_CLOSE)
     {
         ++fake().closeCalls;
+        if (trust->hWVTStateData == stateToken())
+        {
+            --fake().openStates;
+            trust->hWVTStateData = nullptr;
+        }
         return 0;
     }
     ++fake().verifyCalls;
+    trust->hWVTStateData = stateToken(); // as WinVerifyTrust does, trusted or not
+    ++fake().openStates;
     fake().revocationChecks = trust->fdwRevocationChecks;
     fake().provFlags = trust->dwProvFlags;
     fake().uiChoice = trust->dwUIChoice;
@@ -127,7 +158,7 @@ LONG WINAPI fakeWinVerifyTrust(HWND /*window*/, GUID* /*action*/, LPVOID data)
 
 CRYPT_PROVIDER_DATA* WINAPI fakeProvData(HANDLE /*state*/)
 {
-    if (fake().throwReadingSigner)
+    if (fake().throwAt == SignerThrow::ProviderData)
     {
         throw std::bad_alloc{};
     }
@@ -136,6 +167,10 @@ CRYPT_PROVIDER_DATA* WINAPI fakeProvData(HANDLE /*state*/)
 
 CRYPT_PROVIDER_SGNR* WINAPI fakeProvSigner(CRYPT_PROVIDER_DATA* /*data*/, DWORD /*index*/, BOOL /*counter*/, DWORD /*counterIndex*/)
 {
+    if (fake().throwAt == SignerThrow::Signer)
+    {
+        throw std::bad_alloc{};
+    }
     g_providerCert.pCert = &g_cert;
     g_signer.csCertChain = 1;
     g_signer.pasCertChain = &g_providerCert;
@@ -151,7 +186,21 @@ DWORD WINAPI fakeCertName(PCCERT_CONTEXT /*cert*/, DWORD /*type*/, DWORD /*flags
         return 0;
     }
     wcsncpy_s(name, size, signer.c_str(), signer.size());
+    if (fake().throwAt == SignerThrow::Name)
+    {
+        throw std::bad_alloc{};
+    }
     return static_cast<DWORD>(signer.size() + 1);
+}
+
+std::string fakeWideToUtf8(std::wstring_view wide)
+{
+    ++fake().conversions;
+    if (fake().throwAt == SignerThrow::Conversion)
+    {
+        throw std::bad_alloc{};
+    }
+    return WinString::wideToUtf8(wide);
 }
 
 BOOL WINAPI fakeAcquire(HCATADMIN* admin, const GUID* /*subsystem*/, PCWSTR algorithm, PCCERT_STRONG_SIGN_PARA /*policy*/, DWORD /*flags*/)
@@ -325,6 +374,7 @@ TrustApiFunctions fakeApi()
         .releaseCatalogContext = &fakeReleaseCatalog,
         .releaseContext = &fakeReleaseContext,
         .deviceIoControl = &fakeDeviceIoControl,
+        .wideToUtf8 = &fakeWideToUtf8,
     };
 }
 
@@ -511,6 +561,8 @@ TEST_F(WindowsSignatureCheckTest, ATrustedEmbeddedSignatureNamesItsSignerOffline
     EXPECT_EQ(check.signer, "Fake Signer");
     EXPECT_EQ(fake().verifyCalls, 1);
     EXPECT_EQ(fake().closeCalls, 1);
+    EXPECT_EQ(fake().openStates, 0) << "CLOSE was given the state VERIFY opened";
+    EXPECT_EQ(fake().conversions, 1) << "the name is converted through the seam";
     EXPECT_EQ(fake().revocationChecks, static_cast<DWORD>(WTD_REVOKE_NONE));
     EXPECT_NE(fake().provFlags & WTD_CACHE_ONLY_URL_RETRIEVAL, 0U) << "never goes to the network";
     EXPECT_NE(fake().provFlags & WTD_REVOCATION_CHECK_NONE, 0U);
@@ -541,17 +593,44 @@ TEST_F(WindowsSignatureCheckTest, ASignerThatCantBeReadIsLeftUnnamed)
 
 TEST_F(WindowsSignatureCheckTest, AThrowReadingTheSignerStillClosesTheState)
 {
-    // Between VERIFY and CLOSE the signer's name is read, which allocates: a throw there must not skip
-    // CLOSE (#3339), on the embedded path and on the catalog one.
-    fake().throwReadingSigner = true;
+    // Between VERIFY and CLOSE the signer's name is read, which allocates: a throw at any step of that
+    // must not skip CLOSE (#3339, #3342), on the embedded path and on the catalog one. CLOSE is given back
+    // the state VERIFY opened, so none is left open.
+    constexpr std::array points{SignerThrow::ProviderData, SignerThrow::Signer, SignerThrow::Name, SignerThrow::Conversion};
+    for (const SignerThrow point : points)
+    {
+        SCOPED_TRACE(::testing::Message() << "throw at step " << static_cast<int>(point));
+        fake() = FakeTrust{};
+        fake().throwAt = point;
+        EXPECT_THROW((void) verifyEmbeddedSignature(fakeApi(), file(), handle()), std::bad_alloc);
+        EXPECT_EQ(fake().verifyCalls, 1);
+        EXPECT_EQ(fake().closeCalls, 1);
+        EXPECT_EQ(fake().openStates, 0);
+        EXPECT_THROW((void) verifyCatalogSignature(fakeApi(), file(), handle()), std::bad_alloc);
+        EXPECT_EQ(fake().verifyCalls, 2);
+        EXPECT_EQ(fake().closeCalls, 2);
+        EXPECT_EQ(fake().openStates, 0);
+        EXPECT_EQ(fake().catalogsReleased, 1) << "the catalog context is released on the way out too";
+        EXPECT_EQ(fake().released, fake().acquired);
+    }
+}
+
+TEST_F(WindowsSignatureCheckTest, AThrowConvertingTheSignersNameAfterItWasReadStillClosesTheState)
+{
+    // #3339's own failure: CertGetNameStringW has written the name, and converting it to UTF-8 throws.
+    fake().throwAt = SignerThrow::Conversion;
     EXPECT_THROW((void) verifyEmbeddedSignature(fakeApi(), file(), handle()), std::bad_alloc);
-    EXPECT_EQ(fake().verifyCalls, 1);
+    EXPECT_EQ(fake().nameReads, 1) << "the throw came after the name was read";
+    EXPECT_EQ(fake().conversions, 1);
     EXPECT_EQ(fake().closeCalls, 1);
-    EXPECT_THROW((void) verifyCatalogSignature(fakeApi(), file(), handle()), std::bad_alloc);
-    EXPECT_EQ(fake().verifyCalls, 2);
+    EXPECT_EQ(fake().openStates, 0);
+
+    // The next check, with nothing thrown, names its signer and closes as usual.
+    fake().throwAt = SignerThrow::None;
+    const TrustCheck check = verifyEmbeddedSignature(fakeApi(), file(), handle());
+    EXPECT_EQ(check.signer, "Fake Signer");
     EXPECT_EQ(fake().closeCalls, 2);
-    EXPECT_EQ(fake().catalogsReleased, 1) << "the catalog context is released on the way out too";
-    EXPECT_EQ(fake().released, fake().acquired);
+    EXPECT_EQ(fake().openStates, 0);
 }
 
 TEST_F(WindowsSignatureCheckTest, AHandleThatCantBeRewoundIsAnError)

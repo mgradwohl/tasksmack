@@ -2,8 +2,9 @@
 /// @brief The update check's WinHTTP client (#3093), without the network: what it refuses before it opens
 /// a session (a stop already requested, a request with no host, path or User-Agent), the factory, the
 /// wording of its errors, how an asynchronous call's completion is waited for, a whole request through fake
-/// WinHTTP calls, and real WinHTTP stopped or timed out against a loopback listener that never answers
-/// (#3333). No test reaches past 127.0.0.1.
+/// WinHTTP calls (stopped while a call is still running, or unwound by a throw mid-flight, #3342), and real
+/// WinHTTP stopped or timed out against a loopback listener that never answers (#3333). No test reaches past
+/// 127.0.0.1.
 
 #include "Platform/Factory.h"
 #include "Platform/IHttpsClient.h"
@@ -21,6 +22,7 @@
 #include <future>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <optional>
 #include <stop_token>
 #include <string>
@@ -200,6 +202,12 @@ struct FakeHttp // NOLINT(clang-analyzer-optin.performance.Padding)
     Step pendingAt = Step::None; ///< The step that gets no completion until a test delivers one
     bool closeFails = false;     ///< WinHttpCloseHandle on the request answers FALSE
     bool closingOnClose = true;  ///< WinHttpCloseHandle on the request sends HANDLE_CLOSING inline
+    /// The step whose call doesn't return until the test sets releaseCall: a call still running in WinHTTP
+    /// (#3333, #3342).
+    Step blockInCallAt = Step::None;
+    bool releaseCall = false;
+    /// The step whose call starts (the read is given its buffer) and then throws std::bad_alloc (#3342).
+    Step throwAt = Step::None;
     std::string body = R"({"tag_name":"v1.2.3"})";
     // Seen
     DWORD openFlags = 0;
@@ -211,6 +219,8 @@ struct FakeHttp // NOLINT(clang-analyzer-optin.performance.Padding)
     void* readBuffer = nullptr;
     DWORD readLength = 0;
     int requestCloses = 0;
+    bool inCall = false;      ///< A blocked call is running
+    int closesDuringCall = 0; ///< WinHttpCloseHandle on the request while a call on it was still running
     std::thread::id closeThread;
 
     template<typename Predicate> void waitUntil(Predicate predicate)
@@ -266,17 +276,31 @@ void FakeHttp::deliver(DWORD status, LPVOID info, DWORD length)
     target(requestHandle(), value, status, info, length);
 }
 
-/// Records @p step and, unless it is the pending one, completes it with @p status.
+/// Records @p step; holds the call until released if it is the blocked one, throws if it is the throwing one,
+/// and, unless it is the pending one, completes it with @p status.
 void reach(Step step, DWORD status, LPVOID info, DWORD length)
 {
     FakeHttp& fake = fakeHttp();
     bool pending = false;
+    bool throws = false;
     {
-        const std::scoped_lock lock(fake.mutex);
+        std::unique_lock lock(fake.mutex);
         fake.reached = step;
         pending = fake.pendingAt == step;
+        throws = fake.throwAt == step;
+        if (fake.blockInCallAt == step)
+        {
+            fake.inCall = true;
+            fake.changed.notify_all();
+            fake.changed.wait(lock, [&fake] { return fake.releaseCall; });
+            fake.inCall = false;
+        }
     }
     fake.changed.notify_all();
+    if (throws)
+    {
+        throw std::bad_alloc{};
+    }
     if (!pending)
     {
         fake.deliver(status, info, length);
@@ -401,6 +425,10 @@ BOOL WINAPI fakeCloseHandle(HINTERNET handle)
     {
         const std::scoped_lock lock(fake.mutex);
         ++fake.requestCloses;
+        if (fake.inCall)
+        {
+            ++fake.closesDuringCall;
+        }
         fake.closeThread = std::this_thread::get_id();
         fails = fake.closeFails;
         closing = fake.closingOnClose && !fails;
@@ -519,7 +547,8 @@ void stopDuring(Step step)
 
     // Closed, but WinHTTP may still call back or write into the read buffer: the worker waits for HANDLE_CLOSING.
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    EXPECT_FALSE(returned.load());
+    // Fatal: a get() that returned has freed the request state, which the writes and callbacks below would touch.
+    ASSERT_FALSE(returned.load()) << "get() returned before WinHTTP let go of the handle";
     if (step == Step::Read)
     {
         ASSERT_NE(fake.readBuffer, nullptr);
@@ -575,6 +604,123 @@ TEST(WindowsHttpsFakeRequestTest, AFailedCloseNeitherWaitsNorFreesWhatWinHttpMay
     std::memset(fake.readBuffer, 'x', fake.readLength);
     HINTERNET closed = requestHandle();
     fake.deliver(WINHTTP_CALLBACK_STATUS_HANDLE_CLOSING, static_cast<LPVOID>(&closed), sizeof(closed));
+}
+
+/// Stops a request while the call at @p step is still running inside WinHTTP (#3333, #3342): it hasn't
+/// returned yet. Nothing may close the handle under it; the worker closes it, once, after the call returns.
+void stopInsideCall(Step step)
+{
+    FakeHttpScope scope;
+    FakeHttp& fake = scope.fake();
+    fake.blockInCallAt = step;
+    fake.pendingAt = step; // and no completion after it returns: only the stop ends the wait
+    WindowsHttpsClient client(fakeFunctions());
+    std::stop_source stop;
+    std::thread::id workerId;
+    std::expected<HttpsResponse, std::string> result = std::unexpected(std::string("never ran"));
+    std::jthread worker(
+        [&]
+        {
+            workerId = std::this_thread::get_id();
+            result = client.get(validRequest(), stop.get_token());
+        });
+    fake.waitUntil([&fake, step] { return fake.reached == step && fake.inCall; });
+    static_cast<void>(stop.request_stop());
+    std::this_thread::sleep_for(std::chrono::milliseconds(50)); // time for a close from the stopping side
+    {
+        const std::scoped_lock lock(fake.mutex);
+        EXPECT_EQ(fake.requestCloses, 0) << "closed while the call was still using the handle";
+        fake.releaseCall = true;
+    }
+    fake.changed.notify_all();
+    worker.join();
+
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), "Stopped");
+    EXPECT_EQ(fake.requestCloses, 1);
+    EXPECT_EQ(fake.closesDuringCall, 0);
+    EXPECT_EQ(fake.closeThread, workerId);
+}
+
+TEST(WindowsHttpsFakeRequestTest, AStopWhileTheSendIsStillRunningClosesOnlyOnceItReturns)
+{
+    stopInsideCall(Step::Send);
+}
+
+TEST(WindowsHttpsFakeRequestTest, AStopWhileTheResponseCallIsStillRunningClosesOnlyOnceItReturns)
+{
+    stopInsideCall(Step::Receive);
+}
+
+TEST(WindowsHttpsFakeRequestTest, AStopWhileTheDataQueryIsStillRunningClosesOnlyOnceItReturns)
+{
+    stopInsideCall(Step::QueryData);
+}
+
+TEST(WindowsHttpsFakeRequestTest, AStopWhileAReadIsStillRunningClosesOnlyOnceItReturns)
+{
+    stopInsideCall(Step::Read);
+}
+
+/// Throws on the worker while the call at @p step is in flight (#3342): the call started, and (a read) was
+/// given its buffer, then a throw unwinds get(). The handle is still closed once, on the worker, and get()
+/// doesn't let the exception out until HANDLE_CLOSING has come, so the context and the buffer outlive
+/// WinHTTP's use of them.
+void throwDuring(Step step)
+{
+    FakeHttpScope scope;
+    FakeHttp& fake = scope.fake();
+    fake.pendingAt = step;
+    fake.throwAt = step;
+    fake.closingOnClose = false; // the test sends HANDLE_CLOSING, later
+    WindowsHttpsClient client(fakeFunctions());
+    const std::stop_source stop;
+    std::thread::id workerId;
+    std::atomic<bool> threw = false;
+    std::atomic<bool> returned = false;
+    std::jthread worker(
+        [&]
+        {
+            workerId = std::this_thread::get_id();
+            try
+            {
+                [[maybe_unused]] const auto response = client.get(validRequest(), stop.get_token());
+            }
+            catch (const std::bad_alloc&)
+            {
+                threw = true;
+            }
+            returned = true;
+        });
+    fake.waitUntil([&fake] { return fake.requestCloses > 0; });
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    // Fatal: a get() that returned has freed the request state, which the writes and callbacks below would touch.
+    ASSERT_FALSE(returned.load()) << "the exception came out before WinHTTP let go of the handle";
+    if (step == Step::Read)
+    {
+        ASSERT_NE(fake.readBuffer, nullptr);
+        std::memset(fake.readBuffer, 'x', fake.readLength); // still the request's
+    }
+    WINHTTP_ASYNC_RESULT cancelled{.dwResult = 0, .dwError = ERROR_WINHTTP_OPERATION_CANCELLED};
+    fake.deliver(WINHTTP_CALLBACK_STATUS_REQUEST_ERROR, &cancelled, sizeof(cancelled)); // through the live context
+    HINTERNET closed = requestHandle();
+    fake.deliver(WINHTTP_CALLBACK_STATUS_HANDLE_CLOSING, static_cast<LPVOID>(&closed), sizeof(closed));
+    worker.join();
+
+    EXPECT_TRUE(threw.load()) << "the throw reaches get()'s caller";
+    EXPECT_EQ(fake.requestCloses, 1);
+    EXPECT_EQ(fake.closeThread, workerId);
+}
+
+TEST(WindowsHttpsFakeRequestTest, AThrowDuringTheSendClosesOnTheWorkerAndWaitsForHandleClosing)
+{
+    throwDuring(Step::Send);
+}
+
+TEST(WindowsHttpsFakeRequestTest, AThrowDuringAReadClosesOnTheWorkerAndKeepsTheBufferUntilHandleClosing)
+{
+    throwDuring(Step::Read);
 }
 
 // Real WinHTTP (#3333): winhttp.dll's own calls, close counted, against a TCP listener on 127.0.0.1 only
