@@ -10,8 +10,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <concepts>
 #include <cstdint>
 #include <limits>
+#include <type_traits>
 
 namespace Core::FramePacing
 {
@@ -60,8 +62,15 @@ struct EventDrainResult
 /// its own on Wayland, so three stalled polls could pass before a 4-event check and overshoot the
 /// budget several times over. A steady_clock read costs about 50-90 ns under WSL2, against 1.5-2.6 us
 /// for an SDL_PollEvent on an *empty* queue before any layer dispatch, so the per-event read is noise.
+///
+/// The callables are taken by forwarding reference, not by value (#3394, CodeQL cpp/large-parameter): the
+/// application's pollAndDispatch closure is 80 bytes, and a by-value parameter copied it every frame. Both
+/// are called many times, as lvalues, so neither is forwarded.
 template<typename PollAndDispatch, typename ElapsedMs>
-[[nodiscard]] auto drainEventsWithinBudget(PollAndDispatch pollAndDispatch, ElapsedMs elapsedMs, double drainBudgetMs) -> EventDrainResult
+    requires std::predicate<PollAndDispatch&> && std::invocable<ElapsedMs&> && std::convertible_to<std::invoke_result_t<ElapsedMs&>, double>
+// NOLINTNEXTLINE(cppcoreguidelines-missing-std-forward) - called many times as lvalues; forwarding one call would be wrong
+[[nodiscard]] auto drainEventsWithinBudget(PollAndDispatch&& pollAndDispatch, ElapsedMs&& elapsedMs, double drainBudgetMs)
+    -> EventDrainResult
 {
     EventDrainResult result;
     double previousMs = 0.0;
