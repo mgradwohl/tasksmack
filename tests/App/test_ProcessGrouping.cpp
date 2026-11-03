@@ -202,5 +202,23 @@ TEST(ProcessGroupingTest, LabelsNonAppUnitsAndStaleIndices)
     EXPECT_EQ(groups[0].members, (std::vector<std::size_t>{0}));
 }
 
+// #3386: grouping by Unit needs the service list in the background only where units come from it (Windows).
+TEST(ProcessGroupingTest, ServicesDemandFollowsColumnSectionAndUnitGrouping)
+{
+    for (const GroupBy mode : {GroupBy::None, GroupBy::Unit, GroupBy::Container, GroupBy::App, GroupBy::User})
+    {
+        EXPECT_TRUE(ProcessGrouping::servicesBackgroundDemand(true, false, mode, true));
+        EXPECT_TRUE(ProcessGrouping::servicesBackgroundDemand(false, true, mode, false));
+        EXPECT_EQ(ProcessGrouping::servicesBackgroundDemand(false, false, mode, true), mode == GroupBy::Unit);
+        // Linux's units come from each process's cgroup: no list read for grouping.
+        EXPECT_FALSE(ProcessGrouping::servicesBackgroundDemand(false, false, mode, false));
+    }
+#ifdef _WIN32
+    EXPECT_TRUE(ProcessGrouping::UNITS_FROM_SERVICE_LIST);
+#else
+    EXPECT_FALSE(ProcessGrouping::UNITS_FROM_SERVICE_LIST);
+#endif
+}
+
 } // namespace
 } // namespace App

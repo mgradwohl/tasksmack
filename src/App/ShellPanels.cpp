@@ -8,6 +8,7 @@
 #include "Domain/ProcessModel.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Domain/SamplingConfig.h"
+#include "Panels/ProcessGrouping.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "ProcessColumnConfig.h"
 #include "SelectOverride.h"
@@ -119,10 +120,14 @@ void ShellPanels::update(float deltaTime)
     m_ProcessDetails.updateWithSamples(m_PendingSamples, deltaTime);
 
     // The service list is read while the Services tab is shown, and also while the Processes table
-    // shows its Services column or Process Details' Services section is open (#1880) -- at the tab's
+    // shows its Services column or Process Details' Services section is open (#1880), or, on Windows,
+    // while the table is grouped by Unit, whose units come from the list (#3386) -- at the tab's
     // cadence, on its sampler, and not at all once none of them needs it. Only a change does anything.
-    m_Services.setBackgroundDemand(m_Processes.columnSettings().isVisible(ProcessColumn::Services) ||
-                                   m_ProcessDetails.servicesSectionOpen());
+    m_Services.setBackgroundDemand(
+        ProcessGrouping::servicesBackgroundDemand(m_Processes.columnSettings().isVisible(ProcessColumn::Services),
+                                                  m_ProcessDetails.servicesSectionOpen(),
+                                                  m_Processes.groupBy(),
+                                                  ProcessGrouping::UNITS_FROM_SERVICE_LIST));
 
     // Debug: Log when GPU data becomes available for the selected PID.
     // This avoids spamming logs every frame while a GPU-using process is selected.
