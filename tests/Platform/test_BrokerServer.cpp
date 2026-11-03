@@ -21,9 +21,11 @@
 #include "Platform/Linux/HelperPrivileges.h"
 #include "Platform/Linux/HelperSandboxMode.h"
 #include "Platform/Linux/PkexecBroker.h"
+#include "Platform/Linux/PolkitTextAgent.h"
 #include "Platform/Linux/ProcParsing.h"
 #include "Platform/Linux/ProcStatusSecurityParser.h"
 #include "Platform/Linux/SystemdBus.h"
+#include "Platform/ScopedTempDir.h"
 
 #include <gtest/gtest.h>
 
@@ -1151,6 +1153,162 @@ TEST(PkexecBrokerTest, ConnectsToTheHelperAndTerminatesAProcessThroughIt)
         actionResultOf(broker.call(Broker::SignalRequest{.target = target, .signal = Broker::Signal::Terminate}, std::stop_token{}));
     EXPECT_TRUE(result.success) << result.errorMessage;
     EXPECT_EQ(child.terminatingSignal(), SIGTERM);
+}
+
+// #3380: with a polkit agent of TaskSmack's own registered for the prompt, pkexec is told not to register its own
+// (which polkit 127 refuses, and pkexec then exits); without one, it isn't. The agent is registered for the prompt and
+// released once connect() returns. Here the launcher records its arguments and runs the helper.
+TEST(PkexecBrokerTest, ATextAgentOfItsOwnStandsInForPkexecs)
+{
+    const TestSupport::ScopedTempDir dir{"ts_test_text_agent"};
+    const std::filesystem::path launcher = dir.path / "launcher.sh";
+    std::ofstream(launcher) << "echo \"$@\" > '" << (dir.path / "args").string() << "'\n"
+                            << "[ \"$1\" = --disable-internal-agent ] && shift\nexec \"$@\"\n";
+    const auto launcherArgs = [&dir]
+    {
+        std::ifstream file(dir.path / "args");
+        std::string line;
+        std::getline(file, line);
+        return line;
+    };
+
+    int registered = 0;
+    std::weak_ptr<void> agent;
+    {
+        PkexecBroker broker(TASKSMACK_HELPER_PATH, {"/bin/sh", launcher.string()}, HelperSandbox::Mode::Enforce);
+        broker.setTextAgent(
+            [&registered, &agent](const std::stop_token& /*stopToken*/, std::string& /*error*/) -> std::shared_ptr<void>
+            {
+                ++registered;
+                auto handle = std::make_shared<int>(0);
+                agent = handle;
+                return handle;
+            },
+            /*requireForegroundTerminal=*/false);
+        const auto connected = broker.connect(std::stop_token{});
+        ASSERT_TRUE(connected.has_value()) << connected.error();
+        EXPECT_EQ(registered, 1);
+        EXPECT_TRUE(agent.expired()) << "released once connect() returned";
+    }
+    EXPECT_TRUE(launcherArgs().starts_with("--disable-internal-agent ")) << launcherArgs();
+
+    PkexecBroker none(TASKSMACK_HELPER_PATH, {"/bin/sh", launcher.string()}, HelperSandbox::Mode::Enforce);
+    none.setTextAgent(
+        [](const std::stop_token& /*stopToken*/, std::string& error) -> std::shared_ptr<void>
+        {
+            error = "no controlling terminal";
+            return nullptr;
+        },
+        /*requireForegroundTerminal=*/false);
+    ASSERT_TRUE(none.connect(std::stop_token{}).has_value());
+    EXPECT_FALSE(launcherArgs().contains("--disable-internal-agent")) << "none registered: pkexec's own asks";
+}
+
+// #3380: the agent child's lifecycle, with fakes for TaskSmack-as-agent: one that registers (closes fd 3) and serves
+// is running until destroyed, and destroying it never waits long, even if it ignores SIGTERM; one that exits without
+// registering, or never registers, gives no agent, and the second is stopped at the timeout.
+TEST(PolkitTextAgentTest, TheChildIsAnAgentOnlyOnceRegisteredAndIsAlwaysStoppedQuickly)
+{
+    const auto shell = [](const std::string& script)
+    {
+        return std::vector<std::string>{"/bin/sh", "-c", script};
+    };
+    std::string error;
+    const auto timeStopping = [](std::unique_ptr<PolkitTextAgent> agent)
+    {
+        const auto started = std::chrono::steady_clock::now();
+        agent.reset();
+        return std::chrono::steady_clock::now() - started;
+    };
+
+    auto serving =
+        PolkitTextAgent::startWith(shell("exec 3>&-; while :; do sleep 0.05; done"), std::chrono::seconds(2), std::stop_token{}, error);
+    ASSERT_NE(serving, nullptr) << error;
+    EXPECT_LT(timeStopping(std::move(serving)), std::chrono::milliseconds(800)) << "SIGTERM ends it";
+
+    auto stubborn = PolkitTextAgent::startWith(
+        shell("trap '' TERM; exec 3>&-; while :; do sleep 0.05; done"), std::chrono::seconds(2), std::stop_token{}, error);
+    ASSERT_NE(stubborn, nullptr) << error;
+    EXPECT_LT(timeStopping(std::move(stubborn)), std::chrono::seconds(3)) << "killed after a second, never waited for";
+
+    error.clear();
+    EXPECT_EQ(PolkitTextAgent::startWith(shell("exit 1"), std::chrono::seconds(2), std::stop_token{}, error), nullptr);
+    EXPECT_FALSE(error.empty());
+
+    error.clear();
+    const auto started = std::chrono::steady_clock::now();
+    EXPECT_EQ(PolkitTextAgent::startWith(shell("while :; do sleep 0.05; done"), std::chrono::milliseconds(300), std::stop_token{}, error),
+              nullptr);
+    EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds(3)) << "stopped at the timeout";
+    EXPECT_FALSE(error.empty());
+}
+
+// #3380: closing TaskSmack (or cancelling) while the child hasn't registered ends the wait at once, not at the
+// timeout, and stops the child; and the broker then starts no pkexec, saying it was cancelled.
+TEST(PolkitTextAgentTest, AStopWhileTheChildRegistersEndsTheWaitAndStartsNoPkexec)
+{
+    std::stop_source stop;
+    std::jthread stopper(
+        [&stop]
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            stop.request_stop();
+        });
+    std::string error;
+    const auto started = std::chrono::steady_clock::now();
+    EXPECT_EQ(
+        PolkitTextAgent::startWith({"/bin/sh", "-c", "while :; do sleep 0.05; done"}, std::chrono::seconds(10), stop.get_token(), error),
+        nullptr);
+    EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds(3)) << "the stop ended it, not the 10 s timeout";
+    EXPECT_EQ(error, "stopped while the agent registered");
+
+    const TestSupport::ScopedTempDir dir{"ts_test_agent_cancel"};
+    const std::filesystem::path launcher = dir.path / "launcher.sh";
+    std::ofstream(launcher) << "touch '" << (dir.path / "ran").string() << "'\nexec \"$@\"\n";
+    PkexecBroker broker(TASKSMACK_HELPER_PATH, {"/bin/sh", launcher.string()}, HelperSandbox::Mode::Enforce);
+    std::stop_source cancel;
+    broker.setTextAgent(
+        [&cancel](const std::stop_token& /*stopToken*/, std::string& error) -> std::shared_ptr<void>
+        {
+            cancel.request_stop(); // cancelled while the agent registered
+            error = "stopped while the agent registered";
+            return nullptr;
+        },
+        /*requireForegroundTerminal=*/false);
+    // SIGTERM blocked here, and so in any launcher started (a blocked mask is inherited): a setuid pkexec already
+    // running needn't take the broker's SIGTERM, and this way a launcher that started at all leaves its mark.
+    sigset_t term{};
+    sigset_t previous{};
+    sigemptyset(&term);
+    sigaddset(&term, SIGTERM);
+    ASSERT_EQ(::pthread_sigmask(SIG_BLOCK, &term, &previous), 0);
+    const auto connected = broker.connect(cancel.get_token());
+    ASSERT_EQ(::pthread_sigmask(SIG_SETMASK, &previous, nullptr), 0);
+    ASSERT_FALSE(connected.has_value());
+    EXPECT_EQ(connected.error(), "cancelled");
+    std::this_thread::sleep_for(std::chrono::milliseconds(500)); // time for a launcher that did start to show it
+    EXPECT_FALSE(std::filesystem::exists(dir.path / "ran")) << "no pkexec after the cancel";
+}
+
+// #3380: the child's side without a controlling terminal (the tests, CI) can't register, and exits with a failure.
+TEST(PolkitTextAgentTest, TheAgentSideWithoutATerminalFails)
+{
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
+    if (const int tty = ::open("/dev/tty", O_RDWR | O_NOCTTY | O_CLOEXEC); tty >= 0)
+    {
+        ::close(tty);
+        GTEST_SKIP() << "this run has a controlling terminal: the agent would register and serve";
+    }
+    const pid_t child = ::fork();
+    ASSERT_GE(child, 0);
+    if (child == 0)
+    {
+        ::_exit(PolkitTextAgent::runAgent());
+    }
+    int status = 0;
+    ASSERT_EQ(::waitpid(child, &status, 0), child);
+    EXPECT_TRUE(WIFEXITED(status));
+    EXPECT_NE(WEXITSTATUS(status), 0);
 }
 
 TEST(PkexecBrokerTest, TheHelperReadsAProcesssEnvironment)

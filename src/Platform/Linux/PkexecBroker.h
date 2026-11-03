@@ -21,6 +21,8 @@
 #include <chrono>
 #include <cstdint>
 #include <expected>
+#include <functional>
+#include <memory>
 #include <mutex>
 #include <stop_token>
 #include <string>
@@ -57,6 +59,16 @@ class PkexecBroker final : public IPrivilegedBroker
     explicit PkexecBroker(std::string helperPath,
                           std::vector<std::string> launcher = {"pkexec"},
                           HelperSandbox::Mode sandbox = HelperSandbox::Mode::Log);
+
+    /// Registers a polkit agent of TaskSmack's own for the password prompt: a handle that unregisters it when released,
+    /// or null (with the reason) when none could be registered, or the stop token was signalled while it waited. The
+    /// app's is PolkitTextAgent (#3380).
+    using TextAgentFactory = std::function<std::shared_ptr<void>(const std::stop_token& stopToken, std::string& error)>;
+    /// Registers @p factory's agent for each prompt (#3380), only while TaskSmack's process group has its terminal's
+    /// foreground, where a text agent can ask, unless @p requireForegroundTerminal is false (the tests, which have no
+    /// terminal). With one registered, pkexec is started with --disable-internal-agent: its own would be refused on
+    /// polkit 127. Set before the broker is shared; unset (the default), pkexec's own agent asks, as before.
+    void setTextAgent(TextAgentFactory factory, bool requireForegroundTerminal = true);
     ~PkexecBroker() override;
     PkexecBroker(const PkexecBroker&) = delete;
     PkexecBroker& operator=(const PkexecBroker&) = delete;
@@ -110,6 +122,8 @@ class PkexecBroker final : public IPrivilegedBroker
     std::string m_HelperPath;
     std::vector<std::string> m_Launcher;
     HelperSandbox::Mode m_Sandbox;
+    TextAgentFactory m_TextAgent;         ///< Unset: none (#3380)
+    bool m_TextAgentNeedsTerminal = true; ///< Registered only with the terminal's foreground
     mutable std::mutex m_Mutex;
     // Mutable: connected() lets go of a helper that has exited (#2449).
     mutable int m_Fd = -1;

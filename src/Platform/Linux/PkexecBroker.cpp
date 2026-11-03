@@ -4,11 +4,14 @@
 #include "Platform/Linux/BrokerSocket.h"
 #include "Platform/Linux/HelperSandboxMode.h"
 
+#include <spdlog/spdlog.h>
+
 #include <algorithm>
 #include <array>
 #include <chrono>
 #include <expected>
 #include <format>
+#include <memory>
 #include <mutex>
 #include <stop_token>
 #include <string>
@@ -17,6 +20,7 @@
 #include <variant>
 #include <vector>
 
+#include <fcntl.h>
 #include <poll.h>
 #include <signal.h> // NOLINT(modernize-deprecated-headers) - POSIX signal.h provides kill(), csignal does not
 #include <spawn.h>
@@ -47,6 +51,33 @@ constexpr const char* ALREADY_ASKING = "already asking for an administrator's pa
 PkexecBroker::PkexecBroker(std::string helperPath, std::vector<std::string> launcher, HelperSandbox::Mode sandbox)
     : m_HelperPath(std::move(helperPath)), m_Launcher(std::move(launcher)), m_Sandbox(sandbox)
 {}
+
+void PkexecBroker::setTextAgent(TextAgentFactory factory, bool requireForegroundTerminal)
+{
+    const std::scoped_lock lock(m_Mutex);
+    m_TextAgent = std::move(factory);
+    m_TextAgentNeedsTerminal = requireForegroundTerminal;
+}
+
+namespace
+{
+
+/// Whether this process group has its controlling terminal's foreground: a text agent asks there only then, or the
+/// terminal would stop it (SIGTTIN/SIGTTOU) with the prompt never shown (#3380).
+[[nodiscard]] bool ownsTerminalForeground() noexcept
+{
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
+    const int tty = ::open("/dev/tty", O_RDWR | O_NOCTTY | O_CLOEXEC);
+    if (tty < 0)
+    {
+        return false;
+    }
+    const bool foreground = ::tcgetpgrp(tty) == ::getpgrp();
+    ::close(tty);
+    return foreground;
+}
+
+} // namespace
 
 PkexecBroker::~PkexecBroker()
 {
@@ -149,11 +180,36 @@ std::expected<void, std::string> PkexecBroker::connectWithin(const std::stop_tok
     {
         return std::unexpected(std::format("couldn't make the helper's socket: {}", std::system_category().message(errno)));
     }
+    // A polkit agent of TaskSmack's own, as the user, for this prompt (#3380); unregistered when connect() returns.
+    std::shared_ptr<void> textAgent;
+    if (m_TextAgent && (!m_TextAgentNeedsTerminal || ownsTerminalForeground()))
+    {
+        std::string why;
+        textAgent = m_TextAgent(stopToken, why);
+        if (textAgent == nullptr)
+        {
+            spdlog::info("Not registering a polkit text agent: {}", why);
+        }
+    }
+    if (stopToken.stop_requested())
+    {
+        // Stopped while the agent registered (TaskSmack closing, the prompt cancelled): no pkexec after that.
+        ::close(fds[0]);
+        ::close(fds[1]);
+        return std::unexpected(std::string(CANCELLED));
+    }
+
     // The helper's end becomes its stdin; dup2 clears close-on-exec there, and only there.
     posix_spawn_file_actions_t files{};
     posix_spawn_file_actions_init(&files);
     posix_spawn_file_actions_adddup2(&files, fds[1], STDIN_FILENO);
     std::vector<std::string> arguments = m_Launcher;
+    if (textAgent != nullptr && !m_Launcher.empty())
+    {
+        // pkexec registers a text agent of its own for the same process, and exits when it can't, as it can't with ours
+        // registered ("An authentication agent already exists for the given subject"): ours asks (#3380).
+        arguments.emplace_back("--disable-internal-agent");
+    }
     arguments.push_back(m_HelperPath);
     arguments.emplace_back("--broker");
     if (m_Sandbox == HelperSandbox::Mode::Enforce)
