@@ -50,7 +50,8 @@ std::vector<ConnectionRate> connectionRates(const std::vector<Platform::SystemCo
     return rates;
 }
 
-ConnectionsModel::ConnectionsModel(std::unique_ptr<Platform::ISystemConnectionsReader> reader) : m_Reader(std::move(reader))
+ConnectionsModel::ConnectionsModel(std::unique_ptr<Platform::ISystemConnectionsReader> reader, NowFunction now)
+    : m_Reader(std::move(reader)), m_Now(std::move(now))
 {
     if (!m_Reader)
     {
@@ -92,22 +93,27 @@ void ConnectionsModel::sample()
                                  return Connections::compareEndpoints(
                                             a.connection.family, a.connection.local, b.connection.family, b.connection.local) < 0;
                              });
-    // Rates against the last reading (#3079), then this reading's counters kept for the next.
-    const auto now = std::chrono::steady_clock::now();
+    // Rates against the last reading (#3079), then this reading's counters kept for the next. They are built
+    // aside and replace the last reading's together with its time once nothing left can throw: a failure part
+    // way through used to leave some of this reading's counters beside the last reading's time, so the next
+    // rates divided one interval's bytes by two intervals (#3400).
+    const Clock::time_point now = m_Now();
     const double elapsed = m_PreviousBytes.empty() ? 0.0 : std::chrono::duration<double>(now - m_PreviousAt).count();
     next->rates = connectionRates(next->connections, m_PreviousBytes, elapsed);
-    m_PreviousBytes.clear();
+    std::unordered_map<std::uint64_t, ConnectionBytes> bytes;
+    bytes.reserve(next->connections.size());
     for (const Platform::SystemConnection& connection : next->connections)
     {
         if (connection.hasByteCounters)
         {
-            m_PreviousBytes.insert_or_assign(Connections::socketKey(connection.connection),
-                                             ConnectionBytes{.sent = connection.bytesSent, .received = connection.bytesReceived});
+            bytes.insert_or_assign(Connections::socketKey(connection.connection),
+                                   ConnectionBytes{.sent = connection.bytesSent, .received = connection.bytesReceived});
         }
     }
-    m_PreviousAt = now;
     next->version = ++m_LastVersion;
-    m_Slot.commit(std::move(next));
+    m_Slot.commit(std::move(next)); // noexcept, as are the swap and the assignment
+    m_PreviousBytes.swap(bytes);
+    m_PreviousAt = now;
 }
 
 } // namespace Domain

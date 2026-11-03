@@ -429,6 +429,7 @@ set(COMMON_TEST_SOURCES
     Domain/AllocationFailureHook.cpp
     Domain/test_SystemModelAllocationFailure.cpp
     Domain/test_GPUModelAllocationFailure.cpp
+    Domain/test_ConnectionsModelAllocationFailure.cpp # ConnectionsModel under allocation failure (#3400)
     Domain/test_ProcessModelAllocationFailure.cpp
     Domain/test_StorageModel.cpp
     Domain/test_StartupModel.cpp
