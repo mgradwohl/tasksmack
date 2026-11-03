@@ -253,21 +253,23 @@ using JournalReader = std::function<JournalRead(std::uint64_t sinceUsec, std::si
 /// comes from, plus the common others.
 [[nodiscard]] inline std::string signalName(int number)
 {
-    constexpr std::array<std::pair<int, std::string_view>, 13> NAMES{{
-        {1, "SIGHUP"},
-        {2, "SIGINT"},
-        {3, "SIGQUIT"},
-        {4, "SIGILL"},
-        {5, "SIGTRAP"},
-        {6, "SIGABRT"},
-        {7, "SIGBUS"},
-        {8, "SIGFPE"},
-        {9, "SIGKILL"},
-        {11, "SIGSEGV"},
-        {24, "SIGXCPU"},
-        {25, "SIGXFSZ"},
-        {31, "SIGSYS"},
-    }};
+    constexpr std::array<std::pair<int, std::string_view>, 13> NAMES{
+        {
+            {1, "SIGHUP"},
+            {2, "SIGINT"},
+            {3, "SIGQUIT"},
+            {4, "SIGILL"},
+            {5, "SIGTRAP"},
+            {6, "SIGABRT"},
+            {7, "SIGBUS"},
+            {8, "SIGFPE"},
+            {9, "SIGKILL"},
+            {11, "SIGSEGV"},
+            {24, "SIGXCPU"},
+            {25, "SIGXFSZ"},
+            {31, "SIGSYS"},
+        },
+    };
     for (const auto& [value, name] : NAMES)
     {
         if (value == number)

@@ -155,10 +155,12 @@ struct LocalFreer
 };
 
 /// The file rights' generic mapping, for AccessCheck and for an ACE's generic bits.
-constexpr GENERIC_MAPPING FILE_MAPPING{.GenericRead = FILE_GENERIC_READ,
-                                       .GenericWrite = FILE_GENERIC_WRITE,
-                                       .GenericExecute = FILE_GENERIC_EXECUTE,
-                                       .GenericAll = FILE_ALL_ACCESS};
+constexpr GENERIC_MAPPING FILE_MAPPING{
+    .GenericRead = FILE_GENERIC_READ,
+    .GenericWrite = FILE_GENERIC_WRITE,
+    .GenericExecute = FILE_GENERIC_EXECUTE,
+    .GenericAll = FILE_ALL_ACCESS,
+};
 
 /// The rights @p token's user has under @p descriptor, from AccessCheck against its owner, group and
 /// DACL. The error says why they couldn't be told.
@@ -667,11 +669,13 @@ std::expected<Self, std::string> readSelf()
     {
         return std::unexpected(std::format("couldn't read the helper's start time: {}", lastErrorText(GetLastError())));
     }
-    return Self{.taskSmackPath = std::move(taskSmack),
-                .creatorPid = *creator,
-                .startTicks = *ticks,
-                .helperPath = *image,
-                .installCheck = &checkUnchangeableByParent};
+    return Self{
+        .taskSmackPath = std::move(taskSmack),
+        .creatorPid = *creator,
+        .startTicks = *ticks,
+        .helperPath = *image,
+        .installCheck = &checkUnchangeableByParent,
+    };
 }
 
 std::expected<void, std::string> checkParentIsTaskSmack(HANDLE parent, const Arguments& arguments, const Self& self)

@@ -508,7 +508,19 @@ template<typename... Args> [[nodiscard]] std::string formatShort(std::format_str
 
     // Older: show "MMM DD HH:MM" (e.g., "Jan 15 14:23")
     constexpr std::array<std::string_view, 12> months = {
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+        "Jan",
+        "Feb",
+        "Mar",
+        "Apr",
+        "May",
+        "Jun",
+        "Jul",
+        "Aug",
+        "Sep",
+        "Oct",
+        "Nov",
+        "Dec",
+    };
     // tm_mon is guaranteed to be in range [0,11] by localtime_r/localtime_s for valid inputs,
     // but we check both bounds defensively and use .at() for automatic bounds checking
     const std::size_t monthIdx = (localTm.tm_mon >= 0 && localTm.tm_mon < 12) ? static_cast<std::size_t>(localTm.tm_mon) : 0;

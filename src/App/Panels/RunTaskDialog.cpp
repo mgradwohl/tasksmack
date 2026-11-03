@@ -245,7 +245,11 @@ std::optional<Platform::RunProgramRequest> RunTaskDialog::render()
         .pressed = theme.scheme().successButtonActive,
     };
     const UI::Widgets::DialogFooterButton runButton{
-        .label = RUN_LABEL, .fills = &runFills, .tooltip = typed ? nullptr : "Type the program to run", .disabled = !typed};
+        .label = RUN_LABEL,
+        .fills = &runFills,
+        .tooltip = typed ? nullptr : "Type the program to run",
+        .disabled = !typed,
+    };
     const UI::Widgets::DialogFooterButton cancelButton{.label = CANCEL_LABEL, .fills = nullptr, .tooltip = nullptr};
     UI::Widgets::DialogFooterAction pressed =
         UI::Widgets::dialogFooter(runButton, cancelButton, UI::Widgets::footerButtonWidth({RUN_LABEL, CANCEL_LABEL}, BUTTON_MIN_EM));

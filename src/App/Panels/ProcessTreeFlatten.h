@@ -252,12 +252,14 @@ inline void buildProcessTreeRows(const std::vector<Domain::ProcessSnapshot>& sna
                     scratch.stack.push_back(Detail::StackFrame{.procIdx = scratch.children[k - 1], .depth = frame.depth + 1});
                 }
             }
-            outRows.push_back(ProcessTreeRow{.procIdx = frame.procIdx,
-                                             .depth = frame.depth,
-                                             .hasChildren = last > first,
-                                             .isExpanded = isExpanded,
-                                             .isContext = withAncestors && (scratch.state[frame.procIdx] & Detail::CONTEXT) != 0U,
-                                             .childCount = last - first});
+            outRows.push_back(ProcessTreeRow{
+                .procIdx = frame.procIdx,
+                .depth = frame.depth,
+                .hasChildren = last > first,
+                .isExpanded = isExpanded,
+                .isContext = withAncestors && (scratch.state[frame.procIdx] & Detail::CONTEXT) != 0U,
+                .childCount = last - first,
+            });
         }
     }
 }

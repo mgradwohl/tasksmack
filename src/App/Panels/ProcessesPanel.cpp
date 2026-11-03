@@ -755,71 +755,80 @@ struct ProcessCellEntry
 /// The renderer for every column but PID and Name, indexed by toIndex(column).
 /// Initialised directly, not by a consteval builder, so static analysers
 /// (CodeQL cpp/unused-static-function, #1403) see every renderer referenced.
-constexpr std::array<ProcessCellEntry, processColumnCount()> CELL_RENDERERS = {{
-    {.column = ProcessColumn::PID, .render = nullptr},  // drawn by renderProcessRow() (the selectable)
-    {.column = ProcessColumn::Name, .render = nullptr}, // drawn by renderProcessRow() (tree indent and expander)
-    // Identity
-    {.column = ProcessColumn::User, .render = &leftAlignedCell<&Domain::ProcessSnapshot::user, &RowFormatCache::userWidth>},
-    {.column = ProcessColumn::PPID, .render = &rightAlignedCell<&RowFormatCache::ppid>},
-    {.column = ProcessColumn::Publisher,
-     .render = &leftAlignedOrBlankCell<&Domain::ProcessSnapshot::publisher,
-                                       &RowFormatCache::publisherWidth,
-                                       &RowFormatCache::publisherSupported>},
-    {.column = ProcessColumn::Signature, .render = &signatureCell},
-    {.column = ProcessColumn::Container,
-     .render = &leftAlignedOrBlankCell<&Domain::ProcessSnapshot::container,
-                                       &RowFormatCache::containerWidth,
-                                       &RowFormatCache::containerSupported>},
-    {.column = ProcessColumn::Services, .render = &servicesCell},
-    // State
-    {.column = ProcessColumn::State, .render = &stateCell},
-    {.column = ProcessColumn::Status,
-     .render = &leftAlignedOrBlankCell<&Domain::ProcessSnapshot::status, &RowFormatCache::statusWidth, &RowFormatCache::statusSupported>},
-    {.column = ProcessColumn::Type, .render = &typeCell},
-    {.column = ProcessColumn::Architecture, .render = &architectureCell},
-    // Resources
-    {.column = ProcessColumn::CpuPercent, .render = &rightAlignedCell<&RowFormatCache::cpuPercent>},
-    {.column = ProcessColumn::MemPercent, .render = &rightAlignedCell<&RowFormatCache::memPercent>},
-    {.column = ProcessColumn::Resident, .render = &unitAlignedCell<&RowFormatCache::resident, &ProcessCellWidths::unitBytes>},
-    {.column = ProcessColumn::Virtual, .render = &unitAlignedCell<&RowFormatCache::virtualMem, &ProcessCellWidths::unitBytes>},
-    {.column = ProcessColumn::Shared, .render = &unitAlignedCell<&RowFormatCache::shared, &ProcessCellWidths::unitBytes>},
-    {.column = ProcessColumn::PeakResident, .render = &unitAlignedCell<&RowFormatCache::peakRss, &ProcessCellWidths::unitBytes>},
-    {.column = ProcessColumn::Private, .render = &unitAlignedCell<&RowFormatCache::privateMem, &ProcessCellWidths::unitBytes>},
-    {.column = ProcessColumn::Swap, .render = &unitAlignedCell<&RowFormatCache::swap, &ProcessCellWidths::unitBytes>},
-    // Scheduling
-    {.column = ProcessColumn::Priority, .render = &priorityCell},
-    {.column = ProcessColumn::Policy, .render = &schedPolicyCell},
-    {.column = ProcessColumn::Affinity, .render = &rightAlignedCell<&RowFormatCache::affinity>},
-    {.column = ProcessColumn::Threads, .render = &rightAlignedCell<&RowFormatCache::threads>},
-    {.column = ProcessColumn::Handles, .render = &rightAlignedCell<&RowFormatCache::handles>},
-    // Unavailable only when the probe could not read the count (process not accessible).
-    // A count of 0 is a valid result for non-GUI background processes and is
-    // shown as a muted "0" (#1210).
-    {.column = ProcessColumn::GdiObjects, .render = &rightAlignedCell<&RowFormatCache::gdiObjects>},
-    // Time
-    {.column = ProcessColumn::CpuTime, .render = &rightAlignedCell<&RowFormatCache::cpuTime>},
-    {.column = ProcessColumn::StartTime, .render = &rightAlignedCell<&RowFormatCache::startTime>},
-    // I/O
-    {.column = ProcessColumn::IoRead, .render = &unitAlignedCell<&RowFormatCache::ioRead, &ProcessCellWidths::unitBytesPerSec>},
-    {.column = ProcessColumn::IoWrite, .render = &unitAlignedCell<&RowFormatCache::ioWrite, &ProcessCellWidths::unitBytesPerSec>},
-    {.column = ProcessColumn::PageFaults, .render = &rightAlignedCell<&RowFormatCache::pageFaults>},
-    // Network
-    {.column = ProcessColumn::NetSent, .render = &unitAlignedCell<&RowFormatCache::netSent, &ProcessCellWidths::unitBytesPerSec>},
-    {.column = ProcessColumn::NetReceived, .render = &unitAlignedCell<&RowFormatCache::netRecv, &ProcessCellWidths::unitBytesPerSec>},
-    // Power
-    {.column = ProcessColumn::Power, .render = &unitAlignedCell<&RowFormatCache::power, &ProcessCellWidths::unitPower>},
-    // GPU
-    {.column = ProcessColumn::GpuPercent, .render = &rightAlignedCell<&RowFormatCache::gpuPercent>},
-    {.column = ProcessColumn::GpuMemory, .render = &unitAlignedCell<&RowFormatCache::gpuMemory, &ProcessCellWidths::unitBytes>},
-    {.column = ProcessColumn::GpuEngine, .render = &gpuEngineCell},
-    {.column = ProcessColumn::GpuDevice, .render = &gpuDeviceCell},
-    // NPU (#1799)
-    {.column = ProcessColumn::NpuPercent, .render = &rightAlignedCell<&RowFormatCache::npuPercent>},
-    {.column = ProcessColumn::NpuMemory, .render = &unitAlignedCell<&RowFormatCache::npuMemory, &ProcessCellWidths::unitBytes>},
-    {.column = ProcessColumn::NpuEngine, .render = &npuEngineCell},
-    // Command
-    {.column = ProcessColumn::Command, .render = &commandCell},
-}};
+constexpr std::array<ProcessCellEntry, processColumnCount()> CELL_RENDERERS = {
+    {
+        {.column = ProcessColumn::PID, .render = nullptr},  // drawn by renderProcessRow() (the selectable)
+        {.column = ProcessColumn::Name, .render = nullptr}, // drawn by renderProcessRow() (tree indent and expander)
+        // Identity
+        {.column = ProcessColumn::User, .render = &leftAlignedCell<&Domain::ProcessSnapshot::user, &RowFormatCache::userWidth>},
+        {.column = ProcessColumn::PPID, .render = &rightAlignedCell<&RowFormatCache::ppid>},
+        {
+            .column = ProcessColumn::Publisher,
+            .render = &leftAlignedOrBlankCell<&Domain::ProcessSnapshot::publisher,
+                                              &RowFormatCache::publisherWidth,
+                                              &RowFormatCache::publisherSupported>,
+        },
+        {.column = ProcessColumn::Signature, .render = &signatureCell},
+        {
+            .column = ProcessColumn::Container,
+            .render = &leftAlignedOrBlankCell<&Domain::ProcessSnapshot::container,
+                                              &RowFormatCache::containerWidth,
+                                              &RowFormatCache::containerSupported>,
+        },
+        {.column = ProcessColumn::Services, .render = &servicesCell},
+        // State
+        {.column = ProcessColumn::State, .render = &stateCell},
+        {
+            .column = ProcessColumn::Status,
+            .render =
+                &leftAlignedOrBlankCell<&Domain::ProcessSnapshot::status, &RowFormatCache::statusWidth, &RowFormatCache::statusSupported>,
+        },
+        {.column = ProcessColumn::Type, .render = &typeCell},
+        {.column = ProcessColumn::Architecture, .render = &architectureCell},
+        // Resources
+        {.column = ProcessColumn::CpuPercent, .render = &rightAlignedCell<&RowFormatCache::cpuPercent>},
+        {.column = ProcessColumn::MemPercent, .render = &rightAlignedCell<&RowFormatCache::memPercent>},
+        {.column = ProcessColumn::Resident, .render = &unitAlignedCell<&RowFormatCache::resident, &ProcessCellWidths::unitBytes>},
+        {.column = ProcessColumn::Virtual, .render = &unitAlignedCell<&RowFormatCache::virtualMem, &ProcessCellWidths::unitBytes>},
+        {.column = ProcessColumn::Shared, .render = &unitAlignedCell<&RowFormatCache::shared, &ProcessCellWidths::unitBytes>},
+        {.column = ProcessColumn::PeakResident, .render = &unitAlignedCell<&RowFormatCache::peakRss, &ProcessCellWidths::unitBytes>},
+        {.column = ProcessColumn::Private, .render = &unitAlignedCell<&RowFormatCache::privateMem, &ProcessCellWidths::unitBytes>},
+        {.column = ProcessColumn::Swap, .render = &unitAlignedCell<&RowFormatCache::swap, &ProcessCellWidths::unitBytes>},
+        // Scheduling
+        {.column = ProcessColumn::Priority, .render = &priorityCell},
+        {.column = ProcessColumn::Policy, .render = &schedPolicyCell},
+        {.column = ProcessColumn::Affinity, .render = &rightAlignedCell<&RowFormatCache::affinity>},
+        {.column = ProcessColumn::Threads, .render = &rightAlignedCell<&RowFormatCache::threads>},
+        {.column = ProcessColumn::Handles, .render = &rightAlignedCell<&RowFormatCache::handles>},
+        // Unavailable only when the probe could not read the count (process not accessible).
+        // A count of 0 is a valid result for non-GUI background processes and is
+        // shown as a muted "0" (#1210).
+        {.column = ProcessColumn::GdiObjects, .render = &rightAlignedCell<&RowFormatCache::gdiObjects>},
+        // Time
+        {.column = ProcessColumn::CpuTime, .render = &rightAlignedCell<&RowFormatCache::cpuTime>},
+        {.column = ProcessColumn::StartTime, .render = &rightAlignedCell<&RowFormatCache::startTime>},
+        // I/O
+        {.column = ProcessColumn::IoRead, .render = &unitAlignedCell<&RowFormatCache::ioRead, &ProcessCellWidths::unitBytesPerSec>},
+        {.column = ProcessColumn::IoWrite, .render = &unitAlignedCell<&RowFormatCache::ioWrite, &ProcessCellWidths::unitBytesPerSec>},
+        {.column = ProcessColumn::PageFaults, .render = &rightAlignedCell<&RowFormatCache::pageFaults>},
+        // Network
+        {.column = ProcessColumn::NetSent, .render = &unitAlignedCell<&RowFormatCache::netSent, &ProcessCellWidths::unitBytesPerSec>},
+        {.column = ProcessColumn::NetReceived, .render = &unitAlignedCell<&RowFormatCache::netRecv, &ProcessCellWidths::unitBytesPerSec>},
+        // Power
+        {.column = ProcessColumn::Power, .render = &unitAlignedCell<&RowFormatCache::power, &ProcessCellWidths::unitPower>},
+        // GPU
+        {.column = ProcessColumn::GpuPercent, .render = &rightAlignedCell<&RowFormatCache::gpuPercent>},
+        {.column = ProcessColumn::GpuMemory, .render = &unitAlignedCell<&RowFormatCache::gpuMemory, &ProcessCellWidths::unitBytes>},
+        {.column = ProcessColumn::GpuEngine, .render = &gpuEngineCell},
+        {.column = ProcessColumn::GpuDevice, .render = &gpuDeviceCell},
+        // NPU (#1799)
+        {.column = ProcessColumn::NpuPercent, .render = &rightAlignedCell<&RowFormatCache::npuPercent>},
+        {.column = ProcessColumn::NpuMemory, .render = &unitAlignedCell<&RowFormatCache::npuMemory, &ProcessCellWidths::unitBytes>},
+        {.column = ProcessColumn::NpuEngine, .render = &npuEngineCell},
+        // Command
+        {.column = ProcessColumn::Command, .render = &commandCell},
+    },
+};
 
 // Every entry sits at its column's index, every column but PID and Name has a
 // renderer, and those two have none: a column added to ProcessColumn without
@@ -1121,14 +1130,16 @@ void ProcessesPanel::onAttach()
         // sysfs, which the UI thread never calls. It doesn't change while TaskSmack runs.
         Platform::CpuAffinityLayout affinityLayout =
             (platform.actions && actionCapabilities.canSetAffinity) ? platform.actions->affinityLayout() : Platform::CpuAffinityLayout{};
-        PlatformHandoff::Contents contents{.actions = std::move(platform.actions),
-                                           .actionCapabilities = actionCapabilities,
-                                           .affinityLayout = std::move(affinityLayout),
-                                           .udpCollector = std::move(platform.udpCollector),
-                                           .icons = std::move(platform.icons),
-                                           .openFiles = std::move(platform.openFiles),
-                                           .modules = std::move(platform.modules),
-                                           .findCapabilities = findCapabilities};
+        PlatformHandoff::Contents contents{
+            .actions = std::move(platform.actions),
+            .actionCapabilities = actionCapabilities,
+            .affinityLayout = std::move(affinityLayout),
+            .udpCollector = std::move(platform.udpCollector),
+            .icons = std::move(platform.icons),
+            .openFiles = std::move(platform.openFiles),
+            .modules = std::move(platform.modules),
+            .findCapabilities = findCapabilities,
+        };
         {
             const std::scoped_lock lock(handoff->mutex);
             handoff->contents = std::move(contents);
@@ -1825,11 +1836,13 @@ void ProcessesPanel::renderContent()
         const UI::Widgets::FrameOutlineScope frameOutline;
         if (ImGui::BeginCombo("##GroupBy", preview.c_str()))
         {
-            for (const ProcessGrouping::GroupBy mode : {ProcessGrouping::GroupBy::None,
-                                                        ProcessGrouping::GroupBy::Unit,
-                                                        ProcessGrouping::GroupBy::Container,
-                                                        ProcessGrouping::GroupBy::App,
-                                                        ProcessGrouping::GroupBy::User})
+            for (const ProcessGrouping::GroupBy mode : {
+                     ProcessGrouping::GroupBy::None,
+                     ProcessGrouping::GroupBy::Unit,
+                     ProcessGrouping::GroupBy::Container,
+                     ProcessGrouping::GroupBy::App,
+                     ProcessGrouping::GroupBy::User,
+                 })
             {
                 const std::string label(ProcessGrouping::groupByLabel(mode));
                 if (ImGui::Selectable(label.c_str(), mode == m_GroupBy))
@@ -2131,9 +2144,11 @@ void ProcessesPanel::renderContent()
                 const ImGuiTableColumnFlags flags = ImGui::TableGetColumnFlags(column);
                 if ((flags & ImGuiTableColumnFlags_IsEnabled) != 0 && (flags & ImGuiTableColumnFlags_NoSort) == 0)
                 {
-                    choices.push_back({.column = column,
-                                       .name = ImGui::TableGetColumnName(column),
-                                       .sorted = (flags & ImGuiTableColumnFlags_IsSorted) != 0});
+                    choices.push_back({
+                        .column = column,
+                        .name = ImGui::TableGetColumnName(column),
+                        .sorted = (flags & ImGuiTableColumnFlags_IsSorted) != 0,
+                    });
                 }
             }
             if (ImGui::BeginPopup(SORT_MENU_POPUP_ID))
@@ -2722,10 +2737,12 @@ void ProcessesPanel::renderNameCell(const Domain::ProcessSnapshot& proc,
     const float badgeWidth = badge.empty() ? 0.0F : ImGui::CalcTextSize(badge.data(), badge.data() + badge.size()).x;
     static_cast<void>(UI::Widgets::cellText(proc.name,
                                             cachedTextWidth(proc.name, fmt.nameWidth),
-                                            {.rightAligned = false,
-                                             .clippedTooltip = true,
-                                             .layoutFullText = false,
-                                             .trailingReservePx = badge.empty() ? 0.0F : style.ItemSpacing.x + badgeWidth}));
+                                            {
+                                                .rightAligned = false,
+                                                .clippedTooltip = true,
+                                                .layoutFullText = false,
+                                                .trailingReservePx = badge.empty() ? 0.0F : style.ItemSpacing.x + badgeWidth,
+                                            }));
     if (!badge.empty())
     {
         ImGui::SameLine(0.0F, style.ItemSpacing.x);
@@ -3228,11 +3245,16 @@ void ProcessesPanel::applyKeyboardInput(const std::vector<Domain::ProcessSnapsho
             }
             else
             {
-                showBatchOutcome({.message = {.ok = false,
-                                              .text = std::format("{} is already at the {} priority",
-                                                                  proc.name,
-                                                                  *priorityStep == NiceStep::Direction::Raise ? "highest" : "lowest")},
-                                  .anySucceeded = false});
+                showBatchOutcome({
+                    .message =
+                        {
+                            .ok = false,
+                            .text = std::format("{} is already at the {} priority",
+                                                proc.name,
+                                                *priorityStep == NiceStep::Direction::Raise ? "highest" : "lowest"),
+                        },
+                    .anySucceeded = false,
+                });
             }
         }
     }
@@ -3479,11 +3501,13 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
     // The other signals (#3063, Linux): one process, each confirmed with what it usually does.
     if (can.canSendSignals && batchCount == 0 && ImGui::BeginMenu(ICON_FA_BOLT " Send signal###SendSignal", actionsIdle))
     {
-        for (const auto [action, hint] : {std::pair{Detail::ProcessAction::SignalHangup, "reload a daemon"},
-                                          std::pair{Detail::ProcessAction::SignalInterrupt, "as Ctrl+C"},
-                                          std::pair{Detail::ProcessAction::SignalQuit, "exit with a core dump"},
-                                          std::pair{Detail::ProcessAction::SignalUser1, "program-defined"},
-                                          std::pair{Detail::ProcessAction::SignalUser2, "program-defined"}})
+        for (const auto [action, hint] : {
+                 std::pair{Detail::ProcessAction::SignalHangup, "reload a daemon"},
+                 std::pair{Detail::ProcessAction::SignalInterrupt, "as Ctrl+C"},
+                 std::pair{Detail::ProcessAction::SignalQuit, "exit with a core dump"},
+                 std::pair{Detail::ProcessAction::SignalUser1, "program-defined"},
+                 std::pair{Detail::ProcessAction::SignalUser2, "program-defined"},
+             })
         {
             const std::string label = std::format("{}...###{}", Detail::signalName(action), Detail::signalName(action));
             if (ImGui::MenuItem(label.c_str(), hint))
@@ -3610,11 +3634,13 @@ void ProcessesPanel::setGroupBy(ProcessGrouping::GroupBy groupBy)
 
 void ProcessesPanel::rebuildGroupsIfStale(const std::vector<Domain::ProcessSnapshot>& snapshots)
 {
-    const GroupsKey key{.displayVersion = m_DisplayVersion,
-                        .filterGeneration = m_FilterGeneration,
-                        .sortGeneration = m_SortGeneration,
-                        .collapseGeneration = m_GroupCollapseGeneration,
-                        .groupBy = m_GroupBy};
+    const GroupsKey key{
+        .displayVersion = m_DisplayVersion,
+        .filterGeneration = m_FilterGeneration,
+        .sortGeneration = m_SortGeneration,
+        .collapseGeneration = m_GroupCollapseGeneration,
+        .groupBy = m_GroupBy,
+    };
     if (m_GroupsBuiltFor == key)
     {
         return;

@@ -349,13 +349,15 @@ void ProcessIconCache::forget(bool file, std::uint64_t key)
 ProcessIconCache::Stats ProcessIconCache::stats() const
 {
     const std::scoped_lock lock(m_Mutex);
-    Stats stats{.processes = m_Processes.size(),
-                .files = m_Files.size(),
-                .icons = m_Icons.size(),
-                .misses = m_Misses.size(),
-                .queued = m_Queue.size(),
-                .pixelBytes = 0,
-                .loads = m_Loads};
+    Stats stats{
+        .processes = m_Processes.size(),
+        .files = m_Files.size(),
+        .icons = m_Icons.size(),
+        .misses = m_Misses.size(),
+        .queued = m_Queue.size(),
+        .pixelBytes = 0,
+        .loads = m_Loads,
+    };
     m_Icons.forEach([&stats](const std::string& /*key*/, const std::shared_ptr<const ProcessIconImage>& icon)
                     { stats.pixelBytes += icon != nullptr ? icon->rgba.size() : 0U; });
     return stats;

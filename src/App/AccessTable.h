@@ -35,46 +35,62 @@ struct Row
 };
 
 inline constexpr std::array LINUX_ROWS{
-    Row{.item = "Other users' processes: open files count, I/O and network",
+    Row{
+        .item = "Other users' processes: open files count, I/O and network",
         .standard = "Not readable",
         .administrator = "Read through the helper",
         .missingPrivilege = Platform::MissingPrivilege::READ_OTHERS,
-        .needsHelperCoverage = true},
+        .needsHelperCoverage = true,
+    },
     Row{.item = "Other users' processes: PSS and USS memory", .standard = "Not readable", .administrator = "Read through the helper"},
-    Row{.item = "Ending, suspending or resuming other users' processes",
+    Row{
+        .item = "Ending, suspending or resuming other users' processes",
         .standard = "Refused; Authenticate and retry asks each time",
         .administrator = "Done",
-        .missingPrivilege = Platform::MissingPrivilege::SIGNAL_OTHERS},
-    Row{.item = "Raising priority, the Realtime I/O class, other users' priority and affinity",
+        .missingPrivilege = Platform::MissingPrivilege::SIGNAL_OTHERS,
+    },
+    Row{
+        .item = "Raising priority, the Realtime I/O class, other users' priority and affinity",
         .standard = "Refused; Authenticate and retry asks each time",
         .administrator = "Done",
-        .missingPrivilege = Platform::MissingPrivilege::RAISE_PRIORITY},
-    Row{.item = "Processes hidden by /proc's hidepid",
+        .missingPrivilege = Platform::MissingPrivilege::RAISE_PRIORITY,
+    },
+    Row{
+        .item = "Processes hidden by /proc's hidepid",
         .standard = "Not listed",
         .administrator = "Listed through the helper",
         .missingPrivilege = Platform::MissingPrivilege::PROCESSES_HIDDEN,
-        .needsHelperCoverage = true},
-    Row{.item = "System Information: serial numbers, UUIDs, SMBIOS and memory modules",
+        .needsHelperCoverage = true,
+    },
+    Row{
+        .item = "System Information: serial numbers, UUIDs, SMBIOS and memory modules",
         .standard = "Hidden; Authenticate to read",
-        .administrator = "Shown"},
+        .administrator = "Shown",
+    },
     Row{.item = "Other users' crash reports", .standard = "Hidden; Authenticate to read", .administrator = "Shown"},
-    Row{.item = "Service actions",
+    Row{
+        .item = "Service actions",
         .standard = "systemd asks for a password each time",
         .administrator = "Done without asking again",
-        .needsHelperCoverage = true},
+        .needsHelperCoverage = true,
+    },
 };
 
 inline constexpr std::array WINDOWS_ROWS{
     Row{.item = "Network traffic per process (TCP)", .standard = "Not counted", .administrator = "Counted"},
     Row{.item = "UDP traffic per process (opt-in, Settings)", .standard = "Can't start", .administrator = "Counted when turned on"},
-    Row{.item = "Elevated and other users' processes: user, command line, publisher, priority and architecture",
+    Row{
+        .item = "Elevated and other users' processes: user, command line, publisher, priority and architecture",
         .standard = "Partly unreadable",
-        .administrator = "Read"},
+        .administrator = "Read",
+    },
     Row{.item = "Elevated processes: modules, open files and connections", .standard = "Access denied", .administrator = "Listed"},
     Row{.item = "Elevated processes: the Security tab", .standard = "Not readable", .administrator = "Read"},
-    Row{.item = "Ending, suspending, resuming, priority and affinity of elevated or other users' processes",
+    Row{
+        .item = "Ending, suspending, resuming, priority and affinity of elevated or other users' processes",
         .standard = "Refused",
-        .administrator = "Done"},
+        .administrator = "Done",
+    },
     Row{.item = "Memory dumps of elevated processes", .standard = "Refused", .administrator = "Written"},
     Row{.item = "Services: starting, stopping and changing them", .standard = "Refused for most services", .administrator = "Done"},
     Row{.item = "Startup entries for all users", .standard = "Can't be changed", .administrator = "Can be changed"},

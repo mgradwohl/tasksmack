@@ -58,7 +58,7 @@ enum rsmi_temperature_type_t : std::uint32_t
     RSMI_TEMP_TYPE_HBM_0 = 3,
     RSMI_TEMP_TYPE_HBM_1 = 4,
     RSMI_TEMP_TYPE_HBM_2 = 5,
-    RSMI_TEMP_TYPE_HBM_3 = 6
+    RSMI_TEMP_TYPE_HBM_3 = 6,
 };
 // NOLINTEND(cppcoreguidelines-use-enum-class,performance-enum-size,readability-identifier-naming)
 
@@ -79,7 +79,7 @@ enum rsmi_temperature_metric_t : std::uint32_t
     RSMI_TEMP_CRIT_MIN_HYST = 10,
     RSMI_TEMP_OFFSET = 11,
     RSMI_TEMP_LOWEST = 12,
-    RSMI_TEMP_HIGHEST = 13
+    RSMI_TEMP_HIGHEST = 13,
 };
 // NOLINTEND(cppcoreguidelines-use-enum-class,performance-enum-size,readability-identifier-naming)
 
@@ -93,7 +93,7 @@ enum rsmi_clk_type_t : std::uint32_t
     RSMI_CLK_TYPE_SOC = 3,
     RSMI_CLK_TYPE_MEM = 4,
     RSMI_CLK_TYPE_FIRST = RSMI_CLK_TYPE_SYS,
-    RSMI_CLK_TYPE_LAST = RSMI_CLK_TYPE_MEM
+    RSMI_CLK_TYPE_LAST = RSMI_CLK_TYPE_MEM,
 };
 // NOLINTEND(cppcoreguidelines-use-enum-class,performance-enum-size,readability-identifier-naming)
 
@@ -105,7 +105,7 @@ enum rsmi_memory_type_t : std::uint32_t
     RSMI_MEM_TYPE_VIS_VRAM = 1,
     RSMI_MEM_TYPE_GTT = 2,
     RSMI_MEM_TYPE_FIRST = RSMI_MEM_TYPE_VRAM,
-    RSMI_MEM_TYPE_LAST = RSMI_MEM_TYPE_GTT
+    RSMI_MEM_TYPE_LAST = RSMI_MEM_TYPE_GTT,
 };
 // NOLINTEND(cppcoreguidelines-use-enum-class,performance-enum-size,readability-identifier-naming)
 

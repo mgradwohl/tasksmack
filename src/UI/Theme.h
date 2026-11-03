@@ -23,7 +23,7 @@ enum class FontSize : std::uint8_t
     ExtraLarge, // 12pt / 14pt
     Huge,       // 14pt / 16pt
     EvenHuger,  // 16pt / 18pt; "Largest" in Settings, still "even-huger" in config.toml
-    Count
+    Count,
 };
 
 inline constexpr auto ALL_FONT_SIZES = std::to_array<FontSize>({

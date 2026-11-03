@@ -38,15 +38,17 @@ struct GcIpVersion
 /// parts. Mirrors the AMD_IS_APU switch in the kernel's drivers/gpu/drm/amd/amdgpu/amdgpu_discovery.c
 /// (checked against torvalds/linux master, 2026-10-06). A newer APU generation needs adding here
 /// (until then it reads as discrete, as every AMD GPU did before #1266).
-inline constexpr std::array<GcIpVersion, 19> APU_GC_IP_VERSIONS{{
-    {.major = 9, .minor = 1, .revision = 0},  {.major = 9, .minor = 2, .revision = 2},  {.major = 9, .minor = 3, .revision = 0},
-    {.major = 10, .minor = 1, .revision = 3}, {.major = 10, .minor = 1, .revision = 4}, {.major = 10, .minor = 3, .revision = 1},
-    {.major = 10, .minor = 3, .revision = 3}, {.major = 10, .minor = 3, .revision = 6}, {.major = 10, .minor = 3, .revision = 7},
-    {.major = 11, .minor = 0, .revision = 1}, {.major = 11, .minor = 0, .revision = 4}, {.major = 11, .minor = 5, .revision = 0},
-    {.major = 11, .minor = 5, .revision = 1}, {.major = 11, .minor = 5, .revision = 2}, {.major = 11, .minor = 5, .revision = 3},
-    {.major = 11, .minor = 5, .revision = 4}, {.major = 11, .minor = 5, .revision = 6}, {.major = 11, .minor = 7, .revision = 0},
-    {.major = 11, .minor = 7, .revision = 1},
-}};
+inline constexpr std::array<GcIpVersion, 19> APU_GC_IP_VERSIONS{
+    {
+        {.major = 9, .minor = 1, .revision = 0},  {.major = 9, .minor = 2, .revision = 2},  {.major = 9, .minor = 3, .revision = 0},
+        {.major = 10, .minor = 1, .revision = 3}, {.major = 10, .minor = 1, .revision = 4}, {.major = 10, .minor = 3, .revision = 1},
+        {.major = 10, .minor = 3, .revision = 3}, {.major = 10, .minor = 3, .revision = 6}, {.major = 10, .minor = 3, .revision = 7},
+        {.major = 11, .minor = 0, .revision = 1}, {.major = 11, .minor = 0, .revision = 4}, {.major = 11, .minor = 5, .revision = 0},
+        {.major = 11, .minor = 5, .revision = 1}, {.major = 11, .minor = 5, .revision = 2}, {.major = 11, .minor = 5, .revision = 3},
+        {.major = 11, .minor = 5, .revision = 4}, {.major = 11, .minor = 5, .revision = 6}, {.major = 11, .minor = 7, .revision = 0},
+        {.major = 11, .minor = 7, .revision = 1},
+    },
+};
 
 /// An inclusive range of AMD PCI device ids.
 struct PciDeviceIdRange
@@ -61,43 +63,45 @@ struct PciDeviceIdRange
 /// IP-discovery APUs' ids (Raphael, Mendocino, Phoenix, Phoenix2, Strix Point, Strix Halo, Krackan).
 /// The pre-IP-discovery entries mirror the AMD_IS_APU rows of the kernel's amdgpu_drv.c pciidlist
 /// (checked against torvalds/linux master, 2026-10-06); Kaveri's ids have gaps, so it is listed in runs.
-inline constexpr std::array<PciDeviceIdRange, 34> APU_PCI_DEVICE_IDS{{
-    {.first = 0x1304, .last = 0x1307}, // Kaveri
-    {.first = 0x1309, .last = 0x1313}, // Kaveri
-    {.first = 0x1315, .last = 0x1318}, // Kaveri
-    {.first = 0x131B, .last = 0x131D}, // Kaveri
-    {.first = 0x9830, .last = 0x983F}, // Kabini
-    {.first = 0x9850, .last = 0x985F}, // Mullins
-    {.first = 0x9870, .last = 0x9870}, // Carrizo
-    {.first = 0x9874, .last = 0x9877}, // Carrizo
-    {.first = 0x98E4, .last = 0x98E4}, // Stoney
-    {.first = 0x15D8, .last = 0x15D8}, // Picasso / Raven2
-    {.first = 0x15DD, .last = 0x15DD}, // Raven
-    {.first = 0x15E7, .last = 0x15E7}, // Barcelo
-    {.first = 0x1636, .last = 0x1636}, // Renoir
-    {.first = 0x1638, .last = 0x1638}, // Cezanne
-    {.first = 0x164C, .last = 0x164C}, // Lucienne
-    {.first = 0x163F, .last = 0x163F}, // Van Gogh
-    {.first = 0x164D, .last = 0x164D}, // Yellow Carp
-    {.first = 0x1681, .last = 0x1681}, // Rembrandt
-    {.first = 0x13DB, .last = 0x13DB}, // Cyan Skillfish
-    {.first = 0x13F9, .last = 0x13FC}, // Cyan Skillfish
-    {.first = 0x13FE, .last = 0x13FE}, // Cyan Skillfish
-    {.first = 0x143F, .last = 0x143F}, // Cyan Skillfish
-    {.first = 0x164E, .last = 0x164E}, // Raphael
-    {.first = 0x1506, .last = 0x1506}, // Mendocino
-    {.first = 0x15BF, .last = 0x15BF}, // Phoenix
-    {.first = 0x15C8, .last = 0x15C8}, // Phoenix2
-    {.first = 0x150E, .last = 0x150E}, // Strix Point
-    {.first = 0x1586, .last = 0x1586}, // Strix Halo
-    // IP-discovery APUs the kernel identifies by GC version rather than a pciidlist row; ids checked
-    // against the PCI ID Repository (pci-ids.ucw.cz, 2026-10-06).
-    {.first = 0x1435, .last = 0x1435}, // Sephiroth (Van Gogh, Steam Deck OLED)
-    {.first = 0x13C0, .last = 0x13C0}, // Granite Ridge
-    {.first = 0x1900, .last = 0x1901}, // Hawk Point 1 / 2
-    {.first = 0x1114, .last = 0x1114}, // Krackan
-    {.first = 0x1902, .last = 0x1902}, // Krackan 2
-}};
+inline constexpr std::array<PciDeviceIdRange, 34> APU_PCI_DEVICE_IDS{
+    {
+        {.first = 0x1304, .last = 0x1307}, // Kaveri
+        {.first = 0x1309, .last = 0x1313}, // Kaveri
+        {.first = 0x1315, .last = 0x1318}, // Kaveri
+        {.first = 0x131B, .last = 0x131D}, // Kaveri
+        {.first = 0x9830, .last = 0x983F}, // Kabini
+        {.first = 0x9850, .last = 0x985F}, // Mullins
+        {.first = 0x9870, .last = 0x9870}, // Carrizo
+        {.first = 0x9874, .last = 0x9877}, // Carrizo
+        {.first = 0x98E4, .last = 0x98E4}, // Stoney
+        {.first = 0x15D8, .last = 0x15D8}, // Picasso / Raven2
+        {.first = 0x15DD, .last = 0x15DD}, // Raven
+        {.first = 0x15E7, .last = 0x15E7}, // Barcelo
+        {.first = 0x1636, .last = 0x1636}, // Renoir
+        {.first = 0x1638, .last = 0x1638}, // Cezanne
+        {.first = 0x164C, .last = 0x164C}, // Lucienne
+        {.first = 0x163F, .last = 0x163F}, // Van Gogh
+        {.first = 0x164D, .last = 0x164D}, // Yellow Carp
+        {.first = 0x1681, .last = 0x1681}, // Rembrandt
+        {.first = 0x13DB, .last = 0x13DB}, // Cyan Skillfish
+        {.first = 0x13F9, .last = 0x13FC}, // Cyan Skillfish
+        {.first = 0x13FE, .last = 0x13FE}, // Cyan Skillfish
+        {.first = 0x143F, .last = 0x143F}, // Cyan Skillfish
+        {.first = 0x164E, .last = 0x164E}, // Raphael
+        {.first = 0x1506, .last = 0x1506}, // Mendocino
+        {.first = 0x15BF, .last = 0x15BF}, // Phoenix
+        {.first = 0x15C8, .last = 0x15C8}, // Phoenix2
+        {.first = 0x150E, .last = 0x150E}, // Strix Point
+        {.first = 0x1586, .last = 0x1586}, // Strix Halo
+        // IP-discovery APUs the kernel identifies by GC version rather than a pciidlist row; ids checked
+        // against the PCI ID Repository (pci-ids.ucw.cz, 2026-10-06).
+        {.first = 0x1435, .last = 0x1435}, // Sephiroth (Van Gogh, Steam Deck OLED)
+        {.first = 0x13C0, .last = 0x13C0}, // Granite Ridge
+        {.first = 0x1900, .last = 0x1901}, // Hawk Point 1 / 2
+        {.first = 0x1114, .last = 0x1114}, // Krackan
+        {.first = 0x1902, .last = 0x1902}, // Krackan 2
+    },
+};
 
 /// Whether an AMD GPU is an APU's integrated graphics (#1266). The GC IP version decides when
 /// amdgpu publishes it, since that is the signal the kernel's own AMD_IS_APU flag comes from; a

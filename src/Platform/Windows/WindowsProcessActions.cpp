@@ -194,9 +194,11 @@ std::vector<ProcessorCoreRecord> realReadCores()
         if (record.Relationship == RelationProcessorCore && record.Processor.GroupCount > 0)
         {
             // A core's processors are in one group, so its first GroupMask is all of them.
-            cores.push_back({.group = record.Processor.GroupMask[0].Group,
-                             .mask = static_cast<std::uint64_t>(record.Processor.GroupMask[0].Mask),
-                             .efficiencyClass = record.Processor.EfficiencyClass});
+            cores.push_back({
+                .group = record.Processor.GroupMask[0].Group,
+                .mask = static_cast<std::uint64_t>(record.Processor.GroupMask[0].Mask),
+                .efficiencyClass = record.Processor.EfficiencyClass,
+            });
         }
         // NOLINTEND(cppcoreguidelines-pro-type-union-access)
         offset += record.Size;

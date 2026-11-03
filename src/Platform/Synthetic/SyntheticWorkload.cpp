@@ -188,178 +188,202 @@ constexpr std::array<Profile, KIND_COUNT> PROFILES = {
     // Kind::Kernel
     Profile{.activeChance = 0.01, .cpuLo = 0.02, .cpuHi = 0.1, .threadsLo = 1, .threadsHi = 1},
     // Kind::Daemon
-    Profile{.activeChance = 0.05,
-            .cpuLo = 0.02,
-            .cpuHi = 0.3,
-            .rssMibLo = 4,
-            .rssMibHi = 90,
-            .threadsLo = 1,
-            .threadsHi = 16,
-            .handlesLo = 8,
-            .handlesHi = 220,
-            .ioHi = 2e5,
-            .netChance = 0.4,
-            .netHi = 2e5,
-            .faultsHi = 40},
+    Profile{
+        .activeChance = 0.05,
+        .cpuLo = 0.02,
+        .cpuHi = 0.3,
+        .rssMibLo = 4,
+        .rssMibHi = 90,
+        .threadsLo = 1,
+        .threadsHi = 16,
+        .handlesLo = 8,
+        .handlesHi = 220,
+        .ioHi = 2e5,
+        .netChance = 0.4,
+        .netHi = 2e5,
+        .faultsHi = 40,
+    },
     // Kind::ServiceWorker
-    Profile{.activeChance = 0.08,
-            .cpuLo = 0.05,
-            .cpuHi = 0.5,
-            .rssMibLo = 12,
-            .rssMibHi = 160,
-            .threadsLo = 1,
-            .threadsHi = 4,
-            .handlesLo = 12,
-            .handlesHi = 60,
-            .ioHi = 5e5,
-            .netChance = 0.7,
-            .netHi = 4e5,
-            .faultsHi = 50},
+    Profile{
+        .activeChance = 0.08,
+        .cpuLo = 0.05,
+        .cpuHi = 0.5,
+        .rssMibLo = 12,
+        .rssMibHi = 160,
+        .threadsLo = 1,
+        .threadsHi = 4,
+        .handlesLo = 12,
+        .handlesHi = 60,
+        .ioHi = 5e5,
+        .netChance = 0.7,
+        .netHi = 4e5,
+        .faultsHi = 50,
+    },
     // Kind::Session
-    Profile{.activeChance = 0.3,
-            .cpuLo = 0.03,
-            .cpuHi = 0.4,
-            .rssMibLo = 10,
-            .rssMibHi = 380,
-            .threadsLo = 2,
-            .threadsHi = 28,
-            .handlesLo = 20,
-            .handlesHi = 400,
-            .ioHi = 1e5,
-            .netChance = 0.1,
-            .netHi = 2e4,
-            .faultsHi = 100},
+    Profile{
+        .activeChance = 0.3,
+        .cpuLo = 0.03,
+        .cpuHi = 0.4,
+        .rssMibLo = 10,
+        .rssMibHi = 380,
+        .threadsLo = 2,
+        .threadsHi = 28,
+        .handlesLo = 20,
+        .handlesHi = 400,
+        .ioHi = 1e5,
+        .netChance = 0.1,
+        .netHi = 2e4,
+        .faultsHi = 100,
+    },
     // Kind::BrowserMain
-    Profile{.activeChance = 1.0,
-            .cpuLo = 0.3,
-            .cpuHi = 1.0,
-            .rssMibLo = 450,
-            .rssMibHi = 900,
-            .threadsLo = 80,
-            .threadsHi = 140,
-            .handlesLo = 300,
-            .handlesHi = 600,
-            .ioHi = 2e6,
-            .netChance = 1.0,
-            .netHi = 2e6,
-            .faultsHi = 1000},
+    Profile{
+        .activeChance = 1.0,
+        .cpuLo = 0.3,
+        .cpuHi = 1.0,
+        .rssMibLo = 450,
+        .rssMibHi = 900,
+        .threadsLo = 80,
+        .threadsHi = 140,
+        .handlesLo = 300,
+        .handlesHi = 600,
+        .ioHi = 2e6,
+        .netChance = 1.0,
+        .netHi = 2e6,
+        .faultsHi = 1000,
+    },
     // Kind::BrowserChild
-    Profile{.activeChance = 0.02,
-            .cpuLo = 0.1,
-            .cpuHi = 0.9,
-            .rssMibLo = 20,
-            .rssMibHi = 180,
-            .threadsLo = 14,
-            .threadsHi = 40,
-            .handlesLo = 40,
-            .handlesHi = 140,
-            .ioHi = 1e5,
-            .netChance = 0.3,
-            .netHi = 3e5,
-            .faultsHi = 200},
+    Profile{
+        .activeChance = 0.02,
+        .cpuLo = 0.1,
+        .cpuHi = 0.9,
+        .rssMibLo = 20,
+        .rssMibHi = 180,
+        .threadsLo = 14,
+        .threadsHi = 40,
+        .handlesLo = 40,
+        .handlesHi = 140,
+        .ioHi = 1e5,
+        .netChance = 0.3,
+        .netHi = 3e5,
+        .faultsHi = 200,
+    },
     // Kind::EditorMain
-    Profile{.activeChance = 1.0,
-            .cpuLo = 0.05,
-            .cpuHi = 0.3,
-            .rssMibLo = 200,
-            .rssMibHi = 400,
-            .threadsLo = 30,
-            .threadsHi = 60,
-            .handlesLo = 120,
-            .handlesHi = 300,
-            .ioHi = 3e5,
-            .netChance = 0.5,
-            .netHi = 5e4,
-            .faultsHi = 600},
+    Profile{
+        .activeChance = 1.0,
+        .cpuLo = 0.05,
+        .cpuHi = 0.3,
+        .rssMibLo = 200,
+        .rssMibHi = 400,
+        .threadsLo = 30,
+        .threadsHi = 60,
+        .handlesLo = 120,
+        .handlesHi = 300,
+        .ioHi = 3e5,
+        .netChance = 0.5,
+        .netHi = 5e4,
+        .faultsHi = 600,
+    },
     // Kind::EditorChild
-    Profile{.activeChance = 0.05,
-            .cpuLo = 0.05,
-            .cpuHi = 0.4,
-            .rssMibLo = 30,
-            .rssMibHi = 200,
-            .threadsLo = 8,
-            .threadsHi = 24,
-            .handlesLo = 30,
-            .handlesHi = 90,
-            .ioHi = 2e5,
-            .netChance = 0.1,
-            .netHi = 2e4,
-            .faultsHi = 100},
+    Profile{
+        .activeChance = 0.05,
+        .cpuLo = 0.05,
+        .cpuHi = 0.4,
+        .rssMibLo = 30,
+        .rssMibHi = 200,
+        .threadsLo = 8,
+        .threadsHi = 24,
+        .handlesLo = 30,
+        .handlesHi = 90,
+        .ioHi = 2e5,
+        .netChance = 0.1,
+        .netHi = 2e4,
+        .faultsHi = 100,
+    },
     // Kind::LanguageServer
-    Profile{.activeChance = 0.5,
-            .cpuLo = 0.2,
-            .cpuHi = 1.8,
-            .rssMibLo = 100,
-            .rssMibHi = 800,
-            .threadsLo = 8,
-            .threadsHi = 40,
-            .handlesLo = 40,
-            .handlesHi = 400,
-            .ioHi = 3e6,
-            .faultsHi = 1000},
+    Profile{
+        .activeChance = 0.5,
+        .cpuLo = 0.2,
+        .cpuHi = 1.8,
+        .rssMibLo = 100,
+        .rssMibHi = 800,
+        .threadsLo = 8,
+        .threadsHi = 40,
+        .handlesLo = 40,
+        .handlesHi = 400,
+        .ioHi = 3e6,
+        .faultsHi = 1000,
+    },
     // Kind::ContainerShim
     Profile{.rssMibLo = 6, .rssMibHi = 12, .threadsLo = 9, .threadsHi = 12, .handlesLo = 12, .handlesHi = 20, .faultsHi = 2},
     // Kind::ContainerMain
-    Profile{.activeChance = 0.15,
-            .cpuLo = 0.1,
-            .cpuHi = 1.2,
-            .rssMibLo = 40,
-            .rssMibHi = 600,
-            .threadsLo = 2,
-            .threadsHi = 120,
-            .handlesLo = 20,
-            .handlesHi = 600,
-            .ioHi = 4e6,
-            .netChance = 0.9,
-            .netHi = 4e6,
-            .faultsHi = 500},
+    Profile{
+        .activeChance = 0.15,
+        .cpuLo = 0.1,
+        .cpuHi = 1.2,
+        .rssMibLo = 40,
+        .rssMibHi = 600,
+        .threadsLo = 2,
+        .threadsHi = 120,
+        .handlesLo = 20,
+        .handlesHi = 600,
+        .ioHi = 4e6,
+        .netChance = 0.9,
+        .netHi = 4e6,
+        .faultsHi = 500,
+    },
     // Kind::ContainerWorker
-    Profile{.activeChance = 0.03,
-            .cpuLo = 0.05,
-            .cpuHi = 0.6,
-            .rssMibLo = 20,
-            .rssMibHi = 200,
-            .threadsLo = 1,
-            .threadsHi = 8,
-            .handlesLo = 10,
-            .handlesHi = 80,
-            .ioHi = 1e6,
-            .netChance = 0.8,
-            .netHi = 1e6,
-            .faultsHi = 200},
+    Profile{
+        .activeChance = 0.03,
+        .cpuLo = 0.05,
+        .cpuHi = 0.6,
+        .rssMibLo = 20,
+        .rssMibHi = 200,
+        .threadsLo = 1,
+        .threadsHi = 8,
+        .handlesLo = 10,
+        .handlesHi = 80,
+        .ioHi = 1e6,
+        .netChance = 0.8,
+        .netHi = 1e6,
+        .faultsHi = 200,
+    },
     // Kind::Shell
     Profile{.rssMibLo = 4, .rssMibHi = 9, .threadsLo = 1, .threadsHi = 1, .handlesLo = 4, .handlesHi = 8, .faultsHi = 2},
     // Kind::Tool
-    Profile{.activeChance = 0.2,
-            .cpuLo = 0.02,
-            .cpuHi = 0.3,
-            .rssMibLo = 3,
-            .rssMibHi = 120,
-            .threadsLo = 1,
-            .threadsHi = 4,
-            .handlesLo = 4,
-            .handlesHi = 30,
-            .ioHi = 2e5,
-            .netChance = 0.2,
-            .netHi = 1e5,
-            .faultsHi = 100},
+    Profile{
+        .activeChance = 0.2,
+        .cpuLo = 0.02,
+        .cpuHi = 0.3,
+        .rssMibLo = 3,
+        .rssMibHi = 120,
+        .threadsLo = 1,
+        .threadsHi = 4,
+        .handlesLo = 4,
+        .handlesHi = 30,
+        .ioHi = 2e5,
+        .netChance = 0.2,
+        .netHi = 1e5,
+        .faultsHi = 100,
+    },
     // Kind::BuildDriver
     Profile{.rssMibLo = 8, .rssMibHi = 40, .threadsLo = 1, .threadsHi = 2, .handlesLo = 8, .handlesHi = 40, .ioHi = 1e5, .faultsHi = 50},
     // Kind::BuildWorker
-    Profile{.activeChance = 1.0,
-            .cpuLo = 0.7,
-            .cpuHi = 1.0,
-            .rssMibLo = 120,
-            .rssMibHi = 900,
-            .threadsLo = 1,
-            .threadsHi = 1,
-            .handlesLo = 6,
-            .handlesHi = 12,
-            .ioHi = 8e6,
-            .faultsHi = 5000,
-            .lifetimeLo = 4,
-            .lifetimeHi = 45,
-            .nice = 10},
+    Profile{
+        .activeChance = 1.0,
+        .cpuLo = 0.7,
+        .cpuHi = 1.0,
+        .rssMibLo = 120,
+        .rssMibHi = 900,
+        .threadsLo = 1,
+        .threadsHi = 1,
+        .handlesLo = 6,
+        .handlesHi = 12,
+        .ioHi = 8e6,
+        .faultsHi = 5000,
+        .lifetimeLo = 4,
+        .lifetimeHi = 45,
+        .nice = 10,
+    },
 };
 
 /// The resource profile of a @p kind of process.
@@ -482,9 +506,11 @@ class TreeBuilder
             DaemonEntry{.name = "systemd-udevd", .command = "/usr/lib/systemd/systemd-udevd", .user = "root"},
             DaemonEntry{.name = "systemd-resolve", .command = "/usr/lib/systemd/systemd-resolved", .user = "systemd-resolve"},
             DaemonEntry{.name = "systemd-timesyn", .command = "/usr/lib/systemd/systemd-timesyncd", .user = "systemd-timesync"},
-            DaemonEntry{.name = "dbus-daemon",
-                        .command = "@dbus-daemon --system --address=systemd: --nofork --systemd-activation",
-                        .user = "messagebus"},
+            DaemonEntry{
+                .name = "dbus-daemon",
+                .command = "@dbus-daemon --system --address=systemd: --nofork --systemd-activation",
+                .user = "messagebus",
+            },
             DaemonEntry{.name = "NetworkManager", .command = "/usr/sbin/NetworkManager --no-daemon", .user = "root"},
             DaemonEntry{.name = "polkitd", .command = "/usr/lib/polkit-1/polkitd --no-debug", .user = "polkitd"},
             DaemonEntry{.name = "cron", .command = "/usr/sbin/cron -f -P", .user = "root"},
@@ -498,7 +524,10 @@ class TreeBuilder
             DaemonEntry{.name = "gdm3", .command = "/usr/sbin/gdm3", .user = "root"},
             DaemonEntry{.name = "snapd", .command = "/usr/lib/snapd/snapd", .user = "root"},
             DaemonEntry{
-                .name = "dockerd", .command = "/usr/bin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock", .user = "root"},
+                .name = "dockerd",
+                .command = "/usr/bin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock",
+                .user = "root",
+            },
         };
         struct MasterEntry
         {
@@ -509,21 +538,27 @@ class TreeBuilder
             const char* workerFormat;
         };
         static constexpr std::array MASTERS = {
-            MasterEntry{.name = "postgres",
-                        .command = "/usr/lib/postgresql/16/bin/postgres -D /var/lib/postgresql/16/main",
-                        .user = "postgres",
-                        .workerName = "postgres",
-                        .workerFormat = "postgres: 16/main: app appdb 10.0.0.{} idle"},
-            MasterEntry{.name = "nginx",
-                        .command = "nginx: master process /usr/sbin/nginx -g daemon on; master_process on;",
-                        .user = "root",
-                        .workerName = "nginx",
-                        .workerFormat = "nginx: worker process {}"},
-            MasterEntry{.name = "php-fpm8.3",
-                        .command = "php-fpm: master process (/etc/php/8.3/fpm/php-fpm.conf)",
-                        .user = "root",
-                        .workerName = "php-fpm8.3",
-                        .workerFormat = "php-fpm: pool www {}"},
+            MasterEntry{
+                .name = "postgres",
+                .command = "/usr/lib/postgresql/16/bin/postgres -D /var/lib/postgresql/16/main",
+                .user = "postgres",
+                .workerName = "postgres",
+                .workerFormat = "postgres: 16/main: app appdb 10.0.0.{} idle",
+            },
+            MasterEntry{
+                .name = "nginx",
+                .command = "nginx: master process /usr/sbin/nginx -g daemon on; master_process on;",
+                .user = "root",
+                .workerName = "nginx",
+                .workerFormat = "nginx: worker process {}",
+            },
+            MasterEntry{
+                .name = "php-fpm8.3",
+                .command = "php-fpm: master process (/etc/php/8.3/fpm/php-fpm.conf)",
+                .user = "root",
+                .workerName = "php-fpm8.3",
+                .workerFormat = "php-fpm: pool www {}",
+            },
         };
 
         std::size_t added = 0;
@@ -566,17 +601,19 @@ class TreeBuilder
             return roots;
         }
         roots.user = add(init, Kind::Session, "systemd", "/usr/lib/systemd/systemd --user", "synth");
-        static constexpr std::array<std::pair<const char*, const char*>, 9> SESSION = {{
-            {"gnome-shell", "/usr/bin/gnome-shell"},
-            {"pipewire", "/usr/bin/pipewire"},
-            {"wireplumber", "/usr/bin/wireplumber"},
-            {"pipewire-pulse", "/usr/bin/pipewire-pulse"},
-            {"Xwayland", "/usr/bin/Xwayland :0 -rootless -noreset -accessx -core -auth /run/user/1000/.mutter-Xwaylandauth"},
-            {"xdg-desktop-por", "/usr/libexec/xdg-desktop-portal"},
-            {"gvfsd", "/usr/libexec/gvfsd"},
-            {"evolution-data-", "/usr/libexec/evolution-data-server/evolution-alarm-notify"},
-            {"tracker-miner-f", "/usr/libexec/tracker-miner-fs-3"},
-        }};
+        static constexpr std::array<std::pair<const char*, const char*>, 9> SESSION = {
+            {
+                {"gnome-shell", "/usr/bin/gnome-shell"},
+                {"pipewire", "/usr/bin/pipewire"},
+                {"wireplumber", "/usr/bin/wireplumber"},
+                {"pipewire-pulse", "/usr/bin/pipewire-pulse"},
+                {"Xwayland", "/usr/bin/Xwayland :0 -rootless -noreset -accessx -core -auth /run/user/1000/.mutter-Xwaylandauth"},
+                {"xdg-desktop-por", "/usr/libexec/xdg-desktop-portal"},
+                {"gvfsd", "/usr/libexec/gvfsd"},
+                {"evolution-data-", "/usr/libexec/evolution-data-server/evolution-alarm-notify"},
+                {"tracker-miner-f", "/usr/libexec/tracker-miner-fs-3"},
+            },
+        };
         for (const auto& [name, command] : SESSION)
         {
             if (full())
@@ -609,7 +646,12 @@ class TreeBuilder
         }
         const std::ptrdiff_t main = add(sessionUser, Kind::BrowserMain, "firefox", "/usr/lib/firefox/firefox", "synth");
         static constexpr std::array<const char*, 5> HELPERS = {
-            "Socket Process", "RDD Process", "Privileged Cont", "WebExtensions", "Utility Process"};
+            "Socket Process",
+            "RDD Process",
+            "Privileged Cont",
+            "WebExtensions",
+            "Utility Process",
+        };
         std::size_t added = 1;
         for (const char* helper : HELPERS)
         {
@@ -654,12 +696,14 @@ class TreeBuilder
         const std::ptrdiff_t main = add(sessionUser, Kind::EditorMain, "code", "/usr/share/code/code --unity-launch", "synth");
         const std::ptrdiff_t zygote = add(main, Kind::EditorChild, "code", "/usr/share/code/code --type=zygote --no-sandbox", "synth");
         std::size_t added = 2;
-        static constexpr std::array<std::pair<const char*, const char*>, 4> SERVERS = {{
-            {"clangd", "/usr/bin/clangd --background-index --clang-tidy -j={}"},
-            {"rust-analyzer", "/home/synth/.cargo/bin/rust-analyzer --threads {}"},
-            {"pyright-langser", "node /home/synth/.vscode/extensions/pyright/langserver.index.js --stdio --threads {}"},
-            {"gopls", "/home/synth/go/bin/gopls -remote=auto -j {}"},
-        }};
+        static constexpr std::array<std::pair<const char*, const char*>, 4> SERVERS = {
+            {
+                {"clangd", "/usr/bin/clangd --background-index --clang-tidy -j={}"},
+                {"rust-analyzer", "/home/synth/.cargo/bin/rust-analyzer --threads {}"},
+                {"pyright-langser", "node /home/synth/.vscode/extensions/pyright/langserver.index.js --stdio --threads {}"},
+                {"gopls", "/home/synth/go/bin/gopls -remote=auto -j {}"},
+            },
+        };
         for (std::size_t window = 0; added < count && !full(); ++window)
         {
             add(zygote,
@@ -709,31 +753,41 @@ class TreeBuilder
             const char* user;
         };
         static constexpr std::array IMAGES = {
-            Image{.main = "gunicorn",
-                  .mainCommand = "/usr/local/bin/python /usr/local/bin/gunicorn app.wsgi:application --workers 8",
-                  .worker = "gunicorn",
-                  .workerFormat = "/usr/local/bin/python /usr/local/bin/gunicorn app.wsgi:application --worker-id {}",
-                  .user = "app"},
-            Image{.main = "java",
-                  .mainCommand = "java -Xmx2g -XX:+UseG1GC -jar /srv/orders-service.jar",
-                  .worker = "java",
-                  .workerFormat = "java -Xmx512m -jar /srv/orders-worker.jar --partition={}",
-                  .user = "app"},
-            Image{.main = "node",
-                  .mainCommand = "node /srv/gateway/server.js --port 8080",
-                  .worker = "node",
-                  .workerFormat = "node /srv/gateway/worker.js --shard={}",
-                  .user = "node"},
-            Image{.main = "redis-server",
-                  .mainCommand = "redis-server *:6379",
-                  .worker = "redis-server",
-                  .workerFormat = "redis-server *:{} (replica)",
-                  .user = "redis"},
-            Image{.main = "celery",
-                  .mainCommand = "/usr/local/bin/python -m celery -A tasks worker --loglevel=INFO",
-                  .worker = "celery",
-                  .workerFormat = "/usr/local/bin/python -m celery -A tasks worker --hostname=worker{}@%h",
-                  .user = "app"},
+            Image{
+                .main = "gunicorn",
+                .mainCommand = "/usr/local/bin/python /usr/local/bin/gunicorn app.wsgi:application --workers 8",
+                .worker = "gunicorn",
+                .workerFormat = "/usr/local/bin/python /usr/local/bin/gunicorn app.wsgi:application --worker-id {}",
+                .user = "app",
+            },
+            Image{
+                .main = "java",
+                .mainCommand = "java -Xmx2g -XX:+UseG1GC -jar /srv/orders-service.jar",
+                .worker = "java",
+                .workerFormat = "java -Xmx512m -jar /srv/orders-worker.jar --partition={}",
+                .user = "app",
+            },
+            Image{
+                .main = "node",
+                .mainCommand = "node /srv/gateway/server.js --port 8080",
+                .worker = "node",
+                .workerFormat = "node /srv/gateway/worker.js --shard={}",
+                .user = "node",
+            },
+            Image{
+                .main = "redis-server",
+                .mainCommand = "redis-server *:6379",
+                .worker = "redis-server",
+                .workerFormat = "redis-server *:{} (replica)",
+                .user = "redis",
+            },
+            Image{
+                .main = "celery",
+                .mainCommand = "/usr/local/bin/python -m celery -A tasks worker --loglevel=INFO",
+                .worker = "celery",
+                .workerFormat = "/usr/local/bin/python -m celery -A tasks worker --hostname=worker{}@%h",
+                .user = "app",
+            },
         };
         for (std::size_t container = 0; added < count && !full(); ++container)
         {
@@ -763,22 +817,26 @@ class TreeBuilder
     /// Terminals fill whatever is left: shells running tools, and builds whose compiler processes churn.
     void addTerminals(const SessionRoots& session)
     {
-        static constexpr std::array<std::pair<const char*, const char*>, 8> TOOLS = {{
-            {"vim", "vim src/Domain/ProcessModel.cpp"},
-            {"htop", "htop -d 10"},
-            {"less", "less /var/log/syslog"},
-            {"ssh", "ssh -A build@10.0.4.17"},
-            {"python3", "python3 -m http.server 8000"},
-            {"tail", "tail -F /var/log/nginx/access.log"},
-            {"git", "git log --graph --oneline --all"},
-            {"watch", "watch -n 1 nvidia-smi"},
-        }};
-        static constexpr std::array<std::pair<const char*, const char*>, 4> COMPILERS = {{
-            {"cc1plus", "/usr/lib/gcc/x86_64-linux-gnu/14/cc1plus -quiet -I src -std=c++23 -O2 src/unit{}.cpp"},
-            {"clang++", "/usr/bin/clang++ -std=c++23 -O2 -c src/module{}.cpp -o build/module.o"},
-            {"ld.lld", "/usr/bin/ld.lld --threads=1 -o build/bin/target{} build/obj.o"},
-            {"rustc", "rustc --crate-name crate{} --edition=2021 -C opt-level=3"},
-        }};
+        static constexpr std::array<std::pair<const char*, const char*>, 8> TOOLS = {
+            {
+                {"vim", "vim src/Domain/ProcessModel.cpp"},
+                {"htop", "htop -d 10"},
+                {"less", "less /var/log/syslog"},
+                {"ssh", "ssh -A build@10.0.4.17"},
+                {"python3", "python3 -m http.server 8000"},
+                {"tail", "tail -F /var/log/nginx/access.log"},
+                {"git", "git log --graph --oneline --all"},
+                {"watch", "watch -n 1 nvidia-smi"},
+            },
+        };
+        static constexpr std::array<std::pair<const char*, const char*>, 4> COMPILERS = {
+            {
+                {"cc1plus", "/usr/lib/gcc/x86_64-linux-gnu/14/cc1plus -quiet -I src -std=c++23 -O2 src/unit{}.cpp"},
+                {"clang++", "/usr/bin/clang++ -std=c++23 -O2 -c src/module{}.cpp -o build/module.o"},
+                {"ld.lld", "/usr/bin/ld.lld --threads=1 -o build/bin/target{} build/obj.o"},
+                {"rustc", "rustc --crate-name crate{} --edition=2021 -C opt-level=3"},
+            },
+        };
         // Two builds at most, each with a job per core (up to 24), so their compilers are busy processes.
         constexpr std::size_t MAX_BUILDS = 2;
         std::size_t builds = 0;
@@ -1099,9 +1157,11 @@ void Workload::buildSystem()
     {
         const double share = 1.0 + rng.uniform(-MAX_CORE_SHARE_SKEW, MAX_CORE_SHARE_SKEW);
         shareSum += share;
-        m_Cores.push_back(CoreWaves{.processShare = share,
-                                    .overhead = makeWave(rng, rng.uniform(0.002, MAX_CORE_OVERHEAD_BASE)),
-                                    .iowait = makeWave(rng, rng.uniform(0.002, MAX_CORE_OVERHEAD_BASE))});
+        m_Cores.push_back(CoreWaves{
+            .processShare = share,
+            .overhead = makeWave(rng, rng.uniform(0.002, MAX_CORE_OVERHEAD_BASE)),
+            .iowait = makeWave(rng, rng.uniform(0.002, MAX_CORE_OVERHEAD_BASE)),
+        });
     }
     for (CoreWaves& core : m_Cores)
     {
@@ -1144,10 +1204,12 @@ void Workload::buildSystem()
     m_Disks.reserve(m_Spec.disks);
     for (std::size_t d = 0; d < m_Spec.disks; ++d)
     {
-        m_Disks.push_back(DiskSpec{.name = diskName(d),
-                                   .readBytes = makeWave(rng, rng.uniform(2e6, 6e7)),
-                                   .writeBytes = makeWave(rng, rng.uniform(1e6, 3e7)),
-                                   .busy = makeWave(rng, rng.uniform(0.03, 0.25))});
+        m_Disks.push_back(DiskSpec{
+            .name = diskName(d),
+            .readBytes = makeWave(rng, rng.uniform(2e6, 6e7)),
+            .writeBytes = makeWave(rng, rng.uniform(1e6, 3e7)),
+            .busy = makeWave(rng, rng.uniform(0.03, 0.25)),
+        });
     }
 
     // Memory: room for every process's resident set plus cache, in whole 8 GiB steps, at least 16 GiB.
@@ -1237,12 +1299,14 @@ std::uint64_t Workload::totalCpuTicksAt(double uptime) const noexcept
 
 ProcessTotals Workload::processTotalsAt(double uptime) const noexcept
 {
-    return ProcessTotals{.netSentBytesPerSec = m_NetSentSum.at(uptime),
-                         .netReceivedBytesPerSec = m_NetReceivedSum.at(uptime),
-                         .pageFaultsPerSec = m_PageFaultSum.at(uptime),
-                         .threadCount = m_ThreadSum,
-                         .handleCount = m_HandleSum,
-                         .powerWatts = m_CpuSum.at(uptime) * WATTS_PER_BUSY_CORE};
+    return ProcessTotals{
+        .netSentBytesPerSec = m_NetSentSum.at(uptime),
+        .netReceivedBytesPerSec = m_NetReceivedSum.at(uptime),
+        .pageFaultsPerSec = m_PageFaultSum.at(uptime),
+        .threadCount = m_ThreadSum,
+        .handleCount = m_HandleSum,
+        .powerWatts = m_CpuSum.at(uptime) * WATTS_PER_BUSY_CORE,
+    };
 }
 
 void Workload::systemCountersAt(double uptime, SystemCounters& out) const
@@ -1385,22 +1449,29 @@ ProcessCapabilities Workload::processCapabilities() noexcept
 
 SystemCapabilities Workload::systemCapabilities() noexcept
 {
-    return SystemCapabilities{.hasPerCoreCpu = true,
-                              .hasMemoryAvailable = true,
-                              .hasSwap = true,
-                              .hasUptime = true,
-                              .hasIoWait = true,
-                              .hasSteal = true,
-                              .hasLoadAvg = true,
-                              .hasCpuFreq = true,
-                              .hasNetworkCounters = true,
-                              .hasVirtualizationInfo = false};
+    return SystemCapabilities{
+        .hasPerCoreCpu = true,
+        .hasMemoryAvailable = true,
+        .hasSwap = true,
+        .hasUptime = true,
+        .hasIoWait = true,
+        .hasSteal = true,
+        .hasLoadAvg = true,
+        .hasCpuFreq = true,
+        .hasNetworkCounters = true,
+        .hasVirtualizationInfo = false,
+    };
 }
 
 DiskCapabilities Workload::diskCapabilities() noexcept
 {
     return DiskCapabilities{
-        .hasDiskStats = true, .hasReadWriteBytes = true, .hasIoTime = true, .hasDeviceInfo = true, .canFilterPhysical = true};
+        .hasDiskStats = true,
+        .hasReadWriteBytes = true,
+        .hasIoTime = true,
+        .hasDeviceInfo = true,
+        .canFilterPhysical = true,
+    };
 }
 
 } // namespace Platform::Synthetic

@@ -176,11 +176,13 @@ class ProcessModulesView
             {
                 name += " (deleted)";
             }
-            m_Rows.push_back({.module = module,
-                              .name = std::move(name),
-                              .version = Domain::Modules::formatVersion(module.version),
-                              .base = Domain::Modules::formatAddress(module.baseAddress),
-                              .size = UI::Format::formatBytes(static_cast<double>(module.sizeBytes))});
+            m_Rows.push_back({
+                .module = module,
+                .name = std::move(name),
+                .version = Domain::Modules::formatVersion(module.version),
+                .base = Domain::Modules::formatAddress(module.baseAddress),
+                .size = UI::Format::formatBytes(static_cast<double>(module.sizeBytes)),
+            });
         }
         sortRows();
     }

@@ -172,12 +172,14 @@ struct RetiredKey
 ///  - [metrics] integrated_gpu_vram_threshold_mb: integrated vs. discrete is decided per vendor on
 ///    Windows (DXGIGPUProbeMath.h) and by PCI bus on Linux, not by one VRAM threshold.
 ///  - [ui] progress_color_low/high_threshold: TaskSmack draws no threshold-coloured progress bars.
-inline constexpr std::array<RetiredKey, 4> RETIRED_KEYS{{
-    {.section = "metrics", .key = "min_time_for_rate_seconds"},
-    {.section = "metrics", .key = "integrated_gpu_vram_threshold_mb"},
-    {.section = "ui", .key = "progress_color_low_threshold"},
-    {.section = "ui", .key = "progress_color_high_threshold"},
-}};
+inline constexpr std::array<RetiredKey, 4> RETIRED_KEYS{
+    {
+        {.section = "metrics", .key = "min_time_for_rate_seconds"},
+        {.section = "metrics", .key = "integrated_gpu_vram_threshold_mb"},
+        {.section = "ui", .key = "progress_color_low_threshold"},
+        {.section = "ui", .key = "progress_color_high_threshold"},
+    },
+};
 
 /// Removes RETIRED_KEYS from `document`, so a config written by an older TaskSmack stops listing
 /// them on the next save. Everything else is left alone.

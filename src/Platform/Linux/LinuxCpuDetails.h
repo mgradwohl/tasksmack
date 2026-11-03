@@ -102,11 +102,12 @@ struct CpuInfoProcessor
         if (key == "processor")
         {
             const auto number = Detail::parseUnsigned(value);
-            processors.push_back(
-                {.processor = number.has_value() ? std::optional<std::size_t>{static_cast<std::size_t>(*number)} : std::nullopt,
-                 .physicalId = std::nullopt,
-                 .coreId = std::nullopt,
-                 .cpuCores = std::nullopt});
+            processors.push_back({
+                .processor = number.has_value() ? std::optional<std::size_t>{static_cast<std::size_t>(*number)} : std::nullopt,
+                .physicalId = std::nullopt,
+                .coreId = std::nullopt,
+                .cpuCores = std::nullopt,
+            });
             continue;
         }
         if (processors.empty())
@@ -357,11 +358,13 @@ struct SysfsCacheEntry
             }
             const auto type = Detail::readFile(indexIt->path() / "type");
             const auto shared = Detail::readFile(indexIt->path() / "shared_cpu_list");
-            entries.push_back({.cpu = *cpu,
-                               .level = static_cast<unsigned>(*levelValue),
-                               .type = type.has_value() ? std::string(Platform::trimAscii(*type)) : std::string{},
-                               .bytes = *bytes,
-                               .sharedCpuList = shared.has_value() ? std::string(Platform::trimAscii(*shared)) : std::string{}});
+            entries.push_back({
+                .cpu = *cpu,
+                .level = static_cast<unsigned>(*levelValue),
+                .type = type.has_value() ? std::string(Platform::trimAscii(*type)) : std::string{},
+                .bytes = *bytes,
+                .sharedCpuList = shared.has_value() ? std::string(Platform::trimAscii(*shared)) : std::string{},
+            });
         }
     }
     // Directory order is unspecified; sort so the result does not depend on it.

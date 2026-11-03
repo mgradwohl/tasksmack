@@ -53,13 +53,13 @@ enum nvmlReturn_t : unsigned int
     NVML_ERROR_NO_DATA = 21,
     NVML_ERROR_VGPU_ECC_NOT_SUPPORTED = 22,
     NVML_ERROR_INSUFFICIENT_RESOURCES = 23,
-    NVML_ERROR_UNKNOWN = 999
+    NVML_ERROR_UNKNOWN = 999,
 };
 
 // NVML temperature sensor types
 enum nvmlTemperatureSensors_t : unsigned int
 {
-    NVML_TEMPERATURE_GPU = 0
+    NVML_TEMPERATURE_GPU = 0,
 };
 
 // NVML clock types
@@ -68,7 +68,7 @@ enum nvmlClockType_t : unsigned int
     NVML_CLOCK_GRAPHICS = 0,
     NVML_CLOCK_SM = 1,
     NVML_CLOCK_MEM = 2,
-    NVML_CLOCK_VIDEO = 3
+    NVML_CLOCK_VIDEO = 3,
 };
 
 // NVML PCIe utilization counter types
@@ -76,7 +76,7 @@ enum nvmlPcieUtilCounter_t : unsigned int
 {
     NVML_PCIE_UTIL_TX_BYTES = 0,
     NVML_PCIE_UTIL_RX_BYTES = 1,
-    NVML_PCIE_UTIL_COUNT = 2
+    NVML_PCIE_UTIL_COUNT = 2,
 };
 // NOLINTEND(performance-enum-size,cppcoreguidelines-use-enum-class,readability-identifier-naming)
 

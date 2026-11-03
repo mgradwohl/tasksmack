@@ -270,7 +270,10 @@ namespace
     catch (const std::exception& error)
     {
         return Broker::ActionResult{
-            .success = false, .errorMessage = std::string("Replacing Task Manager failed: ") + error.what(), .successNote = {}};
+            .success = false,
+            .errorMessage = std::string("Replacing Task Manager failed: ") + error.what(),
+            .successNote = {},
+        };
     }
 }
 

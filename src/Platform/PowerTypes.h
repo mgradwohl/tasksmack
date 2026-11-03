@@ -14,7 +14,7 @@ enum class BatteryState : std::uint8_t
     Discharging,
     Full,
     NotPresent,
-    NotCharging // Plugged in but held below full (a charge threshold, or the charger is paused)
+    NotCharging, // Plugged in but held below full (a charge threshold, or the charger is paused)
 };
 
 /// Raw power/battery counters from OS.

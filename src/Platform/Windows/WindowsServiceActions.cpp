@@ -48,9 +48,11 @@ struct OpenedService
 [[nodiscard]] OpenedService openService(const Windows::ServiceControlFunctions& api, std::string_view name, DWORD access)
 {
     const Windows::InjectedServiceHandleCloser closer{.close = api.closeServiceHandle};
-    OpenedService opened{.scm = Windows::InjectableServiceHandle(api.openSCManager(nullptr, nullptr, SC_MANAGER_CONNECT), closer),
-                         .service = Windows::InjectableServiceHandle(nullptr, closer),
-                         .error = ERROR_SUCCESS};
+    OpenedService opened{
+        .scm = Windows::InjectableServiceHandle(api.openSCManager(nullptr, nullptr, SC_MANAGER_CONNECT), closer),
+        .service = Windows::InjectableServiceHandle(nullptr, closer),
+        .error = ERROR_SUCCESS,
+    };
     if (!opened.scm)
     {
         opened.error = GetLastError();

@@ -98,39 +98,57 @@ ShellLayer::ShellLayer(std::unique_ptr<IShellHost> host,
     : Layer("ShellLayer"),
       m_Host(std::move(host)),
       m_Updates(std::move(updateClient), tasksmack::Version::FULL, std::move(updateClock)),
-      m_Tabs({{.panel = m_SystemMetricsPanel,
-               .eventName = "SystemOverview",
-               .label = [this] { return m_CachedSystemTabLabel.c_str(); },
-               .text = [this] { return std::string_view(m_SystemMetricsPanel.hostname()); }},
-              {.panel = m_ProcessesPanel,
-               .eventName = "Processes",
-               .label = [] { return PROCESSES_TAB_LABEL; },
-               .text = [] { return std::string_view(PROCESSES_TAB_TEXT); }},
-              {.panel = m_ProcessDetailsPanel,
-               .eventName = "ProcessDetails",
-               .label = [this]
-               { return (m_DetailsTabIcon != ImTextureID_Invalid ? m_DetailsTabIconLabel : m_DetailsTabLabel).label().c_str(); },
-               .text = [this] { return std::string_view(m_ProcessDetailsPanel.tabLabel()); }},
-              {.panel = m_ServicesPanel,
-               .eventName = "Services",
-               .label = [] { return SERVICES_TAB_LABEL; },
-               .text = [] { return std::string_view(SERVICES_TAB_TEXT); }},
-              {.panel = m_StartupPanel,
-               .eventName = "Startup",
-               .label = [] { return STARTUP_TAB_LABEL; },
-               .text = [] { return std::string_view(STARTUP_TAB_TEXT); }},
-              {.panel = m_ConnectionsPanel,
-               .eventName = "Connections",
-               .label = [] { return CONNECTIONS_TAB_LABEL; },
-               .text = [] { return std::string_view(CONNECTIONS_TAB_TEXT); }},
-              {.panel = m_UsersPanel,
-               .eventName = "Users",
-               .label = [] { return USERS_TAB_LABEL; },
-               .text = [] { return std::string_view(USERS_TAB_TEXT); }},
-              {.panel = m_SystemInfoPanel,
-               .eventName = "SystemInfo",
-               .label = [] { return SYSTEM_INFO_TAB_LABEL; },
-               .text = [] { return std::string_view(SYSTEM_INFO_TAB_TEXT); }}})
+      m_Tabs({
+          {
+              .panel = m_SystemMetricsPanel,
+              .eventName = "SystemOverview",
+              .label = [this] { return m_CachedSystemTabLabel.c_str(); },
+              .text = [this] { return std::string_view(m_SystemMetricsPanel.hostname()); },
+          },
+          {
+              .panel = m_ProcessesPanel,
+              .eventName = "Processes",
+              .label = [] { return PROCESSES_TAB_LABEL; },
+              .text = [] { return std::string_view(PROCESSES_TAB_TEXT); },
+          },
+          {
+              .panel = m_ProcessDetailsPanel,
+              .eventName = "ProcessDetails",
+              .label = [this]
+              { return (m_DetailsTabIcon != ImTextureID_Invalid ? m_DetailsTabIconLabel : m_DetailsTabLabel).label().c_str(); },
+              .text = [this] { return std::string_view(m_ProcessDetailsPanel.tabLabel()); },
+          },
+          {
+              .panel = m_ServicesPanel,
+              .eventName = "Services",
+              .label = [] { return SERVICES_TAB_LABEL; },
+              .text = [] { return std::string_view(SERVICES_TAB_TEXT); },
+          },
+          {
+              .panel = m_StartupPanel,
+              .eventName = "Startup",
+              .label = [] { return STARTUP_TAB_LABEL; },
+              .text = [] { return std::string_view(STARTUP_TAB_TEXT); },
+          },
+          {
+              .panel = m_ConnectionsPanel,
+              .eventName = "Connections",
+              .label = [] { return CONNECTIONS_TAB_LABEL; },
+              .text = [] { return std::string_view(CONNECTIONS_TAB_TEXT); },
+          },
+          {
+              .panel = m_UsersPanel,
+              .eventName = "Users",
+              .label = [] { return USERS_TAB_LABEL; },
+              .text = [] { return std::string_view(USERS_TAB_TEXT); },
+          },
+          {
+              .panel = m_SystemInfoPanel,
+              .eventName = "SystemInfo",
+              .label = [] { return SYSTEM_INFO_TAB_LABEL; },
+              .text = [] { return std::string_view(SYSTEM_INFO_TAB_TEXT); },
+          },
+      })
 {
     // One icon cache and texture set for every tab's program icons (#1800): ShellPanels hands the
     // Processes panel's to the Services and Startup tabs.
@@ -850,12 +868,13 @@ void ShellLayer::renderTabBar()
     for (const auto& tab : m_Tabs.tabs())
     {
         const bool details = tab.eventName == "ProcessDetails";
-        m_TabBarItems.push_back({.label = tab.label(),
-                                 .selectRequested = (m_ShowDetailsTabRequested && details) ||
-                                                    (m_ShowServicesTabRequested && tab.eventName == "Services") ||
-                                                    m_StartupTab.wantsSelected(tab.eventName) || m_DemoTab.wantsSelected(tab.eventName),
-                                 .icon = details ? m_DetailsTabIcon : ImTextureID_Invalid,
-                                 .iconSize = details ? m_DetailsTabIconSize : 0.0F});
+        m_TabBarItems.push_back({
+            .label = tab.label(),
+            .selectRequested = (m_ShowDetailsTabRequested && details) || (m_ShowServicesTabRequested && tab.eventName == "Services") ||
+                               m_StartupTab.wantsSelected(tab.eventName) || m_DemoTab.wantsSelected(tab.eventName),
+            .icon = details ? m_DetailsTabIcon : ImTextureID_Invalid,
+            .iconSize = details ? m_DetailsTabIconSize : 0.0F,
+        });
     }
     const MainTabBarView::Result bar = MainTabBarView::render(m_TabBarItems);
     if (!bar.drawn)

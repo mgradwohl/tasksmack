@@ -147,10 +147,18 @@ Outcome renderOpen(bool& showRequested,
         // their buttons in the Actions block use (#1273).
         const UI::Widgets::ButtonFills dangerFills = dangerButtonFills();
         const UI::Widgets::DialogFooterButton confirmButton{
-            .label = confirmLabel, .fills = destructive ? &dangerFills : nullptr, .tooltip = nullptr, .disabled = leading.busy};
+            .label = confirmLabel,
+            .fills = destructive ? &dangerFills : nullptr,
+            .tooltip = nullptr,
+            .disabled = leading.busy,
+        };
         const UI::Widgets::DialogFooterButton cancelButton{.label = "Cancel", .fills = nullptr, .tooltip = nullptr};
         const UI::Widgets::DialogFooterButton leadingButton{
-            .label = leading.label, .fills = nullptr, .tooltip = leading.tooltip, .disabled = leading.busy};
+            .label = leading.label,
+            .fills = nullptr,
+            .tooltip = leading.tooltip,
+            .disabled = leading.busy,
+        };
         UI::Widgets::DialogFooterAction pressed =
             UI::Widgets::dialogFooter(confirmButton, cancelButton, confirmButtonWidth, leadingButton, contentBudget);
         if (escaped)

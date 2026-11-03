@@ -39,15 +39,22 @@ struct ServiceActionResult
     [[nodiscard]] static ServiceActionResult failed(std::string message)
     {
         return {
-            .ok = false, .message = std::move(message), .cancelled = false, .needsAuthorization = false, .authorizationUnavailable = false};
+            .ok = false,
+            .message = std::move(message),
+            .cancelled = false,
+            .needsAuthorization = false,
+            .authorizationUnavailable = false,
+        };
     }
     [[nodiscard]] static ServiceActionResult stopRequested()
     {
-        return {.ok = false,
-                .message = "Cancelled before it finished",
-                .cancelled = true,
-                .needsAuthorization = false,
-                .authorizationUnavailable = false};
+        return {
+            .ok = false,
+            .message = "Cancelled before it finished",
+            .cancelled = true,
+            .needsAuthorization = false,
+            .authorizationUnavailable = false,
+        };
     }
 };
 

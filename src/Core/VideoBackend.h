@@ -20,7 +20,7 @@ class VideoBackend
         Wayland,
         X11,
         XWaylandFallback,
-        Windows
+        Windows,
     };
 
     /// Pure classification policy, with no SDL/environment calls of its own, so it can be

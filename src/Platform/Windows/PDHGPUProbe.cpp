@@ -392,12 +392,14 @@ PDHGPUProbe::CacheStats PDHGPUProbe::instanceCacheStats() const
     {
         return {};
     }
-    return {.hits = m_Impl->instanceCacheHits,
-            .misses = m_Impl->instanceCacheMisses,
-            .clears = m_Impl->instanceCacheClears,
-            .cachedEntries = m_Impl->instanceCache.size(),
-            .positionalHits = m_Impl->positionalHits,
-            .positionalMisses = m_Impl->positionalMisses};
+    return {
+        .hits = m_Impl->instanceCacheHits,
+        .misses = m_Impl->instanceCacheMisses,
+        .clears = m_Impl->instanceCacheClears,
+        .cachedEntries = m_Impl->instanceCache.size(),
+        .positionalHits = m_Impl->positionalHits,
+        .positionalMisses = m_Impl->positionalMisses,
+    };
 }
 
 GPUCapabilities PDHGPUProbe::capabilities() const

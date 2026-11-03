@@ -40,10 +40,12 @@ inline constexpr std::string_view NOT_REPORTED_BY_BATTERY = "The battery did not
     {
         return {.label = label, .value = std::move(value), .available = true, .tooltip = {}};
     }
-    return {.label = label,
-            .value = std::string(CpuDetailsText::UNAVAILABLE_TEXT),
-            .available = false,
-            .tooltip = std::string(reported ? NOT_REPORTED_BY_BATTERY : NOT_REPORTED_BY_SYSTEM)};
+    return {
+        .label = label,
+        .value = std::string(CpuDetailsText::UNAVAILABLE_TEXT),
+        .available = false,
+        .tooltip = std::string(reported ? NOT_REPORTED_BY_BATTERY : NOT_REPORTED_BY_SYSTEM),
+    };
 }
 
 /// The rows for a battery-equipped machine, in display order. Every row is always present, so the
