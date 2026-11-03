@@ -17,7 +17,8 @@
 //   path isn't admitted (#3340): it stays "not checked yet" and find() requests it again on a later sample.
 // - Those later samples take turns (#3403): the first path turned away is where admission resumes, so a
 //   probe asking for more images than the table holds, in the same order each sample, gets a table's worth
-//   further each sample instead of the first ones over and over.
+//   further each sample instead of the first ones over and over. The probe marks each sample with
+//   beginSample(), and a turn nobody asks for through a whole sample is over.
 // - The thread starts with the first request and is stopped and joined by the destructor; a check in
 //   progress finishes first (WinVerifyTrust can't be interrupted), the rest of the queue is dropped.
 //
@@ -101,6 +102,15 @@ class SignatureWorker
         return found->second.result;
     }
 
+    /// Marks the start of the probe's next sample (#3403): a path waiting its turn keeps it until the end of
+    /// the sample after the last one that asked for it, so a turn whose process has gone expires on time,
+    /// whichever paths are still asked for, and a second process of one image can't pass for a new sample.
+    void beginSample()
+    {
+        const std::scoped_lock lock(m_Mutex);
+        ++m_Sample;
+    }
+
     /// Waits up to @p timeout for the queue to empty and the check in progress to finish (tests). True
     /// when it has.
     [[nodiscard]] bool waitUntilIdle(std::chrono::milliseconds timeout)
@@ -136,12 +146,11 @@ class SignatureWorker
         LaterSample,
     };
 
-    /// Where admission resumes after the table turned a path away (#3403). Two keys, so O(1) memory.
+    /// Where admission resumes after the table turned a path away (#3403). One key, so O(1) memory.
     struct Turn
     {
-        std::string resumeAt;                   ///< The first path turned away: the next one admitted
-        std::optional<std::string> firstPassed; ///< The first path passed over while waiting for it
-        bool resumeAsked = false;               ///< resumeAt was asked for since firstPassed last came round
+        std::string resumeAt;          ///< The first path turned away: the next one admitted
+        std::uint64_t askedInSample{}; ///< The last sample (beginSample()) that asked for it
     };
 
     /// request() under m_Mutex.
@@ -173,11 +182,11 @@ class SignatureWorker
                     // once checks have drained the queue; admission resumes with it (#3403).
                     if (!m_Turn.has_value())
                     {
-                        m_Turn = Turn{.resumeAt = key, .firstPassed = std::nullopt, .resumeAsked = false};
+                        m_Turn = Turn{.resumeAt = key, .askedInSample = m_Sample};
                     }
                     else if (m_Turn->resumeAt == key)
                     {
-                        m_Turn->resumeAsked = true;
+                        m_Turn->askedInSample = m_Sample;
                     }
                     return;
                 }
@@ -208,36 +217,26 @@ class SignatureWorker
     }
 
     /// Whether a later sample's ask for @p key, not in the table, may be admitted now (under m_Mutex): yes
-    /// when no path is waiting its turn, or this is the one; no for the others until it has been. If the
-    /// probe comes round to the first path it passed over without asking for the one waiting (that process
-    /// has gone), the turn is dropped, so admission never waits on a path nobody asks for.
+    /// when no path is waiting its turn, or this is the one; no for the others until it has been. A whole
+    /// sample without an ask for the one waiting (that process has gone) ends its turn, so admission never
+    /// waits on a path nobody asks for.
     [[nodiscard]] bool isTurnLocked(const std::string& key)
     {
-        if (!m_Turn.has_value() || m_Turn->resumeAt == key)
+        if (!m_Turn.has_value())
         {
-            if (m_Turn.has_value())
-            {
-                m_Turn->resumeAsked = true;
-            }
             return true;
         }
-        if (!m_Turn->firstPassed.has_value())
+        if (m_Turn->resumeAt == key)
         {
-            m_Turn->firstPassed = key; // a lap starts here: has resumeAt been asked for when it comes round?
-            m_Turn->resumeAsked = false;
-            return false;
+            m_Turn->askedInSample = m_Sample;
+            return true;
         }
-        if (*m_Turn->firstPassed != key)
+        if (m_Sample > m_Turn->askedInSample + 1)
         {
-            return false;
+            m_Turn.reset(); // the sample after its last ask went by without it
+            return true;
         }
-        if (m_Turn->resumeAsked)
-        {
-            m_Turn->resumeAsked = false; // round again: still waiting, for room for it
-            return false;
-        }
-        m_Turn.reset();
-        return true;
+        return false;
     }
 
     /// Answers every queued path as Unknown with @p note, and empties the queue (under m_Mutex).
@@ -317,6 +316,7 @@ class SignatureWorker
     std::deque<std::string> m_Queue;                    // Paths to check, in request order, each at most once
     std::unordered_map<std::string, PathState> m_Paths; // By pathKey()
     std::optional<Turn> m_Turn;                         // Set while a path turned away waits its turn (#3403)
+    std::uint64_t m_Sample = 0;                         // beginSample() calls: the probe's samples
     bool m_Checking = false;                            // The worker holds a path it has taken off the queue
     std::jthread m_Thread;                              // Last: stopped and joined first, while the rest is alive
 };

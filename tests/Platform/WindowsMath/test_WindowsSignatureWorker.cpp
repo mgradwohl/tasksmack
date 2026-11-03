@@ -425,9 +425,10 @@ TEST_F(SignatureWorkerTest, ASlowCheckThatKeepsMakingProgressKeepsTheTableWithin
 
 TEST_F(SignatureWorkerTest, MorePathsThanTheTableHoldsPolledInAFixedOrderAreEachCheckedInTurn)
 {
-    // #3403: a probe that asks for more images than the table holds, every sample in the same order. Admission
-    // resumes each sample where the last one stopped, a table's worth at a time, so the later paths are
-    // checked too rather than the first ones being admitted again each sample, and the table keeps its bound.
+    // #3403: a probe that asks for more images than the table holds, every sample in the same order, each
+    // image run by two processes (so asked for twice). Admission resumes each sample where the last one
+    // stopped, a table's worth at a time, so the later paths are checked too rather than the first ones being
+    // admitted again each sample, and the table keeps its bound.
     constexpr std::size_t MAX_PATHS = 4;
     constexpr std::size_t PATH_COUNT = (4 * MAX_PATHS) + 1; // more than twice the bound: the first ones can't hide it
     constexpr std::size_t SAMPLES = ((PATH_COUNT + MAX_PATHS - 1) / MAX_PATHS) + 1;
@@ -442,11 +443,17 @@ TEST_F(SignatureWorkerTest, MorePathsThanTheTableHoldsPolledInAFixedOrderAreEach
     SignatureWorker worker(fakeFunctions(), options);
     for (std::size_t sample = 1; sample <= SAMPLES; ++sample)
     {
+        worker.beginSample();
+        setGate(false); // no check finishes during the sample, so what it admits doesn't depend on timing
         for (const std::string& path : paths)
         {
-            (void) worker.find(path);
-            EXPECT_LE(worker.pathCount(), MAX_PATHS) << "sample " << sample;
+            for (int process = 0; process < 2; ++process)
+            {
+                (void) worker.find(path);
+                EXPECT_LE(worker.pathCount(), MAX_PATHS) << "sample " << sample;
+            }
         }
+        setGate(true);
         ASSERT_TRUE(worker.waitUntilIdle(WAIT));
     }
     for (const std::string& path : paths)
@@ -455,11 +462,41 @@ TEST_F(SignatureWorkerTest, MorePathsThanTheTableHoldsPolledInAFixedOrderAreEach
     }
 }
 
+TEST_F(SignatureWorkerTest, RepeatedImagesPolledInAFixedOrderDoNotStarveTheLaterOnes)
+{
+    // #3403 review: four images, each run by two processes, with room for one. Every image is checked in
+    // turn: a second process of the same image in the same sample isn't taken for the start of a new one.
+    const std::vector<std::string> order = {"a", "a", "b", "b", "c", "c", "d", "d"};
+    for (const char* path : {"a", "b", "c", "d"})
+    {
+        setStamp(path, 1);
+    }
+    WorkerOptions options;
+    options.maxPaths = 1;
+    SignatureWorker worker(fakeFunctions(), options);
+    constexpr int SAMPLES = 5; // an image a sample, and one more
+    for (int sample = 1; sample <= SAMPLES; ++sample)
+    {
+        worker.beginSample();
+        for (const std::string& path : order)
+        {
+            (void) worker.find(path);
+            EXPECT_LE(worker.pathCount(), 1U) << "sample " << sample;
+        }
+        ASSERT_TRUE(worker.waitUntilIdle(WAIT));
+    }
+    for (const char* path : {"a", "b", "c", "d"})
+    {
+        EXPECT_NE(checksOf(path), 0) << path << " is checked within " << SAMPLES << " samples";
+    }
+}
+
 TEST_F(SignatureWorkerTest, APathWaitingItsTurnThatNobodyAsksForAgainDoesNotHoldUpTheOthers)
 {
-    // #3403: the path admission resumes with belongs to a process that has gone. Once the probe has come
-    // round without asking for it, the others are admitted again.
-    for (const char* path : {"a", "gone", "c"})
+    // #3403 review: the path admission resumes with, and the one passed over after it, both belong to
+    // processes that have gone. A turn lasts at most until the end of the sample after the one its path was
+    // last asked for in, whichever paths are still asked for, so a path asked for later is admitted.
+    for (const char* path : {"a", "gone", "marker", "live"})
     {
         setStamp(path, 1);
     }
@@ -467,19 +504,25 @@ TEST_F(SignatureWorkerTest, APathWaitingItsTurnThatNobodyAsksForAgainDoesNotHold
     WorkerOptions options;
     options.maxPaths = 1;
     SignatureWorker worker(fakeFunctions(), options);
+    worker.beginSample();
     worker.request("a");
     EXPECT_FALSE(worker.find("gone").has_value()) << "turned away: the table is full of a, queued";
+    EXPECT_FALSE(worker.find("marker").has_value());
     setGate(true);
     ASSERT_TRUE(worker.waitUntilIdle(WAIT));
 
-    EXPECT_FALSE(worker.find("c").has_value()) << "not its turn: gone was turned away first";
+    worker.beginSample();
+    EXPECT_FALSE(worker.find("live").has_value()) << "the next sample: gone may still be asked for, and goes first";
     ASSERT_TRUE(worker.waitUntilIdle(WAIT));
-    EXPECT_EQ(checksOf("c"), 0);
-    EXPECT_FALSE(worker.find("c").has_value()) << "the next sample, without gone: c is admitted";
+    EXPECT_EQ(checksOf("live"), 0);
+
+    worker.beginSample();
+    EXPECT_FALSE(worker.find("live").has_value()) << "a whole sample without gone: its turn is over";
     ASSERT_TRUE(worker.waitUntilIdle(WAIT));
-    EXPECT_EQ(checksOf("c"), 1);
-    EXPECT_TRUE(worker.find("c").has_value());
+    EXPECT_EQ(checksOf("live"), 1);
+    EXPECT_TRUE(worker.find("live").has_value());
     EXPECT_EQ(checksOf("gone"), 0);
+    EXPECT_EQ(checksOf("marker"), 0);
     EXPECT_EQ(worker.pathCount(), 1U);
 }
 
