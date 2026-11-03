@@ -35,6 +35,24 @@ enum class GroupBy : std::uint8_t
 /// The label of the group for processes in none.
 inline constexpr std::string_view UNGROUPED_LABEL = "Ungrouped";
 
+/// Whether a process's unit comes from the service list: on Windows it is the first service the list says
+/// the process hosts; on Linux it is the systemd unit its own cgroup names, so the list adds nothing (#3386).
+#ifdef _WIN32
+inline constexpr bool UNITS_FROM_SERVICE_LIST = true;
+#else
+inline constexpr bool UNITS_FROM_SERVICE_LIST = false;
+#endif
+
+/// Whether the service list is needed in the background, beside the Services tab (#1880, #3386): while
+/// the Processes table shows its Services column (@p servicesColumnVisible), Process Details' Services
+/// section is open (@p servicesSectionOpen), or the table is grouped by Unit (@p groupBy) where units
+/// come from the list (@p unitsFromServiceList).
+[[nodiscard]] constexpr bool
+servicesBackgroundDemand(bool servicesColumnVisible, bool servicesSectionOpen, GroupBy groupBy, bool unitsFromServiceList) noexcept
+{
+    return servicesColumnVisible || servicesSectionOpen || (unitsFromServiceList && groupBy == GroupBy::Unit);
+}
+
 /// The app a systemd unit was launched as, or empty when it isn't an app's:
 /// - a desktop or Flatpak app's scope: "app-<launcher>-<app id>-<n>.scope" ("app-gnome-firefox-4521.scope"
 ///   is "firefox"; "app-flatpak-org.mozilla.firefox-7731.scope" is "org.mozilla.firefox");
