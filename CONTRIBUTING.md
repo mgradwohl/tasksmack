@@ -1337,11 +1337,17 @@ come out 2-3x slower on every benchmark, pure arithmetic included (#3163; in #31
 So:
 
 - **`bench.ps1` pins hybrid CPUs.** With `-Core performance`, the default on a CPU whose cores have
-  more than one `EfficiencyClass`, it pins the benchmark process (and everything it starts) to one
-  logical CPU of the highest class. It never takes logical CPU 0, which handles most interrupts,
-  unless nothing else is left. `-Core any` leaves placement to the scheduler, as before. On a CPU
-  with one class of core, nothing changes. If the classes can't be read
-  (`GetLogicalProcessorInformationEx`), the run isn't pinned and a warning says so.
+  more than one `EfficiencyClass`, it pins the benchmark process (and everything it starts) to the
+  logical CPUs of the highest class: all the performance cores. It leaves out logical CPU 0, which
+  handles most interrupts, and its core while that still leaves at least four. `-Core any` leaves
+  placement to the scheduler, as before. On a CPU with one class of core, nothing changes. If the
+  classes can't be read (`GetLogicalProcessorInformationEx`), the run isn't pinned and a warning
+  says so.
+- **Never fewer than four CPUs** (#3413). The `*_Concurrent_PublicationWait` benchmarks run up to
+  four threads (the measuring thread, a writer and two readers) that spin on each other. On one
+  CPU each hand-off waits for a scheduler time slice, so they barely progress and a full run never
+  finishes. When the highest class has fewer than four logical CPUs this process may use, the run
+  isn't pinned and a warning says so.
 - **No EcoQoS.** `TaskSmackBenchmarks.exe` opts itself out of Windows power throttling at
   startup (`SetProcessInformation(ProcessPowerThrottling)`, execution speed on). Otherwise a
   console run started from a background shell can be treated as low-QoS. A failure is reported
@@ -1353,17 +1359,17 @@ So:
 
 - **`bench.sh` pins hybrid CPUs too** (#3198). With `--core performance`, the default when the CPUs'
   `cpu_capacity` (or, without it, `cpufreq/cpuinfo_max_freq`) in `/sys/devices/system/cpu` has more
-  than one value, it runs the benchmark under `taskset -c` on one logical CPU of the fastest class,
-  avoiding CPU 0 and its SMT sibling unless nothing else is left. `--core any` leaves placement to
-  the scheduler. Without those sysfs files, or without `taskset` (util-linux), the run isn't
-  pinned and a warning says so. Its manifest records the same `placement` and `system_load`, the
+  than one value, it runs the benchmark under `taskset -c` on the logical CPUs of the fastest class,
+  leaving out CPU 0 and its SMT sibling while that still leaves at least four, and never on fewer
+  than four, as `bench.ps1` does. `--core any` leaves placement to the scheduler. Without those
+  sysfs files, or without `taskset` (util-linux), the run isn't pinned and a warning says so. Its manifest records the same `placement` and `system_load`, the
   classes ranked from 0 (the slowest) as Windows numbers its `EfficiencyClass`.
 
-Pinning isn't enough when the machine is busy: in #3112 the same binary on the same pinned core
+Pinning isn't enough when the machine is busy: in #3112 the same binary pinned to the same core
 was 30-50% slower with a build and clangd running (38-78% system CPU) than at 7-63%. For an A/B
 comparison on a shared desktop:
 
-1. **Pin both sides to the same core.** Use the default `-Core performance` for both, never one
+1. **Pin both sides to the same cores.** Use the default `-Core performance` for both, never one
    pinned run against one unpinned.
 2. **Interleave the runs:** A, B, A, B, not all of A and then all of B. Load that comes and goes
    then hits both sides alike.
@@ -1412,9 +1418,10 @@ manifest's `preset`, so no file name or manifest field carries it:
   `machine`, an anonymized machine class (CPU model, logical core count, OS name/version,
   architecture), and two more (#3163, #3198):
   - `placement`: `core`, the `-Core` / `--core` mode (`performance` or `any`); `core_class`, the
-    pinned CPU's `EfficiencyClass` (on Linux its class's rank, 0 the slowest), or `any` for an
+    pinned CPUs' `EfficiencyClass` (on Linux their class's rank, 0 the slowest), or `any` for an
     unpinned run; `hybrid`, whether the cores have more
-    than one class (`null` if they couldn't be read); `logical_cpu`, the pinned CPU or `null`;
+    than one class (`null` if they couldn't be read); `logical_cpus`, the pinned CPUs in
+    ascending order, or `null` (manifests from before #3413 have `logical_cpu`, one CPU, instead);
     and `affinity_mask`, the mask the benchmark ran with, in hex.
   - `system_load`: `before_percent` and `after_percent`, the share of all CPUs busy over
     `sample_ms` (500 ms) just before and just after the run, or `null` where it couldn't be

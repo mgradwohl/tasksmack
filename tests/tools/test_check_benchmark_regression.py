@@ -451,7 +451,7 @@ class CheckBenchmarkRegressionTest(unittest.TestCase):
         """A bench.ps1 manifest's placement and system_load, as far as the gate reads them."""
         return {
             "generator": "tools/bench.ps1",
-            "placement": {"core": "performance", "core_class": core_class, "hybrid": True, "logical_cpu": 13, "affinity_mask": "0x2000"},
+            "placement": {"core": "performance", "core_class": core_class, "hybrid": True, "logical_cpus": [1, 10, 11, 12, 13], "affinity_mask": "0x3c02"},
             "system_load": {"sample_ms": 500, "before_percent": before, "after_percent": after},
         }
 
