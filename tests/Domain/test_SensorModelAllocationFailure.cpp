@@ -76,6 +76,29 @@ void expectAligned(const Domain::SensorPublication& publication)
     }
 }
 
+/// The publication holds the whole read @p read taken at @p nowSeconds: every one of its sensors, by key, with that
+/// read's value as its newest point at that time. A publication missing a sensor, or with a stale or swapped
+/// reading under a fresh timestamp, fails.
+void expectWholeRead(const Domain::SensorPublication& publication, const Platform::SensorsInfo& read, double nowSeconds)
+{
+    std::size_t sensorsInRead = 0;
+    for (const Platform::SensorDevice& device : read.devices)
+    {
+        for (const Platform::SensorReading& reading : device.readings)
+        {
+            ++sensorsInRead;
+            const std::string key = Domain::sensorKey(device, reading);
+            const auto found = publication.histories.find(key);
+            ASSERT_NE(found, publication.histories.end()) << key;
+            const Domain::SensorHistory& history = found->second;
+            ASSERT_FALSE(history.values.empty()) << key;
+            EXPECT_FLOAT_EQ(history.values[history.values.size() - 1], static_cast<float>(reading.value)) << key;
+            EXPECT_DOUBLE_EQ(history.times[history.times.size() - 1], nowSeconds) << key;
+        }
+    }
+    EXPECT_EQ(publication.histories.size(), sensorsInRead);
+}
+
 // Fails each allocation of one sample in turn until the sample needs no more. After every failure the
 // publication is the last whole one (or the whole new one), every series is aligned, and the next sample adds
 // the new device and its reading to aligned histories.
@@ -139,7 +162,9 @@ TEST(SensorModelAllocationFailureTest, AFailedAllocationOnASampleThatAddsADevice
         }
         else
         {
+            // Published despite the failure: then the whole failing read, every sensor and value at its time.
             EXPECT_EQ(afterFailure->version, before->version + 1);
+            expectWholeRead(*afterFailure, sensors(60.0, true), std::chrono::duration<double>(now->time_since_epoch()).count());
         }
         expectAligned(*afterFailure);
 
@@ -150,24 +175,9 @@ TEST(SensorModelAllocationFailureTest, AFailedAllocationOnASampleThatAddsADevice
         const auto next = model.publication();
         EXPECT_GT(next->version, before->version);
         expectAligned(*next);
-        EXPECT_EQ(next->histories.size(), 3U);
         // Each sensor's newest point is this read's own value, at this read's time: Package 61, Core 0 56 and the
         // new NVMe 38, by sensor key, so a stale or swapped reading with a fresh timestamp can't pass.
-        const Platform::SensorsInfo expected = sensors(61.0, true);
-        const double nowSeconds = std::chrono::duration<double>(now->time_since_epoch()).count();
-        for (const Platform::SensorDevice& device : expected.devices)
-        {
-            for (const Platform::SensorReading& reading : device.readings)
-            {
-                const std::string key = Domain::sensorKey(device, reading);
-                const auto found = next->histories.find(key);
-                ASSERT_NE(found, next->histories.end()) << key;
-                const Domain::SensorHistory& history = found->second;
-                ASSERT_FALSE(history.values.empty()) << key;
-                EXPECT_FLOAT_EQ(history.values[history.values.size() - 1], static_cast<float>(reading.value)) << key;
-                EXPECT_DOUBLE_EQ(history.times[history.times.size() - 1], nowSeconds) << key;
-            }
-        }
+        expectWholeRead(*next, sensors(61.0, true), std::chrono::duration<double>(now->time_since_epoch()).count());
         if (HasFailure())
         {
             return; // one failing allocation point is enough to report
