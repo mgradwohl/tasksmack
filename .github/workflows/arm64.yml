@@ -33,7 +33,7 @@ concurrency:
 permissions: {}
 
 jobs:
-  # ubuntu-24.04-arm: clang-23/libc++ from apt.llvm.org's arm64 packages (setup-llvm), Xvfb plus
+  # ubuntu-26.04-arm: clang-23/libc++ from apt.llvm.org's arm64 packages (setup-llvm), Xvfb plus
   # Mesa's llvmpipe for the display suites, as on x64.
   build-linux-arm64:
     if: >-
@@ -45,7 +45,7 @@ jobs:
       checks: write
     uses: ./.github/workflows/reusable-build-test.yml
     with:
-      os: ubuntu-24.04-arm
+      os: ubuntu-26.04-arm
       build_type: debug
 
   # windows-11-arm: native ARM64 LLVM (the pinned woa64 installer, setup-windows-llvm) building
