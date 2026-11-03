@@ -241,9 +241,19 @@ if [[ "${MODE}" = "app" && "${DURATION_SECONDS}" -gt 0 ]]; then
     # Closes the TaskSmack this run started -- SIGTERM (SDL turns it into a normal quit), SIGKILL if it is
     # still there 10 s later, as profile-perf.sh's stop_app() -- then reaps heaptrack, giving it 30 s to
     # finish its file before it is killed too. Safe to call twice; the EXIT trap calls it on every exit.
+    # heaptrack runs in its own session (setsid below), so its process group holds heaptrack, its
+    # interpreter and TaskSmack: when TaskSmack wasn't found yet (a Ctrl+C during startup), or heaptrack won't
+    # finish, the whole group is signalled, so a TaskSmack launched after the interruption can't outlive
+    # the run either.
     # shellcheck disable=SC2317,SC2329 # also invoked from the EXIT trap
     stop_capture() {
         local i
+        if [[ -z "${APP_PID}" && -n "${HEAP_PID}" ]]; then
+            APP_PID="$(pgrep -P "${HEAP_PID}" -f -- "${BINARY_PATTERN}" | head -1 || true)"
+        fi
+        if [[ -z "${APP_PID}" ]] && alive "${HEAP_PID}"; then
+            kill -TERM -- "-${HEAP_PID}" 2>/dev/null || true
+        fi
         if alive "${APP_PID}"; then
             kill -TERM "${APP_PID}" 2>/dev/null || true
             for ((i = 0; i < 20; i++)); do alive "${APP_PID}" || break; sleep 0.5; done
@@ -254,7 +264,7 @@ if [[ "${MODE}" = "app" && "${DURATION_SECONDS}" -gt 0 ]]; then
         fi
         if [[ -n "${HEAP_PID}" ]]; then
             for ((i = 0; i < 60; i++)); do alive "${HEAP_PID}" || break; sleep 0.5; done
-            alive "${HEAP_PID}" && kill -KILL "${HEAP_PID}" 2>/dev/null
+            alive "${HEAP_PID}" && kill -KILL -- "-${HEAP_PID}" 2>/dev/null
             set +e
             wait "${HEAP_PID}" 2>/dev/null
             HEAP_EXIT_CODE=$?
@@ -270,11 +280,13 @@ if [[ "${MODE}" = "app" && "${DURATION_SECONDS}" -gt 0 ]]; then
     echo ""
     echo "Launching TaskSmack under heaptrack; it is closed ${DURATION_SECONDS}s after its main loop starts."
     echo ""
-    heaptrack -o "${HEAPTRACK_BASE}" "${BINARY}" > >(tee "${APP_LOG}") 2> >(tee -a "${LOG_FILE}" >&2) &
-    HEAP_PID=$!
     # heaptrack runs TaskSmack as its own child; matched by its command line (the binary's full path), which
     # holds for the real binary and for a script standing in for it, whose process name is its interpreter's.
     BINARY_PATTERN="$(printf '%s' "${BINARY}" | sed 's/[][\\.*^$+?(){}|]/\\&/g')"
+    # Its own session, so HEAP_PID is also its process group's ID (a background job of a non-interactive
+    # shell isn't a group leader, so setsid needs no fork and $! is heaptrack's own PID).
+    setsid heaptrack -o "${HEAPTRACK_BASE}" "${BINARY}" > >(tee "${APP_LOG}") 2> >(tee -a "${LOG_FILE}" >&2) &
+    HEAP_PID=$!
     for ((i = 0; i < 300 && INTERRUPTED == 0; i++)); do
         APP_PID="$(pgrep -P "${HEAP_PID}" -f -- "${BINARY_PATTERN}" | head -1 || true)"
         [[ -n "${APP_PID}" ]] && break

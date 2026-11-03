@@ -9,9 +9,11 @@ profiled. Needs bash; Linux only, as the script is.
 
 import os
 import shutil
+import signal
 import subprocess
 import tempfile
 import textwrap
+import time
 import unittest
 from pathlib import Path
 
@@ -55,6 +57,7 @@ STUB_HEAPTRACK_RUNNING_THE_APP = textwrap.dedent(
     #!/usr/bin/env bash
     [[ "$1" == -o ]] && : > "$2.1234.gz"
     shift 2
+    sleep "${STUB_HEAPTRACK_DELAY:-0}"   # a slow start: TaskSmack isn't there yet
     "$@"
     exit $?
     """
@@ -189,6 +192,26 @@ class ProfileHeapDurationTest(unittest.TestCase):
         result = self.profile("stubborn", "--duration", "1")
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("did not exit within 10s of the script's SIGTERM and was killed", result.stderr)
+
+    def test_ctrl_c_before_the_app_starts_leaves_nothing_running(self):
+        # heaptrack takes 2 s to start TaskSmack; Ctrl+C comes after 0.5 s, before the script can find it.
+        process = subprocess.Popen(
+            [BASH, str(self.root / "tools" / "profile-heap.sh"), "app", "--preset", "profile", "--skip-build",
+             "--duration", "5"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            env={**self.env, "STUB_APP_MODE": "clean", "STUB_HEAPTRACK_DELAY": "2"}, cwd=self.root,
+        )
+        time.sleep(0.5)
+        process.send_signal(signal.SIGINT)
+        _, stderr = process.communicate(timeout=60)
+        self.assertNotEqual(process.returncode, 0)
+        self.assertIn("interrupted", stderr)
+        time.sleep(3)  # past the stub's delayed launch: a TaskSmack started late would be running by now
+        app = str(self.root / "build" / "profile" / "bin" / "TaskSmack")
+        left = subprocess.run(["pgrep", "-f", app], capture_output=True, text=True, check=False).stdout.split()
+        for pid in left:
+            os.kill(int(pid), signal.SIGKILL)
+        self.assertEqual(left, [], "a TaskSmack outlived the interrupted run")
 
     def test_an_app_that_never_reaches_its_main_loop_fails_the_run(self):
         result = self.profile("silent", "--duration", "1")
