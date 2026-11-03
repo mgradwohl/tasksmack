@@ -61,8 +61,9 @@ class PkexecBroker final : public IPrivilegedBroker
                           HelperSandbox::Mode sandbox = HelperSandbox::Mode::Log);
 
     /// Registers a polkit agent of TaskSmack's own for the password prompt: a handle that unregisters it when released,
-    /// or null (with the reason) when none could be registered. The app's is PolkitTextAgent (#3380).
-    using TextAgentFactory = std::function<std::shared_ptr<void>(std::string& error)>;
+    /// or null (with the reason) when none could be registered, or the stop token was signalled while it waited. The
+    /// app's is PolkitTextAgent (#3380).
+    using TextAgentFactory = std::function<std::shared_ptr<void>(const std::stop_token& stopToken, std::string& error)>;
     /// Registers @p factory's agent for each prompt (#3380), only while TaskSmack's process group has its terminal's
     /// foreground, where a text agent can ask, unless @p requireForegroundTerminal is false (the tests, which have no
     /// terminal). With one registered, pkexec is started with --disable-internal-agent: its own would be refused on

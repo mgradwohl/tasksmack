@@ -1,10 +1,12 @@
 #include "PolkitTextAgent.h"
 
+#include <algorithm>
 #include <array>
 #include <cerrno>
 #include <chrono>
 #include <cstdlib>
 #include <memory>
+#include <stop_token>
 #include <string>
 #include <thread>
 #include <vector>
@@ -25,11 +27,12 @@ namespace Platform
 namespace
 {
 
-/// Whether @p fd reads EOF (the child registered, or exited) within @p timeout, retrying an interrupted wait.
-[[nodiscard]] bool waitForReady(int fd, std::chrono::milliseconds timeout) noexcept
+/// Whether @p fd reads EOF (the child registered, or exited) within @p timeout, before @p stopToken is signalled
+/// (looked at every PolkitTextAgent::STOP_POLL), retrying an interrupted wait.
+[[nodiscard]] bool waitForReady(int fd, std::chrono::milliseconds timeout, const std::stop_token& stopToken) noexcept
 {
     const auto deadline = std::chrono::steady_clock::now() + timeout;
-    for (;;)
+    while (!stopToken.stop_requested())
     {
         const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
         if (left.count() <= 0)
@@ -37,7 +40,7 @@ namespace
             return false;
         }
         pollfd readable{.fd = fd, .events = POLLIN, .revents = 0};
-        const int result = ::poll(&readable, 1, static_cast<int>(left.count()));
+        const int result = ::poll(&readable, 1, static_cast<int>(std::min(left, PolkitTextAgent::STOP_POLL).count()));
         if (result > 0)
         {
             return true;
@@ -47,6 +50,7 @@ namespace
             return false;
         }
     }
+    return false;
 }
 
 /// Reaps @p pid if it has exited within @p window: the ready descriptor closes when the child exits, too, and an
@@ -68,13 +72,16 @@ namespace
 
 } // namespace
 
-std::unique_ptr<PolkitTextAgent> PolkitTextAgent::start(std::string& error)
+std::unique_ptr<PolkitTextAgent> PolkitTextAgent::start(const std::stop_token& stopToken, std::string& error)
 {
-    return startWith({"/proc/self/exe", AGENT_ARGUMENT}, std::chrono::duration_cast<std::chrono::milliseconds>(REGISTER_TIMEOUT), error);
+    return startWith(
+        {"/proc/self/exe", AGENT_ARGUMENT}, std::chrono::duration_cast<std::chrono::milliseconds>(REGISTER_TIMEOUT), stopToken, error);
 }
 
-std::unique_ptr<PolkitTextAgent>
-PolkitTextAgent::startWith(const std::vector<std::string>& command, std::chrono::milliseconds timeout, std::string& error)
+std::unique_ptr<PolkitTextAgent> PolkitTextAgent::startWith(const std::vector<std::string>& command,
+                                                            std::chrono::milliseconds timeout,
+                                                            const std::stop_token& stopToken,
+                                                            std::string& error)
 {
     if (command.empty())
     {
@@ -116,14 +123,14 @@ PolkitTextAgent::startWith(const std::vector<std::string>& command, std::chrono:
         error = "couldn't start the agent";
         return nullptr;
     }
-    const bool closed = waitForReady(ready[0], timeout);
+    const bool closed = waitForReady(ready[0], timeout, stopToken);
     ::close(ready[0]);
     // It closes the descriptor when it registers and when it exits: one still running a moment later registered.
     if (!closed || exitsWithin(agent->m_Pid, std::chrono::milliseconds(200)))
     {
         if (!closed)
         {
-            error = "the agent didn't register in time";
+            error = stopToken.stop_requested() ? "stopped while the agent registered" : "the agent didn't register in time";
         }
         else
         {

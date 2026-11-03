@@ -185,11 +185,18 @@ std::expected<void, std::string> PkexecBroker::connectWithin(const std::stop_tok
     if (m_TextAgent && (!m_TextAgentNeedsTerminal || ownsTerminalForeground()))
     {
         std::string why;
-        textAgent = m_TextAgent(why);
+        textAgent = m_TextAgent(stopToken, why);
         if (textAgent == nullptr)
         {
             spdlog::info("Not registering a polkit text agent: {}", why);
         }
+    }
+    if (stopToken.stop_requested())
+    {
+        // Stopped while the agent registered (TaskSmack closing, the prompt cancelled): no pkexec after that.
+        ::close(fds[0]);
+        ::close(fds[1]);
+        return std::unexpected(std::string(CANCELLED));
     }
 
     // The helper's end becomes its stdin; dup2 clears close-on-exec there, and only there.

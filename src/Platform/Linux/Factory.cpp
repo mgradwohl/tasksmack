@@ -55,6 +55,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <memory>
+#include <stop_token>
 #include <string>
 #include <system_error>
 
@@ -112,7 +113,8 @@ std::shared_ptr<IPrivilegedBroker> makePrivilegedBroker(void* /*ownerWindow*/)
     if (runningUnderWsl() ||
         (std::getenv("DISPLAY") == nullptr && std::getenv("WAYLAND_DISPLAY") == nullptr)) // NOLINT(concurrency-mt-unsafe)
     {
-        broker->setTextAgent([](std::string& error) -> std::shared_ptr<void> { return PolkitTextAgent::start(error); });
+        broker->setTextAgent([](const std::stop_token& stopToken, std::string& error) -> std::shared_ptr<void>
+                             { return PolkitTextAgent::start(stopToken, error); });
     }
     return broker;
 }

@@ -12,6 +12,7 @@
 
 #include <chrono>
 #include <memory>
+#include <stop_token>
 #include <string>
 #include <vector>
 
@@ -32,11 +33,16 @@ class PolkitTextAgent
     static constexpr std::chrono::seconds REGISTER_TIMEOUT{5};
 
     /// Starts the agent for this process: TaskSmack itself (/proc/self/exe) with AGENT_ARGUMENT, until destroyed.
-    /// nullptr, with @p error saying why, when it isn't running and registered within REGISTER_TIMEOUT.
-    [[nodiscard]] static std::unique_ptr<PolkitTextAgent> start(std::string& error);
+    /// nullptr, with @p error saying why, when it isn't running and registered within REGISTER_TIMEOUT, or when
+    /// @p stopToken is signalled first (the wait looks every STOP_POLL); the child is stopped then.
+    [[nodiscard]] static std::unique_ptr<PolkitTextAgent> start(const std::stop_token& stopToken, std::string& error);
     /// start() with @p command as the child (the tests: a fake that closes READY_FD, or doesn't), waiting @p timeout.
-    [[nodiscard]] static std::unique_ptr<PolkitTextAgent>
-    startWith(const std::vector<std::string>& command, std::chrono::milliseconds timeout, std::string& error);
+    [[nodiscard]] static std::unique_ptr<PolkitTextAgent> startWith(const std::vector<std::string>& command,
+                                                                    std::chrono::milliseconds timeout,
+                                                                    const std::stop_token& stopToken,
+                                                                    std::string& error);
+    /// How often the wait for the child to register looks at the stop token.
+    static constexpr std::chrono::milliseconds STOP_POLL{100};
 
     /// The child's side, from main(): registers the text listener for the parent, closes READY_FD, and serves until
     /// killed or the parent goes. The process's exit status: nonzero when it couldn't register (no controlling
