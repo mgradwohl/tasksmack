@@ -233,46 +233,87 @@ if [[ "${MODE}" = "app" && "${DURATION_SECONDS}" -gt 0 ]]; then
     # Unattended (#3406): heaptrack in the background, TaskSmack found as its child, closed after --duration.
     MAIN_LOOP_MARKER="Entering main loop" # Logged by Core::Application::run() at info level
     export TASKSMACK_LOG_LEVEL="${TASKSMACK_LOG_LEVEL:-info}"
+    HEAP_PID=""
+    APP_PID=""
+    APP_KILLED=0
+    INTERRUPTED=0
+    alive() { [[ -n "$1" ]] && kill -0 "$1" 2>/dev/null; }
+    # Closes the TaskSmack this run started -- SIGTERM (SDL turns it into a normal quit), SIGKILL if it is
+    # still there 10 s later, as profile-perf.sh's stop_app() -- then reaps heaptrack, giving it 30 s to
+    # finish its file before it is killed too. Safe to call twice; the EXIT trap calls it on every exit.
+    # shellcheck disable=SC2317,SC2329 # also invoked from the EXIT trap
+    stop_capture() {
+        local i
+        if alive "${APP_PID}"; then
+            kill -TERM "${APP_PID}" 2>/dev/null || true
+            for ((i = 0; i < 20; i++)); do alive "${APP_PID}" || break; sleep 0.5; done
+            if alive "${APP_PID}"; then
+                kill -KILL "${APP_PID}" 2>/dev/null || true
+                APP_KILLED=1
+            fi
+        fi
+        if [[ -n "${HEAP_PID}" ]]; then
+            for ((i = 0; i < 60; i++)); do alive "${HEAP_PID}" || break; sleep 0.5; done
+            alive "${HEAP_PID}" && kill -KILL "${HEAP_PID}" 2>/dev/null
+            set +e
+            wait "${HEAP_PID}" 2>/dev/null
+            HEAP_EXIT_CODE=$?
+            set -e
+            HEAP_PID=""
+        fi
+        return 0
+    }
+    # A background job in a non-interactive shell ignores SIGINT, so Ctrl+C reaches this script but not
+    # TaskSmack or heaptrack: note it, and never leave either running (profile-perf.sh does the same).
+    trap 'INTERRUPTED=1' INT
+    trap 'stop_capture; remove_config_dir' EXIT TERM
     echo ""
     echo "Launching TaskSmack under heaptrack; it is closed ${DURATION_SECONDS}s after its main loop starts."
     echo ""
     heaptrack -o "${HEAPTRACK_BASE}" "${BINARY}" > >(tee "${APP_LOG}") 2> >(tee -a "${LOG_FILE}" >&2) &
     HEAP_PID=$!
-    APP_PID=""
     # heaptrack runs TaskSmack as its own child; matched by its command line (the binary's full path), which
     # holds for the real binary and for a script standing in for it, whose process name is its interpreter's.
     BINARY_PATTERN="$(printf '%s' "${BINARY}" | sed 's/[][\\.*^$+?(){}|]/\\&/g')"
-    for ((i = 0; i < 300; i++)); do
+    for ((i = 0; i < 300 && INTERRUPTED == 0; i++)); do
         APP_PID="$(pgrep -P "${HEAP_PID}" -f -- "${BINARY_PATTERN}" | head -1 || true)"
         [[ -n "${APP_PID}" ]] && break
-        kill -0 "${HEAP_PID}" 2>/dev/null || break
+        alive "${HEAP_PID}" || break
         sleep 0.1
     done
     END_REASON=""
-    if [[ -z "${APP_PID}" ]]; then
+    if [[ "${INTERRUPTED}" -eq 1 ]]; then
+        END_REASON="was interrupted (Ctrl+C) before the capture finished"
+    elif [[ -z "${APP_PID}" ]]; then
         END_REASON="exited, or never logged '${MAIN_LOOP_MARKER}', within 30s of starting"
     else
-        for ((i = 0; i < 300; i++)); do
+        for ((i = 0; i < 300 && INTERRUPTED == 0; i++)); do
             grep -q "${MAIN_LOOP_MARKER}" "${APP_LOG}" 2>/dev/null && break
-            kill -0 "${APP_PID}" 2>/dev/null || break
+            alive "${APP_PID}" || break
             sleep 0.1
         done
-        if ! grep -q "${MAIN_LOOP_MARKER}" "${APP_LOG}" 2>/dev/null; then
+        if [[ "${INTERRUPTED}" -eq 1 ]]; then
+            END_REASON="was interrupted (Ctrl+C) before the capture finished"
+        elif ! grep -q "${MAIN_LOOP_MARKER}" "${APP_LOG}" 2>/dev/null; then
             END_REASON="exited, or never logged '${MAIN_LOOP_MARKER}', within 30s of starting"
         else
-            for ((i = 0; i < DURATION_SECONDS; i++)); do
-                kill -0 "${APP_PID}" 2>/dev/null || { END_REASON="exited on its own before --duration elapsed"; break; }
+            for ((i = 0; i < DURATION_SECONDS && INTERRUPTED == 0; i++)); do
+                alive "${APP_PID}" || break
                 sleep 1
             done
+            # Checked after the last sleep too: an exit during it is still an exit before --duration elapsed.
+            if [[ "${INTERRUPTED}" -eq 1 ]]; then
+                END_REASON="was interrupted (Ctrl+C) before --duration elapsed"
+            elif ! alive "${APP_PID}"; then
+                END_REASON="exited on its own before --duration elapsed"
+            fi
         fi
     fi
-    kill -TERM "${APP_PID:-${HEAP_PID}}" 2>/dev/null || true
-    set +e
-    wait "${HEAP_PID}"
-    HEAP_EXIT_CODE=$?
-    set -e
+    stop_capture
     echo "EXIT_CODE=${HEAP_EXIT_CODE}" >> "${LOG_FILE}"
-    if [[ -z "${END_REASON}" && "${HEAP_EXIT_CODE}" -ne 0 ]]; then
+    if [[ -z "${END_REASON}" && "${APP_KILLED}" -eq 1 ]]; then
+        END_REASON="did not exit within 10s of the script's SIGTERM and was killed"
+    elif [[ -z "${END_REASON}" && "${HEAP_EXIT_CODE}" -ne 0 ]]; then
         END_REASON="exited with code ${HEAP_EXIT_CODE} after the script's SIGTERM"
     fi
     if [[ -n "${END_REASON}" ]]; then
@@ -284,6 +325,8 @@ if [[ "${MODE}" = "app" && "${DURATION_SECONDS}" -gt 0 ]]; then
         die "TaskSmack ${END_REASON}, so the allocation profile doesn't cover the --duration window. See ${APP_LOG} and ${LOG_FILE}."
     fi
     echo "END_REASON=closed cleanly by the script's SIGTERM after --duration" >> "${LOG_FILE}"
+    trap remove_config_dir EXIT
+    trap - INT TERM
 elif [[ "${MODE}" = "app" ]]; then
     echo ""
     echo "Launching TaskSmack under heaptrack. Exercise the application, then close it."

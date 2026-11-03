@@ -60,15 +60,21 @@ STUB_HEAPTRACK_RUNNING_THE_APP = textwrap.dedent(
     """
 )
 # A TaskSmack stand-in, by STUB_APP_MODE: "clean" logs the main loop and exits 0 on SIGTERM; "early" logs it and
-# exits on its own after a second; "silent" never logs it and exits; "dirty" exits 3 on SIGTERM.
+# exits on its own after a second; "blink" exits 0.3 s after logging it (inside --duration's last second);
+# "silent" never logs it and exits; "dirty" exits 3 on SIGTERM; "stubborn" ignores SIGTERM.
 STUB_APP = textwrap.dedent(
     """\
     #!/usr/bin/env bash
     mode="${STUB_APP_MODE:-clean}"
     [[ "$mode" == silent ]] && exit 0
     echo "Entering main loop"
-    [[ "$mode" == dirty ]] && trap 'exit 3' TERM || trap 'echo closed >> "$STUB_APP_EVENTS"; exit 0' TERM
+    case "$mode" in
+        dirty) trap 'exit 3' TERM ;;
+        stubborn) trap '' TERM ;;
+        *) trap 'echo closed >> "$STUB_APP_EVENTS"; exit 0' TERM ;;
+    esac
     if [[ "$mode" == early ]]; then sleep 1; exit 0; fi
+    if [[ "$mode" == blink ]]; then sleep 0.3; exit 0; fi
     while :; do sleep 0.1; done
     """
 )
@@ -172,6 +178,17 @@ class ProfileHeapDurationTest(unittest.TestCase):
         result = self.profile("early", "--duration", "5")
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("exited on its own before --duration elapsed", result.stderr)
+
+    def test_an_exit_during_the_last_second_still_fails_the_run(self):
+        # --duration 1 is one second: an app gone 0.3 s in must not pass as a whole capture.
+        result = self.profile("blink", "--duration", "1")
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("exited on its own before --duration elapsed", result.stderr)
+
+    def test_an_app_that_ignores_sigterm_is_killed_and_fails_the_run(self):
+        result = self.profile("stubborn", "--duration", "1")
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("did not exit within 10s of the script's SIGTERM and was killed", result.stderr)
 
     def test_an_app_that_never_reaches_its_main_loop_fails_the_run(self):
         result = self.profile("silent", "--duration", "1")
