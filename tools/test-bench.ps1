@@ -293,8 +293,8 @@ exit [int]$env:STUB_EXIT
         # stub exits 0 with output that cannot be redacted.
         @{ Name = 'separator'; StubExit = '0'; StubOutput = 'partial'
             Command = "& $(& $quote $benchScript) -BenchmarkBinary $(& $quote $stub) -OutputDirectory $(& $quote (Join-Path $root 'separator')) -- '--benchmark_filter=BM_X'" }
-        # #3163: -Core performance pins the stub (through cmd.exe) to one core on a hybrid CPU, and
-        # -Core any leaves it alone; the stub writes the affinity it inherited.
+        # #3163, #3413: -Core performance pins the stub (through cmd.exe) to the performance cores on
+        # a hybrid CPU, and -Core any leaves it alone; the stub writes the affinity it inherited.
         @{ Name = 'core-performance'; StubExit = '0'; StubOutput = 'full'; StubAffinity = (Join-Path $root 'core-performance.affinity')
             Command = "& $(& $quote $benchScript) fake-preset -Core performance -BenchmarkBinary $(& $quote $stub) -OutputDirectory $(& $quote (Join-Path $root 'core-performance')) '--benchmark_filter=BM_X'" }
         @{ Name = 'core-any'; StubExit = '0'; StubOutput = 'full'; StubAffinity = (Join-Path $root 'core-any.affinity')
@@ -448,7 +448,7 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
             build     = @('build_type', 'generator', 'compiler', 'compiler_id', 'compiler_version', 'cxx_flags_sha256', 'cxx_flags_config_sha256', 'cxx_flags_source', 'ipo', 'ipo_source')
             benchmark = @('args', 'raw_repetitions', 'report_aggregates_only')
             machine   = @('label', 'cpu_model', 'logical_cores', 'os_name', 'os_version', 'arch')
-            placement = @('core', 'core_class', 'hybrid', 'logical_cpu', 'affinity_mask')
+            placement = @('core', 'core_class', 'hybrid', 'logical_cpus', 'affinity_mask')
             system_load = @('sample_ms', 'before_percent', 'after_percent')
         }.GetEnumerator()) {
         $keys = @($manifest.($section.Key).PSObject.Properties.Name)
@@ -599,8 +599,8 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
     Assert-True ($bareManifest.binary.sha256 -eq $stubHash -and $bareManifest.exit_code -eq 0) "The manifest must hash the binary that ran: $($bareManifest.binary.sha256) vs $stubHash"
 
     # ── #3163: core placement and system load in the manifest ──────────────────────────────────
-    # What this machine's cores say the runs should have done: pinned to one logical CPU of the
-    # highest EfficiencyClass on a hybrid CPU, left alone elsewhere.
+    # What this machine's cores say the runs should have done: pinned to the logical CPUs of the
+    # highest EfficiencyClass on a hybrid CPU (#3413), left alone elsewhere.
     $hostCores = Get-ProcessorCores
     $hostMask = Get-ProcessAffinityMask
     $expectedPin = Select-BenchCore -Cores $hostCores -Requested 'performance' -AllowedMask $hostMask
@@ -623,21 +623,23 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
     $stubAffinity = (Get-Content -LiteralPath (Join-Path $root 'core-performance.affinity') -Raw).Trim()
     if ($null -ne $expectedPin.Mask) {
         $expectedMask = Format-AffinityMask $expectedPin.Mask
-        Assert-True ($pinnedRun.placement.core -ceq 'performance' -and $pinnedRun.placement.core_class -eq $expectedPin.CoreClass -and $pinnedRun.placement.logical_cpu -eq $expectedPin.LogicalCpu -and $pinnedRun.placement.affinity_mask -ceq $expectedMask) "Pinned placement: $($pinnedRun.placement | ConvertTo-Json -Compress); expected CPU $($expectedPin.LogicalCpu), class $($expectedPin.CoreClass)"
+        $expectedCpus = $expectedPin.LogicalCpus -join ','
+        Assert-True ($pinnedRun.placement.core -ceq 'performance' -and $pinnedRun.placement.core_class -eq $expectedPin.CoreClass -and (@($pinnedRun.placement.logical_cpus) -join ',') -ceq $expectedCpus -and $pinnedRun.placement.affinity_mask -ceq $expectedMask) "Pinned placement: $($pinnedRun.placement | ConvertTo-Json -Compress); expected CPUs $expectedCpus, class $($expectedPin.CoreClass)"
         # The benchmark process (behind cmd.exe) inherited the pin.
         Assert-True ($stubAffinity -ceq $expectedMask) "The stub ran with affinity $stubAffinity, not the pinned $expectedMask"
-        Assert-True ($pinnedRun.placement.logical_cpu -ne 0 -or @($hostCores | Where-Object { $_.EfficiencyClass -eq $expectedPin.CoreClass } | ForEach-Object { $_.Processors }).Count -eq 1) 'Logical CPU 0 must be avoided'
+        # Never one CPU (#3413): a multi-threaded benchmark gets a CPU per thread.
+        Assert-True (@($pinnedRun.placement.logical_cpus).Count -ge $script:MinPinnedCpus) "Pinned to fewer than $($script:MinPinnedCpus) CPUs: $expectedCpus"
         # The default on this (hybrid) machine is the same pin.
         $defaultRun = Get-Content -LiteralPath $ok.Manifest[0].FullName -Raw | ConvertFrom-Json
-        Assert-True ($defaultRun.placement.core -ceq 'performance' -and $defaultRun.placement.logical_cpu -eq $expectedPin.LogicalCpu) "The default on a hybrid CPU must be -Core performance: $($defaultRun.placement | ConvertTo-Json -Compress)"
+        Assert-True ($defaultRun.placement.core -ceq 'performance' -and (@($defaultRun.placement.logical_cpus) -join ',') -ceq $expectedCpus) "The default on a hybrid CPU must be -Core performance: $($defaultRun.placement | ConvertTo-Json -Compress)"
     }
     else {
         # One class of core (or unknown cores): -Core performance changes nothing.
-        Assert-True ($pinnedRun.placement.core -ceq 'performance' -and $pinnedRun.placement.core_class -ceq 'any' -and $null -eq $pinnedRun.placement.logical_cpu) "Placement without a pin: $($pinnedRun.placement | ConvertTo-Json -Compress)"
+        Assert-True ($pinnedRun.placement.core -ceq 'performance' -and $pinnedRun.placement.core_class -ceq 'any' -and $null -eq $pinnedRun.placement.logical_cpus) "Placement without a pin: $($pinnedRun.placement | ConvertTo-Json -Compress)"
         Assert-True ($stubAffinity -ceq (Format-AffinityMask $hostMask)) "The stub's affinity $stubAffinity changed without a hybrid CPU"
     }
     $anyRun = Get-Content -LiteralPath $outcomes['core-any'].Manifest[0].FullName -Raw | ConvertFrom-Json
-    Assert-True ($anyRun.placement.core -ceq 'any' -and $anyRun.placement.core_class -ceq 'any' -and $null -eq $anyRun.placement.logical_cpu -and $anyRun.placement.affinity_mask -ceq (Format-AffinityMask $hostMask)) "-Core any placement: $($anyRun.placement | ConvertTo-Json -Compress)"
+    Assert-True ($anyRun.placement.core -ceq 'any' -and $anyRun.placement.core_class -ceq 'any' -and $null -eq $anyRun.placement.logical_cpus -and $anyRun.placement.affinity_mask -ceq (Format-AffinityMask $hostMask)) "-Core any placement: $($anyRun.placement | ConvertTo-Json -Compress)"
     Assert-True ((Get-Content -LiteralPath (Join-Path $root 'core-any.affinity') -Raw).Trim() -ceq (Format-AffinityMask $hostMask)) '-Core any must leave the benchmark''s affinity alone'
 
     # ── #1445 review: concurrent runs claim distinct output names, never an earlier one's ─────
@@ -1170,43 +1172,59 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
         Assert-True $threw "A buffer truncated to $length bytes must throw"
     }
 
-    # Choosing the core. #3112's Core Ultra 7 255H: P-cores (class 1) at 0, 1 and 10-13, E and
-    # LP-E cores (class 0) elsewhere, no SMT.
+    # Choosing the cores. #3112's Core Ultra 7 255H: P-cores (class 1) at 0, 1 and 10-13, E and
+    # LP-E cores (class 0) elsewhere, no SMT. A pin is a set of at least $script:MinPinnedCpus
+    # CPUs of the top class, never one CPU (#3413).
     $arrowLake = New-Cores (@(@(1, @(0)), @(1, @(1))) + @(foreach ($cpu in 2..9) { , @(0, @($cpu)) }) + @(foreach ($cpu in 10..13) { , @(1, @($cpu)) }) + @(@(0, @(14)), @(0, @(15))))
     $allMask = [uint64]0xffff
+    $without = { param([int[]]$Cpus) $mask = $allMask; foreach ($cpu in $Cpus) { $mask = $mask -band (-bnot ([uint64]1 -shl $cpu)) }; $mask }
     foreach ($case in @(
-            @{ Name = 'hybrid default'; Cores = $arrowLake; Requested = ''; Core = 'performance'; Class = 1; Cpu = 13; Hybrid = $true }
-            @{ Name = 'hybrid performance'; Cores = $arrowLake; Requested = 'performance'; Core = 'performance'; Class = 1; Cpu = 13; Hybrid = $true }
-            @{ Name = 'hybrid any'; Cores = $arrowLake; Requested = 'any'; Core = 'any'; Class = 'any'; Cpu = $null; Hybrid = $true }
-            # CPU 13 outside this process's affinity: the next P-core.
-            @{ Name = 'affinity excludes 13'; Cores = $arrowLake; Requested = ''; Allowed = $allMask -band (-bnot ([uint64]1 -shl 13)); Core = 'performance'; Class = 1; Cpu = 12; Hybrid = $true }
-            # Only P-cores 0 and 1 allowed: 1, not 0.
-            @{ Name = 'only 0 and 1 allowed'; Cores = $arrowLake; Requested = ''; Allowed = [uint64]3; Core = 'performance'; Class = 1; Cpu = 1; Hybrid = $true }
-            # Only P-core 0 allowed: 0 is the last one left.
-            @{ Name = 'only 0 allowed'; Cores = $arrowLake; Requested = ''; Allowed = [uint64]1; Core = 'performance'; Class = 1; Cpu = 0; Hybrid = $true }
+            # Every P-core but CPU 0: five CPUs, enough for the concurrent benchmarks' four threads.
+            @{ Name = 'hybrid default'; Cores = $arrowLake; Requested = ''; Core = 'performance'; Class = 1; Cpus = @(1, 10, 11, 12, 13); Hybrid = $true }
+            @{ Name = 'hybrid performance'; Cores = $arrowLake; Requested = 'performance'; Core = 'performance'; Class = 1; Cpus = @(1, 10, 11, 12, 13); Hybrid = $true }
+            @{ Name = 'hybrid any'; Cores = $arrowLake; Requested = 'any'; Core = 'any'; Class = 'any'; Cpus = $null; Hybrid = $true }
+            # CPUs outside this process's affinity don't count; four left apart from CPU 0 is enough.
+            @{ Name = 'affinity excludes 13'; Cores = $arrowLake; Requested = ''; Allowed = (& $without 13); Core = 'performance'; Class = 1; Cpus = @(1, 10, 11, 12); Hybrid = $true }
+            # Three apart from CPU 0: CPU 0 joins them rather than leave a thread without a CPU.
+            @{ Name = 'affinity excludes 12 and 13'; Cores = $arrowLake; Requested = ''; Allowed = (& $without 12, 13); Core = 'performance'; Class = 1; Cpus = @(0, 1, 10, 11); Hybrid = $true }
+            # Three P-cores in all: fewer than the threads, so a warning and no pin, not a stall.
+            @{ Name = 'three P-cores allowed'; Cores = $arrowLake; Requested = ''; Allowed = (& $without 11, 12, 13); Core = 'performance'; Class = 'any'; Cpus = $null; Hybrid = $true; Warns = $true }
+            @{ Name = 'only 0 allowed'; Cores = $arrowLake; Requested = ''; Allowed = [uint64]1; Core = 'performance'; Class = 'any'; Cpus = $null; Hybrid = $true; Warns = $true }
             # No P-core allowed: a warning, no pin.
-            @{ Name = 'only E-cores allowed'; Cores = $arrowLake; Requested = ''; Allowed = [uint64]0x3fc; Core = 'performance'; Class = 'any'; Cpu = $null; Hybrid = $true; Warns = $true }
-            # SMT: the P-core holding CPU 0 also holds CPU 1, so the other P-core is taken.
-            @{ Name = 'SMT apart from CPU 0'; Cores = (New-Cores @(@(1, @(0, 1)), @(1, @(2, 3)), @(0, @(4)), @(0, @(5)))); Requested = ''; Core = 'performance'; Class = 1; Cpu = 3; Hybrid = $true }
-            @{ Name = 'SMT, only CPU 0''s core'; Cores = (New-Cores @(@(1, @(0, 1)), @(0, @(2)), @(0, @(3)))); Requested = ''; Core = 'performance'; Class = 1; Cpu = 1; Hybrid = $true }
+            @{ Name = 'only E-cores allowed'; Cores = $arrowLake; Requested = ''; Allowed = [uint64]0x3fc; Core = 'performance'; Class = 'any'; Cpus = $null; Hybrid = $true; Warns = $true }
+            # SMT: the P-core holding CPU 0 also holds CPU 1, so the other P-cores are taken.
+            @{ Name = 'SMT apart from CPU 0'; Cores = (New-Cores @(@(1, @(0, 1)), @(1, @(2, 3)), @(1, @(4, 5)), @(0, @(6)), @(0, @(7)))); Requested = ''; Core = 'performance'; Class = 1; Cpus = @(2, 3, 4, 5); Hybrid = $true }
+            # Three CPUs apart from CPU 0's core: its sibling joins them, CPU 0 doesn't.
+            @{ Name = 'SMT, CPU 0''s sibling needed'; Cores = (New-Cores @(@(1, @(0, 1)), @(1, @(2)), @(1, @(3)), @(1, @(4)), @(0, @(5)))); Requested = ''; Core = 'performance'; Class = 1; Cpus = @(1, 2, 3, 4); Hybrid = $true }
+            @{ Name = 'SMT, only CPU 0''s core'; Cores = (New-Cores @(@(1, @(0, 1)), @(0, @(2)), @(0, @(3)))); Requested = ''; Core = 'performance'; Class = 'any'; Cpus = $null; Hybrid = $true; Warns = $true }
+            # One P-core (Lakefield): no pin rather than one CPU.
+            @{ Name = 'one P-core'; Cores = (New-Cores @(@(0, @(0)), @(0, @(1)), @(0, @(2)), @(0, @(3)), @(1, @(4)))); Requested = ''; Core = 'performance'; Class = 'any'; Cpus = $null; Hybrid = $true; Warns = $true }
             # Three classes (LP-E, E, P): the highest.
-            @{ Name = 'three classes'; Cores = (New-Cores @(@(0, @(0)), @(1, @(1)), @(2, @(2)), @(2, @(3)), @(1, @(4)))); Requested = ''; Core = 'performance'; Class = 2; Cpu = 3; Hybrid = $true }
+            @{ Name = 'three classes'; Cores = (New-Cores @(@(0, @(0)), @(1, @(1)), @(2, @(2)), @(2, @(3)), @(2, @(4)), @(2, @(5)), @(1, @(6)))); Requested = ''; Core = 'performance'; Class = 2; Cpus = @(2, 3, 4, 5); Hybrid = $true }
             # The top class only in processor group 1, which ProcessorAffinity cannot reach.
-            @{ Name = 'top class in group 1'; Cores = (New-Cores @(@(0, @(0)), @(0, @(1)), @(1, @(0), 1))); Requested = ''; Core = 'performance'; Class = 'any'; Cpu = $null; Hybrid = $true; Warns = $true }
+            @{ Name = 'top class in group 1'; Cores = (New-Cores @(@(0, @(0)), @(0, @(1)), @(1, @(0), 1))); Requested = ''; Core = 'performance'; Class = 'any'; Cpus = $null; Hybrid = $true; Warns = $true }
             # One class: nothing changes, whatever -Core says.
-            @{ Name = 'uniform default'; Cores = (New-Cores @(@(0, @(0, 1)), @(0, @(2, 3)))); Requested = ''; Core = 'any'; Class = 'any'; Cpu = $null; Hybrid = $false }
-            @{ Name = 'uniform performance'; Cores = (New-Cores @(@(0, @(0, 1)), @(0, @(2, 3)))); Requested = 'performance'; Core = 'performance'; Class = 'any'; Cpu = $null; Hybrid = $false }
+            @{ Name = 'uniform default'; Cores = (New-Cores @(@(0, @(0, 1)), @(0, @(2, 3)))); Requested = ''; Core = 'any'; Class = 'any'; Cpus = $null; Hybrid = $false }
+            @{ Name = 'uniform performance'; Cores = (New-Cores @(@(0, @(0, 1)), @(0, @(2, 3)))); Requested = 'performance'; Core = 'performance'; Class = 'any'; Cpus = $null; Hybrid = $false }
             # Cores unknown: a warning unless -Core any was asked for.
-            @{ Name = 'unknown default'; Cores = $null; Requested = ''; Core = 'any'; Class = 'any'; Cpu = $null; Hybrid = $null; Warns = $true }
-            @{ Name = 'unknown performance'; Cores = $null; Requested = 'performance'; Core = 'performance'; Class = 'any'; Cpu = $null; Hybrid = $null; Warns = $true }
-            @{ Name = 'unknown any'; Cores = $null; Requested = 'any'; Core = 'any'; Class = 'any'; Cpu = $null; Hybrid = $null }
+            @{ Name = 'unknown default'; Cores = $null; Requested = ''; Core = 'any'; Class = 'any'; Cpus = $null; Hybrid = $null; Warns = $true }
+            @{ Name = 'unknown performance'; Cores = $null; Requested = 'performance'; Core = 'performance'; Class = 'any'; Cpus = $null; Hybrid = $null; Warns = $true }
+            @{ Name = 'unknown any'; Cores = $null; Requested = 'any'; Core = 'any'; Class = 'any'; Cpus = $null; Hybrid = $null }
         )) {
         $allowed = if ($case.ContainsKey('Allowed')) { $case.Allowed } else { $allMask }
         $got = Select-BenchCore -Cores $case.Cores -Requested $case.Requested -AllowedMask $allowed
-        $expectedMask = if ($null -ne $case.Cpu) { [uint64]1 -shl $case.Cpu } else { $null }
-        $caseOk = $got.Core -ceq $case.Core -and "$($got.CoreClass)" -ceq "$($case.Class)" -and $got.LogicalCpu -eq $case.Cpu -and $got.Mask -eq $expectedMask -and $got.Hybrid -eq $case.Hybrid -and [bool]$got.Warning -eq [bool]$case['Warns']
+        $expectedMask = $null
+        if ($null -ne $case.Cpus) {
+            $expectedMask = [uint64]0
+            foreach ($cpu in $case.Cpus) { $expectedMask = $expectedMask -bor ([uint64]1 -shl $cpu) }
+        }
+        $cpusOk = if ($null -eq $case.Cpus) { $null -eq $got.LogicalCpus } else { $null -ne $got.LogicalCpus -and ($got.LogicalCpus -join ',') -ceq ($case.Cpus -join ',') }
+        $caseOk = $got.Core -ceq $case.Core -and "$($got.CoreClass)" -ceq "$($case.Class)" -and $cpusOk -and $got.Mask -eq $expectedMask -and $got.Hybrid -eq $case.Hybrid -and [bool]$got.Warning -eq [bool]$case['Warns']
         Assert-True $caseOk "Select-BenchCore ($($case.Name)): $($got | ConvertTo-Json -Compress)"
     }
+    # The warning for too few names the count and the minimum.
+    $tooFew = Select-BenchCore -Cores $arrowLake -Requested '' -AllowedMask (& $without 11, 12, 13)
+    Assert-True ($tooFew.Warning -like "*Only 3 logical CPU*fewer than the $($script:MinPinnedCpus)*") "Too-few warning: $($tooFew.Warning)"
     Assert-True ((Format-AffinityMask ([uint64]1 -shl 63)) -ceq '0x8000000000000000' -and $null -eq (Format-AffinityMask $null)) 'Format-AffinityMask'
     Assert-True ((ConvertFrom-AffinityPointer (ConvertTo-AffinityPointer ([uint64]1 -shl 63))) -eq ([uint64]1 -shl 63) -or [IntPtr]::Size -eq 4) 'An affinity mask with bit 63 survives the IntPtr round trip'
 

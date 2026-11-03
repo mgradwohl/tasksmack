@@ -46,7 +46,7 @@ the milestone `priority: high`, so the conveyor picks them up first.
   ```
 
 - **Baselines,** recorded on the tracker during quiet hours with `tools/measure-idle.ps1` and `tools/bench.ps1`
-  (pinned to a P-core):
+  (pinned to the P-cores):
   - idle CPU, visible and minimized;
   - memory over 90 minutes;
   - startup time;

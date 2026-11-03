@@ -19,7 +19,7 @@
     the exit code. An extra --benchmark_out or --benchmark_out_format argument is refused with exit
     code 2 before the benchmark starts.
 
-    On a hybrid CPU the run is pinned to one performance core by default (-Core). The system CPU
+    On a hybrid CPU the run is pinned to the performance cores by default (-Core). The system CPU
     load is sampled for 500 ms just before and just after the run and recorded in the manifest;
     the TASKSMACK_BENCH_LOAD_SAMPLE_MS environment variable changes the sample length (the script
     tests shorten it).
@@ -38,8 +38,11 @@
     set, as in bench.sh.
 .PARAMETER Core
     Which cores the benchmark runs on (#3163). "performance" pins the benchmark process, and every
-    process it starts, to one logical CPU of the highest EfficiencyClass, never logical CPU 0 (it
-    takes most interrupts) unless nothing else is left. "any" leaves placement to the scheduler.
+    process it starts, to the logical CPUs of the highest EfficiencyClass, leaving out logical CPU 0
+    (it takes most interrupts) and its core while that still leaves at least four. Never fewer than
+    four (#3413): the *_Concurrent_PublicationWait benchmarks run up to four threads that spin on
+    each other, and on one CPU they barely progress; with fewer than four of the highest class the
+    run is not pinned and a warning says so. "any" leaves placement to the scheduler.
     Defaults to "performance" on a hybrid CPU (cores of more than one EfficiencyClass), where a
     whole run can otherwise land on efficiency cores and come out 2-3x slower, and to "any"
     elsewhere; on a CPU with one class "performance" changes nothing. The classes are read with
@@ -553,6 +556,11 @@ namespace TaskSmackBench
 # How long each system-load sample lasts, just before and just after the run. The script tests
 # shorten it with TASKSMACK_BENCH_LOAD_SAMPLE_MS.
 $script:LoadSampleMilliseconds = 500
+# The fewest logical CPUs -Core performance pins a run to (#3413): the most threads one benchmark
+# keeps running at once, the *_Concurrent_PublicationWait benchmarks' measuring thread, writer and
+# two extra readers (benchmarks/bench_ModelLimits.cpp), all of which spin. Kept in step with
+# bench-manifest.py's MIN_PINNED_CPUS.
+$script:MinPinnedCpus = 4
 
 function Initialize-BenchNative {
     if (-not ('TaskSmackBench.Native' -as [type])) { Add-Type -TypeDefinition $script:BenchNativeSource }
@@ -640,21 +648,24 @@ function Select-BenchCore {
     # CPUs this process may use. Returns:
     #  - Core: the mode asked for, or the default: "performance" on a hybrid CPU (more than one
     #    EfficiencyClass), "any" otherwise;
-    #  - CoreClass: the EfficiencyClass of the pinned CPU, or "any" when the run is not pinned;
+    #  - CoreClass: the EfficiencyClass of the pinned CPUs, or "any" when the run is not pinned;
     #  - Hybrid: $true / $false, or $null when the cores are unknown;
-    #  - LogicalCpu and Mask: the logical CPU to pin to and its affinity mask, or $null for none;
+    #  - LogicalCpus and Mask: the logical CPUs to pin to (ascending) and their affinity mask, or
+    #    $null for none;
     #  - Warning: why "performance" could not pin, or $null.
-    # "performance" takes a logical CPU of the highest EfficiencyClass in processor group 0
+    # "performance" takes the logical CPUs of the highest EfficiencyClass in processor group 0
     # (Process.ProcessorAffinity sets the process's primary group, which is group 0 on any machine
-    # with 64 logical CPUs or fewer), preferring a core that does not hold logical CPU 0,
-    # which takes most interrupts (an SMT sibling of CPU 0 shares its core), then any CPU but 0,
-    # and CPU 0 only when it is the last one left; among those, the highest-numbered. On a CPU of
-    # one class it changes nothing.
+    # with 64 logical CPUs or fewer): those on cores that do not hold logical CPU 0, which takes
+    # most interrupts (an SMT sibling of CPU 0 shares its core), else every one but CPU 0, else all
+    # of them, the first of those with at least $script:MinPinnedCpus. A set rather than one CPU
+    # (#3413): it still keeps the run off the efficiency cores (#3163), and a multi-threaded
+    # benchmark gets a CPU per thread. With fewer than that the run is not pinned. On a CPU of one
+    # class it changes nothing.
     param([AllowNull()][object[]]$Cores, [AllowEmptyString()][string]$Requested, [AllowNull()]$AllowedMask)
     $known = $null -ne $Cores -and $Cores.Count -gt 0
     $hybrid = if ($known) { @($Cores | ForEach-Object { $_.EfficiencyClass } | Sort-Object -Unique).Count -gt 1 } else { $null }
     $mode = if ($Requested) { $Requested } elseif ($hybrid) { 'performance' } else { 'any' }
-    $choice = [pscustomobject]@{ Core = $mode; CoreClass = 'any'; Hybrid = $hybrid; LogicalCpu = $null; Mask = $null; Warning = $null }
+    $choice = [pscustomobject]@{ Core = $mode; CoreClass = 'any'; Hybrid = $hybrid; LogicalCpus = $null; Mask = $null; Warning = $null }
     if ($mode -ne 'performance') {
         if (-not $known -and -not $Requested) { $choice.Warning = 'The processor cores could not be read, so the run is not pinned (-Core any). On a hybrid CPU it may land on efficiency cores.' }
         return $choice
@@ -671,15 +682,22 @@ function Select-BenchCore {
     $apart = @($topCores | Where-Object { $_.Processors -notcontains 0 } | ForEach-Object { $_.Processors } | Where-Object { & $usable $_ })
     $notZero = @($topCores | ForEach-Object { $_.Processors } | Where-Object { $_ -ne 0 -and (& $usable $_) })
     $any = @($topCores | ForEach-Object { $_.Processors } | Where-Object { & $usable $_ })
-    $candidates = @(if ($apart.Count) { $apart } elseif ($notZero.Count) { $notZero } else { $any })
-    if (-not $candidates.Count) {
+    if (-not $any.Count) {
         $choice.Warning = "No logical CPU of EfficiencyClass $top is in this process's affinity (processor group 0), so the run is not pinned."
         return $choice
     }
-    $cpu = [int]($candidates | Measure-Object -Maximum).Maximum
+    # Each tier holds the one before it, so the last is the largest.
+    $candidates = @(if ($apart.Count -ge $script:MinPinnedCpus) { $apart } elseif ($notZero.Count -ge $script:MinPinnedCpus) { $notZero } else { $any })
+    if ($candidates.Count -lt $script:MinPinnedCpus) {
+        $choice.Warning = "Only $($candidates.Count) logical CPU(s) of EfficiencyClass $top are in this process's affinity, fewer than the $($script:MinPinnedCpus) threads the concurrent benchmarks run at once, so the run is not pinned."
+        return $choice
+    }
+    $cpus = [int[]]@($candidates | Sort-Object -Unique)
+    $mask = [uint64]0
+    foreach ($cpu in $cpus) { $mask = $mask -bor ([uint64]1 -shl $cpu) }
     $choice.CoreClass = $top
-    $choice.LogicalCpu = $cpu
-    $choice.Mask = [uint64]1 -shl $cpu
+    $choice.LogicalCpus = $cpus
+    $choice.Mask = $mask
     return $choice
 }
 
@@ -712,7 +730,7 @@ function Measure-SystemCpuLoad {
 function Get-PlacementDescription {
     # The console line for a run's placement.
     param($Choice, $Mask)
-    $where = if ($null -ne $Choice.LogicalCpu) { "logical CPU $($Choice.LogicalCpu) (EfficiencyClass $($Choice.CoreClass))" }
+    $where = if ($null -ne $Choice.LogicalCpus) { "logical CPUs $($Choice.LogicalCpus -join ',') (EfficiencyClass $($Choice.CoreClass))" }
     elseif ($Choice.Hybrid -eq $false) { 'any (not a hybrid CPU)' }
     else { 'any (not pinned)' }
     $affinity = if ($null -ne $Mask) { ", affinity $(Format-AffinityMask $Mask)" } else { '' }
@@ -823,13 +841,13 @@ function New-BenchManifest {
             report_aggregates_only = $aggregatesOnly
         }
         machine        = Get-MachineClass
-        # Where the run went (#3163): the -Core mode, the pinned CPU's EfficiencyClass ("any" when
-        # not pinned), whether the CPU is hybrid, the logical CPU and the affinity mask it ran with.
+        # Where the run went (#3163, #3413): the -Core mode, the pinned CPUs' EfficiencyClass ("any"
+        # when not pinned), whether the CPU is hybrid, the logical CPUs and the affinity mask it ran with.
         placement      = [ordered]@{
             core          = $coreChoice.Core
             core_class    = $coreChoice.CoreClass
             hybrid        = $coreChoice.Hybrid
-            logical_cpu   = $coreChoice.LogicalCpu
+            logical_cpus  = $coreChoice.LogicalCpus
             affinity_mask = Format-AffinityMask $runMask
         }
         # The system CPU load just before and just after the run, each over sample_ms: pinning does
@@ -897,10 +915,10 @@ $benchArgs = @(
 Write-Host "Running benchmarks (preset=$Preset) -> $outFile"
 Write-Host "Binary: $benchBin"
 
-# Core placement (#3163): on a hybrid CPU the run is pinned to one performance core by default.
-# This process is pinned only around the launch, so the benchmark and anything it starts inherit
-# the affinity while the script's own work (git, hashing, the manifest) is not confined to one
-# core, and its affinity is put back afterwards (it may be an interactive session that ran
+# Core placement (#3163, #3413): on a hybrid CPU the run is pinned to the performance cores by
+# default. This process is pinned only around the launch, so the benchmark and anything it starts
+# inherit the affinity while the script's own work (git, hashing, the manifest) is not confined to
+# them, and its affinity is put back afterwards (it may be an interactive session that ran
 # `& bench.ps1`). A failure to pin is a warning and an unpinned run, recorded as such.
 $loadSampleMs = $script:LoadSampleMilliseconds
 if ($env:TASKSMACK_BENCH_LOAD_SAMPLE_MS -match '^[0-9]+$') { $loadSampleMs = [int]$env:TASKSMACK_BENCH_LOAD_SAMPLE_MS }
@@ -932,14 +950,14 @@ try {
             $savedAffinity = $original
         }
         catch {
-            $coreChoice.Warning = "Pinning to logical CPU $($coreChoice.LogicalCpu) failed, so the run is not pinned: $_"
+            $coreChoice.Warning = "Pinning to logical CPUs $($coreChoice.LogicalCpus -join ',') failed, so the run is not pinned: $_"
             $coreChoice.CoreClass = 'any'
-            $coreChoice.LogicalCpu = $null
+            $coreChoice.LogicalCpus = $null
             $coreChoice.Mask = $null
             $runMask = $processMask
             if ($null -ne $manifest) {
                 $manifest.placement.core_class = 'any'
-                $manifest.placement.logical_cpu = $null
+                $manifest.placement.logical_cpus = $null
                 $manifest.placement.affinity_mask = Format-AffinityMask $runMask
             }
         }

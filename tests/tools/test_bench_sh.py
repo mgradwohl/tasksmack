@@ -79,7 +79,7 @@ SECTION_KEYS = {
     },
     "benchmark": {"args", "raw_repetitions", "report_aggregates_only"},
     "machine": {"label", "cpu_model", "logical_cores", "os_name", "os_version", "arch"},
-    "placement": {"core", "core_class", "hybrid", "logical_cpu", "affinity_mask"},
+    "placement": {"core", "core_class", "hybrid", "logical_cpus", "affinity_mask"},
     "system_load": {"sample_ms", "before_percent", "after_percent"},
 }
 
@@ -754,30 +754,36 @@ class BenchShTest(unittest.TestCase):
             (root / f"cpu{cpu}" / "topology" / "thread_siblings_list").write_text(siblings[cpu] + "\n", encoding="ascii")
         return root
 
-    @unittest.skipUnless(sys.platform.startswith("linux") and shutil.which("taskset") and len(os.sched_getaffinity(0)) >= 3, "needs Linux, taskset and 3 CPUs")
-    def test_a_hybrid_cpu_runs_pinned_to_a_performance_core_apart_from_cpu_0(self):
-        # #3198: CPUs 0 and 1 share a performance core, CPU 2 is an efficiency core: the run goes to
-        # CPU 1, the only performance CPU but 0, and the manifest says so.
-        allowed = sorted(os.sched_getaffinity(0))[:3]
-        if allowed != [0, 1, 2]:
-            self.skipTest(f"CPUs 0-2 aren't all allowed: {allowed}")
-        sysfs = self.fake_sysfs("hybrid", {0: 1024, 1: 1024, 2: 512}, {0: "0-1", 1: "0-1", 2: "2"})
+    @unittest.skipUnless(sys.platform.startswith("linux") and shutil.which("taskset") and len(os.sched_getaffinity(0)) >= 6, "needs Linux, taskset and 6 CPUs")
+    def test_a_hybrid_cpu_runs_pinned_to_the_performance_cores(self):
+        # #3198, #3413: CPUs 0 and 1 share a performance core, 2-4 are performance cores and 5 an
+        # efficiency core. Three performance CPUs apart from CPU 0's core are fewer than the four the
+        # concurrent benchmarks need, so CPU 1 joins them: the run goes to CPUs 1-4, and the manifest
+        # says so.
+        allowed = sorted(os.sched_getaffinity(0))[:6]
+        if allowed != [0, 1, 2, 3, 4, 5]:
+            self.skipTest(f"CPUs 0-5 aren't all allowed: {allowed}")
+        sysfs = self.fake_sysfs(
+            "hybrid",
+            {0: 1024, 1: 1024, 2: 1024, 3: 1024, 4: 1024, 5: 512},
+            {0: "0-1", 1: "0-1", 2: "2", 3: "3", 4: "4", 5: "5"},
+        )
         affinity = self.root / "affinity.txt"
         code, output, _, manifests = self.run_bench(
             "pinned", 0, env_extra={"TASKSMACK_BENCH_SYSFS_CPU": posix(sysfs), "STUB_AFFINITY_OUT": posix(affinity)}
         )
         self.assertEqual(code, 0, output)
-        self.assertEqual(affinity.read_text(encoding="ascii").split(), ["Cpus_allowed_list:", "1"])
+        self.assertEqual(affinity.read_text(encoding="ascii").split(), ["Cpus_allowed_list:", "1-4"])
         manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
         self.assertEqual(
             manifest["placement"],
-            {"core": "performance", "core_class": 1, "hybrid": True, "logical_cpu": 1, "affinity_mask": "0x2"},
+            {"core": "performance", "core_class": 1, "hybrid": True, "logical_cpus": [1, 2, 3, 4], "affinity_mask": "0x1e"},
         )
         self.assertEqual(manifest["system_load"]["sample_ms"], 10)
         for key in ("before_percent", "after_percent"):
             value = manifest["system_load"][key]
             self.assertTrue(value is None or 0.0 <= value <= 100.0, (key, value))
-        self.assertIn("Cores: --core performance -> logical CPU 1 (class 1)", output)
+        self.assertIn("Cores: --core performance -> logical CPUs 1,2,3,4 (class 1)", output)
 
         # --core any: the scheduler's choice, even on a hybrid CPU.
         code, output, _, manifests = self.run_bench(
@@ -787,9 +793,9 @@ class BenchShTest(unittest.TestCase):
             env_extra={"TASKSMACK_BENCH_SYSFS_CPU": posix(sysfs), "STUB_AFFINITY_OUT": posix(affinity)},
         )
         self.assertEqual(code, 0, output)
-        self.assertNotEqual(affinity.read_text(encoding="ascii").split(), ["Cpus_allowed_list:", "1"])
+        self.assertNotEqual(affinity.read_text(encoding="ascii").split(), ["Cpus_allowed_list:", "1-4"])
         placement = json.loads(manifests[0].read_text(encoding="utf-8"))["placement"]
-        self.assertEqual((placement["core"], placement["core_class"], placement["logical_cpu"]), ("any", "any", None))
+        self.assertEqual((placement["core"], placement["core_class"], placement["logical_cpus"]), ("any", "any", None))
         self.assertTrue(placement["hybrid"])
 
     def test_without_cpu_classes_the_run_is_not_pinned_and_says_so(self):
@@ -797,7 +803,7 @@ class BenchShTest(unittest.TestCase):
         self.assertEqual(code, 0, output)
         self.assertIn("could not be read", output)
         placement = json.loads(manifests[0].read_text(encoding="utf-8"))["placement"]
-        self.assertEqual((placement["core"], placement["core_class"], placement["hybrid"], placement["logical_cpu"]), ("any", "any", None, None))
+        self.assertEqual((placement["core"], placement["core_class"], placement["hybrid"], placement["logical_cpus"]), ("any", "any", None, None))
 
     def test_a_bad_core_option_is_refused_before_anything_runs(self):
         for leading in (("--core", "fast", "fake", "--"), ("--core=", "fake", "--"), ("--core",)):
@@ -1348,25 +1354,39 @@ class PlacementTest(unittest.TestCase):
 
     def test_the_core_choice_follows_select_bench_core(self):
         select = self.module.select_core
-        hybrid = {0: 1, 1: 1, 2: 1, 3: 1, 4: 0, 5: 0}
-        # The default on a hybrid CPU: a performance CPU whose core doesn't hold CPU 0, the highest.
+        # #3413: a pin is a set of at least MIN_PINNED_CPUS performance CPUs, never one CPU.
+        self.assertEqual(self.module.MIN_PINNED_CPUS, 4)
+        # #3112's Core Ultra 7 255H: performance cores at 0, 1 and 10-13, no SMT.
+        arrow_lake = {cpu: (1 if cpu in (0, 1, 10, 11, 12, 13) else 0) for cpu in range(16)}
+        # The default on a hybrid CPU: every performance CPU whose core doesn't hold CPU 0.
         self.assertEqual(
-            select(hybrid, "", None, {0, 1}),
-            {"core": "performance", "core_class": 1, "hybrid": True, "logical_cpu": 3, "warning": None},
+            select(arrow_lake, "", None, {0}),
+            {"core": "performance", "core_class": 1, "hybrid": True, "logical_cpus": [1, 10, 11, 12, 13], "warning": None},
         )
-        # Only CPU 0's core is fast: its sibling, not CPU 0; then CPU 0 when it's the last one left.
-        self.assertEqual(select({0: 1, 1: 1, 2: 0}, "", None, {0, 1})["logical_cpu"], 1)
-        self.assertEqual(select({0: 1, 1: 0}, "", None, {0})["logical_cpu"], 0)
-        # Outside this process's affinity doesn't count; none left is a warning and no pin.
-        self.assertEqual(select(hybrid, "", {0, 1, 2, 4}, {0, 1})["logical_cpu"], 2)
-        none_left = select(hybrid, "performance", {4, 5}, {0, 1})
-        self.assertEqual((none_left["logical_cpu"], none_left["core_class"]), (None, "any"))
+        # Outside this process's affinity doesn't count; four apart from CPU 0 are enough.
+        self.assertEqual(select(arrow_lake, "", set(range(16)) - {13}, {0})["logical_cpus"], [1, 10, 11, 12])
+        # Three apart from CPU 0: CPU 0 joins them rather than leave a thread without a CPU.
+        self.assertEqual(select(arrow_lake, "", set(range(16)) - {12, 13}, {0})["logical_cpus"], [0, 1, 10, 11])
+        # Three performance CPUs in all: a warning and no pin, not a stall.
+        too_few = select(arrow_lake, "", set(range(16)) - {11, 12, 13}, {0})
+        self.assertEqual((too_few["logical_cpus"], too_few["core_class"]), (None, "any"))
+        self.assertIn("Only 3 CPU(s)", too_few["warning"])
+        # SMT: CPU 0's core also holds CPU 1, which joins only when the others are too few.
+        smt = {0: 1, 1: 1, 2: 1, 3: 1, 4: 1, 5: 1, 6: 0, 7: 0}
+        self.assertEqual(select(smt, "", None, {0, 1})["logical_cpus"], [2, 3, 4, 5])
+        self.assertEqual(select({0: 1, 1: 1, 2: 1, 3: 1, 4: 1, 5: 0}, "", None, {0, 1})["logical_cpus"], [1, 2, 3, 4])
+        self.assertIsNone(select({0: 1, 1: 1, 2: 0}, "", None, {0, 1})["logical_cpus"])
+        # Three classes: the fastest.
+        self.assertEqual(select({0: 0, 1: 1, 2: 2, 3: 2, 4: 2, 5: 2, 6: 1}, "", None, {0})["logical_cpus"], [2, 3, 4, 5])
+        # None of the top class allowed: a warning and no pin.
+        none_left = select(arrow_lake, "performance", {2, 3, 4, 5}, {0})
+        self.assertEqual((none_left["logical_cpus"], none_left["core_class"]), (None, "any"))
         self.assertIn("affinity", none_left["warning"])
         # "any", and a CPU of one class: not pinned, no warning.
-        self.assertEqual(select(hybrid, "any", None, {0})["logical_cpu"], None)
+        self.assertEqual(select(arrow_lake, "any", None, {0})["logical_cpus"], None)
         uniform = select({0: 0, 1: 0}, "", None, {0})
-        self.assertEqual((uniform["core"], uniform["hybrid"], uniform["logical_cpu"], uniform["warning"]), ("any", False, None, None))
-        self.assertEqual(select({0: 0, 1: 0}, "performance", None, {0})["logical_cpu"], None)
+        self.assertEqual((uniform["core"], uniform["hybrid"], uniform["logical_cpus"], uniform["warning"]), ("any", False, None, None))
+        self.assertEqual(select({0: 0, 1: 0}, "performance", None, {0})["logical_cpus"], None)
         # Unknown classes: a warning either way, and "performance" says it did nothing.
         self.assertIn("not pinned", select(None, "", None, {0})["warning"])
         self.assertIn("does nothing", select(None, "performance", None, {0})["warning"])
