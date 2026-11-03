@@ -547,7 +547,8 @@ void stopDuring(Step step)
 
     // Closed, but WinHTTP may still call back or write into the read buffer: the worker waits for HANDLE_CLOSING.
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    EXPECT_FALSE(returned.load());
+    // Fatal: a get() that returned has freed the request state, which the writes and callbacks below would touch.
+    ASSERT_FALSE(returned.load()) << "get() returned before WinHTTP let go of the handle";
     if (step == Step::Read)
     {
         ASSERT_NE(fake.readBuffer, nullptr);
@@ -694,7 +695,8 @@ void throwDuring(Step step)
     fake.waitUntil([&fake] { return fake.requestCloses > 0; });
 
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    EXPECT_FALSE(returned.load()) << "the exception came out before WinHTTP let go of the handle";
+    // Fatal: a get() that returned has freed the request state, which the writes and callbacks below would touch.
+    ASSERT_FALSE(returned.load()) << "the exception came out before WinHTTP let go of the handle";
     if (step == Step::Read)
     {
         ASSERT_NE(fake.readBuffer, nullptr);
