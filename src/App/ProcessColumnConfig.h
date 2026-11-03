@@ -72,65 +72,67 @@ enum class ProcessColumn : std::uint8_t
     NpuEngine,
     // Command line (typically last, fixed width by default for stable horizontal scroll extent)
     Command,
-    Count
+    Count,
 };
 
 [[nodiscard]] constexpr auto allProcessColumns() -> std::array<ProcessColumn, static_cast<std::size_t>(ProcessColumn::Count)>
 {
     // Order matches enum definition: Identity, State, Resources, Scheduling, Time, I/O, Network, Power, GPU, NPU, Command
-    return {// Identity
-            ProcessColumn::PID,
-            ProcessColumn::Name,
-            ProcessColumn::User,
-            ProcessColumn::PPID,
-            ProcessColumn::Publisher,
-            ProcessColumn::Signature,
-            ProcessColumn::Container,
-            ProcessColumn::Services,
-            // State
-            ProcessColumn::State,
-            ProcessColumn::Status,
-            ProcessColumn::Type,
-            ProcessColumn::Architecture,
-            // Resources
-            ProcessColumn::CpuPercent,
-            ProcessColumn::MemPercent,
-            ProcessColumn::Resident,
-            ProcessColumn::Virtual,
-            ProcessColumn::Shared,
-            ProcessColumn::PeakResident,
-            ProcessColumn::Private,
-            ProcessColumn::Swap,
-            // Scheduling
-            ProcessColumn::Priority,
-            ProcessColumn::Policy,
-            ProcessColumn::Affinity,
-            ProcessColumn::Threads,
-            ProcessColumn::Handles,
-            ProcessColumn::GdiObjects,
-            // Time
-            ProcessColumn::CpuTime,
-            ProcessColumn::StartTime,
-            // I/O
-            ProcessColumn::IoRead,
-            ProcessColumn::IoWrite,
-            ProcessColumn::PageFaults,
-            // Network
-            ProcessColumn::NetSent,
-            ProcessColumn::NetReceived,
-            // Power
-            ProcessColumn::Power,
-            // GPU
-            ProcessColumn::GpuPercent,
-            ProcessColumn::GpuMemory,
-            ProcessColumn::GpuEngine,
-            ProcessColumn::GpuDevice,
-            // NPU
-            ProcessColumn::NpuPercent,
-            ProcessColumn::NpuMemory,
-            ProcessColumn::NpuEngine,
-            // Command (last)
-            ProcessColumn::Command};
+    return {
+        // Identity
+        ProcessColumn::PID,
+        ProcessColumn::Name,
+        ProcessColumn::User,
+        ProcessColumn::PPID,
+        ProcessColumn::Publisher,
+        ProcessColumn::Signature,
+        ProcessColumn::Container,
+        ProcessColumn::Services,
+        // State
+        ProcessColumn::State,
+        ProcessColumn::Status,
+        ProcessColumn::Type,
+        ProcessColumn::Architecture,
+        // Resources
+        ProcessColumn::CpuPercent,
+        ProcessColumn::MemPercent,
+        ProcessColumn::Resident,
+        ProcessColumn::Virtual,
+        ProcessColumn::Shared,
+        ProcessColumn::PeakResident,
+        ProcessColumn::Private,
+        ProcessColumn::Swap,
+        // Scheduling
+        ProcessColumn::Priority,
+        ProcessColumn::Policy,
+        ProcessColumn::Affinity,
+        ProcessColumn::Threads,
+        ProcessColumn::Handles,
+        ProcessColumn::GdiObjects,
+        // Time
+        ProcessColumn::CpuTime,
+        ProcessColumn::StartTime,
+        // I/O
+        ProcessColumn::IoRead,
+        ProcessColumn::IoWrite,
+        ProcessColumn::PageFaults,
+        // Network
+        ProcessColumn::NetSent,
+        ProcessColumn::NetReceived,
+        // Power
+        ProcessColumn::Power,
+        // GPU
+        ProcessColumn::GpuPercent,
+        ProcessColumn::GpuMemory,
+        ProcessColumn::GpuEngine,
+        ProcessColumn::GpuDevice,
+        // NPU
+        ProcessColumn::NpuPercent,
+        ProcessColumn::NpuMemory,
+        ProcessColumn::NpuEngine,
+        // Command (last)
+        ProcessColumn::Command,
+    };
 }
 
 [[nodiscard]] constexpr auto processColumnCount() -> std::size_t
@@ -268,7 +270,7 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
         // === Command (last, fixed-width by default) ===
         // Command
         {.name="Command", .menuName="Command Line", .configKey="command", .defaultWidth=420.0F, .defaultVisible=true, .canHide=true, .description="Full command line"},
-    }};
+    },};
     // clang-format on
 
     return infos[toIndex(col)];

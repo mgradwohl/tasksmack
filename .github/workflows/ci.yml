@@ -46,7 +46,7 @@ jobs:
   # failed or unexpected classification gives the safe values too, so the worst a classifier fault
   # can do is run jobs it didn't need to, and a failed job still fails CI Success.
   detect-docs-only:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions:
       contents: read
@@ -171,7 +171,7 @@ jobs:
       checks: write
     uses: ./.github/workflows/reusable-build-test.yml
     with:
-      os: ubuntu-24.04
+      os: ubuntu-26.04
       build_type: debug
       build: ${{ github.event_name != 'schedule' }}
       clang_tidy: ${{ github.event_name != 'push' || (github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/release/')) }}
@@ -193,7 +193,7 @@ jobs:
       checks: write
     uses: ./.github/workflows/reusable-build-test.yml
     with:
-      os: ubuntu-24.04
+      os: ubuntu-26.04
       build_type: release
       # Also compile and link TaskSmackBenchmarks (no timing run), so a PR that breaks the
       # benchmark build fails here rather than on main (#1348).
@@ -249,14 +249,14 @@ jobs:
       checks: write
     uses: ./.github/workflows/reusable-build-test.yml
     with:
-      os: ubuntu-24.04
+      os: ubuntu-26.04
       build_type: unity
 
   docs-hygiene:
     # The classifier's docs_site output decides whether the browser test runs (#3103). A failed detect
     # job skips this job, which CI Success counts as a failure, so no change goes untested by mistake.
     needs: [detect-docs-only]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
       contents: read
@@ -300,7 +300,7 @@ jobs:
     name: Automation checks
     needs: [detect-docs-only]
     if: github.event_name == 'pull_request' && needs.detect-docs-only.outputs.automation_only == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
       contents: read
@@ -346,7 +346,7 @@ jobs:
         needs.detect-docs-only.outputs.automation_only != 'true')) &&
       (github.event_name != 'push' || (github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/release/'))) &&
       needs.detect-docs-only.outputs.linux_only != 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions: {}
     steps:
@@ -379,7 +379,7 @@ jobs:
   include-analysis:
     needs: [detect-docs-only, build-linux-debug]
     if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # Dispatch-only, so the cap never delays a pull request. 45 was the job's normal duration, not
     # headroom (#2798): 31 minutes on a normal runner (debug build 12, IWYU 17) and over 55 on a
     # slow one (build 20, IWYU 24+ with a quarter of the translation units still to go), where two
@@ -405,7 +405,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /tmp/iwyu-install
-          key: iwyu-llvm${{ env.LLVM_VERSION }}-${{ env.IWYU_COMMIT_SHA }}-${{ runner.os }}-v1
+          key: iwyu-llvm${{ env.LLVM_VERSION }}-${{ env.IWYU_COMMIT_SHA }}-${{ runner.os }}-ubuntu-26.04-v1
 
       - name: Build include-what-you-use from source
         if: steps.cache-iwyu.outputs.cache-hit != 'true'
@@ -558,7 +558,7 @@ jobs:
       github.event_name == 'pull_request' &&
       needs.detect-docs-only.outputs.docs_only != 'true' &&
       needs.detect-docs-only.outputs.automation_only != 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # 45, not 30: a PR into release/X.Y restores main's ccache, which matches little of the release
     # branch's sources, so its build runs near cold. Backport #2862 took 28 minutes and backport
     # #2820 was cancelled three times at 30 with one test left; main's PRs take 15 to 21.
@@ -661,7 +661,7 @@ jobs:
       - automation-checks
       - static-analysis-windows
       - asan-ubsan
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions: {}
     steps:
@@ -822,7 +822,7 @@ jobs:
               echo "✅ No translation unit affected by this change; clang-tidy (Linux) skipped."
             else
               if [[ "$LINUX_TIDY_OUTCOME" == 'failure' ]]; then
-                msg="clang-tidy (Linux) found problems: see the \"Run clang-tidy (Linux)\" step of build-linux-debug / Build & Test (ubuntu-24.04 debug), and its job summary, ${RUN_URL}"
+                msg="clang-tidy (Linux) found problems: see the \"Run clang-tidy (Linux)\" step of build-linux-debug / Build & Test (ubuntu-26.04 debug), and its job summary, ${RUN_URL}"
               else
                 msg="clang-tidy (Linux) did not run (build-linux-debug: ${LINUX_RESULT:-not run}, clang-tidy step: ${LINUX_TIDY_OUTCOME:-not reached}); see ${RUN_URL}"
               fi

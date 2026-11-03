@@ -397,10 +397,12 @@ class SocketTrafficAccumulator
             {
                 m_PendingByProcess[*owner].add(state.held);
             }
-            state = SocketState{.bytesReceived = state.bytesReceived,
-                                .bytesSent = state.bytesSent,
-                                .hasBaseline = state.hasBaseline,
-                                .staleBaseline = state.staleBaseline};
+            state = SocketState{
+                .bytesReceived = state.bytesReceived,
+                .bytesSent = state.bytesSent,
+                .hasBaseline = state.hasBaseline,
+                .staleBaseline = state.staleBaseline,
+            };
         }
     }
 

@@ -201,8 +201,10 @@ rateChartNotice(bool available, std::span<const double> first, std::span<const d
 [[nodiscard]] inline double threadAxisDataMaxWithGdi(double seriesMax, const ProcessSmoothedUsage& smoothed) noexcept
 {
     return UI::Widgets::withCurrentValues(seriesMax,
-                                          {UI::Widgets::currentIfAvailable(smoothed.threadCountAvailable, smoothed.threadCount),
-                                           UI::Widgets::currentIfAvailable(smoothed.gdiInitialized, smoothed.gdiObjectCount)});
+                                          {
+                                              UI::Widgets::currentIfAvailable(smoothed.threadCountAvailable, smoothed.threadCount),
+                                              UI::Widgets::currentIfAvailable(smoothed.gdiInitialized, smoothed.gdiObjectCount),
+                                          });
 }
 
 [[nodiscard]] inline double threadAxisDataMaxWithGdi(std::span<const double> timeData,
@@ -248,8 +250,10 @@ rateChartNotice(bool available, std::span<const double> first, std::span<const d
 [[nodiscard]] inline double ioAxisDataMax(double seriesMax, const ProcessSmoothedUsage& smoothed) noexcept
 {
     return UI::Widgets::withCurrentValues(seriesMax,
-                                          {UI::Widgets::currentIfAvailable(smoothed.ioAvailable, smoothed.ioReadBytesPerSec),
-                                           UI::Widgets::currentIfAvailable(smoothed.ioAvailable, smoothed.ioWriteBytesPerSec)});
+                                          {
+                                              UI::Widgets::currentIfAvailable(smoothed.ioAvailable, smoothed.ioReadBytesPerSec),
+                                              UI::Widgets::currentIfAvailable(smoothed.ioAvailable, smoothed.ioWriteBytesPerSec),
+                                          });
 }
 
 [[nodiscard]] inline double ioAxisDataMax(std::span<const double> timeData,
@@ -265,8 +269,10 @@ rateChartNotice(bool available, std::span<const double> first, std::span<const d
 [[nodiscard]] inline double networkAxisDataMax(double seriesMax, const ProcessSmoothedUsage& smoothed) noexcept
 {
     return UI::Widgets::withCurrentValues(seriesMax,
-                                          {UI::Widgets::currentIfAvailable(smoothed.networkAvailable, smoothed.netSentBytesPerSec),
-                                           UI::Widgets::currentIfAvailable(smoothed.networkAvailable, smoothed.netRecvBytesPerSec)});
+                                          {
+                                              UI::Widgets::currentIfAvailable(smoothed.networkAvailable, smoothed.netSentBytesPerSec),
+                                              UI::Widgets::currentIfAvailable(smoothed.networkAvailable, smoothed.netRecvBytesPerSec),
+                                          });
 }
 
 [[nodiscard]] inline double networkAxisDataMax(std::span<const double> timeData,
@@ -311,9 +317,12 @@ rateChartNotice(bool available, std::span<const double> first, std::span<const d
 /// reading (the NPU figures come with the GPU ones).
 [[nodiscard]] inline double npuMemoryAxisDataMax(double seriesMax, const ProcessSmoothedUsage& smoothed) noexcept
 {
-    return UI::Widgets::withCurrentValues(seriesMax,
-                                          {UI::Widgets::currentIfAvailable(smoothed.npuMemoryAvailable, smoothed.npuDedicatedMemoryBytes),
-                                           UI::Widgets::currentIfAvailable(smoothed.npuMemoryAvailable, smoothed.npuSharedMemoryBytes)});
+    return UI::Widgets::withCurrentValues(
+        seriesMax,
+        {
+            UI::Widgets::currentIfAvailable(smoothed.npuMemoryAvailable, smoothed.npuDedicatedMemoryBytes),
+            UI::Widgets::currentIfAvailable(smoothed.npuMemoryAvailable, smoothed.npuSharedMemoryBytes),
+        });
 }
 
 [[nodiscard]] inline double npuMemoryAxisDataMax(std::span<const double> timeData,

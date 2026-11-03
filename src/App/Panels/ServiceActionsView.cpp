@@ -112,10 +112,12 @@ dispatch(Platform::IServiceActions& actions, const ServiceActionRequest& request
 {
     if (authorized)
     {
-        constexpr std::array<Platform::ServiceAction, 4> ACTIONS{Platform::ServiceAction::Start,
-                                                                 Platform::ServiceAction::Stop,
-                                                                 Platform::ServiceAction::Restart,
-                                                                 Platform::ServiceAction::SetStartType};
+        constexpr std::array<Platform::ServiceAction, 4> ACTIONS{
+            Platform::ServiceAction::Start,
+            Platform::ServiceAction::Stop,
+            Platform::ServiceAction::Restart,
+            Platform::ServiceAction::SetStartType,
+        };
         return actions.runAuthorized(ACTIONS.at(static_cast<std::size_t>(request.kind)), request.name, request.startType, stopToken);
     }
     switch (request.kind)
@@ -180,12 +182,14 @@ bool needsConfirm(const ServiceActionRequest& request)
 
 ServiceActionRequest makeRequest(ServiceActionKind kind, const Platform::ServiceInfo& service, Platform::ServiceStartType startType)
 {
-    return {.kind = kind,
-            .name = service.name,
-            .displayName = service.displayName.empty() ? service.name : service.displayName,
-            .startType = startType,
-            .fromStartType = service.startType,
-            .critical = isCriticalService(service.name, service.serviceType)};
+    return {
+        .kind = kind,
+        .name = service.name,
+        .displayName = service.displayName.empty() ? service.name : service.displayName,
+        .startType = startType,
+        .fromStartType = service.startType,
+        .critical = isCriticalService(service.name, service.serviceType),
+    };
 }
 
 const char* confirmLabel(const ServiceActionRequest& request)
@@ -282,8 +286,10 @@ ServiceActionMessage resultMessage(const ServiceActionRequest& request, const Pl
     }
     if (setType)
     {
-        return {.ok = false,
-                .text = std::format("Could not set {} to {}: {}", request.name, serviceStartTypeLabel(request.startType), result.message)};
+        return {
+            .ok = false,
+            .text = std::format("Could not set {} to {}: {}", request.name, serviceStartTypeLabel(request.startType), result.message),
+        };
     }
     return {.ok = false, .text = std::format("Could not {} {}: {}", verb(request.kind), request.name, result.message)};
 }
@@ -387,12 +393,14 @@ void ServiceActionsView::renderStartTypeItems(const Platform::ServiceInfo& servi
 {
     using enum Platform::ServiceStartType;
     // The labels serviceStartTypeLabel() gives, as C strings for ImGui.
-    constexpr std::array<std::pair<Platform::ServiceStartType, const char*>, 4> CHOICES{{
-        {Automatic, "Automatic"},
-        {AutomaticDelayed, "Automatic (delayed)"},
-        {Manual, "Manual"},
-        {Disabled, "Disabled"},
-    }};
+    constexpr std::array<std::pair<Platform::ServiceStartType, const char*>, 4> CHOICES{
+        {
+            {Automatic, "Automatic"},
+            {AutomaticDelayed, "Automatic (delayed)"},
+            {Manual, "Manual"},
+            {Disabled, "Disabled"},
+        },
+    };
     for (const auto& [type, label] : CHOICES)
     {
         if (type == AutomaticDelayed && !m_Capabilities.canDelayStart)

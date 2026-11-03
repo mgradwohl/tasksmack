@@ -740,11 +740,13 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
             // the whole generation: the process list is still published.
             try
             {
-                appendSystemHistoryLocked(ProcessSystemHistorySample{.timeSeconds = sampleTimeSeconds,
-                                                                     .pageFaultsPerSec = aggPageFaults,
-                                                                     .threadCount = aggThreads,
-                                                                     .handleCount = aggHandles,
-                                                                     .powerWatts = aggPower});
+                appendSystemHistoryLocked(ProcessSystemHistorySample{
+                    .timeSeconds = sampleTimeSeconds,
+                    .pageFaultsPerSec = aggPageFaults,
+                    .threadCount = aggThreads,
+                    .handleCount = aggHandles,
+                    .powerWatts = aggPower,
+                });
             }
             catch (const std::bad_alloc&)
             {
@@ -772,16 +774,18 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
                 // watchProcess() ran between the copy above and this lock: rare, so copy again here.
                 watchedSnapshot = copyProcess(*m_Snapshots, pidNow);
             }
-            displacedSample = pushWatchedSampleLocked(ProcessSample{.snapshot = std::move(watchedSnapshot),
-                                                                    .version = m_SnapshotVersion,
-                                                                    .sampleTimeSeconds = sampleTimeSeconds,
-                                                                    .ioCountersSupported = m_PublishedCapabilities.hasIoCounters,
-                                                                    .networkCountersSupported = m_PublishedCapabilities.hasNetworkCounters,
-                                                                    .gpuPerProcessSupported = gpuSupport.perProcess,
-                                                                    .gpuUtilizationSupported = gpuSupport.utilization,
-                                                                    .npuPerProcessSupported = gpuSupport.npuPerProcess,
-                                                                    .npuUtilizationSupported = gpuSupport.npuUtilization,
-                                                                    .gpuReadFailed = gpuSupport.readFailed});
+            displacedSample = pushWatchedSampleLocked(ProcessSample{
+                .snapshot = std::move(watchedSnapshot),
+                .version = m_SnapshotVersion,
+                .sampleTimeSeconds = sampleTimeSeconds,
+                .ioCountersSupported = m_PublishedCapabilities.hasIoCounters,
+                .networkCountersSupported = m_PublishedCapabilities.hasNetworkCounters,
+                .gpuPerProcessSupported = gpuSupport.perProcess,
+                .gpuUtilizationSupported = gpuSupport.utilization,
+                .npuPerProcessSupported = gpuSupport.npuPerProcess,
+                .npuUtilizationSupported = gpuSupport.npuUtilization,
+                .gpuReadFailed = gpuSupport.readFailed,
+            });
         }
 
         m_PublishedSnapshotVersion.store(m_SnapshotVersion, std::memory_order_release);
@@ -875,16 +879,18 @@ void ProcessModel::watchProcess(std::int32_t pid)
     std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     if (m_WatchedPid.load(std::memory_order_relaxed) == watched && m_WatchedSampleCount == 0)
     {
-        static_cast<void>(pushWatchedSampleLocked(ProcessSample{.snapshot = std::move(seed),
-                                                                .version = currentVersion,
-                                                                .sampleTimeSeconds = currentSampleTime,
-                                                                .ioCountersSupported = currentCapabilities.hasIoCounters,
-                                                                .networkCountersSupported = currentCapabilities.hasNetworkCounters,
-                                                                .gpuPerProcessSupported = currentGpuSupport.perProcess,
-                                                                .gpuUtilizationSupported = currentGpuSupport.utilization,
-                                                                .npuPerProcessSupported = currentGpuSupport.npuPerProcess,
-                                                                .npuUtilizationSupported = currentGpuSupport.npuUtilization,
-                                                                .gpuReadFailed = currentGpuSupport.readFailed}));
+        static_cast<void>(pushWatchedSampleLocked(ProcessSample{
+            .snapshot = std::move(seed),
+            .version = currentVersion,
+            .sampleTimeSeconds = currentSampleTime,
+            .ioCountersSupported = currentCapabilities.hasIoCounters,
+            .networkCountersSupported = currentCapabilities.hasNetworkCounters,
+            .gpuPerProcessSupported = currentGpuSupport.perProcess,
+            .gpuUtilizationSupported = currentGpuSupport.utilization,
+            .npuPerProcessSupported = currentGpuSupport.npuPerProcess,
+            .npuUtilizationSupported = currentGpuSupport.npuUtilization,
+            .gpuReadFailed = currentGpuSupport.readFailed,
+        }));
     }
 }
 
@@ -931,13 +937,15 @@ bool ProcessModel::tryCopySystemHistoriesIfNewer(std::uint64_t lastSeenVersion, 
     // Shared views, not copies (#2156): five refcount bumps, whatever the history length. Taken into a
     // local and handed over after the lock, so if @p outHistories held the last views of an old block,
     // freeing it doesn't hold up the writer's unique_lock.
-    ProcessSystemHistories histories{.version = m_SystemHistoryVersion,
-                                     .timestamps = m_Timestamps.view(),
-                                     .power = m_SystemPowerHistory.view(),
-                                     .pageFaults = m_SystemPageFaultsHistory.view(),
-                                     .threadCount = m_SystemThreadCountHistory.view(),
-                                     .handleCount = m_SystemHandleCountHistory.view(),
-                                     .capabilities = m_PublishedCapabilities};
+    ProcessSystemHistories histories{
+        .version = m_SystemHistoryVersion,
+        .timestamps = m_Timestamps.view(),
+        .power = m_SystemPowerHistory.view(),
+        .pageFaults = m_SystemPageFaultsHistory.view(),
+        .threadCount = m_SystemThreadCountHistory.view(),
+        .handleCount = m_SystemHandleCountHistory.view(),
+        .capabilities = m_PublishedCapabilities,
+    };
     lock.unlock();
     outHistories = std::move(histories);
     return true;
@@ -1150,20 +1158,24 @@ ProcessModel::GpuSupport ProcessModel::mergeGPUDataContained(std::vector<Process
         {
             snapshot.gpuFieldsRead = false;
         }
-        return GpuSupport{.perProcess = perProcess,
-                          .utilization = perProcess && !gpuModel.perProcessUtilizationKnownUnsupported(),
-                          .npuPerProcess = npuPerProcess,
-                          .npuUtilization = npuPerProcess && !gpuModel.perProcessNpuUtilizationKnownUnsupported(),
-                          .readFailed = false};
+        return GpuSupport{
+            .perProcess = perProcess,
+            .utilization = perProcess && !gpuModel.perProcessUtilizationKnownUnsupported(),
+            .npuPerProcess = npuPerProcess,
+            .npuUtilization = npuPerProcess && !gpuModel.perProcessNpuUtilizationKnownUnsupported(),
+            .readFailed = false,
+        };
     }
 
     // The support the publication's counters were read under (#1210), not the GPU
     // model's flags now.
-    GpuSupport support{.perProcess = publication->perProcessSupported,
-                       .utilization = publication->utilizationSupported,
-                       .npuPerProcess = publication->npuSupported,
-                       .npuUtilization = publication->npuUtilizationSupported,
-                       .readFailed = publication->readFailed};
+    GpuSupport support{
+        .perProcess = publication->perProcessSupported,
+        .utilization = publication->utilizationSupported,
+        .npuPerProcess = publication->npuSupported,
+        .npuUtilization = publication->npuUtilizationSupported,
+        .readFailed = publication->readFailed,
+    };
     if ((!support.perProcess && !support.npuPerProcess) || support.readFailed)
     {
         // Unsupported: nothing to merge. A failed read: no GPU fields, cells read

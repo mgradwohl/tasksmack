@@ -315,16 +315,18 @@ auto TitleBarLayer::hitTestInput() const -> WindowHitTestInput
     // without EWMH maximize, #1339) never sets that flag, and its edges would stay resize handles
     // nobody serves (#2497). SDL calls the hit test from its event pump, on the main thread.
     const bool isMaximized = window.isMaximized();
-    return {.windowWidth = windowWidth,
-            .windowHeight = windowHeight,
-            .titleBarHeightPx = height(),
-            .resizeBorderPx = resizeBorderThickness(),
-            .buttons = m_ButtonLayout,
-            .icon = m_IconBounds,
-            .isMaximized = isMaximized,
-            .systemDrag = computeSystemDragApplies(
-                Core::VideoBackend::usesSystemDrag(), Core::VideoBackend::supportsClientSideMaximize(), isMaximized),
-            .systemResize = Core::VideoBackend::usesSystemResize()};
+    return {
+        .windowWidth = windowWidth,
+        .windowHeight = windowHeight,
+        .titleBarHeightPx = height(),
+        .resizeBorderPx = resizeBorderThickness(),
+        .buttons = m_ButtonLayout,
+        .icon = m_IconBounds,
+        .isMaximized = isMaximized,
+        .systemDrag =
+            computeSystemDragApplies(Core::VideoBackend::usesSystemDrag(), Core::VideoBackend::supportsClientSideMaximize(), isMaximized),
+        .systemResize = Core::VideoBackend::usesSystemResize(),
+    };
 }
 
 auto TitleBarLayer::hitTest(const float x, const float y) const -> SDL_HitTestResult
@@ -907,14 +909,16 @@ void TitleBarLayer::renderTitleBar()
         loadIconTexture(wantedPx);
     }
 
-    const TitleBarView::Output drawn = TitleBarView::render({.windowWidth = static_cast<float>(windowWidth),
-                                                             .windowHeight = static_cast<float>(windowHeight),
-                                                             .barHeight = titleBarHeight,
-                                                             .maximized = window.isMaximized(),
-                                                             .resizeBorderPx = resizeBorderThickness(),
-                                                             .icon = &m_IconTexture,
-                                                             .openSystemMenu = std::exchange(m_ShowSystemMenu, false),
-                                                             .title = window.title()});
+    const TitleBarView::Output drawn = TitleBarView::render({
+        .windowWidth = static_cast<float>(windowWidth),
+        .windowHeight = static_cast<float>(windowHeight),
+        .barHeight = titleBarHeight,
+        .maximized = window.isMaximized(),
+        .resizeBorderPx = resizeBorderThickness(),
+        .icon = &m_IconTexture,
+        .openSystemMenu = std::exchange(m_ShowSystemMenu, false),
+        .title = window.title(),
+    });
     // Where every button and the icon were drawn, and so what isPointInControlArea() keeps out of the
     // drag area and where a right-click opens the system menu.
     m_ButtonLayout = drawn.layout;

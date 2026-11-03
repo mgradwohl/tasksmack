@@ -56,10 +56,12 @@ namespace
     {
         // "I/O priority", its slider under it at the nice slider's row width (it fits itself to the width
         // it is given, as that one does), and [Reset to default] [Apply] under the slider (#1540).
-        width = std::max({width,
-                          ImGui::CalcTextSize("I/O priority").x,
-                          ProcessDetailsLayout::PRIORITY_SLIDER_ROW_WIDTH_EM * emPx,
-                          applyButtonWidth("Reset to default") + spacing + applyButtonWidth(ICON_FA_CHECK "  Apply")});
+        width = std::max({
+            width,
+            ImGui::CalcTextSize("I/O priority").x,
+            ProcessDetailsLayout::PRIORITY_SLIDER_ROW_WIDTH_EM * emPx,
+            applyButtonWidth("Reset to default") + spacing + applyButtonWidth(ICON_FA_CHECK "  Apply"),
+        });
     }
     return width;
 }

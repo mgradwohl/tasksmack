@@ -160,20 +160,24 @@ void renderDiskCell(const std::string& deviceName,
     {
         if (!std::isfinite(current))
         {
-            return NowBar{.valueText = "N/A",
-                          .label = label,
-                          .tooltipText = UI::InlineText::format("{}: not reported this sample", label),
-                          .value01 = 0.0,
-                          .color = theme.scheme().textMuted,
-                          .marker = marker,
-                          .available = false}; // hatched, not a zero bar (#1935)
+            return NowBar{
+                .valueText = "N/A",
+                .label = label,
+                .tooltipText = UI::InlineText::format("{}: not reported this sample", label),
+                .value01 = 0.0,
+                .color = theme.scheme().textMuted,
+                .marker = marker,
+                .available = false,
+            }; // hatched, not a zero bar (#1935)
         }
-        return NowBar{.valueText = UI::Format::formatBytesPerSec(current),
-                      .label = label,
-                      .tooltipText = {},
-                      .value01 = normalizeToUnitInterval(current, diskAxisUpper),
-                      .color = color,
-                      .marker = marker};
+        return NowBar{
+            .valueText = UI::Format::formatBytesPerSec(current),
+            .label = label,
+            .tooltipText = {},
+            .value01 = normalizeToUnitInterval(current, diskAxisUpper),
+            .color = color,
+            .marker = marker,
+        };
     };
     const std::array diskBars{
         makeBar(READ_LABEL, currentRead, theme.scheme().chartIo, seriesStyle(SeriesRole::Primary).marker),
@@ -251,12 +255,16 @@ void renderDiskCell(const std::string& deviceName,
                     if (*idxVal < timeData.size())
                     {
                         const std::array rows{
-                            UI::Widgets::TooltipRow{.label = READ_LABEL,
-                                                    .color = theme.scheme().chartIo,
-                                                    .value = UI::Format::formatBytesPerSecOrNA(static_cast<double>(readData[*idxVal]))},
-                            UI::Widgets::TooltipRow{.label = WRITE_LABEL,
-                                                    .color = theme.scheme().chartIoWrite,
-                                                    .value = UI::Format::formatBytesPerSecOrNA(static_cast<double>(writeData[*idxVal]))},
+                            UI::Widgets::TooltipRow{
+                                .label = READ_LABEL,
+                                .color = theme.scheme().chartIo,
+                                .value = UI::Format::formatBytesPerSecOrNA(static_cast<double>(readData[*idxVal])),
+                            },
+                            UI::Widgets::TooltipRow{
+                                .label = WRITE_LABEL,
+                                .color = theme.scheme().chartIoWrite,
+                                .value = UI::Format::formatBytesPerSecOrNA(static_cast<double>(writeData[*idxVal])),
+                            },
                         };
                         UI::Widgets::renderHistoryTooltip(timeData[*idxVal], rows);
                     }
@@ -532,18 +540,22 @@ void renderStorageSection(RenderContext& ctx)
             UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
 
         // An unmeasured total is NaN: N/A, drawn hatched rather than as a 0 bar (#3025, as #2129).
-        const NowBar readBar{.valueText = UI::Format::formatBytesPerSecOrNA(smoothedRead),
-                             .label = READ_LABEL,
-                             .tooltipText = {},
-                             .value01 = std::isfinite(smoothedRead) ? normalizeToUnitInterval(smoothedRead, diskAxisUpper) : 0.0,
-                             .color = theme.scheme().chartIo,
-                             .available = std::isfinite(smoothedRead)};
-        const NowBar writeBar{.valueText = UI::Format::formatBytesPerSecOrNA(smoothedWrite),
-                              .label = WRITE_LABEL,
-                              .tooltipText = {},
-                              .value01 = std::isfinite(smoothedWrite) ? normalizeToUnitInterval(smoothedWrite, diskAxisUpper) : 0.0,
-                              .color = theme.scheme().chartIoWrite,
-                              .available = std::isfinite(smoothedWrite)};
+        const NowBar readBar{
+            .valueText = UI::Format::formatBytesPerSecOrNA(smoothedRead),
+            .label = READ_LABEL,
+            .tooltipText = {},
+            .value01 = std::isfinite(smoothedRead) ? normalizeToUnitInterval(smoothedRead, diskAxisUpper) : 0.0,
+            .color = theme.scheme().chartIo,
+            .available = std::isfinite(smoothedRead),
+        };
+        const NowBar writeBar{
+            .valueText = UI::Format::formatBytesPerSecOrNA(smoothedWrite),
+            .label = WRITE_LABEL,
+            .tooltipText = {},
+            .value01 = std::isfinite(smoothedWrite) ? normalizeToUnitInterval(smoothedWrite, diskAxisUpper) : 0.0,
+            .color = theme.scheme().chartIoWrite,
+            .available = std::isfinite(smoothedWrite),
+        };
 
         // Shares the tab's height with the network chart above it (#959).
         const float plotHeight = (ctx.fill != nullptr) ? ctx.fill->plotHeight() : HISTORY_PLOT_HEIGHT_DEFAULT;
@@ -581,13 +593,16 @@ void renderStorageSection(RenderContext& ctx)
                         if (*idxVal < alignedDisk)
                         {
                             const std::array rows{
-                                UI::Widgets::TooltipRow{.label = READ_LABEL,
-                                                        .color = theme.scheme().chartIo,
-                                                        .value = UI::Format::formatBytesPerSecOrNA(static_cast<double>(readData[*idxVal]))},
-                                UI::Widgets::TooltipRow{.label = WRITE_LABEL,
-                                                        .color = theme.scheme().chartIoWrite,
-                                                        .value =
-                                                            UI::Format::formatBytesPerSecOrNA(static_cast<double>(writeData[*idxVal]))},
+                                UI::Widgets::TooltipRow{
+                                    .label = READ_LABEL,
+                                    .color = theme.scheme().chartIo,
+                                    .value = UI::Format::formatBytesPerSecOrNA(static_cast<double>(readData[*idxVal])),
+                                },
+                                UI::Widgets::TooltipRow{
+                                    .label = WRITE_LABEL,
+                                    .color = theme.scheme().chartIoWrite,
+                                    .value = UI::Format::formatBytesPerSecOrNA(static_cast<double>(writeData[*idxVal])),
+                                },
                             };
                             UI::Widgets::renderHistoryTooltip(aggregateTimes[*idxVal], rows);
                         }

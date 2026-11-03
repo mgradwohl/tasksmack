@@ -97,30 +97,35 @@ inline constexpr const char* IO_PRIORITY_SLIDER_ID = "###io_priority_slider";
 
 /// Every stop with Realtime, highest priority first. A stop's colour runs with the nice scale's: Realtime
 /// in the high-priority colours, Best-effort through normal, Idle the lowest.
-inline constexpr std::array<PrioritySliderStop, (2 * IO_LEVEL_COUNT) + 1> IO_PRIORITY_STOPS = {{
-    {.name = "realtime 0", .itemLabel = "I/O priority: realtime 0###io_priority_slider", .colorNice = -20},
-    {.name = "realtime 1", .itemLabel = "I/O priority: realtime 1###io_priority_slider", .colorNice = -19},
-    {.name = "realtime 2", .itemLabel = "I/O priority: realtime 2###io_priority_slider", .colorNice = -18},
-    {.name = "realtime 3", .itemLabel = "I/O priority: realtime 3###io_priority_slider", .colorNice = -17},
-    {.name = "realtime 4", .itemLabel = "I/O priority: realtime 4###io_priority_slider", .colorNice = -16},
-    {.name = "realtime 5", .itemLabel = "I/O priority: realtime 5###io_priority_slider", .colorNice = -15},
-    {.name = "realtime 6", .itemLabel = "I/O priority: realtime 6###io_priority_slider", .colorNice = -14},
-    {.name = "realtime 7", .itemLabel = "I/O priority: realtime 7###io_priority_slider", .colorNice = -13},
-    {.name = "best-effort 0", .itemLabel = "I/O priority: best-effort 0###io_priority_slider", .colorNice = -9},
-    {.name = "best-effort 1", .itemLabel = "I/O priority: best-effort 1###io_priority_slider", .colorNice = -6},
-    {.name = "best-effort 2", .itemLabel = "I/O priority: best-effort 2###io_priority_slider", .colorNice = -3},
-    {.name = "best-effort 3", .itemLabel = "I/O priority: best-effort 3###io_priority_slider", .colorNice = 0},
-    {.name = "best-effort 4", .itemLabel = "I/O priority: best-effort 4###io_priority_slider", .colorNice = 3},
-    {.name = "best-effort 5", .itemLabel = "I/O priority: best-effort 5###io_priority_slider", .colorNice = 6},
-    {.name = "best-effort 6", .itemLabel = "I/O priority: best-effort 6###io_priority_slider", .colorNice = 9},
-    {.name = "best-effort 7", .itemLabel = "I/O priority: best-effort 7###io_priority_slider", .colorNice = 12},
-    {.name = "idle", .itemLabel = "I/O priority: idle###io_priority_slider", .colorNice = 19},
-}};
+inline constexpr std::array<PrioritySliderStop, (2 * IO_LEVEL_COUNT) + 1> IO_PRIORITY_STOPS = {
+    {
+        {.name = "realtime 0", .itemLabel = "I/O priority: realtime 0###io_priority_slider", .colorNice = -20},
+        {.name = "realtime 1", .itemLabel = "I/O priority: realtime 1###io_priority_slider", .colorNice = -19},
+        {.name = "realtime 2", .itemLabel = "I/O priority: realtime 2###io_priority_slider", .colorNice = -18},
+        {.name = "realtime 3", .itemLabel = "I/O priority: realtime 3###io_priority_slider", .colorNice = -17},
+        {.name = "realtime 4", .itemLabel = "I/O priority: realtime 4###io_priority_slider", .colorNice = -16},
+        {.name = "realtime 5", .itemLabel = "I/O priority: realtime 5###io_priority_slider", .colorNice = -15},
+        {.name = "realtime 6", .itemLabel = "I/O priority: realtime 6###io_priority_slider", .colorNice = -14},
+        {.name = "realtime 7", .itemLabel = "I/O priority: realtime 7###io_priority_slider", .colorNice = -13},
+        {.name = "best-effort 0", .itemLabel = "I/O priority: best-effort 0###io_priority_slider", .colorNice = -9},
+        {.name = "best-effort 1", .itemLabel = "I/O priority: best-effort 1###io_priority_slider", .colorNice = -6},
+        {.name = "best-effort 2", .itemLabel = "I/O priority: best-effort 2###io_priority_slider", .colorNice = -3},
+        {.name = "best-effort 3", .itemLabel = "I/O priority: best-effort 3###io_priority_slider", .colorNice = 0},
+        {.name = "best-effort 4", .itemLabel = "I/O priority: best-effort 4###io_priority_slider", .colorNice = 3},
+        {.name = "best-effort 5", .itemLabel = "I/O priority: best-effort 5###io_priority_slider", .colorNice = 6},
+        {.name = "best-effort 6", .itemLabel = "I/O priority: best-effort 6###io_priority_slider", .colorNice = 9},
+        {.name = "best-effort 7", .itemLabel = "I/O priority: best-effort 7###io_priority_slider", .colorNice = 12},
+        {.name = "idle", .itemLabel = "I/O priority: idle###io_priority_slider", .colorNice = 19},
+    },
+};
 
 /// The Realtime state a process can be in without TaskSmack being able to set it: shown beyond the
 /// start of the slider without Realtime, hollow.
 inline constexpr PrioritySliderStop IO_REALTIME_BEYOND_STOP{
-    .name = "realtime", .itemLabel = "I/O priority: realtime###io_priority_slider", .colorNice = -20};
+    .name = "realtime",
+    .itemLabel = "I/O priority: realtime###io_priority_slider",
+    .colorNice = -20,
+};
 
 /// Where the Best-effort and Idle bands begin, with Realtime's stops and without them.
 inline constexpr std::array<std::int32_t, 2> IO_BANDS_WITH_REALTIME = {IO_LEVEL_COUNT, 2 * IO_LEVEL_COUNT};

@@ -201,11 +201,13 @@ class ProcessOpenFilesView
             std::string descriptor = Domain::OpenFiles::formatDescriptor(file.descriptor, result.hexDescriptors);
             std::string type(Domain::OpenFiles::kindLabel(file.kind));
             std::string mode = Domain::OpenFiles::formatMode(file.flags);
-            m_Rows.push_back({.file = std::move(file),
-                              .descriptor = std::move(descriptor),
-                              .type = std::move(type),
-                              .mode = std::move(mode),
-                              .path = std::move(path)});
+            m_Rows.push_back({
+                .file = std::move(file),
+                .descriptor = std::move(descriptor),
+                .type = std::move(type),
+                .mode = std::move(mode),
+                .path = std::move(path),
+            });
         }
         sortRows();
     }

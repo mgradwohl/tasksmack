@@ -435,6 +435,7 @@ set(COMMON_TEST_SOURCES
     Domain/test_GPUModelAllocationFailure.cpp
     Domain/test_SensorModelAllocationFailure.cpp # SensorModel under allocation failure (#3342)
     Domain/test_SnapshotModelsAllocationFailure.cpp # Service, Startup and Users models under allocation failure (#3342)
+    Domain/test_ConnectionsModelAllocationFailure.cpp # ConnectionsModel under allocation failure (#3400)
     Domain/test_ProcessModelAllocationFailure.cpp
     Domain/test_StorageModel.cpp
     Domain/test_StartupModel.cpp

@@ -56,12 +56,15 @@ ModulesReadResult WindowsProcessModulesReader::readModules(const ProcessTarget& 
 {
     // PROCESS_VM_READ: the module list lives in the process's own memory (its PEB loader data).
     // Protected processes, and elevated ones from an unelevated TaskSmack, refuse it.
-    auto opened = openProcessVerified({.openProcess = m_Api.openProcess,
-                                       .getProcessTimes = m_Api.getProcessTimes,
-                                       .closeHandle = m_Api.closeHandle,
-                                       .getExitCodeProcess = m_Api.getExitCodeProcess},
-                                      target,
-                                      PROCESS_VM_READ);
+    auto opened = openProcessVerified(
+        {
+            .openProcess = m_Api.openProcess,
+            .getProcessTimes = m_Api.getProcessTimes,
+            .closeHandle = m_Api.closeHandle,
+            .getExitCodeProcess = m_Api.getExitCodeProcess,
+        },
+        target,
+        PROCESS_VM_READ);
     if (!opened)
     {
         auto refused = toReadFailure<ModulesReadStatus>(opened.error());
@@ -110,11 +113,13 @@ ModulesReadResult WindowsProcessModulesReader::readModules(const ProcessTarget& 
             continue; // unloaded since the listing
         }
         const std::wstring path(buffer.data(), length);
-        result.modules.push_back({.path = WinString::wideToUtf8(path),
-                                  .baseAddress = reinterpret_cast<std::uintptr_t>(info.lpBaseOfDll),
-                                  .sizeBytes = info.SizeOfImage,
-                                  .version = fileVersion(path),
-                                  .deleted = false});
+        result.modules.push_back({
+            .path = WinString::wideToUtf8(path),
+            .baseAddress = reinterpret_cast<std::uintptr_t>(info.lpBaseOfDll),
+            .sizeBytes = info.SizeOfImage,
+            .version = fileVersion(path),
+            .deleted = false,
+        });
     }
     return result;
 }
@@ -139,10 +144,12 @@ std::optional<ModuleVersion> WindowsProcessModulesReader::fileVersion(const std:
             const auto* fixed = static_cast<const VS_FIXEDFILEINFO*>(data);
             if (fixed->dwSignature == FIXED_FILE_INFO_SIGNATURE)
             {
-                version = ModuleVersion{.major = HIWORD(fixed->dwFileVersionMS),
-                                        .minor = LOWORD(fixed->dwFileVersionMS),
-                                        .build = HIWORD(fixed->dwFileVersionLS),
-                                        .revision = LOWORD(fixed->dwFileVersionLS)};
+                version = ModuleVersion{
+                    .major = HIWORD(fixed->dwFileVersionMS),
+                    .minor = LOWORD(fixed->dwFileVersionMS),
+                    .build = HIWORD(fixed->dwFileVersionLS),
+                    .revision = LOWORD(fixed->dwFileVersionLS),
+                };
             }
         }
     }

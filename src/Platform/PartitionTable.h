@@ -64,18 +64,30 @@ namespace Platform::PartitionTable
 /// A GPT partition type GUID's common name; empty for one not in the table. Case-insensitive.
 [[nodiscard]] inline std::string_view gptTypeName(std::string_view guid)
 {
-    constexpr std::array<std::pair<std::string_view, std::string_view>, 20> NAMES{{
-        {"C12A7328-F81F-11D2-BA4B-00A0C93EC93B", "EFI System"},          {"E3C9E316-0B5C-4DB8-817D-F92DF00215AE", "Microsoft reserved"},
-        {"EBD0A0A2-B9E5-4433-87C0-68B6B72699C7", "Basic data"},          {"DE94BBA4-06D1-4D40-A16A-BFD50179D6AC", "Recovery"},
-        {"5808C8AA-7E8F-42E0-85D2-E1E90434CFB3", "LDM metadata"},        {"AF9B60A0-1431-4F62-BC68-3311714A69AD", "LDM data"},
-        {"E75CAF8F-F680-4CEE-AFA3-B001E56EFC2D", "Storage Spaces"},      {"21686148-6449-6E6F-744E-656564454649", "BIOS boot"},
-        {"0FC63DAF-8483-4772-8E79-3D69D8477DE4", "Linux filesystem"},    {"0657FD6D-A4AB-43C4-84E5-0933C84B4F4F", "Linux swap"},
-        {"E6D6D379-F507-44C2-A23C-238F2A3DF928", "Linux LVM"},           {"A19D880F-05FC-4D3B-A006-743F0F84911E", "Linux RAID"},
-        {"CA7D7CCB-63ED-4C53-861C-1742536059CC", "Linux LUKS"},          {"4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709", "Linux root (x86-64)"},
-        {"B921B045-1DF0-41C3-AF44-4C6F280D3FAE", "Linux root (ARM64)"},  {"933AC7E1-2EB4-4F13-B844-0E14E2AEF915", "Linux home"},
-        {"BC13C2FF-59E6-4262-A352-B275FD6F7172", "Linux extended boot"}, {"6A898CC3-1DD2-11B2-99A6-080020736631", "ZFS"},
-        {"48465300-0000-11AA-AA11-00306543ECAC", "Apple HFS+"},          {"7C3457EF-0000-11AA-AA11-00306543ECAC", "Apple APFS"},
-    }};
+    constexpr std::array<std::pair<std::string_view, std::string_view>, 20> NAMES{
+        {
+            {"C12A7328-F81F-11D2-BA4B-00A0C93EC93B", "EFI System"},
+            {"E3C9E316-0B5C-4DB8-817D-F92DF00215AE", "Microsoft reserved"},
+            {"EBD0A0A2-B9E5-4433-87C0-68B6B72699C7", "Basic data"},
+            {"DE94BBA4-06D1-4D40-A16A-BFD50179D6AC", "Recovery"},
+            {"5808C8AA-7E8F-42E0-85D2-E1E90434CFB3", "LDM metadata"},
+            {"AF9B60A0-1431-4F62-BC68-3311714A69AD", "LDM data"},
+            {"E75CAF8F-F680-4CEE-AFA3-B001E56EFC2D", "Storage Spaces"},
+            {"21686148-6449-6E6F-744E-656564454649", "BIOS boot"},
+            {"0FC63DAF-8483-4772-8E79-3D69D8477DE4", "Linux filesystem"},
+            {"0657FD6D-A4AB-43C4-84E5-0933C84B4F4F", "Linux swap"},
+            {"E6D6D379-F507-44C2-A23C-238F2A3DF928", "Linux LVM"},
+            {"A19D880F-05FC-4D3B-A006-743F0F84911E", "Linux RAID"},
+            {"CA7D7CCB-63ED-4C53-861C-1742536059CC", "Linux LUKS"},
+            {"4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709", "Linux root (x86-64)"},
+            {"B921B045-1DF0-41C3-AF44-4C6F280D3FAE", "Linux root (ARM64)"},
+            {"933AC7E1-2EB4-4F13-B844-0E14E2AEF915", "Linux home"},
+            {"BC13C2FF-59E6-4262-A352-B275FD6F7172", "Linux extended boot"},
+            {"6A898CC3-1DD2-11B2-99A6-080020736631", "ZFS"},
+            {"48465300-0000-11AA-AA11-00306543ECAC", "Apple HFS+"},
+            {"7C3457EF-0000-11AA-AA11-00306543ECAC", "Apple APFS"},
+        },
+    };
     const std::string upper = upperGuid(guid);
     for (const auto& [id, name] : NAMES)
     {

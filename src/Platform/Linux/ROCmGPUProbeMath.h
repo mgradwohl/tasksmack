@@ -59,7 +59,7 @@ static_assert(sizeof(RsmiFrequenciesBuffer) >= sizeof(RsmiFrequenciesV6));
 enum class FrequenciesLayout : std::uint8_t
 {
     V5,
-    V6
+    V6,
 };
 
 /// The layout to try first for a ROCm SMI library whose rsmi_version_get() reported
@@ -85,14 +85,18 @@ struct FieldOffsets
     std::size_t capacity;
 };
 
-inline constexpr FieldOffsets V5_OFFSETS{.numSupported = offsetof(RsmiFrequenciesV5, num_supported),
-                                         .current = offsetof(RsmiFrequenciesV5, current),
-                                         .frequency = offsetof(RsmiFrequenciesV5, frequency),
-                                         .capacity = std::extent_v<decltype(RsmiFrequenciesV5::frequency)>};
-inline constexpr FieldOffsets V6_OFFSETS{.numSupported = offsetof(RsmiFrequenciesV6, num_supported),
-                                         .current = offsetof(RsmiFrequenciesV6, current),
-                                         .frequency = offsetof(RsmiFrequenciesV6, frequency),
-                                         .capacity = std::extent_v<decltype(RsmiFrequenciesV6::frequency)>};
+inline constexpr FieldOffsets V5_OFFSETS{
+    .numSupported = offsetof(RsmiFrequenciesV5, num_supported),
+    .current = offsetof(RsmiFrequenciesV5, current),
+    .frequency = offsetof(RsmiFrequenciesV5, frequency),
+    .capacity = std::extent_v<decltype(RsmiFrequenciesV5::frequency)>,
+};
+inline constexpr FieldOffsets V6_OFFSETS{
+    .numSupported = offsetof(RsmiFrequenciesV6, num_supported),
+    .current = offsetof(RsmiFrequenciesV6, current),
+    .frequency = offsetof(RsmiFrequenciesV6, frequency),
+    .capacity = std::extent_v<decltype(RsmiFrequenciesV6::frequency)>,
+};
 
 /// Clocks above this are not a real reading (no GPU clock is near 100 GHz).
 inline constexpr std::uint64_t MAX_PLAUSIBLE_HZ = 100'000'000'000ULL;

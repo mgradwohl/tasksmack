@@ -21,16 +21,18 @@ struct ProcessStateName
 };
 
 /// Every state ProcessModel names. Anything else is UNKNOWN_PROCESS_STATE.
-inline constexpr std::array<ProcessStateName, 8> PROCESS_STATE_NAMES{{
-    {.code = 'R', .name = "Running"},
-    {.code = 'S', .name = "Sleeping"},
-    {.code = 'D', .name = "Disk Sleep"},
-    {.code = 'Z', .name = "Zombie"},
-    {.code = 'T', .name = "Stopped"},
-    {.code = 't', .name = "Tracing"},
-    {.code = 'X', .name = "Dead"},
-    {.code = 'I', .name = "Idle"},
-}};
+inline constexpr std::array<ProcessStateName, 8> PROCESS_STATE_NAMES{
+    {
+        {.code = 'R', .name = "Running"},
+        {.code = 'S', .name = "Sleeping"},
+        {.code = 'D', .name = "Disk Sleep"},
+        {.code = 'Z', .name = "Zombie"},
+        {.code = 'T', .name = "Stopped"},
+        {.code = 't', .name = "Tracing"},
+        {.code = 'X', .name = "Dead"},
+        {.code = 'I', .name = "Idle"},
+    },
+};
 
 /// The code and name for any state not in PROCESS_STATE_NAMES.
 inline constexpr ProcessStateName UNKNOWN_PROCESS_STATE{.code = '?', .name = "Unknown"};

@@ -183,12 +183,14 @@ void WindowsPowerProbe::updateCapabilities(const SYSTEM_POWER_STATUS& status)
     m_Capabilities = powerCapabilitiesFrom(status.BatteryFlag,
                                            status.BatteryLifePercent,
                                            status.BatteryLifeTime,
-                                           BatteryDetailsReported{.found = info.found,
-                                                                  .designWh = info.designWh,
-                                                                  .fullChargeWh = info.fullChargeWh,
-                                                                  .healthPercent = info.healthPercent,
-                                                                  .cycleCount = info.cycleCount,
-                                                                  .hasTechnology = !info.technology.empty()});
+                                           BatteryDetailsReported{
+                                               .found = info.found,
+                                               .designWh = info.designWh,
+                                               .fullChargeWh = info.fullChargeWh,
+                                               .healthPercent = info.healthPercent,
+                                               .cycleCount = info.cycleCount,
+                                               .hasTechnology = !info.technology.empty(),
+                                           });
 }
 
 } // namespace Platform

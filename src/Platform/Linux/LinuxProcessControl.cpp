@@ -550,25 +550,27 @@ int realWriteCgroupFileOf(const std::string& cgroup, std::uint64_t identity, std
 
 LinuxProcessSyscalls realProcessSyscalls() noexcept
 {
-    return {.pidfdOpen = &realPidfdOpen,
-            .pidfdSendSignal = &realPidfdSendSignal,
-            .pollPidfd = &realPollPidfd,
-            .setPriority = &realSetPriority,
-            .ioprioSet = &realIoprioSet,
-            .ioprioGet = &realIoprioGet,
-            .setAffinity = &realSetAffinity,
-            .listThreads = &realListThreads,
-            .isThreadOf = &realIsThreadOf,
-            .waitPid = &realWaitPid,
-            .pidfdGetfd = &realPidfdGetfd,
-            .shutdownSocket = &realShutdownSocket,
-            .socketDescriptor = &realSocketDescriptor,
-            .currentNice = &realCurrentNice,
-            .procCgroup = &realProcCgroup,
-            .readCgroupFile = &realReadCgroupFile,
-            .writeCgroupFile = &realWriteCgroupFile,
-            .cgroupIdentity = &realCgroupIdentity,
-            .writeCgroupFileOf = &realWriteCgroupFileOf};
+    return {
+        .pidfdOpen = &realPidfdOpen,
+        .pidfdSendSignal = &realPidfdSendSignal,
+        .pollPidfd = &realPollPidfd,
+        .setPriority = &realSetPriority,
+        .ioprioSet = &realIoprioSet,
+        .ioprioGet = &realIoprioGet,
+        .setAffinity = &realSetAffinity,
+        .listThreads = &realListThreads,
+        .isThreadOf = &realIsThreadOf,
+        .waitPid = &realWaitPid,
+        .pidfdGetfd = &realPidfdGetfd,
+        .shutdownSocket = &realShutdownSocket,
+        .socketDescriptor = &realSocketDescriptor,
+        .currentNice = &realCurrentNice,
+        .procCgroup = &realProcCgroup,
+        .readCgroupFile = &realReadCgroupFile,
+        .writeCgroupFile = &realWriteCgroupFile,
+        .cgroupIdentity = &realCgroupIdentity,
+        .writeCgroupFileOf = &realWriteCgroupFileOf,
+    };
 }
 
 struct LinuxProcessControl::EfficiencyMemory
@@ -1435,9 +1437,11 @@ struct WeightRestore
     }
     if (const int error = written; error != 0)
     {
-        return {.note = std::format("its cgroup's CPU weight is still the minimum: it can't be changed ({})",
-                                    std::system_category().message(error)),
-                .unfinished = lowered};
+        return {
+            .note = std::format("its cgroup's CPU weight is still the minimum: it can't be changed ({})",
+                                std::system_category().message(error)),
+            .unfinished = lowered,
+        };
     }
     return {};
 }
@@ -1555,12 +1559,13 @@ ProcessActionResult LinuxProcessControl::setEfficiencyMode(const ProcessTarget& 
                 m_Efficiency->byProcess.erase(exited);
             }
 
-            const auto [entry, added] =
-                m_Efficiency->byProcess.try_emplace(key,
-                                                    EfficiencyMemory::Before{.nice = niceBefore.value_or(0),
-                                                                             .cpuWeight = weightBefore,
-                                                                             .cgroup = weightBefore.has_value() ? cgroup : std::nullopt,
-                                                                             .cgroupId = cgroupId});
+            const auto [entry, added] = m_Efficiency->byProcess.try_emplace(key,
+                                                                            EfficiencyMemory::Before{
+                                                                                .nice = niceBefore.value_or(0),
+                                                                                .cpuWeight = weightBefore,
+                                                                                .cgroup = weightBefore.has_value() ? cgroup : std::nullopt,
+                                                                                .cgroupId = cgroupId,
+                                                                            });
             if (!added && staleRecord && !entry->second.turnedOff)
             {
                 // Its cgroup was replaced at the same path (#3331): that cgroup's weight is nothing to put back, the

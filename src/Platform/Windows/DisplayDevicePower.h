@@ -115,7 +115,11 @@ class DisplayDevicePower
     // DEVPKEY_Device_BusNumber/Address/PowerData (devpkey.h), defined here rather than through
     // initguid.h so including this header never turns other GUID declarations into definitions.
     static constexpr GUID DEVICE_PROPERTY_GUID{
-        .Data1 = 0xa45c254e, .Data2 = 0xdf1c, .Data3 = 0x4efd, .Data4 = {0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0}};
+        .Data1 = 0xa45c254e,
+        .Data2 = 0xdf1c,
+        .Data3 = 0x4efd,
+        .Data4 = {0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0},
+    };
     static constexpr DEVPROPKEY BUS_NUMBER_KEY{.fmtid = DEVICE_PROPERTY_GUID, .pid = 23};
     static constexpr DEVPROPKEY ADDRESS_KEY{.fmtid = DEVICE_PROPERTY_GUID, .pid = 30};
     static constexpr DEVPROPKEY POWER_DATA_KEY{.fmtid = DEVICE_PROPERTY_GUID, .pid = 32};

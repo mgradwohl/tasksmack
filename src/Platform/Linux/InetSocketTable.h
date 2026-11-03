@@ -37,28 +37,38 @@ struct SocketTable
     const char* procFile;
 };
 
-constexpr std::array<SocketTable, 4> SOCKET_TABLES{{
-    {.protocol = ConnectionProtocol::Tcp,
-     .family = ConnectionFamily::IPv4,
-     .ipProtocol = IPPROTO_TCP,
-     .addressFamily = AF_INET,
-     .procFile = "net/tcp"},
-    {.protocol = ConnectionProtocol::Tcp,
-     .family = ConnectionFamily::IPv6,
-     .ipProtocol = IPPROTO_TCP,
-     .addressFamily = AF_INET6,
-     .procFile = "net/tcp6"},
-    {.protocol = ConnectionProtocol::Udp,
-     .family = ConnectionFamily::IPv4,
-     .ipProtocol = IPPROTO_UDP,
-     .addressFamily = AF_INET,
-     .procFile = "net/udp"},
-    {.protocol = ConnectionProtocol::Udp,
-     .family = ConnectionFamily::IPv6,
-     .ipProtocol = IPPROTO_UDP,
-     .addressFamily = AF_INET6,
-     .procFile = "net/udp6"},
-}};
+constexpr std::array<SocketTable, 4> SOCKET_TABLES{
+    {
+        {
+            .protocol = ConnectionProtocol::Tcp,
+            .family = ConnectionFamily::IPv4,
+            .ipProtocol = IPPROTO_TCP,
+            .addressFamily = AF_INET,
+            .procFile = "net/tcp",
+        },
+        {
+            .protocol = ConnectionProtocol::Tcp,
+            .family = ConnectionFamily::IPv6,
+            .ipProtocol = IPPROTO_TCP,
+            .addressFamily = AF_INET6,
+            .procFile = "net/tcp6",
+        },
+        {
+            .protocol = ConnectionProtocol::Udp,
+            .family = ConnectionFamily::IPv4,
+            .ipProtocol = IPPROTO_UDP,
+            .addressFamily = AF_INET,
+            .procFile = "net/udp",
+        },
+        {
+            .protocol = ConnectionProtocol::Udp,
+            .family = ConnectionFamily::IPv6,
+            .ipProtocol = IPPROTO_UDP,
+            .addressFamily = AF_INET6,
+            .procFile = "net/udp6",
+        },
+    },
+};
 
 /// One socket, raw: the kernel's state number and the endpoints in network byte order.
 struct RawInetSocket
@@ -112,11 +122,13 @@ struct RawInetSocket
 /// The interface row for @p socket.
 [[nodiscard]] constexpr ProcessConnection toConnection(const RawInetSocket& socket) noexcept
 {
-    return {.protocol = socket.protocol,
-            .family = socket.family,
-            .local = socket.local,
-            .remote = socket.remote,
-            .state = connectionStateFromLinux(socket.state)};
+    return {
+        .protocol = socket.protocol,
+        .family = socket.family,
+        .local = socket.local,
+        .remote = socket.remote,
+        .state = connectionStateFromLinux(socket.state),
+    };
 }
 
 namespace Detail
@@ -237,12 +249,14 @@ parseProcNetLine(std::string_view line, ConnectionProtocol protocol, ConnectionF
     {
         return std::nullopt;
     }
-    return RawInetSocket{.inode = inode,
-                         .protocol = protocol,
-                         .family = family,
-                         .state = static_cast<std::uint8_t>(*state),
-                         .local = *local,
-                         .remote = *remote};
+    return RawInetSocket{
+        .inode = inode,
+        .protocol = protocol,
+        .family = family,
+        .state = static_cast<std::uint8_t>(*state),
+        .local = *local,
+        .remote = *remote,
+    };
 }
 
 /// Every socket in the whole text of one /proc/net table, appended to @p out. Lines that do not parse

@@ -196,8 +196,10 @@ class ConnectionCloseControl
         }
         else
         {
-            m_Result = {.ok = false,
-                        .text = std::format("Couldn't close {}'s connection to {}: {}", row.process, row.remote, result.errorMessage)};
+            m_Result = {
+                .ok = false,
+                .text = std::format("Couldn't close {}'s connection to {}: {}", row.process, row.remote, result.errorMessage),
+            };
         }
         m_ResultSecondsLeft = RESULT_SECONDS;
         m_Closed = m_Closed || result.success;
