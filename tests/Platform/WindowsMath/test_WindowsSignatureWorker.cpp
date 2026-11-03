@@ -364,6 +364,13 @@ TEST_F(SignatureWorkerTest, TheQueuedCountFollowsEveryAdmissionAnswerEvictionAnd
         EXPECT_EQ(worker.queuedPathCount(), queued) << step;
         EXPECT_EQ(worker.pathCount(), paths) << step;
     };
+    // With the gate open, or for a path whose answer is cached (which never reaches the gate), the worker
+    // could answer a path just admitted before its count is read. Holding the fakes' lock stops the worker
+    // in openImage() until the count has been read; it is let go before waiting for the worker.
+    const auto holdTheWorker = []
+    {
+        return std::unique_lock(fakes().mutex);
+    };
     expectCounts(0, 0, "a new worker");
     worker.request("a");
     worker.request("a");
@@ -377,13 +384,19 @@ TEST_F(SignatureWorkerTest, TheQueuedCountFollowsEveryAdmissionAnswerEvictionAnd
     setGate(true);
     ASSERT_TRUE(worker.waitUntilIdle(WAIT));
     expectCounts(0, 2, "a and b answered");
-    worker.request("a");
-    expectCounts(1, 2, "an answered path asked for again is queued again, in its own entry");
+    {
+        const auto held = holdTheWorker();
+        worker.request("a");
+        expectCounts(1, 2, "an answered path asked for again is queued again, in its own entry");
+    }
     ASSERT_TRUE(worker.waitUntilIdle(WAIT));
     expectCounts(0, 2, "answered again");
 
-    worker.request("c");
-    expectCounts(1, 1, "full of answered paths: the sweep forgets a and b, and c is admitted");
+    {
+        const auto held = holdTheWorker();
+        worker.request("c");
+        expectCounts(1, 1, "full of answered paths: the sweep forgets a and b, and c is admitted");
+    }
     ASSERT_TRUE(worker.waitUntilIdle(WAIT));
     fakes().throwOnCheck = true;
     worker.request("d");
@@ -402,8 +415,11 @@ TEST_F(SignatureWorkerTest, TheQueuedCountFollowsEveryAdmissionAnswerEvictionAnd
     ASSERT_TRUE(worker.waitUntilIdle(WAIT));
     expectCounts(0, 2, "e and f answered");
     EXPECT_EQ(checksOf("g"), 0) << "never queued";
-    EXPECT_FALSE(worker.find("g").has_value());
-    expectCounts(1, 1, "g's turn: admitted once there's room");
+    {
+        const auto held = holdTheWorker();
+        EXPECT_FALSE(worker.find("g").has_value());
+        expectCounts(1, 1, "g's turn: admitted once there's room");
+    }
     ASSERT_TRUE(worker.waitUntilIdle(WAIT));
     expectCounts(0, 1, "g answered");
     EXPECT_TRUE(worker.find("g").has_value());
