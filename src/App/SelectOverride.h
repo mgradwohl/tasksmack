@@ -465,9 +465,10 @@ struct MainTabChoice
     return !choice.id.has_value();
 }
 
-/// Tab-bar frames a TASKSMACK_TAB request may wait for its tab to be selected before it is dropped
-/// (about 2 s at 60 fps). ImGui selects it on the second frame; this only bounds a request that can
-/// never be met, so it cannot hold the tab bar on one tab for good.
+/// Tab-bar frames a TASKSMACK_TAB request may wait for its tab to be selected before it is dropped.
+/// ImGui selects it on the second frame; this only bounds a request that can never be met, so it
+/// cannot hold the tab bar on one tab for good. Counts draws, not time (#3346): what it waits for
+/// happens a frame later, however long the frame takes.
 inline constexpr int MAX_MAIN_TAB_FRAMES = 120;
 
 /// The TASKSMACK_TAB selection waiting to take effect (#1575). It names the tab by its registered id
