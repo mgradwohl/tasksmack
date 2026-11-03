@@ -9,9 +9,11 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cstdint>
 #include <stop_token>
 #include <string>
+#include <thread>
 #include <vector>
 
 #ifdef TASKSMACK_HAS_SDBUS
@@ -197,6 +199,22 @@ TEST_F(LogindSessionsTest, LockAndSignOutGoToLogindAndAnotherUsersSessionNeedsTh
     EXPECT_FALSE(gone.ok);
     EXPECT_FALSE(gone.needsAuthorization);
     EXPECT_EQ(calls(), (std::vector<std::string>{"LockSession 2", "TerminateSession 5"}));
+}
+
+// #3374: a stop request while logind hasn't answered the lock (TaskSmack closing) ends it as a cancellation.
+TEST_F(LogindSessionsTest, AStopRequestedWhileLogindHasntAnsweredCancelsTheAction)
+{
+    m_Bus.addUnansweredMethod(LOGIN1_PATH, MANAGER, "LockSession");
+    ASSERT_TRUE(m_Bus.start(LOGIN1)) << m_Bus.error();
+    std::stop_source stop;
+    const std::jthread canceller(
+        [&stop]
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            stop.request_stop();
+        });
+    const ServiceActionResult result = SystemdBus::sessionAction("2", SessionAction::Lock, false, stop.get_token());
+    EXPECT_TRUE(result.cancelled) << result.message;
 }
 
 TEST_F(LogindSessionsTest, TheLinuxSessionsReadThroughTheBusAndSayWhyWhenLogindIsAway)
