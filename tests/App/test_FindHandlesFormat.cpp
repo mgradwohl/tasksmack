@@ -34,8 +34,8 @@ std::vector<HandleMatch> matches()
     return {
         match(30, "nginx", HandleKind::Socket, "/run/b.sock"), // 0
         match(10, "Bash", HandleKind::File, "/home/a.txt"),    // 1
-        match(20, "zsh", HandleKind::Directory, "/Home/z"),    // 2
-        match(40, "cron", HandleKind::Library, "/lib/c.so"),   // 3
+        match(20, "Zsh", HandleKind::Directory, "/Home/z"),    // 2
+        match(40, "cron", HandleKind::Device, "/lib/c.so"),    // 3
     };
 }
 
@@ -43,14 +43,15 @@ TEST(FindHandlesOrderTest, EachColumnSortsBothWays)
 {
     const std::vector<HandleMatch> list = matches();
     using App::FindHandlesColumn;
-    // Process names fold ASCII case: Bash, cron, nginx, zsh.
+    // Process names fold ASCII case: Bash, cron, nginx, Zsh (case-sensitive would put Zsh before cron).
     EXPECT_EQ(App::orderFindHandlesMatches(list, FindHandlesColumn::Process, true), (std::vector<std::size_t>{1, 3, 0, 2}));
     EXPECT_EQ(App::orderFindHandlesMatches(list, FindHandlesColumn::Process, false), (std::vector<std::size_t>{2, 0, 3, 1}));
     EXPECT_EQ(App::orderFindHandlesMatches(list, FindHandlesColumn::Pid, true), (std::vector<std::size_t>{1, 2, 0, 3}));
     EXPECT_EQ(App::orderFindHandlesMatches(list, FindHandlesColumn::Pid, false), (std::vector<std::size_t>{3, 0, 2, 1}));
-    // By the label the table shows: File, Folder, Library, Socket.
-    EXPECT_EQ(App::orderFindHandlesMatches(list, FindHandlesColumn::Kind, true), (std::vector<std::size_t>{1, 2, 3, 0}));
-    EXPECT_EQ(App::orderFindHandlesMatches(list, FindHandlesColumn::Kind, false), (std::vector<std::size_t>{0, 3, 2, 1}));
+    // By the label the table shows: Device, File, Folder, Socket. Device's enum value comes after the others, so
+    // comparing enum values instead would put it last.
+    EXPECT_EQ(App::orderFindHandlesMatches(list, FindHandlesColumn::Kind, true), (std::vector<std::size_t>{3, 1, 2, 0}));
+    EXPECT_EQ(App::orderFindHandlesMatches(list, FindHandlesColumn::Kind, false), (std::vector<std::size_t>{0, 2, 1, 3}));
     // Paths fold ASCII case too: /home/a.txt, /Home/z, /lib/c.so, /run/b.sock.
     EXPECT_EQ(App::orderFindHandlesMatches(list, FindHandlesColumn::Path, true), (std::vector<std::size_t>{1, 2, 3, 0}));
     EXPECT_EQ(App::orderFindHandlesMatches(list, FindHandlesColumn::Path, false), (std::vector<std::size_t>{0, 3, 2, 1}));
