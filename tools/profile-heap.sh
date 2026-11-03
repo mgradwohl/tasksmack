@@ -2,14 +2,14 @@
 # tools/profile-heap.sh — Heap allocation profiling for TaskSmack using heaptrack.
 #
 # Usage:
-#   ./tools/profile-heap.sh app   [--preset <preset>] [--skip-build] [--user-config]
+#   ./tools/profile-heap.sh app   [--preset <preset>] [--skip-build] [--user-config] [--duration <seconds>]
 #   ./tools/profile-heap.sh bench [--preset <preset>] [--skip-build]
 #                                 [--bench-filter <regex>] [--bench-reps <n>]
 #                                 [--bench-min-time <t>]
 #   ./tools/profile-heap.sh -h | --help   # print this help
 #
 # Modes:
-#   app   — launch TaskSmack under heaptrack, wait for exit. Default preset: profile.
+#   app   — launch TaskSmack under heaptrack, wait for exit (or for --duration). Default preset: profile.
 #   bench — run TaskSmackBenchmarks under heaptrack. Default preset: benchmark.
 #
 # App mode runs TaskSmack with a fresh, empty TASKSMACK_CONFIG_DIR, removed afterwards (#2250), so it
@@ -18,6 +18,13 @@
 # instead, and refuses to start while a TaskSmack of yours is running. A TaskSmack turned away by
 # another instance's lock (it logs "TaskSmack is already running", or exits with code 75) fails the
 # run. TaskSmack's stdout is also copied to heaptrack-app-<timestamp>-app.log.
+#
+# --duration <seconds> (app mode, #3406): once TaskSmack logs "Entering main loop" (up to 30 s; it is launched
+# with TASKSMACK_LOG_LEVEL=info unless that is already set, so release builds log it too), record for this long,
+# then close TaskSmack with SIGTERM, so an unattended run (an agent, CI, a re-measure) ends on its own, as
+# profile-perf.sh's --duration does. The signal goes to TaskSmack itself, not to heaptrack's wrapper script, so
+# heaptrack finishes its file normally. The run fails if TaskSmack exits before the main loop or before
+# --duration elapses, or exits non-zero after the signal. 0 (the default) waits for you to close it.
 #
 # Outputs under perf-data/:
 #   heaptrack-<mode>-<timestamp>.gz|.zst — heaptrack data (open with heaptrack_gui or heaptrack_print)
@@ -37,6 +44,7 @@
 #
 # Examples:
 #   ./tools/profile-heap.sh app
+#   ./tools/profile-heap.sh app --duration 60     # unattended: 60 s of steady state, then closed
 #   ./tools/profile-heap.sh bench --bench-filter 'BM_ProcessModel_Refresh$'
 #   ./tools/profile-heap.sh bench --preset profile  # debug-info build for better attribution
 
@@ -61,7 +69,7 @@ MODE="${1:-}"
 shift || true
 
 if [[ -z "${MODE}" || ( "${MODE}" != "app" && "${MODE}" != "bench" ) ]]; then
-    echo "Usage: $0 app   [--preset <preset>] [--skip-build] [--user-config]" >&2
+    echo "Usage: $0 app   [--preset <preset>] [--skip-build] [--user-config] [--duration <seconds>]" >&2
     echo "       $0 bench [--preset <preset>] [--skip-build] [--bench-filter <regex>] [--bench-reps <n>] [--bench-min-time <t>]" >&2
     echo "       $0 -h | --help" >&2
     exit 1
@@ -73,6 +81,7 @@ USE_USER_CONFIG=0
 BENCH_FILTER='BM_(ProcessProbe_Enumerate|ProcessModel_Refresh|SystemProbe_Sample|SystemModel_Refresh|GPUProbe_ReadCounters|GPUModel_Refresh)$'
 BENCH_REPS=3
 BENCH_MIN_TIME="0.5s"
+DURATION_SECONDS=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -82,6 +91,7 @@ while [[ $# -gt 0 ]]; do
         --bench-reps)     [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; BENCH_REPS="$2";       shift 2 ;;
         --bench-min-time) [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; BENCH_MIN_TIME="$2";   shift 2 ;;
         --user-config)    USE_USER_CONFIG=1;      shift   ;;
+        --duration)       [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; DURATION_SECONDS="$2"; shift 2 ;;
         -h|--help)        sed -n '2,/^$/{/^$/d;s/^# \{0,1\}//;p;}' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) echo "Unknown argument: $1" >&2; exit 1 ;;
     esac
@@ -89,6 +99,12 @@ done
 
 if [[ "${MODE}" != "app" && "${USE_USER_CONFIG}" -eq 1 ]]; then
     echo "ERROR: --user-config applies to app mode only" >&2
+    exit 1
+fi
+[[ "${DURATION_SECONDS}" =~ ^[0-9]+$ ]] || { echo "ERROR: --duration must be a whole number of seconds" >&2; exit 1; }
+DURATION_SECONDS=$((10#${DURATION_SECONDS}))
+if [[ "${MODE}" != "app" && "${DURATION_SECONDS}" -gt 0 ]]; then
+    echo "ERROR: --duration applies to app mode only" >&2
     exit 1
 fi
 
@@ -208,11 +224,67 @@ fi
     if [[ "${MODE}" = "app" ]]; then
         echo "CONFIG_DIR=${CONFIG_DIR:-user config (--user-config)}"
         echo "APP_LOG=${APP_LOG}"
+        echo "DURATION_SECONDS=${DURATION_SECONDS}"
     fi
 } > "${LOG_FILE}"
 
 HEAP_EXIT_CODE=0
-if [[ "${MODE}" = "app" ]]; then
+if [[ "${MODE}" = "app" && "${DURATION_SECONDS}" -gt 0 ]]; then
+    # Unattended (#3406): heaptrack in the background, TaskSmack found as its child, closed after --duration.
+    MAIN_LOOP_MARKER="Entering main loop" # Logged by Core::Application::run() at info level
+    export TASKSMACK_LOG_LEVEL="${TASKSMACK_LOG_LEVEL:-info}"
+    echo ""
+    echo "Launching TaskSmack under heaptrack; it is closed ${DURATION_SECONDS}s after its main loop starts."
+    echo ""
+    heaptrack -o "${HEAPTRACK_BASE}" "${BINARY}" > >(tee "${APP_LOG}") 2> >(tee -a "${LOG_FILE}" >&2) &
+    HEAP_PID=$!
+    APP_PID=""
+    # heaptrack runs TaskSmack as its own child; matched by its command line (the binary's full path), which
+    # holds for the real binary and for a script standing in for it, whose process name is its interpreter's.
+    BINARY_PATTERN="$(printf '%s' "${BINARY}" | sed 's/[][\\.*^$+?(){}|]/\\&/g')"
+    for ((i = 0; i < 300; i++)); do
+        APP_PID="$(pgrep -P "${HEAP_PID}" -f -- "${BINARY_PATTERN}" | head -1 || true)"
+        [[ -n "${APP_PID}" ]] && break
+        kill -0 "${HEAP_PID}" 2>/dev/null || break
+        sleep 0.1
+    done
+    END_REASON=""
+    if [[ -z "${APP_PID}" ]]; then
+        END_REASON="exited, or never logged '${MAIN_LOOP_MARKER}', within 30s of starting"
+    else
+        for ((i = 0; i < 300; i++)); do
+            grep -q "${MAIN_LOOP_MARKER}" "${APP_LOG}" 2>/dev/null && break
+            kill -0 "${APP_PID}" 2>/dev/null || break
+            sleep 0.1
+        done
+        if ! grep -q "${MAIN_LOOP_MARKER}" "${APP_LOG}" 2>/dev/null; then
+            END_REASON="exited, or never logged '${MAIN_LOOP_MARKER}', within 30s of starting"
+        else
+            for ((i = 0; i < DURATION_SECONDS; i++)); do
+                kill -0 "${APP_PID}" 2>/dev/null || { END_REASON="exited on its own before --duration elapsed"; break; }
+                sleep 1
+            done
+        fi
+    fi
+    kill -TERM "${APP_PID:-${HEAP_PID}}" 2>/dev/null || true
+    set +e
+    wait "${HEAP_PID}"
+    HEAP_EXIT_CODE=$?
+    set -e
+    echo "EXIT_CODE=${HEAP_EXIT_CODE}" >> "${LOG_FILE}"
+    if [[ -z "${END_REASON}" && "${HEAP_EXIT_CODE}" -ne 0 ]]; then
+        END_REASON="exited with code ${HEAP_EXIT_CODE} after the script's SIGTERM"
+    fi
+    if [[ -n "${END_REASON}" ]]; then
+        [[ "${HEAP_EXIT_CODE}" -ne 0 ]] || HEAP_EXIT_CODE=1
+        echo "END_REASON=${END_REASON}" >> "${LOG_FILE}"
+        if [[ "${HEAP_EXIT_CODE}" -eq "${ALREADY_RUNNING_EXIT_CODE}" ]] || grep -q "${ALREADY_RUNNING_MARKER}" "${APP_LOG}" 2>/dev/null; then
+            die "TaskSmack exited (code ${HEAP_EXIT_CODE}): another TaskSmack is already running with the same config directory. See ${APP_LOG}."
+        fi
+        die "TaskSmack ${END_REASON}, so the allocation profile doesn't cover the --duration window. See ${APP_LOG} and ${LOG_FILE}."
+    fi
+    echo "END_REASON=closed cleanly by the script's SIGTERM after --duration" >> "${LOG_FILE}"
+elif [[ "${MODE}" = "app" ]]; then
     echo ""
     echo "Launching TaskSmack under heaptrack. Exercise the application, then close it."
     echo ""
