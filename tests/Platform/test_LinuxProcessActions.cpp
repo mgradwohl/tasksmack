@@ -2845,6 +2845,92 @@ TEST(LinuxProcessActionsTest, CloseConnectionWithoutPtraceAccessIsAPermissionRef
     EXPECT_TRUE(result.permissionDenied);
 }
 
+/// The descriptor the faked pidfd_getfd() hands back, and the errno it or shutdown() fails with (#3374).
+// NOLINTBEGIN(cppcoreguidelines-avoid-non-const-global-variables) - plain function pointer hooks can't capture
+int g_CopiedFd = -1;
+int g_ScanErrno = 0;
+int g_GetfdErrno = 0;
+int g_ShutdownErrno = 0;
+// NOLINTEND(cppcoreguidelines-avoid-non-const-global-variables)
+
+// #3374: every way closing a connection can fail after the identity check says what it was, and only a permission
+// error reads as a refusal (which BrokeredProcessActions retries through the helper).
+TEST(LinuxProcessActionsTest, CloseConnectionSaysWhichStepFailedAndOnlyPermissionIsARefusal)
+{
+    LinuxProcessSyscalls syscalls = realProcessSyscalls();
+    syscalls.socketDescriptor = [](std::int32_t, std::uint64_t) -> std::expected<int, int>
+    {
+        if (g_ScanErrno != 0)
+        {
+            return std::unexpected(g_ScanErrno);
+        }
+        return 5;
+    };
+    syscalls.pidfdGetfd = [](int, int)
+    {
+        if (g_GetfdErrno != 0)
+        {
+            errno = g_GetfdErrno;
+            return -1;
+        }
+        return ::fcntl(g_CopiedFd, F_DUPFD_CLOEXEC, 0); // a copy of a real connected socket
+    };
+    syscalls.shutdownSocket = [](int)
+    {
+        errno = g_ShutdownErrno;
+        return g_ShutdownErrno == 0 ? 0 : -1;
+    };
+    LinuxProcessControl control(syscalls);
+    const auto close = [&control](std::uint64_t inode, int scanErrno, int getfdErrno, int shutdownErrno)
+    {
+        g_ScanErrno = scanErrno;
+        g_GetfdErrno = getfdErrno;
+        g_ShutdownErrno = shutdownErrno;
+        return control.closeConnection(ownTarget(), inode);
+    };
+
+    // The /proc scan: the socket is gone, the scan was refused, or it failed some other way.
+    ProcessActionResult result = close(42, ENOENT, 0, 0);
+    EXPECT_FALSE(result.success);
+    EXPECT_TRUE(result.errorMessage.contains("no longer holds this socket")) << result.errorMessage;
+    EXPECT_FALSE(result.permissionDenied);
+    result = close(42, EACCES, 0, 0);
+    EXPECT_FALSE(result.success);
+    EXPECT_TRUE(result.permissionDenied);
+    result = close(42, EIO, 0, 0);
+    EXPECT_FALSE(result.success);
+    EXPECT_FALSE(result.permissionDenied);
+    EXPECT_EQ(result.errorMessage, std::system_category().message(EIO));
+
+    // pidfd_getfd(): missing before Linux 5.6, or failing other than by permission.
+    result = close(42, 0, ENOSYS, 0);
+    EXPECT_FALSE(result.success);
+    EXPECT_TRUE(result.errorMessage.contains("Linux 5.6")) << result.errorMessage;
+    EXPECT_FALSE(result.permissionDenied);
+    result = close(42, 0, EBADF, 0);
+    EXPECT_FALSE(result.success);
+    EXPECT_FALSE(result.permissionDenied);
+    EXPECT_EQ(result.errorMessage, std::system_category().message(EBADF));
+
+    // shutdown() on the copy of a real connected socket: not connected, or another error.
+    std::array<int, 2> pair{-1, -1};
+    ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, pair.data()), 0);
+    const Posix::FdGuard pairA(pair[0]);
+    const Posix::FdGuard pairB(pair[1]);
+    struct stat info{};
+    ASSERT_EQ(::fstat(pair[0], &info), 0);
+    g_CopiedFd = pair[0];
+    result = close(info.st_ino, 0, 0, ENOTCONN);
+    EXPECT_FALSE(result.success);
+    EXPECT_TRUE(result.errorMessage.contains("isn't connected")) << result.errorMessage;
+    result = close(info.st_ino, 0, 0, EIO);
+    EXPECT_FALSE(result.success);
+    EXPECT_EQ(result.errorMessage, std::system_category().message(EIO));
+    result = close(info.st_ino, 0, 0, 0);
+    EXPECT_TRUE(result.success) << result.errorMessage;
+    g_CopiedFd = -1;
+}
+
 // --- Efficiency mode (#3202) ---------------------------------------------------------------------------
 
 TEST(LinuxEfficiencyModeTest, TheCgroupFilesAndTheRestoreRules)
