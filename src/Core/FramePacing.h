@@ -67,7 +67,10 @@ struct EventDrainResult
 /// application's pollAndDispatch closure is 80 bytes, and a by-value parameter copied it every frame. Both
 /// are called many times, as lvalues, so neither is forwarded.
 template<typename PollAndDispatch, typename ElapsedMs>
-    requires std::predicate<PollAndDispatch&> && std::invocable<ElapsedMs&> && std::convertible_to<std::invoke_result_t<ElapsedMs&>, double>
+// std::invocable, not std::predicate/regular_invocable: pollAndDispatch consumes an event per call, so it
+// isn't equality-preserving, and neither is the clock read.
+    requires std::invocable<PollAndDispatch&> && std::convertible_to<std::invoke_result_t<PollAndDispatch&>, bool> &&
+             std::invocable<ElapsedMs&> && std::convertible_to<std::invoke_result_t<ElapsedMs&>, double>
 // NOLINTNEXTLINE(cppcoreguidelines-missing-std-forward) - called many times as lvalues; forwarding one call would be wrong
 [[nodiscard]] auto drainEventsWithinBudget(PollAndDispatch&& pollAndDispatch, ElapsedMs&& elapsedMs, double drainBudgetMs)
     -> EventDrainResult
