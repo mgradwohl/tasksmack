@@ -1726,6 +1726,11 @@ sudo apt install heaptrack
 # App trace (fresh temporary config; --user-config profiles with your own settings)
 ./tools/profile-heap.sh app
 
+# Unattended app trace (#3406): closed 60 s after its main loop starts, for agents, CI and re-measures.
+# Use the profile preset (the default) when you need TaskSmack's own call sites named: release-type
+# presets have no symbols, so heaptrack shows them as addresses.
+./tools/profile-heap.sh app --duration 60
+
 # Benchmark trace — pinpoint per-call allocation sources
 ./tools/profile-heap.sh bench
 ./tools/profile-heap.sh bench --bench-filter 'BM_ProcessModel_Refresh$'
