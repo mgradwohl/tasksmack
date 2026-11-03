@@ -1042,6 +1042,10 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
     std::vector<ProcessCounters> results;
     results.reserve(m_LastEnumeratedProcessCount);
     ++m_DetailCacheGeneration;
+    if (m_Signatures != nullptr)
+    {
+        m_Signatures->beginSample(); // A signature waiting its turn keeps it at most a sample past its last ask (#3403)
+    }
 
     auto* queryFn = m_Fns.system.ntQuerySystemInformation;
     if (queryFn == nullptr)
