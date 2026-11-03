@@ -9,12 +9,15 @@
     _DETAILS_TAB, _OPEN, and TASKSMACK_DEMO for the shots the startup hooks alone don't reach) and
     TASKSMACK_SCREENSHOT, which writes the frame in-app and quits (CONTRIBUTING.md, "Visual validation
     without input"). Same matrix and names as screenshots.sh, less the Environment and Security
-    sections, which TaskSmack reads on Linux only.
+    sections, which TaskSmack reads on Linux only, and plus the grouped Processes and Users shots, which
+    screenshots.sh doesn't take yet.
 
     Matrix: Overview in every theme; Processes and System in the first dark and the first light theme;
-    the machine tab's CPU Cores, GPU and Network and I/O sub-tabs (cores, gpu, network; #2869), Process
-    Details (overview, gpu, network, and the Overview with its Modules, Open files and Connections
-    sections expanded, each at -SectionWindow) for one process, Services, Startup, Settings, About and
+    the Processes table grouped by service (Unit, with the Services column shown, since that column is
+    what has Windows read the service list) and by user (#3068); the machine tab's CPU Cores, GPU and
+    Network and I/O sub-tabs (cores, gpu, network; #2869), Process Details (overview, gpu, network, and
+    the Overview with its Modules and Connections sections expanded at -SectionWindow and its Open
+    files section at -OpenFilesWindow) for one process, Services, Startup, Users, Settings, About and
     Help in the first theme; and three
     frame sequences written as animated WebPs: overview-live (8 s of the Overview),
     walk-live (10 s: the Processes table, the process selected, its Process Details' Network tab) and
@@ -35,12 +38,17 @@
 .PARAMETER Window
     Window size as WxH (default: 1440x900)
 .PARAMETER SectionWindow
-    Window size for the details-<section> shots (default: -Window; screenshots.sh uses 1440x1200, since on
-    Linux the taller Actions and Priority cards push the Overview's sections below a 900 px fold)
+    Window size for the details-modules and details-connections shots (default: 1440x1200: the Overview's
+    cards push its sections below a 900 px fold)
+.PARAMETER OpenFilesWindow
+    Window size for the details-openfiles shot (default: 1440x1400: Open files is the last section)
 .PARAMETER Themes
     Theme ids; the first is the dark theme, the first containing "light" the light one
 .PARAMETER Process
     Process for the Process Details and Processes shots (default: explorer.exe)
+.PARAMETER ConnectionsPid
+    A process to show in details-connections instead of -Process, for one known to hold sockets
+    (explorer.exe often holds none)
 .PARAMETER WebP
     Convert each PNG to WebP (cwebp -q 80) and each sequence to an animated WebP
 .PARAMETER NoLive
@@ -56,9 +64,11 @@ param(
     [string]$Out = (Join-Path $PSScriptRoot "..\docs\images\screenshots\windows"),
     [int]$After = 8,
     [string]$Window = "1440x900",
-    [string]$SectionWindow = "",
+    [string]$SectionWindow = "1440x1200",
+    [string]$OpenFilesWindow = "1440x1400",
     [string[]]$Themes = @("windows-dark", "ubuntu-light", "dracula", "nord-light", "gruvbox", "monochrome-light"),
     [string]$Process = "explorer.exe",
+    [int]$ConnectionsPid = 0,
     [switch]$WebP,
     [switch]$NoLive
 )
@@ -86,7 +96,6 @@ if ($WebP -and -not (Get-Command cwebp -ErrorAction SilentlyContinue)) {
     Write-Error "-WebP needs cwebp and img2webp from libwebp: winget install Google.Libwebp"
     exit 1
 }
-if (-not $SectionWindow) { $SectionWindow = $Window }
 $Work = Join-Path ([System.IO.Path]::GetTempPath()) "tasksmack-shots-$PID"
 $PngDir = Join-Path $Work "png"
 $null = New-Item -ItemType Directory -Force -Path $Out, $PngDir
@@ -101,9 +110,10 @@ Write-Host ("{0,-30} {1,5} {2,8} {3,10}" -f 'name', 'exit', 'seconds', 'bytes')
 
 # One shot: its own config dir, the hooks in $Hooks, TASKSMACK_SCREENSHOT with $Sequence appended
 # (";frames=N;fps=F" for a live sequence), then wait for TaskSmack to quit by itself. -Full gives
-# the shot the 60 s history window and the 60 s wait; -ShotWindow a window other than -Window.
+# the shot the 60 s history window and the 60 s wait; -ShotWindow a window other than -Window; -Toml
+# lines appended to the config, which ends in its [process_columns] table.
 function Invoke-Shot {
-    param([string]$Name, [string]$Theme, [hashtable]$Hooks, [string]$Sequence = "", [switch]$Full, [string]$ShotWindow = "")
+    param([string]$Name, [string]$Theme, [hashtable]$Hooks, [string]$Sequence = "", [switch]$Full, [string]$ShotWindow = "", [string]$Toml = "")
     $cfg = Join-Path $Work $Name
     $null = New-Item -ItemType Directory -Force -Path $cfg
     $window = if ($ShotWindow) { $ShotWindow } else { $Window }
@@ -111,8 +121,9 @@ function Invoke-Shot {
     $after = if ($Full) { $OverviewAfter } else { $After }
     $history = if ($Full) { "history_max_seconds = $OverviewHistorySeconds`n" } else { "" }
     $toml = "[theme]`nid = '$Theme'`n[font]`nsize = 'medium'`n[sampling]`ninterval_ms = 1000`n$history" +
-            "[window]`nwidth = $width`nheight = $height`n[process_columns]`ncommand = false`n"
-    Set-Content -LiteralPath (Join-Path $cfg "config.toml") -Value $toml -Encoding utf8 -NoNewline
+            "[window]`nwidth = $width`nheight = $height`n[process_columns]`ncommand = false`n$Toml"
+    # Without a BOM, which Windows PowerShell 5.1's Set-Content -Encoding utf8 writes (the Sandbox has only 5.1).
+    [System.IO.File]::WriteAllText((Join-Path $cfg "config.toml"), $toml, (New-Object System.Text.UTF8Encoding $false))
     $shot = Join-Path $PngDir "$Name.png"
     $vars = @{ TASKSMACK_CONFIG_DIR = $cfg; TASKSMACK_WINDOW = $window; TASKSMACK_SCREENSHOT = "$shot;after=$after$Sequence" } + $Hooks
     foreach ($k in $vars.Keys) { Set-Item -Path "Env:$k" -Value $vars[$k] }
@@ -171,6 +182,10 @@ foreach ($t in @($Dark) + $Light) {
     # By its id, SystemInfo, the more robust form: a tab's id never changes, its label may.
     Invoke-Shot "system-$t" $t @{ TASKSMACK_TAB = 'SystemInfo' }
 }
+# The Processes table grouped (#3068). Windows reads the service list Unit groups by only while something
+# shows services, so the unit shot shows the Services column; the App grouping is Linux's (systemd scopes).
+Invoke-Shot "processes-grouped-unit-$Dark" $Dark @{ TASKSMACK_TAB = 'Processes' } -Toml "services = true`n[process_table]`ngroup_by = 'unit'`n"
+Invoke-Shot "processes-grouped-user-$Dark" $Dark @{ TASKSMACK_TAB = 'Processes' } -Toml "[process_table]`ngroup_by = 'user'`n"
 # The machine tab's sub-tabs (#2869), after the usual wait: the GPU and network charts need a few samples.
 foreach ($sub in 'cores', 'gpu', 'network') {
     Invoke-Shot "$sub-$Dark" $Dark @{ TASKSMACK_TAB = 'overview'; TASKSMACK_MACHINE_TAB = $sub }
@@ -182,10 +197,13 @@ foreach ($tab in 'overview', 'gpu', 'network') {
 # startup selection has settled. The Environment and Security sections are read on Linux only (#179,
 # #1526), so screenshots.sh alone takes details-environment and details-security.
 foreach ($section in 'modules', 'openfiles', 'connections') {
-    Invoke-Shot "details-$section-$Dark" $Dark @{ TASKSMACK_SELECT_NAME = $Process; TASKSMACK_DETAILS_TAB = 'overview'; TASKSMACK_DEMO = "1:section=$section" } -ShotWindow $SectionWindow
+    $target = if ($section -eq 'connections' -and $ConnectionsPid -gt 0) { @{ TASKSMACK_SELECT_PID = "$ConnectionsPid" } } else { @{ TASKSMACK_SELECT_NAME = $Process } }
+    $sectionWindow = if ($section -eq 'openfiles') { $OpenFilesWindow } else { $SectionWindow }
+    Invoke-Shot "details-$section-$Dark" $Dark ($target + @{ TASKSMACK_DETAILS_TAB = 'overview'; TASKSMACK_DEMO = "1:section=$section" }) -ShotWindow $sectionWindow
 }
 Invoke-Shot "services-$Dark" $Dark @{ TASKSMACK_TAB = 'Services' }
 Invoke-Shot "startup-$Dark" $Dark @{ TASKSMACK_TAB = 'Startup' }
+Invoke-Shot "users-$Dark" $Dark @{ TASKSMACK_TAB = 'Users' }
 Invoke-Shot "settings-$Dark" $Dark @{ TASKSMACK_TAB = 'overview'; TASKSMACK_OPEN = 'settings' }
 Invoke-Shot "about-$Dark" $Dark @{ TASKSMACK_TAB = 'overview'; TASKSMACK_OPEN = 'about' }
 Invoke-Shot "help-$Dark" $Dark @{ TASKSMACK_TAB = 'overview'; TASKSMACK_OPEN = 'help' }
