@@ -746,29 +746,32 @@ TEST_F(SystemdActionsFakeTest, AStopRequestedWhileWaitingEndsTheWait)
     EXPECT_EQ(calls(), (std::vector<std::string>{"StartUnit cron.service replace"})); // the request already sent stands
 }
 
-/// Requests @p stop after a short delay, for a call the fake never answers (#3374).
-std::jthread stopSoon(std::stop_source& stop)
-{
-    return std::jthread(
-        [&stop]
-        {
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            stop.request_stop();
-        });
-}
+/// The longest a call cancelled by a stop may take: well under the call's own timeout, so a regression that waits
+/// the timeout out before noticing the stop fails (#3374).
+constexpr auto CANCELLED_WITHIN = std::chrono::microseconds(SystemdBus::CALL_TIMEOUT_USEC) / 2;
 
 // #3374: a stop request while systemd hasn't answered the start (TaskSmack closing) ends the call as a
-// cancellation, instead of waiting out the call's own timeout.
+// cancellation, instead of waiting out the call's own timeout. The fake requests the stop when StartUnit arrives
+// and never replies, so the stop lands while the call is in flight, not before it was sent.
 TEST_F(SystemdActionsFakeTest, AStopRequestedWhileTheCallIsUnansweredCancelsIt)
 {
-    m_Bus.addUnansweredMethod(SYSTEMD_PATH, MANAGER, "StartUnit");
-    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
     std::stop_source stop;
-    const std::jthread canceller = stopSoon(stop);
+    m_Bus.addRawMethod(SYSTEMD_PATH,
+                       MANAGER,
+                       "StartUnit",
+                       // NOLINTNEXTLINE(bugprone-exception-escape) - a test fake: an allocation failure here fails the test
+                       [this, stop](sd_bus_message* /*call*/) mutable -> int
+                       {
+                           record("StartUnit");
+                           stop.request_stop();
+                           return 1; // handled, no reply
+                       });
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
     const auto began = std::chrono::steady_clock::now();
     const ServiceActionResult result = SystemdBus::startUnit("cron.service", stop.get_token(), QUICK);
     EXPECT_TRUE(result.cancelled) << result.message;
-    EXPECT_LT(std::chrono::steady_clock::now() - began, std::chrono::seconds(5)) << "ended by the stop, not a timeout";
+    EXPECT_EQ(calls(), (std::vector<std::string>{"StartUnit"})) << "the stop came after the call was sent";
+    EXPECT_LT(std::chrono::steady_clock::now() - began, CANCELLED_WITHIN) << "ended by the stop, not the call's timeout";
 }
 
 // #3374: the same for a start-type change, at its last step: systemd hasn't answered the Reload.
@@ -778,13 +781,23 @@ TEST_F(SystemdActionsFakeTest, AStopRequestedWhileTheReloadIsUnansweredCancelsIt
     {
         serveUnitFileCall(method);
     }
-    m_Bus.addUnansweredMethod(SYSTEMD_PATH, MANAGER, "Reload");
-    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
     std::stop_source stop;
-    const std::jthread canceller = stopSoon(stop);
+    m_Bus.addRawMethod(SYSTEMD_PATH,
+                       MANAGER,
+                       "Reload",
+                       // NOLINTNEXTLINE(bugprone-exception-escape) - a test fake: an allocation failure here fails the test
+                       [this, stop](sd_bus_message* /*call*/) mutable -> int
+                       {
+                           record("Reload");
+                           stop.request_stop();
+                           return 1; // handled, no reply
+                       });
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    const auto began = std::chrono::steady_clock::now();
     const ServiceActionResult result = SystemdBus::setUnitStartType("cron.service", ServiceStartType::Automatic, false, stop.get_token());
     EXPECT_TRUE(result.cancelled) << result.message;
-    EXPECT_EQ(calls(), (std::vector<std::string>{"UnmaskUnitFiles cron.service", "EnableUnitFiles cron.service"}));
+    EXPECT_EQ(calls(), (std::vector<std::string>{"UnmaskUnitFiles cron.service", "EnableUnitFiles cron.service", "Reload"}));
+    EXPECT_LT(std::chrono::steady_clock::now() - began, CANCELLED_WITHIN) << "ended by the stop, not the call's timeout";
 }
 
 // #2472: LinuxServiceActions' "Authenticate and retry" sends each step allowing polkit to prompt, a restart as

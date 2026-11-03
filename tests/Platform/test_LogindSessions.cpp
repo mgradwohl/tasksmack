@@ -13,7 +13,6 @@
 #include <cstdint>
 #include <stop_token>
 #include <string>
-#include <thread>
 #include <vector>
 
 #ifdef TASKSMACK_HAS_SDBUS
@@ -201,20 +200,31 @@ TEST_F(LogindSessionsTest, LockAndSignOutGoToLogindAndAnotherUsersSessionNeedsTh
     EXPECT_EQ(calls(), (std::vector<std::string>{"LockSession 2", "TerminateSession 5"}));
 }
 
-// #3374: a stop request while logind hasn't answered the lock (TaskSmack closing) ends it as a cancellation.
+// #3374: a stop request while logind hasn't answered the lock (TaskSmack closing) ends it as a cancellation. The
+// fake requests the stop when LockSession arrives and never replies, so the stop lands while the call is in flight.
 TEST_F(LogindSessionsTest, AStopRequestedWhileLogindHasntAnsweredCancelsTheAction)
 {
-    m_Bus.addUnansweredMethod(LOGIN1_PATH, MANAGER, "LockSession");
-    ASSERT_TRUE(m_Bus.start(LOGIN1)) << m_Bus.error();
     std::stop_source stop;
-    const std::jthread canceller(
-        [&stop]
-        {
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            stop.request_stop();
-        });
+    m_Bus.addRawMethod(LOGIN1_PATH,
+                       MANAGER,
+                       "LockSession",
+                       // NOLINTNEXTLINE(bugprone-exception-escape) - a test fake: an allocation failure here fails the test
+                       [this, stop](sd_bus_message* /*call*/) mutable -> int
+                       {
+                           {
+                               const std::scoped_lock lock(m_Mutex);
+                               m_Calls.emplace_back("LockSession");
+                           }
+                           stop.request_stop();
+                           return 1; // handled, no reply
+                       });
+    ASSERT_TRUE(m_Bus.start(LOGIN1)) << m_Bus.error();
+    const auto began = std::chrono::steady_clock::now();
     const ServiceActionResult result = SystemdBus::sessionAction("2", SessionAction::Lock, false, stop.get_token());
     EXPECT_TRUE(result.cancelled) << result.message;
+    EXPECT_EQ(calls(), (std::vector<std::string>{"LockSession"})) << "the stop came after the call was sent";
+    EXPECT_LT(std::chrono::steady_clock::now() - began, std::chrono::microseconds(SystemdBus::CALL_TIMEOUT_USEC) / 2)
+        << "ended by the stop, not the call's timeout";
 }
 
 TEST_F(LogindSessionsTest, TheLinuxSessionsReadThroughTheBusAndSayWhyWhenLogindIsAway)
