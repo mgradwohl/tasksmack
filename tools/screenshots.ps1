@@ -198,8 +198,8 @@ foreach ($tab in 'overview', 'gpu', 'network') {
 # #1526), so screenshots.sh alone takes details-environment and details-security.
 foreach ($section in 'modules', 'openfiles', 'connections') {
     $target = if ($section -eq 'connections' -and $ConnectionsPid -gt 0) { @{ TASKSMACK_SELECT_PID = "$ConnectionsPid" } } else { @{ TASKSMACK_SELECT_NAME = $Process } }
-    $sectionWindow = if ($section -eq 'openfiles') { $OpenFilesWindow } else { $SectionWindow }
-    Invoke-Shot "details-$section-$Dark" $Dark ($target + @{ TASKSMACK_DETAILS_TAB = 'overview'; TASKSMACK_DEMO = "1:section=$section" }) -ShotWindow $sectionWindow
+    $shotWindow = if ($section -eq 'openfiles') { $OpenFilesWindow } else { $SectionWindow }
+    Invoke-Shot "details-$section-$Dark" $Dark ($target + @{ TASKSMACK_DETAILS_TAB = 'overview'; TASKSMACK_DEMO = "1:section=$section" }) -ShotWindow $shotWindow
 }
 Invoke-Shot "services-$Dark" $Dark @{ TASKSMACK_TAB = 'Services' }
 Invoke-Shot "startup-$Dark" $Dark @{ TASKSMACK_TAB = 'Startup' }
