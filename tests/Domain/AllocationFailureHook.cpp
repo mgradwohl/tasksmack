@@ -7,12 +7,63 @@
 #include <cstdlib>
 #include <new>
 
+#if !defined(TASKSMACK_NO_ALLOCATOR_HOOK)
+#include <gtest/gtest.h>
+
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <cstdio>
+
+#include <fcntl.h>
+#include <unistd.h>
+#endif
+
 namespace
 {
 
 /// Allocations by this thread before the one that fails; negative when disarmed.
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables) - the allocator hook's per-thread switch
 thread_local std::int64_t t_AllocationsBeforeFailure = -1;
+
+#if !defined(TASKSMACK_NO_ALLOCATOR_HOOK)
+/// The test noted last, so a sweep that arms the hook thousands of times writes its name once.
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables) - the log's one-line-per-test memory
+std::atomic<const ::testing::TestInfo*> g_LastNotedTest{nullptr};
+
+/// Appends "Suite.Case" to the file TASKSMACK_ALLOCATION_HOOK_LOG names, once per test, so CI can say which
+/// tests ran with the hook armed (#3342). It runs before the countdown is set and makes no allocation through
+/// operator new (a stack buffer, open/write/close), so it can't spend or trip the allocation it arms.
+void noteArmedTest() noexcept
+{
+    const char* const path = std::getenv("TASKSMACK_ALLOCATION_HOOK_LOG"); // NOLINT(concurrency-mt-unsafe) - set before the tests start
+    if (path == nullptr || *path == '\0')
+    {
+        return;
+    }
+    const ::testing::TestInfo* const test = ::testing::UnitTest::GetInstance()->current_test_info();
+    if (test == nullptr || g_LastNotedTest.exchange(test) == test)
+    {
+        return;
+    }
+    std::array<char, 512> line{};
+    const int length = std::snprintf(line.data(), line.size(), "%s.%s\n", test->test_suite_name(), test->name());
+    if (length <= 0)
+    {
+        return;
+    }
+    const int file = ::open(
+        path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644); // NOLINT(cppcoreguidelines-pro-type-vararg,hicpp-vararg) - POSIX open
+    if (file < 0)
+    {
+        return;
+    }
+    // One write per line: O_APPEND keeps lines whole when ctest runs suites in parallel processes.
+    const auto size = std::min(static_cast<std::size_t>(length), line.size() - 1);
+    [[maybe_unused]] const auto written = ::write(file, line.data(), size);
+    ::close(file);
+}
+#endif
 
 } // namespace
 
@@ -21,6 +72,12 @@ namespace TestSupport
 
 void armAllocationFailure(std::int64_t count) noexcept
 {
+#if !defined(TASKSMACK_NO_ALLOCATOR_HOOK)
+    if (count >= 0)
+    {
+        noteArmedTest(); // before the countdown starts: nothing it does may count
+    }
+#endif
     t_AllocationsBeforeFailure = count;
 }
 

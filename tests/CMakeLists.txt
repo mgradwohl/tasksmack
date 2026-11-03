@@ -307,6 +307,10 @@ add_test(NAME UiCompareReportScript
 add_test(NAME MergeGtestResultsScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_merge_gtest_results.py)
 
+# tools/allocation-hook-summary.py reports which tests ran with the allocation-failure hook armed (#3342).
+add_test(NAME AllocationHookSummaryScript
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_allocation_hook_summary.py)
+
 # tools/coverage-mismatches.py explains tools/coverage.sh's "functions have mismatched data" warning (#1544).
 add_test(NAME CoverageMismatchesScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_coverage_mismatches.py)
@@ -429,6 +433,8 @@ set(COMMON_TEST_SOURCES
     Domain/AllocationFailureHook.cpp
     Domain/test_SystemModelAllocationFailure.cpp
     Domain/test_GPUModelAllocationFailure.cpp
+    Domain/test_SensorModelAllocationFailure.cpp # SensorModel under allocation failure (#3342)
+    Domain/test_SnapshotModelsAllocationFailure.cpp # Service, Startup and Users models under allocation failure (#3342)
     Domain/test_ConnectionsModelAllocationFailure.cpp # ConnectionsModel under allocation failure (#3400)
     Domain/test_ProcessModelAllocationFailure.cpp
     Domain/test_StorageModel.cpp
