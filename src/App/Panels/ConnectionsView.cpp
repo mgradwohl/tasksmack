@@ -193,16 +193,18 @@ std::vector<ConnectionRow> buildConnectionRows(const Domain::ConnectionsPublicat
         {
             process = "Unknown";
         }
-        rows.push_back({.connection = c,
-                        .process = std::move(process),
-                        .pid = c.pid == 0 ? std::string() : std::to_string(c.pid),
-                        .protocol = std::string(Domain::Connections::protocolLabel(conn.protocol, conn.family)),
-                        .local = endpointText(conn.family, conn.local),
-                        .remote = endpointText(conn.family, conn.remote),
-                        .state = std::string(Domain::Connections::stateLabel(conn.protocol, conn.state)),
-                        .rate = rate,
-                        .sent = rate.known ? UI::Format::formatBytesPerSec(rate.sentPerSec) : std::string(),
-                        .received = rate.known ? UI::Format::formatBytesPerSec(rate.receivedPerSec) : std::string()});
+        rows.push_back({
+            .connection = c,
+            .process = std::move(process),
+            .pid = c.pid == 0 ? std::string() : std::to_string(c.pid),
+            .protocol = std::string(Domain::Connections::protocolLabel(conn.protocol, conn.family)),
+            .local = endpointText(conn.family, conn.local),
+            .remote = endpointText(conn.family, conn.remote),
+            .state = std::string(Domain::Connections::stateLabel(conn.protocol, conn.state)),
+            .rate = rate,
+            .sent = rate.known ? UI::Format::formatBytesPerSec(rate.sentPerSec) : std::string(),
+            .received = rate.known ? UI::Format::formatBytesPerSec(rate.receivedPerSec) : std::string(),
+        });
     }
     return rows;
 }
@@ -320,10 +322,12 @@ namespace
         // Selecting a row selects its holder (#3066); a double-click shows it in Process Details.
         if (row.connection.pid != 0)
         {
-            action = ConnectionsViewAction{.pid = row.connection.pid,
-                                           .startTimeTicks = row.connection.startTimeTicks,
-                                           .showDetails = ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left),
-                                           .close = std::nullopt};
+            action = ConnectionsViewAction{
+                .pid = row.connection.pid,
+                .startTimeTicks = row.connection.startTimeTicks,
+                .showDetails = ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left),
+                .close = std::nullopt,
+            };
         }
     }
     // The row menu (#3066), on a copy of the row taken now: the order may change while it is up.
@@ -477,10 +481,12 @@ renderConnectionsView(const Domain::ConnectionsPublication* publication, bool ha
             const std::string refusal(closeConnectionRefusal(state.menuRow->connection));
             if (ImGui::MenuItem(ICON_FA_XMARK "  Close connection...", nullptr, false, refusal.empty()))
             {
-                action = ConnectionsViewAction{.pid = state.menuRow->connection.pid,
-                                               .startTimeTicks = state.menuRow->connection.startTimeTicks,
-                                               .showDetails = false,
-                                               .close = state.menuRow};
+                action = ConnectionsViewAction{
+                    .pid = state.menuRow->connection.pid,
+                    .startTimeTicks = state.menuRow->connection.startTimeTicks,
+                    .showDetails = false,
+                    .close = state.menuRow,
+                };
             }
             if (!refusal.empty())
             {

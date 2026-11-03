@@ -155,13 +155,15 @@ ThreadsReadResult LinuxProcessThreadsReader::readThreads(const ProcessTarget& ta
         {
             continue; // exited since the listing
         }
-        result.threads.push_back({.tid = *tid,
-                                  .name = std::string(fields->comm),
-                                  .state = fields->state,
-                                  .userTicks = fields->userTime,
-                                  .systemTicks = fields->systemTime,
-                                  .nice = fields->nice,
-                                  .startTicks = fields->startTime});
+        result.threads.push_back({
+            .tid = *tid,
+            .name = std::string(fields->comm),
+            .state = fields->state,
+            .userTicks = fields->userTime,
+            .systemTicks = fields->systemTime,
+            .nice = fields->nice,
+            .startTicks = fields->startTime,
+        });
     }
     // The process exited while it was listed (an exiting process's task directory reads empty), or
     // its PID changed hands: not shown with what was read.

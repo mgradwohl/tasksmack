@@ -69,8 +69,10 @@ struct ConfigDirectoryChoice
         const std::filesystem::path candidate = (std::filesystem::path(*xdgConfigHome) / "tasksmack").lexically_normal();
         if (!isValidConfigDir(candidate))
         {
-            return {.directory = fallback,
-                    .warning = "Ignoring unsafe config directory " + candidate.string() + "; using " + fallback.string()};
+            return {
+                .directory = fallback,
+                .warning = "Ignoring unsafe config directory " + candidate.string() + "; using " + fallback.string(),
+            };
         }
         return {.directory = candidate, .warning = {}};
     }

@@ -83,8 +83,10 @@ StartupActionMessage resultMessage(const StartupActionRequest& request, const Pl
     {
         return {.ok = true, .text = std::format("{} {}", request.enable ? "Enabled" : "Disabled", request.entry.name)};
     }
-    return {.ok = false,
-            .text = std::format("Could not {} {}: {}", request.enable ? "enable" : "disable", request.entry.name, result.message)};
+    return {
+        .ok = false,
+        .text = std::format("Could not {} {}: {}", request.enable ? "enable" : "disable", request.entry.name, result.message),
+    };
 }
 
 } // namespace StartupActionsDetail

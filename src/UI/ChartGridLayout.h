@@ -71,10 +71,12 @@ struct ChartGridDimensions
 {
     if (config.itemCount == 0)
     {
-        return {.columns = 1,
-                .rows = 1,
-                .cellWidth = std::max(config.availableWidth, 0.0F),
-                .cellHeight = std::max(config.availableHeight, 0.0F)};
+        return {
+            .columns = 1,
+            .rows = 1,
+            .cellWidth = std::max(config.availableWidth, 0.0F),
+            .cellHeight = std::max(config.availableHeight, 0.0F),
+        };
     }
 
     const float safeWidth = std::max(config.availableWidth, config.minCellWidth);

@@ -26,14 +26,16 @@ struct FontSizeOption
     UI::FontSize value;
 };
 
-inline constexpr std::array<FontSizeOption, 6> FONT_SIZE_OPTIONS = {{
-    {.label = "Small", .value = UI::FontSize::Small},
-    {.label = "Medium", .value = UI::FontSize::Medium},
-    {.label = "Large", .value = UI::FontSize::Large},
-    {.label = "Extra Large", .value = UI::FontSize::ExtraLarge},
-    {.label = "Huge", .value = UI::FontSize::Huge},
-    {.label = "Largest", .value = UI::FontSize::EvenHuger},
-}};
+inline constexpr std::array<FontSizeOption, 6> FONT_SIZE_OPTIONS = {
+    {
+        {.label = "Small", .value = UI::FontSize::Small},
+        {.label = "Medium", .value = UI::FontSize::Medium},
+        {.label = "Large", .value = UI::FontSize::Large},
+        {.label = "Extra Large", .value = UI::FontSize::ExtraLarge},
+        {.label = "Huge", .value = UI::FontSize::Huge},
+        {.label = "Largest", .value = UI::FontSize::EvenHuger},
+    },
+};
 
 // ========================================
 // Refresh rate options (milliseconds)
@@ -44,14 +46,16 @@ struct RefreshRateOption
     int valueMs;
 };
 
-inline constexpr std::array<RefreshRateOption, 6> REFRESH_RATE_OPTIONS = {{
-    {.label = "100 ms", .valueMs = 100},
-    {.label = "250 ms", .valueMs = 250},
-    {.label = "500 ms", .valueMs = 500},
-    {.label = "1 second", .valueMs = 1000},
-    {.label = "2 seconds", .valueMs = 2000},
-    {.label = "5 seconds", .valueMs = 5000},
-}};
+inline constexpr std::array<RefreshRateOption, 6> REFRESH_RATE_OPTIONS = {
+    {
+        {.label = "100 ms", .valueMs = 100},
+        {.label = "250 ms", .valueMs = 250},
+        {.label = "500 ms", .valueMs = 500},
+        {.label = "1 second", .valueMs = 1000},
+        {.label = "2 seconds", .valueMs = 2000},
+        {.label = "5 seconds", .valueMs = 5000},
+    },
+};
 
 // ========================================
 // History duration options (seconds)
@@ -62,12 +66,14 @@ struct HistoryOption
     int valueSeconds;
 };
 
-inline constexpr std::array<HistoryOption, 4> HISTORY_OPTIONS = {{
-    {.label = "1 minute", .valueSeconds = 60},
-    {.label = "2 minutes", .valueSeconds = 120},
-    {.label = "5 minutes", .valueSeconds = 300},
-    {.label = "10 minutes", .valueSeconds = 600},
-}};
+inline constexpr std::array<HistoryOption, 4> HISTORY_OPTIONS = {
+    {
+        {.label = "1 minute", .valueSeconds = 60},
+        {.label = "2 minutes", .valueSeconds = 120},
+        {.label = "5 minutes", .valueSeconds = 300},
+        {.label = "10 minutes", .valueSeconds = 600},
+    },
+};
 
 // ========================================
 // Combo state and what Save writes (#1120, #1151)

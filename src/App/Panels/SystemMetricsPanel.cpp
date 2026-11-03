@@ -179,14 +179,16 @@ namespace
         }
         return take(shared->probes);
     };
-    return {.system =
-                [made]
-            {
-                return made([](SystemMetricsProbes& probes)
-                            { return SystemModelProbes{.system = std::move(probes.system), .power = std::move(probes.power)}; });
-            },
-            .disk = [made] { return made([](SystemMetricsProbes& probes) { return std::move(probes.disk); }); },
-            .gpu = [made] { return made([](SystemMetricsProbes& probes) { return std::move(probes.gpu); }); }};
+    return {
+        .system =
+            [made]
+        {
+            return made([](SystemMetricsProbes& probes)
+                        { return SystemModelProbes{.system = std::move(probes.system), .power = std::move(probes.power)}; });
+        },
+        .disk = [made] { return made([](SystemMetricsProbes& probes) { return std::move(probes.disk); }); },
+        .gpu = [made] { return made([](SystemMetricsProbes& probes) { return std::move(probes.gpu); }); },
+    };
 }
 
 } // namespace
@@ -464,9 +466,11 @@ std::chrono::milliseconds SystemMetricsPanel::samplingInterval() const
 
 SystemMetricsPanel::SamplerIntervals SystemMetricsPanel::samplerIntervals() const
 {
-    return {.system = m_SystemSampler ? m_SystemSampler->interval() : m_RefreshInterval,
-            .storage = m_StorageSampler ? m_StorageSampler->interval() : m_RefreshInterval,
-            .gpu = m_GpuSampler ? m_GpuSampler->interval() : m_RefreshInterval};
+    return {
+        .system = m_SystemSampler ? m_SystemSampler->interval() : m_RefreshInterval,
+        .storage = m_StorageSampler ? m_StorageSampler->interval() : m_RefreshInterval,
+        .gpu = m_GpuSampler ? m_GpuSampler->interval() : m_RefreshInterval,
+    };
 }
 
 void SystemMetricsPanel::requestRefresh()
@@ -816,11 +820,13 @@ void SystemMetricsPanel::renderOverview()
     // are sized to their chart explicitly (UI::Widgets::beginChartCard()); this one, with no chart, to
     // the rows it lays out this frame (CpuDetailsBlock::beginCard(), #1919).
     auto& userSettings = UserConfig::get().settings();
-    const CpuDetailsBlock::Content cpuDetailsContent{.cpuModel = snap.cpuModel,
-                                                     .collapsedSummary = m_CpuDetails.collapsedSummary,
-                                                     .rows = m_CpuDetails.rows,
-                                                     .rowsGeneration = m_CpuDetails.generation,
-                                                     .expanded = userSettings.cpuDetailsExpanded};
+    const CpuDetailsBlock::Content cpuDetailsContent{
+        .cpuModel = snap.cpuModel,
+        .collapsedSummary = m_CpuDetails.collapsedSummary,
+        .rows = m_CpuDetails.rows,
+        .rowsGeneration = m_CpuDetails.generation,
+        .expanded = userSettings.cpuDetailsExpanded,
+    };
     const bool cpuDetailsVisible = CpuDetailsBlock::beginCard("##CpuDetailsCard", cpuDetailsContent, m_CpuDetailsMeasured);
     if (cpuDetailsVisible && CpuDetailsBlock::render(cpuDetailsContent, m_CpuDetailsMeasured))
     {
@@ -1014,21 +1020,27 @@ void SystemMetricsPanel::renderOverview()
     };
 
     NowBarList cpuBars;
-    cpuBars.push_back({.valueText = UI::Format::formatPercent(m_SmoothedCpu.total),
-                       .label = CPU_TOTAL_LABEL,
-                       .tooltipText = {},
-                       .value01 = UI::Format::percent01(m_SmoothedCpu.total),
-                       .color = theme.scheme().chartCpuTotal}); // The Total line's colour (#1192)
-    cpuBars.push_back({.valueText = UI::Format::formatPercent(m_SmoothedCpu.user),
-                       .label = CPU_USER_LABEL,
-                       .tooltipText = {},
-                       .value01 = UI::Format::percent01(m_SmoothedCpu.user),
-                       .color = theme.scheme().cpuUser});
-    cpuBars.push_back({.valueText = UI::Format::formatPercent(m_SmoothedCpu.system),
-                       .label = CPU_SYSTEM_LABEL,
-                       .tooltipText = {},
-                       .value01 = UI::Format::percent01(m_SmoothedCpu.system),
-                       .color = theme.scheme().cpuSystem});
+    cpuBars.push_back({
+        .valueText = UI::Format::formatPercent(m_SmoothedCpu.total),
+        .label = CPU_TOTAL_LABEL,
+        .tooltipText = {},
+        .value01 = UI::Format::percent01(m_SmoothedCpu.total),
+        .color = theme.scheme().chartCpuTotal,
+    }); // The Total line's colour (#1192)
+    cpuBars.push_back({
+        .valueText = UI::Format::formatPercent(m_SmoothedCpu.user),
+        .label = CPU_USER_LABEL,
+        .tooltipText = {},
+        .value01 = UI::Format::percent01(m_SmoothedCpu.user),
+        .color = theme.scheme().cpuUser,
+    });
+    cpuBars.push_back({
+        .valueText = UI::Format::formatPercent(m_SmoothedCpu.system),
+        .label = CPU_SYSTEM_LABEL,
+        .tooltipText = {},
+        .value01 = UI::Format::percent01(m_SmoothedCpu.system),
+        .color = theme.scheme().cpuSystem,
+    });
     if (showIowait)
     {
         cpuBars.push_back({
@@ -1216,17 +1228,21 @@ void SystemMetricsPanel::renderOverview()
                             std::vector<UI::Widgets::TooltipRow> rows;
                             if (powerIdx)
                             {
-                                rows.push_back({.label = POWER_LABEL,
-                                                .color = theme.scheme().chartPower,
-                                                .value = UI::Format::formatPowerOrZero(Domain::Numeric::toDouble(powerHist[*powerIdx]))});
+                                rows.push_back({
+                                    .label = POWER_LABEL,
+                                    .color = theme.scheme().chartPower,
+                                    .value = UI::Format::formatPowerOrZero(Domain::Numeric::toDouble(powerHist[*powerIdx])),
+                                });
                             }
                             if (batteryIdx)
                             {
                                 const double batteryVal = Domain::Numeric::toDouble(batteryHist[*batteryIdx]);
-                                rows.push_back({.label = batteryLabel,
-                                                .color = theme.scheme().chartBattery,
-                                                .value = UI::Widgets::formatSampleOrNA(
-                                                    batteryVal, [](double v) { return UI::Format::formatPercent(v); })});
+                                rows.push_back({
+                                    .label = batteryLabel,
+                                    .color = theme.scheme().chartBattery,
+                                    .value =
+                                        UI::Widgets::formatSampleOrNA(batteryVal, [](double v) { return UI::Format::formatPercent(v); }),
+                                });
                             }
                             UI::Widgets::renderHistoryTooltip(powerIdx ? powerTimeData[*powerIdx] : batteryTimeData[*batteryIdx], rows);
                         }
@@ -1377,7 +1393,8 @@ void SystemMetricsPanel::renderOverview()
             .value01 = threadsAvailable ? UI::Widgets::normalizeToUnitInterval(m_SmoothedResources.threads, threadAxisUpper) : 0.0,
             .color = theme.scheme().chartThreads,
             .marker = ImPlotMarker_None,
-            .available = threadsAvailable};
+            .available = threadsAvailable,
+        };
         const NowBar faultsBar{
             .valueText = faultsAvailable ? UI::Format::formatCountPerSecond(m_SmoothedResources.pageFaults) : std::string("N/A"),
             .label = FAULTS_LABEL,
@@ -1385,7 +1402,8 @@ void SystemMetricsPanel::renderOverview()
             .value01 = faultsAvailable ? UI::Widgets::normalizeToUnitInterval(m_SmoothedResources.pageFaults, faultAxisUpper) : 0.0,
             .color = theme.scheme().chartPageFaults,
             .marker = ImPlotMarker_None,
-            .available = faultsAvailable};
+            .available = faultsAvailable,
+        };
         const NowBar handlesBar{
             .valueText = handlesAvailable ? UI::Format::formatIntLocalized(std::llround(m_SmoothedResources.handles)) : std::string("N/A"),
             .label = handleLabel,
@@ -1393,7 +1411,8 @@ void SystemMetricsPanel::renderOverview()
             .value01 = handlesAvailable ? UI::Widgets::normalizeToUnitInterval(m_SmoothedResources.handles, handleAxisUpper) : 0.0,
             .color = theme.scheme().chartHandles,
             .marker = ImPlotMarker_None,
-            .available = handlesAvailable};
+            .available = handlesAvailable,
+        };
 
         const auto plot = [&]
         {
@@ -1447,15 +1466,21 @@ void SystemMetricsPanel::renderOverview()
                         if (*idxVal < alignedCount)
                         {
                             const std::array rows{
-                                UI::Widgets::TooltipRow{.label = THREADS_LABEL,
-                                                        .color = theme.scheme().chartThreads,
-                                                        .value = UI::Format::formatIntLocalized(std::llround(threadData[*idxVal]))},
-                                UI::Widgets::TooltipRow{.label = FAULTS_LABEL,
-                                                        .color = theme.scheme().chartPageFaults,
-                                                        .value = UI::Format::formatCountPerSecond(static_cast<double>(faultData[*idxVal]))},
-                                UI::Widgets::TooltipRow{.label = handleLabel,
-                                                        .color = theme.scheme().chartHandles,
-                                                        .value = UI::Format::formatIntLocalized(std::llround(handleData[*idxVal]))},
+                                UI::Widgets::TooltipRow{
+                                    .label = THREADS_LABEL,
+                                    .color = theme.scheme().chartThreads,
+                                    .value = UI::Format::formatIntLocalized(std::llround(threadData[*idxVal])),
+                                },
+                                UI::Widgets::TooltipRow{
+                                    .label = FAULTS_LABEL,
+                                    .color = theme.scheme().chartPageFaults,
+                                    .value = UI::Format::formatCountPerSecond(static_cast<double>(faultData[*idxVal])),
+                                },
+                                UI::Widgets::TooltipRow{
+                                    .label = handleLabel,
+                                    .color = theme.scheme().chartHandles,
+                                    .value = UI::Format::formatIntLocalized(std::llround(handleData[*idxVal])),
+                                },
                             };
                             UI::Widgets::renderHistoryTooltip(timeData[*idxVal], rows);
                         }

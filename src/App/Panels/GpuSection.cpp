@@ -609,16 +609,18 @@ void renderGpuSection(RenderContext& ctx)
                         {
                             if (const auto clockMHz = valueAt(clockData))
                             {
-                                rows.push_back({.label = clockLabel,
-                                                .color = theme.scheme().gpuClock,
-                                                .value = UI::Widgets::formatSampleOrNA(*clockMHz,
-                                                                                       [clockScaleMHz](double mhz)
-                                                                                       {
-                                                                                           return readingWithPercent(
-                                                                                               &UI::Format::formatMegahertz,
-                                                                                               mhz,
-                                                                                               static_cast<double>(clockScaleMHz));
-                                                                                       })});
+                                rows.push_back({
+                                    .label = clockLabel,
+                                    .color = theme.scheme().gpuClock,
+                                    .value = UI::Widgets::formatSampleOrNA(*clockMHz,
+                                                                           [clockScaleMHz](double mhz)
+                                                                           {
+                                                                               return readingWithPercent(
+                                                                                   &UI::Format::formatMegahertz,
+                                                                                   mhz,
+                                                                                   static_cast<double>(clockScaleMHz));
+                                                                           }),
+                                });
                             }
                         }
                         if (caps.hasEncoderDecoder && !encoderData.empty())
@@ -654,20 +656,22 @@ void renderGpuSection(RenderContext& ctx)
         // rather than a real-looking 0 (#1111), and drawn hatched rather than as a zero bar (#1935).
         const auto unavailableBar = [&theme](const char* label)
         {
-            return NowBar{.valueText = "N/A",
-                          .label = label,
-                          .tooltipText = UI::InlineText::format("{}: unavailable this sample", label),
-                          .value01 = 0.0,
-                          .color = theme.scheme().textMuted,
-                          .marker = ImPlotMarker_None,
-                          .available = false};
+            return NowBar{
+                .valueText = "N/A",
+                .label = label,
+                .tooltipText = UI::InlineText::format("{}: unavailable this sample", label),
+                .value01 = 0.0,
+                .color = theme.scheme().textMuted,
+                .marker = ImPlotMarker_None,
+                .available = false,
+            };
         };
         NowBarList gpuCoreBars;
         gpuCoreBars.push_back(smoothed.utilizationInitialized ? NowBar{.valueText = UI::Format::formatPercent(smoothed.utilizationPercent),
                                                                        .label = UTIL_LABEL,
                                                                        .tooltipText = {},
                                                                        .value01 = UI::Format::percent01(smoothed.utilizationPercent),
-                                                                       .color = theme.scheme().gpuUtilization}
+                                                                       .color = theme.scheme().gpuUtilization,}
                                                               : unavailableBar(UTIL_LABEL));
         if (!smoothed.memoryInitialized)
         {
@@ -678,25 +682,27 @@ void renderGpuSection(RenderContext& ctx)
             // Use the snapshot's own computed percent and raw byte values so the percent
             // and byte figures always come from the same sample and cannot show an
             // impossible combination (e.g. 50% with 8 GiB / 8 GiB).
-            gpuCoreBars.push_back(
-                {.valueText = UI::Format::formatPercent(smoothed.memoryPercent),
-                 .label = memoryLabel,
-                 .tooltipText = UI::InlineText::format("{}: {} ({} / {})",
-                                                       memoryLabel,
-                                                       UI::Format::formatPercent(snap.memoryUsedPercent),
-                                                       UI::Format::formatBytes(static_cast<double>(snap.memoryUsedBytes)),
-                                                       UI::Format::formatBytes(static_cast<double>(snap.memoryTotalBytes))),
-                 .value01 = UI::Format::percent01(smoothed.memoryPercent),
-                 .color = theme.scheme().gpuMemory});
+            gpuCoreBars.push_back({
+                .valueText = UI::Format::formatPercent(smoothed.memoryPercent),
+                .label = memoryLabel,
+                .tooltipText = UI::InlineText::format("{}: {} ({} / {})",
+                                                      memoryLabel,
+                                                      UI::Format::formatPercent(snap.memoryUsedPercent),
+                                                      UI::Format::formatBytes(static_cast<double>(snap.memoryUsedBytes)),
+                                                      UI::Format::formatBytes(static_cast<double>(snap.memoryTotalBytes))),
+                .value01 = UI::Format::percent01(smoothed.memoryPercent),
+                .color = theme.scheme().gpuMemory,
+            });
         }
         else
         {
-            gpuCoreBars.push_back(
-                {.valueText = UI::Format::formatPercent(smoothed.memoryPercent),
-                 .label = memoryLabel,
-                 .tooltipText = UI::Widgets::tooltipRowText(memoryLabel, UI::Format::formatPercent(smoothed.memoryPercent)),
-                 .value01 = UI::Format::percent01(smoothed.memoryPercent),
-                 .color = theme.scheme().gpuMemory});
+            gpuCoreBars.push_back({
+                .valueText = UI::Format::formatPercent(smoothed.memoryPercent),
+                .label = memoryLabel,
+                .tooltipText = UI::Widgets::tooltipRowText(memoryLabel, UI::Format::formatPercent(smoothed.memoryPercent)),
+                .value01 = UI::Format::percent01(smoothed.memoryPercent),
+                .color = theme.scheme().gpuMemory,
+            });
         }
         // Like the fan bar below: present whenever the clock line is, so a zero (unreadable) sample
         // shows N/A instead of removing the bar and shifting every bar after it (#995).
@@ -709,7 +715,7 @@ void renderGpuSection(RenderContext& ctx)
                                                                      .label = clockLabel,
                                                                      .tooltipText = {},
                                                                      .value01 = UI::Format::percent01(clockPercent),
-                                                                     .color = theme.scheme().gpuClock}
+                                                                     .color = theme.scheme().gpuClock,}
                                                             : unavailableBar(clockLabel));
         }
         if (caps.hasEncoderDecoder)
@@ -718,13 +724,13 @@ void renderGpuSection(RenderContext& ctx)
                                                                        .label = ENCODER_LABEL,
                                                                        .tooltipText = {},
                                                                        .value01 = UI::Format::percent01(smoothed.encoderPercent),
-                                                                       .color = theme.scheme().gpuEncoder}
+                                                                       .color = theme.scheme().gpuEncoder,}
                                                               : unavailableBar(ENCODER_LABEL));
             gpuCoreBars.push_back(smoothed.decoderInitialized ? NowBar{.valueText = UI::Format::formatPercent(smoothed.decoderPercent),
                                                                        .label = DECODER_LABEL,
                                                                        .tooltipText = {},
                                                                        .value01 = UI::Format::percent01(smoothed.decoderPercent),
-                                                                       .color = theme.scheme().gpuDecoder}
+                                                                       .color = theme.scheme().gpuDecoder,}
                                                               : unavailableBar(DECODER_LABEL));
         }
 
@@ -751,7 +757,7 @@ void renderGpuSection(RenderContext& ctx)
                                                                         .label = powerLabel,
                                                                         .tooltipText = {},
                                                                         .value01 = UI::Format::percent01(powerPercent),
-                                                                        .color = theme.scheme().gpuPower}
+                                                                        .color = theme.scheme().gpuPower,}
                                                                : unavailableBar(powerLabel));
         }
         // Keep pushing a bar (stable column count) whenever the capability is present, so the
@@ -764,14 +770,14 @@ void renderGpuSection(RenderContext& ctx)
                                                                      .label = FAN_LABEL,
                                                                      .tooltipText = {},
                                                                      .value01 = UI::Format::percent01(smoothed.fanPercent),
-                                                                     .color = theme.scheme().gpuFan}
+                                                                     .color = theme.scheme().gpuFan,}
                                                             : NowBar{.valueText = "N/A",
                                                                      .label = FAN_LABEL,
                                                                      .tooltipText = "Fan: unavailable this sample",
                                                                      .value01 = 0.0,
                                                                      .color = theme.scheme().textMuted,
                                                                      .marker = ImPlotMarker_None,
-                                                                     .available = false}); // hatched (#1935)
+                                                                     .available = false,}); // hatched (#1935)
         }
 
         // Use max bar count across both charts for x-axis alignment
@@ -907,9 +913,11 @@ void renderGpuSection(RenderContext& ctx)
                             {
                                 if (const auto power = valueAt(powerData))
                                 {
-                                    rows.push_back({.label = powerLabel,
-                                                    .color = theme.scheme().gpuPower,
-                                                    .value = ofScale(*power, powerScale.watts, &UI::Format::formatWatts)});
+                                    rows.push_back({
+                                        .label = powerLabel,
+                                        .color = theme.scheme().gpuPower,
+                                        .value = ofScale(*power, powerScale.watts, &UI::Format::formatWatts),
+                                    });
                                 }
                             }
                             if (caps.hasFanSpeed && !fanData.empty())

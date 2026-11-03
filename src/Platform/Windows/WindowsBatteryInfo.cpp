@@ -23,7 +23,11 @@ namespace
 
 // GUID_DEVICE_BATTERY (poclass.h), spelled out so no translation unit needs <initguid.h>.
 constexpr GUID BATTERY_INTERFACE_GUID{
-    .Data1 = 0x72631e54, .Data2 = 0x78A4, .Data3 = 0x11d0, .Data4 = {0xbc, 0xf7, 0x00, 0xaa, 0x00, 0xb7, 0xb3, 0x2a}};
+    .Data1 = 0x72631e54,
+    .Data2 = 0x78A4,
+    .Data3 = 0x11d0,
+    .Data4 = {0xbc, 0xf7, 0x00, 0xaa, 0x00, 0xb7, 0xb3, 0x2a},
+};
 // More batteries than any machine has; bounds the enumeration.
 constexpr DWORD MAX_BATTERIES = 8;
 // Characters for a name query; the driver's strings are short.
@@ -129,10 +133,12 @@ BatteryInfo readBatteryInfo(const BatteryDeviceFunctions& api)
             continue;
         }
 
-        readings.push_back(BatteryCapacityReading{.designed = battery.DesignedCapacity,
-                                                  .fullCharged = battery.FullChargedCapacity,
-                                                  .capabilities = battery.Capabilities,
-                                                  .cycleCount = battery.CycleCount});
+        readings.push_back(BatteryCapacityReading{
+            .designed = battery.DesignedCapacity,
+            .fullCharged = battery.FullChargedCapacity,
+            .capabilities = battery.Capabilities,
+            .cycleCount = battery.CycleCount,
+        });
         if (!info.found) // The text describes the first battery that answers
         {
             info.found = true;

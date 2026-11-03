@@ -232,7 +232,11 @@ std::optional<Platform::CpuAffinity> ProcessAffinityDialog::render()
         applyTooltip = READING_LAYOUT_TEXT;
     }
     const UI::Widgets::DialogFooterButton applyButton{
-        .label = APPLY_LABEL, .fills = &applyFills, .tooltip = applyTooltip, .disabled = !anyChosen};
+        .label = APPLY_LABEL,
+        .fills = &applyFills,
+        .tooltip = applyTooltip,
+        .disabled = !anyChosen,
+    };
     const UI::Widgets::DialogFooterButton cancelButton{.label = CANCEL_LABEL, .fills = nullptr, .tooltip = nullptr};
     UI::Widgets::DialogFooterAction pressed =
         UI::Widgets::dialogFooter(applyButton, cancelButton, UI::Widgets::footerButtonWidth({APPLY_LABEL, CANCEL_LABEL}, BUTTON_MIN_EM));

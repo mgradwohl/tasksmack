@@ -157,7 +157,11 @@ chooseTopRowLayout(float paneWidthPx, float infoRowWidthPx, float spacingPx, flo
     const float between = (actions > 0.0F && priority > 0.0F) ? spacing : 0.0F;
     const float controls = actions + between + priority;
     const TopRowLayout atContentWidth{
-        .besideInfo = true, .priorityBesideActions = true, .actionsWidth = actions, .priorityWidth = priority};
+        .besideInfo = true,
+        .priorityBesideActions = true,
+        .actionsWidth = actions,
+        .priorityWidth = priority,
+    };
     if (!std::isfinite(paneWidthPx) || paneWidthPx <= 0.0F)
     {
         return atContentWidth;
@@ -171,10 +175,12 @@ chooseTopRowLayout(float paneWidthPx, float infoRowWidthPx, float spacingPx, flo
     {
         return {.besideInfo = false, .priorityBesideActions = true, .actionsWidth = actions, .priorityWidth = priority};
     }
-    return {.besideInfo = false,
-            .priorityBesideActions = false,
-            .actionsWidth = std::min(actions, paneWidthPx),
-            .priorityWidth = std::min(priority, paneWidthPx)};
+    return {
+        .besideInfo = false,
+        .priorityBesideActions = false,
+        .actionsWidth = std::min(actions, paneWidthPx),
+        .priorityWidth = std::min(priority, paneWidthPx),
+    };
 }
 
 /// Height every card on one row of the Overview shares (#1789): the tallest of @p baseHeightPx (the

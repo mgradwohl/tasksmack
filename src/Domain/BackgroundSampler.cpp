@@ -175,12 +175,14 @@ void BackgroundSampler::runStartHook(const std::function<void()>& hook, std::str
 }
 
 BackgroundSampler::BackgroundSampler(SamplerConfig config)
-    : m_Config{.interval = std::chrono::milliseconds(Sampling::clampRefreshInterval(config.interval.count())),
-               .firstSampleAfterInterval = config.firstSampleAfterInterval,
-               .threadName = std::move(config.threadName),
-               .onThreadStart = std::move(config.onThreadStart),
-               .multiThreadedApartment = config.multiThreadedApartment,
-               .timingSummaryPeriod = config.timingSummaryPeriod}
+    : m_Config{
+          .interval = std::chrono::milliseconds(Sampling::clampRefreshInterval(config.interval.count())),
+          .firstSampleAfterInterval = config.firstSampleAfterInterval,
+          .threadName = std::move(config.threadName),
+          .onThreadStart = std::move(config.onThreadStart),
+          .multiThreadedApartment = config.multiThreadedApartment,
+          .timingSummaryPeriod = config.timingSummaryPeriod,
+      }
 {
     spdlog::debug("BackgroundSampler: created with {}ms interval", m_Config.interval.count());
 }

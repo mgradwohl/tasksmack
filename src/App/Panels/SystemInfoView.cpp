@@ -407,22 +407,26 @@ SystemInfoViewResult renderSystemInfoView(const Domain::SystemInfoSnapshot* snap
     {
         const std::string heading = std::string(ICON_FA_SERVER "  ") + capabilities.unavailableReason;
         UI::Widgets::renderEmptyState(heading.c_str());
-        return {.content = SystemInfoViewContent::Unsupported,
-                .refreshRequested = false,
-                .wifiDetailsRequested = false,
-                .publicIpRequested = false,
-                .authenticateRequested = false,
-                .saveReportRequested = false};
+        return {
+            .content = SystemInfoViewContent::Unsupported,
+            .refreshRequested = false,
+            .wifiDetailsRequested = false,
+            .publicIpRequested = false,
+            .authenticateRequested = false,
+            .saveReportRequested = false,
+        };
     }
     if (snapshot == nullptr || snapshot->version == 0)
     {
         UI::Widgets::renderEmptyState(ICON_FA_SERVER "  Reading system information...");
-        return {.content = SystemInfoViewContent::Loading,
-                .refreshRequested = false,
-                .wifiDetailsRequested = false,
-                .publicIpRequested = false,
-                .authenticateRequested = false,
-                .saveReportRequested = false};
+        return {
+            .content = SystemInfoViewContent::Loading,
+            .refreshRequested = false,
+            .wifiDetailsRequested = false,
+            .publicIpRequested = false,
+            .authenticateRequested = false,
+            .saveReportRequested = false,
+        };
     }
 
     const auto& scheme = UI::Theme::get().scheme();
@@ -467,12 +471,14 @@ SystemInfoViewResult renderSystemInfoView(const Domain::SystemInfoSnapshot* snap
         }
     }
     ImGui::EndChild();
-    return {.content = SystemInfoViewContent::Sections,
-            .refreshRequested = clicks.refresh,
-            .wifiDetailsRequested = wifiDetails,
-            .publicIpRequested = publicIp,
-            .authenticateRequested = authenticate,
-            .saveReportRequested = clicks.saveReport};
+    return {
+        .content = SystemInfoViewContent::Sections,
+        .refreshRequested = clicks.refresh,
+        .wifiDetailsRequested = wifiDetails,
+        .publicIpRequested = publicIp,
+        .authenticateRequested = authenticate,
+        .saveReportRequested = clicks.saveReport,
+    };
 }
 
 } // namespace App

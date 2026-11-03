@@ -62,11 +62,13 @@ template<typename Resolve>
         std::string_view suffix;
         std::size_t entrySize = 0;
     };
-    constexpr std::array<Candidate, 3> CANDIDATES{{
-        {.suffix = "_v3", .entrySize = PROCESS_INFO_V2_SIZE},
-        {.suffix = "_v2", .entrySize = PROCESS_INFO_V2_SIZE},
-        {.suffix = "", .entrySize = PROCESS_INFO_V1_SIZE},
-    }};
+    constexpr std::array<Candidate, 3> CANDIDATES{
+        {
+            {.suffix = "_v3", .entrySize = PROCESS_INFO_V2_SIZE},
+            {.suffix = "_v2", .entrySize = PROCESS_INFO_V2_SIZE},
+            {.suffix = "", .entrySize = PROCESS_INFO_V1_SIZE},
+        },
+    };
     for (const auto& candidate : CANDIDATES)
     {
         std::string name(baseName);
@@ -142,8 +144,10 @@ template<typename Query> [[nodiscard]] std::vector<RunningProcess> queryRunningP
         std::uint64_t usedGpuMemory = 0;
         std::memcpy(&pid, entry, sizeof(pid));
         std::memcpy(&usedGpuMemory, entry + PROCESS_INFO_MEMORY_OFFSET, sizeof(usedGpuMemory));
-        RunningProcess process{.pid = pid,
-                               .usedGpuMemoryBytes = (usedGpuMemory == VALUE_NOT_AVAILABLE) ? std::nullopt : std::optional{usedGpuMemory}};
+        RunningProcess process{
+            .pid = pid,
+            .usedGpuMemoryBytes = (usedGpuMemory == VALUE_NOT_AVAILABLE) ? std::nullopt : std::optional{usedGpuMemory},
+        };
         if (entrySize >= PROCESS_INFO_V2_SIZE)
         {
             std::memcpy(&process.gpuInstanceId, entry + PROCESS_INFO_GPU_INSTANCE_OFFSET, sizeof(process.gpuInstanceId));

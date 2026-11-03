@@ -72,10 +72,12 @@ struct StartupEntryImpact
     {
         return {};
     }
-    return {.cpuUs = totals.cpuUs,
-            .diskBytes = totals.diskBytes,
-            .processCount = totals.processCount,
-            .rating = rateStartupImpact(totals.cpuUs, totals.diskBytes)};
+    return {
+        .cpuUs = totals.cpuUs,
+        .diskBytes = totals.diskBytes,
+        .processCount = totals.processCount,
+        .rating = rateStartupImpact(totals.cpuUs, totals.diskBytes),
+    };
 }
 
 } // namespace Domain

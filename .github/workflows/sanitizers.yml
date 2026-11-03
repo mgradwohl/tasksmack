@@ -27,8 +27,12 @@ jobs:
   # would be wasted; release-branch PRs restore main's entry like every other PR.
   asan-ubsan-cache:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    runs-on: ubuntu-26.04
+    # 45, not 25: a new runner image or compiler snapshot leaves the ccache cold, and a cold build
+    # here took over 25 minutes on the first ubuntu-26.04 run (#3395). A job cancelled at the cap
+    # saves no cache, so a cap below a cold build would keep every later run cold too. Same cap as
+    # ci.yml's ASan+UBSan job, for the same reason.
+    timeout-minutes: 45
     permissions:
       contents: read
     steps:
@@ -65,8 +69,12 @@ jobs:
         run: cmake --build --preset asan-ubsan
 
   sanitizers:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    runs-on: ubuntu-26.04
+    # 45, not 25: a new runner image or compiler snapshot leaves the ccache cold, and a cold build
+    # here took over 25 minutes on the first ubuntu-26.04 run (#3395). A job cancelled at the cap
+    # saves no cache, so a cap below a cold build would keep every later run cold too. Same cap as
+    # ci.yml's ASan+UBSan job, for the same reason.
+    timeout-minutes: 45
     permissions:
       contents: read
     strategy:

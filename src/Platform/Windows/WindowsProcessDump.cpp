@@ -328,11 +328,13 @@ ProcessDumpResult writeProcessDump(
     LARGE_INTEGER size{};
     const std::uint64_t sizeBytes = (GetFileSizeEx(file.handle.get(), &size) != 0) ? static_cast<std::uint64_t>(size.QuadPart) : 0;
     spdlog::info("Wrote a {}-byte dump of PID {}", sizeBytes, pid);
-    return ProcessDump{.file = std::move(file.path),
-                       .sizeBytes = sizeBytes,
-                       .note = note,
-                       .fromSnapshot = fromSnapshot,
-                       .liveReason = std::move(liveReason)};
+    return ProcessDump{
+        .file = std::move(file.path),
+        .sizeBytes = sizeBytes,
+        .note = note,
+        .fromSnapshot = fromSnapshot,
+        .liveReason = std::move(liveReason),
+    };
 }
 
 std::optional<std::uint64_t> processPrivateBytes(HANDLE process)

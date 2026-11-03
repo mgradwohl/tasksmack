@@ -256,7 +256,11 @@ static_assert(WindowVisibility::WIN32_POWER_MONITOR_DIM == PowerMonitorDim);
 // Spelled out, as the SDK only declares it without <initguid.h>. Not GUID_CONSOLE_DISPLAY_STATE,
 // the physical console's display, which can be off while a remote session shows the window.
 constexpr GUID SESSION_DISPLAY_STATUS{
-    .Data1 = 0x2b84c20e, .Data2 = 0xad23, .Data3 = 0x4ddf, .Data4 = {0x93, 0xdb, 0x05, 0xff, 0xbd, 0x7e, 0xfc, 0xa5}};
+    .Data1 = 0x2b84c20e,
+    .Data2 = 0xad23,
+    .Data3 = 0x4ddf,
+    .Data4 = {0x93, 0xdb, 0x05, 0xff, 0xbd, 0x7e, 0xfc, 0xa5},
+};
 
 [[nodiscard]] HWND nativeWindowHandle(SDL_Window* window)
 {

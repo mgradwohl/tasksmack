@@ -159,11 +159,13 @@ invokingUserSession(uid_t effectiveUid,
                                                       {
                                                           return std::nullopt;
                                                       }
-                                                      return Account{.gid = entry.pw_gid,
-                                                                     .name = entry.pw_name != nullptr ? entry.pw_name : "",
-                                                                     .home = entry.pw_dir,
-                                                                     .shell = entry.pw_shell != nullptr ? entry.pw_shell : "",
-                                                                     .groups = {}};
+                                                      return Account{
+                                                          .gid = entry.pw_gid,
+                                                          .name = entry.pw_name != nullptr ? entry.pw_name : "",
+                                                          .home = entry.pw_dir,
+                                                          .shell = entry.pw_shell != nullptr ? entry.pw_shell : "",
+                                                          .groups = {},
+                                                      };
                                                   });
     // Its supplementary groups (#3298): a program started as the user has them all, as in their own session.
     if (account.has_value() && !account->name.empty())

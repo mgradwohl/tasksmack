@@ -44,11 +44,13 @@ enum class Direction : std::uint8_t
         return (stepped < P::MIN_NICE || stepped > P::MAX_NICE) ? std::nullopt : std::optional<std::int32_t>(stepped);
     }
     // The classes F7 and F8 move through, lowest first.
-    constexpr std::array<P::PriorityClass, 5> CLASSES{P::PriorityClass::Idle,
-                                                      P::PriorityClass::BelowNormal,
-                                                      P::PriorityClass::Normal,
-                                                      P::PriorityClass::AboveNormal,
-                                                      P::PriorityClass::High};
+    constexpr std::array<P::PriorityClass, 5> CLASSES{
+        P::PriorityClass::Idle,
+        P::PriorityClass::BelowNormal,
+        P::PriorityClass::Normal,
+        P::PriorityClass::AboveNormal,
+        P::PriorityClass::High,
+    };
     const P::PriorityClass current = priorityClass != P::PriorityClass::None ? priorityClass : P::classFromNice(nice);
     if (current == P::PriorityClass::Realtime)
     {
@@ -83,8 +85,10 @@ enum class Direction : std::uint8_t
     {
         return {.ok = false, .text = result.errorMessage};
     }
-    return {.ok = true,
-            .text = std::format("Priority of {} (PID {}) set to {}", name, pid, ProcessBatch::priorityValueText(nice, windowsClasses))};
+    return {
+        .ok = true,
+        .text = std::format("Priority of {} (PID {}) set to {}", name, pid, ProcessBatch::priorityValueText(nice, windowsClasses)),
+    };
 }
 
 } // namespace App::NiceStep

@@ -104,7 +104,8 @@ void load(State& state, const UserSettings& settings, std::vector<UI::Discovered
     // (an interval set in config.toml, a theme file that's gone); nothing is touched yet.
     const auto themeIt = std::ranges::find(state.themes, settings.themeId, &UI::DiscoveredTheme::id);
     state.themeChoice = ComboState{
-        .index = (themeIt != state.themes.end()) ? std::optional{static_cast<std::size_t>(themeIt - state.themes.begin())} : std::nullopt};
+        .index = (themeIt != state.themes.end()) ? std::optional{static_cast<std::size_t>(themeIt - state.themes.begin())} : std::nullopt,
+    };
     state.fontSizeChoice = ComboState{.index = optionIndexOf(FONT_SIZE_OPTIONS, settings.fontSize, &Detail::FontSizeOption::value)};
     state.refreshRateChoice =
         ComboState{.index = optionIndexOf(REFRESH_RATE_OPTIONS, settings.refreshIntervalMs, &Detail::RefreshRateOption::valueMs)};
@@ -290,19 +291,23 @@ Action render(State& state)
             return ImGui::GetFrameHeight() + style.ItemInnerSpacing.x + ImGui::CalcTextSize(label).x;
         };
 #ifndef _WIN32
-        const float checkboxRowWidth = std::max({checkboxWidth(PRIVILEGE_NOTICE_LABEL),
-                                                 checkboxWidth(PROCESS_ICONS_LABEL),
-                                                 checkboxWidth(HIGHLIGHT_NEW_LABEL),
-                                                 state.updateCheckOffered ? checkboxWidth(CHECK_UPDATES_LABEL) : 0.0F,
-                                                 state.startAtLoginOffered ? checkboxWidth(START_AT_LOGIN_LABEL) : 0.0F,
-                                                 Core::VideoBackend::isWayland() ? checkboxWidth(NATIVE_DECORATIONS_LABEL) : 0.0F});
+        const float checkboxRowWidth = std::max({
+            checkboxWidth(PRIVILEGE_NOTICE_LABEL),
+            checkboxWidth(PROCESS_ICONS_LABEL),
+            checkboxWidth(HIGHLIGHT_NEW_LABEL),
+            state.updateCheckOffered ? checkboxWidth(CHECK_UPDATES_LABEL) : 0.0F,
+            state.startAtLoginOffered ? checkboxWidth(START_AT_LOGIN_LABEL) : 0.0F,
+            Core::VideoBackend::isWayland() ? checkboxWidth(NATIVE_DECORATIONS_LABEL) : 0.0F,
+        });
 #else
-        const float checkboxRowWidth = std::max({checkboxWidth(PRIVILEGE_NOTICE_LABEL),
-                                                 checkboxWidth(PROCESS_ICONS_LABEL),
-                                                 checkboxWidth(HIGHLIGHT_NEW_LABEL),
-                                                 checkboxWidth(UDP_EVENT_TRACE_LABEL),
-                                                 state.updateCheckOffered ? checkboxWidth(CHECK_UPDATES_LABEL) : 0.0F,
-                                                 state.startAtLoginOffered ? checkboxWidth(START_AT_LOGIN_LABEL) : 0.0F});
+        const float checkboxRowWidth = std::max({
+            checkboxWidth(PRIVILEGE_NOTICE_LABEL),
+            checkboxWidth(PROCESS_ICONS_LABEL),
+            checkboxWidth(HIGHLIGHT_NEW_LABEL),
+            checkboxWidth(UDP_EVENT_TRACE_LABEL),
+            state.updateCheckOffered ? checkboxWidth(CHECK_UPDATES_LABEL) : 0.0F,
+            state.startAtLoginOffered ? checkboxWidth(START_AT_LOGIN_LABEL) : 0.0F,
+        });
 #endif
         const float widestOtherRow = std::max({advancedRowWidth, actionRowWidth, checkboxRowWidth});
 
@@ -627,7 +632,10 @@ Action render(State& state)
         const UI::Widgets::DialogFooterButton saveButton{.label = SAVE_LABEL, .fills = &saveFills, .tooltip = nullptr};
         const UI::Widgets::DialogFooterButton cancelButton{.label = CANCEL_LABEL, .fills = nullptr, .tooltip = nullptr};
         const UI::Widgets::DialogFooterButton resetButton{
-            .label = RESET_LABEL, .fills = nullptr, .tooltip = "Put every setting here back to its default; Save keeps them"};
+            .label = RESET_LABEL,
+            .fills = nullptr,
+            .tooltip = "Put every setting here back to its default; Save keeps them",
+        };
         switch (UI::Widgets::dialogFooter(saveButton, cancelButton, actionButtonWidth, resetButton))
         {
         case UI::Widgets::DialogFooterAction::Primary:

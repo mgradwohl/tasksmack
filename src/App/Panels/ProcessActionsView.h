@@ -100,14 +100,18 @@ struct ActionButtonSpec
 /// The Actions block's buttons in row order: Terminate and Kill, then Suspend and Resume.
 /// Terminate and Kill are drawn in the danger colour (isDestructiveAction(), #1273).
 /// "Suspend", not "Pause": the same word as the confirm dialog and the result line (#1203).
-inline constexpr std::array<ActionButtonSpec, 4> ACTION_BUTTONS{{
-    {.action = ProcessAction::Terminate,
-     .label = ICON_FA_XMARK " Terminate",
-     .tooltip = "Ask the process to exit: it can save its work first, or refuse"},
-    {.action = ProcessAction::Kill, .label = ICON_FA_SKULL " Kill", .tooltip = "Force terminate (cannot be caught or ignored)"},
-    {.action = ProcessAction::Stop, .label = ICON_FA_PAUSE " Suspend", .tooltip = "Suspend the process until it is resumed"},
-    {.action = ProcessAction::Resume, .label = ICON_FA_PLAY " Resume", .tooltip = "Resume a suspended process"},
-}};
+inline constexpr std::array<ActionButtonSpec, 4> ACTION_BUTTONS{
+    {
+        {
+            .action = ProcessAction::Terminate,
+            .label = ICON_FA_XMARK " Terminate",
+            .tooltip = "Ask the process to exit: it can save its work first, or refuse",
+        },
+        {.action = ProcessAction::Kill, .label = ICON_FA_SKULL " Kill", .tooltip = "Force terminate (cannot be caught or ignored)"},
+        {.action = ProcessAction::Stop, .label = ICON_FA_PAUSE " Suspend", .tooltip = "Suspend the process until it is resumed"},
+        {.action = ProcessAction::Resume, .label = ICON_FA_PLAY " Resume", .tooltip = "Resume a suspended process"},
+    },
+};
 
 /// How long a result line stays up after an action is dispatched, in seconds.
 inline constexpr float ACTION_RESULT_SECONDS = 5.0F;
@@ -152,9 +156,11 @@ struct SyscallTraceButton
     {
         return {.state = SyscallTraceButtonState::Disabled, .tooltip = "Select a process to trace"};
     }
-    return {.state = SyscallTraceButtonState::Enabled,
-            .tooltip = "Open a terminal running strace attached to this process, showing each system call it makes. "
-                       "Close the window or press Ctrl+C there to stop tracing; the process keeps running."};
+    return {
+        .state = SyscallTraceButtonState::Enabled,
+        .tooltip = "Open a terminal running strace attached to this process, showing each system call it makes. "
+                   "Close the window or press Ctrl+C there to stop tracing; the process keeps running.",
+    };
 }
 
 /// The Efficiency mode toggle's label (#3071), also its ImGui ID: a checkbox in Process Details' Actions
@@ -200,8 +206,10 @@ struct EfficiencyModeToggle
     }
     if (target.startTimeTicks == 0)
     {
-        return {.state = EfficiencyModeToggleState::Disabled,
-                .tooltip = "TaskSmack can't confirm which process this is yet, so it won't change its Efficiency mode"};
+        return {
+            .state = EfficiencyModeToggleState::Disabled,
+            .tooltip = "TaskSmack can't confirm which process this is yet, so it won't change its Efficiency mode",
+        };
     }
     if (actionRunning)
     {
@@ -210,22 +218,30 @@ struct EfficiencyModeToggle
 #ifdef _WIN32
     if (on)
     {
-        return {.state = EfficiencyModeToggleState::Enabled,
-                .tooltip = "Turn Efficiency mode off: Windows schedules the process as before, and its priority is restored"};
+        return {
+            .state = EfficiencyModeToggleState::Enabled,
+            .tooltip = "Turn Efficiency mode off: Windows schedules the process as before, and its priority is restored",
+        };
     }
-    return {.state = EfficiencyModeToggleState::Enabled,
-            .tooltip = "Run the process at Idle priority on Windows' power-saving scheduling (EcoQoS), as Task Manager's "
-                       "Efficiency mode does: it uses less power, and may run slower"};
+    return {
+        .state = EfficiencyModeToggleState::Enabled,
+        .tooltip = "Run the process at Idle priority on Windows' power-saving scheduling (EcoQoS), as Task Manager's "
+                   "Efficiency mode does: it uses less power, and may run slower",
+    };
 #else
     // Linux (#3202): nice 19 and, where it can, the cgroup's lowest CPU weight.
     if (on)
     {
-        return {.state = EfficiencyModeToggleState::Enabled,
-                .tooltip = "Turn Efficiency mode off: the process's priority, and its cgroup's CPU weight, are restored"};
+        return {
+            .state = EfficiencyModeToggleState::Enabled,
+            .tooltip = "Turn Efficiency mode off: the process's priority, and its cgroup's CPU weight, are restored",
+        };
     }
-    return {.state = EfficiencyModeToggleState::Enabled,
-            .tooltip = "Run the process at nice 19, the lowest priority, as Task Manager's Efficiency mode does on Windows: it "
-                       "yields the CPU to other work, and may run slower"};
+    return {
+        .state = EfficiencyModeToggleState::Enabled,
+        .tooltip = "Run the process at nice 19, the lowest priority, as Task Manager's Efficiency mode does on Windows: it "
+                   "yields the CPU to other work, and may run slower",
+    };
 #endif
 }
 

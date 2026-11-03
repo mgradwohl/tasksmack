@@ -429,8 +429,10 @@ struct StripTextParts
     {
         prefix = prefixLength(seriesLabel);
     }
-    StripTextParts parts{.head = (prefix != 0) ? label.name : std::string_view{},
-                         .tail = std::string_view{tip.data() + prefix, tip.size() - prefix}};
+    StripTextParts parts{
+        .head = (prefix != 0) ? label.name : std::string_view{},
+        .tail = std::string_view{tip.data() + prefix, tip.size() - prefix},
+    };
     if (parts.tail.starts_with(' '))
     {
         parts.tail.remove_prefix(1);
@@ -1345,6 +1347,8 @@ template<typename T> [[nodiscard]] T& frameKeyedEntry(std::uint64_t key)
     static int lastPruneFrame = -1;
     static std::uint64_t entriesGeneration = 0;
     constexpr std::size_t PRUNE_ABOVE = 256;
+    // Counts draws, not time (#3346): it only ranks entries when there are more than PRUNE_ABOVE, which
+    // is what bounds the memory; an entry drawn in any of the last STALE_FRAMES frames is kept.
     constexpr int STALE_FRAMES = 600;
 
     if (const std::uint64_t generation = frameCacheGeneration(); generation != entriesGeneration)
@@ -1426,6 +1430,12 @@ struct CsvCapture
 /// Frames a copy request waits for its chart to draw again before it is dropped: the next frame
 /// normally, a little more if a frame is skipped. A chart that has gone (its tab closed) never
 /// copies later, unasked.
+///
+/// Frames, not time, on purpose (#3346): this counts draws, it does not time work. The copy is taken
+/// by the chart's next draw, which the menu asks for at once (AnimationRequest::request()), so the
+/// frame rate does not matter: at the 2 fps floor the request still lives for the next three draws.
+/// A wall-clock bound would only add a way to drop a request before any draw (a long frame, a modal
+/// move loop) without bounding anything frames do not.
 inline constexpr int CSV_REQUEST_FRAMES = 3;
 
 /// `label` as a CSV column header: the ImGui label without its "##" ID part or the right-hand-axis
@@ -1559,10 +1569,12 @@ inline void plotLineWithFill(const char* label,
         // Otherwise -- generation 0 -- they are chosen afresh on every call, as before.
         static ReducedPointsCache uncached; // Scratch only: a generation-0 key is never kept
         const ChartDataScope scope = activeChartDataScope();
-        const ReducedPointsCache::Key key{.generation = scope.generation,
-                                          .dataId = seriesFingerprint(yData, count),
-                                          .count = static_cast<std::size_t>(count),
-                                          .maxOut = effectiveMax};
+        const ReducedPointsCache::Key key{
+            .generation = scope.generation,
+            .dataId = seriesFingerprint(yData, count),
+            .count = static_cast<std::size_t>(count),
+            .maxOut = effectiveMax,
+        };
         ReducedPointsCache& cache = (scope.generation != 0) ? seriesReductionCache(scope.plotId, label) : uncached;
         const std::span<const ReducedPoint> points = cache.points(key, reduce);
 
@@ -1620,7 +1632,11 @@ inline constexpr float SECONDARY_SERIES_WEIGHT = 1.5F;
 inline constexpr float REFERENCE_SERIES_WEIGHT = 1.0F;
 /// Marker shapes of a chart's secondary series, in the order they are drawn. Charts have at most four.
 inline constexpr std::array<ImPlotMarker, 4> SECONDARY_SERIES_MARKERS{
-    ImPlotMarker_Circle, ImPlotMarker_Square, ImPlotMarker_Diamond, ImPlotMarker_Up};
+    ImPlotMarker_Circle,
+    ImPlotMarker_Square,
+    ImPlotMarker_Diamond,
+    ImPlotMarker_Up,
+};
 /// Marker shapes of a chart's reference series: line-only, unlike the secondaries' solid shapes.
 inline constexpr std::array<ImPlotMarker, 2> REFERENCE_SERIES_MARKERS{ImPlotMarker_Cross, ImPlotMarker_Plus};
 /// About this many markers per series across a chart's time axis.
@@ -1639,19 +1655,23 @@ inline constexpr float SERIES_MARKER_RADIUS = 3.0F;
     case SeriesRole::Secondary:
     {
         const std::size_t slot = index % SECONDARY_SERIES_MARKERS.size();
-        return SeriesStyle{.fill = false,
-                           .lineWeightPx = SECONDARY_SERIES_WEIGHT,
-                           .marker = SECONDARY_SERIES_MARKERS[slot],
-                           .markerPhase = static_cast<double>(slot) / static_cast<double>(SECONDARY_SERIES_MARKERS.size())};
+        return SeriesStyle{
+            .fill = false,
+            .lineWeightPx = SECONDARY_SERIES_WEIGHT,
+            .marker = SECONDARY_SERIES_MARKERS[slot],
+            .markerPhase = static_cast<double>(slot) / static_cast<double>(SECONDARY_SERIES_MARKERS.size()),
+        };
     }
     case SeriesRole::Reference:
     {
         // Phases offset from the secondaries' (multiples of a quarter) so their markers do not coincide.
         const std::size_t slot = index % REFERENCE_SERIES_MARKERS.size();
-        return SeriesStyle{.fill = false,
-                           .lineWeightPx = REFERENCE_SERIES_WEIGHT,
-                           .marker = REFERENCE_SERIES_MARKERS[slot],
-                           .markerPhase = (static_cast<double>(slot) + 0.25) / static_cast<double>(REFERENCE_SERIES_MARKERS.size())};
+        return SeriesStyle{
+            .fill = false,
+            .lineWeightPx = REFERENCE_SERIES_WEIGHT,
+            .marker = REFERENCE_SERIES_MARKERS[slot],
+            .markerPhase = (static_cast<double>(slot) + 0.25) / static_cast<double>(REFERENCE_SERIES_MARKERS.size()),
+        };
     }
     }
     return SeriesStyle{};
@@ -1923,16 +1943,18 @@ inline void plotSeriesMarkers(const char* label, const TX* xData, const TY* yDat
                         markerX.data(),
                         markerY.data(),
                         UI::Format::checkedCount(markerX.size()),
-                        {ImPlotProp_Marker,
-                         style.marker,
-                         ImPlotProp_MarkerSize,
-                         lineWeight(SERIES_MARKER_RADIUS),
-                         ImPlotProp_MarkerFillColor,
-                         color,
-                         ImPlotProp_MarkerLineColor,
-                         color,
-                         ImPlotProp_LineColor,
-                         color});
+                        {
+                            ImPlotProp_Marker,
+                            style.marker,
+                            ImPlotProp_MarkerSize,
+                            lineWeight(SERIES_MARKER_RADIUS),
+                            ImPlotProp_MarkerFillColor,
+                            color,
+                            ImPlotProp_MarkerLineColor,
+                            color,
+                            ImPlotProp_LineColor,
+                            color,
+                        });
 }
 
 /// Draws a history series as its SeriesRole says (seriesStyle()): a primary with its fill, a
@@ -2362,17 +2384,28 @@ inline void fillTimeAxis(std::vector<double>& out, std::span<const double> times
 /// until the same buffer is handed out again in a later frame -- never keep one across frames.
 ///
 /// A burst of charts (a busy frame, a tab with many) does not pin its buffers for good (#1173):
-/// buffers no frame has asked for in RELEASE_AFTER_FRAMES frames are freed when a new frame starts.
-/// Buffers are handed out in order, so the unused ones are always the last ones.
+/// buffers no frame has asked for in RELEASE_AFTER of steady-clock time are freed when a new frame
+/// starts. Buffers are handed out in order, so the unused ones are always the last ones.
+///
+/// Time, not frames (#3346): an idle tab draws at the 2 fps floor (#3156), where the 600 frames this
+/// used to count were five minutes, not the ten seconds meant. The clock is read once per frame, in
+/// beginFrame(); tests pass their own.
 class TimeAxisPool
 {
   public:
-    /// Frames a buffer may go unasked-for before it is freed: about ten seconds at 60 fps, long enough
-    /// that switching tabs back and forth does not churn the allocator.
-    static constexpr int RELEASE_AFTER_FRAMES = 600;
+    using Clock = std::chrono::steady_clock;
+    using NowFn = Clock::time_point (*)();
+
+    /// How long a buffer may go unasked-for before it is freed: long enough that switching tabs back
+    /// and forth does not churn the allocator, at any frame rate.
+    static constexpr std::chrono::seconds RELEASE_AFTER{10};
+
+    /// @p now is read once per frame (beginFrame()); a test passes a fake clock.
+    explicit TimeAxisPool(NowFn now = [] { return Clock::now(); }) noexcept : m_Now(now)
+    {}
 
     /// Starts @p frame: buffers handed out from now on belong to it, and those unused for
-    /// RELEASE_AFTER_FRAMES are freed. acquire() does this itself on a frame's first request; calling
+    /// RELEASE_AFTER are freed. acquire() does this itself on a frame's first request; calling
     /// it every frame as well (trimFrameCaches()) lets buffers age and go while no chart asks for an
     /// axis at all, e.g. on the Processes tab (#1173). Repeat calls within a frame do nothing.
     void beginFrame(int frame)
@@ -2380,6 +2413,7 @@ class TimeAxisPool
         if (frame != m_Frame)
         {
             m_Frame = frame;
+            m_FrameTime = m_Now();
             m_Next = 0;
             releaseUnused(frame);
         }
@@ -2396,6 +2430,7 @@ class TimeAxisPool
         }
         Slot& slot = m_Slots[m_Next++];
         slot.lastFrame = frame;
+        slot.lastUsed = m_FrameTime;
         return slot.buffer;
     }
 
@@ -2419,18 +2454,19 @@ class TimeAxisPool
     struct Slot
     {
         std::vector<double> buffer;
-        int lastFrame = 0; ///< Frame the buffer was last handed out in
+        int lastFrame = 0;          ///< Frame the buffer was last handed out in
+        Clock::time_point lastUsed; ///< That frame's start (m_FrameTime)
     };
 
-    /// Frees the trailing buffers not asked for within RELEASE_AFTER_FRAMES of @p frame. Called at the
-    /// start of a frame, before anything is handed out in it, so no span of this frame is affected.
-    /// A frame count that went backwards (a new ImGui context) counts as unused, too.
+    /// Frees the trailing buffers not asked for within RELEASE_AFTER of this frame's start. Called at
+    /// the start of a frame, before anything is handed out in it, so no span of this frame is
+    /// affected. A frame count that went backwards (a new ImGui context) counts as unused, too.
     void releaseUnused(int frame)
     {
         while (!m_Slots.empty())
         {
-            const int lastFrame = m_Slots.back().lastFrame;
-            if (frame >= lastFrame && (frame - lastFrame) <= RELEASE_AFTER_FRAMES)
+            const Slot& last = m_Slots.back();
+            if (frame >= last.lastFrame && (m_FrameTime - last.lastUsed) <= RELEASE_AFTER)
             {
                 break;
             }
@@ -2438,9 +2474,11 @@ class TimeAxisPool
         }
     }
 
+    NowFn m_Now;
     std::vector<Slot> m_Slots;
     std::size_t m_Next = 0;
     int m_Frame = -1;
+    Clock::time_point m_FrameTime;
 };
 
 /// The time axis for a history chart (see fillTimeAxis()), in a buffer from this frame's
@@ -2740,6 +2778,8 @@ rateHistoryConfigWithUpper(const char* id, double xMin, double xMax, ImPlotForma
     static int lastPruneFrame = -1;
     static std::uint64_t stateGeneration = 0;
     constexpr std::size_t PRUNE_ABOVE = 256;
+    // Counts draws, not time (#3346): it only ranks entries when there are more than PRUNE_ABOVE, which
+    // is what bounds the memory; an entry drawn in any of the last STALE_FRAMES frames is kept.
     constexpr int STALE_FRAMES = 600;
 
     if (const std::uint64_t generation = Detail::frameCacheGeneration(); generation != stateGeneration)
@@ -3397,29 +3437,33 @@ inline void renderNowBarValueStrip(std::span<const NowBar> bars,
             head = parts.head;
             tail = parts.tail;
         }
-        entries.push_back({.head = head,
-                           .tail = tail,
-                           .color = bar.color,
-                           .marker = bar.marker,
-                           .seriesLabel = bar.label,
-                           .compactHead = label.name,
-                           .compactTail = bar.valueText,
-                           .rightAxis = label.rightAxis,
-                           .tooltip = (bar.stripTooltip != nullptr) ? std::string_view(bar.stripTooltip) : std::string_view{},
-                           .side = SeriesLabelAlignment::labelSide(axes, label.rightAxis)});
+        entries.push_back({
+            .head = head,
+            .tail = tail,
+            .color = bar.color,
+            .marker = bar.marker,
+            .seriesLabel = bar.label,
+            .compactHead = label.name,
+            .compactTail = bar.valueText,
+            .rightAxis = label.rightAxis,
+            .tooltip = (bar.stripTooltip != nullptr) ? std::string_view(bar.stripTooltip) : std::string_view{},
+            .side = SeriesLabelAlignment::labelSide(axes, label.rightAxis),
+        });
     }
     for (const ValueStripEntry& entry : extras)
     {
         const SeriesLabelParts label = splitSecondaryAxisMark(entry.label);
-        entries.push_back({.head = label.name,
-                           .tail = entry.value,
-                           .color = entry.color,
-                           .seriesLabel = entry.label,
-                           .compactHead = label.name,
-                           .compactTail = entry.value,
-                           .rightAxis = label.rightAxis,
-                           .tooltip = (entry.tooltip != nullptr) ? std::string_view(entry.tooltip) : std::string_view{},
-                           .side = SeriesLabelAlignment::labelSide(axes, label.rightAxis)});
+        entries.push_back({
+            .head = label.name,
+            .tail = entry.value,
+            .color = entry.color,
+            .seriesLabel = entry.label,
+            .compactHead = label.name,
+            .compactTail = entry.value,
+            .rightAxis = label.rightAxis,
+            .tooltip = (entry.tooltip != nullptr) ? std::string_view(entry.tooltip) : std::string_view{},
+            .side = SeriesLabelAlignment::labelSide(axes, label.rightAxis),
+        });
     }
     if (entries.empty())
     {
@@ -3641,6 +3685,8 @@ inline void requestNowBarMotion(ImGuiID barId, double value01, float heightPx)
     static int lastPruneFrame = -1;
     static std::uint64_t stateGeneration = 0;
     constexpr std::size_t PRUNE_ABOVE = 256;
+    // Counts draws, not time (#3346): it only ranks entries when there are more than PRUNE_ABOVE, which
+    // is what bounds the memory; an entry drawn in any of the last STALE_FRAMES frames is kept.
     constexpr int STALE_FRAMES = 600;
 
     if (const std::uint64_t generation = frameCacheGeneration(); generation != stateGeneration)

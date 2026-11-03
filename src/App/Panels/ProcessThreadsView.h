@@ -266,12 +266,14 @@ class ProcessThreadsView
     /// A row menu's item: @p action on @p thread of the process shown, its confirm opened (#3069).
     void requestThreadAction(const Platform::ProcessThread& thread, Platform::ThreadAction action)
     {
-        m_ActionControl.request(PendingThreadAction{.target = m_Target,
-                                                    .tid = thread.tid,
-                                                    .threadCreateTime = thread.createTime,
-                                                    .threadName = thread.name,
-                                                    .processName = m_ProcessName,
-                                                    .action = action});
+        m_ActionControl.request(PendingThreadAction{
+            .target = m_Target,
+            .tid = thread.tid,
+            .threadCreateTime = thread.createTime,
+            .threadName = thread.name,
+            .processName = m_ProcessName,
+            .action = action,
+        });
     }
 
     /// Opens the row menu for the thread @p tid of the last read, as a right-click on its row does (tests).
@@ -339,15 +341,17 @@ class ProcessThreadsView
             }
             current.emplace(thread.tid, Sample{.ticks = ticks, .startTicks = thread.startTicks});
             const double cpuSeconds = static_cast<double>(ticks) / ticksPerSecond;
-            m_Rows.push_back({.thread = thread,
-                              .cpuPercent = cpu,
-                              .cpuSeconds = cpuSeconds,
-                              .tid = std::to_string(thread.tid),
-                              .state = Detail::threadStateText(thread),
-                              .cpu = cpu.has_value() ? UI::Format::formatPercent(*cpu) : std::string(Detail::THREAD_CPU_UNKNOWN),
-                              .cpuTime = UI::Format::formatDuration(cpuSeconds),
-                              .nice = std::to_string(thread.nice),
-                              .started = Detail::threadStartedText(thread.startTicks, result.ticksPerSecond, result.bootTimeEpoch)});
+            m_Rows.push_back({
+                .thread = thread,
+                .cpuPercent = cpu,
+                .cpuSeconds = cpuSeconds,
+                .tid = std::to_string(thread.tid),
+                .state = Detail::threadStateText(thread),
+                .cpu = cpu.has_value() ? UI::Format::formatPercent(*cpu) : std::string(Detail::THREAD_CPU_UNKNOWN),
+                .cpuTime = UI::Format::formatDuration(cpuSeconds),
+                .nice = std::to_string(thread.nice),
+                .started = Detail::threadStartedText(thread.startTicks, result.ticksPerSecond, result.bootTimeEpoch),
+            });
         }
         m_Previous = std::move(current);
         m_PreviousAt = result.acquiredAtSeconds;

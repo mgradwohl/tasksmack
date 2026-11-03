@@ -105,32 +105,40 @@ enum class MachineTab : std::uint8_t
 /// The names the hooks accept for each tab, section, dialog and machine sub-tab, lowercase: parseTab(),
 /// parseSection(), parseDialog() and parseMachineTab() match them in any case; tabName(), sectionName(),
 /// dialogName() and machineTabName() write them.
-inline constexpr std::array<std::pair<std::string_view, DetailsTab>, 4> TAB_NAMES{{
-    {"overview", DetailsTab::Overview},
-    {"gpu", DetailsTab::Gpu},
-    {"npu", DetailsTab::Npu},
-    {"network", DetailsTab::Network},
-}};
-inline constexpr std::array<std::pair<std::string_view, MachineTab>, 5> MACHINE_TAB_NAMES{{
-    {"overview", MachineTab::Overview},
-    {"cores", MachineTab::Cores},
-    {"gpu", MachineTab::Gpu},
-    {"npu", MachineTab::Npu},
-    {"network", MachineTab::Network},
-}};
-inline constexpr std::array<std::pair<std::string_view, DetailsSection>, 6> SECTION_NAMES{{
-    {"environment", DetailsSection::Environment},
-    {"connections", DetailsSection::Connections},
-    {"modules", DetailsSection::Modules},
-    {"security", DetailsSection::Security},
-    {"openfiles", DetailsSection::OpenFiles},
-    {"services", DetailsSection::Services},
-}};
-inline constexpr std::array<std::pair<std::string_view, StartupDialog>, 3> DIALOG_NAMES{{
-    {"help", StartupDialog::Help},
-    {"about", StartupDialog::About},
-    {"settings", StartupDialog::Settings},
-}};
+inline constexpr std::array<std::pair<std::string_view, DetailsTab>, 4> TAB_NAMES{
+    {
+        {"overview", DetailsTab::Overview},
+        {"gpu", DetailsTab::Gpu},
+        {"npu", DetailsTab::Npu},
+        {"network", DetailsTab::Network},
+    },
+};
+inline constexpr std::array<std::pair<std::string_view, MachineTab>, 5> MACHINE_TAB_NAMES{
+    {
+        {"overview", MachineTab::Overview},
+        {"cores", MachineTab::Cores},
+        {"gpu", MachineTab::Gpu},
+        {"npu", MachineTab::Npu},
+        {"network", MachineTab::Network},
+    },
+};
+inline constexpr std::array<std::pair<std::string_view, DetailsSection>, 6> SECTION_NAMES{
+    {
+        {"environment", DetailsSection::Environment},
+        {"connections", DetailsSection::Connections},
+        {"modules", DetailsSection::Modules},
+        {"security", DetailsSection::Security},
+        {"openfiles", DetailsSection::OpenFiles},
+        {"services", DetailsSection::Services},
+    },
+};
+inline constexpr std::array<std::pair<std::string_view, StartupDialog>, 3> DIALOG_NAMES{
+    {
+        {"help", StartupDialog::Help},
+        {"about", StartupDialog::About},
+        {"settings", StartupDialog::Settings},
+    },
+};
 
 /// The process to select: by PID when one is given, else by name.
 struct Target
@@ -385,12 +393,14 @@ struct TabInfo
 /// "System" too until the System panel's first sample brings the hostname (#2731), and that tab is
 /// registered first: matched by text, TASKSMACK_TAB=System opened the machine tab whenever the sample
 /// landed after onAttach() (#2886). The alias names the tab whatever the machine tab reads.
-inline constexpr std::array<std::pair<std::string_view, std::string_view>, 4> TAB_ALIASES{{
-    {"machine", "SystemOverview"},
-    {"overview", "SystemOverview"},
-    {"details", "ProcessDetails"},
-    {"system", "SystemInfo"},
-}};
+inline constexpr std::array<std::pair<std::string_view, std::string_view>, 4> TAB_ALIASES{
+    {
+        {"machine", "SystemOverview"},
+        {"overview", "SystemOverview"},
+        {"details", "ProcessDetails"},
+        {"system", "SystemInfo"},
+    },
+};
 
 /// The tab @p name selects, ignoring case (tabNamesEqual()), in this order across all tabs: a tab
 /// whose registered id equals it; the tab a documented alias (TAB_ALIASES) stands for, when that tab
@@ -465,9 +475,10 @@ struct MainTabChoice
     return !choice.id.has_value();
 }
 
-/// Tab-bar frames a TASKSMACK_TAB request may wait for its tab to be selected before it is dropped
-/// (about 2 s at 60 fps). ImGui selects it on the second frame; this only bounds a request that can
-/// never be met, so it cannot hold the tab bar on one tab for good.
+/// Tab-bar frames a TASKSMACK_TAB request may wait for its tab to be selected before it is dropped.
+/// ImGui selects it on the second frame; this only bounds a request that can never be met, so it
+/// cannot hold the tab bar on one tab for good. Counts draws, not time (#3346): what it waits for
+/// happens a frame later, however long the frame takes.
 inline constexpr int MAX_MAIN_TAB_FRAMES = 120;
 
 /// The TASKSMACK_TAB selection waiting to take effect (#1575). It names the tab by its registered id

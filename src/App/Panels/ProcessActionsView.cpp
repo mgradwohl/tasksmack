@@ -414,11 +414,13 @@ float ProcessActionsView::buttonsRowWidth(const Platform::ProcessActionCapabilit
     // The trace, affinity and dump buttons and the Efficiency mode checkbox each take a row of their own
     // when they don't fit after the others.
     return ProcessDetailsLayout::computeActionButtonsWidth(actionRow,
-                                                           std::max({syscallTraceButtonWidth(capabilities),
-                                                                     setAffinityButtonWidth(capabilities),
-                                                                     createDumpButtonWidth(capabilities),
-                                                                     analyzeWaitChainButtonWidth(capabilities),
-                                                                     efficiencyModeToggleWidth(capabilities)}));
+                                                           std::max({
+                                                               syscallTraceButtonWidth(capabilities),
+                                                               setAffinityButtonWidth(capabilities),
+                                                               createDumpButtonWidth(capabilities),
+                                                               analyzeWaitChainButtonWidth(capabilities),
+                                                               efficiencyModeToggleWidth(capabilities),
+                                                           }));
 }
 
 bool ProcessActionsView::renderButtons(const Platform::ProcessActionCapabilities& capabilities,

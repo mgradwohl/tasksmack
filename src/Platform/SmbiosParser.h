@@ -276,10 +276,12 @@ struct BiosFields
 
 [[nodiscard]] inline BiosFields decodeBios(const Structure& structure)
 {
-    return {.vendor = structure.stringAt(0x04),
-            .version = structure.stringAt(0x05),
-            .releaseDate = structure.stringAt(0x08),
-            .embeddedControllerVersion = formatRelease(structure.byte(0x16), structure.byte(0x17))};
+    return {
+        .vendor = structure.stringAt(0x04),
+        .version = structure.stringAt(0x05),
+        .releaseDate = structure.stringAt(0x08),
+        .embeddedControllerVersion = formatRelease(structure.byte(0x16), structure.byte(0x17)),
+    };
 }
 
 /// Type 1.
@@ -302,13 +304,15 @@ struct SystemFields
     const bool littleEndian = table.majorVersion > 2 || (table.majorVersion == 2 && table.minorVersion >= 6);
     const Bytes uuid =
         structure.formatted.size() >= UUID_OFFSET + UUID_SIZE ? structure.formatted.subspan(UUID_OFFSET, UUID_SIZE) : Bytes{};
-    return {.manufacturer = structure.stringAt(0x04),
-            .productName = structure.stringAt(0x05),
-            .version = structure.stringAt(0x06),
-            .serialNumber = structure.stringAt(0x07),
-            .uuid = formatUuid(uuid, littleEndian),
-            .skuNumber = structure.stringAt(0x19),
-            .family = structure.stringAt(0x1A)};
+    return {
+        .manufacturer = structure.stringAt(0x04),
+        .productName = structure.stringAt(0x05),
+        .version = structure.stringAt(0x06),
+        .serialNumber = structure.stringAt(0x07),
+        .uuid = formatUuid(uuid, littleEndian),
+        .skuNumber = structure.stringAt(0x19),
+        .family = structure.stringAt(0x1A),
+    };
 }
 
 /// Type 2.
@@ -322,10 +326,12 @@ struct BaseboardFields
 
 [[nodiscard]] inline BaseboardFields decodeBaseboard(const Structure& structure)
 {
-    return {.manufacturer = structure.stringAt(0x04),
-            .product = structure.stringAt(0x05),
-            .version = structure.stringAt(0x06),
-            .serialNumber = structure.stringAt(0x07)};
+    return {
+        .manufacturer = structure.stringAt(0x04),
+        .product = structure.stringAt(0x05),
+        .version = structure.stringAt(0x06),
+        .serialNumber = structure.stringAt(0x07),
+    };
 }
 
 /// Type 3.
@@ -344,11 +350,13 @@ inline constexpr std::uint8_t CHASSIS_TYPE_MASK = 0x7F;
 [[nodiscard]] inline ChassisFields decodeChassis(const Structure& structure)
 {
     const std::uint8_t raw = structure.byte(0x05).value_or(0);
-    return {.manufacturer = structure.stringAt(0x04),
-            .type = static_cast<std::uint8_t>(raw & CHASSIS_TYPE_MASK),
-            .hasLock = (raw & CHASSIS_LOCK_BIT) != 0,
-            .version = structure.stringAt(0x06),
-            .serialNumber = structure.stringAt(0x07)};
+    return {
+        .manufacturer = structure.stringAt(0x04),
+        .type = static_cast<std::uint8_t>(raw & CHASSIS_TYPE_MASK),
+        .hasLock = (raw & CHASSIS_LOCK_BIT) != 0,
+        .version = structure.stringAt(0x06),
+        .serialNumber = structure.stringAt(0x07),
+    };
 }
 
 /// The name of a chassis type (DSP0134 7.4.1); the lock bit is ignored. Empty for 0 or an unknown value.
@@ -495,16 +503,18 @@ inline constexpr std::uint8_t BIOS_VIRTUAL_MACHINE_BIT = 0x10;
 /// Machine", which other products end with too ("Parallels ARM Virtual Machine", "QEMU Virtual Machine").
 [[nodiscard]] constexpr std::string_view virtualMachineVendor(std::string_view systemNames) noexcept
 {
-    constexpr std::array<std::pair<std::string_view, std::string_view>, 8> VENDORS{{
-        {"QEMU", "QEMU"}, // UTM's QEMU backend too
-        {"KVM", "KVM"},
-        {"VMware", "VMware"},
-        {"VirtualBox", "VirtualBox"},
-        {"Xen", "Xen"},
-        {"Parallels", "Parallels"},
-        {"Amazon EC2", "Amazon EC2"},   // but not its bare metal: isAmazonBareMetal()
-        {"Virtual Machine", "Hyper-V"}, // Microsoft Corporation's product name
-    }};
+    constexpr std::array<std::pair<std::string_view, std::string_view>, 8> VENDORS{
+        {
+            {"QEMU", "QEMU"}, // UTM's QEMU backend too
+            {"KVM", "KVM"},
+            {"VMware", "VMware"},
+            {"VirtualBox", "VirtualBox"},
+            {"Xen", "Xen"},
+            {"Parallels", "Parallels"},
+            {"Amazon EC2", "Amazon EC2"},   // but not its bare metal: isAmazonBareMetal()
+            {"Virtual Machine", "Hyper-V"}, // Microsoft Corporation's product name
+        },
+    };
     if (isAmazonBareMetal(systemNames))
     {
         return {};
@@ -551,7 +561,16 @@ struct VirtualMachineHint
 [[nodiscard]] inline bool isPlaceholderString(std::string_view text) noexcept
 {
     constexpr std::array<std::string_view, 9> PLACEHOLDERS{
-        "unknown", "not specified", "not available", "undefined", "none", "n/a", "no dimm", "to be filled by o.e.m.", "default string"};
+        "unknown",
+        "not specified",
+        "not available",
+        "undefined",
+        "none",
+        "n/a",
+        "no dimm",
+        "to be filled by o.e.m.",
+        "default string",
+    };
     const auto equalIgnoringCase = [text](std::string_view lower)
     {
         return std::ranges::equal(text,
@@ -590,10 +609,12 @@ struct MemoryArrayFields
 [[nodiscard]] inline MemoryArrayFields decodeMemoryArray(const Structure& structure) noexcept
 {
     constexpr std::uint64_t KIB = 1024;
-    MemoryArrayFields fields{.handle = structure.handle,
-                             .use = structure.byte(0x05).value_or(0),
-                             .maxCapacityBytes = 0,
-                             .deviceCount = structure.word(0x0D).value_or(0)};
+    MemoryArrayFields fields{
+        .handle = structure.handle,
+        .use = structure.byte(0x05).value_or(0),
+        .maxCapacityBytes = 0,
+        .deviceCount = structure.word(0x0D).value_or(0),
+    };
     if (const std::optional<std::uint32_t> capacity = structure.dword(0x07); capacity.has_value())
     {
         if (*capacity == MEMORY_ARRAY_EXTENDED_CAPACITY)
@@ -840,15 +861,17 @@ inline void decodeMemoryTable(Bytes table, MemoryModulesInfo& info)
         {
             continue;
         }
-        info.modules.push_back({.locator = std::move(fields.locator),
-                                .bankLocator = std::move(fields.bankLocator),
-                                .sizeBytes = fields.sizeBytes,
-                                .type = std::string(memoryTypeName(fields.memoryType)),
-                                .formFactor = std::string(memoryFormFactorName(fields.formFactor)),
-                                .speedMts = fields.speedMts,
-                                .configuredSpeedMts = fields.configuredSpeedMts,
-                                .manufacturer = std::move(fields.manufacturer),
-                                .partNumber = std::move(fields.partNumber)});
+        info.modules.push_back({
+            .locator = std::move(fields.locator),
+            .bankLocator = std::move(fields.bankLocator),
+            .sizeBytes = fields.sizeBytes,
+            .type = std::string(memoryTypeName(fields.memoryType)),
+            .formFactor = std::string(memoryFormFactorName(fields.formFactor)),
+            .speedMts = fields.speedMts,
+            .configuredSpeedMts = fields.configuredSpeedMts,
+            .manufacturer = std::move(fields.manufacturer),
+            .partNumber = std::move(fields.partNumber),
+        });
     }
     // An array can under-report (a board that lists more devices than its array declares); never show
     // fewer slots than there are devices.

@@ -159,7 +159,12 @@ struct DialogFooterPlacement
     const float firstX = std::max(leadingShare, rowWidth - actionsWidth);
     const float primaryX = firstX + ((count - 1.0F) * (buttonWidth + spacing));
     return {
-        .rowWidth = rowWidth, .buttonWidth = buttonWidth, .secondaryX = firstX, .primaryX = primaryX, .leadingOnOwnRow = leadingOnOwnRow};
+        .rowWidth = rowWidth,
+        .buttonWidth = buttonWidth,
+        .secondaryX = firstX,
+        .primaryX = primaryX,
+        .leadingOnOwnRow = leadingOnOwnRow,
+    };
 }
 
 /// Height of a dialog footer below the item before it: a spacing, the separator, a spacing and the

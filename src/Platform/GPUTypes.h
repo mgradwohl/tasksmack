@@ -133,7 +133,12 @@ enum class GPUEngineClass : std::uint8_t
 inline constexpr std::size_t GPU_ENGINE_CLASS_COUNT = 5;
 /// The name each engine class goes by in a process's active engines, as Windows' engine types do.
 inline constexpr std::array<std::string_view, GPU_ENGINE_CLASS_COUNT> GPU_ENGINE_CLASS_NAMES{
-    "3D", "Copy", "Video", "VideoProcessing", "Compute"};
+    "3D",
+    "Copy",
+    "Video",
+    "VideoProcessing",
+    "Compute",
+};
 
 /// One engine class's cumulative busyness for one DRM client. `busy` and `total` are in one unit, so
 /// their changes between two samples give the share of the time the client kept the class busy:

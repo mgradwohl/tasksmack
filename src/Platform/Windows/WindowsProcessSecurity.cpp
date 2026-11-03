@@ -306,12 +306,15 @@ SecurityReadResult WindowsProcessSecurityReader::readSecurity(const ProcessTarge
 {
     const std::scoped_lock lock(m_Mutex); // one read at a time: the name cache is shared
     // Closed with the real CloseHandle: this seam's fakes hand out real handles.
-    auto opened = openProcessVerified({.openProcess = m_Api.openProcess,
-                                       .getProcessTimes = m_Api.getProcessTimes,
-                                       .closeHandle = &::CloseHandle,
-                                       .getExitCodeProcess = m_Api.getExitCodeProcess},
-                                      target,
-                                      PROCESS_QUERY_LIMITED_INFORMATION);
+    auto opened = openProcessVerified(
+        {
+            .openProcess = m_Api.openProcess,
+            .getProcessTimes = m_Api.getProcessTimes,
+            .closeHandle = &::CloseHandle,
+            .getExitCodeProcess = m_Api.getExitCodeProcess,
+        },
+        target,
+        PROCESS_QUERY_LIMITED_INFORMATION);
     if (!opened)
     {
         auto refused = toReadFailure<SecurityReadStatus>(opened.error());
@@ -387,9 +390,11 @@ SecurityReadResult WindowsProcessSecurityReader::readSecurity(const ProcessTarge
             // The integrity label is listed as a group too; it has its own row.
             if (complete && (entry->Attributes & SE_GROUP_INTEGRITY) == 0)
             {
-                list.push_back({.account = account(entry->Sid), // points into *groups, alive here
-                                .enabled = (entry->Attributes & SE_GROUP_ENABLED) != 0,
-                                .denyOnly = (entry->Attributes & SE_GROUP_USE_FOR_DENY_ONLY) != 0});
+                list.push_back({
+                    .account = account(entry->Sid), // points into *groups, alive here
+                    .enabled = (entry->Attributes & SE_GROUP_ENABLED) != 0,
+                    .denyOnly = (entry->Attributes & SE_GROUP_USE_FOR_DENY_ONLY) != 0,
+                });
             }
             ++index;
         }

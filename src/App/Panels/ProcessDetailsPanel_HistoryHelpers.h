@@ -72,14 +72,16 @@ struct SampleRateReadings
     const bool read = !sample.gpuReadFailed && sample.snapshot->gpuFieldsRead;
     const bool gpuRead = sample.gpuPerProcessSupported && read;
     const bool npuRead = sample.npuPerProcessSupported && read;
-    return {.io = rateIsReading(sample.ioCountersSupported, sample.snapshot->ioAvailable),
-            .network = rateIsReading(sample.networkCountersSupported, sample.snapshot->networkAvailable),
-            .gpuPerProcess = gpuRead,
-            .gpuUtilization = gpuRead && sample.gpuUtilizationSupported,
-            .gpuSupported = sample.gpuPerProcessSupported,
-            .npuPerProcess = npuRead,
-            .npuUtilization = npuRead && sample.npuUtilizationSupported,
-            .npuSupported = sample.npuPerProcessSupported};
+    return {
+        .io = rateIsReading(sample.ioCountersSupported, sample.snapshot->ioAvailable),
+        .network = rateIsReading(sample.networkCountersSupported, sample.snapshot->networkAvailable),
+        .gpuPerProcess = gpuRead,
+        .gpuUtilization = gpuRead && sample.gpuUtilizationSupported,
+        .gpuSupported = sample.gpuPerProcessSupported,
+        .npuPerProcess = npuRead,
+        .npuUtilization = npuRead && sample.npuUtilizationSupported,
+        .npuSupported = sample.npuPerProcessSupported,
+    };
 }
 
 /// Whether a history holds any actual reading rather than only gaps (NaN).

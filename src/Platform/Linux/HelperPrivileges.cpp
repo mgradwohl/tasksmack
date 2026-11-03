@@ -62,10 +62,12 @@ struct CapabilitySets
     {
         return static_cast<std::uint32_t>(mask >> BITS_PER_WORD);
     };
-    std::array<__user_cap_data_struct, 2> data{{
-        {.effective = low(sets.effective), .permitted = low(sets.permitted), .inheritable = low(sets.inheritable)},
-        {.effective = high(sets.effective), .permitted = high(sets.permitted), .inheritable = high(sets.inheritable)},
-    }};
+    std::array<__user_cap_data_struct, 2> data{
+        {
+            {.effective = low(sets.effective), .permitted = low(sets.permitted), .inheritable = low(sets.inheritable)},
+            {.effective = high(sets.effective), .permitted = high(sets.permitted), .inheritable = high(sets.inheritable)},
+        },
+    };
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - syscall(2) is variadic; glibc has no capset wrapper
     return ::syscall(SYS_capset, &header, data.data()) == 0;
 }

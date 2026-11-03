@@ -1,5 +1,12 @@
 # actionlint configuration (run by the `actionlint` pre-commit hook, #1187).
 # https://github.com/rhysd/actionlint/blob/main/docs/config.md
+self-hosted-runner:
+  # Not self-hosted: GitHub-hosted Ubuntu 26.04 images (actions/runner-images README), which
+  # actionlint 1.7.12's built-in label list predates (#3395). Remove these once a newer actionlint
+  # knows them.
+  labels:
+    - ubuntu-26.04
+    - ubuntu-26.04-arm
 paths:
   .github/workflows/**/*.{yml,yaml}:
     ignore:

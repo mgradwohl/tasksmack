@@ -75,9 +75,11 @@ template<typename Fn> [[nodiscard]] Query query(const Fn& fn, unsigned long long
             continue;
         }
         it->second = sample.timeStamp;
-        result.byPid[sample.pid] = ProcessShare{.smPercent = std::min(sample.smUtil, 100U),
-                                                .encoderPercent = std::min(sample.encUtil, 100U),
-                                                .decoderPercent = std::min(sample.decUtil, 100U)};
+        result.byPid[sample.pid] = ProcessShare{
+            .smPercent = std::min(sample.smUtil, 100U),
+            .encoderPercent = std::min(sample.encUtil, 100U),
+            .decoderPercent = std::min(sample.decUtil, 100U),
+        };
     }
     result.ok = true;
     return result;
