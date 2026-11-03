@@ -33,6 +33,9 @@ A release moves through nine stages, 0 to 8:
 
 ### 1. Foundation: dependencies, toolchain, CI, release pipeline
 
+Get the systems into good shape before the code changes much. Label every CI, infra, build and dependency issue on
+the milestone `priority: high`, so the conveyor picks them up first.
+
 - **Dependency updates** from Renovate and Dependabot: compiler, libraries, Python and actions. Approved majors
   go here.
 - **CI timeouts with headroom:** each job finishes in under about 70% of its limit on a cold cache.
@@ -49,11 +52,20 @@ A release moves through nine stages, 0 to 8:
   - startup time;
   - benchmarks against the previous release.
 
+- **A performance analysis** with the repo's tools, on Windows and Linux, run against those baselines. It files
+  product and tooling perf bugs early, when a fix can still be a refactor in stage 2.
+- **Fault-injection and regression tests** that protect stage 2's refactors.
+
 **Done when:** main is green, the signed dry run passes, and the baselines are posted.
 
 ### 2. Fixes: refactors, bugs, test gaps
 
 Severity first. Test gaps belong here, not at the end, because a test written before a refactor has to be redone.
+Refactors come before features, so new features build on the cleaned-up structure. The two lanes may be in
+different stages, but no feature merges before the refactor it depends on.
+
+Finish with a short perf re-measure against stage 1's baselines, since refactors often touch hot paths. File any
+regression as a bug for this milestone.
 
 **Done when:** no CRITICAL or HIGH bug is open on the milestone. MEDIUM and LOW fixes may still land after the freeze.
 
@@ -74,6 +86,9 @@ local Linux coverage figure (`tools/coverage.sh`) before it merges.
 - **Findings:** fix them. A blocking finding stays on the milestone; the rest move to the next minor.
 - **Baselines:** compare against stage 1's numbers. A performance or memory regression from this cycle is a bug
   for this milestone.
+- **Performance and coverage:** measure, and fix what turns up. A fix the size of a refactor is decided case by
+  case, on its size and benefit. Top up test coverage; most of it came in with stages 2 and 3.
+- **Dependency and security sweep** before the candidate.
 - **Dependencies:** frozen, except for security fixes.
 
 **Done when:** the review sweeps are closed and no blocking finding is open.
@@ -113,6 +128,10 @@ local Linux coverage figure (`tools/coverage.sh`) before it merges.
    ```bash
    git push origin <approved-sha>:refs/heads/release/X.Y
    ```
+
+   The "Main Builds" ruleset requires status checks on `release/*`. Its **"Do not require status checks on
+   creation"** setting must stay on: Dependency Review runs only on pull requests, so a branch cut from a main
+   commit could never satisfy it, and the push would be refused (v0.10.0, 2026-11-03).
 
    Right after the cut, bump main to `X.(Y+1).0`: a PR that changes only `project(TaskSmack VERSION ...)` in
    `CMakeLists.txt`. From then on main's builds read `X.(Y+1).0-dev`, above every `X.Y.*` patch. Until that bump
