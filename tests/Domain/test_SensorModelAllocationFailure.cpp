@@ -9,6 +9,7 @@
 
 #include "AllocationFailureHook.h"
 #include "Domain/SensorModel.h"
+#include "Domain/SensorTracker.h"
 #include "Platform/ISystemInfoProbe.h"
 
 #include <gtest/gtest.h>
@@ -28,7 +29,10 @@ namespace
 
 using namespace std::chrono_literals;
 
-constexpr int WARM_UP_SAMPLES = 30;
+// 63 readings fill all but one slot of each history's first 64-slot block (SharedHistoryBuffer::MIN_BLOCK), so
+// the paused sample's two appends (the break and the reading) must reserve a new block: the sweep reaches the
+// reservation path's allocations, not just the new device's.
+constexpr int WARM_UP_SAMPLES = 63;
 
 Platform::SensorReading temperature(const char* label, const char* id, double celsius)
 {
@@ -147,11 +151,22 @@ TEST(SensorModelAllocationFailureTest, AFailedAllocationOnASampleThatAddsADevice
         EXPECT_GT(next->version, before->version);
         expectAligned(*next);
         EXPECT_EQ(next->histories.size(), 3U);
-        for (const auto& [key, history] : next->histories)
+        // Each sensor's newest point is this read's own value, at this read's time: Package 61, Core 0 56 and the
+        // new NVMe 38, by sensor key, so a stale or swapped reading with a fresh timestamp can't pass.
+        const Platform::SensorsInfo expected = sensors(61.0, true);
+        const double nowSeconds = std::chrono::duration<double>(now->time_since_epoch()).count();
+        for (const Platform::SensorDevice& device : expected.devices)
         {
-            ASSERT_FALSE(history.values.empty()) << key;
-            EXPECT_DOUBLE_EQ(history.times[history.times.size() - 1], std::chrono::duration<double>(now->time_since_epoch()).count())
-                << key;
+            for (const Platform::SensorReading& reading : device.readings)
+            {
+                const std::string key = Domain::sensorKey(device, reading);
+                const auto found = next->histories.find(key);
+                ASSERT_NE(found, next->histories.end()) << key;
+                const Domain::SensorHistory& history = found->second;
+                ASSERT_FALSE(history.values.empty()) << key;
+                EXPECT_FLOAT_EQ(history.values[history.values.size() - 1], static_cast<float>(reading.value)) << key;
+                EXPECT_DOUBLE_EQ(history.times[history.times.size() - 1], nowSeconds) << key;
+            }
         }
         if (HasFailure())
         {

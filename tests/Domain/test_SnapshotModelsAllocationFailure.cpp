@@ -17,6 +17,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <new>
@@ -141,14 +142,19 @@ TEST(SnapshotModelsAllocationFailureTest, AFailedServiceSampleKeepsTheLastWholeL
         {
             ASSERT_EQ(publication.services.size(), 2U);
             EXPECT_EQ(publication.services[0].name, "bits");
-            EXPECT_EQ(publication.servicesByPid.size(), 1U);
+            // The index belongs to this list: bits (stopped, row 0) has no PID, Winmgmt (row 1) is 1234.
+            ASSERT_EQ(publication.servicesByPid.size(), 1U);
+            EXPECT_EQ(publication.servicesByPid.at(1234), (std::vector<std::size_t>{1}));
         },
         [](const Domain::ServicePublication& publication)
         {
             ASSERT_EQ(publication.services.size(), 4U);
             EXPECT_EQ(publication.services[0].name, "Audiosrv");
             EXPECT_EQ(publication.services[3].name, "Winmgmt");
-            EXPECT_EQ(publication.servicesByPid.size(), 2U); // 1234 (two services) and 42
+            // The whole index, against the sorted rows: Audiosrv (0) and Winmgmt (3) share 1234, EventLog (2) is 42.
+            ASSERT_EQ(publication.servicesByPid.size(), 2U);
+            EXPECT_EQ(publication.servicesByPid.at(1234), (std::vector<std::size_t>{0, 3}));
+            EXPECT_EQ(publication.servicesByPid.at(42), (std::vector<std::size_t>{2}));
             EXPECT_FALSE(publication.stale);
         });
 }
