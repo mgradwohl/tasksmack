@@ -698,6 +698,66 @@ TEST_F(ProcessActionsBlockRenderTest, TheEfficiencyModeCheckboxAsksToTurnItOnAnd
     EXPECT_EQ(h.mock.lastTarget(), TARGET);
 }
 
+// #3429: where the platform can set Realtime (Windows), the Priority card has Set Realtime... under the slider.
+// It asks first, with the warning, in the Actions card's confirm, which then sets Realtime's nice; it is greyed out
+// for a process already at Realtime, and not drawn where the platform can't set it.
+TEST_F(ProcessActionsBlockRenderTest, SetRealtimeInThePriorityCardWarnsThenSetsRealtime)
+{
+    constexpr Platform::ProcessActionCapabilities CAPS{
+        .canTerminate = true,
+        .canKill = true,
+        .canSetPriority = true,
+        .canSetRealtimePriority = true,
+    };
+    Harness h;
+    std::optional<std::int32_t> currentNice = 0;
+    Platform::ProcessActionCapabilities caps = CAPS;
+    std::string text;
+    const auto body = [&]
+    {
+        ImGui::LogToBuffer();
+        ProcessActionsBlock::Context context = h.context(caps);
+        context.currentNice = currentNice;
+        (void) ProcessActionsBlock::render(context, layoutFor(caps, 1600.0F, 600.0F), infoCardHeight(6.0F));
+        h.actionsView.renderConfirmation(&h.mock, TARGET);
+        text = GImGui->LogBuffer.c_str();
+        ImGui::LogFinish();
+    };
+
+    (void) runFrame(body);
+    (void) runFrame(body);
+    EXPECT_TRUE(text.contains("Set Realtime...")) << text;
+    const ImGuiWindow* card = priorityWindow();
+    ASSERT_NE(card, nullptr);
+    ImGui::ActivateItemByID(ImHashStr(Detail::SET_REALTIME_PRIORITY_BUTTON_LABEL, 0, card->ID));
+    (void) runFrame(body);
+    ASSERT_TRUE(runFrame(body));
+    const ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
+    ASSERT_NE(modal, nullptr);
+    EXPECT_TRUE(std::string_view(modal->Name).starts_with("Set Realtime priority for victim (PID 1001)?")) << modal->Name;
+    EXPECT_TRUE(text.contains("can make the desktop unresponsive")) << text;
+    EXPECT_EQ(h.mock.setPriorityCount(), 0);                                                             // asked, not done
+    ImGui::ActivateItemByID(ImHashStr("##filled", 0, ImHashStr("Set Realtime priority", 0, modal->ID))); // the danger fill
+    (void) runFrame(body);
+    h.actionsView.waitForActionForTesting(); // on the action worker (#2305)
+    (void) runFrame(body);
+    EXPECT_EQ(h.mock.setPriorityCount(), 1);
+    EXPECT_EQ(h.mock.lastSetPriorityNice(), Detail::REALTIME_PRIORITY_NICE);
+    EXPECT_EQ(h.mock.lastTarget(), TARGET);
+    EXPECT_TRUE(text.contains("Priority of PID 1001 set to Realtime")) << text;
+
+    // Already at Realtime (the next sample): drawn, greyed out, and a press asks nothing.
+    currentNice = Detail::REALTIME_PRIORITY_NICE;
+    (void) runFrame(body);
+    ImGui::ActivateItemByID(ImHashStr(Detail::SET_REALTIME_PRIORITY_BUTTON_LABEL, 0, priorityWindow()->ID));
+    (void) runFrame(body);
+    EXPECT_FALSE(runFrame(body)) << "nothing to confirm for a process already at Realtime";
+
+    caps.canSetRealtimePriority = false; // Linux
+    (void) runFrame(body);
+    EXPECT_FALSE(text.contains("Set Realtime...")) << text;
+}
+
 // #1395: each action button explains itself on hover; Kill names its key.
 TEST_F(ProcessActionsBlockRenderTest, TheActionButtonsExplainThemselvesOnHover)
 {

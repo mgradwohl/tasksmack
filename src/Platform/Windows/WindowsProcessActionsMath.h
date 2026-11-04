@@ -31,11 +31,16 @@ namespace Platform
 
 /// Maps a Unix-style nice value (-20 to 19) to the closest Windows priority class, using
 /// the same threshold boundaries as Domain::Priority::getPriorityLabel. Extracted as a free
-/// function so its five threshold branches can be unit tested directly, without spawning or
-/// opening a real process. We intentionally never return REALTIME_PRIORITY_CLASS, to avoid
-/// system instability.
+/// function so its threshold branches can be unit tested directly, without spawning or
+/// opening a real process. MIN_NICE, which Domain::Priority::classNice() gives Realtime and
+/// no other class, is REALTIME_PRIORITY_CLASS (#3429): on Windows only Set Realtime priority,
+/// behind its warning, sends it; every other value is one of the five classes below it.
 [[nodiscard]] inline uint32_t niceToPriorityClass(int32_t nice)
 {
+    if (nice <= Domain::Priority::MIN_NICE)
+    {
+        return REALTIME_PRIORITY_CLASS;
+    }
     if (nice < Domain::Priority::HIGH_THRESHOLD)
     {
         return HIGH_PRIORITY_CLASS;
@@ -65,7 +70,7 @@ inline constexpr int32_t HIGH_CLASS_NICE = Domain::Priority::classNice(Domain::P
 inline constexpr int32_t REALTIME_CLASS_NICE = Domain::Priority::classNice(Domain::Priority::PriorityClass::Realtime);
 
 /// The nice value to report for a GetPriorityClass() result: the inverse of niceToPriorityClass()
-/// for the five classes it sets (#1204). An unknown class (or GetPriorityClass() failing with 0) is
+/// for the six classes it sets (#1204, #3429). An unknown class (or GetPriorityClass() failing with 0) is
 /// reported as Normal.
 [[nodiscard]] constexpr int32_t priorityClassToNice(uint32_t priorityClass) noexcept
 {
@@ -109,6 +114,49 @@ inline constexpr int32_t REALTIME_CLASS_NICE = Domain::Priority::classNice(Domai
     default:
         return PriorityClass::None;
     }
+}
+
+/// What Set Realtime priority says when Windows quietly gave High instead (#3429): SetPriorityClass()
+/// succeeds either way, and only a caller that holds SeIncreaseBasePriorityPrivilege, as an
+/// administrator's elevated token does, gets Realtime.
+inline constexpr std::string_view REALTIME_NEEDS_ADMIN_MESSAGE = "Windows set High: Realtime needs administrator rights.";
+
+/// The result of a SetPriorityClass(REALTIME_PRIORITY_CLASS) that Windows accepted, from the class
+/// read back after it (@p readBack, GetPriorityClass(): 0 when it can't be read) for process @p pid
+/// (#3429):
+/// - Realtime: done.
+/// - High: Windows downgraded it for want of the privilege. A permission refusal, so
+///   BrokeredProcessActions sends it through the elevated helper, or the UI offers Retry as
+///   administrator. The process stays at High, which is what Windows set.
+/// - Unreadable: done, with a note that it wasn't confirmed.
+/// - Anything else (the process changed its own class at once): a plain failure naming that class.
+[[nodiscard]] inline ProcessActionResult realtimeReadBackResult(uint32_t readBack, int32_t pid)
+{
+    std::string_view other = "another class";
+    switch (readBack)
+    {
+    case REALTIME_PRIORITY_CLASS:
+        return ProcessActionResult::ok();
+    case HIGH_PRIORITY_CLASS:
+        return ProcessActionResult::denied(std::string{REALTIME_NEEDS_ADMIN_MESSAGE});
+    case 0:
+        return ProcessActionResult::ok("Windows accepted Realtime, but its class couldn't be read back to confirm it");
+    case ABOVE_NORMAL_PRIORITY_CLASS:
+        other = "Above Normal";
+        break;
+    case NORMAL_PRIORITY_CLASS:
+        other = "Normal";
+        break;
+    case BELOW_NORMAL_PRIORITY_CLASS:
+        other = "Below Normal";
+        break;
+    case IDLE_PRIORITY_CLASS:
+        other = "Idle";
+        break;
+    default:
+        break;
+    }
+    return ProcessActionResult::error(std::format("Windows set {} instead of Realtime for process {}", other, pid));
 }
 
 /// Whether Terminate's close request goes to this top-level window (#1094): one the target process

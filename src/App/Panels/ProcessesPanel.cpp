@@ -3534,9 +3534,9 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
     // Efficiency mode (#3071), as Task Manager's row menu has it: one process, ticked while it is on.
     // Turning it on is confirmed; turning it off isn't.
     const bool on = Detail::isInEfficiencyMode(proc);
-    if (const Detail::EfficiencyModeToggle toggle =
-            Detail::efficiencyModeToggle(can, {.pid = proc.pid, .startTimeTicks = proc.startTimeTicks}, on, !actionsIdle, batchCount);
-        toggle.state != Detail::EfficiencyModeToggleState::Hidden)
+    const Detail::EfficiencyModeToggle toggle =
+        Detail::efficiencyModeToggle(can, {.pid = proc.pid, .startTimeTicks = proc.startTimeTicks}, on, !actionsIdle, batchCount);
+    if (toggle.state != Detail::EfficiencyModeToggleState::Hidden)
     {
         ImGui::Separator();
         if (ImGui::MenuItem(Detail::EFFICIENCY_MODE_LABEL, nullptr, on, toggle.state == Detail::EfficiencyModeToggleState::Enabled))
@@ -3544,6 +3544,25 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
             toggleRowEfficiencyMode(proc, on);
         }
         ImGui::SetItemTooltip("%s", toggle.tooltip); // a disabled item still says why
+    }
+    // The Realtime priority class (#3429, Windows): one process, always confirmed with a warning.
+    if (const Detail::RealtimePriorityItem realtime =
+            Detail::realtimePriorityItem(can,
+                                         {.pid = proc.pid, .startTimeTicks = proc.startTimeTicks},
+                                         proc.priorityClass == Domain::Priority::PriorityClass::Realtime,
+                                         !actionsIdle,
+                                         batchCount);
+        realtime.state != Detail::RealtimePriorityState::Hidden)
+    {
+        if (toggle.state == Detail::EfficiencyModeToggleState::Hidden) // else it shares Efficiency mode's group
+        {
+            ImGui::Separator();
+        }
+        if (ImGui::MenuItem(Detail::SET_REALTIME_PRIORITY_LABEL, nullptr, false, realtime.state == Detail::RealtimePriorityState::Enabled))
+        {
+            requestRowAction(Detail::ProcessAction::SetRealtimePriority, proc);
+        }
+        ImGui::SetItemTooltip("%s", realtime.tooltip);
     }
     // One priority for the whole selection (#1484): picked in its own dialog, then confirmed as a batch.
     // A single process's priority stays in Process Details' Actions block.

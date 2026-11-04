@@ -68,6 +68,8 @@ struct WindowsProcessFunctions
     /// the class read before it is lowered to Idle, so turning it off can restore it, and the
     /// ProcessPowerThrottling (EcoQoS) state. Null, any of them: no Efficiency mode (canSetEfficiencyMode
     /// false), so a table whose fakes hand out a real handle never reaches the real calls through them.
+    /// setPriority() sets every class through setPriorityClass (the real call where it is null), and Realtime
+    /// only with both it and getPriorityClass, which reads the class back (#3429; canSetRealtimePriority).
     DWORD(WINAPI* getPriorityClass)(HANDLE process) = nullptr;
     BOOL(WINAPI* setPriorityClass)(HANDLE process, DWORD priorityClass) = nullptr;
     BOOL(WINAPI* setProcessInformation)(HANDLE process, PROCESS_INFORMATION_CLASS infoClass, LPVOID info, DWORD size) = nullptr;
@@ -134,6 +136,9 @@ class WindowsProcessActions : public IProcessActions
     /// Resume (#2582): NtResumeProcess on the verified handle. Not guarded: letting a process run again
     /// can't stop Windows.
     [[nodiscard]] ProcessActionResult resume(const ProcessTarget& target) override;
+    /// SetPriorityClass() with niceToPriorityClass(@p nice). MIN_NICE is Realtime (#3429), read back
+    /// afterwards: Windows quietly sets High instead for a caller without SeIncreaseBasePriorityPrivilege,
+    /// and that is a permission refusal (realtimeReadBackResult()), so the elevated helper can retry it.
     [[nodiscard]] ProcessActionResult setPriority(const ProcessTarget& target, int32_t nice) override;
     /// Windows has no ionice equivalent (#803): refused, and canSetIoPriority is false.
     [[nodiscard]] ProcessActionResult setIoPriority(const ProcessTarget& target, IoPriorityClass ioClass, int32_t level) override;

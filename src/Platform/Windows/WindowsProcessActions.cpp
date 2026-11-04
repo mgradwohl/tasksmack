@@ -402,6 +402,12 @@ guardRefusal(const WindowsProcessFunctions& fns, HANDLE process, const ProcessTa
            fns.resumeThread != nullptr && fns.terminateThread != nullptr && fns.getThreadTimes != nullptr;
 }
 
+/// Whether the table has the calls Set Realtime priority makes (#3429): the class set, then read back.
+[[nodiscard]] bool hasRealtimePriority(const WindowsProcessFunctions& fns) noexcept
+{
+    return fns.getPriorityClass != nullptr && fns.setPriorityClass != nullptr;
+}
+
 /// Whether the table has every call Efficiency mode makes (#3071).
 [[nodiscard]] bool hasEfficiencyMode(const WindowsProcessFunctions& fns) noexcept
 {
@@ -466,12 +472,13 @@ WindowsProcessActions::WindowsProcessActions(WindowsProcessFunctions functions)
 ProcessActionCapabilities WindowsProcessActions::actionCapabilities() const
 {
     return ProcessActionCapabilities{
-        .canTerminate = true,                            // WM_CLOSE to the process's windows: a request it may answer (#1094)
-        .canKill = true,                                 // TerminateProcess
-        .canStop = m_Fns.ntSuspendProcess != nullptr,    // NtSuspendProcess (#2582)
-        .canContinue = m_Fns.ntResumeProcess != nullptr, // NtResumeProcess (#2582)
-        .canSetPriority = true,                          // SetPriorityClass
-        .canSetIoPriority = false,                       // No ionice equivalent (#803)
+        .canTerminate = true,                                 // WM_CLOSE to the process's windows: a request it may answer (#1094)
+        .canKill = true,                                      // TerminateProcess
+        .canStop = m_Fns.ntSuspendProcess != nullptr,         // NtSuspendProcess (#2582)
+        .canContinue = m_Fns.ntResumeProcess != nullptr,      // NtResumeProcess (#2582)
+        .canSetPriority = true,                               // SetPriorityClass
+        .canSetRealtimePriority = hasRealtimePriority(m_Fns), // and read back with GetPriorityClass (#3429)
+        .canSetIoPriority = false,                            // No ionice equivalent (#803)
         .canSetRealtimeIoPriority = false,
         // SetProcessAffinityMask, or CPU sets across processor groups (#1881); needs the groups' sizes
         .canSetAffinity = !m_GroupSizes.empty(),
@@ -661,12 +668,21 @@ ProcessActionResult WindowsProcessActions::setPriority(const ProcessTarget& targ
     const int32_t clampedNice = Domain::Priority::clampNice(nice);
 
     const uint32_t priorityClass = niceToPriorityClass(clampedNice);
+    // Realtime is confirmed by reading the class back (#3429), so it needs both calls in the table.
+    const bool realtime = priorityClass == REALTIME_PRIORITY_CLASS;
+    if (realtime && !hasRealtimePriority(m_Fns))
+    {
+        return ProcessActionResult::error(
+            std::format("Realtime priority is not available on this Windows; nothing sent to process {}", target.pid));
+    }
     spdlog::debug("Setting priority class {} (nice={}) for PID {}", priorityClass, clampedNice, target.pid);
     if (auto refused = systemPidResult(target, GuardedAction::Priority))
     {
         return std::move(*refused);
     }
 
+    // PROCESS_SET_INFORMATION; openVerified() adds PROCESS_QUERY_LIMITED_INFORMATION, which reading the
+    // class back needs.
     VerifiedProcess process = openForAction(m_Fns,
                                             target,
                                             PROCESS_SET_INFORMATION,
@@ -678,13 +694,16 @@ ProcessActionResult WindowsProcessActions::setPriority(const ProcessTarget& targ
         return std::move(process.result);
     }
     // Idle or Below normal starves a critical process, and the session with it; nothing a user needs
-    // is served by raising one either (#2556). Realtime is never set at all (niceToPriorityClass()).
+    // is served by raising one either (#2556), least of all to Realtime.
     if (auto refused = guardRefusal(m_Fns, process.handle.get(), target, GuardedAction::Priority))
     {
         return std::move(*refused);
     }
 
-    const BOOL result = SetPriorityClass(process.handle.get(), priorityClass);
+    // Through the table where it has the call (tests' fakes; the real one otherwise), so no test needs to
+    // change a real process's class to reach the paths after it.
+    const auto setClass = (m_Fns.setPriorityClass != nullptr) ? m_Fns.setPriorityClass : &::SetPriorityClass;
+    const BOOL result = setClass(process.handle.get(), priorityClass);
     const DWORD error = result == 0 ? GetLastError() : 0; // Capture error before the handle closes
 
     if (result == 0)
@@ -695,6 +714,17 @@ ProcessActionResult WindowsProcessActions::setPriority(const ProcessTarget& targ
                            GuardedAction::Priority,
                            error,
                            std::format("Failed to set priority for process {}: error {}", target.pid, error));
+    }
+
+    if (realtime)
+    {
+        // Without SeIncreaseBasePriorityPrivilege, SetPriorityClass() succeeds and quietly sets High: only
+        // the class read back says which it was (#3429). An elevated caller needs no privilege enabled
+        // first: kernelbase acquires it for the call.
+        const DWORD readBack = m_Fns.getPriorityClass(process.handle.get());
+        ProcessActionResult confirmed = realtimeReadBackResult(readBack, target.pid);
+        spdlog::info("Set Realtime priority for PID {}: Windows set class 0x{:X}", target.pid, readBack);
+        return confirmed;
     }
 
     spdlog::info("Successfully set priority (nice={}) for PID {}", clampedNice, target.pid);

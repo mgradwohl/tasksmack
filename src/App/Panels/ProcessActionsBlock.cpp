@@ -1,8 +1,10 @@
 #include "ProcessActionsBlock.h"
 
+#include "Domain/PriorityConfig.h"
 #include "Platform/IProcessActions.h"
 #include "ProcessActionsView.h"
 #include "ProcessDetailsLayout.h"
+#include "ProcessDetailsPanel_ActionHelpers.h"
 #include "ProcessOverviewCard.h"
 #include "ProcessPriorityView.h"
 #include "UI/IconsFontAwesome6.h"
@@ -92,6 +94,36 @@ template<typename Rows> [[nodiscard]] float renderRows(bool centred, const Rows&
     return top + rowsHeight + style.WindowPadding.y;
 }
 
+/// Set Realtime... under the priority slider (#3429, Windows): Realtime is not a stop on the slider, since
+/// it is never applied without the warning, so the button asks the Actions card's confirm, whose result
+/// line (and Retry as administrator) says how it went. Nothing where the platform can't set it.
+void renderSetRealtimeButton(const Context& context)
+{
+    const bool isRealtime = context.currentNice.has_value() &&
+                            Domain::Priority::classFromNice(*context.currentNice) == Domain::Priority::PriorityClass::Realtime;
+    const Detail::RealtimePriorityItem item = Detail::realtimePriorityItem(
+        context.capabilities, context.target, isRealtime, context.actionsView->actionRunning() || context.actionsView->confirmPending());
+    if (item.state == Detail::RealtimePriorityState::Hidden)
+    {
+        return;
+    }
+    ImGui::Spacing();
+    const bool enabled = item.state == Detail::RealtimePriorityState::Enabled;
+    if (!enabled)
+    {
+        ImGui::BeginDisabled();
+    }
+    if (ImGui::SmallButton(Detail::SET_REALTIME_PRIORITY_BUTTON_LABEL))
+    {
+        context.actionsView->requestAction(Detail::ProcessAction::SetRealtimePriority, context.target, *context.processName);
+    }
+    if (!enabled)
+    {
+        ImGui::EndDisabled();
+    }
+    ImGui::SetItemTooltip("%s", item.tooltip); // a disabled button still says why
+}
+
 } // namespace
 
 Widths measure(const Platform::ProcessActionCapabilities& capabilities)
@@ -172,6 +204,7 @@ Heights render(const Context& context, const ProcessDetailsLayout::TopRowLayout&
                                    // The error lines wrap at the card's edge too.
                                    ImGui::PushTextWrapPos(0.0F);
                                    context.priorityView->render(context.actions, context.capabilities, context.currentNice, context.target);
+                                   renderSetRealtimeButton(context);
                                    ImGui::PopTextWrapPos();
                                });
             });

@@ -812,6 +812,81 @@ TEST(ProcessActionsViewTest, ARefusedEfficiencyModeOffersAuthenticateAndRetry)
     EXPECT_EQ(view.lastResult().text, "Efficiency mode off for PID 1001");
 }
 
+// --- Set Realtime priority (#3429) ---------------------------------------------------------------------
+
+TEST(ProcessActionsViewTest, SetRealtimePriorityIsHiddenDisabledOrEnabledAndSaysWhy)
+{
+    const Platform::ProcessActionCapabilities none{.canSetPriority = true};
+    const Platform::ProcessActionCapabilities can{.canSetPriority = true, .canSetRealtimePriority = true};
+    using State = Detail::RealtimePriorityState;
+    EXPECT_EQ(Detail::realtimePriorityItem(none, TARGET_A, false, false).state, State::Hidden) << "Linux: no such item";
+    EXPECT_EQ(Detail::realtimePriorityItem(can, TARGET_A, false, false, 3).state, State::Hidden) << "never for a selection";
+    EXPECT_TRUE(Detail::isActionAvailable(can, ProcessAction::SetRealtimePriority));
+    EXPECT_FALSE(Detail::isActionAvailable(none, ProcessAction::SetRealtimePriority));
+
+    const auto disabledBecause = [&can](const Platform::ProcessTarget& target, bool realtime, bool running, std::string_view why)
+    {
+        const Detail::RealtimePriorityItem item = Detail::realtimePriorityItem(can, target, realtime, running);
+        EXPECT_EQ(item.state, State::Disabled) << why;
+        EXPECT_TRUE(std::string_view(item.tooltip).contains(why)) << item.tooltip;
+    };
+    disabledBecause({.pid = -1, .startTimeTicks = 0}, false, false, "Select a process");
+    disabledBecause({.pid = 1001, .startTimeTicks = 0}, false, false, "can't confirm which process");
+    disabledBecause(TARGET_A, true, false, "already runs at Realtime");
+    disabledBecause(TARGET_A, false, true, "Another action is still running");
+
+    const Detail::RealtimePriorityItem item = Detail::realtimePriorityItem(can, TARGET_A, false, false, 1);
+    EXPECT_EQ(item.state, State::Enabled);
+    EXPECT_TRUE(std::string_view(item.tooltip).contains("can make the desktop unresponsive")) << item.tooltip;
+}
+
+TEST(ProcessActionsViewTest, SetRealtimePriorityAsksFirstThenSetsRealtimesNice)
+{
+    TestMocks::MockProcessActions mock;
+    ProcessActionsView view;
+    view.requestAction(ProcessAction::SetRealtimePriority, TARGET_A, "game.exe");
+    EXPECT_TRUE(view.confirmRequested());
+    EXPECT_EQ(mock.setPriorityCount(), 0) << "asked, not done";
+    view.dispatchConfirmed(&mock);
+    view.waitForActionForTesting();
+    EXPECT_EQ(mock.setPriorityCount(), 1);
+    EXPECT_EQ(mock.lastSetPriorityNice(), Detail::REALTIME_PRIORITY_NICE);
+    EXPECT_EQ(mock.lastTarget(), TARGET_A);
+    EXPECT_EQ(view.lastResult().text, "Priority of PID 1001 set to Realtime");
+}
+
+// Windows set High (no administrator rights): the platform's words, and Retry as administrator, which sends
+// Realtime's nice through the helper as a priority change.
+TEST(ProcessActionsViewTest, ARealtimeThatCameOutHighOffersRetryAsAdministrator)
+{
+    TestMocks::MockProcessActions mock;
+    mock.setCapabilities({.canSetPriority = true, .canSetRealtimePriority = true, .canAuthorizeInteractively = true});
+    mock.setPriorityResult(Platform::ProcessActionResult::denied("Windows set High: Realtime needs administrator rights."));
+    ProcessActionsView view;
+    view.requestAction(ProcessAction::SetRealtimePriority, TARGET_A, "game.exe");
+    view.dispatchConfirmed(&mock);
+    view.waitForActionForTesting();
+    EXPECT_FALSE(view.lastResult().ok);
+    EXPECT_EQ(view.lastResult().text,
+              "Could not set Realtime priority for PID 1001: Windows set High: Realtime needs administrator rights.");
+    ASSERT_TRUE(view.offersAuthenticateAndRetry());
+
+    view.retryAuthorizedForTesting();
+    view.waitForActionForTesting();
+    EXPECT_EQ(mock.lastAuthorizedAction().kind, Platform::AuthorizedAction::Kind::SetPriority);
+    EXPECT_EQ(mock.lastAuthorizedAction().nice, Detail::REALTIME_PRIORITY_NICE);
+    EXPECT_EQ(mock.lastAuthorizedAction().target, TARGET_A);
+    EXPECT_EQ(view.lastResult().text, "Priority of PID 1001 set to Realtime");
+
+    // A refusal that isn't for want of rights (a critical process) offers no retry.
+    mock.setPriorityResult(Platform::ProcessActionResult::error("TaskSmack won't change its priority"));
+    view.requestAction(ProcessAction::SetRealtimePriority, TARGET_A, "game.exe");
+    view.dispatchConfirmed(&mock);
+    view.waitForActionForTesting();
+    EXPECT_FALSE(view.lastResult().ok);
+    EXPECT_FALSE(view.offersAuthenticateAndRetry());
+}
+
 TEST(ProcessActionsViewTest, TheInterfaceDefaultReportsTracingUnsupported)
 {
     NoTraceActions actions;

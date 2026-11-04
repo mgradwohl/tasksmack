@@ -61,6 +61,8 @@ namespace Detail
     case ProcessAction::EfficiencyModeOn:
     case ProcessAction::EfficiencyModeOff:
         return capabilities.canSetEfficiencyMode;
+    case ProcessAction::SetRealtimePriority:
+        return capabilities.canSetRealtimePriority;
     case ProcessAction::None:
         break;
     }
@@ -243,6 +245,66 @@ struct EfficiencyModeToggle
                    "yields the CPU to other work, and may run slower",
     };
 #endif
+}
+
+/// Set Realtime priority (#3429, Windows): the row menu's item, also its ImGui ID.
+inline constexpr const char* SET_REALTIME_PRIORITY_LABEL = ICON_FA_TRIANGLE_EXCLAMATION " Set Realtime priority...###SetRealtimePriority";
+/// The same, as the button under Process Details' priority slider.
+inline constexpr const char* SET_REALTIME_PRIORITY_BUTTON_LABEL = ICON_FA_TRIANGLE_EXCLAMATION " Set Realtime...###SetRealtimePriority";
+
+/// How Set Realtime priority is drawn (#3429).
+enum class RealtimePriorityState : std::uint8_t
+{
+    Hidden,   ///< The platform can't set it (Linux, the synthetic scenario), or a selection of several: nothing is drawn.
+    Disabled, ///< Drawn greyed out; the tooltip says why.
+    Enabled,
+};
+
+struct RealtimePriorityItem
+{
+    RealtimePriorityState state = RealtimePriorityState::Hidden;
+    const char* tooltip = "";
+};
+
+/// Set Realtime priority for @p capabilities and @p target, whose class is Realtime already when
+/// @p isRealtime (#3429): hidden where the platform can't set it and for a selection of several
+/// (@p batchCount, the row menu's), disabled with the reason for no process, one whose identity isn't
+/// confirmed yet, one already at Realtime, or while another action runs (@p actionRunning); otherwise
+/// enabled, its tooltip warning what it does. A press always asks to confirm, with the warning.
+[[nodiscard]] constexpr RealtimePriorityItem realtimePriorityItem(const Platform::ProcessActionCapabilities& capabilities,
+                                                                  const Platform::ProcessTarget& target,
+                                                                  bool isRealtime,
+                                                                  bool actionRunning,
+                                                                  std::size_t batchCount = 0) noexcept
+{
+    if (!capabilities.canSetRealtimePriority || batchCount > 1)
+    {
+        return {.state = RealtimePriorityState::Hidden, .tooltip = ""};
+    }
+    if (target.pid <= 0)
+    {
+        return {.state = RealtimePriorityState::Disabled, .tooltip = "Select a process to set its priority"};
+    }
+    if (target.startTimeTicks == 0)
+    {
+        return {
+            .state = RealtimePriorityState::Disabled,
+            .tooltip = "TaskSmack can't confirm which process this is yet, so it won't change its priority",
+        };
+    }
+    if (isRealtime)
+    {
+        return {.state = RealtimePriorityState::Disabled, .tooltip = "The process already runs at Realtime"};
+    }
+    if (actionRunning)
+    {
+        return {.state = RealtimePriorityState::Disabled, .tooltip = "Another action is still running"};
+    }
+    return {
+        .state = RealtimePriorityState::Enabled,
+        .tooltip = "Run the process at the Realtime priority class, ahead of Windows' own work. A busy Realtime process "
+                   "can make the desktop unresponsive, so TaskSmack asks first. Needs administrator rights.",
+    };
 }
 
 /// "Opened strace for PID 321 in a new terminal" / "Could not trace PID 321: ...".

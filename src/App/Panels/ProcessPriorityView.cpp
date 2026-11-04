@@ -427,7 +427,7 @@ float ProcessPriorityView::renderSlider(std::optional<std::int32_t> currentNice,
     if (Detail::windowsPriorityClassFromNice(m_NiceValue) == Detail::WindowsPriorityClass::Realtime)
     {
         ImGui::TextColored(UI::Theme::get().scheme().textWarning,
-                           ICON_FA_TRIANGLE_EXCLAMATION "  Realtime was set outside TaskSmack; it can be lowered here, not set");
+                           ICON_FA_TRIANGLE_EXCLAMATION "  It runs at Realtime, ahead of Windows' own work; pick a class to lower it");
     }
 #endif
     return pick.rightEdge;
