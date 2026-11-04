@@ -59,7 +59,11 @@ TEST(UserRowsTest, OneRowPerSignedInUserWithTheirSessionsAndProcessTotals)
     aliceDesktop.current = true;
     const std::vector<UserSession> sessions{aliceDesktop, session("7", "alice", 1000, "online"), session("5", "Bob", 1001), greeter};
     const std::vector<Domain::ProcessSnapshot> processes{
-        process(10, "alice", 5.0, 100), process(11, "alice", 20.0, 300), process(12, "Bob", 1.0, 50), process(13, "root", 50.0, 9000)};
+        process(10, "alice", 5.0, 100),
+        process(11, "alice", 20.0, 300),
+        process(12, "Bob", 1.0, 50),
+        process(13, "root", 50.0, 9000),
+    };
 
     const std::vector<UserRow> rows = buildUserRows(sessions, processes);
     ASSERT_EQ(rows.size(), 2U) << "the greeter and root (no sign-in) have no row";
@@ -341,7 +345,11 @@ TEST(UserGroupsTest, OneAccountsProcessesAreOneGroup)
 TEST(UserGroupsTest, ProcessesWithNoDomainGroupByUserNameAsBefore)
 {
     const std::vector<Domain::ProcessSnapshot> snapshots{
-        process(10, "alice", 20.0, 300), process(11, "root", 1.0, 10), process(12, "alice", 2.0, 20), process(13, "Alice", 0.5, 5)};
+        process(10, "alice", 20.0, 300),
+        process(11, "root", 1.0, 10),
+        process(12, "alice", 2.0, 20),
+        process(13, "Alice", 0.5, 5),
+    };
     EXPECT_EQ(ProcessGrouping::groupKey(snapshots[0], ProcessGrouping::GroupBy::User), "alice");
     const std::vector<std::size_t> order{0, 1, 2, 3};
     const std::vector<ProcessGrouping::Group> groups =

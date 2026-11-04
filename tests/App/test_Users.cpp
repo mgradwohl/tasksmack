@@ -4,6 +4,7 @@
 /// the session text are UserGrouping's (test_UserGrouping.cpp, #3377).
 
 #include "App/Panels/SessionActionControl.h"
+#include "App/Panels/UserGrouping.h"
 #include "App/Panels/UsersPanel.h"
 #include "App/Panels/UsersView.h"
 #include "Core/ApplicationEvents.h"
@@ -22,7 +23,6 @@
 #include <atomic>
 #include <cfloat>
 #include <chrono>
-#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <mutex>

@@ -13,7 +13,6 @@
 
 #include <imgui.h>
 
-#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
