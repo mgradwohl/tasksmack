@@ -1596,7 +1596,8 @@ struct FaultPlan
     int lastSetValue = 0;            ///< What the last setpriority / ioprio_set was given
     std::function<void()> duringSet; ///< Run once inside the next setpriority / ioprio_set (#3330)
     int pollCalls = 0;
-    int schedulerNow = 0; ///< What sched_getscheduler returns (#3086): a policy, SCHED_RESET_ON_FORK, or -1 (fails)
+    int schedulerNow = 0;                    ///< What sched_getscheduler returns (#3086): a policy, SCHED_RESET_ON_FORK, or -1 (fails)
+    std::function<int(id_t)> schedulerByTid; ///< Or, when set, what it returns for each thread
 };
 
 FaultPlan& plan()
@@ -1661,8 +1662,12 @@ int fakeSetAffinity(id_t /*tid*/, std::size_t setSize, const cpu_set_t* set)
     return plan().setErrno != 0 ? fail(plan().setErrno) : 0;
 }
 
-int fakeGetScheduler(id_t /*tid*/)
+int fakeGetScheduler(id_t tid)
 {
+    if (plan().schedulerByTid)
+    {
+        return plan().schedulerByTid(tid);
+    }
     return plan().schedulerNow < 0 ? fail(ESRCH) : plan().schedulerNow;
 }
 
@@ -2079,9 +2084,43 @@ TEST_F(LinuxProcessActionsFaultTest, SchedPolicyKeepsAThreadsResetOnFork)
     ASSERT_TRUE(m_Actions.setSchedPolicy(ownTarget(), SchedPolicy::Idle).success);
     EXPECT_EQ(plan().lastSetValue, SCHED_IDLE);
 
-    plan().schedulerNow = -1; // the policy can't be read: no flag, as before
-    ASSERT_TRUE(m_Actions.setSchedPolicy(ownTarget(), SchedPolicy::Batch).success);
-    EXPECT_EQ(plan().lastSetValue, SCHED_BATCH);
+    // A policy that can't be read isn't guessed at: the change fails with why, and nothing is set.
+    plan().schedulerNow = -1;
+    const int callsBefore = plan().setCalls;
+    const ProcessActionResult unread = m_Actions.setSchedPolicy(ownTarget(), SchedPolicy::Batch);
+    EXPECT_FALSE(unread.success);
+    EXPECT_EQ(unread.errorMessage, "Process not found - may have already exited") << "the read's ESRCH";
+    EXPECT_EQ(plan().setCalls, callsBefore);
+}
+
+// #3086: the dialog shows the main thread's policy, so under a Normal main thread a real-time worker (an audio
+// thread) keeps its policy and the result says so; when the main thread itself is real time (the dialog warned),
+// every thread changes.
+TEST_F(LinuxProcessActionsFaultTest, RealTimeWorkersUnderANormalMainThreadKeepTheirPolicy)
+{
+    const pid_t self = ::getpid();
+    plan().schedulerByTid = [self](id_t tid)
+    {
+        return static_cast<pid_t>(tid) == self ? SCHED_OTHER : SCHED_FIFO;
+    };
+    const std::size_t threads = listThreads(self).size();
+    ASSERT_GE(threads, 1U);
+    const ProcessActionResult mixed = m_Actions.setSchedPolicy(ownTarget(), SchedPolicy::Batch);
+    ASSERT_TRUE(mixed.success) << mixed.errorMessage;
+    EXPECT_EQ(static_cast<std::size_t>(plan().setCalls), 1U) << "only the main thread";
+    if (threads > 1)
+    {
+        EXPECT_TRUE(mixed.successNote.contains("real-time thread")) << mixed.successNote;
+    }
+
+    plan() = FaultPlan{};
+    plan().schedulerByTid = [](id_t /*tid*/)
+    {
+        return SCHED_RR | SCHED_RESET_ON_FORK;
+    };
+    ASSERT_TRUE(m_Actions.setSchedPolicy(ownTarget(), SchedPolicy::Normal).success);
+    EXPECT_EQ(static_cast<std::size_t>(plan().setCalls), threads) << "a real-time main thread: every thread, as chosen";
+    EXPECT_EQ(plan().lastSetValue, SCHED_OTHER | SCHED_RESET_ON_FORK);
 }
 
 TEST_F(LinuxProcessActionsFaultTest, SchedPolicyReachesEveryThread)

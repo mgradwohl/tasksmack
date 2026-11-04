@@ -1171,27 +1171,66 @@ ProcessActionResult LinuxProcessControl::setSchedPolicy(const ProcessTarget& tar
         return identity;
     }
 
+    // The dialog showed the process's policy as its main thread's (the snapshot's). When that isn't real time, a
+    // real-time worker (an audio thread under a Normal main thread) keeps its policy, so Apply never takes a thread
+    // off real time that the user wasn't shown; when it is, the dialog warned, and every thread changes.
+    const auto isRealtime = [](int linux) noexcept
+    {
+        const int base = linux & ~SCHED_RESET_ON_FORK;
+        return base == SCHED_FIFO || base == SCHED_RR || base == SCHED_DEADLINE;
+    };
+    bool mainThreadRealtime = false;
+    if (m_Syscalls.getScheduler != nullptr)
+    {
+        const int leader = m_Syscalls.getScheduler(static_cast<id_t>(target.pid));
+        if (leader < 0)
+        {
+            const int err = errno;
+            return ProcessActionResult::error(schedPolicyErrorMessage(err, policy, target.pid));
+        }
+        mainThreadRealtime = isRealtime(leader);
+    }
+
     // The policy is per thread, as nice is: sched_setscheduler(2) with the PID changes only the main
     // thread, so every thread is set, threads started meanwhile included (#3086, as #1104).
+    std::size_t keptRealtime = 0;
     const auto result = reniceThreads(
         target.pid,
         m_Syscalls.listThreads,
-        [this, linuxPolicy](id_t tid) -> int
+        [this, linuxPolicy, mainThreadRealtime, &isRealtime, &keptRealtime](id_t tid) -> int
         {
             // A thread's SCHED_RESET_ON_FORK is kept (rtkit sets it on the real-time threads it grants): clearing it
             // would change what the thread's children start with, and the kernel refuses an unprivileged caller
-            // that tries, with EPERM.
-            const int current = m_Syscalls.getScheduler != nullptr ? m_Syscalls.getScheduler(tid) : 0;
-            const int keep = current > 0 ? (current & SCHED_RESET_ON_FORK) : 0;
-            return m_Syscalls.setScheduler(tid, linuxPolicy | keep) == 0 ? 0 : errno;
+            // that tries, with EPERM. A policy that can't be read isn't guessed at: that thread fails with why.
+            int current = 0;
+            if (m_Syscalls.getScheduler != nullptr)
+            {
+                current = m_Syscalls.getScheduler(tid);
+                if (current < 0)
+                {
+                    return errno;
+                }
+            }
+            if (!mainThreadRealtime && isRealtime(current))
+            {
+                ++keptRealtime;
+                return 0; // left as it is: see above
+            }
+            return m_Syscalls.setScheduler(tid, linuxPolicy | (current & SCHED_RESET_ON_FORK)) == 0 ? 0 : errno;
         },
         m_Syscalls.isThreadOf);
     if (!result.has_value())
     {
         return threadListError(target, result.error(), SCHED_POLICY_WORDING);
     }
-    return reportThreadChange(
+    ProcessActionResult outcome = reportThreadChange(
         m_Syscalls, *result, pidfd, target, SCHED_POLICY_WORDING, setting, schedPolicyErrorMessage(result->firstError, policy, target.pid));
+    if (outcome.success && keptRealtime > 0)
+    {
+        outcome.successNote = std::format(
+            "{} real-time thread{} kept {} policy", keptRealtime, keptRealtime == 1 ? "" : "s", keptRealtime == 1 ? "its" : "their");
+    }
+    return outcome;
 }
 
 CpuAffinityLayout LinuxProcessControl::affinityLayout() const

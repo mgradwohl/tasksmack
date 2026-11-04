@@ -203,10 +203,14 @@ Detail::ActionResultMessage schedPolicyResultMessage(const std::string& name,
     {
         return {.ok = false, .text = result.errorMessage};
     }
-    return {
-        .ok = true,
-        .text = std::format("Scheduling policy of {} (PID {}) set to {}", name, pid, Platform::schedPolicyText(policy, 0).view()),
-    };
+    std::string text = std::format("Scheduling policy of {} (PID {}) set to {}", name, pid, Platform::schedPolicyText(policy, 0).view());
+    if (!result.successNote.empty())
+    {
+        // Threads that kept a real-time policy the dialog didn't show (a real-time worker under a Normal main thread)
+        text += "; ";
+        text += result.successNote;
+    }
+    return {.ok = true, .text = std::move(text)};
 }
 
 } // namespace App
