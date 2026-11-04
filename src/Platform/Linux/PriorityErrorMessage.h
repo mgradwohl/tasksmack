@@ -99,9 +99,9 @@ namespace Platform
         return std::format("Permission denied: process {} belongs to another user, or is leaving the Idle policy. Setting it to {} needs "
                            "root or CAP_SYS_NICE.",
                            pid,
-                           schedPolicyLabel(policy, 0));
+                           schedPolicyText(policy, 0).view());
     case EINVAL:
-        return std::format("The {} scheduling policy can't be set for process {}", schedPolicyLabel(policy, 0), pid);
+        return std::format("The {} scheduling policy can't be set for process {}", schedPolicyText(policy, 0).view(), pid);
     case ESRCH:
         return "Process not found - may have already exited";
     default:

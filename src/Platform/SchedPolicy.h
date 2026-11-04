@@ -80,6 +80,11 @@ enum class SchedPolicy : std::uint8_t
     return -1;
 }
 
+// settableSchedPolicyToLinux() is schedPolicyFromLinux()'s inverse for the policies it maps: the two tables can't drift.
+static_assert(schedPolicyFromLinux(static_cast<std::uint32_t>(settableSchedPolicyToLinux(SchedPolicy::Normal))) == SchedPolicy::Normal);
+static_assert(schedPolicyFromLinux(static_cast<std::uint32_t>(settableSchedPolicyToLinux(SchedPolicy::Batch))) == SchedPolicy::Batch);
+static_assert(schedPolicyFromLinux(static_cast<std::uint32_t>(settableSchedPolicyToLinux(SchedPolicy::Idle))) == SchedPolicy::Idle);
+
 /// A scheduling policy's label held by value, so building it allocates nothing (#3244): the Processes table
 /// words the policy from the snapshot's schedPolicy and rtPriority where it draws the cell, instead of every
 /// snapshot carrying the text for each copy of the published snapshots to copy. The longest label,

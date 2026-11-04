@@ -141,9 +141,10 @@ TEST_F(HelperSandboxTest, ItsOwnJobStillWorks)
     EXPECT_EQ(status, 0);
 }
 
-// #3086: Set scheduling policy may move a thread to Batch or Idle (and back to Normal, with CAP_SYS_NICE); real
-// time, SCHED_RESET_ON_FORK and sched_setattr stay refused. Batch with SCHED_RESET_ON_FORK needs no privilege, so
-// its EPERM is the filter's, not the kernel's.
+// #3086: Set scheduling policy may move a thread to Batch or Idle (and back to Normal, with CAP_SYS_NICE), with
+// SCHED_RESET_ON_FORK kept where the thread had it; real time (with or without the flag) and sched_setattr stay
+// refused. FIFO needs privilege the test may have, so its EPERM is checked as the filter's: with the flag allowed for
+// Batch, a FIFO refusal can't be the flag's.
 TEST_F(HelperSandboxTest, OnlyNormalBatchAndIdleSchedulingPoliciesAreSet)
 {
     EXPECT_EQ(underFilter(HelperSandbox::Mode::Enforce,
@@ -165,7 +166,18 @@ TEST_F(HelperSandboxTest, OnlyNormalBatchAndIdleSchedulingPoliciesAreSet)
                           []
                           {
                               const sched_param param{.sched_priority = 0};
-                              return errorOf(::sched_setscheduler(0, SCHED_BATCH | SCHED_RESET_ON_FORK, &param));
+                              if (::sched_setscheduler(0, SCHED_BATCH | SCHED_RESET_ON_FORK, &param) != 0)
+                              {
+                                  return errno;
+                              }
+                              return ::sched_getscheduler(0) == (SCHED_BATCH | SCHED_RESET_ON_FORK) ? 0 : -1;
+                          }),
+              0);
+    EXPECT_EQ(underFilter(HelperSandbox::Mode::Enforce,
+                          []
+                          {
+                              const sched_param param{.sched_priority = 1};
+                              return errorOf(::sched_setscheduler(0, SCHED_FIFO | SCHED_RESET_ON_FORK, &param));
                           }),
               EPERM);
     EXPECT_EQ(underFilter(HelperSandbox::Mode::Enforce,

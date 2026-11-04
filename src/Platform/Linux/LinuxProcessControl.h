@@ -36,9 +36,13 @@ struct LinuxProcessSyscalls
     int (*ioprioGet)(pid_t pid) = nullptr;            ///< ioprio_get(IOPRIO_WHO_PROCESS, pid): the value
     /// sched_setaffinity(tid, setSize, set): the set is a CPU_ALLOC()ed cpu_set_t of setSize bytes (#1887).
     int (*setAffinity)(id_t tid, std::size_t setSize, const cpu_set_t* set) = nullptr;
-    /// sched_setscheduler(tid, policy, {sched_priority = 0}) (#3086): SCHED_OTHER, SCHED_BATCH or SCHED_IDLE only;
-    /// setSchedPolicy() never passes a real-time policy.
+    /// sched_setscheduler(tid, policy, {sched_priority = 0}) (#3086): SCHED_OTHER, SCHED_BATCH or SCHED_IDLE only,
+    /// with SCHED_RESET_ON_FORK OR'ed in when the thread already had it; setSchedPolicy() never passes a real-time
+    /// policy.
     int (*setScheduler)(id_t tid, int policy) = nullptr;
+    /// sched_getscheduler(2): a thread's policy, SCHED_RESET_ON_FORK included, so setSchedPolicy() keeps that flag
+    /// (#3086). Null reads as no flag.
+    int (*getScheduler)(id_t tid) = nullptr;
     /// The thread IDs listed under /proc/<pid>/task, or why they couldn't be (none listed: ESRCH). Left
     /// null, the real listing is used: most tests fake only the calls above.
     std::expected<std::vector<id_t>, std::error_code> (*listThreads)(pid_t pid) = nullptr;

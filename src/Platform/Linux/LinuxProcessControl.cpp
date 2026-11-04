@@ -388,6 +388,11 @@ int realSetScheduler(id_t tid, int policy)
     return ::sched_setscheduler(static_cast<pid_t>(tid), policy, &param);
 }
 
+int realGetScheduler(id_t tid)
+{
+    return ::sched_getscheduler(static_cast<pid_t>(tid));
+}
+
 pid_t realWaitPid(pid_t pid, int* status, int options)
 {
     return ::waitpid(pid, status, options);
@@ -567,6 +572,7 @@ LinuxProcessSyscalls realProcessSyscalls() noexcept
         .ioprioGet = &realIoprioGet,
         .setAffinity = &realSetAffinity,
         .setScheduler = &realSetScheduler,
+        .getScheduler = &realGetScheduler,
         .listThreads = &realListThreads,
         .isThreadOf = &realIsThreadOf,
         .waitPid = &realWaitPid,
@@ -1132,7 +1138,7 @@ ProcessActionResult LinuxProcessControl::setSchedPolicy(const ProcessTarget& tar
     // Normal, Batch and Idle only (#3086): real time is #3219, and the root helper must never set it, so
     // anything else stops here, before sched_setscheduler(2), as the broker protocol's decoder stops it.
     const int linuxPolicy = settableSchedPolicyToLinux(policy);
-    if (!isSettableSchedPolicy(policy) || linuxPolicy < 0)
+    if (linuxPolicy < 0)
     {
         return ProcessActionResult::error("Only the Normal, Batch and Idle scheduling policies can be set");
     }
@@ -1145,7 +1151,7 @@ ProcessActionResult LinuxProcessControl::setSchedPolicy(const ProcessTarget& tar
         return ProcessActionResult::error("Setting the scheduling policy isn't available on this system");
     }
 
-    const std::string setting = std::format("policy={}", schedPolicyLabel(policy, 0));
+    const std::string setting = std::format("policy={}", schedPolicyText(policy, 0).view());
     spdlog::debug("Setting scheduling policy ({}) for PID {}", setting, target.pid);
 
     // As setPriority(): sched_setscheduler(2) has no pidfd form, so the pidfd opened before the
@@ -1170,7 +1176,15 @@ ProcessActionResult LinuxProcessControl::setSchedPolicy(const ProcessTarget& tar
     const auto result = reniceThreads(
         target.pid,
         m_Syscalls.listThreads,
-        [this, linuxPolicy](id_t tid) -> int { return m_Syscalls.setScheduler(tid, linuxPolicy) == 0 ? 0 : errno; },
+        [this, linuxPolicy](id_t tid) -> int
+        {
+            // A thread's SCHED_RESET_ON_FORK is kept (rtkit sets it on the real-time threads it grants): clearing it
+            // would change what the thread's children start with, and the kernel refuses an unprivileged caller
+            // that tries, with EPERM.
+            const int current = m_Syscalls.getScheduler != nullptr ? m_Syscalls.getScheduler(tid) : 0;
+            const int keep = current > 0 ? (current & SCHED_RESET_ON_FORK) : 0;
+            return m_Syscalls.setScheduler(tid, linuxPolicy | keep) == 0 ? 0 : errno;
+        },
         m_Syscalls.isThreadOf);
     if (!result.has_value())
     {

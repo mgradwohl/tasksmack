@@ -1596,6 +1596,7 @@ struct FaultPlan
     int lastSetValue = 0;            ///< What the last setpriority / ioprio_set was given
     std::function<void()> duringSet; ///< Run once inside the next setpriority / ioprio_set (#3330)
     int pollCalls = 0;
+    int schedulerNow = 0; ///< What sched_getscheduler returns (#3086): a policy, SCHED_RESET_ON_FORK, or -1 (fails)
 };
 
 FaultPlan& plan()
@@ -1660,6 +1661,11 @@ int fakeSetAffinity(id_t /*tid*/, std::size_t setSize, const cpu_set_t* set)
     return plan().setErrno != 0 ? fail(plan().setErrno) : 0;
 }
 
+int fakeGetScheduler(id_t /*tid*/)
+{
+    return plan().schedulerNow < 0 ? fail(ESRCH) : plan().schedulerNow;
+}
+
 int fakeIoprioGet(pid_t /*pid*/)
 {
     return plan().ioprioGetErrno != 0 ? fail(plan().ioprioGetErrno) : plan().ioprioGetValue;
@@ -1681,7 +1687,8 @@ class LinuxProcessActionsFaultTest : public ::testing::Test
                                                        .ioprioSet = &fakeSet,
                                                        .ioprioGet = &fakeIoprioGet,
                                                        .setAffinity = &fakeSetAffinity,
-                                                       .setScheduler = &fakeSet}};
+                                                       .setScheduler = &fakeSet,
+                                                       .getScheduler = &fakeGetScheduler}};
 };
 
 TEST_F(LinuxProcessActionsFaultTest, SignalsGoThroughThePidfd)
@@ -2060,6 +2067,23 @@ TEST_F(LinuxProcessActionsFaultTest, AffinityWithoutTheCallIsUnavailable)
 
 // #3086: a scheduling policy goes to every thread as its SCHED_* value, and is confirmed through the pidfd
 // like the other per-thread changes.
+// #3086: a thread's SCHED_RESET_ON_FORK (rtkit sets it on the real-time threads it grants) is kept, never cleared:
+// the kernel refuses an unprivileged caller that clears it, and it decides what the thread's children start with.
+TEST_F(LinuxProcessActionsFaultTest, SchedPolicyKeepsAThreadsResetOnFork)
+{
+    plan().schedulerNow = SCHED_RR | SCHED_RESET_ON_FORK;
+    ASSERT_TRUE(m_Actions.setSchedPolicy(ownTarget(), SchedPolicy::Normal).success);
+    EXPECT_EQ(plan().lastSetValue, SCHED_OTHER | SCHED_RESET_ON_FORK);
+
+    plan().schedulerNow = SCHED_BATCH; // no flag: none added
+    ASSERT_TRUE(m_Actions.setSchedPolicy(ownTarget(), SchedPolicy::Idle).success);
+    EXPECT_EQ(plan().lastSetValue, SCHED_IDLE);
+
+    plan().schedulerNow = -1; // the policy can't be read: no flag, as before
+    ASSERT_TRUE(m_Actions.setSchedPolicy(ownTarget(), SchedPolicy::Batch).success);
+    EXPECT_EQ(plan().lastSetValue, SCHED_BATCH);
+}
+
 TEST_F(LinuxProcessActionsFaultTest, SchedPolicyReachesEveryThread)
 {
     EXPECT_TRUE(m_Actions.actionCapabilities().canSetSchedPolicy);

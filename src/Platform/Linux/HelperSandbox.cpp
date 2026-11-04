@@ -540,14 +540,19 @@ std::vector<sock_filter> program([[maybe_unused]] Mode mode, [[maybe_unused]] pi
             call, {load(argLow(0)), jump(BPF_JMP | BPF_JEQ | BPF_K, static_cast<std::uint32_t>(self), 0, 1), ret(ALLOW), ret(fail(EPERM))});
     }
     // sched_setscheduler: Set scheduling policy (#3086), to SCHED_OTHER, SCHED_BATCH or SCHED_IDLE only, the three the
-    // broker protocol's decoder and LinuxProcessControl both hold it to. Real time (SCHED_FIFO, SCHED_RR), Deadline and
-    // SCHED_RESET_ON_FORK fail as permission denied would; #3219 will revisit real time.
+    // broker protocol's decoder and LinuxProcessControl both hold it to, each with or without SCHED_RESET_ON_FORK
+    // (kept when the thread already had it). Real time (SCHED_FIFO, SCHED_RR) and Deadline fail as permission denied
+    // would; #3219 will revisit real time.
+    constexpr auto RESET = static_cast<std::uint32_t>(SCHED_RESET_ON_FORK);
     code.blockFor(SYS_sched_setscheduler,
                   {
                       load(argLow(1)),
-                      jump(BPF_JMP | BPF_JEQ | BPF_K, static_cast<std::uint32_t>(SCHED_OTHER), 3, 0),
-                      jump(BPF_JMP | BPF_JEQ | BPF_K, static_cast<std::uint32_t>(SCHED_BATCH), 2, 0),
-                      jump(BPF_JMP | BPF_JEQ | BPF_K, static_cast<std::uint32_t>(SCHED_IDLE), 1, 0),
+                      jump(BPF_JMP | BPF_JEQ | BPF_K, static_cast<std::uint32_t>(SCHED_OTHER), 6, 0),
+                      jump(BPF_JMP | BPF_JEQ | BPF_K, static_cast<std::uint32_t>(SCHED_BATCH), 5, 0),
+                      jump(BPF_JMP | BPF_JEQ | BPF_K, static_cast<std::uint32_t>(SCHED_IDLE), 4, 0),
+                      jump(BPF_JMP | BPF_JEQ | BPF_K, static_cast<std::uint32_t>(SCHED_OTHER) | RESET, 3, 0),
+                      jump(BPF_JMP | BPF_JEQ | BPF_K, static_cast<std::uint32_t>(SCHED_BATCH) | RESET, 2, 0),
+                      jump(BPF_JMP | BPF_JEQ | BPF_K, static_cast<std::uint32_t>(SCHED_IDLE) | RESET, 1, 0),
                       ret(fail(EPERM)),
                       ret(ALLOW),
                   });

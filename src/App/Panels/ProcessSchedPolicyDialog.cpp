@@ -65,6 +65,7 @@ void ProcessSchedPolicyDialog::open(Platform::ProcessTarget target, std::string 
     // Only a policy the dialog offers is chosen for the user; see open()'s comment in the header.
     m_Choice = Platform::isSettableSchedPolicy(current) ? std::optional<Platform::SchedPolicy>{current} : std::nullopt;
     m_ShowRequested = true;
+    m_DismissRequested = false; // a dismiss() the last dialog never consumed must not close this one
 }
 
 void ProcessSchedPolicyDialog::choose(Platform::SchedPolicy policy) noexcept
@@ -188,7 +189,7 @@ Detail::ActionResultMessage schedPolicyResultMessage(const std::string& name,
     }
     return {
         .ok = true,
-        .text = std::format("Scheduling policy of {} (PID {}) set to {}", name, pid, Platform::schedPolicyLabel(policy, 0)),
+        .text = std::format("Scheduling policy of {} (PID {}) set to {}", name, pid, Platform::schedPolicyText(policy, 0).view()),
     };
 }
 

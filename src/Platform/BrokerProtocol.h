@@ -1202,15 +1202,12 @@ namespace Detail
 {
     const ProcessTarget target = reader.target();
     const std::uint8_t value = reader.u8();
-    SchedPolicy policy = SchedPolicy::Normal;
-    if (value == static_cast<std::uint8_t>(SchedPolicy::Normal) || value == static_cast<std::uint8_t>(SchedPolicy::Batch) ||
-        value == static_cast<std::uint8_t>(SchedPolicy::Idle))
-    {
-        policy = static_cast<SchedPolicy>(value); // cast only once it is known to be one of the three
-    }
-    else
+    // Any byte casts to the uint8-backed enum; only the policies Set scheduling policy may set are accepted (#3086).
+    auto policy = static_cast<SchedPolicy>(value);
+    if (!isSettableSchedPolicy(policy))
     {
         reader.fail();
+        policy = SchedPolicy::Normal;
     }
     return SchedPolicyRequest{.target = target, .policy = policy};
 }
