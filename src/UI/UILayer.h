@@ -46,6 +46,7 @@ class UILayer : public Core::Layer
     // restored; taken at the next frame boundary the window isn't minimized at, where the fonts and
     // style can be rebuilt between frames (#943, #3150).
     DisplayScaleCheck m_DisplayScaleCheck;
+    int m_AppliedScalePercent = 0; // The Interface scale setting the fonts were last built for (#3376)
 
     // Per-frame render state shared between beginFrame() and endFrame()
     ImFont* m_PushedFont = nullptr; // font pushed in beginFrame, popped in endFrame

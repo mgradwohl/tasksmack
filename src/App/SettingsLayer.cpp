@@ -2,6 +2,7 @@
 
 #include "App/BackgroundOpen.h"
 #include "App/FontSizeChange.h"
+#include "App/InterfaceScaleChange.h"
 #include "App/PanelPlatforms.h"
 #include "App/PlatformOpen.h"
 #include "App/SelectOverride.h"
@@ -18,12 +19,14 @@
 #include "Core/Layer.h"
 #include "Core/Utf8Path.h"
 #include "Domain/StartAtLogin.h"
+#include "Platform/HostEnvironment.h"
 #include "Platform/IStartAtLogin.h"
 #include "UI/Theme.h"
 
 #include <spdlog/spdlog.h>
 
 #include <filesystem>
+#include <format>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -36,6 +39,7 @@ namespace App
 
 using Detail::FONT_SIZE_OPTIONS;
 using Detail::HISTORY_OPTIONS;
+using Detail::INTERFACE_SCALE_OPTIONS;
 using Detail::pickedOption;
 using Detail::REFRESH_RATE_OPTIONS;
 
@@ -197,6 +201,8 @@ SettingsLayer::~SettingsLayer() = default;
 
 void SettingsLayer::onAttach()
 {
+    // Asked once here, not per frame: under WSL the dialog explains Auto's 100% beside the Interface scale (#3376).
+    m_State.underWsl = Platform::runningUnderWsl();
     // TASKSMACK_OPEN=settings (#2827): open at startup, for an unattended capture. The themes the dialog
     // lists are loaded by UILayer, pushed before this layer (main.cpp).
     if (SelectOverride::startupDialog() == SelectOverride::StartupDialog::Settings)
@@ -388,6 +394,14 @@ void SettingsLayer::applySettings()
     {
         changeFontSize(font->value);
         spdlog::info("Font size changed to {}", font->label);
+    }
+
+    // Apply the Interface scale (#3376): UILayer rebuilds the fonts and style at it next frame.
+    if (const auto scale = pickedOption(m_State.interfaceScaleChoice, INTERFACE_SCALE_OPTIONS);
+        scale.has_value() && scale->percent != settings.interfaceScalePercent)
+    {
+        changeInterfaceScale(scale->percent);
+        spdlog::info("Interface scale changed to {}", scale->percent == 0 ? std::string("Auto") : std::format("{}%", scale->percent));
     }
 
     // Apply refresh rate

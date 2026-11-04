@@ -12,6 +12,7 @@
 #   [ui] show_privilege_notice: show startup dialog when running without elevated privileges (true/false)
 #   [ui] cpu_details_expanded: whether the Overview's CPU Details block is expanded (true/false); its heading toggles it
 #   [ui] chart_anti_aliasing: smooth chart line/fill edges (true/false); disable for lower CPU/GPU cost on integrated GPUs
+#   [ui] interface_scale: the size of text and controls in percent (100-300), in place of the display's own scale; 0 = Auto (the display's). For a display that reports the wrong scale, such as WSLg's 100%
 #   [window] width/height/x/y: the window's normal (restored) size and position, kept while it is maximized; a position off every connected display is ignored at startup
 #   [window] maximized: reopen maximized; Restore returns to width/height/x/y
 #   config_version: the format of this file (written by TaskSmack; don't change it)
@@ -65,6 +66,7 @@ chart_tau_ms_max = 400
 chart_tau_ms_min = 20
 cpu_details_expanded = true
 highlight_new_processes = true
+interface_scale = 0
 show_privilege_notice = true
 show_process_icons = true
 

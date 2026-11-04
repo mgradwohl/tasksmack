@@ -92,8 +92,11 @@ void UILayer::onAttach()
         // Measure the display density once and give the same value to Theme (which scales the
         // ImGuiStyle by it, #936) and to the fonts, so the two cannot disagree. A failed
         // measurement (0.0) leaves Theme at 1.0 and bakes the fonts at 1.0 to match.
+        // The Interface scale setting, when it names one, replaces the measurement (#3376).
         const float measuredScale = measureDisplayScale();
-        Theme::get().setDisplayScale(measuredScale);
+        Theme::get().setMeasuredDisplayScale(measuredScale);
+        m_AppliedScalePercent = Theme::get().interfaceScalePercent();
+        Theme::get().setDisplayScale(effectiveDisplayScale(measuredScale, m_AppliedScalePercent));
         const float displayScale = Theme::get().displayScale();
         // A window already minimized has no real size, so its pixel density may be wrong in a way
         // windowUnitScale() can't tell (#3150): the scale is measured again at the first frame after
@@ -226,12 +229,17 @@ void UILayer::onSDLEvent(SDL_Event* event)
 
 void UILayer::rebuildForDisplayScaleChange()
 {
-    const float measured = measureDisplayScale();
+    // The display's own report, then the Interface scale setting over it (#3376): a setting that names a scale keeps
+    // it on any display, and Auto follows the display.
+    const float reported = measureDisplayScale();
+    Theme::get().setMeasuredDisplayScale(reported);
+    m_AppliedScalePercent = Theme::get().interfaceScalePercent();
+    const float measured = effectiveDisplayScale(reported, m_AppliedScalePercent);
     if (!displayScaleChanged(Theme::get().displayScale(), measured))
     {
         return;
     }
-    spdlog::info("Display scale changed from {:.2f} to {:.2f}; rebuilding fonts and style", Theme::get().displayScale(), measured);
+    spdlog::info("UI scale changed from {:.2f} to {:.2f}; rebuilding fonts and style", Theme::get().displayScale(), measured);
 
     // Fonts first, then the style, both before NewFrame(): the text and the chrome around it move
     // together, as the font-size presets do. Nothing keeps an ImFont* across frames except Theme,
@@ -287,6 +295,11 @@ void UILayer::beginFrame()
 {
     // Not while minimized: the window has no real size then, and its pixel density would make the
     // scale about 5x the display's (#3150). The check waits for the restore.
+    // A changed Interface scale setting (#3376) rebuilds through the same path as a display change.
+    if (Theme::get().interfaceScalePercent() != m_AppliedScalePercent)
+    {
+        m_DisplayScaleCheck.request();
+    }
     if (m_DisplayScaleCheck.pending() && m_DisplayScaleCheck.takeDue(Core::Application::get().getWindow().isMinimized()))
     {
         rebuildForDisplayScaleChange();

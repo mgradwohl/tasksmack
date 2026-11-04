@@ -56,6 +56,10 @@ struct State
     // The combos' state while the dialog is open. Save writes only the ones the user picked (#1120).
     Detail::ComboState themeChoice;
     Detail::ComboState fontSizeChoice;
+    Detail::ComboState interfaceScaleChoice; ///< The Interface scale setting (#3376)
+    /// Set by SettingsLayer once, at attach (Platform::runningUnderWsl()), never by load(): under WSL, Auto's 100% is
+    /// WSLg's report rather than the display's, and the dialog says so beside the Interface scale (#3376).
+    bool underWsl = false;
     Detail::ComboState refreshRateChoice;
     Detail::ComboState historyChoice;
     bool forceNativeDecorationsOnWayland = false;

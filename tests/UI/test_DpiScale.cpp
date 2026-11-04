@@ -170,5 +170,23 @@ TEST(DpiScaleTest, ChromeIconIsAShareOfTheBar)
     EXPECT_FLOAT_EQ(computeChromeIconPx(32.0F), 18.0F); // 17.6
     EXPECT_FLOAT_EQ(computeChromeIconPx(56.0F), 31.0F); // 30.8
 }
+// #3376: the Interface scale setting replaces the display's report when it names a scale in range, so 175% is the
+// same size on every platform; Auto (0), or a value outside 100-300, follows the display.
+TEST(DpiScaleTest, TheInterfaceScaleSettingReplacesTheMeasuredScaleWithinItsRange)
+{
+    EXPECT_FLOAT_EQ(effectiveDisplayScale(1.0F, 0), 1.0F);     // Auto: WSLg's report stands
+    EXPECT_FLOAT_EQ(effectiveDisplayScale(1.75F, 0), 1.75F);   // Auto: Windows' report stands
+    EXPECT_FLOAT_EQ(effectiveDisplayScale(1.0F, 175), 1.75F);  // set: replaces, doesn't multiply
+    EXPECT_FLOAT_EQ(effectiveDisplayScale(1.75F, 175), 1.75F); // set on a 175% display: still 175%, not 306%
+    EXPECT_FLOAT_EQ(effectiveDisplayScale(2.0F, INTERFACE_SCALE_MIN_PERCENT), 1.0F);
+    EXPECT_FLOAT_EQ(effectiveDisplayScale(1.0F, INTERFACE_SCALE_MAX_PERCENT), 3.0F);
+    EXPECT_FLOAT_EQ(effectiveDisplayScale(1.5F, 99), 1.5F); // outside the range: Auto
+    EXPECT_FLOAT_EQ(effectiveDisplayScale(1.5F, 301), 1.5F);
+    EXPECT_FLOAT_EQ(effectiveDisplayScale(1.5F, -1), 1.5F);
+    // A failed measurement (0) under Auto stays 0, which displayScaleChanged() rejects; a set scale doesn't need it.
+    EXPECT_FALSE(displayScaleChanged(1.0F, effectiveDisplayScale(0.0F, 0)));
+    EXPECT_FLOAT_EQ(effectiveDisplayScale(0.0F, 150), 1.5F);
+}
+
 } // namespace
 } // namespace UI

@@ -169,6 +169,12 @@ They are counted the way the GPU tab counts each GPU, so the two can be compared
 
 ---
 
+## Text is small under WSL
+
+WSLg tells Linux apps that every display is at 100% scale, whatever Windows uses, so TaskSmack, like every Linux app under WSLg, draws at 100% while Windows draws at 150% or 175%. Set **Interface scale** in **Settings** (Appearance) to the scale Windows uses (**Windows Settings > Display > Scale**). TaskSmack then draws text and controls at that size, sharply, instead of at what WSLg reports. Under WSL, Settings says so beside the setting while it's on **Auto** (#3376).
+
+WSLg can also scale every Linux window itself: `WESTON_RDP_FRACTIONAL_HI_DPI_SCALING=true` in the `[system]` section of `%USERPROFILE%\.wslgconfig`, then `wsl --shutdown`. That fixes every Linux app at once, but the text is bitmap-scaled and looks soft, so leave TaskSmack's Interface scale on Auto if you use it.
+
 ## Where do I put custom themes?
 
 In the `themes` folder of TaskSmack's config directory: `%APPDATA%\TaskSmack\themes\` on Windows, `$XDG_CONFIG_HOME/tasksmack/themes/` (usually `~/.config/tasksmack/themes/`) on Linux. Settings' (F2) **Open Themes Folder** opens it. Restart TaskSmack and the theme appears in the **Theme** list in Settings. See the user guide's [Themes and Configuration](user-guide.md#themes-and-configuration) for the steps, and the [theme reference](https://github.com/mgradwohl/tasksmack/blob/main/assets/themes/README.md) for every key.
