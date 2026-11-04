@@ -202,7 +202,8 @@ inline constexpr int STARTUP_IMPACT_REFRESH_SECONDS = 600;
 
 // How often the Linux Startup tab re-reads the user's crontab (#3425), at most. Reading it runs `crontab -l` (only the
 // setgid crontab program can read the spool), so it isn't done on every Startup sample; a crontab changes only when
-// its owner edits it. The system tables (/etc/crontab, /etc/cron.d) are files, read with each sample.
+// its owner edits it. The system tables are files: /etc/crontab and the files /etc/cron.d holds are listed and read
+// with each sample, on the sampler thread, so a table added or removed shows at the next one.
 inline constexpr int STARTUP_CRON_REFRESH_SECONDS = 60;
 
 // The opt-in update check (#3093) - fixed, not configurable. With "Check for updates daily" on,

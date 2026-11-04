@@ -394,13 +394,20 @@ TEST_F(LinuxStartupTest, ListsTheEnabledSystemdUserUnitsReadOnly)
 }
 
 // #3425: cron jobs are listed read-only: the user's crontab (as `crontab -l` prints it) and the system tables, which
-// name the user; @reboot reads "at startup"; a program not found is Missing; the actions refuse them.
+// name the user; @reboot reads "at startup"; a program not found is Missing, a builtin first (cd) Unresolved; the
+// actions refuse them. /etc/cron.d's files are those cron reads: letters, digits, '_' and '-' only (#3441 review).
 TEST_F(LinuxStartupTest, ListsTheCronJobsReadOnly)
 {
     const std::filesystem::path etcCrontab = m_Root.path / "etc/crontab";
-    const std::filesystem::path cronD = m_Root.path / "etc/cron.d/backup";
+    const std::filesystem::path cronDir = m_Root.path / "etc/cron.d";
+    const std::filesystem::path cronD = cronDir / "backup";
     writeText(etcCrontab, "SHELL=/bin/sh\n17 * * * * root cd / && run-parts /etc/cron.hourly\n");
     writeText(cronD, "# nightly\n@reboot backup /nonexistent/backup --resume\n");
+    for (const char* skipped : {"backup~", "backup.bak", "backup.dpkg-old", ".placeholder"})
+    {
+        writeText(cronDir / skipped, "@reboot root /bin/sh\n"); // package leftovers and hidden files: cron skips them
+    }
+    std::filesystem::create_directories(cronDir / "subdir");
     int userReads = 0;
     CronSources cron{
         .userCrontab = [&userReads]() -> std::optional<std::string>
@@ -408,7 +415,8 @@ TEST_F(LinuxStartupTest, ListsTheCronJobsReadOnly)
             ++userReads;
             return std::string("MAILTO=\"\"\n@reboot /bin/sh -c 'sync'\n*/10 * * * * env LANG=C sh /home/u/poll.sh\n");
         },
-        .systemTables = {etcCrontab, cronD, m_Root.path / "etc/cron.d/missing"},
+        .systemTables = {etcCrontab, m_Root.path / "etc/missing"},
+        .systemTableDirs = {cronDir, m_Root.path / "etc/no-such-dir"},
     };
     LinuxStartupProbe probe(m_Dirs, "GNOME", SEARCH_PATH, SystemdUserDirs{}, std::move(cron));
     const std::vector<StartupEntry> entries = probe.enumerate();
@@ -429,6 +437,7 @@ TEST_F(LinuxStartupTest, ListsTheCronJobsReadOnly)
     const StartupEntry* poll = find(entries, "crontab line 3");
     ASSERT_NE(poll, nullptr);
     EXPECT_EQ(poll->name, "sh (cron, */10 * * * *)") << "env and its assignment are skipped";
+    EXPECT_EQ(poll->target, StartupTargetState::Present) << "sh, on cron's default PATH";
 
     const StartupEntry* hourly = find(entries, etcCrontab.string() + " line 2");
     ASSERT_NE(hourly, nullptr);
@@ -437,6 +446,8 @@ TEST_F(LinuxStartupTest, ListsTheCronJobsReadOnly)
     EXPECT_EQ(hourly->scope, StartupScope::Machine);
     EXPECT_EQ(hourly->sourcePath, etcCrontab.string());
     EXPECT_TRUE(hourly->notSwitchableReason.contains("an administrator changes it")) << hourly->notSwitchableReason;
+    EXPECT_EQ(hourly->target, StartupTargetState::Unresolved) << "cd is the shell's own: no program to find";
+    EXPECT_TRUE(hourly->executablePath.empty());
 
     const StartupEntry* backup = find(entries, cronD.string() + " line 2");
     ASSERT_NE(backup, nullptr);
@@ -448,10 +459,87 @@ TEST_F(LinuxStartupTest, ListsTheCronJobsReadOnly)
     EXPECT_FALSE(actions.setEnabled(*sync, false).ok);
 }
 
+// #3441 review: /etc/cron.d is listed on each sample, not once when the probe is made, so a table added between two
+// samples (and the directory itself appearing) shows at the next one.
+TEST_F(LinuxStartupTest, ACronTableAddedBetweenSamplesShows)
+{
+    const std::filesystem::path cronDir = m_Root.path / "etc/cron.d";
+    LinuxStartupProbe probe(
+        m_Dirs, "GNOME", SEARCH_PATH, SystemdUserDirs{}, CronSources{.userCrontab = {}, .systemTables = {}, .systemTableDirs = {cronDir}});
+    EXPECT_TRUE(probe.enumerate().empty()) << "no directory yet";
+    writeText(cronDir / "late-job", "@hourly root /bin/sh -c true\n");
+    const std::vector<StartupEntry> entries = probe.enumerate();
+    ASSERT_EQ(entries.size(), 1U);
+    EXPECT_EQ(entries[0].registrationName, (cronDir / "late-job").string() + " line 1");
+    std::filesystem::remove(cronDir / "late-job");
+    EXPECT_TRUE(probe.enumerate().empty()) << "and one removed goes";
+}
+
+TEST(CronTableFileNameTest, OnlyDebianCronsNamesAreRead)
+{
+    EXPECT_TRUE(cronTableFileName("e2scrub_all"));
+    EXPECT_TRUE(cronTableFileName("php-sessionclean"));
+    EXPECT_TRUE(cronTableFileName("Backup2"));
+    EXPECT_FALSE(cronTableFileName(""));
+    EXPECT_FALSE(cronTableFileName("backup~"));
+    EXPECT_FALSE(cronTableFileName("backup.bak"));
+    EXPECT_FALSE(cronTableFileName(".placeholder"));
+    EXPECT_FALSE(cronTableFileName("back up"));
+}
+
+// #3441 review: a job's program is looked up on the job's own PATH: the table's PATH= above it, or a PATH= on the
+// command; a shell-quoted program is unquoted; one only a relative PATH entry might hold is Unresolved, not Missing.
+TEST_F(LinuxStartupTest, ACronJobsProgramIsFoundOnItsOwnPath)
+{
+    const std::filesystem::path bin = m_Root.path / "opt/x";
+    const std::filesystem::path inlineBin = m_Root.path / "opt/inline";
+    for (const std::filesystem::path& program : {bin / "backup", inlineBin / "special"})
+    {
+        writeText(program, "#!/bin/sh\n");
+        std::filesystem::permissions(program, std::filesystem::perms::owner_all);
+    }
+    const std::string crontab = "@daily backup\n" // line 1: cron's default PATH
+                                "PATH=" +
+                                bin.string() +
+                                "\n"              // line 2
+                                "@daily backup\n" // line 3: found in opt/x
+                                "@daily PATH=" +
+                                inlineBin.string() +
+                                " special --now\n"                     // line 4: the inline PATH
+                                "@daily special\n"                     // line 5: not on opt/x
+                                "@daily '/bin/sh' /home/u/backup.sh\n" // line 6: quoted
+                                "PATH=relative/bin:" +
+                                bin.string() +
+                                "\n"                        // line 7
+                                "@daily unknown-program\n"; // line 8
+    CronSources cron{
+        .userCrontab = [crontab]() -> std::optional<std::string> { return crontab; }, .systemTables = {}, .systemTableDirs = {}};
+    LinuxStartupProbe probe(m_Dirs, "GNOME", SEARCH_PATH, SystemdUserDirs{}, std::move(cron));
+    const std::vector<StartupEntry> entries = probe.enumerate();
+    ASSERT_EQ(entries.size(), 6U);
+
+    const auto targetOf = [&entries](int line)
+    {
+        const StartupEntry* entry = find(entries, "crontab line " + std::to_string(line));
+        EXPECT_NE(entry, nullptr) << line;
+        return entry != nullptr ? std::make_pair(entry->target, entry->executablePath)
+                                : std::make_pair(StartupTargetState::Unresolved, std::string{});
+    };
+    EXPECT_EQ(targetOf(1).first, StartupTargetState::Missing) << "not in /usr/bin:/bin";
+    EXPECT_EQ(targetOf(3), std::make_pair(StartupTargetState::Present, (bin / "backup").string()));
+    EXPECT_EQ(targetOf(4), std::make_pair(StartupTargetState::Present, (inlineBin / "special").string()));
+    EXPECT_EQ(targetOf(5).first, StartupTargetState::Missing);
+    EXPECT_EQ(targetOf(6), std::make_pair(StartupTargetState::Present, std::string("/bin/sh")));
+    EXPECT_EQ(targetOf(8).first, StartupTargetState::Unresolved) << "relative/bin depends on where cron runs it";
+    const StartupEntry* special = find(entries, "crontab line 4");
+    ASSERT_NE(special, nullptr);
+    EXPECT_EQ(special->name, "special (cron, @daily)");
+}
+
 // #3425: no crontab (`crontab -l` exits 1, "no crontab for <user>") and no system tables list nothing.
 TEST_F(LinuxStartupTest, NoCrontabListsNoCronJobs)
 {
-    CronSources cron{.userCrontab = []() -> std::optional<std::string> { return std::nullopt; }, .systemTables = {}};
+    CronSources cron{.userCrontab = []() -> std::optional<std::string> { return std::nullopt; }, .systemTables = {}, .systemTableDirs = {}};
     LinuxStartupProbe probe(m_Dirs, "GNOME", SEARCH_PATH, SystemdUserDirs{}, std::move(cron));
     EXPECT_TRUE(probe.enumerate().empty());
 }

@@ -37,13 +37,21 @@ struct CronSources
 {
     /// The user's own crontab as `crontab -l` prints it: nullopt when there is none or it can't be read. Unset to skip.
     std::function<std::optional<std::string>()> userCrontab;
-    /// The system tables, read as files: /etc/crontab and each file in /etc/cron.d (they name the user each job
-    /// runs as).
+    /// System tables read as files, which name the user each job runs as: /etc/crontab.
     std::vector<std::filesystem::path> systemTables;
+    /// Directories of system tables, listed again on each enumerate() (on the sampler thread), so a table added
+    /// later shows: /etc/cron.d. Only the files cron itself reads (cronTableFileName()), in name order.
+    std::vector<std::filesystem::path> systemTableDirs;
 };
 
-/// This machine's: `crontab -l`, re-run at most every Domain::Sampling::STARTUP_CRON_REFRESH_SECONDS, and
-/// /etc/crontab plus the files in /etc/cron.d, listed when enumerate() runs.
+/// Whether cron reads a file named @p name in /etc/cron.d. Debian's and Ubuntu's cron (cron(8), the documented
+/// target) reads only names made of ASCII letters, digits, underscores and hyphens, run-parts' rule, so package
+/// leftovers (foo.dpkg-old, foo.bak, backup~) and hidden files (.placeholder) are skipped. Other crons differ
+/// (cronie skips only dot-files and a few suffixes); this follows Debian's.
+[[nodiscard]] bool cronTableFileName(std::string_view name) noexcept;
+
+/// This machine's: `crontab -l`, re-run at most every Domain::Sampling::STARTUP_CRON_REFRESH_SECONDS, /etc/crontab,
+/// and /etc/cron.d, whose files are listed when enumerate() runs. Makes no I/O itself: safe on any thread.
 [[nodiscard]] CronSources cronSources();
 
 class LinuxStartupProbe final : public IStartupProbe

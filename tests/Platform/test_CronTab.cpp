@@ -1,11 +1,14 @@
 /// @file test_CronTab.cpp
 /// @brief Reading cron tables for the Linux Startup tab (#3425): named and five-field schedules, the system tables'
-/// user column, and the lines that aren't jobs (comments, blanks, variable assignments, short or unknown lines).
+/// user column, the lines that aren't jobs (comments, blanks, variable assignments, short or unknown lines), each
+/// job's PATH and SHELL, and the program a job's shell command starts, read without running it.
 
 #include "Platform/Linux/CronTab.h"
 
 #include <gtest/gtest.h>
 
+#include <optional>
+#include <string>
 #include <vector>
 
 namespace Platform
@@ -68,6 +71,79 @@ TEST(CronTabTest, TheScheduleIsWordedForTheStartupTab)
     EXPECT_EQ(CronTab::describeSchedule("@reboot"), "at startup");
     EXPECT_EQ(CronTab::describeSchedule("@daily"), "@daily");
     EXPECT_EQ(CronTab::describeSchedule("*/5 * * * *"), "*/5 * * * *");
+}
+
+// #3441 review: a job keeps the PATH (and SHELL) its table set above it, cron's default before any, and quotes
+// around the value are dropped as cron drops them.
+TEST(CronTabTest, EachJobKeepsThePathAndShellSetAboveIt)
+{
+    const std::vector<CronTab::Entry> jobs = parse("@daily first\n"
+                                                   "PATH=/opt/backup/bin:/usr/bin\n"
+                                                   "@daily second\n"
+                                                   "SHELL = /bin/bash\n"
+                                                   "PATH = \"/opt/other\" \n"
+                                                   "@daily third\n",
+                                                   /*withUser=*/false);
+    ASSERT_EQ(jobs.size(), 3U);
+    EXPECT_EQ(jobs[0].path, "/usr/bin:/bin") << "cron's default, crontab(5)";
+    EXPECT_EQ(jobs[0].shell, "/bin/sh");
+    EXPECT_EQ(jobs[1].path, "/opt/backup/bin:/usr/bin");
+    EXPECT_EQ(jobs[1].shell, "/bin/sh");
+    EXPECT_EQ(jobs[2].path, "/opt/other");
+    EXPECT_EQ(jobs[2].shell, "/bin/bash");
+}
+
+/// The program CronTab::program() reads from @p command, its kind, and the inline PATH it found.
+struct ProgramCase
+{
+    const char* command;
+    CronTab::Program::Kind kind;
+    const char* word;
+    std::optional<std::string> path;
+};
+
+// #3441 review: a job's command is shell syntax: quotes and backslashes are removed, VAR= prefixes, env and exec are
+// skipped, builtins and keywords are told apart, and what only the shell could work out is Unknown.
+TEST(CronTabTest, TheProgramIsTheShellCommandsFirstWord)
+{
+    using Kind = CronTab::Program::Kind;
+    const std::vector<ProgramCase> cases = {
+        {"'/bin/sh' /home/u/backup.sh", Kind::Executable, "/bin/sh", std::nullopt},
+        {R"("/opt/my tools/run" --now)", Kind::Executable, "/opt/my tools/run", std::nullopt},
+        {R"(/opt/my\ tools/run)", Kind::Executable, "/opt/my tools/run", std::nullopt},
+        {"backup.sh>/dev/null 2>&1", Kind::Executable, "backup.sh", std::nullopt},
+        {"run;other", Kind::Executable, "run", std::nullopt},
+        {"LANG=C TZ=UTC backup", Kind::Executable, "backup", std::nullopt},
+        {"PATH=/opt/x:/bin backup --all", Kind::Executable, "backup", "/opt/x:/bin"},
+        {"env -i PATH=/opt/y LANG=C backup", Kind::Executable, "backup", "/opt/y"},
+        {"env -u HOME backup", Kind::Executable, "backup", std::nullopt},
+        {"exec /usr/bin/backup", Kind::Executable, "/usr/bin/backup", std::nullopt},
+        {"date +\\%Y-\\%m-\\%d > /tmp/day", Kind::Executable, "date", std::nullopt},
+        {"cd / && run-parts /etc/cron.hourly", Kind::ShellBuiltin, "cd", std::nullopt},
+        {"[ -x /usr/sbin/x ] && /usr/sbin/x", Kind::ShellBuiltin, "[", std::nullopt},
+        {"test -x /usr/sbin/x && /usr/sbin/x", Kind::ShellBuiltin, "test", std::nullopt},
+        {"if true; then x; fi", Kind::ShellBuiltin, "if", std::nullopt},
+        {". /etc/profile; run", Kind::ShellBuiltin, ".", std::nullopt},
+        {"$HOME/bin/run", Kind::Unknown, "", std::nullopt},
+        {"PATH=$PATH:/opt/x run", Kind::Unknown, "", std::nullopt},
+        {"\"$HOME/bin/run\"", Kind::Unknown, "", std::nullopt},
+        {"`which run`", Kind::Unknown, "", std::nullopt},
+        {"~/bin/run", Kind::Unknown, "", std::nullopt},
+        {"/opt/run-*.sh", Kind::Unknown, "", std::nullopt},
+        {"(cd /tmp && run)", Kind::Unknown, "", std::nullopt},
+        {"> /tmp/log run", Kind::Unknown, "", std::nullopt},
+        {"2>/dev/null run", Kind::Unknown, "", std::nullopt},
+        {"'unterminated", Kind::Unknown, "", std::nullopt},
+        {"env -S 'run --x'", Kind::Unknown, "", std::nullopt},
+        {"%stdin only", Kind::Unknown, "", std::nullopt},
+    };
+    for (const ProgramCase& c : cases)
+    {
+        const CronTab::Program found = CronTab::program(c.command);
+        EXPECT_EQ(found.kind, c.kind) << c.command;
+        EXPECT_EQ(found.word, c.word) << c.command;
+        EXPECT_EQ(found.path, c.path) << c.command;
+    }
 }
 
 } // namespace
