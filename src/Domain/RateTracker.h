@@ -9,9 +9,8 @@
 // RateTracker keeps each identity's last reading and hands back the interval since it: an identity is whatever
 // tells two readings of the same thing apart from a reused number (PID plus start time, TID plus start time, a
 // device ID). It gives no interval for a first reading, for time that didn't move forward (or moved less than the
-// tracker's minimum), and it forgets identities that a round of readings didn't see. counterDelta() and
-// counterRate() turn an interval's two counter values into a change or a rate, and read a counter that went
-// backwards (a reset, or a wrap of a counter wider than its source) as no change known, rather than a huge one.
+// tracker's minimum), and it forgets identities that a round of readings didn't see. Numeric.h's counterDelta(),
+// counterRate() and their wrapping forms turn an interval's two counter values into a change or a rate.
 //
 // Pure: no clock, no threads, no OS. Tested in tests/Domain/test_RateTracker.cpp with fixed timestamps.
 
@@ -62,28 +61,6 @@ struct StartedIdentityHash
         return static_cast<std::size_t>(mixed ^ (mixed >> 31U));
     }
 };
-
-/// The change in a counter from @p previous to @p current; nullopt when it went backwards (a reset or a wrap).
-[[nodiscard]] constexpr std::optional<std::uint64_t> counterDelta(std::uint64_t current, std::uint64_t previous) noexcept
-{
-    if (current < previous)
-    {
-        return std::nullopt;
-    }
-    return current - previous;
-}
-
-/// A counter's change per second from @p previous to @p current over @p seconds; nullopt when it went backwards
-/// or no time passed.
-[[nodiscard]] constexpr std::optional<double> counterRate(std::uint64_t current, std::uint64_t previous, double seconds) noexcept
-{
-    const std::optional<std::uint64_t> delta = counterDelta(current, previous);
-    if (!delta.has_value() || !(seconds > 0.0))
-    {
-        return std::nullopt;
-    }
-    return static_cast<double>(*delta) / seconds;
-}
 
 /// Each identity's last reading, and the interval from it to the next.
 /// @tparam Key    An identity that a reused number can't share (PID plus start time, not the PID alone).

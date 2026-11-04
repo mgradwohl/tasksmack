@@ -336,12 +336,10 @@ class ProcessThreadsView
             if (acquiredAt.has_value())
             {
                 // The same thread is the same TID and start time; a CPU time that went back gives no CPU %.
-                if (const auto interval = m_CpuTimes.observe({.id = thread.tid, .startTicks = thread.startTicks}, ticks, *acquiredAt))
+                if (const auto interval = m_CpuTimes.observe({.id = thread.tid, .startTicks = thread.startTicks}, ticks, *acquiredAt);
+                    interval.has_value() && ticks >= interval->previous)
                 {
-                    if (const std::optional<std::uint64_t> delta = Domain::counterDelta(ticks, interval->previous))
-                    {
-                        cpu = Detail::threadCpuPercent(*delta, result.ticksPerSecond, interval->seconds, m_CpuCount);
-                    }
+                    cpu = Detail::threadCpuPercent(ticks - interval->previous, result.ticksPerSecond, interval->seconds, m_CpuCount);
                 }
             }
             const double cpuSeconds = static_cast<double>(ticks) / ticksPerSecond;

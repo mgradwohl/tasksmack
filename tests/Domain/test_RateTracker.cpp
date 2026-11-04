@@ -1,14 +1,14 @@
 /// @file test_RateTracker.cpp
-/// @brief Domain::RateTracker and the counter helpers (#3344): intervals between readings by acquisition time,
+/// @brief Domain::RateTracker (#3344): intervals between readings by acquisition time,
 /// with fixed timestamps and no clock.
 
+#include "Domain/Numeric.h"
 #include "Domain/RateTracker.h"
 
 #include <gtest/gtest.h>
 
 #include <chrono>
 #include <cstdint>
-#include <optional>
 
 namespace
 {
@@ -49,8 +49,8 @@ TEST(RateTrackerTest, ADelayedAdoptionGivesTheSameRate)
     const auto adoptedLate = late.observe(process, 250, at(101.0));
     ASSERT_TRUE(promptly.has_value());
     ASSERT_TRUE(adoptedLate.has_value());
-    EXPECT_DOUBLE_EQ(*Domain::counterRate(250, promptly->previous, promptly->seconds), 250.0);
-    EXPECT_DOUBLE_EQ(*Domain::counterRate(250, adoptedLate->previous, adoptedLate->seconds), 250.0);
+    EXPECT_DOUBLE_EQ(Domain::Numeric::counterRate<std::uint64_t>(250, promptly->previous, promptly->seconds), 250.0);
+    EXPECT_DOUBLE_EQ(Domain::Numeric::counterRate<std::uint64_t>(250, adoptedLate->previous, adoptedLate->seconds), 250.0);
 }
 
 TEST(RateTrackerTest, TimeThatDoesNotMoveForwardGivesNoIntervalButTheReadingStillBecomesTheLast)
@@ -106,17 +106,6 @@ TEST(RateTrackerTest, ClearMakesEveryNextReadingAFirstOne)
     tracker.clear();
     EXPECT_EQ(tracker.size(), 0U);
     EXPECT_FALSE(tracker.observe(thread, 2, at(2.0)).has_value());
-}
-
-TEST(RateTrackerTest, ACounterThatWentBackGivesNoChangeAndNoRate)
-{
-    EXPECT_EQ(Domain::counterDelta(150, 100), std::optional<std::uint64_t>(50));
-    EXPECT_EQ(Domain::counterDelta(100, 100), std::optional<std::uint64_t>(0));
-    EXPECT_FALSE(Domain::counterDelta(5, 100).has_value()) << "a reset (or a wrap): not an 18-quintillion jump";
-    EXPECT_DOUBLE_EQ(*Domain::counterRate(300, 100, 2.0), 100.0);
-    EXPECT_FALSE(Domain::counterRate(5, 100, 2.0).has_value());
-    EXPECT_FALSE(Domain::counterRate(300, 100, 0.0).has_value()) << "zero elapsed";
-    EXPECT_FALSE(Domain::counterRate(300, 100, -1.0).has_value());
 }
 
 TEST(RateTrackerTest, IdentitiesHashAndCompareOnBothParts)
