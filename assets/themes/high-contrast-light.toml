@@ -1,3 +1,11 @@
+# High Contrast Light Theme
+# Maximum-contrast light palette: near-white surfaces, dark text and strong outlines
+# Light variant of High Contrast. Its chart and status colours are tuned to pass the bundled-theme contrast and
+# colour-vision tests (tests/UI/test_BundledThemes.cpp)
+#
+# Color format: "#RRGGBB" or "#RRGGBBAA" (with alpha)
+# Alpha: 00 = transparent, FF = opaque
+
 [meta]
 name = "High Contrast Light"
 description = "High contrast light palette for accessible reading and chart interpretation"

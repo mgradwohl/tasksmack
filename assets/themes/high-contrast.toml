@@ -1,3 +1,11 @@
+# High Contrast Theme
+# Maximum-contrast dark palette: near-black surfaces, bright text and strong outlines
+# For low vision, washed-out projectors and bright light. Its chart and status colours are tuned to pass the
+# bundled-theme contrast and colour-vision tests (tests/UI/test_BundledThemes.cpp)
+#
+# Color format: "#RRGGBB" or "#RRGGBBAA" (with alpha)
+# Alpha: 00 = transparent, FF = opaque
+
 [meta]
 name = "High Contrast"
 description = "High contrast dark palette for accessible reading and chart interpretation"
