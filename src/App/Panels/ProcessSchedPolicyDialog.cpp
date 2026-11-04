@@ -110,8 +110,18 @@ std::optional<Platform::SchedPolicy> ProcessSchedPolicyDialog::render()
         ImGui::EndPopup();
         return applied;
     }
-    // Escape cancels, as Cancel does: the policy is left alone (#1944).
+    // Escape cancels, as Cancel does: the policy is left alone (#1944). Read before the widgets below take keys.
     const bool escaped = UI::Widgets::dialogEscapePressed();
+    renderChoices();
+    applied = renderFooter(escaped);
+    ImGui::EndPopup();
+    return applied;
+}
+
+void ProcessSchedPolicyDialog::renderChoices()
+{
+    // What the dialog changes, a warning when the process runs under a policy it doesn't offer (real time or
+    // Deadline: applying takes it off that), then one radio button per offered policy with what it does.
     const auto& theme = UI::Theme::get();
 
     ImGui::PushTextWrapPos(0.0F);
@@ -136,7 +146,13 @@ std::optional<Platform::SchedPolicy> ProcessSchedPolicyDialog::render()
     }
     ImGui::PopTextWrapPos();
     ImGui::Spacing();
+}
 
+std::optional<Platform::SchedPolicy> ProcessSchedPolicyDialog::renderFooter(bool escaped)
+{
+    // Apply (disabled until a policy is chosen) returns the choice and closes; Cancel, or Escape pressed this
+    // frame (@p escaped), closes without one.
+    const auto& theme = UI::Theme::get();
     const bool chosen = canApply();
     const UI::Widgets::ButtonFills applyFills{
         .resting = theme.scheme().successButton,
@@ -156,6 +172,7 @@ std::optional<Platform::SchedPolicy> ProcessSchedPolicyDialog::render()
     {
         pressed = UI::Widgets::DialogFooterAction::Secondary;
     }
+    std::optional<Platform::SchedPolicy> applied;
     switch (pressed)
     {
     case UI::Widgets::DialogFooterAction::Primary:
@@ -174,7 +191,6 @@ std::optional<Platform::SchedPolicy> ProcessSchedPolicyDialog::render()
     case UI::Widgets::DialogFooterAction::Leading:
         break;
     }
-    ImGui::EndPopup();
     return applied;
 }
 

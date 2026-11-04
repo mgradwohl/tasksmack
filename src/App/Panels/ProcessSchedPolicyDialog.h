@@ -110,6 +110,11 @@ class ProcessSchedPolicyDialog
     }
 
   private:
+    /// The body: the explanation, the current policy's warning when it isn't offered, and the choices.
+    void renderChoices();
+    /// The footer: what Apply returns (the choice), or nothing for Cancel, Escape (@p escaped) or no press.
+    [[nodiscard]] std::optional<Platform::SchedPolicy> renderFooter(bool escaped);
+
     Platform::ProcessTarget m_Target{.pid = -1, .startTimeTicks = 0};
     std::string m_Name;
     Platform::SchedPolicy m_Current = Platform::SchedPolicy::Unknown;
