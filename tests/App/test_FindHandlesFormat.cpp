@@ -1,14 +1,16 @@
 /// @file test_FindHandlesFormat.cpp
 /// @brief The Find handles dialog's pure parts (#3067, #3374): the results' order for every column and direction,
-/// with its tie-breaks, and every part of the status line.
+/// with its tie-breaks, every part of the status line, and a search stopped before it ran (#3343).
 
 #include "App/Panels/FindHandlesDialog.h"
 #include "Domain/HandleSearch.h"
+#include "Mocks/MockProbes.h"
 
 #include <gtest/gtest.h>
 
 #include <cstddef>
 #include <cstdint>
+#include <stop_token>
 #include <string>
 #include <utility>
 #include <vector>
@@ -93,6 +95,81 @@ TEST(FindHandlesStatusTest, EveryPartOfTheStatusLine)
     clean.searched = 5;
     clean.done = true;
     EXPECT_EQ(App::findHandlesStatus(clean, true), "5 processes searched \xC2\xB7 0 found");
+}
+
+// #3343: Stop signals the search's own stop source, so a search stopped while still queued on the worker (before it
+// ran) reads no process, asks for no password, and publishes itself done.
+TEST(FindHandlesSearchTest, ASearchStoppedBeforeItRunsReadsNothingAndEndsDone)
+{
+    TestMocks::MockProcessOpenFilesReader files;
+    const std::vector<Domain::HandleSearch::SearchProcess> processes{
+        {.target = {.pid = 1, .startTimeTicks = 1}, .name = "a"},
+        {.target = {.pid = 2, .startTimeTicks = 2}, .name = "b"},
+    };
+    std::vector<Domain::HandleSearch::SearchPublication> published;
+    const Domain::HandleSearch::Publish publish = [&published](Domain::HandleSearch::SearchPublication generation)
+    {
+        published.push_back(std::move(generation));
+    };
+
+    std::stop_source cancel;
+    cancel.request_stop(); // Stop, pressed while the job was queued
+    const std::stop_source worker;
+    App::runFindHandlesSearch(processes,
+                              {.openFiles = &files, .modules = nullptr},
+                              true,
+                              Domain::HandleSearch::startFor("x", processes.size(), 1),
+                              cancel,
+                              worker.get_token(),
+                              publish);
+    EXPECT_EQ(files.readCount(), 0);
+    EXPECT_EQ(files.authorizedReadCount(), 0) << "no password prompt for a stopped search";
+    ASSERT_FALSE(published.empty());
+    EXPECT_TRUE(published.back().done);
+    EXPECT_EQ(published.back().searched, 0U);
+}
+
+// The worker's own stop (Stop once the job is in flight, stop(), its destructor) stops the search too, and a search
+// nobody stops reads every process.
+TEST(FindHandlesSearchTest, TheWorkersStopReachesTheSearchAndAnUnstoppedOneReadsEveryProcess)
+{
+    TestMocks::MockProcessOpenFilesReader files;
+    const std::vector<Domain::HandleSearch::SearchProcess> processes{
+        {.target = {.pid = 1, .startTimeTicks = 1}, .name = "a"},
+        {.target = {.pid = 2, .startTimeTicks = 2}, .name = "b"},
+    };
+    std::vector<Domain::HandleSearch::SearchPublication> published;
+    const Domain::HandleSearch::Publish publish = [&published](Domain::HandleSearch::SearchPublication generation)
+    {
+        published.push_back(std::move(generation));
+    };
+
+    const std::stop_source cancel;
+    std::stop_source worker;
+    worker.request_stop();
+    App::runFindHandlesSearch(processes,
+                              {.openFiles = &files, .modules = nullptr},
+                              false,
+                              Domain::HandleSearch::startFor("x", processes.size(), 1),
+                              cancel,
+                              worker.get_token(),
+                              publish);
+    EXPECT_EQ(files.readCount(), 0);
+
+    const std::stop_source fresh;
+    const std::stop_source running;
+    published.clear();
+    App::runFindHandlesSearch(processes,
+                              {.openFiles = &files, .modules = nullptr},
+                              false,
+                              Domain::HandleSearch::startFor("x", processes.size(), 2),
+                              fresh,
+                              running.get_token(),
+                              publish);
+    EXPECT_EQ(files.readCount(), 2);
+    ASSERT_FALSE(published.empty());
+    EXPECT_TRUE(published.back().done);
+    EXPECT_EQ(published.back().searched, 2U);
 }
 
 } // namespace
