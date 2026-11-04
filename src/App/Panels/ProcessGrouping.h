@@ -1,13 +1,15 @@
 #pragma once
 
 // The Processes table's Group by (#3068): processes gathered under group header rows, by systemd unit,
-// container or app, each header showing its group's totals marked with Σ, so a rollup never reads as
-// one process's figure (#838). Pure, so the keys, totals and order are tested without ImGui
-// (test_ProcessGrouping.cpp).
+// container, app or user, each header showing its group's totals marked with Σ, so a rollup never reads
+// as one process's figure (#838). The group itself and its totals are in ProcessGroupTotals.h; by user,
+// the account matching is UserGrouping's (#3377). Pure, so the keys, totals and order are tested without
+// ImGui (test_ProcessGrouping.cpp, test_UserGrouping.cpp).
 
+#include "App/Panels/ProcessGroupTotals.h"
+#include "App/Panels/UserGrouping.h"
 #include "App/ProcessColumnConfig.h"
 #include "Domain/ProcessSnapshot.h"
-#include "Platform/AsciiCase.h"
 #include "Platform/ProcessTypes.h"
 
 #include <algorithm>
@@ -32,7 +34,7 @@ enum class GroupBy : std::uint8_t
     Unit,      ///< The systemd unit the process's cgroup names (Linux); the first service it hosts (Windows)
     Container, ///< Its container ("docker:1a2b3c4d5e6f")
     App,       ///< The app its unit was launched as: a desktop app, a Flatpak or a Snap
-    User,      ///< The user it runs as: per-user totals, the Users view's read-only first part (#3076)
+    User,      ///< The account it runs as (domain and user on Windows, #3377): per-user totals (#3076)
 };
 
 /// The label of the group for processes in none.
@@ -115,7 +117,9 @@ servicesBackgroundDemand(bool servicesColumnVisible, bool servicesSectionOpen, G
     return {};
 }
 
-/// The group @p proc belongs to under @p mode, or empty for none (Ungrouped).
+/// The group @p proc belongs to under @p mode, or empty for none (Ungrouped). By user it is the account the
+/// process names (UserGrouping::processAccountKey()); buildGroups() then gives a Windows process that names
+/// no domain to the one account with its name.
 [[nodiscard]] inline std::string groupKey(const Domain::ProcessSnapshot& proc, GroupBy mode)
 {
     switch (mode)
@@ -127,116 +131,17 @@ servicesBackgroundDemand(bool servicesColumnVisible, bool servicesSectionOpen, G
     case GroupBy::App:
         return proc.serviceNames.empty() ? std::string{} : appFromUnit(proc.serviceNames[0]);
     case GroupBy::User:
-        return proc.user;
+        return UserGrouping::processAccountKey(proc);
     case GroupBy::None:
         break;
     }
     return {};
 }
 
-/// A group's totals over its running members (an exited row, #3060, isn't counted).
-struct Totals
-{
-    std::size_t processes = 0;
-    double cpuPercent = 0.0;
-    double memoryPercent = 0.0;
-    std::uint64_t resident = 0;
-    std::uint64_t privateBytes = 0;
-    std::uint64_t swap = 0;
-    std::int64_t threads = 0;
-    std::int64_t handles = 0;
-    double cpuTimeSeconds = 0.0;
-    double ioRead = 0.0;
-    double ioWrite = 0.0;
-    double netSent = 0.0;
-    double netReceived = 0.0;
-    double powerWatts = 0.0;
-    double gpuPercent = 0.0;
-    std::uint64_t gpuMemory = 0;
-    double npuPercent = 0.0;
-    std::uint64_t npuMemory = 0;
-
-    void add(const Domain::ProcessSnapshot& proc) noexcept
-    {
-        ++processes;
-        cpuPercent += proc.cpuPercent;
-        memoryPercent += proc.memoryPercent;
-        resident += proc.memoryBytes;
-        privateBytes += proc.privateBytes;
-        swap += proc.swapBytes;
-        threads += proc.threadCount;
-        handles += proc.handleCount;
-        cpuTimeSeconds += proc.cpuTimeSeconds;
-        ioRead += proc.ioReadBytesPerSec;
-        ioWrite += proc.ioWriteBytesPerSec;
-        netSent += proc.netSentBytesPerSec;
-        netReceived += proc.netReceivedBytesPerSec;
-        powerWatts += proc.powerWatts;
-        gpuPercent += proc.gpuUtilPercent;
-        gpuMemory += proc.gpuMemoryBytes;
-        npuPercent += proc.npuUtilPercent;
-        npuMemory += proc.npuMemoryBytes;
-    }
-};
-
-/// @p column's total in @p totals, for sorting and drawing; nullopt for a column whose values don't add up
-/// to anything meaningful (names, states, virtual and shared memory, priority, start time, ...).
-[[nodiscard]] constexpr std::optional<double> totalFor(const Totals& totals, ProcessColumn column) noexcept
-{
-    switch (column)
-    {
-    case ProcessColumn::CpuPercent:
-        return totals.cpuPercent;
-    case ProcessColumn::MemPercent:
-        return totals.memoryPercent;
-    case ProcessColumn::Resident:
-        return static_cast<double>(totals.resident);
-    case ProcessColumn::Private:
-        return static_cast<double>(totals.privateBytes);
-    case ProcessColumn::Swap:
-        return static_cast<double>(totals.swap);
-    case ProcessColumn::Threads:
-        return static_cast<double>(totals.threads);
-    case ProcessColumn::Handles:
-        return static_cast<double>(totals.handles);
-    case ProcessColumn::CpuTime:
-        return totals.cpuTimeSeconds;
-    case ProcessColumn::IoRead:
-        return totals.ioRead;
-    case ProcessColumn::IoWrite:
-        return totals.ioWrite;
-    case ProcessColumn::NetSent:
-        return totals.netSent;
-    case ProcessColumn::NetReceived:
-        return totals.netReceived;
-    case ProcessColumn::Power:
-        return totals.powerWatts;
-    case ProcessColumn::GpuPercent:
-        return totals.gpuPercent;
-    case ProcessColumn::GpuMemory:
-        return static_cast<double>(totals.gpuMemory);
-    case ProcessColumn::NpuPercent:
-        return totals.npuPercent;
-    case ProcessColumn::NpuMemory:
-        return static_cast<double>(totals.npuMemory);
-    default:
-        return std::nullopt;
-    }
-}
-
-/// One group: its key (empty: Ungrouped), totals and members in the table's order.
-struct Group
-{
-    std::string key;
-    Totals totals;
-    std::vector<std::size_t> members; ///< Indices into the snapshots, in the order given
-};
-
 /// The groups of @p order (indices into @p snapshots, already filtered and sorted) under @p mode. A
-/// member at or past @p liveCount is an exited row (#3060): listed, not counted. Groups are ordered by
-/// their totals in @p sortColumn, ascending or not as @p ascending says, and by name A to Z between equal
-/// totals; by name in the sort's direction for a column without totals. Ungrouped comes last whatever
-/// the order.
+/// member at or past @p liveCount is an exited row (#3060): listed, not counted. Groups are ordered as
+/// sortGroups() orders them. Group: User matches accounts across processes, so UserGrouping builds it
+/// (buildUserGroups(), #3377).
 [[nodiscard]] inline std::vector<Group> buildGroups(const std::vector<Domain::ProcessSnapshot>& snapshots,
                                                     const std::vector<std::size_t>& order,
                                                     GroupBy mode,
@@ -244,6 +149,10 @@ struct Group
                                                     ProcessColumn sortColumn,
                                                     bool ascending)
 {
+    if (mode == GroupBy::User)
+    {
+        return UserGrouping::buildUserGroups(snapshots, order, liveCount, sortColumn, ascending);
+    }
     std::vector<Group> groups;
     std::unordered_map<std::string, std::size_t> byKey;
     for (const std::size_t index : order)
@@ -257,7 +166,8 @@ struct Group
         auto [slot, added] = byKey.try_emplace(key, groups.size());
         if (added)
         {
-            groups.push_back(Group{.key = std::move(key), .totals = {}, .members = {}});
+            std::string label = key;
+            groups.push_back(Group{.key = std::move(key), .label = std::move(label), .totals = {}, .members = {}});
         }
         Group& group = groups[slot->second];
         group.members.push_back(index);
@@ -266,23 +176,7 @@ struct Group
             group.totals.add(proc);
         }
     }
-    std::ranges::stable_sort(groups,
-                             [sortColumn, ascending](const Group& a, const Group& b)
-                             {
-                                 if (a.key.empty() != b.key.empty())
-                                 {
-                                     return b.key.empty(); // Ungrouped last
-                                 }
-                                 const std::optional<double> ta = totalFor(a.totals, sortColumn);
-                                 const std::optional<double> tb = totalFor(b.totals, sortColumn);
-                                 if (ta.has_value() && tb.has_value() && *ta != *tb)
-                                 {
-                                     return ascending ? *ta < *tb : *ta > *tb;
-                                 }
-                                 // By name, A to Z, between equal totals; a column without totals sorts by name in its direction.
-                                 const auto byName = Platform::compareIgnoreCase(a.key, b.key);
-                                 return (ascending || ta.has_value()) ? byName < 0 : byName > 0;
-                             });
+    sortGroups(groups, sortColumn, ascending);
     return groups;
 }
 
