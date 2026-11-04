@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "generator": "tools/bench.ps1",
+  "created_utc": "2026-11-04T00:33:04Z",
+  "preset": "win-benchmark",
+  "result_file": "win-benchmark-20261103-183304.json",
+  "exit_code": 0,
+  "git": {
+    "commit": "3cbee1f5bbf70a513bc5517f5906460c3916ae9c",
+    "branch": "perf/3414-refresh-win-baseline",
+    "dirty": false
+  },
+  "binary": {
+    "name": "TaskSmackBenchmarks.exe",
+    "sha256": "878d6d94d7e00c9969cd50b700b54b6bb1639e7ac0fa804998a28a50b71617b1"
+  },
+  "build": {
+    "build_type": "Release",
+    "generator": "Ninja",
+    "compiler": "clang++.exe",
+    "compiler_id": "Clang",
+    "compiler_version": "23.1.4",
+    "cxx_flags_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "cxx_flags_config_sha256": "c7ed25de8f271a1fe3c740baa5e616d276f86f1648d1e80d39a10624af27fbd7",
+    "cxx_flags_source": "buildinfo",
+    "ipo": "ON",
+    "ipo_source": "buildinfo"
+  },
+  "benchmark": {
+    "args": [
+      "--benchmark_repetitions=10",
+      "--benchmark_min_time=0.5s",
+      "--benchmark_display_aggregates_only=true",
+      "--benchmark_out=win-benchmark-20261103-183304.json",
+      "--benchmark_out_format=json"
+    ],
+    "raw_repetitions": true,
+    "report_aggregates_only": false
+  },
+  "machine": {
+    "label": "Intel(R) Core(TM) Ultra 7 255H / 16 logical cores / Windows 10.0.26300.0",
+    "cpu_model": "Intel(R) Core(TM) Ultra 7 255H",
+    "logical_cores": 16,
+    "os_name": "Windows",
+    "os_version": "10.0.26300.0",
+    "arch": "X64"
+  },
+  "placement": {
+    "core": "performance",
+    "core_class": 1,
+    "hybrid": true,
+    "logical_cpus": [
+      1,
+      10,
+      11,
+      12,
+      13
+    ],
+    "affinity_mask": "0x3c02"
+  },
+  "system_load": {
+    "sample_ms": 500,
+    "before_percent": 1.4,
+    "after_percent": 1.7
+  }
+}
