@@ -12,6 +12,7 @@
 #include <initializer_list>
 #include <iterator>
 #include <limits>
+#include <optional>
 #include <ranges>
 #include <span>
 
@@ -263,6 +264,39 @@ template<std::ranges::input_range... Rs>
 [[nodiscard]] inline std::size_t firstIndexAtOrAfter(std::span<const double> x, double xMin) noexcept
 {
     return static_cast<std::size_t>(std::ranges::lower_bound(x, xMin) - x.begin());
+}
+
+/// The stretch of a chart's time axis its samples cover: from the first sample to the last.
+struct SampledXRange
+{
+    double first = 0.0;
+    double last = 0.0;
+};
+
+/// The first and last finite times of the ascending time axis @p x, each clipped to the window
+/// [@p xMin, @p xMax]; nullopt when @p x has no finite time or none of its span reaches the window.
+///
+/// For a horizontal reference line drawn over the samples, not the whole axis (#3433): the Peak Used
+/// line ran from the axis's left edge, so with a few seconds of history it covered minutes before
+/// anything was sampled. A window the history fills, with trimming's anchor sample left of xMin
+/// (HistoryUtils::keepTrimAnchor), clips to xMin, so a full window's line still starts at the edge.
+[[nodiscard]] inline std::optional<SampledXRange> sampledXRange(std::span<const double> x, double xMin, double xMax) noexcept
+{
+    const auto isFinite = [](double value)
+    {
+        return std::isfinite(value);
+    };
+    const auto first = std::ranges::find_if(x, isFinite);
+    if (first == x.end())
+    {
+        return std::nullopt;
+    }
+    const auto last = std::ranges::find_if(x.rbegin(), x.rend(), isFinite);
+    if (*first > xMax || *last < xMin)
+    {
+        return std::nullopt;
+    }
+    return SampledXRange{.first = std::max(*first, xMin), .last = std::min(*last, xMax)};
 }
 
 /// maxOfSeries() over the samples a chart's window shows: those at x >= @p xMin on the time axis

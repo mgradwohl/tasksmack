@@ -386,6 +386,65 @@ TEST_F(SystemSectionsRenderTest, MemorySectionDrawsUsedCachedSwapAndPeak)
     EXPECT_FALSE(hasLine(lines, UI::Widgets::formatTooltipRow("Cached", UI::Format::formatPercent(15.0))));
 }
 
+/// Where the first plot's line in @p color starts, as a fraction of the plot area's width from its
+/// left edge (0: the edge), read from the vertices drawn in that colour inside the plot area; NaN
+/// when none was drawn. Anti-aliasing fringes share the colour with a transparent alpha, so only the
+/// RGB is compared.
+[[nodiscard]] double lineStartFraction(const ImVec4& color)
+{
+    ImPlotContext& context = *ImPlot::GetCurrentContext();
+    if (context.Plots.GetBufSize() == 0 || context.Plots.GetByIndex(0) == nullptr)
+    {
+        return NOT_A_NUMBER;
+    }
+    const ImRect rect = context.Plots.GetByIndex(0)->PlotRect;
+    constexpr ImU32 RGB_MASK = 0x00FFFFFFU;
+    const ImU32 rgb = ImGui::ColorConvertFloat4ToU32(color) & RGB_MASK;
+    float minX = std::numeric_limits<float>::max();
+    for (const ImGuiWindow* window : GImGui->Windows)
+    {
+        for (const ImDrawVert& vertex : window->DrawList->VtxBuffer)
+        {
+            if ((vertex.col & RGB_MASK) == rgb && rect.Contains(vertex.pos))
+            {
+                minX = std::min(minX, vertex.pos.x);
+            }
+        }
+    }
+    if (minX == std::numeric_limits<float>::max())
+    {
+        return NOT_A_NUMBER;
+    }
+    return static_cast<double>((minX - rect.Min.x) / rect.GetWidth());
+}
+
+TEST_F(SystemSectionsRenderTest, ThePeakUsedLineCoversTheSampledRangeNotTheWholeAxis)
+{
+    // HISTORY_POINTS samples a second apart (29 s) in a 5-minute window: the line ran from the axis's
+    // left edge, so it read as memory sitting at its peak for minutes before any sample (#3433).
+    const Domain::SystemPublication publication = memoryPublication();
+    MemorySection::RenderContext ctx{.publication = &publication, .maxHistorySeconds = 300.0};
+    const auto draw = [&]
+    {
+        runFrame([&] { MemorySection::renderMemorySection(ctx, publication.timestamps, UI::Widgets::historyFrameNowSeconds(), 3); });
+    };
+    draw();
+    draw();
+    const ImVec4 peakColor = UI::Theme::get().scheme().chartPeakLine;
+    const double partial = lineStartFraction(peakColor);
+    ASSERT_FALSE(std::isnan(partial)) << "no Peak Used line drawn";
+    // The first sample is 29 s from "now" in 300 s: about 90 % of the way across.
+    EXPECT_GT(partial, 0.85);
+
+    // A window the history overfills (10 s of 29 s) still draws the line from the axis's left edge.
+    ctx.maxHistorySeconds = 10.0;
+    draw();
+    draw();
+    const double full = lineStartFraction(peakColor);
+    ASSERT_FALSE(std::isnan(full)) << "no Peak Used line drawn";
+    EXPECT_LT(full, 0.02);
+}
+
 TEST_F(SystemSectionsRenderTest, MemorySectionLeavesOutSeriesWithNoHistory)
 {
     // No swap on this machine, and an idle chart (0% used): no Swap series and no peak line.
