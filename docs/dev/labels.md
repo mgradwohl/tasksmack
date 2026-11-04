@@ -78,8 +78,9 @@ order.
 - **`ci-red-main`:** `main-health.yml` opens, rewrites and closes this tracking issue. Don't add it by hand.
 - **`merging`:** the cross-lane merge lock. A PR in its final merge stage carries it, and the other lane waits up to
   30 minutes. The backport action doesn't copy it.
-- **`code-review`:** every issue a code-review sweep or audit files, so the batch can be triaged with one query
-  (`gh issue list --label code-review --search "no:milestone"`).
+- **`code-review`:** every issue a code-review sweep or audit files, so each batch can be triaged with one query:
+  a general audit's findings have no milestone (`gh issue list --label code-review --search "no:milestone"`), and
+  a release sweep's are on that release's milestone (`gh issue list --label code-review --milestone vX.Y.0`).
 - **`manual close`:** a person must verify it by hand (a real desktop, hardware or a compositor) before it's closed.
 - **`question`:** it needs the maintainer's answer before work continues. Triage adds it when an issue's claim
   looks wrong; agents never close those issues.
