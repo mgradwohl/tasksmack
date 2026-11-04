@@ -549,6 +549,7 @@ set(COMMON_TEST_SOURCES
     App/test_BatteryDetails.cpp
     Platform/test_CgroupContainer.cpp
     Platform/test_CgroupService.cpp
+    Platform/test_CgroupProcessType.cpp # the Linux Type column (#3430)
     Platform/test_ElfArchitecture.cpp
     Platform/test_ProcessArchitecture.cpp
     Platform/test_CgroupFreezerPath.cpp

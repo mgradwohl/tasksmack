@@ -144,18 +144,19 @@ document.
   - a concrete failure scenario: inputs or state, then the wrong result;
   - a suggested fix and a size (S, M or L);
   - a body that ends with `🤖 Generated with [Claude Code](https://claude.com/claude-code)` when an agent wrote it.
-- **Labels:**
+- **Labels** (the full scheme is `docs/dev/labels.md`):
   - the kind: `bug`, `enhancement`, `refactoring`, `performance`, `security` or `testing`;
   - the area: `windows`, `linux`, `ui`, `gpu`, `ci`, `tooling` and so on;
   - a lane if the platform is clear: `agent:Windows` or `agent:WSL`;
   - on a **bug**, one severity, which says how bad it is: `sev:high` (a crash, data loss, a security hole, or a
     broken build or release), `sev:medium` (a wrong or misleading result users notice, or broken on a common
-    setup) or `sev:low` (cosmetic, minor, a test gap, a perf idea, docs). Features get no severity;
+    setup) or `sev:low` (a cosmetic or minor defect). Features, test gaps and perf ideas get no severity;
   - priority is the maintainer's, and says when: `pri:high` (do first this cycle; every `sev:high` bug by default),
     `pri:medium` (normal work for the milestone) or `pri:low` (only if there's time). Every open issue on a release
     milestone carries one. An agent may suggest one in the issue, and never raises it;
-  - `code-review` on every issue an audit files, so the batch can be triaged with one query
-    (`gh issue list --label code-review --search "no:milestone"`);
+  - `code-review` on every issue an audit files, so the batch can be triaged with one query: a general audit's
+    have no milestone (`gh issue list --label code-review --search "no:milestone"`), and a release sweep's are on
+    its milestone (`gh issue list --label code-review --milestone vX.Y.0`);
   - no milestone for a general audit. The maintainer sets those, and agents never put an issue on a
     release milestone to get it in. The exception is a release's own code-review sweep (the stage 4 review in
     `docs/dev/release-process.md`, tracked by a `[RELEASE X.Y] Code-review sweep` issue): its findings go on

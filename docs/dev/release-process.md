@@ -60,7 +60,7 @@ the milestone `pri:high`, so the conveyor picks them up first.
 
 ### 2. Fixes: refactors, bugs, test gaps
 
-Severity first. Test gaps belong here, not at the end, because a test written before a refactor has to be redone.
+Priority first, then severity among bugs ([labels.md](labels.md), "Queue order"). Test gaps belong here, not at the end, because a test written before a refactor has to be redone.
 Refactors come before features, so new features build on the cleaned-up structure. The two lanes may be in
 different stages, but no feature merges before the refactor it depends on.
 
