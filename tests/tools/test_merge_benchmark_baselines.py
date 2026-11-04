@@ -70,6 +70,16 @@ class MergeBenchmarkBaselinesTest(unittest.TestCase):
         medians = {e["run_name"]: e["real_time"] for e in merged["benchmarks"] if e.get("aggregate_name") == "median"}
         self.assertEqual(medians["BM_B"], 3.0, "the errored capture still supplies the benchmarks it ran cleanly")
 
+    def test_a_non_finite_or_non_positive_median_never_displaces_a_valid_one(self) -> None:
+        # Seen first, a NaN would stick (every comparison with it is false); an infinity would win every one.
+        for bad in (float("nan"), float("inf"), 0.0, -5.0):
+            with self.subTest(bad=bad):
+                broken = capture(2600, {"BM_A": (bad, "ns")})
+                valid = capture(3240, {"BM_A": (100.0, "ns")})
+                merged = merge_benchmark_baselines.merge([("broken", broken), ("valid", valid)])
+                medians = [e["real_time"] for e in merged["benchmarks"] if e.get("aggregate_name") == "median"]
+                self.assertEqual(medians, [100.0])
+
     def test_a_benchmark_no_capture_measured_stays_skipped(self) -> None:
         merged = merge_benchmark_baselines.merge([("only", capture(2600, {"BM_A": (1.0, "ns")}, skipped=("BM_GPU",)))])
         gpu = [e for e in merged["benchmarks"] if e["run_name"] == "BM_GPU"]

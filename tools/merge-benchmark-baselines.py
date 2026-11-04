@@ -16,8 +16,8 @@ run on any of the captured classes passes unless the code got slower.
 Each capture is a Google Benchmark JSON file (tools/bench.sh, or the heavy-checks
 benchmark-results artifact's perf-data/benchmark-current.json). For every benchmark (run_name) the
 output holds every entry of the capture with the largest median real_time for it, so its median,
-mean, stddev and cv stay consistent with each other. A benchmark missing, skipped or errored (any
-entry with error_occurred) in a capture is taken from the others. The output's context is the first capture's, plus "tasksmack_merged_from":
+mean, stddev and cv stay consistent with each other. A benchmark missing, skipped, errored (any
+entry with error_occurred) or without a finite, positive median in a capture is taken from the others. The output's context is the first capture's, plus "tasksmack_merged_from":
 each capture's label (LABEL=, such as the heavy-checks run id; the file name without one), CPU MHz
 and how many benchmarks it supplied.
 
@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -40,7 +41,11 @@ def median_ns(entry: dict) -> float | None:
         return None
     scale = TIME_UNIT_NS.get(entry.get("time_unit", "ns"))
     time = entry.get("real_time")
-    if scale is None or not isinstance(time, (int, float)):
+    if scale is None or isinstance(time, bool) or not isinstance(time, (int, float)):
+        return None
+    # A NaN or infinite timing (#871) is no usable data, as the regression checker reads it: chosen, it would win
+    # every comparison (or none) and leave the benchmark uncomparable.
+    if not math.isfinite(time) or time <= 0:
         return None
     return float(time) * scale
 
