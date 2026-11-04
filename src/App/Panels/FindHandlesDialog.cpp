@@ -1,7 +1,7 @@
 #include "FindHandlesDialog.h"
 
 #include "Domain/HandleSearch.h"
-#include "Domain/PublicationWake.h"
+#include "Domain/Worker.h"
 #include "Platform/AsciiCase.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessModules.h"
@@ -18,7 +18,6 @@
 #include <imgui.h>
 
 #include <algorithm>
-#include <atomic>
 #include <compare>
 #include <cstddef>
 #include <cstdint>
@@ -28,7 +27,6 @@
 #include <optional>
 #include <stop_token>
 #include <string>
-#include <thread>
 #include <utility>
 #include <vector>
 
@@ -129,11 +127,7 @@ std::vector<std::size_t> orderFindHandlesMatches(const std::vector<HandleMatch>&
 FindHandlesDialog::~FindHandlesDialog()
 {
     // The worker stops between processes (or inside a password prompt) and is joined before the readers go.
-    if (m_Worker.joinable())
-    {
-        m_Worker.request_stop();
-        m_Worker.join();
-    }
+    m_Worker.reset();
 }
 
 FindHandlesDialog::Capabilities FindHandlesDialog::capabilitiesOf(const Platform::IProcessOpenFilesReader* openFiles,
@@ -155,61 +149,126 @@ void FindHandlesDialog::setReaders(std::unique_ptr<Platform::IProcessOpenFilesRe
     m_Capabilities = capabilities;
 }
 
+std::shared_ptr<const SearchPublication> FindHandlesDialog::publication() const noexcept
+{
+    if (m_Worker != nullptr)
+    {
+        // The worker's generations carry the search's own version, so one older than the search just begun is the
+        // last search's: the begun one shows until the worker gets to it.
+        if (const auto latest = m_Worker->latest();
+            latest != nullptr && latest->version > 0 && (m_Begun == nullptr || latest->value.version >= m_Begun->version))
+        {
+            return {latest, &latest->value}; // shares the publication's ownership
+        }
+    }
+    return m_Begun;
+}
+
+bool FindHandlesDialog::jobActive() const noexcept
+{
+    return m_Worker != nullptr && (m_Worker->queued() > 0 || m_Worker->busy());
+}
+
 bool FindHandlesDialog::searching() const noexcept
 {
-    // The flag first: the worker sets it after its last commit, so once it reads true that commit is visible.
-    if (m_WorkerReturned->load(std::memory_order_acquire))
+    // The job first: it ends after its last publication, so once it has, that publication is the one read.
+    if (!jobActive())
     {
         return false;
     }
-    const std::shared_ptr<const SearchPublication> current = m_Slot->load();
+    const std::shared_ptr<const SearchPublication> current = publication();
     return current != nullptr && current->version > 0 && !current->done;
+}
+
+void FindHandlesDialog::failToStart() noexcept
+{
+    // No thread, or no memory for the job (#3335): the search just begun ends as one that couldn't start, if even
+    // that can be shown. When it can't, the begun one stays, and with no job behind it, it doesn't read as running.
+    try
+    {
+        if (m_Begun != nullptr)
+        {
+            SearchPublication failed = *m_Begun;
+            failed.done = true;
+            failed.failure = "The search couldn't start";
+            ++failed.version;
+            m_Begun = std::make_shared<const SearchPublication>(std::move(failed));
+        }
+    }
+    catch (...) // NOLINT(bugprone-empty-catch) - nothing is left to report with; see above
+    {}
 }
 
 void FindHandlesDialog::startSearch(std::vector<Domain::HandleSearch::SearchProcess> processes, bool authorized, SearchPublication start)
 {
-    if (m_Worker.joinable())
-    {
-        m_Worker.request_stop();
-        m_Worker.join(); // it has already published "done"; this only waits for it to return
-    }
-    // Published here, so searching() is true from this frame on.
-    m_Slot->commit(std::make_shared<const SearchPublication>(start));
-    const Domain::HandleSearch::Readers readers{
-        .openFiles = m_Capabilities.openFiles ? m_OpenFiles.get() : nullptr,
-        .modules = m_Capabilities.modules ? m_Modules.get() : nullptr,
-    };
-    m_WorkerReturned->store(false, std::memory_order_release);
     try
     {
-        m_Worker = std::jthread(
-            [slot = m_Slot, returned = m_WorkerReturned, readers, authorized, processes = std::move(processes), start = std::move(start)](
-                const std::stop_token& stopToken) mutable noexcept
-            {
-                static_cast<void>(Platform::setCurrentThreadName(Platform::FIND_HANDLES_THREAD_NAME));
-                Domain::HandleSearch::run(processes, readers, authorized, std::move(start), *slot, stopToken);
-                returned->store(true, std::memory_order_release);
-                Domain::PublicationWake::notify();
-            });
+        m_Begun = std::make_shared<const SearchPublication>(start); // so searching() is true from this frame on
     }
     catch (...)
     {
-        // No thread (std::system_error), or no memory for its state (#3335). The flag first, so even a failure
-        // that can't be published below ends the search; then, if it can, the start published as a failed one.
-        m_WorkerReturned->store(true, std::memory_order_release);
-        try
+        return; // no memory even to show it begin: the search doesn't, and the last results stay
+    }
+    // A failed worker takes no more work: the next search gets a new one.
+    if (m_Worker != nullptr && m_Worker->state() != Domain::WorkerState::Running)
+    {
+        m_Worker.reset();
+    }
+    try
+    {
+        if (m_Worker == nullptr)
         {
-            if (const std::shared_ptr<const SearchPublication> begun = m_Slot->load(); begun != nullptr)
-            {
-                SearchPublication failed = *begun;
-                failed.done = true;
-                failed.failure = "The search couldn't start";
-                ++failed.version;
-                m_Slot->commit(std::make_shared<const SearchPublication>(std::move(failed)));
-            }
+            m_Worker = std::make_unique<SearchWorker>(
+                SearchWorker::Options{
+                    .threadName = Platform::FIND_HANDLES_THREAD_NAME,
+                    .capacity = 1,
+                    .admission = Domain::Admission::DropOldest,
+                },
+                [](SearchJob& job, const std::stop_token& stop, SearchWorker::JobContext& context)
+                {
+                    // Every generation wakes the frame loop (the worker's finish() and progress()),
+                    // so the progress line moves as the walk does. run() catches what publishing
+                    // throws.
+                    Domain::HandleSearch::run(
+                        job.processes,
+                        job.readers,
+                        job.authorized,
+                        std::move(job.start),
+                        [&context](SearchPublication generation)
+                        {
+                            if (generation.done)
+                            {
+                                context.finish(std::move(generation));
+                            }
+                            else
+                            {
+                                context.progress(std::move(generation));
+                            }
+                        },
+                        stop);
+                });
         }
-        catch (...) // NOLINT(bugprone-empty-catch) - the flag already ends the search; see above
-        {}
+        SearchJob job{
+            .processes = std::move(processes),
+            .readers =
+                {
+                    .openFiles = m_Capabilities.openFiles ? m_OpenFiles.get() : nullptr,
+                    .modules = m_Capabilities.modules ? m_Modules.get() : nullptr,
+                },
+            .authorized = authorized,
+            .start = std::move(start),
+        };
+        // A search starts only once the last one ended (Find and Authenticate show only then), so nothing is in
+        // flight to cancel: the worker's capacity of one and DropOldest keep it so regardless.
+        const Domain::SubmitResult submitted = m_Worker->submit(std::move(job));
+        if (submitted == Domain::SubmitResult::Refused || submitted == Domain::SubmitResult::Closed)
+        {
+            failToStart();
+        }
+    }
+    catch (...)
+    {
+        failToStart();
     }
 }
 
@@ -231,9 +290,9 @@ bool FindHandlesDialog::renderQueryRow()
     ImGui::SameLine();
     if (running)
     {
-        if (ImGui::Button("Stop", ImVec2(buttonWidth, 0.0F)))
+        if (ImGui::Button("Stop", ImVec2(buttonWidth, 0.0F)) && m_Worker != nullptr)
         {
-            m_Worker.request_stop();
+            m_Worker->cancelCurrent(); // the walk stops between processes and publishes what it has as done
         }
         return false;
     }
@@ -354,14 +413,15 @@ std::optional<FindHandlesAction> FindHandlesDialog::render(const ProcessList& pr
     if (renderQueryRow())
     {
         std::vector<Domain::HandleSearch::SearchProcess> all = processes ? processes() : std::vector<Domain::HandleSearch::SearchProcess>{};
-        const std::uint64_t version = m_Slot->version() + 1;
+        const std::shared_ptr<const SearchPublication> last = publication();
+        const std::uint64_t version = (last != nullptr ? last->version : 0) + 1;
         Domain::HandleSearch::SearchPublication start = Domain::HandleSearch::startFor(m_Query, all.size(), version);
         m_Selected.reset();
         startSearch(std::move(all), false, std::move(start));
     }
 
-    const bool workerReturned = m_WorkerReturned->load(std::memory_order_acquire); // before the load, as in searching()
-    const std::shared_ptr<const SearchPublication> current = m_Slot->load();
+    const bool workerReturned = !jobActive(); // before the load, as in searching()
+    const std::shared_ptr<const SearchPublication> current = publication();
     const SearchPublication empty;
     const SearchPublication& shown = current != nullptr ? *current : empty;
     action = renderResults(shown);
@@ -374,7 +434,7 @@ std::optional<FindHandlesAction> FindHandlesDialog::render(const ProcessList& pr
         if (ImGui::SmallButton(ICON_FA_LOCK " Authenticate to search them too"))
         {
             std::vector<Domain::HandleSearch::SearchProcess> denied = shown.denied;
-            startSearch(std::move(denied), true, Domain::HandleSearch::startAuthorizedAfter(shown, m_Slot->version() + 1));
+            startSearch(std::move(denied), true, Domain::HandleSearch::startAuthorizedAfter(shown, shown.version + 1));
         }
         ImGui::SetItemTooltip("Asks for an administrator's password, then searches the processes this run may not read");
     }

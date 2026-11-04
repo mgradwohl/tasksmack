@@ -4,16 +4,15 @@
 // query ("what's locking this file?"). One search walks every process the latest snapshot lists through
 // the open-files (IProcessOpenFiles.h) and modules (IProcessModules.h) readers Process Details uses, on a
 // worker, and publishes its matches in batches as it goes. Searching is pure here; the worker that runs
-// it belongs to the Find handles dialog.
+// it (a Domain::Worker, #3343) belongs to the Find handles dialog.
 
-#include "Domain/PublicationSlot.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 
 #include <cstddef>
 #include <cstdint>
-#include <memory>
+#include <functional>
 #include <span>
 #include <stop_token>
 #include <string>
@@ -103,20 +102,25 @@ struct Readers
     Platform::IProcessModulesReader* modules = nullptr;
 };
 
-/// Searches @p processes, adding to @p start, and commits a new generation to @p slot every
-/// PUBLISH_EVERY_PROCESSES processes and once at the end (done). The caller commits @p start itself, if
+/// Where run() puts each generation it makes: its progress (done false) and its end (done true). It may throw
+/// (no memory to publish): run() catches that as it does a reader's failure.
+using Publish = std::function<void(SearchPublication generation)>;
+
+/// Searches @p processes, adding to @p start, and hands @p publish a new generation every
+/// PUBLISH_EVERY_PROCESSES processes and once at the end (done). The caller shows @p start itself, if
 /// readers should see the search begin, before handing it to a worker. @p start carries the version to begin
 /// at, the query, the total and anything found before: a fresh search's (startFor()) or the matches so far
 /// when an administrator searches the processes the first search was denied (startAuthorizedAfter()).
 /// @p authorized reads each process as an administrator (readAuthorized(): one password prompt for the
 /// walk). Stops between processes when @p stopToken is signalled, publishing what it has as done.
-/// Throws nothing (#3335): a reader that throws, or an allocation that fails, ends the walk with a done
-/// publication that says why (failure), so the worker never takes TaskSmack down.
+/// Throws nothing (#3335): a reader that throws, or an allocation (or a publication) that fails, ends the walk
+/// with a done publication that says why (failure), so the worker never takes TaskSmack down. When even that
+/// one can't be made, the last generation handed over stands, and the worker returning ends the search.
 void run(std::span<const SearchProcess> processes,
          const Readers& readers,
          bool authorized,
          SearchPublication start,
-         PublicationSlot<SearchPublication>& slot,
+         const Publish& publish,
          const std::stop_token& stopToken) noexcept;
 
 /// The first generation of a new search for @p query over @p total processes, at @p version.
