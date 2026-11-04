@@ -101,8 +101,15 @@ void renderSetRealtimeButton(const Context& context)
 {
     const bool isRealtime = context.currentNice.has_value() &&
                             Domain::Priority::classFromNice(*context.currentNice) == Domain::Priority::PriorityClass::Realtime;
-    const Detail::RealtimePriorityItem item = Detail::realtimePriorityItem(
-        context.capabilities, context.target, isRealtime, context.actionsView->actionRunning() || context.actionsView->confirmPending());
+    // Held while the slider's Apply (or its Retry as administrator) runs: both set this process's priority,
+    // and the older could finish last and overwrite Realtime (#3429).
+    const Detail::RealtimePriorityItem item =
+        Detail::realtimePriorityItem(context.capabilities,
+                                     context.target,
+                                     isRealtime,
+                                     context.actionsView->actionRunning() || context.actionsView->confirmPending(),
+                                     0,
+                                     context.priorityView->applying());
     if (item.state == Detail::RealtimePriorityState::Hidden)
     {
         return;
@@ -148,6 +155,9 @@ Heights render(const Context& context, const ProcessDetailsLayout::TopRowLayout&
     const bool fixedHeight = std::isfinite(cardHeight) && cardHeight > 0.0F;
     const ImGuiChildFlags childFlags = fixedHeight ? ImGuiChildFlags_None : ImGuiChildFlags_AutoResizeY;
     const float height = fixedHeight ? cardHeight : 0.0F;
+
+    // A refused Set Realtime priority's "Retry as administrator" waits for the slider's apply (#3429).
+    context.actionsView->holdPriorityRetry(context.priorityView->applying());
 
     const bool drawActions = layout.actionsWidth > 0.0F;
     if (drawActions)
@@ -203,6 +213,8 @@ Heights render(const Context& context, const ProcessDetailsLayout::TopRowLayout&
                                {
                                    // The error lines wrap at the card's edge too.
                                    ImGui::PushTextWrapPos(0.0F);
+                                   // Apply waits while Set Realtime priority is asked about or runs (#3429).
+                                   context.priorityView->holdForOtherPriorityChange(context.actionsView->priorityChangeInFlight());
                                    context.priorityView->render(context.actions, context.capabilities, context.currentNice, context.target);
                                    renderSetRealtimeButton(context);
                                    ImGui::PopTextWrapPos();

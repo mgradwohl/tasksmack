@@ -204,7 +204,7 @@ class ProcessPriorityView
     /// there is no platform call. Null @p actions is the "unavailable" error at once.
     void apply(Platform::IProcessActions* actions, const Platform::ProcessTarget& liveTarget, std::optional<std::int32_t> currentNice)
     {
-        if (dropEditIfTargetMoved(liveTarget) || !canApply(currentNice, liveTarget) || applying())
+        if (dropEditIfTargetMoved(liveTarget) || !canApply(currentNice, liveTarget) || applying() || m_HeldForOtherChange)
         {
             return;
         }
@@ -242,7 +242,22 @@ class ProcessPriorityView
     /// of permission, the platform can ask for authorization, and nothing has changed since.
     [[nodiscard]] bool offersAuthenticateAndRetry() const noexcept
     {
-        return m_Retry.has_value() && !applying();
+        return m_Retry.has_value() && !applying() && !m_HeldForOtherChange;
+    }
+
+    /// Whether another priority change for this process is asked about or running elsewhere (#3429: the
+    /// Actions card's Set Realtime priority): Apply and "Retry as administrator" are held until it is done,
+    /// so the two never race and the older one can't overwrite the newer. The caller sets it each frame,
+    /// before render().
+    void holdForOtherPriorityChange(bool held) noexcept
+    {
+        m_HeldForOtherChange = held;
+    }
+
+    /// Whether Apply is held for another priority change (holdForOtherPriorityChange()).
+    [[nodiscard]] bool heldForOtherPriorityChange() const noexcept
+    {
+        return m_HeldForOtherChange;
     }
 
     /// "Authenticate and retry" was pressed: the refused change again, as an administrator, after the
@@ -390,6 +405,7 @@ class ProcessPriorityView
     std::uint64_t m_Generation = 0; // Bumped by a selection change: a running apply's result is then dropped
     ProcessIoPriorityView m_IoPriorityView;
     std::optional<Retry> m_Retry;
+    bool m_HeldForOtherChange = false; // Another priority change runs elsewhere: Apply waits (#3429)
     // Last, so it is destroyed (waiting for a running apply) before the state its finish writes.
     ProcessActionRun m_ApplyRun;
 };
