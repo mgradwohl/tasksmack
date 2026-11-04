@@ -591,6 +591,11 @@ bool LinuxProcessProbe::applyStat(std::string_view stat, int32_t pid, ProcessCou
     counters.name = std::string(fields->comm);
     counters.state = fields->state;
     counters.parentPid = fields->parentPid;
+    static_assert(CgroupProcessType::PF_KTHREAD == ProcParsing::PF_KTHREAD_FLAG);
+    if (CgroupProcessType::isKernelThread(fields->flags))
+    {
+        counters.processType = CgroupProcessType::SYSTEM; // the Type column (#3430); applyCgroupFacts() leaves it
+    }
     counters.userTime = fields->userTime;
     counters.systemTime = fields->systemTime;
     counters.threadCount = clampToI32((fields->numThreads > 0) ? fields->numThreads : 1);
@@ -1214,11 +1219,13 @@ void LinuxProcessProbe::applyCgroupFacts(std::string_view cgroups,
                                          FactsByCgroup& factsByCgroup,
                                          ProcessCounters& counters)
 {
-    // The Type column (#3430): from the cgroup path and parent PID already in hand, so even a process whose cgroup
-    // can't be read (a kernel thread's parent says System) has one.
-    counters.processType = CgroupProcessType::classify(cgroups, counters.pid, counters.parentPid);
     if (cgroups.empty())
     {
+        // The Type column (#3430): a kernel thread already has System Process from its stat flags.
+        if (counters.processType.empty())
+        {
+            counters.processType = CgroupProcessType::BACKGROUND;
+        }
         return;
     }
     // Processes in the same cgroups share one freeze-state read per pass: the state is a property of
@@ -1241,6 +1248,12 @@ void LinuxProcessProbe::applyCgroupFacts(std::string_view cgroups,
     }
     counters.container = known->second.container;
     counters.services = known->second.services;
+    // The Type column (#3430), unless the stat flags already said kernel thread: a recognised container first, then
+    // the cgroup path.
+    if (counters.processType.empty())
+    {
+        counters.processType = CgroupProcessType::classify(cgroups, !counters.container.empty());
+    }
 }
 uint64_t LinuxProcessProbe::readTotalCpuTime() const
 {

@@ -1737,6 +1737,15 @@ TEST(LinuxProcessProbeTest, TheTypeIsClassifiedFromTheSameCgroupRead)
     processes = probe.enumerate();
     ASSERT_EQ(processes.size(), 1U);
     EXPECT_EQ(processes[0].processType, "App");
+
+    // A Docker container under systemd's cgroup driver sits in system.slice, but its processes are Background: the
+    // container the probe recognises wins over the path.
+    writeFile(proc.path / "4242" / "cgroup",
+              "0::/system.slice/docker-1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b.scope\n");
+    processes = probe.enumerate();
+    ASSERT_EQ(processes.size(), 1U);
+    EXPECT_FALSE(processes[0].container.empty());
+    EXPECT_EQ(processes[0].processType, "Background Process");
 }
 
 /// The first bytes of an ELF header (#2394): the magic, @p elfClass (1: 32-bit, 2: 64-bit), little-endian,

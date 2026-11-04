@@ -1,8 +1,8 @@
 #pragma once
 
 /// @file CgroupProcessType.h
-/// @brief The Processes table's Type on Linux (#3430): App, Background Process or System Process, from the cgroup path
-/// the probe already reads (/proc/[pid]/cgroup) and the parent PID it already parses, with no read of its own.
+/// @brief The Processes table's Type on Linux (#3430): App, Background Process or System Process, from what the probe
+/// already reads: /proc/[pid]/cgroup and the kernel-thread flag in /proc/[pid]/stat. No read of its own.
 
 #include <cstdint>
 #include <string_view>
@@ -13,6 +13,10 @@ namespace Platform::CgroupProcessType
 inline constexpr std::string_view APP = "App";
 inline constexpr std::string_view BACKGROUND = "Background Process";
 inline constexpr std::string_view SYSTEM = "System Process";
+
+/// The kernel's PF_KTHREAD flag. Its own copy, not ProcParsing's, so this header (and its test, which builds on Windows
+/// too) needs no POSIX headers; LinuxProcessProbe.cpp static_asserts the two agree.
+inline constexpr std::uint32_t PF_KTHREAD = 0x00200000U;
 
 namespace Detail
 {
@@ -82,13 +86,23 @@ namespace Detail
     return BACKGROUND;
 }
 
-/// The Type for a process with @p pid and parent @p parentPid whose /proc/[pid]/cgroup reads @p cgroups. Kernel
-/// threads are System: kthreadd (PID 2) and its children. Without a readable cgroup, anything else is Background.
-[[nodiscard]] constexpr std::string_view classify(std::string_view cgroups, std::int32_t pid, std::int32_t parentPid)
+/// Whether the kernel's PF_* @p flags (/proc/[pid]/stat field 9) mark a kernel thread. By the flag, not by PID: inside
+/// a container's PID namespace PID 2 can be an ordinary process.
+[[nodiscard]] constexpr bool isKernelThread(std::uint32_t flags) noexcept
 {
-    if (pid == 2 || parentPid == 2)
+    return (flags & PF_KTHREAD) != 0;
+}
+
+/// The Type of a process that isn't a kernel thread (the probe gives kernel threads System Process from their stat
+/// flags, isKernelThread()), whose /proc/[pid]/cgroup reads @p cgroups. @p inContainer: the probe recognised a container
+/// in those cgroups (CgroupContainer), which wins over the path: Docker's systemd driver runs containers in
+/// `system.slice/docker-<id>.scope`, and their processes are Background, while the host's docker.service stays
+/// System. Without a readable cgroup it's Background.
+[[nodiscard]] constexpr std::string_view classify(std::string_view cgroups, bool inContainer)
+{
+    if (inContainer)
     {
-        return SYSTEM;
+        return BACKGROUND;
     }
     return fromCgroupPath(Detail::cgroupPath(cgroups));
 }
