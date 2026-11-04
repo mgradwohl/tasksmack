@@ -1,12 +1,16 @@
 #include "LinuxStartup.h"
 
+#include "Domain/SamplingConfig.h"
 #include "Platform/IStartupActions.h"
 #include "Platform/IStartupProbe.h"
+#include "Platform/Linux/CommandOutput.h"
+#include "Platform/Linux/CronTab.h"
 #include "Platform/Linux/DesktopEntryIcons.h"
 #include "Platform/Linux/SystemdUnitFile.h"
 #include "Platform/Linux/XdgAutostart.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -16,6 +20,8 @@
 #include <ios>
 #include <iterator>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -224,7 +230,8 @@ LinuxStartupProbe::LinuxStartupProbe()
     : LinuxStartupProbe(dirsFromEnvironment(),
                         environment("XDG_CURRENT_DESKTOP"),
                         environment("PATH"),
-                        systemdUserDirs(environment("HOME"), environment("XDG_CONFIG_HOME")))
+                        systemdUserDirs(environment("HOME"), environment("XDG_CONFIG_HOME")),
+                        cronSources())
 {}
 
 LinuxStartupProbe::LinuxStartupProbe(XdgAutostart::Dirs dirs, std::string currentDesktops, std::string searchPath)
@@ -232,11 +239,106 @@ LinuxStartupProbe::LinuxStartupProbe(XdgAutostart::Dirs dirs, std::string curren
 {}
 
 LinuxStartupProbe::LinuxStartupProbe(XdgAutostart::Dirs dirs, std::string currentDesktops, std::string searchPath, SystemdUserDirs systemd)
+    : LinuxStartupProbe(std::move(dirs), std::move(currentDesktops), std::move(searchPath), std::move(systemd), CronSources{})
+{}
+
+LinuxStartupProbe::LinuxStartupProbe(
+    XdgAutostart::Dirs dirs, std::string currentDesktops, std::string searchPath, SystemdUserDirs systemd, CronSources cron)
     : m_Dirs(std::move(dirs)),
       m_Systemd(std::move(systemd)),
+      m_Cron(std::move(cron)),
       m_CurrentDesktops(std::move(currentDesktops)),
       m_SearchPath(std::move(searchPath))
 {}
+
+CronSources cronSources()
+{
+    // `crontab -l` re-run at most every STARTUP_CRON_REFRESH_SECONDS: the Startup tab samples every few seconds, and a
+    // crontab changes only when its owner edits it. Shared by copies of the function, guarded for the sampler thread.
+    struct Cache
+    {
+        std::mutex mutex;
+        std::optional<std::chrono::steady_clock::time_point> readAt;
+        std::optional<std::string> text;
+    };
+    const auto cache = std::make_shared<Cache>();
+    CronSources sources;
+    sources.userCrontab = [cache] -> std::optional<std::string>
+    {
+        const std::scoped_lock lock(cache->mutex);
+        const auto now = std::chrono::steady_clock::now();
+        if (!cache->readAt.has_value() || now - *cache->readAt >= std::chrono::seconds(Domain::Sampling::STARTUP_CRON_REFRESH_SECONDS))
+        {
+            // Exit 1 with "no crontab for <user>" on stderr when there's none: no jobs, not an error to show.
+            const CommandOutput run = runForOutput({"crontab", "-l"}, std::chrono::seconds(2), std::size_t{256} * 1024);
+            cache->text = (run.started && run.exitCode == 0) ? std::optional<std::string>(run.output) : std::nullopt;
+            cache->readAt = now;
+        }
+        return cache->text;
+    };
+    sources.systemTables.emplace_back("/etc/crontab");
+    std::error_code ec;
+    std::vector<std::filesystem::path> cronD;
+    for (std::filesystem::directory_iterator it("/etc/cron.d", ec); !ec && it != std::filesystem::directory_iterator{}; it.increment(ec))
+    {
+        // cron itself skips names with a dot (package backups: .dpkg-dist, .rpmsave) and hidden files.
+        const std::string name = it->path().filename().string();
+        if (!name.empty() && !name.contains('.'))
+        {
+            cronD.push_back(it->path());
+        }
+    }
+    std::ranges::sort(cronD);
+    sources.systemTables.insert(sources.systemTables.end(), cronD.begin(), cronD.end());
+    return sources;
+}
+
+void LinuxStartupProbe::addCronJobs(std::vector<StartupEntry>& entries) const
+{
+    const auto add = [this, &entries](const CronTab::Entry& job, const std::string& table, bool system)
+    {
+        StartupEntry entry;
+        XdgAutostart::Entry asExec;
+        asExec.exec = job.command; // read as an Exec line: env prefixes skipped, a bare name found on $PATH
+        const std::string program = programOf(asExec, m_SearchPath);
+        const std::string stem =
+            program.empty() ? job.command.substr(0, job.command.find(' ')) : std::filesystem::path(program).filename().string();
+        entry.name =
+            std::format("{} (cron, {}{})", stem, CronTab::describeSchedule(job.schedule), job.user.empty() ? "" : ", as " + job.user);
+        entry.programName = entry.name;
+        entry.registrationName = std::format("{} line {}", table, job.line); // the line identifies it in its table
+        entry.command = job.command;
+        entry.executablePath = program;
+        entry.sourcePath = system ? table : std::string{};
+        entry.location = system ? StartupLocation::CronSystem : StartupLocation::CronUser;
+        entry.scope = system ? StartupScope::Machine : StartupScope::User;
+        entry.enabled = true; // a job line is on; a commented-out one isn't listed
+        entry.notSwitchableReason = system ? std::format("A system cron job, in {}: an administrator changes it", table)
+                                           : std::string("A cron job: change it with crontab -e");
+        entry.target = targetState(program);
+        entries.push_back(std::move(entry));
+    };
+    if (m_Cron.userCrontab)
+    {
+        if (const std::optional<std::string> text = m_Cron.userCrontab())
+        {
+            for (const CronTab::Entry& job : CronTab::parse(*text, /*withUser=*/false))
+            {
+                add(job, "crontab", false);
+            }
+        }
+    }
+    for (const std::filesystem::path& table : m_Cron.systemTables)
+    {
+        if (const std::optional<std::string> text = readFile(table))
+        {
+            for (const CronTab::Entry& job : CronTab::parse(*text, /*withUser=*/true))
+            {
+                add(job, table.string(), true);
+            }
+        }
+    }
+}
 
 void LinuxStartupProbe::addSystemdUnits(std::vector<StartupEntry>& entries) const
 {
@@ -389,6 +491,7 @@ std::vector<StartupEntry> LinuxStartupProbe::enumerate()
         entries.push_back(std::move(entry));
     }
     addSystemdUnits(entries); // #3082
+    addCronJobs(entries);     // #3425
     return entries;
 }
 

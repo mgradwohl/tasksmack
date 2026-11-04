@@ -9,6 +9,8 @@
 #include "Platform/Linux/XdgAutostart.h"
 
 #include <filesystem>
+#include <functional>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -30,6 +32,20 @@ struct SystemdUserDirs
 /// packages' /usr/local/lib/systemd/user and /usr/lib/systemd/user for the unit files themselves.
 [[nodiscard]] SystemdUserDirs systemdUserDirs(std::string_view home, std::string_view xdgConfigHome);
 
+/// Where the cron jobs the Startup tab lists come from (#3425), read-only.
+struct CronSources
+{
+    /// The user's own crontab as `crontab -l` prints it: nullopt when there is none or it can't be read. Unset to skip.
+    std::function<std::optional<std::string>()> userCrontab;
+    /// The system tables, read as files: /etc/crontab and each file in /etc/cron.d (they name the user each job
+    /// runs as).
+    std::vector<std::filesystem::path> systemTables;
+};
+
+/// This machine's: `crontab -l`, re-run at most every Domain::Sampling::STARTUP_CRON_REFRESH_SECONDS, and
+/// /etc/crontab plus the files in /etc/cron.d, listed when enumerate() runs.
+[[nodiscard]] CronSources cronSources();
+
 class LinuxStartupProbe final : public IStartupProbe
 {
   public:
@@ -40,6 +56,9 @@ class LinuxStartupProbe final : public IStartupProbe
     LinuxStartupProbe(XdgAutostart::Dirs dirs, std::string currentDesktops, std::string searchPath);
     /// Test seam with @p systemd's directories too (#3082); the three-argument form lists no systemd units.
     LinuxStartupProbe(XdgAutostart::Dirs dirs, std::string currentDesktops, std::string searchPath, SystemdUserDirs systemd);
+    /// Test seam with @p cron's sources too (#3425); the forms above list no cron jobs.
+    LinuxStartupProbe(
+        XdgAutostart::Dirs dirs, std::string currentDesktops, std::string searchPath, SystemdUserDirs systemd, CronSources cron);
 
     [[nodiscard]] StartupCapabilities capabilities() const override;
     [[nodiscard]] std::vector<StartupEntry> enumerate() override;
@@ -47,9 +66,12 @@ class LinuxStartupProbe final : public IStartupProbe
   private:
     /// The systemd user units enabled to start with the session or on a timer (#3082), read-only.
     void addSystemdUnits(std::vector<StartupEntry>& entries) const;
+    /// The cron jobs (#3425): the user's crontab, then the system tables, read-only.
+    void addCronJobs(std::vector<StartupEntry>& entries) const;
 
     XdgAutostart::Dirs m_Dirs;
     SystemdUserDirs m_Systemd;
+    CronSources m_Cron;
     std::string m_CurrentDesktops;
     std::string m_SearchPath; ///< $PATH, to find an Exec's program
 };

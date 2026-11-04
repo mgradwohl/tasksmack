@@ -18,6 +18,7 @@
 #include <optional>
 #include <string>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 #include <unistd.h>
@@ -390,6 +391,69 @@ TEST_F(LinuxStartupTest, ListsTheEnabledSystemdUserUnitsReadOnly)
     // The actions refuse a unit: it isn't an autostart file.
     LinuxStartupActions actions(m_Dirs);
     EXPECT_FALSE(actions.setEnabled(*syncd, false).ok);
+}
+
+// #3425: cron jobs are listed read-only: the user's crontab (as `crontab -l` prints it) and the system tables, which
+// name the user; @reboot reads "at startup"; a program not found is Missing; the actions refuse them.
+TEST_F(LinuxStartupTest, ListsTheCronJobsReadOnly)
+{
+    const std::filesystem::path etcCrontab = m_Root.path / "etc/crontab";
+    const std::filesystem::path cronD = m_Root.path / "etc/cron.d/backup";
+    writeText(etcCrontab, "SHELL=/bin/sh\n17 * * * * root cd / && run-parts /etc/cron.hourly\n");
+    writeText(cronD, "# nightly\n@reboot backup /nonexistent/backup --resume\n");
+    int userReads = 0;
+    CronSources cron{
+        .userCrontab = [&userReads]() -> std::optional<std::string>
+        {
+            ++userReads;
+            return std::string("MAILTO=\"\"\n@reboot /bin/sh -c 'sync'\n*/10 * * * * env LANG=C sh /home/u/poll.sh\n");
+        },
+        .systemTables = {etcCrontab, cronD, m_Root.path / "etc/cron.d/missing"},
+    };
+    LinuxStartupProbe probe(m_Dirs, "GNOME", SEARCH_PATH, SystemdUserDirs{}, std::move(cron));
+    const std::vector<StartupEntry> entries = probe.enumerate();
+    EXPECT_EQ(userReads, 1);
+    ASSERT_EQ(entries.size(), 4U);
+
+    const StartupEntry* sync = find(entries, "crontab line 2");
+    ASSERT_NE(sync, nullptr);
+    EXPECT_EQ(sync->name, "sh (cron, at startup)");
+    EXPECT_EQ(sync->command, "/bin/sh -c 'sync'");
+    EXPECT_EQ(sync->executablePath, "/bin/sh");
+    EXPECT_EQ(sync->location, StartupLocation::CronUser);
+    EXPECT_EQ(sync->scope, StartupScope::User);
+    EXPECT_TRUE(sync->enabled);
+    EXPECT_EQ(sync->notSwitchableReason, "A cron job: change it with crontab -e");
+    EXPECT_EQ(sync->target, StartupTargetState::Present);
+
+    const StartupEntry* poll = find(entries, "crontab line 3");
+    ASSERT_NE(poll, nullptr);
+    EXPECT_EQ(poll->name, "sh (cron, */10 * * * *)") << "env and its assignment are skipped";
+
+    const StartupEntry* hourly = find(entries, etcCrontab.string() + " line 2");
+    ASSERT_NE(hourly, nullptr);
+    EXPECT_EQ(hourly->name, "cd (cron, 17 * * * *, as root)");
+    EXPECT_EQ(hourly->location, StartupLocation::CronSystem);
+    EXPECT_EQ(hourly->scope, StartupScope::Machine);
+    EXPECT_EQ(hourly->sourcePath, etcCrontab.string());
+    EXPECT_TRUE(hourly->notSwitchableReason.contains("an administrator changes it")) << hourly->notSwitchableReason;
+
+    const StartupEntry* backup = find(entries, cronD.string() + " line 2");
+    ASSERT_NE(backup, nullptr);
+    EXPECT_EQ(backup->name, "backup (cron, at startup, as backup)");
+    EXPECT_EQ(backup->target, StartupTargetState::Missing);
+
+    // The actions refuse a cron job: it isn't an autostart file.
+    LinuxStartupActions actions(m_Dirs);
+    EXPECT_FALSE(actions.setEnabled(*sync, false).ok);
+}
+
+// #3425: no crontab (`crontab -l` exits 1, "no crontab for <user>") and no system tables list nothing.
+TEST_F(LinuxStartupTest, NoCrontabListsNoCronJobs)
+{
+    CronSources cron{.userCrontab = []() -> std::optional<std::string> { return std::nullopt; }, .systemTables = {}};
+    LinuxStartupProbe probe(m_Dirs, "GNOME", SEARCH_PATH, SystemdUserDirs{}, std::move(cron));
+    EXPECT_TRUE(probe.enumerate().empty());
 }
 
 /// An entry for @p fileName, as the probe would hand it to setEnabled().

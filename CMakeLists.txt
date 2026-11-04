@@ -325,6 +325,7 @@ set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/LinuxProcessModulesReader.cpp
     src/Platform/Linux/LinuxProcessThreadsReader.cpp # Process Details Threads (#3069)
     src/Platform/Linux/LinuxStartup.cpp # the Startup tab: XDG autostart entries (#2541)
+    src/Platform/Linux/CommandOutput.cpp # a short command's output, for crontab -l (#3425)
     src/Platform/Linux/LinuxHttpsClient.cpp # the update check's HTTPS client: libcurl (#3238)
     src/Platform/Linux/PolkitTextAgent.cpp # the password prompt where no desktop polkit agent runs: libpolkit-agent-1 (#3380)
     src/Platform/Linux/PolkitTextAgentRun.cpp # its child side, the only file with polkit's headers (#3380)
