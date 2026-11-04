@@ -243,7 +243,7 @@ freeze.
 
 ## The Linux LLVM pin
 
-The Linux release legs build with clang from apt.llvm.org. `LLVM_LINUX_RELEASE` in `release.yml` (`23.1.5`) is
+The Linux release legs build with clang from apt.llvm.org. `LLVM_LINUX_RELEASE` in `release.yml` (`23.1.6`) is
 the one place that pins it, for both architectures (#3393).
 
 - **What's pinned:** the upstream release. Each leg fails at Setup LLVM unless its `clang-23` package version
@@ -261,6 +261,11 @@ the one place that pins it, for both architectures (#3393).
   snapshot it saved after apt.llvm.org moves on. Release runs on `main` and `release/*` (dry runs) save it on a
   miss; a tag run only restores, from main's entry. So run a dry run from main before tagging, and both builds of
   the tag install the same snapshot.
+- **When a bump is due:** apt.llvm.org's `llvm-toolchain-<codename>-23` follows LLVM's `release/23.x` branch, so
+  it moves to each new point release too, and stops serving the old one. That's roughly every two weeks: it moved
+  from 23.1.5 to 23.1.6 on 2026-11-03, between two jobs of this change's own dry run. A warm cache keeps building
+  the pinned release regardless; a cold one (a new runner image, an evicted entry) fails at Setup LLVM until the
+  release is bumped.
 - **Retries:** apt.llvm.org's key, installer and repository each retry with backoff (4 tries), since runners have
   lost DNS to it for hours (2026-11-03).
 

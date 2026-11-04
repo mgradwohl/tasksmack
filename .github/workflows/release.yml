@@ -38,7 +38,7 @@ env:
   #   curl -fsSL https://apt.llvm.org/noble/dists/llvm-toolchain-noble-23/main/binary-amd64/Packages.gz \
   #     | gunzip | grep -A2 '^Package: clang-23$'
   # (binary-arm64 for the arm64 legs).
-  LLVM_LINUX_RELEASE: '23.1.5'
+  LLVM_LINUX_RELEASE: '23.1.6'
 
   # 'true' only for a dispatched run with dry_run left on; a tag push has no inputs, so it is
   # always a real release. Read as $DRY_RUN in scripts and env.DRY_RUN in `if:` conditions.
