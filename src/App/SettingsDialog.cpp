@@ -634,7 +634,9 @@ Action render(State& state)
         }
 
         // Start at sign-in (#3093, part 2), where it is offered.
-        if (state.startAtLoginOffered && renderStartAtLogin(state, widestOtherRow))
+        // Wrapped at the narrower of the width the other rows give the dialog and the width the body has now, so a long
+        // path never widens it, whichever rows set the width on this platform (#3093 part 2, #3376).
+        if (state.startAtLoginOffered && renderStartAtLogin(state, std::min(widestOtherRow, ImGui::GetContentRegionAvail().x)))
         {
             action = Action::RepairStartAtLogin;
         }
