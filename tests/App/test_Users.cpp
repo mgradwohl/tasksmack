@@ -1,15 +1,18 @@
 /// @file test_Users.cpp
 /// @brief The Users tab (#3076): the model's order, Lock and Sign out (the confirm, the worker, Authenticate
-/// and retry), and the panel, sampled only once shown, its rows and its session menu. The rows themselves and
-/// the session text are UserGrouping's (test_UserGrouping.cpp, #3377).
+/// and retry), the sessions' feed, read only on demand (#3377), and the panel, sampled only once shown, its rows and its session menu. The
+/// rows themselves and the session text are UserGrouping's (test_UserGrouping.cpp, #3377).
 
+#include "App/Panels/ProcessGrouping.h"
 #include "App/Panels/SessionActionControl.h"
 #include "App/Panels/UserGrouping.h"
+#include "App/Panels/UserSessionsFeed.h"
 #include "App/Panels/UsersPanel.h"
 #include "App/Panels/UsersView.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Domain/ProcessModel.h"
+#include "Domain/SamplingConfig.h"
 #include "Domain/UsersModel.h"
 #include "Mocks/MockProbes.h"
 #include "Platform/IServiceActions.h"
@@ -268,6 +271,95 @@ TEST(SessionActionTest, DisconnectAsksFirstAndSaysWhatHappensToTheSession)
     EXPECT_STREQ(sessionActionWords(SessionAction::SignOut).title, "Sign out");
 }
 
+/// Waits up to five seconds for @p done.
+template<typename Done> [[nodiscard]] bool waitFor(Done done)
+{
+    const auto giveUp = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!done() && std::chrono::steady_clock::now() < giveUp)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return done();
+}
+
+// #3377: the feed reads the sessions only while sessionsDemand() says a view shows them, at the Settings
+// interval; hiding them closes the gate without joining the thread, and stop() joins it and lets go.
+TEST(UserSessionsFeedTest, ReadsOnlyOnDemandAndStopsCleanly)
+{
+    auto fake = std::make_shared<FakeSessions>(std::vector<UserSession>{session("2", "alice", 1000)});
+    UserSessionsFeed feed([fake] { return fake; });
+    EXPECT_EQ(feed.model(), nullptr);
+    EXPECT_EQ(feed.actions(), nullptr);
+    EXPECT_FALSE(feed.canAct(SessionAction::SignOut));
+    feed.setUsersTabShown(true); // before start(): nothing to read with yet
+    EXPECT_FALSE(feed.demanded());
+    feed.setUsersTabShown(false);
+
+    feed.start();
+    ASSERT_NE(feed.model(), nullptr);
+    ASSERT_NE(feed.actions(), nullptr);
+    EXPECT_TRUE(feed.canAct(SessionAction::SignOut));
+    const auto interval = std::chrono::milliseconds(Domain::Sampling::REFRESH_INTERVAL_MIN_MS);
+    feed.setInterval(interval);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    EXPECT_EQ(fake->m_Reads.load(), 0) << "read with no view shown";
+
+    // The Processes tab grouped by User shows no sessions yet, so it reads none.
+    feed.setProcessesView(true, ProcessGrouping::GroupBy::User);
+    EXPECT_FALSE(feed.demanded());
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    EXPECT_EQ(fake->m_Reads.load(), 0) << "read for Group: User before it shows sessions";
+
+    feed.setUsersTabShown(true);
+    EXPECT_TRUE(feed.demanded());
+    ASSERT_TRUE(waitFor([&feed] { return feed.publishedVersion() >= 2; })) << "not read again at the interval";
+
+    // Hidden: the gate closes at once; a read already running may still finish.
+    feed.setUsersTabShown(false);
+    EXPECT_FALSE(feed.demanded());
+    std::this_thread::sleep_for(interval);
+    const int readsHidden = fake->m_Reads.load();
+    std::this_thread::sleep_for(interval * 4);
+    EXPECT_EQ(fake->m_Reads.load(), readsHidden) << "read while hidden";
+
+    // Shown again: the running sampler reads at once, and again when an action asks.
+    feed.setUsersTabShown(true);
+    ASSERT_TRUE(waitFor([&] { return fake->m_Reads.load() > readsHidden; }));
+    feed.setInterval(std::chrono::milliseconds(Domain::Sampling::REFRESH_INTERVAL_MAX_MS));
+    std::this_thread::sleep_for(interval);
+    const int readsBefore = fake->m_Reads.load();
+    feed.requestRefresh();
+    EXPECT_TRUE(waitFor([&] { return fake->m_Reads.load() > readsBefore; })) << "requestRefresh() read nothing";
+
+    feed.stop();
+    EXPECT_EQ(feed.model(), nullptr);
+    EXPECT_EQ(feed.actions(), nullptr);
+    EXPECT_FALSE(feed.demanded());
+    const int readsStopped = fake->m_Reads.load();
+    std::this_thread::sleep_for(interval * 2);
+    EXPECT_EQ(fake->m_Reads.load(), readsStopped) << "read after stop()";
+    feed.requestRefresh();                                          // no sampler: nothing to ask
+    feed.stop();                                                    // twice is fine
+    EXPECT_EQ(fake.use_count(), 2) << "the feed kept the sessions"; // this test's and the factory's copy
+}
+
+// Sessions the platform can't list are never read, and a feed that was never started stops cleanly.
+TEST(UserSessionsFeedTest, UnsupportedSessionsAreNeverRead)
+{
+    const auto unsupported = std::make_shared<FakeSessions>(std::vector<UserSession>{}, false);
+    UserSessionsFeed feed([unsupported] { return unsupported; });
+    feed.start();
+    feed.setUsersTabShown(true);
+    EXPECT_FALSE(feed.demanded());
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    EXPECT_EQ(unsupported->m_Reads.load(), 0);
+    EXPECT_FALSE(feed.canAct(SessionAction::SignOut));
+    feed.stop();
+
+    const UserSessionsFeed neverStarted([unsupported] { return unsupported; });
+    EXPECT_EQ(neverStarted.publishedVersion(), 0U);
+}
+
 class UsersPanelRenderTest : public ::testing::Test
 {
   protected:
@@ -341,7 +433,8 @@ TEST_F(UsersPanelRenderTest, SamplesOnlyOnceShownListsTheUsersAndTheirSessionsAn
     desktop.type = "wayland";
     desktop.current = true;
     auto fake = std::make_shared<FakeSessions>(std::vector<UserSession>{desktop, session("5", "bob", 1001, "online")});
-    UsersPanel panel([fake] { return fake; }, [](Core::Event&) {});
+    UserSessionsFeed feed([fake] { return fake; });
+    UsersPanel panel(feed, [](Core::Event&) {});
     panel.onAttach();
     EXPECT_TRUE(frame(panel).contains("Reading users..."));
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -408,7 +501,8 @@ TEST_F(UsersPanelRenderTest, WindowsSessionMenusOfferDisconnectInLocksPlace)
     console.current = true;
     UserSession away = session("4", "bob", 0, "disconnected");
     auto fake = std::make_shared<FakeSessions>(std::vector<UserSession>{console, away}, true, true);
-    UsersPanel panel([fake] { return fake; }, [](Core::Event&) {});
+    UserSessionsFeed feed([fake] { return fake; });
+    UsersPanel panel(feed, [](Core::Event&) {});
     panel.onAttach();
     show(panel, "Users");
     const std::string text = frameUntil(panel, "bob");
@@ -495,7 +589,8 @@ TEST_F(UsersPanelRenderTest, WindowsSessionMenusOfferDisconnectInLocksPlace)
 TEST_F(UsersPanelRenderTest, UnsupportedFailedAndEmptyReadsSaySo)
 {
     auto unsupported = std::make_shared<FakeSessions>(std::vector<UserSession>{}, false);
-    UsersPanel none([unsupported] { return unsupported; }, [](Core::Event&) {});
+    UserSessionsFeed noneFeed([unsupported] { return unsupported; });
+    UsersPanel none(noneFeed, [](Core::Event&) {});
     none.onAttach();
     show(none, "Users");
     EXPECT_TRUE(frame(none).contains("Users aren't available"));
@@ -505,7 +600,8 @@ TEST_F(UsersPanelRenderTest, UnsupportedFailedAndEmptyReadsSaySo)
 
     auto failing = std::make_shared<FakeSessions>(std::vector<UserSession>{});
     failing->m_Failure = "systemd-logind isn't running";
-    UsersPanel failed([failing] { return failing; }, [](Core::Event&) {});
+    UserSessionsFeed failedFeed([failing] { return failing; });
+    UsersPanel failed(failedFeed, [](Core::Event&) {});
     failed.onAttach();
     show(failed, "Users");
     const std::string text = frameUntil(failed, "couldn't be read");
@@ -515,7 +611,8 @@ TEST_F(UsersPanelRenderTest, UnsupportedFailedAndEmptyReadsSaySo)
     failed.onDetach();
 
     auto empty = std::make_shared<FakeSessions>(std::vector<UserSession>{});
-    UsersPanel nobody([empty] { return empty; }, [](Core::Event&) {});
+    UserSessionsFeed nobodyFeed([empty] { return empty; });
+    UsersPanel nobody(nobodyFeed, [](Core::Event&) {});
     nobody.onAttach();
     show(nobody, "Users");
     EXPECT_TRUE(frameUntil(nobody, "No one is signed in").contains("No one is signed in"));
@@ -534,7 +631,8 @@ TEST_F(UsersPanelRenderTest, AUsersProcessesAreListedAndADoubleClickOpensTheirDe
     auto fake = std::make_shared<FakeSessions>(std::vector<UserSession>{desktop});
     std::int32_t selectedPid = 0;
     int detailsShown = 0;
-    UsersPanel panel([fake] { return fake; },
+    UserSessionsFeed feed([fake] { return fake; });
+    UsersPanel panel(feed,
                      [&selectedPid, &detailsShown](Core::Event& event)
                      {
                          if (event.getEventType() == Core::ProcessSelectedEvent::getStaticType())

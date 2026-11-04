@@ -267,6 +267,7 @@ set(TASKSMACK_SOURCES
     src/App/Panels/UsersPanel.cpp # the Users tab (#3076)
     src/App/Panels/UsersView.cpp
     src/App/Panels/UserGrouping.cpp # who a process or session belongs to: the Users tab and Group: User (#3377)
+    src/App/Panels/UserSessionsFeed.cpp # the signed-in sessions, read once for every view that shows them (#3377)
     src/App/Panels/SystemInfoPanel.cpp
     src/App/Panels/SystemInfoSections.cpp
     src/App/Panels/SystemInfoView.cpp

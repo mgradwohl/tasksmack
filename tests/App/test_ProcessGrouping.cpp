@@ -260,5 +260,27 @@ TEST(ProcessGroupingTest, ServicesDemandFollowsColumnSectionAndUnitGrouping)
 #endif
 }
 
+// #3377: the signed-in sessions are read while the Users tab is shown, or the Processes tab grouped by User
+// once its groups show sessions; not for any other grouping, nor with the Processes tab hidden.
+TEST(ProcessGroupingTest, SessionsDemandFollowsTheUsersTabAndUserGrouping)
+{
+    for (const GroupBy mode : {GroupBy::None, GroupBy::Unit, GroupBy::Container, GroupBy::App, GroupBy::User})
+    {
+        for (const bool processesShown : {false, true})
+        {
+            for (const bool showSessions : {false, true})
+            {
+                EXPECT_TRUE(ProcessGrouping::sessionsDemand(true, processesShown, mode, showSessions));
+                EXPECT_EQ(ProcessGrouping::sessionsDemand(false, processesShown, mode, showSessions),
+                          showSessions && processesShown && mode == GroupBy::User);
+            }
+        }
+    }
+    // Until the fold adds the session rows, only the Users tab reads them: no change anyone can see.
+    EXPECT_FALSE(ProcessGrouping::USER_GROUPS_SHOW_SESSIONS);
+    static_assert(ProcessGrouping::sessionsDemand(true, false, GroupBy::None, false));
+    static_assert(!ProcessGrouping::sessionsDemand(false, true, GroupBy::User, ProcessGrouping::USER_GROUPS_SHOW_SESSIONS));
+}
+
 } // namespace
 } // namespace App
