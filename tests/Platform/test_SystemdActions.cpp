@@ -800,6 +800,65 @@ TEST_F(SystemdActionsFakeTest, AStopRequestedWhileTheReloadIsUnansweredCancelsIt
     EXPECT_LT(std::chrono::steady_clock::now() - began, CANCELLED_WITHIN) << "ended by the stop, not the call's timeout";
 }
 
+// #3425: the Startup tab switches a user unit through the user manager, as systemctl --user does: EnableUnitFiles or
+// DisableUnitFiles, then Reload; a unit file with no [Install] section can't be enabled. The fake bus stands in for
+// the user bus here (DBUS_SESSION_BUS_ADDRESS).
+TEST_F(SystemdActionsFakeTest, AUserUnitIsSwitchedThroughTheUserManager)
+{
+    serveUnitFileCall("EnableUnitFiles");
+    serveUnitFileCall("DisableUnitFiles");
+    m_Bus.addRawMethod(SYSTEMD_PATH,
+                       MANAGER,
+                       "Reload",
+                       [this](sd_bus_message* call) -> int
+                       {
+                           record("Reload");
+                           return sd_bus_reply_method_return(call, "");
+                       });
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    const char* saved = std::getenv("DBUS_SESSION_BUS_ADDRESS"); // NOLINT(concurrency-mt-unsafe) - single-threaded test
+    const std::optional<std::string> savedAddress = saved != nullptr ? std::optional<std::string>(saved) : std::nullopt;
+    const char* fake = std::getenv("DBUS_SYSTEM_BUS_ADDRESS"); // NOLINT(concurrency-mt-unsafe) - set by m_Bus.start()
+    ASSERT_NE(fake, nullptr);
+    ASSERT_EQ(setenv("DBUS_SESSION_BUS_ADDRESS", fake, 1), 0); // NOLINT(concurrency-mt-unsafe)
+
+    EXPECT_TRUE(SystemdBus::setUserUnitEnabled("syncd.service", false).ok);
+    EXPECT_TRUE(SystemdBus::setUserUnitEnabled("syncd.service", true).ok);
+    EXPECT_EQ(calls(), (std::vector<std::string>{"DisableUnitFiles syncd.service", "Reload", "EnableUnitFiles syncd.service", "Reload"}));
+
+    if (savedAddress.has_value())
+    {
+        setenv("DBUS_SESSION_BUS_ADDRESS", savedAddress->c_str(), 1); // NOLINT(concurrency-mt-unsafe)
+    }
+    else
+    {
+        unsetenv("DBUS_SESSION_BUS_ADDRESS"); // NOLINT(concurrency-mt-unsafe)
+    }
+}
+
+TEST_F(SystemdActionsFakeTest, AUserUnitWithNoInstallSectionCantBeEnabled)
+{
+    serveUnitFileCall("EnableUnitFiles", /*carriesInstallInfo=*/false);
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    const char* saved = std::getenv("DBUS_SESSION_BUS_ADDRESS"); // NOLINT(concurrency-mt-unsafe) - single-threaded test
+    const std::optional<std::string> savedAddress = saved != nullptr ? std::optional<std::string>(saved) : std::nullopt;
+    const char* fake = std::getenv("DBUS_SYSTEM_BUS_ADDRESS"); // NOLINT(concurrency-mt-unsafe) - set by m_Bus.start()
+    ASSERT_NE(fake, nullptr);
+    ASSERT_EQ(setenv("DBUS_SESSION_BUS_ADDRESS", fake, 1), 0); // NOLINT(concurrency-mt-unsafe)
+    const ServiceActionResult result = SystemdBus::setUserUnitEnabled("oneshot.service", true);
+    EXPECT_FALSE(result.ok);
+    EXPECT_EQ(result.message, SystemdActions::NO_INSTALL_SECTION_MESSAGE);
+    EXPECT_EQ(calls(), (std::vector<std::string>{"EnableUnitFiles oneshot.service"})) << "no Reload after a refusal";
+    if (savedAddress.has_value())
+    {
+        setenv("DBUS_SESSION_BUS_ADDRESS", savedAddress->c_str(), 1); // NOLINT(concurrency-mt-unsafe)
+    }
+    else
+    {
+        unsetenv("DBUS_SESSION_BUS_ADDRESS"); // NOLINT(concurrency-mt-unsafe)
+    }
+}
+
 // #2472: LinuxServiceActions' "Authenticate and retry" sends each step allowing polkit to prompt, a restart as
 // a stop then a start.
 TEST_F(SystemdActionsFakeTest, AnAuthorizedActionLetsEachOfItsStepsPrompt)
