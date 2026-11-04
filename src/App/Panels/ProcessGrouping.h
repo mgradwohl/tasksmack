@@ -8,10 +8,13 @@
 #include "App/ProcessColumnConfig.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Platform/AsciiCase.h"
+#include "Platform/ProcessTypes.h"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -331,6 +334,46 @@ struct Group
         }
     }
     return GroupBy::None;
+}
+
+/// Every mode, in the Group control's order.
+inline constexpr std::array<GroupBy, 5> ALL_GROUP_MODES = {GroupBy::None, GroupBy::Unit, GroupBy::Container, GroupBy::App, GroupBy::User};
+
+/// Whether the Group control offers @p mode on a system whose probe reports @p caps (#3428): Container
+/// needs the container (Linux cgroups), App the systemd unit an app was launched in; offered anywhere
+/// else, every process would land under Ungrouped. None, Unit and User are offered everywhere (Unit's
+/// data on Windows comes from the service list, which grouping by Unit asks for, #3386).
+[[nodiscard]] constexpr bool groupModeOffered(GroupBy mode, const Platform::ProcessCapabilities& caps) noexcept
+{
+    switch (mode)
+    {
+    case GroupBy::Container:
+        return caps.hasContainer;
+    case GroupBy::App:
+        return caps.hasAppUnits;
+    case GroupBy::None:
+    case GroupBy::Unit:
+    case GroupBy::User:
+        break;
+    }
+    return true;
+}
+
+/// The modes the Group control offers under @p caps, in its order.
+[[nodiscard]] inline std::vector<GroupBy> offeredGroupModes(const Platform::ProcessCapabilities& caps)
+{
+    std::vector<GroupBy> modes;
+    modes.reserve(ALL_GROUP_MODES.size());
+    std::ranges::copy_if(ALL_GROUP_MODES, std::back_inserter(modes), [&caps](GroupBy mode) { return groupModeOffered(mode, caps); });
+    return modes;
+}
+
+/// The mode the table is grouped by when @p chosen is the saved choice (#3428): itself where it is
+/// offered, else None. The saved choice is kept, so a config shared with a Linux machine, or read before
+/// the probe's capabilities are known, still groups by Container or App once they are.
+[[nodiscard]] constexpr GroupBy effectiveGroupBy(GroupBy chosen, const Platform::ProcessCapabilities& caps) noexcept
+{
+    return groupModeOffered(chosen, caps) ? chosen : GroupBy::None;
 }
 
 } // namespace App::ProcessGrouping
