@@ -46,6 +46,12 @@ inputs:
       default) for no check and no cache.
     required: false
     default: ''
+  generate-test-locales:
+    description: >
+      Generate the de_DE, fr_FR and en_US UTF-8 locales, so the locale-display tests (#1648) run
+      instead of skipping. Only the jobs that run those tests need them.
+    required: false
+    default: 'false'
 
 outputs:
   package-cache-key:
@@ -63,12 +69,6 @@ outputs:
       is staged in package-cache-path; the caller saves it with actions/cache/save under
       package-cache-key (main and release/* runs only, as the repo's other caches)
     value: ${{ steps.install.outputs.staged }}
-  generate-test-locales:
-    description: >
-      Generate the de_DE, fr_FR and en_US UTF-8 locales, so the locale-display tests (#1648) run
-      instead of skipping. Only the jobs that run those tests need them.
-    required: false
-    default: 'false'
 
 runs:
   using: 'composite'
