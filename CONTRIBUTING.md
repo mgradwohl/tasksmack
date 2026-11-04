@@ -3487,6 +3487,9 @@ same checks on both. Renovate and Dependabot target `main`; a security bump is b
 
 ## Pull Request Process
 
+Issues and PRs are labelled by the scheme in [docs/dev/labels.md](docs/dev/labels.md): a kind, a lane, a
+severity on bugs, and a priority on milestone items.
+
 1. Fork the repository
 2. Create a branch from `main`
 3. Make your changes
