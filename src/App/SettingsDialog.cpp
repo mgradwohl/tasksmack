@@ -274,6 +274,7 @@ Action render(State& state)
         }
         const std::string scaleAutoLabel = Detail::interfaceScaleAutoLabel(UI::Theme::get().measuredDisplayScale());
         widestAppearanceValue = std::max(widestAppearanceValue, ImGui::CalcTextSize(scaleAutoLabel.c_str()).x);
+        widestAppearanceValue = std::max(widestAppearanceValue, ImGui::CalcTextSize("Custom (300%)").x); // a hand-edited scale's
         if (!state.themeChoice.index.has_value())
         {
             widestAppearanceValue = std::max(widestAppearanceValue, ImGui::CalcTextSize(state.customThemePreview.c_str()).x);
@@ -405,20 +406,23 @@ Action render(State& state)
         ImGui::SameLine(valueColumn);
         ImGui::SetNextItemWidth(appearanceComboWidth);
         {
-            const auto liveScaleIndex = optionIndexOf(
-                INTERFACE_SCALE_OPTIONS, UserConfig::get().settings().interfaceScalePercent, &Detail::InterfaceScaleOption::percent);
-            const std::size_t scalePreviewIndex =
-                (state.interfaceScaleChoice.touched ? state.interfaceScaleChoice.index : liveScaleIndex).value_or(0);
+            const int livePercent = UserConfig::get().settings().interfaceScalePercent;
+            const auto liveScaleIndex = optionIndexOf(INTERFACE_SCALE_OPTIONS, livePercent, &Detail::InterfaceScaleOption::percent);
+            // No preset for a hand-edited value (interface_scale = 180): shown as Custom, as the refresh and history
+            // combos show theirs, never as Auto.
+            const std::optional<std::size_t> scaleIndex =
+                state.interfaceScaleChoice.touched ? state.interfaceScaleChoice.index : liveScaleIndex;
             const auto scaleLabel = [&scaleAutoLabel](std::size_t index)
             {
                 return INTERFACE_SCALE_OPTIONS[index].percent == 0 ? scaleAutoLabel : std::string(INTERFACE_SCALE_OPTIONS[index].label);
             };
-            if (UI::Widgets::beginOutlinedCombo("##InterfaceScale", scaleLabel(scalePreviewIndex).c_str()))
+            const std::string preview = scaleIndex.has_value() ? scaleLabel(*scaleIndex) : std::format("Custom ({}%)", livePercent);
+            if (UI::Widgets::beginOutlinedCombo("##InterfaceScale", preview.c_str()))
             {
                 comboOpen = true;
                 for (std::size_t i = 0; i < INTERFACE_SCALE_OPTIONS.size(); ++i)
                 {
-                    const bool isSelected = (scalePreviewIndex == i);
+                    const bool isSelected = (scaleIndex == i);
                     if (ImGui::Selectable(scaleLabel(i).c_str(), isSelected))
                     {
                         state.interfaceScaleChoice = ComboState{.index = i, .touched = true};
@@ -433,7 +437,7 @@ Action render(State& state)
             ImGui::SetItemTooltip("The size of text and controls. Auto uses the display's own scale; pick a size when the display reports "
                                   "the wrong one");
             // Under WSL, Auto's 100% is WSLg's report, not the display's (#3376): say so where the setting is.
-            if (state.underWsl && INTERFACE_SCALE_OPTIONS[scalePreviewIndex].percent == 0)
+            if (state.underWsl && scaleIndex.has_value() && INTERFACE_SCALE_OPTIONS[*scaleIndex].percent == 0)
             {
                 ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + appearanceComboWidth + valueColumn);
                 ImGui::TextColored(UI::Theme::get().scheme().textMuted,

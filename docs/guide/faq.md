@@ -173,7 +173,7 @@ They are counted the way the GPU tab counts each GPU, so the two can be compared
 
 WSLg tells Linux apps that every display is at 100% scale, whatever Windows uses, so TaskSmack, like every Linux app under WSLg, draws at 100% while Windows draws at 150% or 175%. Set **Interface scale** in **Settings** (Appearance) to the scale Windows uses (**Windows Settings > Display > Scale**). TaskSmack then draws text and controls at that size, sharply, instead of at what WSLg reports. Under WSL, Settings says so beside the setting while it's on **Auto** (#3376).
 
-WSLg can also scale every Linux window itself: `WESTON_RDP_FRACTIONAL_HI_DPI_SCALING=true` in the `[system]` section of `%USERPROFILE%\.wslgconfig`, then `wsl --shutdown`. That fixes every Linux app at once, but the text is bitmap-scaled and looks soft, so leave TaskSmack's Interface scale on Auto if you use it.
+WSLg can also scale every Linux window itself: `WESTON_RDP_FRACTIONAL_HI_DPI_SCALING=true` in the `[system-distro-env]` section of `%USERPROFILE%\.wslgconfig`, then `wsl --shutdown`. That fixes every Linux app at once, but the text is bitmap-scaled and looks soft, so leave TaskSmack's Interface scale on Auto if you use it.
 
 ## Where do I put custom themes?
 

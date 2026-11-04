@@ -11,11 +11,11 @@ namespace UI
 inline constexpr int INTERFACE_SCALE_MIN_PERCENT = 100;
 inline constexpr int INTERFACE_SCALE_MAX_PERCENT = 300;
 
-/// The UI scale the fonts and style are built at: the Interface scale setting when it names one (@p overridePercent
-/// in [INTERFACE_SCALE_MIN_PERCENT, INTERFACE_SCALE_MAX_PERCENT]), otherwise what the display reports
-/// (@p measured, windowUnitScale()). The override is for a display that misreports its scale: WSLg tells Linux apps
-/// 100% whatever Windows uses (#3376). It replaces the measurement rather than multiplying it, so 175% means the
-/// same size on every platform.
+/// The display scale to build the UI at: the Interface scale setting when it names one (@p overridePercent in
+/// [INTERFACE_SCALE_MIN_PERCENT, INTERFACE_SCALE_MAX_PERCENT]), otherwise what SDL reports (@p measured, the raw display
+/// scale: 1.75 at 175%). Callers divide the answer by the window's pixel density (windowUnitScale()) as they do the
+/// display's own scale, so the setting means the same on-screen size on every platform, native Wayland included. The
+/// override is for a display that misreports its scale: WSLg tells Linux apps 100% whatever Windows uses (#3376).
 [[nodiscard]] constexpr float effectiveDisplayScale(float measured, int overridePercent) noexcept
 {
     if (overridePercent >= INTERFACE_SCALE_MIN_PERCENT && overridePercent <= INTERFACE_SCALE_MAX_PERCENT)

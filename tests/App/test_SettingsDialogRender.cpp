@@ -308,6 +308,22 @@ TEST_F(SettingsDialogRenderTest, UnderWslAutoExplainsWslgsHundredPercent)
     EXPECT_FALSE(text.contains("WSLg reports")) << "a picked scale needs no explanation";
 }
 
+// #3376 review: a hand-edited scale with no preset (interface_scale = 180) reads Custom (180%), not Auto, and under WSL
+// gets no Auto note, since the setting is in force.
+TEST_F(SettingsDialogRenderTest, AHandEditedScaleReadsCustomAndGetsNoAutoNote)
+{
+    auto& settings = UserConfig::get().settings();
+    const int saved = settings.interfaceScalePercent;
+    settings.interfaceScalePercent = 180;
+    SettingsDialog::load(m_State, settings, themes());
+    m_State.underWsl = true;
+    static_cast<void>(openAndSettle());
+    const std::string text = runFrameText();
+    EXPECT_TRUE(text.contains("Custom (180%)")) << text;
+    EXPECT_FALSE(text.contains("WSLg reports")) << text;
+    settings.interfaceScalePercent = saved;
+}
+
 // The Escape that closes an open combo must not also close the dialog (SettingsDialog's
 // comboOpenLastFrame guard): with a combo open, the dialog stays, unsaved and unchanged.
 TEST_F(SettingsDialogRenderTest, EscapeWithAComboOpenKeepsTheDialog)
