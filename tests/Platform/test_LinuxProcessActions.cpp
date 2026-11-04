@@ -1660,8 +1660,9 @@ struct FaultPlan
     int lastSetValue = 0;            ///< What the last setpriority / ioprio_set was given
     std::function<void()> duringSet; ///< Run once inside the next setpriority / ioprio_set (#3330)
     int pollCalls = 0;
-    int schedulerNow = 0;     ///< What sched_getscheduler returns (#3086): a policy, SCHED_RESET_ON_FORK, or -1 (fails)
-    int lastSetPriority = -1; ///< The sched_priority the last sched_setscheduler was given (#3219)
+    int schedulerNow = 0;                    ///< What sched_getscheduler returns (#3086): a policy, SCHED_RESET_ON_FORK, or -1 (fails)
+    std::function<int(id_t)> schedulerByTid; ///< Or, when set, what it returns for each thread
+    int lastSetPriority = -1;                ///< The sched_priority the last sched_setscheduler was given (#3219)
 };
 
 FaultPlan& plan()
@@ -1732,8 +1733,12 @@ int fakeSetScheduler(id_t tid, int policy, int priority)
     return fakeSet(tid, policy);
 }
 
-int fakeGetScheduler(id_t /*tid*/)
+int fakeGetScheduler(id_t tid)
 {
+    if (plan().schedulerByTid)
+    {
+        return plan().schedulerByTid(tid);
+    }
     return plan().schedulerNow < 0 ? fail(ESRCH) : plan().schedulerNow;
 }
 
@@ -2150,9 +2155,66 @@ TEST_F(LinuxProcessActionsFaultTest, SchedPolicyKeepsAThreadsResetOnFork)
     ASSERT_TRUE(m_Actions.setSchedPolicy(ownTarget(), SchedPolicy::Idle).success);
     EXPECT_EQ(plan().lastSetValue, SCHED_IDLE);
 
-    plan().schedulerNow = -1; // the policy can't be read: no flag, as before
-    ASSERT_TRUE(m_Actions.setSchedPolicy(ownTarget(), SchedPolicy::Batch).success);
-    EXPECT_EQ(plan().lastSetValue, SCHED_BATCH);
+    // A policy that can't be read isn't guessed at: the change fails with why, and nothing is set.
+    plan().schedulerNow = -1;
+    const int callsBefore = plan().setCalls;
+    const ProcessActionResult unread = m_Actions.setSchedPolicy(ownTarget(), SchedPolicy::Batch);
+    EXPECT_FALSE(unread.success);
+    EXPECT_EQ(unread.errorMessage, "Process not found - may have already exited") << "the read's ESRCH";
+    EXPECT_EQ(plan().setCalls, callsBefore);
+}
+
+// #3086: the dialog shows the main thread's policy, so under a Normal main thread a real-time worker (an audio
+// thread) keeps its policy and the result says so; when the main thread itself is real time (the dialog warned),
+// every thread changes.
+TEST_F(LinuxProcessActionsFaultTest, RealTimeWorkersUnderANormalMainThreadKeepTheirPolicy)
+{
+    const pid_t self = ::getpid();
+    plan().schedulerByTid = [self](id_t tid)
+    {
+        return static_cast<pid_t>(tid) == self ? SCHED_OTHER : SCHED_FIFO;
+    };
+    const std::size_t threads = listThreads(self).size();
+    ASSERT_GE(threads, 1U);
+    const ProcessActionResult mixed = m_Actions.setSchedPolicy(ownTarget(), SchedPolicy::Batch);
+    ASSERT_TRUE(mixed.success) << mixed.errorMessage;
+    EXPECT_EQ(static_cast<std::size_t>(plan().setCalls), 1U) << "only the main thread";
+    if (threads > 1)
+    {
+        EXPECT_TRUE(mixed.successNote.contains("real-time thread")) << mixed.successNote;
+    }
+
+    plan() = FaultPlan{};
+    plan().schedulerByTid = [](id_t /*tid*/)
+    {
+        return SCHED_RR | SCHED_RESET_ON_FORK;
+    };
+    ASSERT_TRUE(m_Actions.setSchedPolicy(ownTarget(), SchedPolicy::Normal).success);
+    EXPECT_EQ(static_cast<std::size_t>(plan().setCalls), threads) << "a real-time main thread: every thread, as chosen";
+    EXPECT_EQ(plan().lastSetValue, SCHED_OTHER | SCHED_RESET_ON_FORK);
+}
+
+// #3219: a request for real time is an explicit, confirmed choice of real time for the process, so under a Normal
+// main thread every thread gets it, the real-time workers too (they aren't kept, and no note says so). Aimed at a
+// child, since this process is never set real time.
+TEST_F(LinuxProcessActionsFaultTest, ARealtimeRequestSetsRealtimeWorkersToo)
+{
+    const SleepingChild child(2);
+    ASSERT_TRUE(child.started());
+    ASSERT_TRUE(child.threadsReady());
+    const pid_t main = child.target().pid;
+    plan().schedulerByTid = [main](id_t tid)
+    {
+        return static_cast<pid_t>(tid) == main ? SCHED_OTHER : SCHED_FIFO;
+    };
+    const std::size_t threads = listThreads(main).size();
+    ASSERT_GE(threads, 3U);
+    const ProcessActionResult result = m_Actions.setSchedPolicy(child.target(), SchedPolicy::RoundRobin, 10);
+    ASSERT_TRUE(result.success) << result.errorMessage;
+    EXPECT_EQ(static_cast<std::size_t>(plan().setCalls), threads) << "every thread, the FIFO workers included";
+    EXPECT_EQ(plan().lastSetValue, SCHED_RR);
+    EXPECT_EQ(plan().lastSetPriority, 10);
+    EXPECT_FALSE(result.successNote.contains("real-time thread")) << result.successNote;
 }
 
 TEST_F(LinuxProcessActionsFaultTest, SchedPolicyReachesEveryThread)

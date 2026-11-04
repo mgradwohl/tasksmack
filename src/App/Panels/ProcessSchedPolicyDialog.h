@@ -183,8 +183,14 @@ class ProcessSchedPolicyDialog
   private:
     /// The choices: the radio buttons with their lines, and, while FIFO or RR is chosen, the slider and the warning.
     void renderChoices();
+    /// The priority slider and the real-time warning, drawn by renderChoices() while FIFO or RR is chosen (#3219).
+    void renderRealtimeControls();
     /// The real-time confirm step's text for @p chosen: the process, its PID, the policy and the priority.
     void renderConfirmBody(const SchedPolicySetting& chosen) const;
+    /// The footer: Apply and Cancel at the choices, Set and Back at the confirm step (@p confirming). Returns the
+    /// setting on the frame it is applied, nothing for Cancel, Escape (@p escaped), Back, or a press that only moves
+    /// on to the confirm step.
+    [[nodiscard]] std::optional<SchedPolicySetting> renderFooter(bool escaped, bool confirming);
 
     Platform::ProcessTarget m_Target{.pid = -1, .startTimeTicks = 0};
     std::string m_Name;

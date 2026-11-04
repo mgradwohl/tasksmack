@@ -161,6 +161,7 @@ std::optional<SchedPolicySetting> ProcessSchedPolicyDialog::render()
     }
     // Escape cancels, as Cancel does, from the choices or the confirm step: the policy is left alone (#1944).
     const bool escaped = UI::Widgets::dialogEscapePressed();
+    // The confirm step for real time (#3219), or the choices; then the footer, whose buttons follow the step.
     const std::optional<SchedPolicySetting> chosenSetting = setting();
     const bool confirming = m_Confirming && chosenSetting.has_value();
     if (confirming)
@@ -172,7 +173,17 @@ std::optional<SchedPolicySetting> ProcessSchedPolicyDialog::render()
         renderChoices();
     }
     ImGui::Spacing();
+    applied = renderFooter(escaped, confirming);
+    ImGui::EndPopup();
+    return applied;
+}
 
+std::optional<SchedPolicySetting> ProcessSchedPolicyDialog::renderFooter(bool escaped, bool confirming)
+{
+    // At the choices: Apply (disabled until a policy is chosen) returns the setting and closes, except that real time
+    // goes on to the confirm step; Cancel closes. At the confirm step (@p confirming): Set returns the setting, Back
+    // returns to the choices. Escape pressed this frame (@p escaped) closes from either, as Cancel does.
+    std::optional<SchedPolicySetting> applied;
     const auto& theme = UI::Theme::get();
     const bool chosen = canApply();
     // Set at the real-time confirm step is drawn in the danger colour, as Kill's and End process tree's confirms are:
@@ -236,12 +247,14 @@ std::optional<SchedPolicySetting> ProcessSchedPolicyDialog::render()
     case UI::Widgets::DialogFooterAction::Leading:
         break;
     }
-    ImGui::EndPopup();
     return applied;
 }
 
 void ProcessSchedPolicyDialog::renderChoices()
 {
+    // What the dialog changes, a warning when the process's policy isn't offered (Deadline) or its real-time priority
+    // wasn't read, one radio button per offered policy with what it does (real time disabled for TaskSmack itself),
+    // then the real-time controls while FIFO or RR is chosen.
     const auto& theme = UI::Theme::get();
     ImGui::PushTextWrapPos(0.0F);
     ImGui::TextUnformatted("How the kernel schedules this process. Every thread is changed, and threads it starts later inherit it.");
@@ -283,32 +296,42 @@ void ProcessSchedPolicyDialog::renderChoices()
     }
     if (showsRealtimeWarning())
     {
-        ImGui::Spacing();
-        ImGui::TextUnformatted("Real-time priority (1 lowest, 99 highest)");
-        ImGui::SetNextItemWidth(-1.0F);
-        int priority = m_RtPriority;
-        if (ImGui::SliderInt(PRIORITY_SLIDER_ID,
-                             &priority,
-                             Platform::MIN_REALTIME_SCHED_PRIORITY,
-                             Platform::MAX_REALTIME_SCHED_PRIORITY,
-                             "%d",
-                             ImGuiSliderFlags_AlwaysClamp))
-        {
-            setRtPriority(priority);
-        }
-        ImGui::Spacing();
-        ImGui::TextColored(theme.scheme().textWarning, ICON_FA_TRIANGLE_EXCLAMATION "  Real time can make the desktop unresponsive");
-        ImGui::TextUnformatted(REALTIME_WARNING);
-        if (!m_RealtimeNeedsNoPassword)
-        {
-            ImGui::TextColored(theme.scheme().textMuted, "%s", REALTIME_MAY_BE_REFUSED);
-        }
+        renderRealtimeControls();
     }
     ImGui::PopTextWrapPos();
 }
 
+void ProcessSchedPolicyDialog::renderRealtimeControls()
+{
+    // While FIFO or RR is chosen (#3219): the priority slider, then what real time risks, and, without CAP_SYS_NICE or
+    // the helper, that it may be refused.
+    const auto& theme = UI::Theme::get();
+    ImGui::Spacing();
+    ImGui::TextUnformatted("Real-time priority (1 lowest, 99 highest)");
+    ImGui::SetNextItemWidth(-1.0F);
+    int priority = m_RtPriority;
+    if (ImGui::SliderInt(PRIORITY_SLIDER_ID,
+                         &priority,
+                         Platform::MIN_REALTIME_SCHED_PRIORITY,
+                         Platform::MAX_REALTIME_SCHED_PRIORITY,
+                         "%d",
+                         ImGuiSliderFlags_AlwaysClamp))
+    {
+        setRtPriority(priority);
+    }
+    ImGui::Spacing();
+    ImGui::TextColored(theme.scheme().textWarning, ICON_FA_TRIANGLE_EXCLAMATION "  Real time can make the desktop unresponsive");
+    ImGui::TextUnformatted(REALTIME_WARNING);
+    if (!m_RealtimeNeedsNoPassword)
+    {
+        ImGui::TextColored(theme.scheme().textMuted, "%s", REALTIME_MAY_BE_REFUSED);
+    }
+}
+
 void ProcessSchedPolicyDialog::renderConfirmBody(const SchedPolicySetting& chosen) const
 {
+    // Names what Set will do: the process, its PID, the policy and its priority, what real time risks, and the
+    // may-be-refused note where real time needs a password.
     const auto& theme = UI::Theme::get();
     const auto text = Platform::schedPolicyText(chosen.policy, static_cast<std::uint32_t>(chosen.rtPriority));
     ImGui::PushTextWrapPos(0.0F);
@@ -339,13 +362,17 @@ Detail::ActionResultMessage schedPolicyResultMessage(const std::string& name,
     {
         return {.ok = false, .text = result.errorMessage};
     }
-    return {
-        .ok = true,
-        .text = std::format("Scheduling policy of {} (PID {}) set to {}",
-                            name,
-                            pid,
-                            Platform::schedPolicyText(setting.policy, static_cast<std::uint32_t>(setting.rtPriority)).view()),
-    };
+    std::string text = std::format("Scheduling policy of {} (PID {}) set to {}",
+                                   name,
+                                   pid,
+                                   Platform::schedPolicyText(setting.policy, static_cast<std::uint32_t>(setting.rtPriority)).view());
+    if (!result.successNote.empty())
+    {
+        // Threads that kept a real-time policy the dialog didn't show (a real-time worker under a Normal main thread)
+        text += "; ";
+        text += result.successNote;
+    }
+    return {.ok = true, .text = std::move(text)};
 }
 
 } // namespace App

@@ -142,6 +142,10 @@ TEST(ProcessSchedPolicyDialogTest, TheResultLineNamesTheProcessAndPolicy)
     const auto realtime =
         schedPolicyResultMessage("audio", 42, {.policy = SchedPolicy::Fifo, .rtPriority = 50}, Platform::ProcessActionResult::ok());
     EXPECT_EQ(realtime.text, "Scheduling policy of audio (PID 42) set to FIFO 50");
+    Platform::ProcessActionResult kept = Platform::ProcessActionResult::ok();
+    kept.successNote = "2 real-time threads kept their policy";
+    EXPECT_EQ(schedPolicyResultMessage("audio", 42, {.policy = SchedPolicy::Batch}, kept).text,
+              "Scheduling policy of audio (PID 42) set to Batch; 2 real-time threads kept their policy");
 
     const auto failed =
         schedPolicyResultMessage("server", 42, {.policy = SchedPolicy::Idle}, Platform::ProcessActionResult::denied("Permission denied"));
