@@ -11,6 +11,30 @@
     "BM_Format_ChooseByteUnit": {
       "min_abs_delta_ns": 3,
       "reason": "#3126: sub-nanosecond, so a code-layout shift from an unrelated change moves it by a few cycles. It measured 0.43-0.87ns until runs 40444757786 and 40448017472 read 3.09ns and 2.88ns (+2.36ns over the 0.736ns baseline, +320%) with no change to the code it times, then 0.736ns on run 40456436642; the other sub-nanosecond benchmarks stayed within 0.3ns in those runs. 3ns clears the worst reading by about 27% and still fails 0.7ns -> 4ns."
+    },
+    "BM_StorageModel_FullHistory_Publication/18000": {
+      "min_abs_delta_ns": 20,
+      "reason": "#3395: an 8-12 ns accessor (a shared_ptr publication load) that reads slower on some hosted-runner CPU classes than on the slower class the baseline is captured on. Of three ubuntu-26.04 captures on three classes (runs 41752980687, 41756603704, 41760344349; 4195, 3692 and 3240 MHz), the fastest read it 12.0ns slower than the baseline capture, +122% over a few nanoseconds, with no code change. 20ns clears that and still fails a real doubling."
+    },
+    "BM_SystemModel_CpuHistory": {
+      "min_abs_delta_ns": 6,
+      "reason": "#3395: an 8-12 ns accessor (a shared_ptr publication load) that reads slower on some hosted-runner CPU classes than on the slower class the baseline is captured on. Of three ubuntu-26.04 captures on three classes (runs 41752980687, 41756603704, 41760344349; 4195, 3692 and 3240 MHz), the fastest read it 4.0ns slower than the baseline capture, +47% over a few nanoseconds, with no code change. 6ns clears that and still fails a real doubling."
+    },
+    "BM_StorageModel_LatestSnapshot": {
+      "min_abs_delta_ns": 6,
+      "reason": "#3395: an 8-12 ns accessor (a shared_ptr publication load) that reads slower on some hosted-runner CPU classes than on the slower class the baseline is captured on. Of three ubuntu-26.04 captures on three classes (runs 41752980687, 41756603704, 41760344349; 4195, 3692 and 3240 MHz), the fastest read it 3.6ns slower than the baseline capture, +42% over a few nanoseconds, with no code change. 6ns clears that and still fails a real doubling."
+    },
+    "BM_StorageModel_HistoryTimestamps": {
+      "min_abs_delta_ns": 6,
+      "reason": "#3395: an 8-12 ns accessor (a shared_ptr publication load) that reads slower on some hosted-runner CPU classes than on the slower class the baseline is captured on. Of three ubuntu-26.04 captures on three classes (runs 41752980687, 41756603704, 41760344349; 4195, 3692 and 3240 MHz), the fastest read it 3.6ns slower than the baseline capture, +41% over a few nanoseconds, with no code change. 6ns clears that and still fails a real doubling."
+    },
+    "BM_StorageModel_TotalRateHistory": {
+      "min_abs_delta_ns": 6,
+      "reason": "#3395: an 8-12 ns accessor (a shared_ptr publication load) that reads slower on some hosted-runner CPU classes than on the slower class the baseline is captured on. Of three ubuntu-26.04 captures on three classes (runs 41752980687, 41756603704, 41760344349; 4195, 3692 and 3240 MHz), the fastest read it 3.5ns slower than the baseline capture, +40% over a few nanoseconds, with no code change. 6ns clears that and still fails a real doubling."
+    },
+    "BM_StorageModel_PerDiskHistory": {
+      "min_abs_delta_ns": 6,
+      "reason": "#3395: an 8-12 ns accessor (a shared_ptr publication load) that reads slower on some hosted-runner CPU classes than on the slower class the baseline is captured on. Of three ubuntu-26.04 captures on three classes (runs 41752980687, 41756603704, 41760344349; 4195, 3692 and 3240 MHz), the fastest read it 3.5ns slower than the baseline capture, +40% over a few nanoseconds, with no code change. 6ns clears that and still fails a real doubling."
     }
   }
 }

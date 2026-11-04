@@ -1550,7 +1550,7 @@ remove it when a baseline refresh makes it unnecessary. Without the flag every b
 `--threshold` and `--min-abs-delta-ns`.
 
 **Refreshing `perf-data/linux-ci-baseline.json`** (only needed when hosted-runner hardware
-changes, e.g. a `ubuntu-24.04` image update measurably shifts baseline timings, or after a
+changes, e.g. a runner image move (the 24.04 to 26.04 move re-captured it, #3395) measurably shifts baseline timings, or after a
 deliberate, reviewed performance change that the gate should treat as the new normal):
 
 1. Manually trigger `heavy-checks.yml` via `gh workflow run heavy-checks.yml --ref <branch>` (or
