@@ -165,8 +165,8 @@
 
     // ── LLVM toolchain: Windows exact semver pin plus the Linux major-only pins. Every
     //    update to this whole group requires dashboard approval (see packageRules below) --
-    //    not just major bumps -- because Windows resolves the pinned version through
-    //    Chocolatey/WinGet, and neither feed's availability is verified before a PR opens. ──
+    //    not just major bumps -- because the dev box resolves the pinned version through
+    //    WinGet, and CI needs per-architecture installer SHA-256 values no bot can fill in. ──
     {
       customType: 'regex',
       managerFilePatterns: ['/^\\.github/workflows/ci\\.yml$/'],
@@ -571,19 +571,19 @@
     },
     {
       // Every LLVM update -- not just major -- is gated, because the value this group tracks
-      // (upstream llvm-project tags) isn't actually what gets installed on Windows: both CI
-      // (.github/actions/setup-windows-llvm, `choco install llvm`) and the dev-box script
-      // (tools/setup-dev.ps1, `winget install LLVM.LLVM`) resolve the pinned version through
-      // Chocolatey/WinGet, and #752 already recorded a concrete real-world instance of that
-      // feed lagging upstream (upstream had 22.1.8 while Chocolatey still only had 22.1.7) --
-      // an auto-PR'd Windows *patch* bump under the old major-only gate would have generated
-      // an unmergeable PR (every Windows job failing at `choco install`) with nothing to catch
-      // it before CI ran. Detected and listed on the Dependency Dashboard; opens a PR only
-      // once a human ticks the checkbox and (per the same manual-verification precedent as the
-      // CMake/Ninja/ccache dev-box pins below) confirms the proposed version is actually
-      // installable through both feeds first. A true major bump additionally needs the real
-      // compiler/clang-tidy validation and the manual companion-file updates described above
-      // -- the same deliberate process already used for #752's LLVM 23 upgrade. This
+      // (upstream llvm-project tags) isn't by itself enough to install it on Windows. CI
+      // (.github/actions/setup-windows-llvm) installs the release's win64/woa64 MSIs pinned by
+      // LLVM_PINNED_VERSION and their SHA-256 values, which a bot bump leaves stale (every
+      // Windows job would fail the pin check). The dev-box script (tools/setup-dev.ps1,
+      // `winget install LLVM.LLVM`) resolves it through WinGet, which can lag upstream: #752
+      // recorded upstream at 22.1.8 while Chocolatey (CI's feed then) still only had 22.1.7, and
+      // #3452 moved CI off Chocolatey when it had 23.1.3 but not 23.1.5. Detected and listed on
+      // the Dependency Dashboard; opens a PR only once a human ticks the checkbox and (per the
+      // same manual-verification precedent as the CMake/Ninja/ccache dev-box pins below)
+      // confirms the version is in WinGet and updates the installer hashes in the same PR. A
+      // true major bump additionally needs the real compiler/clang-tidy validation and the
+      // manual companion-file updates described above -- the same deliberate process already
+      // used for #752's LLVM 23 upgrade. This
       // supersedes #752's blanket "Windows major bumps are entirely disabled" rule with the
       // dashboard-approval mechanism used everywhere else in this tier.
       matchPackageNames: ['llvm/llvm-project'],
