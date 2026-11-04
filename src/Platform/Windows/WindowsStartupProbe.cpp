@@ -84,25 +84,33 @@ struct RunSource
 };
 
 // const, not constexpr: the predefined HKEY roots are integer-to-pointer casts.
-const std::array<RunSource, 5> RUN_SOURCES = {{
-    {.root = HKEY_CURRENT_USER, .subkey = RUN_KEY, .view = 0, .location = StartupLocation::RunUser, .approvedSubkey = APPROVED_RUN_KEY},
-    {.root = HKEY_LOCAL_MACHINE,
-     .subkey = RUN_KEY,
-     .view = KEY_WOW64_64KEY,
-     .location = StartupLocation::RunMachine,
-     .approvedSubkey = APPROVED_RUN_KEY},
-    {.root = HKEY_LOCAL_MACHINE,
-     .subkey = RUN_KEY,
-     .view = KEY_WOW64_32KEY,
-     .location = StartupLocation::RunMachine32,
-     .approvedSubkey = APPROVED_RUN32_KEY},
-    {.root = HKEY_CURRENT_USER, .subkey = RUN_ONCE_KEY, .view = 0, .location = StartupLocation::RunOnceUser, .approvedSubkey = nullptr},
-    {.root = HKEY_LOCAL_MACHINE,
-     .subkey = RUN_ONCE_KEY,
-     .view = KEY_WOW64_64KEY,
-     .location = StartupLocation::RunOnceMachine,
-     .approvedSubkey = nullptr},
-}};
+const std::array<RunSource, 5> RUN_SOURCES = {
+    {
+        {.root = HKEY_CURRENT_USER, .subkey = RUN_KEY, .view = 0, .location = StartupLocation::RunUser, .approvedSubkey = APPROVED_RUN_KEY},
+        {
+            .root = HKEY_LOCAL_MACHINE,
+            .subkey = RUN_KEY,
+            .view = KEY_WOW64_64KEY,
+            .location = StartupLocation::RunMachine,
+            .approvedSubkey = APPROVED_RUN_KEY,
+        },
+        {
+            .root = HKEY_LOCAL_MACHINE,
+            .subkey = RUN_KEY,
+            .view = KEY_WOW64_32KEY,
+            .location = StartupLocation::RunMachine32,
+            .approvedSubkey = APPROVED_RUN32_KEY,
+        },
+        {.root = HKEY_CURRENT_USER, .subkey = RUN_ONCE_KEY, .view = 0, .location = StartupLocation::RunOnceUser, .approvedSubkey = nullptr},
+        {
+            .root = HKEY_LOCAL_MACHINE,
+            .subkey = RUN_ONCE_KEY,
+            .view = KEY_WOW64_64KEY,
+            .location = StartupLocation::RunOnceMachine,
+            .approvedSubkey = nullptr,
+        },
+    },
+};
 
 /// StartupApproved records, by lower-cased value name.
 using ApprovedMap = std::unordered_map<std::wstring, Windows::StartupMath::ApprovedState>;
@@ -425,8 +433,10 @@ readVersionString(std::span<const std::byte> block, const std::vector<std::pair<
     }
     translations.emplace_back(WORD{0x0409}, WORD{0x04B0});
     translations.emplace_back(WORD{0x0409}, WORD{0x04E4});
-    return {.companyName = readVersionString(block, translations, L"CompanyName"),
-            .fileDescription = readVersionString(block, translations, L"FileDescription")};
+    return {
+        .companyName = readVersionString(block, translations, L"CompanyName"),
+        .fileDescription = readVersionString(block, translations, L"FileDescription"),
+    };
 }
 
 /// The version strings read for one file, kept until the file's last-write time changes.
@@ -798,10 +808,12 @@ struct WindowsStartupProbe::Impl
             {
                 iconPath = WinString::wideToUtf8((root / WinString::utf8ToWide(task.logo)).make_preferred().wstring());
             }
-            resolved.tasks.push_back({.taskId = WinString::utf8ToWide(task.taskId),
-                                      .name = std::move(name),
-                                      .executablePath = std::move(executablePath),
-                                      .iconPath = std::move(iconPath)});
+            resolved.tasks.push_back({
+                .taskId = WinString::utf8ToWide(task.taskId),
+                .name = std::move(name),
+                .executablePath = std::move(executablePath),
+                .iconPath = std::move(iconPath),
+            });
         }
         return &packages.insert_or_assign(key, std::move(resolved)).first->second;
     }

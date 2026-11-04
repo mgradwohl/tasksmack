@@ -138,14 +138,16 @@ SystemConnectionsRead LinuxSystemConnectionsReader::read()
     result.connections.reserve(sockets.size());
     for (const InetSockets::RawInetSocket& socket : sockets)
     {
-        SystemConnection row{.connection = InetSockets::toConnection(socket),
-                             .pid = 0,
-                             .startTimeTicks = 0,
-                             .processName = {},
-                             .bytesSent = socket.bytesSent,
-                             .bytesReceived = socket.bytesReceived,
-                             .hasByteCounters = socket.hasByteCounters,
-                             .socketInode = socket.inode};
+        SystemConnection row{
+            .connection = InetSockets::toConnection(socket),
+            .pid = 0,
+            .startTimeTicks = 0,
+            .processName = {},
+            .bytesSent = socket.bytesSent,
+            .bytesReceived = socket.bytesReceived,
+            .hasByteCounters = socket.hasByteCounters,
+            .socketInode = socket.inode,
+        };
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
         // Inode 0 is a socket no file holds (TIME_WAIT): nobody's.
         if (const auto owner = socket.inode != 0 ? owners.find(socket.inode) : owners.end(); owner != owners.end())

@@ -25,7 +25,7 @@ permissions: {}
 jobs:
     # The job MUST be called `copilot-setup-steps` or it will not be picked up by Copilot.
     copilot-setup-steps:
-        runs-on: ubuntu-24.04
+        runs-on: ubuntu-26.04
         timeout-minutes: 30
 
         permissions:

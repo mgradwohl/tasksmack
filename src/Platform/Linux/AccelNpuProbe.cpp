@@ -370,10 +370,12 @@ void AccelNpuProbe::discoverClients()
             const auto device = std::ranges::find(m_Devices, target.native(), &Device::nodePath);
             if (device != m_Devices.end())
             {
-                found.push_back({.pid = pid,
-                                 .fd = fdIt->path(),
-                                 .fdinfo = procIt->path() / "fdinfo" / fdIt->path().filename(),
-                                 .device = static_cast<std::size_t>(device - m_Devices.begin())});
+                found.push_back({
+                    .pid = pid,
+                    .fd = fdIt->path(),
+                    .fdinfo = procIt->path() / "fdinfo" / fdIt->path().filename(),
+                    .device = static_cast<std::size_t>(device - m_Devices.begin()),
+                });
             }
         }
     }

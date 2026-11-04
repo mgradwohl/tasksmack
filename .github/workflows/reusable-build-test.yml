@@ -294,6 +294,9 @@ jobs:
           # libsystemd-dev and dbus-daemon are installed (setup-llvm), so the D-Bus fake suites must
           # run: SystemdBusFakeEnvironmentTest fails if they would skip or compiled out (#2133).
           TASKSMACK_REQUIRE_SDBUS: '1'
+          # Each test that arms the allocation-failure hook writes its name here once, for the summary
+          # step after "Merge test results" (#3342).
+          TASKSMACK_ALLOCATION_HOOK_LOG: ${{ github.workspace }}/build/${{ inputs.build_type }}/allocation-hook.log
         run: xvfb-run -a -s "-screen 0 1920x1080x24 -noreset" ctest --preset ${{ inputs.build_type }} -j "$(nproc)" --schedule-random --output-on-failure --timeout 60 --output-junit test-results.xml
 
       # tasksmack-helper's privilege drop and seccomp filter, as root (#3058). TasksmackHelperRootTest skips
@@ -375,6 +378,17 @@ jobs:
         env:
           BUILD_DIR: build/${{ runner.os == 'Windows' && 'win-' || '' }}${{ inputs.build_type }}
         run: python tools/merge-gtest-results.py "$BUILD_DIR/test-results.xml" "$BUILD_DIR/test-results-pwsh-script.xml" "$BUILD_DIR/gtest-results" "$BUILD_DIR/test-results-cases.xml"
+
+      # Which tests ran with the allocation-failure hook armed (#3342), in the Job Summary. Linux builds
+      # compile the hook in (only sanitizer builds and Windows leave it out), so --require fails the job
+      # when no test armed it or one skipped for want of it: a hook that silently stopped running can't
+      # pass as a run of skipped tests. A missing case report (the build failed) prints nothing.
+      - name: Allocation-failure hook summary (Linux)
+        if: always() && runner.os == 'Linux' && inputs.build
+        shell: bash
+        env:
+          BUILD_DIR: build/${{ inputs.build_type }}
+        run: python -I tools/allocation-hook-summary.py --require "$BUILD_DIR/allocation-hook.log" "$BUILD_DIR/test-results-cases.xml" | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Upload test results (Linux)
         if: always() && runner.os == 'Linux' && inputs.build

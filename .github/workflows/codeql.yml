@@ -31,7 +31,7 @@ jobs:
   # as successful, so the required "Analyze C++" check still passes, whereas a workflow that never
   # triggers never reports the check and leaves the PR blocked (see osv-scanner.yml, #866).
   detect-docs-only:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions:
       contents: read
@@ -79,7 +79,7 @@ jobs:
   # .github/, everything this analyzes.
   analyze-actions:
     name: Analyze Actions
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
       actions: read
@@ -105,7 +105,7 @@ jobs:
     name: Analyze C++
     needs: [detect-docs-only]
     if: needs.detect-docs-only.outputs.docs_only != 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # Only the app's own compiles are traced (#1786), which took the job from 35-45+ minutes to
     # about a third of that. It was 45 (#1444) while the tests were traced too, and still timed out.
     # Now a pull request's run takes 10-20 minutes and main's about 23, since main never restores a

@@ -38,14 +38,16 @@ struct InputFamily
     std::string_view inputSuffix; ///< "_input", or "_average" for power on chips that only average
 };
 
-inline constexpr std::array<InputFamily, 6> INPUT_FAMILIES{{
-    {.prefix = "temp", .kind = SensorKind::Temperature, .divisor = 1000.0, .inputSuffix = "_input"},
-    {.prefix = "fan", .kind = SensorKind::Fan, .divisor = 1.0, .inputSuffix = "_input"},
-    {.prefix = "in", .kind = SensorKind::Voltage, .divisor = 1000.0, .inputSuffix = "_input"},
-    {.prefix = "curr", .kind = SensorKind::Current, .divisor = 1000.0, .inputSuffix = "_input"},
-    {.prefix = "power", .kind = SensorKind::Power, .divisor = 1'000'000.0, .inputSuffix = "_input"},
-    {.prefix = "power", .kind = SensorKind::Power, .divisor = 1'000'000.0, .inputSuffix = "_average"},
-}};
+inline constexpr std::array<InputFamily, 6> INPUT_FAMILIES{
+    {
+        {.prefix = "temp", .kind = SensorKind::Temperature, .divisor = 1000.0, .inputSuffix = "_input"},
+        {.prefix = "fan", .kind = SensorKind::Fan, .divisor = 1.0, .inputSuffix = "_input"},
+        {.prefix = "in", .kind = SensorKind::Voltage, .divisor = 1000.0, .inputSuffix = "_input"},
+        {.prefix = "curr", .kind = SensorKind::Current, .divisor = 1000.0, .inputSuffix = "_input"},
+        {.prefix = "power", .kind = SensorKind::Power, .divisor = 1'000'000.0, .inputSuffix = "_input"},
+        {.prefix = "power", .kind = SensorKind::Power, .divisor = 1'000'000.0, .inputSuffix = "_average"},
+    },
+};
 
 /// A whole hwmon value: a signed decimal integer, optionally followed by a newline; nullopt otherwise.
 [[nodiscard]] inline std::optional<std::int64_t> parseSysfsInteger(std::string_view text)
@@ -150,12 +152,14 @@ readScaled(const std::filesystem::path& dir, const InputFamily& family, unsigned
             }
             const bool temperature = family.kind == SensorKind::Temperature;
             byChannel.emplace(std::pair{family.kind, *channel},
-                              SensorReading{.kind = family.kind,
-                                            .label = std::move(label),
-                                            .id = std::move(id),
-                                            .value = *value,
-                                            .high = temperature ? readScaled(dir, family, *channel, "_max") : std::nullopt,
-                                            .critical = temperature ? readScaled(dir, family, *channel, "_crit") : std::nullopt});
+                              SensorReading{
+                                  .kind = family.kind,
+                                  .label = std::move(label),
+                                  .id = std::move(id),
+                                  .value = *value,
+                                  .high = temperature ? readScaled(dir, family, *channel, "_max") : std::nullopt,
+                                  .critical = temperature ? readScaled(dir, family, *channel, "_crit") : std::nullopt,
+                              });
         }
     }
     std::vector<SensorReading> readings;
@@ -196,12 +200,14 @@ readScaled(const std::filesystem::path& dir, const InputFamily& family, unsigned
             continue;
         }
         zones.emplace_back(index,
-                           SensorReading{.kind = SensorKind::Temperature,
-                                         .label = type,
-                                         .id = name,
-                                         .value = static_cast<double>(*milli) / 1000.0,
-                                         .high = std::nullopt,
-                                         .critical = std::nullopt});
+                           SensorReading{
+                               .kind = SensorKind::Temperature,
+                               .label = type,
+                               .id = name,
+                               .value = static_cast<double>(*milli) / 1000.0,
+                               .high = std::nullopt,
+                               .critical = std::nullopt,
+                           });
     }
     std::ranges::sort(zones, {}, &std::pair<unsigned, SensorReading>::first);
     std::vector<SensorReading> readings;
@@ -254,9 +260,11 @@ inline void readSensorFacts(const std::filesystem::path& root, SensorsInfo& info
         const unsigned count = ++seen[name];
         // Identified by its hwmon directory, which stays its own while other chips come and go, unlike the
         // "#2" its name may take (#2340).
-        info.devices.push_back({.name = (count == 1) ? name : name + " #" + std::to_string(count),
-                                .id = dir.filename().string(),
-                                .readings = std::move(readings)});
+        info.devices.push_back({
+            .name = (count == 1) ? name : name + " #" + std::to_string(count),
+            .id = dir.filename().string(),
+            .readings = std::move(readings),
+        });
     }
 
     std::vector<SensorReading> zones = readThermalZones(root, hwmonNames);

@@ -860,12 +860,14 @@ column off, since command lines name the machine's users and paths), the startup
 section that pick the view, and `TASKSMACK_SCREENSHOT`, which writes the frame in-app and quits. The
 matrix is Overview in six themes (`windows-dark`, `ubuntu-light`, `dracula`, `nord-light`, `gruvbox`,
 `monochrome-light`), Processes and System Information in the first dark and the first light theme,
-the machine tab's CPU Cores, GPU and Network and I/O sub-tabs (`cores`, `gpu`, `network`, selected by
+the Processes table grouped by service and by user (`processes-grouped-unit`, `processes-grouped-user`,
+#3068; on Windows the unit shot shows the Services column, which is what has TaskSmack read the
+service list Unit groups by; Windows only so far), the machine tab's CPU Cores, GPU and Network and I/O sub-tabs (`cores`, `gpu`, `network`, selected by
 `TASKSMACK_MACHINE_TAB`, #2869), Process Details (overview, GPU, network, and the Overview with its
 Modules, Open files and Connections sections expanded by a one-step `TASKSMACK_DEMO` script:
 `details-modules`, `details-openfiles`, `details-connections`, and on Linux, the only platform that
 reads them, Environment and Security too: `details-environment`, `details-security`) for one process,
-Services, Startup, Settings (`TASKSMACK_OPEN=settings`), About and Help, named `<view>-<theme>.webp`,
+Services, Startup, Users (Windows only so far), Settings (`TASKSMACK_OPEN=settings`), About and Help, named `<view>-<theme>.webp`,
 plus three animated WebPs at 12 fps built from frame sequences:
 `overview-live.webp` (8 s of the Overview), `walk-live.webp` (10 s: `TASKSMACK_DEMO` opens the
 Processes table, selects the process and brings up its Process Details' Network tab) and
@@ -873,8 +875,9 @@ Processes table, selects the process and brings up its Process Details' Network 
 `themes-live` get `[sampling] history_max_seconds = 60` and are captured after 60 s (the hook's
 maximum), so their history charts are full; the other views are captured after 8 s (the GPU and
 network charts need a few samples). The expanded-section shots get their own window size,
-`--section-window` / `-SectionWindow`: 1440x1200 on Linux, where the taller Actions and Priority cards
-push every section below a 900 px fold, and `-Window`'s 1440x900 on Windows.
+`--section-window` / `-SectionWindow`, 1440x1200, since the Actions and Priority cards push every
+section below a 900 px fold; on Windows Open files, the last section, gets `-OpenFilesWindow`'s
+1440x1400, and `-ConnectionsPid` picks a process that holds sockets for `details-connections`.
 `--webp` / `-WebP` converts with `cwebp -q 80` and `img2webp` from libwebp (`sudo apt install
 webp`; Windows: `winget install Google.Libwebp`); without it the PNGs are copied and the frames left
 in the work directory instead. Both scripts print a table of exit code, seconds and bytes per shot
@@ -899,10 +902,14 @@ line is shown in Process Details, so run the binary from a path that names no us
 build's `bin/` at `/srv/tasksmack` inside the namespace, `--exe /srv/tasksmack/TaskSmack --process TaskSmack`).
 
 ```powershell
-# Windows: in a Windows Sandbox (its own processes, user and host name) with a win-release build made
-# inside it (App Control there refuses a binary built on the host), and Mesa's llvmpipe opengl32.dll
-# beside TaskSmack.exe when the Sandbox has no vGPU
-.\tools\screenshots.ps1 -Exe build\win-release\bin\TaskSmack.exe -Out C:\shots\out   # then cwebp/img2webp on the host
+# Windows: in a Windows Sandbox (its own processes, user and host name, WDAGUtilityAccount) with
+# <vGPU>Enable</vGPU> and the release's Authenticode-signed zip mapped in read-only: Smart App Control
+# inside the Sandbox refuses an unsigned TaskSmack.exe, whether built on the host or in the Sandbox.
+# Seed a few HKCU/HKLM Run entries (the Sandbox has no startup apps), start a process that holds a few
+# TCP connections for -ConnectionsPid, and park the Sandbox's pointer in a screen corner
+# (SetCursorPos(0, 0) inside the Sandbox, before each shot), or the host pointer over the Sandbox window
+# hovers a chart and draws its tooltip into the shot.
+.\tools\screenshots.ps1 -Exe C:\shots\TaskSmack.exe -Out C:\shots\out -ConnectionsPid $holder.Id   # then cwebp/img2webp on the host
 ```
 
 The images show the machine they were taken on. Before committing, look at every one for a user name,
@@ -1330,11 +1337,17 @@ come out 2-3x slower on every benchmark, pure arithmetic included (#3163; in #31
 So:
 
 - **`bench.ps1` pins hybrid CPUs.** With `-Core performance`, the default on a CPU whose cores have
-  more than one `EfficiencyClass`, it pins the benchmark process (and everything it starts) to one
-  logical CPU of the highest class. It never takes logical CPU 0, which handles most interrupts,
-  unless nothing else is left. `-Core any` leaves placement to the scheduler, as before. On a CPU
-  with one class of core, nothing changes. If the classes can't be read
-  (`GetLogicalProcessorInformationEx`), the run isn't pinned and a warning says so.
+  more than one `EfficiencyClass`, it pins the benchmark process (and everything it starts) to the
+  logical CPUs of the highest class: all the performance cores. It leaves out logical CPU 0, which
+  handles most interrupts, and its core while that still leaves at least four. `-Core any` leaves
+  placement to the scheduler, as before. On a CPU with one class of core, nothing changes. If the
+  classes can't be read (`GetLogicalProcessorInformationEx`), the run isn't pinned and a warning
+  says so.
+- **Never fewer than four CPUs** (#3413). The `*_Concurrent_PublicationWait` benchmarks run up to
+  four threads (the measuring thread, a writer and two readers) that spin on each other. On one
+  CPU each hand-off waits for a scheduler time slice, so they barely progress and a full run never
+  finishes. When the highest class has fewer than four logical CPUs this process may use, the run
+  isn't pinned and a warning says so.
 - **No EcoQoS.** `TaskSmackBenchmarks.exe` opts itself out of Windows power throttling at
   startup (`SetProcessInformation(ProcessPowerThrottling)`, execution speed on). Otherwise a
   console run started from a background shell can be treated as low-QoS. A failure is reported
@@ -1346,17 +1359,17 @@ So:
 
 - **`bench.sh` pins hybrid CPUs too** (#3198). With `--core performance`, the default when the CPUs'
   `cpu_capacity` (or, without it, `cpufreq/cpuinfo_max_freq`) in `/sys/devices/system/cpu` has more
-  than one value, it runs the benchmark under `taskset -c` on one logical CPU of the fastest class,
-  avoiding CPU 0 and its SMT sibling unless nothing else is left. `--core any` leaves placement to
-  the scheduler. Without those sysfs files, or without `taskset` (util-linux), the run isn't
-  pinned and a warning says so. Its manifest records the same `placement` and `system_load`, the
+  than one value, it runs the benchmark under `taskset -c` on the logical CPUs of the fastest class,
+  leaving out CPU 0 and its SMT sibling while that still leaves at least four, and never on fewer
+  than four, as `bench.ps1` does. `--core any` leaves placement to the scheduler. Without those
+  sysfs files, or without `taskset` (util-linux), the run isn't pinned and a warning says so. Its manifest records the same `placement` and `system_load`, the
   classes ranked from 0 (the slowest) as Windows numbers its `EfficiencyClass`.
 
-Pinning isn't enough when the machine is busy: in #3112 the same binary on the same pinned core
+Pinning isn't enough when the machine is busy: in #3112 the same binary pinned to the same core
 was 30-50% slower with a build and clangd running (38-78% system CPU) than at 7-63%. For an A/B
 comparison on a shared desktop:
 
-1. **Pin both sides to the same core.** Use the default `-Core performance` for both, never one
+1. **Pin both sides to the same cores.** Use the default `-Core performance` for both, never one
    pinned run against one unpinned.
 2. **Interleave the runs:** A, B, A, B, not all of A and then all of B. Load that comes and goes
    then hits both sides alike.
@@ -1405,9 +1418,10 @@ manifest's `preset`, so no file name or manifest field carries it:
   `machine`, an anonymized machine class (CPU model, logical core count, OS name/version,
   architecture), and two more (#3163, #3198):
   - `placement`: `core`, the `-Core` / `--core` mode (`performance` or `any`); `core_class`, the
-    pinned CPU's `EfficiencyClass` (on Linux its class's rank, 0 the slowest), or `any` for an
+    pinned CPUs' `EfficiencyClass` (on Linux their class's rank, 0 the slowest), or `any` for an
     unpinned run; `hybrid`, whether the cores have more
-    than one class (`null` if they couldn't be read); `logical_cpu`, the pinned CPU or `null`;
+    than one class (`null` if they couldn't be read); `logical_cpus`, the pinned CPUs in
+    ascending order, or `null` (manifests from before #3413 have `logical_cpu`, one CPU, instead);
     and `affinity_mask`, the mask the benchmark ran with, in hex.
   - `system_load`: `before_percent` and `after_percent`, the share of all CPUs busy over
     `sample_ms` (500 ms) just before and just after the run, or `null` where it couldn't be
@@ -1718,6 +1732,11 @@ sudo apt install heaptrack
 
 # App trace (fresh temporary config; --user-config profiles with your own settings)
 ./tools/profile-heap.sh app
+
+# Unattended app trace (#3406): closed 60 s after its main loop starts, for agents, CI and re-measures.
+# Use the profile preset (the default) when you need TaskSmack's own call sites named: release-type
+# presets have no symbols, so heaptrack shows them as addresses.
+./tools/profile-heap.sh app --duration 60
 
 # Benchmark trace — pinpoint per-call allocation sources
 ./tools/profile-heap.sh bench
@@ -2820,7 +2839,7 @@ We use GitHub Actions for our CI workflows. They are categorized as follows:
 
     To add a file, show the same for it, add it to `AUTOMATION` in the classifier with its reason, and add a case to `tests/tools/test_ci_change_classifier.py`. That test fails when an allowlisted file is missing, when a build input names one outside a comment, or when a `tests/tools` script names one without `Automation checks` running it.
 - **`reusable-build-test.yml`**: Contains the actual matrix steps for setting up LLVM, Python, `ccache`, configuring CMake, building, and running CTest tests, plus an optional Linux build-only `TaskSmackBenchmarks` step (`build_benchmarks` input). Called by other workflows. It configures with `-DTASKSMACK_ENABLE_PCH=OFF` (except the weekly unity build) because ccache can't cache PCH-using compiles; local presets keep PCH on.
-- **`arm64.yml`**: Linux aarch64 (`ubuntu-24.04-arm`) and Windows ARM64 (`windows-11-arm`, plain ARM64, not ARM64EC) debug build and full `ctest`, through `reusable-build-test.yml` (#2214). It runs on pushes to `main` and `release/*`, nightly and on manual dispatch, and on a pull request only when the PR carries the `ci:arm64` label (adding the label starts a run). It is not part of `CI Success` or any required check, and without the label its jobs are skipped before a runner is assigned. Windows ARM64 installs the native `LLVM-<ver>-woa64.exe` (`setup-windows-llvm`, pinned by SHA-256; Chocolatey only has the x64 installer) and runs the display suites on `mmozeiko/build-mesa`'s ARM64 llvmpipe (`setup-mesa-llvmpipe`, pinned by SHA-256, test-only). `release.yml` builds and ships the ARM64 packages with its own matrix; this workflow is the PR and nightly test leg. On `windows-11-arm` the PowerShell script tests (`pwsh-script` label) run in a second `ctest` with `--repeat until-pass:2`, because pwsh itself crashes there now and then ("Internal CLR error", #2832); nothing else is retried.
+- **`arm64.yml`**: Linux aarch64 (`ubuntu-26.04-arm`) and Windows ARM64 (`windows-11-arm`, plain ARM64, not ARM64EC) debug build and full `ctest`, through `reusable-build-test.yml` (#2214). It runs on pushes to `main` and `release/*`, nightly and on manual dispatch, and on a pull request only when the PR carries the `ci:arm64` label (adding the label starts a run). It is not part of `CI Success` or any required check, and without the label its jobs are skipped before a runner is assigned. Windows ARM64 installs the native `LLVM-<ver>-woa64.exe` (`setup-windows-llvm`, pinned by SHA-256; Chocolatey only has the x64 installer) and runs the display suites on `mmozeiko/build-mesa`'s ARM64 llvmpipe (`setup-mesa-llvmpipe`, pinned by SHA-256, test-only). `release.yml` builds and ships the ARM64 packages with its own matrix; this workflow is the PR and nightly test leg. On `windows-11-arm` the PowerShell script tests (`pwsh-script` label) run in a second `ctest` with `--repeat until-pass:2`, because pwsh itself crashes there now and then ("Internal CLR error", #2832); nothing else is retried.
 - **`manual-build.yml`**: Manual dispatch entry point to trigger a specific OS and build type build from the GitHub UI without opening a PR.
 
 CI caches (#1406): ccache and the FetchContent source cache (`.github/actions/fetchcontent-cache`) are **saved only by runs on `main`** in every workflow, `release.yml` included (tag runs only restore); pull requests restore main's entries and never save their own, which keeps the repository under its Actions cache limit (20 GB since 2026-10-26). Runs on a `release/*` branch save none either, so its pull requests read `main`'s entries (the default branch's), like every other PR. One job per OS saves the FetchContent cache: Windows debug, and the Linux release build after its benchmark-enabled configure, so the saved sources include Google Benchmark. The FetchContent key hashes only what declares or patches dependencies: `cmake/Dependencies.cmake`, `cmake/patches/**`, and the `FetchContent_Declare(...)` blocks of `tests/CMakeLists.txt` and `benchmarks/CMakeLists.txt` (not those whole files, which change whenever a test is added, #1582). `cache-prune.yml` runs after each `main` run of a cache-saving workflow (listed under `cache-prune.yml` below) and deletes all but the newest entry of each ccache, FetchContent, configure-check, clang-tidy result and CodeQL TRAP cache family, so `main` stays under the quota and least-recently-used eviction never removes a live entry (#1583). The TRAP caches (one of about 640 MB per analyzed `main` commit) weren't pruned until #3101; their pile-up kept the repository over its limit, and the eviction removed `main`'s nightly clang-tidy result caches within hours of each save. clang-tidy doesn't compile through ccache; the debug jobs' tidy runs simply reuse the build's configured tree, and `static-analysis.yml` configures with the same flags (`TASKSMACK_ENABLE_PCH=OFF`, plus the Windows flags below) so every run computes the same result-cache keys. The Windows debug build configures with `-DTASKSMACK_ENABLE_IPO=OFF -DTASKSMACK_ENABLE_GHASH=ON -DCMAKE_CXX_SCAN_FOR_MODULES=OFF` (CI only; the presets keep ThinLTO in Debug), which cut its five links from about 50-70 s each to 1-5 s and drops ~530 `clang-scan-deps` runs per build. Its ccache is 750 MB with `inode_cache` on. The other ccache limits are sized from measured working sets (#3100): one full build fills about 614 MB (Linux Debug), 560 MB (ASan+UBSan), 641 MB (coverage) and 445 MB (TSan), so Linux Debug on x64 and ARM64, ASan+UBSan and coverage get 1250 MB (main's tree plus a pull request's changes), TSan 750 MB, and the rest (Release, IWYU, benchmarks, packaging, the Wayland matrix) keep 500 MB. Windows coverage gets 1250 MB too, with `inode_cache` on (#3148): at 500 MB it ran full with about 500 cleanups a build and 18-23% hits, and its `win-coverage` preset builds without ThinLTO or module scanning, like the Windows debug build. At most one entry per family survives pruning, so the ccache total is about 9 GB of the repository's 20 GB Actions cache limit, beside the CodeQL TRAP, LLVM and FetchContent caches; and every build job's post step prints `ccache -s -vv` (hits, misses and why calls were uncacheable); with `TASKSMACK_ENABLE_PCH=OFF`, as CI configures, the dependencies' own precompiled headers (SDL3's) are off too, since ccache can't cache a compile that uses one (#1875). Each build job's summary also gets a build profile from `.ninja_log` (`tools/ninja-build-profile.py`): time per edge kind and the slowest links.

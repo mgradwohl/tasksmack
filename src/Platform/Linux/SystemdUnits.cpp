@@ -150,12 +150,14 @@ constexpr const char* SYSTEMD_SERVICE = "org.freedesktop.systemd1.Service";
         }
         if (name != nullptr && SystemdServices::isService(name))
         {
-            units.push_back({.name = name,
-                             .description = (description != nullptr) ? description : "",
-                             .loadState = (loadState != nullptr) ? loadState : "",
-                             .activeState = (activeState != nullptr) ? activeState : "",
-                             .subState = (subState != nullptr) ? subState : "",
-                             .objectPath = (path != nullptr) ? path : ""});
+            units.push_back({
+                .name = name,
+                .description = (description != nullptr) ? description : "",
+                .loadState = (loadState != nullptr) ? loadState : "",
+                .activeState = (activeState != nullptr) ? activeState : "",
+                .subState = (subState != nullptr) ? subState : "",
+                .objectPath = (path != nullptr) ? path : "",
+            });
         }
     }
     if (result < 0)
@@ -451,11 +453,13 @@ ServicesRead readServices(UnitFileCache* cache, std::chrono::steady_clock::time_
                 if (cache != nullptr)
                 {
                     cache->configs.insert_or_assign(unit.name,
-                                                    CachedUnitConfig{.config = config,
-                                                                     .activeState = unit.activeState,
-                                                                     .subState = unit.subState,
-                                                                     .mainPid = mainPid,
-                                                                     .readAt = now});
+                                                    CachedUnitConfig{
+                                                        .config = config,
+                                                        .activeState = unit.activeState,
+                                                        .subState = unit.subState,
+                                                        .mainPid = mainPid,
+                                                        .readAt = now,
+                                                    });
                 }
                 read.listing.configs.emplace(unit.name, std::move(config));
                 continue;

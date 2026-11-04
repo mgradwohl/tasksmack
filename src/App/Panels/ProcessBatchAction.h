@@ -75,9 +75,11 @@ template<typename SnapshotRange, typename SelectedPredicate>
         const Platform::ProcessTarget target{.pid = snapshot.pid, .startTimeTicks = snapshot.startTimeTicks};
         if (isSelected(target))
         {
-            targets.push_back({.target = target,
-                               .name = snapshot.name,
-                               .priority = std::string(Domain::Priority::getProcessPriorityLabel(snapshot.priorityClass, snapshot.nice))});
+            targets.push_back({
+                .target = target,
+                .name = snapshot.name,
+                .priority = std::string(Domain::Priority::getProcessPriorityLabel(snapshot.priorityClass, snapshot.nice)),
+            });
         }
     }
     return targets;
@@ -126,9 +128,11 @@ template<typename SnapshotVector>
             continue;
         }
         const auto& snapshot = snapshots[row];
-        targets.push_back({.target = {.pid = snapshot.pid, .startTimeTicks = snapshot.startTimeTicks},
-                           .name = snapshot.name,
-                           .priority = std::string(Domain::Priority::getProcessPriorityLabel(snapshot.priorityClass, snapshot.nice))});
+        targets.push_back({
+            .target = {.pid = snapshot.pid, .startTimeTicks = snapshot.startTimeTicks},
+            .name = snapshot.name,
+            .priority = std::string(Domain::Priority::getProcessPriorityLabel(snapshot.priorityClass, snapshot.nice)),
+        });
         stack.pop_back();
     }
     return targets;

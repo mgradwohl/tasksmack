@@ -1,0 +1,189 @@
+// SensorModel's sample under allocation failure (#3342 step 4): a std::bad_alloc anywhere in a sample -- one
+// where a device appears, the reads paused (so each history gets its break as well as the reading) and the
+// history window shrank -- must leave every sensor's values aligned with its times, publish nothing half
+// built, and let the next sample apply cleanly.
+//
+// The failure is real, not simulated: AllocationFailureHook makes the Nth allocation the current thread makes
+// from now throw std::bad_alloc. SensorModel::sample() lets it escape (BackgroundSampler catches and logs it),
+// so the test catches it and asks the hook whether it fired.
+
+#include "AllocationFailureHook.h"
+#include "Domain/SensorModel.h"
+#include "Domain/SensorTracker.h"
+#include "Platform/ISystemInfoProbe.h"
+
+#include <gtest/gtest.h>
+
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <new>
+#include <string>
+#include <utility>
+
+using TestSupport::FailAllocationAfter;
+
+namespace
+{
+
+using namespace std::chrono_literals;
+
+// 63 readings fill all but one slot of each history's first 64-slot block (SharedHistoryBuffer::MIN_BLOCK), so
+// the paused sample's two appends (the break and the reading) must reserve a new block: the sweep reaches the
+// reservation path's allocations, not just the new device's.
+constexpr int WARM_UP_SAMPLES = 63;
+
+Platform::SensorReading temperature(const char* label, const char* id, double celsius)
+{
+    return Platform::SensorReading{
+        .kind = Platform::SensorKind::Temperature, .label = label, .id = id, .value = celsius, .high = {}, .critical = {}};
+}
+
+/// coretemp with two readings, and, when @p withNvme, a second device that appears later.
+Platform::SensorsInfo sensors(double celsius, bool withNvme)
+{
+    Platform::SensorsInfo info;
+    info.available = true;
+    info.listed = true;
+    Platform::SensorDevice cpu;
+    cpu.name = "coretemp";
+    cpu.id = "hwmon0";
+    cpu.readings.push_back(temperature("Package", "temp1", celsius));
+    cpu.readings.push_back(temperature("Core 0", "temp2", celsius - 5.0));
+    info.devices.push_back(std::move(cpu));
+    if (withNvme)
+    {
+        Platform::SensorDevice nvme;
+        nvme.name = "nvme";
+        nvme.id = "hwmon1";
+        nvme.readings.push_back(temperature("Composite", "temp1", 38.0));
+        info.devices.push_back(std::move(nvme));
+    }
+    return info;
+}
+
+/// Every sensor's published values are as many as its times, and its times only move forward.
+void expectAligned(const Domain::SensorPublication& publication)
+{
+    for (const auto& [key, history] : publication.histories)
+    {
+        ASSERT_EQ(history.values.size(), history.times.size()) << key;
+        for (std::size_t i = 1; i < history.times.size(); ++i)
+        {
+            EXPECT_LT(history.times[i - 1], history.times[i]) << key << " at " << i;
+        }
+    }
+}
+
+/// The publication holds the whole read @p read taken at @p nowSeconds: every one of its sensors, by key, with that
+/// read's value as its newest point at that time. A publication missing a sensor, or with a stale or swapped
+/// reading under a fresh timestamp, fails.
+void expectWholeRead(const Domain::SensorPublication& publication, const Platform::SensorsInfo& read, double nowSeconds)
+{
+    std::size_t sensorsInRead = 0;
+    for (const Platform::SensorDevice& device : read.devices)
+    {
+        for (const Platform::SensorReading& reading : device.readings)
+        {
+            ++sensorsInRead;
+            const std::string key = Domain::sensorKey(device, reading);
+            const auto found = publication.histories.find(key);
+            ASSERT_NE(found, publication.histories.end()) << key;
+            const Domain::SensorHistory& history = found->second;
+            ASSERT_FALSE(history.values.empty()) << key;
+            EXPECT_FLOAT_EQ(history.values[history.values.size() - 1], static_cast<float>(reading.value)) << key;
+            EXPECT_DOUBLE_EQ(history.times[history.times.size() - 1], nowSeconds) << key;
+        }
+    }
+    EXPECT_EQ(publication.histories.size(), sensorsInRead);
+}
+
+// Fails each allocation of one sample in turn until the sample needs no more. After every failure the
+// publication is the last whole one (or the whole new one), every series is aligned, and the next sample adds
+// the new device and its reading to aligned histories.
+TEST(SensorModelAllocationFailureTest, AFailedAllocationOnASampleThatAddsADeviceAfterAPauseKeepsTheHistoriesAligned)
+{
+#if defined(TASKSMACK_NO_ALLOCATOR_HOOK)
+    GTEST_SKIP() << TASKSMACK_NO_ALLOCATOR_HOOK;
+#endif
+    constexpr std::int64_t MAX_ALLOCATIONS = 100'000; // a bound on the loop, far above one sample's
+
+    std::int64_t failed = 0;
+    for (std::int64_t failAt = 0; failAt < MAX_ALLOCATIONS; ++failAt)
+    {
+        SCOPED_TRACE("failing allocation " + std::to_string(failAt));
+        auto now = std::make_shared<Domain::SensorModel::Clock::time_point>(std::chrono::hours(1));
+        auto celsius = std::make_shared<double>(40.0);
+        auto withNvme = std::make_shared<bool>(false);
+        Domain::SensorModel model([celsius, withNvme]
+                                  { return Domain::SensorModel::Reader([celsius, withNvme] { return sensors(*celsius, *withNvme); }); },
+                                  1000ms,
+                                  [now] { return *now; });
+        for (int step = 0; step < WARM_UP_SAMPLES; ++step)
+        {
+            *celsius = 40.0 + static_cast<double>(step % 7);
+            model.sample();
+            *now += 1000ms;
+        }
+        const auto before = model.publication();
+        ASSERT_EQ(before->version, static_cast<std::uint64_t>(WARM_UP_SAMPLES));
+
+        // The failing sample: a new device, after a pause (each history gets its break too), into a window
+        // that shrank below what the histories hold.
+        *withNvme = true;
+        *celsius = 60.0;
+        *now += 10s;
+        model.setHistorySeconds(10.0);
+        bool fired = false;
+        {
+            const FailAllocationAfter guard(failAt);
+            try
+            {
+                model.sample();
+            }
+            catch (const std::bad_alloc&)
+            {
+                // the failure this test injects; the hook says whether it fired
+            }
+            fired = !TestSupport::allocationFailurePending();
+        }
+        if (!fired)
+        {
+            break; // the sample made fewer than failAt + 1 allocations: every one has been failed
+        }
+        ++failed;
+
+        // Nothing half built is published: the last whole publication, or the whole new one.
+        const auto afterFailure = model.publication();
+        if (afterFailure->version == before->version)
+        {
+            EXPECT_EQ(afterFailure, before);
+        }
+        else
+        {
+            // Published despite the failure: then the whole failing read, every sensor and value at its time.
+            EXPECT_EQ(afterFailure->version, before->version + 1);
+            expectWholeRead(*afterFailure, sensors(60.0, true), std::chrono::duration<double>(now->time_since_epoch()).count());
+        }
+        expectAligned(*afterFailure);
+
+        // The model carries on: the next sample publishes every sensor, the new device included, aligned.
+        *now += 1000ms;
+        *celsius = 61.0;
+        model.sample();
+        const auto next = model.publication();
+        EXPECT_GT(next->version, before->version);
+        expectAligned(*next);
+        // Each sensor's newest point is this read's own value, at this read's time: Package 61, Core 0 56 and the
+        // new NVMe 38, by sensor key, so a stale or swapped reading with a fresh timestamp can't pass.
+        expectWholeRead(*next, sensors(61.0, true), std::chrono::duration<double>(now->time_since_epoch()).count());
+        if (HasFailure())
+        {
+            return; // one failing allocation point is enough to report
+        }
+    }
+    EXPECT_GT(failed, 5); // the sample did allocate, and those allocations were exercised
+}
+
+} // namespace

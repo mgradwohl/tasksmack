@@ -307,6 +307,10 @@ add_test(NAME UiCompareReportScript
 add_test(NAME MergeGtestResultsScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_merge_gtest_results.py)
 
+# tools/allocation-hook-summary.py reports which tests ran with the allocation-failure hook armed (#3342).
+add_test(NAME AllocationHookSummaryScript
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_allocation_hook_summary.py)
+
 # tools/coverage-mismatches.py explains tools/coverage.sh's "functions have mismatched data" warning (#1544).
 add_test(NAME CoverageMismatchesScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_coverage_mismatches.py)
@@ -429,6 +433,9 @@ set(COMMON_TEST_SOURCES
     Domain/AllocationFailureHook.cpp
     Domain/test_SystemModelAllocationFailure.cpp
     Domain/test_GPUModelAllocationFailure.cpp
+    Domain/test_SensorModelAllocationFailure.cpp # SensorModel under allocation failure (#3342)
+    Domain/test_SnapshotModelsAllocationFailure.cpp # Service, Startup and Users models under allocation failure (#3342)
+    Domain/test_ConnectionsModelAllocationFailure.cpp # ConnectionsModel under allocation failure (#3400)
     Domain/test_ProcessModelAllocationFailure.cpp
     Domain/test_StorageModel.cpp
     Domain/test_StartupModel.cpp
@@ -689,6 +696,7 @@ set(COMMON_TEST_SOURCES
     App/test_SystemMetricsPanelRender.cpp
     App/test_ProcessDetailsPanelRender.cpp
     App/test_ProcessesPanelRender.cpp
+    App/test_FindHandlesFormat.cpp # the Find handles order and status line (#3374)
     App/test_ServicesStartupPanelsRender.cpp
     App/test_WindowOverride.cpp
     Platform/test_SyntheticWorkload.cpp
@@ -1146,7 +1154,7 @@ tasksmack_apply_linux_toolchain(TaskSmackTests)
 if(UNIX AND NOT APPLE)
     # tasksmack_sdbus: libsystemd and TASKSMACK_HAS_SDBUS when found, as for the app (#1525). No X11:
     # Core/X11WindowManager.cpp dlopen()s libX11, as for the app and the benchmarks (#1702).
-    target_link_libraries(TaskSmackTests PRIVATE ${CMAKE_DL_LIBS} tasksmack_sdbus tasksmack_curl)
+    target_link_libraries(TaskSmackTests PRIVATE ${CMAKE_DL_LIBS} tasksmack_sdbus tasksmack_curl tasksmack_polkit_agent)
 
     add_library(TaskSmackNVMLMock SHARED
         Mocks/NVMLMock.cpp

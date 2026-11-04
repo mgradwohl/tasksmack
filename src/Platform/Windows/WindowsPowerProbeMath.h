@@ -174,14 +174,18 @@ inline constexpr std::uint32_t BATTERY_CAPACITY_UNKNOWN_VALUE = 0xFFFFFFFFU;
     }
     std::string upper(code);
     std::ranges::transform(upper, upper.begin(), [](char c) { return (c >= 'a' && c <= 'z') ? static_cast<char>(c - 'a' + 'A') : c; });
-    constexpr std::array<std::array<std::string_view, 2>, 8> NAMES{{{"LION", "Li-ion"},
-                                                                    {"LI-I", "Li-ion"},
-                                                                    {"LIP", "Li-poly"},
-                                                                    {"PBAC", "Lead-acid"},
-                                                                    {"NICD", "NiCd"},
-                                                                    {"NIMH", "NiMH"},
-                                                                    {"NIZN", "NiZn"},
-                                                                    {"RAM", "Alkaline-manganese"}}};
+    constexpr std::array<std::array<std::string_view, 2>, 8> NAMES{
+        {
+            {"LION", "Li-ion"},
+            {"LI-I", "Li-ion"},
+            {"LIP", "Li-poly"},
+            {"PBAC", "Lead-acid"},
+            {"NICD", "NiCd"},
+            {"NIMH", "NiMH"},
+            {"NIZN", "NiZn"},
+            {"RAM", "Alkaline-manganese"},
+        },
+    };
     const auto known = std::ranges::find(NAMES, std::string_view(upper), [](const auto& name) { return name[0]; });
     return known != NAMES.end() ? std::string((*known)[1]) : std::string(code);
 }
@@ -232,8 +236,10 @@ struct BatteryCapacityTotals
             continue;
         }
         totals.relativeCapacity = false;
-        capacities.push_back(PackCapacity{.fullCharge = capacityWh(battery.fullCharged, battery.capabilities),
-                                          .design = capacityWh(battery.designed, battery.capabilities)});
+        capacities.push_back(PackCapacity{
+            .fullCharge = capacityWh(battery.fullCharged, battery.capabilities),
+            .design = capacityWh(battery.designed, battery.capabilities),
+        });
     }
     const CombinedCapacity combined = combinePackCapacities(capacities);
     totals.designWh = combined.design;

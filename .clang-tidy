@@ -25,7 +25,6 @@ Checks: >
   -readability-function-cognitive-complexity,
   -readability-identifier-length,
   -readability-magic-numbers,
-  -readability-trailing-comma,
   -readability-use-concise-preprocessor-directives,
 
 # Disabled checks rationale:
@@ -40,7 +39,6 @@ Checks: >
 # - portability-avoid-pragma-once: project standard intentionally uses #pragma once.
 # - readability-function-cognitive-complexity + readability-identifier-length: too noisy for panel/render/math code.
 # - readability-use-concise-preprocessor-directives: project standard prefers #ifdef/#ifndef.
-# - readability-trailing-comma (new in LLVM 23): style only, and it fights clang-format's layout; adopting it is #2945.
 
 WarningsAsErrors: '*'
 SystemHeaders: false
@@ -56,6 +54,13 @@ FormatStyle: file
 # includes their umbrella headers (<windows.h> with documented ordering,
 # <SDL3/SDL.h>, <toml++/toml.hpp>) instead of granular internal headers.
 CheckOptions:
+  # readability-trailing-comma (#2945): a multi-line braced list or enum ends with a comma, which keeps
+  # clang-format at one element per line. Single-line lists are left as written: clang-tidy 23's Remove
+  # policy takes the comma after an empty {} element (".a = {}, .b = 1") for the list's own and deletes it.
+  - key: readability-trailing-comma.MultiLineCommaPolicy
+    value: Append
+  - key: readability-trailing-comma.SingleLineCommaPolicy
+    value: Ignore
   - key: misc-include-cleaner.IgnoreHeaders
     value: >-
       (.*[/\\]build[/\\].*|.*[/\\]_deps[/\\].*|.*[/\\]dist[/\\].*|.*[/\\]coverage[/\\].*|.*[/\\]spdlog[/\\].*|.*[/\\]vcpkg[/\\].*|.*[/\\]gtest[/\\].*|.*[/\\]gmock[/\\].*|.*[/\\]assets[/\\].*|.*[/\\]\.cache[/\\].*|.*[/\\]tools[/\\].*|.*[/\\]Windows Kits[/\\].*|.*[/\\]SDL3[/\\].*|.*[/\\]toml\+\+[/\\].*)

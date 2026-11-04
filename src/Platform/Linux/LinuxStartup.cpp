@@ -314,12 +314,14 @@ void LinuxStartupProbe::addSystemdUnits(std::vector<StartupEntry>& entries) cons
 
 StartupCapabilities LinuxStartupProbe::capabilities() const
 {
-    return {.canEnumerate = true,
-            .hasEnabledState = true,
-            .hasDisabledTime = false,
-            .hasPublisher = false,
-            .canResolveShortcuts = false,
-            .unavailableReason = {}};
+    return {
+        .canEnumerate = true,
+        .hasEnabledState = true,
+        .hasDisabledTime = false,
+        .hasPublisher = false,
+        .canResolveShortcuts = false,
+        .unavailableReason = {},
+    };
 }
 
 std::vector<StartupEntry> LinuxStartupProbe::enumerate()

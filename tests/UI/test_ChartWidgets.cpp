@@ -671,6 +671,41 @@ TEST(ChartWidgetsReduceTest, ReductionKeepsALeadingGap)
 
 // ========== TimeAxisPool (#1018) ==========
 
+// The time TimeAxisPool reads at each frame's start, in the tests that pass it fakeNow (#3346).
+TimeAxisPool::Clock::time_point g_FakeNow{};
+
+TimeAxisPool::Clock::time_point fakeNow()
+{
+    return g_FakeNow;
+}
+
+/// A pool on the fake clock, which starts at an arbitrary time.
+TimeAxisPool fakeClockPool()
+{
+    g_FakeNow = TimeAxisPool::Clock::time_point{} + std::chrono::hours(1);
+    return TimeAxisPool(&fakeNow);
+}
+
+/// The seconds a pool on the fake clock, drawing at @p fps, keeps a tab's 64 long axes after the
+/// tab is left for one that asks for none (the Processes tab).
+double idleSecondsToFreeABurst(int fps)
+{
+    TimeAxisPool pool = fakeClockPool();
+    const std::vector<double> timestamps(18000, 1.0); // 30 min at 100 ms
+    for (int i = 0; i < 64; ++i)
+    {
+        fillTimeAxis(pool.acquire(1), timestamps, timestamps.size(), 2.0);
+    }
+    const auto start = g_FakeNow;
+    const auto frameTime = std::chrono::duration_cast<TimeAxisPool::Clock::duration>(std::chrono::duration<double>(1.0 / fps));
+    for (int frame = 2; pool.bufferCount() != 0 && frame < 100'000; ++frame)
+    {
+        g_FakeNow += frameTime;
+        pool.beginFrame(frame);
+    }
+    return std::chrono::duration<double>(g_FakeNow - start).count();
+}
+
 TEST(TimeAxisPoolTest, HandsOutDistinctBuffersWithinAFrame)
 {
     TimeAxisPool pool;
@@ -718,7 +753,7 @@ TEST(TimeAxisPoolTest, ReleasesTheBuffersOfABurstOnceTheyGoUnused)
 {
     // #1173: one frame of 64 long axes (CPU Cores on a 64-core machine) used to pin 64 buffers at
     // their peak size forever, long after the tab was left.
-    TimeAxisPool pool;
+    TimeAxisPool pool = fakeClockPool();
     const std::vector<double> timestamps(18000, 1.0); // 30 min at 100 ms
     for (int i = 0; i < 64; ++i)
     {
@@ -726,17 +761,23 @@ TEST(TimeAxisPoolTest, ReleasesTheBuffersOfABurstOnceTheyGoUnused)
     }
     ASSERT_EQ(pool.bufferCount(), 64U);
 
-    // From then on, two short charts a frame.
+    // From then on, two short charts a frame, at about 60 fps, for RELEASE_AFTER.
+    const auto start = g_FakeNow;
     int frame = 2;
-    for (; frame <= 1 + TimeAxisPool::RELEASE_AFTER_FRAMES; ++frame)
+    for (; g_FakeNow - start + std::chrono::milliseconds(16) < TimeAxisPool::RELEASE_AFTER; ++frame)
     {
+        g_FakeNow += std::chrono::milliseconds(16);
         fillTimeAxis(pool.acquire(frame), timestamps, 10, 2.0);
         fillTimeAxis(pool.acquire(frame), timestamps, 10, 2.0);
     }
     // Still within the grace period of the burst's last use: nothing is freed yet, so switching
     // back to the tab does not reallocate.
+    g_FakeNow = start + TimeAxisPool::RELEASE_AFTER;
+    static_cast<void>(pool.acquire(frame++));
     EXPECT_EQ(pool.bufferCount(), 64U);
 
+    g_FakeNow += std::chrono::milliseconds(1);
+    static_cast<void>(pool.acquire(frame));
     static_cast<void>(pool.acquire(frame));
     EXPECT_EQ(pool.bufferCount(), 2U);
     // The two buffers still in use keep their capacity; the 62 others' is gone.
@@ -747,7 +788,7 @@ TEST(TimeAxisPoolTest, FramesThatAskForNoAxisStillReleaseUnusedBuffers)
 {
     // #1173: after leaving the chart tabs (the Processes tab asks for no time axis), buffers must
     // still go once unused; beginFrame() is called every frame, acquire() only by charts.
-    TimeAxisPool pool;
+    TimeAxisPool pool = fakeClockPool();
     const std::vector<double> timestamps(18000, 1.0);
     for (int i = 0; i < 8; ++i)
     {
@@ -755,15 +796,91 @@ TEST(TimeAxisPoolTest, FramesThatAskForNoAxisStillReleaseUnusedBuffers)
     }
     ASSERT_EQ(pool.bufferCount(), 8U);
 
-    int frame = 2;
-    for (; frame <= 1 + TimeAxisPool::RELEASE_AFTER_FRAMES; ++frame)
+    g_FakeNow += TimeAxisPool::RELEASE_AFTER;
+    pool.beginFrame(2);
+    EXPECT_EQ(pool.bufferCount(), 8U); // still within the grace period
+    g_FakeNow += std::chrono::milliseconds(1);
+    pool.beginFrame(3);
+    EXPECT_EQ(pool.bufferCount(), 0U);
+    EXPECT_EQ(pool.retainedCapacity(), 0U);
+}
+
+TEST(TimeAxisPoolTest, TimePassingWithoutFramesFreesBuffersAtTheNextFrame)
+{
+    // #3346: what frees a buffer is the time since it was last asked for, not the frames drawn since.
+    // The first frame after RELEASE_AFTER, with none in between (a static tab, a hidden window), frees it.
+    TimeAxisPool pool = fakeClockPool();
+    for (int i = 0; i < 8; ++i)
+    {
+        static_cast<void>(pool.acquire(1));
+    }
+    g_FakeNow += TimeAxisPool::RELEASE_AFTER + std::chrono::milliseconds(1);
+    pool.beginFrame(2);
+    EXPECT_EQ(pool.bufferCount(), 0U);
+}
+
+TEST(TimeAxisPoolTest, FramesWithoutTimePassingDoNotFreeBuffers)
+{
+    // #3346: the converse. However many frames are drawn, a buffer is kept until RELEASE_AFTER has
+    // passed; 600 frames used to be the limit.
+    TimeAxisPool pool = fakeClockPool();
+    for (int i = 0; i < 8; ++i)
+    {
+        static_cast<void>(pool.acquire(1));
+    }
+    for (int frame = 2; frame <= 10'000; ++frame)
     {
         pool.beginFrame(frame);
     }
-    EXPECT_EQ(pool.bufferCount(), 8U); // still within the grace period
-    pool.beginFrame(frame);
+    EXPECT_EQ(pool.bufferCount(), 8U);
+}
+
+TEST(TimeAxisPoolTest, AnIdleTabsBuffersGoAfterTheSameTimeAtAnyFrameRate)
+{
+    // #3346: a 64-axis tab, then a tab with no axes. Counting 600 frames, the 64 buffers (9.2 MB) went
+    // after 10 s at 60 fps but 300 s at the 2 fps floor of a static tab (#3156); now each rate frees
+    // them on its first frame after RELEASE_AFTER.
+    const double releaseAfterSeconds = std::chrono::duration<double>(TimeAxisPool::RELEASE_AFTER).count();
+    for (const int fps : {60, 20, 2})
+    {
+        SCOPED_TRACE(std::format("{} fps", fps));
+        const double seconds = idleSecondsToFreeABurst(fps);
+        EXPECT_GT(seconds, releaseAfterSeconds);
+        EXPECT_LE(seconds, releaseAfterSeconds + (1.0 / fps) + 1e-6);
+    }
+}
+
+TEST(TimeAxisPoolTest, TabSwitchChurnKeepsThePoolBounded)
+{
+    // #3346: switching between a 64-axis tab and a 2-axis tab every 2 s, at the 2 fps floor, for ten
+    // minutes. The pool never holds more than the busiest tab's buffers, and keeps them while the
+    // switching goes on (no allocator churn); leaving both for a tab with no axes frees them all.
+    TimeAxisPool pool = fakeClockPool();
+    int frame = 1;
+    std::size_t largest = 0;
+    for (int second = 0; second < 600; ++second)
+    {
+        for (int tick = 0; tick < 2; ++tick, ++frame)
+        {
+            g_FakeNow += std::chrono::milliseconds(500);
+            const int axes = (second / 2) % 2 == 0 ? 64 : 2;
+            for (int i = 0; i < axes; ++i)
+            {
+                static_cast<void>(pool.acquire(frame));
+            }
+            largest = std::max(largest, pool.bufferCount());
+        }
+    }
+    EXPECT_EQ(largest, 64U);
+    EXPECT_EQ(pool.bufferCount(), 64U); // kept between the switches
+
+    const auto left = g_FakeNow;
+    while (g_FakeNow - left <= TimeAxisPool::RELEASE_AFTER)
+    {
+        g_FakeNow += std::chrono::milliseconds(500);
+        pool.beginFrame(frame++);
+    }
     EXPECT_EQ(pool.bufferCount(), 0U);
-    EXPECT_EQ(pool.retainedCapacity(), 0U);
 }
 
 TEST(TimeAxisPoolTest, BeginFrameTwiceInAFrameKeepsBuffersAlreadyHandedOut)
@@ -789,9 +906,11 @@ TEST(TimeAxisPoolTest, BeginFrameTwiceInAFrameKeepsBuffersAlreadyHandedOut)
 
 TEST(TimeAxisPoolTest, KeepsBuffersThatAreStillAskedFor)
 {
-    TimeAxisPool pool;
-    for (int frame = 1; frame <= 3 * TimeAxisPool::RELEASE_AFTER_FRAMES; ++frame)
+    TimeAxisPool pool = fakeClockPool();
+    const auto start = g_FakeNow;
+    for (int frame = 1; g_FakeNow - start < 3 * TimeAxisPool::RELEASE_AFTER; ++frame)
     {
+        g_FakeNow += std::chrono::milliseconds(16);
         static_cast<void>(pool.acquire(frame));
         static_cast<void>(pool.acquire(frame));
         static_cast<void>(pool.acquire(frame));

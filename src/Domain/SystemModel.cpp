@@ -89,12 +89,14 @@ findInterface(const std::vector<Platform::SystemCounters::InterfaceCounters>& in
 [[nodiscard]] CpuUsage noCpuReading() noexcept
 {
     constexpr double NO_READING = std::numeric_limits<double>::quiet_NaN();
-    return CpuUsage{.totalPercent = NO_READING,
-                    .userPercent = NO_READING,
-                    .systemPercent = NO_READING,
-                    .idlePercent = NO_READING,
-                    .iowaitPercent = NO_READING,
-                    .stealPercent = NO_READING};
+    return CpuUsage{
+        .totalPercent = NO_READING,
+        .userPercent = NO_READING,
+        .systemPercent = NO_READING,
+        .idlePercent = NO_READING,
+        .iowaitPercent = NO_READING,
+        .stealPercent = NO_READING,
+    };
 }
 
 } // namespace
@@ -267,18 +269,20 @@ void SystemModel::stageHistoryAppend(
     m_InterfaceLastSeenSeconds.reserve(m_InterfaceLastSeenSeconds.size() + pending.newLastSeen.size());
 
     // Room for this sample in every existing series.
-    for (auto* history : {&m_CpuHistory,
-                          &m_CpuUserHistory,
-                          &m_CpuSystemHistory,
-                          &m_CpuIowaitHistory,
-                          &m_CpuIdleHistory,
-                          &m_MemoryHistory,
-                          &m_MemoryCachedHistory,
-                          &m_SwapHistory,
-                          &m_CompressionRatioHistory,
-                          &m_BatteryChargeHistory,
-                          &m_NetRxHistory,
-                          &m_NetTxHistory})
+    for (auto* history : {
+             &m_CpuHistory,
+             &m_CpuUserHistory,
+             &m_CpuSystemHistory,
+             &m_CpuIowaitHistory,
+             &m_CpuIdleHistory,
+             &m_MemoryHistory,
+             &m_MemoryCachedHistory,
+             &m_SwapHistory,
+             &m_CompressionRatioHistory,
+             &m_BatteryChargeHistory,
+             &m_NetRxHistory,
+             &m_NetTxHistory,
+         })
     {
         history->reserve(1);
     }

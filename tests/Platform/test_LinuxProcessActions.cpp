@@ -2845,6 +2845,92 @@ TEST(LinuxProcessActionsTest, CloseConnectionWithoutPtraceAccessIsAPermissionRef
     EXPECT_TRUE(result.permissionDenied);
 }
 
+/// The descriptor the faked pidfd_getfd() hands back, and the errno it or shutdown() fails with (#3374).
+// NOLINTBEGIN(cppcoreguidelines-avoid-non-const-global-variables) - plain function pointer hooks can't capture
+int g_CopiedFd = -1;
+int g_ScanErrno = 0;
+int g_GetfdErrno = 0;
+int g_ShutdownErrno = 0;
+// NOLINTEND(cppcoreguidelines-avoid-non-const-global-variables)
+
+// #3374: every way closing a connection can fail after the identity check says what it was, and only a permission
+// error reads as a refusal (which BrokeredProcessActions retries through the helper).
+TEST(LinuxProcessActionsTest, CloseConnectionSaysWhichStepFailedAndOnlyPermissionIsARefusal)
+{
+    LinuxProcessSyscalls syscalls = realProcessSyscalls();
+    syscalls.socketDescriptor = [](std::int32_t, std::uint64_t) -> std::expected<int, int>
+    {
+        if (g_ScanErrno != 0)
+        {
+            return std::unexpected(g_ScanErrno);
+        }
+        return 5;
+    };
+    syscalls.pidfdGetfd = [](int, int)
+    {
+        if (g_GetfdErrno != 0)
+        {
+            errno = g_GetfdErrno;
+            return -1;
+        }
+        return ::fcntl(g_CopiedFd, F_DUPFD_CLOEXEC, 0); // a copy of a real connected socket
+    };
+    syscalls.shutdownSocket = [](int)
+    {
+        errno = g_ShutdownErrno;
+        return g_ShutdownErrno == 0 ? 0 : -1;
+    };
+    LinuxProcessControl control(syscalls);
+    const auto close = [&control](std::uint64_t inode, int scanErrno, int getfdErrno, int shutdownErrno)
+    {
+        g_ScanErrno = scanErrno;
+        g_GetfdErrno = getfdErrno;
+        g_ShutdownErrno = shutdownErrno;
+        return control.closeConnection(ownTarget(), inode);
+    };
+
+    // The /proc scan: the socket is gone, the scan was refused, or it failed some other way.
+    ProcessActionResult result = close(42, ENOENT, 0, 0);
+    EXPECT_FALSE(result.success);
+    EXPECT_TRUE(result.errorMessage.contains("no longer holds this socket")) << result.errorMessage;
+    EXPECT_FALSE(result.permissionDenied);
+    result = close(42, EACCES, 0, 0);
+    EXPECT_FALSE(result.success);
+    EXPECT_TRUE(result.permissionDenied);
+    result = close(42, EIO, 0, 0);
+    EXPECT_FALSE(result.success);
+    EXPECT_FALSE(result.permissionDenied);
+    EXPECT_EQ(result.errorMessage, std::system_category().message(EIO));
+
+    // pidfd_getfd(): missing before Linux 5.6, or failing other than by permission.
+    result = close(42, 0, ENOSYS, 0);
+    EXPECT_FALSE(result.success);
+    EXPECT_TRUE(result.errorMessage.contains("Linux 5.6")) << result.errorMessage;
+    EXPECT_FALSE(result.permissionDenied);
+    result = close(42, 0, EBADF, 0);
+    EXPECT_FALSE(result.success);
+    EXPECT_FALSE(result.permissionDenied);
+    EXPECT_EQ(result.errorMessage, std::system_category().message(EBADF));
+
+    // shutdown() on the copy of a real connected socket: not connected, or another error.
+    std::array<int, 2> pair{-1, -1};
+    ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, pair.data()), 0);
+    const Posix::FdGuard pairA(pair[0]);
+    const Posix::FdGuard pairB(pair[1]);
+    struct stat info{};
+    ASSERT_EQ(::fstat(pair[0], &info), 0);
+    g_CopiedFd = pair[0];
+    result = close(info.st_ino, 0, 0, ENOTCONN);
+    EXPECT_FALSE(result.success);
+    EXPECT_TRUE(result.errorMessage.contains("isn't connected")) << result.errorMessage;
+    result = close(info.st_ino, 0, 0, EIO);
+    EXPECT_FALSE(result.success);
+    EXPECT_EQ(result.errorMessage, std::system_category().message(EIO));
+    result = close(info.st_ino, 0, 0, 0);
+    EXPECT_TRUE(result.success) << result.errorMessage;
+    g_CopiedFd = -1;
+}
+
 // --- Efficiency mode (#3202) ---------------------------------------------------------------------------
 
 TEST(LinuxEfficiencyModeTest, TheCgroupFilesAndTheRestoreRules)
@@ -2886,7 +2972,12 @@ struct EfficiencyPlan
     std::optional<std::string> procCgroup = std::string("0::/user.slice/app-test.scope\n");
     std::map<std::string, std::string> files{{"cgroup.procs", "self\n"}, {"cpu.weight", "100\n"}};
     int writeErrno = 0;
-    std::vector<std::pair<std::string, std::string>> writes; ///< {file, value}
+    std::vector<std::pair<std::string, std::string>> writes;  ///< {file, value}
+    std::string readableCgroup = "user.slice/app-test.scope"; ///< The one cgroup whose files exist (#3331)
+    std::string lastWriteCgroup;                              ///< The cgroup the last write went to
+    std::uint64_t readableCgroupId = 1;                       ///< readableCgroup's identity (#3331)
+    int identityErrno = 0;                                    ///< Set: reading a cgroup's identity fails with this (#3331)
+    bool replaceAtWrite = false; ///< The cgroup is replaced at its path just as a checked write opens it (#3331)
 };
 
 EfficiencyPlan& efficiency()
@@ -2907,7 +2998,7 @@ std::optional<std::string> fakeProcCgroup(std::int32_t /*pid*/)
 
 std::optional<std::string> fakeReadCgroupFile(const std::string& cgroup, std::string_view file)
 {
-    if (cgroup != "user.slice/app-test.scope")
+    if (cgroup != efficiency().readableCgroup)
     {
         return std::nullopt;
     }
@@ -2915,8 +3006,37 @@ std::optional<std::string> fakeReadCgroupFile(const std::string& cgroup, std::st
     return found == efficiency().files.end() ? std::nullopt : std::optional(found->second);
 }
 
-int fakeWriteCgroupFile(const std::string& /*cgroup*/, std::string_view file, const std::string& value)
+std::expected<std::uint64_t, int> fakeCgroupIdentity(const std::string& cgroup)
 {
+    if (efficiency().identityErrno != 0)
+    {
+        return std::unexpected(efficiency().identityErrno);
+    }
+    if (cgroup != efficiency().readableCgroup)
+    {
+        return std::unexpected(ENOENT);
+    }
+    return efficiency().readableCgroupId;
+}
+
+int fakeWriteCgroupFile(const std::string& cgroup, std::string_view file, const std::string& value);
+
+int fakeWriteCgroupFileOf(const std::string& cgroup, std::uint64_t identity, std::string_view file, const std::string& value)
+{
+    if (std::exchange(efficiency().replaceAtWrite, false))
+    {
+        ++efficiency().readableCgroupId;
+    }
+    if (cgroup != efficiency().readableCgroup || identity != efficiency().readableCgroupId)
+    {
+        return ESTALE;
+    }
+    return fakeWriteCgroupFile(cgroup, file, value);
+}
+
+int fakeWriteCgroupFile(const std::string& cgroup, std::string_view file, const std::string& value)
+{
+    efficiency().lastWriteCgroup = cgroup;
     if (efficiency().writeErrno != 0)
     {
         return efficiency().writeErrno;
@@ -2939,7 +3059,9 @@ LinuxProcessSyscalls fakeEfficiencySyscalls()
                                 .currentNice = &fakeCurrentNice,
                                 .procCgroup = &fakeProcCgroup,
                                 .readCgroupFile = &fakeReadCgroupFile,
-                                .writeCgroupFile = &fakeWriteCgroupFile};
+                                .writeCgroupFile = &fakeWriteCgroupFile,
+                                .cgroupIdentity = &fakeCgroupIdentity,
+                                .writeCgroupFileOf = &fakeWriteCgroupFileOf};
 }
 
 class LinuxEfficiencyModeActionTest : public ::testing::Test
@@ -3145,15 +3267,8 @@ TEST_F(LinuxEfficiencyModeActionTest, AnOffThatCantPutTheWeightBackSaysSoAndKeep
     EXPECT_EQ(off.successNote, "its cgroup's CPU weight wasn't put back: it can't be read");
     EXPECT_EQ(m_Control.rememberedEfficiencyCount(), 1U) << "kept for another try";
 
-    // Its cgroup can't be read at all.
-    efficiency().nice = 5; // put back by the off above
-    efficiency().procCgroup = std::nullopt;
-    off = m_Control.setEfficiencyMode(ownTarget(), false);
-    EXPECT_EQ(off.successNote, "its cgroup's CPU weight wasn't put back: its cgroup can't be read");
-    EXPECT_EQ(m_Control.rememberedEfficiencyCount(), 1U);
-
     // The weight can't be written.
-    efficiency().procCgroup = std::string("0::/user.slice/app-test.scope\n");
+    efficiency().nice = 5; // put back by the off above
     efficiency().files["cpu.weight"] = "1\n";
     efficiency().writeErrno = EACCES;
     off = m_Control.setEfficiencyMode(ownTarget(), false);
@@ -3162,6 +3277,199 @@ TEST_F(LinuxEfficiencyModeActionTest, AnOffThatCantPutTheWeightBackSaysSoAndKeep
 
     // Once it can: the remembered weight, and the memory goes.
     efficiency().writeErrno = 0;
+    efficiency().writes.clear();
+    off = m_Control.setEfficiencyMode(ownTarget(), false);
+    EXPECT_TRUE(off.successNote.empty()) << off.successNote;
+    EXPECT_EQ(efficiency().writes, (std::vector<std::pair<std::string, std::string>>{{"cpu.weight", "50"}}));
+    EXPECT_EQ(m_Control.rememberedEfficiencyCount(), 0U);
+}
+
+// #3331: on lowered its cgroup's weight; the process has moved to another cgroup since. Off puts the weight back on
+// the cgroup on lowered, not on the one the process is in now; and with that one gone, it says so and forgets.
+TEST_F(LinuxEfficiencyModeActionTest, OffPutsTheWeightBackOnTheCgroupOnLoweredNotTheOneItMovedTo)
+{
+    efficiency().files["cpu.weight"] = "50\n";
+    ASSERT_TRUE(m_Control.setEfficiencyMode(ownTarget(), true).success); // app-test.scope: 50 lowered to 1
+    efficiency().nice = 19;
+    efficiency().procCgroup = std::string("0::/user.slice/other.scope\n"); // moved
+    efficiency().writes.clear();
+    ProcessActionResult off = m_Control.setEfficiencyMode(ownTarget(), false);
+    ASSERT_TRUE(off.success) << off.errorMessage;
+    EXPECT_TRUE(off.successNote.empty()) << off.successNote;
+    EXPECT_EQ(efficiency().lastWriteCgroup, "user.slice/app-test.scope") << "the cgroup on lowered";
+    EXPECT_EQ(efficiency().writes, (std::vector<std::pair<std::string, std::string>>{{"cpu.weight", "50"}}));
+
+    // Again, with the old cgroup gone: said, and nothing kept to retry.
+    efficiency().procCgroup = std::string("0::/user.slice/app-test.scope\n");
+    efficiency().nice = 5;
+    efficiency().files["cpu.weight"] = "50\n";
+    ASSERT_TRUE(m_Control.setEfficiencyMode(ownTarget(), true).success);
+    efficiency().nice = 19;
+    efficiency().procCgroup = std::string("0::/user.slice/other.scope\n");
+    efficiency().readableCgroup = "user.slice/other.scope"; // app-test.scope has gone
+    efficiency().writes.clear();
+    off = m_Control.setEfficiencyMode(ownTarget(), false);
+    ASSERT_TRUE(off.success) << off.errorMessage;
+    EXPECT_EQ(off.successNote, "its old cgroup's CPU weight wasn't put back: that cgroup is gone");
+    EXPECT_TRUE(efficiency().writes.empty()) << "the cgroup it moved to is left alone";
+    EXPECT_EQ(m_Control.rememberedEfficiencyCount(), 0U);
+
+    // The process's cgroup can't be read now (it hasn't necessarily moved): the cgroup on lowered gets its weight.
+    efficiency().readableCgroup = "user.slice/app-test.scope";
+    efficiency().procCgroup = std::string("0::/user.slice/app-test.scope\n");
+    efficiency().nice = 5;
+    efficiency().files["cpu.weight"] = "50\n";
+    ASSERT_TRUE(m_Control.setEfficiencyMode(ownTarget(), true).success);
+    efficiency().nice = 19;
+    efficiency().procCgroup = std::nullopt;
+    efficiency().writes.clear();
+    off = m_Control.setEfficiencyMode(ownTarget(), false);
+    EXPECT_TRUE(off.successNote.empty()) << off.successNote;
+    EXPECT_EQ(efficiency().lastWriteCgroup, "user.slice/app-test.scope");
+    EXPECT_EQ(efficiency().writes, (std::vector<std::pair<std::string, std::string>>{{"cpu.weight", "50"}}));
+}
+
+// #3331: the cgroup on lowered was deleted and another made at its path, at weight 1, perhaps holding other
+// processes. Off writes nothing into it: it says the old cgroup is gone and forgets.
+TEST_F(LinuxEfficiencyModeActionTest, OffWritesNothingIntoAnotherCgroupMadeAtTheSamePath)
+{
+    efficiency().files["cpu.weight"] = "50\n";
+    ASSERT_TRUE(m_Control.setEfficiencyMode(ownTarget(), true).success); // lowered, identity 1
+    efficiency().nice = 19;
+    efficiency().readableCgroupId = 2; // deleted and made again
+    efficiency().files["cpu.weight"] = "1\n";
+    efficiency().writes.clear();
+    const ProcessActionResult off = m_Control.setEfficiencyMode(ownTarget(), false);
+    ASSERT_TRUE(off.success) << off.errorMessage;
+    EXPECT_EQ(off.successNote, "its old cgroup's CPU weight wasn't put back: that cgroup is gone");
+    EXPECT_TRUE(efficiency().writes.empty());
+    EXPECT_EQ(m_Control.rememberedEfficiencyCount(), 0U);
+}
+
+// #3331: an off left cgroup A's weight owed; the process moved to B and Efficiency mode was turned on again. That on
+// lowers no second cgroup (one of the two would go unrecorded): it says only the priority was lowered.
+TEST_F(LinuxEfficiencyModeActionTest, AnOnWhileAnotherCgroupsWeightIsOwedLowersNoSecondOne)
+{
+    efficiency().files["cpu.weight"] = "50\n";
+    ASSERT_TRUE(m_Control.setEfficiencyMode(ownTarget(), true).success); // A: 50 lowered to 1
+    efficiency().nice = 19;
+    efficiency().writeErrno = EACCES;
+    ASSERT_TRUE(m_Control.setEfficiencyMode(ownTarget(), false).successNote.contains("still the minimum"));
+
+    efficiency().writeErrno = 0;
+    efficiency().procCgroup = std::string("0::/user.slice/other.scope\n"); // moved to B
+    efficiency().readableCgroup = "user.slice/other.scope";
+    efficiency().files["cpu.weight"] = "80\n";
+    efficiency().nice = 5;
+    efficiency().writes.clear();
+    const ProcessActionResult on = m_Control.setEfficiencyMode(ownTarget(), true);
+    ASSERT_TRUE(on.success) << on.errorMessage;
+    EXPECT_EQ(on.successNote, "only its priority was lowered: its earlier cgroup's CPU weight is still to be put back");
+    EXPECT_TRUE(efficiency().writes.empty()) << "B's weight is left";
+    EXPECT_EQ(m_Control.rememberedEfficiencyCount(), 1U) << "A's weight still owed";
+
+    // And on again: still no second cgroup, the first on having cleared nothing that would let it through.
+    EXPECT_EQ(m_Control.setEfficiencyMode(ownTarget(), true).successNote, on.successNote);
+    EXPECT_TRUE(efficiency().writes.empty());
+}
+
+// #3331: on lowered cgroup A; A was replaced at the same path (at weight 100), and Efficiency mode turned on again with
+// no off between. The old record is stale: it is dropped, the replacement lowered and recorded, and off puts its 100 back.
+TEST_F(LinuxEfficiencyModeActionTest, AnOnAfterTheCgroupWasReplacedRecordsTheReplacement)
+{
+    efficiency().files["cpu.weight"] = "50\n";
+    ASSERT_TRUE(m_Control.setEfficiencyMode(ownTarget(), true).success); // A, identity 1: 50 lowered to 1
+    efficiency().readableCgroupId = 2;                                   // replaced at the same path
+    efficiency().files["cpu.weight"] = "100\n";
+    efficiency().nice = 19;
+    efficiency().writes.clear();
+    ASSERT_TRUE(m_Control.setEfficiencyMode(ownTarget(), true).success);
+    EXPECT_EQ(efficiency().writes, (std::vector<std::pair<std::string, std::string>>{{"cpu.weight", "1"}})) << "the replacement, lowered";
+    efficiency().writes.clear();
+    const ProcessActionResult off = m_Control.setEfficiencyMode(ownTarget(), false);
+    ASSERT_TRUE(off.success) << off.errorMessage;
+    EXPECT_TRUE(off.successNote.empty()) << off.successNote;
+    EXPECT_EQ(efficiency().writes, (std::vector<std::pair<std::string, std::string>>{{"cpu.weight", "100"}})) << "and put back";
+    EXPECT_EQ(plan().lastSetValue, 5) << "the nice from before the first on, still owed";
+    EXPECT_EQ(m_Control.rememberedEfficiencyCount(), 0U);
+}
+
+// #3331: the cgroup is replaced at its path after off's identity check but before its write. The write checks the
+// identity on the directory it writes through, so the replacement gets nothing: off says the old cgroup is gone.
+TEST_F(LinuxEfficiencyModeActionTest, ACgroupReplacedBetweenTheCheckAndTheWriteGetsNothing)
+{
+    efficiency().files["cpu.weight"] = "50\n";
+    ASSERT_TRUE(m_Control.setEfficiencyMode(ownTarget(), true).success);
+    efficiency().nice = 19;
+    efficiency().writes.clear();
+    efficiency().replaceAtWrite = true;
+    const ProcessActionResult off = m_Control.setEfficiencyMode(ownTarget(), false);
+    ASSERT_TRUE(off.success) << off.errorMessage;
+    EXPECT_EQ(off.successNote, "its old cgroup's CPU weight wasn't put back: that cgroup is gone");
+    EXPECT_TRUE(efficiency().writes.empty());
+    EXPECT_EQ(m_Control.rememberedEfficiencyCount(), 0U);
+
+    // And on: replaced just as it lowers, the replacement keeps its weight and nothing is recorded to put back.
+    efficiency().nice = 5;
+    efficiency().files["cpu.weight"] = "80\n";
+    efficiency().replaceAtWrite = true;
+    const ProcessActionResult on = m_Control.setEfficiencyMode(ownTarget(), true);
+    ASSERT_TRUE(on.success) << on.errorMessage;
+    EXPECT_EQ(on.successNote, "only its priority was lowered: its cgroup was replaced");
+    EXPECT_TRUE(efficiency().writes.empty());
+}
+
+// #3331: on can't read its cgroup's identity: it lowers no weight (one it couldn't tell apart from a replacement later),
+// only the priority, and says why; off then has no weight to put anywhere.
+TEST_F(LinuxEfficiencyModeActionTest, AnOnThatCantCheckItsCgroupLowersOnlyThePriority)
+{
+    efficiency().files["cpu.weight"] = "50\n";
+    efficiency().identityErrno = EACCES;
+    const ProcessActionResult on = m_Control.setEfficiencyMode(ownTarget(), true);
+    ASSERT_TRUE(on.success) << on.errorMessage;
+    EXPECT_EQ(on.successNote, "only its priority was lowered: its cgroup can't be checked");
+    EXPECT_TRUE(efficiency().writes.empty());
+
+    efficiency().identityErrno = 0;
+    efficiency().nice = 19;
+    const ProcessActionResult off = m_Control.setEfficiencyMode(ownTarget(), false);
+    ASSERT_TRUE(off.success) << off.errorMessage;
+    EXPECT_TRUE(efficiency().writes.empty()) << "no weight was lowered, so none is put back";
+    EXPECT_EQ(plan().lastSetValue, 5);
+}
+
+// #3331: the first on couldn't read its cgroup's identity, so it lowered no weight; a second on, once it can, lowers
+// the weight. That weight is recorded, so off puts it back rather than leaving it at the minimum.
+TEST_F(LinuxEfficiencyModeActionTest, ASecondOnThatLowersTheWeightRecordsIt)
+{
+    efficiency().files["cpu.weight"] = "50\n";
+    efficiency().identityErrno = EACCES;
+    ASSERT_EQ(m_Control.setEfficiencyMode(ownTarget(), true).successNote, "only its priority was lowered: its cgroup can't be checked");
+    efficiency().identityErrno = 0;
+    efficiency().nice = 19;
+    ASSERT_TRUE(m_Control.setEfficiencyMode(ownTarget(), true).success);
+    EXPECT_EQ(efficiency().writes, (std::vector<std::pair<std::string, std::string>>{{"cpu.weight", "1"}})) << "lowered by the second on";
+    efficiency().writes.clear();
+    const ProcessActionResult off = m_Control.setEfficiencyMode(ownTarget(), false);
+    ASSERT_TRUE(off.success) << off.errorMessage;
+    EXPECT_EQ(efficiency().writes, (std::vector<std::pair<std::string, std::string>>{{"cpu.weight", "50"}})) << "and put back";
+    EXPECT_EQ(plan().lastSetValue, 5) << "the nice from before the first on";
+}
+
+// #3331: off can't check the cgroup on lowered (no permission now, say). That isn't "gone": the weight may still be
+// owed, so the memory is kept, and an off once it can puts the weight back.
+TEST_F(LinuxEfficiencyModeActionTest, OffThatCantCheckTheCgroupKeepsTheMemory)
+{
+    efficiency().files["cpu.weight"] = "50\n";
+    ASSERT_TRUE(m_Control.setEfficiencyMode(ownTarget(), true).success);
+    efficiency().nice = 19;
+    efficiency().identityErrno = EACCES;
+    ProcessActionResult off = m_Control.setEfficiencyMode(ownTarget(), false);
+    ASSERT_TRUE(off.success) << off.errorMessage;
+    EXPECT_TRUE(off.successNote.starts_with("its cgroup's CPU weight wasn't put back: its cgroup can't be checked")) << off.successNote;
+    EXPECT_EQ(m_Control.rememberedEfficiencyCount(), 1U);
+
+    efficiency().identityErrno = 0;
     efficiency().writes.clear();
     off = m_Control.setEfficiencyMode(ownTarget(), false);
     EXPECT_TRUE(off.successNote.empty()) << off.successNote;
@@ -3275,6 +3583,24 @@ TEST(LinuxEfficiencyModeRealTest, TheFactorysActionsObjectsShareWhatOnRemembered
     ASSERT_TRUE(before.has_value());
     ASSERT_TRUE(processesTab->setEfficiencyMode(child.target(), true).success);
     EXPECT_EQ(processDetails->efficiencyNiceToRestore(child.target()), before);
+}
+
+// #3331, the real calls on this process's own cgroup, writing nothing: a checked write with another identity is refused
+// (ESTALE) before it opens anything; with the cgroup's own identity it gets past the check, to a file that isn't there.
+TEST(LinuxEfficiencyModeRealTest, TheCheckedWriteRefusesAnotherCgroupsIdentity)
+{
+    const LinuxProcessSyscalls real = realProcessSyscalls();
+    const std::optional<std::string> text = real.procCgroup(static_cast<std::int32_t>(::getpid()));
+    const std::optional<std::string> cgroup = text.has_value() ? LinuxEfficiency::unifiedCgroupPath(*text) : std::nullopt;
+    if (!cgroup.has_value() || cgroup->empty())
+    {
+        GTEST_SKIP() << "not in a cgroup of its own here";
+    }
+    const std::expected<std::uint64_t, int> identity = real.cgroupIdentity(*cgroup);
+    ASSERT_TRUE(identity.has_value()) << identity.error();
+    EXPECT_EQ(real.writeCgroupFileOf(*cgroup, *identity + 1, LinuxEfficiency::CPU_WEIGHT_FILE, "100"), ESTALE);
+    EXPECT_EQ(real.writeCgroupFileOf(*cgroup, *identity, "tasksmack-no-such-file", "1"), ENOENT);
+    EXPECT_EQ(real.writeCgroupFileOf(*cgroup, *identity, "../cpu.weight", "1"), EINVAL) << "a name, never a path";
 }
 
 // The real calls, on a child: nice 19 reaches it, its cgroup (the test's, shared) keeps its weight, and

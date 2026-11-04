@@ -143,9 +143,11 @@ void UsersPanel::renderContent()
     }
     renderActionLine();
     // Each platform's own items (#3076): Lock on Linux, Disconnect on Windows, Sign out on both.
-    const SessionMenu menu{.lock = m_Sessions != nullptr && m_Sessions->canAct(Platform::SessionAction::Lock),
-                           .disconnect = m_Sessions != nullptr && m_Sessions->canAct(Platform::SessionAction::Disconnect),
-                           .signOut = m_Sessions != nullptr && m_Sessions->canAct(Platform::SessionAction::SignOut)};
+    const SessionMenu menu{
+        .lock = m_Sessions != nullptr && m_Sessions->canAct(Platform::SessionAction::Lock),
+        .disconnect = m_Sessions != nullptr && m_Sessions->canAct(Platform::SessionAction::Disconnect),
+        .signOut = m_Sessions != nullptr && m_Sessions->canAct(Platform::SessionAction::SignOut),
+    };
     if (const std::optional<UsersViewAction> action = renderUsersView(m_Publication.get(), m_Model->hasSessions(), menu, m_ViewState))
     {
         if (action->selectPid != 0)

@@ -38,7 +38,11 @@ static_assert(EMI_NAME_MAX == EMI_NAME_CHARS);
 
 // GUID_DEVICE_ENERGY_METER (emi.h), spelled out so no translation unit needs <initguid.h>.
 constexpr GUID ENERGY_METER_INTERFACE_GUID{
-    .Data1 = 0x45bd8344, .Data2 = 0x7ed6, .Data3 = 0x49cf, .Data4 = {0xa4, 0x40, 0xc2, 0x76, 0xc9, 0x33, 0xb0, 0x53}};
+    .Data1 = 0x45bd8344,
+    .Data2 = 0x7ed6,
+    .Data3 = 0x49cf,
+    .Data4 = {0xa4, 0x40, 0xc2, 0x76, 0xc9, 0x33, 0xb0, 0x53},
+};
 // More energy meters than any machine has; bounds the enumeration.
 constexpr DWORD MAX_ENERGY_METERS = 16;
 

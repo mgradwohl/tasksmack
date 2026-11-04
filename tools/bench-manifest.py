@@ -559,11 +559,16 @@ def report_aggregates_only(args: list[str], environ: Mapping[str, str]) -> bool:
 
 # Core placement and system load (#3198), as bench.ps1 records them (#3163). On a hybrid CPU (Intel
 # P and E cores, Arm big.LITTLE) a whole run can land on efficiency cores and come out 2-3x slower
-# on every benchmark; pinned to one performance core, runs agree within about 10%. bench.sh asks
+# on every benchmark; pinned to the performance cores, runs agree within about 10%. bench.sh asks
 # --select-core where to pin and runs the benchmark under taskset; --system-load samples the load.
 SYSFS_CPU_ROOT = Path("/sys/devices/system/cpu")
 PROC_STAT = Path("/proc/stat")
 LOAD_SAMPLE_MS = 500
+# The fewest logical CPUs --core performance pins a run to (#3413): the most threads one benchmark
+# keeps running at once, the *_Concurrent_PublicationWait benchmarks' measuring thread, writer and
+# two extra readers (benchmarks/bench_ModelLimits.cpp), all of which spin. On one CPU they barely
+# progress. Kept in step with bench.ps1's $script:MinPinnedCpus.
+MIN_PINNED_CPUS = 4
 
 
 def _read_int(path: Path) -> int | None:
@@ -612,17 +617,19 @@ def select_core(classes: dict[int, int] | None, requested: str, allowed: set[int
     """Where the run goes, as bench.ps1's Select-BenchCore decides it. Returns:
     - core: the mode asked for, or the default: "performance" on a hybrid CPU (more than one class),
       "any" otherwise;
-    - core_class: the pinned CPU's class, or "any" when the run is not pinned;
+    - core_class: the pinned CPUs' class, or "any" when the run is not pinned;
     - hybrid: True / False, or None when the classes are unknown;
-    - logical_cpu: the CPU to pin to, or None;
+    - logical_cpus: the CPUs to pin to (ascending), or None;
     - warning: why "performance" could not pin, or None.
-    "performance" takes a CPU of the top class this process may use, preferring one whose core doesn't
-    hold CPU 0 (which takes most interrupts), then any but CPU 0, and CPU 0 only when it is the last
-    one left; among those, the highest-numbered."""
+    "performance" takes the CPUs of the top class this process may use: those whose core doesn't hold
+    CPU 0 (which takes most interrupts), else every one but CPU 0, else all of them, the first of
+    those with at least MIN_PINNED_CPUS. A set rather than one CPU (#3413): it still keeps the run off
+    the efficiency cores, and a multi-threaded benchmark gets a CPU per thread. With fewer than that
+    the run is not pinned."""
     known = bool(classes)
     hybrid = len(set(classes.values())) > 1 if known else None
     mode = requested or ("performance" if hybrid else "any")
-    choice = {"core": mode, "core_class": "any", "hybrid": hybrid, "logical_cpu": None, "warning": None}
+    choice = {"core": mode, "core_class": "any", "hybrid": hybrid, "logical_cpus": None, "warning": None}
     if mode != "performance":
         if not known and not requested:
             choice["warning"] = (
@@ -635,15 +642,21 @@ def select_core(classes: dict[int, int] | None, requested: str, allowed: set[int
     if not hybrid:
         return choice
     top = max(classes.values())
-    usable = [cpu for cpu, rank in classes.items() if rank == top and (allowed is None or cpu in allowed)]
-    candidates = (
-        [cpu for cpu in usable if cpu not in cpu0_siblings] or [cpu for cpu in usable if cpu != 0] or usable
-    )
-    if not candidates:
+    usable = sorted(cpu for cpu, rank in classes.items() if rank == top and (allowed is None or cpu in allowed))
+    if not usable:
         choice["warning"] = f"No CPU of the top class ({top}) is in this process's affinity, so the run is not pinned."
         return choice
+    # Each tier holds the one before it, so the last is the largest.
+    tiers = ([cpu for cpu in usable if cpu not in cpu0_siblings], [cpu for cpu in usable if cpu != 0], usable)
+    candidates = next((tier for tier in tiers if len(tier) >= MIN_PINNED_CPUS), usable)
+    if len(candidates) < MIN_PINNED_CPUS:
+        choice["warning"] = (
+            f"Only {len(candidates)} CPU(s) of the top class ({top}) are in this process's affinity, fewer than the "
+            f"{MIN_PINNED_CPUS} threads the concurrent benchmarks run at once, so the run is not pinned."
+        )
+        return choice
     choice["core_class"] = top
-    choice["logical_cpu"] = max(candidates)
+    choice["logical_cpus"] = candidates
     return choice
 
 
@@ -706,35 +719,38 @@ def load_sample_ms() -> int:
 
 def write_placement(requested: str, out: Path) -> int:
     """--select-core: decides where the run goes (select_core()), writes the manifest's placement to
-    @p out, says where on stderr and prints the logical CPU to pin to on stdout (nothing for none)."""
+    @p out, says where on stderr and prints the logical CPUs to pin to on stdout as a taskset -c list
+    ("1,10,11"; nothing for none)."""
     allowed = os.sched_getaffinity(0) if hasattr(os, "sched_getaffinity") else None
     root = sysfs_cpu_root()
     choice = select_core(cpu_classes(root), requested, allowed, smt_siblings(0, root))
-    if choice["logical_cpu"] is not None and shutil.which("taskset") is None:
-        choice["warning"] = f"taskset isn't installed (util-linux), so the run is not pinned to logical CPU {choice['logical_cpu']}."
+    cpus = choice["logical_cpus"]
+    cpu_list = ",".join(str(cpu) for cpu in cpus) if cpus is not None else ""
+    if cpus is not None and shutil.which("taskset") is None:
+        choice["warning"] = f"taskset isn't installed (util-linux), so the run is not pinned to logical CPUs {cpu_list}."
         choice["core_class"] = "any"
-        choice["logical_cpu"] = None
-    pinned = {choice["logical_cpu"]} if choice["logical_cpu"] is not None else allowed
+        choice["logical_cpus"] = cpus = None
+    pinned = set(cpus) if cpus is not None else allowed
     placement = {
         "core": choice["core"],
         "core_class": choice["core_class"],
         "hybrid": choice["hybrid"],
-        "logical_cpu": choice["logical_cpu"],
+        "logical_cpus": cpus,
         "affinity_mask": affinity_mask(pinned),
     }
     out.write_text(json.dumps(placement, indent=2) + "\n", encoding="utf-8")
     if choice["warning"]:
         print(f"WARNING: {choice['warning']}", file=sys.stderr)
-    if choice["logical_cpu"] is not None:
-        where = f"logical CPU {choice['logical_cpu']} (class {choice['core_class']})"
+    if cpus is not None:
+        where = f"logical CPUs {cpu_list} (class {choice['core_class']})"
     elif choice["hybrid"] is False:
         where = "any (not a hybrid CPU)"
     else:
         where = "any (not pinned)"
     mask = f", affinity {placement['affinity_mask']}" if placement["affinity_mask"] else ""
     print(f"Cores: --core {choice['core']} -> {where}{mask}", file=sys.stderr)
-    if choice["logical_cpu"] is not None:
-        sys.stdout.write(str(choice["logical_cpu"]))
+    if cpus is not None:
+        sys.stdout.write(cpu_list)
     return 0
 
 
@@ -753,7 +769,7 @@ def main() -> int:
     parser.add_argument("--finalize", action="store_true")
     parser.add_argument("--repo-root", type=Path)
     parser.add_argument("--generator", default="tools/bench.sh")
-    # Core placement (#3198): --select-core prints the logical CPU to pin to (nothing for none) and writes
+    # Core placement (#3198): --select-core prints the logical CPUs to pin to (nothing for none) and writes
     # the placement to --placement-out; the snapshot reads it back with --placement.
     parser.add_argument("--select-core", nargs="?", const="", choices=("", "performance", "any"))
     parser.add_argument("--placement-out", type=Path)

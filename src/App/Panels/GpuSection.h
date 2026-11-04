@@ -469,7 +469,11 @@ class PercentSeriesCache
     [[nodiscard]] std::span<const float> percentOf(std::uint64_t generation, std::span<const float> history, float scale)
     {
         const Key key{
-            .generation = generation, .data = history.data(), .size = history.size(), .scaleBits = std::bit_cast<std::uint32_t>(scale)};
+            .generation = generation,
+            .data = history.data(),
+            .size = history.size(),
+            .scaleBits = std::bit_cast<std::uint32_t>(scale),
+        };
         if (!m_Valid || generation == 0 || key != m_Key)
         {
             normalizeToPercent(history, scale, m_Values);

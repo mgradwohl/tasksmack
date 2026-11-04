@@ -203,11 +203,13 @@ class ProcessConnectionsView
         m_Rows.reserve(result.connections.size());
         for (const Platform::ProcessConnection& connection : result.connections)
         {
-            m_Rows.push_back({.connection = connection,
-                              .protocol = std::string(Connections::protocolLabel(connection.protocol, connection.family)),
-                              .local = Connections::formatEndpoint(connection.family, connection.local),
-                              .remote = Connections::formatEndpoint(connection.family, connection.remote),
-                              .state = std::string(Connections::stateLabel(connection.protocol, connection.state))});
+            m_Rows.push_back({
+                .connection = connection,
+                .protocol = std::string(Connections::protocolLabel(connection.protocol, connection.family)),
+                .local = Connections::formatEndpoint(connection.family, connection.local),
+                .remote = Connections::formatEndpoint(connection.family, connection.remote),
+                .state = std::string(Connections::stateLabel(connection.protocol, connection.state)),
+            });
         }
         sortRows();
     }

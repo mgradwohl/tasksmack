@@ -620,12 +620,13 @@ void renderStartupRows(const Domain::StartupPublication& publication,
             const std::string_view key = startupEntryKey(entry);
             ImGui::PushID(entry.packageFamily.c_str());
             ImGui::PushID(key.data(), key.data() + key.size());
-            const RowExtras extras{.actions = actions,
-                                   .icons = icons,
-                                   .impact = (capabilities.hasImpact && index < publication.impacts.size()) ? &publication.impacts[index]
-                                                                                                            : nullptr,
-                                   .publication = &publication,
-                                   .iconKey = state.iconKeys[index]};
+            const RowExtras extras{
+                .actions = actions,
+                .icons = icons,
+                .impact = (capabilities.hasImpact && index < publication.impacts.size()) ? &publication.impacts[index] : nullptr,
+                .publication = &publication,
+                .iconKey = state.iconKeys[index],
+            };
             renderStartupRow(entry, state.enabledLabels[index], capabilities, scheme, state, extras);
             ImGui::PopID();
             ImGui::PopID();

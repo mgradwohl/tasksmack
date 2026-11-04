@@ -213,7 +213,10 @@ struct DetailRefreshPlan
 {
     const bool heavy = firstSeen || heavyDue;
     return DetailRefreshPlan{
-        .light = firstSeen || lightDue || basePriorityChanged, .heavy = heavy, .priority = heavy || basePriorityChanged};
+        .light = firstSeen || lightDue || basePriorityChanged,
+        .heavy = heavy,
+        .priority = heavy || basePriorityChanged,
+    };
 }
 
 /// Mark which of one process's readings the Windows probe took (#1285, the Windows half of #1110).

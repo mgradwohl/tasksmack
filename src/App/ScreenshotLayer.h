@@ -34,6 +34,7 @@ class ScreenshotLayer : public Core::Layer
 
     /// Rendered frames the capture waits after the startup selections settle: a tab ImGui selects a
     /// frame late, and the Process Details tab a selection opens after that, have drawn by then.
+    /// Counts draws, not time (#3346): what it waits for takes frames, however long they are.
     static constexpr int SETTLE_FRAMES = 5;
 
     /// The frame rate asked for while a capture is pending, until a sequence's own rate takes over: the

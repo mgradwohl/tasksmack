@@ -6,9 +6,11 @@
 #   ./tools/bench.sh -h | --help              # print this help
 #
 # preset defaults to 'benchmark'.
-# --core (#3198, as bench.ps1's -Core): "performance" pins the run to one logical CPU of the fastest
-# class with taskset, avoiding CPU 0 and its SMT sibling (CPU 0 takes most interrupts) unless nothing
-# else is left; "any" leaves placement to the scheduler. The default is "performance" on a hybrid CPU
+# --core (#3198, as bench.ps1's -Core): "performance" pins the run to the logical CPUs of the fastest
+# class with taskset, leaving out CPU 0 and its SMT sibling (CPU 0 takes most interrupts) while that
+# still leaves at least four, and never fewer than four (#3413: the concurrent benchmarks run four
+# threads that spin on each other; with fewer of the fastest class the run isn't pinned, with a
+# warning); "any" leaves placement to the scheduler. The default is "performance" on a hybrid CPU
 # (Intel P and E cores, Arm big.LITTLE: more than one cpu_capacity or cpuinfo_max_freq in sysfs) and
 # "any" elsewhere. Without the sysfs files or taskset the run isn't pinned, with a warning. The
 # manifest records where the run went (placement) and the system CPU load just before and after it.
@@ -177,15 +179,15 @@ BENCH_ARGS=(
 echo "Running benchmarks (preset=${PRESET}) → ${OUT_FILE}"
 echo "Binary: ${BENCH_BIN}"
 
-# Core placement (#3198): the logical CPU to pin the run to, or none. Only the benchmark runs under
-# taskset; the script's own work (git, hashing, the manifest) isn't confined to one core. A failure to
-# decide is a warning and an unpinned run with no placement recorded.
+# Core placement (#3198, #3413): the logical CPUs to pin the run to, as a taskset -c list, or none. Only the benchmark runs under taskset; the script's own work (git, hashing, the manifest)
+# isn't confined to those CPUs. A failure to decide is a warning and an unpinned run with no
+# placement recorded.
 PLACEMENT_FILE="$(mktemp "${TMPDIR:-/tmp}/tasksmack-bench-placement.XXXXXX")"
 trap 'rm -f "${PLACEMENT_FILE}"' EXIT
-PIN_CPU=""
-if ! PIN_CPU="$("${PY}" "${SCRIPT_DIR}/bench-manifest.py" --select-core ${CORE:+"${CORE}"} --placement-out "${PLACEMENT_FILE}")"; then
-    echo "WARNING: choosing a core failed, so the run is not pinned and no placement is recorded." >&2
-    PIN_CPU=""
+PIN_CPUS=""
+if ! PIN_CPUS="$("${PY}" "${SCRIPT_DIR}/bench-manifest.py" --select-core ${CORE:+"${CORE}"} --placement-out "${PLACEMENT_FILE}")"; then
+    echo "WARNING: choosing the cores failed, so the run is not pinned and no placement is recorded." >&2
+    PIN_CPUS=""
     rm -f "${PLACEMENT_FILE}"
 fi
 PLACEMENT_ARGS=()
@@ -193,8 +195,8 @@ if [[ -s "${PLACEMENT_FILE}" ]]; then
     PLACEMENT_ARGS=(--placement "${PLACEMENT_FILE}")
 fi
 LAUNCH=("${BENCH_BIN}")
-if [[ -n "${PIN_CPU}" ]]; then
-    LAUNCH=(taskset -c "${PIN_CPU}" "${BENCH_BIN}")
+if [[ -n "${PIN_CPUS}" ]]; then
+    LAUNCH=(taskset -c "${PIN_CPUS}" "${BENCH_BIN}")
 fi
 echo
 

@@ -220,12 +220,15 @@ EnvironmentReadResult WindowsProcessEnvironmentReader::readEnvironment(const Pro
 {
     // PROCESS_VM_READ: the block lives in the process's own memory. Protected processes, and elevated
     // ones from an unelevated TaskSmack, refuse it (PermissionDenied).
-    auto opened = openProcessVerified({.openProcess = m_Api.openProcess,
-                                       .getProcessTimes = m_Api.getProcessTimes,
-                                       .closeHandle = m_Api.closeHandle,
-                                       .getExitCodeProcess = m_Api.getExitCodeProcess},
-                                      target,
-                                      PROCESS_VM_READ);
+    auto opened = openProcessVerified(
+        {
+            .openProcess = m_Api.openProcess,
+            .getProcessTimes = m_Api.getProcessTimes,
+            .closeHandle = m_Api.closeHandle,
+            .getExitCodeProcess = m_Api.getExitCodeProcess,
+        },
+        target,
+        PROCESS_VM_READ);
     if (!opened)
     {
         auto refused = toReadFailure<EnvironmentReadStatus>(opened.error());
@@ -325,7 +328,11 @@ EnvironmentReadResult WindowsProcessEnvironmentReader::readEnvironment(const Pro
     }
     const std::string utf8 = WinString::wideToUtf8(std::wstring_view{text});
     EnvironmentReadResult result{
-        .status = EnvironmentReadStatus::Ok, .variables = Environment::parseEnvironBlock(utf8), .truncated = truncated, .detail = {}};
+        .status = EnvironmentReadStatus::Ok,
+        .variables = Environment::parseEnvironBlock(utf8),
+        .truncated = truncated,
+        .detail = {},
+    };
     if (result.variables.size() > ENVIRONMENT_VARIABLE_CAP)
     {
         result.variables.resize(ENVIRONMENT_VARIABLE_CAP);

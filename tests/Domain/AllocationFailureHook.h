@@ -35,6 +35,8 @@ namespace TestSupport
 
 /// Make the @p count-th allocation from now on this thread (0 = the next one) throw std::bad_alloc;
 /// a negative count disarms. One failure per arming: the hook disarms itself when it fires.
+/// When TASKSMACK_ALLOCATION_HOOK_LOG names a file, the first arming in each test appends "Suite.Case"
+/// to it, and CI's tools/allocation-hook-summary.py reports which tests ran with the hook (#3342).
 void armAllocationFailure(std::int64_t count) noexcept;
 
 /// Whether this thread's armed failure has yet to fire: false once it has thrown (or when disarmed).

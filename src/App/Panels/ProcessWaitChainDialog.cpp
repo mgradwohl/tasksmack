@@ -456,7 +456,11 @@ void ProcessWaitChainDialog::render()
 
     const UI::Widgets::DialogFooterButton closeButton{.label = CLOSE_LABEL, .fills = nullptr, .tooltip = nullptr};
     const UI::Widgets::DialogFooterButton refreshButton{
-        .label = REFRESH_LABEL, .fills = nullptr, .tooltip = "Read the wait chains again", .disabled = reading()};
+        .label = REFRESH_LABEL,
+        .fills = nullptr,
+        .tooltip = "Read the wait chains again",
+        .disabled = reading(),
+    };
     UI::Widgets::DialogFooterAction pressed =
         UI::Widgets::dialogFooter(closeButton, {}, UI::Widgets::footerButtonWidth({CLOSE_LABEL}, BUTTON_MIN_EM), refreshButton);
     if (escaped)

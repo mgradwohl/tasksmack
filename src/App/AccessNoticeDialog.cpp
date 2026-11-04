@@ -189,7 +189,8 @@ Choice render(State& state)
             .fills = nullptr,
             // The note is one of AccessChoice's string literals, so its data() is terminated.
             .tooltip = state.decision.administrator.enabled ? words.promptTooltip : state.decision.administrator.note.data(),
-            .disabled = !administratorOffered};
+            .disabled = !administratorOffered,
+        };
         const UI::Widgets::DialogFooterAction pressed = UI::Widgets::dialogFooter(
             standard, administrator, UI::Widgets::footerButtonWidth({CONTINUE_LABEL, words.switchSession}, BUTTON_MIN_EM));
         // Escape is Continue as Standard, the default; while the prompt is up neither closes it.

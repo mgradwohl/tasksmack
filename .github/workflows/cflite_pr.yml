@@ -56,7 +56,7 @@ permissions:
 jobs:
   fuzz:
     name: Fuzz changed parsers
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     steps:
       # Step timeouts well above the normal times, so a stalled download (#1406: the artifacts API rate

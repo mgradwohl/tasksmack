@@ -168,19 +168,21 @@ SystemCounters LinuxSystemProbe::read()
 
 SystemCapabilities LinuxSystemProbe::capabilities() const
 {
-    return SystemCapabilities{.hasPerCoreCpu = true,
-                              .hasMemoryAvailable = true, // Modern kernels have MemAvailable
-                              .hasSwap = true,
-                              .hasCommitCharge = true, // Committed_AS / CommitLimit in /proc/meminfo (#1627)
-                              .hasUptime = true,
-                              .hasIoWait = true,
-                              .hasSteal = true,
-                              .hasLoadAvg = true,
-                              .hasPressure = m_HasPressure,
-                              .hasCpuFreq = true,
-                              .hasNetworkCounters = true,
-                              .hasVirtualizationInfo = true,           // vmx/svm, /dev/kvm, hypervisor detection (#2592)
-                              .hasVirtualizationSecurityInfo = false}; // VBS and memory integrity are Windows facts (#809)
+    return SystemCapabilities{
+        .hasPerCoreCpu = true,
+        .hasMemoryAvailable = true, // Modern kernels have MemAvailable
+        .hasSwap = true,
+        .hasCommitCharge = true, // Committed_AS / CommitLimit in /proc/meminfo (#1627)
+        .hasUptime = true,
+        .hasIoWait = true,
+        .hasSteal = true,
+        .hasLoadAvg = true,
+        .hasPressure = m_HasPressure,
+        .hasCpuFreq = true,
+        .hasNetworkCounters = true,
+        .hasVirtualizationInfo = true, // vmx/svm, /dev/kvm, hypervisor detection (#2592)
+        .hasVirtualizationSecurityInfo = false,
+    }; // VBS and memory integrity are Windows facts (#809)
 }
 
 long LinuxSystemProbe::ticksPerSecond() const

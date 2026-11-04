@@ -38,6 +38,7 @@ if(WIN32)
     set(PLATFORM_BENCH_SOURCES
         bench_WindowsPDHGPUProbe.cpp
         bench_WindowsProcessProbe.cpp
+        bench_WindowsSignature.cpp
     )
 else()
     set(PLATFORM_BENCH_SOURCES
