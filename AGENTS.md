@@ -38,7 +38,8 @@ candidate (see "Release process" below), and `RELEASE_FREEZE` stays unset.
 
 - **Upstream first:** every fix merges to `main` by the normal PR and is backported from there, so `main` is always
   a superset of every release branch. Never open a product-code PR against `release/*` directly.
-- **The backport label:** put `backport:X.Y` (`backport:0.9`) on the `main` PR, before or after it merges. On the
+- **The backport label:** put `backport:X.Y` on the `main` PR, before or after it merges; the label is created when
+  `release/X.Y` first needs a backport and deleted when the branch retires. On the
   merge, `.github/workflows/backport.yml` opens the cherry-pick PR against `release/X.Y`, titled
   `<original title> [backport X.Y]`, with the original's labels and the open `vX.Y.*` milestone. For a label added
   after the merge, or a retry, comment `/backport` on the merged PR. A conflict fails that backport and the action's

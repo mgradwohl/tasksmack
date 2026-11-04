@@ -3472,7 +3472,7 @@ Branch from `main` and open a pull request back to `main`: all development lands
 a release. Releases ship from `release/X.Y` branches (#2741), which the maintainer cuts from the approved candidate
 commit; see [Cutting a Release](#cutting-a-release). A fix reaches a release branch by backport, upstream first:
 
-1. Merge the fix to `main` by the normal pull request, with the `backport:X.Y` label (for example `backport:0.9`)
+1. Merge the fix to `main` by the normal pull request, with the `backport:X.Y` label
    on it, added before or after the merge.
 2. On the merge, `backport.yml` cherry-picks the squashed commit and opens `<original title> [backport X.Y]`
    against `release/X.Y`, copying the labels and putting it on the open `vX.Y.*` milestone. For a label added after
