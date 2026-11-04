@@ -121,9 +121,9 @@ Changes under `.github/workflows/` need the maintainer's explicit OK before they
 - **Skipped dependencies:** a job whose `needs:` include one that can be skipped (signing while it's off) uses
   `if: ${{ !cancelled() && needs.<job>.result == 'success' }}`. The implicit `success()` treats a skipped
   dependency as a failure and silently skips the job (#2721).
-- **Backports:** a change labelled `backport:0.9` must not depend on main-only features. The `TASKSMACK_SCREENSHOT`
-  clean-quit hook, the smoke checks built on it (#2720, #2726, #2721) and `TASKSMACK_RENDER_METRICS` (#2926) aren't
-  on `release/0.9`. The backport action can't push workflow changes, so those are cherry-picked by hand.
+- **Backports:** a change labelled `backport:X.Y` must not depend on anything that is on `main` but not on
+  `release/X.Y`. Check the release branch, not your memory of it: a hook, test seam or helper added after the cut
+  isn't there. The backport action can't push workflow changes, so those are cherry-picked by hand.
 - **Signatures:** match the signer's certificate subject (CN), never a thumbprint or serial. Azure Artifact Signing
   certificates rotate every few days (#2302).
 
@@ -148,7 +148,8 @@ document.
   - the kind: `bug`, `enhancement`, `refactoring`, `performance`, `security` or `testing`;
   - the area: `windows`, `linux`, `ui`, `gpu`, `ci`, `tooling` and so on;
   - a lane if the platform is clear: `agent:Windows` or `agent:WSL`;
-  - `priority: high` only for crashes, data loss, security, or a broken release;
+  - `priority: high` for work to do first this cycle: a crash, data loss, a security hole or a broken release, or
+    what the maintainer marks to go first (for example the CI and infra issues at the start of a cycle);
   - `code-review` on every issue an audit files, so the batch can be triaged with one query
     (`gh issue list --label code-review --search "no:milestone"`);
   - no milestone for a general audit. The maintainer sets those, and agents never put an issue on a
