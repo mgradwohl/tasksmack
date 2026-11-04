@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <format>
 #include <optional>
@@ -36,6 +37,40 @@ inline constexpr std::array<FontSizeOption, 6> FONT_SIZE_OPTIONS = {
         {.label = "Largest", .value = UI::FontSize::EvenHuger},
     },
 };
+
+// ========================================
+// Interface scale options (percent; 0 = Auto) (#3376)
+// ========================================
+struct InterfaceScaleOption
+{
+    std::string_view label;
+    int percent; ///< 0: Auto, the display's own scale
+};
+
+inline constexpr std::array<InterfaceScaleOption, 9> INTERFACE_SCALE_OPTIONS = {
+    {
+        {.label = "Auto", .percent = 0},
+        {.label = "100%", .percent = 100},
+        {.label = "125%", .percent = 125},
+        {.label = "150%", .percent = 150},
+        {.label = "175%", .percent = 175},
+        {.label = "200%", .percent = 200},
+        {.label = "225%", .percent = 225},
+        {.label = "250%", .percent = 250},
+        {.label = "300%", .percent = 300},
+    },
+};
+
+/// The Interface scale combo's "Auto" text: Auto and the scale the display reports, as a whole percent
+/// ("Auto (175%)"), so Auto never hides what it picked. Just "Auto" when the report isn't a usable scale.
+[[nodiscard]] inline std::string interfaceScaleAutoLabel(float measuredScale)
+{
+    if (!(measuredScale > 0.0F) || !std::isfinite(measuredScale))
+    {
+        return "Auto";
+    }
+    return std::format("Auto ({}%)", static_cast<int>(std::lround(measuredScale * 100.0F)));
+}
 
 // ========================================
 // Refresh rate options (milliseconds)

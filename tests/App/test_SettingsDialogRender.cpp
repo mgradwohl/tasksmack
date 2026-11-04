@@ -149,6 +149,22 @@ class SettingsDialogRenderTest : public ::testing::Test
         return measured;
     }
 
+    /// One frame's text, as ImGui's log captures it (#3376).
+    std::string runFrameText()
+    {
+        ImGui::NewFrame();
+        ImGui::LogToBuffer();
+        ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
+        ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
+        ImGui::Begin("Main", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
+        ImGui::End();
+        static_cast<void>(SettingsDialog::render(m_State));
+        std::string text = GImGui->LogBuffer.c_str();
+        ImGui::LogFinish();
+        ImGui::Render();
+        return text;
+    }
+
     Measured settle()
     {
         Measured measured;
@@ -256,6 +272,10 @@ TEST_F(SettingsDialogRenderTest, EachComboPicksAnEntryAndMarksItTouched)
     EXPECT_EQ(m_State.fontSizeChoice.index, std::optional<std::size_t>(2));
     EXPECT_TRUE(m_State.fontSizeChoice.touched);
 
+    pickFromCombo("##InterfaceScale", "175%"); // #3376
+    EXPECT_EQ(m_State.interfaceScaleChoice.index, std::optional<std::size_t>(4));
+    EXPECT_TRUE(m_State.interfaceScaleChoice.touched);
+
     pickFromCombo("##RefreshRate", "250 ms");
     EXPECT_EQ(m_State.refreshRateChoice.index, std::optional<std::size_t>(1));
     EXPECT_TRUE(m_State.refreshRateChoice.touched);
@@ -266,6 +286,42 @@ TEST_F(SettingsDialogRenderTest, EachComboPicksAnEntryAndMarksItTouched)
 
     // Picking only edits the dialog's state: still open, nothing saved.
     EXPECT_TRUE(runFrame().open);
+}
+
+// #3376: under WSL, with the Interface scale on Auto, the dialog says WSLg reports 100% and where Windows' scale is;
+// elsewhere, or with a scale picked, it says nothing. Auto's own text shows the scale it picked.
+TEST_F(SettingsDialogRenderTest, UnderWslAutoExplainsWslgsHundredPercent)
+{
+    static_cast<void>(openAndSettle());
+    std::string text = runFrameText();
+    EXPECT_TRUE(text.contains("Interface scale")) << text;
+    EXPECT_TRUE(text.contains("Auto (")) << text;
+    EXPECT_FALSE(text.contains("WSLg reports")) << "not under WSL";
+
+    m_State.underWsl = true;
+    text = runFrameText();
+    EXPECT_TRUE(text.contains("WSLg reports every display at 100%")) << text;
+    EXPECT_TRUE(text.contains("Windows Settings > Display > Scale")) << text;
+
+    pickFromCombo("##InterfaceScale", "175%");
+    text = runFrameText();
+    EXPECT_FALSE(text.contains("WSLg reports")) << "a picked scale needs no explanation";
+}
+
+// #3376 review: a hand-edited scale with no preset (interface_scale = 180) reads Custom (180%), not Auto, and under WSL
+// gets no Auto note, since the setting is in force.
+TEST_F(SettingsDialogRenderTest, AHandEditedScaleReadsCustomAndGetsNoAutoNote)
+{
+    auto& settings = UserConfig::get().settings();
+    const int saved = settings.interfaceScalePercent;
+    settings.interfaceScalePercent = 180;
+    SettingsDialog::load(m_State, settings, themes());
+    m_State.underWsl = true;
+    static_cast<void>(openAndSettle());
+    const std::string text = runFrameText();
+    EXPECT_TRUE(text.contains("Custom (180%)")) << text;
+    EXPECT_FALSE(text.contains("WSLg reports")) << text;
+    settings.interfaceScalePercent = saved;
 }
 
 // The Escape that closes an open combo must not also close the dialog (SettingsDialog's

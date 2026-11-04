@@ -170,5 +170,36 @@ TEST(DpiScaleTest, ChromeIconIsAShareOfTheBar)
     EXPECT_FLOAT_EQ(computeChromeIconPx(32.0F), 18.0F); // 17.6
     EXPECT_FLOAT_EQ(computeChromeIconPx(56.0F), 31.0F); // 30.8
 }
+// #3376: the Interface scale setting replaces the display's report when it names a scale in range, so 175% is the
+// same size on every platform; Auto (0), or a value outside 100-300, follows the display.
+TEST(DpiScaleTest, TheInterfaceScaleSettingReplacesTheMeasuredScaleWithinItsRange)
+{
+    EXPECT_FLOAT_EQ(effectiveDisplayScale(1.0F, 0), 1.0F);     // Auto: WSLg's report stands
+    EXPECT_FLOAT_EQ(effectiveDisplayScale(1.75F, 0), 1.75F);   // Auto: Windows' report stands
+    EXPECT_FLOAT_EQ(effectiveDisplayScale(1.0F, 175), 1.75F);  // set: replaces, doesn't multiply
+    EXPECT_FLOAT_EQ(effectiveDisplayScale(1.75F, 175), 1.75F); // set on a 175% display: still 175%, not 306%
+    EXPECT_FLOAT_EQ(effectiveDisplayScale(2.0F, INTERFACE_SCALE_MIN_PERCENT), 1.0F);
+    EXPECT_FLOAT_EQ(effectiveDisplayScale(1.0F, INTERFACE_SCALE_MAX_PERCENT), 3.0F);
+    EXPECT_FLOAT_EQ(effectiveDisplayScale(1.5F, 99), 1.5F); // outside the range: Auto
+    EXPECT_FLOAT_EQ(effectiveDisplayScale(1.5F, 301), 1.5F);
+    EXPECT_FLOAT_EQ(effectiveDisplayScale(1.5F, -1), 1.5F);
+    // A failed measurement (0) under Auto stays 0, which displayScaleChanged() rejects; a set scale doesn't need it.
+    EXPECT_FALSE(displayScaleChanged(1.0F, effectiveDisplayScale(0.0F, 0)));
+    EXPECT_FLOAT_EQ(effectiveDisplayScale(0.0F, 150), 1.5F);
+}
+
+// #3376 review: the setting replaces the display scale *before* the pixel-density division, so on native Wayland at
+// 200% (display scale 2, density 2, which ImGui already renders at) Auto and 200% are both 1.0 in window units, 200% on
+// screen; 300% there is 1.5, and 100% is 0.5.
+TEST(DpiScaleTest, TheInterfaceScaleIsDividedByThePixelDensityLikeTheDisplaysOwn)
+{
+    EXPECT_FLOAT_EQ(windowUnitScale(effectiveDisplayScale(2.0F, 0), 2.0F), 1.0F);
+    EXPECT_FLOAT_EQ(windowUnitScale(effectiveDisplayScale(2.0F, 200), 2.0F), 1.0F) << "not 2.0, which drew 400%";
+    EXPECT_FLOAT_EQ(windowUnitScale(effectiveDisplayScale(2.0F, 300), 2.0F), 1.5F);
+    EXPECT_FLOAT_EQ(windowUnitScale(effectiveDisplayScale(2.0F, 100), 2.0F), 0.5F);
+    // Density 1 (Windows, X11, WSLg): the setting is the window-unit scale itself.
+    EXPECT_FLOAT_EQ(windowUnitScale(effectiveDisplayScale(1.0F, 175), 1.0F), 1.75F);
+}
+
 } // namespace
 } // namespace UI

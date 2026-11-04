@@ -10,6 +10,7 @@
 #include "UI/DpiScale.h"
 #include "UI/FontLoading.h"
 #include "UI/ImGuiTimers.h"
+#include "UI/InterfaceScale.h"
 #include "UI/RenderMetrics.h"
 #include "UI/Theme.h"
 #include "UI/ThemeLoader.h"
@@ -33,20 +34,38 @@
 
 namespace
 {
-// The main window's UI scale in window units (1.0 at 96 DPI): SDL's display scale over the window's
-// pixel density, which ImGui already renders at (#1096). 1.0 without a window, and 0.0 if SDL fails
-// to report the display scale (callers reject that through UI::displayScaleChanged()).
-float measureDisplayScale()
+/// What SDL reports for the main window: its display scale (1.75 at 175%) and its pixel density (framebuffer
+/// pixels per window unit). 1.0 and 1.0 without a window; a display scale of 0.0 if SDL fails to report it (callers
+/// reject that through UI::displayScaleChanged()).
+struct DisplayReport
+{
+    float displayScale = 1.0F;
+    float pixelDensity = 1.0F;
+};
+
+DisplayReport measureDisplay()
 {
     SDL_Window* window = Core::Application::get().getWindow().getHandle();
     if (window == nullptr)
     {
-        return 1.0F;
+        return {};
     }
-    const float displayScale = SDL_GetWindowDisplayScale(window);
-    const float pixelDensity = SDL_GetWindowPixelDensity(window);
-    const float scale = UI::windowUnitScale(displayScale, pixelDensity);
-    spdlog::debug("UI scale {:.3f} (SDL display scale {:.3f}, pixel density {:.3f})", scale, displayScale, pixelDensity);
+    return {.displayScale = SDL_GetWindowDisplayScale(window), .pixelDensity = SDL_GetWindowPixelDensity(window)};
+}
+
+/// The UI scale in window units (1.0 at 96 DPI) the fonts and style are built at: the Interface scale setting in place
+/// of the display's own scale when it names one (#3376), then over the window's pixel density, which ImGui already
+/// renders at (#1096). The setting replaces the display scale *before* that division, so 200% on a native Wayland
+/// display at density 2 is 1.0 here and 200% on screen, not 400%.
+float uiScaleFor(const DisplayReport& report, int interfaceScalePercent)
+{
+    const float displayScale = UI::effectiveDisplayScale(report.displayScale, interfaceScalePercent);
+    const float scale = UI::windowUnitScale(displayScale, report.pixelDensity);
+    spdlog::debug("UI scale {:.3f} (SDL display scale {:.3f}, Interface scale {}, pixel density {:.3f})",
+                  scale,
+                  report.displayScale,
+                  interfaceScalePercent,
+                  report.pixelDensity);
     return scale;
 }
 
@@ -92,8 +111,11 @@ void UILayer::onAttach()
         // Measure the display density once and give the same value to Theme (which scales the
         // ImGuiStyle by it, #936) and to the fonts, so the two cannot disagree. A failed
         // measurement (0.0) leaves Theme at 1.0 and bakes the fonts at 1.0 to match.
-        const float measuredScale = measureDisplayScale();
-        Theme::get().setDisplayScale(measuredScale);
+        // The Interface scale setting, when it names one, replaces the measurement (#3376).
+        const DisplayReport report = measureDisplay();
+        Theme::get().setMeasuredDisplayScale(report.displayScale); // the display's own report, for Settings' "Auto"
+        m_AppliedScalePercent = Theme::get().interfaceScalePercent();
+        Theme::get().setDisplayScale(uiScaleFor(report, m_AppliedScalePercent));
         const float displayScale = Theme::get().displayScale();
         // A window already minimized has no real size, so its pixel density may be wrong in a way
         // windowUnitScale() can't tell (#3150): the scale is measured again at the first frame after
@@ -226,12 +248,17 @@ void UILayer::onSDLEvent(SDL_Event* event)
 
 void UILayer::rebuildForDisplayScaleChange()
 {
-    const float measured = measureDisplayScale();
+    // The display's own report, then the Interface scale setting over it (#3376): a setting that names a scale keeps
+    // it on any display, and Auto follows the display.
+    const DisplayReport report = measureDisplay();
+    Theme::get().setMeasuredDisplayScale(report.displayScale);
+    m_AppliedScalePercent = Theme::get().interfaceScalePercent();
+    const float measured = uiScaleFor(report, m_AppliedScalePercent);
     if (!displayScaleChanged(Theme::get().displayScale(), measured))
     {
         return;
     }
-    spdlog::info("Display scale changed from {:.2f} to {:.2f}; rebuilding fonts and style", Theme::get().displayScale(), measured);
+    spdlog::info("UI scale changed from {:.2f} to {:.2f}; rebuilding fonts and style", Theme::get().displayScale(), measured);
 
     // Fonts first, then the style, both before NewFrame(): the text and the chrome around it move
     // together, as the font-size presets do. Nothing keeps an ImFont* across frames except Theme,
@@ -287,6 +314,11 @@ void UILayer::beginFrame()
 {
     // Not while minimized: the window has no real size then, and its pixel density would make the
     // scale about 5x the display's (#3150). The check waits for the restore.
+    // A changed Interface scale setting (#3376) rebuilds through the same path as a display change.
+    if (Theme::get().interfaceScalePercent() != m_AppliedScalePercent)
+    {
+        m_DisplayScaleCheck.request();
+    }
     if (m_DisplayScaleCheck.pending() && m_DisplayScaleCheck.takeDue(Core::Application::get().getWindow().isMinimized()))
     {
         rebuildForDisplayScaleChange();

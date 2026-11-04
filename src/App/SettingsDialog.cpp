@@ -35,6 +35,7 @@ namespace App::SettingsDialog
 using Detail::ComboState;
 using Detail::FONT_SIZE_OPTIONS;
 using Detail::HISTORY_OPTIONS;
+using Detail::INTERFACE_SCALE_OPTIONS;
 using Detail::optionIndexOf;
 using Detail::REFRESH_RATE_OPTIONS;
 
@@ -44,6 +45,7 @@ namespace
 // Row labels. Sentence case, like the rest of the dialog's text; the section headers are Title Case.
 constexpr const char* THEME_LABEL = "Theme";
 constexpr const char* FONT_SIZE_LABEL = "Font size";
+constexpr const char* INTERFACE_SCALE_LABEL = "Interface scale";
 constexpr const char* REFRESH_LABEL = "Update interval";
 constexpr const char* HISTORY_LABEL = "History length";
 #ifndef _WIN32
@@ -107,6 +109,8 @@ void load(State& state, const UserSettings& settings, std::vector<UI::Discovered
         .index = (themeIt != state.themes.end()) ? std::optional{static_cast<std::size_t>(themeIt - state.themes.begin())} : std::nullopt,
     };
     state.fontSizeChoice = ComboState{.index = optionIndexOf(FONT_SIZE_OPTIONS, settings.fontSize, &Detail::FontSizeOption::value)};
+    state.interfaceScaleChoice =
+        ComboState{.index = optionIndexOf(INTERFACE_SCALE_OPTIONS, settings.interfaceScalePercent, &Detail::InterfaceScaleOption::percent)};
     state.refreshRateChoice =
         ComboState{.index = optionIndexOf(REFRESH_RATE_OPTIONS, settings.refreshIntervalMs, &Detail::RefreshRateOption::valueMs)};
     state.historyChoice =
@@ -133,6 +137,8 @@ void resetToDefaults(State& state)
                           ? ComboState{.index = static_cast<std::size_t>(themeIt - state.themes.begin()), .touched = true}
                           : state.themeChoice; // The default theme's file is missing: leave the choice as it is
     state.fontSizeChoice = Detail::defaultChoice(FONT_SIZE_OPTIONS, defaults.fontSize, &Detail::FontSizeOption::value);
+    state.interfaceScaleChoice =
+        Detail::defaultChoice(INTERFACE_SCALE_OPTIONS, defaults.interfaceScalePercent, &Detail::InterfaceScaleOption::percent);
     state.refreshRateChoice = Detail::defaultChoice(REFRESH_RATE_OPTIONS, defaults.refreshIntervalMs, &Detail::RefreshRateOption::valueMs);
     state.historyChoice = Detail::defaultChoice(HISTORY_OPTIONS, defaults.maxHistorySeconds, &Detail::HistoryOption::valueSeconds);
     state.forceNativeDecorationsOnWayland = defaults.forceNativeWindowDecorationsOnWayland;
@@ -246,6 +252,7 @@ Action render(State& state)
         const float widestLabel = std::max({
             ImGui::CalcTextSize(THEME_LABEL).x,
             ImGui::CalcTextSize(FONT_SIZE_LABEL).x,
+            ImGui::CalcTextSize(INTERFACE_SCALE_LABEL).x,
             ImGui::CalcTextSize(REFRESH_LABEL).x,
             ImGui::CalcTextSize(HISTORY_LABEL).x,
         });
@@ -265,6 +272,9 @@ Action render(State& state)
             widestAppearanceValue =
                 std::max(widestAppearanceValue, ImGui::CalcTextSize(option.label.data(), option.label.data() + option.label.size()).x);
         }
+        const std::string scaleAutoLabel = Detail::interfaceScaleAutoLabel(UI::Theme::get().measuredDisplayScale());
+        widestAppearanceValue = std::max(widestAppearanceValue, ImGui::CalcTextSize(scaleAutoLabel.c_str()).x);
+        widestAppearanceValue = std::max(widestAppearanceValue, ImGui::CalcTextSize("Custom (300%)").x); // a hand-edited scale's
         if (!state.themeChoice.index.has_value())
         {
             widestAppearanceValue = std::max(widestAppearanceValue, ImGui::CalcTextSize(state.customThemePreview.c_str()).x);
@@ -386,6 +396,55 @@ Action render(State& state)
                 }
             }
             UI::Widgets::endOutlinedCombo();
+        }
+
+        // Interface scale (#3376): the size of text and controls in place of the display's own scale, for a display
+        // that misreports it. Auto shows what the display reports, so it never hides what it picked.
+        ImGui::Spacing();
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(INTERFACE_SCALE_LABEL);
+        ImGui::SameLine(valueColumn);
+        ImGui::SetNextItemWidth(appearanceComboWidth);
+        {
+            const int livePercent = UserConfig::get().settings().interfaceScalePercent;
+            const auto liveScaleIndex = optionIndexOf(INTERFACE_SCALE_OPTIONS, livePercent, &Detail::InterfaceScaleOption::percent);
+            // No preset for a hand-edited value (interface_scale = 180): shown as Custom, as the refresh and history
+            // combos show theirs, never as Auto.
+            const std::optional<std::size_t> scaleIndex =
+                state.interfaceScaleChoice.touched ? state.interfaceScaleChoice.index : liveScaleIndex;
+            const auto scaleLabel = [&scaleAutoLabel](std::size_t index)
+            {
+                return INTERFACE_SCALE_OPTIONS[index].percent == 0 ? scaleAutoLabel : std::string(INTERFACE_SCALE_OPTIONS[index].label);
+            };
+            const std::string preview = scaleIndex.has_value() ? scaleLabel(*scaleIndex) : std::format("Custom ({}%)", livePercent);
+            if (UI::Widgets::beginOutlinedCombo("##InterfaceScale", preview.c_str()))
+            {
+                comboOpen = true;
+                for (std::size_t i = 0; i < INTERFACE_SCALE_OPTIONS.size(); ++i)
+                {
+                    const bool isSelected = (scaleIndex == i);
+                    if (ImGui::Selectable(scaleLabel(i).c_str(), isSelected))
+                    {
+                        state.interfaceScaleChoice = ComboState{.index = i, .touched = true};
+                    }
+                    if (isSelected)
+                    {
+                        ImGui::SetItemDefaultFocus();
+                    }
+                }
+                UI::Widgets::endOutlinedCombo();
+            }
+            ImGui::SetItemTooltip("The size of text and controls. Auto uses the display's own scale; pick a size when the display reports "
+                                  "the wrong one");
+            // Under WSL, Auto's 100% is WSLg's report, not the display's (#3376): say so where the setting is.
+            if (state.underWsl && scaleIndex.has_value() && INTERFACE_SCALE_OPTIONS[*scaleIndex].percent == 0)
+            {
+                ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + appearanceComboWidth + valueColumn);
+                ImGui::TextColored(UI::Theme::get().scheme().textMuted,
+                                   "WSLg reports every display at 100%%. If text looks small, pick the scale Windows uses "
+                                   "(Windows Settings > Display > Scale).");
+                ImGui::PopTextWrapPos();
+            }
         }
 
         // The programs' icons beside the names in the Processes, Process Details, Services and Startup
@@ -579,7 +638,9 @@ Action render(State& state)
         }
 
         // Start at sign-in (#3093, part 2), where it is offered.
-        if (state.startAtLoginOffered && renderStartAtLogin(state, widestOtherRow))
+        // Wrapped at the narrower of the width the other rows give the dialog and the width the body has now, so a long
+        // path never widens it, whichever rows set the width on this platform (#3093 part 2, #3376).
+        if (state.startAtLoginOffered && renderStartAtLogin(state, std::min(widestOtherRow, ImGui::GetContentRegionAvail().x)))
         {
             action = Action::RepairStartAtLogin;
         }

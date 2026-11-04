@@ -101,6 +101,11 @@ struct UserSettings
     // should stay just as beautiful as today unless the user opts into the tradeoff.
     bool chartAntiAliasing = true;
 
+    // The Interface scale setting (#3376), [ui] interface_scale: a percentage (100-300) the fonts and chrome are built
+    // at in place of what the display reports, or 0 for Auto (the display's own scale). For a display that
+    // misreports its scale: WSLg tells Linux apps 100% whatever Windows uses.
+    int interfaceScalePercent = 0;
+
     // Window state
     int windowWidth = 1280;
     int windowHeight = 720;

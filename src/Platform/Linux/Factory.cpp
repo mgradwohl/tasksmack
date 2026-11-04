@@ -24,6 +24,7 @@
 #include "LinuxSystemProbe.h"
 #include "LinuxUserSessions.h"
 #include "PkexecBroker.h"
+#include "Platform/HostEnvironment.h"
 #include "Platform/IDiskProbe.h"
 #include "Platform/IGPUProbe.h"
 #include "Platform/IHttpsClient.h"
@@ -53,11 +54,9 @@
 #include "PolkitTextAgent.h"
 
 #include <cstdlib>
-#include <filesystem>
 #include <memory>
 #include <stop_token>
 #include <string>
-#include <system_error>
 
 #include <unistd.h>
 
@@ -82,22 +81,6 @@ std::unique_ptr<IProcessActions> makeProcessActions()
     return std::make_unique<LinuxProcessActions>(LinuxProcessControl::sharedEfficiencyMemory());
 }
 
-namespace
-{
-
-/// Whether TaskSmack runs under WSL, whose sessions have no polkit agent (#3380).
-[[nodiscard]] bool runningUnderWsl()
-{
-    if (std::getenv("WSL_DISTRO_NAME") != nullptr) // NOLINT(concurrency-mt-unsafe) - read once, at construction
-    {
-        return true;
-    }
-    std::error_code error;
-    return std::filesystem::exists("/proc/sys/fs/binfmt_misc/WSLInterop", error);
-}
-
-} // namespace
-
 std::shared_ptr<IPrivilegedBroker> makePrivilegedBroker(void* /*ownerWindow*/)
 {
     // Root needs no helper, and a refusal to root is nothing an administrator can cure. Without the
@@ -110,7 +93,7 @@ std::shared_ptr<IPrivilegedBroker> makePrivilegedBroker(void* /*ownerWindow*/)
     // With no desktop polkit agent (WSL has none; nor has a session without a display), pkexec's own text agent fails on
     // polkit 127 with "No session for cookie" (#3380): TaskSmack's own, in this process, asks in its terminal instead.
     // A desktop session's agent keeps the prompt, in its own dialog.
-    if (runningUnderWsl() ||
+    if (Platform::runningUnderWsl() ||
         (std::getenv("DISPLAY") == nullptr && std::getenv("WAYLAND_DISPLAY") == nullptr)) // NOLINT(concurrency-mt-unsafe)
     {
         broker->setTextAgent([](const std::stop_token& stopToken, std::string& error) -> std::shared_ptr<void>

@@ -16,6 +16,7 @@
 #include "Platform/ThreadName.h"
 #include "ProcessColumnConfig.h"
 #include "UI/ChartWidgets.h"
+#include "UI/InterfaceScale.h"
 #include "UI/Theme.h"
 
 #include <spdlog/spdlog.h>
@@ -233,6 +234,14 @@ void readSettings(const toml::table& config, UserSettings& settings)
     if (auto val = config["ui"]["chart_anti_aliasing"].value<bool>())
     {
         settings.chartAntiAliasing = *val;
+    }
+
+    // Interface scale (#3376): 0 is Auto, and so is anything outside 100-300 (a hand edit), rather than a scale that
+    // would make the UI unreadable.
+    if (auto val = config["ui"]["interface_scale"].value<std::int64_t>())
+    {
+        settings.interfaceScalePercent =
+            (*val >= UI::INTERFACE_SCALE_MIN_PERCENT && *val <= UI::INTERFACE_SCALE_MAX_PERCENT) ? static_cast<int>(*val) : 0;
     }
 
     // Theme
@@ -600,6 +609,7 @@ void readSettings(const toml::table& config, UserSettings& settings)
                 {"highlight_new_processes", settings.highlightNewProcesses},
                 {"cpu_details_expanded", settings.cpuDetailsExpanded},
                 {"chart_anti_aliasing", settings.chartAntiAliasing},
+                {"interface_scale", settings.interfaceScalePercent},
             },
         },
         {"theme", toml::table{{"id", settings.themeId}}},
@@ -1038,6 +1048,8 @@ bool UserConfig::writeSettings(const UserSettings& settings)
             "toggles it\n";
     text << "#   [ui] chart_anti_aliasing: smooth chart line/fill edges (true/false); disable for lower CPU/GPU cost "
             "on integrated GPUs\n";
+    text << "#   [ui] interface_scale: the size of text and controls in percent (100-300), in place of the display's own "
+            "scale; 0 = Auto (the display's). For a display that reports the wrong scale, such as WSLg's 100%\n";
     text << "#   [window] width/height/x/y: the window's normal (restored) size and position, kept while it is maximized; "
             "a position off every connected display is ignored at startup\n";
     text << "#   [window] maximized: reopen maximized; Restore returns to width/height/x/y\n";
@@ -1295,6 +1307,7 @@ void UserConfig::applyToApplication() const
     // Apply theme and font size
     theme.setThemeById(m_Settings.themeId);
     theme.setFontSize(m_Settings.fontSize);
+    theme.setInterfaceScalePercent(m_Settings.interfaceScalePercent); // UILayer rebuilds at it next frame (#3376)
 
     // Push the anti-aliasing preference and the smoothing knobs into UI (which must not depend on
     // App/UserConfig directly -- see tasksmack.md's Dependency Rules). All config-file-only, not

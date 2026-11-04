@@ -5,6 +5,7 @@
 // `scale` parameter itself comes from, via SDL_GetWindowDisplayScale()) - see #770.
 
 #include "Core/WindowGeometry.h"
+#include "UI/InterfaceScale.h"
 
 #include <SDL3/SDL_events.h>
 

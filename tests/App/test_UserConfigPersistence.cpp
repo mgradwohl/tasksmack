@@ -25,6 +25,7 @@
 #include <cstring>
 #include <exception>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <iterator>
 #include <locale>
@@ -686,6 +687,33 @@ TEST(UserSettingsTest, CpuDetailsExpandedDefaultsToTrue)
     EXPECT_TRUE(settings.cpuDetailsExpanded);
 }
 
+// #3376: the Interface scale is saved and loaded; a hand-edited value outside 100-300 loads as Auto.
+TEST_F(UserConfigSaveLoadFixture, TheInterfaceScaleIsSavedAndLoadedAndAnOutOfRangeValueIsAuto)
+{
+    auto& config = UserConfig::get();
+    config.settings().interfaceScalePercent = 175;
+    config.save();
+    config.settings().interfaceScalePercent = 0;
+    UserConfig::get().resetConfigPathForTesting(m_TempDir / "config.toml"); // load() reads a file once per run
+    config.load();
+    EXPECT_EQ(config.settings().interfaceScalePercent, 175);
+
+    // A hand edit outside 100-300 is Auto, rather than a scale that would make the UI unreadable.
+    for (const char* value : {"50", "400", "-5", "0", "99", "301"})
+    {
+        UserSettings settings;
+        settings.interfaceScalePercent = 175;
+        ASSERT_TRUE(UserConfig::parseSettings(std::string("[ui]\ninterface_scale = ") + value + "\n", settings));
+        EXPECT_EQ(settings.interfaceScalePercent, 0) << value;
+    }
+    for (const int value : {100, 250, 300})
+    {
+        UserSettings settings;
+        ASSERT_TRUE(UserConfig::parseSettings(std::format("[ui]\ninterface_scale = {}\n", value), settings));
+        EXPECT_EQ(settings.interfaceScalePercent, value);
+    }
+}
+
 TEST_F(UserConfigSaveLoadFixture, CpuDetailsCollapsedIsSavedAndLoaded)
 {
     auto& config = UserConfig::get();
@@ -1220,6 +1248,7 @@ TEST_F(UserConfigSaveLoadFixture, LoadMissingFileLeavesEverySettingAtItsDocument
                  chartTauMsMin,
                  chartTauMsMax,
                  chartAntiAliasing,
+                 interfaceScalePercent,
                  windowWidth,
                  windowHeight,
                  windowScale,
@@ -1240,6 +1269,7 @@ TEST_F(UserConfigSaveLoadFixture, LoadMissingFileLeavesEverySettingAtItsDocument
 
     EXPECT_EQ(themeId, "arctic-fire");
     EXPECT_EQ(fontSize, UI::FontSize::Medium);
+    EXPECT_EQ(interfaceScalePercent, 0); // Auto: the display's own scale (#3376)
     for (const ProcessColumn col : allProcessColumns())
     {
         // The catalogue's defaults, none chosen: the ones this system can't fill follow its

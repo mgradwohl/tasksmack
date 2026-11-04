@@ -4,6 +4,7 @@
 
 #include "App/SettingsLayerDetail.h"
 #include "Domain/SamplingConfig.h"
+#include "UI/InterfaceScale.h"
 #include "UI/Theme.h"
 
 #include <gtest/gtest.h>
@@ -28,6 +29,27 @@ TEST(SettingsLayerDetailTest, OptionIndexOfMapsEveryFontSizeToItsOption)
     EXPECT_EQ(optionIndexOf(FONT_SIZE_OPTIONS, UI::FontSize::Huge, &FontSizeOption::value), 4U);
     EXPECT_EQ(optionIndexOf(FONT_SIZE_OPTIONS, UI::FontSize::EvenHuger, &FontSizeOption::value), 5U);
     EXPECT_FALSE(optionIndexOf(FONT_SIZE_OPTIONS, static_cast<UI::FontSize>(999), &FontSizeOption::value).has_value());
+}
+
+// #3376: Auto first, then 100-300% in steps; Auto's label shows what the display reports.
+TEST(SettingsLayerDetailTest, TheInterfaceScaleOptionsAndAutosLabel)
+{
+    EXPECT_EQ(INTERFACE_SCALE_OPTIONS.front().percent, 0);
+    EXPECT_EQ(optionIndexOf(INTERFACE_SCALE_OPTIONS, 0, &InterfaceScaleOption::percent), 0U);
+    EXPECT_EQ(optionIndexOf(INTERFACE_SCALE_OPTIONS, 175, &InterfaceScaleOption::percent), 4U);
+    EXPECT_EQ(optionIndexOf(INTERFACE_SCALE_OPTIONS, 180, &InterfaceScaleOption::percent), std::nullopt); // a hand edit: no option
+    for (const InterfaceScaleOption& option : INTERFACE_SCALE_OPTIONS)
+    {
+        if (option.percent != 0)
+        {
+            EXPECT_GE(option.percent, UI::INTERFACE_SCALE_MIN_PERCENT) << option.label;
+            EXPECT_LE(option.percent, UI::INTERFACE_SCALE_MAX_PERCENT) << option.label;
+        }
+    }
+    EXPECT_EQ(interfaceScaleAutoLabel(1.0F), "Auto (100%)");
+    EXPECT_EQ(interfaceScaleAutoLabel(1.75F), "Auto (175%)");
+    EXPECT_EQ(interfaceScaleAutoLabel(1.249F), "Auto (125%)");
+    EXPECT_EQ(interfaceScaleAutoLabel(0.0F), "Auto");
 }
 
 TEST(SettingsLayerDetailTest, OptionIndexOfMapsEveryRefreshRateToItsOption)

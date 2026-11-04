@@ -416,6 +416,31 @@ class Theme
         return m_DisplayScale;
     }
 
+    /// The Interface scale setting (#3376): a percentage in [INTERFACE_SCALE_MIN_PERCENT,
+    /// INTERFACE_SCALE_MAX_PERCENT] (DpiScale.h) that replaces the display's measured scale, or 0 for Auto. UILayer
+    /// notices a change at the next frame boundary and rebuilds the fonts and style at effectiveDisplayScale().
+    void setInterfaceScalePercent(int percent) noexcept
+    {
+        m_InterfaceScalePercent = percent;
+    }
+
+    [[nodiscard]] auto interfaceScalePercent() const noexcept -> int
+    {
+        return m_InterfaceScalePercent;
+    }
+
+    /// What the display last reported (UILayer's measurement), whatever the Interface scale setting says: Settings
+    /// shows it beside "Auto". 1.0 before the first measurement.
+    void setMeasuredDisplayScale(float scale) noexcept
+    {
+        m_MeasuredDisplayScale = scale;
+    }
+
+    [[nodiscard]] auto measuredDisplayScale() const noexcept -> float
+    {
+        return m_MeasuredDisplayScale;
+    }
+
     /// Factor applyImGuiStyle() multiplies its size literals by: the font preset relative to
     /// Medium, times the display scale (see computeStyleScale()).
     ///
@@ -546,6 +571,8 @@ class Theme
 
     // Display density, 1.0 at 96 DPI. Defaults to 1.0 so the style is sane before the window exists.
     float m_DisplayScale = 1.0F;
+    int m_InterfaceScalePercent = 0;     // The Interface scale setting; 0 = Auto (#3376)
+    float m_MeasuredDisplayScale = 1.0F; // The display's own report, for Settings' "Auto" label
     std::array<FontSizeConfig, FONT_SIZE_COUNT> m_FontSizes;
 
     // Pre-baked fonts for each size preset (regular and large variants)
