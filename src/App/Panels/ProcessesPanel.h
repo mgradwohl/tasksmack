@@ -20,6 +20,7 @@
 #include "App/Panels/ProcessRowFormat.h"
 #include "App/Panels/ProcessRowMeter.h"
 #include "App/Panels/ProcessRowMeterView.h"
+#include "App/Panels/ProcessSchedPolicyDialog.h"
 #include "App/Panels/ProcessSelection.h"
 #include "App/Panels/ProcessTableNavigation.h"
 #include "App/Panels/ProcessTreeFlatten.h"
@@ -569,9 +570,10 @@ class ProcessesPanel : public Panel
     // The row menu's "Set priority for N processes..." (#1484): picks the value, then the batch
     // confirmation above sets it.
     ProcessBatchPriorityDialog m_BatchPriorityDialog;
-    ProcessAffinityDialog m_AffinityDialog; // The row menu's Set affinity... (#1887)
-    RunTaskDialog m_RunTaskDialog;          // The toolbar's Run new task... (#3065)
-    FindHandlesDialog m_FindHandlesDialog;  // The toolbar's Find handles (#3067), with its own readers and worker
+    ProcessAffinityDialog m_AffinityDialog;       // The row menu's Set affinity... (#1887)
+    ProcessSchedPolicyDialog m_SchedPolicyDialog; // The row menu's Set scheduling policy... (#3086)
+    RunTaskDialog m_RunTaskDialog;                // The toolbar's Run new task... (#3065)
+    FindHandlesDialog m_FindHandlesDialog;        // The toolbar's Find handles (#3067), with its own readers and worker
     // The row menu's Create dump file... (#807). Declared after m_ProcessActions, which its worker uses
     // until it finishes, so it is destroyed (cancelling and waiting for a dump in flight) first.
     ProcessDumpView m_DumpView;
@@ -941,6 +943,9 @@ class ProcessesPanel : public Panel
     /// The row menu's Set affinity... dialog (#1887), its own confirmation; on Apply, sets the chosen
     /// CPUs on the process it was opened for, by identity, and shows the result in the toolbar.
     void renderAffinityDialog();
+    /// The row menu's Set scheduling policy... dialog (#3086), its own confirmation; on Apply, sets the chosen
+    /// policy on the process it was opened for, by identity, and shows the result in the toolbar.
+    void renderSchedPolicyDialog();
     /// Run new task (#3065): the dialog while open, and the program it asks for started on the row action worker.
     void renderRunTaskDialog();
     /// "/" (#3097): the Find box beside the filter while it is open; what is typed, and Enter, ask

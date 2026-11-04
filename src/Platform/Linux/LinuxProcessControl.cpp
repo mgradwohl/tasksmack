@@ -8,6 +8,7 @@
 #include "LinuxProcessActionsDetail.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/SchedPolicy.h"
 #include "PosixGuards.h"
 #include "PriorityErrorMessage.h"
 #include "ProcParsing.h"
@@ -145,8 +146,8 @@ enum class ProtectedProcess : std::uint8_t
                                              : std::format("PID {} is a kernel thread, which can't be ended, suspended or resumed", pid);
 }
 
-/// Why a priority, I/O priority or affinity change is refused before it's tried (#2641), as a signal is
-/// (signalWouldDoNothing()): PID 1, whose priority and affinity every service systemd starts inherits,
+/// Why a priority, I/O priority, affinity or scheduling policy change is refused before it's tried (#2641, #3086), as
+/// a signal is (signalWouldDoNothing()): PID 1, whose priority, affinity and policy every service systemd starts inherits,
 /// and kernel threads (kswapd, jbd2/*, kworker/u*), where a low priority or the Idle I/O class can stall
 /// reclaim or the journal for the whole machine. Through the helper they would otherwise succeed.
 [[nodiscard]] std::optional<std::string> schedulingChangeRefused(std::int32_t pid)
@@ -157,8 +158,8 @@ enum class ProtectedProcess : std::uint8_t
         return std::nullopt;
     }
     return *reason == ProtectedProcess::Init
-             ? std::string("PID 1 is init, whose priority and CPU affinity TaskSmack doesn't change")
-             : std::format("PID {} is a kernel thread, whose priority and CPU affinity TaskSmack doesn't change", pid);
+             ? std::string("PID 1 is init, whose priority, CPU affinity and scheduling policy TaskSmack doesn't change")
+             : std::format("PID {} is a kernel thread, whose priority, CPU affinity and scheduling policy TaskSmack doesn't change", pid);
 }
 
 /// Error text shared by every action refused because pidfds are unavailable.
@@ -380,6 +381,13 @@ int realSetAffinity(id_t tid, std::size_t setSize, const cpu_set_t* set)
     return ::sched_setaffinity(static_cast<pid_t>(tid), setSize, set);
 }
 
+int realSetScheduler(id_t tid, int policy)
+{
+    // sched_priority must be 0 for SCHED_OTHER, SCHED_BATCH and SCHED_IDLE, the only policies asked for (#3086).
+    const sched_param param{.sched_priority = 0}; // NOLINT(misc-include-cleaner) - sched_param is provided by <sched.h>
+    return ::sched_setscheduler(static_cast<pid_t>(tid), policy, &param);
+}
+
 pid_t realWaitPid(pid_t pid, int* status, int options)
 {
     return ::waitpid(pid, status, options);
@@ -558,6 +566,7 @@ LinuxProcessSyscalls realProcessSyscalls() noexcept
         .ioprioSet = &realIoprioSet,
         .ioprioGet = &realIoprioGet,
         .setAffinity = &realSetAffinity,
+        .setScheduler = &realSetScheduler,
         .listThreads = &realListThreads,
         .isThreadOf = &realIsThreadOf,
         .waitPid = &realWaitPid,
@@ -723,7 +732,8 @@ ProcessActionCapabilities LinuxProcessControl::actionCapabilities() const
         .canSetPriority = true,
         .canSetIoPriority = true, // ioprio_set(2) (#803)
         .canSetRealtimeIoPriority = m_CanSetRealtimeIoPriority,
-        .canSetAffinity = m_Syscalls.setAffinity != nullptr, // sched_setaffinity(2) (#1887)
+        .canSetAffinity = m_Syscalls.setAffinity != nullptr,     // sched_setaffinity(2) (#1887)
+        .canSetSchedPolicy = m_Syscalls.setScheduler != nullptr, // sched_setscheduler(2) (#3086)
         .syscallTrace = SyscallTraceAvailability::Unsupported,
         .canCreateDump = false,
         .canSetEfficiencyMode = true, // nice 19 and a low cgroup cpu.weight (#3202)
@@ -814,6 +824,7 @@ struct ChangeWording
 constexpr ChangeWording NICE_WORDING{.lower = "priority", .leading = "Priority"};
 constexpr ChangeWording IO_WORDING{.lower = "I/O priority", .leading = "I/O priority"};
 constexpr ChangeWording AFFINITY_WORDING{.lower = "CPU affinity", .leading = "CPU affinity"};
+constexpr ChangeWording SCHED_POLICY_WORDING{.lower = "scheduling policy", .leading = "Scheduling policy"};
 
 /// The error for a failed first listing of the target's threads, for either change.
 [[nodiscard]] ProcessActionResult threadListError(const ProcessTarget& target, std::error_code listError, ChangeWording wording)
@@ -1110,6 +1121,63 @@ ProcessActionResult LinuxProcessControl::setAffinity(const ProcessTarget& target
     }
     return reportThreadChange(
         m_Syscalls, *result, pidfd, target, AFFINITY_WORDING, setting, affinityErrorMessage(result->firstError, target.pid));
+}
+
+ProcessActionResult LinuxProcessControl::setSchedPolicy(const ProcessTarget& target, SchedPolicy policy)
+{
+    if (target.pid <= 0)
+    {
+        return ProcessActionResult::error("Invalid PID");
+    }
+    // Normal, Batch and Idle only (#3086): real time is #3219, and the root helper must never set it, so
+    // anything else stops here, before sched_setscheduler(2), as the broker protocol's decoder stops it.
+    const int linuxPolicy = settableSchedPolicyToLinux(policy);
+    if (!isSettableSchedPolicy(policy) || linuxPolicy < 0)
+    {
+        return ProcessActionResult::error("Only the Normal, Batch and Idle scheduling policies can be set");
+    }
+    if (const std::optional<std::string> refused = schedulingChangeRefused(target.pid); refused.has_value())
+    {
+        return ProcessActionResult::error(*refused);
+    }
+    if (m_Syscalls.setScheduler == nullptr)
+    {
+        return ProcessActionResult::error("Setting the scheduling policy isn't available on this system");
+    }
+
+    const std::string setting = std::format("policy={}", schedPolicyLabel(policy, 0));
+    spdlog::debug("Setting scheduling policy ({}) for PID {}", setting, target.pid);
+
+    // As setPriority(): sched_setscheduler(2) has no pidfd form, so the pidfd opened before the
+    // identity check is asked afterwards whether the target survived the call.
+    const PidfdOpen opened = openPidfd(m_Syscalls, target.pid);
+    if (opened.fd < 0)
+    {
+        spdlog::warn("Failed to set scheduling policy for PID {}: {}", target.pid, opened.refusal);
+        return ProcessActionResult::error(opened.refusal);
+    }
+    const FdGuard pidfd(opened.fd);
+
+    ProcessActionResult identity = verifyIdentity(target);
+    if (!identity.success)
+    {
+        spdlog::warn("Not setting scheduling policy for PID {}: {}", target.pid, identity.errorMessage);
+        return identity;
+    }
+
+    // The policy is per thread, as nice is: sched_setscheduler(2) with the PID changes only the main
+    // thread, so every thread is set, threads started meanwhile included (#3086, as #1104).
+    const auto result = reniceThreads(
+        target.pid,
+        m_Syscalls.listThreads,
+        [this, linuxPolicy](id_t tid) -> int { return m_Syscalls.setScheduler(tid, linuxPolicy) == 0 ? 0 : errno; },
+        m_Syscalls.isThreadOf);
+    if (!result.has_value())
+    {
+        return threadListError(target, result.error(), SCHED_POLICY_WORDING);
+    }
+    return reportThreadChange(
+        m_Syscalls, *result, pidfd, target, SCHED_POLICY_WORDING, setting, schedPolicyErrorMessage(result->firstError, policy, target.pid));
 }
 
 CpuAffinityLayout LinuxProcessControl::affinityLayout() const

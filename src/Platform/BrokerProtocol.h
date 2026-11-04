@@ -35,6 +35,7 @@
 #include "Platform/IServiceProbe.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/IUserSessions.h"
+#include "Platform/SchedPolicy.h"
 
 #include <algorithm>
 #include <array>
@@ -67,7 +68,8 @@ namespace Platform::Broker
 /// 13: SessionAction, another user's Windows session disconnected or signed out (#3076).
 /// 14: ThreadAction, one thread suspended, resumed or ended (#3069, Windows); ThreadsResult carries each
 ///     thread's wait reason, suspend count and creation time, and whether its priority is Windows' rather than a nice value.
-inline constexpr std::uint16_t PROTOCOL_VERSION = 14;
+/// 15: SetSchedPolicy, a process's CPU scheduling policy set to Normal, Batch or Idle (#3086, Linux).
+inline constexpr std::uint16_t PROTOCOL_VERSION = 15;
 /// The largest frame either side accepts, header included.
 inline constexpr std::size_t MAX_MESSAGE_BYTES = std::size_t{8} << 20U;
 /// The most processes one ReadProcessCounters asks about (#2728); a sampler with more asks for the first.
@@ -109,6 +111,7 @@ enum class MessageKind : std::uint16_t // NOLINT(performance-enum-size): 16 bits
     TaskManagerReplacement = 23, ///< TaskSmack set or cleared as Task Manager's IFEO debugger (#3072)
     SessionAction = 24,          ///< Another user's Windows session disconnected or signed out (#3076)
     ThreadAction = 25,           ///< One thread of a process suspended, resumed or ended (#3069, Windows)
+    SetSchedPolicy = 26,         ///< A process's scheduling policy set to Normal, Batch or Idle (#3086, Linux)
     ReadEnvironment = 32,        ///< Another user's process's environment, for Process Details (#2309)
     ReadModules = 33,            ///< Its loaded modules (#2309)
     ReadOpenFiles = 34,          ///< Its open files (#2309)
@@ -193,6 +196,16 @@ struct AffinityRequest
     ProcessTarget target;
     CpuAffinity cpus;
     friend bool operator==(const AffinityRequest&, const AffinityRequest&) = default;
+};
+
+/// Set a process's CPU scheduling policy (#3086, protocol v15, Linux): IProcessActions::setSchedPolicy(). Normal,
+/// Batch or Idle only: the decoder refuses every other policy, so the helper is never asked for real time (#3219).
+/// The answer is an ActionResult.
+struct SchedPolicyRequest
+{
+    ProcessTarget target;
+    SchedPolicy policy = SchedPolicy::Normal;
+    friend bool operator==(const SchedPolicyRequest&, const SchedPolicyRequest&) = default;
 };
 
 /// Turn Efficiency mode on or off for a process (#3071, protocol v9): IProcessActions::setEfficiencyMode().
@@ -627,7 +640,8 @@ using Request = std::variant<Hello,
                              ThreadsRequest,
                              TaskManagerReplacementRequest,
                              SessionActionRequest,
-                             ThreadActionRequest>;
+                             ThreadActionRequest,
+                             SchedPolicyRequest>;
 using Response = std::variant<HelloReply,
                               ActionResult,
                               ErrorReply,
@@ -1094,6 +1108,14 @@ namespace Detail
     return MessageKind::SetAffinity;
 }
 
+/// SetSchedPolicy (#3086): the target, then the policy as SchedPolicy's value.
+[[nodiscard]] inline MessageKind encodePayload(Writer& writer, const SchedPolicyRequest& policy)
+{
+    writer.target(policy.target);
+    writer.u8(static_cast<std::uint8_t>(policy.policy));
+    return MessageKind::SetSchedPolicy;
+}
+
 } // namespace Detail
 
 /// The frame of request @p requestId asking for @p request.
@@ -1171,6 +1193,26 @@ namespace Detail
         }
     }
     return AffinityRequest{.target = target, .cpus = std::move(cpus)};
+}
+
+/// A SetSchedPolicy payload (#3086): the target, then the policy, refused unless Normal, Batch or Idle. Real time
+/// (FIFO, round robin), Deadline and Unknown are refused here, before the helper acts, as LinuxProcessControl
+/// refuses them too: the helper may change a scheduling policy only to one of those three (#3219 is real time).
+[[nodiscard]] inline SchedPolicyRequest decodeSchedPolicyRequest(Reader& reader)
+{
+    const ProcessTarget target = reader.target();
+    const std::uint8_t value = reader.u8();
+    SchedPolicy policy = SchedPolicy::Normal;
+    if (value == static_cast<std::uint8_t>(SchedPolicy::Normal) || value == static_cast<std::uint8_t>(SchedPolicy::Batch) ||
+        value == static_cast<std::uint8_t>(SchedPolicy::Idle))
+    {
+        policy = static_cast<SchedPolicy>(value); // cast only once it is known to be one of the three
+    }
+    else
+    {
+        reader.fail();
+    }
+    return SchedPolicyRequest{.target = target, .policy = policy};
 }
 
 /// A ReadProcessCounters payload: whether sockets are wanted (0 or 1), the count (at most
@@ -1335,6 +1377,8 @@ namespace Detail
         return Detail::finish<Request>(reader, id, Detail::decodeIoPriorityRequest(reader));
     case MessageKind::SetAffinity:
         return Detail::finish<Request>(reader, id, Detail::decodeAffinityRequest(reader));
+    case MessageKind::SetSchedPolicy:
+        return Detail::finish<Request>(reader, id, Detail::decodeSchedPolicyRequest(reader));
     case MessageKind::SetEfficiencyMode:
         return Detail::finish<Request>(reader, id, EfficiencyModeRequest{.target = reader.target(), .on = reader.flag()});
     case MessageKind::CloseConnection:
@@ -2202,6 +2246,7 @@ namespace Detail
     case MessageKind::SetPriority:
     case MessageKind::SetIoPriority:
     case MessageKind::SetAffinity:
+    case MessageKind::SetSchedPolicy:
     case MessageKind::ReadEnvironment:
     case MessageKind::ReadModules:
     case MessageKind::ReadOpenFiles:

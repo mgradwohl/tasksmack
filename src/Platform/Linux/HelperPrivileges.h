@@ -4,8 +4,10 @@
 // its peer check passes it stops being root -- it runs as nobody, with no supplementary groups -- and keeps
 // only the capabilities the broker protocol's requests need, never able to regain the rest:
 //   CAP_KILL             signal another user's process (Signal)
-//   CAP_SYS_NICE         renice, ioprio_set (the Realtime class too) and sched_setaffinity on another
-//                        user's process (SetPriority, SetIoPriority, SetAffinity)
+//   CAP_SYS_NICE         renice, ioprio_set (the Realtime class too), sched_setaffinity and sched_setscheduler
+//                        on another user's process (SetPriority, SetIoPriority, SetAffinity, SetSchedPolicy).
+//                        A scheduling policy only to Normal, Batch or Idle (#3086), which the protocol decoder,
+//                        LinuxProcessControl and the seccomp filter all enforce; real time stays refused (#3219)
 //   CAP_SYS_PTRACE       ptrace read access: another user's environ, maps, fd links, fdinfo and
 //                        smaps_rollup, and under hidepid its task stat files (ReadEnvironment, ReadModules,
 //                        ReadOpenFiles, ReadConnections, ReadMemoryRollup, ReadThreads)

@@ -50,7 +50,7 @@ inline constexpr std::array LINUX_ROWS{
         .missingPrivilege = Platform::MissingPrivilege::SIGNAL_OTHERS,
     },
     Row{
-        .item = "Raising priority, the Realtime I/O class, other users' priority and affinity",
+        .item = "Raising priority, the Realtime I/O class, leaving the Idle policy, other users' priority, affinity and policy",
         .standard = "Refused; Authenticate and retry asks each time",
         .administrator = "Done",
         .missingPrivilege = Platform::MissingPrivilege::RAISE_PRIORITY,

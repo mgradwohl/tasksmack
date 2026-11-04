@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Platform/IProcessActions.h"
+#include "Platform/SchedPolicy.h"
 
 #include <cerrno>
 #include <cstdint>
@@ -78,6 +79,29 @@ namespace Platform
                            pid);
     case EINVAL:
         return std::format("None of those CPUs can run process {}: they are offline, or outside the CPUs its cgroup allows.", pid);
+    case ESRCH:
+        return "Process not found - may have already exited";
+    default:
+        return std::system_category().message(err);
+    }
+}
+
+/// The message shown when sched_setscheduler(2) fails with @p err for process @p pid, asked for @p policy
+/// (#3086: Normal, Batch or Idle).
+///
+/// EPERM: the process belongs to another user, or it is leaving the Idle policy, and TaskSmack lacks
+/// CAP_SYS_NICE (an unprivileged thread may leave SCHED_IDLE only within its RLIMIT_NICE, usually 0).
+[[nodiscard]] inline std::string schedPolicyErrorMessage(int err, SchedPolicy policy, std::int32_t pid)
+{
+    switch (err)
+    {
+    case EPERM:
+        return std::format("Permission denied: process {} belongs to another user, or is leaving the Idle policy. Setting it to {} needs "
+                           "root or CAP_SYS_NICE.",
+                           pid,
+                           schedPolicyLabel(policy, 0));
+    case EINVAL:
+        return std::format("The {} scheduling policy can't be set for process {}", schedPolicyLabel(policy, 0), pid);
     case ESRCH:
         return "Process not found - may have already exited";
     default:

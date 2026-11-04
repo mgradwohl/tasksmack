@@ -115,6 +115,25 @@ TEST(BrokerRequestMappingTest, PriorityIoPriorityAndAffinityReachTheirActions)
     EXPECT_EQ(actions.lastTarget(), TARGET);
 }
 
+// #3086: a SetSchedPolicy request reaches setSchedPolicy() with its target and policy, and its refusal comes back.
+TEST(BrokerRequestMappingTest, ASchedulingPolicyReachesItsAction)
+{
+    TestMocks::MockProcessActions actions;
+    EXPECT_TRUE(
+        actionResult(BrokerServer::handleRequest(Broker::SchedPolicyRequest{.target = TARGET, .policy = SchedPolicy::Batch}, actions))
+            .success);
+    EXPECT_EQ(actions.setSchedPolicyCount(), 1);
+    EXPECT_EQ(actions.lastSchedPolicy(), SchedPolicy::Batch);
+    EXPECT_EQ(actions.lastTarget(), TARGET);
+
+    actions.setSchedPolicyResult(ProcessActionResult::error("PID 1 is init"));
+    const Broker::ActionResult refused =
+        actionResult(BrokerServer::handleRequest(Broker::SchedPolicyRequest{.target = TARGET, .policy = SchedPolicy::Idle}, actions));
+    EXPECT_FALSE(refused.success);
+    EXPECT_EQ(refused.errorMessage, "PID 1 is init");
+    EXPECT_EQ(actions.lastSchedPolicy(), SchedPolicy::Idle);
+}
+
 // #3071: a SetEfficiencyMode request reaches setEfficiencyMode() with its target and whether it is on.
 TEST(BrokerRequestMappingTest, EfficiencyModeReachesItsAction)
 {

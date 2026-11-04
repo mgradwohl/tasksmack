@@ -17,6 +17,7 @@
 #include <linux/audit.h>
 #include <linux/filter.h>
 #include <linux/seccomp.h>
+#include <sched.h>
 #include <sys/mman.h>
 #include <sys/prctl.h>
 #include <sys/socket.h>
@@ -331,9 +332,10 @@ constexpr std::array REFUSED{
     SYS_mq_timedreceive,
     SYS_mq_notify,
     SYS_mq_getsetattr,
-    // CAP_SYS_NICE beyond the helper's job (nice, I/O priority, affinity): real-time scheduling, which
-    // can starve every CPU, and other processes' memory placement
-    SYS_sched_setscheduler,
+    // CAP_SYS_NICE beyond the helper's job (nice, I/O priority, affinity, and a scheduling policy of Normal, Batch or
+    // Idle, which sched_setscheduler's own rule below holds it to, #3086): real-time scheduling, which can starve every
+    // CPU (#3219 will revisit it), and other processes' memory placement. sched_setattr stays refused: the helper
+    // never needs it, and its policy is in a struct the filter can't read.
     SYS_sched_setattr,
     SYS_migrate_pages,
     SYS_move_pages,
@@ -537,6 +539,18 @@ std::vector<sock_filter> program([[maybe_unused]] Mode mode, [[maybe_unused]] pi
         code.blockFor(
             call, {load(argLow(0)), jump(BPF_JMP | BPF_JEQ | BPF_K, static_cast<std::uint32_t>(self), 0, 1), ret(ALLOW), ret(fail(EPERM))});
     }
+    // sched_setscheduler: Set scheduling policy (#3086), to SCHED_OTHER, SCHED_BATCH or SCHED_IDLE only, the three the
+    // broker protocol's decoder and LinuxProcessControl both hold it to. Real time (SCHED_FIFO, SCHED_RR), Deadline and
+    // SCHED_RESET_ON_FORK fail as permission denied would; #3219 will revisit real time.
+    code.blockFor(SYS_sched_setscheduler,
+                  {
+                      load(argLow(1)),
+                      jump(BPF_JMP | BPF_JEQ | BPF_K, static_cast<std::uint32_t>(SCHED_OTHER), 3, 0),
+                      jump(BPF_JMP | BPF_JEQ | BPF_K, static_cast<std::uint32_t>(SCHED_BATCH), 2, 0),
+                      jump(BPF_JMP | BPF_JEQ | BPF_K, static_cast<std::uint32_t>(SCHED_IDLE), 1, 0),
+                      ret(fail(EPERM)),
+                      ret(ALLOW),
+                  });
     // openat2's flags are in a struct the filter can't read: say it doesn't exist, and glibc uses openat.
 #ifdef SYS_openat2
     code.returnFor(SYS_openat2, fail(ENOSYS));

@@ -21,6 +21,7 @@
 #include <linux/filter.h>
 #include <linux/seccomp.h>
 #include <netinet/in.h>
+#include <sched.h>
 #include <sys/ioctl.h>
 #include <sys/ipc.h>
 #include <sys/mman.h>
@@ -138,6 +139,43 @@ TEST_F(HelperSandboxTest, ItsOwnJobStillWorks)
                                        return page == MAP_FAILED ? 6 : 0;
                                    });
     EXPECT_EQ(status, 0);
+}
+
+// #3086: Set scheduling policy may move a thread to Batch or Idle (and back to Normal, with CAP_SYS_NICE); real
+// time, SCHED_RESET_ON_FORK and sched_setattr stay refused. Batch with SCHED_RESET_ON_FORK needs no privilege, so
+// its EPERM is the filter's, not the kernel's.
+TEST_F(HelperSandboxTest, OnlyNormalBatchAndIdleSchedulingPoliciesAreSet)
+{
+    EXPECT_EQ(underFilter(HelperSandbox::Mode::Enforce,
+                          []
+                          {
+                              const sched_param param{.sched_priority = 0};
+                              if (::sched_setscheduler(0, SCHED_BATCH, &param) != 0)
+                              {
+                                  return 1;
+                              }
+                              if (::sched_getscheduler(0) != SCHED_BATCH)
+                              {
+                                  return 2;
+                              }
+                              return ::sched_setscheduler(0, SCHED_IDLE, &param) == 0 ? 0 : 3;
+                          }),
+              0);
+    EXPECT_EQ(underFilter(HelperSandbox::Mode::Enforce,
+                          []
+                          {
+                              const sched_param param{.sched_priority = 0};
+                              return errorOf(::sched_setscheduler(0, SCHED_BATCH | SCHED_RESET_ON_FORK, &param));
+                          }),
+              EPERM);
+    EXPECT_EQ(underFilter(HelperSandbox::Mode::Enforce,
+                          []
+                          {
+                              const sched_param param{.sched_priority = 1};
+                              return errorOf(::sched_setscheduler(0, SCHED_FIFO, &param));
+                          }),
+              EPERM);
+    EXPECT_EQ(underFilter(HelperSandbox::Mode::Enforce, [] { return errorOf(::syscall(SYS_sched_setattr, 0, nullptr, 0)); }), EPERM);
 }
 
 TEST_F(HelperSandboxTest, FilesOpenReadOnly)

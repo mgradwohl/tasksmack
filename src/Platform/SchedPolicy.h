@@ -51,6 +51,35 @@ enum class SchedPolicy : std::uint8_t
     }
 }
 
+/// Whether Set scheduling policy may set @p policy (#3086): Normal, Batch and Idle only. Real time (FIFO,
+/// round robin) is #3219, and Deadline is never offered; the broker protocol's decoder and
+/// LinuxProcessControl both refuse every other policy, so the privileged helper is never asked for one.
+[[nodiscard]] constexpr bool isSettableSchedPolicy(SchedPolicy policy) noexcept
+{
+    return policy == SchedPolicy::Normal || policy == SchedPolicy::Batch || policy == SchedPolicy::Idle;
+}
+
+/// The Linux SCHED_* value sched_setscheduler() takes for a settable policy: SCHED_OTHER (0), SCHED_BATCH
+/// (3), SCHED_IDLE (5). -1 for any policy isSettableSchedPolicy() refuses.
+[[nodiscard]] constexpr int settableSchedPolicyToLinux(SchedPolicy policy) noexcept
+{
+    switch (policy)
+    {
+    case SchedPolicy::Normal:
+        return 0;
+    case SchedPolicy::Batch:
+        return 3;
+    case SchedPolicy::Idle:
+        return 5;
+    case SchedPolicy::Unknown:
+    case SchedPolicy::Deadline:
+    case SchedPolicy::RoundRobin:
+    case SchedPolicy::Fifo:
+        break;
+    }
+    return -1;
+}
+
 /// A scheduling policy's label held by value, so building it allocates nothing (#3244): the Processes table
 /// words the policy from the snapshot's schedPolicy and rtPriority where it draws the cell, instead of every
 /// snapshot carrying the text for each copy of the published snapshots to copy. The longest label,

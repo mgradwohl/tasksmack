@@ -4,11 +4,13 @@
 #include "Platform/CpuAffinity.h"
 #include "Platform/CurrentProcess.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/SchedPolicy.h"
 #include "ProcessActionConfirm.h"
 #include "ProcessAffinityDialog.h"
 #include "ProcessDetailsLayout.h"
 #include "ProcessDetailsPanel_ActionHelpers.h"
 #include "ProcessDumpView.h"
+#include "ProcessSchedPolicyDialog.h"
 #include "ProcessWaitChainDialog.h"
 #include "UI/Theme.h"
 #include "UI/Widgets.h"
@@ -39,7 +41,8 @@ void ProcessActionsView::renderControls(Platform::IProcessActions* actions,
                                         const std::string& processName,
                                         const Platform::ProcessTarget& target,
                                         const Platform::CpuAffinity* currentAffinity,
-                                        bool efficiencyMode)
+                                        bool efficiencyMode,
+                                        Platform::SchedPolicy currentSchedPolicy)
 {
     // No name, PID or header of its own: the view sits in the Overview's Actions block, under that
     // block's header and beside the Identity block that names the process (#1493). Its result line
@@ -48,7 +51,9 @@ void ProcessActionsView::renderControls(Platform::IProcessActions* actions,
     renderSyscallTraceButton(actions, capabilities, target, anyButton);
     const bool anyBeforeAffinity = anyButton || capabilities.syscallTrace != Platform::SyscallTraceAvailability::Unsupported;
     renderSetAffinityButton(actions, capabilities, processName, target, currentAffinity, anyBeforeAffinity);
-    const bool anyBeforeDump = anyBeforeAffinity || capabilities.canSetAffinity;
+    const bool anyBeforeSchedPolicy = anyBeforeAffinity || capabilities.canSetAffinity;
+    renderSetSchedPolicyButton(capabilities, processName, target, currentSchedPolicy, anyBeforeSchedPolicy);
+    const bool anyBeforeDump = anyBeforeSchedPolicy || capabilities.canSetSchedPolicy;
     renderCreateDumpButton(actions, capabilities, processName, target, anyBeforeDump);
     const bool anyBeforeWaitChain = anyBeforeDump || DumpDetail::offersCreateDump(capabilities, 0);
     renderAnalyzeWaitChainButton(actions, capabilities, processName, target, anyBeforeWaitChain);
@@ -232,6 +237,60 @@ void ProcessActionsView::renderAffinityDialog(Platform::IProcessActions* actions
         Platform::AuthorizedAction{.kind = Platform::AuthorizedAction::Kind::SetAffinity, .target = target, .cpus = *cpus});
 }
 
+void ProcessActionsView::renderSetSchedPolicyButton(const Platform::ProcessActionCapabilities& capabilities,
+                                                    const std::string& processName,
+                                                    const Platform::ProcessTarget& target,
+                                                    Platform::SchedPolicy current,
+                                                    bool afterButtons)
+{
+    if (!capabilities.canSetSchedPolicy)
+    {
+        return;
+    }
+    // As the affinity button: on the row at its own width when it fits, else on a row of its own.
+    const float width = setSchedPolicyButtonWidth(capabilities);
+    if (afterButtons)
+    {
+        const float rowEnd = ImGui::GetItemRectMax().x;
+        const float regionEnd = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+        if (rowEnd + ImGui::GetStyle().ItemSpacing.x + width <= regionEnd)
+        {
+            ImGui::SameLine();
+        }
+    }
+    const bool noTarget = target.pid <= 0;
+    ImGui::BeginDisabled(noTarget || m_ActionRun.busy());
+    const bool pressed = ImGui::Button(Detail::SET_SCHED_POLICY_LABEL, ImVec2(width, 0.0F));
+    ImGui::EndDisabled();
+    if (pressed && !noTarget)
+    {
+        // The process is captured now; the dialog acts only on it (renderSchedPolicyDialog()).
+        m_SchedPolicyDialog.open(target, processName, current);
+    }
+    ImGui::SetItemTooltip("Normal, Batch or Idle: how the kernel shares the CPU with this process");
+}
+
+void ProcessActionsView::renderSchedPolicyDialog(Platform::IProcessActions* actions, const Platform::ProcessTarget& liveTarget)
+{
+    if (m_SchedPolicyDialog.isPending() && !Detail::isSameProcessTarget(m_SchedPolicyDialog.target(), liveTarget))
+    {
+        m_SchedPolicyDialog.dismiss(); // another process is shown now: never act on the old one
+    }
+    const std::optional<Platform::SchedPolicy> policy = m_SchedPolicyDialog.render();
+    if (!policy.has_value())
+    {
+        return;
+    }
+    const Platform::ProcessTarget target = m_SchedPolicyDialog.target();
+    runAction(
+        actions,
+        std::format("Setting the scheduling policy of PID {}...", target.pid),
+        [actions, target, policy = *policy] { return actions->setSchedPolicy(target, policy); },
+        [name = m_SchedPolicyDialog.name(), pid = target.pid, policy = *policy](const Platform::ProcessActionResult& result)
+        { return schedPolicyResultMessage(name, pid, policy, result); },
+        Platform::AuthorizedAction{.kind = Platform::AuthorizedAction::Kind::SetSchedPolicy, .target = target, .schedPolicy = *policy});
+}
+
 void ProcessActionsView::renderSyscallTraceButton(Platform::IProcessActions* actions,
                                                   const Platform::ProcessActionCapabilities& capabilities,
                                                   const Platform::ProcessTarget& target,
@@ -370,6 +429,16 @@ float ProcessActionsView::setAffinityButtonWidth(const Platform::ProcessActionCa
                                                           ImGui::GetStyle().FramePadding.x);
 }
 
+float ProcessActionsView::setSchedPolicyButtonWidth(const Platform::ProcessActionCapabilities& capabilities)
+{
+    if (!capabilities.canSetSchedPolicy)
+    {
+        return 0.0F;
+    }
+    return ProcessDetailsLayout::computeActionButtonWidth(ImGui::CalcTextSize(Detail::SET_SCHED_POLICY_LABEL).x,
+                                                          ImGui::GetStyle().FramePadding.x);
+}
+
 float ProcessActionsView::createDumpButtonWidth(const Platform::ProcessActionCapabilities& capabilities)
 {
     if (!DumpDetail::offersCreateDump(capabilities, 0))
@@ -411,12 +480,13 @@ float ProcessActionsView::buttonsRowWidth(const Platform::ProcessActionCapabilit
     }
     const float actionRow =
         ProcessDetailsLayout::computeActionButtonRowWidth(actionButtonWidth(capabilities), count, ImGui::GetStyle().ItemSpacing.x);
-    // The trace, affinity and dump buttons and the Efficiency mode checkbox each take a row of their own
+    // The trace, affinity, scheduling policy and dump buttons and the Efficiency mode checkbox each take a row of their own
     // when they don't fit after the others.
     return ProcessDetailsLayout::computeActionButtonsWidth(actionRow,
                                                            std::max({
                                                                syscallTraceButtonWidth(capabilities),
                                                                setAffinityButtonWidth(capabilities),
+                                                               setSchedPolicyButtonWidth(capabilities),
                                                                createDumpButtonWidth(capabilities),
                                                                analyzeWaitChainButtonWidth(capabilities),
                                                                efficiencyModeToggleWidth(capabilities),

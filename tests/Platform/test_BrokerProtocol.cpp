@@ -327,6 +327,33 @@ TEST(BrokerProtocolTest, EveryRequestRoundTrips)
     cpus.set(130); // past the first word
     const Request affinity = AffinityRequest{.target = TARGET, .cpus = cpus};
     EXPECT_EQ(roundTrip(affinity), affinity);
+
+    // #3086 (v15): the three policies the helper may set.
+    for (const SchedPolicy policy : {SchedPolicy::Normal, SchedPolicy::Batch, SchedPolicy::Idle})
+    {
+        const Request request = SchedPolicyRequest{.target = TARGET, .policy = policy};
+        EXPECT_EQ(roundTrip(request), request);
+    }
+}
+
+// #3086: the helper is never asked for real time (#3219), Deadline or a policy past the enum: the decoder refuses
+// every policy but Normal, Batch and Idle, whatever the encoder was given.
+TEST(BrokerProtocolTest, ASchedulingPolicyOtherThanNormalBatchOrIdleIsRefused)
+{
+    for (const SchedPolicy policy : {SchedPolicy::Fifo, SchedPolicy::RoundRobin, SchedPolicy::Deadline, SchedPolicy::Unknown})
+    {
+        EXPECT_FALSE(decodeRequest(encodeRequest(1, Request{SchedPolicyRequest{.target = TARGET, .policy = policy}})).has_value())
+            << static_cast<int>(policy);
+    }
+    // A byte past the enum: the policy follows the 12-byte target.
+    std::vector<std::uint8_t> past = encodeRequest(1, Request{SchedPolicyRequest{.target = TARGET, .policy = SchedPolicy::Batch}});
+    past[4 + HEADER_BYTES + 12] = 0xFF;
+    EXPECT_FALSE(decodeRequest(past).has_value());
+    // And a short one, with no policy byte.
+    std::vector<std::uint8_t> shortFrame = encodeRequest(1, Request{SchedPolicyRequest{.target = TARGET, .policy = SchedPolicy::Idle}});
+    shortFrame.pop_back();
+    shortFrame[0] = static_cast<std::uint8_t>(shortFrame.size() - 4);
+    EXPECT_FALSE(decodeRequest(shortFrame).has_value());
 }
 
 TEST(BrokerProtocolTest, EveryResponseRoundTrips)
@@ -928,6 +955,7 @@ TEST(BrokerProtocolTest, NoResponseDecodesAsARequestAndNoRequestAsAResponse)
         CrashesRequest{},
         ThreadsRequest{.target = TARGET},
         ThreadActionRequest{.target = TARGET, .tid = 9, .action = ThreadAction::Resume},
+        SchedPolicyRequest{.target = TARGET, .policy = SchedPolicy::Batch},
     };
     for (const Request& request : requests)
     {
@@ -1075,6 +1103,7 @@ TEST(BrokerProtocolTest, TheFuzzCorpusHasADecodableSeedForEveryMessageKind)
                                    MessageKind::TaskManagerReplacement,
                                    MessageKind::SessionAction,
                                    MessageKind::ThreadAction,
+                                   MessageKind::SetSchedPolicy,
                                    MessageKind::ReadEnvironment,
                                    MessageKind::ReadModules,
                                    MessageKind::ReadOpenFiles,

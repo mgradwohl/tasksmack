@@ -666,6 +666,64 @@ TEST(LinuxProcessActionsTest, SetAffinityRefusesAnEmptySetAndAnInvalidPid)
 }
 
 // =============================================================================
+// Scheduling policy (#3086), against a real child process: Batch and Idle on its own user's process, and
+// Batch back to Normal, need no privilege (only leaving Idle does).
+// =============================================================================
+
+[[nodiscard]] int schedulerOf(id_t tid)
+{
+    return sched_getscheduler(static_cast<pid_t>(tid)) & ~SCHED_RESET_ON_FORK;
+}
+
+TEST(LinuxProcessActionsTest, SetSchedPolicyChangesEveryThread)
+{
+    const SleepingChild child(2);
+    ASSERT_TRUE(child.started());
+    ASSERT_TRUE(child.threadsReady());
+    const ProcessTarget target = child.target();
+    const std::vector<id_t> tids = listThreads(target.pid);
+    ASSERT_GE(tids.size(), 3U);
+    if (schedulerOf(tids.front()) != SCHED_OTHER)
+    {
+        GTEST_SKIP() << "the test runner isn't under SCHED_OTHER";
+    }
+
+    LinuxProcessActions actions;
+    EXPECT_TRUE(actions.actionCapabilities().canSetSchedPolicy);
+    for (const auto& [policy, expected] : {std::pair{SchedPolicy::Batch, SCHED_BATCH},
+                                           std::pair{SchedPolicy::Normal, SCHED_OTHER},
+                                           std::pair{SchedPolicy::Idle, SCHED_IDLE}})
+    {
+        const auto result = actions.setSchedPolicy(target, policy);
+        ASSERT_TRUE(result.success) << result.errorMessage;
+        for (const id_t tid : tids)
+        {
+            EXPECT_EQ(schedulerOf(tid), expected) << "thread " << tid;
+        }
+    }
+}
+
+TEST(LinuxProcessActionsTest, SetSchedPolicyRefusesRealTimeAnInvalidPidAndAReusedOne)
+{
+    LinuxProcessActions actions;
+    const SleepingChild child;
+    ASSERT_TRUE(child.started());
+    for (const SchedPolicy policy : {SchedPolicy::Fifo, SchedPolicy::RoundRobin, SchedPolicy::Deadline, SchedPolicy::Unknown})
+    {
+        const ProcessActionResult refused = actions.setSchedPolicy(child.target(), policy);
+        EXPECT_FALSE(refused.success);
+        EXPECT_FALSE(refused.permissionDenied) << "no password helps: the helper refuses it too";
+        EXPECT_EQ(refused.errorMessage, "Only the Normal, Batch and Idle scheduling policies can be set");
+    }
+    EXPECT_EQ(schedulerOf(static_cast<id_t>(child.target().pid)), SCHED_OTHER);
+    EXPECT_EQ(actions.setSchedPolicy({.pid = 0, .startTimeTicks = 1}, SchedPolicy::Batch).errorMessage, "Invalid PID");
+    // A different start time: the PID now names another process, and nothing is changed.
+    const ProcessTarget other{.pid = child.target().pid, .startTimeTicks = child.target().startTimeTicks + 1};
+    EXPECT_FALSE(actions.setSchedPolicy(other, SchedPolicy::Batch).success);
+    EXPECT_EQ(schedulerOf(static_cast<id_t>(child.target().pid)), SCHED_OTHER);
+}
+
+// =============================================================================
 // I/O priority (#803), against real child processes. Lowering a process of this user to the Idle
 // class or to a lower best-effort level needs no privilege.
 // =============================================================================
@@ -817,7 +875,8 @@ TEST(LinuxProcessActionsTest, InitAndKernelThreadsKeepTheirPriorityAndAffinity)
     {
         for (const ProcessActionResult& result : {actions.setPriority(target, 19),
                                                   actions.setIoPriority(target, IoPriorityClass::Idle, 0),
-                                                  actions.setAffinity(target, CpuAffinity::fromMask(1))})
+                                                  actions.setAffinity(target, CpuAffinity::fromMask(1)),
+                                                  actions.setSchedPolicy(target, SchedPolicy::Idle)})
         {
             EXPECT_FALSE(result.success);
             EXPECT_FALSE(result.permissionDenied) << "no password helps";
@@ -1245,6 +1304,8 @@ TEST(LinuxProcessControlTest, OffersNoTraceOrDumpButTheSameControlAsLinuxProcess
     EXPECT_EQ(caps.canSetIoPriority, full.canSetIoPriority);
     EXPECT_EQ(caps.canSetRealtimeIoPriority, full.canSetRealtimeIoPriority);
     EXPECT_EQ(caps.canSetAffinity, full.canSetAffinity);
+    EXPECT_EQ(caps.canSetSchedPolicy, full.canSetSchedPolicy);
+    EXPECT_TRUE(caps.canSetSchedPolicy) << "the helper links only this, and sets a policy (#3086)";
 
     EXPECT_FALSE(control.launchSyscallTrace(ownTarget()).success);
     const std::stop_source stop;
@@ -1619,7 +1680,8 @@ class LinuxProcessActionsFaultTest : public ::testing::Test
                                                        .setPriority = &fakeSet,
                                                        .ioprioSet = &fakeSet,
                                                        .ioprioGet = &fakeIoprioGet,
-                                                       .setAffinity = &fakeSetAffinity}};
+                                                       .setAffinity = &fakeSetAffinity,
+                                                       .setScheduler = &fakeSet}};
 };
 
 TEST_F(LinuxProcessActionsFaultTest, SignalsGoThroughThePidfd)
@@ -1994,6 +2056,74 @@ TEST_F(LinuxProcessActionsFaultTest, AffinityWithoutTheCallIsUnavailable)
     // #1891: and asked anyway, it refuses rather than calling a missing function.
     EXPECT_EQ(actions.setAffinity(ownTarget(), CpuAffinity::fromMask(1)).errorMessage,
               "Setting CPU affinity isn't available on this system");
+}
+
+// #3086: a scheduling policy goes to every thread as its SCHED_* value, and is confirmed through the pidfd
+// like the other per-thread changes.
+TEST_F(LinuxProcessActionsFaultTest, SchedPolicyReachesEveryThread)
+{
+    EXPECT_TRUE(m_Actions.actionCapabilities().canSetSchedPolicy);
+    for (const auto& [policy, expected] : {std::pair{SchedPolicy::Normal, SCHED_OTHER},
+                                           std::pair{SchedPolicy::Batch, SCHED_BATCH},
+                                           std::pair{SchedPolicy::Idle, SCHED_IDLE}})
+    {
+        plan() = FaultPlan{};
+        const ProcessActionResult result = m_Actions.setSchedPolicy(ownTarget(), policy);
+        EXPECT_TRUE(result.success) << result.errorMessage;
+        EXPECT_GE(static_cast<std::size_t>(plan().setCalls), listThreads(ownTarget().pid).size()) << "one per thread of this process";
+        EXPECT_EQ(plan().pollCalls, 1);
+        EXPECT_EQ(plan().lastSetValue, expected);
+    }
+}
+
+// #3086: real time, Deadline and an unread policy are refused before sched_setscheduler(2) is reached, so the
+// helper, which links this, can't be made to set one.
+TEST_F(LinuxProcessActionsFaultTest, SchedPolicyRefusesRealTimeBeforeTheCall)
+{
+    for (const SchedPolicy policy : {SchedPolicy::Fifo, SchedPolicy::RoundRobin, SchedPolicy::Deadline, SchedPolicy::Unknown})
+    {
+        const ProcessActionResult refused = m_Actions.setSchedPolicy(ownTarget(), policy);
+        EXPECT_FALSE(refused.success);
+        EXPECT_FALSE(refused.permissionDenied);
+    }
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange) - the out-of-range value is the point
+    EXPECT_FALSE(m_Actions.setSchedPolicy(ownTarget(), static_cast<SchedPolicy>(0xEE)).success);
+    EXPECT_EQ(plan().setCalls, 0);
+    EXPECT_EQ(plan().pollCalls, 0);
+}
+
+TEST_F(LinuxProcessActionsFaultTest, SchedPolicyErrorsSayWhy)
+{
+    plan().setErrno = EPERM;
+    const ProcessActionResult denied = m_Actions.setSchedPolicy(ownTarget(), SchedPolicy::Normal);
+    EXPECT_FALSE(denied.success);
+    EXPECT_TRUE(denied.permissionDenied) << "an administrator may: Authenticate and retry";
+    EXPECT_TRUE(denied.errorMessage.contains("CAP_SYS_NICE")) << denied.errorMessage;
+    EXPECT_TRUE(denied.errorMessage.contains("Idle")) << "leaving Idle is one reason: " << denied.errorMessage;
+    plan().setErrno = EINVAL;
+    const ProcessActionResult invalid = m_Actions.setSchedPolicy(ownTarget(), SchedPolicy::Batch);
+    EXPECT_FALSE(invalid.permissionDenied);
+    EXPECT_TRUE(invalid.errorMessage.contains("Batch")) << invalid.errorMessage;
+    plan().setErrno = 0;
+    plan().openErrno = ENOSYS;
+    const int callsBefore = plan().setCalls;
+    EXPECT_TRUE(m_Actions.setSchedPolicy(ownTarget(), SchedPolicy::Batch).errorMessage.contains("pidfd"));
+    EXPECT_EQ(plan().setCalls, callsBefore) << "never sent to the bare PID";
+}
+
+TEST_F(LinuxProcessActionsFaultTest, SchedPolicyWithoutTheCallIsUnavailable)
+{
+    LinuxProcessActions actions{SyscallTrace::Tools{},
+                                LinuxProcessSyscalls{.pidfdOpen = &fakePidfdOpen,
+                                                     .pidfdSendSignal = &fakePidfdSendSignal,
+                                                     .pollPidfd = &fakePollPidfd,
+                                                     .setPriority = &fakeSet,
+                                                     .ioprioSet = &fakeSet,
+                                                     .ioprioGet = &fakeIoprioGet}};
+    EXPECT_FALSE(actions.actionCapabilities().canSetSchedPolicy);
+    EXPECT_EQ(actions.setSchedPolicy(ownTarget(), SchedPolicy::Batch).errorMessage,
+              "Setting the scheduling policy isn't available on this system");
+    EXPECT_EQ(plan().setCalls, 0);
 }
 
 /// A thread listing that fails with the error in g_ListThreadsError (#1891).

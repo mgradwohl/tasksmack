@@ -1146,6 +1146,105 @@ TEST_F(ProcessesPanelRenderTest, SetAffinityFromTheRowMenuAppliesTheDialogsCpus)
     panel->onDetach();
 }
 
+/// A panel over three processes under @p policy whose actions can set a scheduling policy (#3086) and ask for
+/// authorization; @p actions is left pointing at them.
+[[nodiscard]] std::unique_ptr<ProcessesPanel> schedPolicyPanel(Platform::SchedPolicy policy, TestMocks::MockProcessActions*& actions)
+{
+    return std::make_unique<ProcessesPanel>(
+        [&actions, policy]
+        {
+            auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+            for (auto counters : {TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0),
+                                  TestMocks::makeProcessCounters(100, "server", 'R', 200, 50, 1000, std::uint64_t{8} << 20U, 1),
+                                  TestMocks::makeProcessCounters(101, "worker", 'S', 30, 10, 1100, std::uint64_t{2} << 20U, 100)})
+            {
+                counters.schedPolicy = policy;
+                probe->withProcess(counters);
+            }
+            auto mock = std::make_unique<TestMocks::MockProcessActions>();
+            mock->setCapabilities({.canSetSchedPolicy = true, .canAuthorizeInteractively = true});
+            actions = mock.get();
+            return ProcessesPanelPlatform{.probe = std::move(probe), .actions = std::move(mock), .icons = nullptr};
+        },
+        [](Core::Event&) {});
+}
+
+// #3086: the row menu's Set scheduling policy... opens the dialog on the process's own policy; Apply with Idle
+// chosen sets it on the process the menu was for, and the toolbar says so.
+TEST_F(ProcessesPanelRenderTest, SetSchedulingPolicyFromTheRowMenuAppliesTheDialogsChoice)
+{
+    TestMocks::MockProcessActions* actions = nullptr;
+    const auto panel = schedPolicyPanel(Platform::SchedPolicy::Batch, actions);
+    attachAndSeed(*panel);
+    Core::ActiveTabChangedEvent shown("Processes");
+    panel->onEvent(shown);
+    ASSERT_NE(actions, nullptr);
+    renderUntilLoaded(*panel);
+    const std::optional<std::int32_t> menuPid = openARowMenu(*panel);
+    ASSERT_TRUE(menuPid.has_value());
+
+    pressPopupItem(*panel, ICON_FA_CLOCK " Set scheduling policy...###SetSchedPolicy");
+    static_cast<void>(renderAndCapture(*panel));
+    const std::string text = renderAndCapture(*panel);
+    ASSERT_NE(ImGui::GetTopMostPopupModal(), nullptr);
+    EXPECT_TRUE(text.contains("Runs only when nothing else wants the CPU")) << text;
+    EXPECT_EQ(actions->setSchedPolicyCount(), 0) << "nothing is set before Apply";
+
+    pressModalButton(*panel, "Idle"); // its radio button
+    pressModalFilledButton(*panel, "Apply");
+    panel->waitForRowActionForTesting();
+    EXPECT_EQ(actions->setSchedPolicyCount(), 1);
+    EXPECT_EQ(actions->lastSchedPolicy(), Platform::SchedPolicy::Idle);
+    EXPECT_EQ(actions->lastTarget().pid, menuPid.value_or(-1)); // the process the menu was for
+    EXPECT_EQ(ImGui::GetTopMostPopupModal(), nullptr);
+    EXPECT_NE(renderAndCapture(*panel).find("set to Idle"), std::string::npos) << "the result line";
+    panel->onDetach();
+}
+
+// #3086: leaving Idle without CAP_SYS_NICE is refused for want of permission; Authenticate and retry sends the
+// same policy through runAuthorized().
+TEST_F(ProcessesPanelRenderTest, ARefusedSchedulingPolicyOffersAuthenticateAndRetry)
+{
+    TestMocks::MockProcessActions* actions = nullptr;
+    const auto panel = schedPolicyPanel(Platform::SchedPolicy::Idle, actions);
+    attachAndSeed(*panel);
+    Core::ActiveTabChangedEvent shown("Processes");
+    panel->onEvent(shown);
+    ASSERT_NE(actions, nullptr);
+    actions->setSchedPolicyResult(Platform::ProcessActionResult::denied("Permission denied"));
+    renderUntilLoaded(*panel);
+    const std::optional<std::int32_t> menuPid = openARowMenu(*panel);
+    ASSERT_TRUE(menuPid.has_value());
+    pressPopupItem(*panel, ICON_FA_CLOCK " Set scheduling policy...###SetSchedPolicy");
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    pressModalButton(*panel, "Normal");
+    pressModalFilledButton(*panel, "Apply");
+    panel->waitForRowActionForTesting();
+    EXPECT_EQ(actions->setSchedPolicyCount(), 1);
+    ASSERT_TRUE(panel->offersAuthenticateAndRetry());
+    panel->retryRowActionAuthorizedForTesting();
+    panel->waitForRowActionForTesting();
+    EXPECT_EQ(actions->runAuthorizedCount(), 1);
+    EXPECT_EQ(actions->lastAuthorizedAction().kind, Platform::AuthorizedAction::Kind::SetSchedPolicy);
+    EXPECT_EQ(actions->lastAuthorizedAction().schedPolicy, Platform::SchedPolicy::Normal);
+    EXPECT_EQ(actions->lastAuthorizedAction().target.pid, menuPid.value_or(-1));
+    panel->onDetach();
+}
+
+// #3086: no Set scheduling policy... where the platform can't set one (Windows), nor for a selection of several.
+TEST_F(ProcessesPanelRenderTest, TheRowMenuOffersSetSchedulingPolicyOnlyWhereThePlatformCan)
+{
+    TestMocks::MockProcessActions* actions = nullptr;
+    const auto panel = attachedPanelWithActions([](Core::Event&) {}, actions);
+    ASSERT_NE(actions, nullptr);
+    actions->setCapabilities({.canTerminate = true, .canKill = true});
+    renderUntilLoaded(*panel);
+    ASSERT_TRUE(openARowMenu(*panel).has_value());
+    EXPECT_FALSE(renderAndCapture(*panel).contains("Set scheduling policy")) << "the platform can't set one";
+    panel->onDetach();
+}
+
 /// Actions whose kill waits until the test opens the gate: a password prompt or a helper's round trip
 /// as the panel sees it (#2305).
 class GatedKillActions : public TestMocks::MockProcessActions
