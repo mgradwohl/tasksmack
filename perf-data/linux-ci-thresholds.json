@@ -35,6 +35,18 @@
     "BM_StorageModel_PerDiskHistory": {
       "min_abs_delta_ns": 6,
       "reason": "#3395: an 8-12 ns accessor (a shared_ptr publication load) that reads slower on some hosted-runner CPU classes than on the slower class the baseline is captured on. Of three ubuntu-26.04 captures on three classes (runs 41752980687, 41756603704, 41760344349; 4195, 3692 and 3240 MHz), the fastest read it 3.5ns slower than the baseline capture, +40% over a few nanoseconds, with no code change. 6ns clears that and still fails a real doubling."
+    },
+    "BM_StorageModel_Concurrent_PublicationWait/samples:18000/extra_readers:2/iterations:2000/manual_time": {
+      "threshold": 80,
+      "reason": "#3395: a reader waiting on a publication while two more read, timed by hand over 2,000 iterations, so it follows the runner's core scheduling more than code. Over four ubuntu-26.04 captures on three runner classes (runs 41752980687, 41756603704, 41760344349, 41765293420; 4195, 3692, 3240 and 3702 MHz) its CV was 6-102% and the 3692/3702 MHz class read it 1.28-1.43x the 3240 MHz baseline capture with no code change, crossing 40% once (+43%). 80% clears that by about 26%."
+    },
+    "BM_SystemModel_Concurrent_PublicationWait/samples:18000/extra_readers:2/iterations:2000/manual_time": {
+      "threshold": 80,
+      "reason": "#3395: a reader waiting on a publication while two more read, timed by hand over 2,000 iterations, so it follows the runner's core scheduling more than code. Over four ubuntu-26.04 captures on three runner classes (runs 41752980687, 41756603704, 41760344349, 41765293420; 4195, 3692, 3240 and 3702 MHz) its CV was 6-102% and the 3692/3702 MHz class read it 1.28-1.43x the 3240 MHz baseline capture with no code change, crossing 40% once (+43%). 80% clears that by about 26%."
+    },
+    "BM_HistoryBuffer_CopyToWrapped": {
+      "threshold": 60,
+      "reason": "#3395: copies a wrapped ring buffer, memory-bound like GetSnapshots. Over four ubuntu-26.04 captures on three runner classes (runs 41752980687, 41756603704, 41760344349, 41765293420; 4195, 3692, 3240 and 3702 MHz) it read 0.67-1.00x the baseline capture on three and 1.42x on the fourth, whose own CV was 21.5% (the other captures' 0.2-8%), with no code change. 60% clears that by about 13%."
     }
   }
 }
