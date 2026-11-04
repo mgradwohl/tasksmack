@@ -150,7 +150,7 @@ document.
   - a lane if the platform is clear: `agent:Windows` or `agent:WSL`;
   - on a **bug**, one severity, which says how bad it is: `sev:high` (a crash, data loss, a security hole, or a
     broken build or release), `sev:medium` (a wrong or misleading result users notice, or broken on a common
-    setup) or `sev:low` (cosmetic, minor, a test gap, a perf idea, docs). Features get no severity;
+    setup) or `sev:low` (a cosmetic or minor defect). Features, test gaps and perf ideas get no severity;
   - priority is the maintainer's, and says when: `pri:high` (do first this cycle; every `sev:high` bug by default),
     `pri:medium` (normal work for the milestone) or `pri:low` (only if there's time). Every open issue on a release
     milestone carries one. An agent may suggest one in the issue, and never raises it;

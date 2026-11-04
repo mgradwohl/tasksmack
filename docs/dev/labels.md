@@ -1,7 +1,7 @@
 # Issue and PR labels
 
 This is the label scheme the maintainer approved on 2026-11-03. Every agent, and every person filing or triaging,
-follows it. [AGENTS.md](../../AGENTS.md) has a short version. A label's colour tells you its family, and its GitHub
+follows it. [AGENTS.md](https://github.com/mgradwohl/tasksmack/blob/main/AGENTS.md) has a short version. A label's colour tells you its family, and its GitHub
 description gives its meaning.
 
 ## The families
@@ -24,7 +24,8 @@ Severity describes the impact when the bug happens, not when we'll fix it.
 
 - `sev:high`: a crash, data loss, a security hole, or a broken build or release.
 - `sev:medium`: a wrong or misleading result users notice, or something broken on a common setup.
-- `sev:low`: cosmetic, minor, a test gap, a perf idea, docs.
+- `sev:low`: a cosmetic or minor defect, such as wrong text, a misaligned control, or a slow path that is still correct.
+  A missing test, a perf idea or a docs improvement on its own is not a bug, so it gets no severity.
 
 **Features (`enhancement`) never get a severity.** Size and value go in the issue body.
 
@@ -88,7 +89,7 @@ order.
 ## Backport labels
 
 A `backport:X.Y` label exists only while `release/X.Y` takes backports. It's created when the branch first needs one
-and deleted when the branch retires. [AGENTS.md](../../AGENTS.md) ("Branches and backports") describes the flow. A
+and deleted when the branch retires. [AGENTS.md](https://github.com/mgradwohl/tasksmack/blob/main/AGENTS.md) ("Branches and backports") describes the flow. A
 release with no patch line (v0.10, maintainer 2026-11-03) has no backport label.
 
 ## Adding or removing a label
