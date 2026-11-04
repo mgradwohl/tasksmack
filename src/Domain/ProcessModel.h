@@ -3,10 +3,10 @@
 #include "DeferredProbe.h"
 #include "History.h"
 #include "ISamplable.h"
-#include "PidIndex.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/ProcessTypes.h"
 #include "ProcessEnergyAttribution.h"
+#include "ProcessGeneration.h"
 #include "ProcessRowHistory.h"
 #include "ProcessSnapshot.h"
 #include "SamplingConfig.h"
@@ -291,14 +291,6 @@ class ProcessModel : public ISamplable
     // last one threw part way, possibly between a process's SingleLineMemo update and its counters
     // being stored, so that call re-derives every single-line form rather than trust them (#1624).
     bool m_SnapshotBuildInterrupted = false;
-    // The process tree's PID -> row table, rebuilt by every computeSnapshotsLocked() (#2981). Writer
-    // scratch, guarded by m_SamplingMutex: kept between refreshes only for its storage, never read
-    // outside the tree build and never part of a published snapshot.
-    PidIndex m_PidIndex;
-    // The published rows m_PidIndex maps, or nullptr while it maps none of them (#3334): a refresh that failed after
-    // rebuilding it for its unpublished rows leaves it describing those. Compared with the publication a held-over
-    // lookup reads, never dereferenced.
-    const std::vector<ProcessSnapshot>* m_PidIndexRows = nullptr;
     // The processes carried over (ProcessCounters::heldOver) since their counters were read (#3031), with the
     // system CPU total and sample time of that read: their next real read's rates are taken over the whole
     // time since. Empty nearly always; kept apart from PerProcessState so every other process pays nothing.
@@ -330,7 +322,10 @@ class ProcessModel : public ISamplable
     // Latest computed snapshots. Immutable once published (replaced wholesale by the writer,
     // never mutated in place), so it's handed to readers as a shared_ptr<const ...> instead of
     // being deep-copied under the lock -- see tryCopySnapshotsIfNewer()'s doc comment.
-    std::shared_ptr<const std::vector<ProcessSnapshot>> m_Snapshots = std::make_shared<const std::vector<ProcessSnapshot>>();
+    // The rows and the PID index over them travel together (ProcessGeneration, #3345): a reader's rows are an
+    // aliasing pointer into it (rowsOf()), and a held-over lookup goes through the generation, never a table kept
+    // apart from it (#3334).
+    std::shared_ptr<const ProcessGeneration> m_Generation = std::make_shared<const ProcessGeneration>();
     std::uint64_t m_SnapshotVersion = 0;
     std::atomic<std::uint64_t> m_PublishedSnapshotVersion{0};
     // The aggregated system histories' generation (ProcessSystemHistories::version): advanced with
@@ -351,7 +346,7 @@ class ProcessModel : public ISamplable
     std::vector<ProcessSample> m_WatchedSamples = std::vector<ProcessSample>(WATCHED_SAMPLE_CAPACITY); // guarded by m_Mutex
     std::size_t m_WatchedSampleStart = 0;                                                              // guarded by m_Mutex
     std::size_t m_WatchedSampleCount = 0;                                                              // guarded by m_Mutex
-    double m_SnapshotSampleTimeSeconds = 0.0; // guarded by m_Mutex; m_Snapshots' sample time (ProcessSample)
+    double m_SnapshotSampleTimeSeconds = 0.0; // guarded by m_Mutex; m_Generation's sample time (ProcessSample)
 
     // Thread safety
     mutable std::shared_mutex m_Mutex;
@@ -361,7 +356,7 @@ class ProcessModel : public ISamplable
 
     // Per-process histories for the sparklines (#1612): which metrics to keep (set from the UI
     // thread), the rings carried between generations (sampling thread only), and the generation's
-    // published rings (guarded by m_Mutex, replaced with m_Snapshots so the two always match).
+    // published rings (guarded by m_Mutex, replaced with m_Generation so the two always match).
     std::atomic<ProcessRowHistory::MetricSet> m_RowHistoryMetrics{0};
     ProcessRowHistory::Tracker m_RowHistoryTracker; // guarded by m_SamplingMutex
     std::shared_ptr<const ProcessRowHistory::Generation> m_RowHistory;
@@ -371,15 +366,22 @@ class ProcessModel : public ISamplable
     void computeSnapshotsLocked(const std::vector<Platform::ProcessCounters>& counters, std::uint64_t totalCpuTime);
 
     /// For a carried-over process (ProcessCounters::heldOver, #3031), appends its last row to @p newSnapshots,
-    /// taking the last generation into @p previousSnapshots the first time, and notes when its counters were
+    /// taking the last generation into @p previousGeneration the first time, and notes when its counters were
     /// last read (@p lastSampleTime, m_PrevTotalCpuTime) unless already noted. False when it has no last row.
     /// Out of line, never inlined: computeSnapshotsLocked()'s loop runs for every process, and this for
     /// nearly none. Requires m_SamplingMutex held.
     [[gnu::noinline]] [[nodiscard]] bool appendHeldOverLocked(const Platform::ProcessCounters& current,
                                                               const ProcessIdentity& key,
                                                               Clock::time_point lastSampleTime,
-                                                              std::shared_ptr<const std::vector<ProcessSnapshot>>& previousSnapshots,
+                                                              std::shared_ptr<const ProcessGeneration>& previousGeneration,
                                                               std::vector<ProcessSnapshot>& newSnapshots);
+
+    /// @p generation's rows, as the shared pointer readers take: it shares the generation's ownership.
+    [[nodiscard]] static std::shared_ptr<const std::vector<ProcessSnapshot>>
+    rowsOf(const std::shared_ptr<const ProcessGeneration>& generation) noexcept
+    {
+        return {generation, &generation->rows()};
+    }
 
     /// The interval a process's rates are taken over (#3031), as the system CPU ticks, seconds and
     /// microseconds since its counters were last read.

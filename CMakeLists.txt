@@ -557,6 +557,7 @@ set(TASKSMACK_HEADERS
     src/Platform/Synthetic/SyntheticWorkload.h
     src/Domain/ProcessSnapshot.h
     src/Domain/ProcessModel.h
+    src/Domain/ProcessGeneration.h
     src/Domain/SocketTrafficAccumulator.h
     src/Domain/ProcessConnections.h
     src/Domain/ProcessModules.h
