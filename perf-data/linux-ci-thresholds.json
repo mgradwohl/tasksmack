@@ -11,42 +11,6 @@
     "BM_Format_ChooseByteUnit": {
       "min_abs_delta_ns": 3,
       "reason": "#3126: sub-nanosecond, so a code-layout shift from an unrelated change moves it by a few cycles. It measured 0.43-0.87ns until runs 40444757786 and 40448017472 read 3.09ns and 2.88ns (+2.36ns over the 0.736ns baseline, +320%) with no change to the code it times, then 0.736ns on run 40456436642; the other sub-nanosecond benchmarks stayed within 0.3ns in those runs. 3ns clears the worst reading by about 27% and still fails 0.7ns -> 4ns."
-    },
-    "BM_StorageModel_FullHistory_Publication/18000": {
-      "min_abs_delta_ns": 20,
-      "reason": "#3395: an 8-12 ns accessor (a shared_ptr publication load) that reads slower on some hosted-runner CPU classes than on the slower class the baseline is captured on. Of three ubuntu-26.04 captures on three classes (runs 41752980687, 41756603704, 41760344349; 4195, 3692 and 3240 MHz), the fastest read it 12.0ns slower than the baseline capture, +122% over a few nanoseconds, with no code change. 20ns clears that, at a cost: over the 9.832ns baseline median the gate fails it only above about 29.8ns (3.03x), so a doubling or a tripling passes. A slowdown that size is the publication load itself breaking, which its siblings' 6ns floors still catch at about 1.7x."
-    },
-    "BM_SystemModel_CpuHistory": {
-      "min_abs_delta_ns": 6,
-      "reason": "#3395: an 8-12 ns accessor (a shared_ptr publication load) that reads slower on some hosted-runner CPU classes than on the slower class the baseline is captured on. Of three ubuntu-26.04 captures on three classes (runs 41752980687, 41756603704, 41760344349; 4195, 3692 and 3240 MHz), the fastest read it 4.0ns slower than the baseline capture, +47% over a few nanoseconds, with no code change. 6ns clears that; over the 8.411ns baseline median the gate fails it above about 14.4ns (1.71x), so a doubling still fails."
-    },
-    "BM_StorageModel_LatestSnapshot": {
-      "min_abs_delta_ns": 6,
-      "reason": "#3395: an 8-12 ns accessor (a shared_ptr publication load) that reads slower on some hosted-runner CPU classes than on the slower class the baseline is captured on. Of three ubuntu-26.04 captures on three classes (runs 41752980687, 41756603704, 41760344349; 4195, 3692 and 3240 MHz), the fastest read it 3.6ns slower than the baseline capture, +42% over a few nanoseconds, with no code change. 6ns clears that; over the 8.540ns baseline median the gate fails it above about 14.5ns (1.70x), so a doubling still fails."
-    },
-    "BM_StorageModel_HistoryTimestamps": {
-      "min_abs_delta_ns": 6,
-      "reason": "#3395: an 8-12 ns accessor (a shared_ptr publication load) that reads slower on some hosted-runner CPU classes than on the slower class the baseline is captured on. Of three ubuntu-26.04 captures on three classes (runs 41752980687, 41756603704, 41760344349; 4195, 3692 and 3240 MHz), the fastest read it 3.6ns slower than the baseline capture, +41% over a few nanoseconds, with no code change. 6ns clears that; over the 8.716ns baseline median the gate fails it above about 14.7ns (1.69x), so a doubling still fails."
-    },
-    "BM_StorageModel_TotalRateHistory": {
-      "min_abs_delta_ns": 6,
-      "reason": "#3395: an 8-12 ns accessor (a shared_ptr publication load) that reads slower on some hosted-runner CPU classes than on the slower class the baseline is captured on. Of three ubuntu-26.04 captures on three classes (runs 41752980687, 41756603704, 41760344349; 4195, 3692 and 3240 MHz), the fastest read it 3.5ns slower than the baseline capture, +40% over a few nanoseconds, with no code change. 6ns clears that; over the 8.722ns baseline median the gate fails it above about 14.7ns (1.69x), so a doubling still fails."
-    },
-    "BM_StorageModel_PerDiskHistory": {
-      "min_abs_delta_ns": 6,
-      "reason": "#3395: an 8-12 ns accessor (a shared_ptr publication load) that reads slower on some hosted-runner CPU classes than on the slower class the baseline is captured on. Of three ubuntu-26.04 captures on three classes (runs 41752980687, 41756603704, 41760344349; 4195, 3692 and 3240 MHz), the fastest read it 3.5ns slower than the baseline capture, +40% over a few nanoseconds, with no code change. 6ns clears that; over the 8.725ns baseline median the gate fails it above about 14.7ns (1.69x), so a doubling still fails."
-    },
-    "BM_StorageModel_Concurrent_PublicationWait/samples:18000/extra_readers:2/iterations:2000/manual_time": {
-      "threshold": 80,
-      "reason": "#3395: a reader waiting on a publication while two more read, timed by hand over 2,000 iterations, so it follows the runner's core scheduling more than code. Over four ubuntu-26.04 captures on three runner classes (runs 41752980687, 41756603704, 41760344349, 41765293420; 4195, 3692, 3240 and 3702 MHz) its CV was 6-102% and the 3692/3702 MHz class read it 1.28-1.43x the 3240 MHz baseline capture with no code change, crossing 40% once (+43%). 80% clears that by about 26%."
-    },
-    "BM_SystemModel_Concurrent_PublicationWait/samples:18000/extra_readers:2/iterations:2000/manual_time": {
-      "threshold": 80,
-      "reason": "#3395: a reader waiting on a publication while two more read, timed by hand over 2,000 iterations, so it follows the runner's core scheduling more than code. Over four ubuntu-26.04 captures on three runner classes (runs 41752980687, 41756603704, 41760344349, 41765293420; 4195, 3692, 3240 and 3702 MHz) its CV was 6-102% and the 3692/3702 MHz class read it 1.28-1.43x the 3240 MHz baseline capture with no code change, crossing 40% once (+43%). 80% clears that by about 26%."
-    },
-    "BM_HistoryBuffer_CopyToWrapped": {
-      "threshold": 60,
-      "reason": "#3395: copies a wrapped ring buffer, memory-bound like GetSnapshots. Over four ubuntu-26.04 captures on three runner classes (runs 41752980687, 41756603704, 41760344349, 41765293420; 4195, 3692, 3240 and 3702 MHz) it read 0.67-1.00x the baseline capture on three and 1.42x on the fourth, whose own CV was 21.5% (the other captures' 0.2-8%), with no code change. 60% clears that by about 13%."
     }
   }
 }
