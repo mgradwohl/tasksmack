@@ -16,12 +16,6 @@
       - "src/Platform/Windows/**"
       - "tests/Platform/Windows/**"
 
-"Platform":
-  - changed-files:
-    - any-glob-to-any-file:
-      - "src/Platform/**"
-      - "tests/Platform/**"
-
 # ── Layers ────────────────────────────────────────────────────────────────────
 
 "testing":
