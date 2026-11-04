@@ -22,6 +22,7 @@
 #include <chrono>
 #include <exception>
 #include <stop_token>
+#include <string>
 #include <utility>
 
 namespace Platform
@@ -166,8 +167,10 @@ void WindowsPowerProbe::takeFinishedBatteryInfo()
     {
         return;
     }
+    // All or nothing: a copy that throws leaves the facts, the taken version and m_BatteryInfoRefreshing
+    // as they were, so the next read() takes this publication again instead of skipping it for good.
     const auto published = m_BatteryInfoWorker.latest();
-    if (published->version == m_TakenBatteryInfoVersion)
+    if (!takeNewerPublication(*published, m_BatteryInfo, m_TakenBatteryInfoVersion))
     {
         if (m_BatteryInfoWorker.state() == Domain::WorkerState::Failed)
         {
@@ -178,8 +181,6 @@ void WindowsPowerProbe::takeFinishedBatteryInfo()
         }
         return; // Still reading
     }
-    m_TakenBatteryInfoVersion = published->version;
-    m_BatteryInfo = published->value;
     m_BatteryInfoRefreshing = false;
     spdlog::debug("WindowsPowerProbe: battery facts re-read: found={} relative={}", m_BatteryInfo.found, m_BatteryInfo.relativeCapacity);
     if (m_BatteryInfoRefreshAgain)
@@ -195,9 +196,9 @@ void WindowsPowerProbe::reportBatteryInfoWorkerFailed()
     {
         return;
     }
+    const std::string reason = m_BatteryInfoWorker.failure(); // may throw: then it is reported next time
     m_BatteryInfoFailureReported = true;
-    spdlog::warn("WindowsPowerProbe: the battery re-reads have stopped ({}); the battery facts read so far are kept",
-                 m_BatteryInfoWorker.failure());
+    spdlog::warn("WindowsPowerProbe: the battery re-reads have stopped ({}); the battery facts read so far are kept", reason);
 }
 
 void WindowsPowerProbe::updateCapabilities(const SYSTEM_POWER_STATUS& status)
