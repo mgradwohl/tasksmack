@@ -605,6 +605,73 @@ TEST_F(ProcessActionsBlockRenderTest, SetSchedulingPolicyFromTheCardOpensTheDial
     EXPECT_EQ(h.mock.setSchedPolicyCount(), 2);
 }
 
+// #3219: a process already on FIFO opens the card's dialog on FIFO at its own priority; choosing RR and Apply asks
+// to confirm, naming the process, and Set sets RR at that priority through the action worker; refused for want of
+// permission, Authenticate and retry sends the same policy and priority.
+TEST_F(ProcessActionsBlockRenderTest, RoundRobinFromTheCardIsSetAfterTheConfirm)
+{
+    Harness h;
+    Platform::ProcessActionCapabilities caps = ALL_ACTIONS;
+    caps.canSetSchedPolicy = true;
+    caps.canSetRealtimeSchedPolicy = true;
+    caps.canAuthorizeInteractively = true;
+    h.mock.setCapabilities(caps);
+    h.mock.setSchedPolicyResult(Platform::ProcessActionResult::denied("Permission denied"));
+    std::string text;
+    const auto body = [&]
+    {
+        ImGui::LogToBuffer();
+        ProcessActionsBlock::Context context = h.context(caps);
+        context.currentSchedPolicy = Platform::SchedPolicy::Fifo;
+        context.currentRtPriority = 40;
+        (void) ProcessActionsBlock::render(context, layoutFor(caps, 1600.0F, 600.0F), infoCardHeight(6.0F));
+        h.actionsView.renderConfirmation(&h.mock, TARGET);
+        text = GImGui->LogBuffer.c_str();
+        ImGui::LogFinish();
+    };
+    ASSERT_FALSE(runFrame(body));
+    const auto pressInModal = [](const char* label, bool filled)
+    {
+        const ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
+        ASSERT_NE(modal, nullptr);
+        const ImGuiID id = ImHashStr(label, 0, modal->ID);
+        ImGui::ActivateItemByID(filled ? ImHashStr("##filled", 0, id) : id);
+    };
+    const ImGuiWindow* actions = actionsWindow();
+    ASSERT_NE(actions, nullptr);
+    ImGui::ActivateItemByID(ImHashStr(Detail::SET_SCHED_POLICY_LABEL, 0, actions->ID));
+    static_cast<void>(runFrame(body));
+    ASSERT_TRUE(runFrame(body));
+    ProcessSchedPolicyDialog& dialog = h.actionsView.schedPolicyDialog();
+    EXPECT_EQ(dialog.setting(), (SchedPolicySetting{.policy = Platform::SchedPolicy::Fifo, .rtPriority = 40}));
+    EXPECT_TRUE(text.contains("RT throttling")) << text;
+
+    pressInModal("RR", false);
+    static_cast<void>(runFrame(body));
+    pressInModal("Apply", true);
+    static_cast<void>(runFrame(body));
+    static_cast<void>(runFrame(body));
+    EXPECT_TRUE(dialog.confirming());
+    EXPECT_TRUE(text.contains("Set victim (PID 1001) to RR 40?")) << text;
+    EXPECT_EQ(h.mock.setSchedPolicyCount(), 0) << "nothing is set before the confirm";
+    pressInModal("Set", true);
+    for (int i = 0; i < 3 && h.mock.setSchedPolicyCount() == 0; ++i)
+    {
+        static_cast<void>(runFrame(body));
+        h.actionsView.waitForActionForTesting();
+    }
+    EXPECT_EQ(h.mock.setSchedPolicyCount(), 1);
+    EXPECT_EQ(h.mock.lastSchedPolicy(), Platform::SchedPolicy::RoundRobin);
+    EXPECT_EQ(h.mock.lastRtPriority(), 40);
+    static_cast<void>(runFrame(body));
+    ASSERT_TRUE(h.actionsView.offersAuthenticateAndRetry());
+    h.actionsView.retryAuthorizedForTesting();
+    h.actionsView.waitForActionForTesting();
+    EXPECT_EQ(h.mock.lastAuthorizedAction().kind, Platform::AuthorizedAction::Kind::SetSchedPolicy);
+    EXPECT_EQ(h.mock.lastAuthorizedAction().schedPolicy, Platform::SchedPolicy::RoundRobin);
+    EXPECT_EQ(h.mock.lastAuthorizedAction().rtPriority, 40);
+}
+
 // #3086: no Set scheduling policy... where the platform can't set one (Windows).
 TEST_F(ProcessActionsBlockRenderTest, NoSetSchedulingPolicyWhereThePlatformCantSetOne)
 {

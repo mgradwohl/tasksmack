@@ -51,30 +51,59 @@ enum class SchedPolicy : std::uint8_t
     }
 }
 
-/// Whether Set scheduling policy may set @p policy (#3086): Normal, Batch and Idle only. Real time (FIFO,
-/// round robin) is #3219, and Deadline is never offered; the broker protocol's decoder and
-/// LinuxProcessControl both refuse every other policy, so the privileged helper is never asked for one.
+/// Whether Set scheduling policy may set @p policy: Normal, Batch and Idle (#3086), and the real-time FIFO and
+/// round robin (#3219). Deadline is never offered (it needs a runtime, deadline and period, not one priority); the
+/// broker protocol's decoder and LinuxProcessControl both refuse it, so the privileged helper is never asked for it.
 [[nodiscard]] constexpr bool isSettableSchedPolicy(SchedPolicy policy) noexcept
 {
-    return policy == SchedPolicy::Normal || policy == SchedPolicy::Batch || policy == SchedPolicy::Idle;
+    return policy == SchedPolicy::Normal || policy == SchedPolicy::Batch || policy == SchedPolicy::Idle || policy == SchedPolicy::Fifo ||
+           policy == SchedPolicy::RoundRobin;
 }
 
-/// The Linux SCHED_* value sched_setscheduler() takes for a settable policy: SCHED_OTHER (0), SCHED_BATCH
-/// (3), SCHED_IDLE (5). -1 for any policy isSettableSchedPolicy() refuses.
+/// Whether @p policy is a real-time one (FIFO or round robin), which takes a priority from 1 to 99 (#3219).
+[[nodiscard]] constexpr bool isRealtimeSchedPolicy(SchedPolicy policy) noexcept
+{
+    return policy == SchedPolicy::Fifo || policy == SchedPolicy::RoundRobin;
+}
+
+/// The real-time priorities sched_setscheduler(2) takes for SCHED_FIFO and SCHED_RR on Linux: 1 (lowest) to 99.
+inline constexpr std::int32_t MIN_REALTIME_SCHED_PRIORITY = 1;
+inline constexpr std::int32_t MAX_REALTIME_SCHED_PRIORITY = 99;
+
+/// Whether @p policy with real-time priority @p rtPriority may be set (#3219): a settable policy, with 1 to 99 for
+/// FIFO and round robin and exactly 0 for Normal, Batch and Idle, as sched_setscheduler(2) requires. The broker
+/// protocol's decoder and LinuxProcessControl both refuse any other pair.
+[[nodiscard]] constexpr bool isValidSchedPolicySetting(SchedPolicy policy, std::int32_t rtPriority) noexcept
+{
+    if (!isSettableSchedPolicy(policy))
+    {
+        return false;
+    }
+    if (isRealtimeSchedPolicy(policy))
+    {
+        return rtPriority >= MIN_REALTIME_SCHED_PRIORITY && rtPriority <= MAX_REALTIME_SCHED_PRIORITY;
+    }
+    return rtPriority == 0;
+}
+
+/// The Linux SCHED_* value sched_setscheduler() takes for a settable policy: SCHED_OTHER (0), SCHED_FIFO (1),
+/// SCHED_RR (2), SCHED_BATCH (3), SCHED_IDLE (5). -1 for any policy isSettableSchedPolicy() refuses.
 [[nodiscard]] constexpr int settableSchedPolicyToLinux(SchedPolicy policy) noexcept
 {
     switch (policy)
     {
     case SchedPolicy::Normal:
         return 0;
+    case SchedPolicy::Fifo:
+        return 1;
+    case SchedPolicy::RoundRobin:
+        return 2;
     case SchedPolicy::Batch:
         return 3;
     case SchedPolicy::Idle:
         return 5;
     case SchedPolicy::Unknown:
     case SchedPolicy::Deadline:
-    case SchedPolicy::RoundRobin:
-    case SchedPolicy::Fifo:
         break;
     }
     return -1;
@@ -84,6 +113,12 @@ enum class SchedPolicy : std::uint8_t
 static_assert(schedPolicyFromLinux(static_cast<std::uint32_t>(settableSchedPolicyToLinux(SchedPolicy::Normal))) == SchedPolicy::Normal);
 static_assert(schedPolicyFromLinux(static_cast<std::uint32_t>(settableSchedPolicyToLinux(SchedPolicy::Batch))) == SchedPolicy::Batch);
 static_assert(schedPolicyFromLinux(static_cast<std::uint32_t>(settableSchedPolicyToLinux(SchedPolicy::Idle))) == SchedPolicy::Idle);
+static_assert(schedPolicyFromLinux(static_cast<std::uint32_t>(settableSchedPolicyToLinux(SchedPolicy::Fifo))) == SchedPolicy::Fifo);
+static_assert(schedPolicyFromLinux(static_cast<std::uint32_t>(settableSchedPolicyToLinux(SchedPolicy::RoundRobin))) ==
+              SchedPolicy::RoundRobin);
+static_assert(settableSchedPolicyToLinux(SchedPolicy::Deadline) < 0 && !isSettableSchedPolicy(SchedPolicy::Deadline));
+// The settable set and the Linux mapping agree: exactly the policies with a SCHED_* value are settable.
+static_assert(isSettableSchedPolicy(SchedPolicy::Unknown) == (settableSchedPolicyToLinux(SchedPolicy::Unknown) >= 0));
 
 /// A scheduling policy's label held by value, so building it allocates nothing (#3244): the Processes table
 /// words the policy from the snapshot's schedPolicy and rtPriority where it draws the cell, instead of every

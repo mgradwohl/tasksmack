@@ -984,6 +984,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
             .currentAffinity = m_HasSnapshot ? &proc.cpuAffinity : nullptr,
             .efficiencyMode = m_HasSnapshot && Detail::isInEfficiencyMode(proc),
             .currentSchedPolicy = m_HasSnapshot ? proc.schedPolicy : Platform::SchedPolicy::Unknown,
+            .currentRtPriority = m_HasSnapshot ? proc.rtPriority : 0U,
         };
         // Kept for the next frame's row height; a card scrolled out of view reports 0 and keeps its last.
         const ProcessActionsBlock::Heights needed = ProcessActionsBlock::render(actions, controlsLayout, controlsHeight);

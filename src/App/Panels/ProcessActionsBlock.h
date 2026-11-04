@@ -81,6 +81,7 @@ struct Context
     bool efficiencyMode = false;                            ///< The process is in Efficiency mode: its checkbox is ticked (#3071)
     /// The process's scheduling policy, chosen in the Set scheduling policy dialog when it offers it (#3086)
     Platform::SchedPolicy currentSchedPolicy = Platform::SchedPolicy::Unknown;
+    std::uint32_t currentRtPriority = 0; ///< FIFO's or RR's priority, the slider's start (#3219)
 };
 
 /// What each card's content needs down, header and padding included, as render() drew it: for the

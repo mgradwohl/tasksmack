@@ -3560,7 +3560,8 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
                                   m_AffinityLayout);
         }
     }
-    // One process's scheduling policy (#3086, Linux): Normal, Batch or Idle, in its own dialog, beside Set affinity.
+    // One process's scheduling policy (#3086, Linux): Normal, Batch, Idle, or real-time FIFO or RR (#3219), in its own
+    // dialog, beside Set affinity.
     if (can.canSetSchedPolicy && batchCount == 0)
     {
         if (!can.canSetAffinity) // else it shares Set affinity...'s group
@@ -3569,9 +3570,13 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
         }
         if (ImGui::MenuItem(ICON_FA_CLOCK " Set scheduling policy...###SetSchedPolicy", nullptr, false, actionsIdle))
         {
-            m_SchedPolicyDialog.open({.pid = proc.pid, .startTimeTicks = proc.startTimeTicks}, proc.name, proc.schedPolicy);
+            m_SchedPolicyDialog.open({.pid = proc.pid, .startTimeTicks = proc.startTimeTicks},
+                                     proc.name,
+                                     proc.schedPolicy,
+                                     proc.rtPriority,
+                                     {.ownPid = m_OwnPid, .realtimeNeedsNoPassword = can.canSetRealtimeSchedPolicy});
         }
-        ImGui::SetItemTooltip("Normal, Batch or Idle: how the kernel shares the CPU with this process");
+        ImGui::SetItemTooltip("Normal, Batch, Idle, or real-time FIFO or RR: how the kernel shares the CPU with this process");
     }
     // One process's dump file (#807), as Task Manager's row menu offers it; never for a selection.
     if (DumpDetail::offersCreateDump(can, batchCount))
@@ -4012,18 +4017,24 @@ void ProcessesPanel::renderAffinityDialog()
 
 void ProcessesPanel::renderSchedPolicyDialog()
 {
-    const std::optional<Platform::SchedPolicy> policy = m_SchedPolicyDialog.render();
-    if (!policy.has_value())
+    const std::optional<SchedPolicySetting> setting = m_SchedPolicyDialog.render();
+    if (!setting.has_value())
     {
         return;
     }
     const Platform::ProcessTarget target = m_SchedPolicyDialog.target();
     runRowAction(
         std::format("Setting the scheduling policy of PID {}...", target.pid),
-        [actions = m_ProcessActions.get(), target, policy = *policy] { return actions->setSchedPolicy(target, policy); },
-        [name = m_SchedPolicyDialog.name(), pid = target.pid, policy = *policy](const Platform::ProcessActionResult& result)
-        { return schedPolicyResultMessage(name, pid, policy, result); },
-        Platform::AuthorizedAction{.kind = Platform::AuthorizedAction::Kind::SetSchedPolicy, .target = target, .schedPolicy = *policy});
+        [actions = m_ProcessActions.get(), target, setting = *setting]
+        { return actions->setSchedPolicy(target, setting.policy, setting.rtPriority); },
+        [name = m_SchedPolicyDialog.name(), pid = target.pid, setting = *setting](const Platform::ProcessActionResult& result)
+        { return schedPolicyResultMessage(name, pid, setting, result); },
+        Platform::AuthorizedAction{
+            .kind = Platform::AuthorizedAction::Kind::SetSchedPolicy,
+            .target = target,
+            .schedPolicy = setting->policy,
+            .rtPriority = setting->rtPriority,
+        });
 }
 
 template<typename Work>

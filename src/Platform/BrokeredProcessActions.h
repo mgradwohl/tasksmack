@@ -72,7 +72,7 @@ class BrokeredProcessActions final : public IProcessActions
     [[nodiscard]] ProcessActionResult setPriority(const ProcessTarget& target, std::int32_t nice) override;
     [[nodiscard]] ProcessActionResult setIoPriority(const ProcessTarget& target, IoPriorityClass ioClass, std::int32_t level) override;
     [[nodiscard]] ProcessActionResult setAffinity(const ProcessTarget& target, const CpuAffinity& cpus) override;
-    [[nodiscard]] ProcessActionResult setSchedPolicy(const ProcessTarget& target, SchedPolicy policy) override;
+    [[nodiscard]] ProcessActionResult setSchedPolicy(const ProcessTarget& target, SchedPolicy policy, std::int32_t rtPriority = 0) override;
     [[nodiscard]] ProcessActionResult setEfficiencyMode(const ProcessTarget& target, bool on) override;
     [[nodiscard]] ProcessActionResult closeConnection(const ProcessTarget& target, std::uint64_t socketInode) override;
     [[nodiscard]] ProcessActionResult

@@ -50,6 +50,7 @@ HELLO_PAYLOADS = {
     13: lambda version: struct.pack("<HB", version, 0),  # Hello unchanged; SessionAction added (#3076)
     14: lambda version: struct.pack("<HB", version, 0),  # Hello unchanged; ThreadAction added, ThreadsResult grows (#3069)
     15: lambda version: struct.pack("<HB", version, 0),  # Hello unchanged; SetSchedPolicy added (#3086)
+    16: lambda version: struct.pack("<HB", version, 0),  # Hello unchanged; SetSchedPolicy carries a real-time priority (#3219)
 }
 
 

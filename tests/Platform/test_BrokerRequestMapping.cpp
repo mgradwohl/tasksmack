@@ -132,6 +132,16 @@ TEST(BrokerRequestMappingTest, ASchedulingPolicyReachesItsAction)
     EXPECT_FALSE(refused.success);
     EXPECT_EQ(refused.errorMessage, "PID 1 is init");
     EXPECT_EQ(actions.lastSchedPolicy(), SchedPolicy::Idle);
+    EXPECT_EQ(actions.lastRtPriority(), 0);
+
+    // #3219: real time reaches it with its priority.
+    actions.setSchedPolicyResult(ProcessActionResult::ok());
+    EXPECT_TRUE(
+        actionResult(BrokerServer::handleRequest(
+                         Broker::SchedPolicyRequest{.target = TARGET, .policy = SchedPolicy::RoundRobin, .rtPriority = 10}, actions))
+            .success);
+    EXPECT_EQ(actions.lastSchedPolicy(), SchedPolicy::RoundRobin);
+    EXPECT_EQ(actions.lastRtPriority(), 10);
 }
 
 // #3071: a SetEfficiencyMode request reaches setEfficiencyMode() with its target and whether it is on.

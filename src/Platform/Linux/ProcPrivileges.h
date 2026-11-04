@@ -73,6 +73,14 @@ inline constexpr unsigned CAP_SYS_NICE_BIT = 23;       // ioprio_set(IOPRIO_CLAS
     return capEff.has_value() && (((*capEff >> CAP_SYS_NICE_BIT) & 1U) != 0 || ((*capEff >> CAP_SYS_ADMIN_BIT) & 1U) != 0);
 }
 
+/// Whether @p capEff (parseCapEff() of TaskSmack's own status) lets sched_setscheduler() set a real-time policy
+/// (SCHED_FIFO, SCHED_RR) at any priority: CAP_SYS_NICE (sched(7)). Unknown is no. Without it a user may still
+/// set one up to their RLIMIT_RTPRIO, so the dialog offers real time either way (#3219).
+[[nodiscard]] constexpr bool canSetRealtimeSchedPolicy(std::optional<std::uint64_t> capEff) noexcept
+{
+    return capEff.has_value() && ((*capEff >> CAP_SYS_NICE_BIT) & 1U) != 0;
+}
+
 /// How /proc is mounted, as far as other users' processes go (#2303): its hidepid= level and gid=.
 struct ProcMount
 {

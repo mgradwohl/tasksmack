@@ -86,22 +86,40 @@ namespace Platform
     }
 }
 
-/// The message shown when sched_setscheduler(2) fails with @p err for process @p pid, asked for @p policy
-/// (#3086: Normal, Batch or Idle).
+/// The message shown when sched_setscheduler(2) fails with @p err for process @p pid, asked for @p policy at
+/// real-time priority @p rtPriority (#3086: Normal, Batch or Idle at 0; #3219: FIFO or round robin at 1 to 99).
 ///
 /// EPERM: the process belongs to another user, or it is leaving the Idle policy, and TaskSmack lacks
-/// CAP_SYS_NICE (an unprivileged thread may leave SCHED_IDLE only within its RLIMIT_NICE, usually 0).
-[[nodiscard]] inline std::string schedPolicyErrorMessage(int err, SchedPolicy policy, std::int32_t pid)
+/// CAP_SYS_NICE (an unprivileged thread may leave SCHED_IDLE only within its RLIMIT_NICE, usually 0). For real
+/// time, also a priority above the caller's RLIMIT_RTPRIO (0 unless the user is granted one, as an audio group
+/// often is). EINVAL: the kernel refused the policy or priority (a kernel built without it).
+[[nodiscard]] inline std::string schedPolicyErrorMessage(int err, SchedPolicy policy, std::int32_t rtPriority, std::int32_t pid)
 {
+    const auto text = schedPolicyText(policy, static_cast<std::uint32_t>(rtPriority));
     switch (err)
     {
     case EPERM:
+        if (isRealtimeSchedPolicy(policy))
+        {
+            return std::format("Permission denied: setting process {} to the real-time {} policy needs root or CAP_SYS_NICE, or an "
+                               "RLIMIT_RTPRIO of at least {} for its user.",
+                               pid,
+                               text.view(),
+                               rtPriority);
+        }
         return std::format("Permission denied: process {} belongs to another user, or is leaving the Idle policy. Setting it to {} needs "
                            "root or CAP_SYS_NICE.",
                            pid,
-                           schedPolicyText(policy, 0).view());
+                           text.view());
     case EINVAL:
-        return std::format("The {} scheduling policy can't be set for process {}", schedPolicyText(policy, 0).view(), pid);
+        if (isRealtimeSchedPolicy(policy))
+        {
+            return std::format("The real-time {} scheduling policy can't be set for process {}: the kernel refused priority {}",
+                               text.view(),
+                               pid,
+                               rtPriority);
+        }
+        return std::format("The {} scheduling policy can't be set for process {}", text.view(), pid);
     case ESRCH:
         return "Process not found - may have already exited";
     default:

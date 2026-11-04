@@ -142,10 +142,8 @@ TEST_F(HelperSandboxTest, ItsOwnJobStillWorks)
 }
 
 // #3086: Set scheduling policy may move a thread to Batch or Idle (and back to Normal, with CAP_SYS_NICE), with
-// SCHED_RESET_ON_FORK kept where the thread had it; real time (with or without the flag) and sched_setattr stay
-// refused. FIFO needs privilege the test may have, so its EPERM is checked as the filter's: with the flag allowed for
-// Batch, a FIFO refusal can't be the flag's.
-TEST_F(HelperSandboxTest, OnlyNormalBatchAndIdleSchedulingPoliciesAreSet)
+// SCHED_RESET_ON_FORK kept where the thread had it.
+TEST_F(HelperSandboxTest, NormalBatchAndIdleSchedulingPoliciesAreSet)
 {
     EXPECT_EQ(underFilter(HelperSandbox::Mode::Enforce,
                           []
@@ -173,20 +171,33 @@ TEST_F(HelperSandboxTest, OnlyNormalBatchAndIdleSchedulingPoliciesAreSet)
                               return ::sched_getscheduler(0) == (SCHED_BATCH | SCHED_RESET_ON_FORK) ? 0 : -1;
                           }),
               0);
-    EXPECT_EQ(underFilter(HelperSandbox::Mode::Enforce,
-                          []
-                          {
-                              const sched_param param{.sched_priority = 1};
-                              return errorOf(::sched_setscheduler(0, SCHED_FIFO | SCHED_RESET_ON_FORK, &param));
-                          }),
-              EPERM);
-    EXPECT_EQ(underFilter(HelperSandbox::Mode::Enforce,
-                          []
-                          {
-                              const sched_param param{.sched_priority = 1};
-                              return errorOf(::sched_setscheduler(0, SCHED_FIFO, &param));
-                          }),
-              EPERM);
+}
+
+// #3219: real time (FIFO and RR, with or without SCHED_RESET_ON_FORK) gets past the filter; Deadline and
+// sched_setattr don't. Whether the kernel would then grant real time depends on the test's own privilege, so each
+// call asks for priority 0, which the kernel refuses for FIFO and RR, and for Deadline through sched_setscheduler, as
+// EINVAL, before it looks at privilege. EINVAL is the kernel's answer, so the filter let the call through; EPERM
+// can only be the filter's refusal. The unfiltered baseline shows Deadline is EINVAL without the filter.
+TEST_F(HelperSandboxTest, RealtimeGetsPastTheFilterButDeadlineAndSchedSetattrDont)
+{
+    constexpr int SCHED_DEADLINE_POLICY = 6; // SCHED_DEADLINE, which glibc's <sched.h> may not name
+    const auto withZeroPriority = [](int policy)
+    {
+        const sched_param param{.sched_priority = 0};
+        return errorOf(::sched_setscheduler(0, policy, &param));
+    };
+    ASSERT_EQ(withZeroPriority(SCHED_DEADLINE_POLICY), EINVAL) << "the baseline: no filter, the kernel's own refusal";
+    ASSERT_EQ(withZeroPriority(SCHED_FIFO), EINVAL);
+    for (const int policy : {SCHED_FIFO, SCHED_RR, SCHED_FIFO | SCHED_RESET_ON_FORK, SCHED_RR | SCHED_RESET_ON_FORK})
+    {
+        EXPECT_EQ(underFilter(HelperSandbox::Mode::Enforce, [&] { return withZeroPriority(policy); }), EINVAL)
+            << "policy " << policy << ": the kernel saw it, so the filter allowed it";
+    }
+    for (const int policy : {SCHED_DEADLINE_POLICY, SCHED_DEADLINE_POLICY | SCHED_RESET_ON_FORK, 4, 7})
+    {
+        EXPECT_EQ(underFilter(HelperSandbox::Mode::Enforce, [&] { return withZeroPriority(policy); }), EPERM)
+            << "policy " << policy << ": the filter refused it";
+    }
     EXPECT_EQ(underFilter(HelperSandbox::Mode::Enforce, [] { return errorOf(::syscall(SYS_sched_setattr, 0, nullptr, 0)); }), EPERM);
 }
 

@@ -285,6 +285,14 @@ using LinuxProcessDetail::verifyIdentity;
     return ProcPrivileges::canSetRealtimeIoPriority(status ? ProcPrivileges::parseCapEff(*status) : std::nullopt);
 }
 
+/// Whether TaskSmack itself may set a real-time scheduling policy at any priority: CAP_SYS_NICE in its own
+/// effective set (ProcPrivileges::canSetRealtimeSchedPolicy()). Read once, by the constructor (#3219).
+[[nodiscard]] bool ownProcessCanSetRealtimeSched()
+{
+    const std::optional<std::string> status = readSmallFile("/proc/self/status");
+    return ProcPrivileges::canSetRealtimeSchedPolicy(status ? ProcPrivileges::parseCapEff(*status) : std::nullopt);
+}
+
 /// Whether thread `tid` is still in `pid`'s thread group. A TID belongs to one task at a time, so if
 /// it is still listed under /proc/<pid>/task after setpriority(2), the call reached a thread of the
 /// target: had the worker exited and its TID been reused by another process, it would be listed
@@ -381,10 +389,10 @@ int realSetAffinity(id_t tid, std::size_t setSize, const cpu_set_t* set)
     return ::sched_setaffinity(static_cast<pid_t>(tid), setSize, set);
 }
 
-int realSetScheduler(id_t tid, int policy)
+int realSetScheduler(id_t tid, int policy, int priority)
 {
-    // sched_priority must be 0 for SCHED_OTHER, SCHED_BATCH and SCHED_IDLE, the only policies asked for (#3086).
-    const sched_param param{.sched_priority = 0}; // NOLINT(misc-include-cleaner) - sched_param is provided by <sched.h>
+    // sched_priority is 0 for SCHED_OTHER, SCHED_BATCH and SCHED_IDLE (#3086), 1 to 99 for SCHED_FIFO and SCHED_RR (#3219).
+    const sched_param param{.sched_priority = priority}; // NOLINT(misc-include-cleaner) - sched_param is provided by <sched.h>
     return ::sched_setscheduler(static_cast<pid_t>(tid), policy, &param);
 }
 
@@ -676,7 +684,10 @@ LinuxProcessControl::LinuxProcessControl(const LinuxProcessSyscalls& syscalls) :
 {}
 
 LinuxProcessControl::LinuxProcessControl(const LinuxProcessSyscalls& syscalls, std::shared_ptr<EfficiencyMemory> efficiency)
-    : m_Syscalls(syscalls), m_CanSetRealtimeIoPriority(ownProcessCanSetRealtimeIo()), m_Efficiency(std::move(efficiency))
+    : m_Syscalls(syscalls),
+      m_CanSetRealtimeIoPriority(ownProcessCanSetRealtimeIo()),
+      m_CanSetRealtimeSchedPolicy(ownProcessCanSetRealtimeSched()),
+      m_Efficiency(std::move(efficiency))
 {
     if (m_Syscalls.currentNice == nullptr)
     {
@@ -738,8 +749,9 @@ ProcessActionCapabilities LinuxProcessControl::actionCapabilities() const
         .canSetPriority = true,
         .canSetIoPriority = true, // ioprio_set(2) (#803)
         .canSetRealtimeIoPriority = m_CanSetRealtimeIoPriority,
-        .canSetAffinity = m_Syscalls.setAffinity != nullptr,     // sched_setaffinity(2) (#1887)
-        .canSetSchedPolicy = m_Syscalls.setScheduler != nullptr, // sched_setscheduler(2) (#3086)
+        .canSetAffinity = m_Syscalls.setAffinity != nullptr,                                            // sched_setaffinity(2) (#1887)
+        .canSetSchedPolicy = m_Syscalls.setScheduler != nullptr,                                        // sched_setscheduler(2) (#3086)
+        .canSetRealtimeSchedPolicy = m_Syscalls.setScheduler != nullptr && m_CanSetRealtimeSchedPolicy, // CAP_SYS_NICE (#3219)
         .syscallTrace = SyscallTraceAvailability::Unsupported,
         .canCreateDump = false,
         .canSetEfficiencyMode = true, // nice 19 and a low cgroup cpu.weight (#3202)
@@ -1129,29 +1141,47 @@ ProcessActionResult LinuxProcessControl::setAffinity(const ProcessTarget& target
         m_Syscalls, *result, pidfd, target, AFFINITY_WORDING, setting, affinityErrorMessage(result->firstError, target.pid));
 }
 
-ProcessActionResult LinuxProcessControl::setSchedPolicy(const ProcessTarget& target, SchedPolicy policy)
+ProcessActionResult LinuxProcessControl::setSchedPolicy(const ProcessTarget& target, SchedPolicy policy, std::int32_t rtPriority)
 {
     if (target.pid <= 0)
     {
         return ProcessActionResult::error("Invalid PID");
     }
-    // Normal, Batch and Idle only (#3086): real time is #3219, and the root helper must never set it, so
-    // anything else stops here, before sched_setscheduler(2), as the broker protocol's decoder stops it.
+    // Normal, Batch and Idle at priority 0 (#3086), FIFO and round robin at 1 to 99 (#3219): Deadline and any other
+    // pair stop here, before sched_setscheduler(2), as the broker protocol's decoder stops them for the root helper.
     const int linuxPolicy = settableSchedPolicyToLinux(policy);
     if (linuxPolicy < 0)
     {
-        return ProcessActionResult::error("Only the Normal, Batch and Idle scheduling policies can be set");
+        return ProcessActionResult::error("Only the Normal, Batch, Idle, FIFO and round robin scheduling policies can be set");
+    }
+    if (!isValidSchedPolicySetting(policy, rtPriority))
+    {
+        return ProcessActionResult::error(
+            isRealtimeSchedPolicy(policy)
+                ? std::format("A real-time priority runs from {} to {}, not {}",
+                              MIN_REALTIME_SCHED_PRIORITY,
+                              MAX_REALTIME_SCHED_PRIORITY,
+                              rtPriority)
+                : std::format("The {} policy takes no real-time priority (asked for {})", schedPolicyText(policy, 0).view(), rtPriority));
     }
     if (const std::optional<std::string> refused = schedulingChangeRefused(target.pid); refused.has_value())
     {
         return ProcessActionResult::error(*refused);
+    }
+    // Never real time for this process itself (#3219): TaskSmack's UI thread, or the root helper, spinning at a
+    // real-time priority could starve the desktop the user needs to undo it.
+    if (isRealtimeSchedPolicy(policy) && target.pid == ::getpid())
+    {
+        const std::string self = std::format("PID {} is this process, which TaskSmack never runs under a real-time policy", target.pid);
+        spdlog::info("Not setting scheduling policy: {}", self);
+        return ProcessActionResult::error(self);
     }
     if (m_Syscalls.setScheduler == nullptr)
     {
         return ProcessActionResult::error("Setting the scheduling policy isn't available on this system");
     }
 
-    const std::string setting = std::format("policy={}", schedPolicyText(policy, 0).view());
+    const std::string setting = std::format("policy={}", schedPolicyText(policy, static_cast<std::uint32_t>(rtPriority)).view());
     spdlog::debug("Setting scheduling policy ({}) for PID {}", setting, target.pid);
 
     // As setPriority(): sched_setscheduler(2) has no pidfd form, so the pidfd opened before the
@@ -1176,22 +1206,27 @@ ProcessActionResult LinuxProcessControl::setSchedPolicy(const ProcessTarget& tar
     const auto result = reniceThreads(
         target.pid,
         m_Syscalls.listThreads,
-        [this, linuxPolicy](id_t tid) -> int
+        [this, linuxPolicy, rtPriority](id_t tid) -> int
         {
             // A thread's SCHED_RESET_ON_FORK is kept (rtkit sets it on the real-time threads it grants): clearing it
             // would change what the thread's children start with, and the kernel refuses an unprivileged caller
             // that tries, with EPERM.
             const int current = m_Syscalls.getScheduler != nullptr ? m_Syscalls.getScheduler(tid) : 0;
             const int keep = current > 0 ? (current & SCHED_RESET_ON_FORK) : 0;
-            return m_Syscalls.setScheduler(tid, linuxPolicy | keep) == 0 ? 0 : errno;
+            return m_Syscalls.setScheduler(tid, linuxPolicy | keep, rtPriority) == 0 ? 0 : errno;
         },
         m_Syscalls.isThreadOf);
     if (!result.has_value())
     {
         return threadListError(target, result.error(), SCHED_POLICY_WORDING);
     }
-    return reportThreadChange(
-        m_Syscalls, *result, pidfd, target, SCHED_POLICY_WORDING, setting, schedPolicyErrorMessage(result->firstError, policy, target.pid));
+    return reportThreadChange(m_Syscalls,
+                              *result,
+                              pidfd,
+                              target,
+                              SCHED_POLICY_WORDING,
+                              setting,
+                              schedPolicyErrorMessage(result->firstError, policy, rtPriority, target.pid));
 }
 
 CpuAffinityLayout LinuxProcessControl::affinityLayout() const

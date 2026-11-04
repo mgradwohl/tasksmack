@@ -69,7 +69,8 @@ namespace Platform::Broker
 /// 14: ThreadAction, one thread suspended, resumed or ended (#3069, Windows); ThreadsResult carries each
 ///     thread's wait reason, suspend count and creation time, and whether its priority is Windows' rather than a nice value.
 /// 15: SetSchedPolicy, a process's CPU scheduling policy set to Normal, Batch or Idle (#3086, Linux).
-inline constexpr std::uint16_t PROTOCOL_VERSION = 15;
+/// 16: SetSchedPolicy carries a real-time priority, and may set FIFO or round robin with 1 to 99 (#3219, Linux).
+inline constexpr std::uint16_t PROTOCOL_VERSION = 16;
 /// The largest frame either side accepts, header included.
 inline constexpr std::size_t MAX_MESSAGE_BYTES = std::size_t{8} << 20U;
 /// The most processes one ReadProcessCounters asks about (#2728); a sampler with more asks for the first.
@@ -111,7 +112,7 @@ enum class MessageKind : std::uint16_t // NOLINT(performance-enum-size): 16 bits
     TaskManagerReplacement = 23, ///< TaskSmack set or cleared as Task Manager's IFEO debugger (#3072)
     SessionAction = 24,          ///< Another user's Windows session disconnected or signed out (#3076)
     ThreadAction = 25,           ///< One thread of a process suspended, resumed or ended (#3069, Windows)
-    SetSchedPolicy = 26,         ///< A process's scheduling policy set to Normal, Batch or Idle (#3086, Linux)
+    SetSchedPolicy = 26,         ///< A process's scheduling policy and real-time priority set (#3086, #3219, Linux)
     ReadEnvironment = 32,        ///< Another user's process's environment, for Process Details (#2309)
     ReadModules = 33,            ///< Its loaded modules (#2309)
     ReadOpenFiles = 34,          ///< Its open files (#2309)
@@ -199,12 +200,14 @@ struct AffinityRequest
 };
 
 /// Set a process's CPU scheduling policy (#3086, protocol v15, Linux): IProcessActions::setSchedPolicy(). Normal,
-/// Batch or Idle only: the decoder refuses every other policy, so the helper is never asked for real time (#3219).
-/// The answer is an ActionResult.
+/// Batch or Idle with priority 0, or (v16, #3219) the real-time FIFO or round robin with a priority from 1 to 99:
+/// the decoder refuses every other pair (isValidSchedPolicySetting()), Deadline included. The answer is an
+/// ActionResult.
 struct SchedPolicyRequest
 {
     ProcessTarget target;
     SchedPolicy policy = SchedPolicy::Normal;
+    std::int32_t rtPriority = 0; ///< sched_priority: 1 to 99 for FIFO and round robin, 0 for the others (v16)
     friend bool operator==(const SchedPolicyRequest&, const SchedPolicyRequest&) = default;
 };
 
@@ -1108,11 +1111,12 @@ namespace Detail
     return MessageKind::SetAffinity;
 }
 
-/// SetSchedPolicy (#3086): the target, then the policy as SchedPolicy's value.
+/// SetSchedPolicy (#3086): the target, the policy as SchedPolicy's value, then (v16, #3219) its real-time priority.
 [[nodiscard]] inline MessageKind encodePayload(Writer& writer, const SchedPolicyRequest& policy)
 {
     writer.target(policy.target);
     writer.u8(static_cast<std::uint8_t>(policy.policy));
+    writer.i32(policy.rtPriority);
     return MessageKind::SetSchedPolicy;
 }
 
@@ -1195,21 +1199,23 @@ namespace Detail
     return AffinityRequest{.target = target, .cpus = std::move(cpus)};
 }
 
-/// A SetSchedPolicy payload (#3086): the target, then the policy, refused unless Normal, Batch or Idle. Real time
-/// (FIFO, round robin), Deadline and Unknown are refused here, before the helper acts, as LinuxProcessControl
-/// refuses them too: the helper may change a scheduling policy only to one of those three (#3219 is real time).
+/// A SetSchedPolicy payload (#3086): the target, the policy, then its real-time priority (v16, #3219). Refused unless
+/// the pair is one Set scheduling policy may set: Normal, Batch or Idle with priority 0, FIFO or round robin with 1
+/// to 99. Deadline, Unknown and an out-of-range priority are refused here, before the helper acts, as
+/// LinuxProcessControl refuses them too.
 [[nodiscard]] inline SchedPolicyRequest decodeSchedPolicyRequest(Reader& reader)
 {
     const ProcessTarget target = reader.target();
     const std::uint8_t value = reader.u8();
-    // Any byte casts to the uint8-backed enum; only the policies Set scheduling policy may set are accepted (#3086).
-    auto policy = static_cast<SchedPolicy>(value);
-    if (!isSettableSchedPolicy(policy))
+    const std::int32_t rtPriority = reader.i32();
+    // Any byte casts to the uint8-backed enum; only the pairs Set scheduling policy may set are accepted.
+    const auto policy = static_cast<SchedPolicy>(value);
+    if (!isValidSchedPolicySetting(policy, rtPriority))
     {
         reader.fail();
-        policy = SchedPolicy::Normal;
+        return SchedPolicyRequest{.target = target, .policy = SchedPolicy::Normal, .rtPriority = 0};
     }
-    return SchedPolicyRequest{.target = target, .policy = policy};
+    return SchedPolicyRequest{.target = target, .policy = policy, .rtPriority = rtPriority};
 }
 
 /// A ReadProcessCounters payload: whether sockets are wanted (0 or 1), the count (at most
