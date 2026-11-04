@@ -3329,6 +3329,27 @@ TEST_F(LinuxEfficiencyModeActionTest, OffPutsTheWeightBackOnTheCgroupOnLoweredNo
     EXPECT_EQ(efficiency().writes, (std::vector<std::pair<std::string, std::string>>{{"cpu.weight", "50"}}));
 }
 
+// #3374: on lowered its cgroup's weight, the process has moved since, and the old cgroup is still there but its weight
+// can't be written. A process that left it won't bring it back, so off says why and forgets it rather than keeping
+// it for a retry that can't succeed.
+TEST_F(LinuxEfficiencyModeActionTest, AnOffAfterAMoveThatCantWriteTheOldCgroupSaysSoAndForgets)
+{
+    efficiency().files["cpu.weight"] = "50\n";
+    ASSERT_TRUE(m_Control.setEfficiencyMode(ownTarget(), true).success); // app-test.scope: 50 lowered to 1
+    ASSERT_EQ(m_Control.rememberedEfficiencyCount(), 1U);
+    efficiency().nice = 19;
+    efficiency().procCgroup = std::string("0::/user.slice/other.scope\n"); // moved; app-test.scope stays readable
+    efficiency().writeErrno = EACCES;
+    efficiency().writes.clear();
+    const ProcessActionResult off = m_Control.setEfficiencyMode(ownTarget(), false);
+    ASSERT_TRUE(off.success) << off.errorMessage;
+    EXPECT_EQ(off.successNote,
+              "its old cgroup's CPU weight wasn't put back: it has moved to another cgroup, and the old one can't be changed");
+    EXPECT_EQ(efficiency().lastWriteCgroup, "user.slice/app-test.scope") << "it tried the cgroup on lowered, not the new one";
+    EXPECT_TRUE(efficiency().writes.empty());
+    EXPECT_EQ(m_Control.rememberedEfficiencyCount(), 0U) << "nothing kept to retry";
+}
+
 // #3331: the cgroup on lowered was deleted and another made at its path, at weight 1, perhaps holding other
 // processes. Off writes nothing into it: it says the old cgroup is gone and forgets.
 TEST_F(LinuxEfficiencyModeActionTest, OffWritesNothingIntoAnotherCgroupMadeAtTheSamePath)
