@@ -46,12 +46,13 @@ different priority in a comment, but **never raises one** the maintainer set, an
 
 Each lane takes work in this order (maintainer, 2026-11-04):
 1. **CI, infra, tooling, build and dependencies** (`ci`, `tooling`, `dependencies`, `release`).
-2. **Bugs** (`bug`), with the refactors and test gaps that go with fixing them.
-3. **Parity features** (`parity`).
-4. **New features** (`enhancement` without `parity`).
+2. **Bugs** (`bug`), with the test gaps that go with fixing them.
+3. **Refactors** (`refactoring`), before any feature, so features build on the cleaned-up structure.
+4. **Parity features** (`parity`).
+5. **New features** (`enhancement` without `parity`).
 
-Priority orders the work *within* each step: `pri:high`, then `pri:medium`, then `pri:low`. It never moves a new
-feature ahead of a bug. Severity breaks ties among bugs.
+Priority orders the work *within* each step: `pri:high`, then `pri:medium`, then `pri:low`. It never moves a
+feature ahead of a refactor or a bug. Severity breaks ties among bugs.
 
 No feature merges before the refactor it depends on. The release tracker (`[RELEASE X.Y]`) lists the cycle's own
 order.
