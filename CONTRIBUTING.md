@@ -1488,7 +1488,10 @@ By default, benchmarks output to console. You can also:
 ```bash
 # Keep baselines platform-specific for apples-to-apples comparisons
 # Linux baseline:    perf-data/linux-baseline.json
-# Windows baseline:  perf-data/win-baseline.json
+# Windows baseline:  perf-data/win-baseline.json (+ win-baseline.manifest.json; a full default
+#                    `pwsh tools/bench.ps1` run, pinned to the performance cores, #3414)
+# A committed baseline keeps only the aggregate rows (mean/median/stddev/cv), which is all the
+# comparison reads: every repetition of the full suite is over pre-commit's 500 KB file limit.
 
 # Compare Windows runs (median per benchmark; exits 1 on a regression over --threshold, default 15%)
 python tools/check-benchmark-regression.py --baseline perf-data/win-baseline.json --current perf-data/win-benchmark-<timestamp>.json
@@ -1504,8 +1507,16 @@ an unpinned one), it refuses with exit code 2 before comparing anything (#3163).
 leave an exit code that's wrong either way: 1 for dozens of regressions that are only the cores,
 or 0 with a real regression hidden by a faster core. Pass `--allow-core-class-mismatch` to
 compare them anyway, with a warning. A run without that field isn't checked, and the output says
-so: the committed baselines have no manifest, nor do runs from before #3163 (Windows) and #3198
-(Linux). The CI gate isn't affected. The comparison also prints each manifest's `system_load`.
+so: the committed Linux baselines have no manifest, nor do runs from before #3163 (Windows) and
+#3198 (Linux). `perf-data/win-baseline.json` has one (#3414), so a Windows run is only compared
+with it when it ran on the same core class: the default `-Core performance`. The CI gate isn't
+affected. The comparison also prints each manifest's `system_load`.
+
+Even on a quiet machine, two full runs of the same binary differ by more than 15% on a few
+benchmarks (#3414): the `*_Concurrent_PublicationWait/.../extra_readers:2` ones, which have a CV
+of 10-50% within a run, and a few whose median moves between runs although each run's CV is
+low, such as `BM_WindowsProcessProbe_SnapshotReplay` (8.5 us or 38 us). Re-run a flagged
+benchmark with a filter before treating it as a regression.
 
 ### CI Benchmark Regression Gate
 
