@@ -29,15 +29,40 @@ inputs:
     description: 'Install ccache'
     required: false
     default: 'true'
-  expect-exact-version:
+  expect-release:
     description: >
-      Exact apt package version to require for clang-<llvm-version> (e.g.
-      '1:23.1.3~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80').
-      When set, fails the step if apt.llvm.org served a different version
-      than expected, so a release build never silently picks up a toolchain
-      change. Leave empty (the default) to skip the check.
+      Upstream LLVM release to require (e.g. '23.1.5', which must be in llvm-version's major). When
+      set, the step fails unless clang-<llvm-version>'s package version starts with '1:<release>~'
+      and clang reports that release, so a release build never silently picks up another upstream
+      release. The apt.llvm.org snapshot inside that release (the part after the '~') may change:
+      apt.llvm.org rebuilds it every few days and keeps only the newest (#3393), so pinning the
+      whole build string broke releases on its own (#3307, #3392). The exact build string is the
+      caller's to record (record-build-inputs.sh beside this action).
+      Setting it also turns on the LLVM package cache: the apt.llvm.org .debs of that release are
+      restored from the Actions cache (key: release, OS image, architecture, package set), so a
+      warm run installs without reaching apt.llvm.org at all. On a miss they are staged in
+      package-cache-path for the caller to save (outputs below); this action never saves, so a
+      workflow that saves is visible to tools/check-cache-prune-triggers.py. Leave empty (the
+      default) for no check and no cache.
     required: false
     default: ''
+
+outputs:
+  package-cache-key:
+    description: 'expect-release only: the LLVM package cache key'
+    value: ${{ steps.package-cache-key.outputs.key }}
+  package-cache-path:
+    description: 'expect-release only: the directory the LLVM .debs are restored to and staged in'
+    value: ${{ steps.package-cache-key.outputs.path }}
+  package-cache-hit:
+    description: "expect-release only: 'true' when LLVM was installed from the cached .debs"
+    value: ${{ steps.install.outputs.cache-hit }}
+  package-cache-staged:
+    description: >-
+      expect-release only: 'true' after a cache miss once every installed LLVM .deb of the release
+      is staged in package-cache-path; the caller saves it with actions/cache/save under
+      package-cache-key (main and release/* runs only, as the repo's other caches)
+    value: ${{ steps.install.outputs.staged }}
   generate-test-locales:
     description: >
       Generate the de_DE, fr_FR and en_US UTF-8 locales, so the locale-display tests (#1648) run
@@ -78,98 +103,92 @@ runs:
           /etc/apt/sources.list.d/packages-microsoft-prod.list
         sudo find /etc/apt/sources.list.d/ -name '*microsoft*' -delete 2>/dev/null || true
 
-    - name: Install LLVM ${{ inputs.llvm-version }}
+    # The LLVM package cache (#3393), for callers that pin a release (expect-release). The key names
+    # everything that decides which .debs a run needs: the release, the OS image (Ubuntu 24.04 and
+    # 26.04 are different apt.llvm.org repositories), the architecture and the requested packages.
+    # Only an exact hit is used, never a restore-key, since a partial set can't install. A cached
+    # set keeps installing the snapshot it was saved from after apt.llvm.org moves on, which is the
+    # point: a warm run is independent of apt.llvm.org's state and reachability. Bump the -v suffix
+    # to discard a bad entry; a new release gets a new key by itself.
+    - name: LLVM package cache key
+      id: package-cache-key
+      if: inputs.expect-release != ''
       shell: bash
       env:
+        EXPECT_RELEASE: ${{ inputs.expect-release }}
+        INSTALL_CLANG_FORMAT: ${{ inputs.install-clang-format }}
+        INSTALL_CLANG_TIDY: ${{ inputs.install-clang-tidy }}
+        LLVM_VERSION: ${{ inputs.llvm-version }}
+      run: |
+        if [[ ! "$EXPECT_RELEASE" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          echo "::error::expect-release must be an X.Y.Z LLVM release, not '$EXPECT_RELEASE'."
+          exit 1
+        fi
+        if [[ "${EXPECT_RELEASE%%.*}" != "${LLVM_VERSION:-23}" ]]; then
+          echo "::error::expect-release $EXPECT_RELEASE is not in llvm-version ${LLVM_VERSION:-23}'s major."
+          exit 1
+        fi
+        # shellcheck disable=SC1091
+        image=$(. /etc/os-release && echo "${ID}${VERSION_ID}")
+        # The optional apt.llvm.org packages (install-llvm.sh's LLVM_PACKAGES); clangd is always in.
+        packages="format=${INSTALL_CLANG_FORMAT} tidy=${INSTALL_CLANG_TIDY}"
+        set_id=$(printf '%s' "$packages" | sha256sum | cut -c1-12)
+        echo "key=Linux-llvm-debs-${EXPECT_RELEASE}-${image}-${RUNNER_ARCH}-${set_id}-v1" >> "$GITHUB_OUTPUT"
+        echo "path=${RUNNER_TEMP}/llvm-debs" >> "$GITHUB_OUTPUT"
+
+    - name: Restore the LLVM package cache
+      id: package-cache
+      if: inputs.expect-release != ''
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.package-cache-key.outputs.path }}
+        key: ${{ steps.package-cache-key.outputs.key }}
+
+    - name: Install LLVM ${{ inputs.llvm-version }}
+      id: install
+      shell: bash
+      env:
+        CACHE_DIR: ${{ steps.package-cache-key.outputs.path }}
+        CACHE_RESTORED: ${{ steps.package-cache.outputs.cache-hit }}
+        EXPECT_RELEASE: ${{ inputs.expect-release }}
         INSTALL_CCACHE: ${{ inputs.install-ccache }}
         INSTALL_CLANGD: ${{ inputs.install-clangd }}
         INSTALL_CLANG_FORMAT: ${{ inputs.install-clang-format }}
         INSTALL_CLANG_TIDY: ${{ inputs.install-clang-tidy }}
         INSTALL_NINJA: ${{ inputs.install-ninja }}
         LLVM_VERSION: ${{ inputs.llvm-version }}
-      run: |
-        LLVM_VER="$LLVM_VERSION"
-        # Restored after removing this as "provably unreachable": GitHub Copilot's own
-        # code-review setup-step runner invokes this action through a path that does not
-        # resolve `${{ env.LLVM_VERSION }}` the way a normal Actions runner does, sending an
-        # empty string here in practice (reproduced directly -- see PR #859's review thread).
-        # Every real `uses:` call site in this repo's own workflows still passes a value, but
-        # that external caller doesn't, so the fallback stays.
-        if [[ -z "$LLVM_VER" ]]; then
-          LLVM_VER='23'
-        fi
-        if [[ ! "$LLVM_VER" =~ ^[0-9]+$ ]]; then
-          echo "llvm-version must be a numeric major version" >&2
-          exit 1
-        fi
+      # The cache-hit path, apt.llvm.org's installer and the retries are in the script (#3393).
+      run: bash "$GITHUB_ACTION_PATH/install-llvm.sh"
 
-        # GitHub's Ubuntu mirror list prefers azure.archive.ubuntu.com, which can
-        # accept a connection and then stall indefinitely. Select the standard
-        # archive before any apt operation so a hung Azure request cannot prevent
-        # fallback logic from ever running.
-        sudo tee /etc/apt/apt.conf.d/80-tasksmack-network >/dev/null <<'APT_CONFIG'
-        Acquire::Retries "2";
-        Acquire::http::Timeout "15";
-        Acquire::https::Timeout "15";
-        APT_CONFIG
-        # x64 only: arm64 packages live on ports.ubuntu.com, not archive.ubuntu.com, so the
-        # ubuntu-26.04-arm image's mirror list is left as it is (#2214).
-        if [[ -f /etc/apt/apt-mirrors.txt && "$(dpkg --print-architecture)" == 'amd64' ]]; then
-          echo 'https://archive.ubuntu.com/ubuntu/' |
-            sudo tee /etc/apt/apt-mirrors.txt >/dev/null
-        fi
-        sudo sed -i \
-          's|https\?://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
-          /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || true
-
-        # Verify the installer before granting it root privileges.
-        # To update: curl --fail --silent --show-error --location --output llvm.sh https://apt.llvm.org/llvm.sh && sha256sum llvm.sh | awk '{print $1}'
-        LLVM_INSTALLER_SHA256='03878e08f47b66cc95bc4b544b0db3c6d9ce8d60e6cf2492ae357984330a9eae'
-        curl --fail --silent --show-error --location \
-          --output llvm.sh https://apt.llvm.org/llvm.sh
-        echo "$LLVM_INSTALLER_SHA256  llvm.sh" | sha256sum --check --strict
-        chmod +x llvm.sh
-        sudo timeout --kill-after=10s 300s ./llvm.sh "$LLVM_VER"
-        rm -f llvm.sh
-
-        # Build package list - always include GUI dependencies; libcurl for the update check's HTTPS client (#3238)
-        PACKAGES="libgl1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev libwayland-dev libxkbcommon-dev libc++-${LLVM_VER}-dev libc++abi-${LLVM_VER}-dev libfreetype-dev libsystemd-dev libcurl4-openssl-dev libpolkit-agent-1-dev dbus-daemon pkg-config"
-
-        if [[ "$INSTALL_NINJA" == "true" ]]; then
-          PACKAGES="$PACKAGES ninja-build"
-        fi
-        if [[ "$INSTALL_CCACHE" == "true" ]]; then
-          PACKAGES="$PACKAGES ccache"
-        fi
-        if [[ "$INSTALL_CLANG_FORMAT" == "true" ]]; then
-          PACKAGES="$PACKAGES clang-format-${LLVM_VER}"
-        fi
-        if [[ "$INSTALL_CLANG_TIDY" == "true" ]]; then
-          PACKAGES="$PACKAGES clang-tidy-${LLVM_VER}"
-        fi
-        if [[ "$INSTALL_CLANGD" == "true" ]]; then
-          PACKAGES="$PACKAGES clangd-${LLVM_VER}"
-        fi
-
-        # Install packages
-        sudo timeout --kill-after=10s 180s apt-get update
-        sudo timeout --kill-after=10s 300s apt-get install -y $PACKAGES
-
-    - name: Assert exact LLVM package version
-      if: ${{ inputs.expect-exact-version != '' }}
+    - name: Assert the LLVM release
+      if: inputs.expect-release != ''
       shell: bash
       env:
         LLVM_VERSION: ${{ inputs.llvm-version }}
-        EXPECTED_VERSION: ${{ inputs.expect-exact-version }}
+        EXPECT_RELEASE: ${{ inputs.expect-release }}
       run: |
-        ACTUAL_VERSION=$(dpkg-query -W -f='${Version}' "clang-${LLVM_VERSION}")
-        if [[ "$ACTUAL_VERSION" != "$EXPECTED_VERSION" ]]; then
-          echo "::error::apt.llvm.org served clang-${LLVM_VERSION} version '$ACTUAL_VERSION', but this workflow is pinned to '$EXPECTED_VERSION'."
-          echo "apt.llvm.org only retains the latest snapshot per major version, so this is expected once it rotates forward." >&2
-          echo "Confirm the new version is acceptable, then update the pinned value passed as expect-exact-version to '$ACTUAL_VERSION'." >&2
+        VER="${LLVM_VERSION:-23}"
+        ACTUAL_VERSION=$(dpkg-query -W -f='${Version}' "clang-${VER}")
+        if [[ "$ACTUAL_VERSION" != "1:${EXPECT_RELEASE}~"* ]]; then
+          echo "::error::clang-${VER} is package version '$ACTUAL_VERSION', which is not LLVM ${EXPECT_RELEASE} (expected '1:${EXPECT_RELEASE}~...')."
+          echo "apt.llvm.org now serves another upstream release for LLVM ${VER}. Review it, then bump LLVM_LINUX_RELEASE in release.yml (docs/dev/release-process.md, \"The Linux LLVM pin\")." >&2
           exit 1
         fi
-        echo "Verified clang-${LLVM_VERSION} exact package version: $ACTUAL_VERSION"
+        CLANG_LINE=$("clang-${VER}" --version | head -n 1)
+        if [[ "$CLANG_LINE" != *"clang version ${EXPECT_RELEASE}"* ]]; then
+          echo "::error::clang-${VER} reports '$CLANG_LINE', not clang version ${EXPECT_RELEASE}."
+          exit 1
+        fi
+        # The linker and C++ library must be the same apt.llvm.org build as the compiler, so a mix
+        # of two snapshots (a partial upgrade, or a stale cache entry) can't build a release.
+        for pkg in "lld-${VER}" "libc++-${VER}-dev" "libc++abi-${VER}-dev"; do
+          other=$(dpkg-query -W -f='${Version}' "$pkg")
+          if [[ "$other" != "$ACTUAL_VERSION" ]]; then
+            echo "::error::$pkg is '$other', but clang-${VER} is '$ACTUAL_VERSION'."
+            exit 1
+          fi
+        done
+        echo "Verified LLVM ${EXPECT_RELEASE}: clang-${VER} package ${ACTUAL_VERSION} (${CLANG_LINE})"
 
     - name: Configure LLVM alternatives
       shell: bash

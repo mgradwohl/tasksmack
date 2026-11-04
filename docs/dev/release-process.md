@@ -241,6 +241,40 @@ freeze.
   A `release/X.Y` branch must read `X.Y.*`. It's compared only with its own line's tags, so `release/0.9` stays
   green after v0.10.0 ships.
 
+## The Linux LLVM pin
+
+The Linux release legs build with clang from apt.llvm.org. `LLVM_LINUX_RELEASE` in `release.yml` (`23.1.5`) is
+the one place that pins it, for both architectures (#3393).
+
+- **What's pinned:** the upstream release. Each leg fails at Setup LLVM unless its `clang-23` package version
+  starts with `1:<release>~` and `clang-23 --version` reports that release. `lld-23` and `libc++` must be the same
+  build as clang.
+- **What isn't:** apt.llvm.org's snapshot inside the release (`~++<date>+<commit>-1~exp1~<build>`). It rebuilds
+  the snapshot every few days and keeps only the newest, so pinning the whole build string blocked two releases on
+  its own (#3307, #3392).
+- **Where the snapshot shows:** every Linux leg records the exact build string of each LLVM package it installed in
+  its `linux-build-inputs-<arch>` artifact. `verify-reproducibility` compares the two records and says when the two
+  builds got different snapshots. That's informational: the package digests decide its result, and the job stays
+  advisory.
+- **The package cache:** Setup LLVM restores the release's `.deb`s from the Actions cache, keyed by release, OS
+  image, architecture and package set. A warm run doesn't reach apt.llvm.org at all, and keeps installing the
+  snapshot it saved after apt.llvm.org moves on. Release runs on `main` and `release/*` (dry runs) save it on a
+  miss; a tag run only restores, from main's entry. So run a dry run from main before tagging, and both builds of
+  the tag install the same snapshot.
+- **Retries:** apt.llvm.org's key, installer and repository each retry with backoff (4 tries), since runners have
+  lost DNS to it for hours (2026-11-03).
+
+To bump the release, when apt.llvm.org moves to a new one (Setup LLVM fails with "is not LLVM `<release>`") or on
+purpose:
+
+1. Check what it serves: `curl -fsSL
+   https://apt.llvm.org/noble/dists/llvm-toolchain-noble-23/main/binary-amd64/Packages.gz | gunzip | grep -A2
+   '^Package: clang-23$'`, and `binary-arm64` too.
+2. Review the upstream release notes, then change `LLVM_LINUX_RELEASE` in a PR. The new key starts a new cache
+   entry by itself.
+3. Run a release dry run on the PR branch. Both Linux legs must pass. After the merge, run one from main, so the
+   cache holds the new release before a tag needs it.
+
 ## Patch releases
 
 A patch happens only when a shipped bug warrants one.
