@@ -314,6 +314,7 @@ class ProcessModel : public ISamplable
     long m_TicksPerSecond = 100;           // For cpuTimeSeconds calculation
     Clock::time_point m_PrevSampleTime;    // For rate calculations (network, I/O, power)
     bool m_HasPrevSampleTime = false;
+    std::optional<Clock::time_point> m_PrevEnergyAt; // the last package energy read's acquisition (#3344)
 
     // Aggregated system histories (aligned by timestamps), guarded by m_Mutex. Capacity is set from
     // the configured window; time-based trimming via discardFront keeps them in the window. Shared,
@@ -369,10 +370,13 @@ class ProcessModel : public ISamplable
     // Helpers
     /// Requires m_SamplingMutex held. @p acquiredAt is when @p counters were read (#3344): every rate's interval is
     /// between two samples' acquisitions, so the reads that follow enumerate() (socket traffic, package energy)
-    /// and the computing itself don't change any rate's denominator.
+    /// and the computing itself don't change any rate's denominator. Power shared out from a package energy
+    /// counter is the exception: that counter is read after the others, so its interval is its own.
+    /// @p energyAcquiredAt, when the package energy counter was read this sample, times package-derived power.
     void computeSnapshotsLocked(const std::vector<Platform::ProcessCounters>& counters,
                                 std::uint64_t totalCpuTime,
-                                Clock::time_point acquiredAt);
+                                Clock::time_point acquiredAt,
+                                std::optional<Clock::time_point> energyAcquiredAt);
 
     /// For a carried-over process (ProcessCounters::heldOver, #3031), appends its last row to @p newSnapshots,
     /// taking the last generation into @p previousSnapshots the first time, and notes when its counters were

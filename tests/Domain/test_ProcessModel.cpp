@@ -1378,6 +1378,38 @@ TEST(ProcessModelTest, PackageEnergyIsSharedByIntervalCpuTime)
     EXPECT_DOUBLE_EQ(idle->powerWatts, 0.0);
 }
 
+// #3344: package-derived power divides by the time between the package counter's own reads, which come after the
+// socket read: with enumerations at 0 s and 1 s and socket reads taking 400 ms, then 50 ms, a constant 10 W package
+// is read at 0.4 s (4 J) and 1.05 s (10.5 J), so 6.5 J over 0.65 s is 10 W, not 6.5 W over the enumerations' 1 s.
+TEST(ProcessModelTest, PackagePowerDividesByTheTimeBetweenItsOwnReads)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->withProcess(1, "busy").withCpuTime(1, 100, 0);
+    rawProbe->setTotalCpuTime(10'000);
+    rawProbe->setPackageEnergy(
+        Platform::PackageEnergyReading{.energyUj = 4'000'000, .maxRangeUj = 0, .busyCpuTicks = std::nullopt, .otherPackages = {}});
+
+    Domain::ProcessModel::Clock::time_point now{};
+    auto socketReadTakes = std::chrono::milliseconds(400);
+    rawProbe->setOnSocketRead([&now, &socketReadTakes] { now += socketReadTakes; });
+    Domain::ProcessModel model(std::move(probe), [&now] { return now; });
+    model.refresh();
+
+    now = Domain::ProcessModel::Clock::time_point{std::chrono::seconds(1)};
+    socketReadTakes = std::chrono::milliseconds(50);
+    rawProbe->withCpuTime(1, 200, 0);
+    rawProbe->setTotalCpuTime(10'100);
+    rawProbe->setPackageEnergy(
+        Platform::PackageEnergyReading{.energyUj = 10'500'000, .maxRangeUj = 0, .busyCpuTicks = std::nullopt, .otherPackages = {}});
+    model.refresh();
+
+    const auto snaps = model.snapshots();
+    const auto busy = std::ranges::find_if(snaps, [](const Domain::ProcessSnapshot& s) { return s.pid == 1; });
+    ASSERT_NE(busy, snaps.end());
+    EXPECT_NEAR(busy->powerWatts, 10.0, 1e-9);
+}
+
 // #2444 (#2479): a multi-socket machine's other packages reach the attribution: package 0 used 2 J and
 // package 1 3 J, so the busy process draws 5 W, not package 0's 2 W.
 TEST(ProcessModelTest, EveryPackagesEnergyIsSharedOut)

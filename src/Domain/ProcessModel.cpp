@@ -374,24 +374,29 @@ void ProcessModel::refresh()
     // Per-process power from a package energy counter: share each interval's energy by each
     // process's CPU time in that interval. Probes that report per-process energy themselves
     // return nullopt and their energyMicrojoules is used as-is.
+    std::optional<Clock::time_point> energyAcquiredAt;
     if (const auto packageEnergy = m_Probe->readPackageEnergy())
     {
+        // The package counter has its own acquisition: the energy shared out is what it used between two of these
+        // reads, after the socket read, so power divides by the time between them, not between enumerations (#3344).
+        energyAcquiredAt = m_Now();
         m_EnergyAttributor.attribute(
             currentCounters, packageEnergy->energyUj, packageEnergy->maxRangeUj, packageEnergy->busyCpuTicks, packageEnergy->otherPackages);
     }
 
-    computeSnapshotsLocked(currentCounters, currentTotalCpuTime, acquiredAt);
+    computeSnapshotsLocked(currentCounters, currentTotalCpuTime, acquiredAt, energyAcquiredAt);
 }
 
 void ProcessModel::updateFromCounters(const std::vector<Platform::ProcessCounters>& counters, std::uint64_t totalCpuTime)
 {
     std::scoped_lock const samplingLock(m_SamplingMutex);
-    computeSnapshotsLocked(counters, totalCpuTime, m_Now()); // counters handed in are taken as read now
+    computeSnapshotsLocked(counters, totalCpuTime, m_Now(), std::nullopt); // counters handed in are taken as read now
 }
 
 void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCounters>& counters,
                                           std::uint64_t totalCpuTime,
-                                          Clock::time_point acquiredAt)
+                                          Clock::time_point acquiredAt,
+                                          std::optional<Clock::time_point> energyAcquiredAt)
 {
     std::vector<ProcessSnapshot> newSnapshots;
     // When this model first listed each process, parallel to newSnapshots: the GPU merge needs it to
@@ -437,6 +442,21 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
             timeDeltaUs = 0;
         }
     }
+    // Power shared out from a package energy counter (#1093) divides by the time between its own reads (#3344); a
+    // probe's own per-process energy is read with the counters, so it keeps their interval.
+    if (energyAcquiredAt.has_value())
+    {
+        timeDeltaUs = 0;
+        if (m_PrevEnergyAt.has_value())
+        {
+            const auto energyDelta = *energyAcquiredAt - *m_PrevEnergyAt;
+            if (std::chrono::duration<double>(energyDelta).count() >= MIN_ELAPSED_FOR_RATES)
+            {
+                timeDeltaUs = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(energyDelta).count());
+            }
+        }
+    }
+    m_PrevEnergyAt = energyAcquiredAt; // a refresh without a package read forgets it: the attributor's baseline goes too
     const bool hasElapsedForHistory = m_HasPrevSampleTime;
     const Clock::time_point lastSampleTime = m_PrevSampleTime; // a process carried over from now on was read then (#3031)
     m_PrevSampleTime = currentSampleTime;
