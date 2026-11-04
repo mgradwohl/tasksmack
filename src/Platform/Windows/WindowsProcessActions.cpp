@@ -6,6 +6,7 @@
 #include "Platform/WaitChain.h"
 #include "WindowsAffinityMath.h"
 #include "WindowsConversions.h"
+#include "WindowsFileLocation.h"
 #include "WindowsFolderPicker.h"
 #include "WindowsHandles.h"
 #include "WindowsNtQuery.h"
@@ -40,6 +41,9 @@
 #include <stop_token>
 #include <string>
 #include <string_view>
+#ifndef TASKSMACK_NO_FILE_LOCATION
+#include <system_error>
+#endif
 #include <utility>
 #include <vector>
 
@@ -116,6 +120,31 @@ openVerified(const WindowsProcessFunctions& fns, const ProcessTarget& target, DW
             std::format("Cannot confirm the identity of process {}: error {}; action not sent", target.pid, failure.win32Error)),
     };
 }
+
+/// Whether Open file location can be offered (#3426): the executable's path can be read, and Explorer
+/// can be asked to show it, by the shell or by starting explorer.exe.
+[[nodiscard]] bool hasFileLocation(const WindowsProcessFunctions& fns) noexcept
+{
+    const Windows::FileLocationFunctions& shell = fns.fileLocation;
+    return fns.queryFullProcessImageName != nullptr &&
+           (shell.selectInFolder != nullptr || (shell.startProcess != nullptr && shell.explorerPath != nullptr));
+}
+
+#ifndef TASKSMACK_NO_FILE_LOCATION
+/// Why Open file location couldn't read the process's executable (#3426): OpenProcess's @p error.
+[[nodiscard]] std::string fileLocationOpenFailure(DWORD error)
+{
+    if (error == ERROR_INVALID_PARAMETER)
+    {
+        return "Process not found - may have already exited";
+    }
+    if (error == ERROR_ACCESS_DENIED)
+    {
+        return "Its executable can't be read: access is denied";
+    }
+    return std::format("Its executable can't be read: {}", std::system_category().message(static_cast<int>(error)));
+}
+#endif
 
 /// EnumWindows state for Terminate: the process whose windows to close, and how many were asked.
 struct CloseRequest
@@ -418,6 +447,12 @@ WindowsProcessFunctions realWindowsProcessFunctions() noexcept
         .resumeThread = &ResumeThread,
         .terminateThread = &TerminateThread,
         .getThreadTimes = &GetThreadTimes,
+        .queryFullProcessImageName = &QueryFullProcessImageNameW,
+#ifdef TASKSMACK_NO_FILE_LOCATION
+        .fileLocation = {}, // TaskSmackHelper.exe: no shell calls in the elevated image (#3426)
+#else
+        .fileLocation = Windows::realFileLocationFunctions(),
+#endif
     };
 }
 
@@ -445,6 +480,7 @@ ProcessActionCapabilities WindowsProcessActions::actionCapabilities() const
         .canChooseDumpFolder = HAS_DUMPS,                 // IFileOpenDialog with FOS_PICKFOLDERS (#2001)
         .dumpsFromSnapshot = HAS_DUMPS,                   // PssCaptureSnapshot, else from the running process (#2001)
         .canAuthorizeInteractively = false,               // BrokeredProcessActions sets it when TaskSmackHelper.exe can be used (#2550)
+        .canOpenFileLocation = hasFileLocation(m_Fns),    // SHOpenFolderAndSelectItems, or explorer.exe /select (#3426)
         .canSetEfficiencyMode = hasEfficiencyMode(m_Fns), // EcoQoS and the Idle class, as Task Manager (#3071)
         .canAnalyzeWaitChain = HAS_WAIT_CHAINS,           // GetThreadWaitChain, as Task Manager's Analyze wait chain (#3084)
         .canCloseConnections = false,
@@ -1023,6 +1059,44 @@ WindowsProcessActions::actOnThread(const ProcessTarget& target, std::int32_t tid
                  target.pid,
                  previous);
     return ProcessActionResult::ok(threadActionNote(action, previous));
+}
+
+ProcessActionResult WindowsProcessActions::openFileLocation(const ProcessTarget& target)
+{
+#ifdef TASKSMACK_NO_FILE_LOCATION
+    // TaskSmackHelper.exe: BrokeredProcessActions never sends it one, and WindowsFileLocation.cpp isn't built in.
+    return IProcessActions::openFileLocation(target);
+#else
+    if (!hasFileLocation(m_Fns))
+    {
+        return IProcessActions::openFileLocation(target);
+    }
+    if (target.pid == SYSTEM_PROCESS_PID)
+    {
+        return ProcessActionResult::error("The System process has no executable file");
+    }
+    // The identity check every action makes, so the path read is the target's, never a reused PID's.
+    VerifiedProcess process =
+        openVerified(m_Fns, target, PROCESS_QUERY_LIMITED_INFORMATION, [](DWORD error) { return fileLocationOpenFailure(error); });
+    if (!process.result.success)
+    {
+        spdlog::warn("Not opening the file location of PID {}: {}", target.pid, process.result.errorMessage);
+        return std::move(process.result);
+    }
+    constexpr DWORD MAX_PATH_CHARS = 32768; // the longest path Windows allows, with its terminator
+    std::wstring path(MAX_PATH_CHARS, L'\0');
+    DWORD size = MAX_PATH_CHARS;
+    if (m_Fns.queryFullProcessImageName(process.handle.get(), 0, path.data(), &size) == 0)
+    {
+        // The kernel's own processes (Registry, Memory Compression, Secure System) have no image file.
+        const DWORD error = GetLastError();
+        std::string message = std::format("Its executable can't be read: {}", std::system_category().message(static_cast<int>(error)));
+        spdlog::warn("Not opening the file location of PID {}: {}", target.pid, message);
+        return ProcessActionResult::error(std::move(message));
+    }
+    path.resize(size);
+    return Windows::revealInExplorer(m_Fns.fileLocation, path);
+#endif
 }
 
 WaitChainReadResult WindowsProcessActions::readWaitChains(const ProcessTarget& target, const std::stop_token& stopToken)
