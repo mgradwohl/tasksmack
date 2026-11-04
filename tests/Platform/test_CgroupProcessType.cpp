@@ -35,6 +35,11 @@ TEST(CgroupProcessTypeTest, TheSystemsServicesAndInitAreSystem)
     EXPECT_EQ(classify("0::/system.slice/sshd.service\n", false), SYSTEM);
     EXPECT_EQ(classify("0::/system.slice/system-getty.slice/getty@tty1.service\n", false), SYSTEM);
     EXPECT_EQ(classify("0::/system.slice/docker.service\n", false), SYSTEM); // the host's Docker daemon
+    EXPECT_EQ(classify("0::/system.slice\n", false), SYSTEM);
+    // The whole first component, not a prefix of it.
+    EXPECT_EQ(classify("0::/system.slice2.slice/worker.scope\n", false), BACKGROUND);
+    EXPECT_EQ(classify("0::/init.scopeX\n", false), BACKGROUND);
+    EXPECT_EQ(classify("0::/user.slice/system.slice/x.service\n", false), BACKGROUND); // only the first component counts
 }
 
 TEST(CgroupProcessTypeTest, ADesktopAppsScopeIsAnApp)

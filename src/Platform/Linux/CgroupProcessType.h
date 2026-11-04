@@ -56,6 +56,17 @@ namespace Detail
     return unit.ends_with(".scope") && (unit.starts_with("app-") || unit.starts_with("snap."));
 }
 
+/// Whether @p path's first component is exactly @p unit: "/system.slice" and "/system.slice/x.service" are, but
+/// "/system.slice2.slice/y.scope" isn't.
+[[nodiscard]] constexpr bool firstComponentIs(std::string_view path, std::string_view unit)
+{
+    if (!path.starts_with('/') || path.size() < unit.size() + 1 || path.compare(1, unit.size(), unit) != 0)
+    {
+        return false;
+    }
+    return path.size() == unit.size() + 1 || path[unit.size() + 1] == '/';
+}
+
 } // namespace Detail
 
 /// The Type of the process in @p path (a cgroup path, "/user.slice/user-1000.slice/...").
@@ -65,7 +76,7 @@ namespace Detail
 ///   aren't an app (a terminal's shell, `session-N.scope`), a container's, or a path a cgroup namespace hides ("/").
 [[nodiscard]] constexpr std::string_view fromCgroupPath(std::string_view path)
 {
-    if (path.starts_with("/system.slice") || path.starts_with("/init.scope"))
+    if (Detail::firstComponentIs(path, "system.slice") || Detail::firstComponentIs(path, "init.scope"))
     {
         return SYSTEM;
     }
