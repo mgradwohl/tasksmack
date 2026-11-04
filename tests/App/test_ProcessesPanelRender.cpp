@@ -19,6 +19,7 @@
 #include "App/Panels/NiceStep.h"
 #include "App/Panels/ProcessActionsView.h"
 #include "App/Panels/ProcessColumnAvailability.h"
+#include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
 #include "App/Panels/ProcessDumpView.h"
 #include "App/Panels/ProcessPins.h"
 #include "App/Panels/ProcessRowFormat.h"
@@ -839,6 +840,66 @@ TEST_F(ProcessesPanelRenderTest, EfficiencyModeTickedInTheRowMenuIsTurnedOffAtOn
     panel->waitForRowActionForTesting();
     EXPECT_EQ(actions->efficiencyModeCount(), 1) << "greyed out for a selection: nothing is sent";
     EXPECT_EQ(ImGui::GetTopMostPopupModal(), nullptr);
+    panel->onDetach();
+}
+
+// #3429: where the platform can set Realtime (Windows), the row menu's Set Realtime priority... asks first, with
+// the warning and the danger fill, then sets Realtime's nice for the process the menu was for. A refusal for want
+// of rights says what Windows did, as the platform words it.
+TEST_F(ProcessesPanelRenderTest, SetRealtimePriorityFromTheRowMenuWarnsThenSetsRealtime)
+{
+    TestMocks::MockProcessActions* actions = nullptr;
+    const auto panel = std::make_unique<ProcessesPanel>(
+        [&actions]
+        {
+            auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+            probe->withProcess(TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0))
+                .withProcess(TestMocks::makeProcessCounters(100, "server", 'R', 200, 50, 1000, std::uint64_t{8} << 20U, 1));
+            auto mock = std::make_unique<TestMocks::MockProcessActions>();
+            mock->setCapabilities({.canTerminate = true, .canKill = true, .canSetPriority = true, .canSetRealtimePriority = true});
+            actions = mock.get();
+            return ProcessesPanelPlatform{.probe = std::move(probe), .actions = std::move(mock), .icons = nullptr};
+        },
+        [](Core::Event&) {});
+    attachAndSeed(*panel);
+    Core::ActiveTabChangedEvent shown("Processes");
+    panel->onEvent(shown);
+    ASSERT_NE(actions, nullptr);
+    renderUntilLoaded(*panel);
+
+    std::optional<std::int32_t> menuPid = openARowMenu(*panel);
+    ASSERT_TRUE(menuPid.has_value());
+    pressPopupItem(*panel, App::Detail::SET_REALTIME_PRIORITY_LABEL);
+    static_cast<void>(renderAndCapture(*panel));
+    const std::string text = renderAndCapture(*panel);
+    const ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
+    ASSERT_NE(modal, nullptr);
+    EXPECT_TRUE(std::string_view(modal->Name).starts_with("Set Realtime priority for")) << modal->Name;
+    EXPECT_TRUE(text.contains("can make the desktop unresponsive")) << text;
+    EXPECT_EQ(actions->setPriorityCount(), 0); // asked, not done
+
+    pressModalFilledButton(*panel, "Set Realtime priority"); // the danger fill
+    panel->waitForRowActionForTesting();
+    EXPECT_EQ(actions->setPriorityCount(), 1);
+    EXPECT_EQ(actions->lastSetPriorityNice(), App::Detail::REALTIME_PRIORITY_NICE);
+    EXPECT_EQ(actions->lastTarget().pid, menuPid.value_or(-1));
+    EXPECT_TRUE(renderAndCapture(*panel).contains(std::format("Priority of PID {} set to Realtime", menuPid.value_or(-1))));
+
+    // Windows quietly set High: the toolbar says so.
+    actions->setPriorityResult(Platform::ProcessActionResult::denied("Windows set High: Realtime needs administrator rights."));
+    if (topPopup() != nullptr)
+    {
+        closePopups(*panel);
+    }
+    menuPid = openARowMenu(*panel);
+    ASSERT_TRUE(menuPid.has_value());
+    pressPopupItem(*panel, App::Detail::SET_REALTIME_PRIORITY_LABEL);
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    ASSERT_NE(ImGui::GetTopMostPopupModal(), nullptr);
+    pressModalFilledButton(*panel, "Set Realtime priority");
+    panel->waitForRowActionForTesting();
+    EXPECT_TRUE(renderAndCapture(*panel).contains("Windows set High: Realtime needs administrator rights.")) << "the toolbar";
     panel->onDetach();
 }
 

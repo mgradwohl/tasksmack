@@ -9,6 +9,7 @@
 /// actual dispatch decision logic directly against a mock, which is the part #415 cared about.
 
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
+#include "Domain/PriorityConfig.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Mocks/MockProbes.h"
 #include "Platform/IProcessActions.h"
@@ -18,6 +19,7 @@
 #include <cstdint>
 #include <format>
 #include <initializer_list>
+#include <optional>
 #include <string>
 #include <tuple>
 
@@ -323,6 +325,50 @@ TEST(ProcessActionHelpersTest, EachActionHasItsOwnProgressLabel)
     EXPECT_STREQ(actionProgressLabel(ProcessAction::EfficiencyModeOn), "Turning Efficiency mode on for");
     EXPECT_STREQ(actionProgressLabel(ProcessAction::EfficiencyModeOff), "Turning Efficiency mode off for");
     EXPECT_STREQ(actionProgressLabel(ProcessAction::None), "Acting on");
+}
+
+// #3429: Set Realtime priority sets Realtime's nice through setPriority(), warns that it can make the desktop
+// unresponsive, confirms in the danger fill, says Windows' quiet High as the platform words it, and retries
+// through the helper as a priority change.
+TEST(ProcessActionHelpersTest, SetRealtimePriorityWarnsSetsRealtimesNiceAndRetriesAsAPriorityChange)
+{
+    TestMocks::MockProcessActions mock;
+    const Platform::ProcessTarget target{.pid = 321, .startTimeTicks = 1000};
+    constexpr ProcessAction ACTION = ProcessAction::SetRealtimePriority;
+
+    EXPECT_TRUE(dispatchProcessAction(mock, ACTION, target).success);
+    EXPECT_EQ(mock.setPriorityCount(), 1);
+    EXPECT_EQ(mock.lastSetPriorityNice(), Domain::Priority::classNice(Domain::Priority::PriorityClass::Realtime));
+    EXPECT_EQ(REALTIME_PRIORITY_NICE, Domain::Priority::MIN_NICE);
+    EXPECT_EQ(mock.lastTarget(), target);
+
+    EXPECT_EQ(confirmTitle(ACTION, "game.exe", 321), "Set Realtime priority for game.exe (PID 321)?");
+    const std::string body = confirmBody(ACTION, "game.exe", 321);
+    EXPECT_TRUE(body.starts_with("game.exe (PID 321) will run at the Realtime priority class")) << body;
+    EXPECT_TRUE(body.contains("can make the desktop unresponsive")) << body;
+    EXPECT_TRUE(body.contains("Without administrator rights, Windows sets High instead")) << body;
+    EXPECT_STREQ(actionLabel(ACTION), "Set Realtime priority"); // the confirm's button
+    EXPECT_STREQ(actionProgressLabel(ACTION), "Setting Realtime priority for");
+    EXPECT_FALSE(isDestructiveAction(ACTION)) << "it doesn't end the process";
+    EXPECT_TRUE(confirmsInDanger(ACTION)) << "but its confirm is in the danger fill";
+    EXPECT_FALSE(confirmsInDanger(ProcessAction::Stop));
+    EXPECT_TRUE(confirmsInDanger(ProcessAction::Kill));
+    EXPECT_FALSE(signalFor(ACTION).has_value());
+
+    EXPECT_EQ(formatActionResultMessage(ACTION, 321, Platform::ProcessActionResult::ok()).text, "Priority of PID 321 set to Realtime");
+    EXPECT_EQ(formatActionResultMessage(ACTION, 321, Platform::ProcessActionResult::ok("not read back")).text,
+              "Priority of PID 321 set to Realtime (not read back)");
+    const ActionResultMessage high = formatActionResultMessage(
+        ACTION, 321, Platform::ProcessActionResult::denied("Windows set High: Realtime needs administrator rights."));
+    EXPECT_FALSE(high.ok);
+    EXPECT_EQ(high.text, "Could not set Realtime priority for PID 321: Windows set High: Realtime needs administrator rights.");
+
+    const std::optional<Platform::AuthorizedAction> authorized = authorizedActionFor(ACTION, target);
+    ASSERT_TRUE(authorized.has_value());
+    const Platform::AuthorizedAction retry = authorized.value_or(Platform::AuthorizedAction{});
+    EXPECT_EQ(retry.kind, Platform::AuthorizedAction::Kind::SetPriority);
+    EXPECT_EQ(retry.nice, Domain::Priority::MIN_NICE);
+    EXPECT_EQ(retry.target, target);
 }
 
 // The actions that aren't signals have no signal, and None has nothing to retry or confirm.

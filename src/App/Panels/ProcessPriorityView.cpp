@@ -427,7 +427,7 @@ float ProcessPriorityView::renderSlider(std::optional<std::int32_t> currentNice,
     if (Detail::windowsPriorityClassFromNice(m_NiceValue) == Detail::WindowsPriorityClass::Realtime)
     {
         ImGui::TextColored(UI::Theme::get().scheme().textWarning,
-                           ICON_FA_TRIANGLE_EXCLAMATION "  Realtime was set outside TaskSmack; it can be lowered here, not set");
+                           ICON_FA_TRIANGLE_EXCLAMATION "  It runs at Realtime, ahead of Windows' own work; pick a class to lower it");
     }
 #endif
     return pick.rightEdge;
@@ -645,7 +645,8 @@ void ProcessPriorityView::renderApplyButton(Platform::IProcessActions* actions,
     // Disabled without an edit, and also until a snapshot has confirmed the start time: no platform
     // acts on an unknown one (IProcessActions' checkProcessIdentity()).
     // Disabled, too, while an apply runs on its worker (#2305).
-    const bool enabled = canApply(currentNice, target) && !applying();
+    // And while Set Realtime priority runs for it (#3429): the two would race.
+    const bool enabled = canApply(currentNice, target) && !applying() && !m_HeldForOtherChange;
     const bool waiting = waitingForProcessDetails(currentNice, target);
 
     // Right-align the Apply button. As wide as its label, the same rule as Terminate's and Kill's
@@ -687,6 +688,10 @@ void ProcessPriorityView::renderApplyButton(Platform::IProcessActions* actions,
         if (applying())
         {
             tooltip = "Applying the last change";
+        }
+        else if (m_HeldForOtherChange)
+        {
+            tooltip = "Waiting for Set Realtime priority to finish";
         }
         else if (waiting)
         {

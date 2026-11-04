@@ -91,6 +91,7 @@ inline constexpr std::array WINDOWS_ROWS{
         .standard = "Refused",
         .administrator = "Done",
     },
+    Row{.item = "Realtime priority", .standard = "Windows sets High instead", .administrator = "Set"},
     Row{.item = "Memory dumps of elevated processes", .standard = "Refused", .administrator = "Written"},
     Row{.item = "Services: starting, stopping and changing them", .standard = "Refused for most services", .administrator = "Done"},
     Row{.item = "Startup entries for all users", .standard = "Can't be changed", .administrator = "Can be changed"},
@@ -99,8 +100,8 @@ inline constexpr std::array WINDOWS_ROWS{
 
 /// The table's last row: what is refused even as Administrator, and says so.
 inline constexpr std::string_view LINUX_NEVER = "Never, even as Administrator: PID 1 (init) and kernel threads";
-inline constexpr std::string_view WINDOWS_NEVER = "Never, even as Administrator: protected and critical processes, the System process "
-                                                  "(PID 4), and Realtime priority";
+inline constexpr std::string_view WINDOWS_NEVER =
+    "Never, even as Administrator: protected and critical processes, and the System process (PID 4)";
 
 [[nodiscard]] constexpr std::span<const Row> rowsFor(AccessChoice::AccessPlatform platform) noexcept
 {

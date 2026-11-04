@@ -4,6 +4,7 @@
 // dialog's title and body, and the dispatch to IProcessActions and its result message, so the
 // mocked-IProcessActions tests (#415) reach them without ProcessDetailsPanel's private members.
 
+#include "Domain/PriorityConfig.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/ProcessTypes.h"
@@ -39,7 +40,13 @@ enum class ProcessAction : std::uint8_t
     // need no extra parameter. Only "on" is confirmed, as Task Manager does.
     EfficiencyModeOn,
     EfficiencyModeOff,
+    // The Realtime priority class (#3429, Windows): setPriority() with classNice(Realtime), always
+    // confirmed with a warning, since a busy Realtime process can make the desktop unresponsive.
+    SetRealtimePriority,
 };
+
+/// The nice value SetRealtimePriority passes setPriority(): Realtime's (Domain::Priority::classNice()).
+inline constexpr std::int32_t REALTIME_PRIORITY_NICE = Domain::Priority::classNice(Domain::Priority::PriorityClass::Realtime);
 
 /// Whether @p action turns Efficiency mode on or off (#3071).
 [[nodiscard]] constexpr bool isEfficiencyModeAction(ProcessAction action) noexcept
@@ -76,6 +83,7 @@ enum class ProcessAction : std::uint8_t
     case ProcessAction::Resume:
     case ProcessAction::EfficiencyModeOn:
     case ProcessAction::EfficiencyModeOff:
+    case ProcessAction::SetRealtimePriority:
         break;
     }
     return std::nullopt;
@@ -103,6 +111,7 @@ enum class ProcessAction : std::uint8_t
     case ProcessAction::Resume:
     case ProcessAction::EfficiencyModeOn:
     case ProcessAction::EfficiencyModeOff:
+    case ProcessAction::SetRealtimePriority:
         break;
     }
     return "";
@@ -140,6 +149,8 @@ enum class ProcessAction : std::uint8_t
         return "turn Efficiency mode on for";
     case ProcessAction::EfficiencyModeOff:
         return "turn Efficiency mode off for";
+    case ProcessAction::SetRealtimePriority:
+        return "set Realtime priority for";
     case ProcessAction::None:
         break;
     }
@@ -188,6 +199,11 @@ inline constexpr float AUTHORIZE_RESULT_SECONDS = 30.0F;
         authorized.kind = Kind::SetEfficiencyMode;
         authorized.efficiencyMode = action == ProcessAction::EfficiencyModeOn;
         return authorized;
+    case ProcessAction::SetRealtimePriority:
+        // The helper sets it as any priority change (#3429): running elevated, it gets Realtime, not High.
+        authorized.kind = Kind::SetPriority;
+        authorized.nice = REALTIME_PRIORITY_NICE;
+        return authorized;
     case ProcessAction::None:
         break;
     }
@@ -221,6 +237,8 @@ inline constexpr float AUTHORIZE_RESULT_SECONDS = 30.0F;
         return "Turning Efficiency mode on for";
     case ProcessAction::EfficiencyModeOff:
         return "Turning Efficiency mode off for";
+    case ProcessAction::SetRealtimePriority:
+        return "Setting Realtime priority for";
     case ProcessAction::None:
         break;
     }
@@ -251,6 +269,8 @@ inline constexpr float AUTHORIZE_RESULT_SECONDS = 30.0F;
         return "Turn on Efficiency mode"; // the confirm's button, as Task Manager's
     case ProcessAction::EfficiencyModeOff:
         return "Turn off Efficiency mode";
+    case ProcessAction::SetRealtimePriority:
+        return "Set Realtime priority";
     case ProcessAction::None:
         break;
     }
@@ -265,6 +285,13 @@ inline constexpr float AUTHORIZE_RESULT_SECONDS = 30.0F;
     return action == ProcessAction::Terminate || action == ProcessAction::Kill;
 }
 
+/// Whether the confirm dialog's button for @p action takes the danger fill: the destructive actions, and
+/// Set Realtime priority (#3429), which can make the whole desktop unresponsive.
+[[nodiscard]] constexpr bool confirmsInDanger(ProcessAction action) noexcept
+{
+    return isDestructiveAction(action) || action == ProcessAction::SetRealtimePriority;
+}
+
 /// Confirm dialog title, "Kill firefox (PID 1234)?": the action, then the process it hits (#1203).
 [[nodiscard]] inline std::string confirmTitle(ProcessAction action, std::string_view processName, std::int32_t pid)
 {
@@ -272,9 +299,9 @@ inline constexpr float AUTHORIZE_RESULT_SECONDS = 30.0F;
     {
         return std::format("Send {} to {} (PID {})?", signalName(action), processName, pid); // #3063
     }
-    if (isEfficiencyModeAction(action))
+    if (isEfficiencyModeAction(action) || action == ProcessAction::SetRealtimePriority)
     {
-        return std::format("{} for {} (PID {})?", actionLabel(action), processName, pid); // #3071
+        return std::format("{} for {} (PID {})?", actionLabel(action), processName, pid); // #3071, #3429
     }
     return std::format("{} {} (PID {})?", actionLabel(action), processName, pid);
 }
@@ -323,6 +350,13 @@ inline constexpr float AUTHORIZE_RESULT_SECONDS = 30.0F;
 #endif
     case ProcessAction::EfficiencyModeOff:
         return std::format("{} (PID {}) will leave Efficiency mode, and its priority will be restored.", processName, pid);
+    case ProcessAction::SetRealtimePriority:
+        // The warning #3429 asks for: what Realtime does, and that it can make the desktop unresponsive.
+        return std::format("{} (PID {}) will run at the Realtime priority class, ahead of Windows' own work, the mouse and "
+                           "keyboard included. If it keeps the CPU busy, it can make the desktop unresponsive until it ends. "
+                           "Without administrator rights, Windows sets High instead.",
+                           processName,
+                           pid);
     case ProcessAction::None:
         break;
     }
@@ -372,6 +406,8 @@ dispatchProcessAction(Platform::IProcessActions& actions, ProcessAction action, 
         return actions.setEfficiencyMode(target, true);
     case ProcessAction::EfficiencyModeOff:
         return actions.setEfficiencyMode(target, false);
+    case ProcessAction::SetRealtimePriority:
+        return actions.setPriority(target, REALTIME_PRIORITY_NICE);
     case ProcessAction::None:
         break;
     }
@@ -407,6 +443,15 @@ formatActionResultMessage(ProcessAction action, std::int32_t pid, const Platform
         if (!result.successNote.empty())
         {
             text += std::format(" ({})", result.successNote); // its priority set to Normal, not restored (#3281)
+        }
+        return {.ok = true, .text = std::move(text)};
+    }
+    if (result.success && action == ProcessAction::SetRealtimePriority)
+    {
+        std::string text = std::format("Priority of PID {} set to Realtime", pid); // #3429
+        if (!result.successNote.empty())
+        {
+            text += std::format(" ({})", result.successNote); // its class couldn't be read back
         }
         return {.ok = true, .text = std::move(text)};
     }

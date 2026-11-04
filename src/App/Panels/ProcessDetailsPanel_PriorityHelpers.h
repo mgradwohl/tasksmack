@@ -310,11 +310,11 @@ inline constexpr bool PRIORITY_USES_WINDOWS_CLASSES = false;
 #endif
 
 /// A Windows priority class, lowest first: Domain's, which the Processes table names too (#1280).
-/// Realtime is reported, never set: Platform::niceToPriorityClass() deliberately stops at High.
-/// None never comes from windowsPriorityClassFromNice().
+/// Realtime is reported, and never set from the slider: only Set Realtime priority, behind its warning,
+/// sends its nice value (#3429). None never comes from windowsPriorityClassFromNice().
 using WindowsPriorityClass = Domain::Priority::PriorityClass;
 
-/// The classes the priority control offers, in its order. Realtime is not among them.
+/// The classes the priority slider offers, in its order. Realtime is not among them (Set Realtime..., #3429).
 inline constexpr std::array<WindowsPriorityClass, 5> SETTABLE_WINDOWS_PRIORITY_CLASSES = {
     WindowsPriorityClass::Idle,
     WindowsPriorityClass::BelowNormal,
@@ -603,7 +603,7 @@ inline constexpr std::array<PrioritySliderStop, 5> WINDOWS_PRIORITY_STOPS = {
 /// Realtime, shown beyond High when a process already has it.
 inline constexpr PrioritySliderStop WINDOWS_REALTIME_STOP{
     .name = windowsPriorityClassName(WindowsPriorityClass::Realtime),
-    .itemLabel = "Priority class: Realtime (set outside TaskSmack)###priority_class_slider",
+    .itemLabel = "Priority class: Realtime###priority_class_slider",
     .colorNice = windowsPriorityClassNice(WindowsPriorityClass::Realtime),
 };
 
@@ -615,7 +615,7 @@ inline constexpr DiscretePrioritySlider WINDOWS_PRIORITY_SLIDER{
     .stops = WINDOWS_PRIORITY_STOPS,
     .beyondStart = &WINDOWS_REALTIME_STOP,
     .tooltip = "Windows priority class: higher classes get CPU time first.\n"
-               "Realtime cannot be set here.\n\n"
+               "Realtime isn't a stop: Set Realtime... sets it, one process at a time, behind a warning.\n\n"
                "Keyboard shortcuts:\n"
                "  Left/Right, Up/Down: One class higher or lower\n"
                "  Home/End: Highest/lowest class\n\n"

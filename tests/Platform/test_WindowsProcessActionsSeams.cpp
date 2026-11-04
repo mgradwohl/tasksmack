@@ -263,7 +263,8 @@ TEST_F(WindowsProcessActionsSeamTest, ACriticalProcessIsNeverEndedReprioritisedO
         {critical + "end it", actions.kill(TARGET)},
         {critical + "end it", actions.terminate(TARGET)},
         {critical + "change its priority", actions.setPriority(TARGET, 10)},
-        {critical + "change its priority", actions.setPriority(TARGET, -20)},
+        // High; -20 is Realtime (#3429), which this table can't confirm (no GetPriorityClass), refused before opening
+        {critical + "change its priority", actions.setPriority(TARGET, -19)},
         {critical + "change its CPU affinity", actions.setAffinity(TARGET, CpuAffinity::fromMask(0b1U))},
         {critical + "suspend it", actions.stop(TARGET)},
     };
