@@ -1951,10 +1951,11 @@ TEST(GPUModelTest, FailedSensorReadsPublishGapsNotZeros)
     EXPECT_FALSE(snaps[0].decoderAvailable);
 }
 
-TEST(GPUModelTest, ZeroGpuClockIsAGapLikeItsNowBar)
+TEST(GPUModelTest, AvailableZeroMhzClockIsARealZeroNotAGap)
 {
-    // A 0 MHz clock is the probes' "couldn't read it" and the Clock NowBar shows N/A for it (#995);
-    // the history has a gap there too, so the line and the bar agree (#1111).
+    // A clock the probe read as 0 MHz (an engine power-gated: D3DKMT's Frequency of 0 on an Intel or
+    // AMD adapter) is a real reading, so the line drops to the floor rather than breaking into
+    // fragments; availability alone says whether the clock was read (#3421).
     auto probe = std::make_unique<MockGPUProbe>();
     auto* rawProbe = probe.get();
     rawProbe->withGPU("GPU0", "Test GPU", "TestVendor");
@@ -1965,6 +1966,7 @@ TEST(GPUModelTest, ZeroGpuClockIsAGapLikeItsNowBar)
 
     Domain::GPUModel model(std::move(probe));
     model.refresh();
+    counters.gpuClockAvailable = true;
     counters.gpuClockMHz = 0;
     rawProbe->withGPUCounters("GPU0", counters);
     model.refresh();
@@ -1972,9 +1974,32 @@ TEST(GPUModelTest, ZeroGpuClockIsAGapLikeItsNowBar)
     const auto hist = publishedHistory(model, "GPU0").gpuClock;
     ASSERT_EQ(hist.size(), 2U);
     EXPECT_FLOAT_EQ(hist[0], 1500.0F);
+    EXPECT_FALSE(std::isnan(hist[1]));
+    EXPECT_FLOAT_EQ(hist[1], 0.0F);
+}
+
+TEST(GPUModelTest, UnreadClockIsAGapWhateverItsValue)
+{
+    // A clock the probe couldn't read is a gap, whether it left 0 or a stale value behind (#1111, #3421).
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->withGPU("GPU0", "Test GPU", "TestVendor");
+    Platform::GPUCounters counters;
+    counters.gpuId = "GPU0";
+    counters.gpuClockAvailable = false;
+    counters.gpuClockMHz = 0;
+    rawProbe->withGPUCounters("GPU0", counters);
+
+    Domain::GPUModel model(std::move(probe));
+    model.refresh();
+    counters.gpuClockMHz = 1500;
+    rawProbe->withGPUCounters("GPU0", counters);
+    model.refresh();
+
+    const auto hist = publishedHistory(model, "GPU0").gpuClock;
+    ASSERT_EQ(hist.size(), 2U);
+    EXPECT_TRUE(std::isnan(hist[0]));
     EXPECT_TRUE(std::isnan(hist[1]));
-    const auto publication = model.publication();
-    EXPECT_TRUE(std::isnan(publication->histories.at("GPU0").gpuClock.back()));
 }
 
 TEST(GPUModelTest, PerGpuHistoryHasAGapWhileGpuAbsent)
