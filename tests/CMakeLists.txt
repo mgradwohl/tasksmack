@@ -1020,6 +1020,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/Panels/UsersPanel.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/UsersView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/UserGrouping.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/UserSessionsFeed.cpp
     # The System Information page (#1399), run headless (test_SystemInfoView.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/Panels/SystemInfoSections.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/SystemInfoView.cpp

@@ -58,6 +58,19 @@ servicesBackgroundDemand(bool servicesColumnVisible, bool servicesSectionOpen, G
     return servicesColumnVisible || servicesSectionOpen || (unitsFromServiceList && groupBy == GroupBy::Unit);
 }
 
+/// Whether Group: User shows each account's signed-in sessions under its header (#3377). Not yet: the fold
+/// that adds the session rows turns it on, and until then the Processes table reads no sessions.
+inline constexpr bool USER_GROUPS_SHOW_SESSIONS = false;
+
+/// Whether the signed-in sessions are read (App::UserSessionsFeed, #3377): only while a view that shows them
+/// is shown, the Users tab (@p usersTabShown), or the Processes tab (@p processesTabShown) grouped by User
+/// (@p groupBy) once its groups show sessions (@p userGroupsShowSessions). At the Settings interval meanwhile.
+[[nodiscard]] constexpr bool
+sessionsDemand(bool usersTabShown, bool processesTabShown, GroupBy groupBy, bool userGroupsShowSessions) noexcept
+{
+    return usersTabShown || (userGroupsShowSessions && processesTabShown && groupBy == GroupBy::User);
+}
+
 /// The app a systemd unit was launched as, or empty when it isn't an app's:
 /// - a desktop or Flatpak app's scope: "app-<launcher>-<app id>-<n>.scope" ("app-gnome-firefox-4521.scope"
 ///   is "firefox"; "app-flatpak-org.mozilla.firefox-7731.scope" is "org.mozilla.firefox");
