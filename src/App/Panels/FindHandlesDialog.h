@@ -18,6 +18,8 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <span>
+#include <stop_token>
 #include <string>
 #include <vector>
 
@@ -35,6 +37,19 @@ struct FindHandlesAction
 /// @p workerReturned: the search's job on the worker has ended, so a search that isn't done stopped without its last publication
 /// (#3335), and is shown as stopped with its last counts rather than as searching.
 [[nodiscard]] std::string findHandlesStatus(const Domain::HandleSearch::SearchPublication& publication, bool workerReturned);
+
+/// One Find handles search as its worker runs it (#3343): HandleSearch::run() over @p processes, handing each
+/// generation to @p publish. @p cancel is the search's own: the dialog's Stop signals it as well as the worker's job
+/// in flight, so a search stopped while still queued on the worker reads nothing (and asks for no password) once it
+/// runs. Otherwise the walk stops on @p workerStop: the worker's cancel (Stop, once the job is in flight), its stop
+/// and its destructor.
+void runFindHandlesSearch(std::span<const Domain::HandleSearch::SearchProcess> processes,
+                          const Domain::HandleSearch::Readers& readers,
+                          bool authorized,
+                          Domain::HandleSearch::SearchPublication start,
+                          const std::stop_source& cancel,
+                          const std::stop_token& workerStop,
+                          const Domain::HandleSearch::Publish& publish) noexcept;
 
 /// A results column of the Find handles table.
 enum class FindHandlesColumn : std::uint8_t
@@ -117,6 +132,7 @@ class FindHandlesDialog
         Domain::HandleSearch::Readers readers;
         bool authorized = false;
         Domain::HandleSearch::SearchPublication start;
+        std::stop_source cancel{std::nostopstate}; ///< The search's own stop (runFindHandlesSearch()).
     };
     using SearchWorker = Domain::Worker<SearchJob, Domain::HandleSearch::SearchPublication>;
 
@@ -138,6 +154,8 @@ class FindHandlesDialog
     /// The last search begun here, shown until the worker publishes one of its generations (or for good, when it
     /// couldn't start).
     std::shared_ptr<const Domain::HandleSearch::SearchPublication> m_Begun;
+    /// The last search's own stop, shared with its job: Stop signals it whether the job is queued or running.
+    std::stop_source m_SearchCancel{std::nostopstate};
     std::string m_Query;
     std::uint64_t m_OrderVersion = 0; ///< The publication m_Order was built for
     FindHandlesColumn m_SortColumn = FindHandlesColumn::Process;

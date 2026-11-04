@@ -25,6 +25,7 @@
 #include <memory>
 #include <numeric>
 #include <optional>
+#include <span>
 #include <stop_token>
 #include <string>
 #include <utility>
@@ -122,6 +123,21 @@ std::vector<std::size_t> orderFindHandlesMatches(const std::vector<HandleMatch>&
                                  return ascending ? order < 0 : order > 0;
                              });
     return order;
+}
+
+void runFindHandlesSearch(std::span<const Domain::HandleSearch::SearchProcess> processes,
+                          const Domain::HandleSearch::Readers& readers,
+                          bool authorized,
+                          SearchPublication start,
+                          const std::stop_source& cancel,
+                          const std::stop_token& workerStop,
+                          const Domain::HandleSearch::Publish& publish) noexcept
+{
+    // Stop pressed while the job was queued signalled only the search's own source: then it runs with that token,
+    // already signalled, and reads nothing. Otherwise it runs with the worker's, which Stop signals too
+    // (cancelCurrent()) once the job is in flight, as do the worker's stop and destructor.
+    const std::stop_token stop = cancel.stop_requested() ? cancel.get_token() : workerStop;
+    Domain::HandleSearch::run(processes, readers, authorized, std::move(start), publish, stop);
 }
 
 FindHandlesDialog::~FindHandlesDialog()
@@ -229,23 +245,23 @@ void FindHandlesDialog::startSearch(std::vector<Domain::HandleSearch::SearchProc
                     // Every generation wakes the frame loop (the worker's finish() and progress()),
                     // so the progress line moves as the walk does. run() catches what publishing
                     // throws.
-                    Domain::HandleSearch::run(
-                        job.processes,
-                        job.readers,
-                        job.authorized,
-                        std::move(job.start),
-                        [&context](SearchPublication generation)
-                        {
-                            if (generation.done)
-                            {
-                                context.finish(std::move(generation));
-                            }
-                            else
-                            {
-                                context.progress(std::move(generation));
-                            }
-                        },
-                        stop);
+                    runFindHandlesSearch(job.processes,
+                                         job.readers,
+                                         job.authorized,
+                                         std::move(job.start),
+                                         job.cancel,
+                                         stop,
+                                         [&context](SearchPublication generation)
+                                         {
+                                             if (generation.done)
+                                             {
+                                                 context.finish(std::move(generation));
+                                             }
+                                             else
+                                             {
+                                                 context.progress(std::move(generation));
+                                             }
+                                         });
                 });
         }
         SearchJob job{
@@ -257,7 +273,9 @@ void FindHandlesDialog::startSearch(std::vector<Domain::HandleSearch::SearchProc
                 },
             .authorized = authorized,
             .start = std::move(start),
+            .cancel = std::stop_source{}, // allocates its shared state: inside the try
         };
+        m_SearchCancel = job.cancel;
         // A search starts only once the last one ended (Find and Authenticate show only then), so nothing is in
         // flight to cancel: the worker's capacity of one and DropOldest keep it so regardless.
         const Domain::SubmitResult submitted = m_Worker->submit(std::move(job));
@@ -290,9 +308,15 @@ bool FindHandlesDialog::renderQueryRow()
     ImGui::SameLine();
     if (running)
     {
-        if (ImGui::Button("Stop", ImVec2(buttonWidth, 0.0F)) && m_Worker != nullptr)
+        if (ImGui::Button("Stop", ImVec2(buttonWidth, 0.0F)))
         {
-            m_Worker->cancelCurrent(); // the walk stops between processes and publishes what it has as done
+            // The search's own stop, for a job still queued, and the worker's job in flight: the walk stops between
+            // processes and publishes what it has as done.
+            m_SearchCancel.request_stop();
+            if (m_Worker != nullptr)
+            {
+                m_Worker->cancelCurrent(); // the job in flight, if it is no longer queued
+            }
         }
         return false;
     }
