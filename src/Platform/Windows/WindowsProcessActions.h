@@ -3,6 +3,7 @@
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
 #include "WindowsAffinityMath.h"
+#include "WindowsFileLocation.h"
 #include "WindowsNtQuery.h"
 #include "WindowsProcessDump.h"
 
@@ -81,6 +82,12 @@ struct WindowsProcessFunctions
     BOOL(WINAPI* terminateThread)(HANDLE thread, DWORD exitCode) = nullptr;
     /// GetThreadTimes(): the thread's creation time, checked against the one the user confirmed (#3069).
     BOOL(WINAPI* getThreadTimes)(HANDLE thread, LPFILETIME creation, LPFILETIME exit, LPFILETIME kernel, LPFILETIME user) = nullptr;
+    /// QueryFullProcessImageNameW(), on the verified handle: the executable Open file location shows (#3426).
+    BOOL(WINAPI* queryFullProcessImageName)(HANDLE process, DWORD flags, LPWSTR path, PDWORD size) = nullptr;
+    /// Explorer asked to show that executable selected (#3426). Null queryFullProcessImageName, or no
+    /// selectInFolder and no startProcess here: no Open file location (canOpenFileLocation false), as in
+    /// TaskSmackHelper.exe, which never serves one (BrokeredProcessActions keeps it the user's own).
+    Windows::FileLocationFunctions fileLocation{};
 };
 
 /// The real Win32 calls.
@@ -171,6 +178,12 @@ class WindowsProcessActions : public IProcessActions
     /// @p threadCreateTime (GetThreadTimes): a TID reused since the user confirmed, or an unknown time (0), is refused. Access
     /// denied opening the thread is permissionDenied, so the elevated helper can retry it, unless the process
     /// is protected. Windows counts suspensions: the success note says so when the count isn't the plain one.
+    /// Open file location (#3426): the executable's path (QueryFullProcessImageNameW) through the same
+    /// identity check as every action, then Explorer on it, selected: SHOpenFolderAndSelectItems, or
+    /// explorer.exe /select when that fails (Windows::revealInExplorer()). As TaskSmack's user, never the
+    /// elevated helper. A process whose path can't be read (System, a protected process) is an error
+    /// saying so; the System process (PID 4) is refused before anything is opened: it has no file.
+    [[nodiscard]] ProcessActionResult openFileLocation(const ProcessTarget& target) override;
     [[nodiscard]] ProcessActionResult
     actOnThread(const ProcessTarget& target, std::int32_t tid, std::uint64_t threadCreateTime, ThreadAction action) override;
 

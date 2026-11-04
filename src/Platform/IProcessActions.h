@@ -284,7 +284,7 @@ struct ProcessActionCapabilities
     /// prompt (Linux: the pkexec-started helper, #2308). The UI then offers "Authenticate and retry".
     bool canAuthorizeInteractively = false;
     /// openFileLocation(): the file manager can be asked to show a process's executable (#3064; Linux:
-    /// FileManager1 over D-Bus or xdg-open).
+    /// FileManager1 over D-Bus or xdg-open; Windows: SHOpenFolderAndSelectItems or explorer.exe /select, #3426).
     bool canOpenFileLocation = false;
     /// runProgram(): Run new task can start a program (#3065), and with administrator rights too where
     /// canRunProgramAsAdministrator says so (Linux: pkexec is installed, or TaskSmack runs as root).
