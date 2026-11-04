@@ -8,7 +8,11 @@
 #include "Platform/IProcessIconSource.h"
 
 #include <gtest/gtest.h>
+#include <spdlog/logger.h>
+#include <spdlog/sinks/ringbuffer_sink.h>
+#include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -519,6 +523,69 @@ TEST_F(ProcessIconCacheTest, ALoadWhoseDrainIsRefusedIsAskedAgainAndLoads)
 
     EXPECT_NE(lookupUntilLoaded(*cache, 1, 1, "a"), nullptr) << "asked again, and loaded";
     EXPECT_EQ(m_State->iconReads.load(), 1);
+    cache.reset();
+}
+
+/// The default logger's messages, for as long as this lives. A mutex sink: the worker logs too.
+class LogCapture
+{
+  public:
+    LogCapture() : m_Previous(spdlog::default_logger()), m_Sink(std::make_shared<spdlog::sinks::ringbuffer_sink_mt>(LINES))
+    {
+        auto logger = std::make_shared<spdlog::logger>("icon-cache-test", m_Sink);
+        logger->set_level(spdlog::level::trace);
+        logger->set_pattern("%v");
+        spdlog::set_default_logger(std::move(logger));
+    }
+    // NOLINTNEXTLINE(bugprone-exception-escape) - only building the registry can throw, and the constructor did that
+    ~LogCapture()
+    {
+        spdlog::set_default_logger(m_Previous);
+    }
+    LogCapture(const LogCapture&) = delete;
+    LogCapture& operator=(const LogCapture&) = delete;
+    LogCapture(LogCapture&&) = delete;
+    LogCapture& operator=(LogCapture&&) = delete;
+
+    /// How many of the messages so far contain @p text.
+    [[nodiscard]] std::size_t count(std::string_view text) const
+    {
+        const std::vector<std::string> lines = m_Sink->last_formatted();
+        return static_cast<std::size_t>(std::ranges::count_if(lines, [text](const std::string& line) { return line.contains(text); }));
+    }
+
+  private:
+    static constexpr std::size_t LINES = 128;
+    std::shared_ptr<spdlog::logger> m_Previous;
+    std::shared_ptr<spdlog::sinks::ringbuffer_sink_mt> m_Sink;
+};
+
+TEST_F(ProcessIconCacheTest, AWorkerThatFailsAfterAdmittingADrainIsReportedOnceAndItsRowsKeepTheGenericIcon)
+{
+    // #3343: the drain was admitted (Queued), then the worker failed before running it. Later lookups of
+    // the same rows find their entries, so no submit() sees Closed; the failure is still logged, once, and
+    // the rows keep the generic icon: Failed is terminal, and no thread is left to load them.
+    constexpr std::string_view STOPPED = "icon loads have stopped (drain failed for testing)";
+    m_State->paths[1] = "/bin/a";
+    m_State->iconSides["/bin/a"] = SIZE;
+    const LogCapture log;
+    auto cache = makeCache(ProcessIconCacheConfig{});
+
+    cache->failNextDrainForTesting();
+    EXPECT_EQ(cache->lookup(1, 1, "a", SIZE), nullptr);
+    ASSERT_TRUE(waitUntil(
+        [&cache, &log, STOPPED]
+        {
+            EXPECT_EQ(cache->lookup(1, 1, "a", SIZE), nullptr);
+            return log.count(STOPPED) > 0;
+        }))
+        << "a lookup of the same row reports the failure";
+    for (int frame = 0; frame < 8; ++frame)
+    {
+        EXPECT_EQ(cache->lookup(1, 1, "a", SIZE), nullptr) << "the row keeps the generic icon";
+    }
+    EXPECT_EQ(log.count(STOPPED), 1U) << "reported once";
+    EXPECT_EQ(m_State->iconReads.load(), 0);
     cache.reset();
 }
 

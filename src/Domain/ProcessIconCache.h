@@ -33,6 +33,7 @@
 #include "Platform/IProcessIconSource.h"
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -153,6 +154,14 @@ class ProcessIconCache
         m_RefuseNextDrain = true;
     }
 
+    /// Has the next drain throw on the worker's thread once it was admitted, as allocating its stop state
+    /// can: the worker ends Failed with the loads it had queued still waiting.
+    void failNextDrainForTesting()
+    {
+        const std::scoped_lock lock(m_Mutex);
+        m_FailNextDrain = true;
+    }
+
   private:
     struct Request
     {
@@ -184,9 +193,12 @@ class ProcessIconCache
     /// The worker's job: run the queued loads, newest first, until the queue is empty or @p stop is
     /// signalled, waking the frame loop each time the queue drains.
     void drain(const std::stop_token& stop);
-    /// Has the worker drain the queue; called without the lock held. A worker that has ended (Failed:
-    /// no thread could be started) is reported once, and the rows keep the generic icon.
+    /// Has the worker drain the queue; called without the lock held. A refused drain takes the queued
+    /// loads back; a worker that has ended is reported (reportWorkerFailure()).
     void wakeWorker();
+    /// Logs, once, that the worker is Failed (no thread could be started, or a drain threw), whenever
+    /// that happened; called without the lock held, by every lookup. The rows keep the generic icon.
+    void reportWorkerFailure();
     /// Loads one request; the source is called without the lock held.
     void load(const Request& request);
     /// Drops the process or file, so its next lookup queues a load again (after a load threw).
@@ -214,8 +226,9 @@ class ProcessIconCache
     std::deque<Request> m_Queue;
     std::uint64_t m_NextIconId = 1;
     std::uint64_t m_Loads = 0;
-    bool m_WorkerFailureReported = false; // wakeWorker() has logged that the worker ended; under m_Mutex
-    bool m_RefuseNextDrain = false;       // refuseNextDrainForTesting(); under m_Mutex
+    std::atomic<bool> m_WorkerFailureReported{false}; // reportWorkerFailure() has logged that the worker failed
+    bool m_RefuseNextDrain = false;                   // refuseNextDrainForTesting(); under m_Mutex
+    bool m_FailNextDrain = false;                     // failNextDrainForTesting(); under m_Mutex
 
     LoadWorker m_Worker; // Last: stopped and joined before the state above is destroyed
 };

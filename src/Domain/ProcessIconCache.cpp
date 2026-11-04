@@ -10,6 +10,7 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
@@ -17,6 +18,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <stop_token>
 #include <string>
 #include <string_view>
@@ -167,6 +169,10 @@ ProcessIconCache::lookupEntry(bool file, std::uint64_t key, std::int32_t pid, st
     {
         return nullptr;
     }
+    // Before the cached answer: a worker that failed after admitting a drain leaves rows whose entries
+    // answer every later lookup, so no submit() would see it end. They keep the generic icon (Failed is
+    // terminal: nothing is left to load them), and the failure is logged once.
+    reportWorkerFailure();
     {
         const std::scoped_lock lock(m_Mutex);
         LruMap<std::uint64_t, ProcessEntry>& map = entries(file);
@@ -220,18 +226,24 @@ void ProcessIconCache::wakeWorker()
         m_Queue.clear();
         return;
     }
-    if (result != SubmitResult::Closed || m_Worker.state() != WorkerState::Failed)
+    if (result == SubmitResult::Closed)
+    {
+        reportWorkerFailure(); // No thread could be started, or the worker failed since the last lookup
+    }
+}
+
+void ProcessIconCache::reportWorkerFailure()
+{
+    // Two atomic loads on every lookup until it has reported; one after.
+    if (!m_Config.startWorker || m_WorkerFailureReported.load(std::memory_order_relaxed) || m_Worker.state() != WorkerState::Failed)
     {
         return;
     }
     // The reason first: if copying it throws, nothing is marked, and the next lookup reports it.
     const std::string reason = m_Worker.failure();
+    if (m_WorkerFailureReported.exchange(true, std::memory_order_relaxed))
     {
-        const std::scoped_lock lock(m_Mutex);
-        if (std::exchange(m_WorkerFailureReported, true))
-        {
-            return;
-        }
+        return;
     }
     spdlog::warn("ProcessIconCache: icon loads have stopped ({}); rows keep the generic icon", reason);
 }
@@ -258,6 +270,13 @@ std::size_t ProcessIconCache::loadPending()
 
 void ProcessIconCache::drain(const std::stop_token& stop)
 {
+    {
+        const std::scoped_lock lock(m_Mutex);
+        if (std::exchange(m_FailNextDrain, false))
+        {
+            throw std::runtime_error("drain failed for testing");
+        }
+    }
     while (!stop.stop_requested())
     {
         Request request;
