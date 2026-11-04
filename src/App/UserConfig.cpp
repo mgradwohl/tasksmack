@@ -16,7 +16,7 @@
 #include "Platform/ThreadName.h"
 #include "ProcessColumnConfig.h"
 #include "UI/ChartWidgets.h"
-#include "UI/DpiScale.h"
+#include "UI/InterfaceScale.h"
 #include "UI/Theme.h"
 
 #include <spdlog/spdlog.h>

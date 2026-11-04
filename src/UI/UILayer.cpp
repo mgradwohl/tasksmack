@@ -10,6 +10,7 @@
 #include "UI/DpiScale.h"
 #include "UI/FontLoading.h"
 #include "UI/ImGuiTimers.h"
+#include "UI/InterfaceScale.h"
 #include "UI/RenderMetrics.h"
 #include "UI/Theme.h"
 #include "UI/ThemeLoader.h"

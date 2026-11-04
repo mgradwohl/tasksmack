@@ -4,7 +4,7 @@
 
 #include "App/SettingsLayerDetail.h"
 #include "Domain/SamplingConfig.h"
-#include "UI/DpiScale.h"
+#include "UI/InterfaceScale.h"
 #include "UI/Theme.h"
 
 #include <gtest/gtest.h>
