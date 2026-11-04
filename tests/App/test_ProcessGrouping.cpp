@@ -1,5 +1,6 @@
 // The Processes table's Group by (#3068): group keys, app names from systemd units, totals and order.
 
+#include "App/Panels/ProcessGroupTotals.h"
 #include "App/Panels/ProcessGrouping.h"
 #include "App/ProcessColumnConfig.h"
 #include "Domain/ProcessSnapshot.h"

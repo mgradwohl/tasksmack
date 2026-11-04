@@ -1,15 +1,15 @@
 /// @file test_Users.cpp
-/// @brief The Users tab (#3076): a row per signed-in user with their sessions and their processes' totals,
-/// the session text, the model's order, Lock and Sign out (the confirm, the worker, Authenticate and retry),
-/// and the panel, sampled only once shown, its rows and its session menu.
+/// @brief The Users tab (#3076): the model's order, Lock and Sign out (the confirm, the worker, Authenticate
+/// and retry), and the panel, sampled only once shown, its rows and its session menu. The rows themselves and
+/// the session text are UserGrouping's (test_UserGrouping.cpp, #3377).
 
 #include "App/Panels/SessionActionControl.h"
+#include "App/Panels/UserGrouping.h"
 #include "App/Panels/UsersPanel.h"
 #include "App/Panels/UsersView.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Domain/ProcessModel.h"
-#include "Domain/ProcessSnapshot.h"
 #include "Domain/UsersModel.h"
 #include "Mocks/MockProbes.h"
 #include "Platform/IServiceActions.h"
@@ -23,7 +23,6 @@
 #include <atomic>
 #include <cfloat>
 #include <chrono>
-#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -53,241 +52,10 @@ using Platform::UserSession;
     return s;
 }
 
-[[nodiscard]] Domain::ProcessSnapshot process(std::int32_t pid, std::string user, double cpu, std::uint64_t memory)
+TEST(SessionMenuTest, HasItemsWhenThePlatformCanDoSomething)
 {
-    Domain::ProcessSnapshot p;
-    p.pid = pid;
-    p.name = "proc" + std::to_string(pid);
-    p.user = std::move(user);
-    p.cpuPercent = cpu;
-    p.memoryBytes = memory;
-    p.ioReadBytesPerSec = 10.0;
-    p.ioWriteBytesPerSec = 5.0;
-    p.netSentBytesPerSec = 2.0;
-    p.netReceivedBytesPerSec = 3.0;
-    return p;
-}
-
-TEST(UserRowsTest, OneRowPerSignedInUserWithTheirSessionsAndProcessTotals)
-{
-    UserSession greeter = session("c1", "gdm", 120);
-    greeter.sessionClass = "greeter";
-    UserSession aliceDesktop = session("2", "alice", 1000);
-    aliceDesktop.current = true;
-    const std::vector<UserSession> sessions{aliceDesktop, session("7", "alice", 1000, "online"), session("5", "Bob", 1001), greeter};
-    const std::vector<Domain::ProcessSnapshot> processes{
-        process(10, "alice", 5.0, 100), process(11, "alice", 20.0, 300), process(12, "Bob", 1.0, 50), process(13, "root", 50.0, 9000)};
-
-    const std::vector<UserRow> rows = buildUserRows(sessions, processes);
-    ASSERT_EQ(rows.size(), 2U) << "the greeter and root (no sign-in) have no row";
-    EXPECT_EQ(rows[0].user, "alice");
-    EXPECT_EQ(rows[0].uid, 1000U);
-    EXPECT_EQ(rows[0].sessions.size(), 2U);
-    EXPECT_TRUE(rows[0].current);
-    EXPECT_EQ(rows[0].totals.processes, 2U);
-    EXPECT_DOUBLE_EQ(rows[0].totals.cpuPercent, 25.0);
-    EXPECT_EQ(rows[0].totals.resident, 400U);
-    EXPECT_DOUBLE_EQ(rows[0].totals.ioRead + rows[0].totals.ioWrite, 30.0);
-    EXPECT_DOUBLE_EQ(rows[0].totals.netSent + rows[0].totals.netReceived, 10.0);
-    EXPECT_EQ(rows[0].processes, (std::vector<std::size_t>{1, 0})) << "busiest first";
-    EXPECT_EQ(rows[1].user, "Bob") << "by name, ignoring case";
-    EXPECT_FALSE(rows[1].current);
-    EXPECT_EQ(rows[1].processes, (std::vector<std::size_t>{2}));
-
-    EXPECT_TRUE(isSignInSession(session("1", "x", 1)));
-    UserSession unclassed = session("1", "x", 1);
-    unclassed.sessionClass.clear();
-    EXPECT_TRUE(isSignInSession(unclassed));
-    unclassed.sessionClass = "manager";
-    EXPECT_FALSE(isSignInSession(unclassed));
-}
-
-TEST(UserRowsTest, TheSessionTextSaysWhereHowAndWhatItIsDoing)
-{
-    UserSession desktop = session("2", "alice", 1000);
-    desktop.seat = "seat0";
-    desktop.tty = "tty2";
-    desktop.type = "wayland";
-    EXPECT_EQ(sessionPlace(desktop), "seat0 \xC2\xB7 tty2 \xC2\xB7 Wayland");
-    UserSession ssh = session("5", "bob", 1001);
-    ssh.tty = "pts/0";
-    ssh.type = "tty";
-    ssh.remote = true;
-    ssh.remoteHost = "10.0.0.9";
-    EXPECT_EQ(sessionPlace(ssh), "pts/0 \xC2\xB7 Console \xC2\xB7 from 10.0.0.9");
-    ssh.remoteHost.clear();
-    ssh.type = "x11";
-    EXPECT_EQ(sessionPlace(ssh), "pts/0 \xC2\xB7 X11 \xC2\xB7 remote");
-    UserSession bare = session("9", "carol", 1002);
-    bare.type = "unspecified";
-    EXPECT_EQ(sessionPlace(bare), "Session 9");
-    bare.type = "mir";
-    EXPECT_EQ(sessionPlace(bare), "Mir");
-    bare.type = "custom";
-    EXPECT_EQ(sessionPlace(bare), "custom");
-
-    constexpr std::uint64_t MINUTE = 60'000'000;
-    const std::uint64_t now = 1'000 * MINUTE;
-    EXPECT_EQ(sessionStatus(session("1", "a", 1, "active"), now), "Active");
-    EXPECT_EQ(sessionStatus(session("1", "a", 1, "online"), now), "Signed in");
-    EXPECT_EQ(sessionStatus(session("1", "a", 1, "closing"), now), "Closing");
-    UserSession idle = session("1", "a", 1);
-    idle.idle = true;
-    EXPECT_EQ(sessionStatus(idle, now), "Idle") << "no idle-since";
-    idle.idleSinceUsec = now - (12 * MINUTE);
-    EXPECT_EQ(sessionStatus(idle, now), "Idle for 12 min");
-    idle.idleSinceUsec = now - (125 * MINUTE);
-    EXPECT_EQ(sessionStatus(idle, now), "Idle for 2 h 5 min");
-    idle.idleSinceUsec = now - 1000;
-    EXPECT_EQ(sessionStatus(idle, now), "Idle") << "under a minute";
-    idle.idleSinceUsec = now + MINUTE;
-    EXPECT_EQ(sessionStatus(idle, now), "Idle") << "a clock that went back";
-}
-
-// #3076: Windows' sessions say where they are (the console, a Remote Desktop and its client), the WTS states
-// it adds read as words, and the tooltip names the domain, the sign-in and the session.
-TEST(UserRowsTest, WindowsSessionsSayWhereTheyAreAndWhatTheyAreDoing)
-{
-    UserSession console = session("1", "alice", 0);
-    console.type = "console";
-    EXPECT_EQ(sessionPlace(console), "Console");
-    UserSession rdp = session("3", "bob", 0);
-    rdp.seat = "RDP-Tcp#0";
-    rdp.type = "rdp";
-    rdp.remote = true;
-    rdp.remoteHost = "LAPTOP";
-    EXPECT_EQ(sessionPlace(rdp), "RDP-Tcp#0 \xC2\xB7 Remote Desktop \xC2\xB7 from LAPTOP");
-    UserSession away = session("4", "carol", 0, "disconnected");
-    EXPECT_EQ(sessionPlace(away), "Session 4") << "a disconnected session has no client to say";
-
-    EXPECT_EQ(sessionStatus(away, 0), "Disconnected");
-    EXPECT_EQ(sessionStatus(session("5", "dave", 0, "connecting"), 0), "Connecting");
-
-    EXPECT_EQ(sessionTooltip(session("2", "alice", 1000)), "alice\nSession 2") << "Linux: no domain, no sign-in time";
-    UserSession signedIn = session("1", "alice", 0);
-    signedIn.domain = "PC";
-    signedIn.logonUsec = 1'700'000'000'000'000ULL;
-    const std::string tooltip = sessionTooltip(signedIn);
-    EXPECT_TRUE(tooltip.starts_with("PC\\alice\nSigned in ")) << tooltip;
-    EXPECT_TRUE(tooltip.ends_with("\nSession 1")) << tooltip;
-
     EXPECT_FALSE(SessionMenu{}.any());
     EXPECT_TRUE((SessionMenu{.lock = false, .disconnect = true, .signOut = false}.any()));
-}
-
-// #3076: two accounts with one short name (PC\\alice and CORP\\alice) are two rows, each labelled with its
-// domain. A process that names only the short name can't be told apart, so neither row gets it; a name only
-// one row has keeps its processes.
-TEST(UserRowsTest, AccountsOfTwoDomainsAreTwoRows)
-{
-    UserSession local = session("1", "alice", 0);
-    local.domain = "PC";
-    UserSession corp = session("2", "alice", 0);
-    corp.domain = "CORP";
-    UserSession bob = session("3", "bob", 0);
-    bob.domain = "PC";
-    UserSession again = session("4", "bob", 0);
-    again.domain = "PC";
-    const std::vector<Domain::ProcessSnapshot> processes{process(10, "alice", 5.0, 100), process(11, "bob", 1.0, 50)};
-    const std::vector<UserRow> rows = buildUserRows({local, corp, bob, again}, processes);
-    ASSERT_EQ(rows.size(), 3U);
-    EXPECT_EQ(rows[0].label, "bob") << "a short name only one row has";
-    EXPECT_EQ(rows[0].key, "PC\\bob");
-    EXPECT_EQ(rows[0].sessions.size(), 2U) << "both of PC\\bob's sessions";
-    EXPECT_EQ(rows[0].processes, (std::vector<std::size_t>{1}));
-    EXPECT_EQ(rows[1].label, "CORP\\alice");
-    EXPECT_EQ(rows[2].label, "PC\\alice");
-    EXPECT_TRUE(rows[1].processes.empty()) << "an alice process could be either alice's";
-    EXPECT_TRUE(rows[2].processes.empty());
-    EXPECT_EQ(rows[1].user, "alice");
-}
-
-/// A Windows process, which names its owner's domain too (#3310).
-[[nodiscard]] Domain::ProcessSnapshot processOf(std::int32_t pid, std::string domain, std::string user, double cpu)
-{
-    Domain::ProcessSnapshot p = process(pid, std::move(user), cpu, 100);
-    p.userDomain = std::move(domain);
-    return p;
-}
-
-// #3310: a Windows process names its owner's domain, so PC\\alice's and CORP\\alice's processes each go to
-// their own row, whatever the case of the names. One with no domain still goes only to a name one row has.
-TEST(UserRowsTest, AProcessWithItsDomainGoesToThatAccountsRow)
-{
-    UserSession local = session("1", "alice", 0);
-    local.domain = "PC";
-    UserSession corp = session("2", "alice", 0);
-    corp.domain = "CORP";
-    UserSession bob = session("3", "bob", 0);
-    bob.domain = "PC";
-    const std::vector<Domain::ProcessSnapshot> processes{
-        processOf(10, "PC", "alice", 5.0),
-        processOf(11, "CORP", "alice", 7.0),
-        processOf(12, "corp", "ALICE", 1.0), // Windows compares account names without case
-        processOf(13, "NT AUTHORITY", "SYSTEM", 50.0),
-        processOf(14, "OTHER", "alice", 9.0), // A third alice, signed in nowhere
-        process(15, "alice", 3.0, 100),       // No domain: either alice's
-        process(16, "bob", 2.0, 100),         // No domain, a name one row has
-        processOf(17, "CORP", "bob", 4.0),    // CORP\\bob isn't PC\\bob
-    };
-    const std::vector<UserRow> rows = buildUserRows({local, corp, bob}, processes);
-    ASSERT_EQ(rows.size(), 3U);
-    EXPECT_EQ(rows[0].key, "PC\\bob");
-    EXPECT_EQ(rows[0].processes, (std::vector<std::size_t>{6}));
-    EXPECT_EQ(rows[1].key, "CORP\\alice");
-    EXPECT_EQ(rows[1].processes, (std::vector<std::size_t>{1, 2})) << "busiest first";
-    EXPECT_EQ(rows[1].totals.processes, 2U);
-    EXPECT_EQ(rows[2].key, "PC\\alice");
-    EXPECT_EQ(rows[2].processes, (std::vector<std::size_t>{0}));
-}
-
-// #3310: a row whose sessions gave no domain takes a process with one when only that row has its name (a
-// session WTS named no domain for can't be told from the process's account). Linux's rows and processes,
-// with no domain on either side, match by name as they did.
-TEST(UserRowsTest, ARowWithNoDomainTakesItsNamesProcesses)
-{
-    const std::vector<Domain::ProcessSnapshot> processes{processOf(10, "PC", "alice", 5.0), process(11, "alice", 1.0, 100)};
-    const std::vector<UserRow> rows = buildUserRows({session("1", "alice", 1000)}, processes);
-    ASSERT_EQ(rows.size(), 1U);
-    EXPECT_EQ(rows[0].processes, (std::vector<std::size_t>{0, 1}));
-
-    UserSession corp = session("2", "alice", 0);
-    corp.domain = "CORP";
-    const std::vector<UserRow> two = buildUserRows({session("1", "alice", 1000), corp}, processes);
-    ASSERT_EQ(two.size(), 2U);
-    EXPECT_TRUE(two[0].processes.empty()) << "alice has two rows: PC\\alice's process could be the bare row's";
-    EXPECT_TRUE(two[1].processes.empty());
-}
-
-// #3310: Windows names ignore case, so a process with a domain falls back to a row with none by its name in
-// any case, and only when no other row has that name in any case. Without a domain (Linux) names keep their case.
-TEST(UserRowsTest, TheNoDomainFallbackIgnoresCase)
-{
-    UserSession corp = session("2", "ALICE", 0);
-    corp.domain = "CORP";
-    const std::vector<UserRow> ambiguous = buildUserRows({session("1", "alice", 1000), corp}, {processOf(10, "PC", "alice", 5.0)});
-    ASSERT_EQ(ambiguous.size(), 2U);
-    EXPECT_TRUE(ambiguous[0].processes.empty()) << "alice and CORP\\ALICE are one name to Windows: either could be PC\\alice";
-    EXPECT_TRUE(ambiguous[1].processes.empty());
-
-    const std::vector<Domain::ProcessSnapshot> processes{processOf(10, "PC", "ALICE", 5.0), process(11, "ALICE", 1.0, 100)};
-    const std::vector<UserRow> sole = buildUserRows({session("1", "alice", 1000)}, processes);
-    ASSERT_EQ(sole.size(), 1U);
-    EXPECT_EQ(sole[0].processes, (std::vector<std::size_t>{0})) << "PC\\ALICE is the sole alice row's; ALICE without a domain isn't";
-}
-
-// #3076: a Windows session whose user couldn't be read is a row of its own, said to be not readable, with no
-// processes and its reason in the tooltip.
-TEST(UserRowsTest, ASessionNotReadableIsItsOwnRow)
-{
-    UserSession hidden = session("5", "", 0, "disconnected");
-    hidden.unreadable = "Access is denied";
-    const std::vector<UserRow> rows = buildUserRows({hidden, session("1", "alice", 1000)}, {process(10, "", 1.0, 1)});
-    ASSERT_EQ(rows.size(), 2U);
-    EXPECT_EQ(rows[1].label, "Not readable");
-    EXPECT_TRUE(rows[1].user.empty());
-    EXPECT_TRUE(rows[1].processes.empty());
-    EXPECT_EQ(sessionTooltip(hidden), "Its user couldn't be read: Access is denied\nSession 5");
 }
 
 /// Sessions a test controls: what read() lists and what act() answers, with each call recorded. Linux's
@@ -491,7 +259,7 @@ TEST(SessionActionTest, DisconnectAsksFirstAndSaysWhatHappensToTheSession)
     remote.remote = true;
     remote.type = "rdp";
     remote.remoteHost = "LAPTOP";
-    const std::string question = disconnectQuestion(remote);
+    const std::string question = UserGrouping::disconnectQuestion(remote);
     EXPECT_TRUE(question.contains("the Remote Desktop connection closes")) << question;
     EXPECT_FALSE(question.contains("this screen locks")) << question;
 

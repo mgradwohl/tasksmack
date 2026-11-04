@@ -523,6 +523,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessPins.cpp # pinned processes (#3061)
     App/test_Connections.cpp # the Connections tab (#3066)
     App/test_Users.cpp # the Users tab (#3076)
+    App/test_UserGrouping.cpp # account matching for the Users tab and Group: User (#3377)
     Domain/test_HandleSearch.cpp # Find handles (#3067)
     App/test_ProcessGrouping.cpp # Group by (#3068)
     App/test_ProcessTreeFlatten.cpp
@@ -1018,6 +1019,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ConnectionsView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/UsersPanel.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/UsersView.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/UserGrouping.cpp
     # The System Information page (#1399), run headless (test_SystemInfoView.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/Panels/SystemInfoSections.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/SystemInfoView.cpp

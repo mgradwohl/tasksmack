@@ -19,6 +19,7 @@
 #include "App/Panels/ProcessDisplayFreeze.h"
 #include "App/Panels/ProcessDumpView.h"
 #include "App/Panels/ProcessFilterCache.h"
+#include "App/Panels/ProcessGroupTotals.h"
 #include "App/Panels/ProcessGrouping.h"
 #include "App/Panels/ProcessLookup.h"
 #include "App/Panels/ProcessPins.h"
@@ -3744,7 +3745,7 @@ void ProcessesPanel::renderGroupHeaderRow(std::size_t groupIndex)
         {
             const std::string label = std::format("{} {} ({})",
                                                   collapsed ? ICON_FA_CARET_RIGHT : ICON_FA_CARET_DOWN,
-                                                  group.key.empty() ? ProcessGrouping::UNGROUPED_LABEL : std::string_view(group.key),
+                                                  group.key.empty() ? ProcessGrouping::UNGROUPED_LABEL : std::string_view(group.label),
                                                   group.members.size());
             static_cast<void>(
                 UI::Widgets::cellText(label,
