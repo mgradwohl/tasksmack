@@ -462,6 +462,7 @@ set(COMMON_TEST_SOURCES
     Domain/test_Worker.cpp # the background worker primitive (#3343)
     Domain/test_RateTracker.cpp # rates by acquisition time, keyed on identity (#3344)
     Domain/test_PidIndex.cpp
+    Domain/test_ProcessGeneration.cpp # rows, PID index and tree published together (#3345)
     Domain/test_ProcessIconCache.cpp
     # Linux desktop-entry icon lookup (#1800): pure std::filesystem, run on every platform
     Platform/test_DesktopEntryIcons.cpp

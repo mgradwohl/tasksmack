@@ -274,8 +274,9 @@ TEST(ProcessModelAllocationFailureTest, AFailedRefreshLeavesNoHeldOverRowOnAnoth
 }
 
 // #3334: the same, with a PID listed twice (reused within one read) and the held-over refresh's own allocations
-// failed in turn too, so the lookup's table rebuild fails and it walks the rows: the held-over process still gets
-// its own row, not the other one on its PID.
+// failed in turn too: the held-over process still gets its own row, not the other one on its PID. Since #3345 the
+// lookup goes through the published generation's own index and allocates nothing, so only the refresh's other
+// allocations fail here.
 TEST(ProcessModelAllocationFailureTest, AHeldOverLookupThatCantRebuildItsTableFindsItsOwnRowOnAReusedPid)
 {
 #if defined(TASKSMACK_NO_ALLOCATOR_HOOK)
@@ -284,14 +285,13 @@ TEST(ProcessModelAllocationFailureTest, AHeldOverLookupThatCantRebuildItsTableFi
     constexpr std::int64_t MAX_ALLOCATIONS = 100'000;
     const Platform::ProcessCounters first = TestMocks::makeProcessCounters(100, "first", 'S', 100, 50, 10, 1024, 1);
     const Platform::ProcessCounters second = TestMocks::makeProcessCounters(100, "second", 'S', 100, 50, 20, 1024, 1);
-    // Enough others that the failed refresh's table is far bigger: rebuilding it for two rows then shrinks it, which
-    // allocates, so failing that allocation sends the lookup down its walk.
+    // Enough others that the failed refresh's generation is far bigger than the published one it never replaced.
     std::vector<Platform::ProcessCounters> many{first, second};
     for (std::int32_t pid = 300; pid < 430; ++pid) // 132 rows: a 256-slot table, more than 8x the 16 two rows need
     {
         many.push_back(TestMocks::makeProcessCounters(pid, "other", 'S', 100, 50, 30, 1024, 1));
     }
-    int walkedLookups = 0;
+    int survivedLookups = 0;
     for (std::int64_t failRefresh = 0; failRefresh < MAX_ALLOCATIONS; ++failRefresh)
     {
         bool refreshFired = false;
@@ -351,7 +351,7 @@ TEST(ProcessModelAllocationFailureTest, AHeldOverLookupThatCantRebuildItsTableFi
             {
                 continue;
             }
-            ++walkedLookups;
+            ++survivedLookups;
             const auto rows = model.snapshots();
             ASSERT_EQ(rows.size(), 2U);
             EXPECT_EQ(rows[1].startTimeTicks, 20U);
@@ -366,7 +366,7 @@ TEST(ProcessModelAllocationFailureTest, AHeldOverLookupThatCantRebuildItsTableFi
             break;
         }
     }
-    EXPECT_GT(walkedLookups, 0) << "some held-over refresh survives a failed allocation";
+    EXPECT_GT(survivedLookups, 0) << "some held-over refresh survives a failed allocation";
 }
 
 // #2156: changing the history window never allocates for the histories, so it cannot fail part way
