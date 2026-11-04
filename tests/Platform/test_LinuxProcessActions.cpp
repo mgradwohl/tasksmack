@@ -3341,6 +3341,7 @@ TEST_F(LinuxEfficiencyModeActionTest, AnOffAfterAMoveThatCantWriteTheOldCgroupSa
     efficiency().procCgroup = std::string("0::/user.slice/other.scope\n"); // moved; app-test.scope stays readable
     efficiency().writeErrno = EACCES;
     efficiency().writes.clear();
+    efficiency().lastWriteCgroup.clear(); // so the check below sees off's write, not on's
     const ProcessActionResult off = m_Control.setEfficiencyMode(ownTarget(), false);
     ASSERT_TRUE(off.success) << off.errorMessage;
     EXPECT_EQ(off.successNote,
