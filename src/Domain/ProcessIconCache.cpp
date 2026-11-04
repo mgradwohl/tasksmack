@@ -2,6 +2,7 @@
 
 #include "Domain/LruMap.h"
 #include "Domain/PublicationWake.h"
+#include "Domain/Worker.h"
 #include "Platform/AsciiCase.h"
 #include "Platform/IProcessIconSource.h"
 #include "Platform/ThreadName.h"
@@ -19,7 +20,6 @@
 #include <stop_token>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <utility>
 #include <vector>
 
@@ -124,22 +124,25 @@ ProcessIconCache::ProcessIconCache(std::unique_ptr<Platform::IProcessIconSource>
       m_Processes(config.maxProcesses),
       m_Files(config.maxFiles),
       m_Icons(config.maxIcons),
-      m_Misses(config.maxMisses)
-{
-    if (m_Source != nullptr && m_Config.startWorker)
-    {
-        m_Worker = std::jthread([this](const std::stop_token& stopToken) { workerLoop(stopToken); });
-    }
-}
+      m_Misses(config.maxMisses),
+      // One drain queued at most: a load queued while a drain waits merges into it, and one queued while a
+      // drain runs queues the next (the running one may have found the queue empty). The thread starts with the
+      // first drain, so a cache made with startWorker false, or without a source, never has one. load()
+      // contains what a source throws; anything else the Worker does (#3343): it ends Failed, and the rows
+      // keep the generic icon.
+      m_Worker(
+          {
+              .threadName = Platform::ICON_READ_THREAD_NAME,
+              .capacity = 1,
+              .admission = Admission::MergeByKey,
+              .sameKey = [](const Drain& /*queued*/, const Drain& /*incoming*/) noexcept { return true; },
+          },
+          [this](Drain& /*job*/, const std::stop_token& stop, LoadWorker::JobContext& /*context*/) { drain(stop); })
+{}
 
-ProcessIconCache::~ProcessIconCache()
-{
-    if (m_Worker.joinable())
-    {
-        m_Worker.request_stop(); // Wakes the wait through its stop_token
-        m_Worker.join();
-    }
-}
+// The worker, the last member, is stopped first: a load running finishes, the queue is left unrun, and the
+// thread is joined while the maps it files into are alive.
+ProcessIconCache::~ProcessIconCache() = default;
 
 std::shared_ptr<const ProcessIconImage>
 ProcessIconCache::lookup(std::uint64_t uniqueKey, std::int32_t pid, std::string_view name, int sizePx)
@@ -185,8 +188,32 @@ ProcessIconCache::lookupEntry(bool file, std::uint64_t key, std::int32_t pid, st
         m_Queue.push_back(
             Request{.uniqueKey = key, .pid = pid, .sizePx = sizePx, .name = std::string(name), .file = file, .path = std::string(path)});
     }
-    m_Wake.notify_one();
+    wakeWorker();
     return nullptr;
+}
+
+void ProcessIconCache::wakeWorker()
+{
+    if (!m_Config.startWorker)
+    {
+        return; // loadPending() runs the loads
+    }
+    // Queued, or Merged into the drain already queued. Refused (no memory to queue one) leaves the load
+    // for the next one queued to wake; Closed is a worker that has ended.
+    if (m_Worker.submit(Drain{}) != SubmitResult::Closed || m_Worker.state() != WorkerState::Failed)
+    {
+        return;
+    }
+    // The reason first: if copying it throws, nothing is marked, and the next lookup reports it.
+    const std::string reason = m_Worker.failure();
+    {
+        const std::scoped_lock lock(m_Mutex);
+        if (std::exchange(m_WorkerFailureReported, true))
+        {
+            return;
+        }
+    }
+    spdlog::warn("ProcessIconCache: icon loads have stopped ({}); rows keep the generic icon", reason);
 }
 
 std::size_t ProcessIconCache::loadPending()
@@ -209,17 +236,16 @@ std::size_t ProcessIconCache::loadPending()
     }
 }
 
-void ProcessIconCache::workerLoop(const std::stop_token& stopToken)
+void ProcessIconCache::drain(const std::stop_token& stop)
 {
-    static_cast<void>(Platform::setCurrentThreadName(Platform::ICON_READ_THREAD_NAME));
-    while (!stopToken.stop_requested())
+    while (!stop.stop_requested())
     {
         Request request;
         {
-            std::unique_lock lock(m_Mutex);
-            if (!m_Wake.wait(lock, stopToken, [this] { return !m_Queue.empty(); }))
+            const std::scoped_lock lock(m_Mutex);
+            if (m_Queue.empty())
             {
-                return; // Stop requested
+                return; // The next load queued submits the next drain
             }
             // Newest first: the rows on screen now, not the ones scrolled past.
             request = std::move(m_Queue.back());

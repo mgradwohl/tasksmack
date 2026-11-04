@@ -28,6 +28,15 @@ namespace Domain
 namespace
 {
 
+/// What loadIcon() throws on the worker's thread (#3343): nothing, a std::exception, or something that
+/// isn't one. Atomic, unlike throwOnLoad, since the test changes it while the worker runs.
+enum class LoadThrows : std::uint8_t
+{
+    Nothing,
+    StdException,
+    NonStdException,
+};
+
 /// What the fake source was asked, and what it answers.
 struct FakeIconSourceState
 {
@@ -39,6 +48,7 @@ struct FakeIconSourceState
     bool caseInsensitive = false;
     bool byName = false; ///< Answers by name when the path has no icon, as Linux's desktop entries do
     bool throwOnLoad = false;
+    std::atomic<LoadThrows> loadThrows{LoadThrows::Nothing};
 };
 
 class FakeIconSource final : public Platform::IProcessIconSource
@@ -62,6 +72,16 @@ class FakeIconSource final : public Platform::IProcessIconSource
         if (m_State->throwOnLoad)
         {
             throw std::runtime_error("unreadable");
+        }
+        switch (m_State->loadThrows.load())
+        {
+        case LoadThrows::StdException:
+            throw std::runtime_error("unreadable");
+        case LoadThrows::NonStdException:
+            // NOLINTNEXTLINE(bugprone-std-exception-baseclass,hicpp-exception-baseclass) - the point: what a catch (std::exception) misses
+            throw 42;
+        case LoadThrows::Nothing:
+            break;
         }
         const std::string key = executablePath.empty() ? "?" + std::string(processName) : std::string(executablePath);
         auto it = m_State->iconSides.find(key);
@@ -394,6 +414,75 @@ TEST_F(ProcessIconCacheTest, TheWorkerLoadsWithoutTheCallersHelp)
     }
     EXPECT_NE(icon, nullptr);
     cache.reset(); // Joins the worker
+}
+
+/// Looks process @p key up until it has an icon, or 10 s pass; the icon, or nullptr.
+std::shared_ptr<const ProcessIconImage>
+lookupUntilLoaded(ProcessIconCache& cache, std::uint64_t key, std::int32_t pid, std::string_view name)
+{
+    std::shared_ptr<const ProcessIconImage> icon = cache.lookup(key, pid, name, SIZE);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (icon == nullptr && std::chrono::steady_clock::now() < deadline)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        icon = cache.lookup(key, pid, name, SIZE);
+    }
+    return icon;
+}
+
+TEST_F(ProcessIconCacheTest, TheWorkerLoadsEveryRowOfABurst)
+{
+    // #3343: the worker's job is one drain of the cache's queue, one queued at most, so a burst of rows
+    // merges into one or two drains. None of the burst's loads is lost: a load queued while a drain runs
+    // starts another.
+    constexpr std::int32_t ROWS = 64;
+    for (std::int32_t pid = 1; pid <= ROWS; ++pid)
+    {
+        m_State->paths[pid] = "/usr/bin/app" + std::to_string(pid);
+        m_State->iconSides[m_State->paths[pid]] = SIZE;
+    }
+    auto cache = makeCache(ProcessIconCacheConfig{});
+    for (std::int32_t pid = 1; pid <= ROWS; ++pid)
+    {
+        static_cast<void>(cache->lookup(static_cast<std::uint64_t>(pid), pid, "app", SIZE));
+    }
+    for (std::int32_t pid = 1; pid <= ROWS; ++pid)
+    {
+        EXPECT_NE(lookupUntilLoaded(*cache, static_cast<std::uint64_t>(pid), pid, "app"), nullptr) << "PID " << pid;
+    }
+    EXPECT_EQ(m_State->iconReads.load(), ROWS) << "each row read once";
+    cache.reset(); // Stops and joins the worker
+}
+
+TEST_F(ProcessIconCacheTest, ASourceThatThrowsOnTheWorkerEndsNeitherTheWorkerNorTheProcess)
+{
+    // #3343: a read that throws on the worker's thread, a std::exception or anything else, is contained:
+    // the row keeps the generic icon and is asked again, and the worker goes on loading other rows.
+    m_State->paths[1] = "/bin/a";
+    m_State->paths[2] = "/bin/b";
+    m_State->paths[3] = "/bin/c";
+    m_State->iconSides["/bin/a"] = SIZE;
+    m_State->iconSides["/bin/b"] = SIZE;
+    m_State->iconSides["/bin/c"] = SIZE;
+    auto cache = makeCache(ProcessIconCacheConfig{});
+
+    m_State->loadThrows = LoadThrows::StdException;
+    EXPECT_EQ(cache->lookup(1, 1, "a", SIZE), nullptr);
+    m_State->loadThrows = LoadThrows::NonStdException; // the worker may not have read process 1 yet: either throws
+    EXPECT_EQ(cache->lookup(2, 2, "b", SIZE), nullptr);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (m_State->iconReads.load() < 2 && std::chrono::steady_clock::now() < deadline)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_EQ(m_State->iconReads.load(), 2) << "the worker read both throwing rows";
+
+    m_State->loadThrows = LoadThrows::Nothing;
+    EXPECT_NE(lookupUntilLoaded(*cache, 3, 3, "c"), nullptr) << "the worker went on";
+    EXPECT_NE(lookupUntilLoaded(*cache, 1, 1, "a"), nullptr) << "asked again, and read";
+    EXPECT_NE(lookupUntilLoaded(*cache, 2, 2, "b"), nullptr) << "asked again after a non-std exception, and read";
+    EXPECT_EQ(cache->stats().misses, 0U) << "a read that threw isn't remembered as missing";
+    cache.reset();
 }
 
 // #1800: files asked for by path -- the Startup and Services tabs' programs, packaged apps' logos.
