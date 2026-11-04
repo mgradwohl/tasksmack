@@ -14,27 +14,27 @@
     },
     "BM_StorageModel_FullHistory_Publication/18000": {
       "min_abs_delta_ns": 20,
-      "reason": "#3395: an 8-12 ns accessor (a shared_ptr publication load) that reads slower on some hosted-runner CPU classes than on the slower class the baseline is captured on. Of three ubuntu-26.04 captures on three classes (runs 41752980687, 41756603704, 41760344349; 4195, 3692 and 3240 MHz), the fastest read it 12.0ns slower than the baseline capture, +122% over a few nanoseconds, with no code change. 20ns clears that and still fails a real doubling."
+      "reason": "#3395: an 8-12 ns accessor (a shared_ptr publication load) that reads slower on some hosted-runner CPU classes than on the slower class the baseline is captured on. Of three ubuntu-26.04 captures on three classes (runs 41752980687, 41756603704, 41760344349; 4195, 3692 and 3240 MHz), the fastest read it 12.0ns slower than the baseline capture, +122% over a few nanoseconds, with no code change. 20ns clears that, at a cost: over the 9.832ns baseline median the gate fails it only above about 29.8ns (3.03x), so a doubling or a tripling passes. A slowdown that size is the publication load itself breaking, which its siblings' 6ns floors still catch at about 1.7x."
     },
     "BM_SystemModel_CpuHistory": {
       "min_abs_delta_ns": 6,
-      "reason": "#3395: an 8-12 ns accessor (a shared_ptr publication load) that reads slower on some hosted-runner CPU classes than on the slower class the baseline is captured on. Of three ubuntu-26.04 captures on three classes (runs 41752980687, 41756603704, 41760344349; 4195, 3692 and 3240 MHz), the fastest read it 4.0ns slower than the baseline capture, +47% over a few nanoseconds, with no code change. 6ns clears that and still fails a real doubling."
+      "reason": "#3395: an 8-12 ns accessor (a shared_ptr publication load) that reads slower on some hosted-runner CPU classes than on the slower class the baseline is captured on. Of three ubuntu-26.04 captures on three classes (runs 41752980687, 41756603704, 41760344349; 4195, 3692 and 3240 MHz), the fastest read it 4.0ns slower than the baseline capture, +47% over a few nanoseconds, with no code change. 6ns clears that; over the 8.411ns baseline median the gate fails it above about 14.4ns (1.71x), so a doubling still fails."
     },
     "BM_StorageModel_LatestSnapshot": {
       "min_abs_delta_ns": 6,
-      "reason": "#3395: an 8-12 ns accessor (a shared_ptr publication load) that reads slower on some hosted-runner CPU classes than on the slower class the baseline is captured on. Of three ubuntu-26.04 captures on three classes (runs 41752980687, 41756603704, 41760344349; 4195, 3692 and 3240 MHz), the fastest read it 3.6ns slower than the baseline capture, +42% over a few nanoseconds, with no code change. 6ns clears that and still fails a real doubling."
+      "reason": "#3395: an 8-12 ns accessor (a shared_ptr publication load) that reads slower on some hosted-runner CPU classes than on the slower class the baseline is captured on. Of three ubuntu-26.04 captures on three classes (runs 41752980687, 41756603704, 41760344349; 4195, 3692 and 3240 MHz), the fastest read it 3.6ns slower than the baseline capture, +42% over a few nanoseconds, with no code change. 6ns clears that; over the 8.540ns baseline median the gate fails it above about 14.5ns (1.70x), so a doubling still fails."
     },
     "BM_StorageModel_HistoryTimestamps": {
       "min_abs_delta_ns": 6,
-      "reason": "#3395: an 8-12 ns accessor (a shared_ptr publication load) that reads slower on some hosted-runner CPU classes than on the slower class the baseline is captured on. Of three ubuntu-26.04 captures on three classes (runs 41752980687, 41756603704, 41760344349; 4195, 3692 and 3240 MHz), the fastest read it 3.6ns slower than the baseline capture, +41% over a few nanoseconds, with no code change. 6ns clears that and still fails a real doubling."
+      "reason": "#3395: an 8-12 ns accessor (a shared_ptr publication load) that reads slower on some hosted-runner CPU classes than on the slower class the baseline is captured on. Of three ubuntu-26.04 captures on three classes (runs 41752980687, 41756603704, 41760344349; 4195, 3692 and 3240 MHz), the fastest read it 3.6ns slower than the baseline capture, +41% over a few nanoseconds, with no code change. 6ns clears that; over the 8.716ns baseline median the gate fails it above about 14.7ns (1.69x), so a doubling still fails."
     },
     "BM_StorageModel_TotalRateHistory": {
       "min_abs_delta_ns": 6,
-      "reason": "#3395: an 8-12 ns accessor (a shared_ptr publication load) that reads slower on some hosted-runner CPU classes than on the slower class the baseline is captured on. Of three ubuntu-26.04 captures on three classes (runs 41752980687, 41756603704, 41760344349; 4195, 3692 and 3240 MHz), the fastest read it 3.5ns slower than the baseline capture, +40% over a few nanoseconds, with no code change. 6ns clears that and still fails a real doubling."
+      "reason": "#3395: an 8-12 ns accessor (a shared_ptr publication load) that reads slower on some hosted-runner CPU classes than on the slower class the baseline is captured on. Of three ubuntu-26.04 captures on three classes (runs 41752980687, 41756603704, 41760344349; 4195, 3692 and 3240 MHz), the fastest read it 3.5ns slower than the baseline capture, +40% over a few nanoseconds, with no code change. 6ns clears that; over the 8.722ns baseline median the gate fails it above about 14.7ns (1.69x), so a doubling still fails."
     },
     "BM_StorageModel_PerDiskHistory": {
       "min_abs_delta_ns": 6,
-      "reason": "#3395: an 8-12 ns accessor (a shared_ptr publication load) that reads slower on some hosted-runner CPU classes than on the slower class the baseline is captured on. Of three ubuntu-26.04 captures on three classes (runs 41752980687, 41756603704, 41760344349; 4195, 3692 and 3240 MHz), the fastest read it 3.5ns slower than the baseline capture, +40% over a few nanoseconds, with no code change. 6ns clears that and still fails a real doubling."
+      "reason": "#3395: an 8-12 ns accessor (a shared_ptr publication load) that reads slower on some hosted-runner CPU classes than on the slower class the baseline is captured on. Of three ubuntu-26.04 captures on three classes (runs 41752980687, 41756603704, 41760344349; 4195, 3692 and 3240 MHz), the fastest read it 3.5ns slower than the baseline capture, +40% over a few nanoseconds, with no code change. 6ns clears that; over the 8.725ns baseline median the gate fails it above about 14.7ns (1.69x), so a doubling still fails."
     },
     "BM_StorageModel_Concurrent_PublicationWait/samples:18000/extra_readers:2/iterations:2000/manual_time": {
       "threshold": 80,
