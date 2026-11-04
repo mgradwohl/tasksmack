@@ -144,7 +144,7 @@ document.
   - a concrete failure scenario: inputs or state, then the wrong result;
   - a suggested fix and a size (S, M or L);
   - a body that ends with `🤖 Generated with [Claude Code](https://claude.com/claude-code)` when an agent wrote it.
-- **Labels:**
+- **Labels** (the full scheme is `docs/dev/labels.md`):
   - the kind: `bug`, `enhancement`, `refactoring`, `performance`, `security` or `testing`;
   - the area: `windows`, `linux`, `ui`, `gpu`, `ci`, `tooling` and so on;
   - a lane if the platform is clear: `agent:Windows` or `agent:WSL`;

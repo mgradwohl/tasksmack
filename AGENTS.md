@@ -26,6 +26,23 @@ condenses what an agent needs every session; read those for the rest.
 - Treat `.github/workflows/*` edits as needing the maintainer's explicit confirmation before pushing, even though
   the `gh` token has `workflow` scope — CI/CD changes get extra human review on this project.
 
+## Issues and labels (2026-11-03)
+
+The full scheme is in [docs/dev/labels.md](docs/dev/labels.md). The rules agents act on:
+
+- **Every issue gets a kind and a lane.** The kind is one of `bug`, `enhancement`, `documentation`, `refactoring`,
+  `performance`, `security` or `testing`. The lane is `agent:Windows`, `agent:WSL`, or both for two-platform work.
+  Add `parity` to any Windows/Linux gap.
+- **Severity is for bugs only.** Use `sev:high` (crash, data loss, security, broken build or release), `sev:medium`
+  (a wrong result users notice, or broken on a common setup) or `sev:low`. Features get none.
+- **Priority is the maintainer's.** Every open issue on a release milestone carries `pri:high`, `pri:medium` or
+  `pri:low`. Agents default new milestone items to `pri:medium`, and a `sev:high` bug to `pri:high`. They may
+  suggest a change in a comment, but never change one the maintainer set.
+- **Queue order:** priority first. Within it, bugs, systems and refactors, then `parity`, then new features.
+- **Leave `good first issue` and `help wanted` to outside contributors:** don't pick them up, plan them or put
+  them on a milestone.
+- **New or deleted labels need the maintainer.** A new one must fit a family in docs/dev/labels.md.
+
 ## Branches and backports (#2741)
 
 Release branches from v0.9 on. `main` is frozen only from the feature freeze until the maintainer approves the
