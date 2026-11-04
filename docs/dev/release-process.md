@@ -34,7 +34,7 @@ A release moves through nine stages, 0 to 8:
 ### 1. Foundation: dependencies, toolchain, CI, release pipeline
 
 Get the systems into good shape before the code changes much. Label every CI, infra, build and dependency issue on
-the milestone `priority: high`, so the conveyor picks them up first.
+the milestone `pri:high`, so the conveyor picks them up first.
 
 - **Dependency updates** from Renovate and Dependabot: compiler, libraries, Python and actions. Approved majors
   go here.
