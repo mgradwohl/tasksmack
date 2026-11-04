@@ -224,6 +224,11 @@ jobs:
           fi
           echo "Tag version matches PROJECT_VERSION: $PROJECT_VERSION"
 
+  # Linux packages build on ubuntu-24.04(-arm) on purpose, while CI tests on ubuntu-26.04 (#3395, maintainer
+  # 2026-11-03): a package needs the glibc of the image it was built on, and 24.04's 2.38 is the floor the user
+  # guide promises (Ubuntu 24.04, Debian 13, Fedora 39, RHEL 10). Move these runners only when 24.04 support is
+  # dropped on purpose, together with the guide's System Requirements.
+  #
   # Every build, reproducibility and validation job runs once per architecture (#2214): x64, and
   # ARM64 natively on GitHub's arm64 runners (ubuntu-24.04-arm, windows-11-arm), as arm64.yml does
   # in CI. Each build leg uploads <os>-packages-<arch>, and create-release takes all four. x64 keeps
