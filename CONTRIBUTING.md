@@ -2931,7 +2931,7 @@ opens PRs; the same CI gate applies before merge.
     version is installable from both Chocolatey (CI) and WinGet (`tools/setup-dev.ps1`), which can lag
     upstream (#752). These need updating by hand in the same PR (grep for the old major too): the
     `clang++-23`/`clang-23` names in `CMakePresets.json`'s Linux presets, `release.yml`'s
-    `LLVM_LINUX_EXACT_VERSION`, the "LLVM 23" checks in `tools/pgo.sh`/`tools/pgo.ps1`, `tools/common.sh`'s
+    `LLVM_LINUX_RELEASE` (see [docs/dev/release-process.md](docs/dev/release-process.md#the-linux-llvm-pin)), the "LLVM 23" checks in `tools/pgo.sh`/`tools/pgo.ps1`, `tools/common.sh`'s
     clang-format version-discovery list, and the two fallback defaults inside `setup-llvm/action.yml`, kept
     for Copilot's review setup, which can call it with an empty input.
   - **Python interpreter** (major.minor, from stable tags only), grouped: `setup-python-glad/action.yml`,
@@ -3287,10 +3287,13 @@ immediately.
 Each platform build job's "Record toolchain versions" step logs the runner image
 (`ubuntu-24.04`/`ubuntu-24.04-arm`/`windows-2025`/`windows-11-arm`), full compiler/linker versions (`clang --version`, `ld.lld
 --version`), CMake, Ninja, and Python versions to that job's log. Linux additionally pins and
-asserts an exact `apt.llvm.org` package version for `clang-23` (`LLVM_LINUX_EXACT_VERSION` in
-`release.yml`) rather than accepting whatever the apt repository currently serves for the major
-version — see the comment above that variable for the deliberate-upgrade procedure; the arm64
-runner installs the same package version from apt.llvm.org's `binary-arm64`. Windows already pins
+asserts the upstream LLVM release (`LLVM_LINUX_RELEASE` in `release.yml`, e.g. `23.1.5`) on both
+architectures rather than accepting whatever release the apt repository serves for the major version,
+and records the exact `apt.llvm.org` build string of every LLVM package it installed in the
+`linux-build-inputs-<arch>` artifact, which `verify-reproducibility` compares; it pins the release, not
+the snapshot, since apt.llvm.org replaces its snapshots every few days (#3393). See
+[The Linux LLVM pin](docs/dev/release-process.md#the-linux-llvm-pin) for how to bump it and how the
+LLVM package cache works. Windows already pins
 an exact LLVM semver via `LLVM_SEMVER_VERSION`: Chocolatey's installer on x64, and on ARM64 the
 native `woa64` installer pinned by SHA-256 in `.github/actions/setup-windows-llvm`.
 

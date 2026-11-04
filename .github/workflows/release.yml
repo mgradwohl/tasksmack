@@ -25,25 +25,20 @@ concurrency:
 env:
   LLVM_VERSION: '23'
   LLVM_SEMVER_VERSION: '23.1.3'
-  # Exact apt.llvm.org package versions currently served for clang-23 (noble),
-  # one per architecture: apt.llvm.org builds amd64 and arm64 separately, so
-  # one can lag the other or miss a snapshot, and each Linux leg asserts its
-  # own architecture's pin (#2778). apt.llvm.org does not retain old snapshots
-  # per major version -- it only ever serves the latest build for a given
-  # major -- so these pins cannot survive indefinitely. When apt rotates a
-  # snapshot forward, that architecture's build-linux "Assert exact LLVM
-  # package version" step fails with the new version string instead of
-  # silently building with it. Review the change, then update that value
-  # (found via:
-  #   curl -fsSL https://apt.llvm.org/noble/dists/llvm-toolchain-noble-23/main/binary-<arch>/Packages.gz \
+  # The upstream LLVM release every Linux leg builds with, on both architectures: the one place to
+  # bump it (#3393; docs/dev/release-process.md, "The Linux LLVM pin"). setup-llvm's expect-release
+  # fails a leg whose clang-23 package isn't 1:<this>~... or whose clang doesn't report it, so another
+  # upstream release is always a reviewed PR. The apt.llvm.org snapshot inside the release is not
+  # pinned: apt.llvm.org rebuilds it every few days and keeps only the newest, so pinning the whole
+  # build string (as LLVM_LINUX_EXACT_VERSION did) blocked two releases on its own (#3307, #3392).
+  # Each leg records the exact build string it installed in its linux-build-inputs-<arch> artifact,
+  # which verify-reproducibility compares, and the LLVM package cache (main and release/* runs save
+  # it, tag runs restore it) keeps installing the snapshot it saved after apt.llvm.org moves on.
+  # To see what apt.llvm.org serves now:
+  #   curl -fsSL https://apt.llvm.org/noble/dists/llvm-toolchain-noble-23/main/binary-amd64/Packages.gz \
   #     | gunzip | grep -A2 '^Package: clang-23$'
-  # with binary-amd64 for LLVM_LINUX_EXACT_VERSION and binary-arm64 for
-  # LLVM_LINUX_EXACT_VERSION_ARM64) so a Linux toolchain change is always a
-  # deliberate, reviewed PR rather than a change in apt repository state
-  # between two runs of the same tag. The matrix picks the pin: arm64 legs
-  # pass LLVM_LINUX_EXACT_VERSION_ARM64 to setup-llvm, x64 legs the other.
-  LLVM_LINUX_EXACT_VERSION: '1:23.1.5~++20261102114213+392dfff97d29-1~exp1~20261102114325.94'
-  LLVM_LINUX_EXACT_VERSION_ARM64: '1:23.1.5~++20261102114213+392dfff97d29-1~exp1~20261102114325.94'
+  # (binary-arm64 for the arm64 legs).
+  LLVM_LINUX_RELEASE: '23.1.6'
 
   # 'true' only for a dispatched run with dry_run left on; a tag push has no inputs, so it is
   # always a real release. Read as $DRY_RUN in scripts and env.DRY_RUN in `if:` conditions.
@@ -262,11 +257,26 @@ jobs:
         run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
 
       - name: Setup LLVM
+        id: llvm
         uses: ./.github/actions/setup-llvm
         with:
           llvm-version: ${{ env.LLVM_VERSION }}
-          # This architecture's own pin (#2778; both are documented in the env block at the top).
-          expect-exact-version: ${{ matrix.arch == 'arm64' && env.LLVM_LINUX_EXACT_VERSION_ARM64 || env.LLVM_LINUX_EXACT_VERSION }}
+          # The pinned release (#3393; documented in the env block at the top).
+          expect-release: ${{ env.LLVM_LINUX_RELEASE }}
+
+      - name: Save the LLVM package cache (main and release/* only)
+        # setup-llvm staged the release's .debs after a cache miss. Only main and release/* save, as
+        # the repo's other caches (#1406): a tag run reads its branch's entry (a tag can't read a
+        # release branch's, so a tag cut from release/X.Y reads main's), and a PR branch's dry run
+        # restores only. verify-reproducibility restores the same entry, so both builds of a tag
+        # install the same snapshot whenever one is cached.
+        if: >-
+          steps.llvm.outputs.package-cache-staged == 'true' &&
+          (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/'))
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.llvm.outputs.package-cache-path }}
+          key: ${{ steps.llvm.outputs.package-cache-key }}
 
       - name: Setup Python for GLAD
         uses: ./.github/actions/setup-python-glad
@@ -286,15 +296,26 @@ jobs:
           save: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Record toolchain versions
-        # Documents the exact release environment for cross-run investigation.
+        # The exact release environment, including the apt.llvm.org build string of every LLVM package
+        # installed (setup-llvm pins only the release, #3393), for verify-reproducibility to compare
+        # and for cross-run investigation.
+        env:
+          PACKAGE_CACHE_HIT: ${{ steps.llvm.outputs.package-cache-hit }}
         run: |
           echo "=== Release toolchain versions (Linux) ==="
-          clang --version
-          ld.lld --version
-          cmake --version
-          ninja --version
-          python3 --version
-          dpkg-query -W -f='clang-${{ env.LLVM_VERSION }} package: ${Version}\n' "clang-${{ env.LLVM_VERSION }}"
+          echo "LLVM installed from the package cache: ${PACKAGE_CACHE_HIT:-false}"
+          # Outside the checkout: an untracked file there would make version.h say "dirty".
+          bash .github/actions/setup-llvm/record-build-inputs.sh \
+            "$RUNNER_TEMP/build-inputs/linux-${{ matrix.arch }}-build-inputs.txt" "$LLVM_LINUX_RELEASE" "$LLVM_VERSION"
+
+      - name: Upload the build-inputs record
+        # A workflow artifact only, not a release asset: verify-reproducibility downloads it by this name.
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: linux-build-inputs-${{ matrix.arch }}
+          path: ${{ runner.temp }}/build-inputs/linux-${{ matrix.arch }}-build-inputs.txt
+          if-no-files-found: error
+          retention-days: 90
 
       - name: Configure
         # Every release build, dry runs included, passes an empty TASKSMACK_VERSION_SUFFIX, so it reads
@@ -363,11 +384,17 @@ jobs:
         uses: ./.github/actions/setup-llvm
         with:
           llvm-version: ${{ env.LLVM_VERSION }}
-          # This architecture's own pin (#2778; both are documented in the env block at the top).
-          expect-exact-version: ${{ matrix.arch == 'arm64' && env.LLVM_LINUX_EXACT_VERSION_ARM64 || env.LLVM_LINUX_EXACT_VERSION }}
+          # The pinned release (#3393; documented in the env block at the top). It restores the same
+          # LLVM package cache entry as build-linux, and never saves one.
+          expect-release: ${{ env.LLVM_LINUX_RELEASE }}
 
       - name: Setup Python for GLAD
         uses: ./.github/actions/setup-python-glad
+
+      - name: Record toolchain versions
+        run: |
+          bash .github/actions/setup-llvm/record-build-inputs.sh \
+            "$RUNNER_TEMP/build-inputs/linux-${{ matrix.arch }}-build-inputs.txt" "$LLVM_LINUX_RELEASE" "$LLVM_VERSION"
 
       - name: Configure
         # No ccache here (unlike build-linux): a genuinely independent rebuild must not
@@ -389,6 +416,12 @@ jobs:
         with:
           name: linux-packages-${{ matrix.arch }}
           path: original-dist/
+
+      - name: Download build-linux's build-inputs record
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: linux-build-inputs-${{ matrix.arch }}
+          path: ${{ runner.temp }}/original-build-inputs/
 
       - name: Compare digests
         # This job's own cpack leaves CPack's _CPack_Packages staging directory in dist/
@@ -416,9 +449,32 @@ jobs:
               FAILED=1
             fi
           done
+          # The build inputs (#3393) say what a difference means. setup-llvm pins the LLVM release,
+          # not apt.llvm.org's snapshot inside it, so the two builds can install different snapshots
+          # when no package cache entry pinned one, and clang's version string (in every object's
+          # .comment section) then differs. Informational: the packages decide the result, and a
+          # different snapshot alone never fails this job when the packages still match.
+          original_inputs="$RUNNER_TEMP/original-build-inputs/linux-${{ matrix.arch }}-build-inputs.txt"
+          rebuilt_inputs="$RUNNER_TEMP/build-inputs/linux-${{ matrix.arch }}-build-inputs.txt"
+          INPUTS_DIFFER=0
+          if [[ ! -f "$original_inputs" || ! -f "$rebuilt_inputs" ]]; then
+            echo "::warning::A build-inputs record is missing, so a toolchain change can't be told from a build change."
+          elif ! diff -u "$original_inputs" "$rebuilt_inputs"; then
+            INPUTS_DIFFER=1
+            if grep '^llvm_package:' "$original_inputs" | cmp -s - <(grep '^llvm_package:' "$rebuilt_inputs"); then
+              echo "The build inputs differ (above), but both builds installed the same LLVM packages."
+            else
+              echo "::notice::The two builds installed different apt.llvm.org snapshots of LLVM $LLVM_LINUX_RELEASE (diff above)."
+            fi
+          else
+            echo "Both builds had identical build inputs, including the exact LLVM package builds."
+          fi
           if [[ "$FAILED" -eq 0 ]]; then
             echo "All Linux packages are byte-for-byte identical across two independent builds of this tag."
           else
+            if [[ "$INPUTS_DIFFER" -eq 1 ]]; then
+              echo "::warning::The build inputs differ too (above), which can explain the difference without the build being non-reproducible: a different LLVM snapshot changes clang's embedded version string (#3393)."
+            fi
             echo "Reproducibility check found differences (advisory only; did not block the release)." >&2
             exit 1
           fi
