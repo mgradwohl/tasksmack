@@ -454,10 +454,27 @@ TEST_F(ProcessIconCacheTest, TheWorkerLoadsEveryRowOfABurst)
     cache.reset(); // Stops and joins the worker
 }
 
+/// Waits until @p done answers true, or 10 s pass; whether it did. A wait on an outcome the worker
+/// leaves in the cache, not a sleep standing in for one.
+template<typename Done> bool waitUntil(Done done)
+{
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!done())
+    {
+        if (std::chrono::steady_clock::now() >= deadline)
+        {
+            return false;
+        }
+        std::this_thread::yield();
+    }
+    return true;
+}
+
 TEST_F(ProcessIconCacheTest, ASourceThatThrowsOnTheWorkerEndsNeitherTheWorkerNorTheProcess)
 {
     // #3343: a read that throws on the worker's thread, a std::exception or anything else, is contained:
-    // the row keeps the generic icon and is asked again, and the worker goes on loading other rows.
+    // the row keeps the generic icon and is forgotten, so it is asked again, and the worker goes on
+    // loading other rows. Each row is read alone, so each kind of throw is the one its read met.
     m_State->paths[1] = "/bin/a";
     m_State->paths[2] = "/bin/b";
     m_State->paths[3] = "/bin/c";
@@ -468,20 +485,40 @@ TEST_F(ProcessIconCacheTest, ASourceThatThrowsOnTheWorkerEndsNeitherTheWorkerNor
 
     m_State->loadThrows = LoadThrows::StdException;
     EXPECT_EQ(cache->lookup(1, 1, "a", SIZE), nullptr);
-    m_State->loadThrows = LoadThrows::NonStdException; // the worker may not have read process 1 yet: either throws
+    ASSERT_TRUE(waitUntil([&cache] { return cache->stats().processes == 0; })) << "the std::exception read forgot its row";
+    EXPECT_EQ(m_State->iconReads.load(), 1);
+
+    m_State->loadThrows = LoadThrows::NonStdException;
     EXPECT_EQ(cache->lookup(2, 2, "b", SIZE), nullptr);
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-    while (m_State->iconReads.load() < 2 && std::chrono::steady_clock::now() < deadline)
-    {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
-    ASSERT_EQ(m_State->iconReads.load(), 2) << "the worker read both throwing rows";
+    ASSERT_TRUE(waitUntil([&cache] { return cache->stats().processes == 0; })) << "the non-std read forgot its row";
+    EXPECT_EQ(m_State->iconReads.load(), 2);
 
     m_State->loadThrows = LoadThrows::Nothing;
     EXPECT_NE(lookupUntilLoaded(*cache, 3, 3, "c"), nullptr) << "the worker went on";
     EXPECT_NE(lookupUntilLoaded(*cache, 1, 1, "a"), nullptr) << "asked again, and read";
     EXPECT_NE(lookupUntilLoaded(*cache, 2, 2, "b"), nullptr) << "asked again after a non-std exception, and read";
+    EXPECT_EQ(m_State->iconReads.load(), 5) << "each throwing row read once more, the other once";
     EXPECT_EQ(cache->stats().misses, 0U) << "a read that threw isn't remembered as missing";
+    cache.reset();
+}
+
+TEST_F(ProcessIconCacheTest, ALoadWhoseDrainIsRefusedIsAskedAgainAndLoads)
+{
+    // #3343: a drain refused (no memory to queue one) while the worker is idle leaves no drain to run the
+    // load. The load is taken back, row entry and all, so the row's next lookup queues it again and it
+    // loads, rather than the row keeping the generic icon for good.
+    m_State->paths[1] = "/bin/a";
+    m_State->iconSides["/bin/a"] = SIZE;
+    auto cache = makeCache(ProcessIconCacheConfig{});
+
+    cache->refuseNextDrainForTesting();
+    EXPECT_EQ(cache->lookup(1, 1, "a", SIZE), nullptr);
+    const ProcessIconCache::Stats refused = cache->stats();
+    EXPECT_EQ(refused.queued, 0U) << "the refused load was taken back";
+    EXPECT_EQ(refused.processes, 0U) << "and the row with it, so its next lookup asks again";
+
+    EXPECT_NE(lookupUntilLoaded(*cache, 1, 1, "a"), nullptr) << "asked again, and loaded";
+    EXPECT_EQ(m_State->iconReads.load(), 1);
     cache.reset();
 }
 

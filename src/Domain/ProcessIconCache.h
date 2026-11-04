@@ -145,6 +145,14 @@ class ProcessIconCache
 
     [[nodiscard]] Stats stats() const;
 
+    /// Has the next drain submit() answer Refused without asking the worker, as it does when there is no
+    /// memory to queue one: the one case a queued load could be left with no drain to run it.
+    void refuseNextDrainForTesting()
+    {
+        const std::scoped_lock lock(m_Mutex);
+        m_RefuseNextDrain = true;
+    }
+
   private:
     struct Request
     {
@@ -207,6 +215,7 @@ class ProcessIconCache
     std::uint64_t m_NextIconId = 1;
     std::uint64_t m_Loads = 0;
     bool m_WorkerFailureReported = false; // wakeWorker() has logged that the worker ended; under m_Mutex
+    bool m_RefuseNextDrain = false;       // refuseNextDrainForTesting(); under m_Mutex
 
     LoadWorker m_Worker; // Last: stopped and joined before the state above is destroyed
 };

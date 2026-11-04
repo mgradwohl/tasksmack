@@ -198,9 +198,29 @@ void ProcessIconCache::wakeWorker()
     {
         return; // loadPending() runs the loads
     }
-    // Queued, or Merged into the drain already queued. Refused (no memory to queue one) leaves the load
-    // for the next one queued to wake; Closed is a worker that has ended.
-    if (m_Worker.submit(Drain{}) != SubmitResult::Closed || m_Worker.state() != WorkerState::Failed)
+    // Queued, or Merged into the drain already queued; Refused (no memory to queue one) takes the queued
+    // loads back; Closed is a worker that has ended.
+    bool refuse = false;
+    {
+        const std::scoped_lock lock(m_Mutex);
+        refuse = std::exchange(m_RefuseNextDrain, false);
+    }
+    const SubmitResult result = refuse ? SubmitResult::Refused : m_Worker.submit(Drain{});
+    if (result == SubmitResult::Refused)
+    {
+        // No drain queued (no memory to queue one), and the one running, if any, may have found the queue
+        // empty already: nothing is sure to run these loads. Take them back, row entries and all, so each
+        // row's next lookup queues its load and submits a drain again, rather than finding its entry and
+        // keeping the generic icon for good. A drain that does run meanwhile finds less to do.
+        const std::scoped_lock lock(m_Mutex);
+        for (const Request& request : m_Queue)
+        {
+            static_cast<void>(entries(request.file).erase(request.uniqueKey));
+        }
+        m_Queue.clear();
+        return;
+    }
+    if (result != SubmitResult::Closed || m_Worker.state() != WorkerState::Failed)
     {
         return;
     }
