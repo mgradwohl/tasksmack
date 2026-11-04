@@ -12,6 +12,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -307,7 +308,7 @@ TEST(UserGroupsTest, TwoAccountsWithOneShortNameAreTwoGroupsLabelledWithTheirDom
 }
 
 // #3377: one account's processes are one group, whatever the case of its names (Windows compares account
-// names without it), labelled as its first process spells it; and a process whose domain wasn't read joins
+// names without it), labelled as its lowest-numbered process spells it; and a process whose domain wasn't read joins
 // the one account with its name, as the Users tab gives it to the one row.
 TEST(UserGroupsTest, OneAccountsProcessesAreOneGroup)
 {
@@ -362,6 +363,91 @@ TEST(UserGroupsTest, ProcessesWithNoDomainGroupByUserNameAsBefore)
     EXPECT_EQ(groups[1].label, "root");
     EXPECT_EQ(groups[2].label, "Alice");
     EXPECT_EQ(groups[2].totals.processes, 0U);
+}
+
+/// Group: User's groups of @p snapshots taken in @p order, sorted by CPU as @p ascending says.
+[[nodiscard]] std::vector<ProcessGrouping::Group>
+userGroupsInOrder(const std::vector<Domain::ProcessSnapshot>& snapshots, const std::vector<std::size_t>& order, bool ascending)
+{
+    return ProcessGrouping::buildGroups(
+        snapshots, order, ProcessGrouping::GroupBy::User, snapshots.size(), ProcessColumn::CpuPercent, ascending);
+}
+
+/// The group keyed @p key in @p groups, or null.
+[[nodiscard]] const ProcessGrouping::Group* groupKeyed(const std::vector<ProcessGrouping::Group>& groups, const std::string& key)
+{
+    for (const ProcessGrouping::Group& group : groups)
+    {
+        if (group.key == key)
+        {
+            return &group;
+        }
+    }
+    return nullptr;
+}
+
+/// @p group's members, sorted, so groups built in two orders compare.
+[[nodiscard]] std::vector<std::size_t> sortedMembers(const ProcessGrouping::Group& group)
+{
+    std::vector<std::size_t> members = group.members;
+    std::ranges::sort(members);
+    return members;
+}
+
+// #3377 review: Windows compares account names without case, so whichever spelling of an account the table
+// meets first, "alice" and "ALICE" are one name. A process whose domain wasn't read joins the one alice
+// account, labelled as the lowest-numbered process spells it, whether the table is sorted up or down.
+TEST(UserGroupsTest, ABareNameJoinsTheOneAccountWithItInEitherOrder)
+{
+    const std::vector<Domain::ProcessSnapshot> snapshots{
+        processOf(10, "PC", "alice", 5.0),
+        processOf(11, "pc", "ALICE", 3.0),
+        process(12, "alice", 1.0, 100), // Its domain wasn't read
+    };
+    for (const bool ascending : {false, true})
+    {
+        for (const std::vector<std::size_t>& order : {std::vector<std::size_t>{0, 1, 2}, std::vector<std::size_t>{2, 1, 0}})
+        {
+            const std::vector<ProcessGrouping::Group> groups = userGroupsInOrder(snapshots, order, ascending);
+            ASSERT_EQ(groups.size(), 1U) << "order " << order[0] << ", ascending " << ascending;
+            EXPECT_EQ(groups[0].key, "pc\\alice");
+            EXPECT_EQ(groups[0].label, "alice") << "order " << order[0] << ", ascending " << ascending;
+            EXPECT_EQ(sortedMembers(groups[0]), (std::vector<std::size_t>{0, 1, 2}));
+            EXPECT_DOUBLE_EQ(groups[0].totals.cpuPercent, 9.0);
+        }
+    }
+}
+
+// #3377 review: with PC\alice and CORP\ALICE, two accounts Windows names alike, a process whose domain wasn't
+// read could be either's: it keeps a group of its own, in either order, and neither account's totals take it.
+TEST(UserGroupsTest, ABareNameTwoAccountsShareStaysItsOwnGroupInEitherOrder)
+{
+    const std::vector<Domain::ProcessSnapshot> snapshots{
+        processOf(10, "PC", "alice", 5.0),
+        processOf(11, "CORP", "ALICE", 3.0),
+        process(12, "alice", 1.0, 100), // Its domain wasn't read
+    };
+    for (const bool ascending : {false, true})
+    {
+        for (const std::vector<std::size_t>& order : {std::vector<std::size_t>{0, 1, 2}, std::vector<std::size_t>{2, 1, 0}})
+        {
+            const std::vector<ProcessGrouping::Group> groups = userGroupsInOrder(snapshots, order, ascending);
+            ASSERT_EQ(groups.size(), 3U) << "order " << order[0] << ", ascending " << ascending;
+            const ProcessGrouping::Group* pc = groupKeyed(groups, "pc\\alice");
+            const ProcessGrouping::Group* corp = groupKeyed(groups, "corp\\alice");
+            const ProcessGrouping::Group* bare = groupKeyed(groups, "alice");
+            ASSERT_NE(pc, nullptr);
+            ASSERT_NE(corp, nullptr);
+            ASSERT_NE(bare, nullptr);
+            EXPECT_EQ(pc->members, (std::vector<std::size_t>{0}));
+            EXPECT_DOUBLE_EQ(pc->totals.cpuPercent, 5.0);
+            EXPECT_EQ(corp->members, (std::vector<std::size_t>{1}));
+            EXPECT_EQ(bare->members, (std::vector<std::size_t>{2}));
+            EXPECT_EQ(pc->label, "PC\\alice") << "two groups are alice to Windows";
+            EXPECT_EQ(corp->label, "CORP\\ALICE");
+            EXPECT_EQ(bare->label, "alice");
+        }
+    }
 }
 
 } // namespace

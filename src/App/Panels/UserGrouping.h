@@ -57,8 +57,9 @@ struct UserRow
 /// PC\\alice's and CORP\\alice's processes are two groups (#3377). A process that names no domain joins the
 /// one account with its name, as buildUserRows() gives it to the one row, and is grouped by its name alone
 /// when none or two have it. A group is labelled with the short name, or DOMAIN\\user when two groups share
-/// the name. A member at or past @p liveCount is an exited row (#3060): listed, not counted. Ordered by
-/// ProcessGrouping::sortGroups(), with Ungrouped (a user not read) last.
+/// the name, spelled as its lowest-numbered process spells it. Names compare ignoring ASCII case wherever an
+/// account has a domain, so the table's order never changes the groups (#3377 review). A member at or past @p liveCount is an exited row
+/// (#3060): listed, not counted. Ordered by ProcessGrouping::sortGroups(), with Ungrouped (a user not read) last.
 [[nodiscard]] std::vector<ProcessGrouping::Group> buildUserGroups(const std::vector<Domain::ProcessSnapshot>& snapshots,
                                                                   const std::vector<std::size_t>& order,
                                                                   std::size_t liveCount,
