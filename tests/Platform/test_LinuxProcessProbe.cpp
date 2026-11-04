@@ -1720,6 +1720,25 @@ TEST(LinuxProcessProbeTest, ServicesAreTheSystemdServiceFromTheCgroup)
     EXPECT_TRUE(probe.capabilities().hasServices);
 }
 
+TEST(LinuxProcessProbeTest, TheTypeIsClassifiedFromTheSameCgroupRead)
+{
+    // #3430: System Process for a system service, App for a desktop app's scope, from the cgroup the probe already
+    // reads; the Type column is offered on Linux now.
+    ScopedTempDir proc("ts_test_proc_type");
+    writeVmHwmProcess(proc.path, "Name:\tsshd\nUid:\t0\t0\t0\t0\n");
+    writeFile(proc.path / "4242" / "cgroup", "0::/system.slice/ssh.service\n");
+    LinuxProcessProbe probe(proc.path);
+    EXPECT_TRUE(probe.capabilities().hasProcessType);
+    auto processes = probe.enumerate();
+    ASSERT_EQ(processes.size(), 1U);
+    EXPECT_EQ(processes[0].processType, "System Process");
+
+    writeFile(proc.path / "4242" / "cgroup", "0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-gnome-firefox-4242.scope\n");
+    processes = probe.enumerate();
+    ASSERT_EQ(processes.size(), 1U);
+    EXPECT_EQ(processes[0].processType, "App");
+}
+
 /// The first bytes of an ELF header (#2394): the magic, @p elfClass (1: 32-bit, 2: 64-bit), little-endian,
 /// and e_machine @p machine (an EM_* value). The probe reads no more than these.
 [[nodiscard]] std::string elfHeader(std::uint16_t machine, char elfClass = 2)

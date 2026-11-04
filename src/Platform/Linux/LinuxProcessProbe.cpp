@@ -6,6 +6,7 @@
 
 #include "CgroupContainer.h"
 #include "CgroupFreezeStatus.h"
+#include "CgroupProcessType.h"
 #include "CgroupService.h"
 #include "Domain/SamplingConfig.h"
 #include "ElfArchitecture.h"
@@ -535,6 +536,7 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
         .hasStatus = true,                              // From cgroup freezer state
         .hasContainer = true,                           // From /proc/[pid]/cgroup paths
         .hasServices = true,                            // The systemd service, from the same paths (#1886)
+        .hasProcessType = true,                         // From the cgroup path and parent PID (#3430)
         .hasArchitecture = true,                        // The ELF header of /proc/[pid]/exe (#2394)
         .hasSchedPolicy = true,                         // /proc/[pid]/stat fields 40-41 (#3086)
         .hasReducedPrivileges = missingPrivileges != 0, // Data or actions limited (#2303)
@@ -1212,6 +1214,9 @@ void LinuxProcessProbe::applyCgroupFacts(std::string_view cgroups,
                                          FactsByCgroup& factsByCgroup,
                                          ProcessCounters& counters)
 {
+    // The Type column (#3430): from the cgroup path and parent PID already in hand, so even a process whose cgroup
+    // can't be read (a kernel thread's parent says System) has one.
+    counters.processType = CgroupProcessType::classify(cgroups, counters.pid, counters.parentPid);
     if (cgroups.empty())
     {
         return;

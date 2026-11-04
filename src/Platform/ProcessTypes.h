@@ -127,8 +127,9 @@ struct ProcessCounters
     // are matched to processes by PID from the service list instead (Domain::ProcessModel).
     std::string services;
 
-    // Process type classification (optional, Windows-only)
-    // Values: "App", "Background Process", "Windows Process" (empty if not available)
+    // Process type classification (the Type column). Windows: "App", "Background Process", "Windows Process";
+    // Linux: "App", "Background Process", "System Process", from the cgroup path and parent PID (#3430). Empty if
+    // not available.
     std::string processType;
 
     // The architecture the process runs as (#2394), as ProcessArchitecture::architectureLabel() words it:
@@ -251,18 +252,19 @@ struct ProcessCapabilities
     bool hasServices = false;           // Whether the services a process runs are available: Linux, the systemd
                                         // unit from its cgroups (ProcessCounters::services, #1886); Windows, set by
                                         // Domain::ProcessModel once a service list with PIDs is attached (#1880)
-    bool hasProcessType = false;        // Whether process type classification is available (Windows: App/Background/Windows)
-    bool hasArchitecture = false;       // Whether ProcessCounters::architecture is filled (#2394)
-    bool hasSchedPolicy = false;        // Whether ProcessCounters::schedPolicy is filled (#3086)
-    bool hasSignature = false;          // Whether ProcessCounters::signature is filled (#3070; Windows: WinVerifyTrust)
-    bool hasGdiObjects = false;         // Whether GDI object count is available (Windows-only via GetGuiResources)
-    bool hasReducedPrivileges = false;  // True when the process lacks the privileges to read some data, or act
-                                        // on other users' processes (not necessarily curable by elevation: sudo
-                                        // can't restore capabilities a container or service dropped).
-                                        // Linux: missingPrivileges isn't empty (ProcPrivileges::missingPrivileges()).
-                                        // Windows: non-admin AND EStats was specifically denied (ERROR_ACCESS_DENIED).
-                                        //          Remains false when EStats is simply unsupported, because
-                                        //          running as Administrator would not restore those counters.
+    bool hasProcessType =
+        false; // Whether process type classification is available (Windows: App/Background/Windows; Linux: App/Background/System, #3430)
+    bool hasArchitecture = false;      // Whether ProcessCounters::architecture is filled (#2394)
+    bool hasSchedPolicy = false;       // Whether ProcessCounters::schedPolicy is filled (#3086)
+    bool hasSignature = false;         // Whether ProcessCounters::signature is filled (#3070; Windows: WinVerifyTrust)
+    bool hasGdiObjects = false;        // Whether GDI object count is available (Windows-only via GetGuiResources)
+    bool hasReducedPrivileges = false; // True when the process lacks the privileges to read some data, or act
+                                       // on other users' processes (not necessarily curable by elevation: sudo
+                                       // can't restore capabilities a container or service dropped).
+                                       // Linux: missingPrivileges isn't empty (ProcPrivileges::missingPrivileges()).
+                                       // Windows: non-admin AND EStats was specifically denied (ERROR_ACCESS_DENIED).
+                                       //          Remains false when EStats is simply unsupported, because
+                                       //          running as Administrator would not restore those counters.
     // True when per-process network counters were denied although the process already has the
     // privileges they need, so elevating would not help. Windows: elevated, yet TCP EStats access
     // denied (a policy or a driver, #1358). Never true together with hasNetworkCounters or

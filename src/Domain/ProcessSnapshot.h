@@ -173,7 +173,8 @@ struct ProcessSnapshot
     std::string publisher;    // Software publisher/vendor (Windows PE version info; empty if not available)
     std::string container;    // Container: "docker:1a2b3c4d5e6f", "lxc:web" (Linux cgroups; empty if in none)
     std::string services;     // Services it runs, comma-joined: "sshd.service", "Dhcp, EventLog" (#1886, #1880)
-    std::string processType;  // Process type: "App", "Background Process", "Windows Process" (Windows-only)
+    std::string
+        processType; // Process type: "App", "Background Process", and "Windows Process" (Windows) or "System Process" (Linux, #3430)
     std::string architecture; // Architecture it runs as: "x64", "ARM64", "x64 (emulated)", "x86 (WOW64)" (#2394; empty if unread)
     // The image's Authenticode signature (#3070, Windows): how it is signed, by whom, or why not. Shared,
     // so a copy copies a pointer; its column's text, Platform::signatureLabel(), is a view of it, worded
