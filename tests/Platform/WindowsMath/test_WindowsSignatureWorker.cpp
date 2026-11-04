@@ -4,7 +4,8 @@
 /// new process of an image re-reads its stamp, checked again only when the file changed or has no file ID
 /// (#3292); the path table's bound, which a table full of queued paths keeps by admitting no more (#3340),
 /// also while a slow check keeps finishing one file at a time under load (#3342); more paths than the
-/// table holds, polled in a fixed order, each checked in turn (#3403); a check that throws; and
+/// table holds, polled in a fixed order, each checked in turn (#3403); the count of queued paths a full
+/// table turns a path away on without sweeping (#3418); a check that throws; and
 /// the destructor stopping a queue.
 /// Pure (no Windows header), so built everywhere.
 
@@ -342,6 +343,86 @@ TEST_F(SignatureWorkerTest, ATableFullOfQueuedPathsAdmitsNoMoreUntilTheyAreCheck
     EXPECT_EQ(checksOf("c"), 1);
     EXPECT_EQ(checksOf("d"), 1);
     EXPECT_EQ(worker.pathCount(), 2U);
+}
+
+TEST_F(SignatureWorkerTest, TheQueuedCountFollowsEveryAdmissionAnswerEvictionAndThrow)
+{
+    // #3418: a table full of queued paths turns a new one away without sweeping it, on the strength of the
+    // worker's count of queued paths. That count must match the table through every way a path is queued
+    // (admitted, or an answered one asked for again) and stops being queued (answered, or the check threw),
+    // and through a sweep that forgets the answered ones.
+    for (const char* path : {"a", "b", "c", "d", "e", "f", "g"})
+    {
+        setStamp(path, 1);
+    }
+    setGate(false); // the worker holds a's check: a stays queued while it is checked
+    WorkerOptions options;
+    options.maxPaths = 2;
+    SignatureWorker worker(fakeFunctions(), options);
+    const auto expectCounts = [&worker](std::size_t queued, std::size_t paths, const char* step)
+    {
+        EXPECT_EQ(worker.queuedPathCount(), queued) << step;
+        EXPECT_EQ(worker.pathCount(), paths) << step;
+    };
+    // With the gate open, or for a path whose answer is cached (which never reaches the gate), the worker
+    // could answer a path just admitted before its count is read. Holding the fakes' lock stops the worker
+    // in openImage() until the count has been read; it is let go before waiting for the worker.
+    const auto holdTheWorker = []
+    {
+        return std::unique_lock(fakes().mutex);
+    };
+    expectCounts(0, 0, "a new worker");
+    worker.request("a");
+    worker.request("a");
+    expectCounts(1, 1, "a admitted once, however often it's asked for");
+    worker.request("b");
+    expectCounts(2, 2, "b admitted: the table is full of queued paths");
+    worker.request("c");
+    EXPECT_FALSE(worker.find("d").has_value());
+    expectCounts(2, 2, "c and d turned away: nothing queued can be forgotten");
+
+    setGate(true);
+    ASSERT_TRUE(worker.waitUntilIdle(WAIT));
+    expectCounts(0, 2, "a and b answered");
+    {
+        const auto held = holdTheWorker();
+        worker.request("a");
+        expectCounts(1, 2, "an answered path asked for again is queued again, in its own entry");
+    }
+    ASSERT_TRUE(worker.waitUntilIdle(WAIT));
+    expectCounts(0, 2, "answered again");
+
+    {
+        const auto held = holdTheWorker();
+        worker.request("c");
+        expectCounts(1, 1, "full of answered paths: the sweep forgets a and b, and c is admitted");
+    }
+    ASSERT_TRUE(worker.waitUntilIdle(WAIT));
+    fakes().throwOnCheck = true;
+    worker.request("d");
+    ASSERT_TRUE(worker.waitUntilIdle(WAIT));
+    expectCounts(0, 2, "a check that threw is answered, no longer queued");
+    EXPECT_EQ(worker.find("d").value_or(SignatureCheck{}).note, "the check threw");
+    fakes().throwOnCheck = false;
+
+    setGate(false);
+    worker.request("e");
+    expectCounts(1, 1, "the sweep forgets c and d, answered, and e is admitted");
+    worker.request("f");
+    worker.request("g");
+    expectCounts(2, 2, "f admitted, g turned away");
+    setGate(true);
+    ASSERT_TRUE(worker.waitUntilIdle(WAIT));
+    expectCounts(0, 2, "e and f answered");
+    EXPECT_EQ(checksOf("g"), 0) << "never queued";
+    {
+        const auto held = holdTheWorker();
+        EXPECT_FALSE(worker.find("g").has_value());
+        expectCounts(1, 1, "g's turn: admitted once there's room");
+    }
+    ASSERT_TRUE(worker.waitUntilIdle(WAIT));
+    expectCounts(0, 1, "g answered");
+    EXPECT_TRUE(worker.find("g").has_value());
 }
 
 TEST_F(SignatureWorkerTest, ASlowCheckThatKeepsMakingProgressKeepsTheTableWithinItsBoundAndChecksEveryPath)
