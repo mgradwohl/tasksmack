@@ -456,6 +456,7 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
             }
         }
     }
+    const std::optional<Clock::time_point> lastEnergyTime = m_PrevEnergyAt; // a process carried over from now on: its read's
     m_PrevEnergyAt = energyAcquiredAt; // a refresh without a package read forgets it: the attributor's baseline goes too
     const bool hasElapsedForHistory = m_HasPrevSampleTime;
     const Clock::time_point lastSampleTime = m_PrevSampleTime; // a process carried over from now on was read then (#3031)
@@ -505,7 +506,8 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
 
         // A process this refresh couldn't read (#3031): its last row again, and its state as it was, so
         // the next real read is measured against the last real one. Not for a process with no row yet.
-        if (current.heldOver && !inserted && appendHeldOverLocked(current, key, lastSampleTime, previousSnapshots, newSnapshots))
+        if (current.heldOver && !inserted &&
+            appendHeldOverLocked(current, key, lastSampleTime, lastEnergyTime, previousSnapshots, newSnapshots))
         {
             const ProcessSnapshot& heldRef = newSnapshots.back();
             aggPageFaults += heldRef.pageFaultsPerSec;
@@ -526,7 +528,7 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
         RateInterval interval{.totalCpuDelta = totalCpuDelta, .elapsedSeconds = elapsedSeconds, .timeDeltaUs = timeDeltaUs};
         if (!m_HeldOver.empty())
         {
-            interval = rateIntervalAfterHeldOverLocked(key, interval, totalCpuTime, currentSampleTime);
+            interval = rateIntervalAfterHeldOverLocked(key, interval, totalCpuTime, currentSampleTime, energyAcquiredAt);
         }
 
         // --- peak RSS ---
@@ -1288,6 +1290,7 @@ ProcessModel::GpuSupport ProcessModel::mergeGPUDataContained(std::vector<Process
 bool ProcessModel::appendHeldOverLocked(const Platform::ProcessCounters& current,
                                         const ProcessIdentity& key,
                                         Clock::time_point lastSampleTime,
+                                        std::optional<Clock::time_point> lastEnergyTime,
                                         std::shared_ptr<const std::vector<ProcessSnapshot>>& previousSnapshots,
                                         std::vector<ProcessSnapshot>& newSnapshots)
 {
@@ -1330,7 +1333,8 @@ bool ProcessModel::appendHeldOverLocked(const Platform::ProcessCounters& current
         return false;
     }
     // Its counters were read last refresh, unless it was carried over then too.
-    m_HeldOver.try_emplace(key, HeldOverSince{.totalCpuTime = m_PrevTotalCpuTime, .sampleTime = lastSampleTime});
+    m_HeldOver.try_emplace(key,
+                           HeldOverSince{.totalCpuTime = m_PrevTotalCpuTime, .sampleTime = lastSampleTime, .energyTime = lastEnergyTime});
     // Copied in place: emplace_back(const ProcessSnapshot&), not the loop's push_back(ProcessSnapshot&&), so
     // that one stays inlined there.
     newSnapshots.emplace_back((*previousSnapshots)[row]).childrenIndices.clear(); // the tree is built again after the loop
@@ -1340,7 +1344,8 @@ bool ProcessModel::appendHeldOverLocked(const Platform::ProcessCounters& current
 ProcessModel::RateInterval ProcessModel::rateIntervalAfterHeldOverLocked(const ProcessIdentity& key,
                                                                          RateInterval interval,
                                                                          std::uint64_t totalCpuTime,
-                                                                         Clock::time_point now)
+                                                                         Clock::time_point now,
+                                                                         std::optional<Clock::time_point> energyNow)
 {
     const auto since = m_HeldOver.find(key);
     if (since == m_HeldOver.end())
@@ -1356,6 +1361,21 @@ ProcessModel::RateInterval ProcessModel::rateIntervalAfterHeldOverLocked(const P
     {
         interval.elapsedSeconds = 0.0;
         interval.timeDeltaUs = 0;
+    }
+    // Package-derived power runs between package reads (#3344), as it does for every other process this sample:
+    // from the held sample's read to this one, or not at all when either sample had none.
+    if (energyNow.has_value())
+    {
+        interval.timeDeltaUs = 0;
+        if (since->second.energyTime.has_value())
+        {
+            const auto sinceEnergy = *energyNow - *since->second.energyTime;
+            if (std::chrono::duration<double>(sinceEnergy).count() >= MIN_ELAPSED_FOR_RATES)
+            {
+                interval.timeDeltaUs =
+                    static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(sinceEnergy).count());
+            }
+        }
     }
     m_HeldOver.erase(since);
     return interval;

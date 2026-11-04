@@ -306,6 +306,9 @@ class ProcessModel : public ISamplable
     {
         std::uint64_t totalCpuTime = 0;
         Clock::time_point sampleTime;
+        /// The package energy read of that sample (#3344), when there was one: its power on recovery is over the
+        /// time since that read, not since the enumeration.
+        std::optional<Clock::time_point> energyTime;
     };
     std::unordered_map<ProcessIdentity, HeldOverSince, ProcessIdentityHash> m_HeldOver;
 
@@ -380,12 +383,14 @@ class ProcessModel : public ISamplable
 
     /// For a carried-over process (ProcessCounters::heldOver, #3031), appends its last row to @p newSnapshots,
     /// taking the last generation into @p previousSnapshots the first time, and notes when its counters were
-    /// last read (@p lastSampleTime, m_PrevTotalCpuTime) unless already noted. False when it has no last row.
+    /// last read (@p lastSampleTime and @p lastEnergyTime, the package energy read of that sample if any, and
+    /// m_PrevTotalCpuTime) unless already noted. False when it has no last row.
     /// Out of line, never inlined: computeSnapshotsLocked()'s loop runs for every process, and this for
     /// nearly none. Requires m_SamplingMutex held.
     [[gnu::noinline]] [[nodiscard]] bool appendHeldOverLocked(const Platform::ProcessCounters& current,
                                                               const ProcessIdentity& key,
                                                               Clock::time_point lastSampleTime,
+                                                              std::optional<Clock::time_point> lastEnergyTime,
                                                               std::shared_ptr<const std::vector<ProcessSnapshot>>& previousSnapshots,
                                                               std::vector<ProcessSnapshot>& newSnapshots);
 
@@ -399,9 +404,14 @@ class ProcessModel : public ISamplable
     };
 
     /// @p interval, or, for a process carried over since its counters were last read, the interval since
-    /// that read, forgetting it (#3031). Never inlined, as appendHeldOverLocked(). Requires m_SamplingMutex held.
-    [[gnu::noinline]] [[nodiscard]] RateInterval
-    rateIntervalAfterHeldOverLocked(const ProcessIdentity& key, RateInterval interval, std::uint64_t totalCpuTime, Clock::time_point now);
+    /// that read, forgetting it (#3031). @p energyNow is this sample's package energy read, if any: package-derived
+    /// power then runs from the held sample's package read to it (#3344). Never inlined, as appendHeldOverLocked().
+    /// Requires m_SamplingMutex held.
+    [[gnu::noinline]] [[nodiscard]] RateInterval rateIntervalAfterHeldOverLocked(const ProcessIdentity& key,
+                                                                                 RateInterval interval,
+                                                                                 std::uint64_t totalCpuTime,
+                                                                                 Clock::time_point now,
+                                                                                 std::optional<Clock::time_point> energyNow);
 
     /// Merges @p publication's per-process GPU counters into @p snapshots. @p firstSeen holds, for
     /// each snapshot, when this model first listed that process: a process first listed after the

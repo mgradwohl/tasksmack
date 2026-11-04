@@ -1410,6 +1410,51 @@ TEST(ProcessModelTest, PackagePowerDividesByTheTimeBetweenItsOwnReads)
     EXPECT_NEAR(busy->powerWatts, 10.0, 1e-9);
 }
 
+// #3344: a process carried over a sample, then read again, takes its package-derived power over the time between the
+// package reads of its last real sample and this one, not between the enumerations. A constant 10 W package is read
+// at 0.4 s (4 J), 1.1 s (11 J) and 2.05 s (20.5 J), the socket reads taking 400, 100 and 50 ms: all 16.5 J since the
+// first read are the process's, over 1.65 s, so 10 W, not 8.25 W over the enumerations' 2 s.
+TEST(ProcessModelTest, AHeldOverProcessTakesItsPackagePowerOverThePackageReads)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+    Platform::ProcessCounters busy = makeCounter(1, "busy", 'R', 100, 0);
+    rawProbe->setCounters({busy});
+    rawProbe->setTotalCpuTime(10'000);
+    rawProbe->setPackageEnergy(
+        Platform::PackageEnergyReading{.energyUj = 4'000'000, .maxRangeUj = 0, .busyCpuTicks = std::nullopt, .otherPackages = {}});
+
+    Domain::ProcessModel::Clock::time_point now{};
+    auto socketReadTakes = std::chrono::milliseconds(400);
+    rawProbe->setOnSocketRead([&now, &socketReadTakes] { now += socketReadTakes; });
+    Domain::ProcessModel model(std::move(probe), [&now] { return now; });
+    model.refresh();
+
+    // Carried over: its record isn't a fresh read, though the package's energy is shared out by it as ever.
+    now = Domain::ProcessModel::Clock::time_point{std::chrono::seconds(1)};
+    socketReadTakes = std::chrono::milliseconds(100);
+    Platform::ProcessCounters carried = makeCounter(1, "busy", 'R', 200, 0);
+    carried.heldOver = true;
+    rawProbe->setCounters({carried});
+    rawProbe->setTotalCpuTime(10'100);
+    rawProbe->setPackageEnergy(
+        Platform::PackageEnergyReading{.energyUj = 11'000'000, .maxRangeUj = 0, .busyCpuTicks = std::nullopt, .otherPackages = {}});
+    model.refresh();
+
+    now = Domain::ProcessModel::Clock::time_point{std::chrono::seconds(2)};
+    socketReadTakes = std::chrono::milliseconds(50);
+    busy.userTime = 300;
+    rawProbe->setCounters({busy});
+    rawProbe->setTotalCpuTime(10'200);
+    rawProbe->setPackageEnergy(
+        Platform::PackageEnergyReading{.energyUj = 20'500'000, .maxRangeUj = 0, .busyCpuTicks = std::nullopt, .otherPackages = {}});
+    model.refresh();
+
+    const auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1U);
+    EXPECT_NEAR(snaps[0].powerWatts, 10.0, 1e-9);
+}
+
 // #2444 (#2479): a multi-socket machine's other packages reach the attribution: package 0 used 2 J and
 // package 1 3 J, so the busy process draws 5 W, not package 0's 2 W.
 TEST(ProcessModelTest, EveryPackagesEnergyIsSharedOut)
