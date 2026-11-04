@@ -783,8 +783,10 @@ TEST_F(DRMGPUProbeUnitTest, ReadGPUCounters_GpuFrequency_IsRead)
     EXPECT_TRUE(counters[0].gpuClockAvailable);
 }
 
-TEST_F(DRMGPUProbeUnitTest, ReadGPUCounters_ZeroFrequency_IsIgnored)
+TEST_F(DRMGPUProbeUnitTest, ReadGPUCounters_ZeroFrequency_IsARealZero)
 {
+    // A frequency file that reads 0 is the GT idle at 0 MHz, a reading: only a failed read is
+    // unavailable (#3421).
     const auto deviceDir = makeCard("card0", "i915");
     writeFile(deviceDir / "vendor", "0x8086");
     writeFile(deviceDir / "class", "0x030000");
@@ -797,6 +799,7 @@ TEST_F(DRMGPUProbeUnitTest, ReadGPUCounters_ZeroFrequency_IsIgnored)
 
     const auto counters = probe.readGPUCounters();
     ASSERT_EQ(counters.size(), 1U);
+    EXPECT_TRUE(counters[0].gpuClockAvailable);
     EXPECT_EQ(counters[0].gpuClockMHz, 0U);
 }
 
@@ -960,7 +963,7 @@ TEST_F(DRMGPUProbeUnitTest, MalformedHexClass_TreatedAsUnrecognised)
     EXPECT_TRUE(gpus[0].isIntegrated);
 }
 
-TEST_F(DRMGPUProbeUnitTest, MalformedFrequencyFile_TreatedAsZero)
+TEST_F(DRMGPUProbeUnitTest, MalformedFrequencyFile_ClockUnavailable)
 {
     const auto deviceDir = makeCard("card0", "i915");
     writeFile(deviceDir / "vendor", "0x8086");
@@ -972,7 +975,8 @@ TEST_F(DRMGPUProbeUnitTest, MalformedFrequencyFile_TreatedAsZero)
 
     const auto counters = probe.readGPUCounters();
     ASSERT_EQ(counters.size(), 1U);
-    // Malformed value → treated as zero → field left at 0
+    // A malformed value is a failed read: unavailable this sample, not a real 0 MHz (#3421)
+    EXPECT_FALSE(counters[0].gpuClockAvailable);
     EXPECT_EQ(counters[0].gpuClockMHz, 0U);
 }
 

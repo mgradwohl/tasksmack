@@ -250,15 +250,8 @@ void updateSmoothedGPU(const std::string& gpuId, const Domain::GPUSnapshot& snap
     smoothReading(smoothed.powerWatts, smoothed.powerInitialized, snap.powerAvailable, snap.powerDrawWatts);
     smoothReading(smoothed.encoderPercent, smoothed.encoderInitialized, snap.encoderAvailable, snap.encoderUtilPercent);
     smoothReading(smoothed.decoderPercent, smoothed.decoderInitialized, snap.decoderAvailable, snap.decoderUtilPercent);
-    if (snap.gpuClockAvailable && snap.gpuClockMHz > 0)
-    {
-        smoothed.clockMHz = initializeOrSmooth(smoothed.clockMHz, static_cast<double>(snap.gpuClockMHz), alpha, smoothed.clockInitialized);
-        smoothed.clockInitialized = true;
-    }
-    else
-    {
-        smoothed.clockInitialized = false;
-    }
+    // A read 0 MHz is a power-gated engine, shown as "0 MHz"; only an unread clock is N/A (#3421).
+    smoothReading(smoothed.clockMHz, smoothed.clockInitialized, snap.gpuClockAvailable, static_cast<double>(snap.gpuClockMHz));
     if (snap.fanSpeedAvailable)
     {
         smoothed.fanPercent =
@@ -704,8 +697,8 @@ void renderGpuSection(RenderContext& ctx)
                 .color = theme.scheme().gpuMemory,
             });
         }
-        // Like the fan bar below: present whenever the clock line is, so a zero (unreadable) sample
-        // shows N/A instead of removing the bar and shifting every bar after it (#995).
+        // Like the fan bar below: present whenever the clock line is, so an unread sample shows N/A
+        // instead of removing the bar and shifting every bar after it (#995).
         if (caps.hasClockSpeeds)
         {
             // The label names the scale and the value is the clock in MHz, so the strip's

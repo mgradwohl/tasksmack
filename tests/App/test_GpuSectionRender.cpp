@@ -423,6 +423,27 @@ TEST_F(GpuSectionRenderTest, SmoothingSnapsFirstThenEasesAndSkipsUnreadValues)
     EXPECT_DOUBLE_EQ(smoothed.temperatureC, temperatureBefore);
 }
 
+// #3421: a clock the probe read as 0 MHz (an Intel or AMD engine power-gated) is a reading, so the
+// Clock NowBar says "0 MHz" rather than "unavailable this sample"; only an unread clock is N/A.
+TEST_F(GpuSectionRenderTest, AnAvailableZeroMhzClockShowsZeroNotUnavailable)
+{
+    Domain::GPUPublication publication;
+    publication.gpuInfoKnown = true;
+    publication.capabilities = allSensors();
+    addGpu(publication, "gpu0", "GPU");
+    publication.snapshots[0].gpuClockAvailable = true;
+    publication.snapshots[0].gpuClockMHz = 0;
+    GpuSection::RenderContext ctx = context(&publication);
+    static_cast<void>(renderAndCapture(ctx));
+    const std::string text = renderAndCapture(ctx);
+
+    ASSERT_TRUE(m_Smoothed.contains("gpu0"));
+    EXPECT_TRUE(m_Smoothed.at("gpu0").clockInitialized);
+    EXPECT_DOUBLE_EQ(m_Smoothed.at("gpu0").clockMHz, 0.0);
+    EXPECT_TRUE(text.contains(") : 0 MHz")) << text;
+    EXPECT_FALSE(text.contains("unavailable this sample")) << text;
+}
+
 TEST_F(GpuSectionRenderTest, AHoveredChartShowsItsTooltip)
 {
     Domain::GPUPublication publication;
@@ -645,8 +666,9 @@ TEST_F(GpuSectionRenderTest, AnUnreadGpuReadingHasAnUnavailableBar)
         publication.capabilities = allSensors();
         addGpu(publication, "gpu0", "GPU");
         Domain::GPUSnapshot& snap = publication.snapshots[0];
-        // Every reading taken, the ones that can be a measured 0 at 0 (a clock of 0 is not a reading).
+        // Every reading taken and at 0, the power-gated clock's 0 MHz included (#3421).
         snap.utilizationPercent = 0.0;
+        snap.gpuClockMHz = 0;
         snap.memoryUtilPercent = 0.0;
         snap.memoryUsedBytes = 0;
         snap.temperatureC = 0;

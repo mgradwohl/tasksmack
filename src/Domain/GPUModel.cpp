@@ -76,6 +76,16 @@ template<typename T> [[nodiscard]] float sampleOrNaN(const GPUSnapshot& sample, 
 }
 
 /// A field's history value: NaN for a placeholder or a sample whose read of that field failed (#1111).
+///
+/// The one rule for every GPU field (#3421): its *Available flag alone says whether it was read, and a
+/// field that was read is drawn as it is, 0 included. A probe that can't tell a failed read from a 0
+/// clears the flag itself, so no value here means "unread":
+/// - Clock: 0 MHz is real (an engine power-gated: D3DKMT's Frequency 0; an idle i915/xe GT). Every
+///   probe clears gpuClockAvailable on a failed read (NVML, ROCm, DRM, D3DKMT) or a sleeping GPU.
+/// - Fan: 0 RPM/% is real (zero-RPM fans stop at idle); unread is fanSpeedAvailable false.
+/// - Power: 0 W is real; unread is powerAvailable false.
+/// - Temperature: no GPU runs at 0 °C, so the D3DKMT and DRM probes take a 0 as unread and clear
+///   temperatureAvailable there; Domain still reads only the flag.
 template<typename T> [[nodiscard]] float readingOrNaN(const GPUSnapshot& sample, T value, bool available)
 {
     return available ? sampleOrNaN(sample, value) : std::numeric_limits<float>::quiet_NaN();
@@ -201,14 +211,6 @@ using EngineClientsByGpu = std::unordered_map<std::string, std::vector<Platform:
     return next;
 }
 
-/// The GPU clock: NaN when the read failed or returned 0 MHz. A 0 is the probes' "couldn't read it"
-/// (DRM, and NVML on a suspended GPU), and the Clock NowBar already shows N/A for it (#995), so the
-/// line has a gap there too rather than diving to 0 (#1111).
-[[nodiscard]] float gpuClockOrNaN(const GPUSnapshot& sample)
-{
-    return readingOrNaN(sample, sample.gpuClockMHz, sample.gpuClockAvailable && sample.gpuClockMHz > 0);
-}
-
 /// The fan speed as a float: NaN when it couldn't be read, not 0.0F, so the chart shows a gap
 /// rather than a flat "0%" indistinguishable from an idle fan.
 [[nodiscard]] float fanSpeedOrNaN(const GPUSnapshot& sample)
@@ -228,7 +230,8 @@ GPUModel::HistorySample GPUModel::historySample(const GPUSnapshot& sample) noexc
         .memoryTotalBytes = sample.memoryAvailable ? sample.memoryTotalBytes : 0,
         .utilization = readingOrNaN(sample, sample.utilizationPercent, sample.utilizationAvailable),
         .memoryPercent = readingOrNaN(sample, sample.memoryUsedPercent, sample.memoryAvailable),
-        .gpuClock = gpuClockOrNaN(sample),
+        // A read 0 MHz is a power-gated engine, drawn at the floor; only an unread clock is a gap (#3421).
+        .gpuClock = readingOrNaN(sample, sample.gpuClockMHz, sample.gpuClockAvailable),
         .encoder = readingOrNaN(sample, sample.encoderUtilPercent, sample.encoderAvailable),
         .decoder = readingOrNaN(sample, sample.decoderUtilPercent, sample.decoderAvailable),
         .temperature = readingOrNaN(sample, sample.temperatureC, sample.temperatureAvailable),

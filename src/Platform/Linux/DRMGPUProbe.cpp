@@ -1446,11 +1446,12 @@ std::vector<GPUCounters> DRMGPUProbe::readGPUCounters()
             }
         }
 
-        // GPU frequency in MHz: i915's cardX/gt_cur_freq_mhz, or xe's device/tile0/gt0/freq0/cur_freq (#1268)
-        const uint64_t freqMhz = readSysfsUint64(clockPath(card));
-        if (freqMhz > 0)
+        // GPU frequency in MHz: i915's cardX/gt_cur_freq_mhz, or xe's device/tile0/gt0/freq0/cur_freq (#1268).
+        // A file that reads 0 is the GT idle at 0 MHz, a reading; only a missing or malformed file is
+        // unread this sample (#3421).
+        if (const auto freqMhz = readSysfsOptionalUint64(clockPath(card)))
         {
-            counter.gpuClockMHz = static_cast<uint32_t>(freqMhz);
+            counter.gpuClockMHz = static_cast<uint32_t>(*freqMhz);
         }
         else
         {
