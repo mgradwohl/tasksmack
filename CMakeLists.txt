@@ -564,6 +564,7 @@ set(TASKSMACK_HEADERS
     src/Domain/ProcessSecurity.h
     src/Domain/ISamplable.h
     src/Domain/PublicationSlot.h
+    src/Domain/Worker.h
     src/Domain/SharedHistory.h
     src/Domain/GPUSnapshot.h
     src/Domain/GPUModel.h

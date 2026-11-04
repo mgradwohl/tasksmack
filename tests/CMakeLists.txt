@@ -455,6 +455,7 @@ set(COMMON_TEST_SOURCES
     Domain/test_SamplingConfig.cpp
     Domain/test_HistorySeries.cpp
     Domain/test_LruMap.cpp
+    Domain/test_Worker.cpp # the background worker primitive (#3343)
     Domain/test_PidIndex.cpp
     Domain/test_ProcessIconCache.cpp
     # Linux desktop-entry icon lookup (#1800): pure std::filesystem, run on every platform
