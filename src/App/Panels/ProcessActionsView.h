@@ -391,8 +391,11 @@ class ProcessActionsView
     /// (holdPriorityRetry(), #3429): the two would race.
     [[nodiscard]] bool offersAuthenticateAndRetry() const noexcept
     {
-        return m_Retry.has_value() && !m_ActionRun.busy() &&
-               !(m_PriorityRetryHeld && m_Retry->action.kind == Platform::AuthorizedAction::Kind::SetPriority);
+        if (!m_Retry.has_value() || m_ActionRun.busy())
+        {
+            return false;
+        }
+        return !m_PriorityRetryHeld || m_Retry->action.kind != Platform::AuthorizedAction::Kind::SetPriority;
     }
 
     /// Whether the Priority card's Apply (or its retry) runs for this process now (#3429): "Authenticate
@@ -736,7 +739,7 @@ class ProcessActionsView
     /// administrator, after the password prompt (IProcessActions::runAuthorized(), #2308).
     void retryAuthorized()
     {
-        if (!offersAuthenticateAndRetry())
+        if (!m_Retry.has_value() || !offersAuthenticateAndRetry())
         {
             return;
         }
