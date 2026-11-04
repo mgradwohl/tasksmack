@@ -1695,6 +1695,37 @@ TEST(ProcessModelTest, BuilderPatternBackwardCompatibility)
     EXPECT_EQ(snaps[0].name, "legacy_proc");
 }
 
+// #3344: a rate's interval is between the two samples' acquisitions, taken as enumerate() returns, not when the
+// snapshots are computed: a socket-traffic read that takes 400 ms one time and 50 ms the next doesn't change it.
+TEST(ProcessModelTest, RatesDivideByTheTimeBetweenReadsNotByTheReadsThatFollow)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+    Platform::ProcessCounters first = makeCounter(100, "reader", 'R', 1000, 500);
+    first.readBytes = 1024 * 1024;
+    rawProbe->setCounters({first});
+    rawProbe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel::Clock::time_point now{};
+    auto socketReadTakes = std::chrono::milliseconds(400);
+    rawProbe->setOnSocketRead([&now, &socketReadTakes] { now += socketReadTakes; });
+    Domain::ProcessModel model(std::move(probe), [&now] { return now; });
+    model.refresh(); // read at 0 s; the socket read ends at 0.4 s
+
+    now = Domain::ProcessModel::Clock::time_point{std::chrono::seconds(1)};
+    socketReadTakes = std::chrono::milliseconds(50);
+    Platform::ProcessCounters second = makeCounter(100, "reader", 'R', 2000, 1000);
+    second.readBytes = 2 * 1024 * 1024;
+    rawProbe->setCounters({second});
+    rawProbe->setTotalCpuTime(200000);
+    model.refresh(); // read at 1 s; the socket read ends at 1.05 s
+
+    const auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    // 1 MB over the 1 s between the reads, not over the 0.65 s between the socket reads' ends (1.54 MB/s).
+    EXPECT_DOUBLE_EQ(snaps[0].ioReadBytesPerSec, 1024.0 * 1024.0);
+}
+
 TEST(ProcessModelTest, IoRatesCalculatedFromDeltas)
 {
     auto probe = std::make_unique<MockProcessProbe>();

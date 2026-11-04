@@ -340,6 +340,9 @@ void ProcessModel::refresh()
     const bool hadNetworkCounters = m_Probe->capabilities().hasNetworkCounters;
     auto currentCounters = m_Probe->enumerate();
     const std::uint64_t currentTotalCpuTime = m_Probe->totalCpuTime();
+    // When these counters were read (#3344): stamped here, not when the snapshots are computed, so the reads
+    // below (a sock_diag dump, an energy counter) and their varying latency stay out of every rate's interval.
+    const Clock::time_point acquiredAt = m_Now();
 
     // Per-process network bytes from per-connection readings: monotonic, so a connection closing or
     // being attributed late doesn't make a process's counter drop or jump (#1099). Probes that report
@@ -377,16 +380,18 @@ void ProcessModel::refresh()
             currentCounters, packageEnergy->energyUj, packageEnergy->maxRangeUj, packageEnergy->busyCpuTicks, packageEnergy->otherPackages);
     }
 
-    computeSnapshotsLocked(currentCounters, currentTotalCpuTime);
+    computeSnapshotsLocked(currentCounters, currentTotalCpuTime, acquiredAt);
 }
 
 void ProcessModel::updateFromCounters(const std::vector<Platform::ProcessCounters>& counters, std::uint64_t totalCpuTime)
 {
     std::scoped_lock const samplingLock(m_SamplingMutex);
-    computeSnapshotsLocked(counters, totalCpuTime);
+    computeSnapshotsLocked(counters, totalCpuTime, m_Now()); // counters handed in are taken as read now
 }
 
-void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCounters>& counters, std::uint64_t totalCpuTime)
+void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCounters>& counters,
+                                          std::uint64_t totalCpuTime,
+                                          Clock::time_point acquiredAt)
 {
     std::vector<ProcessSnapshot> newSnapshots;
     // When this model first listed each process, parallel to newSnapshots: the GPU merge needs it to
@@ -408,7 +413,7 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
     }
 
     const double maxSaneRate = m_MaxSaneNetworkRateBps.load(std::memory_order_relaxed);
-    const auto currentSampleTime = m_Now();
+    const Clock::time_point currentSampleTime = acquiredAt;
     double elapsedSeconds = 0.0;
     std::uint64_t timeDeltaUs = 0;
     if (m_HasPrevSampleTime)

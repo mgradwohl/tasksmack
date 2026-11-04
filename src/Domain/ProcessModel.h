@@ -367,8 +367,12 @@ class ProcessModel : public ISamplable
     std::shared_ptr<const ProcessRowHistory::Generation> m_RowHistory;
 
     // Helpers
-    /// Requires m_SamplingMutex held.
-    void computeSnapshotsLocked(const std::vector<Platform::ProcessCounters>& counters, std::uint64_t totalCpuTime);
+    /// Requires m_SamplingMutex held. @p acquiredAt is when @p counters were read (#3344): every rate's interval is
+    /// between two samples' acquisitions, so the reads that follow enumerate() (socket traffic, package energy)
+    /// and the computing itself don't change any rate's denominator.
+    void computeSnapshotsLocked(const std::vector<Platform::ProcessCounters>& counters,
+                                std::uint64_t totalCpuTime,
+                                Clock::time_point acquiredAt);
 
     /// For a carried-over process (ProcessCounters::heldOver, #3031), appends its last row to @p newSnapshots,
     /// taking the last generation into @p previousSnapshots the first time, and notes when its counters were
