@@ -450,5 +450,60 @@ TEST(UserGroupsTest, ABareNameTwoAccountsShareStaysItsOwnGroupInEitherOrder)
     }
 }
 
+// #3377 review: the Processes filter hides rows, not accounts. With PC\alice's process filtered out, a bare
+// alice could still be PC\alice's or CORP\alice's, so it keeps a group of its own, CORP's totals don't take
+// it, and no header is drawn for the hidden PC\alice; the labels still say both domains.
+TEST(UserGroupsTest, AFilteredOutAccountStillMakesABareNameAmbiguous)
+{
+    const std::vector<Domain::ProcessSnapshot> snapshots{
+        processOf(10, "PC", "alice", 5.0),
+        processOf(11, "CORP", "alice", 3.0),
+        process(12, "alice", 1.0, 100), // Its domain wasn't read
+    };
+    for (const bool ascending : {false, true})
+    {
+        for (const std::vector<std::size_t>& order : {std::vector<std::size_t>{1, 2}, std::vector<std::size_t>{2, 1}})
+        {
+            const std::vector<ProcessGrouping::Group> groups = userGroupsInOrder(snapshots, order, ascending);
+            ASSERT_EQ(groups.size(), 2U) << "order " << order[0] << ", ascending " << ascending;
+            EXPECT_EQ(groupKeyed(groups, "pc\\alice"), nullptr) << "PC\\alice's only process is filtered out";
+            const ProcessGrouping::Group* corp = groupKeyed(groups, "corp\\alice");
+            const ProcessGrouping::Group* bare = groupKeyed(groups, "alice");
+            ASSERT_NE(corp, nullptr);
+            ASSERT_NE(bare, nullptr);
+            EXPECT_EQ(corp->members, (std::vector<std::size_t>{1}));
+            EXPECT_DOUBLE_EQ(corp->totals.cpuPercent, 3.0);
+            EXPECT_EQ(corp->label, "CORP\\alice");
+            EXPECT_EQ(bare->members, (std::vector<std::size_t>{2}));
+        }
+    }
+}
+
+// #3377 review: with the one alice account's own process filtered out, a bare alice still joins that account
+// (its group, under its key), and nothing else changes.
+TEST(UserGroupsTest, ABareNameJoinsItsAccountWhenTheAccountsProcessesAreFilteredOut)
+{
+    const std::vector<Domain::ProcessSnapshot> snapshots{
+        processOf(10, "PC", "alice", 5.0),
+        process(11, "alice", 1.0, 100), // Its domain wasn't read
+        processOf(12, "PC", "bob", 2.0),
+    };
+    for (const bool ascending : {false, true})
+    {
+        for (const std::vector<std::size_t>& order : {std::vector<std::size_t>{1, 2}, std::vector<std::size_t>{2, 1}})
+        {
+            const std::vector<ProcessGrouping::Group> groups = userGroupsInOrder(snapshots, order, ascending);
+            ASSERT_EQ(groups.size(), 2U) << "order " << order[0] << ", ascending " << ascending;
+            const ProcessGrouping::Group* alice = groupKeyed(groups, "pc\\alice");
+            ASSERT_NE(alice, nullptr) << "order " << order[0] << ", ascending " << ascending;
+            EXPECT_EQ(alice->members, (std::vector<std::size_t>{1}));
+            EXPECT_EQ(alice->label, "alice");
+            const ProcessGrouping::Group* bob = groupKeyed(groups, "pc\\bob");
+            ASSERT_NE(bob, nullptr);
+            EXPECT_EQ(bob->members, (std::vector<std::size_t>{2}));
+        }
+    }
+}
+
 } // namespace
 } // namespace App::UserGrouping

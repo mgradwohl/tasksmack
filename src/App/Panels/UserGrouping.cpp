@@ -16,6 +16,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -231,54 +232,31 @@ std::vector<ProcessGrouping::Group> buildUserGroups(const std::vector<Domain::Pr
                                                     bool ascending)
 {
     using ProcessGrouping::Group;
+    // The accounts come from the whole generation, not from `order` (#3377 review): the filter hides rows,
+    // not accounts, so a process with no domain is as ambiguous with PC\alice's process filtered out as with
+    // it shown. Short names count ignoring ASCII case, as Windows compares them, so neither the table's order
+    // nor which spelling it meets first changes the answer.
+    std::unordered_set<std::string> accounts;                        // processAccountKey() of each with a domain
+    std::map<std::string_view, std::size_t, NameLess> accountsNamed; // short name -> how many accounts have it
+    std::map<std::string_view, std::string, NameLess> accountNamed;  // short name -> an account's key with it
+    for (const Domain::ProcessSnapshot& proc : snapshots)
+    {
+        if (proc.user.empty() || proc.userDomain.empty())
+        {
+            continue;
+        }
+        if (const auto [account, added] = accounts.insert(processAccountKey(proc)); added)
+        {
+            ++accountsNamed[proc.user];
+            accountNamed.try_emplace(proc.user, *account);
+        }
+    }
+    // Then the rows the table shows, in its order: a group only for an account with one of them.
     std::vector<Group> groups;
-    std::unordered_map<std::string, std::size_t> byKey; // processAccountKey() -> its group
-    // Each group's names as its lowest-numbered process spells them, whatever the table's order: its label.
+    std::unordered_map<std::string, std::size_t> byKey; // key -> its group
+    // Each group's names as its lowest-numbered member spells them, whatever the table's order: its label.
     std::vector<AccountLess::Names> names;
     std::vector<std::size_t> namedBy; // the snapshot index `names` came from
-    // Short names counted ignoring ASCII case, as Windows compares them (#3377 review): which spelling of an
-    // account the table meets first can't change which account a process with no domain joins.
-    std::map<std::string_view, std::size_t, NameLess> accountsNamed; // short name -> how many accounts with a domain have it
-    const auto groupOf = [&](std::size_t index) -> std::size_t
-    {
-        const Domain::ProcessSnapshot& proc = snapshots[index];
-        std::string key = processAccountKey(proc);
-        auto [slot, added] = byKey.try_emplace(key, groups.size());
-        if (added)
-        {
-            groups.push_back(Group{.key = std::move(key), .label = {}, .totals = {}, .members = {}});
-            names.emplace_back(proc.userDomain, proc.user);
-            namedBy.push_back(index);
-            if (!proc.user.empty() && !proc.userDomain.empty())
-            {
-                ++accountsNamed[proc.user];
-            }
-        }
-        else if (index < namedBy[slot->second])
-        {
-            names[slot->second] = AccountLess::Names{proc.userDomain, proc.user};
-            namedBy[slot->second] = index;
-        }
-        return slot->second;
-    };
-    // First the accounts the processes name with a domain (Windows), so one that names none can join one.
-    for (const std::size_t index : order)
-    {
-        if (index < snapshots.size() && !snapshots[index].user.empty() && !snapshots[index].userDomain.empty())
-        {
-            static_cast<void>(groupOf(index));
-        }
-    }
-    // A short name one account has, in any case -> its group. Linux's processes name no domain, so it is
-    // empty there and their groups stay keyed by the name as it is.
-    std::map<std::string_view, std::size_t, NameLess> soleAccountNamed;
-    for (std::size_t g = 0; g < groups.size(); ++g)
-    {
-        if (accountsNamed[names[g].second] == 1)
-        {
-            soleAccountNamed.emplace(names[g].second, g);
-        }
-    }
     for (const std::size_t index : order)
     {
         if (index >= snapshots.size())
@@ -286,33 +264,43 @@ std::vector<ProcessGrouping::Group> buildUserGroups(const std::vector<Domain::Pr
             continue;
         }
         const Domain::ProcessSnapshot& proc = snapshots[index];
-        std::size_t slot = 0;
-        if (const auto sole = soleAccountNamed.find(proc.user); proc.userDomain.empty() && sole != soleAccountNamed.end())
+        std::string key;
+        if (const auto sole = accountNamed.find(proc.user);
+            proc.userDomain.empty() && sole != accountNamed.end() && accountsNamed[proc.user] == 1)
         {
-            slot = sole->second; // Its domain wasn't read, and only one account has its name
+            key = sole->second; // Its domain wasn't read, and only one account has its name
         }
         else
         {
-            slot = groupOf(index);
+            key = processAccountKey(proc);
         }
-        Group& group = groups[slot];
+        auto [slot, added] = byKey.try_emplace(key, groups.size());
+        if (added)
+        {
+            groups.push_back(Group{.key = std::move(key), .label = {}, .totals = {}, .members = {}});
+            names.emplace_back(proc.userDomain, proc.user);
+            namedBy.push_back(index);
+        }
+        else if (index < namedBy[slot->second])
+        {
+            names[slot->second] = AccountLess::Names{proc.userDomain, proc.user};
+            namedBy[slot->second] = index;
+        }
+        Group& group = groups[slot->second];
         group.members.push_back(index);
         if (index < liveCount)
         {
             group.totals.add(proc);
         }
     }
-    // The short name, or DOMAIN\user when two groups share it, in any case (only a group with a domain gets
-    // one, so Linux's alice and Alice stay alice and Alice).
-    std::map<std::string_view, std::size_t, NameLess> groupsNamed;
-    for (const AccountLess::Names& account : names)
-    {
-        ++groupsNamed[account.second];
-    }
+    // The short name, or DOMAIN\user when two accounts in the generation share it, in any case (only a group
+    // with a domain gets one, so Linux's alice and Alice stay alice and Alice).
     for (std::size_t g = 0; g < groups.size(); ++g)
     {
         const auto& [domain, user] = names[g];
-        groups[g].label = !domain.empty() && groupsNamed[user] > 1 ? std::string(domain) + "\\" + std::string(user) : std::string(user);
+        const auto named = accountsNamed.find(user);
+        const bool shared = named != accountsNamed.end() && named->second > 1;
+        groups[g].label = !domain.empty() && shared ? std::string(domain) + "\\" + std::string(user) : std::string(user);
     }
     ProcessGrouping::sortGroups(groups, sortColumn, ascending);
     return groups;
