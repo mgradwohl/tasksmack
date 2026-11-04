@@ -16,8 +16,8 @@ run on any of the captured classes passes unless the code got slower.
 Each capture is a Google Benchmark JSON file (tools/bench.sh, or the heavy-checks
 benchmark-results artifact's perf-data/benchmark-current.json). For every benchmark (run_name) the
 output holds every entry of the capture with the largest median real_time for it, so its median,
-mean, stddev and cv stay consistent with each other. A benchmark missing or skipped in a capture
-is taken from the others. The output's context is the first capture's, plus "tasksmack_merged_from":
+mean, stddev and cv stay consistent with each other. A benchmark missing, skipped or errored (any
+entry with error_occurred) in a capture is taken from the others. The output's context is the first capture's, plus "tasksmack_merged_from":
 each capture's label (LABEL=, such as the heavy-checks run id; the file name without one), CPU MHz
 and how many benchmarks it supplied.
 
@@ -50,12 +50,16 @@ def merge(captures: list[tuple[str, dict]]) -> dict:
     slowest: dict[str, tuple[float, int]] = {}  # run_name -> (median ns, capture index)
     order: list[str] = []
     for index, (_, data) in enumerate(captures):
-        for entry in data.get("benchmarks", []):
+        entries = data.get("benchmarks", [])
+        # A capture whose run of a benchmark errored in any entry can't supply it: the regression checker gives an
+        # error precedence over the median, so copying that group would leave the benchmark uncomparable.
+        errored = {e.get("run_name") or e.get("name") for e in entries if e.get("error_occurred")}
+        for entry in entries:
             name = entry.get("run_name") or entry.get("name")
             if name not in slowest and name not in order:
                 order.append(name)
             median = median_ns(entry)
-            if median is not None and (name not in slowest or median > slowest[name][0]):
+            if median is not None and name not in errored and (name not in slowest or median > slowest[name][0]):
                 slowest[name] = (median, index)
 
     supplied = [0] * len(captures)

@@ -58,6 +58,18 @@ class MergeBenchmarkBaselinesTest(unittest.TestCase):
         self.assertEqual(medians, {"BM_A": 5.0, "BM_B": 7.0, "BM_C": 9.0})
         self.assertFalse(any(e.get("skipped") for e in merged["benchmarks"]), "the measured one, not the skip")
 
+    def test_a_capture_whose_run_errored_never_supplies_that_benchmark(self) -> None:
+        # The slower capture's median is 200 ns, but one of its entries errored: the clean 100 ns capture supplies it.
+        errored = capture(2600, {"BM_A": (200.0, "ns"), "BM_B": (3.0, "ns")})
+        errored["benchmarks"].append({"name": "BM_A", "run_name": "BM_A", "error_occurred": True, "error_message": "boom"})
+        clean = capture(3240, {"BM_A": (100.0, "ns"), "BM_B": (2.0, "ns")})
+        merged = merge_benchmark_baselines.merge([("errored", errored), ("clean", clean)])
+        bm_a = [e for e in merged["benchmarks"] if e["run_name"] == "BM_A"]
+        self.assertFalse(any(e.get("error_occurred") for e in bm_a), "no error row copied into the baseline")
+        self.assertEqual([e["real_time"] for e in bm_a if e.get("aggregate_name") == "median"], [100.0])
+        medians = {e["run_name"]: e["real_time"] for e in merged["benchmarks"] if e.get("aggregate_name") == "median"}
+        self.assertEqual(medians["BM_B"], 3.0, "the errored capture still supplies the benchmarks it ran cleanly")
+
     def test_a_benchmark_no_capture_measured_stays_skipped(self) -> None:
         merged = merge_benchmark_baselines.merge([("only", capture(2600, {"BM_A": (1.0, "ns")}, skipped=("BM_GPU",)))])
         gpu = [e for e in merged["benchmarks"] if e["run_name"] == "BM_GPU"]
