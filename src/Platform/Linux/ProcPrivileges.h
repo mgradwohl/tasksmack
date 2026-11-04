@@ -73,6 +73,25 @@ inline constexpr unsigned CAP_SYS_NICE_BIT = 23;       // ioprio_set(IOPRIO_CLAS
     return capEff.has_value() && (((*capEff >> CAP_SYS_NICE_BIT) & 1U) != 0 || ((*capEff >> CAP_SYS_ADMIN_BIT) & 1U) != 0);
 }
 
+/// The thread group (process) a /proc/<id>/status belongs to: its "Tgid:" line (#3219). For a thread's ID it
+/// names the process the thread is in, which is what a per-process rule must compare. Nullopt when absent or not
+/// a positive number.
+[[nodiscard]] inline std::optional<std::int32_t> parseTgid(std::string_view status) noexcept
+{
+    const std::optional<std::string_view> value = ProcStatusSecurity::fieldValue(status, "Tgid");
+    if (!value.has_value() || value->empty())
+    {
+        return std::nullopt;
+    }
+    std::int32_t tgid = 0;
+    const auto [ptr, ec] = std::from_chars(value->data(), value->data() + value->size(), tgid);
+    if (ec != std::errc{} || ptr != value->data() + value->size() || tgid <= 0)
+    {
+        return std::nullopt;
+    }
+    return tgid;
+}
+
 /// Whether @p capEff (parseCapEff() of TaskSmack's own status) lets sched_setscheduler() set a real-time policy
 /// (SCHED_FIFO, SCHED_RR) at any priority: CAP_SYS_NICE (sched(7)). Unknown is no. Without it a user may still
 /// set one up to their RLIMIT_RTPRIO, so the dialog offers real time either way (#3219).

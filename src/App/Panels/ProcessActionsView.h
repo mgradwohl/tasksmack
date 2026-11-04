@@ -19,6 +19,7 @@
 #include "App/Panels/ProcessSchedPolicyDialog.h"
 #include "App/Panels/ProcessWaitChainDialog.h"
 #include "Platform/CpuAffinity.h"
+#include "Platform/CurrentProcess.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/SchedPolicy.h"
 #include "ProcessDetailsPanel_ActionHelpers.h"
@@ -776,10 +777,11 @@ class ProcessActionsView
         ResultFormat format;
     };
     std::optional<Retry> m_Retry;
-    std::uint64_t m_Generation = 0;               // bumped by onSelectionChanged() (#2389)
-    std::uint64_t m_RunGeneration = 0;            // m_Generation when the running action started
-    ProcessAffinityDialog m_AffinityDialog;       // Set affinity... (#1887)
-    ProcessSchedPolicyDialog m_SchedPolicyDialog; // Set scheduling policy... (#3086)
+    std::uint64_t m_Generation = 0;                       // bumped by onSelectionChanged() (#2389)
+    std::uint64_t m_RunGeneration = 0;                    // m_Generation when the running action started
+    ProcessAffinityDialog m_AffinityDialog;               // Set affinity... (#1887)
+    ProcessSchedPolicyDialog m_SchedPolicyDialog;         // Set scheduling policy... (#3086)
+    std::int32_t m_OwnPid = Platform::currentProcessId(); // TaskSmack's own PID, taken once: never real time (#3219)
     // The dialog's CPU layout, read once on its worker (#3182). Its worker uses the panel's IProcessActions
     // until it finishes: the panel declares this view after its actions, so its destructor's wait goes first.
     AffinityLayoutRead m_AffinityLayout;

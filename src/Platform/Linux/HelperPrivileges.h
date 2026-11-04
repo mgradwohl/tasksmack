@@ -9,7 +9,7 @@
 //                        A scheduling policy only to Normal, Batch or Idle (#3086) or real-time FIFO or round
 //                        robin at 1 to 99 (#3219), which the protocol decoder, LinuxProcessControl and the
 //                        seccomp filter enforce (the priority is checked by the first two, the filter can't
-//                        read it); real time never for the helper itself, and Deadline stays refused
+//                        read it); real time never for the helper or TaskSmack, and Deadline stays refused
 //   CAP_SYS_PTRACE       ptrace read access: another user's environ, maps, fd links, fdinfo and
 //                        smaps_rollup, and under hidepid its task stat files (ReadEnvironment, ReadModules,
 //                        ReadOpenFiles, ReadConnections, ReadMemoryRollup, ReadThreads)

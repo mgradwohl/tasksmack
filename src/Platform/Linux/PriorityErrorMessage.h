@@ -92,7 +92,8 @@ namespace Platform
 /// EPERM: the process belongs to another user, or it is leaving the Idle policy, and TaskSmack lacks
 /// CAP_SYS_NICE (an unprivileged thread may leave SCHED_IDLE only within its RLIMIT_NICE, usually 0). For real
 /// time, also a priority above the caller's RLIMIT_RTPRIO (0 unless the user is granted one, as an audio group
-/// often is). EINVAL: the kernel refused the policy or priority (a kernel built without it).
+/// often is), or a cgroup with RT group scheduling that gives real time no runtime, which refuses even root. EINVAL: the kernel refused the
+/// policy or priority (a kernel built without it).
 [[nodiscard]] inline std::string schedPolicyErrorMessage(int err, SchedPolicy policy, std::int32_t rtPriority, std::int32_t pid)
 {
     const auto text = schedPolicyText(policy, static_cast<std::uint32_t>(rtPriority));
@@ -101,8 +102,9 @@ namespace Platform
     case EPERM:
         if (isRealtimeSchedPolicy(policy))
         {
-            return std::format("Permission denied: setting process {} to the real-time {} policy needs root or CAP_SYS_NICE, or an "
-                               "RLIMIT_RTPRIO of at least {} for its user.",
+            return std::format("Permission denied: setting process {} to the real-time {} policy needs root or CAP_SYS_NICE when it "
+                               "belongs to another user; for your own, CAP_SYS_NICE or an RLIMIT_RTPRIO of at least {}. A cgroup "
+                               "that gives real time no runtime (RT group scheduling, cpu.rt_runtime_us 0) refuses it even as root.",
                                pid,
                                text.view(),
                                rtPriority);

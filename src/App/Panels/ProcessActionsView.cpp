@@ -2,7 +2,6 @@
 
 #include "AuthorizeWording.h"
 #include "Platform/CpuAffinity.h"
-#include "Platform/CurrentProcess.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/SchedPolicy.h"
 #include "ProcessActionConfirm.h"
@@ -96,7 +95,7 @@ void ProcessActionsView::renderAnalyzeWaitChainButton(Platform::IProcessActions*
     if (pressed && !disabled)
     {
         // The process is captured now; the dialog reads and names only it.
-        m_WaitChainDialog->open(actions, target, processName, Platform::currentProcessId());
+        m_WaitChainDialog->open(actions, target, processName, m_OwnPid);
     }
     ImGui::SetItemTooltip("%s", WaitChainDetail::ANALYZE_WAIT_CHAIN_TOOLTIP);
 }
@@ -273,7 +272,7 @@ void ProcessActionsView::renderSetSchedPolicyButton(const Platform::ProcessActio
                                  current.policy,
                                  current.rtPriority,
                                  {
-                                     .ownPid = Platform::currentProcessId(), // never offered real time (#3219)
+                                     .ownPid = m_OwnPid, // never offered real time (#3219)
                                      .realtimeNeedsNoPassword = capabilities.canSetRealtimeSchedPolicy,
                                  });
     }

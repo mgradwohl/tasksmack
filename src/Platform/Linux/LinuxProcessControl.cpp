@@ -17,6 +17,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <array>
 #include <cerrno>
 #include <charconv>
@@ -291,6 +292,14 @@ using LinuxProcessDetail::verifyIdentity;
 {
     const std::optional<std::string> status = readSmallFile("/proc/self/status");
     return ProcPrivileges::canSetRealtimeSchedPolicy(status ? ProcPrivileges::parseCapEff(*status) : std::nullopt);
+}
+
+/// The process `id` (a PID, or a thread's TID) belongs to, as /proc/<id>/status names it (#3219); `id` itself
+/// when that can't be read (it has exited, and the identity check will say so).
+[[nodiscard]] std::int32_t threadGroupOf(std::int32_t id)
+{
+    const std::optional<std::string> status = readSmallFile(std::format("/proc/{}/status", id));
+    return (status ? ProcPrivileges::parseTgid(*status) : std::nullopt).value_or(id);
 }
 
 /// Whether thread `tid` is still in `pid`'s thread group. A TID belongs to one task at a time, so if
@@ -687,6 +696,7 @@ LinuxProcessControl::LinuxProcessControl(const LinuxProcessSyscalls& syscalls, s
     : m_Syscalls(syscalls),
       m_CanSetRealtimeIoPriority(ownProcessCanSetRealtimeIo()),
       m_CanSetRealtimeSchedPolicy(ownProcessCanSetRealtimeSched()),
+      m_NoRealtimePids{static_cast<std::int32_t>(::getpid())},
       m_Efficiency(std::move(efficiency))
 {
     if (m_Syscalls.currentNice == nullptr)
@@ -1168,13 +1178,23 @@ ProcessActionResult LinuxProcessControl::setSchedPolicy(const ProcessTarget& tar
     {
         return ProcessActionResult::error(*refused);
     }
-    // Never real time for this process itself (#3219): TaskSmack's UI thread, or the root helper, spinning at a
-    // real-time priority could starve the desktop the user needs to undo it.
-    if (isRealtimeSchedPolicy(policy) && target.pid == ::getpid())
+    // Never real time for this process or the helper's client, TaskSmack (#3219): its UI thread, or the root helper,
+    // spinning at a real-time priority could starve the desktop the user needs to undo it. Compared by thread group,
+    // since one of the process's thread IDs names the same process and every one of its threads would be changed.
+    if (isRealtimeSchedPolicy(policy))
     {
-        const std::string self = std::format("PID {} is this process, which TaskSmack never runs under a real-time policy", target.pid);
-        spdlog::info("Not setting scheduling policy: {}", self);
-        return ProcessActionResult::error(self);
+        const std::int32_t process = threadGroupOf(target.pid);
+        if (std::ranges::find(m_NoRealtimePids, process) != m_NoRealtimePids.end())
+        {
+            const std::string self =
+                process == target.pid
+                    ? std::format("PID {} is TaskSmack (or its helper), which never runs under a real-time policy", target.pid)
+                    : std::format("PID {} is a thread of PID {}, TaskSmack (or its helper), which never runs under a real-time policy",
+                                  target.pid,
+                                  process);
+            spdlog::info("Not setting scheduling policy: {}", self);
+            return ProcessActionResult::error(self);
+        }
     }
     if (m_Syscalls.setScheduler == nullptr)
     {

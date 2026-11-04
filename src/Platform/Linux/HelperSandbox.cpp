@@ -539,23 +539,30 @@ std::vector<sock_filter> program([[maybe_unused]] Mode mode, [[maybe_unused]] pi
         code.blockFor(
             call, {load(argLow(0)), jump(BPF_JMP | BPF_JEQ | BPF_K, static_cast<std::uint32_t>(self), 0, 1), ret(ALLOW), ret(fail(EPERM))});
     }
-    // sched_setscheduler: Set scheduling policy, to SCHED_OTHER, SCHED_BATCH or SCHED_IDLE (#3086) or the real-time
-    // SCHED_FIFO or SCHED_RR (#3219), the five the broker protocol's decoder and LinuxProcessControl hold it to, each
-    // with or without SCHED_RESET_ON_FORK (kept when the thread already had it), which is masked off before the
-    // compare. Real time is acceptable here: the decoder and LinuxProcessControl both check the priority (1 to 99),
-    // refuse the helper's own process, the UI warns and confirms first, and the kernel's RT throttling still holds
-    // real-time tasks to sched_rt_runtime_us of each period. The priority is behind a pointer the filter can't read.
+    // sched_setscheduler: Set scheduling policy, to SCHED_OTHER, SCHED_BATCH or SCHED_IDLE (#3086) for any thread, or the
+    // real-time SCHED_FIFO or SCHED_RR (#3219) for any thread but the helper's own, the five the broker protocol's
+    // decoder and LinuxProcessControl hold it to, each with or without SCHED_RESET_ON_FORK (kept when the thread already
+    // had it), which is masked off before the compare. Real time is acceptable here: the decoder and LinuxProcessControl
+    // both check the priority (1 to 99) and refuse real time for the helper and its client, TaskSmack; the UI warns and
+    // confirms first; and the kernel's RT throttling still holds real-time tasks to sched_rt_runtime_us of each period.
+    // The filter itself refuses real time for pid 0 (the caller) and the helper's own PID, so code run in the helper by
+    // a bug can't make the helper real time either; it can't see the priority, which is behind a pointer.
     // SCHED_DEADLINE and any other value fail as permission denied would.
     constexpr auto RESET = static_cast<std::uint32_t>(SCHED_RESET_ON_FORK);
     code.blockFor(SYS_sched_setscheduler,
                   {
                       load(argLow(1)),
                       statement(BPF_ALU | BPF_AND | BPF_K, ~RESET),
-                      jump(BPF_JMP | BPF_JEQ | BPF_K, static_cast<std::uint32_t>(SCHED_OTHER), 5, 0),
-                      jump(BPF_JMP | BPF_JEQ | BPF_K, static_cast<std::uint32_t>(SCHED_BATCH), 4, 0),
-                      jump(BPF_JMP | BPF_JEQ | BPF_K, static_cast<std::uint32_t>(SCHED_IDLE), 3, 0),
-                      jump(BPF_JMP | BPF_JEQ | BPF_K, static_cast<std::uint32_t>(SCHED_FIFO), 2, 0),
+                      jump(BPF_JMP | BPF_JEQ | BPF_K, static_cast<std::uint32_t>(SCHED_OTHER), 9, 0), // to ALLOW
+                      jump(BPF_JMP | BPF_JEQ | BPF_K, static_cast<std::uint32_t>(SCHED_BATCH), 8, 0),
+                      jump(BPF_JMP | BPF_JEQ | BPF_K, static_cast<std::uint32_t>(SCHED_IDLE), 7, 0),
+                      jump(BPF_JMP | BPF_JEQ | BPF_K, static_cast<std::uint32_t>(SCHED_FIFO), 2, 0), // to the pid check
                       jump(BPF_JMP | BPF_JEQ | BPF_K, static_cast<std::uint32_t>(SCHED_RR), 1, 0),
+                      ret(fail(EPERM)),
+                      // Real time: not for the caller (pid 0) or the helper itself.
+                      load(argLow(0)),
+                      jump(BPF_JMP | BPF_JEQ | BPF_K, 0, 1, 0),
+                      jump(BPF_JMP | BPF_JEQ | BPF_K, static_cast<std::uint32_t>(self), 0, 1),
                       ret(fail(EPERM)),
                       ret(ALLOW),
                   });

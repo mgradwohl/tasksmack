@@ -87,9 +87,11 @@ class ProcessSchedPolicyDialog
     /// Asks for the dialog for @p target (named @p name), now under @p current at real-time priority
     /// @p currentRtPriority; it opens on the next render(). A policy the dialog offers is chosen as @p current has it:
     /// Normal, Batch or Idle, or (#3219) FIFO or RR with the slider at @p currentRtPriority, so Apply re-applies what
-    /// the process already runs under. A process under Deadline, or one not read, opens with nothing chosen, so Apply
-    /// waits for a choice: preselecting Normal there would make one press of Apply take it off Deadline without the
-    /// user having picked that. The slider starts at DEFAULT_REALTIME_PRIORITY for a process not on real time.
+    /// the process already runs under. A process under Deadline, one not read, or one on FIFO or RR whose priority
+    /// wasn't read (@p currentRtPriority 0, which real time never has) opens with nothing chosen, so Apply waits for a
+    /// choice: preselecting Normal there would make one press of Apply take it off Deadline, and preselecting FIFO 1
+    /// would silently lower it to the least real time, without the user having picked that. The slider starts at
+    /// DEFAULT_REALTIME_PRIORITY for a process not on real time, or whose priority wasn't read.
     void open(Platform::ProcessTarget target,
               std::string name,
               Platform::SchedPolicy current,
@@ -190,6 +192,7 @@ class ProcessSchedPolicyDialog
     std::optional<Platform::SchedPolicy> m_Choice;
     std::int32_t m_RtPriority = DEFAULT_REALTIME_PRIORITY;
     bool m_OwnProcess = false;              // TaskSmack itself: never real time
+    bool m_CurrentRtPriorityUnread = false; // On FIFO or RR at a priority not read (0): nothing chosen
     bool m_RealtimeNeedsNoPassword = false; // As SchedPolicyDialogOptions has it
     bool m_Confirming = false;              // The real-time confirm step is showing
     ImVec2 m_LastWorkSize;                  // For UI::Widgets::centerNextDialog()

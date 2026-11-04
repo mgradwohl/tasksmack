@@ -34,6 +34,7 @@
 #include <format>
 #include <fstream>
 #include <functional>
+#include <future>
 #include <iterator>
 #include <limits>
 #include <map>
@@ -2204,10 +2205,53 @@ TEST_F(LinuxProcessActionsFaultTest, RealtimeForThisProcessIsRefusedBeforeTheCal
         const ProcessActionResult refused = m_Actions.setSchedPolicy(ownTarget(), policy, 50);
         EXPECT_FALSE(refused.success);
         EXPECT_FALSE(refused.permissionDenied) << "no password helps: the helper refuses it too";
-        EXPECT_TRUE(refused.errorMessage.contains("is this process")) << refused.errorMessage;
+        EXPECT_TRUE(refused.errorMessage.contains("never runs under a real-time policy")) << refused.errorMessage;
     }
     EXPECT_EQ(plan().setCalls, 0);
     EXPECT_TRUE(m_Actions.setSchedPolicy(ownTarget(), SchedPolicy::Batch).success);
+}
+
+// #3219: one of this process's thread IDs names this process too (and every thread would be changed), so it is
+// refused by its thread group, not let through because the TID isn't getpid().
+TEST_F(LinuxProcessActionsFaultTest, RealtimeForAThreadOfThisProcessIsRefused)
+{
+    std::promise<pid_t> started;
+    std::promise<void> done;
+    std::thread worker(
+        [&started, finished = done.get_future()]() mutable
+        {
+            started.set_value(::gettid());
+            finished.wait();
+        });
+    const pid_t tid = started.get_future().get();
+    ASSERT_NE(tid, ::getpid());
+    std::ifstream stat(std::format("/proc/self/task/{}/stat", tid));
+    const std::string line((std::istreambuf_iterator<char>(stat)), std::istreambuf_iterator<char>());
+    const ProcessTarget thread{.pid = static_cast<std::int32_t>(tid), .startTimeTicks = ProcParsing::parseStatStartTime(line).value_or(0)};
+    const ProcessActionResult refused = m_Actions.setSchedPolicy(thread, SchedPolicy::RoundRobin, 10);
+    done.set_value();
+    worker.join();
+    EXPECT_FALSE(refused.success);
+    EXPECT_FALSE(refused.permissionDenied);
+    EXPECT_TRUE(refused.errorMessage.contains(std::format("is a thread of PID {}", ::getpid()))) << refused.errorMessage;
+    EXPECT_EQ(plan().setCalls, 0);
+}
+
+// #3219: the helper adds its client, TaskSmack, to the processes never set real time (refuseRealtimeFor()); the
+// time-sharing policies stay allowed for it.
+TEST_F(LinuxProcessActionsFaultTest, RealtimeForTheHelpersClientIsRefused)
+{
+    const SleepingChild client;
+    ASSERT_TRUE(client.started());
+    ASSERT_TRUE(m_Actions.setSchedPolicy(client.target(), SchedPolicy::Fifo, 99).success) << "not protected yet";
+    plan() = FaultPlan{};
+    m_Actions.refuseRealtimeFor(client.target().pid);
+    const ProcessActionResult refused = m_Actions.setSchedPolicy(client.target(), SchedPolicy::Fifo, 99);
+    EXPECT_FALSE(refused.success);
+    EXPECT_FALSE(refused.permissionDenied);
+    EXPECT_TRUE(refused.errorMessage.contains("TaskSmack (or its helper)")) << refused.errorMessage;
+    EXPECT_EQ(plan().setCalls, 0);
+    EXPECT_TRUE(m_Actions.setSchedPolicy(client.target(), SchedPolicy::Batch).success);
 }
 
 // #3086, #3219: Deadline, an unread policy and a priority the policy doesn't take are refused before
@@ -2259,6 +2303,8 @@ TEST_F(LinuxProcessActionsFaultTest, SchedPolicyErrorsSayWhy)
     EXPECT_TRUE(realtimeDenied.permissionDenied) << "the helper may: Authenticate and retry";
     EXPECT_TRUE(realtimeDenied.errorMessage.contains("CAP_SYS_NICE")) << realtimeDenied.errorMessage;
     EXPECT_TRUE(realtimeDenied.errorMessage.contains("RLIMIT_RTPRIO of at least 50")) << realtimeDenied.errorMessage;
+    EXPECT_TRUE(realtimeDenied.errorMessage.contains("another user")) << realtimeDenied.errorMessage;
+    EXPECT_TRUE(realtimeDenied.errorMessage.contains("cpu.rt_runtime_us")) << realtimeDenied.errorMessage;
     EXPECT_TRUE(realtimeDenied.errorMessage.contains("FIFO 50")) << realtimeDenied.errorMessage;
     plan().setErrno = EINVAL;
     const ProcessActionResult realtimeInvalid = m_Actions.setSchedPolicy(child.target(), SchedPolicy::RoundRobin, 7);

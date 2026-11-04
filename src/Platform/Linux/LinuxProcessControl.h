@@ -140,6 +140,13 @@ class LinuxProcessControl : public IProcessActions
     LinuxProcessControl(LinuxProcessControl&&) noexcept;
     LinuxProcessControl& operator=(LinuxProcessControl&&) noexcept;
 
+    /// Adds @p pid to the processes setSchedPolicy() never sets real time (#3219): this process always is; the helper
+    /// adds its client, TaskSmack, whose PID it has from its socket's peer credentials.
+    void refuseRealtimeFor(std::int32_t pid)
+    {
+        m_NoRealtimePids.push_back(pid);
+    }
+
     [[nodiscard]] ProcessActionCapabilities actionCapabilities() const override;
     [[nodiscard]] ProcessActionResult terminate(const ProcessTarget& target) override;
     [[nodiscard]] ProcessActionResult kill(const ProcessTarget& target) override;
@@ -177,6 +184,7 @@ class LinuxProcessControl : public IProcessActions
     LinuxProcessSyscalls m_Syscalls;
     bool m_CanSetRealtimeIoPriority = false;        // CAP_SYS_NICE or CAP_SYS_ADMIN, read at construction (#1540)
     bool m_CanSetRealtimeSchedPolicy = false;       // CAP_SYS_NICE, read at construction (#3219)
+    std::vector<std::int32_t> m_NoRealtimePids;     // Never set real time, by thread group: this process, and the helper's client
     std::shared_ptr<EfficiencyMemory> m_Efficiency; // behind a pointer: shared (#3330), and its mutex is immovable
 };
 

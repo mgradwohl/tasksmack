@@ -86,11 +86,16 @@ void ProcessSchedPolicyDialog::open(Platform::ProcessTarget target,
     m_Current = current;
     m_OwnProcess = options.ownPid > 0 && target.pid == options.ownPid;
     m_RealtimeNeedsNoPassword = options.realtimeNeedsNoPassword;
-    // A real-time process opens at its own priority; anything else at the middle of the range.
-    m_RtPriority = Platform::isRealtimeSchedPolicy(current) ? clampRtPriority(currentRtPriority) : DEFAULT_REALTIME_PRIORITY;
-    // Only a policy the dialog offers is chosen for the user; see open()'s comment in the header.
+    // A real-time process opens at its own priority; anything else, or one whose priority wasn't read (0), at the middle.
+    m_CurrentRtPriorityUnread = Platform::isRealtimeSchedPolicy(current) && currentRtPriority == 0;
+    m_RtPriority = Platform::isRealtimeSchedPolicy(current) && !m_CurrentRtPriorityUnread ? clampRtPriority(currentRtPriority)
+                                                                                          : DEFAULT_REALTIME_PRIORITY;
+    // Only a policy the dialog offers, at a priority it read, is chosen for the user; see open()'s comment in the header.
     m_Choice = std::nullopt;
-    choose(current);
+    if (!m_CurrentRtPriorityUnread)
+    {
+        choose(current);
+    }
     m_Confirming = false;
     m_ShowRequested = true;
     m_DismissRequested = false; // a dismiss() the last dialog never consumed must not close this one
@@ -170,11 +175,18 @@ std::optional<SchedPolicySetting> ProcessSchedPolicyDialog::render()
 
     const auto& theme = UI::Theme::get();
     const bool chosen = canApply();
-    const UI::Widgets::ButtonFills applyFills{
-        .resting = theme.scheme().successButton,
-        .hovered = theme.scheme().successButtonHovered,
-        .pressed = theme.scheme().successButtonActive,
-    };
+    // Set at the real-time confirm step is drawn in the danger colour, as Kill's and End process tree's confirms are:
+    // it is the consequential choice there, not the safe default (#3219).
+    const UI::Widgets::ButtonFills applyFills = confirming ? UI::Widgets::ButtonFills{
+                                                                 .resting = theme.scheme().dangerButton,
+                                                                 .hovered = theme.scheme().dangerButtonHovered,
+                                                                 .pressed = theme.scheme().dangerButtonActive,
+                                                             }
+                                                           : UI::Widgets::ButtonFills{
+                                                                 .resting = theme.scheme().successButton,
+                                                                 .hovered = theme.scheme().successButtonHovered,
+                                                                 .pressed = theme.scheme().successButtonActive,
+                                                             };
     const UI::Widgets::DialogFooterButton applyButton{
         .label = confirming ? SET_LABEL : APPLY_LABEL,
         .fills = &applyFills,
@@ -240,6 +252,13 @@ void ProcessSchedPolicyDialog::renderChoices()
                            static_cast<int>(unoffered.size()),
                            unoffered.data());
     }
+    if (m_CurrentRtPriorityUnread)
+    {
+        ImGui::TextColored(theme.scheme().textWarning,
+                           ICON_FA_TRIANGLE_EXCLAMATION "  It runs under %s now, at a real-time priority TaskSmack couldn't read. Choose a "
+                                                        "policy, and for real time a priority, below.",
+                           m_Current == Platform::SchedPolicy::Fifo ? "FIFO" : "RR");
+    }
     ImGui::Spacing();
     for (const SchedPolicyChoice& option : SCHED_POLICY_CHOICES)
     {
@@ -304,6 +323,10 @@ void ProcessSchedPolicyDialog::renderConfirmBody(const SchedPolicySetting& chose
     ImGui::TextUnformatted(question.c_str());
     ImGui::TextUnformatted("Every thread runs ahead of every normal process until it blocks or yields. If it spins, the desktop may "
                            "stop responding until RT throttling lets it through; Back returns to the choices.");
+    if (!m_RealtimeNeedsNoPassword)
+    {
+        ImGui::TextColored(theme.scheme().textMuted, "%s", REALTIME_MAY_BE_REFUSED);
+    }
     ImGui::PopTextWrapPos();
 }
 

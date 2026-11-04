@@ -71,6 +71,22 @@ TEST(ProcessSchedPolicyDialogTest, ARealtimeProcessOpensWithItsPolicyAndPriority
     EXPECT_EQ(dialog.rtPriority(), 20) << "the slider keeps its place";
 }
 
+// #3219: a FIFO or RR process whose priority wasn't read (0, which real time never has) opens with nothing chosen
+// and the slider at 50, rather than preselecting priority 1, so the user picks explicitly.
+TEST(ProcessSchedPolicyDialogTest, ARealtimeProcessWithAnUnreadPriorityOpensWithNothingChosen)
+{
+    for (const SchedPolicy current : {SchedPolicy::Fifo, SchedPolicy::RoundRobin})
+    {
+        ProcessSchedPolicyDialog dialog;
+        dialog.open({.pid = 42, .startTimeTicks = 7}, "audio", current, 0);
+        EXPECT_FALSE(dialog.choice().has_value()) << static_cast<int>(current);
+        EXPECT_FALSE(dialog.canApply());
+        EXPECT_EQ(dialog.rtPriority(), DEFAULT_REALTIME_PRIORITY);
+        dialog.choose(current);
+        EXPECT_EQ(dialog.setting(), (SchedPolicySetting{.policy = current, .rtPriority = DEFAULT_REALTIME_PRIORITY}));
+    }
+}
+
 // #3219: TaskSmack's own process is never offered real time; the time-sharing policies stay.
 TEST(ProcessSchedPolicyDialogTest, TaskSmacksOwnProcessIsNeverOfferedRealtime)
 {
@@ -256,6 +272,8 @@ TEST_F(ProcessSchedPolicyDialogRenderTest, RealtimeWarnsAndAsksToConfirmBeforeIt
     static_cast<void>(frame(dialog, &text));
     EXPECT_TRUE(text.contains("Set audio (PID 42) to RR 30?")) << text;
     EXPECT_TRUE(text.contains("round robin policy at priority 30")) << text;
+    EXPECT_TRUE(text.contains("RLIMIT_RTPRIO")) << "the may-be-refused note is repeated at the confirm: " << text;
+    EXPECT_TRUE(text.contains("Authenticate and retry")) << text;
 
     press("Back", false);
     EXPECT_FALSE(frame(dialog).has_value());
@@ -289,6 +307,7 @@ TEST_F(ProcessSchedPolicyDialogRenderTest, EscapeAtTheConfirmStepCancels)
     ASSERT_TRUE(dialog.confirming());
     static_cast<void>(frame(dialog, &text));
     EXPECT_TRUE(text.contains("Set audio (PID 42) to FIFO 60?")) << text;
+    EXPECT_FALSE(text.contains("RLIMIT_RTPRIO")) << "no may-be-refused note where real time needs no password: " << text;
     ImGui::GetIO().AddKeyEvent(ImGuiKey_Escape, true);
     EXPECT_FALSE(frame(dialog).has_value());
     ImGui::GetIO().AddKeyEvent(ImGuiKey_Escape, false);
@@ -297,6 +316,24 @@ TEST_F(ProcessSchedPolicyDialogRenderTest, EscapeAtTheConfirmStepCancels)
         EXPECT_FALSE(frame(dialog).has_value());
     }
     EXPECT_FALSE(dialog.isPending());
+}
+
+// #3219: a real-time process whose priority wasn't read says so, and Apply waits for a choice.
+TEST_F(ProcessSchedPolicyDialogRenderTest, ARealtimeProcessWithAnUnreadPriorityIsNamedAndApplyWaits)
+{
+    ProcessSchedPolicyDialog dialog;
+    dialog.open({.pid = 42, .startTimeTicks = 7}, "audio", SchedPolicy::Fifo, 0);
+    std::string text;
+    static_cast<void>(frame(dialog));
+    static_cast<void>(frame(dialog, &text));
+    EXPECT_TRUE(text.contains("real-time priority TaskSmack couldn't read")) << text;
+    press("Apply", true);
+    for (int i = 0; i < 3; ++i)
+    {
+        EXPECT_FALSE(frame(dialog).has_value());
+    }
+    EXPECT_FALSE(dialog.confirming());
+    EXPECT_TRUE(dialog.isPending());
 }
 
 // #3219: TaskSmack's own process draws FIFO and RR disabled, with the reason.
