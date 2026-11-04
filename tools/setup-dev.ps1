@@ -47,7 +47,7 @@ param(
     # checksum-verified release binary), so this pins the latest version winget actually has
     # available. winget keeps only recent versions of a package, so a pin it no longer carries
     # installs its newest version instead, with a warning (Install-WinGetPackage below).
-    [string]$CMakeVersion = "4.4.4",
+    [string]$CMakeVersion = "4.4.5",
     [string]$NinjaVersion = "1.13.2",
     [string]$CcacheVersion = "4.14.2",
     # Renovate (.github/renovate.json5) bumps this literal directly; every consumer below
