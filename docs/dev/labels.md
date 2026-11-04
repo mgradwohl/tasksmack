@@ -37,7 +37,8 @@ Priority says when the work happens this cycle. **Every open issue on a release 
 - `pri:medium`: normal work for the milestone. A new milestone item defaults to this.
 - `pri:low`: only if there's time. It's the first candidate to move to the next milestone at the freeze.
 
-Agents put `pri:medium` on new milestone items, and `pri:high` on a `sev:high` bug. An agent may *suggest* a
+Agents put `pri:medium` on new milestone items, and `pri:high` on a `sev:high` bug and on the cycle's stage-1 CI,
+infra, build and dependency issues ([release-process.md](release-process.md), stage 1). An agent may *suggest* a
 different priority in a comment, but **never raises one** the maintainer set, and never lowers one either.
 
 ## Queue order
@@ -67,8 +68,11 @@ order.
 
 - **PR labeler** (`.github/labeler.yml`): `windows`, `linux`, `testing`, `documentation`, `ci`, `tooling`,
   `dependencies`, `security` and `release`, by changed path.
-- **Dependabot** (`.github/dependabot.yml`) and **Renovate** (`.github/renovate.json5`): `dependencies` plus `ci`
-  (Actions) or `tooling` (pip).
+- **Dependabot** (`.github/dependabot.yml`): `dependencies` plus `ci` on its GitHub Actions PRs, and `dependencies`
+  plus `tooling` on its pip PRs.
+- **Renovate** (`.github/renovate.json5`): `dependencies` plus `ci` on every PR. Its Actions and pip managers are
+  off, since Dependabot covers those (`enabledManagers` is `custom.regex` and `pre-commit`). So a Renovate PR
+  bumps a version pinned by a custom regex (CMake FetchContent and toolchain pins) or a pre-commit hook.
 - **`ci:arm64`:** add it to a PR to run the ARM64 build and test jobs (`arm64.yml`).
 - **`ci-red-main`:** `main-health.yml` opens, rewrites and closes this tracking issue. Don't add it by hand.
 - **`merging`:** the cross-lane merge lock. A PR in its final merge stage carries it, and the other lane waits up to

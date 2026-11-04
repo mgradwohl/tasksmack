@@ -36,7 +36,8 @@ The full scheme is in [docs/dev/labels.md](docs/dev/labels.md). The rules agents
 - **Severity is for bugs only.** Use `sev:high` (crash, data loss, security, broken build or release), `sev:medium`
   (a wrong result users notice, or broken on a common setup) or `sev:low`. Features get none.
 - **Priority is the maintainer's.** Every open issue on a release milestone carries `pri:high`, `pri:medium` or
-  `pri:low`. Agents default new milestone items to `pri:medium`, and a `sev:high` bug to `pri:high`. They may
+  `pri:low`. Agents default new milestone items to `pri:medium`, a `sev:high` bug to `pri:high`, and a cycle's
+  stage-1 CI, infra, build and dependency issues to `pri:high` (docs/dev/release-process.md). They may
   suggest a change in a comment, but never change one the maintainer set.
 - **Queue order:** priority first. Within it, bugs, systems and refactors, then `parity`, then new features.
 - **Leave `good first issue` and `help wanted` to outside contributors:** don't pick them up, plan them or put
