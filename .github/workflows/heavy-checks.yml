@@ -44,7 +44,7 @@ concurrency:
 
 env:
   LLVM_VERSION: '23'
-  LLVM_SEMVER_VERSION: '23.1.3'
+  LLVM_SEMVER_VERSION: '23.1.5'
   # Floors for LINE coverage (see the "Check coverage threshold" steps, #1543). Linux: 95%, and a
   # drop below it FAILS the coverage job (maintainer, 2026-10-15, closing #1891), set when the nightly
   # run read 95.51% of lines. Windows: 85%, warn-only (maintainer, 2026-10-12, when it read 89.8%;
@@ -572,11 +572,10 @@ jobs:
 
   benchmark-regression:
     if: github.event_name != 'workflow_dispatch' || inputs.scope != 'coverage'
-    # Stays on ubuntu-24.04 while the rest of CI runs on 26.04 (#3395): perf-data/linux-ci-baseline.json
-    # was captured on 24.04 hosted runners, and comparing a 26.04 run against it would read the image
-    # change as regressions. Move it together with a baseline refresh on 26.04 (CONTRIBUTING.md,
-    # "Refreshing perf-data/linux-ci-baseline.json").
-    runs-on: ubuntu-24.04
+    # On ubuntu-26.04 with the rest of CI (#3395): perf-data/linux-ci-baseline.json was re-captured there. Its
+    # baseline is tied to the runner image, so an image move re-captures it (CONTRIBUTING.md, "Refreshing
+    # perf-data/linux-ci-baseline.json").
+    runs-on: ubuntu-26.04
     # 20 minutes was not enough: a live run timed out mid-suite with TaskSmackBenchmarks still
     # executing after ~14 minutes of the ~73-benchmark, 10-repetitions-each suite alone (on top
     # of setup/build time) -- shared 4-vCPU hosted runners are simply slower per-repetition
@@ -649,7 +648,7 @@ jobs:
           cp "$latest_json" perf-data/benchmark-current.json
           echo "BENCHMARK_JSON=$latest_json" >> "$GITHUB_ENV"
 
-      # perf-data/linux-ci-baseline.json was recorded on this same ubuntu-24.04 hosted-runner
+      # perf-data/linux-ci-baseline.json was recorded on this same ubuntu-26.04 hosted-runner
       # class (see CONTRIBUTING.md's "Refreshing the CI benchmark baseline" section for the
       # exact procedure and when to redo this) -- unlike the original local-machine baseline
       # (10 cores @ 3.7 GHz, still kept as perf-data/linux-baseline.json for `tools/bench.sh`'s

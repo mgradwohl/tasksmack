@@ -25,6 +25,7 @@
 #include <stop_token>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <unistd.h>
@@ -187,12 +188,16 @@ TEST(LinuxProcessOpenFilesReaderRealTest, FindHandlesFindsThisProcessHoldingAFil
     const std::vector<Domain::HandleSearch::SearchProcess> self{
         {.target = {.pid = static_cast<std::int32_t>(::getpid()), .startTimeTicks = startTicks.value_or(0)}, .name = "TaskSmackTests"}};
     Domain::PublicationSlot<Domain::HandleSearch::SearchPublication> slot;
+    const Domain::HandleSearch::Publish publish = [&slot](Domain::HandleSearch::SearchPublication generation)
+    {
+        slot.commit(std::make_shared<const Domain::HandleSearch::SearchPublication>(std::move(generation)));
+    };
     const std::stop_source stop;
     Domain::HandleSearch::run(self,
                               {.openFiles = &openFiles, .modules = &modules},
                               false,
                               Domain::HandleSearch::startFor("locked-by-findhandles", self.size(), 1),
-                              slot,
+                              publish,
                               stop.get_token());
     std::shared_ptr<const Domain::HandleSearch::SearchPublication> found = slot.load();
     ASSERT_NE(found, nullptr);
@@ -205,7 +210,7 @@ TEST(LinuxProcessOpenFilesReaderRealTest, FindHandlesFindsThisProcessHoldingAFil
                               {.openFiles = &openFiles, .modules = &modules},
                               false,
                               Domain::HandleSearch::startFor("libc.so", self.size(), 10),
-                              slot,
+                              publish,
                               stop.get_token());
     found = slot.load();
     EXPECT_TRUE(std::ranges::any_of(

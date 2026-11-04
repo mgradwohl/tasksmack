@@ -303,12 +303,14 @@ void memoryTooltip(const ChartTimeAxis& axis, const MemoryChartData& data)
 void drawMemorySeries(const ChartTimeAxis& axis, const MemoryChartData& data)
 {
     const auto& scheme = UI::Theme::get().scheme();
-    // Draw peak working set as a horizontal reference line (never decreases)
-    if (data.peakBytes > 0.0)
+    // The peak working set (the OS's lifetime peak, which never decreases) as a horizontal reference
+    // line over the process's samples in the window: from its first sample, not the axis's left edge,
+    // which can be before the process started (#3433).
+    const auto sampled = UI::Widgets::sampledXRange(axis.timeData, axis.axisConfig.xMin, axis.axisConfig.xMax);
+    if (data.peakBytes > 0.0 && sampled)
     {
-        // Draw horizontal line at peak value across the entire X range
         const double peakY = data.peakBytes;
-        std::array<double, 2> peakX = {axis.axisConfig.xMin, axis.axisConfig.xMax};
+        std::array<double, 2> peakX = {sampled->first, sampled->last};
         std::array<double, 2> peakYVals = {peakY, peakY};
         ImPlot::PlotLine(MEM_PEAK_LABEL,
                          peakX.data(),

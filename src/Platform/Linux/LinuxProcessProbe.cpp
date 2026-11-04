@@ -536,6 +536,7 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
         .hasStatus = true,                              // From cgroup freezer state
         .hasContainer = true,                           // From /proc/[pid]/cgroup paths
         .hasServices = true,                            // The systemd service, from the same paths (#1886)
+        .hasAppUnits = true,                            // The app's scope or service, from the same paths (#3428)
         .hasProcessType = true,                         // From the cgroup path and parent PID (#3430)
         .hasArchitecture = true,                        // The ELF header of /proc/[pid]/exe (#2394)
         .hasSchedPolicy = true,                         // /proc/[pid]/stat fields 40-41 (#3086)

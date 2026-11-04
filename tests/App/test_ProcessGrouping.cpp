@@ -3,6 +3,7 @@
 #include "App/Panels/ProcessGrouping.h"
 #include "App/ProcessColumnConfig.h"
 #include "Domain/ProcessSnapshot.h"
+#include "Platform/ProcessTypes.h"
 
 #include <gtest/gtest.h>
 
@@ -47,6 +48,44 @@ TEST(ProcessGroupingTest, AppNamesFromDesktopFlatpakAndSnapUnits)
     EXPECT_EQ(ProcessGrouping::appFromUnit("snap.lxd.daemon.service"), "lxd");
     EXPECT_EQ(ProcessGrouping::appFromUnit("docker.service"), "");
     EXPECT_EQ(ProcessGrouping::appFromUnit("session-3.scope"), "");
+}
+
+// #3428: the Group control offers Container and App only where the probe reads them: a Windows-like probe
+// (no cgroups, no systemd units) gets None, Unit and User; a Linux-like one every mode, in the same order.
+TEST(ProcessGroupingTest, OfferedModesFollowTheProbesCapabilities)
+{
+    Platform::ProcessCapabilities windowsLike;
+    windowsLike.hasServices = true; // the service list, attached
+    EXPECT_EQ(ProcessGrouping::offeredGroupModes(windowsLike), (std::vector{GroupBy::None, GroupBy::Unit, GroupBy::User}));
+
+    Platform::ProcessCapabilities linuxLike;
+    linuxLike.hasServices = true;
+    linuxLike.hasContainer = true;
+    linuxLike.hasAppUnits = true;
+    EXPECT_EQ(ProcessGrouping::offeredGroupModes(linuxLike),
+              (std::vector{GroupBy::None, GroupBy::Unit, GroupBy::Container, GroupBy::App, GroupBy::User}));
+
+    Platform::ProcessCapabilities containersOnly;
+    containersOnly.hasContainer = true;
+    EXPECT_EQ(ProcessGrouping::offeredGroupModes(containersOnly),
+              (std::vector{GroupBy::None, GroupBy::Unit, GroupBy::Container, GroupBy::User}));
+}
+
+// #3428: a saved mode this system doesn't offer groups by None; one it offers stands.
+TEST(ProcessGroupingTest, ASavedModeNotOfferedFallsBackToNone)
+{
+    const Platform::ProcessCapabilities windowsLike;
+    EXPECT_EQ(ProcessGrouping::effectiveGroupBy(GroupBy::Container, windowsLike), GroupBy::None);
+    EXPECT_EQ(ProcessGrouping::effectiveGroupBy(GroupBy::App, windowsLike), GroupBy::None);
+    EXPECT_EQ(ProcessGrouping::effectiveGroupBy(GroupBy::Unit, windowsLike), GroupBy::Unit);
+    EXPECT_EQ(ProcessGrouping::effectiveGroupBy(GroupBy::User, windowsLike), GroupBy::User);
+    EXPECT_EQ(ProcessGrouping::effectiveGroupBy(GroupBy::None, windowsLike), GroupBy::None);
+
+    Platform::ProcessCapabilities linuxLike;
+    linuxLike.hasContainer = true;
+    linuxLike.hasAppUnits = true;
+    EXPECT_EQ(ProcessGrouping::effectiveGroupBy(GroupBy::Container, linuxLike), GroupBy::Container);
+    EXPECT_EQ(ProcessGrouping::effectiveGroupBy(GroupBy::App, linuxLike), GroupBy::App);
 }
 
 TEST(ProcessGroupingTest, KeysByMode)

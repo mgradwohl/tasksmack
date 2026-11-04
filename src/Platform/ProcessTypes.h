@@ -252,6 +252,11 @@ struct ProcessCapabilities
     bool hasServices = false;           // Whether the services a process runs are available: Linux, the systemd
                                         // unit from its cgroups (ProcessCounters::services, #1886); Windows, set by
                                         // Domain::ProcessModel once a service list with PIDs is attached (#1880)
+    bool hasAppUnits = false;           // Whether ProcessCounters::services names the systemd unit a process was
+                                        // launched in, so the app it was launched as can be read from it
+                                        // (app-*/snap.* scopes and services, App::ProcessGrouping::appFromUnit()).
+                                        // Linux: from /proc/[pid]/cgroup. Windows: false, its services are SCM
+                                        // services, not apps (#3428)
     bool hasProcessType =
         false; // Whether process type classification is available (Windows: App/Background/Windows; Linux: App/Background/System, #3430)
     bool hasArchitecture = false;      // Whether ProcessCounters::architecture is filled (#2394)

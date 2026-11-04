@@ -1,7 +1,5 @@
 #include "Domain/HandleSearch.h"
 
-#include "Domain/PublicationSlot.h"
-#include "Domain/PublicationWake.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 
@@ -10,7 +8,6 @@
 #include <cstdint>
 #include <exception>
 #include <format>
-#include <memory>
 #include <span>
 #include <stop_token>
 #include <string>
@@ -183,7 +180,7 @@ void walk(std::span<const SearchProcess> processes,
           const Readers& readers,
           bool authorized,
           SearchPublication& current,
-          PublicationSlot<SearchPublication>& slot,
+          const Publish& publish,
           const std::stop_token& stopToken)
 {
     const std::string loweredQuery = lowered(current.query);
@@ -220,15 +217,14 @@ void walk(std::span<const SearchProcess> processes,
         {
             sincePublish = 0;
             ++current.version;
-            // No wake: the dialog's progress line can wait for the frame loop's slow floor (#3156).
-            slot.commit(std::make_shared<const SearchPublication>(current));
+            publish(current);
         }
     }
 }
 
 /// Publishes @p current as done, saying why it stopped early when @p reason isn't null. A publication that can't be
 /// made (no memory left even for it) is given up on: the dialog sees its worker return and stops waiting (#3335).
-void finish(SearchPublication& current, PublicationSlot<SearchPublication>& slot, const char* reason) noexcept
+void finish(SearchPublication& current, const Publish& publish, const char* reason) noexcept
 {
     try
     {
@@ -238,11 +234,10 @@ void finish(SearchPublication& current, PublicationSlot<SearchPublication>& slot
             current.failure = std::format("The search stopped: {}", reason);
         }
         ++current.version;
-        slot.commit(std::make_shared<const SearchPublication>(std::move(current)));
+        publish(std::move(current));
     }
     catch (...) // NOLINT(bugprone-empty-catch) - nothing is left to report with; see above
     {}
-    PublicationWake::notify(); // the finished search shows at once (#3156)
 }
 
 } // namespace
@@ -251,25 +246,25 @@ void run(std::span<const SearchProcess> processes,
          const Readers& readers,
          bool authorized,
          SearchPublication start,
-         PublicationSlot<SearchPublication>& slot,
+         const Publish& publish,
          const std::stop_token& stopToken) noexcept
 {
     SearchPublication current = std::move(start);
     try
     {
-        walk(processes, readers, authorized, current, slot, stopToken);
+        walk(processes, readers, authorized, current, publish, stopToken);
     }
     catch (const std::exception& error)
     {
-        finish(current, slot, error.what());
+        finish(current, publish, error.what());
         return;
     }
     catch (...)
     {
-        finish(current, slot, "an unknown error");
+        finish(current, publish, "an unknown error");
         return;
     }
-    finish(current, slot, nullptr);
+    finish(current, publish, nullptr);
 }
 
 } // namespace Domain::HandleSearch

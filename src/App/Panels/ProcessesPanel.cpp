@@ -1047,7 +1047,8 @@ void ProcessesPanel::onAttach()
     m_ColumnSettings.keepUnhideableColumnsVisible(); // Whatever the settings were given (#1209)
     m_MeterSettings = UserConfig::get().settings().processMeters;
     m_Pins = ProcessPins::Pins(UserConfig::get().settings().pinnedProcesses); // #3061
-    m_GroupBy = UserConfig::get().settings().processGroupBy;                  // #3068
+    // #3068; the saved mode where this system offers it (#3428), checked again as capabilities arrive.
+    m_GroupBy = ProcessGrouping::effectiveGroupBy(UserConfig::get().settings().processGroupBy, processCapabilities());
 
     // m_RefreshInterval starts at the SamplingConfig default, and the model at its built-in history
     // length; ShellLayer raises the configured values as events on its first update (#1079).
@@ -1607,6 +1608,15 @@ void ProcessesPanel::renderContent()
             m_RequestedColumns = *changed;
         }
     }
+    // The saved Group mode where this system offers it, else None (#3428). The saved choice is kept, and
+    // checked each frame: the capabilities are the defaults until the first sample is adopted.
+    if (const ProcessGrouping::GroupBy active =
+            ProcessGrouping::effectiveGroupBy(UserConfig::get().settings().processGroupBy, processCapabilities());
+        active != m_GroupBy)
+    {
+        m_GroupBy = active;
+        m_GroupsBuiltFor.reset();
+    }
 
     // Prune row format cache entries for processes no longer present, once per new snapshot
     // generation (not per frame). Entries themselves are built lazily, on demand, by
@@ -1836,13 +1846,8 @@ void ProcessesPanel::renderContent()
         const UI::Widgets::FrameOutlineScope frameOutline;
         if (ImGui::BeginCombo("##GroupBy", preview.c_str()))
         {
-            for (const ProcessGrouping::GroupBy mode : {
-                     ProcessGrouping::GroupBy::None,
-                     ProcessGrouping::GroupBy::Unit,
-                     ProcessGrouping::GroupBy::Container,
-                     ProcessGrouping::GroupBy::App,
-                     ProcessGrouping::GroupBy::User,
-                 })
+            // Only the modes this system has the data for (#3428): Container and App are Linux's.
+            for (const ProcessGrouping::GroupBy mode : ProcessGrouping::offeredGroupModes(processCapabilities()))
             {
                 const std::string label(ProcessGrouping::groupByLabel(mode));
                 if (ImGui::Selectable(label.c_str(), mode == m_GroupBy))
@@ -1853,7 +1858,14 @@ void ProcessesPanel::renderContent()
             ImGui::EndCombo();
         }
     }
-    ImGui::SetItemTooltip("Group processes by systemd unit, container, app or user, each group under a row with its totals");
+    if (const Platform::ProcessCapabilities groupCaps = processCapabilities(); groupCaps.hasContainer || groupCaps.hasAppUnits)
+    {
+        ImGui::SetItemTooltip("Group processes by systemd unit, container, app or user, each group under a row with its totals");
+    }
+    else
+    {
+        ImGui::SetItemTooltip("Group processes by service or user, each group under a row with its totals");
+    }
     if (offerRunTask)
     {
         ImGui::SameLine();
@@ -3009,11 +3021,13 @@ void ProcessesPanel::setTreeView(bool enabled)
     }
     m_TreeViewEnabled = enabled;
     m_NameWidthSyncPending = true;
-    if (m_TreeViewEnabled && m_GroupBy != ProcessGrouping::GroupBy::None)
+    if (ProcessGrouping::GroupBy& saved = UserConfig::get().settings().processGroupBy;
+        m_TreeViewEnabled && (m_GroupBy != ProcessGrouping::GroupBy::None || saved != ProcessGrouping::GroupBy::None))
     {
-        // Tree and Group by are separate views (#3068): Tree sets the group back to None.
+        // Tree and Group by are separate views (#3068): Tree sets the group back to None, the saved one
+        // too, even one this system doesn't offer (#3428), so it can't come back under the tree.
         m_GroupBy = ProcessGrouping::GroupBy::None;
-        UserConfig::get().settings().processGroupBy = m_GroupBy;
+        saved = m_GroupBy;
         m_GroupsBuiltFor.reset();
     }
     if (m_TreeViewEnabled)
@@ -3615,12 +3629,15 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
 
 void ProcessesPanel::setGroupBy(ProcessGrouping::GroupBy groupBy)
 {
-    if (groupBy == m_GroupBy)
+    // Choosing None while a saved mode this system doesn't offer stands in for it (#3428) replaces the
+    // saved mode, so the comparison is with both.
+    ProcessGrouping::GroupBy& saved = UserConfig::get().settings().processGroupBy;
+    if (groupBy == m_GroupBy && groupBy == saved)
     {
         return;
     }
     m_GroupBy = groupBy;
-    UserConfig::get().settings().processGroupBy = groupBy; // saved with the other settings
+    saved = groupBy; // saved with the other settings
     m_GroupsBuiltFor.reset();
     if (groupBy != ProcessGrouping::GroupBy::None && m_TreeViewEnabled)
     {

@@ -26,6 +26,15 @@ namespace
 
 using namespace Domain::HandleSearch;
 
+/// run()'s generations, committed to @p slot one by one, as the dialog's worker publishes them.
+[[nodiscard]] Publish publishTo(Domain::PublicationSlot<SearchPublication>& slot)
+{
+    return [&slot](SearchPublication generation)
+    {
+        slot.commit(std::make_shared<const SearchPublication>(std::move(generation)));
+    };
+}
+
 [[nodiscard]] SearchProcess process(std::int32_t pid, std::string name)
 {
     return SearchProcess{.target = {.pid = pid, .startTimeTicks = 100U + static_cast<std::uint64_t>(pid)}, .name = std::move(name)};
@@ -221,7 +230,12 @@ TEST(HandleSearchTest, RunStopsOnceTheMatchCapIsReached)
     Domain::PublicationSlot<SearchPublication> slot;
     const std::stop_source stop;
     // No open-files reader: the modules alone are searched.
-    run(processes, {.openFiles = nullptr, .modules = &mods}, false, startFor("libcap", processes.size(), 1), slot, stop.get_token());
+    run(processes,
+        {.openFiles = nullptr, .modules = &mods},
+        false,
+        startFor("libcap", processes.size(), 1),
+        publishTo(slot),
+        stop.get_token());
 
     const std::shared_ptr<const SearchPublication> last = slot.load();
     ASSERT_NE(last, nullptr);
@@ -244,13 +258,23 @@ TEST(HandleSearchTest, AnAdministratorSearchOnAFullResultIsMarkedTruncated)
     std::vector<SearchProcess> processes{process(2, "postgres"), process(1, "mine")};
     Domain::PublicationSlot<SearchPublication> slot;
     std::stop_source stop;
-    run(processes, {.openFiles = &files, .modules = nullptr}, false, startFor("data.db", processes.size(), 1), slot, stop.get_token());
+    run(processes,
+        {.openFiles = &files, .modules = nullptr},
+        false,
+        startFor("data.db", processes.size(), 1),
+        publishTo(slot),
+        stop.get_token());
     const std::shared_ptr<const SearchPublication> first = slot.load();
     ASSERT_EQ(first->matches.size(), MAX_MATCHES);
     ASSERT_EQ(first->denied.size(), 1U);
 
     const std::vector<SearchProcess> denied = first->denied;
-    run(denied, {.openFiles = &files, .modules = nullptr}, true, startAuthorizedAfter(*first, first->version + 1), slot, stop.get_token());
+    run(denied,
+        {.openFiles = &files, .modules = nullptr},
+        true,
+        startAuthorizedAfter(*first, first->version + 1),
+        publishTo(slot),
+        stop.get_token());
     const std::shared_ptr<const SearchPublication> second = slot.load();
     EXPECT_TRUE(second->done);
     EXPECT_TRUE(second->truncated);
@@ -266,7 +290,12 @@ TEST(HandleSearchTest, AnAuthorizedRunReadsTheModulesAuthorizedToo)
     const std::vector<SearchProcess> processes{process(5, "daemon")};
     Domain::PublicationSlot<SearchPublication> slot;
     const std::stop_source stop;
-    run(processes, {.openFiles = &files, .modules = &mods}, true, startFor("secret", processes.size(), 1), slot, stop.get_token());
+    run(processes,
+        {.openFiles = &files, .modules = &mods},
+        true,
+        startFor("secret", processes.size(), 1),
+        publishTo(slot),
+        stop.get_token());
 
     const std::shared_ptr<const SearchPublication> last = slot.load();
     ASSERT_NE(last, nullptr);
@@ -341,7 +370,12 @@ TEST(HandleSearchTest, RunWalksEveryProcessAndPublishesBatchesThenDone)
     mods.results.erase(40);
     Domain::PublicationSlot<SearchPublication> slot;
     std::stop_source stop;
-    run(processes, {.openFiles = &files, .modules = &mods}, false, startFor("FILE-1", processes.size(), 5), slot, stop.get_token());
+    run(processes,
+        {.openFiles = &files, .modules = &mods},
+        false,
+        startFor("FILE-1", processes.size(), 5),
+        publishTo(slot),
+        stop.get_token());
 
     const std::shared_ptr<const SearchPublication> last = slot.load();
     ASSERT_NE(last, nullptr);
@@ -365,7 +399,7 @@ TEST(HandleSearchTest, RunStopsBetweenProcessesWhenAsked)
     Domain::PublicationSlot<SearchPublication> slot;
     std::stop_source stop;
     stop.request_stop();
-    run(processes, {.openFiles = &files, .modules = nullptr}, false, startFor("x", processes.size(), 1), slot, stop.get_token());
+    run(processes, {.openFiles = &files, .modules = nullptr}, false, startFor("x", processes.size(), 1), publishTo(slot), stop.get_token());
     ASSERT_NE(slot.load(), nullptr);
     EXPECT_TRUE(slot.load()->done);
     EXPECT_EQ(slot.load()->searched, 0U);
@@ -423,7 +457,12 @@ TEST(HandleSearchTest, AReaderOrAllocationFailureEndsTheWalkAsDoneWithItsReason)
     std::stop_source stop;
 
     files.throwOn = 18; // after the first progress publication (16 processes)
-    run(processes, {.openFiles = &files, .modules = nullptr}, false, startFor("file-1", processes.size(), 1), slot, stop.get_token());
+    run(processes,
+        {.openFiles = &files, .modules = nullptr},
+        false,
+        startFor("file-1", processes.size(), 1),
+        publishTo(slot),
+        stop.get_token());
     std::shared_ptr<const SearchPublication> last = slot.load();
     ASSERT_NE(last, nullptr);
     EXPECT_TRUE(last->done);
@@ -434,7 +473,12 @@ TEST(HandleSearchTest, AReaderOrAllocationFailureEndsTheWalkAsDoneWithItsReason)
 
     files.throwOn = 1; // before any progress publication
     files.kind = 1;
-    run(processes, {.openFiles = &files, .modules = nullptr}, false, startFor("file", processes.size(), 10), slot, stop.get_token());
+    run(processes,
+        {.openFiles = &files, .modules = nullptr},
+        false,
+        startFor("file", processes.size(), 10),
+        publishTo(slot),
+        stop.get_token());
     last = slot.load();
     ASSERT_TRUE(last->done);
     EXPECT_TRUE(last->failure.starts_with("The search stopped: ")) << last->failure;
@@ -443,12 +487,22 @@ TEST(HandleSearchTest, AReaderOrAllocationFailureEndsTheWalkAsDoneWithItsReason)
     EXPECT_EQ(last->version, 11U);
 
     files.kind = 2;
-    run(processes, {.openFiles = &files, .modules = nullptr}, false, startFor("file", processes.size(), 20), slot, stop.get_token());
+    run(processes,
+        {.openFiles = &files, .modules = nullptr},
+        false,
+        startFor("file", processes.size(), 20),
+        publishTo(slot),
+        stop.get_token());
     EXPECT_EQ(slot.load()->failure, "The search stopped: an unknown error");
 
     // A search after the failures runs to its end, with no failure.
     files.throwOn = 0;
-    run(processes, {.openFiles = &files, .modules = nullptr}, false, startFor("file-2", processes.size(), 30), slot, stop.get_token());
+    run(processes,
+        {.openFiles = &files, .modules = nullptr},
+        false,
+        startFor("file-2", processes.size(), 30),
+        publishTo(slot),
+        stop.get_token());
     last = slot.load();
     EXPECT_TRUE(last->done);
     EXPECT_TRUE(last->failure.empty()) << last->failure;
@@ -459,7 +513,7 @@ TEST(HandleSearchTest, AReaderOrAllocationFailureEndsTheWalkAsDoneWithItsReason)
 // #3335, with real allocation failures (AllocationFailureHook): each allocation run() makes is failed in turn, the
 // lowered query's, a match's, a progress publication's and the done publication's. run() never lets one out. The
 // slot ends either done, saying why when the walk failed, or, when the done publication itself couldn't be made,
-// at the last one it could, for the dialog's worker-returned flag to end.
+// at the last one it could, for the dialog to end the search when its job does.
 TEST(HandleSearchTest, EveryAllocationRunMakesCanFailWithoutEscaping)
 {
 #if defined(TASKSMACK_NO_ALLOCATOR_HOOK)
@@ -485,10 +539,11 @@ TEST(HandleSearchTest, EveryAllocationRunMakesCanFailWithoutEscaping)
         slot.commit(std::make_shared<const SearchPublication>(start));
         std::stop_source stop;
         SearchPublication input = start; // copied before the hook is armed: only run()'s own allocations fail
+        const Publish publish = publishTo(slot);
         bool fired = false;
         {
             const TestSupport::FailAllocationAfter guard(failAt);
-            run(processes, {.openFiles = &files, .modules = nullptr}, false, std::move(input), slot, stop.get_token());
+            run(processes, {.openFiles = &files, .modules = nullptr}, false, std::move(input), publish, stop.get_token());
             fired = !TestSupport::allocationFailurePending();
         }
         const std::shared_ptr<const SearchPublication> last = slot.load();
@@ -510,7 +565,7 @@ TEST(HandleSearchTest, EveryAllocationRunMakesCanFailWithoutEscaping)
         }
     }
     EXPECT_GT(reported, 0) << "a failure in the walk is published as done with its reason";
-    EXPECT_GT(unpublished, 0) << "a failed done publication leaves the last one (the dialog's flag ends the search)";
+    EXPECT_GT(unpublished, 0) << "a failed done publication leaves the last one (the dialog ends the search when its job does)";
 }
 
 // #3335: an administrator search after a failed one starts without that failure.
@@ -533,13 +588,23 @@ TEST(HandleSearchTest, AnAdministratorSearchAddsTheDeniedProcessesToTheFirstResu
     std::vector<SearchProcess> processes{process(1, "mine"), process(2, "postgres")};
     Domain::PublicationSlot<SearchPublication> slot;
     std::stop_source stop;
-    run(processes, {.openFiles = &files, .modules = nullptr}, false, startFor("data.db", processes.size(), 1), slot, stop.get_token());
+    run(processes,
+        {.openFiles = &files, .modules = nullptr},
+        false,
+        startFor("data.db", processes.size(), 1),
+        publishTo(slot),
+        stop.get_token());
     const std::shared_ptr<const SearchPublication> first = slot.load();
     ASSERT_EQ(first->matches.size(), 1U);
     ASSERT_EQ(first->denied.size(), 1U);
 
     const std::vector<SearchProcess> denied = first->denied;
-    run(denied, {.openFiles = &files, .modules = nullptr}, true, startAuthorizedAfter(*first, first->version + 1), slot, stop.get_token());
+    run(denied,
+        {.openFiles = &files, .modules = nullptr},
+        true,
+        startAuthorizedAfter(*first, first->version + 1),
+        publishTo(slot),
+        stop.get_token());
     const std::shared_ptr<const SearchPublication> second = slot.load();
     EXPECT_TRUE(second->done);
     EXPECT_TRUE(second->authorized);

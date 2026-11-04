@@ -1544,6 +1544,7 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
         .hasPublisher = true,    // From GetFileVersionInfo on process image path
         .hasContainer = false,   // cgroup containers are Linux's
         .hasServices = false,    // Matched by PID from the service list, by Domain::ProcessModel (#1880)
+        .hasAppUnits = false,    // No systemd units: the services matched are SCM services, not apps (#3428)
         .hasProcessType = true,  // Classified from path + GetGuiResources
         .hasArchitecture = true, // ProcessMachineTypeInfo, else IsWow64Process2 (#2394)
         // WinVerifyTrust on each image, embedded and through the catalogs, on the signature worker (#3070)

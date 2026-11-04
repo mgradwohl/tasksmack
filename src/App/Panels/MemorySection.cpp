@@ -7,6 +7,7 @@
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/InlineText.h"
+#include "UI/RateAxis.h"
 #include "UI/Theme.h"
 
 #include <imgui.h>
@@ -294,9 +295,12 @@ void renderMemorySection(RenderContext& ctx, std::span<const double> timestamps,
                            seriesStyle(SeriesRole::Secondary, 1));
             }
 
-            if (peakMemPercent > 0.0)
+            // Over the samples, not the whole axis: a partial history's peak said nothing about the
+            // minutes before the first sample (#3433).
+            if (const auto sampled = UI::Widgets::sampledXRange(timeData, axisConfig.xMin, axisConfig.xMax);
+                peakMemPercent > 0.0 && sampled)
             {
-                const std::array<double, 2> xLine = {axisConfig.xMin, axisConfig.xMax};
+                const std::array<double, 2> xLine = {sampled->first, sampled->last};
                 const std::array<double, 2> yLine = {peakMemPercent, peakMemPercent};
                 ImPlot::PlotLine(
                     PEAK_LABEL,

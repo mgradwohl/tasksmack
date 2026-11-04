@@ -1545,9 +1545,15 @@ hosted runner, instead of timing an empty probe's early return (#1420).
 
 This is a *separate* baseline from `perf-data/linux-baseline.json` above, deliberately: that one was
 recorded on a developer machine, and comparing it with hosted `ubuntu-24.04` runners flagged the machine
-difference as a regression on every run (#683). Hosted runners also land on two speed classes, so the
-committed CI baseline is a capture from the slower class: a run on the faster class can only look like an
-improvement, never a false regression (#682). The two classes don't slow every benchmark alike (#2336):
+difference as a regression on every run (#683). Hosted runners also land on several CPU classes, and no
+class is the slowest at everything: on `ubuntu-26.04` a 2600 MHz class reads the thread-handoff benchmarks
+(`*_Concurrent_PublicationWait`) about twice as slow as a 3240 MHz one, and the /proc and syscall ones
+(`BM_ProcessProbe_*`, `BM_*Model_Refresh`) two to three times as fast (#3395). So the committed CI baseline
+takes each benchmark from whichever capture, over several classes, read it slowest
+(`tools/merge-benchmark-baselines.py`): a run on any captured class can only look like an improvement,
+never a false regression (#682), and the threshold still applies to every benchmark. Its context's
+`tasksmack_merged_from` lists the captures and how many benchmarks each supplied. Classes don't slow every
+benchmark alike (#2336):
 allocator- and memory-bound benchmarks vary more, so `--threshold-overrides FILE` gives the benchmarks a
 JSON file lists their own threshold, each with a required `reason`. An entry can set its own noise floor
 instead, or as well, as `min_abs_delta_ns`: that is for a sub-nanosecond benchmark that an unrelated
@@ -1561,27 +1567,33 @@ remove it when a baseline refresh makes it unnecessary. Without the flag every b
 `--threshold` and `--min-abs-delta-ns`.
 
 **Refreshing `perf-data/linux-ci-baseline.json`** (only needed when hosted-runner hardware
-changes, e.g. a `ubuntu-24.04` image update measurably shifts baseline timings, or after a
-deliberate, reviewed performance change that the gate should treat as the new normal):
+changes, e.g. a runner image move (the 24.04 to 26.04 move re-captured it, #3395) measurably shifts baseline timings, a
+new runner class reads some benchmarks slower than the baseline, or after a deliberate, reviewed performance change that the
+gate should treat as the new normal):
 
 1. Manually trigger `heavy-checks.yml` via `gh workflow run heavy-checks.yml --ref <branch>` (or
    the Actions tab's "Run workflow" button), and wait for the `benchmark-regression` job to
-   finish.
-2. Download its `benchmark-results` artifact and extract `perf-data/benchmark-current.json`:
+   finish. Repeat until the captures cover the CPU classes the runners land on (the job log's
+   "Run on (4 X N MHz CPU s)" line names each one's class); #3395 took five runs for four classes.
+2. Download each run's `benchmark-results` artifact, each into its own directory:
    ```bash
-   gh run download <run-id> --name benchmark-results --dir /tmp/benchmark-results
+   gh run download <run-id> --name benchmark-results --dir /tmp/benchmark-results/<run-id>
    ```
 3. Review the new numbers against the old baseline before replacing it -- a baseline refresh
    should be a deliberate, reviewed change, not a way to silently paper over a real regression.
    If every benchmark shifted by roughly the same percentage in the same direction, that's very
-   likely a runner-class difference, not a real change: dispatch one more run and compare before
-   deciding which to keep.
-4. Replace the baseline and commit it in its own PR (not bundled with unrelated changes):
+   likely a runner-class difference, not a real change.
+4. Merge the captures, each benchmark from the capture slowest at it, labelled by run id, and commit the
+   result in its own PR (not bundled with unrelated changes):
    ```bash
-   cp /tmp/benchmark-results/perf-data/benchmark-current.json perf-data/linux-ci-baseline.json
+   python3 tools/merge-benchmark-baselines.py --output perf-data/linux-ci-baseline.json \
+       <run-id>=/tmp/benchmark-results/<run-id>/perf-data/benchmark-current.json ...
    git add perf-data/linux-ci-baseline.json
    git commit -m "chore(perf): refresh CI benchmark baseline"
    ```
+   Then replay every capture against the new baseline with `tools/check-benchmark-regression.py` (the
+   arguments `heavy-checks.yml` passes): each must pass. Remove any `perf-data/linux-ci-thresholds.json`
+   entry the refresh makes unnecessary, that is, one every capture passes without.
 5. Push and confirm the next `heavy-checks.yml` run passes against the refreshed baseline.
 
 ### Available Benchmarks
@@ -2850,7 +2862,7 @@ We use GitHub Actions for our CI workflows. They are categorized as follows:
 
     To add a file, show the same for it, add it to `AUTOMATION` in the classifier with its reason, and add a case to `tests/tools/test_ci_change_classifier.py`. That test fails when an allowlisted file is missing, when a build input names one outside a comment, or when a `tests/tools` script names one without `Automation checks` running it.
 - **`reusable-build-test.yml`**: Contains the actual matrix steps for setting up LLVM, Python, `ccache`, configuring CMake, building, and running CTest tests, plus an optional Linux build-only `TaskSmackBenchmarks` step (`build_benchmarks` input). Called by other workflows. It configures with `-DTASKSMACK_ENABLE_PCH=OFF` (except the weekly unity build) because ccache can't cache PCH-using compiles; local presets keep PCH on.
-- **`arm64.yml`**: Linux aarch64 (`ubuntu-26.04-arm`) and Windows ARM64 (`windows-11-arm`, plain ARM64, not ARM64EC) debug build and full `ctest`, through `reusable-build-test.yml` (#2214). It runs on pushes to `main` and `release/*`, nightly and on manual dispatch, and on a pull request only when the PR carries the `ci:arm64` label (adding the label starts a run). It is not part of `CI Success` or any required check, and without the label its jobs are skipped before a runner is assigned. Windows ARM64 installs the native `LLVM-<ver>-woa64.exe` (`setup-windows-llvm`, pinned by SHA-256; Chocolatey only has the x64 installer) and runs the display suites on `mmozeiko/build-mesa`'s ARM64 llvmpipe (`setup-mesa-llvmpipe`, pinned by SHA-256, test-only). `release.yml` builds and ships the ARM64 packages with its own matrix; this workflow is the PR and nightly test leg. On `windows-11-arm` the PowerShell script tests (`pwsh-script` label) run in a second `ctest` with `--repeat until-pass:2`, because pwsh itself crashes there now and then ("Internal CLR error", #2832); nothing else is retried.
+- **`arm64.yml`**: Linux aarch64 (`ubuntu-26.04-arm`) and Windows ARM64 (`windows-11-arm`, plain ARM64, not ARM64EC) debug build and full `ctest`, through `reusable-build-test.yml` (#2214). It runs on pushes to `main` and `release/*`, nightly and on manual dispatch, and on a pull request only when the PR carries the `ci:arm64` label (adding the label starts a run). It is not part of `CI Success` or any required check, and without the label its jobs are skipped before a runner is assigned. Windows ARM64 installs the native `LLVM-<ver>-woa64.msi` (`setup-windows-llvm`, pinned by SHA-256, as x64's `win64.msi` is) and runs the display suites on `mmozeiko/build-mesa`'s ARM64 llvmpipe (`setup-mesa-llvmpipe`, pinned by SHA-256, test-only). `release.yml` builds and ships the ARM64 packages with its own matrix; this workflow is the PR and nightly test leg. On `windows-11-arm` the PowerShell script tests (`pwsh-script` label) run in a second `ctest` with `--repeat until-pass:2`, because pwsh itself crashes there now and then ("Internal CLR error", #2832); nothing else is retried.
 - **`manual-build.yml`**: Manual dispatch entry point to trigger a specific OS and build type build from the GitHub UI without opening a PR.
 
 CI caches (#1406): ccache and the FetchContent source cache (`.github/actions/fetchcontent-cache`) are **saved only by runs on `main`** in every workflow, `release.yml` included (tag runs only restore); pull requests restore main's entries and never save their own, which keeps the repository under its Actions cache limit (20 GB since 2026-10-26). Runs on a `release/*` branch save none either, so its pull requests read `main`'s entries (the default branch's), like every other PR. One job per OS saves the FetchContent cache: Windows debug, and the Linux release build after its benchmark-enabled configure, so the saved sources include Google Benchmark. The FetchContent key hashes only what declares or patches dependencies: `cmake/Dependencies.cmake`, `cmake/patches/**`, and the `FetchContent_Declare(...)` blocks of `tests/CMakeLists.txt` and `benchmarks/CMakeLists.txt` (not those whole files, which change whenever a test is added, #1582). `cache-prune.yml` runs after each `main` run of a cache-saving workflow (listed under `cache-prune.yml` below) and deletes all but the newest entry of each ccache, FetchContent, configure-check, clang-tidy result and CodeQL TRAP cache family, so `main` stays under the quota and least-recently-used eviction never removes a live entry (#1583). The TRAP caches (one of about 640 MB per analyzed `main` commit) weren't pruned until #3101; their pile-up kept the repository over its limit, and the eviction removed `main`'s nightly clang-tidy result caches within hours of each save. clang-tidy doesn't compile through ccache; the debug jobs' tidy runs simply reuse the build's configured tree, and `static-analysis.yml` configures with the same flags (`TASKSMACK_ENABLE_PCH=OFF`, plus the Windows flags below) so every run computes the same result-cache keys. The Windows debug build configures with `-DTASKSMACK_ENABLE_IPO=OFF -DTASKSMACK_ENABLE_GHASH=ON -DCMAKE_CXX_SCAN_FOR_MODULES=OFF` (CI only; the presets keep ThinLTO in Debug), which cut its five links from about 50-70 s each to 1-5 s and drops ~530 `clang-scan-deps` runs per build. Its ccache is 750 MB with `inode_cache` on. The other ccache limits are sized from measured working sets (#3100): one full build fills about 614 MB (Linux Debug), 560 MB (ASan+UBSan), 641 MB (coverage) and 445 MB (TSan), so Linux Debug on x64 and ARM64, ASan+UBSan and coverage get 1250 MB (main's tree plus a pull request's changes), TSan 750 MB, and the rest (Release, IWYU, benchmarks, packaging, the Wayland matrix) keep 500 MB. Windows coverage gets 1250 MB too, with `inode_cache` on (#3148): at 500 MB it ran full with about 500 cleanups a build and 18-23% hits, and its `win-coverage` preset builds without ThinLTO or module scanning, like the Windows debug build. At most one entry per family survives pruning, so the ccache total is about 9 GB of the repository's 20 GB Actions cache limit, beside the CodeQL TRAP, LLVM and FetchContent caches; and every build job's post step prints `ccache -s -vv` (hits, misses and why calls were uncacheable); with `TASKSMACK_ENABLE_PCH=OFF`, as CI configures, the dependencies' own precompiled headers (SDL3's) are off too, since ccache can't cache a compile that uses one (#1875). Each build job's summary also gets a build profile from `.ninja_log` (`tools/ninja-build-profile.py`): time per edge kind and the slowest links.
@@ -2939,8 +2951,9 @@ opens PRs; the same CI gate applies before merge.
     rely on) and of the `setup-llvm` and `setup-windows-llvm` actions, `LLVM_SUPPORTED_VERSION` in
     `tools/setup-dev.sh`, `$LlvmVersion` in `tools/setup-dev.ps1`, and `TASKSMACK_LLVM_VERSION` in
     `cmake/Options.cmake`. Only stable `llvmorg-X.Y.Z` tags count. Before approving, confirm the Windows
-    version is installable from both Chocolatey (CI) and WinGet (`tools/setup-dev.ps1`), which can lag
-    upstream (#752). These need updating by hand in the same PR (grep for the old major too): the
+    version is installable from WinGet (`tools/setup-dev.ps1`), which can lag upstream (#752); CI installs
+    the release's own `win64`/`woa64` MSIs, so bump `LLVM_PINNED_VERSION` and their SHA-256 values in
+    `setup-windows-llvm/action.yml` too. These need updating by hand in the same PR (grep for the old major too): the
     `clang++-23`/`clang-23` names in `CMakePresets.json`'s Linux presets, `release.yml`'s
     `LLVM_LINUX_RELEASE` (see [docs/dev/release-process.md](docs/dev/release-process.md#the-linux-llvm-pin)), the "LLVM 23" checks in `tools/pgo.sh`/`tools/pgo.ps1`, `tools/common.sh`'s
     clang-format version-discovery list, and the two fallback defaults inside `setup-llvm/action.yml`, kept
@@ -3305,8 +3318,8 @@ and records the exact `apt.llvm.org` build string of every LLVM package it insta
 the snapshot, since apt.llvm.org replaces its snapshots every few days (#3393). See
 [The Linux LLVM pin](docs/dev/release-process.md#the-linux-llvm-pin) for how to bump it and how the
 LLVM package cache works. Windows already pins
-an exact LLVM semver via `LLVM_SEMVER_VERSION`: Chocolatey's installer on x64, and on ARM64 the
-native `woa64` installer pinned by SHA-256 in `.github/actions/setup-windows-llvm`.
+an exact LLVM semver via `LLVM_SEMVER_VERSION`: LLVM's own `win64` (x64) and `woa64` (ARM64) MSIs
+from its GitHub release, each pinned by SHA-256 in `.github/actions/setup-windows-llvm`.
 
 ### Release Reproducibility
 

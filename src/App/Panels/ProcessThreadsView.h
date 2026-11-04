@@ -16,6 +16,7 @@
 // sort and the filter are tested against a mock reader without an ImGui context.
 
 #include "Domain/ProcessState.h"
+#include "Domain/RateTracker.h"
 #include "Domain/SamplingConfig.h"
 #include "LazyBackgroundRead.h"
 #include "Platform/AsciiCase.h"
@@ -36,7 +37,6 @@
 #include <stop_token>
 #include <string>
 #include <string_view>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -246,8 +246,7 @@ class ProcessThreadsView
         m_Detail.clear();
         m_Truncated = false;
         m_Rows.clear();
-        m_Previous.clear();
-        m_PreviousAt.reset();
+        m_CpuTimes.clear();
         m_FilteredRows.clear();
         m_FilterDirty = true;
     }
@@ -302,8 +301,8 @@ class ProcessThreadsView
 
     /// Takes in a read: its status and, for Ok, its threads formatted and sorted, each one's CPU % from its CPU
     /// time at the read before (the same thread: same TID and start time), over the time between the two reads'
-    /// acquisitions (result.acquiredAtSeconds), however late either was taken in (#3337). A read with no
-    /// acquisition time, or one not after the last's, gives no CPU % (the dash).
+    /// acquisitions (result.acquiredAtSeconds), however late either was taken in (#3337), by Domain's
+    /// RateTracker (#3344). A read with no acquisition time, or one not after the last's, gives no CPU % (the dash).
     void applyResult(const Platform::ThreadsReadResult& result)
     {
         m_HasRead = true;
@@ -315,31 +314,34 @@ class ProcessThreadsView
         m_Detail = result.detail;
         m_Truncated = result.truncated;
         m_Rows.clear();
+        if (result.status != Platform::ThreadsReadStatus::Ok || !result.acquiredAtSeconds.has_value())
+        {
+            // A failed read, or one with no acquisition time: the next read's CPU times are its first.
+            m_CpuTimes.clear();
+        }
         if (result.status != Platform::ThreadsReadStatus::Ok)
         {
-            m_Previous.clear();
-            m_PreviousAt.reset();
             m_FilterDirty = true;
             return;
         }
-        // Zero or negative (no time between the acquisitions, or either unknown): no CPU %, nothing divided.
-        const double elapsed =
-            (m_PreviousAt.has_value() && result.acquiredAtSeconds.has_value()) ? *result.acquiredAtSeconds - *m_PreviousAt : 0.0;
         const double ticksPerSecond = static_cast<double>(std::max<std::int64_t>(result.ticksPerSecond, 1));
-        std::unordered_map<std::int32_t, Sample> current;
-        current.reserve(result.threads.size());
+        const std::optional<Domain::AcquiredAt> acquiredAt =
+            result.acquiredAtSeconds.has_value() ? std::optional(Domain::acquiredAtFromSeconds(*result.acquiredAtSeconds)) : std::nullopt;
         m_Rows.reserve(result.threads.size());
+        m_CpuTimes.beginRound();
         for (const Platform::ProcessThread& thread : result.threads)
         {
             const std::uint64_t ticks = thread.userTicks + thread.systemTicks;
             std::optional<double> cpu;
-            if (const auto previous = m_Previous.find(thread.tid); elapsed > 0.0 && previous != m_Previous.end() &&
-                                                                   previous->second.startTicks == thread.startTicks &&
-                                                                   ticks >= previous->second.ticks)
+            if (acquiredAt.has_value())
             {
-                cpu = Detail::threadCpuPercent(ticks - previous->second.ticks, result.ticksPerSecond, elapsed, m_CpuCount);
+                // The same thread is the same TID and start time; a CPU time that went back gives no CPU %.
+                if (const auto interval = m_CpuTimes.observe({.id = thread.tid, .startTicks = thread.startTicks}, ticks, *acquiredAt);
+                    interval.has_value() && ticks >= interval->previous)
+                {
+                    cpu = Detail::threadCpuPercent(ticks - interval->previous, result.ticksPerSecond, interval->seconds, m_CpuCount);
+                }
             }
-            current.emplace(thread.tid, Sample{.ticks = ticks, .startTicks = thread.startTicks});
             const double cpuSeconds = static_cast<double>(ticks) / ticksPerSecond;
             m_Rows.push_back({
                 .thread = thread,
@@ -353,8 +355,7 @@ class ProcessThreadsView
                 .started = Detail::threadStartedText(thread.startTicks, result.ticksPerSecond, result.bootTimeEpoch),
             });
         }
-        m_Previous = std::move(current);
-        m_PreviousAt = result.acquiredAtSeconds;
+        m_CpuTimes.endRound(); // threads that have ended are forgotten
         sortRows();
     }
 
@@ -414,12 +415,6 @@ class ProcessThreadsView
     }
 
   private:
-    struct Sample
-    {
-        std::uint64_t ticks = 0;
-        std::uint64_t startTicks = 0;
-    };
-
     /// @p result, with its acquisition time from @p clock when the reader left it unset: on the worker, as the
     /// read returns, so a result taken in late still divides by when its counters were read (#3337).
     [[nodiscard]] static Platform::ThreadsReadResult stamped(Platform::ThreadsReadResult result, const Clock& clock)
@@ -483,17 +478,17 @@ class ProcessThreadsView
     // Ordered by alignment, largest first (clang-analyzer-optin.performance.Padding), the flags last.
     std::size_t m_CpuCount = 1;
     std::size_t m_LabelCount = SIZE_MAX; // the count m_CountLabel shows
-    std::optional<double> m_PreviousAt;  // when the last read's CPU times were read (its acquisition time, #3337)
     Platform::ProcessTarget m_Target{};  // the process shown, as of the last update() (for the thread actions)
     std::vector<Row> m_Rows;
     std::vector<std::size_t> m_FilteredRows;
     std::string m_Detail;
     std::string m_Filter;
     std::string m_FilterKey;
-    std::string m_CountLabel;                            // the header with the count: "Threads (12)"
-    std::string m_ProcessName;                           // the process's name, for the thread actions' confirm and result line (#3069)
-    std::unordered_map<std::int32_t, Sample> m_Previous; // the last read's CPU time per thread, for CPU %
-    Clock m_Clock;                                       // stamps each read on the worker (#3337)
+    std::string m_CountLabel;  // the header with the count: "Threads (12)"
+    std::string m_ProcessName; // the process's name, for the thread actions' confirm and result line (#3069)
+    /// Each thread's CPU time (user plus system ticks) at the last read, for CPU % (#3344).
+    Domain::RateTracker<Domain::StartedIdentity, std::uint64_t, Domain::StartedIdentityHash> m_CpuTimes;
+    Clock m_Clock; // stamps each read on the worker (#3337)
 
     // The read in flight and its cadence (the Settings interval, set by update()). Destroying the view
     // waits for at most one read.
