@@ -38,12 +38,15 @@ class UserSessionsFeed
     UserSessionsFeed(UserSessionsFeed&&) = delete;
     UserSessionsFeed& operator=(UserSessionsFeed&&) = delete;
 
-    /// Makes the sessions, the model and the action worker; sampling waits for demand. Once until stop().
+    /// Makes the sessions, the model and the action worker, then samples if a view already demands them
+    /// (one shown before start(), or still shown across stop()); otherwise sampling waits for demand. Once
+    /// until stop().
     /// On the UI thread, from the Users tab's onAttach() (the composition root's one sessions creation).
     void start();
 
     /// Joins the sampler thread (the one place it is waited for), then stops and waits for an action in
-    /// flight, and lets the sessions go. Safe to call twice, or without start().
+    /// flight, and lets the sessions go. The views' inputs (setUsersTabShown(), setProcessesView()) are kept.
+    /// Safe to call twice, or without start().
     void stop();
 
     /// Whether the Users tab is shown, one of sessionsDemand()'s inputs.

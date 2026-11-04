@@ -343,11 +343,42 @@ TEST(UserSessionsFeedTest, ReadsOnlyOnDemandAndStopsCleanly)
     EXPECT_EQ(fake.use_count(), 2) << "the feed kept the sessions"; // this test's and the factory's copy
 }
 
+// A view shown before start() is read from as soon as the feed starts, whichever comes first (#3469 review).
+TEST(UserSessionsFeedTest, AViewShownBeforeStartIsReadOnceStarted)
+{
+    UserSessionsFeed feed([] { return std::make_shared<FakeSessions>(std::vector<UserSession>{session("2", "alice", 1000)}); });
+    feed.setUsersTabShown(true);
+    EXPECT_FALSE(feed.demanded()) << "nothing to read with before start()";
+    feed.start();
+    EXPECT_TRUE(feed.demanded());
+    EXPECT_TRUE(waitFor([&feed] { return feed.publishedVersion() >= 1; })) << "shown, then started, but never read";
+    feed.stop();
+}
+
+// stop() then start() with the view still shown reads again: the shown view outlives the restart.
+TEST(UserSessionsFeedTest, ARestartWithTheViewStillShownReadsAgain)
+{
+    UserSessionsFeed feed([] { return std::make_shared<FakeSessions>(std::vector<UserSession>{session("2", "alice", 1000)}); });
+    feed.start();
+    feed.setUsersTabShown(true);
+    ASSERT_TRUE(waitFor([&feed] { return feed.publishedVersion() >= 1; }));
+    feed.stop();
+    EXPECT_FALSE(feed.demanded());
+    feed.start();
+    EXPECT_TRUE(feed.demanded());
+    EXPECT_TRUE(waitFor([&feed] { return feed.publishedVersion() >= 1; })) << "restarted, still shown, but never read";
+    feed.stop();
+}
+
 // Sessions the platform can't list are never read, and a feed that was never started stops cleanly.
 TEST(UserSessionsFeedTest, UnsupportedSessionsAreNeverRead)
 {
     const auto unsupported = std::make_shared<FakeSessions>(std::vector<UserSession>{}, false);
-    UserSessionsFeed feed([unsupported] { return unsupported; });
+    const auto makeSessions = [&unsupported]
+    {
+        return std::shared_ptr<Platform::IUserSessions>(unsupported);
+    };
+    UserSessionsFeed feed(makeSessions);
     feed.start();
     feed.setUsersTabShown(true);
     EXPECT_FALSE(feed.demanded());
@@ -356,7 +387,7 @@ TEST(UserSessionsFeedTest, UnsupportedSessionsAreNeverRead)
     EXPECT_FALSE(feed.canAct(SessionAction::SignOut));
     feed.stop();
 
-    const UserSessionsFeed neverStarted([unsupported] { return unsupported; });
+    const UserSessionsFeed neverStarted(makeSessions);
     EXPECT_EQ(neverStarted.publishedVersion(), 0U);
 }
 

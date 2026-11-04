@@ -39,6 +39,7 @@ void UserSessionsFeed::start()
     m_Model = std::make_shared<Domain::UsersModel>(m_Sessions);
     m_Gate = std::make_shared<SamplingGate>(m_Model);
     m_Actions.emplace(m_Sessions);
+    applyDemand(); // a view shown before start(), or still shown across a stop() and start()
 }
 
 void UserSessionsFeed::stop()
@@ -48,7 +49,7 @@ void UserSessionsFeed::stop()
     m_Gate.reset();
     m_Model.reset();
     m_Sessions.reset();
-    m_Demanded = false;
+    m_Demanded = false; // the gate is gone; the views' inputs stay, so start() resumes what they demand
 }
 
 void UserSessionsFeed::setUsersTabShown(bool shown)
