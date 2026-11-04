@@ -323,6 +323,68 @@ TEST_F(ProcessDetailsChartsRenderTest, OverviewDrawsCpuMemoryAndResources)
     EXPECT_EQ(plots[2], resourceSeries());
 }
 
+/// Where the line in @p color starts in the plot whose series are @p labels, as a fraction of its plot
+/// area's width from the left edge (0: the edge), read from the vertices drawn in that colour inside
+/// the plot area; NaN when there is no such plot or line. Anti-aliasing fringes share the colour with a
+/// transparent alpha, so only the RGB is compared.
+[[nodiscard]] double lineStartFraction(const SeriesLabels& labels, const ImVec4& color)
+{
+    ImPlotContext& context = *ImPlot::GetCurrentContext();
+    for (int i = 0; i < context.Plots.GetBufSize(); ++i)
+    {
+        ImPlotPlot* plot = context.Plots.GetByIndex(i); // GetLegendLabel() is not const
+        SeriesLabels found;
+        for (int item = 0; plot != nullptr && item < plot->Items.GetLegendCount(); ++item)
+        {
+            found.emplace(plot->Items.GetLegendLabel(item));
+        }
+        if (plot == nullptr || found != labels)
+        {
+            continue;
+        }
+        const ImRect rect = plot->PlotRect;
+        constexpr ImU32 RGB_MASK = 0x00FFFFFFU;
+        const ImU32 rgb = ImGui::ColorConvertFloat4ToU32(color) & RGB_MASK;
+        float minX = FLT_MAX;
+        for (const ImGuiWindow* window : GImGui->Windows)
+        {
+            for (const ImDrawVert& vertex : window->DrawList->VtxBuffer)
+            {
+                if ((vertex.col & RGB_MASK) == rgb && rect.Contains(vertex.pos))
+                {
+                    minX = std::min(minX, vertex.pos.x);
+                }
+            }
+        }
+        return minX == FLT_MAX ? NOT_A_NUMBER : static_cast<double>((minX - rect.Min.x) / rect.GetWidth());
+    }
+    return NOT_A_NUMBER;
+}
+
+TEST_F(ProcessDetailsChartsRenderTest, ThePeakMemoryLineStartsAtTheProcesssFirstSample)
+{
+    // HISTORY_POINTS samples a second apart (59 s) in a 5-minute window: the lifetime-peak line ran
+    // from the axis's left edge, minutes before the process's first sample (#3433).
+    ChartInputs inputs(busyPoint);
+    // The axis scales to the series, not the peak, so put the line where the plot area shows it.
+    inputs.ctx.peakMemoryBytes = 30'000'000.0;
+    ProcessDetailsCharts charts;
+    renderOverview(charts, inputs.ctx);
+    renderOverview(charts, inputs.ctx);
+    const ImVec4 peakColor = UI::Theme::get().scheme().chartPeakLine;
+    const double partial = lineStartFraction(memorySeries(), peakColor);
+    ASSERT_FALSE(std::isnan(partial)) << "no Peak Memory line drawn";
+    EXPECT_GT(partial, 0.75); // 59 s from "now" in 300 s: about 80 % of the way across
+
+    // A window the history overfills (30 s of 59 s) still draws it from the axis's left edge.
+    inputs.ctx.maxHistorySeconds = 30.0;
+    renderOverview(charts, inputs.ctx);
+    renderOverview(charts, inputs.ctx);
+    const double full = lineStartFraction(memorySeries(), peakColor);
+    ASSERT_FALSE(std::isnan(full)) << "no Peak Memory line drawn";
+    EXPECT_LT(full, 0.02);
+}
+
 TEST_F(ProcessDetailsChartsRenderTest, OverviewFollowsTheSharedMemoryAndPowerCapabilities)
 {
     ChartInputs inputs(busyPoint);

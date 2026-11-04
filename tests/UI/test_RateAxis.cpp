@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstddef>
 #include <limits>
+#include <optional>
 #include <span>
 
 namespace UI::Widgets
@@ -153,6 +154,69 @@ TEST(RateAxisTest, FirstIndexAtOrAfterFindsTheWindowsFirstSample)
     EXPECT_EQ(firstIndexAtOrAfter(x, -60.0), 1U);
     EXPECT_EQ(firstIndexAtOrAfter(x, -100.0), 0U);
     EXPECT_EQ(firstIndexAtOrAfter(x, 1.0), 4U);
+}
+
+// ========== sampledXRange (#3433) ==========
+
+/// @p range, or NaN at both ends when there is none (after an ASSERT_TRUE that there is).
+[[nodiscard]] SampledXRange orNaN(const std::optional<SampledXRange>& range) noexcept
+{
+    constexpr double NAN_SECONDS = std::numeric_limits<double>::quiet_NaN();
+    return range.value_or(SampledXRange{.first = NAN_SECONDS, .last = NAN_SECONDS});
+}
+
+TEST(SampledXRangeTest, APartialWindowStartsAtTheFirstSample)
+{
+    // 40 s of history in a 5-minute window: the Peak Used line spanned all of it, from -300 s.
+    const std::array<double, 3> x{-40.0, -20.0, -1.0};
+    const auto range = sampledXRange(x, -300.0, 0.0);
+    ASSERT_TRUE(range.has_value());
+    EXPECT_DOUBLE_EQ(orNaN(range).first, -40.0);
+    EXPECT_DOUBLE_EQ(orNaN(range).last, -1.0);
+}
+
+TEST(SampledXRangeTest, AFullWindowStillSpansTheWholeAxis)
+{
+    // Trimming keeps an anchor sample left of the window's edge, and the newest can be stamped just
+    // after the frame's "now": both clip to the axis, as the line was drawn before.
+    const std::array<double, 4> x{-301.0, -150.0, -1.0, 0.25};
+    const auto range = sampledXRange(x, -300.0, 0.0);
+    ASSERT_TRUE(range.has_value());
+    EXPECT_DOUBLE_EQ(orNaN(range).first, -300.0);
+    EXPECT_DOUBLE_EQ(orNaN(range).last, 0.0);
+}
+
+TEST(SampledXRangeTest, AnEmptyHistoryHasNoRange)
+{
+    EXPECT_FALSE(sampledXRange({}, -300.0, 0.0).has_value());
+    const std::array<double, 2> unknown{std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::quiet_NaN()};
+    EXPECT_FALSE(sampledXRange(unknown, -300.0, 0.0).has_value());
+}
+
+TEST(SampledXRangeTest, SamplesOutsideTheWindowAreClipped)
+{
+    // History older than the window (it was shortened) clips to its left edge.
+    const std::array<double, 3> older{-900.0, -600.0, -30.0};
+    const auto clipped = sampledXRange(older, -60.0, 0.0);
+    ASSERT_TRUE(clipped.has_value());
+    EXPECT_DOUBLE_EQ(orNaN(clipped).first, -60.0);
+    EXPECT_DOUBLE_EQ(orNaN(clipped).last, -30.0);
+
+    // A history wholly left or right of the window covers none of it.
+    const std::array<double, 2> before{-900.0, -600.0};
+    EXPECT_FALSE(sampledXRange(before, -60.0, 0.0).has_value());
+    const std::array<double, 2> after{1.0, 2.0};
+    EXPECT_FALSE(sampledXRange(after, -60.0, 0.0).has_value());
+}
+
+TEST(SampledXRangeTest, NonFiniteTimesAtTheEndsAreSkipped)
+{
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const std::array<double, 4> x{nan, -20.0, -5.0, nan};
+    const auto range = sampledXRange(x, -60.0, 0.0);
+    ASSERT_TRUE(range.has_value());
+    EXPECT_DOUBLE_EQ(orNaN(range).first, -20.0);
+    EXPECT_DOUBLE_EQ(orNaN(range).last, -5.0);
 }
 
 // ========== cachedMaxOfSeriesSince / VisibleMaxCache (#843) ==========
