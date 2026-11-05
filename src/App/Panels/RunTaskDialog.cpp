@@ -107,7 +107,7 @@ Detail::ActionResultMessage runTaskResultMessage(std::string_view shown, bool as
     if (result.cancelled)
     {
         // Not an error: the user said no at the system's prompt (Windows: UAC, #3427).
-        return {.ok = true, .text = std::format("Didn't start {}: {}", shown, result.errorMessage)};
+        return {.ok = false, .text = std::format("Didn't start {}: {}", shown, result.errorMessage), .neutral = true};
     }
     if (!result.success)
     {

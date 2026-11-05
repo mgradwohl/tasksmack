@@ -1818,7 +1818,7 @@ void ProcessesPanel::renderContent()
     }
     ImGui::SetCursorPosX(statusLayout.x);
     {
-        const bool colored = showActionResult;
+        const bool colored = showActionResult && !m_RowActionResult.neutral; // a cancelled run: the normal colour (#3427)
         if (colored)
         {
             ImGui::PushStyleColor(ImGuiCol_Text, m_RowActionResult.ok ? theme.scheme().textSuccess : theme.scheme().textError);

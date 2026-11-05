@@ -136,7 +136,8 @@ TEST(RunTaskResultTest, ShortNameAndResultLines)
     // #3427: a dismissed UAC prompt says it was cancelled, not that it failed.
     const Detail::ActionResultMessage cancelled =
         runTaskResultMessage("notepad", true, Platform::ProcessActionResult::cancelledByUser("the administrator prompt was cancelled"));
-    EXPECT_TRUE(cancelled.ok);
+    EXPECT_FALSE(cancelled.ok); // nothing started
+    EXPECT_TRUE(cancelled.neutral);
     EXPECT_EQ(cancelled.text, "Didn't start notepad: the administrator prompt was cancelled");
 }
 
