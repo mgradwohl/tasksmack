@@ -890,18 +890,22 @@ TEST(BrokeredProcessActionsTest, RunAuthorizedTurnsEfficiencyModeOnThroughTheHel
 TEST(BrokeredProcessActionsTest, ASchedulingPolicyRefusedInProcessIsRetriedThroughTheHelper)
 {
     Fixture f(/*connected=*/true);
-    EXPECT_TRUE(f.actions->setSchedPolicy(TARGET, SchedPolicy::Batch).success);
+    EXPECT_TRUE(f.actions->setSchedPolicy(TARGET, SchedPolicy::Batch, Platform::RealtimeThreads::Keep).success);
     EXPECT_TRUE(f.broker->requests().empty()) << "done in process: the helper isn't asked";
 
     f.inner->setSchedPolicyResult(ProcessActionResult::denied("Permission denied: process 4242 belongs to another user"));
-    EXPECT_TRUE(f.actions->setSchedPolicy(TARGET, SchedPolicy::Normal).success);
+    EXPECT_TRUE(f.actions->setSchedPolicy(TARGET, SchedPolicy::Normal, Platform::RealtimeThreads::Change).success);
     EXPECT_EQ(f.inner->setSchedPolicyCount(), 2);
+    EXPECT_EQ(f.inner->lastRealtimeThreads(), Platform::RealtimeThreads::Change);
     std::vector<Broker::Request> requests = f.broker->requests();
     ASSERT_EQ(requests.size(), 1U);
-    EXPECT_EQ(requests[0], (Broker::Request{Broker::SchedPolicyRequest{.target = TARGET, .policy = SchedPolicy::Normal}}));
+    EXPECT_EQ(requests[0],
+              (Broker::Request{Broker::SchedPolicyRequest{
+                  .target = TARGET, .policy = SchedPolicy::Normal, .realtimeThreads = Platform::RealtimeThreads::Change}}))
+        << "the dialog's warning travels with the retry";
 
     f.inner->setSchedPolicyResult(ProcessActionResult::error("PID 1 is init"));
-    EXPECT_FALSE(f.actions->setSchedPolicy(TARGET, SchedPolicy::Idle).success);
+    EXPECT_FALSE(f.actions->setSchedPolicy(TARGET, SchedPolicy::Idle, Platform::RealtimeThreads::Keep).success);
     EXPECT_EQ(f.broker->requests().size(), 1U);
 
     // The capability is the inner actions', passed through.
@@ -1052,7 +1056,7 @@ TEST(BrokeredProcessActionsTest, OverActionsWithOnlyTheDefaultsTheDefaultsShowTh
 
     // A scheduling policy (#3086): not offered, refused as unavailable, never retried through the helper.
     EXPECT_FALSE(actions.actionCapabilities().canSetSchedPolicy);
-    const ProcessActionResult policy = actions.setSchedPolicy(TARGET, SchedPolicy::Batch);
+    const ProcessActionResult policy = actions.setSchedPolicy(TARGET, SchedPolicy::Batch, Platform::RealtimeThreads::Keep);
     EXPECT_FALSE(policy.success);
     EXPECT_EQ(policy.errorMessage, "Setting the scheduling policy isn't available on this system");
     EXPECT_FALSE(policy.permissionDenied);

@@ -59,6 +59,24 @@ TEST(ProcessSchedPolicyDialogTest, APolicyItDoesntOfferOpensWithNothingChosen)
     }
 }
 
+// Apply may take real-time threads off real time only when the dialog warned that the process runs real time or
+// Deadline; opened on Normal, Batch, Idle or an unread policy, it keeps them, whatever the process turns into.
+TEST(ProcessSchedPolicyDialogTest, ApplyChangesRealTimeThreadsOnlyAfterTheWarning)
+{
+    for (const SchedPolicy current : {SchedPolicy::Fifo, SchedPolicy::RoundRobin, SchedPolicy::Deadline})
+    {
+        ProcessSchedPolicyDialog dialog;
+        dialog.open({.pid = 42, .startTimeTicks = 7}, "audio", current);
+        EXPECT_EQ(dialog.realtimeThreads(), Platform::RealtimeThreads::Change) << static_cast<int>(current);
+    }
+    for (const SchedPolicy current : {SchedPolicy::Normal, SchedPolicy::Batch, SchedPolicy::Idle, SchedPolicy::Unknown})
+    {
+        ProcessSchedPolicyDialog dialog;
+        dialog.open({.pid = 42, .startTimeTicks = 7}, "server", current);
+        EXPECT_EQ(dialog.realtimeThreads(), Platform::RealtimeThreads::Keep) << static_cast<int>(current);
+    }
+}
+
 TEST(ProcessSchedPolicyDialogTest, OffersNormalBatchAndIdleEachWithALine)
 {
     ASSERT_EQ(SCHED_POLICY_CHOICES.size(), 3U);

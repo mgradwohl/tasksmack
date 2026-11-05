@@ -1129,7 +1129,7 @@ ProcessActionResult LinuxProcessControl::setAffinity(const ProcessTarget& target
         m_Syscalls, *result, pidfd, target, AFFINITY_WORDING, setting, affinityErrorMessage(result->firstError, target.pid));
 }
 
-ProcessActionResult LinuxProcessControl::setSchedPolicy(const ProcessTarget& target, SchedPolicy policy)
+ProcessActionResult LinuxProcessControl::setSchedPolicy(const ProcessTarget& target, SchedPolicy policy, RealtimeThreads realtimeThreads)
 {
     if (target.pid <= 0)
     {
@@ -1171,25 +1171,16 @@ ProcessActionResult LinuxProcessControl::setSchedPolicy(const ProcessTarget& tar
         return identity;
     }
 
-    // The dialog showed the process's policy as its main thread's (the snapshot's). When that isn't real time, a
-    // real-time worker (an audio thread under a Normal main thread) keeps its policy, so Apply never takes a thread
-    // off real time that the user wasn't shown; when it is, the dialog warned, and every thread changes.
+    // Real-time threads change only when the dialog warned that the process runs real time (it showed the main
+    // thread's policy, from the snapshot): RealtimeThreads::Change. Otherwise every real-time thread keeps its
+    // policy, the main thread included: an audio worker under a Normal main thread, or a process that turned real
+    // time after the dialog opened, is never taken off real time without that warning.
+    const bool keepRealtime = realtimeThreads != RealtimeThreads::Change;
     const auto isRealtime = [](int linux) noexcept
     {
         const int base = linux & ~SCHED_RESET_ON_FORK;
         return base == SCHED_FIFO || base == SCHED_RR || base == SCHED_DEADLINE;
     };
-    bool mainThreadRealtime = false;
-    if (m_Syscalls.getScheduler != nullptr)
-    {
-        const int leader = m_Syscalls.getScheduler(static_cast<id_t>(target.pid));
-        if (leader < 0)
-        {
-            const int err = errno;
-            return ProcessActionResult::error(schedPolicyErrorMessage(err, policy, target.pid));
-        }
-        mainThreadRealtime = isRealtime(leader);
-    }
 
     // The policy is per thread, as nice is: sched_setscheduler(2) with the PID changes only the main
     // thread, so every thread is set, threads started meanwhile included (#3086, as #1104).
@@ -1197,7 +1188,7 @@ ProcessActionResult LinuxProcessControl::setSchedPolicy(const ProcessTarget& tar
     const auto result = reniceThreads(
         target.pid,
         m_Syscalls.listThreads,
-        [this, linuxPolicy, mainThreadRealtime, &isRealtime, &keptRealtime](id_t tid) -> int
+        [this, linuxPolicy, keepRealtime, &isRealtime, &keptRealtime](id_t tid) -> int
         {
             // A thread's SCHED_RESET_ON_FORK is kept (rtkit sets it on the real-time threads it grants): clearing it
             // would change what the thread's children start with, and the kernel refuses an unprivileged caller
@@ -1211,7 +1202,7 @@ ProcessActionResult LinuxProcessControl::setSchedPolicy(const ProcessTarget& tar
                     return errno;
                 }
             }
-            if (!mainThreadRealtime && isRealtime(current))
+            if (keepRealtime && isRealtime(current))
             {
                 ++keptRealtime;
                 return 0; // left as it is: see above

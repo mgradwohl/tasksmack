@@ -152,7 +152,8 @@ class LinuxProcessControl : public IProcessActions
     [[nodiscard]] IoPriorityReadResult getIoPriority(const ProcessTarget& target) override;
     [[nodiscard]] ProcessActionResult setAffinity(const ProcessTarget& target, const CpuAffinity& cpus) override;
     /// Normal, Batch or Idle on every thread (#3086); any other policy is refused before sched_setscheduler(2).
-    [[nodiscard]] ProcessActionResult setSchedPolicy(const ProcessTarget& target, SchedPolicy policy) override;
+    [[nodiscard]] ProcessActionResult
+    setSchedPolicy(const ProcessTarget& target, SchedPolicy policy, RealtimeThreads realtimeThreads) override;
     /// Efficiency mode (#3202, LinuxEfficiencyMode.h): on, nice 19 for every thread and, where it may and the
     /// process is alone in its cgroup, the cgroup's cpu.weight at 1; off, what on changed put back.
     [[nodiscard]] ProcessActionResult setEfficiencyMode(const ProcessTarget& target, bool on) override;

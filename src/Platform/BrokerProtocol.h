@@ -200,11 +200,13 @@ struct AffinityRequest
 
 /// Set a process's CPU scheduling policy (#3086, protocol v15, Linux): IProcessActions::setSchedPolicy(). Normal,
 /// Batch or Idle only: the decoder refuses every other policy, so the helper is never asked for real time (#3219).
-/// The answer is an ActionResult.
+/// realtimeThreads says whether the dialog warned that the process runs real time (RealtimeThreads::Change): only
+/// then are its real-time threads changed. The answer is an ActionResult.
 struct SchedPolicyRequest
 {
     ProcessTarget target;
     SchedPolicy policy = SchedPolicy::Normal;
+    RealtimeThreads realtimeThreads = RealtimeThreads::Keep;
     friend bool operator==(const SchedPolicyRequest&, const SchedPolicyRequest&) = default;
 };
 
@@ -1108,11 +1110,12 @@ namespace Detail
     return MessageKind::SetAffinity;
 }
 
-/// SetSchedPolicy (#3086): the target, then the policy as SchedPolicy's value.
+/// SetSchedPolicy (#3086): the target, the policy as SchedPolicy's value, then RealtimeThreads' value.
 [[nodiscard]] inline MessageKind encodePayload(Writer& writer, const SchedPolicyRequest& policy)
 {
     writer.target(policy.target);
     writer.u8(static_cast<std::uint8_t>(policy.policy));
+    writer.u8(static_cast<std::uint8_t>(policy.realtimeThreads));
     return MessageKind::SetSchedPolicy;
 }
 
@@ -1195,7 +1198,8 @@ namespace Detail
     return AffinityRequest{.target = target, .cpus = std::move(cpus)};
 }
 
-/// A SetSchedPolicy payload (#3086): the target, then the policy, refused unless Normal, Batch or Idle. Real time
+/// A SetSchedPolicy payload (#3086): the target, the policy, refused unless Normal, Batch or Idle, then
+/// RealtimeThreads, refused unless Keep or Change. Real time
 /// (FIFO, round robin), Deadline and Unknown are refused here, before the helper acts, as LinuxProcessControl
 /// refuses them too: the helper may change a scheduling policy only to one of those three (#3219 is real time).
 [[nodiscard]] inline SchedPolicyRequest decodeSchedPolicyRequest(Reader& reader)
@@ -1209,7 +1213,15 @@ namespace Detail
         reader.fail();
         policy = SchedPolicy::Normal;
     }
-    return SchedPolicyRequest{.target = target, .policy = policy};
+    // Keep (0) or Change (1); any other byte is refused, never read as consent to demote real-time threads.
+    const std::uint8_t realtime = reader.u8();
+    if (realtime > static_cast<std::uint8_t>(RealtimeThreads::Change))
+    {
+        reader.fail();
+    }
+    const RealtimeThreads realtimeThreads =
+        realtime == static_cast<std::uint8_t>(RealtimeThreads::Change) ? RealtimeThreads::Change : RealtimeThreads::Keep;
+    return SchedPolicyRequest{.target = target, .policy = policy, .realtimeThreads = realtimeThreads};
 }
 
 /// A ReadProcessCounters payload: whether sockets are wanted (0 or 1), the count (at most

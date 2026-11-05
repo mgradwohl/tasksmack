@@ -777,10 +777,12 @@ class MockProcessActions : public Platform::IProcessActions
     {
         m_SetSchedPolicyResult = std::move(result);
     }
-    [[nodiscard]] Platform::ProcessActionResult setSchedPolicy(const Platform::ProcessTarget& target, Platform::SchedPolicy policy) override
+    [[nodiscard]] Platform::ProcessActionResult
+    setSchedPolicy(const Platform::ProcessTarget& target, Platform::SchedPolicy policy, Platform::RealtimeThreads realtimeThreads) override
     {
         m_LastTarget = target;
         m_LastSchedPolicy = policy;
+        m_LastRealtimeThreads = realtimeThreads;
         ++m_SetSchedPolicyCount;
         return m_SetSchedPolicyResult;
     }
@@ -791,6 +793,10 @@ class MockProcessActions : public Platform::IProcessActions
     [[nodiscard]] Platform::SchedPolicy lastSchedPolicy() const
     {
         return m_LastSchedPolicy;
+    }
+    [[nodiscard]] Platform::RealtimeThreads lastRealtimeThreads() const
+    {
+        return m_LastRealtimeThreads;
     }
 
     /// runAuthorized() (#2308): records the action and returns this.
@@ -1190,6 +1196,7 @@ class MockProcessActions : public Platform::IProcessActions
     Platform::CpuAffinity m_LastAffinity;
     int m_SetSchedPolicyCount = 0;
     Platform::SchedPolicy m_LastSchedPolicy = Platform::SchedPolicy::Unknown;
+    Platform::RealtimeThreads m_LastRealtimeThreads = Platform::RealtimeThreads::Keep;
     Platform::ProcessActionResult m_SetSchedPolicyResult = Platform::ProcessActionResult::ok();
     Platform::ProcessActionResult m_RunAuthorizedResult = Platform::ProcessActionResult::ok();
     int m_RunAuthorizedCount = 0;

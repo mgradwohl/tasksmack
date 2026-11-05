@@ -282,13 +282,17 @@ void ProcessActionsView::renderSchedPolicyDialog(Platform::IProcessActions* acti
         return;
     }
     const Platform::ProcessTarget target = m_SchedPolicyDialog.target();
+    const Platform::RealtimeThreads realtime = m_SchedPolicyDialog.realtimeThreads();
     runAction(
         actions,
         std::format("Setting the scheduling policy of PID {}...", target.pid),
-        [actions, target, policy = *policy] { return actions->setSchedPolicy(target, policy); },
+        [actions, target, policy = *policy, realtime] { return actions->setSchedPolicy(target, policy, realtime); },
         [name = m_SchedPolicyDialog.name(), pid = target.pid, policy = *policy](const Platform::ProcessActionResult& result)
         { return schedPolicyResultMessage(name, pid, policy, result); },
-        Platform::AuthorizedAction{.kind = Platform::AuthorizedAction::Kind::SetSchedPolicy, .target = target, .schedPolicy = *policy});
+        Platform::AuthorizedAction{.kind = Platform::AuthorizedAction::Kind::SetSchedPolicy,
+                                   .target = target,
+                                   .schedPolicy = *policy,
+                                   .realtimeThreads = realtime});
 }
 
 void ProcessActionsView::renderSyscallTraceButton(Platform::IProcessActions* actions,

@@ -99,6 +99,14 @@ class ProcessSchedPolicyDialog
         return m_Current;
     }
 
+    /// What Apply may do with real-time threads: Change only when the dialog opened on a real-time or Deadline
+    /// policy, the one case it warns that applying takes the process off it; Keep otherwise, so a process that
+    /// turned real time after the dialog opened keeps its real-time threads.
+    [[nodiscard]] Platform::RealtimeThreads realtimeThreads() const noexcept
+    {
+        return Platform::isRealtimeOrDeadline(m_Current) ? Platform::RealtimeThreads::Change : Platform::RealtimeThreads::Keep;
+    }
+
     /// The process Apply is for, by identity, and its name.
     [[nodiscard]] const Platform::ProcessTarget& target() const noexcept
     {

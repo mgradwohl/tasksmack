@@ -73,7 +73,7 @@ Broker::Request brokerRequestFor(const AuthorizedAction& action)
     case Kind::SetAffinity:
         return Broker::AffinityRequest{.target = action.target, .cpus = action.cpus};
     case Kind::SetSchedPolicy:
-        return Broker::SchedPolicyRequest{.target = action.target, .policy = action.schedPolicy};
+        return Broker::SchedPolicyRequest{.target = action.target, .policy = action.schedPolicy, .realtimeThreads = action.realtimeThreads};
     case Kind::SendSignal:
         return Broker::SignalRequest{.target = action.target, .signal = brokerSignalFor(action.signal)};
     case Kind::SetEfficiencyMode:
@@ -207,10 +207,11 @@ ProcessActionResult BrokeredProcessActions::setAffinity(const ProcessTarget& tar
     return retried(m_Inner->setAffinity(target, cpus), {.kind = AuthorizedAction::Kind::SetAffinity, .target = target, .cpus = cpus});
 }
 
-ProcessActionResult BrokeredProcessActions::setSchedPolicy(const ProcessTarget& target, SchedPolicy policy)
+ProcessActionResult BrokeredProcessActions::setSchedPolicy(const ProcessTarget& target, SchedPolicy policy, RealtimeThreads realtimeThreads)
 {
-    return retried(m_Inner->setSchedPolicy(target, policy),
-                   {.kind = AuthorizedAction::Kind::SetSchedPolicy, .target = target, .schedPolicy = policy});
+    return retried(
+        m_Inner->setSchedPolicy(target, policy, realtimeThreads),
+        {.kind = AuthorizedAction::Kind::SetSchedPolicy, .target = target, .schedPolicy = policy, .realtimeThreads = realtimeThreads});
 }
 
 ProcessActionResult BrokeredProcessActions::closeConnection(const ProcessTarget& target, std::uint64_t socketInode)

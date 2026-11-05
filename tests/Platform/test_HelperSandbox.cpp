@@ -143,8 +143,9 @@ TEST_F(HelperSandboxTest, ItsOwnJobStillWorks)
 
 // #3086: Set scheduling policy may move a thread to Batch or Idle (and back to Normal, with CAP_SYS_NICE), with
 // SCHED_RESET_ON_FORK kept where the thread had it; real time (with or without the flag) and sched_setattr stay
-// refused. FIFO needs privilege the test may have, so its EPERM is checked as the filter's: with the flag allowed for
-// Batch, a FIFO refusal can't be the flag's.
+// refused. FIFO is asked for with priority 0, which the kernel rejects as invalid (EINVAL) before it checks privilege:
+// so EPERM can only be the filter's refusal, on a privileged runner or not, and with the flag allowed for Batch, a FIFO
+// refusal can't be the flag's.
 TEST_F(HelperSandboxTest, OnlyNormalBatchAndIdleSchedulingPoliciesAreSet)
 {
     EXPECT_EQ(underFilter(HelperSandbox::Mode::Enforce,
@@ -176,14 +177,14 @@ TEST_F(HelperSandboxTest, OnlyNormalBatchAndIdleSchedulingPoliciesAreSet)
     EXPECT_EQ(underFilter(HelperSandbox::Mode::Enforce,
                           []
                           {
-                              const sched_param param{.sched_priority = 1};
+                              const sched_param param{.sched_priority = 0}; // invalid for FIFO: EINVAL unless filtered
                               return errorOf(::sched_setscheduler(0, SCHED_FIFO | SCHED_RESET_ON_FORK, &param));
                           }),
               EPERM);
     EXPECT_EQ(underFilter(HelperSandbox::Mode::Enforce,
                           []
                           {
-                              const sched_param param{.sched_priority = 1};
+                              const sched_param param{.sched_priority = 0}; // invalid for FIFO: EINVAL unless filtered
                               return errorOf(::sched_setscheduler(0, SCHED_FIFO, &param));
                           }),
               EPERM);

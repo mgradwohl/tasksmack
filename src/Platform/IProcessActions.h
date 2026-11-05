@@ -246,7 +246,8 @@ struct AuthorizedAction
     std::int32_t level = 4;
     // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
     CpuAffinity cpus{};
-    SchedPolicy schedPolicy = SchedPolicy::Normal; ///< SetSchedPolicy: Normal, Batch or Idle
+    SchedPolicy schedPolicy = SchedPolicy::Normal;           ///< SetSchedPolicy: Normal, Batch or Idle
+    RealtimeThreads realtimeThreads = RealtimeThreads::Keep; ///< SetSchedPolicy: whether the dialog warned
 };
 
 /// Run new task (#3065): a program to start, as Task Manager's File > Run new task.
@@ -406,14 +407,18 @@ class IProcessActions
     }
 
     /// Sets the target's CPU scheduling policy (#3086) on every one of its threads: Normal, Batch or Idle
-    /// only; any other policy is refused before the OS is asked (real time is #3219). Refused, as every
+    /// only; any other policy is refused before the OS is asked (real time is #3219). A thread under a
+    /// real-time policy changes only with RealtimeThreads::Change, which the dialog passes only when it warned
+    /// that the process runs real time; with Keep it is left as it is and the result says so. Refused, as every
     /// action is, unless the process at the target's PID is the target. The default refuses it as
     /// unsupported, matching ProcessActionCapabilities::canSetSchedPolicy's default (false), which an
     /// implementation that does not override this must leave as it is.
-    [[nodiscard]] virtual ProcessActionResult setSchedPolicy(const ProcessTarget& target, SchedPolicy policy)
+    [[nodiscard]] virtual ProcessActionResult
+    setSchedPolicy(const ProcessTarget& target, SchedPolicy policy, RealtimeThreads realtimeThreads)
     {
         static_cast<void>(target);
         static_cast<void>(policy);
+        static_cast<void>(realtimeThreads);
         return ProcessActionResult::error("Setting the scheduling policy isn't available on this system");
     }
 
