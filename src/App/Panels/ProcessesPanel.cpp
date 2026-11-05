@@ -19,6 +19,7 @@
 #include "App/Panels/ProcessDisplayFreeze.h"
 #include "App/Panels/ProcessDumpView.h"
 #include "App/Panels/ProcessFilterCache.h"
+#include "App/Panels/ProcessGroupTotals.h"
 #include "App/Panels/ProcessGrouping.h"
 #include "App/Panels/ProcessLookup.h"
 #include "App/Panels/ProcessPins.h"
@@ -1048,7 +1049,8 @@ void ProcessesPanel::onAttach()
     m_ColumnSettings.keepUnhideableColumnsVisible(); // Whatever the settings were given (#1209)
     m_MeterSettings = UserConfig::get().settings().processMeters;
     m_Pins = ProcessPins::Pins(UserConfig::get().settings().pinnedProcesses); // #3061
-    m_GroupBy = UserConfig::get().settings().processGroupBy;                  // #3068
+    // #3068; the saved mode where this system offers it (#3428), checked again as capabilities arrive.
+    m_GroupBy = ProcessGrouping::effectiveGroupBy(UserConfig::get().settings().processGroupBy, processCapabilities());
 
     // m_RefreshInterval starts at the SamplingConfig default, and the model at its built-in history
     // length; ShellLayer raises the configured values as events on its first update (#1079).
@@ -1608,6 +1610,15 @@ void ProcessesPanel::renderContent()
             m_RequestedColumns = *changed;
         }
     }
+    // The saved Group mode where this system offers it, else None (#3428). The saved choice is kept, and
+    // checked each frame: the capabilities are the defaults until the first sample is adopted.
+    if (const ProcessGrouping::GroupBy active =
+            ProcessGrouping::effectiveGroupBy(UserConfig::get().settings().processGroupBy, processCapabilities());
+        active != m_GroupBy)
+    {
+        m_GroupBy = active;
+        m_GroupsBuiltFor.reset();
+    }
 
     // Prune row format cache entries for processes no longer present, once per new snapshot
     // generation (not per frame). Entries themselves are built lazily, on demand, by
@@ -1837,13 +1848,8 @@ void ProcessesPanel::renderContent()
         const UI::Widgets::FrameOutlineScope frameOutline;
         if (ImGui::BeginCombo("##GroupBy", preview.c_str()))
         {
-            for (const ProcessGrouping::GroupBy mode : {
-                     ProcessGrouping::GroupBy::None,
-                     ProcessGrouping::GroupBy::Unit,
-                     ProcessGrouping::GroupBy::Container,
-                     ProcessGrouping::GroupBy::App,
-                     ProcessGrouping::GroupBy::User,
-                 })
+            // Only the modes this system has the data for (#3428): Container and App are Linux's.
+            for (const ProcessGrouping::GroupBy mode : ProcessGrouping::offeredGroupModes(processCapabilities()))
             {
                 const std::string label(ProcessGrouping::groupByLabel(mode));
                 if (ImGui::Selectable(label.c_str(), mode == m_GroupBy))
@@ -1854,7 +1860,14 @@ void ProcessesPanel::renderContent()
             ImGui::EndCombo();
         }
     }
-    ImGui::SetItemTooltip("Group processes by systemd unit, container, app or user, each group under a row with its totals");
+    if (const Platform::ProcessCapabilities groupCaps = processCapabilities(); groupCaps.hasContainer || groupCaps.hasAppUnits)
+    {
+        ImGui::SetItemTooltip("Group processes by systemd unit, container, app or user, each group under a row with its totals");
+    }
+    else
+    {
+        ImGui::SetItemTooltip("Group processes by service or user, each group under a row with its totals");
+    }
     if (offerRunTask)
     {
         ImGui::SameLine();
@@ -3012,11 +3025,13 @@ void ProcessesPanel::setTreeView(bool enabled)
     }
     m_TreeViewEnabled = enabled;
     m_NameWidthSyncPending = true;
-    if (m_TreeViewEnabled && m_GroupBy != ProcessGrouping::GroupBy::None)
+    if (ProcessGrouping::GroupBy& saved = UserConfig::get().settings().processGroupBy;
+        m_TreeViewEnabled && (m_GroupBy != ProcessGrouping::GroupBy::None || saved != ProcessGrouping::GroupBy::None))
     {
-        // Tree and Group by are separate views (#3068): Tree sets the group back to None.
+        // Tree and Group by are separate views (#3068): Tree sets the group back to None, the saved one
+        // too, even one this system doesn't offer (#3428), so it can't come back under the tree.
         m_GroupBy = ProcessGrouping::GroupBy::None;
-        UserConfig::get().settings().processGroupBy = m_GroupBy;
+        saved = m_GroupBy;
         m_GroupsBuiltFor.reset();
     }
     if (m_TreeViewEnabled)
@@ -3523,9 +3538,9 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
     // Efficiency mode (#3071), as Task Manager's row menu has it: one process, ticked while it is on.
     // Turning it on is confirmed; turning it off isn't.
     const bool on = Detail::isInEfficiencyMode(proc);
-    if (const Detail::EfficiencyModeToggle toggle =
-            Detail::efficiencyModeToggle(can, {.pid = proc.pid, .startTimeTicks = proc.startTimeTicks}, on, !actionsIdle, batchCount);
-        toggle.state != Detail::EfficiencyModeToggleState::Hidden)
+    const Detail::EfficiencyModeToggle toggle =
+        Detail::efficiencyModeToggle(can, {.pid = proc.pid, .startTimeTicks = proc.startTimeTicks}, on, !actionsIdle, batchCount);
+    if (toggle.state != Detail::EfficiencyModeToggleState::Hidden)
     {
         ImGui::Separator();
         if (ImGui::MenuItem(Detail::EFFICIENCY_MODE_LABEL, nullptr, on, toggle.state == Detail::EfficiencyModeToggleState::Enabled))
@@ -3533,6 +3548,25 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
             toggleRowEfficiencyMode(proc, on);
         }
         ImGui::SetItemTooltip("%s", toggle.tooltip); // a disabled item still says why
+    }
+    // The Realtime priority class (#3429, Windows): one process, always confirmed with a warning.
+    if (const Detail::RealtimePriorityItem realtime =
+            Detail::realtimePriorityItem(can,
+                                         {.pid = proc.pid, .startTimeTicks = proc.startTimeTicks},
+                                         proc.priorityClass == Domain::Priority::PriorityClass::Realtime,
+                                         !actionsIdle,
+                                         batchCount);
+        realtime.state != Detail::RealtimePriorityState::Hidden)
+    {
+        if (toggle.state == Detail::EfficiencyModeToggleState::Hidden) // else it shares Efficiency mode's group
+        {
+            ImGui::Separator();
+        }
+        if (ImGui::MenuItem(Detail::SET_REALTIME_PRIORITY_LABEL, nullptr, false, realtime.state == Detail::RealtimePriorityState::Enabled))
+        {
+            requestRowAction(Detail::ProcessAction::SetRealtimePriority, proc);
+        }
+        ImGui::SetItemTooltip("%s", realtime.tooltip);
     }
     // One priority for the whole selection (#1484): picked in its own dialog, then confirmed as a batch.
     // A single process's priority stays in Process Details' Actions block.
@@ -3631,12 +3665,15 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
 
 void ProcessesPanel::setGroupBy(ProcessGrouping::GroupBy groupBy)
 {
-    if (groupBy == m_GroupBy)
+    // Choosing None while a saved mode this system doesn't offer stands in for it (#3428) replaces the
+    // saved mode, so the comparison is with both.
+    ProcessGrouping::GroupBy& saved = UserConfig::get().settings().processGroupBy;
+    if (groupBy == m_GroupBy && groupBy == saved)
     {
         return;
     }
     m_GroupBy = groupBy;
-    UserConfig::get().settings().processGroupBy = groupBy; // saved with the other settings
+    saved = groupBy; // saved with the other settings
     m_GroupsBuiltFor.reset();
     if (groupBy != ProcessGrouping::GroupBy::None && m_TreeViewEnabled)
     {
@@ -3743,7 +3780,7 @@ void ProcessesPanel::renderGroupHeaderRow(std::size_t groupIndex)
         {
             const std::string label = std::format("{} {} ({})",
                                                   collapsed ? ICON_FA_CARET_RIGHT : ICON_FA_CARET_DOWN,
-                                                  group.key.empty() ? ProcessGrouping::UNGROUPED_LABEL : std::string_view(group.key),
+                                                  group.key.empty() ? ProcessGrouping::UNGROUPED_LABEL : std::string_view(group.label),
                                                   group.members.size());
             static_cast<void>(
                 UI::Widgets::cellText(label,

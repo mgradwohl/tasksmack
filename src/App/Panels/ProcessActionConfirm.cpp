@@ -206,7 +206,7 @@ Outcome render(bool& showRequested, Detail::ProcessAction action, std::string_vi
     }
     return renderOpen(showRequested,
                       Detail::actionLabel(action),
-                      Detail::isDestructiveAction(action),
+                      Detail::confirmsInDanger(action),
                       Detail::confirmTitle(action, processName, pid),
                       Detail::confirmBody(action, processName, pid),
                       {});
@@ -214,7 +214,7 @@ Outcome render(bool& showRequested, Detail::ProcessAction action, std::string_vi
 
 Outcome renderText(bool& showRequested, Detail::ProcessAction action, std::string_view title, std::string_view question, bool dismiss)
 {
-    return renderLabelled(showRequested, Detail::actionLabel(action), Detail::isDestructiveAction(action), title, question, dismiss);
+    return renderLabelled(showRequested, Detail::actionLabel(action), Detail::confirmsInDanger(action), title, question, dismiss);
 }
 
 Outcome renderLabelled(bool& showRequested,

@@ -177,6 +177,8 @@ template<typename SnapshotVector>
 #endif
     case Detail::ProcessAction::EfficiencyModeOff:
         return std::format("{} processes will leave Efficiency mode, and their priorities will be restored.", count);
+    case Detail::ProcessAction::SetRealtimePriority: // one process at a time (#3429), never a batch: said for completeness
+        return std::format("{} processes will run at the Realtime priority class, which can make the desktop unresponsive.", count);
     case Detail::ProcessAction::None:
         break;
     }

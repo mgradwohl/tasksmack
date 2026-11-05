@@ -267,6 +267,8 @@ set(TASKSMACK_SOURCES
     src/App/Panels/ConnectionsView.cpp
     src/App/Panels/UsersPanel.cpp # the Users tab (#3076)
     src/App/Panels/UsersView.cpp
+    src/App/Panels/UserGrouping.cpp # who a process or session belongs to: the Users tab and Group: User (#3377)
+    src/App/Panels/UserSessionsFeed.cpp # the signed-in sessions, read once for every view that shows them (#3377)
     src/App/Panels/SystemInfoPanel.cpp
     src/App/Panels/SystemInfoSections.cpp
     src/App/Panels/SystemInfoView.cpp
@@ -377,6 +379,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsTaskManagerInstall.cpp # Program Files, and who can change an elevated copy (#3280)
     src/Platform/Windows/WindowsUserSessions.cpp # the Users tab's WTS sessions, Disconnect and Sign out (#3076)
     src/Platform/Windows/WindowsFolderPicker.cpp
+    src/Platform/Windows/WindowsFileLocation.cpp # Open file location: SHOpenFolderAndSelectItems, or explorer.exe /select (#3426)
     src/Platform/Windows/WindowsProcessConnections.cpp
     src/Platform/Windows/WindowsProcessEnvironmentReader.cpp # a process's environment block, out of its PEB (#2569)
     src/Platform/Windows/WindowsProcessIconSource.cpp
@@ -558,6 +561,7 @@ set(TASKSMACK_HEADERS
     src/Platform/Synthetic/SyntheticWorkload.h
     src/Domain/ProcessSnapshot.h
     src/Domain/ProcessModel.h
+    src/Domain/ProcessGeneration.h
     src/Domain/SocketTrafficAccumulator.h
     src/Domain/ProcessConnections.h
     src/Domain/ProcessModules.h
@@ -566,6 +570,7 @@ set(TASKSMACK_HEADERS
     src/Domain/ISamplable.h
     src/Domain/PublicationSlot.h
     src/Domain/Worker.h
+    src/Domain/RateTracker.h
     src/Domain/SharedHistory.h
     src/Domain/GPUSnapshot.h
     src/Domain/GPUModel.h
@@ -643,6 +648,7 @@ elseif(WIN32)
         src/Platform/Windows/WindowsProcessMachine.h
         src/Platform/Windows/WindowsProcessMachineMath.h
         src/Platform/Windows/WindowsFolderPicker.h
+        src/Platform/Windows/WindowsFileLocation.h
         src/Platform/Windows/WindowsProcessConnections.h
         src/Platform/Windows/WindowsProcessEnvironmentReader.h
         src/Platform/Windows/WindowsProcessIconSource.h
@@ -1036,7 +1042,8 @@ if(WIN32)
     # Only what the helper calls (#2557), not the app's whole list. No dump writer and no COM folder
     # picker: WindowsProcessActions.cpp leaves its dump members to IProcessActions' refusals without them.
     # No wait chain reader either (#3084): the helper serves none, so WindowsWaitChain.cpp isn't built in.
-    target_compile_definitions(TaskSmackHelper PRIVATE TASKSMACK_NO_PROCESS_DUMPS TASKSMACK_NO_WAIT_CHAINS)
+    # No Open file location (#3426): BrokeredProcessActions keeps it the user's own, so no shell calls here.
+    target_compile_definitions(TaskSmackHelper PRIVATE TASKSMACK_NO_PROCESS_DUMPS TASKSMACK_NO_WAIT_CHAINS TASKSMACK_NO_FILE_LOCATION)
     target_link_libraries(TaskSmackHelper PRIVATE spdlog::spdlog_header_only
         advapi32 # tokens, security descriptors and AccessCheck (BrokerHelper, BrokerPipe)
         bcrypt # BCryptGenRandom (BrokerPipe)

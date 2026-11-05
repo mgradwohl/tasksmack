@@ -1,6 +1,7 @@
 #include "WindowsPowerProbe.h"
 
 #include "Domain/SamplingConfig.h"
+#include "Domain/Worker.h"
 #include "Platform/PowerTypes.h"
 #include "Platform/ThreadName.h"
 #include "WindowsBatteryInfo.h"
@@ -20,9 +21,8 @@
 
 #include <chrono>
 #include <exception>
-#include <mutex>
-#include <optional>
-#include <thread>
+#include <stop_token>
+#include <string>
 #include <utility>
 
 namespace Platform
@@ -41,7 +41,27 @@ WindowsPowerProbe::WindowsPowerProbe() : WindowsPowerProbe(Windows::BatteryDevic
 {}
 
 WindowsPowerProbe::WindowsPowerProbe(const Windows::BatteryDeviceFunctions& batteryApi, GetSystemPowerStatusFn getSystemPowerStatus)
-    : m_BatteryApi(batteryApi), m_GetSystemPowerStatus(getSystemPowerStatus)
+    : m_BatteryApi(batteryApi),
+      m_GetSystemPowerStatus(getSystemPowerStatus),
+      // At most one re-read is queued or running: requestBatteryInfoRefresh() defers a change that comes
+      // while one runs until its result is taken. The read itself -- SetupAPI's enumeration and the battery
+      // IOCTLs, which a slow ACPI call can stall -- is the worker's alone (#2731); the sampling pass never
+      // waits for it. A std::exception from it is logged and reads as no facts, as before; anything else
+      // the Worker contains (#3343): it ends Failed, and read() keeps the facts it has.
+      m_BatteryInfoWorker({.threadName = BATTERY_READ_THREAD_NAME, .capacity = 1, .admission = Domain::Admission::Refuse},
+                          [this](BatteryInfoReread& /*job*/, const std::stop_token& /*stop*/, BatteryInfoWorker::JobContext& context)
+                          {
+                              Windows::BatteryInfo info;
+                              try
+                              {
+                                  info = Windows::readBatteryInfo(m_BatteryApi);
+                              }
+                              catch (const std::exception& e)
+                              {
+                                  spdlog::warn("WindowsPowerProbe: the battery read failed: {}", e.what());
+                              }
+                              context.finish(std::move(info));
+                          })
 {
     SYSTEM_POWER_STATUS sps{};
     const bool statusRead = m_GetSystemPowerStatus(&sps) != 0;
@@ -129,27 +149,16 @@ void WindowsPowerProbe::requestBatteryInfoRefresh(bool isOnAc)
 
 void WindowsPowerProbe::startBatteryInfoRefresh()
 {
-    // Assigning joins the previous worker, which has handed its result over and is exiting. The read
-    // itself -- SetupAPI's enumeration and the battery IOCTLs, which a slow ACPI call can stall -- is
-    // the worker's alone (#2731); the sampling pass never waits for it.
-    m_BatteryInfoWorker = std::jthread(
-        [this]
-        {
-            setCurrentThreadName(BATTERY_READ_THREAD_NAME);
-            Windows::BatteryInfo info;
-            try
-            {
-                info = Windows::readBatteryInfo(m_BatteryApi);
-            }
-            catch (const std::exception& e)
-            {
-                spdlog::warn("WindowsPowerProbe: the battery read failed: {}", e.what());
-            }
-            const std::scoped_lock lock(m_FinishedBatteryInfoMutex);
-            m_FinishedBatteryInfo = std::move(info);
-        });
+    // The worker's thread starts with the first re-read. Nothing else is queued (one re-read at a time),
+    // so a submit that isn't Queued is a worker that has ended (Closed), or no memory to queue it
+    // (Refused): either way no result is coming, and the next due re-read tries again.
+    const Domain::SubmitResult submitted = m_BatteryInfoWorker.submit(BatteryInfoReread{});
     m_BatteryInfoReadAt = std::chrono::steady_clock::now();
-    m_BatteryInfoRefreshing = true;
+    m_BatteryInfoRefreshing = submitted == Domain::SubmitResult::Queued;
+    if (m_BatteryInfoWorker.state() == Domain::WorkerState::Failed)
+    {
+        reportBatteryInfoWorkerFailed(); // no thread could be started
+    }
 }
 
 void WindowsPowerProbe::takeFinishedBatteryInfo()
@@ -158,16 +167,20 @@ void WindowsPowerProbe::takeFinishedBatteryInfo()
     {
         return;
     }
-    std::optional<Windows::BatteryInfo> finished;
+    // All or nothing: a copy that throws leaves the facts, the taken version and m_BatteryInfoRefreshing
+    // as they were, so the next read() takes this publication again instead of skipping it for good.
+    const auto published = m_BatteryInfoWorker.latest();
+    if (!takeNewerPublication(*published, m_BatteryInfo, m_TakenBatteryInfoVersion))
     {
-        const std::scoped_lock lock(m_FinishedBatteryInfoMutex);
-        finished.swap(m_FinishedBatteryInfo);
-    }
-    if (!finished.has_value())
-    {
+        if (m_BatteryInfoWorker.state() == Domain::WorkerState::Failed)
+        {
+            // The re-read threw something the body doesn't catch: no result is coming
+            m_BatteryInfoRefreshing = false;
+            m_BatteryInfoRefreshAgain = false;
+            reportBatteryInfoWorkerFailed();
+        }
         return; // Still reading
     }
-    m_BatteryInfo = std::move(*finished);
     m_BatteryInfoRefreshing = false;
     spdlog::debug("WindowsPowerProbe: battery facts re-read: found={} relative={}", m_BatteryInfo.found, m_BatteryInfo.relativeCapacity);
     if (m_BatteryInfoRefreshAgain)
@@ -175,6 +188,17 @@ void WindowsPowerProbe::takeFinishedBatteryInfo()
         m_BatteryInfoRefreshAgain = false;
         startBatteryInfoRefresh();
     }
+}
+
+void WindowsPowerProbe::reportBatteryInfoWorkerFailed()
+{
+    if (m_BatteryInfoFailureReported)
+    {
+        return;
+    }
+    const std::string reason = m_BatteryInfoWorker.failure(); // may throw: then it is reported next time
+    m_BatteryInfoFailureReported = true;
+    spdlog::warn("WindowsPowerProbe: the battery re-reads have stopped ({}); the battery facts read so far are kept", reason);
 }
 
 void WindowsPowerProbe::updateCapabilities(const SYSTEM_POWER_STATUS& status)

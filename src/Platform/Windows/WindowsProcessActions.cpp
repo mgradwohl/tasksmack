@@ -6,6 +6,7 @@
 #include "Platform/WaitChain.h"
 #include "WindowsAffinityMath.h"
 #include "WindowsConversions.h"
+#include "WindowsFileLocation.h"
 #include "WindowsFolderPicker.h"
 #include "WindowsHandles.h"
 #include "WindowsNtQuery.h"
@@ -40,6 +41,9 @@
 #include <stop_token>
 #include <string>
 #include <string_view>
+#ifndef TASKSMACK_NO_FILE_LOCATION
+#include <system_error>
+#endif
 #include <utility>
 #include <vector>
 
@@ -116,6 +120,31 @@ openVerified(const WindowsProcessFunctions& fns, const ProcessTarget& target, DW
             std::format("Cannot confirm the identity of process {}: error {}; action not sent", target.pid, failure.win32Error)),
     };
 }
+
+/// Whether Open file location can be offered (#3426): the executable's path can be read, and Explorer
+/// can be asked to show it, by the shell or by starting explorer.exe.
+[[nodiscard]] bool hasFileLocation(const WindowsProcessFunctions& fns) noexcept
+{
+    const Windows::FileLocationFunctions& shell = fns.fileLocation;
+    return fns.queryFullProcessImageName != nullptr &&
+           (shell.selectInFolder != nullptr || (shell.startProcess != nullptr && shell.explorerPath != nullptr));
+}
+
+#ifndef TASKSMACK_NO_FILE_LOCATION
+/// Why Open file location couldn't read the process's executable (#3426): OpenProcess's @p error.
+[[nodiscard]] std::string fileLocationOpenFailure(DWORD error)
+{
+    if (error == ERROR_INVALID_PARAMETER)
+    {
+        return "Process not found - may have already exited";
+    }
+    if (error == ERROR_ACCESS_DENIED)
+    {
+        return "Its executable can't be read: access is denied";
+    }
+    return std::format("Its executable can't be read: {}", std::system_category().message(static_cast<int>(error)));
+}
+#endif
 
 /// EnumWindows state for Terminate: the process whose windows to close, and how many were asked.
 struct CloseRequest
@@ -373,6 +402,12 @@ guardRefusal(const WindowsProcessFunctions& fns, HANDLE process, const ProcessTa
            fns.resumeThread != nullptr && fns.terminateThread != nullptr && fns.getThreadTimes != nullptr;
 }
 
+/// Whether the table has the calls Set Realtime priority makes (#3429): the class set, then read back.
+[[nodiscard]] bool hasRealtimePriority(const WindowsProcessFunctions& fns) noexcept
+{
+    return fns.getPriorityClass != nullptr && fns.setPriorityClass != nullptr;
+}
+
 /// Whether the table has every call Efficiency mode makes (#3071).
 [[nodiscard]] bool hasEfficiencyMode(const WindowsProcessFunctions& fns) noexcept
 {
@@ -418,6 +453,12 @@ WindowsProcessFunctions realWindowsProcessFunctions() noexcept
         .resumeThread = &ResumeThread,
         .terminateThread = &TerminateThread,
         .getThreadTimes = &GetThreadTimes,
+        .queryFullProcessImageName = &QueryFullProcessImageNameW,
+#ifdef TASKSMACK_NO_FILE_LOCATION
+        .fileLocation = {}, // TaskSmackHelper.exe: no shell calls in the elevated image (#3426)
+#else
+        .fileLocation = Windows::realFileLocationFunctions(),
+#endif
     };
 }
 
@@ -431,12 +472,13 @@ WindowsProcessActions::WindowsProcessActions(WindowsProcessFunctions functions)
 ProcessActionCapabilities WindowsProcessActions::actionCapabilities() const
 {
     return ProcessActionCapabilities{
-        .canTerminate = true,                            // WM_CLOSE to the process's windows: a request it may answer (#1094)
-        .canKill = true,                                 // TerminateProcess
-        .canStop = m_Fns.ntSuspendProcess != nullptr,    // NtSuspendProcess (#2582)
-        .canContinue = m_Fns.ntResumeProcess != nullptr, // NtResumeProcess (#2582)
-        .canSetPriority = true,                          // SetPriorityClass
-        .canSetIoPriority = false,                       // No ionice equivalent (#803)
+        .canTerminate = true,                                 // WM_CLOSE to the process's windows: a request it may answer (#1094)
+        .canKill = true,                                      // TerminateProcess
+        .canStop = m_Fns.ntSuspendProcess != nullptr,         // NtSuspendProcess (#2582)
+        .canContinue = m_Fns.ntResumeProcess != nullptr,      // NtResumeProcess (#2582)
+        .canSetPriority = true,                               // SetPriorityClass
+        .canSetRealtimePriority = hasRealtimePriority(m_Fns), // and read back with GetPriorityClass (#3429)
+        .canSetIoPriority = false,                            // No ionice equivalent (#803)
         .canSetRealtimeIoPriority = false,
         // SetProcessAffinityMask, or CPU sets across processor groups (#1881); needs the groups' sizes
         .canSetAffinity = !m_GroupSizes.empty(),
@@ -445,6 +487,7 @@ ProcessActionCapabilities WindowsProcessActions::actionCapabilities() const
         .canChooseDumpFolder = HAS_DUMPS,                 // IFileOpenDialog with FOS_PICKFOLDERS (#2001)
         .dumpsFromSnapshot = HAS_DUMPS,                   // PssCaptureSnapshot, else from the running process (#2001)
         .canAuthorizeInteractively = false,               // BrokeredProcessActions sets it when TaskSmackHelper.exe can be used (#2550)
+        .canOpenFileLocation = hasFileLocation(m_Fns),    // SHOpenFolderAndSelectItems, or explorer.exe /select (#3426)
         .canSetEfficiencyMode = hasEfficiencyMode(m_Fns), // EcoQoS and the Idle class, as Task Manager (#3071)
         .canAnalyzeWaitChain = HAS_WAIT_CHAINS,           // GetThreadWaitChain, as Task Manager's Analyze wait chain (#3084)
         .canCloseConnections = false,
@@ -625,12 +668,21 @@ ProcessActionResult WindowsProcessActions::setPriority(const ProcessTarget& targ
     const int32_t clampedNice = Domain::Priority::clampNice(nice);
 
     const uint32_t priorityClass = niceToPriorityClass(clampedNice);
+    // Realtime is confirmed by reading the class back (#3429), so it needs both calls in the table.
+    const bool realtime = priorityClass == REALTIME_PRIORITY_CLASS;
+    if (realtime && !hasRealtimePriority(m_Fns))
+    {
+        return ProcessActionResult::error(
+            std::format("Realtime priority is not available on this Windows; nothing sent to process {}", target.pid));
+    }
     spdlog::debug("Setting priority class {} (nice={}) for PID {}", priorityClass, clampedNice, target.pid);
     if (auto refused = systemPidResult(target, GuardedAction::Priority))
     {
         return std::move(*refused);
     }
 
+    // PROCESS_SET_INFORMATION; openVerified() adds PROCESS_QUERY_LIMITED_INFORMATION, which reading the
+    // class back needs.
     VerifiedProcess process = openForAction(m_Fns,
                                             target,
                                             PROCESS_SET_INFORMATION,
@@ -642,13 +694,16 @@ ProcessActionResult WindowsProcessActions::setPriority(const ProcessTarget& targ
         return std::move(process.result);
     }
     // Idle or Below normal starves a critical process, and the session with it; nothing a user needs
-    // is served by raising one either (#2556). Realtime is never set at all (niceToPriorityClass()).
+    // is served by raising one either (#2556), least of all to Realtime.
     if (auto refused = guardRefusal(m_Fns, process.handle.get(), target, GuardedAction::Priority))
     {
         return std::move(*refused);
     }
 
-    const BOOL result = SetPriorityClass(process.handle.get(), priorityClass);
+    // Through the table where it has the call (tests' fakes; the real one otherwise), so no test needs to
+    // change a real process's class to reach the paths after it.
+    const auto setClass = (m_Fns.setPriorityClass != nullptr) ? m_Fns.setPriorityClass : &::SetPriorityClass;
+    const BOOL result = setClass(process.handle.get(), priorityClass);
     const DWORD error = result == 0 ? GetLastError() : 0; // Capture error before the handle closes
 
     if (result == 0)
@@ -659,6 +714,17 @@ ProcessActionResult WindowsProcessActions::setPriority(const ProcessTarget& targ
                            GuardedAction::Priority,
                            error,
                            std::format("Failed to set priority for process {}: error {}", target.pid, error));
+    }
+
+    if (realtime)
+    {
+        // Without SeIncreaseBasePriorityPrivilege, SetPriorityClass() succeeds and quietly sets High: only
+        // the class read back says which it was (#3429). An elevated caller needs no privilege enabled
+        // first: kernelbase acquires it for the call.
+        const DWORD readBack = m_Fns.getPriorityClass(process.handle.get());
+        ProcessActionResult confirmed = realtimeReadBackResult(readBack, target.pid);
+        spdlog::info("Set Realtime priority for PID {}: Windows set class 0x{:X}", target.pid, readBack);
+        return confirmed;
     }
 
     spdlog::info("Successfully set priority (nice={}) for PID {}", clampedNice, target.pid);
@@ -1023,6 +1089,44 @@ WindowsProcessActions::actOnThread(const ProcessTarget& target, std::int32_t tid
                  target.pid,
                  previous);
     return ProcessActionResult::ok(threadActionNote(action, previous));
+}
+
+ProcessActionResult WindowsProcessActions::openFileLocation(const ProcessTarget& target)
+{
+#ifdef TASKSMACK_NO_FILE_LOCATION
+    // TaskSmackHelper.exe: BrokeredProcessActions never sends it one, and WindowsFileLocation.cpp isn't built in.
+    return IProcessActions::openFileLocation(target);
+#else
+    if (!hasFileLocation(m_Fns))
+    {
+        return IProcessActions::openFileLocation(target);
+    }
+    if (target.pid == SYSTEM_PROCESS_PID)
+    {
+        return ProcessActionResult::error("The System process has no executable file");
+    }
+    // The identity check every action makes, so the path read is the target's, never a reused PID's.
+    VerifiedProcess process =
+        openVerified(m_Fns, target, PROCESS_QUERY_LIMITED_INFORMATION, [](DWORD error) { return fileLocationOpenFailure(error); });
+    if (!process.result.success)
+    {
+        spdlog::warn("Not opening the file location of PID {}: {}", target.pid, process.result.errorMessage);
+        return std::move(process.result);
+    }
+    constexpr DWORD MAX_PATH_CHARS = 32768; // the longest path Windows allows, with its terminator
+    std::wstring path(MAX_PATH_CHARS, L'\0');
+    DWORD size = MAX_PATH_CHARS;
+    if (m_Fns.queryFullProcessImageName(process.handle.get(), 0, path.data(), &size) == 0)
+    {
+        // The kernel's own processes (Registry, Memory Compression, Secure System) have no image file.
+        const DWORD error = GetLastError();
+        std::string message = std::format("Its executable can't be read: {}", std::system_category().message(static_cast<int>(error)));
+        spdlog::warn("Not opening the file location of PID {}: {}", target.pid, message);
+        return ProcessActionResult::error(std::move(message));
+    }
+    path.resize(size);
+    return Windows::revealInExplorer(m_Fns.fileLocation, path);
+#endif
 }
 
 WaitChainReadResult WindowsProcessActions::readWaitChains(const ProcessTarget& target, const std::stop_token& stopToken)

@@ -11,6 +11,7 @@
 #include "Platform/ImageSignature.h"
 #include "Platform/ProcessTypes.h"
 #include "PriorityConfig.h"
+#include "ProcessGeneration.h"
 #include "ProcessRowHistory.h"
 #include "ProcessServices.h"
 #include "ProcessSnapshot.h"
@@ -340,6 +341,9 @@ void ProcessModel::refresh()
     const bool hadNetworkCounters = m_Probe->capabilities().hasNetworkCounters;
     auto currentCounters = m_Probe->enumerate();
     const std::uint64_t currentTotalCpuTime = m_Probe->totalCpuTime();
+    // When these counters were read (#3344): stamped here, not when the snapshots are computed, so the reads
+    // below (a sock_diag dump, an energy counter) and their varying latency stay out of every rate's interval.
+    const Clock::time_point acquiredAt = m_Now();
 
     // Per-process network bytes from per-connection readings: monotonic, so a connection closing or
     // being attributed late doesn't make a process's counter drop or jump (#1099). Probes that report
@@ -371,22 +375,29 @@ void ProcessModel::refresh()
     // Per-process power from a package energy counter: share each interval's energy by each
     // process's CPU time in that interval. Probes that report per-process energy themselves
     // return nullopt and their energyMicrojoules is used as-is.
+    std::optional<Clock::time_point> energyAcquiredAt;
     if (const auto packageEnergy = m_Probe->readPackageEnergy())
     {
+        // The package counter has its own acquisition: the energy shared out is what it used between two of these
+        // reads, after the socket read, so power divides by the time between them, not between enumerations (#3344).
+        energyAcquiredAt = m_Now();
         m_EnergyAttributor.attribute(
             currentCounters, packageEnergy->energyUj, packageEnergy->maxRangeUj, packageEnergy->busyCpuTicks, packageEnergy->otherPackages);
     }
 
-    computeSnapshotsLocked(currentCounters, currentTotalCpuTime);
+    computeSnapshotsLocked(currentCounters, currentTotalCpuTime, acquiredAt, energyAcquiredAt);
 }
 
 void ProcessModel::updateFromCounters(const std::vector<Platform::ProcessCounters>& counters, std::uint64_t totalCpuTime)
 {
     std::scoped_lock const samplingLock(m_SamplingMutex);
-    computeSnapshotsLocked(counters, totalCpuTime);
+    computeSnapshotsLocked(counters, totalCpuTime, m_Now(), std::nullopt); // counters handed in are taken as read now
 }
 
-void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCounters>& counters, std::uint64_t totalCpuTime)
+void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCounters>& counters,
+                                          std::uint64_t totalCpuTime,
+                                          Clock::time_point acquiredAt,
+                                          std::optional<Clock::time_point> energyAcquiredAt)
 {
     std::vector<ProcessSnapshot> newSnapshots;
     // When this model first listed each process, parallel to newSnapshots: the GPU merge needs it to
@@ -396,19 +407,19 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
     std::shared_ptr<const ServiceModel> serviceModel;
     // The last generation, taken when a process carried over (ProcessCounters::heldOver) needs its row (#3031):
     // only then, as holding it past its replacement costs every refresh.
-    std::shared_ptr<const std::vector<ProcessSnapshot>> previousSnapshots;
+    std::shared_ptr<const ProcessGeneration> lastGeneration;
     std::size_t reserveSize = 0;
 
     {
-        std::shared_lock const lock(m_Mutex); // Only lock to safely read m_GPUModel, m_ServiceModel and m_Snapshots
+        std::shared_lock const lock(m_Mutex); // Only lock to safely read m_GPUModel, m_ServiceModel and m_Generation
         gpuModel = m_GPUModel;
         serviceModel = m_ServiceModel;
         // Only the previous generation's size is needed (to reserve), so no copy of it is taken.
-        reserveSize = std::max(counters.size(), m_Snapshots->size());
+        reserveSize = std::max(counters.size(), m_Generation->rows().size());
     }
 
     const double maxSaneRate = m_MaxSaneNetworkRateBps.load(std::memory_order_relaxed);
-    const auto currentSampleTime = m_Now();
+    const Clock::time_point currentSampleTime = acquiredAt;
     double elapsedSeconds = 0.0;
     std::uint64_t timeDeltaUs = 0;
     if (m_HasPrevSampleTime)
@@ -432,6 +443,22 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
             timeDeltaUs = 0;
         }
     }
+    // Power shared out from a package energy counter (#1093) divides by the time between its own reads (#3344); a
+    // probe's own per-process energy is read with the counters, so it keeps their interval.
+    if (energyAcquiredAt.has_value())
+    {
+        timeDeltaUs = 0;
+        if (m_PrevEnergyAt.has_value())
+        {
+            const auto energyDelta = *energyAcquiredAt - *m_PrevEnergyAt;
+            if (std::chrono::duration<double>(energyDelta).count() >= MIN_ELAPSED_FOR_RATES)
+            {
+                timeDeltaUs = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(energyDelta).count());
+            }
+        }
+    }
+    const std::optional<Clock::time_point> lastEnergyTime = m_PrevEnergyAt; // a process carried over from now on: its read's
+    m_PrevEnergyAt = energyAcquiredAt; // a refresh without a package read forgets it: the attributor's baseline goes too
     const bool hasElapsedForHistory = m_HasPrevSampleTime;
     const Clock::time_point lastSampleTime = m_PrevSampleTime; // a process carried over from now on was read then (#3031)
     m_PrevSampleTime = currentSampleTime;
@@ -443,7 +470,7 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
         totalCpuDelta = totalCpuTime - m_PrevTotalCpuTime;
     }
 
-    // Keep m_Snapshots published and readable until the replacement snapshot vector
+    // Keep m_Generation published and readable until the replacement snapshot vector
     // is fully prepared and ready to publish.
     newSnapshots.reserve(reserveSize);
     firstSeen.reserve(reserveSize);
@@ -480,7 +507,8 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
 
         // A process this refresh couldn't read (#3031): its last row again, and its state as it was, so
         // the next real read is measured against the last real one. Not for a process with no row yet.
-        if (current.heldOver && !inserted && appendHeldOverLocked(current, key, lastSampleTime, previousSnapshots, newSnapshots))
+        if (current.heldOver && !inserted &&
+            appendHeldOverLocked(current, key, lastSampleTime, lastEnergyTime, lastGeneration, newSnapshots))
         {
             const ProcessSnapshot& heldRef = newSnapshots.back();
             aggPageFaults += heldRef.pageFaultsPerSec;
@@ -501,7 +529,7 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
         RateInterval interval{.totalCpuDelta = totalCpuDelta, .elapsedSeconds = elapsedSeconds, .timeDeltaUs = timeDeltaUs};
         if (!m_HeldOver.empty())
         {
-            interval = rateIntervalAfterHeldOverLocked(key, interval, totalCpuTime, currentSampleTime);
+            interval = rateIntervalAfterHeldOverLocked(key, interval, totalCpuTime, currentSampleTime, energyAcquiredAt);
         }
 
         // --- peak RSS ---
@@ -639,53 +667,17 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
         ProcessServices::mergeInto(newSnapshots, counters, firstSeen, current ? services.get() : nullptr);
     }
 
-    // --- Build Process Tree Hierarchy ---
-    {
-        // The writer's reusable PID -> row table (#2981): a stable process set rebuilds it in the
-        // slots it already has, where a fresh std::unordered_map allocated a node per process. A PID
-        // listed twice maps to its last row, as that map's operator[] assignment did.
-        m_PidIndexRows = nullptr; // these rows aren't published yet, and may never be if this refresh fails (#3334)
-        m_PidIndex.rebuild(newSnapshots, &ProcessSnapshot::pid);
-
-        for (std::size_t i = 0; i < newSnapshots.size(); ++i)
-        {
-            const std::int32_t parentPid = newSnapshots[i].parentPid;
-            if (parentPid > 0)
-            {
-                const std::size_t parentRow = m_PidIndex.find(parentPid);
-                if (parentRow != PidIndex::NOT_FOUND && parentRow != i)
-                {
-                    // Guard against PID reuse: m_PidIndex maps parentPid to whichever *currently
-                    // running* process now holds that PID, which may no longer be the process that
-                    // actually forked this child if the original parent has since exited and the PID
-                    // was recycled by an unrelated process between the two /proc reads that produced
-                    // this batch. A real parent must have started at or before its child, so reject
-                    // candidates that started later. startTimeTicks is 0 when a probe couldn't
-                    // determine start time; skip the check rather than drop a legitimate link when
-                    // that data isn't available.
-                    const std::uint64_t candidateParentStart = counters[parentRow].startTimeTicks;
-                    const std::uint64_t childStart = counters[i].startTimeTicks;
-                    const bool startTimesKnown = candidateParentStart != 0 && childStart != 0;
-                    if (!startTimesKnown || candidateParentStart <= childStart)
-                    {
-                        newSnapshots[parentRow].childrenIndices.push_back(i);
-                    }
-                }
-            }
-        }
-    }
+    // Build the new immutable generation before taking the lock, off to the side (#3345): the rows, their PID index
+    // and the process tree they link (ProcessGeneration), all or nothing. std::make_shared allocates, and that
+    // allocator call must not happen while readers are blocked on m_Mutex -- that would add allocator latency to
+    // exactly the reader-blocking critical section this shared_ptr scheme exists to shrink.
+    std::shared_ptr<const ProcessGeneration> newGeneration = std::make_shared<const ProcessGeneration>(std::move(newSnapshots));
 
     // The sparklines' rings (#1612), carried over from the last generation and given this one's
     // values; nullptr, with every ring dropped, while no sparkline is shown. Row-aligned with
-    // newSnapshots, so built before it is moved into the publication.
+    // the new generation's rows.
     std::shared_ptr<const ProcessRowHistory::Generation> newRowHistory =
-        m_RowHistoryTracker.advance(newSnapshots, m_RowHistoryMetrics.load(std::memory_order_relaxed));
-
-    // Build the new immutable generation before taking the lock: std::make_shared allocates
-    // (control block + vector shell), and that allocator call must not happen while readers
-    // are blocked on m_Mutex -- that would add allocator latency to exactly the
-    // reader-blocking critical section this shared_ptr scheme exists to shrink.
-    auto newSnapshotsPublication = std::make_shared<const std::vector<ProcessSnapshot>>(std::move(newSnapshots));
+        m_RowHistoryTracker.advance(newGeneration->rows(), m_RowHistoryMetrics.load(std::memory_order_relaxed));
 
     // Absolute time (since the clock's epoch), to match SystemModel's timestamp format. Also the
     // watched process's sample time, so Process Details and the Overview share one timebase (#1098).
@@ -698,7 +690,7 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
     // MSVC STL false positive: the analyzer loses track of make_shared's control block (shared_ptr's
     // _Rep) returned by copyProcess() and reports a leak; ownership is a plain shared_ptr.
     // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
-    std::shared_ptr<const ProcessSnapshot> watchedSnapshot = (watchedPid > 0) ? copyProcess(*newSnapshotsPublication, watchedPid) : nullptr;
+    std::shared_ptr<const ProcessSnapshot> watchedSnapshot = (watchedPid > 0) ? copyProcess(newGeneration->rows(), watchedPid) : nullptr;
     // Its PSS and USS (#1885), which cost the kernel a walk of every mapping: for this one process
     // only, outside the lock. The rare re-copy under the lock below (the watch changed meanwhile)
     // goes without them until the next refresh.
@@ -727,7 +719,7 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
     // ProcessSnapshots' worth of strings/vectors, if this write is what drops the last
     // reference to it) happens after the lock below is released, not while it's held.
     // The same for the watched sample this publish displaces from the ring.
-    std::shared_ptr<const std::vector<ProcessSnapshot>> previousGeneration;
+    std::shared_ptr<const ProcessGeneration> previousGeneration;
     ProcessSample displacedSample;
     bool historyAppendFailed = false;
     {
@@ -755,10 +747,9 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
             trimHistory();
         }
 
-        previousGeneration = std::move(m_Snapshots);      // move out, not destroy -- ownership transfers to the local
-        m_Snapshots = std::move(newSnapshotsPublication); // pointer swap only, no allocation or destruction
-        m_PidIndexRows = m_Snapshots.get();               // the index was built for these rows, in this order (#3334)
-        m_RowHistory.swap(newRowHistory);                 // the outgoing rings are released after the lock, with newRowHistory
+        previousGeneration = std::move(m_Generation); // move out, not destroy -- ownership transfers to the local
+        m_Generation = std::move(newGeneration);      // pointer swap only, no allocation or destruction
+        m_RowHistory.swap(newRowHistory);             // the outgoing rings are released after the lock, with newRowHistory
         ++m_SnapshotVersion;
         ++m_SystemHistoryVersion;
         m_PublishedCapabilities = publishedCapabilities;
@@ -772,7 +763,7 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
             if (pidNow != watchedPid)
             {
                 // watchProcess() ran between the copy above and this lock: rare, so copy again here.
-                watchedSnapshot = copyProcess(*m_Snapshots, pidNow);
+                watchedSnapshot = copyProcess(m_Generation->rows(), pidNow);
             }
             displacedSample = pushWatchedSampleLocked(ProcessSample{
                 .snapshot = std::move(watchedSnapshot),
@@ -803,13 +794,13 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
 std::vector<ProcessSnapshot> ProcessModel::snapshots() const
 {
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return *m_Snapshots;
+    return m_Generation->rows();
 }
 
 std::optional<ProcessSnapshot> ProcessModel::findSnapshot(std::int32_t pid) const
 {
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    for (const auto& snap : *m_Snapshots)
+    for (const auto& snap : m_Generation->rows())
     {
         if (snap.pid == pid)
         {
@@ -861,7 +852,7 @@ void ProcessModel::watchProcess(std::int32_t pid)
         m_WatchedSamples.swap(ring);
         m_WatchedSampleStart = 0;
         m_WatchedSampleCount = 0;
-        current = m_Snapshots;
+        current = rowsOf(m_Generation);
         currentVersion = m_SnapshotVersion;
         currentSampleTime = m_SnapshotSampleTimeSeconds;
         currentCapabilities = m_PublishedCapabilities;
@@ -982,7 +973,7 @@ bool ProcessModel::tryCopySnapshotsIfNewer(std::uint64_t lastSeenVersion,
         {
             return false;
         }
-        newSnapshots = m_Snapshots; // refcount bump only -- newSnapshots is a fresh local, nothing to destroy
+        newSnapshots = rowsOf(m_Generation); // refcount bump only -- newSnapshots is a fresh local, nothing to destroy
         newVersion = m_SnapshotVersion;
         if (outCapabilities != nullptr)
         {
@@ -1066,7 +1057,7 @@ void ProcessModel::setMaxSaneNetworkRate(double bytesPerSecond) noexcept
 std::size_t ProcessModel::processCount() const
 {
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return m_Snapshots->size();
+    return m_Generation->rows().size();
 }
 
 Platform::ProcessCapabilities ProcessModel::capabilities() const
@@ -1263,59 +1254,35 @@ ProcessModel::GpuSupport ProcessModel::mergeGPUDataContained(std::vector<Process
 bool ProcessModel::appendHeldOverLocked(const Platform::ProcessCounters& current,
                                         const ProcessIdentity& key,
                                         Clock::time_point lastSampleTime,
-                                        std::shared_ptr<const std::vector<ProcessSnapshot>>& previousSnapshots,
+                                        std::optional<Clock::time_point> lastEnergyTime,
+                                        std::shared_ptr<const ProcessGeneration>& previousGeneration,
                                         std::vector<ProcessSnapshot>& newSnapshots)
 {
-    if (previousSnapshots == nullptr)
+    if (previousGeneration == nullptr)
     {
         std::shared_lock const lock(m_Mutex);
-        previousSnapshots = m_Snapshots;
+        previousGeneration = m_Generation;
     }
-    // m_PidIndex maps the last generation's rows (computeSnapshotsLocked() rebuilds it after the loop), unless the
-    // refresh before failed after rebuilding it for rows it never published: then it is rebuilt for these (#3334).
-    std::size_t row = PidIndex::NOT_FOUND;
-    if (m_PidIndexRows != previousSnapshots.get())
-    {
-        m_PidIndexRows = nullptr;
-        try
-        {
-            m_PidIndex.rebuild(*previousSnapshots, &ProcessSnapshot::pid);
-            m_PidIndexRows = previousSnapshots.get();
-        }
-        catch (const std::exception&)
-        {
-            // No memory for the table: find the row by walking the rows, as rare as the failed refresh before. By the
-            // whole identity, so a PID listed twice (a reused PID within one read) finds its own row.
-            const auto found =
-                std::ranges::find_if(*previousSnapshots,
-                                     [&current](const ProcessSnapshot& snapshot)
-                                     { return snapshot.pid == current.pid && snapshot.startTimeTicks == current.startTimeTicks; });
-            row = found == previousSnapshots->end() ? PidIndex::NOT_FOUND : static_cast<std::size_t>(found - previousSnapshots->begin());
-        }
-    }
-    if (m_PidIndexRows == previousSnapshots.get())
-    {
-        row = m_PidIndex.find(current.pid);
-    }
-    // The PID check is a backstop: the table maps these rows, so its row holds this PID. Two processes started in
-    // the same clock tick share a start time, so the start time alone doesn't tell them apart.
-    if (row >= previousSnapshots->size() || (*previousSnapshots)[row].pid != current.pid ||
-        (*previousSnapshots)[row].startTimeTicks != current.startTimeTicks)
+    // Through the published generation's own index (#3345), which only ever describes its own rows (#3334).
+    const ProcessSnapshot* const last = previousGeneration->find(current.pid, current.startTimeTicks);
+    if (last == nullptr)
     {
         return false;
     }
     // Its counters were read last refresh, unless it was carried over then too.
-    m_HeldOver.try_emplace(key, HeldOverSince{.totalCpuTime = m_PrevTotalCpuTime, .sampleTime = lastSampleTime});
+    m_HeldOver.try_emplace(key,
+                           HeldOverSince{.totalCpuTime = m_PrevTotalCpuTime, .sampleTime = lastSampleTime, .energyTime = lastEnergyTime});
     // Copied in place: emplace_back(const ProcessSnapshot&), not the loop's push_back(ProcessSnapshot&&), so
     // that one stays inlined there.
-    newSnapshots.emplace_back((*previousSnapshots)[row]).childrenIndices.clear(); // the tree is built again after the loop
+    newSnapshots.emplace_back(*last).childrenIndices.clear(); // the next generation links its own tree
     return true;
 }
 
 ProcessModel::RateInterval ProcessModel::rateIntervalAfterHeldOverLocked(const ProcessIdentity& key,
                                                                          RateInterval interval,
                                                                          std::uint64_t totalCpuTime,
-                                                                         Clock::time_point now)
+                                                                         Clock::time_point now,
+                                                                         std::optional<Clock::time_point> energyNow)
 {
     const auto since = m_HeldOver.find(key);
     if (since == m_HeldOver.end())
@@ -1331,6 +1298,21 @@ ProcessModel::RateInterval ProcessModel::rateIntervalAfterHeldOverLocked(const P
     {
         interval.elapsedSeconds = 0.0;
         interval.timeDeltaUs = 0;
+    }
+    // Package-derived power runs between package reads (#3344), as it does for every other process this sample:
+    // from the held sample's read to this one, or not at all when either sample had none.
+    if (energyNow.has_value())
+    {
+        interval.timeDeltaUs = 0;
+        if (since->second.energyTime.has_value())
+        {
+            const auto sinceEnergy = *energyNow - *since->second.energyTime;
+            if (std::chrono::duration<double>(sinceEnergy).count() >= MIN_ELAPSED_FOR_RATES)
+            {
+                interval.timeDeltaUs =
+                    static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(sinceEnergy).count());
+            }
+        }
     }
     m_HeldOver.erase(since);
     return interval;

@@ -7,15 +7,14 @@
 // Linux, Disconnect... and Sign out... on Windows (UsersPanel runs them).
 //
 // The rows are built from two published generations, the sessions' (UsersModel) and the processes'
-// (ProcessModel), and rebuilt only when either changes. buildUserRows() and the text helpers are pure and
-// tested without ImGui (test_Users.cpp).
+// (ProcessModel), and rebuilt only when either changes. The rows and the session text come from
+// UserGrouping (buildUserRows(), sessionPlace(), ...), pure and tested without ImGui (test_UserGrouping.cpp).
 
-#include "App/Panels/ProcessGrouping.h"
+#include "App/Panels/UserGrouping.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Domain/UsersModel.h"
 #include "Platform/IUserSessions.h"
 
-#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <memory>
@@ -25,42 +24,6 @@
 
 namespace App
 {
-
-/// One signed-in user: their sessions, and their processes' totals.
-struct UserRow
-{
-    std::string user;  ///< The short name the Processes table's User column has; empty for a session not readable
-    std::string key;   ///< What the row groups by (Platform::accountKey()): "PC\\alice" and "CORP\\alice" are two rows
-    std::string label; ///< What the row says: the short name, "CORP\\alice" when two rows share it, or "Not readable"
-    std::uint32_t uid = 0;
-    std::vector<Platform::UserSession> sessions; ///< In the publication's order
-    ProcessGrouping::Totals totals;              ///< Over every process running as them
-    /// Indices into the process generation, busiest first. On Windows a process names its owner's domain too,
-    /// so PC\\alice's and CORP\\alice's processes go to their own rows (#3310). A process that names only a
-    /// short name goes to the one row with that name, and to neither when two rows share it.
-    std::vector<std::size_t> processes;
-    bool current = false; ///< One of their sessions is TaskSmack's own
-};
-
-/// Whether @p session is a person's sign-in (logind class "user"), not a greeter, lock screen or the user
-/// manager's own background session, which the tab leaves out.
-[[nodiscard]] bool isSignInSession(const Platform::UserSession& session);
-
-/// A row per account with a sign-in session (by domain and user name on Windows), sorted by its label, each
-/// with the processes running as them. A session whose user couldn't be read is a row of its own.
-[[nodiscard]] std::vector<UserRow> buildUserRows(const std::vector<Platform::UserSession>& sessions,
-                                                 const std::vector<Domain::ProcessSnapshot>& processes);
-
-/// Where and how a session is: "seat0 · tty2 · Wayland", "pts/0 · from 10.0.0.9".
-[[nodiscard]] std::string sessionPlace(const Platform::UserSession& session);
-
-/// What a session is doing at @p nowUsec (CLOCK_REALTIME µs): "Active", "Idle for 12 min", "Signed in",
-/// "Closing", and on Windows "Disconnected" and "Connecting".
-[[nodiscard]] std::string sessionStatus(const Platform::UserSession& session, std::uint64_t nowUsec);
-
-/// A session row's tooltip: the user with their domain (Windows), when they signed in, and the session's
-/// ID: "PC\alice\nSigned in 09:12:04\nSession 2".
-[[nodiscard]] std::string sessionTooltip(const Platform::UserSession& session);
 
 /// Which items a session's row menu has: what the platform's IUserSessions::canAct() allows.
 struct SessionMenu
@@ -91,7 +54,7 @@ struct UsersViewState
 {
     std::uint64_t builtSessionsVersion = std::numeric_limits<std::uint64_t>::max();
     std::uint64_t builtProcessesVersion = std::numeric_limits<std::uint64_t>::max();
-    std::vector<UserRow> rows;
+    std::vector<UserGrouping::UserRow> rows;
     std::shared_ptr<const std::vector<Domain::ProcessSnapshot>> processes; ///< The generation `rows` index
     /// The session the row menu was opened on, copied at the right-click: the rows can be rebuilt while it
     /// is up (as the Processes table's, #1365).

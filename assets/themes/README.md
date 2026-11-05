@@ -316,6 +316,8 @@ Alpha values:
 | Dracula | Dark purple theme with vivid accents |
 | Gruvbox | Warm retro dark theme |
 | Gruvbox Light | Warm retro light theme |
+| High Contrast | Near-black surfaces with bright text and distinct chart accents |
+| High Contrast Light | Near-white surfaces with dark text and distinct chart accents |
 | Monochrome | Classic green terminal/CRT aesthetic (dark) |
 | Monochrome Light | Light version with green accents |
 | Nord | Cool polar dark palette |

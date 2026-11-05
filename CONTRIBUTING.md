@@ -1545,9 +1545,15 @@ hosted runner, instead of timing an empty probe's early return (#1420).
 
 This is a *separate* baseline from `perf-data/linux-baseline.json` above, deliberately: that one was
 recorded on a developer machine, and comparing it with hosted `ubuntu-24.04` runners flagged the machine
-difference as a regression on every run (#683). Hosted runners also land on two speed classes, so the
-committed CI baseline is a capture from the slower class: a run on the faster class can only look like an
-improvement, never a false regression (#682). The two classes don't slow every benchmark alike (#2336):
+difference as a regression on every run (#683). Hosted runners also land on several CPU classes, and no
+class is the slowest at everything: on `ubuntu-26.04` a 2600 MHz class reads the thread-handoff benchmarks
+(`*_Concurrent_PublicationWait`) about twice as slow as a 3240 MHz one, and the /proc and syscall ones
+(`BM_ProcessProbe_*`, `BM_*Model_Refresh`) two to three times as fast (#3395). So the committed CI baseline
+takes each benchmark from whichever capture, over several classes, read it slowest
+(`tools/merge-benchmark-baselines.py`): a run on any captured class can only look like an improvement,
+never a false regression (#682), and the threshold still applies to every benchmark. Its context's
+`tasksmack_merged_from` lists the captures and how many benchmarks each supplied. Classes don't slow every
+benchmark alike (#2336):
 allocator- and memory-bound benchmarks vary more, so `--threshold-overrides FILE` gives the benchmarks a
 JSON file lists their own threshold, each with a required `reason`. An entry can set its own noise floor
 instead, or as well, as `min_abs_delta_ns`: that is for a sub-nanosecond benchmark that an unrelated
@@ -1561,27 +1567,33 @@ remove it when a baseline refresh makes it unnecessary. Without the flag every b
 `--threshold` and `--min-abs-delta-ns`.
 
 **Refreshing `perf-data/linux-ci-baseline.json`** (only needed when hosted-runner hardware
-changes, e.g. a `ubuntu-24.04` image update measurably shifts baseline timings, or after a
-deliberate, reviewed performance change that the gate should treat as the new normal):
+changes, e.g. a runner image move (the 24.04 to 26.04 move re-captured it, #3395) measurably shifts baseline timings, a
+new runner class reads some benchmarks slower than the baseline, or after a deliberate, reviewed performance change that the
+gate should treat as the new normal):
 
 1. Manually trigger `heavy-checks.yml` via `gh workflow run heavy-checks.yml --ref <branch>` (or
    the Actions tab's "Run workflow" button), and wait for the `benchmark-regression` job to
-   finish.
-2. Download its `benchmark-results` artifact and extract `perf-data/benchmark-current.json`:
+   finish. Repeat until the captures cover the CPU classes the runners land on (the job log's
+   "Run on (4 X N MHz CPU s)" line names each one's class); #3395 took five runs for four classes.
+2. Download each run's `benchmark-results` artifact, each into its own directory:
    ```bash
-   gh run download <run-id> --name benchmark-results --dir /tmp/benchmark-results
+   gh run download <run-id> --name benchmark-results --dir /tmp/benchmark-results/<run-id>
    ```
 3. Review the new numbers against the old baseline before replacing it -- a baseline refresh
    should be a deliberate, reviewed change, not a way to silently paper over a real regression.
    If every benchmark shifted by roughly the same percentage in the same direction, that's very
-   likely a runner-class difference, not a real change: dispatch one more run and compare before
-   deciding which to keep.
-4. Replace the baseline and commit it in its own PR (not bundled with unrelated changes):
+   likely a runner-class difference, not a real change.
+4. Merge the captures, each benchmark from the capture slowest at it, labelled by run id, and commit the
+   result in its own PR (not bundled with unrelated changes):
    ```bash
-   cp /tmp/benchmark-results/perf-data/benchmark-current.json perf-data/linux-ci-baseline.json
+   python3 tools/merge-benchmark-baselines.py --output perf-data/linux-ci-baseline.json \
+       <run-id>=/tmp/benchmark-results/<run-id>/perf-data/benchmark-current.json ...
    git add perf-data/linux-ci-baseline.json
    git commit -m "chore(perf): refresh CI benchmark baseline"
    ```
+   Then replay every capture against the new baseline with `tools/check-benchmark-regression.py` (the
+   arguments `heavy-checks.yml` passes): each must pass. Remove any `perf-data/linux-ci-thresholds.json`
+   entry the refresh makes unnecessary, that is, one every capture passes without.
 5. Push and confirm the next `heavy-checks.yml` run passes against the refreshed baseline.
 
 ### Available Benchmarks

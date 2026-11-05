@@ -1,22 +1,18 @@
 #include "UsersPanel.h"
 
 #include "App/Panel.h"
-#include "App/PanelPlatforms.h"
 #include "App/Panels/AuthorizeWording.h"
 #include "App/Panels/ProcessActionConfirm.h"
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
-#include "App/Panels/SamplingGate.h"
 #include "App/Panels/SessionActionControl.h"
+#include "App/Panels/UserSessionsFeed.h"
 #include "App/Panels/UsersView.h"
-#include "App/SyntheticScenario.h"
 #include "Core/Application.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
-#include "Domain/BackgroundSampler.h"
 #include "Domain/ProcessModel.h"
 #include "Domain/UsersModel.h"
 #include "Platform/IUserSessions.h"
-#include "Platform/ThreadName.h"
 #include "UI/Theme.h"
 
 #include <imgui.h>
@@ -25,23 +21,17 @@
 #include <functional>
 #include <memory>
 #include <optional>
-#include <string>
 #include <utility>
 
 namespace App
 {
 
-UsersPanel::UsersPanel() : Panel("Users")
+UsersPanel::UsersPanel(UserSessionsFeed& feed) : Panel("Users"), m_Feed(feed)
 {}
 
-UsersPanel::UsersPanel(std::function<std::shared_ptr<Platform::IUserSessions>()> makeSessions, std::function<void(Core::Event&)> raiseEvent)
-    : Panel("Users"), m_MakeSessions(std::move(makeSessions)), m_RaiseEvent(std::move(raiseEvent))
+UsersPanel::UsersPanel(UserSessionsFeed& feed, std::function<void(Core::Event&)> raiseEvent)
+    : Panel("Users"), m_Feed(feed), m_RaiseEvent(std::move(raiseEvent))
 {}
-
-UsersPanel::~UsersPanel()
-{
-    m_Sampler.reset(); // the sampler stops before the model it samples goes away
-}
 
 void UsersPanel::raiseEvent(Core::Event& event)
 {
@@ -55,21 +45,14 @@ void UsersPanel::raiseEvent(Core::Event& event)
 
 void UsersPanel::onAttach()
 {
-    // The composition root's one sessions creation for this panel; sampling waits for the tab to show.
-    m_Sessions = m_MakeSessions ? m_MakeSessions() : makeUsersPanelSessions(Synthetic::activeScenario());
-    m_Model = std::make_shared<Domain::UsersModel>(m_Sessions);
-    m_Gate = std::make_shared<SamplingGate>(m_Model);
-    m_Actions.emplace(m_Sessions);
+    // The composition root's one sessions creation, the feed's (#3377); sampling waits for the tab to show.
+    m_Feed.start();
 }
 
 void UsersPanel::onDetach()
 {
-    m_Sampler.reset(); // joins the sampler thread: the one place it is waited for
-    m_Actions.reset(); // stops and waits for an action in flight
-    m_Gate.reset();
+    m_Feed.stop(); // joins the sampler thread, then waits for an action in flight
     m_Publication.reset();
-    m_Model.reset();
-    m_Sessions.reset();
 }
 
 void UsersPanel::onEvent(Core::Event& event)
@@ -78,55 +61,28 @@ void UsersPanel::onEvent(Core::Event& event)
     dispatcher.dispatch<Core::ActiveTabChangedEvent>(
         [this](Core::ActiveTabChangedEvent& e)
         {
-            setActive(e.tabName() == "Users");
+            m_Feed.setUsersTabShown(e.tabName() == "Users");
             return false;
         });
     // Sampled at the interval chosen in Settings, like every live figure (#2731).
     dispatcher.dispatch<Core::RefreshRateChangedEvent>(
         [this](Core::RefreshRateChangedEvent& e)
         {
-            m_Interval = std::chrono::milliseconds(e.getIntervalMs());
-            if (m_Sampler)
-            {
-                m_Sampler->setInterval(m_Interval);
-            }
+            m_Feed.setInterval(std::chrono::milliseconds(e.getIntervalMs()));
             return false;
         });
 }
 
-void UsersPanel::setActive(bool active)
-{
-    if (!m_Gate || !m_Model->hasSessions())
-    {
-        return;
-    }
-    m_Gate->setOpen(active);
-    if (!active)
-    {
-        return;
-    }
-    if (m_Sampler)
-    {
-        m_Sampler->requestRefresh(); // current as soon as the tab shows again
-        return;
-    }
-    Domain::SamplerConfig config;
-    config.interval = m_Interval;
-    config.threadName = std::string(Platform::USERS_SAMPLER_THREAD_NAME);
-    m_Sampler = std::make_unique<Domain::BackgroundSampler>(config);
-    m_Sampler->addSamplable(m_Gate, "users");
-    m_Sampler->start();
-}
-
 void UsersPanel::renderContent()
 {
-    if (!m_Model)
+    const Domain::UsersModel* const model = m_Feed.model();
+    if (model == nullptr)
     {
         return;
     }
-    if (!m_Publication || m_Publication->version != m_Model->version())
+    if (!m_Publication || m_Publication->version != model->version())
     {
-        m_Publication = m_Model->publication();
+        m_Publication = model->publication();
     }
     // The processes' newest generation, shared, not copied (the Processes panel samples it).
     if (const std::shared_ptr<Domain::ProcessModel> processes = m_ProcessModel.lock(); processes != nullptr)
@@ -137,18 +93,19 @@ void UsersPanel::renderContent()
     {
         refreshUserRows(*m_Publication, m_Processes, m_ProcessesVersion, m_ViewState);
     }
-    if (m_Actions)
+    SessionActionControl* const actions = m_Feed.actions();
+    if (actions != nullptr)
     {
-        m_Actions->update(ImGui::GetIO().DeltaTime);
+        actions->update(ImGui::GetIO().DeltaTime);
     }
     renderActionLine();
     // Each platform's own items (#3076): Lock on Linux, Disconnect on Windows, Sign out on both.
     const SessionMenu menu{
-        .lock = m_Sessions != nullptr && m_Sessions->canAct(Platform::SessionAction::Lock),
-        .disconnect = m_Sessions != nullptr && m_Sessions->canAct(Platform::SessionAction::Disconnect),
-        .signOut = m_Sessions != nullptr && m_Sessions->canAct(Platform::SessionAction::SignOut),
+        .lock = m_Feed.canAct(Platform::SessionAction::Lock),
+        .disconnect = m_Feed.canAct(Platform::SessionAction::Disconnect),
+        .signOut = m_Feed.canAct(Platform::SessionAction::SignOut),
     };
-    if (const std::optional<UsersViewAction> action = renderUsersView(m_Publication.get(), m_Model->hasSessions(), menu, m_ViewState))
+    if (const std::optional<UsersViewAction> action = renderUsersView(m_Publication.get(), model->hasSessions(), menu, m_ViewState))
     {
         if (action->selectPid != 0)
         {
@@ -160,17 +117,17 @@ void UsersPanel::renderContent()
                 raiseEvent(show);
             }
         }
-        if (m_Actions && action->lock.has_value())
+        if (actions != nullptr && action->lock.has_value())
         {
-            m_Actions->lock(*action->lock);
+            actions->lock(*action->lock);
         }
-        if (m_Actions && action->signOut.has_value())
+        if (actions != nullptr && action->signOut.has_value())
         {
-            m_Actions->requestSignOut(*action->signOut);
+            actions->requestSignOut(*action->signOut);
         }
-        if (m_Actions && action->disconnect.has_value())
+        if (actions != nullptr && action->disconnect.has_value())
         {
-            m_Actions->requestDisconnect(*action->disconnect);
+            actions->requestDisconnect(*action->disconnect);
         }
     }
     renderConfirm();
@@ -178,33 +135,34 @@ void UsersPanel::renderContent()
 
 void UsersPanel::renderActionLine()
 {
-    if (!m_Actions)
+    SessionActionControl* const actions = m_Feed.actions();
+    if (actions == nullptr)
     {
         return;
     }
     const auto& scheme = UI::Theme::get().scheme();
-    if (m_Actions->busy())
+    if (actions->busy())
     {
-        ImGui::TextColored(scheme.textMuted, "%s", m_Actions->pendingText().c_str());
+        ImGui::TextColored(scheme.textMuted, "%s", actions->pendingText().c_str());
         return;
     }
-    const Detail::ActionResultMessage& result = m_Actions->result();
+    const Detail::ActionResultMessage& result = actions->result();
     if (result.empty())
     {
         return;
     }
     ImGui::TextColored(result.ok ? scheme.textSuccess : scheme.textError, "%s", result.text.c_str());
-    if (m_Actions->takeDone() && m_Sampler)
+    if (actions->takeDone())
     {
-        m_Sampler->requestRefresh(); // the session's new state without waiting a sample
+        m_Feed.requestRefresh(); // the session's new state without waiting a sample
     }
     // A refusal an administrator could finish (#2304): the lock and the words, never colour alone.
-    if (m_Actions->offersAuthenticateAndRetry())
+    if (actions->offersAuthenticateAndRetry())
     {
         ImGui::SameLine();
         if (ImGui::SmallButton(AuthorizeWording::RETRY_LABEL))
         {
-            m_Actions->retryAuthorized();
+            actions->retryAuthorized();
         }
         ImGui::SetItemTooltip("%s", AuthorizeWording::RETRY_TOOLTIP);
     }
@@ -212,20 +170,21 @@ void UsersPanel::renderActionLine()
 
 void UsersPanel::renderConfirm()
 {
-    if (!m_Actions || !m_Actions->pending().has_value())
+    SessionActionControl* const actions = m_Feed.actions();
+    if (actions == nullptr || !actions->pending().has_value())
     {
         return;
     }
     // Sign out loses unsaved work, so its button is the destructive one; a Disconnect keeps every program.
-    const bool signOut = m_Actions->pendingAction() == Platform::SessionAction::SignOut;
-    const char* const title = sessionActionWords(m_Actions->pendingAction()).title;
-    switch (ProcessActionConfirm::renderLabelled(m_Actions->showConfirm(), title, signOut, title, m_Actions->question()))
+    const bool signOut = actions->pendingAction() == Platform::SessionAction::SignOut;
+    const char* const title = sessionActionWords(actions->pendingAction()).title;
+    switch (ProcessActionConfirm::renderLabelled(actions->showConfirm(), title, signOut, title, actions->question()))
     {
     case ProcessActionConfirm::Outcome::Confirmed:
-        m_Actions->confirm();
+        actions->confirm();
         break;
     case ProcessActionConfirm::Outcome::Cancelled:
-        m_Actions->cancel();
+        actions->cancel();
         break;
     case ProcessActionConfirm::Outcome::None:
         break;

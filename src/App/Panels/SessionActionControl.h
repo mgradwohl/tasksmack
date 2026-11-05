@@ -13,7 +13,7 @@
 
 #include "App/Panels/BackgroundTask.h"
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
-#include "App/Panels/UsersView.h"
+#include "App/Panels/UserGrouping.h"
 #include "Platform/IServiceActions.h"
 #include "Platform/IUserSessions.h"
 #include "Platform/ThreadName.h"
@@ -27,41 +27,6 @@
 
 namespace App
 {
-
-/// The Sign out confirm's question for @p session.
-[[nodiscard]] inline std::string signOutQuestion(const Platform::UserSession& session)
-{
-    std::string question = std::format(
-        "Sign out {} from {}?\n\nEvery program in the session ends, and unsaved work is lost.", session.user, sessionPlace(session));
-    if (session.current)
-    {
-        question += " This is the session TaskSmack runs in, so TaskSmack closes too.";
-    }
-    return question;
-}
-
-/// The Disconnect confirm's question for @p session (#3076, Windows).
-[[nodiscard]] inline std::string disconnectQuestion(const Platform::UserSession& session)
-{
-    if (session.current && session.remote)
-    {
-        // Inside Remote Desktop, Disconnect closes the connection rather than locking a screen.
-        return std::format("Disconnect {} from {}?\n\nThis is the session TaskSmack runs in: the Remote Desktop connection closes. "
-                           "Its programs, TaskSmack too, keep running until you reconnect.",
-                           session.user,
-                           sessionPlace(session));
-    }
-    if (session.current)
-    {
-        return std::format("Disconnect {} from {}?\n\nThis is the session TaskSmack runs in: this screen locks. Its programs, "
-                           "TaskSmack too, keep running until you sign back in.",
-                           session.user,
-                           sessionPlace(session));
-    }
-    return std::format("Disconnect {} from {}?\n\nTheir programs keep running, and they sign back in to return to them.",
-                       session.user,
-                       sessionPlace(session));
-}
 
 /// The words a session action's line and confirm use.
 struct SessionActionWords
@@ -101,13 +66,13 @@ class SessionActionControl
     /// The row menu's Sign out...: the confirm opens for @p session.
     void requestSignOut(const Platform::UserSession& session)
     {
-        request(session, Platform::SessionAction::SignOut, signOutQuestion(session));
+        request(session, Platform::SessionAction::SignOut, UserGrouping::signOutQuestion(session));
     }
 
     /// The row menu's Disconnect... (Windows): the confirm opens for @p session.
     void requestDisconnect(const Platform::UserSession& session)
     {
-        request(session, Platform::SessionAction::Disconnect, disconnectQuestion(session));
+        request(session, Platform::SessionAction::Disconnect, UserGrouping::disconnectQuestion(session));
     }
 
     [[nodiscard]] const std::optional<Platform::UserSession>& pending() const noexcept

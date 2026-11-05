@@ -260,12 +260,16 @@ struct RunProgramRequest
 /// Capabilities for process actions.
 struct ProcessActionCapabilities
 {
-    bool canTerminate = false;     // SIGTERM
-    bool canKill = false;          // SIGKILL
-    bool canStop = false;          // SIGSTOP
-    bool canContinue = false;      // SIGCONT
-    bool canSendSignals = false;   // sendSignal(): HUP, INT, QUIT, USR1, USR2 (Linux, #3063)
-    bool canSetPriority = false;   // setpriority/SetPriorityClass
+    bool canTerminate = false;   // SIGTERM
+    bool canKill = false;        // SIGKILL
+    bool canStop = false;        // SIGSTOP
+    bool canContinue = false;    // SIGCONT
+    bool canSendSignals = false; // sendSignal(): HUP, INT, QUIT, USR1, USR2 (Linux, #3063)
+    bool canSetPriority = false; // setpriority/SetPriorityClass
+    /// setPriority() with Domain::Priority::classNice(Realtime) sets the Realtime priority class, read back
+    /// to confirm it (Windows, #3429): the UI offers it behind a warning. False on Linux, where that value is
+    /// nice -20.
+    bool canSetRealtimePriority = false;
     bool canSetIoPriority = false; // ioprio_set (Linux only)
     /// The Realtime I/O class too: ioprio_set(IOPRIO_CLASS_RT) needs CAP_SYS_NICE (or CAP_SYS_ADMIN) in
     /// TaskSmack's own effective set, read once at construction (Linux only, #1540).
@@ -290,7 +294,7 @@ struct ProcessActionCapabilities
     /// prompt (Linux: the pkexec-started helper, #2308). The UI then offers "Authenticate and retry".
     bool canAuthorizeInteractively = false;
     /// openFileLocation(): the file manager can be asked to show a process's executable (#3064; Linux:
-    /// FileManager1 over D-Bus or xdg-open).
+    /// FileManager1 over D-Bus or xdg-open; Windows: SHOpenFolderAndSelectItems or explorer.exe /select, #3426).
     bool canOpenFileLocation = false;
     /// runProgram(): Run new task can start a program (#3065), and with administrator rights too where
     /// canRunProgramAsAdministrator says so (Linux: pkexec is installed, or TaskSmack runs as root).
@@ -343,7 +347,9 @@ class IProcessActions
 
     /// Set process priority (nice value on Unix, priority class on Windows).
     /// @param target Process to change
-    /// @param nice Nice value (-20 to 19 on Unix, mapped to priority class on Windows)
+    /// @param nice Nice value (-20 to 19 on Unix, mapped to priority class on Windows: -20, which
+    ///             Domain::Priority::classNice() gives Realtime, sets the Realtime class where
+    ///             actionCapabilities().canSetRealtimePriority says so, #3429)
     [[nodiscard]] virtual ProcessActionResult setPriority(const ProcessTarget& target, int32_t nice) = 0;
 
     /// Set the process's I/O priority (ioprio_set on Linux, for every thread). Refused where

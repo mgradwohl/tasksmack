@@ -63,6 +63,8 @@ namespace Detail
     case ProcessAction::EfficiencyModeOn:
     case ProcessAction::EfficiencyModeOff:
         return capabilities.canSetEfficiencyMode;
+    case ProcessAction::SetRealtimePriority:
+        return capabilities.canSetRealtimePriority;
     case ProcessAction::None:
         break;
     }
@@ -249,6 +251,73 @@ struct EfficiencyModeToggle
 #endif
 }
 
+/// Set Realtime priority (#3429, Windows): the row menu's item, also its ImGui ID.
+inline constexpr const char* SET_REALTIME_PRIORITY_LABEL = ICON_FA_TRIANGLE_EXCLAMATION " Set Realtime priority...###SetRealtimePriority";
+/// The same, as the button under Process Details' priority slider.
+inline constexpr const char* SET_REALTIME_PRIORITY_BUTTON_LABEL = ICON_FA_TRIANGLE_EXCLAMATION " Set Realtime...###SetRealtimePriority";
+
+/// How Set Realtime priority is drawn (#3429).
+enum class RealtimePriorityState : std::uint8_t
+{
+    Hidden,   ///< The platform can't set it (Linux, the synthetic scenario), or a selection of several: nothing is drawn.
+    Disabled, ///< Drawn greyed out; the tooltip says why.
+    Enabled,
+};
+
+struct RealtimePriorityItem
+{
+    RealtimePriorityState state = RealtimePriorityState::Hidden;
+    const char* tooltip = "";
+};
+
+/// Set Realtime priority for @p capabilities and @p target, whose class is Realtime already when
+/// @p isRealtime (#3429): hidden where the platform can't set it and for a selection of several
+/// (@p batchCount, the row menu's), disabled with the reason for no process, one whose identity isn't
+/// confirmed yet, one already at Realtime, while another action runs (@p actionRunning), or while
+/// Process Details' priority slider applies a change to it (@p priorityApplying: the two would race, and
+/// the older could land last); otherwise enabled, its tooltip warning what it does. A press always asks
+/// to confirm, with the warning.
+[[nodiscard]] constexpr RealtimePriorityItem realtimePriorityItem(const Platform::ProcessActionCapabilities& capabilities,
+                                                                  const Platform::ProcessTarget& target,
+                                                                  bool isRealtime,
+                                                                  bool actionRunning,
+                                                                  std::size_t batchCount = 0,
+                                                                  bool priorityApplying = false) noexcept
+{
+    if (!capabilities.canSetRealtimePriority || batchCount > 1)
+    {
+        return {.state = RealtimePriorityState::Hidden, .tooltip = ""};
+    }
+    if (target.pid <= 0)
+    {
+        return {.state = RealtimePriorityState::Disabled, .tooltip = "Select a process to set its priority"};
+    }
+    if (target.startTimeTicks == 0)
+    {
+        return {
+            .state = RealtimePriorityState::Disabled,
+            .tooltip = "TaskSmack can't confirm which process this is yet, so it won't change its priority",
+        };
+    }
+    if (isRealtime)
+    {
+        return {.state = RealtimePriorityState::Disabled, .tooltip = "The process already runs at Realtime"};
+    }
+    if (actionRunning)
+    {
+        return {.state = RealtimePriorityState::Disabled, .tooltip = "Another action is still running"};
+    }
+    if (priorityApplying)
+    {
+        return {.state = RealtimePriorityState::Disabled, .tooltip = "Waiting for the priority change being applied to finish"};
+    }
+    return {
+        .state = RealtimePriorityState::Enabled,
+        .tooltip = "Run the process at the Realtime priority class, ahead of Windows' own work. A busy Realtime process "
+                   "can make the desktop unresponsive, so TaskSmack asks first. Needs administrator rights.",
+    };
+}
+
 /// "Opened strace for PID 321 in a new terminal" / "Could not trace PID 321: ...".
 [[nodiscard]] inline ActionResultMessage formatSyscallTraceResult(std::int32_t pid, const Platform::ProcessActionResult& result)
 {
@@ -326,9 +395,23 @@ class ProcessActionsView
     }
 
     /// Whether the result line offers "Authenticate and retry" (#2308).
+    /// Not for a refused priority change (Set Realtime priority) while the Priority card's own apply runs
+    /// (holdPriorityRetry(), #3429): the two would race.
     [[nodiscard]] bool offersAuthenticateAndRetry() const noexcept
     {
-        return m_Retry.has_value() && !m_ActionRun.busy();
+        if (!m_Retry.has_value() || m_ActionRun.busy())
+        {
+            return false;
+        }
+        return !m_PriorityRetryHeld || m_Retry->action.kind != Platform::AuthorizedAction::Kind::SetPriority;
+    }
+
+    /// Whether the Priority card's Apply (or its retry) runs for this process now (#3429): "Authenticate
+    /// and retry" for a refused Set Realtime priority waits until it is done, so the two never set the
+    /// priority at once and the older can't land last. The caller sets it each frame, before rendering.
+    void holdPriorityRetry(bool held) noexcept
+    {
+        m_PriorityRetryHeld = held;
     }
 
     /// Presses "Authenticate and retry", for tests.
@@ -596,6 +679,14 @@ class ProcessActionsView
         return m_ConfirmTarget;
     }
 
+    /// Whether a priority change is asked about or running here (#3429): Set Realtime priority pending its
+    /// confirm, running, or retried as an administrator. The Priority card holds its own Apply meanwhile, so
+    /// the two never set the same process's priority at once and the older one can't land last.
+    [[nodiscard]] bool priorityChangeInFlight() const noexcept
+    {
+        return m_ConfirmAction == Detail::ProcessAction::SetRealtimePriority || (m_ActionRun.busy() && m_RunSetsPriority);
+    }
+
     /// The result line, empty when there is nothing to show.
     [[nodiscard]] const Detail::ActionResultMessage& lastResult() const noexcept
     {
@@ -641,6 +732,9 @@ class ProcessActionsView
             return;
         }
         m_RunGeneration = m_Generation;
+        // Set Realtime priority (#3429) sets the priority, as the Priority card's Apply does: the card holds
+        // its Apply while this runs (priorityChangeInFlight()).
+        m_RunSetsPriority = retry.has_value() && retry->kind == Platform::AuthorizedAction::Kind::SetPriority;
         static_cast<void>(m_ActionRun.start(
             std::move(pending),
             std::move(work),
@@ -665,19 +759,21 @@ class ProcessActionsView
     /// administrator, after the password prompt (IProcessActions::runAuthorized(), #2308).
     void retryAuthorized()
     {
-        if (!m_Retry.has_value() || m_ActionRun.busy())
+        if (!m_Retry.has_value() || !offersAuthenticateAndRetry())
         {
             return;
         }
         Retry retry = std::move(*m_Retry);
         m_Retry.reset();
+        const bool setsPriority = retry.action.kind == Platform::AuthorizedAction::Kind::SetPriority;
         runAction(
             retry.actions,
             std::format("Waiting for authorization to act on PID {}...", retry.action.target.pid),
             [actions = retry.actions, action = retry.action](const std::stop_token& stopToken)
             { return actions->runAuthorized(action, stopToken); },
             std::move(retry.format),
-            std::nullopt); // a refusal to the administrator isn't offered again
+            std::nullopt);                // a refusal to the administrator isn't offered again
+        m_RunSetsPriority = setsPriority; // runAction() can't tell from the retry it was given, which is none
     }
 
     /// Takes in the CPU layout's read once it has finished, and hands the layout to an affinity dialog
@@ -770,6 +866,8 @@ class ProcessActionsView
     std::optional<Retry> m_Retry;
     std::uint64_t m_Generation = 0;               // bumped by onSelectionChanged() (#2389)
     std::uint64_t m_RunGeneration = 0;            // m_Generation when the running action started
+    bool m_RunSetsPriority = false;               // The running action sets the priority: Set Realtime priority (#3429)
+    bool m_PriorityRetryHeld = false;             // The Priority card's apply runs: a priority retry waits (#3429)
     ProcessAffinityDialog m_AffinityDialog;       // Set affinity... (#1887)
     ProcessSchedPolicyDialog m_SchedPolicyDialog; // Set scheduling policy... (#3086)
     // The dialog's CPU layout, read once on its worker (#3182). Its worker uses the panel's IProcessActions

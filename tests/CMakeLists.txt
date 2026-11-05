@@ -274,6 +274,10 @@ endif()
 add_test(NAME BenchmarkRegressionGateScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_check_benchmark_regression.py)
 
+# tools/merge-benchmark-baselines.py builds the CI baseline from captures on several runner classes (#3395).
+add_test(NAME MergeBenchmarkBaselinesScript
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_merge_benchmark_baselines.py)
+
 # tools/tidy-changed-files.py picks the PR clang-tidy jobs' translation units (#1406, #1626). The tests
 # build throwaway git repositories (about 10 s idle). On a loaded Windows machine each git process is
 # far slower and the run neared 180 s (#1797); 600 s keeps it clear of that and of the CI --timeout.
@@ -456,7 +460,9 @@ set(COMMON_TEST_SOURCES
     Domain/test_HistorySeries.cpp
     Domain/test_LruMap.cpp
     Domain/test_Worker.cpp # the background worker primitive (#3343)
+    Domain/test_RateTracker.cpp # rates by acquisition time, keyed on identity (#3344)
     Domain/test_PidIndex.cpp
+    Domain/test_ProcessGeneration.cpp # rows, PID index and tree published together (#3345)
     Domain/test_ProcessIconCache.cpp
     # Linux desktop-entry icon lookup (#1800): pure std::filesystem, run on every platform
     Platform/test_DesktopEntryIcons.cpp
@@ -517,6 +523,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessPins.cpp # pinned processes (#3061)
     App/test_Connections.cpp # the Connections tab (#3066)
     App/test_Users.cpp # the Users tab (#3076)
+    App/test_UserGrouping.cpp # account matching for the Users tab and Group: User (#3377)
     Domain/test_HandleSearch.cpp # Find handles (#3067)
     App/test_ProcessGrouping.cpp # Group by (#3068)
     App/test_ProcessTreeFlatten.cpp
@@ -749,6 +756,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsSystemProbeNetwork.cpp
     Platform/test_WindowsProcessActions.cpp
     Platform/test_WindowsProcessActionsSeams.cpp
+    Platform/test_WindowsFileLocation.cpp  # Open file location: SHOpenFolderAndSelectItems, then explorer.exe /select, through fakes (#3426)
     Platform/test_WindowsWaitChain.cpp  # Analyze wait chain: the WCT session through fakes, and one real child (#3084)
     Platform/test_WindowsSignatureCheck.cpp  # WinVerifyTrust, embedded and catalog, through fakes and on notepad.exe (#3070)
     Platform/test_WindowsDebugPrivilege.cpp
@@ -1013,6 +1021,8 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ConnectionsView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/UsersPanel.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/UsersView.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/UserGrouping.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/UserSessionsFeed.cpp
     # The System Information page (#1399), run headless (test_SystemInfoView.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/Panels/SystemInfoSections.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/SystemInfoView.cpp

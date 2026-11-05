@@ -19,6 +19,7 @@
 #include "App/Panels/NiceStep.h"
 #include "App/Panels/ProcessActionsView.h"
 #include "App/Panels/ProcessColumnAvailability.h"
+#include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
 #include "App/Panels/ProcessDumpView.h"
 #include "App/Panels/ProcessPins.h"
 #include "App/Panels/ProcessRowFormat.h"
@@ -839,6 +840,66 @@ TEST_F(ProcessesPanelRenderTest, EfficiencyModeTickedInTheRowMenuIsTurnedOffAtOn
     panel->waitForRowActionForTesting();
     EXPECT_EQ(actions->efficiencyModeCount(), 1) << "greyed out for a selection: nothing is sent";
     EXPECT_EQ(ImGui::GetTopMostPopupModal(), nullptr);
+    panel->onDetach();
+}
+
+// #3429: where the platform can set Realtime (Windows), the row menu's Set Realtime priority... asks first, with
+// the warning and the danger fill, then sets Realtime's nice for the process the menu was for. A refusal for want
+// of rights says what Windows did, as the platform words it.
+TEST_F(ProcessesPanelRenderTest, SetRealtimePriorityFromTheRowMenuWarnsThenSetsRealtime)
+{
+    TestMocks::MockProcessActions* actions = nullptr;
+    const auto panel = std::make_unique<ProcessesPanel>(
+        [&actions]
+        {
+            auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+            probe->withProcess(TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0))
+                .withProcess(TestMocks::makeProcessCounters(100, "server", 'R', 200, 50, 1000, std::uint64_t{8} << 20U, 1));
+            auto mock = std::make_unique<TestMocks::MockProcessActions>();
+            mock->setCapabilities({.canTerminate = true, .canKill = true, .canSetPriority = true, .canSetRealtimePriority = true});
+            actions = mock.get();
+            return ProcessesPanelPlatform{.probe = std::move(probe), .actions = std::move(mock), .icons = nullptr};
+        },
+        [](Core::Event&) {});
+    attachAndSeed(*panel);
+    Core::ActiveTabChangedEvent shown("Processes");
+    panel->onEvent(shown);
+    ASSERT_NE(actions, nullptr);
+    renderUntilLoaded(*panel);
+
+    std::optional<std::int32_t> menuPid = openARowMenu(*panel);
+    ASSERT_TRUE(menuPid.has_value());
+    pressPopupItem(*panel, App::Detail::SET_REALTIME_PRIORITY_LABEL);
+    static_cast<void>(renderAndCapture(*panel));
+    const std::string text = renderAndCapture(*panel);
+    const ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
+    ASSERT_NE(modal, nullptr);
+    EXPECT_TRUE(std::string_view(modal->Name).starts_with("Set Realtime priority for")) << modal->Name;
+    EXPECT_TRUE(text.contains("can make the desktop unresponsive")) << text;
+    EXPECT_EQ(actions->setPriorityCount(), 0); // asked, not done
+
+    pressModalFilledButton(*panel, "Set Realtime priority"); // the danger fill
+    panel->waitForRowActionForTesting();
+    EXPECT_EQ(actions->setPriorityCount(), 1);
+    EXPECT_EQ(actions->lastSetPriorityNice(), App::Detail::REALTIME_PRIORITY_NICE);
+    EXPECT_EQ(actions->lastTarget().pid, menuPid.value_or(-1));
+    EXPECT_TRUE(renderAndCapture(*panel).contains(std::format("Priority of PID {} set to Realtime", menuPid.value_or(-1))));
+
+    // Windows quietly set High: the toolbar says so.
+    actions->setPriorityResult(Platform::ProcessActionResult::denied("Windows set High: Realtime needs administrator rights."));
+    if (topPopup() != nullptr)
+    {
+        closePopups(*panel);
+    }
+    menuPid = openARowMenu(*panel);
+    ASSERT_TRUE(menuPid.has_value());
+    pressPopupItem(*panel, App::Detail::SET_REALTIME_PRIORITY_LABEL);
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    ASSERT_NE(ImGui::GetTopMostPopupModal(), nullptr);
+    pressModalFilledButton(*panel, "Set Realtime priority");
+    panel->waitForRowActionForTesting();
+    EXPECT_TRUE(renderAndCapture(*panel).contains("Windows set High: Realtime needs administrator rights.")) << "the toolbar";
     panel->onDetach();
 }
 
@@ -3290,6 +3351,9 @@ TEST_F(ProcessesPanelRenderTest, GroupByContainerShowsHeadersWithTotalsAndCollap
             web.container = "docker:1a2b3c4d5e6f";
             auto worker = TestMocks::makeProcessCounters(101, "nginx-worker", 'S', 30, 10, 1100, std::uint64_t{2} << 20U, 100);
             worker.container = "docker:1a2b3c4d5e6f";
+            Platform::ProcessCapabilities caps;
+            caps.hasContainer = true; // Group: Container is offered only where containers are read (#3428)
+            probe->setCapabilities(caps);
             probe->withProcess(TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0))
                 .withProcess(web)
                 .withProcess(worker);
@@ -3343,6 +3407,55 @@ TEST_F(ProcessesPanelRenderTest, GroupByContainerShowsHeadersWithTotalsAndCollap
     text = renderAndCapture(*panel);
     EXPECT_EQ(UserConfig::get().settings().processGroupBy, ProcessGrouping::GroupBy::None);
     EXPECT_TRUE(text.contains("Group: None")) << text;
+    panel->onDetach(); // TearDown restores the settings
+}
+
+// #3428: where the probe reads no containers and no app units (Windows), a saved Group: Container stands
+// as None, the Group control doesn't offer Container or App, and the saved choice is kept for a system that
+// has them; choosing None there replaces it.
+TEST_F(ProcessesPanelRenderTest, TheGroupControlOffersOnlyTheModesThisSystemHasDataFor)
+{
+    UserConfig::get().settings().processGroupBy = ProcessGrouping::GroupBy::Container;
+    const auto panel = attachedPanel(); // the mock probe's default capabilities: no containers, no app units
+    renderUntilLoaded(*panel);
+    std::string text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("Group: None")) << text;
+    EXPECT_FALSE(text.contains("Ungrouped")) << text;
+    EXPECT_EQ(panel->groupBy(), ProcessGrouping::GroupBy::None);
+    EXPECT_EQ(UserConfig::get().settings().processGroupBy, ProcessGrouping::GroupBy::Container); // kept
+
+    const ImGuiWindow* shell = ImGui::FindWindowByName("Shell");
+    ASSERT_NE(shell, nullptr);
+    ImGui::ActivateItemByID(ImHashStr("##GroupBy", 0, shell->ID));
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    ASSERT_NE(topPopup(), nullptr);
+    // The open list's items: the words drawn between the Group control and the Columns button.
+    text = renderAndCapture(*panel);
+    const std::size_t listStart = text.find("Group: None");
+    const std::size_t listEnd = text.find("Columns");
+    ASSERT_NE(listStart, std::string::npos) << text;
+    ASSERT_NE(listEnd, std::string::npos) << text;
+    ASSERT_LT(listStart, listEnd) << text;
+    const std::size_t itemsStart = listStart + std::string_view("Group: None").size();
+    std::istringstream list(text.substr(itemsStart, listEnd - itemsStart));
+    std::vector<std::string> offered;
+    for (std::string word; list >> word;)
+    {
+        offered.push_back(word);
+    }
+    const auto offers = [&offered](std::string_view label)
+    {
+        return std::ranges::find(offered, label) != offered.end();
+    };
+    EXPECT_TRUE(offers("None")) << text;
+    EXPECT_TRUE(offers("Unit")) << text;
+    EXPECT_TRUE(offers("User")) << text;
+    EXPECT_FALSE(offers("Container")) << text;
+    EXPECT_FALSE(offers("App")) << text;
+    pressPopupItem(*panel, "None");
+    static_cast<void>(renderAndCapture(*panel));
+    EXPECT_EQ(UserConfig::get().settings().processGroupBy, ProcessGrouping::GroupBy::None);
     panel->onDetach(); // TearDown restores the settings
 }
 
@@ -3812,6 +3925,14 @@ TEST_F(ProcessesPanelRenderTest, GroupHeadersTotalEachColumnInItsUnit)
             web.container = "docker:1a2b3c4d5e6f";
             web.threadCount = 4;
             web.handleCount = 40;
+            Platform::ProcessCapabilities caps;
+            caps.hasContainer = true; // Group: Container is offered only where containers are read (#3428)
+            caps.hasThreadCount = true;
+            caps.hasHandleCount = true;
+            caps.hasIoCounters = true;
+            caps.hasNetworkCounters = true;
+            caps.hasPowerUsage = true;
+            probe->setCapabilities(caps);
             probe->withProcess(web);
             return ProcessesPanelPlatform{
                 .probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>(), .icons = nullptr};

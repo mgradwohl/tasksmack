@@ -94,6 +94,26 @@ TEST(BrokeredProcessActionsTest, APermissionRefusalWithoutAHelperIsReturnedForTh
     EXPECT_EQ(f.broker->connectCount(), 0); // never prompts by itself
 }
 
+// #3429: Windows' quiet High for an unelevated Realtime is a permission refusal, so a running helper, elevated,
+// sets Realtime's value as any priority change; without one the UI offers Retry as administrator.
+TEST(BrokeredProcessActionsTest, ARealtimeThatCameOutHighGoesThroughTheHelper)
+{
+    const Fixture f(/*connected=*/true);
+    f.inner->setPriorityResult(ProcessActionResult::denied("Windows set High: Realtime needs administrator rights."));
+    const ProcessActionResult result = f.actions->setPriority(TARGET, -20);
+    EXPECT_TRUE(result.success) << result.errorMessage;
+    const std::vector<Broker::Request> requests = f.broker->requests();
+    ASSERT_EQ(requests.size(), 1U);
+    EXPECT_EQ(requests.front(), (Broker::Request{Broker::PriorityRequest{.target = TARGET, .nice = -20}}));
+
+    const Fixture offline(/*connected=*/false);
+    offline.inner->setPriorityResult(ProcessActionResult::denied("Windows set High: Realtime needs administrator rights."));
+    const ProcessActionResult refused = offline.actions->setPriority(TARGET, -20);
+    EXPECT_TRUE(refused.permissionDenied);
+    EXPECT_EQ(refused.errorMessage, "Windows set High: Realtime needs administrator rights.");
+    EXPECT_TRUE(offline.broker->requests().empty());
+}
+
 TEST(BrokeredProcessActionsTest, RunAuthorizedConnectsThenActsThroughTheHelper)
 {
     const Fixture f(/*connected=*/false);

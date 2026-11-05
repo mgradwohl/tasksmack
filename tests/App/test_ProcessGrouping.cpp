@@ -1,8 +1,10 @@
 // The Processes table's Group by (#3068): group keys, app names from systemd units, totals and order.
 
+#include "App/Panels/ProcessGroupTotals.h"
 #include "App/Panels/ProcessGrouping.h"
 #include "App/ProcessColumnConfig.h"
 #include "Domain/ProcessSnapshot.h"
+#include "Platform/ProcessTypes.h"
 
 #include <gtest/gtest.h>
 
@@ -47,6 +49,44 @@ TEST(ProcessGroupingTest, AppNamesFromDesktopFlatpakAndSnapUnits)
     EXPECT_EQ(ProcessGrouping::appFromUnit("snap.lxd.daemon.service"), "lxd");
     EXPECT_EQ(ProcessGrouping::appFromUnit("docker.service"), "");
     EXPECT_EQ(ProcessGrouping::appFromUnit("session-3.scope"), "");
+}
+
+// #3428: the Group control offers Container and App only where the probe reads them: a Windows-like probe
+// (no cgroups, no systemd units) gets None, Unit and User; a Linux-like one every mode, in the same order.
+TEST(ProcessGroupingTest, OfferedModesFollowTheProbesCapabilities)
+{
+    Platform::ProcessCapabilities windowsLike;
+    windowsLike.hasServices = true; // the service list, attached
+    EXPECT_EQ(ProcessGrouping::offeredGroupModes(windowsLike), (std::vector{GroupBy::None, GroupBy::Unit, GroupBy::User}));
+
+    Platform::ProcessCapabilities linuxLike;
+    linuxLike.hasServices = true;
+    linuxLike.hasContainer = true;
+    linuxLike.hasAppUnits = true;
+    EXPECT_EQ(ProcessGrouping::offeredGroupModes(linuxLike),
+              (std::vector{GroupBy::None, GroupBy::Unit, GroupBy::Container, GroupBy::App, GroupBy::User}));
+
+    Platform::ProcessCapabilities containersOnly;
+    containersOnly.hasContainer = true;
+    EXPECT_EQ(ProcessGrouping::offeredGroupModes(containersOnly),
+              (std::vector{GroupBy::None, GroupBy::Unit, GroupBy::Container, GroupBy::User}));
+}
+
+// #3428: a saved mode this system doesn't offer groups by None; one it offers stands.
+TEST(ProcessGroupingTest, ASavedModeNotOfferedFallsBackToNone)
+{
+    const Platform::ProcessCapabilities windowsLike;
+    EXPECT_EQ(ProcessGrouping::effectiveGroupBy(GroupBy::Container, windowsLike), GroupBy::None);
+    EXPECT_EQ(ProcessGrouping::effectiveGroupBy(GroupBy::App, windowsLike), GroupBy::None);
+    EXPECT_EQ(ProcessGrouping::effectiveGroupBy(GroupBy::Unit, windowsLike), GroupBy::Unit);
+    EXPECT_EQ(ProcessGrouping::effectiveGroupBy(GroupBy::User, windowsLike), GroupBy::User);
+    EXPECT_EQ(ProcessGrouping::effectiveGroupBy(GroupBy::None, windowsLike), GroupBy::None);
+
+    Platform::ProcessCapabilities linuxLike;
+    linuxLike.hasContainer = true;
+    linuxLike.hasAppUnits = true;
+    EXPECT_EQ(ProcessGrouping::effectiveGroupBy(GroupBy::Container, linuxLike), GroupBy::Container);
+    EXPECT_EQ(ProcessGrouping::effectiveGroupBy(GroupBy::App, linuxLike), GroupBy::App);
 }
 
 TEST(ProcessGroupingTest, KeysByMode)
@@ -218,6 +258,28 @@ TEST(ProcessGroupingTest, ServicesDemandFollowsColumnSectionAndUnitGrouping)
 #else
     EXPECT_FALSE(ProcessGrouping::UNITS_FROM_SERVICE_LIST);
 #endif
+}
+
+// #3377: the signed-in sessions are read while the Users tab is shown, or the Processes tab grouped by User
+// once its groups show sessions; not for any other grouping, nor with the Processes tab hidden.
+TEST(ProcessGroupingTest, SessionsDemandFollowsTheUsersTabAndUserGrouping)
+{
+    for (const GroupBy mode : {GroupBy::None, GroupBy::Unit, GroupBy::Container, GroupBy::App, GroupBy::User})
+    {
+        for (const bool processesShown : {false, true})
+        {
+            for (const bool showSessions : {false, true})
+            {
+                EXPECT_TRUE(ProcessGrouping::sessionsDemand(true, processesShown, mode, showSessions));
+                EXPECT_EQ(ProcessGrouping::sessionsDemand(false, processesShown, mode, showSessions),
+                          showSessions && processesShown && mode == GroupBy::User);
+            }
+        }
+    }
+    // Until the fold adds the session rows, only the Users tab reads them: no change anyone can see.
+    EXPECT_FALSE(ProcessGrouping::USER_GROUPS_SHOW_SESSIONS);
+    static_assert(ProcessGrouping::sessionsDemand(true, false, GroupBy::None, false));
+    static_assert(!ProcessGrouping::sessionsDemand(false, true, GroupBy::User, ProcessGrouping::USER_GROUPS_SHOW_SESSIONS));
 }
 
 } // namespace

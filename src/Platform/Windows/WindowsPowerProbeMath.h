@@ -9,6 +9,8 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace Platform
@@ -246,6 +248,25 @@ struct BatteryCapacityTotals
     totals.fullChargeWh = combined.fullCharge;
     totals.healthPercent = combined.healthPercent;
     return totals;
+}
+
+/// Takes @p published (a Domain::WorkerPublication) into @p facts when it is newer than @p takenVersion,
+/// and advances @p takenVersion to it. All or nothing: the value is copied first, and only once that has
+/// succeeded is it moved into @p facts and the version marked taken. A copy that throws (no memory for
+/// the battery's strings) changes nothing, so the same publication is taken on the next try rather than
+/// skipped for good (#3343). @return Whether it was newer, and so taken.
+template<typename Publication, typename Snapshot>
+[[nodiscard]] bool takeNewerPublication(const Publication& published, Snapshot& facts, std::uint64_t& takenVersion)
+{
+    static_assert(std::is_nothrow_move_assignable_v<Snapshot>, "the move after the copy must not throw");
+    if (published.version == takenVersion)
+    {
+        return false;
+    }
+    Snapshot copy = published.value; // may throw: nothing has changed yet
+    facts = std::move(copy);
+    takenVersion = published.version;
+    return true;
 }
 
 } // namespace Platform
