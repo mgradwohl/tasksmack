@@ -18,9 +18,12 @@
 #include <benchmark/benchmark.h>
 
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <random>
+#include <utility>
+#include <vector>
 
 namespace
 {
@@ -37,6 +40,61 @@ void fillHistory(Domain::HistoryBuffer<double>& history, std::size_t count)
     {
         history.push(static_cast<double>(i));
     }
+}
+
+/// The cache line the copy benchmarks align their source and destination to.
+constexpr std::uintptr_t kCacheLineBytes = 64;
+/// The most rings cacheAlignedHistory() allocates looking for one that starts on a cache line.
+constexpr std::size_t kAlignAttempts = 64;
+
+/// Where in its cache line @p history's storage starts (its slot 0, while nothing has wrapped).
+[[nodiscard]] std::uintptr_t storageOffset(const Domain::HistoryBuffer<double>& history)
+{
+    return std::bit_cast<std::uintptr_t>(&history.ref(0)) % kCacheLineBytes;
+}
+
+/// An empty kCapacity ring whose storage starts on a cache line, for the copy benchmarks (#3448).
+///
+/// The heap aligns the ring's storage to 16 bytes, so where it starts in a cache line changes with each
+/// allocation: each repetition, and each launch. copyTo()'s vector copy is about a third slower when
+/// its source starts 48 bytes into a line than at 0 or 32 (13.6 ns against 9.5 ns), which made
+/// CopyTo's spread within a run 14-23% and moved its median between runs by over 15%. Holding the
+/// rings that start elsewhere until one starts on a line makes every repetition copy the same way. The
+/// counter storage_offset reports where the ring timed starts: 0, unless no attempt found a line.
+[[nodiscard]] Domain::HistoryBuffer<double> cacheAlignedHistory()
+{
+    std::vector<Domain::HistoryBuffer<double>> misaligned;
+    misaligned.reserve(kAlignAttempts);
+    for (std::size_t attempt = 0; attempt < kAlignAttempts; ++attempt)
+    {
+        Domain::HistoryBuffer<double> history(kCapacity);
+        if (storageOffset(history) == 0)
+        {
+            return history;
+        }
+        misaligned.push_back(std::move(history)); // Held, so the next allocation lands elsewhere
+    }
+    return Domain::HistoryBuffer<double>(kCapacity);
+}
+
+/// The size of a page, the span over which a load can be mistaken for a pending store to an address
+/// with the same low 12 bits (4K aliasing).
+constexpr std::uintptr_t kPageBytes = 4096;
+/// Where the copy benchmarks' destination starts relative to their source, modulo a page: half a page
+/// on, so no load of the source shares its low 12 bits with a store the copy just made.
+constexpr std::uintptr_t kDestinationPageOffset = kPageBytes / 2;
+
+/// A kCapacity destination in @p storage starting kDestinationPageOffset past @p source modulo a page,
+/// and so on a cache line when @p source is (#3448). Where a stack array lands against the heap's ring
+/// changes with each launch, and in CopyToWrapped, whose second chunk copies the ring's start to the
+/// middle of the destination, it moved a repetition by up to 15%.
+[[nodiscard]] double* placedDestination(std::vector<double>& storage, const double* source)
+{
+    storage.assign(kCapacity + (kPageBytes / sizeof(double)), 0.0);
+    const auto begin = std::bit_cast<std::uintptr_t>(storage.data());
+    const auto target = (std::bit_cast<std::uintptr_t>(source) + kDestinationPageOffset) % kPageBytes;
+    const auto skip = (target + kPageBytes - (begin % kPageBytes)) % kPageBytes;
+    return storage.data() + (skip / sizeof(double));
 }
 
 // Benchmark push() operation - this is called every sample interval
@@ -119,42 +177,50 @@ static void BM_HistoryBuffer_SequentialAccess(benchmark::State& state)
 }
 BENCHMARK(BM_HistoryBuffer_SequentialAccess);
 
-// Benchmark copyTo() - used for ImPlot rendering
+// Benchmark copyTo() - used for ImPlot rendering. The ring's storage starts on a cache line
+// (cacheAlignedHistory()) and the destination half a page past it (placedDestination()), so every
+// repetition and every run copies with the same alignment.
 static void BM_HistoryBuffer_CopyTo(benchmark::State& state)
 {
-    Domain::HistoryBuffer<double> history(kCapacity);
+    Domain::HistoryBuffer<double> history = cacheAlignedHistory();
+    const auto offset = storageOffset(history);
+    std::vector<double> storage;
+    double* const buffer = placedDestination(storage, &history.ref(0));
     fillHistory(history, kCapacity);
-
-    std::array<double, kCapacity> buffer{};
 
     for (auto _ : state)
     {
         benchmark::DoNotOptimize(history);
-        auto copied = history.copyTo(buffer.data(), buffer.size());
+        auto copied = history.copyTo(buffer, kCapacity);
         benchmark::DoNotOptimize(copied);
         benchmark::DoNotOptimize(buffer);
+        benchmark::ClobberMemory();
     }
     state.SetBytesProcessed(state.iterations() * static_cast<std::int64_t>(kCapacity * sizeof(double)));
+    state.counters["storage_offset"] = benchmark::Counter(static_cast<double>(offset));
 }
 BENCHMARK(BM_HistoryBuffer_CopyTo);
 
-// Benchmark copyTo() with wrapped data (worst case)
+// Benchmark copyTo() with wrapped data (worst case), aligned as CopyTo is
 static void BM_HistoryBuffer_CopyToWrapped(benchmark::State& state)
 {
-    Domain::HistoryBuffer<double> history(kCapacity);
+    Domain::HistoryBuffer<double> history = cacheAlignedHistory();
+    const auto offset = storageOffset(history);
+    std::vector<double> storage;
+    double* const buffer = placedDestination(storage, &history.ref(0));
     // Push 1.5x capacity so the data wraps around
     fillHistory(history, kCapacity + (kCapacity / 2));
-
-    std::array<double, kCapacity> buffer{};
 
     for (auto _ : state)
     {
         benchmark::DoNotOptimize(history);
-        auto copied = history.copyTo(buffer.data(), buffer.size());
+        auto copied = history.copyTo(buffer, kCapacity);
         benchmark::DoNotOptimize(copied);
         benchmark::DoNotOptimize(buffer);
+        benchmark::ClobberMemory();
     }
     state.SetBytesProcessed(state.iterations() * static_cast<std::int64_t>(kCapacity * sizeof(double)));
+    state.counters["storage_offset"] = benchmark::Counter(static_cast<double>(offset));
 }
 BENCHMARK(BM_HistoryBuffer_CopyToWrapped);
 
