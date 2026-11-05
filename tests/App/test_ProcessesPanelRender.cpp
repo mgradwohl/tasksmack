@@ -1195,6 +1195,7 @@ TEST_F(ProcessesPanelRenderTest, SetSchedulingPolicyFromTheRowMenuAppliesTheDial
     panel->waitForRowActionForTesting();
     EXPECT_EQ(actions->setSchedPolicyCount(), 1);
     EXPECT_EQ(actions->lastSchedPolicy(), Platform::SchedPolicy::Idle);
+    EXPECT_EQ(actions->lastRealtimeThreads(), Platform::RealtimeThreads::Keep) << "opened on Batch: no warning, none demoted";
     EXPECT_EQ(actions->lastTarget().pid, menuPid.value_or(-1)); // the process the menu was for
     EXPECT_EQ(ImGui::GetTopMostPopupModal(), nullptr);
     EXPECT_NE(renderAndCapture(*panel).find("set to Idle"), std::string::npos) << "the result line";

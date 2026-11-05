@@ -572,6 +572,7 @@ TEST_F(ProcessActionsBlockRenderTest, SetSchedulingPolicyFromTheCardOpensTheDial
     }
     EXPECT_EQ(h.mock.setSchedPolicyCount(), 1);
     EXPECT_EQ(h.mock.lastSchedPolicy(), Platform::SchedPolicy::Batch);
+    EXPECT_EQ(h.mock.lastRealtimeThreads(), Platform::RealtimeThreads::Keep) << "opened on Normal: no warning, none demoted";
     EXPECT_EQ(h.mock.lastTarget().pid, TARGET.pid);
     static_cast<void>(runFrame(body));
     EXPECT_TRUE(text.contains("Scheduling policy of victim (PID 1001) set to Batch")) << text;

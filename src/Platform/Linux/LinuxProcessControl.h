@@ -160,7 +160,8 @@ class LinuxProcessControl : public IProcessActions
     [[nodiscard]] ProcessActionResult setAffinity(const ProcessTarget& target, const CpuAffinity& cpus) override;
     /// Normal, Batch or Idle (#3086), or FIFO or round robin at 1 to 99 (#3219), on every thread; any other pair, and
     /// real time for this process itself, is refused before sched_setscheduler(2).
-    [[nodiscard]] ProcessActionResult setSchedPolicy(const ProcessTarget& target, SchedPolicy policy, std::int32_t rtPriority = 0) override;
+    [[nodiscard]] ProcessActionResult
+    setSchedPolicy(const ProcessTarget& target, SchedPolicy policy, std::int32_t rtPriority, RealtimeThreads realtimeThreads) override;
     /// Efficiency mode (#3202, LinuxEfficiencyMode.h): on, nice 19 for every thread and, where it may and the
     /// process is alone in its cgroup, the cgroup's cpu.weight at 1; off, what on changed put back.
     [[nodiscard]] ProcessActionResult setEfficiencyMode(const ProcessTarget& target, bool on) override;

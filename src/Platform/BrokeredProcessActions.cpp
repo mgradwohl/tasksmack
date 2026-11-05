@@ -73,7 +73,10 @@ Broker::Request brokerRequestFor(const AuthorizedAction& action)
     case Kind::SetAffinity:
         return Broker::AffinityRequest{.target = action.target, .cpus = action.cpus};
     case Kind::SetSchedPolicy:
-        return Broker::SchedPolicyRequest{.target = action.target, .policy = action.schedPolicy, .rtPriority = action.rtPriority};
+        return Broker::SchedPolicyRequest{.target = action.target,
+                                          .policy = action.schedPolicy,
+                                          .rtPriority = action.rtPriority,
+                                          .realtimeThreads = action.realtimeThreads};
     case Kind::SendSignal:
         return Broker::SignalRequest{.target = action.target, .signal = brokerSignalFor(action.signal)};
     case Kind::SetEfficiencyMode:
@@ -212,10 +215,17 @@ ProcessActionResult BrokeredProcessActions::setAffinity(const ProcessTarget& tar
     return retried(m_Inner->setAffinity(target, cpus), {.kind = AuthorizedAction::Kind::SetAffinity, .target = target, .cpus = cpus});
 }
 
-ProcessActionResult BrokeredProcessActions::setSchedPolicy(const ProcessTarget& target, SchedPolicy policy, std::int32_t rtPriority)
+ProcessActionResult BrokeredProcessActions::setSchedPolicy(const ProcessTarget& target,
+                                                           SchedPolicy policy,
+                                                           std::int32_t rtPriority,
+                                                           RealtimeThreads realtimeThreads)
 {
-    return retried(m_Inner->setSchedPolicy(target, policy, rtPriority),
-                   {.kind = AuthorizedAction::Kind::SetSchedPolicy, .target = target, .schedPolicy = policy, .rtPriority = rtPriority});
+    return retried(m_Inner->setSchedPolicy(target, policy, rtPriority, realtimeThreads),
+                   {.kind = AuthorizedAction::Kind::SetSchedPolicy,
+                    .target = target,
+                    .schedPolicy = policy,
+                    .realtimeThreads = realtimeThreads,
+                    .rtPriority = rtPriority});
 }
 
 ProcessActionResult BrokeredProcessActions::closeConnection(const ProcessTarget& target, std::uint64_t socketInode)

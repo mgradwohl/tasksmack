@@ -65,7 +65,8 @@ namespace
     // any other pair, Deadline included, and the actions refuse it again.
     if (const auto* policy = std::get_if<Broker::SchedPolicyRequest>(&request))
     {
-        return Broker::ActionResult::from(actions.setSchedPolicy(policy->target, policy->policy, policy->rtPriority));
+        return Broker::ActionResult::from(
+            actions.setSchedPolicy(policy->target, policy->policy, policy->rtPriority, policy->realtimeThreads));
     }
     if (const auto* close = std::get_if<Broker::CloseConnectionRequest>(&request))
     {

@@ -201,13 +201,15 @@ struct AffinityRequest
 
 /// Set a process's CPU scheduling policy (#3086, protocol v15, Linux): IProcessActions::setSchedPolicy(). Normal,
 /// Batch or Idle with priority 0, or (v16, #3219) the real-time FIFO or round robin with a priority from 1 to 99:
-/// the decoder refuses every other pair (isValidSchedPolicySetting()), Deadline included. The answer is an
-/// ActionResult.
+/// the decoder refuses every other pair (isValidSchedPolicySetting()), Deadline included. realtimeThreads says whether
+/// the dialog warned that the process runs real time (RealtimeThreads::Change): only then does Normal, Batch or Idle
+/// change its real-time threads. The answer is an ActionResult.
 struct SchedPolicyRequest
 {
     ProcessTarget target;
     SchedPolicy policy = SchedPolicy::Normal;
     std::int32_t rtPriority = 0; ///< sched_priority: 1 to 99 for FIFO and round robin, 0 for the others (v16)
+    RealtimeThreads realtimeThreads = RealtimeThreads::Keep;
     friend bool operator==(const SchedPolicyRequest&, const SchedPolicyRequest&) = default;
 };
 
@@ -1111,12 +1113,14 @@ namespace Detail
     return MessageKind::SetAffinity;
 }
 
-/// SetSchedPolicy (#3086): the target, the policy as SchedPolicy's value, then (v16, #3219) its real-time priority.
+/// SetSchedPolicy (#3086): the target, the policy as SchedPolicy's value, (v16, #3219) its real-time priority, then
+/// RealtimeThreads' value.
 [[nodiscard]] inline MessageKind encodePayload(Writer& writer, const SchedPolicyRequest& policy)
 {
     writer.target(policy.target);
     writer.u8(static_cast<std::uint8_t>(policy.policy));
     writer.i32(policy.rtPriority);
+    writer.u8(static_cast<std::uint8_t>(policy.realtimeThreads));
     return MessageKind::SetSchedPolicy;
 }
 
@@ -1199,23 +1203,27 @@ namespace Detail
     return AffinityRequest{.target = target, .cpus = std::move(cpus)};
 }
 
-/// A SetSchedPolicy payload (#3086): the target, the policy, then its real-time priority (v16, #3219). Refused unless
-/// the pair is one Set scheduling policy may set: Normal, Batch or Idle with priority 0, FIFO or round robin with 1
-/// to 99. Deadline, Unknown and an out-of-range priority are refused here, before the helper acts, as
-/// LinuxProcessControl refuses them too.
+/// A SetSchedPolicy payload (#3086): the target, the policy, its real-time priority (v16, #3219), then
+/// RealtimeThreads. Refused unless the pair is one Set scheduling policy may set: Normal, Batch or Idle with priority
+/// 0, FIFO or round robin with 1 to 99; Deadline, Unknown and an out-of-range priority are refused here, before the
+/// helper acts, as LinuxProcessControl refuses them too. RealtimeThreads is refused unless Keep or Change.
 [[nodiscard]] inline SchedPolicyRequest decodeSchedPolicyRequest(Reader& reader)
 {
     const ProcessTarget target = reader.target();
     const std::uint8_t value = reader.u8();
     const std::int32_t rtPriority = reader.i32();
-    // Any byte casts to the uint8-backed enum; only the pairs Set scheduling policy may set are accepted.
+    const std::uint8_t realtime = reader.u8();
+    // Any byte casts to the uint8-backed enum; only the pairs Set scheduling policy may set are accepted. RealtimeThreads
+    // is Keep (0) or Change (1); any other byte is refused, never read as consent to demote real-time threads.
     const auto policy = static_cast<SchedPolicy>(value);
-    if (!isValidSchedPolicySetting(policy, rtPriority))
+    if (!isValidSchedPolicySetting(policy, rtPriority) || realtime > static_cast<std::uint8_t>(RealtimeThreads::Change))
     {
         reader.fail();
         return SchedPolicyRequest{.target = target, .policy = SchedPolicy::Normal, .rtPriority = 0};
     }
-    return SchedPolicyRequest{.target = target, .policy = policy, .rtPriority = rtPriority};
+    const RealtimeThreads realtimeThreads =
+        realtime == static_cast<std::uint8_t>(RealtimeThreads::Change) ? RealtimeThreads::Change : RealtimeThreads::Keep;
+    return SchedPolicyRequest{.target = target, .policy = policy, .rtPriority = rtPriority, .realtimeThreads = realtimeThreads};
 }
 
 /// A ReadProcessCounters payload: whether sockets are wanted (0 or 1), the count (at most

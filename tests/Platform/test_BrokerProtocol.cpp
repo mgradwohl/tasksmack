@@ -331,8 +331,11 @@ TEST(BrokerProtocolTest, EveryRequestRoundTrips)
     // #3086 (v15): the three time-sharing policies the helper may set, at priority 0.
     for (const SchedPolicy policy : {SchedPolicy::Normal, SchedPolicy::Batch, SchedPolicy::Idle})
     {
-        const Request request = SchedPolicyRequest{.target = TARGET, .policy = policy};
-        EXPECT_EQ(roundTrip(request), request);
+        for (const RealtimeThreads realtime : {RealtimeThreads::Keep, RealtimeThreads::Change})
+        {
+            const Request request = SchedPolicyRequest{.target = TARGET, .policy = policy, .realtimeThreads = realtime};
+            EXPECT_EQ(roundTrip(request), request);
+        }
     }
     // #3219 (v16): real time with its priority, at both ends of 1 to 99.
     for (const SchedPolicy policy : {SchedPolicy::Fifo, SchedPolicy::RoundRobin})
@@ -371,11 +374,19 @@ TEST(BrokerProtocolTest, ASchedulingPolicyOrPriorityItCantSetIsRefused)
     std::vector<std::uint8_t> past = encodeRequest(1, Request{SchedPolicyRequest{.target = TARGET, .policy = SchedPolicy::Batch}});
     past[4 + HEADER_BYTES + 12] = 0xFF;
     EXPECT_FALSE(decodeRequest(past).has_value());
-    // And a short one, its priority cut short (v16).
+    // A RealtimeThreads byte past Change is refused, never read as consent to take real-time threads off real time:
+    // it follows the target, the policy byte and the 4-byte priority (v16).
+    std::vector<std::uint8_t> consent = encodeRequest(1, Request{SchedPolicyRequest{.target = TARGET, .policy = SchedPolicy::Batch}});
+    consent[4 + HEADER_BYTES + 17] = 2;
+    EXPECT_FALSE(decodeRequest(consent).has_value());
+    // And short ones: no RealtimeThreads byte, then the priority cut short (v16).
     std::vector<std::uint8_t> shortFrame = encodeRequest(1, Request{SchedPolicyRequest{.target = TARGET, .policy = SchedPolicy::Idle}});
-    shortFrame.pop_back();
-    shortFrame[0] = static_cast<std::uint8_t>(shortFrame.size() - 4);
-    EXPECT_FALSE(decodeRequest(shortFrame).has_value());
+    for (int dropped = 0; dropped < 2; ++dropped)
+    {
+        shortFrame.pop_back();
+        shortFrame[0] = static_cast<std::uint8_t>(shortFrame.size() - 4);
+        EXPECT_FALSE(decodeRequest(shortFrame).has_value()) << dropped;
+    }
 }
 
 TEST(BrokerProtocolTest, EveryResponseRoundTrips)

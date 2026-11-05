@@ -27,6 +27,23 @@ enum class SchedPolicy : std::uint8_t
     Fifo,       ///< SCHED_FIFO: real time, running until it blocks or yields
 };
 
+/// What Set scheduling policy does with threads under a real-time policy (FIFO, round robin, Deadline) (#3086).
+/// The dialog says so: it warns, before Apply, only when the process it shows runs under one, and only then may
+/// Apply take them off it. Keep leaves every real-time thread as it is, the main thread included, so a process
+/// that turned real time after the dialog opened is never demoted without that warning.
+enum class RealtimeThreads : std::uint8_t
+{
+    Keep,   ///< Real-time threads keep their policy; the result counts them
+    Change, ///< The dialog warned that the process runs real time: every thread takes the chosen policy
+};
+
+/// Whether @p policy is a real-time one (FIFO, round robin) or Deadline: the policies Set scheduling policy
+/// changes only when the dialog warned (RealtimeThreads::Change).
+[[nodiscard]] constexpr bool isRealtimeOrDeadline(SchedPolicy policy) noexcept
+{
+    return policy == SchedPolicy::Fifo || policy == SchedPolicy::RoundRobin || policy == SchedPolicy::Deadline;
+}
+
 /// The policy Linux's /proc/[pid]/stat field 41 (or sched_getscheduler()) names; SCHED_RESET_ON_FORK, a
 /// flag the kernel may OR in, is ignored. Unknown for any other value.
 [[nodiscard]] constexpr SchedPolicy schedPolicyFromLinux(std::uint32_t policy) noexcept

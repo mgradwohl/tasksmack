@@ -291,16 +291,19 @@ void ProcessActionsView::renderSchedPolicyDialog(Platform::IProcessActions* acti
         return;
     }
     const Platform::ProcessTarget target = m_SchedPolicyDialog.target();
+    const Platform::RealtimeThreads realtime = m_SchedPolicyDialog.realtimeThreads();
     runAction(
         actions,
         std::format("Setting the scheduling policy of PID {}...", target.pid),
-        [actions, target, setting = *setting] { return actions->setSchedPolicy(target, setting.policy, setting.rtPriority); },
+        [actions, target, setting = *setting, realtime]
+        { return actions->setSchedPolicy(target, setting.policy, setting.rtPriority, realtime); },
         [name = m_SchedPolicyDialog.name(), pid = target.pid, setting = *setting](const Platform::ProcessActionResult& result)
         { return schedPolicyResultMessage(name, pid, setting, result); },
         Platform::AuthorizedAction{
             .kind = Platform::AuthorizedAction::Kind::SetSchedPolicy,
             .target = target,
             .schedPolicy = setting->policy,
+            .realtimeThreads = realtime,
             .rtPriority = setting->rtPriority,
         });
 }
