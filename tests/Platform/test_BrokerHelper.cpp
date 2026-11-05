@@ -45,6 +45,7 @@
 #include <optional>
 #include <ranges>
 #include <span>
+#include <stdexcept>
 #include <stop_token>
 #include <string>
 #include <string_view>
@@ -809,6 +810,201 @@ TEST(BrokerHelperTest, AWatchOnARunningProcessEndsAtOnceWhenDestroyed)
         EXPECT_FALSE(watch.token().stop_requested());
     }
     EXPECT_LT(since(start), WAIT);
+}
+
+// --- The watch on Domain::Worker (#3343) ------------------------------------------------------------
+
+/// What the stand-in for WaitForMultipleObjects saw and does, one test at a time. Every wait it makes
+/// is the real one, bounded by WAIT, so a watch that is never woken fails the test instead of hanging it.
+struct WaitSeam
+{
+    enum class Then : std::uint8_t
+    {
+        Wait,        ///< The real wait
+        Fail,        ///< WAIT_FAILED at once, as on a handle that isn't waitable
+        Throw,       ///< A std::exception at once
+        ThrowNonStd, ///< Something that isn't a std::exception, at once
+    };
+
+    std::atomic<Then> then{Then::Wait};
+    std::promise<void> entered; ///< Set as the stand-in is called
+    std::wstring threadName;    ///< The calling thread's description
+    std::atomic<DWORD> result{0xFFFF'FFFFU};
+    std::atomic<bool> wakeOpenAfterWait{false}; ///< The wake event was still open, and set, when the wait returned
+    std::atomic<bool> returned{false};          ///< The stand-in returned, a while after the wait did
+};
+
+WaitSeam* g_WaitSeam = nullptr; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables) - the stand-in's, set per test
+
+/// The calling thread's description (SetThreadDescription's), or empty when it has none.
+[[nodiscard]] std::wstring currentThreadName()
+{
+    PWSTR description = nullptr;
+    if (FAILED(GetThreadDescription(GetCurrentThread(), &description)) || description == nullptr)
+    {
+        return {};
+    }
+    std::wstring name(description);
+    LocalFree(description);
+    return name;
+}
+
+DWORD WINAPI seamWait(DWORD count, const HANDLE* handles, BOOL waitAll, DWORD /*milliseconds*/)
+{
+    WaitSeam& seam = *g_WaitSeam;
+    seam.threadName = currentThreadName();
+    switch (seam.then.load())
+    {
+    case WaitSeam::Then::Fail:
+        seam.entered.set_value();
+        return WAIT_FAILED;
+    case WaitSeam::Then::Throw:
+        seam.entered.set_value();
+        throw std::runtime_error("the watch's wait broke (test)");
+    case WaitSeam::Then::ThrowNonStd:
+        seam.entered.set_value();
+        // NOLINTNEXTLINE(bugprone-std-exception-baseclass,hicpp-exception-baseclass) - the point: what a catch (std::exception) misses
+        throw 42;
+    case WaitSeam::Then::Wait:
+        break;
+    }
+    seam.entered.set_value();
+    const DWORD result = WaitForMultipleObjects(count, handles, waitAll, static_cast<DWORD>(WAIT.count()));
+    seam.result = result;
+    // handles[1] is the wake: still open (a closed handle fails the wait), and set.
+    seam.wakeOpenAfterWait = count == 2 && WaitForSingleObject(handles[1], 0) == WAIT_OBJECT_0;
+    std::this_thread::sleep_for(50ms); // a destructor that didn't join would be gone by now
+    seam.returned = true;
+    return result;
+}
+
+class ProcessWatchWorkerTest : public ::testing::Test
+{
+  protected:
+    void SetUp() override
+    {
+        g_WaitSeam = &m_Seam;
+        m_Parent.reset(CreateEventW(nullptr, TRUE, FALSE, nullptr)); // set: the parent has exited
+        ASSERT_TRUE(m_Parent);
+    }
+    void TearDown() override
+    {
+        g_WaitSeam = nullptr;
+    }
+
+    /// Waits (bounded) until the watch's thread is in the stand-in.
+    [[nodiscard]] bool entered()
+    {
+        return m_Seam.entered.get_future().wait_for(WAIT) == std::future_status::ready;
+    }
+
+    WaitSeam m_Seam;
+    UniqueHandle m_Parent;
+};
+
+// The watch's wait runs on its Worker's named thread, not the constructing one.
+TEST_F(ProcessWatchWorkerTest, TheWatchWaitsOnItsNamedWorkerThread)
+{
+    const BrokerHelper::ProcessWatch watch(m_Parent.get(), {}, &seamWait);
+    ASSERT_TRUE(entered());
+    EXPECT_EQ(m_Seam.threadName, L"ts-parent-watch");
+    EXPECT_TRUE(watch.failure().empty());
+}
+
+// The parent exiting during the wait stops the session, and the watch hasn't failed.
+TEST_F(ProcessWatchWorkerTest, TheParentExitingDuringTheWaitStopsTheSession)
+{
+    const BrokerHelper::ProcessWatch watch(m_Parent.get(), {}, &seamWait);
+    std::promise<void> stopped;
+    const std::stop_callback onStop(watch.token(), [&stopped] { stopped.set_value(); });
+    ASSERT_TRUE(entered());
+    ASSERT_NE(SetEvent(m_Parent.get()), FALSE);
+    ASSERT_EQ(stopped.get_future().wait_for(WAIT), std::future_status::ready);
+    EXPECT_TRUE(watch.failure().empty());
+}
+
+// Destroying the watch during its wait cancels it through the wake (the Worker's cancel hook), at once:
+// the wait returns for the wake, with the event still open, the thread is joined before the destructor
+// returns, and the session's token is left as it was: only the parent's exit or the outer token stop it.
+TEST_F(ProcessWatchWorkerTest, CancellingDuringTheWaitWakesItAndJoinsBeforeTheEventCloses)
+{
+    std::stop_token token;
+    const auto start = std::chrono::steady_clock::now();
+    {
+        const BrokerHelper::ProcessWatch watch(m_Parent.get(), {}, &seamWait);
+        token = watch.token();
+        ASSERT_TRUE(entered());
+    }
+    EXPECT_LT(since(start), WAIT) << "the wake, not the stand-in's bound, ended the wait";
+    EXPECT_TRUE(m_Seam.returned) << "the destructor joined the watch's thread";
+    EXPECT_EQ(m_Seam.result.load(), WAIT_OBJECT_0 + 1) << "the wake ended it";
+    EXPECT_TRUE(m_Seam.wakeOpenAfterWait) << "the wake event outlives the wait";
+    EXPECT_FALSE(token.stop_requested()) << "the watch's own end doesn't stop the session";
+}
+
+// A watch destroyed at once, maybe before its job reached the wait, still ends promptly.
+TEST_F(ProcessWatchWorkerTest, AWatchDestroyedBeforeItsWaitEndsPromptly)
+{
+    const auto start = std::chrono::steady_clock::now();
+    for (int i = 0; i < 20; ++i)
+    {
+        m_Seam.entered = std::promise<void>();
+        const BrokerHelper::ProcessWatch watch(m_Parent.get(), {}, &seamWait);
+    }
+    EXPECT_LT(since(start), WAIT);
+}
+
+// The outer token stopping during the wait stops the session; the wait goes on until the watch goes.
+TEST_F(ProcessWatchWorkerTest, TheOuterTokenStopsTheSessionDuringTheWait)
+{
+    std::stop_source outer;
+    const BrokerHelper::ProcessWatch watch(m_Parent.get(), outer.get_token(), &seamWait);
+    ASSERT_TRUE(entered());
+    outer.request_stop();
+    EXPECT_TRUE(watch.token().stop_requested());
+}
+
+// A wait that fails stops the session (fails closed), as before the migration.
+TEST_F(ProcessWatchWorkerTest, AFailedWaitStopsTheSession)
+{
+    m_Seam.then = WaitSeam::Then::Fail;
+    const BrokerHelper::ProcessWatch watch(m_Parent.get(), {}, &seamWait);
+    std::promise<void> stopped;
+    const std::stop_callback onStop(watch.token(), [&stopped] { stopped.set_value(); });
+    ASSERT_EQ(stopped.get_future().wait_for(WAIT), std::future_status::ready);
+}
+
+// A watch that throws is contained by its Worker, never std::terminate, and fails closed: the session's
+// token is stopped (as serve() and acceptClient() watch it), so no session runs unwatched, and failure()
+// says why.
+TEST_F(ProcessWatchWorkerTest, AWatchThatThrowsStopsTheSessionAndSaysWhy)
+{
+    m_Seam.then = WaitSeam::Then::Throw;
+    const BrokerHelper::ProcessWatch watch(m_Parent.get(), {}, &seamWait);
+    std::promise<void> stopped;
+    const std::stop_callback onStop(watch.token(), [&stopped] { stopped.set_value(); });
+    ASSERT_EQ(stopped.get_future().wait_for(WAIT), std::future_status::ready);
+    const auto deadline = std::chrono::steady_clock::now() + WAIT;
+    while (watch.failure().empty() && std::chrono::steady_clock::now() < deadline)
+    {
+        std::this_thread::sleep_for(1ms);
+    }
+    EXPECT_EQ(watch.failure(), "the watch's wait broke (test)");
+}
+
+TEST_F(ProcessWatchWorkerTest, AWatchThatThrowsAnythingStopsTheSession)
+{
+    m_Seam.then = WaitSeam::Then::ThrowNonStd;
+    const BrokerHelper::ProcessWatch watch(m_Parent.get(), {}, &seamWait);
+    std::promise<void> stopped;
+    const std::stop_callback onStop(watch.token(), [&stopped] { stopped.set_value(); });
+    ASSERT_EQ(stopped.get_future().wait_for(WAIT), std::future_status::ready);
+    const auto deadline = std::chrono::steady_clock::now() + WAIT;
+    while (watch.failure().empty() && std::chrono::steady_clock::now() < deadline)
+    {
+        std::this_thread::sleep_for(1ms);
+    }
+    EXPECT_FALSE(watch.failure().empty());
 }
 
 // --- acceptClient() and the parent's handle (#2520 review, finding 2) -------------------------------
