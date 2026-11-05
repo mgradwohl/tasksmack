@@ -14,6 +14,7 @@
 #include "WindowsProcessDump.h"
 #include "WindowsProcessDumpMath.h"
 #include "WindowsProcessIdentity.h"
+#include "WindowsRunProgram.h"
 #ifndef TASKSMACK_NO_WAIT_CHAINS
 #include "WindowsWaitChain.h"
 #endif
@@ -459,6 +460,11 @@ WindowsProcessFunctions realWindowsProcessFunctions() noexcept
 #else
         .fileLocation = Windows::realFileLocationFunctions(),
 #endif
+#ifdef TASKSMACK_NO_RUN_PROGRAM
+        .runProgram = {}, // TaskSmackHelper.exe: no ShellExecuteExW in the elevated image (#3427)
+#else
+        .runProgram = Windows::realRunProgramFunctions(),
+#endif
     };
 }
 
@@ -466,7 +472,10 @@ WindowsProcessActions::WindowsProcessActions() : WindowsProcessActions(realWindo
 {}
 
 WindowsProcessActions::WindowsProcessActions(WindowsProcessFunctions functions)
-    : m_Fns(functions), m_GroupSizes((m_Fns.readGroupSizes != nullptr) ? m_Fns.readGroupSizes() : std::vector<std::uint32_t>{})
+    : m_Fns(functions),
+      m_GroupSizes((m_Fns.readGroupSizes != nullptr) ? m_Fns.readGroupSizes() : std::vector<std::uint32_t>{}),
+      // Constant for the process's life, so read once: actionCapabilities() is asked every frame (#3182).
+      m_Elevated(m_Fns.runProgram.shellExecute != nullptr && m_Fns.runProgram.isElevated != nullptr && m_Fns.runProgram.isElevated())
 {}
 
 ProcessActionCapabilities WindowsProcessActions::actionCapabilities() const
@@ -483,11 +492,14 @@ ProcessActionCapabilities WindowsProcessActions::actionCapabilities() const
         // SetProcessAffinityMask, or CPU sets across processor groups (#1881); needs the groups' sizes
         .canSetAffinity = !m_GroupSizes.empty(),
         .syscallTrace = SyscallTraceAvailability::Unsupported,
-        .canCreateDump = HAS_DUMPS,                       // MiniDumpWriteDump, dbghelp.dll loaded on the first dump (#807)
-        .canChooseDumpFolder = HAS_DUMPS,                 // IFileOpenDialog with FOS_PICKFOLDERS (#2001)
-        .dumpsFromSnapshot = HAS_DUMPS,                   // PssCaptureSnapshot, else from the running process (#2001)
-        .canAuthorizeInteractively = false,               // BrokeredProcessActions sets it when TaskSmackHelper.exe can be used (#2550)
-        .canOpenFileLocation = hasFileLocation(m_Fns),    // SHOpenFolderAndSelectItems, or explorer.exe /select (#3426)
+        .canCreateDump = HAS_DUMPS,                    // MiniDumpWriteDump, dbghelp.dll loaded on the first dump (#807)
+        .canChooseDumpFolder = HAS_DUMPS,              // IFileOpenDialog with FOS_PICKFOLDERS (#2001)
+        .dumpsFromSnapshot = HAS_DUMPS,                // PssCaptureSnapshot, else from the running process (#2001)
+        .canAuthorizeInteractively = false,            // BrokeredProcessActions sets it when TaskSmackHelper.exe can be used (#2550)
+        .canOpenFileLocation = hasFileLocation(m_Fns), // SHOpenFolderAndSelectItems, or explorer.exe /select (#3426)
+        .canRunProgram = m_Fns.runProgram.shellExecute != nullptr, // ShellExecuteExW, as Run new task (#3427)
+        // The runas verb's UAC prompt, unless TaskSmack is elevated already, when every task it starts is too.
+        .canRunProgramAsAdministrator = m_Fns.runProgram.shellExecute != nullptr && !m_Elevated,
         .canSetEfficiencyMode = hasEfficiencyMode(m_Fns), // EcoQoS and the Idle class, as Task Manager (#3071)
         .canAnalyzeWaitChain = HAS_WAIT_CHAINS,           // GetThreadWaitChain, as Task Manager's Analyze wait chain (#3084)
         .canCloseConnections = false,
@@ -1089,6 +1101,20 @@ WindowsProcessActions::actOnThread(const ProcessTarget& target, std::int32_t tid
                  target.pid,
                  previous);
     return ProcessActionResult::ok(threadActionNote(action, previous));
+}
+
+ProcessActionResult WindowsProcessActions::runProgram(const RunProgramRequest& request)
+{
+#ifdef TASKSMACK_NO_RUN_PROGRAM
+    // TaskSmackHelper.exe: BrokeredProcessActions never sends it one, and WindowsRunProgram.cpp isn't built in.
+    return IProcessActions::runProgram(request);
+#else
+    if (m_Fns.runProgram.shellExecute == nullptr)
+    {
+        return IProcessActions::runProgram(request);
+    }
+    return Windows::runShellProgram(m_Fns.runProgram, m_Elevated, request);
+#endif
 }
 
 ProcessActionResult WindowsProcessActions::openFileLocation(const ProcessTarget& target)

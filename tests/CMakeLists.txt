@@ -756,6 +756,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsProcessActions.cpp
     Platform/test_WindowsProcessActionsSeams.cpp
     Platform/test_WindowsFileLocation.cpp  # Open file location: SHOpenFolderAndSelectItems, then explorer.exe /select, through fakes (#3426)
+    Platform/test_WindowsRunProgram.cpp  # Run new task: ShellExecuteExW open/runas and a cancelled UAC prompt, through fakes (#3427)
     Platform/test_WindowsWaitChain.cpp  # Analyze wait chain: the WCT session through fakes, and one real child (#3084)
     Platform/test_WindowsSignatureCheck.cpp  # WinVerifyTrust, embedded and catalog, through fakes and on notepad.exe (#3070)
     Platform/test_WindowsDebugPrivilege.cpp
