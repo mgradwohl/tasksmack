@@ -379,6 +379,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsUserSessions.cpp # the Users tab's WTS sessions, Disconnect and Sign out (#3076)
     src/Platform/Windows/WindowsFolderPicker.cpp
     src/Platform/Windows/WindowsFileLocation.cpp # Open file location: SHOpenFolderAndSelectItems, or explorer.exe /select (#3426)
+    src/Platform/Windows/WindowsRunProgram.cpp # Run new task: ShellExecuteExW, runas for administrator (#3427)
     src/Platform/Windows/WindowsProcessConnections.cpp
     src/Platform/Windows/WindowsProcessEnvironmentReader.cpp # a process's environment block, out of its PEB (#2569)
     src/Platform/Windows/WindowsProcessIconSource.cpp
@@ -647,6 +648,7 @@ elseif(WIN32)
         src/Platform/Windows/WindowsProcessMachineMath.h
         src/Platform/Windows/WindowsFolderPicker.h
         src/Platform/Windows/WindowsFileLocation.h
+        src/Platform/Windows/WindowsRunProgram.h
         src/Platform/Windows/WindowsProcessConnections.h
         src/Platform/Windows/WindowsProcessEnvironmentReader.h
         src/Platform/Windows/WindowsProcessIconSource.h
@@ -1040,8 +1042,10 @@ if(WIN32)
     # Only what the helper calls (#2557), not the app's whole list. No dump writer and no COM folder
     # picker: WindowsProcessActions.cpp leaves its dump members to IProcessActions' refusals without them.
     # No wait chain reader either (#3084): the helper serves none, so WindowsWaitChain.cpp isn't built in.
-    # No Open file location (#3426): BrokeredProcessActions keeps it the user's own, so no shell calls here.
-    target_compile_definitions(TaskSmackHelper PRIVATE TASKSMACK_NO_PROCESS_DUMPS TASKSMACK_NO_WAIT_CHAINS TASKSMACK_NO_FILE_LOCATION)
+    # No Open file location (#3426) and no Run new task (#3427): BrokeredProcessActions keeps both the
+    # user's own, so no shell calls here.
+    target_compile_definitions(TaskSmackHelper PRIVATE TASKSMACK_NO_PROCESS_DUMPS TASKSMACK_NO_WAIT_CHAINS TASKSMACK_NO_FILE_LOCATION
+        TASKSMACK_NO_RUN_PROGRAM)
     target_link_libraries(TaskSmackHelper PRIVATE spdlog::spdlog_header_only
         advapi32 # tokens, security descriptors and AccessCheck (BrokerHelper, BrokerPipe)
         bcrypt # BCryptGenRandom (BrokerPipe)

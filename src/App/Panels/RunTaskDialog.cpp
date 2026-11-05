@@ -42,6 +42,20 @@ constexpr const char* RECENT_POPUP_ID = "##RunTaskRecent";
 constexpr float BUTTON_MIN_EM = 7.5F;
 constexpr float DIALOG_WIDTH_EM = 34.0F;
 
+// What the dialog says about the command, per platform: Linux splits it as a shell would, without one;
+// Windows opens it as the Run box does (#3427).
+#ifdef _WIN32
+constexpr const char* COMMAND_HINT = "notepad, or cmd /k ver";
+constexpr const char* COMMAND_NOTE = "Windows opens it as the Run box does, so a document, a folder or a web address works too. Quote a "
+                                     "program whose path has spaces in it.";
+constexpr const char* ADMINISTRATOR_TOOLTIP = "Windows asks for your consent first (User Account Control).";
+#else
+constexpr const char* COMMAND_HINT = "konsole, or /usr/bin/foot --title Rescue";
+constexpr const char* COMMAND_NOTE = "No shell runs it, so $VARIABLES, ~ and wildcards stay as typed. Quote a word with spaces in it.";
+constexpr const char* ADMINISTRATOR_TOOLTIP = "Asks for an administrator's password first (Linux: through pkexec). A program with a window "
+                                              "may not open this way, because pkexec doesn't pass on your display.";
+#endif
+
 /// The app's file dialog over its window, starting in /usr/bin, where most programs are; with no window
 /// (headless), nothing is chosen.
 void sdlBrowse(std::function<void(std::string)> chosen)
@@ -90,6 +104,11 @@ std::string runTaskShortName(std::string_view commandLine)
 
 Detail::ActionResultMessage runTaskResultMessage(std::string_view shown, bool asAdministrator, const Platform::ProcessActionResult& result)
 {
+    if (result.cancelled)
+    {
+        // Not an error: the user said no at the system's prompt (Windows: UAC, #3427).
+        return {.ok = false, .text = std::format("Didn't start {}: {}", shown, result.errorMessage), .neutral = true};
+    }
     if (!result.success)
     {
         return {.ok = false, .text = std::format("Could not start {}: {}", shown, result.errorMessage)};
@@ -126,7 +145,11 @@ void RunTaskDialog::takeBrowseResult()
     {
         if (!m_BrowseSlot->path->empty())
         {
+#ifdef _WIN32
+            m_Command = Platform::CommandWords::quoteProgram(*m_BrowseSlot->path); // a chosen file is the program (#3427)
+#else
             m_Command = Platform::CommandWords::quote(*m_BrowseSlot->path); // a chosen file is one word
+#endif
             m_FocusCommand = true;
         }
         m_BrowseSlot->path.reset();
@@ -143,8 +166,7 @@ bool RunTaskDialog::renderCommandRow()
     {
         ImGui::SetKeyboardFocusHere();
     }
-    const bool entered =
-        ImGui::InputTextWithHint("##command", "konsole, or /usr/bin/foot --title Rescue", &m_Command, ImGuiInputTextFlags_EnterReturnsTrue);
+    const bool entered = ImGui::InputTextWithHint("##command", COMMAND_HINT, &m_Command, ImGuiInputTextFlags_EnterReturnsTrue);
     if (!m_Recent.empty())
     {
         ImGui::SameLine(0.0F, ImGui::GetStyle().ItemSpacing.x);
@@ -224,8 +246,7 @@ std::optional<Platform::RunProgramRequest> RunTaskDialog::render()
 
     ImGui::PushTextWrapPos(0.0F);
     ImGui::TextUnformatted("The program to start, and its arguments. It runs on its own, apart from TaskSmack.");
-    ImGui::TextColored(theme.scheme().textMuted,
-                       "No shell runs it, so $VARIABLES, ~ and wildcards stay as typed. Quote a word with spaces in it.");
+    ImGui::TextColored(theme.scheme().textMuted, "%s", COMMAND_NOTE);
     ImGui::PopTextWrapPos();
     ImGui::Spacing();
 
@@ -234,8 +255,7 @@ std::optional<Platform::RunProgramRequest> RunTaskDialog::render()
     if (m_CanRunAsAdministrator)
     {
         UI::Widgets::outlinedCheckbox("Run as administrator", &m_AsAdministrator);
-        ImGui::SetItemTooltip("Asks for an administrator's password first (Linux: through pkexec). A program with a window may not "
-                              "open this way, because pkexec doesn't pass on your display.");
+        ImGui::SetItemTooltip("%s", ADMINISTRATOR_TOOLTIP);
     }
 
     const bool typed = m_Command.find_first_not_of(" \t\n") != std::string::npos;

@@ -1818,7 +1818,7 @@ void ProcessesPanel::renderContent()
     }
     ImGui::SetCursorPosX(statusLayout.x);
     {
-        const bool colored = showActionResult;
+        const bool colored = showActionResult && !m_RowActionResult.neutral; // a cancelled run: the normal colour (#3427)
         if (colored)
         {
             ImGui::PushStyleColor(ImGuiCol_Text, m_RowActionResult.ok ? theme.scheme().textSuccess : theme.scheme().textError);
@@ -3986,7 +3986,7 @@ void ProcessesPanel::renderRunTaskDialog()
         [actions = m_ProcessActions.get(), request = *request] { return actions->runProgram(request); },
         [shown = std::move(shown), admin = request->asAdministrator](const Platform::ProcessActionResult& result)
         { return runTaskResultMessage(shown, admin, result); },
-        std::nullopt); // its own pkexec prompt when elevated: nothing the helper does
+        std::nullopt); // its own pkexec or UAC prompt when elevated (#3427): nothing the helper does
 }
 
 void ProcessesPanel::renderFindHandlesDialog(const std::vector<Domain::ProcessSnapshot>& snapshots)

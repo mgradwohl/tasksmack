@@ -3237,6 +3237,76 @@ TEST_F(ProcessesPanelRenderTest, RunNewTaskStartsTheCommandAndRemembersIt)
     UserConfig::get().settings().recentCommands.clear();
 }
 
+// #3427: a run the user called off at the system's prompt (a dismissed UAC prompt) shows in the toolbar
+// in the normal text colour: nothing started, so not the success colour, and nothing went wrong, so not
+// the error colour either. A run that starts is in the success colour, which shows the check can see it.
+TEST_F(ProcessesPanelRenderTest, ACancelledRunNewTaskShowsInTheNormalTextColour)
+{
+    UserConfig::get().settings().recentCommands = {"cmd"};
+    TestMocks::MockProcessActions* actions = nullptr;
+    auto panel = std::make_unique<ProcessesPanel>(
+        [&actions]
+        {
+            auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+            probe->withProcess(TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0));
+            auto mock = std::make_unique<TestMocks::MockProcessActions>();
+            mock->setCapabilities({.canRunProgram = true, .canRunProgramAsAdministrator = true});
+            actions = mock.get();
+            return ProcessesPanelPlatform{.probe = std::move(probe), .actions = std::move(mock), .icons = nullptr};
+        });
+    attachAndSeed(*panel);
+    Core::ActiveTabChangedEvent shown("Processes");
+    panel->onEvent(shown);
+    for (int frame = 0; frame < LOAD_FRAMES && panel->processCount() < 1; ++frame)
+    {
+        static_cast<void>(renderAndCapture(*panel));
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    static_cast<void>(renderAndCapture(*panel));
+    ASSERT_NE(actions, nullptr);
+
+    // Vertices of the toolbar's own window (the Shell window it draws in) in @p colour, in the last frame.
+    const auto shellVerticesIn = [](const ImVec4& colour)
+    {
+        const ImU32 wanted = ImGui::ColorConvertFloat4ToU32(colour);
+        const ImGuiWindow* shell = ImGui::FindWindowByName("Shell");
+        return (shell == nullptr)
+                 ? std::ptrdiff_t{0}
+                 : std::ranges::count_if(shell->DrawList->VtxBuffer, [wanted](const ImDrawVert& v) { return v.col == wanted; });
+    };
+    const auto runTheLastCommand = [&panel]
+    {
+        const ImGuiWindow* shell = ImGui::FindWindowByName("Shell");
+        ASSERT_NE(shell, nullptr);
+        ImGui::ActivateItemByID(ImHashStr(ICON_FA_ROCKET "###RunNewTask", 0, shell->ID));
+        for (int frame = 0; frame < 3; ++frame)
+        {
+            static_cast<void>(renderAndCapture(*panel));
+        }
+        const ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
+        ASSERT_NE(modal, nullptr) << "Run new task didn't open its dialog";
+        ImGui::ActivateItemByID(ImHashStr("##filled", 0, ImHashStr("Run", 0, modal->ID)));
+    };
+    // Before any result: what the rest of the toolbar draws in those colours. The tests' built-in scheme
+    // may give success and error one colour, so each is counted against its own baseline.
+    const auto& scheme = UI::Theme::get().scheme();
+    const std::ptrdiff_t successBefore = shellVerticesIn(scheme.textSuccess);
+    const std::ptrdiff_t errorBefore = shellVerticesIn(scheme.textError);
+
+    runTheLastCommand();
+    ASSERT_TRUE(updateUntilBatchResult(*panel, "Started cmd"));
+    EXPECT_GT(shellVerticesIn(scheme.textSuccess), successBefore) << "the started run isn't in the success colour";
+
+    actions->setRunProgramResult(Platform::ProcessActionResult::cancelledByUser("the administrator prompt was cancelled"));
+    runTheLastCommand();
+    ASSERT_TRUE(updateUntilBatchResult(*panel, "Didn't start cmd: the administrator prompt was cancelled"));
+    EXPECT_EQ(shellVerticesIn(scheme.textSuccess), successBefore) << "a cancelled run is shown as a success";
+    EXPECT_EQ(shellVerticesIn(scheme.textError), errorBefore) << "a cancelled run is shown as an error";
+    EXPECT_EQ(actions->runProgramCount(), 2);
+    panel->onDetach();
+    UserConfig::get().settings().recentCommands.clear();
+}
+
 // #3068: grouped by container, each container is a header row with its process count and Σ totals, its
 // processes under it, the rest under Ungrouped last; clicking a header collapses it; Tree sets the group
 // back to None.

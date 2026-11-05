@@ -424,6 +424,10 @@ struct ActionResultMessage
 {
     bool ok = false;
     std::string text; ///< Empty when there is nothing to show.
+    /// Neither a success nor a failure: the user called it off at a system prompt (Run new task's dismissed
+    /// UAC prompt, #3427). ok is false, since nothing was done, but the line is drawn in the normal text
+    /// colour, not the error colour.
+    bool neutral = false;
 
     [[nodiscard]] bool empty() const noexcept
     {
