@@ -56,6 +56,7 @@
 #include <deque>
 #include <exception>
 #include <mutex>
+#include <new>
 #include <optional>
 #include <ranges>
 #include <stop_token>
@@ -114,7 +115,7 @@ class SignatureWorker
     {
         const std::scoped_lock lock(m_Mutex);
         static_cast<void>(workerEndedLocked());
-        requestLocked(path, pathKey(path), Asker::NewProcess);
+        requestLocked(path, keyLocked(path), Asker::NewProcess);
     }
 
     /// The answer for @p path once checked since the last request(); nullopt while queued or checking.
@@ -174,7 +175,9 @@ class SignatureWorker
     }
 
     /// Has the next drain submit() answer Refused without asking the Worker, as it does when there is no
-    /// memory to queue one (tests): the one case a queued path could be left with no drain to run it.
+    /// memory to queue one (tests): the one case a queued path could be left with no drain to run it. The
+    /// take-back that follows runs with every key made under the lock throwing std::bad_alloc, as the memory
+    /// that just ran out would: it must not need one.
     void refuseNextDrainForTesting()
     {
         const std::scoped_lock lock(m_Mutex);
@@ -209,6 +212,25 @@ class SignatureWorker
     struct Drained
     {};
     using CheckWorker = Domain::Worker<Drain, Drained>;
+
+    /// A path waiting in m_Queue, with its m_Paths key, made at admission: so taking it back, answering it
+    /// and checking it make no key, and the take-back after a refused drain (no memory) allocates nothing.
+    struct QueuedPath
+    {
+        std::string path;
+        std::string key;
+    };
+
+    /// pathKey() under m_Mutex: every key made under the lock goes through here, so a test can have it throw
+    /// where an allocation can't be allowed to (refuseNextDrainForTesting()).
+    [[nodiscard]] std::string keyLocked(std::string_view path)
+    {
+        if (std::exchange(m_KeysFail, false))
+        {
+            throw std::bad_alloc();
+        }
+        return pathKey(path);
+    }
 
     /// request() under m_Mutex.
     void requestLocked(std::string_view path, std::string key, Asker asker)
@@ -258,11 +280,22 @@ class SignatureWorker
         {
             m_Turn.reset(); // its turn has come: those after it are admitted as there's room
         }
-        PathState& state = m_Paths[std::move(key)];
-        state.result.reset();
-        state.queued = true;
+        // Transactional: what allocates (the queue entry, its copies, the table's node) comes first, and a throw
+        // there leaves the queue, the table and the count as they were.
+        m_Queue.push_back(QueuedPath{.path = std::string(path), .key = key});
+        PathState* state = nullptr;
+        try
+        {
+            state = &m_Paths[std::move(key)];
+        }
+        catch (...)
+        {
+            m_Queue.pop_back();
+            throw;
+        }
+        state->result.reset();
+        state->queued = true;
         ++m_QueuedCount; // not queued before: a queued path returned at the top
-        m_Queue.emplace_back(path);
         submitDrainLocked();
     }
 
@@ -274,23 +307,26 @@ class SignatureWorker
             failQueuedLocked(*m_EndNote); // the worker has ended: answered at once, never left queued
             return;
         }
-        const Domain::SubmitResult result =
-            std::exchange(m_RefuseNextDrain, false) ? Domain::SubmitResult::Refused : m_Worker.submit(Drain{});
+        const bool refuseForTesting = std::exchange(m_RefuseNextDrain, false);
+        const Domain::SubmitResult result = refuseForTesting ? Domain::SubmitResult::Refused : m_Worker.submit(Drain{});
         if (result == Domain::SubmitResult::Refused)
         {
             // No drain queued (no memory to queue one; a queued drain would have merged), and the one running,
             // if any, may have found the queue empty already: nothing is sure to check these paths. Take them
             // back, so find() asks again on a later sample, rather than leave them "not checked yet" for good.
-            // A drain that does run meanwhile finds less to do.
-            for (const std::string& queued : m_Queue)
+            // A drain that does run meanwhile finds less to do. Memory has just run out, so this allocates
+            // nothing: each entry carries its key, and the lookups, erases and clear make none.
+            m_KeysFail = refuseForTesting;
+            for (const QueuedPath& queued : m_Queue)
             {
-                if (const auto found = m_Paths.find(pathKey(queued)); found != m_Paths.end() && found->second.queued)
+                if (const auto found = m_Paths.find(queued.key); found != m_Paths.end() && found->second.queued)
                 {
                     --m_QueuedCount;
                     m_Paths.erase(found);
                 }
             }
             m_Queue.clear();
+            m_KeysFail = false;
             m_Idle.notify_all();
             return;
         }
@@ -363,9 +399,9 @@ class SignatureWorker
     /// Answers every queued path as Unknown with @p note, and empties the queue (under m_Mutex).
     void failQueuedLocked(std::string_view note)
     {
-        for (const std::string& queued : m_Queue)
+        for (const QueuedPath& queued : m_Queue)
         {
-            if (const auto found = m_Paths.find(pathKey(queued)); found != m_Paths.end())
+            if (const auto found = m_Paths.find(queued.key); found != m_Paths.end())
             {
                 found->second.result = SignatureCheck{.signature = ImageSignature::Unknown, .note = std::string(note), .signer = {}};
                 markAnsweredLocked(found->second);
@@ -401,22 +437,22 @@ class SignatureWorker
         }
         while (!stop.stop_requested())
         {
-            std::string path;
+            QueuedPath queued;
             {
                 const std::scoped_lock lock(m_Mutex);
                 if (m_Queue.empty())
                 {
                     return;
                 }
-                path = std::move(m_Queue.front());
+                queued = std::move(m_Queue.front());
                 m_Queue.pop_front();
                 m_Checking = true;
             }
-            const std::string key = pathKey(path);
+            const std::string& key = queued.key;
             SignatureCheck check;
             try
             {
-                check = checkSignature(m_Fns, &m_Cache, path, key);
+                check = checkSignature(m_Fns, &m_Cache, queued.path, key);
             }
             catch (const std::exception& e)
             {
@@ -451,7 +487,7 @@ class SignatureWorker
     std::condition_variable_any m_Pause; // The pause between files waits on it, for the job's stop only
     std::condition_variable m_Idle;
     // Guarded by m_Mutex
-    std::deque<std::string> m_Queue;                    // Paths to check, in request order, each at most once
+    std::deque<QueuedPath> m_Queue;                     // Paths to check, in request order, each at most once
     std::unordered_map<std::string, PathState> m_Paths; // By pathKey()
     std::size_t m_QueuedCount = 0;                      // m_Paths' entries with queued set (#3418)
     std::optional<Turn> m_Turn;                         // Set while a path turned away waits its turn (#3403)
@@ -459,6 +495,7 @@ class SignatureWorker
     bool m_Checking = false;                            // The worker holds a path it has taken off the queue
     std::optional<std::string> m_EndNote;               // Set once the Worker is seen ended: why (#3343)
     bool m_RefuseNextDrain = false;                     // refuseNextDrainForTesting()
+    bool m_KeysFail = false;                            // keyLocked() throws once: refuseNextDrainForTesting()
     // The worker's thread's
     bool m_Started = false; // onWorkerStart has been called
     CheckWorker m_Worker;   // Last: stopped and joined first, while the rest is alive

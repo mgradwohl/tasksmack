@@ -778,16 +778,53 @@ TEST_F(SignatureWorkerTest, APathWhoseDrainIsRefusedIsTakenBackAndCheckedWhenAsk
     EXPECT_EQ(checksOf("a"), 1);
 }
 
+TEST_F(SignatureWorkerTest, TheTakeBackAfterARefusedDrainAllocatesNoKeyForALongPath)
+{
+    // #3479 review: a drain is refused because memory has run out, so taking the queued paths back must not
+    // need any. The seam has every key made under the lock throw std::bad_alloc during the take-back; paths
+    // longer than any small-string buffer would need a heap key. The take-back keys by what admission made,
+    // so request() doesn't throw and nothing is left queued with no drain to check it.
+    const std::string first = "C:\\" + std::string(300, 'a') + ".exe";
+    const std::string second = "C:\\" + std::string(300, 'b') + ".exe";
+    setStamp(first, 1);
+    setStamp(second, 1);
+    setGate(false); // first's check is held, so second is queued behind it when its drain is refused
+    SignatureWorker worker(fakeFunctions(), {});
+    worker.request(first);
+    worker.refuseNextDrainForTesting();
+    EXPECT_NO_THROW(worker.request(second)) << "the take-back makes no key";
+    EXPECT_LE(worker.queuedPathCount(), 1U) << "second, at least, taken back; first may be in its check";
+    setGate(true);
+    ASSERT_TRUE(worker.waitUntilIdle(WAIT));
+    EXPECT_EQ(worker.queuedPathCount(), 0U) << "nothing left queued with no drain to check it";
+
+    // Both asked for again on a later sample (a path taken back is forgotten), and both checked.
+    worker.beginSample();
+    static_cast<void>(worker.find(first));
+    static_cast<void>(worker.find(second));
+    ASSERT_TRUE(worker.waitUntilIdle(WAIT));
+    EXPECT_TRUE(worker.find(first).has_value());
+    EXPECT_TRUE(worker.find(second).has_value());
+    EXPECT_EQ(checksOf(first), 1);
+    EXPECT_EQ(checksOf(second), 1);
+}
+
 TEST_F(SignatureWorkerTest, TheDestructorWaitsForTheCheckInProgressAndDropsTheRest)
 {
     // WinVerifyTrust can't be interrupted: shutdown while a check is in progress lets it finish, filing its
-    // answer in a table still alive, and drops the paths queued behind it unchecked.
+    // answer in a table still alive, and drops the paths queued behind it unchecked. An hour's pause after
+    // each check means the worker can't reach two's check whenever the stop lands: if the check is let go
+    // before the destructor asks to stop, the worker is in the pause, which the stop ends.
     for (const char* path : {"one", "two", "three"})
     {
         setStamp(path, 1);
     }
-    setMetered(true); // TearDown lets every check through, should an assertion end the test early
-    auto worker = std::make_unique<SignatureWorker>(fakeFunctions(), WorkerOptions{});
+    WorkerOptions options;
+    options.pause = std::chrono::hours(1);
+    auto worker = std::make_unique<SignatureWorker>(fakeFunctions(), options);
+    // After the worker, so it goes first: an assertion that ends the test lets the held check go before the
+    // worker is destroyed (TearDown would be too late).
+    const MeteredChecks metered;
     worker->request("one");
     worker->request("two");
     worker->request("three");
