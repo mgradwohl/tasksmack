@@ -10,6 +10,11 @@
 //    be copied (no memory) still reads as a fixed text.
 //  - Bounded admission (#3340): the queue holds at most `capacity` jobs, and each worker states what a
 //    full queue does (Admission). submit() says what it did, so a caller can show "not checked yet".
+//    Admission is synchronous (#3472): everything a job needs before its body (its stop state) is made in
+//    submit(), under the lock, so a failure there (no memory) answers Refused, and taking a job off the queue
+//    allocates nothing. A job submit() admitted reaches its body unless it leaves the queue first: stop() or
+//    the destructor drops it, a later DropOldest submit drops it, a MergeByKey submit replaces it, or an
+//    earlier job's body throws (the worker is Failed, and drops its queue). The worker never fails between.
 //  - Cancellation (#3333): every job gets a stop token of its own, signalled by cancelCurrent(), stop() and
 //    the destructor. A resource that needs its own safe abort (a WinHTTP request) is guarded by a cancel
 //    hook the body arms for exactly the resource's lifetime (JobContext::armCancel()): the hook is called
@@ -76,7 +81,7 @@ enum class Admission : std::uint8_t
 /// What submit() did with a job.
 enum class SubmitResult : std::uint8_t
 {
-    Queued,        ///< Queued at the back.
+    Queued,        ///< Queued at the back, with all it needs to run: its body runs unless it leaves the queue first.
     Merged,        ///< It replaced a queued job with the same key (MergeByKey).
     DroppedOldest, ///< Queued at the back; the oldest queued job was dropped for it (DropOldest).
     /// Not admitted, and the queue is as it was: it is full, or there was no memory to queue the job, or
@@ -105,10 +110,14 @@ template<typename Snapshot> struct WorkerPublication
 ///                   worker's lock, so its destructor must not call back into the worker. Its move
 ///                   construction and assignment must not throw: that is what keeps admission transactional.
 /// @tparam Snapshot  What the body publishes for the owner; default-constructible (the value before any).
-template<typename Job, typename Snapshot> class Worker
+/// @tparam StopState Each job's stop state: std::stop_source, which every worker uses. A test substitutes one
+///                   whose construction fails, as std::stop_source's allocation can, on every platform (#3472).
+template<typename Job, typename Snapshot, typename StopState = std::stop_source> class Worker
 {
     static_assert(std::is_nothrow_move_constructible_v<Job> && std::is_nothrow_move_assignable_v<Job>,
                   "Domain::Worker moves jobs inside its admission and shutdown paths, which must not throw");
+    static_assert(std::is_nothrow_move_constructible_v<StopState> && std::is_nothrow_move_assignable_v<StopState>,
+                  "Domain::Worker moves a job's stop state off the queue, which must not allocate or throw");
 
     /// The armed cancel hook: a callable the body owns, and how to call it.
     struct ArmedHook
@@ -240,7 +249,9 @@ template<typename Job, typename Snapshot> class Worker
 
     /// Offers @p job to the queue under the worker's Admission policy; never waits for a job, and never
     /// throws. Starts the thread on the first call: when it can't start, the worker is Failed and this
-    /// answers Closed. Transactional: a job that isn't admitted leaves the queue as it was.
+    /// answers Closed. Transactional: a job that isn't admitted leaves the queue as it was. A job queued here
+    /// carries its stop state, made here (#3472): Queued (or DroppedOldest) means its body runs, unless the job
+    /// leaves the queue first (stop(), a DropOldest or MergeByKey submit, an earlier job's body that throws).
     [[nodiscard]] SubmitResult submit(Job&& job) noexcept
     {
         std::optional<Job> dropped; // destroyed after the lock is released
@@ -329,11 +340,13 @@ template<typename Job, typename Snapshot> class Worker
         {
             if (m_Options.admission == Admission::MergeByKey && m_Options.sameKey)
             {
-                // sameKey may throw; nothing has changed until the (non-throwing) move below.
-                const auto same = std::ranges::find_if(m_Queue, [this, &job](const Job& queued) { return m_Options.sameKey(queued, job); });
+                // sameKey may throw; nothing has changed until the (non-throwing) move below. The queued entry
+                // keeps its stop state: a merge makes none.
+                const auto same =
+                    std::ranges::find_if(m_Queue, [this, &job](const QueuedJob& queued) { return m_Options.sameKey(queued.job, job); });
                 if (same != m_Queue.end())
                 {
-                    *same = std::move(job);
+                    same->job = std::move(job);
                     return SubmitResult::Merged;
                 }
             }
@@ -342,11 +355,13 @@ template<typename Job, typename Snapshot> class Worker
             {
                 return SubmitResult::Refused;
             }
-            // Only the push can throw (no memory), and then the queue is as it was; the rest moves.
-            m_Queue.push_back(std::move(job));
+            // Only the job's stop state and the push allocate (no memory throws), and either leaves the queue and
+            // @p job as they were: the entry is built in place, after the push has its room. The rest moves.
+            StopState stop;
+            m_Queue.emplace_back(std::move(job), std::move(stop));
             if (full)
             {
-                dropped.emplace(std::move(m_Queue.front()));
+                dropped.emplace(std::move(m_Queue.front().job));
                 m_Queue.pop_front();
             }
             m_Wake.notify_one();
@@ -499,8 +514,9 @@ template<typename Job, typename Snapshot> class Worker
         PublicationWake::notify();
     }
 
-    /// The thread. Never throws: the body's exceptions end it in loop(), with their reason; anything the
-    /// loop's own bookkeeping throws (no memory for a job's stop state) ends it here.
+    /// The thread. Never throws: the body's exceptions end it in loop(), with their reason. The loop's own
+    /// bookkeeping allocates nothing (a job's stop state is made at submit, #3472); what is left of it that
+    /// could throw (waiting, std::system_error) ends it here.
     void run(const std::stop_token& stop) noexcept
     {
         static_cast<void>(Platform::setCurrentThreadName(m_Options.threadName));
@@ -533,10 +549,12 @@ template<typename Job, typename Snapshot> class Worker
                 {
                     return; // stopped; stop() dropped the queue
                 }
-                m_JobStop = std::stop_source{}; // the only allocation here, before the job is taken
-                jobStop = m_JobStop.get_token();
-                job.emplace(std::move(m_Queue.front()));
+                // Moves only: the job's stop state was made when it was admitted, so nothing here can fail.
+                QueuedJob& next = m_Queue.front();
+                job.emplace(std::move(next.job));
+                m_JobStop = std::move(next.stop);
                 m_Queue.pop_front();
+                jobStop = m_JobStop.get_token();
                 m_InFlight = true;
             }
             std::string what; // a failure's reason, copied on this thread (#1685)
@@ -603,6 +621,15 @@ template<typename Job, typename Snapshot> class Worker
         m_Idle.notify_all();
     }
 
+    /// A queued job and its stop state, made at admission (#3472).
+    struct QueuedJob
+    {
+        QueuedJob(Job&& queuedJob, StopState&& queuedStop) noexcept : job(std::move(queuedJob)), stop(std::move(queuedStop))
+        {}
+        Job job;
+        StopState stop;
+    };
+
     Options m_Options;
     Body m_Body;
 
@@ -610,11 +637,11 @@ template<typename Job, typename Snapshot> class Worker
     std::condition_variable_any m_Wake;
     std::condition_variable m_Idle;
     // Guarded by m_Mutex
-    std::deque<Job> m_Queue;
-    bool m_InFlight = false;    // the thread holds a job it took off the queue
-    std::stop_source m_JobStop; // the job in flight's
-    ArmedHook m_Hook;           // the job's cancel hook, while its CancelGuard lives
-    std::string m_Failure;      // why it failed
+    std::deque<QueuedJob> m_Queue;
+    bool m_InFlight = false; // the thread holds a job it took off the queue
+    StopState m_JobStop;     // the job in flight's, moved off the queue with it
+    ArmedHook m_Hook;        // the job's cancel hook, while its CancelGuard lives
+    std::string m_Failure;   // why it failed
     bool m_FailureUnrecorded = false;
     // Written under m_Mutex, read without it
     std::atomic<WorkerState> m_State{WorkerState::Running};

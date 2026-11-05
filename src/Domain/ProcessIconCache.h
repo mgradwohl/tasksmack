@@ -154,8 +154,9 @@ class ProcessIconCache
         m_RefuseNextDrain = true;
     }
 
-    /// Has the next drain throw on the worker's thread once it was admitted, as allocating its stop state
-    /// can: the worker ends Failed with the loads it had queued still waiting.
+    /// Has the next drain throw on the worker's thread once it was admitted, before it loads anything, as
+    /// its own bookkeeping can when memory runs out: the worker ends Failed with the loads it had queued still
+    /// waiting. (The Worker itself can't fail a job it admitted before the body runs, #3472; a body can.)
     void failNextDrainForTesting()
     {
         const std::scoped_lock lock(m_Mutex);

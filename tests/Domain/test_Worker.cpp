@@ -94,7 +94,7 @@ class Ran
 };
 
 /// Waits until @p worker has a job in flight.
-bool waitBusy(const TestWorker& worker)
+template<typename AnyWorker> bool waitBusy(const AnyWorker& worker)
 {
     const auto deadline = std::chrono::steady_clock::now() + WAIT;
     while (!worker.busy())
@@ -392,6 +392,208 @@ TEST(WorkerTest, SubmittingAnLvalueWhoseCopyThrowsAnswersRefusedAndQueuesNothing
     SubmitResult afterStop = SubmitResult::Queued;
     EXPECT_NO_THROW(afterStop = worker.submit(failing));
     EXPECT_EQ(afterStop, SubmitResult::Closed);
+}
+
+/// A job's stop state whose construction can be made to fail, as std::stop_source's allocation does when memory
+/// has run out (#3472). Unlike the allocation hook it works on every platform and in sanitizer builds, and it
+/// fails the stop state alone, on whichever thread makes it: so a worker that made it after admission, on its
+/// own thread, would answer Queued and then fail.
+class FailingStopSource
+{
+  public:
+    FailingStopSource()
+    {
+        if (failNext().exchange(false))
+        {
+            throw std::bad_alloc();
+        }
+    }
+    ~FailingStopSource() = default;
+    FailingStopSource(const FailingStopSource&) = delete;
+    FailingStopSource& operator=(const FailingStopSource&) = delete;
+    FailingStopSource(FailingStopSource&&) noexcept = default;
+    FailingStopSource& operator=(FailingStopSource&&) noexcept = default;
+
+    /// Set: the next construction, on any thread, throws std::bad_alloc, and clears it.
+    [[nodiscard]] static std::atomic<bool>& failNext() noexcept
+    {
+        static std::atomic<bool> armed{false};
+        return armed;
+    }
+
+    // std::stop_source's names, which Worker calls.
+    [[nodiscard]] std::stop_token get_token() const noexcept // NOLINT(readability-identifier-naming)
+    {
+        return m_Source.get_token();
+    }
+    bool request_stop() noexcept // NOLINT(readability-identifier-naming)
+    {
+        return m_Source.request_stop();
+    }
+    [[nodiscard]] bool stop_requested() const noexcept // NOLINT(readability-identifier-naming)
+    {
+        return m_Source.stop_requested();
+    }
+
+  private:
+    std::stop_source m_Source;
+};
+
+using StopStateWorker = Worker<TestJob, double, FailingStopSource>;
+
+// A job's stop state is made at admission, under the worker's lock (#3472): when it can't be (no memory),
+// submit() answers Refused with the queue as it was and the worker Running, rather than Queued and a worker that
+// then fails before the body. Under every policy that queues a new entry; a merge keeps the queued entry's stop
+// state, so it makes none.
+TEST(WorkerTest, AStopStateThatCannotBeMadeIsRefusedAtSubmitAndTheWorkerGoesOn)
+{
+    Gate gate;
+    Ran ran;
+    const auto body = [&gate, &ran](TestJob& job, const std::stop_token& stop, StopStateWorker::JobContext& /*context*/)
+    {
+        if (job.id == 0)
+        {
+            static_cast<void>(gate.pass(stop));
+        }
+        ran.add(job.id);
+    };
+
+    // Refuse, with room: nothing queued, nothing run, and the next job is admitted and runs.
+    {
+        StopStateWorker worker(StopStateWorker::Options{.threadName = "ts-test-worker", .capacity = 2, .admission = Admission::Refuse},
+                               body);
+        EXPECT_EQ(worker.submit({.id = 1}), SubmitResult::Queued); // starts the thread
+        ASSERT_TRUE(worker.waitUntilIdle(WAIT));
+        FailingStopSource::failNext() = true;
+        EXPECT_EQ(worker.submit({.id = 2}), SubmitResult::Refused);
+        EXPECT_FALSE(FailingStopSource::failNext()) << "submit() made the stop state";
+        EXPECT_EQ(worker.queued(), 0U);
+        ASSERT_TRUE(worker.waitUntilIdle(WAIT));
+        EXPECT_EQ(worker.state(), WorkerState::Running);
+        EXPECT_EQ(worker.submit({.id = 3}), SubmitResult::Queued);
+        ASSERT_TRUE(worker.waitUntilIdle(WAIT));
+        EXPECT_EQ(worker.state(), WorkerState::Running);
+        EXPECT_EQ(ran.ids(), (std::vector<int>{1, 3}));
+    }
+
+    // DropOldest, full: refused before anything is dropped, so the oldest queued job still runs.
+    FailingStopSource::failNext() = false;
+    {
+        StopStateWorker worker(StopStateWorker::Options{.threadName = "ts-test-worker", .capacity = 1, .admission = Admission::DropOldest},
+                               body);
+        EXPECT_EQ(worker.submit({.id = 0}), SubmitResult::Queued);
+        ASSERT_TRUE(waitBusy(worker));
+        const TestJob oldest{.id = 4};
+        EXPECT_EQ(worker.submit(oldest), SubmitResult::Queued);
+        FailingStopSource::failNext() = true;
+        EXPECT_EQ(worker.submit({.id = 5}), SubmitResult::Refused);
+        EXPECT_FALSE(FailingStopSource::failNext());
+        EXPECT_EQ(worker.queued(), 1U);
+        EXPECT_GT(oldest.alive.use_count(), 1) << "the oldest queued job wasn't dropped";
+        gate.open();
+        ASSERT_TRUE(worker.waitUntilIdle(WAIT));
+        EXPECT_EQ(worker.state(), WorkerState::Running);
+        EXPECT_EQ(ran.ids(), (std::vector<int>{1, 3, 0, 4}));
+    }
+}
+
+TEST(WorkerTest, AMergeKeepsTheQueuedJobsStopStateAndMakesNone)
+{
+    Gate gate;
+    Ran ran;
+    StopStateWorker worker(
+        {
+            .threadName = "ts-test-worker",
+            .capacity = 1,
+            .admission = Admission::MergeByKey,
+            .sameKey = [](const TestJob& queued, const TestJob& incoming) { return queued.key == incoming.key; },
+        },
+        [&gate, &ran](TestJob& job, const std::stop_token& stop, StopStateWorker::JobContext& /*context*/)
+        {
+            if (job.id == 0)
+            {
+                static_cast<void>(gate.pass(stop));
+            }
+            ran.add(job.id);
+        });
+    EXPECT_EQ(worker.submit({.id = 0, .key = 0}), SubmitResult::Queued);
+    ASSERT_TRUE(waitBusy(worker));
+    EXPECT_EQ(worker.submit({.id = 1, .key = 7}), SubmitResult::Queued);
+    FailingStopSource::failNext() = true;
+    EXPECT_EQ(worker.submit({.id = 2, .key = 7}), SubmitResult::Merged);
+    EXPECT_TRUE(FailingStopSource::failNext()) << "a merge makes no stop state";
+    EXPECT_EQ(worker.submit({.id = 3, .key = 8}), SubmitResult::Refused) << "full: refused before any stop state is made";
+    EXPECT_TRUE(FailingStopSource::failNext());
+    FailingStopSource::failNext() = false;
+    gate.open();
+    ASSERT_TRUE(worker.waitUntilIdle(WAIT));
+    EXPECT_EQ(worker.state(), WorkerState::Running);
+    EXPECT_EQ(ran.ids(), (std::vector<int>{0, 2}));
+}
+
+// The same with the real allocation (#3472): the stop state is submit()'s first allocation, and when it fails
+// submit() answers Refused, with nothing queued. Skipped where the hook is compiled out (Windows, sanitizer
+// builds: AllocationFailureHook.h); the Linux debug and release builds run it.
+TEST(WorkerTest, AnAllocationFailureAtSubmitIsRefusedAndQueuesNothing)
+{
+#ifdef TASKSMACK_NO_ALLOCATOR_HOOK
+    GTEST_SKIP() << TASKSMACK_NO_ALLOCATOR_HOOK;
+#else
+    Ran ran;
+    TestWorker worker(options(4, Admission::Refuse),
+                      [&ran](TestJob& job, const std::stop_token& /*stop*/, TestWorker::JobContext& /*context*/) { ran.add(job.id); });
+    EXPECT_EQ(worker.submit({.id = 1}), SubmitResult::Queued); // starts the thread, which allocates
+    ASSERT_TRUE(worker.waitUntilIdle(WAIT));
+    TestJob job{.id = 2}; // made before the arming: its own make_shared allocates
+    SubmitResult result = SubmitResult::Queued;
+    bool stillPending = true;
+    {
+        const TestSupport::FailAllocationAfter failNext(0);
+        result = worker.submit(std::move(job));
+        stillPending = TestSupport::allocationFailurePending();
+    }
+    EXPECT_FALSE(stillPending) << "submit() allocated the job's stop state";
+    EXPECT_EQ(result, SubmitResult::Refused);
+    EXPECT_EQ(worker.queued(), 0U);
+    ASSERT_TRUE(worker.waitUntilIdle(WAIT));
+    EXPECT_EQ(worker.state(), WorkerState::Running);
+    EXPECT_EQ(ran.ids(), std::vector<int>{1});
+#endif
+}
+
+// Nothing between a job leaving the queue and its body allocates (#3472), so nothing there can fail: a job
+// that was Queued reaches its body. Job 1's body arms the hook on the worker thread as it ends, and job 2,
+// queued behind it, finds it still armed. Linux only, as above.
+TEST(WorkerTest, AQueuedJobReachesItsBodyWithoutAnAllocation)
+{
+#ifdef TASKSMACK_NO_ALLOCATOR_HOOK
+    GTEST_SKIP() << TASKSMACK_NO_ALLOCATOR_HOOK;
+#else
+    Gate gate;
+    std::atomic<bool> secondRan{false};
+    std::atomic<bool> stillPending{false};
+    TestWorker worker(options(4, Admission::Refuse),
+                      [&gate, &secondRan, &stillPending](TestJob& job, const std::stop_token& stop, TestWorker::JobContext& /*context*/)
+                      {
+                          if (job.id == 1)
+                          {
+                              static_cast<void>(gate.pass(stop));
+                              TestSupport::armAllocationFailure(0); // the next allocation on this thread fails
+                              return;
+                          }
+                          stillPending = TestSupport::allocationFailurePending(); // first: before anything here allocates
+                          TestSupport::armAllocationFailure(-1);
+                          secondRan = true;
+                      });
+    EXPECT_EQ(worker.submit({.id = 1}), SubmitResult::Queued);
+    ASSERT_TRUE(waitBusy(worker));
+    EXPECT_EQ(worker.submit({.id = 2}), SubmitResult::Queued);
+    gate.open();
+    ASSERT_TRUE(worker.waitUntilIdle(WAIT));
+    EXPECT_EQ(worker.state(), WorkerState::Running) << worker.failure();
+    EXPECT_TRUE(secondRan.load());
+    EXPECT_TRUE(stillPending.load()) << "something between the queue and the body allocated";
+#endif
 }
 
 // Low memory on the worker thread is contained: an allocation that fails inside the body (here, the one a
