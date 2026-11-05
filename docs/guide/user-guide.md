@@ -318,6 +318,8 @@ The machine tab, the first tab, is named after the computer. Its sub-tabs (**Ove
   The chart's value strip also shows the **Commit** charge against the commit limit (for example "Commit: 35.0 GiB / 73.7 GiB (48%)"), sampled with the rest of memory: how much memory programs have been promised, which RAM plus the page files or swap must back, so you can see the machine nearing "out of memory" while RAM is still free. It is a reading, not a line on the chart. On Windows it comes from `GetPerformanceInfo` and its hover shows the peak commit since boot; on Linux from `Committed_AS` and `CommitLimit` in `/proc/meminfo`, where the limit is only enforced in strict overcommit mode, so the figure can pass 100%. Where the system doesn't report it, the entry is left out.
 
   On Linux, while zram or zswap holds compressed swap, the value strip also shows **Compressed**: how many times smaller the stored data is, and its size before and after compression (for example "Compressed: 2.9× (1.2 GiB in 410 MiB)"). Hover it for each kind on its own (zram's figures include the RAM its devices use), and for the lowest and highest ratio over the chart's time window. The ratio over time is drawn on the chart too, as the **Compression →** line, read against its own scale on the right ("2×", "3×"). Hovering the chart shows its value at that moment. zram comes from each `/sys/block/zramN/mm_stat`, and the device list is checked every 10 seconds. zswap comes from `Zswap` and `Zswapped` in `/proc/meminfo`, on kernel 5.19 and later. With nothing compressed stored, the entry is left out.
+
+  On Windows, while memory compression is on, the value strip shows **Compressed** too: the RAM the compression store holds, the figure Task Manager shows as "In use (Compressed)" (for example "Compressed: 410 MiB"). It is the working set of the Memory Compression process, read from the process list with the rest of memory, at the refresh interval, with no administrator rights needed. Windows doesn't document how much data the store holds before compression, so there is no ratio and no **Compression →** line. When memory compression is off (`Disable-MMAgent -MemoryCompression`), there is no Memory Compression process and the entry is left out.
 - **Swap** — swap usage percentage history
 - **Storage** — aggregate and per-device throughput
 - **Network** — aggregate and per-interface throughput, totals, status, and link speed
@@ -838,6 +840,7 @@ The following table summarizes capabilities that differ between Windows and Linu
 |---------|-------|---------|
 | CPU utilization (total + per-core) | ✅ | ✅ |
 | Memory metrics | ✅ | ✅ |
+| Memory chart: Compressed entry | ✅ (zram and zswap: the ratio and the sizes before and after, with the **Compression →** line) | ✅ (the Memory Compression process's working set, Task Manager's "In use (Compressed)"; no ratio or ratio line: Windows documents no figure for the data the store holds) |
 | System uptime | ✅ | ✅ |
 | CPU Details: sockets, cores, cache sizes, base speed | ✅ (`/proc/cpuinfo`, `/sys/devices/system/cpu`) | ✅ |
 | CPU Details: virtualization, hypervisor | ✅ (`/proc/cpuinfo` flags, `/dev/kvm`, DMI) | ✅ (no elevated privileges needed) |
