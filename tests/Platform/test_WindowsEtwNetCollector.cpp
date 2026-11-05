@@ -5,7 +5,8 @@
 /// Microsoft-Windows-Kernel-Network under the IPv4/IPv6 keywords, and is consumed on a thread whose
 /// callback sums fabricated EVENT_RECORDs per process (TCP, other providers and malformed events
 /// ignored); stop() and the destructor stop the session, close the consumer and join its thread; a
-/// session that ends from outside stops the delivery; the stale-session sweep stops a crashed
+/// session that ends from outside stops the delivery; the consumer runs on its named Domain::Worker,
+/// which contains anything it throws (#3343); the stale-session sweep stops a crashed
 /// TaskSmack's session but not a running one's or another tool's. No real trace session is started.
 
 #include "Platform/IUdpTrafficCollector.h"
@@ -13,6 +14,9 @@
 #include "Platform/Windows/WindowsEtwNetMath.h"
 
 #include <gtest/gtest.h>
+#include <spdlog/logger.h>
+#include <spdlog/sinks/ringbuffer_sink.h>
+#include <spdlog/spdlog.h>
 
 // NOLINTBEGIN(misc-include-cleaner) - Windows umbrella headers
 // clang-format off
@@ -35,11 +39,14 @@
 #include <cstdint>
 #include <cstring>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 // NOLINTBEGIN(misc-include-cleaner,cppcoreguidelines-pro-type-reinterpret-cast,readability-non-const-parameter,cppcoreguidelines-pro-type-union-access,modernize-use-designated-initializers,clang-analyzer-optin.performance.Padding)
@@ -107,7 +114,9 @@ struct Fake
 
     std::vector<FakeEvent> events; // Delivered by ProcessTrace before it waits
     ULONG processStatus = ERROR_SUCCESS;
-    bool processThrows = false; // ProcessTrace throws once released
+    bool processThrows = false;                // ProcessTrace throws a std::exception once released
+    bool processThrowsNonStd = false;          // ProcessTrace throws something that isn't one, once released
+    std::vector<std::wstring> consumerThreads; // The name of each thread ProcessTrace ran on
 
     std::vector<ULONG64> stoppedIds;
     std::vector<std::wstring> stoppedNames;
@@ -138,6 +147,19 @@ void release()
     const std::scoped_lock lock(fake().mutex);
     fake().released = true;
     fake().changed.notify_all();
+}
+
+/// The calling thread's name (SetThreadDescription's), or empty when it has none.
+std::wstring currentThreadName()
+{
+    PWSTR description = nullptr;
+    if (FAILED(GetThreadDescription(GetCurrentThread(), &description)) || description == nullptr)
+    {
+        return {};
+    }
+    std::wstring name(description);
+    LocalFree(description);
+    return name;
 }
 
 ULONG WINAPI fakeStartTrace(ULONG64* traceId, LPCWSTR name, PEVENT_TRACE_PROPERTIES properties)
@@ -244,12 +266,18 @@ ULONG WINAPI fakeProcessTrace(ULONG64* handles, ULONG handleCount, LPFILETIME /*
         fake().callback(&record);
     }
     std::unique_lock lock(fake().mutex);
+    fake().consumerThreads.push_back(currentThreadName());
     fake().delivered = true;
     fake().changed.notify_all();
     fake().changed.wait(lock, [] { return fake().released; });
     if (fake().processThrows)
     {
         throw std::runtime_error("ProcessTrace failed");
+    }
+    if (fake().processThrowsNonStd)
+    {
+        // NOLINTNEXTLINE(bugprone-std-exception-baseclass,hicpp-exception-baseclass) - the point: what a catch (std::exception) misses
+        throw 42;
     }
     return fake().processStatus;
 }
@@ -352,6 +380,8 @@ class WindowsEtwNetCollectorTest : public ::testing::Test
         f.events.clear();
         f.processStatus = ERROR_SUCCESS;
         f.processThrows = false;
+        f.processThrowsNonStd = false;
+        f.consumerThreads.clear();
         f.stoppedIds.clear();
         f.stoppedNames.clear();
         f.queryCalls = 0;
@@ -665,6 +695,175 @@ TEST_F(WindowsEtwNetCollectorTest, AConsumerThatFailsOrThrowsStopsDelivering)
         EXPECT_FALSE(collector.isDelivering());
         EXPECT_TRUE(collector.sample().empty());
     }
+}
+
+// --- The consumer's Domain::Worker (#3343) ------------------------------------------------------
+
+/// The default logger's messages, for as long as this lives. A mutex sink: the consumer logs too.
+class LogCapture
+{
+  public:
+    LogCapture() : m_Previous(spdlog::default_logger()), m_Sink(std::make_shared<spdlog::sinks::ringbuffer_sink_mt>(LINES))
+    {
+        auto logger = std::make_shared<spdlog::logger>("etw-net-test", m_Sink);
+        logger->set_level(spdlog::level::trace);
+        logger->set_pattern("%v");
+        spdlog::set_default_logger(std::move(logger));
+    }
+    // NOLINTNEXTLINE(bugprone-exception-escape) - only building the registry can throw, and the constructor did that
+    ~LogCapture()
+    {
+        spdlog::set_default_logger(m_Previous);
+    }
+    LogCapture(const LogCapture&) = delete;
+    LogCapture& operator=(const LogCapture&) = delete;
+    LogCapture(LogCapture&&) = delete;
+    LogCapture& operator=(LogCapture&&) = delete;
+
+    /// How many of the messages so far contain @p text.
+    [[nodiscard]] std::size_t count(std::string_view text) const
+    {
+        const std::vector<std::string> lines = m_Sink->last_formatted();
+        return static_cast<std::size_t>(std::ranges::count_if(lines, [text](const std::string& line) { return line.contains(text); }));
+    }
+
+    /// Waits (bounded) until a message contains @p text. @return Whether one did in time.
+    [[nodiscard]] bool waitFor(std::string_view text) const
+    {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (count(text) == 0)
+        {
+            if (std::chrono::steady_clock::now() >= deadline)
+            {
+                return false;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        return true;
+    }
+
+  private:
+    static constexpr std::size_t LINES = 128;
+    std::shared_ptr<spdlog::logger> m_Previous;
+    std::shared_ptr<spdlog::sinks::ringbuffer_sink_mt> m_Sink;
+};
+
+// The consumer runs on its worker's thread, named as the jthread was, and stop() joins it after the
+// session's stop and the consumer's close, in that order.
+TEST_F(WindowsEtwNetCollectorTest, TheConsumerRunsOnTheNamedWorkerThread)
+{
+    WindowsEtwNetCollector collector(fakeFunctions());
+    ASSERT_EQ(collector.start(), UdpCollectorStartResult::Started);
+    ASSERT_TRUE(waitDelivered());
+    {
+        const std::scoped_lock lock(fake().mutex);
+        EXPECT_EQ(fake().consumerThreads, std::vector<std::wstring>{L"ts-udp-trace"});
+    }
+    collector.stop();
+    EXPECT_EQ(fake().stoppedIds, std::vector<ULONG64>{SESSION_ID});
+    EXPECT_EQ(fake().closeCalls, 1);
+    EXPECT_TRUE(collector.sessionName().empty());
+}
+
+// A consumer that throws something that isn't a std::exception, after its job was admitted, is contained:
+// it never reaches std::terminate, its end is logged, the delivery stops, and the next start() cleans it
+// up and consumes the new session on a new worker.
+TEST_F(WindowsEtwNetCollectorTest, AConsumerThatThrowsAnythingIsContainedReportedAndCanStartAgain)
+{
+    const LogCapture log;
+    fake().events = {udpEvent(EtwNet::UDP4_SEND_EVENT_ID, 10, 1)};
+    fake().processThrowsNonStd = true;
+    WindowsEtwNetCollector collector(fakeFunctions());
+    ASSERT_EQ(collector.start(), UdpCollectorStartResult::Started);
+    ASSERT_TRUE(waitDelivered());
+    EXPECT_TRUE(collector.isDelivering());
+
+    release();
+    // ERROR_UNHANDLED_EXCEPTION (574): the consumer's status for anything thrown out of ProcessTrace
+    ASSERT_TRUE(log.waitFor("the consumer stopped (574)"));
+    EXPECT_FALSE(collector.isDelivering());
+    EXPECT_TRUE(collector.sample().empty());
+
+    {
+        const std::scoped_lock lock(fake().mutex);
+        fake().processThrowsNonStd = false;
+        fake().delivered = false;
+        fake().released = false;
+    }
+    ASSERT_EQ(collector.start(), UdpCollectorStartResult::Started);
+    EXPECT_EQ(fake().closeCalls, 1) << "the ended session's consumer closed before the new one";
+    ASSERT_TRUE(waitDelivered());
+    EXPECT_TRUE(collector.isDelivering());
+    {
+        const std::scoped_lock lock(fake().mutex);
+        EXPECT_EQ(fake().consumerThreads, (std::vector<std::wstring>{L"ts-udp-trace", L"ts-udp-trace"}));
+    }
+    collector.stop();
+    EXPECT_EQ(fake().closeCalls, 2);
+    EXPECT_EQ(log.count("the consumer stopped"), 1U) << "a consumer stopped by stop() isn't reported";
+}
+
+// The worker can fail after its submit answered Queued, before consume() runs (Domain::Worker's setup of
+// the job, its stop state, can throw). Nothing then clears m_Running, so sample() looks at the worker:
+// the failure is logged once, the delivery ends, and the next start() cleans up and really starts again.
+TEST_F(WindowsEtwNetCollectorTest, AConsumerThatFailsBeforeItRunsIsReportedBySampleAndStartsAgain)
+{
+    const LogCapture log;
+    constexpr std::string_view REPORTED = "the consumer stopped (the consumer's setup failed (test))";
+    fake().events = {udpEvent(EtwNet::UDP4_SEND_EVENT_ID, 10, 1)};
+    WindowsEtwNetCollector collector(fakeFunctions());
+    collector.failNextConsumerForTesting();
+    ASSERT_EQ(collector.start(), UdpCollectorStartResult::Started);
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (log.count(REPORTED) == 0 && std::chrono::steady_clock::now() < deadline)
+    {
+        static_cast<void>(collector.sample());
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    EXPECT_EQ(log.count(REPORTED), 1U);
+    EXPECT_FALSE(collector.isDelivering());
+    EXPECT_TRUE(collector.sample().empty());
+    EXPECT_EQ(log.count(REPORTED), 1U) << "reported once";
+    {
+        const std::scoped_lock lock(fake().mutex);
+        EXPECT_TRUE(fake().consumerThreads.empty()) << "ProcessTrace never ran";
+    }
+
+    ASSERT_EQ(collector.start(), UdpCollectorStartResult::Started);
+    EXPECT_EQ(fake().closeCalls, 1) << "the failed session's consumer closed before the new one";
+    EXPECT_EQ(fake().startedNames.size(), 2U);
+    ASSERT_TRUE(waitDelivered());
+    EXPECT_TRUE(collector.isDelivering());
+    collector.stop();
+    EXPECT_EQ(fake().closeCalls, 2);
+    EXPECT_EQ(log.count("the consumer stopped"), 1U);
+}
+
+// The same failure, seen first by start(): it doesn't answer Started on the dead session's word, but
+// cleans it up and starts a new one.
+TEST_F(WindowsEtwNetCollectorTest, AConsumerThatFailsBeforeItRunsIsCleanedUpByTheNextStart)
+{
+    const LogCapture log;
+    fake().events = {udpEvent(EtwNet::UDP4_SEND_EVENT_ID, 10, 1)};
+    WindowsEtwNetCollector collector(fakeFunctions());
+    collector.failNextConsumerForTesting();
+    ASSERT_EQ(collector.start(), UdpCollectorStartResult::Started);
+
+    // Until the worker has failed, start() answers Started for the running session; once it has, it restarts.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (fake().startedNames.size() < 2 && std::chrono::steady_clock::now() < deadline)
+    {
+        ASSERT_EQ(collector.start(), UdpCollectorStartResult::Started);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_EQ(fake().startedNames.size(), 2U) << "a start() after the failure started a new session";
+    EXPECT_EQ(fake().closeCalls, 1);
+    EXPECT_EQ(log.count("the consumer stopped (the consumer's setup failed (test))"), 1U);
+    ASSERT_TRUE(waitDelivered());
+    EXPECT_TRUE(collector.isDelivering());
+    collector.stop();
+    EXPECT_EQ(fake().closeCalls, 2);
 }
 
 // --- The real calls ---------------------------------------------------------------------------

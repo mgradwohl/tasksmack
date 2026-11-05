@@ -1,5 +1,6 @@
 #include "WindowsEtwNetCollector.h"
 
+#include "Domain/Worker.h"
 #include "Platform/IUdpTrafficCollector.h"
 #include "Platform/ThreadName.h"
 #include "Platform/Windows/WindowsConversions.h"
@@ -16,13 +17,14 @@
 #include <cstdint>
 #include <cstring>
 #include <cwchar>
+#include <exception>
 #include <mutex>
 #include <optional>
 #include <span>
+#include <stdexcept>
+#include <stop_token>
 #include <string>
 #include <string_view>
-#include <system_error>
-#include <thread>
 #include <vector>
 
 namespace Platform
@@ -205,6 +207,7 @@ WindowsEtwNetCollector::SessionProperties WindowsEtwNetCollector::makeProperties
 UdpCollectorStartResult WindowsEtwNetCollector::start()
 {
     const std::scoped_lock lock(m_ControlMutex);
+    observeConsumerFailureLocked(); // a consumer that failed before it ran left m_Running set
     if (m_Running.load(std::memory_order_acquire))
     {
         return UdpCollectorStartResult::Started;
@@ -296,13 +299,8 @@ UdpCollectorStartResult WindowsEtwNetCollector::start()
     m_LastEventsLost = 0;
     m_LastBuffersLost = 0;
     m_Running.store(true, std::memory_order_release);
-    try
+    if (!startConsumerLocked(consumer))
     {
-        m_Consumer = std::jthread([this, consumer] { consume(consumer); });
-    }
-    catch (const std::system_error& e)
-    {
-        spdlog::warn("UDP event trace: could not start its consumer thread ({})", e.what());
         stopLocked();
         return UdpCollectorStartResult::Failed;
     }
@@ -342,10 +340,10 @@ void WindowsEtwNetCollector::stopLocked()
         (void) m_Fns.closeTrace(m_ConsumerHandle);
         m_ConsumerHandle = 0;
     }
-    if (m_Consumer.joinable())
-    {
-        m_Consumer.join();
-    }
+    // A consumer that failed is reported before it goes. Destroying the worker stops it and joins its
+    // thread, which ProcessTrace's return lets go.
+    observeConsumerFailureLocked();
+    m_Consumer.reset();
     m_Running.store(false, std::memory_order_release);
     m_Delivering.store(false, std::memory_order_release);
     m_SessionName.clear();
@@ -354,13 +352,86 @@ void WindowsEtwNetCollector::stopLocked()
     m_Counters.clear();
 }
 
+bool WindowsEtwNetCollector::startConsumerLocked(ULONG64 consumerHandle)
+{
+    // A worker of its own per session: its one job runs until the session ends, and a worker that has
+    // ended (Stopped, or Failed) takes no more work. Its thread starts with the submit, as the jthread did.
+    m_ConsumerFailureReported = false;
+    try
+    {
+        m_Consumer.emplace(
+            ConsumerWorker::Options{.threadName = UDP_TRACE_THREAD_NAME, .capacity = 1, .admission = Domain::Admission::Refuse},
+            [this](ConsumeSession& session, const std::stop_token& /*stop*/, ConsumerWorker::JobContext& /*context*/)
+            {
+                if (m_FailNextConsumer.exchange(false, std::memory_order_acq_rel))
+                {
+                    throw std::runtime_error("the consumer's setup failed (test)");
+                }
+                consume(session.consumerHandle);
+            });
+    }
+    catch (const std::exception& e) // no memory for the worker's state
+    {
+        spdlog::warn("UDP event trace: could not start its consumer thread ({})", e.what());
+        return false;
+    }
+    const Domain::SubmitResult submitted = m_Consumer->submit(ConsumeSession{.consumerHandle = consumerHandle});
+    if (submitted == Domain::SubmitResult::Queued)
+    {
+        return true;
+    }
+    // Closed: no thread could be started, and the worker is Failed. Refused: no memory to queue the job.
+    // Either way nothing consumes the session, and the caller stops it; a later start() tries again.
+    // The reason is read before it is logged; a copy of it that fails (no memory) reads as a fixed text.
+    std::string failure;
+    std::string_view reason = "no memory to queue its job";
+    if (m_Consumer->state() == Domain::WorkerState::Failed)
+    {
+        try
+        {
+            failure = m_Consumer->failure();
+            reason = failure;
+        }
+        catch (const std::exception&)
+        {
+            reason = ConsumerWorker::FAILURE_UNRECORDED;
+        }
+    }
+    spdlog::warn("UDP event trace: could not start its consumer thread ({})", reason);
+    return false;
+}
+
+void WindowsEtwNetCollector::observeConsumerFailureLocked() noexcept
+{
+    if (!m_Consumer.has_value() || m_Consumer->state() != Domain::WorkerState::Failed)
+    {
+        return;
+    }
+    // Nothing consumes the session any more: it has ended, as for a consumer that returned. start()
+    // cleans it up (stopLocked()) and starts a new one.
+    m_Delivering.store(false, std::memory_order_release);
+    m_Running.store(false, std::memory_order_release);
+    if (m_ConsumerFailureReported)
+    {
+        return;
+    }
+    try
+    {
+        const std::string reason = m_Consumer->failure(); // read first: a copy that throws is reported next time
+        spdlog::warn("UDP event trace: the consumer stopped ({}); network counters are TCP only again", reason);
+        m_ConsumerFailureReported = true;
+    }
+    catch (...) // NOLINT(bugprone-empty-catch) - reported at the next look
+    {}
+}
+
 void WindowsEtwNetCollector::consume(ULONG64 consumerHandle)
 {
-    // Nothing thrown here leaves the thread (#1695): a failure becomes a status and a log line.
+    // Nothing thrown here leaves the job (#1695): a failure becomes a status and a log line. The worker's
+    // own boundary (#3343) is the backstop, and names the thread (UDP_TRACE_THREAD_NAME).
     ULONG status = ERROR_SUCCESS;
     try
     {
-        (void) setCurrentThreadName(UDP_TRACE_THREAD_NAME);
         ULONG64 handle = consumerHandle;
         status = m_Fns.processTrace(&handle, 1, nullptr, nullptr);
     }
@@ -430,6 +501,15 @@ bool WindowsEtwNetCollector::isDelivering() const
 
 std::vector<UdpProcessTraffic> WindowsEtwNetCollector::sample()
 {
+    {
+        // Before the running check: a consumer that failed before it ran left m_Running set. Skipped when
+        // start() or stop() holds the control lock; they look themselves.
+        const std::unique_lock lock(m_ControlMutex, std::try_to_lock);
+        if (lock.owns_lock())
+        {
+            observeConsumerFailureLocked();
+        }
+    }
     if (!m_Running.load(std::memory_order_acquire))
     {
         return {};
