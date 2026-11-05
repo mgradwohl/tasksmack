@@ -343,7 +343,15 @@ BOOL WINAPI fakeGetTokenInformation(HANDLE /*token*/, TOKEN_INFORMATION_CLASS in
     // a SID of its own unless a test sets the RID, as a renamed account keeps its SID.
     auto* const sid = static_cast<std::byte*>(info) + sizeof(TOKEN_USER);
     constexpr std::array<std::byte, 8> HEADER{
-        std::byte{1}, std::byte{2}, std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0}, std::byte{5}};
+        std::byte{1},
+        std::byte{2},
+        std::byte{0},
+        std::byte{0},
+        std::byte{0},
+        std::byte{0},
+        std::byte{0},
+        std::byte{5},
+    };
     const std::array<DWORD, 2> subAuthorities{21, fake().sidRid.value_or(static_cast<DWORD>(std::hash<std::wstring>{}(fake().user)))};
     std::memcpy(sid, HEADER.data(), HEADER.size());
     std::memcpy(sid + HEADER.size(), subAuthorities.data(), sizeof(subAuthorities));
@@ -925,7 +933,7 @@ TEST_F(WindowsProcessProbeSeamTest, AProcessWithAHungWindowIsNotRespondingFromTh
     EXPECT_EQ(walks, 1) << "one walk a sample, whatever the process count";
     for (const ProcessCounters& other : processes)
     {
-        if (other.pid != static_cast<std::int32_t>(PID))
+        if (std::cmp_not_equal(other.pid, PID))
         {
             EXPECT_FALSE(other.notResponding) << other.pid;
         }

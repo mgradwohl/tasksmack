@@ -7,8 +7,8 @@
 // provider, Microsoft-Windows-Kernel-Network, does report every UDP datagram with its process and
 // size. This collector starts a private real-time session on it, named for this process
 // (EtwNet::sessionName()), with only its UDP send and receive events enabled (IDs 42/43, IPv4, and
-// 58/59, IPv6), and consumes it on a thread of its own whose callback adds each datagram's bytes to
-// its process's counters (EtwNet::UdpByteCounters).
+// 58/59, IPv6), and consumes it on a thread of its own (ts-udp-trace, a Domain::Worker, #3343) whose
+// callback adds each datagram's bytes to its process's counters (EtwNet::UdpByteCounters).
 //
 // Opt-in: App starts it only when the Settings toggle is on, and it starts only when TaskSmack runs
 // elevated (a session on a kernel provider needs administrator rights; the Performance Log Users
@@ -35,6 +35,7 @@
 // clang-format on
 // NOLINTEND(misc-include-cleaner)
 
+#include "Domain/Worker.h"
 #include "Platform/IUdpTrafficCollector.h"
 #include "Platform/Windows/WindowsEtwNetMath.h"
 
@@ -43,9 +44,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <vector>
 
 namespace Platform
@@ -136,10 +137,23 @@ class WindowsEtwNetCollector final : public IUdpTrafficCollector
         std::array<wchar_t, 1024> logFileName;
     };
 
+    /// The consumer's one job: ProcessTrace on the session's consumer handle, for as long as the session runs.
+    struct ConsumeSession
+    {
+        ULONG64 consumerHandle = 0;
+    };
+    /// The consumer publishes nothing: its events go to m_Counters, and its end to m_Running.
+    struct ConsumerResult
+    {};
+    using ConsumerWorker = Domain::Worker<ConsumeSession, ConsumerResult>;
+
     [[nodiscard]] static SessionProperties makeProperties();
     void stopStaleSessions();
     void stopSessionByName(const std::wstring& name) const;
     void stopLocked();
+    /// Starts the consumer worker on @p consumerHandle (under m_ControlMutex). @return Whether its job was
+    /// admitted; when it wasn't, why is logged and the caller stops what it started.
+    [[nodiscard]] bool startConsumerLocked(ULONG64 consumerHandle);
     void consume(ULONG64 consumerHandle);
     void logLostEvents();
 
@@ -148,7 +162,6 @@ class WindowsEtwNetCollector final : public IUdpTrafficCollector
     std::wstring m_SessionName;        // Guarded by m_ControlMutex; empty when stopped
     ULONG64 m_SessionId = 0;           // Guarded by m_ControlMutex
     ULONG64 m_ConsumerHandle = 0;      // Guarded by m_ControlMutex
-    std::jthread m_Consumer;           // Started and joined under m_ControlMutex
 
     std::atomic<bool> m_Running{false};
     std::atomic<bool> m_Delivering{false};
@@ -160,6 +173,11 @@ class WindowsEtwNetCollector final : public IUdpTrafficCollector
 
     std::mutex m_CountersMutex;
     EtwNet::UdpByteCounters m_Counters; // Guarded by m_CountersMutex
+
+    // The consumer thread, one Domain::Worker per session (a Failed or Stopped worker is terminal, and its
+    // job runs as long as the session does). Built and destroyed (stopped and joined) under m_ControlMutex.
+    // Last: what its job uses outlives it.
+    std::optional<ConsumerWorker> m_Consumer;
 };
 
 } // namespace Platform
