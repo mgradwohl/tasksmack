@@ -58,7 +58,9 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <new>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -105,7 +107,7 @@ struct SnapshotShape
     std::size_t threads = 0;
 };
 
-[[nodiscard]] SnapshotShape snapshotShape(const std::vector<std::byte>& buffer, std::size_t bytes)
+[[nodiscard]] SnapshotShape snapshotShape(std::span<const std::byte> buffer, std::size_t bytes)
 {
     SnapshotShape shape;
     for (std::size_t offset = 0; offset + sizeof(SYSTEM_PROCESS_INFORMATION) <= bytes;)
@@ -188,6 +190,40 @@ constexpr std::size_t REPLAY_PROCESSES = 256;
 constexpr std::size_t REPLAY_THREADS = 16;
 /// The alignment of each entry in the replayed snapshot, as the kernel aligns them.
 constexpr std::size_t REPLAY_ENTRY_ALIGNMENT = 8;
+/// A page: the replayed snapshot starts on one, and SnapshotReplay's copy of it half of one later.
+constexpr std::size_t PAGE_BYTES = 4096;
+
+/// An allocator that starts every allocation on a page, so a buffer's place in its pages, and against
+/// another such buffer, is the same in every run rather than wherever the heap had room.
+template<typename T> struct PageAlignedAllocator
+{
+    using value_type = T;
+    PageAlignedAllocator() noexcept = default;
+    // NOLINTNEXTLINE(cppcoreguidelines-explicit-constructor,misc-explicit-constructor) - allocators rebind by conversion
+    template<typename U> PageAlignedAllocator(const PageAlignedAllocator<U>& /*other*/) noexcept
+    {}
+    [[nodiscard]] T* allocate(std::size_t count)
+    {
+        return static_cast<T*>(::operator new(count * sizeof(T), std::align_val_t{PAGE_BYTES}));
+    }
+    void deallocate(T* pointer, std::size_t /*count*/) noexcept
+    {
+        ::operator delete(pointer, std::align_val_t{PAGE_BYTES});
+    }
+    friend bool operator==(const PageAlignedAllocator& /*lhs*/, const PageAlignedAllocator& /*rhs*/) noexcept
+    {
+        return true;
+    }
+};
+using PageAlignedBytes = std::vector<std::byte, PageAlignedAllocator<std::byte>>;
+
+/// The snapshot ParseWarmCache and SnapshotReplay replay: its bytes, on a page, and its image names.
+struct ReplayedSnapshot
+{
+    PageAlignedBytes bytes;
+    std::vector<std::pair<std::size_t, std::size_t>> namePointers; // {pointer's offset, name's offset}
+    SnapshotShape shape;
+};
 
 /// The snapshot ParseWarmCache and SnapshotReplay replay (#3448), built once from capturedSnapshot().
 ///
@@ -196,10 +232,12 @@ constexpr std::size_t REPLAY_ENTRY_ALIGNMENT = 8;
 /// 7.4-8.5 us, ParseWarmCache 100-124 us), which is more than the regression check's 15%. This one
 /// keeps the capture's first REPLAY_PROCESSES processes with REPLAY_THREADS thread records each, so
 /// its size and its parse no longer follow what else is running. A machine with fewer processes
-/// replays them all; the processes and snapshot_kib counters say what was replayed.
-[[nodiscard]] CapturedSnapshot& replayedSnapshot()
+/// replays them all; the processes and snapshot_kib counters say what was replayed. Its bytes start on
+/// a page, and SnapshotReplay copies them to half a page further on, since with both left where the
+/// heap put them two full runs of one binary read 5.8 us and 7.0 us for the same 392 KiB.
+[[nodiscard]] ReplayedSnapshot& replayedSnapshot()
 {
-    static CapturedSnapshot snapshot;
+    static ReplayedSnapshot snapshot;
     return snapshot;
 }
 
@@ -217,7 +255,7 @@ constexpr std::size_t REPLAY_ENTRY_ALIGNMENT = 8;
     }
     const auto& captured = capturedSnapshot().bytes;
     const auto base = std::bit_cast<std::uintptr_t>(captured.data());
-    std::vector<std::byte> bytes;
+    PageAlignedBytes bytes;
     std::vector<std::pair<std::size_t, std::size_t>> namePointers;
     std::size_t lastEntry = 0;
     std::size_t processes = 0;
@@ -368,11 +406,14 @@ void BM_WindowsProcessProbe_SnapshotReplay(benchmark::State& state)
         return;
     }
     const auto& snapshot = replayedSnapshot();
-    std::vector<std::byte> buffer(snapshot.bytes.size() + SNAPSHOT_HEADROOM_BYTES);
+    // The copy lands half a page past where the snapshot starts in its page (#3448), the same in every run.
+    PageAlignedBytes storage((PAGE_BYTES / 2) + snapshot.bytes.size() + SNAPSHOT_HEADROOM_BYTES);
+    const std::span<std::byte> buffer = std::span<std::byte>(storage).subspan(PAGE_BYTES / 2);
+    const auto length = static_cast<ULONG>(std::min<std::size_t>(buffer.size(), std::numeric_limits<ULONG>::max()));
     for (auto _ : state)
     {
         ULONG returned = 0;
-        benchmark::DoNotOptimize(replaySnapshot(SystemProcessInformation, buffer.data(), bufferLength(buffer), &returned));
+        benchmark::DoNotOptimize(replaySnapshot(SystemProcessInformation, buffer.data(), length, &returned));
         benchmark::ClobberMemory();
     }
     state.counters["processes"] = benchmark::Counter(static_cast<double>(snapshot.shape.processes));
