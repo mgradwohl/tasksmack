@@ -63,6 +63,12 @@ struct Widths
     }
 };
 
+/// Why the Actions card's priority changes (Efficiency mode, a refused Set Realtime priority's or Efficiency
+/// mode's retry) wait for the shown process, or null when they needn't (#3429, #3467): the slider's Apply
+/// runs (@p sliderApplying), or the Processes table has a change for it in flight (@p priorityHeldElsewhere,
+/// Context::priorityHeldElsewhere). For ProcessActionsView::holdPriorityChanges().
+[[nodiscard]] const char* actionsHoldReason(bool sliderApplying, const char* priorityHeldElsewhere) noexcept;
+
 /// Measures the widths chooseTopRowLayout() lays the cards out from.
 [[nodiscard]] Widths measure(const Platform::ProcessActionCapabilities& capabilities);
 
@@ -78,6 +84,10 @@ struct Context
     std::optional<std::int32_t> currentNice;
     const Platform::CpuAffinity* currentAffinity = nullptr; ///< Ticks the affinity dialog's boxes (#1887); null: every CPU
     bool efficiencyMode = false;                            ///< The process is in Efficiency mode: its checkbox is ticked (#3071)
+    /// Why the priority controls wait for a priority change of this process in the Processes table, or
+    /// null when none runs there (#3467, PriorityChangesInFlight::holdReason()): the slider's Apply, its
+    /// retry, Set Realtime... and Set Realtime priority's retry are held meanwhile.
+    const char* priorityHeldElsewhere = nullptr;
 };
 
 /// What each card's content needs down, header and padding included, as render() drew it: for the

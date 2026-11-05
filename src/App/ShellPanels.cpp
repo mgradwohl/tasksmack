@@ -31,6 +31,9 @@ ShellPanels::ShellPanels()
 {
     m_Services.setIconView(&m_Processes.iconView());
     m_Startup.setIconView(&m_Processes.iconView());
+    // One priority change at a time reaches a process, from whichever panel (#3467).
+    m_Processes.setPriorityChanges(&m_PriorityChanges);
+    m_ProcessDetails.setPriorityChanges(&m_PriorityChanges);
 }
 
 void ShellPanels::prepareAttach()
