@@ -26,6 +26,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -722,6 +723,35 @@ TEST_F(SignatureWorkerTest, ACheckThatThrowsSomethingElseFailsTheWorkerWhichAnsw
     EXPECT_EQ(checksOf("c"), 0);
     EXPECT_EQ(worker.queuedPathCount(), 0U);
     EXPECT_TRUE(worker.waitUntilIdle(0ms)) << "nothing is left queued or in progress";
+}
+
+TEST_F(SignatureWorkerTest, APathWhoseEndAnswerCouldNotBeMadeIsAnsweredByTheNextLookup)
+{
+    // #3479 review: once the worker has failed, a path asked for is answered at once with the end note. When
+    // copying the note throws (no memory), the path is left queued; the next lookup answers it, even one of
+    // that path alone (it is in the table, so asks for no new path that would sweep the queue), rather than
+    // leaving it "not checked yet" for good.
+    for (const char* path : {"a", "c"})
+    {
+        setStamp(path, 1);
+    }
+    fakes().throwNonException = true;
+    SignatureWorker worker(fakeFunctions(), {});
+    worker.request("a"); // its check throws 42: the worker fails
+    ASSERT_TRUE(waitUntil([&worker] { return worker.find("a").has_value(); })) << "the failure is seen";
+
+    worker.failNextEndAnswerForTesting();
+    EXPECT_THROW(worker.request("c"), std::bad_alloc);
+    EXPECT_EQ(worker.queuedPathCount(), 1U) << "c is left queued: its answer couldn't be made";
+    EXPECT_FALSE(worker.waitUntilIdle(0ms));
+
+    const std::optional<SignatureCheck> stranded = worker.find("c");
+    ASSERT_TRUE(stranded.has_value()) << "the next lookup answers c";
+    EXPECT_EQ(stranded.value_or(SignatureCheck{}).signature, ImageSignature::Unknown);
+    EXPECT_TRUE(stranded.value_or(SignatureCheck{}).note.contains("Unknown error"));
+    EXPECT_EQ(worker.queuedPathCount(), 0U);
+    EXPECT_TRUE(worker.waitUntilIdle(0ms));
+    EXPECT_EQ(checksOf("c"), 0);
 }
 
 TEST_F(SignatureWorkerTest, ABurstAskedForWhileACheckIsInProgressIsEachCheckedOnce)

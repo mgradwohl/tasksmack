@@ -184,6 +184,14 @@ class SignatureWorker
         m_RefuseNextDrain = true;
     }
 
+    /// Has the next answer made for a path queued after the worker ended throw std::bad_alloc, as copying
+    /// the end note can when memory has run out (tests): the path stays queued, for the next call to answer.
+    void failNextEndAnswerForTesting()
+    {
+        const std::scoped_lock lock(m_Mutex);
+        m_EndAnswerFails = true;
+    }
+
   private:
     struct PathState
     {
@@ -341,11 +349,17 @@ class SignatureWorker
 
     /// Whether the Worker has ended (under m_Mutex). The first time it is seen ended, every path still
     /// queued, and the one being checked when a drain threw, is answered Unknown with the reason, which
-    /// is logged; each path queued after is answered the same at once (submitDrainLocked()).
+    /// is logged; each path queued after is answered the same at once (submitDrainLocked()). A path whose
+    /// answer couldn't be made then (no memory to copy the note) is still queued, and is answered here, by the
+    /// next request() or find(), whichever path it asks for.
     bool workerEndedLocked()
     {
         if (m_EndNote.has_value())
         {
+            if (!m_Queue.empty())
+            {
+                failQueuedLocked(*m_EndNote); // a path left queued when its answer couldn't be copied
+            }
             return true;
         }
         const Domain::WorkerState state = m_Worker.state();
@@ -396,13 +410,19 @@ class SignatureWorker
         return false;
     }
 
-    /// Answers every queued path as Unknown with @p note, and empties the queue (under m_Mutex).
+    /// Answers every queued path as Unknown with @p note, and empties the queue (under m_Mutex). A copy of
+    /// the note that throws (no memory) leaves the paths not yet answered queued, and the queue as it is, for
+    /// workerEndedLocked() to answer on the next call.
     void failQueuedLocked(std::string_view note)
     {
         for (const QueuedPath& queued : m_Queue)
         {
             if (const auto found = m_Paths.find(queued.key); found != m_Paths.end())
             {
+                if (std::exchange(m_EndAnswerFails, false))
+                {
+                    throw std::bad_alloc(); // failNextEndAnswerForTesting(): the note's copy, out of memory
+                }
                 found->second.result = SignatureCheck{.signature = ImageSignature::Unknown, .note = std::string(note), .signer = {}};
                 markAnsweredLocked(found->second);
             }
@@ -496,6 +516,7 @@ class SignatureWorker
     std::optional<std::string> m_EndNote;               // Set once the Worker is seen ended: why (#3343)
     bool m_RefuseNextDrain = false;                     // refuseNextDrainForTesting()
     bool m_KeysFail = false;                            // keyLocked() throws once: refuseNextDrainForTesting()
+    bool m_EndAnswerFails = false;                      // failQueuedLocked() throws once: failNextEndAnswerForTesting()
     // The worker's thread's
     bool m_Started = false; // onWorkerStart has been called
     CheckWorker m_Worker;   // Last: stopped and joined first, while the rest is alive
