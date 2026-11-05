@@ -596,6 +596,69 @@ TEST(WorkerTest, AQueuedJobReachesItsBodyWithoutAnAllocation)
 #endif
 }
 
+/// A job that counts its moves: a debug STL's container move allocates a proxy, so a worker that moved a job
+/// on its way to the body could fail there, after Queued, where the allocation hook can't see it (Windows).
+class MoveCountingJob
+{
+  public:
+    explicit MoveCountingJob(int id) noexcept : m_Id(id)
+    {}
+    ~MoveCountingJob() = default;
+    MoveCountingJob(const MoveCountingJob&) = delete;
+    MoveCountingJob& operator=(const MoveCountingJob&) = delete;
+    MoveCountingJob(MoveCountingJob&& other) noexcept : m_Id(other.m_Id)
+    {
+        moves().fetch_add(1);
+    }
+    MoveCountingJob& operator=(MoveCountingJob&& other) noexcept
+    {
+        m_Id = other.m_Id;
+        moves().fetch_add(1);
+        return *this;
+    }
+
+    [[nodiscard]] int id() const noexcept
+    {
+        return m_Id;
+    }
+
+    /// Every move of any MoveCountingJob so far.
+    [[nodiscard]] static std::atomic<int>& moves() noexcept
+    {
+        static std::atomic<int> count{0};
+        return count;
+    }
+
+  private:
+    int m_Id;
+};
+
+// A queued job reaches its body as it was queued (#3472): the thread splices its node off the queue rather than
+// moving the job out, so nothing per job is constructed between Queued and the body, not even on a debug STL.
+TEST(WorkerTest, AQueuedJobIsNotMovedOnItsWayToItsBody)
+{
+    using MoveWorker = Worker<MoveCountingJob, double>;
+    Gate gate;
+    std::atomic<int> movesAtBody{-1};
+    MoveWorker worker(MoveWorker::Options{.threadName = "ts-test-worker", .capacity = 4, .admission = Admission::Refuse},
+                      [&gate, &movesAtBody](MoveCountingJob& job, const std::stop_token& stop, MoveWorker::JobContext& /*context*/)
+                      {
+                          if (job.id() == 0)
+                          {
+                              static_cast<void>(gate.pass(stop));
+                              return;
+                          }
+                          movesAtBody = MoveCountingJob::moves().load();
+                      });
+    EXPECT_EQ(worker.submit(MoveCountingJob(0)), SubmitResult::Queued);
+    ASSERT_TRUE(waitBusy(worker));
+    EXPECT_EQ(worker.submit(MoveCountingJob(1)), SubmitResult::Queued);
+    const int movesAfterSubmit = MoveCountingJob::moves().load(); // job 1 waits behind job 0 until the gate opens
+    gate.open();
+    ASSERT_TRUE(worker.waitUntilIdle(WAIT));
+    EXPECT_EQ(movesAtBody.load(), movesAfterSubmit) << "the job was moved between the queue and its body";
+}
+
 // Low memory on the worker thread is contained: an allocation that fails inside the body (here, the one a
 // publication makes) ends the worker Failed with a reason, and the bookkeeping after it (the failure's
 // record, the queue, idle, a later submit(), the destructor) runs without terminating the process. The

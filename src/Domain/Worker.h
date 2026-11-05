@@ -12,9 +12,9 @@
 //    full queue does (Admission). submit() says what it did, so a caller can show "not checked yet".
 //    Admission is synchronous (#3472): everything a job needs before its body (its stop state) is made in
 //    submit(), under the lock, so a failure there (no memory) answers Refused, and taking a job off the queue
-//    allocates nothing. A job submit() admitted reaches its body unless it leaves the queue first: stop() or
-//    the destructor drops it, a later DropOldest submit drops it, a MergeByKey submit replaces it, or an
-//    earlier job's body throws (the worker is Failed, and drops its queue). The worker never fails between.
+//    constructs nothing: its node is spliced, not moved, so even a debug STL's container proxy isn't made. A job submit() admitted reaches
+//    its body unless it leaves the queue first: stop() or the destructor drops it, a later DropOldest submit drops it, a MergeByKey submit
+//    replaces it, or an earlier job's body throws (the worker is Failed, and drops its queue). The worker never fails between.
 //  - Cancellation (#3333): every job gets a stop token of its own, signalled by cancelCurrent(), stop() and
 //    the destructor. A resource that needs its own safe abort (a WinHTTP request) is guarded by a cancel
 //    hook the body arms for exactly the resource's lifetime (JobContext::armCancel()): the hook is called
@@ -52,9 +52,9 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
-#include <deque>
 #include <exception>
 #include <functional>
+#include <list>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -515,8 +515,9 @@ template<typename Job, typename Snapshot, typename StopState = std::stop_source>
     }
 
     /// The thread. Never throws: the body's exceptions end it in loop(), with their reason. The loop's own
-    /// bookkeeping allocates nothing (a job's stop state is made at submit, #3472); what is left of it that
-    /// could throw (waiting, std::system_error) ends it here.
+    /// bookkeeping constructs nothing per job (#3472): the job's stop state is made at submit, its node is
+    /// spliced off the queue, and a failure's reason goes into storage made with the worker. What is left of it
+    /// that could throw (waiting, std::system_error) ends it here.
     void run(const std::stop_token& stop) noexcept
     {
         static_cast<void>(Platform::setCurrentThreadName(m_Options.threadName));
@@ -541,7 +542,6 @@ template<typename Job, typename Snapshot, typename StopState = std::stop_source>
         JobContext context(*this);
         while (true)
         {
-            std::optional<Job> job;
             std::stop_token jobStop;
             {
                 std::unique_lock lock(m_Mutex);
@@ -549,17 +549,16 @@ template<typename Job, typename Snapshot, typename StopState = std::stop_source>
                 {
                     return; // stopped; stop() dropped the queue
                 }
-                // Moves only: the job's stop state was made when it was admitted, so nothing here can fail.
-                QueuedJob& next = m_Queue.front();
-                job.emplace(std::move(next.job));
-                m_JobStop = std::move(next.stop);
-                m_Queue.pop_front();
+                // Nothing is constructed here (#3472), so nothing can fail between Queued and the body: the job's
+                // node moves to m_Current as it is (a splice, not a move of the job, which a debug STL's container
+                // proxy would allocate for), and its stop state, made at admission, moves to m_JobStop.
+                m_Current.splice(m_Current.end(), m_Queue, m_Queue.begin());
+                m_JobStop = std::move(m_Current.front().stop);
                 jobStop = m_JobStop.get_token();
                 m_InFlight = true;
             }
-            std::string what; // a failure's reason, copied on this thread (#1685)
-            const std::optional<std::string_view> failure = runJob(*job, jobStop, context, what);
-            job.reset(); // the job's resources go before it counts as done, failed or not
+            const std::optional<std::string_view> failure = runJob(m_Current.front().job, jobStop, context);
+            m_Current.clear(); // the job's resources go before it counts as done, failed or not
             {
                 const std::scoped_lock lock(m_Mutex);
                 if (failure.has_value())
@@ -585,8 +584,9 @@ template<typename Job, typename Snapshot, typename StopState = std::stop_source>
     }
 
     /// The no-throw boundary: runs the body on @p job. @return The reason when it threw (pointing into
-    /// @p what, or a fixed text), and nullopt when it returned. The caller fails the worker, after the job is gone.
-    std::optional<std::string_view> runJob(Job& job, const std::stop_token& jobStop, JobContext& context, std::string& what) noexcept
+    /// m_FailureWhat, or a fixed text), and nullopt when it returned. The caller fails the worker, after the job
+    /// is gone.
+    std::optional<std::string_view> runJob(Job& job, const std::stop_token& jobStop, JobContext& context) noexcept
     {
         std::string_view reason;
         try
@@ -598,8 +598,8 @@ template<typename Job, typename Snapshot, typename StopState = std::stop_source>
         {
             try
             {
-                what = e.what();
-                reason = what;
+                m_FailureWhat = e.what();
+                reason = m_FailureWhat;
             }
             catch (...)
             {
@@ -637,16 +637,19 @@ template<typename Job, typename Snapshot, typename StopState = std::stop_source>
     std::condition_variable_any m_Wake;
     std::condition_variable m_Idle;
     // Guarded by m_Mutex
-    std::deque<QueuedJob> m_Queue;
-    bool m_InFlight = false; // the thread holds a job it took off the queue
-    StopState m_JobStop;     // the job in flight's, moved off the queue with it
-    ArmedHook m_Hook;        // the job's cancel hook, while its CancelGuard lives
-    std::string m_Failure;   // why it failed
+    std::list<QueuedJob> m_Queue; // a list, so the thread takes a job by splicing its node (#3472)
+    bool m_InFlight = false;      // the thread holds a job it took off the queue
+    StopState m_JobStop;          // the job in flight's, moved off the queue with it
+    ArmedHook m_Hook;             // the job's cancel hook, while its CancelGuard lives
+    std::string m_Failure;        // why it failed
     bool m_FailureUnrecorded = false;
     // Written under m_Mutex, read without it
     std::atomic<WorkerState> m_State{WorkerState::Running};
 
-    std::uint64_t m_NextVersion = 0; // the worker thread's
+    // The worker thread's. Made with the worker, so a job constructs neither before its body (#3472).
+    std::list<QueuedJob> m_Current; // the job in flight's node, spliced off m_Queue under m_Mutex
+    std::string m_FailureWhat;      // a body's exception text, copied on this thread (#1685)
+    std::uint64_t m_NextVersion = 0;
     PublicationSlot<Publication> m_Slot;
 
     std::jthread m_Thread; // last: stopped and joined first, while the rest is alive
