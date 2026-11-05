@@ -527,6 +527,37 @@ TEST(SystemModelTest, CompressedSwapPassesThroughWithItsRatioAndHistory)
     EXPECT_FLOAT_EQ(history[history.size() - 1], 2.0F);
 }
 
+// #3363: Windows' compressed memory passes through as a size with no ratio, so the ratio's history stays
+// NaN, and a sample without it (compression turned off) clears it.
+TEST(SystemModelTest, WindowsCompressedMemoryPassesThroughWithoutARatio)
+{
+    auto probe = std::make_unique<MockSystemProbe>();
+    auto* rawProbe = probe.get();
+    auto mem = makeMemoryCounters(16ULL << 30U, 8ULL << 30U);
+    mem.hasMemoryCompression = true;
+    mem.memoryCompressionBytes = 300ULL << 20U;
+    rawProbe->setCounters(makeSystemCounters(makeCpuCounters(0, 0, 0, 1000), mem));
+    Domain::SystemModel model(std::move(probe));
+    model.refresh(); // the seed: no history yet
+    rawProbe->setCounters(makeSystemCounters(makeCpuCounters(0, 0, 0, 1500), mem));
+    model.refresh();
+    const auto snap = model.snapshot();
+    EXPECT_TRUE(snap.hasMemoryCompression);
+    EXPECT_EQ(snap.memoryCompressionBytes, 300ULL << 20U);
+    EXPECT_DOUBLE_EQ(snap.compressionRatio, 0.0);
+    const auto publication = model.publication();
+    ASSERT_NE(publication, nullptr);
+    ASSERT_FALSE(publication->compressionRatioHistory.empty());
+    EXPECT_TRUE(std::isnan(publication->compressionRatioHistory[publication->compressionRatioHistory.size() - 1]));
+
+    mem.hasMemoryCompression = false;
+    mem.memoryCompressionBytes = 0;
+    rawProbe->setCounters(makeSystemCounters(makeCpuCounters(0, 0, 0, 2000), mem));
+    model.refresh();
+    EXPECT_FALSE(model.snapshot().hasMemoryCompression);
+    EXPECT_EQ(model.snapshot().memoryCompressionBytes, 0U);
+}
+
 TEST(SystemModelTest, SwapZeroWhenNoSwap)
 {
     auto probe = std::make_unique<MockSystemProbe>();

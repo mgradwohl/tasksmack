@@ -106,6 +106,13 @@ struct MemoryCounters
     bool hasZswap = false;
     uint64_t zswapOriginalBytes = 0;   ///< Zswapped
     uint64_t zswapCompressedBytes = 0; ///< Zswap
+
+    // Compressed memory (#3363), Windows: the working set of the "Memory Compression" process, which holds
+    // the compression store, from the SystemProcessInformation snapshot (Task Manager's "In use
+    // (Compressed)"). hasMemoryCompression: that process was found this sample, so compression is on.
+    // Windows documents no figure for the data it stands for, so there is no ratio.
+    bool hasMemoryCompression = false;
+    uint64_t memoryCompressionBytes = 0;
 };
 
 /// Combined system counters snapshot.
