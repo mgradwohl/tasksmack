@@ -803,6 +803,69 @@ TEST_F(WindowsEtwNetCollectorTest, AConsumerThatThrowsAnythingIsContainedReporte
     EXPECT_EQ(log.count("the consumer stopped"), 1U) << "a consumer stopped by stop() isn't reported";
 }
 
+// The worker can fail after its submit answered Queued, before consume() runs (Domain::Worker's setup of
+// the job, its stop state, can throw). Nothing then clears m_Running, so sample() looks at the worker:
+// the failure is logged once, the delivery ends, and the next start() cleans up and really starts again.
+TEST_F(WindowsEtwNetCollectorTest, AConsumerThatFailsBeforeItRunsIsReportedBySampleAndStartsAgain)
+{
+    const LogCapture log;
+    constexpr std::string_view REPORTED = "the consumer stopped (the consumer's setup failed (test))";
+    fake().events = {udpEvent(EtwNet::UDP4_SEND_EVENT_ID, 10, 1)};
+    WindowsEtwNetCollector collector(fakeFunctions());
+    collector.failNextConsumerForTesting();
+    ASSERT_EQ(collector.start(), UdpCollectorStartResult::Started);
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (log.count(REPORTED) == 0 && std::chrono::steady_clock::now() < deadline)
+    {
+        static_cast<void>(collector.sample());
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    EXPECT_EQ(log.count(REPORTED), 1U);
+    EXPECT_FALSE(collector.isDelivering());
+    EXPECT_TRUE(collector.sample().empty());
+    EXPECT_EQ(log.count(REPORTED), 1U) << "reported once";
+    {
+        const std::scoped_lock lock(fake().mutex);
+        EXPECT_TRUE(fake().consumerThreads.empty()) << "ProcessTrace never ran";
+    }
+
+    ASSERT_EQ(collector.start(), UdpCollectorStartResult::Started);
+    EXPECT_EQ(fake().closeCalls, 1) << "the failed session's consumer closed before the new one";
+    EXPECT_EQ(fake().startedNames.size(), 2U);
+    ASSERT_TRUE(waitDelivered());
+    EXPECT_TRUE(collector.isDelivering());
+    collector.stop();
+    EXPECT_EQ(fake().closeCalls, 2);
+    EXPECT_EQ(log.count("the consumer stopped"), 1U);
+}
+
+// The same failure, seen first by start(): it doesn't answer Started on the dead session's word, but
+// cleans it up and starts a new one.
+TEST_F(WindowsEtwNetCollectorTest, AConsumerThatFailsBeforeItRunsIsCleanedUpByTheNextStart)
+{
+    const LogCapture log;
+    fake().events = {udpEvent(EtwNet::UDP4_SEND_EVENT_ID, 10, 1)};
+    WindowsEtwNetCollector collector(fakeFunctions());
+    collector.failNextConsumerForTesting();
+    ASSERT_EQ(collector.start(), UdpCollectorStartResult::Started);
+
+    // Until the worker has failed, start() answers Started for the running session; once it has, it restarts.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (fake().startedNames.size() < 2 && std::chrono::steady_clock::now() < deadline)
+    {
+        ASSERT_EQ(collector.start(), UdpCollectorStartResult::Started);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_EQ(fake().startedNames.size(), 2U) << "a start() after the failure started a new session";
+    EXPECT_EQ(fake().closeCalls, 1);
+    EXPECT_EQ(log.count("the consumer stopped (the consumer's setup failed (test))"), 1U);
+    ASSERT_TRUE(waitDelivered());
+    EXPECT_TRUE(collector.isDelivering());
+    collector.stop();
+    EXPECT_EQ(fake().closeCalls, 2);
+}
+
 // --- The real calls ---------------------------------------------------------------------------
 
 TEST(WindowsEtwNetCollectorSystemTest, TheRealFunctionsAreAllSet)
