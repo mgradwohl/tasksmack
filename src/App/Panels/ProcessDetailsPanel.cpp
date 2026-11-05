@@ -388,6 +388,13 @@ void ProcessDetailsPanel::renderContent()
         m_ActionCapabilities = m_ProcessActions->actionCapabilities();
     }
 
+    // A priority change for the shown process running in the Processes table holds this panel's own (#3467).
+    // Set here for the whole frame, the dialogs included, not only while the Overview's cards are drawn.
+    m_PriorityHeldElsewhere = m_PriorityChanges != nullptr
+                                ? m_PriorityChanges->holdReason(PriorityChangesInFlight::Panel::ProcessDetails, selectedTarget())
+                                : nullptr;
+    m_ActionsView.holdPriorityChanges(ProcessActionsBlock::actionsHoldReason(m_PriorityView.applying(), m_PriorityHeldElsewhere));
+
     renderPane(killRequested);
 
     // The Actions block's confirm dialog, submitted here every frame rather than from the block: the
@@ -1010,9 +1017,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
             .currentAffinity = m_HasSnapshot ? &proc.cpuAffinity : nullptr,
             .efficiencyMode = m_HasSnapshot && Detail::isInEfficiencyMode(proc),
             // A priority change for this process running in the Processes table holds these controls (#3467).
-            .priorityHeldElsewhere = m_PriorityChanges != nullptr
-                                       ? m_PriorityChanges->holdReason(PriorityChangesInFlight::Panel::ProcessDetails, selectedTarget())
-                                       : nullptr,
+            .priorityHeldElsewhere = m_PriorityHeldElsewhere,
         };
         // Kept for the next frame's row height; a card scrolled out of view reports 0 and keeps its last.
         const ProcessActionsBlock::Heights needed = ProcessActionsBlock::render(actions, controlsLayout, controlsHeight);

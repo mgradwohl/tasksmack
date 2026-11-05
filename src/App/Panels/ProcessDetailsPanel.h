@@ -411,6 +411,7 @@ class ProcessDetailsPanel : public Panel
     ProcessPriorityView m_PriorityView;
     // Shared with the Processes table by ShellPanels (#3467), which outlives this panel; null on its own.
     PriorityChangesInFlight* m_PriorityChanges = nullptr;
+    const char* m_PriorityHeldElsewhere = nullptr;                   // This frame's holdReason() for the shown process, or null
     std::vector<Platform::ProcessTarget> m_PublishedPriorityChanges; // publishPriorityChanges()' buffer, reused
     // The Actions and Priority cards' content heights as last drawn (0 until they have been): the row
     // they are on takes the tallest card's height (ProcessDetailsLayout::computeRowCardHeight(), #1789).

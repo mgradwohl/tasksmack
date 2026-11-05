@@ -63,6 +63,12 @@ struct Widths
     }
 };
 
+/// Why the Actions card's priority changes (Efficiency mode, a refused Set Realtime priority's or Efficiency
+/// mode's retry) wait for the shown process, or null when they needn't (#3429, #3467): the slider's Apply
+/// runs (@p sliderApplying), or the Processes table has a change for it in flight (@p priorityHeldElsewhere,
+/// Context::priorityHeldElsewhere). For ProcessActionsView::holdPriorityChanges().
+[[nodiscard]] const char* actionsHoldReason(bool sliderApplying, const char* priorityHeldElsewhere) noexcept;
+
 /// Measures the widths chooseTopRowLayout() lays the cards out from.
 [[nodiscard]] Widths measure(const Platform::ProcessActionCapabilities& capabilities);
 

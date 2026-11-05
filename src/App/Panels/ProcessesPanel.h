@@ -412,12 +412,11 @@ class ProcessesPanel : public Panel
     }
 
     /// Whether the toolbar offers "Authenticate and retry" after a refused row action (#2308). Not for a
-    /// refused priority change while Process Details has one running for that process (#3467).
+    /// refused priority change (Efficiency mode included) while Process Details has one running for that process (#3467).
     [[nodiscard]] bool offersAuthenticateAndRetry() const noexcept
     {
         return m_RowRetry.has_value() && m_RowActionResultSeconds > 0.0F && !rowActionRunning() &&
-               (m_RowRetry->action.kind != Platform::AuthorizedAction::Kind::SetPriority ||
-                !priorityHeldElsewhere(m_RowRetry->action.target));
+               (!Detail::changesPriority(m_RowRetry->action.kind) || !priorityHeldElsewhere(m_RowRetry->action.target));
     }
 
     /// Presses the toolbar's "Authenticate and retry", for tests.

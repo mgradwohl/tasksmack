@@ -898,6 +898,86 @@ TEST_F(ProcessDetailsPanelRenderTest, ItsPriorityChangesHoldTheTablesControlsUnt
     EXPECT_EQ(actions->setPriorityCount(), 1);
 }
 
+/// The Actions card's child window, as the last frame left it.
+[[nodiscard]] const ImGuiWindow* actionsCardWindow()
+{
+    for (const ImGuiWindow* window : ImGui::GetCurrentContext()->Windows)
+    {
+        if ((window->Flags & ImGuiWindowFlags_ChildWindow) != 0 && std::string_view{window->Name}.contains("ProcessActionsBlock_"))
+        {
+            return window;
+        }
+    }
+    return nullptr;
+}
+
+// #3467 review: Efficiency mode sets the priority too (Idle on Windows). Its checkbox asks nothing while the
+// Processes tab changes the shown process's priority; released, its confirm is published, so the table (and the
+// slider's Apply) waits for it; and a refused Efficiency mode change's "Retry as administrator" isn't offered while
+// the table changes the priority, then is again once that has finished.
+TEST_F(ProcessDetailsPanelRenderTest, EfficiencyModeAndTheProcessesTabHoldEachOther)
+{
+    auto owned = std::make_unique<TestMocks::MockProcessActions>();
+    TestMocks::MockProcessActions* actions = owned.get();
+    actions->setCapabilities(
+        {.canTerminate = true, .canKill = true, .canSetPriority = true, .canAuthorizeInteractively = true, .canSetEfficiencyMode = true});
+    ProcessDetailsPanel panel(std::move(owned));
+    PriorityChangesInFlight changes;
+    panel.setPriorityChanges(&changes);
+    Core::ActiveTabChangedEvent shown("ProcessDetails");
+    panel.onEvent(shown);
+    panel.setSelectedPid(PID, START_TICKS);
+    const std::vector samples{sampleAt(1.0, 10.0)};
+    panel.updateWithSamples(samples, 1.0F);
+    static_cast<void>(renderAndCapture(panel));
+    static_cast<void>(renderAndCapture(panel));
+    const Platform::ProcessTarget target{.pid = PID, .startTimeTicks = START_TICKS};
+    constexpr auto PROCESSES = PriorityChangesInFlight::Panel::Processes;
+    ProcessActionsView& view = panel.actionsViewForTesting();
+    const auto clickEfficiencyMode = [&]
+    {
+        const ImGuiWindow* card = actionsCardWindow();
+        ASSERT_NE(card, nullptr);
+        ImGui::ActivateItemByID(ImHashStr(Detail::EFFICIENCY_MODE_LABEL, 0, card->ID));
+        static_cast<void>(renderAndCapture(panel));
+        static_cast<void>(renderAndCapture(panel));
+    };
+
+    const std::array table{target};
+    changes.publish(PROCESSES, table);
+    static_cast<void>(renderAndCapture(panel));
+    clickEfficiencyMode();
+    EXPECT_EQ(view.pendingAction(), Detail::ProcessAction::None) << "held while the table changes its priority";
+
+    changes.publish(PROCESSES, {});
+    static_cast<void>(renderAndCapture(panel));
+    clickEfficiencyMode();
+    ASSERT_EQ(view.pendingAction(), Detail::ProcessAction::EfficiencyModeOn) << "released: it asks";
+    EXPECT_TRUE(changes.heldElsewhere(PROCESSES, target)) << "its confirm holds the table";
+    EXPECT_TRUE(panel.priorityViewForTesting().heldForOtherPriorityChange()) << "and the slider's Apply";
+
+    actions->setEfficiencyModeResult(Platform::ProcessActionResult::denied("Access denied"));
+    const ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
+    ASSERT_NE(modal, nullptr);
+    ImGui::ActivateItemByID(ImHashStr("Turn on Efficiency mode", 0, modal->ID)); // confirmed through its dialog
+    static_cast<void>(renderAndCapture(panel));
+    view.waitForActionForTesting();
+    EXPECT_EQ(actions->efficiencyModeCount(), 1);
+    static_cast<void>(renderAndCapture(panel));
+    EXPECT_FALSE(changes.heldElsewhere(PROCESSES, target)) << "refused and taken in: released";
+    ASSERT_TRUE(view.offersAuthenticateAndRetry()) << "refused: the retry is offered";
+
+    changes.publish(PROCESSES, table);
+    static_cast<void>(renderAndCapture(panel));
+    EXPECT_FALSE(view.offersAuthenticateAndRetry()) << "held while the table changes its priority";
+    view.retryAuthorizedForTesting();
+    EXPECT_EQ(actions->runAuthorizedCount(), 0) << "a press sends nothing meanwhile";
+
+    changes.publish(PROCESSES, {});
+    static_cast<void>(renderAndCapture(panel));
+    EXPECT_TRUE(view.offersAuthenticateAndRetry()) << "offered again once it has finished";
+}
+
 // #2407: the Realtime I/O class can become settable after the panel is built -- BrokeredProcessActions
 // reports it once the privileged helper connects -- and the I/O slider then offers its Realtime stops.
 // They used to come from a copy of the capabilities taken at construction, so they never appeared.

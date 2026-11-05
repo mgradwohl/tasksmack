@@ -2353,9 +2353,9 @@ void ProcessesPanel::publishPriorityChanges()
             m_PublishedPriorityChanges.push_back(target.target);
         }
     };
-    if (m_RowAction.action == Detail::ProcessAction::SetRealtimePriority)
+    if (Detail::changesPriority(m_RowAction.action))
     {
-        publishTargets(m_RowAction.targets); // asked about in its confirm
+        publishTargets(m_RowAction.targets); // Set Realtime priority or Efficiency mode, asked about in its confirm
     }
     if (m_BatchPriorityDialog.isPending())
     {
@@ -3602,8 +3602,12 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
     // Efficiency mode (#3071), as Task Manager's row menu has it: one process, ticked while it is on.
     // Turning it on is confirmed; turning it off isn't.
     const bool on = Detail::isInEfficiencyMode(proc);
+    // Efficiency mode sets the priority: greyed out, too, while Process Details changes this process's (#3467).
+    const Platform::ProcessTarget rowTarget{.pid = proc.pid, .startTimeTicks = proc.startTimeTicks};
+    const char* const priorityHeld =
+        priorityHeldElsewhere(rowTarget) ? PriorityChangesInFlight::waitReason(PriorityChangesInFlight::Panel::Processes) : nullptr;
     const Detail::EfficiencyModeToggle toggle =
-        Detail::efficiencyModeToggle(can, {.pid = proc.pid, .startTimeTicks = proc.startTimeTicks}, on, !actionsIdle, batchCount);
+        Detail::holdEfficiencyModeToggle(Detail::efficiencyModeToggle(can, rowTarget, on, !actionsIdle, batchCount), priorityHeld);
     if (toggle.state != Detail::EfficiencyModeToggleState::Hidden)
     {
         ImGui::Separator();
@@ -3615,11 +3619,10 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
     }
     // The Realtime priority class (#3429, Windows): one process, always confirmed with a warning.
     // Greyed out, too, while Process Details changes this process's priority (#3467).
-    const Platform::ProcessTarget rowTarget{.pid = proc.pid, .startTimeTicks = proc.startTimeTicks};
     if (const Detail::RealtimePriorityItem realtime = Detail::holdRealtimePriorityItem(
             Detail::realtimePriorityItem(
                 can, rowTarget, proc.priorityClass == Domain::Priority::PriorityClass::Realtime, !actionsIdle, batchCount),
-            priorityHeldElsewhere(rowTarget) ? PriorityChangesInFlight::waitReason(PriorityChangesInFlight::Panel::Processes) : nullptr);
+            priorityHeld);
         realtime.state != Detail::RealtimePriorityState::Hidden)
     {
         if (toggle.state == Detail::EfficiencyModeToggleState::Hidden) // else it shares Efficiency mode's group
@@ -4154,9 +4157,9 @@ void ProcessesPanel::runRowAction(std::string pending,
         showRowActionResult(format(Platform::ProcessActionResult::error("Another action is still running")), false);
         return;
     }
-    // F7/F8, Set Realtime priority and their retries set the priority, as Process Details' changes do: never
+    // F7/F8, Set Realtime priority, Efficiency mode and their retries set the priority, as Process Details' changes do: never
     // while one for the same process runs there, or the older of the two could land last (#3467).
-    if (!setsPriorityOf.has_value() && retry.has_value() && retry->kind == Platform::AuthorizedAction::Kind::SetPriority)
+    if (!setsPriorityOf.has_value() && retry.has_value() && Detail::changesPriority(retry->kind))
     {
         setsPriorityOf = retry->target;
     }
@@ -4192,9 +4195,8 @@ void ProcessesPanel::retryRowActionAuthorized()
     }
     RowRetry retry = std::move(*m_RowRetry);
     m_RowRetry.reset();
-    const std::optional<Platform::ProcessTarget> setsPriorityOf = retry.action.kind == Platform::AuthorizedAction::Kind::SetPriority
-                                                                    ? std::optional<Platform::ProcessTarget>{retry.action.target}
-                                                                    : std::nullopt;
+    const std::optional<Platform::ProcessTarget> setsPriorityOf =
+        Detail::changesPriority(retry.action.kind) ? std::optional<Platform::ProcessTarget>{retry.action.target} : std::nullopt;
     runRowAction(
         std::format("Waiting for authorization to act on PID {}...", retry.action.target.pid),
         [actions = m_ProcessActions.get(), action = retry.action](const std::stop_token& stopToken)

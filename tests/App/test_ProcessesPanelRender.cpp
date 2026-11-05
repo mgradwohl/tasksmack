@@ -3800,6 +3800,85 @@ TEST_F(ProcessesPanelRenderTest, SetRealtimeFromTheRowMenuAndProcessDetailsHoldE
     panel->onDetach();
 }
 
+// #3467 review: Efficiency mode sets the priority too (Idle on Windows). The row menu's item is greyed out while
+// Process Details changes that process's priority; once that has finished it asks again, and its confirm and its
+// run hold Process Details' priority controls for that process until the result is taken in.
+TEST_F(ProcessesPanelRenderTest, EfficiencyModeFromTheRowMenuAndProcessDetailsHoldEachOther)
+{
+    PriorityChangesInFlight changes;
+    TestMocks::MockProcessActions* actions = nullptr;
+    const auto panel = efficiencyModePanel("", actions);
+    panel->setPriorityChanges(&changes);
+    ASSERT_NE(actions, nullptr);
+    renderUntilLoaded(*panel);
+    constexpr auto DETAILS = PriorityChangesInFlight::Panel::ProcessDetails;
+
+    std::optional<std::int32_t> menuPid = openARowMenu(*panel);
+    ASSERT_TRUE(menuPid.has_value());
+    const Platform::ProcessTarget target{.pid = *menuPid, .startTimeTicks = mockStartTicks(*menuPid)};
+    const std::array details{target};
+    changes.publish(DETAILS, details);
+    static_cast<void>(renderAndCapture(*panel));
+    pressPopupItem(*panel, App::Detail::EFFICIENCY_MODE_LABEL);
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    EXPECT_EQ(ImGui::GetTopMostPopupModal(), nullptr) << "greyed out while Process Details changes its priority";
+    EXPECT_EQ(actions->efficiencyModeCount(), 0);
+
+    changes.publish(DETAILS, {});
+    if (topPopup() != nullptr)
+    {
+        closePopups(*panel);
+    }
+    menuPid = openARowMenu(*panel);
+    ASSERT_EQ(menuPid, target.pid);
+    pressPopupItem(*panel, App::Detail::EFFICIENCY_MODE_LABEL);
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    ASSERT_NE(ImGui::GetTopMostPopupModal(), nullptr) << "released: it asks";
+    EXPECT_TRUE(changes.heldElsewhere(DETAILS, target)) << "its confirm holds Process Details";
+
+    pressModalButton(*panel, "Turn on Efficiency mode");
+    EXPECT_TRUE(changes.heldElsewhere(DETAILS, target)) << "and so does its run";
+    ASSERT_TRUE(updateUntilBatchResult(*panel, "Efficiency mode on for PID"));
+    EXPECT_EQ(actions->efficiencyModeCount(), 1);
+    EXPECT_FALSE(changes.heldElsewhere(DETAILS, target)) << "released once taken in";
+    panel->onDetach();
+}
+
+// #3467 review: a refused Efficiency mode change's "Authenticate and retry" in the toolbar isn't offered while
+// Process Details changes that process's priority (an older retry could overwrite the newer change), and is
+// offered again once that has finished.
+TEST_F(ProcessesPanelRenderTest, ARefusedEfficiencyModeChangesRetryWaitsForProcessDetails)
+{
+    PriorityChangesInFlight changes;
+    TestMocks::MockProcessActions* actions = nullptr;
+    const auto panel = efficiencyModePanel(std::string(Platform::EFFICIENCY_MODE_STATUS), actions);
+    panel->setPriorityChanges(&changes);
+    ASSERT_NE(actions, nullptr);
+    renderUntilLoaded(*panel);
+    actions->setCapabilities({.canTerminate = true, .canKill = true, .canAuthorizeInteractively = true, .canSetEfficiencyMode = true});
+    actions->setEfficiencyModeResult(Platform::ProcessActionResult::denied("Access denied"));
+
+    const std::optional<std::int32_t> menuPid = openARowMenu(*panel);
+    ASSERT_TRUE(menuPid.has_value());
+    const Platform::ProcessTarget target{.pid = *menuPid, .startTimeTicks = mockStartTicks(*menuPid)};
+    pressPopupItem(*panel, App::Detail::EFFICIENCY_MODE_LABEL); // in it: off at once, refused
+    panel->waitForRowActionForTesting();
+    static_cast<void>(renderAndCapture(*panel));
+    ASSERT_TRUE(panel->offersAuthenticateAndRetry()) << "refused: the retry is offered";
+
+    const std::array details{target};
+    changes.publish(PriorityChangesInFlight::Panel::ProcessDetails, details);
+    EXPECT_FALSE(panel->offersAuthenticateAndRetry()) << "held while Process Details changes its priority";
+    panel->retryRowActionAuthorizedForTesting();
+    EXPECT_EQ(actions->runAuthorizedCount(), 0) << "a press sends nothing meanwhile";
+
+    changes.publish(PriorityChangesInFlight::Panel::ProcessDetails, {});
+    EXPECT_TRUE(panel->offersAuthenticateAndRetry()) << "offered again once it has finished";
+    panel->onDetach();
+}
+
 // #3097: "/" over the table opens the Find box; typing jumps the selection to the first matching row,
 // Enter to the next; a name nothing has says so; Escape closes the box.
 TEST_F(ProcessesPanelRenderTest, SlashFindsAProcessByNameAndEnterGoesToTheNext)

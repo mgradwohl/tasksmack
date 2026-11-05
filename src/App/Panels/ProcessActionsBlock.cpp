@@ -94,8 +94,9 @@ template<typename Rows> [[nodiscard]] float renderRows(bool centred, const Rows&
     return top + rowsHeight + style.WindowPadding.y;
 }
 
-/// Why the slider's Apply waits while Set Realtime priority is asked about or runs (#3429).
-constexpr const char* SET_REALTIME_HOLD_REASON = "Waiting for Set Realtime priority to finish";
+/// Why the slider's Apply waits while the Actions card's Set Realtime priority or Efficiency mode change
+/// is asked about or runs (#3429, #3467).
+constexpr const char* ACTIONS_CARD_HOLD_REASON = "Waiting for Set Realtime priority or Efficiency mode to finish";
 
 /// Set Realtime... under the priority slider (#3429, Windows): Realtime is not a stop on the slider, since
 /// it is never applied without the warning, so the button asks the Actions card's confirm, whose result
@@ -138,6 +139,11 @@ void renderSetRealtimeButton(const Context& context)
 
 } // namespace
 
+const char* actionsHoldReason(bool sliderApplying, const char* priorityHeldElsewhere) noexcept
+{
+    return sliderApplying ? "Waiting for the priority change being applied to finish" : priorityHeldElsewhere;
+}
+
 Widths measure(const Platform::ProcessActionCapabilities& capabilities)
 {
     return Widths{
@@ -161,9 +167,10 @@ Heights render(const Context& context, const ProcessDetailsLayout::TopRowLayout&
     const ImGuiChildFlags childFlags = fixedHeight ? ImGuiChildFlags_None : ImGuiChildFlags_AutoResizeY;
     const float height = fixedHeight ? cardHeight : 0.0F;
 
-    // A refused Set Realtime priority's "Retry as administrator" waits for the slider's apply (#3429), and for
-    // a change for this process in the Processes table (#3467).
-    context.actionsView->holdPriorityRetry(context.priorityView->applying() || context.priorityHeldElsewhere != nullptr);
+    // The Actions card's priority changes -- Efficiency mode, and a refused Set Realtime priority's or
+    // Efficiency mode's "Retry as administrator" -- wait for the slider's apply (#3429), and for a change for
+    // this process in the Processes table (#3467).
+    context.actionsView->holdPriorityChanges(actionsHoldReason(context.priorityView->applying(), context.priorityHeldElsewhere));
 
     const bool drawActions = layout.actionsWidth > 0.0F;
     if (drawActions)
@@ -219,10 +226,11 @@ Heights render(const Context& context, const ProcessDetailsLayout::TopRowLayout&
                                {
                                    // The error lines wrap at the card's edge too.
                                    ImGui::PushTextWrapPos(0.0F);
-                                   // Apply waits while Set Realtime priority is asked about or runs (#3429), or
+                                   // Apply waits while Set Realtime priority or Efficiency mode is asked about or
+                                   // runs (#3429, #3467), or
                                    // a change for this process runs in the Processes table (#3467).
                                    context.priorityView->holdForOtherPriorityChange(context.actionsView->priorityChangeInFlight()
-                                                                                        ? SET_REALTIME_HOLD_REASON
+                                                                                        ? ACTIONS_CARD_HOLD_REASON
                                                                                         : context.priorityHeldElsewhere);
                                    context.priorityView->render(context.actions, context.capabilities, context.currentNice, context.target);
                                    renderSetRealtimeButton(context);

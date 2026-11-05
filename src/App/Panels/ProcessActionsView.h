@@ -314,6 +314,18 @@ struct RealtimePriorityItem
     };
 }
 
+/// @p toggle, held while another priority change for the same process runs (#3467): Efficiency mode sets
+/// the priority too. An enabled toggle is greyed out with @p heldReason; any other, and every toggle when
+/// @p heldReason is null, is left as it is.
+[[nodiscard]] constexpr EfficiencyModeToggle holdEfficiencyModeToggle(EfficiencyModeToggle toggle, const char* heldReason) noexcept
+{
+    if (toggle.state == EfficiencyModeToggleState::Enabled && heldReason != nullptr)
+    {
+        return {.state = EfficiencyModeToggleState::Disabled, .tooltip = heldReason};
+    }
+    return toggle;
+}
+
 /// @p item, held while a priority change for the same process runs in another panel (#3467): an enabled
 /// item is greyed out with @p heldReason (PriorityChangesInFlight::holdReason()); any other, and every
 /// item when @p heldReason is null, is left as it is.
@@ -399,23 +411,26 @@ class ProcessActionsView
     }
 
     /// Whether the result line offers "Authenticate and retry" (#2308).
-    /// Not for a refused priority change (Set Realtime priority) while the Priority card's own apply runs
-    /// (holdPriorityRetry(), #3429): the two would race.
+    /// Not for a refused priority change (Set Realtime priority, Efficiency mode) while another priority
+    /// change for the process runs (holdPriorityChanges(), #3429, #3467): the two would race.
     [[nodiscard]] bool offersAuthenticateAndRetry() const noexcept
     {
         if (!m_Retry.has_value() || m_ActionRun.busy())
         {
             return false;
         }
-        return !m_PriorityRetryHeld || m_Retry->action.kind != Platform::AuthorizedAction::Kind::SetPriority;
+        return m_PriorityHoldReason == nullptr || !Detail::changesPriority(m_Retry->action.kind);
     }
 
-    /// Whether the Priority card's Apply (or its retry) runs for this process now (#3429): "Authenticate
-    /// and retry" for a refused Set Realtime priority waits until it is done, so the two never set the
-    /// priority at once and the older can't land last. The caller sets it each frame, before rendering.
-    void holdPriorityRetry(bool held) noexcept
+    /// Why this view's priority changes for the shown process wait, or null when they needn't (#3429,
+    /// #3467): the Priority card's Apply (or its retry) runs, or the Processes table has a priority change
+    /// for the process in flight. The Efficiency mode checkbox is greyed out with @p reason meanwhile, and
+    /// "Authenticate and retry" for a refused Set Realtime priority or Efficiency mode change isn't offered,
+    /// so the two never set the priority at once and the older can't land last. The caller sets it each
+    /// frame, before rendering.
+    void holdPriorityChanges(const char* reason) noexcept
     {
-        m_PriorityRetryHeld = held;
+        m_PriorityHoldReason = reason;
     }
 
     /// Presses "Authenticate and retry", for tests.
@@ -671,8 +686,9 @@ class ProcessActionsView
         return m_ConfirmTarget;
     }
 
-    /// Whether a priority change is asked about or running here (#3429): Set Realtime priority pending its
-    /// confirm, running, or retried as an administrator. The Priority card holds its own Apply meanwhile, so
+    /// Whether a priority change is asked about or running here (#3429): Set Realtime priority or Efficiency
+    /// mode (#3467, Detail::changesPriority()) pending its confirm, running, or retried as an administrator.
+    /// The Priority card holds its own Apply meanwhile, so
     /// the two never set the same process's priority at once and the older one can't land last.
     [[nodiscard]] bool priorityChangeInFlight() const noexcept
     {
@@ -684,7 +700,7 @@ class ProcessActionsView
     /// publishes it, so the Processes table holds its own priority controls for that process meanwhile.
     [[nodiscard]] std::optional<Platform::ProcessTarget> priorityChangeTarget() const noexcept
     {
-        if (m_ConfirmAction == Detail::ProcessAction::SetRealtimePriority)
+        if (Detail::changesPriority(m_ConfirmAction))
         {
             return m_ConfirmTarget.target;
         }
@@ -747,12 +763,17 @@ class ProcessActionsView
             showResult(format(Platform::ProcessActionResult::error("Another action is still running")));
             return;
         }
-        m_RunGeneration = m_Generation;
-        // Set Realtime priority (#3429) sets the priority, as the Priority card's Apply does: the card holds
+        // Set Realtime priority (#3429) and Efficiency mode set the priority, as the Priority card's Apply
+        // does: never while another change for the process runs (holdPriorityChanges()), and the card holds
         // its Apply while this runs (priorityChangeInFlight()), and so does the Processes table (#3467).
-        m_RunPriorityTarget = (retry.has_value() && retry->kind == Platform::AuthorizedAction::Kind::SetPriority)
-                                ? std::optional<Platform::ProcessTarget>{retry->target}
-                                : std::nullopt;
+        const bool setsPriority = retry.has_value() && Detail::changesPriority(retry->kind);
+        if (setsPriority && m_PriorityHoldReason != nullptr)
+        {
+            showResult(format(Platform::ProcessActionResult::error(m_PriorityHoldReason)));
+            return;
+        }
+        m_RunGeneration = m_Generation;
+        m_RunPriorityTarget = setsPriority ? std::optional<Platform::ProcessTarget>{retry->target} : std::nullopt;
         static_cast<void>(m_ActionRun.start(
             std::move(pending),
             std::move(work),
@@ -783,9 +804,8 @@ class ProcessActionsView
         }
         Retry retry = std::move(*m_Retry);
         m_Retry.reset();
-        const std::optional<Platform::ProcessTarget> priorityTarget = retry.action.kind == Platform::AuthorizedAction::Kind::SetPriority
-                                                                        ? std::optional<Platform::ProcessTarget>{retry.action.target}
-                                                                        : std::nullopt;
+        const std::optional<Platform::ProcessTarget> priorityTarget =
+            Detail::changesPriority(retry.action.kind) ? std::optional<Platform::ProcessTarget>{retry.action.target} : std::nullopt;
         runAction(
             retry.actions,
             std::format("Waiting for authorization to act on PID {}...", retry.action.target.pid),
@@ -878,8 +898,8 @@ class ProcessActionsView
     std::uint64_t m_RunGeneration = 0; // m_Generation when the running action started
     // The process the running action sets the priority of: Set Realtime priority (#3429, #3467). None for any other.
     std::optional<Platform::ProcessTarget> m_RunPriorityTarget;
-    bool m_PriorityRetryHeld = false;       // The Priority card's apply runs: a priority retry waits (#3429)
-    ProcessAffinityDialog m_AffinityDialog; // Set affinity... (#1887)
+    const char* m_PriorityHoldReason = nullptr; // Another priority change runs: this view's wait, saying why (#3429, #3467)
+    ProcessAffinityDialog m_AffinityDialog;     // Set affinity... (#1887)
     // The dialog's CPU layout, read once on its worker (#3182). Its worker uses the panel's IProcessActions
     // until it finishes: the panel declares this view after its actions, so its destructor's wait goes first.
     AffinityLayoutRead m_AffinityLayout;
