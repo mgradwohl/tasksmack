@@ -104,15 +104,15 @@ struct MemoryCounters
     uint64_t zramCompressedBytes = 0; ///< Its compressed size
     uint64_t zramMemoryUsedBytes = 0; ///< RAM the devices take: compressed data plus allocator overhead
     bool hasZswap = false;
-    uint64_t zswapOriginalBytes = 0;   ///< Zswapped
-    uint64_t zswapCompressedBytes = 0; ///< Zswap
-
     // Compressed memory (#3363), Windows: the working set of the "Memory Compression" process, which holds
     // the compression store, from the SystemProcessInformation snapshot (Task Manager's "In use
     // (Compressed)"). hasMemoryCompression: that process was found this sample, so compression is on.
-    // Windows documents no figure for the data it stands for, so there is no ratio.
+    // Windows documents no figure for the data it stands for, so there is no ratio. The flag sits beside
+    // hasZswap so it takes no padding of its own.
     bool hasMemoryCompression = false;
-    uint64_t memoryCompressionBytes = 0;
+    uint64_t zswapOriginalBytes = 0;     ///< Zswapped
+    uint64_t zswapCompressedBytes = 0;   ///< Zswap
+    uint64_t memoryCompressionBytes = 0; ///< Windows: the Memory Compression process's working set
 };
 
 /// Combined system counters snapshot.

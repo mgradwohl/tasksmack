@@ -115,14 +115,14 @@ struct SystemSnapshot
     std::uint64_t zramCompressedBytes = 0;
     std::uint64_t zramMemoryUsedBytes = 0;
     bool hasZswap = false;
+    // Compressed memory (#3363, Windows): the Memory Compression process's working set, as the counters
+    // read it; hasMemoryCompression is false when compression is off. It has no ratio (compressionRatio
+    // stays 0), since Windows documents no figure for the data the store holds. The flag sits beside
+    // hasZswap so it takes no padding of its own.
+    bool hasMemoryCompression = false;
     std::uint64_t zswapOriginalBytes = 0;
     std::uint64_t zswapCompressedBytes = 0;
     double compressionRatio = 0.0;
-
-    // Compressed memory (#3363, Windows): the Memory Compression process's working set, as the counters
-    // read it; hasMemoryCompression is false when compression is off. It has no ratio (compressionRatio
-    // stays 0), since Windows documents no figure for the data the store holds.
-    bool hasMemoryCompression = false;
     std::uint64_t memoryCompressionBytes = 0;
 
     // Computed percentages
