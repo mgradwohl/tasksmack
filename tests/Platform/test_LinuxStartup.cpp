@@ -488,7 +488,9 @@ TEST(CronTableFileNameTest, OnlyDebianCronsNamesAreRead)
 }
 
 // #3441 review: a job's program is looked up on the job's own PATH: the table's PATH= above it, or a PATH= on the
-// command; a shell-quoted program is unquoted; one only a relative PATH entry might hold is Unresolved, not Missing.
+// command; a shell-quoted program is unquoted; one only a relative PATH entry might hold is Unresolved, not Missing,
+// even when a later directory holds one. env -i or env -u PATH searches execvp's default instead, and a program in a
+// directory TaskSmack can't search is Unresolved, not Missing.
 TEST_F(LinuxStartupTest, ACronJobsProgramIsFoundOnItsOwnPath)
 {
     const std::filesystem::path bin = m_Root.path / "opt/x";
@@ -510,13 +512,29 @@ TEST_F(LinuxStartupTest, ACronJobsProgramIsFoundOnItsOwnPath)
                                 "@daily '/bin/sh' /home/u/backup.sh\n" // line 6: quoted
                                 "PATH=relative/bin:" +
                                 bin.string() +
-                                "\n"                        // line 7
-                                "@daily unknown-program\n"; // line 8
+                                "\n"                       // line 7
+                                "@daily unknown-program\n" // line 8
+                                "@daily backup\n"          // line 9: opt/x has it, but relative/bin comes first
+                                "PATH=" +
+                                bin.string() +
+                                "\n"                                  // line 10
+                                "@daily /usr/bin/env -i sh -c true\n" // line 11: env's default path
+                                "@daily env -u PATH sh -c true\n"     // line 12
+                                "@daily env -i PATH=" +
+                                bin.string() +
+                                " backup\n"                        // line 13: set again after -i
+                                "@daily env --unset=PATH backup\n" // line 14: not in /bin:/usr/bin
+                                "@daily " +
+                                (m_Root.path / "locked/job.sh").string() + "\n"; // line 15
     CronSources cron{
         .userCrontab = [crontab]() -> std::optional<std::string> { return crontab; }, .systemTables = {}, .systemTableDirs = {}};
+    const std::filesystem::path locked = m_Root.path / "locked";
+    writeText(locked / "job.sh", "#!/bin/sh\n");
+    std::filesystem::permissions(locked, std::filesystem::perms::none);
     LinuxStartupProbe probe(m_Dirs, "GNOME", SEARCH_PATH, SystemdUserDirs{}, std::move(cron));
     const std::vector<StartupEntry> entries = probe.enumerate();
-    ASSERT_EQ(entries.size(), 6U);
+    std::filesystem::permissions(locked, std::filesystem::perms::owner_all); // so the scratch root can be removed
+    ASSERT_EQ(entries.size(), 12U);
 
     const auto targetOf = [&entries](int line)
     {
@@ -531,6 +549,19 @@ TEST_F(LinuxStartupTest, ACronJobsProgramIsFoundOnItsOwnPath)
     EXPECT_EQ(targetOf(5).first, StartupTargetState::Missing);
     EXPECT_EQ(targetOf(6), std::make_pair(StartupTargetState::Present, std::string("/bin/sh")));
     EXPECT_EQ(targetOf(8).first, StartupTargetState::Unresolved) << "relative/bin depends on where cron runs it";
+    EXPECT_EQ(targetOf(9).first, StartupTargetState::Unresolved) << "relative/bin may hold the backup cron runs";
+    for (const int line : {11, 12})
+    {
+        const auto [state, program] = targetOf(line);
+        EXPECT_EQ(state, StartupTargetState::Present) << line << ": found on /bin:/usr/bin, not on opt/x";
+        EXPECT_TRUE(program == "/bin/sh" || program == "/usr/bin/sh") << program;
+    }
+    EXPECT_EQ(targetOf(13), std::make_pair(StartupTargetState::Present, (bin / "backup").string()));
+    EXPECT_EQ(targetOf(14).first, StartupTargetState::Missing) << "env --unset=PATH: opt/x isn't searched";
+    if (::geteuid() != 0) // root searches any directory
+    {
+        EXPECT_EQ(targetOf(15).first, StartupTargetState::Unresolved) << "a directory TaskSmack can't search";
+    }
     const StartupEntry* special = find(entries, "crontab line 4");
     ASSERT_NE(special, nullptr);
     EXPECT_EQ(special->name, "special (cron, @daily)");

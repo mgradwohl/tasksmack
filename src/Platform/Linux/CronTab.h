@@ -233,6 +233,9 @@ struct Program
     Kind kind = Kind::Unknown;
     std::string word;                ///< The first command word, unquoted; empty when Unknown
     std::optional<std::string> path; ///< A PATH set for it on the line itself (`PATH=/opt/x cmd`, `env PATH=...`)
+    /// `env -i` or `env -u PATH` removed the PATH it inherits and none was set after: env's execvp() then searches
+    /// its default, /bin:/usr/bin, not the table's PATH.
+    bool pathRemoved = false;
 };
 
 namespace Detail
@@ -249,19 +252,22 @@ namespace Detail
 [[nodiscard]] inline std::string shellCommand(std::string_view command)
 {
     std::string text;
-    for (std::size_t i = 0; i < command.size(); ++i)
+    std::size_t i = 0;
+    while (i < command.size())
     {
-        if (command[i] == '\\' && i + 1 < command.size() && command[i + 1] == '%')
+        const char c = command[i];
+        if (c == '\\' && i + 1 < command.size() && command[i + 1] == '%')
         {
             text += '%';
-            ++i;
+            i += 2;
             continue;
         }
-        if (command[i] == '%')
+        if (c == '%')
         {
             break;
         }
-        text += command[i];
+        text += c;
+        ++i;
     }
     return text;
 }
@@ -280,7 +286,7 @@ struct ShellWord
     ShellWord word;
     bool quoted = false;
     std::size_t i = 0;
-    for (; i < text.size(); ++i)
+    while (i < text.size())
     {
         const char c = text[i];
         if (isBlank(c) || isShellOperator(c))
@@ -295,35 +301,38 @@ struct ShellWord
                 return std::nullopt;
             }
             word.text.append(text.substr(i + 1, close - i - 1));
-            i = close;
+            i = close + 1;
             quoted = true;
             continue;
         }
         if (c == '"')
         {
-            for (++i; i < text.size() && text[i] != '"'; ++i)
+            std::size_t j = i + 1;
+            while (j < text.size() && text[j] != '"')
             {
-                const char d = text[i];
+                const char d = text[j];
                 if (d == '$' || d == '`')
                 {
                     return std::nullopt;
                 }
-                if (d == '\\' && i + 1 < text.size() &&
-                    (text[i + 1] == '$' || text[i + 1] == '`' || text[i + 1] == '"' || text[i + 1] == '\\' || text[i + 1] == '\n'))
+                if (d == '\\' && j + 1 < text.size() &&
+                    (text[j + 1] == '$' || text[j + 1] == '`' || text[j + 1] == '"' || text[j + 1] == '\\' || text[j + 1] == '\n'))
                 {
-                    ++i;
-                    if (text[i] != '\n')
+                    if (text[j + 1] != '\n')
                     {
-                        word.text += text[i];
+                        word.text += text[j + 1];
                     }
+                    j += 2;
                     continue;
                 }
                 word.text += d;
+                ++j;
             }
-            if (i >= text.size())
+            if (j >= text.size())
             {
                 return std::nullopt;
             }
+            i = j + 1; // past the closing quote
             quoted = true;
             continue;
         }
@@ -333,11 +342,11 @@ struct ShellWord
             {
                 return std::nullopt;
             }
-            ++i;
-            if (text[i] != '\n')
+            if (text[i + 1] != '\n')
             {
-                word.text += text[i];
+                word.text += text[i + 1];
             }
+            i += 2;
             quoted = true;
             continue;
         }
@@ -363,6 +372,7 @@ struct ShellWord
             word.assignmentAt = word.text.size();
         }
         word.text += c;
+        ++i;
     }
     text.remove_prefix(i);
     return word;
@@ -406,7 +416,22 @@ struct ShellWord
     Program result;
     bool afterEnv = false;
     bool afterExec = false;
-    bool skipNext = false; // env's -u NAME, -C DIR
+    // env's -u NAME (its name next) or -C DIR (skipped) left waiting for its argument.
+    enum class EnvArgument : std::uint8_t
+    {
+        None,
+        UnsetName,
+        Skipped,
+    };
+    EnvArgument pending = EnvArgument::None;
+    const auto unset = [&result](std::string_view name)
+    {
+        if (name == "PATH")
+        {
+            result.path.reset();
+            result.pathRemoved = true;
+        }
+    };
     for (;;)
     {
         while (!rest.empty() && Detail::isBlank(rest.front()))
@@ -423,9 +448,13 @@ struct ShellWord
         {
             return Program{}; // "2>/dev/null cmd": a redirection first
         }
-        if (skipNext)
+        if (pending != EnvArgument::None)
         {
-            skipNext = false;
+            if (pending == EnvArgument::UnsetName)
+            {
+                unset(word->text);
+            }
+            pending = EnvArgument::None;
             continue;
         }
         if (word->assignmentAt != std::string::npos && Detail::isShellName(std::string_view(word->text).substr(0, word->assignmentAt)))
@@ -433,17 +462,58 @@ struct ShellWord
             if (std::string_view(word->text).substr(0, word->assignmentAt) == "PATH")
             {
                 result.path = word->text.substr(word->assignmentAt + 1);
+                result.pathRemoved = false;
             }
             continue;
         }
         if (afterEnv && word->text.starts_with('-'))
         {
-            if (word->text.starts_with("-S") || word->text.starts_with("--split-string") || word->text.starts_with("--default-signal") ||
-                word->text.starts_with("-P"))
+            const std::string_view option = word->text;
+            if (option.starts_with("--split-string") || option.starts_with("--default-signal"))
             {
-                return Program{}; // env splits its own string, or searches another path: not followed
+                return Program{}; // env splits its own string, or changes signals with an optional argument: not followed
             }
-            skipNext = word->text == "-u" || word->text == "-C" || word->text == "--unset" || word->text == "--chdir";
+            if (option == "-" || option == "--ignore-environment")
+            {
+                unset("PATH"); // every inherited variable, PATH among them
+            }
+            else if (option == "--unset" || option == "--chdir")
+            {
+                pending = option == "--unset" ? EnvArgument::UnsetName : EnvArgument::Skipped;
+            }
+            else if (option.starts_with("--unset="))
+            {
+                unset(option.substr(std::string_view("--unset=").size()));
+            }
+            else if (!option.starts_with("--"))
+            {
+                // A cluster of short options (-i, -0, -v), where -u and -C take the rest of it or the next word.
+                for (std::size_t at = 1; at < option.size(); ++at)
+                {
+                    const char flag = option[at];
+                    if (flag == 'S' || flag == 'P')
+                    {
+                        return Program{}; // env splits its own string, or searches another path: not followed
+                    }
+                    if (flag == 'i')
+                    {
+                        unset("PATH");
+                    }
+                    else if (flag == 'u' || flag == 'C')
+                    {
+                        const std::string_view argument = option.substr(at + 1);
+                        if (argument.empty())
+                        {
+                            pending = flag == 'u' ? EnvArgument::UnsetName : EnvArgument::Skipped;
+                        }
+                        else if (flag == 'u')
+                        {
+                            unset(argument);
+                        }
+                        break;
+                    }
+                }
+            }
             continue;
         }
         if (afterExec && word->text.starts_with('-'))

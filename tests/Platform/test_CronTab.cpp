@@ -146,5 +146,38 @@ TEST(CronTabTest, TheProgramIsTheShellCommandsFirstWord)
     }
 }
 
+// #3441 review: env -i, env - and env -u PATH (in any spelling) remove the PATH the job inherits, so env's execvp()
+// searches its default; a PATH= after them sets it again, and unsetting another variable leaves PATH alone.
+TEST(CronTabTest, EnvThatRemovesPathIsTold)
+{
+    for (const char* command : {"env -i sh",
+                                "/usr/bin/env -i sh",
+                                "env - sh",
+                                "env --ignore-environment sh",
+                                "env -u PATH sh",
+                                "env -uPATH sh",
+                                "env --unset PATH sh",
+                                "env --unset=PATH sh",
+                                "env -0iv sh",
+                                "PATH=/opt/x env -i sh"})
+    {
+        const CronTab::Program found = CronTab::program(command);
+        EXPECT_EQ(found.kind, CronTab::Program::Kind::Executable) << command;
+        EXPECT_EQ(found.word, "sh") << command;
+        EXPECT_TRUE(found.pathRemoved) << command;
+        EXPECT_EQ(found.path, std::nullopt) << command;
+    }
+    for (const char* command : {"env -i PATH=/opt/y sh", "env -u PATH PATH=/opt/y sh"})
+    {
+        const CronTab::Program found = CronTab::program(command);
+        EXPECT_FALSE(found.pathRemoved) << command;
+        EXPECT_EQ(found.path, "/opt/y") << command;
+    }
+    for (const char* command : {"env -u HOME sh", "env -C /tmp sh", "env sh", "sh"})
+    {
+        EXPECT_FALSE(CronTab::program(command).pathRemoved) << command;
+    }
+}
+
 } // namespace
 } // namespace Platform

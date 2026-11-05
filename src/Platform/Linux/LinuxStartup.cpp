@@ -241,12 +241,27 @@ struct CronTarget
             return target; // relative to the directory the job runs in
         }
         std::error_code ec;
+        const bool there = std::filesystem::exists(found.word, ec);
+        if (ec)
+        {
+            return target; // a directory TaskSmack can't search (/root/backup.sh): cron's may, so not Missing
+        }
         target.program = found.word;
-        target.state = std::filesystem::exists(found.word, ec) ? StartupTargetState::Present : StartupTargetState::Missing;
+        target.state = there ? StartupTargetState::Present : StartupTargetState::Missing;
         return target;
     }
     bool uncertain = false;
-    std::string_view path = found.path.has_value() ? std::string_view(*found.path) : std::string_view(job.path);
+    // env -i or env -u PATH: execvp() then searches its default path rather than the one the job inherits.
+    constexpr std::string_view EXECVP_DEFAULT_PATH = "/bin:/usr/bin";
+    std::string_view path = job.path;
+    if (found.path.has_value())
+    {
+        path = *found.path;
+    }
+    else if (found.pathRemoved)
+    {
+        path = EXECVP_DEFAULT_PATH;
+    }
     for (;;)
     {
         const std::size_t colon = path.find(':');
@@ -264,6 +279,10 @@ struct CronTarget
                 std::filesystem::perms::owner_exec | std::filesystem::perms::group_exec | std::filesystem::perms::others_exec;
             if (std::filesystem::is_regular_file(status) && (status.permissions() & ANY_EXEC) != std::filesystem::perms::none)
             {
+                if (uncertain)
+                {
+                    return target; // an earlier directory, relative or unreadable, may hold the one cron runs
+                }
                 target.program = candidate.string();
                 target.state = StartupTargetState::Present;
                 return target;
