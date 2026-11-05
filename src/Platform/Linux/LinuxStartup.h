@@ -8,6 +8,7 @@
 #include "Platform/IStartupProbe.h"
 #include "Platform/Linux/XdgAutostart.h"
 
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <optional>
@@ -42,6 +43,9 @@ struct CronSources
     /// Directories of system tables, listed again on each enumerate() (on the sampler thread), so a table added
     /// later shows: /etc/cron.d. Only the files cron itself reads (cronTableFileName()), in name order.
     std::vector<std::filesystem::path> systemTableDirs;
+    /// The owner cron requires of a system table: root (0). cron ignores a table owned by anyone else, or writable
+    /// by its group or others, so its jobs are listed off, with why. Tests pass their own user ID.
+    std::uint32_t systemTableOwner = 0;
 };
 
 /// Whether cron reads a file named @p name in /etc/cron.d. Debian's and Ubuntu's cron (cron(8), the documented

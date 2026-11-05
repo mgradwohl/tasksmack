@@ -457,7 +457,18 @@ struct ShellWord
             pending = EnvArgument::None;
             continue;
         }
-        if (word->assignmentAt != std::string::npos && Detail::isShellName(std::string_view(word->text).substr(0, word->assignmentAt)))
+        // After env, any word with a '=' after a name is env's own assignment, quoted or not (`env 'LANG=C' sh`);
+        // before it, only the shell's unquoted NAME= is.
+        if (afterEnv && word->assignmentAt == std::string::npos && !word->text.starts_with('-'))
+        {
+            const std::size_t equals = word->text.find('=');
+            if (equals != std::string::npos && equals > 0)
+            {
+                word->assignmentAt = equals;
+            }
+        }
+        if (word->assignmentAt != std::string::npos &&
+            (afterEnv ? !word->text.starts_with('-') : Detail::isShellName(std::string_view(word->text).substr(0, word->assignmentAt))))
         {
             if (std::string_view(word->text).substr(0, word->assignmentAt) == "PATH")
             {

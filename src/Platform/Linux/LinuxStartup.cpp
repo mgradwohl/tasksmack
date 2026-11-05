@@ -29,6 +29,7 @@
 #include <utility>
 #include <vector>
 
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace Platform
@@ -391,7 +392,8 @@ CronSources cronSources()
 
 void LinuxStartupProbe::addCronJobs(std::vector<StartupEntry>& entries) const
 {
-    const auto add = [&entries](const CronTab::Entry& job, const std::string& table, bool system)
+    // ignoredBecause: why cron skips the whole table (a system table it won't trust), else empty.
+    const auto add = [&entries](const CronTab::Entry& job, const std::string& table, bool system, std::string_view ignoredBecause)
     {
         const CronTarget found = cronTarget(job);
         StartupEntry entry;
@@ -404,9 +406,16 @@ void LinuxStartupProbe::addCronJobs(std::vector<StartupEntry>& entries) const
         entry.sourcePath = system ? table : std::string{};
         entry.location = system ? StartupLocation::CronSystem : StartupLocation::CronUser;
         entry.scope = system ? StartupScope::Machine : StartupScope::User;
-        entry.enabled = true; // a job line is on; a commented-out one isn't listed
-        entry.notSwitchableReason = system ? std::format("A system cron job, in {}: an administrator changes it", table)
-                                           : std::string("A cron job: change it with crontab -e");
+        entry.enabled = ignoredBecause.empty(); // a job line is on; a commented-out one isn't listed
+        if (!ignoredBecause.empty())
+        {
+            entry.notSwitchableReason = std::format("cron ignores {}: it {}", table, ignoredBecause);
+        }
+        else
+        {
+            entry.notSwitchableReason = system ? std::format("A system cron job, in {}: an administrator changes it", table)
+                                               : std::string("A cron job: change it with crontab -e");
+        }
         entry.target = found.state;
         entries.push_back(std::move(entry));
     };
@@ -416,7 +425,7 @@ void LinuxStartupProbe::addCronJobs(std::vector<StartupEntry>& entries) const
         {
             for (const CronTab::Entry& job : CronTab::parse(*text, /*withUser=*/false))
             {
-                add(job, "crontab", false);
+                add(job, "crontab", false, {});
             }
         }
     }
@@ -441,9 +450,23 @@ void LinuxStartupProbe::addCronJobs(std::vector<StartupEntry>& entries) const
     {
         if (const std::optional<std::string> text = readFile(table))
         {
+            // cron (Debian's and cronie) skips a system table not owned by root or writable by group or others.
+            std::string_view ignoredBecause;
+            struct stat info{};
+            if (::stat(table.c_str(), &info) == 0)
+            {
+                if (info.st_uid != m_Cron.systemTableOwner)
+                {
+                    ignoredBecause = "isn't owned by root";
+                }
+                else if ((info.st_mode & (S_IWGRP | S_IWOTH)) != 0)
+                {
+                    ignoredBecause = "can be written by its group or others";
+                }
+            }
             for (const CronTab::Entry& job : CronTab::parse(*text, /*withUser=*/true))
             {
-                add(job, table.string(), true);
+                add(job, table.string(), true, ignoredBecause);
             }
         }
     }
