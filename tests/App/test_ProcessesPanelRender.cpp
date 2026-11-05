@@ -3638,7 +3638,11 @@ TEST_F(ProcessesPanelRenderTest, F7AndF8StepTheSelectedProcessesPriorityAtOnce)
 /// The start time attachedPanelWithActions()' mock gives @p pid's process.
 [[nodiscard]] constexpr std::uint64_t mockStartTicks(std::int32_t pid) noexcept
 {
-    return pid == 1 ? 100 : (pid == 100 ? 1000 : 1100);
+    if (pid == 1)
+    {
+        return 100;
+    }
+    return pid == 100 ? 1000 : 1100;
 }
 
 // #3467, Process Details to the table: while Process Details changes the selected process's priority, F7 sets
@@ -3770,7 +3774,8 @@ TEST_F(ProcessesPanelRenderTest, SetRealtimeFromTheRowMenuAndProcessDetailsHoldE
 
     std::optional<std::int32_t> menuPid = openARowMenu(*panel);
     ASSERT_TRUE(menuPid.has_value());
-    const Platform::ProcessTarget target{.pid = *menuPid, .startTimeTicks = mockStartTicks(*menuPid)};
+    const std::int32_t pid = menuPid.value_or(-1);
+    const Platform::ProcessTarget target{.pid = pid, .startTimeTicks = mockStartTicks(pid)};
     const std::array details{target};
     changes.publish(PriorityChangesInFlight::Panel::ProcessDetails, details);
     static_cast<void>(renderAndCapture(*panel));
@@ -3815,7 +3820,8 @@ TEST_F(ProcessesPanelRenderTest, EfficiencyModeFromTheRowMenuAndProcessDetailsHo
 
     std::optional<std::int32_t> menuPid = openARowMenu(*panel);
     ASSERT_TRUE(menuPid.has_value());
-    const Platform::ProcessTarget target{.pid = *menuPid, .startTimeTicks = mockStartTicks(*menuPid)};
+    const std::int32_t pid = menuPid.value_or(-1);
+    const Platform::ProcessTarget target{.pid = pid, .startTimeTicks = mockStartTicks(pid)};
     const std::array details{target};
     changes.publish(DETAILS, details);
     static_cast<void>(renderAndCapture(*panel));
@@ -3840,7 +3846,13 @@ TEST_F(ProcessesPanelRenderTest, EfficiencyModeFromTheRowMenuAndProcessDetailsHo
 
     pressModalButton(*panel, "Turn on Efficiency mode");
     EXPECT_TRUE(changes.heldElsewhere(DETAILS, target)) << "and so does its run";
-    ASSERT_TRUE(updateUntilBatchResult(*panel, "Efficiency mode on for PID"));
+    // Waits for the row action worker and takes its result in, as the next frame's onUpdate() would; that
+    // frame's render then publishes the release. Not a text match: the progress line ("Turning Efficiency mode
+    // on for PID 1...") reads like the result's.
+    panel->waitForRowActionForTesting();
+    const std::string text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains(std::format("Efficiency mode on for PID {}", target.pid))) << text;
+    EXPECT_FALSE(text.contains("Turning Efficiency mode on")) << text;
     EXPECT_EQ(actions->efficiencyModeCount(), 1);
     EXPECT_FALSE(changes.heldElsewhere(DETAILS, target)) << "released once taken in";
     panel->onDetach();
@@ -3862,7 +3874,8 @@ TEST_F(ProcessesPanelRenderTest, ARefusedEfficiencyModeChangesRetryWaitsForProce
 
     const std::optional<std::int32_t> menuPid = openARowMenu(*panel);
     ASSERT_TRUE(menuPid.has_value());
-    const Platform::ProcessTarget target{.pid = *menuPid, .startTimeTicks = mockStartTicks(*menuPid)};
+    const std::int32_t pid = menuPid.value_or(-1);
+    const Platform::ProcessTarget target{.pid = pid, .startTimeTicks = mockStartTicks(pid)};
     pressPopupItem(*panel, App::Detail::EFFICIENCY_MODE_LABEL); // in it: off at once, refused
     panel->waitForRowActionForTesting();
     static_cast<void>(renderAndCapture(*panel));
