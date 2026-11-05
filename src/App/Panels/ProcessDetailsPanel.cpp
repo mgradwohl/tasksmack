@@ -26,6 +26,7 @@
 #include "Platform/IServiceProbe.h"
 #include "Platform/ImageSignature.h"
 #include "Platform/SchedPolicy.h"
+#include "PriorityChangesInFlight.h"
 #include "ProcessActionsBlock.h"
 #include "ProcessActionsView.h"
 #include "ProcessConnectionsView.h"
@@ -138,6 +139,11 @@ void ProcessDetailsPanel::updateWithSamples(std::span<const Domain::ProcessSampl
 
     // Fade out action result message
     m_ActionsView.tick(deltaTime);
+    // A priority change finished on its worker since the last frame: taken in here too, not only when the
+    // Overview is drawn, so it holds the Processes table's priority controls no longer than it runs (#3467).
+    m_ActionsView.updateActionRun();
+    m_PriorityView.update();
+    publishPriorityChanges();
     // The Set affinity dialog's CPU layout (#3182): read once on its worker, started here, before any
     // selection, so the dialog normally finds it read. Never read on the UI thread.
     m_ActionsView.updateAffinityLayout(m_ActionCapabilities.canSetAffinity ? m_ProcessActions.get() : nullptr);
@@ -396,6 +402,26 @@ void ProcessDetailsPanel::renderContent()
     m_ActionsView.renderConfirmation(m_ProcessActions.get(), showsRunningProcess() ? selectedTarget() : noTarget);
     // The Threads section's thread action confirm (#3069), on the same terms.
     m_ThreadsView.renderConfirmation(m_ProcessActions.get(), showsRunningProcess() ? selectedTarget() : noTarget);
+    // A priority change asked about or started this frame holds the Processes table's controls from now (#3467).
+    publishPriorityChanges();
+}
+
+void ProcessDetailsPanel::publishPriorityChanges()
+{
+    if (m_PriorityChanges == nullptr)
+    {
+        return;
+    }
+    m_PublishedPriorityChanges.clear();
+    if (const std::optional<Platform::ProcessTarget> target = m_ActionsView.priorityChangeTarget(); target.has_value())
+    {
+        m_PublishedPriorityChanges.push_back(*target);
+    }
+    if (const std::optional<Platform::ProcessTarget> target = m_PriorityView.applyingTarget(); target.has_value())
+    {
+        m_PublishedPriorityChanges.push_back(*target);
+    }
+    m_PriorityChanges->publish(PriorityChangesInFlight::Panel::ProcessDetails, m_PublishedPriorityChanges);
 }
 
 void ProcessDetailsPanel::renderPane(bool killRequested)
@@ -983,6 +1009,10 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
             .currentNice = m_HasSnapshot ? std::optional<std::int32_t>{proc.nice} : std::nullopt,
             .currentAffinity = m_HasSnapshot ? &proc.cpuAffinity : nullptr,
             .efficiencyMode = m_HasSnapshot && Detail::isInEfficiencyMode(proc),
+            // A priority change for this process running in the Processes table holds these controls (#3467).
+            .priorityHeldElsewhere = m_PriorityChanges != nullptr
+                                       ? m_PriorityChanges->holdReason(PriorityChangesInFlight::Panel::ProcessDetails, selectedTarget())
+                                       : nullptr,
         };
         // Kept for the next frame's row height; a card scrolled out of view reports 0 and keeps its last.
         const ProcessActionsBlock::Heights needed = ProcessActionsBlock::render(actions, controlsLayout, controlsHeight);

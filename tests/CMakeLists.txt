@@ -625,6 +625,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessSmoothedUsage.cpp
     App/test_ProcessActionHelpers.cpp
     App/test_ProcessActionsView.cpp
+    App/test_PriorityChangesInFlight.cpp # the priority changes in flight both panels share (#3467)
     App/test_AuthorizeWording.cpp
     App/test_ProcessDumpView.cpp
     App/test_ProcessWaitChainDialog.cpp # Analyze wait chain's dialog (#3084)

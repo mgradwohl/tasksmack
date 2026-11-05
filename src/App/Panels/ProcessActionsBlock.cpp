@@ -94,6 +94,9 @@ template<typename Rows> [[nodiscard]] float renderRows(bool centred, const Rows&
     return top + rowsHeight + style.WindowPadding.y;
 }
 
+/// Why the slider's Apply waits while Set Realtime priority is asked about or runs (#3429).
+constexpr const char* SET_REALTIME_HOLD_REASON = "Waiting for Set Realtime priority to finish";
+
 /// Set Realtime... under the priority slider (#3429, Windows): Realtime is not a stop on the slider, since
 /// it is never applied without the warning, so the button asks the Actions card's confirm, whose result
 /// line (and Retry as administrator) says how it went. Nothing where the platform can't set it.
@@ -102,14 +105,16 @@ void renderSetRealtimeButton(const Context& context)
     const bool isRealtime = context.currentNice.has_value() &&
                             Domain::Priority::classFromNice(*context.currentNice) == Domain::Priority::PriorityClass::Realtime;
     // Held while the slider's Apply (or its Retry as administrator) runs: both set this process's priority,
-    // and the older could finish last and overwrite Realtime (#3429).
-    const Detail::RealtimePriorityItem item =
+    // and the older could finish last and overwrite Realtime (#3429). So while a change for it runs in the
+    // Processes table (#3467).
+    const Detail::RealtimePriorityItem item = Detail::holdRealtimePriorityItem(
         Detail::realtimePriorityItem(context.capabilities,
                                      context.target,
                                      isRealtime,
                                      context.actionsView->actionRunning() || context.actionsView->confirmPending(),
                                      0,
-                                     context.priorityView->applying());
+                                     context.priorityView->applying()),
+        context.priorityHeldElsewhere);
     if (item.state == Detail::RealtimePriorityState::Hidden)
     {
         return;
@@ -156,8 +161,9 @@ Heights render(const Context& context, const ProcessDetailsLayout::TopRowLayout&
     const ImGuiChildFlags childFlags = fixedHeight ? ImGuiChildFlags_None : ImGuiChildFlags_AutoResizeY;
     const float height = fixedHeight ? cardHeight : 0.0F;
 
-    // A refused Set Realtime priority's "Retry as administrator" waits for the slider's apply (#3429).
-    context.actionsView->holdPriorityRetry(context.priorityView->applying());
+    // A refused Set Realtime priority's "Retry as administrator" waits for the slider's apply (#3429), and for
+    // a change for this process in the Processes table (#3467).
+    context.actionsView->holdPriorityRetry(context.priorityView->applying() || context.priorityHeldElsewhere != nullptr);
 
     const bool drawActions = layout.actionsWidth > 0.0F;
     if (drawActions)
@@ -213,8 +219,11 @@ Heights render(const Context& context, const ProcessDetailsLayout::TopRowLayout&
                                {
                                    // The error lines wrap at the card's edge too.
                                    ImGui::PushTextWrapPos(0.0F);
-                                   // Apply waits while Set Realtime priority is asked about or runs (#3429).
-                                   context.priorityView->holdForOtherPriorityChange(context.actionsView->priorityChangeInFlight());
+                                   // Apply waits while Set Realtime priority is asked about or runs (#3429), or
+                                   // a change for this process runs in the Processes table (#3467).
+                                   context.priorityView->holdForOtherPriorityChange(context.actionsView->priorityChangeInFlight()
+                                                                                        ? SET_REALTIME_HOLD_REASON
+                                                                                        : context.priorityHeldElsewhere);
                                    context.priorityView->render(context.actions, context.capabilities, context.currentNice, context.target);
                                    renderSetRealtimeButton(context);
                                    ImGui::PopTextWrapPos();

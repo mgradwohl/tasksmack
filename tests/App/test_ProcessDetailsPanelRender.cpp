@@ -7,8 +7,10 @@
 /// selected, and a dump in flight keeps its progress and then shows its result (#2117). The I/O slider
 /// follows capabilities that change after construction, as Realtime does once the helper connects (#2407).
 
+#include "App/Panels/PriorityChangesInFlight.h"
 #include "App/Panels/ProcessActionsView.h"
 #include "App/Panels/ProcessDetailsPanel.h"
+#include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
 #include "App/Panels/ProcessDumpView.h"
 #include "App/Panels/ProcessIoPriorityView.h"
 #include "App/Panels/ProcessPriorityView.h"
@@ -39,6 +41,8 @@
 #include <implot_internal.h>
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -46,6 +50,7 @@
 #include <filesystem>
 #include <iterator>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -745,6 +750,152 @@ TEST_F(ProcessDetailsPanelRenderTest, TheKillShortcutAsksFirst)
     ASSERT_NE(modal, nullptr);
     EXPECT_TRUE(std::string_view(modal->Name).starts_with("Kill")) << modal->Name;
     EXPECT_EQ(mock->killCount(), 0); // asked, not done
+}
+
+/// Actions that set priority, Realtime included, whose setPriority waits until the test opens the gate: an apply
+/// still on its worker, as a UAC prompt or the helper's round trip leaves it.
+class GatedPriorityActions : public TestMocks::MockProcessActions
+{
+  public:
+    GatedPriorityActions()
+    {
+        setCapabilities({.canTerminate = true, .canKill = true, .canSetPriority = true, .canSetRealtimePriority = true});
+    }
+
+    [[nodiscard]] Platform::ProcessActionResult setPriority(const Platform::ProcessTarget& target, std::int32_t nice) override
+    {
+        m_Gate.wait(false);
+        return TestMocks::MockProcessActions::setPriority(target, nice);
+    }
+
+    void open()
+    {
+        m_Gate = true;
+        m_Gate.notify_all();
+    }
+
+  private:
+    std::atomic<bool> m_Gate{false};
+};
+
+/// The Priority card's child window, as the last frame left it.
+[[nodiscard]] const ImGuiWindow* priorityCardWindow()
+{
+    for (const ImGuiWindow* window : ImGui::GetCurrentContext()->Windows)
+    {
+        if ((window->Flags & ImGuiWindowFlags_ChildWindow) != 0 && std::string_view{window->Name}.contains("ProcessPriorityBlock_"))
+        {
+            return window;
+        }
+    }
+    return nullptr;
+}
+
+// #3467, the table to Process Details: while the Processes tab changes the shown process's priority, the slider's
+// Apply sends nothing and says why, and Set Realtime... asks nothing; a process with the same PID and another start
+// time is not held, and once the table's change has finished both work again.
+TEST_F(ProcessDetailsPanelRenderTest, ThePriorityControlsWaitForAChangeInTheProcessesTab)
+{
+    auto owned = std::make_unique<GatedPriorityActions>();
+    GatedPriorityActions* actions = owned.get();
+    actions->open(); // these applies finish at once
+    ProcessDetailsPanel panel(std::move(owned));
+    PriorityChangesInFlight changes;
+    panel.setPriorityChanges(&changes);
+    Core::ActiveTabChangedEvent shown("ProcessDetails");
+    panel.onEvent(shown);
+    panel.setSelectedPid(PID, START_TICKS);
+    const std::vector samples{sampleAt(1.0, 10.0)};
+    panel.updateWithSamples(samples, 1.0F);
+    static_cast<void>(renderAndCapture(panel));
+    static_cast<void>(renderAndCapture(panel));
+    const Platform::ProcessTarget target{.pid = PID, .startTimeTicks = START_TICKS};
+    ProcessPriorityView& priority = panel.priorityViewForTesting();
+    ASSERT_FALSE(priority.heldForOtherPriorityChange());
+
+    const std::array table{target};
+    changes.publish(PriorityChangesInFlight::Panel::Processes, table);
+    static_cast<void>(renderAndCapture(panel));
+    EXPECT_TRUE(priority.heldForOtherPriorityChange()) << "held while the table changes it";
+    EXPECT_STREQ(priority.holdReason(), PriorityChangesInFlight::waitReason(PriorityChangesInFlight::Panel::ProcessDetails));
+    priority.editNice(5, target);
+    priority.apply(actions, target, std::optional<std::int32_t>{0});
+    EXPECT_FALSE(priority.applying()) << "Apply sends nothing meanwhile";
+    const ImGuiWindow* card = priorityCardWindow();
+    ASSERT_NE(card, nullptr);
+    ImGui::ActivateItemByID(ImHashStr(Detail::SET_REALTIME_PRIORITY_BUTTON_LABEL, 0, card->ID));
+    static_cast<void>(renderAndCapture(panel));
+    static_cast<void>(renderAndCapture(panel));
+    EXPECT_EQ(panel.actionsViewForTesting().pendingAction(), Detail::ProcessAction::None) << "Set Realtime... asks nothing meanwhile";
+    EXPECT_EQ(actions->setPriorityCount(), 0);
+
+    // The same PID, another start time: another process, so not held.
+    const std::array reused{Platform::ProcessTarget{.pid = PID, .startTimeTicks = START_TICKS + 1}};
+    changes.publish(PriorityChangesInFlight::Panel::Processes, reused);
+    static_cast<void>(renderAndCapture(panel));
+    EXPECT_FALSE(priority.heldForOtherPriorityChange());
+
+    // Released: Apply sets it, and Set Realtime... asks again.
+    changes.publish(PriorityChangesInFlight::Panel::Processes, {});
+    static_cast<void>(renderAndCapture(panel));
+    EXPECT_FALSE(priority.heldForOtherPriorityChange());
+    priority.apply(actions, target, std::optional<std::int32_t>{0}); // the edit is still pending
+    priority.update(/*wait=*/true);
+    EXPECT_EQ(actions->setPriorityCount(), 1);
+    EXPECT_EQ(actions->lastSetPriorityNice(), 5);
+    static_cast<void>(renderAndCapture(panel));
+    ImGui::ActivateItemByID(ImHashStr(Detail::SET_REALTIME_PRIORITY_BUTTON_LABEL, 0, priorityCardWindow()->ID));
+    static_cast<void>(renderAndCapture(panel));
+    EXPECT_EQ(panel.actionsViewForTesting().pendingAction(), Detail::ProcessAction::SetRealtimePriority);
+}
+
+// #3467, Process Details to the table: Set Realtime priority asked about, and the slider's apply on its worker, are
+// published for their process, so the Processes table holds its priority controls for it; the apply's result is
+// taken in on the update path too, so a change that finished with the tab hidden releases them without waiting
+// for the tab to be shown.
+TEST_F(ProcessDetailsPanelRenderTest, ItsPriorityChangesHoldTheTablesControlsUntilTheyFinish)
+{
+    auto owned = std::make_unique<GatedPriorityActions>();
+    GatedPriorityActions* actions = owned.get();
+    ProcessDetailsPanel panel(std::move(owned));
+    PriorityChangesInFlight changes;
+    panel.setPriorityChanges(&changes);
+    Core::ActiveTabChangedEvent shown("ProcessDetails");
+    panel.onEvent(shown);
+    panel.setSelectedPid(PID, START_TICKS);
+    const std::vector samples{sampleAt(1.0, 10.0)};
+    panel.updateWithSamples(samples, 1.0F);
+    static_cast<void>(renderAndCapture(panel));
+    const Platform::ProcessTarget target{.pid = PID, .startTimeTicks = START_TICKS};
+    constexpr auto PROCESSES = PriorityChangesInFlight::Panel::Processes;
+    const std::vector<Domain::ProcessSample> none;
+
+    panel.actionsViewForTesting().requestAction(Detail::ProcessAction::SetRealtimePriority, target, "server");
+    panel.updateWithSamples(none, 0.0F);
+    EXPECT_TRUE(changes.heldElsewhere(PROCESSES, target)) << "asked about: held";
+    panel.actionsViewForTesting().cancelConfirm();
+    panel.updateWithSamples(none, 0.0F);
+    EXPECT_FALSE(changes.heldElsewhere(PROCESSES, target)) << "cancelled: released";
+
+    ProcessPriorityView& priority = panel.priorityViewForTesting();
+    priority.editNice(5, target);
+    priority.apply(actions, target, std::optional<std::int32_t>{0});
+    ASSERT_TRUE(priority.applying());
+    static_cast<void>(renderAndCapture(panel));
+    EXPECT_TRUE(changes.heldElsewhere(PROCESSES, target)) << "applying: held";
+    EXPECT_FALSE(changes.heldElsewhere(PROCESSES, {.pid = PID, .startTimeTicks = START_TICKS + 1})) << "a reused PID is another process";
+
+    Core::ActiveTabChangedEvent hidden("Processes");
+    panel.onEvent(hidden);
+    actions->open();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (changes.heldElsewhere(PROCESSES, target) && std::chrono::steady_clock::now() < deadline)
+    {
+        panel.updateWithSamples(none, 0.0F); // the update path alone: the tab is hidden
+        std::this_thread::yield();
+    }
+    EXPECT_FALSE(changes.heldElsewhere(PROCESSES, target)) << "released once taken in, with the tab hidden";
+    EXPECT_EQ(actions->setPriorityCount(), 1);
 }
 
 // #2407: the Realtime I/O class can become settable after the panel is built -- BrokeredProcessActions

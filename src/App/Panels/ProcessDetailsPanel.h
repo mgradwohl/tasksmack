@@ -17,6 +17,7 @@
 #include "Platform/IProcessSecurity.h"
 #include "Platform/IProcessThreads.h"
 #include "Platform/ProcessTypes.h"
+#include "PriorityChangesInFlight.h"
 #include "ProcessActionsView.h"
 #include "ProcessConnectionsView.h"
 #include "ProcessCrashHistoryView.h"
@@ -42,6 +43,7 @@
 #include <string>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace App
 {
@@ -186,6 +188,15 @@ class ProcessDetailsPanel : public Panel
         m_CrashHistoryView.setHistory(std::move(crashHistory));
     }
 
+    /// The priority changes in flight the panel shares with the Processes table (#3467), from the composition
+    /// root (ShellPanels), which keeps it alive longer than the panel: the panel publishes the process its
+    /// own change is for, and holds its priority controls for a process the table has one running for.
+    /// Null (the default, a panel on its own) holds nothing.
+    void setPriorityChanges(PriorityChangesInFlight* changes) noexcept
+    {
+        m_PriorityChanges = changes;
+    }
+
     /// Whether the machine has an NPU or compute accelerator: the NPU tab is shown beside the GPU tab
     /// only then, on the machine view's NPU tab's condition (GpuSection::showAcceleratorTab(), #1869).
     /// Set each frame by ShellLayer; false (the default) hides it.
@@ -304,6 +315,9 @@ class ProcessDetailsPanel : public Panel
     /// updateWithSamples()'s on-demand section reads (Environment, Connections, Modules, Threads,
     /// Security, Open files, I/O priority, Recent crashes), each started only when due.
     void updateOnDemandReads(float deltaTime);
+    /// Publishes the process a priority change here is asked about or running for (#3467): Set Realtime
+    /// priority's, and the slider's apply's. Called from the update path and after each frame's render.
+    void publishPriorityChanges();
 
     /// Appends one history point for @p snapshot at @p sampleTimeSeconds, after a gap point when
     /// @p gapBefore (see Detail::takeSamples()). @p rateReadings says which of its I/O and network rates
@@ -395,6 +409,9 @@ class ProcessDetailsPanel : public Panel
     // The Overview section to draw open when the Overview is next drawn (requestSection(), #2827).
     std::optional<SelectOverride::DetailsSection> m_RequestedSection;
     ProcessPriorityView m_PriorityView;
+    // Shared with the Processes table by ShellPanels (#3467), which outlives this panel; null on its own.
+    PriorityChangesInFlight* m_PriorityChanges = nullptr;
+    std::vector<Platform::ProcessTarget> m_PublishedPriorityChanges; // publishPriorityChanges()' buffer, reused
     // The Actions and Priority cards' content heights as last drawn (0 until they have been): the row
     // they are on takes the tallest card's height (ProcessDetailsLayout::computeRowCardHeight(), #1789).
     float m_ActionsCardHeight = 0.0F;

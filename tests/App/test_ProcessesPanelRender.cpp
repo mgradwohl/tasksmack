@@ -17,6 +17,7 @@
 #include "App/Panels/ExitingProcessRows.h"
 #include "App/Panels/FindHandlesDialog.h"
 #include "App/Panels/NiceStep.h"
+#include "App/Panels/PriorityChangesInFlight.h"
 #include "App/Panels/ProcessActionsView.h"
 #include "App/Panels/ProcessColumnAvailability.h"
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
@@ -60,6 +61,7 @@
 #include <toml++/toml.hpp>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cfloat>
 #include <chrono>
@@ -3631,6 +3633,171 @@ TEST_F(ProcessesPanelRenderTest, F7AndF8StepTheSelectedProcessesPriorityAtOnce)
     panel->expireFrameRequests(); // the frame ended before the table took it
     static_cast<void>(renderAndCapture(*panel));
     EXPECT_EQ(actions->setPriorityCount(), 2);
+}
+
+/// The start time attachedPanelWithActions()' mock gives @p pid's process.
+[[nodiscard]] constexpr std::uint64_t mockStartTicks(std::int32_t pid) noexcept
+{
+    return pid == 1 ? 100 : (pid == 100 ? 1000 : 1100);
+}
+
+// #3467, Process Details to the table: while Process Details changes the selected process's priority, F7 sets
+// nothing and the toolbar says why; once that change has finished, F7 works again. A process that merely has
+// the same PID (another start time) is not held.
+TEST_F(ProcessesPanelRenderTest, F7WaitsForAPriorityChangeInProcessDetailsForThatProcess)
+{
+    PriorityChangesInFlight changes;
+    SelectionSink events;
+    TestMocks::MockProcessActions* actions = nullptr;
+    const auto panel = attachedPanelWithActions(events.sink(), actions);
+    panel->setPriorityChanges(&changes);
+    renderUntilLoaded(*panel);
+    ASSERT_NE(actions, nullptr);
+    pressKey(*panel, ImGuiKey_DownArrow);
+    const std::int32_t pid = panel->selectedPid();
+    ASSERT_GT(pid, 0);
+    const Platform::ProcessTarget target{.pid = pid, .startTimeTicks = mockStartTicks(pid)};
+
+    const std::array details{target};
+    changes.publish(PriorityChangesInFlight::Panel::ProcessDetails, details);
+    panel->requestPriorityStep(NiceStep::Direction::Raise);
+    static_cast<void>(renderAndCapture(*panel));
+    const std::string refused = renderAndCapture(*panel);
+    EXPECT_EQ(actions->setPriorityCount(), 0) << "held while Process Details changes it";
+    EXPECT_TRUE(refused.contains(PriorityChangesInFlight::refusal(PriorityChangesInFlight::Panel::Processes))) << refused;
+
+    // The same PID, another start time: another process, so not held.
+    const std::array reused{Platform::ProcessTarget{.pid = pid, .startTimeTicks = target.startTimeTicks + 1}};
+    changes.publish(PriorityChangesInFlight::Panel::ProcessDetails, reused);
+    panel->requestPriorityStep(NiceStep::Direction::Raise);
+    static_cast<void>(renderAndCapture(*panel));
+    panel->waitForRowActionForTesting();
+    EXPECT_EQ(actions->setPriorityCount(), 1);
+    EXPECT_EQ(actions->lastTarget(), target);
+
+    // Released: F7 sets it again.
+    changes.publish(PriorityChangesInFlight::Panel::ProcessDetails, {});
+    panel->requestPriorityStep(NiceStep::Direction::Lower);
+    static_cast<void>(renderAndCapture(*panel));
+    panel->waitForRowActionForTesting();
+    EXPECT_EQ(actions->setPriorityCount(), 2);
+    panel->onDetach();
+}
+
+// #3467, the table to Process Details: F7's change is published for its process from the frame it starts until
+// its result is taken in, so Process Details holds its priority controls for that process meanwhile.
+TEST_F(ProcessesPanelRenderTest, F7HoldsProcessDetailsPriorityControlsUntilItsResultIsTakenIn)
+{
+    PriorityChangesInFlight changes;
+    SelectionSink events;
+    TestMocks::MockProcessActions* actions = nullptr;
+    const auto panel = attachedPanelWithActions(events.sink(), actions);
+    panel->setPriorityChanges(&changes);
+    renderUntilLoaded(*panel);
+    ASSERT_NE(actions, nullptr);
+    pressKey(*panel, ImGuiKey_DownArrow);
+    const std::int32_t pid = panel->selectedPid();
+    ASSERT_GT(pid, 0);
+    const Platform::ProcessTarget target{.pid = pid, .startTimeTicks = mockStartTicks(pid)};
+    EXPECT_FALSE(changes.heldElsewhere(PriorityChangesInFlight::Panel::ProcessDetails, target));
+
+    panel->requestPriorityStep(NiceStep::Direction::Raise);
+    static_cast<void>(renderAndCapture(*panel)); // started on the row action worker
+    EXPECT_TRUE(changes.heldElsewhere(PriorityChangesInFlight::Panel::ProcessDetails, target)) << "held from the frame it starts";
+    EXPECT_FALSE(
+        changes.heldElsewhere(PriorityChangesInFlight::Panel::ProcessDetails, {.pid = pid, .startTimeTicks = target.startTimeTicks + 1}))
+        << "a reused PID is another process";
+
+    ASSERT_TRUE(updateUntilBatchResult(*panel, "Priority of")); // onUpdate() takes the result in
+    EXPECT_EQ(actions->setPriorityCount(), 1);
+    EXPECT_FALSE(changes.heldElsewhere(PriorityChangesInFlight::Panel::ProcessDetails, target)) << "released once taken in";
+    panel->onDetach();
+}
+
+// #3467: Set priority for N processes... leaves out a process Process Details is changing the priority of, sets the
+// others, and its result line says how many it skipped and why.
+TEST_F(ProcessesPanelRenderTest, ABatchPriorityChangeSkipsAProcessWithAChangeRunningInProcessDetails)
+{
+    PriorityChangesInFlight changes;
+    TestMocks::MockProcessActions* actions = nullptr;
+    const auto panel = attachedPanelWithActions([](Core::Event&) {}, actions);
+    panel->setPriorityChanges(&changes);
+    ASSERT_NE(actions, nullptr);
+    renderUntilLoaded(*panel);
+    selectAll(*panel);
+    ASSERT_EQ(panel->selectionCount(), 3U);
+    const Platform::ProcessTarget server{.pid = 100, .startTimeTicks = mockStartTicks(100)};
+    const std::array details{server};
+    changes.publish(PriorityChangesInFlight::Panel::ProcessDetails, details);
+
+    ASSERT_TRUE(openARowMenu(*panel).has_value());
+    pressPopupItem(*panel, std::format("{} Set priority for 3 processes...###SetPriority", ICON_FA_GAUGE_HIGH));
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    ASSERT_NE(ImGui::GetTopMostPopupModal(), nullptr);
+    pressModalFilledButton(*panel, "Apply to 3 processes");
+    ASSERT_TRUE(updateUntilBatchResult(*panel, "1 process skipped")); // from the batch's worker (#2142)
+    EXPECT_EQ(actions->setPriorityCount(), 2) << "the other two are set";
+    EXPECT_NE(actions->lastTarget(), server);
+    panel->onDetach();
+}
+
+// #3467: the row menu's Set Realtime priority... is greyed out while Process Details changes that process's
+// priority; once that has finished it asks again, and its confirm and its run hold Process Details' controls
+// for that process until the result is taken in.
+TEST_F(ProcessesPanelRenderTest, SetRealtimeFromTheRowMenuAndProcessDetailsHoldEachOther)
+{
+    PriorityChangesInFlight changes;
+    TestMocks::MockProcessActions* actions = nullptr;
+    const auto panel = std::make_unique<ProcessesPanel>(
+        [&actions]
+        {
+            auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+            probe->withProcess(TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0))
+                .withProcess(TestMocks::makeProcessCounters(100, "server", 'R', 200, 50, 1000, std::uint64_t{8} << 20U, 1));
+            auto mock = std::make_unique<TestMocks::MockProcessActions>();
+            mock->setCapabilities({.canTerminate = true, .canKill = true, .canSetPriority = true, .canSetRealtimePriority = true});
+            actions = mock.get();
+            return ProcessesPanelPlatform{.probe = std::move(probe), .actions = std::move(mock), .icons = nullptr};
+        },
+        [](Core::Event&) {});
+    panel->setPriorityChanges(&changes);
+    attachAndSeed(*panel);
+    Core::ActiveTabChangedEvent shown("Processes");
+    panel->onEvent(shown);
+    ASSERT_NE(actions, nullptr);
+    renderUntilLoaded(*panel);
+
+    std::optional<std::int32_t> menuPid = openARowMenu(*panel);
+    ASSERT_TRUE(menuPid.has_value());
+    const Platform::ProcessTarget target{.pid = *menuPid, .startTimeTicks = mockStartTicks(*menuPid)};
+    const std::array details{target};
+    changes.publish(PriorityChangesInFlight::Panel::ProcessDetails, details);
+    static_cast<void>(renderAndCapture(*panel));
+    pressPopupItem(*panel, App::Detail::SET_REALTIME_PRIORITY_LABEL);
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    EXPECT_EQ(ImGui::GetTopMostPopupModal(), nullptr) << "greyed out while Process Details changes it";
+
+    changes.publish(PriorityChangesInFlight::Panel::ProcessDetails, {});
+    if (topPopup() != nullptr)
+    {
+        closePopups(*panel);
+    }
+    menuPid = openARowMenu(*panel);
+    ASSERT_EQ(menuPid, target.pid);
+    pressPopupItem(*panel, App::Detail::SET_REALTIME_PRIORITY_LABEL);
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    ASSERT_NE(ImGui::GetTopMostPopupModal(), nullptr) << "released: it asks";
+    EXPECT_TRUE(changes.heldElsewhere(PriorityChangesInFlight::Panel::ProcessDetails, target)) << "its confirm holds Process Details";
+
+    pressModalFilledButton(*panel, "Set Realtime priority");
+    EXPECT_TRUE(changes.heldElsewhere(PriorityChangesInFlight::Panel::ProcessDetails, target)) << "and so does its run";
+    ASSERT_TRUE(updateUntilBatchResult(*panel, "set to Realtime"));
+    EXPECT_EQ(actions->setPriorityCount(), 1);
+    EXPECT_FALSE(changes.heldElsewhere(PriorityChangesInFlight::Panel::ProcessDetails, target)) << "released once taken in";
+    panel->onDetach();
 }
 
 // #3097: "/" over the table opens the Find box; typing jumps the selection to the first matching row,
