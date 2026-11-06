@@ -162,7 +162,7 @@ class Acl
 };
 
 /// A primary token for a standard user, made from this process's (the runner's administrator): Administrators
-/// deny-only and every privilege but SeChangeNotify gone (CreateRestrictedToken), and a default DACL that lets
+/// deny-only and every privilege but SeChangeNotify gone (CreateRestrictedToken), Medium integrity, and a default DACL that lets
 /// in this user, SYSTEM and Administrators, so the processes started with it, and what they make, can be opened
 /// by each other as well as by the test. CreateProcessAsUserW takes it without SeAssignPrimaryToken: it is a
 /// restricted version of the caller's own token. @p alsoLetIn, when not empty, is one more SID the default DACL
@@ -200,6 +200,17 @@ class Acl
     if (acl.get() == nullptr || SetTokenInformation(token.get(), TokenDefaultDacl, &defaultDacl, sizeof(defaultDacl)) == FALSE)
     {
         ADD_FAILURE() << "couldn't set the restricted token's default DACL: " << GetLastError();
+        return {};
+    }
+    // Medium integrity, as a standard user's processes run: CreateRestrictedToken keeps the elevated runner's High,
+    // and a High process refuses a Medium one (another account's helper) write access such as PROCESS_TERMINATE
+    // whatever its DACL says.
+    std::vector<std::byte> medium = wellKnownSid(WinMediumLabelSid);
+    TOKEN_MANDATORY_LABEL label{.Label = {.Sid = medium.data(), .Attributes = SE_GROUP_INTEGRITY}};
+    const auto labelSize = static_cast<DWORD>(sizeof(label) + medium.size());
+    if (medium.empty() || SetTokenInformation(token.get(), TokenIntegrityLevel, &label, labelSize) == FALSE)
+    {
+        ADD_FAILURE() << "couldn't lower the restricted token to Medium integrity: " << GetLastError();
         return {};
     }
     return token;
