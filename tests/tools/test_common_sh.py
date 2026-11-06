@@ -85,6 +85,33 @@ class FindPythonTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertTrue(result.stdout.strip().endswith("/.venv/bin/python"), result.stdout)
 
+    def test_a_native_interpreters_crlf_version_is_accepted(self):
+        # #3517: Windows Python prints CRLF, and MSYS2/Cygwin bash builds without Git for Windows'
+        # patch keep the CR in $(...). The trailing " \r" survives even Git Bash's CRLF handling.
+        path = self.checkout / ".venv" / "Scripts" / "python.exe"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("#!/bin/sh\nprintf '3.14\\r \\r\\n'\n", encoding="utf-8", newline="\n")
+        path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        for ostype in ("msys", "cygwin"):
+            with self.subTest(ostype=ostype):
+                result = self.find_python(ostype)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertTrue(result.stdout.strip().endswith("/.venv/Scripts/python.exe"), result.stdout)
+
+    def test_strip_native_output_drops_crs_and_surrounding_whitespace(self):
+        script = 'source "$1"; printf "[%s]" "$(strip_native_output "$2")"'
+        cases = {"win32\r\n": "[win32]", "win32\r \r": "[win32]", " C:\\a b\\c\r": "[C:\\a b\\c]", "": "[]"}
+        for value, expected in cases.items():
+            with self.subTest(value=value):
+                result = subprocess.run(
+                    [BASH, "-c", script, "test", posix(self.checkout / "tools" / "common.sh"), value],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, expected)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -296,8 +296,11 @@ int onActionReply(sd_bus_message* message, void* userdata, sd_bus_error* /*retEr
     const auto giveUpAt = std::chrono::steady_clock::now() + wait.timeout;
     for (;;)
     {
-        const std::string state = activeStateOf(bus, unitObject);
+        // The job first, then the state: a job that finishes between the two reads would otherwise be paired with
+        // the state from before it ("It didn't start (inactive)" for a restart that worked, #3520). Once the job is
+        // gone, the state read after it is the final one.
         const bool gone = jobPath.empty() || jobGone(bus, jobPath);
+        const std::string state = activeStateOf(bus, unitObject);
         switch (SystemdActions::waitStep(goal, state, gone))
         {
         case SystemdActions::WaitStep::Done:

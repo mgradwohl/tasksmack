@@ -4,6 +4,7 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
+#include "Platform/IProcessMemoryMap.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
@@ -144,6 +145,24 @@ namespace
         OpenFilesReadResult failed;
         failed.status = OpenFilesReadStatus::Failed;
         return Broker::OpenFilesReply{.result = std::move(failed)};
+    }
+}
+
+/// Process Details' memory map (#3089): the reader checks the target's identity itself, and reads only that
+/// process's own smaps.
+[[nodiscard]] Broker::Response handleMemoryMap(const Broker::MemoryMapRequest& read, const Readers& readers)
+{
+    if (readers.memoryMap == nullptr)
+    {
+        return Broker::ErrorReply{.message = "This helper doesn't read memory maps"};
+    }
+    try
+    {
+        return Broker::MemoryMapReply{.result = readers.memoryMap->readMemoryMap(read.target)};
+    }
+    catch (...)
+    {
+        return Broker::MemoryMapReply{.result = {.status = MemoryMapReadStatus::Failed, .mappings = {}, .detail = {}}};
     }
 }
 
@@ -382,6 +401,10 @@ Broker::Response handleRequest(const Broker::Request& request, IProcessActions& 
     if (const auto* read = std::get_if<Broker::ThreadsRequest>(&request))
     {
         return handleThreads(*read, readers);
+    }
+    if (const auto* read = std::get_if<Broker::MemoryMapRequest>(&request))
+    {
+        return handleMemoryMap(*read, readers);
     }
     if (const auto* read = std::get_if<Broker::MemoryRollupRequest>(&request))
     {

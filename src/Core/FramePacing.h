@@ -191,6 +191,56 @@ nextConsecutiveSkippedRenders(std::uint32_t consecutiveSkippedRenders, bool skip
     return renderedFrame ? 0 : consecutiveSkippedRenders;
 }
 
+/// Whether the loop iteration renders its move/resize frame (#3511), capped at the display rate: for a
+/// new framebuffer size this drain (@p needsResizeRedraw), or within the interaction grace
+/// (@p forceInteractionRedraw) when there is something to show -- this drain handled events
+/// (@p hadEvents: the pointer of a client-side drag moved, a window event came), or the title bar's
+/// client-side drag or resize moved or sized the window last frame (@p geometryChangedLastFrame).
+/// Not while the window is hidden (@p isHidden, #1125) or P3 skips the render (@p skipRenderThisFrame).
+///
+/// A grace iteration with none of those used to draw and present a frame too: the same size, the same
+/// content, 8 ms after the one before it at 120 Hz. In #3511's resize bursts that was more than half
+/// of every frame presented while the window resized (7,222 frames for 3,199 resizes). Now the
+/// iteration falls to the regular frame instead: paced at the animation or input rate when one applies
+/// (computeUsesPacedRegularFrame()), and otherwise the idle wait, which the next event wakes at once.
+[[nodiscard]] constexpr auto computeShouldRenderInteractionFrame(bool needsResizeRedraw,
+                                                                 bool forceInteractionRedraw,
+                                                                 bool hadEvents,
+                                                                 bool geometryChangedLastFrame,
+                                                                 bool isHidden,
+                                                                 bool skipRenderThisFrame) noexcept -> bool
+{
+    if (isHidden || skipRenderThisFrame)
+    {
+        return false;
+    }
+    return needsResizeRedraw || (forceInteractionRedraw && (hadEvents || geometryChangedLastFrame));
+}
+
+/// Whether a grace iteration's move/resize frame was held back by computeShouldRenderInteractionFrame()
+/// (#3511): it would have rendered before, and doesn't now. Counted by the resize trace (deferredFrames).
+[[nodiscard]] constexpr auto isDeferredInteractionFrame(bool needsResizeRedraw,
+                                                        bool forceInteractionRedraw,
+                                                        bool hadEvents,
+                                                        bool geometryChangedLastFrame,
+                                                        bool isHidden,
+                                                        bool skipRenderThisFrame) noexcept -> bool
+{
+    return forceInteractionRedraw && !isHidden && !skipRenderThisFrame &&
+           !computeShouldRenderInteractionFrame(
+               needsResizeRedraw, forceInteractionRedraw, hadEvents, geometryChangedLastFrame, isHidden, skipRenderThisFrame);
+}
+
+/// Whether the regular frame is paced at @p frameRateCap (computeFrameRateCap()) rather than left to the
+/// idle wait: whenever a cap applies and the move/resize path didn't render this iteration (#3511). A
+/// grace iteration with nothing new defers its move/resize frame (computeShouldRenderInteractionFrame());
+/// a chart still easing (AnimationRequest) or an input grace still running then keeps its rate, instead
+/// of dropping to the 20 fps idle wait for the rest of the resize grace.
+[[nodiscard]] constexpr auto computeUsesPacedRegularFrame(double frameRateCap, bool didImmediateResizeRedraw) noexcept -> bool
+{
+    return frameRateCap > 0.0 && !didImmediateResizeRedraw;
+}
+
 /// Whether the loop iteration renders its regular (paced/idle) frame. Not when the move/resize path
 /// already rendered one, nor when P3 skips it, nor when the idle wait woke on an event
 /// (@p idleWaitWokeOnEvent): that event goes through the next iteration's drain first, so the frame

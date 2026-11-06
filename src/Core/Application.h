@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Event.h"
+#include "GraphicsReset.h"
 #include "Layer.h"
 #include "PathService.h"
 #include "Window.h"
@@ -178,14 +179,36 @@ class Application
     std::uint64_t m_PublicationWakesTaken = 0;
     bool m_LastIdleWaitWoke = false;
     bool m_LastIdleWaitPolledEvent = false;
+    /// Turns the per-frame GPU reset checks into one context replacement per reset (#3484).
+    GraphicsResetMonitor m_GraphicsReset;
+    /// The resets already logged as reported, so a driver that reports one for several frames logs it once.
+    std::uint64_t m_GraphicsResetsLogged = 0;
+    /// Replaces the context after a reset, and suspends and retries drawing when that fails (#3484).
+    GraphicsContextRecovery m_GraphicsRecovery;
+
+    /// Read the context's GPU reset status: a reset reported pauses drawing at once (Settling), and
+    /// once it is over the context is replaced and the layers rebuild (#3484, GraphicsReset.h).
+    void checkGraphicsReset();
+    /// The replacement's steps, bound to the layer stack and the window.
+    [[nodiscard]] GraphicsContextRecoverySteps graphicsRecoverySteps();
+    /// Logs what an attempt did (nothing when @p outcome made none); after the last failed one, stops the app.
+    void noteGraphicsRecovery(GraphicsRecoveryOutcome outcome);
+    /// Once per loop iteration, drawing or not (a minimized window too): the reset check, or the next
+    /// retry of a failed replacement when it is due.
+    void pollGraphicsRecovery();
+    /// Whether drawing -- and with it every OpenGL call -- is suspended: a reported reset is settling,
+    /// a failed replacement waits to be retried, or recovery gave up. Event handling goes on; GL state the events change (the
+    /// viewport, the swap interval) is remembered and applied when a replacement works.
+    [[nodiscard]] bool drawingSuspended() const noexcept;
 
     /// Run one update+render+swapBuffers cycle. Extracted so the main loop and
     /// the immediate-repaint-on-resize path share identical rendering logic. Detailed
     /// per-layer timing/slow-frame diagnostics are enabled by passing non-null timing
     /// pointers (i.e. whenever perf tracing is enabled at all) -- not gated separately by
     /// interaction state, so idle and interaction frames pay identical instrumentation
-    /// overhead and their measured phase timings stay directly comparable.
-    void renderFrame(float deltaTime,
+    /// overhead and their measured phase timings stay directly comparable. False, with nothing
+    /// drawn or timed, while drawing is suspended after a GPU reset (#3484).
+    bool renderFrame(float deltaTime,
                      bool resizeTriggeredFrame,
                      double* updateMs = nullptr,
                      double* renderMs = nullptr,

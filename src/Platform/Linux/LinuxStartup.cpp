@@ -208,6 +208,39 @@ constexpr std::uintmax_t MAX_FILE_BYTES = std::uintmax_t{64} * 1024U;
     return true;
 }
 
+/// Why a systemd user unit enabled for every user (/etc/systemd/user) can't be switched here, and how an
+/// administrator switches it (#3425).
+[[nodiscard]] std::string allUsersUnitReason(std::string_view unit)
+{
+    // Quoted for a POSIX shell when it needs it: an escaped instance name (backup@home\x2duser.service) keeps its
+    // backslash when the command is pasted, and `--` ends systemctl's options, so a name starting with '-' stays the
+    // unit (#3512 review).
+    const bool plain = !unit.empty() && std::ranges::all_of(unit,
+                                                            [](char c)
+                                                            {
+                                                                return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                                                                       (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '_' ||
+                                                                       c == '@' || c == ':';
+                                                            });
+    std::string quoted;
+    if (plain)
+    {
+        quoted = unit;
+    }
+    else
+    {
+        quoted = "'";
+        for (const char c : unit)
+        {
+            quoted += c == '\'' ? std::string("'\\''") : std::string(1, c);
+        }
+        quoted += '\'';
+    }
+    return std::format("Enabled for every user in /etc/systemd/user: an administrator changes it with "
+                       "sudo systemctl --global disable -- {} (or enable)",
+                       quoted);
+}
+
 /// The program a cron job starts and whether it is there.
 struct CronTarget
 {
@@ -621,10 +654,11 @@ void LinuxStartupProbe::addSystemdUnits(std::vector<StartupEntry>& entries) cons
         entry.scope = system ? StartupScope::Machine : StartupScope::User;
         entry.enabled = found.enabled; // linked into a .wants directory: that is what "enabled" is
         // The user's own: switched through the user manager, as systemctl --user does (#3425). One enabled for every
-        // user is an administrator's to change.
+        // user is an administrator's to change, and stays read-only here: systemd has no D-Bus call for it, and the
+        // helper writes no files (maintainer, 2026-11-06). The reason says how.
         if (found.owner == Owner::AllUsers)
         {
-            entry.notSwitchableReason = "Enabled for every user in /etc/systemd/user: an administrator changes it";
+            entry.notSwitchableReason = allUsersUnitReason(name);
         }
         else if (found.owner == Owner::Package)
         {
@@ -788,7 +822,9 @@ StartupActionResult LinuxStartupActions::setEnabled(const StartupEntry& entry, b
     }
     if (entry.location == StartupLocation::SystemdSystemUnit)
     {
-        return StartupActionResult::failed("Enabled for every user in /etc/systemd/user: an administrator changes it");
+        // The entry's own reason when it has one: a package's link isn't removed by systemctl --global (#3512 review).
+        return StartupActionResult::failed(entry.notSwitchableReason.empty() ? allUsersUnitReason(entry.registrationName)
+                                                                             : entry.notSwitchableReason);
     }
     const std::string& fileName = entry.registrationName;
     if (m_Dirs.user.empty())

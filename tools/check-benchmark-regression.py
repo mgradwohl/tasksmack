@@ -5,7 +5,8 @@ tools/check-benchmark-regression.py — Compare benchmark results against a base
 Usage:
     python3 tools/check-benchmark-regression.py --baseline perf-data/linux-baseline.json \
         --current perf-data/benchmark-latest.json [--threshold 15] [--min-coverage 90] \
-        [--min-abs-delta-ns 1.0] [--threshold-overrides perf-data/linux-ci-thresholds.json]
+        [--min-abs-delta-ns 1.0] [--threshold-overrides perf-data/linux-ci-thresholds.json] \
+        [--regressions-out regressions.json]
 
 Exit codes:
     0  No matched benchmark exceeds both its threshold and its floor, and coverage meets --min-coverage
@@ -75,6 +76,11 @@ names. perf-data/win-baseline.json has its manifest committed beside it (#3447);
 (the Linux baselines, runs from before #3163 and #3198) is not checked, and the output says so. The
 system CPU load each manifest recorded before and after its run is printed, for reading a noisy
 comparison.
+
+--regressions-out FILE writes the regressed benchmarks' names, {"regressions": [...]}, once the
+comparison has run (an empty list when none regressed). heavy-checks.yml hands them to
+tools/bench-across-launches.py, which re-measures them in further separate launches, and this
+script then checks the median across launches at the same thresholds (#3476).
 
 Whatever the result, the coverage line is printed, then any regressions, then one FAILED line for
 each gate that failed (#3448): a run that regressed still reports its coverage, and one that both
@@ -365,6 +371,15 @@ def main() -> int:
             "of refusing (exit 2)"
         ),
     )
+    parser.add_argument(
+        "--regressions-out",
+        type=Path,
+        default=None,
+        help=(
+            "Write the regressed benchmarks' names to this JSON file, as {\"regressions\": [...]}, "
+            "once the comparison has run (for tools/bench-across-launches.py, #3476)"
+        ),
+    )
     args = parser.parse_args()
 
     if not args.baseline.exists():
@@ -588,6 +603,18 @@ def main() -> int:
                 below_floor.append(row)
         elif pct_change < -5.0:
             improvements.append((name, base_time, base_unit, cur_time, cur_unit, pct_change))
+
+    # The names tools/bench-across-launches.py re-measures in further launches (#3476): written whatever the
+    # result, an empty list when nothing regressed.
+    if args.regressions_out is not None:
+        try:
+            args.regressions_out.write_text(
+                json.dumps({"regressions": sorted(name for name, *_ in regressions)}, indent=2) + "\n",
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            print(f"ERROR: cannot write {args.regressions_out}: {exc}", file=sys.stderr)
+            return 2
 
     # ── Report coverage gaps ────────────────────────────────────────────────────
     if missing_from_current:

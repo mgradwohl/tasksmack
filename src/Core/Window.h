@@ -7,6 +7,7 @@
 #include <SDL3/SDL_rect.h>
 #include <SDL3/SDL_video.h>
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <utility>
@@ -43,10 +44,26 @@ class Window
 
     void swapBuffers() const;
 
+    /// Whether the context reports a GPU reset (GL_LOSE_CONTEXT_ON_RESET, ARB_robustness; #3484).
+    [[nodiscard]] bool reportsGraphicsReset() const noexcept
+    {
+        return m_ReportsGraphicsReset;
+    }
+    /// glGetGraphicsResetStatus() for the current context: 0 (GL_NO_ERROR) when there was no reset, or
+    /// when the context can't report one. Cheap: no flush or wait. UI thread.
+    [[nodiscard]] std::uint32_t graphicsResetStatus() const noexcept;
+    /// Replace the OpenGL context after a GPU reset (#3484): a new one, made current and loaded, then
+    /// the old one destroyed. Every OpenGL object the old context held is gone. False when the new
+    /// one can't be made (the old one is kept), made current or loaded; a later call tries again
+    /// (Core::GraphicsContextRecovery decides when). UI thread, between frames.
+    bool recreateGLContext();
+
     /// Enable or disable vertical sync at runtime.
     /// Pass true to restore adaptive vsync (SDL_GL_SetSwapInterval(-1) with
     /// fallback to 1). Pass false to disable vsync (interval 0), which reduces
     /// compositor-stall coupling on Wayland during interactive resize.
+    /// Calls the driver only for a change on the current context, and asks for adaptive vsync once
+    /// per context (Core::SwapIntervalCache, #3511).
     static void setVSync(bool enabled);
 
     [[nodiscard]] bool shouldClose() const noexcept;
@@ -279,7 +296,8 @@ class Window
     WindowSpecification m_Spec;
     SDL_Window* m_Handle = nullptr;
     SDL_GLContext m_GLContext = nullptr;
-    GraphicsHostInfo m_GLInfo; // the OpenGL strings, captured once the context exists
+    bool m_ReportsGraphicsReset = false; // see reportsGraphicsReset()
+    GraphicsHostInfo m_GLInfo;           // the OpenGL strings, captured once the context exists
     bool m_ShouldClose = false;
     bool m_HiddenForTesting = false; // see setHiddenForTesting()
     // The Windows signals isHidden() adds to minimized and occluded (#3152); all false elsewhere.

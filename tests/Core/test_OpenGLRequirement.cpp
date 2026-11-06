@@ -71,6 +71,20 @@ TEST(OpenGLRequirementTest, VersionStringCheckIsConstexpr)
     static_assert(!glVersionStringMeetsRequirement(std::string_view{"1.1.0"}));
 }
 
+TEST(OpenGLRequirementTest, GladVersionCheckRejectsAFailedLoadAndOlderContexts)
+{
+    // What Core::Window::recreateGLContext() checks a GPU reset's replacement context with (#3484):
+    // gladLoadGL()'s result, GLAD_MAKE_VERSION(major, minor) = major * 10000 + minor, or 0.
+    EXPECT_FALSE(gladVersionMeetsRequirement(0)); // loading failed
+    EXPECT_FALSE(gladVersionMeetsRequirement(-1));
+    EXPECT_FALSE(gladVersionMeetsRequirement(10001)); // GDI Generic's 1.1
+    EXPECT_FALSE(gladVersionMeetsRequirement(30002)); // 3.2
+    EXPECT_FALSE(gladVersionMeetsRequirement(20001)); // 2.1
+    EXPECT_TRUE(gladVersionMeetsRequirement(30003));  // 3.3, what Window asks for
+    EXPECT_TRUE(gladVersionMeetsRequirement(40006));  // 4.6
+    static_assert(gladVersionMeetsRequirement(30003) && !gladVersionMeetsRequirement(30002));
+}
+
 TEST(OpenGLRequirementTest, MessageNamesTheRequiredAndActualVersionsAndTheDriver)
 {
     const std::string message = unsupportedGLVersionMessage("1.1.0", "GDI Generic", "Microsoft Corporation");

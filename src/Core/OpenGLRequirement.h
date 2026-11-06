@@ -63,6 +63,15 @@ constexpr int REQUIRED_GL_MINOR = 3;
     return version != nullptr && glVersionStringMeetsRequirement(std::string_view{version});
 }
 
+/// Whether gladLoadGL()'s result names a context that can run TaskSmack's renderer: 0 when loading
+/// failed, else GLAD_MAKE_VERSION(major, minor), major * 10000 + minor. Core::Window checks a
+/// replacement context with it after a GPU reset (#3484), as the constructor checks the first one.
+[[nodiscard]] constexpr bool gladVersionMeetsRequirement(const int gladVersion) noexcept
+{
+    constexpr int GLAD_VERSION_FACTOR = 10000; // GLAD_MAKE_VERSION's
+    return gladVersion > 0 && meetsRequiredGLVersion(gladVersion / GLAD_VERSION_FACTOR, gladVersion % GLAD_VERSION_FACTOR);
+}
+
 /// The error TaskSmack stops with (shown in a message box on Windows) when the context is too old.
 /// version, renderer and vendor are the context's glGetString() values.
 [[nodiscard]] inline std::string

@@ -135,6 +135,33 @@ class CheckBenchmarkRegressionTest(unittest.TestCase):
         self.assertLess(output.index("Coverage: "), output.index("Regressions (1)"))
         self.assertIn("FAILED: 1 benchmark(s) regressed", output)
 
+    def test_regressions_out_lists_the_regressed_names_only(self):
+        # #3476: tools/bench-across-launches.py re-measures exactly these. Below-floor and improved ones aren't listed.
+        with tempfile.TemporaryDirectory() as out_dir:
+            out = Path(out_dir) / "regressions.json"
+            code, output = self.run_gate(
+                {"BM_B": 100.0, "BM_A": 100.0, "BM_Tiny": 0.4, "BM_Fast": 100.0, "BM_Same": 100.0},
+                {"BM_B": 200.0, "BM_A": 150.0, "BM_Tiny": 0.6, "BM_Fast": 50.0, "BM_Same": 100.0},
+                "--regressions-out",
+                str(out),
+            )
+            self.assertEqual(code, 1, output)
+            self.assertEqual(json.loads(out.read_text(encoding="utf-8")), {"regressions": ["BM_A", "BM_B"]})
+
+    def test_regressions_out_is_an_empty_list_on_a_pass(self):
+        with tempfile.TemporaryDirectory() as out_dir:
+            out = Path(out_dir) / "regressions.json"
+            code, output = self.run_gate({"BM_A": 100.0}, {"BM_A": 101.0}, "--regressions-out", str(out))
+            self.assertEqual(code, 0, output)
+            self.assertEqual(json.loads(out.read_text(encoding="utf-8")), {"regressions": []})
+
+    def test_regressions_out_that_cannot_be_written_is_a_usage_error(self):
+        with tempfile.TemporaryDirectory() as out_dir:
+            out = Path(out_dir) / "missing-dir" / "regressions.json"
+            code, output = self.run_gate({"BM_A": 100.0}, {"BM_A": 300.0}, "--regressions-out", str(out))
+            self.assertEqual(code, 2, output)
+            self.assertIn("cannot write", output)
+
     def test_a_regression_and_a_coverage_loss_are_both_reported(self):
         baseline = {f"BM_{i}": 100.0 for i in range(10)}
         current = {"BM_0": 300.0, "BM_1": 100.0}

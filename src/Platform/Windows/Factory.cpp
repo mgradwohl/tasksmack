@@ -10,6 +10,7 @@
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessIconSource.h"
+#include "Platform/IProcessMemoryMap.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
@@ -163,6 +164,12 @@ std::unique_ptr<IProcessThreadsReader> makeProcessThreadsReader()
 {
     // The SystemProcessInformation snapshot's threads, with each one's description and suspend count (#3069).
     return std::make_unique<Windows::WindowsProcessThreadsReader>();
+}
+
+std::unique_ptr<IProcessMemoryMapReader> makeProcessMemoryMapReader()
+{
+    // The memory map (#3089): VirtualQueryEx with GetMappedFileNameW is the Windows lane's; none until then.
+    return std::make_unique<UnsupportedProcessMemoryMapReader>();
 }
 
 std::unique_ptr<IProcessOpenFilesReader> makeProcessOpenFilesReader()

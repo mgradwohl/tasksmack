@@ -18,6 +18,7 @@ on:
       - 'perf-data/linux-ci-thresholds.json'
       - 'tools/bench.sh'
       - 'tools/check-benchmark-regression.py'
+      - 'tools/bench-across-launches.py'
       - '.github/workflows/heavy-checks.yml'
   schedule:
     # Nightly at 04:00 UTC (was weekly): coverage, Windows coverage, benchmarks; the sanitizer
@@ -585,10 +586,16 @@ jobs:
     # a steady 23.0-23.5 minutes, so the build gets about 19; the full-tree build it used to do took
     # 7-9 minutes warm and 23-28 with a cold ccache (evicted) or on release/0.9 (68% hits against
     # main's cache), which is what timed out. The Build step now builds only the benchmark binary.
+    # The re-measurement after a flag (#3476) gets at most 10 minutes of what's left: see "Re-measure
+    # flagged benchmarks across launches", which reads this 45 as JOB_TIMEOUT_SECONDS.
     timeout-minutes: 45
     permissions:
       contents: read
     steps:
+      # When the job started, for the re-measurement's time budget (#3476).
+      - name: Record the job start
+        run: echo "JOB_START_EPOCH=$(date +%s)" >> "$GITHUB_ENV"
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup LLVM
@@ -658,7 +665,10 @@ jobs:
       # shared-vCPU neighbor-noise a hosted runner still has even against another hosted run,
       # and bench.sh's existing --benchmark_repetitions=10 + median-of-repetitions comparison
       # (already load_benchmarks()-filtered to aggregate_name == "median") further damps
-      # single-run noise on both sides of the comparison.
+      # single-run noise on both sides of the comparison. That isn't enough on its own: every repetition
+      # in one launch shares that launch's luck (where the heap and code land, its neighbours), so a
+      # ns-scale benchmark can read 40-80% slow for a whole launch of an unchanged binary, and each
+      # re-run flagged a different set (#3476). A flag is re-measured across launches, below.
       - name: Check for regression
         id: regression-check
         run: |
@@ -667,7 +677,104 @@ jobs:
             --current  perf-data/benchmark-current.json \
             --threshold 40 \
             --threshold-overrides perf-data/linux-ci-thresholds.json \
+            --regressions-out "$RUNNER_TEMP/regressions.json" \
             2>&1 | tee benchmark-regression-output.txt
+          echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+      # Measure across launches (#3476; the maintainer's decision on #3448, 2026-11-05): the benchmarks
+      # the check flagged run again, alone, in LAUNCHES more separate launches of the binary (5 with the
+      # full run), with bench.sh's same 10 repetitions each, and each one's median across the 5
+      # launches' medians is checked against the same baseline at the same thresholds, as part of the
+      # whole run, so coverage is checked again too. Not best-of-N: a benchmark slow in 3 of the 5
+      # launches still fails, and the output lists every launch's value against the baseline. Only
+      # a check that ran and flagged regressions (exit 1) gets here; a coverage loss alone has nothing
+      # to re-measure and fails as before. Bounded twice over, by a budget of 10 minutes or what the
+      # job's 45 minutes leave after a 5-minute margin for the steps after it, whichever is less:
+      # tools/bench-across-launches.py estimates the re-runs from the full run's own timings and
+      # refuses past the budget, and the launches share a hard deadline at the budget (each runs
+      # under `timeout` with what's left). Either way the flags stand as regressions, the output
+      # says so, and the summary and upload steps still run. A typical flag (a few ns-scale
+      # benchmarks, 5-8 s each) costs under 3 minutes.
+      - name: Re-measure flagged benchmarks across launches
+        id: across-launches
+        if: steps.regression-check.outputs.exit_code == '1'
+        env:
+          LAUNCHES: '4'
+          MAX_SECONDS: '600'
+          MARGIN_SECONDS: '300'
+          # The job's timeout-minutes, 45 (tests/tools/test_workflow_run_steps.py keeps them in step).
+          JOB_TIMEOUT_SECONDS: '2700'
+        run: |
+          now=$(date +%s)
+          left=$(( JOB_TIMEOUT_SECONDS - (now - JOB_START_EPOCH) - MARGIN_SECONDS ))
+          budget=$(( left < MAX_SECONDS ? left : MAX_SECONDS ))
+          # The estimate can be short (a /manual_time benchmark reports less than it runs, #3508), so the
+          # launches also share a hard deadline: the budget, from here.
+          deadline=$(( now + budget ))
+          out_of_time() {
+            echo "Out of time: $1, past the ${budget}s budget. The flags stand as regressions." \
+              | tee -a benchmark-across-launches-output.txt
+            echo "exit_code=1" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+          planned=0
+          filter=$(python3 tools/bench-across-launches.py plan \
+                     --current perf-data/benchmark-current.json \
+                     --regressions "$RUNNER_TEMP/regressions.json" \
+                     --launches "$LAUNCHES" --budget-seconds "$budget" \
+                     2> benchmark-across-launches-output.txt) || planned=$?
+          cat benchmark-across-launches-output.txt
+          if [[ "$planned" -ne 0 ]]; then
+            echo "exit_code=1" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          results=()
+          for launch in $(seq 2 $(( LAUNCHES + 1 ))); do
+            remaining=$(( deadline - $(date +%s) ))
+            if (( remaining <= 0 )); then
+              out_of_time "launch ${launch} of $(( LAUNCHES + 1 )) not started"
+            fi
+            echo "::group::Launch ${launch} of $(( LAUNCHES + 1 ))"
+            # A separate process each time, in a directory of its own. timeout signals bench.sh's whole
+            # process group, the benchmark binary included; pipefail keeps its status through the tee.
+            mkdir -p "perf-data/launches/${launch}"
+            status=0
+            ( set -o pipefail
+              TASKSMACK_BENCH_OUT_DIR="perf-data/launches/${launch}" timeout --kill-after=10s "${remaining}s" \
+                ./tools/bench.sh benchmark -- --benchmark_filter="$filter" | tee "$RUNNER_TEMP/launch-${launch}.txt" ) \
+              || status=$?
+            echo "::endgroup::"
+            if (( status == 124 || status == 137 )); then
+              # A killed launch leaves an unredacted partial result; it isn't uploaded.
+              rm -rf "perf-data/launches/${launch}"
+              out_of_time "launch ${launch} of $(( LAUNCHES + 1 )) stopped after ${remaining}s"
+            elif (( status != 0 )); then
+              echo "ERROR: launch ${launch} failed (exit ${status})" >&2
+              exit "$status"
+            fi
+            result=$(sed -n 's/^RESULT=//p' "$RUNNER_TEMP/launch-${launch}.txt" | tail -n 1)
+            if [[ -z "$result" || ! -f "$result" ]]; then
+              echo "ERROR: launch ${launch}'s output JSON not found (bench.sh printed RESULT=${result})" >&2
+              exit 1
+            fi
+            results+=("$result")
+          done
+          # A flagged benchmark with no usable median in some launch fails here (exit 2), not quietly.
+          ( set -o pipefail
+            python3 tools/bench-across-launches.py combine \
+              --first perf-data/benchmark-current.json \
+              --regressions "$RUNNER_TEMP/regressions.json" \
+              --baseline perf-data/linux-ci-baseline.json \
+              --output perf-data/benchmark-across-launches.json \
+              "${results[@]}" 2>&1 | tee -a benchmark-across-launches-output.txt )
+          echo "" | tee -a benchmark-across-launches-output.txt
+          # The same arguments as "Check for regression": the same thresholds and overrides.
+          python3 tools/check-benchmark-regression.py \
+            --baseline perf-data/linux-ci-baseline.json \
+            --current  perf-data/benchmark-across-launches.json \
+            --threshold 40 \
+            --threshold-overrides perf-data/linux-ci-thresholds.json \
+            2>&1 | tee -a benchmark-across-launches-output.txt
           echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
 
       - name: Add benchmark summary to workflow summary
@@ -680,6 +787,14 @@ jobs:
             cat benchmark-regression-output.txt >> "$GITHUB_STEP_SUMMARY"
             echo '```' >> "$GITHUB_STEP_SUMMARY"
           fi
+          if [[ -f benchmark-across-launches-output.txt ]]; then
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "### The flagged benchmarks across launches (#3476)" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            cat benchmark-across-launches-output.txt >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Upload benchmark results
         if: always()
@@ -689,12 +804,17 @@ jobs:
           path: |
             perf-data/benchmark-current.json
             benchmark-regression-output.txt
+            perf-data/benchmark-across-launches.json
+            perf-data/launches/
+            benchmark-across-launches-output.txt
           retention-days: 7
 
+      # A flag fails the job unless the re-measurement ran and passed. When it was skipped (a usage
+      # error, exit 2) or refused (over budget), its exit_code is '1' or empty, so the flag stands.
       - name: Fail on regression
-        if: steps.regression-check.outputs.exit_code != '0'
+        if: steps.regression-check.outputs.exit_code != '0' && steps.across-launches.outputs.exit_code != '0'
         run: |
-          echo "One or more benchmarks regressed beyond the threshold vs. the CI baseline. See the job summary for details." >&2
+          echo "One or more benchmarks regressed beyond the threshold vs. the CI baseline, and stayed past it as the median across launches (or weren't re-measured). See the job summary for each launch's value." >&2
           echo "If this is a real, accepted regression (not noise), refresh perf-data/linux-ci-baseline.json per CONTRIBUTING.md's baseline-refresh procedure." >&2
           exit 1
 

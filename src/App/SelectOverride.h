@@ -74,10 +74,10 @@ enum class DetailsTab : std::uint8_t
 /// TASKSMACK_DEMO's section= step expands (#2827).
 enum class DetailsSection : std::uint8_t
 {
-    Environment, ///< Linux only
+    Environment,
     Connections,
     Modules,
-    Security, ///< Linux only
+    Security,
     OpenFiles,
     Services, ///< Drawn only for a process that runs a service
 };

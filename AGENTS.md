@@ -142,7 +142,11 @@ cmake --workflow --preset win-dev    # Windows equivalent
 Common presets have a `win-` twin: `debug`, `release`, `release-compatible`, `optimized`, `relwithdebinfo`,
 `coverage`, `unity`, `pgo-generate`/`pgo-use`/`pgo-baseline`, `profile`, `benchmark`. Linux-only: `asan-ubsan`, `tsan`, `msan`.
 
-Format/lint (required before a PR is ready):
+Format/lint (required before a PR is ready). Each script under `tools/` that has a `.ps1` twin: run the `.ps1` on
+Windows and the `.sh` on Linux and WSL, as CI does. Git Bash, MSYS2 and Cygwin aren't supported shells for
+these tools: the `.sh` scripts' hand-off to the `.ps1` there (#3500) is a safety net, not a path to extend.
+
+Linux and WSL:
 ```bash
 ./tools/clang-format.sh              # or --changed-only for just the git diff
 ./tools/clang-tidy.sh debug          # or a preset (tsan, asan-ubsan) or --build-dir DIR
@@ -150,8 +154,26 @@ Format/lint (required before a PR is ready):
 pre-commit run --all-files           # whitespace, UTF-8, REUSE, actionlint, guidance sync, ...
 ```
 
+Windows (PowerShell 7):
+```powershell
+pwsh tools/clang-format.ps1          # or -ChangedOnly for just the git diff
+pwsh tools/clang-tidy.ps1 debug      # or -ChangedOnly, -Files ..., -BuildDir build\win-debug
+pwsh tools/check-format.ps1          # check without modifying
+pre-commit run --all-files
+```
+
 Test: `ctest --preset debug` / `ctest --preset win-debug` (Google Test; mocks in `tests/Mocks/MockProbes.h`;
 use `EXPECT_DOUBLE_EQ`, not `EXPECT_EQ`, on floats).
+
+Daytime filter, on a machine someone is using: never run `ctest` unfiltered or `TaskSmackAppTests`; run
+`TaskSmackTests --gtest_filter=-*OnDisplay*:UiScenario*:AccessNotice*:Screenshot*:WindowTest.*:ApplicationTest.*:CiRealSystem*`,
+or a targeted suite filter. The display suites open windows and drive the mouse.
+
+CI real-system tests (#3489): a suite named `CiRealSystem*`, derived from `TestSupport::CiRealSystemTest`
+(`tests/Support/CiRealSystem.h`), changes the machine it runs on, so it skips unless `TASKSMACK_CI_REAL_SYSTEM=1`
+on a GitHub-hosted runner. Only the CI step "Real-system tests (Windows)" sets it. Never set it locally; the
+daytime filter excludes the group too. A change to a real OS path adds such a test, or the PR says why only a
+manual check can cover it.
 
 Naming: `PascalCase` classes, `camelCase` functions, `m_PascalCase` members, `UPPER_SNAKE_CASE` constants.
 Sampling literals live in `src/Domain/SamplingConfig.h` — reuse them, don't re-declare.

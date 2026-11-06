@@ -13,6 +13,7 @@
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessIconSource.h"
+#include "Platform/IProcessMemoryMap.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessSecurity.h"
@@ -97,7 +98,7 @@ TEST(SyntheticScenarioParseTest, FlagWordTakesTheDefaults)
 
 TEST(SyntheticScenarioParseTest, ReadsEveryKey)
 {
-    const auto result = parseScenario("processes=5000,history=full,cores=64,disks=8,interfaces=12,seed=7,refresh=250");
+    const auto result = parseScenario("processes=5000,history=full,cores=64,disks=8,interfaces=12,numa=2,seed=7,refresh=250");
     ASSERT_TRUE(result.config.has_value());
     // value_or, not value(): clang-tidy's optional check does not model ASSERT_TRUE's early return.
     const ScenarioConfig resultConfig = result.config.value_or(ScenarioConfig{});
@@ -106,6 +107,7 @@ TEST(SyntheticScenarioParseTest, ReadsEveryKey)
     EXPECT_EQ(resultConfig.workload.cores, 64U);
     EXPECT_EQ(resultConfig.workload.disks, 8U);
     EXPECT_EQ(resultConfig.workload.interfaces, 12U);
+    EXPECT_EQ(resultConfig.workload.numaNodes, 2U);
     EXPECT_EQ(resultConfig.workload.seed, 7U);
     EXPECT_EQ(resultConfig.historySeconds, Sampling::HISTORY_SECONDS_MAX);
     EXPECT_EQ(resultConfig.refreshIntervalMs, 250);
@@ -190,6 +192,19 @@ TEST(SyntheticScenarioParseTest, RefreshIsClampedToTheSupportedRange)
     EXPECT_FALSE(bad.warnings.empty());
 }
 
+TEST(SyntheticScenarioParseTest, NumaNodesAreClamped)
+{
+    // #3088: one node by default, so a plain scenario shows no NUMA view.
+    EXPECT_EQ(parsed("1").workload.numaNodes, 1U);
+    const auto none = parseScenario("numa=0");
+    EXPECT_EQ(none.config.value_or(ScenarioConfig{}).workload.numaNodes, Platform::Synthetic::MIN_NUMA_NODES);
+    EXPECT_FALSE(none.warnings.empty());
+    const auto many = parseScenario("numa=1000");
+    EXPECT_EQ(many.config.value_or(ScenarioConfig{}).workload.numaNodes, Platform::Synthetic::MAX_NUMA_NODES);
+    EXPECT_FALSE(many.warnings.empty());
+    EXPECT_NE(App::Synthetic::describe(parsed("numa=2")).find("numa=2"), std::string::npos);
+}
+
 TEST(SyntheticScenarioParseTest, DescribeNamesTheSettings)
 {
     const std::string text = App::Synthetic::describe(parsed("processes=123,refresh=500"));
@@ -262,6 +277,7 @@ TEST(SyntheticScenarioTest, WithoutAScenarioDetailReadersAreThePlatformsOwn)
     EXPECT_TRUE(
         sameKind<Platform::IProcessConnectionsReader>(makeProcessConnectionsReader(nullptr), Platform::makeProcessConnectionsReader()));
     EXPECT_TRUE(sameKind<Platform::IProcessModulesReader>(makeProcessModulesReader(nullptr), Platform::makeProcessModulesReader()));
+    EXPECT_TRUE(sameKind<Platform::IProcessMemoryMapReader>(makeProcessMemoryMapReader(nullptr), Platform::makeProcessMemoryMapReader()));
     EXPECT_TRUE(sameKind<Platform::IProcessOpenFilesReader>(makeProcessOpenFilesReader(nullptr), Platform::makeProcessOpenFilesReader()));
     EXPECT_TRUE(sameKind<Platform::IProcessSecurityReader>(makeProcessSecurityReader(nullptr), Platform::makeProcessSecurityReader()));
     // Linux has no UDP collector (nullptr); Windows has one.
@@ -320,6 +336,8 @@ TEST(SyntheticScenarioTest, ScenarioDetailReadersAreTheUnsupportedStandIns)
     EXPECT_NE(dynamic_cast<Platform::UnsupportedProcessConnectionsReader*>(App::Synthetic::makeProcessConnectionsReader(&scenario).get()),
               nullptr);
     EXPECT_NE(dynamic_cast<Platform::UnsupportedProcessModulesReader*>(App::Synthetic::makeProcessModulesReader(&scenario).get()), nullptr);
+    EXPECT_NE(dynamic_cast<Platform::UnsupportedProcessMemoryMapReader*>(App::Synthetic::makeProcessMemoryMapReader(&scenario).get()),
+              nullptr);
     EXPECT_NE(dynamic_cast<Platform::UnsupportedProcessOpenFilesReader*>(App::Synthetic::makeProcessOpenFilesReader(&scenario).get()),
               nullptr);
     EXPECT_NE(dynamic_cast<Platform::UnsupportedProcessSecurityReader*>(App::Synthetic::makeProcessSecurityReader(&scenario).get()),

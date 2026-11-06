@@ -3,6 +3,7 @@
 /// deleted when the cache is full, a failed one is not retried every frame, and every texture is
 /// deleted by clear() and by the destructor. A fake backend counts the calls; no GL context.
 
+#include "Core/GraphicsReset.h"
 #include "UI/IconTextureCache.h"
 
 #include <glad/gl.h>
@@ -106,6 +107,34 @@ TEST(IconTextureCacheTest, ClearAndTheDestructorDeleteEveryTexture)
     }
     EXPECT_EQ(log->destroyed.size(), 3U); // The destructor deleted the last one
     EXPECT_EQ(log->created.size(), log->destroyed.size());
+}
+
+TEST(IconTextureCacheTest, AReplacedContextsTexturesAreForgottenNotDeleted)
+{
+    // #3484: after a GPU reset Application replaces the OpenGL context. The cache's names belonged
+    // to the old one; deleting them could delete the new context's objects that reuse the names.
+    const auto log = std::make_shared<BackendLog>();
+    {
+        IconTextureCache cache(8, fakeBackend(log));
+        const std::uint32_t before = cache.texture(1, 4, 4, pixels());
+        static_cast<void>(cache.texture(2, 4, 4, pixels()));
+        ASSERT_EQ(log->created.size(), 2U);
+
+        Core::advanceGraphicsContextGeneration();
+        // Drawn again: made again in the new context, and nothing deleted.
+        const std::uint32_t after = cache.texture(1, 4, 4, pixels());
+        EXPECT_NE(after, before);
+        EXPECT_EQ(log->created.size(), 3U);
+        EXPECT_TRUE(log->destroyed.empty());
+        EXPECT_EQ(cache.size(), 1U);
+
+        // A later replacement, then clear(): still nothing of the old contexts deleted.
+        Core::advanceGraphicsContextGeneration();
+        cache.clear();
+        EXPECT_TRUE(log->destroyed.empty());
+        EXPECT_EQ(cache.size(), 0U);
+    }
+    EXPECT_TRUE(log->destroyed.empty()); // and nothing at destruction either
 }
 
 TEST(IconTextureCacheTest, TheOpenGLBackendMakesNothingWithoutGL)

@@ -16,6 +16,7 @@
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessIconSource.h"
+#include "Platform/IProcessMemoryMap.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
@@ -196,6 +197,12 @@ void applySetting(const std::string& key, std::string_view setting, ScenarioConf
     {
         parseCount(key, setting, 0, Platform::Synthetic::MAX_INTERFACES, config.workload.interfaces, warnings);
     }
+    else if (key == "numa")
+    {
+        // The Workload also caps it at the core count, so every node has a CPU.
+        parseCount(
+            key, setting, Platform::Synthetic::MIN_NUMA_NODES, Platform::Synthetic::MAX_NUMA_NODES, config.workload.numaNodes, warnings);
+    }
     else if (key == "seed")
     {
         parseSeed(setting, config, warnings);
@@ -263,11 +270,12 @@ ParseResult parseScenario(const char* value)
 
 std::string describe(const ScenarioConfig& config)
 {
-    return std::format("processes={} cores={} disks={} interfaces={} seed={} history={}s refresh={}",
+    return std::format("processes={} cores={} disks={} interfaces={} numa={} seed={} history={}s refresh={}",
                        config.workload.processes,
                        config.workload.cores,
                        config.workload.disks,
                        config.workload.interfaces,
+                       config.workload.numaNodes,
                        config.workload.seed,
                        config.historySeconds,
                        config.refreshIntervalMs ? std::format("{}ms", *config.refreshIntervalMs) : std::string("configured"));
@@ -381,6 +389,15 @@ std::unique_ptr<Platform::IProcessThreadsReader> makeProcessThreadsReader(const 
         return std::make_unique<Platform::UnsupportedProcessThreadsReader>();
     }
     return Platform::makeProcessThreadsReader();
+}
+
+std::unique_ptr<Platform::IProcessMemoryMapReader> makeProcessMemoryMapReader(const Scenario* scenario)
+{
+    if (scenario != nullptr)
+    {
+        return std::make_unique<Platform::UnsupportedProcessMemoryMapReader>();
+    }
+    return Platform::makeProcessMemoryMapReader();
 }
 
 std::unique_ptr<Platform::ISystemConnectionsReader> makeSystemConnectionsReader(const Scenario* scenario)

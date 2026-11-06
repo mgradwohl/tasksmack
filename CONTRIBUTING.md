@@ -775,6 +775,21 @@ Three established ways to get real coverage of such a file's logic:
        because a real pointer's moves mix with the injected ones. `--use-display` runs it on the desktop.
      - **Requirements:** both refs need the scenario suite.
 
+5. **Need the real OS path, which changes the machine (#3489)?** Some calls only fakes can reach on a
+   developer's machine: a process set to Realtime, a program started through the shell or `runas`, Explorer
+   opened on a folder, the elevated helper served from Program Files, a throwaway account. Put such a test in
+   a suite named `CiRealSystem*` derived from `TestSupport::CiRealSystemTest` (`tests/Support/CiRealSystem.h`,
+   Windows helpers in `tests/Support/CiRealSystemWindows.h`). Its `SetUp()` skips the test unless
+   `TASKSMACK_CI_REAL_SYSTEM=1` on a GitHub-hosted runner (`GITHUB_ACTIONS=true`,
+   `RUNNER_ENVIRONMENT=github-hosted`). CI's "Real-system tests (Windows)" step sets it and runs
+   `TaskSmackTests --gtest_filter=CiRealSystem*` after the normal `ctest`. It fails if none of them ran.
+   - **Rules:** keep every child idle (suspended, or `TaskSmackCiStub.exe`, which only sleeps), and end it
+     and remove what the test made in a scope guard. Skip with the reason when the runner can't do it (no
+     memory compression on a Server image).
+   - **Never locally:** don't set the variable on your own machine. The daytime filter excludes `CiRealSystem*`.
+   - **The rule:** a change to a real OS path adds such a test, or the PR says why only a manual check can
+     cover it (a UAC prompt, a sign-out, hardware).
+
 Before writing any of these tests, check whether the logic already exists as a shared, tested
 helper (for example `Core::isEnvFlagEnabled()` in `Core/EnvUtils.h`), and reuse it instead.
 
@@ -1051,6 +1066,16 @@ For a preset other than `debug`/`relwithdebinfo` or a `--build-dir`, the module 
 temporary copy that is removed when the run ends, so that tree's own files, including the `compile_commands.json`
 clangd reads, are never touched. Every other option works the same with each, for example
 `./tools/clang-tidy.sh tsan --changed-only`.
+
+On Windows, `tools/clang-tidy.sh` run from Git Bash, MSYS2 or Cygwin hands its options to `tools/clang-tidy.ps1`,
+the script CI's Windows job runs, so a local run uses CI's header filter, exclusions and checks (#3500). `debug` and
+`relwithdebinfo` mean `build/win-<type>` there; `--build-dir DIR` becomes `-BuildDir DIR`, which `clang-tidy.ps1` also
+takes directly (`pwsh tools/clang-tidy.ps1 -BuildDir build/win-debug -Files src/Platform/Windows/WindowsSystemProbe.cpp`).
+Before #3500 the Git Bash run used the Linux settings: its header filter never matched a Windows path, so it
+reported no header findings at all, and it skipped `src/Platform/Windows/`. Both scripts start a candidate Python
+before using it (`.venv`, then `python`, `python3`, and `py -3` on Windows), so the Microsoft Store's `python3`
+stub is skipped. `tools/test-clang-tidy-headers.ps1` (the `ClangTidyHeadersScript` CTest test on Windows) checks
+that both report a finding in a fixture header.
 
 `.clang-tidy` sets `WarningsAsErrors: '*'`, so any clang-tidy finding fails the run, locally and in CI's
 blocking jobs. Fix the finding, or suppress it with a `NOLINT(check-name)` comment that says why. Before
@@ -1563,6 +1588,48 @@ JSON) on either side is reported as *not measured* and left out of coverage enti
 denominator; a `SkipWithError` (`"error_occurred": true`) on either side still counts against it, even if the other side skipped. The
 `BM_GPUProbe_*`/`BM_GPUModel_*` benchmarks skip this way when the real probe finds no GPU, as on the
 hosted runner, instead of timing an empty probe's early return (#1420).
+
+**A flag is re-measured across launches** (#3476; the maintainer's decision on #3448, 2026-11-05). The 10
+repetitions of one launch share that launch's luck on a shared hosted runner: where the heap and the code
+landed, and who else was on the host. So a ns-scale benchmark can read 40-80% slow for a whole launch of an
+unchanged binary, and before this each re-run of one commit flagged a different set
+(`BM_HistoryBuffer_CopyTo`, `_Push*`, `_MemoryFootprint/iterations:10000`,
+`BM_ProcessRowMeter_RowHistoryAdvance/500/1`). When the check flags regressions, the job:
+
+1. writes the flagged names (`check-benchmark-regression.py --regressions-out`);
+2. runs only those benchmarks again in 4 more separate launches of the binary, 5 in all with the full run,
+   each `tools/bench.sh benchmark -- --benchmark_filter=<anchored, escaped names>` with the same 10
+   repetitions (`tools/bench-across-launches.py plan` prints the filter);
+3. takes each flagged benchmark's median across the 5 launches' medians, into a copy of the full run
+   (`bench-across-launches.py combine`, which prints every launch's value against the baseline);
+4. runs the same check on that copy, at the same thresholds and overrides, with the same coverage floor.
+
+It isn't best-of-N and no threshold changes: a benchmark slow in 3 of the 5 launches still fails, and a real
+regression, slow in every launch, reads as one in the per-launch list. A flagged benchmark that has no
+usable median in some launch fails the job. A coverage loss alone has nothing to re-measure and fails as
+before. The re-runs are bounded: `plan` estimates them from the full run's own timings (iterations x time,
+which sums to the suite's wall time within a few percent, plus a second per benchmark per launch; a
+`/manual_time` benchmark reports less than it runs, so it counts 25x plus 5 s), and refuses, leaving the
+flags as regressions, past 10 minutes or past what the job's 45 minutes leave after a 5-minute margin.
+Since an estimate can still be short, the launches also share a hard deadline at that budget: each runs
+under `timeout` with what's left, and a launch that hits it, or a budget gone before the next launch,
+stops the re-measurement with the flags standing, says so, and still writes the summary and artifact
+(#3508). A typical flag of a few ns-scale benchmarks (5-8 s each) costs under 3 minutes. The
+`benchmark-results` artifact holds the launches (`perf-data/launches/`), the combined run
+(`perf-data/benchmark-across-launches.json`) and its report. To do the same by hand after a local run:
+
+```bash
+python3 tools/check-benchmark-regression.py --baseline perf-data/linux-ci-baseline.json --current FIRST.json \
+    --threshold 40 --threshold-overrides perf-data/linux-ci-thresholds.json --regressions-out regressions.json
+filter=$(python3 tools/bench-across-launches.py plan --current FIRST.json --regressions regressions.json)
+for i in 1 2 3 4; do ./tools/bench.sh benchmark -- --benchmark_filter="$filter"; done   # note each RESULT=
+python3 tools/bench-across-launches.py combine --first FIRST.json --regressions regressions.json \
+    --baseline perf-data/linux-ci-baseline.json --output combined.json LAUNCH-2.json LAUNCH-3.json ...
+python3 tools/check-benchmark-regression.py --baseline perf-data/linux-ci-baseline.json --current combined.json \
+    --threshold 40 --threshold-overrides perf-data/linux-ci-thresholds.json
+```
+
+The script is plain Python, so `bench.ps1` runs can use it the same way.
 
 This is a *separate* baseline from `perf-data/linux-baseline.json` above, deliberately: that one was
 recorded on a developer machine, and comparing it with hosted `ubuntu-24.04` runners flagged the machine

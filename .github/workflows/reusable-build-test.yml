@@ -252,6 +252,7 @@ jobs:
         run: cmake --build --preset ${{ inputs.build_type }}
 
       - name: Build (Windows)
+        id: build-windows
         if: runner.os == 'Windows' && inputs.build
         shell: pwsh
         env:
@@ -302,14 +303,22 @@ jobs:
       # tasksmack-helper's privilege drop and seccomp filter, as root (#3058). TasksmackHelperRootTest skips
       # unless it runs as root, and the runner's passwordless sudo is the only root CI has: without this
       # step the helper's drop to 65534 with four capabilities ran only when the maintainer ran it by hand.
-      # A skip fails the step as well, so a root run that quietly skips can't pass.
+      # A skip fails the step as well, so a root run that quietly skips can't pass. DetachedSpawnTest.AsRoot*
+      # (#3298, #3491) runs here too: a RunAs's supplementary groups need root to set, and it ran only in
+      # heavy-checks' coverage pass before. TASKSMACK_CI_REAL_SYSTEM lets TasksmackHelperRootTest.ActsOnARealUnitUnderItsSandbox
+      # (#3491) create, drive and remove a runtime unit on this disposable runner; it skips anywhere else.
       - name: Helper root test (Linux)
         if: runner.os == 'Linux' && inputs.build && inputs.build_type == 'debug'
+        env:
+          TASKSMACK_CI_REAL_SYSTEM: '1'
         run: |
           set -o pipefail
-          sudo -E build/debug/tests/TaskSmackTests --gtest_filter='TasksmackHelperRootTest.*' 2>&1 | tee helper-root-test.log
-          if grep -q '\[  SKIPPED \]' helper-root-test.log || ! grep -q '\[  PASSED  \] 1 test' helper-root-test.log; then
-            echo "::error title=Helper root test::TasksmackHelperRootTest didn't run and pass as root"
+          # Named, not -E: this runner's sudo refuses to preserve the whole environment and ignores -E. The
+          # real-system guard reads these three (tests/Support/CiRealSystem.h).
+          sudo --preserve-env=TASKSMACK_CI_REAL_SYSTEM,GITHUB_ACTIONS,RUNNER_ENVIRONMENT \
+            build/debug/tests/TaskSmackTests --gtest_filter='TasksmackHelperRootTest.*:DetachedSpawnTest.AsRoot*' 2>&1 | tee helper-root-test.log
+          if grep -q '\[  SKIPPED \]' helper-root-test.log || ! grep -q '\[  PASSED  \] 3 tests' helper-root-test.log; then
+            echo "::error title=Helper root test::TasksmackHelperRootTest and DetachedSpawnTest.AsRoot* didn't all run and pass as root"
             exit 1
           fi
 
@@ -342,6 +351,47 @@ jobs:
           TASKSMACK_REQUIRE_DISPLAY: '1'
           GALLIUM_DRIVER: llvmpipe
         run: ctest --preset win-${{ inputs.build_type }} -j $env:NUMBER_OF_PROCESSORS --schedule-random --output-on-failure --timeout 60 --output-junit test-results.xml
+
+      # The CI real-system tests (#3489; tracker #3492): Realtime priority, Run new task, Compressed memory, Open
+      # file location and the elevated helper's session ends, on the real OS paths that otherwise had only fakes
+      # and a manual check. They change the machine, so tests/Support/CiRealSystem.h skips them unless
+      # TASKSMACK_CI_REAL_SYSTEM=1 on a GitHub-hosted runner (GITHUB_ACTIONS, RUNNER_ENVIRONMENT, which the runner
+      # sets): only this step asks, and the ctest above saw them skip. One process, so they run serially. The step
+      # fails when none ran, so a guard that stops seeing CI can't pass as a run of skips; each case's result is
+      # in the Job Summary and the artifact (ci-real-system-results.json).
+      - name: Real-system tests (Windows)
+        if: always() && runner.os == 'Windows' && runner.arch != 'ARM64' && inputs.build && steps.build-windows.outcome == 'success'
+        shell: pwsh
+        timeout-minutes: 10
+        env:
+          TASKSMACK_CI_REAL_SYSTEM: '1'
+          BUILD_DIR: build/win-${{ inputs.build_type }}
+        run: |
+          $results = "$env:BUILD_DIR/ci-real-system-results.json"
+          & "$env:BUILD_DIR/tests/TaskSmackTests.exe" --gtest_filter='CiRealSystem*' "--gtest_output=json:$results"
+          $code = $LASTEXITCODE
+          if (-not (Test-Path $results)) {
+            Write-Host "::error title=Real-system tests::TaskSmackTests wrote no results (exit $code)"
+            exit 1
+          }
+          $cases = (Get-Content -Raw $results | ConvertFrom-Json).testsuites | ForEach-Object { $suite = $_.name; $_.testsuite | ForEach-Object {
+            $why = if ($_.failures) { ($_.failures | ForEach-Object { $_.failure }) -join ' / ' } elseif ($_.skipped) { $_.skipped.message } else { '' }
+            [pscustomobject]@{ Test = "$suite.$($_.name)"; Result = $_.result; Failed = [bool]$_.failures; Note = (($why -split "`n")[0]) }
+          } }
+          "### CI real-system tests (Windows)`n" | Out-File -Append $env:GITHUB_STEP_SUMMARY
+          "| Test | Result | Note |`n|---|---|---|" | Out-File -Append $env:GITHUB_STEP_SUMMARY
+          foreach ($case in $cases) {
+            $result = if ($case.Failed) { 'FAILED' } else { $case.Result }
+            Write-Host "$($case.Test): $result $($case.Note)"
+            "| $($case.Test) | $result | $($case.Note -replace '\|', '/') |" | Out-File -Append $env:GITHUB_STEP_SUMMARY
+          }
+          $ran = @($cases | Where-Object { $_.Result -eq 'COMPLETED' }).Count
+          if ($ran -eq 0) {
+            Write-Host "::error title=Real-system tests::no CiRealSystem test ran: every one skipped or none exists, so the guard didn't see CI"
+            exit 1
+          }
+          Write-Host "$ran of $(@($cases).Count) CiRealSystem tests ran"
+          exit $code
 
       # windows-11-arm (arm64.yml) runs the same ctest, in two parts (#2832). On that runner, and never
       # on x64, pwsh itself (7.6.6, the version the windows-2025 image ships too) dies a few seconds
@@ -409,6 +459,7 @@ jobs:
             build/win-${{ inputs.build_type }}/test-results.xml
             build/win-${{ inputs.build_type }}/test-results-pwsh-script.xml
             build/win-${{ inputs.build_type }}/test-results-cases.xml
+            build/win-${{ inputs.build_type }}/ci-real-system-results.json
           retention-days: 5
 
       - name: Publish test results to Job Summary

@@ -2105,7 +2105,7 @@ Section buildNetworkAdaptersSection(const Platform::NetworkAdaptersInfo& network
         {
             rows.push_back(row(adapter.name + " MAC address", adapter.mac, NOT_REPORTED, true));
         }
-        // Windows only so far: Linux leaves these empty, so their rows are left out there.
+        // Rows only for an adapter with gateways (both platforms fill them; Linux since #2591).
         // Split like the addresses: local gateways a plain row, public ones an identifier row (#2191).
         std::string localGateways = joined(adapter.gateways, isLocalAddressText);
         std::string publicGateways = joined(adapter.gateways, isPublic);

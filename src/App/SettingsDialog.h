@@ -34,11 +34,11 @@ inline constexpr const char* PROCESS_ICONS_LABEL = "Show process icons";        
 inline constexpr const char* HIGHLIGHT_NEW_LABEL = "Highlight new and exited processes"; // #3060
 // Windows only (#1492): the opt-in UDP event trace.
 inline constexpr const char* UDP_EVENT_TRACE_LABEL = "Count UDP traffic per process";
-// The opt-in update check (#3093): shown where it is offered (not on Linux yet).
+// The opt-in update check (#3093): shown where it is offered (Windows and Linux).
 inline constexpr const char* CHECK_UPDATES_LABEL = "Check for updates daily";
 inline constexpr const char* CHECK_UPDATES_NOTE = "Asks GitHub once a day; nothing is downloaded.";
 inline constexpr const char* CHECK_NOW_LABEL = ICON_FA_ARROWS_ROTATE "  Check now";
-// Start at sign-in (#3093, part 2): shown where it is offered (Windows; not on Linux yet).
+// Start at sign-in (#3093, part 2): shown where it is offered (Windows and Linux).
 inline constexpr const char* START_AT_LOGIN_LABEL = "Start TaskSmack when I sign in";
 inline constexpr const char* REPAIR_START_AT_LOGIN_LABEL = ICON_FA_WRENCH "  Repair##StartAtLogin";
 

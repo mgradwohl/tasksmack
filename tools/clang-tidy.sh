@@ -19,6 +19,7 @@ BUILD_NAME=""    # debug, relwithdebinfo or another configure preset, as given
 BUILD_DIR_ARG="" # --build-dir DIR, as given
 VERBOSE=false
 JOBS=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+JOBS_ARG="" # -j N, as given
 CHANGED_ONLY=false
 CACHE_DIR=""
 FILES=()
@@ -72,7 +73,7 @@ while [[ $# -gt 0 ]]; do
                 echo "Error: $1 requires a positive integer" >&2
                 exit 1
             fi
-            JOBS="$2"; shift 2 ;;
+            JOBS="$2"; JOBS_ARG="$2"; shift 2 ;;
         -c|--changed-only) CHANGED_ONLY=true; shift ;;
         --cache-dir)
             if [[ $# -lt 2 ]]; then
@@ -94,13 +95,40 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-PYTHON_EXE=$(command -v python3 2>/dev/null || command -v python 2>/dev/null || echo "")
+# shellcheck source=tools/common.sh
+source "$SCRIPT_DIR/common.sh"
+
+# The project's Python (find_python: the venv, then 3.14+ on PATH), else any python3 or python that
+# actually starts. Starting it rules out the Microsoft Store's python3/python stub on Windows, which
+# is on PATH but only prints "Python was not found" (#3500).
+PYTHON_EXE="$(find_python 2>/dev/null || true)"
+if [[ -z "$PYTHON_EXE" ]]; then
+    for candidate in python3 python; do
+        if command -v "$candidate" &>/dev/null && "$candidate" -c '' &>/dev/null; then
+            PYTHON_EXE="$(command -v "$candidate")"
+            break
+        fi
+    done
+fi
 
 # Print the binaryDir of configure preset $1, from CMakePresets.json and CMakeUserPresets.json (and
 # their includes): its own or the first one its inherits chain gives, with the macros expanded.
 # Fails, printing nothing, for a name that isn't a visible configure preset with a binaryDir.
 resolve_preset_binary_dir() {
-    "$PYTHON_EXE" -I -X utf8 - "$PROJECT_ROOT" "$1" <<'PY'
+    # The checkout's path as this Python reads it. A native Windows Python (sys.platform win32: the
+    # Windows venv's python.exe, or python.org's) needs C:\...: Cygwin passes /cygdrive/c/... to it
+    # unconverted, and Git Bash/MSYS2 would convert /c/... anyway, so convert explicitly in every
+    # Windows shell. A POSIX Python (Linux, or Cygwin's and MSYS2's own) reads the POSIX path as is.
+    local root="$PROJECT_ROOT" platform
+    case "${OSTYPE:-}" in
+        msys* | cygwin*)
+            platform="$(strip_native_output "$("$PYTHON_EXE" -I -c 'import sys; print(sys.platform)' 2>/dev/null || true)")"
+            if [[ "$platform" == win32 ]]; then
+                root="$(cygpath -w "$PROJECT_ROOT")"
+            fi
+            ;;
+    esac
+    "$PYTHON_EXE" -I -X utf8 - "$root" "$1" <<'PY'
 import json, os, re, sys
 
 root, name = sys.argv[1], sys.argv[2]
@@ -153,6 +181,82 @@ value = re.sub(r"\$p?env\{(\w+)\}", lambda m: os.environ.get(m.group(1), ""), va
 print(os.path.normpath(os.path.join(root, value)))
 PY
 }
+
+# On Windows (Git Bash, MSYS2, Cygwin) run tools/clang-tidy.ps1, the script CI's Windows clang-tidy
+# runs, with the same options (#3500). This script's Linux settings miss every Windows header
+# finding there: its exclude filter drops src/Platform/Windows/, its header filter is rooted at the
+# /c/... form of the checkout that clang-tidy never reports, and it lacks the Windows check exclusion.
+# debug and relwithdebinfo mean build/win-<type>; win-debug and win-relwithdebinfo are taken too.
+run_windows_clang_tidy() {
+    local pwsh_exe
+    pwsh_exe="$(command -v pwsh || true)"
+    if [[ -z "$pwsh_exe" ]]; then
+        echo "Error: on Windows this script runs tools/clang-tidy.ps1, which needs PowerShell 7 (pwsh) on PATH" >&2
+        exit 1
+    fi
+    # PowerShell single-quoted literal: ' doubles.
+    psq() { printf "'%s'" "${1//\'/\'\'}"; }
+    winpath() { cygpath -w "$1"; }
+
+    local -a ps_args=()
+    local build_dir="$BUILD_DIR_ARG"
+    if [[ -n "$build_dir" && -n "$BUILD_NAME" ]]; then
+        echo "Error: give a build type or preset ($BUILD_NAME) or --build-dir, not both" >&2
+        exit 1
+    fi
+    case "$BUILD_NAME" in
+        "") ;;
+        debug | win-debug) ps_args+=(-BuildType debug) ;;
+        relwithdebinfo | win-relwithdebinfo) ps_args+=(-BuildType relwithdebinfo) ;;
+        *)
+            if [[ -z "$PYTHON_EXE" ]] || ! build_dir="$(resolve_preset_binary_dir "$BUILD_NAME")" || [[ -z "$build_dir" ]]; then
+                echo "Error: Unknown argument: $BUILD_NAME (not an option, a .cpp/.h file, or a configure preset with a binaryDir; looking a preset up needs python)" >&2
+                usage 1
+            fi
+            # Windows Python's print() ends the line with CRLF; $(...) strips only the LF in some bash builds.
+            build_dir="$(strip_native_output "$build_dir")"
+            ;;
+    esac
+    if [[ -n "$build_dir" ]]; then
+        if [[ ! -d "$build_dir" ]]; then
+            echo "Error: --build-dir $build_dir: no such directory" >&2
+            exit 1
+        fi
+        ps_args+=(-BuildDir "$(psq "$(winpath "$build_dir")")")
+    fi
+    if $VERBOSE; then ps_args+=(-ShowDetails); fi
+    if $CHANGED_ONLY; then ps_args+=(-ChangedOnly); fi
+    if [[ -n "$JOBS_ARG" ]]; then ps_args+=(-Jobs "$JOBS_ARG"); fi
+    if [[ -n "$CACHE_DIR" ]]; then ps_args+=(-CacheDir "$(psq "$(winpath "$CACHE_DIR")")"); fi
+    if [[ ${#FILES[@]} -gt 0 ]]; then
+        local list="" f
+        for f in "${FILES[@]}"; do
+            # Relative paths stay relative: clang-tidy.ps1 resolves them against the checkout, as here.
+            if [[ "$f" = /* ]]; then f="$(winpath "$f")"; fi
+            list+="${list:+,}$(psq "$f")"
+        done
+        ps_args+=(-Files "$list")
+    fi
+    local script
+    script="$(psq "$(winpath "$SCRIPT_DIR/clang-tidy.ps1")")"
+    # -Command, not -File: -File can't pass a list to -Files. The arguments are literals quoted above.
+    # Fail closed: a bare "exit \$LASTEXITCODE" exits 0 when the script never sets it (a parameter
+    # binding failure, a missing script, a run that ends without exit). Here an error that stops the
+    # script exits 1, a nonzero exit code is passed on, and 0 is success only when clang-tidy.ps1's
+    # Exit-Tidy recorded it; anything else exits 1.
+    local wrapper
+    wrapper="\$ErrorActionPreference = 'Stop'
+\$global:TaskSmackClangTidyExit = \$null
+try { & $script ${ps_args[*]}; \$code = \$LASTEXITCODE }
+catch { [Console]::Error.WriteLine((\$_ | Out-String)); exit 1 }
+if (\$code) { exit [int]\$code }
+if (\$global:TaskSmackClangTidyExit -ne 0) { [Console]::Error.WriteLine('clang-tidy.ps1 ended without a result'); exit 1 }
+exit 0"
+    MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL="*" exec "$pwsh_exe" -NoLogo -NoProfile -Command "$wrapper"
+}
+case "${OSTYPE:-}" in
+    msys* | cygwin*) run_windows_clang_tidy ;;
+esac
 
 # Where the compile database comes from. debug and relwithdebinfo use build/<type>, which this
 # script configures when needed, and write the stripped copy to build/<type>/clang-tidy-compdb, as
@@ -219,9 +323,6 @@ sanitize_compile_commands() {
         -e 's/-Xclang -fno-pch-timestamp//g' \
         "$1" > "$2"
 }
-
-# shellcheck source=tools/common.sh
-source "$SCRIPT_DIR/common.sh"
 
 # Find clang-tidy: the CI-pinned LLVM's (/usr/lib/llvm-23/bin) before an unversioned one on PATH, so
 # a machine with only clang-tidy-23 installed (no unversioned symlink) still finds it.
@@ -309,7 +410,9 @@ COMPILE_COMMANDS_DIR_IN_USE="$TIDY_COMPDB_DIR"
 if [[ ${#FILES[@]} -eq 0 ]]; then
     if [[ "$CHANGED_ONLY" == "true" ]]; then
         # Files this branch changes (committed, staged, unstaged, untracked); see list_changed_files
-        mapfile -t CHANGED_FILES < <(list_changed_files "$PROJECT_ROOT" | grep -E '\.(cpp|h)$' | grep -v 'Platform/Windows/' || true)
+        # Not tests/tools/fixtures/: test fixtures with deliberate findings, analyzed only when named.
+        mapfile -t CHANGED_FILES < <(list_changed_files "$PROJECT_ROOT" | grep -E '\.(cpp|h)$' | grep -v 'Platform/Windows/' \
+            | grep -v '^tests/tools/fixtures/' || true)
         if [[ ${#CHANGED_FILES[@]} -eq 0 ]]; then
             echo "No changed C++ files found."
             exit 0

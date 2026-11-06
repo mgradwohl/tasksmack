@@ -1,0 +1,15 @@
+7f3a1c028000-7f3a1c1bd000 r-xp 00028000 08:01 1835   /usr/lib/libc.so.6
+Size:               1620 kB
+Rss:                1200 kB
+Pss:                  40 kB
+Shared_Clean:       1196 kB
+Shared_Dirty:          0 kB
+Private_Clean:         4 kB
+Private_Dirty:         0 kB
+Swap:                  0 kB
+SwapPss:               0 kB
+VmFlags: rd ex mr mw me sd
+7ffd5a1f0000-7ffd5a211000 rw-p 00000000 00:00 0    [stack]
+Rss:  132 kB
+7f3a1e000000-7f3a1e001000 rw-s 00000000 00:01 2048 /memfd:jit (deleted)
+Rss: 4 kB
