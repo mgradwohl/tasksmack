@@ -2067,9 +2067,12 @@ namespace Detail
         const std::uint8_t kind = reader.u8();
         if (kind > static_cast<std::uint8_t>(MemoryMappingKind::Other))
         {
-            reader.fail();
+            reader.fail(); // never cast a byte past the enum: the mapping keeps its default kind
         }
-        mapping.kind = static_cast<MemoryMappingKind>(kind);
+        else
+        {
+            mapping.kind = static_cast<MemoryMappingKind>(kind);
+        }
         mapping.path = reader.text();
         mapping.fileOffset = reader.u64();
         const std::uint8_t present = reader.u8();
