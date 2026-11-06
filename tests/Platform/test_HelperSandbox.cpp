@@ -148,6 +148,11 @@ TEST_F(HelperSandboxTest, ItsOwnJobStillWorks)
 // refusal can't be the flag's.
 TEST_F(HelperSandboxTest, OnlyNormalBatchAndIdleSchedulingPoliciesAreSet)
 {
+    // Leaving Idle needs CAP_SYS_NICE or RLIMIT_NICE, filter or not: a runner under Idle can't run the positive checks.
+    if ((::sched_getscheduler(0) & ~SCHED_RESET_ON_FORK) == SCHED_IDLE)
+    {
+        GTEST_SKIP() << "the test runner is under SCHED_IDLE";
+    }
     EXPECT_EQ(underFilter(HelperSandbox::Mode::Enforce,
                           []
                           {
