@@ -1142,9 +1142,15 @@ TEST(TasksmackHelperRootTest, KeepsOnlyItsCapabilitiesAndServesEveryRequestOnAno
 // #3491 item 5: Close connection through the real helper on another user's socket. A child running as OTHER_USER
 // connects to a loopback listener this test holds; the helper, dropped to its kept capabilities under the
 // enforcing filter, copies the child's descriptor (pidfd_getfd) and shuts it down, so this end reads end of file.
-// Root only (CI's root step); it changes nothing outside the test.
+// Root, on a disposable CI runner only (CI's root step).
 TEST(TasksmackHelperRootTest, ClosesAnotherUsersTcpConnection)
 {
+    // Real-system tests run only on a disposable GitHub-hosted runner, never under sudo on a developer machine,
+    // in WSL or on a self-hosted runner (#3491, #3489).
+    if (const std::optional<std::string> why = ::TestSupport::ciRealSystemSkipReason())
+    {
+        GTEST_SKIP() << *why;
+    }
     if (::geteuid() != 0)
     {
         GTEST_SKIP() << "Needs root: sudo build/debug/tests/TaskSmackTests --gtest_filter='TasksmackHelperRootTest.*'";
