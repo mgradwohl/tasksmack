@@ -1,5 +1,6 @@
 #include "IconTextureCache.h"
 
+#include "Core/GraphicsReset.h"
 #include "Domain/LruMap.h"
 
 #include <glad/gl.h>
@@ -59,7 +60,8 @@ IconTextureBackend IconTextureBackend::openGL()
     };
 }
 
-IconTextureCache::IconTextureCache(std::size_t capacity, IconTextureBackend backend) : m_Backend(std::move(backend)), m_Textures(capacity)
+IconTextureCache::IconTextureCache(std::size_t capacity, IconTextureBackend backend)
+    : m_Backend(std::move(backend)), m_Textures(capacity), m_ContextGeneration(Core::graphicsContextGeneration())
 {}
 
 IconTextureCache::~IconTextureCache()
@@ -74,6 +76,7 @@ IconTextureCache::~IconTextureCache()
 
 std::uint32_t IconTextureCache::texture(std::uint64_t iconId, int width, int height, std::span<const std::uint8_t> rgba)
 {
+    forgetIfContextReplaced();
     if (const std::uint32_t* existing = m_Textures.find(iconId); existing != nullptr)
     {
         return *existing;
@@ -87,8 +90,20 @@ std::uint32_t IconTextureCache::texture(std::uint64_t iconId, int width, int hei
     return made;
 }
 
+void IconTextureCache::forgetIfContextReplaced()
+{
+    if (const std::uint64_t generation = Core::graphicsContextGeneration(); generation != m_ContextGeneration)
+    {
+        // A GPU reset replaced the context (#3484): the textures went with it, and their names may
+        // already belong to the new context's objects, so they are forgotten, not deleted.
+        m_Textures.clear();
+        m_ContextGeneration = generation;
+    }
+}
+
 void IconTextureCache::clear()
 {
+    forgetIfContextReplaced();
     if (m_Backend.destroy)
     {
         m_Textures.forEach(

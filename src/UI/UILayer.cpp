@@ -174,6 +174,7 @@ void UILayer::onAttach()
         }
         // LCOV_EXCL_STOP
         backendsInitialized = true;
+        m_RendererReady = true;
 
         // Seed the cached pixel size and set the initial OpenGL viewport.
         // All subsequent resize-driven glViewport calls happen in onEvent(WindowResizedEvent),
@@ -209,7 +210,13 @@ void UILayer::onDetach()
 {
     spdlog::info("Shutting down ImGui");
 
-    ImGui_ImplOpenGL3_Shutdown();
+    // Not after a GPU reset whose replacement context could not be made (#3484): the renderer is
+    // already shut down then.
+    if (m_RendererReady)
+    {
+        ImGui_ImplOpenGL3_Shutdown();
+        m_RendererReady = false;
+    }
     ImGui_ImplSDL3_Shutdown();
     ImPlot::DestroyContext();
     // The fonts go with the context's atlas: Theme must not keep pointers to them, and caches keyed on
@@ -217,6 +224,41 @@ void UILayer::onDetach()
     Theme::get().clearFontRegistrations();
     ImGui::DestroyContext();
 }
+
+// LCOV_EXCL_START - runs only after a GPU reset, which no test can cause (#3484)
+void UILayer::onGraphicsContextLost()
+{
+    // The renderer's shader, buffers and textures were in the lost context. Shutting it down marks
+    // ImGui's textures (the font atlas) destroyed, so the next frame makes them again.
+    if (m_RendererReady)
+    {
+        ImGui_ImplOpenGL3_Shutdown();
+        m_RendererReady = false;
+    }
+}
+
+void UILayer::onGraphicsContextRestored()
+{
+    if (!ImGui_ImplOpenGL3_Init("#version 330 core"))
+    {
+        // Init fails only without OpenGL 3, which the replacement context has, as the first one did.
+        throw std::runtime_error("Failed to initialize the ImGui OpenGL 3 renderer backend on the new context");
+    }
+    // Running from here on, so a failure below leaves it for onGraphicsContextLost() to shut down.
+    m_RendererReady = true;
+    // Init() makes no GL objects; NewFrame() would make them and only assert on a failure. Made here,
+    // a shader that won't compile or link on the new context fails the replacement instead (#3484).
+    if (!ImGui_ImplOpenGL3_CreateDeviceObjects())
+    {
+        throw std::runtime_error("The ImGui OpenGL 3 renderer's shaders or buffers could not be made on the new context");
+    }
+    // The viewport belongs to the context too.
+    if (m_CachedPixelW > 0 && m_CachedPixelH > 0)
+    {
+        glViewport(0, 0, m_CachedPixelW, m_CachedPixelH);
+    }
+}
+// LCOV_EXCL_STOP
 
 void UILayer::onRender()
 {
@@ -310,7 +352,12 @@ void UILayer::onEvent(Core::Event& event)
             {
                 m_CachedPixelW = w;
                 m_CachedPixelH = h;
-                Core::traceResizePerfVoid(Core::ResizePerfOperation::Viewport, w, h, [&] { glViewport(0, 0, w, h); });
+                // Not while the renderer is down after a GPU reset (#3484): there is no working context;
+                // onGraphicsContextRestored() sets the viewport from the size kept here.
+                if (m_RendererReady)
+                {
+                    Core::traceResizePerfVoid(Core::ResizePerfOperation::Viewport, w, h, [&] { glViewport(0, 0, w, h); });
+                }
             }
             return false; // Do not consume; other layers may need the resize notification
         });

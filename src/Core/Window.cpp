@@ -1,6 +1,7 @@
 #include "Window.h"
 
 #include "Core/GraphicsHostInfo.h"
+#include "Core/GraphicsReset.h"
 #include "Core/OpenGLRequirement.h"
 #include "Core/ResizePerfOperation.h"
 #include "Core/SwapInterval.h"
@@ -18,6 +19,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <iterator>
 #include <optional>
 #include <span>
@@ -64,6 +66,41 @@ constexpr float PIXEL_DENSITY_EPSILON = 1e-3F;
     // OpenGL returns a byte pointer (GLubyte*); treat it as a C-string for logging only.
     const auto* chars = reinterpret_cast<const char*>(bytes); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
     return {chars};
+}
+
+// GraphicsReset.h keeps these without a loader; they must be the real ones.
+static_assert(GL_RESET_STATUS_NO_ERROR == GL_NO_ERROR);
+static_assert(GL_RESET_STATUS_GUILTY == GL_GUILTY_CONTEXT_RESET);
+static_assert(GL_RESET_STATUS_INNOCENT == GL_INNOCENT_CONTEXT_RESET);
+static_assert(GL_RESET_STATUS_UNKNOWN == GL_UNKNOWN_CONTEXT_RESET);
+static_assert(GL_LOSE_CONTEXT_ON_RESET_STRATEGY == GL_LOSE_CONTEXT_ON_RESET);
+// gladVersionMeetsRequirement() reads GLAD's encoding of the version it loaded.
+// NOLINTBEGIN(readability-math-missing-parentheses) - GLAD_MAKE_VERSION's own expansion
+static_assert(gladVersionMeetsRequirement(GLAD_MAKE_VERSION(REQUIRED_GL_MAJOR, REQUIRED_GL_MINOR)));
+static_assert(!gladVersionMeetsRequirement(GLAD_MAKE_VERSION(REQUIRED_GL_MAJOR, REQUIRED_GL_MINOR - 1)));
+// NOLINTEND(readability-math-missing-parentheses)
+
+/// Whether the current context reports a GPU reset through glGetGraphicsResetStatus() (#3484): it
+/// was made with GL_LOSE_CONTEXT_ON_RESET, and one of the entry points is loaded. Asked only when
+/// the context has robustness, where GL_RESET_NOTIFICATION_STRATEGY is a valid query.
+[[nodiscard]] bool currentContextReportsReset() noexcept
+{
+    const bool hasRobustness = GLAD_GL_KHR_robustness != 0 || GLAD_GL_ARB_robustness != 0;
+    if (!hasRobustness || (glGetGraphicsResetStatus == nullptr && glGetGraphicsResetStatusARB == nullptr))
+    {
+        return false;
+    }
+    GLint strategy = 0;
+    glGetIntegerv(GL_RESET_NOTIFICATION_STRATEGY, &strategy);
+    return std::cmp_equal(strategy, GL_LOSE_CONTEXT_ON_RESET_STRATEGY);
+}
+
+/// Asks SDL for the next context to report a GPU reset (GL_LOSE_CONTEXT_ON_RESET), as the window's
+/// first context and a replacement both are (#3484). A driver without WGL/GLX_ARB_create_context_robustness
+/// ignores it.
+void requestResetNotification() noexcept
+{
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_RESET_NOTIFICATION, SDL_GL_CONTEXT_RESET_LOSE_CONTEXT);
 }
 
 /// Whether {a Windows key, the Down arrow} are held right now: the shell's Win+Down (#1279). Never
@@ -542,6 +579,9 @@ Window::Window(WindowSpecification spec) : m_Spec(std::move(spec))
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 0);
     SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 0);
+    // Report a GPU reset (a Windows TDR) rather than carry on degraded: Application replaces the
+    // context when one happens (#3484, Core/GraphicsReset.h).
+    requestResetNotification();
 
     // Create window flags
     SDL_WindowFlags windowFlags = SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
@@ -566,6 +606,13 @@ Window::Window(WindowSpecification spec) : m_Spec(std::move(spec))
 
     m_GLContext = SDL_GL_CreateContext(m_Handle);
     // LCOV_EXCL_START - needs SDL or OpenGL setup to fail, which no test display can be made to do (#3221)
+    if (m_GLContext == nullptr)
+    {
+        // A driver that refuses the reset notification still gets a context, one that can't report a reset.
+        spdlog::warn("OpenGL context with reset notification failed ({}); trying without", SDL_GetError());
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_RESET_NOTIFICATION, SDL_GL_CONTEXT_RESET_NO_NOTIFICATION);
+        m_GLContext = SDL_GL_CreateContext(m_Handle);
+    }
     if (m_GLContext == nullptr)
     {
         spdlog::critical("Failed to create OpenGL context: {}", SDL_GetError());
@@ -606,6 +653,8 @@ Window::Window(WindowSpecification spec) : m_Spec(std::move(spec))
     spdlog::info("  Vendor: {}", m_GLInfo.glVendor);
     spdlog::info("  Renderer: {}", m_GLInfo.glRenderer);
     spdlog::info("  Version: {}", m_GLInfo.glVersion);
+    m_ReportsGraphicsReset = currentContextReportsReset();
+    spdlog::info("  Reports a GPU reset: {}", m_ReportsGraphicsReset);
 
     // SDL can hand back an older context than the one requested (GDI Generic's OpenGL 1.1 on a PC with
     // no GPU driver), and GLAD loads it without complaint: stop here with a message, rather than crash
@@ -691,6 +740,61 @@ void Window::swapBuffers() const
 {
     SDL_GL_SwapWindow(m_Handle);
 }
+
+std::uint32_t Window::graphicsResetStatus() const noexcept
+{
+    if (!m_ReportsGraphicsReset)
+    {
+        return GL_RESET_STATUS_NO_ERROR;
+    }
+    // LCOV_EXCL_START - a GPU reset can't be made to happen in a test; GraphicsResetMonitor's handling of one is tested
+    if (glGetGraphicsResetStatus != nullptr)
+    {
+        return glGetGraphicsResetStatus();
+    }
+    return glGetGraphicsResetStatusARB();
+    // LCOV_EXCL_STOP
+}
+
+// LCOV_EXCL_START - runs only after a GPU reset, which no test can cause (#3484)
+bool Window::recreateGLContext()
+{
+    // The new context first, so a failure leaves the old one (lost, but still a context) in place.
+    requestResetNotification();
+    SDL_GLContext replacement = SDL_GL_CreateContext(m_Handle);
+    if (replacement == nullptr)
+    {
+        spdlog::error("Replacing the OpenGL context after a GPU reset failed: {}", SDL_GetError());
+        static_cast<void>(SDL_GL_MakeCurrent(m_Handle, m_GLContext));
+        return false;
+    }
+    // SDL_GL_CreateContext() made the replacement current.
+    SDL_GL_DestroyContext(m_GLContext);
+    m_GLContext = replacement;
+    // The swap interval belongs to the context: the restore's setVSync() sets it on the new one (#3511).
+    forgetSwapInterval();
+    if (!SDL_GL_MakeCurrent(m_Handle, m_GLContext))
+    {
+        spdlog::error("Making the replacement OpenGL context current failed: {}", SDL_GetError());
+        return false;
+    }
+    // The same pixel format and driver, but the entry points are reloaded for the new context.
+    const int version =
+        gladLoadGL(reinterpret_cast<GLADloadfunc>(SDL_GL_GetProcAddress)); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+    // The constructor's check too: loading can succeed on a context older than the renderer needs.
+    if (!gladVersionMeetsRequirement(version))
+    {
+        spdlog::error("The replacement OpenGL context can't be used: {}",
+                      version == 0 ? std::string("loading OpenGL failed")
+                                   : unsupportedGLVersionMessage(glString(GL_VERSION), glString(GL_RENDERER), glString(GL_VENDOR)));
+        return false;
+    }
+    m_ReportsGraphicsReset = currentContextReportsReset();
+    spdlog::info(
+        "Replaced the OpenGL context after a GPU reset ({}); reports a GPU reset: {}", glString(GL_VERSION), m_ReportsGraphicsReset);
+    return true;
+}
+// LCOV_EXCL_STOP
 
 void Window::setVSync(bool enabled)
 {

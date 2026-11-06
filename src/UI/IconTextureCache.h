@@ -5,7 +5,10 @@
 // At most `capacity` textures are kept; the least recently drawn is deleted to make room, and every
 // one is deleted by clear() and the destructor. The texture calls go through a backend (OpenGL's by
 // default) so the tests count creations and deletions without a GL context
-// (tests/UI/test_IconTextureCache.cpp).
+// (tests/UI/test_IconTextureCache.cpp). After a GPU reset replaces the OpenGL context
+// (Core::graphicsContextGeneration() moves on, #3484) the textures it holds went with the old one:
+// the next texture() or clear() forgets them, without deleting names the new context may already
+// use, and texture() makes each icon's texture again as it is drawn.
 
 #include "Domain/LruMap.h"
 
@@ -56,8 +59,12 @@ class IconTextureCache
     }
 
   private:
+    /// Forgets every texture, deleting none, when the context they were made in has been replaced.
+    void forgetIfContextReplaced();
+
     IconTextureBackend m_Backend;
     Domain::LruMap<std::uint64_t, std::uint32_t> m_Textures;
+    std::uint64_t m_ContextGeneration; // Core::graphicsContextGeneration() the textures were made in
 };
 
 } // namespace UI
