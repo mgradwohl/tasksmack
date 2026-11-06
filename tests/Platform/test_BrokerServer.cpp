@@ -26,6 +26,7 @@
 #include "Platform/Linux/ProcStatusSecurityParser.h"
 #include "Platform/Linux/SystemdBus.h"
 #include "Platform/ScopedTempDir.h"
+#include "Support/CiRealSystem.h"
 
 #include <gtest/gtest.h>
 
@@ -1176,17 +1177,18 @@ TEST(TasksmackHelperRootTest, KeepsOnlyItsCapabilitiesAndServesEveryRequestOnAno
 // root, with systemd as PID 1; anywhere else it skips.
 TEST(TasksmackHelperRootTest, ActsOnARealUnitUnderItsSandbox)
 {
-    const char* ci = std::getenv("TASKSMACK_CI_REAL_SYSTEM"); // NOLINT(concurrency-mt-unsafe) - read once, before threads
-    if (ci == nullptr || std::string_view(ci) != "1" || ::geteuid() != 0 || !std::filesystem::is_directory("/run/systemd/system"))
+    // The disposable-runner guard the Windows real-system tests use (#3489): TASKSMACK_CI_REAL_SYSTEM=1 on a
+    // GitHub-hosted runner, never a developer machine, a self-hosted runner or WSL.
+    if (const std::optional<std::string> why = ::TestSupport::ciRealSystemSkipReason())
     {
-        GTEST_SKIP() << "Real-system test: CI only (TASKSMACK_CI_REAL_SYSTEM=1, as root, under systemd)";
+        GTEST_SKIP() << *why;
+    }
+    if (::geteuid() != 0 || !std::filesystem::is_directory("/run/systemd/system"))
+    {
+        GTEST_SKIP() << "Real-system test: needs root, under systemd";
     }
     const std::string unit = std::format("tasksmack-ci-{}.service", ::getpid());
     const std::filesystem::path file = std::filesystem::path("/run/systemd/system") / unit;
-    std::ofstream(file) << "[Unit]\nDescription=TaskSmack CI real-unit test (#3491)\n"
-                           "[Service]\nExecStart=/bin/sleep infinity\n"
-                           "[Install]\nWantedBy=multi-user.target\n";
-    ASSERT_EQ(std::system("systemctl daemon-reload"), 0); // NOLINT(cert-env33-c,concurrency-mt-unsafe) - CI only
     struct Cleanup
     {
         std::string unit;
@@ -1200,7 +1202,11 @@ TEST(TasksmackHelperRootTest, ActsOnARealUnitUnderItsSandbox)
             // NOLINTNEXTLINE(cert-env33-c,concurrency-mt-unsafe,bugprone-unused-return-value) - best effort, CI only
             static_cast<void>(std::system("systemctl daemon-reload"));
         }
-    } const cleanup{.unit = unit, .file = file};
+    } const cleanup{.unit = unit, .file = file}; // before anything that can fail, so a failed setup removes it too
+    std::ofstream(file) << "[Unit]\nDescription=TaskSmack CI real-unit test (#3491)\n"
+                           "[Service]\nExecStart=/bin/sleep infinity\n"
+                           "[Install]\nWantedBy=multi-user.target\n";
+    ASSERT_EQ(std::system("systemctl daemon-reload"), 0); // NOLINT(cert-env33-c,concurrency-mt-unsafe) - CI only
 
     SocketPair pair;
     ASSERT_TRUE(pair.valid());
