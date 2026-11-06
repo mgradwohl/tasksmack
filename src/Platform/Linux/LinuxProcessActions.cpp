@@ -336,7 +336,7 @@ runCancellable(const LinuxProcessSyscalls& syscalls, const std::vector<std::stri
 /// org.freedesktop.FileManager1.ShowItems([uri], "") on this user's session bus: Nautilus, Dolphin,
 /// Nemo, Caja, Thunar and PCManFM answer it with the file selected (#3064). False when there is no
 /// session bus or nothing answers in time.
-// LCOV_EXCL_START - opens the user's real file manager; tests fake it (LinuxProcessSyscalls::showItemInFileManager)
+// Tested against a fake FileManager1 on a private session bus (OpenFileLocationCallsShowItemsOnTheSessionBus, #3491).
 [[nodiscard]] bool showItemOverSessionBus(const std::string& uri)
 {
 #ifdef TASKSMACK_HAS_SDBUS
@@ -373,7 +373,6 @@ runCancellable(const LinuxProcessSyscalls& syscalls, const std::vector<std::stri
     return false;
 #endif
 }
-// LCOV_EXCL_STOP
 
 /// @p syscalls with the trace and dump calls a test left null filled in with the real ones;
 /// LinuxProcessControl fills in the thread listing the same way.
