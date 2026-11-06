@@ -255,11 +255,49 @@ int sendBurst(const UdpSocket& sender, const UdpSocket& receiver, const sockaddr
     return arrived;
 }
 
-/// This process's UDP counters in @p traffic; zeros when it isn't listed.
-[[nodiscard]] Platform::UdpProcessTraffic ownTraffic(const std::vector<Platform::UdpProcessTraffic>& traffic)
+/// This process's UDP counters in @p traffic; nullopt when it isn't listed (an empty sample: a consumer that stopped).
+[[nodiscard]] std::optional<Platform::UdpProcessTraffic> ownTraffic(const std::vector<Platform::UdpProcessTraffic>& traffic)
 {
     const auto found = std::ranges::find(traffic, static_cast<std::uint32_t>(GetCurrentProcessId()), &Platform::UdpProcessTraffic::pid);
-    return (found != traffic.end()) ? *found : Platform::UdpProcessTraffic{.pid = GetCurrentProcessId()};
+    if (found == traffic.end())
+    {
+        return std::nullopt;
+    }
+    return *found;
+}
+
+/// How long this process's counters must stay the same before the baseline is taken: several of the session's
+/// flushes (FLUSH_TIMER_SECONDS), so no warm-up event is still on its way.
+constexpr std::chrono::milliseconds QUIET_FOR{3'000};
+
+/// This process's counters once they have stayed the same for QUIET_FOR, within @p timeout, with nothing sent
+/// meanwhile: every warm-up event that will ever arrive has. nullopt when they never settle, or the process
+/// drops out of the sample.
+[[nodiscard]] std::optional<Platform::UdpProcessTraffic> settledTraffic(Platform::WindowsEtwNetCollector& collector,
+                                                                        std::chrono::milliseconds timeout)
+{
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    std::optional<Platform::UdpProcessTraffic> last = ownTraffic(collector.sample());
+    auto stableSince = std::chrono::steady_clock::now();
+    while (last.has_value() && std::chrono::steady_clock::now() < deadline)
+    {
+        std::this_thread::sleep_for(250ms);
+        const std::optional<Platform::UdpProcessTraffic> now = ownTraffic(collector.sample());
+        if (!now.has_value())
+        {
+            return std::nullopt;
+        }
+        if (now->bytesSent != last->bytesSent || now->bytesReceived != last->bytesReceived)
+        {
+            last = now;
+            stableSince = std::chrono::steady_clock::now();
+        }
+        else if (std::chrono::steady_clock::now() - stableSince >= QUIET_FOR)
+        {
+            return last;
+        }
+    }
+    return std::nullopt;
 }
 
 /// Whether an ETW session named @p name runs (ControlTraceW's query finds it).
@@ -305,29 +343,43 @@ TEST_F(CiRealSystemUdpTraceTest, TheSessionCountsThisProcesssLoopbackUdpAndIsGon
         ASSERT_FALSE(session.empty());
         EXPECT_TRUE(traceSessionRuns(session));
 
-        // Send until the session delivers its first event: the provider is enabled a moment after start().
+        // Send until the session counts this process: the provider is enabled a moment after start(), and
+        // isDelivering() turns true on any process's first event, not necessarily this one's.
         const auto deadline = std::chrono::steady_clock::now() + 30s;
-        while (!collector.isDelivering() && std::chrono::steady_clock::now() < deadline)
+        bool counted = false;
+        while (!counted && std::chrono::steady_clock::now() < deadline)
         {
             [[maybe_unused]] const int warmUp = sendBurst(sender, receiver, address);
             std::this_thread::sleep_for(200ms);
+            counted = ownTraffic(collector.sample()).has_value();
         }
         ASSERT_TRUE(collector.isDelivering()) << "the session never delivered a UDP event";
+        ASSERT_TRUE(counted) << "the session never counted this process's UDP";
 
-        // Then one counted burst: this process's counters grow by at least its bytes, both ways.
-        const Platform::UdpProcessTraffic before = ownTraffic(collector.sample());
+        // The warm-up's events may still be on their way, and would count toward the burst: so the baseline is
+        // taken only once this process's counters have stopped changing, with nothing sent. (Waiting for the whole
+        // warm-up volume can't work: what was sent before the provider was enabled is never seen.)
+        const std::optional<Platform::UdpProcessTraffic> settled = settledTraffic(collector, 30s);
+        ASSERT_TRUE(settled.has_value()) << "this process's UDP counters never settled, or it dropped out of the sample";
+        const Platform::UdpProcessTraffic before = settled.value_or(Platform::UdpProcessTraffic{});
+
+        // Then one counted burst: this process's cumulative counters reach at least the baseline plus its bytes, both
+        // ways. A sample without this process (a consumer that stopped) fails, never reads as zeros.
         ASSERT_EQ(sendBurst(sender, receiver, address), DATAGRAMS) << "a datagram wasn't sent or didn't arrive: " << WSAGetLastError();
         constexpr std::uint64_t BURST_BYTES = static_cast<std::uint64_t>(DATAGRAMS) * DATAGRAM_BYTES;
+        const std::uint64_t sentTarget = before.bytesSent + BURST_BYTES;
+        const std::uint64_t receivedTarget = before.bytesReceived + BURST_BYTES;
         Platform::UdpProcessTraffic after = before;
-        const auto counted = std::chrono::steady_clock::now() + 15s;
-        while ((after.bytesSent < before.bytesSent + BURST_BYTES || after.bytesReceived < before.bytesReceived + BURST_BYTES) &&
-               std::chrono::steady_clock::now() < counted)
+        const auto countedBy = std::chrono::steady_clock::now() + 15s;
+        while ((after.bytesSent < sentTarget || after.bytesReceived < receivedTarget) && std::chrono::steady_clock::now() < countedBy)
         {
             std::this_thread::sleep_for(250ms);
-            after = ownTraffic(collector.sample());
+            const std::optional<Platform::UdpProcessTraffic> now = ownTraffic(collector.sample());
+            ASSERT_TRUE(now.has_value()) << "this process dropped out of the UDP sample: the consumer stopped";
+            after = now.value_or(Platform::UdpProcessTraffic{});
         }
-        EXPECT_GE(after.bytesSent - before.bytesSent, BURST_BYTES);
-        EXPECT_GE(after.bytesReceived - before.bytesReceived, BURST_BYTES);
+        EXPECT_GE(after.bytesSent, sentTarget) << "baseline " << before.bytesSent;
+        EXPECT_GE(after.bytesReceived, receivedTarget) << "baseline " << before.bytesReceived;
         RecordProperty("udpBytesSent", std::to_string(after.bytesSent));
 
         collector.stop();
