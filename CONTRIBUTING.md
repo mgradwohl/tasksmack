@@ -1150,6 +1150,10 @@ Check formatting (no changes):
 pwsh tools/check-format.ps1    # Windows
 ```
 
+Both pairs take the C++ files under `src/`, `tests/` and `benchmarks/`, less any in a `build/` or `.git/` folder
+inside them, and fail when they find none: the folders above the checkout don't count, so one under a `build`
+folder is checked in full (#3528).
+
 ## Coverage
 
 Coverage reports are written to `coverage/` (gitignored).

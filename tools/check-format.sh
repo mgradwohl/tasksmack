@@ -45,15 +45,18 @@ if [[ -z "$CLANG_FORMAT" ]]; then
 fi
 warn_llvm_version_skew "$CLANG_FORMAT" clang-format
 
-SEARCH_DIRS=()
-for dir in "${FORMAT_DIRS[@]}"; do
-    SEARCH_DIRS+=("$PROJECT_ROOT/$dir")
-done
-
 FAILED=0
 FILE_COUNT=0
 
-while IFS= read -r -d '' file; do
+mapfile -d '' FILES < <(list_format_files "$PROJECT_ROOT")
+# None found is never a real result (a filter that matched the checkout's own path once passed with
+# "All 0 files", #3528), so it fails.
+if [[ ${#FILES[@]} -eq 0 ]]; then
+    echo "Error: no C++ sources found under ${PROJECT_ROOT} (${FORMAT_DIRS[*]})." >&2
+    exit 1
+fi
+
+for file in "${FILES[@]}"; do
     FILE_COUNT=$((FILE_COUNT + 1))
     if $VERBOSE; then
         echo "Checking: $(basename "$file")"
@@ -62,7 +65,7 @@ while IFS= read -r -d '' file; do
         echo "FAIL: $file"
         FAILED=$((FAILED + 1))
     fi
-done < <(find "${SEARCH_DIRS[@]}" -type f \( -name "*.cpp" -o -name "*.h" \) ! -path "*/build/*" ! -path "*/.git/*" -print0 2>/dev/null)
+done
 
 if [[ $FAILED -gt 0 ]]; then
     echo "$FAILED of $FILE_COUNT files need formatting."

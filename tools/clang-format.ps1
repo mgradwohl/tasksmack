@@ -57,10 +57,12 @@ if ($ChangedOnly) {
         exit 0
     }
 } else {
-    # Find all source files
-    $searchDirs = Get-FormatSourceDir -Root $ProjectRoot
-    $files = Get-ChildItem -Path $searchDirs -Recurse -Include "*.cpp", "*.h" -ErrorAction SilentlyContinue |
-             Where-Object { $_.FullName -notmatch "\\build\\" -and $_.FullName -notmatch "\\.git\\" }
+    # Find all source files; none found is never a real result (#3528)
+    $files = @(Get-FormatSourceFile -Root $ProjectRoot)
+    if ($files.Count -eq 0) {
+        Write-Error "No C++ sources found under $ProjectRoot (src, tests, benchmarks)."
+        exit 1
+    }
 }
 
 $fileCount = ($files | Measure-Object).Count

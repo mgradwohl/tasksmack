@@ -114,6 +114,54 @@ function Get-FormatSourceDir {
     return @('src', 'tests', 'benchmarks') | ForEach-Object { Join-Path $Root $_ }
 }
 
+# The C++ sources (*.cpp, *.h) the format scripts check and format: every one under
+# Get-FormatSourceDir, less any inside a build or .git directory. The pattern is matched against the
+# path relative to -Root, never the full path, so a checkout that itself sits under a folder named
+# build (C:\build\tasksmack) still finds its files (#3528). list_format_files in common.sh is the twin.
+function Get-FormatSourceFile {
+    [CmdletBinding()]
+    [OutputType([object[]])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root
+    )
+
+    $rootFull = [System.IO.Path]::GetFullPath($Root)
+    return @(Get-ChildItem -Path (Get-FormatSourceDir -Root $Root) -Recurse -File -Include '*.cpp', '*.h' -ErrorAction SilentlyContinue |
+            Where-Object { [System.IO.Path]::GetRelativePath($rootFull, $_.FullName) -notmatch '(^|[\\/])(build|\.git)[\\/]' })
+}
+
+# The -ignore-filename-regex llvm-cov gets in tools/coverage.ps1: generated and third-party sources
+# (any _deps or .cache directory) and the project's own build, tests and benchmarks directories. Those
+# three are anchored at -Root: llvm-cov matches the whole recorded path, so an unanchored "build" or
+# "tests" segment matched a checkout under such a folder and left every file out of the report (#3528).
+# The root matches with either separator and in any letter case, since the compiler may record it
+# either way. coverage_ignore_regex in common.sh is the twin.
+function Get-CoverageIgnoreRegex {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root
+    )
+
+    $rootPattern = [System.Text.StringBuilder]::new()
+    foreach ($ch in [System.IO.Path]::TrimEndingDirectorySeparator([System.IO.Path]::GetFullPath($Root)).ToCharArray()) {
+        $upper = [char]::ToUpperInvariant($ch)
+        $lower = [char]::ToLowerInvariant($ch)
+        if ($ch -eq [char]'\' -or $ch -eq [char]'/') {
+            [void]$rootPattern.Append('(\\|/)')
+        } elseif ($upper -cne $lower) {
+            [void]$rootPattern.Append("[$upper$lower]")
+        } elseif ('.^$|?*+()[]{}'.Contains($ch)) {
+            [void]$rootPattern.Append("\$ch")
+        } else {
+            [void]$rootPattern.Append($ch)
+        }
+    }
+    return "^$rootPattern(\\|/)(build|tests|benchmarks)(\\|/)|(\\|/)(_deps|\.cache)(\\|/)"
+}
+
 # List the files this branch changes, for the -ChangedOnly modes of clang-format.ps1 and
 # clang-tidy.ps1: everything that differs from the merge-base with origin/main (or local main) --
 # commits already on the branch, staged and unstaged edits -- plus untracked files that aren't
