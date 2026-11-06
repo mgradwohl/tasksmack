@@ -286,9 +286,15 @@ class HeavyChecksAcrossLaunchesTests(unittest.TestCase):
         # 4 s: the plan's estimate for one benchmark with no timed repetitions is 1 s a launch, 4 s in all.
         first = {**self.BASELINE, "BM_Big": 1600.0}
         launches = [{"BM_Big": 1000.0}] * 4
+        # The step's two clock reads (its start, then before launch 2) are the same second, so launch 2 gets the
+        # whole 4 s even when the real clock would tick between them. The real timeout still kills the launch.
+        now = int(time.time())
+        dates = self.tmp / "dates"
+        dates.write_text(f"{now}\n{now}\n", encoding="utf-8")
         started = time.monotonic()
-        check_exit, remeasure, outputs = self.gate(
-            first, launches, {"MAX_SECONDS": "4", "STUB_SLOW_LAUNCH": "2", "STUB_SLOW_SECONDS": "30"})
+        check_exit, remeasure, outputs = self.gate(first, launches, {
+            "MAX_SECONDS": "4", "STUB_SLOW_LAUNCH": "2", "STUB_SLOW_SECONDS": "30",
+            "JOB_START_EPOCH": str(now), "STUB_DATES": posix(dates)})
         self.assertLess(time.monotonic() - started, 25, "the slow launch was killed, not waited out")
         self.assertEqual(remeasure.returncode, 0, remeasure.stdout + remeasure.stderr)
         self.assertEqual(outputs["exit_code"], "1")
