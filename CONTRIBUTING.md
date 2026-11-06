@@ -1531,6 +1531,10 @@ is now held still rather than given a looser threshold:
   Under `bench.ps1`'s pinning each of the benchmark's threads gets a CPU of its own, and the model
   sits on cache lines of its own, since its placement decided how often the threads contended.
 
+The three `extra_readers:2` benchmarks still move between full runs: over three clean runs their
+median wait read 4.25-5.01 us (System), 4.21-5.05 us (Storage) and 4.74-8.83 us (GPU). A flag on
+one of them alone is still most likely noise (#3448).
+
 `check-benchmark-regression.py` prints the coverage line before any regressions, so a failing
 comparison still says how much it compared. Re-run a flagged benchmark with a filter before
 treating it as a regression.

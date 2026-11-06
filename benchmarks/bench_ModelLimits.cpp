@@ -420,9 +420,8 @@ void spinUntil(std::chrono::steady_clock::time_point deadline)
 ///
 /// Left to the scheduler, the four threads of an extra_readers:2 run (the measuring reader, the writer
 /// and two readers, all spinning) moved between bench.ps1's five performance cores as they blocked and
-/// woke on the publication lock, and each run settled into one of two patterns: 26-29% or 56-59% of the
-/// publication() calls uncontended, at 14-19 us or 35-48 us a call. That one choice moved the median
-/// 2-3x between runs of one binary.
+/// woke on the publication lock. Each on a CPU of its own, the spread of their repetitions within a run
+/// fell from a CV of 20-51% to 6-17%.
 class ConcurrentThreadPin
 {
   public:

@@ -12,7 +12,7 @@
 //    copies of the cached details, with no process handle opened. SnapshotReplay is the replay's own
 //    cost (a copy of the replayed bytes), to subtract from it. The replay has a fixed shape, not the
 //    machine's (#3448): the capture's first REPLAY_PROCESSES processes, each with REPLAY_THREADS threads
-//    (see replaySnapshot()), so the two time the same work from one run to the next.
+//    (see replayedSnapshot()), so the two time the same work from one run to the next.
 //  - EnumerateAtInterval/<ms>: the real enumerate() with the detail caches' clock moved on <ms> per
 //    call, as samples that far apart would see it: 0 keeps every cache warm (snapshot + parse), 1000
 //    is the default refresh interval (the light details read every sample, the heavy ones every
@@ -233,8 +233,9 @@ struct ReplayedSnapshot
 /// keeps the capture's first REPLAY_PROCESSES processes with REPLAY_THREADS thread records each, so
 /// its size and its parse no longer follow what else is running. A machine with fewer processes
 /// replays them all; the processes and snapshot_kib counters say what was replayed. Its bytes start on
-/// a page, and SnapshotReplay copies them to half a page further on, since with both left where the
-/// heap put them two full runs of one binary read 5.8 us and 7.0 us for the same 392 KiB.
+/// a page, and SnapshotReplay copies them to half a page further on, so where the heap put either
+/// buffer is no longer a difference between runs: with both left to the heap, two full runs of one
+/// binary read 5.8 us and 7.0 us for the same 392 KiB.
 [[nodiscard]] ReplayedSnapshot& replayedSnapshot()
 {
     static ReplayedSnapshot snapshot;
