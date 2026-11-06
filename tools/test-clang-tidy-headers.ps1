@@ -133,9 +133,17 @@ try {
     $realPython = foreach ($name in 'python', 'python3') {
         $command = Get-Command $name -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
         if (-not $command) { continue }
-        # Not "| Select-Object -First 1": stopping the pipeline early leaves $LASTEXITCODE unset.
-        $exe = @(& $command.Source -I -c 'import sys; print(sys.executable)' 2>$null)[0]
-        if ($LASTEXITCODE -eq 0 -and $exe -and (Test-Path -LiteralPath $exe)) { $exe; break }
+        # Not "| Select-Object -First 1": stopping the pipeline early leaves $LASTEXITCODE unset. And
+        # not indexed before the count is checked: the Store's python alias can print nothing, and
+        # [0] of an empty array throws under strict mode.
+        try {
+            $lines = @(& $command.Source -I -c 'import sys; print(sys.executable)' 2>$null)
+        } catch {
+            continue
+        }
+        if ($LASTEXITCODE -ne 0 -or $lines.Count -eq 0) { continue }
+        $exe = $lines[0]
+        if ($exe -and (Test-Path -LiteralPath $exe)) { $exe; break }
     }
     if ($realPython) {
         $shim = Join-Path $copy '.venv\bin\python'
