@@ -439,7 +439,8 @@ TEST_F(LinuxStartupTest, ListsTheEnabledSystemdUserUnitsReadOnly)
     EXPECT_EQ(agent->name, "agent");
     EXPECT_EQ(agent->location, StartupLocation::SystemdSystemUnit);
     EXPECT_EQ(agent->scope, StartupScope::Machine);
-    EXPECT_FALSE(agent->notSwitchableReason.empty()) << "enabled for every user: an administrator's";
+    // #3425: read-only here (no D-Bus call for it, and the helper writes no files); the row says how to switch it.
+    EXPECT_TRUE(agent->notSwitchableReason.contains("sudo systemctl --global disable agent.service")) << agent->notSwitchableReason;
 
     // #3425: the actions switch the user's own unit through the user manager, and refuse one enabled for every user.
     std::vector<std::string> switched;
@@ -450,7 +451,9 @@ TEST_F(LinuxStartupTest, ListsTheEnabledSystemdUserUnitsReadOnly)
                                     return StartupActionResult::succeeded();
                                 });
     EXPECT_EQ(actions.setEnabled(*backup, false).ok, HAS_SDBUS) << "without sd-bus it's refused before the user manager";
-    EXPECT_FALSE(actions.setEnabled(*agent, false).ok);
+    const StartupActionResult refused = actions.setEnabled(*agent, false);
+    EXPECT_FALSE(refused.ok);
+    EXPECT_TRUE(refused.message.contains("systemctl --global")) << refused.message;
     EXPECT_FALSE(actions.setEnabled(*syncd, false).ok) << "linked for every user too: not the user's to switch off";
     EXPECT_EQ(switched, HAS_SDBUS ? std::vector<std::string>{"disable backup.timer"} : std::vector<std::string>{});
 }

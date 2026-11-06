@@ -208,6 +208,15 @@ constexpr std::uintmax_t MAX_FILE_BYTES = std::uintmax_t{64} * 1024U;
     return true;
 }
 
+/// Why a systemd user unit enabled for every user (/etc/systemd/user) can't be switched here, and how an
+/// administrator switches it (#3425).
+[[nodiscard]] std::string allUsersUnitReason(std::string_view unit)
+{
+    return std::format("Enabled for every user in /etc/systemd/user: an administrator changes it with "
+                       "sudo systemctl --global disable {} (or enable)",
+                       unit);
+}
+
 /// The program a cron job starts and whether it is there.
 struct CronTarget
 {
@@ -621,10 +630,11 @@ void LinuxStartupProbe::addSystemdUnits(std::vector<StartupEntry>& entries) cons
         entry.scope = system ? StartupScope::Machine : StartupScope::User;
         entry.enabled = found.enabled; // linked into a .wants directory: that is what "enabled" is
         // The user's own: switched through the user manager, as systemctl --user does (#3425). One enabled for every
-        // user is an administrator's to change.
+        // user is an administrator's to change, and stays read-only here: systemd has no D-Bus call for it, and the
+        // helper writes no files (maintainer, 2026-11-06). The reason says how.
         if (found.owner == Owner::AllUsers)
         {
-            entry.notSwitchableReason = "Enabled for every user in /etc/systemd/user: an administrator changes it";
+            entry.notSwitchableReason = allUsersUnitReason(name);
         }
         else if (found.owner == Owner::Package)
         {
@@ -788,7 +798,7 @@ StartupActionResult LinuxStartupActions::setEnabled(const StartupEntry& entry, b
     }
     if (entry.location == StartupLocation::SystemdSystemUnit)
     {
-        return StartupActionResult::failed("Enabled for every user in /etc/systemd/user: an administrator changes it");
+        return StartupActionResult::failed(allUsersUnitReason(entry.registrationName));
     }
     const std::string& fileName = entry.registrationName;
     if (m_Dirs.user.empty())
