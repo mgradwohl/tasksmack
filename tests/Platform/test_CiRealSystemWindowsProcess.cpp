@@ -2,15 +2,15 @@
 // and a manual check. A window that stops answering reads as Not responding, and its wait chain leads to the
 // thread it waits on (#3084, #3211); the UDP trace counts a process's datagrams from a real ETW session and leaves
 // none behind (#1492); SeDebugPrivilege is enabled on a real token (#2128); the critical-process guard refuses
-// winlogon.exe with the real IsProcessCritical, its one changing call a fake (#2556); and the tests that skip
-// because the runner is elevated run again as a standard user. They need an elevated runner and change what runs on
+// a critical process with the real IsProcessCritical, its one changing call a fake (#2556); and the tests that skip
+// because the runner is elevated run again unelevated. They need an elevated runner and change what runs on
 // it, so they run only where CiRealSystem.h's guard lets them; each ends what it starts and puts back what it changes.
 
+#include "Core/Utf8Path.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IUdpTrafficCollector.h"
 #include "Platform/ProcessTypes.h"
 #include "Platform/WaitChain.h"
-#include "Platform/Windows/WinString.h"
 #include "Platform/Windows/WindowsDebugPrivilege.h"
 #include "Platform/Windows/WindowsEtwNetCollector.h"
 #include "Platform/Windows/WindowsHandles.h"
@@ -33,6 +33,7 @@
 #include <ws2tcpip.h>
 #include <windows.h>
 #include <evntrace.h>
+#include <tlhelp32.h>
 // clang-format on
 
 #include <algorithm>
@@ -231,20 +232,24 @@ class UdpSocket
 constexpr int DATAGRAMS = 50;
 constexpr int DATAGRAM_BYTES = 1000;
 
-/// Sends DATAGRAMS datagrams from @p sender to @p receiver's @p address and reads them back: how many arrived.
+/// Sends DATAGRAMS datagrams from @p sender to @p receiver's @p address, reading each back before the next is sent,
+/// so the receive buffer never holds more than one and none is dropped: how many were sent whole and arrived whole.
+/// A send or a receive that fails, or comes up short, ends the burst there.
 int sendBurst(const UdpSocket& sender, const UdpSocket& receiver, const sockaddr_in& address)
 {
     std::array<char, DATAGRAM_BYTES> payload{};
     payload.fill('u');
+    std::array<char, DATAGRAM_BYTES> buffer{};
+    int arrived = 0;
     for (int i = 0; i < DATAGRAMS; ++i)
     {
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - Winsock takes a sockaddr
-        sendto(sender.get(), payload.data(), DATAGRAM_BYTES, 0, reinterpret_cast<const sockaddr*>(&address), sizeof(address));
-    }
-    int arrived = 0;
-    std::array<char, DATAGRAM_BYTES> buffer{};
-    while (arrived < DATAGRAMS && recv(receiver.get(), buffer.data(), DATAGRAM_BYTES, 0) == DATAGRAM_BYTES)
-    {
+        const int sent =
+            sendto(sender.get(), payload.data(), DATAGRAM_BYTES, 0, reinterpret_cast<const sockaddr*>(&address), sizeof(address));
+        if (sent != DATAGRAM_BYTES || recv(receiver.get(), buffer.data(), DATAGRAM_BYTES, 0) != DATAGRAM_BYTES)
+        {
+            break;
+        }
         ++arrived;
     }
     return arrived;
@@ -311,7 +316,7 @@ TEST_F(CiRealSystemUdpTraceTest, TheSessionCountsThisProcesssLoopbackUdpAndIsGon
 
         // Then one counted burst: this process's counters grow by at least its bytes, both ways.
         const Platform::UdpProcessTraffic before = ownTraffic(collector.sample());
-        ASSERT_EQ(sendBurst(sender, receiver, address), DATAGRAMS);
+        ASSERT_EQ(sendBurst(sender, receiver, address), DATAGRAMS) << "a datagram wasn't sent or didn't arrive: " << WSAGetLastError();
         constexpr std::uint64_t BURST_BYTES = static_cast<std::uint64_t>(DATAGRAMS) * DATAGRAM_BYTES;
         Platform::UdpProcessTraffic after = before;
         const auto counted = std::chrono::steady_clock::now() + 15s;
@@ -422,31 +427,58 @@ class CiRealSystemCriticalProcessTest : public TestSupport::CiRealSystemTest
     return calls;
 }
 
-TEST_F(CiRealSystemCriticalProcessTest, WinlogonIsCriticalAndAPriorityChangeIsRefused)
+/// The first process (not PID 0 or 4) that IsProcessCritical calls critical and that this process can open for a
+/// priority change, as setPriority() does: winlogon.exe on a client Windows, the DcomLaunch svchost.exe and others.
+/// A protected one (csrss.exe) refuses the open, so the guard would never be reached on it. nullopt when none is.
+[[nodiscard]] std::optional<Platform::ProcessTarget> openableCriticalProcess()
 {
-    // Read-only: the real IsProcessCritical answers on csrss.exe and winlogon.exe, and the guard refuses a priority
-    // change on winlogon.exe before its call, which is a fake here, so even a broken guard changes nothing.
+    const UniqueHandle snapshot(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0));
+    if (!snapshot || snapshot.get() == INVALID_HANDLE_VALUE)
+    {
+        return std::nullopt;
+    }
+    PROCESSENTRY32W entry{};
+    entry.dwSize = sizeof(entry);
+    for (BOOL more = Process32FirstW(snapshot.get(), &entry); more != FALSE; more = Process32NextW(snapshot.get(), &entry))
+    {
+        constexpr DWORD SYSTEM_PID = 4;
+        if (entry.th32ProcessID == 0 || entry.th32ProcessID == SYSTEM_PID)
+        {
+            continue;
+        }
+        const UniqueHandle process(OpenProcess(PROCESS_SET_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, entry.th32ProcessID));
+        BOOL critical = FALSE;
+        if (process && IsProcessCritical(process.get(), &critical) != FALSE && critical != FALSE)
+        {
+            return Platform::ProcessTarget{
+                .pid = static_cast<std::int32_t>(entry.th32ProcessID),
+                .startTimeTicks = startTicksOf(process.get()),
+            };
+        }
+    }
+    return std::nullopt;
+}
+
+TEST_F(CiRealSystemCriticalProcessTest, ACriticalProcessIsRefusedAPriorityChange)
+{
+    // Read-only: the real IsProcessCritical answers on csrss.exe, and the guard refuses a priority change on a
+    // critical process before its call, which is a fake here, so even a broken guard changes nothing. Which
+    // processes are critical depends on the edition (winlogon.exe isn't on the windows-2025 runner), so the test
+    // takes the first critical one it may open.
     const DebugPrivilegeRestorer restorer;
     ASSERT_EQ(Platform::Windows::enableDebugPrivilegeIfElevated(), Platform::Windows::DebugPrivilegeResult::Enabled);
-    for (const std::wstring_view name : {std::wstring_view(L"csrss.exe"), std::wstring_view(L"winlogon.exe")})
-    {
-        const std::vector<DWORD> pids = pidsNamed(name);
-        ASSERT_FALSE(pids.empty()) << "no " << Platform::WinString::wideToUtf8(name) << " runs";
-        const UniqueHandle process(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pids.front()));
-        ASSERT_TRUE(process) << GetLastError();
-        BOOL critical = FALSE;
-        ASSERT_NE(IsProcessCritical(process.get(), &critical), FALSE) << GetLastError();
-        EXPECT_NE(critical, FALSE) << Platform::WinString::wideToUtf8(name) << " isn't critical";
-    }
+    const std::vector<DWORD> csrss = pidsNamed(L"csrss.exe");
+    ASSERT_FALSE(csrss.empty()) << "no csrss.exe runs";
+    const UniqueHandle session(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, csrss.front()));
+    ASSERT_TRUE(session) << GetLastError();
+    BOOL csrssCritical = FALSE;
+    ASSERT_NE(IsProcessCritical(session.get(), &csrssCritical), FALSE) << GetLastError();
+    EXPECT_NE(csrssCritical, FALSE) << "csrss.exe isn't critical";
 
-    const std::vector<DWORD> winlogons = pidsNamed(L"winlogon.exe");
-    ASSERT_FALSE(winlogons.empty());
-    const UniqueHandle winlogon(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, winlogons.front()));
-    ASSERT_TRUE(winlogon) << GetLastError();
-    const Platform::ProcessTarget target{
-        .pid = static_cast<std::int32_t>(winlogons.front()),
-        .startTimeTicks = startTicksOf(winlogon.get()),
-    };
+    const std::optional<Platform::ProcessTarget> found = openableCriticalProcess();
+    ASSERT_TRUE(found.has_value()) << "no critical process this administrator, with SeDebugPrivilege, may open";
+    const Platform::ProcessTarget target = found.value_or(Platform::ProcessTarget{});
+    RecordProperty("criticalPid", std::to_string(target.pid));
 
     Platform::WindowsProcessFunctions functions = Platform::realWindowsProcessFunctions();
     priorityCalls() = 0;
@@ -465,15 +497,15 @@ TEST_F(CiRealSystemCriticalProcessTest, WinlogonIsCriticalAndAPriorityChangeIsRe
     EXPECT_FALSE(result.success);
     EXPECT_FALSE(result.permissionDenied) << "a critical process is refused, not retried as administrator";
     EXPECT_EQ(result.errorMessage, Platform::criticalProcessRefusal(target.pid, Platform::GuardedAction::Priority));
-    EXPECT_EQ(priorityCalls().load(), 0) << "the guard let a priority change on winlogon.exe through";
+    EXPECT_EQ(priorityCalls().load(), 0) << "the guard let a priority change on critical process " << target.pid << " through";
 }
 
-// --- The tests that skip only because the runner is elevated, run as a standard user -------------------------
+// --- The tests that skip only because the runner is elevated, run unelevated ----------------------------------
 
 class CiRealSystemStandardUserTest : public TestSupport::CiRealSystemTest
 {};
 
-/// The tests that skip on an elevated runner, and pass as a standard user.
+/// The tests that skip on an elevated runner, and pass unelevated.
 constexpr std::wstring_view ELEVATED_ONLY_SKIPS =
     L"WindowsProcessProbeTest.NonElevatedNeverClaimsNetworkCounters:TaskManagerInstallTest.TheElevatedRouteAndTheHelperReachTheSameVerdict";
 
@@ -488,28 +520,100 @@ constexpr std::wstring_view ELEVATED_ONLY_SKIPS =
     return count;
 }
 
-TEST_F(CiRealSystemStandardUserTest, TheElevatedOnlySkipsRunAsAStandardUser)
+/// Whether @p process's token reads as elevated (TokenElevation); nullopt when it can't be read.
+[[nodiscard]] std::optional<bool> isElevated(HANDLE process)
 {
-    // This binary again, with a standard user's primary token (the runner's own account, Administrators deny-only,
-    // Medium integrity), running only those tests; its JSON report says each ran and passed.
-    const UniqueHandle token = standardUserPrimaryToken();
-    ASSERT_TRUE(token);
+    HANDLE token = nullptr;
+    if (OpenProcessToken(process, TOKEN_QUERY, &token) == FALSE)
+    {
+        return std::nullopt;
+    }
+    const UniqueHandle owned(token);
     TOKEN_ELEVATION elevation{};
     DWORD size = 0;
-    ASSERT_NE(GetTokenInformation(token.get(), TokenElevation, &elevation, sizeof(elevation), &size), FALSE) << GetLastError();
-    ASSERT_EQ(elevation.TokenIsElevated, 0U) << "the standard user's token still reads as elevated";
+    if (GetTokenInformation(owned.get(), TokenElevation, &elevation, sizeof(elevation), &size) == FALSE)
+    {
+        return std::nullopt;
+    }
+    return elevation.TokenIsElevated != 0;
+}
+
+/// @p exe started with @p parameters as a child of @p parent (PROC_THREAD_ATTRIBUTE_PARENT_PROCESS), so it runs with
+/// that process's token: the shell's, unelevated. An empty Child, with a failure added, when it can't be.
+[[nodiscard]] Child startUnder(HANDLE parent, const std::filesystem::path& exe, const std::wstring& parameters)
+{
+    SIZE_T size = 0;
+    InitializeProcThreadAttributeList(nullptr, 1, 0, &size);
+    std::vector<std::byte> storage(size);
+    auto* attributes = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(
+        storage.data()); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast) - the list's own buffer
+    if (size == 0 || InitializeProcThreadAttributeList(attributes, 1, 0, &size) == FALSE)
+    {
+        ADD_FAILURE() << "couldn't make the attribute list: " << GetLastError();
+        return {};
+    }
+    HANDLE parentHandle = parent;
+    const BOOL updated = UpdateProcThreadAttribute(
+        attributes, 0, PROC_THREAD_ATTRIBUTE_PARENT_PROCESS, static_cast<void*>(&parentHandle), sizeof(parentHandle), nullptr, nullptr);
+    std::wstring commandLine = L"\"" + exe.wstring() + L"\" " + parameters;
+    STARTUPINFOEXW startup{};
+    startup.StartupInfo.cb = sizeof(startup);
+    startup.lpAttributeList = attributes;
+    PROCESS_INFORMATION info{};
+    const bool created = (updated != FALSE) && CreateProcessW(exe.c_str(),
+                                                              commandLine.data(),
+                                                              nullptr,
+                                                              nullptr,
+                                                              FALSE,
+                                                              EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW,
+                                                              nullptr,
+                                                              nullptr,
+                                                              &startup.StartupInfo,
+                                                              &info) != FALSE;
+    const DWORD error = GetLastError();
+    DeleteProcThreadAttributeList(attributes);
+    if (!created)
+    {
+        ADD_FAILURE() << "couldn't start " << Core::pathToUtf8(exe) << " under the shell: " << error;
+        return {};
+    }
+    return {info.hProcess, info.hThread, info.dwProcessId};
+}
+
+TEST_F(CiRealSystemStandardUserTest, TheElevatedOnlySkipsRunAsAStandardUser)
+{
+    // This binary again, running only those tests, as the runner's user unelevated: a child of the shell
+    // (Explorer), whose filtered token UAC made at sign-in. A token restricted by hand (Administrators deny-only,
+    // Medium) still reads as elevated (TokenElevation), so those tests would skip again. Its JSON report says each
+    // ran and passed.
+    HWND shell = GetShellWindow();
+    if (shell == nullptr)
+    {
+        GTEST_SKIP() << "this runner's desktop has no shell, whose unelevated token the child would run with";
+    }
+    DWORD shellPid = 0;
+    GetWindowThreadProcessId(shell, &shellPid);
+    const UniqueHandle explorer(OpenProcess(PROCESS_CREATE_PROCESS | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, shellPid));
+    ASSERT_TRUE(explorer) << "couldn't open the shell, PID " << shellPid << ": " << GetLastError();
+    const std::optional<bool> shellElevated = isElevated(explorer.get());
+    ASSERT_TRUE(shellElevated.has_value()) << "couldn't read the shell's token: " << GetLastError();
+    if (shellElevated.value_or(true))
+    {
+        GTEST_SKIP() << "the shell runs elevated (UAC is off), so there is no unelevated token to run the tests with";
+    }
 
     const ScratchFolder folder(std::filesystem::temp_directory_path() / (L"TaskSmackCiStandardUser." + uniqueSuffix()));
     const std::filesystem::path report = folder.path() / L"report.json";
     const std::wstring parameters =
         L"--gtest_filter=" + std::wstring(ELEVATED_ONLY_SKIPS) + L" \"--gtest_output=json:" + report.wstring() + L"\"";
-    const Child child = start(ownExecutable(), {.token = token.get(), .parameters = parameters});
+    const Child child = startUnder(explorer.get(), ownExecutable(), parameters);
     ASSERT_NE(child.process(), nullptr);
+    EXPECT_EQ(isElevated(child.process()), std::optional<bool>(false)) << "the child runs elevated";
     const std::optional<DWORD> exit = child.exitCode(2 * STARTUP_WAIT);
-    ASSERT_TRUE(exit.has_value()) << "the standard-user run didn't finish";
+    ASSERT_TRUE(exit.has_value()) << "the unelevated run didn't finish";
     std::ifstream in(report, std::ios::binary);
     const std::string json{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
-    ASSERT_FALSE(json.empty()) << "the standard-user run wrote no report; its exit status " << exit.value_or(0);
+    ASSERT_FALSE(json.empty()) << "the unelevated run wrote no report; its exit status " << exit.value_or(0);
     EXPECT_EQ(exit.value_or(1), 0U) << json;
     EXPECT_EQ(occurrences(json, "\"result\": \"COMPLETED\""), 2U) << json;
     EXPECT_EQ(occurrences(json, "\"result\": \"SKIPPED\""), 0U) << json;

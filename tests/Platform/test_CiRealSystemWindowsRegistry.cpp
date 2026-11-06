@@ -40,7 +40,9 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <expected>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <ios>
 #include <iterator>
@@ -99,6 +101,22 @@ namespace WinString = Platform::WinString;
     }
     value.resize(bytes);
     return value;
+}
+
+/// Whether @p name is under @p root\@p key, whatever its type or data; an error when it can't be told.
+[[nodiscard]] std::expected<bool, std::string> valueExists(HKEY root, const std::wstring& key, const std::wstring& name)
+{
+    DWORD bytes = 0;
+    const LSTATUS status = RegGetValueW(root, key.c_str(), name.c_str(), RRF_RT_ANY | RRF_SUBKEY_WOW6464KEY, nullptr, nullptr, &bytes);
+    if (status == ERROR_SUCCESS)
+    {
+        return true;
+    }
+    if (status == ERROR_FILE_NOT_FOUND)
+    {
+        return false; // no such value, or no such key
+    }
+    return std::unexpected(std::format("error {}", status));
 }
 
 /// Whether @p root\@p key is there.
@@ -252,10 +270,22 @@ class CiRealSystemTaskManagerTest : public TestSupport::CiRealSystemTest
         {
             return;
         }
-        if (const auto existing = taskManagerDebugger())
+        // Before any restorer exists: it deletes the Debugger and the marker on scope exit, so a value of either
+        // that was there before (of any type: TaskSmack's reader calls a non-text one "a value that isn't text")
+        // means the test doesn't run at all.
+        Platform::Windows::WindowsIfeoRegistry registry;
+        const auto debugger = registry.readDebugger();
+        ASSERT_TRUE(debugger.has_value()) << "couldn't read taskmgr.exe's Debugger: " << debugger.error();
+        if (debugger->has_value())
         {
-            GTEST_SKIP() << "taskmgr.exe already has a Debugger (" << WinString::wideToUtf8(*existing)
-                         << "), which these tests won't overwrite";
+            GTEST_SKIP() << "taskmgr.exe already has a Debugger (" << debugger->value_or("") << "), which these tests won't overwrite";
+        }
+        const std::expected<bool, std::string> marked = valueExists(HKEY_LOCAL_MACHINE, taskManagerKey(), createdMarkerValue());
+        ASSERT_TRUE(marked.has_value()) << "couldn't read taskmgr.exe's " << Replacement::CREATED_MARKER_VALUE << ": " << marked.error();
+        if (marked.value_or(true))
+        {
+            GTEST_SKIP() << "taskmgr.exe's key already has a " << Replacement::CREATED_MARKER_VALUE
+                         << " value, which these tests won't remove";
         }
     }
 };
@@ -385,17 +415,24 @@ TEST_F(CiRealSystemStartAtLoginTest, TheRunValueIsWrittenReadAndRemoved)
 {
     // Starting TaskSmack.exe --minimized from the value, and its window's state, need the app's own binary, so
     // they stay a manual check for now (#3490).
-    if (const auto existing = readString(HKEY_CURRENT_USER, Platform::Windows::RUN_KEY, Platform::Windows::RUN_VALUE_NAME))
-    {
-        GTEST_SKIP() << "this user's Run key already has a TaskSmack value (" << WinString::wideToUtf8(*existing)
-                     << "), which this test won't overwrite";
-    }
-    const ValueRemover removed(HKEY_CURRENT_USER, Platform::Windows::RUN_KEY, Platform::Windows::RUN_VALUE_NAME);
+    // Read through TaskSmack's own reader, before the remover exists: any TaskSmack value there now is the user's,
+    // and the test doesn't run; nor when the read fails. Then any value of that name, of a type the reader skips.
     Platform::WindowsStartAtLogin startAtLogin;
-
     const auto before = startAtLogin.read();
     ASSERT_TRUE(before.has_value()) << before.error();
-    EXPECT_FALSE(before->command.has_value());
+    if (before->command.has_value())
+    {
+        GTEST_SKIP() << "this user's Run key already has a TaskSmack value (" << before->command.value_or("")
+                     << "), which this test won't overwrite";
+    }
+    const std::expected<bool, std::string> present =
+        valueExists(HKEY_CURRENT_USER, Platform::Windows::RUN_KEY, Platform::Windows::RUN_VALUE_NAME);
+    ASSERT_TRUE(present.has_value()) << "couldn't read the Run key: " << present.error();
+    if (present.value_or(true))
+    {
+        GTEST_SKIP() << "this user's Run key already has a TaskSmack value TaskSmack can't read, which this test won't overwrite";
+    }
+    const ValueRemover removed(HKEY_CURRENT_USER, Platform::Windows::RUN_KEY, Platform::Windows::RUN_VALUE_NAME);
     EXPECT_TRUE(before->caseInsensitivePaths);
     EXPECT_TRUE(samePath(WinString::utf8ToWide(before->executable), ownExecutable().wstring())) << before->executable;
 
