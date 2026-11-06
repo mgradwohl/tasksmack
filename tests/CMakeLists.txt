@@ -809,6 +809,8 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     # run as a standard user
     Platform/test_CiRealSystemWindowsRegistry.cpp
     Platform/test_CiRealSystemWindowsProcess.cpp
+    # Services: start, stop, restart and the startup type on throwaway services (TaskSmackCiService.exe)
+    Platform/test_CiRealSystemWindowsService.cpp
     Platform/test_HelperLauncher.cpp  # starting the helper with ShellExecuteExW("runas"), through fakes (#2549)
     Platform/test_WindowsTaskManagerReplacement.cpp  # taskmgr.exe's IFEO key, on a scratch HKCU key, and the helper's checks (#3072)
     Platform/test_WindowsUserSessions.cpp  # the Users tab's WTS reader and actions through fakes, and this machine's sessions (#3076)
@@ -1343,6 +1345,16 @@ if(WIN32)
     tasksmack_apply_windows_platform(TaskSmackCiStub)
     add_dependencies(TaskSmackTests TaskSmackCiStub)
     target_compile_definitions(TaskSmackTests PRIVATE TASKSMACK_CI_STUB_PATH="$<TARGET_FILE:TaskSmackCiStub>")
+
+    # TaskSmackCiService.exe (#3490): the throwaway service the CI real-system service tests install, control
+    # through the real WindowsServiceActions and delete. It only reports itself running until it is stopped.
+    add_executable(TaskSmackCiService WIN32 Support/CiService.cpp)
+    target_compile_features(TaskSmackCiService PRIVATE cxx_std_23)
+    tasksmack_apply_default_warnings(TaskSmackCiService)
+    tasksmack_apply_text_encoding(TaskSmackCiService)
+    tasksmack_apply_windows_platform(TaskSmackCiService)
+    add_dependencies(TaskSmackTests TaskSmackCiService)
+    target_compile_definitions(TaskSmackTests PRIVATE TASKSMACK_CI_SERVICE_PATH="$<TARGET_FILE:TaskSmackCiService>")
 endif()
 
 # test_BundledThemes.cpp checks the shipped theme files themselves, from the source tree.
