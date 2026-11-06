@@ -689,7 +689,9 @@ TEST_F(ConnectionsPanelRenderTest, AnUnsupportedReaderSaysSoAndNeverSamples)
     ConnectionsPanel panel([reads] { return std::make_unique<FakeReader>(reads, false); }, [](Core::Event&) {});
     panel.onAttach();
     show(panel, "Connections");
-    EXPECT_TRUE(frame(panel).contains("Connections aren't available"));
+    const std::string text = frame(panel);
+    EXPECT_TRUE(text.contains("Connections aren't available"));
+    EXPECT_TRUE(text.contains("#3356")); // the parity issue for Windows (#3431)
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     EXPECT_EQ(reads->load(), 0);
     panel.onDetach();
