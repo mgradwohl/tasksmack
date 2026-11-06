@@ -2231,6 +2231,103 @@ TEST(FramePacingTest, KeyQueuedDuringATimedOutIdleWaitShowsInTheNextFrame)
     EXPECT_EQ(framesShowingKey.size(), 2U) << "a polled event skips one render, like a wake, and no more";
 }
 
+TEST(FramePacingTest, InteractionFrameRendersForANewSizeEventsOrAClientSideGeometryChange)
+{
+    using Core::FramePacing::computeShouldRenderInteractionFrame;
+    // Arguments: needsResizeRedraw, forceInteractionRedraw (grace), hadEvents, geometryChangedLastFrame,
+    // isHidden, skipRenderThisFrame.
+    EXPECT_TRUE(computeShouldRenderInteractionFrame(true, false, true, false, false, false)) << "a new size";
+    EXPECT_TRUE(computeShouldRenderInteractionFrame(true, true, true, false, false, false)) << "a new size within the grace";
+    EXPECT_TRUE(computeShouldRenderInteractionFrame(false, true, true, false, false, false)) << "the grace, and events this drain";
+    EXPECT_TRUE(computeShouldRenderInteractionFrame(false, true, false, true, false, false))
+        << "the grace, and the title bar's drag or resize moved the window last frame";
+    EXPECT_FALSE(computeShouldRenderInteractionFrame(false, false, true, true, false, false)) << "no interaction";
+}
+
+TEST(FramePacingTest, GraceIterationWithNothingNewPresentsNoFrameOfItsOwn)
+{
+    // #3511: the second frame of every programmatic resize, the same size and content 8 ms later.
+    using Core::FramePacing::computeShouldRenderInteractionFrame;
+    using Core::FramePacing::isDeferredInteractionFrame;
+    EXPECT_FALSE(computeShouldRenderInteractionFrame(false, true, false, false, false, false));
+    EXPECT_TRUE(isDeferredInteractionFrame(false, true, false, false, false, false));
+    // Every other combination either renders or would not have rendered before either.
+    EXPECT_FALSE(isDeferredInteractionFrame(true, true, false, false, false, false)) << "renders: a new size";
+    EXPECT_FALSE(isDeferredInteractionFrame(false, true, true, false, false, false)) << "renders: events";
+    EXPECT_FALSE(isDeferredInteractionFrame(false, true, false, true, false, false)) << "renders: geometry changed";
+    EXPECT_FALSE(isDeferredInteractionFrame(false, false, false, false, false, false)) << "no grace: never rendered here";
+    EXPECT_FALSE(isDeferredInteractionFrame(false, true, false, false, true, false)) << "hidden: never rendered here";
+    EXPECT_FALSE(isDeferredInteractionFrame(false, true, false, false, false, true)) << "P3 skip: never rendered here";
+}
+
+TEST(FramePacingTest, InteractionFrameNeverRendersHiddenOrSkipped)
+{
+    using Core::FramePacing::computeShouldRenderInteractionFrame;
+    EXPECT_FALSE(computeShouldRenderInteractionFrame(true, true, true, true, true, false)) << "hidden (#1125)";
+    EXPECT_FALSE(computeShouldRenderInteractionFrame(true, true, true, true, false, true)) << "P3 skip (#1410)";
+}
+
+TEST(FramePacingTest, ProgrammaticResizeBurstPresentsOneFramePerSize)
+{
+    // #3511's run e2: a SetWindowPos every ~37 ms at 120 Hz. Each resize's drain renders its new size;
+    // the iteration after it (no events, no client-side geometry change) used to present it again.
+    using Core::FramePacing::computeShouldRenderInteractionFrame;
+    int framesBefore = 0;
+    int framesNow = 0;
+    constexpr int RESIZES = 100;
+    for (int resize = 0; resize < RESIZES; ++resize)
+    {
+        // The drain with the resize events.
+        framesBefore += 1;
+        framesNow += computeShouldRenderInteractionFrame(true, true, true, false, false, false) ? 1 : 0;
+        // The next iteration, within the grace, with an empty queue: it waits for the next resize.
+        framesBefore += 1;
+        framesNow += computeShouldRenderInteractionFrame(false, true, false, false, false, false) ? 1 : 0;
+    }
+    EXPECT_EQ(framesBefore, 2 * RESIZES);
+    EXPECT_EQ(framesNow, RESIZES);
+}
+
+TEST(FramePacingTest, AnimationDuringResizeGraceKeepsItsRateWhenTheInteractionFrameIsDeferred)
+{
+    // #3511 review: a grace iteration with nothing new defers its move/resize frame; a chart still easing
+    // (AnimationRequest at 60 fps) must then get its paced frame, not the 20 fps idle wait.
+    using namespace Core::FramePacing;
+    constexpr double IDLE_FPS = 20.0;
+    constexpr double MAX_FPS = 60.0;
+    const double animationFps = computeAnimationRate(60.0, IDLE_FPS, MAX_FPS);
+    const double cap = computeFrameRateCap(animationFps, false, false, MAX_FPS);
+    const bool immediate = computeShouldRenderInteractionFrame(false, true, false, false, false, false);
+    ASSERT_FALSE(immediate) << "the repeat is deferred";
+    EXPECT_TRUE(computeUsesPacedRegularFrame(cap, immediate)) << "the animation keeps its paced frame";
+    // With no animation and no input, the deferred iteration takes the idle wait.
+    EXPECT_FALSE(
+        computeUsesPacedRegularFrame(computeFrameRateCap(computeAnimationRate(0.0, IDLE_FPS, MAX_FPS), false, false, MAX_FPS), immediate));
+}
+
+TEST(FramePacingTest, InputGraceOverlappingResizeGraceKeepsTheInputRate)
+{
+    // A click during a resize's grace: its input grace (#843) paces the follow-up frames at the input rate.
+    using namespace Core::FramePacing;
+    constexpr double MAX_FPS = 60.0;
+    const double inputGraceUntil = computeInputRedrawUntil(10.0, 1, 0.0, 0.2);
+    const bool inputGraceActive = isWithinInteractionGrace(10.05, inputGraceUntil);
+    ASSERT_TRUE(inputGraceActive);
+    const double cap = computeFrameRateCap(0.0, inputGraceActive, false, MAX_FPS);
+    const bool immediate = computeShouldRenderInteractionFrame(false, true, false, false, false, false);
+    EXPECT_TRUE(computeUsesPacedRegularFrame(cap, immediate));
+}
+
+TEST(FramePacingTest, NoPacedRegularFrameAfterAMoveResizeFrame)
+{
+    // The move/resize frame already waited for the display rate: the regular frame isn't paced again
+    // (computeShouldRenderRegularFrame() skips it anyway).
+    using Core::FramePacing::computeUsesPacedRegularFrame;
+    EXPECT_FALSE(computeUsesPacedRegularFrame(60.0, true));
+    EXPECT_TRUE(computeUsesPacedRegularFrame(60.0, false));
+    EXPECT_FALSE(computeUsesPacedRegularFrame(0.0, false)) << "no cap: the idle path";
+}
+
 TEST(FramePacingTest, ShouldSleepWhenIdleOutsideGracePeriod)
 {
     EXPECT_TRUE(Core::FramePacing::computeShouldSleepWhenIdle(false, true));
@@ -2577,6 +2674,41 @@ TEST_F(ResizePerfOperationTest, FinalizationAndSubmissionRemainDistinct)
     EXPECT_EQ(calls, 2);
     EXPECT_EQ(trace.durations[static_cast<std::size_t>(Core::ResizePerfOperation::ImGuiFinalize)].count, 1U);
     EXPECT_EQ(trace.durations[static_cast<std::size_t>(Core::ResizePerfOperation::OpenGLSubmit)].count, 1U);
+}
+
+TEST_F(ResizePerfOperationTest, SkippedCallsAreCountedAndLoggedButNotTimed)
+{
+    // #3511: a swap interval already in force, or a viewport already that size, is a call not made.
+    Core::recordResizePerfSkipped(Core::ResizePerfOperation::SwapInterval);
+    Core::recordResizePerfSkipped(Core::ResizePerfOperation::SwapInterval);
+    Core::recordResizePerfSkipped(Core::ResizePerfOperation::Viewport);
+    const auto& trace = Core::resizePerfOperations();
+    const auto swapInterval = static_cast<std::size_t>(Core::ResizePerfOperation::SwapInterval);
+    const auto viewport = static_cast<std::size_t>(Core::ResizePerfOperation::Viewport);
+    EXPECT_EQ(trace.skipped[swapInterval], 2U);
+    EXPECT_EQ(trace.skipped[viewport], 1U);
+    EXPECT_EQ(trace.durations[swapInterval].count, 0U) << "a skipped call is not a call";
+    Core::logResizePerfOperationSummary();
+    EXPECT_TRUE(m_Output.str().contains("ResizePerfOperations[swap-interval]: count=0"));
+    EXPECT_TRUE(m_Output.str().contains("maxRequestedA=0 maxRequestedB=0 skipped=2"));
+}
+
+TEST_F(ResizePerfOperationTest, SkippedCallsAreNotCountedWhileTracingIsOff)
+{
+    Core::resizePerfOperations().enabled = false;
+    Core::recordResizePerfSkipped(Core::ResizePerfOperation::Viewport);
+    EXPECT_EQ(Core::resizePerfOperations().skipped[static_cast<std::size_t>(Core::ResizePerfOperation::Viewport)], 0U);
+}
+
+TEST_F(ResizePerfOperationTest, DeferredInteractionFramesAreLoggedAndResetWithTheInterval)
+{
+    Core::ResizePerfTraceStats stats;
+    stats.recordEventBatch(1, 1, 0.1, 0.1, false);
+    stats.deferredInteractionFrames = 3;
+    Core::logResizePerfTraceSummary(stats, "interaction-progress");
+    EXPECT_TRUE(m_Output.str().contains(" deferredFrames=3"));
+    stats.resetIntervalCounters();
+    EXPECT_EQ(stats.deferredInteractionFrames, 0U);
 }
 
 TEST_F(ResizePerfOperationTest, FirstFrameHasNoFabricatedGapAndSkippedLoopsRemainInNextGap)

@@ -335,14 +335,20 @@ void UILayer::rebuildForDisplayScaleChange()
 void UILayer::onEvent(Core::Event& event)
 {
     // Keep the OpenGL viewport in sync with the framebuffer without polling SDL every frame.
-    // glViewport() is called exactly once per pixel-size change, driven by the event system.
+    // glViewport() is called once per pixel-size change, driven by the event system. One size can
+    // come in two or three events (SDL's RESIZED and PIXEL_SIZE_CHANGED, and the title bar's own
+    // resize commit): only the first changes the viewport (#3511).
     Core::EventDispatcher dispatcher(event);
     dispatcher.dispatch<Core::WindowResizedEvent>(
         [this](Core::WindowResizedEvent& e)
         {
             const int w = e.getWidth();
             const int h = e.getHeight();
-            if (w > 0 && h > 0)
+            if (w == m_CachedPixelW && h == m_CachedPixelH)
+            {
+                Core::recordResizePerfSkipped(Core::ResizePerfOperation::Viewport);
+            }
+            else if (w > 0 && h > 0)
             {
                 m_CachedPixelW = w;
                 m_CachedPixelH = h;

@@ -47,6 +47,9 @@ struct ResizePerfOperations
     bool enabled = resizePerfTraceRequested();
     std::array<ResizePerfDurationStats, static_cast<std::size_t>(ResizePerfOperation::Count)> durations{};
     std::array<std::uint64_t, static_cast<std::size_t>(ResizePerfOperation::Count)> failures{};
+    /// Calls not made because they would have changed nothing (#3511): a swap interval already in
+    /// force, a viewport already that size.
+    std::array<std::uint64_t, static_cast<std::size_t>(ResizePerfOperation::Count)> skipped{};
     std::array<std::pair<int, int>, static_cast<std::size_t>(ResizePerfOperation::Count)> maxRequests{};
     ResizePerfDurationStats loops;
     ResizePerfDurationStats frameGaps;
@@ -133,6 +136,16 @@ template<typename Call> void traceResizePerfVoid(ResizePerfOperation operation, 
     recordResizePerfOperation(operation, start, end, std::nullopt, requestedA, requestedB);
 }
 
+/// A call to @p operation that was not made, because it would have changed nothing (#3511).
+inline void recordResizePerfSkipped(ResizePerfOperation operation)
+{
+    auto& trace = resizePerfOperations();
+    if (trace.enabled)
+    {
+        ++trace.skipped[static_cast<std::size_t>(operation)];
+    }
+}
+
 inline void recordResizePerfFrameEnd(std::uint64_t end)
 {
     auto& trace = resizePerfOperations();
@@ -155,7 +168,7 @@ inline void logResizePerfOperationSummary()
     {
         const auto& stats = trace.durations[i];
         spdlog::info("ResizePerfOperations[{}]: count={} max={:.3f} ms over100={} over250={} failures={} "
-                     "maxRequestedA={} maxRequestedB={}",
+                     "maxRequestedA={} maxRequestedB={} skipped={}",
                      RESIZE_PERF_OPERATION_NAMES[i],
                      stats.count,
                      stats.maxMs,
@@ -163,7 +176,8 @@ inline void logResizePerfOperationSummary()
                      stats.over250,
                      trace.failures[i],
                      trace.maxRequests[i].first,
-                     trace.maxRequests[i].second);
+                     trace.maxRequests[i].second,
+                     trace.skipped[i]);
     }
     spdlog::info("ResizePerfWallSummary: loops={} loopMax={:.3f} ms loopOver100={} loopOver250={} "
                  "frameGaps={} gapMax={:.3f} ms gapOver100={} gapOver250={}",

@@ -4,6 +4,7 @@
 #include "Core/GraphicsReset.h"
 #include "Core/OpenGLRequirement.h"
 #include "Core/ResizePerfOperation.h"
+#include "Core/SwapInterval.h"
 #include "Core/VideoBackend.h"
 #include "Core/WindowConstants.h"
 #include "Core/WindowGeometry.h"
@@ -539,6 +540,25 @@ void unhookWindowMessages(SDL_Window* sdlWindow)
 } // namespace
 #endif
 
+namespace
+{
+// What Window::setVSync() last set (#3511). UI thread only, like every GL call. Forgotten whenever a
+// context is made or destroyed (forgetSwapInterval()), so a new context that gets a destroyed one's
+// handle back is never taken for it.
+[[nodiscard]] SwapIntervalCache& swapIntervalCache() noexcept
+{
+    static SwapIntervalCache cache;
+    return cache;
+}
+
+// Call with every context made, and before every context destroyed (a replacement after a GPU reset,
+// #3484, does both).
+void forgetSwapInterval() noexcept
+{
+    swapIntervalCache().invalidate();
+}
+} // namespace
+
 Window::Window(WindowSpecification spec) : m_Spec(std::move(spec))
 {
     spdlog::info("Creating window: {} ({}x{})", m_Spec.Title, m_Spec.Width, m_Spec.Height);
@@ -650,20 +670,8 @@ Window::Window(WindowSpecification spec) : m_Spec(std::move(spec))
     }
     // LCOV_EXCL_STOP
 
-    if (m_Spec.VSync)
-    {
-        // Prefer adaptive vsync: presents immediately when a frame is late instead of
-        // stalling until the next vblank. Falls back to regular vsync if the driver
-        // does not support GLX_EXT_swap_control_tear / WGL_EXT_swap_control_tear.
-        if (!traceResizePerfSDL(ResizePerfOperation::SwapInterval, -1, 0, [] { return SDL_GL_SetSwapInterval(-1); }))
-        {
-            traceResizePerfSDL(ResizePerfOperation::SwapInterval, 1, 0, [] { return SDL_GL_SetSwapInterval(1); });
-        }
-    }
-    else
-    {
-        traceResizePerfSDL(ResizePerfOperation::SwapInterval, 0, 0, [] { return SDL_GL_SetSwapInterval(0); });
-    }
+    forgetSwapInterval(); // a new context, whatever its handle
+    setVSync(m_Spec.VSync);
 
 #ifdef _WIN32
     // Set window icon from embedded resource (title bar and taskbar). The returned
@@ -707,6 +715,7 @@ Window::~Window()
 
     if (m_GLContext != nullptr)
     {
+        forgetSwapInterval(); // its handle may come back for the next context
         SDL_GL_DestroyContext(m_GLContext);
         m_GLContext = nullptr;
     }
@@ -762,6 +771,8 @@ bool Window::recreateGLContext()
     // SDL_GL_CreateContext() made the replacement current.
     SDL_GL_DestroyContext(m_GLContext);
     m_GLContext = replacement;
+    // The swap interval belongs to the context: the restore's setVSync() sets it on the new one (#3511).
+    forgetSwapInterval();
     if (!SDL_GL_MakeCurrent(m_Handle, m_GLContext))
     {
         spdlog::error("Making the replacement OpenGL context current failed: {}", SDL_GetError());
@@ -787,18 +798,32 @@ bool Window::recreateGLContext()
 
 void Window::setVSync(bool enabled)
 {
-    if (enabled)
-    {
-        // Mirror the logic used during initialisation: prefer adaptive vsync
-        // (swap-interval -1) and fall back to regular vsync (1) if unsupported.
-        if (!traceResizePerfSDL(ResizePerfOperation::SwapInterval, -1, 0, [] { return SDL_GL_SetSwapInterval(-1); }))
+    // Prefer adaptive vsync: it presents a late frame at once instead of stalling to the next vblank.
+    // A driver without GLX_EXT_swap_control_tear / WGL_EXT_swap_control_tear refuses it, and regular
+    // vsync is used. The cache asks the driver only for a change, and asks for adaptive vsync once per
+    // context (#3511): the resize interactions turn vsync off and on again (Application::run()).
+    // Per context, and forgotten when one is made or destroyed (forgetSwapInterval()).
+    const SwapIntervalCache::Outcome outcome = swapIntervalCache().apply(
+        enabled,
+        SDL_GL_GetCurrentContext(),
+        [](const int interval)
         {
-            traceResizePerfSDL(ResizePerfOperation::SwapInterval, 1, 0, [] { return SDL_GL_SetSwapInterval(1); });
-        }
-    }
-    else
+            return traceResizePerfSDL(
+                ResizePerfOperation::SwapInterval, interval, 0, [interval] { return SDL_GL_SetSwapInterval(interval); });
+        });
+    if (outcome.calls == 0)
     {
-        traceResizePerfSDL(ResizePerfOperation::SwapInterval, 0, 0, [] { return SDL_GL_SetSwapInterval(0); });
+        recordResizePerfSkipped(ResizePerfOperation::SwapInterval);
+    }
+    if (outcome.adaptiveRefused)
+    {
+        spdlog::info("Adaptive vsync isn't supported by this OpenGL context ({}); using regular vsync", SDL_GetError());
+    }
+    // Not a warning, and once per context: a context without swap control (the headless test displays)
+    // refuses every request, and before #3511 that was silent. The resize trace counts each failure.
+    if (outcome.firstRefusal)
+    {
+        spdlog::info("This OpenGL context doesn't let the swap interval change ({}); vsync stays as the driver set it", SDL_GetError());
     }
 }
 

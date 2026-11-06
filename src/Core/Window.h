@@ -62,6 +62,8 @@ class Window
     /// Pass true to restore adaptive vsync (SDL_GL_SetSwapInterval(-1) with
     /// fallback to 1). Pass false to disable vsync (interval 0), which reduces
     /// compositor-stall coupling on Wayland during interactive resize.
+    /// Calls the driver only for a change on the current context, and asks for adaptive vsync once
+    /// per context (Core::SwapIntervalCache, #3511).
     static void setVSync(bool enabled);
 
     [[nodiscard]] bool shouldClose() const noexcept;

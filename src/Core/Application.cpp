@@ -931,8 +931,18 @@ void Application::run()
         wakeCoalescer.setPaused(hiddenWait.drawsNoFrames);
 
         // isHidden, not only minimized: an occluded window that gets a move/resize event must not render
-        // at the display rate through the interaction grace period either (#1125).
-        if ((needsResizeRedraw || forceInteractionRedraw) && !isHidden && !skipRenderThisFrame)
+        // at the display rate through the interaction grace period either (#1125). Within the grace, only
+        // when there is something new to show (#3511): an iteration with no events and no client-side
+        // geometry change falls to the regular frame below (paced, or the idle wait) instead of presenting
+        // the same frame again.
+        if (traceResizePerfThisFrame &&
+            FramePacing::isDeferredInteractionFrame(
+                needsResizeRedraw, forceInteractionRedraw, hadEvents, geometryChangedLastFrame, isHidden, skipRenderThisFrame))
+        {
+            ++resizeTraceStats.deferredInteractionFrames;
+        }
+        if (FramePacing::computeShouldRenderInteractionFrame(
+                needsResizeRedraw, forceInteractionRedraw, hadEvents, geometryChangedLastFrame, isHidden, skipRenderThisFrame))
         {
             // Vsync is off during an interaction, so a stream of mouse events would otherwise render
             // unbounded (#1153): cap it at the display rate, which vsync would have given.
@@ -1003,7 +1013,9 @@ void Application::run()
                 guardLayerCall(layer, "onHiddenUpdate", [&] { layer->onHiddenUpdate(); });
             }
         }
-        else if (frameRateCap > 0.0 && !isInteracting)
+        // Not after a move/resize frame, which waited for the display rate already; but a grace iteration
+        // that deferred its frame (#3511) still paces an animation or input frame here.
+        else if (FramePacing::computeUsesPacedRegularFrame(frameRateCap, didImmediateResizeRedraw))
         {
             const double waitSeconds = FramePacing::computeFrameWaitSeconds(
                 getTime() - lastFrameStart, FramePacing::framePeriodSeconds(m_DisplayRefreshHz, frameRateCap));
