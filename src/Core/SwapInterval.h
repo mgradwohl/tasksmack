@@ -92,7 +92,7 @@ class SwapIntervalCache
     /// each planned interval until one is accepted.
     template<typename Set> Outcome apply(bool enabled, const void* context, Set set)
     {
-        const bool adaptiveKnownUnsupported = m_Context == context && m_AdaptiveUnsupported;
+        const bool adaptiveKnownUnsupported = !m_Invalidated && m_Context == context && m_AdaptiveUnsupported;
         const Attempts attempts = plan(enabled, context);
         Outcome outcome;
         outcome.accepted = attempts.count == 0;
@@ -112,6 +112,15 @@ class SwapIntervalCache
         return outcome;
     }
 
+    /// Forget everything, so the next request asks the driver again whatever context it names. Call
+    /// when a context is made or destroyed: a new context can get a destroyed one's handle back, and
+    /// would otherwise be taken for it (its default interval left in force).
+    void invalidate() noexcept
+    {
+        *this = {};
+        m_Invalidated = true;
+    }
+
     /// The interval in force on the current context, if known.
     [[nodiscard]] std::optional<int> applied() const noexcept
     {
@@ -127,7 +136,7 @@ class SwapIntervalCache
   private:
     void adopt(const void* context) noexcept
     {
-        if (context != m_Context)
+        if (m_Invalidated || context != m_Context)
         {
             *this = {};
             m_Context = context;
@@ -137,6 +146,8 @@ class SwapIntervalCache
     const void* m_Context = nullptr;
     std::optional<int> m_Applied;
     bool m_AdaptiveUnsupported = false;
+    /// Set by invalidate(): the next plan() starts over even for the same context handle.
+    bool m_Invalidated = false;
 };
 
 } // namespace Core

@@ -201,8 +201,8 @@ nextConsecutiveSkippedRenders(std::uint32_t consecutiveSkippedRenders, bool skip
 /// A grace iteration with none of those used to draw and present a frame too: the same size, the same
 /// content, 8 ms after the one before it at 120 Hz. In #3511's resize bursts that was more than half
 /// of every frame presented while the window resized (7,222 frames for 3,199 resizes). Now the
-/// iteration takes the idle wait instead: the next event wakes it at once, and without one the
-/// regular frame comes at the idle rate, so the grace still keeps the display current.
+/// iteration falls to the regular frame instead: paced at the animation or input rate when one applies
+/// (computeUsesPacedRegularFrame()), and otherwise the idle wait, which the next event wakes at once.
 [[nodiscard]] constexpr auto computeShouldRenderInteractionFrame(bool needsResizeRedraw,
                                                                  bool forceInteractionRedraw,
                                                                  bool hadEvents,
@@ -229,6 +229,16 @@ nextConsecutiveSkippedRenders(std::uint32_t consecutiveSkippedRenders, bool skip
     return forceInteractionRedraw && !isHidden && !skipRenderThisFrame &&
            !computeShouldRenderInteractionFrame(
                needsResizeRedraw, forceInteractionRedraw, hadEvents, geometryChangedLastFrame, isHidden, skipRenderThisFrame);
+}
+
+/// Whether the regular frame is paced at @p frameRateCap (computeFrameRateCap()) rather than left to the
+/// idle wait: whenever a cap applies and the move/resize path didn't render this iteration (#3511). A
+/// grace iteration with nothing new defers its move/resize frame (computeShouldRenderInteractionFrame());
+/// a chart still easing (AnimationRequest) or an input grace still running then keeps its rate, instead
+/// of dropping to the 20 fps idle wait for the rest of the resize grace.
+[[nodiscard]] constexpr auto computeUsesPacedRegularFrame(double frameRateCap, bool didImmediateResizeRedraw) noexcept -> bool
+{
+    return frameRateCap > 0.0 && !didImmediateResizeRedraw;
 }
 
 /// Whether the loop iteration renders its regular (paced/idle) frame. Not when the move/resize path

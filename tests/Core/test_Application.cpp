@@ -2288,6 +2288,46 @@ TEST(FramePacingTest, ProgrammaticResizeBurstPresentsOneFramePerSize)
     EXPECT_EQ(framesNow, RESIZES);
 }
 
+TEST(FramePacingTest, AnimationDuringResizeGraceKeepsItsRateWhenTheInteractionFrameIsDeferred)
+{
+    // #3511 review: a grace iteration with nothing new defers its move/resize frame; a chart still easing
+    // (AnimationRequest at 60 fps) must then get its paced frame, not the 20 fps idle wait.
+    using namespace Core::FramePacing;
+    constexpr double IDLE_FPS = 20.0;
+    constexpr double MAX_FPS = 60.0;
+    const double animationFps = computeAnimationRate(60.0, IDLE_FPS, MAX_FPS);
+    const double cap = computeFrameRateCap(animationFps, false, false, MAX_FPS);
+    const bool immediate = computeShouldRenderInteractionFrame(false, true, false, false, false, false);
+    ASSERT_FALSE(immediate) << "the repeat is deferred";
+    EXPECT_TRUE(computeUsesPacedRegularFrame(cap, immediate)) << "the animation keeps its paced frame";
+    // With no animation and no input, the deferred iteration takes the idle wait.
+    EXPECT_FALSE(
+        computeUsesPacedRegularFrame(computeFrameRateCap(computeAnimationRate(0.0, IDLE_FPS, MAX_FPS), false, false, MAX_FPS), immediate));
+}
+
+TEST(FramePacingTest, InputGraceOverlappingResizeGraceKeepsTheInputRate)
+{
+    // A click during a resize's grace: its input grace (#843) paces the follow-up frames at the input rate.
+    using namespace Core::FramePacing;
+    constexpr double MAX_FPS = 60.0;
+    const double inputGraceUntil = computeInputRedrawUntil(10.0, 1, 0.0, 0.2);
+    const bool inputGraceActive = isWithinInteractionGrace(10.05, inputGraceUntil);
+    ASSERT_TRUE(inputGraceActive);
+    const double cap = computeFrameRateCap(0.0, inputGraceActive, false, MAX_FPS);
+    const bool immediate = computeShouldRenderInteractionFrame(false, true, false, false, false, false);
+    EXPECT_TRUE(computeUsesPacedRegularFrame(cap, immediate));
+}
+
+TEST(FramePacingTest, NoPacedRegularFrameAfterAMoveResizeFrame)
+{
+    // The move/resize frame already waited for the display rate: the regular frame isn't paced again
+    // (computeShouldRenderRegularFrame() skips it anyway).
+    using Core::FramePacing::computeUsesPacedRegularFrame;
+    EXPECT_FALSE(computeUsesPacedRegularFrame(60.0, true));
+    EXPECT_TRUE(computeUsesPacedRegularFrame(60.0, false));
+    EXPECT_FALSE(computeUsesPacedRegularFrame(0.0, false)) << "no cap: the idle path";
+}
+
 TEST(FramePacingTest, ShouldSleepWhenIdleOutsideGracePeriod)
 {
     EXPECT_TRUE(Core::FramePacing::computeShouldSleepWhenIdle(false, true));

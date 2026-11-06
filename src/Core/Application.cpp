@@ -991,7 +991,9 @@ void Application::run()
                 guardLayerCall(layer, "onHiddenUpdate", [&] { layer->onHiddenUpdate(); });
             }
         }
-        else if (frameRateCap > 0.0 && !isInteracting)
+        // Not after a move/resize frame, which waited for the display rate already; but a grace iteration
+        // that deferred its frame (#3511) still paces an animation or input frame here.
+        else if (FramePacing::computeUsesPacedRegularFrame(frameRateCap, didImmediateResizeRedraw))
         {
             const double waitSeconds = FramePacing::computeFrameWaitSeconds(
                 getTime() - lastFrameStart, FramePacing::framePeriodSeconds(m_DisplayRefreshHz, frameRateCap));

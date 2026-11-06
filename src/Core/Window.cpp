@@ -503,6 +503,25 @@ void unhookWindowMessages(SDL_Window* sdlWindow)
 } // namespace
 #endif
 
+namespace
+{
+// What Window::setVSync() last set (#3511). UI thread only, like every GL call. Forgotten whenever a
+// context is made or destroyed (forgetSwapInterval()), so a new context that gets a destroyed one's
+// handle back is never taken for it.
+[[nodiscard]] SwapIntervalCache& swapIntervalCache() noexcept
+{
+    static SwapIntervalCache cache;
+    return cache;
+}
+
+// Call with every context made, and before every context destroyed (a replacement after a GPU reset,
+// #3484, does both).
+void forgetSwapInterval() noexcept
+{
+    swapIntervalCache().invalidate();
+}
+} // namespace
+
 Window::Window(WindowSpecification spec) : m_Spec(std::move(spec))
 {
     spdlog::info("Creating window: {} ({}x{})", m_Spec.Title, m_Spec.Width, m_Spec.Height);
@@ -602,6 +621,7 @@ Window::Window(WindowSpecification spec) : m_Spec(std::move(spec))
     }
     // LCOV_EXCL_STOP
 
+    forgetSwapInterval(); // a new context, whatever its handle
     setVSync(m_Spec.VSync);
 
 #ifdef _WIN32
@@ -646,6 +666,7 @@ Window::~Window()
 
     if (m_GLContext != nullptr)
     {
+        forgetSwapInterval(); // its handle may come back for the next context
         SDL_GL_DestroyContext(m_GLContext);
         m_GLContext = nullptr;
     }
@@ -677,16 +698,15 @@ void Window::setVSync(bool enabled)
     // A driver without GLX_EXT_swap_control_tear / WGL_EXT_swap_control_tear refuses it, and regular
     // vsync is used. The cache asks the driver only for a change, and asks for adaptive vsync once per
     // context (#3511): the resize interactions turn vsync off and on again (Application::run()).
-    // UI thread only, like every GL call; per context, so a replaced one (#3484) starts over.
-    static SwapIntervalCache cache;
-    const SwapIntervalCache::Outcome outcome =
-        cache.apply(enabled,
-                    SDL_GL_GetCurrentContext(),
-                    [](const int interval)
-                    {
-                        return traceResizePerfSDL(
-                            ResizePerfOperation::SwapInterval, interval, 0, [interval] { return SDL_GL_SetSwapInterval(interval); });
-                    });
+    // Per context, and forgotten when one is made or destroyed (forgetSwapInterval()).
+    const SwapIntervalCache::Outcome outcome = swapIntervalCache().apply(
+        enabled,
+        SDL_GL_GetCurrentContext(),
+        [](const int interval)
+        {
+            return traceResizePerfSDL(
+                ResizePerfOperation::SwapInterval, interval, 0, [interval] { return SDL_GL_SetSwapInterval(interval); });
+        });
     if (outcome.calls == 0)
     {
         recordResizePerfSkipped(ResizePerfOperation::SwapInterval);

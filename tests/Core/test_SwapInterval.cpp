@@ -157,6 +157,43 @@ TEST(SwapIntervalCacheTest, ARefusedIntervalIsAskedForAgainNextTime)
     EXPECT_EQ(driver.calls, (std::vector{SWAP_INTERVAL_IMMEDIATE, SWAP_INTERVAL_IMMEDIATE}));
 }
 
+TEST(SwapIntervalCacheTest, ANewContextWithAReusedHandleIsSetAgain)
+{
+    // A destroyed context's handle can come back for the next one (#3511 review). Window invalidates the
+    // cache when it makes or destroys a context, so the new one gets its interval, not the old one's.
+    SwapIntervalCache cache;
+    FakeDriver driver;
+    driver.adaptiveSupported = false;
+    const auto set = [&](int interval)
+    {
+        return driver(interval);
+    };
+    static_cast<void>(cache.apply(true, &CONTEXT_A, set));
+    cache.invalidate(); // ~Window(): the context is destroyed
+    cache.invalidate(); // Window(): a new one is made, with the same handle
+    driver.calls.clear();
+    const auto reused = cache.apply(true, &CONTEXT_A, set);
+    EXPECT_EQ(driver.calls, (std::vector{SWAP_INTERVAL_ADAPTIVE, SWAP_INTERVAL_VSYNC})) << "set again, adaptive asked again";
+    EXPECT_TRUE(reused.adaptiveRefused) << "the new context's refusal is its own, and logged";
+    EXPECT_EQ(reused.applied, SWAP_INTERVAL_VSYNC);
+
+    // From then on the new context is remembered as before.
+    driver.calls.clear();
+    const auto again = cache.apply(true, &CONTEXT_A, set);
+    EXPECT_EQ(again.calls, 0U);
+    EXPECT_FALSE(again.adaptiveRefused);
+}
+
+TEST(SwapIntervalCacheTest, InvalidateBeforeAnyRequestChangesNothing)
+{
+    SwapIntervalCache cache;
+    FakeDriver driver;
+    cache.invalidate();
+    const auto off = cache.apply(false, &CONTEXT_A, [&](int interval) { return driver(interval); });
+    EXPECT_EQ(driver.calls, (std::vector{SWAP_INTERVAL_IMMEDIATE}));
+    EXPECT_TRUE(off.accepted);
+}
+
 TEST(SwapIntervalCacheTest, VsyncRefusedEntirelyLeavesTheIntervalUnknown)
 {
     SwapIntervalCache cache;
