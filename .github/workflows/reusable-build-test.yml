@@ -303,14 +303,16 @@ jobs:
       # tasksmack-helper's privilege drop and seccomp filter, as root (#3058). TasksmackHelperRootTest skips
       # unless it runs as root, and the runner's passwordless sudo is the only root CI has: without this
       # step the helper's drop to 65534 with four capabilities ran only when the maintainer ran it by hand.
-      # A skip fails the step as well, so a root run that quietly skips can't pass.
+      # A skip fails the step as well, so a root run that quietly skips can't pass. DetachedSpawnTest.AsRoot*
+      # (#3298, #3491) runs here too: a RunAs's supplementary groups need root to set, and it ran only in
+      # heavy-checks' coverage pass before.
       - name: Helper root test (Linux)
         if: runner.os == 'Linux' && inputs.build && inputs.build_type == 'debug'
         run: |
           set -o pipefail
-          sudo -E build/debug/tests/TaskSmackTests --gtest_filter='TasksmackHelperRootTest.*' 2>&1 | tee helper-root-test.log
-          if grep -q '\[  SKIPPED \]' helper-root-test.log || ! grep -q '\[  PASSED  \] 1 test' helper-root-test.log; then
-            echo "::error title=Helper root test::TasksmackHelperRootTest didn't run and pass as root"
+          sudo -E build/debug/tests/TaskSmackTests --gtest_filter='TasksmackHelperRootTest.*:DetachedSpawnTest.AsRoot*' 2>&1 | tee helper-root-test.log
+          if grep -q '\[  SKIPPED \]' helper-root-test.log || ! grep -q '\[  PASSED  \] 2 tests' helper-root-test.log; then
+            echo "::error title=Helper root test::TasksmackHelperRootTest and DetachedSpawnTest.AsRoot* didn't all run and pass as root"
             exit 1
           fi
 
