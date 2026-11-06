@@ -137,7 +137,8 @@ void LinuxPowerProbe::discoverBatteries()
     {
         addPackCapabilities(batteryPath);
     }
-    m_Capabilities.hasTimeEstimates = false; // Linux doesn't provide time estimates directly
+    // Time to empty or full is worked out from the charge and the power rate in read(), when both are there (#3431)
+    m_Capabilities.hasTimeEstimates = m_Capabilities.hasBattery && m_Capabilities.hasChargeCapacity && m_Capabilities.hasPowerRate;
     spdlog::debug("LinuxPowerProbe: {} system batteries under {}", m_BatteryPaths.size(), m_PowerSupplyRoot);
 }
 

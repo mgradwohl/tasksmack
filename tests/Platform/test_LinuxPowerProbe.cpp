@@ -270,6 +270,25 @@ TEST_F(LinuxPowerProbeUnitTest, Battery_Discharging_ReturnsCorrectState)
     EXPECT_EQ(counters.chargePercent, 75);
 }
 
+// #3431: time estimates are offered when the charge and the power rate are read, as read() works them out from
+// those; a pack with only a percentage offers none.
+TEST_F(LinuxPowerProbeUnitTest, TimeEstimatesAreOfferedWhenChargeAndPowerAreRead)
+{
+    const auto batPath = makeBatteryDevice("BAT0");
+    writeFile(batPath / "status", "Discharging");
+    writeFile(batPath / "capacity", "60");
+    {
+        const LinuxPowerProbe percentOnly(m_SysRoot.string());
+        EXPECT_FALSE(percentOnly.capabilities().hasTimeEstimates);
+    }
+    writeFile(batPath / "energy_now", "30000000");
+    writeFile(batPath / "energy_full", "50000000");
+    writeFile(batPath / "power_now", "10000000");
+    LinuxPowerProbe probe(m_SysRoot.string());
+    EXPECT_TRUE(probe.capabilities().hasTimeEstimates);
+    EXPECT_EQ(probe.read().timeToEmptySec, 3U * 3600U) << "30 Wh at 10 W";
+}
+
 TEST_F(LinuxPowerProbeUnitTest, Battery_Charging_ReturnsCorrectState)
 {
     const auto batPath = makeBatteryDevice("BAT0");
