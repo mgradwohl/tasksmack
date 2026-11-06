@@ -154,6 +154,16 @@ pre-commit run --all-files           # whitespace, UTF-8, REUSE, actionlint, gui
 Test: `ctest --preset debug` / `ctest --preset win-debug` (Google Test; mocks in `tests/Mocks/MockProbes.h`;
 use `EXPECT_DOUBLE_EQ`, not `EXPECT_EQ`, on floats).
 
+Daytime filter, on a machine someone is using: never run `ctest` unfiltered or `TaskSmackAppTests`; run
+`TaskSmackTests --gtest_filter=-*OnDisplay*:UiScenario*:AccessNotice*:Screenshot*:WindowTest.*:ApplicationTest.*:CiRealSystem*`,
+or a targeted suite filter. The display suites open windows and drive the mouse.
+
+CI real-system tests (#3489): a suite named `CiRealSystem*`, derived from `TestSupport::CiRealSystemTest`
+(`tests/Support/CiRealSystem.h`), changes the machine it runs on, so it skips unless `TASKSMACK_CI_REAL_SYSTEM=1`
+on a GitHub-hosted runner. Only the CI step "Real-system tests (Windows)" sets it. Never set it locally; the
+daytime filter excludes the group too. A change to a real OS path adds such a test, or the PR says why only a
+manual check can cover it.
+
 Naming: `PascalCase` classes, `camelCase` functions, `m_PascalCase` members, `UPPER_SNAKE_CASE` constants.
 Sampling literals live in `src/Domain/SamplingConfig.h` — reuse them, don't re-declare.
 

@@ -108,6 +108,10 @@ if(WIN32)
         # frame (minimized) is left out of the frame and loop figures, n/a when none drew one (#3210).
         add_test(NAME ResizePerfSummaryScript
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-resize-perf-summary.ps1)
+        # tools/winget-manifest.ps1 fills in packaging/winget/'s templates from a release's SHA256SUMS (#3486).
+        # Fixture SHA256SUMS files; nothing is downloaded, and winget isn't needed.
+        add_test(NAME WingetManifestScript
+            COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-winget-manifest.ps1)
         # The PowerShell script tests take turns (#2054). Each starts pwsh, several compile C# with
         # Add-Type, and some start further pwsh or stub processes; run together under `ctest -j` on a
         # 4-core CI runner they slowed each other down many times over (CMakeCacheScript, 1.5-4.4 s
@@ -125,19 +129,19 @@ if(WIN32)
         # reusable-build-test.yml gives these entries, and no others, a second attempt on that leg.
         set_tests_properties(ResizeCaptureScript EtwCaptureScript EtwAnalysisScript CMakeCacheScript BenchScript
             CheckPrereqsScript SetupDevScript VerifyWindowsSignaturesScript BuildWindowsInstallerScript
-            ResizePerfSummaryScript ClangTidyHeadersScript PROPERTIES
+            ResizePerfSummaryScript WingetManifestScript ClangTidyHeadersScript PROPERTIES
             RESOURCE_LOCK pwsh-script-tests
             LABELS pwsh-script)
         set_tests_properties(ResizeCaptureScript EtwAnalysisScript CMakeCacheScript CheckPrereqsScript SetupDevScript
-            VerifyWindowsSignaturesScript BuildWindowsInstallerScript ResizePerfSummaryScript ClangTidyHeadersScript
-            PROPERTIES TIMEOUT 120)
+            VerifyWindowsSignaturesScript BuildWindowsInstallerScript ResizePerfSummaryScript WingetManifestScript
+            ClangTidyHeadersScript PROPERTIES TIMEOUT 120)
         set_tests_properties(EtwCaptureScript BenchScript PROPERTIES TIMEOUT 180)
     else()
         # Say so rather than leave the ETW script tests silently missing from ctest (#1187).
         message(WARNING "pwsh (PowerShell 7) not found: the ResizeCaptureScript, EtwCaptureScript, "
                         "EtwAnalysisScript, CMakeCacheScript, BenchScript, CheckPrereqsScript, SetupDevScript, "
-                        "VerifyWindowsSignaturesScript, BuildWindowsInstallerScript, ResizePerfSummaryScript and "
-                        "ClangTidyHeadersScript tests "
+                        "VerifyWindowsSignaturesScript, BuildWindowsInstallerScript, ResizePerfSummaryScript, "
+                        "WingetManifestScript and ClangTidyHeadersScript tests "
                         "are not registered. Install PowerShell 7 to run them.")
     endif()
     # The Authenticode gate on packaging TaskSmackHelper.exe (#2550): the build's own, unsigned
@@ -285,6 +289,11 @@ add_test(NAME BenchmarkRegressionGateScript
 add_test(NAME MergeBenchmarkBaselinesScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_merge_benchmark_baselines.py)
 
+# tools/bench-across-launches.py re-measures the benchmarks the CI gate flagged in separate launches, and the gate
+# checks the median across them (#3476).
+add_test(NAME BenchAcrossLaunchesScript
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_bench_across_launches.py)
+
 # tools/tidy-changed-files.py picks the PR clang-tidy jobs' translation units (#1406, #1626). The tests
 # build throwaway git repositories (about 10 s idle). On a loaded Windows machine each git process is
 # far slower and the run neared 180 s (#1797); 600 s keeps it clear of that and of the CI --timeout.
@@ -356,7 +365,8 @@ add_test(NAME StartupWiringScript
 
 # The run: scripts of renovate.yml's dry-run choice (#2527), sanitizers.yml's job summary (#2532),
 # main-health.yml's per-job check (#2313), release.yml's Windows digest comparison (#2952),
-# codeql.yml's src/ filter (#2992) and changelog.yml's release notes (#3144), read from the workflows and run with bash (pwsh for release.yml's)
+# codeql.yml's src/ filter (#2992), changelog.yml's release notes (#3144) and heavy-checks.yml's re-measurement of
+# flagged benchmarks across launches (#3476), read from the workflows and run with bash (pwsh for release.yml's)
 # against stubs and fixtures (#2478). The Main Health and CodeQL cases also need jq on bash's PATH, and
 # the release.yml cases pwsh on PATH; each is skipped without.
 if(TASKSMACK_BASH)
@@ -694,6 +704,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessActionRun.cpp
     App/test_ProcessBatchPriorityDialogRender.cpp
     App/test_ProcessAffinityDialog.cpp
+    App/test_ProcessSchedPolicyDialog.cpp  # Set scheduling policy (#3086)
     App/test_AboutDialogRender.cpp
     App/test_AccessNoticeDialogRender.cpp  # Standard or Administrator, headless (#2728)
     App/test_ElevationNoticeDialogRender.cpp
@@ -771,6 +782,10 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsElevation.cpp
     Platform/test_BrokerPipe.cpp  # the privileged broker's named-pipe transport (#2311)
     Platform/test_BrokerHelper.cpp  # TaskSmackHelper.exe: its parent checks, its session and the exe itself (#2517)
+    # CI real-system tests (#3489): Realtime, Run new task, Compressed memory, Open file location and the helper's
+    # session end for real, on a disposable runner only (tests/Support/CiRealSystem.h's guard skips them elsewhere)
+    Platform/test_CiRealSystemWindows.cpp
+    Platform/test_CiRealSystemHelper.cpp
     Platform/test_HelperLauncher.cpp  # starting the helper with ShellExecuteExW("runas"), through fakes (#2549)
     Platform/test_WindowsTaskManagerReplacement.cpp  # taskmgr.exe's IFEO key, on a scratch HKCU key, and the helper's checks (#3072)
     Platform/test_WindowsUserSessions.cpp  # the Users tab's WTS reader and actions through fakes, and this machine's sessions (#3076)
@@ -863,6 +878,7 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_LogindSessions.cpp  # the Users tab's sessions (#3076)
     Platform/test_ProcParsing.cpp  # the file readers and parseDouble (#1891)
     Platform/test_PressureParser.cpp  # /proc/pressure parsing (#3062)
+    Platform/test_LinuxNuma.cpp  # the NUMA nodes from /sys/devices/system/node (#3088)
     Platform/test_SystemdJournal.cpp
     Platform/test_InetSocketTable.cpp
     Platform/test_LinuxProcessStatus.cpp
@@ -977,6 +993,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessActionConfirm.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessBatchPriorityDialog.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessAffinityDialog.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessSchedPolicyDialog.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/RunTaskDialog.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/FindHandlesDialog.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessActionsView.cpp
@@ -1268,6 +1285,40 @@ if(TARGET TaskSmackHelper)
         # Whether the helper is built with CFG and CETCOMPAT, which the tests then check it has (#2557)
         $<$<BOOL:${TASKSMACK_HELPER_HARDENED}>:TASKSMACK_WINDOWS_HELPER_HARDENED>
     )
+
+    # The CI real-system tests' copy of the helper (#3489, test_CiRealSystemHelper.cpp): the same sources,
+    # definitions and libraries as TaskSmackHelper.exe, but a session that ends after 3 s idle instead of five
+    # minutes (TASKSMACK_HELPER_TEST_IDLE_TIMEOUT_MS, HelperMain.cpp), so the idle exit is seen for real. Test
+    # code only: nothing ships it, and it has no version resource or CFG of its own.
+    add_executable(TaskSmackHelperShortIdle WIN32 ${TASKSMACK_WINDOWS_HELPER_SOURCES})
+    target_compile_features(TaskSmackHelperShortIdle PRIVATE cxx_std_23)
+    tasksmack_apply_default_warnings(TaskSmackHelperShortIdle)
+    tasksmack_apply_text_encoding(TaskSmackHelperShortIdle)
+    tasksmack_apply_windows_definitions(TaskSmackHelperShortIdle)
+    target_include_directories(TaskSmackHelperShortIdle PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_BINARY_DIR}/generated)
+    target_compile_definitions(TaskSmackHelperShortIdle PRIVATE ${TASKSMACK_WINDOWS_HELPER_DEFINITIONS}
+        TASKSMACK_HELPER_TEST_IDLE_TIMEOUT_MS=3000)
+    target_link_libraries(TaskSmackHelperShortIdle PRIVATE ${TASKSMACK_WINDOWS_HELPER_LIBRARIES})
+    target_link_options(TaskSmackHelperShortIdle PRIVATE
+        "LINKER:/MANIFESTINPUT:${TASKSMACK_MANIFEST_OUT}"
+        "LINKER:/DEPENDENTLOADFLAG:0x800"
+    )
+    add_dependencies(TaskSmackTests TaskSmackHelperShortIdle)
+    target_compile_definitions(TaskSmackTests PRIVATE
+        TASKSMACK_WINDOWS_HELPER_SHORT_IDLE_PATH="$<TARGET_FILE:TaskSmackHelperShortIdle>"
+    )
+endif()
+
+# TaskSmackCiStub.exe (#3489): the idle program the CI real-system tests start through the shell, show in
+# Explorer and act on. It only sleeps, and every test ends it.
+if(WIN32)
+    add_executable(TaskSmackCiStub WIN32 Support/CiStub.cpp)
+    target_compile_features(TaskSmackCiStub PRIVATE cxx_std_23)
+    tasksmack_apply_default_warnings(TaskSmackCiStub)
+    tasksmack_apply_text_encoding(TaskSmackCiStub)
+    tasksmack_apply_windows_platform(TaskSmackCiStub)
+    add_dependencies(TaskSmackTests TaskSmackCiStub)
+    target_compile_definitions(TaskSmackTests PRIVATE TASKSMACK_CI_STUB_PATH="$<TARGET_FILE:TaskSmackCiStub>")
 endif()
 
 # test_BundledThemes.cpp checks the shipped theme files themselves, from the source tree.

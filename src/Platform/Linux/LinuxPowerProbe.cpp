@@ -137,7 +137,7 @@ void LinuxPowerProbe::discoverBatteries()
     {
         addPackCapabilities(batteryPath);
     }
-    m_Capabilities.hasTimeEstimates = false; // Linux doesn't provide time estimates directly
+    m_Capabilities.hasTimeEstimates = false; // set by read(), from the packs that are in (#3431)
     spdlog::debug("LinuxPowerProbe: {} system batteries under {}", m_BatteryPaths.size(), m_PowerSupplyRoot);
 }
 
@@ -181,6 +181,10 @@ PowerCounters LinuxPowerProbe::read()
     // A pack can be inserted into or taken from a bay the driver keeps listing, which leaves the
     // set of paths, and so discovery, unchanged (#2408)
     m_Capabilities.hasBattery = !packs.empty();
+    // Time to empty or full is worked out only from a charge combined in Wh and a power rate (#3431): kept with
+    // presence, so a pack put into or taken from a listed bay updates it too.
+    m_Capabilities.hasTimeEstimates =
+        chargeInWattHours(packs) && std::ranges::any_of(packs, [](const PackReading& p) { return p.hasPowerRate; });
     if (packs.empty())
     {
         PowerCounters counters;
@@ -268,6 +272,7 @@ std::optional<LinuxPowerProbe::PackReading> LinuxPowerProbe::readPack(const std:
     if (Fs::exists(batteryPath + "/power_now"))
     {
         counters.powerNowW = static_cast<double>(magnitude(readSysfsInt64(batteryPath + "/power_now"))) / 1000000.0; // µW to W
+        pack.hasPowerRate = true;
     }
     else if (Fs::exists(batteryPath + "/current_now") && voltageUv > 0)
     {
@@ -275,6 +280,7 @@ std::optional<LinuxPowerProbe::PackReading> LinuxPowerProbe::readPack(const std:
         counters.powerNowW =
             (static_cast<double>(magnitude(readSysfsInt64(batteryPath + "/current_now"))) * static_cast<double>(voltageUv)) /
             1000000000000.0;
+        pack.hasPowerRate = true;
     }
     if (counters.state == BatteryState::Charging)
     {
@@ -306,6 +312,23 @@ std::optional<LinuxPowerProbe::PackReading> LinuxPowerProbe::readPack(const std:
 /// - Power: the sum of the packs' signed rates.
 /// - Cycle count: the most-cycled pack's. Voltage, technology, model and manufacturer: the first
 ///   pack's (by name), as a combined value would mean nothing.
+bool LinuxPowerProbe::sharesUnit(const std::vector<PackReading>& packs)
+{
+    const CapacityUnit unit = packs.front().unit;
+    return unit != CapacityUnit::None && std::ranges::all_of(packs, [unit](const PackReading& p) { return p.unit == unit; });
+}
+
+bool LinuxPowerProbe::chargeCountedFor(const std::vector<PackReading>& packs)
+{
+    // The charge figures count a pack's charge only with its capacity (#2409)
+    return sharesUnit(packs) && (packs.size() == 1 || std::ranges::all_of(packs, [](const PackReading& p) { return p.full > 0.0; }));
+}
+
+bool LinuxPowerProbe::chargeInWattHours(const std::vector<PackReading>& packs)
+{
+    return !packs.empty() && chargeCountedFor(packs) && packs.front().unit == CapacityUnit::WattHours;
+}
+
 PowerCounters LinuxPowerProbe::combinePacks(const std::vector<PackReading>& packs)
 {
     PowerCounters counters;
@@ -359,11 +382,8 @@ PowerCounters LinuxPowerProbe::combinePacks(const std::vector<PackReading>& pack
     }
 
     const CapacityUnit unit = first.unit;
-    const bool sharedUnit =
-        unit != CapacityUnit::None && std::ranges::all_of(packs, [unit](const PackReading& p) { return p.unit == unit; });
-    // The charge figures count a pack's charge only with its capacity (#2409)
-    const bool chargeCounted =
-        sharedUnit && (packs.size() == 1 || std::ranges::all_of(packs, [](const PackReading& p) { return p.full > 0.0; }));
+    const bool sharedUnit = sharesUnit(packs);
+    const bool chargeCounted = chargeCountedFor(packs);
     double now = 0.0;
     double full = 0.0;
     std::vector<PackCapacity> capacities;
@@ -401,7 +421,7 @@ PowerCounters LinuxPowerProbe::combinePacks(const std::vector<PackReading>& pack
         counters.healthPercent = batteryHealthPercent(first.healthFull, first.healthDesign);
     }
 
-    const bool wattHours = chargeCounted && unit == CapacityUnit::WattHours;
+    const bool wattHours = chargeInWattHours(packs);
     if (wattHours)
     {
         counters.chargeNowWh = now;

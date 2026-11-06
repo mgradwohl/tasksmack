@@ -37,6 +37,7 @@
 #include <shellapi.h>
 // clang-format on
 
+#include <chrono>
 #include <cstddef>
 #include <span>
 #include <stop_token>
@@ -46,6 +47,16 @@
 
 namespace
 {
+
+#ifdef TASKSMACK_HELPER_TEST_IDLE_TIMEOUT_MS
+/// The tests' short-idle copy of the helper (TaskSmackHelperShortIdle, tests/CMakeLists.txt; #3489), which the
+/// CI real-system tests run to see a session end when it goes idle without waiting five minutes. Only that
+/// test target defines it, and only ever shorter: the shipped helper always waits IDLE_TIMEOUT.
+constexpr std::chrono::milliseconds SESSION_IDLE_TIMEOUT{TASKSMACK_HELPER_TEST_IDLE_TIMEOUT_MS};
+static_assert(SESSION_IDLE_TIMEOUT < Platform::Windows::BrokerHelper::IDLE_TIMEOUT);
+#else
+constexpr std::chrono::milliseconds SESSION_IDLE_TIMEOUT{Platform::Windows::BrokerHelper::IDLE_TIMEOUT};
+#endif
 
 /// The command line's arguments after the program's name, or nothing when it can't be split.
 [[nodiscard]] std::vector<std::wstring_view> arguments(int& count, LPWSTR*& argv)
@@ -141,7 +152,7 @@ int WINAPI wWinMain(HINSTANCE /*instance*/, HINSTANCE /*previous*/, LPWSTR /*com
         };
         const std::stop_source never;
         return static_cast<int>(Helper::run(
-            *parsed, *self, handler, Helper::IDLE_TIMEOUT, Platform::Windows::BrokerPipeServer::ACCEPT_TIMEOUT, never.get_token()));
+            *parsed, *self, handler, SESSION_IDLE_TIMEOUT, Platform::Windows::BrokerPipeServer::ACCEPT_TIMEOUT, never.get_token()));
     }
     catch (...) // an allocation failure or the like: TaskSmack sees the pipe close
     {

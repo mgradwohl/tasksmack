@@ -15,6 +15,7 @@
 #include "App/Panels/ProcessDumpView.h"
 #include "App/Panels/ProcessOverviewCard.h"
 #include "App/Panels/ProcessPriorityView.h"
+#include "App/Panels/ProcessSchedPolicyDialog.h"
 #include "Core/Application.h"
 #include "Domain/PriorityConfig.h"
 #include "Mocks/MockProbes.h"
@@ -517,6 +518,111 @@ TEST_F(ProcessActionsBlockRenderTest, SetAffinityFromTheCardOpensTheDialogAndApp
     EXPECT_EQ(h.mock.setAffinityCount(), 1);
     EXPECT_EQ(h.mock.affinityLayoutCount(), 1) << "read once, for both openings";
     EXPECT_NE(h.mock.affinityLayoutThread(), std::this_thread::get_id()) << "read on its worker, never the UI thread";
+}
+
+// #3086: where the platform can set a scheduling policy (Linux), the Actions card has Set scheduling policy...;
+// it opens the dialog on the process's policy, Apply with Batch chosen sets it on that process and the card's
+// line says so; a refusal for want of permission offers Authenticate and retry, which sends the same policy; and
+// a selection change closes the dialog unapplied.
+TEST_F(ProcessActionsBlockRenderTest, SetSchedulingPolicyFromTheCardOpensTheDialogAndAppliesToTheProcess)
+{
+    Harness h;
+    Platform::ProcessActionCapabilities caps = ALL_ACTIONS;
+    caps.canSetSchedPolicy = true;
+    caps.canAuthorizeInteractively = true;
+    h.mock.setCapabilities(caps);
+    std::string text;
+    const auto body = [&]
+    {
+        ImGui::LogToBuffer();
+        ProcessActionsBlock::Context context = h.context(caps);
+        context.currentSchedPolicy = Platform::SchedPolicy::Normal;
+        (void) ProcessActionsBlock::render(context, layoutFor(caps, 1600.0F, 600.0F), infoCardHeight(6.0F));
+        h.actionsView.renderConfirmation(&h.mock, TARGET);
+        text = GImGui->LogBuffer.c_str();
+        ImGui::LogFinish();
+    };
+    ASSERT_FALSE(runFrame(body));
+    EXPECT_TRUE(text.contains("Set scheduling policy...")) << text;
+    const auto pressButton = [&]
+    {
+        const ImGuiWindow* actions = actionsWindow();
+        ASSERT_NE(actions, nullptr);
+        ImGui::ActivateItemByID(ImHashStr(Detail::SET_SCHED_POLICY_LABEL, 0, actions->ID));
+        static_cast<void>(runFrame(body));
+        ASSERT_TRUE(runFrame(body));
+    };
+    const auto pressInModal = [](const char* label, bool filled)
+    {
+        const ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
+        ASSERT_NE(modal, nullptr);
+        const ImGuiID id = ImHashStr(label, 0, modal->ID);
+        ImGui::ActivateItemByID(filled ? ImHashStr("##filled", 0, id) : id);
+    };
+    pressButton();
+    ProcessSchedPolicyDialog& dialog = h.actionsView.schedPolicyDialog();
+    EXPECT_EQ(dialog.target().pid, TARGET.pid);
+    EXPECT_EQ(dialog.choice(), Platform::SchedPolicy::Normal);
+
+    pressInModal("Batch", false);
+    static_cast<void>(runFrame(body));
+    pressInModal("Apply", true);
+    for (int i = 0; i < 3 && h.mock.setSchedPolicyCount() == 0; ++i)
+    {
+        static_cast<void>(runFrame(body));
+        h.actionsView.waitForActionForTesting(); // the change runs on the action worker (#2305)
+    }
+    EXPECT_EQ(h.mock.setSchedPolicyCount(), 1);
+    EXPECT_EQ(h.mock.lastSchedPolicy(), Platform::SchedPolicy::Batch);
+    EXPECT_EQ(h.mock.lastRealtimeThreads(), Platform::RealtimeThreads::Keep) << "opened on Normal: no warning, none demoted";
+    EXPECT_EQ(h.mock.lastTarget().pid, TARGET.pid);
+    static_cast<void>(runFrame(body));
+    EXPECT_TRUE(text.contains("Scheduling policy of victim (PID 1001) set to Batch")) << text;
+
+    // Refused for want of permission: Authenticate and retry sends the same policy as an administrator.
+    h.mock.setSchedPolicyResult(Platform::ProcessActionResult::denied("Permission denied"));
+    pressButton();
+    pressInModal("Idle", false);
+    static_cast<void>(runFrame(body));
+    pressInModal("Apply", true);
+    for (int i = 0; i < 3 && h.mock.setSchedPolicyCount() == 1; ++i)
+    {
+        static_cast<void>(runFrame(body));
+        h.actionsView.waitForActionForTesting();
+    }
+    EXPECT_EQ(h.mock.setSchedPolicyCount(), 2);
+    static_cast<void>(runFrame(body));
+    ASSERT_TRUE(h.actionsView.offersAuthenticateAndRetry());
+    h.actionsView.retryAuthorizedForTesting();
+    h.actionsView.waitForActionForTesting();
+    EXPECT_EQ(h.mock.runAuthorizedCount(), 1);
+    EXPECT_EQ(h.mock.lastAuthorizedAction().kind, Platform::AuthorizedAction::Kind::SetSchedPolicy);
+    EXPECT_EQ(h.mock.lastAuthorizedAction().schedPolicy, Platform::SchedPolicy::Idle);
+    EXPECT_EQ(h.mock.lastAuthorizedAction().target.pid, TARGET.pid);
+
+    // Opened again, then the selection moves on: closed, nothing applied.
+    pressButton();
+    h.actionsView.onSelectionChanged();
+    static_cast<void>(runFrame(body));
+    EXPECT_FALSE(runFrame(body));
+    EXPECT_EQ(h.mock.setSchedPolicyCount(), 2);
+}
+
+// #3086: no Set scheduling policy... where the platform can't set one (Windows).
+TEST_F(ProcessActionsBlockRenderTest, NoSetSchedulingPolicyWhereThePlatformCantSetOne)
+{
+    Harness h;
+    std::string text;
+    (void) runFrame(
+        [&]
+        {
+            ImGui::LogToBuffer();
+            (void) ProcessActionsBlock::render(h.context(ALL_ACTIONS), layoutFor(ALL_ACTIONS, 1600.0F, 600.0F), infoCardHeight(6.0F));
+            text = GImGui->LogBuffer.c_str();
+            ImGui::LogFinish();
+        });
+    EXPECT_FALSE(text.contains("Set scheduling policy")) << text;
+    EXPECT_TRUE(text.contains("Suspend")) << text;
 }
 
 // #3182: Set affinity... pressed before the CPU layout has been read opens the dialog at once, saying it

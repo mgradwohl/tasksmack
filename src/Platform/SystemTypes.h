@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Platform/CpuAffinity.h"
 #include "Platform/CpuDetails.h"
 
 #include <cstddef>
@@ -115,7 +116,6 @@ struct MemoryCounters
     uint64_t memoryCompressionBytes = 0; ///< Windows: the Memory Compression process's working set
 };
 
-/// Combined system counters snapshot.
 /// One line of a Linux pressure stall information file (#3062): the share of wall time, in percent, that
 /// tasks were stalled on the resource, averaged over the last 10, 60 and 300 seconds.
 struct PressureStall
@@ -139,6 +139,19 @@ struct ResourcePressure
     }
 };
 
+/// One NUMA node (#3088): its processors and its memory, raw, as the OS reports them. The Domain layer
+/// derives used memory and per-node CPU use (from cpuPerCore, by the processors in `cpus`).
+///   Linux: /sys/devices/system/node/node<id>/cpulist, and its meminfo's MemTotal and MemFree.
+///   Windows: GetNumaNodeProcessorMaskEx and GetNumaAvailableMemoryNodeEx.
+struct NumaNode
+{
+    int id = 0;                      ///< The OS's node number; the numbers need not be contiguous
+    CpuAffinity cpus;                ///< Its logical processors, numbered as cpuPerCore's coreId; empty: CPU-less node
+    std::uint64_t memTotalBytes = 0; ///< 0 for a memoryless node (CPUs only)
+    std::uint64_t memFreeBytes = 0;  ///< Linux: MemFree, free pages only (page cache is not counted as free)
+};
+
+/// Combined system counters snapshot.
 struct SystemCounters
 {
     CpuCounters cpuTotal;                // Aggregate across all cores
@@ -157,6 +170,10 @@ struct SystemCounters
     ResourcePressure cpuPressure;
     ResourcePressure memoryPressure;
     ResourcePressure ioPressure;
+
+    // The NUMA nodes (#3088), sorted by id, where SystemCapabilities::hasNumaNodes says they're read; empty
+    // when they couldn't be. A machine without NUMA hardware reports one node that holds everything.
+    std::vector<NumaNode> numaNodes;
 
     // The current CPU clock in MHz (#1184). Linux: cpu0's cpufreq reading. Windows: the base clock (~MHz)
     // scaled by "% Processor Performance", the processors' average, as Task Manager's "Speed".
@@ -210,7 +227,8 @@ struct SystemCapabilities
     bool hasIoWait = false;
     bool hasSteal = false;
     bool hasLoadAvg = false;
-    bool hasPressure = false; // /proc/pressure: Linux PSI, when the kernel has it enabled (#3062)
+    bool hasPressure = false;  // /proc/pressure: Linux PSI, when the kernel has it enabled (#3062)
+    bool hasNumaNodes = false; // SystemCounters::numaNodes is read (#3088)
     bool hasCpuFreq = false;
     bool hasNetworkCounters = false; // System-wide network byte counters
     // CpuDetails' virtualization fields (firmware, SLAT, hypervisor) mean something here (Windows,

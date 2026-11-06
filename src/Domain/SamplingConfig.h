@@ -235,6 +235,12 @@ inline constexpr int GPU_RESCAN_INTERVAL_SECONDS = 10;
 // or removing one). Each sample reads the known devices' mm_stat; only the listing waits for this.
 inline constexpr int ZRAM_RESCAN_INTERVAL_SECONDS = 10;
 
+// NUMA node re-enumeration interval (seconds) - fixed, not configurable (#3088)
+// How often the Linux system probe lists /sys/devices/system/node and re-reads each node's cpulist: the
+// layout only changes on CPU or memory hotplug. Each sample reads the known nodes' meminfo; only the
+// listing and the CPU lists wait for this.
+inline constexpr int NUMA_RESCAN_INTERVAL_SECONDS = 10;
+
 // Memory Compression process search interval (seconds) - fixed, not configurable (#3483)
 // While the Windows system probe knows no "Memory Compression" process (compression is off, or the last
 // search failed), how often it looks for one in a whole SystemProcessInformation snapshot, so compression

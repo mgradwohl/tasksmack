@@ -6,8 +6,10 @@
 
 #include "Domain/SamplingConfig.h"
 #include "LinuxCpuDetails.h"
+#include "Platform/CpuAffinity.h"
 #include "Platform/CpuDetails.h"
 #include "Platform/Linux/LinuxCommitPaging.h"
+#include "Platform/Linux/LinuxNuma.h"
 #include "Platform/Linux/PressureParser.h"
 #include "Platform/SystemTypes.h"
 #include "ProcParsing.h"
@@ -95,6 +97,7 @@ LinuxSystemProbe::LinuxSystemProbe(std::filesystem::path procRoot,
       m_SysClassNetRoot(std::move(sysClassNetRoot)),
       m_CpuSysfsRoot(std::move(cpuSysfsRoot)),
       m_SysBlockRoot(rootDir / "sys" / "block"),
+      m_NumaNodeRoot(rootDir / "sys" / "devices" / "system" / "node"),
       m_TicksPerSecond(sysconf(_SC_CLK_TCK)),
       m_NumCores(checkedPositiveToSizeT(sysconf(_SC_NPROCESSORS_ONLN), 1U))
 {
@@ -107,6 +110,11 @@ LinuxSystemProbe::LinuxSystemProbe(std::filesystem::path procRoot,
     // Pressure stall information is a kernel option (CONFIG_PSI), and can be turned off at boot (psi=0),
     // when the files are missing or refuse reads (#3062). Decided once: it can't change while running.
     m_HasPressure = readResourcePressure(m_ProcRoot, "cpu").read();
+
+    // NUMA nodes (#3088): the node root is there whenever the kernel has CONFIG_NUMA, with one node on a
+    // machine without NUMA hardware. Decided once, like PSI; the nodes in it are listed as they change.
+    std::error_code numaError;
+    m_HasNuma = std::filesystem::is_directory(m_NumaNodeRoot, numaError);
 
     // Read hostname (cached)
     std::array<char, 256> hostBuffer{};
@@ -154,6 +162,10 @@ SystemCounters LinuxSystemProbe::read()
     readCpuDetails(counters);
     readMemoryCounters(counters, m_ProcRoot);
     readZram(counters);
+    if (m_HasNuma)
+    {
+        readNuma(counters);
+    }
     readUptime(counters, m_ProcRoot);
     readLoadAvg(counters, m_ProcRoot);
     if (m_HasPressure)
@@ -178,6 +190,7 @@ SystemCapabilities LinuxSystemProbe::capabilities() const
         .hasSteal = true,
         .hasLoadAvg = true,
         .hasPressure = m_HasPressure,
+        .hasNumaNodes = m_HasNuma,
         .hasCpuFreq = true,
         .hasNetworkCounters = true,
         .hasVirtualizationInfo = true, // vmx/svm, /dev/kvm, hypervisor detection (#2592)
@@ -531,6 +544,83 @@ void LinuxSystemProbe::readZram(SystemCounters& counters)
             counters.memory.zramCompressedBytes += device->compressedBytes;
             counters.memory.zramMemoryUsedBytes += device->memoryUsedBytes;
         }
+    }
+}
+
+void LinuxSystemProbe::readNuma(SystemCounters& counters)
+{
+    // The lock only guards the cached layout and its state, never the I/O. Until a first listing is
+    // published, every caller lists the nodes itself rather than take an unfinished (empty) layout. Once
+    // one is, an expired layout is rescanned by one caller while the others keep using the old one.
+    std::vector<NumaNode> layout;
+    bool rescan = false;
+    bool ownsRescan = false; // this call set m_NumaRescanning, so it clears it
+    const auto now = std::chrono::steady_clock::now();
+    {
+        const std::scoped_lock lock(m_NumaMutex);
+        if (!m_NumaScanned)
+        {
+            rescan = true;
+        }
+        else if (now - m_NumaScannedAt >= std::chrono::seconds(Domain::Sampling::NUMA_RESCAN_INTERVAL_SECONDS) && !m_NumaRescanning)
+        {
+            rescan = true;
+            ownsRescan = true;
+            m_NumaRescanning = true;
+        }
+        else
+        {
+            layout = m_NumaLayout;
+        }
+    }
+    if (rescan)
+    {
+        // Everything that can throw (the listing, and the copy to publish, which allocates) happens in
+        // the try, so a failure always clears the rescan flag; publishing below is only a swap.
+        std::vector<NumaNode> published;
+        try
+        {
+            for (const int id : LinuxNuma::listNodeIds(m_NumaNodeRoot))
+            {
+                // A cpulist that can't be read or parsed leaves the node's CPUs empty until the next listing.
+                layout.push_back(NumaNode{.id = id, .cpus = LinuxNuma::readNodeCpus(m_NumaNodeRoot, id).value_or(CpuAffinity{})});
+            }
+            published = layout;
+        }
+        catch (...)
+        {
+            if (ownsRescan)
+            {
+                const std::scoped_lock lock(m_NumaMutex);
+                m_NumaRescanning = false; // let a later call retry
+            }
+            throw;
+        }
+        // The layout, its time and the ready flag are published together, without allocating. A listing
+        // that started before the published one (overlapping first calls) doesn't replace it.
+        const std::scoped_lock lock(m_NumaMutex);
+        if (!m_NumaScanned || now >= m_NumaScannedAt)
+        {
+            m_NumaLayout.swap(published);
+            m_NumaScannedAt = now;
+            m_NumaScanned = true;
+        }
+        if (ownsRescan)
+        {
+            m_NumaRescanning = false;
+        }
+    }
+    counters.numaNodes.reserve(layout.size());
+    for (NumaNode& node : layout)
+    {
+        const auto memory = LinuxNuma::readNodeMemory(m_NumaNodeRoot, node.id);
+        if (!memory.has_value())
+        {
+            continue; // went offline since the listing
+        }
+        node.memTotalBytes = memory->totalBytes;
+        node.memFreeBytes = memory->freeBytes;
+        counters.numaNodes.push_back(std::move(node));
     }
 }
 

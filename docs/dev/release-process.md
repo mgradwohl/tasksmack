@@ -155,6 +155,7 @@ local Linux coverage figure (`tools/coverage.sh`) before it merges.
    - Authenticode;
    - the download guide is present, and the notes aren't the placeholder.
 6. Submit the installers to Microsoft SmartScreen.
+   Check that `publish-winget` opened the winget-pkgs pull request (see [Publishing to WinGet](#publishing-to-winget)).
 7. Close the milestone. Post a short announcement in GitHub Discussions: highlights, the download guide and how to
    verify.
 
@@ -280,6 +281,222 @@ purpose:
 3. Run a release dry run on the PR branch. Both Linux legs must pass. After the merge, run one from main, so the
    cache holds the new release before a tag needs it.
 
+## Publishing to WinGet
+
+TaskSmack is in the Windows Package Manager as `TaskSmack.TaskSmack` from v0.11.0 (#3486). Each version is
+three manifests in [microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs), under
+`manifests/t/TaskSmack/TaskSmack/<version>/`, pointing at the release's two NSIS installers
+(`TaskSmack-<version>-win64.exe` and `TaskSmack-<version>-windows-arm64.exe`) with their SHA-256. The templates
+are in [`packaging/winget/`](https://github.com/mgradwohl/tasksmack/tree/main/packaging/winget), beside the other
+packaging, with the reasons for the installer fields:
+- schema **1.12.0**, not the newest, 1.28.0. wingetcreate v1.12.13.0, the newest release and the one that submits
+  every update, reads, validates (with its bundled WinGetUtil 1.12.350) and writes 1.12.0, and `update` rewrites
+  every manifest to it. It would refuse 1.28.0 headers. winget-pkgs recommends 1.28.0 and accepts 1.12.0 ("1.12.0 is
+  also accepted", its `doc/ValidationFailureGuide.md`). `WINGETCREATE_MANIFEST_VERSION` in `release.yml` names the
+  version, beside the pin; `tools/winget-manifest.ps1` refuses templates on any other, and `publish-winget` checks
+  what wingetcreate wrote before submitting. Move all of them to 1.28.0 together with a wingetcreate release that
+  writes it (its main branch already does);
+- per-machine, and `ElevationRequirement: elevationRequired`, since the installer always needs an administrator;
+- `UpgradeBehavior: install`, because the installer upgrades in place and keeps Replace Task Manager and Start at
+  sign-in (#3276);
+- `AppsAndFeaturesEntries` matching the 32-bit installer's Uninstall key (`WOW6432Node\...\Uninstall\TaskSmack`,
+  DisplayName `TaskSmack`, Publisher `TaskSmack Contributors`);
+- no `InstallerSwitches` (winget's nullsoft defaults, `/S` and `/D=`, are the installer's) and no `Commands` (the
+  installer doesn't put TaskSmack on `PATH`).
+
+Change those templates when the installer changes. The automatic updates copy each version's manifests from the
+one before, so a changed field also needs a hand-made update PR to winget-pkgs.
+
+### The first submission (once, by hand, at v0.11.0)
+
+An update needs the package to exist, so the maintainer submits v0.11.0's manifests under their own account, once
+v0.11.0 is published. Get `wingetcreate` with `winget install Microsoft.WingetCreate`.
+
+```powershell
+gh release download v0.11.0 --repo mgradwohl/tasksmack --pattern SHA256SUMS --pattern SHA256SUMS.bundle --dir winget-0.11.0
+# Optional: check SHA256SUMS first (docs/guide/user-guide.md, "Verifying a Release"):
+cosign verify-blob --bundle winget-0.11.0/SHA256SUMS.bundle `
+  --certificate-identity-regexp '^https://github\.com/mgradwohl/tasksmack/\.github/workflows/release\.yml@refs/tags/.+$' `
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com winget-0.11.0/SHA256SUMS
+$date = gh release view v0.11.0 --repo mgradwohl/tasksmack --json publishedAt --jq '.publishedAt[:10]'
+pwsh tools/winget-manifest.ps1 -Version 0.11.0 -ReleaseDir winget-0.11.0 -ReleaseDate $date
+winget validate --manifest winget-0.11.0\winget\manifests\t\TaskSmack\TaskSmack\0.11.0
+# Test it in Windows Sandbox now ("Testing in Windows Sandbox" below), then:
+wingetcreate submit --prtitle "New package: TaskSmack.TaskSmack version 0.11.0" winget-0.11.0\winget\manifests\t\TaskSmack\TaskSmack\0.11.0
+wingetcreate token --clear
+```
+
+The script takes the installers' hashes from `SHA256SUMS`, the Sigstore-signed list release.yml publishes, rather
+than downloading them. The Sandbox test, and winget-pkgs' validation pipeline on the pull request, download both
+installers and check them against those hashes, so a wrong hash fails before anything merges.
+
+Called with no `--token`, `wingetcreate submit` signs you in to GitHub in the browser, forks winget-pkgs to your
+account if needed and opens the pull request. `token --clear` then drops the sign-in it cached, so no token stays on
+the machine. Fill in the pull request's checklist:
+- sign the Microsoft CLA when its bot asks (once per account);
+- confirm no other open pull request is for TaskSmack.TaskSmack 0.11.0, that the pull request holds this one
+  version's three files, and that it passed `winget validate` and the Sandbox install;
+- for the schema item (the template asks for 1.28), say it's 1.12.0, which winget-pkgs accepts, because that's what
+  wingetcreate validates and submits.
+
+winget-pkgs' moderators and its validation pipeline review the pull request; answer their comments on it. Once it
+merges, `winget install TaskSmack.TaskSmack` works, and every later Latest release is submitted automatically.
+
+### Testing in Windows Sandbox
+
+winget-pkgs asks for a local install test. Run it in Windows Sandbox, not on a working machine: it opens a Sandbox
+window, so do it when nobody is using the desktop. It needs Windows Pro, Enterprise or Education on x64, with the
+Sandbox feature on (`Enable-WindowsOptionalFeature -FeatureName Containers-DisposableClientVM -All -Online`, then
+restart). SandboxTest.ps1 downloads WinGet into the Sandbox and validates the manifest. It then installs the
+manifest there with `winget install --manifest`, which downloads each installer and checks its SHA-256, and runs
+`-Script`. Pin the script to a winget-pkgs commit you've read; `1410e3eea47ed72934a257db21cf7a638a862b94`
+(2026-06-16) is the one checked for this guide.
+
+**Before publication, check by what's installed, not by package ID.** Until `TaskSmack.TaskSmack` is merged into
+winget-pkgs, a copy installed from a local manifest isn't tied to any source. So
+`winget list --id TaskSmack.TaskSmack`, `winget uninstall --id ...` and `winget upgrade --id ...` find nothing, even
+when the install is right. The checks below read the Uninstall (ARP) entry, which is
+`HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\TaskSmack` with its `DisplayName`,
+`DisplayVersion` and `Publisher`, plus the install folder and `winget list --name TaskSmack`. They match by name,
+the way winget's own correlation does through `AppsAndFeaturesEntries`. The by-ID checks are at the end, for after
+publication.
+
+```powershell
+$sandbox = (New-Item -ItemType Directory -Force "$env:TEMP\winget-sandbox").FullName
+Invoke-WebRequest https://raw.githubusercontent.com/microsoft/winget-pkgs/1410e3eea47ed72934a257db21cf7a638a862b94/Tools/SandboxTest.ps1 -OutFile "$sandbox\SandboxTest.ps1"
+# v0.10.0, the newest release today; for the real submission use v0.11.0's folder from above.
+gh release download v0.10.0 --repo mgradwohl/tasksmack --pattern SHA256SUMS --dir "$sandbox\v0.10.0"
+pwsh tools/winget-manifest.ps1 -Version 0.10.0 -ReleaseDir "$sandbox\v0.10.0" -ReleaseDate 2026-11-03
+$manifest = "$sandbox\v0.10.0\winget\manifests\t\TaskSmack\TaskSmack\0.10.0"
+Set-Location $sandbox
+.\SandboxTest.ps1 -Manifest $manifest -MapFolder $sandbox -Script {
+    $folder = "$env:ProgramFiles\TaskSmack"
+    $arp = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall'
+    function Get-TaskSmackArp { @(Get-ChildItem $arp | Get-ItemProperty | Where-Object DisplayName -Like 'TaskSmack*' |
+        Select-Object PSChildName, DisplayName, DisplayVersion, Publisher) }
+    "Installed: $(Test-Path "$folder\TaskSmack.exe")"
+    Get-TaskSmackArp | Format-Table -AutoSize
+    winget list --name TaskSmack --accept-source-agreements
+    $app = Start-Process "$folder\TaskSmack.exe" -PassThru; Start-Sleep -Seconds 15
+    "Running after 15 s: $(-not $app.HasExited)"; Stop-Process -Id $app.Id -ErrorAction SilentlyContinue
+    winget uninstall --name TaskSmack --exact --silent --accept-source-agreements
+    # The NSIS uninstaller finishes from a copy of itself, so wait for the folder to go.
+    $deadline = (Get-Date).AddSeconds(60)
+    while ((Test-Path $folder) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
+    "Folder left behind: $(Test-Path $folder)"
+    "Uninstall entries left: $((Get-TaskSmackArp).Count)"
+}
+```
+
+The expected result:
+- The manifest validates, and the install succeeds silently with no prompt in the Sandbox: `Installed: True`.
+- The table shows exactly one entry: `PSChildName` `TaskSmack`, `DisplayName` `TaskSmack`, `DisplayVersion` `0.10.0`
+  and `Publisher` `TaskSmack Contributors`. Those are the values the manifest's `AppsAndFeaturesEntries` and
+  `ProductCode` name.
+- `winget list --name TaskSmack` shows TaskSmack 0.10.0 with a local ID (`ARP\Machine\X86\TaskSmack`) and no source.
+  That's expected before publication.
+- `Running after 15 s: True`, and the window shows TaskSmack. If it stops with an OpenGL message instead, the Sandbox
+  has no vGPU, which is the Sandbox's problem, not the manifest's.
+- The uninstall succeeds: `Folder left behind: False` and `Uninstall entries left: 0`.
+
+**The upgrade case**, once two releases with this installer exist. v0.10.0 is the first whose Uninstall key is
+`TaskSmack` (#3276); v0.9.x's was `TaskSmack 0.9.x`. So test from v0.10.0 to v0.11.0, once v0.11.0 is published and
+before you submit it. Generate both folders as above, then install v0.11.0's manifest over v0.10.0.
+`winget install --manifest` runs the new installer over the old one, which is what `UpgradeBehavior: install`
+does. Before publication, `winget upgrade` can't tie the installed copy to the manifest.
+
+```powershell
+.\SandboxTest.ps1 -Manifest $manifest -MapFolder $sandbox -Script {
+    $arp = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall'
+    winget install --manifest "$env:USERPROFILE\Desktop\winget-sandbox\v0.11.0\winget\manifests\t\TaskSmack\TaskSmack\0.11.0" --silent --accept-source-agreements
+    @(Get-ChildItem $arp | Get-ItemProperty | Where-Object DisplayName -Like 'TaskSmack*' |
+        Select-Object PSChildName, DisplayName, DisplayVersion) | Format-Table -AutoSize
+    "TaskSmack.exe: $((Get-Item "$env:ProgramFiles\TaskSmack\TaskSmack.exe").VersionInfo.ProductVersion)"
+    winget list --name TaskSmack --accept-source-agreements
+}
+```
+
+(The Sandbox maps `$sandbox` to its desktop under the same folder name.) The expected result: the install succeeds
+silently. The table shows exactly **one** entry, `TaskSmack` at `DisplayVersion` `0.11.0`: one entry, not two.
+TaskSmack.exe reports 0.11.0, and `winget list --name TaskSmack` shows one TaskSmack at 0.11.0.
+
+**After publication, check by ID.** Once the winget-pkgs pull request merges, run these in a fresh Sandbox:
+- `.\SandboxTest.ps1 -Script { winget install --id TaskSmack.TaskSmack --exact --silent --accept-source-agreements; winget list --id TaskSmack.TaskSmack --accept-source-agreements }`
+  should show TaskSmack.TaskSmack with source `winget`.
+- Once a second version is published, install the older one with `--version`, then run
+  `winget upgrade --id TaskSmack.TaskSmack --silent`. It should move to the newest version, leave one ARP entry, and
+  leave `winget upgrade` with nothing pending.
+- `winget uninstall --id TaskSmack.TaskSmack --silent` should remove it.
+
+Only these by-ID checks prove that winget ties an installed TaskSmack to the published package.
+
+### Automatic updates
+
+`release.yml`'s `publish-winget` job runs on a tag run after `verify-published-release` passes, for a release that
+`create-release` made Latest. It skips a dry run, a pre-release and a patch to an older line (a v0.9.x after
+v0.10.0), since each would make WinGet's newest version go backwards (#3277). It runs in the `release-signing`
+environment, and in order it:
+
+1. checks `WINGET_TOKEN` is set and belongs to `tasksmack-boop`. With no token, the job passes with a notice and
+   submits nothing.
+2. checks again that the release is published, not a pre-release, and still Latest, and takes its date for
+   `ReleaseDate`.
+3. checks that `TaskSmack.TaskSmack` is already in winget-pkgs, that this version isn't, and that no open pull
+   request is for it. If any check fails, the job passes with a notice and submits nothing. That covers v0.11.0's
+   own tag run, before the first submission merges, and a re-run after a successful submission. Only a confirmed
+   HTTP 404 counts as "not there": a rate limit, a 5xx or no response is retried with backoff, then fails the job
+   with GitHub's answer, so an outage never skips a release's submission.
+4. downloads `wingetcreate.exe` at the pinned release (`WINGETCREATE_VERSION`) and checks its SHA-256
+   (`WINGETCREATE_SHA256`).
+5. runs `wingetcreate update TaskSmack.TaskSmack --version X.Y.Z --urls <x64 installer>|x64 <arm64 installer>|arm64
+   --release-notes-url <release> --release-date <date> --out <folder>`. wingetcreate downloads both installers,
+   hashes them, copies every other field from the previous version's manifests, and writes the new version's
+   manifests to the folder, without submitting. The job checks that every file is on `WINGETCREATE_MANIFEST_VERSION`,
+   then runs `wingetcreate submit --prtitle "Update: TaskSmack.TaskSmack to X.Y.Z" <folder>`, which validates them,
+   pushes a branch to `tasksmack-boop/winget-pkgs` and opens the pull request from it.
+6. looks the pull request up on winget-pkgs (search, up to 6 tries 20 s apart) and links it in the step summary.
+   Only an open or merged pull request counts, not an earlier rejected one. If none turns up, the job fails.
+
+The pull request shows as `tasksmack-boop`, the machine account whose address is `tasksmack@uppercutwoodworks.com`
+(#3493); the manifests have no e-mail field. The account's first pull request gets `Needs-CLA` until someone
+signs the Microsoft CLA as `tasksmack-boop`. Nobody needs to act on later ones unless their validation fails or a
+moderator asks something.
+
+`winget-health.yml` follows the pull request to the merge. Once a day it checks that the newest Latest release's
+folder is on winget-pkgs' default branch. If it isn't, it keeps one issue open, titled "WinGet: TaskSmack.TaskSmack
+<version> isn't published" and labelled `release` and `agent:Windows` (found by that title; never `ci-red-main`,
+which means main is red and holds merges), while any of these hold:
+- the pull request carries a label that needs us (any `*Error*` or `*Failed*` label except `Waived-*`, or
+  `Needs-Author-Feedback`, `Needs-CLA`, `Changes-Requested`, `Blocking-Issue` and the like);
+- it was closed without merging, or none exists a day after the release;
+- 7 days have passed.
+
+It closes that issue once the version is there, and does nothing before the first submission. As in the job,
+only a 404 means "not submitted yet". Any other failed call, the search included, fails the check instead.
+
+If the job fails after the release is out, fix the cause and re-run the job, or submit that version by hand with
+`wingetcreate update ... --submit` as above. wingetcreate is used rather than `vedantmgoyal9/winget-releaser`:
+that action can be pinned by commit, but it installs `cargo-binstall@main` and the newest Komac at run time, so
+code no pin covers would hold the token. To move to a newer wingetcreate, change both `WINGETCREATE_*` values in
+one reviewed PR. Take the SHA-256 from the release's asset digest:
+`gh api repos/microsoft/winget-create/releases/tags/<tag> --jq '.assets[] | select(.name == "wingetcreate.exe") | .digest'`.
+
+### The token
+
+`WINGET_TOKEN` is a classic personal access token of the `tasksmack-boop` account with only the `public_repo`
+scope. It's stored in the `release-signing` environment, so only jobs that may enter that environment can read
+it. The WinGet submission tools document a classic token for the pull request from the fork into
+microsoft/winget-pkgs, which belongs to another owner. A leaked token reaches only that account's public
+repositories, which hold nothing but the winget-pkgs fork. The current token expires on **2027-11-04**; rotate it
+before then:
+
+1. Sign in as `tasksmack-boop` and create a new classic token: scope `public_repo` only, expiry one year.
+2. In this repository's **Settings → Environments → release-signing**, replace the `WINGET_TOKEN` secret's value.
+3. Delete the old token on `tasksmack-boop`, update the expiry date above in a PR, and set a reminder a few weeks
+   before the new one.
+
+A missing or expired token doesn't fail a release. An empty secret skips the job, and an expired one fails only
+`publish-winget`, after the release is published. To stop the automatic updates, delete the secret.
 ## Patch releases
 
 A patch happens only when a shipped bug warrants one.

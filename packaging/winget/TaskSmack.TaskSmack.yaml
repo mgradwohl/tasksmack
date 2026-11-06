@@ -1,0 +1,17 @@
+# WinGet version manifest template for TaskSmack.TaskSmack (#3486). tools/winget-manifest.ps1 fills in
+# ${VERSION} and writes the result to manifests/t/TaskSmack/TaskSmack/<version>/; see
+# docs/dev/release-process.md, "Publishing to WinGet".
+#
+# Schema 1.12.0, not the newest (1.28.0), in all three files: wingetcreate v1.12.13.0, the newest release, which
+# release.yml's publish-winget submits with, reads, validates (WinGetUtil 1.12.350) and writes 1.12.0, and rewrites
+# every manifest it updates to it. winget-pkgs accepts 1.12.0 ("1.12.0 is also accepted",
+# doc/ValidationFailureGuide.md). Move to 1.28.0 together with a wingetcreate release that writes it: change
+# WINGETCREATE_MANIFEST_VERSION in release.yml with the pin, and tools/winget-manifest.ps1 refuses templates that
+# differ from it.
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.version.1.12.0.schema.json
+
+PackageIdentifier: TaskSmack.TaskSmack
+PackageVersion: ${VERSION}
+DefaultLocale: en-US
+ManifestType: version
+ManifestVersion: 1.12.0

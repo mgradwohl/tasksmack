@@ -61,6 +61,11 @@ namespace
     {
         return Broker::ActionResult::from(actions.setAffinity(affinity->target, affinity->cpus));
     }
+    // Normal, Batch or Idle only (#3086): the decoder refused any other policy, and the actions refuse it again.
+    if (const auto* policy = std::get_if<Broker::SchedPolicyRequest>(&request))
+    {
+        return Broker::ActionResult::from(actions.setSchedPolicy(policy->target, policy->policy, policy->realtimeThreads));
+    }
     if (const auto* close = std::get_if<Broker::CloseConnectionRequest>(&request))
     {
         return Broker::ActionResult::from(actions.closeConnection(close->target, close->socketInode));

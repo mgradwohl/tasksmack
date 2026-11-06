@@ -775,6 +775,21 @@ Three established ways to get real coverage of such a file's logic:
        because a real pointer's moves mix with the injected ones. `--use-display` runs it on the desktop.
      - **Requirements:** both refs need the scenario suite.
 
+5. **Need the real OS path, which changes the machine (#3489)?** Some calls only fakes can reach on a
+   developer's machine: a process set to Realtime, a program started through the shell or `runas`, Explorer
+   opened on a folder, the elevated helper served from Program Files, a throwaway account. Put such a test in
+   a suite named `CiRealSystem*` derived from `TestSupport::CiRealSystemTest` (`tests/Support/CiRealSystem.h`,
+   Windows helpers in `tests/Support/CiRealSystemWindows.h`). Its `SetUp()` skips the test unless
+   `TASKSMACK_CI_REAL_SYSTEM=1` on a GitHub-hosted runner (`GITHUB_ACTIONS=true`,
+   `RUNNER_ENVIRONMENT=github-hosted`). CI's "Real-system tests (Windows)" step sets it and runs
+   `TaskSmackTests --gtest_filter=CiRealSystem*` after the normal `ctest`. It fails if none of them ran.
+   - **Rules:** keep every child idle (suspended, or `TaskSmackCiStub.exe`, which only sleeps), and end it
+     and remove what the test made in a scope guard. Skip with the reason when the runner can't do it (no
+     memory compression on a Server image).
+   - **Never locally:** don't set the variable on your own machine. The daytime filter excludes `CiRealSystem*`.
+   - **The rule:** a change to a real OS path adds such a test, or the PR says why only a manual check can
+     cover it (a UAC prompt, a sign-out, hardware).
+
 Before writing any of these tests, check whether the logic already exists as a shared, tested
 helper (for example `Core::isEnvFlagEnabled()` in `Core/EnvUtils.h`), and reuse it instead.
 
@@ -1573,6 +1588,48 @@ JSON) on either side is reported as *not measured* and left out of coverage enti
 denominator; a `SkipWithError` (`"error_occurred": true`) on either side still counts against it, even if the other side skipped. The
 `BM_GPUProbe_*`/`BM_GPUModel_*` benchmarks skip this way when the real probe finds no GPU, as on the
 hosted runner, instead of timing an empty probe's early return (#1420).
+
+**A flag is re-measured across launches** (#3476; the maintainer's decision on #3448, 2026-11-05). The 10
+repetitions of one launch share that launch's luck on a shared hosted runner: where the heap and the code
+landed, and who else was on the host. So a ns-scale benchmark can read 40-80% slow for a whole launch of an
+unchanged binary, and before this each re-run of one commit flagged a different set
+(`BM_HistoryBuffer_CopyTo`, `_Push*`, `_MemoryFootprint/iterations:10000`,
+`BM_ProcessRowMeter_RowHistoryAdvance/500/1`). When the check flags regressions, the job:
+
+1. writes the flagged names (`check-benchmark-regression.py --regressions-out`);
+2. runs only those benchmarks again in 4 more separate launches of the binary, 5 in all with the full run,
+   each `tools/bench.sh benchmark -- --benchmark_filter=<anchored, escaped names>` with the same 10
+   repetitions (`tools/bench-across-launches.py plan` prints the filter);
+3. takes each flagged benchmark's median across the 5 launches' medians, into a copy of the full run
+   (`bench-across-launches.py combine`, which prints every launch's value against the baseline);
+4. runs the same check on that copy, at the same thresholds and overrides, with the same coverage floor.
+
+It isn't best-of-N and no threshold changes: a benchmark slow in 3 of the 5 launches still fails, and a real
+regression, slow in every launch, reads as one in the per-launch list. A flagged benchmark that has no
+usable median in some launch fails the job. A coverage loss alone has nothing to re-measure and fails as
+before. The re-runs are bounded: `plan` estimates them from the full run's own timings (iterations x time,
+which sums to the suite's wall time within a few percent, plus a second per benchmark per launch; a
+`/manual_time` benchmark reports less than it runs, so it counts 25x plus 5 s), and refuses, leaving the
+flags as regressions, past 10 minutes or past what the job's 45 minutes leave after a 5-minute margin.
+Since an estimate can still be short, the launches also share a hard deadline at that budget: each runs
+under `timeout` with what's left, and a launch that hits it, or a budget gone before the next launch,
+stops the re-measurement with the flags standing, says so, and still writes the summary and artifact
+(#3508). A typical flag of a few ns-scale benchmarks (5-8 s each) costs under 3 minutes. The
+`benchmark-results` artifact holds the launches (`perf-data/launches/`), the combined run
+(`perf-data/benchmark-across-launches.json`) and its report. To do the same by hand after a local run:
+
+```bash
+python3 tools/check-benchmark-regression.py --baseline perf-data/linux-ci-baseline.json --current FIRST.json \
+    --threshold 40 --threshold-overrides perf-data/linux-ci-thresholds.json --regressions-out regressions.json
+filter=$(python3 tools/bench-across-launches.py plan --current FIRST.json --regressions regressions.json)
+for i in 1 2 3 4; do ./tools/bench.sh benchmark -- --benchmark_filter="$filter"; done   # note each RESULT=
+python3 tools/bench-across-launches.py combine --first FIRST.json --regressions regressions.json \
+    --baseline perf-data/linux-ci-baseline.json --output combined.json LAUNCH-2.json LAUNCH-3.json ...
+python3 tools/check-benchmark-regression.py --baseline perf-data/linux-ci-baseline.json --current combined.json \
+    --threshold 40 --threshold-overrides perf-data/linux-ci-thresholds.json
+```
+
+The script is plain Python, so `bench.ps1` runs can use it the same way.
 
 This is a *separate* baseline from `perf-data/linux-baseline.json` above, deliberately: that one was
 recorded on a developer machine, and comparing it with hosted `ubuntu-24.04` runners flagged the machine
@@ -2907,6 +2964,7 @@ CI caches (#1406): ccache and the FetchContent source cache (`.github/actions/fe
 - **`sanitizers.yml`**: Performs heavy blocking runs using Address/Undefined Behavior (ASan+UBSan) and Thread (TSan) sanitizers, generating HTML reports of memory leaks or data races. A push to `main` or a `release/*` branch runs TSan only, because ASan+UBSan already gates every PR in `ci.yml` (a push to `main` also refreshes that PR job's ccache); manual dispatch runs both, and `heavy-checks.yml` runs both nightly.
 - **`cache-prune.yml`**: After each run on `main` of a workflow that saves caches (CI, Sanitizers, Heavy Checks, ARM64, CodeQL, Static Analysis, Manual Build, Release; the `check-cache-prune-triggers` pre-commit hook keeps the list complete, #2410), deletes superseded Actions cache entries (all but the newest of each `ccache-<key>` prefix, each OS's FetchContent, configure-check and clang-tidy result cache, and each CodeQL TRAP cache, `tools/cache-prune-stale.py`). Manual dispatch defaults to a dry run that lists what it would delete (#1583).
 - **`main-health.yml`**: After every run of the main workflows on `main` or a `release/*` branch (CI, which includes the nightly full `clang-tidy`, plus ARM64, CodeQL, Sanitizers, Heavy Checks, OSV and Pre-commit; not the dispatch-only `static-analysis.yml`), opens or updates that branch's tracking issue (`CI: <branch> is red`, labelled `ci-red-main`) while any of them is red, and closes it when all are green again (#1406, #2741). A manual dispatch re-reads `main` and every `release/*` branch.
+- **`winget-health.yml`**: Once a day, checks that the newest Latest release is on WinGet (`manifests/t/TaskSmack/TaskSmack/<version>/` on microsoft/winget-pkgs' default branch). While it isn't and its pull request is stuck (a validation-error or author-feedback label, closed, missing) or 7 days have passed, it keeps one issue open (`WinGet: TaskSmack.TaskSmack <version> isn't published`, labelled `release` and `agent:Windows`, found by its title, never `ci-red-main`), and closes it once the version is there (#3486; [Publishing to WinGet](docs/dev/release-process.md#publishing-to-winget)). It does nothing before the first submission.
 - **ClusterFuzzLite (`cflite_*.yml`)**: Google's continuous fuzzing suite. Runs on PRs (`cflite_pr.yml`), pushes to main (`cflite_build.yml`), and weekly for batching and pruning corpora (`cflite_batch.yml`, `cflite_prune.yml`).
 
 ### Code Quality & Hygiene

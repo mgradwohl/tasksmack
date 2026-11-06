@@ -234,6 +234,7 @@ set(TASKSMACK_SOURCES
     src/App/Panels/ProcessActionConfirm.cpp
     src/App/Panels/ProcessBatchPriorityDialog.cpp
     src/App/Panels/ProcessAffinityDialog.cpp
+    src/App/Panels/ProcessSchedPolicyDialog.cpp # Set scheduling policy (#3086)
     src/App/Panels/RunTaskDialog.cpp # Run new task (#3065)
     src/App/Panels/FindHandlesDialog.cpp # Find handles (#3067)
     src/App/Panels/ProcessActionsView.cpp
@@ -587,6 +588,7 @@ set(TASKSMACK_HEADERS
     src/Domain/ProcessIconCache.h
     src/UI/IconTextureCache.h
     src/App/Panels/ProcessIconView.h
+    src/App/Panels/ProcessSchedPolicyDialog.h
 )
 
 # Platform-specific headers
@@ -614,6 +616,7 @@ if(UNIX AND NOT APPLE)
         src/Platform/Linux/LinuxSystemInfoProbe.h
         src/Platform/Linux/LinuxOsInfo.h
         src/Platform/Linux/LinuxCommitPaging.h
+        src/Platform/Linux/LinuxNuma.h
         src/Platform/Linux/LinuxDiskSmart.h
         src/Platform/Linux/LinuxStorage.h
         src/Platform/Linux/LinuxGraphics.h
@@ -1014,25 +1017,30 @@ endif()
 # or themes -- so as little as possible runs elevated. A Windows-subsystem program, so starting it opens
 # no console window. Windows only; Linux has tasksmack-helper above.
 if(WIN32)
+    # The sources, definitions and libraries are lists, so the tests' short-idle copy of the helper
+    # (tests/CMakeLists.txt, TaskSmackHelperShortIdle, #3489) is built from exactly the same ones.
+    set(TASKSMACK_WINDOWS_HELPER_SOURCES
+        ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/HelperMain.cpp
+        ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/BrokerHelper.cpp
+        ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/BrokerPipe.cpp
+        ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/BrokerPipeServer.cpp
+        ${TaskSmack_SOURCE_DIR}/src/Platform/BrokerRequestMapping.cpp
+        ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsDebugPrivilege.cpp
+        ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsElevation.cpp
+        ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsProcessActions.cpp
+        ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsProcessIdentity.cpp
+        ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsProcessMachine.cpp
+        ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsProcessModules.cpp
+        ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsProcessOpenFiles.cpp
+        ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsProcessConnections.cpp
+        ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsProcessThreads.cpp # Process Details threads of another user's process (#3069)
+        ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsTaskManagerReplacement.cpp # Replace Task Manager's IFEO Debugger (#3072)
+        ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsUserSessions.cpp # another user's session disconnected or signed out (#3076)
+        ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WinString.cpp
+        ${TaskSmack_SOURCE_DIR}/src/Platform/ThreadName.cpp
+    )
     add_executable(TaskSmackHelper WIN32
-        src/Platform/Windows/HelperMain.cpp
-        src/Platform/Windows/BrokerHelper.cpp
-        src/Platform/Windows/BrokerPipe.cpp
-        src/Platform/Windows/BrokerPipeServer.cpp
-        src/Platform/BrokerRequestMapping.cpp
-        src/Platform/Windows/WindowsDebugPrivilege.cpp
-        src/Platform/Windows/WindowsElevation.cpp
-        src/Platform/Windows/WindowsProcessActions.cpp
-        src/Platform/Windows/WindowsProcessIdentity.cpp
-        src/Platform/Windows/WindowsProcessMachine.cpp
-        src/Platform/Windows/WindowsProcessModules.cpp
-        src/Platform/Windows/WindowsProcessOpenFiles.cpp
-        src/Platform/Windows/WindowsProcessConnections.cpp
-        src/Platform/Windows/WindowsProcessThreads.cpp # Process Details threads of another user's process (#3069)
-        src/Platform/Windows/WindowsTaskManagerReplacement.cpp # Replace Task Manager's IFEO Debugger (#3072)
-        src/Platform/Windows/WindowsUserSessions.cpp # another user's session disconnected or signed out (#3076)
-        src/Platform/Windows/WinString.cpp
-        src/Platform/ThreadName.cpp
+        ${TASKSMACK_WINDOWS_HELPER_SOURCES}
         ${TASKSMACK_HELPER_RC_OUT} # version info (#2557): "TaskSmack administrator helper" in its UAC prompt
     )
     target_compile_features(TaskSmackHelper PRIVATE cxx_std_23)
@@ -1045,9 +1053,10 @@ if(WIN32)
     # No wait chain reader either (#3084): the helper serves none, so WindowsWaitChain.cpp isn't built in.
     # No Open file location (#3426) and no Run new task (#3427): BrokeredProcessActions keeps both the
     # user's own, so no shell calls here.
-    target_compile_definitions(TaskSmackHelper PRIVATE TASKSMACK_NO_PROCESS_DUMPS TASKSMACK_NO_WAIT_CHAINS TASKSMACK_NO_FILE_LOCATION
+    set(TASKSMACK_WINDOWS_HELPER_DEFINITIONS TASKSMACK_NO_PROCESS_DUMPS TASKSMACK_NO_WAIT_CHAINS TASKSMACK_NO_FILE_LOCATION
         TASKSMACK_NO_RUN_PROGRAM)
-    target_link_libraries(TaskSmackHelper PRIVATE spdlog::spdlog_header_only
+    target_compile_definitions(TaskSmackHelper PRIVATE ${TASKSMACK_WINDOWS_HELPER_DEFINITIONS})
+    set(TASKSMACK_WINDOWS_HELPER_LIBRARIES spdlog::spdlog_header_only
         advapi32 # tokens, security descriptors and AccessCheck (BrokerHelper, BrokerPipe)
         bcrypt # BCryptGenRandom (BrokerPipe)
         iphlpapi # the process's TCP and UDP tables (WindowsProcessConnections)
@@ -1055,6 +1064,7 @@ if(WIN32)
         version # a module's file description and version (WindowsProcessModules)
         wtsapi32 # the sessions a Disconnect or Sign out names, and the call itself (WindowsUserSessions, #3076)
     )
+    target_link_libraries(TaskSmackHelper PRIVATE ${TASKSMACK_WINDOWS_HELPER_LIBRARIES})
     # Exploit mitigations for the one image that runs elevated (#2557): Control Flow Guard (the compiler's
     # checks on indirect calls, and the linker's table of their valid targets) and CET shadow-stack
     # compatibility, so Windows checks returns against a hardware shadow stack where the CPU has one.

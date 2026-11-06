@@ -162,6 +162,11 @@ stopUnit(std::string_view name, const std::stop_token& stopToken, UnitWait wait 
 [[nodiscard]] ServiceActionResult
 setUnitStartType(std::string_view name, ServiceStartType startType, bool allowInteractive = false, const std::stop_token& stopToken = {});
 
+/// Enables or disables the user's own systemd unit @p name (a .service or .timer), as `systemctl --user enable` /
+/// `disable` does (#3425): EnableUnitFiles or DisableUnitFiles on the user manager, then Reload. It writes only links
+/// under ~/.config/systemd/user, so no password is involved. A unit with no [Install] section can't be enabled.
+[[nodiscard]] ServiceActionResult setUserUnitEnabled(std::string_view name, bool enabled, const std::stop_token& stopToken = {});
+
 /// Reads org.freedesktop.systemd1.Manager's Firmware/Loader/InitRD/Userspace/FinishTimestampMonotonic
 /// from the system bus. Unprivileged.
 [[nodiscard]] BootTimestampsRead readBootTimestamps();

@@ -270,6 +270,26 @@ TEST_F(LinuxPowerProbeUnitTest, Battery_Discharging_ReturnsCorrectState)
     EXPECT_EQ(counters.chargePercent, 75);
 }
 
+// #3431: time estimates are offered when the charge and the power rate are read, as read() works them out from
+// those; a pack with only a percentage offers none.
+TEST_F(LinuxPowerProbeUnitTest, TimeEstimatesAreOfferedWhenChargeAndPowerAreRead)
+{
+    const auto batPath = makeBatteryDevice("BAT0");
+    writeFile(batPath / "status", "Discharging");
+    writeFile(batPath / "capacity", "60");
+    {
+        LinuxPowerProbe percentOnly(m_SysRoot.string());
+        static_cast<void>(percentOnly.read());
+        EXPECT_FALSE(percentOnly.capabilities().hasTimeEstimates);
+    }
+    writeFile(batPath / "energy_now", "30000000");
+    writeFile(batPath / "energy_full", "50000000");
+    writeFile(batPath / "power_now", "10000000");
+    LinuxPowerProbe probe(m_SysRoot.string());
+    EXPECT_EQ(probe.read().timeToEmptySec, 3U * 3600U) << "30 Wh at 10 W";
+    EXPECT_TRUE(probe.capabilities().hasTimeEstimates);
+}
+
 TEST_F(LinuxPowerProbeUnitTest, Battery_Charging_ReturnsCorrectState)
 {
     const auto batPath = makeBatteryDevice("BAT0");
@@ -959,13 +979,34 @@ TEST_F(LinuxPowerProbeMultiPackTest, OnlyAnEmptyBayIsNoBattery)
 
     writeFile(bat0 / "status", "Discharging");
     writeFile(bat0 / "capacity", "70");
+    writeFile(bat0 / "energy_now", "20000000");
+    writeFile(bat0 / "energy_full", "40000000");
+    writeFile(bat0 / "power_now", "10000000");
     writeFile(bat0 / "present", "1"); // Inserted into the bay the driver kept listing
     EXPECT_EQ(probe.read().chargePercent, 70);
     EXPECT_TRUE(probe.capabilities().hasBattery);
+    EXPECT_TRUE(probe.capabilities().hasTimeEstimates) << "#3431: kept with presence";
 
     writeFile(bat0 / "present", "0"); // And taken out again
     EXPECT_EQ(probe.read().state, BatteryState::NotPresent);
     EXPECT_FALSE(probe.capabilities().hasBattery);
+    EXPECT_FALSE(probe.capabilities().hasTimeEstimates);
+}
+
+// #3431: no time estimates where the charge can't be combined in Wh: charge in µAh with no voltage, or packs whose
+// units differ.
+TEST_F(LinuxPowerProbeMultiPackTest, NoTimeEstimatesWithoutAChargeInWattHours)
+{
+    makePack("BAT0", {.capacity = "50", .chargeNow = "2000000", .chargeFull = "4000000", .power = "10000000"});
+    LinuxPowerProbe noVoltage(m_SysRoot.string());
+    static_cast<void>(noVoltage.read());
+    EXPECT_FALSE(noVoltage.capabilities().hasTimeEstimates) << "charge in µAh with no voltage";
+
+    makePack("BAT1", {.capacity = "50", .energyNow = "20000000", .energyFull = "40000000", .power = "5000000"});
+    LinuxPowerProbe mixed(m_SysRoot.string());
+    const PowerCounters counters = mixed.read();
+    EXPECT_FALSE(mixed.capabilities().hasTimeEstimates) << "mixed units";
+    EXPECT_EQ(counters.timeToEmptySec, 0U);
 }
 
 TEST_F(LinuxPowerProbeMultiPackTest, APackInsertedLaterIsCombined)

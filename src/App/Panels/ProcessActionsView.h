@@ -16,9 +16,11 @@
 #include "App/Panels/ProcessActionRun.h"
 #include "App/Panels/ProcessAffinityDialog.h"
 #include "App/Panels/ProcessDumpView.h"
+#include "App/Panels/ProcessSchedPolicyDialog.h"
 #include "App/Panels/ProcessWaitChainDialog.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/SchedPolicy.h"
 #include "ProcessDetailsPanel_ActionHelpers.h"
 #include "UI/IconsFontAwesome6.h"
 
@@ -122,6 +124,8 @@ inline constexpr float ACTION_RESULT_SECONDS = 5.0F;
 inline constexpr const char* SYSCALL_TRACE_LABEL = ICON_FA_TERMINAL " Trace system calls (strace)";
 /// The Actions card's Set affinity... button (#1887), opening ProcessAffinityDialog.
 inline constexpr const char* SET_AFFINITY_LABEL = ICON_FA_MICROCHIP " Set affinity...";
+/// The Actions card's Set scheduling policy... button (#3086, Linux), opening ProcessSchedPolicyDialog.
+inline constexpr const char* SET_SCHED_POLICY_LABEL = ICON_FA_CLOCK " Set scheduling policy...";
 
 /// How the trace button is drawn.
 enum class SyscallTraceButtonState : std::uint8_t
@@ -387,6 +391,9 @@ class ProcessActionsView
     /// Then "Set affinity..." where the platform can (#1887), placed the same way; it opens the affinity
     /// dialog with @p currentAffinity's CPUs ticked (null: every CPU), for the process captured now.
     ///
+    /// Then "Set scheduling policy..." where the platform can (#3086, Linux), placed the same way; it opens
+    /// the policy dialog with @p currentSchedPolicy chosen when it offers that one, for the process captured now.
+    ///
     /// Then "Create dump file..." where the platform can write one (#807), placed the same way; it asks
     /// to confirm a dump of the process captured now, into the temp folder.
     ///
@@ -401,7 +408,8 @@ class ProcessActionsView
                         const std::string& processName,
                         const Platform::ProcessTarget& target,
                         const Platform::CpuAffinity* currentAffinity = nullptr,
-                        bool efficiencyMode = false);
+                        bool efficiencyMode = false,
+                        Platform::SchedPolicy currentSchedPolicy = Platform::SchedPolicy::Unknown);
 
     /// Draws the last action's result line, when there is one, with "Authenticate and retry" beside a
     /// permission refusal the platform can retry as an administrator (#2308).
@@ -453,6 +461,10 @@ class ProcessActionsView
     /// platform can't set affinity (#1887).
     [[nodiscard]] static float setAffinityButtonWidth(const Platform::ProcessActionCapabilities& capabilities);
 
+    /// Width of the Set scheduling policy... button for @p capabilities at the current font, or 0 where the
+    /// platform can't set a scheduling policy (#3086).
+    [[nodiscard]] static float setSchedPolicyButtonWidth(const Platform::ProcessActionCapabilities& capabilities);
+
     /// Width of the Create dump file... button for @p capabilities at the current font, or 0 where the
     /// platform can't write a dump (#807).
     [[nodiscard]] static float createDumpButtonWidth(const Platform::ProcessActionCapabilities& capabilities);
@@ -470,8 +482,8 @@ class ProcessActionsView
     /// dispatched to @p actions. Kept apart from the buttons so it runs even when they are not drawn:
     /// ProcessDetailsPanel calls it at panel scope, since the Actions block's child is skipped while it
     /// is scrolled out of view, and F9 must still open its Kill confirm then (#1493).
-    /// The affinity dialog (#1887) runs here too, and is closed unapplied when @p liveTarget is no
-    /// longer the process it was opened for; and the dump's confirm, progress and result (#807), its
+    /// The affinity dialog (#1887) and the scheduling policy dialog (#3086) run here too, each closed unapplied
+    /// when @p liveTarget is no longer the process it was opened for; and the dump's confirm, progress and result (#807), its
     /// confirm closed unconfirmed the same way. And the wait chain dialog (#3084), which names its own
     /// process, so it stays up whatever is selected.
     void renderConfirmation(Platform::IProcessActions* actions, const Platform::ProcessTarget& liveTarget)
@@ -479,6 +491,7 @@ class ProcessActionsView
         m_ActionRun.update(); // a confirmed action, trace launch or affinity change that has finished (#2305)
         renderConfirmDialog(actions, liveTarget);
         renderAffinityDialog(actions, liveTarget);
+        renderSchedPolicyDialog(actions, liveTarget);
         m_DumpView.render(actions, &liveTarget);
         m_WaitChainDialog->render();
     }
@@ -505,6 +518,12 @@ class ProcessActionsView
     [[nodiscard]] ProcessAffinityDialog& affinityDialog() noexcept
     {
         return m_AffinityDialog;
+    }
+
+    /// The scheduling policy dialog, for tests: open after Set scheduling policy... is pressed (#3086).
+    [[nodiscard]] ProcessSchedPolicyDialog& schedPolicyDialog() noexcept
+    {
+        return m_SchedPolicyDialog;
     }
 
     /// The update path (#3182): starts the one read of @p actions' CPU layout on its worker, early, so
@@ -546,6 +565,7 @@ class ProcessActionsView
         m_DismissPending = m_DismissPending || confirmPending();
         cancelConfirm();
         m_AffinityDialog.dismiss();
+        m_SchedPolicyDialog.dismiss();
         m_DumpView.onSelectionChanged(); // its confirm only: a dump already running goes on
         m_LastResult = {};
         m_Retry.reset(); // never offer to retry an action on a process no longer shown
@@ -852,6 +872,16 @@ class ProcessActionsView
     /// The affinity dialog while it is open; closed unapplied once @p liveTarget moves on. Apply sets
     /// the CPUs through @p actions (null: unavailable) and shows the result line.
     void renderAffinityDialog(Platform::IProcessActions* actions, const Platform::ProcessTarget& liveTarget);
+    /// Set scheduling policy... (#3086): at the row's end at its own width, as the affinity button is. A press
+    /// opens the dialog for @p target, with @p current chosen when it is Normal, Batch or Idle.
+    void renderSetSchedPolicyButton(const Platform::ProcessActionCapabilities& capabilities,
+                                    const std::string& processName,
+                                    const Platform::ProcessTarget& target,
+                                    Platform::SchedPolicy current,
+                                    bool afterButtons);
+    /// The scheduling policy dialog while it is open; closed unapplied once @p liveTarget moves on. Apply sets
+    /// the policy through @p actions (null: unavailable) and shows the result line.
+    void renderSchedPolicyDialog(Platform::IProcessActions* actions, const Platform::ProcessTarget& liveTarget);
     void renderSyscallTraceButton(Platform::IProcessActions* actions,
                                   const Platform::ProcessActionCapabilities& capabilities,
                                   const Platform::ProcessTarget& target,
@@ -898,8 +928,9 @@ class ProcessActionsView
     std::uint64_t m_RunGeneration = 0; // m_Generation when the running action started
     // The process the running action sets the priority of: Set Realtime priority (#3429, #3467). None for any other.
     std::optional<Platform::ProcessTarget> m_RunPriorityTarget;
-    const char* m_PriorityHoldReason = nullptr; // Another priority change runs: this view's wait, saying why (#3429, #3467)
-    ProcessAffinityDialog m_AffinityDialog;     // Set affinity... (#1887)
+    const char* m_PriorityHoldReason = nullptr;   // Another priority change runs: this view's wait, saying why (#3429, #3467)
+    ProcessAffinityDialog m_AffinityDialog;       // Set affinity... (#1887)
+    ProcessSchedPolicyDialog m_SchedPolicyDialog; // Set scheduling policy... (#3086)
     // The dialog's CPU layout, read once on its worker (#3182). Its worker uses the panel's IProcessActions
     // until it finishes: the panel declares this view after its actions, so its destructor's wait goes first.
     AffinityLayoutRead m_AffinityLayout;
