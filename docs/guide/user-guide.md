@@ -31,6 +31,7 @@ TaskSmack runs on Linux and Windows only; macOS and other operating systems are 
 | Linux (Debian/Ubuntu) | `.deb` | `sudo apt install ./TaskSmack-*.deb`, then run `TaskSmack` (installs to `/usr/bin`) |
 | Linux (other) | `.tar.gz` | Extract and run `bin/TaskSmack` |
 | Windows | `.exe` installer (from v0.9.1) | Run it to install TaskSmack in `C:\Program Files\TaskSmack`, with a Start menu shortcut; remove it from **Settings → Apps** |
+| Windows (WinGet, from v0.11.0) | the same installer | `winget install TaskSmack.TaskSmack`, then `winget upgrade TaskSmack.TaskSmack` for later releases (x64 and ARM64) |
 | Windows (portable) | `.zip` | Extract and run `TaskSmack.exe` (no Visual C++ Redistributable needed) |
 
 The Linux packages are built on Ubuntu 24.04 and need glibc 2.38 or newer: Ubuntu 24.04, Debian 13, Fedora 39, RHEL, AlmaLinux and Rocky 10, or later, and current Arch and openSUSE Tumbleweed. An older distribution, such as Ubuntu 22.04, Debian 12 or RHEL 9, can't run them (the `.deb` won't install, and the `.tar.gz`'s program won't start), but TaskSmack builds from source there: see [System Requirements](#operating-system).
@@ -43,6 +44,8 @@ Each package comes in two architectures. Pick the one that matches your computer
 | ARM64 | `TaskSmack-<version>-linux-aarch64.deb`, `TaskSmack-<version>-linux-aarch64.tar.gz` | `TaskSmack-<version>-windows-arm64.exe`, `TaskSmack-<version>-windows-arm64.zip` |
 
 On Windows, the installer (`.exe`) asks for administrator rights, installs TaskSmack for every user in `C:\Program Files\TaskSmack` and adds a TaskSmack folder to the Start menu. To remove it, use **Settings → Apps → Installed apps**, or **Uninstall** in that Start menu folder; your settings, which live in your own profile, stay. `TaskSmack-<version>-win64.exe /S` installs it without any questions. The `.zip` holds the same files and runs from wherever you extract it.
+
+From v0.11.0, TaskSmack is also in the Windows Package Manager as `TaskSmack.TaskSmack`: `winget install TaskSmack.TaskSmack` downloads the installer for your architecture (x64 or ARM64) from the GitHub release, checks its SHA-256 and runs it, so it asks for administrator rights the same way and installs to the same place. `winget upgrade TaskSmack.TaskSmack` installs a newer release over it, keeping Replace Task Manager and Start at sign-in, as running the newer installer yourself does; `winget uninstall TaskSmack.TaskSmack` removes it. A new release reaches WinGet once the winget-pkgs reviewers merge its manifest, which can take a few days after the release. Earlier releases aren't in WinGet.
 
 On Linux, `uname -m` prints `x86_64` or `aarch64`. On Windows, **Settings → System → About** shows "x64-based processor" or "ARM-based processor". On Windows on Arm, OpenGL comes from Microsoft's "OpenCL, OpenGL, and Vulkan Compatibility Pack" (in the Microsoft Store), which many such PCs come with; without it TaskSmack stops at startup with a message naming the OpenGL version it found (see [Graphics](#graphics)).
 
