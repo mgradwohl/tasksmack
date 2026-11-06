@@ -117,6 +117,10 @@ if(WIN32)
         # Fixture SHA256SUMS files; nothing is downloaded, and winget isn't needed.
         add_test(NAME WingetManifestScript
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-winget-manifest.ps1)
+        # tools/release-smoke-check.ps1 starts each run in an empty work folder (#3530). Only its work-folder
+        # functions run, in TEMP; the smoke check itself launches TaskSmack, so it never runs here.
+        add_test(NAME ReleaseSmokeCheckScript
+            COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-release-smoke-check.ps1)
         # The PowerShell script tests take turns (#2054). Each starts pwsh, several compile C# with
         # Add-Type, and some start further pwsh or stub processes; run together under `ctest -j` on a
         # 4-core CI runner they slowed each other down many times over (CMakeCacheScript, 1.5-4.4 s
@@ -134,19 +138,21 @@ if(WIN32)
         # reusable-build-test.yml gives these entries, and no others, a second attempt on that leg.
         set_tests_properties(ResizeCaptureScript EtwCaptureScript EtwAnalysisScript CMakeCacheScript BenchScript
             CheckPrereqsScript SetupDevScript VerifyWindowsSignaturesScript BuildWindowsInstallerScript
-            ResizePerfSummaryScript WingetManifestScript ClangTidyHeadersScript FormatSourcesScript PROPERTIES
+            ResizePerfSummaryScript WingetManifestScript ClangTidyHeadersScript FormatSourcesScript
+            ReleaseSmokeCheckScript PROPERTIES
             RESOURCE_LOCK pwsh-script-tests
             LABELS pwsh-script)
         set_tests_properties(ResizeCaptureScript EtwAnalysisScript CMakeCacheScript CheckPrereqsScript SetupDevScript
             VerifyWindowsSignaturesScript BuildWindowsInstallerScript ResizePerfSummaryScript WingetManifestScript
-            ClangTidyHeadersScript FormatSourcesScript PROPERTIES TIMEOUT 120)
+            ClangTidyHeadersScript FormatSourcesScript ReleaseSmokeCheckScript PROPERTIES TIMEOUT 120)
         set_tests_properties(EtwCaptureScript BenchScript PROPERTIES TIMEOUT 180)
     else()
         # Say so rather than leave the ETW script tests silently missing from ctest (#1187).
         message(WARNING "pwsh (PowerShell 7) not found: the ResizeCaptureScript, EtwCaptureScript, "
                         "EtwAnalysisScript, CMakeCacheScript, BenchScript, CheckPrereqsScript, SetupDevScript, "
                         "VerifyWindowsSignaturesScript, BuildWindowsInstallerScript, ResizePerfSummaryScript, "
-                        "WingetManifestScript, ClangTidyHeadersScript and FormatSourcesScript tests "
+                        "WingetManifestScript, ClangTidyHeadersScript, FormatSourcesScript and "
+                        "ReleaseSmokeCheckScript tests "
                         "are not registered. Install PowerShell 7 to run them.")
     endif()
     # The Authenticode gate on packaging TaskSmackHelper.exe (#2550): the build's own, unsigned
