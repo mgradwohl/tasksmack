@@ -1,6 +1,8 @@
+# Usage: pwsh -File tools/md-link-audit.ps1 [-RepoRoot <dir>]. The root defaults to this checkout's, wherever
+# it runs from; it was the current directory, so a run from tools\ scanned 0 files and passed (#3529).
 param(
     [Parameter(Mandatory = $false)]
-    [string]$RepoRoot = (Get-Location).Path
+    [string]$RepoRoot = (Split-Path -Parent $PSScriptRoot)
 )
 
 $ErrorActionPreference = 'Stop'
@@ -80,6 +82,19 @@ $docsDir = Join-Path $repoRootFull 'docs'
 $docsDirNorm = ($docsDir.TrimEnd('\') + '\')
 if (Test-Path -LiteralPath $docsDir) {
     $mdFiles += Get-ChildItem -LiteralPath $docsDir -Recurse -File -Filter '*.md'
+}
+
+# A link's target path. A root-absolute one ("/guide/faq.md") in a page under docs/ resolves from docs/, the
+# docsify site's root: its sidebar's links are root-absolute because docsify's relativePath would otherwise
+# resolve them against the page being shown. Anywhere else it resolves from the repository root. As
+# resolve_target in tools/md-link-audit.sh does (#3529).
+function Resolve-LinkPath([System.IO.FileInfo]$md, [string]$pathPart) {
+    if (-not $pathPart.StartsWith('/')) {
+        return Join-Path $md.DirectoryName $pathPart
+    }
+    $underDocs = (Test-Path -LiteralPath $docsDir) -and $md.FullName.StartsWith($docsDirNorm, [System.StringComparison]::OrdinalIgnoreCase)
+    $siteRoot = if ($underDocs) { $docsDir } else { $repoRootFull }
+    return Join-Path $siteRoot ($pathPart.TrimStart('/'))
 }
 
 $anchorCache = @{}
@@ -249,11 +264,7 @@ foreach ($md in $mdFiles) {
                 $pathPart = $pathPart.Substring(0, $qIndex)
             }
 
-            $targetPath = if ($pathPart.StartsWith('/')) {
-                Join-Path $repoRootFull ($pathPart.TrimStart('/'))
-            } else {
-                Join-Path $md.DirectoryName $pathPart
-            }
+            $targetPath = Resolve-LinkPath $md $pathPart
 
             if (-not (Test-Path -LiteralPath $targetPath)) {
                 Add-Broken $broken 'missing-file' $md.FullName $lineNo $target "Missing file '$targetPath'"
@@ -311,11 +322,7 @@ foreach ($md in $mdFiles) {
             $pathPart = [uri]::UnescapeDataString($pathPart)
             $anchor = [uri]::UnescapeDataString($anchor)
 
-            $targetPath = if ($pathPart.StartsWith('/')) {
-                Join-Path $repoRootFull ($pathPart.TrimStart('/'))
-            } else {
-                Join-Path $md.DirectoryName $pathPart
-            }
+            $targetPath = Resolve-LinkPath $md $pathPart
 
             if (-not (Test-Path -LiteralPath $targetPath)) {
                 Add-Broken $broken 'missing-file' $md.FullName $lineNo $target "Missing file '$targetPath' (ref [$refKey])"

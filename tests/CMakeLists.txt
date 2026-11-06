@@ -238,6 +238,15 @@ if(TASKSMACK_BASH AND NOT WIN32)
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_md_link_audit.py)
     set_tests_properties(MdLinkAuditScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}" TIMEOUT 60)
 endif()
+# Its Windows twin, tools/md-link-audit.ps1, through the same cases, plus the checkout itself with no broken
+# link: it resolved docs/'s root-absolute links against the repository root (#3529). It starts pwsh, so it
+# takes its turn with the PowerShell script tests (#2054) and gets their second attempt on windows-11-arm.
+if(WIN32 AND TASKSMACK_PWSH)
+    add_test(NAME MdLinkAuditPs1Script
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_md_link_audit.py MdLinkAuditPs1Test)
+    set_tests_properties(MdLinkAuditPs1Script PROPERTIES ENVIRONMENT "TASKSMACK_TEST_PWSH=${TASKSMACK_PWSH}"
+        RESOURCE_LOCK pwsh-script-tests LABELS pwsh-script TIMEOUT 120)
+endif()
 
 # tools/resize-perf-summary.awk, measure-idle.sh's ResizePerf summary reader: a window that drew no frame
 # (minimized) is left out of the frame and loop figures, n/a when none drew one (#3210). Canned log lines
