@@ -347,10 +347,19 @@ merges, `winget install TaskSmack.TaskSmack` works, and every later Latest relea
 winget-pkgs asks for a local install test. Run it in Windows Sandbox, not on a working machine: it opens a Sandbox
 window, so do it when nobody is using the desktop. It needs Windows Pro, Enterprise or Education on x64, with the
 Sandbox feature on (`Enable-WindowsOptionalFeature -FeatureName Containers-DisposableClientVM -All -Online`, then
-restart). SandboxTest.ps1 downloads WinGet into the Sandbox, validates the manifest, installs it there with
-`winget install --manifest`, which downloads each installer and checks its SHA-256, and then runs `-Script`. Pin
-the script to a winget-pkgs commit you've read; `1410e3eea47ed72934a257db21cf7a638a862b94` (2026-06-16) is the
-one checked for this guide.
+restart). SandboxTest.ps1 downloads WinGet into the Sandbox and validates the manifest. It then installs the
+manifest there with `winget install --manifest`, which downloads each installer and checks its SHA-256, and runs
+`-Script`. Pin the script to a winget-pkgs commit you've read; `1410e3eea47ed72934a257db21cf7a638a862b94`
+(2026-06-16) is the one checked for this guide.
+
+**Before publication, check by what's installed, not by package ID.** Until `TaskSmack.TaskSmack` is merged into
+winget-pkgs, a copy installed from a local manifest isn't tied to any source. So
+`winget list --id TaskSmack.TaskSmack`, `winget uninstall --id ...` and `winget upgrade --id ...` find nothing, even
+when the install is right. The checks below read the Uninstall (ARP) entry, which is
+`HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\TaskSmack` with its `DisplayName`,
+`DisplayVersion` and `Publisher`, plus the install folder and `winget list --name TaskSmack`. They match by name,
+the way winget's own correlation does through `AppsAndFeaturesEntries`. The by-ID checks are at the end, for after
+publication.
 
 ```powershell
 $sandbox = (New-Item -ItemType Directory -Force "$env:TEMP\winget-sandbox").FullName
@@ -361,37 +370,65 @@ pwsh tools/winget-manifest.ps1 -Version 0.10.0 -ReleaseDir "$sandbox\v0.10.0" -R
 $manifest = "$sandbox\v0.10.0\winget\manifests\t\TaskSmack\TaskSmack\0.10.0"
 Set-Location $sandbox
 .\SandboxTest.ps1 -Manifest $manifest -MapFolder $sandbox -Script {
-    $exe = "$env:ProgramFiles\TaskSmack\TaskSmack.exe"
-    "Installed: $(Test-Path $exe)"
-    winget list --id TaskSmack.TaskSmack --accept-source-agreements
-    $app = Start-Process $exe -PassThru; Start-Sleep -Seconds 15
+    $folder = "$env:ProgramFiles\TaskSmack"
+    $arp = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall'
+    function Get-TaskSmackArp { @(Get-ChildItem $arp | Get-ItemProperty | Where-Object DisplayName -Like 'TaskSmack*' |
+        Select-Object PSChildName, DisplayName, DisplayVersion, Publisher) }
+    "Installed: $(Test-Path "$folder\TaskSmack.exe")"
+    Get-TaskSmackArp | Format-Table -AutoSize
+    winget list --name TaskSmack --accept-source-agreements
+    $app = Start-Process "$folder\TaskSmack.exe" -PassThru; Start-Sleep -Seconds 15
     "Running after 15 s: $(-not $app.HasExited)"; Stop-Process -Id $app.Id -ErrorAction SilentlyContinue
-    winget uninstall --id TaskSmack.TaskSmack --silent --accept-source-agreements
-    "Folder left behind: $(Test-Path "$env:ProgramFiles\TaskSmack")"
+    winget uninstall --name TaskSmack --exact --silent --accept-source-agreements
+    # The NSIS uninstaller finishes from a copy of itself, so wait for the folder to go.
+    $deadline = (Get-Date).AddSeconds(60)
+    while ((Test-Path $folder) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
+    "Folder left behind: $(Test-Path $folder)"
+    "Uninstall entries left: $((Get-TaskSmackArp).Count)"
 }
 ```
 
-The expected result: the manifest validates, the install succeeds silently with no prompt in the Sandbox, and
-`Installed: True`. `winget list` shows TaskSmack.TaskSmack at the manifest's version, which proves
-`AppsAndFeaturesEntries` correlate. `Running after 15 s: True`, and the window shows TaskSmack. If it stops with an
-OpenGL message instead, the Sandbox has no vGPU, which is the Sandbox's problem, not the manifest's. The uninstall
-succeeds, and `Folder left behind: False`.
+The expected result:
+- The manifest validates, and the install succeeds silently with no prompt in the Sandbox: `Installed: True`.
+- The table shows exactly one entry: `PSChildName` `TaskSmack`, `DisplayName` `TaskSmack`, `DisplayVersion` `0.10.0`
+  and `Publisher` `TaskSmack Contributors`. Those are the values the manifest's `AppsAndFeaturesEntries` and
+  `ProductCode` name.
+- `winget list --name TaskSmack` shows TaskSmack 0.10.0 with a local ID (`ARP\Machine\X86\TaskSmack`) and no source.
+  That's expected before publication.
+- `Running after 15 s: True`, and the window shows TaskSmack. If it stops with an OpenGL message instead, the Sandbox
+  has no vGPU, which is the Sandbox's problem, not the manifest's.
+- The uninstall succeeds: `Folder left behind: False` and `Uninstall entries left: 0`.
 
-**The upgrade case**, once two releases with this installer exist: v0.10.0 is the first whose Uninstall key is
-`TaskSmack` (#3276), and v0.9.x's was `TaskSmack 0.9.x`. So test with v0.10.0, then v0.11.0 once it's published and
-before you submit it. Generate both folders as above, then:
+**The upgrade case**, once two releases with this installer exist. v0.10.0 is the first whose Uninstall key is
+`TaskSmack` (#3276); v0.9.x's was `TaskSmack 0.9.x`. So test from v0.10.0 to v0.11.0, once v0.11.0 is published and
+before you submit it. Generate both folders as above, then install v0.11.0's manifest over v0.10.0.
+`winget install --manifest` runs the new installer over the old one, which is what `UpgradeBehavior: install`
+does. Before publication, `winget upgrade` can't tie the installed copy to the manifest.
 
 ```powershell
 .\SandboxTest.ps1 -Manifest $manifest -MapFolder $sandbox -Script {
-    winget upgrade --manifest "$env:USERPROFILE\Desktop\winget-sandbox\v0.11.0\winget\manifests\t\TaskSmack\TaskSmack\0.11.0" --silent --accept-source-agreements
-    winget list --id TaskSmack.TaskSmack --accept-source-agreements
-    (Get-ItemProperty 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\TaskSmack').DisplayVersion
+    $arp = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall'
+    winget install --manifest "$env:USERPROFILE\Desktop\winget-sandbox\v0.11.0\winget\manifests\t\TaskSmack\TaskSmack\0.11.0" --silent --accept-source-agreements
+    @(Get-ChildItem $arp | Get-ItemProperty | Where-Object DisplayName -Like 'TaskSmack*' |
+        Select-Object PSChildName, DisplayName, DisplayVersion) | Format-Table -AutoSize
+    "TaskSmack.exe: $((Get-Item "$env:ProgramFiles\TaskSmack\TaskSmack.exe").VersionInfo.ProductVersion)"
+    winget list --name TaskSmack --accept-source-agreements
 }
 ```
 
-(The Sandbox maps `$sandbox` to its desktop under the same folder name.) The expected result: the upgrade succeeds
-silently, `winget list` shows one TaskSmack.TaskSmack at 0.11.0 with nothing to upgrade, and the Uninstall key's
-DisplayVersion is 0.11.0: one entry, not two.
+(The Sandbox maps `$sandbox` to its desktop under the same folder name.) The expected result: the install succeeds
+silently. The table shows exactly **one** entry, `TaskSmack` at `DisplayVersion` `0.11.0`: one entry, not two.
+TaskSmack.exe reports 0.11.0, and `winget list --name TaskSmack` shows one TaskSmack at 0.11.0.
+
+**After publication, check by ID.** Once the winget-pkgs pull request merges, run these in a fresh Sandbox:
+- `.\SandboxTest.ps1 -Script { winget install --id TaskSmack.TaskSmack --exact --silent --accept-source-agreements; winget list --id TaskSmack.TaskSmack --accept-source-agreements }`
+  should show TaskSmack.TaskSmack with source `winget`.
+- Once a second version is published, install the older one with `--version`, then run
+  `winget upgrade --id TaskSmack.TaskSmack --silent`. It should move to the newest version, leave one ARP entry, and
+  leave `winget upgrade` with nothing pending.
+- `winget uninstall --id TaskSmack.TaskSmack --silent` should remove it.
+
+Only these by-ID checks prove that winget ties an installed TaskSmack to the published package.
 
 ### Automatic updates
 
