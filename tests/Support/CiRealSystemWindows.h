@@ -165,8 +165,10 @@ class Acl
 /// deny-only and every privilege but SeChangeNotify gone (CreateRestrictedToken), and a default DACL that lets
 /// in this user, SYSTEM and Administrators, so the processes started with it, and what they make, can be opened
 /// by each other as well as by the test. CreateProcessAsUserW takes it without SeAssignPrimaryToken: it is a
-/// restricted version of the caller's own token. Null, with a failure added, when it can't be made.
-[[nodiscard]] inline UniqueHandle standardUserPrimaryToken()
+/// restricted version of the caller's own token. @p alsoLetIn, when not empty, is one more SID the default DACL
+/// gives full access: another account's, whose processes must open this one's. Null, with a failure added, when
+/// it can't be made.
+[[nodiscard]] inline UniqueHandle standardUserPrimaryToken(const std::vector<std::byte>& alsoLetIn = {})
 {
     HANDLE own = nullptr;
     if (OpenProcessToken(GetCurrentProcess(), TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ASSIGN_PRIMARY | TOKEN_ADJUST_DEFAULT, &own) == FALSE)
@@ -184,11 +186,16 @@ class Acl
         return {};
     }
     UniqueHandle token(restricted);
-    const Acl acl({
+    std::vector<Grant> grants{
         {.sid = ownUserSid(), .rights = GENERIC_ALL},
         {.sid = wellKnownSid(WinLocalSystemSid), .rights = GENERIC_ALL},
         {.sid = administrators, .rights = GENERIC_ALL},
-    });
+    };
+    if (!alsoLetIn.empty())
+    {
+        grants.push_back({.sid = alsoLetIn, .rights = GENERIC_ALL});
+    }
+    const Acl acl(std::move(grants));
     TOKEN_DEFAULT_DACL defaultDacl{.DefaultDacl = acl.get()};
     if (acl.get() == nullptr || SetTokenInformation(token.get(), TokenDefaultDacl, &defaultDacl, sizeof(defaultDacl)) == FALSE)
     {
@@ -198,16 +205,35 @@ class Acl
     return token;
 }
 
-/// @p primary duplicated as an impersonation token, for SetThreadToken.
-[[nodiscard]] inline UniqueHandle impersonationOf(HANDLE primary)
+/// Adds an ACE giving @p sid @p rights to kernel object @p object's DACL (a process, or a token), keeping what is
+/// there. False, with a failure added, when it can't.
+inline bool letIn(HANDLE object, std::vector<std::byte> sid, DWORD rights)
 {
-    HANDLE duplicate = nullptr;
-    if (DuplicateTokenEx(primary, TOKEN_IMPERSONATE | TOKEN_QUERY, nullptr, SecurityImpersonation, TokenImpersonation, &duplicate) == FALSE)
+    PACL existing = nullptr;
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    if (GetSecurityInfo(object, SE_KERNEL_OBJECT, DACL_SECURITY_INFORMATION, nullptr, nullptr, &existing, nullptr, &descriptor) !=
+        ERROR_SUCCESS)
     {
-        ADD_FAILURE() << "couldn't make an impersonation token: " << GetLastError();
-        return {};
+        ADD_FAILURE() << "couldn't read an object's DACL";
+        return false;
     }
-    return UniqueHandle(duplicate);
+    EXPLICIT_ACCESS_W entry{};
+    entry.grfAccessPermissions = rights;
+    entry.grfAccessMode = GRANT_ACCESS;
+    entry.grfInheritance = NO_INHERITANCE;
+    entry.Trustee.TrusteeForm = TRUSTEE_IS_SID;
+    entry.Trustee.TrusteeType = TRUSTEE_IS_UNKNOWN;
+    // TRUSTEE_IS_SID: ptstrName holds the SID, as the API documents.
+    entry.Trustee.ptstrName = reinterpret_cast<LPWSTR>(sid.data()); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+    PACL updated = nullptr;
+    const DWORD merged = SetEntriesInAclW(1, &entry, existing, &updated);
+    const DWORD set = (merged == ERROR_SUCCESS)
+                        ? SetSecurityInfo(object, SE_KERNEL_OBJECT, DACL_SECURITY_INFORMATION, nullptr, nullptr, updated, nullptr)
+                        : merged;
+    LocalFree(static_cast<HLOCAL>(updated));
+    LocalFree(descriptor);
+    EXPECT_EQ(set, static_cast<DWORD>(ERROR_SUCCESS)) << "couldn't widen an object's DACL";
+    return set == ERROR_SUCCESS;
 }
 
 /// A process the test started: ended (TerminateProcess) and waited for on scope exit if it is still running.
@@ -252,6 +278,14 @@ class Child
         DWORD code = 0;
         GetExitCodeProcess(m_Process.get(), &code);
         return code;
+    }
+    /// Lets a child started suspended run.
+    void resume() const noexcept
+    {
+        if (m_Thread)
+        {
+            ResumeThread(m_Thread.get());
+        }
     }
     /// Ends it, if it still runs, and waits for it.
     void end() noexcept

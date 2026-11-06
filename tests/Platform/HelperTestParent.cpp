@@ -18,7 +18,8 @@
 //   TaskSmack.exe session <hold|close|idle> <log> <pid> <start ticks> [<user> <password>]
 //
 // It starts the helper (as <user>, through CreateProcessWithLogonW, when one is given: an over-the-shoulder
-// elevation's other account), writes "launched <helper pid>" to <log>, and connects. Then:
+// elevation's other account), writes "launched <helper pid>" to <log>,
+// waits until the test makes <log>.ack (it holds the helper by then), and connects. Then:
 //   - hold:  asks the helper to end <pid>, writes "served", and waits;
 //   - close: the same, then closes the pipe (PipeBroker::disconnect()), writes "closed", and waits;
 //   - idle:  writes "connected", and waits, asking nothing.
@@ -167,8 +168,12 @@ BOOL WINAPI createProcessAsAnotherAccount(SHELLEXECUTEINFOW* info)
     return TRUE;
 }
 
+/// How often the session verb looks for the test's acknowledgement.
+constexpr DWORD ACK_POLL_MS = 10;
+
 /// The launcher seam for the session verb: createProcessInstead() or createProcessAsAnotherAccount(), then
-/// "launched <pid>" in the log, so the test can hold the helper's process from the start.
+/// "launched <pid>" in the log, and a wait for the test's acknowledgement (<log>.ack) that it holds the helper's
+/// process, so however quickly the session ends, the test sees how.
 BOOL WINAPI launchAndNote(SHELLEXECUTEINFOW* info)
 {
     const BOOL started = g_LogonUser.empty() ? createProcessInstead(info) : createProcessAsAnotherAccount(info);
@@ -180,6 +185,13 @@ BOOL WINAPI launchAndNote(SHELLEXECUTEINFOW* info)
         return FALSE;
     }
     note(std::format("launched {}", GetProcessId(info->hProcess)));
+    // Holding the helper's process, so its PID names it still, until the test has opened it too: <log>.ack.
+    const std::wstring acknowledgement = g_SessionLog + L".ack";
+    const auto deadline = std::chrono::steady_clock::now() + STARTUP;
+    while (GetFileAttributesW(acknowledgement.c_str()) == INVALID_FILE_ATTRIBUTES && std::chrono::steady_clock::now() < deadline)
+    {
+        Sleep(ACK_POLL_MS);
+    }
     return TRUE;
 }
 

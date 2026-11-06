@@ -1,9 +1,9 @@
 // CI real-system tests on Windows, phase 1 (#3489; tracker #3492): the real OS paths of Realtime priority
 // (#3465), Run new task (#3471), Compressed memory (#3482) and Open file location (#3461), which until now had
 // only fakes plus a manual check. They change the machine (a process at Realtime, programs started through the
-// shell, an Explorer window), so they run only on a disposable GitHub-hosted runner, where the runner's user is
-// an administrator and UAC is off: CiRealSystem.h's guard skips them everywhere else. Every child is idle (a
-// suspended cmd.exe, or TaskSmackCiStub.exe, which only sleeps) and ends on scope exit.
+// shell, an Explorer window), so they run only on a disposable GitHub-hosted runner, where the runner's user is an
+// administrator whose tests run elevated (UAC is on): CiRealSystem.h's guard skips them everywhere else. Every
+// child is idle (a suspended cmd.exe, or TaskSmackCiStub.exe, which only sleeps) and ends on scope exit.
 
 #include "Core/Utf8Path.h"
 #include "Domain/PriorityConfig.h"
@@ -38,10 +38,15 @@
 #include <cstdint>
 #include <filesystem>
 #include <format>
+#include <fstream>
+#include <ios>
+#include <istream>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #ifndef TASKSMACK_CI_STUB_PATH
@@ -81,59 +86,98 @@ TEST_F(CiRealSystemRealtimeTest, AnAdministratorSetsRealtimeAndWindowsKeepsIt)
     EXPECT_EQ(GetPriorityClass(child.process()), static_cast<DWORD>(REALTIME_PRIORITY_CLASS));
 }
 
-/// Impersonates @p token on this thread until scope exit.
-class Impersonating
+/// The standard-user test's child's command line: only the child case.
+constexpr std::wstring_view REALTIME_CHILD_FILTER = L"--gtest_filter=CiRealSystemRealtimeTest.ChildSetsRealtimeAsAStandardUser";
+
+/// The environment variables that make a TaskSmackTests.exe the standard-user test's child: the target, as "<pid>
+/// <start ticks>", and the file it writes its result to.
+constexpr std::string_view REALTIME_CHILD_TARGET = "TASKSMACK_CI_REALTIME_CHILD_TARGET";
+constexpr std::string_view REALTIME_CHILD_RESULT = "TASKSMACK_CI_REALTIME_CHILD_RESULT";
+
+/// This test binary's own path, which the standard-user test starts again as its child.
+[[nodiscard]] std::filesystem::path ownExecutable()
+{
+    std::array<wchar_t, 32'768> path{};
+    const DWORD length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+    return {std::wstring(path.data(), length)};
+}
+
+/// Sets environment variable @p name for this process (so a child started now inherits it) until scope exit.
+class ScopedVariable
 {
   public:
-    explicit Impersonating(HANDLE token) : m_Active(SetThreadToken(nullptr, token) != FALSE)
+    ScopedVariable(std::wstring name, const std::wstring& value) : m_Name(std::move(name))
     {
-        EXPECT_TRUE(m_Active) << "couldn't impersonate: " << GetLastError();
+        EXPECT_NE(SetEnvironmentVariableW(m_Name.c_str(), value.c_str()), FALSE) << GetLastError();
     }
-    ~Impersonating()
+    ~ScopedVariable()
     {
-        if (m_Active)
-        {
-            RevertToSelf();
-        }
+        SetEnvironmentVariableW(m_Name.c_str(), nullptr);
     }
-    Impersonating(const Impersonating&) = delete;
-    Impersonating& operator=(const Impersonating&) = delete;
-    Impersonating(Impersonating&&) = delete;
-    Impersonating& operator=(Impersonating&&) = delete;
-
-    [[nodiscard]] bool active() const noexcept
-    {
-        return m_Active;
-    }
+    ScopedVariable(const ScopedVariable&) = delete;
+    ScopedVariable& operator=(const ScopedVariable&) = delete;
+    ScopedVariable(ScopedVariable&&) = delete;
+    ScopedVariable& operator=(ScopedVariable&&) = delete;
 
   private:
-    bool m_Active;
+    std::wstring m_Name;
 };
+
+// The child half of the test below: run by a copy of this binary that the test starts with a standard user's
+// primary token, it sets Realtime through the real WindowsProcessActions as that user, and writes what came back.
+// Anywhere else (the group's own run included) it skips.
+TEST_F(CiRealSystemRealtimeTest, ChildSetsRealtimeAsAStandardUser)
+{
+    const std::optional<std::string> target = TestSupport::environmentValue(std::string(REALTIME_CHILD_TARGET));
+    const std::optional<std::string> resultFile = TestSupport::environmentValue(std::string(REALTIME_CHILD_RESULT));
+    if (!target.has_value() || !resultFile.has_value())
+    {
+        GTEST_SKIP() << "only the standard-user Realtime test's child runs this";
+    }
+    Platform::ProcessTarget process;
+    std::istringstream(target.value_or("")) >> process.pid >> process.startTimeTicks;
+    ASSERT_NE(process.pid, 0);
+    Platform::WindowsProcessActions actions;
+    const ProcessActionResult result = actions.setPriority(process, REALTIME_NICE);
+    std::ofstream(Core::utf8ToPath(resultFile.value_or("")), std::ios::trunc)
+        << (result.success ? 1 : 0) << ' ' << (result.permissionDenied ? 1 : 0) << ' ' << result.errorMessage;
+}
 
 TEST_F(CiRealSystemRealtimeTest, AStandardUserGetsHighAndTheReadBackSaysSo)
 {
-    // A standard user's TaskSmack: the child is its own (started with that token), and the call is made as that
-    // user (impersonating it), who has no SeIncreaseBasePriorityPrivilege. SetPriorityClass succeeds, Windows sets
-    // High, and only the class read back tells (#3429).
+    // A standard user's TaskSmack (#3429): Realtime needs SeIncreaseBasePriorityPrivilege in the caller's primary
+    // token, which a standard user's doesn't have, so SetPriorityClass succeeds, Windows sets High, and only the
+    // class read back tells. The call is made in a process of that user's own: this binary again, started with the
+    // restricted primary token, running the child case above. Impersonation wouldn't do: the privilege comes from
+    // the primary token.
     const UniqueHandle token = standardUserPrimaryToken();
     ASSERT_TRUE(token);
-    const Child child = suspendedCmd(token.get());
-    ASSERT_NE(child.process(), nullptr);
-    const UniqueHandle impersonation = impersonationOf(token.get());
-    ASSERT_TRUE(impersonation);
-    Platform::WindowsProcessActions actions;
-    ProcessActionResult result;
+    const Child target = suspendedCmd(token.get());
+    ASSERT_NE(target.process(), nullptr);
+    const ScratchFolder folder(std::filesystem::temp_directory_path() / (L"TaskSmackCiRealtime." + uniqueSuffix()));
+    const std::filesystem::path resultFile = folder.path() / L"result.txt";
+    const Platform::ProcessTarget named = target.target();
+    Child child;
     {
-        const Impersonating asStandardUser(impersonation.get());
-        ASSERT_TRUE(asStandardUser.active());
-        result = actions.setPriority(child.target(), REALTIME_NICE);
+        const ScopedVariable targetVariable(L"TASKSMACK_CI_REALTIME_CHILD_TARGET", std::format(L"{} {}", named.pid, named.startTimeTicks));
+        const ScopedVariable resultVariable(L"TASKSMACK_CI_REALTIME_CHILD_RESULT", resultFile.wstring());
+        child = start(ownExecutable(), {.token = token.get(), .parameters = std::wstring(REALTIME_CHILD_FILTER)});
     }
-    EXPECT_FALSE(result.success);
-    EXPECT_TRUE(result.permissionDenied) << "the elevated helper is offered for it";
-    EXPECT_EQ(result.errorMessage, Platform::REALTIME_NEEDS_ADMIN_MESSAGE);
-    EXPECT_EQ(GetPriorityClass(child.process()), static_cast<DWORD>(HIGH_PRIORITY_CLASS));
+    ASSERT_NE(child.process(), nullptr);
+    const std::optional<DWORD> exit = child.exitCode(2 * STARTUP_WAIT);
+    ASSERT_TRUE(exit.has_value()) << "the standard-user child didn't finish";
+    std::ifstream in(resultFile);
+    int success = -1;
+    int denied = -1;
+    std::string message;
+    in >> success >> denied;
+    std::getline(in >> std::ws, message);
+    ASSERT_NE(success, -1) << "the child wrote no result; its exit status " << exit.value_or(0);
+    EXPECT_EQ(success, 0) << "Windows let a standard user set Realtime";
+    EXPECT_EQ(denied, 1) << "the elevated helper is offered for it";
+    EXPECT_EQ(message, Platform::REALTIME_NEEDS_ADMIN_MESSAGE);
+    EXPECT_EQ(GetPriorityClass(target.process()), static_cast<DWORD>(HIGH_PRIORITY_CLASS));
 }
-
 // --- #3471: Run new task -------------------------------------------------------------------------------------
 
 class CiRealSystemRunTaskTest : public TestSupport::CiRealSystemTest
@@ -178,6 +222,21 @@ class StubCopy
     return status != ERROR_SUCCESS || value != 0;
 }
 
+/// Whether this process's token is elevated (TokenElevation); false when it can't be read.
+[[nodiscard]] bool thisProcessIsElevated()
+{
+    HANDLE token = nullptr;
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token) == FALSE)
+    {
+        return false;
+    }
+    const UniqueHandle owned(token);
+    TOKEN_ELEVATION elevation{};
+    DWORD size = 0;
+    return GetTokenInformation(owned.get(), TokenElevation, &elevation, sizeof(elevation), &size) != FALSE &&
+           elevation.TokenIsElevated != 0;
+}
+
 TEST_F(CiRealSystemRunTaskTest, OpenStartsTheProgram)
 {
     const StubCopy stub(L"TaskSmackCiRunOpen");
@@ -195,12 +254,16 @@ TEST_F(CiRealSystemRunTaskTest, OpenStartsTheProgram)
 
 TEST_F(CiRealSystemRunTaskTest, RunasStartsItElevated)
 {
-    if (uacIsOn())
+    // The runner has UAC on, but its tests run elevated: from an elevated process runas starts the program with the
+    // same full token and no prompt. A process that isn't elevated would raise the consent prompt, which nothing
+    // here can answer.
+    if (uacIsOn() && !thisProcessIsElevated())
     {
-        GTEST_SKIP() << "UAC is on here, so runas would raise its consent prompt, which nothing can answer";
+        GTEST_SKIP() << "UAC is on and this process isn't elevated, so runas would raise its consent prompt, which "
+                        "nothing can answer";
     }
     const StubCopy stub(L"TaskSmackCiRunAs");
-    // Not elevated as far as runShellProgram() knows, so it asks for the runas verb, which with UAC off starts
+    // Not elevated as far as runShellProgram() knows, so it asks for the runas verb, which from this elevated process starts
     // the program with the administrator's full token and no prompt.
     const ProcessActionResult result =
         Platform::Windows::runShellProgram(Platform::Windows::realRunProgramFunctions(), false, runRequest(stub.exe(), true));
@@ -369,6 +432,7 @@ void expectExplorerShowsTheFolder(const std::wstring& folderName)
     ASSERT_TRUE(result.success) << result.errorMessage;
 
     HWND shown = nullptr;
+    std::vector<HWND> newWindows; // every new folder window, the right one or not: each is closed at the end
     std::wstring lastTitle;
     const auto deadline = std::chrono::steady_clock::now() + STARTUP_WAIT;
     while (shown == nullptr && std::chrono::steady_clock::now() < deadline)
@@ -379,6 +443,10 @@ void expectExplorerShowsTheFolder(const std::wstring& folderName)
             {
                 continue;
             }
+            if (std::ranges::find(newWindows, window) == newWindows.end())
+            {
+                newWindows.push_back(window);
+            }
             lastTitle = titleOf(window);
             if (lastTitle.contains(folderName))
             {
@@ -388,12 +456,22 @@ void expectExplorerShowsTheFolder(const std::wstring& folderName)
         }
         std::this_thread::sleep_for(100ms);
     }
-    if (shown == nullptr && !hadShell)
+    // Only no window at all, on a desktop with no shell, is the runner's limit. A new window on another folder is a
+    // failure: Explorer was asked for this one.
+    if (newWindows.empty() && !hadShell)
     {
-        GTEST_SKIP() << "no Explorer window came up, and this runner's desktop has no shell (GetShellWindow() is null), "
-                        "so Explorer can't show a folder here";
+        GTEST_SKIP() << "no Explorer window came up at all, and this runner's desktop has no shell (GetShellWindow() is "
+                        "null), so Explorer can't show a folder here";
     }
-    ASSERT_NE(shown, nullptr) << "no new Explorer window shows the folder; the last new one's title: "
+    for (HWND window : newWindows)
+    {
+        if (window != shown)
+        {
+            PostMessageW(window, WM_CLOSE, 0, 0);
+        }
+    }
+    ASSERT_FALSE(newWindows.empty()) << "no new Explorer window came up";
+    ASSERT_NE(shown, nullptr) << "a new Explorer window came up, but not on the folder; the last new one's title: "
                               << Core::pathToUtf8(std::filesystem::path(lastTitle));
     EXPECT_NE(PostMessageW(shown, WM_CLOSE, 0, 0), FALSE) << GetLastError();
     const auto closeDeadline = std::chrono::steady_clock::now() + 10s;

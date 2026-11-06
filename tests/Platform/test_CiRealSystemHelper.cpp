@@ -5,7 +5,7 @@
 // helper and TaskSmackHelperTestParent.exe (as TaskSmack.exe) in it, and runs that TaskSmack as a standard user
 // (the runner's own account with Administrators deny-only). The helper then serves it for real, and each test
 // watches one way a session ends: TaskSmack killed, TaskSmack closing the pipe, the idle timeout (the short-idle
-// copy of the helper, 3 s), and an over-the-shoulder elevation's one action (a throwaway administrator account,
+// copy of the helper, 3 s), and an over-the-shoulder elevation's one action (a throwaway local account,
 // deleted after). Each also checks the helper's exit status is Exit::Done, never std::terminate's abort (3) or a
 // fail-fast. And a copy in a folder its user can change is refused, with the same standard user's token.
 // CiRealSystem.h's guard skips all of it anywhere but such a runner.
@@ -150,6 +150,11 @@ class SessionLog
     {
         return m_Folder.path() / L"session.log";
     }
+    /// The file the test makes once it holds the helper's process, which TaskSmack waits for.
+    [[nodiscard]] std::filesystem::path acknowledgement() const
+    {
+        return m_Folder.path() / L"session.log.ack";
+    }
     [[nodiscard]] std::string text() const
     {
         std::ifstream in(path());
@@ -187,12 +192,14 @@ class SessionLog
     ScratchFolder m_Folder;
 };
 
-/// A throwaway local administrator, for an over-the-shoulder elevation: the helper runs as it, TaskSmack as the
-/// runner's own user. Deleted on scope exit.
-class ThrowawayAdministrator
+/// A throwaway local account, for an over-the-shoulder elevation: the helper runs as it, TaskSmack as the runner's
+/// own user, so the helper gives the session one action (#2550). A plain user: on the runner UAC is on, so an
+/// administrator's logon through CreateProcessWithLogonW would get the filtered token anyway, and the grant turns
+/// only on the two accounts being different. Deleted on scope exit.
+class ThrowawayAccount
 {
   public:
-    ThrowawayAdministrator()
+    ThrowawayAccount()
     {
         std::random_device random;
         m_Name = std::format(L"tsci{:08x}", random());
@@ -204,7 +211,8 @@ class ThrowawayAdministrator
         user.usri1_priv = USER_PRIV_USER;
         user.usri1_flags = UF_SCRIPT | UF_DONT_EXPIRE_PASSWD;
         DWORD badField = 0;
-        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - NetUserAdd takes its USER_INFO_1 as bytes
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - NetUserAdd
+        // takes its USER_INFO_1 as bytes
         auto* userBytes = reinterpret_cast<LPBYTE>(&user);
         const NET_API_STATUS added = NetUserAdd(nullptr, 1, userBytes, &badField);
         if (added != NERR_Success)
@@ -213,44 +221,34 @@ class ThrowawayAdministrator
             return;
         }
         m_Added = true;
-        // The Administrators group by its SID: its name is localised.
-        std::vector<std::byte> administrators = wellKnownSid(WinBuiltinAdministratorsSid);
-        std::array<wchar_t, 256> group{};
+        m_Sid.resize(SECURITY_MAX_SID_SIZE);
+        auto sidSize = static_cast<DWORD>(m_Sid.size());
         std::array<wchar_t, 256> domain{};
-        auto groupSize = static_cast<DWORD>(group.size());
         auto domainSize = static_cast<DWORD>(domain.size());
         SID_NAME_USE use = SidTypeUnknown;
-        if (LookupAccountSidW(nullptr, administrators.data(), group.data(), &groupSize, domain.data(), &domainSize, &use) == FALSE)
+        if (LookupAccountNameW(nullptr, m_Name.c_str(), m_Sid.data(), &sidSize, domain.data(), &domainSize, &use) == FALSE)
         {
-            ADD_FAILURE() << "couldn't name the Administrators group: " << GetLastError();
+            ADD_FAILURE() << "couldn't read the new account's SID: " << GetLastError();
+            m_Sid.clear();
             return;
         }
-        LOCALGROUP_MEMBERS_INFO_3 member{.lgrmi3_domainandname = m_Name.data()};
-        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - the API takes its LOCALGROUP_MEMBERS_INFO_3 as bytes
-        auto* memberBytes = reinterpret_cast<LPBYTE>(&member);
-        const NET_API_STATUS joined = NetLocalGroupAddMembers(nullptr, group.data(), 3, memberBytes, 1);
-        if (joined != NERR_Success)
-        {
-            ADD_FAILURE() << "couldn't make the account an administrator: " << joined;
-            return;
-        }
-        m_Ready = true;
+        m_Sid.resize(sidSize);
     }
-    ~ThrowawayAdministrator()
+    ~ThrowawayAccount()
     {
         if (m_Added)
         {
             NetUserDel(nullptr, m_Name.c_str());
         }
     }
-    ThrowawayAdministrator(const ThrowawayAdministrator&) = delete;
-    ThrowawayAdministrator& operator=(const ThrowawayAdministrator&) = delete;
-    ThrowawayAdministrator(ThrowawayAdministrator&&) = delete;
-    ThrowawayAdministrator& operator=(ThrowawayAdministrator&&) = delete;
+    ThrowawayAccount(const ThrowawayAccount&) = delete;
+    ThrowawayAccount& operator=(const ThrowawayAccount&) = delete;
+    ThrowawayAccount(ThrowawayAccount&&) = delete;
+    ThrowawayAccount& operator=(ThrowawayAccount&&) = delete;
 
     [[nodiscard]] bool ready() const noexcept
     {
-        return m_Ready;
+        return !m_Sid.empty();
     }
     [[nodiscard]] const std::wstring& name() const noexcept
     {
@@ -260,12 +258,16 @@ class ThrowawayAdministrator
     {
         return m_Password;
     }
+    [[nodiscard]] const std::vector<std::byte>& sid() const noexcept
+    {
+        return m_Sid;
+    }
 
   private:
     std::wstring m_Name;
     std::wstring m_Password;
+    std::vector<std::byte> m_Sid;
     bool m_Added = false;
-    bool m_Ready = false;
 };
 
 [[nodiscard]] std::optional<DWORD> parsePid(const std::string& text)
@@ -279,14 +281,21 @@ class ThrowawayAdministrator
     return pid;
 }
 
-/// One served session: the standard-user TaskSmack started from @p install in @p mode, with an idle victim of
-/// its user's for the helper to end. The helper's process is held from its launch on.
+/// How long a test waits for the victim the helper ended: TerminateProcess returns before the process has gone.
+constexpr std::chrono::milliseconds VICTIM_WAIT{10'000};
+
+/// One served session: the standard-user TaskSmack started from @p install in @p mode, with an idle victim of its
+/// user's for the helper to end. TaskSmack waits after starting the helper until the test holds the helper's
+/// process (the session verb's acknowledgement file), so no way the session ends can beat the test to it. With
+/// @p asAccount, the helper runs as that account, and TaskSmack's process, its token and the victim let it in, as an
+/// elevated helper's administrator would be let in.
 class ServedSession
 {
   public:
-    ServedSession(const ProtectedInstall& install, std::wstring_view mode, const ThrowawayAdministrator* asAccount = nullptr)
+    ServedSession(const ProtectedInstall& install, std::wstring_view mode, const ThrowawayAccount* asAccount = nullptr)
     {
-        m_Token = standardUserPrimaryToken();
+        const std::vector<std::byte> other = (asAccount != nullptr) ? asAccount->sid() : std::vector<std::byte>{};
+        m_Token = standardUserPrimaryToken(other);
         if (!m_Token)
         {
             return;
@@ -298,10 +307,28 @@ class ServedSession
         {
             parameters += std::format(L" {} {}", asAccount->name(), asAccount->password());
         }
-        m_TaskSmack = start(install.taskSmack(), {.token = m_Token.get(), .parameters = parameters});
+        // Suspended until the other account is let in to TaskSmack's process and token, which the helper opens.
+        m_TaskSmack = start(install.taskSmack(), {.token = m_Token.get(), .suspended = true, .parameters = parameters});
+        if (asAccount != nullptr && m_TaskSmack.process() != nullptr)
+        {
+            letIn(m_Victim.process(), other, PROCESS_ALL_ACCESS);
+            letIn(m_TaskSmack.process(), other, SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION);
+            HANDLE token = nullptr;
+            if (OpenProcessToken(m_TaskSmack.process(), READ_CONTROL | WRITE_DAC, &token) != FALSE)
+            {
+                const UniqueHandle taskSmackToken(token);
+                letIn(taskSmackToken.get(), other, TOKEN_QUERY | TOKEN_DUPLICATE);
+            }
+            else
+            {
+                ADD_FAILURE() << "couldn't open TaskSmack's token: " << GetLastError();
+            }
+        }
+        m_TaskSmack.resume();
     }
 
-    /// Waits for the helper's launch and opens it; false, with the log in the failure, when there is none.
+    /// Waits for the helper's launch, opens it, and tells TaskSmack to go on; false, with the log in the failure,
+    /// when there is no helper.
     [[nodiscard]] bool helperLaunched()
     {
         const std::optional<std::string> launched = m_Log.waitFor("launched", STARTUP_WAIT);
@@ -311,7 +338,9 @@ class ServedSession
             ADD_FAILURE() << "TaskSmack didn't start the helper. Its log:\n" << m_Log.text();
             return false;
         }
+        // TaskSmack holds the helper's process until the acknowledgement, so its PID still names it.
         m_Helper.reset(OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE, FALSE, *pid));
+        std::ofstream(m_Log.acknowledgement()) << "held\n";
         if (!m_Helper)
         {
             ADD_FAILURE() << "couldn't open the helper, PID " << *pid << ": " << GetLastError();
@@ -319,12 +348,16 @@ class ServedSession
         }
         return true;
     }
-    /// Waits for TaskSmack to write @p line; false, with the log in the failure, when it doesn't.
+    /// Waits for TaskSmack to write @p line; false, with the log and the helper's exit status (if it has exited)
+    /// in the failure, when it doesn't.
     [[nodiscard]] bool reached(std::string_view line)
     {
         if (!m_Log.waitFor(line, 2 * STARTUP_WAIT).has_value())
         {
-            ADD_FAILURE() << "TaskSmack never wrote \"" << line << "\". Its log:\n" << m_Log.text();
+            const std::optional<DWORD> exit = helperExit(0ms);
+            ADD_FAILURE() << "TaskSmack never wrote \"" << line << "\". Its log:\n"
+                          << m_Log.text() << "The helper: "
+                          << (exit.has_value() ? BrokerHelper::exitMeaning(exit.value_or(0)) : std::string("still running"));
             return false;
         }
         return true;
@@ -344,9 +377,10 @@ class ServedSession
     {
         return m_TaskSmack;
     }
-    [[nodiscard]] const Child& victim() const noexcept
+    /// Whether the helper ended the victim, waiting up to VICTIM_WAIT for it to be gone.
+    [[nodiscard]] bool victimEnded() const
     {
-        return m_Victim;
+        return m_Victim.exitCode(VICTIM_WAIT).has_value();
     }
     ~ServedSession()
     {
@@ -379,7 +413,7 @@ TEST_F(CiRealSystemHelperTest, ExitsWithinTwoSecondsOfTaskSmackBeingKilled)
     ServedSession session(install, L"hold");
     ASSERT_TRUE(session.helperLaunched());
     ASSERT_TRUE(session.reached("served"));
-    EXPECT_TRUE(session.victim().exitCode(0ms).has_value()) << "the helper served the action";
+    EXPECT_TRUE(session.victimEnded()) << "the helper served the action";
     ASSERT_EQ(session.helperExit(0ms), std::nullopt) << "the session ended before TaskSmack did";
     ASSERT_NE(TerminateProcess(session.taskSmack().process(), 1), FALSE) << GetLastError();
     expectSessionDone(session.helperExit(EXIT_WITHIN));
@@ -391,8 +425,9 @@ TEST_F(CiRealSystemHelperTest, ExitsWithinTwoSecondsOfTaskSmackClosingThePipe)
     ServedSession session(install, L"close");
     ASSERT_TRUE(session.helperLaunched());
     ASSERT_TRUE(session.reached("closed"));
-    EXPECT_TRUE(session.victim().exitCode(0ms).has_value()) << "the helper served the action";
+    // The helper's exit first, so the victim's wait doesn't eat into its two seconds.
     expectSessionDone(session.helperExit(EXIT_WITHIN));
+    EXPECT_TRUE(session.victimEnded()) << "the helper served the action";
     EXPECT_EQ(session.taskSmack().exitCode(0ms), std::nullopt) << "TaskSmack still runs: the closed pipe ended it";
 }
 
@@ -414,15 +449,16 @@ TEST_F(CiRealSystemHelperTest, ExitsAfterItsIdleTimeout)
 
 TEST_F(CiRealSystemHelperTest, AnOverTheShoulderElevationExitsAfterItsOneAction)
 {
-    const ThrowawayAdministrator administrator;
-    ASSERT_TRUE(administrator.ready());
+    const ThrowawayAccount account;
+    ASSERT_TRUE(account.ready());
     const ProtectedInstall install(TASKSMACK_WINDOWS_HELPER_PATH);
-    // The helper runs as the other administrator, TaskSmack as the runner's user: a one-action grant (#2550).
-    ServedSession session(install, L"hold", &administrator);
+    // The helper runs as the other account, TaskSmack as the runner's user: a one-action grant (#2550).
+    ServedSession session(install, L"hold", &account);
     ASSERT_TRUE(session.helperLaunched());
     ASSERT_TRUE(session.reached("served"));
-    EXPECT_TRUE(session.victim().exitCode(0ms).has_value()) << "the helper served the action";
+    // The helper's exit first, so the victim's wait doesn't eat into its two seconds.
     expectSessionDone(session.helperExit(EXIT_WITHIN));
+    EXPECT_TRUE(session.victimEnded()) << "the helper served the action";
     EXPECT_EQ(session.taskSmack().exitCode(0ms), std::nullopt) << "TaskSmack still runs, the pipe open: the one action ended it";
 }
 
