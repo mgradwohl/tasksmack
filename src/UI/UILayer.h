@@ -54,6 +54,9 @@ class UILayer : public Core::Layer
     ImFont* m_PushedFont = nullptr; // font pushed in beginFrame, popped in endFrame
     int m_CachedPixelW = 0;         // last known framebuffer width  (avoids redundant glViewport)
     int m_CachedPixelH = 0;         // last known framebuffer height (avoids redundant glViewport)
+    // Whether the ImGui OpenGL renderer is running: false between a GPU reset's onGraphicsContextLost()
+    // and onGraphicsContextRestored(), and for good if no replacement context could be made (#3484).
+    bool m_RendererReady = false;
 };
 
 } // namespace UI

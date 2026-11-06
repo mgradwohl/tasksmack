@@ -183,12 +183,19 @@ class Application
     GraphicsResetMonitor m_GraphicsReset;
     /// The resets already logged as reported, so a driver that reports one for several frames logs it once.
     std::uint64_t m_GraphicsResetsLogged = 0;
-    /// Set when replacing the context failed: the app carries on, degraded, and stops trying.
-    bool m_GraphicsResetRecoveryFailed = false;
+    /// Replaces the context after a reset, and suspends and retries drawing when that fails (#3484).
+    GraphicsContextRecovery m_GraphicsRecovery;
 
     /// After a frame: read the context's GPU reset status and, once a reset is over, replace the
     /// context and let the layers drop and rebuild their OpenGL objects (#3484, GraphicsReset.h).
     void checkGraphicsReset();
+    /// The replacement's steps, bound to the layer stack and the window.
+    [[nodiscard]] GraphicsContextRecoverySteps graphicsRecoverySteps();
+    /// Logs a replacement's outcome; after the last failed attempt, stops the app.
+    void noteGraphicsRecoveryState(GraphicsRecoveryState state);
+    /// Whether a frame may draw: false while a failed replacement is waiting to be retried (and
+    /// retries it when due), or after recovery gave up.
+    [[nodiscard]] bool graphicsReadyForFrame();
 
     /// Run one update+render+swapBuffers cycle. Extracted so the main loop and
     /// the immediate-repaint-on-resize path share identical rendering logic. Detailed

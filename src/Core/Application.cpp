@@ -1098,6 +1098,13 @@ void Application::run()
 void Application::renderFrame(
     float deltaTime, bool resizeTriggeredFrame, double* updateMs, double* renderMs, double* postRenderMs, double* swapMs)
 {
+    // After a GPU reset whose context replacement failed (#3484) the layers have no renderer: no
+    // frame, so no GL call, while run() keeps pumping events and the replacement is retried here.
+    if (!graphicsReadyForFrame())
+    {
+        return;
+    }
+
     // Single flag now governs both the aggregate phase timings below AND the detailed
     // per-layer breakdown (previously a separate tracingInteractionFrame parameter gated the
     // per-layer breakdown by interaction state alone, which meant idle frames skipped the
@@ -1266,7 +1273,7 @@ bool Application::closeRequestAccepted()
 
 void Application::checkGraphicsReset()
 {
-    if (m_GraphicsResetRecoveryFailed || !m_Window->reportsGraphicsReset())
+    if (m_GraphicsRecovery.state() != GraphicsRecoveryState::Rendering || !m_Window->reportsGraphicsReset())
     {
         return;
     }
@@ -1290,23 +1297,66 @@ void Application::checkGraphicsReset()
     spdlog::warn("Replacing the OpenGL context after GPU reset {} ({} context reset)",
                  m_GraphicsReset.resets(),
                  graphicsResetStatusName(m_GraphicsReset.lostStatus()));
-    for (const auto& layer : std::views::reverse(m_LayerStack))
+    noteGraphicsRecoveryState(m_GraphicsRecovery.replace(getTime(), graphicsRecoverySteps()));
+    // LCOV_EXCL_STOP
+}
+
+// LCOV_EXCL_START - runs only after a GPU reset; GraphicsContextRecovery's decisions are unit-tested
+GraphicsContextRecoverySteps Application::graphicsRecoverySteps()
+{
+    return GraphicsContextRecoverySteps{
+        .loseLayers =
+            [this]
+        {
+            for (const auto& layer : std::views::reverse(m_LayerStack))
+            {
+                guardLayerCall(layer, "onGraphicsContextLost", [&] { layer->onGraphicsContextLost(); });
+            }
+        },
+        .recreateContext = [this] { return m_Window->recreateGLContext(); },
+        .advanceGeneration = [] { advanceGraphicsContextGeneration(); },
+        .restoreLayers =
+            [this]
+        {
+            // The swap interval belongs to the context: put back what the frame loop has set.
+            Window::setVSync(m_Spec.VSync && !m_VsyncDisabledForInteraction);
+            for (const auto& layer : m_LayerStack)
+            {
+                guardLayerCall(layer, "onGraphicsContextRestored", [&] { layer->onGraphicsContextRestored(); });
+            }
+        },
+    };
+}
+
+void Application::noteGraphicsRecoveryState(const GraphicsRecoveryState state)
+{
+    switch (state)
     {
-        guardLayerCall(layer, "onGraphicsContextLost", [&] { layer->onGraphicsContextLost(); });
+    case GraphicsRecoveryState::Rendering:
+        break;
+    case GraphicsRecoveryState::Suspended:
+        spdlog::error("Could not replace the OpenGL context (attempt {}); drawing is suspended and it will be tried again",
+                      m_GraphicsRecovery.attempts());
+        break;
+    case GraphicsRecoveryState::GaveUp:
+        spdlog::critical("Could not replace the OpenGL context after a GPU reset in {} attempts; TaskSmack is closing",
+                         m_GraphicsRecovery.attempts());
+        stop(); // Not a close request a layer could veto: there is no renderer to carry on with
+        break;
     }
-    if (!m_Window->recreateGLContext())
+}
+
+// LCOV_EXCL_STOP
+
+bool Application::graphicsReadyForFrame()
+{
+    if (m_GraphicsRecovery.state() == GraphicsRecoveryState::Suspended)
+    // LCOV_EXCL_START - only after a failed replacement; GraphicsContextRecovery's retries are unit-tested
     {
-        m_GraphicsResetRecoveryFailed = true;
-        spdlog::error("Could not replace the OpenGL context; rendering may stay slow until TaskSmack restarts");
-    }
-    advanceGraphicsContextGeneration();
-    // The swap interval belongs to the context: put back what the frame loop has set.
-    Window::setVSync(m_Spec.VSync && !m_VsyncDisabledForInteraction);
-    for (const auto& layer : m_LayerStack)
-    {
-        guardLayerCall(layer, "onGraphicsContextRestored", [&] { layer->onGraphicsContextRestored(); });
+        noteGraphicsRecoveryState(m_GraphicsRecovery.retryIfDue(getTime(), graphicsRecoverySteps()));
     }
     // LCOV_EXCL_STOP
+    return m_GraphicsRecovery.state() == GraphicsRecoveryState::Rendering;
 }
 
 void Application::raiseEvent(Event& event)

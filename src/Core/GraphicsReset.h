@@ -12,13 +12,17 @@
 // and Application checks glGetGraphicsResetStatus() once per frame. A reset seen there is handled by
 // GraphicsResetMonitor below: it waits until the driver says the reset is over (the robustness spec's
 // rule before making a new context), or GRAPHICS_RESET_SETTLE_TIMEOUT_SECONDS at the most, then asks
-// for one recreation. Application then lets the layers drop what lived in the old context
-// (Layer::onGraphicsContextLost()), has Window replace the context, advances graphicsContextGeneration()
-// and lets the layers rebuild (Layer::onGraphicsContextRestored()).
+// for one recreation. GraphicsContextRecovery then runs it: the layers drop what lived in the old
+// context (Layer::onGraphicsContextLost()), Window replaces the context and, only once that worked,
+// graphicsContextGeneration() advances and the layers rebuild (Layer::onGraphicsContextRestored()).
+// A failed replacement suspends drawing and is retried a few times before the app gives up and closes.
 //
 // Pure, so the decision is unit-tested without a GPU (tests/Core/test_GraphicsReset.cpp).
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <string_view>
 
 namespace Core
@@ -107,8 +111,96 @@ class GraphicsResetMonitor
     bool m_Lost = false;
 };
 
+/// The steps of replacing the context, as GraphicsContextRecovery runs them; Application binds them to
+/// the layers and Window, the tests to fakes.
+struct GraphicsContextRecoverySteps
+{
+    std::function<void()> loseLayers;        ///< Layer::onGraphicsContextLost(), top of the stack first
+    std::function<bool()> recreateContext;   ///< Window::recreateGLContext(): false when it failed
+    std::function<void()> advanceGeneration; ///< advanceGraphicsContextGeneration()
+    std::function<void()> restoreLayers;     ///< swap interval, then Layer::onGraphicsContextRestored()
+};
+
+/// Where the renderer stands after a GPU reset.
+enum class GraphicsRecoveryState : std::uint8_t
+{
+    Rendering, ///< A working context: frames draw
+    Suspended, ///< The layers dropped their GL objects and no new context could be made yet: no frame draws
+    GaveUp,    ///< Every attempt failed: the app closes, with the error logged
+};
+
+/// Replaces the context after a reset, and decides what happens when that fails (#3484). The layers
+/// are restored -- and the context generation advanced -- only after a replacement succeeds: a
+/// layer rebuilt on a failed or missing context would make GL calls with no renderer behind them.
+/// A failure suspends drawing (Application skips its frames, still pumping events) and retries after
+/// each of GRAPHICS_RECOVERY_RETRY_DELAYS_SECONDS, since a driver still recovering from the reset
+/// can refuse a context for a moment; after the last one it gives up and Application closes, rather
+/// than run on without a renderer. UI thread.
+class GraphicsContextRecovery
+{
+  public:
+    /// Waits before each retry after a failed replacement, seconds: about 15 s in all.
+    static constexpr std::array<double, 5> GRAPHICS_RECOVERY_RETRY_DELAYS_SECONDS{0.5, 1.0, 2.0, 4.0, 8.0};
+
+    /// A reset is over (GraphicsResetMonitor said Recreate): drop the layers' GL objects and replace
+    /// the context, at @p nowSeconds.
+    GraphicsRecoveryState replace(const double nowSeconds, const GraphicsContextRecoverySteps& steps)
+    {
+        steps.loseLayers();
+        m_Attempts = 0;
+        return attempt(nowSeconds, steps);
+    }
+
+    /// While Suspended, the next attempt once its delay has passed; otherwise nothing. The state after.
+    GraphicsRecoveryState retryIfDue(const double nowSeconds, const GraphicsContextRecoverySteps& steps)
+    {
+        if (m_State != GraphicsRecoveryState::Suspended || nowSeconds < m_NextAttemptAt)
+        {
+            return m_State;
+        }
+        return attempt(nowSeconds, steps);
+    }
+
+    [[nodiscard]] GraphicsRecoveryState state() const noexcept
+    {
+        return m_State;
+    }
+
+    /// Replacements tried since the last reset began.
+    [[nodiscard]] std::size_t attempts() const noexcept
+    {
+        return m_Attempts;
+    }
+
+  private:
+    GraphicsRecoveryState attempt(const double nowSeconds, const GraphicsContextRecoverySteps& steps)
+    {
+        ++m_Attempts;
+        if (steps.recreateContext())
+        {
+            steps.advanceGeneration();
+            steps.restoreLayers();
+            m_State = GraphicsRecoveryState::Rendering;
+        }
+        else if (m_Attempts > GRAPHICS_RECOVERY_RETRY_DELAYS_SECONDS.size())
+        {
+            m_State = GraphicsRecoveryState::GaveUp;
+        }
+        else
+        {
+            m_State = GraphicsRecoveryState::Suspended;
+            m_NextAttemptAt = nowSeconds + GRAPHICS_RECOVERY_RETRY_DELAYS_SECONDS.at(m_Attempts - 1);
+        }
+        return m_State;
+    }
+
+    double m_NextAttemptAt = 0.0;
+    std::size_t m_Attempts = 0;
+    GraphicsRecoveryState m_State = GraphicsRecoveryState::Rendering;
+};
+
 /// Advanced by Application each time it replaces the OpenGL context after a reset: a cache of GL
-/// object names (UI::IconTextureCache) compares it with the generation it made them in, and forgets
+/// object names (UI::IconTextureCache, UI::Texture) compares it with the generation it made them in, and forgets
 /// them -- without deleting, as they belonged to the old context -- when it has moved on. UI thread.
 [[nodiscard]] inline std::uint64_t& graphicsContextGenerationStorage() noexcept
 {

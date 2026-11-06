@@ -53,8 +53,9 @@ class Window
     /// when the context can't report one. Cheap: no flush or wait. UI thread.
     [[nodiscard]] std::uint32_t graphicsResetStatus() const noexcept;
     /// Replace the OpenGL context after a GPU reset (#3484): a new one, made current and loaded, then
-    /// the old one destroyed. Every OpenGL object the old context held is gone. False, with the old
-    /// context kept, when the new one can't be made. UI thread, between frames.
+    /// the old one destroyed. Every OpenGL object the old context held is gone. False when the new
+    /// one can't be made (the old one is kept), made current or loaded; a later call tries again
+    /// (Core::GraphicsContextRecovery decides when). UI thread, between frames.
     bool recreateGLContext();
 
     /// Enable or disable vertical sync at runtime.

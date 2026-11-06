@@ -1,7 +1,9 @@
 /// @file test_GraphicsReset.cpp
 /// @brief Tests for Core/GraphicsReset.h (#3484): a GPU reset that glGetGraphicsResetStatus() reports
 /// leads to exactly one OpenGL context replacement, after the driver says the reset is over or after
-/// GRAPHICS_RESET_SETTLE_TIMEOUT_SECONDS, and a context that never reports one is never replaced.
+/// GRAPHICS_RESET_SETTLE_TIMEOUT_SECONDS, and a context that never reports one is never replaced; and
+/// GraphicsContextRecovery restores the layers only after a replacement succeeds, retries a failed one
+/// after each delay, and gives up after the last.
 /// Before #3484 nothing checked: after a Windows TDR the app kept drawing with the degraded context,
 /// and every idle frame cost 15-30 ms until it restarted.
 
@@ -9,7 +11,11 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <cstddef>
 #include <cstdint>
+#include <string>
+#include <vector>
 
 namespace Core
 {
@@ -83,6 +89,116 @@ TEST(GraphicsResetMonitorTest, EachResetGetsItsOwnReplacement)
     recreations += monitor.observe(GL_RESET_STATUS_NO_ERROR, now) == GraphicsResetAction::Recreate ? 1 : 0;
     EXPECT_EQ(recreations, 3);
     EXPECT_EQ(monitor.resets(), 3U);
+}
+
+// GraphicsContextRecovery with fakes: each step appends its name, and recreateContext() answers from
+// a script of results (true = the new context was made).
+struct RecoveryLog
+{
+    std::vector<std::string> calls;
+    std::vector<bool> recreateResults;
+    std::size_t recreateCalls = 0;
+};
+
+[[nodiscard]] GraphicsContextRecoverySteps fakeSteps(RecoveryLog& log)
+{
+    return GraphicsContextRecoverySteps{
+        .loseLayers = [&log] { log.calls.emplace_back("lose"); },
+        .recreateContext =
+            [&log]
+        {
+            log.calls.emplace_back("recreate");
+            const bool made = log.recreateCalls < log.recreateResults.size() && log.recreateResults[log.recreateCalls];
+            ++log.recreateCalls;
+            return made;
+        },
+        .advanceGeneration = [&log] { log.calls.emplace_back("advance"); },
+        .restoreLayers = [&log] { log.calls.emplace_back("restore"); },
+    };
+}
+
+TEST(GraphicsContextRecoveryTest, ASuccessfulReplacementRestoresTheLayersAfterTheNewContext)
+{
+    RecoveryLog log;
+    log.recreateResults = {true};
+    GraphicsContextRecovery recovery;
+    EXPECT_EQ(recovery.replace(1.0, fakeSteps(log)), GraphicsRecoveryState::Rendering);
+    EXPECT_EQ(log.calls, (std::vector<std::string>{"lose", "recreate", "advance", "restore"}));
+    EXPECT_EQ(recovery.attempts(), 1U);
+}
+
+TEST(GraphicsContextRecoveryTest, AFailedReplacementNeverRestoresTheLayers)
+{
+    // The renderer was shut down by the lose step: restoring the layers, or advancing the generation,
+    // with no new context behind them would make GL calls on nothing.
+    RecoveryLog log;
+    log.recreateResults = {false};
+    GraphicsContextRecovery recovery;
+    EXPECT_EQ(recovery.replace(1.0, fakeSteps(log)), GraphicsRecoveryState::Suspended);
+    EXPECT_EQ(log.calls, (std::vector<std::string>{"lose", "recreate"}));
+    EXPECT_EQ(recovery.state(), GraphicsRecoveryState::Suspended);
+}
+
+TEST(GraphicsContextRecoveryTest, RetriesAfterTheDelayAndRestoresOnceItWorks)
+{
+    RecoveryLog log;
+    log.recreateResults = {false, false, true};
+    GraphicsContextRecovery recovery;
+    const auto steps = fakeSteps(log);
+    const auto& delays = GraphicsContextRecovery::GRAPHICS_RECOVERY_RETRY_DELAYS_SECONDS;
+    ASSERT_EQ(recovery.replace(10.0, steps), GraphicsRecoveryState::Suspended);
+
+    // Not before the first delay has passed: no attempt at all.
+    EXPECT_EQ(recovery.retryIfDue(10.0 + delays[0] - 0.01, steps), GraphicsRecoveryState::Suspended);
+    EXPECT_EQ(log.recreateCalls, 1U);
+    // The second attempt fails too, and waits the second delay.
+    const double second = 10.0 + delays[0];
+    EXPECT_EQ(recovery.retryIfDue(second, steps), GraphicsRecoveryState::Suspended);
+    EXPECT_EQ(recovery.retryIfDue(second + delays[1] - 0.01, steps), GraphicsRecoveryState::Suspended);
+    EXPECT_EQ(log.recreateCalls, 2U);
+    // The third works: only now the generation advances and the layers are restored, once each.
+    EXPECT_EQ(recovery.retryIfDue(second + delays[1], steps), GraphicsRecoveryState::Rendering);
+    EXPECT_EQ(log.calls, (std::vector<std::string>{"lose", "recreate", "recreate", "recreate", "advance", "restore"}));
+    EXPECT_EQ(recovery.attempts(), 3U);
+    // Rendering again: retryIfDue() does nothing.
+    EXPECT_EQ(recovery.retryIfDue(1000.0, steps), GraphicsRecoveryState::Rendering);
+    EXPECT_EQ(log.recreateCalls, 3U);
+}
+
+TEST(GraphicsContextRecoveryTest, GivesUpAfterTheLastRetryWithoutEverRestoring)
+{
+    RecoveryLog log; // every attempt fails
+    GraphicsContextRecovery recovery;
+    const auto steps = fakeSteps(log);
+    double now = 0.0;
+    GraphicsRecoveryState state = recovery.replace(now, steps);
+    for (const double delay : GraphicsContextRecovery::GRAPHICS_RECOVERY_RETRY_DELAYS_SECONDS)
+    {
+        ASSERT_EQ(state, GraphicsRecoveryState::Suspended);
+        now += delay;
+        state = recovery.retryIfDue(now, steps);
+    }
+    EXPECT_EQ(state, GraphicsRecoveryState::GaveUp);
+    EXPECT_EQ(recovery.attempts(), GraphicsContextRecovery::GRAPHICS_RECOVERY_RETRY_DELAYS_SECONDS.size() + 1U);
+    EXPECT_EQ(std::ranges::count(log.calls, std::string("restore")), 0);
+    EXPECT_EQ(std::ranges::count(log.calls, std::string("advance")), 0);
+    EXPECT_EQ(std::ranges::count(log.calls, std::string("lose")), 1);
+    // Given up: no more attempts, however long it waits.
+    EXPECT_EQ(recovery.retryIfDue(now + 1000.0, steps), GraphicsRecoveryState::GaveUp);
+    EXPECT_EQ(log.recreateCalls, GraphicsContextRecovery::GRAPHICS_RECOVERY_RETRY_DELAYS_SECONDS.size() + 1U);
+}
+
+TEST(GraphicsContextRecoveryTest, ANewResetAfterRecoveryStartsAFreshCount)
+{
+    RecoveryLog log;
+    log.recreateResults = {false, true, false, true};
+    GraphicsContextRecovery recovery;
+    const auto steps = fakeSteps(log);
+    ASSERT_EQ(recovery.replace(0.0, steps), GraphicsRecoveryState::Suspended);
+    ASSERT_EQ(recovery.retryIfDue(100.0, steps), GraphicsRecoveryState::Rendering);
+    ASSERT_EQ(recovery.replace(200.0, steps), GraphicsRecoveryState::Suspended);
+    EXPECT_EQ(recovery.attempts(), 1U);
+    EXPECT_EQ(recovery.retryIfDue(300.0, steps), GraphicsRecoveryState::Rendering);
 }
 
 TEST(GraphicsResetTest, StatusNames)

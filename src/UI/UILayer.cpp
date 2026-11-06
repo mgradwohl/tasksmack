@@ -174,6 +174,7 @@ void UILayer::onAttach()
         }
         // LCOV_EXCL_STOP
         backendsInitialized = true;
+        m_RendererReady = true;
 
         // Seed the cached pixel size and set the initial OpenGL viewport.
         // All subsequent resize-driven glViewport calls happen in onEvent(WindowResizedEvent),
@@ -209,7 +210,13 @@ void UILayer::onDetach()
 {
     spdlog::info("Shutting down ImGui");
 
-    ImGui_ImplOpenGL3_Shutdown();
+    // Not after a GPU reset whose replacement context could not be made (#3484): the renderer is
+    // already shut down then.
+    if (m_RendererReady)
+    {
+        ImGui_ImplOpenGL3_Shutdown();
+        m_RendererReady = false;
+    }
     ImGui_ImplSDL3_Shutdown();
     ImPlot::DestroyContext();
     // The fonts go with the context's atlas: Theme must not keep pointers to them, and caches keyed on
@@ -223,7 +230,11 @@ void UILayer::onGraphicsContextLost()
 {
     // The renderer's shader, buffers and textures were in the lost context. Shutting it down marks
     // ImGui's textures (the font atlas) destroyed, so the next frame makes them again.
-    ImGui_ImplOpenGL3_Shutdown();
+    if (m_RendererReady)
+    {
+        ImGui_ImplOpenGL3_Shutdown();
+        m_RendererReady = false;
+    }
 }
 
 void UILayer::onGraphicsContextRestored()
@@ -233,6 +244,7 @@ void UILayer::onGraphicsContextRestored()
         // Init fails only without OpenGL 3, which the replacement context has, as the first one did.
         throw std::runtime_error("Failed to initialize the ImGui OpenGL 3 renderer backend on the new context");
     }
+    m_RendererReady = true;
     // The viewport belongs to the context too.
     if (m_CachedPixelW > 0 && m_CachedPixelH > 0)
     {

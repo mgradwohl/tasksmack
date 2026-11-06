@@ -15,6 +15,7 @@
 /// is available (CI provides one on both OSes: Xvfb + Mesa on Linux, Mesa's llvmpipe on Windows,
 /// #2134), skipping otherwise.
 
+#include "Core/GraphicsReset.h"
 #include "Core/HeadlessVideoDriverTestUtils.h"
 #include "Core/Utf8Path.h"
 #include "Core/Window.h"
@@ -43,8 +44,46 @@
 
 namespace UI
 {
+
+/// Texture's friend: makes a Texture that holds a texture name without any GL call, for the
+/// context-replacement test below (#3484).
+class TextureLoader
+{
+  public:
+    [[nodiscard]] static Texture holding(const std::uint32_t id, const int width, const int height)
+    {
+        Texture texture;
+        texture.m_Id = id;
+        texture.m_Width = width;
+        texture.m_Height = height;
+        texture.m_ContextGeneration = Core::graphicsContextGeneration();
+        return texture;
+    }
+};
+
 namespace
 {
+
+TEST(IconLoaderTest, ATextureOfAReplacedContextIsInvalidAndNotDeleted)
+{
+    // #3484: after a GPU reset Application replaces the OpenGL context. A texture made in the old one
+    // must draw as nothing and must not be deleted: the new context may use its name for another
+    // texture (the font atlas). Without GL loaded, a glDeleteTextures() call here would crash.
+    const std::uint32_t name = 0xFFFF0U;
+    Texture tex = TextureLoader::holding(name, 4, 4);
+    ASSERT_TRUE(tex.valid());
+    EXPECT_EQ(tex.textureId(), static_cast<ImTextureID>(name));
+
+    Core::advanceGraphicsContextGeneration();
+    EXPECT_FALSE(tex.valid());
+    EXPECT_EQ(tex.textureId(), ImTextureID{});
+
+    // Moved, then destroyed: still stale, still not deleted.
+    Texture moved(std::move(tex));
+    EXPECT_FALSE(moved.valid());
+    moved = Texture{};
+    EXPECT_FALSE(moved.valid());
+}
 
 TEST(IconLoaderTest, DefaultConstructedTextureIsInvalid)
 {
