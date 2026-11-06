@@ -207,6 +207,10 @@ std::string_view startupLocationLabel(Platform::StartupLocation location) noexce
         return "systemd user unit";
     case SystemdSystemUnit:
         return "systemd user unit (all users)";
+    case CronUser:
+        return "cron (your crontab)";
+    case CronSystem:
+        return "cron (system)";
     default:
         return "";
     }

@@ -759,22 +759,72 @@ void WindowsSystemProbe::readMemoryCompression(SystemCounters& counters)
     // that holds it, from the process snapshot, which needs no handle to that protected process and so no
     // administrator rights (as System Information's Commit & paging reads it, #1516). How much data the
     // store stands for is only in undocumented store statistics, so it is left out.
+    //
+    // The whole snapshot is every process and thread, about 2-5 ms of kernel time, which doubled this
+    // sampler's cost (#3483). A handle for a per-process query (ProcessVmCounters) is refused without
+    // administrator rights, even PROCESS_QUERY_LIMITED_INFORMATION, so the whole snapshot finds the
+    // process once, and each sample lists only its session (session 0, the services') for that id.
+    if (m_MemoryCompression.has_value() && !m_SessionProcessQueryFails)
+    {
+        const std::optional<std::size_t> written =
+            WindowsCommitPaging::querySessionProcessesInto(m_Fns.nt.ntQuerySystemInformation,
+                                                           m_MemoryCompression->sessionId,
+                                                           m_ProcessSnapshot,
+                                                           WindowsCommitPaging::PROCESS_INFORMATION_INITIAL_BYTES);
+        if (written.has_value())
+        {
+            if (const std::optional<WindowsCommitPaging::MemoryCompressionProcess> process =
+                    WindowsCommitPaging::findMemoryCompressionProcess(std::span<const std::byte>(m_ProcessSnapshot.data(), *written),
+                                                                      m_MemoryCompression->processId);
+                process.has_value())
+            {
+                counters.memory.hasMemoryCompression = true;
+                counters.memory.memoryCompressionBytes = process->workingSet;
+                return;
+            }
+            // Gone (compression turned off, or the process restarted): search again now
+        }
+        else
+        {
+            m_SessionProcessQueryFails = true;
+            spdlog::debug("WindowsSystemProbe: SystemSessionProcessInformation failed; compressed memory is read from the whole "
+                          "process snapshot each sample");
+        }
+        m_MemoryCompression.reset();
+        m_NextMemoryCompressionSearch = {};
+    }
+    // A known process is still searched for each sample when the session list can't be read, so the
+    // value keeps the refresh interval
+    const auto now = m_Fns.now();
+    if (m_MemoryCompression.has_value() || now >= m_NextMemoryCompressionSearch)
+    {
+        m_MemoryCompression.reset();
+        searchMemoryCompression(counters, now);
+    }
+}
+
+void WindowsSystemProbe::searchMemoryCompression(SystemCounters& counters, std::chrono::steady_clock::time_point now)
+{
     const std::optional<std::size_t> written =
         WindowsCommitPaging::querySystemInformationInto(m_Fns.nt.ntQuerySystemInformation,
                                                         WindowsCommitPaging::SYSTEM_PROCESS_INFORMATION_CLASS,
                                                         m_ProcessSnapshot,
                                                         WindowsCommitPaging::PROCESS_INFORMATION_INITIAL_BYTES);
-    if (!written.has_value())
+    std::optional<WindowsCommitPaging::MemoryCompressionProcess> process;
+    if (written.has_value())
     {
+        process = WindowsCommitPaging::findMemoryCompressionProcess(std::span<const std::byte>(m_ProcessSnapshot.data(), *written));
+    }
+    if (!process.has_value())
+    {
+        // Off, or the query failed: look again after the search interval, so compression turned on is
+        // still noticed without a whole snapshot every sample
+        m_NextMemoryCompressionSearch = now + std::chrono::seconds(Domain::Sampling::MEMORY_COMPRESSION_SEARCH_INTERVAL_SECONDS);
         return;
     }
-    if (const std::optional<std::uint64_t> workingSet =
-            WindowsCommitPaging::memoryCompressionWorkingSet(std::span<const std::byte>(m_ProcessSnapshot.data(), *written));
-        workingSet.has_value())
-    {
-        counters.memory.hasMemoryCompression = true;
-        counters.memory.memoryCompressionBytes = *workingSet;
-    }
+    counters.memory.hasMemoryCompression = true;
+    counters.memory.memoryCompressionBytes = process->workingSet;
+    m_MemoryCompression = MemoryCompressionTarget{.processId = process->processId, .sessionId = process->sessionId};
 }
 
 SwapBytes WindowsSystemProbe::readSwap() const

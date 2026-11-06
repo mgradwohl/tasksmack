@@ -11,13 +11,16 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <ios>
 #include <iterator>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 #include <unistd.h>
@@ -26,6 +29,13 @@ namespace Platform
 {
 namespace
 {
+
+// Whether this build switches systemd units (through sd-bus); without it they're listed read-only (#3497 review).
+#ifdef TASKSMACK_HAS_SDBUS
+constexpr bool HAS_SDBUS = true;
+#else
+constexpr bool HAS_SDBUS = false;
+#endif
 
 /// Where the tests' programs (sh) are found, rather than this machine's $PATH.
 constexpr const char* SEARCH_PATH = "/usr/bin:/bin";
@@ -316,6 +326,32 @@ TEST_F(LinuxStartupTest, ANameThatIsntAnAutostartFileIsRefused)
 }
 
 // #3082: a unit file's description, first ExecStart (prefixes dropped), a timer's schedule and unit.
+// #3425: [Install] WantedBy= lists every target, across lines; an empty value resets it.
+TEST(SystemdUnitFileTest, ReadsWantedByAndWhetherItStartsWithTheSession)
+{
+    SystemdUnitFile::Unit unit = SystemdUnitFile::parse("[Install]\nWantedBy=default.target  multi-user.target\nWantedBy=timers.target\n");
+    EXPECT_EQ(unit.wantedBy, (std::vector<std::string>{"default.target", "multi-user.target", "timers.target"}));
+    EXPECT_TRUE(SystemdUnitFile::installsIntoSession(unit));
+    unit = SystemdUnitFile::parse("[Install]\nWantedBy=default.target\nWantedBy=\nWantedBy=sockets.target\n");
+    // #3497 review: a line ending in a backslash continues on the next, comments inside it skipped.
+    const SystemdUnitFile::Unit continued = SystemdUnitFile::parse(
+        "[Install]\nWantedBy=sockets.target \\\n# a comment\n    default.target\n[Service]\nExecStart=/bin/a \\\n  --b\n");
+    EXPECT_EQ(continued.wantedBy, (std::vector<std::string>{"sockets.target", "default.target"}));
+    EXPECT_TRUE(SystemdUnitFile::installsIntoSession(continued));
+    EXPECT_FALSE(continued.execStart.empty());
+    // A continued header keeps its section; a lone backslash at the end or before a blank line is nothing.
+    EXPECT_TRUE(
+        SystemdUnitFile::installsIntoSession(SystemdUnitFile::parse("[Install]\\\n\nWantedBy=default.target \\\n  timers.target\n")));
+    static_cast<void>(SystemdUnitFile::parse("[Install]\n\\\n\n\\"));
+    // #3497 review: list words may be quoted.
+    EXPECT_TRUE(SystemdUnitFile::installsIntoSession(SystemdUnitFile::parse("[Install]\nWantedBy=\"default.target\" 'x y.target'\n")));
+    EXPECT_EQ(SystemdUnitFile::parse("[Install]\nWantedBy=\"default.target\" 'x y.target'\n").wantedBy,
+              (std::vector<std::string>{"default.target", "x y.target"}));
+    EXPECT_EQ(unit.wantedBy, (std::vector<std::string>{"sockets.target"}));
+    EXPECT_FALSE(SystemdUnitFile::installsIntoSession(unit));
+    EXPECT_FALSE(SystemdUnitFile::installsIntoSession(SystemdUnitFile::parse("[Service]\nExecStart=/bin/true\n")));
+}
+
 TEST(SystemdUnitFileTest, ReadsWhatTheStartupTabShows)
 {
     const SystemdUnitFile::Unit service =
@@ -342,37 +378,45 @@ TEST(SystemdUnitFileTest, TheDirectoriesFollowXdgConfigHome)
     EXPECT_TRUE(systemdUserDirs("", "relative").user.empty());
 }
 
-// #3082: enabled user units (services and timers) are listed read-only beside the autostart files; the user's
-// link to a unit wins over the same unit enabled for every user; a timer shows the command its service runs.
+// #3082: enabled user units (services and timers) are listed beside the autostart files; a unit the user links that is
+// also enabled for every user is the administrator's, read-only (#3497 review: disabling the user's link wouldn't stop
+// it); a timer shows the command its service runs.
 TEST_F(LinuxStartupTest, ListsTheEnabledSystemdUserUnitsReadOnly)
 {
     const std::filesystem::path user = m_Root.path / "home/.config/systemd/user";
     const std::filesystem::path system = m_Root.path / "etc/systemd/user";
     const std::filesystem::path lib = m_Root.path / "usr/lib/systemd/user";
     writeText(lib / "syncd.service", "[Unit]\nDescription=Sync daemon\n[Service]\nExecStart=/bin/sh -c true\n");
-    writeText(lib / "backup.timer", "[Unit]\nDescription=Nightly backup\n[Timer]\nOnCalendar=daily\n");
+    writeText(lib / "backup.timer", "[Unit]\nDescription=Nightly backup\n[Timer]\nOnCalendar=daily\n[Install]\nWantedBy=timers.target\n");
+    // #3497 review: linked by hand with no session [Install]: once off it couldn't be listed again, so read-only.
+    writeText(lib / "handmade.service", "[Service]\nExecStart=/bin/true\n");
     writeText(lib / "backup.service", "[Service]\nExecStart=/nonexistent/backup --all\n");
     std::filesystem::create_directories(user / "default.target.wants");
     std::filesystem::create_directories(user / "timers.target.wants");
     std::filesystem::create_directories(system / "default.target.wants");
     std::filesystem::create_symlink(lib / "syncd.service", user / "default.target.wants/syncd.service");
     std::filesystem::create_symlink(lib / "backup.timer", user / "timers.target.wants/backup.timer");
+    std::filesystem::create_symlink(lib / "handmade.service", user / "default.target.wants/handmade.service");
     std::filesystem::create_symlink(lib / "syncd.service", system / "default.target.wants/syncd.service");
     writeText(system / "default.target.wants/agent.service", "[Service]\nExecStart=/bin/sh\n");
 
     LinuxStartupProbe probe(
         m_Dirs, "GNOME", SEARCH_PATH, SystemdUserDirs{.user = user, .system = {system}, .unitPath = {user, system, lib}});
     const std::vector<StartupEntry> entries = probe.enumerate();
-    ASSERT_EQ(entries.size(), 3U);
+    ASSERT_EQ(entries.size(), 4U);
+    const StartupEntry* handmade = find(entries, "handmade.service");
+    ASSERT_NE(handmade, nullptr);
+    EXPECT_TRUE(handmade->enabled);
+    EXPECT_TRUE(handmade->notSwitchableReason.contains("no session target")) << handmade->notSwitchableReason;
 
     const StartupEntry* syncd = find(entries, "syncd.service");
     ASSERT_NE(syncd, nullptr);
     EXPECT_EQ(syncd->name, "Sync daemon");
     EXPECT_EQ(syncd->command, "/bin/sh -c true");
     EXPECT_EQ(syncd->executablePath, "/bin/sh");
-    EXPECT_EQ(syncd->location, StartupLocation::SystemdUserUnit) << "the user's link wins";
+    EXPECT_EQ(syncd->location, StartupLocation::SystemdSystemUnit) << "also enabled for every user";
     EXPECT_TRUE(syncd->enabled);
-    EXPECT_FALSE(syncd->notSwitchableReason.empty()) << "read-only for now";
+    EXPECT_FALSE(syncd->notSwitchableReason.empty()) << "the all-users link would still start it";
     EXPECT_EQ(syncd->target, StartupTargetState::Present);
 
     const StartupEntry* backup = find(entries, "backup.timer");
@@ -380,16 +424,329 @@ TEST_F(LinuxStartupTest, ListsTheEnabledSystemdUserUnitsReadOnly)
     EXPECT_EQ(backup->name, "Nightly backup (timer, OnCalendar=daily)");
     EXPECT_EQ(backup->command, "/nonexistent/backup --all") << "the command its service runs";
     EXPECT_EQ(backup->target, StartupTargetState::Missing);
+    EXPECT_EQ(backup->location, StartupLocation::SystemdUserUnit);
+    if (HAS_SDBUS)
+    {
+        EXPECT_TRUE(backup->notSwitchableReason.empty()) << "the user's own: switched through the user manager (#3425)";
+    }
+    else
+    {
+        EXPECT_TRUE(backup->notSwitchableReason.contains("no systemd support")) << backup->notSwitchableReason;
+    }
 
     const StartupEntry* agent = find(entries, "agent.service");
     ASSERT_NE(agent, nullptr);
     EXPECT_EQ(agent->name, "agent");
     EXPECT_EQ(agent->location, StartupLocation::SystemdSystemUnit);
     EXPECT_EQ(agent->scope, StartupScope::Machine);
+    EXPECT_FALSE(agent->notSwitchableReason.empty()) << "enabled for every user: an administrator's";
 
-    // The actions refuse a unit: it isn't an autostart file.
+    // #3425: the actions switch the user's own unit through the user manager, and refuse one enabled for every user.
+    std::vector<std::string> switched;
+    LinuxStartupActions actions(m_Dirs,
+                                [&switched](std::string_view unit, bool enabled)
+                                {
+                                    switched.push_back(std::string(enabled ? "enable " : "disable ") + std::string(unit));
+                                    return StartupActionResult::succeeded();
+                                });
+    EXPECT_EQ(actions.setEnabled(*backup, false).ok, HAS_SDBUS) << "without sd-bus it's refused before the user manager";
+    EXPECT_FALSE(actions.setEnabled(*agent, false).ok);
+    EXPECT_FALSE(actions.setEnabled(*syncd, false).ok) << "linked for every user too: not the user's to switch off";
+    EXPECT_EQ(switched, HAS_SDBUS ? std::vector<std::string>{"disable backup.timer"} : std::vector<std::string>{});
+}
+
+// #3425: a unit that would start with the session once enabled, but isn't linked, is listed as disabled, so one switched
+// off stays in the list to switch back on; a template and a unit with no session target aren't listed, an instance file
+// is, and the first definition of a name shadows later copies even when it isn't installable (#3497 review).
+TEST_F(LinuxStartupTest, AnInstallableUnitThatIsntEnabledIsListedDisabled)
+{
+    const std::filesystem::path user = m_Root.path / "home/.config/systemd/user";
+    const std::filesystem::path lib = m_Root.path / "usr/lib/systemd/user";
+    writeText(lib / "notes-sync.service",
+              "[Unit]\nDescription=Notes sync\n[Service]\nExecStart=/bin/sh -c true\n[Install]\nWantedBy=default.target\n");
+    writeText(lib / "cleanup.timer", "[Timer]\nOnCalendar=weekly\n[Install]\nWantedBy=timers.target\n");
+    writeText(lib / "cleanup.service", "[Service]\nExecStart=/bin/true\n");
+    writeText(lib / "worker@.service", "[Service]\nExecStart=/bin/true %i\n[Install]\nWantedBy=default.target\n");
+    writeText(lib / "socket-only.service", "[Service]\nExecStart=/bin/true\n[Install]\nWantedBy=sockets.target\n");
+    writeText(lib / "static.service", "[Service]\nExecStart=/bin/true\n");
+    writeText(lib / "worker@alice.service", "[Service]\nExecStart=/bin/true alice\n[Install]\nWantedBy=default.target\n");
+    writeText(lib / "shadowed.service", "[Service]\nExecStart=/bin/true\n[Install]\nWantedBy=default.target\n");
+    writeText(user / "shadowed.service", "[Service]\nExecStart=/bin/true\n"); // the user's override: no [Install]
+    // #3497 review: [Install] from drop-ins: one adds a session target, one resets it.
+    writeText(lib / "dropped-in.service", "[Service]\nExecStart=/bin/true\n");
+    writeText(lib / "dropped-in.service.d/install.conf", "[Install]\nWantedBy=default.target\n");
+    writeText(lib / "reset.service", "[Service]\nExecStart=/bin/true\n[Install]\nWantedBy=default.target\n");
+    writeText(user / "reset.service.d/no-install.conf", "[Install]\nWantedBy=\n");
+    // #3497 review: an alias of a unit isn't listed under its own name; a package's own .wants link is the package's;
+    // a template's instance linked by the user, with no instance file, is read-only.
+    std::filesystem::create_symlink(lib / "notes-sync.service", lib / "notes-alias.service");
+    writeText(lib / "pkg.service", "[Service]\nExecStart=/bin/true\n[Install]\nWantedBy=default.target\n");
+    std::filesystem::create_directories(lib / "default.target.wants");
+    std::filesystem::create_symlink(lib / "pkg.service", lib / "default.target.wants/pkg.service");
+    std::filesystem::create_directories(user / "default.target.wants");
+    std::filesystem::create_symlink(lib / "worker@.service", user / "default.target.wants/worker@bob.service");
+
+    LinuxStartupProbe probe(m_Dirs, "GNOME", SEARCH_PATH, SystemdUserDirs{.user = user, .system = {}, .unitPath = {user, lib}});
+    const std::vector<StartupEntry> entries = probe.enumerate();
+    ASSERT_EQ(entries.size(), 6U);
+    EXPECT_EQ(find(entries, "notes-alias.service"), nullptr) << "an alias";
+    ASSERT_NE(find(entries, "dropped-in.service"), nullptr) << "its session target comes from a drop-in";
+    EXPECT_EQ(find(entries, "reset.service"), nullptr) << "a drop-in resets its WantedBy=";
+    const StartupEntry* pkg = find(entries, "pkg.service");
+    ASSERT_NE(pkg, nullptr);
+    EXPECT_TRUE(pkg->enabled) << "the package's link starts it";
+    EXPECT_EQ(pkg->location, StartupLocation::SystemdSystemUnit);
+    EXPECT_FALSE(pkg->notSwitchableReason.empty());
+    const StartupEntry* bob = find(entries, "worker@bob.service");
+    ASSERT_NE(bob, nullptr);
+    EXPECT_TRUE(bob->enabled);
+    EXPECT_EQ(bob->location, StartupLocation::SystemdUserUnit);
+    EXPECT_TRUE(bob->notSwitchableReason.contains("instance of worker@.service")) << bob->notSwitchableReason;
+    EXPECT_FALSE(
+        LinuxStartupActions(m_Dirs, [](std::string_view, bool) { return StartupActionResult::succeeded(); }).setEnabled(*bob, false).ok)
+        << "disabling would lose it from the list";
+    EXPECT_EQ(find(entries, "shadowed.service"), nullptr) << "the user's override, first on the path, has no [Install]";
+    const StartupEntry* instance = find(entries, "worker@alice.service");
+    ASSERT_NE(instance, nullptr) << "an instance file is listed; only the template isn't";
+    EXPECT_FALSE(instance->enabled);
+    const StartupEntry* notes = find(entries, "notes-sync.service");
+    ASSERT_NE(notes, nullptr);
+    EXPECT_FALSE(notes->enabled);
+    EXPECT_EQ(notes->name, "Notes sync");
+    EXPECT_EQ(notes->location, StartupLocation::SystemdUserUnit);
+    EXPECT_EQ(notes->notSwitchableReason.empty(), HAS_SDBUS) << notes->notSwitchableReason;
+    const StartupEntry* cleanup = find(entries, "cleanup.timer");
+    ASSERT_NE(cleanup, nullptr);
+    EXPECT_FALSE(cleanup->enabled);
+    EXPECT_EQ(cleanup->command, "/bin/true") << "the command its service runs";
+}
+
+// #3425: cron jobs are listed read-only: the user's crontab (as `crontab -l` prints it) and the system tables, which
+// name the user; @reboot reads "at startup"; a program not found is Missing, a builtin first (cd) Unresolved; the
+// actions refuse them. /etc/cron.d's files are those cron reads: letters, digits, '_' and '-' only (#3441 review).
+TEST_F(LinuxStartupTest, ListsTheCronJobsReadOnly)
+{
+    const std::filesystem::path etcCrontab = m_Root.path / "etc/crontab";
+    const std::filesystem::path cronDir = m_Root.path / "etc/cron.d";
+    const std::filesystem::path cronD = cronDir / "backup";
+    writeText(etcCrontab, "SHELL=/bin/sh\n17 * * * * root cd / && run-parts /etc/cron.hourly\n");
+    writeText(cronD, "# nightly\n@reboot backup /nonexistent/backup --resume\n");
+    for (const char* skipped : {"backup~", "backup.bak", "backup.dpkg-old", ".placeholder"})
+    {
+        writeText(cronDir / skipped, "@reboot root /bin/sh\n"); // package leftovers and hidden files: cron skips them
+    }
+    std::filesystem::create_directories(cronDir / "subdir");
+    int userReads = 0;
+    CronSources cron{
+        .userCrontab = [&userReads]() -> std::optional<std::string>
+        {
+            ++userReads;
+            return std::string("MAILTO=\"\"\n@reboot /bin/sh -c 'sync'\n*/10 * * * * env LANG=C sh /home/u/poll.sh\n");
+        },
+        .systemTables = {etcCrontab, m_Root.path / "etc/missing"},
+        .systemTableDirs = {cronDir, m_Root.path / "etc/no-such-dir"},
+        .systemTableOwner = ::geteuid(), // the test's tables are the test user's, as cron's are root's
+    };
+    LinuxStartupProbe probe(m_Dirs, "GNOME", SEARCH_PATH, SystemdUserDirs{}, std::move(cron));
+    const std::vector<StartupEntry> entries = probe.enumerate();
+    EXPECT_EQ(userReads, 1);
+    ASSERT_EQ(entries.size(), 4U);
+
+    const StartupEntry* sync = find(entries, "crontab line 2");
+    ASSERT_NE(sync, nullptr);
+    EXPECT_EQ(sync->name, "sh (cron, at startup)");
+    EXPECT_EQ(sync->command, "/bin/sh -c 'sync'");
+    EXPECT_EQ(sync->executablePath, "/bin/sh");
+    EXPECT_EQ(sync->location, StartupLocation::CronUser);
+    EXPECT_EQ(sync->scope, StartupScope::User);
+    EXPECT_TRUE(sync->enabled);
+    EXPECT_EQ(sync->notSwitchableReason, "A cron job: change it with crontab -e");
+    EXPECT_EQ(sync->target, StartupTargetState::Present);
+
+    const StartupEntry* poll = find(entries, "crontab line 3");
+    ASSERT_NE(poll, nullptr);
+    EXPECT_EQ(poll->name, "sh (cron, */10 * * * *)") << "env and its assignment are skipped";
+    EXPECT_EQ(poll->target, StartupTargetState::Present) << "sh, on cron's default PATH";
+
+    const StartupEntry* hourly = find(entries, etcCrontab.string() + " line 2");
+    ASSERT_NE(hourly, nullptr);
+    EXPECT_EQ(hourly->name, "cd (cron, 17 * * * *, as root)");
+    EXPECT_EQ(hourly->location, StartupLocation::CronSystem);
+    EXPECT_EQ(hourly->scope, StartupScope::Machine);
+    EXPECT_EQ(hourly->sourcePath, etcCrontab.string());
+    EXPECT_TRUE(hourly->notSwitchableReason.contains("an administrator changes it")) << hourly->notSwitchableReason;
+    EXPECT_TRUE(hourly->enabled);
+    EXPECT_EQ(hourly->target, StartupTargetState::Unresolved) << "cd is the shell's own: no program to find";
+    EXPECT_TRUE(hourly->executablePath.empty());
+
+    const StartupEntry* backup = find(entries, cronD.string() + " line 2");
+    ASSERT_NE(backup, nullptr);
+    EXPECT_EQ(backup->name, "backup (cron, at startup, as backup)");
+    EXPECT_EQ(backup->target, StartupTargetState::Missing);
+
+    // The actions refuse a cron job: it isn't an autostart file.
     LinuxStartupActions actions(m_Dirs);
-    EXPECT_FALSE(actions.setEnabled(*syncd, false).ok);
+    EXPECT_FALSE(actions.setEnabled(*sync, false).ok);
+}
+
+// #3441 review: cron ignores a system table not owned by root or writable by its group or others, so its jobs are
+// listed off, saying why, never as on.
+TEST_F(LinuxStartupTest, ASystemCronTableCronWontTrustIsListedOff)
+{
+    const std::filesystem::path cronDir = m_Root.path / "etc/cron.d";
+    writeText(cronDir / "trusted", "@hourly root /bin/sh -c true\n");
+    writeText(cronDir / "writable", "@hourly root /bin/sh -c true\n");
+    std::filesystem::permissions(cronDir / "trusted", std::filesystem::perms::owner_read | std::filesystem::perms::owner_write);
+    std::filesystem::permissions(cronDir / "writable",
+                                 std::filesystem::perms::owner_read | std::filesystem::perms::owner_write |
+                                     std::filesystem::perms::others_read | std::filesystem::perms::others_write);
+    const auto entriesOwnedBy = [&](std::uint32_t owner)
+    {
+        LinuxStartupProbe probe(
+            m_Dirs,
+            "GNOME",
+            SEARCH_PATH,
+            SystemdUserDirs{},
+            CronSources{.userCrontab = {}, .systemTables = {}, .systemTableDirs = {cronDir}, .systemTableOwner = owner});
+        return probe.enumerate();
+    };
+    const std::vector<StartupEntry> entries = entriesOwnedBy(::geteuid());
+    ASSERT_EQ(entries.size(), 2U);
+    const StartupEntry* trusted = find(entries, (cronDir / "trusted").string() + " line 1");
+    const StartupEntry* writable = find(entries, (cronDir / "writable").string() + " line 1");
+    ASSERT_NE(trusted, nullptr);
+    ASSERT_NE(writable, nullptr);
+    EXPECT_TRUE(trusted->enabled);
+    EXPECT_FALSE(writable->enabled);
+    EXPECT_TRUE(writable->notSwitchableReason.contains("cron ignores")) << writable->notSwitchableReason;
+    EXPECT_TRUE(writable->notSwitchableReason.contains("group or others")) << writable->notSwitchableReason;
+
+    // Owned by someone other than the owner cron requires: every job is off.
+    for (const StartupEntry& entry : entriesOwnedBy(::geteuid() + 1))
+    {
+        EXPECT_FALSE(entry.enabled) << entry.registrationName;
+        EXPECT_TRUE(entry.notSwitchableReason.contains("isn't owned by root")) << entry.notSwitchableReason;
+    }
+}
+
+// #3441 review: /etc/cron.d is listed on each sample, not once when the probe is made, so a table added between two
+// samples (and the directory itself appearing) shows at the next one.
+TEST_F(LinuxStartupTest, ACronTableAddedBetweenSamplesShows)
+{
+    const std::filesystem::path cronDir = m_Root.path / "etc/cron.d";
+    LinuxStartupProbe probe(
+        m_Dirs,
+        "GNOME",
+        SEARCH_PATH,
+        SystemdUserDirs{},
+        CronSources{.userCrontab = {}, .systemTables = {}, .systemTableDirs = {cronDir}, .systemTableOwner = ::geteuid()});
+    EXPECT_TRUE(probe.enumerate().empty()) << "no directory yet";
+    writeText(cronDir / "late-job", "@hourly root /bin/sh -c true\n");
+    const std::vector<StartupEntry> entries = probe.enumerate();
+    ASSERT_EQ(entries.size(), 1U);
+    EXPECT_EQ(entries[0].registrationName, (cronDir / "late-job").string() + " line 1");
+    std::filesystem::remove(cronDir / "late-job");
+    EXPECT_TRUE(probe.enumerate().empty()) << "and one removed goes";
+}
+
+TEST(CronTableFileNameTest, OnlyDebianCronsNamesAreRead)
+{
+    EXPECT_TRUE(cronTableFileName("e2scrub_all"));
+    EXPECT_TRUE(cronTableFileName("php-sessionclean"));
+    EXPECT_TRUE(cronTableFileName("Backup2"));
+    EXPECT_FALSE(cronTableFileName(""));
+    EXPECT_FALSE(cronTableFileName("backup~"));
+    EXPECT_FALSE(cronTableFileName("backup.bak"));
+    EXPECT_FALSE(cronTableFileName(".placeholder"));
+    EXPECT_FALSE(cronTableFileName("back up"));
+}
+
+// #3441 review: a job's program is looked up on the job's own PATH: the table's PATH= above it, or a PATH= on the
+// command; a shell-quoted program is unquoted; one only a relative PATH entry might hold is Unresolved, not Missing,
+// even when a later directory holds one. env -i or env -u PATH searches execvp's default instead, and a program in a
+// directory TaskSmack can't search is Unresolved, not Missing.
+TEST_F(LinuxStartupTest, ACronJobsProgramIsFoundOnItsOwnPath)
+{
+    const std::filesystem::path bin = m_Root.path / "opt/x";
+    const std::filesystem::path inlineBin = m_Root.path / "opt/inline";
+    for (const std::filesystem::path& program : {bin / "backup", inlineBin / "special"})
+    {
+        writeText(program, "#!/bin/sh\n");
+        std::filesystem::permissions(program, std::filesystem::perms::owner_all);
+    }
+    const std::string crontab = "@daily backup\n" // line 1: cron's default PATH
+                                "PATH=" +
+                                bin.string() +
+                                "\n"              // line 2
+                                "@daily backup\n" // line 3: found in opt/x
+                                "@daily PATH=" +
+                                inlineBin.string() +
+                                " special --now\n"                     // line 4: the inline PATH
+                                "@daily special\n"                     // line 5: not on opt/x
+                                "@daily '/bin/sh' /home/u/backup.sh\n" // line 6: quoted
+                                "PATH=relative/bin:" +
+                                bin.string() +
+                                "\n"                       // line 7
+                                "@daily unknown-program\n" // line 8
+                                "@daily backup\n"          // line 9: opt/x has it, but relative/bin comes first
+                                "PATH=" +
+                                bin.string() +
+                                "\n"                                  // line 10
+                                "@daily /usr/bin/env -i sh -c true\n" // line 11: env's default path
+                                "@daily env -u PATH sh -c true\n"     // line 12
+                                "@daily env -i PATH=" +
+                                bin.string() +
+                                " backup\n"                        // line 13: set again after -i
+                                "@daily env --unset=PATH backup\n" // line 14: not in /bin:/usr/bin
+                                "@daily " +
+                                (m_Root.path / "locked/job.sh").string() + "\n"; // line 15
+    CronSources cron{
+        .userCrontab = [crontab]() -> std::optional<std::string> { return crontab; }, .systemTables = {}, .systemTableDirs = {}};
+    const std::filesystem::path locked = m_Root.path / "locked";
+    writeText(locked / "job.sh", "#!/bin/sh\n");
+    std::filesystem::permissions(locked, std::filesystem::perms::none);
+    LinuxStartupProbe probe(m_Dirs, "GNOME", SEARCH_PATH, SystemdUserDirs{}, std::move(cron));
+    const std::vector<StartupEntry> entries = probe.enumerate();
+    std::filesystem::permissions(locked, std::filesystem::perms::owner_all); // so the scratch root can be removed
+    ASSERT_EQ(entries.size(), 12U);
+
+    const auto targetOf = [&entries](int line)
+    {
+        const StartupEntry* entry = find(entries, "crontab line " + std::to_string(line));
+        EXPECT_NE(entry, nullptr) << line;
+        return entry != nullptr ? std::make_pair(entry->target, entry->executablePath)
+                                : std::make_pair(StartupTargetState::Unresolved, std::string{});
+    };
+    EXPECT_EQ(targetOf(1).first, StartupTargetState::Missing) << "not in /usr/bin:/bin";
+    EXPECT_EQ(targetOf(3), std::make_pair(StartupTargetState::Present, (bin / "backup").string()));
+    EXPECT_EQ(targetOf(4), std::make_pair(StartupTargetState::Present, (inlineBin / "special").string()));
+    EXPECT_EQ(targetOf(5).first, StartupTargetState::Missing);
+    EXPECT_EQ(targetOf(6), std::make_pair(StartupTargetState::Present, std::string("/bin/sh")));
+    EXPECT_EQ(targetOf(8).first, StartupTargetState::Unresolved) << "relative/bin depends on where cron runs it";
+    EXPECT_EQ(targetOf(9).first, StartupTargetState::Unresolved) << "relative/bin may hold the backup cron runs";
+    for (const int line : {11, 12})
+    {
+        const auto [state, program] = targetOf(line);
+        EXPECT_EQ(state, StartupTargetState::Present) << line << ": found on /bin:/usr/bin, not on opt/x";
+        EXPECT_TRUE(program == "/bin/sh" || program == "/usr/bin/sh") << program;
+    }
+    EXPECT_EQ(targetOf(13), std::make_pair(StartupTargetState::Present, (bin / "backup").string()));
+    EXPECT_EQ(targetOf(14).first, StartupTargetState::Missing) << "env --unset=PATH: opt/x isn't searched";
+    if (::geteuid() != 0) // root searches any directory
+    {
+        EXPECT_EQ(targetOf(15).first, StartupTargetState::Unresolved) << "a directory TaskSmack can't search";
+    }
+    const StartupEntry* special = find(entries, "crontab line 4");
+    ASSERT_NE(special, nullptr);
+    EXPECT_EQ(special->name, "special (cron, @daily)");
+}
+
+// #3425: no crontab (`crontab -l` exits 1, "no crontab for <user>") and no system tables list nothing.
+TEST_F(LinuxStartupTest, NoCrontabListsNoCronJobs)
+{
+    CronSources cron{.userCrontab = []() -> std::optional<std::string> { return std::nullopt; }, .systemTables = {}, .systemTableDirs = {}};
+    LinuxStartupProbe probe(m_Dirs, "GNOME", SEARCH_PATH, SystemdUserDirs{}, std::move(cron));
+    EXPECT_TRUE(probe.enumerate().empty());
 }
 
 /// An entry for @p fileName, as the probe would hand it to setEnabled().

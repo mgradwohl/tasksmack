@@ -97,6 +97,8 @@ struct ApprovedKey
     case StartupLocation::XdgAutostartSystem:
     case StartupLocation::SystemdUserUnit:
     case StartupLocation::SystemdSystemUnit:
+    case StartupLocation::CronUser: // Linux's (#3425)
+    case StartupLocation::CronSystem:
         break;
     }
     return std::nullopt;
@@ -280,6 +282,8 @@ startupDisplayName(std::string_view fileDescription, std::string_view executable
     case StartupLocation::XdgAutostartSystem:
     case StartupLocation::SystemdUserUnit:
     case StartupLocation::SystemdSystemUnit:
+    case StartupLocation::CronUser: // Linux's (#3425)
+    case StartupLocation::CronSystem:
         break;
     }
     return std::string(programName);

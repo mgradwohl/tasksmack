@@ -81,6 +81,9 @@ order.
   bumps a version pinned by a custom regex (CMake FetchContent and toolchain pins) or a pre-commit hook.
 - **`ci:arm64`:** add it to a PR to run the ARM64 build and test jobs (`arm64.yml`).
 - **`ci-red-main`:** `main-health.yml` opens, rewrites and closes this tracking issue. Don't add it by hand.
+- **`winget-health.yml`:** opens, rewrites and closes one issue, "WinGet: TaskSmack.TaskSmack <version> isn't
+  published", labelled `release` and `agent:Windows` and found by that title among the open `release` issues
+  (#3486). It never uses `ci-red-main`: a WinGet moderation delay isn't a red main.
 - **`merging`:** the cross-lane merge lock. A PR in its final merge stage carries it, and the other lane waits up to
   30 minutes. The backport action doesn't copy it.
 - **`code-review`:** every issue a code-review sweep or audit files, so each batch can be triaged with one query:
