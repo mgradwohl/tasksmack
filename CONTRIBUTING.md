@@ -782,10 +782,13 @@ Three established ways to get real coverage of such a file's logic:
    Windows helpers in `tests/Support/CiRealSystemWindows.h`). Its `SetUp()` skips the test unless
    `TASKSMACK_CI_REAL_SYSTEM=1` on a GitHub-hosted runner (`GITHUB_ACTIONS=true`,
    `RUNNER_ENVIRONMENT=github-hosted`). CI's "Real-system tests (Windows)" step sets it and runs
-   `TaskSmackTests --gtest_filter=CiRealSystem*` after the normal `ctest`. It fails if none of them ran.
+   `TaskSmackTests --gtest_filter=CiRealSystem*` after the normal `ctest`. It fails if none of them ran, or if
+   the runner still has something a test made (a `tsci*` account or profile, a `TaskSmackCi*` service, folder,
+   IFEO key or Run value).
    - **Rules:** keep every child idle (suspended, or `TaskSmackCiStub.exe`, which only sleeps, or with
-     `--hung-window` shows a window and stops answering it), and end it and remove what the test made in a
-     scope guard: a registry value, a key, a privilege turned on. Skip with the reason when the runner can't do
+     `--hung-window` shows a window and stops answering it; a service is `TaskSmackCiService.exe`, which only
+     waits to be stopped), and end it and remove what the test made in a scope guard: a registry value, a key,
+     a privilege turned on, a service, a `ThrowawayAccount`. Skip with the reason when the runner can't do
      it (no memory compression on a Server image), and rather than overwrite a value that was there before.
    - **Never locally:** don't set the variable on your own machine. The daytime filter excludes `CiRealSystem*`.
    - **The rule:** a change to a real OS path adds such a test, or the PR says why only a manual check can

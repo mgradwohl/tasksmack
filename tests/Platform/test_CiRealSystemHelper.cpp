@@ -27,10 +27,8 @@
 #endif
 #include <windows.h>
 #include <aclapi.h>
-#include <lm.h>
 // clang-format on
 
-#include <array>
 #include <charconv>
 #include <chrono>
 #include <cstddef>
@@ -39,15 +37,12 @@
 #include <fstream>
 #include <iterator>
 #include <optional>
-#include <random>
 #include <sstream>
 #include <string>
 #include <string_view>
 #include <system_error>
 #include <thread>
 #include <vector>
-
-#pragma comment(lib, "netapi32.lib")
 
 #if defined(TASKSMACK_WINDOWS_HELPER_PATH) && defined(TASKSMACK_WINDOWS_HELPER_TEST_PARENT_PATH) &&                                        \
     defined(TASKSMACK_WINDOWS_HELPER_SHORT_IDLE_PATH)
@@ -157,84 +152,6 @@ class SessionLog
 
   private:
     ScratchFolder m_Folder;
-};
-
-/// A throwaway local account, for an over-the-shoulder elevation: the helper runs as it, TaskSmack as the runner's
-/// own user, so the helper gives the session one action (#2550). A plain user: on the runner UAC is on, so an
-/// administrator's logon through CreateProcessWithLogonW would get the filtered token anyway, and the grant turns
-/// only on the two accounts being different. Deleted on scope exit.
-class ThrowawayAccount
-{
-  public:
-    ThrowawayAccount()
-    {
-        std::random_device random;
-        m_Name = std::format(L"tsci{:08x}", random());
-        // Upper, lower, digits and symbols, 24 characters: any complexity policy takes it.
-        m_Password = std::format(L"Ts!{:08x}{:08x}-qZ9", random(), random());
-        USER_INFO_1 user{};
-        user.usri1_name = m_Name.data();
-        user.usri1_password = m_Password.data();
-        user.usri1_priv = USER_PRIV_USER;
-        user.usri1_flags = UF_SCRIPT | UF_DONT_EXPIRE_PASSWD;
-        DWORD badField = 0;
-        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - NetUserAdd
-        // takes its USER_INFO_1 as bytes
-        auto* userBytes = reinterpret_cast<LPBYTE>(&user);
-        const NET_API_STATUS added = NetUserAdd(nullptr, 1, userBytes, &badField);
-        if (added != NERR_Success)
-        {
-            ADD_FAILURE() << "couldn't add a local account: " << added << " (field " << badField << ")";
-            return;
-        }
-        m_Added = true;
-        m_Sid.resize(SECURITY_MAX_SID_SIZE);
-        auto sidSize = static_cast<DWORD>(m_Sid.size());
-        std::array<wchar_t, 256> domain{};
-        auto domainSize = static_cast<DWORD>(domain.size());
-        SID_NAME_USE use = SidTypeUnknown;
-        if (LookupAccountNameW(nullptr, m_Name.c_str(), m_Sid.data(), &sidSize, domain.data(), &domainSize, &use) == FALSE)
-        {
-            ADD_FAILURE() << "couldn't read the new account's SID: " << GetLastError();
-            m_Sid.clear();
-            return;
-        }
-        m_Sid.resize(sidSize);
-    }
-    ~ThrowawayAccount()
-    {
-        if (m_Added)
-        {
-            NetUserDel(nullptr, m_Name.c_str());
-        }
-    }
-    ThrowawayAccount(const ThrowawayAccount&) = delete;
-    ThrowawayAccount& operator=(const ThrowawayAccount&) = delete;
-    ThrowawayAccount(ThrowawayAccount&&) = delete;
-    ThrowawayAccount& operator=(ThrowawayAccount&&) = delete;
-
-    [[nodiscard]] bool ready() const noexcept
-    {
-        return !m_Sid.empty();
-    }
-    [[nodiscard]] const std::wstring& name() const noexcept
-    {
-        return m_Name;
-    }
-    [[nodiscard]] const std::wstring& password() const noexcept
-    {
-        return m_Password;
-    }
-    [[nodiscard]] const std::vector<std::byte>& sid() const noexcept
-    {
-        return m_Sid;
-    }
-
-  private:
-    std::wstring m_Name;
-    std::wstring m_Password;
-    std::vector<std::byte> m_Sid;
-    bool m_Added = false;
 };
 
 [[nodiscard]] std::optional<DWORD> parsePid(const std::string& text)

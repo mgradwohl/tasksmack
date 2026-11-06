@@ -3,8 +3,9 @@
 // thread it waits on (#3084, #3211); the UDP trace counts a process's datagrams from a real ETW session and leaves
 // none behind (#1492); SeDebugPrivilege is enabled on a real token (#2128); the critical-process guard refuses
 // a critical process with the real IsProcessCritical, its one changing call a fake (#2556); and the tests that skip
-// because the runner is elevated run again unelevated. They need an elevated runner and change what runs on
-// it, so they run only where CiRealSystem.h's guard lets them; each ends what it starts and puts back what it changes.
+// because the runner is elevated run again as a throwaway standard account. They need an elevated runner and change
+// what runs on it, so they run only where CiRealSystem.h's guard lets them; each ends what it starts and puts back
+// what it changes.
 
 #include "Core/Utf8Path.h"
 #include "Platform/IProcessActions.h"
@@ -32,6 +33,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include <aclapi.h>
 #include <evntrace.h>
 #include <tlhelp32.h>
 // clang-format on
@@ -46,11 +48,13 @@
 #include <fstream>
 #include <ios>
 #include <iterator>
+#include <memory>
 #include <optional>
 #include <span>
 #include <stop_token>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -590,43 +594,114 @@ constexpr std::wstring_view ELEVATED_ONLY_SKIPS =
     return elevation.TokenIsElevated != 0;
 }
 
-/// @p exe started with @p parameters as a child of @p parent (PROC_THREAD_ATTRIBUTE_PARENT_PROCESS), so it runs with
-/// that process's token: the shell's, unelevated. An empty Child, with a failure added, when it can't be.
-[[nodiscard]] Child startUnder(HANDLE parent, const std::filesystem::path& exe, const std::wstring& parameters)
+/// Gives @p sid @p rights on file or folder @p path, keeping what is there, and takes them away again on scope exit:
+/// what the throwaway account needs of the build's files and of the report's folder. A failure is added when the
+/// grant can't be made.
+class FileAccessGrant
 {
-    SIZE_T size = 0;
-    InitializeProcThreadAttributeList(nullptr, 1, 0, &size);
-    std::vector<std::byte> storage(size);
-    auto* attributes = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(
-        storage.data()); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast) - the list's own buffer
-    if (size == 0 || InitializeProcThreadAttributeList(attributes, 1, 0, &size) == FALSE)
+  public:
+    FileAccessGrant(std::filesystem::path path, std::vector<std::byte> sid, DWORD rights, DWORD inheritance = NO_INHERITANCE)
+        : m_Path(std::move(path)), m_Sid(std::move(sid)), m_Granted(change(GRANT_ACCESS, rights, inheritance))
     {
-        ADD_FAILURE() << "couldn't make the attribute list: " << GetLastError();
-        return {};
+        EXPECT_TRUE(m_Granted) << "couldn't let the throwaway account in to " << Core::pathToUtf8(m_Path);
     }
-    HANDLE parentHandle = parent;
-    const BOOL updated = UpdateProcThreadAttribute(
-        attributes, 0, PROC_THREAD_ATTRIBUTE_PARENT_PROCESS, static_cast<void*>(&parentHandle), sizeof(parentHandle), nullptr, nullptr);
-    std::wstring commandLine = L"\"" + exe.wstring() + L"\" " + parameters;
-    STARTUPINFOEXW startup{};
-    startup.StartupInfo.cb = sizeof(startup);
-    startup.lpAttributeList = attributes;
-    PROCESS_INFORMATION info{};
-    const bool created = (updated != FALSE) && CreateProcessW(exe.c_str(),
-                                                              commandLine.data(),
-                                                              nullptr,
-                                                              nullptr,
-                                                              FALSE,
-                                                              EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW,
-                                                              nullptr,
-                                                              nullptr,
-                                                              &startup.StartupInfo,
-                                                              &info) != FALSE;
-    const DWORD error = GetLastError();
-    DeleteProcThreadAttributeList(attributes);
-    if (!created)
+    ~FileAccessGrant()
     {
-        ADD_FAILURE() << "couldn't start " << Core::pathToUtf8(exe) << " under the shell: " << error;
+        try
+        {
+            if (m_Granted)
+            {
+                change(REVOKE_ACCESS, 0, NO_INHERITANCE);
+            }
+        }
+        catch (...) // NOLINT(bugprone-empty-catch) - out of memory: the ACE stays on the throwaway runner
+        {}
+    }
+    FileAccessGrant(const FileAccessGrant&) = delete;
+    FileAccessGrant& operator=(const FileAccessGrant&) = delete;
+    FileAccessGrant(FileAccessGrant&&) = delete;
+    FileAccessGrant& operator=(FileAccessGrant&&) = delete;
+
+  private:
+    bool change(ACCESS_MODE mode, DWORD rights, DWORD inheritance)
+    {
+        std::wstring name = m_Path.wstring();
+        PACL existing = nullptr;
+        PSECURITY_DESCRIPTOR descriptor = nullptr;
+        if (GetNamedSecurityInfoW(
+                name.c_str(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, nullptr, nullptr, &existing, nullptr, &descriptor) !=
+            ERROR_SUCCESS)
+        {
+            return false;
+        }
+        EXPLICIT_ACCESS_W entry{};
+        entry.grfAccessPermissions = rights;
+        entry.grfAccessMode = mode;
+        entry.grfInheritance = inheritance;
+        entry.Trustee.TrusteeForm = TRUSTEE_IS_SID;
+        entry.Trustee.TrusteeType = TRUSTEE_IS_UNKNOWN;
+        // TRUSTEE_IS_SID: ptstrName holds the SID, as the API documents.
+        entry.Trustee.ptstrName = reinterpret_cast<LPWSTR>(m_Sid.data()); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+        PACL updated = nullptr;
+        DWORD result = SetEntriesInAclW(1, &entry, existing, &updated);
+        if (result == ERROR_SUCCESS)
+        {
+            result = SetNamedSecurityInfoW(name.data(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, nullptr, nullptr, updated, nullptr);
+        }
+        LocalFree(static_cast<HLOCAL>(updated));
+        LocalFree(descriptor);
+        return result == ERROR_SUCCESS;
+    }
+
+    std::filesystem::path m_Path;
+    std::vector<std::byte> m_Sid;
+    bool m_Granted = false;
+};
+
+/// The programs and libraries beside @p exe (this binary, its DLLs, llvmpipe's opengl32.dll): what a run of it
+/// loads from its own folder.
+[[nodiscard]] std::vector<std::filesystem::path> loadedFromItsFolder(const std::filesystem::path& exe)
+{
+    std::vector<std::filesystem::path> files;
+    std::error_code error;
+    for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(exe.parent_path(), error))
+    {
+        const std::wstring extension = entry.path().extension().wstring();
+        if (entry.is_regular_file(error) && (sameText(extension, L".exe") || sameText(extension, L".dll")))
+        {
+            files.push_back(entry.path());
+        }
+    }
+    return files;
+}
+
+/// @p exe started with @p parameters in @p folder as @p account (CreateProcessWithLogonW, its profile loaded, so it
+/// has a %TEMP% of its own), hidden, with that account's own environment: none of this process's variables, so not
+/// the guard's either. An empty Child, with a failure added, when it can't be. The password goes only to the logon.
+[[nodiscard]] Child startAs(const ThrowawayAccount& account,
+                            const std::filesystem::path& exe,
+                            const std::wstring& parameters,
+                            const std::filesystem::path& folder)
+{
+    std::wstring commandLine = L"\"" + exe.wstring() + L"\" " + parameters;
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    startup.dwFlags = STARTF_USESHOWWINDOW;
+    startup.wShowWindow = SW_HIDE;
+    PROCESS_INFORMATION info{};
+    if (CreateProcessWithLogonW(account.name().c_str(),
+                                L".",
+                                account.password().c_str(),
+                                LOGON_WITH_PROFILE,
+                                exe.c_str(),
+                                commandLine.data(),
+                                0,
+                                nullptr,
+                                folder.c_str(),
+                                &startup,
+                                &info) == FALSE)
+    {
+        ADD_FAILURE() << "couldn't start " << Core::pathToUtf8(exe) << " as the throwaway account: " << GetLastError();
         return {};
     }
     return {info.hProcess, info.hThread, info.dwProcessId};
@@ -634,38 +709,35 @@ constexpr std::wstring_view ELEVATED_ONLY_SKIPS =
 
 TEST_F(CiRealSystemStandardUserTest, TheElevatedOnlySkipsRunAsAStandardUser)
 {
-    // This binary again, running only those tests, as the runner's user unelevated: a child of the shell
-    // (Explorer), whose filtered token UAC made at sign-in. A token restricted by hand (Administrators deny-only,
-    // Medium) still reads as elevated (TokenElevation), so those tests would skip again. Its JSON report says each
-    // ran and passed.
-    HWND shell = GetShellWindow();
-    if (shell == nullptr)
+    // This binary again, running only those tests, as a throwaway local standard account. On the runner UAC is
+    // off, so every token of the runner's own user is elevated, Explorer's too; and a token restricted by hand
+    // (Administrators deny-only, Medium) still reads as elevated (TokenElevation), so those tests would skip again.
+    // A standard account's logon token isn't elevated, UAC or not. Its JSON report says each ran and passed.
+    const ThrowawayAccount account;
+    ASSERT_TRUE(account.ready());
+    const std::filesystem::path exe = ownExecutable();
+    std::vector<std::unique_ptr<FileAccessGrant>> grants;
+    for (const std::filesystem::path& file : loadedFromItsFolder(exe))
     {
-        GTEST_SKIP() << "this runner's desktop has no shell, whose unelevated token the child would run with";
+        grants.push_back(std::make_unique<FileAccessGrant>(file, account.sid(), GENERIC_READ | GENERIC_EXECUTE));
     }
-    DWORD shellPid = 0;
-    GetWindowThreadProcessId(shell, &shellPid);
-    const UniqueHandle explorer(OpenProcess(PROCESS_CREATE_PROCESS | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, shellPid));
-    ASSERT_TRUE(explorer) << "couldn't open the shell, PID " << shellPid << ": " << GetLastError();
-    const std::optional<bool> shellElevated = isElevated(explorer.get());
-    ASSERT_TRUE(shellElevated.has_value()) << "couldn't read the shell's token: " << GetLastError();
-    if (shellElevated.value_or(true))
-    {
-        GTEST_SKIP() << "the shell runs elevated (UAC is off), so there is no unelevated token to run the tests with";
-    }
-
     const ScratchFolder folder(std::filesystem::temp_directory_path() / (L"TaskSmackCiStandardUser." + uniqueSuffix()));
+    const FileAccessGrant reportAccess(folder.path(), account.sid(), GENERIC_ALL, SUB_CONTAINERS_AND_OBJECTS_INHERIT);
     const std::filesystem::path report = folder.path() / L"report.json";
     const std::wstring parameters =
         L"--gtest_filter=" + std::wstring(ELEVATED_ONLY_SKIPS) + L" \"--gtest_output=json:" + report.wstring() + L"\"";
-    const Child child = startUnder(explorer.get(), ownExecutable(), parameters);
+    const Child child = startAs(account, exe, parameters, folder.path());
     ASSERT_NE(child.process(), nullptr);
-    EXPECT_EQ(isElevated(child.process()), std::optional<bool>(false)) << "the child runs elevated";
+    // The token is the account's, whose DACL may not let this administrator read it; the report says it either way.
+    if (const std::optional<bool> elevated = isElevated(child.process()); elevated.has_value())
+    {
+        EXPECT_FALSE(*elevated) << "the child runs elevated";
+    }
     const std::optional<DWORD> exit = child.exitCode(2 * STARTUP_WAIT);
-    ASSERT_TRUE(exit.has_value()) << "the unelevated run didn't finish";
+    ASSERT_TRUE(exit.has_value()) << "the standard user's run didn't finish";
     std::ifstream in(report, std::ios::binary);
     const std::string json{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
-    ASSERT_FALSE(json.empty()) << "the unelevated run wrote no report; its exit status " << exit.value_or(0);
+    ASSERT_FALSE(json.empty()) << "the standard user's run wrote no report; its exit status " << exit.value_or(0);
     EXPECT_EQ(exit.value_or(1), 0U) << json;
     EXPECT_EQ(occurrences(json, "\"result\": \"COMPLETED\""), 2U) << json;
     EXPECT_EQ(occurrences(json, "\"result\": \"SKIPPED\""), 0U) << json;
