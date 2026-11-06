@@ -8,7 +8,10 @@
 #include "Platform/IStartupProbe.h"
 #include "Platform/Linux/XdgAutostart.h"
 
+#include <cstdint>
 #include <filesystem>
+#include <functional>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -30,6 +33,31 @@ struct SystemdUserDirs
 /// packages' /usr/local/lib/systemd/user and /usr/lib/systemd/user for the unit files themselves.
 [[nodiscard]] SystemdUserDirs systemdUserDirs(std::string_view home, std::string_view xdgConfigHome);
 
+/// Where the cron jobs the Startup tab lists come from (#3425), read-only.
+struct CronSources
+{
+    /// The user's own crontab as `crontab -l` prints it: nullopt when there is none or it can't be read. Unset to skip.
+    std::function<std::optional<std::string>()> userCrontab;
+    /// System tables read as files, which name the user each job runs as: /etc/crontab.
+    std::vector<std::filesystem::path> systemTables;
+    /// Directories of system tables, listed again on each enumerate() (on the sampler thread), so a table added
+    /// later shows: /etc/cron.d. Only the files cron itself reads (cronTableFileName()), in name order.
+    std::vector<std::filesystem::path> systemTableDirs;
+    /// The owner cron requires of a system table: root (0). cron ignores a table owned by anyone else, or writable
+    /// by its group or others, so its jobs are listed off, with why. Tests pass their own user ID.
+    std::uint32_t systemTableOwner = 0;
+};
+
+/// Whether cron reads a file named @p name in /etc/cron.d. Debian's and Ubuntu's cron (cron(8), the documented
+/// target) reads only names made of ASCII letters, digits, underscores and hyphens, run-parts' rule, so package
+/// leftovers (foo.dpkg-old, foo.bak, backup~) and hidden files (.placeholder) are skipped. Other crons differ
+/// (cronie skips only dot-files and a few suffixes); this follows Debian's.
+[[nodiscard]] bool cronTableFileName(std::string_view name) noexcept;
+
+/// This machine's: `crontab -l`, re-run at most every Domain::Sampling::STARTUP_CRON_REFRESH_SECONDS, /etc/crontab,
+/// and /etc/cron.d, whose files are listed when enumerate() runs. Makes no I/O itself: safe on any thread.
+[[nodiscard]] CronSources cronSources();
+
 class LinuxStartupProbe final : public IStartupProbe
 {
   public:
@@ -40,6 +68,9 @@ class LinuxStartupProbe final : public IStartupProbe
     LinuxStartupProbe(XdgAutostart::Dirs dirs, std::string currentDesktops, std::string searchPath);
     /// Test seam with @p systemd's directories too (#3082); the three-argument form lists no systemd units.
     LinuxStartupProbe(XdgAutostart::Dirs dirs, std::string currentDesktops, std::string searchPath, SystemdUserDirs systemd);
+    /// Test seam with @p cron's sources too (#3425); the forms above list no cron jobs.
+    LinuxStartupProbe(
+        XdgAutostart::Dirs dirs, std::string currentDesktops, std::string searchPath, SystemdUserDirs systemd, CronSources cron);
 
     [[nodiscard]] StartupCapabilities capabilities() const override;
     [[nodiscard]] std::vector<StartupEntry> enumerate() override;
@@ -47,9 +78,12 @@ class LinuxStartupProbe final : public IStartupProbe
   private:
     /// The systemd user units enabled to start with the session or on a timer (#3082), read-only.
     void addSystemdUnits(std::vector<StartupEntry>& entries) const;
+    /// The cron jobs (#3425): the user's crontab, then the system tables, read-only.
+    void addCronJobs(std::vector<StartupEntry>& entries) const;
 
     XdgAutostart::Dirs m_Dirs;
     SystemdUserDirs m_Systemd;
+    CronSources m_Cron;
     std::string m_CurrentDesktops;
     std::string m_SearchPath; ///< $PATH, to find an Exec's program
 };

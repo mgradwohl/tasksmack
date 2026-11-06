@@ -10,6 +10,7 @@
 #include "Platform/CpuDetails.h"
 #include "Platform/SystemTypes.h"
 #include "Platform/Windows/ProcessorPerformanceCounter.h" // IWYU pragma: keep (destroys the null counter)
+#include "Platform/Windows/WindowsCommitPaging.h"
 #include "Platform/Windows/WindowsSystemProbe.h"
 #include "Platform/Windows/WindowsSystemProbeMath.h"
 
@@ -24,6 +25,7 @@
 #include <cstring>
 #include <iterator>
 #include <optional>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -107,6 +109,13 @@ struct FakeSystem // NOLINT(clang-analyzer-optin.performance.Padding)
     bool failPageFile = false;
     bool pageFileMismatchFirst = false;
     bool noPageFile = false;
+    // The process list (#3363): whether it answers, the Memory Compression process's working set in it
+    // (0 = no such process: compression is off), whether it first says the probe's buffer is too small,
+    // and how many times it was asked
+    bool processListAnswers = true;
+    std::uint64_t compressionWorkingSet = 0;
+    bool processListMismatchFirst = false;
+    int processListQueries = 0;
     // How far the fakes below advance the probe's clock (#2731), in place of the real calls' time
     std::chrono::milliseconds systemTimesTake{0};
     std::chrono::milliseconds memoryStatusTake{0};
@@ -318,10 +327,53 @@ LONG pageFileQuery(PVOID buffer, ULONG length, PULONG returned)
     return 0;
 }
 
+/// The process list (#3363): the idle process (no name), then "Memory Compression" with
+/// compressionWorkingSet, when it is set. Padded past the probe's first buffer when asked for a mismatch.
+LONG processListQuery(PVOID buffer, ULONG length, PULONG returned)
+{
+    auto& f = fake();
+    ++f.processListQueries;
+    if (!f.processListAnswers)
+    {
+        return STATUS_ACCESS_DENIED_NT;
+    }
+    constexpr std::wstring_view NAME = L"Memory Compression";
+    constexpr std::size_t STRIDE = sizeof(SYSTEM_PROCESS_INFORMATION) + 64;
+    const std::size_t entries = f.compressionWorkingSet != 0 ? 2 : 1;
+    const std::size_t needed =
+        f.processListMismatchFirst ? WindowsCommitPaging::PROCESS_INFORMATION_INITIAL_BYTES + STRIDE : STRIDE * entries;
+    *returned = static_cast<ULONG>(needed);
+    if (length < needed)
+    {
+        return STATUS_INFO_LENGTH_MISMATCH_NT;
+    }
+    auto* base = static_cast<std::byte*>(buffer);
+    SYSTEM_PROCESS_INFORMATION idle{};
+    idle.NextEntryOffset = entries > 1 ? static_cast<ULONG>(STRIDE) : 0;
+    idle.WorkingSetSize = 8;
+    std::memcpy(base, &idle, sizeof(idle));
+    if (entries > 1)
+    {
+        std::byte* at = base + STRIDE;
+        auto* name =
+            reinterpret_cast<wchar_t*>(at + sizeof(SYSTEM_PROCESS_INFORMATION)); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+        std::memcpy(name, NAME.data(), NAME.size() * sizeof(wchar_t));
+        SYSTEM_PROCESS_INFORMATION compression{};
+        compression.ImageName.Length = static_cast<USHORT>(NAME.size() * sizeof(wchar_t));
+        compression.ImageName.MaximumLength = compression.ImageName.Length;
+        compression.ImageName.Buffer = name;
+        compression.WorkingSetSize = static_cast<SIZE_T>(f.compressionWorkingSet);
+        std::memcpy(at, &compression, sizeof(compression));
+    }
+    return 0;
+}
+
 LONG NTAPI fakeNtQuerySystemInformation(ULONG infoClass, PVOID buffer, ULONG length, PULONG returned)
 {
     switch (infoClass)
     {
+    case WindowsCommitPaging::SYSTEM_PROCESS_INFORMATION_CLASS:
+        return processListQuery(buffer, length, returned);
     case PROCESSOR_PERFORMANCE_CLASS:
         ++fake().ntPerCoreCalls;
         if (fake().failNtPerCore)
@@ -554,6 +606,40 @@ TEST_F(WindowsSystemProbeSeamsTest, PageFileListLongerThanTheFirstBufferIsReadIn
     const SystemCounters counters = probe.read();
 
     EXPECT_EQ(counters.memory.swapTotalBytes, 1'500ULL * PAGE_SIZE);
+}
+
+// #3363: compressed memory is the Memory Compression process's working set from the process list, read
+// every sample into a buffer kept between them; with no such process (compression off), or no list, it
+// is left out.
+TEST_F(WindowsSystemProbeSeamsTest, CompressedMemoryIsTheMemoryCompressionProcesssWorkingSet)
+{
+    fake().compressionWorkingSet = 300ULL << 20U;
+    fake().processListMismatchFirst = true;
+    auto probe = makeProbe();
+    SystemCounters counters = probe.read();
+    EXPECT_TRUE(counters.memory.hasMemoryCompression);
+    EXPECT_EQ(counters.memory.memoryCompressionBytes, 300ULL << 20U);
+    EXPECT_EQ(fake().processListQueries, 2) << "the first buffer was too small, so it grew once";
+
+    fake().compressionWorkingSet = 310ULL << 20U;
+    counters = probe.read();
+    EXPECT_EQ(counters.memory.memoryCompressionBytes, 310ULL << 20U) << "read again each sample";
+    EXPECT_EQ(fake().processListQueries, 3) << "the grown buffer is kept for the next sample";
+
+    fake().compressionWorkingSet = 0; // compression turned off
+    counters = probe.read();
+    EXPECT_FALSE(counters.memory.hasMemoryCompression);
+    EXPECT_EQ(counters.memory.memoryCompressionBytes, 0U);
+
+    fake().compressionWorkingSet = 300ULL << 20U;
+    fake().processListAnswers = false;
+    counters = probe.read();
+    EXPECT_FALSE(counters.memory.hasMemoryCompression);
+    EXPECT_EQ(counters.memory.totalBytes, 16ULL << 30U) << "the rest of memory is still read";
+
+    fake().ntAvailable = false;
+    auto withoutNt = makeProbe();
+    EXPECT_FALSE(withoutNt.read().memory.hasMemoryCompression);
 }
 
 TEST_F(WindowsSystemProbeSeamsTest, WithoutNtQuerySystemInformationExTheOneGroupQueryIsUsed)

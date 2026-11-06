@@ -108,7 +108,8 @@ struct WindowsSystemProbeFunctions
 struct SystemReadTiming
 {
     /// "cpu" (GetSystemTimes and the per-core NT query), "cpu-details" (the topology re-read, rare),
-    /// "memory" (GlobalMemoryStatusEx, GetPerformanceInfo and the page files), "uptime", "pdh-freq"
+    /// "memory" (GlobalMemoryStatusEx, GetPerformanceInfo, the page files and the process snapshot for
+    /// compressed memory), "uptime", "pdh-freq"
     /// (the PDH collect) or "ifTable" (GetIfTable2 and the device lookups); empty before the first read().
     std::string_view slowestSubRead;
     std::chrono::steady_clock::duration slowest{};
@@ -186,6 +187,10 @@ class WindowsSystemProbe : public ISystemProbe
     void readCpuCounters(SystemCounters& counters) const;
     void readPerCoreCpuCounters(SystemCounters& counters) const;
     void readMemoryCounters(SystemCounters& counters) const;
+    /// Compressed memory (#3363): the "Memory Compression" process's working set from a
+    /// SystemProcessInformation snapshot into m_ProcessSnapshot; not set when the process isn't there
+    /// (compression is off) or the query fails.
+    void readMemoryCompression(SystemCounters& counters);
     /// Page-file totals from NtQuerySystemInformation; zero when there is no page file or the
     /// query fails.
     [[nodiscard]] SwapBytes readSwap() const;
@@ -224,6 +229,9 @@ class WindowsSystemProbe : public ISystemProbe
     // thread only.
     std::vector<NetworkInterfaceKey> m_InterfaceKeys;
     std::vector<NetworkInterfaceKey> m_InterfaceKeysScratch;
+    // The SystemProcessInformation snapshot readMemoryCompression() reads (#3363), kept between samples
+    // so it isn't allocated again once grown. Sampler thread only.
+    std::vector<std::byte> m_ProcessSnapshot;
     // The last read()'s sub-read timing (#2731). Sampler thread only.
     SystemReadTiming m_LastReadTiming;
     // The nominal base clock (nominalCpuBaseMHz), read once: it is fixed for the boot session

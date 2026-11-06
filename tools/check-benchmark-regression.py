@@ -71,9 +71,14 @@ a warning for a deliberate cross-class comparison. It refuses rather than warns 
 would sit above an exit code that is wrong either way: 1 for regressions that are not in the
 code, or 0 for real ones hidden by a faster core. Each run's manifest is the
 <result>.manifest.json sidecar next to it, or the one --baseline-manifest / --current-manifest
-names. A run without one (the committed baselines, runs from before #3163 and #3198) is not checked,
-and the output says so. The system CPU load each manifest recorded before and after its run is
-printed, for reading a noisy comparison.
+names. perf-data/win-baseline.json has its manifest committed beside it (#3447); a run without one
+(the Linux baselines, runs from before #3163 and #3198) is not checked, and the output says so. The
+system CPU load each manifest recorded before and after its run is printed, for reading a noisy
+comparison.
+
+Whatever the result, the coverage line is printed, then any regressions, then one FAILED line for
+each gate that failed (#3448): a run that regressed still reports its coverage, and one that both
+regressed and lost coverage reports both.
 
 The JSON format is Google Benchmark's --benchmark_format=json output.
 """
@@ -632,20 +637,30 @@ def main() -> int:
             print(f"   {name}: {base:.2f}{base_unit} -> {cur:.2f}{cur_unit}  ({pct:+.1f}%){own_threshold_note(name)}")
         print()
 
-    # ── Report regressions ────────────────────────────────────────────────────
+    # ── Coverage, then regressions: both always reported (#3448) ─────────────
+    # Benchmarks skipped on purpose are out of the denominator as well as the numerator. Coverage is
+    # printed whatever the result, so a run with regressions still says how much of the baseline it
+    # compared, and a run with both a regression and a coverage loss reports both failures.
+    measurable = len(baseline) - skipped_baseline
+    coverage_pct = (compared / measurable) * 100.0
+    print(
+        f"Coverage: {coverage_pct:.1f}% ({compared} of {measurable} measurable baseline benchmark(s) compared; "
+        f"{len(missing_from_current)} missing, {len(invalid)} invalid/unusable, "
+        f"{skipped_baseline} skipped on purpose; {args.min_coverage:.1f}% required)."
+    )
+    print()
+
     if regressions:
         print(f"Regressions ({len(regressions)}) - exceeded {args.threshold:.1f}% threshold:")
         for name, base, base_unit, cur, cur_unit, pct in sorted(regressions, key=lambda x: -x[5]):
             print(f"   {name}: {base:.1f}{base_unit} -> {cur:.1f}{cur_unit}  ({pct:+.1f}%){own_threshold_note(name)}")
         print()
+
+    failed = False
+    if regressions:
         override_note = " (or their own threshold)" if any(name in own_thresholds for name, *_ in regressions) else ""
         print(f"FAILED: {len(regressions)} benchmark(s) regressed beyond {args.threshold:.1f}%{override_note}.")
-        return 1
-
-    # ── Coverage gate ─────────────────────────────────────────────────────────
-    # Benchmarks skipped on purpose are out of the denominator as well as the numerator.
-    measurable = len(baseline) - skipped_baseline
-    coverage_pct = (compared / measurable) * 100.0
+        failed = True
     if coverage_pct < args.min_coverage:
         print(
             f"FAILED: coverage {coverage_pct:.1f}% is below the required "
@@ -653,6 +668,8 @@ def main() -> int:
             f"{len(invalid)} invalid/unusable, out of {measurable} measurable baseline benchmark(s); "
             f"{skipped_baseline} skipped on purpose)."
         )
+        failed = True
+    if failed:
         return 1
 
     floor_note = f" ({len(below_floor)} over {args.threshold:.1f}% only within the noise floor)" if below_floor else ""

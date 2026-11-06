@@ -625,6 +625,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessSmoothedUsage.cpp
     App/test_ProcessActionHelpers.cpp
     App/test_ProcessActionsView.cpp
+    App/test_PriorityChangesInFlight.cpp # the priority changes in flight both panels share (#3467)
     App/test_AuthorizeWording.cpp
     App/test_ProcessDumpView.cpp
     App/test_ProcessWaitChainDialog.cpp # Analyze wait chain's dialog (#3084)
@@ -757,6 +758,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsProcessActions.cpp
     Platform/test_WindowsProcessActionsSeams.cpp
     Platform/test_WindowsFileLocation.cpp  # Open file location: SHOpenFolderAndSelectItems, then explorer.exe /select, through fakes (#3426)
+    Platform/test_WindowsRunProgram.cpp  # Run new task: ShellExecuteExW open/runas and a cancelled UAC prompt, through fakes (#3427)
     Platform/test_WindowsWaitChain.cpp  # Analyze wait chain: the WCT session through fakes, and one real child (#3084)
     Platform/test_WindowsSignatureCheck.cpp  # WinVerifyTrust, embedded and catalog, through fakes and on notepad.exe (#3070)
     Platform/test_WindowsDebugPrivilege.cpp
@@ -836,6 +838,8 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_DetachedSpawn.cpp
     Platform/test_SessionUser.cpp  # whom a run as root opens links and folders as (#2461)
     Platform/test_LinuxStartup.cpp  # the Startup tab on Linux: XDG autostart (#2541)
+    Platform/test_CronTab.cpp # cron tables for the Linux Startup tab (#3425)
+    Platform/test_CommandOutput.cpp # a short command's output, for crontab -l (#3425)
     Platform/test_LinuxHttpsClient.cpp  # the update check's HTTPS client on Linux: libcurl (#3238)
     Platform/test_LinuxStartAtLogin.cpp  # start at sign-in on Linux: the XDG autostart entry (#3254)
     Platform/test_LinuxIoPriority.cpp

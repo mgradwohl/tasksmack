@@ -127,6 +127,28 @@ class CheckBenchmarkRegressionTest(unittest.TestCase):
         self.assertEqual(code, 1, output)
         self.assertIn("BM_Big", output)
 
+    def test_coverage_is_printed_before_the_regressions(self):
+        # #3448: a regression used to return before coverage was printed.
+        code, output = self.run_gate({"BM_A": 100.0, "BM_B": 100.0}, {"BM_A": 300.0, "BM_B": 100.0})
+        self.assertEqual(code, 1, output)
+        self.assertIn("Coverage: 100.0% (2 of 2 measurable baseline benchmark(s) compared", output)
+        self.assertLess(output.index("Coverage: "), output.index("Regressions (1)"))
+        self.assertIn("FAILED: 1 benchmark(s) regressed", output)
+
+    def test_a_regression_and_a_coverage_loss_are_both_reported(self):
+        baseline = {f"BM_{i}": 100.0 for i in range(10)}
+        current = {"BM_0": 300.0, "BM_1": 100.0}
+        code, output = self.run_gate(baseline, current)
+        self.assertEqual(code, 1, output)
+        self.assertIn("Coverage: 20.0% (2 of 10", output)
+        self.assertIn("FAILED: 1 benchmark(s) regressed", output)
+        self.assertIn("FAILED: coverage 20.0% is below the required 90.0%", output)
+
+    def test_coverage_is_printed_on_success(self):
+        code, output = self.run_gate({"BM_A": 100.0}, {"BM_A": 100.0})
+        self.assertEqual(code, 0, output)
+        self.assertIn("Coverage: 100.0% (1 of 1", output)
+
     def test_floor_of_zero_gates_on_percentage_alone(self):
         code, output = self.run_gate({"BM_Tiny": 0.4}, {"BM_Tiny": 0.6}, "--min-abs-delta-ns", "0")
         self.assertEqual(code, 1, output)

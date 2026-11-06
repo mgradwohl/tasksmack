@@ -105,7 +105,9 @@ void ProcessActionsView::renderEfficiencyModeToggle(Platform::IProcessActions* a
                                                     bool on,
                                                     bool afterButtons)
 {
-    const Detail::EfficiencyModeToggle toggle = Detail::efficiencyModeToggle(capabilities, target, on, m_ActionRun.busy());
+    // Efficiency mode sets the priority: held while another change for the process runs (#3467).
+    const Detail::EfficiencyModeToggle toggle =
+        Detail::holdEfficiencyModeToggle(Detail::efficiencyModeToggle(capabilities, target, on, m_ActionRun.busy()), m_PriorityHoldReason);
     if (toggle.state == Detail::EfficiencyModeToggleState::Hidden)
     {
         return;

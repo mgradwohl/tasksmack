@@ -1512,11 +1512,32 @@ so: the committed Linux baselines have no manifest, nor do runs from before #316
 with it when it ran on the same core class: the default `-Core performance`. The CI gate isn't
 affected. The comparison also prints each manifest's `system_load`.
 
-Even on a quiet machine, two full runs of the same binary differ by more than 15% on a few
-benchmarks (#3414): the `*_Concurrent_PublicationWait/.../extra_readers:2` ones, which have a CV
-of 10-50% within a run, and a few whose median moves between runs although each run's CV is
-low, such as `BM_WindowsProcessProbe_SnapshotReplay` (8.5 us or 38 us). Re-run a flagged
-benchmark with a filter before treating it as a regression.
+Two full runs of one binary on a quiet machine used to differ by more than 15% on about eight
+benchmarks (#3414, #3448). The causes were in the benchmarks, not the code they time, and each
+is now held still rather than given a looser threshold:
+
+- **What's on the machine.** `BM_WindowsProcessProbe_SnapshotReplay` and `ParseWarmCache`
+  replayed the live process snapshot, so their time followed how many processes were running
+  (300-324, 505-567 KiB). They now replay a fixed shape: the capture's first 256 processes,
+  16 threads each.
+- **Where the heap put a buffer.** `BM_HistoryBuffer_CopyTo` / `CopyToWrapped` copy about a third
+  slower from a source 48 bytes into a cache line, and the heap's 16-byte alignment changed with
+  every repetition and launch. The ring now starts on a cache line and the destination half a
+  page past it.
+- **The lock's long tail.** A `*_Concurrent_PublicationWait/.../extra_readers:2` reader that loses
+  the publication lock sleeps in the kernel (100 us at the 90th percentile, up to 1.3 ms at the
+  99th, against 2-3 us at the median), and one handoff per iteration reported the mean. Each
+  iteration now times 11 handoffs and reports their median (the mean stays as `mean_wait_us`).
+  Under `bench.ps1`'s pinning each of the benchmark's threads gets a CPU of its own, and the model
+  sits on cache lines of its own, since its placement decided how often the threads contended.
+
+The three `extra_readers:2` benchmarks still move between full runs: over three clean runs their
+median wait read 4.25-5.01 us (System), 4.21-5.05 us (Storage) and 4.74-8.83 us (GPU). A flag on
+one of them alone is still most likely noise (#3448).
+
+`check-benchmark-regression.py` prints the coverage line before any regressions, so a failing
+comparison still says how much it compared. Re-run a flagged benchmark with a filter before
+treating it as a regression.
 
 ### CI Benchmark Regression Gate
 

@@ -646,7 +646,8 @@ void ProcessPriorityView::renderApplyButton(Platform::IProcessActions* actions,
     // acts on an unknown one (IProcessActions' checkProcessIdentity()).
     // Disabled, too, while an apply runs on its worker (#2305).
     // And while Set Realtime priority runs for it (#3429): the two would race.
-    const bool enabled = canApply(currentNice, target) && !applying() && !m_HeldForOtherChange;
+    // Or while a priority change for it runs in the Processes table (#3467).
+    const bool enabled = canApply(currentNice, target) && !applying() && !heldForOtherPriorityChange();
     const bool waiting = waitingForProcessDetails(currentNice, target);
 
     // Right-align the Apply button. As wide as its label, the same rule as Terminate's and Kill's
@@ -689,9 +690,9 @@ void ProcessPriorityView::renderApplyButton(Platform::IProcessActions* actions,
         {
             tooltip = "Applying the last change";
         }
-        else if (m_HeldForOtherChange)
+        else if (heldForOtherPriorityChange())
         {
-            tooltip = "Waiting for Set Realtime priority to finish";
+            tooltip = m_HoldReason;
         }
         else if (waiting)
         {

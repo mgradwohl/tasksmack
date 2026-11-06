@@ -1,12 +1,16 @@
 #include "LinuxStartup.h"
 
+#include "Domain/SamplingConfig.h"
 #include "Platform/IStartupActions.h"
 #include "Platform/IStartupProbe.h"
+#include "Platform/Linux/CommandOutput.h"
+#include "Platform/Linux/CronTab.h"
 #include "Platform/Linux/DesktopEntryIcons.h"
 #include "Platform/Linux/SystemdUnitFile.h"
 #include "Platform/Linux/XdgAutostart.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -16,6 +20,8 @@
 #include <ios>
 #include <iterator>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -23,6 +29,7 @@
 #include <utility>
 #include <vector>
 
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace Platform
@@ -198,6 +205,105 @@ constexpr std::uintmax_t MAX_FILE_BYTES = std::uintmax_t{64} * 1024U;
     return true;
 }
 
+/// The program a cron job starts and whether it is there.
+struct CronTarget
+{
+    std::string program; ///< Its path when found; as written when Missing; empty when Unresolved
+    std::string stem;    ///< What the row is named after: the program's file name, or the command's first word
+    StartupTargetState state = StartupTargetState::Unresolved;
+};
+
+/// Whether @p shell reads a command as POSIX sh does, so CronTab::program() reads it right.
+[[nodiscard]] bool posixShell(std::string_view shell)
+{
+    const std::string name = std::filesystem::path(shell).filename().string();
+    return name == "sh" || name == "dash" || name == "bash" || name == "ksh" || name == "mksh" || name == "zsh" || name == "busybox";
+}
+
+/// Where cron's shell finds @p job's program: its first command word (CronTab::program()), looked up on the job's
+/// own PATH (an inline `PATH=... cmd`, else the table's last PATH=, else cron's default) when it has no '/'. A
+/// builtin, shell syntax not followed, another kind of shell, a relative path (it runs from the user's home) or a
+/// PATH with relative or unreadable directories leaves it Unresolved rather than Missing: only what cron would
+/// certainly not find is Missing.
+[[nodiscard]] CronTarget cronTarget(const CronTab::Entry& job)
+{
+    CronTarget target;
+    const CronTab::Program found = CronTab::program(job.command);
+    if (found.kind != CronTab::Program::Kind::Executable || !posixShell(job.shell))
+    {
+        target.stem = found.word.empty() ? job.command.substr(0, job.command.find_first_of(" \t")) : found.word;
+        return target;
+    }
+    target.stem = std::filesystem::path(found.word).filename().string();
+    if (found.word.contains('/'))
+    {
+        if (found.word.front() != '/')
+        {
+            return target; // relative to the directory the job runs in
+        }
+        std::error_code ec;
+        const bool there = std::filesystem::exists(found.word, ec);
+        if (ec)
+        {
+            return target; // a directory TaskSmack can't search (/root/backup.sh): cron's may, so not Missing
+        }
+        target.program = found.word;
+        target.state = there ? StartupTargetState::Present : StartupTargetState::Missing;
+        return target;
+    }
+    bool uncertain = false;
+    // env -i or env -u PATH: execvp() then searches its default path rather than the one the job inherits.
+    constexpr std::string_view EXECVP_DEFAULT_PATH = "/bin:/usr/bin";
+    std::string_view path = job.path;
+    if (found.path.has_value())
+    {
+        path = *found.path;
+    }
+    else if (found.pathRemoved)
+    {
+        path = EXECVP_DEFAULT_PATH;
+    }
+    for (;;)
+    {
+        const std::size_t colon = path.find(':');
+        const std::string_view dir = path.substr(0, colon);
+        if (dir.empty() || dir.front() != '/')
+        {
+            uncertain = true; // the current directory, or one relative to it
+        }
+        else
+        {
+            std::error_code ec;
+            const std::filesystem::path candidate = std::filesystem::path(dir) / found.word;
+            const std::filesystem::file_status status = std::filesystem::status(candidate, ec);
+            constexpr auto ANY_EXEC =
+                std::filesystem::perms::owner_exec | std::filesystem::perms::group_exec | std::filesystem::perms::others_exec;
+            if (std::filesystem::is_regular_file(status) && (status.permissions() & ANY_EXEC) != std::filesystem::perms::none)
+            {
+                if (uncertain)
+                {
+                    return target; // an earlier directory, relative or unreadable, may hold the one cron runs
+                }
+                target.program = candidate.string();
+                target.state = StartupTargetState::Present;
+                return target;
+            }
+            uncertain = uncertain || ec == std::errc::permission_denied; // a directory TaskSmack can't search
+        }
+        if (colon == std::string_view::npos)
+        {
+            break;
+        }
+        path.remove_prefix(colon + 1);
+    }
+    if (!uncertain)
+    {
+        target.program = found.word; // left as written, and Missing
+        target.state = StartupTargetState::Missing;
+    }
+    return target;
+}
+
 } // namespace
 
 SystemdUserDirs systemdUserDirs(std::string_view home, std::string_view xdgConfigHome)
@@ -224,7 +330,8 @@ LinuxStartupProbe::LinuxStartupProbe()
     : LinuxStartupProbe(dirsFromEnvironment(),
                         environment("XDG_CURRENT_DESKTOP"),
                         environment("PATH"),
-                        systemdUserDirs(environment("HOME"), environment("XDG_CONFIG_HOME")))
+                        systemdUserDirs(environment("HOME"), environment("XDG_CONFIG_HOME")),
+                        cronSources())
 {}
 
 LinuxStartupProbe::LinuxStartupProbe(XdgAutostart::Dirs dirs, std::string currentDesktops, std::string searchPath)
@@ -232,11 +339,138 @@ LinuxStartupProbe::LinuxStartupProbe(XdgAutostart::Dirs dirs, std::string curren
 {}
 
 LinuxStartupProbe::LinuxStartupProbe(XdgAutostart::Dirs dirs, std::string currentDesktops, std::string searchPath, SystemdUserDirs systemd)
+    : LinuxStartupProbe(std::move(dirs), std::move(currentDesktops), std::move(searchPath), std::move(systemd), CronSources{})
+{}
+
+LinuxStartupProbe::LinuxStartupProbe(
+    XdgAutostart::Dirs dirs, std::string currentDesktops, std::string searchPath, SystemdUserDirs systemd, CronSources cron)
     : m_Dirs(std::move(dirs)),
       m_Systemd(std::move(systemd)),
+      m_Cron(std::move(cron)),
       m_CurrentDesktops(std::move(currentDesktops)),
       m_SearchPath(std::move(searchPath))
 {}
+
+bool cronTableFileName(std::string_view name) noexcept
+{
+    const auto allowed = [](char c)
+    {
+        return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-';
+    };
+    return !name.empty() && std::ranges::all_of(name, allowed);
+}
+
+CronSources cronSources()
+{
+    // `crontab -l` re-run at most every STARTUP_CRON_REFRESH_SECONDS: the Startup tab samples every few seconds, and a
+    // crontab changes only when its owner edits it. Shared by copies of the function, guarded for the sampler thread.
+    struct Cache
+    {
+        std::mutex mutex;
+        std::optional<std::chrono::steady_clock::time_point> readAt;
+        std::optional<std::string> text;
+    };
+    const auto cache = std::make_shared<Cache>();
+    CronSources sources;
+    sources.userCrontab = [cache] -> std::optional<std::string>
+    {
+        const std::scoped_lock lock(cache->mutex);
+        const auto now = std::chrono::steady_clock::now();
+        if (!cache->readAt.has_value() || now - *cache->readAt >= std::chrono::seconds(Domain::Sampling::STARTUP_CRON_REFRESH_SECONDS))
+        {
+            // Exit 1 with "no crontab for <user>" on stderr when there's none: no jobs, not an error to show.
+            const CommandOutput run = runForOutput({"crontab", "-l"}, std::chrono::seconds(2), std::size_t{256} * 1024);
+            cache->text = (run.started && run.exitCode == 0) ? std::optional<std::string>(run.output) : std::nullopt;
+            cache->readAt = now;
+        }
+        return cache->text;
+    };
+    sources.systemTables.emplace_back("/etc/crontab");
+    sources.systemTableDirs.emplace_back("/etc/cron.d");
+    return sources;
+}
+
+void LinuxStartupProbe::addCronJobs(std::vector<StartupEntry>& entries) const
+{
+    // ignoredBecause: why cron skips the whole table (a system table it won't trust), else empty.
+    const auto add = [&entries](const CronTab::Entry& job, const std::string& table, bool system, std::string_view ignoredBecause)
+    {
+        const CronTarget found = cronTarget(job);
+        StartupEntry entry;
+        entry.name =
+            std::format("{} (cron, {}{})", found.stem, CronTab::describeSchedule(job.schedule), job.user.empty() ? "" : ", as " + job.user);
+        entry.programName = entry.name;
+        entry.registrationName = std::format("{} line {}", table, job.line); // the line identifies it in its table
+        entry.command = job.command;
+        entry.executablePath = found.program;
+        entry.sourcePath = system ? table : std::string{};
+        entry.location = system ? StartupLocation::CronSystem : StartupLocation::CronUser;
+        entry.scope = system ? StartupScope::Machine : StartupScope::User;
+        entry.enabled = ignoredBecause.empty(); // a job line is on; a commented-out one isn't listed
+        if (!ignoredBecause.empty())
+        {
+            entry.notSwitchableReason = std::format("cron ignores {}: it {}", table, ignoredBecause);
+        }
+        else
+        {
+            entry.notSwitchableReason = system ? std::format("A system cron job, in {}: an administrator changes it", table)
+                                               : std::string("A cron job: change it with crontab -e");
+        }
+        entry.target = found.state;
+        entries.push_back(std::move(entry));
+    };
+    if (m_Cron.userCrontab)
+    {
+        if (const std::optional<std::string> text = m_Cron.userCrontab())
+        {
+            for (const CronTab::Entry& job : CronTab::parse(*text, /*withUser=*/false))
+            {
+                add(job, "crontab", false, {});
+            }
+        }
+    }
+    // The directories are listed here, on the sampler thread, each sample: a table added since shows at once.
+    std::vector<std::filesystem::path> tables = m_Cron.systemTables;
+    for (const std::filesystem::path& dir : m_Cron.systemTableDirs)
+    {
+        std::vector<std::filesystem::path> found;
+        std::error_code ec;
+        for (std::filesystem::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec))
+        {
+            std::error_code typeError;
+            if (cronTableFileName(it->path().filename().string()) && it->is_regular_file(typeError))
+            {
+                found.push_back(it->path());
+            }
+        }
+        std::ranges::sort(found);
+        tables.insert(tables.end(), found.begin(), found.end());
+    }
+    for (const std::filesystem::path& table : tables)
+    {
+        if (const std::optional<std::string> text = readFile(table))
+        {
+            // cron (Debian's and cronie) skips a system table not owned by root or writable by group or others.
+            std::string_view ignoredBecause;
+            struct stat info{};
+            if (::stat(table.c_str(), &info) == 0)
+            {
+                if (info.st_uid != m_Cron.systemTableOwner)
+                {
+                    ignoredBecause = "isn't owned by root";
+                }
+                else if ((info.st_mode & (S_IWGRP | S_IWOTH)) != 0)
+                {
+                    ignoredBecause = "can be written by its group or others";
+                }
+            }
+            for (const CronTab::Entry& job : CronTab::parse(*text, /*withUser=*/true))
+            {
+                add(job, table.string(), true, ignoredBecause);
+            }
+        }
+    }
+}
 
 void LinuxStartupProbe::addSystemdUnits(std::vector<StartupEntry>& entries) const
 {
@@ -389,6 +623,7 @@ std::vector<StartupEntry> LinuxStartupProbe::enumerate()
         entries.push_back(std::move(entry));
     }
     addSystemdUnits(entries); // #3082
+    addCronJobs(entries);     // #3425
     return entries;
 }
 

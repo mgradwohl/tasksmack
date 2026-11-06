@@ -283,7 +283,7 @@ ProcessActionResult BrokeredProcessActions::openFileLocation(const ProcessTarget
 
 ProcessActionResult BrokeredProcessActions::runProgram(const RunProgramRequest& request)
 {
-    return m_Inner->runProgram(request); // its own pkexec prompt when elevated: the helper never starts programs
+    return m_Inner->runProgram(request); // its own pkexec or UAC prompt when elevated: the helper never starts programs
 }
 
 ProcessDumpResult
