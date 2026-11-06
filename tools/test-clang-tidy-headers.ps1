@@ -6,7 +6,9 @@
 #     carrying the PCH and module flags the script must strip (left in, they fail the compile);
 #     Both run from the checkout and from a copy of the scripts whose path has a space;
 #   - tools/clang-tidy.sh --build-dir through Git Bash, and with a named preset, in that copy with its
-#     own CMakePresets.json (Windows Python's CRLF output and Windows paths, #3500 review).
+#     own CMakePresets.json (Windows Python's CRLF output and Windows paths, #3500 review), also with
+#     a stand-in Python whose CR survives $(...), as under MSYS2 and Cygwin (#3517);
+#   - a malformed database fails both scripts and leaves no temporary directory in TEMP (#3517).
 # Registered in CTest on Windows with PowerShell 7; can also run directly with pwsh -File. Skips (passes)
 # when clang-tidy isn't installed.
 #Requires -Version 7
@@ -122,13 +124,65 @@ try {
     Assert-True ($output -notmatch 'no such directory') "clang-tidy.sh tidy-fixture did not find the preset's binaryDir:`n$output"
     Assert-ReportsHeaderFinding 'clang-tidy.sh tidy-fixture (named preset, Git Bash)' $output $LASTEXITCODE
 
+    # ── The same preset under a bash that keeps native Python's CR (MSYS2, Cygwin; #3517) ─────────
+    # Git Bash's $(...) drops a CRLF's CR, so the copy's venv gets a stand-in for native Windows Python
+    # that ends its sys.platform and binaryDir lines with "\r \r\n", whose first CR survives, and that
+    # passes paths through unconverted, as Cygwin does. Read as "win32\r ", the platform makes the
+    # lookup hand the POSIX root to a native Python, which can't open it. The version probe is passed
+    # through clean, so find_python picks the stand-in either way.
+    $realPython = foreach ($name in 'python', 'python3') {
+        $command = Get-Command $name -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $command) { continue }
+        # Not "| Select-Object -First 1": stopping the pipeline early leaves $LASTEXITCODE unset.
+        $exe = @(& $command.Source -I -c 'import sys; print(sys.executable)' 2>$null)[0]
+        if ($LASTEXITCODE -eq 0 -and $exe -and (Test-Path -LiteralPath $exe)) { $exe; break }
+    }
+    if ($realPython) {
+        $shim = Join-Path $copy '.venv\bin\python'
+        New-Item -ItemType Directory -Path (Split-Path -Parent $shim) -Force | Out-Null
+        $shimText = @(
+            '#!/usr/bin/env bash'
+            "real='$($realPython -replace '\\', '/')'"
+            'export MSYS_NO_PATHCONV=1'
+            'case "$*" in *sys.version_info*) exec "$real" "$@" ;; esac'
+            'out="$("$real" "$@")" || exit'
+            'printf ''%s\r \r\n'' "$out"'
+        ) -join "`n"
+        [IO.File]::WriteAllText($shim, "$shimText`n")
+        $output = & $gitBash $copySh tidy-fixture -j 1 "$($fixtureRel -replace '\\', '/')/HeaderFinding.cpp" 2>&1 | Out-String
+        $code = $LASTEXITCODE
+        Remove-Item -LiteralPath (Join-Path $copy '.venv') -Recurse -Force
+        Assert-True ($output -notmatch 'Unknown argument|no such directory') "clang-tidy.sh tidy-fixture misread a CRLF platform or binaryDir:`n$output"
+        Assert-ReportsHeaderFinding 'clang-tidy.sh tidy-fixture (CRLF Python output)' $output $code
+    } else {
+        Write-Host 'No python on PATH; the CRLF platform case was not tested'
+    }
+
     # ── The hand-off fails closed (#3500 review): clang-tidy.ps1 stopping on an error, or not there ─
     $badDir = Join-Path $scratch 'malformed'
     New-Item -ItemType Directory -Path $badDir | Out-Null
     [IO.File]::WriteAllText((Join-Path $badDir 'compile_commands.json'), '[{ "directory": ')
-    $output = & $gitBash $copySh --build-dir ($badDir -replace '\\', '/') -j 1 "$($fixtureRel -replace '\\', '/')/HeaderFinding.cpp" 2>&1 | Out-String
-    $code = $LASTEXITCODE
+    # Both runs get their own TEMP, which must be empty afterwards: the sanitized database's temporary
+    # directory is removed however clang-tidy.ps1 ends, a terminating error included (#3517).
+    $privateTemp = Join-Path $scratch 'temp'
+    New-Item -ItemType Directory -Path $privateTemp | Out-Null
+    $savedTemp, $savedTmp = $env:TEMP, $env:TMP
+    try {
+        $env:TEMP = $env:TMP = $privateTemp
+        $output = & pwsh -NoLogo -NoProfile -File (Join-Path $copy 'tools\clang-tidy.ps1') -BuildDir $badDir `
+            -Files (Join-Path $copy "$fixtureRel\HeaderFinding.cpp") -Jobs 1 *>&1 | Out-String
+        $code = $LASTEXITCODE
+        $left = @(Get-ChildItem -LiteralPath $privateTemp -Filter '*clang-tidy*' -Force)
+        Assert-True ($code -ne 0) "clang-tidy.ps1 passed (exit $code) on a malformed database:`n$output"
+        Assert-True ($left.Count -eq 0) "clang-tidy.ps1 left $(($left | Select-Object -ExpandProperty Name) -join ', ') in TEMP after a malformed database:`n$output"
+        $output = & $gitBash $copySh --build-dir ($badDir -replace '\\', '/') -j 1 "$($fixtureRel -replace '\\', '/')/HeaderFinding.cpp" 2>&1 | Out-String
+        $code = $LASTEXITCODE
+        $left = @(Get-ChildItem -LiteralPath $privateTemp -Filter '*clang-tidy*' -Force)
+    } finally {
+        $env:TEMP, $env:TMP = $savedTemp, $savedTmp
+    }
     Assert-True ($code -ne 0 -and $output -notmatch 'completed successfully') "clang-tidy.sh passed (exit $code) although clang-tidy.ps1 failed on a malformed database:`n$output"
+    Assert-True ($left.Count -eq 0) "clang-tidy.sh's hand-off left $(($left | Select-Object -ExpandProperty Name) -join ', ') in TEMP after a malformed database:`n$output"
 
     # No usable Python: the preset lookup says so and fails, rather than passing or guessing. PATH keeps
     # only pwsh (Git Bash adds its own tools, which have no Python); the copy has no .venv.
