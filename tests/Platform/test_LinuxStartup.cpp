@@ -509,6 +509,11 @@ TEST_F(LinuxStartupTest, AnInstallableUnitThatIsntEnabledIsListedDisabled)
     EXPECT_TRUE(pkg->enabled) << "the package's link starts it";
     EXPECT_EQ(pkg->location, StartupLocation::SystemdSystemUnit);
     EXPECT_FALSE(pkg->notSwitchableReason.empty());
+    // Refused with its own reason, not the systemctl --global command, which wouldn't remove a package's link.
+    const StartupActionResult pkgRefused = LinuxStartupActions(m_Dirs).setEnabled(*pkg, false);
+    EXPECT_FALSE(pkgRefused.ok);
+    EXPECT_EQ(pkgRefused.message, pkg->notSwitchableReason);
+    EXPECT_FALSE(pkgRefused.message.contains("systemctl --global")) << pkgRefused.message;
     const StartupEntry* bob = find(entries, "worker@bob.service");
     ASSERT_NE(bob, nullptr);
     EXPECT_TRUE(bob->enabled);

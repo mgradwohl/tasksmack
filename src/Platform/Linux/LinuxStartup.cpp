@@ -822,7 +822,9 @@ StartupActionResult LinuxStartupActions::setEnabled(const StartupEntry& entry, b
     }
     if (entry.location == StartupLocation::SystemdSystemUnit)
     {
-        return StartupActionResult::failed(allUsersUnitReason(entry.registrationName));
+        // The entry's own reason when it has one: a package's link isn't removed by systemctl --global (#3512 review).
+        return StartupActionResult::failed(entry.notSwitchableReason.empty() ? allUsersUnitReason(entry.registrationName)
+                                                                             : entry.notSwitchableReason);
     }
     const std::string& fileName = entry.registrationName;
     if (m_Dirs.user.empty())
