@@ -1239,6 +1239,37 @@ TEST(TasksmackHelperRootTest, ClosesAnotherUsersTcpConnection)
     EXPECT_EQ(::recv(accepted, byte.data(), byte.size(), MSG_DONTWAIT), 0) << "end of file: the helper shut the child's end down";
 }
 
+// #3491 item 2 (#2320, #2326, #2329, #2330, #2891): "Authenticate and retry" end to end. The real pkexec, through a
+// running polkitd, starts the helper installed where the packages put it (/usr/libexec/tasksmack, its policy in
+// /usr/share/polkit-1/actions), and the helper, now root, reads PID 1's environment, which only root can. CI's
+// step installs pkexec and polkitd, the helper and its policy, and a polkit rule that allows the runner's user
+// without a password; the password dialog stays a manual check. Run unprivileged, on a disposable runner only.
+TEST(PkexecRealSystemTest, TheInstalledHelperRunsAsRootThroughPkexec)
+{
+    if (const std::optional<std::string> why = ::TestSupport::ciRealSystemSkipReason())
+    {
+        GTEST_SKIP() << *why;
+    }
+    constexpr const char* INSTALLED_HELPER = "/usr/libexec/tasksmack/tasksmack-helper";
+    if (::geteuid() == 0 || !std::filesystem::exists(INSTALLED_HELPER))
+    {
+        GTEST_SKIP() << "Runs unprivileged, with the helper installed at " << INSTALLED_HELPER;
+    }
+    PkexecBroker broker(INSTALLED_HELPER); // launched through "pkexec", as the app does
+    const auto connected = broker.connect(std::stop_token{});
+    ASSERT_TRUE(connected.has_value()) << connected.error();
+
+    std::ifstream statFile("/proc/1/stat");
+    const std::string statLine((std::istreambuf_iterator<char>(statFile)), std::istreambuf_iterator<char>());
+    const ProcessTarget init{.pid = 1, .startTimeTicks = ProcParsing::parseStatStartTime(statLine).value_or(0)};
+    ASSERT_NE(init.startTimeTicks, 0U);
+    const auto response = broker.call(Broker::EnvironmentRequest{.target = init}, std::stop_token{});
+    ASSERT_TRUE(response.has_value()) << response.error();
+    ASSERT_TRUE(std::holds_alternative<Broker::EnvironmentReply>(*response));
+    EXPECT_EQ(std::get<Broker::EnvironmentReply>(*response).result.status, EnvironmentReadStatus::Ok)
+        << "PID 1's environment is root's to read: the helper runs as root through pkexec";
+}
+
 /// What `systemctl show -p <property> --value <unit>` prints, trimmed (#3491).
 [[nodiscard]] std::string unitProperty(const std::string& unit, const char* property)
 {

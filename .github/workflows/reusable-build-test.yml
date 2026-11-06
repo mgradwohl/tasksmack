@@ -322,6 +322,35 @@ jobs:
             exit 1
           fi
 
+      # "Authenticate and retry" end to end (#3491 item 2): the real pkexec and polkitd start the helper from
+      # where the packages install it, and PkexecRealSystemTest checks it runs as root. The same rule as
+      # release.yml's validate-linux-helper allows the runner's user without a password; the dialog itself
+      # stays a manual check. Unprivileged, and a skip fails the step as in the root step above.
+      - name: Helper through pkexec (Linux)
+        if: runner.os == 'Linux' && inputs.build && inputs.build_type == 'debug'
+        env:
+          TASKSMACK_CI_REAL_SYSTEM: '1'
+        run: |
+          set -o pipefail
+          sudo timeout --kill-after=10s 300s apt-get update -q
+          sudo timeout --kill-after=10s 300s apt-get install -y --no-install-recommends pkexec polkitd
+          sudo install -D -m 0755 build/debug/bin/tasksmack-helper /usr/libexec/tasksmack/tasksmack-helper
+          sudo install -D -m 0644 assets/linux/app.tasksmack.TaskSmack.helper.policy \
+            /usr/share/polkit-1/actions/app.tasksmack.TaskSmack.helper.policy
+          user="$(id -un)"
+          printf '%s\n' \
+            'polkit.addRule(function (action, subject) {' \
+            "    if (action.id == \"app.tasksmack.TaskSmack.helper\" && subject.user == \"$user\") {" \
+            '        return polkit.Result.YES;' \
+            '    }' \
+            '});' | sudo tee /etc/polkit-1/rules.d/49-tasksmack-ci.rules
+          sudo systemctl restart polkit
+          build/debug/tests/TaskSmackTests --gtest_filter='PkexecRealSystemTest.*' 2>&1 | tee pkexec-real-test.log
+          if grep -q '\[  SKIPPED \]' pkexec-real-test.log || ! grep -q '\[  PASSED  \] 1 test' pkexec-real-test.log; then
+            echo "::error title=Helper through pkexec::PkexecRealSystemTest didn't run and pass"
+            exit 1
+          fi
+
       # Build-only check that the benchmark target still compiles and links (#1348: a PR removed
       # a function bench_Format.cpp still used, and nothing on the PR built benchmarks). The
       # timing run and regression gate stay in heavy-checks.yml. Runs after the tests so a
