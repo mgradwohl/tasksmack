@@ -71,6 +71,9 @@ class LinuxSystemProbe : public ISystemProbe
     /// Every zram device's mm_stat, summed into the counters (#3087); the device list is re-read from
     /// m_SysBlockRoot every ZRAM_RESCAN_INTERVAL_SECONDS.
     void readZram(SystemCounters& counters);
+    /// Every NUMA node's memory, with its CPUs, into counters.numaNodes (#3088). The node list and the
+    /// CPU lists are re-read from m_NumaNodeRoot every NUMA_RESCAN_INTERVAL_SECONDS; meminfo every call.
+    void readNuma(SystemCounters& counters);
 
     /// Read network-related counters (bytes, packets, etc.) from /proc/net/dev.
     /// Unlike the other read* helpers, this method is non-static because it
@@ -113,6 +116,7 @@ class LinuxSystemProbe : public ISystemProbe
     std::filesystem::path m_SysClassNetRoot;
     std::filesystem::path m_CpuSysfsRoot;
     std::filesystem::path m_SysBlockRoot; // <rootDir>/sys/block, where zram devices are (#3087)
+    std::filesystem::path m_NumaNodeRoot; // <rootDir>/sys/devices/system/node, the NUMA nodes (#3088)
     long m_TicksPerSecond;
     std::size_t m_NumCores;
     bool m_HasPressure = false; // the kernel has PSI enabled: /proc/pressure/cpu reads (#3062)
@@ -138,6 +142,18 @@ class LinuxSystemProbe : public ISystemProbe
     std::vector<std::filesystem::path> m_ZramStatPaths;
     std::chrono::steady_clock::time_point m_ZramScannedAt;
     bool m_ZramScanned = false;
+
+    // The NUMA nodes' layout (#3088): each node's id and CPUs, memory left at 0, as last listed, and when.
+    // m_HasNuma (the node root exists; a kernel without CONFIG_NUMA has none) is decided at construction
+    // and not changed after. The rest is guarded by m_NumaMutex, since read() may run on several threads.
+    // m_NumaScanned: a completed layout has been published (set with it and m_NumaScannedAt).
+    // m_NumaRescanning: one call is re-listing an expired layout; the others keep using the old one.
+    bool m_HasNuma = false;
+    std::mutex m_NumaMutex;
+    std::vector<NumaNode> m_NumaLayout;
+    std::chrono::steady_clock::time_point m_NumaScannedAt;
+    bool m_NumaScanned = false;
+    bool m_NumaRescanning = false;
 
     /// Publish this sample's CPU details and core count (#809), in one critical section, so a
     /// concurrent read() cannot pair this sample's per-core counters with details or a count from

@@ -36,6 +36,8 @@ struct WorkloadSpec
     std::size_t cores = 16;
     std::size_t disks = 4;
     std::size_t interfaces = 4;
+    /// NUMA nodes (#3088): the cores and memory are split evenly between them, in order. At most `cores`.
+    std::size_t numaNodes = 1;
     std::uint64_t seed = 1413;
 };
 
@@ -45,6 +47,8 @@ inline constexpr std::size_t MIN_CORES = 1;
 inline constexpr std::size_t MAX_CORES = 1024;
 inline constexpr std::size_t MAX_DISKS = 64;
 inline constexpr std::size_t MAX_INTERFACES = 256;
+inline constexpr std::size_t MIN_NUMA_NODES = 1;
+inline constexpr std::size_t MAX_NUMA_NODES = 64;
 
 /// The per-process totals ProcessModel aggregates into its system histories (threads, page faults,
 /// network, power), as instantaneous rates: what the App preloads those histories with.

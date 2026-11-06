@@ -616,6 +616,7 @@ if(UNIX AND NOT APPLE)
         src/Platform/Linux/LinuxSystemInfoProbe.h
         src/Platform/Linux/LinuxOsInfo.h
         src/Platform/Linux/LinuxCommitPaging.h
+        src/Platform/Linux/LinuxNuma.h
         src/Platform/Linux/LinuxDiskSmart.h
         src/Platform/Linux/LinuxStorage.h
         src/Platform/Linux/LinuxGraphics.h

@@ -1,5 +1,6 @@
 #include "SyntheticWorkload.h"
 
+#include "Platform/CpuAffinity.h"
 #include "Platform/ProcessTypes.h"
 #include "Platform/StorageTypes.h"
 #include "Platform/SystemTypes.h"
@@ -1045,6 +1046,7 @@ Workload::Workload(const WorkloadSpec& spec, std::chrono::steady_clock::time_poi
     m_Spec.cores = std::clamp(m_Spec.cores, MIN_CORES, MAX_CORES);
     m_Spec.disks = std::min(m_Spec.disks, MAX_DISKS);
     m_Spec.interfaces = std::min(m_Spec.interfaces, MAX_INTERFACES);
+    m_Spec.numaNodes = std::clamp(m_Spec.numaNodes, MIN_NUMA_NODES, std::min(MAX_NUMA_NODES, m_Spec.cores));
     buildProcesses();
     buildSystem();
 }
@@ -1356,6 +1358,32 @@ void Workload::systemCountersAt(double uptime, SystemCounters& out) const
     out.memory.swapTotalBytes = toCounter(8.0 * GIB);
     out.memory.swapFreeBytes = toCounter(8.0 * GIB * (0.92 + (0.04 * std::sin(uptime * 2.0 * std::numbers::pi / 199.0))));
 
+    // NUMA nodes (#3088): consecutive runs of cores, and equal shares of the memory (the last node takes
+    // the remainder). The free memory leans towards one node, then another, by phase-shifted waves that
+    // sum to the node count, so the nodes add up to the machine's free memory and never read alike. The
+    // waves' shared amplitude is bounded by the smallest node's room (nodeShare), so no node's free memory
+    // exceeds its total and none has to be clamped: clamping one would lose free memory from the sum (#3498).
+    const std::size_t nodeCount = m_Spec.numaNodes;
+    out.numaNodes.resize(nodeCount);
+    const std::uint64_t nodeShare = m_TotalMemoryBytes / nodeCount;
+    const auto free = static_cast<double>(out.memory.freeBytes);
+    constexpr double MAX_LEAN = 0.25;
+    const double evenFree = free / static_cast<double>(nodeCount);
+    const double amplitude =
+        (nodeCount > 1 && evenFree > 0.0) ? std::clamp((static_cast<double>(nodeShare) / evenFree) - 1.0, 0.0, MAX_LEAN) : 0.0;
+    for (std::size_t node = 0; node < nodeCount; ++node)
+    {
+        NumaNode& numa = out.numaNodes[node];
+        numa.id = static_cast<int>(node);
+        numa.cpus = CpuAffinity{};
+        numa.cpus.setRange(node * m_Cores.size() / nodeCount, (((node + 1) * m_Cores.size()) / nodeCount) - 1);
+        numa.memTotalBytes = (node + 1 == nodeCount) ? m_TotalMemoryBytes - (nodeShare * (nodeCount - 1)) : nodeShare;
+        const double phase = 2.0 * std::numbers::pi * static_cast<double>(node) / static_cast<double>(nodeCount);
+        const double lean = amplitude * std::sin((uptime * 2.0 * std::numbers::pi / 311.0) + phase);
+        // min() only absorbs rounding: the amplitude already keeps the wave within the node.
+        numa.memFreeBytes = std::min(numa.memTotalBytes, toCounter(evenFree * (1.0 + lean)));
+    }
+
     out.uptimeSeconds = static_cast<std::uint64_t>(uptime);
     out.bootTimestamp = m_BootUnixSeconds;
     out.loadAvg1 = busyNow * 1.1;
@@ -1457,6 +1485,7 @@ SystemCapabilities Workload::systemCapabilities() noexcept
         .hasIoWait = true,
         .hasSteal = true,
         .hasLoadAvg = true,
+        .hasNumaNodes = true,
         .hasCpuFreq = true,
         .hasNetworkCounters = true,
         .hasVirtualizationInfo = false,

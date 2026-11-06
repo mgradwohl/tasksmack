@@ -97,7 +97,7 @@ TEST(SyntheticScenarioParseTest, FlagWordTakesTheDefaults)
 
 TEST(SyntheticScenarioParseTest, ReadsEveryKey)
 {
-    const auto result = parseScenario("processes=5000,history=full,cores=64,disks=8,interfaces=12,seed=7,refresh=250");
+    const auto result = parseScenario("processes=5000,history=full,cores=64,disks=8,interfaces=12,numa=2,seed=7,refresh=250");
     ASSERT_TRUE(result.config.has_value());
     // value_or, not value(): clang-tidy's optional check does not model ASSERT_TRUE's early return.
     const ScenarioConfig resultConfig = result.config.value_or(ScenarioConfig{});
@@ -106,6 +106,7 @@ TEST(SyntheticScenarioParseTest, ReadsEveryKey)
     EXPECT_EQ(resultConfig.workload.cores, 64U);
     EXPECT_EQ(resultConfig.workload.disks, 8U);
     EXPECT_EQ(resultConfig.workload.interfaces, 12U);
+    EXPECT_EQ(resultConfig.workload.numaNodes, 2U);
     EXPECT_EQ(resultConfig.workload.seed, 7U);
     EXPECT_EQ(resultConfig.historySeconds, Sampling::HISTORY_SECONDS_MAX);
     EXPECT_EQ(resultConfig.refreshIntervalMs, 250);
@@ -188,6 +189,19 @@ TEST(SyntheticScenarioParseTest, RefreshIsClampedToTheSupportedRange)
     const ScenarioConfig badConfig = bad.config.value_or(ScenarioConfig{});
     EXPECT_FALSE(badConfig.refreshIntervalMs.has_value());
     EXPECT_FALSE(bad.warnings.empty());
+}
+
+TEST(SyntheticScenarioParseTest, NumaNodesAreClamped)
+{
+    // #3088: one node by default, so a plain scenario shows no NUMA view.
+    EXPECT_EQ(parsed("1").workload.numaNodes, 1U);
+    const auto none = parseScenario("numa=0");
+    EXPECT_EQ(none.config.value_or(ScenarioConfig{}).workload.numaNodes, Platform::Synthetic::MIN_NUMA_NODES);
+    EXPECT_FALSE(none.warnings.empty());
+    const auto many = parseScenario("numa=1000");
+    EXPECT_EQ(many.config.value_or(ScenarioConfig{}).workload.numaNodes, Platform::Synthetic::MAX_NUMA_NODES);
+    EXPECT_FALSE(many.warnings.empty());
+    EXPECT_NE(App::Synthetic::describe(parsed("numa=2")).find("numa=2"), std::string::npos);
 }
 
 TEST(SyntheticScenarioParseTest, DescribeNamesTheSettings)
