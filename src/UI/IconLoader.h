@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Core/GraphicsReset.h"
+
 #include <imgui.h>
 
 #include <cstdint>
@@ -12,6 +14,9 @@ namespace UI
 /// Move-only type that automatically releases the texture on destruction.
 /// Typical usage: auto tex = loadTexture("path/to/icon.png"); ImGui::Image(tex.textureId(), tex.size());
 /// Default-constructed instances are invalid (valid() returns false).
+/// After a GPU reset replaces the OpenGL context (Core::graphicsContextGeneration() moves on, #3484)
+/// a texture made in the old context is invalid too: it draws as no texture, and is not deleted, as
+/// the new context may already use its name for another object.
 class Texture
 {
   public:
@@ -28,7 +33,7 @@ class Texture
     /// Default-constructed or moved-from textures return false.
     [[nodiscard]] bool valid() const noexcept
     {
-        return m_Id != 0U;
+        return m_Id != 0U && m_ContextGeneration == Core::graphicsContextGeneration();
     }
 
     /// Returns the OpenGL texture ID as ImTextureID for use with ImGui::Image().
@@ -38,7 +43,7 @@ class Texture
         // ImTextureID may be void* or an integer type depending on ImGui's backend configuration.
         // Cast from GLuint (m_Id) to the target type. Using static_cast for integer-to-integer,
         // reinterpret_cast would be needed for integer-to-pointer but ImGui typically uses integers.
-        return static_cast<ImTextureID>(m_Id); // NOLINT(performance-no-int-to-ptr)
+        return static_cast<ImTextureID>(valid() ? m_Id : 0U); // NOLINT(performance-no-int-to-ptr)
     }
 
     /// Returns the texture dimensions as an ImVec2 for convenience with ImGui.
@@ -54,6 +59,7 @@ class Texture
     std::uint32_t m_Id = 0U;
     int m_Width = 0;
     int m_Height = 0;
+    std::uint64_t m_ContextGeneration = 0; // Core::graphicsContextGeneration() m_Id was made in
 
     friend class TextureLoader;
     friend auto loadTexture(const std::filesystem::path& path) -> Texture;

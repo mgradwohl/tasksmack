@@ -1,5 +1,6 @@
 #include "UI/IconLoader.h"
 
+#include "Core/GraphicsReset.h"
 #include "Core/Utf8Path.h"
 
 #include <glad/gl.h>
@@ -45,7 +46,10 @@ Texture::~Texture()
 }
 
 Texture::Texture(Texture&& other) noexcept
-    : m_Id(std::exchange(other.m_Id, 0U)), m_Width(std::exchange(other.m_Width, 0)), m_Height(std::exchange(other.m_Height, 0))
+    : m_Id(std::exchange(other.m_Id, 0U)),
+      m_Width(std::exchange(other.m_Width, 0)),
+      m_Height(std::exchange(other.m_Height, 0)),
+      m_ContextGeneration(other.m_ContextGeneration)
 {}
 
 Texture& Texture::operator=(Texture&& other) noexcept
@@ -56,17 +60,19 @@ Texture& Texture::operator=(Texture&& other) noexcept
         m_Id = std::exchange(other.m_Id, 0U);
         m_Width = std::exchange(other.m_Width, 0);
         m_Height = std::exchange(other.m_Height, 0);
+        m_ContextGeneration = other.m_ContextGeneration;
     }
     return *this;
 }
 
 void Texture::destroy() noexcept
 {
-    if (m_Id != 0U)
+    // A texture of a context a GPU reset replaced (#3484) went with it: its name is only forgotten.
+    if (m_Id != 0U && m_ContextGeneration == Core::graphicsContextGeneration())
     {
         glDeleteTextures(1, &m_Id);
-        m_Id = 0U;
     }
+    m_Id = 0U;
     m_Width = 0;
     m_Height = 0;
 }
@@ -120,6 +126,7 @@ auto loadTexture(const std::filesystem::path& path) -> Texture
     texture.m_Id = textureId;
     texture.m_Width = width;
     texture.m_Height = height;
+    texture.m_ContextGeneration = Core::graphicsContextGeneration();
     return texture;
 }
 

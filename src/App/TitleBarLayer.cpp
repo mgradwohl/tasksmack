@@ -187,6 +187,17 @@ void TitleBarLayer::loadIconTexture(const int pixelSize)
     }
 }
 
+// LCOV_EXCL_START - runs only after a GPU reset, which no test can cause (#3484)
+void TitleBarLayer::onGraphicsContextLost()
+{
+    // The icon's texture was in the lost context: drop it while that context is still current. The
+    // bar draws without it until the drawn size next changes (a display-scale change loads the file
+    // then, as it always has) or a restart, rather than read the file on the UI thread now.
+    m_IconTexture = UI::Texture{};
+    spdlog::info("Title bar icon dropped with the lost OpenGL context");
+}
+// LCOV_EXCL_STOP
+
 void TitleBarLayer::onDetach()
 {
     spdlog::info("TitleBarLayer detached");

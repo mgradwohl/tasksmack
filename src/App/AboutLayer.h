@@ -27,6 +27,7 @@ class AboutLayer : public Core::Layer
     void onUpdate(float deltaTime) override;
     void onRender() override;
     void onEvent(Core::Event& event) override;
+    void onGraphicsContextLost() override;
 
   private:
     void requestOpen();
