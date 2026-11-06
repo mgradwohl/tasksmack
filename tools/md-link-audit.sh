@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root=${1:-"$(pwd)"}
+# Usage: tools/md-link-audit.sh [repo-root]. The root defaults to this checkout's, wherever it runs from; it
+# was the current directory, so a run from tools/ scanned 0 files and passed (#3529).
+repo_root=${1:-"$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"}
 
 python3 - "$repo_root" <<'PY'
 import sys

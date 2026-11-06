@@ -1,6 +1,8 @@
+# Usage: pwsh -File tools/md-link-audit.ps1 [-RepoRoot <dir>]. The root defaults to this checkout's, wherever
+# it runs from; it was the current directory, so a run from tools\ scanned 0 files and passed (#3529).
 param(
     [Parameter(Mandatory = $false)]
-    [string]$RepoRoot = (Get-Location).Path
+    [string]$RepoRoot = (Split-Path -Parent $PSScriptRoot)
 )
 
 $ErrorActionPreference = 'Stop'
@@ -67,7 +69,28 @@ function Add-Broken(
     ) | Out-Null
 }
 
-$repoRootFull = (Resolve-Path -LiteralPath $RepoRoot).Path
+# A path spelled one way for every prefix comparison below: full, with "\" separators and no trailing one, and
+# with 8.3 short names expanded when it exists. Get-Item expands them and Resolve-Path doesn't, while
+# Get-ChildItem hands back long names, so a root under C:\Users\RUNNER~1 (a CI runner's TEMP) never matched
+# its own files (#3529).
+function Get-CanonicalPath([string]$path) {
+    $full = if (Test-Path -LiteralPath $path) {
+        (Get-Item -LiteralPath $path -Force).FullName
+    } else {
+        [System.IO.Path]::GetFullPath($path)
+    }
+    return [System.IO.Path]::TrimEndingDirectorySeparator([System.IO.Path]::GetFullPath($full))
+}
+
+# Whether @p path is @p dir or inside it, whatever the case, separators or 8.3 spelling of either.
+function Test-UnderDirectory([string]$path, [string]$dir) {
+    $p = Get-CanonicalPath $path
+    $d = Get-CanonicalPath $dir
+    return $p.Equals($d, [System.StringComparison]::OrdinalIgnoreCase) -or
+        $p.StartsWith($d + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+$repoRootFull = Get-CanonicalPath $RepoRoot
 $repoRootNorm = ($repoRootFull.TrimEnd('\') + '\')
 
 $mdFiles = @()
@@ -80,6 +103,19 @@ $docsDir = Join-Path $repoRootFull 'docs'
 $docsDirNorm = ($docsDir.TrimEnd('\') + '\')
 if (Test-Path -LiteralPath $docsDir) {
     $mdFiles += Get-ChildItem -LiteralPath $docsDir -Recurse -File -Filter '*.md'
+}
+
+# A link's target path. A root-absolute one ("/guide/faq.md") in a page under docs/ resolves from docs/, the
+# docsify site's root: its sidebar's links are root-absolute because docsify's relativePath would otherwise
+# resolve them against the page being shown. Anywhere else it resolves from the repository root. As
+# resolve_target in tools/md-link-audit.sh does (#3529).
+function Resolve-LinkPath([System.IO.FileInfo]$md, [string]$pathPart) {
+    if (-not $pathPart.StartsWith('/')) {
+        return Join-Path $md.DirectoryName $pathPart
+    }
+    $underDocs = (Test-Path -LiteralPath $docsDir) -and (Test-UnderDirectory $md.FullName $docsDir)
+    $siteRoot = if ($underDocs) { $docsDir } else { $repoRootFull }
+    return Join-Path $siteRoot ($pathPart.TrimStart('/'))
 }
 
 $anchorCache = @{}
@@ -222,7 +258,7 @@ foreach ($md in $mdFiles) {
                 } elseif (-not (Test-Path -LiteralPath $routePath)) {
                     Add-Broken $broken 'missing-file' $md.FullName $lineNo $target "Missing docsify route target '$routePath'"
                 } elseif ($docsifyAnchor -ne '') {
-                    $routeAnchors = Get-AnchorsCached (Resolve-Path -LiteralPath $routePath).Path
+                    $routeAnchors = Get-AnchorsCached (Get-CanonicalPath $routePath)
                     if (-not $routeAnchors.Contains($docsifyAnchor)) {
                         Add-Broken $broken 'missing-anchor' $md.FullName $lineNo $target "Missing anchor '#$docsifyAnchor' in $routePath (docsify route)"
                     }
@@ -249,19 +285,15 @@ foreach ($md in $mdFiles) {
                 $pathPart = $pathPart.Substring(0, $qIndex)
             }
 
-            $targetPath = if ($pathPart.StartsWith('/')) {
-                Join-Path $repoRootFull ($pathPart.TrimStart('/'))
-            } else {
-                Join-Path $md.DirectoryName $pathPart
-            }
+            $targetPath = Resolve-LinkPath $md $pathPart
 
             if (-not (Test-Path -LiteralPath $targetPath)) {
                 Add-Broken $broken 'missing-file' $md.FullName $lineNo $target "Missing file '$targetPath'"
                 continue
             }
 
-            $fullTarget = (Resolve-Path -LiteralPath $targetPath).Path
-            if (-not ($fullTarget.ToLowerInvariant().StartsWith($repoRootNorm.ToLowerInvariant()))) {
+            $fullTarget = Get-CanonicalPath $targetPath
+            if (-not (Test-UnderDirectory $fullTarget $repoRootFull)) {
                 continue
             }
 
@@ -311,18 +343,14 @@ foreach ($md in $mdFiles) {
             $pathPart = [uri]::UnescapeDataString($pathPart)
             $anchor = [uri]::UnescapeDataString($anchor)
 
-            $targetPath = if ($pathPart.StartsWith('/')) {
-                Join-Path $repoRootFull ($pathPart.TrimStart('/'))
-            } else {
-                Join-Path $md.DirectoryName $pathPart
-            }
+            $targetPath = Resolve-LinkPath $md $pathPart
 
             if (-not (Test-Path -LiteralPath $targetPath)) {
                 Add-Broken $broken 'missing-file' $md.FullName $lineNo $target "Missing file '$targetPath' (ref [$refKey])"
                 continue
             }
 
-            $fullTarget = (Resolve-Path -LiteralPath $targetPath).Path
+            $fullTarget = Get-CanonicalPath $targetPath
             if ($anchor -ne '') {
                 $anchorsThere = Get-AnchorsCached $fullTarget
                 if (-not $anchorsThere.Contains($anchor)) {
