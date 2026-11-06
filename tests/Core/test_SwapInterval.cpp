@@ -3,9 +3,18 @@
 /// adaptive vsync once per context (#3511).
 
 #include "Core/SwapInterval.h"
+#include "Core/Window.h"
 
 #include <gtest/gtest.h>
+#include <spdlog/logger.h>
+#include <spdlog/sinks/ostream_sink.h>
+#include <spdlog/spdlog.h>
 
+#include <cstddef>
+#include <memory>
+#include <sstream>
+#include <string>
+#include <utility>
 #include <vector>
 
 namespace
@@ -192,6 +201,68 @@ TEST(SwapIntervalCacheTest, InvalidateBeforeAnyRequestChangesNothing)
     const auto off = cache.apply(false, &CONTEXT_A, [&](int interval) { return driver(interval); });
     EXPECT_EQ(driver.calls, (std::vector{SWAP_INTERVAL_IMMEDIATE}));
     EXPECT_TRUE(off.accepted);
+}
+
+TEST(SwapIntervalCacheTest, AContextWithoutSwapControlReportsItsRefusalOnce)
+{
+    // A headless test display refuses every swap interval ("That operation is not supported"). Each
+    // resize interaction asks again, but only the first refusal is reported (#3518's Linux CI).
+    SwapIntervalCache cache;
+    FakeDriver driver;
+    driver.refuseAll = true;
+    const auto set = [&](int interval)
+    {
+        return driver(interval);
+    };
+    int reports = 0;
+    for (int interaction = 0; interaction < 50; ++interaction)
+    {
+        reports += cache.apply(false, &CONTEXT_A, set).firstRefusal ? 1 : 0;
+        reports += cache.apply(true, &CONTEXT_A, set).firstRefusal ? 1 : 0;
+    }
+    EXPECT_EQ(reports, 1);
+    // A new context reports its own refusal, once.
+    cache.invalidate();
+    EXPECT_TRUE(cache.apply(false, &CONTEXT_A, set).firstRefusal);
+    EXPECT_FALSE(cache.apply(false, &CONTEXT_A, set).firstRefusal);
+}
+
+TEST(SwapIntervalCacheTest, AnAcceptedIntervalIsNoRefusal)
+{
+    SwapIntervalCache cache;
+    FakeDriver driver;
+    driver.adaptiveSupported = false; // a refused adaptive request alone, then regular vsync accepted
+    EXPECT_FALSE(cache.apply(true, &CONTEXT_A, [&](int interval) { return driver(interval); }).firstRefusal);
+}
+
+TEST(SwapIntervalCacheTest, SetVSyncWithoutSwapControlNeverWarns)
+{
+    // Window::setVSync() with no context that can take a swap interval (here none at all): SDL refuses
+    // every call. Nothing is logged at warning level or above, however often it is asked, and it says so
+    // at most once (LogWarningGuard fails an on-display test on any warning).
+    std::ostringstream output;
+    const std::shared_ptr<spdlog::logger> previous = spdlog::default_logger();
+    auto logger = std::make_shared<spdlog::logger>("swap-interval-test", std::make_shared<spdlog::sinks::ostream_sink_mt>(output));
+    logger->set_level(spdlog::level::trace);
+    logger->set_pattern("%l %v");
+    spdlog::set_default_logger(std::move(logger));
+    for (int interaction = 0; interaction < 20; ++interaction)
+    {
+        Core::Window::setVSync(false);
+        Core::Window::setVSync(true);
+    }
+    spdlog::set_default_logger(previous);
+
+    const std::string log = output.str();
+    EXPECT_FALSE(log.contains("warning ")) << log;
+    EXPECT_FALSE(log.contains("error ")) << log;
+    std::size_t refusals = 0;
+    for (std::size_t at = log.find("doesn't let the swap interval change"); at != std::string::npos;
+         at = log.find("doesn't let the swap interval change", at + 1))
+    {
+        ++refusals;
+    }
+    EXPECT_LE(refusals, 1U) << log;
 }
 
 TEST(SwapIntervalCacheTest, VsyncRefusedEntirelyLeavesTheIntervalUnknown)

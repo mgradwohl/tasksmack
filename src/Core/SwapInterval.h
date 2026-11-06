@@ -44,7 +44,11 @@ class SwapIntervalCache
         std::size_t calls = 0;        ///< SDL_GL_SetSwapInterval() calls made; 0 = already set
         bool accepted = false;        ///< one was accepted, or none was needed
         bool adaptiveRefused = false; ///< this call found adaptive vsync unsupported (logged once)
-        std::optional<int> applied;   ///< the context's interval now, if known
+        /// The context refused every interval this call asked for, for the first time: reported once per
+        /// context, not on every resize interaction. A context with no swap control at all (a headless
+        /// test display: "That operation is not supported") refuses each request, and only the first says so.
+        bool firstRefusal = false;
+        std::optional<int> applied; ///< the context's interval now, if known
     };
 
     /// The intervals to try to turn vsync on (@p enabled) or off on the context @p context.
@@ -108,6 +112,11 @@ class SwapIntervalCache
             }
         }
         outcome.adaptiveRefused = !adaptiveKnownUnsupported && m_AdaptiveUnsupported;
+        if (!outcome.accepted && !m_RefusalReported)
+        {
+            outcome.firstRefusal = true;
+            m_RefusalReported = true;
+        }
         outcome.applied = m_Applied;
         return outcome;
     }
@@ -148,6 +157,8 @@ class SwapIntervalCache
     bool m_AdaptiveUnsupported = false;
     /// Set by invalidate(): the next plan() starts over even for the same context handle.
     bool m_Invalidated = false;
+    /// The context refused a request and that was reported (Outcome::firstRefusal).
+    bool m_RefusalReported = false;
 };
 
 } // namespace Core

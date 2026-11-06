@@ -819,12 +819,12 @@ void Window::setVSync(bool enabled)
     {
         spdlog::info("Adaptive vsync isn't supported by this OpenGL context ({}); using regular vsync", SDL_GetError());
     }
-    // LCOV_EXCL_START - needs a driver that refuses the swap interval, which no test display does
-    if (!outcome.accepted)
+    // Not a warning, and once per context: a context without swap control (the headless test displays)
+    // refuses every request, and before #3511 that was silent. The resize trace counts each failure.
+    if (outcome.firstRefusal)
     {
-        spdlog::warn("Could not {} vsync: {}", enabled ? "enable" : "disable", SDL_GetError());
+        spdlog::info("This OpenGL context doesn't let the swap interval change ({}); vsync stays as the driver set it", SDL_GetError());
     }
-    // LCOV_EXCL_STOP
 }
 
 bool Window::shouldClose() const noexcept
