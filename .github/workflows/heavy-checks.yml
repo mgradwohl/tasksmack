@@ -18,6 +18,7 @@ on:
       - 'perf-data/linux-ci-thresholds.json'
       - 'tools/bench.sh'
       - 'tools/check-benchmark-regression.py'
+      - 'tools/bench-across-launches.py'
       - '.github/workflows/heavy-checks.yml'
   schedule:
     # Nightly at 04:00 UTC (was weekly): coverage, Windows coverage, benchmarks; the sanitizer
