@@ -507,6 +507,7 @@ set(COMMON_TEST_SOURCES
     UI/test_ThemeLoader.cpp
     UI/test_AssetPath.cpp
     UI/test_ThemeHeader.cpp
+    UI/test_FontPointSize.cpp # the Font size setting as a point size, and the named sizes it replaced (#3375)
     UI/test_WidgetsHeader.cpp
     UI/test_IconLoader.cpp
     UI/test_IconTextureCache.cpp

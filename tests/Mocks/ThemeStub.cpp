@@ -1,11 +1,11 @@
 // Minimal stub implementations of UI::Theme methods for the test and benchmark binaries.
 //
 // UserConfig.cpp is compiled into the test binary and references Theme::get(),
-// Theme::setThemeById(), Theme::setFontSize(), and Theme::currentThemeId(). The stub keeps what
+// Theme::setThemeById(), Theme::setFontPointSize(), and Theme::currentThemeId(). The stub keeps what
 // those setters were given so UserConfig::applyToApplication() -> captureFromApplication() can be
 // round-tripped in tests (#1187): setThemeById() records the id verbatim (the real Theme ignores an
-// id it has no theme for; no theme files are discovered here), and setFontSize() sets the same
-// m_CurrentFontSize the inline currentFontSize() returns.
+// id it has no theme for; no theme files are discovered here), and setFontPointSize() sets the same
+// m_FontPointSize the inline fontPointSize() returns, clamped as the real one does.
 //
 // Theme.cpp is excluded from the test build because applyImGuiStyle() and
 // applyPendingStyleChanges() call ImGui/ImPlot runtime APIs that require an active
@@ -24,17 +24,14 @@ namespace UI
 {
 
 // Defaulted constructor: member variables are initialized from their in-class defaults
-// (e.g. m_CurrentThemeIndex = 0, m_CurrentFontSize = Medium).  This intentionally
-// skips the initializeFontSizes() / loadDefaultFallbackTheme() calls in the real
+// (e.g. m_CurrentThemeIndex = 0, m_FontPointSize = FONT_POINT_SIZE_DEFAULT).  This intentionally
+// skips the loadDefaultFallbackTheme() call in the real
 // Theme::Theme() body, which is what makes this safe as a test stub.
 Theme::Theme() = default;
 
-// No-op private helpers.  Defined here so the linker finds them if any other
-// translation unit (transitively) references them; the defaulted constructor above
-// does not call them.
-void Theme::initializeFontSizes()
-{}
-
+// No-op private helper.  Defined here so the linker finds it if any other
+// translation unit (transitively) references it; the defaulted constructor above
+// does not call it.
 void Theme::loadDefaultFallbackTheme()
 {}
 
@@ -206,7 +203,7 @@ auto Theme::titleFont() const -> ImFont*
     return nullptr;
 }
 
-// Referenced by ChartWidgets.h's lineWeight(). The reference configuration (Medium font, 100 % display
+// Referenced by ChartWidgets.h's lineWeight(). The reference configuration (8 pt font, 100 % display
 // scale), where authored line weights are drawn as written.
 auto Theme::styleScale() const -> float
 {
@@ -218,30 +215,30 @@ void Theme::setThemeById(std::string_view id)
     stubThemeId() = id;
 }
 
-void Theme::setFontSize(FontSize size)
+void Theme::setFontPointSize(int points)
 {
-    m_CurrentFontSize = size;
+    m_FontPointSize = clampFontPointSize(points);
 }
 
-// One step up or down the sizes, as the real ones (Ctrl+= / Ctrl+- in ShellLayer, #1547); no fonts to rebuild.
+// One point up or down, within the range, as the real ones (Ctrl+= / Ctrl+- in ShellLayer, #1547, #3375); no fonts
+// to rebuild.
 auto Theme::increaseFontSize() -> bool
 {
-    const auto next = static_cast<std::size_t>(m_CurrentFontSize) + 1;
-    if (next >= static_cast<std::size_t>(FontSize::Count))
+    if (m_FontPointSize >= FONT_POINT_SIZE_MAX)
     {
         return false;
     }
-    setFontSize(static_cast<FontSize>(next));
+    setFontPointSize(m_FontPointSize + 1);
     return true;
 }
 
 auto Theme::decreaseFontSize() -> bool
 {
-    if (m_CurrentFontSize == FontSize::Small)
+    if (m_FontPointSize <= FONT_POINT_SIZE_MIN)
     {
         return false;
     }
-    setFontSize(static_cast<FontSize>(static_cast<std::size_t>(m_CurrentFontSize) - 1));
+    setFontPointSize(m_FontPointSize - 1);
     return true;
 }
 

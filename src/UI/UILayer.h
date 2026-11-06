@@ -34,6 +34,9 @@ class UILayer : public Core::Layer
     void beginFrame();
     void endFrame();
     void rebuildForDisplayScaleChange();
+    /// Clears the atlas and builds the fonts again at @p scale and Theme's Font size setting, falling back to
+    /// ImGui's built-in font if that throws. Between frames only (beginFrame(), before NewFrame()).
+    void rebuildFonts(float scale);
 
     // Where the fonts were loaded from, kept to rebuild them at a new display scale (#943).
     std::filesystem::path m_AssetsDir;

@@ -2,11 +2,11 @@
 
 // Font files read into memory once and shared by every font built from them (#1170).
 //
-// UI::loadAllFonts() (FontLoading.cpp) adds each face once per Font Size preset and size, so the same few TTF
-// files back about thirty ImFontConfig sources. AddFontFromFileTTF() read the whole file again for
-// each of them -- Inter twelve times, Font Awesome thirteen -- at startup and
-// again on every display-scale change. The fonts are now added from memory with
-// FontDataOwnedByAtlas = false, all pointing at one buffer per file kept here.
+// UI::loadAllFonts() (FontLoading.cpp) adds each face several times -- once per size, plus the tabular
+// digits -- so the same few TTF files back a dozen ImFontConfig sources. AddFontFromFileTTF() read the
+// whole file again for each of them at startup and again on every display-scale or font-size change
+// (#3375). The fonts are now added from memory with FontDataOwnedByAtlas = false, all pointing at one
+// buffer per file kept here.
 //
 // ImGui 1.92 keeps reading a font's data for as long as the atlas holds the font (glyphs are baked
 // lazily), so the buffers handed out must outlive every atlas that uses them: there is no way to

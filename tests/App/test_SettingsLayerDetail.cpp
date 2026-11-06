@@ -4,11 +4,13 @@
 
 #include "App/SettingsLayerDetail.h"
 #include "Domain/SamplingConfig.h"
+#include "UI/FontPointSize.h"
 #include "UI/InterfaceScale.h"
-#include "UI/Theme.h"
 
 #include <gtest/gtest.h>
 
+#include <cstddef>
+#include <format>
 #include <optional>
 
 namespace App::Detail
@@ -20,15 +22,18 @@ namespace
 // Option index lookup (optionIndexOf, which replaced the find*Index helpers in #1221)
 // ========================================
 
-TEST(SettingsLayerDetailTest, OptionIndexOfMapsEveryFontSizeToItsOption)
+// #3375: one option per whole point size in the setting's range, in order, each labelled with its size.
+TEST(SettingsLayerDetailTest, OptionIndexOfMapsEveryPointSizeToItsOption)
 {
-    EXPECT_EQ(optionIndexOf(FONT_SIZE_OPTIONS, UI::FontSize::Small, &FontSizeOption::value), 0U);
-    EXPECT_EQ(optionIndexOf(FONT_SIZE_OPTIONS, UI::FontSize::Medium, &FontSizeOption::value), 1U);
-    EXPECT_EQ(optionIndexOf(FONT_SIZE_OPTIONS, UI::FontSize::Large, &FontSizeOption::value), 2U);
-    EXPECT_EQ(optionIndexOf(FONT_SIZE_OPTIONS, UI::FontSize::ExtraLarge, &FontSizeOption::value), 3U);
-    EXPECT_EQ(optionIndexOf(FONT_SIZE_OPTIONS, UI::FontSize::Huge, &FontSizeOption::value), 4U);
-    EXPECT_EQ(optionIndexOf(FONT_SIZE_OPTIONS, UI::FontSize::EvenHuger, &FontSizeOption::value), 5U);
-    EXPECT_FALSE(optionIndexOf(FONT_SIZE_OPTIONS, static_cast<UI::FontSize>(999), &FontSizeOption::value).has_value());
+    for (int points = UI::FONT_POINT_SIZE_MIN; points <= UI::FONT_POINT_SIZE_MAX; ++points)
+    {
+        const auto index = optionIndexOf(FONT_SIZE_OPTIONS, points, &FontSizeOption::points);
+        ASSERT_TRUE(index.has_value()) << points;
+        EXPECT_EQ(*index, static_cast<std::size_t>(points - UI::FONT_POINT_SIZE_MIN));
+        EXPECT_EQ(FONT_SIZE_OPTIONS[*index].label, std::format("{} pt", points));
+    }
+    EXPECT_FALSE(optionIndexOf(FONT_SIZE_OPTIONS, UI::FONT_POINT_SIZE_MIN - 1, &FontSizeOption::points).has_value());
+    EXPECT_FALSE(optionIndexOf(FONT_SIZE_OPTIONS, UI::FONT_POINT_SIZE_MAX + 1, &FontSizeOption::points).has_value());
 }
 
 // #3376: Auto first, then 100-300% in steps; Auto's label shows what the display reports.
@@ -80,7 +85,7 @@ TEST(SettingsLayerDetailTest, OptionIndexOfMapsEveryHistoryDurationToItsOption)
 
 TEST(SettingsLayerDetailTest, FontSizeOptionsHaveExpectedCount)
 {
-    EXPECT_EQ(FONT_SIZE_OPTIONS.size(), 6U);
+    EXPECT_EQ(FONT_SIZE_OPTIONS.size(), 26U); // 7 to 32 pt
 }
 
 TEST(SettingsLayerDetailTest, RefreshRateOptionsHaveExpectedCount)
@@ -160,9 +165,9 @@ TEST(SettingsLayerDetailTest, PickedComboWritesThePickedOption)
 
 TEST(SettingsLayerDetailTest, FontSizeChangedWhileOpenIsNotRevertedByApply)
 {
-    // The dialog opened on Medium, then Ctrl+= made it Large; the combo was never touched, so
+    // The dialog opened on 8 pt, then Ctrl+= made it 9; the combo was never touched, so
     // Apply has nothing to write and the shortcut's change stands (#1151).
-    const ComboState fontChoice{.index = optionIndexOf(FONT_SIZE_OPTIONS, UI::FontSize::Medium, &FontSizeOption::value)};
+    const ComboState fontChoice{.index = optionIndexOf(FONT_SIZE_OPTIONS, UI::FONT_POINT_SIZE_DEFAULT, &FontSizeOption::points)};
     EXPECT_FALSE(pickedOption(fontChoice, FONT_SIZE_OPTIONS).has_value());
 }
 
@@ -188,10 +193,10 @@ TEST(SettingsLayerDetailTest, CustomLabelsDescribeOffListValues)
 TEST(SettingsLayerDetailTest, DefaultChoicePicksEachShippedDefault)
 {
     // Picked, so Save writes the default even when the stored value was already something else.
-    const ComboState font = defaultChoice(FONT_SIZE_OPTIONS, UI::FontSize::Medium, &FontSizeOption::value);
+    const ComboState font = defaultChoice(FONT_SIZE_OPTIONS, UI::FONT_POINT_SIZE_DEFAULT, &FontSizeOption::points);
     EXPECT_TRUE(font.touched);
     ASSERT_TRUE(pickedOption(font, FONT_SIZE_OPTIONS).has_value());
-    EXPECT_EQ(pickedOption(font, FONT_SIZE_OPTIONS).value().value, UI::FontSize::Medium);
+    EXPECT_EQ(pickedOption(font, FONT_SIZE_OPTIONS).value().points, UI::FONT_POINT_SIZE_DEFAULT);
 
     const ComboState refresh =
         defaultChoice(REFRESH_RATE_OPTIONS, Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS, &RefreshRateOption::valueMs);
@@ -211,10 +216,12 @@ TEST(SettingsLayerDetailTest, DefaultChoiceForAnOffListValueWritesNothing)
     EXPECT_FALSE(pickedOption(choice, REFRESH_RATE_OPTIONS).has_value());
 }
 
-TEST(SettingsLayerDetailTest, LargestFontPresetIsNamedLargest)
+TEST(SettingsLayerDetailTest, TheFontSizeOptionsRunFromTheSmallestToTheLargestPointSize)
 {
-    EXPECT_EQ(FONT_SIZE_OPTIONS.back().label, "Largest");
-    EXPECT_EQ(FONT_SIZE_OPTIONS.back().value, UI::FontSize::EvenHuger);
+    EXPECT_EQ(FONT_SIZE_OPTIONS.front().label, "7 pt");
+    EXPECT_EQ(FONT_SIZE_OPTIONS.front().points, UI::FONT_POINT_SIZE_MIN);
+    EXPECT_EQ(FONT_SIZE_OPTIONS.back().label, "32 pt");
+    EXPECT_EQ(FONT_SIZE_OPTIONS.back().points, UI::FONT_POINT_SIZE_MAX);
 }
 
 } // namespace

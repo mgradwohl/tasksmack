@@ -10,6 +10,7 @@
 #include "Domain/UpdateCheck.h"
 #include "Platform/ProcessTypes.h"
 #include "UI/ChartWidgets.h"
+#include "UI/FontPointSize.h"
 #include "UI/Format.h"
 #include "UI/Theme.h"
 
@@ -1217,7 +1218,7 @@ TEST_F(UserConfigSaveLoadFixture, LoadMissingFileUsesDefaults)
 
     // Defaults from UserSettings
     EXPECT_EQ(config.settings().themeId, "arctic-fire");
-    EXPECT_EQ(config.settings().fontSize, UI::FontSize::Medium);
+    EXPECT_EQ(config.settings().fontPointSize, UI::FONT_POINT_SIZE_DEFAULT);
     EXPECT_TRUE(config.settings().showPrivilegeNotice);
     EXPECT_TRUE(config.settings().chartAntiAliasing);
 }
@@ -1233,7 +1234,7 @@ TEST_F(UserConfigSaveLoadFixture, LoadMissingFileLeavesEverySettingAtItsDocument
     // One name per UserSettings member, in declaration order: a structured binding must name them
     // all, so a new setting stops this test compiling until its default is asserted below.
     const auto& [themeId,
-                 fontSize,
+                 fontPointSize,
                  processGroupBy,
                  processColumns,
                  processMeters,
@@ -1268,7 +1269,7 @@ TEST_F(UserConfigSaveLoadFixture, LoadMissingFileLeavesEverySettingAtItsDocument
                  forceNativeWindowDecorationsOnWayland] = config.settings();
 
     EXPECT_EQ(themeId, "arctic-fire");
-    EXPECT_EQ(fontSize, UI::FontSize::Medium);
+    EXPECT_EQ(fontPointSize, 8);         // UI::FONT_POINT_SIZE_DEFAULT: the old Medium, exactly (#3375)
     EXPECT_EQ(interfaceScalePercent, 0); // Auto: the display's own scale (#3376)
     for (const ProcessColumn col : allProcessColumns())
     {
@@ -1347,7 +1348,7 @@ TEST_F(UserConfigSaveLoadFixture, LoadMalformedTomlUsesDefaults)
 
     // Parse failure -> falls back to defaults.
     EXPECT_EQ(config.settings().themeId, "arctic-fire");
-    EXPECT_EQ(config.settings().fontSize, UI::FontSize::Medium);
+    EXPECT_EQ(config.settings().fontPointSize, UI::FONT_POINT_SIZE_DEFAULT);
 }
 
 // ========== Load/Save: Theme Round-Trip ==========
@@ -1372,24 +1373,24 @@ TEST_F(UserConfigSaveLoadFixture, ThemeAndFontSizeRoundTripThroughTheTheme)
     // stayed green. The test build's Theme (tests/Mocks/ThemeStub.cpp) keeps what it is given.
     auto& theme = UI::Theme::get();
     const std::string originalId = theme.currentThemeId();
-    const UI::FontSize originalSize = theme.currentFontSize();
+    const int originalSize = theme.fontPointSize();
 
     auto& config = UserConfig::get();
     config.settings().themeId = "dracula";
-    config.settings().fontSize = UI::FontSize::ExtraLarge;
+    config.settings().fontPointSize = 12;
     config.applyToApplication();
     EXPECT_EQ(theme.currentThemeId(), "dracula");
-    EXPECT_EQ(theme.currentFontSize(), UI::FontSize::ExtraLarge);
+    EXPECT_EQ(theme.fontPointSize(), 12);
 
     config.settings().themeId = "arctic-fire";
-    config.settings().fontSize = UI::FontSize::Small;
+    config.settings().fontPointSize = 7;
     config.captureFromApplication();
     EXPECT_EQ(config.settings().themeId, "dracula");
-    EXPECT_EQ(config.settings().fontSize, UI::FontSize::ExtraLarge);
+    EXPECT_EQ(config.settings().fontPointSize, 12);
 
     // The Theme singleton is process-wide; the chart tests in this binary scale by its font size.
     theme.setThemeById(originalId);
-    theme.setFontSize(originalSize);
+    theme.setFontPointSize(originalSize);
 }
 
 TEST_F(UserConfigSaveLoadFixture, ThemeAndFontSizeSurviveSaveLoadApply)
@@ -1399,90 +1400,28 @@ TEST_F(UserConfigSaveLoadFixture, ThemeAndFontSizeSurviveSaveLoadApply)
     // covered alone elsewhere; this checks the file in between carries what the Theme held.
     auto& theme = UI::Theme::get();
     const std::string originalId = theme.currentThemeId();
-    const UI::FontSize originalSize = theme.currentFontSize();
+    const int originalSize = theme.fontPointSize();
 
     auto& config = UserConfig::get();
     theme.setThemeById("dracula");
-    theme.setFontSize(UI::FontSize::Large);
+    theme.setFontPointSize(10);
     config.captureFromApplication();
     config.save();
 
     // Simulate a fresh start: neither the Theme nor the in-memory settings remember the session.
     theme.setThemeById("arctic-fire");
-    theme.setFontSize(UI::FontSize::Small);
+    theme.setFontPointSize(7);
     config.settings().themeId = "arctic-fire";
-    config.settings().fontSize = UI::FontSize::Small;
+    config.settings().fontPointSize = 7;
 
     config.load();
     config.applyToApplication();
     EXPECT_EQ(theme.currentThemeId(), "dracula");
-    EXPECT_EQ(theme.currentFontSize(), UI::FontSize::Large);
+    EXPECT_EQ(theme.fontPointSize(), 10);
 
     // The Theme singleton is process-wide; the chart tests in this binary scale by its font size.
     theme.setThemeById(originalId);
-    theme.setFontSize(originalSize);
-}
-
-// ========== Load/Save: Font Size Round-Trips ==========
-
-TEST_F(UserConfigSaveLoadFixture, FontSizeSmallRoundTrip)
-{
-    auto& config = UserConfig::get();
-    config.settings().fontSize = UI::FontSize::Small;
-    config.save();
-    config.settings().fontSize = UI::FontSize::Medium;
-    config.load();
-    EXPECT_EQ(config.settings().fontSize, UI::FontSize::Small);
-}
-
-TEST_F(UserConfigSaveLoadFixture, FontSizeLargeRoundTrip)
-{
-    auto& config = UserConfig::get();
-    config.settings().fontSize = UI::FontSize::Large;
-    config.save();
-    config.settings().fontSize = UI::FontSize::Medium;
-    config.load();
-    EXPECT_EQ(config.settings().fontSize, UI::FontSize::Large);
-}
-
-TEST_F(UserConfigSaveLoadFixture, FontSizeExtraLargeRoundTrip)
-{
-    auto& config = UserConfig::get();
-    config.settings().fontSize = UI::FontSize::ExtraLarge;
-    config.save();
-    config.settings().fontSize = UI::FontSize::Medium;
-    config.load();
-    EXPECT_EQ(config.settings().fontSize, UI::FontSize::ExtraLarge);
-}
-
-TEST_F(UserConfigSaveLoadFixture, FontSizeHugeRoundTrip)
-{
-    auto& config = UserConfig::get();
-    config.settings().fontSize = UI::FontSize::Huge;
-    config.save();
-    config.settings().fontSize = UI::FontSize::Medium;
-    config.load();
-    EXPECT_EQ(config.settings().fontSize, UI::FontSize::Huge);
-}
-
-TEST_F(UserConfigSaveLoadFixture, FontSizeEvenHugerRoundTrip)
-{
-    auto& config = UserConfig::get();
-    config.settings().fontSize = UI::FontSize::EvenHuger;
-    config.save();
-    config.settings().fontSize = UI::FontSize::Medium;
-    config.load();
-    EXPECT_EQ(config.settings().fontSize, UI::FontSize::EvenHuger);
-}
-
-TEST_F(UserConfigSaveLoadFixture, FontSizeMediumRoundTrip)
-{
-    auto& config = UserConfig::get();
-    config.settings().fontSize = UI::FontSize::Medium;
-    config.save();
-    config.settings().fontSize = UI::FontSize::Small;
-    config.load();
-    EXPECT_EQ(config.settings().fontSize, UI::FontSize::Medium);
+    theme.setFontPointSize(originalSize);
 }
 
 // ========== Load: Invalid Font Size Keeps Default ==========
@@ -1498,8 +1437,8 @@ TEST_F(UserConfigSaveLoadFixture, UnknownFontSizeKeepsDefault)
     auto& config = UserConfig::get();
     config.load();
 
-    // Unrecognised value — font size remains at default (Medium).
-    EXPECT_EQ(config.settings().fontSize, UI::FontSize::Medium);
+    // Unrecognised value — font size remains at the default.
+    EXPECT_EQ(config.settings().fontPointSize, UI::FONT_POINT_SIZE_DEFAULT);
 }
 
 // ========== Load/Save: Sampling Parameters Round-Trip ==========
@@ -2231,6 +2170,110 @@ TEST_F(UserConfigSaveLoadFixture, LegacyConfigIsParsedWithTheMigrationRule)
     EXPECT_TRUE(versioned.processColumns.isChosen(ProcessColumn::Power));
 }
 
+// ========== Migration: the named font size of earlier versions (#3375) ==========
+
+// A file with only a named size, saved with nothing changed: the save writes the point size the name meant and drops
+// the name, so the size survives into a file that no longer has it.
+TEST_F(UserConfigSaveLoadFixture, ANamedFontSizeIsRewrittenAsItsPointSize)
+{
+    for (const UI::LegacyFontSize& legacy : UI::LEGACY_FONT_SIZES)
+    {
+        writeFile(m_ConfigPath, std::format("[font]\nsize = \"{}\"\n\n[theme]\nid = \"dracula\"\n", legacy.configName));
+        auto& config = UserConfig::get();
+        config.resetConfigPathForTesting(m_ConfigPath);
+        config.load();
+        ASSERT_EQ(config.settings().fontPointSize, legacy.points) << legacy.configName;
+
+        config.save();
+        const auto document = parsed(m_ConfigPath);
+        EXPECT_EQ(document["font"]["point_size"].value<std::int64_t>(), std::optional<std::int64_t>{legacy.points}) << legacy.configName;
+        EXPECT_FALSE(document["font"]["size"]) << legacy.configName;
+        EXPECT_EQ(document["theme"]["id"].value<std::string>(), "dracula"); // the rest of the file as it was
+
+        config.resetConfigPathForTesting(m_ConfigPath);
+        config.load();
+        EXPECT_EQ(config.settings().fontPointSize, legacy.points) << legacy.configName;
+    }
+}
+
+// A size changed in the session wins over the old name, which is dropped.
+TEST_F(UserConfigSaveLoadFixture, AFontSizeChangedOverANamedOneIsSavedAsThePointSize)
+{
+    writeFile(m_ConfigPath, "[font]\nsize = \"huge\"\n");
+    auto& config = UserConfig::get();
+    config.load();
+    ASSERT_EQ(config.settings().fontPointSize, 14);
+    config.settings().fontPointSize = 9;
+    config.save();
+
+    const auto document = parsed(m_ConfigPath);
+    EXPECT_EQ(document["font"]["point_size"].value<std::int64_t>(), std::optional<std::int64_t>{9});
+    EXPECT_FALSE(document["font"]["size"]);
+}
+
+// A file with both keys (a hand edit, or a downgrade and back) keeps its point size, and loses the name.
+TEST_F(UserConfigSaveLoadFixture, APointSizeBesideANamedOneKeepsThePointSize)
+{
+    writeFile(m_ConfigPath, "[font]\npoint_size = 11\nsize = \"small\"\n");
+    auto& config = UserConfig::get();
+    config.load();
+    ASSERT_EQ(config.settings().fontPointSize, 11);
+    config.save();
+
+    const auto document = parsed(m_ConfigPath);
+    EXPECT_EQ(document["font"]["point_size"].value<std::int64_t>(), std::optional<std::int64_t>{11});
+    EXPECT_FALSE(document["font"]["size"]);
+}
+
+// A name that was never a size is dropped and writes no point size: it read as the default, and still does.
+TEST_F(UserConfigSaveLoadFixture, AnUnknownNamedFontSizeIsDroppedAndStaysTheDefault)
+{
+    writeFile(m_ConfigPath, "[font]\nsize = \"gigantic\"\n");
+    auto& config = UserConfig::get();
+    config.load();
+    ASSERT_EQ(config.settings().fontPointSize, UI::FONT_POINT_SIZE_DEFAULT);
+    config.save();
+
+    const auto document = parsed(m_ConfigPath);
+    EXPECT_FALSE(document["font"]["size"]);
+    EXPECT_FALSE(document["font"]["point_size"]);
+    config.resetConfigPathForTesting(m_ConfigPath);
+    config.load();
+    EXPECT_EQ(config.settings().fontPointSize, UI::FONT_POINT_SIZE_DEFAULT);
+}
+
+// A named size edited into the file while TaskSmack ran is migrated from the file, as other edits made while it runs are
+// kept (#1122).
+TEST_F(UserConfigSaveLoadFixture, ANamedFontSizeEditedInWhileRunningIsMigratedFromTheFile)
+{
+    writeFile(m_ConfigPath, "[theme]\nid = \"dracula\"\n");
+    auto& config = UserConfig::get();
+    config.load();
+    writeFile(m_ConfigPath, "[theme]\nid = \"dracula\"\n\n[font]\nsize = \"extra-large\"\n");
+    config.settings().refreshIntervalMs = 2000; // some other change, so the save writes the file
+    config.save();
+
+    const auto document = parsed(m_ConfigPath);
+    EXPECT_EQ(document["font"]["point_size"].value<std::int64_t>(), std::optional<std::int64_t>{12});
+    EXPECT_FALSE(document["font"]["size"]);
+}
+
+// ========== Load/Save: Font Size Round-Trips (#3375) ==========
+
+TEST_F(UserConfigSaveLoadFixture, EveryFontPointSizeRoundTrips)
+{
+    auto& config = UserConfig::get();
+    for (int points = UI::FONT_POINT_SIZE_MIN; points <= UI::FONT_POINT_SIZE_MAX; ++points)
+    {
+        config.settings().fontPointSize = points;
+        config.save();
+        config.settings().fontPointSize = points == UI::FONT_POINT_SIZE_DEFAULT ? 7 : UI::FONT_POINT_SIZE_DEFAULT;
+        config.load();
+        EXPECT_EQ(config.settings().fontPointSize, points);
+        EXPECT_EQ(parsed(m_ConfigPath)["font"]["point_size"].value<std::int64_t>(), std::optional<std::int64_t>{points});
+    }
+}
+
 // ========== A config.toml saved by the released v0.8.0 (#2725) ==========
 
 /// tests/App/fixtures/config-v0.8.0.toml: saved by v0.8.0 itself (tests/App/fixtures/README.md says
@@ -2245,7 +2288,7 @@ void expectV080Settings(const UserSettings& settings)
 {
     // Changed in v0.8.0's Settings dialog.
     EXPECT_EQ(settings.themeId, "dracula");
-    EXPECT_EQ(settings.fontSize, UI::FontSize::Large);
+    EXPECT_EQ(settings.fontPointSize, 10); // v0.8.0's "large" (#3375)
     EXPECT_EQ(settings.refreshIntervalMs, 2000);
     EXPECT_EQ(settings.maxHistorySeconds, 600);
     // "Don't show again" on the privilege notice.
@@ -2332,6 +2375,9 @@ TEST_F(UserConfigSaveLoadFixture, AConfigSavedByV080LoadsEveryValueAndSavesThemB
     }
     EXPECT_EQ(document["theme"]["id"].value<std::string>(), "dracula");
     EXPECT_EQ(document["window"]["width"].value<int>(), 1500);
+    // v0.8.0's named size, "large", is now a point size (#3375).
+    EXPECT_EQ(document["font"]["point_size"].value<std::int64_t>(), std::optional<std::int64_t>{10});
+    EXPECT_FALSE(document["font"]["size"]);
 
     // Read back, every value holds.
     config.resetConfigPathForTesting(m_ConfigPath);

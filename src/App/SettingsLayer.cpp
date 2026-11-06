@@ -390,9 +390,10 @@ void SettingsLayer::applySettings()
     }
 
     // Apply font size
-    if (const auto font = pickedOption(m_State.fontSizeChoice, FONT_SIZE_OPTIONS); font.has_value() && font->value != settings.fontSize)
+    if (const auto font = pickedOption(m_State.fontSizeChoice, FONT_SIZE_OPTIONS);
+        font.has_value() && font->points != settings.fontPointSize)
     {
-        changeFontSize(font->value);
+        changeFontSize(font->points); // UILayer rebuilds the fonts at it next frame (#3375)
         spdlog::info("Font size changed to {}", font->label);
     }
 

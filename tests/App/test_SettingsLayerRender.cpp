@@ -70,7 +70,7 @@ class SettingsLayerRenderTest : public ::testing::Test
 
         m_OriginalPath = UserConfig::get().configPath();
         m_OriginalSettings = UserConfig::get().settings();
-        m_OriginalFontSize = UI::Theme::get().currentFontSize();
+        m_OriginalFontSize = UI::Theme::get().fontPointSize();
         std::error_code ec;
         const std::filesystem::path base = std::filesystem::temp_directory_path(ec);
         ASSERT_FALSE(ec);
@@ -134,7 +134,7 @@ class SettingsLayerRenderTest : public ::testing::Test
     void TearDown() override
     {
         m_Layer.reset();
-        UI::Theme::get().setFontSize(m_OriginalFontSize);
+        UI::Theme::get().setFontPointSize(m_OriginalFontSize);
         UserConfig::get().resetConfigPathForTesting(m_OriginalPath);
         UserConfig::get().settings() = m_OriginalSettings;
         std::error_code ec;
@@ -270,7 +270,7 @@ class SettingsLayerRenderTest : public ::testing::Test
     std::unique_ptr<SettingsLayer> m_Layer;
     std::filesystem::path m_OriginalPath;
     UserSettings m_OriginalSettings;
-    UI::FontSize m_OriginalFontSize = UI::FontSize::Medium;
+    int m_OriginalFontSize = UI::FONT_POINT_SIZE_DEFAULT;
 };
 
 TEST_F(SettingsLayerRenderTest, StaysClosedUntilOpenSettingsIsRaised)
@@ -296,22 +296,22 @@ TEST_F(SettingsLayerRenderTest, SaveWritesThePickedChoicesRaisesTheirEventsAndSa
     UserSettings& settings = UserConfig::get().settings();
     settings.refreshIntervalMs = 1000;
     settings.maxHistorySeconds = 300;
-    settings.fontSize = UI::FontSize::Medium;
+    settings.fontPointSize = UI::FONT_POINT_SIZE_DEFAULT;
     settings.showPrivilegeNotice = true;
-    UI::Theme::get().setFontSize(UI::FontSize::Medium);
+    UI::Theme::get().setFontPointSize(UI::FONT_POINT_SIZE_DEFAULT);
     ASSERT_TRUE(openDialog());
 
     pickFromCombo("##RefreshRate", "250 ms");
     pickFromCombo("##History", "10 minutes");
-    pickFromCombo("##FontSize", "Large");
+    pickFromCombo("##FontSize", "12 pt");                // #3375
     pressInBody(SettingsDialog::PRIVILEGE_NOTICE_LABEL); // unticks it
     pressSave();
 
     EXPECT_FALSE(settle());
     EXPECT_EQ(settings.refreshIntervalMs, 250);
     EXPECT_EQ(settings.maxHistorySeconds, 600);
-    EXPECT_EQ(settings.fontSize, UI::FontSize::Large);
-    EXPECT_EQ(UI::Theme::get().currentFontSize(), UI::FontSize::Large);
+    EXPECT_EQ(settings.fontPointSize, 12);
+    EXPECT_EQ(UI::Theme::get().fontPointSize(), 12);
     EXPECT_FALSE(settings.showPrivilegeNotice);
     EXPECT_EQ(m_Seen.refreshIntervalsMs, std::vector<int>{250});
     EXPECT_EQ(m_Seen.historySeconds, std::vector<int>{600});
@@ -324,6 +324,7 @@ TEST_F(SettingsLayerRenderTest, SaveWritesThePickedChoicesRaisesTheirEventsAndSa
     UserConfig::get().load();
     EXPECT_EQ(UserConfig::get().settings().refreshIntervalMs, 250);
     EXPECT_EQ(UserConfig::get().settings().maxHistorySeconds, 600);
+    EXPECT_EQ(UserConfig::get().settings().fontPointSize, 12);
 }
 
 // #1395: the process-icons choice (#1800) is saved when it changes.

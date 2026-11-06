@@ -40,7 +40,7 @@ TEST(SettingsDialogStateTest, LoadPicksTheStoredValuesWithoutTouchingThem)
 {
     UserSettings settings;
     settings.themeId = "cyberpunk";
-    settings.fontSize = UI::FontSize::Large;
+    settings.fontPointSize = 10;
     settings.refreshIntervalMs = 500;
     settings.maxHistorySeconds = 120;
     settings.showPrivilegeNotice = false;
@@ -48,7 +48,7 @@ TEST(SettingsDialogStateTest, LoadPicksTheStoredValuesWithoutTouchingThem)
     SettingsDialog::load(state, settings, themes());
     EXPECT_EQ(state.themes.size(), 2U);
     EXPECT_EQ(state.themeChoice.index, std::optional<std::size_t>(1));
-    EXPECT_EQ(state.fontSizeChoice.index, std::optional<std::size_t>(2));
+    EXPECT_EQ(state.fontSizeChoice.index, std::optional<std::size_t>(3)); // 7, 8, 9, then 10 pt (#3375)
     EXPECT_EQ(state.refreshRateChoice.index, std::optional<std::size_t>(2));
     EXPECT_EQ(state.historyChoice.index, std::optional<std::size_t>(1));
     EXPECT_FALSE(state.themeChoice.touched); // Nothing is written until the user picks it (#1120)
@@ -73,7 +73,7 @@ TEST(SettingsDialogStateTest, ResetToDefaultsPicksEveryDefault)
 {
     UserSettings settings;
     settings.themeId = "cyberpunk";
-    settings.fontSize = UI::FontSize::Huge;
+    settings.fontPointSize = 14;
     settings.showPrivilegeNotice = false;
     SettingsDialog::State state;
     SettingsDialog::load(state, settings, themes());
@@ -82,7 +82,8 @@ TEST(SettingsDialogStateTest, ResetToDefaultsPicksEveryDefault)
     EXPECT_EQ(state.themeChoice.index, std::optional<std::size_t>(0)); // arctic-fire
     EXPECT_TRUE(state.themeChoice.touched);                            // Save writes it
     EXPECT_EQ(state.fontSizeChoice.index,
-              Detail::optionIndexOf(Detail::FONT_SIZE_OPTIONS, defaults.fontSize, &Detail::FontSizeOption::value));
+              Detail::optionIndexOf(Detail::FONT_SIZE_OPTIONS, defaults.fontPointSize, &Detail::FontSizeOption::points));
+    EXPECT_EQ(Detail::FONT_SIZE_OPTIONS[state.fontSizeChoice.index.value_or(0)].points, 8); // the old Medium (#3375)
     EXPECT_TRUE(state.fontSizeChoice.touched);
     EXPECT_TRUE(state.refreshRateChoice.touched);
     EXPECT_TRUE(state.historyChoice.touched);
@@ -268,8 +269,8 @@ TEST_F(SettingsDialogRenderTest, EachComboPicksAnEntryAndMarksItTouched)
     EXPECT_EQ(m_State.themeChoice.index, std::optional<std::size_t>(1));
     EXPECT_TRUE(m_State.themeChoice.touched);
 
-    pickFromCombo("##FontSize", "Large");
-    EXPECT_EQ(m_State.fontSizeChoice.index, std::optional<std::size_t>(2));
+    pickFromCombo("##FontSize", "12 pt"); // #3375: a point size, not a name
+    EXPECT_EQ(m_State.fontSizeChoice.index, std::optional<std::size_t>(5));
     EXPECT_TRUE(m_State.fontSizeChoice.touched);
 
     pickFromCombo("##InterfaceScale", "175%"); // #3376

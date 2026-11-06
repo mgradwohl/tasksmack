@@ -125,7 +125,7 @@ void UILayer::onAttach()
             m_DisplayScaleCheck.request();
         }
 
-        // Pre-bake fonts for all size presets
+        // The fonts, at Theme's Font size setting (#3375)
         // Locate assets directory once (searches build dir and FHS install paths)
         m_AssetsDir = findAssetsDir();
         const auto& assetsDir = m_AssetsDir;
@@ -259,9 +259,15 @@ void UILayer::rebuildForDisplayScaleChange()
         return;
     }
     spdlog::info("UI scale changed from {:.2f} to {:.2f}; rebuilding fonts and style", Theme::get().displayScale(), measured);
+    rebuildFonts(measured);
+    // Queues the style rebuild; applyPendingStyleChanges() flushes it straight after this.
+    Theme::get().setDisplayScale(measured);
+}
 
+void UILayer::rebuildFonts(float scale)
+{
     // Fonts first, then the style, both before NewFrame(): the text and the chrome around it move
-    // together, as the font-size presets do. Nothing keeps an ImFont* across frames except Theme,
+    // together. Nothing keeps an ImFont* across frames except Theme,
     // whose registrations are dropped before the atlas is cleared -- an optional font that fails to
     // reload is then null, not dangling -- and re-made by loadAllFonts(). Caches keyed on a font
     // also see Theme::fontGeneration() advance. With ImGuiBackendFlags_RendererHasTextures the
@@ -271,23 +277,21 @@ void UILayer::rebuildForDisplayScaleChange()
     ImGui::GetIO().Fonts->ClearFonts();
     try
     {
-        loadAllFonts(m_FontFiles, m_AssetsDir, measured);
+        loadAllFonts(m_FontFiles, m_AssetsDir, scale);
     }
     catch (const std::exception& e)
     {
         // The old fonts are already gone, and beginFrame() must still reach NewFrame() with a font
         // to draw with, so fall back to ImGui's built-in font rather than let this escape.
-        spdlog::error("Rebuilding fonts at display scale {:.2f} failed ({}); using the built-in font", measured, e.what());
+        spdlog::error("Rebuilding fonts at display scale {:.2f} failed ({}); using the built-in font", scale, e.what());
         Theme::get().clearFontRegistrations();
         ImGui::GetIO().Fonts->ClearFonts();
-        loadFallbackFonts(m_FontFiles, m_AssetsDir, measured);
+        loadFallbackFonts(m_FontFiles, m_AssetsDir, scale);
     }
-    // Timed so the cost of a scale change can be measured (#1170). Glyphs are rasterized lazily, so
-    // this covers loading the faces, not baking them.
+    // Timed so the cost of a scale or size change can be measured (#1170). Glyphs are rasterized
+    // lazily, so this covers loading the faces, not baking them.
     spdlog::info("Fonts rebuilt in {:.1f} ms",
                  std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - rebuildStart).count());
-    // Queues the style rebuild; applyPendingStyleChanges() flushes it straight after this.
-    Theme::get().setDisplayScale(measured);
 }
 
 void UILayer::onEvent(Core::Event& event)
@@ -322,6 +326,16 @@ void UILayer::beginFrame()
     if (m_DisplayScaleCheck.pending() && m_DisplayScaleCheck.takeDue(Core::Application::get().getWindow().isMinimized()))
     {
         rebuildForDisplayScaleChange();
+    }
+    // A changed Font size setting (#3375), from Settings or Ctrl+= / Ctrl+-: the atlas holds one size, so it is
+    // rebuilt here, between frames, at the scale it already has. Theme queued the style rebuild with the size, so
+    // the text and the chrome around it change at this same boundary. After a display-scale rebuild above, which
+    // built at the new size already, there is nothing left to do.
+    if (Theme::get().fontsNeedRebuild())
+    {
+        spdlog::info(
+            "Font size changed from {} pt to {} pt; rebuilding fonts", Theme::get().fontsBuiltPointSize(), Theme::get().fontPointSize());
+        rebuildFonts(Theme::get().displayScale());
     }
 
     // Apply any pending theme change BEFORE starting the ImGui frame
