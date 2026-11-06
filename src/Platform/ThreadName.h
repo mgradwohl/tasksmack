@@ -31,7 +31,7 @@ inline constexpr std::string_view SERVICE_SAMPLER_THREAD_NAME = "ts-sampler-svc"
 inline constexpr std::string_view SENSOR_SAMPLER_THREAD_NAME = "ts-sampler-sens";
 /// The Connections tab's sampler (#3066), running only while the tab is shown.
 inline constexpr std::string_view CONNECTIONS_SAMPLER_THREAD_NAME = "ts-sampler-conn";
-/// The Users tab's sampler (#3076), running only while the tab is shown.
+/// The Users tab's sampler (#3076), App::UserSessionsFeed's (#3377), running only while the tab is shown.
 inline constexpr std::string_view USERS_SAMPLER_THREAD_NAME = "ts-sampler-user";
 /// The worker that runs one Users tab Lock or Sign out at a time (#3076).
 inline constexpr std::string_view SESSION_ACTION_THREAD_NAME = "ts-session-act";
@@ -108,6 +108,9 @@ inline constexpr std::string_view START_AT_LOGIN_THREAD_NAME = "ts-sign-in";
 /// The thread that starts TaskSmack's Windows administrator helper, and sits behind its UAC prompt for
 /// as long as that is up (PipeBroker::launch(), #2549; named in #2768).
 inline constexpr std::string_view HELPER_LAUNCH_THREAD_NAME = "ts-uac-launch";
+/// The worker in the Windows administrator helper (TaskSmackHelper.exe) that waits on TaskSmack's process
+/// and ends the helper's session when it exits (BrokerHelper::ProcessWatch, #2517; on Domain::Worker, #3343).
+inline constexpr std::string_view BROKER_WATCH_THREAD_NAME = "ts-parent-watch";
 /// The worker that reads process icons for the Processes table and Process Details (#1800).
 inline constexpr std::string_view ICON_READ_THREAD_NAME = "ts-icon-read";
 /// The thread that consumes the opt-in UDP event trace on Windows (#1492) while it runs.

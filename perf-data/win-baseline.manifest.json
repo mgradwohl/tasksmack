@@ -1,18 +1,18 @@
 {
   "schema_version": 1,
   "generator": "tools/bench.ps1",
-  "created_utc": "2026-11-04T00:33:04Z",
+  "created_utc": "2026-11-05T13:10:44Z",
   "preset": "win-benchmark",
-  "result_file": "win-benchmark-20261103-183304.json",
+  "result_file": "win-benchmark-20261105-071044.json",
   "exit_code": 0,
   "git": {
-    "commit": "3cbee1f5bbf70a513bc5517f5906460c3916ae9c",
-    "branch": "perf/3414-refresh-win-baseline",
+    "commit": "0058f43d952b614a6862da5246a3dacd0c03e07c",
+    "branch": "fix/3448-windows-benchmark-noise",
     "dirty": false
   },
   "binary": {
     "name": "TaskSmackBenchmarks.exe",
-    "sha256": "878d6d94d7e00c9969cd50b700b54b6bb1639e7ac0fa804998a28a50b71617b1"
+    "sha256": "13d3cb912ddfbba3744ec8cd919bad463752b4026b07b2ca972668294bf50dbe"
   },
   "build": {
     "build_type": "Release",
@@ -31,7 +31,7 @@
       "--benchmark_repetitions=10",
       "--benchmark_min_time=0.5s",
       "--benchmark_display_aggregates_only=true",
-      "--benchmark_out=win-benchmark-20261103-183304.json",
+      "--benchmark_out=win-benchmark-20261105-071044.json",
       "--benchmark_out_format=json"
     ],
     "raw_repetitions": true,
@@ -60,7 +60,7 @@
   },
   "system_load": {
     "sample_ms": 500,
-    "before_percent": 1.4,
-    "after_percent": 1.7
+    "before_percent": 6.3,
+    "after_percent": 2.5
   }
 }

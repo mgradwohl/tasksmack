@@ -1512,11 +1512,32 @@ so: the committed Linux baselines have no manifest, nor do runs from before #316
 with it when it ran on the same core class: the default `-Core performance`. The CI gate isn't
 affected. The comparison also prints each manifest's `system_load`.
 
-Even on a quiet machine, two full runs of the same binary differ by more than 15% on a few
-benchmarks (#3414): the `*_Concurrent_PublicationWait/.../extra_readers:2` ones, which have a CV
-of 10-50% within a run, and a few whose median moves between runs although each run's CV is
-low, such as `BM_WindowsProcessProbe_SnapshotReplay` (8.5 us or 38 us). Re-run a flagged
-benchmark with a filter before treating it as a regression.
+Two full runs of one binary on a quiet machine used to differ by more than 15% on about eight
+benchmarks (#3414, #3448). The causes were in the benchmarks, not the code they time, and each
+is now held still rather than given a looser threshold:
+
+- **What's on the machine.** `BM_WindowsProcessProbe_SnapshotReplay` and `ParseWarmCache`
+  replayed the live process snapshot, so their time followed how many processes were running
+  (300-324, 505-567 KiB). They now replay a fixed shape: the capture's first 256 processes,
+  16 threads each.
+- **Where the heap put a buffer.** `BM_HistoryBuffer_CopyTo` / `CopyToWrapped` copy about a third
+  slower from a source 48 bytes into a cache line, and the heap's 16-byte alignment changed with
+  every repetition and launch. The ring now starts on a cache line and the destination half a
+  page past it.
+- **The lock's long tail.** A `*_Concurrent_PublicationWait/.../extra_readers:2` reader that loses
+  the publication lock sleeps in the kernel (100 us at the 90th percentile, up to 1.3 ms at the
+  99th, against 2-3 us at the median), and one handoff per iteration reported the mean. Each
+  iteration now times 11 handoffs and reports their median (the mean stays as `mean_wait_us`).
+  Under `bench.ps1`'s pinning each of the benchmark's threads gets a CPU of its own, and the model
+  sits on cache lines of its own, since its placement decided how often the threads contended.
+
+The three `extra_readers:2` benchmarks still move between full runs: over three clean runs their
+median wait read 4.25-5.01 us (System), 4.21-5.05 us (Storage) and 4.74-8.83 us (GPU). A flag on
+one of them alone is still most likely noise (#3448).
+
+`check-benchmark-regression.py` prints the coverage line before any regressions, so a failing
+comparison still says how much it compared. Re-run a flagged benchmark with a filter before
+treating it as a regression.
 
 ### CI Benchmark Regression Gate
 
@@ -1545,9 +1566,15 @@ hosted runner, instead of timing an empty probe's early return (#1420).
 
 This is a *separate* baseline from `perf-data/linux-baseline.json` above, deliberately: that one was
 recorded on a developer machine, and comparing it with hosted `ubuntu-24.04` runners flagged the machine
-difference as a regression on every run (#683). Hosted runners also land on two speed classes, so the
-committed CI baseline is a capture from the slower class: a run on the faster class can only look like an
-improvement, never a false regression (#682). The two classes don't slow every benchmark alike (#2336):
+difference as a regression on every run (#683). Hosted runners also land on several CPU classes, and no
+class is the slowest at everything: on `ubuntu-26.04` a 2600 MHz class reads the thread-handoff benchmarks
+(`*_Concurrent_PublicationWait`) about twice as slow as a 3240 MHz one, and the /proc and syscall ones
+(`BM_ProcessProbe_*`, `BM_*Model_Refresh`) two to three times as fast (#3395). So the committed CI baseline
+takes each benchmark from whichever capture, over several classes, read it slowest
+(`tools/merge-benchmark-baselines.py`): a run on any captured class can only look like an improvement,
+never a false regression (#682), and the threshold still applies to every benchmark. Its context's
+`tasksmack_merged_from` lists the captures and how many benchmarks each supplied. Classes don't slow every
+benchmark alike (#2336):
 allocator- and memory-bound benchmarks vary more, so `--threshold-overrides FILE` gives the benchmarks a
 JSON file lists their own threshold, each with a required `reason`. An entry can set its own noise floor
 instead, or as well, as `min_abs_delta_ns`: that is for a sub-nanosecond benchmark that an unrelated
@@ -1561,27 +1588,33 @@ remove it when a baseline refresh makes it unnecessary. Without the flag every b
 `--threshold` and `--min-abs-delta-ns`.
 
 **Refreshing `perf-data/linux-ci-baseline.json`** (only needed when hosted-runner hardware
-changes, e.g. a `ubuntu-24.04` image update measurably shifts baseline timings, or after a
-deliberate, reviewed performance change that the gate should treat as the new normal):
+changes, e.g. a runner image move (the 24.04 to 26.04 move re-captured it, #3395) measurably shifts baseline timings, a
+new runner class reads some benchmarks slower than the baseline, or after a deliberate, reviewed performance change that the
+gate should treat as the new normal):
 
 1. Manually trigger `heavy-checks.yml` via `gh workflow run heavy-checks.yml --ref <branch>` (or
    the Actions tab's "Run workflow" button), and wait for the `benchmark-regression` job to
-   finish.
-2. Download its `benchmark-results` artifact and extract `perf-data/benchmark-current.json`:
+   finish. Repeat until the captures cover the CPU classes the runners land on (the job log's
+   "Run on (4 X N MHz CPU s)" line names each one's class); #3395 took five runs for four classes.
+2. Download each run's `benchmark-results` artifact, each into its own directory:
    ```bash
-   gh run download <run-id> --name benchmark-results --dir /tmp/benchmark-results
+   gh run download <run-id> --name benchmark-results --dir /tmp/benchmark-results/<run-id>
    ```
 3. Review the new numbers against the old baseline before replacing it -- a baseline refresh
    should be a deliberate, reviewed change, not a way to silently paper over a real regression.
    If every benchmark shifted by roughly the same percentage in the same direction, that's very
-   likely a runner-class difference, not a real change: dispatch one more run and compare before
-   deciding which to keep.
-4. Replace the baseline and commit it in its own PR (not bundled with unrelated changes):
+   likely a runner-class difference, not a real change.
+4. Merge the captures, each benchmark from the capture slowest at it, labelled by run id, and commit the
+   result in its own PR (not bundled with unrelated changes):
    ```bash
-   cp /tmp/benchmark-results/perf-data/benchmark-current.json perf-data/linux-ci-baseline.json
+   python3 tools/merge-benchmark-baselines.py --output perf-data/linux-ci-baseline.json \
+       <run-id>=/tmp/benchmark-results/<run-id>/perf-data/benchmark-current.json ...
    git add perf-data/linux-ci-baseline.json
    git commit -m "chore(perf): refresh CI benchmark baseline"
    ```
+   Then replay every capture against the new baseline with `tools/check-benchmark-regression.py` (the
+   arguments `heavy-checks.yml` passes): each must pass. Remove any `perf-data/linux-ci-thresholds.json`
+   entry the refresh makes unnecessary, that is, one every capture passes without.
 5. Push and confirm the next `heavy-checks.yml` run passes against the refreshed baseline.
 
 ### Available Benchmarks

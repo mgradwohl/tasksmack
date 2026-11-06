@@ -1007,6 +1007,8 @@ WindowsProcessProbe::WindowsProcessProbe(const WindowsProcessProbeFunctions& fun
     // one-shot worker: the SetupAPI enumeration can stall on a slow ACPI call, which must hold up
     // neither the thread building this probe nor a sample. Last in the constructor: the worker reads
     // only its own copy of the API table and the two energy members, and the destructor joins it first.
+    // A raw jthread, not a Domain::Worker (#3343): it runs exactly once, and a Worker would keep an idle
+    // thread for the probe's lifetime.
     if (functions.energyMeter.has_value())
     {
         m_EnergyMeterOpener = std::jthread(
@@ -1544,6 +1546,7 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
         .hasPublisher = true,    // From GetFileVersionInfo on process image path
         .hasContainer = false,   // cgroup containers are Linux's
         .hasServices = false,    // Matched by PID from the service list, by Domain::ProcessModel (#1880)
+        .hasAppUnits = false,    // No systemd units: the services matched are SCM services, not apps (#3428)
         .hasProcessType = true,  // Classified from path + GetGuiResources
         .hasArchitecture = true, // ProcessMachineTypeInfo, else IsWow64Process2 (#2394)
         // WinVerifyTrust on each image, embedded and through the catalogs, on the signature worker (#3070)

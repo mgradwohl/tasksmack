@@ -52,12 +52,19 @@ namespace Platform
 
 // =============================================================================
 // niceToPriorityClass: pure mapping from Unix nice value to Windows priority class,
-// no process required. Covers all five threshold branches plus their boundaries.
+// no process required. Covers every threshold branch plus their boundaries.
 // =============================================================================
+
+TEST(NiceToPriorityClassTest, MinNiceAloneMapsToRealtime)
+{
+    // #3429: MIN_NICE is Realtime's own value (classNice()), which no other class reports.
+    EXPECT_EQ(niceToPriorityClass(-20), static_cast<uint32_t>(REALTIME_PRIORITY_CLASS));
+    EXPECT_EQ(niceToPriorityClass(-19), static_cast<uint32_t>(HIGH_PRIORITY_CLASS));
+}
 
 TEST(NiceToPriorityClassTest, BelowHighThresholdMapsToHigh)
 {
-    EXPECT_EQ(niceToPriorityClass(-20), static_cast<uint32_t>(HIGH_PRIORITY_CLASS));
+    EXPECT_EQ(niceToPriorityClass(-19), static_cast<uint32_t>(HIGH_PRIORITY_CLASS));
     EXPECT_EQ(niceToPriorityClass(-11), static_cast<uint32_t>(HIGH_PRIORITY_CLASS));
 }
 
@@ -103,6 +110,7 @@ TEST(PriorityClassToNiceTest, EverySettableClassRoundTrips)
              static_cast<uint32_t>(NORMAL_PRIORITY_CLASS),
              static_cast<uint32_t>(ABOVE_NORMAL_PRIORITY_CLASS),
              static_cast<uint32_t>(HIGH_PRIORITY_CLASS),
+             static_cast<uint32_t>(REALTIME_PRIORITY_CLASS), // #3429
          })
     {
         EXPECT_EQ(niceToPriorityClass(priorityClassToNice(priorityClass)), priorityClass) << "class 0x" << std::hex << priorityClass;
@@ -120,12 +128,12 @@ TEST(PriorityClassToNiceTest, EveryClassIsLabelledAsItself)
     EXPECT_EQ(Domain::Priority::getPriorityLabel(priorityClassToNice(HIGH_PRIORITY_CLASS)), "High");
 }
 
-TEST(PriorityClassToNiceTest, RealtimeIsDistinctFromHighButNeverSetAsRealtime)
+TEST(PriorityClassToNiceTest, RealtimeIsDistinctFromHigh)
 {
-    // Realtime keeps MIN_NICE so the UI can name it; writing that back sets High, never Realtime.
+    // Realtime keeps MIN_NICE so the UI can name it, and only Set Realtime priority writes it back (#3429).
     EXPECT_EQ(priorityClassToNice(REALTIME_PRIORITY_CLASS), Domain::Priority::MIN_NICE);
     EXPECT_NE(priorityClassToNice(REALTIME_PRIORITY_CLASS), priorityClassToNice(HIGH_PRIORITY_CLASS));
-    EXPECT_EQ(niceToPriorityClass(priorityClassToNice(REALTIME_PRIORITY_CLASS)), static_cast<uint32_t>(HIGH_PRIORITY_CLASS));
+    EXPECT_EQ(niceToPriorityClass(priorityClassToNice(HIGH_PRIORITY_CLASS)), static_cast<uint32_t>(HIGH_PRIORITY_CLASS));
 }
 
 TEST(PriorityClassToNiceTest, AnUnknownClassIsNormal)
@@ -982,6 +990,10 @@ struct FakeEco
     static inline DWORD classError = 0;    // SetPriorityClass fails with this, when not 0
     static inline DWORD openedAccess = 0;
     static inline DWORD priorityClass = 0; // What GetPriorityClass reports; SetPriorityClass changes it
+    // What SetPriorityClass(REALTIME_PRIORITY_CLASS) leaves, as Windows does: Realtime with the privilege,
+    // High without it (#3429)
+    static inline DWORD realtimeGives = REALTIME_PRIORITY_CLASS;
+    static inline bool unreadable = false; // GetPriorityClass fails (returns 0)
     static inline bool critical = false;
     static inline bool isProtected = false;
     static inline std::vector<Throttle> throttles;
@@ -995,6 +1007,8 @@ struct FakeEco
         classError = 0;
         openedAccess = 0;
         priorityClass = NORMAL_PRIORITY_CLASS;
+        realtimeGives = REALTIME_PRIORITY_CLASS;
+        unreadable = false;
         critical = false;
         isProtected = false;
         throttles.clear();
@@ -1036,7 +1050,7 @@ struct FakeEco
     }
     static DWORD WINAPI getPriorityClass(HANDLE /*process*/)
     {
-        return priorityClass;
+        return unreadable ? 0 : priorityClass;
     }
     static BOOL WINAPI setPriorityClass(HANDLE /*process*/, DWORD newClass)
     {
@@ -1046,7 +1060,7 @@ struct FakeEco
             SetLastError(classError);
             return FALSE;
         }
-        priorityClass = newClass;
+        priorityClass = (newClass == REALTIME_PRIORITY_CLASS) ? realtimeGives : newClass;
         return TRUE;
     }
     static BOOL WINAPI setProcessInformation(HANDLE /*process*/, PROCESS_INFORMATION_CLASS infoClass, LPVOID info, DWORD size)
@@ -1251,6 +1265,100 @@ TEST_F(WindowsEfficiencyModeTest, WithoutItsCallsThereIsNoEfficiencyModeAndNothi
     EXPECT_EQ(FakeEco::openedAccess, 0U);
 
     EXPECT_TRUE(WindowsProcessActions{}.actionCapabilities().canSetEfficiencyMode) << "the real calls";
+}
+
+// =============================================================================
+// Set Realtime priority (#3429): through the same faked calls, never a real process's class
+// =============================================================================
+
+TEST_F(WindowsEfficiencyModeTest, RealtimeIsSetAndConfirmedByReadingTheClassBack)
+{
+    WindowsProcessActions actions(FakeEco::functions());
+    EXPECT_TRUE(actions.actionCapabilities().canSetRealtimePriority);
+    const auto result = actions.setPriority(ecoTarget(7201), Domain::Priority::classNice(Domain::Priority::PriorityClass::Realtime));
+    EXPECT_TRUE(result.success) << result.errorMessage;
+    EXPECT_TRUE(result.successNote.empty());
+    EXPECT_NE(FakeEco::openedAccess & PROCESS_SET_INFORMATION, 0U);
+    EXPECT_EQ(FakeEco::classesSet, (std::vector<DWORD>{REALTIME_PRIORITY_CLASS}));
+
+    // Every other class goes through the same call, unconfirmed as before.
+    FakeEco::classesSet.clear();
+    ASSERT_TRUE(actions.setPriority(ecoTarget(7201), HIGH_CLASS_NICE).success);
+    EXPECT_EQ(FakeEco::classesSet, (std::vector<DWORD>{HIGH_PRIORITY_CLASS})) << "High's nice is High, never Realtime";
+}
+
+TEST_F(WindowsEfficiencyModeTest, RealtimeThatWindowsQuietlyMadeHighIsAPermissionRefusalSayingSo)
+{
+    WindowsProcessActions actions(FakeEco::functions());
+    FakeEco::realtimeGives = HIGH_PRIORITY_CLASS; // no SeIncreaseBasePriorityPrivilege: SetPriorityClass succeeds anyway
+    const auto result = actions.setPriority(ecoTarget(7202), REALTIME_CLASS_NICE);
+    EXPECT_FALSE(result.success);
+    EXPECT_TRUE(result.permissionDenied) << "the elevated helper can retry it";
+    EXPECT_EQ(result.errorMessage, "Windows set High: Realtime needs administrator rights.");
+    EXPECT_EQ(FakeEco::priorityClass, static_cast<DWORD>(HIGH_PRIORITY_CLASS)) << "left at what Windows set";
+}
+
+TEST_F(WindowsEfficiencyModeTest, ARefusedRealtimeIsReportedAndAGuardedProcessNeverGetsIt)
+{
+    WindowsProcessActions actions(FakeEco::functions());
+    FakeEco::openError = ERROR_ACCESS_DENIED; // another user's process, or an elevated one
+    const auto denied = actions.setPriority(ecoTarget(7203), REALTIME_CLASS_NICE);
+    EXPECT_FALSE(denied.success);
+    EXPECT_TRUE(denied.permissionDenied);
+
+    FakeEco::openError = 0;
+    FakeEco::classError = ERROR_ACCESS_DENIED;
+    const auto refused = actions.setPriority(ecoTarget(7203), REALTIME_CLASS_NICE);
+    EXPECT_FALSE(refused.success);
+    EXPECT_TRUE(refused.permissionDenied);
+
+    FakeEco::classError = 0;
+    FakeEco::classesSet.clear();
+    FakeEco::critical = true;
+    const auto critical = actions.setPriority(ecoTarget(7203), REALTIME_CLASS_NICE);
+    EXPECT_FALSE(critical.success);
+    EXPECT_FALSE(critical.permissionDenied) << "no administrator makes it safe";
+    FakeEco::critical = false;
+    const auto system = actions.setPriority({.pid = SYSTEM_PROCESS_PID, .startTimeTicks = 1234}, REALTIME_CLASS_NICE);
+    EXPECT_FALSE(system.success);
+    EXPECT_TRUE(FakeEco::classesSet.empty()) << "nothing reached a guarded process";
+}
+
+TEST_F(WindowsEfficiencyModeTest, AnUnreadableClassIsASuccessThatSaysItWasntConfirmed)
+{
+    WindowsProcessActions actions(FakeEco::functions());
+    FakeEco::unreadable = true;
+    const auto result = actions.setPriority(ecoTarget(7204), REALTIME_CLASS_NICE);
+    EXPECT_TRUE(result.success) << result.errorMessage;
+    EXPECT_NE(result.successNote.find("couldn't be read back"), std::string::npos) << result.successNote;
+}
+
+TEST_F(WindowsEfficiencyModeTest, WithoutTheReadBackThereIsNoRealtimeAndNothingIsOpened)
+{
+    WindowsProcessFunctions fns = FakeEco::functions();
+    fns.getPriorityClass = nullptr;
+    WindowsProcessActions actions(fns);
+    EXPECT_FALSE(actions.actionCapabilities().canSetRealtimePriority);
+    const auto result = actions.setPriority(ecoTarget(7205), REALTIME_CLASS_NICE);
+    EXPECT_FALSE(result.success);
+    EXPECT_NE(result.errorMessage.find("not available"), std::string::npos) << result.errorMessage;
+    EXPECT_EQ(FakeEco::openedAccess, 0U);
+
+    EXPECT_TRUE(WindowsProcessActions{}.actionCapabilities().canSetRealtimePriority) << "the real calls";
+}
+
+TEST(WindowsRealtimeReadBackTest, OnlyRealtimeReadBackIsDoneAndHighSaysAdministratorRights)
+{
+    EXPECT_TRUE(realtimeReadBackResult(REALTIME_PRIORITY_CLASS, 42).success);
+    const auto high = realtimeReadBackResult(HIGH_PRIORITY_CLASS, 42);
+    EXPECT_FALSE(high.success);
+    EXPECT_TRUE(high.permissionDenied);
+    EXPECT_EQ(high.errorMessage, REALTIME_NEEDS_ADMIN_MESSAGE);
+    const auto normal = realtimeReadBackResult(NORMAL_PRIORITY_CLASS, 42);
+    EXPECT_FALSE(normal.success);
+    EXPECT_FALSE(normal.permissionDenied);
+    EXPECT_EQ(normal.errorMessage, "Windows set Normal instead of Realtime for process 42");
+    EXPECT_TRUE(realtimeReadBackResult(0, 42).success) << "unreadable: Windows accepted it";
 }
 
 TEST(WindowsEfficiencyModeMathTest, TheClassRestoredIsTheOneRememberedWhileTheProcessIsStillAtIdle)

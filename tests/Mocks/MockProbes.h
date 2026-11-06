@@ -393,8 +393,19 @@ class MockProcessProbe : public Platform::IProcessProbe
         m_CapabilitiesAfterSocketRead = caps;
     }
 
+    /// Called inside every readSocketTraffic(), as the read's own work: a test's clock can move there, as a slow
+    /// sock_diag dump's would (#3344).
+    void setOnSocketRead(std::function<void()> hook)
+    {
+        m_OnSocketRead = std::move(hook);
+    }
+
     [[nodiscard]] Platform::SocketTrafficReading readSocketTraffic() const override
     {
+        if (m_OnSocketRead)
+        {
+            m_OnSocketRead();
+        }
         if (m_CapabilitiesAfterSocketRead.has_value())
         {
             m_Capabilities = *m_CapabilitiesAfterSocketRead;
@@ -449,6 +460,7 @@ class MockProcessProbe : public Platform::IProcessProbe
     std::atomic<int> m_EnumerateCount{0};
     std::optional<Platform::PackageEnergyReading> m_PackageEnergy;
     Platform::SocketTrafficReading m_SocketTraffic;
+    std::function<void()> m_OnSocketRead;
     std::map<std::int32_t, Platform::MemoryRollup> m_MemoryRollups;
     std::vector<std::int32_t> m_MemoryRollupsDenied;
     mutable std::atomic<int> m_MemoryRollupReads{0};

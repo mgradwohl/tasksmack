@@ -17,6 +17,7 @@
 #include "App/Panels/ProcessPriorityView.h"
 #include "App/Panels/ProcessSchedPolicyDialog.h"
 #include "Core/Application.h"
+#include "Domain/PriorityConfig.h"
 #include "Mocks/MockProbes.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
@@ -47,6 +48,7 @@
 #include <imgui_internal.h> // The cards' child windows, for their size, and the open modal
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -869,6 +871,228 @@ TEST_F(ProcessActionsBlockRenderTest, TheEfficiencyModeCheckboxAsksToTurnItOnAnd
     EXPECT_EQ(h.mock.efficiencyModeCount(), 2);
     EXPECT_FALSE(h.mock.lastEfficiencyMode());
     EXPECT_EQ(h.mock.lastTarget(), TARGET);
+}
+
+// #3429: where the platform can set Realtime (Windows), the Priority card has Set Realtime... under the slider.
+// It asks first, with the warning, in the Actions card's confirm, which then sets Realtime's nice; it is greyed out
+// for a process already at Realtime, and not drawn where the platform can't set it.
+TEST_F(ProcessActionsBlockRenderTest, SetRealtimeInThePriorityCardWarnsThenSetsRealtime)
+{
+    constexpr Platform::ProcessActionCapabilities CAPS{
+        .canTerminate = true,
+        .canKill = true,
+        .canSetPriority = true,
+        .canSetRealtimePriority = true,
+    };
+    Harness h;
+    std::optional<std::int32_t> currentNice = 0;
+    Platform::ProcessActionCapabilities caps = CAPS;
+    std::string text;
+    const auto body = [&]
+    {
+        ImGui::LogToBuffer();
+        ProcessActionsBlock::Context context = h.context(caps);
+        context.currentNice = currentNice;
+        (void) ProcessActionsBlock::render(context, layoutFor(caps, 1600.0F, 600.0F), infoCardHeight(6.0F));
+        h.actionsView.renderConfirmation(&h.mock, TARGET);
+        text = GImGui->LogBuffer.c_str();
+        ImGui::LogFinish();
+    };
+
+    (void) runFrame(body);
+    (void) runFrame(body);
+    EXPECT_TRUE(text.contains("Set Realtime...")) << text;
+    const ImGuiWindow* card = priorityWindow();
+    ASSERT_NE(card, nullptr);
+    ImGui::ActivateItemByID(ImHashStr(Detail::SET_REALTIME_PRIORITY_BUTTON_LABEL, 0, card->ID));
+    (void) runFrame(body);
+    ASSERT_TRUE(runFrame(body));
+    const ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
+    ASSERT_NE(modal, nullptr);
+    EXPECT_TRUE(std::string_view(modal->Name).starts_with("Set Realtime priority for victim (PID 1001)?")) << modal->Name;
+    EXPECT_TRUE(text.contains("can make the desktop unresponsive")) << text;
+    EXPECT_EQ(h.mock.setPriorityCount(), 0);                                                             // asked, not done
+    ImGui::ActivateItemByID(ImHashStr("##filled", 0, ImHashStr("Set Realtime priority", 0, modal->ID))); // the danger fill
+    (void) runFrame(body);
+    h.actionsView.waitForActionForTesting(); // on the action worker (#2305)
+    (void) runFrame(body);
+    EXPECT_EQ(h.mock.setPriorityCount(), 1);
+    EXPECT_EQ(h.mock.lastSetPriorityNice(), Detail::REALTIME_PRIORITY_NICE);
+    EXPECT_EQ(h.mock.lastTarget(), TARGET);
+    EXPECT_TRUE(text.contains("Priority of PID 1001 set to Realtime")) << text;
+
+    // Already at Realtime (the next sample): drawn, greyed out, and a press asks nothing.
+    currentNice = Detail::REALTIME_PRIORITY_NICE;
+    (void) runFrame(body);
+    ImGui::ActivateItemByID(ImHashStr(Detail::SET_REALTIME_PRIORITY_BUTTON_LABEL, 0, priorityWindow()->ID));
+    (void) runFrame(body);
+    EXPECT_FALSE(runFrame(body)) << "nothing to confirm for a process already at Realtime";
+
+    caps.canSetRealtimePriority = false; // Linux
+    (void) runFrame(body);
+    EXPECT_FALSE(text.contains("Set Realtime...")) << text;
+}
+
+/// Actions whose setPriority waits until the test opens the gate: an apply or a Set Realtime priority still
+/// on its worker, as a UAC prompt or the helper's round trip leaves it.
+class GatedPriorityActions : public TestMocks::MockProcessActions
+{
+  public:
+    [[nodiscard]] Platform::ProcessActionResult setPriority(const Platform::ProcessTarget& target, std::int32_t nice) override
+    {
+        m_Gate.wait(false);
+        return TestMocks::MockProcessActions::setPriority(target, nice);
+    }
+
+    void open()
+    {
+        m_Gate = true;
+        m_Gate.notify_all();
+    }
+
+  private:
+    std::atomic<bool> m_Gate{false};
+};
+
+constexpr Platform::ProcessActionCapabilities REALTIME_CAPS{
+    .canTerminate = true,
+    .canKill = true,
+    .canSetPriority = true,
+    .canSetRealtimePriority = true,
+};
+
+// #3429 review: while the slider's Apply is still on its worker, Set Realtime... is greyed out, so the two never
+// set the same process's priority at once and the older can't land last, overwriting Realtime.
+TEST_F(ProcessActionsBlockRenderTest, SetRealtimeWaitsForTheSlidersApply)
+{
+    Harness h;
+    GatedPriorityActions gated;
+    const auto body = [&]
+    {
+        ProcessActionsBlock::Context context = h.context(REALTIME_CAPS);
+        context.actions = &gated;
+        (void) ProcessActionsBlock::render(context, layoutFor(REALTIME_CAPS, 1600.0F, 600.0F), infoCardHeight(6.0F));
+        h.actionsView.renderConfirmation(&gated, TARGET);
+    };
+    h.priorityView.editNice(Domain::Priority::classNice(Domain::Priority::PriorityClass::High), TARGET);
+    h.priorityView.apply(&gated, TARGET, std::optional<std::int32_t>{0});
+    ASSERT_TRUE(h.priorityView.applying());
+
+    (void) runFrame(body);
+    ImGui::ActivateItemByID(ImHashStr(Detail::SET_REALTIME_PRIORITY_BUTTON_LABEL, 0, priorityWindow()->ID));
+    (void) runFrame(body);
+    EXPECT_FALSE(runFrame(body)) << "no confirm while the apply runs";
+    EXPECT_EQ(h.actionsView.pendingAction(), Detail::ProcessAction::None);
+
+    gated.open();
+    h.priorityView.update(/*wait=*/true);
+    (void) runFrame(body);
+    ImGui::ActivateItemByID(ImHashStr(Detail::SET_REALTIME_PRIORITY_BUTTON_LABEL, 0, priorityWindow()->ID));
+    (void) runFrame(body);
+    EXPECT_TRUE(runFrame(body)) << "once it has finished, Set Realtime... asks again";
+    EXPECT_EQ(h.actionsView.pendingAction(), Detail::ProcessAction::SetRealtimePriority);
+}
+
+// #3429 review, the other way: while Set Realtime priority is asked about or still running, the slider's Apply is
+// held, and its press sends nothing; once it has finished, Apply works again.
+TEST_F(ProcessActionsBlockRenderTest, TheSlidersApplyWaitsForSetRealtime)
+{
+    Harness h;
+    GatedPriorityActions gated;
+    const auto body = [&]
+    {
+        ProcessActionsBlock::Context context = h.context(REALTIME_CAPS);
+        context.actions = &gated;
+        (void) ProcessActionsBlock::render(context, layoutFor(REALTIME_CAPS, 1600.0F, 600.0F), infoCardHeight(6.0F));
+        h.actionsView.renderConfirmation(&gated, TARGET);
+    };
+    const std::int32_t high = Domain::Priority::classNice(Domain::Priority::PriorityClass::High);
+
+    h.actionsView.requestAction(Detail::ProcessAction::SetRealtimePriority, TARGET, h.name);
+    (void) runFrame(body);
+    ASSERT_TRUE(runFrame(body)) << "its confirm is up";
+    EXPECT_TRUE(h.priorityView.heldForOtherPriorityChange());
+
+    // Confirmed through the dialog's danger button: on the action worker, held at the gate.
+    const ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
+    ASSERT_NE(modal, nullptr);
+    ImGui::ActivateItemByID(ImHashStr("##filled", 0, ImHashStr("Set Realtime priority", 0, modal->ID)));
+    (void) runFrame(body);
+    ASSERT_TRUE(h.actionsView.actionRunning());
+    (void) runFrame(body);
+    EXPECT_TRUE(h.priorityView.heldForOtherPriorityChange()) << "still running";
+    h.priorityView.editNice(high, TARGET);
+    h.priorityView.apply(&gated, TARGET, std::optional<std::int32_t>{0});
+    EXPECT_FALSE(h.priorityView.applying()) << "Apply sends nothing while Set Realtime priority runs";
+
+    gated.open();
+    h.actionsView.waitForActionForTesting();
+    EXPECT_EQ(gated.setPriorityCount(), 1);
+    EXPECT_EQ(gated.lastSetPriorityNice(), Detail::REALTIME_PRIORITY_NICE);
+    (void) runFrame(body);
+    EXPECT_FALSE(h.priorityView.heldForOtherPriorityChange());
+    h.priorityView.apply(&gated, TARGET, std::optional<std::int32_t>{0}); // the edit is still pending
+    h.priorityView.update(/*wait=*/true);
+    EXPECT_EQ(gated.setPriorityCount(), 2);
+    EXPECT_EQ(gated.lastSetPriorityNice(), high);
+}
+
+// #3429 review: a refused Set Realtime priority's "Retry as administrator" waits while the slider's Apply runs, and
+// is offered again once it has finished.
+TEST_F(ProcessActionsBlockRenderTest, SetRealtimesRetryWaitsForTheSlidersApply)
+{
+    Harness h;
+    TestMocks::MockProcessActions refusing;
+    Platform::ProcessActionCapabilities caps = REALTIME_CAPS;
+    caps.canAuthorizeInteractively = true;
+    refusing.setCapabilities(caps);
+    refusing.setPriorityResult(Platform::ProcessActionResult::denied("Access denied"));
+    GatedPriorityActions gated;
+    const auto body = [&]
+    {
+        ProcessActionsBlock::Context context = h.context(caps);
+        context.actions = &refusing;
+        (void) ProcessActionsBlock::render(context, layoutFor(caps, 1600.0F, 600.0F), infoCardHeight(6.0F));
+    };
+
+    h.actionsView.requestAction(Detail::ProcessAction::SetRealtimePriority, TARGET, h.name);
+    h.actionsView.dispatchConfirmed(&refusing);
+    h.actionsView.waitForActionForTesting();
+    (void) runFrame(body);
+    ASSERT_TRUE(h.actionsView.offersAuthenticateAndRetry()) << "refused: the retry is offered";
+
+    h.priorityView.editNice(Domain::Priority::classNice(Domain::Priority::PriorityClass::High), TARGET);
+    h.priorityView.apply(&gated, TARGET, std::optional<std::int32_t>{0});
+    ASSERT_TRUE(h.priorityView.applying());
+    (void) runFrame(body);
+    EXPECT_FALSE(h.actionsView.offersAuthenticateAndRetry()) << "held while the apply runs";
+    h.actionsView.retryAuthorizedForTesting();
+    EXPECT_FALSE(h.actionsView.actionRunning()) << "a press sends nothing meanwhile";
+    EXPECT_EQ(refusing.runAuthorizedCount(), 0);
+
+    gated.open();
+    h.priorityView.update(/*wait=*/true);
+    (void) runFrame(body);
+    EXPECT_TRUE(h.actionsView.offersAuthenticateAndRetry()) << "offered again once it has finished";
+}
+
+// Any other action running (a Kill) doesn't hold Apply: only a priority change would race it.
+TEST(ProcessActionsViewInFlightTest, OnlySetRealtimePriorityIsAPriorityChangeInFlight)
+{
+    ProcessActionsView view;
+    EXPECT_FALSE(view.priorityChangeInFlight());
+    view.requestAction(Detail::ProcessAction::Kill, TARGET, "victim");
+    EXPECT_FALSE(view.priorityChangeInFlight());
+    view.cancelConfirm();
+    view.requestAction(Detail::ProcessAction::SetRealtimePriority, TARGET, "victim");
+    EXPECT_TRUE(view.priorityChangeInFlight());
+    view.cancelConfirm();
+    EXPECT_FALSE(view.priorityChangeInFlight());
+
+    const Detail::RealtimePriorityItem item =
+        Detail::realtimePriorityItem(REALTIME_CAPS, TARGET, false, false, 0, /*priorityApplying=*/true);
+    EXPECT_EQ(item.state, Detail::RealtimePriorityState::Disabled);
+    EXPECT_TRUE(std::string_view(item.tooltip).contains("priority change being applied")) << item.tooltip;
 }
 
 // #1395: each action button explains itself on hover; Kill names its key.

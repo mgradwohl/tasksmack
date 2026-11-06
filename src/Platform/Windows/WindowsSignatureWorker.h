@@ -20,15 +20,34 @@
 //   probe asking for more images than the table holds, in the same order each sample, gets a table's worth
 //   further each sample instead of the first ones over and over. The probe marks each sample with
 //   beginSample(), and a turn nobody asks for through a whole sample is over.
-// - The thread starts with the first request and is stopped and joined by the destructor; a check in
-//   progress finishes first (WinVerifyTrust can't be interrupted), the rest of the queue is dropped.
+//
+// The thread is a Domain::Worker (#3343). The path table stays the queue, as ProcessIconCache's load queue
+// does (#3468): it is what keeps each path queued once, bounds it, takes turns and counts what is queued, and
+// a Worker job per path would only restate that, with a scan of its queue on every request. The Worker's job
+// is one drain of the table's queue, one queued at most (MergeByKey, every drain the same): a path queued
+// while a drain waits merges into it, and one queued while a drain runs queues the next, which may have
+// found the queue empty already.
+// - The thread starts with the first request, and is stopped and joined by the destructor; a check in
+//   progress finishes first (WinVerifyTrust can't be interrupted, so no cancel hook is armed), and the rest of
+//   the queue is dropped. A pause between files ends at the stop.
+// - A check that throws a std::exception is answered Unknown with its message. Anything else that escapes a
+//   drain ends the Worker Failed rather than std::terminate; so does a thread that can't be started. A Failed
+//   worker is reported once, by the next request() or find(): every path queued is answered Unknown with
+//   the reason, and so is each path asked for after, so none stays "not checked yet" for good, and the
+//   reason is logged once.
 //
 // Free of <windows.h>: the calls are SignatureFunctions, so the queueing, the caching and the hand-over are
 // tested on every platform with fakes (tests/Platform/WindowsMath/test_WindowsSignatureWorker.cpp).
+//
+// Locks: m_Mutex is taken before the Worker's own (request() submits under it). The Worker never calls back
+// into this class under its lock: a drain takes m_Mutex on the worker's thread with no Worker lock held.
 
+#include "Domain/Worker.h"
 #include "Platform/ImageSignature.h"
 #include "Platform/ThreadName.h"
 #include "WindowsImageSignature.h"
+
+#include <spdlog/spdlog.h>
 
 #include <chrono>
 #include <condition_variable>
@@ -37,12 +56,12 @@
 #include <deque>
 #include <exception>
 #include <mutex>
+#include <new>
 #include <optional>
+#include <ranges>
 #include <stop_token>
 #include <string>
 #include <string_view>
-#include <system_error>
-#include <thread>
 #include <unordered_map>
 #include <utility>
 
@@ -65,10 +84,21 @@ class SignatureWorker
 {
   public:
     SignatureWorker(const SignatureFunctions& functions, const WorkerOptions& options)
-        : m_Fns(functions), m_Options(options), m_Cache(options.maxCachedFiles)
+        : m_Fns(functions),
+          m_Options(options),
+          m_Cache(options.maxCachedFiles),
+          m_Worker(
+              {
+                  .threadName = SIGNATURE_CHECK_THREAD_NAME,
+                  .capacity = 1,
+                  .admission = Domain::Admission::MergeByKey,
+                  .sameKey = [](const Drain& /*queued*/, const Drain& /*incoming*/) noexcept { return true; },
+              },
+              [this](Drain& /*job*/, const std::stop_token& stop, CheckWorker::JobContext& /*context*/) { drain(stop); })
     {}
 
-    /// Stops the worker and joins it (a check in progress finishes first).
+    /// Stops the worker and joins it (a check in progress finishes first): m_Worker, the last member, goes
+    /// first, while the table it files into is alive.
     ~SignatureWorker() = default;
 
     SignatureWorker(const SignatureWorker&) = delete;
@@ -84,7 +114,8 @@ class SignatureWorker
     void request(std::string_view path)
     {
         const std::scoped_lock lock(m_Mutex);
-        requestLocked(path, pathKey(path), Asker::NewProcess);
+        static_cast<void>(workerEndedLocked());
+        requestLocked(path, keyLocked(path), Asker::NewProcess);
     }
 
     /// The answer for @p path once checked since the last request(); nullopt while queued or checking.
@@ -94,6 +125,9 @@ class SignatureWorker
     {
         std::string key = pathKey(path);
         const std::scoped_lock lock(m_Mutex);
+        // Before the answer: a worker that failed with paths queued answers them here, since a path already
+        // in the table never reaches request() again (#3343).
+        static_cast<void>(workerEndedLocked());
         const auto found = m_Paths.find(key);
         if (found == m_Paths.end())
         {
@@ -140,6 +174,24 @@ class SignatureWorker
         return m_QueuedCount;
     }
 
+    /// Has the next drain submit() answer Refused without asking the Worker, as it does when there is no
+    /// memory to queue one (tests): the one case a queued path could be left with no drain to run it. The
+    /// take-back that follows runs with every key made under the lock throwing std::bad_alloc, as the memory
+    /// that just ran out would: it must not need one.
+    void refuseNextDrainForTesting()
+    {
+        const std::scoped_lock lock(m_Mutex);
+        m_RefuseNextDrain = true;
+    }
+
+    /// Has the next answer made for a path queued after the worker ended throw std::bad_alloc, as copying
+    /// the end note can when memory has run out (tests): the path stays queued, for the next call to answer.
+    void failNextEndAnswerForTesting()
+    {
+        const std::scoped_lock lock(m_Mutex);
+        m_EndAnswerFails = true;
+    }
+
   private:
     struct PathState
     {
@@ -160,6 +212,33 @@ class SignatureWorker
         std::string resumeAt;          ///< The first path turned away: the next one admitted
         std::uint64_t askedInSample{}; ///< The last sample (beginSample()) that asked for it
     };
+
+    /// One drain of m_Queue, as the Worker's job; it carries nothing.
+    struct Drain
+    {};
+    /// The Worker publishes nothing: a check files its answer in m_Paths.
+    struct Drained
+    {};
+    using CheckWorker = Domain::Worker<Drain, Drained>;
+
+    /// A path waiting in m_Queue, with its m_Paths key, made at admission: so taking it back, answering it
+    /// and checking it make no key, and the take-back after a refused drain (no memory) allocates nothing.
+    struct QueuedPath
+    {
+        std::string path;
+        std::string key;
+    };
+
+    /// pathKey() under m_Mutex: every key made under the lock goes through here, so a test can have it throw
+    /// where an allocation can't be allowed to (refuseNextDrainForTesting()).
+    [[nodiscard]] std::string keyLocked(std::string_view path)
+    {
+        if (std::exchange(m_KeysFail, false))
+        {
+            throw std::bad_alloc();
+        }
+        return pathKey(path);
+    }
 
     /// request() under m_Mutex.
     void requestLocked(std::string_view path, std::string key, Asker asker)
@@ -209,25 +288,103 @@ class SignatureWorker
         {
             m_Turn.reset(); // its turn has come: those after it are admitted as there's room
         }
-        PathState& state = m_Paths[std::move(key)];
-        state.result.reset();
-        state.queued = true;
-        ++m_QueuedCount; // not queued before: a queued path returned at the top
-        m_Queue.emplace_back(path);
-        if (!m_Thread.joinable())
+        // Transactional: what allocates (the queue entry, its copies, the table's node) comes first, and a throw
+        // there leaves the queue, the table and the count as they were.
+        m_Queue.push_back(QueuedPath{.path = std::string(path), .key = key});
+        PathState* state = nullptr;
+        try
         {
-            try
+            state = &m_Paths[std::move(key)];
+        }
+        catch (...)
+        {
+            m_Queue.pop_back();
+            throw;
+        }
+        state->result.reset();
+        state->queued = true;
+        ++m_QueuedCount; // not queued before: a queued path returned at the top
+        submitDrainLocked();
+    }
+
+    /// Has the Worker drain m_Queue (under m_Mutex), after a path was queued.
+    void submitDrainLocked()
+    {
+        if (m_EndNote.has_value())
+        {
+            failQueuedLocked(*m_EndNote); // the worker has ended: answered at once, never left queued
+            return;
+        }
+        const bool refuseForTesting = std::exchange(m_RefuseNextDrain, false);
+        const Domain::SubmitResult result = refuseForTesting ? Domain::SubmitResult::Refused : m_Worker.submit(Drain{});
+        if (result == Domain::SubmitResult::Refused)
+        {
+            // No drain queued (no memory to queue one; a queued drain would have merged), and the one running,
+            // if any, may have found the queue empty already: nothing is sure to check these paths. Take them
+            // back, so find() asks again on a later sample, rather than leave them "not checked yet" for good.
+            // A drain that does run meanwhile finds less to do. Memory has just run out, so this allocates
+            // nothing: each entry carries its key, and the lookups, erases and clear make none.
+            m_KeysFail = refuseForTesting;
+            for (const QueuedPath& queued : m_Queue)
             {
-                m_Thread = std::jthread([this](const std::stop_token& stop) { run(stop); });
+                if (const auto found = m_Paths.find(queued.key); found != m_Paths.end() && found->second.queued)
+                {
+                    --m_QueuedCount;
+                    m_Paths.erase(found);
+                }
             }
-            catch (const std::system_error&)
+            m_Queue.clear();
+            m_KeysFail = false;
+            m_Idle.notify_all();
+            return;
+        }
+        if (result == Domain::SubmitResult::Closed)
+        {
+            // The worker has ended (Closed answers only then): no thread could be started, or a drain failed
+            // since the last request. Every queued path, this one too, is answered as a check that couldn't be
+            // made.
+            static_cast<void>(workerEndedLocked());
+        }
+    }
+
+    /// Whether the Worker has ended (under m_Mutex). The first time it is seen ended, every path still
+    /// queued, and the one being checked when a drain threw, is answered Unknown with the reason, which
+    /// is logged; each path queued after is answered the same at once (submitDrainLocked()). A path whose
+    /// answer couldn't be made then (no memory to copy the note) is still queued, and is answered here, by the
+    /// next request() or find(), whichever path it asks for.
+    bool workerEndedLocked()
+    {
+        if (m_EndNote.has_value())
+        {
+            if (!m_Queue.empty())
             {
-                // No thread: the request is answered as a check that couldn't be made, never left queued.
-                failQueuedLocked("no thread could be started for the check");
-                return;
+                failQueuedLocked(*m_EndNote); // a path left queued when its answer couldn't be copied
+            }
+            return true;
+        }
+        const Domain::WorkerState state = m_Worker.state();
+        if (state == Domain::WorkerState::Running)
+        {
+            return false;
+        }
+        // The reason first: if copying it throws, nothing has changed, and the next call reports it. A sweep
+        // cut short (no memory) leaves the rest queued and counted, and the next call goes on with it.
+        std::string note = state == Domain::WorkerState::Failed ? "The signature checks have stopped: " + m_Worker.failure()
+                                                                : "The signature checks have stopped";
+        for (PathState& entry : m_Paths | std::views::values)
+        {
+            if (entry.queued)
+            {
+                entry.result = SignatureCheck{.signature = ImageSignature::Unknown, .note = note, .signer = {}};
+                markAnsweredLocked(entry);
             }
         }
-        m_Wake.notify_one();
+        m_Queue.clear();
+        m_Checking = false; // a drain that threw left its path behind; none runs any more
+        spdlog::warn("SignatureWorker: {}; signatures read Unknown", note);
+        m_EndNote = std::move(note);
+        m_Idle.notify_all();
+        return true;
     }
 
     /// Whether a later sample's ask for @p key, not in the table, may be admitted now (under m_Mutex): yes
@@ -253,13 +410,19 @@ class SignatureWorker
         return false;
     }
 
-    /// Answers every queued path as Unknown with @p note, and empties the queue (under m_Mutex).
+    /// Answers every queued path as Unknown with @p note, and empties the queue (under m_Mutex). A copy of
+    /// the note that throws (no memory) leaves the paths not yet answered queued, and the queue as it is, for
+    /// workerEndedLocked() to answer on the next call.
     void failQueuedLocked(std::string_view note)
     {
-        for (const std::string& queued : m_Queue)
+        for (const QueuedPath& queued : m_Queue)
         {
-            if (const auto found = m_Paths.find(pathKey(queued)); found != m_Paths.end())
+            if (const auto found = m_Paths.find(queued.key); found != m_Paths.end())
             {
+                if (std::exchange(m_EndAnswerFails, false))
+                {
+                    throw std::bad_alloc(); // failNextEndAnswerForTesting(): the note's copy, out of memory
+                }
                 found->second.result = SignatureCheck{.signature = ImageSignature::Unknown, .note = std::string(note), .signer = {}};
                 markAnsweredLocked(found->second);
             }
@@ -278,31 +441,38 @@ class SignatureWorker
         }
     }
 
-    void run(const std::stop_token& stop)
+    /// The Worker's job, on its thread: checks the queued paths in request order, pausing after each, until
+    /// the queue is empty (the next path queued submits the next drain) or @p stop, the job's, is signalled
+    /// (the destructor: what is still queued is dropped with the worker). A std::exception from a check is
+    /// its answer; anything else thrown here ends the Worker Failed (workerEndedLocked() reports it).
+    void drain(const std::stop_token& stop)
     {
-        setCurrentThreadName(SIGNATURE_CHECK_THREAD_NAME);
-        if (m_Options.onWorkerStart != nullptr)
+        if (!m_Started)
         {
-            m_Options.onWorkerStart();
-        }
-        while (true)
-        {
-            std::string path;
+            m_Started = true;
+            if (m_Options.onWorkerStart != nullptr)
             {
-                std::unique_lock lock(m_Mutex);
-                if (!m_Wake.wait(lock, stop, [this] { return !m_Queue.empty(); }) || stop.stop_requested())
+                m_Options.onWorkerStart();
+            }
+        }
+        while (!stop.stop_requested())
+        {
+            QueuedPath queued;
+            {
+                const std::scoped_lock lock(m_Mutex);
+                if (m_Queue.empty())
                 {
-                    return; // stopped: what is still queued is dropped with the worker
+                    return;
                 }
-                path = std::move(m_Queue.front());
+                queued = std::move(m_Queue.front());
                 m_Queue.pop_front();
                 m_Checking = true;
             }
-            const std::string key = pathKey(path);
+            const std::string& key = queued.key;
             SignatureCheck check;
             try
             {
-                check = checkSignature(m_Fns, &m_Cache, path, key);
+                check = checkSignature(m_Fns, &m_Cache, queued.path, key);
             }
             catch (const std::exception& e)
             {
@@ -323,9 +493,9 @@ class SignatureWorker
             }
             if (m_Options.pause.count() > 0)
             {
-                // A gentle pace; a stop request ends the pause at once.
+                // A gentle pace; the stop (the job's own token, signalled by the destructor) ends it at once.
                 std::unique_lock lock(m_Mutex);
-                (void) m_Wake.wait_for(lock, stop, m_Options.pause, [] { return false; });
+                static_cast<void>(m_Pause.wait_for(lock, stop, m_Options.pause, [] { return false; }));
             }
         }
     }
@@ -334,16 +504,22 @@ class SignatureWorker
     WorkerOptions m_Options;
     SignatureCache m_Cache; // The worker's thread stores into it; it has its own lock
     mutable std::mutex m_Mutex;
-    std::condition_variable_any m_Wake;
+    std::condition_variable_any m_Pause; // The pause between files waits on it, for the job's stop only
     std::condition_variable m_Idle;
     // Guarded by m_Mutex
-    std::deque<std::string> m_Queue;                    // Paths to check, in request order, each at most once
+    std::deque<QueuedPath> m_Queue;                     // Paths to check, in request order, each at most once
     std::unordered_map<std::string, PathState> m_Paths; // By pathKey()
     std::size_t m_QueuedCount = 0;                      // m_Paths' entries with queued set (#3418)
     std::optional<Turn> m_Turn;                         // Set while a path turned away waits its turn (#3403)
     std::uint64_t m_Sample = 0;                         // beginSample() calls: the probe's samples
     bool m_Checking = false;                            // The worker holds a path it has taken off the queue
-    std::jthread m_Thread;                              // Last: stopped and joined first, while the rest is alive
+    std::optional<std::string> m_EndNote;               // Set once the Worker is seen ended: why (#3343)
+    bool m_RefuseNextDrain = false;                     // refuseNextDrainForTesting()
+    bool m_KeysFail = false;                            // keyLocked() throws once: refuseNextDrainForTesting()
+    bool m_EndAnswerFails = false;                      // failQueuedLocked() throws once: failNextEndAnswerForTesting()
+    // The worker's thread's
+    bool m_Started = false; // onWorkerStart has been called
+    CheckWorker m_Worker;   // Last: stopped and joined first, while the rest is alive
 };
 
 } // namespace Platform::WindowsSignature

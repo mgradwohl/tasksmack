@@ -3,10 +3,11 @@
 // Process icons, loaded off the UI thread and kept in bounded memory (#1800).
 //
 // The UI thread asks lookup() for each process row it draws. The first time a process is seen, a load
-// is queued and lookup() returns nothing (the row shows the generic icon); a worker thread then reads
-// the process's executable and that file's icon through Platform::IProcessIconSource, scales it to
-// the size asked for, and files it. Later lookups of the process return the icon, or nothing for a
-// program without one, from an O(1) map lookup that does not allocate.
+// is queued and lookup() returns nothing (the row shows the generic icon); the ts-icon-read worker (a
+// Domain::Worker, #3343) then reads the process's executable and that file's icon through
+// Platform::IProcessIconSource, scales it to the size asked for, and files it. Later lookups of the
+// process return the icon, or nothing for a program without one, from an O(1) map lookup that does not
+// allocate.
 //
 // lookupFile() does the same for a file named by path rather than a running process (#1800): a
 // startup entry's or a service's program, or a packaged app's logo. Its icons share the maps below
@@ -21,12 +22,18 @@
 // - misses, the same keys: executables with no icon, so they are not read again on every new process.
 // A process keeps its icon's pixels alive (shared_ptr) after the icon map drops them, so memory is
 // bounded by the process map's capacity times the distinct icons among those processes.
+//
+// The load queue is the cache's own, not the Worker's: it is newest first (the rows on screen now), and
+// dropping its oldest request forgets that row's entry, so the row asks again (#1800). The Worker's job
+// is only "drain the queue", one queued at most, so the worker's thread is the only thread, started with
+// the first load queued.
 
 #include "Domain/LruMap.h"
+#include "Domain/Worker.h"
 #include "Platform/IProcessIconSource.h"
 
 #include <array>
-#include <condition_variable>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -36,7 +43,6 @@
 #include <stop_token>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <vector>
 
 namespace Domain
@@ -140,6 +146,23 @@ class ProcessIconCache
 
     [[nodiscard]] Stats stats() const;
 
+    /// Has the next drain submit() answer Refused without asking the worker, as it does when there is no
+    /// memory to queue one: the one case a queued load could be left with no drain to run it.
+    void refuseNextDrainForTesting()
+    {
+        const std::scoped_lock lock(m_Mutex);
+        m_RefuseNextDrain = true;
+    }
+
+    /// Has the next drain throw on the worker's thread once it was admitted, before it loads anything, as
+    /// its own bookkeeping can when memory runs out: the worker ends Failed with the loads it had queued still
+    /// waiting. (The Worker itself can't fail a job it admitted before the body runs, #3472; a body can.)
+    void failNextDrainForTesting()
+    {
+        const std::scoped_lock lock(m_Mutex);
+        m_FailNextDrain = true;
+    }
+
   private:
     struct Request
     {
@@ -168,7 +191,15 @@ class ProcessIconCache
     {
         return file ? m_Files : m_Processes;
     }
-    void workerLoop(const std::stop_token& stopToken);
+    /// The worker's job: run the queued loads, newest first, until the queue is empty or @p stop is
+    /// signalled, waking the frame loop each time the queue drains.
+    void drain(const std::stop_token& stop);
+    /// Has the worker drain the queue; called without the lock held. A refused drain takes the queued
+    /// loads back; a worker that has ended is reported (reportWorkerFailure()).
+    void wakeWorker();
+    /// Logs, once, that the worker is Failed (no thread could be started, or a drain threw), whenever
+    /// that happened; called without the lock held, by every lookup. The rows keep the generic icon.
+    void reportWorkerFailure();
     /// Loads one request; the source is called without the lock held.
     void load(const Request& request);
     /// Drops the process or file, so its next lookup queues a load again (after a load threw).
@@ -180,8 +211,15 @@ class ProcessIconCache
     bool m_FoldCase = false;
     bool m_KeyByName = false; // the source's findsIconsByName() (#2462)
 
+    /// One drain of the load queue, as the worker's job; it carries nothing.
+    struct Drain
+    {};
+    /// The worker publishes nothing: a load files its icon in the maps above.
+    struct Drained
+    {};
+    using LoadWorker = Worker<Drain, Drained>;
+
     mutable std::mutex m_Mutex;
-    std::condition_variable_any m_Wake;
     LruMap<std::uint64_t, ProcessEntry> m_Processes;
     LruMap<std::uint64_t, ProcessEntry> m_Files;
     LruMap<std::string, std::shared_ptr<const ProcessIconImage>> m_Icons;
@@ -189,8 +227,11 @@ class ProcessIconCache
     std::deque<Request> m_Queue;
     std::uint64_t m_NextIconId = 1;
     std::uint64_t m_Loads = 0;
+    std::atomic<bool> m_WorkerFailureReported{false}; // reportWorkerFailure() has logged that the worker failed
+    bool m_RefuseNextDrain = false;                   // refuseNextDrainForTesting(); under m_Mutex
+    bool m_FailNextDrain = false;                     // failNextDrainForTesting(); under m_Mutex
 
-    std::jthread m_Worker; // Last: stopped and joined before the state above is destroyed
+    LoadWorker m_Worker; // Last: stopped and joined before the state above is destroyed
 };
 
 } // namespace Domain

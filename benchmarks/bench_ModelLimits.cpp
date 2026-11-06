@@ -37,18 +37,26 @@
 
 #include <benchmark/benchmark.h>
 
+#include <algorithm>
+#include <array>
 #include <atomic>
+#include <bit>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <ratio>
 #include <stop_token>
 #include <string>
 #include <thread>
 #include <tuple>
 #include <utility>
 #include <vector>
+
+#if defined(_WIN32)
+#include <windows.h>
+#endif
 
 namespace
 {
@@ -80,6 +88,41 @@ constexpr double START_SECONDS = 1000.0;
 {
     return static_cast<double>(samples) * SAMPLE_INTERVAL_SECONDS;
 }
+
+/// The cache line a fixture's model starts on, and the unit it fills.
+constexpr std::size_t MODEL_ALIGNMENT = 64;
+
+/// A fixture's model, on cache lines of its own: it starts on one, and nothing else shares its last
+/// (#3448). make_unique would put it wherever the heap had room, 16-byte aligned, so its members fell
+/// into different cache lines from one launch to the next. The concurrent benchmarks' threads all
+/// touch the model's publication lock, and the writer its histories beside it, so that placement set
+/// how often they contended: one binary's extra_readers:2 runs fell into two patterns, by where the model
+/// started in its line, at 14 us or 35-80 us a call. Reached like the unique_ptr it replaces.
+template<typename Model> class CacheLineModel
+{
+  public:
+    template<typename... Args> void emplace(Args&&... args)
+    {
+        m_Holder = std::make_unique<Holder>(std::forward<Args>(args)...);
+    }
+    [[nodiscard]] Model* operator->() const noexcept
+    {
+        return &m_Holder->model;
+    }
+    [[nodiscard]] Model& operator*() const noexcept
+    {
+        return m_Holder->model;
+    }
+
+  private:
+    struct alignas(MODEL_ALIGNMENT) Holder
+    {
+        template<typename... Args> explicit Holder(Args&&... args) : model(std::forward<Args>(args)...)
+        {}
+        Model model;
+    };
+    std::unique_ptr<Holder> m_Holder;
+};
 
 /// One fixture per configuration for the life of the process: see the file comment.
 template<typename Fixture, typename Key, typename Make> Fixture& cachedFixture(const Key& key, Make&& make)
@@ -154,7 +197,7 @@ class SystemCounterFeed
 /// `samples`-long history.
 struct SystemFixture
 {
-    std::unique_ptr<Domain::SystemModel> model;
+    CacheLineModel<Domain::SystemModel> model;
     SystemCounterFeed feed;
     std::uint64_t step = 0;
 
@@ -162,7 +205,7 @@ struct SystemFixture
     {
         auto probe = std::make_unique<TestMocks::MockSystemProbe>();
         probe->setCapabilities(TestMocks::makeFullSystemCapabilities());
-        model = std::make_unique<Domain::SystemModel>(std::move(probe));
+        model.emplace(std::move(probe));
         model->setMaxHistorySeconds(windowSecondsFor(samples));
         // One more than the window holds, so the history is full before the first measured sample.
         // Preloaded as one series with one publish (#1413) rather than a publish per sample, which
@@ -349,6 +392,17 @@ constexpr auto CONCURRENT_WAITED = std::chrono::microseconds(1);
 /// once that wait is near zero (#868) the default min-time rule would run millions of iterations, each
 /// still paying a full writer sample, and overrun the Heavy Checks timeout.
 constexpr benchmark::IterationCount CONCURRENT_ITERATIONS = 2000;
+/// The handoffs each iteration of the concurrent benchmark times, reporting their median wait (#3448).
+/// Odd, so the median is one of them.
+///
+/// One handoff per iteration made the reported time the mean wait, and the waits have a long tail: on
+/// Windows a reader that loses the publication lock to the extra readers sleeps in the kernel, and its
+/// wake-up took 100 us at the 90th percentile and up to 1.3 ms at the 99th, against 2-3 us at the
+/// median. Those few waits set the mean, so it moved 2x between repetitions (a CV of 13-51%) and between
+/// runs. The median of 11 is in that tail only when six of the 11 are, which a 10% tail almost never
+/// gives; a lock held through a publish again (#868) still moves every handoff's wait, and so the median.
+/// The mean wait is still reported, as mean_wait_us.
+constexpr std::size_t CONCURRENT_HANDOFFS = 11;
 
 /// Busy-waits until @p deadline: a sleep would hand the core away for far longer than the wait.
 void spinUntil(std::chrono::steady_clock::time_point deadline)
@@ -358,16 +412,74 @@ void spinUntil(std::chrono::steady_clock::time_point deadline)
     }
 }
 
+/// Pins the calling thread to one logical CPU of its own while it lives, and puts its affinity back
+/// after (#3448). Only on Windows, and only when the process is already confined to a set of CPUs
+/// (tools/bench.ps1's -Core performance), with at least @p threads of them: the concurrent benchmark's
+/// threads then each get the CPU numbered @p index in that set, counted from its highest. Otherwise it
+/// does nothing.
+///
+/// Left to the scheduler, the four threads of an extra_readers:2 run (the measuring reader, the writer
+/// and two readers, all spinning) moved between bench.ps1's five performance cores as they blocked and
+/// woke on the publication lock. Each on a CPU of its own, the spread of their repetitions within a run
+/// fell from a CV of 20-51% to 6-17%.
+class ConcurrentThreadPin
+{
+  public:
+    ConcurrentThreadPin(std::size_t index, std::size_t threads) noexcept
+    {
+#if defined(_WIN32)
+        DWORD_PTR processMask = 0;
+        DWORD_PTR systemMask = 0;
+        if (GetProcessAffinityMask(GetCurrentProcess(), &processMask, &systemMask) == 0 || processMask == systemMask ||
+            std::cmp_less(std::popcount(processMask), threads) || index >= threads)
+        {
+            return;
+        }
+        DWORD_PTR mask = processMask;
+        for (std::size_t skipped = 0; skipped < index && mask != 0; ++skipped)
+        {
+            mask &= ~std::bit_floor(mask); // Drop the highest CPU left
+        }
+        if (mask != 0)
+        {
+            m_Previous = SetThreadAffinityMask(GetCurrentThread(), std::bit_floor(mask));
+        }
+#else
+        static_cast<void>(index);
+        static_cast<void>(threads);
+#endif
+    }
+    ~ConcurrentThreadPin()
+    {
+#if defined(_WIN32)
+        if (m_Previous != 0)
+        {
+            static_cast<void>(SetThreadAffinityMask(GetCurrentThread(), m_Previous));
+        }
+#endif
+    }
+    ConcurrentThreadPin(const ConcurrentThreadPin&) = delete;
+    ConcurrentThreadPin& operator=(const ConcurrentThreadPin&) = delete;
+    ConcurrentThreadPin(ConcurrentThreadPin&&) = delete;
+    ConcurrentThreadPin& operator=(ConcurrentThreadPin&&) = delete;
+
+  private:
+#if defined(_WIN32)
+    DWORD_PTR m_Previous = 0; // The thread's affinity before, or 0 when it was not pinned
+#endif
+};
+
 // How long a UI-style reader waits in a model's publication() while the sampler publishes: the
 // baseline #868's critical-section work should shrink. `fixture` has the model in `model` and takes
 // one sample with sampleOnce().
 //
-// Each iteration is one publish met head-on: the reader cues a writer thread to take one sample
+// Each handoff is one publish met head-on: the reader cues a writer thread to take one sample
 // (append, trim and publish(), which copied every series under the model's exclusive lock before
 // #868), waits CONCURRENT_HEAD_START for it to take the lock, then calls publication() -- which, on
-// the old locking, blocks until the publish is done. The reported time is that call alone (manual
+// the old locking, blocks until the publish is done. The handoff's wait is that call alone (manual
 // timing): the lock's hold time less the head start, plus the blocked reader's wake-up -- what a frame
-// that lands on a publish stalls for. Handing over this way, rather than running the writer free,
+// that lands on a publish stalls for. Each iteration makes CONCURRENT_HANDOFFS handoffs and reports
+// their median wait (#3448). Handing over this way, rather than running the writer free,
 // keeps the measurement about one hold: a writer publishing back to back re-takes the lock before a
 // woken reader runs, and the reader then waits on the scheduler for many holds.
 //
@@ -377,7 +489,11 @@ void spinUntil(std::chrono::steady_clock::time_point deadline)
 // `writer_sample_us`. Counters:
 //   writer_sample_us -- the writer's mean time per sample (append, trim, publish), including taking
 //                       the lock; compare the model's uncontended *_Publish benchmark, the same work
-//   missed_pct       -- iterations whose publication() didn't wait (the writer hadn't the lock yet)
+//   missed_pct       -- handoffs whose publication() didn't wait (the writer hadn't the lock yet)
+//   mean_wait_us     -- the mean wait of every handoff, long tail and all: what one handoff per
+//                       iteration reported before #3448
+// Each thread runs on a CPU of its own when bench.ps1 has pinned the run (ConcurrentThreadPin), and the
+// model sits on cache lines of its own (CacheLineModel).
 template<typename Fixture> void measureConcurrentPublicationWait(benchmark::State& state, Fixture& fixture)
 {
     auto& model = *fixture.model;
@@ -392,10 +508,15 @@ template<typename Fixture> void measureConcurrentPublicationWait(benchmark::Stat
     std::atomic<std::int64_t> sampleNanos{0};
     std::int64_t samples = 0;
     std::int64_t missed = 0;
+    std::chrono::steady_clock::duration totalWait{};
+    // The measuring reader (this thread), the writer and each extra reader get a CPU of their own.
+    const std::size_t threads = 2 + static_cast<std::size_t>(state.range(1));
+    const ConcurrentThreadPin readerPin(0, threads);
     {
         std::jthread writer(
-            [&fixture, &phase, &sampleNanos](const std::stop_token& stop)
+            [&fixture, &phase, &sampleNanos, threads](const std::stop_token& stop)
             {
+                const ConcurrentThreadPin writerPin(1, threads);
                 while (!stop.stop_requested())
                 {
                     if (phase.load(std::memory_order_acquire) != Phase::Cued)
@@ -414,31 +535,40 @@ template<typename Fixture> void measureConcurrentPublicationWait(benchmark::Stat
         for (std::int64_t i = 0; i < state.range(1); ++i)
         {
             extraReaders.emplace_back(
-                [&model](const std::stop_token& stop)
+                [&model, threads, pin = 2 + static_cast<std::size_t>(i)](const std::stop_token& stop)
                 {
+                    const ConcurrentThreadPin extraReaderPin(pin, threads);
                     while (!stop.stop_requested())
                     {
-                        auto publication = model.publication();
+                        const auto publication = model.publication();
                         benchmark::DoNotOptimize(publication->version);
                     }
                 });
         }
 
+        std::array<std::chrono::steady_clock::duration, CONCURRENT_HANDOFFS> waits{};
         for (auto _ : state)
         {
-            phase.store(Phase::Cued, std::memory_order_release);
-            spinUntil(std::chrono::steady_clock::now() + CONCURRENT_HEAD_START);
-            const auto start = std::chrono::steady_clock::now();
-            auto publication = model.publication();
-            const auto waited = std::chrono::steady_clock::now() - start;
-            state.SetIterationTime(std::chrono::duration<double>(waited).count());
-            benchmark::DoNotOptimize(publication->version);
-            missed += (waited < CONCURRENT_WAITED) ? 1 : 0;
-            ++samples;
-            while (phase.load(std::memory_order_acquire) != Phase::Done)
+            for (auto& waited : waits)
             {
+                phase.store(Phase::Cued, std::memory_order_release);
+                spinUntil(std::chrono::steady_clock::now() + CONCURRENT_HEAD_START);
+                const auto start = std::chrono::steady_clock::now();
+                const auto publication = model.publication();
+                waited = std::chrono::steady_clock::now() - start;
+                benchmark::DoNotOptimize(publication->version);
+                missed += (waited < CONCURRENT_WAITED) ? 1 : 0;
+                totalWait += waited;
+                ++samples;
+                while (phase.load(std::memory_order_acquire) != Phase::Done)
+                {
+                }
+                phase.store(Phase::Idle, std::memory_order_relaxed);
             }
-            phase.store(Phase::Idle, std::memory_order_relaxed);
+            // The iteration's time is its handoffs' median wait (#3448).
+            const auto middle = waits.begin() + (CONCURRENT_HANDOFFS / 2);
+            std::ranges::nth_element(waits, middle);
+            state.SetIterationTime(std::chrono::duration<double>(*middle).count());
         }
 
         writer.request_stop();
@@ -454,6 +584,8 @@ template<typename Fixture> void measureConcurrentPublicationWait(benchmark::Stat
         benchmark::Counter((samples == 0) ? 0.0 : (static_cast<double>(sampleNanos.load()) / static_cast<double>(samples)) / 1e3);
     state.counters["missed_pct"] =
         benchmark::Counter((samples == 0) ? 0.0 : (100.0 * static_cast<double>(missed)) / static_cast<double>(samples));
+    state.counters["mean_wait_us"] = benchmark::Counter(
+        (samples == 0) ? 0.0 : std::chrono::duration<double, std::micro>(totalWait).count() / static_cast<double>(samples));
 }
 
 // measureConcurrentPublicationWait() on SystemModel at a range(0)-sample history (8 cores, 2
@@ -482,7 +614,7 @@ BENCHMARK(BM_SystemModel_Concurrent_PublicationWait)
 struct StorageFixture
 {
     Mocks::MockDiskProbe* probe = nullptr; // Owned by model
-    std::unique_ptr<Domain::StorageModel> model;
+    CacheLineModel<Domain::StorageModel> model;
     Platform::SystemDiskCounters counters;
     std::uint64_t step = 0;
 
@@ -490,7 +622,7 @@ struct StorageFixture
     {
         auto ownedProbe = std::make_unique<Mocks::MockDiskProbe>();
         probe = ownedProbe.get();
-        model = std::make_unique<Domain::StorageModel>(std::move(ownedProbe));
+        model.emplace(std::move(ownedProbe));
         model->setMaxHistorySeconds(windowSecondsFor(samples));
         counters.disks.resize(disks);
         for (std::size_t i = 0; i < disks; ++i)
@@ -687,7 +819,7 @@ BENCHMARK(BM_StorageModel_Concurrent_PublicationWait)
 struct GPUFixture
 {
     TestMocks::MockGPUProbe* probe = nullptr; // Owned by model
-    std::unique_ptr<Domain::GPUModel> model;
+    CacheLineModel<Domain::GPUModel> model;
     std::vector<std::string> gpuIds;
     std::uint64_t step = 0;
 
@@ -700,7 +832,7 @@ struct GPUFixture
             ownedProbe->withGPU(gpuIds.back(), "Synthetic GPU " + std::to_string(i));
         }
         probe = ownedProbe.get();
-        model = std::make_unique<Domain::GPUModel>(std::move(ownedProbe));
+        model.emplace(std::move(ownedProbe));
         model->setMaxHistorySeconds(windowSecondsFor(samples));
         for (std::int64_t i = 0; i <= samples; ++i)
         {

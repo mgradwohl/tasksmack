@@ -9,6 +9,7 @@
 #include "App/Panels/IncrementalSearch.h"
 #include "App/Panels/NewProcessHighlight.h"
 #include "App/Panels/NiceStep.h"
+#include "App/Panels/PriorityChangesInFlight.h"
 #include "App/Panels/ProcessActionConfirm.h"
 #include "App/Panels/ProcessActionsView.h"
 #include "App/Panels/ProcessAffinityDialog.h"
@@ -19,6 +20,7 @@
 #include "App/Panels/ProcessDisplayFreeze.h"
 #include "App/Panels/ProcessDumpView.h"
 #include "App/Panels/ProcessFilterCache.h"
+#include "App/Panels/ProcessGroupTotals.h"
 #include "App/Panels/ProcessGrouping.h"
 #include "App/Panels/ProcessLookup.h"
 #include "App/Panels/ProcessPins.h"
@@ -845,6 +847,20 @@ static_assert(std::ranges::all_of(allProcessColumns(),
               "CELL_RENDERERS needs one entry per Processes column, in ProcessColumn "
               "order, with a renderer for every column but PID and Name");
 
+/// What a batch priority change's result line adds for the @p skipped processes it left out, each with a
+/// priority change still running in Process Details (#3467): "; 1 process skipped: ...". Empty for none.
+[[nodiscard]] std::string batchPrioritySkippedText(std::size_t skipped)
+{
+    if (skipped == 0)
+    {
+        return {};
+    }
+    return std::format("; {} skipped: {} priority change{} still running in Process Details",
+                       ProcessBatch::processCountText(skipped),
+                       skipped == 1 ? "its" : "their",
+                       skipped == 1 ? " is" : "s are");
+}
+
 } // namespace
 
 // ============================================================================
@@ -1048,7 +1064,8 @@ void ProcessesPanel::onAttach()
     m_ColumnSettings.keepUnhideableColumnsVisible(); // Whatever the settings were given (#1209)
     m_MeterSettings = UserConfig::get().settings().processMeters;
     m_Pins = ProcessPins::Pins(UserConfig::get().settings().pinnedProcesses); // #3061
-    m_GroupBy = UserConfig::get().settings().processGroupBy;                  // #3068
+    // #3068; the saved mode where this system offers it (#3428), checked again as capabilities arrive.
+    m_GroupBy = ProcessGrouping::effectiveGroupBy(UserConfig::get().settings().processGroupBy, processCapabilities());
 
     // m_RefreshInterval starts at the SamplingConfig default, and the model at its built-in history
     // length; ShellLayer raises the configured values as events on its first update (#1079).
@@ -1290,6 +1307,12 @@ void ProcessesPanel::onDetach()
     // asked to stop first, so a password prompt still up is given up on, not waited out (#2388).
     m_RowActionRun.requestStop();
     m_RowActionRun.update(/*wait=*/true);
+    // Nothing here holds Process Details' priority controls any more (#3467).
+    m_BatchPriorityTargets.clear();
+    if (m_PriorityChanges != nullptr)
+    {
+        m_PriorityChanges->publish(PriorityChangesInFlight::Panel::Processes, {});
+    }
     // The UDP event trace's session is stopped here, not left to whichever of the model and this
     // panel lets the collector go last (#1492): after a switch still running on its worker (#3155),
     // which is waited for, and whatever was asked for after it dropped. The one wait a detach makes
@@ -1375,10 +1398,20 @@ void ProcessesPanel::onUpdate(float deltaTime)
     // the progress line.
     if (std::optional<ProcessBatch::BatchRunOutcome> outcome = m_BatchRun.poll(); outcome.has_value())
     {
+        // A batch priority change that left processes out says how many, and why (#3467).
+        if (m_BatchPrioritySkipped > 0)
+        {
+            outcome->message.ok = false;
+            outcome->message.text += batchPrioritySkippedText(m_BatchPrioritySkipped);
+        }
+        m_BatchPriorityTargets.clear();
+        m_BatchPrioritySkipped = 0;
         showBatchOutcome(std::move(*outcome));
     }
     // So has a single-process action (#2305): its result line replaces "Killing PID 123...".
     m_RowActionRun.update();
+    // Neither holds Process Details' priority controls any more once taken in (#3467).
+    publishPriorityChanges();
 
     if (!m_ProcessModel || !m_Sampler)
     {
@@ -1608,6 +1641,15 @@ void ProcessesPanel::renderContent()
             m_RequestedColumns = *changed;
         }
     }
+    // The saved Group mode where this system offers it, else None (#3428). The saved choice is kept, and
+    // checked each frame: the capabilities are the defaults until the first sample is adopted.
+    if (const ProcessGrouping::GroupBy active =
+            ProcessGrouping::effectiveGroupBy(UserConfig::get().settings().processGroupBy, processCapabilities());
+        active != m_GroupBy)
+    {
+        m_GroupBy = active;
+        m_GroupsBuiltFor.reset();
+    }
 
     // Prune row format cache entries for processes no longer present, once per new snapshot
     // generation (not per frame). Entries themselves are built lazily, on demand, by
@@ -1808,7 +1850,7 @@ void ProcessesPanel::renderContent()
     }
     ImGui::SetCursorPosX(statusLayout.x);
     {
-        const bool colored = showActionResult;
+        const bool colored = showActionResult && !m_RowActionResult.neutral; // a cancelled run: the normal colour (#3427)
         if (colored)
         {
             ImGui::PushStyleColor(ImGuiCol_Text, m_RowActionResult.ok ? theme.scheme().textSuccess : theme.scheme().textError);
@@ -1837,13 +1879,8 @@ void ProcessesPanel::renderContent()
         const UI::Widgets::FrameOutlineScope frameOutline;
         if (ImGui::BeginCombo("##GroupBy", preview.c_str()))
         {
-            for (const ProcessGrouping::GroupBy mode : {
-                     ProcessGrouping::GroupBy::None,
-                     ProcessGrouping::GroupBy::Unit,
-                     ProcessGrouping::GroupBy::Container,
-                     ProcessGrouping::GroupBy::App,
-                     ProcessGrouping::GroupBy::User,
-                 })
+            // Only the modes this system has the data for (#3428): Container and App are Linux's.
+            for (const ProcessGrouping::GroupBy mode : ProcessGrouping::offeredGroupModes(processCapabilities()))
             {
                 const std::string label(ProcessGrouping::groupByLabel(mode));
                 if (ImGui::Selectable(label.c_str(), mode == m_GroupBy))
@@ -1854,7 +1891,14 @@ void ProcessesPanel::renderContent()
             ImGui::EndCombo();
         }
     }
-    ImGui::SetItemTooltip("Group processes by systemd unit, container, app or user, each group under a row with its totals");
+    if (const Platform::ProcessCapabilities groupCaps = processCapabilities(); groupCaps.hasContainer || groupCaps.hasAppUnits)
+    {
+        ImGui::SetItemTooltip("Group processes by systemd unit, container, app or user, each group under a row with its totals");
+    }
+    else
+    {
+        ImGui::SetItemTooltip("Group processes by service or user, each group under a row with its totals");
+    }
     if (offerRunTask)
     {
         ImGui::SameLine();
@@ -2199,6 +2243,7 @@ void ProcessesPanel::renderContent()
             {
                 sortSpecs->SpecsDirty = true;
                 ImGui::EndTable();
+                publishPriorityChanges(); // as at the end of the frame's drawing (#3467)
                 return;
             }
 
@@ -2293,6 +2338,41 @@ void ProcessesPanel::renderContent()
 
         ImGui::EndTable();
     }
+    // A priority change asked about or started this frame holds Process Details' controls from now (#3467).
+    publishPriorityChanges();
+}
+
+void ProcessesPanel::publishPriorityChanges()
+{
+    if (m_PriorityChanges == nullptr)
+    {
+        return;
+    }
+    m_PublishedPriorityChanges.clear();
+    const auto publishTargets = [this](std::span<const ProcessBatch::BatchTarget> targets)
+    {
+        for (const ProcessBatch::BatchTarget& target : targets)
+        {
+            m_PublishedPriorityChanges.push_back(target.target);
+        }
+    };
+    if (Detail::changesPriority(m_RowAction.action))
+    {
+        publishTargets(m_RowAction.targets); // Set Realtime priority or Efficiency mode, asked about in its confirm
+    }
+    if (m_BatchPriorityDialog.isPending())
+    {
+        publishTargets(m_BatchPriorityDialog.targets()); // the dialog is its confirmation (#1539)
+    }
+    if (m_RowActionRun.busy() && m_RowRunPriorityTarget.has_value())
+    {
+        m_PublishedPriorityChanges.push_back(*m_RowRunPriorityTarget);
+    }
+    if (m_BatchRun.busy())
+    {
+        m_PublishedPriorityChanges.insert(m_PublishedPriorityChanges.end(), m_BatchPriorityTargets.begin(), m_BatchPriorityTargets.end());
+    }
+    m_PriorityChanges->publish(PriorityChangesInFlight::Panel::Processes, m_PublishedPriorityChanges);
 }
 
 size_t ProcessesPanel::processCount() const
@@ -3012,11 +3092,13 @@ void ProcessesPanel::setTreeView(bool enabled)
     }
     m_TreeViewEnabled = enabled;
     m_NameWidthSyncPending = true;
-    if (m_TreeViewEnabled && m_GroupBy != ProcessGrouping::GroupBy::None)
+    if (ProcessGrouping::GroupBy& saved = UserConfig::get().settings().processGroupBy;
+        m_TreeViewEnabled && (m_GroupBy != ProcessGrouping::GroupBy::None || saved != ProcessGrouping::GroupBy::None))
     {
-        // Tree and Group by are separate views (#3068): Tree sets the group back to None.
+        // Tree and Group by are separate views (#3068): Tree sets the group back to None, the saved one
+        // too, even one this system doesn't offer (#3428), so it can't come back under the tree.
         m_GroupBy = ProcessGrouping::GroupBy::None;
-        UserConfig::get().settings().processGroupBy = m_GroupBy;
+        saved = m_GroupBy;
         m_GroupsBuiltFor.reset();
     }
     if (m_TreeViewEnabled)
@@ -3523,9 +3605,13 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
     // Efficiency mode (#3071), as Task Manager's row menu has it: one process, ticked while it is on.
     // Turning it on is confirmed; turning it off isn't.
     const bool on = Detail::isInEfficiencyMode(proc);
-    if (const Detail::EfficiencyModeToggle toggle =
-            Detail::efficiencyModeToggle(can, {.pid = proc.pid, .startTimeTicks = proc.startTimeTicks}, on, !actionsIdle, batchCount);
-        toggle.state != Detail::EfficiencyModeToggleState::Hidden)
+    // Efficiency mode sets the priority: greyed out, too, while Process Details changes this process's (#3467).
+    const Platform::ProcessTarget rowTarget{.pid = proc.pid, .startTimeTicks = proc.startTimeTicks};
+    const char* const priorityHeld =
+        priorityHeldElsewhere(rowTarget) ? PriorityChangesInFlight::waitReason(PriorityChangesInFlight::Panel::Processes) : nullptr;
+    const Detail::EfficiencyModeToggle toggle =
+        Detail::holdEfficiencyModeToggle(Detail::efficiencyModeToggle(can, rowTarget, on, !actionsIdle, batchCount), priorityHeld);
+    if (toggle.state != Detail::EfficiencyModeToggleState::Hidden)
     {
         ImGui::Separator();
         if (ImGui::MenuItem(Detail::EFFICIENCY_MODE_LABEL, nullptr, on, toggle.state == Detail::EfficiencyModeToggleState::Enabled))
@@ -3533,6 +3619,24 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
             toggleRowEfficiencyMode(proc, on);
         }
         ImGui::SetItemTooltip("%s", toggle.tooltip); // a disabled item still says why
+    }
+    // The Realtime priority class (#3429, Windows): one process, always confirmed with a warning.
+    // Greyed out, too, while Process Details changes this process's priority (#3467).
+    if (const Detail::RealtimePriorityItem realtime = Detail::holdRealtimePriorityItem(
+            Detail::realtimePriorityItem(
+                can, rowTarget, proc.priorityClass == Domain::Priority::PriorityClass::Realtime, !actionsIdle, batchCount),
+            priorityHeld);
+        realtime.state != Detail::RealtimePriorityState::Hidden)
+    {
+        if (toggle.state == Detail::EfficiencyModeToggleState::Hidden) // else it shares Efficiency mode's group
+        {
+            ImGui::Separator();
+        }
+        if (ImGui::MenuItem(Detail::SET_REALTIME_PRIORITY_LABEL, nullptr, false, realtime.state == Detail::RealtimePriorityState::Enabled))
+        {
+            requestRowAction(Detail::ProcessAction::SetRealtimePriority, proc);
+        }
+        ImGui::SetItemTooltip("%s", realtime.tooltip);
     }
     // One priority for the whole selection (#1484): picked in its own dialog, then confirmed as a batch.
     // A single process's priority stays in Process Details' Actions block.
@@ -3636,12 +3740,15 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
 
 void ProcessesPanel::setGroupBy(ProcessGrouping::GroupBy groupBy)
 {
-    if (groupBy == m_GroupBy)
+    // Choosing None while a saved mode this system doesn't offer stands in for it (#3428) replaces the
+    // saved mode, so the comparison is with both.
+    ProcessGrouping::GroupBy& saved = UserConfig::get().settings().processGroupBy;
+    if (groupBy == m_GroupBy && groupBy == saved)
     {
         return;
     }
     m_GroupBy = groupBy;
-    UserConfig::get().settings().processGroupBy = groupBy; // saved with the other settings
+    saved = groupBy; // saved with the other settings
     m_GroupsBuiltFor.reset();
     if (groupBy != ProcessGrouping::GroupBy::None && m_TreeViewEnabled)
     {
@@ -3748,7 +3855,7 @@ void ProcessesPanel::renderGroupHeaderRow(std::size_t groupIndex)
         {
             const std::string label = std::format("{} {} ({})",
                                                   collapsed ? ICON_FA_CARET_RIGHT : ICON_FA_CARET_DOWN,
-                                                  group.key.empty() ? ProcessGrouping::UNGROUPED_LABEL : std::string_view(group.key),
+                                                  group.key.empty() ? ProcessGrouping::UNGROUPED_LABEL : std::string_view(group.label),
                                                   group.members.size());
             static_cast<void>(
                 UI::Widgets::cellText(label,
@@ -3934,13 +4041,52 @@ void ProcessesPanel::renderBatchPriorityDialog()
         showBatchOutcome({.message = {.ok = false, .text = "Process actions unavailable"}, .anySucceeded = false});
         return;
     }
-    const std::span<const ProcessBatch::BatchTarget> targets = m_BatchPriorityDialog.targets();
-    if (std::optional<ProcessBatch::BatchRunOutcome> failed = m_BatchRun.startPriority(
-            *m_ProcessActions, std::vector<ProcessBatch::BatchTarget>(targets.begin(), targets.end()), *nice, m_OwnPid);
+    // A process Process Details is changing the priority of is left out, and the result line says so
+    // (#3467): set now as well, the older of the two changes could land last.
+    std::vector<ProcessBatch::BatchTarget> targets;
+    std::size_t skipped = 0;
+    for (const ProcessBatch::BatchTarget& target : m_BatchPriorityDialog.targets())
+    {
+        if (priorityHeldElsewhere(target.target))
+        {
+            ++skipped;
+        }
+        else
+        {
+            targets.push_back(target);
+        }
+    }
+    if (targets.empty())
+    {
+        showBatchOutcome({
+            .message =
+                {
+                    .ok = false,
+                    .text = std::format("Priority not set{}", batchPrioritySkippedText(skipped)),
+                },
+            .anySucceeded = false,
+        });
+        return;
+    }
+    if (m_BatchRun.busy())
+    {
+        return; // startPriority() starts nothing while another batch runs, and the menu offers none meanwhile
+    }
+    std::vector<Platform::ProcessTarget> identities;
+    identities.reserve(targets.size());
+    for (const ProcessBatch::BatchTarget& target : targets)
+    {
+        identities.push_back(target.target);
+    }
+    if (std::optional<ProcessBatch::BatchRunOutcome> failed =
+            m_BatchRun.startPriority(*m_ProcessActions, std::move(targets), *nice, m_OwnPid);
         failed.has_value())
     {
         showBatchOutcome(std::move(*failed));
+        return;
     }
+    m_BatchPriorityTargets = std::move(identities);
+    m_BatchPrioritySkipped = skipped;
 }
 
 void ProcessesPanel::showBatchOutcome(ProcessBatch::BatchRunOutcome outcome)
@@ -3970,7 +4116,7 @@ void ProcessesPanel::renderRunTaskDialog()
         [actions = m_ProcessActions.get(), request = *request] { return actions->runProgram(request); },
         [shown = std::move(shown), admin = request->asAdministrator](const Platform::ProcessActionResult& result)
         { return runTaskResultMessage(shown, admin, result); },
-        std::nullopt); // its own pkexec prompt when elevated: nothing the helper does
+        std::nullopt); // its own pkexec or UAC prompt when elevated (#3427): nothing the helper does
 }
 
 void ProcessesPanel::renderFindHandlesDialog(const std::vector<Domain::ProcessSnapshot>& snapshots)
@@ -4040,7 +4186,11 @@ void ProcessesPanel::renderSchedPolicyDialog()
 }
 
 template<typename Work>
-void ProcessesPanel::runRowAction(std::string pending, Work work, RowResultFormat format, std::optional<Platform::AuthorizedAction> retry)
+void ProcessesPanel::runRowAction(std::string pending,
+                                  Work work,
+                                  RowResultFormat format,
+                                  std::optional<Platform::AuthorizedAction> retry,
+                                  std::optional<Platform::ProcessTarget> setsPriorityOf)
 {
     if (!m_ProcessActions)
     {
@@ -4052,6 +4202,20 @@ void ProcessesPanel::runRowAction(std::string pending, Work work, RowResultForma
         showRowActionResult(format(Platform::ProcessActionResult::error("Another action is still running")), false);
         return;
     }
+    // F7/F8, Set Realtime priority, Efficiency mode and their retries set the priority, as Process Details' changes do: never
+    // while one for the same process runs there, or the older of the two could land last (#3467).
+    if (!setsPriorityOf.has_value() && retry.has_value() && Detail::changesPriority(retry->kind))
+    {
+        setsPriorityOf = retry->target;
+    }
+    if (setsPriorityOf.has_value() && priorityHeldElsewhere(*setsPriorityOf))
+    {
+        showRowActionResult(
+            format(Platform::ProcessActionResult::error(PriorityChangesInFlight::refusal(PriorityChangesInFlight::Panel::Processes))),
+            false);
+        return;
+    }
+    m_RowRunPriorityTarget = setsPriorityOf;
     static_cast<void>(m_RowActionRun.start(
         std::move(pending),
         std::move(work),
@@ -4076,12 +4240,15 @@ void ProcessesPanel::retryRowActionAuthorized()
     }
     RowRetry retry = std::move(*m_RowRetry);
     m_RowRetry.reset();
+    const std::optional<Platform::ProcessTarget> setsPriorityOf =
+        Detail::changesPriority(retry.action.kind) ? std::optional<Platform::ProcessTarget>{retry.action.target} : std::nullopt;
     runRowAction(
         std::format("Waiting for authorization to act on PID {}...", retry.action.target.pid),
         [actions = m_ProcessActions.get(), action = retry.action](const std::stop_token& stopToken)
         { return actions->runAuthorized(action, stopToken); },
         std::move(retry.format),
-        std::nullopt); // a refusal to the administrator isn't offered again
+        std::nullopt, // a refusal to the administrator isn't offered again
+        setsPriorityOf);
 }
 
 void ProcessesPanel::showRowActionResult(Detail::ActionResultMessage message, bool succeeded)

@@ -35,6 +35,7 @@
 #include "PerfProviderApartment.h"
 #include "ProcessorPerformanceCounter.h"
 #include "WinString.h"
+#include "WindowsCommitPaging.h"
 #include "WindowsConversions.h"
 #include "WindowsNtQuery.h"
 #include "WindowsSystemProbeMath.h"
@@ -555,6 +556,7 @@ SystemCounters WindowsSystemProbe::read()
     refreshCpuDetailsIfProcessorsChanged(counters.cpuPerCore);
     timer.lap(SUB_READ_CPU_DETAILS);
     readMemoryCounters(counters);
+    readMemoryCompression(counters);
     timer.lap(SUB_READ_MEMORY);
     readUptime(counters);
     readStaticInfo(counters);
@@ -749,6 +751,30 @@ void WindowsSystemProbe::readMemoryCounters(SystemCounters& counters) const
     const SwapBytes swap = readSwap();
     counters.memory.swapTotalBytes = swap.totalBytes;
     counters.memory.swapFreeBytes = swap.freeBytes;
+}
+
+void WindowsSystemProbe::readMemoryCompression(SystemCounters& counters)
+{
+    // The store's size as Task Manager's "In use (Compressed)" gives it: the working set of the process
+    // that holds it, from the process snapshot, which needs no handle to that protected process and so no
+    // administrator rights (as System Information's Commit & paging reads it, #1516). How much data the
+    // store stands for is only in undocumented store statistics, so it is left out.
+    const std::optional<std::size_t> written =
+        WindowsCommitPaging::querySystemInformationInto(m_Fns.nt.ntQuerySystemInformation,
+                                                        WindowsCommitPaging::SYSTEM_PROCESS_INFORMATION_CLASS,
+                                                        m_ProcessSnapshot,
+                                                        WindowsCommitPaging::PROCESS_INFORMATION_INITIAL_BYTES);
+    if (!written.has_value())
+    {
+        return;
+    }
+    if (const std::optional<std::uint64_t> workingSet =
+            WindowsCommitPaging::memoryCompressionWorkingSet(std::span<const std::byte>(m_ProcessSnapshot.data(), *written));
+        workingSet.has_value())
+    {
+        counters.memory.hasMemoryCompression = true;
+        counters.memory.memoryCompressionBytes = *workingSet;
+    }
 }
 
 SwapBytes WindowsSystemProbe::readSwap() const

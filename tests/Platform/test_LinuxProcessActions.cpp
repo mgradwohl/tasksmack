@@ -710,6 +710,9 @@ TEST(LinuxProcessActionsTest, SetSchedPolicyRefusesDeadlineABadPriorityAnInvalid
     LinuxProcessActions actions;
     const SleepingChild child;
     ASSERT_TRUE(child.started());
+    // The child inherits the runner's policy (Batch or Idle under some CI runners): it must stay as it started.
+    const int initial = schedulerOf(static_cast<id_t>(child.target().pid));
+    ASSERT_GE(initial, 0);
     for (const SchedPolicy policy : {SchedPolicy::Deadline, SchedPolicy::Unknown})
     {
         const ProcessActionResult refused = actions.setSchedPolicy(child.target(), policy, 0, Platform::RealtimeThreads::Keep);
@@ -727,13 +730,13 @@ TEST(LinuxProcessActionsTest, SetSchedPolicyRefusesDeadlineABadPriorityAnInvalid
     }
     EXPECT_EQ(actions.setSchedPolicy(child.target(), SchedPolicy::Normal, 5, Platform::RealtimeThreads::Keep).errorMessage,
               "The Normal policy takes no real-time priority (asked for 5)");
-    EXPECT_EQ(schedulerOf(static_cast<id_t>(child.target().pid)), SCHED_OTHER);
+    EXPECT_EQ(schedulerOf(static_cast<id_t>(child.target().pid)), initial);
     EXPECT_EQ(actions.setSchedPolicy({.pid = 0, .startTimeTicks = 1}, SchedPolicy::Batch, 0, Platform::RealtimeThreads::Keep).errorMessage,
               "Invalid PID");
     // A different start time: the PID now names another process, and nothing is changed.
     const ProcessTarget other{.pid = child.target().pid, .startTimeTicks = child.target().startTimeTicks + 1};
     EXPECT_FALSE(actions.setSchedPolicy(other, SchedPolicy::Batch, 0, Platform::RealtimeThreads::Keep).success);
-    EXPECT_EQ(schedulerOf(static_cast<id_t>(child.target().pid)), SCHED_OTHER);
+    EXPECT_EQ(schedulerOf(static_cast<id_t>(child.target().pid)), initial);
 }
 
 // #3219: a child set to round robin at priority 1, the least real time there is, on every thread, then back to
@@ -2175,15 +2178,26 @@ TEST_F(LinuxProcessActionsFaultTest, RealTimeWorkersUnderANormalMainThreadKeepTh
     {
         return static_cast<pid_t>(tid) == self ? SCHED_OTHER : SCHED_FIFO;
     };
-    const std::size_t threads = listThreads(self).size();
-    ASSERT_GE(threads, 1U);
+    // A worker of our own, so the mixed case always has one (the runner may have no other thread).
+    const std::jthread worker(
+        [](const std::stop_token& stop)
+        {
+            while (!stop.stop_requested())
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+        });
+    std::size_t threads = listThreads(self).size();
+    for (int tries = 0; threads < 2 && tries < 200; ++tries)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        threads = listThreads(self).size();
+    }
+    ASSERT_GE(threads, 2U);
     const ProcessActionResult mixed = m_Actions.setSchedPolicy(ownTarget(), SchedPolicy::Batch, 0, Platform::RealtimeThreads::Keep);
     ASSERT_TRUE(mixed.success) << mixed.errorMessage;
     EXPECT_EQ(static_cast<std::size_t>(plan().setCalls), 1U) << "only the main thread";
-    if (threads > 1)
-    {
-        EXPECT_TRUE(mixed.successNote.contains("real-time thread")) << mixed.successNote;
-    }
+    EXPECT_TRUE(mixed.successNote.contains("real-time thread")) << mixed.successNote;
 
     plan() = FaultPlan{};
     plan().schedulerByTid = [](id_t /*tid*/)

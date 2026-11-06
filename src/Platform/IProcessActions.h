@@ -30,19 +30,28 @@ struct ProcessActionResult
     /// EACCES), which acting as an administrator could cure: BrokeredProcessActions retries such a
     /// failure through the privileged helper (#2308). False for every other failure.
     bool permissionDenied = false;
+    /// On failure, whether the user called it off at a prompt of the system's (Windows: the UAC consent
+    /// prompt dismissed, ERROR_CANCELLED), so the UI says it was cancelled rather than that it failed
+    /// (Run new task, #3427). False for every other failure.
+    bool cancelled = false;
 
     static ProcessActionResult ok(std::string note = {})
     {
-        return {.success = true, .errorMessage = {}, .successNote = std::move(note), .permissionDenied = false};
+        return {.success = true, .errorMessage = {}, .successNote = std::move(note), .permissionDenied = false, .cancelled = false};
     }
     static ProcessActionResult error(std::string msg)
     {
-        return {.success = false, .errorMessage = std::move(msg), .successNote = {}, .permissionDenied = false};
+        return {.success = false, .errorMessage = std::move(msg), .successNote = {}, .permissionDenied = false, .cancelled = false};
     }
     /// A failure for want of permission over the process (permissionDenied).
     static ProcessActionResult denied(std::string msg)
     {
-        return {.success = false, .errorMessage = std::move(msg), .successNote = {}, .permissionDenied = true};
+        return {.success = false, .errorMessage = std::move(msg), .successNote = {}, .permissionDenied = true, .cancelled = false};
+    }
+    /// Called off by the user at a system prompt (cancelled); @p msg says which.
+    static ProcessActionResult cancelledByUser(std::string msg)
+    {
+        return {.success = false, .errorMessage = std::move(msg), .successNote = {}, .permissionDenied = false, .cancelled = true};
     }
 };
 
@@ -254,19 +263,25 @@ struct AuthorizedAction
 /// Run new task (#3065): a program to start, as Task Manager's File > Run new task.
 struct RunProgramRequest
 {
-    std::string commandLine;      ///< The program and its arguments, split as CommandWords::split() does
-    bool asAdministrator = false; ///< Started with administrator rights (Linux: through pkexec)
+    /// The program and its arguments: split as CommandWords::split() does on Linux, and as
+    /// CommandWords::splitProgram() does on Windows (#3427), where the rest is the program's to parse.
+    std::string commandLine;
+    bool asAdministrator = false; ///< Started with administrator rights (Linux: through pkexec; Windows: the runas verb, UAC)
 };
 
 /// Capabilities for process actions.
 struct ProcessActionCapabilities
 {
-    bool canTerminate = false;     // SIGTERM
-    bool canKill = false;          // SIGKILL
-    bool canStop = false;          // SIGSTOP
-    bool canContinue = false;      // SIGCONT
-    bool canSendSignals = false;   // sendSignal(): HUP, INT, QUIT, USR1, USR2 (Linux, #3063)
-    bool canSetPriority = false;   // setpriority/SetPriorityClass
+    bool canTerminate = false;   // SIGTERM
+    bool canKill = false;        // SIGKILL
+    bool canStop = false;        // SIGSTOP
+    bool canContinue = false;    // SIGCONT
+    bool canSendSignals = false; // sendSignal(): HUP, INT, QUIT, USR1, USR2 (Linux, #3063)
+    bool canSetPriority = false; // setpriority/SetPriorityClass
+    /// setPriority() with Domain::Priority::classNice(Realtime) sets the Realtime priority class, read back
+    /// to confirm it (Windows, #3429): the UI offers it behind a warning. False on Linux, where that value is
+    /// nice -20.
+    bool canSetRealtimePriority = false;
     bool canSetIoPriority = false; // ioprio_set (Linux only)
     /// The Realtime I/O class too: ioprio_set(IOPRIO_CLASS_RT) needs CAP_SYS_NICE (or CAP_SYS_ADMIN) in
     /// TaskSmack's own effective set, read once at construction (Linux only, #1540).
@@ -296,10 +311,12 @@ struct ProcessActionCapabilities
     /// prompt (Linux: the pkexec-started helper, #2308). The UI then offers "Authenticate and retry".
     bool canAuthorizeInteractively = false;
     /// openFileLocation(): the file manager can be asked to show a process's executable (#3064; Linux:
-    /// FileManager1 over D-Bus or xdg-open).
+    /// FileManager1 over D-Bus or xdg-open; Windows: SHOpenFolderAndSelectItems or explorer.exe /select, #3426).
     bool canOpenFileLocation = false;
     /// runProgram(): Run new task can start a program (#3065), and with administrator rights too where
-    /// canRunProgramAsAdministrator says so (Linux: pkexec is installed, or TaskSmack runs as root).
+    /// canRunProgramAsAdministrator says so (Linux: pkexec is installed, or TaskSmack runs as root; Windows,
+    /// #3427: TaskSmack isn't elevated, so the runas verb's UAC prompt can elevate it, while an elevated
+    /// TaskSmack's tasks are elevated already).
     bool canRunProgram = false;
     bool canRunProgramAsAdministrator = false;
     /// setEfficiencyMode(): Efficiency mode on or off, as Task Manager's (#3071; Windows: EcoQoS power
@@ -349,7 +366,9 @@ class IProcessActions
 
     /// Set process priority (nice value on Unix, priority class on Windows).
     /// @param target Process to change
-    /// @param nice Nice value (-20 to 19 on Unix, mapped to priority class on Windows)
+    /// @param nice Nice value (-20 to 19 on Unix, mapped to priority class on Windows: -20, which
+    ///             Domain::Priority::classNice() gives Realtime, sets the Realtime class where
+    ///             actionCapabilities().canSetRealtimePriority says so, #3429)
     [[nodiscard]] virtual ProcessActionResult setPriority(const ProcessTarget& target, int32_t nice) = 0;
 
     /// Set the process's I/O priority (ioprio_set on Linux, for every thread). Refused where
@@ -389,7 +408,9 @@ class IProcessActions
     }
 
     /// Starts the program @p request names, detached from TaskSmack (#3065), and returns once it has been
-    /// started, never waiting for it. Its first word is looked up on PATH unless it holds a '/'. The
+    /// started, never waiting for it. Linux: its first word is looked up on PATH unless it holds a '/'.
+    /// Windows (#3427): ShellExecuteExW opens it, so a document, a folder or a web address works too, and
+    /// a dismissed UAC prompt is a cancelled result (ProcessActionResult::cancelled). The
     /// default refuses it as unsupported, matching ProcessActionCapabilities::canRunProgram's default
     /// (false), which an implementation that does not override this must leave as it is.
     [[nodiscard]] virtual ProcessActionResult runProgram(const RunProgramRequest& request)

@@ -278,7 +278,8 @@ PipeBroker::launch(const std::wstring& pipeName, const std::stop_token& giveUp, 
         std::expected<UniqueHandle, std::string> fallback = std::unexpected(std::string("the helper couldn't be started"));
         std::expected<UniqueHandle, std::string> tooLate = std::unexpected(std::string(APPROVED_TOO_LATE));
         // Detached: a prompt can't be taken down, so nothing could join this thread in time. It owns all
-        // it touches, the launcher included.
+        // it touches, the launcher included. Not a Domain::Worker (#3343) for the same reason: a Worker's
+        // owner waits for its job on the way out, and this thread must outlive its owner.
         std::thread(
             [pending,
              launcher = m_Launcher,

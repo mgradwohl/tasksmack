@@ -4,7 +4,7 @@
 /// relative-capacity units, no battery, a failed IOCTL, and the device handle closed exactly once;
 /// the probe's capabilities following a battery inserted, removed or answering late (#2413); and the
 /// re-reads running on the ts-battery-read worker, so a battery device that stalls never delays a
-/// sample (#2731).
+/// sample (#2731); and a re-read that throws, contained by that worker's Domain::Worker (#3343).
 
 #include "Platform/PowerTypes.h"
 #include "Platform/ThreadName.h"
@@ -12,16 +12,22 @@
 #include "Platform/Windows/WindowsPowerProbe.h"
 
 #include <gtest/gtest.h>
+#include <spdlog/sinks/ringbuffer_sink.h>
+#include <spdlog/spdlog.h>
 
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
+#include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace Platform::Windows
@@ -29,10 +35,19 @@ namespace Platform::Windows
 namespace
 {
 
+/// What the fake enumeration throws (#3343): nothing, a std::exception, or something that isn't one.
+enum class EnumerateThrows : std::uint8_t
+{
+    Nothing,
+    StdException,
+    NonStdException,
+};
+
 /// The answers the fakes give, set per test.
 struct FakeBattery
 {
     std::vector<std::wstring> paths{LR"(\\?\acpi#pnp0c0a#1#{72631e54-78a4-11d0-bcf7-00aa00b7b32a})"};
+    EnumerateThrows enumerateThrows = EnumerateThrows::Nothing;
     bool failOpen = false;
     ULONG tag = 7;
     bool failInformation = false;
@@ -176,8 +191,52 @@ EnumerationGate& gate()
 std::vector<std::wstring> fakeEnumerate()
 {
     gate().pass();
+    switch (fake().enumerateThrows)
+    {
+    case EnumerateThrows::StdException:
+        throw std::runtime_error("SetupAPI went away");
+    case EnumerateThrows::NonStdException:
+        // NOLINTNEXTLINE(bugprone-std-exception-baseclass,hicpp-exception-baseclass) - the point: what a body's catch (std::exception) misses
+        throw 42;
+    case EnumerateThrows::Nothing:
+        break;
+    }
     return fake().paths;
 }
+
+/// The default logger's messages, for as long as this lives. A mutex sink: the worker logs too.
+class LogCapture
+{
+  public:
+    LogCapture() : m_Previous(spdlog::default_logger()), m_Sink(std::make_shared<spdlog::sinks::ringbuffer_sink_mt>(LINES))
+    {
+        auto logger = std::make_shared<spdlog::logger>("battery-info-test", m_Sink);
+        logger->set_level(spdlog::level::trace);
+        logger->set_pattern("%v");
+        spdlog::set_default_logger(std::move(logger));
+    }
+    // NOLINTNEXTLINE(bugprone-exception-escape) - only building the registry can throw, and the constructor did that
+    ~LogCapture()
+    {
+        spdlog::set_default_logger(m_Previous);
+    }
+    LogCapture(const LogCapture&) = delete;
+    LogCapture& operator=(const LogCapture&) = delete;
+    LogCapture(LogCapture&&) = delete;
+    LogCapture& operator=(LogCapture&&) = delete;
+
+    /// How many of the messages so far contain @p text.
+    [[nodiscard]] std::size_t count(std::string_view text) const
+    {
+        const std::vector<std::string> lines = m_Sink->last_formatted();
+        return static_cast<std::size_t>(std::ranges::count_if(lines, [text](const std::string& line) { return line.contains(text); }));
+    }
+
+  private:
+    static constexpr std::size_t LINES = 128;
+    std::shared_ptr<spdlog::logger> m_Previous;
+    std::shared_ptr<spdlog::sinks::ringbuffer_sink_mt> m_Sink;
+};
 
 /// Opens the gate when the test leaves its scope, so a failed assertion leaves no worker stuck there
 /// for the probe's destructor to join. Declared after the probe, so it runs first.
@@ -302,10 +361,12 @@ class WindowsBatteryInfoTest : public ::testing::Test
 
     static BatteryDeviceFunctions fakes()
     {
-        return {.enumerateBatteries = &fakeEnumerate,
-                .createFile = &fakeCreateFile,
-                .deviceIoControl = &fakeDeviceIoControl,
-                .closeHandle = &fakeCloseHandle};
+        return {
+            .enumerateBatteries = &fakeEnumerate,
+            .createFile = &fakeCreateFile,
+            .deviceIoControl = &fakeDeviceIoControl,
+            .closeHandle = &fakeCloseHandle,
+        };
     }
 };
 
@@ -535,6 +596,68 @@ TEST_F(WindowsBatteryInfoTest, AChangeDuringARereadHasTheDeviceReadOnceMore)
     (void) probe.read();
     (void) probe.read();
     EXPECT_EQ(gate().passed(), 3) << "the same source again: no further read";
+}
+
+TEST_F(WindowsBatteryInfoTest, AReReadThatThrowsAStdExceptionIsLoggedAndReadsAsNoFacts)
+{
+    // The body catches a std::exception itself, as the one-shot thread did: the re-read reads as no facts,
+    // and the worker goes on (#3343)
+    const LogCapture log;
+    WindowsPowerProbe probe(fakes(), &fakeGetSystemPowerStatus);
+    fake().enumerateThrows = EnumerateThrows::StdException;
+    fake().acLineStatus = 1; // Plugged in: a re-read is due
+    fake().batteryFlag = BATTERY_FLAG_CHARGING;
+    PowerCounters counters = readUntil(probe, [](const PowerCounters& c) { return c.chargeDesignWh <= 0.0; });
+    EXPECT_DOUBLE_EQ(counters.chargeDesignWh, 0.0);
+    EXPECT_EQ(counters.state, BatteryState::Charging) << "the live state, from GetSystemPowerStatus";
+    EXPECT_EQ(log.count("the battery read failed: SetupAPI went away"), 1U);
+
+    // The next re-read runs, and answers
+    fake().enumerateThrows = EnumerateThrows::Nothing;
+    fake().acLineStatus = 0;
+    fake().batteryFlag = BATTERY_FLAG_HIGH;
+    counters = readUntil(probe, [](const PowerCounters& c) { return c.chargeDesignWh > 0.0; });
+    EXPECT_DOUBLE_EQ(counters.chargeDesignWh, 52.6);
+    EXPECT_EQ(log.count("re-reads have stopped"), 0U);
+}
+
+TEST_F(WindowsBatteryInfoTest, AReReadThatThrowsSomethingElseEndsTheWorkerNotTheProcess)
+{
+    // #3343: what the body doesn't catch, Domain::Worker does. It used to escape the one-shot thread and
+    // terminate TaskSmack; now the worker ends Failed, read() logs why once, keeps the facts read so far,
+    // and goes on reporting the live state. No re-read runs after it.
+    const LogCapture log;
+    WindowsPowerProbe probe(fakes(), &fakeGetSystemPowerStatus);
+    ASSERT_EQ(gate().passed(), 1) << "the seed, read at construction";
+    fake().enumerateThrows = EnumerateThrows::NonStdException;
+    fake().acLineStatus = 1;
+    fake().batteryFlag = BATTERY_FLAG_CHARGING;
+    PowerCounters counters = probe.read();
+    ASSERT_TRUE(gate().waitForPassed(2, std::chrono::seconds{5})) << "the worker reached the throwing device";
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+    while (log.count("re-reads have stopped") == 0 && std::chrono::steady_clock::now() < deadline)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds{1});
+        counters = probe.read();
+    }
+    EXPECT_EQ(log.count("the battery re-reads have stopped (Unknown error)"), 1U) << "Worker's reason for a non-std exception";
+    EXPECT_EQ(counters.state, BatteryState::Charging);
+    EXPECT_DOUBLE_EQ(counters.chargeDesignWh, 52.6) << "the facts read so far are kept";
+    EXPECT_EQ(counters.manufacturer, "Contoso");
+
+    // A later change starts no re-read (the worker answers Closed), and isn't logged again
+    fake().enumerateThrows = EnumerateThrows::Nothing;
+    fake().acLineStatus = 0;
+    fake().batteryFlag = BATTERY_FLAG_HIGH;
+    fake().batteryLifePercent = 79;
+    counters = probe.read();
+    EXPECT_EQ(counters.state, BatteryState::Discharging);
+    EXPECT_EQ(counters.chargePercent, 79);
+    EXPECT_DOUBLE_EQ(counters.chargeDesignWh, 52.6);
+    (void) probe.read();
+    EXPECT_EQ(gate().passed(), 2);
+    EXPECT_EQ(log.count("re-reads have stopped"), 1U);
 }
 
 TEST_F(WindowsBatteryInfoTest, ProbeWithNoBatteryReadsNoDeviceFacts)

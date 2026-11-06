@@ -12,6 +12,7 @@
 
 #include <array>
 #include <cstdint>
+#include <new>
 #include <string_view>
 
 namespace Platform
@@ -307,6 +308,86 @@ TEST(BatteryCapacityTest, NoBatteriesOrOnlyRelativeOnesReportNoCapacity)
     EXPECT_DOUBLE_EQ(totals.fullChargeWh, 0.0);
     EXPECT_EQ(totals.healthPercent, -1);
     EXPECT_EQ(totals.cycleCount, 9U);
+}
+
+// =============================================================================
+// takeNewerPublication: WindowsPowerProbe's take of the battery worker's publication (#3343). A copy
+// that throws (no memory for the battery's strings) must leave the publication to be taken again: marking
+// it taken first stalled the facts for good, every later re-read deferred behind it.
+// =============================================================================
+
+/// A snapshot whose copy throws while told to, as BatteryInfo's strings do when memory runs out.
+struct CopyMayThrow
+{
+    static inline bool throwOnCopy = false;
+    int facts = 0;
+
+    CopyMayThrow() = default;
+    explicit CopyMayThrow(int value) : facts(value)
+    {}
+    CopyMayThrow(const CopyMayThrow& other) : facts(other.facts)
+    {
+        if (throwOnCopy)
+        {
+            throw std::bad_alloc();
+        }
+    }
+    CopyMayThrow& operator=(const CopyMayThrow& other) = delete;
+    CopyMayThrow(CopyMayThrow&&) noexcept = default;
+    CopyMayThrow& operator=(CopyMayThrow&&) noexcept = default;
+    ~CopyMayThrow() = default;
+};
+
+/// Domain::WorkerPublication's shape: a version and a value.
+struct FakePublication
+{
+    std::uint64_t version = 0;
+    CopyMayThrow value;
+};
+
+/// Resets CopyMayThrow::throwOnCopy when the test leaves, failed or not.
+class CopyThrowReset
+{
+  public:
+    CopyThrowReset() = default;
+    ~CopyThrowReset()
+    {
+        CopyMayThrow::throwOnCopy = false;
+    }
+    CopyThrowReset(const CopyThrowReset&) = delete;
+    CopyThrowReset& operator=(const CopyThrowReset&) = delete;
+    CopyThrowReset(CopyThrowReset&&) = delete;
+    CopyThrowReset& operator=(CopyThrowReset&&) = delete;
+};
+
+TEST(TakeNewerPublicationTest, TakesANewerOneOnce)
+{
+    const FakePublication published{.version = 2, .value = CopyMayThrow(7)};
+    CopyMayThrow facts(1);
+    std::uint64_t taken = 1;
+    EXPECT_TRUE(takeNewerPublication(published, facts, taken));
+    EXPECT_EQ(facts.facts, 7);
+    EXPECT_EQ(taken, 2U);
+    EXPECT_FALSE(takeNewerPublication(published, facts, taken)) << "taken already";
+    EXPECT_EQ(facts.facts, 7);
+}
+
+TEST(TakeNewerPublicationTest, WhoseCopyThrowsChangesNothingAndIsTakenNextTime)
+{
+    const CopyThrowReset reset;
+    const FakePublication published{.version = 2, .value = CopyMayThrow(7)};
+    CopyMayThrow facts(1);
+    std::uint64_t taken = 1;
+
+    CopyMayThrow::throwOnCopy = true;
+    EXPECT_THROW(static_cast<void>(takeNewerPublication(published, facts, taken)), std::bad_alloc);
+    EXPECT_EQ(facts.facts, 1) << "the facts known so far are kept";
+    EXPECT_EQ(taken, 1U) << "not marked taken: the next read() takes it again";
+
+    CopyMayThrow::throwOnCopy = false;
+    EXPECT_TRUE(takeNewerPublication(published, facts, taken)) << "the retry takes it, rather than stalling on it";
+    EXPECT_EQ(facts.facts, 7);
+    EXPECT_EQ(taken, 2U);
 }
 
 } // namespace

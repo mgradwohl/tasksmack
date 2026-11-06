@@ -546,6 +546,52 @@ TEST_F(SystemSectionsRenderTest, MemorySectionStripShowsCompressedSwapWhileSomet
     EXPECT_EQ(renderAndCapture(render).find("Compressed"), std::string::npos);
 }
 
+// #3363: Windows' compressed memory in the value strip, the Memory Compression process's size alone (no
+// ratio, so no ratio line), and nothing while compression is off.
+TEST_F(SystemSectionsRenderTest, MemorySectionStripShowsWindowsCompressedMemoryOnlyWhileCompressionIsOn)
+{
+    Domain::SystemPublication publication = memoryPublication();
+    publication.snapshot.hasMemoryCompression = true;
+    publication.snapshot.memoryCompressionBytes = 410ULL << 20U;
+    MemorySection::SmoothedMemory smoothed;
+    MemorySection::RenderContext ctx{.publication = &publication, .smoothedMemory = &smoothed};
+    MemorySection::updateSmoothedMemory(smoothed, publication.snapshot, 0.0F, REFRESH);
+    const auto render = [&]
+    {
+        MemorySection::renderMemorySection(ctx, publication.timestamps, UI::Widgets::historyFrameNowSeconds(), 3);
+    };
+    runFrame(render);
+    runFrame(render);
+    const std::string value = MemorySection::compressedStripValue(publication.snapshot);
+    EXPECT_EQ(value, UI::Format::formatBytes(static_cast<double>(410ULL << 20U)));
+    const std::string text = renderAndCapture(render);
+    EXPECT_NE(text.find("Compressed"), std::string::npos) << text;
+    EXPECT_NE(text.find(value), std::string::npos) << text;
+    EXPECT_EQ(text.find("×"), std::string::npos) << "no ratio on Windows: " << text;
+    const auto plots = plotsDrawn();
+    ASSERT_EQ(plots.size(), 1U);
+    EXPECT_EQ(plots[0], (SeriesLabels{"Used", "Cached", "Swap", "Peak Used"}));
+
+    publication.snapshot.hasMemoryCompression = false; // compression is off
+    publication.snapshot.memoryCompressionBytes = 0;
+    EXPECT_TRUE(MemorySection::compressedStripValue(publication.snapshot).empty());
+    EXPECT_TRUE(MemorySection::compressedStripTooltip(publication.snapshot, {}).empty());
+    const std::string hidden = renderAndCapture(render);
+    EXPECT_EQ(hidden.find("Compressed"), std::string::npos) << hidden;
+}
+
+TEST(MemorySectionCompressedTest, WindowsTooltipNamesTheMemoryCompressionProcessAndNoRatio)
+{
+    Domain::SystemSnapshot snap;
+    snap.hasMemoryCompression = true;
+    snap.memoryCompressionBytes = 300ULL << 20U;
+    const std::vector<float> history{std::numeric_limits<float>::quiet_NaN()};
+    const std::string text = MemorySection::compressedStripTooltip(snap, history);
+    EXPECT_NE(text.find("Memory Compression"), std::string::npos) << text;
+    EXPECT_EQ(text.find("Ratio over the chart"), std::string::npos) << text;
+    EXPECT_EQ(text.find("zram"), std::string::npos) << text;
+}
+
 // #3087: with a compression ratio in the window, the Memory chart draws it as its own line on a
 // right-hand axis, after the RAM and swap series; with none, there is no such line.
 TEST_F(SystemSectionsRenderTest, MemorySectionDrawsTheCompressionRatioLineOnlyWhenThereIsOne)

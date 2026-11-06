@@ -104,7 +104,8 @@ std::string compressedStripValue(const Domain::SystemSnapshot& snap)
 {
     if (snap.compressionRatio <= 0.0)
     {
-        return {};
+        // Windows (#3363): the store's size alone, as Task Manager's "In use (Compressed)"
+        return snap.hasMemoryCompression ? UI::Format::formatBytes(static_cast<double>(snap.memoryCompressionBytes)) : std::string{};
     }
     const std::uint64_t original = (snap.hasZram ? snap.zramOriginalBytes : 0) + (snap.hasZswap ? snap.zswapOriginalBytes : 0);
     const std::uint64_t compressed = (snap.hasZram ? snap.zramCompressedBytes : 0) + (snap.hasZswap ? snap.zswapCompressedBytes : 0);
@@ -118,7 +119,13 @@ std::string compressedStripTooltip(const Domain::SystemSnapshot& snap, std::span
 {
     if (snap.compressionRatio <= 0.0)
     {
-        return {};
+        if (!snap.hasMemoryCompression)
+        {
+            return {};
+        }
+        // Windows (#3363): no ratio, since Windows documents no figure for the data the store holds
+        return "Memory Windows keeps compressed in RAM instead of paging it out\n"
+               "The Memory Compression process's working set";
     }
     std::string text = "Swapped-out memory kept compressed in RAM";
     const auto kind = [&text](const char* name, std::uint64_t original, std::uint64_t compressed)
@@ -444,7 +451,8 @@ void renderMemorySection(RenderContext& ctx, std::span<const double> timestamps,
         };
     }
     // Compressed swap (#3087, Linux): zram and zswap's ratio and sizes, a reading like Commit, only
-    // while something compressed is stored.
+    // while something compressed is stored. Windows (#3363): the compression store's size, while
+    // memory compression is on.
     const std::string compressedValue = compressedStripValue(snap);
     const auto& ratioHist = ctx.publication->compressionRatioHistory;
     const std::string compressedTooltip =

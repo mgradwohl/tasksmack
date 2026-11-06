@@ -1,5 +1,6 @@
 #include "BrokerHelper.h"
 
+#include "Domain/Worker.h"
 #include "Platform/BrokerProtocol.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
@@ -7,6 +8,7 @@
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
+#include "Platform/ThreadName.h"
 #include "Platform/Windows/BrokerPipe.h"
 #include "Platform/Windows/BrokerPipeServer.h"
 #include "Platform/Windows/WinString.h"
@@ -33,7 +35,6 @@
 #include <string>
 #include <string_view>
 #include <system_error>
-#include <thread>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -823,28 +824,61 @@ std::string exitMeaning(DWORD code)
     return std::format("the helper exited with status {}", code);
 }
 
-ProcessWatch::ProcessWatch(HANDLE process, const std::stop_token& outer)
-    : m_Wake(CreateEventW(nullptr, TRUE, FALSE, nullptr)), m_Outer(outer, [this] { m_Stop.request_stop(); })
+ProcessWatch::ProcessWatch(HANDLE process, const std::stop_token& outer, WaitForObjectsFn wait)
+    : m_Process(process),
+      m_Wait(wait),
+      // Not inheritable (no SECURITY_ATTRIBUTES), as every handle the helper makes.
+      m_Wake(CreateEventW(nullptr, TRUE, FALSE, nullptr)),
+      m_Outer(outer, [this] { m_Stop.request_stop(); }),
+      m_Worker({.threadName = BROKER_WATCH_THREAD_NAME, .capacity = 1, .admission = Domain::Admission::Refuse},
+               [this](Watch& /*job*/, const std::stop_token& /*stop*/, WatchWorker::JobContext& context) { watch(context); })
 {
     if (!m_Wake)
     {
         throw std::runtime_error(std::format("couldn't watch TaskSmack's process: {}", lastErrorText(GetLastError())));
     }
-    m_Thread = std::jthread(
-        [this, process]
-        {
-            const std::array<HANDLE, 2> handles{process, m_Wake.get()};
-            // Either ends the wait: the process (or a failed wait) stops the session, the wake ends this thread.
-            if (WaitForMultipleObjects(static_cast<DWORD>(handles.size()), handles.data(), FALSE, INFINITE) != WAIT_OBJECT_0 + 1)
-            {
-                m_Stop.request_stop();
-            }
-        });
+    // Queued: the job's body runs (#3472), unless this watch goes first. Anything else (Closed: no thread
+    // could be started; Refused: no memory to queue it) means nothing would watch, so the session never
+    // starts: serveParent() answers Exit::Failed, as it did when the thread couldn't be made.
+    if (const Domain::SubmitResult submitted = m_Worker.submit(Watch{}); submitted != Domain::SubmitResult::Queued)
+    {
+        throw std::runtime_error(submitted == Domain::SubmitResult::Closed
+                                     ? std::format("couldn't watch TaskSmack's process: {}", m_Worker.failure())
+                                     : std::string("couldn't watch TaskSmack's process: no memory to start the watch"));
+    }
 }
 
 ProcessWatch::~ProcessWatch()
 {
-    SetEvent(m_Wake.get()); // m_Thread, joined next, returns at once
+    // Cancels the wait (the hook sets m_Wake, so it returns at once, leaving the session's token as it is)
+    // and joins the thread; m_Outer, m_Wake and m_Stop go after, in that order.
+    static_cast<void>(m_Worker.stop());
+}
+
+void ProcessWatch::watch(WatchWorker::JobContext& context)
+{
+    // The cancel hook: the Worker calls it when this watch goes (stop()), or at once when that came first.
+    // Declared before the guard, so it outlives every call. SetEvent is quick and calls nothing back.
+    const auto wake = [this] noexcept
+    {
+        SetEvent(m_Wake.get());
+    };
+    const auto armed = context.armCancel(wake);
+    try
+    {
+        const std::array<HANDLE, 2> handles{m_Process, m_Wake.get()};
+        // Either ends the wait: the process (or a failed wait) stops the session, the wake ends this job.
+        if (m_Wait(static_cast<DWORD>(handles.size()), handles.data(), FALSE, INFINITE) != WAIT_OBJECT_0 + 1)
+        {
+            m_Stop.request_stop();
+        }
+    }
+    catch (...)
+    {
+        // Fails closed: a watch that can't go on stops the session before the Worker records why.
+        m_Stop.request_stop();
+        throw;
+    }
 }
 
 Exit run(const Arguments& arguments,

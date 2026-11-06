@@ -204,7 +204,7 @@ class ProcessPriorityView
     /// there is no platform call. Null @p actions is the "unavailable" error at once.
     void apply(Platform::IProcessActions* actions, const Platform::ProcessTarget& liveTarget, std::optional<std::int32_t> currentNice)
     {
-        if (dropEditIfTargetMoved(liveTarget) || !canApply(currentNice, liveTarget) || applying())
+        if (dropEditIfTargetMoved(liveTarget) || !canApply(currentNice, liveTarget) || applying() || heldForOtherPriorityChange())
         {
             return;
         }
@@ -221,6 +221,7 @@ class ProcessPriorityView
             return;
         }
         m_Retry.reset();
+        m_ApplyTarget = target;
         Platform::AuthorizedAction retry;
         retry.kind = Platform::AuthorizedAction::Kind::SetPriority;
         retry.target = target;
@@ -242,7 +243,29 @@ class ProcessPriorityView
     /// of permission, the platform can ask for authorization, and nothing has changed since.
     [[nodiscard]] bool offersAuthenticateAndRetry() const noexcept
     {
-        return m_Retry.has_value() && !applying();
+        return m_Retry.has_value() && !applying() && !heldForOtherPriorityChange();
+    }
+
+    /// Whether another priority change for this process is asked about or running elsewhere, and why
+    /// (@p reason, Apply's tooltip; null when there is none): the Actions card's Set Realtime priority
+    /// (#3429), or a change in the Processes table (#3467). Apply and "Retry as administrator" are held
+    /// until it is done, so the two never race and the older one can't overwrite the newer. The caller
+    /// sets it each frame, before render().
+    void holdForOtherPriorityChange(const char* reason) noexcept
+    {
+        m_HoldReason = reason;
+    }
+
+    /// Whether Apply is held for another priority change (holdForOtherPriorityChange()).
+    [[nodiscard]] bool heldForOtherPriorityChange() const noexcept
+    {
+        return m_HoldReason != nullptr;
+    }
+
+    /// Why Apply is held (holdForOtherPriorityChange()), or null when it isn't.
+    [[nodiscard]] const char* holdReason() const noexcept
+    {
+        return m_HoldReason;
     }
 
     /// "Authenticate and retry" was pressed: the refused change again, as an administrator, after the
@@ -255,6 +278,7 @@ class ProcessPriorityView
         }
         const Retry retry = *m_Retry;
         m_Retry.reset();
+        m_ApplyTarget = retry.action.target;
         static_cast<void>(m_ApplyRun.start(
             std::format("Waiting for authorization to set the priority of PID {}...", retry.action.target.pid),
             [actions = retry.actions, action = retry.action](const std::stop_token& stopToken)
@@ -288,6 +312,14 @@ class ProcessPriorityView
     [[nodiscard]] bool applying() const noexcept
     {
         return m_ApplyRun.busy();
+    }
+
+    /// The process the running apply (or its retry) sets the priority of, while applying() (#3467): the
+    /// edit's own target, which a selection change since doesn't move. Process Details publishes it, so
+    /// the Processes table holds its own priority controls for that process meanwhile.
+    [[nodiscard]] std::optional<Platform::ProcessTarget> applyingTarget() const noexcept
+    {
+        return applying() ? std::optional<Platform::ProcessTarget>{m_ApplyTarget} : std::nullopt;
     }
 
     /// What the line under Apply says while applying(): "Setting the priority of PID 1234...".
@@ -390,6 +422,8 @@ class ProcessPriorityView
     std::uint64_t m_Generation = 0; // Bumped by a selection change: a running apply's result is then dropped
     ProcessIoPriorityView m_IoPriorityView;
     std::optional<Retry> m_Retry;
+    const char* m_HoldReason = nullptr;                // Another priority change runs elsewhere: Apply waits, saying why (#3429, #3467)
+    Platform::ProcessTarget m_ApplyTarget = NO_TARGET; // The process the running apply is for (applyingTarget())
     // Last, so it is destroyed (waiting for a running apply) before the state its finish writes.
     ProcessActionRun m_ApplyRun;
 };

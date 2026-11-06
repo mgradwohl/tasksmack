@@ -42,6 +42,9 @@ inline constexpr ULONG SYSTEM_PROCESS_INFORMATION_CLASS = 5;
 inline constexpr ULONG SYSTEM_PAGE_FILE_INFORMATION_CLASS = 18;
 inline constexpr ULONG SYSTEM_PAGE_FILE_INFORMATION_EX_CLASS = 144;
 inline constexpr LONG STATUS_INFO_LENGTH_MISMATCH_VALUE = static_cast<LONG>(0xC0000004L);
+/// The first buffer for a SystemProcessInformation snapshot: every process with its threads, which grows
+/// it when they don't fit.
+inline constexpr std::size_t PROCESS_INFORMATION_INITIAL_BYTES = std::size_t{512} * 1024;
 
 /// The calls readCommitPaging() makes. Defaults to the real ones; tests substitute fakes.
 struct Functions
@@ -171,21 +174,28 @@ struct RawPageFile
     return std::nullopt;
 }
 
-/// NtQuerySystemInformation(@p infoClass) into a buffer that grows on STATUS_INFO_LENGTH_MISMATCH, trimmed
-/// to the bytes written; nullopt when the call fails.
-[[nodiscard]] inline std::optional<std::vector<std::byte>>
-querySystemInformation(const Functions& fns, ULONG infoClass, std::size_t initialBytes)
+/// NtQuerySystemInformation(@p infoClass) through @p query into @p buffer, which grows on
+/// STATUS_INFO_LENGTH_MISMATCH (to at least @p initialBytes) and is never shrunk, so a caller that keeps it
+/// between samples doesn't allocate once it has grown (#3363). The bytes written, or nullopt when the call
+/// fails or @p query is null; only those leading bytes hold the answer.
+[[nodiscard]] inline std::optional<std::size_t> querySystemInformationInto(Windows::NtQuerySystemInformationFn query,
+                                                                           ULONG infoClass,
+                                                                           std::vector<std::byte>& buffer,
+                                                                           std::size_t initialBytes)
 {
-    if (fns.ntQuerySystemInformation == nullptr)
+    if (query == nullptr)
     {
         return std::nullopt;
     }
     constexpr std::size_t MAX_BYTES = std::size_t{64} * 1024 * 1024;
-    std::vector<std::byte> buffer(initialBytes);
+    if (buffer.size() < initialBytes)
+    {
+        buffer.resize(initialBytes);
+    }
     for (int attempt = 0; attempt < 6; ++attempt)
     {
         ULONG returned = 0;
-        const LONG status = fns.ntQuerySystemInformation(infoClass, buffer.data(), static_cast<ULONG>(buffer.size()), &returned);
+        const LONG status = query(infoClass, buffer.data(), static_cast<ULONG>(buffer.size()), &returned);
         if (status == STATUS_INFO_LENGTH_MISMATCH_VALUE)
         {
             // The list can grow between calls: take what it asked for plus headroom, at least double.
@@ -201,10 +211,24 @@ querySystemInformation(const Functions& fns, ULONG infoClass, std::size_t initia
         {
             return std::nullopt;
         }
-        buffer.resize(std::min<std::size_t>(returned, buffer.size()));
-        return buffer;
+        return std::min<std::size_t>(returned, buffer.size());
     }
     return std::nullopt;
+}
+
+/// NtQuerySystemInformation(@p infoClass) into a buffer that grows on STATUS_INFO_LENGTH_MISMATCH, trimmed
+/// to the bytes written; nullopt when the call fails.
+[[nodiscard]] inline std::optional<std::vector<std::byte>>
+querySystemInformation(const Functions& fns, ULONG infoClass, std::size_t initialBytes)
+{
+    std::vector<std::byte> buffer;
+    const std::optional<std::size_t> written = querySystemInformationInto(fns.ntQuerySystemInformation, infoClass, buffer, initialBytes);
+    if (!written.has_value())
+    {
+        return std::nullopt;
+    }
+    buffer.resize(*written);
+    return buffer;
 }
 
 /// Every drive letter's NT device, for ntPathToDosPath().
@@ -279,8 +303,8 @@ inline void readCommitPaging(CommitPagingInfo& info, const Functions& fns = {})
         }
     }
 
-    constexpr std::size_t PROCESS_BYTES = std::size_t{512} * 1024;
-    if (const auto processes = querySystemInformation(fns, SYSTEM_PROCESS_INFORMATION_CLASS, PROCESS_BYTES); processes.has_value())
+    if (const auto processes = querySystemInformation(fns, SYSTEM_PROCESS_INFORMATION_CLASS, PROCESS_INFORMATION_INITIAL_BYTES);
+        processes.has_value())
     {
         info.compressedBytes = memoryCompressionWorkingSet(*processes);
     }
