@@ -39,7 +39,7 @@ try {
         "$('2' * 64)  TaskSmack-1.2.3-win64.zip"
         "$arm64  TaskSmack-1.2.3-windows-arm64.exe"
     )
-    $run = Invoke-Manifest @('-Version', '1.2.3', '-ReleaseDir', $release)
+    $run = Invoke-Manifest @('-Version', '1.2.3', '-ReleaseDir', $release, '-ReleaseDate', '2026-12-01')
     Assert-True ($run.Code -eq 0) "A good release failed ($($run.Code)): $($run.Output)"
     $dir = Join-Path $release 'winget/manifests/t/TaskSmack/TaskSmack/1.2.3'
     $names = @(Get-ChildItem -LiteralPath $dir -File | ForEach-Object Name | Sort-Object)
@@ -52,10 +52,10 @@ try {
         Assert-True (-not $text.Contains('${')) "$name keeps a placeholder: $text"
         Assert-True ($text -match '(?m)^PackageIdentifier: TaskSmack\.TaskSmack$') "${name}: no PackageIdentifier"
         Assert-True ($text -match '(?m)^PackageVersion: 1\.2\.3$') "${name}: no PackageVersion 1.2.3"
-        Assert-True ($text -match '(?m)^ManifestVersion: 1\.10\.0$') "${name}: no ManifestVersion 1.10.0"
+        Assert-True ($text -match '(?m)^ManifestVersion: 1\.28\.0$') "${name}: no ManifestVersion 1.28.0"
         # Only the schema comment is kept; the templates' own notes stay in packaging/winget/.
         $comments = @($text -split "`n" | Where-Object { $_ -match '^\s*#' })
-        Assert-True ($comments.Count -eq 1 -and $comments[0] -like '# yaml-language-server: $schema=https://aka.ms/winget-manifest.*.1.10.0.schema.json') "$name comments: $($comments -join ' | ')"
+        Assert-True ($comments.Count -eq 1 -and $comments[0] -like '# yaml-language-server: $schema=https://aka.ms/winget-manifest.*.1.28.0.schema.json') "$name comments: $($comments -join ' | ')"
     }
     $installer = [IO.File]::ReadAllText((Join-Path $dir 'TaskSmack.TaskSmack.installer.yaml'))
     foreach ($expected in @(
@@ -65,7 +65,8 @@ try {
             "InstallerSha256: $($arm64.ToUpperInvariant())"
             'InstallerType: nullsoft'
             'Scope: machine'
-            'ElevationRequirement: elevatesSelf'
+            'ElevationRequirement: elevationRequired'
+            'ReleaseDate: 2026-12-01'
             'UpgradeBehavior: install'
         )) {
         Assert-True ($installer.Contains($expected)) "The installer manifest lacks '$expected':`n$installer"
@@ -83,17 +84,23 @@ try {
     $out = Join-Path $root 'out'
     $run = Invoke-Manifest @('-Version', '1.2.3', '-ReleaseDir', $release, '-OutDir', $out)
     Assert-True ($run.Code -eq 0 -and (Test-Path -LiteralPath (Join-Path $out 'manifests/t/TaskSmack/TaskSmack/1.2.3/TaskSmack.TaskSmack.yaml'))) "-OutDir: $($run.Code) $($run.Output)"
+    # Without -ReleaseDate, the optional ReleaseDate line is left out rather than left as a placeholder.
+    $undated = [IO.File]::ReadAllText((Join-Path $out 'manifests/t/TaskSmack/TaskSmack/1.2.3/TaskSmack.TaskSmack.installer.yaml'))
+    Assert-True (-not $undated.Contains('ReleaseDate') -and -not $undated.Contains('${')) "Without -ReleaseDate:`n$undated"
 
     # ── Refusals: a bad version, a missing installer, a malformed line, no SHA256SUMS ────────────────
     foreach ($case in @(
             @{ Name = 'v-prefix'; Version = 'v1.2.3'; Lines = @("$x64  TaskSmack-1.2.3-win64.exe", "$arm64  TaskSmack-1.2.3-windows-arm64.exe"); Expect = 'X\.Y\.Z' }
             @{ Name = 'prerelease'; Version = '1.2.3-rc1'; Lines = @("$x64  TaskSmack-1.2.3-rc1-win64.exe", "$arm64  TaskSmack-1.2.3-rc1-windows-arm64.exe"); Expect = 'X\.Y\.Z' }
+            @{ Name = 'bad-date'; Version = '1.2.3'; Date = '12/01/2026'; Lines = @("$x64  TaskSmack-1.2.3-win64.exe", "$arm64  TaskSmack-1.2.3-windows-arm64.exe"); Expect = 'yyyy-MM-dd' }
             @{ Name = 'no-arm64'; Version = '1.2.3'; Lines = @("$x64  TaskSmack-1.2.3-win64.exe"); Expect = 'windows-arm64\.exe' }
             @{ Name = 'other-version'; Version = '1.2.4'; Lines = @("$x64  TaskSmack-1.2.3-win64.exe", "$arm64  TaskSmack-1.2.3-windows-arm64.exe"); Expect = '1\.2\.4-win64\.exe' }
             @{ Name = 'malformed'; Version = '1.2.3'; Lines = @("$x64 TaskSmack-1.2.3-win64.exe", "$arm64  TaskSmack-1.2.3-windows-arm64.exe"); Expect = "isn't '<sha256>  <name>'" }
         )) {
         $dir = New-Release $case.Name $case.Lines
-        $run = Invoke-Manifest @('-Version', $case.Version, '-ReleaseDir', $dir)
+        $arguments = @('-Version', $case.Version, '-ReleaseDir', $dir)
+        if ($case.ContainsKey('Date')) { $arguments += @('-ReleaseDate', $case.Date) }
+        $run = Invoke-Manifest $arguments
         Assert-True ($run.Code -ne 0 -and $run.Output -match $case.Expect) "$($case.Name) - exit $($run.Code), output: $($run.Output)"
         Assert-True (-not (Test-Path -LiteralPath (Join-Path $dir 'winget'))) "$($case.Name) - wrote manifests anyway"
     }

@@ -1,10 +1,10 @@
 # WinGet version manifest template for TaskSmack.TaskSmack (#3486). tools/winget-manifest.ps1 fills in
 # ${VERSION} and writes the result to manifests/t/TaskSmack/TaskSmack/<version>/; see
 # docs/dev/release-process.md, "Publishing to WinGet".
-# yaml-language-server: $schema=https://aka.ms/winget-manifest.version.1.10.0.schema.json
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.version.1.28.0.schema.json
 
 PackageIdentifier: TaskSmack.TaskSmack
 PackageVersion: ${VERSION}
 DefaultLocale: en-US
 ManifestType: version
-ManifestVersion: 1.10.0
+ManifestVersion: 1.28.0

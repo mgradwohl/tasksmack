@@ -5,12 +5,15 @@
 .SYNOPSIS
     Write TaskSmack's WinGet manifests for one release from packaging/winget/ and its SHA256SUMS (#3486).
 .DESCRIPTION
-    Fills in the three templates in packaging/winget/ (version, defaultLocale and installer, schema 1.10.0)
+    Fills in the three templates in packaging/winget/ (version, defaultLocale and installer, schema 1.28.0)
     for -Version: ${VERSION}, and the SHA-256 of the x64 and ARM64 NSIS installers, read from the release's
     SHA256SUMS as ${SHA256_X64} (TaskSmack-<version>-win64.exe) and ${SHA256_ARM64}
-    (TaskSmack-<version>-windows-arm64.exe). They go to <OutDir>\manifests\t\TaskSmack\TaskSmack\<version>\,
+    (TaskSmack-<version>-windows-arm64.exe), and ${RELEASE_DATE} from -ReleaseDate (the line is left out
+    without it). They go to <OutDir>\manifests\t\TaskSmack\TaskSmack\<version>\,
     the folder winget-pkgs keeps them in, ready for `winget validate`, `wingetcreate submit` or
-    `komac submit`. Nothing is downloaded or installed: the hashes are the ones release.yml published.
+    `komac submit`. Nothing is downloaded or installed: the hashes are the ones release.yml published and
+    Sigstore-signed. winget-pkgs' validation pipeline, and `winget install --manifest` or SandboxTest.ps1,
+    download the installers and check them against these hashes.
 
     This is for the first submission, made by hand (docs/dev/release-process.md, "Publishing to WinGet").
     Later releases are submitted by release.yml's publish-winget job, which updates the manifests in
@@ -20,15 +23,19 @@
 .PARAMETER ReleaseDir
     A folder holding the release's SHA256SUMS (gh release download vX.Y.Z --pattern SHA256SUMS). Check it
     against SHA256SUMS.bundle first (docs/guide/user-guide.md, "Verifying a Release").
+.PARAMETER ReleaseDate
+    The release's date, yyyy-MM-dd (gh release view vX.Y.Z --json publishedAt --jq '.publishedAt[:10]').
+    Optional; winget-pkgs doesn't require it.
 .PARAMETER OutDir
     Where the manifests\ tree is written. Omitted, <ReleaseDir>\winget. The version's folder must not exist yet.
 .EXAMPLE
     gh release download v0.11.0 --repo mgradwohl/tasksmack --pattern SHA256SUMS --dir release
-    pwsh tools/winget-manifest.ps1 -Version 0.11.0 -ReleaseDir release
+    pwsh tools/winget-manifest.ps1 -Version 0.11.0 -ReleaseDir release -ReleaseDate 2026-12-01
 #>
 param(
     [Parameter(Mandatory)][string]$Version,
     [Parameter(Mandatory)][string]$ReleaseDir,
+    [string]$ReleaseDate = '',
     [string]$OutDir = ''
 )
 
@@ -42,6 +49,11 @@ function Fail([string]$Message) {
 
 if ($Version -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
     Fail "-Version must be X.Y.Z with no leading v, not '$Version'."
+}
+$parsedDate = [datetime]::MinValue
+if ($ReleaseDate -and -not [datetime]::TryParseExact($ReleaseDate, 'yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture,
+        [Globalization.DateTimeStyles]::None, [ref]$parsedDate)) {
+    Fail "-ReleaseDate must be yyyy-MM-dd, not '$ReleaseDate'."
 }
 $sumsPath = Join-Path $ReleaseDir 'SHA256SUMS'
 if (-not (Test-Path -LiteralPath $sumsPath -PathType Leaf)) { Fail "$sumsPath not found." }
@@ -58,6 +70,7 @@ $installers = [ordered]@{
     SHA256_ARM64 = "TaskSmack-$Version-windows-arm64.exe"
 }
 $values = @{ VERSION = $Version }
+if ($ReleaseDate) { $values['RELEASE_DATE'] = $ReleaseDate }
 foreach ($key in $installers.Keys) {
     $name = $installers[$key]
     if (-not $sums.ContainsKey($name)) { Fail "$sumsPath lists no $name; is it v$Version's?" }
@@ -75,7 +88,9 @@ foreach ($template in $templates) {
     $source = Join-Path $templateDir $template
     if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { Fail "$source not found." }
     # The templates' comments are about the templates, so only the schema line is kept.
-    $lines = @([IO.File]::ReadAllLines($source) | Where-Object { $_ -notmatch '^\s*#(?! yaml-language-server:)' })
+    # Without -ReleaseDate, its optional line is left out.
+    $lines = @([IO.File]::ReadAllLines($source) | Where-Object { $_ -notmatch '^\s*#(?! yaml-language-server:)' } |
+            Where-Object { $ReleaseDate -or -not $_.Contains('${RELEASE_DATE}') })
     $text = ($lines -join "`n").Trim() + "`n"
     foreach ($placeholder in [regex]::Matches($text, '\$\{([A-Z0-9_]+)\}')) {
         $key = $placeholder.Groups[1].Value
@@ -94,4 +109,4 @@ Write-Host "  x64:   $($installers.SHA256_X64)  $($values.SHA256_X64)"
 Write-Host "  arm64: $($installers.SHA256_ARM64)  $($values.SHA256_ARM64)"
 Write-Host 'Next:'
 Write-Host "  winget validate --manifest `"$target`""
-Write-Host "  wingetcreate submit `"$target`"   (or: komac submit `"$target`")"
+Write-Host "  wingetcreate submit --prtitle `"New package: TaskSmack.TaskSmack version $Version`" `"$target`""

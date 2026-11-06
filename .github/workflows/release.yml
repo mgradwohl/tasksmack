@@ -3287,7 +3287,9 @@ jobs:
     # vedantmgoyal9/winget-releaser. That action can be pinned by commit, but it runs cargo-bins/cargo-binstall@main
     # and installs whatever Komac is newest, so code no pin covers would hold the token. wingetcreate downloads
     # each installer, hashes it and keeps every other field of the previous version's manifests (packaging/
-    # winget/'s), so the AppsAndFeaturesEntries, UpgradeBehavior and the rest carry over.
+    # winget/'s), so the AppsAndFeaturesEntries, UpgradeBehavior and the rest carry over. Once it has opened the pull
+    # request, "Confirm the pull request is open" finds it and links it in the step summary; winget-health.yml checks
+    # daily that it merges.
     needs: [create-release, verify-published-release]
     if: >-
       ${{ !cancelled() && github.event_name == 'push' && needs.create-release.result == 'success' &&
@@ -3332,6 +3334,7 @@ jobs:
 
       - name: Check the release is published, not a pre-release, and still Latest
         # create-release decided Latest when it published; checked again here, since a later release may have taken it.
+        id: release
         if: steps.token.outputs.present == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -3344,28 +3347,44 @@ jobs:
             Write-Error "$env:TAG isn't a published, Latest, strict-semver release (draft: $($release.draft), pre-release: $($release.prerelease), Latest: $latest)."
             exit 1
           }
-          Write-Host "$env:TAG is the published Latest release."
+          # The manifest's ReleaseDate: the day the release was published, in UTC.
+          $date = ([datetime]$release.published_at).ToUniversalTime().ToString('yyyy-MM-dd')
+          Write-Host "$env:TAG is the published Latest release ($date)."
+          "date=$date" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
-      - name: Check TaskSmack.TaskSmack is in winget-pkgs
+      - name: Check TaskSmack.TaskSmack is in winget-pkgs and has no pull request for this version
         # An update needs the package's first version merged (the manual submission). Until then, as for
-        # v0.11.0's own tag run, the job passes with a notice instead of failing after the release is out.
+        # v0.11.0's own tag run, the job passes with a notice instead of failing after the release is out. It also
+        # passes when this version is already there or a pull request for it is open (winget-pkgs' checklist: no
+        # second pull request for the same version), so a re-run doesn't submit twice. Read-only public calls.
         id: package
         if: steps.token.outputs.present == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $null = gh api repos/microsoft/winget-pkgs/contents/manifests/t/TaskSmack/TaskSmack --silent 2>&1
-          if ($LASTEXITCODE -ne 0) {
-            $msg = "$env:WINGET_PACKAGE_ID isn't in microsoft/winget-pkgs yet, so $env:TAG is left for the first, manual submission (docs/dev/release-process.md, `"Publishing to WinGet`")."
-            Write-Host "::notice title=WinGet::$msg"
-            "- WinGet: skipped ($msg)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-            'exists=false' | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          function Skip([string]$Message) {
+            Write-Host "::notice title=WinGet::$Message"
+            "- WinGet: skipped ($Message)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+            'submit=false' | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
             exit 0
           }
-          'exists=true' | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          $version = $env:TAG.Substring(1)
+          $folder = "repos/microsoft/winget-pkgs/contents/manifests/t/TaskSmack/TaskSmack"
+          $null = gh api $folder --silent 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            Skip "$env:WINGET_PACKAGE_ID isn't in microsoft/winget-pkgs yet, so $env:TAG is left for the first, manual submission (docs/dev/release-process.md, `"Publishing to WinGet`")."
+          }
+          $null = gh api "$folder/$version" --silent 2>&1
+          if ($LASTEXITCODE -eq 0) { Skip "$env:WINGET_PACKAGE_ID $version is already in microsoft/winget-pkgs." }
+          $versionPattern = "(^|[^0-9.])$([regex]::Escape($version))($|[^0-9.])"
+          $found = gh api -X GET search/issues -f q="repo:microsoft/winget-pkgs is:pr is:open $env:WINGET_PACKAGE_ID in:title" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { Write-Error "Couldn't search microsoft/winget-pkgs' pull requests."; exit 1 }
+          $open = @($found.items | Where-Object { $_.title.Contains($env:WINGET_PACKAGE_ID) -and $_.title -match $versionPattern })
+          if ($open.Count -gt 0) { Skip "a pull request for $env:WINGET_PACKAGE_ID $version is already open: $($open[0].html_url)" }
+          'submit=true' | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       - name: Install wingetcreate
-        if: steps.token.outputs.present == 'true' && steps.package.outputs.exists == 'true'
+        if: steps.token.outputs.present == 'true' && steps.package.outputs.submit == 'true'
         run: |
           $exe = Join-Path $env:RUNNER_TEMP 'wingetcreate.exe'
           Invoke-WebRequest -Uri "https://github.com/microsoft/winget-create/releases/download/$env:WINGETCREATE_VERSION/wingetcreate.exe" -OutFile $exe
@@ -3377,19 +3396,54 @@ jobs:
           "WINGETCREATE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Submit the update to winget-pkgs
-        if: steps.token.outputs.present == 'true' && steps.package.outputs.exists == 'true'
-
+        # The title is winget-pkgs' pull request template's format for an update.
+        id: submit
+        if: steps.token.outputs.present == 'true' && steps.package.outputs.submit == 'true'
         env:
           # wingetcreate reads its token from this variable, so it's never on a command line.
           WINGET_CREATE_GITHUB_TOKEN: ${{ secrets.WINGET_TOKEN }}
+          RELEASE_DATE: ${{ steps.release.outputs.date }}
         run: |
           $version = $env:TAG.Substring(1)
           $base = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:TAG"
           & $env:WINGETCREATE update $env:WINGET_PACKAGE_ID --version $version `
             --urls "$base/TaskSmack-$version-win64.exe|x64" "$base/TaskSmack-$version-windows-arm64.exe|arm64" `
             --release-notes-url "https://github.com/$env:GITHUB_REPOSITORY/releases/tag/$env:TAG" `
-            --prtitle "New version: $env:WINGET_PACKAGE_ID version $version" --submit --no-open
+            --release-date $env:RELEASE_DATE `
+            --prtitle "Update: $env:WINGET_PACKAGE_ID to $version" --submit --no-open
           $code = $LASTEXITCODE
-          $result = if ($code -eq 0) { "submitted $env:WINGET_PACKAGE_ID $version from $env:WINGET_FORK_USER/winget-pkgs (see the step log for the pull request)" } else { "**FAILED** (wingetcreate exit $code; see the step log)" }
-          "- WinGet: $result" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          if ($code -ne 0) {
+            "- WinGet: **FAILED** (wingetcreate exit $code; see the step log)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          }
           exit $code
+
+      - name: Confirm the pull request is open
+        # wingetcreate's exit code alone doesn't show the pull request exists, so look it up: tasksmack-boop's pull
+        # request whose title names this version, through the public search API, which can lag a minute behind.
+        # Read-only, with this run's GITHUB_TOKEN; the winget token isn't needed. winget-health.yml then follows the
+        # pull request until the version is on winget-pkgs' default branch.
+        if: steps.submit.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = $env:TAG.Substring(1)
+          $versionPattern = "(^|[^0-9.])$([regex]::Escape($version))($|[^0-9.])"
+          $query = "repo:microsoft/winget-pkgs is:pr author:$env:WINGET_FORK_USER $env:WINGET_PACKAGE_ID in:title"
+          $tries = 6
+          for ($try = 1; $try -le $tries; $try++) {
+            $found = gh api -X GET search/issues -f q=$query -f sort=created -f order=desc | ConvertFrom-Json
+            if ($LASTEXITCODE -eq 0) {
+              $pr = @($found.items | Where-Object { $_.title.Contains($env:WINGET_PACKAGE_ID) -and $_.title -match $versionPattern }) | Select-Object -First 1
+              if ($pr) {
+                Write-Host "::notice title=WinGet::Opened $($pr.html_url)"
+                "- WinGet: submitted $env:WINGET_PACKAGE_ID $version from $env:WINGET_FORK_USER/winget-pkgs: $($pr.html_url) ($($pr.state))" |
+                  Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+                exit 0
+              }
+            }
+            if ($try -lt $tries) { Write-Host "No pull request found yet (try $try of $tries); waiting 20 s."; Start-Sleep -Seconds 20 }
+          }
+          "- WinGet: **FAILED** (wingetcreate finished, but no $env:WINGET_FORK_USER pull request for $env:WINGET_PACKAGE_ID $version turned up on microsoft/winget-pkgs)" |
+            Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          Write-Error "No $env:WINGET_FORK_USER pull request for $env:WINGET_PACKAGE_ID $version found on microsoft/winget-pkgs after $tries tries."
+          exit 1
