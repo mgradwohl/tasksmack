@@ -249,7 +249,7 @@ class WindowsSystemProbe : public ISystemProbe
     };
     std::optional<MemoryCompressionTarget> m_MemoryCompression;
     // While none is known, the earliest the next whole-snapshot search may run (#3483). Sampler thread only.
-    std::chrono::steady_clock::time_point m_NextMemoryCompressionSearch{};
+    std::chrono::steady_clock::time_point m_NextMemoryCompressionSearch;
     // The last read()'s sub-read timing (#2731). Sampler thread only.
     SystemReadTiming m_LastReadTiming;
     // The nominal base clock (nominalCpuBaseMHz), read once: it is fixed for the boot session

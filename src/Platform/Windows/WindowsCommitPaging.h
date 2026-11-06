@@ -182,7 +182,10 @@ findMemoryCompressionProcess(std::span<const std::byte> buffer, std::optional<st
             if (std::wstring_view(text.data(), text.size()) == NAME)
             {
                 return MemoryCompressionProcess{
-                    .processId = id, .workingSet = static_cast<std::uint64_t>(entry.WorkingSetSize), .sessionId = entry.SessionId};
+                    .processId = id,
+                    .workingSet = static_cast<std::uint64_t>(entry.WorkingSetSize),
+                    .sessionId = entry.SessionId,
+                };
             }
         }
         if (entry.NextEntryOffset < sizeof(SYSTEM_PROCESS_INFORMATION))
@@ -269,7 +272,7 @@ struct SessionProcessRequest
     ULONG bufferBytes;
     PVOID buffer;
 };
-static_assert(sizeof(SessionProcessRequest) == 2 * sizeof(ULONG) + sizeof(PVOID), "SYSTEM_SESSION_PROCESS_INFORMATION's layout");
+static_assert(sizeof(SessionProcessRequest) == (2 * sizeof(ULONG)) + sizeof(PVOID), "SYSTEM_SESSION_PROCESS_INFORMATION's layout");
 
 /// NtQuerySystemInformation(SystemSessionProcessInformation) for @p sessionId through @p query into
 /// @p buffer, grown as querySystemInformationInto() grows its own (#3483): only that session's processes,
