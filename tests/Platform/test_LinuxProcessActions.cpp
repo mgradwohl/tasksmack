@@ -708,6 +708,9 @@ TEST(LinuxProcessActionsTest, SetSchedPolicyRefusesRealTimeAnInvalidPidAndAReuse
     LinuxProcessActions actions;
     const SleepingChild child;
     ASSERT_TRUE(child.started());
+    // The child inherits the runner's policy (Batch or Idle under some CI runners): it must stay as it started.
+    const int initial = schedulerOf(static_cast<id_t>(child.target().pid));
+    ASSERT_GE(initial, 0);
     for (const SchedPolicy policy : {SchedPolicy::Fifo, SchedPolicy::RoundRobin, SchedPolicy::Deadline, SchedPolicy::Unknown})
     {
         const ProcessActionResult refused = actions.setSchedPolicy(child.target(), policy, Platform::RealtimeThreads::Keep);
@@ -715,13 +718,13 @@ TEST(LinuxProcessActionsTest, SetSchedPolicyRefusesRealTimeAnInvalidPidAndAReuse
         EXPECT_FALSE(refused.permissionDenied) << "no password helps: the helper refuses it too";
         EXPECT_EQ(refused.errorMessage, "Only the Normal, Batch and Idle scheduling policies can be set");
     }
-    EXPECT_EQ(schedulerOf(static_cast<id_t>(child.target().pid)), SCHED_OTHER);
+    EXPECT_EQ(schedulerOf(static_cast<id_t>(child.target().pid)), initial);
     EXPECT_EQ(actions.setSchedPolicy({.pid = 0, .startTimeTicks = 1}, SchedPolicy::Batch, Platform::RealtimeThreads::Keep).errorMessage,
               "Invalid PID");
     // A different start time: the PID now names another process, and nothing is changed.
     const ProcessTarget other{.pid = child.target().pid, .startTimeTicks = child.target().startTimeTicks + 1};
     EXPECT_FALSE(actions.setSchedPolicy(other, SchedPolicy::Batch, Platform::RealtimeThreads::Keep).success);
-    EXPECT_EQ(schedulerOf(static_cast<id_t>(child.target().pid)), SCHED_OTHER);
+    EXPECT_EQ(schedulerOf(static_cast<id_t>(child.target().pid)), initial);
 }
 
 // =============================================================================
