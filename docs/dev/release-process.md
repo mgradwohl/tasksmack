@@ -416,7 +416,8 @@ moderator asks something.
 
 `winget-health.yml` follows the pull request to the merge. Once a day it checks that the newest Latest release's
 folder is on winget-pkgs' default branch. If it isn't, it keeps one issue open, titled "WinGet: TaskSmack.TaskSmack
-<version> isn't published" and labelled `ci-red-main`, `release` and `agent:Windows`, while any of these hold:
+<version> isn't published" and labelled `release` and `agent:Windows` (found by that title; never `ci-red-main`,
+which means main is red and holds merges), while any of these hold:
 - the pull request carries a label that needs us (any `*Error*` or `*Failed*` label except `Waived-*`, or
   `Needs-Author-Feedback`, `Needs-CLA`, `Changes-Requested`, `Blocking-Issue` and the like);
 - it was closed without merging, or none exists a day after the release;

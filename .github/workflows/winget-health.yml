@@ -5,7 +5,8 @@ name: WinGet Health
 # publish-winget job opens the pull request that adds it; this follows that pull request to the merge. While the
 # version isn't there and its pull request carries a label that needs us (a validation error, author feedback, the
 # CLA), or none is open, or 7 days have passed since the release, it keeps ONE tracking issue open (title
-# "WinGet: TaskSmack.TaskSmack <version> isn't published", labels `ci-red-main`, `release`, `agent:Windows`) and
+# "WinGet: TaskSmack.TaskSmack <version> isn't published", labels `release` and `agent:Windows`, found by that exact
+# title among the open `release` issues; never `ci-red-main`, which means main is red and holds every merge) and
 # closes it once the version is on the default branch. Before the first, manual submission (no
 # TaskSmack.TaskSmack in winget-pkgs at all) it does nothing. docs/dev/release-process.md, "Publishing to WinGet".
 #
@@ -40,7 +41,7 @@ jobs:
           PACKAGE_ID: TaskSmack.TaskSmack
           PACKAGE_PATH: manifests/t/TaskSmack/TaskSmack
           WINGET_REPO: microsoft/winget-pkgs
-          LABELS: ci-red-main,release,agent:Windows
+          LABELS: release,agent:Windows
           GRACE_DAYS: '7'
           # winget-pkgs labels (gh api repos/microsoft/winget-pkgs/labels) that mean the pull request is stuck until
           # someone acts: every *Error* and *Failed* label except the Waived-* ones, and these.
@@ -70,8 +71,11 @@ jobs:
           echo "Latest release: $tag, published $published."
 
           # REST only: `gh issue edit`/`view` go through GraphQL fields that fail on this repo.
-          issue=$(gh api "repos/$REPO/issues?labels=ci-red-main&state=open&per_page=50" \
-            --jq ".[] | select(.title | startswith(\"WinGet: $PACKAGE_ID \")) | .number" | head -n1)
+          # The one issue, found by its title among the open `release` issues: the exact title for this version, or
+          # an older version's (retitled below, so there's still only one).
+          issue=$(gh api --paginate "repos/$REPO/issues?labels=release&state=open&per_page=100" \
+            --jq ".[] | select(.pull_request == null) | select(.title == \"$title\" or
+              (.title | test(\"^WinGet: $PACKAGE_ID [0-9.]+ isn't published$\"))) | .number" | head -n1)
 
           if gh api "repos/$WINGET_REPO/contents/$PACKAGE_PATH/$version" --silent 2>/dev/null; then
             echo "$PACKAGE_ID $version is on $WINGET_REPO's default branch."
