@@ -73,6 +73,11 @@ static_assert(GL_RESET_STATUS_GUILTY == GL_GUILTY_CONTEXT_RESET);
 static_assert(GL_RESET_STATUS_INNOCENT == GL_INNOCENT_CONTEXT_RESET);
 static_assert(GL_RESET_STATUS_UNKNOWN == GL_UNKNOWN_CONTEXT_RESET);
 static_assert(GL_LOSE_CONTEXT_ON_RESET_STRATEGY == GL_LOSE_CONTEXT_ON_RESET);
+// gladVersionMeetsRequirement() reads GLAD's encoding of the version it loaded.
+// NOLINTBEGIN(readability-math-missing-parentheses) - GLAD_MAKE_VERSION's own expansion
+static_assert(gladVersionMeetsRequirement(GLAD_MAKE_VERSION(REQUIRED_GL_MAJOR, REQUIRED_GL_MINOR)));
+static_assert(!gladVersionMeetsRequirement(GLAD_MAKE_VERSION(REQUIRED_GL_MAJOR, REQUIRED_GL_MINOR - 1)));
+// NOLINTEND(readability-math-missing-parentheses)
 
 /// Whether the current context reports a GPU reset through glGetGraphicsResetStatus() (#3484): it
 /// was made with GL_LOSE_CONTEXT_ON_RESET, and one of the entry points is loaded. Asked only when
@@ -763,9 +768,14 @@ bool Window::recreateGLContext()
         return false;
     }
     // The same pixel format and driver, but the entry points are reloaded for the new context.
-    if (gladLoadGL(reinterpret_cast<GLADloadfunc>(SDL_GL_GetProcAddress)) == 0) // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+    const int version =
+        gladLoadGL(reinterpret_cast<GLADloadfunc>(SDL_GL_GetProcAddress)); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+    // The constructor's check too: loading can succeed on a context older than the renderer needs.
+    if (!gladVersionMeetsRequirement(version))
     {
-        spdlog::error("Reloading OpenGL for the replacement context failed");
+        spdlog::error("The replacement OpenGL context can't be used: {}",
+                      version == 0 ? std::string("loading OpenGL failed")
+                                   : unsupportedGLVersionMessage(glString(GL_VERSION), glString(GL_RENDERER), glString(GL_VENDOR)));
         return false;
     }
     m_ReportsGraphicsReset = currentContextReportsReset();

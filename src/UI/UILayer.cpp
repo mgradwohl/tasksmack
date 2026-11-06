@@ -339,7 +339,12 @@ void UILayer::onEvent(Core::Event& event)
             {
                 m_CachedPixelW = w;
                 m_CachedPixelH = h;
-                Core::traceResizePerfVoid(Core::ResizePerfOperation::Viewport, w, h, [&] { glViewport(0, 0, w, h); });
+                // Not while the renderer is down after a GPU reset (#3484): there is no working context;
+                // onGraphicsContextRestored() sets the viewport from the size kept here.
+                if (m_RendererReady)
+                {
+                    Core::traceResizePerfVoid(Core::ResizePerfOperation::Viewport, w, h, [&] { glViewport(0, 0, w, h); });
+                }
             }
             return false; // Do not consume; other layers may need the resize notification
         });

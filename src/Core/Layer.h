@@ -53,7 +53,9 @@ class Layer
     {}
 
     /// A new OpenGL context replaced the lost one and is current (#3484): make again what
-    /// onGraphicsContextLost() dropped. Called bottom of the stack first, between frames.
+    /// onGraphicsContextLost() dropped. Called bottom of the stack first, between frames. Throwing
+    /// fails the whole replacement: every layer then gets onGraphicsContextLost() again, drawing
+    /// stays suspended and the replacement is retried (Core::GraphicsContextRecovery).
     virtual void onGraphicsContextRestored()
     {}
 

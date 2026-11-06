@@ -20,6 +20,7 @@
 // Pure, so the decision is unit-tested without a GPU (tests/Core/test_GraphicsReset.cpp).
 
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -118,24 +119,36 @@ struct GraphicsContextRecoverySteps
     std::function<void()> loseLayers;        ///< Layer::onGraphicsContextLost(), top of the stack first
     std::function<bool()> recreateContext;   ///< Window::recreateGLContext(): false when it failed
     std::function<void()> advanceGeneration; ///< advanceGraphicsContextGeneration()
-    std::function<void()> restoreLayers;     ///< swap interval, then Layer::onGraphicsContextRestored()
+    /// The swap interval, then Layer::onGraphicsContextRestored() for each layer: false when a layer
+    /// could not rebuild (it threw), as the ImGui renderer does when its Init fails.
+    std::function<bool()> restoreLayers;
 };
 
 /// Where the renderer stands after a GPU reset.
 enum class GraphicsRecoveryState : std::uint8_t
 {
     Rendering, ///< A working context: frames draw
-    Suspended, ///< The layers dropped their GL objects and no new context could be made yet: no frame draws
-    GaveUp,    ///< Every attempt failed: the app closes, with the error logged
+    Suspended, ///< The layers dropped their GL objects and no working context is back yet: no frame draws
+    GaveUp,    ///< Every attempt failed: the app stops, with the error logged
 };
 
-/// Replaces the context after a reset, and decides what happens when that fails (#3484). The layers
-/// are restored -- and the context generation advanced -- only after a replacement succeeds: a
-/// layer rebuilt on a failed or missing context would make GL calls with no renderer behind them.
-/// A failure suspends drawing (Application skips its frames, still pumping events) and retries after
-/// each of GRAPHICS_RECOVERY_RETRY_DELAYS_SECONDS, since a driver still recovering from the reset
-/// can refuse a context for a moment; after the last one it gives up and Application closes, rather
-/// than run on without a renderer. UI thread.
+/// What one call into GraphicsContextRecovery did.
+struct GraphicsRecoveryOutcome
+{
+    GraphicsRecoveryState state = GraphicsRecoveryState::Rendering;
+    /// Whether this call attempted a replacement: only then is there anything new to log.
+    bool attempted = false;
+};
+
+/// Replaces the context after a reset, and decides what happens when that fails (#3484). The context
+/// generation is advanced and the layers restored only after a new context was made: a layer
+/// rebuilt on a failed or missing context would make GL calls with no renderer behind them. And a
+/// replacement counts as working only when every layer rebuilt on it; if one could not, the layers
+/// drop what they made on it again and the attempt has failed. A failure suspends drawing
+/// (Application makes no frame and no GL call, still pumping events, minimized or not) and retries
+/// after each of GRAPHICS_RECOVERY_RETRY_DELAYS_SECONDS, since a driver still recovering from the
+/// reset can refuse a context for a moment; after the last one it gives up and Application stops,
+/// rather than run on without a renderer. UI thread.
 class GraphicsContextRecovery
 {
   public:
@@ -144,21 +157,21 @@ class GraphicsContextRecovery
 
     /// A reset is over (GraphicsResetMonitor said Recreate): drop the layers' GL objects and replace
     /// the context, at @p nowSeconds.
-    GraphicsRecoveryState replace(const double nowSeconds, const GraphicsContextRecoverySteps& steps)
+    GraphicsRecoveryOutcome replace(const double nowSeconds, const GraphicsContextRecoverySteps& steps)
     {
         steps.loseLayers();
         m_Attempts = 0;
-        return attempt(nowSeconds, steps);
+        return {.state = attempt(nowSeconds, steps), .attempted = true};
     }
 
-    /// While Suspended, the next attempt once its delay has passed; otherwise nothing. The state after.
-    GraphicsRecoveryState retryIfDue(const double nowSeconds, const GraphicsContextRecoverySteps& steps)
+    /// While Suspended, the next attempt once its delay has passed; otherwise nothing (attempted false).
+    GraphicsRecoveryOutcome retryIfDue(const double nowSeconds, const GraphicsContextRecoverySteps& steps)
     {
         if (m_State != GraphicsRecoveryState::Suspended || nowSeconds < m_NextAttemptAt)
         {
-            return m_State;
+            return {.state = m_State, .attempted = false};
         }
-        return attempt(nowSeconds, steps);
+        return {.state = attempt(nowSeconds, steps), .attempted = true};
     }
 
     [[nodiscard]] GraphicsRecoveryState state() const noexcept
@@ -172,14 +185,40 @@ class GraphicsContextRecovery
         return m_Attempts;
     }
 
+    /// The longest the frame loop may wait for an event at @p nowSeconds, given it wanted @p waitMs,
+    /// and still make the next retry on time: 0 once that is due; @p waitMs itself unless Suspended.
+    [[nodiscard]] int boundWaitMs(const int waitMs, const double nowSeconds) const noexcept
+    {
+        if (m_State != GraphicsRecoveryState::Suspended)
+        {
+            return waitMs;
+        }
+        const double remainingMs = std::ceil((m_NextAttemptAt - nowSeconds) * 1000.0);
+        if (!(remainingMs > 0.0))
+        {
+            return 0;
+        }
+        return remainingMs < static_cast<double>(waitMs) ? static_cast<int>(remainingMs) : waitMs;
+    }
+
   private:
     GraphicsRecoveryState attempt(const double nowSeconds, const GraphicsContextRecoverySteps& steps)
     {
         ++m_Attempts;
+        bool working = false;
         if (steps.recreateContext())
         {
             steps.advanceGeneration();
-            steps.restoreLayers();
+            working = steps.restoreLayers();
+            if (!working)
+            {
+                // What the layers did rebuild lives in the new context: let them drop it again, so the
+                // next attempt starts where this one did.
+                steps.loseLayers();
+            }
+        }
+        if (working)
+        {
             m_State = GraphicsRecoveryState::Rendering;
         }
         else if (m_Attempts > GRAPHICS_RECOVERY_RETRY_DELAYS_SECONDS.size())

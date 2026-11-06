@@ -191,11 +191,15 @@ class Application
     void checkGraphicsReset();
     /// The replacement's steps, bound to the layer stack and the window.
     [[nodiscard]] GraphicsContextRecoverySteps graphicsRecoverySteps();
-    /// Logs a replacement's outcome; after the last failed attempt, stops the app.
-    void noteGraphicsRecoveryState(GraphicsRecoveryState state);
-    /// Whether a frame may draw: false while a failed replacement is waiting to be retried (and
-    /// retries it when due), or after recovery gave up.
-    [[nodiscard]] bool graphicsReadyForFrame();
+    /// Logs what an attempt did (nothing when @p outcome made none); after the last failed one, stops the app.
+    void noteGraphicsRecovery(GraphicsRecoveryOutcome outcome);
+    /// Once per loop iteration, drawing or not (a minimized window too): the next retry of a failed
+    /// replacement, when it is due.
+    void pollGraphicsRecovery();
+    /// Whether drawing -- and with it every OpenGL call -- is suspended: a failed replacement waits to
+    /// be retried, or recovery gave up. Event handling goes on; GL state the events change (the
+    /// viewport, the swap interval) is remembered and applied when a replacement works.
+    [[nodiscard]] bool drawingSuspended() const noexcept;
 
     /// Run one update+render+swapBuffers cycle. Extracted so the main loop and
     /// the immediate-repaint-on-resize path share identical rendering logic. Detailed

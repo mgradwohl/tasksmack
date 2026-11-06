@@ -242,12 +242,14 @@ void ensureXdgRuntimeDir()
 // the assertion ImGui uses to detect that is compiled out in NDEBUG (Release) builds but active
 // in Debug. Shared by renderFrame(), raiseEvent(), and the SDL event passthrough loop in run()
 // so every per-frame/per-event layer callback degrades the same way instead of only some of
-// them (#778).
-template<typename Call> void guardLayerCall(const std::unique_ptr<Layer>& layer, std::string_view phase, const Call& call)
+// them (#778). Returns whether the call completed, for the one caller that must know: a layer
+// failing to rebuild after a GPU reset fails the context replacement (#3484).
+template<typename Call> bool guardLayerCall(const std::unique_ptr<Layer>& layer, std::string_view phase, const Call& call)
 {
     try
     {
         call();
+        return true;
     }
     catch (const std::exception& e)
     {
@@ -272,6 +274,7 @@ template<typename Call> void guardLayerCall(const std::unique_ptr<Layer>& layer,
                     // must not throw
         {}
     }
+    return false;
 }
 
 // The publication wake (#3156 stage 2): Domain::PublicationWake's handler while run() runs. A sampler
@@ -822,12 +825,20 @@ void Application::run()
         const auto vsyncStart = traceResizePerfThisFrame ? SDL_GetPerformanceCounter() : 0;
         switch (FramePacing::computeVsyncTransition(wasInteracting, isInteracting, m_Spec.VSync, m_VsyncDisabledForInteraction))
         {
+        // While drawing is suspended after a GPU reset (#3484) there is no working context to set it
+        // on: only the wanted state is kept, and the replacement applies it.
         case FramePacing::VsyncTransition::Disable:
-            Window::setVSync(false);
+            if (!drawingSuspended())
+            {
+                Window::setVSync(false);
+            }
             m_VsyncDisabledForInteraction = true;
             break;
         case FramePacing::VsyncTransition::Restore:
-            Window::setVSync(true);
+            if (!drawingSuspended())
+            {
+                Window::setVSync(true);
+            }
             m_VsyncDisabledForInteraction = false;
             break;
         case FramePacing::VsyncTransition::NoChange:
@@ -904,6 +915,10 @@ void Application::run()
         // on a display that is off (#3152): nothing on screen, so no frames at all once the first is
         // drawn (#3156); the loop waits for the event that shows the window again. Only drawing stops:
         // the samplers keep the Settings interval on their own threads (#2731).
+        // A failed context replacement's retry (#3484), here and not in renderFrame(): a minimized or
+        // hidden window draws no frames, and must still retry, or give up and stop.
+        pollGraphicsRecovery();
+
         m_Window->pollVisibility();
         const WindowVisibility::HiddenState hiddenState = m_Window->hiddenState();
         const bool isHidden = hiddenState != WindowVisibility::HiddenState::Shown; // Window::isHidden()
@@ -976,7 +991,8 @@ void Application::run()
         {
             if (!hadEvents)
             {
-                static_cast<void>(waitForEvent(hiddenWait.timeoutMs, traceResizePerfThisFrame));
+                // No longer than the next retry of a failed context replacement (#3484).
+                static_cast<void>(waitForEvent(m_GraphicsRecovery.boundWaitMs(hiddenWait.timeoutMs, getTime()), traceResizePerfThisFrame));
             }
             for (const auto& layer : m_LayerStack)
             {
@@ -1016,7 +1032,9 @@ void Application::run()
                         .graceActive = keepInteractionRedrawActive || inputGraceActive || !drewFirstFrame,
                     },
                     {.idleMs = IDLE_FRAME_SLEEP_MS, .hiddenMs = MINIMIZED_FRAME_SLEEP_MS, .staticFloorMs = STATIC_FRAME_FLOOR_MS});
-                const int sleepMs = FramePacing::computeIdleWaitMs(periodMs, getTime() - lastFrameStart);
+                // No longer than the next retry of a failed context replacement (#3484).
+                const int sleepMs =
+                    m_GraphicsRecovery.boundWaitMs(FramePacing::computeIdleWaitMs(periodMs, getTime() - lastFrameStart), getTime());
                 const auto waitOutcome = waitForEvent(sleepMs, traceResizePerfThisFrame);
                 ++m_IdleWaitCount;
                 m_LastIdleWaitWoke = waitOutcome == FramePacing::IdleWaitOutcome::Woke;
@@ -1099,8 +1117,8 @@ void Application::renderFrame(
     float deltaTime, bool resizeTriggeredFrame, double* updateMs, double* renderMs, double* postRenderMs, double* swapMs)
 {
     // After a GPU reset whose context replacement failed (#3484) the layers have no renderer: no
-    // frame, so no GL call, while run() keeps pumping events and the replacement is retried here.
-    if (!graphicsReadyForFrame())
+    // frame, so no GL call, while run() keeps pumping events and retries the replacement.
+    if (drawingSuspended())
     {
         return;
     }
@@ -1273,7 +1291,7 @@ bool Application::closeRequestAccepted()
 
 void Application::checkGraphicsReset()
 {
-    if (m_GraphicsRecovery.state() != GraphicsRecoveryState::Rendering || !m_Window->reportsGraphicsReset())
+    if (drawingSuspended() || !m_Window->reportsGraphicsReset())
     {
         return;
     }
@@ -1297,7 +1315,7 @@ void Application::checkGraphicsReset()
     spdlog::warn("Replacing the OpenGL context after GPU reset {} ({} context reset)",
                  m_GraphicsReset.resets(),
                  graphicsResetStatusName(m_GraphicsReset.lostStatus()));
-    noteGraphicsRecoveryState(m_GraphicsRecovery.replace(getTime(), graphicsRecoverySteps()));
+    noteGraphicsRecovery(m_GraphicsRecovery.replace(getTime(), graphicsRecoverySteps()));
     // LCOV_EXCL_STOP
 }
 
@@ -1318,21 +1336,33 @@ GraphicsContextRecoverySteps Application::graphicsRecoverySteps()
         .restoreLayers =
             [this]
         {
-            // The swap interval belongs to the context: put back what the frame loop has set.
+            // The swap interval belongs to the context: the one the frame loop wants now, which it
+            // only remembered while drawing was suspended.
             Window::setVSync(m_Spec.VSync && !m_VsyncDisabledForInteraction);
+            bool allRestored = true;
             for (const auto& layer : m_LayerStack)
             {
-                guardLayerCall(layer, "onGraphicsContextRestored", [&] { layer->onGraphicsContextRestored(); });
+                // A layer that throws (the ImGui renderer failing to start) leaves the frame with no
+                // renderer: the whole replacement has failed, not just that layer's call.
+                allRestored =
+                    guardLayerCall(layer, "onGraphicsContextRestored", [&] { layer->onGraphicsContextRestored(); }) && allRestored;
             }
+            return allRestored;
         },
     };
 }
 
-void Application::noteGraphicsRecoveryState(const GraphicsRecoveryState state)
+void Application::noteGraphicsRecovery(const GraphicsRecoveryOutcome outcome)
 {
-    switch (state)
+    // Only what an attempt did: a check that found nothing due yet has nothing new to say.
+    if (!outcome.attempted)
+    {
+        return;
+    }
+    switch (outcome.state)
     {
     case GraphicsRecoveryState::Rendering:
+        spdlog::info("OpenGL context replaced and every layer rebuilt (attempt {})", m_GraphicsRecovery.attempts());
         break;
     case GraphicsRecoveryState::Suspended:
         spdlog::error("Could not replace the OpenGL context (attempt {}); drawing is suspended and it will be tried again",
@@ -1346,17 +1376,18 @@ void Application::noteGraphicsRecoveryState(const GraphicsRecoveryState state)
     }
 }
 
-// LCOV_EXCL_STOP
-
-bool Application::graphicsReadyForFrame()
+void Application::pollGraphicsRecovery()
 {
     if (m_GraphicsRecovery.state() == GraphicsRecoveryState::Suspended)
-    // LCOV_EXCL_START - only after a failed replacement; GraphicsContextRecovery's retries are unit-tested
     {
-        noteGraphicsRecoveryState(m_GraphicsRecovery.retryIfDue(getTime(), graphicsRecoverySteps()));
+        noteGraphicsRecovery(m_GraphicsRecovery.retryIfDue(getTime(), graphicsRecoverySteps()));
     }
-    // LCOV_EXCL_STOP
-    return m_GraphicsRecovery.state() == GraphicsRecoveryState::Rendering;
+}
+// LCOV_EXCL_STOP
+
+bool Application::drawingSuspended() const noexcept
+{
+    return m_GraphicsRecovery.state() != GraphicsRecoveryState::Rendering;
 }
 
 void Application::raiseEvent(Event& event)
