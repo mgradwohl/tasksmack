@@ -3283,7 +3283,7 @@ jobs:
     # request from it, so the token must belong to that account; "Check the WinGet token" makes sure it does.
     # While the secret is unset or empty the job passes with a notice and submits nothing.
     #
-    # How: Microsoft's wingetcreate (`update --submit`), one release pinned by its SHA-256, rather than
+    # How: Microsoft's wingetcreate (`update`, then `submit`), one release pinned by its SHA-256, rather than
     # vedantmgoyal9/winget-releaser. That action can be pinned by commit, but it runs cargo-bins/cargo-binstall@main
     # and installs whatever Komac is newest, so code no pin covers would hold the token. wingetcreate downloads
     # each installer, hashes it and keeps every other field of the previous version's manifests (packaging/
@@ -3305,6 +3305,12 @@ jobs:
       WINGET_FORK_USER: tasksmack-boop
       WINGETCREATE_VERSION: v1.12.13.0
       WINGETCREATE_SHA256: 24042bd37915805615e6cf969ac57c6439124c3fe85823327f5f3fb24bd9ffea
+      # The manifest schema that wingetcreate release reads, validates (its bundled WinGetUtil 1.12.350) and writes:
+      # `update` rewrites every manifest to it. winget-pkgs accepts it (1.28.0 is recommended, "1.12.0 is also
+      # accepted"), and no wingetcreate release writes 1.28.0 yet. The packaging/winget templates must be on the same
+      # version (tools/winget-manifest.ps1 checks), and "Submit the update" checks what wingetcreate wrote. Change it
+      # together with the pin.
+      WINGETCREATE_MANIFEST_VERSION: '1.12.0'
     defaults:
       run:
         shell: pwsh
@@ -3422,7 +3428,9 @@ jobs:
           "WINGETCREATE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Submit the update to winget-pkgs
-        # The title is winget-pkgs' pull request template's format for an update.
+        # In two halves, so what is submitted is checked first: `update` writes the new version's manifests to a folder
+        # (no --submit), every file must be on WINGETCREATE_MANIFEST_VERSION, then `submit` opens the pull request from
+        # that folder. The title is winget-pkgs' pull request template's format for an update.
         id: submit
         if: steps.token.outputs.present == 'true' && steps.package.outputs.submit == 'true'
         env:
@@ -3432,16 +3440,32 @@ jobs:
         run: |
           $version = $env:TAG.Substring(1)
           $base = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:TAG"
+          function Stop-Step([string]$Message) {
+            "- WinGet: **FAILED** ($Message)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+            Write-Error $Message
+            exit 1
+          }
+          $out = Join-Path $env:RUNNER_TEMP 'winget-update'
           & $env:WINGETCREATE update $env:WINGET_PACKAGE_ID --version $version `
             --urls "$base/TaskSmack-$version-win64.exe|x64" "$base/TaskSmack-$version-windows-arm64.exe|arm64" `
             --release-notes-url "https://github.com/$env:GITHUB_REPOSITORY/releases/tag/$env:TAG" `
-            --release-date $env:RELEASE_DATE `
-            --prtitle "Update: $env:WINGET_PACKAGE_ID to $version" --submit --no-open
-          $code = $LASTEXITCODE
-          if ($code -ne 0) {
-            "- WinGet: **FAILED** (wingetcreate exit $code; see the step log)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+            --release-date $env:RELEASE_DATE --out $out
+          if ($LASTEXITCODE -ne 0) { Stop-Step "wingetcreate update exit $LASTEXITCODE; see the step log" }
+          $files = @(Get-ChildItem -LiteralPath $out -Recurse -File -Filter '*.yaml')
+          $dirs = @($files | ForEach-Object DirectoryName | Sort-Object -Unique)
+          if ($files.Count -lt 3 -or $dirs.Count -ne 1 -or (Split-Path -Leaf $dirs[0]) -ne $version) {
+            Stop-Step "wingetcreate update wrote $($files.Count) manifests in [$($dirs -join ', ')], not one $version folder"
           }
-          exit $code
+          foreach ($file in $files) {
+            $text = Get-Content -LiteralPath $file.FullName -Raw
+            $found = [regex]::Match($text, '(?m)^ManifestVersion: (\S+)\s*$').Groups[1].Value
+            if ($found -ne $env:WINGETCREATE_MANIFEST_VERSION) {
+              Stop-Step "$($file.Name) is on ManifestVersion '$found', not $env:WINGETCREATE_MANIFEST_VERSION (WINGETCREATE_MANIFEST_VERSION)"
+            }
+            Write-Host "$($file.Name): ManifestVersion $found"
+          }
+          & $env:WINGETCREATE submit --prtitle "Update: $env:WINGET_PACKAGE_ID to $version" --no-open $dirs[0]
+          if ($LASTEXITCODE -ne 0) { Stop-Step "wingetcreate submit exit $LASTEXITCODE; see the step log" }
 
       - name: Confirm the pull request is open
         # wingetcreate's exit code alone doesn't show the pull request exists, so look it up: tasksmack-boop's open

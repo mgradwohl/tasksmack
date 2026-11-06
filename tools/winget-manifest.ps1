@@ -5,7 +5,7 @@
 .SYNOPSIS
     Write TaskSmack's WinGet manifests for one release from packaging/winget/ and its SHA256SUMS (#3486).
 .DESCRIPTION
-    Fills in the three templates in packaging/winget/ (version, defaultLocale and installer, schema 1.28.0)
+    Fills in the three templates in packaging/winget/ (version, defaultLocale and installer)
     for -Version: ${VERSION}, and the SHA-256 of the x64 and ARM64 NSIS installers, read from the release's
     SHA256SUMS as ${SHA256_X64} (TaskSmack-<version>-win64.exe) and ${SHA256_ARM64}
     (TaskSmack-<version>-windows-arm64.exe), and ${RELEASE_DATE} from -ReleaseDate (the line is left out
@@ -81,7 +81,16 @@ foreach ($key in $installers.Keys) {
     $values[$key] = $sums[$name].ToUpperInvariant()
 }
 
-$templateDir = Join-Path (Split-Path -Parent $PSScriptRoot) 'packaging/winget'
+# The schema version the submission tool writes: release.yml's WINGETCREATE_MANIFEST_VERSION, beside the
+# wingetcreate pin. wingetcreate validates against its own schema and rewrites what it updates to it, so a manifest
+# on any other version would be refused, or rewritten on the first automatic update.
+$repoRoot = Split-Path -Parent $PSScriptRoot
+$workflow = Join-Path $repoRoot '.github/workflows/release.yml'
+$pinned = @([IO.File]::ReadAllLines($workflow) | Where-Object { $_ -match "^\s+WINGETCREATE_MANIFEST_VERSION:\s*'?([0-9]+\.[0-9]+\.[0-9]+)'?\s*$" } |
+        ForEach-Object { $Matches[1] })
+if ($pinned.Count -ne 1) { Fail "$workflow sets WINGETCREATE_MANIFEST_VERSION $($pinned.Count) times, expected once." }
+$manifestVersion = $pinned[0]
+$templateDir = Join-Path $repoRoot 'packaging/winget'
 $templates = @('TaskSmack.TaskSmack.yaml', 'TaskSmack.TaskSmack.installer.yaml', 'TaskSmack.TaskSmack.locale.en-US.yaml')
 $target = Join-Path $OutDir "manifests/t/TaskSmack/TaskSmack/$Version"
 if (Test-Path -LiteralPath $target) { Fail "$target already exists; remove it or pick another -OutDir." }
@@ -101,6 +110,12 @@ foreach ($template in $templates) {
         if (-not $values.ContainsKey($key)) { Fail "$template uses `${$key}, which this script doesn't fill in." }
     }
     foreach ($key in $values.Keys) { $text = $text.Replace("`${$key}", $values[$key]) }
+    $versions = @([regex]::Matches($text, '(?m)^ManifestVersion: (\S+)$') | ForEach-Object { $_.Groups[1].Value })
+    $schemas = @([regex]::Matches($text, '(?m)^# yaml-language-server: \$schema=https://aka\.ms/winget-manifest\.[A-Za-z]+\.(\S+)\.schema\.json$') |
+            ForEach-Object { $_.Groups[1].Value })
+    if ($versions.Count -ne 1 -or $versions[0] -ne $manifestVersion -or $schemas.Count -ne 1 -or $schemas[0] -ne $manifestVersion) {
+        Fail "$template is on ManifestVersion [$($versions -join ', ')] with schema header [$($schemas -join ', ')], but wingetcreate submits $manifestVersion (WINGETCREATE_MANIFEST_VERSION in release.yml); keep them the same."
+    }
     $manifests[$template] = $text
 }
 # Written to a staging folder beside the version's and renamed into place, so a failed write leaves no folder
@@ -116,7 +131,7 @@ try {
 } finally {
     if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue }
 }
-Write-Host "Wrote TaskSmack.TaskSmack $Version's manifests to $target"
+Write-Host "Wrote TaskSmack.TaskSmack $Version's manifests (schema $manifestVersion) to $target"
 Write-Host "  x64:   $($installers.SHA256_X64)  $($values.SHA256_X64)"
 Write-Host "  arm64: $($installers.SHA256_ARM64)  $($values.SHA256_ARM64)"
 Write-Host 'Next:'

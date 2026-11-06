@@ -16,7 +16,7 @@
 # as a plain uninstall, which turns both off. No InstallerSwitches: winget's nullsoft defaults (/S for a silent
 # install, /D= for --location) are the installer's, and an upgrade needs no switch of its own. No Commands: the
 # installer doesn't put TaskSmack on PATH.
-# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.28.0.schema.json
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.12.0.schema.json
 
 PackageIdentifier: TaskSmack.TaskSmack
 PackageVersion: ${VERSION}
@@ -46,4 +46,4 @@ Installers:
     InstallerUrl: https://github.com/mgradwohl/tasksmack/releases/download/v${VERSION}/TaskSmack-${VERSION}-windows-arm64.exe
     InstallerSha256: ${SHA256_ARM64}
 ManifestType: installer
-ManifestVersion: 1.28.0
+ManifestVersion: 1.12.0

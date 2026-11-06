@@ -11,6 +11,11 @@ function Assert-True {
 }
 
 $script = Join-Path $PSScriptRoot 'winget-manifest.ps1'
+# The schema version release.yml's wingetcreate pin submits; every generated manifest must be on it.
+$releaseYml = Join-Path (Split-Path -Parent $PSScriptRoot) '.github/workflows/release.yml'
+$pinnedVersion = @(Get-Content -LiteralPath $releaseYml | Where-Object { $_ -match "^\s+WINGETCREATE_MANIFEST_VERSION:\s*'([0-9.]+)'" } | ForEach-Object { $Matches[1] })
+if ($pinnedVersion.Count -ne 1) { throw "release.yml sets WINGETCREATE_MANIFEST_VERSION $($pinnedVersion.Count) times" }
+$pinnedVersion = $pinnedVersion[0]
 $pwsh = (Get-Process -Id $PID).Path
 $x64 = 'a' * 64
 $arm64 = '0123456789abcdef' * 4
@@ -52,10 +57,10 @@ try {
         Assert-True (-not $text.Contains('${')) "$name keeps a placeholder: $text"
         Assert-True ($text -match '(?m)^PackageIdentifier: TaskSmack\.TaskSmack$') "${name}: no PackageIdentifier"
         Assert-True ($text -match '(?m)^PackageVersion: 1\.2\.3$') "${name}: no PackageVersion 1.2.3"
-        Assert-True ($text -match '(?m)^ManifestVersion: 1\.28\.0$') "${name}: no ManifestVersion 1.28.0"
+        Assert-True ($text -match "(?m)^ManifestVersion: $([regex]::Escape($pinnedVersion))`$") "${name}: no ManifestVersion $pinnedVersion"
         # Only the schema comment is kept; the templates' own notes stay in packaging/winget/.
         $comments = @($text -split "`n" | Where-Object { $_ -match '^\s*#' })
-        Assert-True ($comments.Count -eq 1 -and $comments[0] -like '# yaml-language-server: $schema=https://aka.ms/winget-manifest.*.1.28.0.schema.json') "$name comments: $($comments -join ' | ')"
+        Assert-True ($comments.Count -eq 1 -and $comments[0] -like "# yaml-language-server: `$schema=https://aka.ms/winget-manifest.*.$pinnedVersion.schema.json") "$name comments: $($comments -join ' | ')"
     }
     $installer = [IO.File]::ReadAllText((Join-Path $dir 'TaskSmack.TaskSmack.installer.yaml'))
     foreach ($expected in @(
@@ -113,6 +118,21 @@ try {
     Assert-True (-not (Test-Path -LiteralPath (Join-Path ([IO.Path]::GetTempPath()) 'out/manifests/t/TaskSmack/TaskSmack/1.2.3'))) 'Relative paths: wrote under .NET''s working directory'
     $staged = @(Get-ChildItem -LiteralPath (Join-Path $release 'winget/manifests/t/TaskSmack/TaskSmack') -Force | Where-Object Name -NE '1.2.3')
     Assert-True ($staged.Count -eq 0) "The good run left $(($staged | ForEach-Object Name) -join ', ') beside its folder"
+    # ── Templates on another schema than the one wingetcreate submits are refused ─────────────────
+    # A copy of the script, its templates (moved to 1.28.0) and a release.yml naming 1.12.0, as wingetcreate
+    # v1.12.13.0 writes: the script must refuse rather than write manifests wingetcreate would reject.
+    $fake = Join-Path $root 'fake-repo'
+    foreach ($sub in 'tools', 'packaging/winget', '.github/workflows') { New-Item -ItemType Directory -Path (Join-Path $fake $sub) -Force | Out-Null }
+    Copy-Item -LiteralPath $script -Destination (Join-Path $fake 'tools')
+    foreach ($template in Get-ChildItem -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) 'packaging/winget') -Filter '*.yaml') {
+        $moved = [IO.File]::ReadAllText($template.FullName).Replace("ManifestVersion: $pinnedVersion", 'ManifestVersion: 1.28.0').Replace(".$pinnedVersion.schema.json", '.1.28.0.schema.json')
+        [IO.File]::WriteAllText((Join-Path $fake "packaging/winget/$($template.Name)"), $moved)
+    }
+    [IO.File]::WriteAllText((Join-Path $fake '.github/workflows/release.yml'), "env:`n      WINGETCREATE_MANIFEST_VERSION: '1.12.0'`n")
+    $mismatch = New-Release 'mismatch' @("$x64  TaskSmack-1.2.3-win64.exe", "$arm64  TaskSmack-1.2.3-windows-arm64.exe")
+    $output = & $pwsh -NoProfile -File (Join-Path $fake 'tools/winget-manifest.ps1') -Version 1.2.3 -ReleaseDir $mismatch 2>&1 | Out-String
+    Assert-True ($LASTEXITCODE -ne 0 -and $output -match 'ManifestVersion \[1\.28\.0\].*wingetcreate submits 1\.12\.0') "A 1.28.0 template against wingetcreate's 1.12.0: $LASTEXITCODE $output"
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $mismatch 'winget'))) 'A schema mismatch wrote manifests anyway'
     # ── Refusals: a bad version, a missing installer, a malformed line, no SHA256SUMS ────────────────
     foreach ($case in @(
             @{ Name = 'v-prefix'; Version = 'v1.2.3'; Lines = @("$x64  TaskSmack-1.2.3-win64.exe", "$arm64  TaskSmack-1.2.3-windows-arm64.exe"); Expect = 'X\.Y\.Z' }

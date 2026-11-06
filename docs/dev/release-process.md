@@ -287,9 +287,15 @@ TaskSmack is in the Windows Package Manager as `TaskSmack.TaskSmack` from v0.11.
 three manifests in [microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs), under
 `manifests/t/TaskSmack/TaskSmack/<version>/`, pointing at the release's two NSIS installers
 (`TaskSmack-<version>-win64.exe` and `TaskSmack-<version>-windows-arm64.exe`) with their SHA-256. The templates
-(schema 1.28.0, the newest winget-pkgs takes) are in
-[`packaging/winget/`](https://github.com/mgradwohl/tasksmack/tree/main/packaging/winget), beside the other
+are in [`packaging/winget/`](https://github.com/mgradwohl/tasksmack/tree/main/packaging/winget), beside the other
 packaging, with the reasons for the installer fields:
+- schema **1.12.0**, not the newest, 1.28.0. wingetcreate v1.12.13.0, the newest release and the one that submits
+  every update, reads, validates (with its bundled WinGetUtil 1.12.350) and writes 1.12.0, and `update` rewrites
+  every manifest to it. It would refuse 1.28.0 headers. winget-pkgs recommends 1.28.0 and accepts 1.12.0 ("1.12.0 is
+  also accepted", its `doc/ValidationFailureGuide.md`). `WINGETCREATE_MANIFEST_VERSION` in `release.yml` names the
+  version, beside the pin; `tools/winget-manifest.ps1` refuses templates on any other, and `publish-winget` checks
+  what wingetcreate wrote before submitting. Move all of them to 1.28.0 together with a wingetcreate release that
+  writes it (its main branch already does);
 - per-machine, and `ElevationRequirement: elevationRequired`, since the installer always needs an administrator;
 - `UpgradeBehavior: install`, because the installer upgrades in place and keeps Replace Task Manager and Start at
   sign-in (#3276);
@@ -330,7 +336,8 @@ the machine. Fill in the pull request's checklist:
 - sign the Microsoft CLA when its bot asks (once per account);
 - confirm no other open pull request is for TaskSmack.TaskSmack 0.11.0, that the pull request holds this one
   version's three files, and that it passed `winget validate` and the Sandbox install;
-- confirm it uses schema 1.28.
+- for the schema item (the template asks for 1.28), say it's 1.12.0, which winget-pkgs accepts, because that's what
+  wingetcreate validates and submits.
 
 winget-pkgs' moderators and its validation pipeline review the pull request; answer their comments on it. Once it
 merges, `winget install TaskSmack.TaskSmack` works, and every later Latest release is submitted automatically.
@@ -405,9 +412,11 @@ environment, and in order it:
 4. downloads `wingetcreate.exe` at the pinned release (`WINGETCREATE_VERSION`) and checks its SHA-256
    (`WINGETCREATE_SHA256`).
 5. runs `wingetcreate update TaskSmack.TaskSmack --version X.Y.Z --urls <x64 installer>|x64 <arm64 installer>|arm64
-   --release-notes-url <release> --release-date <date> --prtitle "Update: TaskSmack.TaskSmack to X.Y.Z" --submit`.
-   wingetcreate downloads both installers, hashes them, and copies every other field from the previous version's
-   manifests. It then pushes a branch to `tasksmack-boop/winget-pkgs` and opens the pull request from it.
+   --release-notes-url <release> --release-date <date> --out <folder>`. wingetcreate downloads both installers,
+   hashes them, copies every other field from the previous version's manifests, and writes the new version's
+   manifests to the folder, without submitting. The job checks that every file is on `WINGETCREATE_MANIFEST_VERSION`,
+   then runs `wingetcreate submit --prtitle "Update: TaskSmack.TaskSmack to X.Y.Z" <folder>`, which validates them,
+   pushes a branch to `tasksmack-boop/winget-pkgs` and opens the pull request from it.
 6. looks the pull request up on winget-pkgs (search, up to 6 tries 20 s apart) and links it in the step summary.
    Only an open or merged pull request counts, not an earlier rejected one. If none turns up, the job fails.
 
