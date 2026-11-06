@@ -213,7 +213,8 @@ constexpr std::uintmax_t MAX_FILE_BYTES = std::uintmax_t{64} * 1024U;
 [[nodiscard]] std::string allUsersUnitReason(std::string_view unit)
 {
     // Quoted for a POSIX shell when it needs it: an escaped instance name (backup@home\x2duser.service) keeps its
-    // backslash when the command is pasted (#3512 review).
+    // backslash when the command is pasted, and `--` ends systemctl's options, so a name starting with '-' stays the
+    // unit (#3512 review).
     const bool plain = !unit.empty() && std::ranges::all_of(unit,
                                                             [](char c)
                                                             {
@@ -236,7 +237,7 @@ constexpr std::uintmax_t MAX_FILE_BYTES = std::uintmax_t{64} * 1024U;
         quoted += '\'';
     }
     return std::format("Enabled for every user in /etc/systemd/user: an administrator changes it with "
-                       "sudo systemctl --global disable {} (or enable)",
+                       "sudo systemctl --global disable -- {} (or enable)",
                        quoted);
 }
 
