@@ -783,8 +783,8 @@ TEST(LinuxProcessActionsTest, SetSchedPolicySetsRoundRobinWhereThisUserMay)
         ASSERT_EQ(sched_getparam(static_cast<pid_t>(tid), &param), 0);
         EXPECT_EQ(param.sched_priority, 1) << "thread " << tid;
     }
-    // Back to time sharing: leaving real time for Normal needs no privilege.
-    ASSERT_TRUE(actions.setSchedPolicy(target, SchedPolicy::Normal, 0, Platform::RealtimeThreads::Keep).success);
+    // Back to time sharing: leaving real time for Normal needs no privilege. The dialog warned (Change): every thread.
+    ASSERT_TRUE(actions.setSchedPolicy(target, SchedPolicy::Normal, 0, Platform::RealtimeThreads::Change).success);
     for (const id_t tid : tids)
     {
         EXPECT_EQ(schedulerOf(tid), SCHED_OTHER) << "thread " << tid;

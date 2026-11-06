@@ -152,6 +152,13 @@ class ProcessSchedPolicyDialog
         return m_Choice.has_value() && Platform::isRealtimeSchedPolicy(*m_Choice);
     }
 
+    /// Whether the dialog warns that Apply takes the process off real time: it runs FIFO or RR now and Normal, Batch
+    /// or Idle is chosen. realtimeThreads() is Change then, so every real-time thread is demoted (#3463 review).
+    [[nodiscard]] bool warnsOffRealtime() const noexcept
+    {
+        return Platform::isRealtimeSchedPolicy(m_Current) && m_Choice.has_value() && !Platform::isRealtimeSchedPolicy(*m_Choice);
+    }
+
     /// Whether the confirm step for real time is showing (Apply was pressed with FIFO or RR chosen).
     [[nodiscard]] bool confirming() const noexcept
     {

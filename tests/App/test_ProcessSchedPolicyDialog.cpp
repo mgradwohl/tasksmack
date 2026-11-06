@@ -64,10 +64,15 @@ TEST(ProcessSchedPolicyDialogTest, ARealtimeProcessOpensWithItsPolicyAndPriority
     dialog.open({.pid = 42, .startTimeTicks = 7}, "audio", SchedPolicy::RoundRobin, 20);
     EXPECT_EQ(dialog.setting(), (SchedPolicySetting{.policy = SchedPolicy::RoundRobin, .rtPriority = 20}));
     EXPECT_TRUE(dialog.showsRealtimeWarning());
+    EXPECT_FALSE(dialog.warnsOffRealtime()) << "staying real time";
     dialog.choose(SchedPolicy::Normal);
     EXPECT_EQ(dialog.setting(), (SchedPolicySetting{.policy = SchedPolicy::Normal, .rtPriority = 0})) << "no priority for Normal";
     EXPECT_FALSE(dialog.showsRealtimeWarning());
+    // #3463 review: leaving real time demotes every thread (Change), so the dialog says so before Apply.
+    EXPECT_TRUE(dialog.warnsOffRealtime());
+    EXPECT_EQ(dialog.realtimeThreads(), Platform::RealtimeThreads::Change);
     dialog.choose(SchedPolicy::Fifo);
+    EXPECT_FALSE(dialog.warnsOffRealtime());
     EXPECT_EQ(dialog.rtPriority(), 20) << "the slider keeps its place";
 }
 

@@ -294,6 +294,13 @@ void ProcessSchedPolicyDialog::renderChoices()
     {
         ImGui::TextColored(theme.scheme().textMuted, "%s", OWN_PROCESS_NO_REALTIME);
     }
+    if (warnsOffRealtime())
+    {
+        // RealtimeThreads::Change takes every real-time thread off real time: said before Apply (#3463 review).
+        ImGui::TextColored(theme.scheme().textWarning,
+                           ICON_FA_TRIANGLE_EXCLAMATION "  It runs under %s now. Applying this takes every thread off real time.",
+                           m_Current == Platform::SchedPolicy::Fifo ? "FIFO" : "RR");
+    }
     if (showsRealtimeWarning())
     {
         renderRealtimeControls();
