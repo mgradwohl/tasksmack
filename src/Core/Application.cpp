@@ -814,6 +814,9 @@ void Application::run()
         // without reintroducing per-event rendering stalls: render at most once
         // per drained event batch.
         bool didImmediateResizeRedraw = false;
+        // Whether a renderFrame() this iteration drew: not while drawing is suspended after a GPU
+        // reset (#3484), when it returns without a frame and nothing may count as one.
+        bool drewFrame = false;
         const bool forceInteractionRedraw = FramePacing::isWithinInteractionGrace(getTime(), m_InteractionRedrawUntil);
         const bool isInteracting = FramePacing::computeIsInteracting(needsResizeRedraw, forceInteractionRedraw, resizeEventCount);
         const bool tracingInteraction = m_ResizePerfTraceEnabled && isInteracting;
@@ -949,13 +952,14 @@ void Application::run()
             double renderMs = 0.0;
             double postRenderMs = 0.0;
             double swapMs = 0.0;
-            renderFrame(computeDeltaTime(),
-                        true,
-                        traceResizePerfThisFrame ? &updateMs : nullptr,
-                        traceResizePerfThisFrame ? &renderMs : nullptr,
-                        traceResizePerfThisFrame ? &postRenderMs : nullptr,
-                        traceResizePerfThisFrame ? &swapMs : nullptr);
-            if (traceResizePerfThisFrame)
+            const bool drewResizeFrame = renderFrame(computeDeltaTime(),
+                                                     true,
+                                                     traceResizePerfThisFrame ? &updateMs : nullptr,
+                                                     traceResizePerfThisFrame ? &renderMs : nullptr,
+                                                     traceResizePerfThisFrame ? &postRenderMs : nullptr,
+                                                     traceResizePerfThisFrame ? &swapMs : nullptr);
+            drewFrame = drewFrame || drewResizeFrame;
+            if (traceResizePerfThisFrame && drewResizeFrame)
             {
                 resizeTraceStats.recordFrame(true, updateMs, renderMs, postRenderMs, swapMs);
                 recordDeliveredFrame();
@@ -1053,13 +1057,14 @@ void Application::run()
             double renderMs = 0.0;
             double postRenderMs = 0.0;
             double swapMs = 0.0;
-            renderFrame(computeDeltaTime(),
-                        false,
-                        traceResizePerfThisFrame ? &updateMs : nullptr,
-                        traceResizePerfThisFrame ? &renderMs : nullptr,
-                        traceResizePerfThisFrame ? &postRenderMs : nullptr,
-                        traceResizePerfThisFrame ? &swapMs : nullptr);
-            if (traceResizePerfThisFrame)
+            const bool drewRegularFrame = renderFrame(computeDeltaTime(),
+                                                      false,
+                                                      traceResizePerfThisFrame ? &updateMs : nullptr,
+                                                      traceResizePerfThisFrame ? &renderMs : nullptr,
+                                                      traceResizePerfThisFrame ? &postRenderMs : nullptr,
+                                                      traceResizePerfThisFrame ? &swapMs : nullptr);
+            drewFrame = drewFrame || drewRegularFrame;
+            if (traceResizePerfThisFrame && drewRegularFrame)
             {
                 resizeTraceStats.recordFrame(false, updateMs, renderMs, postRenderMs, swapMs);
                 recordDeliveredFrame();
@@ -1087,8 +1092,9 @@ void Application::run()
         }
 
         // Read after this iteration's render(s): what they drew decides how the next frame is paced.
-        // A skipped render (or a wake that defers it) leaves the previous answer standing.
-        const bool renderedFrame = didImmediateResizeRedraw || renderRegularFrame;
+        // A skipped render (or a wake that defers it), or one that drew nothing because drawing is
+        // suspended after a GPU reset (#3484), leaves the previous answer standing.
+        const bool renderedFrame = drewFrame;
         if (renderedFrame)
         {
             requestedAnimationFps = AnimationRequest::consume();
@@ -1113,14 +1119,14 @@ void Application::run()
     spdlog::info("Exiting main loop");
 }
 
-void Application::renderFrame(
+bool Application::renderFrame(
     float deltaTime, bool resizeTriggeredFrame, double* updateMs, double* renderMs, double* postRenderMs, double* swapMs)
 {
     // After a GPU reset whose context replacement failed (#3484) the layers have no renderer: no
     // frame, so no GL call, while run() keeps pumping events and retries the replacement.
     if (drawingSuspended())
     {
-        return;
+        return false;
     }
 
     // Single flag now governs both the aggregate phase timings below AND the detailed
@@ -1274,6 +1280,7 @@ void Application::renderFrame(
             }
         }
     }
+    return true;
 }
 
 void Application::stop()

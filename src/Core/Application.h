@@ -206,8 +206,9 @@ class Application
     /// per-layer timing/slow-frame diagnostics are enabled by passing non-null timing
     /// pointers (i.e. whenever perf tracing is enabled at all) -- not gated separately by
     /// interaction state, so idle and interaction frames pay identical instrumentation
-    /// overhead and their measured phase timings stay directly comparable.
-    void renderFrame(float deltaTime,
+    /// overhead and their measured phase timings stay directly comparable. False, with nothing
+    /// drawn or timed, while drawing is suspended after a GPU reset (#3484).
+    bool renderFrame(float deltaTime,
                      bool resizeTriggeredFrame,
                      double* updateMs = nullptr,
                      double* renderMs = nullptr,
