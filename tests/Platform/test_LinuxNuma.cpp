@@ -105,6 +105,9 @@ TEST(LinuxNumaTest, MeminfoSkipsMalformedLines)
                                                     "Node 0 MemTotal 5 kB\n"
                                                     "Node 0 MemTotal: -5 kB\n"
                                                     "Node 0 MemTotal: 5 MB\n"
+                                                    "Node 0 MemTotal: 5\n" // no unit: not taken as 5 KiB
+                                                    "Node 0 MemFree: 3\n"
+                                                    "Node 0 MemUsed: 1\n"
                                                     "Node 0 MemTotal: 5 kB extra\n"
                                                     "Node 0 MemTotal: 99999999999999999999 kB\n"
                                                     "Node 0 MemTotal: 18446744073709551615 kB\n" // overflows as bytes
@@ -116,6 +119,21 @@ TEST(LinuxNumaTest, MeminfoSkipsMalformedLines)
     ASSERT_TRUE(memory.has_value());
     EXPECT_EQ(memory.value_or(LinuxNuma::NodeMemory{}).totalBytes, 2048 * KIB);
     EXPECT_EQ(memory.value_or(LinuxNuma::NodeMemory{}).freeBytes, 1024 * KIB);
+}
+
+TEST(LinuxNumaTest, MeminfoValuesWithoutTheKbUnitAreSkipped)
+{
+    // A unitless value first doesn't win as the first occurrence: the valid line after it counts.
+    const auto memory = LinuxNuma::parseNodeMeminfo("Node 0 MemTotal: 5\n"
+                                                    "Node 0 MemTotal: 2048 kB\n"
+                                                    "Node 0 MemFree: 7\n"
+                                                    "Node 0 MemFree: 512 kB\n");
+    EXPECT_EQ(memory.value_or(LinuxNuma::NodeMemory{}).totalBytes, 2048 * KIB);
+    EXPECT_EQ(memory.value_or(LinuxNuma::NodeMemory{}).freeBytes, 512 * KIB);
+
+    // MemUsed without a unit isn't used for the fallback either; with only unitless values, nothing reads.
+    EXPECT_FALSE(LinuxNuma::parseNodeMeminfo("Node 0 MemTotal: 2048 kB\nNode 0 MemUsed: 1024\n").has_value());
+    EXPECT_FALSE(LinuxNuma::parseNodeMeminfo("Node 0 MemTotal: 2048\nNode 0 MemFree: 1024\n").has_value());
 }
 
 TEST(LinuxNumaTest, MeminfoWithoutTotalOrFreeIsUnread)

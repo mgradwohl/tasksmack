@@ -66,7 +66,8 @@ template<typename T> [[nodiscard]] inline std::optional<T> parseWhole(std::strin
 }
 
 /// One meminfo line, "Node <n> <Key>: <value> kB", as its key and value in bytes; nullopt when the line
-/// isn't in that form, or the value doesn't fit in 64 bits as bytes.
+/// isn't in that form (the kB unit included: a value without it can't be taken as KiB), or the value
+/// doesn't fit in 64 bits as bytes. Unitless counts such as HugePages_Total are skipped with it; none is used.
 struct MeminfoLine
 {
     std::string_view key;
@@ -89,8 +90,7 @@ struct MeminfoLine
     key.remove_suffix(1);
     const auto kib = parseWhole<std::uint64_t>(nextField(rest));
     const std::string_view unit = nextField(rest);
-    if (!kib.has_value() || (unit != "kB" && !unit.empty()) || !nextField(rest).empty() ||
-        *kib > std::numeric_limits<std::uint64_t>::max() / KIB)
+    if (!kib.has_value() || unit != "kB" || !nextField(rest).empty() || *kib > std::numeric_limits<std::uint64_t>::max() / KIB)
     {
         return std::nullopt;
     }
