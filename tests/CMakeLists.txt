@@ -770,6 +770,10 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsElevation.cpp
     Platform/test_BrokerPipe.cpp  # the privileged broker's named-pipe transport (#2311)
     Platform/test_BrokerHelper.cpp  # TaskSmackHelper.exe: its parent checks, its session and the exe itself (#2517)
+    # CI real-system tests (#3489): Realtime, Run new task, Compressed memory, Open file location and the helper's
+    # session end for real, on a disposable runner only (tests/Support/CiRealSystem.h's guard skips them elsewhere)
+    Platform/test_CiRealSystemWindows.cpp
+    Platform/test_CiRealSystemHelper.cpp
     Platform/test_HelperLauncher.cpp  # starting the helper with ShellExecuteExW("runas"), through fakes (#2549)
     Platform/test_WindowsTaskManagerReplacement.cpp  # taskmgr.exe's IFEO key, on a scratch HKCU key, and the helper's checks (#3072)
     Platform/test_WindowsUserSessions.cpp  # the Users tab's WTS reader and actions through fakes, and this machine's sessions (#3076)
@@ -1267,6 +1271,40 @@ if(TARGET TaskSmackHelper)
         # Whether the helper is built with CFG and CETCOMPAT, which the tests then check it has (#2557)
         $<$<BOOL:${TASKSMACK_HELPER_HARDENED}>:TASKSMACK_WINDOWS_HELPER_HARDENED>
     )
+
+    # The CI real-system tests' copy of the helper (#3489, test_CiRealSystemHelper.cpp): the same sources,
+    # definitions and libraries as TaskSmackHelper.exe, but a session that ends after 3 s idle instead of five
+    # minutes (TASKSMACK_HELPER_TEST_IDLE_TIMEOUT_MS, HelperMain.cpp), so the idle exit is seen for real. Test
+    # code only: nothing ships it, and it has no version resource or CFG of its own.
+    add_executable(TaskSmackHelperShortIdle WIN32 ${TASKSMACK_WINDOWS_HELPER_SOURCES})
+    target_compile_features(TaskSmackHelperShortIdle PRIVATE cxx_std_23)
+    tasksmack_apply_default_warnings(TaskSmackHelperShortIdle)
+    tasksmack_apply_text_encoding(TaskSmackHelperShortIdle)
+    tasksmack_apply_windows_definitions(TaskSmackHelperShortIdle)
+    target_include_directories(TaskSmackHelperShortIdle PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_BINARY_DIR}/generated)
+    target_compile_definitions(TaskSmackHelperShortIdle PRIVATE ${TASKSMACK_WINDOWS_HELPER_DEFINITIONS}
+        TASKSMACK_HELPER_TEST_IDLE_TIMEOUT_MS=3000)
+    target_link_libraries(TaskSmackHelperShortIdle PRIVATE ${TASKSMACK_WINDOWS_HELPER_LIBRARIES})
+    target_link_options(TaskSmackHelperShortIdle PRIVATE
+        "LINKER:/MANIFESTINPUT:${TASKSMACK_MANIFEST_OUT}"
+        "LINKER:/DEPENDENTLOADFLAG:0x800"
+    )
+    add_dependencies(TaskSmackTests TaskSmackHelperShortIdle)
+    target_compile_definitions(TaskSmackTests PRIVATE
+        TASKSMACK_WINDOWS_HELPER_SHORT_IDLE_PATH="$<TARGET_FILE:TaskSmackHelperShortIdle>"
+    )
+endif()
+
+# TaskSmackCiStub.exe (#3489): the idle program the CI real-system tests start through the shell, show in
+# Explorer and act on. It only sleeps, and every test ends it.
+if(WIN32)
+    add_executable(TaskSmackCiStub WIN32 Support/CiStub.cpp)
+    target_compile_features(TaskSmackCiStub PRIVATE cxx_std_23)
+    tasksmack_apply_default_warnings(TaskSmackCiStub)
+    tasksmack_apply_text_encoding(TaskSmackCiStub)
+    tasksmack_apply_windows_platform(TaskSmackCiStub)
+    add_dependencies(TaskSmackTests TaskSmackCiStub)
+    target_compile_definitions(TaskSmackTests PRIVATE TASKSMACK_CI_STUB_PATH="$<TARGET_FILE:TaskSmackCiStub>")
 endif()
 
 # test_BundledThemes.cpp checks the shipped theme files themselves, from the source tree.

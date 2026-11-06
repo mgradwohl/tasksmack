@@ -10,6 +10,20 @@
 //
 // Exit status 0 when the helper did as asked, which it must not. Otherwise it is 1, and why is in
 // HelperTestParent.log beside it, which the test reads.
+//
+// The CI real-system tests (#3489, test_CiRealSystemHelper.cpp) also run it from an install the helper does
+// serve (a Program Files folder only administrators can change, the parent a standard user), to watch how a
+// served session ends:
+//
+//   TaskSmack.exe session <hold|close|idle> <log> <pid> <start ticks> [<user> <password>]
+//
+// It starts the helper (as <user>, through CreateProcessWithLogonW, when one is given: an over-the-shoulder
+// elevation's other account), writes "launched <helper pid>" to <log>, and connects. Then:
+//   - hold:  asks the helper to end <pid>, writes "served", and waits;
+//   - close: the same, then closes the pipe (PipeBroker::disconnect()), writes "closed", and waits;
+//   - idle:  writes "connected", and waits, asking nothing.
+// "Waits" is two minutes at most: the test ends it sooner, or watches the helper end its session meanwhile.
+// A failure is written to <log> as "failed: <why>", exit status 1.
 
 #include "Platform/BrokerProtocol.h"
 #include "Platform/IPrivilegedBroker.h"
@@ -104,6 +118,135 @@ template<typename T> [[nodiscard]] bool parseNumber(std::wstring_view text, T& v
     return error == std::errc{} && end == narrow.data() + narrow.size() && !narrow.empty();
 }
 
+/// The account the session verb starts the helper as, when it names one, and the helper it started. Globals:
+/// the launcher seam is a plain function pointer.
+// NOLINTBEGIN(cppcoreguidelines-avoid-non-const-global-variables) - read by the plain-function launcher seam
+std::wstring g_LogonUser;
+std::wstring g_LogonPassword;
+std::wstring g_SessionLog;
+// NOLINTEND(cppcoreguidelines-avoid-non-const-global-variables)
+
+/// Appends @p line to the session verb's log.
+void note(std::string_view line)
+{
+    std::ofstream(g_SessionLog, std::ios::app) << line << '\n';
+}
+
+/// createProcessInstead(), as another account (g_LogonUser): CreateProcessWithLogonW, which needs no
+/// privilege, makes the helper this process's child as "runas" does, and runs it as that account, as an
+/// over-the-shoulder elevation does (#2550). No profile is loaded: the helper reads nothing of its own.
+BOOL WINAPI createProcessAsAnotherAccount(SHELLEXECUTEINFOW* info)
+{
+    if (info == nullptr || info->cbSize != sizeof(SHELLEXECUTEINFOW) || info->lpVerb == nullptr ||
+        std::wstring_view(info->lpVerb) != L"runas" || (info->fMask & SEE_MASK_NOCLOSEPROCESS) == 0 || info->lpFile == nullptr ||
+        info->lpParameters == nullptr)
+    {
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return FALSE;
+    }
+    std::wstring commandLine = std::format(L"\"{}\" {}", info->lpFile, info->lpParameters);
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION process{};
+    if (CreateProcessWithLogonW(g_LogonUser.c_str(),
+                                L".",
+                                g_LogonPassword.c_str(),
+                                0,
+                                info->lpFile,
+                                commandLine.data(),
+                                0,
+                                nullptr,
+                                nullptr,
+                                &startup,
+                                &process) == FALSE)
+    {
+        return FALSE;
+    }
+    CloseHandle(process.hThread);
+    info->hProcess = process.hProcess;
+    return TRUE;
+}
+
+/// The launcher seam for the session verb: createProcessInstead() or createProcessAsAnotherAccount(), then
+/// "launched <pid>" in the log, so the test can hold the helper's process from the start.
+BOOL WINAPI launchAndNote(SHELLEXECUTEINFOW* info)
+{
+    const BOOL started = g_LogonUser.empty() ? createProcessInstead(info) : createProcessAsAnotherAccount(info);
+    if (started == FALSE)
+    {
+        const DWORD error = GetLastError();
+        note(std::format("start failed: {}", error));
+        SetLastError(error);
+        return FALSE;
+    }
+    note(std::format("launched {}", GetProcessId(info->hProcess)));
+    return TRUE;
+}
+
+/// Writes "failed: <why>" to the session verb's log, and returns 1.
+int sessionFailed(const std::string& why)
+{
+    note("failed: " + why);
+    return 1;
+}
+
+/// How long the session verb waits once it has done its part: the test ends it sooner.
+constexpr DWORD SESSION_WAIT_MS = 120'000;
+
+int session(std::span<wchar_t*> arguments)
+{
+    // session <mode> <log> <pid> <ticks> [<user> <password>]
+    if (arguments.size() != 6 && arguments.size() != 8)
+    {
+        return fail("usage: session <hold|close|idle> <log> <pid> <start ticks> [<user> <password>]");
+    }
+    const std::wstring_view mode(arguments[2]);
+    g_SessionLog = arguments[3];
+    if (arguments.size() == 8)
+    {
+        g_LogonUser = arguments[6];
+        g_LogonPassword = arguments[7];
+    }
+    if (mode != L"hold" && mode != L"close" && mode != L"idle")
+    {
+        return sessionFailed("unknown mode");
+    }
+    ProcessTarget target;
+    if (!parseNumber(std::wstring_view(arguments[4]), target.pid) || !parseNumber(std::wstring_view(arguments[5]), target.startTimeTicks))
+    {
+        return sessionFailed("the target isn't <pid> <start ticks>");
+    }
+    PipeBroker broker(HelperLauncher::makeLauncher({.shellExecuteEx = &launchAndNote}));
+    if (const auto connected = broker.connectWithin({}, STARTUP); !connected.has_value())
+    {
+        return sessionFailed("connect: " + connected.error());
+    }
+    if (mode == L"idle")
+    {
+        note("connected");
+    }
+    else
+    {
+        const ProcessActionResult result =
+            actionResultOf(broker.call(Broker::SignalRequest{.target = target, .signal = Broker::Signal::Kill}, {}));
+        if (!result.success)
+        {
+            return sessionFailed("kill: " + result.errorMessage);
+        }
+        if (mode == L"close")
+        {
+            broker.disconnect();
+            note("closed");
+        }
+        else
+        {
+            note("served");
+        }
+    }
+    Sleep(SESSION_WAIT_MS);
+    return 0;
+}
+
 int killThroughTheHelper(std::wstring_view pidText, std::wstring_view ticksText)
 {
     ProcessTarget target;
@@ -136,6 +279,10 @@ int wmain(int argc, wchar_t** argv)
         if (arguments.size() == 4 && std::wstring_view(arguments[1]) == L"kill")
         {
             return killThroughTheHelper(arguments[2], arguments[3]);
+        }
+        if (arguments.size() >= 2 && std::wstring_view(arguments[1]) == L"session")
+        {
+            return session(arguments);
         }
         return fail("usage: kill <pid> <start ticks>");
     }
