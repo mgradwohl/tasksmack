@@ -388,8 +388,9 @@ renderConnectionsView(const Domain::ConnectionsPublication* publication, bool ha
 {
     if (!hasConnections)
     {
-        UI::Widgets::renderEmptyState(ICON_FA_NETWORK_WIRED "  Connections aren't available",
-                                      "TaskSmack lists the machine's TCP and UDP sockets on Linux. Support for Windows is planned.");
+        UI::Widgets::renderEmptyState(
+            ICON_FA_NETWORK_WIRED "  Connections aren't available",
+            "TaskSmack lists the machine's TCP and UDP sockets on Linux. Windows support is coming: issue #3356.");
         return std::nullopt;
     }
     if (publication == nullptr || publication->version == 0)
