@@ -1360,11 +1360,17 @@ void Workload::systemCountersAt(double uptime, SystemCounters& out) const
 
     // NUMA nodes (#3088): consecutive runs of cores, and equal shares of the memory (the last node takes
     // the remainder). The free memory leans towards one node, then another, by phase-shifted waves that
-    // sum to the node count, so the nodes add up to the machine's free memory and never read alike.
+    // sum to the node count, so the nodes add up to the machine's free memory and never read alike. The
+    // waves' shared amplitude is bounded by the smallest node's room (nodeShare), so no node's free memory
+    // exceeds its total and none has to be clamped: clamping one would lose free memory from the sum (#3498).
     const std::size_t nodeCount = m_Spec.numaNodes;
     out.numaNodes.resize(nodeCount);
     const std::uint64_t nodeShare = m_TotalMemoryBytes / nodeCount;
     const auto free = static_cast<double>(out.memory.freeBytes);
+    constexpr double MAX_LEAN = 0.25;
+    const double evenFree = free / static_cast<double>(nodeCount);
+    const double amplitude =
+        (nodeCount > 1 && evenFree > 0.0) ? std::clamp((static_cast<double>(nodeShare) / evenFree) - 1.0, 0.0, MAX_LEAN) : 0.0;
     for (std::size_t node = 0; node < nodeCount; ++node)
     {
         NumaNode& numa = out.numaNodes[node];
@@ -1373,8 +1379,9 @@ void Workload::systemCountersAt(double uptime, SystemCounters& out) const
         numa.cpus.setRange(node * m_Cores.size() / nodeCount, (((node + 1) * m_Cores.size()) / nodeCount) - 1);
         numa.memTotalBytes = (node + 1 == nodeCount) ? m_TotalMemoryBytes - (nodeShare * (nodeCount - 1)) : nodeShare;
         const double phase = 2.0 * std::numbers::pi * static_cast<double>(node) / static_cast<double>(nodeCount);
-        const double lean = (nodeCount > 1) ? 0.25 * std::sin((uptime * 2.0 * std::numbers::pi / 311.0) + phase) : 0.0;
-        numa.memFreeBytes = std::min(numa.memTotalBytes, toCounter(free * (1.0 + lean) / static_cast<double>(nodeCount)));
+        const double lean = amplitude * std::sin((uptime * 2.0 * std::numbers::pi / 311.0) + phase);
+        // min() only absorbs rounding: the amplitude already keeps the wave within the node.
+        numa.memFreeBytes = std::min(numa.memTotalBytes, toCounter(evenFree * (1.0 + lean)));
     }
 
     out.uptimeSeconds = static_cast<std::uint64_t>(uptime);

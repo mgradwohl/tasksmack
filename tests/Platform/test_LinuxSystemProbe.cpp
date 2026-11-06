@@ -742,6 +742,55 @@ TEST(LinuxSystemProbeTest, NumaNodesComeFromTheNodeSysfsRoot)
     EXPECT_TRUE(without.read().numaNodes.empty());
 }
 
+// #3498: concurrent first reads each see every node; none takes the layout before its first listing is done.
+TEST(LinuxSystemProbeTest, ConcurrentFirstNumaReadsSeeEveryNode)
+{
+    ScopedTempDir root("ts_test_sys_numa_race");
+    const std::filesystem::path proc = root.path / "proc";
+    std::filesystem::create_directories(proc);
+    std::ofstream(proc / "meminfo") << "MemTotal: 2000 kB\nMemFree: 1000 kB\n";
+    const std::filesystem::path nodes = root.path / "sys" / "devices" / "system" / "node";
+    for (int id = 0; id < 4; ++id)
+    {
+        const std::filesystem::path dir = nodes / ("node" + std::to_string(id));
+        std::filesystem::create_directories(dir);
+        std::ofstream(dir / "cpulist") << id << "\n";
+        std::ofstream(dir / "meminfo") << "Node " << id << " MemTotal: 500 kB\nNode " << id << " MemFree: 250 kB\n";
+    }
+
+    constexpr int ROUNDS = 20;
+    constexpr int THREADS = 8;
+    for (int round = 0; round < ROUNDS; ++round)
+    {
+        LinuxSystemProbe probe(proc, proc / "no-sys-class-net", root.path / "no-cpu-sysfs", root.path);
+        std::atomic<bool> go{false};
+        std::vector<std::size_t> seen(THREADS, 0);
+        std::vector<std::thread> threads;
+        threads.reserve(THREADS);
+        for (int t = 0; t < THREADS; ++t)
+        {
+            threads.emplace_back(
+                [&probe, &go, &seen, t]
+                {
+                    while (!go.load(std::memory_order_acquire))
+                    {
+                        std::this_thread::yield();
+                    }
+                    seen[static_cast<std::size_t>(t)] = probe.read().numaNodes.size();
+                });
+        }
+        go.store(true, std::memory_order_release);
+        for (std::thread& thread : threads)
+        {
+            thread.join();
+        }
+        for (const std::size_t count : seen)
+        {
+            EXPECT_EQ(count, 4U);
+        }
+    }
+}
+
 TEST(LinuxSystemProbeTest, CpuDetailsComeFromTheInjectedProcAndCpuSysfsRoots)
 {
     // The CPU Details block's facts are read from the roots the probe was given (#809, #1351)

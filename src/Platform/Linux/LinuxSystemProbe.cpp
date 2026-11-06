@@ -549,17 +549,24 @@ void LinuxSystemProbe::readZram(SystemCounters& counters)
 
 void LinuxSystemProbe::readNuma(SystemCounters& counters)
 {
-    // As readZram(): the lock only guards the cached layout and its time, never the I/O.
+    // The lock only guards the cached layout and its state, never the I/O. Until a first listing is
+    // published, every caller lists the nodes itself rather than take an unfinished (empty) layout. Once
+    // one is, an expired layout is rescanned by one caller while the others keep using the old one.
     std::vector<NumaNode> layout;
     bool rescan = false;
+    bool ownsRescan = false; // this call set m_NumaRescanning, so it clears it
+    const auto now = std::chrono::steady_clock::now();
     {
         const std::scoped_lock lock(m_NumaMutex);
-        const auto now = std::chrono::steady_clock::now();
-        rescan = !m_NumaScanned || now - m_NumaScannedAt >= std::chrono::seconds(Domain::Sampling::NUMA_RESCAN_INTERVAL_SECONDS);
-        if (rescan)
+        if (!m_NumaScanned)
         {
-            m_NumaScanned = true;
-            m_NumaScannedAt = now;
+            rescan = true;
+        }
+        else if (now - m_NumaScannedAt >= std::chrono::seconds(Domain::Sampling::NUMA_RESCAN_INTERVAL_SECONDS) && !m_NumaRescanning)
+        {
+            rescan = true;
+            ownsRescan = true;
+            m_NumaRescanning = true;
         }
         else
         {
@@ -568,13 +575,36 @@ void LinuxSystemProbe::readNuma(SystemCounters& counters)
     }
     if (rescan)
     {
-        for (const int id : LinuxNuma::listNodeIds(m_NumaNodeRoot))
+        try
         {
-            // A cpulist that can't be read or parsed leaves the node's CPUs empty until the next listing.
-            layout.push_back(NumaNode{.id = id, .cpus = LinuxNuma::readNodeCpus(m_NumaNodeRoot, id).value_or(CpuAffinity{})});
+            for (const int id : LinuxNuma::listNodeIds(m_NumaNodeRoot))
+            {
+                // A cpulist that can't be read or parsed leaves the node's CPUs empty until the next listing.
+                layout.push_back(NumaNode{.id = id, .cpus = LinuxNuma::readNodeCpus(m_NumaNodeRoot, id).value_or(CpuAffinity{})});
+            }
         }
+        catch (...)
+        {
+            if (ownsRescan)
+            {
+                const std::scoped_lock lock(m_NumaMutex);
+                m_NumaRescanning = false; // let a later call retry
+            }
+            throw;
+        }
+        // The layout, its time and the ready flag are published together. A listing that started before
+        // the published one (overlapping first calls) doesn't replace it.
         const std::scoped_lock lock(m_NumaMutex);
-        m_NumaLayout = layout;
+        if (!m_NumaScanned || now >= m_NumaScannedAt)
+        {
+            m_NumaLayout = layout;
+            m_NumaScannedAt = now;
+            m_NumaScanned = true;
+        }
+        if (ownsRescan)
+        {
+            m_NumaRescanning = false;
+        }
     }
     counters.numaNodes.reserve(layout.size());
     for (NumaNode& node : layout)

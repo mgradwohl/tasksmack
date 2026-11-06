@@ -146,11 +146,14 @@ class LinuxSystemProbe : public ISystemProbe
     // The NUMA nodes' layout (#3088): each node's id and CPUs, memory left at 0, as last listed, and when.
     // m_HasNuma (the node root exists; a kernel without CONFIG_NUMA has none) is decided at construction
     // and not changed after. The rest is guarded by m_NumaMutex, since read() may run on several threads.
+    // m_NumaScanned: a completed layout has been published (set with it and m_NumaScannedAt).
+    // m_NumaRescanning: one call is re-listing an expired layout; the others keep using the old one.
     bool m_HasNuma = false;
     std::mutex m_NumaMutex;
     std::vector<NumaNode> m_NumaLayout;
     std::chrono::steady_clock::time_point m_NumaScannedAt;
     bool m_NumaScanned = false;
+    bool m_NumaRescanning = false;
 
     /// Publish this sample's CPU details and core count (#809), in one critical section, so a
     /// concurrent read() cannot pair this sample's per-core counters with details or a count from

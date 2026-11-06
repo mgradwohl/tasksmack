@@ -197,6 +197,33 @@ TEST(SyntheticWorkloadTest, NumaNodesSplitTheCoresAndMemory)
     EXPECT_EQ(makeWorkload(tooMany).spec().numaNodes, Platform::Synthetic::MIN_NUMA_NODES);
 }
 
+// #3498: with almost nothing running, free memory is nearly all of it, and no node may be clamped at its
+// total (that loses free memory from the sum): processes=1,numa=2 at 222 s was off by over 1 MiB.
+TEST(SyntheticWorkloadTest, NumaFreeMemoryAddsUpWithFewProcesses)
+{
+    for (const std::size_t nodeCount : {std::size_t{2}, std::size_t{3}, std::size_t{8}})
+    {
+        WorkloadSpec idle = spec(1);
+        idle.numaNodes = nodeCount;
+        const Workload workload = makeWorkload(idle);
+        for (int second = 0; second <= 620; second += 2)
+        {
+            const double uptime = static_cast<double>(second);
+            SCOPED_TRACE(std::to_string(nodeCount) + " nodes at " + std::to_string(second) + " s");
+            Platform::SystemCounters system;
+            workload.systemCountersAt(uptime, system);
+            ASSERT_EQ(system.numaNodes.size(), nodeCount);
+            std::uint64_t freeSum = 0;
+            for (const Platform::NumaNode& node : system.numaNodes)
+            {
+                EXPECT_LE(node.memFreeBytes, node.memTotalBytes);
+                freeSum += node.memFreeBytes;
+            }
+            EXPECT_NEAR(static_cast<double>(freeSum), static_cast<double>(system.memory.freeBytes), static_cast<double>(nodeCount));
+        }
+    }
+}
+
 TEST(SyntheticWorkloadTest, ProcessTreeIsConsistent)
 {
     const auto processes = processesAt(makeWorkload(spec(3000)), NOW);
