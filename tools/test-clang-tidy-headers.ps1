@@ -8,7 +8,8 @@
 #   - tools/clang-tidy.sh --build-dir through Git Bash, and with a named preset, in that copy with its
 #     own CMakePresets.json (Windows Python's CRLF output and Windows paths, #3500 review), also with
 #     a stand-in Python whose CR survives $(...), as under MSYS2 and Cygwin (#3517);
-#   - a malformed database fails both scripts and leaves no temporary directory in TEMP (#3517).
+#   - a malformed database fails both scripts and leaves no temporary directory in TEMP (#3517);
+#   - clang-tidy.ps1's Python lookup isn't misled by an earlier command's exit code (#3523).
 # Registered in CTest on Windows with PowerShell 7; can also run directly with pwsh -File. Skips (passes)
 # when clang-tidy isn't installed.
 #Requires -Version 7
@@ -26,6 +27,27 @@ $fixtureRel = 'tests\tools\fixtures\clang-tidy-headers'
 # The finding's location: "HeaderFinding.h:<line>:<column>: warning: ... [check]"
 $expected = 'HeaderFinding\.h:\d+:\d+: (warning|error): .*\[readability-math-missing-parentheses'
 $cppFinding = 'HeaderFinding\.cpp:\d+:\d+: (warning|error)'
+
+# ── clang-tidy.ps1's Find-WorkingPython reads each Python check's own exit code (#3523) ─────────
+# A stale non-zero $LASTEXITCODE from an earlier command must not make a working Python look broken.
+# The function is loaded from the script's AST, since running the script needs a build tree.
+$scriptAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'clang-tidy.ps1'), [ref]$null, [ref]$null)
+$findPythonAst = $scriptAst.Find({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Find-WorkingPython'
+    }, $true)
+Assert-True ($null -ne $findPythonAst) 'clang-tidy.ps1 has no Find-WorkingPython function'
+. ([scriptblock]::Create($findPythonAst.Extent.Text))
+$ProjectRoot = $repoRoot
+$global:LASTEXITCODE = 0
+$freshPython = Find-WorkingPython
+if ($freshPython) {
+    $global:LASTEXITCODE = 7
+    $stalePython = Find-WorkingPython
+    Assert-True ($stalePython -eq $freshPython) "Find-WorkingPython after a stale exit code 7 chose '$stalePython', not '$freshPython'"
+} else {
+    Write-Host 'No working python; the stale exit code case was not tested'
+}
 
 $clangTidy = Find-LlvmTool -Name 'clang-tidy'
 if (-not $clangTidy) {
@@ -128,8 +150,10 @@ try {
     # Git Bash's $(...) drops a CRLF's CR, so the copy's venv gets a stand-in for native Windows Python
     # that ends its sys.platform and binaryDir lines with "\r \r\n", whose first CR survives, and that
     # passes paths through unconverted, as Cygwin does. Read as "win32\r ", the platform makes the
-    # lookup hand the POSIX root to a native Python, which can't open it. The version probe is passed
-    # through clean, so find_python picks the stand-in either way.
+    # lookup hand the POSIX root to a native Python, which can't open it. The version probe answers a
+    # fixed supported 3.14, so find_python picks the stand-in whatever the backing Python's version
+    # (an older one would be rejected, and the fallback would run the real Python without any CR).
+    # The stand-in logs its other calls, and the case asserts it ran the platform probe.
     $realPython = foreach ($name in 'python', 'python3') {
         $command = Get-Command $name -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
         if (-not $command) { continue }
@@ -147,12 +171,16 @@ try {
     }
     if ($realPython) {
         $shim = Join-Path $copy '.venv\bin\python'
+        $shimLog = Join-Path $scratch 'stand-in-python.log'
         New-Item -ItemType Directory -Path (Split-Path -Parent $shim) -Force | Out-Null
+        New-Item -ItemType Directory -Path $scratch -Force | Out-Null
         $shimText = @(
             '#!/usr/bin/env bash'
             "real='$($realPython -replace '\\', '/')'"
+            "log='$($shimLog -replace '\\', '/')'"
             'export MSYS_NO_PATHCONV=1'
-            'case "$*" in *sys.version_info*) exec "$real" "$@" ;; esac'
+            'case "$*" in *sys.version_info*) echo 3.14; exit 0 ;; esac'
+            'printf ''%s\n'' "$*" >> "$log"'
             'out="$("$real" "$@")" || exit'
             'printf ''%s\r \r\n'' "$out"'
         ) -join "`n"
@@ -160,6 +188,8 @@ try {
         $output = & $gitBash $copySh tidy-fixture -j 1 "$($fixtureRel -replace '\\', '/')/HeaderFinding.cpp" 2>&1 | Out-String
         $code = $LASTEXITCODE
         Remove-Item -LiteralPath (Join-Path $copy '.venv') -Recurse -Force
+        $shimCalls = if (Test-Path -LiteralPath $shimLog) { Get-Content -LiteralPath $shimLog -Raw } else { '' }
+        Assert-True ($shimCalls -match 'sys\.platform') "clang-tidy.sh tidy-fixture did not choose the CRLF stand-in Python (its calls: '$shimCalls'):`n$output"
         Assert-True ($output -notmatch 'Unknown argument|no such directory') "clang-tidy.sh tidy-fixture misread a CRLF platform or binaryDir:`n$output"
         Assert-ReportsHeaderFinding 'clang-tidy.sh tidy-fixture (CRLF Python output)' $output $code
     } else {
