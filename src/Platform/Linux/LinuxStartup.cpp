@@ -494,6 +494,30 @@ void LinuxStartupProbe::addSystemdUnits(std::vector<StartupEntry>& entries) cons
         bool enabled = true; ///< Linked into a session target's .wants; false: installable there, not linked (#3425)
     };
     std::map<std::string, Found> units;
+    // A unit's effective settings: its file, then its drop-ins (<name>.d/*.conf on the unit path, one per file name,
+    // the earliest directory's winning, applied in name order), as systemd reads [Install] (#3497 review).
+    const auto effective = [this](const std::string& name, std::string text)
+    {
+        std::map<std::string, std::filesystem::path> dropIns;
+        for (const std::filesystem::path& dir : m_Systemd.unitPath)
+        {
+            std::error_code ec;
+            for (std::filesystem::directory_iterator it(dir / (name + ".d"), ec); !ec && it != std::filesystem::directory_iterator{};
+                 it.increment(ec))
+            {
+                if (it->path().extension() == ".conf")
+                {
+                    dropIns.try_emplace(it->path().filename().string(), it->path());
+                }
+            }
+        }
+        for (const auto& [file, path] : dropIns)
+        {
+            text += '\n';
+            text += readFile(path).value_or(std::string{});
+        }
+        return SystemdUnitFile::parse(text);
+    };
     const auto scan = [&units](const std::filesystem::path& dir, Owner owner)
     {
         for (const char* wants : {"default.target.wants", "graphical-session.target.wants", "timers.target.wants"})
@@ -555,7 +579,7 @@ void LinuxStartupProbe::addSystemdUnits(std::vector<StartupEntry>& entries) cons
                 continue; // an alias (Alias=) of another unit, listed under its own name
             }
             const std::optional<std::string> text = readFile(it->path());
-            if (text.has_value() && SystemdUnitFile::installsIntoSession(SystemdUnitFile::parse(*text)))
+            if (text.has_value() && SystemdUnitFile::installsIntoSession(effective(name, *text)))
             {
                 units.try_emplace(name, Found{.link = it->path(), .owner = Owner::User, .enabled = false});
             }
@@ -564,7 +588,7 @@ void LinuxStartupProbe::addSystemdUnits(std::vector<StartupEntry>& entries) cons
     for (const auto& [name, found] : units)
     {
         const bool timer = name.ends_with(".timer");
-        const SystemdUnitFile::Unit unit = SystemdUnitFile::parse(readFile(found.link).value_or(std::string{}));
+        const SystemdUnitFile::Unit unit = effective(name, readFile(found.link).value_or(std::string{}));
         // A timer starts its service: Unit=, else the timer's own name with .service.
         std::string command = unit.execStart;
         if (timer)
@@ -606,6 +630,13 @@ void LinuxStartupProbe::addSystemdUnits(std::vector<StartupEntry>& entries) cons
         {
             entry.notSwitchableReason = "Enabled by the package that installed it: disabling here can't remove that link";
         }
+        else if (!SystemdUnitFile::installsIntoSession(unit))
+        {
+            // Linked by hand, or its [Install] no longer names a session target: once its link is removed it couldn't be
+            // listed to switch back on.
+            entry.notSwitchableReason =
+                "Its [Install] section names no session target, so once off it couldn't be switched back on here: use systemctl --user";
+        }
         else if (const std::size_t at = name.find('@'); at != std::string::npos && name[at + 1] != '.')
         {
             // An instance (worker@alice.service) of a template: once its link is removed only the template file is
@@ -624,6 +655,13 @@ void LinuxStartupProbe::addSystemdUnits(std::vector<StartupEntry>& entries) cons
                                 name.substr(name.rfind('.')));
             }
         }
+#ifndef TASKSMACK_HAS_SDBUS
+        if (entry.notSwitchableReason.empty())
+        {
+            // Switched through the user manager over D-Bus: a build without sd-bus can't (#3497 review).
+            entry.notSwitchableReason = "This build has no systemd support (sd-bus): use systemctl --user";
+        }
+#endif
         entry.target = entry.executablePath.empty() ? StartupTargetState::Unresolved : targetState(entry.executablePath);
         entries.push_back(std::move(entry));
     }

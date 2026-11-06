@@ -380,20 +380,27 @@ TEST_F(LinuxStartupTest, ListsTheEnabledSystemdUserUnitsReadOnly)
     const std::filesystem::path system = m_Root.path / "etc/systemd/user";
     const std::filesystem::path lib = m_Root.path / "usr/lib/systemd/user";
     writeText(lib / "syncd.service", "[Unit]\nDescription=Sync daemon\n[Service]\nExecStart=/bin/sh -c true\n");
-    writeText(lib / "backup.timer", "[Unit]\nDescription=Nightly backup\n[Timer]\nOnCalendar=daily\n");
+    writeText(lib / "backup.timer", "[Unit]\nDescription=Nightly backup\n[Timer]\nOnCalendar=daily\n[Install]\nWantedBy=timers.target\n");
+    // #3497 review: linked by hand with no session [Install]: once off it couldn't be listed again, so read-only.
+    writeText(lib / "handmade.service", "[Service]\nExecStart=/bin/true\n");
     writeText(lib / "backup.service", "[Service]\nExecStart=/nonexistent/backup --all\n");
     std::filesystem::create_directories(user / "default.target.wants");
     std::filesystem::create_directories(user / "timers.target.wants");
     std::filesystem::create_directories(system / "default.target.wants");
     std::filesystem::create_symlink(lib / "syncd.service", user / "default.target.wants/syncd.service");
     std::filesystem::create_symlink(lib / "backup.timer", user / "timers.target.wants/backup.timer");
+    std::filesystem::create_symlink(lib / "handmade.service", user / "default.target.wants/handmade.service");
     std::filesystem::create_symlink(lib / "syncd.service", system / "default.target.wants/syncd.service");
     writeText(system / "default.target.wants/agent.service", "[Service]\nExecStart=/bin/sh\n");
 
     LinuxStartupProbe probe(
         m_Dirs, "GNOME", SEARCH_PATH, SystemdUserDirs{.user = user, .system = {system}, .unitPath = {user, system, lib}});
     const std::vector<StartupEntry> entries = probe.enumerate();
-    ASSERT_EQ(entries.size(), 3U);
+    ASSERT_EQ(entries.size(), 4U);
+    const StartupEntry* handmade = find(entries, "handmade.service");
+    ASSERT_NE(handmade, nullptr);
+    EXPECT_TRUE(handmade->enabled);
+    EXPECT_TRUE(handmade->notSwitchableReason.contains("no session target")) << handmade->notSwitchableReason;
 
     const StartupEntry* syncd = find(entries, "syncd.service");
     ASSERT_NE(syncd, nullptr);
@@ -451,6 +458,11 @@ TEST_F(LinuxStartupTest, AnInstallableUnitThatIsntEnabledIsListedDisabled)
     writeText(lib / "worker@alice.service", "[Service]\nExecStart=/bin/true alice\n[Install]\nWantedBy=default.target\n");
     writeText(lib / "shadowed.service", "[Service]\nExecStart=/bin/true\n[Install]\nWantedBy=default.target\n");
     writeText(user / "shadowed.service", "[Service]\nExecStart=/bin/true\n"); // the user's override: no [Install]
+    // #3497 review: [Install] from drop-ins: one adds a session target, one resets it.
+    writeText(lib / "dropped-in.service", "[Service]\nExecStart=/bin/true\n");
+    writeText(lib / "dropped-in.service.d/install.conf", "[Install]\nWantedBy=default.target\n");
+    writeText(lib / "reset.service", "[Service]\nExecStart=/bin/true\n[Install]\nWantedBy=default.target\n");
+    writeText(user / "reset.service.d/no-install.conf", "[Install]\nWantedBy=\n");
     // #3497 review: an alias of a unit isn't listed under its own name; a package's own .wants link is the package's;
     // a template's instance linked by the user, with no instance file, is read-only.
     std::filesystem::create_symlink(lib / "notes-sync.service", lib / "notes-alias.service");
@@ -462,8 +474,10 @@ TEST_F(LinuxStartupTest, AnInstallableUnitThatIsntEnabledIsListedDisabled)
 
     LinuxStartupProbe probe(m_Dirs, "GNOME", SEARCH_PATH, SystemdUserDirs{.user = user, .system = {}, .unitPath = {user, lib}});
     const std::vector<StartupEntry> entries = probe.enumerate();
-    ASSERT_EQ(entries.size(), 5U);
+    ASSERT_EQ(entries.size(), 6U);
     EXPECT_EQ(find(entries, "notes-alias.service"), nullptr) << "an alias";
+    ASSERT_NE(find(entries, "dropped-in.service"), nullptr) << "its session target comes from a drop-in";
+    EXPECT_EQ(find(entries, "reset.service"), nullptr) << "a drop-in resets its WantedBy=";
     const StartupEntry* pkg = find(entries, "pkg.service");
     ASSERT_NE(pkg, nullptr);
     EXPECT_TRUE(pkg->enabled) << "the package's link starts it";
