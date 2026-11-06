@@ -1579,6 +1579,44 @@ denominator; a `SkipWithError` (`"error_occurred": true`) on either side still c
 `BM_GPUProbe_*`/`BM_GPUModel_*` benchmarks skip this way when the real probe finds no GPU, as on the
 hosted runner, instead of timing an empty probe's early return (#1420).
 
+**A flag is re-measured across launches** (#3476; the maintainer's decision on #3448, 2026-11-05). The 10
+repetitions of one launch share that launch's luck on a shared hosted runner: where the heap and the code
+landed, and who else was on the host. So a ns-scale benchmark can read 40-80% slow for a whole launch of an
+unchanged binary, and before this each re-run of one commit flagged a different set
+(`BM_HistoryBuffer_CopyTo`, `_Push*`, `_MemoryFootprint/iterations:10000`,
+`BM_ProcessRowMeter_RowHistoryAdvance/500/1`). When the check flags regressions, the job:
+
+1. writes the flagged names (`check-benchmark-regression.py --regressions-out`);
+2. runs only those benchmarks again in 4 more separate launches of the binary, 5 in all with the full run,
+   each `tools/bench.sh benchmark -- --benchmark_filter=<anchored, escaped names>` with the same 10
+   repetitions (`tools/bench-across-launches.py plan` prints the filter);
+3. takes each flagged benchmark's median across the 5 launches' medians, into a copy of the full run
+   (`bench-across-launches.py combine`, which prints every launch's value against the baseline);
+4. runs the same check on that copy, at the same thresholds and overrides, with the same coverage floor.
+
+It isn't best-of-N and no threshold changes: a benchmark slow in 3 of the 5 launches still fails, and a real
+regression, slow in every launch, reads as one in the per-launch list. A flagged benchmark that has no
+usable median in some launch fails the job. A coverage loss alone has nothing to re-measure and fails as
+before. The re-runs are bounded: `plan` estimates them from the full run's own timings (iterations x time,
+which sums to the suite's wall time within a few percent, plus a second per benchmark per launch), and
+refuses, leaving the flags as regressions, past 10 minutes or past what the job's 45 minutes leave after
+a 5-minute margin. A typical flag of a few ns-scale benchmarks (5-8 s each) costs under 3 minutes. The
+`benchmark-results` artifact holds the launches (`perf-data/launches/`), the combined run
+(`perf-data/benchmark-across-launches.json`) and its report. To do the same by hand after a local run:
+
+```bash
+python3 tools/check-benchmark-regression.py --baseline perf-data/linux-ci-baseline.json --current FIRST.json \
+    --threshold 40 --threshold-overrides perf-data/linux-ci-thresholds.json --regressions-out regressions.json
+filter=$(python3 tools/bench-across-launches.py plan --current FIRST.json --regressions regressions.json)
+for i in 1 2 3 4; do ./tools/bench.sh benchmark -- --benchmark_filter="$filter"; done   # note each RESULT=
+python3 tools/bench-across-launches.py combine --first FIRST.json --regressions regressions.json \
+    --baseline perf-data/linux-ci-baseline.json --output combined.json LAUNCH-2.json LAUNCH-3.json ...
+python3 tools/check-benchmark-regression.py --baseline perf-data/linux-ci-baseline.json --current combined.json \
+    --threshold 40 --threshold-overrides perf-data/linux-ci-thresholds.json
+```
+
+The script is plain Python, so `bench.ps1` runs can use it the same way.
+
 This is a *separate* baseline from `perf-data/linux-baseline.json` above, deliberately: that one was
 recorded on a developer machine, and comparing it with hosted `ubuntu-24.04` runners flagged the machine
 difference as a regression on every run (#683). Hosted runners also land on several CPU classes, and no

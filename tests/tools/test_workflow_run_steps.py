@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Runs the shell of workflow steps whose bugs lived only inside a `run:` block (#2478).
 
+- heavy-checks.yml benchmark-regression "Check for regression" and "Re-measure flagged benchmarks across
+  launches": a flagged benchmark runs in 4 more launches (a stub bench.sh), and the median across the 5 is
+  checked at the same thresholds, so one slow launch passes and a real regression stays red (#3476).
 - renovate.yml "Select dry-run mode": a scheduled or `disabled` run must not set RENOVATE_DRY_RUN,
   which Renovate reads as a dry run whatever its value (#2527).
 - sanitizers.yml "Add sanitizer summary to workflow summary": the report's file name is printed in
@@ -42,11 +45,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import zipfile
 from pathlib import Path
@@ -96,6 +101,187 @@ class HeavyChecksBenchmarkBuildTests(unittest.TestCase):
         # bench.sh runs build/<preset>/bin/TaskSmackBenchmarks: the preset must be the one built.
         run = find_step(self.WORKFLOW, "Run benchmarks", job=self.JOB)
         self.assertIn("./tools/bench.sh benchmark ", run.run)
+
+
+BENCH_LAUNCH_WRITER = r'''
+import json, re, sys
+from pathlib import Path
+
+# argv: filter, launch number, output path. Writes the launch's timings from launches.json, the benchmarks
+# the filter selects only, shaped as bench.sh writes them: 3 repetitions, then the aggregates.
+pattern, number, out = sys.argv[1], sys.argv[2], Path(sys.argv[3])
+stub = Path(__file__).parent
+timings = json.loads((stub / "launches.json").read_text(encoding="utf-8"))[number]
+with open(stub / "filters.log", "a", encoding="utf-8") as log:
+    log.write(pattern + "\n")
+rows = []
+for name, time in timings.items():
+    if re.search(pattern, name) is None:
+        continue
+    rows += [{"name": name, "run_name": name, "run_type": "iteration", "repetition_index": i, "iterations": 10,
+              "real_time": time, "cpu_time": time, "time_unit": "ns"} for i in range(3)]
+    rows += [{"name": f"{name}_{a}", "run_name": name, "run_type": "aggregate", "aggregate_name": a,
+              "real_time": time, "cpu_time": time, "time_unit": "ns"} for a in ("mean", "median")]
+out.parent.mkdir(parents=True, exist_ok=True)
+out.write_text(json.dumps({"context": {}, "benchmarks": rows}), encoding="utf-8")
+'''
+
+BENCH_SH_STUB = r"""#!/usr/bin/env bash
+# tools/bench.sh's stand-in: one "launch" per call, numbered from 2, the filter passed through.
+set -euo pipefail
+[[ "$1" == "benchmark" && "$2" == "--" ]] || { echo "bench.sh stub: unexpected arguments $*" >&2; exit 2; }
+filter=""
+for arg in "$@"; do
+  case "$arg" in --benchmark_filter=*) filter="${arg#--benchmark_filter=}" ;; esac
+done
+number=$(( $(cat "$STUB_DIR/count") + 1 ))
+echo "$number" > "$STUB_DIR/count"
+out="$TASKSMACK_BENCH_OUT_DIR/benchmark-$number.json"
+"$STUB_PYTHON" "$STUB_DIR/write_launch.py" "$filter" "$number" "$out"
+echo "RESULT=$out"
+"""
+
+
+class HeavyChecksAcrossLaunchesTests(unittest.TestCase):
+    """#3476: a benchmark the gate flags is re-measured in 4 more separate launches, and the median across the 5
+    launches is checked at the same thresholds. A slow launch passes; a real regression stays red."""
+
+    WORKFLOW = WORKFLOWS / "heavy-checks.yml"
+    JOB = "benchmark-regression"
+    CHECK = "Check for regression"
+    REMEASURE = "Re-measure flagged benchmarks across launches"
+    BASELINE = {"BM_HistoryBuffer_MemoryFootprint/iterations:10000": 4.3, "BM_Big": 1000.0, "BM_Steady": 50.0}
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.work = self.tmp / "work"
+        self.stub = self.tmp / "stub"
+        self.runner_temp = self.tmp / "runner"
+        for directory in (self.work / "tools", self.work / "perf-data", self.stub, self.runner_temp):
+            directory.mkdir(parents=True)
+        for script in ("check-benchmark-regression.py", "bench-across-launches.py"):
+            shutil.copy(REPO / "tools" / script, self.work / "tools" / script)
+        bench_sh = self.work / "tools" / "bench.sh"
+        bench_sh.write_text(BENCH_SH_STUB, encoding="utf-8", newline="\n")
+        bench_sh.chmod(bench_sh.stat().st_mode | stat.S_IXUSR)
+        (self.stub / "write_launch.py").write_text(BENCH_LAUNCH_WRITER, encoding="utf-8")
+        (self.stub / "count").write_text("1\n", encoding="utf-8")
+        shutil.copy(REPO / "perf-data" / "linux-ci-thresholds.json", self.work / "perf-data" / "linux-ci-thresholds.json")
+        self.write_run("linux-ci-baseline.json", self.BASELINE)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def write_run(self, name: str, timings: dict[str, float]) -> None:
+        rows = [{"name": f"{bm}_median", "run_name": bm, "aggregate_name": "median", "real_time": ns, "cpu_time": ns,
+                 "time_unit": "ns"} for bm, ns in timings.items()]
+        (self.work / "perf-data" / name).write_text(json.dumps({"benchmarks": rows}), encoding="utf-8")
+
+    def run_step(self, name: str, extra_env: dict[str, str] | None = None) -> tuple[subprocess.CompletedProcess, dict]:
+        step = find_step(self.WORKFLOW, name, job=self.JOB)
+        output = self.tmp / f"output-{name}"
+        output.write_text("", encoding="utf-8")
+        script = (
+            # GitHub's bash runs a step with -e. python3 is this interpreter (Git Bash's may be the Store alias).
+            "set -e\n"
+            f'python3() {{ "{posix(Path(sys.executable))}" "$@"; }}\n'
+            f'cd "{posix(self.work)}"\n' + step.run
+        )
+        env = {key: value.strip("'") for key, value in step.env.items()}
+        result = run_bash(script, self.tmp, {
+            **env, "RUNNER_TEMP": posix(self.runner_temp), "GITHUB_OUTPUT": posix(output),
+            "JOB_START_EPOCH": str(int(time.time())), "STUB_DIR": posix(self.stub), "STUB_PYTHON": posix(Path(sys.executable)),
+            "PYTHONUTF8": "1", **(extra_env or {}),
+        })
+        outputs = dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines() if "=" in line)
+        return result, outputs
+
+    def gate(self, first: dict[str, float], launches: list[dict[str, float]], extra_env: dict[str, str] | None = None):
+        """Runs the check on `first`, then, when it flagged, the re-measurement with `launches` as launches 2-5."""
+        self.write_run("benchmark-current.json", first)
+        (self.stub / "launches.json").write_text(
+            json.dumps({str(i + 2): timings for i, timings in enumerate(launches)}), encoding="utf-8")
+        check, check_out = self.run_step(self.CHECK)
+        self.assertEqual(check.returncode, 0, check.stdout + check.stderr)
+        remeasure, remeasure_out = self.run_step(self.REMEASURE, extra_env)
+        return check_out["exit_code"], remeasure, remeasure_out
+
+    def fails(self, check_exit: str, remeasure_exit: str | None) -> bool:
+        """The "Fail on regression" step's `if:`, as the workflow writes it."""
+        condition = find_step(self.WORKFLOW, "Fail on regression", job=self.JOB).condition
+        self.assertEqual(
+            condition, "steps.regression-check.outputs.exit_code != '0' && steps.across-launches.outputs.exit_code != '0'")
+        return check_exit != "0" and (remeasure_exit or "") != "0"
+
+    def test_the_remeasure_runs_only_on_a_flag_and_rechecks_at_the_same_thresholds(self):
+        names = step_names(self.WORKFLOW, self.JOB)
+        self.assertEqual(names.index(self.REMEASURE), names.index(self.CHECK) + 1)
+        self.assertEqual(find_step(self.WORKFLOW, self.REMEASURE, job=self.JOB).condition,
+                         "steps.regression-check.outputs.exit_code == '1'")
+        check = find_step(self.WORKFLOW, self.CHECK, job=self.JOB).run
+        remeasure = find_step(self.WORKFLOW, self.REMEASURE, job=self.JOB).run
+        for argument in ("--baseline perf-data/linux-ci-baseline.json", "--threshold 40",
+                         "--threshold-overrides perf-data/linux-ci-thresholds.json"):
+            self.assertIn(argument, check)
+            self.assertEqual(remeasure.count(argument), 1 if argument.startswith("--threshold") else 2, argument)
+        self.assertNotIn("--min-coverage", remeasure, "the default coverage floor, as the first check")
+        env = find_step(self.WORKFLOW, self.REMEASURE, job=self.JOB).env
+        self.assertEqual(env["LAUNCHES"], "'4'", "5 launches in all, as decided on #3448")
+        job = self.WORKFLOW.read_text(encoding="utf-8").split(f"\n  {self.JOB}:\n", 1)[1]
+        timeout = re.search(r"^    timeout-minutes: (\d+)$", job, re.MULTILINE)
+        self.assertEqual(int(env["JOB_TIMEOUT_SECONDS"].strip("'")), int(timeout.group(1)) * 60)
+
+    def test_a_clean_run_never_remeasures(self):
+        check_exit, remeasure, outputs = self.gate(dict(self.BASELINE), [])
+        self.assertEqual(check_exit, "0")
+        self.assertFalse(self.fails(check_exit, None))
+
+    def test_one_slow_launch_passes(self):
+        footprint = "BM_HistoryBuffer_MemoryFootprint/iterations:10000"
+        # #3502: +52% (4.3 -> 6.6 ns) in one launch of a Windows-only change.
+        first = {**self.BASELINE, footprint: 6.6}
+        launches = [{footprint: t} for t in (4.4, 6.5, 4.2, 4.5)]
+        check_exit, remeasure, outputs = self.gate(first, launches)
+        self.assertEqual(check_exit, "1")
+        self.assertEqual(remeasure.returncode, 0, remeasure.stdout + remeasure.stderr)
+        self.assertEqual(outputs["exit_code"], "0", remeasure.stdout)
+        self.assertFalse(self.fails(check_exit, outputs["exit_code"]))
+        self.assertEqual((self.stub / "filters.log").read_text(encoding="utf-8").splitlines(),
+                         ["^(BM_HistoryBuffer_MemoryFootprint/iterations:10000)$"] * 4, "4 launches of the flagged one")
+        report = (self.work / "benchmark-across-launches-output.txt").read_text(encoding="utf-8")
+        self.assertIn("launch 1: 6.60ns (+53.5%)", report)
+        self.assertIn("median: 4.50ns (+4.7%)", report)
+        self.assertIn("Coverage: 100.0% (3 of 3", report)
+
+    def test_a_real_regression_stays_red(self):
+        first = {**self.BASELINE, "BM_Big": 1600.0}
+        launches = [{"BM_Big": t} for t in (1580.0, 1620.0, 1010.0, 1590.0)]
+        check_exit, remeasure, outputs = self.gate(first, launches)
+        self.assertEqual(remeasure.returncode, 0, remeasure.stdout + remeasure.stderr)
+        self.assertEqual(outputs["exit_code"], "1")
+        self.assertTrue(self.fails(check_exit, outputs["exit_code"]))
+        report = (self.work / "benchmark-across-launches-output.txt").read_text(encoding="utf-8")
+        self.assertIn("median: 1590.00ns (+59.0%)", report)
+        self.assertIn("FAILED: 1 benchmark(s) regressed", report)
+
+    def test_no_time_left_leaves_the_flag_standing(self):
+        first = {**self.BASELINE, "BM_Big": 1600.0}
+        check_exit, remeasure, outputs = self.gate(first, [], {"JOB_START_EPOCH": str(int(time.time()) - 2700)})
+        self.assertEqual(remeasure.returncode, 0, remeasure.stdout + remeasure.stderr)
+        self.assertEqual(outputs["exit_code"], "1")
+        self.assertTrue(self.fails(check_exit, outputs["exit_code"]))
+        self.assertFalse((self.stub / "filters.log").exists(), "no launch started")
+        self.assertIn("flags stand as regressions", (self.work / "benchmark-across-launches-output.txt").read_text(encoding="utf-8"))
+
+    def test_a_failed_launch_fails_the_step(self):
+        first = {**self.BASELINE, "BM_Big": 1600.0}
+        # Launch 3 doesn't measure it: the combine refuses, and the step fails.
+        launches = [{"BM_Big": 1000.0}, {}, {"BM_Big": 1000.0}, {"BM_Big": 1000.0}]
+        check_exit, remeasure, outputs = self.gate(first, launches)
+        self.assertNotEqual(remeasure.returncode, 0, remeasure.stdout)
+        self.assertNotIn("exit_code", outputs)
+        self.assertIn("no usable median in launch 3", remeasure.stdout + remeasure.stderr)
 
 
 class RenovateDryRunTests(unittest.TestCase):

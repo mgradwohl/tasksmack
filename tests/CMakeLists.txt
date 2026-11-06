@@ -284,6 +284,11 @@ add_test(NAME BenchmarkRegressionGateScript
 add_test(NAME MergeBenchmarkBaselinesScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_merge_benchmark_baselines.py)
 
+# tools/bench-across-launches.py re-measures the benchmarks the CI gate flagged in separate launches, and the gate
+# checks the median across them (#3476).
+add_test(NAME BenchAcrossLaunchesScript
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_bench_across_launches.py)
+
 # tools/tidy-changed-files.py picks the PR clang-tidy jobs' translation units (#1406, #1626). The tests
 # build throwaway git repositories (about 10 s idle). On a loaded Windows machine each git process is
 # far slower and the run neared 180 s (#1797); 600 s keeps it clear of that and of the CI --timeout.
@@ -355,7 +360,8 @@ add_test(NAME StartupWiringScript
 
 # The run: scripts of renovate.yml's dry-run choice (#2527), sanitizers.yml's job summary (#2532),
 # main-health.yml's per-job check (#2313), release.yml's Windows digest comparison (#2952),
-# codeql.yml's src/ filter (#2992) and changelog.yml's release notes (#3144), read from the workflows and run with bash (pwsh for release.yml's)
+# codeql.yml's src/ filter (#2992), changelog.yml's release notes (#3144) and heavy-checks.yml's re-measurement of
+# flagged benchmarks across launches (#3476), read from the workflows and run with bash (pwsh for release.yml's)
 # against stubs and fixtures (#2478). The Main Health and CodeQL cases also need jq on bash's PATH, and
 # the release.yml cases pwsh on PATH; each is skipped without.
 if(TASKSMACK_BASH)
