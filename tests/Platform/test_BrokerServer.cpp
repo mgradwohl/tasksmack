@@ -37,6 +37,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <format>
 #include <fstream>
@@ -1131,6 +1132,113 @@ TEST(TasksmackHelperRootTest, KeepsOnlyItsCapabilitiesAndServesEveryRequestOnAno
     EXPECT_EQ(child.terminatingSignal(), SIGKILL);
     pair.closeClient();
     EXPECT_EQ(helper.exitCode(), 0);
+}
+
+/// What `systemctl show -p <property> --value <unit>` prints, trimmed (#3491).
+[[nodiscard]] std::string unitProperty(const std::string& unit, const char* property)
+{
+    const std::string command = std::format("systemctl show -p {} --value {} 2>/dev/null", property, unit);
+    std::string out;
+    // NOLINTNEXTLINE(cert-env33-c) - a fixed command with a generated unit name, on a disposable CI runner
+    if (FILE* pipe = ::popen(command.c_str(), "r"); pipe != nullptr)
+    {
+        std::array<char, 256> buffer{};
+        while (std::fgets(buffer.data(), static_cast<int>(buffer.size()), pipe) != nullptr)
+        {
+            out += buffer.data();
+        }
+        ::pclose(pipe);
+    }
+    while (!out.empty() && (out.back() == '\n' || out.back() == ' '))
+    {
+        out.pop_back();
+    }
+    return out;
+}
+
+/// Polls a unit's property until it reads @p want, for up to 10 s.
+[[nodiscard]] bool waitForUnit(const std::string& unit, const char* property, std::string_view want)
+{
+    for (int tries = 0; tries < 100; ++tries)
+    {
+        if (unitProperty(unit, property) == want)
+        {
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    return false;
+}
+
+// #3491 item 1 (#3002, #3303): the root helper, under the enforcing seccomp filter, stops, starts and restarts a
+// real unit and switches its start type, over the system bus it held before its sandbox. The unit is a runtime
+// one in /run/systemd/system, removed afterwards. Only on a disposable CI runner: TASKSMACK_CI_REAL_SYSTEM=1, as
+// root, with systemd as PID 1; anywhere else it skips.
+TEST(TasksmackHelperRootTest, ActsOnARealUnitUnderItsSandbox)
+{
+    const char* ci = std::getenv("TASKSMACK_CI_REAL_SYSTEM"); // NOLINT(concurrency-mt-unsafe) - read once, before threads
+    if (ci == nullptr || std::string_view(ci) != "1" || ::geteuid() != 0 || !std::filesystem::is_directory("/run/systemd/system"))
+    {
+        GTEST_SKIP() << "Real-system test: CI only (TASKSMACK_CI_REAL_SYSTEM=1, as root, under systemd)";
+    }
+    const std::string unit = std::format("tasksmack-ci-{}.service", ::getpid());
+    const std::filesystem::path file = std::filesystem::path("/run/systemd/system") / unit;
+    std::ofstream(file) << "[Unit]\nDescription=TaskSmack CI real-unit test (#3491)\n"
+                           "[Service]\nExecStart=/bin/sleep infinity\n"
+                           "[Install]\nWantedBy=multi-user.target\n";
+    ASSERT_EQ(std::system("systemctl daemon-reload"), 0); // NOLINT(cert-env33-c,concurrency-mt-unsafe) - CI only
+    struct Cleanup
+    {
+        std::string unit;
+        std::filesystem::path file;
+        ~Cleanup()
+        {
+            // NOLINTNEXTLINE(cert-env33-c,concurrency-mt-unsafe,bugprone-unused-return-value) - best effort, CI only
+            static_cast<void>(std::system(std::format("systemctl disable --now {} >/dev/null 2>&1", unit).c_str()));
+            std::error_code ignored;
+            std::filesystem::remove(file, ignored);
+            // NOLINTNEXTLINE(cert-env33-c,concurrency-mt-unsafe,bugprone-unused-return-value) - best effort, CI only
+            static_cast<void>(std::system("systemctl daemon-reload"));
+        }
+    } const cleanup{.unit = unit, .file = file};
+
+    SocketPair pair;
+    ASSERT_TRUE(pair.valid());
+    HelperProcess helper(pair.server());
+    ASSERT_TRUE(helper.started());
+    pair.closeServer();
+    std::uint32_t id = 1;
+    ASSERT_TRUE(std::holds_alternative<Broker::HelloReply>(roundTrip(pair.client(), id++, Broker::Hello{}).message));
+    const auto act = [&](ServiceAction action, ServiceStartType startType = ServiceStartType::Unknown)
+    {
+        const auto reply =
+            roundTrip(pair.client(), id++, Broker::ServiceActionRequest{.action = action, .unit = unit, .startType = startType});
+        EXPECT_TRUE(std::holds_alternative<Broker::ServiceActionReply>(reply.message));
+        return std::holds_alternative<Broker::ServiceActionReply>(reply.message)
+                 ? std::get<Broker::ServiceActionReply>(reply.message).result
+                 : ServiceActionResult::failed("no ServiceActionReply");
+    };
+
+    const ServiceActionResult started = act(ServiceAction::Start);
+    ASSERT_TRUE(started.ok) << started.message;
+    ASSERT_TRUE(waitForUnit(unit, "ActiveState", "active"));
+    const std::string firstPid = unitProperty(unit, "MainPID");
+
+    const ServiceActionResult restarted = act(ServiceAction::Restart);
+    ASSERT_TRUE(restarted.ok) << restarted.message;
+    ASSERT_TRUE(waitForUnit(unit, "ActiveState", "active"));
+    EXPECT_NE(unitProperty(unit, "MainPID"), firstPid) << "a new main process";
+
+    const ServiceActionResult automatic = act(ServiceAction::SetStartType, ServiceStartType::Automatic);
+    ASSERT_TRUE(automatic.ok) << automatic.message;
+    EXPECT_TRUE(waitForUnit(unit, "UnitFileState", "enabled"));
+    const ServiceActionResult manual = act(ServiceAction::SetStartType, ServiceStartType::Manual);
+    ASSERT_TRUE(manual.ok) << manual.message;
+    EXPECT_TRUE(waitForUnit(unit, "UnitFileState", "disabled"));
+
+    const ServiceActionResult stopped = act(ServiceAction::Stop);
+    ASSERT_TRUE(stopped.ok) << stopped.message;
+    EXPECT_TRUE(waitForUnit(unit, "ActiveState", "inactive"));
 }
 
 TEST(PkexecBrokerTest, ConnectsToTheHelperAndTerminatesAProcessThroughIt)
