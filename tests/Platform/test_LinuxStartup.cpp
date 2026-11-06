@@ -439,7 +439,17 @@ TEST_F(LinuxStartupTest, ListsTheEnabledSystemdUserUnitsReadOnly)
     EXPECT_EQ(agent->name, "agent");
     EXPECT_EQ(agent->location, StartupLocation::SystemdSystemUnit);
     EXPECT_EQ(agent->scope, StartupScope::Machine);
-    EXPECT_FALSE(agent->notSwitchableReason.empty()) << "enabled for every user: an administrator's";
+    // #3425: read-only here (no D-Bus call for it, and the helper writes no files); the row says how to switch it.
+    EXPECT_TRUE(agent->notSwitchableReason.contains("sudo systemctl --global disable -- agent.service")) << agent->notSwitchableReason;
+    // An escaped instance name is shell-quoted, so the pasted command names the same unit (#3512 review).
+    StartupEntry escaped;
+    escaped.registrationName = R"(backup@home\x2duser.service)";
+    escaped.location = StartupLocation::SystemdSystemUnit;
+    const StartupActionResult quoted = LinuxStartupActions(m_Dirs).setEnabled(escaped, false);
+    EXPECT_TRUE(quoted.message.contains(R"(disable -- 'backup@home\x2duser.service')")) << quoted.message;
+    escaped.registrationName = "--backup.service"; // a leading '-': after the `--`, not an option
+    const StartupActionResult dashed = LinuxStartupActions(m_Dirs).setEnabled(escaped, false);
+    EXPECT_TRUE(dashed.message.contains("disable -- --backup.service")) << dashed.message;
 
     // #3425: the actions switch the user's own unit through the user manager, and refuse one enabled for every user.
     std::vector<std::string> switched;
@@ -450,7 +460,9 @@ TEST_F(LinuxStartupTest, ListsTheEnabledSystemdUserUnitsReadOnly)
                                     return StartupActionResult::succeeded();
                                 });
     EXPECT_EQ(actions.setEnabled(*backup, false).ok, HAS_SDBUS) << "without sd-bus it's refused before the user manager";
-    EXPECT_FALSE(actions.setEnabled(*agent, false).ok);
+    const StartupActionResult refused = actions.setEnabled(*agent, false);
+    EXPECT_FALSE(refused.ok);
+    EXPECT_TRUE(refused.message.contains("systemctl --global")) << refused.message;
     EXPECT_FALSE(actions.setEnabled(*syncd, false).ok) << "linked for every user too: not the user's to switch off";
     EXPECT_EQ(switched, HAS_SDBUS ? std::vector<std::string>{"disable backup.timer"} : std::vector<std::string>{});
 }
@@ -497,6 +509,11 @@ TEST_F(LinuxStartupTest, AnInstallableUnitThatIsntEnabledIsListedDisabled)
     EXPECT_TRUE(pkg->enabled) << "the package's link starts it";
     EXPECT_EQ(pkg->location, StartupLocation::SystemdSystemUnit);
     EXPECT_FALSE(pkg->notSwitchableReason.empty());
+    // Refused with its own reason, not the systemctl --global command, which wouldn't remove a package's link.
+    const StartupActionResult pkgRefused = LinuxStartupActions(m_Dirs).setEnabled(*pkg, false);
+    EXPECT_FALSE(pkgRefused.ok);
+    EXPECT_EQ(pkgRefused.message, pkg->notSwitchableReason);
+    EXPECT_FALSE(pkgRefused.message.contains("systemctl --global")) << pkgRefused.message;
     const StartupEntry* bob = find(entries, "worker@bob.service");
     ASSERT_NE(bob, nullptr);
     EXPECT_TRUE(bob->enabled);
