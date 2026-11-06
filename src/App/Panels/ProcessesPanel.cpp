@@ -4062,10 +4062,12 @@ void ProcessesPanel::renderSchedPolicyDialog()
         { return actions->setSchedPolicy(target, policy, realtime); },
         [name = m_SchedPolicyDialog.name(), pid = target.pid, policy = *policy](const Platform::ProcessActionResult& result)
         { return schedPolicyResultMessage(name, pid, policy, result); },
-        Platform::AuthorizedAction{.kind = Platform::AuthorizedAction::Kind::SetSchedPolicy,
-                                   .target = target,
-                                   .schedPolicy = *policy,
-                                   .realtimeThreads = realtime});
+        Platform::AuthorizedAction{
+            .kind = Platform::AuthorizedAction::Kind::SetSchedPolicy,
+            .target = target,
+            .schedPolicy = *policy,
+            .realtimeThreads = realtime,
+        });
 }
 
 template<typename Work>
