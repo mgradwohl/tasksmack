@@ -103,7 +103,7 @@ inline ParsedInstance parseInstanceName(const std::string& instanceName)
 
     // Extract PID (ends at next underscore)
     auto pidStart = pidPos + pidPrefix.length();
-    auto pidEnd = instanceName.find('_', pidStart);
+    const auto pidEnd = instanceName.find('_', pidStart);
     if (pidEnd == std::string::npos)
     {
         return result;
@@ -127,7 +127,7 @@ inline ParsedInstance parseInstanceName(const std::string& instanceName)
         return result;
     }
 
-    auto luidStart = luidPos + luidPrefix.length();
+    const auto luidStart = luidPos + luidPrefix.length();
     // LUID ends at _phys_, _engtype_, or end of string
     auto luidEnd = instanceName.find("_phys_", luidStart);
     if (luidEnd == std::string::npos)
@@ -266,7 +266,7 @@ inline std::string normalizeEngineType(const std::string& rawType)
         {"Graphics_1", "3D"},
     };
 
-    auto it = ENGINE_MAP.find(rawType);
+    const auto it = ENGINE_MAP.find(rawType);
     if (it != ENGINE_MAP.end())
     {
         return it->second;
@@ -472,7 +472,7 @@ struct PDHGPUProbe::Impl
 
     struct WideStringHash
     {
-        using is_transparent = void;
+        using is_transparent = void; // NOLINT(readability-identifier-naming) - the standard library's name
         [[nodiscard]] std::size_t operator()(std::wstring_view value) const noexcept
         {
             return std::hash<std::wstring_view>{}(value);
@@ -577,7 +577,7 @@ struct PDHGPUProbe::Impl
         return true;
     }
 
-    void addWildcardCounter(const wchar_t* counterPath, PDH_HCOUNTER& counter)
+    void addWildcardCounter(const wchar_t* counterPath, PDH_HCOUNTER& counter) const
     {
         const PDH_STATUS status = pdhAddEnglishCounter(query, counterPath, 0, &counter);
         if (status != ERROR_SUCCESS)
@@ -719,7 +719,7 @@ struct PDHGPUProbe::Impl
 
     /// Records how many items the read just made of @p posCache's counter listed, when it succeeded
     /// (lastArrayReadOk: an empty array included); a failed read leaves the count from the last one.
-    void noteListed(PositionalCache& posCache, DWORD itemCount) noexcept
+    void noteListed(PositionalCache& posCache, DWORD itemCount) const noexcept
     {
         if (lastArrayReadOk)
         {

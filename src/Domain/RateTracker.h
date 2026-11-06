@@ -77,7 +77,8 @@ template<typename Key, typename Value, typename Hash = std::hash<Key>, typename 
 
     /// @p minimumSeconds: an interval this short or shorter gives no rate (a seed reading taken just after the
     /// first one would divide a few counts by almost nothing). The reading still becomes the identity's last.
-    explicit RateTracker(double minimumSeconds = 0.0) noexcept : m_MinimumSeconds(minimumSeconds > 0.0 ? minimumSeconds : 0.0)
+    /// Not noexcept: MSVC's std::unordered_map allocates in its default constructor.
+    explicit RateTracker(double minimumSeconds = 0.0) : m_MinimumSeconds(minimumSeconds > 0.0 ? minimumSeconds : 0.0)
     {}
 
     /// Records @p value, read at @p acquiredAt, as @p key's last reading, and marks @p key seen this round. Returns

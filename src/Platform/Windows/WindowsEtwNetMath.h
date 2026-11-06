@@ -200,10 +200,12 @@ inline void appendUdpSamples(std::vector<SocketTrafficSample>& sockets, std::spa
     sockets.reserve(sockets.size() + udp.size());
     for (const UdpProcessTraffic& process : udp)
     {
-        sockets.push_back(SocketTrafficSample{.key = udpSocketKey(process.pid),
-                                              .pid = static_cast<std::int32_t>(process.pid),
-                                              .bytesReceived = process.bytesReceived,
-                                              .bytesSent = process.bytesSent});
+        sockets.push_back(SocketTrafficSample{
+            .key = udpSocketKey(process.pid),
+            .pid = static_cast<std::int32_t>(process.pid),
+            .bytesReceived = process.bytesReceived,
+            .bytesSent = process.bytesSent,
+        });
     }
 }
 

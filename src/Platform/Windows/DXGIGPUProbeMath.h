@@ -18,7 +18,7 @@ namespace Platform
 {
 
 /// Convert a DXGI vendor ID to a vendor name string.
-[[nodiscard]] inline std::string vendorIdToName(uint32_t vendorId)
+[[nodiscard]] inline std::string_view vendorIdToName(uint32_t vendorId)
 {
     switch (vendorId)
     {
