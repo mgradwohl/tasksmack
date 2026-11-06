@@ -15,6 +15,7 @@
 //   cores=N       logical CPUs (default 16)
 //   disks=N       disks (default 4)
 //   interfaces=N  network interfaces (default 4)
+//   numa=N        NUMA nodes, splitting the cores and memory between them (default 1, at most cores; #3088)
 //   seed=N        generator seed (default 1413): the same seed gives the same machine
 //   history=full|none|S  history to preload: the longest window (default), none, or S seconds
 //   refresh=MS    refresh interval to start at, instead of the configured one
@@ -75,7 +76,7 @@ struct ParseResult
 /// value turns it on, with the defaults for every key it doesn't set (or sets badly, with a warning).
 [[nodiscard]] ParseResult parseScenario(const char* value);
 
-/// "processes=2000 cores=16 disks=4 interfaces=4 seed=1413 history=1800s refresh=configured"
+/// "processes=2000 cores=16 disks=4 interfaces=4 numa=1 seed=1413 history=1800s refresh=configured"
 [[nodiscard]] std::string describe(const ScenarioConfig& config);
 
 /// An active scenario: its settings and the one synthetic machine every probe made from it shares.

@@ -10,7 +10,9 @@
 //  - ParseWarmCache: enumerate() over one captured snapshot, replayed by a fake query, with the detail
 //    caches' clock held still: the record parse, the thread-state tally, the cache lookups and the
 //    copies of the cached details, with no process handle opened. SnapshotReplay is the replay's own
-//    cost (a copy of the captured bytes), to subtract from it.
+//    cost (a copy of the replayed bytes), to subtract from it. The replay has a fixed shape, not the
+//    machine's (#3448): the capture's first REPLAY_PROCESSES processes, each with REPLAY_THREADS threads
+//    (see replayedSnapshot()), so the two time the same work from one run to the next.
 //  - EnumerateAtInterval/<ms>: the real enumerate() with the detail caches' clock moved on <ms> per
 //    call, as samples that far apart would see it: 0 keeps every cache warm (snapshot + parse), 1000
 //    is the default refresh interval (the light details read every sample, the heavy ones every
@@ -56,7 +58,9 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <new>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -103,7 +107,7 @@ struct SnapshotShape
     std::size_t threads = 0;
 };
 
-[[nodiscard]] SnapshotShape snapshotShape(const std::vector<std::byte>& buffer, std::size_t bytes)
+[[nodiscard]] SnapshotShape snapshotShape(std::span<const std::byte> buffer, std::size_t bytes)
 {
     SnapshotShape shape;
     for (std::size_t offset = 0; offset + sizeof(SYSTEM_PROCESS_INFORMATION) <= bytes;)
@@ -179,11 +183,150 @@ struct CapturedSnapshot
     return true;
 }
 
-/// A fake NtQuerySystemInformation that writes the captured snapshot, its image name pointers moved
-/// to the caller's buffer, as the kernel would have written it there.
+/// The processes in the replayed snapshot: the capture's first ones, which are the longest-lived (the
+/// kernel lists processes in creation order), so the same set from one run to the next.
+constexpr std::size_t REPLAY_PROCESSES = 256;
+/// The threads each replayed process has: its own first ones, repeated if it has fewer.
+constexpr std::size_t REPLAY_THREADS = 16;
+/// The alignment of each entry in the replayed snapshot, as the kernel aligns them.
+constexpr std::size_t REPLAY_ENTRY_ALIGNMENT = 8;
+/// A page: the replayed snapshot starts on one, and SnapshotReplay's copy of it half of one later.
+constexpr std::size_t PAGE_BYTES = 4096;
+
+/// An allocator that starts every allocation on a page, so a buffer's place in its pages, and against
+/// another such buffer, is the same in every run rather than wherever the heap had room.
+template<typename T> struct PageAlignedAllocator
+{
+    using value_type = T;
+    PageAlignedAllocator() noexcept = default;
+    // NOLINTNEXTLINE(cppcoreguidelines-explicit-constructor,misc-explicit-constructor) - allocators rebind by conversion
+    template<typename U> PageAlignedAllocator(const PageAlignedAllocator<U>& /*other*/) noexcept
+    {}
+    [[nodiscard]] T* allocate(std::size_t count)
+    {
+        return static_cast<T*>(::operator new(count * sizeof(T), std::align_val_t{PAGE_BYTES}));
+    }
+    void deallocate(T* pointer, std::size_t /*count*/) noexcept
+    {
+        ::operator delete(pointer, std::align_val_t{PAGE_BYTES});
+    }
+    friend bool operator==(const PageAlignedAllocator& /*lhs*/, const PageAlignedAllocator& /*rhs*/) noexcept
+    {
+        return true;
+    }
+};
+using PageAlignedBytes = std::vector<std::byte, PageAlignedAllocator<std::byte>>;
+
+/// The snapshot ParseWarmCache and SnapshotReplay replay: its bytes, on a page, and its image names.
+struct ReplayedSnapshot
+{
+    PageAlignedBytes bytes;
+    std::vector<std::pair<std::size_t, std::size_t>> namePointers; // {pointer's offset, name's offset}
+    SnapshotShape shape;
+};
+
+/// The snapshot ParseWarmCache and SnapshotReplay replay (#3448), built once from capturedSnapshot().
+///
+/// Replaying the capture as it was made its size the machine's: 300-324 processes and 505-567 KiB on
+/// one desktop from one run to the next, and both benchmarks' times followed it (SnapshotReplay
+/// 7.4-8.5 us, ParseWarmCache 100-124 us), which is more than the regression check's 15%. This one
+/// keeps the capture's first REPLAY_PROCESSES processes with REPLAY_THREADS thread records each, so
+/// its size and its parse no longer follow what else is running. A machine with fewer processes
+/// replays them all; the processes and snapshot_kib counters say what was replayed. Its bytes start on
+/// a page, and SnapshotReplay copies them to half a page further on, so where the heap put either
+/// buffer is no longer a difference between runs: with both left to the heap, two full runs of one
+/// binary read 5.8 us and 7.0 us for the same 392 KiB.
+[[nodiscard]] ReplayedSnapshot& replayedSnapshot()
+{
+    static ReplayedSnapshot snapshot;
+    return snapshot;
+}
+
+/// Build replayedSnapshot() from capturedSnapshot() (once per benchmark binary). False if the capture failed.
+[[nodiscard]] bool buildReplaySnapshot()
+{
+    auto& replay = replayedSnapshot();
+    if (!replay.bytes.empty())
+    {
+        return true;
+    }
+    if (!captureSnapshot())
+    {
+        return false;
+    }
+    const auto& captured = capturedSnapshot().bytes;
+    const auto base = std::bit_cast<std::uintptr_t>(captured.data());
+    PageAlignedBytes bytes;
+    std::vector<std::pair<std::size_t, std::size_t>> namePointers;
+    std::size_t lastEntry = 0;
+    std::size_t processes = 0;
+    for (std::size_t offset = 0; offset + sizeof(SYSTEM_PROCESS_INFORMATION) <= captured.size() && processes < REPLAY_PROCESSES;)
+    {
+        SYSTEM_PROCESS_INFORMATION entry{};
+        std::memcpy(&entry, captured.data() + offset, sizeof(entry));
+        const ULONG next = entry.NextEntryOffset;
+        const std::size_t entryEnd = (next != 0) ? std::min(captured.size(), offset + next) : captured.size();
+        const std::size_t threadsBegin = offset + sizeof(SYSTEM_PROCESS_INFORMATION);
+        const std::size_t recorded = (entryEnd > threadsBegin) ? (entryEnd - threadsBegin) / sizeof(SYSTEM_THREAD_INFORMATION) : 0;
+        const std::size_t threads = std::min<std::size_t>(entry.NumberOfThreads, recorded);
+
+        const std::size_t start = bytes.size();
+        bytes.resize(start + sizeof(SYSTEM_PROCESS_INFORMATION) + (REPLAY_THREADS * sizeof(SYSTEM_THREAD_INFORMATION)));
+        for (std::size_t thread = 0; thread < REPLAY_THREADS && threads != 0; ++thread)
+        {
+            std::memcpy(bytes.data() + start + sizeof(SYSTEM_PROCESS_INFORMATION) + (thread * sizeof(SYSTEM_THREAD_INFORMATION)),
+                        captured.data() + threadsBegin + ((thread % threads) * sizeof(SYSTEM_THREAD_INFORMATION)),
+                        sizeof(SYSTEM_THREAD_INFORMATION));
+        }
+
+        const auto name = std::bit_cast<std::uintptr_t>(entry.ImageName.Buffer);
+        const std::size_t nameBytes = entry.ImageName.Length;
+        if (nameBytes != 0 && name >= base && name + nameBytes <= base + captured.size())
+        {
+            const std::size_t nameOffset = bytes.size();
+            bytes.resize(nameOffset + nameBytes + sizeof(wchar_t)); // The kernel's terminator too
+            std::memcpy(bytes.data() + nameOffset, captured.data() + (name - base), nameBytes);
+            namePointers.emplace_back(start + offsetof(SYSTEM_PROCESS_INFORMATION, ImageName) + offsetof(UNICODE_STRING, Buffer),
+                                      nameOffset);
+            entry.ImageName.MaximumLength = static_cast<USHORT>(nameBytes + sizeof(wchar_t));
+        }
+        else
+        {
+            entry.ImageName.Length = 0;
+            entry.ImageName.MaximumLength = 0;
+        }
+        entry.ImageName.Buffer = nullptr; // Pointed at the caller's copy by replaySnapshot()
+        entry.NumberOfThreads = static_cast<ULONG>(REPLAY_THREADS);
+        bytes.resize((bytes.size() + REPLAY_ENTRY_ALIGNMENT - 1) / REPLAY_ENTRY_ALIGNMENT * REPLAY_ENTRY_ALIGNMENT);
+        entry.NextEntryOffset = static_cast<ULONG>(bytes.size() - start);
+        std::memcpy(bytes.data() + start, &entry, sizeof(entry));
+        lastEntry = start;
+        ++processes;
+
+        if (next == 0)
+        {
+            break;
+        }
+        offset += next;
+    }
+    if (bytes.empty())
+    {
+        return false;
+    }
+    constexpr ULONG LAST = 0;
+    std::memcpy(bytes.data() + lastEntry + offsetof(SYSTEM_PROCESS_INFORMATION, NextEntryOffset), &LAST, sizeof(LAST));
+
+    replay.shape = snapshotShape(bytes, bytes.size());
+    replay.namePointers = std::move(namePointers);
+    replay.bytes = std::move(bytes);
+    return true;
+}
+
+/// A fake NtQuerySystemInformation that writes replayedSnapshot(), its image name pointers moved to
+/// the caller's buffer, as the kernel would have written it there.
 LONG NTAPI replaySnapshot(ULONG /*systemInformationClass*/, PVOID systemInformation, ULONG systemInformationLength, PULONG returnLength)
 {
-    const auto& snapshot = capturedSnapshot();
+    const auto& snapshot = replayedSnapshot();
     const auto size = static_cast<ULONG>(snapshot.bytes.size());
     if (returnLength != nullptr)
     {
@@ -258,17 +401,20 @@ BENCHMARK(BM_WindowsProcessProbe_SnapshotQuery)->Unit(benchmark::kMicrosecond);
 
 void BM_WindowsProcessProbe_SnapshotReplay(benchmark::State& state)
 {
-    if (!captureSnapshot())
+    if (!buildReplaySnapshot())
     {
         state.SkipWithError("Could not capture a process snapshot");
         return;
     }
-    const auto& snapshot = capturedSnapshot();
-    std::vector<std::byte> buffer(snapshot.bytes.size() + SNAPSHOT_HEADROOM_BYTES);
+    const auto& snapshot = replayedSnapshot();
+    // The copy lands half a page past where the snapshot starts in its page (#3448), the same in every run.
+    PageAlignedBytes storage((PAGE_BYTES / 2) + snapshot.bytes.size() + SNAPSHOT_HEADROOM_BYTES);
+    const std::span<std::byte> buffer = std::span<std::byte>(storage).subspan(PAGE_BYTES / 2);
+    const auto length = static_cast<ULONG>(std::min<std::size_t>(buffer.size(), std::numeric_limits<ULONG>::max()));
     for (auto _ : state)
     {
         ULONG returned = 0;
-        benchmark::DoNotOptimize(replaySnapshot(SystemProcessInformation, buffer.data(), bufferLength(buffer), &returned));
+        benchmark::DoNotOptimize(replaySnapshot(SystemProcessInformation, buffer.data(), length, &returned));
         benchmark::ClobberMemory();
     }
     state.counters["processes"] = benchmark::Counter(static_cast<double>(snapshot.shape.processes));
@@ -278,7 +424,7 @@ BENCHMARK(BM_WindowsProcessProbe_SnapshotReplay)->Unit(benchmark::kMicrosecond);
 
 void BM_WindowsProcessProbe_ParseWarmCache(benchmark::State& state)
 {
-    if (!captureSnapshot())
+    if (!buildReplaySnapshot())
     {
         state.SkipWithError("Could not capture a process snapshot");
         return;
@@ -295,7 +441,7 @@ void BM_WindowsProcessProbe_ParseWarmCache(benchmark::State& state)
         benchmark::DoNotOptimize(counters.data());
     }
     state.counters["processes"] = benchmark::Counter(static_cast<double>(counters.size()));
-    state.counters["threads"] = benchmark::Counter(static_cast<double>(capturedSnapshot().shape.threads));
+    state.counters["threads"] = benchmark::Counter(static_cast<double>(replayedSnapshot().shape.threads));
 }
 BENCHMARK(BM_WindowsProcessProbe_ParseWarmCache)->Unit(benchmark::kMicrosecond);
 

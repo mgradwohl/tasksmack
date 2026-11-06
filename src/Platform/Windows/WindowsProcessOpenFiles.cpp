@@ -415,7 +415,9 @@ OpenFilesReadResult WindowsProcessOpenFilesReader::readOpenFiles(const ProcessTa
 
     if (!fileHandles.empty())
     {
-        // The namer owns the process handle from here: it may outlive this read.
+        // The namer owns the process handle from here: it may outlive this read. Detached, not a
+        // Domain::Worker (#3343): a name query that never answers can't be cancelled, so a hung namer is
+        // abandoned on purpose and nothing waits for it; MAX_STUCK_NAMERS caps how many are left waiting.
         const auto state = std::make_shared<NamingState>(m_Api, process.release(), std::move(fileHandles));
         try
         {

@@ -15,6 +15,7 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -54,6 +55,57 @@ TEST(CommandWordsTest, QuoteMakesOneWordThatSplitsBack)
     EXPECT_EQ(Platform::CommandWords::quote("/usr/bin/foot"), "/usr/bin/foot"); // left alone when it can be
 }
 
+// #3427: Windows' Run box split, the program and then its parameters as typed.
+TEST(CommandWordsTest, SplitProgramTakesTheProgramAndLeavesTheParametersAsTyped)
+{
+    using Platform::CommandWords::splitProgram;
+    const auto split = [](std::string_view line)
+    {
+        const auto result = splitProgram(line);
+        return result.has_value() ? std::pair{result->program, result->parameters} : std::pair{std::string("ERROR"), result.error()};
+    };
+    using Pair = std::pair<std::string, std::string>;
+    EXPECT_EQ(split("notepad"), (Pair{"notepad", ""}));
+    EXPECT_EQ(split("  \tnotepad  \t"), (Pair{"notepad", ""}));
+    EXPECT_EQ(split("cmd /k echo  two  spaces"), (Pair{"cmd", "/k echo  two  spaces"}));                 // the parameters untouched
+    EXPECT_EQ(split(R"(notepad "C:\My Files\a b.txt")"), (Pair{"notepad", R"("C:\My Files\a b.txt")"})); // quotes kept for it
+    EXPECT_EQ(split(R"("C:\Program Files\App\app.exe" --flag "x y")"), (Pair{R"(C:\Program Files\App\app.exe)", R"(--flag "x y")"}));
+    EXPECT_EQ(split(R"("C:\Program Files\App\app.exe")"), (Pair{R"(C:\Program Files\App\app.exe)", ""}));
+    EXPECT_EQ(split("https://example.com/a?b=c"), (Pair{"https://example.com/a?b=c", ""}));
+    EXPECT_EQ(split("shell:startup"), (Pair{"shell:startup", ""}));
+    // UTF-8 stays whole: split on ASCII bytes only.
+    EXPECT_EQ(split("\"C:\\Users\\Zo\xC3\xAB\\Caf\xC3\xA9 \xE2\x98\x95.txt\" \xE6\x97\xA5\xE6\x9C\xAC"),
+              (Pair{"C:\\Users\\Zo\xC3\xAB\\Caf\xC3\xA9 \xE2\x98\x95.txt", "\xE6\x97\xA5\xE6\x9C\xAC"}));
+    EXPECT_EQ(split("\xE3\x83\xA1\xE3\x83\xA2\xE5\xB8\xB3 x"), (Pair{"\xE3\x83\xA1\xE3\x83\xA2\xE5\xB8\xB3", "x"}));
+}
+
+TEST(CommandWordsTest, SplitProgramRefusesABlankProgramOrAnOpenQuote)
+{
+    using Platform::CommandWords::splitProgram;
+    EXPECT_FALSE(splitProgram("").has_value());
+    EXPECT_FALSE(splitProgram(" \t ").has_value());
+    EXPECT_FALSE(splitProgram(R"("" --x)").has_value());
+    EXPECT_FALSE(splitProgram(R"("  " --x)").has_value());
+    const auto open = splitProgram(R"("C:\Program Files\app.exe --x)");
+    ASSERT_FALSE(open.has_value());
+    EXPECT_EQ(open.error(), "A \" quote isn't closed");
+}
+
+TEST(CommandWordsTest, QuoteProgramMakesAProgramThatSplitsBack)
+{
+    for (const std::string path : {R"(C:\Windows\notepad.exe)", R"(C:\Program Files\App\app.exe)", "C:\\Caf\xC3\xA9 \xE2\x98\x95\\x.exe"})
+    {
+        const std::string quoted = Platform::CommandWords::quoteProgram(path);
+        const auto split = Platform::CommandWords::splitProgram(quoted);
+        ASSERT_TRUE(split.has_value()) << quoted;
+        EXPECT_EQ(split->program, path) << quoted;
+        EXPECT_EQ(split->parameters, "") << quoted;
+    }
+    EXPECT_EQ(Platform::CommandWords::quoteProgram(R"(C:\Windows\notepad.exe)"), R"(C:\Windows\notepad.exe)"); // left alone when it can be
+    EXPECT_EQ(Platform::CommandWords::quoteProgram(R"(C:\My App\a.exe)"), R"("C:\My App\a.exe")");
+    EXPECT_EQ(Platform::CommandWords::quoteProgram(""), R"("")");
+}
+
 TEST(RunTaskHistoryTest, RememberPutsTheCommandFirstOnceAndCaps)
 {
     std::vector<std::string> recent{"htop", "konsole"};
@@ -81,6 +133,12 @@ TEST(RunTaskResultTest, ShortNameAndResultLines)
         runTaskResultMessage("htop", false, Platform::ProcessActionResult::error("htop wasn't found"));
     EXPECT_FALSE(failed.ok);
     EXPECT_EQ(failed.text, "Could not start htop: htop wasn't found");
+    // #3427: a dismissed UAC prompt says it was cancelled, not that it failed.
+    const Detail::ActionResultMessage cancelled =
+        runTaskResultMessage("notepad", true, Platform::ProcessActionResult::cancelledByUser("the administrator prompt was cancelled"));
+    EXPECT_FALSE(cancelled.ok); // nothing started
+    EXPECT_TRUE(cancelled.neutral);
+    EXPECT_EQ(cancelled.text, "Didn't start notepad: the administrator prompt was cancelled");
 }
 
 // The dialog, drawn in an ImGui context of its own.
@@ -176,13 +234,45 @@ TEST_F(RunTaskDialogTest, BrowsePutsTheChosenFileInAsOneWord)
     static_cast<void>(frame(dialog)); // the modal is up from its second frame
     static_cast<void>(press(dialog, ICON_FA_FOLDER_OPEN " Browse..."));
     ASSERT_TRUE(static_cast<bool>(answer)) << "Browse... didn't ask for a file";
-    answer("/opt/My App/run");        // as the file dialog would, maybe from another thread
+#ifdef _WIN32
+    answer(R"(C:\Program Files\My App\run.exe)"); // as the file dialog would, maybe from another thread
+#else
+    answer("/opt/My App/run"); // as the file dialog would, maybe from another thread
+#endif
     static_cast<void>(frame(dialog)); // takes it in, and focuses the command line
     static_cast<void>(frame(dialog));
 
     const std::optional<Platform::RunProgramRequest> run = press(dialog, "Run", true);
     ASSERT_TRUE(run.has_value());
+#ifdef _WIN32
+    // Quoted as the program of a Windows command line (#3427).
+    EXPECT_EQ(run.value_or(Platform::RunProgramRequest{}).commandLine, R"("C:\Program Files\My App\run.exe")");
+#else
     EXPECT_EQ(run.value_or(Platform::RunProgramRequest{}).commandLine, "'/opt/My App/run'");
+#endif
+}
+
+// #3427: the Run as administrator tick is there only where the platform says it can work (Windows: hidden
+// when TaskSmack is elevated already), and a tick left from before isn't sent once it's hidden.
+TEST_F(RunTaskDialogTest, TheAdministratorTickIsOfferedOnlyWhereItCanWork)
+{
+    RunTaskDialog dialog([](const std::function<void(std::string)>&) {});
+    dialog.open({"notepad"}, true);
+    static_cast<void>(frame(dialog));
+    static_cast<void>(frame(dialog)); // the modal is up from its second frame
+    static_cast<void>(press(dialog, "Run as administrator"));
+    std::optional<Platform::RunProgramRequest> run = press(dialog, "Run", true);
+    ASSERT_TRUE(run.has_value());
+    EXPECT_TRUE(run.value_or(Platform::RunProgramRequest{}).asAdministrator);
+    static_cast<void>(frame(dialog));
+
+    dialog.open({"notepad"}, false);
+    static_cast<void>(frame(dialog));
+    static_cast<void>(frame(dialog));
+    static_cast<void>(press(dialog, "Run as administrator")); // no such item: nothing happens
+    run = press(dialog, "Run", true);
+    ASSERT_TRUE(run.has_value());
+    EXPECT_FALSE(run.value_or(Platform::RunProgramRequest{.commandLine = {}, .asAdministrator = true}).asAdministrator);
 }
 
 // #3186: the arrow beside the command line lists the recent commands; picking one fills the line in.

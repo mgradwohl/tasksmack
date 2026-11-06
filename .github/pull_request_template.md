@@ -32,6 +32,8 @@ Exclude generated files, vendored code, and lock files from the count. -->
 - [ ] I have run `clang-format` on my changes
 - [ ] I have run `pre-commit run --all-files` or installed pre-commit hooks
 - [ ] I have added tests that prove my fix/feature works
+- [ ] A change to a real OS path (a process action, the shell, the elevated helper, a system figure) adds a
+      `CiRealSystem*` test (`tests/Support/CiRealSystem.h`), or I say below why only a manual check can cover it
 - [ ] All new and existing tests pass
 - [ ] I have updated documentation as needed
 

@@ -17,6 +17,7 @@
 #include "App/Panels/ExitingProcessRows.h"
 #include "App/Panels/FindHandlesDialog.h"
 #include "App/Panels/NiceStep.h"
+#include "App/Panels/PriorityChangesInFlight.h"
 #include "App/Panels/ProcessActionsView.h"
 #include "App/Panels/ProcessColumnAvailability.h"
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
@@ -60,6 +61,7 @@
 #include <toml++/toml.hpp>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cfloat>
 #include <chrono>
@@ -1204,6 +1206,106 @@ TEST_F(ProcessesPanelRenderTest, SetAffinityFromTheRowMenuAppliesTheDialogsCpus)
     EXPECT_EQ(actions->lastAffinity(), Platform::CpuAffinity::fromMask(0b1U));
     EXPECT_EQ(actions->lastTarget().pid, menuPid.value_or(-1)); // the process the menu was for
     EXPECT_EQ(ImGui::GetTopMostPopupModal(), nullptr);
+    panel->onDetach();
+}
+
+/// A panel over three processes under @p policy whose actions can set a scheduling policy (#3086) and ask for
+/// authorization; @p actions is left pointing at them.
+[[nodiscard]] std::unique_ptr<ProcessesPanel> schedPolicyPanel(Platform::SchedPolicy policy, TestMocks::MockProcessActions*& actions)
+{
+    return std::make_unique<ProcessesPanel>(
+        [&actions, policy]
+        {
+            auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+            for (auto counters : {TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0),
+                                  TestMocks::makeProcessCounters(100, "server", 'R', 200, 50, 1000, std::uint64_t{8} << 20U, 1),
+                                  TestMocks::makeProcessCounters(101, "worker", 'S', 30, 10, 1100, std::uint64_t{2} << 20U, 100)})
+            {
+                counters.schedPolicy = policy;
+                probe->withProcess(counters);
+            }
+            auto mock = std::make_unique<TestMocks::MockProcessActions>();
+            mock->setCapabilities({.canSetSchedPolicy = true, .canAuthorizeInteractively = true});
+            actions = mock.get();
+            return ProcessesPanelPlatform{.probe = std::move(probe), .actions = std::move(mock), .icons = nullptr};
+        },
+        [](Core::Event&) {});
+}
+
+// #3086: the row menu's Set scheduling policy... opens the dialog on the process's own policy; Apply with Idle
+// chosen sets it on the process the menu was for, and the toolbar says so.
+TEST_F(ProcessesPanelRenderTest, SetSchedulingPolicyFromTheRowMenuAppliesTheDialogsChoice)
+{
+    TestMocks::MockProcessActions* actions = nullptr;
+    const auto panel = schedPolicyPanel(Platform::SchedPolicy::Batch, actions);
+    attachAndSeed(*panel);
+    Core::ActiveTabChangedEvent shown("Processes");
+    panel->onEvent(shown);
+    ASSERT_NE(actions, nullptr);
+    renderUntilLoaded(*panel);
+    const std::optional<std::int32_t> menuPid = openARowMenu(*panel);
+    ASSERT_TRUE(menuPid.has_value());
+
+    pressPopupItem(*panel, ICON_FA_CLOCK " Set scheduling policy...###SetSchedPolicy");
+    static_cast<void>(renderAndCapture(*panel));
+    const std::string text = renderAndCapture(*panel);
+    ASSERT_NE(ImGui::GetTopMostPopupModal(), nullptr);
+    EXPECT_TRUE(text.contains("Runs only when nothing else wants the CPU")) << text;
+    EXPECT_EQ(actions->setSchedPolicyCount(), 0) << "nothing is set before Apply";
+
+    pressModalButton(*panel, "Idle"); // its radio button
+    pressModalFilledButton(*panel, "Apply");
+    panel->waitForRowActionForTesting();
+    EXPECT_EQ(actions->setSchedPolicyCount(), 1);
+    EXPECT_EQ(actions->lastSchedPolicy(), Platform::SchedPolicy::Idle);
+    EXPECT_EQ(actions->lastRealtimeThreads(), Platform::RealtimeThreads::Keep) << "opened on Batch: no warning, none demoted";
+    EXPECT_EQ(actions->lastTarget().pid, menuPid.value_or(-1)); // the process the menu was for
+    EXPECT_EQ(ImGui::GetTopMostPopupModal(), nullptr);
+    EXPECT_NE(renderAndCapture(*panel).find("set to Idle"), std::string::npos) << "the result line";
+    panel->onDetach();
+}
+
+// #3086: leaving Idle without CAP_SYS_NICE is refused for want of permission; Authenticate and retry sends the
+// same policy through runAuthorized().
+TEST_F(ProcessesPanelRenderTest, ARefusedSchedulingPolicyOffersAuthenticateAndRetry)
+{
+    TestMocks::MockProcessActions* actions = nullptr;
+    const auto panel = schedPolicyPanel(Platform::SchedPolicy::Idle, actions);
+    attachAndSeed(*panel);
+    Core::ActiveTabChangedEvent shown("Processes");
+    panel->onEvent(shown);
+    ASSERT_NE(actions, nullptr);
+    actions->setSchedPolicyResult(Platform::ProcessActionResult::denied("Permission denied"));
+    renderUntilLoaded(*panel);
+    const std::optional<std::int32_t> menuPid = openARowMenu(*panel);
+    ASSERT_TRUE(menuPid.has_value());
+    pressPopupItem(*panel, ICON_FA_CLOCK " Set scheduling policy...###SetSchedPolicy");
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    pressModalButton(*panel, "Normal");
+    pressModalFilledButton(*panel, "Apply");
+    panel->waitForRowActionForTesting();
+    EXPECT_EQ(actions->setSchedPolicyCount(), 1);
+    ASSERT_TRUE(panel->offersAuthenticateAndRetry());
+    panel->retryRowActionAuthorizedForTesting();
+    panel->waitForRowActionForTesting();
+    EXPECT_EQ(actions->runAuthorizedCount(), 1);
+    EXPECT_EQ(actions->lastAuthorizedAction().kind, Platform::AuthorizedAction::Kind::SetSchedPolicy);
+    EXPECT_EQ(actions->lastAuthorizedAction().schedPolicy, Platform::SchedPolicy::Normal);
+    EXPECT_EQ(actions->lastAuthorizedAction().target.pid, menuPid.value_or(-1));
+    panel->onDetach();
+}
+
+// #3086: no Set scheduling policy... where the platform can't set one (Windows), nor for a selection of several.
+TEST_F(ProcessesPanelRenderTest, TheRowMenuOffersSetSchedulingPolicyOnlyWhereThePlatformCan)
+{
+    TestMocks::MockProcessActions* actions = nullptr;
+    const auto panel = attachedPanelWithActions([](Core::Event&) {}, actions);
+    ASSERT_NE(actions, nullptr);
+    actions->setCapabilities({.canTerminate = true, .canKill = true});
+    renderUntilLoaded(*panel);
+    ASSERT_TRUE(openARowMenu(*panel).has_value());
+    EXPECT_FALSE(renderAndCapture(*panel).contains("Set scheduling policy")) << "the platform can't set one";
     panel->onDetach();
 }
 
@@ -3237,6 +3339,76 @@ TEST_F(ProcessesPanelRenderTest, RunNewTaskStartsTheCommandAndRemembersIt)
     UserConfig::get().settings().recentCommands.clear();
 }
 
+// #3427: a run the user called off at the system's prompt (a dismissed UAC prompt) shows in the toolbar
+// in the normal text colour: nothing started, so not the success colour, and nothing went wrong, so not
+// the error colour either. A run that starts is in the success colour, which shows the check can see it.
+TEST_F(ProcessesPanelRenderTest, ACancelledRunNewTaskShowsInTheNormalTextColour)
+{
+    UserConfig::get().settings().recentCommands = {"cmd"};
+    TestMocks::MockProcessActions* actions = nullptr;
+    auto panel = std::make_unique<ProcessesPanel>(
+        [&actions]
+        {
+            auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+            probe->withProcess(TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0));
+            auto mock = std::make_unique<TestMocks::MockProcessActions>();
+            mock->setCapabilities({.canRunProgram = true, .canRunProgramAsAdministrator = true});
+            actions = mock.get();
+            return ProcessesPanelPlatform{.probe = std::move(probe), .actions = std::move(mock), .icons = nullptr};
+        });
+    attachAndSeed(*panel);
+    Core::ActiveTabChangedEvent shown("Processes");
+    panel->onEvent(shown);
+    for (int frame = 0; frame < LOAD_FRAMES && panel->processCount() < 1; ++frame)
+    {
+        static_cast<void>(renderAndCapture(*panel));
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    static_cast<void>(renderAndCapture(*panel));
+    ASSERT_NE(actions, nullptr);
+
+    // Vertices of the toolbar's own window (the Shell window it draws in) in @p colour, in the last frame.
+    const auto shellVerticesIn = [](const ImVec4& colour)
+    {
+        const ImU32 wanted = ImGui::ColorConvertFloat4ToU32(colour);
+        const ImGuiWindow* shell = ImGui::FindWindowByName("Shell");
+        return (shell == nullptr)
+                 ? std::ptrdiff_t{0}
+                 : std::ranges::count_if(shell->DrawList->VtxBuffer, [wanted](const ImDrawVert& v) { return v.col == wanted; });
+    };
+    const auto runTheLastCommand = [&panel]
+    {
+        const ImGuiWindow* shell = ImGui::FindWindowByName("Shell");
+        ASSERT_NE(shell, nullptr);
+        ImGui::ActivateItemByID(ImHashStr(ICON_FA_ROCKET "###RunNewTask", 0, shell->ID));
+        for (int frame = 0; frame < 3; ++frame)
+        {
+            static_cast<void>(renderAndCapture(*panel));
+        }
+        const ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
+        ASSERT_NE(modal, nullptr) << "Run new task didn't open its dialog";
+        ImGui::ActivateItemByID(ImHashStr("##filled", 0, ImHashStr("Run", 0, modal->ID)));
+    };
+    // Before any result: what the rest of the toolbar draws in those colours. The tests' built-in scheme
+    // may give success and error one colour, so each is counted against its own baseline.
+    const auto& scheme = UI::Theme::get().scheme();
+    const std::ptrdiff_t successBefore = shellVerticesIn(scheme.textSuccess);
+    const std::ptrdiff_t errorBefore = shellVerticesIn(scheme.textError);
+
+    runTheLastCommand();
+    ASSERT_TRUE(updateUntilBatchResult(*panel, "Started cmd"));
+    EXPECT_GT(shellVerticesIn(scheme.textSuccess), successBefore) << "the started run isn't in the success colour";
+
+    actions->setRunProgramResult(Platform::ProcessActionResult::cancelledByUser("the administrator prompt was cancelled"));
+    runTheLastCommand();
+    ASSERT_TRUE(updateUntilBatchResult(*panel, "Didn't start cmd: the administrator prompt was cancelled"));
+    EXPECT_EQ(shellVerticesIn(scheme.textSuccess), successBefore) << "a cancelled run is shown as a success";
+    EXPECT_EQ(shellVerticesIn(scheme.textError), errorBefore) << "a cancelled run is shown as an error";
+    EXPECT_EQ(actions->runProgramCount(), 2);
+    panel->onDetach();
+    UserConfig::get().settings().recentCommands.clear();
+}
+
 // #3068: grouped by container, each container is a header row with its process count and Σ totals, its
 // processes under it, the rest under Ungrouped last; clicking a header collapses it; Tree sets the group
 // back to None.
@@ -3631,6 +3803,263 @@ TEST_F(ProcessesPanelRenderTest, F7AndF8StepTheSelectedProcessesPriorityAtOnce)
     panel->expireFrameRequests(); // the frame ended before the table took it
     static_cast<void>(renderAndCapture(*panel));
     EXPECT_EQ(actions->setPriorityCount(), 2);
+}
+
+/// The start time attachedPanelWithActions()' mock gives @p pid's process.
+[[nodiscard]] constexpr std::uint64_t mockStartTicks(std::int32_t pid) noexcept
+{
+    if (pid == 1)
+    {
+        return 100;
+    }
+    return pid == 100 ? 1000 : 1100;
+}
+
+// #3467, Process Details to the table: while Process Details changes the selected process's priority, F7 sets
+// nothing and the toolbar says why; once that change has finished, F7 works again. A process that merely has
+// the same PID (another start time) is not held.
+TEST_F(ProcessesPanelRenderTest, F7WaitsForAPriorityChangeInProcessDetailsForThatProcess)
+{
+    PriorityChangesInFlight changes;
+    SelectionSink events;
+    TestMocks::MockProcessActions* actions = nullptr;
+    const auto panel = attachedPanelWithActions(events.sink(), actions);
+    panel->setPriorityChanges(&changes);
+    renderUntilLoaded(*panel);
+    ASSERT_NE(actions, nullptr);
+    pressKey(*panel, ImGuiKey_DownArrow);
+    const std::int32_t pid = panel->selectedPid();
+    ASSERT_GT(pid, 0);
+    const Platform::ProcessTarget target{.pid = pid, .startTimeTicks = mockStartTicks(pid)};
+
+    const std::array details{target};
+    changes.publish(PriorityChangesInFlight::Panel::ProcessDetails, details);
+    panel->requestPriorityStep(NiceStep::Direction::Raise);
+    static_cast<void>(renderAndCapture(*panel));
+    const std::string refused = renderAndCapture(*panel);
+    EXPECT_EQ(actions->setPriorityCount(), 0) << "held while Process Details changes it";
+    EXPECT_TRUE(refused.contains(PriorityChangesInFlight::refusal(PriorityChangesInFlight::Panel::Processes))) << refused;
+
+    // The same PID, another start time: another process, so not held.
+    const std::array reused{Platform::ProcessTarget{.pid = pid, .startTimeTicks = target.startTimeTicks + 1}};
+    changes.publish(PriorityChangesInFlight::Panel::ProcessDetails, reused);
+    panel->requestPriorityStep(NiceStep::Direction::Raise);
+    static_cast<void>(renderAndCapture(*panel));
+    panel->waitForRowActionForTesting();
+    EXPECT_EQ(actions->setPriorityCount(), 1);
+    EXPECT_EQ(actions->lastTarget(), target);
+
+    // Released: F7 sets it again.
+    changes.publish(PriorityChangesInFlight::Panel::ProcessDetails, {});
+    panel->requestPriorityStep(NiceStep::Direction::Lower);
+    static_cast<void>(renderAndCapture(*panel));
+    panel->waitForRowActionForTesting();
+    EXPECT_EQ(actions->setPriorityCount(), 2);
+    panel->onDetach();
+}
+
+// #3467, the table to Process Details: F7's change is published for its process from the frame it starts until
+// its result is taken in, so Process Details holds its priority controls for that process meanwhile.
+TEST_F(ProcessesPanelRenderTest, F7HoldsProcessDetailsPriorityControlsUntilItsResultIsTakenIn)
+{
+    PriorityChangesInFlight changes;
+    SelectionSink events;
+    TestMocks::MockProcessActions* actions = nullptr;
+    const auto panel = attachedPanelWithActions(events.sink(), actions);
+    panel->setPriorityChanges(&changes);
+    renderUntilLoaded(*panel);
+    ASSERT_NE(actions, nullptr);
+    pressKey(*panel, ImGuiKey_DownArrow);
+    const std::int32_t pid = panel->selectedPid();
+    ASSERT_GT(pid, 0);
+    const Platform::ProcessTarget target{.pid = pid, .startTimeTicks = mockStartTicks(pid)};
+    EXPECT_FALSE(changes.heldElsewhere(PriorityChangesInFlight::Panel::ProcessDetails, target));
+
+    panel->requestPriorityStep(NiceStep::Direction::Raise);
+    static_cast<void>(renderAndCapture(*panel)); // started on the row action worker
+    EXPECT_TRUE(changes.heldElsewhere(PriorityChangesInFlight::Panel::ProcessDetails, target)) << "held from the frame it starts";
+    EXPECT_FALSE(
+        changes.heldElsewhere(PriorityChangesInFlight::Panel::ProcessDetails, {.pid = pid, .startTimeTicks = target.startTimeTicks + 1}))
+        << "a reused PID is another process";
+
+    ASSERT_TRUE(updateUntilBatchResult(*panel, "Priority of")); // onUpdate() takes the result in
+    EXPECT_EQ(actions->setPriorityCount(), 1);
+    EXPECT_FALSE(changes.heldElsewhere(PriorityChangesInFlight::Panel::ProcessDetails, target)) << "released once taken in";
+    panel->onDetach();
+}
+
+// #3467: Set priority for N processes... leaves out a process Process Details is changing the priority of, sets the
+// others, and its result line says how many it skipped and why.
+TEST_F(ProcessesPanelRenderTest, ABatchPriorityChangeSkipsAProcessWithAChangeRunningInProcessDetails)
+{
+    PriorityChangesInFlight changes;
+    TestMocks::MockProcessActions* actions = nullptr;
+    const auto panel = attachedPanelWithActions([](Core::Event&) {}, actions);
+    panel->setPriorityChanges(&changes);
+    ASSERT_NE(actions, nullptr);
+    renderUntilLoaded(*panel);
+    selectAll(*panel);
+    ASSERT_EQ(panel->selectionCount(), 3U);
+    const Platform::ProcessTarget server{.pid = 100, .startTimeTicks = mockStartTicks(100)};
+    const std::array details{server};
+    changes.publish(PriorityChangesInFlight::Panel::ProcessDetails, details);
+
+    ASSERT_TRUE(openARowMenu(*panel).has_value());
+    pressPopupItem(*panel, std::format("{} Set priority for 3 processes...###SetPriority", ICON_FA_GAUGE_HIGH));
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    ASSERT_NE(ImGui::GetTopMostPopupModal(), nullptr);
+    pressModalFilledButton(*panel, "Apply to 3 processes");
+    ASSERT_TRUE(updateUntilBatchResult(*panel, "1 process skipped")); // from the batch's worker (#2142)
+    EXPECT_EQ(actions->setPriorityCount(), 2) << "the other two are set";
+    EXPECT_NE(actions->lastTarget(), server);
+    panel->onDetach();
+}
+
+// #3467: the row menu's Set Realtime priority... is greyed out while Process Details changes that process's
+// priority; once that has finished it asks again, and its confirm and its run hold Process Details' controls
+// for that process until the result is taken in.
+TEST_F(ProcessesPanelRenderTest, SetRealtimeFromTheRowMenuAndProcessDetailsHoldEachOther)
+{
+    PriorityChangesInFlight changes;
+    TestMocks::MockProcessActions* actions = nullptr;
+    const auto panel = std::make_unique<ProcessesPanel>(
+        [&actions]
+        {
+            auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+            probe->withProcess(TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0))
+                .withProcess(TestMocks::makeProcessCounters(100, "server", 'R', 200, 50, 1000, std::uint64_t{8} << 20U, 1));
+            auto mock = std::make_unique<TestMocks::MockProcessActions>();
+            mock->setCapabilities({.canTerminate = true, .canKill = true, .canSetPriority = true, .canSetRealtimePriority = true});
+            actions = mock.get();
+            return ProcessesPanelPlatform{.probe = std::move(probe), .actions = std::move(mock), .icons = nullptr};
+        },
+        [](Core::Event&) {});
+    panel->setPriorityChanges(&changes);
+    attachAndSeed(*panel);
+    Core::ActiveTabChangedEvent shown("Processes");
+    panel->onEvent(shown);
+    ASSERT_NE(actions, nullptr);
+    renderUntilLoaded(*panel);
+
+    std::optional<std::int32_t> menuPid = openARowMenu(*panel);
+    ASSERT_TRUE(menuPid.has_value());
+    const std::int32_t pid = menuPid.value_or(-1);
+    const Platform::ProcessTarget target{.pid = pid, .startTimeTicks = mockStartTicks(pid)};
+    const std::array details{target};
+    changes.publish(PriorityChangesInFlight::Panel::ProcessDetails, details);
+    static_cast<void>(renderAndCapture(*panel));
+    pressPopupItem(*panel, App::Detail::SET_REALTIME_PRIORITY_LABEL);
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    EXPECT_EQ(ImGui::GetTopMostPopupModal(), nullptr) << "greyed out while Process Details changes it";
+
+    changes.publish(PriorityChangesInFlight::Panel::ProcessDetails, {});
+    if (topPopup() != nullptr)
+    {
+        closePopups(*panel);
+    }
+    menuPid = openARowMenu(*panel);
+    ASSERT_EQ(menuPid, target.pid);
+    pressPopupItem(*panel, App::Detail::SET_REALTIME_PRIORITY_LABEL);
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    ASSERT_NE(ImGui::GetTopMostPopupModal(), nullptr) << "released: it asks";
+    EXPECT_TRUE(changes.heldElsewhere(PriorityChangesInFlight::Panel::ProcessDetails, target)) << "its confirm holds Process Details";
+
+    pressModalFilledButton(*panel, "Set Realtime priority");
+    EXPECT_TRUE(changes.heldElsewhere(PriorityChangesInFlight::Panel::ProcessDetails, target)) << "and so does its run";
+    ASSERT_TRUE(updateUntilBatchResult(*panel, "set to Realtime"));
+    EXPECT_EQ(actions->setPriorityCount(), 1);
+    EXPECT_FALSE(changes.heldElsewhere(PriorityChangesInFlight::Panel::ProcessDetails, target)) << "released once taken in";
+    panel->onDetach();
+}
+
+// #3467 review: Efficiency mode sets the priority too (Idle on Windows). The row menu's item is greyed out while
+// Process Details changes that process's priority; once that has finished it asks again, and its confirm and its
+// run hold Process Details' priority controls for that process until the result is taken in.
+TEST_F(ProcessesPanelRenderTest, EfficiencyModeFromTheRowMenuAndProcessDetailsHoldEachOther)
+{
+    PriorityChangesInFlight changes;
+    TestMocks::MockProcessActions* actions = nullptr;
+    const auto panel = efficiencyModePanel("", actions);
+    panel->setPriorityChanges(&changes);
+    ASSERT_NE(actions, nullptr);
+    renderUntilLoaded(*panel);
+    constexpr auto DETAILS = PriorityChangesInFlight::Panel::ProcessDetails;
+
+    std::optional<std::int32_t> menuPid = openARowMenu(*panel);
+    ASSERT_TRUE(menuPid.has_value());
+    const std::int32_t pid = menuPid.value_or(-1);
+    const Platform::ProcessTarget target{.pid = pid, .startTimeTicks = mockStartTicks(pid)};
+    const std::array details{target};
+    changes.publish(DETAILS, details);
+    static_cast<void>(renderAndCapture(*panel));
+    pressPopupItem(*panel, App::Detail::EFFICIENCY_MODE_LABEL);
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    EXPECT_EQ(ImGui::GetTopMostPopupModal(), nullptr) << "greyed out while Process Details changes its priority";
+    EXPECT_EQ(actions->efficiencyModeCount(), 0);
+
+    changes.publish(DETAILS, {});
+    if (topPopup() != nullptr)
+    {
+        closePopups(*panel);
+    }
+    menuPid = openARowMenu(*panel);
+    ASSERT_EQ(menuPid, target.pid);
+    pressPopupItem(*panel, App::Detail::EFFICIENCY_MODE_LABEL);
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    ASSERT_NE(ImGui::GetTopMostPopupModal(), nullptr) << "released: it asks";
+    EXPECT_TRUE(changes.heldElsewhere(DETAILS, target)) << "its confirm holds Process Details";
+
+    pressModalButton(*panel, "Turn on Efficiency mode");
+    EXPECT_TRUE(changes.heldElsewhere(DETAILS, target)) << "and so does its run";
+    // Waits for the row action worker and takes its result in, as the next frame's onUpdate() would; that
+    // frame's render then publishes the release. Not a text match: the progress line ("Turning Efficiency mode
+    // on for PID 1...") reads like the result's.
+    panel->waitForRowActionForTesting();
+    const std::string text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains(std::format("Efficiency mode on for PID {}", target.pid))) << text;
+    EXPECT_FALSE(text.contains("Turning Efficiency mode on")) << text;
+    EXPECT_EQ(actions->efficiencyModeCount(), 1);
+    EXPECT_FALSE(changes.heldElsewhere(DETAILS, target)) << "released once taken in";
+    panel->onDetach();
+}
+
+// #3467 review: a refused Efficiency mode change's "Authenticate and retry" in the toolbar isn't offered while
+// Process Details changes that process's priority (an older retry could overwrite the newer change), and is
+// offered again once that has finished.
+TEST_F(ProcessesPanelRenderTest, ARefusedEfficiencyModeChangesRetryWaitsForProcessDetails)
+{
+    PriorityChangesInFlight changes;
+    TestMocks::MockProcessActions* actions = nullptr;
+    const auto panel = efficiencyModePanel(std::string(Platform::EFFICIENCY_MODE_STATUS), actions);
+    panel->setPriorityChanges(&changes);
+    ASSERT_NE(actions, nullptr);
+    renderUntilLoaded(*panel);
+    actions->setCapabilities({.canTerminate = true, .canKill = true, .canAuthorizeInteractively = true, .canSetEfficiencyMode = true});
+    actions->setEfficiencyModeResult(Platform::ProcessActionResult::denied("Access denied"));
+
+    const std::optional<std::int32_t> menuPid = openARowMenu(*panel);
+    ASSERT_TRUE(menuPid.has_value());
+    const std::int32_t pid = menuPid.value_or(-1);
+    const Platform::ProcessTarget target{.pid = pid, .startTimeTicks = mockStartTicks(pid)};
+    pressPopupItem(*panel, App::Detail::EFFICIENCY_MODE_LABEL); // in it: off at once, refused
+    panel->waitForRowActionForTesting();
+    static_cast<void>(renderAndCapture(*panel));
+    ASSERT_TRUE(panel->offersAuthenticateAndRetry()) << "refused: the retry is offered";
+
+    const std::array details{target};
+    changes.publish(PriorityChangesInFlight::Panel::ProcessDetails, details);
+    EXPECT_FALSE(panel->offersAuthenticateAndRetry()) << "held while Process Details changes its priority";
+    panel->retryRowActionAuthorizedForTesting();
+    EXPECT_EQ(actions->runAuthorizedCount(), 0) << "a press sends nothing meanwhile";
+
+    changes.publish(PriorityChangesInFlight::Panel::ProcessDetails, {});
+    EXPECT_TRUE(panel->offersAuthenticateAndRetry()) << "offered again once it has finished";
+    panel->onDetach();
 }
 
 // #3097: "/" over the table opens the Find box; typing jumps the selection to the first matching row,

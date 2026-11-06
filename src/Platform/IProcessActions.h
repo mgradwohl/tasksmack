@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Platform/CpuAffinity.h"
+#include "Platform/SchedPolicy.h"
 #include "Platform/WaitChain.h"
 
 #include <cstdint>
@@ -29,19 +30,28 @@ struct ProcessActionResult
     /// EACCES), which acting as an administrator could cure: BrokeredProcessActions retries such a
     /// failure through the privileged helper (#2308). False for every other failure.
     bool permissionDenied = false;
+    /// On failure, whether the user called it off at a prompt of the system's (Windows: the UAC consent
+    /// prompt dismissed, ERROR_CANCELLED), so the UI says it was cancelled rather than that it failed
+    /// (Run new task, #3427). False for every other failure.
+    bool cancelled = false;
 
     static ProcessActionResult ok(std::string note = {})
     {
-        return {.success = true, .errorMessage = {}, .successNote = std::move(note), .permissionDenied = false};
+        return {.success = true, .errorMessage = {}, .successNote = std::move(note), .permissionDenied = false, .cancelled = false};
     }
     static ProcessActionResult error(std::string msg)
     {
-        return {.success = false, .errorMessage = std::move(msg), .successNote = {}, .permissionDenied = false};
+        return {.success = false, .errorMessage = std::move(msg), .successNote = {}, .permissionDenied = false, .cancelled = false};
     }
     /// A failure for want of permission over the process (permissionDenied).
     static ProcessActionResult denied(std::string msg)
     {
-        return {.success = false, .errorMessage = std::move(msg), .successNote = {}, .permissionDenied = true};
+        return {.success = false, .errorMessage = std::move(msg), .successNote = {}, .permissionDenied = true, .cancelled = false};
+    }
+    /// Called off by the user at a system prompt (cancelled); @p msg says which.
+    static ProcessActionResult cancelledByUser(std::string msg)
+    {
+        return {.success = false, .errorMessage = std::move(msg), .successNote = {}, .permissionDenied = false, .cancelled = true};
     }
 };
 
@@ -230,6 +240,7 @@ struct AuthorizedAction
         SetEfficiencyMode, ///< efficiencyMode (#3071)
         CloseConnection,   ///< socketInode (#3066)
         ThreadAction,      ///< tid and threadAction (#3069)
+        SetSchedPolicy,    ///< schedPolicy (#3086)
     };
     Kind kind = Kind::Terminate;
     ProcessTarget target;
@@ -244,13 +255,17 @@ struct AuthorizedAction
     std::int32_t level = 4;
     // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
     CpuAffinity cpus{};
+    SchedPolicy schedPolicy = SchedPolicy::Normal;           ///< SetSchedPolicy: Normal, Batch or Idle
+    RealtimeThreads realtimeThreads = RealtimeThreads::Keep; ///< SetSchedPolicy: whether the dialog warned
 };
 
 /// Run new task (#3065): a program to start, as Task Manager's File > Run new task.
 struct RunProgramRequest
 {
-    std::string commandLine;      ///< The program and its arguments, split as CommandWords::split() does
-    bool asAdministrator = false; ///< Started with administrator rights (Linux: through pkexec)
+    /// The program and its arguments: split as CommandWords::split() does on Linux, and as
+    /// CommandWords::splitProgram() does on Windows (#3427), where the rest is the program's to parse.
+    std::string commandLine;
+    bool asAdministrator = false; ///< Started with administrator rights (Linux: through pkexec; Windows: the runas verb, UAC)
 };
 
 /// Capabilities for process actions.
@@ -273,6 +288,8 @@ struct ProcessActionCapabilities
     /// setAffinity(): which processors the process may run on (#1887 Linux: sched_setaffinity;
     /// #1881 Windows).
     bool canSetAffinity = false;
+    /// setSchedPolicy(): the CPU scheduling policy, Normal, Batch or Idle (#3086 Linux: sched_setscheduler).
+    bool canSetSchedPolicy = false;
     /// launchSyscallTrace(): found once, when the implementation is constructed, never per frame.
     SyscallTraceAvailability syscallTrace = SyscallTraceAvailability::Unsupported;
     /// createDump(): a full-memory dump file of the process (#807; Windows: MiniDumpWriteDump).
@@ -291,7 +308,9 @@ struct ProcessActionCapabilities
     /// FileManager1 over D-Bus or xdg-open; Windows: SHOpenFolderAndSelectItems or explorer.exe /select, #3426).
     bool canOpenFileLocation = false;
     /// runProgram(): Run new task can start a program (#3065), and with administrator rights too where
-    /// canRunProgramAsAdministrator says so (Linux: pkexec is installed, or TaskSmack runs as root).
+    /// canRunProgramAsAdministrator says so (Linux: pkexec is installed, or TaskSmack runs as root; Windows,
+    /// #3427: TaskSmack isn't elevated, so the runas verb's UAC prompt can elevate it, while an elevated
+    /// TaskSmack's tasks are elevated already).
     bool canRunProgram = false;
     bool canRunProgramAsAdministrator = false;
     /// setEfficiencyMode(): Efficiency mode on or off, as Task Manager's (#3071; Windows: EcoQoS power
@@ -383,7 +402,9 @@ class IProcessActions
     }
 
     /// Starts the program @p request names, detached from TaskSmack (#3065), and returns once it has been
-    /// started, never waiting for it. Its first word is looked up on PATH unless it holds a '/'. The
+    /// started, never waiting for it. Linux: its first word is looked up on PATH unless it holds a '/'.
+    /// Windows (#3427): ShellExecuteExW opens it, so a document, a folder or a web address works too, and
+    /// a dismissed UAC prompt is a cancelled result (ProcessActionResult::cancelled). The
     /// default refuses it as unsupported, matching ProcessActionCapabilities::canRunProgram's default
     /// (false), which an implementation that does not override this must leave as it is.
     [[nodiscard]] virtual ProcessActionResult runProgram(const RunProgramRequest& request)
@@ -404,6 +425,22 @@ class IProcessActions
         static_cast<void>(target);
         static_cast<void>(cpus);
         return ProcessActionResult::error("Setting CPU affinity isn't available on this system");
+    }
+
+    /// Sets the target's CPU scheduling policy (#3086) on every one of its threads: Normal, Batch or Idle
+    /// only; any other policy is refused before the OS is asked (real time is #3219). A thread under a
+    /// real-time policy changes only with RealtimeThreads::Change, which the dialog passes only when it warned
+    /// that the process runs real time; with Keep it is left as it is and the result says so. Refused, as every
+    /// action is, unless the process at the target's PID is the target. The default refuses it as
+    /// unsupported, matching ProcessActionCapabilities::canSetSchedPolicy's default (false), which an
+    /// implementation that does not override this must leave as it is.
+    [[nodiscard]] virtual ProcessActionResult
+    setSchedPolicy(const ProcessTarget& target, SchedPolicy policy, RealtimeThreads realtimeThreads)
+    {
+        static_cast<void>(target);
+        static_cast<void>(policy);
+        static_cast<void>(realtimeThreads);
+        return ProcessActionResult::error("Setting the scheduling policy isn't available on this system");
     }
 
     /// Writes a full-memory dump of the target into @p directory (#807), as Task Manager's "Create dump
@@ -526,7 +563,7 @@ class IProcessActions
         };
     }
 
-    /// Retries @p request (a signal, priority, I/O priority, affinity or Efficiency mode change) as an administrator,
+    /// Retries @p request (a signal, priority, I/O priority, affinity, scheduling policy or Efficiency mode change) as an administrator,
     /// asking for the password first if need be (#2308): what "Authenticate and retry" does after a
     /// permissionDenied failure. Blocks for as long as the prompt is up, so it runs on a worker, never
     /// the UI thread. The default refuses it, matching ProcessActionCapabilities'

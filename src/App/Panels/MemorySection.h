@@ -59,11 +59,13 @@ void updateSmoothedMemory(SmoothedMemory& smoothed,
 [[nodiscard]] std::string commitStripTooltip(const Domain::SystemSnapshot& snap);
 
 /// The value strip's Compressed entry (#3087): "2.9× (1.2 GiB in 410 MiB)", compressed swap's ratio and
-/// sizes, zram and zswap together; empty while nothing compressed is stored.
+/// sizes, zram and zswap together; on Windows (#3363) the compression store's size alone, "410 MiB"; empty
+/// while nothing compressed is stored or compression is off.
 [[nodiscard]] std::string compressedStripValue(const Domain::SystemSnapshot& snap);
 
 /// The Compressed entry's hover text: each kind's sizes and ratio, zram's RAM use, and the ratio's range
-/// over @p ratioHistory (the chart's window; NaN where nothing was stored); empty with no entry.
+/// over @p ratioHistory (the chart's window; NaN where nothing was stored); on Windows (#3363) what the size
+/// is, with no ratio; empty with no entry.
 [[nodiscard]] std::string compressedStripTooltip(const Domain::SystemSnapshot& snap, std::span<const float> ratioHistory);
 
 /// Render the Memory & Swap history chart with now bars

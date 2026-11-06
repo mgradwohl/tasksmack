@@ -14,6 +14,7 @@
 
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/SchedPolicy.h"
 #include "ProcessDetailsLayout.h"
 
 #include <cmath>
@@ -31,13 +32,13 @@ namespace ProcessActionsBlock
 {
 
 /// Whether there is anything to offer: the platform can run at least one action, set priority, I/O
-/// priority, affinity or Efficiency mode, write a dump file, analyze a wait chain, or trace system calls
+/// priority, affinity, scheduling policy or Efficiency mode, write a dump file, analyze a wait chain, or trace system calls
 /// (shown even greyed out). Without, neither card is drawn.
 [[nodiscard]] constexpr bool hasAnyAction(const Platform::ProcessActionCapabilities& capabilities) noexcept
 {
     return capabilities.canTerminate || capabilities.canKill || capabilities.canStop || capabilities.canContinue ||
-           capabilities.canSetPriority || capabilities.canSetIoPriority || capabilities.canSetAffinity || capabilities.canCreateDump ||
-           capabilities.canSetEfficiencyMode || capabilities.canAnalyzeWaitChain ||
+           capabilities.canSetPriority || capabilities.canSetIoPriority || capabilities.canSetAffinity || capabilities.canSetSchedPolicy ||
+           capabilities.canCreateDump || capabilities.canSetEfficiencyMode || capabilities.canAnalyzeWaitChain ||
            capabilities.syscallTrace != Platform::SyscallTraceAvailability::Unsupported;
 }
 
@@ -63,6 +64,12 @@ struct Widths
     }
 };
 
+/// Why the Actions card's priority changes (Efficiency mode, a refused Set Realtime priority's or Efficiency
+/// mode's retry) wait for the shown process, or null when they needn't (#3429, #3467): the slider's Apply
+/// runs (@p sliderApplying), or the Processes table has a change for it in flight (@p priorityHeldElsewhere,
+/// Context::priorityHeldElsewhere). For ProcessActionsView::holdPriorityChanges().
+[[nodiscard]] const char* actionsHoldReason(bool sliderApplying, const char* priorityHeldElsewhere) noexcept;
+
 /// Measures the widths chooseTopRowLayout() lays the cards out from.
 [[nodiscard]] Widths measure(const Platform::ProcessActionCapabilities& capabilities);
 
@@ -78,6 +85,12 @@ struct Context
     std::optional<std::int32_t> currentNice;
     const Platform::CpuAffinity* currentAffinity = nullptr; ///< Ticks the affinity dialog's boxes (#1887); null: every CPU
     bool efficiencyMode = false;                            ///< The process is in Efficiency mode: its checkbox is ticked (#3071)
+    /// The process's scheduling policy, chosen in the Set scheduling policy dialog when it offers it (#3086)
+    Platform::SchedPolicy currentSchedPolicy = Platform::SchedPolicy::Unknown;
+    /// Why the priority controls wait for a priority change of this process in the Processes table, or
+    /// null when none runs there (#3467, PriorityChangesInFlight::holdReason()): the slider's Apply, its
+    /// retry, Set Realtime... and Set Realtime priority's retry are held meanwhile.
+    const char* priorityHeldElsewhere = nullptr;
 };
 
 /// What each card's content needs down, header and padding included, as render() drew it: for the

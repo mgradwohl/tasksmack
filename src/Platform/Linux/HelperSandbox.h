@@ -6,13 +6,15 @@
 // helper never does: writing or creating files, exec, loading code (no PROT_EXEC mappings), ptrace and
 // process_vm_*, sockets other than its broker socket (fd 0), open_by_handle_at, mounts, namespaces, BPF,
 // io_uring, keyrings and changing its IDs or capabilities. Its own job stays allowed: reading /proc, the
-// journal, coredumps and firmware files, pidfd_send_signal, setpriority, ioprio_set and sched_setaffinity, and
+// journal, coredumps and firmware files, pidfd_send_signal, setpriority, ioprio_set, sched_setaffinity,
+// sched_setscheduler to Normal, Batch or Idle only (#3086: the filter checks the policy, as the broker protocol's
+// decoder and LinuxProcessControl do; real time stays refused, and #3219 will revisit it), and
 // for Close connection (#3066) pidfd_getfd and shutdown: the copied descriptor is shut down and closed at once,
 // but code running in the helper could copy another process's descriptors with it, as CAP_SYS_PTRACE allows.
 //
 // What it can't take away is the helper's job itself: with CAP_SYS_PTRACE a read-only open of
-// /proc/<pid>/mem still reads another process's memory, and the renice, I/O priority and affinity calls
-// stay open; the user-space checks guard those.
+// /proc/<pid>/mem still reads another process's memory, and the renice, I/O priority, affinity and scheduling
+// policy calls stay open; the user-space checks guard those.
 //
 // A named refusal fails the call with an errno (so glibc falls back from openat2, and a late dlopen fails
 // cleanly); anything not listed is logged (Mode::Log) or kills the helper (Mode::Enforce). The program is

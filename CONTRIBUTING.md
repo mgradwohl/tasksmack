@@ -775,6 +775,21 @@ Three established ways to get real coverage of such a file's logic:
        because a real pointer's moves mix with the injected ones. `--use-display` runs it on the desktop.
      - **Requirements:** both refs need the scenario suite.
 
+5. **Need the real OS path, which changes the machine (#3489)?** Some calls only fakes can reach on a
+   developer's machine: a process set to Realtime, a program started through the shell or `runas`, Explorer
+   opened on a folder, the elevated helper served from Program Files, a throwaway account. Put such a test in
+   a suite named `CiRealSystem*` derived from `TestSupport::CiRealSystemTest` (`tests/Support/CiRealSystem.h`,
+   Windows helpers in `tests/Support/CiRealSystemWindows.h`). Its `SetUp()` skips the test unless
+   `TASKSMACK_CI_REAL_SYSTEM=1` on a GitHub-hosted runner (`GITHUB_ACTIONS=true`,
+   `RUNNER_ENVIRONMENT=github-hosted`). CI's "Real-system tests (Windows)" step sets it and runs
+   `TaskSmackTests --gtest_filter=CiRealSystem*` after the normal `ctest`. It fails if none of them ran.
+   - **Rules:** keep every child idle (suspended, or `TaskSmackCiStub.exe`, which only sleeps), and end it
+     and remove what the test made in a scope guard. Skip with the reason when the runner can't do it (no
+     memory compression on a Server image).
+   - **Never locally:** don't set the variable on your own machine. The daytime filter excludes `CiRealSystem*`.
+   - **The rule:** a change to a real OS path adds such a test, or the PR says why only a manual check can
+     cover it (a UAC prompt, a sign-out, hardware).
+
 Before writing any of these tests, check whether the logic already exists as a shared, tested
 helper (for example `Core::isEnvFlagEnabled()` in `Core/EnvUtils.h`), and reuse it instead.
 
@@ -1512,11 +1527,32 @@ so: the committed Linux baselines have no manifest, nor do runs from before #316
 with it when it ran on the same core class: the default `-Core performance`. The CI gate isn't
 affected. The comparison also prints each manifest's `system_load`.
 
-Even on a quiet machine, two full runs of the same binary differ by more than 15% on a few
-benchmarks (#3414): the `*_Concurrent_PublicationWait/.../extra_readers:2` ones, which have a CV
-of 10-50% within a run, and a few whose median moves between runs although each run's CV is
-low, such as `BM_WindowsProcessProbe_SnapshotReplay` (8.5 us or 38 us). Re-run a flagged
-benchmark with a filter before treating it as a regression.
+Two full runs of one binary on a quiet machine used to differ by more than 15% on about eight
+benchmarks (#3414, #3448). The causes were in the benchmarks, not the code they time, and each
+is now held still rather than given a looser threshold:
+
+- **What's on the machine.** `BM_WindowsProcessProbe_SnapshotReplay` and `ParseWarmCache`
+  replayed the live process snapshot, so their time followed how many processes were running
+  (300-324, 505-567 KiB). They now replay a fixed shape: the capture's first 256 processes,
+  16 threads each.
+- **Where the heap put a buffer.** `BM_HistoryBuffer_CopyTo` / `CopyToWrapped` copy about a third
+  slower from a source 48 bytes into a cache line, and the heap's 16-byte alignment changed with
+  every repetition and launch. The ring now starts on a cache line and the destination half a
+  page past it.
+- **The lock's long tail.** A `*_Concurrent_PublicationWait/.../extra_readers:2` reader that loses
+  the publication lock sleeps in the kernel (100 us at the 90th percentile, up to 1.3 ms at the
+  99th, against 2-3 us at the median), and one handoff per iteration reported the mean. Each
+  iteration now times 11 handoffs and reports their median (the mean stays as `mean_wait_us`).
+  Under `bench.ps1`'s pinning each of the benchmark's threads gets a CPU of its own, and the model
+  sits on cache lines of its own, since its placement decided how often the threads contended.
+
+The three `extra_readers:2` benchmarks still move between full runs: over three clean runs their
+median wait read 4.25-5.01 us (System), 4.21-5.05 us (Storage) and 4.74-8.83 us (GPU). A flag on
+one of them alone is still most likely noise (#3448).
+
+`check-benchmark-regression.py` prints the coverage line before any regressions, so a failing
+comparison still says how much it compared. Re-run a flagged benchmark with a filter before
+treating it as a regression.
 
 ### CI Benchmark Regression Gate
 
@@ -2876,6 +2912,7 @@ CI caches (#1406): ccache and the FetchContent source cache (`.github/actions/fe
 - **`sanitizers.yml`**: Performs heavy blocking runs using Address/Undefined Behavior (ASan+UBSan) and Thread (TSan) sanitizers, generating HTML reports of memory leaks or data races. A push to `main` or a `release/*` branch runs TSan only, because ASan+UBSan already gates every PR in `ci.yml` (a push to `main` also refreshes that PR job's ccache); manual dispatch runs both, and `heavy-checks.yml` runs both nightly.
 - **`cache-prune.yml`**: After each run on `main` of a workflow that saves caches (CI, Sanitizers, Heavy Checks, ARM64, CodeQL, Static Analysis, Manual Build, Release; the `check-cache-prune-triggers` pre-commit hook keeps the list complete, #2410), deletes superseded Actions cache entries (all but the newest of each `ccache-<key>` prefix, each OS's FetchContent, configure-check and clang-tidy result cache, and each CodeQL TRAP cache, `tools/cache-prune-stale.py`). Manual dispatch defaults to a dry run that lists what it would delete (#1583).
 - **`main-health.yml`**: After every run of the main workflows on `main` or a `release/*` branch (CI, which includes the nightly full `clang-tidy`, plus ARM64, CodeQL, Sanitizers, Heavy Checks, OSV and Pre-commit; not the dispatch-only `static-analysis.yml`), opens or updates that branch's tracking issue (`CI: <branch> is red`, labelled `ci-red-main`) while any of them is red, and closes it when all are green again (#1406, #2741). A manual dispatch re-reads `main` and every `release/*` branch.
+- **`winget-health.yml`**: Once a day, checks that the newest Latest release is on WinGet (`manifests/t/TaskSmack/TaskSmack/<version>/` on microsoft/winget-pkgs' default branch). While it isn't and its pull request is stuck (a validation-error or author-feedback label, closed, missing) or 7 days have passed, it keeps one issue open (`WinGet: TaskSmack.TaskSmack <version> isn't published`, labelled `release` and `agent:Windows`, found by its title, never `ci-red-main`), and closes it once the version is there (#3486; [Publishing to WinGet](docs/dev/release-process.md#publishing-to-winget)). It does nothing before the first submission.
 - **ClusterFuzzLite (`cflite_*.yml`)**: Google's continuous fuzzing suite. Runs on PRs (`cflite_pr.yml`), pushes to main (`cflite_build.yml`), and weekly for batching and pruning corpora (`cflite_batch.yml`, `cflite_prune.yml`).
 
 ### Code Quality & Hygiene

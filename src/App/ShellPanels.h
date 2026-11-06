@@ -1,8 +1,9 @@
 #pragma once
 
 // The shell's six panels and the wiring between them that does not touch the window (#2136): the
-// crash history they share, the signed-in sessions' feed (#3377), the models handed from one panel to
-// another, and the per-update hand-offs (capabilities, the selection count, Process Details' new
+// crash history they share, the signed-in sessions' feed (#3377), the priority changes in flight that
+// the Processes table and Process Details hold each other's priority controls by (#3467), the models
+// handed from one panel to another, and the per-update hand-offs (capabilities, the selection count, Process Details' new
 // samples, the Services sampler's background demand) and startup settings. ShellLayer adds the window,
 // the tab bar, the status bar and input around it; the headless PGO training driver
 // (src/Training/UiTrainingDriver.cpp) its own tab bar. One copy of the wiring, so training runs what
@@ -11,6 +12,7 @@
 
 #include "Domain/ProcessSnapshot.h"
 #include "Panels/ConnectionsPanel.h"
+#include "Panels/PriorityChangesInFlight.h"
 #include "Panels/ProcessDetailsPanel.h"
 #include "Panels/ProcessesPanel.h"
 #include "Panels/ServicesPanel.h"
@@ -116,6 +118,10 @@ class ShellPanels
     // The signed-in sessions, before every panel that shows them, so it outlives them (#3377). The Users tab
     // starts and stops it, at its attach and detach.
     UserSessionsFeed m_UserSessions;
+    // The processes a priority change is asked about or running for, in the Processes table or Process
+    // Details (#3467): each panel holds its own priority controls for a process the other has one for.
+    // Before both panels, so it outlives them.
+    PriorityChangesInFlight m_PriorityChanges;
     // The Processes panel first: its icon view outlives the Services and Startup tabs that draw with it.
     ProcessesPanel m_Processes;
     ProcessDetailsPanel m_ProcessDetails;

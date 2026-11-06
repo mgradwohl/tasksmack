@@ -6,6 +6,7 @@
 #include "WindowsFileLocation.h"
 #include "WindowsNtQuery.h"
 #include "WindowsProcessDump.h"
+#include "WindowsRunProgram.h"
 
 // clang-format off
 #ifndef WIN32_LEAN_AND_MEAN
@@ -90,6 +91,10 @@ struct WindowsProcessFunctions
     /// selectInFolder and no startProcess here: no Open file location (canOpenFileLocation false), as in
     /// TaskSmackHelper.exe, which never serves one (BrokeredProcessActions keeps it the user's own).
     Windows::FileLocationFunctions fileLocation{};
+    /// ShellExecuteExW and the elevation check, for Run new task (#3427). Null shellExecute: no Run new task
+    /// (canRunProgram false), as in TaskSmackHelper.exe, which never serves one (BrokeredProcessActions keeps
+    /// it the user's own), and in a test's table, so no test starts a program or raises UAC.
+    Windows::RunProgramFunctions runProgram{};
 };
 
 /// The real Win32 calls.
@@ -189,6 +194,11 @@ class WindowsProcessActions : public IProcessActions
     /// elevated helper. A process whose path can't be read (System, a protected process) is an error
     /// saying so; the System process (PID 4) is refused before anything is opened: it has no file.
     [[nodiscard]] ProcessActionResult openFileLocation(const ProcessTarget& target) override;
+    /// Run new task (#3427): the command line opened with ShellExecuteExW (Windows::runShellProgram()), so a
+    /// document, a folder or a web address works too; as administrator through the runas verb's UAC prompt,
+    /// unless TaskSmack is elevated already (read once, at construction), when it simply opens it, elevated.
+    /// A dismissed prompt is a cancelled result. As TaskSmack's user, never the elevated helper.
+    [[nodiscard]] ProcessActionResult runProgram(const RunProgramRequest& request) override;
     [[nodiscard]] ProcessActionResult
     actOnThread(const ProcessTarget& target, std::int32_t tid, std::uint64_t threadCreateTime, ThreadAction action) override;
 
@@ -207,6 +217,7 @@ class WindowsProcessActions : public IProcessActions
 
     WindowsProcessFunctions m_Fns;
     std::vector<std::uint32_t> m_GroupSizes; // Each processor group's maximum processor count, read at construction
+    bool m_Elevated = false;                 // TaskSmack's token elevated, read at construction (#3427)
     DWORD m_ThreadActionRefusedPid = 0;      // refuseThreadActionsOn()'s
 };
 

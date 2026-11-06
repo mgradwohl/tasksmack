@@ -10,6 +10,7 @@
 #include "Platform/CpuDetails.h"
 #include "Platform/SystemTypes.h"
 #include "Platform/Windows/ProcessorPerformanceCounter.h" // IWYU pragma: keep (destroys the null counter)
+#include "Platform/Windows/WindowsCommitPaging.h"
 #include "Platform/Windows/WindowsSystemProbe.h"
 #include "Platform/Windows/WindowsSystemProbeMath.h"
 
@@ -24,6 +25,8 @@
 #include <cstring>
 #include <iterator>
 #include <optional>
+#include <span>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -47,6 +50,7 @@ namespace
 
 constexpr LONG STATUS_ACCESS_DENIED_NT = static_cast<LONG>(0xC0000022L);
 constexpr LONG STATUS_INFO_LENGTH_MISMATCH_NT = static_cast<LONG>(0xC0000004L);
+constexpr LONG STATUS_BUFFER_TOO_SMALL_NT = static_cast<LONG>(0xC0000023L);
 constexpr ULONG PROCESSOR_PERFORMANCE_CLASS = 8;
 constexpr ULONG PAGE_FILE_CLASS = 18;
 constexpr ULONG HYPERVISOR_CLASS = 91; // ARM64's hypervisor read (#2377); x64 asks CPUID instead
@@ -107,6 +111,22 @@ struct FakeSystem // NOLINT(clang-analyzer-optin.performance.Padding)
     bool failPageFile = false;
     bool pageFileMismatchFirst = false;
     bool noPageFile = false;
+    // The process list (#3363): whether it answers, the Memory Compression process's working set in it
+    // (0 = no such process: compression is off), whether it first says the probe's buffer is too small,
+    // and how many times it was asked
+    bool processListAnswers = true;
+    std::uint64_t compressionWorkingSet = 0;
+    bool processListMismatchFirst = false;
+    int processListQueries = 0;
+    // The Memory Compression process's id and session (#3483), and one session's list
+    // (SystemSessionProcessInformation): whether it answers, how many times it was asked and for which
+    // session last
+    std::uint64_t compressionProcessId = 3808;
+    ULONG compressionSessionId = 0;
+    bool sessionListAnswers = true;
+    bool sessionListTooSmallAnswersBufferTooSmall = false;
+    int sessionListQueries = 0;
+    ULONG lastSessionQueried = 0xFFFFFFFF;
     // How far the fakes below advance the probe's clock (#2731), in place of the real calls' time
     std::chrono::milliseconds systemTimesTake{0};
     std::chrono::milliseconds memoryStatusTake{0};
@@ -318,10 +338,98 @@ LONG pageFileQuery(PVOID buffer, ULONG length, PULONG returned)
     return 0;
 }
 
+/// Writes a process list in SystemProcessInformation's layout: the idle process (no name, session 0) when
+/// @p withIdle, then "Memory Compression" with compressionWorkingSet, compressionProcessId and
+/// compressionSessionId when @p withCompression. @p needed bytes are asked for (the list's own size when 0).
+LONG writeProcessList(PVOID buffer, ULONG length, PULONG returned, bool withIdle, bool withCompression, std::size_t needed)
+{
+    const auto& f = fake();
+    constexpr std::wstring_view NAME = L"Memory Compression";
+    constexpr std::size_t STRIDE = sizeof(SYSTEM_PROCESS_INFORMATION) + 64;
+    const std::size_t entries = (withIdle ? 1U : 0U) + (withCompression ? 1U : 0U);
+    if (needed == 0)
+    {
+        needed = STRIDE * entries;
+    }
+    *returned = static_cast<ULONG>(needed);
+    if (length < needed)
+    {
+        return STATUS_INFO_LENGTH_MISMATCH_NT;
+    }
+    auto* at = static_cast<std::byte*>(buffer);
+    if (withIdle)
+    {
+        SYSTEM_PROCESS_INFORMATION idle{};
+        idle.NextEntryOffset = withCompression ? static_cast<ULONG>(STRIDE) : 0;
+        idle.WorkingSetSize = 8;
+        std::memcpy(at, &idle, sizeof(idle));
+        at += STRIDE;
+    }
+    if (withCompression)
+    {
+        auto* name =
+            reinterpret_cast<wchar_t*>(at + sizeof(SYSTEM_PROCESS_INFORMATION)); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+        std::memcpy(name, NAME.data(), NAME.size() * sizeof(wchar_t));
+        SYSTEM_PROCESS_INFORMATION compression{};
+        compression.ImageName.Length = static_cast<USHORT>(NAME.size() * sizeof(wchar_t));
+        compression.ImageName.MaximumLength = compression.ImageName.Length;
+        compression.ImageName.Buffer = name;
+        compression.UniqueProcessId =
+            reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(f.compressionProcessId)); // NOLINT(performance-no-int-to-ptr)
+        compression.SessionId = f.compressionSessionId;
+        compression.WorkingSetSize = static_cast<SIZE_T>(f.compressionWorkingSet);
+        std::memcpy(at, &compression, sizeof(compression));
+    }
+    return 0;
+}
+
+/// The process list (#3363): the idle process, then "Memory Compression" when compressionWorkingSet is set.
+/// Padded past the probe's first buffer when asked for a mismatch.
+LONG processListQuery(PVOID buffer, ULONG length, PULONG returned)
+{
+    auto& f = fake();
+    ++f.processListQueries;
+    if (!f.processListAnswers)
+    {
+        return STATUS_ACCESS_DENIED_NT;
+    }
+    const std::size_t needed =
+        f.processListMismatchFirst ? WindowsCommitPaging::PROCESS_INFORMATION_INITIAL_BYTES + sizeof(SYSTEM_PROCESS_INFORMATION) + 64 : 0;
+    return writeProcessList(buffer, length, returned, true, f.compressionWorkingSet != 0, needed);
+}
+
+/// One session's process list (#3483): the request names the session and the buffer; the idle process is
+/// in session 0, Memory Compression in compressionSessionId. An empty session writes nothing.
+LONG sessionListQuery(PVOID request, ULONG length, PULONG returned)
+{
+    auto& f = fake();
+    ++f.sessionListQueries;
+    if (!f.sessionListAnswers || length != sizeof(WindowsCommitPaging::SessionProcessRequest))
+    {
+        return STATUS_ACCESS_DENIED_NT;
+    }
+    WindowsCommitPaging::SessionProcessRequest session{};
+    std::memcpy(&session, request, sizeof(session));
+    f.lastSessionQueried = session.sessionId;
+    const bool withIdle = session.sessionId == 0;
+    const bool withCompression = f.compressionWorkingSet != 0 && session.sessionId == f.compressionSessionId;
+    if (!withIdle && !withCompression)
+    {
+        *returned = 0;
+        return 0;
+    }
+    const LONG status = writeProcessList(session.buffer, session.bufferBytes, returned, withIdle, withCompression, 0);
+    return status == STATUS_INFO_LENGTH_MISMATCH_NT && f.sessionListTooSmallAnswersBufferTooSmall ? STATUS_BUFFER_TOO_SMALL_NT : status;
+}
+
 LONG NTAPI fakeNtQuerySystemInformation(ULONG infoClass, PVOID buffer, ULONG length, PULONG returned)
 {
     switch (infoClass)
     {
+    case WindowsCommitPaging::SYSTEM_PROCESS_INFORMATION_CLASS:
+        return processListQuery(buffer, length, returned);
+    case WindowsCommitPaging::SYSTEM_SESSION_PROCESS_INFORMATION_CLASS:
+        return sessionListQuery(buffer, length, returned);
     case PROCESSOR_PERFORMANCE_CLASS:
         ++fake().ntPerCoreCalls;
         if (fake().failNtPerCore)
@@ -554,6 +662,151 @@ TEST_F(WindowsSystemProbeSeamsTest, PageFileListLongerThanTheFirstBufferIsReadIn
     const SystemCounters counters = probe.read();
 
     EXPECT_EQ(counters.memory.swapTotalBytes, 1'500ULL * PAGE_SIZE);
+}
+
+// #3363: compressed memory is the Memory Compression process's working set. #3483: the first sample finds
+// it in the whole process list, grown into a buffer kept between samples; each later one reads it, at the
+// same interval, from its session's list alone.
+TEST_F(WindowsSystemProbeSeamsTest, CompressedMemoryIsTheMemoryCompressionProcesssWorkingSet)
+{
+    fake().compressionWorkingSet = 300ULL << 20U;
+    fake().compressionSessionId = 2; // whichever session the snapshot says, not an assumed 0
+    fake().processListMismatchFirst = true;
+    auto probe = makeProbe();
+    SystemCounters counters = probe.read();
+    EXPECT_TRUE(counters.memory.hasMemoryCompression);
+    EXPECT_EQ(counters.memory.memoryCompressionBytes, 300ULL << 20U);
+    EXPECT_EQ(fake().processListQueries, 2) << "the first buffer was too small, so it grew once";
+    EXPECT_EQ(fake().sessionListQueries, 0);
+
+    fake().compressionWorkingSet = 310ULL << 20U;
+    counters = probe.read();
+    EXPECT_TRUE(counters.memory.hasMemoryCompression);
+    EXPECT_EQ(counters.memory.memoryCompressionBytes, 310ULL << 20U) << "read again each sample";
+    EXPECT_EQ(fake().processListQueries, 2) << "no whole snapshot once the process is known";
+    EXPECT_EQ(fake().sessionListQueries, 1);
+    EXPECT_EQ(fake().lastSessionQueried, 2U);
+}
+
+// #3483: after the first sample, no sample takes the whole process snapshot while the process stays.
+TEST_F(WindowsSystemProbeSeamsTest, CompressedMemoryTakesNoWholeSnapshotPerSampleAfterTheFirst)
+{
+    fake().compressionWorkingSet = 300ULL << 20U;
+    auto probe = makeProbe();
+    for (int sample = 0; sample < 20; ++sample)
+    {
+        fake().compressionWorkingSet = (300ULL + static_cast<std::uint64_t>(sample)) << 20U;
+        fakeClock() += std::chrono::seconds{1};
+        const SystemCounters counters = probe.read();
+        ASSERT_TRUE(counters.memory.hasMemoryCompression) << "sample " << sample;
+        EXPECT_EQ(counters.memory.memoryCompressionBytes, (300ULL + static_cast<std::uint64_t>(sample)) << 20U) << "sample " << sample;
+    }
+    EXPECT_EQ(fake().processListQueries, 1);
+    EXPECT_EQ(fake().sessionListQueries, 19);
+}
+
+// #3483: a process gone from its session's list (compression restarted it under a new id) is searched
+// for again in the same sample, so the value doesn't skip one, and the new id is read after that.
+TEST_F(WindowsSystemProbeSeamsTest, CompressedMemoryFindsTheProcessAgainWhenItsGone)
+{
+    fake().compressionWorkingSet = 300ULL << 20U;
+    auto probe = makeProbe();
+    ASSERT_TRUE(probe.read().memory.hasMemoryCompression);
+
+    fake().compressionProcessId = 9100; // a new process
+    fake().compressionWorkingSet = 50ULL << 20U;
+    SystemCounters counters = probe.read();
+    EXPECT_TRUE(counters.memory.hasMemoryCompression);
+    EXPECT_EQ(counters.memory.memoryCompressionBytes, 50ULL << 20U);
+    EXPECT_EQ(fake().sessionListQueries, 1) << "the old id was looked for in the session list";
+    EXPECT_EQ(fake().processListQueries, 2) << "then found again in the whole snapshot";
+
+    fake().compressionWorkingSet = 60ULL << 20U;
+    counters = probe.read();
+    EXPECT_EQ(counters.memory.memoryCompressionBytes, 60ULL << 20U);
+    EXPECT_EQ(fake().processListQueries, 2);
+    EXPECT_EQ(fake().sessionListQueries, 2);
+}
+
+// #3363: with no Memory Compression process (compression off) the value is hidden. #3483: the whole
+// snapshot then looks for one only every MEMORY_COMPRESSION_SEARCH_INTERVAL_SECONDS, so compression
+// turned on is still found; turned off again, it is hidden at once.
+TEST_F(WindowsSystemProbeSeamsTest, CompressedMemoryIsHiddenWhenOffAndSearchedForOnTheSearchInterval)
+{
+    auto probe = makeProbe();
+    SystemCounters counters = probe.read();
+    EXPECT_FALSE(counters.memory.hasMemoryCompression);
+    EXPECT_EQ(counters.memory.memoryCompressionBytes, 0U);
+    EXPECT_EQ(fake().processListQueries, 1);
+
+    const auto interval = std::chrono::seconds(Domain::Sampling::MEMORY_COMPRESSION_SEARCH_INTERVAL_SECONDS);
+    fake().compressionWorkingSet = 300ULL << 20U; // turned on
+    fakeClock() += interval - std::chrono::seconds{1};
+    EXPECT_FALSE(probe.read().memory.hasMemoryCompression) << "not searched for before the interval";
+    EXPECT_EQ(fake().processListQueries, 1);
+    EXPECT_EQ(fake().sessionListQueries, 0);
+
+    fakeClock() += std::chrono::seconds{1};
+    counters = probe.read();
+    EXPECT_TRUE(counters.memory.hasMemoryCompression);
+    EXPECT_EQ(counters.memory.memoryCompressionBytes, 300ULL << 20U);
+    EXPECT_EQ(fake().processListQueries, 2);
+
+    fake().compressionWorkingSet = 0; // turned off
+    counters = probe.read();
+    EXPECT_FALSE(counters.memory.hasMemoryCompression);
+    EXPECT_EQ(counters.memory.memoryCompressionBytes, 0U);
+    EXPECT_EQ(fake().processListQueries, 3) << "gone from the session list, so the whole snapshot was searched";
+    EXPECT_FALSE(probe.read().memory.hasMemoryCompression);
+    EXPECT_EQ(fake().processListQueries, 3) << "and not again before the interval";
+}
+
+// #3363: no process list, or no NtQuerySystemInformation, hides the value and nothing else. #3483: a
+// session list that fails falls back to the whole snapshot each sample, at the same interval.
+TEST_F(WindowsSystemProbeSeamsTest, CompressedMemoryIsHiddenOnFailureAndFallsBackToTheWholeSnapshot)
+{
+    fake().compressionWorkingSet = 300ULL << 20U;
+    fake().processListAnswers = false;
+    auto probe = makeProbe();
+    SystemCounters counters = probe.read();
+    EXPECT_FALSE(counters.memory.hasMemoryCompression);
+    EXPECT_EQ(counters.memory.totalBytes, 16ULL << 30U) << "the rest of memory is still read";
+
+    fake().ntAvailable = false;
+    auto withoutNt = makeProbe();
+    EXPECT_FALSE(withoutNt.read().memory.hasMemoryCompression);
+
+    fake() = FakeSystem{};
+    fake().compressionWorkingSet = 300ULL << 20U;
+    fake().sessionListAnswers = false;
+    auto withoutSessions = makeProbe();
+    for (int sample = 0; sample < 3; ++sample)
+    {
+        fake().compressionWorkingSet = (300ULL + static_cast<std::uint64_t>(sample)) << 20U;
+        counters = withoutSessions.read();
+        ASSERT_TRUE(counters.memory.hasMemoryCompression) << "sample " << sample;
+        EXPECT_EQ(counters.memory.memoryCompressionBytes, (300ULL + static_cast<std::uint64_t>(sample)) << 20U);
+    }
+    EXPECT_EQ(fake().sessionListQueries, 1) << "tried once";
+    EXPECT_EQ(fake().processListQueries, 3) << "then the whole snapshot each sample";
+}
+
+// #3483: the session list grows its buffer on STATUS_BUFFER_TOO_SMALL as well as on
+// STATUS_INFO_LENGTH_MISMATCH, as it may answer either when the request's buffer is too small.
+TEST_F(WindowsSystemProbeSeamsTest, SessionProcessListGrowsOnBufferTooSmall)
+{
+    fake().compressionWorkingSet = 300ULL << 20U;
+    fake().sessionListTooSmallAnswersBufferTooSmall = true;
+    std::vector<std::byte> buffer;
+    const std::optional<std::size_t> written =
+        WindowsCommitPaging::querySessionProcessesInto(&fakeNtQuerySystemInformation, 0, buffer, sizeof(SYSTEM_PROCESS_INFORMATION));
+    EXPECT_EQ(fake().sessionListQueries, 2) << "grown once";
+    ASSERT_TRUE(written.has_value());
+    const std::optional<WindowsCommitPaging::MemoryCompressionProcess> process = WindowsCommitPaging::findMemoryCompressionProcess(
+        std::span<const std::byte>(buffer.data(), written.value_or(0)), fake().compressionProcessId);
+    ASSERT_TRUE(process.has_value());
+    EXPECT_EQ(process.value_or(WindowsCommitPaging::MemoryCompressionProcess{}).workingSet, 300ULL << 20U);
+    EXPECT_EQ(process.value_or(WindowsCommitPaging::MemoryCompressionProcess{.sessionId = 1}).sessionId, 0U);
 }
 
 TEST_F(WindowsSystemProbeSeamsTest, WithoutNtQuerySystemInformationExTheOneGroupQueryIsUsed)

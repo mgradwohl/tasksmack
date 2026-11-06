@@ -21,6 +21,7 @@
 #include <linux/filter.h>
 #include <linux/seccomp.h>
 #include <netinet/in.h>
+#include <sched.h>
 #include <sys/ioctl.h>
 #include <sys/ipc.h>
 #include <sys/mman.h>
@@ -138,6 +139,61 @@ TEST_F(HelperSandboxTest, ItsOwnJobStillWorks)
                                        return page == MAP_FAILED ? 6 : 0;
                                    });
     EXPECT_EQ(status, 0);
+}
+
+// #3086: Set scheduling policy may move a thread to Batch or Idle (and back to Normal, with CAP_SYS_NICE), with
+// SCHED_RESET_ON_FORK kept where the thread had it; real time (with or without the flag) and sched_setattr stay
+// refused. FIFO is asked for with priority 0, which the kernel rejects as invalid (EINVAL) before it checks privilege:
+// so EPERM can only be the filter's refusal, on a privileged runner or not, and with the flag allowed for Batch, a FIFO
+// refusal can't be the flag's.
+TEST_F(HelperSandboxTest, OnlyNormalBatchAndIdleSchedulingPoliciesAreSet)
+{
+    // Leaving Idle needs CAP_SYS_NICE or RLIMIT_NICE, filter or not: a runner under Idle can't run the positive checks.
+    if ((::sched_getscheduler(0) & ~SCHED_RESET_ON_FORK) == SCHED_IDLE)
+    {
+        GTEST_SKIP() << "the test runner is under SCHED_IDLE";
+    }
+    EXPECT_EQ(underFilter(HelperSandbox::Mode::Enforce,
+                          []
+                          {
+                              const sched_param param{.sched_priority = 0};
+                              if (::sched_setscheduler(0, SCHED_BATCH, &param) != 0)
+                              {
+                                  return 1;
+                              }
+                              if (::sched_getscheduler(0) != SCHED_BATCH)
+                              {
+                                  return 2;
+                              }
+                              return ::sched_setscheduler(0, SCHED_IDLE, &param) == 0 ? 0 : 3;
+                          }),
+              0);
+    EXPECT_EQ(underFilter(HelperSandbox::Mode::Enforce,
+                          []
+                          {
+                              const sched_param param{.sched_priority = 0};
+                              if (::sched_setscheduler(0, SCHED_BATCH | SCHED_RESET_ON_FORK, &param) != 0)
+                              {
+                                  return errno;
+                              }
+                              return ::sched_getscheduler(0) == (SCHED_BATCH | SCHED_RESET_ON_FORK) ? 0 : -1;
+                          }),
+              0);
+    EXPECT_EQ(underFilter(HelperSandbox::Mode::Enforce,
+                          []
+                          {
+                              const sched_param param{.sched_priority = 0}; // invalid for FIFO: EINVAL unless filtered
+                              return errorOf(::sched_setscheduler(0, SCHED_FIFO | SCHED_RESET_ON_FORK, &param));
+                          }),
+              EPERM);
+    EXPECT_EQ(underFilter(HelperSandbox::Mode::Enforce,
+                          []
+                          {
+                              const sched_param param{.sched_priority = 0}; // invalid for FIFO: EINVAL unless filtered
+                              return errorOf(::sched_setscheduler(0, SCHED_FIFO, &param));
+                          }),
+              EPERM);
+    EXPECT_EQ(underFilter(HelperSandbox::Mode::Enforce, [] { return errorOf(::syscall(SYS_sched_setattr, 0, nullptr, 0)); }), EPERM);
 }
 
 TEST_F(HelperSandboxTest, FilesOpenReadOnly)

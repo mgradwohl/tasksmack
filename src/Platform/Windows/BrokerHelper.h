@@ -48,6 +48,7 @@
 #include <windows.h>
 // clang-format on
 
+#include "Domain/Worker.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/Windows/BrokerPipe.h"
 #include "Platform/Windows/BrokerPipeServer.h"
@@ -63,7 +64,6 @@
 #include <stop_token>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <vector>
 
 namespace Platform::Windows::BrokerHelper
@@ -196,13 +196,22 @@ struct Self
 /// error says which check failed.
 [[nodiscard]] std::expected<void, std::string> checkParentIsTaskSmack(HANDLE parent, const Arguments& arguments, const Self& self);
 
+/// WaitForMultipleObjects, or a test's stand-in.
+using WaitForObjectsFn = DWORD(WINAPI*)(DWORD count, const HANDLE* handles, BOOL waitAll, DWORD milliseconds);
+
 /// A stop token that is stopped when @p process ends or @p outer is stopped: the session's, so the
-/// helper exits with TaskSmack. @p process (any waitable handle) must outlive this. Watched by a thread
-/// that blocks on it, not a poll.
+/// helper exits with TaskSmack. @p process (any waitable handle) must outlive this. Watched by a
+/// Domain::Worker (#3343, BROKER_WATCH_THREAD_NAME) whose one job blocks on it, not a poll, through
+/// @p wait. It fails closed: a wait that fails, or a watch that throws (the Worker contains it, and is
+/// Failed), stops the session too, so a session never runs unwatched. Only this watch's own end (its
+/// destruction, which sets the wake event through the job's cancel hook) leaves the token as it was.
+/// The constructor throws when the watch can't be started (no event, no thread, no memory), and the
+/// session then never starts.
 class ProcessWatch
 {
   public:
-    ProcessWatch(HANDLE process, const std::stop_token& outer);
+    ProcessWatch(HANDLE process, const std::stop_token& outer, WaitForObjectsFn wait = &::WaitForMultipleObjects);
+    /// Ends the wait (the cancel hook sets the wake event) and joins the thread, before the event is closed.
     ~ProcessWatch();
     ProcessWatch(const ProcessWatch&) = delete;
     ProcessWatch& operator=(const ProcessWatch&) = delete;
@@ -214,11 +223,28 @@ class ProcessWatch
         return m_Stop.get_token();
     }
 
+    /// Why the watch failed (it threw, and stopped the session), or empty when it hasn't.
+    [[nodiscard]] std::string failure() const
+    {
+        return m_Worker.failure();
+    }
+
   private:
+    struct Watch
+    {}; ///< The worker's one job: wait on the process and the wake event
+    struct Watched
+    {}; ///< It publishes nothing: its end is m_Stop
+    using WatchWorker = Domain::Worker<Watch, Watched>;
+
+    /// The job: waits for the process, or the wake. Anything else that ends it stops the session.
+    void watch(WatchWorker::JobContext& context);
+
+    HANDLE m_Process;
+    WaitForObjectsFn m_Wait;
     std::stop_source m_Stop;
-    UniqueHandle m_Wake; // set to end the watching thread
+    UniqueHandle m_Wake; // set by the job's cancel hook, to end the wait
     std::stop_callback<std::function<void()>> m_Outer;
-    std::jthread m_Thread; // last: joined first, while the rest is alive
+    WatchWorker m_Worker; // last: stopped and joined first, while the rest is alive
 };
 
 /// What one consent lets TaskSmack's user do through the helper (#2550).

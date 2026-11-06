@@ -5,6 +5,7 @@
 #include "App/Panels/ExitingProcessRows.h"
 #include "App/Panels/FindHandlesDialog.h"
 #include "App/Panels/NiceStep.h"
+#include "App/Panels/PriorityChangesInFlight.h"
 #include "App/Panels/ProcessActionRun.h"
 #include "App/Panels/ProcessAffinityDialog.h"
 #include "App/Panels/ProcessBatchAction.h"
@@ -20,6 +21,7 @@
 #include "App/Panels/ProcessRowFormat.h"
 #include "App/Panels/ProcessRowMeter.h"
 #include "App/Panels/ProcessRowMeterView.h"
+#include "App/Panels/ProcessSchedPolicyDialog.h"
 #include "App/Panels/ProcessSelection.h"
 #include "App/Panels/ProcessTableNavigation.h"
 #include "App/Panels/ProcessTreeFlatten.h"
@@ -317,6 +319,16 @@ class ProcessesPanel : public Panel
     /// (#1254). UI thread; takes no lock once a generation is cached.
     [[nodiscard]] Platform::ProcessCapabilities processCapabilities() const;
 
+    /// The priority changes in flight the table shares with Process Details (#3467), from the composition
+    /// root (ShellPanels), which keeps it alive longer than the panel: the table publishes the processes its
+    /// own changes are for (F7/F8, Set Realtime priority..., a batch priority change), and holds its
+    /// priority controls for a process Process Details has one running for. Null (the default, a panel on
+    /// its own) holds nothing.
+    void setPriorityChanges(PriorityChangesInFlight* changes) noexcept
+    {
+        m_PriorityChanges = changes;
+    }
+
     /// The GPU model whose probe decides whether per-process GPU usage can be observed (#1210). Set
     /// by ShellLayer, which shares it with the process model; kept weakly.
     void setGpuModel(const std::shared_ptr<const Domain::GPUModel>& gpuModel);
@@ -400,10 +412,12 @@ class ProcessesPanel : public Panel
         return m_WaitChainDialog;
     }
 
-    /// Whether the toolbar offers "Authenticate and retry" after a refused row action (#2308).
+    /// Whether the toolbar offers "Authenticate and retry" after a refused row action (#2308). Not for a
+    /// refused priority change (Efficiency mode included) while Process Details has one running for that process (#3467).
     [[nodiscard]] bool offersAuthenticateAndRetry() const noexcept
     {
-        return m_RowRetry.has_value() && m_RowActionResultSeconds > 0.0F && !rowActionRunning();
+        return m_RowRetry.has_value() && m_RowActionResultSeconds > 0.0F && !rowActionRunning() &&
+               (!Detail::changesPriority(m_RowRetry->action.kind) || !priorityHeldElsewhere(m_RowRetry->action.target));
     }
 
     /// Presses the toolbar's "Authenticate and retry", for tests.
@@ -569,9 +583,10 @@ class ProcessesPanel : public Panel
     // The row menu's "Set priority for N processes..." (#1484): picks the value, then the batch
     // confirmation above sets it.
     ProcessBatchPriorityDialog m_BatchPriorityDialog;
-    ProcessAffinityDialog m_AffinityDialog; // The row menu's Set affinity... (#1887)
-    RunTaskDialog m_RunTaskDialog;          // The toolbar's Run new task... (#3065)
-    FindHandlesDialog m_FindHandlesDialog;  // The toolbar's Find handles (#3067), with its own readers and worker
+    ProcessAffinityDialog m_AffinityDialog;       // The row menu's Set affinity... (#1887)
+    ProcessSchedPolicyDialog m_SchedPolicyDialog; // The row menu's Set scheduling policy... (#3086)
+    RunTaskDialog m_RunTaskDialog;                // The toolbar's Run new task... (#3065)
+    FindHandlesDialog m_FindHandlesDialog;        // The toolbar's Find handles (#3067), with its own readers and worker
     // The row menu's Create dump file... (#807). Declared after m_ProcessActions, which its worker uses
     // until it finishes, so it is destroyed (cancelling and waiting for a dump in flight) first.
     ProcessDumpView m_DumpView;
@@ -596,8 +611,34 @@ class ProcessesPanel : public Panel
     /// showing @p pending until it finishes; @p format turns its result into the toolbar's line. A
     /// permission refusal of @p retry, where the actions can ask for authorization, offers
     /// "Authenticate and retry" beside the line (#2308).
+    /// A priority change (@p retry a SetPriority, or @p setsPriorityOf for an authorized retry, which has no
+    /// @p retry of its own) is refused while Process Details has one running for the process (#3467), and
+    /// is published for it while it runs.
     template<typename Work>
-    void runRowAction(std::string pending, Work work, RowResultFormat format, std::optional<Platform::AuthorizedAction> retry);
+    void runRowAction(std::string pending,
+                      Work work,
+                      RowResultFormat format,
+                      std::optional<Platform::AuthorizedAction> retry,
+                      std::optional<Platform::ProcessTarget> setsPriorityOf = std::nullopt);
+    // The process the running single-process action sets the priority of (#3467); none for any other.
+    std::optional<Platform::ProcessTarget> m_RowRunPriorityTarget;
+    // The processes the running batch sets the priority of (#3467); empty for any other batch.
+    std::vector<Platform::ProcessTarget> m_BatchPriorityTargets;
+    // How many of the selection the running batch priority change left out, for a change running for
+    // each of them in Process Details (#3467); its result line says so.
+    std::size_t m_BatchPrioritySkipped = 0;
+    // Shared with Process Details by ShellPanels (#3467), which outlives this panel; null on its own.
+    PriorityChangesInFlight* m_PriorityChanges = nullptr;
+    std::vector<Platform::ProcessTarget> m_PublishedPriorityChanges; // publishPriorityChanges()' buffer, reused
+    /// Whether Process Details has a priority change for @p target asked about or running (#3467).
+    [[nodiscard]] bool priorityHeldElsewhere(const Platform::ProcessTarget& target) const noexcept
+    {
+        return m_PriorityChanges != nullptr && m_PriorityChanges->heldElsewhere(PriorityChangesInFlight::Panel::Processes, target);
+    }
+    /// Publishes the processes a priority change here is asked about or running for (#3467): Set Realtime
+    /// priority's confirm, the batch priority dialog's, and the running row action or batch, when it sets
+    /// the priority. Called from onUpdate(), after each frame's render, and empty at detach.
+    void publishPriorityChanges();
     void showRowActionResult(Detail::ActionResultMessage message, bool succeeded);
     /// The toolbar's "Authenticate and retry" was pressed: the refused action again, as an
     /// administrator, after the password prompt (IProcessActions::runAuthorized(), #2308).
@@ -941,6 +982,9 @@ class ProcessesPanel : public Panel
     /// The row menu's Set affinity... dialog (#1887), its own confirmation; on Apply, sets the chosen
     /// CPUs on the process it was opened for, by identity, and shows the result in the toolbar.
     void renderAffinityDialog();
+    /// The row menu's Set scheduling policy... dialog (#3086), its own confirmation; on Apply, sets the chosen
+    /// policy on the process it was opened for, by identity, and shows the result in the toolbar.
+    void renderSchedPolicyDialog();
     /// Run new task (#3065): the dialog while open, and the program it asks for started on the row action worker.
     void renderRunTaskDialog();
     /// "/" (#3097): the Find box beside the filter while it is open; what is typed, and Enter, ask

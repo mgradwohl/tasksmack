@@ -722,6 +722,9 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters,
     snap.zswapOriginalBytes = counters.memory.zswapOriginalBytes;
     snap.zswapCompressedBytes = counters.memory.zswapCompressedBytes;
     snap.compressionRatio = compressionRatio(snap);
+    // Compressed memory (#3363, Windows): a size only, no ratio
+    snap.hasMemoryCompression = counters.memory.hasMemoryCompression;
+    snap.memoryCompressionBytes = counters.memory.hasMemoryCompression ? counters.memory.memoryCompressionBytes : 0;
 
     // Uptime
     snap.uptimeSeconds = counters.uptimeSeconds;

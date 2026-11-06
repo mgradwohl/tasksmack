@@ -65,8 +65,8 @@ namespace App::ElevationNoticeText
     }
     if ((missing & Missing::RAISE_PRIORITY) != 0)
     {
-        text += "\n\nRaising a process's priority, the Realtime I/O class, and changing other users' "
-                "priority or CPU affinity are refused.";
+        text += "\n\nRaising a process's priority, the Realtime I/O class, taking a process off the Idle "
+                "scheduling policy, and changing other users' priority, CPU affinity or scheduling policy are refused.";
         need("CAP_SYS_NICE");
     }
     std::string named;

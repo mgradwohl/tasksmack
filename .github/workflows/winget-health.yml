@@ -1,0 +1,182 @@
+name: WinGet Health
+
+# Checks once a day that the newest Latest TaskSmack release is published on WinGet (#3486): that
+# manifests/t/TaskSmack/TaskSmack/<version>/ is on microsoft/winget-pkgs' default branch. release.yml's
+# publish-winget job opens the pull request that adds it; this follows that pull request to the merge. While the
+# version isn't there and its pull request carries a label that needs us (a validation error, author feedback, the
+# CLA), or none is open, or 7 days have passed since the release, it keeps ONE tracking issue open (title
+# "WinGet: TaskSmack.TaskSmack <version> isn't published", labels `release` and `agent:Windows`, found by that exact
+# title among the open `release` issues; never `ci-red-main`, which means main is red and holds every merge) and
+# closes it once the version is on the default branch. Before the first, manual submission (no
+# TaskSmack.TaskSmack in winget-pkgs at all) it does nothing. docs/dev/release-process.md, "Publishing to WinGet".
+#
+# Its own workflow rather than a job in main-health.yml: main-health runs on workflow_run after this repo's own
+# workflows and judges branches by their runs, while this runs on a schedule and reads another repository. Only
+# public, read-only calls to microsoft/winget-pkgs, with this run's GITHUB_TOKEN; no other token.
+on:
+  schedule:
+    - cron: '23 16 * * *'  # daily, 08:23 Pacific standard time
+  workflow_dispatch:
+
+concurrency:
+  group: winget-health
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  check:
+    name: Check WinGet has the Latest release
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      contents: read  # the Latest release
+      issues: write  # the tracking issue
+    steps:
+      - name: Open, update or close the tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SERVER: ${{ github.server_url }}
+          PACKAGE_ID: TaskSmack.TaskSmack
+          PACKAGE_PATH: manifests/t/TaskSmack/TaskSmack
+          WINGET_REPO: microsoft/winget-pkgs
+          LABELS: release,agent:Windows
+          GRACE_DAYS: '7'
+          # winget-pkgs labels (gh api repos/microsoft/winget-pkgs/labels) that mean the pull request is stuck until
+          # someone acts: every *Error* and *Failed* label except the Waived-* ones, and these.
+          BLOCKING_LABELS: |-
+            Author-Not-Authorized
+            Blocking-Issue
+            Changes-Requested
+            Needs-Author-Feedback
+            Needs-CLA
+            Package-Flagged
+            PUA-Detection
+            Validation-Hash-Flagged
+        run: |
+          set -euo pipefail
+          run_link="[${GITHUB_WORKFLOW}](${SERVER}/${REPO}/actions/runs/${GITHUB_RUN_ID})"
+
+          # Prints 200 or 404 for a GET. Only a confirmed 404 means "not there": a rate limit (403/429), a 5xx or no
+          # response is retried with backoff, then fails the check with what GitHub said, rather than reading as
+          # "not submitted" or "no pull request".
+          http_status() {
+            local path=$1 delay=5 try out status detail
+            for try in 1 2 3 4; do
+              out=$(gh api -i --silent "$path" 2>&1) || true
+              status=$(sed -nE '1s#^HTTP/[^ ]+ ([0-9]{3}).*#\1#p' <<<"$out")
+              if [[ "$status" == 200 || "$status" == 404 ]]; then
+                echo "$status"
+                return 0
+              fi
+              if [[ -n "$status" ]]; then
+                detail=$(grep -iE '^(HTTP/|Retry-After|X-Ratelimit-(Remaining|Reset))' <<<"$out" | tr -d '\r' | paste -sd ';' - || true)
+              else
+                detail="no response: $(tr '\n' ' ' <<<"$out")"
+              fi
+              echo "GET $path, try $try of 4: $detail" >&2
+              if (( try < 4 )) && [[ -z "$status" || "$status" == 403 || "$status" == 429 || "$status" -ge 500 ]]; then
+                sleep "$delay"
+                delay=$(( delay * 2 ))
+                continue
+              fi
+              echo "::error title=WinGet Health::GET $path failed ($detail)" >&2
+              return 1
+            done
+          }
+
+          # Before the first submission there is nothing to follow.
+          status=$(http_status "repos/$WINGET_REPO/contents/$PACKAGE_PATH")
+          if [[ "$status" == 404 ]]; then
+            echo "$PACKAGE_ID isn't in $WINGET_REPO yet (no first submission); nothing to check."
+            exit 0
+          fi
+
+          # The newest Latest release: GitHub's Latest is never a draft or a pre-release.
+          latest=$(gh api "repos/$REPO/releases/latest" --jq '"\(.tag_name)|\(.published_at)"')
+          IFS='|' read -r tag published <<<"$latest"
+          version=${tag#v}
+          title="WinGet: $PACKAGE_ID $version isn't published"
+          echo "Latest release: $tag, published $published."
+
+          # REST only: `gh issue edit`/`view` go through GraphQL fields that fail on this repo.
+          # The one issue, found by its title among the open `release` issues: the exact title for this version, or
+          # an older version's (retitled below, so there's still only one).
+          issue=$(gh api --paginate "repos/$REPO/issues?labels=release&state=open&per_page=100" \
+            --jq ".[] | select(.pull_request == null) | select(.title == \"$title\" or
+              (.title | test(\"^WinGet: $PACKAGE_ID [0-9.]+ isn't published$\"))) | .number" | head -n1)
+
+          status=$(http_status "repos/$WINGET_REPO/contents/$PACKAGE_PATH/$version")
+          if [[ "$status" == 200 ]]; then
+            echo "$PACKAGE_ID $version is on $WINGET_REPO's default branch."
+            if [[ -n "$issue" ]]; then
+              gh api "repos/$REPO/issues/$issue/comments" --silent \
+                -f body="\`$PACKAGE_ID\` $version is on WinGet: ${SERVER}/${WINGET_REPO}/tree/HEAD/${PACKAGE_PATH}/${version} (closed by ${run_link})."
+              gh api -X PATCH "repos/$REPO/issues/$issue" --silent -f state=closed -f state_reason=completed
+              echo "Closed #$issue."
+            fi
+            exit 0
+          fi
+
+          # Not there yet: find this version's pull request, newest first, an open one before a closed one (search
+          # gives a merged one as closed, but a merged one would have put the version on the default branch). The
+          # search is captured first, so a failed search stops the check rather than reading as "no pull request".
+          if ! prs=$(gh api -X GET search/issues -f q="repo:$WINGET_REPO is:pr $PACKAGE_ID in:title" -f sort=created \
+            -f order=desc -f per_page=30 --jq ".items[] | select(.title | contains(\"$PACKAGE_ID\"))
+              | \"\(.number)|\(.state)|\(.html_url)|\([.labels[].name] | join(\",\"))|\(.title)\""); then
+            echo "::error title=WinGet Health::Searching $WINGET_REPO's pull requests failed; nothing was decided."
+            exit 1
+          fi
+          version_re="(^|[^0-9.])${version//./\\.}(\$|[^0-9.])"
+          pr_number='' pr_state='' pr_url='' pr_labels=''
+          while IFS='|' read -r number state url labels pr_title; do
+            [[ -n "$number" && "$pr_title" =~ $version_re ]] || continue
+            if [[ -z "$pr_number" || "$state" == 'open' ]]; then
+              pr_number=$number pr_state=$state pr_url=$url pr_labels=$labels
+            fi
+            [[ "$state" != 'open' ]] || break
+          done <<<"$prs"
+          age_days=$(( ($(date -u +%s) - $(date -u -d "$published" +%s)) / 86400 ))
+          problems=()
+          if [[ -z "$pr_number" ]]; then
+            # publish-winget submits within minutes of publishing; a day without a pull request means it didn't.
+            (( age_days < 1 )) || problems+=("no pull request for $version on $WINGET_REPO (did release.yml's publish-winget job run?)")
+          else
+            echo "Pull request: $pr_url ($pr_state; labels: ${pr_labels:-none})."
+            [[ "$pr_state" == 'open' ]] || problems+=("its pull request $pr_url was closed without merging")
+            blocking=()
+            IFS=',' read -r -a labels <<<"$pr_labels"
+            for label in "${labels[@]}"; do
+              [[ -n "$label" && "$label" != Waived-* ]] || continue
+              if [[ "$label" == *Error* || "$label" == *Failed* ]] || grep -qxF -- "$label" <<<"$BLOCKING_LABELS"; then
+                blocking+=("\`$label\`")
+              fi
+            done
+            (( ${#blocking[@]} == 0 )) || problems+=("its pull request $pr_url is labelled ${blocking[*]}")
+          fi
+          (( age_days < GRACE_DAYS )) || problems+=("it isn't merged $age_days days after the release (the limit is $GRACE_DAYS)")
+
+          if (( ${#problems[@]} == 0 )); then
+            echo "$PACKAGE_ID $version isn't on WinGet yet, but nothing needs us (release $age_days days old)."
+            exit 0
+          fi
+
+          list=$(printf -- '- %s\n' "${problems[@]}")
+          echo "$list"
+          body="\`$PACKAGE_ID\` $version (release [$tag](${SERVER}/${REPO}/releases/tag/${tag}), published $published) isn't on WinGet yet:
+
+          ${list}
+
+          WinGet publishes a version once its pull request merges into \`$WINGET_REPO\`. See the pull request's validation comments, [winget-pkgs' validation failure guide](${SERVER}/${WINGET_REPO}/blob/master/doc/ValidationFailureGuide.md) and docs/dev/release-process.md, \"Publishing to WinGet\". This issue is maintained by \`.github/workflows/winget-health.yml\` (#3486): it is rewritten every day and closed automatically once \`${PACKAGE_PATH}/${version}\` is on winget-pkgs' default branch. Last updated by ${run_link}."
+
+          if [[ -z "$issue" ]]; then
+            args=(-f title="$title" -f body="$body")
+            IFS=',' read -r -a labels <<<"$LABELS"
+            for label in "${labels[@]}"; do args+=(-f "labels[]=$label"); done
+            issue=$(gh api "repos/$REPO/issues" "${args[@]}" --jq .number)
+            echo "Opened #$issue."
+          else
+            gh api -X PATCH "repos/$REPO/issues/$issue" --silent -f title="$title" -f body="$body"
+            echo "Updated #$issue."
+          fi

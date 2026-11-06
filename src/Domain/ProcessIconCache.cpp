@@ -169,7 +169,7 @@ ProcessIconCache::lookupEntry(bool file, std::uint64_t key, std::int32_t pid, st
     {
         return nullptr;
     }
-    // Before the cached answer: a worker that failed after admitting a drain leaves rows whose entries
+    // Before the cached answer: a worker whose drain threw after it was admitted leaves rows whose entries
     // answer every later lookup, so no submit() would see it end. They keep the generic icon (Failed is
     // terminal: nothing is left to load them), and the failure is logged once.
     reportWorkerFailure();

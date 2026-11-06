@@ -9,6 +9,7 @@
 #include "App/Panels/IncrementalSearch.h"
 #include "App/Panels/NewProcessHighlight.h"
 #include "App/Panels/NiceStep.h"
+#include "App/Panels/PriorityChangesInFlight.h"
 #include "App/Panels/ProcessActionConfirm.h"
 #include "App/Panels/ProcessActionsView.h"
 #include "App/Panels/ProcessAffinityDialog.h"
@@ -27,6 +28,7 @@
 #include "App/Panels/ProcessRowMeter.h"
 #include "App/Panels/ProcessRowMeterView.h"
 #include "App/Panels/ProcessRowSelection.h"
+#include "App/Panels/ProcessSchedPolicyDialog.h"
 #include "App/Panels/ProcessSelection.h"
 #include "App/Panels/ProcessSignatureText.h"
 #include "App/Panels/ProcessSortUtils.h"
@@ -845,6 +847,20 @@ static_assert(std::ranges::all_of(allProcessColumns(),
               "CELL_RENDERERS needs one entry per Processes column, in ProcessColumn "
               "order, with a renderer for every column but PID and Name");
 
+/// What a batch priority change's result line adds for the @p skipped processes it left out, each with a
+/// priority change still running in Process Details (#3467): "; 1 process skipped: ...". Empty for none.
+[[nodiscard]] std::string batchPrioritySkippedText(std::size_t skipped)
+{
+    if (skipped == 0)
+    {
+        return {};
+    }
+    return std::format("; {} skipped: {} priority change{} still running in Process Details",
+                       ProcessBatch::processCountText(skipped),
+                       skipped == 1 ? "its" : "their",
+                       skipped == 1 ? " is" : "s are");
+}
+
 } // namespace
 
 // ============================================================================
@@ -1291,6 +1307,12 @@ void ProcessesPanel::onDetach()
     // asked to stop first, so a password prompt still up is given up on, not waited out (#2388).
     m_RowActionRun.requestStop();
     m_RowActionRun.update(/*wait=*/true);
+    // Nothing here holds Process Details' priority controls any more (#3467).
+    m_BatchPriorityTargets.clear();
+    if (m_PriorityChanges != nullptr)
+    {
+        m_PriorityChanges->publish(PriorityChangesInFlight::Panel::Processes, {});
+    }
     // The UDP event trace's session is stopped here, not left to whichever of the model and this
     // panel lets the collector go last (#1492): after a switch still running on its worker (#3155),
     // which is waited for, and whatever was asked for after it dropped. The one wait a detach makes
@@ -1376,10 +1398,20 @@ void ProcessesPanel::onUpdate(float deltaTime)
     // the progress line.
     if (std::optional<ProcessBatch::BatchRunOutcome> outcome = m_BatchRun.poll(); outcome.has_value())
     {
+        // A batch priority change that left processes out says how many, and why (#3467).
+        if (m_BatchPrioritySkipped > 0)
+        {
+            outcome->message.ok = false;
+            outcome->message.text += batchPrioritySkippedText(m_BatchPrioritySkipped);
+        }
+        m_BatchPriorityTargets.clear();
+        m_BatchPrioritySkipped = 0;
         showBatchOutcome(std::move(*outcome));
     }
     // So has a single-process action (#2305): its result line replaces "Killing PID 123...".
     m_RowActionRun.update();
+    // Neither holds Process Details' priority controls any more once taken in (#3467).
+    publishPriorityChanges();
 
     if (!m_ProcessModel || !m_Sampler)
     {
@@ -1818,7 +1850,7 @@ void ProcessesPanel::renderContent()
     }
     ImGui::SetCursorPosX(statusLayout.x);
     {
-        const bool colored = showActionResult;
+        const bool colored = showActionResult && !m_RowActionResult.neutral; // a cancelled run: the normal colour (#3427)
         if (colored)
         {
             ImGui::PushStyleColor(ImGuiCol_Text, m_RowActionResult.ok ? theme.scheme().textSuccess : theme.scheme().textError);
@@ -1927,6 +1959,8 @@ void ProcessesPanel::renderContent()
     renderBatchPriorityDialog();
     // The row menu's Set affinity... (#1887), applied on its own Apply.
     renderAffinityDialog();
+    // The row menu's Set scheduling policy... (#3086), applied on its own Apply.
+    renderSchedPolicyDialog();
     renderRunTaskDialog();
     renderFindHandlesDialog(currentSnapshots);
 
@@ -2209,6 +2243,7 @@ void ProcessesPanel::renderContent()
             {
                 sortSpecs->SpecsDirty = true;
                 ImGui::EndTable();
+                publishPriorityChanges(); // as at the end of the frame's drawing (#3467)
                 return;
             }
 
@@ -2303,6 +2338,41 @@ void ProcessesPanel::renderContent()
 
         ImGui::EndTable();
     }
+    // A priority change asked about or started this frame holds Process Details' controls from now (#3467).
+    publishPriorityChanges();
+}
+
+void ProcessesPanel::publishPriorityChanges()
+{
+    if (m_PriorityChanges == nullptr)
+    {
+        return;
+    }
+    m_PublishedPriorityChanges.clear();
+    const auto publishTargets = [this](std::span<const ProcessBatch::BatchTarget> targets)
+    {
+        for (const ProcessBatch::BatchTarget& target : targets)
+        {
+            m_PublishedPriorityChanges.push_back(target.target);
+        }
+    };
+    if (Detail::changesPriority(m_RowAction.action))
+    {
+        publishTargets(m_RowAction.targets); // Set Realtime priority or Efficiency mode, asked about in its confirm
+    }
+    if (m_BatchPriorityDialog.isPending())
+    {
+        publishTargets(m_BatchPriorityDialog.targets()); // the dialog is its confirmation (#1539)
+    }
+    if (m_RowActionRun.busy() && m_RowRunPriorityTarget.has_value())
+    {
+        m_PublishedPriorityChanges.push_back(*m_RowRunPriorityTarget);
+    }
+    if (m_BatchRun.busy())
+    {
+        m_PublishedPriorityChanges.insert(m_PublishedPriorityChanges.end(), m_BatchPriorityTargets.begin(), m_BatchPriorityTargets.end());
+    }
+    m_PriorityChanges->publish(PriorityChangesInFlight::Panel::Processes, m_PublishedPriorityChanges);
 }
 
 size_t ProcessesPanel::processCount() const
@@ -3213,8 +3283,8 @@ void ProcessesPanel::applyKeyboardInput(const std::vector<Domain::ProcessSnapsho
     // So is a dump's confirm, progress or result (#807), and a batch still running on its worker (#2142),
     // and the wait chain dialog (#3084), which has an End process confirmation of its own.
     const bool rowActionPending = m_ShowRowActionConfirm || m_RowAction.pending() || m_BatchPriorityDialog.isPending() ||
-                                  m_AffinityDialog.isPending() || m_RunTaskDialog.isOpen() || m_FindHandlesDialog.isOpen() ||
-                                  m_DumpView.active() || m_WaitChainDialog.isOpen() || rowActionRunning();
+                                  m_AffinityDialog.isPending() || m_SchedPolicyDialog.isPending() || m_RunTaskDialog.isOpen() ||
+                                  m_FindHandlesDialog.isOpen() || m_DumpView.active() || m_WaitChainDialog.isOpen() || rowActionRunning();
     if (killRequested && m_Selection.size() > 1)
     {
         // Only while at least one selected row is visible: with every selected row filtered out, F9
@@ -3535,8 +3605,12 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
     // Efficiency mode (#3071), as Task Manager's row menu has it: one process, ticked while it is on.
     // Turning it on is confirmed; turning it off isn't.
     const bool on = Detail::isInEfficiencyMode(proc);
+    // Efficiency mode sets the priority: greyed out, too, while Process Details changes this process's (#3467).
+    const Platform::ProcessTarget rowTarget{.pid = proc.pid, .startTimeTicks = proc.startTimeTicks};
+    const char* const priorityHeld =
+        priorityHeldElsewhere(rowTarget) ? PriorityChangesInFlight::waitReason(PriorityChangesInFlight::Panel::Processes) : nullptr;
     const Detail::EfficiencyModeToggle toggle =
-        Detail::efficiencyModeToggle(can, {.pid = proc.pid, .startTimeTicks = proc.startTimeTicks}, on, !actionsIdle, batchCount);
+        Detail::holdEfficiencyModeToggle(Detail::efficiencyModeToggle(can, rowTarget, on, !actionsIdle, batchCount), priorityHeld);
     if (toggle.state != Detail::EfficiencyModeToggleState::Hidden)
     {
         ImGui::Separator();
@@ -3547,12 +3621,11 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
         ImGui::SetItemTooltip("%s", toggle.tooltip); // a disabled item still says why
     }
     // The Realtime priority class (#3429, Windows): one process, always confirmed with a warning.
-    if (const Detail::RealtimePriorityItem realtime =
-            Detail::realtimePriorityItem(can,
-                                         {.pid = proc.pid, .startTimeTicks = proc.startTimeTicks},
-                                         proc.priorityClass == Domain::Priority::PriorityClass::Realtime,
-                                         !actionsIdle,
-                                         batchCount);
+    // Greyed out, too, while Process Details changes this process's priority (#3467).
+    if (const Detail::RealtimePriorityItem realtime = Detail::holdRealtimePriorityItem(
+            Detail::realtimePriorityItem(
+                can, rowTarget, proc.priorityClass == Domain::Priority::PriorityClass::Realtime, !actionsIdle, batchCount),
+            priorityHeld);
         realtime.state != Detail::RealtimePriorityState::Hidden)
     {
         if (toggle.state == Detail::EfficiencyModeToggleState::Hidden) // else it shares Efficiency mode's group
@@ -3591,10 +3664,23 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
                                   m_AffinityLayout);
         }
     }
+    // One process's scheduling policy (#3086, Linux): Normal, Batch or Idle, in its own dialog, beside Set affinity.
+    if (can.canSetSchedPolicy && batchCount == 0)
+    {
+        if (!can.canSetAffinity) // else it shares Set affinity...'s group
+        {
+            ImGui::Separator();
+        }
+        if (ImGui::MenuItem(ICON_FA_CLOCK " Set scheduling policy...###SetSchedPolicy", nullptr, false, actionsIdle))
+        {
+            m_SchedPolicyDialog.open({.pid = proc.pid, .startTimeTicks = proc.startTimeTicks}, proc.name, proc.schedPolicy);
+        }
+        ImGui::SetItemTooltip("Normal, Batch or Idle: how the kernel shares the CPU with this process");
+    }
     // One process's dump file (#807), as Task Manager's row menu offers it; never for a selection.
     if (DumpDetail::offersCreateDump(can, batchCount))
     {
-        if (!can.canSetAffinity || batchCount != 0) // else it shares Set affinity...'s group
+        if ((!can.canSetAffinity && !can.canSetSchedPolicy) || batchCount != 0) // else it shares Set affinity...'s group
         {
             ImGui::Separator();
         }
@@ -3612,7 +3698,7 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
     // it waits on no row action.
     if (WaitChainDetail::offersAnalyzeWaitChain(can, batchCount))
     {
-        if (!can.canSetAffinity && !DumpDetail::offersCreateDump(can, batchCount)) // else it shares their group
+        if (!can.canSetAffinity && !can.canSetSchedPolicy && !DumpDetail::offersCreateDump(can, batchCount)) // else it shares their group
         {
             ImGui::Separator();
         }
@@ -3950,13 +4036,52 @@ void ProcessesPanel::renderBatchPriorityDialog()
         showBatchOutcome({.message = {.ok = false, .text = "Process actions unavailable"}, .anySucceeded = false});
         return;
     }
-    const std::span<const ProcessBatch::BatchTarget> targets = m_BatchPriorityDialog.targets();
-    if (std::optional<ProcessBatch::BatchRunOutcome> failed = m_BatchRun.startPriority(
-            *m_ProcessActions, std::vector<ProcessBatch::BatchTarget>(targets.begin(), targets.end()), *nice, m_OwnPid);
+    // A process Process Details is changing the priority of is left out, and the result line says so
+    // (#3467): set now as well, the older of the two changes could land last.
+    std::vector<ProcessBatch::BatchTarget> targets;
+    std::size_t skipped = 0;
+    for (const ProcessBatch::BatchTarget& target : m_BatchPriorityDialog.targets())
+    {
+        if (priorityHeldElsewhere(target.target))
+        {
+            ++skipped;
+        }
+        else
+        {
+            targets.push_back(target);
+        }
+    }
+    if (targets.empty())
+    {
+        showBatchOutcome({
+            .message =
+                {
+                    .ok = false,
+                    .text = std::format("Priority not set{}", batchPrioritySkippedText(skipped)),
+                },
+            .anySucceeded = false,
+        });
+        return;
+    }
+    if (m_BatchRun.busy())
+    {
+        return; // startPriority() starts nothing while another batch runs, and the menu offers none meanwhile
+    }
+    std::vector<Platform::ProcessTarget> identities;
+    identities.reserve(targets.size());
+    for (const ProcessBatch::BatchTarget& target : targets)
+    {
+        identities.push_back(target.target);
+    }
+    if (std::optional<ProcessBatch::BatchRunOutcome> failed =
+            m_BatchRun.startPriority(*m_ProcessActions, std::move(targets), *nice, m_OwnPid);
         failed.has_value())
     {
         showBatchOutcome(std::move(*failed));
+        return;
     }
+    m_BatchPriorityTargets = std::move(identities);
+    m_BatchPrioritySkipped = skipped;
 }
 
 void ProcessesPanel::showBatchOutcome(ProcessBatch::BatchRunOutcome outcome)
@@ -3986,7 +4111,7 @@ void ProcessesPanel::renderRunTaskDialog()
         [actions = m_ProcessActions.get(), request = *request] { return actions->runProgram(request); },
         [shown = std::move(shown), admin = request->asAdministrator](const Platform::ProcessActionResult& result)
         { return runTaskResultMessage(shown, admin, result); },
-        std::nullopt); // its own pkexec prompt when elevated: nothing the helper does
+        std::nullopt); // its own pkexec or UAC prompt when elevated (#3427): nothing the helper does
 }
 
 void ProcessesPanel::renderFindHandlesDialog(const std::vector<Domain::ProcessSnapshot>& snapshots)
@@ -4031,8 +4156,35 @@ void ProcessesPanel::renderAffinityDialog()
         Platform::AuthorizedAction{.kind = Platform::AuthorizedAction::Kind::SetAffinity, .target = target, .cpus = *cpus});
 }
 
+void ProcessesPanel::renderSchedPolicyDialog()
+{
+    const std::optional<Platform::SchedPolicy> policy = m_SchedPolicyDialog.render();
+    if (!policy.has_value())
+    {
+        return;
+    }
+    const Platform::ProcessTarget target = m_SchedPolicyDialog.target();
+    const Platform::RealtimeThreads realtime = m_SchedPolicyDialog.realtimeThreads();
+    runRowAction(
+        std::format("Setting the scheduling policy of PID {}...", target.pid),
+        [actions = m_ProcessActions.get(), target, policy = *policy, realtime]
+        { return actions->setSchedPolicy(target, policy, realtime); },
+        [name = m_SchedPolicyDialog.name(), pid = target.pid, policy = *policy](const Platform::ProcessActionResult& result)
+        { return schedPolicyResultMessage(name, pid, policy, result); },
+        Platform::AuthorizedAction{
+            .kind = Platform::AuthorizedAction::Kind::SetSchedPolicy,
+            .target = target,
+            .schedPolicy = *policy,
+            .realtimeThreads = realtime,
+        });
+}
+
 template<typename Work>
-void ProcessesPanel::runRowAction(std::string pending, Work work, RowResultFormat format, std::optional<Platform::AuthorizedAction> retry)
+void ProcessesPanel::runRowAction(std::string pending,
+                                  Work work,
+                                  RowResultFormat format,
+                                  std::optional<Platform::AuthorizedAction> retry,
+                                  std::optional<Platform::ProcessTarget> setsPriorityOf)
 {
     if (!m_ProcessActions)
     {
@@ -4044,6 +4196,20 @@ void ProcessesPanel::runRowAction(std::string pending, Work work, RowResultForma
         showRowActionResult(format(Platform::ProcessActionResult::error("Another action is still running")), false);
         return;
     }
+    // F7/F8, Set Realtime priority, Efficiency mode and their retries set the priority, as Process Details' changes do: never
+    // while one for the same process runs there, or the older of the two could land last (#3467).
+    if (!setsPriorityOf.has_value() && retry.has_value() && Detail::changesPriority(retry->kind))
+    {
+        setsPriorityOf = retry->target;
+    }
+    if (setsPriorityOf.has_value() && priorityHeldElsewhere(*setsPriorityOf))
+    {
+        showRowActionResult(
+            format(Platform::ProcessActionResult::error(PriorityChangesInFlight::refusal(PriorityChangesInFlight::Panel::Processes))),
+            false);
+        return;
+    }
+    m_RowRunPriorityTarget = setsPriorityOf;
     static_cast<void>(m_RowActionRun.start(
         std::move(pending),
         std::move(work),
@@ -4068,12 +4234,15 @@ void ProcessesPanel::retryRowActionAuthorized()
     }
     RowRetry retry = std::move(*m_RowRetry);
     m_RowRetry.reset();
+    const std::optional<Platform::ProcessTarget> setsPriorityOf =
+        Detail::changesPriority(retry.action.kind) ? std::optional<Platform::ProcessTarget>{retry.action.target} : std::nullopt;
     runRowAction(
         std::format("Waiting for authorization to act on PID {}...", retry.action.target.pid),
         [actions = m_ProcessActions.get(), action = retry.action](const std::stop_token& stopToken)
         { return actions->runAuthorized(action, stopToken); },
         std::move(retry.format),
-        std::nullopt); // a refusal to the administrator isn't offered again
+        std::nullopt, // a refusal to the administrator isn't offered again
+        setsPriorityOf);
 }
 
 void ProcessesPanel::showRowActionResult(Detail::ActionResultMessage message, bool succeeded)

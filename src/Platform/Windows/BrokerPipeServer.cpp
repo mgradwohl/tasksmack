@@ -56,11 +56,11 @@ bool isRead(const Broker::Request& request) noexcept
     // Every kind is sorted into the Hello, an action or a read. One added to Broker::Request must be
     // sorted here too, or a one-action session (#2550) and the over-the-shoulder read filter
     // (BrokerHelper::readsOnlyOwnProcesses) might let it through: revisit both, then this count.
-    // ServiceActionRequest and CloseConnectionRequest (#3066) are actions Windows' helper doesn't do (an ErrorReply),
-    // so they are neither here.
+    // ServiceActionRequest, CloseConnectionRequest (#3066) and SchedPolicyRequest (#3086, Linux only) are actions
+    // Windows' helper doesn't do (an ErrorReply), so they are neither here.
     // TaskManagerReplacementRequest (#3072), SessionActionRequest (#3076) and ThreadActionRequest (#3069) are actions
     // (isActionWindowsDoes()).
-    static_assert(std::variant_size_v<Broker::Request> == 22, "sort the new request kind into an action or a read");
+    static_assert(std::variant_size_v<Broker::Request> == 23, "sort the new request kind into an action or a read");
     return std::holds_alternative<Broker::EnvironmentRequest>(request) || std::holds_alternative<Broker::ModulesRequest>(request) ||
            std::holds_alternative<Broker::OpenFilesRequest>(request) || std::holds_alternative<Broker::ConnectionsRequest>(request) ||
            std::holds_alternative<Broker::MemoryRollupRequest>(request) || std::holds_alternative<Broker::FirmwareFileRequest>(request) ||

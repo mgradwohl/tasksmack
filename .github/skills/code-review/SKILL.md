@@ -45,7 +45,7 @@ TaskSmack has a strict layered architecture: App → UI → Core → Domain → 
 
 - Verify mutex usage and `std::atomic` correctness in `BackgroundSampler` and snapshot publication paths.
 - Snapshots published to UI must be immutable and versioned; flag shared mutable state crossed between sampler threads and render code.
-- A new background thread uses `Domain::Worker` (`src/Domain/Worker.h`, #3343); a raw `std::jthread` needs a reason.
+- A new background thread uses `Domain::Worker` (`src/Domain/Worker.h`, #3343); a raw `std::jthread` or detached `std::thread` needs a stated reason at the thread.
 
 ### Timing and cadence (#2731)
 
@@ -92,6 +92,10 @@ TaskSmack has a strict layered architecture: App → UI → Core → Domain → 
 - **No frame-timing assumptions:** the event drain stops after `DRAIN_BUDGET_MS` (`src/Core/Application.cpp`), so two
   events pushed together can be handled in different frames under load (#2901). A test waits on the state it
   observes, not on a frame count. A scenario step retries from fresh geometry until it takes (#2906).
+- **Real OS paths (#3489):** a change to a real OS call that tests reach only through fakes (a process action, the
+  shell, the elevated helper, a system figure) adds a `CiRealSystem*` test (`tests/Support/CiRealSystem.h`; CI's
+  "Real-system tests" step runs it on a disposable runner), or the PR says why only a manual check can cover it (a
+  UAC prompt, a sign-out, hardware). Flag a PR that does neither.
 - **Fuzz builds:** when a source a fuzzer compiles gains a dependency, the fuzzer's `build_fuzzer` line in
   `.clusterfuzzlite/build.sh` needs it too. A missing one fails "Fuzz changed parsers" at link time (#2930).
 

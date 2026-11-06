@@ -54,6 +54,21 @@ inline constexpr std::int32_t REALTIME_PRIORITY_NICE = Domain::Priority::classNi
     return action == ProcessAction::EfficiencyModeOn || action == ProcessAction::EfficiencyModeOff;
 }
 
+/// Whether @p action changes the process's priority, so it must not overlap another priority change of
+/// the same process (#3429, #3467): Set Realtime priority, and Efficiency mode, which sets Idle on Windows
+/// (nice 19 on Linux) and restores a class when turned off.
+[[nodiscard]] constexpr bool changesPriority(ProcessAction action) noexcept
+{
+    return action == ProcessAction::SetRealtimePriority || isEfficiencyModeAction(action);
+}
+
+/// Whether the authorized retry @p kind changes the process's priority (#3467): a priority change
+/// (the slider's, F7/F8, Set Realtime priority) or an Efficiency mode change.
+[[nodiscard]] constexpr bool changesPriority(Platform::AuthorizedAction::Kind kind) noexcept
+{
+    return kind == Platform::AuthorizedAction::Kind::SetPriority || kind == Platform::AuthorizedAction::Kind::SetEfficiencyMode;
+}
+
 /// Whether @p snapshot's process is in Efficiency mode, as its Status says (#3071): what checks the toggle.
 [[nodiscard]] inline bool isInEfficiencyMode(const Domain::ProcessSnapshot& snapshot) noexcept
 {
@@ -424,6 +439,10 @@ struct ActionResultMessage
 {
     bool ok = false;
     std::string text; ///< Empty when there is nothing to show.
+    /// Neither a success nor a failure: the user called it off at a system prompt (Run new task's dismissed
+    /// UAC prompt, #3427). ok is false, since nothing was done, but the line is drawn in the normal text
+    /// colour, not the error colour.
+    bool neutral = false;
 
     [[nodiscard]] bool empty() const noexcept
     {

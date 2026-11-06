@@ -16,9 +16,11 @@
 #include "App/Panels/ProcessActionRun.h"
 #include "App/Panels/ProcessAffinityDialog.h"
 #include "App/Panels/ProcessDumpView.h"
+#include "App/Panels/ProcessSchedPolicyDialog.h"
 #include "App/Panels/ProcessWaitChainDialog.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/SchedPolicy.h"
 #include "ProcessDetailsPanel_ActionHelpers.h"
 #include "UI/IconsFontAwesome6.h"
 
@@ -122,6 +124,8 @@ inline constexpr float ACTION_RESULT_SECONDS = 5.0F;
 inline constexpr const char* SYSCALL_TRACE_LABEL = ICON_FA_TERMINAL " Trace system calls (strace)";
 /// The Actions card's Set affinity... button (#1887), opening ProcessAffinityDialog.
 inline constexpr const char* SET_AFFINITY_LABEL = ICON_FA_MICROCHIP " Set affinity...";
+/// The Actions card's Set scheduling policy... button (#3086, Linux), opening ProcessSchedPolicyDialog.
+inline constexpr const char* SET_SCHED_POLICY_LABEL = ICON_FA_CLOCK " Set scheduling policy...";
 
 /// How the trace button is drawn.
 enum class SyscallTraceButtonState : std::uint8_t
@@ -314,6 +318,30 @@ struct RealtimePriorityItem
     };
 }
 
+/// @p toggle, held while another priority change for the same process runs (#3467): Efficiency mode sets
+/// the priority too. An enabled toggle is greyed out with @p heldReason; any other, and every toggle when
+/// @p heldReason is null, is left as it is.
+[[nodiscard]] constexpr EfficiencyModeToggle holdEfficiencyModeToggle(EfficiencyModeToggle toggle, const char* heldReason) noexcept
+{
+    if (toggle.state == EfficiencyModeToggleState::Enabled && heldReason != nullptr)
+    {
+        return {.state = EfficiencyModeToggleState::Disabled, .tooltip = heldReason};
+    }
+    return toggle;
+}
+
+/// @p item, held while a priority change for the same process runs in another panel (#3467): an enabled
+/// item is greyed out with @p heldReason (PriorityChangesInFlight::holdReason()); any other, and every
+/// item when @p heldReason is null, is left as it is.
+[[nodiscard]] constexpr RealtimePriorityItem holdRealtimePriorityItem(RealtimePriorityItem item, const char* heldReason) noexcept
+{
+    if (item.state == RealtimePriorityState::Enabled && heldReason != nullptr)
+    {
+        return {.state = RealtimePriorityState::Disabled, .tooltip = heldReason};
+    }
+    return item;
+}
+
 /// "Opened strace for PID 321 in a new terminal" / "Could not trace PID 321: ...".
 [[nodiscard]] inline ActionResultMessage formatSyscallTraceResult(std::int32_t pid, const Platform::ProcessActionResult& result)
 {
@@ -363,6 +391,9 @@ class ProcessActionsView
     /// Then "Set affinity..." where the platform can (#1887), placed the same way; it opens the affinity
     /// dialog with @p currentAffinity's CPUs ticked (null: every CPU), for the process captured now.
     ///
+    /// Then "Set scheduling policy..." where the platform can (#3086, Linux), placed the same way; it opens
+    /// the policy dialog with @p currentSchedPolicy chosen when it offers that one, for the process captured now.
+    ///
     /// Then "Create dump file..." where the platform can write one (#807), placed the same way; it asks
     /// to confirm a dump of the process captured now, into the temp folder.
     ///
@@ -377,7 +408,8 @@ class ProcessActionsView
                         const std::string& processName,
                         const Platform::ProcessTarget& target,
                         const Platform::CpuAffinity* currentAffinity = nullptr,
-                        bool efficiencyMode = false);
+                        bool efficiencyMode = false,
+                        Platform::SchedPolicy currentSchedPolicy = Platform::SchedPolicy::Unknown);
 
     /// Draws the last action's result line, when there is one, with "Authenticate and retry" beside a
     /// permission refusal the platform can retry as an administrator (#2308).
@@ -387,23 +419,26 @@ class ProcessActionsView
     }
 
     /// Whether the result line offers "Authenticate and retry" (#2308).
-    /// Not for a refused priority change (Set Realtime priority) while the Priority card's own apply runs
-    /// (holdPriorityRetry(), #3429): the two would race.
+    /// Not for a refused priority change (Set Realtime priority, Efficiency mode) while another priority
+    /// change for the process runs (holdPriorityChanges(), #3429, #3467): the two would race.
     [[nodiscard]] bool offersAuthenticateAndRetry() const noexcept
     {
         if (!m_Retry.has_value() || m_ActionRun.busy())
         {
             return false;
         }
-        return !m_PriorityRetryHeld || m_Retry->action.kind != Platform::AuthorizedAction::Kind::SetPriority;
+        return m_PriorityHoldReason == nullptr || !Detail::changesPriority(m_Retry->action.kind);
     }
 
-    /// Whether the Priority card's Apply (or its retry) runs for this process now (#3429): "Authenticate
-    /// and retry" for a refused Set Realtime priority waits until it is done, so the two never set the
-    /// priority at once and the older can't land last. The caller sets it each frame, before rendering.
-    void holdPriorityRetry(bool held) noexcept
+    /// Why this view's priority changes for the shown process wait, or null when they needn't (#3429,
+    /// #3467): the Priority card's Apply (or its retry) runs, or the Processes table has a priority change
+    /// for the process in flight. The Efficiency mode checkbox is greyed out with @p reason meanwhile, and
+    /// "Authenticate and retry" for a refused Set Realtime priority or Efficiency mode change isn't offered,
+    /// so the two never set the priority at once and the older can't land last. The caller sets it each
+    /// frame, before rendering.
+    void holdPriorityChanges(const char* reason) noexcept
     {
-        m_PriorityRetryHeld = held;
+        m_PriorityHoldReason = reason;
     }
 
     /// Presses "Authenticate and retry", for tests.
@@ -426,6 +461,10 @@ class ProcessActionsView
     /// platform can't set affinity (#1887).
     [[nodiscard]] static float setAffinityButtonWidth(const Platform::ProcessActionCapabilities& capabilities);
 
+    /// Width of the Set scheduling policy... button for @p capabilities at the current font, or 0 where the
+    /// platform can't set a scheduling policy (#3086).
+    [[nodiscard]] static float setSchedPolicyButtonWidth(const Platform::ProcessActionCapabilities& capabilities);
+
     /// Width of the Create dump file... button for @p capabilities at the current font, or 0 where the
     /// platform can't write a dump (#807).
     [[nodiscard]] static float createDumpButtonWidth(const Platform::ProcessActionCapabilities& capabilities);
@@ -443,8 +482,8 @@ class ProcessActionsView
     /// dispatched to @p actions. Kept apart from the buttons so it runs even when they are not drawn:
     /// ProcessDetailsPanel calls it at panel scope, since the Actions block's child is skipped while it
     /// is scrolled out of view, and F9 must still open its Kill confirm then (#1493).
-    /// The affinity dialog (#1887) runs here too, and is closed unapplied when @p liveTarget is no
-    /// longer the process it was opened for; and the dump's confirm, progress and result (#807), its
+    /// The affinity dialog (#1887) and the scheduling policy dialog (#3086) run here too, each closed unapplied
+    /// when @p liveTarget is no longer the process it was opened for; and the dump's confirm, progress and result (#807), its
     /// confirm closed unconfirmed the same way. And the wait chain dialog (#3084), which names its own
     /// process, so it stays up whatever is selected.
     void renderConfirmation(Platform::IProcessActions* actions, const Platform::ProcessTarget& liveTarget)
@@ -452,6 +491,7 @@ class ProcessActionsView
         m_ActionRun.update(); // a confirmed action, trace launch or affinity change that has finished (#2305)
         renderConfirmDialog(actions, liveTarget);
         renderAffinityDialog(actions, liveTarget);
+        renderSchedPolicyDialog(actions, liveTarget);
         m_DumpView.render(actions, &liveTarget);
         m_WaitChainDialog->render();
     }
@@ -478,6 +518,12 @@ class ProcessActionsView
     [[nodiscard]] ProcessAffinityDialog& affinityDialog() noexcept
     {
         return m_AffinityDialog;
+    }
+
+    /// The scheduling policy dialog, for tests: open after Set scheduling policy... is pressed (#3086).
+    [[nodiscard]] ProcessSchedPolicyDialog& schedPolicyDialog() noexcept
+    {
+        return m_SchedPolicyDialog;
     }
 
     /// The update path (#3182): starts the one read of @p actions' CPU layout on its worker, early, so
@@ -519,6 +565,7 @@ class ProcessActionsView
         m_DismissPending = m_DismissPending || confirmPending();
         cancelConfirm();
         m_AffinityDialog.dismiss();
+        m_SchedPolicyDialog.dismiss();
         m_DumpView.onSelectionChanged(); // its confirm only: a dump already running goes on
         m_LastResult = {};
         m_Retry.reset(); // never offer to retry an action on a process no longer shown
@@ -659,12 +706,37 @@ class ProcessActionsView
         return m_ConfirmTarget;
     }
 
-    /// Whether a priority change is asked about or running here (#3429): Set Realtime priority pending its
-    /// confirm, running, or retried as an administrator. The Priority card holds its own Apply meanwhile, so
+    /// Whether a priority change is asked about or running here (#3429): Set Realtime priority or Efficiency
+    /// mode (#3467, Detail::changesPriority()) pending its confirm, running, or retried as an administrator.
+    /// The Priority card holds its own Apply meanwhile, so
     /// the two never set the same process's priority at once and the older one can't land last.
     [[nodiscard]] bool priorityChangeInFlight() const noexcept
     {
-        return m_ConfirmAction == Detail::ProcessAction::SetRealtimePriority || (m_ActionRun.busy() && m_RunSetsPriority);
+        return priorityChangeTarget().has_value();
+    }
+
+    /// The process priorityChangeInFlight()'s change is for (#3467): the confirm's captured process, or the
+    /// one the running change was started for, which a selection change since doesn't move. Process Details
+    /// publishes it, so the Processes table holds its own priority controls for that process meanwhile.
+    [[nodiscard]] std::optional<Platform::ProcessTarget> priorityChangeTarget() const noexcept
+    {
+        if (Detail::changesPriority(m_ConfirmAction))
+        {
+            return m_ConfirmTarget.target;
+        }
+        if (m_ActionRun.busy())
+        {
+            return m_RunPriorityTarget;
+        }
+        return std::nullopt;
+    }
+
+    /// Takes a finished action's result in, as renderConfirmation() does: from the panel's update path too
+    /// (#3467), so a change that finished while the tab was hidden no longer holds the Processes table's
+    /// priority controls until the tab is shown again. Never waits.
+    void updateActionRun()
+    {
+        m_ActionRun.update();
     }
 
     /// The result line, empty when there is nothing to show.
@@ -711,10 +783,17 @@ class ProcessActionsView
             showResult(format(Platform::ProcessActionResult::error("Another action is still running")));
             return;
         }
+        // Set Realtime priority (#3429) and Efficiency mode set the priority, as the Priority card's Apply
+        // does: never while another change for the process runs (holdPriorityChanges()), and the card holds
+        // its Apply while this runs (priorityChangeInFlight()), and so does the Processes table (#3467).
+        const bool setsPriority = retry.has_value() && Detail::changesPriority(retry->kind);
+        if (setsPriority && m_PriorityHoldReason != nullptr)
+        {
+            showResult(format(Platform::ProcessActionResult::error(m_PriorityHoldReason)));
+            return;
+        }
         m_RunGeneration = m_Generation;
-        // Set Realtime priority (#3429) sets the priority, as the Priority card's Apply does: the card holds
-        // its Apply while this runs (priorityChangeInFlight()).
-        m_RunSetsPriority = retry.has_value() && retry->kind == Platform::AuthorizedAction::Kind::SetPriority;
+        m_RunPriorityTarget = setsPriority ? std::optional<Platform::ProcessTarget>{retry->target} : std::nullopt;
         static_cast<void>(m_ActionRun.start(
             std::move(pending),
             std::move(work),
@@ -745,15 +824,16 @@ class ProcessActionsView
         }
         Retry retry = std::move(*m_Retry);
         m_Retry.reset();
-        const bool setsPriority = retry.action.kind == Platform::AuthorizedAction::Kind::SetPriority;
+        const std::optional<Platform::ProcessTarget> priorityTarget =
+            Detail::changesPriority(retry.action.kind) ? std::optional<Platform::ProcessTarget>{retry.action.target} : std::nullopt;
         runAction(
             retry.actions,
             std::format("Waiting for authorization to act on PID {}...", retry.action.target.pid),
             [actions = retry.actions, action = retry.action](const std::stop_token& stopToken)
             { return actions->runAuthorized(action, stopToken); },
             std::move(retry.format),
-            std::nullopt);                // a refusal to the administrator isn't offered again
-        m_RunSetsPriority = setsPriority; // runAction() can't tell from the retry it was given, which is none
+            std::nullopt);                    // a refusal to the administrator isn't offered again
+        m_RunPriorityTarget = priorityTarget; // runAction() can't tell from the retry it was given, which is none
     }
 
     /// Takes in the CPU layout's read once it has finished, and hands the layout to an affinity dialog
@@ -792,6 +872,16 @@ class ProcessActionsView
     /// The affinity dialog while it is open; closed unapplied once @p liveTarget moves on. Apply sets
     /// the CPUs through @p actions (null: unavailable) and shows the result line.
     void renderAffinityDialog(Platform::IProcessActions* actions, const Platform::ProcessTarget& liveTarget);
+    /// Set scheduling policy... (#3086): at the row's end at its own width, as the affinity button is. A press
+    /// opens the dialog for @p target, with @p current chosen when it is Normal, Batch or Idle.
+    void renderSetSchedPolicyButton(const Platform::ProcessActionCapabilities& capabilities,
+                                    const std::string& processName,
+                                    const Platform::ProcessTarget& target,
+                                    Platform::SchedPolicy current,
+                                    bool afterButtons);
+    /// The scheduling policy dialog while it is open; closed unapplied once @p liveTarget moves on. Apply sets
+    /// the policy through @p actions (null: unavailable) and shows the result line.
+    void renderSchedPolicyDialog(Platform::IProcessActions* actions, const Platform::ProcessTarget& liveTarget);
     void renderSyscallTraceButton(Platform::IProcessActions* actions,
                                   const Platform::ProcessActionCapabilities& capabilities,
                                   const Platform::ProcessTarget& target,
@@ -834,11 +924,13 @@ class ProcessActionsView
         ResultFormat format;
     };
     std::optional<Retry> m_Retry;
-    std::uint64_t m_Generation = 0;         // bumped by onSelectionChanged() (#2389)
-    std::uint64_t m_RunGeneration = 0;      // m_Generation when the running action started
-    bool m_RunSetsPriority = false;         // The running action sets the priority: Set Realtime priority (#3429)
-    bool m_PriorityRetryHeld = false;       // The Priority card's apply runs: a priority retry waits (#3429)
-    ProcessAffinityDialog m_AffinityDialog; // Set affinity... (#1887)
+    std::uint64_t m_Generation = 0;    // bumped by onSelectionChanged() (#2389)
+    std::uint64_t m_RunGeneration = 0; // m_Generation when the running action started
+    // The process the running action sets the priority of: Set Realtime priority (#3429, #3467). None for any other.
+    std::optional<Platform::ProcessTarget> m_RunPriorityTarget;
+    const char* m_PriorityHoldReason = nullptr;   // Another priority change runs: this view's wait, saying why (#3429, #3467)
+    ProcessAffinityDialog m_AffinityDialog;       // Set affinity... (#1887)
+    ProcessSchedPolicyDialog m_SchedPolicyDialog; // Set scheduling policy... (#3086)
     // The dialog's CPU layout, read once on its worker (#3182). Its worker uses the panel's IProcessActions
     // until it finishes: the panel declares this view after its actions, so its destructor's wait goes first.
     AffinityLayoutRead m_AffinityLayout;

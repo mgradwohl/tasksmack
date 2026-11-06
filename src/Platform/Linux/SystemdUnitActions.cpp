@@ -403,6 +403,28 @@ changeUnitFile(sd_bus* bus, const char* method, std::string_view name, bool with
     return std::nullopt;
 }
 
+/// Manager.Reload, as systemctl does after changing unit files, so systemd sees the new state.
+[[nodiscard]] ServiceActionResult reloadManager(sd_bus* bus, const std::stop_token& stopToken)
+{
+    BusError error;
+    Message call;
+    Message reply;
+    int result = newManagerCall(bus, call, "Reload");
+    if (result >= 0)
+    {
+        result = callAction(bus, call.get(), stopToken, error, reply);
+    }
+    if (result == -ECANCELED && stopToken.stop_requested())
+    {
+        return ServiceActionResult::stopRequested();
+    }
+    if (result < 0)
+    {
+        return actionFailure(bus, error, result);
+    }
+    return ServiceActionResult::succeeded();
+}
+
 } // namespace
 
 std::optional<std::string> holdSystemBusForActions()
@@ -529,26 +551,9 @@ setUnitStartType(std::string_view name, ServiceStartType startType, bool allowIn
     case SystemdActions::FileChange::Disable:
         break;
     }
-    // As systemctl does after changing unit files, so systemd sees the new state.
-    const auto reload = [&bus, &stopToken] -> ServiceActionResult
+    const auto reload = [&bus, &stopToken]
     {
-        BusError error;
-        Message call;
-        Message reply;
-        int result = newManagerCall(bus.get(), call, "Reload");
-        if (result >= 0)
-        {
-            result = callAction(bus.get(), call.get(), stopToken, error, reply);
-        }
-        if (result == -ECANCELED && stopToken.stop_requested())
-        {
-            return ServiceActionResult::stopRequested();
-        }
-        if (result < 0)
-        {
-            return actionFailure(bus.get(), error, result);
-        }
-        return ServiceActionResult::succeeded();
+        return reloadManager(bus.get(), stopToken);
     };
     if (auto failed = changeUnitFile(bus.get(), method, name, withForce, stopToken))
     {
@@ -561,6 +566,23 @@ setUnitStartType(std::string_view name, ServiceStartType startType, bool allowIn
         return std::move(*failed);
     }
     return reload();
+}
+
+ServiceActionResult setUserUnitEnabled(std::string_view name, bool enabled, const std::stop_token& stopToken)
+{
+    // The user's own systemd manager, on the user (session) bus: what `systemctl --user enable/disable` talks to. It
+    // writes links under ~/.config/systemd/user, so no password is ever needed.
+    Bus bus;
+    if (const int result = sd_bus_open_user(bus.out()); result < 0)
+    {
+        return ServiceActionResult::failed(std::string("Your systemd user manager couldn't be reached: ") +
+                                           std::strerror(-result)); // NOLINT(concurrency-mt-unsafe)
+    }
+    if (auto failed = changeUnitFile(bus.get(), enabled ? "EnableUnitFiles" : "DisableUnitFiles", name, enabled, stopToken))
+    {
+        return std::move(*failed);
+    }
+    return reloadManager(bus.get(), stopToken);
 }
 
 ServiceActionResult sessionAction(std::string_view id, SessionAction action, bool allowInteractive, const std::stop_token& stopToken)
@@ -634,6 +656,11 @@ setUnitStartType(std::string_view /*name*/, ServiceStartType /*startType*/, bool
 
 ServiceActionResult
 sessionAction(std::string_view /*id*/, SessionAction /*action*/, bool /*allowInteractive*/, const std::stop_token& /*stopToken*/)
+{
+    return ServiceActionResult::failed("This build has no systemd support (it was built without libsystemd)");
+}
+
+ServiceActionResult setUserUnitEnabled(std::string_view /*name*/, bool /*enabled*/, const std::stop_token& /*stopToken*/)
 {
     return ServiceActionResult::failed("This build has no systemd support (it was built without libsystemd)");
 }

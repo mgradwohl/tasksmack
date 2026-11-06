@@ -6,7 +6,9 @@
 /// also while a slow check keeps finishing one file at a time under load (#3342); more paths than the
 /// table holds, polled in a fixed order, each checked in turn (#3403); the count of queued paths a full
 /// table turns a path away on without sweeping (#3418); a check that throws; and
-/// the destructor stopping a queue.
+/// the destructor stopping a queue. On Domain::Worker (#3343): a check that throws something other than a
+/// std::exception fails the worker, which answers every path rather than terminating; a burst against a
+/// drain in progress, each path checked once; a drain refused; and shutdown while a check is in progress.
 /// Pure (no Windows header), so built everywhere.
 
 #include "Platform/ImageSignature.h"
@@ -22,7 +24,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <mutex>
+#include <new>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -44,6 +48,7 @@ struct Fakes
     std::map<std::string, FileStamp> stamps; // guarded; a path missing here can't be read
     std::map<std::string, int> checks;       // guarded: verifyEmbeddedSignature calls by path
     std::atomic<bool> throwOnCheck{false};
+    std::atomic<bool> throwNonException{false}; // a throw that isn't a std::exception (#3343)
     std::thread::id checkThread;
     // A gate the check waits on while closed, so a test can hold the worker mid-check.
     std::condition_variable gateChanged;
@@ -69,6 +74,7 @@ void resetFakes()
     fakes().stamps.clear();
     fakes().checks.clear();
     fakes().throwOnCheck = false;
+    fakes().throwNonException = false;
     fakes().checkThread = {};
     fakes().gateOpen = true;
     fakes().metered = false;
@@ -111,6 +117,11 @@ SignatureFunctions fakeFunctions()
             if (fakes().throwOnCheck)
             {
                 throw std::runtime_error("the check threw");
+            }
+            if (fakes().throwNonException)
+            {
+                // NOLINTNEXTLINE(bugprone-std-exception-baseclass,hicpp-exception-baseclass) - the point: what a catch (std::exception) misses
+                throw 42;
             }
             return TrustCheck{.result = 0, .signer = "Signer of " + path};
         },
@@ -170,6 +181,42 @@ std::size_t checksCompleted()
 {
     const std::scoped_lock lock(fakes().mutex);
     return fakes().completed;
+}
+
+/// Meters the checks for as long as it lives, and lets them all through when it goes. Declared after the
+/// worker, it goes first, so the worker never joins on a metered check, even when an assertion ends the test.
+class MeteredChecks
+{
+  public:
+    MeteredChecks()
+    {
+        setMetered(true);
+    }
+    // A lock that throws here ends the test run, which is what it should do
+    ~MeteredChecks() // NOLINT(bugprone-exception-escape)
+    {
+        setMetered(false);
+    }
+    MeteredChecks(const MeteredChecks&) = delete;
+    MeteredChecks& operator=(const MeteredChecks&) = delete;
+    MeteredChecks(MeteredChecks&&) = delete;
+    MeteredChecks& operator=(MeteredChecks&&) = delete;
+};
+
+/// Waits until @p done answers true, or WAIT passes; whether it did. A wait on an outcome the worker
+/// leaves, not a sleep standing in for one.
+template<typename Done> [[nodiscard]] bool waitUntil(Done done)
+{
+    const auto deadline = std::chrono::steady_clock::now() + WAIT;
+    while (!done())
+    {
+        if (std::chrono::steady_clock::now() >= deadline)
+        {
+            return false;
+        }
+        std::this_thread::yield();
+    }
+    return true;
 }
 
 class SignatureWorkerTest : public ::testing::Test
@@ -636,6 +683,199 @@ TEST_F(SignatureWorkerTest, AnIdleWorkerIsIdleAndStopsWithoutARequest)
     SignatureWorker worker(fakeFunctions(), {});
     EXPECT_TRUE(worker.waitUntilIdle(0ms));
     EXPECT_EQ(worker.pathCount(), 0U);
+}
+
+TEST_F(SignatureWorkerTest, ACheckThatThrowsSomethingElseFailsTheWorkerWhichAnswersEveryPathRatherThanTerminating)
+{
+    // #3343: a std::exception from a check is answered Unknown (above); anything else escapes it, to
+    // Domain::Worker's boundary. The worker ends Failed, never std::terminate, and says so: the path that
+    // threw, the one queued behind it, and every path asked for later are answered Unknown with the reason,
+    // so none stays "not checked yet" for good, the table drains, and nothing is checked again.
+    for (const char* path : {"a", "b", "c"})
+    {
+        setStamp(path, 1);
+    }
+    fakes().throwNonException = true;
+    SignatureWorker worker(fakeFunctions(), {});
+    {
+        const MeteredChecks metered;
+        worker.request("a");
+        ASSERT_TRUE(waitForChecksEntered(1));
+        worker.request("b"); // queued behind a, which is being checked
+        allowChecks(1);      // a's check throws 42
+        ASSERT_TRUE(waitUntil([&worker] { return worker.find("b").has_value(); })) << "b is answered, not left queued";
+    }
+    for (const char* path : {"a", "b"})
+    {
+        const std::optional<SignatureCheck> found = worker.find(path);
+        ASSERT_TRUE(found.has_value()) << path;
+        const SignatureCheck check = found.value_or(SignatureCheck{});
+        EXPECT_EQ(check.signature, ImageSignature::Unknown) << path;
+        EXPECT_TRUE(check.note.contains("Unknown error")) << path << ": " << check.note;
+    }
+    EXPECT_EQ(checksOf("a"), 1);
+    EXPECT_EQ(checksOf("b"), 0) << "never checked: the worker ended before it";
+
+    worker.request("c"); // after the failure: answered at once
+    const std::optional<SignatureCheck> later = worker.find("c");
+    ASSERT_TRUE(later.has_value()) << "a path asked for after the failure is answered at once";
+    EXPECT_EQ(later.value_or(SignatureCheck{}).signature, ImageSignature::Unknown);
+    EXPECT_EQ(checksOf("c"), 0);
+    EXPECT_EQ(worker.queuedPathCount(), 0U);
+    EXPECT_TRUE(worker.waitUntilIdle(0ms)) << "nothing is left queued or in progress";
+}
+
+TEST_F(SignatureWorkerTest, APathWhoseEndAnswerCouldNotBeMadeIsAnsweredByTheNextLookup)
+{
+    // #3479 review: once the worker has failed, a path asked for is answered at once with the end note. When
+    // copying the note throws (no memory), the path is left queued; the next lookup answers it, even one of
+    // that path alone (it is in the table, so asks for no new path that would sweep the queue), rather than
+    // leaving it "not checked yet" for good.
+    for (const char* path : {"a", "c"})
+    {
+        setStamp(path, 1);
+    }
+    fakes().throwNonException = true;
+    SignatureWorker worker(fakeFunctions(), {});
+    worker.request("a"); // its check throws 42: the worker fails
+    ASSERT_TRUE(waitUntil([&worker] { return worker.find("a").has_value(); })) << "the failure is seen";
+
+    worker.failNextEndAnswerForTesting();
+    EXPECT_THROW(worker.request("c"), std::bad_alloc);
+    EXPECT_EQ(worker.queuedPathCount(), 1U) << "c is left queued: its answer couldn't be made";
+    EXPECT_FALSE(worker.waitUntilIdle(0ms));
+
+    const std::optional<SignatureCheck> stranded = worker.find("c");
+    ASSERT_TRUE(stranded.has_value()) << "the next lookup answers c";
+    EXPECT_EQ(stranded.value_or(SignatureCheck{}).signature, ImageSignature::Unknown);
+    EXPECT_TRUE(stranded.value_or(SignatureCheck{}).note.contains("Unknown error"));
+    EXPECT_EQ(worker.queuedPathCount(), 0U);
+    EXPECT_TRUE(worker.waitUntilIdle(0ms));
+    EXPECT_EQ(checksOf("c"), 0);
+}
+
+TEST_F(SignatureWorkerTest, ABurstAskedForWhileACheckIsInProgressIsEachCheckedOnce)
+{
+    // #3343: the worker's own queue holds one drain of the path table at most; a path queued while one is
+    // queued merges into it, and one queued while a drain runs queues the next. However the burst lands
+    // against a drain in progress, none of its paths is lost and none is checked twice.
+    constexpr int BURST = 32;
+    std::vector<std::string> paths{"first.exe"};
+    for (int i = 0; i < BURST; ++i)
+    {
+        paths.push_back("burst-" + std::to_string(i) + ".exe");
+    }
+    for (const std::string& path : paths)
+    {
+        setStamp(path, 1);
+    }
+    SignatureWorker worker(fakeFunctions(), {});
+    {
+        const MeteredChecks metered;
+        worker.request(paths.front());
+        ASSERT_TRUE(waitForChecksEntered(1)); // the drain is running, its check held
+        for (std::size_t i = 1; i < paths.size(); ++i)
+        {
+            worker.request(paths[i]);
+            worker.request(paths[i]); // a second process of the same image: still queued once
+        }
+        EXPECT_EQ(worker.queuedPathCount(), paths.size()) << "the burst, and the path being checked";
+    }
+    ASSERT_TRUE(worker.waitUntilIdle(WAIT));
+    for (const std::string& path : paths)
+    {
+        EXPECT_EQ(checksOf(path), 1) << path;
+        EXPECT_TRUE(worker.find(path).has_value()) << path;
+    }
+    EXPECT_EQ(worker.queuedPathCount(), 0U);
+}
+
+TEST_F(SignatureWorkerTest, APathWhoseDrainIsRefusedIsTakenBackAndCheckedWhenAskedAgain)
+{
+    // #3343: a drain the Worker can't queue (no memory) while none is queued leaves nothing sure to check
+    // the paths queued. They are taken back, so a later sample's find() queues them again, rather than
+    // leaving them "not checked yet" for good.
+    setStamp("a", 1);
+    SignatureWorker worker(fakeFunctions(), {});
+    worker.refuseNextDrainForTesting();
+    worker.request("a");
+    EXPECT_EQ(worker.queuedPathCount(), 0U) << "taken back";
+    EXPECT_EQ(worker.pathCount(), 0U) << "and forgotten, so it is asked for again";
+    EXPECT_TRUE(worker.waitUntilIdle(0ms)) << "nothing is left queued";
+    EXPECT_FALSE(worker.find("a").has_value()) << "asked for again: queued, with a drain this time";
+    ASSERT_TRUE(worker.waitUntilIdle(WAIT));
+    EXPECT_TRUE(worker.find("a").has_value());
+    EXPECT_EQ(checksOf("a"), 1);
+}
+
+TEST_F(SignatureWorkerTest, TheTakeBackAfterARefusedDrainAllocatesNoKeyForALongPath)
+{
+    // #3479 review: a drain is refused because memory has run out, so taking the queued paths back must not
+    // need any. The seam has every key made under the lock throw std::bad_alloc during the take-back; paths
+    // longer than any small-string buffer would need a heap key. The take-back keys by what admission made,
+    // so request() doesn't throw and nothing is left queued with no drain to check it.
+    const std::string first = "C:\\" + std::string(300, 'a') + ".exe";
+    const std::string second = "C:\\" + std::string(300, 'b') + ".exe";
+    setStamp(first, 1);
+    setStamp(second, 1);
+    setGate(false); // first's check is held, so second is queued behind it when its drain is refused
+    SignatureWorker worker(fakeFunctions(), {});
+    worker.request(first);
+    worker.refuseNextDrainForTesting();
+    EXPECT_NO_THROW(worker.request(second)) << "the take-back makes no key";
+    EXPECT_LE(worker.queuedPathCount(), 1U) << "second, at least, taken back; first may be in its check";
+    setGate(true);
+    ASSERT_TRUE(worker.waitUntilIdle(WAIT));
+    EXPECT_EQ(worker.queuedPathCount(), 0U) << "nothing left queued with no drain to check it";
+
+    // Both asked for again on a later sample (a path taken back is forgotten), and both checked.
+    worker.beginSample();
+    static_cast<void>(worker.find(first));
+    static_cast<void>(worker.find(second));
+    ASSERT_TRUE(worker.waitUntilIdle(WAIT));
+    EXPECT_TRUE(worker.find(first).has_value());
+    EXPECT_TRUE(worker.find(second).has_value());
+    EXPECT_EQ(checksOf(first), 1);
+    EXPECT_EQ(checksOf(second), 1);
+}
+
+TEST_F(SignatureWorkerTest, TheDestructorWaitsForTheCheckInProgressAndDropsTheRest)
+{
+    // WinVerifyTrust can't be interrupted: shutdown while a check is in progress lets it finish, filing its
+    // answer in a table still alive, and drops the paths queued behind it unchecked. An hour's pause after
+    // each check means the worker can't reach two's check whenever the stop lands: if the check is let go
+    // before the destructor asks to stop, the worker is in the pause, which the stop ends.
+    for (const char* path : {"one", "two", "three"})
+    {
+        setStamp(path, 1);
+    }
+    WorkerOptions options;
+    options.pause = std::chrono::hours(1);
+    auto worker = std::make_unique<SignatureWorker>(fakeFunctions(), options);
+    // After the worker, so it goes first: an assertion that ends the test lets the held check go before the
+    // worker is destroyed (TearDown would be too late).
+    const MeteredChecks metered;
+    worker->request("one");
+    worker->request("two");
+    worker->request("three");
+    ASSERT_TRUE(waitForChecksEntered(1)) << "one's check is in progress";
+    std::atomic<bool> destroyed{false};
+    std::thread destroying(
+        [&worker, &destroyed]
+        {
+            worker.reset();
+            destroyed = true;
+        });
+    // A negative check: it can't fail when the destructor waits, only miss one that doesn't.
+    std::this_thread::sleep_for(50ms);
+    EXPECT_FALSE(destroyed.load()) << "the destructor waits for the check in progress";
+    allowChecks(1);
+    destroying.join();
+    EXPECT_TRUE(destroyed.load());
+    EXPECT_EQ(checksCompleted(), 1U) << "the check in progress finished";
+    EXPECT_EQ(checksOf("one"), 1);
+    EXPECT_EQ(checksOf("two"), 0) << "dropped";
+    EXPECT_EQ(checksOf("three"), 0) << "dropped";
 }
 
 } // namespace

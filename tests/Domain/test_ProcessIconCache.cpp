@@ -562,7 +562,7 @@ class LogCapture
 
 TEST_F(ProcessIconCacheTest, AWorkerThatFailsAfterAdmittingADrainIsReportedOnceAndItsRowsKeepTheGenericIcon)
 {
-    // #3343: the drain was admitted (Queued), then the worker failed before running it. Later lookups of
+    // #3343: the drain was admitted (Queued), then threw before it loaded anything. Later lookups of
     // the same rows find their entries, so no submit() sees Closed; the failure is still logged, once, and
     // the rows keep the generic icon: Failed is terminal, and no thread is left to load them.
     constexpr std::string_view STOPPED = "icon loads have stopped (drain failed for testing)";
