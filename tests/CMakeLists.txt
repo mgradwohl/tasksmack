@@ -804,6 +804,11 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     # session end for real, on a disposable runner only (tests/Support/CiRealSystem.h's guard skips them elsewhere)
     Platform/test_CiRealSystemWindows.cpp
     Platform/test_CiRealSystemHelper.cpp
+    # Phase 2 (#3490): the real HKLM IFEO key, Run value and StartupApproved values; Not responding and its wait
+    # chain, the UDP trace's ETW session, SeDebugPrivilege, the critical-process guard, and the elevated-only skips
+    # run as a standard user
+    Platform/test_CiRealSystemWindowsRegistry.cpp
+    Platform/test_CiRealSystemWindowsProcess.cpp
     Platform/test_HelperLauncher.cpp  # starting the helper with ShellExecuteExW("runas"), through fakes (#2549)
     Platform/test_WindowsTaskManagerReplacement.cpp  # taskmgr.exe's IFEO key, on a scratch HKCU key, and the helper's checks (#3072)
     Platform/test_WindowsUserSessions.cpp  # the Users tab's WTS reader and actions through fakes, and this machine's sessions (#3076)

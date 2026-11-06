@@ -2,7 +2,8 @@
 
 /// @file CiRealSystemWindows.h
 /// @brief What the Windows CI real-system tests (#3489) share: a standard user's token made from the runner's
-/// administrator one, idle child processes that end on scope exit, and finding a process by its image. Only the
+/// administrator one, idle child processes that end on scope exit, finding a process by its image, an install folder
+/// in Program Files only administrators can change, and an environment variable set for a child (#3490). Only the
 /// CiRealSystem* suites use it, behind CiRealSystem.h's guard.
 
 #ifdef _WIN32
@@ -488,6 +489,67 @@ inline void copyFile(const std::filesystem::path& from, const std::filesystem::p
     std::filesystem::copy_file(from, to, std::filesystem::copy_options::overwrite_existing, error);
     EXPECT_FALSE(error) << "couldn't copy " << Core::pathToUtf8(from) << " to " << Core::pathToUtf8(to) << ": " << error.message();
 }
+
+/// SetNamedSecurityInfoW(@p path): owner Administrators and a protected DACL of SYSTEM and Administrators full
+/// control and Users read and execute, inherited by what is under it: what an installer gives Program Files\TaskSmack.
+inline void protectAsAnInstall(const std::filesystem::path& path)
+{
+    std::vector<std::byte> administrators = wellKnownSid(WinBuiltinAdministratorsSid);
+    constexpr DWORD INHERITED = SUB_CONTAINERS_AND_OBJECTS_INHERIT;
+    const Acl acl({
+        {.sid = wellKnownSid(WinLocalSystemSid), .rights = GENERIC_ALL, .inheritance = INHERITED},
+        {.sid = administrators, .rights = GENERIC_ALL, .inheritance = INHERITED},
+        {.sid = wellKnownSid(WinBuiltinUsersSid), .rights = GENERIC_READ | GENERIC_EXECUTE, .inheritance = INHERITED},
+    });
+    ASSERT_NE(acl.get(), nullptr) << "couldn't make the install's ACL: " << GetLastError();
+    std::wstring name = path.wstring();
+    const DWORD set = SetNamedSecurityInfoW(name.data(),
+                                            SE_FILE_OBJECT,
+                                            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                                            administrators.data(),
+                                            nullptr,
+                                            acl.get(),
+                                            nullptr);
+    ASSERT_EQ(set, static_cast<DWORD>(ERROR_SUCCESS)) << "couldn't protect " << Core::pathToUtf8(path);
+}
+
+/// %ProgramFiles%.
+[[nodiscard]] inline std::filesystem::path programFiles()
+{
+    std::array<wchar_t, MAX_PATH> path{};
+    const DWORD length = GetEnvironmentVariableW(L"ProgramFiles", path.data(), static_cast<DWORD>(path.size()));
+    return (length == 0 || length >= path.size()) ? std::filesystem::path(L"C:\\Program Files")
+                                                  : std::filesystem::path(std::wstring(path.data(), length));
+}
+
+/// This test binary's own path, which a test starts again as its child (with another token, say).
+[[nodiscard]] inline std::filesystem::path ownExecutable()
+{
+    std::array<wchar_t, 32'768> path{};
+    const DWORD length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+    return {std::wstring(path.data(), length)};
+}
+
+/// Sets environment variable @p name for this process (so a child started now inherits it) until scope exit.
+class ScopedVariable
+{
+  public:
+    ScopedVariable(std::wstring name, const std::wstring& value) : m_Name(std::move(name))
+    {
+        EXPECT_NE(SetEnvironmentVariableW(m_Name.c_str(), value.c_str()), FALSE) << GetLastError();
+    }
+    ~ScopedVariable()
+    {
+        SetEnvironmentVariableW(m_Name.c_str(), nullptr);
+    }
+    ScopedVariable(const ScopedVariable&) = delete;
+    ScopedVariable& operator=(const ScopedVariable&) = delete;
+    ScopedVariable(ScopedVariable&&) = delete;
+    ScopedVariable& operator=(ScopedVariable&&) = delete;
+
+  private:
+    std::wstring m_Name;
+};
 
 } // namespace TestSupport::CiRealSystem
 
