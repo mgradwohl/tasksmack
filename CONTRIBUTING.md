@@ -775,6 +775,21 @@ Three established ways to get real coverage of such a file's logic:
        because a real pointer's moves mix with the injected ones. `--use-display` runs it on the desktop.
      - **Requirements:** both refs need the scenario suite.
 
+5. **Need the real OS path, which changes the machine (#3489)?** Some calls only fakes can reach on a
+   developer's machine: a process set to Realtime, a program started through the shell or `runas`, Explorer
+   opened on a folder, the elevated helper served from Program Files, a throwaway account. Put such a test in
+   a suite named `CiRealSystem*` derived from `TestSupport::CiRealSystemTest` (`tests/Support/CiRealSystem.h`,
+   Windows helpers in `tests/Support/CiRealSystemWindows.h`). Its `SetUp()` skips the test unless
+   `TASKSMACK_CI_REAL_SYSTEM=1` on a GitHub-hosted runner (`GITHUB_ACTIONS=true`,
+   `RUNNER_ENVIRONMENT=github-hosted`). CI's "Real-system tests (Windows)" step sets it and runs
+   `TaskSmackTests --gtest_filter=CiRealSystem*` after the normal `ctest`. It fails if none of them ran.
+   - **Rules:** keep every child idle (suspended, or `TaskSmackCiStub.exe`, which only sleeps), and end it
+     and remove what the test made in a scope guard. Skip with the reason when the runner can't do it (no
+     memory compression on a Server image).
+   - **Never locally:** don't set the variable on your own machine. The daytime filter excludes `CiRealSystem*`.
+   - **The rule:** a change to a real OS path adds such a test, or the PR says why only a manual check can
+     cover it (a UAC prompt, a sign-out, hardware).
+
 Before writing any of these tests, check whether the logic already exists as a shared, tested
 helper (for example `Core::isEnvFlagEnabled()` in `Core/EnvUtils.h`), and reuse it instead.
 
