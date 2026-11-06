@@ -2107,15 +2107,26 @@ TEST_F(LinuxProcessActionsFaultTest, RealTimeWorkersUnderANormalMainThreadKeepTh
     {
         return static_cast<pid_t>(tid) == self ? SCHED_OTHER : SCHED_FIFO;
     };
-    const std::size_t threads = listThreads(self).size();
-    ASSERT_GE(threads, 1U);
+    // A worker of our own, so the mixed case always has one (the runner may have no other thread).
+    const std::jthread worker(
+        [](const std::stop_token& stop)
+        {
+            while (!stop.stop_requested())
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+        });
+    std::size_t threads = listThreads(self).size();
+    for (int tries = 0; threads < 2 && tries < 200; ++tries)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        threads = listThreads(self).size();
+    }
+    ASSERT_GE(threads, 2U);
     const ProcessActionResult mixed = m_Actions.setSchedPolicy(ownTarget(), SchedPolicy::Batch, Platform::RealtimeThreads::Keep);
     ASSERT_TRUE(mixed.success) << mixed.errorMessage;
     EXPECT_EQ(static_cast<std::size_t>(plan().setCalls), 1U) << "only the main thread";
-    if (threads > 1)
-    {
-        EXPECT_TRUE(mixed.successNote.contains("real-time thread")) << mixed.successNote;
-    }
+    EXPECT_TRUE(mixed.successNote.contains("real-time thread")) << mixed.successNote;
 
     plan() = FaultPlan{};
     plan().schedulerByTid = [](id_t /*tid*/)
