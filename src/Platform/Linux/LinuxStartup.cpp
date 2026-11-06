@@ -233,7 +233,7 @@ constexpr std::uintmax_t MAX_FILE_BYTES = std::uintmax_t{64} * 1024U;
         {
             quoted += c == '\'' ? std::string("'\\''") : std::string(1, c);
         }
-        quoted += "'";
+        quoted += '\'';
     }
     return std::format("Enabled for every user in /etc/systemd/user: an administrator changes it with "
                        "sudo systemctl --global disable {} (or enable)",
