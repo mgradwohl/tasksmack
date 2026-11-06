@@ -37,6 +37,7 @@
 #include <iterator>
 #include <limits>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <stop_token>
 #include <string>
@@ -51,6 +52,7 @@
 #include <pthread.h>
 #include <sched.h>
 #include <signal.h> // NOLINT(modernize-deprecated-headers) - POSIX signal.h provides kill(), csignal does not
+#include <stdlib.h> // NOLINT(modernize-deprecated-headers) - POSIX setenv()/unsetenv()
 #include <sys/poll.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
@@ -59,6 +61,12 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+#ifdef TASKSMACK_HAS_SDBUS
+#include "FakeSystemBus.h"
+
+#include <systemd/sd-bus.h>
+#endif
 
 namespace Platform
 {
@@ -2544,6 +2552,80 @@ TEST(LinuxProcessActionsTest, OpenFileLocationAsksTheFileManagerToShowTheExecuta
     EXPECT_EQ(showItems().uris.front(), FileManagerReveal::fileUri(self.string()));
     EXPECT_FALSE(std::filesystem::exists(dir.path / "argv.txt")); // ShowItems answered: no xdg-open
 }
+
+#ifdef TASKSMACK_HAS_SDBUS
+// #3491 item 4 (#3064): the real ShowItems call, not the seam. A fake org.freedesktop.FileManager1 on a private
+// session bus gets ShowItems(as, s) with the executable's file:// URI and an empty startup ID; with nothing
+// answering, Open file location falls back to xdg-open.
+TEST(LinuxProcessActionsTest, OpenFileLocationCallsShowItemsOnTheSessionBus)
+{
+    if (::geteuid() == 0 || !::TestSupport::FakeSystemBus::available())
+    {
+        GTEST_SKIP() << "Needs dbus-daemon, and not root (root for another user doesn't use D-Bus)";
+    }
+    std::vector<std::pair<std::vector<std::string>, std::string>> calls; // (uris, startup ID), on the bus thread
+    std::mutex callsMutex;
+    // Declared after what its thread writes, so that thread is joined before either is destroyed.
+    ::TestSupport::FakeSystemBus bus;
+    bus.addRawMethod("/org/freedesktop/FileManager1",
+                     "org.freedesktop.FileManager1",
+                     "ShowItems",
+                     [&calls, &callsMutex](sd_bus_message* call) -> int
+                     {
+                         char** uris = nullptr;
+                         const char* startup = nullptr;
+                         // Exactly (as, s), as FileManager1 requires: a call without the startup ID must fail here.
+                         const char* signature = sd_bus_message_get_signature(call, 1);
+                         if (signature == nullptr || std::string_view(signature) != "ass" || sd_bus_message_read_strv(call, &uris) < 0 ||
+                             sd_bus_message_read(call, "s", &startup) <= 0)
+                         {
+                             return sd_bus_reply_method_errorf(call, "org.freedesktop.DBus.Error.InvalidArgs", "bad arguments");
+                         }
+                         std::vector<std::string> list;
+                         for (char** uri = uris; uri != nullptr && *uri != nullptr; ++uri)
+                         {
+                             list.emplace_back(*uri);
+                             std::free(*uri); // NOLINT(cppcoreguidelines-no-malloc,cppcoreguidelines-owning-memory) - sd-bus strv
+                         }
+                         std::free(static_cast<void*>(uris)); // NOLINT(cppcoreguidelines-no-malloc,cppcoreguidelines-owning-memory)
+                         {
+                             const std::scoped_lock lock(callsMutex);
+                             calls.emplace_back(std::move(list), startup != nullptr ? startup : "");
+                         }
+                         return sd_bus_reply_method_return(call, "");
+                     });
+    ASSERT_TRUE(bus.start("org.freedesktop.FileManager1")) << bus.error();
+    const char* saved = std::getenv("DBUS_SESSION_BUS_ADDRESS"); // NOLINT(concurrency-mt-unsafe) - single-threaded test
+    const std::optional<std::string> savedAddress = saved != nullptr ? std::optional<std::string>(saved) : std::nullopt;
+    const char* fake = std::getenv("DBUS_SYSTEM_BUS_ADDRESS"); // NOLINT(concurrency-mt-unsafe) - set by bus.start()
+    ASSERT_NE(fake, nullptr);
+    ASSERT_EQ(setenv("DBUS_SESSION_BUS_ADDRESS", fake, 1), 0); // NOLINT(concurrency-mt-unsafe) - the fake stands in for the session bus
+
+    // The real showItemInFileManager: left null, so LinuxProcessActions fills in the session-bus call.
+    LinuxProcessSyscalls syscalls = realProcessSyscalls();
+    syscalls.showItemInFileManager = nullptr;
+    const TestSupport::ScopedTempDir dir("tasksmack_show_items_real");
+    LinuxProcessActions actions(
+        SyscallTrace::Tools{.tracerPath = {}, .terminal = std::nullopt, .coreDumperPath = {}, .folderOpenerPath = {}, .elevatorPath = {}},
+        syscalls);
+    const auto result = actions.openFileLocation(ownTarget());
+
+    if (savedAddress.has_value())
+    {
+        setenv("DBUS_SESSION_BUS_ADDRESS", savedAddress->c_str(), 1); // NOLINT(concurrency-mt-unsafe)
+    }
+    else
+    {
+        unsetenv("DBUS_SESSION_BUS_ADDRESS"); // NOLINT(concurrency-mt-unsafe)
+    }
+    ASSERT_TRUE(result.success) << result.errorMessage;
+    const std::scoped_lock lock(callsMutex);
+    ASSERT_EQ(calls.size(), 1U);
+    EXPECT_EQ(calls.front().first,
+              (std::vector<std::string>{FileManagerReveal::fileUri(std::filesystem::read_symlink("/proc/self/exe").string())}));
+    EXPECT_EQ(calls.front().second, "") << "no startup notification ID";
+}
+#endif
 
 TEST(LinuxProcessActionsTest, OpenFileLocationOpensTheFolderWhenNoFileManagerAnswers)
 {
