@@ -126,6 +126,10 @@ struct ResizePerfTraceStats
     std::uint32_t p0BudgetCapHits = 0;
     /// Number of frames skipped by P3 (drain-overrun skip-render).
     std::uint32_t skippedRenderFrames = 0;
+    /// Interaction-grace iterations that no longer present a frame of their own, because nothing changed
+    /// since the last one (FramePacing::isDeferredInteractionFrame, #3511). Logged as deferredFrames, at
+    /// the end of the line; before #3511 each of these was one more resizeFrame.
+    std::uint32_t deferredInteractionFrames = 0;
     /// Max wall time for any single event (poll + dispatch) inside the drain loop, which checks its
     /// budget after every event (#1410). Logged as maxSingleEvent; it was maxPollBatch, a 4-event
     /// interval, so the two are not comparable across captures.
@@ -261,6 +265,7 @@ struct ResizePerfTraceStats
         frameTail = {};
         p0BudgetCapHits = 0;
         skippedRenderFrames = 0;
+        deferredInteractionFrames = 0;
         maxSingleEventMs = 0.0;
         loopIntervals = 0;
         loopIntervalMs = 0.0;
@@ -334,7 +339,7 @@ inline void logResizePerfTraceSummary(const ResizePerfTraceStats& stats, const s
                  "update avg/p95/p99/max={:.3f}/{:.3f}/{:.3f}/{:.3f} ms "
                  "render avg/p95/p99/max={:.3f}/{:.3f}/{:.3f}/{:.3f} ms "
                  "post avg/p95/p99/max={:.3f}/{:.3f}/{:.3f}/{:.3f} ms "
-                 "swap avg/p95/p99/max={:.3f}/{:.3f}/{:.3f}/{:.3f} ms",
+                 "swap avg/p95/p99/max={:.3f}/{:.3f}/{:.3f}/{:.3f} ms deferredFrames={}",
                  reason,
                  stats.eventBatches,
                  stats.drainedEvents,
@@ -376,7 +381,8 @@ inline void logResizePerfTraceSummary(const ResizePerfTraceStats& stats, const s
                  avg(stats.swapMs, stats.frames),
                  swapP95,
                  swapP99,
-                 stats.maxSwapMs);
+                 stats.maxSwapMs,
+                 stats.deferredInteractionFrames);
 }
 
 } // namespace Core

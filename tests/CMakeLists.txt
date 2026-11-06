@@ -430,6 +430,7 @@ set(COMMON_TEST_SOURCES
     Core/test_OpenGLRequirement.cpp
     Core/test_PathService.cpp
     Core/test_SaveFileDialog.cpp
+    Core/test_SwapInterval.cpp # the swap interval set only on a change (#3511)
     Core/test_VideoBackend.cpp
     Core/test_Window.cpp
     Core/test_WindowEventRouting.cpp

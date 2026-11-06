@@ -3,6 +3,7 @@
 #include "Core/GraphicsHostInfo.h"
 #include "Core/OpenGLRequirement.h"
 #include "Core/ResizePerfOperation.h"
+#include "Core/SwapInterval.h"
 #include "Core/VideoBackend.h"
 #include "Core/WindowConstants.h"
 #include "Core/WindowGeometry.h"
@@ -601,20 +602,7 @@ Window::Window(WindowSpecification spec) : m_Spec(std::move(spec))
     }
     // LCOV_EXCL_STOP
 
-    if (m_Spec.VSync)
-    {
-        // Prefer adaptive vsync: presents immediately when a frame is late instead of
-        // stalling until the next vblank. Falls back to regular vsync if the driver
-        // does not support GLX_EXT_swap_control_tear / WGL_EXT_swap_control_tear.
-        if (!traceResizePerfSDL(ResizePerfOperation::SwapInterval, -1, 0, [] { return SDL_GL_SetSwapInterval(-1); }))
-        {
-            traceResizePerfSDL(ResizePerfOperation::SwapInterval, 1, 0, [] { return SDL_GL_SetSwapInterval(1); });
-        }
-    }
-    else
-    {
-        traceResizePerfSDL(ResizePerfOperation::SwapInterval, 0, 0, [] { return SDL_GL_SetSwapInterval(0); });
-    }
+    setVSync(m_Spec.VSync);
 
 #ifdef _WIN32
     // Set window icon from embedded resource (title bar and taskbar). The returned
@@ -685,19 +673,34 @@ void Window::swapBuffers() const
 
 void Window::setVSync(bool enabled)
 {
-    if (enabled)
+    // Prefer adaptive vsync: it presents a late frame at once instead of stalling to the next vblank.
+    // A driver without GLX_EXT_swap_control_tear / WGL_EXT_swap_control_tear refuses it, and regular
+    // vsync is used. The cache asks the driver only for a change, and asks for adaptive vsync once per
+    // context (#3511): the resize interactions turn vsync off and on again (Application::run()).
+    // UI thread only, like every GL call; per context, so a replaced one (#3484) starts over.
+    static SwapIntervalCache cache;
+    const SwapIntervalCache::Outcome outcome =
+        cache.apply(enabled,
+                    SDL_GL_GetCurrentContext(),
+                    [](const int interval)
+                    {
+                        return traceResizePerfSDL(
+                            ResizePerfOperation::SwapInterval, interval, 0, [interval] { return SDL_GL_SetSwapInterval(interval); });
+                    });
+    if (outcome.calls == 0)
     {
-        // Mirror the logic used during initialisation: prefer adaptive vsync
-        // (swap-interval -1) and fall back to regular vsync (1) if unsupported.
-        if (!traceResizePerfSDL(ResizePerfOperation::SwapInterval, -1, 0, [] { return SDL_GL_SetSwapInterval(-1); }))
-        {
-            traceResizePerfSDL(ResizePerfOperation::SwapInterval, 1, 0, [] { return SDL_GL_SetSwapInterval(1); });
-        }
+        recordResizePerfSkipped(ResizePerfOperation::SwapInterval);
     }
-    else
+    if (outcome.adaptiveRefused)
     {
-        traceResizePerfSDL(ResizePerfOperation::SwapInterval, 0, 0, [] { return SDL_GL_SetSwapInterval(0); });
+        spdlog::info("Adaptive vsync isn't supported by this OpenGL context ({}); using regular vsync", SDL_GetError());
     }
+    // LCOV_EXCL_START - needs a driver that refuses the swap interval, which no test display does
+    if (!outcome.accepted)
+    {
+        spdlog::warn("Could not {} vsync: {}", enabled ? "enable" : "disable", SDL_GetError());
+    }
+    // LCOV_EXCL_STOP
 }
 
 bool Window::shouldClose() const noexcept

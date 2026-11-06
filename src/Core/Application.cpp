@@ -912,8 +912,17 @@ void Application::run()
         wakeCoalescer.setPaused(hiddenWait.drawsNoFrames);
 
         // isHidden, not only minimized: an occluded window that gets a move/resize event must not render
-        // at the display rate through the interaction grace period either (#1125).
-        if ((needsResizeRedraw || forceInteractionRedraw) && !isHidden && !skipRenderThisFrame)
+        // at the display rate through the interaction grace period either (#1125). Within the grace, only
+        // when there is something new to show (#3511): an iteration with no events and no client-side
+        // geometry change takes the idle wait below instead of presenting the same frame again.
+        if (traceResizePerfThisFrame &&
+            FramePacing::isDeferredInteractionFrame(
+                needsResizeRedraw, forceInteractionRedraw, hadEvents, geometryChangedLastFrame, isHidden, skipRenderThisFrame))
+        {
+            ++resizeTraceStats.deferredInteractionFrames;
+        }
+        if (FramePacing::computeShouldRenderInteractionFrame(
+                needsResizeRedraw, forceInteractionRedraw, hadEvents, geometryChangedLastFrame, isHidden, skipRenderThisFrame))
         {
             // Vsync is off during an interaction, so a stream of mouse events would otherwise render
             // unbounded (#1153): cap it at the display rate, which vsync would have given.
