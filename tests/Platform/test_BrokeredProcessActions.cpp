@@ -1707,8 +1707,18 @@ TEST(BrokeredMemoryMapReaderTest, ARefusedReadGoesThroughARunningHelperAndOtherw
     BrokeredMemoryMapReader own(std::make_unique<ScriptedMemoryMapReader>(memoryMapWith(MemoryMapReadStatus::Ok)), broker);
     EXPECT_EQ(own.readMemoryMap(TARGET).status, MemoryMapReadStatus::Ok);
     BrokeredMemoryMapReader gone(std::make_unique<ScriptedMemoryMapReader>(memoryMapWith(MemoryMapReadStatus::ProcessExited)), broker);
-    EXPECT_EQ(gone.readMemoryMap(TARGET).status, MemoryMapReadStatus::ProcessExited);
+    broker->setConnected(false);
+    EXPECT_EQ(gone.readMemoryMap(TARGET).status, MemoryMapReadStatus::ProcessExited) << "no helper running";
     EXPECT_EQ(broker->requests().size(), 2U);
+
+    // #3495 review: under hidepid=2 another user's live process reads as gone here, so with the helper running a
+    // locally absent target goes to it too; it checks the start time itself and says exited for a mismatch.
+    broker->setConnected(true);
+    EXPECT_EQ(gone.readMemoryMap(TARGET).status, MemoryMapReadStatus::Ok) << "hidden here, read by the helper";
+    EXPECT_EQ(broker->requests().size(), 3U);
+    broker->setAnswer([](const Broker::Request&)
+                      { return Broker::Response{Broker::MemoryMapReply{.result = memoryMapWith(MemoryMapReadStatus::ProcessExited)}}; });
+    EXPECT_EQ(gone.readMemoryMap(TARGET).status, MemoryMapReadStatus::ProcessExited) << "the helper's start-time check refuses it";
 }
 
 TEST(BrokeredMemoryMapReaderTest, TheFactoryWrapsOnlyAReaderThatCanReadAndAWithoutHelperRefusalStands)

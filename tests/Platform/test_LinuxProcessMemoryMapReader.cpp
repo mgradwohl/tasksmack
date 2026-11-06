@@ -41,6 +41,8 @@ class LinuxProcessMemoryMapReaderTest : public ::testing::Test
     void SetUp() override
     {
         std::filesystem::create_directories(m_Proc.path / "100");
+        std::filesystem::create_directories(m_Proc.path / "self");
+        std::ofstream(m_Proc.path / "self" / "smaps") << ""; // the kernel has smaps
         write("stat", "100 (server) S 1 100 100 0 -1 4194560 10 0 0 0 5 6 0 0 20 0 1 0 4242 1000 50\n");
         write("smaps", std::string(SERVER) + std::string(HEAP));
     }
@@ -124,6 +126,16 @@ TEST_F(LinuxProcessMemoryMapReaderTest, WhatEachKindOfMissingOrBrokenSmapsReadsA
     const MemoryMapReadResult empty = reader.readMemoryMap(TARGET);
     EXPECT_EQ(empty.status, MemoryMapReadStatus::Ok);
     EXPECT_TRUE(empty.mappings.empty());
+}
+
+// #3495 review: a kernel without smaps (no CONFIG_PROC_PAGE_MONITOR) is unsupported, not a process that exited.
+TEST_F(LinuxProcessMemoryMapReaderTest, AKernelWithoutSmapsIsUnsupported)
+{
+    std::filesystem::remove(m_Proc.path / "self" / "smaps");
+    std::filesystem::remove(m_Proc.path / "100" / "smaps");
+    LinuxProcessMemoryMapReader reader(m_Proc.path.string());
+    EXPECT_FALSE(reader.hasMemoryMap());
+    EXPECT_EQ(reader.readMemoryMap(TARGET).status, MemoryMapReadStatus::Unsupported);
 }
 
 // An smaps this user can't read is permission denied (another user's process), which the brokered reader

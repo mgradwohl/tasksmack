@@ -9,6 +9,7 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
+#include "Platform/IProcessMemoryMap.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
@@ -1409,6 +1410,34 @@ TEST(PkexecBrokerTest, TheHelperReadsAProcesssPssAndUss)
     }
     ASSERT_TRUE(rollup.has_value());
     EXPECT_GT(rollup.value_or(MemoryRollup{}).pssBytes, 0U);
+}
+
+// #3495 review: a process's memory map through the real helper, under the enforcing seccomp filter: its
+// mappings come back measured, and a target whose start time doesn't match is refused as exited.
+TEST(PkexecBrokerTest, TheHelperReadsAProcesssMemoryMapAndRefusesAStaleTarget)
+{
+    if (!std::filesystem::exists("/proc/self/smaps"))
+    {
+        GTEST_SKIP() << "This kernel has no smaps";
+    }
+    const SleepingChild child;
+    ASSERT_TRUE(child.started());
+    PkexecBroker broker(TASKSMACK_HELPER_PATH, {}, HelperSandbox::Mode::Enforce);
+    ASSERT_TRUE(broker.connect(std::stop_token{}).has_value());
+    const auto response = broker.call(Broker::MemoryMapRequest{.target = child.target()}, std::stop_token{});
+    ASSERT_TRUE(response.has_value()) << response.error();
+    ASSERT_TRUE(std::holds_alternative<Broker::MemoryMapReply>(*response));
+    const MemoryMapReadResult& map = std::get<Broker::MemoryMapReply>(*response).result;
+    ASSERT_EQ(map.status, MemoryMapReadStatus::Ok) << map.detail;
+    ASSERT_FALSE(map.mappings.empty());
+    EXPECT_TRUE(std::ranges::any_of(map.mappings, [](const MemoryMapping& m) { return m.residentBytes.value_or(0) > 0; }))
+        << "measured, from smaps";
+
+    const ProcessTarget stale{.pid = child.target().pid, .startTimeTicks = child.target().startTimeTicks + 1};
+    const auto refused = broker.call(Broker::MemoryMapRequest{.target = stale}, std::stop_token{});
+    ASSERT_TRUE(refused.has_value()) << refused.error();
+    ASSERT_TRUE(std::holds_alternative<Broker::MemoryMapReply>(*refused));
+    EXPECT_EQ(std::get<Broker::MemoryMapReply>(*refused).result.status, MemoryMapReadStatus::ProcessExited);
 }
 
 // #2728: the sampler's batch of refused FD counts and I/O, through the real helper; a target whose start

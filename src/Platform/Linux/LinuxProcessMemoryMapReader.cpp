@@ -9,6 +9,7 @@
 #include <cerrno>
 #include <cstddef>
 #include <expected>
+#include <filesystem>
 #include <limits>
 #include <string>
 #include <string_view>
@@ -43,13 +44,25 @@ using Posix::FdGuard;
 
 } // namespace
 
+LinuxProcessMemoryMapReader::LinuxProcessMemoryMapReader(std::string procRoot, std::size_t maxSmapsBytes)
+    : m_ProcRoot(std::move(procRoot)), m_MaxSmapsBytes(maxSmapsBytes)
+{
+    std::error_code ignored;
+    m_HasSmaps = std::filesystem::exists(std::filesystem::path(m_ProcRoot) / "self" / "smaps", ignored);
+}
+
 bool LinuxProcessMemoryMapReader::hasMemoryMap() const
 {
-    return true;
+    return m_HasSmaps;
 }
 
 MemoryMapReadResult LinuxProcessMemoryMapReader::readMemoryMap(const ProcessTarget& target)
 {
+    if (!m_HasSmaps)
+    {
+        // A kernel without CONFIG_PROC_PAGE_MONITOR has no smaps for any process: unsupported, never "exited".
+        return {.status = MemoryMapReadStatus::Unsupported, .mappings = {}, .detail = {}};
+    }
     if (target.pid <= 0)
     {
         return failure(ESRCH);

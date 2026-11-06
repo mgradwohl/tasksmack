@@ -27,13 +27,13 @@ class LinuxProcessMemoryMapReader final : public IProcessMemoryMapReader
     /// result marked truncated.
     static constexpr std::size_t MAX_SMAPS_BYTES = std::size_t{32} << 20U;
 
-    LinuxProcessMemoryMapReader() = default;
+    LinuxProcessMemoryMapReader() : LinuxProcessMemoryMapReader("/proc")
+    {}
 
     /// Test seam: read "<procRoot>/<pid>/..." instead of "/proc/<pid>/...", and at most @p maxSmapsBytes of
-    /// smaps.
-    explicit LinuxProcessMemoryMapReader(std::string procRoot, std::size_t maxSmapsBytes = MAX_SMAPS_BYTES)
-        : m_ProcRoot(std::move(procRoot)), m_MaxSmapsBytes(maxSmapsBytes)
-    {}
+    /// smaps. Whether the kernel has smaps at all (CONFIG_PROC_PAGE_MONITOR) is decided here, once, from
+    /// "<procRoot>/self/smaps", as the process probe decides smaps_rollup.
+    explicit LinuxProcessMemoryMapReader(std::string procRoot, std::size_t maxSmapsBytes = MAX_SMAPS_BYTES);
 
     [[nodiscard]] bool hasMemoryMap() const override;
     [[nodiscard]] MemoryMapReadResult readMemoryMap(const ProcessTarget& target) override;
@@ -41,6 +41,7 @@ class LinuxProcessMemoryMapReader final : public IProcessMemoryMapReader
   private:
     std::string m_ProcRoot = "/proc";
     std::size_t m_MaxSmapsBytes = MAX_SMAPS_BYTES;
+    bool m_HasSmaps = false; ///< The kernel provides /proc/<pid>/smaps (#3495 review)
 };
 
 } // namespace Platform

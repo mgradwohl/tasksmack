@@ -665,7 +665,10 @@ bool BrokeredMemoryMapReader::hasMemoryMap() const
 MemoryMapReadResult BrokeredMemoryMapReader::readMemoryMap(const ProcessTarget& target)
 {
     MemoryMapReadResult result = m_Inner->readMemoryMap(target);
-    if (result.status != MemoryMapReadStatus::PermissionDenied || m_Broker == nullptr || !m_Broker->connected())
+    // Exited too: under hidepid=2 another user's live process is invisible here, and the helper, which checks
+    // the target's start time itself, still sees it (#3495 review).
+    const bool retry = result.status == MemoryMapReadStatus::PermissionDenied || result.status == MemoryMapReadStatus::ProcessExited;
+    if (!retry || m_Broker == nullptr || !m_Broker->connected())
     {
         return result;
     }
