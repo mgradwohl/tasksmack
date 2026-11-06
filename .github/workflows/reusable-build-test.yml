@@ -313,7 +313,10 @@ jobs:
           TASKSMACK_CI_REAL_SYSTEM: '1'
         run: |
           set -o pipefail
-          sudo -E build/debug/tests/TaskSmackTests --gtest_filter='TasksmackHelperRootTest.*:DetachedSpawnTest.AsRoot*' 2>&1 | tee helper-root-test.log
+          # Named, not -E: this runner's sudo refuses to preserve the whole environment and ignores -E. The
+          # real-system guard reads these three (tests/Support/CiRealSystem.h).
+          sudo --preserve-env=TASKSMACK_CI_REAL_SYSTEM,GITHUB_ACTIONS,RUNNER_ENVIRONMENT \
+            build/debug/tests/TaskSmackTests --gtest_filter='TasksmackHelperRootTest.*:DetachedSpawnTest.AsRoot*' 2>&1 | tee helper-root-test.log
           if grep -q '\[  SKIPPED \]' helper-root-test.log || ! grep -q '\[  PASSED  \] 3 tests' helper-root-test.log; then
             echo "::error title=Helper root test::TasksmackHelperRootTest and DetachedSpawnTest.AsRoot* didn't all run and pass as root"
             exit 1
