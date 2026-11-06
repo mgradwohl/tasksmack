@@ -39,9 +39,14 @@ namespace Platform::WindowsCommitPaging
 {
 
 inline constexpr ULONG SYSTEM_PROCESS_INFORMATION_CLASS = 5;
+/// One session's processes, in SystemProcessInformation's layout (#3483).
+inline constexpr ULONG SYSTEM_SESSION_PROCESS_INFORMATION_CLASS = 53;
 inline constexpr ULONG SYSTEM_PAGE_FILE_INFORMATION_CLASS = 18;
 inline constexpr ULONG SYSTEM_PAGE_FILE_INFORMATION_EX_CLASS = 144;
 inline constexpr LONG STATUS_INFO_LENGTH_MISMATCH_VALUE = static_cast<LONG>(0xC0000004L);
+/// What SystemSessionProcessInformation may answer in STATUS_INFO_LENGTH_MISMATCH's place when the
+/// buffer the request names is too small (#3483); grown the same way.
+inline constexpr LONG STATUS_BUFFER_TOO_SMALL_VALUE = static_cast<LONG>(0xC0000023L);
 /// The first buffer for a SystemProcessInformation snapshot: every process with its threads, which grows
 /// it when they don't fit.
 inline constexpr std::size_t PROCESS_INFORMATION_INITIAL_BYTES = std::size_t{512} * 1024;
@@ -142,9 +147,21 @@ struct RawPageFile
     return files;
 }
 
-/// The working set of the process named "Memory Compression" in a SystemProcessInformation buffer;
-/// nullopt when there is none (compression is off) or the buffer is malformed.
-[[nodiscard]] inline std::optional<std::uint64_t> memoryCompressionWorkingSet(std::span<const std::byte> buffer)
+/// The "Memory Compression" process as a SystemProcessInformation-layout buffer lists it (#3483): its id,
+/// its working set and the session it runs in.
+struct MemoryCompressionProcess
+{
+    std::uint64_t processId = 0;
+    std::uint64_t workingSet = 0;
+    ULONG sessionId = 0;
+};
+
+/// The process named "Memory Compression" in a SystemProcessInformation-layout buffer (the whole snapshot,
+/// or one session's from SystemSessionProcessInformation), and only the one whose id is @p processId when
+/// that is given; nullopt when there is none (compression is off, or that process is gone) or the buffer
+/// is malformed.
+[[nodiscard]] inline std::optional<MemoryCompressionProcess>
+findMemoryCompressionProcess(std::span<const std::byte> buffer, std::optional<std::uint64_t> processId = std::nullopt)
 {
     constexpr std::wstring_view NAME = L"Memory Compression";
     const auto base = reinterpret_cast<std::uintptr_t>(buffer.data()); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
@@ -153,16 +170,19 @@ struct RawPageFile
     {
         SYSTEM_PROCESS_INFORMATION entry{};
         std::memcpy(&entry, buffer.data() + offset, sizeof(entry));
+        const auto id = static_cast<std::uint64_t>(
+            reinterpret_cast<std::uintptr_t>(entry.UniqueProcessId));               // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
         const auto name = reinterpret_cast<std::uintptr_t>(entry.ImageName.Buffer); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
         const std::size_t nameBytes = entry.ImageName.Length;
-        if (nameBytes == NAME.size() * sizeof(wchar_t) && name >= base && name - base <= buffer.size() &&
-            nameBytes <= buffer.size() - (name - base))
+        if ((!processId.has_value() || id == *processId) && nameBytes == NAME.size() * sizeof(wchar_t) && name >= base &&
+            name - base <= buffer.size() && nameBytes <= buffer.size() - (name - base))
         {
             std::array<wchar_t, NAME.size()> text{};
             std::memcpy(text.data(), buffer.data() + (name - base), nameBytes);
             if (std::wstring_view(text.data(), text.size()) == NAME)
             {
-                return static_cast<std::uint64_t>(entry.WorkingSetSize);
+                return MemoryCompressionProcess{
+                    .processId = id, .workingSet = static_cast<std::uint64_t>(entry.WorkingSetSize), .sessionId = entry.SessionId};
             }
         }
         if (entry.NextEntryOffset < sizeof(SYSTEM_PROCESS_INFORMATION))
@@ -174,19 +194,23 @@ struct RawPageFile
     return std::nullopt;
 }
 
-/// NtQuerySystemInformation(@p infoClass) through @p query into @p buffer, which grows on
-/// STATUS_INFO_LENGTH_MISMATCH (to at least @p initialBytes) and is never shrunk, so a caller that keeps it
-/// between samples doesn't allocate once it has grown (#3363). The bytes written, or nullopt when the call
-/// fails or @p query is null; only those leading bytes hold the answer.
-[[nodiscard]] inline std::optional<std::size_t> querySystemInformationInto(Windows::NtQuerySystemInformationFn query,
-                                                                           ULONG infoClass,
-                                                                           std::vector<std::byte>& buffer,
-                                                                           std::size_t initialBytes)
+/// The working set of the process named "Memory Compression" in a SystemProcessInformation buffer;
+/// nullopt when there is none (compression is off) or the buffer is malformed.
+[[nodiscard]] inline std::optional<std::uint64_t> memoryCompressionWorkingSet(std::span<const std::byte> buffer)
 {
-    if (query == nullptr)
+    if (const std::optional<MemoryCompressionProcess> process = findMemoryCompressionProcess(buffer); process.has_value())
     {
-        return std::nullopt;
+        return process->workingSet;
     }
+    return std::nullopt;
+}
+
+/// @p query(data, bytes, &returned) into @p buffer, which grows on STATUS_INFO_LENGTH_MISMATCH or
+/// STATUS_BUFFER_TOO_SMALL (to at least @p initialBytes) and is never shrunk. The bytes written, or nullopt
+/// when the call fails.
+template<typename Query>
+[[nodiscard]] std::optional<std::size_t> queryGrowingInto(std::vector<std::byte>& buffer, std::size_t initialBytes, const Query& query)
+{
     constexpr std::size_t MAX_BYTES = std::size_t{64} * 1024 * 1024;
     if (buffer.size() < initialBytes)
     {
@@ -195,8 +219,8 @@ struct RawPageFile
     for (int attempt = 0; attempt < 6; ++attempt)
     {
         ULONG returned = 0;
-        const LONG status = query(infoClass, buffer.data(), static_cast<ULONG>(buffer.size()), &returned);
-        if (status == STATUS_INFO_LENGTH_MISMATCH_VALUE)
+        const LONG status = query(buffer.data(), static_cast<ULONG>(buffer.size()), &returned);
+        if (status == STATUS_INFO_LENGTH_MISMATCH_VALUE || status == STATUS_BUFFER_TOO_SMALL_VALUE)
         {
             // The list can grow between calls: take what it asked for plus headroom, at least double.
             const std::size_t next = std::max<std::size_t>(buffer.size() * 2, static_cast<std::size_t>(returned) + (returned / 4));
@@ -214,6 +238,59 @@ struct RawPageFile
         return std::min<std::size_t>(returned, buffer.size());
     }
     return std::nullopt;
+}
+
+/// NtQuerySystemInformation(@p infoClass) through @p query into @p buffer, which grows on
+/// STATUS_INFO_LENGTH_MISMATCH (to at least @p initialBytes) and is never shrunk, so a caller that keeps it
+/// between samples doesn't allocate once it has grown (#3363). The bytes written, or nullopt when the call
+/// fails or @p query is null; only those leading bytes hold the answer.
+[[nodiscard]] inline std::optional<std::size_t> querySystemInformationInto(Windows::NtQuerySystemInformationFn query,
+                                                                           ULONG infoClass,
+                                                                           std::vector<std::byte>& buffer,
+                                                                           std::size_t initialBytes)
+{
+    if (query == nullptr)
+    {
+        return std::nullopt;
+    }
+    return queryGrowingInto(buffer,
+                            initialBytes,
+                            [query, infoClass](PVOID data, ULONG bytes, PULONG returned)
+                            { return query(infoClass, data, bytes, returned); });
+}
+
+/// SYSTEM_SESSION_PROCESS_INFORMATION, SystemSessionProcessInformation's request (#3483): the session to
+/// list and the buffer the kernel writes its processes into, in SystemProcessInformation's layout.
+/// ReturnLength gives the bytes written, or the bytes needed with STATUS_INFO_LENGTH_MISMATCH or
+/// STATUS_BUFFER_TOO_SMALL.
+struct SessionProcessRequest
+{
+    ULONG sessionId;
+    ULONG bufferBytes;
+    PVOID buffer;
+};
+static_assert(sizeof(SessionProcessRequest) == 2 * sizeof(ULONG) + sizeof(PVOID), "SYSTEM_SESSION_PROCESS_INFORMATION's layout");
+
+/// NtQuerySystemInformation(SystemSessionProcessInformation) for @p sessionId through @p query into
+/// @p buffer, grown as querySystemInformationInto() grows its own (#3483): only that session's processes,
+/// so the kernel copies a part of the whole snapshot. The bytes written (0 when the session has no
+/// processes), or nullopt when the call fails or @p query is null.
+[[nodiscard]] inline std::optional<std::size_t> querySessionProcessesInto(Windows::NtQuerySystemInformationFn query,
+                                                                          ULONG sessionId,
+                                                                          std::vector<std::byte>& buffer,
+                                                                          std::size_t initialBytes)
+{
+    if (query == nullptr)
+    {
+        return std::nullopt;
+    }
+    return queryGrowingInto(buffer,
+                            initialBytes,
+                            [query, sessionId](PVOID data, ULONG bytes, PULONG returned)
+                            {
+                                SessionProcessRequest request{.sessionId = sessionId, .bufferBytes = bytes, .buffer = data};
+                                return query(SYSTEM_SESSION_PROCESS_INFORMATION_CLASS, &request, sizeof(request), returned);
+                            });
 }
 
 /// NtQuerySystemInformation(@p infoClass) into a buffer that grows on STATUS_INFO_LENGTH_MISMATCH, trimmed

@@ -17,8 +17,15 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
+#include <span>
 #include <string>
 #include <vector>
+
+#ifdef _WIN32
+#include "Platform/Windows/WindowsCommitPaging.h"
+#include "Platform/Windows/WindowsNtQuery.h"
+#endif
 
 namespace
 {
@@ -41,6 +48,67 @@ static void BM_SystemProbe_Sample(benchmark::State& state)
     BenchmarkUtils::reportMemoryDelta(state, memTracker);
 }
 BENCHMARK(BM_SystemProbe_Sample);
+
+#ifdef _WIN32
+// The two reads WindowsSystemProbe makes for compressed memory (#3483): the whole SystemProcessInformation
+// snapshot that finds the Memory Compression process (each sample before #3483, now only to search for
+// it), and its session's list alone, which each sample reads now. Each into a buffer kept between
+// iterations, as the probe keeps it.
+static void BM_WindowsMemoryCompression_WholeSnapshot(benchmark::State& state)
+{
+    const auto query = Platform::Windows::ntQuerySystemInformation();
+    std::vector<std::byte> buffer;
+    for (auto _ : state)
+    {
+        const auto written =
+            Platform::WindowsCommitPaging::querySystemInformationInto(query,
+                                                                      Platform::WindowsCommitPaging::SYSTEM_PROCESS_INFORMATION_CLASS,
+                                                                      buffer,
+                                                                      Platform::WindowsCommitPaging::PROCESS_INFORMATION_INITIAL_BYTES);
+        if (!written.has_value())
+        {
+            state.SkipWithError("SystemProcessInformation failed");
+            break;
+        }
+        auto process = Platform::WindowsCommitPaging::findMemoryCompressionProcess(std::span<const std::byte>(buffer.data(), *written));
+        benchmark::DoNotOptimize(process);
+    }
+}
+BENCHMARK(BM_WindowsMemoryCompression_WholeSnapshot)->Unit(benchmark::kMicrosecond);
+
+static void BM_WindowsMemoryCompression_SessionList(benchmark::State& state)
+{
+    const auto query = Platform::Windows::ntQuerySystemInformation();
+    std::vector<std::byte> buffer;
+    const auto written =
+        Platform::WindowsCommitPaging::querySystemInformationInto(query,
+                                                                  Platform::WindowsCommitPaging::SYSTEM_PROCESS_INFORMATION_CLASS,
+                                                                  buffer,
+                                                                  Platform::WindowsCommitPaging::PROCESS_INFORMATION_INITIAL_BYTES);
+    const auto found = written.has_value()
+                         ? Platform::WindowsCommitPaging::findMemoryCompressionProcess(std::span<const std::byte>(buffer.data(), *written))
+                         : std::nullopt;
+    if (!found.has_value())
+    {
+        state.SkipWithError("no Memory Compression process (compression is off)");
+        return;
+    }
+    for (auto _ : state)
+    {
+        const auto session = Platform::WindowsCommitPaging::querySessionProcessesInto(
+            query, found->sessionId, buffer, Platform::WindowsCommitPaging::PROCESS_INFORMATION_INITIAL_BYTES);
+        if (!session.has_value())
+        {
+            state.SkipWithError("SystemSessionProcessInformation failed");
+            break;
+        }
+        auto process = Platform::WindowsCommitPaging::findMemoryCompressionProcess(std::span<const std::byte>(buffer.data(), *session),
+                                                                                   found->processId);
+        benchmark::DoNotOptimize(process);
+    }
+}
+BENCHMARK(BM_WindowsMemoryCompression_SessionList)->Unit(benchmark::kMicrosecond);
+#endif
 
 // Benchmark SystemModel refresh (full pipeline including delta computation)
 // This is called from the UI/main-thread update cycle (not a background thread)

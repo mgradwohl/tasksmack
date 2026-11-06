@@ -108,7 +108,7 @@ struct WindowsSystemProbeFunctions
 struct SystemReadTiming
 {
     /// "cpu" (GetSystemTimes and the per-core NT query), "cpu-details" (the topology re-read, rare),
-    /// "memory" (GlobalMemoryStatusEx, GetPerformanceInfo, the page files and the process snapshot for
+    /// "memory" (GlobalMemoryStatusEx, GetPerformanceInfo, the page files and the process list for
     /// compressed memory), "uptime", "pdh-freq"
     /// (the PDH collect) or "ifTable" (GetIfTable2 and the device lookups); empty before the first read().
     std::string_view slowestSubRead;
@@ -187,10 +187,17 @@ class WindowsSystemProbe : public ISystemProbe
     void readCpuCounters(SystemCounters& counters) const;
     void readPerCoreCpuCounters(SystemCounters& counters) const;
     void readMemoryCounters(SystemCounters& counters) const;
-    /// Compressed memory (#3363): the "Memory Compression" process's working set from a
-    /// SystemProcessInformation snapshot into m_ProcessSnapshot; not set when the process isn't there
-    /// (compression is off) or the query fails.
+    /// Compressed memory (#3363): the "Memory Compression" process's working set; not set when the
+    /// process isn't there (compression is off) or the query fails. Once a whole SystemProcessInformation
+    /// snapshot has found the process, each sample reads only its session's process list
+    /// (SystemSessionProcessInformation) for that process id (#3483); the whole snapshot is taken again
+    /// only when the process is gone from it, and, while none is known, no more than every
+    /// MEMORY_COMPRESSION_SEARCH_INTERVAL_SECONDS.
     void readMemoryCompression(SystemCounters& counters);
+    /// The whole-snapshot search readMemoryCompression() makes: the process's working set into
+    /// @p counters and its id and session into m_MemoryCompression, or, when there is none or the query
+    /// fails, neither, and the next search scheduled.
+    void searchMemoryCompression(SystemCounters& counters, std::chrono::steady_clock::time_point now);
     /// Page-file totals from NtQuerySystemInformation; zero when there is no page file or the
     /// query fails.
     [[nodiscard]] SwapBytes readSwap() const;
@@ -229,9 +236,20 @@ class WindowsSystemProbe : public ISystemProbe
     // thread only.
     std::vector<NetworkInterfaceKey> m_InterfaceKeys;
     std::vector<NetworkInterfaceKey> m_InterfaceKeysScratch;
-    // The SystemProcessInformation snapshot readMemoryCompression() reads (#3363), kept between samples
-    // so it isn't allocated again once grown. Sampler thread only.
+    // The process list readMemoryCompression() reads (#3363): the whole SystemProcessInformation snapshot
+    // when it searches, else the Memory Compression process's session's (#3483). Kept between samples so
+    // it isn't allocated again once grown. Sampler thread only.
     std::vector<std::byte> m_ProcessSnapshot;
+    // The Memory Compression process the last search found (#3483): its id and session, which each sample
+    // reads; nullopt while none is known. Sampler thread only.
+    struct MemoryCompressionTarget
+    {
+        std::uint64_t processId = 0;
+        std::uint32_t sessionId = 0;
+    };
+    std::optional<MemoryCompressionTarget> m_MemoryCompression;
+    // While none is known, the earliest the next whole-snapshot search may run (#3483). Sampler thread only.
+    std::chrono::steady_clock::time_point m_NextMemoryCompressionSearch{};
     // The last read()'s sub-read timing (#2731). Sampler thread only.
     SystemReadTiming m_LastReadTiming;
     // The nominal base clock (nominalCpuBaseMHz), read once: it is fixed for the boot session
@@ -251,6 +269,9 @@ class WindowsSystemProbe : public ISystemProbe
     CpuTopology::CachedCpuDetails m_CpuDetails;
     // Set by the first read(), so the second opens m_OpenProcessorPerformance's counter (#3154)
     bool m_FirstReadDone = false;
+    // Set when SystemSessionProcessInformation fails (#3483): each sample then searches the whole
+    // snapshot, as before it. Sampler thread only.
+    bool m_SessionProcessQueryFails = false;
 };
 
 } // namespace Platform
