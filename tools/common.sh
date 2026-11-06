@@ -74,6 +74,17 @@ get_llvm_tool_major_version() {
     "$tool_path" --version 2>/dev/null | grep -oE 'version [0-9]+' | grep -oE '[0-9]+' | head -1
 }
 
+# Print $1 without its carriage returns and leading or trailing whitespace. For a value a native
+# Windows tool printed: Windows Python's print() ends the line with CRLF, and $(...) drops only the LF
+# in MSYS2 and Cygwin bash builds without Git for Windows' patch (#3517).
+# Usage: value="$(strip_native_output "$("$tool" ...)")"
+strip_native_output() {
+    local value="${1//$'\r'/}"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    printf '%s' "$value"
+}
+
 # Returns 0 if the given executable exists and is Python >= 3.14 (project minimum).
 # Usage: _python_meets_min python3
 _python_meets_min() {
@@ -81,6 +92,8 @@ _python_meets_min() {
     command -v "$exe" &>/dev/null || return 1
     local ver
     ver="$("$exe" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')" || return 1
+    ver="$(strip_native_output "$ver")"
+    [[ "$ver" =~ ^[0-9]+\.[0-9]+$ ]] || return 1
     local major="${ver%%.*}" minor="${ver##*.}"
     (( major > 3 || (major == 3 && minor >= 14) ))
 }

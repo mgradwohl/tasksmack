@@ -165,13 +165,11 @@ if (-not $ExternalCompdb -and -not (Test-Path $CompileCommandsJson)) {
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
-# Exit with $Code, first removing a -BuildDir's temporary database. (exit in a function ends the script.)
-# Every result past this point exits through here, and $global:TaskSmackClangTidyExit records it, so
-# clang-tidy.sh's hand-off counts a run as clean only when it got here with 0 (#3500 review).
+# Exit with $Code. (exit in a function ends the script; the finally below still removes a -BuildDir's
+# temporary database.) Every result past this point exits through here, and
+# $global:TaskSmackClangTidyExit records it, so clang-tidy.sh's hand-off counts a run as clean only
+# when it got here with 0 (#3500 review).
 function Exit-Tidy([int]$Code) {
-    if ($ExternalCompdb) {
-        Remove-Item -LiteralPath $TidyCompdbDir -Recurse -Force -ErrorAction SilentlyContinue
-    }
     $global:TaskSmackClangTidyExit = $Code
     exit $Code
 }
@@ -257,217 +255,225 @@ function Write-SanitizedCompileCommands([string]$Source, [string]$Destination) {
     [IO.File]::WriteAllText($Destination, $json, [Text.UTF8Encoding]::new($false))
 }
 
-# Generate a sanitized compile_commands.json for clang-tidy without touching the live file.
-# CMake emits two PCH-related flag groups per TU:
-#   1. -Xclang -include-pch -Xclang /path/cmake_pch.hxx.pch  (binary PCH)
-#   2. -Xclang -include    -Xclang /path/cmake_pch.hxx        (PCH source include)
-#   3. -Xclang -fno-pch-timestamp                            (PCH reproducibility flag, defensive)
-# clang-tidy cannot use any of these without a prior full build, so strip all.
-if ($ShowDetails) {
-    Write-Host "Generating sanitized clang-tidy compilation database..."
-}
-Remove-Item $CompileCommandsTidy -Force -ErrorAction SilentlyContinue
-if ($ExternalCompdb) {
+# Everything from here on can create the temporary database, so it is removed in finally however the
+# script ends: through Exit-Tidy, or on a terminating error such as a malformed database (#3517).
+try {
+    # Generate a sanitized compile_commands.json for clang-tidy without touching the live file.
+    # CMake emits two PCH-related flag groups per TU:
+    #   1. -Xclang -include-pch -Xclang /path/cmake_pch.hxx.pch  (binary PCH)
+    #   2. -Xclang -include    -Xclang /path/cmake_pch.hxx        (PCH source include)
+    #   3. -Xclang -fno-pch-timestamp                            (PCH reproducibility flag, defensive)
+    # clang-tidy cannot use any of these without a prior full build, so strip all.
     if ($ShowDetails) {
-        Write-Host "Using compile database: $CompileCommandsJson"
+        Write-Host "Generating sanitized clang-tidy compilation database..."
     }
-} else {
-    & cmake --build $BuildDir --target generate-clang-tidy-compile-commands 2>$null
-    if ($LASTEXITCODE -ne 0 -and $ShowDetails) {
-        Write-Host "Falling back to local compile_commands sanitization..."
-    }
-}
-if (-not (Test-Path $CompileCommandsTidy)) {
-    $null = New-Item -ItemType Directory -Path $TidyCompdbDir -Force
-    Write-SanitizedCompileCommands -Source $CompileCommandsJson -Destination $CompileCommandsTidy
-}
-
-# Several targets compile the same src/ files (the TaskSmackApp object library, the tests, ...), and
-# clang-tidy analyzes a file once per database entry. Keep one entry per file, the app's (#1626).
-# Not fatal: without it every file is still analyzed, just once per target that compiles it.
-$Python = Find-WorkingPython
-if (-not $Python) {
-    Write-Warning "python not found (tried .venv, python, python3, py -3); compile database not de-duplicated (files may be analyzed more than once)."
-} else {
-    if ($ShowDetails) {
-        Write-Host "Using python: $Python"
-    }
-    $dedupeOutput = & $Python -I -X utf8 (Join-Path $ScriptDir "dedupe-compile-commands.py") $CompileCommandsTidy 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        Write-Warning "compile database not de-duplicated (files may be analyzed more than once): $dedupeOutput"
-    } elseif ($ShowDetails) {
-        Write-Host $dedupeOutput
-    }
-}
-
-# Determine files to analyze. Explicit -Files win over -ChangedOnly, as in clang-tidy.sh.
-if ($ChangedOnly -and $Files.Count -eq 0) {
-    # Files this branch changes (committed, staged, unstaged, untracked); see Get-ChangedFileList. Not
-    # tests/tools/fixtures/: test fixtures with deliberate findings, analyzed only when named in -Files.
-    if ($ShowDetails) {
-        Write-Host "Getting changed files from git..."
-    }
-    $SourceFiles = @(Get-ChangedFileList -Root $ProjectRoot |
-        Where-Object { $_ -match '\.(cpp|h)$' } |
-        Where-Object { $_ -notmatch 'Platform[/\\]Linux[/\\]' } |
-        Where-Object { $_ -notmatch '^tests[/\\]tools[/\\]fixtures[/\\]' } |
-        ForEach-Object { Join-Path $ProjectRoot $_ })
-    if ($SourceFiles.Count -eq 0) {
-        Write-Host "No changed C++ files found."
-        Exit-Tidy 0
-    }
-    if ($ShowDetails) {
-        Write-Host "Analyzing $($SourceFiles.Count) changed files..."
-    }
-} else {
-    $ChangedOnly = $false
-    if ($Files.Count -eq 0) {
-        # Get all source files from project, excluding other-platform files
-        $SourceFiles = @()
-        $SourceDirs = @("src")
-        foreach ($dir in $SourceDirs) {
-            $fullDir = Join-Path $ProjectRoot $dir
-            if (Test-Path $fullDir) {
-                $SourceFiles += Get-ChildItem -Path $fullDir -Recurse -Include "*.cpp" |
-                    Where-Object { $_.FullName -notmatch '\\Platform\\Linux\\' } |
-                    Select-Object -ExpandProperty FullName
-            }
+    Remove-Item $CompileCommandsTidy -Force -ErrorAction SilentlyContinue
+    if ($ExternalCompdb) {
+        if ($ShowDetails) {
+            Write-Host "Using compile database: $CompileCommandsJson"
         }
     } else {
-        $SourceFiles = $Files | ForEach-Object {
-            if ([System.IO.Path]::IsPathRooted($_)) { $_ }
-            else { Join-Path $ProjectRoot $_ }
+        & cmake --build $BuildDir --target generate-clang-tidy-compile-commands 2>$null
+        if ($LASTEXITCODE -ne 0 -and $ShowDetails) {
+            Write-Host "Falling back to local compile_commands sanitization..."
         }
     }
-}
-
-if ($SourceFiles.Count -eq 0) {
-    Write-Host "Error: No source files found to analyze." -ForegroundColor Red
-    Exit-Tidy 1
-}
-
-# Determine number of jobs
-if ($Jobs -le 0) {
-    $Jobs = [Environment]::ProcessorCount
-}
-
-$ConfigFile = Join-Path $ProjectRoot ".clang-tidy"
-
-# Windows-only check exclusions, appended to .clang-tidy's Checks (which Linux keeps in full).
-# - clang-analyzer-optin.core.EnumCastOutOfRange: MSVC STL false positive. std::filesystem::read_symlink
-#   ORs two __std_fs_file_flags bits (_BITMASK_OPS in <xfilesystem_abi.h>), and the analyzer reports
-#   the combined value as outside the enum's range. The report is located in that system header, so
-#   a NOLINT (or [[clang::suppress]]) in our code can't silence it. Reached via App/UserConfig.cpp.
-$WindowsCheckExclusions = "-clang-analyzer-optin.core.EnumCastOutOfRange"
-
-# Each task carries the file's result-cache key ("-" when its result isn't cached).
-$Tasks = @($SourceFiles | ForEach-Object { [PSCustomObject]@{ Key = '-'; File = [string]$_ } })
-if ($CacheDir) {
-    $CacheDir = [System.IO.Path]::GetFullPath($CacheDir)
-    $fileList = New-TemporaryFile
-    $selected = $null
-    $cacheOk = $false
-    try {
-        Set-Content -LiteralPath $fileList -Value $SourceFiles -Encoding utf8
-        if ($Python) {
-            # A whole-tree run prunes markers no current file has, so a saved cache holds only live keys.
-            # The flags below must match the clang-tidy call's: they are part of every cache key.
-            $cacheArgs = @(
-                '-I', '-X', 'utf8', (Join-Path $ScriptDir "tidy-cache.py"), 'select',
-                '--cache-dir', $CacheDir, '--compdb', $CompileCommandsTidy, '--clang-tidy', $ClangTidy,
-                '--repo-root', $ProjectRoot, '--salt-file', $ConfigFile, '--salt-file', $PSCommandPath,
-                # --salt=VALUE, not --salt VALUE: a value starting with "-" would read as an option.
-                "--salt=$HeaderFilterRegex", "--salt=$ExcludeHeaderFilterRegex", "--salt=$WindowsCheckExclusions",
-                '--extra-arg=-std=c++23', '--extra-arg=-Wno-unknown-warning-option', '--files-from', $fileList)
-            if ($Files.Count -eq 0 -and -not $ChangedOnly) { $cacheArgs += '--prune' }
-            $selected = & $Python @cacheArgs
-            $cacheOk = ($LASTEXITCODE -eq 0)
-        }
-    } finally {
-        Remove-Item -LiteralPath $fileList -Force -ErrorAction SilentlyContinue
+    if (-not (Test-Path $CompileCommandsTidy)) {
+        $null = New-Item -ItemType Directory -Path $TidyCompdbDir -Force
+        Write-SanitizedCompileCommands -Source $CompileCommandsJson -Destination $CompileCommandsTidy
     }
-    if (-not $cacheOk) {
-        Write-Warning "clang-tidy result cache unavailable; analyzing every file."
-        $CacheDir = ""
+
+    # Several targets compile the same src/ files (the TaskSmackApp object library, the tests, ...), and
+    # clang-tidy analyzes a file once per database entry. Keep one entry per file, the app's (#1626).
+    # Not fatal: without it every file is still analyzed, just once per target that compiles it.
+    $Python = Find-WorkingPython
+    if (-not $Python) {
+        Write-Warning "python not found (tried .venv, python, python3, py -3); compile database not de-duplicated (files may be analyzed more than once)."
     } else {
-        $Tasks = @($selected | Where-Object { $_ } | ForEach-Object {
-            $key, $file = $_ -split "`t", 2
-            [PSCustomObject]@{ Key = $key; File = $file }
-        })
-        if ($Tasks.Count -eq 0) {
-            Write-Host "clang-tidy completed successfully (every file unchanged since a clean run)." -ForegroundColor Green
+        if ($ShowDetails) {
+            Write-Host "Using python: $Python"
+        }
+        $dedupeOutput = & $Python -I -X utf8 (Join-Path $ScriptDir "dedupe-compile-commands.py") $CompileCommandsTidy 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "compile database not de-duplicated (files may be analyzed more than once): $dedupeOutput"
+        } elseif ($ShowDetails) {
+            Write-Host $dedupeOutput
+        }
+    }
+
+    # Determine files to analyze. Explicit -Files win over -ChangedOnly, as in clang-tidy.sh.
+    if ($ChangedOnly -and $Files.Count -eq 0) {
+        # Files this branch changes (committed, staged, unstaged, untracked); see Get-ChangedFileList. Not
+        # tests/tools/fixtures/: test fixtures with deliberate findings, analyzed only when named in -Files.
+        if ($ShowDetails) {
+            Write-Host "Getting changed files from git..."
+        }
+        $SourceFiles = @(Get-ChangedFileList -Root $ProjectRoot |
+            Where-Object { $_ -match '\.(cpp|h)$' } |
+            Where-Object { $_ -notmatch 'Platform[/\\]Linux[/\\]' } |
+            Where-Object { $_ -notmatch '^tests[/\\]tools[/\\]fixtures[/\\]' } |
+            ForEach-Object { Join-Path $ProjectRoot $_ })
+        if ($SourceFiles.Count -eq 0) {
+            Write-Host "No changed C++ files found."
             Exit-Tidy 0
         }
+        if ($ShowDetails) {
+            Write-Host "Analyzing $($SourceFiles.Count) changed files..."
+        }
+    } else {
+        $ChangedOnly = $false
+        if ($Files.Count -eq 0) {
+            # Get all source files from project, excluding other-platform files
+            $SourceFiles = @()
+            $SourceDirs = @("src")
+            foreach ($dir in $SourceDirs) {
+                $fullDir = Join-Path $ProjectRoot $dir
+                if (Test-Path $fullDir) {
+                    $SourceFiles += Get-ChildItem -Path $fullDir -Recurse -Include "*.cpp" |
+                        Where-Object { $_.FullName -notmatch '\\Platform\\Linux\\' } |
+                        Select-Object -ExpandProperty FullName
+                }
+            }
+        } else {
+            $SourceFiles = $Files | ForEach-Object {
+                if ([System.IO.Path]::IsPathRooted($_)) { $_ }
+                else { Join-Path $ProjectRoot $_ }
+            }
+        }
     }
-}
 
-if ($ShowDetails) {
-    Write-Host "Running clang-tidy on $($Tasks.Count) files with $Jobs parallel jobs..."
+    if ($SourceFiles.Count -eq 0) {
+        Write-Host "Error: No source files found to analyze." -ForegroundColor Red
+        Exit-Tidy 1
+    }
+
+    # Determine number of jobs
+    if ($Jobs -le 0) {
+        $Jobs = [Environment]::ProcessorCount
+    }
+
+    $ConfigFile = Join-Path $ProjectRoot ".clang-tidy"
+
+    # Windows-only check exclusions, appended to .clang-tidy's Checks (which Linux keeps in full).
+    # - clang-analyzer-optin.core.EnumCastOutOfRange: MSVC STL false positive. std::filesystem::read_symlink
+    #   ORs two __std_fs_file_flags bits (_BITMASK_OPS in <xfilesystem_abi.h>), and the analyzer reports
+    #   the combined value as outside the enum's range. The report is located in that system header, so
+    #   a NOLINT (or [[clang::suppress]]) in our code can't silence it. Reached via App/UserConfig.cpp.
+    $WindowsCheckExclusions = "-clang-analyzer-optin.core.EnumCastOutOfRange"
+
+    # Each task carries the file's result-cache key ("-" when its result isn't cached).
+    $Tasks = @($SourceFiles | ForEach-Object { [PSCustomObject]@{ Key = '-'; File = [string]$_ } })
+    if ($CacheDir) {
+        $CacheDir = [System.IO.Path]::GetFullPath($CacheDir)
+        $fileList = New-TemporaryFile
+        $selected = $null
+        $cacheOk = $false
+        try {
+            Set-Content -LiteralPath $fileList -Value $SourceFiles -Encoding utf8
+            if ($Python) {
+                # A whole-tree run prunes markers no current file has, so a saved cache holds only live keys.
+                # The flags below must match the clang-tidy call's: they are part of every cache key.
+                $cacheArgs = @(
+                    '-I', '-X', 'utf8', (Join-Path $ScriptDir "tidy-cache.py"), 'select',
+                    '--cache-dir', $CacheDir, '--compdb', $CompileCommandsTidy, '--clang-tidy', $ClangTidy,
+                    '--repo-root', $ProjectRoot, '--salt-file', $ConfigFile, '--salt-file', $PSCommandPath,
+                    # --salt=VALUE, not --salt VALUE: a value starting with "-" would read as an option.
+                    "--salt=$HeaderFilterRegex", "--salt=$ExcludeHeaderFilterRegex", "--salt=$WindowsCheckExclusions",
+                    '--extra-arg=-std=c++23', '--extra-arg=-Wno-unknown-warning-option', '--files-from', $fileList)
+                if ($Files.Count -eq 0 -and -not $ChangedOnly) { $cacheArgs += '--prune' }
+                $selected = & $Python @cacheArgs
+                $cacheOk = ($LASTEXITCODE -eq 0)
+            }
+        } finally {
+            Remove-Item -LiteralPath $fileList -Force -ErrorAction SilentlyContinue
+        }
+        if (-not $cacheOk) {
+            Write-Warning "clang-tidy result cache unavailable; analyzing every file."
+            $CacheDir = ""
+        } else {
+            $Tasks = @($selected | Where-Object { $_ } | ForEach-Object {
+                $key, $file = $_ -split "`t", 2
+                [PSCustomObject]@{ Key = $key; File = $file }
+            })
+            if ($Tasks.Count -eq 0) {
+                Write-Host "clang-tidy completed successfully (every file unchanged since a clean run)." -ForegroundColor Green
+                Exit-Tidy 0
+            }
+        }
+    }
+
+    if ($ShowDetails) {
+        Write-Host "Running clang-tidy on $($Tasks.Count) files with $Jobs parallel jobs..."
+        Write-Host ""
+    }
+
+    # Process files in batches for parallel execution
+    $results = $Tasks | ForEach-Object -ThrottleLimit $Jobs -Parallel {
+        $file = $_.File
+        $key = $_.Key
+        $clangTidy = $using:ClangTidy
+        $configFile = $using:ConfigFile
+        $buildDir = $using:TidyCompdbDir
+        $projectRoot = $using:ProjectRoot
+        $showDetails = $using:ShowDetails
+
+        # Get relative path for display
+        $relativePath = $file
+        if ($file.StartsWith($projectRoot)) {
+            $relativePath = $file.Substring($projectRoot.Length + 1)
+        }
+
+        if ($showDetails) {
+            Write-Host "  Analyzing: $relativePath"
+        }
+
+        $output = & $clangTidy `
+            --config-file="$configFile" `
+            --checks="$using:WindowsCheckExclusions" `
+            --header-filter="$using:HeaderFilterRegex" `
+            --exclude-header-filter="$using:ExcludeHeaderFilterRegex" `
+            -p "$buildDir" `
+            --extra-arg=-std=c++23 `
+            --extra-arg=-Wno-unknown-warning-option `
+            "$file" 2>&1
+
+        $exitCode = $LASTEXITCODE
+
+        [PSCustomObject]@{
+            File = $relativePath
+            Key = $key
+            ExitCode = $exitCode
+            Output = $output
+        }
+    }
+
+    # Collect results
+    $hasErrors = $false
+    foreach ($result in $results) {
+        # Record only a clean result (#1785); a file with findings is analyzed again next time.
+        if ($CacheDir -and $result.Key -ne '-' -and $result.ExitCode -eq 0 -and -not ($result.Output -match "warning:|error:")) {
+            Set-Content -LiteralPath (Join-Path $CacheDir $result.Key) -Value $result.File -Encoding utf8 -ErrorAction SilentlyContinue
+        }
+        if ($result.ExitCode -ne 0 -or ($result.Output -match "warning:|error:")) {
+            if ($result.Output) {
+                Write-Host $result.Output
+            }
+            if ($result.ExitCode -ne 0) {
+                $hasErrors = $true
+            }
+        }
+    }
+
     Write-Host ""
-}
-
-# Process files in batches for parallel execution
-$results = $Tasks | ForEach-Object -ThrottleLimit $Jobs -Parallel {
-    $file = $_.File
-    $key = $_.Key
-    $clangTidy = $using:ClangTidy
-    $configFile = $using:ConfigFile
-    $buildDir = $using:TidyCompdbDir
-    $projectRoot = $using:ProjectRoot
-    $showDetails = $using:ShowDetails
-
-    # Get relative path for display
-    $relativePath = $file
-    if ($file.StartsWith($projectRoot)) {
-        $relativePath = $file.Substring($projectRoot.Length + 1)
+    if ($hasErrors) {
+        Write-Host "clang-tidy found issues." -ForegroundColor Yellow
+        Exit-Tidy 1
+    } else {
+        Write-Host "clang-tidy completed successfully." -ForegroundColor Green
+        Exit-Tidy 0
     }
-
-    if ($showDetails) {
-        Write-Host "  Analyzing: $relativePath"
+} finally {
+    if ($ExternalCompdb) {
+        Remove-Item -LiteralPath $TidyCompdbDir -Recurse -Force -ErrorAction SilentlyContinue
     }
-
-    $output = & $clangTidy `
-        --config-file="$configFile" `
-        --checks="$using:WindowsCheckExclusions" `
-        --header-filter="$using:HeaderFilterRegex" `
-        --exclude-header-filter="$using:ExcludeHeaderFilterRegex" `
-        -p "$buildDir" `
-        --extra-arg=-std=c++23 `
-        --extra-arg=-Wno-unknown-warning-option `
-        "$file" 2>&1
-
-    $exitCode = $LASTEXITCODE
-
-    [PSCustomObject]@{
-        File = $relativePath
-        Key = $key
-        ExitCode = $exitCode
-        Output = $output
-    }
-}
-
-# Collect results
-$hasErrors = $false
-foreach ($result in $results) {
-    # Record only a clean result (#1785); a file with findings is analyzed again next time.
-    if ($CacheDir -and $result.Key -ne '-' -and $result.ExitCode -eq 0 -and -not ($result.Output -match "warning:|error:")) {
-        Set-Content -LiteralPath (Join-Path $CacheDir $result.Key) -Value $result.File -Encoding utf8 -ErrorAction SilentlyContinue
-    }
-    if ($result.ExitCode -ne 0 -or ($result.Output -match "warning:|error:")) {
-        if ($result.Output) {
-            Write-Host $result.Output
-        }
-        if ($result.ExitCode -ne 0) {
-            $hasErrors = $true
-        }
-    }
-}
-
-Write-Host ""
-if ($hasErrors) {
-    Write-Host "clang-tidy found issues." -ForegroundColor Yellow
-    Exit-Tidy 1
-} else {
-    Write-Host "clang-tidy completed successfully." -ForegroundColor Green
-    Exit-Tidy 0
 }

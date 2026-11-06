@@ -122,8 +122,8 @@ resolve_preset_binary_dir() {
     local root="$PROJECT_ROOT" platform
     case "${OSTYPE:-}" in
         msys* | cygwin*)
-            platform="$("$PYTHON_EXE" -I -c 'import sys; print(sys.platform)' 2>/dev/null || true)"
-            if [[ "${platform%$'\r'}" == win32 ]]; then
+            platform="$(strip_native_output "$("$PYTHON_EXE" -I -c 'import sys; print(sys.platform)' 2>/dev/null || true)")"
+            if [[ "$platform" == win32 ]]; then
                 root="$(cygpath -w "$PROJECT_ROOT")"
             fi
             ;;
@@ -213,8 +213,8 @@ run_windows_clang_tidy() {
                 echo "Error: Unknown argument: $BUILD_NAME (not an option, a .cpp/.h file, or a configure preset with a binaryDir; looking a preset up needs python)" >&2
                 usage 1
             fi
-            # Windows Python's print() ends the line with CRLF; $(...) strips only the LF.
-            build_dir="${build_dir%$'\r'}"
+            # Windows Python's print() ends the line with CRLF; $(...) strips only the LF in some bash builds.
+            build_dir="$(strip_native_output "$build_dir")"
             ;;
     esac
     if [[ -n "$build_dir" ]]; then
