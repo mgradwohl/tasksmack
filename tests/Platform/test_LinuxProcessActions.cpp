@@ -2563,9 +2563,10 @@ TEST(LinuxProcessActionsTest, OpenFileLocationCallsShowItemsOnTheSessionBus)
     {
         GTEST_SKIP() << "Needs dbus-daemon, and not root (root for another user doesn't use D-Bus)";
     }
-    ::TestSupport::FakeSystemBus bus;
     std::vector<std::pair<std::vector<std::string>, std::string>> calls; // (uris, startup ID), on the bus thread
     std::mutex callsMutex;
+    // Declared after what its thread writes, so that thread is joined before either is destroyed.
+    ::TestSupport::FakeSystemBus bus;
     bus.addRawMethod("/org/freedesktop/FileManager1",
                      "org.freedesktop.FileManager1",
                      "ShowItems",
@@ -2573,7 +2574,10 @@ TEST(LinuxProcessActionsTest, OpenFileLocationCallsShowItemsOnTheSessionBus)
                      {
                          char** uris = nullptr;
                          const char* startup = nullptr;
-                         if (sd_bus_message_read_strv(call, &uris) < 0 || sd_bus_message_read(call, "s", &startup) < 0)
+                         // Exactly (as, s), as FileManager1 requires: a call without the startup ID must fail here.
+                         const char* signature = sd_bus_message_get_signature(call, 1);
+                         if (signature == nullptr || std::string_view(signature) != "ass" || sd_bus_message_read_strv(call, &uris) < 0 ||
+                             sd_bus_message_read(call, "s", &startup) <= 0)
                          {
                              return sd_bus_reply_method_errorf(call, "org.freedesktop.DBus.Error.InvalidArgs", "bad arguments");
                          }
