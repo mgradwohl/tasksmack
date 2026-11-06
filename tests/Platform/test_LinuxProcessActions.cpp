@@ -2278,6 +2278,12 @@ TEST_F(LinuxProcessActionsFaultTest, CloseConnectionRefusesAnUnopenablePidfdAndA
 {
     LinuxProcessSyscalls syscalls = realProcessSyscalls();
     syscalls.pidfdOpen = &fakePidfdOpen;
+    // Neither refusal may reach the socket scan: it fails the test if called.
+    syscalls.socketDescriptor = [](std::int32_t, std::uint64_t) -> std::expected<int, int>
+    {
+        ADD_FAILURE() << "the socket scan ran before the refusal";
+        return std::unexpected(ENOENT);
+    };
     LinuxProcessControl control(syscalls);
     plan().openErrno = ESRCH;
     const ProcessActionResult gone = control.closeConnection(ownTarget(), 42);
@@ -2288,7 +2294,7 @@ TEST_F(LinuxProcessActionsFaultTest, CloseConnectionRefusesAnUnopenablePidfdAndA
     const ProcessTarget reused{.pid = ownTarget().pid, .startTimeTicks = ownTarget().startTimeTicks + 1};
     const ProcessActionResult other = control.closeConnection(reused, 42);
     EXPECT_FALSE(other.success);
-    EXPECT_FALSE(other.errorMessage.contains("no longer holds")) << "refused at the identity check, before the socket scan";
+    EXPECT_TRUE(other.errorMessage.contains("different process")) << other.errorMessage;
 }
 
 // #1891: a trace aimed at a PID whose start time no longer matches is refused before anything is opened.
