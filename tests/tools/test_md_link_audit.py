@@ -132,6 +132,26 @@ class MdLinkAuditPs1Test(MdLinkAuditTest):
             ["-RepoRoot", str(root)] if root is not None else []
         )
 
+    def test_a_root_given_as_an_8dot3_short_path_still_resolves_docs_links_from_docs(self):
+        # A CI runner's TEMP is C:\Users\RUNNER~1\..., while the scanned files come back with long names, so
+        # the "is this page under docs/" check must compare the two spellings as one path (#3529).
+        import ctypes
+
+        root = self.root / "a long checkout directory name"
+        (root / "docs" / "guide").mkdir(parents=True)
+        (root / "docs" / "guide" / "page.md").write_text("# Page\n", encoding="utf-8")
+        (root / "docs" / "_sidebar.md").write_text("- [Page](/guide/page.md)\n- [Gone](/guide/gone.md)\n", encoding="utf-8")
+        buffer = ctypes.create_unicode_buffer(32768)
+        if not ctypes.windll.kernel32.GetShortPathNameW(str(root), buffer, len(buffer)) or not buffer.value:
+            self.skipTest("GetShortPathNameW failed")
+        short = buffer.value
+        if os.path.basename(short).lower() == root.name.lower():
+            self.skipTest("8.3 names are disabled on this volume")
+        result = self.audit(Path(short))
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("Broken internal link findings: 1", result.stdout)
+        self.assertIn("docs/_sidebar.md:2: /guide/gone.md", result.stdout)
+
     def test_the_checkout_has_no_broken_link(self):
         result = self.audit(REPO_ROOT)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
