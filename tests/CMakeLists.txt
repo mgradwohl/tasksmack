@@ -76,6 +76,11 @@ if(WIN32)
         # tools/cmake-cache.ps1, the CMakeCache.txt reader bench.ps1 and the ETW scripts share (#1479).
         add_test(NAME CMakeCacheScript
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-cmake-cache.ps1)
+        # tools/clang-tidy.ps1, and tools/clang-tidy.sh from Git Bash, report a finding in a project header
+        # the analyzed .cpp includes, as CI's Windows clang-tidy does (#3500). A fixture and a one-entry
+        # compile database; about two seconds. Skips when clang-tidy isn't installed.
+        add_test(NAME ClangTidyHeadersScript
+            COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-clang-tidy-headers.ps1)
         # tools/bench.ps1 against a stub benchmark binary: exit-code propagation (#1423) and the
         # provenance manifest (#1424). The stub benchmark is a Python script when CMake's interpreter
         # is passed in (much cheaper to start than PowerShell).

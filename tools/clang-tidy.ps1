@@ -18,6 +18,10 @@
 .PARAMETER CacheDir
     Skip files that passed before with identical inputs, and record clean results in this
     directory (tools/tidy-cache.py; needs python and clang-scan-deps)
+.PARAMETER BuildDir
+    Use the compile_commands.json in this directory, any configured tree, instead of
+    build\win-<BuildType>. Never configures: the module and PCH flags are stripped in a temporary
+    copy, and the tree is left untouched (like clang-tidy.sh --build-dir). Not with a BuildType.
 .EXAMPLE
     .\clang-tidy.ps1
 .EXAMPLE
@@ -26,6 +30,11 @@
     .\clang-tidy.ps1 -Files src/Domain/ProcessModel.cpp
 .EXAMPLE
     .\clang-tidy.ps1 -ChangedOnly
+.EXAMPLE
+    .\clang-tidy.ps1 -BuildDir build\win-debug -Files src/Platform/Windows/WindowsSystemProbe.cpp
+.NOTES
+    CI's Windows clang-tidy runs this script. tools/clang-tidy.sh hands its arguments to it when it
+    runs in Git Bash, MSYS2 or Cygwin (#3500), so a local run from either shell uses CI's flags.
 #>
 [CmdletBinding()]
 param(
@@ -41,7 +50,9 @@ param(
 
     [switch]$ChangedOnly,
 
-    [string]$CacheDir = ""
+    [string]$CacheDir = "",
+
+    [string]$BuildDir = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -59,18 +70,72 @@ Initialize-LlvmRoot
 
 # Limit header diagnostics to project headers.
 # Note: clang-tidy requires --header-filter to be set when using --exclude-header-filter.
-$ProjectRootRegex = [regex]::Escape($ProjectRoot)
+# clang-tidy matches the filters against a header's path as clang spelled it, and on Windows that is
+# C:\a\b, C:/a/b or a mix: CMake writes -I flags with "/" and the main file with "\", and a quoted
+# include found next to its includer takes the includer's separators (#3500). So every separator in
+# the checkout's path matches either one, and the drive letter either case.
+$ProjectRootRegex = [regex]::Escape($ProjectRoot) -replace '\\\\', '[\\/]'
+if ($ProjectRootRegex -match '^([A-Za-z]):') {
+    $ProjectRootRegex = "[$($Matches[1].ToUpperInvariant())$($Matches[1].ToLowerInvariant())]" + $ProjectRootRegex.Substring(1)
+}
 $HeaderFilterRegex = "^$ProjectRootRegex[\\/](src|tests)[\\/]"
 
 # Exclude generated/build trees and the other platform's folder.
 # gladsources is generated under build\<preset>\gladsources.
 $ExcludeHeaderFilterRegex = "^$ProjectRootRegex[\\/](build|dist|coverage|\.cache)[\\/]|^$ProjectRootRegex[\\/]src[\\/]Platform[\\/]Linux[\\/]|^$ProjectRootRegex.*[\\/]gladsources[\\/]"
 
-# Build directory
-$BuildDir = Join-Path $ProjectRoot "build\win-$BuildType"
-$CompileCommandsJson = Join-Path $BuildDir "compile_commands.json"
-$TidyCompdbDir = Join-Path $BuildDir "clang-tidy-compdb"
+# Build directory: build\win-<BuildType>, which this script configures when needed and whose stripped
+# database goes to its clang-tidy-compdb folder; or a -BuildDir, which is only read, and whose
+# stripped database goes to a temporary folder removed on exit.
+$ExternalCompdb = [bool]$BuildDir
+if ($ExternalCompdb) {
+    if ($PSBoundParameters.ContainsKey('BuildType')) {
+        Write-Error "Give a BuildType ($BuildType) or -BuildDir, not both." -ErrorAction Continue
+        exit 1
+    }
+    if (-not (Test-Path -LiteralPath $BuildDir -PathType Container)) {
+        Write-Error "-BuildDir ${BuildDir}: no such directory." -ErrorAction Continue
+        exit 1
+    }
+    $BuildDir = (Resolve-Path -LiteralPath $BuildDir).ProviderPath
+    $CompileCommandsJson = Join-Path $BuildDir "compile_commands.json"
+    if (-not (Test-Path -LiteralPath $CompileCommandsJson)) {
+        Write-Error "-BuildDir $BuildDir has no compile_commands.json. Configure that tree first: cmake --preset <its preset>." -ErrorAction Continue
+        exit 1
+    }
+    $TidyCompdbDir = Join-Path ([IO.Path]::GetTempPath()) "tasksmack-clang-tidy-compdb-$([guid]::NewGuid().ToString('N'))"
+} else {
+    $BuildDir = Join-Path $ProjectRoot "build\win-$BuildType"
+    $CompileCommandsJson = Join-Path $BuildDir "compile_commands.json"
+    $TidyCompdbDir = Join-Path $BuildDir "clang-tidy-compdb"
+}
 $CompileCommandsTidy = Join-Path $TidyCompdbDir "compile_commands.json"
+
+# The first Python that runs: the project venv's, then python, python3 and py -3 on PATH. Each is
+# started once, so the Microsoft Store's python/python3 stub (a WindowsApps alias that only prints
+# "Python was not found" and fails) is skipped instead of chosen (#3500). Returns the interpreter's
+# own path (sys.executable), or $null.
+function Find-WorkingPython {
+    $candidates = @(
+        @{ Exe = (Join-Path $ProjectRoot ".venv\Scripts\python.exe"); Args = @() }
+        @{ Exe = "python"; Args = @() }
+        @{ Exe = "python3"; Args = @() }
+        @{ Exe = "py"; Args = @("-3") }
+    )
+    foreach ($candidate in $candidates) {
+        $command = Get-Command $candidate.Exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $command) { continue }
+        try {
+            $exe = & $command.Source @($candidate.Args) -I -c "import sys; print(sys.executable)" 2>$null | Select-Object -First 1
+        } catch {
+            continue
+        }
+        if ($LASTEXITCODE -eq 0 -and $exe -and (Test-Path -LiteralPath $exe)) {
+            return $exe
+        }
+    }
+    return $null
+}
 
 # Find clang-tidy
 $ClangTidy = Find-LlvmTool -Name "clang-tidy"
@@ -85,19 +150,27 @@ if ($ShowDetails) {
     Write-Host "Using clang-tidy: $ClangTidy"
 }
 
-# Configure if needed (using CMake presets)
+# Configure if needed (using CMake presets); never a -BuildDir
 $NinjaFile = Join-Path $BuildDir "build.ninja"
-if (-not (Test-Path $NinjaFile)) {
+if (-not $ExternalCompdb -and -not (Test-Path $NinjaFile)) {
     Write-Host "Build not configured. Running cmake --preset win-$BuildType..."
     & cmake --preset "win-$BuildType"
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
 # Ensure compile_commands.json exists (emitted by CMake at generate time)
-if (-not (Test-Path $CompileCommandsJson)) {
+if (-not $ExternalCompdb -and -not (Test-Path $CompileCommandsJson)) {
     Write-Host "compile_commands.json missing. Re-running cmake --preset win-$BuildType..."
     & cmake --preset "win-$BuildType"
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
+
+# Exit with $Code, first removing a -BuildDir's temporary database. (exit in a function ends the script.)
+function Exit-Tidy([int]$Code) {
+    if ($ExternalCompdb) {
+        Remove-Item -LiteralPath $TidyCompdbDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    exit $Code
 }
 
 # Generate a sanitized compile_commands.json for clang-tidy without touching the live file.
@@ -110,9 +183,15 @@ if ($ShowDetails) {
     Write-Host "Generating sanitized clang-tidy compilation database..."
 }
 Remove-Item $CompileCommandsTidy -Force -ErrorAction SilentlyContinue
-& cmake --build $BuildDir --target generate-clang-tidy-compile-commands 2>$null
-if ($LASTEXITCODE -ne 0 -and $ShowDetails) {
-    Write-Host "Falling back to local compile_commands sanitization..."
+if ($ExternalCompdb) {
+    if ($ShowDetails) {
+        Write-Host "Using compile database: $CompileCommandsJson"
+    }
+} else {
+    & cmake --build $BuildDir --target generate-clang-tidy-compile-commands 2>$null
+    if ($LASTEXITCODE -ne 0 -and $ShowDetails) {
+        Write-Host "Falling back to local compile_commands sanitization..."
+    }
 }
 if (-not (Test-Path $CompileCommandsTidy)) {
     $null = New-Item -ItemType Directory -Path $TidyCompdbDir -Force
@@ -128,13 +207,14 @@ if (-not (Test-Path $CompileCommandsTidy)) {
 # Several targets compile the same src/ files (the TaskSmackApp object library, the tests, ...), and
 # clang-tidy analyzes a file once per database entry. Keep one entry per file, the app's (#1626).
 # Not fatal: without it every file is still analyzed, just once per target that compiles it.
-# "python" first: on Windows a bare "python3" is often the Microsoft Store stub.
-$Python = @("python", "python3") | ForEach-Object { Get-Command $_ -CommandType Application -ErrorAction SilentlyContinue } |
-    Select-Object -First 1
+$Python = Find-WorkingPython
 if (-not $Python) {
-    Write-Warning "python not found; compile database not de-duplicated (files may be analyzed more than once)."
+    Write-Warning "python not found (tried .venv, python, python3, py -3); compile database not de-duplicated (files may be analyzed more than once)."
 } else {
-    $dedupeOutput = & $Python.Source -I -X utf8 (Join-Path $ScriptDir "dedupe-compile-commands.py") $CompileCommandsTidy 2>&1
+    if ($ShowDetails) {
+        Write-Host "Using python: $Python"
+    }
+    $dedupeOutput = & $Python -I -X utf8 (Join-Path $ScriptDir "dedupe-compile-commands.py") $CompileCommandsTidy 2>&1
     if ($LASTEXITCODE -ne 0) {
         Write-Warning "compile database not de-duplicated (files may be analyzed more than once): $dedupeOutput"
     } elseif ($ShowDetails) {
@@ -154,7 +234,7 @@ if ($ChangedOnly -and $Files.Count -eq 0) {
         ForEach-Object { Join-Path $ProjectRoot $_ })
     if ($SourceFiles.Count -eq 0) {
         Write-Host "No changed C++ files found."
-        exit 0
+        Exit-Tidy 0
     }
     if ($ShowDetails) {
         Write-Host "Analyzing $($SourceFiles.Count) changed files..."
@@ -183,7 +263,7 @@ if ($ChangedOnly -and $Files.Count -eq 0) {
 
 if ($SourceFiles.Count -eq 0) {
     Write-Host "Error: No source files found to analyze." -ForegroundColor Red
-    exit 1
+    Exit-Tidy 1
 }
 
 # Determine number of jobs
@@ -220,7 +300,7 @@ if ($CacheDir) {
                 "--salt=$HeaderFilterRegex", "--salt=$ExcludeHeaderFilterRegex", "--salt=$WindowsCheckExclusions",
                 '--extra-arg=-std=c++23', '--extra-arg=-Wno-unknown-warning-option', '--files-from', $fileList)
             if ($Files.Count -eq 0 -and -not $ChangedOnly) { $cacheArgs += '--prune' }
-            $selected = & $Python.Source @cacheArgs
+            $selected = & $Python @cacheArgs
             $cacheOk = ($LASTEXITCODE -eq 0)
         }
     } finally {
@@ -236,7 +316,7 @@ if ($CacheDir) {
         })
         if ($Tasks.Count -eq 0) {
             Write-Host "clang-tidy completed successfully (every file unchanged since a clean run)." -ForegroundColor Green
-            exit 0
+            Exit-Tidy 0
         }
     }
 }
@@ -306,8 +386,8 @@ foreach ($result in $results) {
 Write-Host ""
 if ($hasErrors) {
     Write-Host "clang-tidy found issues." -ForegroundColor Yellow
-    exit 1
+    Exit-Tidy 1
 } else {
     Write-Host "clang-tidy completed successfully." -ForegroundColor Green
-    exit 0
+    Exit-Tidy 0
 }

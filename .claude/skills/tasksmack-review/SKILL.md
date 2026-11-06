@@ -104,6 +104,9 @@ Flag: uninitialized members, missing `override`, `NULL`/`0` for pointers, `const
   call. See `src/App/CoalescingWriter.h`.
 - **Newer clang-tidy:** checks that only a newer LLVM than CI's runs, such as `readability-trailing-comma` on LLVM 23
   while CI is on 22, aren't findings until CI's LLVM moves (#945).
+- **Header findings:** CI reports findings in the project headers a checked `.cpp` includes. On Windows, check
+  with `pwsh tools/clang-tidy.ps1` (CI's script) or `tools/clang-tidy.sh` from Git Bash, which hands off to it;
+  before #3500 the Git Bash run silently skipped every header.
 
 ## 8. CI and release workflows
 

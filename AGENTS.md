@@ -145,7 +145,8 @@ Common presets have a `win-` twin: `debug`, `release`, `release-compatible`, `op
 Format/lint (required before a PR is ready):
 ```bash
 ./tools/clang-format.sh              # or --changed-only for just the git diff
-./tools/clang-tidy.sh debug          # or a preset (tsan, asan-ubsan) or --build-dir DIR
+./tools/clang-tidy.sh debug          # or a preset (tsan, asan-ubsan) or --build-dir DIR; in Git Bash it
+                                     # runs CI's Windows script, pwsh tools/clang-tidy.ps1 (#3500)
 ./tools/check-format.sh              # check without modifying
 pre-commit run --all-files           # whitespace, UTF-8, REUSE, actionlint, guidance sync, ...
 ```
