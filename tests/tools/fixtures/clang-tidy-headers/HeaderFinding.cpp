@@ -3,6 +3,11 @@
 
 #include "HeaderFinding.h"
 
+// The test's compile databases define this; without it the command was split wrongly.
+#ifndef TIDY_FIXTURE_DEFINE
+#error "TIDY_FIXTURE_DEFINE is not defined: the compile command was not parsed as written"
+#endif
+
 namespace TidyFixture
 {
 

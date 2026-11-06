@@ -200,6 +200,8 @@ run_windows_clang_tidy() {
                 echo "Error: Unknown argument: $BUILD_NAME (not an option, a .cpp/.h file, or a configure preset with a binaryDir; looking a preset up needs python)" >&2
                 usage 1
             fi
+            # Windows Python's print() ends the line with CRLF; $(...) strips only the LF.
+            build_dir="${build_dir%$'\r'}"
             ;;
     esac
     if [[ -n "$build_dir" ]]; then
@@ -383,7 +385,9 @@ COMPILE_COMMANDS_DIR_IN_USE="$TIDY_COMPDB_DIR"
 if [[ ${#FILES[@]} -eq 0 ]]; then
     if [[ "$CHANGED_ONLY" == "true" ]]; then
         # Files this branch changes (committed, staged, unstaged, untracked); see list_changed_files
-        mapfile -t CHANGED_FILES < <(list_changed_files "$PROJECT_ROOT" | grep -E '\.(cpp|h)$' | grep -v 'Platform/Windows/' || true)
+        # Not tests/tools/fixtures/: test fixtures with deliberate findings, analyzed only when named.
+        mapfile -t CHANGED_FILES < <(list_changed_files "$PROJECT_ROOT" | grep -E '\.(cpp|h)$' | grep -v 'Platform/Windows/' \
+            | grep -v '^tests/tools/fixtures/' || true)
         if [[ ${#CHANGED_FILES[@]} -eq 0 ]]; then
             echo "No changed C++ files found."
             exit 0

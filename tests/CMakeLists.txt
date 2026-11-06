@@ -125,17 +125,19 @@ if(WIN32)
         # reusable-build-test.yml gives these entries, and no others, a second attempt on that leg.
         set_tests_properties(ResizeCaptureScript EtwCaptureScript EtwAnalysisScript CMakeCacheScript BenchScript
             CheckPrereqsScript SetupDevScript VerifyWindowsSignaturesScript BuildWindowsInstallerScript
-            ResizePerfSummaryScript PROPERTIES
+            ResizePerfSummaryScript ClangTidyHeadersScript PROPERTIES
             RESOURCE_LOCK pwsh-script-tests
             LABELS pwsh-script)
         set_tests_properties(ResizeCaptureScript EtwAnalysisScript CMakeCacheScript CheckPrereqsScript SetupDevScript
-            VerifyWindowsSignaturesScript BuildWindowsInstallerScript ResizePerfSummaryScript PROPERTIES TIMEOUT 120)
+            VerifyWindowsSignaturesScript BuildWindowsInstallerScript ResizePerfSummaryScript ClangTidyHeadersScript
+            PROPERTIES TIMEOUT 120)
         set_tests_properties(EtwCaptureScript BenchScript PROPERTIES TIMEOUT 180)
     else()
         # Say so rather than leave the ETW script tests silently missing from ctest (#1187).
         message(WARNING "pwsh (PowerShell 7) not found: the ResizeCaptureScript, EtwCaptureScript, "
                         "EtwAnalysisScript, CMakeCacheScript, BenchScript, CheckPrereqsScript, SetupDevScript, "
-                        "VerifyWindowsSignaturesScript, BuildWindowsInstallerScript and ResizePerfSummaryScript tests "
+                        "VerifyWindowsSignaturesScript, BuildWindowsInstallerScript, ResizePerfSummaryScript and "
+                        "ClangTidyHeadersScript tests "
                         "are not registered. Install PowerShell 7 to run them.")
     endif()
     # The Authenticode gate on packaging TaskSmackHelper.exe (#2550): the build's own, unsigned

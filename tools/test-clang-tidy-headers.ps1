@@ -1,9 +1,13 @@
 # Tests that the local clang-tidy scripts report a finding in a project header the analyzed .cpp
-# includes, as CI's Windows clang-tidy (tools/clang-tidy.ps1) does (#3500). Runs
-# tools/clang-tidy.ps1 -BuildDir, and tools/clang-tidy.sh --build-dir through Git Bash when Git for
-# Windows is installed, on tests/tools/fixtures/clang-tidy-headers with a one-entry compile database,
-# so no configured tree is needed. Registered in CTest on Windows with PowerShell 7; can also run
-# directly with pwsh -File. Skips (passes) when clang-tidy isn't installed.
+# includes, as CI's Windows clang-tidy (tools/clang-tidy.ps1) does (#3500). Runs on
+# tests/tools/fixtures/clang-tidy-headers with one-entry compile databases, so no configured tree is
+# needed:
+#   - tools/clang-tidy.ps1 -BuildDir, with an "arguments" database and with a "command" database, each
+#     carrying the PCH and module flags the script must strip (left in, they fail the compile);
+#   - tools/clang-tidy.sh --build-dir through Git Bash, and with a named preset, in a copy of the
+#     scripts with its own CMakePresets.json (Windows Python's CRLF output, #3500 review).
+# Registered in CTest on Windows with PowerShell 7; can also run directly with pwsh -File. Skips (passes)
+# when clang-tidy isn't installed.
 #Requires -Version 7
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -15,10 +19,10 @@ function Assert-True {
 }
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$fixtureDir = Join-Path $repoRoot 'tests\tools\fixtures\clang-tidy-headers'
-$fixtureCpp = Join-Path $fixtureDir 'HeaderFinding.cpp'
+$fixtureRel = 'tests\tools\fixtures\clang-tidy-headers'
 # The finding's location: "HeaderFinding.h:<line>:<column>: warning: ... [check]"
 $expected = 'HeaderFinding\.h:\d+:\d+: (warning|error): .*\[readability-math-missing-parentheses'
+$cppFinding = 'HeaderFinding\.cpp:\d+:\d+: (warning|error)'
 
 $clangTidy = Find-LlvmTool -Name 'clang-tidy'
 if (-not $clangTidy) {
@@ -26,42 +30,92 @@ if (-not $clangTidy) {
     exit 0
 }
 
-$root = Join-Path ([IO.Path]::GetTempPath()) "tasksmack-clang-tidy-headers-$([guid]::NewGuid().ToString('N'))"
-$buildDir = Join-Path $root 'build'
-New-Item -ItemType Directory -Path $buildDir | Out-Null
-try {
-    # One entry, forward slashes as CMake writes them on Windows. No standard headers: fast, and the
-    # result doesn't depend on the installed SDK or STL.
-    $cpp = $fixtureCpp -replace '\\', '/'
-    $dir = $fixtureDir -replace '\\', '/'
-    $compdb = @(@{ directory = $dir; file = $cpp; arguments = @('clang++', '-std=c++23', "-I$dir", '-c', $cpp) })
-    [IO.File]::WriteAllText((Join-Path $buildDir 'compile_commands.json'), (ConvertTo-Json -InputObject $compdb -Depth 4))
+# A one-entry database for the fixture under $Root, in "arguments" or "command" form. The flags the
+# scripts strip point at files that don't exist, so an entry they leave in fails the compile. The
+# fixture .cpp #errors without TIDY_FIXTURE_DEFINE, whose value has a space (and, in the command form,
+# escaped quotes), so a command split wrongly fails too. No standard headers: fast, and independent of
+# the installed SDK or STL.
+function Write-FixtureCompdb([string]$Root, [string]$BuildDir, [string]$Form) {
+    $dir = (Join-Path $Root $fixtureRel) -replace '\\', '/'
+    $cpp = "$dir/HeaderFinding.cpp"
+    $unusable = @('-Xclang', '-include-pch', '-Xclang', "$dir/missing.pch",
+        '-Xclang', '-include', '-Xclang', "$dir/missing/cmake_pch.hxx",
+        '-Xclang', '-fno-pch-timestamp', "@$dir/missing.modmap", "-fmodule-output=$dir/missing.pcm")
+    $entry = [ordered]@{ directory = $dir }
+    if ($Form -eq 'arguments') {
+        $entry.arguments = @('clang++', '-std=c++23', "-I$dir", '-DTIDY_FIXTURE_DEFINE="fixture name"') + $unusable + @('-c', $cpp)
+    } else {
+        $entry.command = ('"C:\Program Files\LLVM\bin\clang++.exe" -std=c++23 -I{0} "-DTIDY_FIXTURE_DEFINE=\"fixture name\"" {1} -c {2}' -f
+            $dir, ($unusable -join ' '), $cpp)
+    }
+    $entry.file = $cpp
+    New-Item -ItemType Directory -Path $BuildDir -Force | Out-Null
+    [IO.File]::WriteAllText((Join-Path $BuildDir 'compile_commands.json'), (ConvertTo-Json -InputObject @([PSCustomObject]$entry) -Depth 4))
+}
 
-    # ── tools/clang-tidy.ps1, the script CI's Windows clang-tidy runs ───────────────────────────
-    $output = & pwsh -NoLogo -NoProfile -File (Join-Path $PSScriptRoot 'clang-tidy.ps1') -BuildDir $buildDir -Files $fixtureCpp -Jobs 1 *>&1 | Out-String
-    $code = $LASTEXITCODE
-    Assert-True ($output -match $expected) "clang-tidy.ps1 did not report the header finding:`n$output"
-    Assert-True ($code -ne 0) "clang-tidy.ps1 reported the header finding but exited $code"
-    Assert-True ($output -notmatch 'HeaderFinding\.cpp:\d+:\d+: (warning|error)') "the fixture .cpp has its own finding (fix the fixture):`n$output"
-    Assert-True ($output -notmatch 'python not found') "clang-tidy.ps1 found no working python:`n$output"
+function Assert-ReportsHeaderFinding([string]$What, [string]$Output, [int]$Code) {
+    Assert-True ($Output -match $expected) "${What} did not report the header finding:`n$Output"
+    Assert-True ($Code -ne 0) "${What} reported the header finding but exited $Code"
+    Assert-True ($Output -notmatch $cppFinding) "${What}: the fixture .cpp has its own finding or failed to compile:`n$Output"
+    Assert-True ($Output -notmatch 'error: .*(missing\.pch|cmake_pch|missing\.modmap|TIDY_FIXTURE_DEFINE)') "${What} kept an unusable flag or split the command wrongly:`n$Output"
+    Assert-True ($Output -notmatch 'python not found') "${What} found no working python:`n$Output"
+}
+
+# Git for Windows' own bash, never a bare "bash" from PATH: on Windows that can be WSL's.
+$gitExecPath = (& git --exec-path 2>$null)
+$gitBash = if ($gitExecPath) { Join-Path $gitExecPath '..\..\..\bin\bash.exe' } else { $null }
+$gitBash = if ($gitBash -and (Test-Path -LiteralPath $gitBash)) { (Resolve-Path -LiteralPath $gitBash).ProviderPath } else { $null }
+
+$scratch = Join-Path ([IO.Path]::GetTempPath()) "tasksmack-clang-tidy-headers-$([guid]::NewGuid().ToString('N'))"
+# The named-preset case runs a copy of the scripts whose CMakePresets.json names the fixture database.
+# It lives in the checkout's (git-ignored) .cache, so its path is spelled like the checkout's, never a
+# temp directory's 8.3 short name.
+$copy = Join-Path $repoRoot ".cache\clang-tidy-headers-test-$([guid]::NewGuid().ToString('N'))"
+try {
+    # ── tools/clang-tidy.ps1, the script CI's Windows clang-tidy runs: both database forms ──────
+    $fixtureCpp = Join-Path $repoRoot "$fixtureRel\HeaderFinding.cpp"
+    foreach ($form in 'arguments', 'command') {
+        $buildDir = Join-Path $scratch $form
+        Write-FixtureCompdb -Root $repoRoot -BuildDir $buildDir -Form $form
+        $output = & pwsh -NoLogo -NoProfile -File (Join-Path $PSScriptRoot 'clang-tidy.ps1') -BuildDir $buildDir -Files $fixtureCpp -Jobs 1 *>&1 | Out-String
+        Assert-ReportsHeaderFinding "clang-tidy.ps1 -BuildDir ($form database)" $output $LASTEXITCODE
+    }
+
+    if (-not $gitBash) {
+        Write-Host 'Git Bash not found; the clang-tidy.sh hand-off was not tested'
+        Write-Host 'clang-tidy header tests passed'
+        exit 0
+    }
 
     # ── tools/clang-tidy.sh from Git Bash, the command agents run, which hands off to clang-tidy.ps1 ─
-    # Git for Windows' own bash, never a bare "bash" from PATH: on Windows that can be WSL's.
-    $gitExecPath = (& git --exec-path 2>$null)
-    $gitBash = if ($gitExecPath) { Join-Path $gitExecPath '..\..\..\bin\bash.exe' } else { $null }
-    if ($gitBash -and (Test-Path -LiteralPath $gitBash)) {
-        $gitBash = (Resolve-Path -LiteralPath $gitBash).ProviderPath
-        $shScript = (Join-Path $PSScriptRoot 'clang-tidy.sh') -replace '\\', '/'
-        $output = & $gitBash $shScript --build-dir ($buildDir -replace '\\', '/') -j 1 'tests/tools/fixtures/clang-tidy-headers/HeaderFinding.cpp' 2>&1 | Out-String
-        $code = $LASTEXITCODE
-        Assert-True ($output -match $expected) "clang-tidy.sh (Git Bash) did not report the header finding:`n$output"
-        Assert-True ($code -ne 0) "clang-tidy.sh (Git Bash) reported the header finding but exited $code"
-    } else {
-        Write-Host 'Git Bash not found; the clang-tidy.sh hand-off was not tested'
+    $buildDir = Join-Path $scratch 'arguments'
+    $shScript = (Join-Path $PSScriptRoot 'clang-tidy.sh') -replace '\\', '/'
+    $output = & $gitBash $shScript --build-dir ($buildDir -replace '\\', '/') -j 1 "$($fixtureRel -replace '\\', '/')/HeaderFinding.cpp" 2>&1 | Out-String
+    Assert-ReportsHeaderFinding 'clang-tidy.sh --build-dir (Git Bash)' $output $LASTEXITCODE
+
+    # ── clang-tidy.sh with a named preset: its binaryDir comes from Windows Python (CRLF) ────────
+    New-Item -ItemType Directory -Path (Join-Path $copy 'tools') -Force | Out-Null
+    foreach ($file in 'clang-tidy.sh', 'clang-tidy.ps1', 'common.sh', 'common.ps1', 'dedupe-compile-commands.py') {
+        Copy-Item -LiteralPath (Join-Path $PSScriptRoot $file) -Destination (Join-Path $copy 'tools')
     }
+    foreach ($file in '.clang-tidy', '.pre-commit-config.yaml') {
+        Copy-Item -LiteralPath (Join-Path $repoRoot $file) -Destination $copy
+    }
+    New-Item -ItemType Directory -Path (Join-Path $copy $fixtureRel) -Force | Out-Null
+    Copy-Item -Path (Join-Path $repoRoot "$fixtureRel\*") -Destination (Join-Path $copy $fixtureRel)
+    [IO.File]::WriteAllText((Join-Path $copy 'CMakePresets.json'), (ConvertTo-Json -Depth 4 -InputObject ([ordered]@{
+                    version = 6
+                    configurePresets = @(@{ name = 'tidy-fixture'; binaryDir = '${sourceDir}/build/tidy-fixture' })
+                })))
+    Write-FixtureCompdb -Root $copy -BuildDir (Join-Path $copy 'build\tidy-fixture') -Form 'arguments'
+    $copySh = (Join-Path $copy 'tools\clang-tidy.sh') -replace '\\', '/'
+    $output = & $gitBash $copySh tidy-fixture -j 1 "$($fixtureRel -replace '\\', '/')/HeaderFinding.cpp" 2>&1 | Out-String
+    Assert-True ($output -notmatch 'no such directory') "clang-tidy.sh tidy-fixture did not find the preset's binaryDir:`n$output"
+    Assert-ReportsHeaderFinding 'clang-tidy.sh tidy-fixture (named preset, Git Bash)' $output $LASTEXITCODE
 
     Write-Host 'clang-tidy header tests passed'
 }
 finally {
-    Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $copy -Recurse -Force -ErrorAction SilentlyContinue
 }

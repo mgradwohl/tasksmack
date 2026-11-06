@@ -173,6 +173,87 @@ function Exit-Tidy([int]$Code) {
     exit $Code
 }
 
+# Split a compile database "command" string the way clang does on Windows (CommandLineToArgvW's rules):
+# whitespace separates arguments, "..." groups, 2n backslashes before a quote are n backslashes and the
+# quote toggles, 2n+1 are n and a literal quote, and backslashes before anything else are literal.
+function Split-WindowsCommandLine([string]$CommandLine) {
+    if (-not $CommandLine.Contains('\"')) {
+        # No backslash before a quote, so backslashes are all literal: an argument is a run of unquoted
+        # non-space text and "..." groups (fast; CMake's commands are this form).
+        return , @([regex]::Matches($CommandLine, '(?:[^\s"]+|"[^"]*"?)+') | ForEach-Object { $_.Value.Replace('"', '') })
+    }
+    $arguments = [Collections.Generic.List[string]]::new()
+    $current = [Text.StringBuilder]::new()
+    $inQuotes = $false
+    $hasArgument = $false
+    $i = 0
+    while ($i -lt $CommandLine.Length) {
+        $c = $CommandLine[$i]
+        if ($c -eq '\') {
+            $run = 0
+            while ($i -lt $CommandLine.Length -and $CommandLine[$i] -eq '\') { $run++; $i++ }
+            if ($i -lt $CommandLine.Length -and $CommandLine[$i] -eq '"') {
+                $null = $current.Append('\', [Math]::Floor($run / 2))
+                if ($run % 2 -eq 1) { $null = $current.Append('"'); $i++ }
+            } else {
+                $null = $current.Append('\', $run)
+            }
+            $hasArgument = $true
+            continue
+        }
+        if ($c -eq '"') {
+            $inQuotes = -not $inQuotes
+            $hasArgument = $true
+        } elseif (-not $inQuotes -and [char]::IsWhiteSpace($c)) {
+            if ($hasArgument) { $arguments.Add($current.ToString()); $null = $current.Clear(); $hasArgument = $false }
+        } else {
+            $null = $current.Append($c)
+            $hasArgument = $true
+        }
+        $i++
+    }
+    if ($hasArgument) { $arguments.Add($current.ToString()) }
+    return , $arguments.ToArray()
+}
+
+# Drop the flags clang-tidy can't use from one entry's argument list: C++20 module @*.modmap files and
+# -fmodule-output=..., and CMake's precompiled-header flags (the -Xclang -include-pch -Xclang <pch>
+# group, the -Xclang -include -Xclang <...cmake_pch...> force-include, and -Xclang -fno-pch-timestamp).
+function Remove-UnusableCompileFlags([string[]]$Arguments) {
+    $kept = [Collections.Generic.List[string]]::new()
+    $i = 0
+    while ($i -lt $Arguments.Count) {
+        $a = $Arguments[$i]
+        $next = if ($i + 1 -lt $Arguments.Count) { $Arguments[$i + 1] } else { $null }
+        $value = if ($i + 3 -lt $Arguments.Count -and $Arguments[$i + 2] -eq '-Xclang') { $Arguments[$i + 3] } else { $null }
+        if ($a -like '@*.modmap' -or $a -like '-fmodule-output=*') { $i++; continue }
+        if ($a -eq '-Xclang' -and $next -eq '-fno-pch-timestamp') { $i += 2; continue }
+        if ($a -eq '-Xclang' -and $next -eq '-include-pch' -and $null -ne $value) { $i += 4; continue }
+        if ($a -eq '-Xclang' -and $next -eq '-include' -and $null -ne $value -and $value -like '*cmake_pch*') { $i += 4; continue }
+        $kept.Add($a)
+        $i++
+    }
+    return , $kept.ToArray()
+}
+
+# Write compile database $Source to $Destination with Remove-UnusableCompileFlags applied to every entry.
+# The entries are parsed, not edited as text (#3500 review): an "arguments" entry is filtered element by
+# element, and a "command" entry is split with Windows rules and written back as "arguments".
+function Write-SanitizedCompileCommands([string]$Source, [string]$Destination) {
+    $entries = @(Get-Content -LiteralPath $Source -Raw -Encoding utf8 | ConvertFrom-Json)
+    $sanitized = foreach ($entry in $entries) {
+        $arguments = if ($entry.PSObject.Properties['arguments']) { [string[]]$entry.arguments }
+        else { Split-WindowsCommandLine $entry.command }
+        $out = [ordered]@{ directory = $entry.directory }
+        $out.arguments = Remove-UnusableCompileFlags $arguments
+        $out.file = $entry.file
+        if ($entry.PSObject.Properties['output']) { $out.output = $entry.output }
+        [PSCustomObject]$out
+    }
+    $json = ConvertTo-Json -InputObject @($sanitized) -Depth 4
+    [IO.File]::WriteAllText($Destination, $json, [Text.UTF8Encoding]::new($false))
+}
+
 # Generate a sanitized compile_commands.json for clang-tidy without touching the live file.
 # CMake emits two PCH-related flag groups per TU:
 #   1. -Xclang -include-pch -Xclang /path/cmake_pch.hxx.pch  (binary PCH)
@@ -195,13 +276,7 @@ if ($ExternalCompdb) {
 }
 if (-not (Test-Path $CompileCommandsTidy)) {
     $null = New-Item -ItemType Directory -Path $TidyCompdbDir -Force
-    $content = Get-Content $CompileCommandsJson -Raw -Encoding utf8
-    $content = $content -replace '@[^ ]*\.modmap', ''
-    $content = $content -replace '-fmodule-output=[^ ]*', ''
-    $content = $content -replace '-Xclang -include-pch -Xclang [^ ]*', ''
-    $content = $content -replace '-Xclang -include -Xclang [^ ]*cmake_pch[^ ]*', ''
-    $content = $content -replace '-Xclang -fno-pch-timestamp', ''
-    Set-Content $CompileCommandsTidy -Value $content -NoNewline -Encoding utf8
+    Write-SanitizedCompileCommands -Source $CompileCommandsJson -Destination $CompileCommandsTidy
 }
 
 # Several targets compile the same src/ files (the TaskSmackApp object library, the tests, ...), and
@@ -224,13 +299,15 @@ if (-not $Python) {
 
 # Determine files to analyze. Explicit -Files win over -ChangedOnly, as in clang-tidy.sh.
 if ($ChangedOnly -and $Files.Count -eq 0) {
-    # Files this branch changes (committed, staged, unstaged, untracked); see Get-ChangedFileList
+    # Files this branch changes (committed, staged, unstaged, untracked); see Get-ChangedFileList. Not
+    # tests/tools/fixtures/: test fixtures with deliberate findings, analyzed only when named in -Files.
     if ($ShowDetails) {
         Write-Host "Getting changed files from git..."
     }
     $SourceFiles = @(Get-ChangedFileList -Root $ProjectRoot |
         Where-Object { $_ -match '\.(cpp|h)$' } |
         Where-Object { $_ -notmatch 'Platform[/\\]Linux[/\\]' } |
+        Where-Object { $_ -notmatch '^tests[/\\]tools[/\\]fixtures[/\\]' } |
         ForEach-Object { Join-Path $ProjectRoot $_ })
     if ($SourceFiles.Count -eq 0) {
         Write-Host "No changed C++ files found."
