@@ -48,6 +48,7 @@ class LinuxPowerProbe : public IPowerProbe
         double design = 0.0;
         double healthFull = 0.0; // The raw full/design pair, for a lone pack whose capacities have no unit
         double healthDesign = 0.0;
+        bool hasPowerRate = false; ///< power_now, or current_now with a voltage, was read (#3431)
     };
 
     void discoverBatteries();
@@ -58,6 +59,12 @@ class LinuxPowerProbe : public IPowerProbe
     [[nodiscard]] static std::optional<PackReading> readPack(const std::string& batteryPath);
     /// The packs as one system battery; see the definition for the policy
     [[nodiscard]] static PowerCounters combinePacks(const std::vector<PackReading>& packs);
+    /// Whether every pack reports its capacity in one unit.
+    [[nodiscard]] static bool sharesUnit(const std::vector<PackReading>& packs);
+    /// Whether the combined charge counts every pack (one unit, and each pack's capacity known, #2409).
+    [[nodiscard]] static bool chargeCountedFor(const std::vector<PackReading>& packs);
+    /// Whether the combined charge is in Wh, which time to empty or full needs (#3431).
+    [[nodiscard]] static bool chargeInWattHours(const std::vector<PackReading>& packs);
     [[nodiscard]] static std::string readSysfsFile(const std::string& path);
     [[nodiscard]] static std::uint64_t readSysfsUInt64(const std::string& path, std::uint64_t fallback = 0);
     [[nodiscard]] static int readSysfsInt(const std::string& path, int fallback = -1);
