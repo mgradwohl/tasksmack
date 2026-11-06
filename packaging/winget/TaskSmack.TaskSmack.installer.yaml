@@ -1,0 +1,49 @@
+# WinGet installer manifest template for TaskSmack.TaskSmack (#3486). tools/winget-manifest.ps1 fills in
+# ${VERSION}, ${SHA256_X64} and ${SHA256_ARM64} from the release's SHA256SUMS, and ${RELEASE_DATE}; see
+# docs/dev/release-process.md, "Publishing to WinGet".
+#
+# The installers are release.yml's NSIS installers (cmake/Packaging.cmake): per machine, in
+# C:\Program Files\TaskSmack, and always need administrator rights (RequestExecutionLevel admin), so
+# ElevationRequirement is elevationRequired: the schema keeps elevatesSelf for an installer that decides at run
+# time whether to elevate, and has winget start this one elevated (one UAC prompt either way). The NSIS stub is
+# 32-bit on both architectures, so its Uninstall key is HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\TaskSmack (CPACK_PACKAGE_INSTALL_REGISTRY_KEY),
+# with DisplayName CPACK_NSIS_DISPLAY_NAME and Publisher CPACK_PACKAGE_VENDOR: AppsAndFeaturesEntries below must
+# match them, or winget can't tell an installed TaskSmack is this package.
+#
+# UpgradeBehavior install: the new installer runs over the old one. It uninstalls the installed version itself,
+# with /TASKSMACK_UPGRADE when it goes to the same folder, which keeps Replace Task Manager and Start at sign-in
+# (#3276, cmake/CPackProjectConfig.cmake.in). uninstallPrevious would have winget run the old uninstaller first
+# as a plain uninstall, which turns both off. No InstallerSwitches: winget's nullsoft defaults (/S for a silent
+# install, /D= for --location) are the installer's, and an upgrade needs no switch of its own. No Commands: the
+# installer doesn't put TaskSmack on PATH.
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.12.0.schema.json
+
+PackageIdentifier: TaskSmack.TaskSmack
+PackageVersion: ${VERSION}
+InstallerType: nullsoft
+Scope: machine
+InstallModes:
+  - interactive
+  - silent
+  - silentWithProgress
+UpgradeBehavior: install
+ElevationRequirement: elevationRequired
+# Windows 10 1903, the first to honour the manifest's UTF-8 activeCodePage (README.md, "System Requirements").
+MinimumOSVersion: 10.0.18362.0
+ProductCode: TaskSmack
+ReleaseDate: ${RELEASE_DATE}
+AppsAndFeaturesEntries:
+  - DisplayName: TaskSmack
+    Publisher: TaskSmack Contributors
+    ProductCode: TaskSmack
+InstallationMetadata:
+  DefaultInstallLocation: '%ProgramFiles%\TaskSmack'
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/mgradwohl/tasksmack/releases/download/v${VERSION}/TaskSmack-${VERSION}-win64.exe
+    InstallerSha256: ${SHA256_X64}
+  - Architecture: arm64
+    InstallerUrl: https://github.com/mgradwohl/tasksmack/releases/download/v${VERSION}/TaskSmack-${VERSION}-windows-arm64.exe
+    InstallerSha256: ${SHA256_ARM64}
+ManifestType: installer
+ManifestVersion: 1.12.0

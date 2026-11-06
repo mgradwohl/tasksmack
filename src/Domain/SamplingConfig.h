@@ -235,6 +235,13 @@ inline constexpr int GPU_RESCAN_INTERVAL_SECONDS = 10;
 // or removing one). Each sample reads the known devices' mm_stat; only the listing waits for this.
 inline constexpr int ZRAM_RESCAN_INTERVAL_SECONDS = 10;
 
+// Memory Compression process search interval (seconds) - fixed, not configurable (#3483)
+// While the Windows system probe knows no "Memory Compression" process (compression is off, or the last
+// search failed), how often it looks for one in a whole SystemProcessInformation snapshot, so compression
+// turned on is noticed. Once found, each sample reads its working set from its session's process list
+// alone; only the search, the costly whole snapshot, waits for this.
+inline constexpr int MEMORY_COMPRESSION_SEARCH_INTERVAL_SECONDS = 10;
+
 // Oldest per-process GPU publication ProcessModel still merges (#1417). The GPU sampler reads the
 // per-process GPU counters and publishes them; the process sampler, on its own cadence, merges the
 // newest publication. Normally that is at most one system-sampler interval old (capped at

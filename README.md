@@ -76,6 +76,7 @@ Some metrics require optional drivers, vendor libraries, kernel support, or elev
 | Debian/Ubuntu | `.deb` | `sudo apt install ./TaskSmack-*.deb`, then run `TaskSmack` (installs to `/usr/bin`) |
 | Other Linux distributions | `.tar.gz` | Extract and run `bin/TaskSmack` |
 | Windows | `.exe` installer (from v0.9.1) | Run it to install TaskSmack in `C:\Program Files\TaskSmack`, with a Start menu shortcut; remove it from **Settings → Apps** |
+| Windows (WinGet, from v0.11.0) | the same installer | `winget install TaskSmack.TaskSmack`, then `winget upgrade TaskSmack.TaskSmack` for later releases (x64 and ARM64) |
 | Windows (portable) | `.zip` | Extract and run `TaskSmack.exe` (no Visual C++ Redistributable needed) |
 
 The Linux packages need glibc 2.38 or newer (Ubuntu 24.04, Debian 13, Fedora 39, RHEL 10, or later); on Ubuntu 22.04, Debian 12, RHEL 9 or another older distribution, [build from source](CONTRIBUTING.md#quick-start).

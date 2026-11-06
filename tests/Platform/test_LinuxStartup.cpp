@@ -18,6 +18,7 @@
 #include <iterator>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <utility>
 #include <vector>
@@ -28,6 +29,13 @@ namespace Platform
 {
 namespace
 {
+
+// Whether this build switches systemd units (through sd-bus); without it they're listed read-only (#3497 review).
+#ifdef TASKSMACK_HAS_SDBUS
+constexpr bool HAS_SDBUS = true;
+#else
+constexpr bool HAS_SDBUS = false;
+#endif
 
 /// Where the tests' programs (sh) are found, rather than this machine's $PATH.
 constexpr const char* SEARCH_PATH = "/usr/bin:/bin";
@@ -318,6 +326,32 @@ TEST_F(LinuxStartupTest, ANameThatIsntAnAutostartFileIsRefused)
 }
 
 // #3082: a unit file's description, first ExecStart (prefixes dropped), a timer's schedule and unit.
+// #3425: [Install] WantedBy= lists every target, across lines; an empty value resets it.
+TEST(SystemdUnitFileTest, ReadsWantedByAndWhetherItStartsWithTheSession)
+{
+    SystemdUnitFile::Unit unit = SystemdUnitFile::parse("[Install]\nWantedBy=default.target  multi-user.target\nWantedBy=timers.target\n");
+    EXPECT_EQ(unit.wantedBy, (std::vector<std::string>{"default.target", "multi-user.target", "timers.target"}));
+    EXPECT_TRUE(SystemdUnitFile::installsIntoSession(unit));
+    unit = SystemdUnitFile::parse("[Install]\nWantedBy=default.target\nWantedBy=\nWantedBy=sockets.target\n");
+    // #3497 review: a line ending in a backslash continues on the next, comments inside it skipped.
+    const SystemdUnitFile::Unit continued = SystemdUnitFile::parse(
+        "[Install]\nWantedBy=sockets.target \\\n# a comment\n    default.target\n[Service]\nExecStart=/bin/a \\\n  --b\n");
+    EXPECT_EQ(continued.wantedBy, (std::vector<std::string>{"sockets.target", "default.target"}));
+    EXPECT_TRUE(SystemdUnitFile::installsIntoSession(continued));
+    EXPECT_FALSE(continued.execStart.empty());
+    // A continued header keeps its section; a lone backslash at the end or before a blank line is nothing.
+    EXPECT_TRUE(
+        SystemdUnitFile::installsIntoSession(SystemdUnitFile::parse("[Install]\\\n\nWantedBy=default.target \\\n  timers.target\n")));
+    static_cast<void>(SystemdUnitFile::parse("[Install]\n\\\n\n\\"));
+    // #3497 review: list words may be quoted.
+    EXPECT_TRUE(SystemdUnitFile::installsIntoSession(SystemdUnitFile::parse("[Install]\nWantedBy=\"default.target\" 'x y.target'\n")));
+    EXPECT_EQ(SystemdUnitFile::parse("[Install]\nWantedBy=\"default.target\" 'x y.target'\n").wantedBy,
+              (std::vector<std::string>{"default.target", "x y.target"}));
+    EXPECT_EQ(unit.wantedBy, (std::vector<std::string>{"sockets.target"}));
+    EXPECT_FALSE(SystemdUnitFile::installsIntoSession(unit));
+    EXPECT_FALSE(SystemdUnitFile::installsIntoSession(SystemdUnitFile::parse("[Service]\nExecStart=/bin/true\n")));
+}
+
 TEST(SystemdUnitFileTest, ReadsWhatTheStartupTabShows)
 {
     const SystemdUnitFile::Unit service =
@@ -344,37 +378,45 @@ TEST(SystemdUnitFileTest, TheDirectoriesFollowXdgConfigHome)
     EXPECT_TRUE(systemdUserDirs("", "relative").user.empty());
 }
 
-// #3082: enabled user units (services and timers) are listed read-only beside the autostart files; the user's
-// link to a unit wins over the same unit enabled for every user; a timer shows the command its service runs.
+// #3082: enabled user units (services and timers) are listed beside the autostart files; a unit the user links that is
+// also enabled for every user is the administrator's, read-only (#3497 review: disabling the user's link wouldn't stop
+// it); a timer shows the command its service runs.
 TEST_F(LinuxStartupTest, ListsTheEnabledSystemdUserUnitsReadOnly)
 {
     const std::filesystem::path user = m_Root.path / "home/.config/systemd/user";
     const std::filesystem::path system = m_Root.path / "etc/systemd/user";
     const std::filesystem::path lib = m_Root.path / "usr/lib/systemd/user";
     writeText(lib / "syncd.service", "[Unit]\nDescription=Sync daemon\n[Service]\nExecStart=/bin/sh -c true\n");
-    writeText(lib / "backup.timer", "[Unit]\nDescription=Nightly backup\n[Timer]\nOnCalendar=daily\n");
+    writeText(lib / "backup.timer", "[Unit]\nDescription=Nightly backup\n[Timer]\nOnCalendar=daily\n[Install]\nWantedBy=timers.target\n");
+    // #3497 review: linked by hand with no session [Install]: once off it couldn't be listed again, so read-only.
+    writeText(lib / "handmade.service", "[Service]\nExecStart=/bin/true\n");
     writeText(lib / "backup.service", "[Service]\nExecStart=/nonexistent/backup --all\n");
     std::filesystem::create_directories(user / "default.target.wants");
     std::filesystem::create_directories(user / "timers.target.wants");
     std::filesystem::create_directories(system / "default.target.wants");
     std::filesystem::create_symlink(lib / "syncd.service", user / "default.target.wants/syncd.service");
     std::filesystem::create_symlink(lib / "backup.timer", user / "timers.target.wants/backup.timer");
+    std::filesystem::create_symlink(lib / "handmade.service", user / "default.target.wants/handmade.service");
     std::filesystem::create_symlink(lib / "syncd.service", system / "default.target.wants/syncd.service");
     writeText(system / "default.target.wants/agent.service", "[Service]\nExecStart=/bin/sh\n");
 
     LinuxStartupProbe probe(
         m_Dirs, "GNOME", SEARCH_PATH, SystemdUserDirs{.user = user, .system = {system}, .unitPath = {user, system, lib}});
     const std::vector<StartupEntry> entries = probe.enumerate();
-    ASSERT_EQ(entries.size(), 3U);
+    ASSERT_EQ(entries.size(), 4U);
+    const StartupEntry* handmade = find(entries, "handmade.service");
+    ASSERT_NE(handmade, nullptr);
+    EXPECT_TRUE(handmade->enabled);
+    EXPECT_TRUE(handmade->notSwitchableReason.contains("no session target")) << handmade->notSwitchableReason;
 
     const StartupEntry* syncd = find(entries, "syncd.service");
     ASSERT_NE(syncd, nullptr);
     EXPECT_EQ(syncd->name, "Sync daemon");
     EXPECT_EQ(syncd->command, "/bin/sh -c true");
     EXPECT_EQ(syncd->executablePath, "/bin/sh");
-    EXPECT_EQ(syncd->location, StartupLocation::SystemdUserUnit) << "the user's link wins";
+    EXPECT_EQ(syncd->location, StartupLocation::SystemdSystemUnit) << "also enabled for every user";
     EXPECT_TRUE(syncd->enabled);
-    EXPECT_FALSE(syncd->notSwitchableReason.empty()) << "read-only for now";
+    EXPECT_FALSE(syncd->notSwitchableReason.empty()) << "the all-users link would still start it";
     EXPECT_EQ(syncd->target, StartupTargetState::Present);
 
     const StartupEntry* backup = find(entries, "backup.timer");
@@ -382,16 +424,101 @@ TEST_F(LinuxStartupTest, ListsTheEnabledSystemdUserUnitsReadOnly)
     EXPECT_EQ(backup->name, "Nightly backup (timer, OnCalendar=daily)");
     EXPECT_EQ(backup->command, "/nonexistent/backup --all") << "the command its service runs";
     EXPECT_EQ(backup->target, StartupTargetState::Missing);
+    EXPECT_EQ(backup->location, StartupLocation::SystemdUserUnit);
+    if (HAS_SDBUS)
+    {
+        EXPECT_TRUE(backup->notSwitchableReason.empty()) << "the user's own: switched through the user manager (#3425)";
+    }
+    else
+    {
+        EXPECT_TRUE(backup->notSwitchableReason.contains("no systemd support")) << backup->notSwitchableReason;
+    }
 
     const StartupEntry* agent = find(entries, "agent.service");
     ASSERT_NE(agent, nullptr);
     EXPECT_EQ(agent->name, "agent");
     EXPECT_EQ(agent->location, StartupLocation::SystemdSystemUnit);
     EXPECT_EQ(agent->scope, StartupScope::Machine);
+    EXPECT_FALSE(agent->notSwitchableReason.empty()) << "enabled for every user: an administrator's";
 
-    // The actions refuse a unit: it isn't an autostart file.
-    LinuxStartupActions actions(m_Dirs);
-    EXPECT_FALSE(actions.setEnabled(*syncd, false).ok);
+    // #3425: the actions switch the user's own unit through the user manager, and refuse one enabled for every user.
+    std::vector<std::string> switched;
+    LinuxStartupActions actions(m_Dirs,
+                                [&switched](std::string_view unit, bool enabled)
+                                {
+                                    switched.push_back(std::string(enabled ? "enable " : "disable ") + std::string(unit));
+                                    return StartupActionResult::succeeded();
+                                });
+    EXPECT_EQ(actions.setEnabled(*backup, false).ok, HAS_SDBUS) << "without sd-bus it's refused before the user manager";
+    EXPECT_FALSE(actions.setEnabled(*agent, false).ok);
+    EXPECT_FALSE(actions.setEnabled(*syncd, false).ok) << "linked for every user too: not the user's to switch off";
+    EXPECT_EQ(switched, HAS_SDBUS ? std::vector<std::string>{"disable backup.timer"} : std::vector<std::string>{});
+}
+
+// #3425: a unit that would start with the session once enabled, but isn't linked, is listed as disabled, so one switched
+// off stays in the list to switch back on; a template and a unit with no session target aren't listed, an instance file
+// is, and the first definition of a name shadows later copies even when it isn't installable (#3497 review).
+TEST_F(LinuxStartupTest, AnInstallableUnitThatIsntEnabledIsListedDisabled)
+{
+    const std::filesystem::path user = m_Root.path / "home/.config/systemd/user";
+    const std::filesystem::path lib = m_Root.path / "usr/lib/systemd/user";
+    writeText(lib / "notes-sync.service",
+              "[Unit]\nDescription=Notes sync\n[Service]\nExecStart=/bin/sh -c true\n[Install]\nWantedBy=default.target\n");
+    writeText(lib / "cleanup.timer", "[Timer]\nOnCalendar=weekly\n[Install]\nWantedBy=timers.target\n");
+    writeText(lib / "cleanup.service", "[Service]\nExecStart=/bin/true\n");
+    writeText(lib / "worker@.service", "[Service]\nExecStart=/bin/true %i\n[Install]\nWantedBy=default.target\n");
+    writeText(lib / "socket-only.service", "[Service]\nExecStart=/bin/true\n[Install]\nWantedBy=sockets.target\n");
+    writeText(lib / "static.service", "[Service]\nExecStart=/bin/true\n");
+    writeText(lib / "worker@alice.service", "[Service]\nExecStart=/bin/true alice\n[Install]\nWantedBy=default.target\n");
+    writeText(lib / "shadowed.service", "[Service]\nExecStart=/bin/true\n[Install]\nWantedBy=default.target\n");
+    writeText(user / "shadowed.service", "[Service]\nExecStart=/bin/true\n"); // the user's override: no [Install]
+    // #3497 review: [Install] from drop-ins: one adds a session target, one resets it.
+    writeText(lib / "dropped-in.service", "[Service]\nExecStart=/bin/true\n");
+    writeText(lib / "dropped-in.service.d/install.conf", "[Install]\nWantedBy=default.target\n");
+    writeText(lib / "reset.service", "[Service]\nExecStart=/bin/true\n[Install]\nWantedBy=default.target\n");
+    writeText(user / "reset.service.d/no-install.conf", "[Install]\nWantedBy=\n");
+    // #3497 review: an alias of a unit isn't listed under its own name; a package's own .wants link is the package's;
+    // a template's instance linked by the user, with no instance file, is read-only.
+    std::filesystem::create_symlink(lib / "notes-sync.service", lib / "notes-alias.service");
+    writeText(lib / "pkg.service", "[Service]\nExecStart=/bin/true\n[Install]\nWantedBy=default.target\n");
+    std::filesystem::create_directories(lib / "default.target.wants");
+    std::filesystem::create_symlink(lib / "pkg.service", lib / "default.target.wants/pkg.service");
+    std::filesystem::create_directories(user / "default.target.wants");
+    std::filesystem::create_symlink(lib / "worker@.service", user / "default.target.wants/worker@bob.service");
+
+    LinuxStartupProbe probe(m_Dirs, "GNOME", SEARCH_PATH, SystemdUserDirs{.user = user, .system = {}, .unitPath = {user, lib}});
+    const std::vector<StartupEntry> entries = probe.enumerate();
+    ASSERT_EQ(entries.size(), 6U);
+    EXPECT_EQ(find(entries, "notes-alias.service"), nullptr) << "an alias";
+    ASSERT_NE(find(entries, "dropped-in.service"), nullptr) << "its session target comes from a drop-in";
+    EXPECT_EQ(find(entries, "reset.service"), nullptr) << "a drop-in resets its WantedBy=";
+    const StartupEntry* pkg = find(entries, "pkg.service");
+    ASSERT_NE(pkg, nullptr);
+    EXPECT_TRUE(pkg->enabled) << "the package's link starts it";
+    EXPECT_EQ(pkg->location, StartupLocation::SystemdSystemUnit);
+    EXPECT_FALSE(pkg->notSwitchableReason.empty());
+    const StartupEntry* bob = find(entries, "worker@bob.service");
+    ASSERT_NE(bob, nullptr);
+    EXPECT_TRUE(bob->enabled);
+    EXPECT_EQ(bob->location, StartupLocation::SystemdUserUnit);
+    EXPECT_TRUE(bob->notSwitchableReason.contains("instance of worker@.service")) << bob->notSwitchableReason;
+    EXPECT_FALSE(
+        LinuxStartupActions(m_Dirs, [](std::string_view, bool) { return StartupActionResult::succeeded(); }).setEnabled(*bob, false).ok)
+        << "disabling would lose it from the list";
+    EXPECT_EQ(find(entries, "shadowed.service"), nullptr) << "the user's override, first on the path, has no [Install]";
+    const StartupEntry* instance = find(entries, "worker@alice.service");
+    ASSERT_NE(instance, nullptr) << "an instance file is listed; only the template isn't";
+    EXPECT_FALSE(instance->enabled);
+    const StartupEntry* notes = find(entries, "notes-sync.service");
+    ASSERT_NE(notes, nullptr);
+    EXPECT_FALSE(notes->enabled);
+    EXPECT_EQ(notes->name, "Notes sync");
+    EXPECT_EQ(notes->location, StartupLocation::SystemdUserUnit);
+    EXPECT_EQ(notes->notSwitchableReason.empty(), HAS_SDBUS) << notes->notSwitchableReason;
+    const StartupEntry* cleanup = find(entries, "cleanup.timer");
+    ASSERT_NE(cleanup, nullptr);
+    EXPECT_FALSE(cleanup->enabled);
+    EXPECT_EQ(cleanup->command, "/bin/true") << "the command its service runs";
 }
 
 // #3425: cron jobs are listed read-only: the user's crontab (as `crontab -l` prints it) and the system tables, which

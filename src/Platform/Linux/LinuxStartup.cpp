@@ -1,11 +1,13 @@
 #include "LinuxStartup.h"
 
 #include "Domain/SamplingConfig.h"
+#include "Platform/IServiceActions.h"
 #include "Platform/IStartupActions.h"
 #include "Platform/IStartupProbe.h"
 #include "Platform/Linux/CommandOutput.h"
 #include "Platform/Linux/CronTab.h"
 #include "Platform/Linux/DesktopEntryIcons.h"
+#include "Platform/Linux/SystemdBus.h"
 #include "Platform/Linux/SystemdUnitFile.h"
 #include "Platform/Linux/XdgAutostart.h"
 
@@ -23,6 +25,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -474,14 +477,48 @@ void LinuxStartupProbe::addCronJobs(std::vector<StartupEntry>& entries) const
 
 void LinuxStartupProbe::addSystemdUnits(std::vector<StartupEntry>& entries) const
 {
-    // Each unit name once: a user's link wins over the same unit enabled for every user.
+    // Each unit name once. A unit linked both by the user and for every user is the administrator's: disabling the
+    // user's link would leave the all-users one starting it, so it's listed as enabled for every user, read-only.
+    // Whose link starts it: the user's own is switched through the user manager; one an administrator made for every
+    // user (/etc/systemd/user) or a package shipped (/usr/lib/systemd/user/*.wants) isn't the user's to remove.
+    enum class Owner : std::uint8_t
+    {
+        User,
+        AllUsers,
+        Package,
+    };
     struct Found
     {
         std::filesystem::path link;
-        bool system = false;
+        Owner owner = Owner::User;
+        bool enabled = true; ///< Linked into a session target's .wants; false: installable there, not linked (#3425)
     };
     std::map<std::string, Found> units;
-    const auto scan = [&units](const std::filesystem::path& dir, bool system)
+    // A unit's effective settings: its file, then its drop-ins (<name>.d/*.conf on the unit path, one per file name,
+    // the earliest directory's winning, applied in name order), as systemd reads [Install] (#3497 review).
+    const auto effective = [this](const std::string& name, std::string text)
+    {
+        std::map<std::string, std::filesystem::path> dropIns;
+        for (const std::filesystem::path& dir : m_Systemd.unitPath)
+        {
+            std::error_code ec;
+            for (std::filesystem::directory_iterator it(dir / (name + ".d"), ec); !ec && it != std::filesystem::directory_iterator{};
+                 it.increment(ec))
+            {
+                if (it->path().extension() == ".conf")
+                {
+                    dropIns.try_emplace(it->path().filename().string(), it->path());
+                }
+            }
+        }
+        for (const auto& [file, path] : dropIns)
+        {
+            text += '\n';
+            text += readFile(path).value_or(std::string{});
+        }
+        return SystemdUnitFile::parse(text);
+    };
+    const auto scan = [&units](const std::filesystem::path& dir, Owner owner)
     {
         for (const char* wants : {"default.target.wants", "graphical-session.target.wants", "timers.target.wants"})
         {
@@ -492,23 +529,66 @@ void LinuxStartupProbe::addSystemdUnits(std::vector<StartupEntry>& entries) cons
                 const std::string name = it->path().filename().string();
                 if (name.ends_with(".service") || name.ends_with(".timer"))
                 {
-                    units.try_emplace(name, Found{.link = it->path(), .system = system});
+                    const auto [unit, added] = units.try_emplace(name, Found{.link = it->path(), .owner = owner});
+                    if (!added && unit->second.owner == Owner::User)
+                    {
+                        unit->second.owner = owner; // also enabled elsewhere: removing the user's link wouldn't stop it
+                    }
                 }
             }
         }
     };
     if (!m_Systemd.user.empty())
     {
-        scan(m_Systemd.user, false);
+        scan(m_Systemd.user, Owner::User);
     }
     for (const std::filesystem::path& dir : m_Systemd.system)
     {
-        scan(dir, true);
+        scan(dir, Owner::AllUsers);
+    }
+    for (const std::filesystem::path& dir : m_Systemd.unitPath)
+    {
+        if (dir != m_Systemd.user && std::ranges::find(m_Systemd.system, dir) == m_Systemd.system.end())
+        {
+            scan(dir, Owner::Package); // a package's own .wants links (#3497 review)
+        }
+    }
+    // The units that would start with the session once enabled, but aren't (#3425): their [Install] WantedBy= names a
+    // session target. Listed as disabled, so one switched off stays in the list to switch back on. Templates
+    // (name@.service) aren't: one needs an instance name to enable; an instance file (name@x.service) is. The first
+    // definition of a name on the unit path is the one systemd uses, so it shadows every later copy, even when it
+    // isn't installable (a mask, or an override with no session WantedBy=).
+    std::set<std::string> defined;
+    for (const std::filesystem::path& dir : m_Systemd.unitPath)
+    {
+        std::error_code ec;
+        for (std::filesystem::directory_iterator it(dir, ec); !ec && it != std::filesystem::directory_iterator{}; it.increment(ec))
+        {
+            const std::string name = it->path().filename().string();
+            if ((!name.ends_with(".service") && !name.ends_with(".timer")) || name.contains("@."))
+            {
+                continue;
+            }
+            if (!defined.insert(name).second || units.contains(name))
+            {
+                continue; // an earlier directory's definition wins, or it is already listed as linked
+            }
+            std::error_code linkError;
+            if (it->is_symlink(linkError) && std::filesystem::read_symlink(it->path(), linkError).filename() != name)
+            {
+                continue; // an alias (Alias=) of another unit, listed under its own name
+            }
+            const std::optional<std::string> text = readFile(it->path());
+            if (text.has_value() && SystemdUnitFile::installsIntoSession(effective(name, *text)))
+            {
+                units.try_emplace(name, Found{.link = it->path(), .owner = Owner::User, .enabled = false});
+            }
+        }
     }
     for (const auto& [name, found] : units)
     {
         const bool timer = name.ends_with(".timer");
-        const SystemdUnitFile::Unit unit = SystemdUnitFile::parse(readFile(found.link).value_or(std::string{}));
+        const SystemdUnitFile::Unit unit = effective(name, readFile(found.link).value_or(std::string{}));
         // A timer starts its service: Unit=, else the timer's own name with .service.
         std::string command = unit.execStart;
         if (timer)
@@ -536,11 +616,52 @@ void LinuxStartupProbe::addSystemdUnits(std::vector<StartupEntry>& entries) cons
         entry.command = command;
         entry.executablePath = command.substr(0, command.find(' '));
         entry.sourcePath = found.link.string();
-        entry.location = found.system ? StartupLocation::SystemdSystemUnit : StartupLocation::SystemdUserUnit;
-        entry.scope = found.system ? StartupScope::Machine : StartupScope::User;
-        entry.enabled = true; // linked into a .wants directory: that is what "enabled" is
-        entry.notSwitchableReason = found.system ? "Enabled for every user in /etc/systemd/user"
-                                                 : "A systemd unit: switch it with systemctl --user disable " + name;
+        const bool system = found.owner != Owner::User;
+        entry.location = system ? StartupLocation::SystemdSystemUnit : StartupLocation::SystemdUserUnit;
+        entry.scope = system ? StartupScope::Machine : StartupScope::User;
+        entry.enabled = found.enabled; // linked into a .wants directory: that is what "enabled" is
+        // The user's own: switched through the user manager, as systemctl --user does (#3425). One enabled for every
+        // user is an administrator's to change.
+        if (found.owner == Owner::AllUsers)
+        {
+            entry.notSwitchableReason = "Enabled for every user in /etc/systemd/user: an administrator changes it";
+        }
+        else if (found.owner == Owner::Package)
+        {
+            entry.notSwitchableReason = "Enabled by the package that installed it: disabling here can't remove that link";
+        }
+        else if (!SystemdUnitFile::installsIntoSession(unit))
+        {
+            // Linked by hand, or its [Install] no longer names a session target: once its link is removed it couldn't be
+            // listed to switch back on.
+            entry.notSwitchableReason =
+                "Its [Install] section names no session target, so once off it couldn't be switched back on here: use systemctl --user";
+        }
+        else if (const std::size_t at = name.find('@'); at != std::string::npos && name[at + 1] != '.')
+        {
+            // An instance (worker@alice.service) of a template: once its link is removed only the template file is
+            // left, so it couldn't be listed to switch back on. Read-only unless it has an instance file of its own.
+            const bool ownFile = std::ranges::any_of(m_Systemd.unitPath,
+                                                     [&name](const std::filesystem::path& dir)
+                                                     {
+                                                         std::error_code ec;
+                                                         return std::filesystem::is_regular_file(dir / name, ec);
+                                                     });
+            if (!ownFile)
+            {
+                entry.notSwitchableReason =
+                    std::format("An instance of {}{}: switch it with systemctl --user, so it isn't lost from this list once off",
+                                name.substr(0, at + 1),
+                                name.substr(name.rfind('.')));
+            }
+        }
+#ifndef TASKSMACK_HAS_SDBUS
+        if (entry.notSwitchableReason.empty())
+        {
+            // Switched through the user manager over D-Bus: a build without sd-bus can't (#3497 review).
+            entry.notSwitchableReason = "This build has no systemd support (sd-bus): use systemctl --user";
+        }
+#endif
         entry.target = entry.executablePath.empty() ? StartupTargetState::Unresolved : targetState(entry.executablePath);
         entries.push_back(std::move(entry));
     }
@@ -630,7 +751,17 @@ std::vector<StartupEntry> LinuxStartupProbe::enumerate()
 LinuxStartupActions::LinuxStartupActions() : LinuxStartupActions(dirsFromEnvironment())
 {}
 
-LinuxStartupActions::LinuxStartupActions(XdgAutostart::Dirs dirs) : m_Dirs(std::move(dirs))
+LinuxStartupActions::LinuxStartupActions(XdgAutostart::Dirs dirs)
+    : LinuxStartupActions(std::move(dirs),
+                          [](std::string_view unit, bool enabled)
+                          {
+                              const ServiceActionResult result = SystemdBus::setUserUnitEnabled(unit, enabled);
+                              return result.ok ? StartupActionResult::succeeded() : StartupActionResult::failed(result.message);
+                          })
+{}
+
+LinuxStartupActions::LinuxStartupActions(XdgAutostart::Dirs dirs, UserUnitSwitch switchUserUnit)
+    : m_Dirs(std::move(dirs)), m_SwitchUserUnit(std::move(switchUserUnit))
 {}
 
 StartupActionCapabilities LinuxStartupActions::capabilities() const
@@ -641,6 +772,24 @@ StartupActionCapabilities LinuxStartupActions::capabilities() const
 
 StartupActionResult LinuxStartupActions::setEnabled(const StartupEntry& entry, bool enabled)
 {
+    // A systemd user unit (#3425): the user's own through the user manager; one enabled for every user isn't ours.
+    if (entry.location == StartupLocation::SystemdUserUnit)
+    {
+        if (!entry.notSwitchableReason.empty())
+        {
+            return StartupActionResult::failed(entry.notSwitchableReason); // a template's instance, read-only
+        }
+        const std::string& unit = entry.registrationName;
+        if (!m_SwitchUserUnit || unit.empty() || unit.contains('/') || (!unit.ends_with(".service") && !unit.ends_with(".timer")))
+        {
+            return StartupActionResult::failed("This isn't a systemd user unit");
+        }
+        return m_SwitchUserUnit(unit, enabled);
+    }
+    if (entry.location == StartupLocation::SystemdSystemUnit)
+    {
+        return StartupActionResult::failed("Enabled for every user in /etc/systemd/user: an administrator changes it");
+    }
     const std::string& fileName = entry.registrationName;
     if (m_Dirs.user.empty())
     {

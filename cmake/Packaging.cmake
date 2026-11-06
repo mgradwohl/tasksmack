@@ -8,7 +8,9 @@ set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "${PROJECT_NAME} - TaskSmack")
 set(CPACK_PACKAGE_DESCRIPTION "TaskSmack - Modern cross-platform system monitor")
 set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/mgradwohl/tasksmack")
 set(CPACK_PACKAGE_VENDOR "TaskSmack Contributors")
-set(CPACK_PACKAGE_CONTACT "mgradwohl@users.noreply.github.com")
+# Also the .deb Maintainer field (CPACK_DEBIAN_PACKAGE_MAINTAINER below) and the NSIS Contact (CPACK_NSIS_CONTACT
+# defaults to it), so it takes the RFC 5322 "Name <address>" form Debian Policy asks for (#3493).
+set(CPACK_PACKAGE_CONTACT "TaskSmack <tasksmack@uppercutwoodworks.com>")
 set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_SOURCE_DIR}/LICENSE")
 set(CPACK_RESOURCE_FILE_README "${CMAKE_SOURCE_DIR}/README.md")
 set(CPACK_PACKAGE_ICON "${CMAKE_SOURCE_DIR}/assets/icons/tasksmack.ico")
