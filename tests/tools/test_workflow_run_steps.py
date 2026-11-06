@@ -136,6 +136,8 @@ for arg in "$@"; do
 done
 number=$(( $(cat "$STUB_DIR/count") + 1 ))
 echo "$number" > "$STUB_DIR/count"
+# A launch that overruns: launch STUB_SLOW_LAUNCH sleeps STUB_SLOW_SECONDS first.
+if [[ "${STUB_SLOW_LAUNCH:-}" == "$number" ]]; then sleep "${STUB_SLOW_SECONDS:-30}"; fi
 out="$TASKSMACK_BENCH_OUT_DIR/benchmark-$number.json"
 "$STUB_PYTHON" "$STUB_DIR/write_launch.py" "$filter" "$number" "$out"
 echo "RESULT=$out"
@@ -186,6 +188,10 @@ class HeavyChecksAcrossLaunchesTests(unittest.TestCase):
             # GitHub's bash runs a step with -e. python3 is this interpreter (Git Bash's may be the Store alias).
             "set -e\n"
             f'python3() {{ "{posix(Path(sys.executable))}" "$@"; }}\n'
+            # With STUB_DATES, `date +%s` answers from that file, a line per call, so a deadline can pass
+            # between two launches without waiting for it.
+            'date() { if [[ -n "${STUB_DATES:-}" ]]; then head -n 1 "$STUB_DATES"; sed -i 1d "$STUB_DATES"; '
+            'else command date "$@"; fi; }\n'
             f'cd "{posix(self.work)}"\n' + step.run
         )
         env = {key: value.strip("'") for key, value in step.env.items()}
@@ -273,6 +279,41 @@ class HeavyChecksAcrossLaunchesTests(unittest.TestCase):
         self.assertTrue(self.fails(check_exit, outputs["exit_code"]))
         self.assertFalse((self.stub / "filters.log").exists(), "no launch started")
         self.assertIn("flags stand as regressions", (self.work / "benchmark-across-launches-output.txt").read_text(encoding="utf-8"))
+
+    @unittest.skipIf(os.name == "nt", "timeout's process-group kill is POSIX; the step runs on Linux")
+    def test_a_launch_past_the_deadline_is_stopped_and_the_flag_stands(self):
+        # #3508: the estimate can be short, so each launch runs under timeout with what's left of the budget.
+        # 4 s: the plan's estimate for one benchmark with no timed repetitions is 1 s a launch, 4 s in all.
+        first = {**self.BASELINE, "BM_Big": 1600.0}
+        launches = [{"BM_Big": 1000.0}] * 4
+        started = time.monotonic()
+        check_exit, remeasure, outputs = self.gate(
+            first, launches, {"MAX_SECONDS": "4", "STUB_SLOW_LAUNCH": "2", "STUB_SLOW_SECONDS": "30"})
+        self.assertLess(time.monotonic() - started, 25, "the slow launch was killed, not waited out")
+        self.assertEqual(remeasure.returncode, 0, remeasure.stdout + remeasure.stderr)
+        self.assertEqual(outputs["exit_code"], "1")
+        self.assertTrue(self.fails(check_exit, outputs["exit_code"]))
+        report = (self.work / "benchmark-across-launches-output.txt").read_text(encoding="utf-8")
+        self.assertIn("Out of time: launch 2 of 5 stopped after 4s, past the 4s budget. The flags stand", report)
+        self.assertFalse((self.work / "perf-data" / "launches" / "2").exists(), "the killed launch's partial output")
+        self.assertFalse((self.work / "perf-data" / "benchmark-across-launches.json").exists())
+
+    def test_the_deadline_passing_between_launches_stops_them(self):
+        first = {**self.BASELINE, "BM_Big": 1600.0}
+        launches = [{"BM_Big": 1000.0}] * 4
+        now = int(time.time())
+        dates = self.tmp / "dates"
+        # The step reads the clock once at its start, then before each launch: launch 2 starts with the whole
+        # budget, and launch 3 finds it gone.
+        dates.write_text(f"{now}\n{now}\n{now + 600}\n", encoding="utf-8")
+        check_exit, remeasure, outputs = self.gate(
+            first, launches, {"JOB_START_EPOCH": str(now), "STUB_DATES": posix(dates)})
+        self.assertEqual(remeasure.returncode, 0, remeasure.stdout + remeasure.stderr)
+        self.assertEqual(outputs["exit_code"], "1")
+        self.assertTrue(self.fails(check_exit, outputs["exit_code"]))
+        self.assertEqual(len((self.stub / "filters.log").read_text(encoding="utf-8").splitlines()), 1, "launch 2 only")
+        report = (self.work / "benchmark-across-launches-output.txt").read_text(encoding="utf-8")
+        self.assertIn("Out of time: launch 3 of 5 not started, past the 600s budget. The flags stand", report)
 
     def test_a_failed_launch_fails_the_step(self):
         first = {**self.BASELINE, "BM_Big": 1600.0}

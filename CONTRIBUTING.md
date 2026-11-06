@@ -1598,9 +1598,13 @@ It isn't best-of-N and no threshold changes: a benchmark slow in 3 of the 5 laun
 regression, slow in every launch, reads as one in the per-launch list. A flagged benchmark that has no
 usable median in some launch fails the job. A coverage loss alone has nothing to re-measure and fails as
 before. The re-runs are bounded: `plan` estimates them from the full run's own timings (iterations x time,
-which sums to the suite's wall time within a few percent, plus a second per benchmark per launch), and
-refuses, leaving the flags as regressions, past 10 minutes or past what the job's 45 minutes leave after
-a 5-minute margin. A typical flag of a few ns-scale benchmarks (5-8 s each) costs under 3 minutes. The
+which sums to the suite's wall time within a few percent, plus a second per benchmark per launch; a
+`/manual_time` benchmark reports less than it runs, so it counts 25x plus 5 s), and refuses, leaving the
+flags as regressions, past 10 minutes or past what the job's 45 minutes leave after a 5-minute margin.
+Since an estimate can still be short, the launches also share a hard deadline at that budget: each runs
+under `timeout` with what's left, and a launch that hits it, or a budget gone before the next launch,
+stops the re-measurement with the flags standing, says so, and still writes the summary and artifact
+(#3508). A typical flag of a few ns-scale benchmarks (5-8 s each) costs under 3 minutes. The
 `benchmark-results` artifact holds the launches (`perf-data/launches/`), the combined run
 (`perf-data/benchmark-across-launches.json`) and its report. To do the same by hand after a local run:
 

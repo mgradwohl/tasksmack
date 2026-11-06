@@ -688,10 +688,13 @@ jobs:
       # whole run, so coverage is checked again too. Not best-of-N: a benchmark slow in 3 of the 5
       # launches still fails, and the output lists every launch's value against the baseline. Only
       # a check that ran and flagged regressions (exit 1) gets here; a coverage loss alone has nothing
-      # to re-measure and fails as before. Bounded: tools/bench-across-launches.py estimates the
-      # re-runs from the full run's own timings and refuses, leaving the flags as regressions, past
-      # 10 minutes or past what the job's 45 minutes leave after a 5-minute margin for the steps
-      # after it. A typical flag (a few ns-scale benchmarks, 5-8 s each) costs under 3 minutes.
+      # to re-measure and fails as before. Bounded twice over, by a budget of 10 minutes or what the
+      # job's 45 minutes leave after a 5-minute margin for the steps after it, whichever is less:
+      # tools/bench-across-launches.py estimates the re-runs from the full run's own timings and
+      # refuses past the budget, and the launches share a hard deadline at the budget (each runs
+      # under `timeout` with what's left). Either way the flags stand as regressions, the output
+      # says so, and the summary and upload steps still run. A typical flag (a few ns-scale
+      # benchmarks, 5-8 s each) costs under 3 minutes.
       - name: Re-measure flagged benchmarks across launches
         id: across-launches
         if: steps.regression-check.outputs.exit_code == '1'
@@ -702,8 +705,18 @@ jobs:
           # The job's timeout-minutes, 45 (tests/tools/test_workflow_run_steps.py keeps them in step).
           JOB_TIMEOUT_SECONDS: '2700'
         run: |
-          left=$(( JOB_TIMEOUT_SECONDS - ($(date +%s) - JOB_START_EPOCH) - MARGIN_SECONDS ))
+          now=$(date +%s)
+          left=$(( JOB_TIMEOUT_SECONDS - (now - JOB_START_EPOCH) - MARGIN_SECONDS ))
           budget=$(( left < MAX_SECONDS ? left : MAX_SECONDS ))
+          # The estimate can be short (a /manual_time benchmark reports less than it runs, #3508), so the
+          # launches also share a hard deadline: the budget, from here.
+          deadline=$(( now + budget ))
+          out_of_time() {
+            echo "Out of time: $1, past the ${budget}s budget. The flags stand as regressions." \
+              | tee -a benchmark-across-launches-output.txt
+            echo "exit_code=1" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
           planned=0
           filter=$(python3 tools/bench-across-launches.py plan \
                      --current perf-data/benchmark-current.json \
@@ -715,15 +728,30 @@ jobs:
             echo "exit_code=1" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          mkdir -p perf-data/launches
           results=()
           for launch in $(seq 2 $(( LAUNCHES + 1 ))); do
+            remaining=$(( deadline - $(date +%s) ))
+            if (( remaining <= 0 )); then
+              out_of_time "launch ${launch} of $(( LAUNCHES + 1 )) not started"
+            fi
             echo "::group::Launch ${launch} of $(( LAUNCHES + 1 ))"
-            # A separate process each time; pipefail keeps a failed launch failing the step.
+            # A separate process each time, in a directory of its own. timeout signals bench.sh's whole
+            # process group, the benchmark binary included; pipefail keeps its status through the tee.
+            mkdir -p "perf-data/launches/${launch}"
+            status=0
             ( set -o pipefail
-              TASKSMACK_BENCH_OUT_DIR=perf-data/launches ./tools/bench.sh benchmark -- --benchmark_filter="$filter" \
-                | tee "$RUNNER_TEMP/launch-${launch}.txt" )
+              TASKSMACK_BENCH_OUT_DIR="perf-data/launches/${launch}" timeout --kill-after=10s "${remaining}s" \
+                ./tools/bench.sh benchmark -- --benchmark_filter="$filter" | tee "$RUNNER_TEMP/launch-${launch}.txt" ) \
+              || status=$?
             echo "::endgroup::"
+            if (( status == 124 || status == 137 )); then
+              # A killed launch leaves an unredacted partial result; it isn't uploaded.
+              rm -rf "perf-data/launches/${launch}"
+              out_of_time "launch ${launch} of $(( LAUNCHES + 1 )) stopped after ${remaining}s"
+            elif (( status != 0 )); then
+              echo "ERROR: launch ${launch} failed (exit ${status})" >&2
+              exit "$status"
+            fi
             result=$(sed -n 's/^RESULT=//p' "$RUNNER_TEMP/launch-${launch}.txt" | tail -n 1)
             if [[ -z "$result" || ! -f "$result" ]]; then
               echo "ERROR: launch ${launch}'s output JSON not found (bench.sh printed RESULT=${result})" >&2

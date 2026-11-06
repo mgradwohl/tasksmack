@@ -21,8 +21,13 @@ plan: given the full run (FIRST.json) and the names tools/check-benchmark-regres
 (anchored, each name escaped), and refuse (exit 1) when re-running them --launches more times would
 take longer than --budget-seconds. The estimate is the time the first launch spent in their
 repetitions (iterations x real_time, which sums to the suite's wall time within a few percent) plus a
-second per benchmark per launch for its setup. Over budget, the flag stands as a regression: that
-many slowed benchmarks is not what a slow launch looks like, and the job has no time to tell.
+second per benchmark per launch for its setup. A /manual_time benchmark reports only the time it
+chose to measure, not what it ran: measureConcurrentPublicationWait() (benchmarks/bench_ModelLimits.cpp)
+does 11 handoffs per iteration and reports their median, and on CI those benchmarks report about
+4 ms of repetitions against 1.1-1.3 s of wall time each (#3508). So a manual-time benchmark counts
+25x its reported time plus 5 s of setup. The estimate is a first gate only: heavy-checks.yml also
+stops the launches at a hard deadline. Over budget, the flag stands as a regression: that many
+slowed benchmarks is not what a slow launch looks like, and the job has no time to tell.
 
 combine: FIRST.json is launch 1; each LAUNCH.json is a further separate launch of the flagged
 benchmarks alone. For each flagged benchmark, its real_time and cpu_time become the median of the
@@ -52,6 +57,10 @@ TIME_UNIT_NS = {"ns": 1.0, "us": 1e3, "ms": 1e6, "s": 1e9}
 # its metacharacters. Python's re.escape would also escape characters ERE gives no meaning to.
 ERE_SPECIAL = set("\\.[]()*+?{}|^$")
 SETUP_SECONDS_PER_BENCHMARK = 1.0
+# A /manual_time benchmark (UseManualTime(), which Google Benchmark writes into its name) reports less
+# than it runs; see the docstring.
+MANUAL_TIME_FACTOR = 25.0
+MANUAL_TIME_SETUP_SECONDS = 5.0
 
 
 class InputError(Exception):
@@ -119,6 +128,17 @@ def measured_seconds(data: dict, name: str) -> float:
     return total
 
 
+def is_manual_time(name: str) -> bool:
+    return "/manual_time" in name
+
+
+def launch_seconds(data: dict, name: str) -> float:
+    """The estimated wall time of one launch of @p name, from its repetitions in @p data."""
+    if is_manual_time(name):
+        return measured_seconds(data, name) * MANUAL_TIME_FACTOR + MANUAL_TIME_SETUP_SECONDS
+    return measured_seconds(data, name) + SETUP_SECONDS_PER_BENCHMARK
+
+
 def median_row(data: dict, name: str) -> dict | None:
     """@p name's median row in @p data, or None when it has none or any of its rows failed or skipped."""
     rows = [e for e in data["benchmarks"] if run_name(e) == name]
@@ -136,7 +156,7 @@ def plan(args: argparse.Namespace) -> int:
     if not names:
         print("Nothing to re-measure: the check flagged no regression.", file=sys.stderr)
         return 1
-    per_launch = sum(measured_seconds(first, n) + SETUP_SECONDS_PER_BENCHMARK for n in names)
+    per_launch = sum(launch_seconds(first, n) for n in names)
     estimate = per_launch * args.launches
     print(
         f"{len(names)} flagged benchmark(s), about {per_launch:.0f}s a launch: {args.launches} more launch(es) "

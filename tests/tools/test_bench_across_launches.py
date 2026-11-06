@@ -89,6 +89,19 @@ class BenchAcrossLaunchesTest(unittest.TestCase):
         )
         self.assertEqual(code, 0, err)
 
+    def test_plan_counts_a_manual_time_benchmark_conservatively(self) -> None:
+        # #3508: a /manual_time benchmark reports one handoff's median of 11 per iteration, about 4 ms of
+        # repetitions on CI for 1.1-1.3 s of wall time. 3 x 1000 x 1 us = 3 ms, so 25 x 3 ms + 5 s = 5.075 s a launch.
+        name = "BM_SystemModel_Concurrent_PublicationWait/samples:18000/extra_readers:2/iterations:2000/manual_time"
+        current = self.write("current.json", launch({name: 1.0}, unit="us"))
+        regressions = self.write("regressions.json", {"regressions": [name]})
+        code, _, err = self.call("plan", "--current", current, "--regressions", regressions, "--budget-seconds", "20")
+        self.assertEqual(code, 1, "4 launches of 5.075 s are over 20 s")
+        self.assertIn("about 5s a launch", err)
+        code, out, err = self.call("plan", "--current", current, "--regressions", regressions, "--budget-seconds", "21")
+        self.assertEqual(code, 0, err)
+        self.assertIn("manual_time", out)
+
     def test_plan_with_nothing_flagged_or_bad_input(self) -> None:
         current = self.write("current.json", launch({"BM_A": 1.0}))
         empty = self.write("empty.json", {"regressions": []})
