@@ -10,7 +10,6 @@
 // fail-fast. And a copy in a folder its user can change is refused, with the same standard user's token.
 // CiRealSystem.h's guard skips all of it anywhere but such a runner.
 
-#include "Core/Utf8Path.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/Windows/BrokerHelper.h"
 #include "Platform/Windows/WindowsHandles.h"
@@ -80,38 +79,6 @@ void expectSessionDone(std::optional<DWORD> code)
     EXPECT_NE(exit, FAST_FAIL_EXIT) << "the helper failed fast";
     EXPECT_NE(exit, ABORT_EXIT) << "the helper aborted (std::terminate), or refused its parent";
     EXPECT_EQ(exit, static_cast<DWORD>(BrokerHelper::Exit::Done)) << BrokerHelper::exitMeaning(exit);
-}
-
-/// SetNamedSecurityInfoW(@p path): owner Administrators and a protected DACL of SYSTEM and Administrators full
-/// control and Users read and execute, inherited by what is under it: what an installer gives Program Files\TaskSmack.
-void protectAsAnInstall(const std::filesystem::path& path)
-{
-    std::vector<std::byte> administrators = wellKnownSid(WinBuiltinAdministratorsSid);
-    constexpr DWORD INHERITED = SUB_CONTAINERS_AND_OBJECTS_INHERIT;
-    const Acl acl({
-        {.sid = wellKnownSid(WinLocalSystemSid), .rights = GENERIC_ALL, .inheritance = INHERITED},
-        {.sid = administrators, .rights = GENERIC_ALL, .inheritance = INHERITED},
-        {.sid = wellKnownSid(WinBuiltinUsersSid), .rights = GENERIC_READ | GENERIC_EXECUTE, .inheritance = INHERITED},
-    });
-    ASSERT_NE(acl.get(), nullptr) << "couldn't make the install's ACL: " << GetLastError();
-    std::wstring name = path.wstring();
-    const DWORD set = SetNamedSecurityInfoW(name.data(),
-                                            SE_FILE_OBJECT,
-                                            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-                                            administrators.data(),
-                                            nullptr,
-                                            acl.get(),
-                                            nullptr);
-    ASSERT_EQ(set, static_cast<DWORD>(ERROR_SUCCESS)) << "couldn't protect " << Core::pathToUtf8(path);
-}
-
-/// %ProgramFiles%.
-[[nodiscard]] std::filesystem::path programFiles()
-{
-    std::array<wchar_t, MAX_PATH> path{};
-    const DWORD length = GetEnvironmentVariableW(L"ProgramFiles", path.data(), static_cast<DWORD>(path.size()));
-    return (length == 0 || length >= path.size()) ? std::filesystem::path(L"C:\\Program Files")
-                                                  : std::filesystem::path(std::wstring(path.data(), length));
 }
 
 /// An install the helper serves: a folder in Program Files only administrators can change, with @p helper as
