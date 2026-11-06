@@ -374,11 +374,39 @@ struct StartOptions
     return {path.data(), size};
 }
 
-/// Whether @p first and @p second are the same path, ignoring case as NTFS does.
-[[nodiscard]] inline bool samePath(std::wstring_view first, std::wstring_view second)
+/// Whether @p first and @p second are the same text, ignoring case as NTFS does: for a file name or an extension.
+[[nodiscard]] inline bool sameText(std::wstring_view first, std::wstring_view second)
 {
     return CompareStringOrdinal(first.data(), static_cast<int>(first.size()), second.data(), static_cast<int>(second.size()), TRUE) ==
            CSTR_EQUAL;
+}
+
+/// @p path in one spelling: backslashes (CMake's $<TARGET_FILE> gives forward slashes), no "." or ".." components,
+/// and, for a path that exists, each 8.3 short component (a runner's %TEMP% under C:\Users\RUNNER~1) in its long form,
+/// as QueryFullProcessImageNameW gives it.
+[[nodiscard]] inline std::wstring normalisedPath(std::wstring_view path)
+{
+    std::wstring text = std::filesystem::path(path).lexically_normal().make_preferred().wstring();
+    const DWORD needed = GetLongPathNameW(text.c_str(), nullptr, 0);
+    if (needed == 0)
+    {
+        return text; // it doesn't exist (any more): the spelling as given
+    }
+    std::wstring longer(needed, L'\0');
+    const DWORD length = GetLongPathNameW(text.c_str(), longer.data(), needed);
+    if (length == 0 || length >= needed)
+    {
+        return text;
+    }
+    longer.resize(length);
+    return longer;
+}
+
+/// Whether @p first and @p second name the same path: the same once each is normalisedPath()'d, ignoring case as
+/// NTFS does.
+[[nodiscard]] inline bool samePath(std::wstring_view first, std::wstring_view second)
+{
+    return sameText(normalisedPath(first), normalisedPath(second));
 }
 
 /// The PIDs of the running processes whose executable file is named @p exeName (Toolhelp's szExeFile).
@@ -394,7 +422,7 @@ struct StartOptions
     entry.dwSize = sizeof(entry);
     for (BOOL more = Process32FirstW(snapshot.get(), &entry); more != FALSE; more = Process32NextW(snapshot.get(), &entry))
     {
-        if (samePath(&entry.szExeFile[0], exeName))
+        if (sameText(&entry.szExeFile[0], exeName))
         {
             pids.push_back(entry.th32ProcessID);
         }

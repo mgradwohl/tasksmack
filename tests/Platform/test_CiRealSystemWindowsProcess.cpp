@@ -667,7 +667,7 @@ class FileAccessGrant
     for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(exe.parent_path(), error))
     {
         const std::wstring extension = entry.path().extension().wstring();
-        if (entry.is_regular_file(error) && (samePath(extension, L".exe") || samePath(extension, L".dll")))
+        if (entry.is_regular_file(error) && (sameText(extension, L".exe") || sameText(extension, L".dll")))
         {
             files.push_back(entry.path());
         }
