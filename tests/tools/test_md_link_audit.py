@@ -30,8 +30,11 @@ class MdLinkAuditTest(unittest.TestCase):
         self.root = Path(tempfile.mkdtemp(prefix="md_link_audit_"))
         self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
 
-    def command(self, root):
-        return [BASH, str(REPO_ROOT / "tools" / "md-link-audit.sh"), str(root)]
+    SCRIPT = "md-link-audit.sh"
+
+    def command(self, root, tools_dir=REPO_ROOT / "tools"):
+        """The audit of @p root, or of the checkout @p tools_dir is in when @p root is None."""
+        return [BASH, str(tools_dir / self.SCRIPT)] + ([str(root)] if root is not None else [])
 
     def audit(self, root=None):
         return subprocess.run(
@@ -40,6 +43,24 @@ class MdLinkAuditTest(unittest.TestCase):
             text=True,
             check=False,
         )
+
+    def test_with_no_root_it_audits_its_own_checkout_from_any_directory(self):
+        # The root defaults to the script's checkout, not the current directory (#3529): run from tools/ of a
+        # scratch checkout with no argument, its broken link is still found.
+        tools_dir = self.root / "tools"
+        tools_dir.mkdir()
+        shutil.copy2(REPO_ROOT / "tools" / self.SCRIPT, tools_dir / self.SCRIPT)
+        (self.root / "README.md").write_text("[Gone](missing.md)\n", encoding="utf-8")
+        result = subprocess.run(
+            self.command(None, tools_dir),
+            capture_output=True,
+            text=True,
+            check=False,
+            cwd=tools_dir,
+        )
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("Broken internal link findings: 1", result.stdout)
+        self.assertIn("README.md:1: missing.md", result.stdout)
 
     def test_code_spans_and_fenced_blocks_are_not_links_but_a_real_missing_reference_is(self):
         (self.root / "README.md").write_text(
@@ -104,8 +125,12 @@ class MdLinkAuditTest(unittest.TestCase):
 
 @unittest.skipUnless(PWSH, "TASKSMACK_TEST_PWSH not set")
 class MdLinkAuditPs1Test(MdLinkAuditTest):
-    def command(self, root):
-        return [PWSH, "-NoLogo", "-NoProfile", "-File", str(REPO_ROOT / "tools" / "md-link-audit.ps1"), "-RepoRoot", str(root)]
+    SCRIPT = "md-link-audit.ps1"
+
+    def command(self, root, tools_dir=REPO_ROOT / "tools"):
+        return [PWSH, "-NoLogo", "-NoProfile", "-File", str(tools_dir / self.SCRIPT)] + (
+            ["-RepoRoot", str(root)] if root is not None else []
+        )
 
     def test_the_checkout_has_no_broken_link(self):
         result = self.audit(REPO_ROOT)
