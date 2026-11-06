@@ -212,9 +212,32 @@ constexpr std::uintmax_t MAX_FILE_BYTES = std::uintmax_t{64} * 1024U;
 /// administrator switches it (#3425).
 [[nodiscard]] std::string allUsersUnitReason(std::string_view unit)
 {
+    // Quoted for a POSIX shell when it needs it: an escaped instance name (backup@home\x2duser.service) keeps its
+    // backslash when the command is pasted (#3512 review).
+    const bool plain = !unit.empty() && std::ranges::all_of(unit,
+                                                            [](char c)
+                                                            {
+                                                                return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                                                                       (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '_' ||
+                                                                       c == '@' || c == ':';
+                                                            });
+    std::string quoted;
+    if (plain)
+    {
+        quoted = unit;
+    }
+    else
+    {
+        quoted = "'";
+        for (const char c : unit)
+        {
+            quoted += c == '\'' ? std::string("'\\''") : std::string(1, c);
+        }
+        quoted += "'";
+    }
     return std::format("Enabled for every user in /etc/systemd/user: an administrator changes it with "
                        "sudo systemctl --global disable {} (or enable)",
-                       unit);
+                       quoted);
 }
 
 /// The program a cron job starts and whether it is there.

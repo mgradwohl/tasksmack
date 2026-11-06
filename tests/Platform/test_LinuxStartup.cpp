@@ -441,6 +441,12 @@ TEST_F(LinuxStartupTest, ListsTheEnabledSystemdUserUnitsReadOnly)
     EXPECT_EQ(agent->scope, StartupScope::Machine);
     // #3425: read-only here (no D-Bus call for it, and the helper writes no files); the row says how to switch it.
     EXPECT_TRUE(agent->notSwitchableReason.contains("sudo systemctl --global disable agent.service")) << agent->notSwitchableReason;
+    // An escaped instance name is shell-quoted, so the pasted command names the same unit (#3512 review).
+    StartupEntry escaped;
+    escaped.registrationName = R"(backup@home\x2duser.service)";
+    escaped.location = StartupLocation::SystemdSystemUnit;
+    const StartupActionResult quoted = LinuxStartupActions(m_Dirs).setEnabled(escaped, false);
+    EXPECT_TRUE(quoted.message.contains(R"(disable 'backup@home\x2duser.service')")) << quoted.message;
 
     // #3425: the actions switch the user's own unit through the user manager, and refuse one enabled for every user.
     std::vector<std::string> switched;
