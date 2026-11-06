@@ -218,6 +218,29 @@ void UILayer::onDetach()
     ImGui::DestroyContext();
 }
 
+// LCOV_EXCL_START - runs only after a GPU reset, which no test can cause (#3484)
+void UILayer::onGraphicsContextLost()
+{
+    // The renderer's shader, buffers and textures were in the lost context. Shutting it down marks
+    // ImGui's textures (the font atlas) destroyed, so the next frame makes them again.
+    ImGui_ImplOpenGL3_Shutdown();
+}
+
+void UILayer::onGraphicsContextRestored()
+{
+    if (!ImGui_ImplOpenGL3_Init("#version 330 core"))
+    {
+        // Init fails only without OpenGL 3, which the replacement context has, as the first one did.
+        throw std::runtime_error("Failed to initialize the ImGui OpenGL 3 renderer backend on the new context");
+    }
+    // The viewport belongs to the context too.
+    if (m_CachedPixelW > 0 && m_CachedPixelH > 0)
+    {
+        glViewport(0, 0, m_CachedPixelW, m_CachedPixelH);
+    }
+}
+// LCOV_EXCL_STOP
+
 void UILayer::onRender()
 {
     beginFrame();

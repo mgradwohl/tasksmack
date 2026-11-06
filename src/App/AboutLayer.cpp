@@ -71,6 +71,17 @@ void AboutLayer::onEvent(Core::Event& event)
         });
 }
 
+// LCOV_EXCL_START - runs only after a GPU reset, which no test can cause (#3484)
+void AboutLayer::onGraphicsContextLost()
+{
+    // The icon's texture was in the lost context, and its name may be reused by the new one's (the
+    // font atlas): drop it, so the dialog shows without the picture rather than with another texture.
+    // Not loaded again, which would read the file on the UI thread; a restart brings it back.
+    m_Icon = UI::Texture{};
+    spdlog::info("About dialog icon dropped with the lost OpenGL context");
+}
+// LCOV_EXCL_STOP
+
 void AboutLayer::requestOpen()
 {
     m_OpenRequested = true;

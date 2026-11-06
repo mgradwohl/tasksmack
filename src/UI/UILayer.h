@@ -29,6 +29,8 @@ class UILayer : public Core::Layer
     void onPostRender() override;
     void onEvent(Core::Event& event) override;
     void onSDLEvent(SDL_Event* event) override;
+    void onGraphicsContextLost() override;
+    void onGraphicsContextRestored() override;
 
   private:
     void beginFrame();

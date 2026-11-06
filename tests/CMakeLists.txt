@@ -412,6 +412,7 @@ set(COMMON_TEST_SOURCES
     Core/test_ConfigDirOverride.cpp
     Core/test_EnvUtils.cpp
     Core/test_FramebufferCapture.cpp
+    Core/test_GraphicsReset.cpp
     Core/test_LocaleSetup.cpp
     Core/test_ApplicationEvents.cpp
     Core/test_Event.cpp

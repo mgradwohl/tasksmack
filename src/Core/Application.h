@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Event.h"
+#include "GraphicsReset.h"
 #include "Layer.h"
 #include "PathService.h"
 #include "Window.h"
@@ -178,6 +179,16 @@ class Application
     std::uint64_t m_PublicationWakesTaken = 0;
     bool m_LastIdleWaitWoke = false;
     bool m_LastIdleWaitPolledEvent = false;
+    /// Turns the per-frame GPU reset checks into one context replacement per reset (#3484).
+    GraphicsResetMonitor m_GraphicsReset;
+    /// The resets already logged as reported, so a driver that reports one for several frames logs it once.
+    std::uint64_t m_GraphicsResetsLogged = 0;
+    /// Set when replacing the context failed: the app carries on, degraded, and stops trying.
+    bool m_GraphicsResetRecoveryFailed = false;
+
+    /// After a frame: read the context's GPU reset status and, once a reset is over, replace the
+    /// context and let the layers drop and rebuild their OpenGL objects (#3484, GraphicsReset.h).
+    void checkGraphicsReset();
 
     /// Run one update+render+swapBuffers cycle. Extracted so the main loop and
     /// the immediate-repaint-on-resize path share identical rendering logic. Detailed

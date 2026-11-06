@@ -46,6 +46,17 @@ class Layer
     virtual void onHiddenUpdate()
     {}
 
+    /// The GPU was reset and the OpenGL context is lost (#3484): drop every OpenGL object the layer
+    /// made. The lost context is still current, so deleting them is harmless but does nothing. Called
+    /// top of the stack first, between frames, before Window replaces the context.
+    virtual void onGraphicsContextLost()
+    {}
+
+    /// A new OpenGL context replaced the lost one and is current (#3484): make again what
+    /// onGraphicsContextLost() dropped. Called bottom of the stack first, between frames.
+    virtual void onGraphicsContextRestored()
+    {}
+
     /// Handle Core::Event broadcasts (window and application events; raw input arrives through
     /// onSDLEvent). Application::raiseEvent() calls layers top of the stack first. A dispatch
     /// handler that returns true marks the event handled and stops it reaching the layers below,

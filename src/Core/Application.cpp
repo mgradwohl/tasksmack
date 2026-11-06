@@ -6,6 +6,7 @@
 #include "Core/Event.h"
 #include "Core/FramePacing.h"
 #include "Core/FrameWake.h"
+#include "Core/GraphicsReset.h"
 #include "Core/Layer.h"
 #include "Core/ResizePerfOperation.h"
 #include "Core/ResizePerfTrace.h"
@@ -1163,6 +1164,7 @@ void Application::renderFrame(
 
     m_Window->swapBuffers();
     const auto swapEnd = tracing ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+    checkGraphicsReset();
     const auto frameEndCounter = tracing ? SDL_GetPerformanceCounter() : 0;
 
     if (updateMs != nullptr)
@@ -1260,6 +1262,51 @@ bool Application::closeRequestAccepted()
     WindowCloseEvent event;
     raiseEvent(event);
     return !event.isHandled();
+}
+
+void Application::checkGraphicsReset()
+{
+    if (m_GraphicsResetRecoveryFailed || !m_Window->reportsGraphicsReset())
+    {
+        return;
+    }
+    // LCOV_EXCL_START - needs a real GPU reset; GraphicsResetMonitor's decisions are unit-tested
+    const std::uint32_t status = m_Window->graphicsResetStatus();
+    const GraphicsResetAction action = m_GraphicsReset.observe(status, getTime());
+    if (action == GraphicsResetAction::None)
+    {
+        return;
+    }
+    if (action == GraphicsResetAction::Wait)
+    {
+        if (status != GL_RESET_STATUS_NO_ERROR && m_GraphicsResetsLogged != m_GraphicsReset.resets())
+        {
+            m_GraphicsResetsLogged = m_GraphicsReset.resets();
+            spdlog::warn("GPU reset reported ({} context reset); waiting for it to finish before replacing the OpenGL context",
+                         graphicsResetStatusName(status));
+        }
+        return;
+    }
+    spdlog::warn("Replacing the OpenGL context after GPU reset {} ({} context reset)",
+                 m_GraphicsReset.resets(),
+                 graphicsResetStatusName(m_GraphicsReset.lostStatus()));
+    for (const auto& layer : std::views::reverse(m_LayerStack))
+    {
+        guardLayerCall(layer, "onGraphicsContextLost", [&] { layer->onGraphicsContextLost(); });
+    }
+    if (!m_Window->recreateGLContext())
+    {
+        m_GraphicsResetRecoveryFailed = true;
+        spdlog::error("Could not replace the OpenGL context; rendering may stay slow until TaskSmack restarts");
+    }
+    advanceGraphicsContextGeneration();
+    // The swap interval belongs to the context: put back what the frame loop has set.
+    Window::setVSync(m_Spec.VSync && !m_VsyncDisabledForInteraction);
+    for (const auto& layer : m_LayerStack)
+    {
+        guardLayerCall(layer, "onGraphicsContextRestored", [&] { layer->onGraphicsContextRestored(); });
+    }
+    // LCOV_EXCL_STOP
 }
 
 void Application::raiseEvent(Event& event)
