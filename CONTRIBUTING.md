@@ -1067,6 +1067,16 @@ temporary copy that is removed when the run ends, so that tree's own files, incl
 clangd reads, are never touched. Every other option works the same with each, for example
 `./tools/clang-tidy.sh tsan --changed-only`.
 
+On Windows, `tools/clang-tidy.sh` run from Git Bash, MSYS2 or Cygwin hands its options to `tools/clang-tidy.ps1`,
+the script CI's Windows job runs, so a local run uses CI's header filter, exclusions and checks (#3500). `debug` and
+`relwithdebinfo` mean `build/win-<type>` there; `--build-dir DIR` becomes `-BuildDir DIR`, which `clang-tidy.ps1` also
+takes directly (`pwsh tools/clang-tidy.ps1 -BuildDir build/win-debug -Files src/Platform/Windows/WindowsSystemProbe.cpp`).
+Before #3500 the Git Bash run used the Linux settings: its header filter never matched a Windows path, so it
+reported no header findings at all, and it skipped `src/Platform/Windows/`. Both scripts start a candidate Python
+before using it (`.venv`, then `python`, `python3`, and `py -3` on Windows), so the Microsoft Store's `python3`
+stub is skipped. `tools/test-clang-tidy-headers.ps1` (the `ClangTidyHeadersScript` CTest test on Windows) checks
+that both report a finding in a fixture header.
+
 `.clang-tidy` sets `WarningsAsErrors: '*'`, so any clang-tidy finding fails the run, locally and in CI's
 blocking jobs. Fix the finding, or suppress it with a `NOLINT(check-name)` comment that says why. Before
 this, clang-tidy exited 0 on warnings, so the CI job could never fail on one (#1089). CI runs clang-tidy

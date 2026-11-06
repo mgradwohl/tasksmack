@@ -134,11 +134,13 @@ using Thresholds = std::array<std::uint8_t, 256>;
         {
             continue;
         }
-        attributes.push_back(Attribute{.id = id,
-                                       .flags = static_cast<std::uint16_t>(littleEndian(entry.subspan(1, 2))),
-                                       .current = static_cast<std::uint8_t>(entry[3]),
-                                       .worst = static_cast<std::uint8_t>(entry[4]),
-                                       .raw = littleEndian(entry.subspan(5, RAW_VALUE_BYTES))});
+        attributes.push_back(Attribute{
+            .id = id,
+            .flags = static_cast<std::uint16_t>(littleEndian(entry.subspan(1, 2))),
+            .current = static_cast<std::uint8_t>(entry[3]),
+            .worst = static_cast<std::uint8_t>(entry[4]),
+            .raw = littleEndian(entry.subspan(5, RAW_VALUE_BYTES)),
+        });
     }
     return attributes;
 }
@@ -202,8 +204,10 @@ struct IdentifySmart
     {
         return std::nullopt;
     }
-    return IdentifySmart{.supported = (littleEndian(identify.subspan(IDENTIFY_SMART_SUPPORTED_OFFSET, 2)) & IDENTIFY_SMART_BIT) != 0,
-                         .enabled = (littleEndian(identify.subspan(IDENTIFY_SMART_ENABLED_OFFSET, 2)) & IDENTIFY_SMART_BIT) != 0};
+    return IdentifySmart{
+        .supported = (littleEndian(identify.subspan(IDENTIFY_SMART_SUPPORTED_OFFSET, 2)) & IDENTIFY_SMART_BIT) != 0,
+        .enabled = (littleEndian(identify.subspan(IDENTIFY_SMART_ENABLED_OFFSET, 2)) & IDENTIFY_SMART_BIT) != 0,
+    };
 }
 
 /// The attribute with @p id in @p attributes, or nullptr.

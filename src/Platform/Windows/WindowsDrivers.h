@@ -53,15 +53,15 @@ struct FileVersionRecord
 };
 
 // The image signature check's types, shared with the Processes table's Signature column (#3070).
-using FileStamp = WindowsSignature::FileStamp;
-using FileId = WindowsSignature::FileId;
-using OpenedImage = WindowsSignature::OpenedImage;
-using SignatureCheck = Platform::SignatureCheck;
-using TrustCheck = WindowsSignature::TrustCheck;
-using SignatureCache = WindowsSignature::SignatureCache;
-using SignatureVerdict = WindowsSignature::SignatureVerdict;
+using Platform::SignatureCheck;
 using WindowsSignature::classifySignature;
+using WindowsSignature::FileId;
+using WindowsSignature::FileStamp;
 using WindowsSignature::isTrustFailure;
+using WindowsSignature::OpenedImage;
+using WindowsSignature::SignatureCache;
+using WindowsSignature::SignatureVerdict;
+using WindowsSignature::TrustCheck;
 namespace TrustResult = WindowsSignature::TrustResult;
 
 /// The calls readDrivers() makes.
