@@ -130,25 +130,30 @@ void migrateLegacyProcessColumns(toml::table& document, const toml::table& mine)
 }
 
 /// The named font size of a config.toml from before point sizes (#3375), `[font] size = "large"`, as `[font]
-/// point_size = 10`, unless the file has a point size already (which then wins, as it does on load). The name goes
-/// either way, so the file doesn't keep a setting nothing reads. Read from the file as it is now, so a named size
-/// edited in while TaskSmack ran is kept too; an unknown name is just dropped, and reads as the default, as on load.
-/// Runs after the owned keys are merged in: a size changed in this session is written as a point size by then.
-void migrateLegacyFontSize(toml::table& document)
+/// point_size = 10`, unless the file has a point size already that reads as a number (which then wins, as it does on
+/// load: readSettings()). The name goes either way, so the file doesn't keep a setting nothing reads. Read from the
+/// file as it is now, so a named size edited in while TaskSmack ran is kept too; an unknown name is just dropped, and
+/// reads as the default, as on load. A point size that isn't a number (a hand edit, `point_size = "big"`) is ignored
+/// on load, so it is replaced: by the name's size, or else by @p sessionPoints, the size this session has; kept, it
+/// would lose the name's size on the next load once the name is gone. Runs after the owned keys are merged in: a size
+/// changed in this session is written as a point size by then.
+void migrateLegacyFontSize(toml::table& document, int sessionPoints)
 {
     auto* font = document.get_as<toml::table>("font");
     if (font == nullptr || !font->contains("size"))
     {
         return;
     }
-    if (!font->contains("point_size"))
+    if (!(*font)["point_size"].value<double>().has_value())
     {
-        if (const auto name = (*font)["size"].value<std::string>())
+        const auto name = (*font)["size"].value<std::string>();
+        if (const std::optional<int> named = name.has_value() ? UI::legacyFontSizePoints(*name) : std::nullopt)
         {
-            if (const auto points = UI::legacyFontSizePoints(*name))
-            {
-                font->insert_or_assign("point_size", *points);
-            }
+            font->insert_or_assign("point_size", *named);
+        }
+        else if (font->contains("point_size"))
+        {
+            font->insert_or_assign("point_size", UI::clampFontPointSize(sessionPoints));
         }
     }
     font->erase("size");
@@ -988,7 +993,7 @@ bool UserConfig::writeSettings(const UserSettings& settings)
     // gets only the keys whose value TaskSmack changed from its baseline.
     UserConfigHelpers::mergeOwnedKeys(document, fileExists ? buildTable(m_Synced) : toml::table{}, mine);
     // A file from before point sizes (#3375) gets the point size its named size meant, and loses the name.
-    migrateLegacyFontSize(document);
+    migrateLegacyFontSize(document, settings.fontPointSize);
     // No chosen column left (all reset, or none ever chosen): no empty [process_columns] header.
     if (const auto* columns = document.get_as<toml::table>("process_columns"); columns != nullptr && columns->empty())
     {

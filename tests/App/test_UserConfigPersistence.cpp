@@ -2225,6 +2225,42 @@ TEST_F(UserConfigSaveLoadFixture, APointSizeBesideANamedOneKeepsThePointSize)
     EXPECT_FALSE(document["font"]["size"]);
 }
 
+// A point size that isn't a number beside a valid name (#3375 review): the load reads the name, so the save must not
+// keep the bad point size and drop the name, or the next launch falls back to the default.
+TEST_F(UserConfigSaveLoadFixture, AnInvalidPointSizeBesideANamedOneIsReplacedByTheNamedSize)
+{
+    writeFile(m_ConfigPath, "[font]\npoint_size = \"big\"\nsize = \"large\"\n");
+    auto& config = UserConfig::get();
+    config.load();
+    ASSERT_EQ(config.settings().fontPointSize, 10);
+    config.save(); // nothing changed in the session
+
+    const auto document = parsed(m_ConfigPath);
+    EXPECT_EQ(document["font"]["point_size"].value<std::int64_t>(), std::optional<std::int64_t>{10});
+    EXPECT_FALSE(document["font"]["size"]);
+    config.resetConfigPathForTesting(m_ConfigPath);
+    config.load();
+    EXPECT_EQ(config.settings().fontPointSize, 10);
+}
+
+// The same with a name that was never a size: the load read the default, so the bad point size is replaced by the
+// session's size rather than left for the next load to ignore.
+TEST_F(UserConfigSaveLoadFixture, AnInvalidPointSizeBesideAnUnknownNameIsReplacedByTheSessionSize)
+{
+    writeFile(m_ConfigPath, "[font]\npoint_size = \"big\"\nsize = \"gigantic\"\n");
+    auto& config = UserConfig::get();
+    config.load();
+    ASSERT_EQ(config.settings().fontPointSize, UI::FONT_POINT_SIZE_DEFAULT);
+    config.save();
+
+    const auto document = parsed(m_ConfigPath);
+    EXPECT_EQ(document["font"]["point_size"].value<std::int64_t>(), std::optional<std::int64_t>{UI::FONT_POINT_SIZE_DEFAULT});
+    EXPECT_FALSE(document["font"]["size"]);
+    config.resetConfigPathForTesting(m_ConfigPath);
+    config.load();
+    EXPECT_EQ(config.settings().fontPointSize, UI::FONT_POINT_SIZE_DEFAULT);
+}
+
 // A name that was never a size is dropped and writes no point size: it read as the default, and still does.
 TEST_F(UserConfigSaveLoadFixture, AnUnknownNamedFontSizeIsDroppedAndStaysTheDefault)
 {
