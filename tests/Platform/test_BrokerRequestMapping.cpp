@@ -9,6 +9,7 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
+#include "Platform/IProcessMemoryMap.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
@@ -599,6 +600,60 @@ TEST(BrokerRequestMappingTest, AThreadsRequestIsReadThroughItsReader)
     const Broker::Response failed = BrokerServer::handleRequest(Broker::ThreadsRequest{.target = TARGET}, actions, readers);
     ASSERT_TRUE(std::holds_alternative<Broker::ThreadsReply>(failed));
     EXPECT_EQ(std::get<Broker::ThreadsReply>(failed).result.status, ThreadsReadStatus::Failed);
+}
+
+/// A memory map reader that counts its reads and answers one mapping at the target's PID, or throws (#3089).
+class FakeMemoryMapReader final : public IProcessMemoryMapReader
+{
+  public:
+    explicit FakeMemoryMapReader(bool throws = false) : m_Throws(throws)
+    {}
+    [[nodiscard]] bool hasMemoryMap() const override
+    {
+        return true;
+    }
+    [[nodiscard]] MemoryMapReadResult readMemoryMap(const ProcessTarget& target) override
+    {
+        ++m_Reads;
+        if (m_Throws)
+        {
+            throw std::runtime_error("boom");
+        }
+        MemoryMapReadResult result{.status = MemoryMapReadStatus::Ok, .mappings = {}, .detail = {}};
+        result.mappings.push_back(
+            {.start = static_cast<std::uint64_t>(target.pid), .end = 0x10000, .kind = MemoryMappingKind::Heap, .path = "[heap]"});
+        return result;
+    }
+    int m_Reads = 0;
+
+  private:
+    bool m_Throws = false;
+};
+
+// #3089: another user's process's memory map, read by the helper's reader, refused without one.
+TEST(BrokerRequestMappingTest, AMemoryMapRequestIsReadThroughItsReader)
+{
+    TestMocks::MockProcessActions actions;
+    FakeMemoryMapReader memoryMap;
+    BrokerServer::Readers readers;
+    readers.memoryMap = &memoryMap;
+    const Broker::Response response = BrokerServer::handleRequest(Broker::MemoryMapRequest{.target = TARGET}, actions, readers);
+    ASSERT_TRUE(std::holds_alternative<Broker::MemoryMapReply>(response));
+    EXPECT_EQ(memoryMap.m_Reads, 1);
+    const MemoryMapReadResult& result = std::get<Broker::MemoryMapReply>(response).result;
+    EXPECT_EQ(result.status, MemoryMapReadStatus::Ok);
+    ASSERT_EQ(result.mappings.size(), 1U);
+    EXPECT_EQ(result.mappings[0].start, static_cast<std::uint64_t>(TARGET.pid));
+
+    const Broker::Response none = BrokerServer::handleRequest(Broker::MemoryMapRequest{.target = TARGET}, actions);
+    ASSERT_TRUE(std::holds_alternative<Broker::ErrorReply>(none));
+    EXPECT_EQ(std::get<Broker::ErrorReply>(none).message, "This helper doesn't read memory maps");
+
+    FakeMemoryMapReader throwing(true);
+    readers.memoryMap = &throwing;
+    const Broker::Response failed = BrokerServer::handleRequest(Broker::MemoryMapRequest{.target = TARGET}, actions, readers);
+    ASSERT_TRUE(std::holds_alternative<Broker::MemoryMapReply>(failed));
+    EXPECT_EQ(std::get<Broker::MemoryMapReply>(failed).result.status, MemoryMapReadStatus::Failed);
 }
 
 TEST(BrokerRequestMappingTest, AnActionThatThrowsANonStandardExceptionIsAFailedResult)

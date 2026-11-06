@@ -1420,7 +1420,8 @@ TEST(BrokerPipeServeTest, EveryRequestKindIsTheHelloAnActionOrARead)
     EXPECT_FALSE(BrokerPipeServer::isRead(signOut)) << "an action (#3076)";
     EXPECT_TRUE(BrokerPipeServer::isActionWindowsDoes(signOut));
     EXPECT_TRUE(BrokerPipeServer::putsOffTheWindowsIdleExit(signOut));
-    static_assert(std::variant_size_v<Broker::Request> == 21, "a new request kind: add it above");
+    EXPECT_TRUE(BrokerPipeServer::isRead(Broker::MemoryMapRequest{.target = TARGET})) << "Process Details' memory map (#3089)";
+    static_assert(std::variant_size_v<Broker::Request> == 22, "a new request kind: add it above");
 }
 
 TEST(BrokerPipeServeTest, AOneActionSessionIsntKeptOpenByGreetingAgain)

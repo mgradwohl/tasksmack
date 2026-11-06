@@ -30,6 +30,7 @@
 #include "Platform/Linux/LinuxProcessConnectionsReader.h"
 #include "Platform/Linux/LinuxProcessControl.h"
 #include "Platform/Linux/LinuxProcessEnvironmentReader.h"
+#include "Platform/Linux/LinuxProcessMemoryMapReader.h"
 #include "Platform/Linux/LinuxProcessModulesReader.h"
 #include "Platform/Linux/LinuxProcessOpenFilesReader.h"
 #include "Platform/Linux/LinuxProcessThreadsReader.h"
@@ -207,7 +208,8 @@ int main(int argc, char* const* argv)
         Platform::LinuxProcessEnvironmentReader environment;
         Platform::LinuxProcessModulesReader modules;
         Platform::LinuxProcessOpenFilesReader openFiles;
-        Platform::LinuxProcessThreadsReader threads; // #3069
+        Platform::LinuxProcessThreadsReader threads;     // #3069
+        Platform::LinuxProcessMemoryMapReader memoryMap; // #3089: only the target's own smaps
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
         // Every table from /proc/<pid>/net, never a NETLINK_SOCK_DIAG socket: the seccomp filter allows
         // the helper no socket but its broker's (#2752), and /proc gives the same tables.
@@ -221,6 +223,7 @@ int main(int argc, char* const* argv)
             .openFiles = &openFiles,
             .connections = &connections,
             .threads = &threads,
+            .memoryMap = &memoryMap,
             .memoryRollup = [](std::int32_t pid, std::uint64_t startTimeTicks)
             { return Platform::Linux::readMemoryRollupAt("/proc", pid, startTimeTicks); },
             // Other users' FD counts, I/O bytes and socket inodes, for the sampler (#2728)

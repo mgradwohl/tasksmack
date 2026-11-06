@@ -10,6 +10,7 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
+#include "Platform/IProcessMemoryMap.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
@@ -1589,6 +1590,115 @@ TEST(BrokeredThreadsReaderTest, AHelperThatCantAnswerSaysWhy)
     BrokeredThreadsReader confused(std::make_unique<ScriptedThreadsReader>(threadsWith(ThreadsReadStatus::PermissionDenied)), odd);
     const ThreadsReadResult unexpected = confused.readThreads(TARGET);
     EXPECT_EQ(unexpected.status, ThreadsReadStatus::Failed);
+    EXPECT_EQ(unexpected.detail, "The administrator helper gave an unexpected answer");
+}
+
+// --- BrokeredMemoryMapReader (#3089) ------------------------------------------------------------------
+
+/// A memory map reader answering @p result every time, counting its reads.
+class ScriptedMemoryMapReader final : public IProcessMemoryMapReader
+{
+  public:
+    explicit ScriptedMemoryMapReader(MemoryMapReadResult result, bool has = true) : m_Result(std::move(result)), m_Has(has)
+    {}
+    [[nodiscard]] bool hasMemoryMap() const override
+    {
+        return m_Has;
+    }
+    [[nodiscard]] MemoryMapReadResult readMemoryMap(const ProcessTarget& /*target*/) override
+    {
+        ++m_Reads;
+        return m_Result;
+    }
+    int m_Reads = 0;
+
+  private:
+    MemoryMapReadResult m_Result;
+    bool m_Has = true;
+};
+
+[[nodiscard]] MemoryMapReadResult memoryMapWith(MemoryMapReadStatus status)
+{
+    return {.status = status, .mappings = {}, .detail = {}};
+}
+
+TEST(BrokeredMemoryMapReaderTest, ARefusedReadGoesThroughARunningHelperAndOtherwiseWaitsForTheUi)
+{
+    auto broker = std::make_shared<Mocks::FakeBroker>(true);
+    broker->setAnswer(
+        [](const Broker::Request&)
+        {
+            MemoryMapReadResult read = memoryMapWith(MemoryMapReadStatus::Ok);
+            read.mappings.push_back({.start = 0x1000, .end = 0x2000, .kind = MemoryMappingKind::Stack, .path = "[stack]"});
+            return Broker::Response{Broker::MemoryMapReply{.result = read}};
+        });
+    BrokeredMemoryMapReader reader(std::make_unique<ScriptedMemoryMapReader>(memoryMapWith(MemoryMapReadStatus::PermissionDenied)), broker);
+    EXPECT_TRUE(reader.hasMemoryMap());
+    const MemoryMapReadResult viaHelper = reader.readMemoryMap(TARGET);
+    EXPECT_EQ(viaHelper.status, MemoryMapReadStatus::Ok);
+    ASSERT_EQ(viaHelper.mappings.size(), 1U);
+    EXPECT_EQ(viaHelper.mappings[0].path, "[stack]");
+    ASSERT_EQ(broker->requests().size(), 1U);
+    EXPECT_EQ(broker->requests().front(), (Broker::Request{Broker::MemoryMapRequest{.target = TARGET}}));
+
+    // No helper running: the refusal stands until the user chooses Authenticate to read, which starts it.
+    broker->setConnected(false);
+    EXPECT_EQ(reader.readMemoryMap(TARGET).status, MemoryMapReadStatus::PermissionDenied);
+    EXPECT_TRUE(reader.canReadAuthorized());
+    EXPECT_EQ(reader.readAuthorized(TARGET, std::stop_token{}).status, MemoryMapReadStatus::Ok);
+    EXPECT_EQ(broker->connectCount(), 1);
+
+    // A read the reader makes itself, or one that failed some other way, goes nowhere near the helper.
+    BrokeredMemoryMapReader own(std::make_unique<ScriptedMemoryMapReader>(memoryMapWith(MemoryMapReadStatus::Ok)), broker);
+    EXPECT_EQ(own.readMemoryMap(TARGET).status, MemoryMapReadStatus::Ok);
+    BrokeredMemoryMapReader gone(std::make_unique<ScriptedMemoryMapReader>(memoryMapWith(MemoryMapReadStatus::ProcessExited)), broker);
+    EXPECT_EQ(gone.readMemoryMap(TARGET).status, MemoryMapReadStatus::ProcessExited);
+    EXPECT_EQ(broker->requests().size(), 2U);
+}
+
+TEST(BrokeredMemoryMapReaderTest, TheFactoryWrapsOnlyAReaderThatCanReadAndAWithoutHelperRefusalStands)
+{
+    auto broker = std::make_shared<Mocks::FakeBroker>(false);
+    EXPECT_EQ(withPrivilegedBroker(std::unique_ptr<IProcessMemoryMapReader>{}, broker), nullptr);
+    auto unsupported = std::make_unique<UnsupportedProcessMemoryMapReader>();
+    const IProcessMemoryMapReader* const rawUnsupported = unsupported.get();
+    EXPECT_EQ(withPrivilegedBroker(std::unique_ptr<IProcessMemoryMapReader>(std::move(unsupported)), broker).get(), rawUnsupported);
+    EXPECT_TRUE(withPrivilegedBroker(std::unique_ptr<IProcessMemoryMapReader>(
+                                         std::make_unique<ScriptedMemoryMapReader>(memoryMapWith(MemoryMapReadStatus::Ok))),
+                                     broker)
+                    ->canReadAuthorized());
+    auto plain = std::make_unique<ScriptedMemoryMapReader>(memoryMapWith(MemoryMapReadStatus::Ok));
+    const IProcessMemoryMapReader* const rawPlain = plain.get();
+    EXPECT_EQ(withPrivilegedBroker(std::unique_ptr<IProcessMemoryMapReader>(std::move(plain)), nullptr).get(), rawPlain);
+
+    auto owned = std::make_unique<ScriptedMemoryMapReader>(memoryMapWith(MemoryMapReadStatus::PermissionDenied));
+    ScriptedMemoryMapReader* const inner = owned.get();
+    BrokeredMemoryMapReader alone(std::move(owned), nullptr);
+    EXPECT_FALSE(alone.canReadAuthorized());
+    EXPECT_EQ(alone.readAuthorized(TARGET, std::stop_token{}).status, MemoryMapReadStatus::PermissionDenied);
+    EXPECT_EQ(alone.readMemoryMap(TARGET).status, MemoryMapReadStatus::PermissionDenied);
+    EXPECT_EQ(inner->m_Reads, 2);
+
+    broker->setConnectFailure("the password prompt was dismissed");
+    BrokeredMemoryMapReader dismissed(std::make_unique<ScriptedMemoryMapReader>(memoryMapWith(MemoryMapReadStatus::PermissionDenied)),
+                                      broker);
+    EXPECT_EQ(dismissed.readAuthorized(TARGET, std::stop_token{}).status, MemoryMapReadStatus::PermissionDenied);
+    EXPECT_TRUE(broker->requests().empty());
+}
+
+TEST(BrokeredMemoryMapReaderTest, AHelperThatCantAnswerSaysWhy)
+{
+    BrokeredMemoryMapReader broken(std::make_unique<ScriptedMemoryMapReader>(memoryMapWith(MemoryMapReadStatus::PermissionDenied)),
+                                   failingBroker("the channel broke"));
+    const MemoryMapReadResult failed = broken.readMemoryMap(TARGET);
+    EXPECT_EQ(failed.status, MemoryMapReadStatus::Failed);
+    EXPECT_TRUE(failed.detail.contains("the channel broke")) << failed.detail;
+
+    auto odd = std::make_shared<Mocks::FakeBroker>(true);
+    odd->setAnswer([](const Broker::Request&) { return Broker::Response{Broker::ErrorReply{.message = "no"}}; });
+    BrokeredMemoryMapReader confused(std::make_unique<ScriptedMemoryMapReader>(memoryMapWith(MemoryMapReadStatus::PermissionDenied)), odd);
+    const MemoryMapReadResult unexpected = confused.readMemoryMap(TARGET);
+    EXPECT_EQ(unexpected.status, MemoryMapReadStatus::Failed);
     EXPECT_EQ(unexpected.detail, "The administrator helper gave an unexpected answer");
 }
 

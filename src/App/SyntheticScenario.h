@@ -31,6 +31,7 @@
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessIconSource.h"
+#include "Platform/IProcessMemoryMap.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
@@ -126,6 +127,8 @@ class Scenario
 [[nodiscard]] std::unique_ptr<Platform::IProcessModulesReader> makeProcessModulesReader(const Scenario* scenario);
 /// The threads reader (#3069): the platform's, or under a scenario one that lists nothing.
 [[nodiscard]] std::unique_ptr<Platform::IProcessThreadsReader> makeProcessThreadsReader(const Scenario* scenario);
+/// With a scenario, a reader that reports no memory map support, for the same reason (#3089).
+[[nodiscard]] std::unique_ptr<Platform::IProcessMemoryMapReader> makeProcessMemoryMapReader(const Scenario* scenario);
 /// The Connections tab's reader (#3066): the platform's, or under a scenario one that lists nothing.
 [[nodiscard]] std::unique_ptr<Platform::ISystemConnectionsReader> makeSystemConnectionsReader(const Scenario* scenario);
 /// With a scenario, a reader that reports no open-files support, for the same reason (#183).

@@ -424,6 +424,7 @@ set(COMMON_TEST_SOURCES
     Domain/test_SharedHistory.cpp
     Domain/test_ProcessConnections.cpp
     Domain/test_ProcessSecurity.cpp
+    Domain/test_ProcessMemoryMap.cpp  # a memory map's totals by kind and file (#3089)
     Domain/test_Numeric.cpp
     Domain/test_SingleLineText.cpp
     Domain/test_ProcessEnergyAttribution.cpp
@@ -578,6 +579,7 @@ set(COMMON_TEST_SOURCES
     Platform/test_StartupImpact.cpp  # a startup entry's share of a sign-in measurement (#3073)
     Platform/test_ProcMapsParser.cpp
     Platform/test_SmapsRollupParser.cpp
+    Platform/test_SmapsParser.cpp  # /proc/[pid]/smaps as a memory map (#3089)
     Platform/test_ProcFdParser.cpp
     Platform/test_ProcStatusSecurityParser.cpp
     Platform/test_ProcessIdentity.cpp
@@ -842,6 +844,7 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_LinuxProcessConnectionsReader.cpp
     Platform/test_LinuxProcessModulesReader.cpp
     Platform/test_LinuxProcessThreadsReader.cpp # Process Details Threads (#3069)
+    Platform/test_LinuxProcessMemoryMapReader.cpp # a process's memory map from smaps (#3089)
     Platform/test_LinuxSystemConnectionsReader.cpp # the Connections tab (#3066)
     Platform/test_LinuxProcessOpenFilesReader.cpp
     Platform/test_LinuxProcessSecurityReader.cpp

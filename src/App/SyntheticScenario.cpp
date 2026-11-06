@@ -16,6 +16,7 @@
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessIconSource.h"
+#include "Platform/IProcessMemoryMap.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
@@ -381,6 +382,15 @@ std::unique_ptr<Platform::IProcessThreadsReader> makeProcessThreadsReader(const 
         return std::make_unique<Platform::UnsupportedProcessThreadsReader>();
     }
     return Platform::makeProcessThreadsReader();
+}
+
+std::unique_ptr<Platform::IProcessMemoryMapReader> makeProcessMemoryMapReader(const Scenario* scenario)
+{
+    if (scenario != nullptr)
+    {
+        return std::make_unique<Platform::UnsupportedProcessMemoryMapReader>();
+    }
+    return Platform::makeProcessMemoryMapReader();
 }
 
 std::unique_ptr<Platform::ISystemConnectionsReader> makeSystemConnectionsReader(const Scenario* scenario)

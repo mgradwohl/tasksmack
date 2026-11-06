@@ -10,6 +10,7 @@
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessIconSource.h"
+#include "Platform/IProcessMemoryMap.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
@@ -70,6 +71,10 @@ namespace Platform
 /// Creates the platform-appropriate IProcessThreadsReader implementation (#3069; Windows: unsupported
 /// until its lane adds one).
 [[nodiscard]] std::unique_ptr<IProcessThreadsReader> makeProcessThreadsReader();
+
+/// Creates the platform-appropriate IProcessMemoryMapReader implementation (#3089): smaps on Linux; Windows:
+/// unsupported until its lane's VirtualQueryEx reader lands.
+[[nodiscard]] std::unique_ptr<IProcessMemoryMapReader> makeProcessMemoryMapReader();
 
 /// Creates the platform-appropriate ISystemConnectionsReader implementation (#3066; Windows: unsupported
 /// until its lane adds one).

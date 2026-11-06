@@ -27,6 +27,7 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
+#include "Platform/IProcessMemoryMap.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
@@ -67,7 +68,8 @@ namespace Platform::Broker
 /// 13: SessionAction, another user's Windows session disconnected or signed out (#3076).
 /// 14: ThreadAction, one thread suspended, resumed or ended (#3069, Windows); ThreadsResult carries each
 ///     thread's wait reason, suspend count and creation time, and whether its priority is Windows' rather than a nice value.
-inline constexpr std::uint16_t PROTOCOL_VERSION = 14;
+/// 15: ReadMemoryMap, another user's process's memory map for Process Details (#3089).
+inline constexpr std::uint16_t PROTOCOL_VERSION = 15;
 /// The largest frame either side accepts, header included.
 inline constexpr std::size_t MAX_MESSAGE_BYTES = std::size_t{8} << 20U;
 /// The most processes one ReadProcessCounters asks about (#2728); a sampler with more asks for the first.
@@ -90,6 +92,9 @@ inline constexpr std::size_t MAX_MODULES = std::size_t{1} << 16U;
 inline constexpr std::size_t MAX_CONNECTIONS = std::size_t{1} << 16U;
 /// The most threads a ThreadsReply carries (#3069); a read with more keeps the first.
 inline constexpr std::size_t MAX_THREADS = std::size_t{1} << 16U;
+/// The most mappings a MemoryMapReply carries (#3089); a read with more keeps the first. A frame holds fewer
+/// (at least 35 bytes each) when they are many, and says it was cut.
+inline constexpr std::size_t MAX_MEMORY_MAPPINGS = std::size_t{1} << 18U;
 /// The largest firmware file a FirmwareFileReply carries; SMBIOS tables are a few KiB to some tens.
 inline constexpr std::size_t MAX_FIRMWARE_FILE_BYTES = std::size_t{1} << 20U;
 /// The frame header after the length: version, kind, request id.
@@ -119,6 +124,7 @@ enum class MessageKind : std::uint16_t // NOLINT(performance-enum-size): 16 bits
     ReadProcessCounters = 39,    ///< Many processes' FD counts and I/O bytes at once, for the sampler (#2728)
     ListHiddenProcesses = 40,    ///< The processes hidepid hides from TaskSmack, as their /proc files' text (#2728)
     ReadThreads = 41,            ///< Another user's process's threads, for Process Details (#3069)
+    ReadMemoryMap = 42,          ///< Another user's process's memory map, for Process Details (#3089)
     ActionResult = 48,           ///< The answer to a process action
     EnvironmentResult = 49,      ///< The answer to ReadEnvironment
     ModulesResult = 50,          ///< The answer to ReadModules
@@ -131,6 +137,7 @@ enum class MessageKind : std::uint16_t // NOLINT(performance-enum-size): 16 bits
     HiddenProcessesResult = 57,  ///< The answer to ListHiddenProcesses
     ServiceActionResult = 58,    ///< The answer to ServiceAction
     ThreadsResult = 59,          ///< The answer to ReadThreads
+    MemoryMapResult = 60,        ///< The answer to ReadMemoryMap
     Error = 63,                  ///< A request the helper refused to read (malformed, or a kind it doesn't do)
 };
 
@@ -377,6 +384,26 @@ struct ThreadsReply
                left.result.ticksPerSecond == right.result.ticksPerSecond && left.result.truncated == right.result.truncated &&
                left.result.bootTimeEpoch == right.result.bootTimeEpoch && left.result.windowsPriorities == right.result.windowsPriorities &&
                std::ranges::equal(left.result.threads, right.result.threads, same);
+    }
+};
+
+/// Read a process's memory map (#3089), as the helper reads it with its capabilities. It names only the
+/// target: the helper reads that process's own smaps, never a path the request could choose.
+struct MemoryMapRequest
+{
+    ProcessTarget target;
+    friend bool operator==(const MemoryMapRequest&, const MemoryMapRequest&) = default;
+};
+
+/// The answer to MemoryMapRequest: the read's result, as IProcessMemoryMapReader returns it.
+struct MemoryMapReply
+{
+    MemoryMapReadResult result;
+
+    friend bool operator==(const MemoryMapReply& left, const MemoryMapReply& right)
+    {
+        return left.result.status == right.result.status && left.result.detail == right.result.detail &&
+               left.result.truncated == right.result.truncated && left.result.mappings == right.result.mappings;
     }
 };
 
@@ -627,7 +654,8 @@ using Request = std::variant<Hello,
                              ThreadsRequest,
                              TaskManagerReplacementRequest,
                              SessionActionRequest,
-                             ThreadActionRequest>;
+                             ThreadActionRequest,
+                             MemoryMapRequest>;
 using Response = std::variant<HelloReply,
                               ActionResult,
                               ErrorReply,
@@ -641,7 +669,8 @@ using Response = std::variant<HelloReply,
                               ProcessCountersReply,
                               HiddenProcessesReply,
                               ServiceActionReply,
-                              ThreadsReply>;
+                              ThreadsReply,
+                              MemoryMapReply>;
 
 /// A decoded frame: its request id and message.
 template<typename Message> struct Decoded
@@ -1028,6 +1057,12 @@ namespace Detail
     return MessageKind::ReadThreads;
 }
 
+[[nodiscard]] inline MessageKind encodePayload(Writer& writer, const MemoryMapRequest& map)
+{
+    writer.target(map.target);
+    return MessageKind::ReadMemoryMap;
+}
+
 [[nodiscard]] inline MessageKind encodePayload(Writer& writer, const MemoryRollupRequest& rollup)
 {
     writer.target(rollup.target);
@@ -1358,6 +1393,8 @@ namespace Detail
         return Detail::finish<Request>(reader, id, ConnectionsRequest{.target = reader.target()});
     case MessageKind::ReadThreads:
         return Detail::finish<Request>(reader, id, ThreadsRequest{.target = reader.target()});
+    case MessageKind::ReadMemoryMap:
+        return Detail::finish<Request>(reader, id, MemoryMapRequest{.target = reader.target()});
     case MessageKind::ReadMemoryRollup:
         return Detail::finish<Request>(reader, id, MemoryRollupRequest{.target = reader.target()});
     case MessageKind::ReadProcessCounters:
@@ -1383,6 +1420,7 @@ namespace Detail
     case MessageKind::HiddenProcessesResult:
     case MessageKind::ServiceActionResult:
     case MessageKind::ThreadsResult:
+    case MessageKind::MemoryMapResult:
     case MessageKind::Error:
         break;
     }
@@ -1564,6 +1602,89 @@ namespace Detail
         writer.u64(thread.createTime);
     }
     return MessageKind::ThreadsResult;
+}
+
+/// A MemoryMapResult mapping's flag bits, and its sizes in the order their presence bits name them (#3089).
+namespace MemoryMapWire
+{
+inline constexpr std::uint8_t READABLE = 1U << 0U;
+inline constexpr std::uint8_t WRITABLE = 1U << 1U;
+inline constexpr std::uint8_t EXECUTABLE = 1U << 2U;
+inline constexpr std::uint8_t SHARED = 1U << 3U;
+inline constexpr std::uint8_t GUARD = 1U << 4U;
+inline constexpr std::uint8_t RESERVED = 1U << 5U;
+inline constexpr std::uint8_t DELETED = 1U << 6U;
+inline constexpr std::uint8_t ALL_FLAGS = (1U << 7U) - 1U;
+
+/// Each size field: bit i of a mapping's presence byte says whether SIZES[i] follows.
+inline constexpr std::array<std::optional<std::uint64_t> MemoryMapping::*, 8> SIZES{
+    &MemoryMapping::residentBytes,
+    &MemoryMapping::pssBytes,
+    &MemoryMapping::sharedCleanBytes,
+    &MemoryMapping::sharedDirtyBytes,
+    &MemoryMapping::privateCleanBytes,
+    &MemoryMapping::privateDirtyBytes,
+    &MemoryMapping::swapBytes,
+    &MemoryMapping::swapPssBytes,
+};
+
+/// The bytes one mapping takes on the wire.
+[[nodiscard]] inline std::size_t bytesOf(const MemoryMapping& mapping) noexcept
+{
+    std::size_t sizes = 0;
+    for (const auto field : SIZES)
+    {
+        sizes += (mapping.*field).has_value() ? 8 : 0;
+    }
+    return 8 + 8 + 1 + 1 + textBytes(mapping.path) + 8 + 1 + sizes;
+}
+} // namespace MemoryMapWire
+
+/// MemoryMapResult: status, detail, truncated, count; a mapping: start, end, flag bits, kind, path, file
+/// offset, a presence byte, then each size it names. As many as fit a frame.
+[[nodiscard]] inline MessageKind encodePayload(Writer& writer, const MemoryMapReply& map)
+{
+    constexpr std::size_t ROOM = listRoom(1 + 4 + MAX_STRING_BYTES + 1 + 4);
+    const std::size_t count = entriesThatFit(std::span(map.result.mappings), MAX_MEMORY_MAPPINGS, ROOM, MemoryMapWire::bytesOf);
+    writer.u8(static_cast<std::uint8_t>(map.result.status));
+    writer.text(map.result.detail);
+    writer.u8((map.result.truncated || count < map.result.mappings.size()) ? 1 : 0);
+    writer.u32(static_cast<std::uint32_t>(count));
+    for (std::size_t i = 0; i < count; ++i)
+    {
+        const MemoryMapping& mapping = map.result.mappings[i];
+        writer.u64(mapping.start);
+        writer.u64(mapping.end);
+        const auto bit = [](bool on, std::uint8_t value)
+        {
+            return on ? value : std::uint8_t{0};
+        };
+        writer.u8(static_cast<std::uint8_t>(bit(mapping.readable, MemoryMapWire::READABLE) |
+                                            bit(mapping.writable, MemoryMapWire::WRITABLE) |
+                                            bit(mapping.executable, MemoryMapWire::EXECUTABLE) |
+                                            bit(mapping.shared, MemoryMapWire::SHARED) | bit(mapping.guard, MemoryMapWire::GUARD) |
+                                            bit(mapping.reserved, MemoryMapWire::RESERVED) | bit(mapping.deleted, MemoryMapWire::DELETED)));
+        writer.u8(static_cast<std::uint8_t>(mapping.kind));
+        writer.text(mapping.path);
+        writer.u64(mapping.fileOffset);
+        std::uint8_t present = 0;
+        for (std::size_t field = 0; field < MemoryMapWire::SIZES.size(); ++field)
+        {
+            if ((mapping.*MemoryMapWire::SIZES[field]).has_value())
+            {
+                present = static_cast<std::uint8_t>(present | (1U << field));
+            }
+        }
+        writer.u8(present);
+        for (const auto field : MemoryMapWire::SIZES)
+        {
+            if (const std::optional<std::uint64_t>& size = mapping.*field; size.has_value())
+            {
+                writer.u64(*size);
+            }
+        }
+    }
+    return MessageKind::MemoryMapResult;
 }
 
 /// MemoryRollupResult: 0 when the figures follow, else 1 + the failure; then PSS, USS and swap PSS.
@@ -1843,6 +1964,70 @@ namespace Detail
     for (std::uint32_t i = 0; reader.ok() && i < count; ++i)
     {
         reply.result.files.push_back(decodeOpenFile(reader));
+    }
+    return reply;
+}
+
+/// A MemoryMapResult's payload: the status (refused past Failed), detail, truncated, a count (refused past
+/// MAX_MEMORY_MAPPINGS), then each mapping, refused when its end is before its start, it sets a flag bit past
+/// DELETED, or its kind is past Other.
+[[nodiscard]] inline MemoryMapReply decodeMemoryMapReply(Reader& reader)
+{
+    MemoryMapReply reply;
+    const std::uint8_t value = reader.u8();
+    if (value <= static_cast<std::uint8_t>(MemoryMapReadStatus::Failed))
+    {
+        reply.result.status = static_cast<MemoryMapReadStatus>(value);
+    }
+    else
+    {
+        reader.fail();
+    }
+    reply.result.detail = reader.text();
+    reply.result.truncated = reader.flag();
+    const std::uint32_t count = reader.u32();
+    if (count > MAX_MEMORY_MAPPINGS)
+    {
+        reader.fail();
+    }
+    for (std::uint32_t i = 0; reader.ok() && i < count; ++i)
+    {
+        MemoryMapping mapping;
+        mapping.start = reader.u64();
+        mapping.end = reader.u64();
+        if (mapping.end < mapping.start)
+        {
+            reader.fail();
+        }
+        const std::uint8_t flags = reader.u8();
+        if ((flags & ~MemoryMapWire::ALL_FLAGS) != 0)
+        {
+            reader.fail();
+        }
+        mapping.readable = (flags & MemoryMapWire::READABLE) != 0;
+        mapping.writable = (flags & MemoryMapWire::WRITABLE) != 0;
+        mapping.executable = (flags & MemoryMapWire::EXECUTABLE) != 0;
+        mapping.shared = (flags & MemoryMapWire::SHARED) != 0;
+        mapping.guard = (flags & MemoryMapWire::GUARD) != 0;
+        mapping.reserved = (flags & MemoryMapWire::RESERVED) != 0;
+        mapping.deleted = (flags & MemoryMapWire::DELETED) != 0;
+        const std::uint8_t kind = reader.u8();
+        if (kind > static_cast<std::uint8_t>(MemoryMappingKind::Other))
+        {
+            reader.fail();
+        }
+        mapping.kind = static_cast<MemoryMappingKind>(kind);
+        mapping.path = reader.text();
+        mapping.fileOffset = reader.u64();
+        const std::uint8_t present = reader.u8();
+        for (std::size_t field = 0; field < MemoryMapWire::SIZES.size(); ++field)
+        {
+            if ((present & (1U << field)) != 0)
+            {
+                mapping.*MemoryMapWire::SIZES[field] = reader.u64();
+            }
+        }
+        reply.result.mappings.push_back(std::move(mapping));
     }
     return reply;
 }
@@ -2197,6 +2382,8 @@ namespace Detail
         return Detail::finish<Response>(reader, id, Detail::decodeServiceActionReply(reader));
     case MessageKind::ThreadsResult:
         return Detail::finish<Response>(reader, id, Detail::decodeThreadsReply(reader));
+    case MessageKind::MemoryMapResult:
+        return Detail::finish<Response>(reader, id, Detail::decodeMemoryMapReply(reader));
     case MessageKind::Hello:
     case MessageKind::Signal:
     case MessageKind::SetPriority:
@@ -2218,6 +2405,7 @@ namespace Detail
     case MessageKind::SessionAction:
     case MessageKind::ThreadAction:
     case MessageKind::ReadThreads:
+    case MessageKind::ReadMemoryMap:
         break;
     }
     return std::unexpected("Not a response");

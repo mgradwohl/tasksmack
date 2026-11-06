@@ -8,7 +8,7 @@
 //                        user's process (SetPriority, SetIoPriority, SetAffinity)
 //   CAP_SYS_PTRACE       ptrace read access: another user's environ, maps, fd links, fdinfo and
 //                        smaps_rollup, and under hidepid its task stat files (ReadEnvironment, ReadModules,
-//                        ReadOpenFiles, ReadConnections, ReadMemoryRollup, ReadThreads)
+//                        ReadOpenFiles, ReadConnections, ReadMemoryRollup, ReadThreads, ReadMemoryMap)
 //   CAP_DAC_READ_SEARCH  read the journal and core files whatever their owner and mode (ReadCrashes)
 // CAP_DAC_READ_SEARCH also reads the root-only firmware files (ReadFirmwareFile), so nothing needs UID 0.
 // Not being UID 0 means owning no root-owned file: code run in the helper by a bug can't rewrite

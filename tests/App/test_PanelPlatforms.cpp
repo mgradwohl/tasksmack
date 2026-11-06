@@ -7,6 +7,8 @@
 #include "Domain/CrashHistory.h"
 #include "Mocks/FakeBroker.h"
 #include "Platform/BrokerProtocol.h"
+#include "Platform/BrokeredProcessActions.h"
+#include "Platform/IProcessMemoryMap.h"
 #include "Platform/ISystemInfoProbe.h"
 
 #include <gtest/gtest.h>
@@ -153,6 +155,25 @@ TEST(PanelPlatformsTest, TheAppsCrashHistoryProbeGoesThroughTheSharedHelper)
     ASSERT_NE(probe, nullptr);
     EXPECT_TRUE(probe->canReadAuthorized()) << "made without the helper";
     EXPECT_TRUE(systemInfo->canReadAuthorized());
+}
+
+// #3089: Process Details' memory map reader goes through the shared helper on a platform that reads one.
+TEST(PanelPlatformsTest, TheMemoryMapReaderGoesThroughTheSharedHelper)
+{
+    Detail::setSharedPrivilegedBrokerForTesting(std::make_shared<Mocks::FakeBroker>(false));
+    const std::unique_ptr<Platform::IProcessMemoryMapReader> reader = makeProcessMemoryMapReader(nullptr);
+    Detail::setSharedPrivilegedBrokerForTesting(nullptr);
+    ASSERT_NE(reader, nullptr);
+    // Windows reads none until its lane's VirtualQueryEx reader lands; then this holds there too.
+    if (reader->hasMemoryMap())
+    {
+        EXPECT_NE(dynamic_cast<Platform::BrokeredMemoryMapReader*>(reader.get()), nullptr);
+        EXPECT_TRUE(reader->canReadAuthorized());
+    }
+#ifndef _WIN32
+    EXPECT_TRUE(reader->hasMemoryMap()) << "Linux reads smaps";
+#endif
+    // A synthetic run's reader is Synthetic::makeProcessMemoryMapReader()'s, which test_SyntheticScenario checks.
 }
 
 TEST(PanelPlatformsTest, TheCrashHistoryNeverStartsTheHelper)
