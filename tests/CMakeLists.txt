@@ -81,6 +81,11 @@ if(WIN32)
         # compile database; about two seconds. Skips when clang-tidy isn't installed.
         add_test(NAME ClangTidyHeadersScript
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-clang-tidy-headers.ps1)
+        # tools/check-format.ps1, tools/clang-format.ps1 and coverage.ps1's ignore regex find the sources of a
+        # checkout under a folder named build (#3528): a junction to the checkout and a small copy, in TEMP.
+        # Skips the two script runs when clang-format isn't installed.
+        add_test(NAME FormatSourcesScript
+            COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-format-sources.ps1)
         # tools/bench.ps1 against a stub benchmark binary: exit-code propagation (#1423) and the
         # provenance manifest (#1424). The stub benchmark is a Python script when CMake's interpreter
         # is passed in (much cheaper to start than PowerShell).
@@ -129,19 +134,19 @@ if(WIN32)
         # reusable-build-test.yml gives these entries, and no others, a second attempt on that leg.
         set_tests_properties(ResizeCaptureScript EtwCaptureScript EtwAnalysisScript CMakeCacheScript BenchScript
             CheckPrereqsScript SetupDevScript VerifyWindowsSignaturesScript BuildWindowsInstallerScript
-            ResizePerfSummaryScript WingetManifestScript ClangTidyHeadersScript PROPERTIES
+            ResizePerfSummaryScript WingetManifestScript ClangTidyHeadersScript FormatSourcesScript PROPERTIES
             RESOURCE_LOCK pwsh-script-tests
             LABELS pwsh-script)
         set_tests_properties(ResizeCaptureScript EtwAnalysisScript CMakeCacheScript CheckPrereqsScript SetupDevScript
             VerifyWindowsSignaturesScript BuildWindowsInstallerScript ResizePerfSummaryScript WingetManifestScript
-            ClangTidyHeadersScript PROPERTIES TIMEOUT 120)
+            ClangTidyHeadersScript FormatSourcesScript PROPERTIES TIMEOUT 120)
         set_tests_properties(EtwCaptureScript BenchScript PROPERTIES TIMEOUT 180)
     else()
         # Say so rather than leave the ETW script tests silently missing from ctest (#1187).
         message(WARNING "pwsh (PowerShell 7) not found: the ResizeCaptureScript, EtwCaptureScript, "
                         "EtwAnalysisScript, CMakeCacheScript, BenchScript, CheckPrereqsScript, SetupDevScript, "
                         "VerifyWindowsSignaturesScript, BuildWindowsInstallerScript, ResizePerfSummaryScript, "
-                        "WingetManifestScript and ClangTidyHeadersScript tests "
+                        "WingetManifestScript, ClangTidyHeadersScript and FormatSourcesScript tests "
                         "are not registered. Install PowerShell 7 to run them.")
     endif()
     # The Authenticode gate on packaging TaskSmackHelper.exe (#2550): the build's own, unsigned

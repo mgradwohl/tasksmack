@@ -197,7 +197,9 @@ $LLVM_PROFDATA merge -sparse "${profiles[@]}" -o "${BUILD_DIR}/default.profdata"
 # marked LCOV_EXCL_START/STOP or LCOV_EXCL_LINE, each with its reason (#2039, #3221), and defaulted
 # comparison operators, which clang never covers fully. tools/lcov-exclude.py drops them here and
 # tools/coverage.ps1 does the same on Windows; the HTML report and the summary below still count them.
-COV_IGNORE_REGEX='.*/(build|_deps|tests|benchmarks|\.cache)/.*'
+# build, tests and benchmarks are anchored at the checkout, so one under a folder of that name still
+# reports its files (#3528). Keep in sync with tools/coverage.ps1 $IgnoreRegex.
+COV_IGNORE_REGEX="$(coverage_ignore_regex "$PROJECT_ROOT")"
 
 # llvm-cov only reports files compiled into the binaries it is given, so with TaskSmackTests
 # alone the ~27% of src/ that is never linked into the tests (panels, layers, Theme.cpp,
@@ -232,6 +234,28 @@ $LLVM_COV export \
     -format=lcov \
     -ignore-filename-regex="${COV_IGNORE_REGEX}" \
     > "${COVERAGE_DIR}/coverage.lcov"
+# The ignore regex is anchored at the checkout (#3528), so a root CMake spelled some other way would
+# leave tests/ in the report, and a match on the checkout's own path would leave src/ out. Either is a
+# wrong report, never a real result, so it fails here.
+PROJECT_ROOT_PHYSICAL="$(cd "$PROJECT_ROOT" && pwd -P)"
+src_count=0
+leaked=""
+while IFS= read -r reported; do
+    reported="${reported#SF:}"
+    for root in "$PROJECT_ROOT" "$PROJECT_ROOT_PHYSICAL"; do
+        if [[ "$reported" == "$root"/* ]]; then
+            case "${reported#"$root"/}" in
+                src/*) src_count=$((src_count + 1)) ;;
+                build/* | tests/* | benchmarks/*) leaked="${leaked:-$reported}" ;;
+            esac
+            break
+        fi
+    done
+done < <(grep '^SF:' "${COVERAGE_DIR}/coverage.lcov" || true)
+if [[ "$src_count" -eq 0 || -n "$leaked" ]]; then
+    echo "Error: the LCOV report has ${src_count} file(s) under src/, or one -ignore-filename-regex should have left out (${leaked:-none}); regex: ${COV_IGNORE_REGEX}" >&2
+    exit 1
+fi
 dropped_lines="$("$PYTHON_EXE" -I -X utf8 "${SCRIPT_DIR}/lcov-exclude.py" "${COVERAGE_DIR}/coverage.lcov")"
 echo "Left ${dropped_lines} structurally untestable line(s) out of the LCOV report (#2039, #3221)."
 
