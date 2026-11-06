@@ -25,6 +25,8 @@ enum class StartupLocation : std::uint8_t
                          ///< user's copy of the same name, when there is one, switches
     SystemdUserUnit,     ///< Linux: a .service or .timer enabled in ~/.config/systemd/user (#3082)
     SystemdSystemUnit,   ///< Linux: a user .service or .timer enabled for every user, in /etc/systemd/user (#3082)
+    CronUser,            ///< Linux: a job in the user's own crontab (#3425)
+    CronSystem,          ///< Linux: a job in /etc/crontab or /etc/cron.d, which names the user it runs as (#3425)
 };
 
 /// Whether an entry starts for the current user only or for every user of the machine.
