@@ -30,6 +30,13 @@ namespace Platform
 namespace
 {
 
+// Whether this build switches systemd units (through sd-bus); without it they're listed read-only (#3497 review).
+#ifdef TASKSMACK_HAS_SDBUS
+constexpr bool HAS_SDBUS = true;
+#else
+constexpr bool HAS_SDBUS = false;
+#endif
+
 /// Where the tests' programs (sh) are found, rather than this machine's $PATH.
 constexpr const char* SEARCH_PATH = "/usr/bin:/bin";
 
@@ -418,7 +425,14 @@ TEST_F(LinuxStartupTest, ListsTheEnabledSystemdUserUnitsReadOnly)
     EXPECT_EQ(backup->command, "/nonexistent/backup --all") << "the command its service runs";
     EXPECT_EQ(backup->target, StartupTargetState::Missing);
     EXPECT_EQ(backup->location, StartupLocation::SystemdUserUnit);
-    EXPECT_TRUE(backup->notSwitchableReason.empty()) << "the user's own: switched through the user manager (#3425)";
+    if (HAS_SDBUS)
+    {
+        EXPECT_TRUE(backup->notSwitchableReason.empty()) << "the user's own: switched through the user manager (#3425)";
+    }
+    else
+    {
+        EXPECT_TRUE(backup->notSwitchableReason.contains("no systemd support")) << backup->notSwitchableReason;
+    }
 
     const StartupEntry* agent = find(entries, "agent.service");
     ASSERT_NE(agent, nullptr);
@@ -435,10 +449,10 @@ TEST_F(LinuxStartupTest, ListsTheEnabledSystemdUserUnitsReadOnly)
                                     switched.push_back(std::string(enabled ? "enable " : "disable ") + std::string(unit));
                                     return StartupActionResult::succeeded();
                                 });
-    EXPECT_TRUE(actions.setEnabled(*backup, false).ok);
+    EXPECT_EQ(actions.setEnabled(*backup, false).ok, HAS_SDBUS) << "without sd-bus it's refused before the user manager";
     EXPECT_FALSE(actions.setEnabled(*agent, false).ok);
     EXPECT_FALSE(actions.setEnabled(*syncd, false).ok) << "linked for every user too: not the user's to switch off";
-    EXPECT_EQ(switched, (std::vector<std::string>{"disable backup.timer"}));
+    EXPECT_EQ(switched, HAS_SDBUS ? std::vector<std::string>{"disable backup.timer"} : std::vector<std::string>{});
 }
 
 // #3425: a unit that would start with the session once enabled, but isn't linked, is listed as disabled, so one switched
@@ -500,7 +514,7 @@ TEST_F(LinuxStartupTest, AnInstallableUnitThatIsntEnabledIsListedDisabled)
     EXPECT_FALSE(notes->enabled);
     EXPECT_EQ(notes->name, "Notes sync");
     EXPECT_EQ(notes->location, StartupLocation::SystemdUserUnit);
-    EXPECT_TRUE(notes->notSwitchableReason.empty());
+    EXPECT_EQ(notes->notSwitchableReason.empty(), HAS_SDBUS) << notes->notSwitchableReason;
     const StartupEntry* cleanup = find(entries, "cleanup.timer");
     ASSERT_NE(cleanup, nullptr);
     EXPECT_FALSE(cleanup->enabled);
