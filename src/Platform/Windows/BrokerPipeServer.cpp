@@ -60,14 +60,15 @@ bool isRead(const Broker::Request& request) noexcept
     // Windows' helper doesn't do (an ErrorReply), so they are neither here.
     // TaskManagerReplacementRequest (#3072), SessionActionRequest (#3076) and ThreadActionRequest (#3069) are actions
     // (isActionWindowsDoes()).
-    static_assert(std::variant_size_v<Broker::Request> == 22, "sort the new request kind into an action or a read");
+    static_assert(std::variant_size_v<Broker::Request> == 23, "sort the new request kind into an action or a read");
     return std::holds_alternative<Broker::EnvironmentRequest>(request) || std::holds_alternative<Broker::ModulesRequest>(request) ||
            std::holds_alternative<Broker::OpenFilesRequest>(request) || std::holds_alternative<Broker::ConnectionsRequest>(request) ||
            std::holds_alternative<Broker::MemoryRollupRequest>(request) || std::holds_alternative<Broker::FirmwareFileRequest>(request) ||
            std::holds_alternative<Broker::CrashesRequest>(request) ||
            std::holds_alternative<Broker::ProcessCountersRequest>(request) || // Windows reads every process itself: an ErrorReply
            std::holds_alternative<Broker::HiddenProcessesRequest>(request) || // Windows has no hidepid: an ErrorReply
-           std::holds_alternative<Broker::ThreadsRequest>(request);           // Process Details' threads (#3069)
+           std::holds_alternative<Broker::ThreadsRequest>(request) ||         // Process Details' threads (#3069)
+           std::holds_alternative<Broker::MemoryMapRequest>(request); // its memory map (#3089): an ErrorReply until Windows reads one
 }
 
 bool putsOffTheWindowsIdleExit(const Broker::Request& request) noexcept

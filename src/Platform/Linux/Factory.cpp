@@ -10,6 +10,7 @@
 #include "LinuxProcessControl.h"
 #include "LinuxProcessEnvironmentReader.h"
 #include "LinuxProcessIconSource.h"
+#include "LinuxProcessMemoryMapReader.h"
 #include "LinuxProcessModulesReader.h"
 #include "LinuxProcessOpenFilesReader.h"
 #include "LinuxProcessProbe.h"
@@ -35,6 +36,7 @@
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessIconSource.h"
+#include "Platform/IProcessMemoryMap.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
@@ -125,6 +127,11 @@ std::unique_ptr<IProcessModulesReader> makeProcessModulesReader()
 std::unique_ptr<IProcessThreadsReader> makeProcessThreadsReader()
 {
     return std::make_unique<LinuxProcessThreadsReader>();
+}
+
+std::unique_ptr<IProcessMemoryMapReader> makeProcessMemoryMapReader()
+{
+    return std::make_unique<LinuxProcessMemoryMapReader>();
 }
 
 std::unique_ptr<ISystemConnectionsReader> makeSystemConnectionsReader()

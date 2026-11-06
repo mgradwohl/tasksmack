@@ -1424,7 +1424,8 @@ TEST(BrokerPipeServeTest, EveryRequestKindIsTheHelloAnActionOrARead)
     const Broker::SchedPolicyRequest schedPolicy{.target = TARGET, .policy = SchedPolicy::Batch};
     EXPECT_FALSE(BrokerPipeServer::isRead(schedPolicy));
     EXPECT_FALSE(BrokerPipeServer::isActionWindowsDoes(schedPolicy)) << "an ErrorReply (#3086)";
-    static_assert(std::variant_size_v<Broker::Request> == 22, "a new request kind: add it above");
+    EXPECT_TRUE(BrokerPipeServer::isRead(Broker::MemoryMapRequest{.target = TARGET})) << "Process Details' memory map (#3089)";
+    static_assert(std::variant_size_v<Broker::Request> == 23, "a new request kind: add it above");
 }
 
 TEST(BrokerPipeServeTest, AOneActionSessionIsntKeptOpenByGreetingAgain)

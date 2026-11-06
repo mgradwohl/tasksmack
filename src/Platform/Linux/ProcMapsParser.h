@@ -37,7 +37,11 @@ struct MapsLine
 {
     std::uint64_t start = 0;
     std::uint64_t end = 0;
+    bool readable = false; ///< perms[0] 'r'
+    bool writable = false; ///< perms[1] 'w'
     bool executable = false;
+    bool shared = false;      ///< perms[3] 's', rather than 'p' (private, copy-on-write) (#3089)
+    std::uint64_t offset = 0; ///< Where in the file the mapping starts (#3089)
     std::uint64_t inode = 0;
     std::string_view pathname;
 };
@@ -66,7 +70,6 @@ template<typename T> [[nodiscard]] bool takeNumber(std::string_view& rest, int b
 [[nodiscard]] inline std::optional<MapsLine> parseMapsLine(std::string_view line) noexcept
 {
     MapsLine out;
-    std::uint64_t offset = 0;
     if (!Detail::takeNumber(line, 16, '-', out.start) || !Detail::takeNumber(line, 16, ' ', out.end) || out.end < out.start)
     {
         return std::nullopt;
@@ -76,9 +79,12 @@ template<typename T> [[nodiscard]] bool takeNumber(std::string_view& rest, int b
     {
         return std::nullopt;
     }
+    out.readable = line[0] == 'r';
+    out.writable = line[1] == 'w';
     out.executable = line[2] == 'x';
+    out.shared = line[3] == 's';
     line.remove_prefix(5);
-    if (!Detail::takeNumber(line, 16, ' ', offset))
+    if (!Detail::takeNumber(line, 16, ' ', out.offset))
     {
         return std::nullopt;
     }

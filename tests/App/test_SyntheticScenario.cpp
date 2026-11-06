@@ -13,6 +13,7 @@
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessIconSource.h"
+#include "Platform/IProcessMemoryMap.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessSecurity.h"
@@ -276,6 +277,7 @@ TEST(SyntheticScenarioTest, WithoutAScenarioDetailReadersAreThePlatformsOwn)
     EXPECT_TRUE(
         sameKind<Platform::IProcessConnectionsReader>(makeProcessConnectionsReader(nullptr), Platform::makeProcessConnectionsReader()));
     EXPECT_TRUE(sameKind<Platform::IProcessModulesReader>(makeProcessModulesReader(nullptr), Platform::makeProcessModulesReader()));
+    EXPECT_TRUE(sameKind<Platform::IProcessMemoryMapReader>(makeProcessMemoryMapReader(nullptr), Platform::makeProcessMemoryMapReader()));
     EXPECT_TRUE(sameKind<Platform::IProcessOpenFilesReader>(makeProcessOpenFilesReader(nullptr), Platform::makeProcessOpenFilesReader()));
     EXPECT_TRUE(sameKind<Platform::IProcessSecurityReader>(makeProcessSecurityReader(nullptr), Platform::makeProcessSecurityReader()));
     // Linux has no UDP collector (nullptr); Windows has one.
@@ -334,6 +336,8 @@ TEST(SyntheticScenarioTest, ScenarioDetailReadersAreTheUnsupportedStandIns)
     EXPECT_NE(dynamic_cast<Platform::UnsupportedProcessConnectionsReader*>(App::Synthetic::makeProcessConnectionsReader(&scenario).get()),
               nullptr);
     EXPECT_NE(dynamic_cast<Platform::UnsupportedProcessModulesReader*>(App::Synthetic::makeProcessModulesReader(&scenario).get()), nullptr);
+    EXPECT_NE(dynamic_cast<Platform::UnsupportedProcessMemoryMapReader*>(App::Synthetic::makeProcessMemoryMapReader(&scenario).get()),
+              nullptr);
     EXPECT_NE(dynamic_cast<Platform::UnsupportedProcessOpenFilesReader*>(App::Synthetic::makeProcessOpenFilesReader(&scenario).get()),
               nullptr);
     EXPECT_NE(dynamic_cast<Platform::UnsupportedProcessSecurityReader*>(App::Synthetic::makeProcessSecurityReader(&scenario).get()),

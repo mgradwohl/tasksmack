@@ -23,6 +23,7 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
+#include "Platform/IProcessMemoryMap.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
@@ -205,6 +206,24 @@ class BrokeredThreadsReader final : public IProcessThreadsReader
     std::shared_ptr<IPrivilegedBroker> m_Broker;
 };
 
+/// Process Details' memory map that an administrator can finish (#3089), as BrokeredThreadsReader.
+class BrokeredMemoryMapReader final : public IProcessMemoryMapReader
+{
+  public:
+    BrokeredMemoryMapReader(std::unique_ptr<IProcessMemoryMapReader> inner, std::shared_ptr<IPrivilegedBroker> broker);
+
+    [[nodiscard]] bool hasMemoryMap() const override;
+    [[nodiscard]] MemoryMapReadResult readMemoryMap(const ProcessTarget& target) override;
+    [[nodiscard]] bool canReadAuthorized() const override;
+    [[nodiscard]] MemoryMapReadResult readAuthorized(const ProcessTarget& target, const std::stop_token& stopToken) override;
+
+  private:
+    [[nodiscard]] MemoryMapReadResult viaBroker(const ProcessTarget& target, const std::stop_token& stopToken);
+
+    std::unique_ptr<IProcessMemoryMapReader> m_Inner;
+    std::shared_ptr<IPrivilegedBroker> m_Broker;
+};
+
 /// The process probe, with Process Details' PSS and USS (#2309) read through the helper while it runs
 /// when the in-process read is refused (another user's process), and each refresh's refused FD counts and
 /// I/O bytes the same way, in one ReadProcessCounters (#2728); the processes hidepid hides from it are
@@ -285,6 +304,8 @@ class BrokeredProcessProbe final : public IProcessProbe
 
 [[nodiscard]] std::unique_ptr<IProcessConnectionsReader> withPrivilegedBroker(std::unique_ptr<IProcessConnectionsReader> reader,
                                                                               std::shared_ptr<IPrivilegedBroker> broker);
+[[nodiscard]] std::unique_ptr<IProcessMemoryMapReader> withPrivilegedBroker(std::unique_ptr<IProcessMemoryMapReader> reader,
+                                                                            std::shared_ptr<IPrivilegedBroker> broker);
 [[nodiscard]] std::unique_ptr<IProcessThreadsReader> withPrivilegedBroker(std::unique_ptr<IProcessThreadsReader> reader,
                                                                           std::shared_ptr<IPrivilegedBroker> broker);
 

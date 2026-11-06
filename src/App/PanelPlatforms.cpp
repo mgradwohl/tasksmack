@@ -20,6 +20,7 @@
 #include "Platform/IHttpsClient.h"
 #include "Platform/IPrivilegedBroker.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IProcessMemoryMap.h"
 #include "Platform/IStartAtLogin.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/IUserSessions.h"
@@ -149,6 +150,15 @@ ProcessDetailsReaders makeProcessDetailsReaders(const Synthetic::Scenario* scena
                      ? Platform::withPrivilegedBroker(Synthetic::makeProcessThreadsReader(scenario), sharedPrivilegedBroker())
                      : Synthetic::makeProcessThreadsReader(scenario),
     };
+}
+
+std::unique_ptr<Platform::IProcessMemoryMapReader> makeProcessMemoryMapReader(const Synthetic::Scenario* scenario)
+{
+    if (scenario != nullptr)
+    {
+        return Synthetic::makeProcessMemoryMapReader(scenario);
+    }
+    return Platform::withPrivilegedBroker(Synthetic::makeProcessMemoryMapReader(scenario), sharedPrivilegedBroker());
 }
 
 std::unique_ptr<Platform::IProcessActions> makeConnectionsPanelActions(const Synthetic::Scenario* scenario)

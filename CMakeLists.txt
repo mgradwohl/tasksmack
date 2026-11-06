@@ -327,6 +327,7 @@ set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/LinuxSystemConnectionsReader.cpp # the Connections tab (#3066)
     src/Platform/Linux/LinuxProcessModulesReader.cpp
     src/Platform/Linux/LinuxProcessThreadsReader.cpp # Process Details Threads (#3069)
+    src/Platform/Linux/LinuxProcessMemoryMapReader.cpp # a process's memory map from smaps (#3089)
     src/Platform/Linux/LinuxStartup.cpp # the Startup tab: XDG autostart entries (#2541)
     src/Platform/Linux/CommandOutput.cpp # a short command's output, for crontab -l (#3425)
     src/Platform/Linux/LinuxHttpsClient.cpp # the update check's HTTPS client: libcurl (#3238)
@@ -993,6 +994,7 @@ if(UNIX AND NOT APPLE)
         src/Platform/Linux/LinuxProcessModulesReader.cpp
         src/Platform/Linux/LinuxProcessOpenFilesReader.cpp
         src/Platform/Linux/LinuxProcessThreadsReader.cpp # Process Details threads of another user's process (#3069)
+        src/Platform/Linux/LinuxProcessMemoryMapReader.cpp # another user's process's memory map (#3089)
         src/Platform/Linux/LinuxProcessConnectionsReader.cpp
         src/Platform/Linux/NetlinkSocketStats.cpp
         src/Platform/Linux/SystemdJournal.cpp # every user's crashes for System Information (#2310)

@@ -20,6 +20,7 @@
 #include "Platform/IHttpsClient.h"
 #include "Platform/IPrivilegedBroker.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IProcessMemoryMap.h"
 #include "Platform/IStartAtLogin.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/IUserSessions.h"
@@ -57,6 +58,11 @@ void preparePanelPlatforms(const Synthetic::Scenario* scenario);
 /// Process Details' actions and readers: @p scenario's (its readers say "unsupported", so made-up PIDs
 /// never reach real /proc entries), or the platform's.
 [[nodiscard]] ProcessDetailsReaders makeProcessDetailsReaders(const Synthetic::Scenario* scenario);
+
+/// Process Details' memory map reader (#3089): the platform's, whose refusal of another user's process goes
+/// to the shared helper once it runs (and "Authenticate to read" starts it), or @p scenario's, which reads
+/// nothing. Making it reads nothing; the Memory map section's view calls it on its worker.
+[[nodiscard]] std::unique_ptr<Platform::IProcessMemoryMapReader> makeProcessMemoryMapReader(const Synthetic::Scenario* scenario);
 
 /// The Connections tab's process actions, for Close connection (#3066): the scenario's, or the platform's,
 /// which an administrator can finish through the helper.
