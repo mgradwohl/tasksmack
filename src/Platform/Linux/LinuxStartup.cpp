@@ -25,6 +25,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -476,7 +477,8 @@ void LinuxStartupProbe::addCronJobs(std::vector<StartupEntry>& entries) const
 
 void LinuxStartupProbe::addSystemdUnits(std::vector<StartupEntry>& entries) const
 {
-    // Each unit name once: a user's link wins over the same unit enabled for every user.
+    // Each unit name once. A unit linked both by the user and for every user is the administrator's: disabling the
+    // user's link would leave the all-users one starting it, so it's listed as enabled for every user, read-only.
     struct Found
     {
         std::filesystem::path link;
@@ -495,7 +497,11 @@ void LinuxStartupProbe::addSystemdUnits(std::vector<StartupEntry>& entries) cons
                 const std::string name = it->path().filename().string();
                 if (name.ends_with(".service") || name.ends_with(".timer"))
                 {
-                    units.try_emplace(name, Found{.link = it->path(), .system = system});
+                    const auto [unit, added] = units.try_emplace(name, Found{.link = it->path(), .system = system});
+                    if (!added && system)
+                    {
+                        unit->second.system = true; // also enabled for every user: not the user's to switch off
+                    }
                 }
             }
         }
@@ -510,16 +516,23 @@ void LinuxStartupProbe::addSystemdUnits(std::vector<StartupEntry>& entries) cons
     }
     // The units that would start with the session once enabled, but aren't (#3425): their [Install] WantedBy= names a
     // session target. Listed as disabled, so one switched off stays in the list to switch back on. Templates
-    // (name@.service) aren't: one needs an instance name to enable.
+    // (name@.service) aren't: one needs an instance name to enable; an instance file (name@x.service) is. The first
+    // definition of a name on the unit path is the one systemd uses, so it shadows every later copy, even when it
+    // isn't installable (a mask, or an override with no session WantedBy=).
+    std::set<std::string> defined;
     for (const std::filesystem::path& dir : m_Systemd.unitPath)
     {
         std::error_code ec;
         for (std::filesystem::directory_iterator it(dir, ec); !ec && it != std::filesystem::directory_iterator{}; it.increment(ec))
         {
             const std::string name = it->path().filename().string();
-            if ((!name.ends_with(".service") && !name.ends_with(".timer")) || name.contains('@') || units.contains(name))
+            if ((!name.ends_with(".service") && !name.ends_with(".timer")) || name.contains("@."))
             {
                 continue;
+            }
+            if (!defined.insert(name).second || units.contains(name))
+            {
+                continue; // an earlier directory's definition wins, or it is already listed as linked
             }
             const std::optional<std::string> text = readFile(it->path());
             if (text.has_value() && SystemdUnitFile::installsIntoSession(SystemdUnitFile::parse(*text)))

@@ -62,11 +62,36 @@ namespace Detail
     while (!text.empty())
     {
         const std::size_t newline = text.find('\n');
-        const std::string_view line = Detail::trim(text.substr(0, newline));
+        std::string_view line = Detail::trim(text.substr(0, newline));
         text = newline == std::string_view::npos ? std::string_view{} : text.substr(newline + 1);
         if (line.empty() || line.front() == '#' || line.front() == ';')
         {
             continue;
+        }
+        // A line ending in a backslash continues on the next, as systemd joins them: the backslash becomes a space,
+        // and comment lines inside the continuation are skipped.
+        std::string joined;
+        if (line.back() == '\\')
+        {
+            joined = line;
+            while (!joined.empty() && joined.back() == '\\' && !text.empty())
+            {
+                joined.back() = ' ';
+                const std::size_t next = text.find('\n');
+                const std::string_view more = Detail::trim(text.substr(0, next));
+                text = next == std::string_view::npos ? std::string_view{} : text.substr(next + 1);
+                if (!more.empty() && (more.front() == '#' || more.front() == ';'))
+                {
+                    joined += '\\'; // still continuing past the comment
+                    continue;
+                }
+                joined += more;
+            }
+            if (!joined.empty() && joined.back() == '\\')
+            {
+                joined.pop_back(); // the file ended mid-continuation
+            }
+            line = Detail::trim(joined);
         }
         if (line.front() == '[' && line.back() == ']')
         {

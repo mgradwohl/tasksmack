@@ -326,6 +326,12 @@ TEST(SystemdUnitFileTest, ReadsWantedByAndWhetherItStartsWithTheSession)
     EXPECT_EQ(unit.wantedBy, (std::vector<std::string>{"default.target", "multi-user.target", "timers.target"}));
     EXPECT_TRUE(SystemdUnitFile::installsIntoSession(unit));
     unit = SystemdUnitFile::parse("[Install]\nWantedBy=default.target\nWantedBy=\nWantedBy=sockets.target\n");
+    // #3497 review: a line ending in a backslash continues on the next, comments inside it skipped.
+    const SystemdUnitFile::Unit continued = SystemdUnitFile::parse(
+        "[Install]\nWantedBy=sockets.target \\\n# a comment\n    default.target\n[Service]\nExecStart=/bin/a \\\n  --b\n");
+    EXPECT_EQ(continued.wantedBy, (std::vector<std::string>{"sockets.target", "default.target"}));
+    EXPECT_TRUE(SystemdUnitFile::installsIntoSession(continued));
+    EXPECT_FALSE(continued.execStart.empty());
     EXPECT_EQ(unit.wantedBy, (std::vector<std::string>{"sockets.target"}));
     EXPECT_FALSE(SystemdUnitFile::installsIntoSession(unit));
     EXPECT_FALSE(SystemdUnitFile::installsIntoSession(SystemdUnitFile::parse("[Service]\nExecStart=/bin/true\n")));
@@ -357,8 +363,9 @@ TEST(SystemdUnitFileTest, TheDirectoriesFollowXdgConfigHome)
     EXPECT_TRUE(systemdUserDirs("", "relative").user.empty());
 }
 
-// #3082: enabled user units (services and timers) are listed read-only beside the autostart files; the user's
-// link to a unit wins over the same unit enabled for every user; a timer shows the command its service runs.
+// #3082: enabled user units (services and timers) are listed beside the autostart files; a unit the user links that is
+// also enabled for every user is the administrator's, read-only (#3497 review: disabling the user's link wouldn't stop
+// it); a timer shows the command its service runs.
 TEST_F(LinuxStartupTest, ListsTheEnabledSystemdUserUnitsReadOnly)
 {
     const std::filesystem::path user = m_Root.path / "home/.config/systemd/user";
@@ -385,9 +392,9 @@ TEST_F(LinuxStartupTest, ListsTheEnabledSystemdUserUnitsReadOnly)
     EXPECT_EQ(syncd->name, "Sync daemon");
     EXPECT_EQ(syncd->command, "/bin/sh -c true");
     EXPECT_EQ(syncd->executablePath, "/bin/sh");
-    EXPECT_EQ(syncd->location, StartupLocation::SystemdUserUnit) << "the user's link wins";
+    EXPECT_EQ(syncd->location, StartupLocation::SystemdSystemUnit) << "also enabled for every user";
     EXPECT_TRUE(syncd->enabled);
-    EXPECT_TRUE(syncd->notSwitchableReason.empty()) << "the user's own: switched through the user manager (#3425)";
+    EXPECT_FALSE(syncd->notSwitchableReason.empty()) << "the all-users link would still start it";
     EXPECT_EQ(syncd->target, StartupTargetState::Present);
 
     const StartupEntry* backup = find(entries, "backup.timer");
@@ -395,6 +402,8 @@ TEST_F(LinuxStartupTest, ListsTheEnabledSystemdUserUnitsReadOnly)
     EXPECT_EQ(backup->name, "Nightly backup (timer, OnCalendar=daily)");
     EXPECT_EQ(backup->command, "/nonexistent/backup --all") << "the command its service runs";
     EXPECT_EQ(backup->target, StartupTargetState::Missing);
+    EXPECT_EQ(backup->location, StartupLocation::SystemdUserUnit);
+    EXPECT_TRUE(backup->notSwitchableReason.empty()) << "the user's own: switched through the user manager (#3425)";
 
     const StartupEntry* agent = find(entries, "agent.service");
     ASSERT_NE(agent, nullptr);
@@ -411,13 +420,15 @@ TEST_F(LinuxStartupTest, ListsTheEnabledSystemdUserUnitsReadOnly)
                                     switched.push_back(std::string(enabled ? "enable " : "disable ") + std::string(unit));
                                     return StartupActionResult::succeeded();
                                 });
-    EXPECT_TRUE(actions.setEnabled(*syncd, false).ok);
+    EXPECT_TRUE(actions.setEnabled(*backup, false).ok);
     EXPECT_FALSE(actions.setEnabled(*agent, false).ok);
-    EXPECT_EQ(switched, (std::vector<std::string>{"disable syncd.service"}));
+    EXPECT_FALSE(actions.setEnabled(*syncd, false).ok) << "linked for every user too: not the user's to switch off";
+    EXPECT_EQ(switched, (std::vector<std::string>{"disable backup.timer"}));
 }
 
 // #3425: a unit that would start with the session once enabled, but isn't linked, is listed as disabled, so one switched
-// off stays in the list to switch back on; a template and a unit with no session target aren't listed.
+// off stays in the list to switch back on; a template and a unit with no session target aren't listed, an instance file
+// is, and the first definition of a name shadows later copies even when it isn't installable (#3497 review).
 TEST_F(LinuxStartupTest, AnInstallableUnitThatIsntEnabledIsListedDisabled)
 {
     const std::filesystem::path user = m_Root.path / "home/.config/systemd/user";
@@ -429,11 +440,17 @@ TEST_F(LinuxStartupTest, AnInstallableUnitThatIsntEnabledIsListedDisabled)
     writeText(lib / "worker@.service", "[Service]\nExecStart=/bin/true %i\n[Install]\nWantedBy=default.target\n");
     writeText(lib / "socket-only.service", "[Service]\nExecStart=/bin/true\n[Install]\nWantedBy=sockets.target\n");
     writeText(lib / "static.service", "[Service]\nExecStart=/bin/true\n");
-    std::filesystem::create_directories(user);
+    writeText(lib / "worker@alice.service", "[Service]\nExecStart=/bin/true alice\n[Install]\nWantedBy=default.target\n");
+    writeText(lib / "shadowed.service", "[Service]\nExecStart=/bin/true\n[Install]\nWantedBy=default.target\n");
+    writeText(user / "shadowed.service", "[Service]\nExecStart=/bin/true\n"); // the user's override: no [Install]
 
     LinuxStartupProbe probe(m_Dirs, "GNOME", SEARCH_PATH, SystemdUserDirs{.user = user, .system = {}, .unitPath = {user, lib}});
     const std::vector<StartupEntry> entries = probe.enumerate();
-    ASSERT_EQ(entries.size(), 2U);
+    ASSERT_EQ(entries.size(), 3U);
+    EXPECT_EQ(find(entries, "shadowed.service"), nullptr) << "the user's override, first on the path, has no [Install]";
+    const StartupEntry* instance = find(entries, "worker@alice.service");
+    ASSERT_NE(instance, nullptr) << "an instance file is listed; only the template isn't";
+    EXPECT_FALSE(instance->enabled);
     const StartupEntry* notes = find(entries, "notes-sync.service");
     ASSERT_NE(notes, nullptr);
     EXPECT_FALSE(notes->enabled);
