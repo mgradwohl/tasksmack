@@ -2249,6 +2249,54 @@ TEST_F(LinuxProcessActionsFaultTest, AffinityWhenTheThreadsCantBeListedSaysWhy)
     EXPECT_EQ(plan().setCalls, 0);
 }
 
+// #3374: when the target's threads can't be listed, setting a scheduling policy says so, as affinity does, and
+// nothing is set.
+TEST_F(LinuxProcessActionsFaultTest, SchedPolicyWhenTheThreadsCantBeListedSaysWhy)
+{
+    LinuxProcessActions actions{SyscallTrace::Tools{},
+                                LinuxProcessSyscalls{.pidfdOpen = &fakePidfdOpen,
+                                                     .pidfdSendSignal = &fakePidfdSendSignal,
+                                                     .pollPidfd = &fakePollPidfd,
+                                                     .setPriority = &fakeSet,
+                                                     .ioprioSet = &fakeSet,
+                                                     .ioprioGet = &fakeIoprioGet,
+                                                     .setScheduler = &fakeSet,
+                                                     .getScheduler = &fakeGetScheduler,
+                                                     .listThreads = &failingListThreads}};
+    g_ListThreadsError = std::errc::no_such_file_or_directory;
+    EXPECT_EQ(actions.setSchedPolicy(ownTarget(), SchedPolicy::Batch, Platform::RealtimeThreads::Keep).errorMessage,
+              "Process not found - may have already exited");
+    g_ListThreadsError = std::errc::permission_denied;
+    const std::string denied = actions.setSchedPolicy(ownTarget(), SchedPolicy::Batch, Platform::RealtimeThreads::Keep).errorMessage;
+    EXPECT_TRUE(denied.starts_with("Can't list the threads of process")) << denied;
+    EXPECT_EQ(plan().setCalls, 0);
+}
+
+// #3374: Close connection opens the process's pidfd and checks its identity before it touches a descriptor: a
+// pidfd that can't be opened, and a PID whose start time no longer matches, are both refused with why.
+TEST_F(LinuxProcessActionsFaultTest, CloseConnectionRefusesAnUnopenablePidfdAndAReusedPid)
+{
+    LinuxProcessSyscalls syscalls = realProcessSyscalls();
+    syscalls.pidfdOpen = &fakePidfdOpen;
+    // Neither refusal may reach the socket scan: it fails the test if called.
+    syscalls.socketDescriptor = [](std::int32_t, std::uint64_t) -> std::expected<int, int>
+    {
+        ADD_FAILURE() << "the socket scan ran before the refusal";
+        return std::unexpected(ENOENT);
+    };
+    LinuxProcessControl control(syscalls);
+    plan().openErrno = ESRCH;
+    const ProcessActionResult gone = control.closeConnection(ownTarget(), 42);
+    EXPECT_FALSE(gone.success);
+    EXPECT_FALSE(gone.errorMessage.empty());
+
+    plan().openErrno = 0;
+    const ProcessTarget reused{.pid = ownTarget().pid, .startTimeTicks = ownTarget().startTimeTicks + 1};
+    const ProcessActionResult other = control.closeConnection(reused, 42);
+    EXPECT_FALSE(other.success);
+    EXPECT_TRUE(other.errorMessage.contains("different process")) << other.errorMessage;
+}
+
 // #1891: a trace aimed at a PID whose start time no longer matches is refused before anything is opened.
 TEST_F(LinuxProcessActionsFaultTest, ATraceOfAReusedPidIsRefused)
 {
