@@ -122,6 +122,31 @@ try {
     Assert-True ($output -notmatch 'no such directory') "clang-tidy.sh tidy-fixture did not find the preset's binaryDir:`n$output"
     Assert-ReportsHeaderFinding 'clang-tidy.sh tidy-fixture (named preset, Git Bash)' $output $LASTEXITCODE
 
+    # ── The hand-off fails closed (#3500 review): clang-tidy.ps1 stopping on an error, or not there ─
+    $badDir = Join-Path $scratch 'malformed'
+    New-Item -ItemType Directory -Path $badDir | Out-Null
+    [IO.File]::WriteAllText((Join-Path $badDir 'compile_commands.json'), '[{ "directory": ')
+    $output = & $gitBash $copySh --build-dir ($badDir -replace '\\', '/') -j 1 "$($fixtureRel -replace '\\', '/')/HeaderFinding.cpp" 2>&1 | Out-String
+    $code = $LASTEXITCODE
+    Assert-True ($code -ne 0 -and $output -notmatch 'completed successfully') "clang-tidy.sh passed (exit $code) although clang-tidy.ps1 failed on a malformed database:`n$output"
+
+    # No usable Python: the preset lookup says so and fails, rather than passing or guessing. PATH keeps
+    # only pwsh (Git Bash adds its own tools, which have no Python); the copy has no .venv.
+    $savedPath = $env:PATH
+    try {
+        $env:PATH = "$(Split-Path -Parent (Get-Command pwsh).Source);$env:SystemRoot\System32"
+        $output = & $gitBash $copySh tidy-fixture -j 1 "$($fixtureRel -replace '\\', '/')/HeaderFinding.cpp" 2>&1 | Out-String
+        $code = $LASTEXITCODE
+    } finally {
+        $env:PATH = $savedPath
+    }
+    Assert-True ($code -ne 0 -and $output -match 'needs python') "clang-tidy.sh tidy-fixture without Python: exit $code, expected a 'needs python' error:`n$output"
+
+    Remove-Item -LiteralPath (Join-Path $copy 'tools\clang-tidy.ps1')
+    $output = & $gitBash $copySh tidy-fixture -j 1 "$($fixtureRel -replace '\\', '/')/HeaderFinding.cpp" 2>&1 | Out-String
+    $code = $LASTEXITCODE
+    Assert-True ($code -ne 0) "clang-tidy.sh passed (exit $code) although clang-tidy.ps1 is missing:`n$output"
+
     Write-Host 'clang-tidy header tests passed'
 }
 finally {

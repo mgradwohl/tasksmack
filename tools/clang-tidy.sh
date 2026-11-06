@@ -240,7 +240,19 @@ run_windows_clang_tidy() {
     local script
     script="$(psq "$(winpath "$SCRIPT_DIR/clang-tidy.ps1")")"
     # -Command, not -File: -File can't pass a list to -Files. The arguments are literals quoted above.
-    MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL="*" exec "$pwsh_exe" -NoLogo -NoProfile -Command "& $script ${ps_args[*]}; exit \$LASTEXITCODE"
+    # Fail closed: a bare "exit \$LASTEXITCODE" exits 0 when the script never sets it (a parameter
+    # binding failure, a missing script, a run that ends without exit). Here an error that stops the
+    # script exits 1, a nonzero exit code is passed on, and 0 is success only when clang-tidy.ps1's
+    # Exit-Tidy recorded it; anything else exits 1.
+    local wrapper
+    wrapper="\$ErrorActionPreference = 'Stop'
+\$global:TaskSmackClangTidyExit = \$null
+try { & $script ${ps_args[*]}; \$code = \$LASTEXITCODE }
+catch { [Console]::Error.WriteLine((\$_ | Out-String)); exit 1 }
+if (\$code) { exit [int]\$code }
+if (\$global:TaskSmackClangTidyExit -ne 0) { [Console]::Error.WriteLine('clang-tidy.ps1 ended without a result'); exit 1 }
+exit 0"
+    MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL="*" exec "$pwsh_exe" -NoLogo -NoProfile -Command "$wrapper"
 }
 case "${OSTYPE:-}" in
     msys* | cygwin*) run_windows_clang_tidy ;;

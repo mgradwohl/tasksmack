@@ -166,10 +166,13 @@ if (-not $ExternalCompdb -and -not (Test-Path $CompileCommandsJson)) {
 }
 
 # Exit with $Code, first removing a -BuildDir's temporary database. (exit in a function ends the script.)
+# Every result past this point exits through here, and $global:TaskSmackClangTidyExit records it, so
+# clang-tidy.sh's hand-off counts a run as clean only when it got here with 0 (#3500 review).
 function Exit-Tidy([int]$Code) {
     if ($ExternalCompdb) {
         Remove-Item -LiteralPath $TidyCompdbDir -Recurse -Force -ErrorAction SilentlyContinue
     }
+    $global:TaskSmackClangTidyExit = $Code
     exit $Code
 }
 
