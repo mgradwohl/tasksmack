@@ -332,6 +332,14 @@ TEST(SystemdUnitFileTest, ReadsWantedByAndWhetherItStartsWithTheSession)
     EXPECT_EQ(continued.wantedBy, (std::vector<std::string>{"sockets.target", "default.target"}));
     EXPECT_TRUE(SystemdUnitFile::installsIntoSession(continued));
     EXPECT_FALSE(continued.execStart.empty());
+    // A continued header keeps its section; a lone backslash at the end or before a blank line is nothing.
+    EXPECT_TRUE(
+        SystemdUnitFile::installsIntoSession(SystemdUnitFile::parse("[Install]\\\n\nWantedBy=default.target \\\n  timers.target\n")));
+    static_cast<void>(SystemdUnitFile::parse("[Install]\n\\\n\n\\"));
+    // #3497 review: list words may be quoted.
+    EXPECT_TRUE(SystemdUnitFile::installsIntoSession(SystemdUnitFile::parse("[Install]\nWantedBy=\"default.target\" 'x y.target'\n")));
+    EXPECT_EQ(SystemdUnitFile::parse("[Install]\nWantedBy=\"default.target\" 'x y.target'\n").wantedBy,
+              (std::vector<std::string>{"default.target", "x y.target"}));
     EXPECT_EQ(unit.wantedBy, (std::vector<std::string>{"sockets.target"}));
     EXPECT_FALSE(SystemdUnitFile::installsIntoSession(unit));
     EXPECT_FALSE(SystemdUnitFile::installsIntoSession(SystemdUnitFile::parse("[Service]\nExecStart=/bin/true\n")));
@@ -443,10 +451,32 @@ TEST_F(LinuxStartupTest, AnInstallableUnitThatIsntEnabledIsListedDisabled)
     writeText(lib / "worker@alice.service", "[Service]\nExecStart=/bin/true alice\n[Install]\nWantedBy=default.target\n");
     writeText(lib / "shadowed.service", "[Service]\nExecStart=/bin/true\n[Install]\nWantedBy=default.target\n");
     writeText(user / "shadowed.service", "[Service]\nExecStart=/bin/true\n"); // the user's override: no [Install]
+    // #3497 review: an alias of a unit isn't listed under its own name; a package's own .wants link is the package's;
+    // a template's instance linked by the user, with no instance file, is read-only.
+    std::filesystem::create_symlink(lib / "notes-sync.service", lib / "notes-alias.service");
+    writeText(lib / "pkg.service", "[Service]\nExecStart=/bin/true\n[Install]\nWantedBy=default.target\n");
+    std::filesystem::create_directories(lib / "default.target.wants");
+    std::filesystem::create_symlink(lib / "pkg.service", lib / "default.target.wants/pkg.service");
+    std::filesystem::create_directories(user / "default.target.wants");
+    std::filesystem::create_symlink(lib / "worker@.service", user / "default.target.wants/worker@bob.service");
 
     LinuxStartupProbe probe(m_Dirs, "GNOME", SEARCH_PATH, SystemdUserDirs{.user = user, .system = {}, .unitPath = {user, lib}});
     const std::vector<StartupEntry> entries = probe.enumerate();
-    ASSERT_EQ(entries.size(), 3U);
+    ASSERT_EQ(entries.size(), 5U);
+    EXPECT_EQ(find(entries, "notes-alias.service"), nullptr) << "an alias";
+    const StartupEntry* pkg = find(entries, "pkg.service");
+    ASSERT_NE(pkg, nullptr);
+    EXPECT_TRUE(pkg->enabled) << "the package's link starts it";
+    EXPECT_EQ(pkg->location, StartupLocation::SystemdSystemUnit);
+    EXPECT_FALSE(pkg->notSwitchableReason.empty());
+    const StartupEntry* bob = find(entries, "worker@bob.service");
+    ASSERT_NE(bob, nullptr);
+    EXPECT_TRUE(bob->enabled);
+    EXPECT_EQ(bob->location, StartupLocation::SystemdUserUnit);
+    EXPECT_TRUE(bob->notSwitchableReason.contains("instance of worker@.service")) << bob->notSwitchableReason;
+    EXPECT_FALSE(
+        LinuxStartupActions(m_Dirs, [](std::string_view, bool) { return StartupActionResult::succeeded(); }).setEnabled(*bob, false).ok)
+        << "disabling would lose it from the list";
     EXPECT_EQ(find(entries, "shadowed.service"), nullptr) << "the user's override, first on the path, has no [Install]";
     const StartupEntry* instance = find(entries, "worker@alice.service");
     ASSERT_NE(instance, nullptr) << "an instance file is listed; only the template isn't";

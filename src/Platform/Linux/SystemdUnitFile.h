@@ -58,7 +58,7 @@ namespace Detail
 [[nodiscard]] inline Unit parse(std::string_view text)
 {
     Unit unit;
-    std::string_view section;
+    std::string section; // owned: a continued header's text lives in a per-line buffer
     while (!text.empty())
     {
         const std::size_t newline = text.find('\n');
@@ -92,6 +92,10 @@ namespace Detail
                 joined.pop_back(); // the file ended mid-continuation
             }
             line = Detail::trim(joined);
+            if (line.empty())
+            {
+                continue; // only a backslash, at the end of the file or before a blank line
+            }
         }
         if (line.front() == '[' && line.back() == ']')
         {
@@ -132,15 +136,30 @@ namespace Detail
             {
                 unit.wantedBy.clear();
             }
+            // A space-separated list, each word optionally in "..." or '...' (systemd's extract_first_word()).
             while (!value.empty())
             {
-                const std::size_t space = value.find_first_of(" \t");
-                const std::string_view target = value.substr(0, space);
+                std::string target;
+                std::size_t at = 0;
+                while (at < value.size() && value[at] != ' ' && value[at] != '\t')
+                {
+                    const char c = value[at];
+                    if (c == '"' || c == '\'')
+                    {
+                        const std::size_t close = value.find(c, at + 1);
+                        const std::size_t end = close == std::string_view::npos ? value.size() : close;
+                        target.append(value.substr(at + 1, end - at - 1));
+                        at = close == std::string_view::npos ? value.size() : close + 1;
+                        continue;
+                    }
+                    target += c;
+                    ++at;
+                }
                 if (!target.empty())
                 {
-                    unit.wantedBy.emplace_back(target);
+                    unit.wantedBy.push_back(std::move(target));
                 }
-                value = space == std::string_view::npos ? std::string_view{} : Detail::trim(value.substr(space));
+                value = Detail::trim(value.substr(at));
             }
         }
     }
