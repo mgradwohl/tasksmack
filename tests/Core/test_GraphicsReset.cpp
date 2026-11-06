@@ -306,6 +306,82 @@ TEST(GraphicsContextRecoveryTest, AWaitIsBoundedByTheNextRetry)
     EXPECT_EQ(recovery.boundWaitMs(HIDDEN_WAIT_MS, now), HIDDEN_WAIT_MS); // GaveUp: nothing to wait for
 }
 
+TEST(GraphicsContextRecoveryTest, AReportedResetStopsDrawingAtOnce)
+{
+    // While the reset settles (the monitor says Wait), nothing may draw or make GL calls on the lost
+    // context: the layers drop their objects now, and the replacement later doesn't drop them twice.
+    RecoveryLog log;
+    log.recreateResults = {true};
+    GraphicsContextRecovery recovery;
+    const auto steps = fakeSteps(log);
+    ASSERT_TRUE(recovery.drawing());
+
+    recovery.lost(steps);
+    EXPECT_EQ(recovery.state(), GraphicsRecoveryState::Settling);
+    EXPECT_FALSE(recovery.drawing());
+    recovery.lost(steps); // reported again while settling: nothing more
+    EXPECT_EQ(log.calls, (std::vector<std::string>{"lose"}));
+    // Waits stay short, so the loop sees the reset end promptly; a retry check finds nothing to do.
+    EXPECT_EQ(recovery.boundWaitMs(1000, 0.0), GraphicsContextRecovery::GRAPHICS_RESET_SETTLE_POLL_MS);
+    EXPECT_EQ(recovery.boundWaitMs(10, 0.0), 10);
+    EXPECT_FALSE(recovery.retryIfDue(100.0, steps).attempted);
+
+    EXPECT_EQ(recovery.replace(1.0, steps).state, GraphicsRecoveryState::Rendering);
+    EXPECT_TRUE(recovery.drawing());
+    EXPECT_EQ(log.calls, (std::vector<std::string>{"lose", "recreate", "advance", "restore"}));
+}
+
+TEST(GraphicsContextRecoveryTest, SettlingThenAFailedReplacementStaysSuspended)
+{
+    RecoveryLog log; // the replacement fails
+    GraphicsContextRecovery recovery;
+    const auto steps = fakeSteps(log);
+    recovery.lost(steps);
+    EXPECT_EQ(recovery.replace(1.0, steps).state, GraphicsRecoveryState::Suspended);
+    EXPECT_FALSE(recovery.drawing());
+    EXPECT_EQ(log.calls, (std::vector<std::string>{"lose", "recreate"}));
+}
+
+TEST(GraphicsContextRecoveryTest, TheLoopStopsDrawingFromTheFirstReportedFrameUntilTheReplacement)
+{
+    // Application's per-iteration check: the monitor's action decides lost() (Wait) or replace()
+    // (Recreate). No iteration from the first one that sees the reset to the replacement draws.
+    RecoveryLog log;
+    log.recreateResults = {true};
+    GraphicsResetMonitor monitor;
+    GraphicsContextRecovery recovery;
+    const auto steps = fakeSteps(log);
+    const std::vector<std::uint32_t> statuses{
+        GL_RESET_STATUS_NO_ERROR,
+        GL_RESET_STATUS_NO_ERROR,
+        GL_RESET_STATUS_GUILTY,
+        GL_RESET_STATUS_GUILTY,
+        GL_RESET_STATUS_GUILTY,
+        GL_RESET_STATUS_NO_ERROR,
+        GL_RESET_STATUS_NO_ERROR,
+    };
+    std::vector<bool> drew;
+    double now = 0.0;
+    for (const std::uint32_t status : statuses)
+    {
+        switch (monitor.observe(status, now))
+        {
+        case GraphicsResetAction::None:
+            break;
+        case GraphicsResetAction::Wait:
+            recovery.lost(steps);
+            break;
+        case GraphicsResetAction::Recreate:
+            static_cast<void>(recovery.replace(now, steps));
+            break;
+        }
+        drew.push_back(recovery.drawing());
+        now += 0.05;
+    }
+    EXPECT_EQ(drew, (std::vector<bool>{true, true, false, false, false, true, true}));
+    EXPECT_EQ(log.calls, (std::vector<std::string>{"lose", "recreate", "advance", "restore"}));
+}
+
 TEST(GraphicsResetTest, StatusNames)
 {
     EXPECT_EQ(graphicsResetStatusName(GL_RESET_STATUS_NO_ERROR), "none");

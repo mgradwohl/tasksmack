@@ -244,7 +244,14 @@ void UILayer::onGraphicsContextRestored()
         // Init fails only without OpenGL 3, which the replacement context has, as the first one did.
         throw std::runtime_error("Failed to initialize the ImGui OpenGL 3 renderer backend on the new context");
     }
+    // Running from here on, so a failure below leaves it for onGraphicsContextLost() to shut down.
     m_RendererReady = true;
+    // Init() makes no GL objects; NewFrame() would make them and only assert on a failure. Made here,
+    // a shader that won't compile or link on the new context fails the replacement instead (#3484).
+    if (!ImGui_ImplOpenGL3_CreateDeviceObjects())
+    {
+        throw std::runtime_error("The ImGui OpenGL 3 renderer's shaders or buffers could not be made on the new context");
+    }
     // The viewport belongs to the context too.
     if (m_CachedPixelW > 0 && m_CachedPixelH > 0)
     {

@@ -9,13 +9,15 @@
 // timeouts.
 //
 // So Core::Window asks for a context that reports a reset (GL_LOSE_CONTEXT_ON_RESET, ARB_robustness),
-// and Application checks glGetGraphicsResetStatus() once per frame. A reset seen there is handled by
-// GraphicsResetMonitor below: it waits until the driver says the reset is over (the robustness spec's
-// rule before making a new context), or GRAPHICS_RESET_SETTLE_TIMEOUT_SECONDS at the most, then asks
-// for one recreation. GraphicsContextRecovery then runs it: the layers drop what lived in the old
-// context (Layer::onGraphicsContextLost()), Window replaces the context and, only once that worked,
-// graphicsContextGeneration() advances and the layers rebuild (Layer::onGraphicsContextRestored()).
-// A failed replacement suspends drawing and is retried a few times before the app gives up and closes.
+// and Application checks glGetGraphicsResetStatus() once per loop iteration, drawing or not. From the
+// first check that sees a reset, drawing -- and every GL call frames and events make -- pauses
+// (GraphicsContextRecovery::lost(): the layers drop what lived in the old context). GraphicsResetMonitor
+// below waits until the driver says the reset is over (the robustness spec's rule before making a new
+// context), or GRAPHICS_RESET_SETTLE_TIMEOUT_SECONDS at the most, then asks for one recreation, which
+// GraphicsContextRecovery runs: Window replaces the context, graphicsContextGeneration() advances once
+// that worked, and drawing resumes only once every layer rebuilt on it
+// (Layer::onGraphicsContextRestored()). A failed replacement keeps drawing suspended and is retried a
+// few times before the app gives up and stops.
 //
 // Pure, so the decision is unit-tested without a GPU (tests/Core/test_GraphicsReset.cpp).
 
@@ -128,6 +130,7 @@ struct GraphicsContextRecoverySteps
 enum class GraphicsRecoveryState : std::uint8_t
 {
     Rendering, ///< A working context: frames draw
+    Settling,  ///< A reset is reported and not over yet: the layers dropped their GL objects, no frame draws
     Suspended, ///< The layers dropped their GL objects and no working context is back yet: no frame draws
     GaveUp,    ///< Every attempt failed: the app stops, with the error logged
 };
@@ -152,16 +155,40 @@ struct GraphicsRecoveryOutcome
 class GraphicsContextRecovery
 {
   public:
+    /// The longest the frame loop waits between reset-status checks while a reset settles.
+    static constexpr int GRAPHICS_RESET_SETTLE_POLL_MS = 50;
+
     /// Waits before each retry after a failed replacement, seconds: about 15 s in all.
     static constexpr std::array<double, 5> GRAPHICS_RECOVERY_RETRY_DELAYS_SECONDS{0.5, 1.0, 2.0, 4.0, 8.0};
 
-    /// A reset is over (GraphicsResetMonitor said Recreate): drop the layers' GL objects and replace
-    /// the context, at @p nowSeconds.
+    /// A reset is reported and still settling (GraphicsResetMonitor said Wait): stop drawing at once,
+    /// with the layers' GL objects dropped, until replace(). Nothing more if already stopped.
+    void lost(const GraphicsContextRecoverySteps& steps)
+    {
+        if (m_State == GraphicsRecoveryState::Rendering)
+        {
+            steps.loseLayers();
+            m_State = GraphicsRecoveryState::Settling;
+        }
+    }
+
+    /// A reset is over (GraphicsResetMonitor said Recreate): drop the layers' GL objects, unless lost()
+    /// already did, and replace the context, at @p nowSeconds.
     GraphicsRecoveryOutcome replace(const double nowSeconds, const GraphicsContextRecoverySteps& steps)
     {
-        steps.loseLayers();
+        if (m_State == GraphicsRecoveryState::Rendering)
+        {
+            steps.loseLayers();
+        }
         m_Attempts = 0;
         return {.state = attempt(nowSeconds, steps), .attempted = true};
+    }
+
+    /// Whether frames draw (and GL calls happen): only with a working context, not while a reset
+    /// settles, a failed replacement waits for its retry, or after giving up.
+    [[nodiscard]] bool drawing() const noexcept
+    {
+        return m_State == GraphicsRecoveryState::Rendering;
     }
 
     /// While Suspended, the next attempt once its delay has passed; otherwise nothing (attempted false).
@@ -186,9 +213,15 @@ class GraphicsContextRecovery
     }
 
     /// The longest the frame loop may wait for an event at @p nowSeconds, given it wanted @p waitMs,
-    /// and still make the next retry on time: 0 once that is due; @p waitMs itself unless Suspended.
+    /// and still make the next retry on time: 0 once that is due; at most GRAPHICS_RESET_SETTLE_POLL_MS
+    /// while a reset settles; @p waitMs itself while Rendering or after giving up.
     [[nodiscard]] int boundWaitMs(const int waitMs, const double nowSeconds) const noexcept
     {
+        if (m_State == GraphicsRecoveryState::Settling)
+        {
+            // The reset status is checked each iteration: often enough to see it end promptly.
+            return waitMs < GRAPHICS_RESET_SETTLE_POLL_MS ? waitMs : GRAPHICS_RESET_SETTLE_POLL_MS;
+        }
         if (m_State != GraphicsRecoveryState::Suspended)
         {
             return waitMs;

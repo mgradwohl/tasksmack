@@ -1189,7 +1189,6 @@ void Application::renderFrame(
 
     m_Window->swapBuffers();
     const auto swapEnd = tracing ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
-    checkGraphicsReset();
     const auto frameEndCounter = tracing ? SDL_GetPerformanceCounter() : 0;
 
     if (updateMs != nullptr)
@@ -1291,7 +1290,8 @@ bool Application::closeRequestAccepted()
 
 void Application::checkGraphicsReset()
 {
-    if (drawingSuspended() || !m_Window->reportsGraphicsReset())
+    const GraphicsRecoveryState state = m_GraphicsRecovery.state();
+    if ((state != GraphicsRecoveryState::Rendering && state != GraphicsRecoveryState::Settling) || !m_Window->reportsGraphicsReset())
     {
         return;
     }
@@ -1307,9 +1307,11 @@ void Application::checkGraphicsReset()
         if (status != GL_RESET_STATUS_NO_ERROR && m_GraphicsResetsLogged != m_GraphicsReset.resets())
         {
             m_GraphicsResetsLogged = m_GraphicsReset.resets();
-            spdlog::warn("GPU reset reported ({} context reset); waiting for it to finish before replacing the OpenGL context",
+            spdlog::warn("GPU reset reported ({} context reset); drawing paused until it finishes and the OpenGL context is replaced",
                          graphicsResetStatusName(status));
         }
+        // Drawing, and every GL call frames and events make, stops now: the context is lost.
+        m_GraphicsRecovery.lost(graphicsRecoverySteps());
         return;
     }
     spdlog::warn("Replacing the OpenGL context after GPU reset {} ({} context reset)",
@@ -1364,6 +1366,8 @@ void Application::noteGraphicsRecovery(const GraphicsRecoveryOutcome outcome)
     case GraphicsRecoveryState::Rendering:
         spdlog::info("OpenGL context replaced and every layer rebuilt (attempt {})", m_GraphicsRecovery.attempts());
         break;
+    case GraphicsRecoveryState::Settling: // an attempt never ends there: only lost() enters it
+        break;
     case GraphicsRecoveryState::Suspended:
         spdlog::error("Could not replace the OpenGL context (attempt {}); drawing is suspended and it will be tried again",
                       m_GraphicsRecovery.attempts());
@@ -1376,18 +1380,23 @@ void Application::noteGraphicsRecovery(const GraphicsRecoveryOutcome outcome)
     }
 }
 
+// LCOV_EXCL_STOP
+
 void Application::pollGraphicsRecovery()
 {
     if (m_GraphicsRecovery.state() == GraphicsRecoveryState::Suspended)
+    // LCOV_EXCL_START - only after a failed replacement; GraphicsContextRecovery's retries are unit-tested
     {
         noteGraphicsRecovery(m_GraphicsRecovery.retryIfDue(getTime(), graphicsRecoverySteps()));
+        return;
     }
+    // LCOV_EXCL_STOP
+    checkGraphicsReset(); // Rendering: a new reset; Settling: whether it is over
 }
-// LCOV_EXCL_STOP
 
 bool Application::drawingSuspended() const noexcept
 {
-    return m_GraphicsRecovery.state() != GraphicsRecoveryState::Rendering;
+    return !m_GraphicsRecovery.drawing();
 }
 
 void Application::raiseEvent(Event& event)

@@ -186,18 +186,18 @@ class Application
     /// Replaces the context after a reset, and suspends and retries drawing when that fails (#3484).
     GraphicsContextRecovery m_GraphicsRecovery;
 
-    /// After a frame: read the context's GPU reset status and, once a reset is over, replace the
-    /// context and let the layers drop and rebuild their OpenGL objects (#3484, GraphicsReset.h).
+    /// Read the context's GPU reset status: a reset reported pauses drawing at once (Settling), and
+    /// once it is over the context is replaced and the layers rebuild (#3484, GraphicsReset.h).
     void checkGraphicsReset();
     /// The replacement's steps, bound to the layer stack and the window.
     [[nodiscard]] GraphicsContextRecoverySteps graphicsRecoverySteps();
     /// Logs what an attempt did (nothing when @p outcome made none); after the last failed one, stops the app.
     void noteGraphicsRecovery(GraphicsRecoveryOutcome outcome);
-    /// Once per loop iteration, drawing or not (a minimized window too): the next retry of a failed
-    /// replacement, when it is due.
+    /// Once per loop iteration, drawing or not (a minimized window too): the reset check, or the next
+    /// retry of a failed replacement when it is due.
     void pollGraphicsRecovery();
-    /// Whether drawing -- and with it every OpenGL call -- is suspended: a failed replacement waits to
-    /// be retried, or recovery gave up. Event handling goes on; GL state the events change (the
+    /// Whether drawing -- and with it every OpenGL call -- is suspended: a reported reset is settling,
+    /// a failed replacement waits to be retried, or recovery gave up. Event handling goes on; GL state the events change (the
     /// viewport, the swap interval) is remembered and applied when a replacement works.
     [[nodiscard]] bool drawingSuspended() const noexcept;
 
