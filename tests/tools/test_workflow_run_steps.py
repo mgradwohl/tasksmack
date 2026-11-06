@@ -168,7 +168,9 @@ class HeavyChecksAcrossLaunchesTests(unittest.TestCase):
         bench_sh.write_text(BENCH_SH_STUB, encoding="utf-8", newline="\n")
         bench_sh.chmod(bench_sh.stat().st_mode | stat.S_IXUSR)
         (self.stub / "write_launch.py").write_text(BENCH_LAUNCH_WRITER, encoding="utf-8")
-        (self.stub / "count").write_text("1\n", encoding="utf-8")
+        # Files bash reads are written with LF on every platform (here, the counter and the STUB_DATES clocks): a
+        # CRLF line from Python's Windows default would reach bash's arithmetic with its \r.
+        (self.stub / "count").write_text("1\n", encoding="utf-8", newline="\n")
         shutil.copy(REPO / "perf-data" / "linux-ci-thresholds.json", self.work / "perf-data" / "linux-ci-thresholds.json")
         self.write_run("linux-ci-baseline.json", self.BASELINE)
 
@@ -290,7 +292,7 @@ class HeavyChecksAcrossLaunchesTests(unittest.TestCase):
         # whole 4 s even when the real clock would tick between them. The real timeout still kills the launch.
         now = int(time.time())
         dates = self.tmp / "dates"
-        dates.write_text(f"{now}\n{now}\n", encoding="utf-8")
+        dates.write_text(f"{now}\n{now}\n", encoding="utf-8", newline="\n")
         started = time.monotonic()
         check_exit, remeasure, outputs = self.gate(first, launches, {
             "MAX_SECONDS": "4", "STUB_SLOW_LAUNCH": "2", "STUB_SLOW_SECONDS": "30",
@@ -311,7 +313,7 @@ class HeavyChecksAcrossLaunchesTests(unittest.TestCase):
         dates = self.tmp / "dates"
         # The step reads the clock once at its start, then before each launch: launch 2 starts with the whole
         # budget, and launch 3 finds it gone.
-        dates.write_text(f"{now}\n{now}\n{now + 600}\n", encoding="utf-8")
+        dates.write_text(f"{now}\n{now}\n{now + 600}\n", encoding="utf-8", newline="\n")
         check_exit, remeasure, outputs = self.gate(
             first, launches, {"JOB_START_EPOCH": str(now), "STUB_DATES": posix(dates)})
         self.assertEqual(remeasure.returncode, 0, remeasure.stdout + remeasure.stderr)
