@@ -234,6 +234,7 @@ set(TASKSMACK_SOURCES
     src/App/Panels/ProcessActionConfirm.cpp
     src/App/Panels/ProcessBatchPriorityDialog.cpp
     src/App/Panels/ProcessAffinityDialog.cpp
+    src/App/Panels/ProcessSchedPolicyDialog.cpp # Set scheduling policy (#3086)
     src/App/Panels/RunTaskDialog.cpp # Run new task (#3065)
     src/App/Panels/FindHandlesDialog.cpp # Find handles (#3067)
     src/App/Panels/ProcessActionsView.cpp
@@ -587,6 +588,7 @@ set(TASKSMACK_HEADERS
     src/Domain/ProcessIconCache.h
     src/UI/IconTextureCache.h
     src/App/Panels/ProcessIconView.h
+    src/App/Panels/ProcessSchedPolicyDialog.h
 )
 
 # Platform-specific headers

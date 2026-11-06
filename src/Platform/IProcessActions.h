@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Platform/CpuAffinity.h"
+#include "Platform/SchedPolicy.h"
 #include "Platform/WaitChain.h"
 
 #include <cstdint>
@@ -239,6 +240,7 @@ struct AuthorizedAction
         SetEfficiencyMode, ///< efficiencyMode (#3071)
         CloseConnection,   ///< socketInode (#3066)
         ThreadAction,      ///< tid and threadAction (#3069)
+        SetSchedPolicy,    ///< schedPolicy (#3086)
     };
     Kind kind = Kind::Terminate;
     ProcessTarget target;
@@ -253,6 +255,8 @@ struct AuthorizedAction
     std::int32_t level = 4;
     // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
     CpuAffinity cpus{};
+    SchedPolicy schedPolicy = SchedPolicy::Normal;           ///< SetSchedPolicy: Normal, Batch or Idle
+    RealtimeThreads realtimeThreads = RealtimeThreads::Keep; ///< SetSchedPolicy: whether the dialog warned
 };
 
 /// Run new task (#3065): a program to start, as Task Manager's File > Run new task.
@@ -284,6 +288,8 @@ struct ProcessActionCapabilities
     /// setAffinity(): which processors the process may run on (#1887 Linux: sched_setaffinity;
     /// #1881 Windows).
     bool canSetAffinity = false;
+    /// setSchedPolicy(): the CPU scheduling policy, Normal, Batch or Idle (#3086 Linux: sched_setscheduler).
+    bool canSetSchedPolicy = false;
     /// launchSyscallTrace(): found once, when the implementation is constructed, never per frame.
     SyscallTraceAvailability syscallTrace = SyscallTraceAvailability::Unsupported;
     /// createDump(): a full-memory dump file of the process (#807; Windows: MiniDumpWriteDump).
@@ -421,6 +427,22 @@ class IProcessActions
         return ProcessActionResult::error("Setting CPU affinity isn't available on this system");
     }
 
+    /// Sets the target's CPU scheduling policy (#3086) on every one of its threads: Normal, Batch or Idle
+    /// only; any other policy is refused before the OS is asked (real time is #3219). A thread under a
+    /// real-time policy changes only with RealtimeThreads::Change, which the dialog passes only when it warned
+    /// that the process runs real time; with Keep it is left as it is and the result says so. Refused, as every
+    /// action is, unless the process at the target's PID is the target. The default refuses it as
+    /// unsupported, matching ProcessActionCapabilities::canSetSchedPolicy's default (false), which an
+    /// implementation that does not override this must leave as it is.
+    [[nodiscard]] virtual ProcessActionResult
+    setSchedPolicy(const ProcessTarget& target, SchedPolicy policy, RealtimeThreads realtimeThreads)
+    {
+        static_cast<void>(target);
+        static_cast<void>(policy);
+        static_cast<void>(realtimeThreads);
+        return ProcessActionResult::error("Setting the scheduling policy isn't available on this system");
+    }
+
     /// Writes a full-memory dump of the target into @p directory (#807), as Task Manager's "Create dump
     /// file" does, and returns the file written: from a snapshot of the process where the platform can
     /// take one (ProcessDump::fromSnapshot), else from the running process. Blocking, for seconds or minutes with a large process,
@@ -541,7 +563,7 @@ class IProcessActions
         };
     }
 
-    /// Retries @p request (a signal, priority, I/O priority, affinity or Efficiency mode change) as an administrator,
+    /// Retries @p request (a signal, priority, I/O priority, affinity, scheduling policy or Efficiency mode change) as an administrator,
     /// asking for the password first if need be (#2308): what "Authenticate and retry" does after a
     /// permissionDenied failure. Blocks for as long as the prompt is up, so it runs on a worker, never
     /// the UI thread. The default refuses it, matching ProcessActionCapabilities'

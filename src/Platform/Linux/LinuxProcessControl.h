@@ -2,6 +2,7 @@
 
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/SchedPolicy.h"
 #include "SyscallTrace.h"
 
 #include <cstddef>
@@ -35,6 +36,13 @@ struct LinuxProcessSyscalls
     int (*ioprioGet)(pid_t pid) = nullptr;            ///< ioprio_get(IOPRIO_WHO_PROCESS, pid): the value
     /// sched_setaffinity(tid, setSize, set): the set is a CPU_ALLOC()ed cpu_set_t of setSize bytes (#1887).
     int (*setAffinity)(id_t tid, std::size_t setSize, const cpu_set_t* set) = nullptr;
+    /// sched_setscheduler(tid, policy, {sched_priority = 0}) (#3086): SCHED_OTHER, SCHED_BATCH or SCHED_IDLE only,
+    /// with SCHED_RESET_ON_FORK OR'ed in when the thread already had it; setSchedPolicy() never passes a real-time
+    /// policy.
+    int (*setScheduler)(id_t tid, int policy) = nullptr;
+    /// sched_getscheduler(2): a thread's policy, SCHED_RESET_ON_FORK included, so setSchedPolicy() keeps that flag
+    /// (#3086). Null reads as no flag.
+    int (*getScheduler)(id_t tid) = nullptr;
     /// The thread IDs listed under /proc/<pid>/task, or why they couldn't be (none listed: ESRCH). Left
     /// null, the real listing is used: most tests fake only the calls above.
     std::expected<std::vector<id_t>, std::error_code> (*listThreads)(pid_t pid) = nullptr;
@@ -91,8 +99,8 @@ struct LinuxProcessSyscalls
 /// The real system calls.
 [[nodiscard]] LinuxProcessSyscalls realProcessSyscalls() noexcept;
 
-/// The process-control half of the Linux IProcessActions: signals, nice, I/O priority and CPU affinity,
-/// and nothing that starts another program. tasksmack-helper, which runs as root, links only this, so no
+/// The process-control half of the Linux IProcessActions: signals, nice, I/O priority, CPU affinity and
+/// the scheduling policy, and nothing that starts another program. tasksmack-helper, which runs as root, links only this, so no
 /// strace, gcore or terminal launch -- nor the PATH search for them -- is in it (#2640). TaskSmack itself
 /// uses LinuxProcessActions, which adds those.
 ///
@@ -143,6 +151,9 @@ class LinuxProcessControl : public IProcessActions
     [[nodiscard]] ProcessActionResult setIoPriority(const ProcessTarget& target, IoPriorityClass ioClass, int32_t level) override;
     [[nodiscard]] IoPriorityReadResult getIoPriority(const ProcessTarget& target) override;
     [[nodiscard]] ProcessActionResult setAffinity(const ProcessTarget& target, const CpuAffinity& cpus) override;
+    /// Normal, Batch or Idle on every thread (#3086); any other policy is refused before sched_setscheduler(2).
+    [[nodiscard]] ProcessActionResult
+    setSchedPolicy(const ProcessTarget& target, SchedPolicy policy, RealtimeThreads realtimeThreads) override;
     /// Efficiency mode (#3202, LinuxEfficiencyMode.h): on, nice 19 for every thread and, where it may and the
     /// process is alone in its cgroup, the cgroup's cpu.weight at 1; off, what on changed put back.
     [[nodiscard]] ProcessActionResult setEfficiencyMode(const ProcessTarget& target, bool on) override;

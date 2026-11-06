@@ -180,6 +180,14 @@ TEST(ProcessActionsContractTest, RefusesWhenThePidBelongsToADifferentProcess)
         EXPECT_FALSE(affinity.success);
         EXPECT_NE(affinity.errorMessage.find("different process"), std::string::npos) << affinity.errorMessage;
     }
+
+    if (actions->actionCapabilities().canSetSchedPolicy && own.schedPolicy == Platform::SchedPolicy::Normal)
+    {
+        // Its own policy, so even a wrongly accepted call would change nothing (#3086).
+        const auto policy = actions->setSchedPolicy(reused, Platform::SchedPolicy::Normal, Platform::RealtimeThreads::Keep);
+        EXPECT_FALSE(policy.success);
+        EXPECT_NE(policy.errorMessage.find("different process"), std::string::npos) << policy.errorMessage;
+    }
 }
 
 TEST(ProcessActionsContractTest, RefusesWhenTheStartTimeIsUnknown)

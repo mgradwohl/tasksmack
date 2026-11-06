@@ -1420,7 +1420,11 @@ TEST(BrokerPipeServeTest, EveryRequestKindIsTheHelloAnActionOrARead)
     EXPECT_FALSE(BrokerPipeServer::isRead(signOut)) << "an action (#3076)";
     EXPECT_TRUE(BrokerPipeServer::isActionWindowsDoes(signOut));
     EXPECT_TRUE(BrokerPipeServer::putsOffTheWindowsIdleExit(signOut));
-    static_assert(std::variant_size_v<Broker::Request> == 21, "a new request kind: add it above");
+    // #3086: a scheduling policy is Linux only, an ErrorReply here.
+    const Broker::SchedPolicyRequest schedPolicy{.target = TARGET, .policy = SchedPolicy::Batch};
+    EXPECT_FALSE(BrokerPipeServer::isRead(schedPolicy));
+    EXPECT_FALSE(BrokerPipeServer::isActionWindowsDoes(schedPolicy)) << "an ErrorReply (#3086)";
+    static_assert(std::variant_size_v<Broker::Request> == 22, "a new request kind: add it above");
 }
 
 TEST(BrokerPipeServeTest, AOneActionSessionIsntKeptOpenByGreetingAgain)

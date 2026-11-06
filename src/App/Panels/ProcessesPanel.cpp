@@ -28,6 +28,7 @@
 #include "App/Panels/ProcessRowMeter.h"
 #include "App/Panels/ProcessRowMeterView.h"
 #include "App/Panels/ProcessRowSelection.h"
+#include "App/Panels/ProcessSchedPolicyDialog.h"
 #include "App/Panels/ProcessSelection.h"
 #include "App/Panels/ProcessSignatureText.h"
 #include "App/Panels/ProcessSortUtils.h"
@@ -1958,6 +1959,8 @@ void ProcessesPanel::renderContent()
     renderBatchPriorityDialog();
     // The row menu's Set affinity... (#1887), applied on its own Apply.
     renderAffinityDialog();
+    // The row menu's Set scheduling policy... (#3086), applied on its own Apply.
+    renderSchedPolicyDialog();
     renderRunTaskDialog();
     renderFindHandlesDialog(currentSnapshots);
 
@@ -3280,8 +3283,8 @@ void ProcessesPanel::applyKeyboardInput(const std::vector<Domain::ProcessSnapsho
     // So is a dump's confirm, progress or result (#807), and a batch still running on its worker (#2142),
     // and the wait chain dialog (#3084), which has an End process confirmation of its own.
     const bool rowActionPending = m_ShowRowActionConfirm || m_RowAction.pending() || m_BatchPriorityDialog.isPending() ||
-                                  m_AffinityDialog.isPending() || m_RunTaskDialog.isOpen() || m_FindHandlesDialog.isOpen() ||
-                                  m_DumpView.active() || m_WaitChainDialog.isOpen() || rowActionRunning();
+                                  m_AffinityDialog.isPending() || m_SchedPolicyDialog.isPending() || m_RunTaskDialog.isOpen() ||
+                                  m_FindHandlesDialog.isOpen() || m_DumpView.active() || m_WaitChainDialog.isOpen() || rowActionRunning();
     if (killRequested && m_Selection.size() > 1)
     {
         // Only while at least one selected row is visible: with every selected row filtered out, F9
@@ -3661,10 +3664,23 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
                                   m_AffinityLayout);
         }
     }
+    // One process's scheduling policy (#3086, Linux): Normal, Batch or Idle, in its own dialog, beside Set affinity.
+    if (can.canSetSchedPolicy && batchCount == 0)
+    {
+        if (!can.canSetAffinity) // else it shares Set affinity...'s group
+        {
+            ImGui::Separator();
+        }
+        if (ImGui::MenuItem(ICON_FA_CLOCK " Set scheduling policy...###SetSchedPolicy", nullptr, false, actionsIdle))
+        {
+            m_SchedPolicyDialog.open({.pid = proc.pid, .startTimeTicks = proc.startTimeTicks}, proc.name, proc.schedPolicy);
+        }
+        ImGui::SetItemTooltip("Normal, Batch or Idle: how the kernel shares the CPU with this process");
+    }
     // One process's dump file (#807), as Task Manager's row menu offers it; never for a selection.
     if (DumpDetail::offersCreateDump(can, batchCount))
     {
-        if (!can.canSetAffinity || batchCount != 0) // else it shares Set affinity...'s group
+        if ((!can.canSetAffinity && !can.canSetSchedPolicy) || batchCount != 0) // else it shares Set affinity...'s group
         {
             ImGui::Separator();
         }
@@ -3682,7 +3698,7 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
     // it waits on no row action.
     if (WaitChainDetail::offersAnalyzeWaitChain(can, batchCount))
     {
-        if (!can.canSetAffinity && !DumpDetail::offersCreateDump(can, batchCount)) // else it shares their group
+        if (!can.canSetAffinity && !can.canSetSchedPolicy && !DumpDetail::offersCreateDump(can, batchCount)) // else it shares their group
         {
             ImGui::Separator();
         }
@@ -4138,6 +4154,29 @@ void ProcessesPanel::renderAffinityDialog()
         [name = m_AffinityDialog.name(), pid = target.pid, cpus = *cpus](const Platform::ProcessActionResult& result)
         { return affinityResultMessage(name, pid, cpus, result); },
         Platform::AuthorizedAction{.kind = Platform::AuthorizedAction::Kind::SetAffinity, .target = target, .cpus = *cpus});
+}
+
+void ProcessesPanel::renderSchedPolicyDialog()
+{
+    const std::optional<Platform::SchedPolicy> policy = m_SchedPolicyDialog.render();
+    if (!policy.has_value())
+    {
+        return;
+    }
+    const Platform::ProcessTarget target = m_SchedPolicyDialog.target();
+    const Platform::RealtimeThreads realtime = m_SchedPolicyDialog.realtimeThreads();
+    runRowAction(
+        std::format("Setting the scheduling policy of PID {}...", target.pid),
+        [actions = m_ProcessActions.get(), target, policy = *policy, realtime]
+        { return actions->setSchedPolicy(target, policy, realtime); },
+        [name = m_SchedPolicyDialog.name(), pid = target.pid, policy = *policy](const Platform::ProcessActionResult& result)
+        { return schedPolicyResultMessage(name, pid, policy, result); },
+        Platform::AuthorizedAction{
+            .kind = Platform::AuthorizedAction::Kind::SetSchedPolicy,
+            .target = target,
+            .schedPolicy = *policy,
+            .realtimeThreads = realtime,
+        });
 }
 
 template<typename Work>

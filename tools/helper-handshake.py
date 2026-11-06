@@ -49,6 +49,7 @@ HELLO_PAYLOADS = {
     12: lambda version: struct.pack("<HB", version, 0),  # Hello unchanged; TaskManagerReplacement added (#3072)
     13: lambda version: struct.pack("<HB", version, 0),  # Hello unchanged; SessionAction added (#3076)
     14: lambda version: struct.pack("<HB", version, 0),  # Hello unchanged; ThreadAction added, ThreadsResult grows (#3069)
+    15: lambda version: struct.pack("<HB", version, 0),  # Hello unchanged; SetSchedPolicy added (#3086)
 }
 
 

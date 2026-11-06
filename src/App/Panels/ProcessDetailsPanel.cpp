@@ -1016,6 +1016,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
             .currentNice = m_HasSnapshot ? std::optional<std::int32_t>{proc.nice} : std::nullopt,
             .currentAffinity = m_HasSnapshot ? &proc.cpuAffinity : nullptr,
             .efficiencyMode = m_HasSnapshot && Detail::isInEfficiencyMode(proc),
+            .currentSchedPolicy = m_HasSnapshot ? proc.schedPolicy : Platform::SchedPolicy::Unknown,
             // A priority change for this process running in the Processes table holds these controls (#3467).
             .priorityHeldElsewhere = m_PriorityHeldElsewhere,
         };
