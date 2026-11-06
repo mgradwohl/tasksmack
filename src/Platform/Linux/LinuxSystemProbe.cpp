@@ -575,6 +575,9 @@ void LinuxSystemProbe::readNuma(SystemCounters& counters)
     }
     if (rescan)
     {
+        // Everything that can throw (the listing, and the copy to publish, which allocates) happens in
+        // the try, so a failure always clears the rescan flag; publishing below is only a swap.
+        std::vector<NumaNode> published;
         try
         {
             for (const int id : LinuxNuma::listNodeIds(m_NumaNodeRoot))
@@ -582,6 +585,7 @@ void LinuxSystemProbe::readNuma(SystemCounters& counters)
                 // A cpulist that can't be read or parsed leaves the node's CPUs empty until the next listing.
                 layout.push_back(NumaNode{.id = id, .cpus = LinuxNuma::readNodeCpus(m_NumaNodeRoot, id).value_or(CpuAffinity{})});
             }
+            published = layout;
         }
         catch (...)
         {
@@ -592,12 +596,12 @@ void LinuxSystemProbe::readNuma(SystemCounters& counters)
             }
             throw;
         }
-        // The layout, its time and the ready flag are published together. A listing that started before
-        // the published one (overlapping first calls) doesn't replace it.
+        // The layout, its time and the ready flag are published together, without allocating. A listing
+        // that started before the published one (overlapping first calls) doesn't replace it.
         const std::scoped_lock lock(m_NumaMutex);
         if (!m_NumaScanned || now >= m_NumaScannedAt)
         {
-            m_NumaLayout = layout;
+            m_NumaLayout.swap(published);
             m_NumaScannedAt = now;
             m_NumaScanned = true;
         }
