@@ -229,6 +229,12 @@ inline constexpr int GPU_RESCAN_INTERVAL_SECONDS = 10;
 // or removing one). Each sample reads the known devices' mm_stat; only the listing waits for this.
 inline constexpr int ZRAM_RESCAN_INTERVAL_SECONDS = 10;
 
+// NUMA node re-enumeration interval (seconds) - fixed, not configurable (#3088)
+// How often the Linux system probe lists /sys/devices/system/node and re-reads each node's cpulist: the
+// layout only changes on CPU or memory hotplug. Each sample reads the known nodes' meminfo; only the
+// listing and the CPU lists wait for this.
+inline constexpr int NUMA_RESCAN_INTERVAL_SECONDS = 10;
+
 // Oldest per-process GPU publication ProcessModel still merges (#1417). The GPU sampler reads the
 // per-process GPU counters and publishes them; the process sampler, on its own cadence, merges the
 // newest publication. Normally that is at most one system-sampler interval old (capped at

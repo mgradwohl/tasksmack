@@ -11,6 +11,7 @@
 
 #if defined(__linux__) && __has_include(<unistd.h>)
 
+#include "Platform/CpuAffinity.h"
 #include "Platform/Linux/LinuxSystemProbe.h"
 #include "Platform/ScopedTempDir.h"
 #include "Platform/SystemTypes.h"
@@ -27,6 +28,7 @@
 #include <string_view>
 #include <system_error>
 #include <thread>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -683,6 +685,61 @@ TEST(LinuxSystemProbeTest, CompressedSwapComesFromMeminfoAndZramMmStat)
     const MemoryCounters nothing = empty.read().memory;
     EXPECT_FALSE(nothing.hasZswap);
     EXPECT_FALSE(nothing.hasZram);
+}
+
+// #3088: the NUMA nodes under <root>/sys/devices/system/node, each node's CPUs and memory.
+TEST(LinuxSystemProbeTest, NumaNodesComeFromTheNodeSysfsRoot)
+{
+    ScopedTempDir root("ts_test_sys_numa");
+    const std::filesystem::path proc = root.path / "proc";
+    std::filesystem::create_directories(proc);
+    std::ofstream(proc / "meminfo") << "MemTotal: 24000000 kB\nMemFree: 8000000 kB\n";
+    const std::filesystem::path nodes = root.path / "sys" / "devices" / "system" / "node";
+    for (const auto& [name, cpulist, meminfo] :
+         {std::tuple<const char*, const char*, const char*>{
+              "node0", "0-3\n", "Node 0 MemTotal: 16000000 kB\nNode 0 MemFree: 5000000 kB\nNode 0 MemUsed: 11000000 kB\n"},
+          std::tuple<const char*, const char*, const char*>{
+              "node1", "4-7\n", "Node 1 MemTotal: 8000000 kB\nNode 1 MemFree: 3000000 kB\nNode 1 MemUsed: 5000000 kB\n"}})
+    {
+        std::filesystem::create_directories(nodes / name);
+        std::ofstream(nodes / name / "cpulist") << cpulist;
+        std::ofstream(nodes / name / "meminfo") << meminfo;
+    }
+    std::ofstream(nodes / "online") << "0-1\n";
+
+    LinuxSystemProbe probe(proc, proc / "no-sys-class-net", root.path / "no-cpu-sysfs", root.path);
+    EXPECT_TRUE(probe.capabilities().hasNumaNodes);
+    const std::vector<NumaNode> read = probe.read().numaNodes;
+    ASSERT_EQ(read.size(), 2U);
+    EXPECT_EQ(read[0].id, 0);
+    EXPECT_EQ(read[0].cpus, CpuAffinity::fromCpuList("0-3"));
+    EXPECT_EQ(read[0].memTotalBytes, 16'000'000ULL * 1024);
+    EXPECT_EQ(read[0].memFreeBytes, 5'000'000ULL * 1024);
+    EXPECT_EQ(read[1].id, 1);
+    EXPECT_EQ(read[1].cpus, CpuAffinity::fromCpuList("4-7"));
+    EXPECT_EQ(read[1].memTotalBytes, 8'000'000ULL * 1024);
+
+    // Memory is read every sample; the node list and CPUs only at the rescan interval.
+    std::ofstream(nodes / "node1" / "meminfo") << "Node 1 MemTotal: 8000000 kB\nNode 1 MemFree: 1000000 kB\n";
+    std::ofstream(nodes / "node1" / "cpulist") << "4-5\n";
+    const std::vector<NumaNode> again = probe.read().numaNodes;
+    ASSERT_EQ(again.size(), 2U);
+    EXPECT_EQ(again[1].memFreeBytes, 1'000'000ULL * 1024);
+    EXPECT_EQ(again[1].cpus, CpuAffinity::fromCpuList("4-7"));
+
+    // A node that goes offline (its directory removed) drops out of the next sample.
+    std::filesystem::remove_all(nodes / "node1");
+    const std::vector<NumaNode> offline = probe.read().numaNodes;
+    ASSERT_EQ(offline.size(), 1U);
+    EXPECT_EQ(offline[0].id, 0);
+
+    // No node root (a kernel without CONFIG_NUMA): not read, and said so.
+    ScopedTempDir none("ts_test_sys_numa_none");
+    std::filesystem::create_directories(none.path / "proc");
+    std::ofstream(none.path / "proc" / "meminfo") << "MemTotal: 1000 kB\n";
+    LinuxSystemProbe without(none.path / "proc", none.path / "no-net", none.path / "no-cpu", none.path);
+    EXPECT_FALSE(without.capabilities().hasNumaNodes);
+    EXPECT_TRUE(without.read().numaNodes.empty());
 }
 
 TEST(LinuxSystemProbeTest, CpuDetailsComeFromTheInjectedProcAndCpuSysfsRoots)

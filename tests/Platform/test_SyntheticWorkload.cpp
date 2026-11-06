@@ -2,6 +2,7 @@
 /// @brief Platform::Synthetic (#1413): the synthetic machine is deterministic for a seed, has the
 /// requested shape, a consistent process tree and monotonic counters, and its probes read it.
 
+#include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/ProcessTypes.h"
 #include "Platform/StorageTypes.h"
@@ -153,6 +154,47 @@ TEST(SyntheticWorkloadTest, ClampsTheSpec)
     EXPECT_EQ(huge.spec().cores, Platform::Synthetic::MAX_CORES);
     EXPECT_EQ(huge.spec().disks, Platform::Synthetic::MAX_DISKS);
     EXPECT_EQ(huge.spec().interfaces, Platform::Synthetic::MAX_INTERFACES);
+}
+
+// #3088: numa=N splits the cores into consecutive runs and the memory into equal shares.
+TEST(SyntheticWorkloadTest, NumaNodesSplitTheCoresAndMemory)
+{
+    const Workload single = makeWorkload(spec(50));
+    Platform::SystemCounters one;
+    single.systemCountersAt(NOW, one);
+    ASSERT_EQ(one.numaNodes.size(), 1U);
+    EXPECT_EQ(one.numaNodes[0].cpus.count(), 8U);
+    EXPECT_EQ(one.numaNodes[0].memTotalBytes, one.memory.totalBytes);
+    EXPECT_TRUE(Workload::systemCapabilities().hasNumaNodes);
+
+    WorkloadSpec twoNodes = spec(50);
+    twoNodes.numaNodes = 2;
+    const Workload workload = makeWorkload(twoNodes);
+    for (const double uptime : {NOW, NOW + 50.0, NOW + 150.0})
+    {
+        Platform::SystemCounters system;
+        workload.systemCountersAt(uptime, system);
+        ASSERT_EQ(system.numaNodes.size(), 2U);
+        const Platform::NumaNode& first = system.numaNodes[0];
+        const Platform::NumaNode& second = system.numaNodes[1];
+        EXPECT_EQ(first.id, 0);
+        EXPECT_EQ(second.id, 1);
+        EXPECT_EQ(first.cpus, Platform::CpuAffinity::fromCpuList("0-3"));
+        EXPECT_EQ(second.cpus, Platform::CpuAffinity::fromCpuList("4-7"));
+        EXPECT_EQ(first.memTotalBytes + second.memTotalBytes, system.memory.totalBytes);
+        EXPECT_LE(first.memFreeBytes, first.memTotalBytes);
+        EXPECT_LE(second.memFreeBytes, second.memTotalBytes);
+        // The nodes' free memory adds up to the machine's, give or take rounding.
+        const auto freeSum = static_cast<double>(first.memFreeBytes + second.memFreeBytes);
+        EXPECT_NEAR(freeSum, static_cast<double>(system.memory.freeBytes), 2.0);
+    }
+
+    // At most one node per core, and at most MAX_NUMA_NODES.
+    WorkloadSpec tooMany = spec(50);
+    tooMany.numaNodes = 1000;
+    EXPECT_EQ(makeWorkload(tooMany).spec().numaNodes, 8U);
+    tooMany.numaNodes = 0;
+    EXPECT_EQ(makeWorkload(tooMany).spec().numaNodes, Platform::Synthetic::MIN_NUMA_NODES);
 }
 
 TEST(SyntheticWorkloadTest, ProcessTreeIsConsistent)
