@@ -1,11 +1,13 @@
 #include "LinuxStartup.h"
 
 #include "Domain/SamplingConfig.h"
+#include "Platform/IServiceActions.h"
 #include "Platform/IStartupActions.h"
 #include "Platform/IStartupProbe.h"
 #include "Platform/Linux/CommandOutput.h"
 #include "Platform/Linux/CronTab.h"
 #include "Platform/Linux/DesktopEntryIcons.h"
+#include "Platform/Linux/SystemdBus.h"
 #include "Platform/Linux/SystemdUnitFile.h"
 #include "Platform/Linux/XdgAutostart.h"
 
@@ -479,6 +481,7 @@ void LinuxStartupProbe::addSystemdUnits(std::vector<StartupEntry>& entries) cons
     {
         std::filesystem::path link;
         bool system = false;
+        bool enabled = true; ///< Linked into a session target's .wants; false: installable there, not linked (#3425)
     };
     std::map<std::string, Found> units;
     const auto scan = [&units](const std::filesystem::path& dir, bool system)
@@ -504,6 +507,26 @@ void LinuxStartupProbe::addSystemdUnits(std::vector<StartupEntry>& entries) cons
     for (const std::filesystem::path& dir : m_Systemd.system)
     {
         scan(dir, true);
+    }
+    // The units that would start with the session once enabled, but aren't (#3425): their [Install] WantedBy= names a
+    // session target. Listed as disabled, so one switched off stays in the list to switch back on. Templates
+    // (name@.service) aren't: one needs an instance name to enable.
+    for (const std::filesystem::path& dir : m_Systemd.unitPath)
+    {
+        std::error_code ec;
+        for (std::filesystem::directory_iterator it(dir, ec); !ec && it != std::filesystem::directory_iterator{}; it.increment(ec))
+        {
+            const std::string name = it->path().filename().string();
+            if ((!name.ends_with(".service") && !name.ends_with(".timer")) || name.contains('@') || units.contains(name))
+            {
+                continue;
+            }
+            const std::optional<std::string> text = readFile(it->path());
+            if (text.has_value() && SystemdUnitFile::installsIntoSession(SystemdUnitFile::parse(*text)))
+            {
+                units.try_emplace(name, Found{.link = it->path(), .system = false, .enabled = false});
+            }
+        }
     }
     for (const auto& [name, found] : units)
     {
@@ -538,9 +561,11 @@ void LinuxStartupProbe::addSystemdUnits(std::vector<StartupEntry>& entries) cons
         entry.sourcePath = found.link.string();
         entry.location = found.system ? StartupLocation::SystemdSystemUnit : StartupLocation::SystemdUserUnit;
         entry.scope = found.system ? StartupScope::Machine : StartupScope::User;
-        entry.enabled = true; // linked into a .wants directory: that is what "enabled" is
-        entry.notSwitchableReason = found.system ? "Enabled for every user in /etc/systemd/user"
-                                                 : "A systemd unit: switch it with systemctl --user disable " + name;
+        entry.enabled = found.enabled; // linked into a .wants directory: that is what "enabled" is
+        // The user's own: switched through the user manager, as systemctl --user does (#3425). One enabled for every
+        // user is an administrator's to change.
+        entry.notSwitchableReason =
+            found.system ? "Enabled for every user in /etc/systemd/user: an administrator changes it" : std::string{};
         entry.target = entry.executablePath.empty() ? StartupTargetState::Unresolved : targetState(entry.executablePath);
         entries.push_back(std::move(entry));
     }
@@ -630,7 +655,17 @@ std::vector<StartupEntry> LinuxStartupProbe::enumerate()
 LinuxStartupActions::LinuxStartupActions() : LinuxStartupActions(dirsFromEnvironment())
 {}
 
-LinuxStartupActions::LinuxStartupActions(XdgAutostart::Dirs dirs) : m_Dirs(std::move(dirs))
+LinuxStartupActions::LinuxStartupActions(XdgAutostart::Dirs dirs)
+    : LinuxStartupActions(std::move(dirs),
+                          [](std::string_view unit, bool enabled)
+                          {
+                              const ServiceActionResult result = SystemdBus::setUserUnitEnabled(unit, enabled);
+                              return result.ok ? StartupActionResult::succeeded() : StartupActionResult::failed(result.message);
+                          })
+{}
+
+LinuxStartupActions::LinuxStartupActions(XdgAutostart::Dirs dirs, UserUnitSwitch switchUserUnit)
+    : m_Dirs(std::move(dirs)), m_SwitchUserUnit(std::move(switchUserUnit))
 {}
 
 StartupActionCapabilities LinuxStartupActions::capabilities() const
@@ -641,6 +676,20 @@ StartupActionCapabilities LinuxStartupActions::capabilities() const
 
 StartupActionResult LinuxStartupActions::setEnabled(const StartupEntry& entry, bool enabled)
 {
+    // A systemd user unit (#3425): the user's own through the user manager; one enabled for every user isn't ours.
+    if (entry.location == StartupLocation::SystemdUserUnit)
+    {
+        const std::string& unit = entry.registrationName;
+        if (!m_SwitchUserUnit || unit.empty() || unit.contains('/') || (!unit.ends_with(".service") && !unit.ends_with(".timer")))
+        {
+            return StartupActionResult::failed("This isn't a systemd user unit");
+        }
+        return m_SwitchUserUnit(unit, enabled);
+    }
+    if (entry.location == StartupLocation::SystemdSystemUnit)
+    {
+        return StartupActionResult::failed("Enabled for every user in /etc/systemd/user: an administrator changes it");
+    }
     const std::string& fileName = entry.registrationName;
     if (m_Dirs.user.empty())
     {

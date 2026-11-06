@@ -3,9 +3,12 @@
 // The parts of a systemd unit file the Startup tab shows (#3082): what a user unit runs at sign-in, or what
 // a timer starts and when. Pure: the text is the caller's, so it is tested without a filesystem.
 
+#include <algorithm>
+#include <array>
 #include <cstddef>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace Platform::SystemdUnitFile
 {
@@ -17,7 +20,21 @@ struct Unit
     std::string execStart;   ///< [Service] ExecStart=, the first one, without its -, @, +, ! or : prefixes
     std::string schedule;    ///< [Timer] the first OnCalendar=, OnBootSec=, OnStartupSec= or OnUnitActiveSec=, as "OnCalendar=daily"
     std::string timerUnit;   ///< [Timer] Unit= (empty: the timer's own name with .service)
+    /// [Install] WantedBy=, every target named (#3425): what `systemctl --user enable` links it into. An empty value
+    /// resets the list, as systemd reads it.
+    std::vector<std::string> wantedBy;
 };
+
+/// The targets a user unit starts with the session or on a timer from (#3082, #3425): enabled into one of these, it's
+/// a startup entry.
+inline constexpr std::array<std::string_view, 3> SESSION_TARGETS = {"default.target", "graphical-session.target", "timers.target"};
+
+/// Whether @p unit's [Install] section would enable it into one of SESSION_TARGETS.
+[[nodiscard]] inline bool installsIntoSession(const Unit& unit)
+{
+    return std::ranges::any_of(
+        unit.wantedBy, [](const std::string& target) { return std::ranges::find(SESSION_TARGETS, target) != SESSION_TARGETS.end(); });
+}
 
 namespace Detail
 {
@@ -37,7 +54,7 @@ namespace Detail
 
 } // namespace Detail
 
-/// @p text parsed: keys outside the three sections, comments (# and ;) and continuation lines are ignored.
+/// @p text parsed: keys outside the four sections, comments (# and ;) and continuation lines are ignored.
 [[nodiscard]] inline Unit parse(std::string_view text)
 {
     Unit unit;
@@ -83,6 +100,23 @@ namespace Detail
         else if (section == "Timer" && key == "Unit")
         {
             unit.timerUnit = value;
+        }
+        else if (section == "Install" && key == "WantedBy")
+        {
+            if (value.empty())
+            {
+                unit.wantedBy.clear();
+            }
+            while (!value.empty())
+            {
+                const std::size_t space = value.find_first_of(" \t");
+                const std::string_view target = value.substr(0, space);
+                if (!target.empty())
+                {
+                    unit.wantedBy.emplace_back(target);
+                }
+                value = space == std::string_view::npos ? std::string_view{} : Detail::trim(value.substr(space));
+            }
         }
     }
     return unit;

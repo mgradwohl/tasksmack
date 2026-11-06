@@ -95,15 +95,21 @@ class LinuxStartupProbe final : public IStartupProbe
 class LinuxStartupActions final : public IStartupActions
 {
   public:
+    /// Switches a systemd user unit (#3425): SystemdBus::setUserUnitEnabled(), or a test's fake.
+    using UserUnitSwitch = std::function<StartupActionResult(std::string_view unit, bool enabled)>;
+
     LinuxStartupActions();
-    /// Test seam: these directories.
+    /// Test seam: these directories, switching user units through the real user manager.
     explicit LinuxStartupActions(XdgAutostart::Dirs dirs);
+    /// Test seam: these directories, and @p switchUserUnit for systemd user units.
+    LinuxStartupActions(XdgAutostart::Dirs dirs, UserUnitSwitch switchUserUnit);
 
     [[nodiscard]] StartupActionCapabilities capabilities() const override;
     [[nodiscard]] StartupActionResult setEnabled(const StartupEntry& entry, bool enabled) override;
 
   private:
     XdgAutostart::Dirs m_Dirs;
+    UserUnitSwitch m_SwitchUserUnit;
 };
 
 } // namespace Platform
