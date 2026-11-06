@@ -115,7 +115,20 @@ fi
 # their includes): its own or the first one its inherits chain gives, with the macros expanded.
 # Fails, printing nothing, for a name that isn't a visible configure preset with a binaryDir.
 resolve_preset_binary_dir() {
-    "$PYTHON_EXE" -I -X utf8 - "$PROJECT_ROOT" "$1" <<'PY'
+    # The checkout's path as this Python reads it. A native Windows Python (sys.platform win32: the
+    # Windows venv's python.exe, or python.org's) needs C:\...: Cygwin passes /cygdrive/c/... to it
+    # unconverted, and Git Bash/MSYS2 would convert /c/... anyway, so convert explicitly in every
+    # Windows shell. A POSIX Python (Linux, or Cygwin's and MSYS2's own) reads the POSIX path as is.
+    local root="$PROJECT_ROOT" platform
+    case "${OSTYPE:-}" in
+        msys* | cygwin*)
+            platform="$("$PYTHON_EXE" -I -c 'import sys; print(sys.platform)' 2>/dev/null || true)"
+            if [[ "${platform%$'\r'}" == win32 ]]; then
+                root="$(cygpath -w "$PROJECT_ROOT")"
+            fi
+            ;;
+    esac
+    "$PYTHON_EXE" -I -X utf8 - "$root" "$1" <<'PY'
 import json, os, re, sys
 
 root, name = sys.argv[1], sys.argv[2]

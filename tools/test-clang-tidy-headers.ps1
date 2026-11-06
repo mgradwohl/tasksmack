@@ -4,8 +4,9 @@
 # needed:
 #   - tools/clang-tidy.ps1 -BuildDir, with an "arguments" database and with a "command" database, each
 #     carrying the PCH and module flags the script must strip (left in, they fail the compile);
-#   - tools/clang-tidy.sh --build-dir through Git Bash, and with a named preset, in a copy of the
-#     scripts with its own CMakePresets.json (Windows Python's CRLF output, #3500 review).
+#     Both run from the checkout and from a copy of the scripts whose path has a space;
+#   - tools/clang-tidy.sh --build-dir through Git Bash, and with a named preset, in that copy with its
+#     own CMakePresets.json (Windows Python's CRLF output and Windows paths, #3500 review).
 # Registered in CTest on Windows with PowerShell 7; can also run directly with pwsh -File. Skips (passes)
 # when clang-tidy isn't installed.
 #Requires -Version 7
@@ -45,8 +46,12 @@ function Write-FixtureCompdb([string]$Root, [string]$BuildDir, [string]$Form) {
     if ($Form -eq 'arguments') {
         $entry.arguments = @('clang++', '-std=c++23', "-I$dir", '-DTIDY_FIXTURE_DEFINE="fixture name"') + $unusable + @('-c', $cpp)
     } else {
-        $entry.command = ('"C:\Program Files\LLVM\bin\clang++.exe" -std=c++23 -I{0} "-DTIDY_FIXTURE_DEFINE=\"fixture name\"" {1} -c {2}' -f
-            $dir, ($unusable -join ' '), $cpp)
+        # Every path-bearing argument quoted, as CMake does when a path has a space ($Root can: see below).
+        $quoted = @("-I$dir") + $unusable + @($cpp) | ForEach-Object { if ($_ -match '[/\\]') { "`"$_`"" } else { $_ } }
+        $includeArg, $rest = $quoted
+        $unusableArgs = $rest[0..($rest.Count - 2)] -join ' '
+        $entry.command = ('"C:\Program Files\LLVM\bin\clang++.exe" -std=c++23 {0} "-DTIDY_FIXTURE_DEFINE=\"fixture name\"" {1} -c {2}' -f
+            $includeArg, $unusableArgs, $rest[-1])
     }
     $entry.file = $cpp
     New-Item -ItemType Directory -Path $BuildDir -Force | Out-Null
@@ -67,33 +72,12 @@ $gitBash = if ($gitExecPath) { Join-Path $gitExecPath '..\..\..\bin\bash.exe' } 
 $gitBash = if ($gitBash -and (Test-Path -LiteralPath $gitBash)) { (Resolve-Path -LiteralPath $gitBash).ProviderPath } else { $null }
 
 $scratch = Join-Path ([IO.Path]::GetTempPath()) "tasksmack-clang-tidy-headers-$([guid]::NewGuid().ToString('N'))"
-# The named-preset case runs a copy of the scripts whose CMakePresets.json names the fixture database.
-# It lives in the checkout's (git-ignored) .cache, so its path is spelled like the checkout's, never a
+# A copy of the scripts and the fixture, in a directory whose name has a space: the cases below run
+# from it as well as from the checkout, and the named-preset case uses its own CMakePresets.json. It
+# lives in the checkout's (git-ignored) .cache, so its path is spelled like the checkout's, never a
 # temp directory's 8.3 short name.
-$copy = Join-Path $repoRoot ".cache\clang-tidy-headers-test-$([guid]::NewGuid().ToString('N'))"
+$copy = Join-Path $repoRoot ".cache\clang-tidy headers test $([guid]::NewGuid().ToString('N'))"
 try {
-    # ── tools/clang-tidy.ps1, the script CI's Windows clang-tidy runs: both database forms ──────
-    $fixtureCpp = Join-Path $repoRoot "$fixtureRel\HeaderFinding.cpp"
-    foreach ($form in 'arguments', 'command') {
-        $buildDir = Join-Path $scratch $form
-        Write-FixtureCompdb -Root $repoRoot -BuildDir $buildDir -Form $form
-        $output = & pwsh -NoLogo -NoProfile -File (Join-Path $PSScriptRoot 'clang-tidy.ps1') -BuildDir $buildDir -Files $fixtureCpp -Jobs 1 *>&1 | Out-String
-        Assert-ReportsHeaderFinding "clang-tidy.ps1 -BuildDir ($form database)" $output $LASTEXITCODE
-    }
-
-    if (-not $gitBash) {
-        Write-Host 'Git Bash not found; the clang-tidy.sh hand-off was not tested'
-        Write-Host 'clang-tidy header tests passed'
-        exit 0
-    }
-
-    # ── tools/clang-tidy.sh from Git Bash, the command agents run, which hands off to clang-tidy.ps1 ─
-    $buildDir = Join-Path $scratch 'arguments'
-    $shScript = (Join-Path $PSScriptRoot 'clang-tidy.sh') -replace '\\', '/'
-    $output = & $gitBash $shScript --build-dir ($buildDir -replace '\\', '/') -j 1 "$($fixtureRel -replace '\\', '/')/HeaderFinding.cpp" 2>&1 | Out-String
-    Assert-ReportsHeaderFinding 'clang-tidy.sh --build-dir (Git Bash)' $output $LASTEXITCODE
-
-    # ── clang-tidy.sh with a named preset: its binaryDir comes from Windows Python (CRLF) ────────
     New-Item -ItemType Directory -Path (Join-Path $copy 'tools') -Force | Out-Null
     foreach ($file in 'clang-tidy.sh', 'clang-tidy.ps1', 'common.sh', 'common.ps1', 'dedupe-compile-commands.py') {
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot $file) -Destination (Join-Path $copy 'tools')
@@ -103,6 +87,31 @@ try {
     }
     New-Item -ItemType Directory -Path (Join-Path $copy $fixtureRel) -Force | Out-Null
     Copy-Item -Path (Join-Path $repoRoot "$fixtureRel\*") -Destination (Join-Path $copy $fixtureRel)
+
+    # ── tools/clang-tidy.ps1, the script CI's Windows clang-tidy runs: both database forms ──────
+    foreach ($root in $repoRoot, $copy) {
+        foreach ($form in 'arguments', 'command') {
+            $buildDir = Join-Path $scratch "$form-$([array]::IndexOf(@($repoRoot, $copy), $root))"
+            Write-FixtureCompdb -Root $root -BuildDir $buildDir -Form $form
+            $output = & pwsh -NoLogo -NoProfile -File (Join-Path $root 'tools\clang-tidy.ps1') -BuildDir $buildDir `
+                -Files (Join-Path $root "$fixtureRel\HeaderFinding.cpp") -Jobs 1 *>&1 | Out-String
+            Assert-ReportsHeaderFinding "clang-tidy.ps1 -BuildDir ($form database, from $root)" $output $LASTEXITCODE
+        }
+    }
+
+    if (-not $gitBash) {
+        Write-Host 'Git Bash not found; the clang-tidy.sh hand-off was not tested'
+        Write-Host 'clang-tidy header tests passed'
+        exit 0
+    }
+
+    # ── tools/clang-tidy.sh from Git Bash, the command agents run, which hands off to clang-tidy.ps1 ─
+    $buildDir = Join-Path $scratch 'arguments-0'
+    $shScript = (Join-Path $PSScriptRoot 'clang-tidy.sh') -replace '\\', '/'
+    $output = & $gitBash $shScript --build-dir ($buildDir -replace '\\', '/') -j 1 "$($fixtureRel -replace '\\', '/')/HeaderFinding.cpp" 2>&1 | Out-String
+    Assert-ReportsHeaderFinding 'clang-tidy.sh --build-dir (Git Bash)' $output $LASTEXITCODE
+
+    # ── clang-tidy.sh with a named preset, from the copy: its binaryDir comes from Windows Python ─
     [IO.File]::WriteAllText((Join-Path $copy 'CMakePresets.json'), (ConvertTo-Json -Depth 4 -InputObject ([ordered]@{
                     version = 6
                     configurePresets = @(@{ name = 'tidy-fixture'; binaryDir = '${sourceDir}/build/tidy-fixture' })
