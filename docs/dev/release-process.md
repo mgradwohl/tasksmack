@@ -399,15 +399,17 @@ environment, and in order it:
    `ReleaseDate`.
 3. checks that `TaskSmack.TaskSmack` is already in winget-pkgs, that this version isn't, and that no open pull
    request is for it. If any check fails, the job passes with a notice and submits nothing. That covers v0.11.0's
-   own tag run, before the first submission merges, and a re-run after a successful submission.
+   own tag run, before the first submission merges, and a re-run after a successful submission. Only a confirmed
+   HTTP 404 counts as "not there": a rate limit, a 5xx or no response is retried with backoff, then fails the job
+   with GitHub's answer, so an outage never skips a release's submission.
 4. downloads `wingetcreate.exe` at the pinned release (`WINGETCREATE_VERSION`) and checks its SHA-256
    (`WINGETCREATE_SHA256`).
 5. runs `wingetcreate update TaskSmack.TaskSmack --version X.Y.Z --urls <x64 installer>|x64 <arm64 installer>|arm64
    --release-notes-url <release> --release-date <date> --prtitle "Update: TaskSmack.TaskSmack to X.Y.Z" --submit`.
    wingetcreate downloads both installers, hashes them, and copies every other field from the previous version's
    manifests. It then pushes a branch to `tasksmack-boop/winget-pkgs` and opens the pull request from it.
-6. looks the pull request up on winget-pkgs (search, up to 6 tries 20 s apart) and links it in the step summary. If
-   no pull request turns up, the job fails.
+6. looks the pull request up on winget-pkgs (search, up to 6 tries 20 s apart) and links it in the step summary.
+   Only an open or merged pull request counts, not an earlier rejected one. If none turns up, the job fails.
 
 The pull request shows as `tasksmack-boop`, the machine account whose address is `tasksmack@uppercutwoodworks.com`
 (#3493); the manifests have no e-mail field. The account's first pull request gets `Needs-CLA` until someone
@@ -423,7 +425,8 @@ which means main is red and holds merges), while any of these hold:
 - it was closed without merging, or none exists a day after the release;
 - 7 days have passed.
 
-It closes that issue once the version is there, and does nothing before the first submission.
+It closes that issue once the version is there, and does nothing before the first submission. As in the job,
+only a 404 means "not submitted yet". Any other failed call, the search included, fails the check instead.
 
 If the job fails after the release is out, fix the cause and re-run the job, or submit that version by hand with
 `wingetcreate update ... --submit` as above. wingetcreate is used rather than `vedantmgoyal9/winget-releaser`:

@@ -55,13 +55,17 @@ if ($ReleaseDate -and -not [datetime]::TryParseExact($ReleaseDate, 'yyyy-MM-dd',
         [Globalization.DateTimeStyles]::None, [ref]$parsedDate)) {
     Fail "-ReleaseDate must be yyyy-MM-dd, not '$ReleaseDate'."
 }
+# Absolute from here on: .NET's file calls resolve a relative path against the process's working directory,
+# which in a PowerShell session after Set-Location isn't PowerShell's location.
+$here = (Get-Location -PSProvider FileSystem).ProviderPath
+$ReleaseDir = [IO.Path]::GetFullPath($ReleaseDir, $here)
 $sumsPath = Join-Path $ReleaseDir 'SHA256SUMS'
 if (-not (Test-Path -LiteralPath $sumsPath -PathType Leaf)) { Fail "$sumsPath not found." }
-if (-not $OutDir) { $OutDir = Join-Path $ReleaseDir 'winget' }
+$OutDir = if ($OutDir) { [IO.Path]::GetFullPath($OutDir, $here) } else { Join-Path $ReleaseDir 'winget' }
 
 # SHA256SUMS is `sha256sum` output: '<64 hex>  <name>' per line (release.yml, "Write SHA256SUMS").
 $sums = @{}
-foreach ($line in [IO.File]::ReadAllLines((Resolve-Path -LiteralPath $sumsPath).Path)) {
+foreach ($line in [IO.File]::ReadAllLines($sumsPath)) {
     if ($line -match '^([0-9a-f]{64})  ([^/\\]+)$') { $sums[$Matches[2]] = $Matches[1] }
     elseif ($line.Trim()) { Fail "$sumsPath has a line that isn't '<sha256>  <name>': $line" }
 }
@@ -99,11 +103,19 @@ foreach ($template in $templates) {
     foreach ($key in $values.Keys) { $text = $text.Replace("`${$key}", $values[$key]) }
     $manifests[$template] = $text
 }
-New-Item -ItemType Directory -Path $target -Force | Out-Null
-$utf8 = [Text.UTF8Encoding]::new($false)
-foreach ($template in $manifests.Keys) { [IO.File]::WriteAllText((Join-Path $target $template), $manifests[$template], $utf8) }
-
-$target = (Resolve-Path -LiteralPath $target).Path
+# Written to a staging folder beside the version's and renamed into place, so a failed write leaves no folder
+# (empty or partial) that would block the next run.
+$parent = Split-Path -Parent $target
+[IO.Directory]::CreateDirectory($parent) | Out-Null
+$staging = Join-Path $parent ".$Version.tmp-$([guid]::NewGuid().ToString('N'))"
+try {
+    [IO.Directory]::CreateDirectory($staging) | Out-Null
+    $utf8 = [Text.UTF8Encoding]::new($false)
+    foreach ($template in $manifests.Keys) { [IO.File]::WriteAllText((Join-Path $staging $template), $manifests[$template], $utf8) }
+    [IO.Directory]::Move($staging, $target)
+} finally {
+    if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue }
+}
 Write-Host "Wrote TaskSmack.TaskSmack $Version's manifests to $target"
 Write-Host "  x64:   $($installers.SHA256_X64)  $($values.SHA256_X64)"
 Write-Host "  arm64: $($installers.SHA256_ARM64)  $($values.SHA256_ARM64)"

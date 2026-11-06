@@ -88,6 +88,31 @@ try {
     $undated = [IO.File]::ReadAllText((Join-Path $out 'manifests/t/TaskSmack/TaskSmack/1.2.3/TaskSmack.TaskSmack.installer.yaml'))
     Assert-True (-not $undated.Contains('ReleaseDate') -and -not $undated.Contains('${')) "Without -ReleaseDate:`n$undated"
 
+    # ── Relative paths, run in this session after Set-Location (PRRT_kwDOQo1RlM60WbQG) ────────────
+    # In-process, with .NET's working directory somewhere else, as in a PowerShell session whose location
+    # changed: the script must resolve -ReleaseDir and -OutDir against PowerShell's location before its .NET
+    # file writes, and leave no staging folder behind.
+    $relative = Join-Path $root 'relative'
+    New-Item -ItemType Directory -Path (Join-Path $relative 'release') | Out-Null
+    Copy-Item -LiteralPath (Join-Path $release 'SHA256SUMS') -Destination (Join-Path $relative 'release')
+    $savedLocation = Get-Location
+    $savedDirectory = [Environment]::CurrentDirectory
+    try {
+        Set-Location -LiteralPath $relative
+        [Environment]::CurrentDirectory = [IO.Path]::GetTempPath()
+        & $script -Version 1.2.3 -ReleaseDir 'release' -OutDir 'out' 6>&1 | Out-Null
+    } finally {
+        Set-Location $savedLocation
+        [Environment]::CurrentDirectory = $savedDirectory
+    }
+    $relativeDir = Join-Path $relative 'out/manifests/t/TaskSmack/TaskSmack'
+    $written = @(Get-ChildItem -LiteralPath (Join-Path $relativeDir '1.2.3') -File | ForEach-Object Name)
+    Assert-True ($written.Count -eq 3) "Relative paths: wrote [$($written -join ', ')] under $relativeDir"
+    $leftovers = @(Get-ChildItem -LiteralPath $relativeDir -Force | Where-Object Name -NE '1.2.3')
+    Assert-True ($leftovers.Count -eq 0) "Relative paths: left behind $(($leftovers | ForEach-Object Name) -join ', ')"
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path ([IO.Path]::GetTempPath()) 'out/manifests/t/TaskSmack/TaskSmack/1.2.3'))) 'Relative paths: wrote under .NET''s working directory'
+    $staged = @(Get-ChildItem -LiteralPath (Join-Path $release 'winget/manifests/t/TaskSmack/TaskSmack') -Force | Where-Object Name -NE '1.2.3')
+    Assert-True ($staged.Count -eq 0) "The good run left $(($staged | ForEach-Object Name) -join ', ') beside its folder"
     # ── Refusals: a bad version, a missing installer, a malformed line, no SHA256SUMS ────────────────
     foreach ($case in @(
             @{ Name = 'v-prefix'; Version = 'v1.2.3'; Lines = @("$x64  TaskSmack-1.2.3-win64.exe", "$arm64  TaskSmack-1.2.3-windows-arm64.exe"); Expect = 'X\.Y\.Z' }

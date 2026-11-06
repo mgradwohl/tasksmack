@@ -3368,21 +3368,47 @@ jobs:
             'submit=false' | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
             exit 0
           }
+          function Stop-Step([string]$Message) {
+            "- WinGet: **FAILED** ($Message)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+            Write-Error $Message
+            exit 1
+          }
+          # Only a confirmed 404 means "not there": a rate limit (403/429), a 5xx or no response is retried with
+          # backoff and then fails the step with what GitHub said, so a release's submission is never skipped by an
+          # outage. Returns 200 or 404.
+          function Get-HttpStatus([string]$Path) {
+            $delay = 5
+            for ($try = 1; $try -le 4; $try++) {
+              $out = @(gh api -i --silent $Path 2>&1 | ForEach-Object { "$_" })
+              $status = if ($out.Count -gt 0 -and $out[0] -match '^HTTP/\S+ (\d{3})') { [int]$Matches[1] } else { 0 }
+              if ($status -eq 200 -or $status -eq 404) { return $status }
+              $detail = if ($status) { ($out | Where-Object { $_ -match '^(HTTP/|Retry-After|X-Ratelimit-Remaining|X-Ratelimit-Reset)' }) -join '; ' } else { "no response: $($out -join ' ')" }
+              Write-Host "GET $Path, try $try of 4: $detail"
+              if ($try -lt 4 -and ($status -eq 0 -or $status -eq 403 -or $status -eq 429 -or $status -ge 500)) {
+                Start-Sleep -Seconds $delay
+                $delay *= 2
+                continue
+              }
+              Stop-Step "GET $Path failed ($detail), so whether to submit $env:TAG is unknown; re-run the job"
+            }
+          }
           $version = $env:TAG.Substring(1)
           $folder = "repos/microsoft/winget-pkgs/contents/manifests/t/TaskSmack/TaskSmack"
-          $null = gh api $folder --silent 2>&1
-          if ($LASTEXITCODE -ne 0) {
+          if ((Get-HttpStatus $folder) -eq 404) {
             Skip "$env:WINGET_PACKAGE_ID isn't in microsoft/winget-pkgs yet, so $env:TAG is left for the first, manual submission (docs/dev/release-process.md, `"Publishing to WinGet`")."
           }
-          $null = gh api "$folder/$version" --silent 2>&1
-          if ($LASTEXITCODE -eq 0) { Skip "$env:WINGET_PACKAGE_ID $version is already in microsoft/winget-pkgs." }
+          if ((Get-HttpStatus "$folder/$version") -eq 200) { Skip "$env:WINGET_PACKAGE_ID $version is already in microsoft/winget-pkgs." }
           $versionPattern = "(^|[^0-9.])$([regex]::Escape($version))($|[^0-9.])"
-          $found = gh api -X GET search/issues -f q="repo:microsoft/winget-pkgs is:pr is:open $env:WINGET_PACKAGE_ID in:title" | ConvertFrom-Json
-          if ($LASTEXITCODE -ne 0) { Write-Error "Couldn't search microsoft/winget-pkgs' pull requests."; exit 1 }
+          $found = $null
+          for ($try = 1; $try -le 4 -and -not $found; $try++) {
+            $json = gh api -X GET search/issues -f q="repo:microsoft/winget-pkgs is:pr is:open $env:WINGET_PACKAGE_ID in:title" 2>&1 | Out-String
+            if ($LASTEXITCODE -eq 0) { $found = $json | ConvertFrom-Json }
+            elseif ($try -lt 4) { Write-Host "Search, try $try of 4, failed: $json"; Start-Sleep -Seconds (5 * [math]::Pow(2, $try - 1)) }
+            else { Stop-Step "searching microsoft/winget-pkgs' pull requests failed: $json" }
+          }
           $open = @($found.items | Where-Object { $_.title.Contains($env:WINGET_PACKAGE_ID) -and $_.title -match $versionPattern })
           if ($open.Count -gt 0) { Skip "a pull request for $env:WINGET_PACKAGE_ID $version is already open: $($open[0].html_url)" }
           'submit=true' | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-
       - name: Install wingetcreate
         if: steps.token.outputs.present == 'true' && steps.package.outputs.submit == 'true'
         run: |
@@ -3418,8 +3444,8 @@ jobs:
           exit $code
 
       - name: Confirm the pull request is open
-        # wingetcreate's exit code alone doesn't show the pull request exists, so look it up: tasksmack-boop's pull
-        # request whose title names this version, through the public search API, which can lag a minute behind.
+        # wingetcreate's exit code alone doesn't show the pull request exists, so look it up: tasksmack-boop's open
+        # (or merged) pull request whose title names this version, through the public search API, which can lag a minute behind.
         # Read-only, with this run's GITHUB_TOKEN; the winget token isn't needed. winget-health.yml then follows the
         # pull request until the version is on winget-pkgs' default branch.
         if: steps.submit.outcome == 'success'
@@ -3433,7 +3459,10 @@ jobs:
           for ($try = 1; $try -le $tries; $try++) {
             $found = gh api -X GET search/issues -f q=$query -f sort=created -f order=desc | ConvertFrom-Json
             if ($LASTEXITCODE -eq 0) {
-              $pr = @($found.items | Where-Object { $_.title.Contains($env:WINGET_PACKAGE_ID) -and $_.title -match $versionPattern }) | Select-Object -First 1
+              # Open, or closed because it merged; an earlier, rejected pull request for this version doesn't count.
+              $pr = @($found.items | Where-Object {
+                  $_.title.Contains($env:WINGET_PACKAGE_ID) -and $_.title -match $versionPattern -and
+                  ($_.state -eq 'open' -or ($_.pull_request -and $_.pull_request.merged_at)) }) | Select-Object -First 1
               if ($pr) {
                 Write-Host "::notice title=WinGet::Opened $($pr.html_url)"
                 "- WinGet: submitted $env:WINGET_PACKAGE_ID $version from $env:WINGET_FORK_USER/winget-pkgs: $($pr.html_url) ($($pr.state))" |

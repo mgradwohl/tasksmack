@@ -58,14 +58,44 @@ jobs:
           set -euo pipefail
           run_link="[${GITHUB_WORKFLOW}](${SERVER}/${REPO}/actions/runs/${GITHUB_RUN_ID})"
 
+          # Prints 200 or 404 for a GET. Only a confirmed 404 means "not there": a rate limit (403/429), a 5xx or no
+          # response is retried with backoff, then fails the check with what GitHub said, rather than reading as
+          # "not submitted" or "no pull request".
+          http_status() {
+            local path=$1 delay=5 try out status detail
+            for try in 1 2 3 4; do
+              out=$(gh api -i --silent "$path" 2>&1) || true
+              status=$(sed -nE '1s#^HTTP/[^ ]+ ([0-9]{3}).*#\1#p' <<<"$out")
+              if [[ "$status" == 200 || "$status" == 404 ]]; then
+                echo "$status"
+                return 0
+              fi
+              if [[ -n "$status" ]]; then
+                detail=$(grep -iE '^(HTTP/|Retry-After|X-Ratelimit-(Remaining|Reset))' <<<"$out" | tr -d '\r' | paste -sd ';' - || true)
+              else
+                detail="no response: $(tr '\n' ' ' <<<"$out")"
+              fi
+              echo "GET $path, try $try of 4: $detail" >&2
+              if (( try < 4 )) && [[ -z "$status" || "$status" == 403 || "$status" == 429 || "$status" -ge 500 ]]; then
+                sleep "$delay"
+                delay=$(( delay * 2 ))
+                continue
+              fi
+              echo "::error title=WinGet Health::GET $path failed ($detail)" >&2
+              return 1
+            done
+          }
+
           # Before the first submission there is nothing to follow.
-          if ! gh api "repos/$WINGET_REPO/contents/$PACKAGE_PATH" --silent 2>/dev/null; then
+          status=$(http_status "repos/$WINGET_REPO/contents/$PACKAGE_PATH")
+          if [[ "$status" == 404 ]]; then
             echo "$PACKAGE_ID isn't in $WINGET_REPO yet (no first submission); nothing to check."
             exit 0
           fi
 
           # The newest Latest release: GitHub's Latest is never a draft or a pre-release.
-          IFS='|' read -r tag published < <(gh api "repos/$REPO/releases/latest" --jq '"\(.tag_name)|\(.published_at)"')
+          latest=$(gh api "repos/$REPO/releases/latest" --jq '"\(.tag_name)|\(.published_at)"')
+          IFS='|' read -r tag published <<<"$latest"
           version=${tag#v}
           title="WinGet: $PACKAGE_ID $version isn't published"
           echo "Latest release: $tag, published $published."
@@ -77,7 +107,8 @@ jobs:
             --jq ".[] | select(.pull_request == null) | select(.title == \"$title\" or
               (.title | test(\"^WinGet: $PACKAGE_ID [0-9.]+ isn't published$\"))) | .number" | head -n1)
 
-          if gh api "repos/$WINGET_REPO/contents/$PACKAGE_PATH/$version" --silent 2>/dev/null; then
+          status=$(http_status "repos/$WINGET_REPO/contents/$PACKAGE_PATH/$version")
+          if [[ "$status" == 200 ]]; then
             echo "$PACKAGE_ID $version is on $WINGET_REPO's default branch."
             if [[ -n "$issue" ]]; then
               gh api "repos/$REPO/issues/$issue/comments" --silent \
@@ -88,18 +119,24 @@ jobs:
             exit 0
           fi
 
-          # Not there yet: find this version's pull request, newest first, open or closed (search gives a merged
-          # one as closed, but a merged one would have put the version on the default branch).
+          # Not there yet: find this version's pull request, newest first, an open one before a closed one (search
+          # gives a merged one as closed, but a merged one would have put the version on the default branch). The
+          # search is captured first, so a failed search stops the check rather than reading as "no pull request".
+          if ! prs=$(gh api -X GET search/issues -f q="repo:$WINGET_REPO is:pr $PACKAGE_ID in:title" -f sort=created \
+            -f order=desc -f per_page=30 --jq ".items[] | select(.title | contains(\"$PACKAGE_ID\"))
+              | \"\(.number)|\(.state)|\(.html_url)|\([.labels[].name] | join(\",\"))|\(.title)\""); then
+            echo "::error title=WinGet Health::Searching $WINGET_REPO's pull requests failed; nothing was decided."
+            exit 1
+          fi
           version_re="(^|[^0-9.])${version//./\\.}(\$|[^0-9.])"
           pr_number='' pr_state='' pr_url='' pr_labels=''
           while IFS='|' read -r number state url labels pr_title; do
-            if [[ -n "$number" && "$pr_title" =~ $version_re ]]; then
+            [[ -n "$number" && "$pr_title" =~ $version_re ]] || continue
+            if [[ -z "$pr_number" || "$state" == 'open' ]]; then
               pr_number=$number pr_state=$state pr_url=$url pr_labels=$labels
-              break
             fi
-          done < <(gh api -X GET search/issues -f q="repo:$WINGET_REPO is:pr $PACKAGE_ID in:title" -f sort=created \
-            -f order=desc -f per_page=30 --jq ".items[] | select(.title | contains(\"$PACKAGE_ID\"))
-              | \"\(.number)|\(.state)|\(.html_url)|\([.labels[].name] | join(\",\"))|\(.title)\"")
+            [[ "$state" != 'open' ]] || break
+          done <<<"$prs"
           age_days=$(( ($(date -u +%s) - $(date -u -d "$published" +%s)) / 86400 ))
           problems=()
           if [[ -z "$pr_number" ]]; then
