@@ -73,6 +73,19 @@ class DragTracker
         return {.kind = Step::Kind::Move, .x = targetX, .y = targetY};
     }
 
+    /// The release, with the pointer at (@p mouseX, @p mouseY) in global coordinates: the step that takes
+    /// the window to where the pointer was let go, before the drag is cleared. A drag step has no
+    /// throttle, so this is the decision step() makes; it is its own call because the release must be
+    /// applied even when no frame stepped the drag since the last motion: Core holds frames while the
+    /// size changes (#882), and a drag off a maximize changes it (the restore), so a move and the
+    /// release can both come within one hold. Below the threshold a maximized window stays maximized
+    /// (a bare click); past it the release restores it under the pointer (Restore, then
+    /// rebaseAfterRestore()), as a moving sample would have.
+    [[nodiscard]] Step finish(int mouseX, int mouseY) noexcept
+    {
+        return step(mouseX, mouseY);
+    }
+
     /// After a Restore, with the pointer now at (@p mouseX, @p mouseY): where to put the restored
     /// window, @p restoredWidth wide, so the pointer keeps its place on the title bar: its proportion
     /// across (computeRestoreFromMaximizedDragX()) and its distance below the top

@@ -301,7 +301,7 @@ void TitleBarLayer::onSDLEvent(SDL_Event* event)
     }
     else if (event->type == SDL_EVENT_MOUSE_BUTTON_UP && event->button.button == SDL_BUTTON_LEFT)
     {
-        finishResizeAtRelease(*event);
+        finishInteractionAtRelease(*event);
         endWindowInteraction();
     }
     else if (event->type == SDL_EVENT_WINDOW_FOCUS_LOST)
@@ -565,6 +565,9 @@ void TitleBarLayer::updateWindowInteraction()
 
     if ((mouseButtons & SDL_BUTTON_LMASK) == 0U)
     {
+        // Released without the button-up reaching onSDLEvent() first: finish at the pointer read now,
+        // as the button-up would have (#882), then end.
+        finishInteractionAt(globalMouseX, globalMouseY);
         endWindowInteraction();
         return;
     }
@@ -583,7 +586,12 @@ void TitleBarLayer::updateWindowInteraction()
 
 void TitleBarLayer::updateDrag(const int mx, const int my, Core::Window& window, double& restoreMs, double& setPositionMs)
 {
-    const DragTracker::Step step = m_Drag.step(mx, my);
+    applyDragStep(m_Drag.step(mx, my), mx, my, window, restoreMs, setPositionMs);
+}
+
+void TitleBarLayer::applyDragStep(
+    const DragTracker::Step& step, const int mx, const int my, Core::Window& window, double& restoreMs, double& setPositionMs)
+{
     switch (step.kind)
     {
     case DragTracker::Step::Kind::None:
@@ -676,9 +684,9 @@ void TitleBarLayer::updateResize(
     }
 }
 
-void TitleBarLayer::finishResizeAtRelease(const SDL_Event& buttonUp)
+void TitleBarLayer::finishInteractionAtRelease(const SDL_Event& buttonUp)
 {
-    if (m_InteractionMode != InteractionMode::Resize)
+    if (m_InteractionMode == InteractionMode::None)
     {
         return;
     }
@@ -690,14 +698,36 @@ void TitleBarLayer::finishResizeAtRelease(const SDL_Event& buttonUp)
     }
     // The release's own pointer position, as beginWindowInteraction() takes the press's: the window's
     // origin plus the event's window-local coordinates (SDL captures the mouse during the press, so they
-    // are relative to this window even outside it). While Core holds frames during a resize (#882), a
-    // move and the release can both come before any onUpdate() steps the tracker, and the release is
-    // then the only record of where the pointer ended.
+    // are relative to this window even outside it).
     const auto [windowOriginX, windowOriginY] = window.getPosition();
-    const int globalMouseX = windowOriginX + static_cast<int>(buttonUp.button.x);
-    const int globalMouseY = windowOriginY + static_cast<int>(buttonUp.button.y);
+    finishInteractionAt(windowOriginX + static_cast<int>(buttonUp.button.x), windowOriginY + static_cast<int>(buttonUp.button.y));
+}
+
+void TitleBarLayer::finishInteractionAt(const int mx, const int my)
+{
+    // While Core holds frames during a resize (#882), a move and the release can both come before any
+    // onUpdate() steps the drag or resize, and the release is then the only record of where the pointer
+    // ended. A drag off a maximize is held too: the restore changes the size.
+    auto& window = Core::Application::get().getWindow();
+    SDL_Window* sdlWindow = window.getHandle();
+    if (sdlWindow == nullptr)
+    {
+        return;
+    }
+    if (m_InteractionMode == InteractionMode::Drag)
+    {
+        double restoreMs = 0.0;
+        double setPositionMs = 0.0;
+        applyDragStep(m_Drag.finish(mx, my), mx, my, window, restoreMs, setPositionMs);
+        return;
+    }
+    if (m_InteractionMode != InteractionMode::Resize)
+    {
+        return;
+    }
+    const auto [windowOriginX, windowOriginY] = window.getPosition();
     const auto [minimumWidth, minimumHeight] = window.getMinimumSize();
-    const std::optional<WindowRect> target = m_Resize.finish(globalMouseX, globalMouseY, minimumWidth, minimumHeight);
+    const std::optional<WindowRect> target = m_Resize.finish(mx, my, minimumWidth, minimumHeight);
     if (!target.has_value())
     {
         return;
@@ -715,7 +745,6 @@ void TitleBarLayer::finishResizeAtRelease(const SDL_Event& buttonUp)
     }
     Core::Application::get().signalWindowGeometryChanged();
 }
-
 void TitleBarLayer::endWindowInteraction()
 {
     if (const std::optional<std::pair<int, int>> pending = m_Resize.pendingSize();

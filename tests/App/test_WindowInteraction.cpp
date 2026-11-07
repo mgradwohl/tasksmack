@@ -220,6 +220,54 @@ TEST(RestoreSettleTest, StopEndsItAndNothingHappensBeforeAStart)
     EXPECT_FALSE(settle.check(940, 730, 0.2).has_value());
 }
 
+TEST(DragTrackerTest, ADragOffAMaximizeThenAMoveAndAReleaseWithinAHeldFrameEndsUnderThePointer)
+{
+    // #882 review: the restore changes the size, so Core holds the frames that step the drag. The press
+    // and restore come first; then the pointer moves on and is released within one hold, so no step()
+    // sees that move and the release is the last word.
+    DragTracker drag;
+    drag.begin(1440, 10, 0, 0, true, 1920);
+    ASSERT_EQ(drag.step(1450, 10).kind, DragKind::Restore);
+    ASSERT_EQ(drag.rebaseAfterRestore(800, 1450, 10), std::pair(850, 0));
+
+    // The hold: the pointer goes to (1530, 90) and is released there.
+    const DragTracker::Step released = drag.finish(1530, 90);
+    EXPECT_EQ(released.kind, DragKind::Move);
+    EXPECT_EQ(released.x, 930) << "the restored window follows the pointer to the release";
+    EXPECT_EQ(released.y, 80);
+    EXPECT_EQ(drag.finish(1530, 90).kind, DragKind::None) << "already there";
+}
+
+TEST(DragTrackerTest, AReleasePastTheThresholdBeforeAnyStepRestoresTheMaximizedWindow)
+{
+    // The whole drag off the maximize inside one hold: press, move past the threshold, release. The
+    // release restores the window (then rebaseAfterRestore() places it under the pointer).
+    DragTracker drag;
+    drag.begin(1440, 10, 0, 0, true, 1920);
+    EXPECT_EQ(drag.finish(1500, 120).kind, DragKind::Restore);
+    EXPECT_EQ(drag.rebaseAfterRestore(800, 1500, 120), std::pair(900, 110));
+}
+
+TEST(DragTrackerTest, AReleaseWithinTheThresholdLeavesTheWindowMaximized)
+{
+    // A bare click on a maximized title bar: no restore at the release either.
+    DragTracker drag;
+    drag.begin(960, 10, 0, 0, true, 1920);
+    EXPECT_EQ(drag.finish(962, 11).kind, DragKind::None);
+    EXPECT_TRUE(drag.pendingRestore());
+}
+
+TEST(DragTrackerTest, AReleaseOfANormalWindowDragMovesItToTheReleasePointer)
+{
+    DragTracker drag;
+    drag.begin(500, 20, 100, 50, false, 0);
+    ASSERT_EQ(drag.step(510, 20).kind, DragKind::Move);
+    const DragTracker::Step released = drag.finish(560, 70);
+    EXPECT_EQ(released.kind, DragKind::Move);
+    EXPECT_EQ(released.x, 160);
+    EXPECT_EQ(released.y, 100);
+}
+
 // ---- Resize -----------------------------------------------------------------------------------
 
 constexpr WindowRect START{.x = 100, .y = 100, .width = 800, .height = 600};
