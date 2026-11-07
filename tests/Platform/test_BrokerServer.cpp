@@ -1290,6 +1290,10 @@ constexpr const char* TEXT_AGENT_INNER_ENV = "TASKSMACK_CI_TEXT_AGENT_INNER";
 // which the maintainer hit on WSL) rather than hanging.
 TEST(PkexecTextAgentInner, AnswersAnAdminPromptThroughTheInstalledHelper)
 {
+    if (const std::optional<std::string> why = ::TestSupport::ciRealSystemSkipReason())
+    {
+        GTEST_SKIP() << *why;
+    }
     if (const char* inner = std::getenv(TEXT_AGENT_INNER_ENV); inner == nullptr || std::string_view(inner) != "1")
     {
         GTEST_SKIP() << "Run by PkexecTextAgentRealSystemTest on its pseudo-terminal only";
@@ -1308,10 +1312,27 @@ TEST(PkexecTextAgentInner, AnswersAnAdminPromptThroughTheInstalledHelper)
         EXPECT_TRUE(secondError.contains("couldn't register")) << secondError;
     }
 
+    // Ours must be the agent that answers: the broker skips the factory off the terminal's foreground, and pkexec's
+    // internal agent could prompt in its place when ours fails to register, so both are ruled out here.
+    auto registered = std::make_shared<std::atomic<int>>(0);
+    auto registerError = std::make_shared<std::string>();
     PkexecBroker broker(PkexecBroker::INSTALLED_HELPER_PATH);
-    broker.setTextAgent([agentCommand](const std::stop_token& stopToken, std::string& error) -> std::shared_ptr<void>
-                        { return PolkitTextAgent::startWith(agentCommand, std::chrono::seconds(10), stopToken, error); });
+    broker.setTextAgent(
+        [agentCommand, registered, registerError](const std::stop_token& stopToken, std::string& error) -> std::shared_ptr<void>
+        {
+            std::shared_ptr<void> agent = PolkitTextAgent::startWith(agentCommand, std::chrono::seconds(10), stopToken, error);
+            if (agent != nullptr)
+            {
+                registered->fetch_add(1);
+            }
+            else
+            {
+                *registerError = error;
+            }
+            return agent;
+        });
     const auto connected = broker.connect(std::stop_token{});
+    ASSERT_EQ(registered->load(), 1) << "TaskSmack's own agent didn't register for the prompt: " << *registerError;
     ASSERT_TRUE(connected.has_value()) << connected.error();
 
     std::ifstream statFile("/proc/1/stat");
@@ -1401,6 +1422,22 @@ TEST(PkexecTextAgentRealSystemTest, TaskSmacksOwnAgentAsksForTheAdminPasswordOnI
         }
         if (::waitpid(child, &status, WNOHANG) == child)
         {
+            // Whatever it wrote last may still sit in the terminal: read until it's empty (EIO once the slave is closed).
+            for (;;)
+            {
+                pollfd rest{.fd = master, .events = POLLIN, .revents = 0};
+                if (::poll(&rest, 1, 100) <= 0 || (rest.revents & POLLIN) == 0)
+                {
+                    break;
+                }
+                std::array<char, 1024> buffer{};
+                const ssize_t got = ::read(master, buffer.data(), buffer.size());
+                if (got <= 0)
+                {
+                    break;
+                }
+                output.append(buffer.data(), static_cast<std::size_t>(got));
+            }
             break;
         }
         status = -1;
