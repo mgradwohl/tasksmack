@@ -189,7 +189,7 @@ if ($ExtraArgsFile) {
         exit 2
     }
     try {
-        $ExtraArgs = [System.Text.Json.JsonSerializer]::Deserialize([IO.File]::ReadAllText($ExtraArgsFile, [Text.UTF8Encoding]::new($false)), [string[]], [System.Text.Json.JsonSerializerOptions]::Default)
+        $ExtraArgs = [System.Text.Json.JsonSerializer]::Deserialize([IO.File]::ReadAllText($ExtraArgsFile, [Text.UTF8Encoding]::new($false)), [string[]], [System.Text.Json.JsonSerializerOptions]::new())
     }
     catch {
         Write-Error -Message "-ExtraArgsFile '$ExtraArgsFile' is not a JSON array of strings: $_" -ErrorAction Continue
@@ -1282,7 +1282,7 @@ if ($Baseline) {
         param([string]$Filter, [string]$Directory)
         $argsFile = Join-Path ([IO.Path]::GetTempPath()) "tasksmack-bench-args-$([guid]::NewGuid().ToString('N')).json"
         try {
-            [IO.File]::WriteAllText($argsFile, [System.Text.Json.JsonSerializer]::Serialize([string[]](@($ExtraArgs) + @("--benchmark_filter=$Filter")), [string[]], [System.Text.Json.JsonSerializerOptions]::Default), [Text.UTF8Encoding]::new($false))
+            [IO.File]::WriteAllText($argsFile, [System.Text.Json.JsonSerializer]::Serialize([string[]](@($ExtraArgs) + @("--benchmark_filter=$Filter")), [string[]], [System.Text.Json.JsonSerializerOptions]::new()), [Text.UTF8Encoding]::new($false))
             $childArgs = @('-NoProfile', '-File', $benchScriptPath, $Preset, '-BenchmarkBinary', $benchBin, '-OutputDirectory', $Directory, '-ExtraArgsFile', $argsFile)
             if ($Core) { $childArgs += @('-Core', $Core) }
             $lines = @(& $pwshExe @childArgs | ForEach-Object { Write-Host $_; $_ })
