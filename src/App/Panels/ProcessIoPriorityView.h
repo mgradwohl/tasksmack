@@ -35,7 +35,6 @@
 
 #include <algorithm>
 #include <array>
-#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <format>
@@ -295,26 +294,49 @@ inline constexpr DiscretePrioritySlider IO_HINT_SLIDER{
         return 1; // Normal
     }
     const std::optional<Platform::IoPriorityHint> hint = Platform::ioPriorityHintFromLevel(priority.level);
-    if (hint == Platform::IoPriorityHint::Critical)
+    if (!hint.has_value())
     {
+        return 1; // Normal: a level Windows doesn't define
+    }
+    // IO_HINT_ORDER's stops, spelled out so nothing here can throw.
+    switch (*hint)
+    {
+    case Platform::IoPriorityHint::Critical:
         return PRIORITY_STOP_BEYOND_START;
+    case Platform::IoPriorityHint::High:
+        return 0;
+    case Platform::IoPriorityHint::Low:
+        return 2;
+    case Platform::IoPriorityHint::VeryLow:
+        return 3;
+    case Platform::IoPriorityHint::Normal:
+        break;
     }
-    for (std::size_t i = 0; i < IO_HINT_ORDER.size(); ++i)
-    {
-        if (IO_HINT_ORDER.at(i) == hint)
-        {
-            return static_cast<std::int32_t>(i);
-        }
-    }
-    return 1; // Normal: a level Windows doesn't define
+    return 1;
 }
 
-/// The hint stop @p index stands for: ioHintStopFor()'s inverse (never Critical).
+/// The hint stop @p index stands for: ioHintStopFor()'s inverse (never Critical); held to the stops.
 [[nodiscard]] constexpr Platform::IoPriority ioHintForStop(std::int32_t index) noexcept
 {
-    const auto i = static_cast<std::size_t>(std::clamp(index, 0, static_cast<std::int32_t>(IO_HINT_ORDER.size()) - 1));
-    return {.ioClass = Platform::IoPriorityClass::WindowsHint, .level = static_cast<std::int32_t>(IO_HINT_ORDER.at(i))};
+    Platform::IoPriorityHint hint = Platform::IoPriorityHint::Normal;
+    if (index <= 0)
+    {
+        hint = Platform::IoPriorityHint::High;
+    }
+    else if (index == 2)
+    {
+        hint = Platform::IoPriorityHint::Low;
+    }
+    else if (index >= 3)
+    {
+        hint = Platform::IoPriorityHint::VeryLow;
+    }
+    return {.ioClass = Platform::IoPriorityClass::WindowsHint, .level = static_cast<std::int32_t>(hint)};
 }
+
+// The two functions above and the slider's stops agree, stop by stop.
+static_assert(IO_HINT_ORDER[0] == Platform::IoPriorityHint::High && IO_HINT_ORDER[1] == Platform::IoPriorityHint::Normal &&
+              IO_HINT_ORDER[2] == Platform::IoPriorityHint::Low && IO_HINT_ORDER[3] == Platform::IoPriorityHint::VeryLow);
 
 /// The current I/O priority as the header shows it, in ionice(1)'s words: "best-effort 4", "idle",
 /// "realtime 0", or for a class never set "default (best-effort N from nice)", N being the level the
