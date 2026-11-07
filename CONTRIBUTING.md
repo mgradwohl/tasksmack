@@ -793,6 +793,10 @@ Three established ways to get real coverage of such a file's logic:
      waits to be stopped), and end it and remove what the test made in a scope guard: a registry value, a key,
      a privilege turned on, a service, a `ThrowawayAccount`. Skip with the reason when the runner can't do
      it (no memory compression on a Server image), and rather than overwrite a value that was there before.
+   - **TaskSmack.exe itself:** a test that starts the app copies it (`TASKSMACK_APP_PATH`), its assets and Mesa's
+     software OpenGL into a scratch folder, gives it its own `TASKSMACK_CONFIG_DIR` and `TEMP`, and closes it with
+     `WM_CLOSE`, ending it in a scope guard only if it doesn't exit (`test_CiRealSystemWindowsApp.cpp`). Input
+     goes to its window as messages, never as `SendInput`, which reaches whatever has the foreground.
    - **Never locally:** don't set the variable on your own machine. The daytime filter excludes `CiRealSystem*`.
    - **The rule:** a change to a real OS path adds such a test, or the PR says why only a manual check can
      cover it (a UAC prompt, a sign-out, hardware).

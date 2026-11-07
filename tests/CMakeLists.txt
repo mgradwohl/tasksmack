@@ -826,6 +826,8 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_CiRealSystemWindowsProcess.cpp
     # Services: start, stop, restart and the startup type on throwaway services (TaskSmackCiService.exe)
     Platform/test_CiRealSystemWindowsService.cpp
+    # TaskSmack.exe started on the runner: --minimized, a second start in Task Manager's place, and the folder dialog
+    Platform/test_CiRealSystemWindowsApp.cpp
     Platform/test_RealSystemPathSupport.cpp  # the path comparison those tests check images with; changes nothing
     Platform/test_HelperLauncher.cpp  # starting the helper with ShellExecuteExW("runas"), through fakes (#2549)
     Platform/test_WindowsTaskManagerReplacement.cpp  # taskmgr.exe's IFEO key, on a scratch HKCU key, and the helper's checks (#3072)
@@ -1373,6 +1375,11 @@ if(WIN32)
     tasksmack_apply_windows_platform(TaskSmackCiService)
     add_dependencies(TaskSmackTests TaskSmackCiService)
     target_compile_definitions(TaskSmackTests PRIVATE TASKSMACK_CI_SERVICE_PATH="$<TARGET_FILE:TaskSmackCiService>")
+
+    # TaskSmack.exe itself (#3490), which test_CiRealSystemWindowsApp.cpp copies and starts on the runner. Only its
+    # path: CI's build makes every target, and a TaskSmackTests build of its own needn't relink the app for tests
+    # that skip off the runner (a missing copy fails them there).
+    target_compile_definitions(TaskSmackTests PRIVATE TASKSMACK_APP_PATH="$<TARGET_FILE:TaskSmack>")
 endif()
 
 # test_BundledThemes.cpp checks the shipped theme files themselves, from the source tree.

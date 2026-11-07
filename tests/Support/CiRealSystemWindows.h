@@ -564,17 +564,29 @@ inline void protectAsAnInstall(const std::filesystem::path& path)
     return {std::wstring(path.data(), length)};
 }
 
-/// Sets environment variable @p name for this process (so a child started now inherits it) until scope exit.
+/// Sets environment variable @p name for this process (so a child started now inherits it) until scope exit,
+/// then puts back the value it had, or unsets it when it had none (TEMP, say, which the test itself still needs).
 class ScopedVariable
 {
   public:
     ScopedVariable(std::wstring name, const std::wstring& value) : m_Name(std::move(name))
     {
+        const DWORD needed = GetEnvironmentVariableW(m_Name.c_str(), nullptr, 0);
+        if (needed > 0)
+        {
+            std::wstring previous(needed, L'\0');
+            const DWORD length = GetEnvironmentVariableW(m_Name.c_str(), previous.data(), needed);
+            if (length > 0 && length < needed)
+            {
+                previous.resize(length);
+                m_Previous = std::move(previous);
+            }
+        }
         EXPECT_NE(SetEnvironmentVariableW(m_Name.c_str(), value.c_str()), FALSE) << GetLastError();
     }
     ~ScopedVariable()
     {
-        SetEnvironmentVariableW(m_Name.c_str(), nullptr);
+        SetEnvironmentVariableW(m_Name.c_str(), m_Previous.has_value() ? m_Previous->c_str() : nullptr);
     }
     ScopedVariable(const ScopedVariable&) = delete;
     ScopedVariable& operator=(const ScopedVariable&) = delete;
@@ -583,6 +595,7 @@ class ScopedVariable
 
   private:
     std::wstring m_Name;
+    std::optional<std::wstring> m_Previous;
 };
 
 /// A throwaway local standard account (USER_PRIV_USER, a member of Users only), named tsci<8 hex digits>, with a
