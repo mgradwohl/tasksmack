@@ -38,7 +38,9 @@
     changes, so a benchmark slow in most launches still fails. The launches, the flagged names and the
     combined run go to <result>.across-launches\ next to the result. The script then exits with the
     check's exit code: 0 passed, 1 regressions or low coverage, 2 an unusable input. A coverage loss
-    alone has nothing to re-measure and fails as it is. Needs Python (-Python).
+    alone has nothing to re-measure and fails as it is. A further launch whose manifest records a
+    different core class from the full run's (say, its pinning failed) is exit 2, with nothing
+    combined. Needs Python (-Python), which runs as python -I -X utf8.
 .PARAMETER Launches
     With -Baseline: how many more launches the flagged benchmarks get, 5 in all with the full run.
     Defaults to 4, as heavy-checks.yml.
@@ -47,8 +49,14 @@
     estimates them from the full run's own timings and refuses past it, and no launch starts once it
     is spent; either way the flags stand as regressions. Defaults to 600, as heavy-checks.yml.
 .PARAMETER CheckArgs
-    With -Baseline: more arguments for both checks, e.g. @('--threshold', '40'). The script sets
-    --baseline, --current, --current-manifest and --regressions-out itself, so they are refused.
+    With -Baseline: more arguments for both checks. From PowerShell pass an array,
+    & tools/bench.ps1 -Baseline <file> -CheckArgs @('--threshold', '40'). "pwsh -File" can't bind an
+    array: there -CheckArgs takes one token, so write the option and its value as one,
+    -CheckArgs '--threshold=40' (any further token goes to the benchmark binary). The script sets
+    --baseline, --current, --current-manifest and --regressions-out itself, so they are refused, and
+    so is any abbreviation of them (the checker's argparse accepts unique prefixes, e.g.
+    --current-man), with or without =value. The script's own options also come after -CheckArgs
+    on the checker's command line, so its values win either way.
 .PARAMETER Python
     With -Baseline: the Python interpreter for the check. Defaults to the checkout's
     .venv\Scripts\python.exe when there is one, then python3 or python on PATH (not the Microsoft
@@ -187,6 +195,18 @@ function Find-BenchPython {
     return $(if ($found.Count -gt 0) { $found[0] } else { $null })
 }
 
+function Get-ReservedCheckOption {
+    # The checker option bench.ps1 sets itself that $Argument would set: the option, its =value form,
+    # or an abbreviation of either. tools/check-benchmark-regression.py's argparse accepts any unique
+    # prefix of a long option (no allow_abbrev=False), so --current-man=x is --current-manifest.
+    # Every option it could abbreviate is named, joined with "or"; $null when it sets none of them.
+    param([string]$Argument)
+    $name = $Argument.Split('=', 2)[0]
+    if (-not $name.StartsWith('--') -or $name.Length -le 2) { return $null }
+    $hits = @('--baseline', '--current', '--current-manifest', '--regressions-out' | Where-Object { $_.StartsWith($name, [StringComparison]::Ordinal) })
+    return $(if ($hits.Count -gt 0) { $hits -join ' or ' } else { $null })
+}
+
 # -Baseline is checked before the run, so a mistake fails now and not after a 25-minute run. Exit
 # code 2, a usage error.
 $pythonExe = $null
@@ -202,8 +222,9 @@ if ($Baseline) {
         exit 2
     }
     foreach ($arg in $CheckArgs) {
-        if ($arg -match '^--(baseline|current|current-manifest|regressions-out)(=|$)') {
-            Write-Error -Message "'$arg' is not allowed in -CheckArgs: bench.ps1 sets it for each check itself." -ErrorAction Continue
+        $owned = Get-ReservedCheckOption $arg
+        if ($owned) {
+            Write-Error -Message "'$arg' is not allowed in -CheckArgs: the checker reads it as $owned, which bench.ps1 sets for each check itself." -ErrorAction Continue
             exit 2
         }
     }
@@ -958,6 +979,16 @@ function Invoke-ResultRedaction {
     $json | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath $outFile -Encoding utf8
 }
 
+function Get-ManifestCoreClass {
+    # The core class a bench.ps1 manifest records, as text: the pinned EfficiencyClass, "any" when not
+    # pinned, or "(none)" when it records no placement. Throws when the manifest does not parse.
+    param([string]$Path)
+    $manifest = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
+    $placement = if ($manifest.PSObject.Properties['placement']) { $manifest.placement } else { $null }
+    if ($null -eq $placement -or -not $placement.PSObject.Properties['core_class'] -or $null -eq $placement.core_class) { return '(none)' }
+    return [string]$placement.core_class
+}
+
 function Invoke-AcrossLaunches {
     # -Baseline (#3448): check $First against $Baseline and, when it flags regressions, measure the
     # flagged benchmarks across launches and check the median across them, as heavy-checks.yml's
@@ -983,10 +1014,17 @@ function Invoke-AcrossLaunches {
     New-Item -ItemType Directory -Path $WorkDirectory -Force | Out-Null
     $regressions = Join-Path $WorkDirectory 'regressions.json'
     $nativeExit = { if ($null -eq $LASTEXITCODE) { 2 } else { $LASTEXITCODE } }
+    # Python in isolated UTF-8 mode, as CONTRIBUTING.md asks of wrappers: a benchmark name outside the
+    # console code page would otherwise fail to print through the pipe PowerShell reads.
+    $pythonArgs = @('-I', '-X', 'utf8')
+    # The full run's core class, which every further launch must share (#3163): one that ran elsewhere
+    # (say, its pinning failed and it ran unpinned) would mix cores in one median.
+    $firstClass = if ($FirstManifest -and (Test-Path -LiteralPath $FirstManifest -PathType Leaf)) { Get-ManifestCoreClass $FirstManifest } else { $null }
 
     Write-Host ""
     Write-Host "Checking against $Baseline"
-    & $Python $checker --baseline $Baseline --current $First @CheckArgs --regressions-out $regressions | Out-Host
+    # -CheckArgs first: the script's own options come after them and win (argparse keeps the last).
+    & $Python @pythonArgs $checker @CheckArgs --baseline $Baseline --current $First --regressions-out $regressions | Out-Host
     $checked = & $nativeExit
     # Only flagged regressions are re-measured; a pass, or a usage error, stands.
     if ($checked -ne 1) { return $checked }
@@ -995,7 +1033,7 @@ function Invoke-AcrossLaunches {
     # loss alone) or the estimate is over budget, and says which.
     $clock = [Diagnostics.Stopwatch]::StartNew()
     Write-Host ""
-    $planOut = @(& $Python $helper plan --current $First --regressions $regressions --launches $Launches --budget-seconds $BudgetSeconds)
+    $planOut = @(& $Python @pythonArgs $helper plan --current $First --regressions $regressions --launches $Launches --budget-seconds $BudgetSeconds)
     $planned = & $nativeExit
     if ($planned -ne 0) {
         if ($planned -eq 1) { Write-Host "The flags stand as regressions." }
@@ -1023,13 +1061,21 @@ function Invoke-AcrossLaunches {
             Write-Error -Message "Launch $index's result not found (RESULT=$($launched.Result))." -ErrorAction Continue
             return 2
         }
+        if ($null -ne $firstClass) {
+            $launchManifest = [IO.Path]::ChangeExtension($launched.Result, '.manifest.json')
+            $launchClass = if (Test-Path -LiteralPath $launchManifest -PathType Leaf) { Get-ManifestCoreClass $launchManifest } else { '(no manifest)' }
+            if ($launchClass -cne $firstClass) {
+                Write-Error -Message "Launch $index ran on core class $launchClass, not the full run's $firstClass ($launchManifest), so its times can't share a median with the full run's. Nothing is combined." -ErrorAction Continue
+                return 2
+            }
+        }
         $results.Add($launched.Result)
     }
 
     # A flagged benchmark with no usable median in some launch fails here (exit 2), not quietly.
     $combined = Join-Path $WorkDirectory 'combined.json'
     Write-Host ""
-    & $Python $helper combine --first $First --regressions $regressions --baseline $Baseline --output $combined @results | Out-Host
+    & $Python @pythonArgs $helper combine --first $First --regressions $regressions --baseline $Baseline --output $combined @results | Out-Host
     $combinedExit = & $nativeExit
     if ($combinedExit -ne 0) { return $combinedExit }
 
@@ -1037,7 +1083,7 @@ function Invoke-AcrossLaunches {
     $manifestArgs = if ($FirstManifest -and (Test-Path -LiteralPath $FirstManifest -PathType Leaf)) { @('--current-manifest', $FirstManifest) } else { @() }
     Write-Host ""
     Write-Host "Checking the median across $total launches against $Baseline"
-    & $Python $checker --baseline $Baseline --current $combined @manifestArgs @CheckArgs | Out-Host
+    & $Python @pythonArgs $checker @CheckArgs --baseline $Baseline --current $combined @manifestArgs | Out-Host
     return (& $nativeExit)
 }
 

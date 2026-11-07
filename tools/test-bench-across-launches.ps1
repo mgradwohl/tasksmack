@@ -157,34 +157,88 @@ shutil.copyfile(canned, out)
     Assert-True ($missing.Exit -eq 2 -and $missing.Launched -eq 0) "missing baseline: exit $($missing.Exit), $($missing.Launched) launches"
     $owned = Invoke-Scenario 'owned' @(20.0) -More @('-CheckArgs', '--current=x.json')
     Assert-True ($owned.Exit -eq 2 -and $owned.Launched -eq 0) "-CheckArgs --current: exit $($owned.Exit), $($owned.Launched) launches"
+    # An abbreviation the checker's argparse would read as --current-manifest is refused the same way.
+    $abbreviated = Invoke-Scenario 'abbreviated' @(20.0) -More @('-CheckArgs', '--current-man=x.manifest.json')
+    Assert-True ($abbreviated.Exit -eq 2 -and $abbreviated.Launched -eq 0) "-CheckArgs --current-man: exit $($abbreviated.Exit), $($abbreviated.Launched) launches"
+    Assert-True ($abbreviated.Output -match '--current-manifest') "-CheckArgs --current-man: the option is not named`n$($abbreviated.Output)"
 
-    # In process: Invoke-AcrossLaunches with a launcher that writes canned runs, for two flagged names.
-    # The launcher gets the plan's filter as it is, every name anchored and escaped.
+    # In process: bench.ps1's functions for -Baseline.
     $benchAst = [System.Management.Automation.Language.Parser]::ParseFile($benchScript, [ref]$null, [ref]$null)
-    $function = $benchAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Invoke-AcrossLaunches' }, $false)
-    . ([scriptblock]::Create($function.Extent.Text))
-    $direct = Join-Path $root 'direct'
-    New-Item -ItemType Directory -Path $direct | Out-Null
-    $first = Join-Path $direct 'first.json'
-    $names = @('BM_A/size:8', 'BM_B<int>/threads:2')
-    Write-Run $first @{ 'BM_A/size:8' = 30.0; 'BM_B<int>/threads:2' = 30.0; BM_Steady = 100.0 }
-    $directBaseline = Join-Path $direct 'baseline.json'
-    Write-Run $directBaseline @{ 'BM_A/size:8' = 10.0; 'BM_B<int>/threads:2' = 10.0; BM_Steady = 100.0 }
+    foreach ($functionName in 'Get-ReservedCheckOption', 'Get-ManifestCoreClass', 'Invoke-AcrossLaunches') {
+        $function = $benchAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $functionName }, $false)
+        Assert-True ($null -ne $function) "bench.ps1 has no $functionName"
+        . ([scriptblock]::Create($function.Extent.Text))
+    }
+
+    # The reserved options, their =value forms and every abbreviation of them; nothing else.
+    foreach ($case in @(
+            @{ Arg = '--baseline'; Owned = '--baseline' }
+            @{ Arg = '--base=x.json'; Owned = '--baseline' }
+            @{ Arg = '--b'; Owned = '--baseline' }
+            @{ Arg = '--cur'; Owned = '--current or --current-manifest' }
+            @{ Arg = '--current'; Owned = '--current or --current-manifest' }
+            @{ Arg = '--current-m=x'; Owned = '--current-manifest' }
+            @{ Arg = '--reg'; Owned = '--regressions-out' }
+            @{ Arg = '--regressions-out=r.json'; Owned = '--regressions-out' }
+            @{ Arg = '--threshold=40'; Owned = $null }
+            @{ Arg = '--baseline-manifest=b.manifest.json'; Owned = $null }
+            @{ Arg = '--min-coverage'; Owned = $null }
+            @{ Arg = '40'; Owned = $null }
+            @{ Arg = '--'; Owned = $null }
+            @{ Arg = '--Base'; Owned = $null }
+        )) {
+        $got = Get-ReservedCheckOption $case.Arg
+        Assert-True ("$got" -ceq "$($case.Owned)") "Get-ReservedCheckOption '$($case.Arg)': '$got', not '$($case.Owned)'"
+    }
+
+    # Invoke-AcrossLaunches with a launcher that writes canned runs and manifests, for two flagged names,
+    # one outside every Windows code page's ASCII range (a CJK character): the checker and the helper
+    # run in UTF-8 mode, so it prints through the pipe and the filter comes back as it was written.
+    [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+    $wide = "BM_B<$([char]0x540D)>/threads:2"
+    $names = @('BM_A/size:8', $wide)
+    function New-Direct([string]$Name) {
+        $directory = Join-Path $root $Name
+        New-Item -ItemType Directory -Path $directory | Out-Null
+        $first = Join-Path $directory 'first.json'
+        Write-Run $first @{ 'BM_A/size:8' = 30.0; $wide = 30.0; BM_Steady = 100.0 }
+        $base = Join-Path $directory 'baseline.json'
+        Write-Run $base @{ 'BM_A/size:8' = 10.0; $wide = 10.0; BM_Steady = 100.0 }
+        $manifest = Join-Path $directory 'first.manifest.json'
+        @{ placement = @{ core = 'performance'; core_class = 1 } } | ConvertTo-Json | Set-Content -LiteralPath $manifest -Encoding utf8
+        return [pscustomobject]@{ First = $first; Baseline = $base; Manifest = $manifest; Work = (Join-Path $directory 'work') }
+    }
     $seen = [Collections.Generic.List[string]]::new()
+    # The core class each launch's manifest records, by launch directory name.
+    $classes = @{}
     $fake = {
         param([string]$Filter, [string]$Directory)
         $seen.Add($Filter)
         $path = Join-Path $Directory 'run.json'
-        Write-Run $path @{ 'BM_A/size:8' = 10.0; 'BM_B<int>/threads:2' = 11.0 }
+        Write-Run $path @{ 'BM_A/size:8' = 10.0; $wide = 11.0 }
+        $class = if ($classes.ContainsKey((Split-Path -Leaf $Directory))) { $classes[(Split-Path -Leaf $Directory)] } else { 1 }
+        @{ placement = @{ core = 'performance'; core_class = $class } } | ConvertTo-Json | Set-Content -LiteralPath ([IO.Path]::ChangeExtension($path, '.manifest.json')) -Encoding utf8
         [pscustomobject]@{ ExitCode = 0; Result = $path }
     }
-    $code = Invoke-AcrossLaunches -Python $python -ToolsDirectory $PSScriptRoot -Baseline $directBaseline -First $first `
-        -FirstManifest (Join-Path $direct 'first.manifest.json') -WorkDirectory (Join-Path $direct 'work') -Launches 4 `
-        -BudgetSeconds 600 -CheckArgs @() -Launch $fake 6>$null
+    $direct = New-Direct 'direct'
+    $code = Invoke-AcrossLaunches -Python $python -ToolsDirectory $PSScriptRoot -Baseline $direct.Baseline -First $direct.First `
+        -FirstManifest $direct.Manifest -WorkDirectory $direct.Work -Launches 4 -BudgetSeconds 600 -CheckArgs @() -Launch $fake 6>$null
     Assert-True ($code -eq 0) "direct: exit $code"
     Assert-True ($seen.Count -eq 4 -and @($seen | Select-Object -Unique).Count -eq 1) "direct: filters $($seen -join ' ; ')"
-    Assert-True ($seen[0] -ceq '^(BM_A/size:8|BM_B<int>/threads:2)$') "direct: filter $($seen[0])"
+    Assert-True ($seen[0] -ceq "^(BM_A/size:8|$wide)$") "direct: filter $($seen[0])"
     Assert-True (@($names | Where-Object { $_ -notmatch $seen[0] }).Count -eq 0 -and 'BM_Steady' -notmatch $seen[0]) 'direct: the filter matches the flagged names only'
+    $combinedDirect = Get-Content -LiteralPath (Join-Path $direct.Work 'combined.json') -Raw -Encoding utf8 | ConvertFrom-Json
+    Assert-True (@($combinedDirect.benchmarks | Where-Object { $_.run_name -ceq $wide -and $_.real_time -eq 11.0 }).Count -eq 1) 'direct: the wide name combined'
+
+    # A launch on another core class (launch 3 ran unpinned) is refused before anything is combined.
+    $seen.Clear()
+    $classes['launch-3'] = 'any'
+    $mixed = New-Direct 'mixed'
+    $code = Invoke-AcrossLaunches -Python $python -ToolsDirectory $PSScriptRoot -Baseline $mixed.Baseline -First $mixed.First `
+        -FirstManifest $mixed.Manifest -WorkDirectory $mixed.Work -Launches 4 -BudgetSeconds 600 -CheckArgs @() -Launch $fake 6>$null 2>$null
+    Assert-True ($code -eq 2) "mixed core classes: exit $code"
+    Assert-True ($seen.Count -eq 2) "mixed core classes: $($seen.Count) launches, not 2 (it stops at the mismatch)"
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $mixed.Work 'combined.json'))) 'mixed core classes: combined anyway'
 
     Write-Host 'bench.ps1 -Baseline (across launches) tests passed'
 }

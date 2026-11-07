@@ -1635,17 +1635,25 @@ python3 tools/check-benchmark-regression.py --baseline perf-data/linux-ci-baseli
 ```
 
 On Windows, `bench.ps1 -Baseline <file>` does all of that itself (#3448): it checks the run at the
-checker's defaults (plus any `-CheckArgs`, e.g. `-CheckArgs @('--threshold', '40')`), and when that flags
-regressions it runs the flagged benchmarks alone in `-Launches` more separate launches (default 4, 5 in all),
-each a `bench.ps1` run of its own with the same preset, binary, `-Core` and arguments plus the plan's filter,
-so each is pinned, redacted and given a manifest like any run. It then combines them and checks the median
-across launches at the same thresholds, and exits with that check's code (0 passed, 1 regressions or low
-coverage, 2 unusable input). The flagged names, the launches and the combined run go to
+checker's defaults plus any `-CheckArgs`, and when that flags regressions it runs the flagged benchmarks
+alone in `-Launches` more separate launches (default 4, 5 in all), each a `bench.ps1` run of its own with the
+same preset, binary, `-Core` and arguments plus the plan's filter, so each is pinned, redacted and given a
+manifest like any run. A launch whose manifest records a different core class from the full run's (its
+pinning failed, say) stops it with exit 2 before anything is combined. It then combines them and checks the
+median across launches at the same thresholds, and exits with that check's code (0 passed, 1 regressions or
+low coverage, 2 unusable input). The flagged names, the launches and the combined run go to
 `<result>.across-launches\` next to the result; `-BudgetSeconds` (default 600) bounds the launches as on CI.
-No Windows CI job runs the benchmarks, so this is for local runs, which belong in a quiet window:
+The checks run as `python -I -X utf8`. `-CheckArgs` refuses the options the script sets itself
+(`--baseline`, `--current`, `--current-manifest`, `--regressions-out`) and any abbreviation of them, since
+the checker's argparse accepts unique prefixes. No Windows CI job runs the benchmarks, so this is for local
+runs, which belong in a quiet window:
 
 ```powershell
 pwsh tools/bench.ps1 win-benchmark -Baseline perf-data/win-baseline.json
+# "pwsh -File" can't bind an array, so -CheckArgs takes one token there: the option and its value as one
+pwsh tools/bench.ps1 win-benchmark -Baseline perf-data/win-baseline.json -CheckArgs '--threshold=40'
+# From PowerShell, an array
+& ./tools/bench.ps1 win-benchmark -Baseline perf-data/win-baseline.json -CheckArgs @('--threshold', '40')
 ```
 
 This is a *separate* baseline from `perf-data/linux-baseline.json` above, deliberately: that one was
