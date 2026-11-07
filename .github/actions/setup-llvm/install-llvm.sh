@@ -76,10 +76,11 @@ sudo sed -i \
   's|https\?://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
   /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || true
 
-# Always include GUI dependencies; libcurl for the update check's HTTPS client (#3238).
+# Always include GUI dependencies; libcurl for the update check's HTTPS client (#3238); libbpf for
+# the helper's UDP byte counter (#3366, libbpf required on Linux).
 SYSTEM_PACKAGES=(libgl1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev
   libwayland-dev libxkbcommon-dev libfreetype-dev libsystemd-dev libcurl4-openssl-dev libpolkit-agent-1-dev
-  dbus-daemon pkg-config)
+  libbpf-dev dbus-daemon pkg-config)
 # The apt.llvm.org packages this job uses by name: llvm.sh's own four, then the extras. Their
 # dependencies (libllvm, libclang-cpp, ...) come along.
 LLVM_PACKAGES=("clang-${LLVM_VER}" "lldb-${LLVM_VER}" "lld-${LLVM_VER}" "clangd-${LLVM_VER}"

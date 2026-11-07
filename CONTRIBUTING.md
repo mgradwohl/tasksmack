@@ -205,6 +205,9 @@ python -m pip install --require-hashes -r requirements-glad.txt
 # too, to read every user's crash entries from the journal.
 # -DTASKSMACK_WITH_SDBUS=OFF builds without it even when it is installed.
 sudo apt install libsystemd-dev pkg-config
+# Required: libbpf, for the helper's eBPF counter of each process's UDP bytes (#3366). Configure fails
+# without it.
+sudo apt install libbpf-dev
 ```
 
 ### Windows Pre-Requisites
