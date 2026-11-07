@@ -4,6 +4,7 @@
 #include "Core/Utf8Path.h"
 #include "DpiScale.h"
 #include "FallbackTheme.h"
+#include "FontPointSize.h"
 #include "StyleScale.h"
 #include "ThemeCatalog.h"
 #include "ThemeLoader.h"
@@ -28,11 +29,6 @@ namespace
 /// Id of the built-in theme the constructor installs before any theme file is read.
 constexpr std::string_view FALLBACK_THEME_ID = "fallback";
 
-[[nodiscard]] constexpr auto fontSizeIndex(FontSize size) noexcept -> std::size_t
-{
-    return static_cast<std::size_t>(std::to_underlying(size));
-}
-
 } // namespace
 
 auto Theme::get() -> Theme&
@@ -43,7 +39,6 @@ auto Theme::get() -> Theme&
 
 Theme::Theme()
 {
-    initializeFontSizes();
     loadDefaultFallbackTheme();
 }
 
@@ -126,11 +121,6 @@ void Theme::loadThemes(const std::filesystem::path& themesDir)
                               .value_or(0);
 
     spdlog::info("Loaded {} themes, current: {}", m_LoadedSchemes.size(), m_DiscoveredThemes[m_CurrentThemeIndex].name);
-}
-
-void Theme::initializeFontSizes()
-{
-    m_FontSizes = FONT_SIZE_PRESETS;
 }
 
 auto Theme::currentThemeId() const -> const std::string&
@@ -352,7 +342,7 @@ void Theme::applyImGuiStyle() const
     style.SeparatorTextBorderSize = scaledStrokePx(3.0F, scale);
     style.DockingSeparatorSize = scaledStrokePx(2.0F, scale);
 
-    spdlog::info("ImGui style scaled by {:.2f} ({} preset at {:.2f} display scale)", scale, fontConfig().name, m_DisplayScale);
+    spdlog::info("ImGui style scaled by {:.2f} ({} pt at {:.2f} display scale)", scale, m_FontPointSize, m_DisplayScale);
 
     // Apply ImPlot style colors from theme
     // StyleColorsAuto() derives colors from current ImGui style
@@ -417,19 +407,21 @@ auto Theme::accentColor(std::size_t index) const -> ImVec4
 
 // ============ Font Management ============
 
-void Theme::setFontSize(FontSize size)
+void Theme::setFontPointSize(int points)
 {
-    if (size == m_CurrentFontSize)
+    const int clamped = clampFontPointSize(points);
+    if (clamped == m_FontPointSize)
     {
         return;
     }
-    m_CurrentFontSize = size;
-    spdlog::info("Font size changed to: {}", fontConfig().name);
+    m_FontPointSize = clamped;
+    spdlog::info("Font size changed to: {} pt", clamped);
 
     // Queue a style rebuild so padding, spacing and scrollbars follow the new font size; without it
-    // the chrome keeps the previous preset's proportions until the next theme change (#936). Queued
+    // the chrome keeps the previous size's proportions until the next theme change (#936). Queued
     // rather than applied because the settings dialog calls this from inside a live frame --
-    // see applyPendingStyleChanges().
+    // see applyPendingStyleChanges(). The fonts themselves are rebuilt by UILayer at the same frame
+    // boundary (fontsNeedRebuild()).
     m_StyleDirty = true;
 }
 
@@ -446,73 +438,29 @@ void Theme::setDisplayScale(float scale)
     m_StyleDirty = true;
 }
 
-auto Theme::fontConfig() const -> const FontSizeConfig&
-{
-    return m_FontSizes[fontSizeIndex(m_CurrentFontSize)];
-}
-
-auto Theme::fontConfig(FontSize size) const -> const FontSizeConfig&
-{
-    return m_FontSizes[fontSizeIndex(size)];
-}
-
 auto Theme::increaseFontSize() -> bool
 {
-    switch (m_CurrentFontSize)
+    if (m_FontPointSize >= FONT_POINT_SIZE_MAX)
     {
-    case FontSize::Small:
-        setFontSize(FontSize::Medium);
-        return true;
-    case FontSize::Medium:
-        setFontSize(FontSize::Large);
-        return true;
-    case FontSize::Large:
-        setFontSize(FontSize::ExtraLarge);
-        return true;
-    case FontSize::ExtraLarge:
-        setFontSize(FontSize::Huge);
-        return true;
-    case FontSize::Huge:
-        setFontSize(FontSize::EvenHuger);
-        return true;
-    case FontSize::EvenHuger:
-    case FontSize::Count:
         return false;
     }
-
-    return false;
+    setFontPointSize(m_FontPointSize + 1);
+    return true;
 }
 
 auto Theme::decreaseFontSize() -> bool
 {
-    switch (m_CurrentFontSize)
+    if (m_FontPointSize <= FONT_POINT_SIZE_MIN)
     {
-    case FontSize::Small:
-    case FontSize::Count:
         return false;
-    case FontSize::Medium:
-        setFontSize(FontSize::Small);
-        return true;
-    case FontSize::Large:
-        setFontSize(FontSize::Medium);
-        return true;
-    case FontSize::ExtraLarge:
-        setFontSize(FontSize::Large);
-        return true;
-    case FontSize::Huge:
-        setFontSize(FontSize::ExtraLarge);
-        return true;
-    case FontSize::EvenHuger:
-        setFontSize(FontSize::Huge);
-        return true;
     }
-
-    return false;
+    setFontPointSize(m_FontPointSize - 1);
+    return true;
 }
 
 auto Theme::regularFont() const -> ImFont*
 {
-    return m_Fonts[fontSizeIndex(m_CurrentFontSize)].regular;
+    return m_Fonts.regular;
 }
 
 auto Theme::pushRegularFont() const -> ImFont*
@@ -527,28 +475,33 @@ auto Theme::pushRegularFont() const -> ImFont*
 
 auto Theme::largeFont() const -> ImFont*
 {
-    return m_Fonts[fontSizeIndex(m_CurrentFontSize)].large;
+    return m_Fonts.large;
 }
 
 auto Theme::boldFont() const -> ImFont*
 {
-    const auto& fonts = m_Fonts[fontSizeIndex(m_CurrentFontSize)];
-    return fonts.bold != nullptr ? fonts.bold : fonts.regular;
+    return m_Fonts.bold != nullptr ? m_Fonts.bold : m_Fonts.regular;
 }
 
 auto Theme::chartFont() const -> ImFont*
 {
-    return m_Fonts[fontSizeIndex(chartFontSize(m_CurrentFontSize))].regular;
+    return m_Fonts.chart != nullptr ? m_Fonts.chart : m_Fonts.regular;
 }
 
-void Theme::registerFonts(FontSize size, ImFont* regular, ImFont* large)
+void Theme::registerFonts(int pointSize, ImFont* regular, ImFont* large)
 {
-    m_Fonts[fontSizeIndex(size)] = {.regular = regular, .large = large, .bold = nullptr};
+    m_Fonts = {.regular = regular, .large = large, .bold = nullptr, .chart = nullptr};
+    m_FontsBuiltPointSize = regular != nullptr ? pointSize : 0;
 }
 
-void Theme::registerBoldFont(FontSize size, ImFont* bold)
+void Theme::registerBoldFont(ImFont* bold)
 {
-    m_Fonts[fontSizeIndex(size)].bold = bold;
+    m_Fonts.bold = bold;
+}
+
+void Theme::registerChartFont(ImFont* chart)
+{
+    m_Fonts.chart = chart;
 }
 
 void Theme::registerTitleFont(ImFont* font)
@@ -558,7 +511,8 @@ void Theme::registerTitleFont(ImFont* font)
 
 void Theme::clearFontRegistrations()
 {
-    m_Fonts.fill(FontPair{});
+    m_Fonts = FontSet{};
+    m_FontsBuiltPointSize = 0;
     m_TitleFont = nullptr;
     m_ChromeIconFont = nullptr;
     ++m_FontGeneration;

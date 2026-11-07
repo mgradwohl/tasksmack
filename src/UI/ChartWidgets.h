@@ -315,7 +315,7 @@ inline constexpr int LINE_PLOT_POINT_BUDGET_STEP = 16;
     return static_cast<int>(clamped);
 }
 
-/// RAII guard that pushes the chart font (see UI::chartFontSize()) for axis labels and hints.
+/// RAII guard that pushes the chart font (see UI::chartFontPointSize()) for axis labels and hints.
 class PlotFontGuard
 {
   public:

@@ -9,6 +9,7 @@
 #include "App/ElevationNoticeText.h"
 #include "UI/DialogMetrics.h"
 #include "UI/DpiScale.h"
+#include "UI/FontPointSize.h"
 #include "UI/StyleScale.h"
 #include "UI/Theme.h"
 
@@ -324,7 +325,8 @@ class ElevationNoticeFontTest : public ElevationNoticeDialogRenderTest
     }
 
     static constexpr std::array SCALES{1.0F, 1.25F, 1.5F, 1.75F, 2.0F};
-    static constexpr std::array PRESETS{UI::FontSize::Small, UI::FontSize::Medium};
+    /// The old Small and Medium sizes, 7 and 8 pt (#3375).
+    static constexpr std::array POINT_SIZES{7, UI::FONT_POINT_SIZE_DEFAULT};
 
     ImFont* m_Inter = nullptr;
 };
@@ -333,14 +335,14 @@ TEST_F(ElevationNoticeFontTest, NoLineIsALoneWordAtSmallOrMedium)
 {
     ImGui::GetIO().DisplaySize = ImVec2(1200.0F, 800.0F); // The window #1986 was found in
     m_State.openRequested = true;
-    for (const UI::FontSize preset : PRESETS)
+    for (const int points : POINT_SIZES)
     {
         for (const float scale : SCALES)
         {
-            const auto& config = UI::FONT_SIZE_PRESETS.at(static_cast<std::size_t>(preset));
-            const float sizePx = UI::computePointsToPixels(config.regularPt, scale);
-            SCOPED_TRACE(std::string(config.name) + " at " + std::to_string(scale));
-            useInter(config.regularPt, scale);
+            const float regularPt = UI::fontPointSizesFor(points).regularPt;
+            const float sizePx = UI::computePointsToPixels(regularPt, scale);
+            SCOPED_TRACE(std::to_string(points) + " pt at " + std::to_string(scale));
+            useInter(regularPt, scale);
             const Measured measured = settle();
             ASSERT_TRUE(measured.open);
             ASSERT_NEAR(measured.emPx, sizePx, 1.0F); // ImGui rounds the size to a whole pixel
@@ -367,13 +369,12 @@ TEST_F(ElevationNoticeFontTest, NoPlatformsWordingLeavesALoneWordAtSmallOrMedium
         std::string(ElevationNoticeText::OTHER)};
     for (const std::string_view text : texts)
     {
-        for (const UI::FontSize preset : PRESETS)
+        for (const int points : POINT_SIZES)
         {
             for (const float scale : SCALES)
             {
-                const auto& config = UI::FONT_SIZE_PRESETS.at(static_cast<std::size_t>(preset));
-                SCOPED_TRACE(std::string(config.name) + " at " + std::to_string(scale) + ": " + std::string(text.substr(0, 24)));
-                useInter(config.regularPt, scale);
+                SCOPED_TRACE(std::to_string(points) + " pt at " + std::to_string(scale) + ": " + std::string(text.substr(0, 24)));
+                useInter(UI::fontPointSizesFor(points).regularPt, scale);
                 ImGui::NewFrame();
                 // ImGui truncates the window's width to a whole pixel; the body wraps inside the padding.
                 const float wrapWidth =

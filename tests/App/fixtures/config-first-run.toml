@@ -13,6 +13,7 @@
 #   [ui] cpu_details_expanded: whether the Overview's CPU Details block is expanded (true/false); its heading toggles it
 #   [ui] chart_anti_aliasing: smooth chart line/fill edges (true/false); disable for lower CPU/GPU cost on integrated GPUs
 #   [ui] interface_scale: the size of text and controls in percent (100-300), in place of the display's own scale; 0 = Auto (the display's). For a display that reports the wrong scale, such as WSLg's 100%
+#   [font] point_size: the size of body text in points (7-32, default 8); headings are 2 points larger. It replaces the named size of earlier versions, [font] size
 #   [window] width/height/x/y: the window's normal (restored) size and position, kept while it is maximized; a position off every connected display is ignored at startup
 #   [window] maximized: reopen maximized; Restore returns to width/height/x/y
 #   config_version: the format of this file (written by TaskSmack; don't change it)
@@ -29,7 +30,7 @@ config_version = 2
 folder = ''
 
 [font]
-size = 'medium'
+point_size = 8
 
 [metrics]
 max_sane_rate_bps = 12500000000.0

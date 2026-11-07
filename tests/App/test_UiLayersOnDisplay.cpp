@@ -19,6 +19,7 @@
 #include "App/ElevationNoticeLayer.h"
 #include "App/HelpLayer.h"
 #include "App/ProcessColumnConfig.h"
+#include "App/SettingsDialog.h"
 #include "App/SettingsLayer.h"
 #include "App/ShellLayer.h"
 #include "App/TitleBarButtons.h"
@@ -41,6 +42,7 @@
 #include "Domain/SamplingConfig.h"
 #include "ScratchConfigDir.h"
 #include "UI/DpiScale.h"
+#include "UI/FontPointSize.h"
 #include "UI/IconTextureCache.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/RenderMetrics.h"
@@ -491,6 +493,218 @@ TEST_F(UiLayersOnDisplayTest, ADisplayScaleChangeRebuildsTheFontsAtTheMeasuredSc
     EXPECT_GT(observed.measured, 0.0F);
     EXPECT_FLOAT_EQ(observed.afterRebuild, observed.measured); // back at what the window reports
     EXPECT_GT(observed.fontGenerationAfter, observed.fontGenerationBefore) << "the fonts weren't rebuilt";
+}
+
+/// What FontSizeSettingDriverLayer saw (#3375).
+struct FontSizeSettingObserved
+{
+    int builtBefore = 0;                ///< The size the fonts were first built at
+    float emBefore = 0.0F;              ///< ImGui::GetFontSize() then
+    std::uint64_t generationBefore = 0; ///< Theme::fontGeneration() then
+    int settingAfter = 0;               ///< Theme's Font size setting after Save
+    int builtAfter = 0;                 ///< The size the fonts were rebuilt at
+    float emAfter = 0.0F;               ///< ImGui::GetFontSize() a frame after the rebuild
+    float regularPxAfter = 0.0F;        ///< The body font's own size then
+    float chartPxAfter = 0.0F;          ///< The chart font's own size then
+    float styleScaleAfter = 0.0F;       ///< Theme::styleScale() then
+    float displayScale = 0.0F;          ///< Theme::displayScale() throughout
+    std::uint64_t generationAfter = 0;  ///< Theme::fontGeneration() then
+    int savedPointSize = 0;             ///< UserConfig's setting after Save
+    int frames = 0;
+    bool timedOut = false;
+};
+
+/// Pushed after UILayer and SettingsLayer: once the frame has settled, opens
+/// Settings, picks "12 pt" from the Font size combo and presses Save, as a user
+/// does (#3375). UILayer then rebuilds the font atlas at 12 pt at the next
+/// frame boundary; the layer records what the frames draw at, before and after,
+/// and stops the app.
+class FontSizeSettingDriverLayer : public Core::Layer
+{
+  public:
+    explicit FontSizeSettingDriverLayer(FontSizeSettingObserved& observed) : Layer("FontSizeSettingDriver"), m_Observed(observed)
+    {}
+
+    void onRender() override
+    {
+        Core::AnimationRequest::request(Core::AnimationRequest::FULL_RATE); // keep frames coming
+        const int frame = ++m_Observed.frames;
+        if (frame >= MAX_FRAMES)
+        {
+            m_Observed.timedOut = true;
+            Core::Application::get().stop();
+            return;
+        }
+        if (frame < SETTLE)
+        {
+            return;
+        }
+        const UI::Theme& theme = UI::Theme::get();
+        const bool settingsOpen = ImGui::IsPopupOpen(App::SettingsDialog::POPUP_ID);
+        const ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
+        const ImGuiWindow* top = GImGui->OpenPopupStack.empty() ? nullptr : GImGui->OpenPopupStack.back().Window;
+        const bool comboOpen = settingsOpen && top != nullptr && top != modal;
+        const bool retry = frame % RETRY_FRAMES == 0;
+        switch (m_Phase)
+        {
+        case Phase::Open:
+            if (frame == SETTLE)
+            {
+                m_Observed.builtBefore = theme.fontsBuiltPointSize();
+                m_Observed.emBefore = ImGui::GetFontSize();
+                m_Observed.generationBefore = theme.fontGeneration();
+                m_Observed.displayScale = theme.displayScale();
+            }
+            if (settingsOpen)
+            {
+                m_Phase = Phase::OpenCombo;
+            }
+            else if (retry || frame == SETTLE)
+            {
+                Core::OpenSettingsEvent event;
+                Core::Application::get().raiseEvent(event);
+            }
+            break;
+        case Phase::OpenCombo:
+            if (comboOpen)
+            {
+                m_Phase = Phase::Pick;
+            }
+            else if (retry && modal != nullptr)
+            {
+                for (const ImGuiWindow* window : GImGui->Windows)
+                {
+                    if (window->ParentWindow == modal && std::string_view{window->Name}.contains("##SettingsBody"))
+                    {
+                        ImGui::ActivateItemByID(ImHashStr("##FontSize", 0, window->ID));
+                    }
+                }
+            }
+            break;
+        case Phase::Pick:
+            if (!comboOpen)
+            {
+                m_Phase = Phase::Save;
+            }
+            else if (retry)
+            {
+                ImGui::ActivateItemByID(ImHashStr(TARGET_LABEL, 0, top->ID));
+            }
+            break;
+        case Phase::Save:
+            if (!settingsOpen)
+            {
+                m_Observed.settingAfter = theme.fontPointSize();
+                m_Observed.savedPointSize = App::UserConfig::get().settings().fontPointSize;
+                m_Phase = Phase::AwaitRebuild;
+            }
+            else if (retry && modal != nullptr)
+            {
+                // Save: a filled button, "##filled" under its label.
+                ImGui::ActivateItemByID(ImHashStr("##filled", 0, ImHashStr(App::SettingsDialog::SAVE_LABEL, 0, modal->ID)));
+            }
+            break;
+        case Phase::AwaitRebuild:
+            // This frame began after the rebuild when the fonts are at the setting's
+            // size: what it draws at is the new size's.
+            if (theme.fontsBuiltPointSize() == TARGET_POINTS)
+            {
+                m_Observed.builtAfter = theme.fontsBuiltPointSize();
+                m_Observed.emAfter = ImGui::GetFontSize();
+                m_Observed.regularPxAfter = theme.regularFont() != nullptr ? theme.regularFont()->LegacySize : 0.0F;
+                m_Observed.chartPxAfter = theme.chartFont() != nullptr ? theme.chartFont()->LegacySize : 0.0F;
+                m_Observed.styleScaleAfter = theme.styleScale();
+                m_Observed.generationAfter = theme.fontGeneration();
+                Core::Application::get().stop();
+            }
+            break;
+        }
+    }
+
+    static constexpr int TARGET_POINTS = 12;
+    static constexpr const char* TARGET_LABEL = "12 pt";
+
+  private:
+    enum class Phase : std::uint8_t
+    {
+        Open,
+        OpenCombo,
+        Pick,
+        Save,
+        AwaitRebuild,
+    };
+
+    static constexpr int SETTLE = 10;
+    static constexpr int RETRY_FRAMES = 10; // a press that didn't take is made again
+    static constexpr int MAX_FRAMES = 600;
+
+    FontSizeSettingObserved& m_Observed;
+    Phase m_Phase = Phase::Open;
+};
+
+// #3375: picking a point size in Settings and pressing Save rebuilds the fonts
+// at that size, at a frame boundary, in a real UILayer: the text, the chart
+// text and the chrome around it all grow, and the size is saved.
+TEST_F(UiLayersOnDisplayTest, PickingAFontSizeInSettingsRebuildsTheFontsAtIt)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    UI::Theme& theme = UI::Theme::get();
+    const int originalSize = theme.fontPointSize();
+    theme.setFontPointSize(UI::FONT_POINT_SIZE_DEFAULT); // the scratch config's default, as a first
+                                                         // run starts
+    Core::ApplicationSpecification spec;
+    spec.Name = "UiLayersOnDisplayFontSizeTest";
+    spec.VSync = false;
+    FontSizeSettingObserved observed;
+    try
+    {
+        Core::Application app(spec);
+        app.pushLayer<UI::UILayer>();
+        app.pushLayer<App::SettingsLayer>();
+        app.pushLayer<FontSizeSettingDriverLayer>(observed);
+        app.run();
+    }
+    catch (const std::exception& e)
+    {
+        theme.setFontPointSize(originalSize);
+        FAIL() << "Application failed after the display probe passed: " << e.what();
+    }
+    App::UserConfig::get().flushPendingSave(); // Save is written by the settings worker (#2916)
+    theme.setFontPointSize(originalSize);
+
+    constexpr int TARGET = FontSizeSettingDriverLayer::TARGET_POINTS;
+    EXPECT_FALSE(observed.timedOut);
+    EXPECT_EQ(observed.builtBefore, UI::FONT_POINT_SIZE_DEFAULT);
+    EXPECT_EQ(observed.settingAfter, TARGET);
+    EXPECT_EQ(observed.savedPointSize, TARGET);
+    EXPECT_EQ(observed.builtAfter, TARGET);
+    EXPECT_GT(observed.generationAfter, observed.generationBefore) << "the fonts weren't rebuilt";
+    ASSERT_GT(observed.displayScale, 0.0F);
+    // ImGui rounds a font's size to a whole pixel.
+    EXPECT_NEAR(observed.emBefore, UI::computePointsToPixels(static_cast<float>(UI::FONT_POINT_SIZE_DEFAULT), observed.displayScale), 1.0F);
+    EXPECT_NEAR(observed.regularPxAfter, UI::computePointsToPixels(static_cast<float>(TARGET), observed.displayScale), 0.01F);
+    EXPECT_NEAR(observed.emAfter, observed.regularPxAfter, 1.0F);
+    EXPECT_NEAR(
+        observed.chartPxAfter, UI::computePointsToPixels(static_cast<float>(UI::chartFontPointSize(TARGET)), observed.displayScale), 0.01F);
+    EXPECT_FLOAT_EQ(observed.styleScaleAfter, (static_cast<float>(TARGET) / 8.0F) * observed.displayScale);
+
+    // Saved as a point size, with no named size beside it.
+    const std::filesystem::path savedPath = App::UserConfig::get().configPath();
+    toml::table saved;
+    try
+    {
+        saved = toml::parse_file(Core::pathToUtf8(savedPath));
+    }
+    catch (const toml::parse_error& e)
+    {
+        FAIL() << "can't read " << Core::pathToUtf8(savedPath) << ": " << e.what();
+    }
+    EXPECT_EQ(saved["font"]["point_size"].value<std::int64_t>(), std::optional<std::int64_t>{TARGET});
+    EXPECT_FALSE(saved["font"]["size"]);
 }
 
 /// What MinimizedStartDriverLayer saw (#3150).
@@ -4130,7 +4344,7 @@ class ShellKeysDriverLayer : public Core::Layer
         case Phase::PressGrow:
             if (m_Retries == 0)
             {
-                m_FontBefore = UI::Theme::get().currentFontSize(); // not again on a retry
+                m_FontBefore = UI::Theme::get().fontPointSize(); // not again on a retry
             }
             pressCtrl(ImGuiKey_Equal, false, true);
             next(Phase::ReleaseGrow, 1);
@@ -4141,7 +4355,9 @@ class ShellKeysDriverLayer : public Core::Layer
             next(Phase::AwaitGrow, 1);
             break;
         case Phase::AwaitGrow:
-            m_Observed.fontGrew = UI::Theme::get().currentFontSize() != m_FontBefore;
+            // A point larger, and the fonts rebuilt at it by UILayer at a frame boundary (#3375).
+            m_Observed.fontGrew = UI::Theme::get().fontPointSize() != m_FontBefore && !UI::Theme::get().fontsNeedRebuild() &&
+                                  UI::Theme::get().fontsBuiltPointSize() == UI::Theme::get().fontPointSize();
             static_cast<void>(awaitThen(m_Observed.fontGrew, Phase::PressShrink, Phase::PressGrow));
             break;
         case Phase::PressShrink:
@@ -4154,7 +4370,8 @@ class ShellKeysDriverLayer : public Core::Layer
             next(Phase::AwaitShrink, 1);
             break;
         case Phase::AwaitShrink:
-            m_Observed.fontShrankBack = UI::Theme::get().currentFontSize() == m_FontBefore;
+            m_Observed.fontShrankBack =
+                UI::Theme::get().fontPointSize() == m_FontBefore && UI::Theme::get().fontsBuiltPointSize() == m_FontBefore;
             if (awaitThen(m_Observed.fontShrankBack, Phase::Done, Phase::PressShrink))
             {
                 Core::Application::get().stop();
@@ -4225,7 +4442,7 @@ class ShellKeysDriverLayer : public Core::Layer
     int m_WaitDeadline = 0;
     int m_RetryFrame = 0;
     int m_Retries = 0;
-    UI::FontSize m_FontBefore = UI::FontSize::Medium;
+    int m_FontBefore = UI::FONT_POINT_SIZE_DEFAULT;
 };
 
 TEST_F(UiLayersOnDisplayTest, TheShellsShortcutsAndTheDetailsRequestDoWhatTheySay)
@@ -4261,7 +4478,7 @@ TEST_F(UiLayersOnDisplayTest, TheShellsShortcutsAndTheDetailsRequestDoWhatTheySa
     EXPECT_TRUE(observed.treeViewToggledBack);          // ...and back
     EXPECT_TRUE(observed.metricsOnAfterToggle);         // Ctrl+Shift+M turns the render metrics on...
     EXPECT_FALSE(observed.metricsOffAfterSecondToggle); // ...and off again
-    EXPECT_TRUE(observed.fontGrew);                     // Ctrl+= one preset larger
+    EXPECT_TRUE(observed.fontGrew);                     // Ctrl+= one point larger, fonts rebuilt (#3375)
     EXPECT_TRUE(observed.fontShrankBack);               // Ctrl+- back
 }
 

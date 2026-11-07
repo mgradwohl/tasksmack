@@ -2,6 +2,7 @@
 #include "App/ProcessColumnConfig.h"
 #include "App/UserConfig.h"
 #include "Domain/SamplingConfig.h"
+#include "UI/FontPointSize.h"
 #include "UI/Theme.h"
 
 #include <gtest/gtest.h>
@@ -13,6 +14,7 @@
 #include <array>
 #include <cerrno>
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <ios>
@@ -41,7 +43,8 @@ TEST(UserSettingsTest, DefaultThemeId)
 TEST(UserSettingsTest, DefaultFontSize)
 {
     const UserSettings settings;
-    EXPECT_EQ(settings.fontSize, UI::FontSize::Medium);
+    EXPECT_EQ(settings.fontPointSize, 8); // the old Medium, exactly (#3375)
+    EXPECT_EQ(settings.fontPointSize, UI::FONT_POINT_SIZE_DEFAULT);
 }
 
 TEST(UserSettingsTest, DefaultRefreshInterval)
@@ -121,31 +124,6 @@ TEST(UserSettingsTest, WindowDimensionsBoundaries)
     settings.windowHeight = 16384;
     EXPECT_EQ(settings.windowWidth, 16384);
     EXPECT_EQ(settings.windowHeight, 16384);
-}
-
-// ========== Font Size Enum Values ==========
-
-TEST(UserSettingsTest, AllFontSizesAreValid)
-{
-    UserSettings settings;
-
-    settings.fontSize = UI::FontSize::Small;
-    EXPECT_EQ(settings.fontSize, UI::FontSize::Small);
-
-    settings.fontSize = UI::FontSize::Medium;
-    EXPECT_EQ(settings.fontSize, UI::FontSize::Medium);
-
-    settings.fontSize = UI::FontSize::Large;
-    EXPECT_EQ(settings.fontSize, UI::FontSize::Large);
-
-    settings.fontSize = UI::FontSize::ExtraLarge;
-    EXPECT_EQ(settings.fontSize, UI::FontSize::ExtraLarge);
-
-    settings.fontSize = UI::FontSize::Huge;
-    EXPECT_EQ(settings.fontSize, UI::FontSize::Huge);
-
-    settings.fontSize = UI::FontSize::EvenHuger;
-    EXPECT_EQ(settings.fontSize, UI::FontSize::EvenHuger);
 }
 
 // ========== Window Position Optional Handling ==========
@@ -419,15 +397,17 @@ TEST_F(UserConfigLoadSaveTest, LoadLogsParseFailureAndKeepsDefaultsForTomlppCras
     }
 }
 
-TEST_F(UserConfigLoadSaveTest, LoadParsesAllFontSizes)
+// #3375: a config.toml from before point sizes, with only a named size, loads as the point size that name was.
+TEST_F(UserConfigLoadSaveTest, LoadMapsEveryOldNamedSizeToItsPointSize)
 {
-    const std::vector<std::pair<std::string, UI::FontSize>> cases = {
-        {"small", UI::FontSize::Small},
-        {"medium", UI::FontSize::Medium},
-        {"large", UI::FontSize::Large},
-        {"extra-large", UI::FontSize::ExtraLarge},
-        {"huge", UI::FontSize::Huge},
-        {"even-huger", UI::FontSize::EvenHuger},
+    const std::vector<std::pair<std::string, int>> cases = {
+        {"small", 7},
+        {"medium", 8},
+        {"large", 10},
+        {"extra-large", 12},
+        {"huge", 14},
+        {"even-huger", 16},
+        {"no-such-size", UI::FONT_POINT_SIZE_DEFAULT},
     };
 
     for (const auto& [str, expected] : cases)
@@ -438,7 +418,33 @@ TEST_F(UserConfigLoadSaveTest, LoadParsesAllFontSizes)
             f << "[font]\nsize = \"" << str << "\"\n";
         }
         UserConfig::get().load();
-        EXPECT_EQ(UserConfig::get().settings().fontSize, expected) << "Failed for font size: " << str;
+        EXPECT_EQ(UserConfig::get().settings().fontPointSize, expected) << "Failed for font size: " << str;
+    }
+}
+
+// #3375: the point size, when there is one, wins over an old name beside it; a hand edit is rounded and clamped.
+TEST_F(UserConfigLoadSaveTest, LoadReadsThePointSizeBeforeTheOldName)
+{
+    const std::vector<std::pair<std::string, int>> cases = {
+        {"point_size = 13", 13},
+        {"point_size = 13\nsize = \"huge\"", 13},
+        {"size = \"huge\"\npoint_size = 9", 9},
+        {"point_size = 11.6", 12},
+        {"point_size = 2", UI::FONT_POINT_SIZE_MIN},
+        {"point_size = 900", UI::FONT_POINT_SIZE_MAX},
+        {"point_size = \"big\"\nsize = \"large\"", 10}, // not a number: the old name, as though it weren't there
+        {"point_size = \"big\"", UI::FONT_POINT_SIZE_DEFAULT},
+    };
+
+    for (const auto& [body, expected] : cases)
+    {
+        UserConfig::get().resetConfigPathForTesting(m_ConfigPath);
+        {
+            std::ofstream f(m_ConfigPath);
+            f << "[font]\n" << body << "\n";
+        }
+        UserConfig::get().load();
+        EXPECT_EQ(UserConfig::get().settings().fontPointSize, expected) << body;
     }
 }
 
@@ -528,7 +534,7 @@ pid = "false"
     const auto& settings = UserConfig::get().settings();
     EXPECT_EQ(settings.refreshIntervalMs, Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS);
     EXPECT_EQ(settings.themeId, "arctic-fire");
-    EXPECT_EQ(settings.fontSize, UI::FontSize::Medium);
+    EXPECT_EQ(settings.fontPointSize, UI::FONT_POINT_SIZE_DEFAULT);
     EXPECT_EQ(settings.windowWidth, 1280);
     EXPECT_EQ(settings.windowHeight, 720);
     EXPECT_FALSE(settings.windowMaximized);
@@ -571,16 +577,23 @@ TEST_F(UserConfigLoadSaveTest, SaveWithNoOptionalWindowPos)
     EXPECT_FALSE(cfg.settings().windowPosY.has_value());
 }
 
-TEST_F(UserConfigLoadSaveTest, SaveUsesMediumForUnknownFontSize)
+// #3375: the point size is written as [font] point_size, a whole number in range, and the old name is not written.
+TEST_F(UserConfigLoadSaveTest, SaveWritesThePointSizeInRange)
 {
     auto& config = UserConfig::get();
-    config.settings().fontSize = static_cast<UI::FontSize>(255);
-    config.save();
+    for (const auto& [set, written] : {std::pair{12, 12}, std::pair{255, UI::FONT_POINT_SIZE_MAX}, std::pair{-4, UI::FONT_POINT_SIZE_MIN}})
+    {
+        std::filesystem::remove(m_ConfigPath);
+        config.resetConfigPathForTesting(m_ConfigPath);
+        config.settings().fontPointSize = set;
+        config.save();
 
-    const auto savedConfig = toml::parse_file(m_ConfigPath.string());
-    const auto fontSize = savedConfig["font"]["size"].value<std::string>();
-    ASSERT_TRUE(fontSize.has_value());
-    EXPECT_EQ(*fontSize, "medium");
+        const auto savedConfig = toml::parse_file(m_ConfigPath.string());
+        const auto points = savedConfig["font"]["point_size"].value<std::int64_t>();
+        ASSERT_TRUE(points.has_value()) << set;
+        EXPECT_EQ(*points, written) << set;
+        EXPECT_FALSE(savedConfig["font"]["size"]) << set;
+    }
 }
 
 // ========== saveInBackground() (#2916): the UI thread's saves, written by a worker ==========
@@ -675,7 +688,7 @@ maximized = true
     ASSERT_TRUE(parsed);
     EXPECT_EQ(settings.refreshIntervalMs, 250);
     EXPECT_EQ(settings.themeId, "tokyo-night");
-    EXPECT_EQ(settings.fontSize, UI::FontSize::Large);
+    EXPECT_EQ(settings.fontPointSize, 10); // the old "large" (#3375)
     EXPECT_TRUE(settings.windowMaximized);
 }
 
