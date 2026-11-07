@@ -1558,6 +1558,12 @@ void Window::showMinimizedWithoutFocus()
     // (WM_SHOWWINDOW, WM_WINDOWPOSCHANGED with IsIconic), sent during the call, so its flags follow.
     if (auto* const hwnd = nativeWindowHandle(m_Handle); hwnd != nullptr)
     {
+        // Told first, while the window is still hidden, that it is to be minimized: SDL keeps that as a pending
+        // flag. The WM_SHOWWINDOW below makes SDL apply its pending flags (SDL_OnWindowShown), and with none it
+        // calls SDL_RestoreWindow, a ShowWindow(SW_RESTORE) that showed the window restored and activated it
+        // before it was minimized: TaskSmack.exe --minimized on the CI runner was left restored, in the
+        // foreground (#3490). With the flag, SDL minimizes it there instead.
+        SDL_MinimizeWindow(m_Handle);
         ShowWindow(hwnd, SW_SHOWMINNOACTIVE);
         // A process's first ShowWindow can take its launcher's STARTUPINFO show state instead of the one
         // asked for (STARTF_USESHOWWINDOW: a test runner's, a shortcut's "Run: Normal window"), leaving the
