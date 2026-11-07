@@ -413,8 +413,8 @@ class CiRealSystemStartAtLoginTest : public TestSupport::CiRealSystemTest
 
 TEST_F(CiRealSystemStartAtLoginTest, TheRunValueIsWrittenReadAndRemoved)
 {
-    // Starting TaskSmack.exe --minimized from the value, and its window's state, need the app's own binary, so
-    // they stay a manual check for now (#3490).
+    // TaskSmack.exe started with the value's --minimized, and its window's state, are checked by
+    // CiRealSystemAppLaunchTest (test_CiRealSystemWindowsApp.cpp).
     // Read through TaskSmack's own reader, before the remover exists: any TaskSmack value there now is the user's,
     // and the test doesn't run; nor when the read fails. Then any value of that name, of a type the reader skips.
     Platform::WindowsStartAtLogin startAtLogin;
