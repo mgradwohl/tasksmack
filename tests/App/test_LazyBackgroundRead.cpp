@@ -5,13 +5,16 @@
 /// closed on-demand section dropped (and, for a selection change or a close, stopped: #2404), a
 /// read that throws (a std::exception or anything else) turned into the Failed result on the worker,
 /// and the "Authenticate to read" request (#2309) the sections share (#2567): taken once, withdrawn by
-/// a selection change, offered only while the reader can read as an administrator.
+/// a selection change, offered only while the reader can read as an administrator. Since #3343 each read
+/// runs on a Domain::Worker: shutdown with a read queued, and a read that cannot start.
 
 #include "App/Panels/LazyBackgroundRead.h"
+#include "Domain/AllocationFailureHook.h"
 #include "Platform/IProcessActions.h"
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <chrono>
 #include <future>
 #include <optional>
@@ -232,6 +235,79 @@ TEST(LazyBackgroundReadTest, OnDemandClosingStopsTheReadInFlight)
     read.request();
     read.markDrawnOpen();
     EXPECT_TRUE(read.due(0.0F));
+}
+
+// #3343 shutdown: a section destroyed with its read just started (still on its worker's queue, or running)
+// stops the read and waits for it, so nothing it uses is gone while it runs.
+TEST(LazyBackgroundReadTest, DestroyedWithAReadQueuedItStopsTheReadAndWaits)
+{
+    std::atomic<int> stopped{0};
+    constexpr int RUNS = 50;
+    for (int run = 0; run < RUNS; ++run)
+    {
+        Read read(REFRESH_MS, "ts-test-read", &failed);
+        read.markDrawnOpen();
+        ASSERT_TRUE(read.due(0.0F));
+        ASSERT_FALSE(read.start(TARGET,
+                                [&stopped](const Platform::ProcessTarget&, const std::stop_token& stop)
+                                {
+                                    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+                                    while (!stop.stop_requested() && std::chrono::steady_clock::now() < deadline)
+                                    {
+                                        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                                    }
+                                    if (stop.stop_requested())
+                                    {
+                                        stopped.fetch_add(1);
+                                    }
+                                    return FakeResult{};
+                                })
+                         .has_value());
+    }
+    EXPECT_EQ(stopped.load(), RUNS);
+}
+
+// #3343: a read that throws after a selection change is dropped like any read for the previous selection,
+// and the worker it threw on doesn't hold up the next read.
+TEST(LazyBackgroundReadTest, AThrowingReadForAPreviousSelectionIsDroppedAndTheNextReadRuns)
+{
+    Read read(REFRESH_MS, "ts-test-read", &failed);
+    read.markDrawnOpen();
+    ASSERT_TRUE(read.due(0.0F));
+    static_cast<void>(read.start(TARGET, [](const Platform::ProcessTarget&) -> FakeResult { throw std::runtime_error("boom"); }));
+    read.reset();
+    EXPECT_FALSE(read.takeFinished(TARGET, true).has_value());
+    EXPECT_FALSE(read.inFlight());
+    read.markDrawnOpen();
+    ASSERT_TRUE(read.due(0.0F));
+    ASSERT_FALSE(read.start(TARGET, [](const Platform::ProcessTarget& t) { return FakeResult{.value = t.pid, .error = {}}; }).has_value());
+    EXPECT_EQ(read.takeFinished(TARGET, true).value_or(FakeResult{}).value, TARGET.pid);
+}
+
+// #3343: a read that can't start (no memory for its worker) is the Failed result at once, with nothing in
+// flight, so the section shows it and the next refresh tries again. Skipped where the hook is compiled out
+// (Windows, sanitizer builds: AllocationFailureHook.h); the Linux debug and release builds run it.
+TEST(LazyBackgroundReadTest, AReadThatCannotStartIsTheFailedResultAndTheNextRefreshRetries)
+{
+#ifdef TASKSMACK_NO_ALLOCATOR_HOOK
+    GTEST_SKIP() << TASKSMACK_NO_ALLOCATOR_HOOK;
+#else
+    Read read(REFRESH_MS, "ts-test-read", &failed);
+    read.markDrawnOpen();
+    ASSERT_TRUE(read.due(0.0F));
+    std::optional<FakeResult> failure;
+    {
+        const TestSupport::FailAllocationAfter failNext(0);
+        failure = read.start(TARGET, [](const Platform::ProcessTarget&) { return FakeResult{.value = 1, .error = {}}; });
+    }
+    ASSERT_TRUE(failure.has_value());
+    EXPECT_EQ(failure.value_or(FakeResult{}).value, -1);
+    EXPECT_FALSE(read.inFlight());
+    read.markDrawnOpen();
+    EXPECT_TRUE(read.due(static_cast<float>(REFRESH_MS) / 1000.0F)); // the next refresh
+    ASSERT_FALSE(read.start(TARGET, [](const Platform::ProcessTarget&) { return FakeResult{.value = 2, .error = {}}; }).has_value());
+    EXPECT_EQ(read.takeFinished(TARGET, true).value_or(FakeResult{}).value, 2);
+#endif
 }
 
 // #2567: the "Authenticate to read" press (#2309) the four sections share. The view's next update()

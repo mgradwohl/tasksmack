@@ -23,7 +23,8 @@
 //    through a PublicationSlot; the owner reads latest() on the UI thread, which waits for a pointer swap
 //    at most. Each publication, and a failure, wakes the frame loop (PublicationWake, #3156).
 //  - Shutdown: stop() (and the destructor) cancels the job in flight, waits for it, and drops what is still
-//    queued without running it. It allocates nothing, so it can't fail when memory has run out.
+//    queued without running it. It allocates nothing, so it can't fail when memory has run out. close() does
+//    the same without the wait, for an owner that mustn't block; stop() or the destructor joins later.
 //
 // One thread per worker (#2731: each data domain on its own worker), started with the first submit(). No
 // thread pool. Free of the OS but for the thread name; tested in tests/Domain/test_Worker.cpp.
@@ -304,6 +305,22 @@ template<typename Job, typename Snapshot, typename StopState = std::stop_source>
     /// @return How many queued jobs were dropped.
     std::size_t stop() noexcept
     {
+        const std::size_t dropped = close();
+        if (m_Thread.joinable() && m_Thread.get_id() != std::this_thread::get_id())
+        {
+            m_Thread.join();
+        }
+        m_Idle.notify_all();
+        return dropped;
+    }
+
+    /// stop() without the wait: cancels the job in flight, drops the queued jobs unrun and tells the thread to
+    /// end, but doesn't join it, so an owner on the UI thread never waits for the thread's last bookkeeping
+    /// after a job it has taken the result of (App::BackgroundTask). stop() or the destructor joins it later,
+    /// at once if the thread has ended by then. Allocates nothing; safe to call more than once, from the
+    /// owner's thread. @return How many queued jobs were dropped.
+    std::size_t close() noexcept
+    {
         std::size_t dropped = 0;
         {
             const std::scoped_lock lock(m_Mutex);
@@ -313,10 +330,6 @@ template<typename Job, typename Snapshot, typename StopState = std::stop_source>
             m_Queue.clear(); // in place: draining into another container could allocate (a debug STL's proxy)
             cancelInFlightLocked();
             static_cast<void>(m_Thread.request_stop());
-        }
-        if (m_Thread.joinable() && m_Thread.get_id() != std::this_thread::get_id())
-        {
-            m_Thread.join();
         }
         m_Idle.notify_all();
         return dropped;
