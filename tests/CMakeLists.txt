@@ -707,6 +707,7 @@ set(COMMON_TEST_SOURCES
     App/test_NetInterfaceUtils.cpp
     App/test_PowerStatusText.cpp
     App/test_ElevationNoticeText.cpp
+    App/test_AdministratorHold.cpp # the Access notice's Administrator hold on Domain::Worker (#3343)
     App/test_StatusBarText.cpp
     App/test_UpdateChecker.cpp # the update check's worker, with a fake client and clock (#3093)
     App/test_StartAtLoginSetting.cpp # start at sign-in's worker, with a fake entry (#3093 part 2)
@@ -1116,6 +1117,8 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/PlatformOpen.cpp
     # The Limited Data notice (#1547), run headless (test_ElevationNoticeDialogRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/AccessNoticeDialog.cpp
+    # The Access notice's Administrator hold on Domain::Worker (#3343), with a test broker (test_AdministratorHold.cpp)
+    ${CMAKE_SOURCE_DIR}/src/App/AdministratorHold.cpp
     ${CMAKE_SOURCE_DIR}/src/App/ElevationNoticeDialog.cpp
     # The Help window (#172), run headless (test_HelpWindowRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/HelpWindow.cpp

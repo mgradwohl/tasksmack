@@ -108,6 +108,8 @@ template<typename Snapshot> class CoalescingWriter
     {
         try
         {
+            // A raw jthread, not a Domain::Worker (#3343): it is one-shot, so no thread sits idle between saves,
+            // and flush() waits for everything submitted to be written, which a Worker has no way to say.
             // Assigning joins the previous worker, which found nothing pending and is ending.
             m_Worker = std::jthread(
                 [this]

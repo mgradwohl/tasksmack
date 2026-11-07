@@ -231,6 +231,9 @@ void BackgroundSampler::start()
     m_Running.store(true);
     try
     {
+        // A raw jthread, not a Domain::Worker (#3343): this is a timed loop at the Settings interval (#2731), not
+        // a queue of jobs. It times its own passes (#3153), follows interval changes, and builds its probes on the
+        // thread first (onThreadStart). Each pass contains its own failures, and the entry point catches the rest.
         m_SamplerThread = std::jthread(
             [this, name = std::move(threadName), hook = std::move(startHook), multiThreadedApartment](const std::stop_token& st) noexcept
             {

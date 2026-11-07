@@ -111,6 +111,9 @@ inline constexpr std::string_view HELPER_LAUNCH_THREAD_NAME = "ts-uac-launch";
 /// The worker in the Windows administrator helper (TaskSmackHelper.exe) that waits on TaskSmack's process
 /// and ends the helper's session when it exits (BrokerHelper::ProcessWatch, #2517; on Domain::Worker, #3343).
 inline constexpr std::string_view BROKER_WATCH_THREAD_NAME = "ts-parent-watch";
+/// The worker that holds the Linux administrator helper for the session when the Access notice's
+/// Administrator is chosen, behind its password prompt (App::AdministratorHold, #2728; on Domain::Worker, #3343).
+inline constexpr std::string_view ADMIN_HOLD_THREAD_NAME = "ts-admin-hold";
 /// The worker that reads process icons for the Processes table and Process Details (#1800).
 inline constexpr std::string_view ICON_READ_THREAD_NAME = "ts-icon-read";
 /// The thread that consumes the opt-in UDP event trace on Windows (#1492) while it runs.
