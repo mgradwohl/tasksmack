@@ -296,10 +296,10 @@ TEST_F(ProcessEnvironmentViewRenderTest, FailedReadsDrawTheirStatusInsteadOfAnEm
     ProcessEnvironmentView detailed;
     TestMocks::MockProcessEnvironmentReader detailedReader;
     detailedReader.setResult(
-        {.status = Platform::EnvironmentReadStatus::Failed, .variables = {}, .truncated = false, .detail = "a 32-bit process (WOW64)"});
+        {.status = Platform::EnvironmentReadStatus::Failed, .variables = {}, .truncated = false, .detail = "the process has no PEB"});
     openAndRead(detailed, detailedReader);
-    EXPECT_EQ(detailed.detail(), "a 32-bit process (WOW64)");
-    EXPECT_TRUE(renderAndCapture(detailed, true).contains("Could not be read: a 32-bit process (WOW64)"));
+    EXPECT_EQ(detailed.detail(), "the process has no PEB");
+    EXPECT_TRUE(renderAndCapture(detailed, true).contains("Could not be read: the process has no PEB"));
     detailed.onSelectionChanged(); // the reason goes with the process it was about
     EXPECT_TRUE(detailed.detail().empty());
 }
