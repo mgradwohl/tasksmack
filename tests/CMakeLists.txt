@@ -94,7 +94,8 @@ if(WIN32)
         set_tests_properties(BenchScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_PYTHON=${Python3_EXECUTABLE}")
         # tools/bench.ps1 -Baseline measures flagged benchmarks across launches with
         # tools/bench-across-launches.py and checks the median across them (#3448). A stub binary
-        # copies canned runs; no benchmark runs. About 25 seconds (a PowerShell start per launch).
+        # copies canned runs; no benchmark runs. About 25 seconds alone (a PowerShell start per launch),
+        # so it gets BenchScript's 180 s below.
         add_test(NAME BenchAcrossLaunchesPs1Script
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-bench-across-launches.ps1)
         set_tests_properties(BenchAcrossLaunchesPs1Script PROPERTIES ENVIRONMENT "TASKSMACK_TEST_PYTHON=${Python3_EXECUTABLE}")
@@ -143,20 +144,21 @@ if(WIN32)
         # "Fatal error. Internal CLR error. (0x80131506)" (ctest: SEGFAULT), and only there, so
         # reusable-build-test.yml gives these entries, and no others, a second attempt on that leg.
         set_tests_properties(ResizeCaptureScript EtwCaptureScript EtwAnalysisScript CMakeCacheScript BenchScript
-            CheckPrereqsScript SetupDevScript VerifyWindowsSignaturesScript BuildWindowsInstallerScript
-            ResizePerfSummaryScript WingetManifestScript ClangTidyHeadersScript FormatSourcesScript
-            ReleaseSmokeCheckScript PROPERTIES
+            BenchAcrossLaunchesPs1Script CheckPrereqsScript SetupDevScript VerifyWindowsSignaturesScript
+            BuildWindowsInstallerScript ResizePerfSummaryScript WingetManifestScript ClangTidyHeadersScript
+            FormatSourcesScript ReleaseSmokeCheckScript PROPERTIES
             RESOURCE_LOCK pwsh-script-tests
             LABELS pwsh-script)
         set_tests_properties(ResizeCaptureScript EtwAnalysisScript CMakeCacheScript CheckPrereqsScript SetupDevScript
             VerifyWindowsSignaturesScript BuildWindowsInstallerScript ResizePerfSummaryScript WingetManifestScript
             ClangTidyHeadersScript FormatSourcesScript ReleaseSmokeCheckScript PROPERTIES TIMEOUT 120)
-        set_tests_properties(EtwCaptureScript BenchScript PROPERTIES TIMEOUT 180)
+        set_tests_properties(EtwCaptureScript BenchScript BenchAcrossLaunchesPs1Script PROPERTIES TIMEOUT 180)
     else()
         # Say so rather than leave the ETW script tests silently missing from ctest (#1187).
         message(WARNING "pwsh (PowerShell 7) not found: the ResizeCaptureScript, EtwCaptureScript, "
-                        "EtwAnalysisScript, CMakeCacheScript, BenchScript, CheckPrereqsScript, SetupDevScript, "
-                        "VerifyWindowsSignaturesScript, BuildWindowsInstallerScript, ResizePerfSummaryScript, "
+                        "EtwAnalysisScript, CMakeCacheScript, BenchScript, BenchAcrossLaunchesPs1Script, "
+                        "CheckPrereqsScript, SetupDevScript, VerifyWindowsSignaturesScript, "
+                        "BuildWindowsInstallerScript, ResizePerfSummaryScript, "
                         "WingetManifestScript, ClangTidyHeadersScript, FormatSourcesScript and "
                         "ReleaseSmokeCheckScript tests "
                         "are not registered. Install PowerShell 7 to run them.")
