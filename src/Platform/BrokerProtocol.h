@@ -207,7 +207,7 @@ struct AffinityRequest
 };
 
 /// Set a process's CPU scheduling policy (#3086, protocol v15, Linux): IProcessActions::setSchedPolicy(). Normal,
-/// Batch or Idle with priority 0, or (v16, #3219) the real-time FIFO or round robin with a priority from 1 to 99:
+/// Batch or Idle with priority 0, or (v17, #3219) the real-time FIFO or round robin with a priority from 1 to 99:
 /// the decoder refuses every other pair (isValidSchedPolicySetting()), Deadline included. realtimeThreads says whether
 /// the dialog warned that the process runs real time (RealtimeThreads::Change): only then does Normal, Batch or Idle
 /// change its real-time threads. The answer is an ActionResult.
@@ -215,7 +215,7 @@ struct SchedPolicyRequest
 {
     ProcessTarget target;
     SchedPolicy policy = SchedPolicy::Normal;
-    std::int32_t rtPriority = 0; ///< sched_priority: 1 to 99 for FIFO and round robin, 0 for the others (v16)
+    std::int32_t rtPriority = 0; ///< sched_priority: 1 to 99 for FIFO and round robin, 0 for the others (v17)
     RealtimeThreads realtimeThreads = RealtimeThreads::Keep;
     friend bool operator==(const SchedPolicyRequest&, const SchedPolicyRequest&) = default;
 };
@@ -1148,7 +1148,7 @@ namespace Detail
     return MessageKind::SetAffinity;
 }
 
-/// SetSchedPolicy (#3086): the target, the policy as SchedPolicy's value, (v16, #3219) its real-time priority, then
+/// SetSchedPolicy (#3086): the target, the policy as SchedPolicy's value, (v17, #3219) its real-time priority, then
 /// RealtimeThreads' value.
 [[nodiscard]] inline MessageKind encodePayload(Writer& writer, const SchedPolicyRequest& policy)
 {
@@ -1238,7 +1238,7 @@ namespace Detail
     return AffinityRequest{.target = target, .cpus = std::move(cpus)};
 }
 
-/// A SetSchedPolicy payload (#3086): the target, the policy, its real-time priority (v16, #3219), then
+/// A SetSchedPolicy payload (#3086): the target, the policy, its real-time priority (v17, #3219), then
 /// RealtimeThreads. Refused unless the pair is one Set scheduling policy may set: Normal, Batch or Idle with priority
 /// 0, FIFO or round robin with 1 to 99; Deadline, Unknown and an out-of-range priority are refused here, before the
 /// helper acts, as LinuxProcessControl refuses them too. RealtimeThreads is refused unless Keep or Change.
