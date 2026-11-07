@@ -3,7 +3,8 @@
 // Process Details' I/O priority control (#803): the Linux ionice setting, drawn by ProcessPriorityView
 // under the nice control: one discrete slider through every class and level in bands -- Realtime 0..7 |
 // Best-effort 0..7 | Idle (#1540) -- with the never-set default drawn hollow at the level nice derives, a
-// "Reset to default" button, and its own Apply button.
+// "Reset to default" button, and its own Apply button. On Windows (#3362) the same control sets the I/O
+// priority hint instead: High | Normal | Low | Very low, with no Reset to default.
 //
 // The safety model is ProcessPriorityView's, rule for rule: an edit records the process it was made for
 // (PID and start time); Apply is enabled only when the edit's and the live target's start times are
@@ -34,6 +35,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <format>
@@ -61,6 +63,8 @@ namespace Detail
         return "Best-effort";
     case Platform::IoPriorityClass::Idle:
         return "Idle";
+    case Platform::IoPriorityClass::WindowsHint:
+        return "Priority hint";
     case Platform::IoPriorityClass::None:
     default:
         return "Default";
@@ -73,9 +77,19 @@ namespace Detail
     return ioClass == Platform::IoPriorityClass::Realtime || ioClass == Platform::IoPriorityClass::BestEffort;
 }
 
-/// @p priority as the platform keeps it: the level held to 0-7 for a class with levels, 0 otherwise.
+/// @p priority as the platform keeps it: the level held to 0-7 for a class with levels, a Windows hint held to
+/// Very low to Critical (#3362), 0 otherwise.
 [[nodiscard]] constexpr Platform::IoPriority normalizeIoPriority(const Platform::IoPriority& priority) noexcept
 {
+    if (priority.ioClass == Platform::IoPriorityClass::WindowsHint)
+    {
+        return {
+            .ioClass = priority.ioClass,
+            .level = std::clamp(priority.level,
+                                static_cast<std::int32_t>(Platform::IoPriorityHint::VeryLow),
+                                static_cast<std::int32_t>(Platform::IoPriorityHint::Critical)),
+        };
+    }
     return {
         .ioClass = priority.ioClass,
         .level = ioClassHasLevels(priority.ioClass) ? Domain::Priority::clampIoLevel(priority.level) : 0,
@@ -204,13 +218,117 @@ struct IoStop
     return {.ioClass = Platform::IoPriorityClass::Idle, .level = 0};
 }
 
+// ---------------------------------------------------------------------------------------------------
+// Windows' I/O priority (#3362): one hint, not classes and levels, so its own slider -- High | Normal |
+// Low | Very low, highest first as the nice slider -- in the words Process Explorer and System Informer
+// use. Critical, the memory manager's own, is never offered: a process already there (they are the
+// system's) is shown beyond the start, hollow, as Windows' Realtime priority class is (#1538).
+// ---------------------------------------------------------------------------------------------------
+
+/// The hint's name as the control shows it: "Very low", "Low", "Normal", "High", "Critical".
+[[nodiscard]] constexpr std::string_view ioPriorityHintName(Platform::IoPriorityHint hint) noexcept
+{
+    switch (hint)
+    {
+    case Platform::IoPriorityHint::VeryLow:
+        return "Very low";
+    case Platform::IoPriorityHint::Low:
+        return "Low";
+    case Platform::IoPriorityHint::High:
+        return "High";
+    case Platform::IoPriorityHint::Critical:
+        return "Critical";
+    case Platform::IoPriorityHint::Normal:
+        break;
+    }
+    return "Normal";
+}
+
+/// The hints the slider offers, highest first (stop 0 is High).
+inline constexpr std::array<Platform::IoPriorityHint, 4> IO_HINT_ORDER = {
+    Platform::IoPriorityHint::High,
+    Platform::IoPriorityHint::Normal,
+    Platform::IoPriorityHint::Low,
+    Platform::IoPriorityHint::VeryLow,
+};
+
+/// Its stops, coloured as the nice scale: High in the high-priority colours, Very low the lowest.
+inline constexpr std::array<PrioritySliderStop, IO_HINT_ORDER.size()> IO_HINT_STOPS = {
+    {
+        {.name = "High", .itemLabel = "I/O priority: High###io_priority_slider", .colorNice = -10},
+        {.name = "Normal", .itemLabel = "I/O priority: Normal###io_priority_slider", .colorNice = 0},
+        {.name = "Low", .itemLabel = "I/O priority: Low###io_priority_slider", .colorNice = 10},
+        {.name = "Very low", .itemLabel = "I/O priority: Very low###io_priority_slider", .colorNice = 19},
+    },
+};
+
+/// Critical, shown beyond the start, hollow, never picked.
+inline constexpr PrioritySliderStop IO_HINT_CRITICAL_BEYOND_STOP{
+    .name = "Critical",
+    .itemLabel = "I/O priority: Critical###io_priority_slider",
+    .colorNice = -20,
+};
+
+inline constexpr const char* IO_HINT_SLIDER_TOOLTIP = "Windows I/O priority:\n"
+                                                      "  High: served before Normal; needs administrator rights\n"
+                                                      "  Normal: every process's default\n"
+                                                      "  Low, Very low: background work, served after Normal\n"
+                                                      "Critical is the system's own, and isn't offered.\n\n"
+                                                      "Keyboard shortcuts:\n"
+                                                      "  Left/Right, Up/Down: One step higher or lower\n"
+                                                      "  Home/End: Highest/lowest";
+
+/// The Windows slider (#3362).
+inline constexpr DiscretePrioritySlider IO_HINT_SLIDER{
+    .stops = IO_HINT_STOPS,
+    .beyondStart = &IO_HINT_CRITICAL_BEYOND_STOP,
+    .tooltip = IO_HINT_SLIDER_TOOLTIP,
+    .bandStarts = {},
+};
+
+/// The stop for @p priority on the Windows slider: Critical beyond its start (PRIORITY_STOP_BEYOND_START), and
+/// anything not yet read as a Windows hint at Normal, every process's default.
+[[nodiscard]] constexpr std::int32_t ioHintStopFor(const Platform::IoPriority& priority) noexcept
+{
+    if (priority.ioClass != Platform::IoPriorityClass::WindowsHint)
+    {
+        return 1; // Normal
+    }
+    const std::optional<Platform::IoPriorityHint> hint = Platform::ioPriorityHintFromLevel(priority.level);
+    if (hint == Platform::IoPriorityHint::Critical)
+    {
+        return PRIORITY_STOP_BEYOND_START;
+    }
+    for (std::size_t i = 0; i < IO_HINT_ORDER.size(); ++i)
+    {
+        if (IO_HINT_ORDER.at(i) == hint)
+        {
+            return static_cast<std::int32_t>(i);
+        }
+    }
+    return 1; // Normal: a level Windows doesn't define
+}
+
+/// The hint stop @p index stands for: ioHintStopFor()'s inverse (never Critical).
+[[nodiscard]] constexpr Platform::IoPriority ioHintForStop(std::int32_t index) noexcept
+{
+    const auto i = static_cast<std::size_t>(std::clamp(index, 0, static_cast<std::int32_t>(IO_HINT_ORDER.size()) - 1));
+    return {.ioClass = Platform::IoPriorityClass::WindowsHint, .level = static_cast<std::int32_t>(IO_HINT_ORDER.at(i))};
+}
+
 /// The current I/O priority as the header shows it, in ionice(1)'s words: "best-effort 4", "idle",
 /// "realtime 0", or for a class never set "default (best-effort N from nice)", N being the level the
-/// kernel derives from @p nice (just "default (from nice)" while the nice value is not known).
+/// kernel derives from @p nice (just "default (from nice)" while the nice value is not known). A Windows
+/// hint (#3362) is its name: "Very low", "Normal", "High".
 [[nodiscard]] inline std::string describeIoPriority(const Platform::IoPriority& priority, std::optional<std::int32_t> nice)
 {
     switch (priority.ioClass)
     {
+    case Platform::IoPriorityClass::WindowsHint:
+    {
+        const std::optional<Platform::IoPriorityHint> hint = Platform::ioPriorityHintFromLevel(priority.level);
+        return hint.has_value() ? std::string(ioPriorityHintName(*hint)) : std::format("unknown ({})", priority.level);
+    }
     case Platform::IoPriorityClass::Realtime:
         return std::format("realtime {}", priority.level);
     case Platform::IoPriorityClass::BestEffort:
@@ -226,7 +344,7 @@ struct IoStop
 
 } // namespace Detail
 
-/// The I/O priority control for the process Process Details shows (Linux; hidden where
+/// The I/O priority control for the process Process Details shows (Linux, and Windows since #3362; hidden where
 /// ProcessActionCapabilities::canSetIoPriority is false).
 class ProcessIoPriorityView
 {
@@ -234,11 +352,15 @@ class ProcessIoPriorityView
     /// Draws the control for @p target from the last value updateRead() took in: the row label, one slider through every class and level
     /// (Detail::IO_PRIORITY_SLIDER, or without Realtime unless @p realtimeSettable, #1540), "Reset to default" and Apply, which sets the
     /// edit through @p actions. @p currentNice is the process's nice value from its latest snapshot: a
-    /// class never set shows at the Best-effort level it derives. The caller checks the capability.
+    /// class never set shows at the Best-effort level it derives. With @p windowsHints
+    /// (ProcessActionCapabilities::ioPriorityHints, #3362) it is Windows' slider instead
+    /// (Detail::IO_HINT_SLIDER), with no Reset to default: Normal is every process's default. The caller checks
+    /// the capability.
     void render(Platform::IProcessActions* actions,
                 std::optional<std::int32_t> currentNice,
                 const Platform::ProcessTarget& target,
-                bool realtimeSettable);
+                bool realtimeSettable,
+                bool windowsHints = false);
 
     /// A different process was selected: drop the edit, its target, the error line and the value read
     /// for the previous process.

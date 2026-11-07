@@ -35,7 +35,8 @@ constexpr const char* RESET_LABEL = "Reset to default";
 void ProcessIoPriorityView::render(Platform::IProcessActions* actions,
                                    std::optional<std::int32_t> currentNice,
                                    const Platform::ProcessTarget& target,
-                                   bool realtimeSettable)
+                                   bool realtimeSettable,
+                                   bool windowsHints)
 {
     // An apply finished on its worker since the last frame (#2305): its result first, so the read
     // below sees the read it asks for.
@@ -60,13 +61,17 @@ void ProcessIoPriorityView::render(Platform::IProcessActions* actions,
     // One slider for class and level, highest priority at the left like the nice slider. Without the
     // privilege Realtime needs it starts at Best-effort 0, and a process already in Realtime shows beyond
     // its start, hollow. A class never set shows hollow at the level nice derives; picking any other stop
-    // makes it explicit.
-    const Detail::DiscretePrioritySlider& slider = realtimeSettable ? Detail::IO_PRIORITY_SLIDER : Detail::IO_PRIORITY_SLIDER_NO_REALTIME;
-    const Detail::IoStop shown = Detail::ioStopFor(m_Edit, currentNice.value_or(Domain::Priority::NORMAL_NICE), realtimeSettable);
+    // makes it explicit. Windows (#3362) has its four hints instead, Critical shown beyond the start.
+    const Detail::DiscretePrioritySlider& linuxSlider =
+        realtimeSettable ? Detail::IO_PRIORITY_SLIDER : Detail::IO_PRIORITY_SLIDER_NO_REALTIME;
+    const Detail::DiscretePrioritySlider& slider = windowsHints ? Detail::IO_HINT_SLIDER : linuxSlider;
+    const Detail::IoStop shown = windowsHints
+                                   ? Detail::IoStop{.index = Detail::ioHintStopFor(m_Edit), .inherited = false}
+                                   : Detail::ioStopFor(m_Edit, currentNice.value_or(Domain::Priority::NORMAL_NICE), realtimeSettable);
     const Detail::DiscretePick pick = Detail::renderDiscretePrioritySlider(slider, shown.index, shown.inherited);
     if (pick.index != shown.index && pick.index >= 0)
     {
-        editIoPriority(Detail::ioPriorityForStop(pick.index, realtimeSettable), target);
+        editIoPriority(windowsHints ? Detail::ioHintForStop(pick.index) : Detail::ioPriorityForStop(pick.index, realtimeSettable), target);
     }
 
     // [Reset to default] [Apply], right-aligned under the slider. Reset is there only while the value
@@ -76,7 +81,8 @@ void ProcessIoPriorityView::render(Platform::IProcessActions* actions,
     // Disabled, too, while an apply runs on its worker (#2305).
     const bool enabled = canApply(target) && !applying();
     const bool waiting = waitingForProcessDetails(target);
-    const bool showReset = m_Edit.ioClass != Platform::IoPriorityClass::None;
+    // Windows has no "never set": Normal is the default, and a stop like any other.
+    const bool showReset = !windowsHints && m_Edit.ioClass != Platform::IoPriorityClass::None;
     // The panel does not scroll horizontally: when the pair is wider than it, Reset takes a row of its
     // own above Apply, and neither is wider than the panel, so Apply is never clipped off its edge.
     const float available = std::max(ImGui::GetContentRegionAvail().x, 1.0F);

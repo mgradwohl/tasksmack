@@ -59,6 +59,12 @@ enum class DebugPrivilegeResult : std::uint8_t
 /// privilege). Every failure is logged and returned, never thrown: startup goes on without it.
 [[nodiscard]] DebugPrivilegeResult enableDebugPrivilegeIfElevated(const DebugPrivilegeFunctions& fns = {});
 
+/// As enableDebugPrivilegeIfElevated(), for SeIncreaseBasePriorityPrivilege (SE_INC_BASE_PRIORITY_NAME,
+/// #3362): what NtSetInformationProcess checks before it sets a process's I/O priority to High, and which
+/// it doesn't enable for the call. WindowsProcessActions enables it before such a change, in an elevated
+/// TaskSmack or the elevated helper; not elevated, nothing is changed, and Windows refuses High.
+[[nodiscard]] DebugPrivilegeResult enableIncreaseBasePriorityPrivilegeIfElevated(const DebugPrivilegeFunctions& fns = {});
+
 } // namespace Platform::Windows
 
 #endif // _WIN32

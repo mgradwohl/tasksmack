@@ -403,5 +403,64 @@ TEST_F(ProcessIoPriorityViewRenderTest, ResetToDefaultFollowsTheNiceValueAgain)
     EXPECT_EQ(mock.setIoPriorityCount(), 0);
 }
 
+// --- Windows' hints (#3362) ---------------------------------------------------------------------------------
+
+constexpr Platform::ProcessActionCapabilities NICE_AND_HINTS{.canSetPriority = true, .canSetIoPriority = true, .ioPriorityHints = true};
+
+[[nodiscard]] constexpr IoPriority hint(Platform::IoPriorityHint value)
+{
+    return {.ioClass = IoPriorityClass::WindowsHint, .level = static_cast<std::int32_t>(value)};
+}
+
+TEST_F(ProcessIoPriorityViewRenderTest, WindowsHintsStepFromHighToVeryLowAndApplyTheHint)
+{
+    TestMocks::MockProcessActions mock;
+    mock.setIoPriorityReadResult(hint(Platform::IoPriorityHint::Normal));
+    ProcessPriorityView view;
+    const auto body = [&]
+    {
+        draw(view, mock, NICE_AND_HINTS, NICE, TARGET_A);
+    };
+    runFrame(body); // Draws the control
+    runFrame(body); // Reads the current value
+    EXPECT_EQ(view.ioPriorityView().shownIoPriority(), hint(Platform::IoPriorityHint::Normal));
+    pressOnIoSlider(ImGuiKey_RightArrow, body);
+    EXPECT_EQ(view.ioPriorityView().shownIoPriority(), hint(Platform::IoPriorityHint::Low));
+    pressOnIoSlider(ImGuiKey_End, body);
+    EXPECT_EQ(view.ioPriorityView().shownIoPriority(), hint(Platform::IoPriorityHint::VeryLow));
+    pressOnIoSlider(ImGuiKey_Home, body);
+    EXPECT_EQ(view.ioPriorityView().shownIoPriority(), hint(Platform::IoPriorityHint::High));
+    EXPECT_EQ(mock.setIoPriorityCount(), 0); // Picking applies nothing
+
+    view.ioPriorityView().apply(&mock, TARGET_A);
+    view.update(/*wait=*/true);
+    ASSERT_EQ(mock.setIoPriorityCount(), 1);
+    EXPECT_EQ(mock.lastSetIoPriority(), hint(Platform::IoPriorityHint::High));
+}
+
+TEST_F(ProcessIoPriorityViewRenderTest, WindowsHintsOfferNoResetAndNeverCritical)
+{
+    TestMocks::MockProcessActions mock;
+    mock.setIoPriorityReadResult(hint(Platform::IoPriorityHint::Critical)); // the system's own
+    ProcessPriorityView view;
+    const auto body = [&]
+    {
+        draw(view, mock, NICE_AND_HINTS, NICE, TARGET_A);
+    };
+    runFrame(body);
+    runFrame(body);
+    const ImGuiID resetId = ImHashStr("Reset to default", 0, ImHashStr("io_priority", 0, ImGui::FindWindowByName("Details")->ID));
+    ImGui::ActivateItemByID(resetId);
+    runFrame(body);
+    runFrame(body);
+    EXPECT_FALSE(view.ioPriorityView().hasPendingEdit()) << "no Reset to default on Windows";
+
+    // Critical is shown beyond the start: the slider steps down from it to High, never back to it.
+    pressOnIoSlider(ImGuiKey_RightArrow, body);
+    EXPECT_EQ(view.ioPriorityView().shownIoPriority(), hint(Platform::IoPriorityHint::High));
+    pressOnIoSlider(ImGuiKey_LeftArrow, body);
+    EXPECT_EQ(view.ioPriorityView().shownIoPriority(), hint(Platform::IoPriorityHint::High));
+}
+
 } // namespace
 } // namespace App

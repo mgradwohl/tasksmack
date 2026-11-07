@@ -97,17 +97,44 @@ struct ProcessTarget
     return ProcessActionResult::ok();
 }
 
-/// A Linux I/O scheduling class (ioprio_set(2)), with the kernel's own numbering (IOPRIO_CLASS_*).
+/// A process's I/O priority class. None to Idle are Linux's I/O scheduling classes (ioprio_set(2)), with
+/// the kernel's own numbering (IOPRIO_CLASS_*); WindowsHint is Windows' per-process I/O priority, which
+/// has no classes, only one hint (#3362).
 enum class IoPriorityClass : std::uint8_t
 {
     None = 0,       ///< Never set: the kernel derives a best-effort level from the nice value.
     Realtime = 1,   ///< Served before every other class; setting it needs CAP_SYS_NICE (or CAP_SYS_ADMIN).
     BestEffort = 2, ///< The normal class, with levels 0 (highest) to 7 (lowest).
     Idle = 3,       ///< Served only when no other process wants the disk.
+    /// Windows' I/O priority hint (ProcessIoPriority, #3362): the level is the IoPriorityHint, as Windows
+    /// numbers it (higher is more urgent, unlike Linux's levels). Only Windows reads or sets it.
+    WindowsHint = 4,
 };
 
+/// Windows' I/O priority hints (IO_PRIORITY_HINT, #3362), as Windows numbers them: the level of an
+/// IoPriority whose class is WindowsHint. Critical is the memory manager's own, never set by TaskSmack.
+enum class IoPriorityHint : std::uint8_t
+{
+    VeryLow = 0,  ///< Background work: served after everything else
+    Low = 1,      ///< Below normal
+    Normal = 2,   ///< Every process's default
+    High = 3,     ///< Setting it needs SeIncreaseBasePriorityPrivilege (an administrator)
+    Critical = 4, ///< The system's own; read, never set
+};
+
+/// The hint for a WindowsHint level, or nullopt for a value Windows doesn't define.
+[[nodiscard]] constexpr std::optional<IoPriorityHint> ioPriorityHintFromLevel(std::int32_t level) noexcept
+{
+    if (level < static_cast<std::int32_t>(IoPriorityHint::VeryLow) || level > static_cast<std::int32_t>(IoPriorityHint::Critical))
+    {
+        return std::nullopt;
+    }
+    return static_cast<IoPriorityHint>(level);
+}
+
 /// A process's I/O priority: its class, and its level within Realtime or BestEffort (0 is highest,
-/// 7 lowest). The level means nothing for None and Idle, and is 0 there.
+/// 7 lowest), or for WindowsHint the IoPriorityHint. The level means nothing for None and Idle, and is
+/// 0 there.
 struct IoPriority
 {
     IoPriorityClass ioClass = IoPriorityClass::None;
@@ -281,10 +308,13 @@ struct ProcessActionCapabilities
     /// to confirm it (Windows, #3429): the UI offers it behind a warning. False on Linux, where that value is
     /// nice -20.
     bool canSetRealtimePriority = false;
-    bool canSetIoPriority = false; // ioprio_set (Linux only)
+    bool canSetIoPriority = false; // ioprio_set (Linux), NtSetInformationProcess(ProcessIoPriority) (Windows, #3362)
     /// The Realtime I/O class too: ioprio_set(IOPRIO_CLASS_RT) needs CAP_SYS_NICE (or CAP_SYS_ADMIN) in
     /// TaskSmack's own effective set, read once at construction (Linux only, #1540).
     bool canSetRealtimeIoPriority = false;
+    /// getIoPriority() and setIoPriority() speak Windows' I/O priority hints (IoPriorityClass::WindowsHint,
+    /// #3362) rather than Linux's classes and levels, so the control offers Very low, Low, Normal and High.
+    bool ioPriorityHints = false;
     /// setAffinity(): which processors the process may run on (#1887 Linux: sched_setaffinity;
     /// #1881 Windows).
     bool canSetAffinity = false;
@@ -365,14 +395,17 @@ class IProcessActions
     ///             actionCapabilities().canSetRealtimePriority says so, #3429)
     [[nodiscard]] virtual ProcessActionResult setPriority(const ProcessTarget& target, int32_t nice) = 0;
 
-    /// Set the process's I/O priority (ioprio_set on Linux, for every thread). Refused where
-    /// actionCapabilities().canSetIoPriority is false.
+    /// Set the process's I/O priority (ioprio_set on Linux, for every thread; the ProcessIoPriority hint on
+    /// Windows, #3362). Refused where actionCapabilities().canSetIoPriority is false, and for a class the
+    /// platform doesn't have (WindowsHint on Linux, any other on Windows).
     /// @param target  Process to change
     /// @param ioClass Scheduling class
-    /// @param level   Level within Realtime or BestEffort (0 highest to 7 lowest); ignored otherwise
+    /// @param level   Level within Realtime or BestEffort (0 highest to 7 lowest); the IoPriorityHint for
+    ///                WindowsHint; ignored otherwise
     [[nodiscard]] virtual ProcessActionResult setIoPriority(const ProcessTarget& target, IoPriorityClass ioClass, int32_t level) = 0;
 
-    /// Read the process's current I/O priority (ioprio_get on Linux), on demand for one process: it
+    /// Read the process's current I/O priority (ioprio_get on Linux, NtQueryInformationProcess's
+    /// ProcessIoPriority on Windows), on demand for one process: it
     /// is not part of the sampled counters. Refused, as the actions are, unless the process at the
     /// target's PID is the target.
     [[nodiscard]] virtual IoPriorityReadResult getIoPriority(const ProcessTarget& target) = 0;

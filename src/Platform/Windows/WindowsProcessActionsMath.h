@@ -18,6 +18,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <expected>
 #include <format>
 #include <map>
 #include <mutex>
@@ -212,6 +213,7 @@ enum class GuardedAction : std::uint8_t
     EfficiencyMode,
     SuspendThread, ///< SuspendThread on one of its threads (#3069)
     EndThread,     ///< TerminateThread on one of its threads (#3069)
+    IoPriority,    ///< NtSetInformationProcess(ProcessIoPriority) (#3362)
 };
 
 /// What TaskSmack won't do, worded to follow "TaskSmack won't".
@@ -231,6 +233,8 @@ enum class GuardedAction : std::uint8_t
         return "suspend its threads";
     case GuardedAction::EndThread:
         return "end its threads";
+    case GuardedAction::IoPriority:
+        return "change its I/O priority";
     case GuardedAction::End:
         break;
     }
@@ -275,7 +279,8 @@ inline constexpr int32_t SYSTEM_PROCESS_PID = 4;
 /// when it refuses the open, from re-prioritising or re-pinning (#2602).
 [[nodiscard]] inline std::string protectedProcessRefusal(int32_t pid, GuardedAction action = GuardedAction::End)
 {
-    if (action == GuardedAction::Priority || action == GuardedAction::Affinity || action == GuardedAction::EfficiencyMode)
+    if (action == GuardedAction::Priority || action == GuardedAction::Affinity || action == GuardedAction::EfficiencyMode ||
+        action == GuardedAction::IoPriority)
     {
         return std::format("Process {} is a protected process (a system or anti-malware service); Windows won't let even an "
                            "administrator {}",
@@ -527,6 +532,8 @@ inline constexpr std::uint32_t NT_STATUS_PROCESS_IS_TERMINATING = 0xC000010AU;
         return std::format("Access denied: can't suspend the threads of process {}. It may run elevated or as another user.", pid);
     case GuardedAction::EndThread:
         return std::format("Access denied: can't end the threads of process {}. It may run elevated or as another user.", pid);
+    case GuardedAction::IoPriority:
+        return std::format("Access denied: can't change the I/O priority of process {}. It may run elevated or as another user.", pid);
     case GuardedAction::End:
         break;
     }
@@ -547,6 +554,105 @@ inline constexpr std::uint32_t NT_STATUS_PROCESS_IS_TERMINATING = 0xC000010AU;
         return "Process not found - may have already exited";
     }
     return std::format("Failed to open process {}: error {}", pid, error);
+}
+
+// --- I/O priority (#3362) ------------------------------------------------------------------------------------
+
+/// ProcessIoPriority: the PROCESSINFOCLASS NtQueryInformationProcess and NtSetInformationProcess read and set a
+/// process's I/O priority hint with, as a ULONG IO_PRIORITY_HINT. winternl.h leaves it out.
+inline constexpr ULONG PROCESS_IO_PRIORITY_CLASS = 33;
+
+/// The NTSTATUS values the I/O priority calls return that ioPrioritySetResult() words, spelled out since
+/// <windows.h> doesn't define them (<ntstatus.h> does). NT_STATUS_ACCESS_DENIED is above.
+inline constexpr std::uint32_t NT_STATUS_PRIVILEGE_NOT_HELD = 0xC0000061U;
+inline constexpr std::uint32_t NT_STATUS_INVALID_PARAMETER = 0xC000000DU;
+
+/// The hint's name in a message: "Very low", "Low", "Normal", "High", "Critical".
+[[nodiscard]] constexpr std::string_view ioPriorityHintName(IoPriorityHint hint) noexcept
+{
+    switch (hint)
+    {
+    case IoPriorityHint::VeryLow:
+        return "Very low";
+    case IoPriorityHint::Low:
+        return "Low";
+    case IoPriorityHint::High:
+        return "High";
+    case IoPriorityHint::Critical:
+        return "Critical";
+    case IoPriorityHint::Normal:
+        break;
+    }
+    return "Normal";
+}
+
+/// The hint setIoPriority() sends for @p ioClass and @p level, or why nothing is sent to @p pid: Windows has only
+/// the WindowsHint class, so Linux's classes are refused, as is a level Windows doesn't define; and Critical,
+/// which is the memory manager's own (paging I/O), is never set: Windows refuses it to a caller outside the
+/// kernel, and a process at Critical would compete with the system's own paging.
+[[nodiscard]] inline std::expected<IoPriorityHint, std::string>
+ioPriorityHintToSet(IoPriorityClass ioClass, std::int32_t level, int32_t pid)
+{
+    const std::optional<IoPriorityHint> hint = ioPriorityHintFromLevel(level);
+    if (ioClass != IoPriorityClass::WindowsHint || !hint.has_value())
+    {
+        return std::unexpected(std::format(
+            "Windows' I/O priority is Very low, Low, Normal or High; that setting isn't one, so nothing was sent to process {}", pid));
+    }
+    if (*hint == IoPriorityHint::Critical)
+    {
+        return std::unexpected(std::format("Critical I/O priority is the system's own; TaskSmack won't set it for process {}", pid));
+    }
+    return *hint;
+}
+
+/// The I/O priority NtQueryInformationProcess(ProcessIoPriority) read for @p pid: @p status, and @p value, the
+/// IO_PRIORITY_HINT it wrote. A hint Windows doesn't define is an error, never guessed at.
+[[nodiscard]] inline IoPriorityReadResult ioPriorityReadResult(std::uint32_t status, ULONG value, int32_t pid)
+{
+    if ((status & 0x80000000U) != 0) // NT_SUCCESS() is a non-negative NTSTATUS
+    {
+        if (status == NT_STATUS_ACCESS_DENIED)
+        {
+            return std::unexpected(std::format("Access denied: can't read the I/O priority of process {}", pid));
+        }
+        return std::unexpected(std::format("Failed to read the I/O priority of process {}: NTSTATUS 0x{:08X}", pid, status));
+    }
+    const std::optional<IoPriorityHint> hint =
+        (value <= static_cast<ULONG>(IoPriorityHint::Critical)) ? ioPriorityHintFromLevel(static_cast<std::int32_t>(value)) : std::nullopt;
+    if (!hint.has_value())
+    {
+        return std::unexpected(std::format("Process {} has an I/O priority Windows doesn't define ({})", pid, value));
+    }
+    return IoPriority{.ioClass = IoPriorityClass::WindowsHint, .level = static_cast<std::int32_t>(*hint)};
+}
+
+/// What setting @p pid's I/O priority to @p hint says, from NtSetInformationProcess's @p status. Privilege not
+/// held (High without SeIncreaseBasePriorityPrivilege) and access denied are permission refusals, so
+/// BrokeredProcessActions retries them through the elevated helper, or the UI offers Retry as administrator.
+/// @p isProtected: access denied on a protected process is a plain error, since it refuses an administrator too.
+[[nodiscard]] inline ProcessActionResult ioPrioritySetResult(std::uint32_t status, int32_t pid, IoPriorityHint hint, bool isProtected)
+{
+    if ((status & 0x80000000U) == 0)
+    {
+        return ProcessActionResult::ok();
+    }
+    switch (status)
+    {
+    case NT_STATUS_PRIVILEGE_NOT_HELD:
+        return ProcessActionResult::denied(
+            std::format("{} I/O priority needs administrator rights (SeIncreaseBasePriorityPrivilege); process {} wasn't changed",
+                        ioPriorityHintName(hint),
+                        pid));
+    case NT_STATUS_ACCESS_DENIED:
+        return isProtected ? ProcessActionResult::error(protectedProcessRefusal(pid, GuardedAction::IoPriority))
+                           : ProcessActionResult::denied(accessDeniedMessage(pid, GuardedAction::IoPriority));
+    case NT_STATUS_INVALID_PARAMETER:
+        return ProcessActionResult::error(std::format("Windows refused {} I/O priority for process {}", ioPriorityHintName(hint), pid));
+    default:
+        break;
+    }
+    return ProcessActionResult::error(std::format("Failed to set the I/O priority of process {}: NTSTATUS 0x{:08X}", pid, status));
 }
 
 /// Whether Terminate's close requests were all refused for want of access (#2602): UIPI keeps a process

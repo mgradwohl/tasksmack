@@ -45,6 +45,7 @@
 #include <string_view>
 #include <system_error>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace Platform
@@ -663,20 +664,341 @@ TEST(WindowsProcessActionsTest, SetPriorityOfTheSystemProcessIsRefused)
     EXPECT_FALSE(result.errorMessage.empty());
 }
 
-TEST(WindowsProcessActionsTest, IoPriorityIsNotSupportedAndNothingIsSent)
+TEST(WindowsProcessActionsTest, IoPriorityIsOfferedAsWindowsHints)
 {
-    // #803: Windows has no ionice equivalent, so the capability is off and both calls refuse.
+    // #3362: the real calls are found, and the control speaks Windows' hints, not ionice's classes.
+    const WindowsProcessActions actions;
+    const auto caps = actions.actionCapabilities();
+    EXPECT_TRUE(caps.canSetIoPriority);
+    EXPECT_TRUE(caps.ioPriorityHints);
+    EXPECT_FALSE(caps.canSetRealtimeIoPriority) << "Linux's class";
+}
+
+TEST(WindowsProcessActionsTest, IoPriorityOfASuspendedChildIsReadAsAHint)
+{
+    // Read only, nothing set: a new process's I/O priority is Normal, unless it inherited a lower one from a test
+    // runner started in the background. Setting one is the CI real-system test's (CiRealSystemIoPriorityTest).
+    const SuspendedChild child;
+    ASSERT_TRUE(child.started());
     WindowsProcessActions actions;
+    const IoPriorityReadResult read = actions.getIoPriority(child.target());
+    ASSERT_TRUE(read.has_value()) << read.error();
+    EXPECT_EQ(read->ioClass, IoPriorityClass::WindowsHint);
+    EXPECT_GE(read->level, static_cast<std::int32_t>(IoPriorityHint::VeryLow));
+    EXPECT_LE(read->level, static_cast<std::int32_t>(IoPriorityHint::Normal));
+
+    const ProcessTarget reused{.pid = child.target().pid, .startTimeTicks = child.target().startTimeTicks + 1};
+    const IoPriorityReadResult refused = actions.getIoPriority(reused);
+    ASSERT_FALSE(refused.has_value()) << "a reused PID is never read";
+    EXPECT_NE(refused.error().find("different process"), std::string::npos) << refused.error();
+}
+
+// =============================================================================
+// I/O priority (#3362): the hint mapping, and the actions through faked Nt calls
+// =============================================================================
+
+TEST(WindowsIoPriorityMathTest, OnlyWindowsHintsUpToHighAreSet)
+{
+    EXPECT_EQ(ioPriorityHintToSet(IoPriorityClass::WindowsHint, 0, 7), IoPriorityHint::VeryLow);
+    EXPECT_EQ(ioPriorityHintToSet(IoPriorityClass::WindowsHint, 1, 7), IoPriorityHint::Low);
+    EXPECT_EQ(ioPriorityHintToSet(IoPriorityClass::WindowsHint, 2, 7), IoPriorityHint::Normal);
+    EXPECT_EQ(ioPriorityHintToSet(IoPriorityClass::WindowsHint, 3, 7), IoPriorityHint::High);
+
+    const auto critical = ioPriorityHintToSet(IoPriorityClass::WindowsHint, 4, 7);
+    ASSERT_FALSE(critical.has_value());
+    EXPECT_EQ(critical.error(), "Critical I/O priority is the system's own; TaskSmack won't set it for process 7");
+
+    for (const auto& [ioClass, level] : {
+             std::pair{IoPriorityClass::WindowsHint, 5},
+             std::pair{IoPriorityClass::WindowsHint, -1},
+             std::pair{IoPriorityClass::BestEffort, 2},
+             std::pair{IoPriorityClass::Idle, 0},
+             std::pair{IoPriorityClass::None, 0},
+             std::pair{IoPriorityClass::Realtime, 0},
+         })
+    {
+        const auto refused = ioPriorityHintToSet(ioClass, level, 7);
+        ASSERT_FALSE(refused.has_value()) << static_cast<int>(ioClass) << " " << level;
+        EXPECT_NE(refused.error().find("Very low, Low, Normal or High"), std::string::npos) << refused.error();
+    }
+}
+
+TEST(WindowsIoPriorityMathTest, TheHintReadIsTheLevelAndAnUndefinedOneIsAnError)
+{
+    for (const IoPriorityHint hint :
+         {IoPriorityHint::VeryLow, IoPriorityHint::Low, IoPriorityHint::Normal, IoPriorityHint::High, IoPriorityHint::Critical})
+    {
+        const IoPriorityReadResult read = ioPriorityReadResult(0, static_cast<ULONG>(hint), 7);
+        ASSERT_TRUE(read.has_value()) << read.error();
+        EXPECT_EQ(*read, (IoPriority{.ioClass = IoPriorityClass::WindowsHint, .level = static_cast<std::int32_t>(hint)}));
+    }
+    const IoPriorityReadResult unknown = ioPriorityReadResult(0, 5, 7);
+    ASSERT_FALSE(unknown.has_value());
+    EXPECT_EQ(unknown.error(), "Process 7 has an I/O priority Windows doesn't define (5)");
+
+    EXPECT_EQ(ioPriorityReadResult(NT_STATUS_ACCESS_DENIED, 0, 7).error(), "Access denied: can't read the I/O priority of process 7");
+    EXPECT_EQ(ioPriorityReadResult(NT_STATUS_INVALID_PARAMETER, 0, 7).error(),
+              "Failed to read the I/O priority of process 7: NTSTATUS 0xC000000D");
+}
+
+TEST(WindowsIoPriorityMathTest, ThePrivilegeAndAccessRefusalsAreTheOnesTheHelperCanRetry)
+{
+    EXPECT_TRUE(ioPrioritySetResult(0, 7, IoPriorityHint::Low, false).success);
+
+    const ProcessActionResult privilege = ioPrioritySetResult(NT_STATUS_PRIVILEGE_NOT_HELD, 7, IoPriorityHint::High, false);
+    EXPECT_FALSE(privilege.success);
+    EXPECT_TRUE(privilege.permissionDenied);
+    EXPECT_EQ(privilege.errorMessage,
+              "High I/O priority needs administrator rights (SeIncreaseBasePriorityPrivilege); process 7 wasn't changed");
+
+    const ProcessActionResult denied = ioPrioritySetResult(NT_STATUS_ACCESS_DENIED, 7, IoPriorityHint::Low, false);
+    EXPECT_TRUE(denied.permissionDenied);
+    EXPECT_EQ(denied.errorMessage, "Access denied: can't change the I/O priority of process 7. It may run elevated or as another user.");
+
+    const ProcessActionResult guarded = ioPrioritySetResult(NT_STATUS_ACCESS_DENIED, 7, IoPriorityHint::Low, true);
+    EXPECT_FALSE(guarded.permissionDenied) << "a protected process refuses an administrator too";
+    EXPECT_NE(guarded.errorMessage.find("protected process"), std::string::npos) << guarded.errorMessage;
+
+    const ProcessActionResult invalid = ioPrioritySetResult(NT_STATUS_INVALID_PARAMETER, 7, IoPriorityHint::VeryLow, false);
+    EXPECT_FALSE(invalid.permissionDenied);
+    EXPECT_EQ(invalid.errorMessage, "Windows refused Very low I/O priority for process 7");
+
+    EXPECT_EQ(ioPrioritySetResult(0xC0000001U, 7, IoPriorityHint::Low, false).errorMessage,
+              "Failed to set the I/O priority of process 7: NTSTATUS 0xC0000001");
+}
+
+namespace
+{
+
+/// What the faked I/O priority calls do and saw; each test starts from reset(). The handle the open hands out is
+/// a real one to this test process, which only the fakes ever see: nothing here changes a real I/O priority.
+struct FakeIo
+{
+    static inline std::uint64_t creationTicks = 0;
+    static inline DWORD openError = 0;
+    static inline DWORD openedAccess = 0;
+    static inline bool critical = false;
+    static inline bool isProtected = false;
+    static inline LONG queryStatus = 0;
+    static inline ULONG hint = 2; // What NtQueryInformationProcess reports: Normal
+    static inline LONG setStatus = 0;
+    static inline std::vector<ULONG> hintsSet;
+    static inline int privilegeEnables = 0;
+
+    static void reset()
+    {
+        creationTicks = 1234;
+        openError = 0;
+        openedAccess = 0;
+        critical = false;
+        isProtected = false;
+        queryStatus = 0;
+        hint = 2;
+        setStatus = 0;
+        hintsSet.clear();
+        privilegeEnables = 0;
+    }
+
+    static HANDLE WINAPI openProcess(DWORD access, BOOL /*inherit*/, DWORD /*pid*/)
+    {
+        openedAccess = access;
+        if (openError != 0)
+        {
+            SetLastError(openError);
+            return nullptr;
+        }
+        return OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, GetCurrentProcessId());
+    }
+    static BOOL WINAPI
+    getProcessTimes(HANDLE /*process*/, LPFILETIME creation, LPFILETIME /*exit*/, LPFILETIME /*kernel*/, LPFILETIME /*user*/)
+    {
+        creation->dwLowDateTime = static_cast<DWORD>(creationTicks & 0xFFFFFFFFU);
+        creation->dwHighDateTime = static_cast<DWORD>(creationTicks >> 32U);
+        return TRUE;
+    }
+    static BOOL WINAPI isProcessCritical(HANDLE /*process*/, PBOOL isCritical)
+    {
+        *isCritical = critical ? TRUE : FALSE;
+        return TRUE;
+    }
+    static BOOL WINAPI getProcessInformation(HANDLE /*process*/, PROCESS_INFORMATION_CLASS infoClass, LPVOID info, DWORD size)
+    {
+        if (infoClass != ProcessProtectionLevelInfo || size != sizeof(PROCESS_PROTECTION_LEVEL_INFORMATION))
+        {
+            SetLastError(ERROR_INVALID_PARAMETER);
+            return FALSE;
+        }
+        static_cast<PROCESS_PROTECTION_LEVEL_INFORMATION*>(info)->ProtectionLevel =
+            isProtected ? PROTECTION_LEVEL_ANTIMALWARE_LIGHT : PROTECTION_LEVEL_NONE;
+        return TRUE;
+    }
+    static LONG NTAPI query(HANDLE /*process*/, ULONG infoClass, PVOID info, ULONG size, PULONG written)
+    {
+        EXPECT_EQ(infoClass, PROCESS_IO_PRIORITY_CLASS);
+        EXPECT_EQ(size, sizeof(ULONG));
+        *static_cast<ULONG*>(info) = hint;
+        if (written != nullptr)
+        {
+            *written = sizeof(ULONG);
+        }
+        return queryStatus;
+    }
+    static LONG NTAPI set(HANDLE /*process*/, ULONG infoClass, PVOID info, ULONG size)
+    {
+        EXPECT_EQ(infoClass, PROCESS_IO_PRIORITY_CLASS);
+        EXPECT_EQ(size, sizeof(ULONG));
+        hintsSet.push_back(*static_cast<const ULONG*>(info));
+        return setStatus;
+    }
+
+    [[nodiscard]] static WindowsProcessFunctions functions()
+    {
+        WindowsProcessFunctions fns{};
+        fns.openProcess = &openProcess;
+        fns.getProcessTimes = &getProcessTimes;
+        fns.isProcessCritical = &isProcessCritical;
+        fns.getProcessInformation = &getProcessInformation;
+        fns.ntQueryInformationProcess = &query;
+        fns.ntSetInformationProcess = &set;
+        fns.enableIncreaseBasePriority = []
+        {
+            ++privilegeEnables;
+            return true;
+        };
+        return fns;
+    }
+};
+
+constexpr ProcessTarget IO_TARGET{.pid = 4343, .startTimeTicks = 1234};
+
+[[nodiscard]] constexpr std::int32_t hintLevel(IoPriorityHint hint)
+{
+    return static_cast<std::int32_t>(hint);
+}
+
+class WindowsIoPriorityTest : public ::testing::Test
+{
+  protected:
+    void SetUp() override
+    {
+        FakeIo::reset();
+    }
+};
+
+} // namespace
+
+TEST_F(WindowsIoPriorityTest, EachHintIsSetThroughAVerifiedHandleAndReadBack)
+{
+    WindowsProcessActions actions(FakeIo::functions());
+    EXPECT_TRUE(actions.actionCapabilities().canSetIoPriority);
+    EXPECT_TRUE(actions.actionCapabilities().ioPriorityHints);
+
+    for (const IoPriorityHint hint : {IoPriorityHint::VeryLow, IoPriorityHint::Low, IoPriorityHint::Normal, IoPriorityHint::High})
+    {
+        const ProcessActionResult result = actions.setIoPriority(IO_TARGET, IoPriorityClass::WindowsHint, hintLevel(hint));
+        EXPECT_TRUE(result.success) << result.errorMessage;
+    }
+    EXPECT_EQ(FakeIo::hintsSet, (std::vector<ULONG>{0, 1, 2, 3}));
+    EXPECT_NE(FakeIo::openedAccess & PROCESS_SET_INFORMATION, 0U);
+    EXPECT_EQ(FakeIo::privilegeEnables, 1) << "only High enables SeIncreaseBasePriorityPrivilege";
+
+    FakeIo::hint = 1;
+    const IoPriorityReadResult read = actions.getIoPriority(IO_TARGET);
+    ASSERT_TRUE(read.has_value()) << read.error();
+    EXPECT_EQ(*read, (IoPriority{.ioClass = IoPriorityClass::WindowsHint, .level = hintLevel(IoPriorityHint::Low)}));
+    EXPECT_EQ(FakeIo::openedAccess & PROCESS_SET_INFORMATION, 0U) << "a read opens for query only";
+}
+
+TEST_F(WindowsIoPriorityTest, CriticalLinuxClassesTheSystemAndACriticalProcessAreRefused)
+{
+    WindowsProcessActions actions(FakeIo::functions());
+
+    const ProcessActionResult critical =
+        actions.setIoPriority(IO_TARGET, IoPriorityClass::WindowsHint, hintLevel(IoPriorityHint::Critical));
+    EXPECT_FALSE(critical.success);
+    EXPECT_FALSE(critical.permissionDenied);
+    EXPECT_NE(critical.errorMessage.find("system's own"), std::string::npos) << critical.errorMessage;
+    EXPECT_EQ(FakeIo::openedAccess, 0U) << "refused before anything is opened";
+
+    const ProcessActionResult linuxClass = actions.setIoPriority(IO_TARGET, IoPriorityClass::Idle, 0);
+    EXPECT_FALSE(linuxClass.success);
+    EXPECT_EQ(FakeIo::openedAccess, 0U);
+
+    const ProcessActionResult system =
+        actions.setIoPriority({.pid = SYSTEM_PROCESS_PID, .startTimeTicks = 1234}, IoPriorityClass::WindowsHint, 0);
+    EXPECT_FALSE(system.success);
+    EXPECT_EQ(system.errorMessage, "PID 4 is the System process; TaskSmack won't change its I/O priority");
+
+    FakeIo::critical = true;
+    const ProcessActionResult guarded = actions.setIoPriority(IO_TARGET, IoPriorityClass::WindowsHint, hintLevel(IoPriorityHint::VeryLow));
+    EXPECT_FALSE(guarded.success);
+    EXPECT_FALSE(guarded.permissionDenied) << "no administrator makes it safe";
+    EXPECT_EQ(guarded.errorMessage, criticalProcessRefusal(IO_TARGET.pid, GuardedAction::IoPriority));
+
+    FakeIo::critical = false;
+    FakeIo::creationTicks = 9999;
+    const ProcessActionResult reused = actions.setIoPriority(IO_TARGET, IoPriorityClass::WindowsHint, hintLevel(IoPriorityHint::Low));
+    EXPECT_FALSE(reused.success);
+    EXPECT_NE(reused.errorMessage.find("different process"), std::string::npos) << reused.errorMessage;
+
+    EXPECT_TRUE(FakeIo::hintsSet.empty()) << "nothing reached a refused process";
+}
+
+TEST_F(WindowsIoPriorityTest, HighWithoutThePrivilegeAndAccessDeniedArePermissionRefusals)
+{
+    WindowsProcessActions actions(FakeIo::functions());
+
+    FakeIo::setStatus = static_cast<LONG>(NT_STATUS_PRIVILEGE_NOT_HELD);
+    const ProcessActionResult high = actions.setIoPriority(IO_TARGET, IoPriorityClass::WindowsHint, hintLevel(IoPriorityHint::High));
+    EXPECT_FALSE(high.success);
+    EXPECT_TRUE(high.permissionDenied) << "the elevated helper can retry it";
+    EXPECT_NE(high.errorMessage.find("administrator rights"), std::string::npos) << high.errorMessage;
+
+    FakeIo::setStatus = 0;
+    FakeIo::openError = ERROR_ACCESS_DENIED;
+    const ProcessActionResult opened = actions.setIoPriority(IO_TARGET, IoPriorityClass::WindowsHint, hintLevel(IoPriorityHint::Low));
+    EXPECT_FALSE(opened.success);
+    EXPECT_TRUE(opened.permissionDenied);
+    EXPECT_EQ(opened.errorMessage, "Access denied: can't change the I/O priority of process 4343. It may run elevated or as another user.");
+
+    FakeIo::openError = 0;
+    FakeIo::isProtected = true;
+    FakeIo::setStatus = static_cast<LONG>(NT_STATUS_ACCESS_DENIED);
+    const ProcessActionResult guarded = actions.setIoPriority(IO_TARGET, IoPriorityClass::WindowsHint, hintLevel(IoPriorityHint::Low));
+    EXPECT_FALSE(guarded.success);
+    EXPECT_FALSE(guarded.permissionDenied);
+    EXPECT_NE(guarded.errorMessage.find("protected process"), std::string::npos) << guarded.errorMessage;
+
+    FakeIo::openError = ERROR_INVALID_PARAMETER;
+    EXPECT_EQ(actions.setIoPriority(IO_TARGET, IoPriorityClass::WindowsHint, 1).errorMessage,
+              "Process not found - may have already exited");
+    EXPECT_FALSE(actions.getIoPriority(IO_TARGET).has_value());
+}
+
+TEST_F(WindowsIoPriorityTest, AReadThatWindowsRefusesSaysSo)
+{
+    WindowsProcessActions actions(FakeIo::functions());
+    FakeIo::queryStatus = static_cast<LONG>(NT_STATUS_ACCESS_DENIED);
+    const IoPriorityReadResult denied = actions.getIoPriority(IO_TARGET);
+    ASSERT_FALSE(denied.has_value());
+    EXPECT_EQ(denied.error(), "Access denied: can't read the I/O priority of process 4343");
+
+    FakeIo::queryStatus = 0;
+    FakeIo::openError = ERROR_ACCESS_DENIED;
+    EXPECT_EQ(actions.getIoPriority(IO_TARGET).error(), "Access denied: can't read the I/O priority of process 4343");
+}
+
+TEST_F(WindowsIoPriorityTest, WithoutTheNtCallsThereIsNoIoPriorityAndNothingIsOpened)
+{
+    WindowsProcessFunctions fns = FakeIo::functions();
+    fns.ntSetInformationProcess = nullptr;
+    WindowsProcessActions actions(fns);
     EXPECT_FALSE(actions.actionCapabilities().canSetIoPriority);
-
-    const auto set = actions.setIoPriority({.pid = 1234, .startTimeTicks = 1}, IoPriorityClass::Idle, 0);
+    const ProcessActionResult set = actions.setIoPriority(IO_TARGET, IoPriorityClass::WindowsHint, 1);
     EXPECT_FALSE(set.success);
-    EXPECT_NE(set.errorMessage.find("not supported on Windows"), std::string::npos) << set.errorMessage;
-    EXPECT_NE(set.errorMessage.find("1234"), std::string::npos) << set.errorMessage;
-
-    const auto get = actions.getIoPriority({.pid = 1234, .startTimeTicks = 1});
-    ASSERT_FALSE(get.has_value());
-    EXPECT_NE(get.error().find("not supported on Windows"), std::string::npos) << get.error();
+    EXPECT_NE(set.errorMessage.find("not available"), std::string::npos) << set.errorMessage;
+    EXPECT_FALSE(actions.getIoPriority(IO_TARGET).has_value());
+    EXPECT_EQ(FakeIo::openedAccess, 0U);
 }
 
 // =============================================================================

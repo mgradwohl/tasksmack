@@ -95,6 +95,14 @@ struct WindowsProcessFunctions
     /// (canRunProgram false), as in TaskSmackHelper.exe, which never serves one (BrokeredProcessActions keeps
     /// it the user's own), and in a test's table, so no test starts a program or raises UAC.
     Windows::RunProgramFunctions runProgram{};
+    /// ntdll's NtQueryInformationProcess and NtSetInformationProcess, for ProcessIoPriority (#3362), on the
+    /// verified handle. Null, either: no I/O priority (canSetIoPriority false), and nothing is opened.
+    Windows::NtQueryInformationProcessFn ntQueryInformationProcess = nullptr;
+    Windows::NtSetInformationProcessFn ntSetInformationProcess = nullptr;
+    /// Enables SeIncreaseBasePriorityPrivilege on TaskSmack's own token when it is elevated, before High is set
+    /// (#3362; Windows::enableIncreaseBasePriorityPrivilegeIfElevated()); true when it is enabled. Null: not
+    /// tried, and Windows decides by the token as it stands, as in a test's table.
+    bool (*enableIncreaseBasePriority)() = nullptr;
 };
 
 /// The real Win32 calls.
@@ -110,7 +118,7 @@ struct WindowsProcessFunctions
 /// Some processes are never acted on, however TaskSmack runs: elevated, or as the elevated helper with
 /// SeDebugPrivilege (#2556). PID 4 (the kernel's System process; PID 0 is refused as invalid), and any critical process (IsProcessCritical:
 /// winlogon.exe, the DcomLaunch svchost.exe, whose exit bugchecks Windows), are refused Kill, Terminate,
-/// a priority change, an affinity change and Suspend; a protected process is refused Kill, Terminate
+/// a priority or I/O priority change, an affinity change and Suspend; a protected process is refused Kill, Terminate
 /// and Suspend with a message saying so, and TaskSmack's own process is refused Suspend (#2582), which
 /// would freeze it with nothing left to resume it. Each is a plain error, never permissionDenied:
 /// running as administrator, which "Retry as administrator" offers, doesn't make it safe. Every action
@@ -145,9 +153,15 @@ class WindowsProcessActions : public IProcessActions
     /// afterwards: Windows quietly sets High instead for a caller without SeIncreaseBasePriorityPrivilege,
     /// and that is a permission refusal (realtimeReadBackResult()), so the elevated helper can retry it.
     [[nodiscard]] ProcessActionResult setPriority(const ProcessTarget& target, int32_t nice) override;
-    /// Windows has no ionice equivalent (#803): refused, and canSetIoPriority is false.
+    /// The process's I/O priority hint (#3362): NtSetInformationProcess(ProcessIoPriority) on the verified handle,
+    /// as Process Explorer sets it. Only IoPriorityClass::WindowsHint, at Very low, Low, Normal or High
+    /// (ioPriorityHintToSet()); Critical, the system's own, is refused before anything is opened, as is PID 4.
+    /// The critical-process guard refuses a critical process, as a priority change. High needs
+    /// SeIncreaseBasePriorityPrivilege, enabled first where TaskSmack is elevated; without it Windows refuses,
+    /// and that is a permission refusal, so the elevated helper can retry it.
     [[nodiscard]] ProcessActionResult setIoPriority(const ProcessTarget& target, IoPriorityClass ioClass, int32_t level) override;
-    /// Refused, as setIoPriority() is.
+    /// NtQueryInformationProcess(ProcessIoPriority) through the identity check, with
+    /// PROCESS_QUERY_LIMITED_INFORMATION: an IoPriority of class WindowsHint (ioPriorityReadResult()).
     [[nodiscard]] IoPriorityReadResult getIoPriority(const ProcessTarget& target) override;
     /// One processor group: SetProcessAffinityMask(), which every thread, and every thread started
     /// later, follows. Several: SetProcessDefaultCpuSets(), since one affinity mask can't span groups

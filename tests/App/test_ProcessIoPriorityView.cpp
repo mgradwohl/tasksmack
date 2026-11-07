@@ -85,6 +85,70 @@ TEST(ProcessIoPriorityViewTest, ClassNamesAndLevels)
     EXPECT_FALSE(Detail::ioClassHasLevels(IoPriorityClass::None));
 }
 
+// --- Windows' hints (#3362) ---------------------------------------------------------------------------------
+
+[[nodiscard]] constexpr IoPriority windowsHint(Platform::IoPriorityHint hint)
+{
+    return {.ioClass = IoPriorityClass::WindowsHint, .level = static_cast<std::int32_t>(hint)};
+}
+
+TEST(ProcessIoPriorityViewTest, WindowsHintsAreNamedAsWindowsNamesThem)
+{
+    EXPECT_EQ(Detail::ioPriorityClassName(IoPriorityClass::WindowsHint), "Priority hint");
+    EXPECT_EQ(Detail::describeIoPriority(windowsHint(Platform::IoPriorityHint::VeryLow), 0), "Very low");
+    EXPECT_EQ(Detail::describeIoPriority(windowsHint(Platform::IoPriorityHint::Low), std::nullopt), "Low");
+    EXPECT_EQ(Detail::describeIoPriority(windowsHint(Platform::IoPriorityHint::Normal), 10), "Normal") << "never derived from nice";
+    EXPECT_EQ(Detail::describeIoPriority(windowsHint(Platform::IoPriorityHint::High), 0), "High");
+    EXPECT_EQ(Detail::describeIoPriority(windowsHint(Platform::IoPriorityHint::Critical), 0), "Critical");
+    EXPECT_EQ(Detail::describeIoPriority({.ioClass = IoPriorityClass::WindowsHint, .level = 9}, 0), "unknown (9)");
+}
+
+TEST(ProcessIoPriorityViewTest, TheWindowsSliderRunsHighToVeryLowWithCriticalBeyondItsStart)
+{
+    ASSERT_EQ(Detail::IO_HINT_SLIDER.stops.size(), 4U);
+    EXPECT_EQ(Detail::IO_HINT_SLIDER.stops.front().name, "High");
+    EXPECT_EQ(Detail::IO_HINT_SLIDER.stops.back().name, "Very low");
+    ASSERT_NE(Detail::IO_HINT_SLIDER.beyondStart, nullptr);
+    EXPECT_EQ(Detail::IO_HINT_SLIDER.beyondStart->name, "Critical");
+
+    for (std::int32_t stop = 0; stop < 4; ++stop)
+    {
+        const IoPriority picked = Detail::ioHintForStop(stop);
+        EXPECT_EQ(picked.ioClass, IoPriorityClass::WindowsHint);
+        EXPECT_NE(picked.level, static_cast<std::int32_t>(Platform::IoPriorityHint::Critical)) << "never offered";
+        EXPECT_EQ(Detail::ioHintStopFor(picked), stop) << "stop " << stop << " round-trips";
+    }
+    EXPECT_EQ(Detail::ioHintForStop(0), windowsHint(Platform::IoPriorityHint::High));
+    EXPECT_EQ(Detail::ioHintForStop(3), windowsHint(Platform::IoPriorityHint::VeryLow));
+    EXPECT_EQ(Detail::ioHintForStop(99), windowsHint(Platform::IoPriorityHint::VeryLow)) << "held to the stops";
+    EXPECT_EQ(Detail::ioHintStopFor(windowsHint(Platform::IoPriorityHint::Critical)), Detail::PRIORITY_STOP_BEYOND_START);
+    EXPECT_EQ(Detail::ioHintStopFor({}), 1) << "not read yet: Normal, the default";
+}
+
+TEST(ProcessIoPriorityViewTest, NormalizeHoldsAWindowsHintToTheHintsWindowsDefines)
+{
+    EXPECT_EQ(Detail::normalizeIoPriority({.ioClass = IoPriorityClass::WindowsHint, .level = 3}),
+              windowsHint(Platform::IoPriorityHint::High));
+    EXPECT_EQ(Detail::normalizeIoPriority({.ioClass = IoPriorityClass::WindowsHint, .level = 12}),
+              windowsHint(Platform::IoPriorityHint::Critical));
+    EXPECT_EQ(Detail::normalizeIoPriority({.ioClass = IoPriorityClass::WindowsHint, .level = -2}),
+              windowsHint(Platform::IoPriorityHint::VeryLow));
+}
+
+TEST(ProcessIoPriorityViewTest, AWindowsHintIsAppliedAsItsClassAndLevel)
+{
+    TestMocks::MockProcessActions mock;
+    ProcessIoPriorityView view;
+    readCurrent(view, mock, TARGET_A, windowsHint(Platform::IoPriorityHint::Normal));
+    view.editIoPriority(windowsHint(Platform::IoPriorityHint::VeryLow), TARGET_A);
+    ASSERT_TRUE(view.canApply(TARGET_A));
+    view.apply(&mock, TARGET_A);
+    view.update(/*wait=*/true);
+    ASSERT_EQ(mock.setIoPriorityCount(), 1);
+    EXPECT_EQ(mock.lastSetIoPriority(), windowsHint(Platform::IoPriorityHint::VeryLow));
+    EXPECT_EQ(mock.lastTarget(), TARGET_A);
+}
+
 TEST(ProcessIoPriorityViewTest, NormalizeHoldsTheLevel)
 {
     EXPECT_EQ(Detail::normalizeIoPriority({.ioClass = IoPriorityClass::BestEffort, .level = 12}).level, 7);

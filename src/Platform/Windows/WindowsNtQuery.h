@@ -1,7 +1,8 @@
 #pragma once
 
 // The one place the Windows probes resolve ntdll's NtQuerySystemInformation(Ex) (#1183), the
-// actions its NtSuspendProcess and NtResumeProcess (#2582), and the environment reader its
+// actions its NtSuspendProcess and NtResumeProcess (#2582) and, for the I/O priority, its
+// NtQueryInformationProcess and NtSetInformationProcess (#3362), and the environment reader its
 // NtQueryInformationProcess (#2569). ntdll.dll is already loaded in every
 // process, so it is found with GetModuleHandleW, never loaded from a search path. Each lookup
 // is a function-local static initialised by a lambda, so it runs once, thread-safely, whichever
@@ -48,6 +49,13 @@ using NtProcessSuspendResumeFn = LONG(NTAPI*)(HANDLE process);
 /// (class 0) gives a process's PEB address (#2569).
 using NtQueryInformationProcessFn = LONG(NTAPI*)(
     HANDLE process, ULONG processInformationClass, PVOID processInformation, ULONG processInformationLength, PULONG returnLength);
+
+/// NtSetInformationProcess, its class passed as a ULONG as NtQueryInformationProcessFn's is; the result
+/// is an NTSTATUS. ProcessIoPriority (class 33) sets a process's I/O priority hint (#3362).
+using NtSetInformationProcessFn = LONG(NTAPI*)(HANDLE process,
+                                               ULONG processInformationClass,
+                                               PVOID processInformation,
+                                               ULONG processInformationLength);
 
 /// Look up `name` in ntdll.dll, which every process has loaded; null if it is missing.
 template<typename Fn> [[nodiscard]] Fn ntdllProc(const char* name) noexcept
@@ -101,6 +109,16 @@ template<typename Fn> [[nodiscard]] Fn ntdllProc(const char* name) noexcept
     static const auto fn = [] noexcept
     {
         return ntdllProc<NtQueryInformationProcessFn>("NtQueryInformationProcess");
+    }();
+    return fn;
+}
+
+/// ntdll's NtSetInformationProcess, or null if it cannot be found. Resolved once.
+[[nodiscard]] inline NtSetInformationProcessFn ntSetInformationProcess() noexcept
+{
+    static const auto fn = [] noexcept
+    {
+        return ntdllProc<NtSetInformationProcessFn>("NtSetInformationProcess");
     }();
     return fn;
 }

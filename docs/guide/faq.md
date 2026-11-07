@@ -97,8 +97,7 @@ through Windows' own UAC prompt, in front of TaskSmack's window:
 
 - **If your account is an administrator,** the prompt asks you to approve. For a few minutes afterwards,
   refused actions and reads are retried through the helper without asking again. The helper exits when
-  TaskSmack does, or after 5 minutes without an action. An I/O priority change, which Windows doesn't
-  support, doesn't keep it running.
+  TaskSmack does, or after 5 minutes without an action.
 - **If your account is a standard user,** only **Retry as administrator** is offered. The prompt asks for
   an administrator's name and password, and the helper then runs as that administrator. It does that one
   action and exits, so the next one asks again. It wouldn't read another account's process for you,

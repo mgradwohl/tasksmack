@@ -3,7 +3,7 @@
 // Process Details' priority control, under the buttons of the Overview's Actions block (#1179, slice 4;
 // #1493): the nice-value slider on Linux, the same slider with a stop per priority class on Windows
 // (#1204, #1538), the Apply
-// button, and the error line under it; and under those, on Linux, the I/O priority control (#803,
+// button, and the error line under it; and under those, the I/O priority control (#803; Windows, #3362,
 // ProcessIoPriorityView).
 //
 // The view owns only its UI state. The IProcessActions it applies through stays owned by the panel (the
