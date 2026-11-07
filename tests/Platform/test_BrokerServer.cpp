@@ -1270,6 +1270,191 @@ TEST(PkexecRealSystemTest, TheInstalledHelperRunsAsRootThroughPkexec)
         << "PID 1's environment is root's to read: the helper runs as root through pkexec";
 }
 
+/// Set by PkexecTextAgentRealSystemTest for the copy of this binary it runs on a pseudo-terminal (#3491).
+constexpr const char* TEXT_AGENT_INNER_ENV = "TASKSMACK_CI_TEXT_AGENT_INNER";
+
+/// TaskSmack itself, beside this binary in the build tree (bin/TaskSmack next to tests/TaskSmackTests): the agent's
+/// executable, as the app runs /proc/self/exe.
+[[nodiscard]] std::filesystem::path builtTaskSmack()
+{
+    std::error_code error;
+    const std::filesystem::path self = std::filesystem::read_symlink("/proc/self/exe", error);
+    return error ? std::filesystem::path{} : self.parent_path().parent_path() / "bin" / "TaskSmack";
+}
+
+// #3491 item 2, the #3381 path, inner half: run only by the outer test below, as the leader of a session whose
+// controlling terminal is the outer test's pseudo-terminal. Under an AUTH_ADMIN rule, TaskSmack's own text agent
+// (the built TaskSmack with --polkit-text-agent, as the app starts it) asks for the password there, pkexec runs
+// without its internal agent, and the installed helper reads PID 1's environment as root. Before that, a second
+// agent for the same process is refused cleanly ("An authentication agent already exists for the given subject",
+// which the maintainer hit on WSL) rather than hanging.
+TEST(PkexecTextAgentInner, AnswersAnAdminPromptThroughTheInstalledHelper)
+{
+    if (const std::optional<std::string> why = ::TestSupport::ciRealSystemSkipReason())
+    {
+        GTEST_SKIP() << *why;
+    }
+    if (const char* inner = std::getenv(TEXT_AGENT_INNER_ENV); inner == nullptr || std::string_view(inner) != "1")
+    {
+        GTEST_SKIP() << "Run by PkexecTextAgentRealSystemTest on its pseudo-terminal only";
+    }
+    const std::filesystem::path app = builtTaskSmack();
+    ASSERT_TRUE(std::filesystem::exists(app)) << app;
+    const std::vector<std::string> agentCommand{app.string(), PolkitTextAgent::AGENT_ARGUMENT};
+
+    {
+        std::string error;
+        const auto first = PolkitTextAgent::startWith(agentCommand, std::chrono::seconds(10), std::stop_token{}, error);
+        ASSERT_NE(first, nullptr) << error;
+        std::string secondError;
+        const auto second = PolkitTextAgent::startWith(agentCommand, std::chrono::seconds(10), std::stop_token{}, secondError);
+        EXPECT_EQ(second, nullptr) << "a second agent for the same process registered";
+        EXPECT_TRUE(secondError.contains("couldn't register")) << secondError;
+    }
+
+    // Ours must be the agent that answers: the broker skips the factory off the terminal's foreground, and pkexec's
+    // internal agent could prompt in its place when ours fails to register, so both are ruled out here.
+    auto registered = std::make_shared<std::atomic<int>>(0);
+    auto registerError = std::make_shared<std::string>();
+    PkexecBroker broker(PkexecBroker::INSTALLED_HELPER_PATH);
+    broker.setTextAgent(
+        [agentCommand, registered, registerError](const std::stop_token& stopToken, std::string& error) -> std::shared_ptr<void>
+        {
+            std::shared_ptr<void> agent = PolkitTextAgent::startWith(agentCommand, std::chrono::seconds(10), stopToken, error);
+            if (agent != nullptr)
+            {
+                registered->fetch_add(1);
+            }
+            else
+            {
+                *registerError = error;
+            }
+            return agent;
+        });
+    const auto connected = broker.connect(std::stop_token{});
+    ASSERT_EQ(registered->load(), 1) << "TaskSmack's own agent didn't register for the prompt: " << *registerError;
+    ASSERT_TRUE(connected.has_value()) << connected.error();
+
+    std::ifstream statFile("/proc/1/stat");
+    const std::string statLine((std::istreambuf_iterator<char>(statFile)), std::istreambuf_iterator<char>());
+    const ProcessTarget init{.pid = 1, .startTimeTicks = ProcParsing::parseStatStartTime(statLine).value_or(0)};
+    ASSERT_NE(init.startTimeTicks, 0U);
+    const auto response = broker.call(Broker::EnvironmentRequest{.target = init}, std::stop_token{});
+    ASSERT_TRUE(response.has_value()) << response.error();
+    ASSERT_TRUE(std::holds_alternative<Broker::EnvironmentReply>(*response));
+    EXPECT_EQ(std::get<Broker::EnvironmentReply>(*response).result.status, EnvironmentReadStatus::Ok);
+}
+
+// #3491 item 2, outer half: on a disposable CI runner whose workflow gave its user a throwaway password
+// (TASKSMACK_CI_RUNNER_PASSWORD) and set an AUTH_ADMIN rule for the helper's action, runs the inner test above in a
+// copy of this binary on a new pseudo-terminal, and types the password when polkit's text agent asks for it.
+TEST(PkexecTextAgentRealSystemTest, TaskSmacksOwnAgentAsksForTheAdminPasswordOnItsTerminal)
+{
+    if (const std::optional<std::string> why = ::TestSupport::ciRealSystemSkipReason())
+    {
+        GTEST_SKIP() << *why;
+    }
+    const char* passwordEnv = std::getenv("TASKSMACK_CI_RUNNER_PASSWORD"); // NOLINT(concurrency-mt-unsafe)
+    if (::geteuid() == 0 || passwordEnv == nullptr || !std::filesystem::exists(PkexecBroker::INSTALLED_HELPER_PATH))
+    {
+        GTEST_SKIP() << "Runs unprivileged, with TASKSMACK_CI_RUNNER_PASSWORD and the helper installed";
+    }
+    const std::string password = passwordEnv;
+    std::error_code error;
+    const std::filesystem::path self = std::filesystem::read_symlink("/proc/self/exe", error);
+    ASSERT_FALSE(error) << error.message();
+
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX posix_openpt()
+    const int master = ::posix_openpt(O_RDWR | O_NOCTTY | O_CLOEXEC);
+    ASSERT_GE(master, 0);
+    ASSERT_EQ(::grantpt(master), 0);
+    ASSERT_EQ(::unlockpt(master), 0);
+    const char* slaveName = ::ptsname(master); // NOLINT(concurrency-mt-unsafe) - one call, before the fork
+    ASSERT_NE(slaveName, nullptr);
+    const std::string slavePath = slaveName;
+    const std::string filter = "--gtest_filter=PkexecTextAgentInner.*";
+    std::vector<char*> argv{
+        const_cast<char*>(self.c_str()), const_cast<char*>(filter.c_str()), nullptr}; // NOLINT(cppcoreguidelines-pro-type-const-cast)
+
+    const pid_t child = ::fork();
+    ASSERT_GE(child, 0);
+    if (child == 0)
+    {
+        // A session of its own whose controlling terminal is the slave: opened without O_NOCTTY after setsid().
+        ::setsid();
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
+        const int slave = ::open(slavePath.c_str(), O_RDWR);
+        if (slave < 0)
+        {
+            ::_exit(126);
+        }
+        ::dup2(slave, STDIN_FILENO);
+        ::dup2(slave, STDOUT_FILENO);
+        ::dup2(slave, STDERR_FILENO);
+        ::unsetenv("TASKSMACK_CI_RUNNER_PASSWORD"); // NOLINT(concurrency-mt-unsafe) - the forked child, before exec
+        ::setenv(TEXT_AGENT_INNER_ENV, "1", 1);     // NOLINT(concurrency-mt-unsafe)
+        ::execv(argv.front(), argv.data());
+        ::_exit(127);
+    }
+
+    // Reads what the child writes to its terminal, answers the first password prompt, and waits for it to exit.
+    std::string output;
+    bool answered = false;
+    int status = -1;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(90);
+    while (std::chrono::steady_clock::now() < deadline)
+    {
+        pollfd readable{.fd = master, .events = POLLIN, .revents = 0};
+        if (::poll(&readable, 1, 200) > 0 && (readable.revents & POLLIN) != 0)
+        {
+            std::array<char, 1024> buffer{};
+            const ssize_t got = ::read(master, buffer.data(), buffer.size());
+            if (got > 0)
+            {
+                output.append(buffer.data(), static_cast<std::size_t>(got));
+            }
+        }
+        if (!answered && output.contains("assword:"))
+        {
+            const std::string line = password + "\n";
+            ASSERT_EQ(::write(master, line.data(), line.size()), static_cast<ssize_t>(line.size()));
+            answered = true;
+        }
+        if (::waitpid(child, &status, WNOHANG) == child)
+        {
+            // Whatever it wrote last may still sit in the terminal: read until it's empty (EIO once the slave is closed).
+            for (;;)
+            {
+                pollfd rest{.fd = master, .events = POLLIN, .revents = 0};
+                if (::poll(&rest, 1, 100) <= 0 || (rest.revents & POLLIN) == 0)
+                {
+                    break;
+                }
+                std::array<char, 1024> buffer{};
+                const ssize_t got = ::read(master, buffer.data(), buffer.size());
+                if (got <= 0)
+                {
+                    break;
+                }
+                output.append(buffer.data(), static_cast<std::size_t>(got));
+            }
+            break;
+        }
+        status = -1;
+    }
+    if (status == -1)
+    {
+        ::kill(child, SIGKILL);
+        ::waitpid(child, &status, 0);
+        ADD_FAILURE() << "the inner test didn't finish in 90 s";
+    }
+    ::close(master);
+    EXPECT_TRUE(answered) << "polkit's text agent never asked for the password; the terminal showed:\n" << output;
+    EXPECT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0) << output;
+    EXPECT_TRUE(output.contains("[  PASSED  ] 1 test")) << output;
+    EXPECT_FALSE(output.contains("[  SKIPPED ]")) << output;
+}
+
 /// What `systemctl show -p <property> --value <unit>` prints, trimmed (#3491).
 [[nodiscard]] std::string unitProperty(const std::string& unit, const char* property)
 {
