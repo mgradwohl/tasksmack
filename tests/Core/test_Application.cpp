@@ -1841,12 +1841,14 @@ TEST(FramePacingTest, ConsecutiveSkipCountResetsOnAFrameAndHoldsThroughADeferred
 TEST(FramePacingTest, RegularFrameRendersUnlessAlreadyDrawnSkippedDeferredByAWakeOrHidden)
 {
     using Core::FramePacing::computeShouldRenderRegularFrame;
-    EXPECT_TRUE(computeShouldRenderRegularFrame(false, false, false, false));
-    EXPECT_FALSE(computeShouldRenderRegularFrame(true, false, false, false));
-    EXPECT_FALSE(computeShouldRenderRegularFrame(false, true, false, false));
-    EXPECT_FALSE(computeShouldRenderRegularFrame(false, false, true, false));
+    EXPECT_TRUE(computeShouldRenderRegularFrame(false, false, false, false, false));
+    EXPECT_FALSE(computeShouldRenderRegularFrame(true, false, false, false, false));
+    EXPECT_FALSE(computeShouldRenderRegularFrame(false, true, false, false, false));
+    EXPECT_FALSE(computeShouldRenderRegularFrame(false, false, true, false, false));
     // #3156: a hidden window that draws no frames at all.
-    EXPECT_FALSE(computeShouldRenderRegularFrame(false, false, false, true));
+    EXPECT_FALSE(computeShouldRenderRegularFrame(false, false, false, true, false));
+    // #882: an iteration that holds its present during an interactive resize.
+    EXPECT_FALSE(computeShouldRenderRegularFrame(false, false, false, false, true));
 }
 
 // #3156: a hidden window draws no frames and waits for the event that shows it again, a cloaked one
@@ -2011,7 +2013,7 @@ TEST(FramePacingTest, KeyDuringIdleWaitShowsInTheFirstFrameAfterTheWake)
         {
             idleWakeEvent = KEY; // the wait wakes on the key and takes it off the queue
         }
-        if (Core::FramePacing::computeShouldRenderRegularFrame(idleWakeEvent.has_value(), false, false, false))
+        if (Core::FramePacing::computeShouldRenderRegularFrame(idleWakeEvent.has_value(), false, false, false, false))
         {
             framesShowingKey.push_back(keyHandled);
         }
@@ -2212,7 +2214,7 @@ TEST(FramePacingTest, KeyQueuedDuringATimedOutIdleWaitShowsInTheNextFrame)
                 idleWakeEvent = wakeEvent;
             }
         }
-        if (Core::FramePacing::computeShouldRenderRegularFrame(idleWakeEvent.has_value(), false, false, false))
+        if (Core::FramePacing::computeShouldRenderRegularFrame(idleWakeEvent.has_value(), false, false, false, false))
         {
             framesShowingKey.push_back(keyHandled);
         }
@@ -2326,6 +2328,174 @@ TEST(FramePacingTest, NoPacedRegularFrameAfterAMoveResizeFrame)
     EXPECT_FALSE(computeUsesPacedRegularFrame(60.0, true));
     EXPECT_TRUE(computeUsesPacedRegularFrame(60.0, false));
     EXPECT_FALSE(computeUsesPacedRegularFrame(0.0, false)) << "no cap: the idle path";
+}
+
+namespace
+{
+// computeResizePresent()'s input with the shipping limits (#882).
+[[nodiscard]] Core::FramePacing::ResizePresentInput
+resizePresentInput(double nowSeconds, double lastSizeChangeSeconds, double lastFrameStartSeconds, bool frameOwed)
+{
+    return {
+        .nowSeconds = nowSeconds,
+        .lastSizeChangeSeconds = lastSizeChangeSeconds,
+        .lastFrameStartSeconds = lastFrameStartSeconds,
+        .frameOwed = frameOwed,
+        .minIntervalSeconds = Core::FramePacing::RESIZE_PRESENT_MIN_INTERVAL_SECONDS,
+        .burstWindowSeconds = Core::FramePacing::RESIZE_BURST_WINDOW_SECONDS,
+    };
+}
+} // namespace
+
+TEST(ResizePresentBoundTest, LimitsAreTheDocumentedOnes)
+{
+    // #882: at most 20 presents a second while the size changes, and the burst outlives one held interval.
+    EXPECT_DOUBLE_EQ(Core::FramePacing::RESIZE_PRESENT_MIN_INTERVAL_SECONDS, 0.050);
+    EXPECT_DOUBLE_EQ(Core::FramePacing::RESIZE_BURST_WINDOW_SECONDS, 0.100);
+    EXPECT_GT(Core::FramePacing::RESIZE_BURST_WINDOW_SECONDS, Core::FramePacing::RESIZE_PRESENT_MIN_INTERVAL_SECONDS);
+}
+
+TEST(ResizePresentBoundTest, HoldsANewSizeThatComesSoonerThanTheMinimumIntervalAfterTheLastFrame)
+{
+    using namespace Core::FramePacing;
+    // A SetWindowPos 16 ms after the frame for the previous size.
+    EXPECT_EQ(computeResizePresent(resizePresentInput(10.016, 10.016, 10.0, false)), ResizePresent::Hold);
+    EXPECT_EQ(computeResizePresent(resizePresentInput(10.049, 10.048, 10.0, true)), ResizePresent::Hold) << "still within the interval";
+    // The interval has passed: the held frame is owed, and drawn at the size of the moment.
+    EXPECT_EQ(computeResizePresent(resizePresentInput(10.051, 10.048, 10.0, true)), ResizePresent::PresentOwed);
+    // A new size once the interval has passed renders as it always did.
+    EXPECT_EQ(computeResizePresent(resizePresentInput(10.060, 10.060, 10.0, false)), ResizePresent::Unbounded);
+}
+
+TEST(ResizePresentBoundTest, AStableSizeNeverHoldsAFrame)
+{
+    // No starvation of normal frames: an animation or input frame 8 ms after the last one is held only
+    // while the size is changing.
+    using namespace Core::FramePacing;
+    constexpr double NEVER = -std::numeric_limits<double>::infinity();
+    EXPECT_EQ(computeResizePresent(resizePresentInput(10.008, NEVER, 10.0, false)), ResizePresent::Unbounded) << "never resized";
+    EXPECT_EQ(computeResizePresent(resizePresentInput(10.008, 9.0, 10.0, false)), ResizePresent::Unbounded) << "resized a second ago";
+    EXPECT_EQ(computeResizePresent(resizePresentInput(10.108, 10.0, 10.1, false)), ResizePresent::Unbounded)
+        << "the burst window (100 ms) has passed since the last size change";
+}
+
+TEST(ResizePresentBoundTest, NoBoundWhereTheMinimumIntervalIsZero)
+{
+    // Wayland and X11 (Application::run()): a minimum interval of 0 never holds.
+    using namespace Core::FramePacing;
+    ResizePresentInput input = resizePresentInput(10.001, 10.001, 10.0, false);
+    input.minIntervalSeconds = 0.0;
+    EXPECT_EQ(computeResizePresent(input), ResizePresent::Unbounded);
+}
+
+TEST(ResizePresentBoundTest, HoldWaitEndsWhenTheOwedFrameIsDue)
+{
+    using Core::FramePacing::resizePresentHoldMs;
+    // 34 ms left; the double arithmetic may land a hair above, which rounds up to 35, never down to 33.
+    const int holdMs = resizePresentHoldMs(10.016, 10.0, 0.050);
+    EXPECT_GE(holdMs, 34);
+    EXPECT_LE(holdMs, 35);
+    EXPECT_EQ(resizePresentHoldMs(10.0155, 10.0, 0.050), 35) << "34.5 ms left: rounded up, never short";
+    EXPECT_EQ(resizePresentHoldMs(10.060, 10.0, 0.050), 0) << "the interval has passed";
+    EXPECT_EQ(resizePresentHoldMs(10.2, 10.0, 0.050), 0) << "a late frame: no wait";
+    EXPECT_EQ(resizePresentHoldMs(9.0, 10.0, 0.050), 50) << "a clock step back waits no longer than one interval";
+}
+
+TEST(ResizePresentBoundTest, BurstOfSizeChangesPresentsAtTheBoundedRateAndTheLastSizeAfterItSettles)
+{
+    // #3511's supervised run: a SetWindowPos every 16 ms, each a new size, for about 3 s (the stall came
+    // at call 44). Before #882 every size presented; now at most one frame per 50 ms, each at the size
+    // of the moment, and the last size presents once the burst stops.
+    using namespace Core::FramePacing;
+    constexpr int STEPS = 188;
+    constexpr double STEP_SECONDS = 0.016;
+    constexpr double START = 100.0;
+    constexpr double NO_EVENT = std::numeric_limits<double>::infinity();
+    const auto eventTime = [](int step)
+    {
+        return START + (step * STEP_SECONDS);
+    };
+
+    double now = START;
+    double lastFrameStart = START - 1.0;
+    double lastSizeChange = -std::numeric_limits<double>::infinity();
+    bool owed = false;
+    int nextStep = 0;
+    int currentSize = 0;
+    std::vector<double> presentTimes;
+    std::vector<int> presentedSizes;
+    int heldPresents = 0;
+    // One loop iteration per event, or per end of a hold wait, like Application::run().
+    for (int iteration = 0; iteration < 10 * STEPS && (nextStep < STEPS || owed); ++iteration)
+    {
+        bool newSize = false;
+        if (nextStep < STEPS && eventTime(nextStep) <= now)
+        {
+            currentSize = ++nextStep;
+            lastSizeChange = now;
+            newSize = true;
+        }
+        const ResizePresent decision = computeResizePresent(resizePresentInput(now, lastSizeChange, lastFrameStart, owed));
+        const bool wantsFrame =
+            computeShouldRenderInteractionFrame(newSize || decision == ResizePresent::PresentOwed, true, newSize, false, false, false);
+        const double nextEvent = (nextStep < STEPS) ? eventTime(nextStep) : NO_EVENT;
+        if (decision == ResizePresent::Hold)
+        {
+            if (wantsFrame)
+            {
+                owed = true;
+                ++heldPresents;
+            }
+            // The hold wait: the next event, or the end of the hold, whichever is first.
+            const double holdEnd = now + (resizePresentHoldMs(now, lastFrameStart, RESIZE_PRESENT_MIN_INTERVAL_SECONDS) / 1000.0);
+            now = std::min(holdEnd, nextEvent);
+            continue;
+        }
+        if (wantsFrame)
+        {
+            lastFrameStart = now;
+            owed = false;
+            presentTimes.push_back(now);
+            presentedSizes.push_back(currentSize);
+        }
+        if (nextEvent == NO_EVENT)
+        {
+            break;
+        }
+        now = nextEvent;
+    }
+
+    ASSERT_FALSE(presentTimes.empty());
+    const double burstSeconds = (STEPS - 1) * STEP_SECONDS;
+    EXPECT_LE(presentTimes.size(), static_cast<std::size_t>((burstSeconds / RESIZE_PRESENT_MIN_INTERVAL_SECONDS) + 2.0))
+        << "at most one present per 50 ms while the size changes";
+    EXPECT_LT(presentTimes.size(), static_cast<std::size_t>(STEPS / 2)) << "far fewer presents than sizes (one per size before)";
+    EXPECT_GT(heldPresents, 0);
+    for (std::size_t i = 1; i < presentTimes.size(); ++i)
+    {
+        const double gap = presentTimes[i] - presentTimes[i - 1];
+        EXPECT_GE(gap, RESIZE_PRESENT_MIN_INTERVAL_SECONDS - 1e-9) << "present " << i;
+        EXPECT_LE(gap, RESIZE_PRESENT_MIN_INTERVAL_SECONDS + STEP_SECONDS + 0.002)
+            << "the content keeps following the drag: no present waits longer than one interval and a step, present " << i;
+        EXPECT_GT(presentedSizes[i], presentedSizes[i - 1]) << "each present shows a newer size";
+    }
+    // The settle frame: the last size presents, no later than one interval after the frame before it.
+    EXPECT_EQ(presentedSizes.back(), STEPS);
+    EXPECT_FALSE(owed);
+    EXPECT_LE(presentTimes.back() - eventTime(STEPS - 1), RESIZE_PRESENT_MIN_INTERVAL_SECONDS + 0.002);
+}
+
+TEST(ResizePresentBoundTest, AnIsolatedResizePresentsAtOnceAndOwesNothing)
+{
+    // A single SetWindowPos (or a maximize) after a quiet second: its frame renders at once, as before.
+    using namespace Core::FramePacing;
+    EXPECT_EQ(computeResizePresent(resizePresentInput(20.0, 20.0, 19.0, false)), ResizePresent::Unbounded);
+    // The iteration after it, 8 ms later, with nothing new: held only as far as the regular frame goes;
+    // no move/resize frame is wanted, so nothing is owed and no repeat is drawn later.
+    using Core::FramePacing::computeShouldRenderInteractionFrame;
+    EXPECT_EQ(computeResizePresent(resizePresentInput(20.008, 20.0, 20.0, false)), ResizePresent::Hold);
+    EXPECT_FALSE(computeShouldRenderInteractionFrame(false, true, false, false, false, false));
+    EXPECT_EQ(computeResizePresent(resizePresentInput(20.2, 20.0, 20.0, false)), ResizePresent::Unbounded);
 }
 
 TEST(FramePacingTest, ShouldSleepWhenIdleOutsideGracePeriod)
@@ -2709,6 +2879,21 @@ TEST_F(ResizePerfOperationTest, DeferredInteractionFramesAreLoggedAndResetWithTh
     EXPECT_TRUE(m_Output.str().contains(" deferredFrames=3"));
     stats.resetIntervalCounters();
     EXPECT_EQ(stats.deferredInteractionFrames, 0U);
+}
+
+TEST_F(ResizePerfOperationTest, HeldAndOwedResizePresentsAreLoggedAndResetWithTheInterval)
+{
+    // #882: the presents the resize bound held back, and the held frames drawn once the hold ended.
+    Core::ResizePerfTraceStats stats;
+    stats.recordEventBatch(1, 1, 0.1, 0.1, false);
+    stats.heldResizePresents = 7;
+    stats.owedResizePresents = 2;
+    Core::logResizePerfTraceSummary(stats, "interaction-progress");
+    EXPECT_TRUE(m_Output.str().contains(" deferredFrames=0 heldPresents=7 owedPresents=2"))
+        << "at the end of the line, after deferredFrames, so the summary scripts' keys are unaffected";
+    stats.resetIntervalCounters();
+    EXPECT_EQ(stats.heldResizePresents, 0U);
+    EXPECT_EQ(stats.owedResizePresents, 0U);
 }
 
 TEST_F(ResizePerfOperationTest, FirstFrameHasNoFabricatedGapAndSkippedLoopsRemainInNextGap)

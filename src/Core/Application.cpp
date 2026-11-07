@@ -632,6 +632,15 @@ void Application::run()
     // a repaint (same size) from a resize that surfaced only as an expose (#1154).
     std::pair<int, int> lastResizePixelSize = m_Window->getSizeInPixels();
 
+    // The present bound during an interactive resize (#882, FramePacing::computeResizePresent): when the
+    // framebuffer size last changed, and whether a held frame is still owed. Windows only: there #3511's
+    // supervised run still hit a 2.5 s present inside the driver after a few seconds of rapid resizing.
+    // A Wayland compositor paces a resize to the client's commits itself, so holding them there would
+    // only slow the resize, and no X11 stall has been reported.
+    double lastSizeChangeTime = -std::numeric_limits<double>::infinity();
+    bool resizePresentOwed = false;
+    const double resizePresentMinInterval = VideoBackend::isWindows() ? FramePacing::RESIZE_PRESENT_MIN_INTERVAL_SECONDS : 0.0;
+
     spdlog::info("Entering main loop");
 
     while (m_Running)
@@ -698,6 +707,12 @@ void Application::run()
                     return;
                 }
                 ++resizeEventCount;
+                // A new size, not the same size again (SDL's RESIZED and PIXEL_SIZE_CHANGED carry one
+                // size twice): the resize present bound runs while the size keeps changing (#882).
+                if (pixelSize != lastResizePixelSize)
+                {
+                    lastSizeChangeTime = getTime();
+                }
                 lastResizePixelSize = pixelSize;
                 WindowResizedEvent resizeEvent(pixelSize.first, pixelSize.second);
                 raiseEvent(resizeEvent);
@@ -941,8 +956,43 @@ void Application::run()
         {
             ++resizeTraceStats.deferredInteractionFrames;
         }
-        if (FramePacing::computeShouldRenderInteractionFrame(
-                needsResizeRedraw, forceInteractionRedraw, hadEvents, geometryChangedLastFrame, isHidden, skipRenderThisFrame))
+        // While the size keeps changing, at most one frame per RESIZE_PRESENT_MIN_INTERVAL_SECONDS (#882): a
+        // held iteration draws and presents nothing and waits for the next event or the end of the hold
+        // below; the frame it owes is drawn once the hold ends, at the size of the moment. Not while
+        // the hidden window draws no frames: the event that shows it draws the newest state.
+        const FramePacing::ResizePresent resizePresent = hiddenWait.drawsNoFrames
+                                                           ? FramePacing::ResizePresent::Unbounded
+                                                           : FramePacing::computeResizePresent({
+                                                                 .nowSeconds = getTime(),
+                                                                 .lastSizeChangeSeconds = lastSizeChangeTime,
+                                                                 .lastFrameStartSeconds = lastFrameStart,
+                                                                 .frameOwed = resizePresentOwed,
+                                                                 .minIntervalSeconds = resizePresentMinInterval,
+                                                                 .burstWindowSeconds = FramePacing::RESIZE_BURST_WINDOW_SECONDS,
+                                                             });
+        const bool holdPresent = resizePresent == FramePacing::ResizePresent::Hold;
+        const bool presentOwedFrame = resizePresent == FramePacing::ResizePresent::PresentOwed;
+        if (hiddenWait.drawsNoFrames)
+        {
+            resizePresentOwed = false;
+        }
+        const bool wantsInteractionFrame = FramePacing::computeShouldRenderInteractionFrame(needsResizeRedraw || presentOwedFrame,
+                                                                                            forceInteractionRedraw,
+                                                                                            hadEvents,
+                                                                                            geometryChangedLastFrame,
+                                                                                            isHidden,
+                                                                                            skipRenderThisFrame);
+        // Only a held move/resize frame is owed: a regular frame the hold delays (an animation, an idle
+        // frame) comes through the regular path anyway once the hold ends.
+        if (holdPresent && wantsInteractionFrame)
+        {
+            resizePresentOwed = true;
+            if (traceResizePerfThisFrame)
+            {
+                ++resizeTraceStats.heldResizePresents;
+            }
+        }
+        if (wantsInteractionFrame && !holdPresent)
         {
             // Vsync is off during an interaction, so a stream of mouse events would otherwise render
             // unbounded (#1153): cap it at the display rate, which vsync would have given.
@@ -974,7 +1024,14 @@ void Application::run()
                 resizeTraceStats.recordFrame(true, updateMs, renderMs, postRenderMs, swapMs);
                 recordDeliveredFrame();
                 loopTiming.frameMs = updateMs + renderMs + postRenderMs + swapMs;
+                if (presentOwedFrame)
+                {
+                    ++resizeTraceStats.owedResizePresents;
+                }
             }
+            // Paid by any attempt, drawn or not: while drawing is suspended after a GPU reset (#3484) an
+            // owed frame kept owing would make every iteration try again without waiting.
+            resizePresentOwed = false;
             didImmediateResizeRedraw = true;
         }
 
@@ -1012,6 +1069,17 @@ void Application::run()
             {
                 guardLayerCall(layer, "onHiddenUpdate", [&] { layer->onHiddenUpdate(); });
             }
+        }
+        // A held present (#882): no frame this iteration. Wait for the next event, which the next drain
+        // handles at once, or for the end of the hold, when the owed frame is drawn. The event pump never
+        // stops: any event ends the wait.
+        else if (holdPresent)
+        {
+            // No longer than the next retry of a failed context replacement (#3484).
+            static_cast<void>(
+                waitForEvent(m_GraphicsRecovery.boundWaitMs(
+                                 FramePacing::resizePresentHoldMs(getTime(), lastFrameStart, resizePresentMinInterval), getTime()),
+                             traceResizePerfThisFrame));
         }
         // Not after a move/resize frame, which waited for the display rate already; but a grace iteration
         // that deferred its frame (#3511) still paces an animation or input frame here.
@@ -1060,10 +1128,12 @@ void Application::run()
 
         // A wake on an event skips this render: the next iteration drains the event first, then
         // renders, paced as any input-driven frame (#1153) (#1409).
+        // A held present (#882) skips it too: the owed frame follows once the hold ends.
         const bool renderRegularFrame = FramePacing::computeShouldRenderRegularFrame(
-            idleWakeEvent.has_value(), didImmediateResizeRedraw, skipRenderThisFrame, hiddenWait.drawsNoFrames);
+            idleWakeEvent.has_value(), didImmediateResizeRedraw, skipRenderThisFrame, hiddenWait.drawsNoFrames, holdPresent);
         if (renderRegularFrame)
         {
+            resizePresentOwed = false; // a frame at the current size pays any held one (#882)
             lastFrameStart = getTime();
             double updateMs = 0.0;
             double renderMs = 0.0;
