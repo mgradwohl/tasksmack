@@ -88,7 +88,14 @@
 .PARAMETER ExtraArgs
     Arguments passed to the benchmark binary (e.g. --benchmark_filter=Foo). A "--" separator before
     them works when the script is called from PowerShell (& tools/bench.ps1 win-benchmark -- ...),
-    but not through "pwsh -File", whose own parameter binding rejects a bare "--".
+    but not through "pwsh -File", whose own parameter binding rejects a bare "--" and splits any
+    argument that starts with "-" at its first ":" as if it were -name:value (#3547), so
+    "pwsh -File" can't pass --benchmark_filter=BM_X/iterations:1000; call the script from PowerShell
+    with & for that.
+.PARAMETER ExtraArgsFile
+    Internal (#3547): a UTF-8 JSON array of strings that replaces ExtraArgs, which -Baseline's further
+    launches use to hand their arguments to a bench.ps1 of their own exactly as they are. Can't be
+    combined with ExtraArgs or -Baseline.
 .EXAMPLE
     pwsh tools/bench.ps1
 .EXAMPLE
@@ -127,6 +134,10 @@ param(
     [string[]]$CheckArgs = @(),
 
     [string]$Python,
+
+    # The benchmark arguments of a -Baseline further launch (#3547): see Invoke-AcrossLaunches' caller.
+    [Parameter(DontShow)]
+    [string]$ExtraArgsFile,
 
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$ExtraArgs = @()
@@ -167,6 +178,24 @@ elseif ($Preset.StartsWith("--")) {
 #   bench.ps1 win-benchmark -- --benchmark_filter=Foo
 if ($ExtraArgs.Count -gt 0 -and $ExtraArgs[0] -eq "--") {
     $ExtraArgs = if ($ExtraArgs.Count -gt 1) { $ExtraArgs[1..($ExtraArgs.Count - 1)] } else { @() }
+}
+
+# A -Baseline further launch's arguments, read from the file its parent wrote (#3547): through
+# "pwsh -File" they would be split at their first ":" (see ExtraArgs). System.Text.Json, not
+# ConvertFrom-Json, which would turn a date-shaped string into a DateTime.
+if ($ExtraArgsFile) {
+    if ($ExtraArgs.Count -gt 0 -or $Baseline) {
+        Write-Error -Message '-ExtraArgsFile cannot be combined with benchmark arguments or -Baseline.' -ErrorAction Continue
+        exit 2
+    }
+    try {
+        $ExtraArgs = [System.Text.Json.JsonSerializer]::Deserialize([IO.File]::ReadAllText($ExtraArgsFile, [Text.UTF8Encoding]::new($false)), [string[]], [System.Text.Json.JsonSerializerOptions]::Default)
+    }
+    catch {
+        Write-Error -Message "-ExtraArgsFile '$ExtraArgsFile' is not a JSON array of strings: $_" -ErrorAction Continue
+        exit 2
+    }
+    if ($null -eq $ExtraArgs) { $ExtraArgs = @() }
 }
 
 # The script owns the output file: Google Benchmark takes the last --benchmark_out(_format), so an
@@ -1239,16 +1268,29 @@ if ($manifestError) {
 # launch is this script again in a process of its own, with the same preset, binary, -Core and
 # arguments plus the plan's --benchmark_filter (Google Benchmark takes the last one), so it is pinned,
 # sampled, redacted and given a manifest the same way. Its output is shown and its RESULT= line read.
+# The benchmark arguments go to it in a temporary file (-ExtraArgsFile, #3547), not on its command
+# line: "pwsh -File" splits an argument that starts with "-" at its first ":" as -name:value, and
+# most flagged names hold one (BM_X/iterations:1000). The preset, binary, directory and core stay on
+# the command line: none of them can start with "-" (a "--" preset was moved into ExtraArgs above,
+# the binary and directory are absolute paths, and -Core is validated). A process of its own, not
+# & bench.ps1 in this one: the launch pins, sets the console encoding and exits or throws as a
+# top-level run does, and none of that may reach this run or the launches after it.
 $checkExit = 0
 if ($Baseline) {
     $pwshExe = (Get-Process -Id $PID).Path
     $launchOne = {
         param([string]$Filter, [string]$Directory)
-        $childArgs = @('-NoProfile', '-File', $benchScriptPath, $Preset, '-BenchmarkBinary', $benchBin, '-OutputDirectory', $Directory)
-        if ($Core) { $childArgs += @('-Core', $Core) }
-        $childArgs += @($ExtraArgs) + @("--benchmark_filter=$Filter")
-        $lines = @(& $pwshExe @childArgs | ForEach-Object { Write-Host $_; $_ })
-        $code = if ($null -eq $LASTEXITCODE) { 2 } else { $LASTEXITCODE }
+        $argsFile = Join-Path ([IO.Path]::GetTempPath()) "tasksmack-bench-args-$([guid]::NewGuid().ToString('N')).json"
+        try {
+            [IO.File]::WriteAllText($argsFile, [System.Text.Json.JsonSerializer]::Serialize([string[]](@($ExtraArgs) + @("--benchmark_filter=$Filter")), [string[]], [System.Text.Json.JsonSerializerOptions]::Default), [Text.UTF8Encoding]::new($false))
+            $childArgs = @('-NoProfile', '-File', $benchScriptPath, $Preset, '-BenchmarkBinary', $benchBin, '-OutputDirectory', $Directory, '-ExtraArgsFile', $argsFile)
+            if ($Core) { $childArgs += @('-Core', $Core) }
+            $lines = @(& $pwshExe @childArgs | ForEach-Object { Write-Host $_; $_ })
+            $code = if ($null -eq $LASTEXITCODE) { 2 } else { $LASTEXITCODE }
+        }
+        finally {
+            Remove-Item -LiteralPath $argsFile -Force -ErrorAction SilentlyContinue
+        }
         $resultLine = @($lines | Where-Object { "$_" -like 'RESULT=*' } | Select-Object -Last 1)
         [pscustomobject]@{ ExitCode = $code; Result = $(if ($resultLine.Count -gt 0) { "$($resultLine[0])".Substring('RESULT='.Length) } else { $null }) }
     }

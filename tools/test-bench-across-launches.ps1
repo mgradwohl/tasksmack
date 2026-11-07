@@ -45,17 +45,20 @@ try {
 
     # The stub binary: an ASCII batch file running a Python script that copies the canned run for this
     # launch (STUB_CANNED_DIR\launch-<n>.json, n counted in STUB_COUNTER) to the last --benchmark_out, or
-    # exits 3 when there is none. It ignores the filter: what bench.ps1 passed is in each launch's manifest.
+    # exits 3 when there is none. It ignores the filter, but records the arguments it received in
+    # STUB_CANNED_DIR\args-<n>.json (#3547), so a test can check the filter reached the binary intact.
     $binDir = Join-Path $root 'bin'
     New-Item -ItemType Directory -Path $binDir | Out-Null
     $stubScript = Join-Path $binDir 'stub.py'
     Set-Content -LiteralPath $stubScript -Encoding utf8 -Value @'
-import os, shutil, sys
+import json, os, shutil, sys
 out = [a for a in sys.argv[1:] if a.startswith("--benchmark_out=")][-1][len("--benchmark_out="):]
 counter = os.environ["STUB_COUNTER"]
 launch = (int(open(counter, encoding="ascii").read()) if os.path.exists(counter) else 0) + 1
 with open(counter, "w", encoding="ascii") as stream:
     stream.write(str(launch))
+with open(os.path.join(os.environ["STUB_CANNED_DIR"], f"args-{launch}.json"), "w", encoding="utf-8") as stream:
+    json.dump(sys.argv[1:], stream, ensure_ascii=False)
 canned = os.path.join(os.environ["STUB_CANNED_DIR"], f"launch-{launch}.json")
 if not os.path.exists(canned):
     sys.exit(3)
@@ -70,15 +73,17 @@ shutil.copyfile(canned, out)
     [Environment]::SetEnvironmentVariable('BENCHMARK_REPORT_AGGREGATES_ONLY', [NullString]::Value)
 
     # One bench.ps1 -Baseline run in a process of its own (the script exits with the check's code), over
-    # the canned launches given as BM_Noisy's time in each: BM_Steady is 100 ns throughout.
+    # the canned launches given as the time of each -Noisy benchmark (BM_Noisy unless given) in each:
+    # BM_Steady is 100 ns throughout.
     function Invoke-Scenario {
-        param([string]$Name, [double[]]$NoisyTimes, [string[]]$More = @(), [string]$BaselinePath = $baseline)
+        param([string]$Name, [double[]]$NoisyTimes, [string[]]$More = @(), [string]$BaselinePath = $baseline, [string[]]$Noisy = @('BM_Noisy'))
         $directory = Join-Path $root $Name
         $canned = Join-Path $directory 'canned'
         New-Item -ItemType Directory -Path $canned | Out-Null
         for ($index = 0; $index -lt $NoisyTimes.Count; $index++) {
-            # Launch 1 is the full run; the further ones hold only the flagged benchmark, as a filtered run does.
-            $times = if ($index -eq 0) { @{ BM_Steady = 100.0; BM_Noisy = $NoisyTimes[$index] } } else { @{ BM_Noisy = $NoisyTimes[$index] } }
+            # Launch 1 is the full run; the further ones hold only the flagged benchmarks, as a filtered run does.
+            $times = if ($index -eq 0) { @{ BM_Steady = 100.0 } } else { @{} }
+            foreach ($noisyName in $Noisy) { $times[$noisyName] = $NoisyTimes[$index] }
             Write-Run (Join-Path $canned "launch-$($index + 1).json") $times
         }
         $counter = Join-Path $directory 'launches.txt'
@@ -91,7 +96,7 @@ shutil.copyfile(canned, out)
         $launched = if (Test-Path -LiteralPath $counter) { [int](Get-Content -LiteralPath $counter -Raw) } else { 0 }
         $result = @(Get-ChildItem -LiteralPath $out -Filter '*.json' -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -notlike '*.manifest.json' })
         $work = if ($result.Count -eq 1) { [IO.Path]::ChangeExtension($result[0].FullName, '.across-launches') } else { $null }
-        return [pscustomobject]@{ Name = $Name; Exit = $code; Output = $text; Launched = $launched; Result = $result; Work = $work }
+        return [pscustomobject]@{ Name = $Name; Exit = $code; Output = $text; Launched = $launched; Result = $result; Work = $work; Canned = $canned }
     }
     function Get-LaunchManifests([string]$Work) {
         @(Get-ChildItem -LiteralPath $Work -Directory -Filter 'launch-*' | Sort-Object Name | ForEach-Object {
@@ -125,6 +130,45 @@ shutil.copyfile(canned, out)
     # A launch's output is redacted like any run's.
     $launchResult = @(Get-ChildItem -LiteralPath (Join-Path $noise.Work 'launch-2') -Filter '*.json' -File | Where-Object { $_.Name -notlike '*.manifest.json' })
     Assert-True ((Get-Content -LiteralPath $launchResult[0].FullName -Raw | ConvertFrom-Json).context.host_name -ceq 'redacted') 'noise: launch result not redacted'
+
+    # Flagged names as real ones are (#3547): a ":" (iterations:1000), "/", "|", "[", a space and a CJK
+    # character. "pwsh -File" split the launch's --benchmark_filter at its first ":", and launch 2 failed.
+    # The binary must receive the plan's filter exactly. (The stub is a batch file: the filter holds a
+    # space, so PowerShell quotes it, and cmd.exe passes its "|" and "^" through untouched.)
+    $oddNames = @('BM_Colon/iterations:1000', "BM_Odd[a|b] c/$([char]0x540D)/ms:60000")
+    $oddBaseline = Join-Path $root 'odd-baseline.json'
+    $oddTimes = @{ BM_Steady = 100.0 }
+    foreach ($oddName in $oddNames) { $oddTimes[$oddName] = 10.0 }
+    Write-Run $oddBaseline $oddTimes
+    $argsFilesBefore = @(Get-ChildItem -LiteralPath ([IO.Path]::GetTempPath()) -Filter 'tasksmack-bench-args-*.json' -File -ErrorAction SilentlyContinue | ForEach-Object Name)
+    $odd = Invoke-Scenario 'odd' @(20.0, 10.0, 10.5, 9.8, 10.2) -BaselinePath $oddBaseline -Noisy $oddNames
+    Assert-True ($odd.Exit -eq 0) "odd names: exit $($odd.Exit)`n$($odd.Output)"
+    Assert-True ($odd.Launched -eq 5) "odd names: $($odd.Launched) launches, not 5`n$($odd.Output)"
+    # The plan's filter, escaped as tools/bench-across-launches.py's ere_escape does, in either order.
+    $ereEscape = { param([string]$Text) -join ($Text.ToCharArray() | ForEach-Object { if ('\.[]()*+?{}|^$'.Contains($_)) { "\$_" } else { "$_" } }) }
+    $escaped = @($oddNames | ForEach-Object { & $ereEscape $_ })
+    $expected = @("--benchmark_filter=^($($escaped[0])|$($escaped[1]))$", "--benchmark_filter=^($($escaped[1])|$($escaped[0]))$")
+    for ($launch = 2; $launch -le 5; $launch++) {
+        $received = @([IO.File]::ReadAllText((Join-Path $odd.Canned "args-$launch.json"), [Text.UTF8Encoding]::new($false)) | ConvertFrom-Json)
+        $filters = @($received | Where-Object { $_ -like '--benchmark_filter=*' })
+        Assert-True ($filters.Count -eq 2 -and $filters[0] -ceq '--benchmark_filter=BM_') "odd names: launch $launch's filters $($filters -join ' ; ')"
+        Assert-True ($expected -ccontains $filters[-1]) "odd names: launch $launch got [$($filters[-1])], not [$($expected[0])]"
+        # Every other argument as bench.ps1 passes it: nothing split off the filter.
+        Assert-True (@($received | Where-Object { $_ -notlike '--benchmark_*' }).Count -eq 0) "odd names: launch $launch got a stray argument: $($received -join ' ; ')"
+    }
+    $oddCombined = Get-Content -LiteralPath (Join-Path $odd.Work 'combined.json') -Raw -Encoding utf8 | ConvertFrom-Json
+    foreach ($oddName in $oddNames) {
+        Assert-True (@($oddCombined.benchmarks | Where-Object { $_.run_name -ceq $oddName -and $_.real_time -eq 10.2 }).Count -eq 1) "odd names: $oddName not combined to 10.2 ns"
+    }
+    # The launches' argument files are temporary and removed.
+    $leftBehind = @(Get-ChildItem -LiteralPath ([IO.Path]::GetTempPath()) -Filter 'tasksmack-bench-args-*.json' -File -ErrorAction SilentlyContinue | Where-Object { $argsFilesBefore -notcontains $_.Name })
+    Assert-True ($leftBehind.Count -eq 0) "odd names: argument files left behind: $(($leftBehind | ForEach-Object Name) -join ', ')"
+
+    # -ExtraArgsFile is for those launches alone: with benchmark arguments of its own it is a usage error.
+    $argsFile = Join-Path $root 'args.json'
+    Set-Content -LiteralPath $argsFile -Encoding utf8 -Value '["--benchmark_filter=BM_"]'
+    $refused = @(& $hostExe -NoProfile -File $benchScript fake-preset -BenchmarkBinary $stub -OutputDirectory (Join-Path $root 'refused') -ExtraArgsFile $argsFile '--benchmark_filter=BM_' 2>&1)
+    Assert-True ($LASTEXITCODE -eq 2) "-ExtraArgsFile with arguments: exit $LASTEXITCODE`n$($refused -join "`n")"
 
     # A real regression: slow in 4 of the 5 launches. One fast launch doesn't pass it (not best-of-N).
     $real = Invoke-Scenario 'real' @(20.0, 20.0, 21.0, 10.0, 19.0)
