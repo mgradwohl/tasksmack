@@ -299,8 +299,12 @@ void TitleBarLayer::onSDLEvent(SDL_Event* event)
             beginWindowInteraction(*event);
         }
     }
-    else if ((event->type == SDL_EVENT_MOUSE_BUTTON_UP && event->button.button == SDL_BUTTON_LEFT) ||
-             event->type == SDL_EVENT_WINDOW_FOCUS_LOST)
+    else if (event->type == SDL_EVENT_MOUSE_BUTTON_UP && event->button.button == SDL_BUTTON_LEFT)
+    {
+        finishResizeAtRelease(*event);
+        endWindowInteraction();
+    }
+    else if (event->type == SDL_EVENT_WINDOW_FOCUS_LOST)
     {
         endWindowInteraction();
     }
@@ -670,6 +674,46 @@ void TitleBarLayer::updateResize(
         Core::WindowResizedEvent resizeEvent(pixelW, pixelH);
         timedOp(m_TraceEnabled, raiseResizeEventMs, [&] { Core::Application::get().raiseEvent(resizeEvent); });
     }
+}
+
+void TitleBarLayer::finishResizeAtRelease(const SDL_Event& buttonUp)
+{
+    if (m_InteractionMode != InteractionMode::Resize)
+    {
+        return;
+    }
+    const auto& window = Core::Application::get().getWindow();
+    SDL_Window* sdlWindow = window.getHandle();
+    if (sdlWindow == nullptr || buttonUp.button.windowID != SDL_GetWindowID(sdlWindow))
+    {
+        return;
+    }
+    // The release's own pointer position, as beginWindowInteraction() takes the press's: the window's
+    // origin plus the event's window-local coordinates (SDL captures the mouse during the press, so they
+    // are relative to this window even outside it). While Core holds frames during a resize (#882), a
+    // move and the release can both come before any onUpdate() steps the tracker, and the release is
+    // then the only record of where the pointer ended.
+    const auto [windowOriginX, windowOriginY] = window.getPosition();
+    const int globalMouseX = windowOriginX + static_cast<int>(buttonUp.button.x);
+    const int globalMouseY = windowOriginY + static_cast<int>(buttonUp.button.y);
+    const auto [minimumWidth, minimumHeight] = window.getMinimumSize();
+    const std::optional<WindowRect> target = m_Resize.finish(globalMouseX, globalMouseY, minimumWidth, minimumHeight);
+    if (!target.has_value())
+    {
+        return;
+    }
+    if (target->x != windowOriginX || target->y != windowOriginY)
+    {
+        window.setPosition(target->x, target->y);
+    }
+    if (const auto [liveWidth, liveHeight] = window.getSize(); target->width != liveWidth || target->height != liveHeight)
+    {
+        Core::traceResizePerfSDL(Core::ResizePerfOperation::FinalSizeCommit,
+                                 target->width,
+                                 target->height,
+                                 [&] { return SDL_SetWindowSize(sdlWindow, target->width, target->height); });
+    }
+    Core::Application::get().signalWindowGeometryChanged();
 }
 
 void TitleBarLayer::endWindowInteraction()

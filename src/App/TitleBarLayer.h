@@ -113,6 +113,9 @@ class TitleBarLayer : public Core::Layer
     /// restore moved it away (RestoreSettle, #2761). @p setPositionMs accumulates the move's time.
     void settleRestore(Core::Window& window, double& setPositionMs);
     void updateResize(int mx, int my, Core::Window& window, double& setPositionMs, double& setSizeMs, double& raiseResizeEventMs);
+    /// A client-side resize's release (@p buttonUp): sizes the window for where the pointer was let go,
+    /// motion no update saw included (ResizeTracker::finish(), #882), before endWindowInteraction().
+    void finishResizeAtRelease(const SDL_Event& buttonUp);
     void endWindowInteraction();
 
     /// Query the current mouse position and button mask together, using whichever SDL query is
