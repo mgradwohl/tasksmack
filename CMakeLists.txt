@@ -455,6 +455,7 @@ if(UNIX AND NOT APPLE)
     target_compile_definitions(tasksmack_bpf INTERFACE TASKSMACK_HAS_LIBBPF=1)
     message(STATUS "libbpf ${LIBBPF_VERSION}: per-process UDP bytes through the helper's eBPF counter (#3366)")
 endif()
+include(cmake/BpfObject.cmake) # compiles and embeds the counter's BPF program
 
 # libcurl on Linux (#3238): the opt-in update check's HTTPS client (LinuxHttpsClient), a build dependency the
 # .deb then depends on (CPACK_DEBIAN_PACKAGE_SHLIBDEPS). Found with pkg-config, as libsystemd is: without it

@@ -65,3 +65,12 @@ path = "CODE_OF_CONDUCT.md"
 precedence = "override"
 SPDX-FileCopyrightText = "Contributor Covenant contributors <https://www.contributor-covenant.org>"
 SPDX-License-Identifier = "CC-BY-4.0"
+
+# The helper's eBPF UDP byte counter (#3366). The kernel loads a fentry/fexit program only under a
+# GPL-compatible license string, so this one file is dual-licensed (maintainer, 2026-11-07); the rest of
+# TaskSmack stays MIT.
+[[annotations]]
+path = "src/Platform/Linux/bpf/udp_bytes.bpf.c"
+precedence = "override"
+SPDX-FileCopyrightText = "2026 Matt Gradwohl"
+SPDX-License-Identifier = "MIT OR GPL-2.0-only"
