@@ -10,7 +10,6 @@
 // fail-fast. And a copy in a folder its user can change is refused, with the same standard user's token.
 // CiRealSystem.h's guard skips all of it anywhere but such a runner.
 
-#include "Core/Utf8Path.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/Windows/BrokerHelper.h"
 #include "Platform/Windows/WindowsHandles.h"
@@ -28,10 +27,8 @@
 #endif
 #include <windows.h>
 #include <aclapi.h>
-#include <lm.h>
 // clang-format on
 
-#include <array>
 #include <charconv>
 #include <chrono>
 #include <cstddef>
@@ -40,15 +37,12 @@
 #include <fstream>
 #include <iterator>
 #include <optional>
-#include <random>
 #include <sstream>
 #include <string>
 #include <string_view>
 #include <system_error>
 #include <thread>
 #include <vector>
-
-#pragma comment(lib, "netapi32.lib")
 
 #if defined(TASKSMACK_WINDOWS_HELPER_PATH) && defined(TASKSMACK_WINDOWS_HELPER_TEST_PARENT_PATH) &&                                        \
     defined(TASKSMACK_WINDOWS_HELPER_SHORT_IDLE_PATH)
@@ -80,38 +74,6 @@ void expectSessionDone(std::optional<DWORD> code)
     EXPECT_NE(exit, FAST_FAIL_EXIT) << "the helper failed fast";
     EXPECT_NE(exit, ABORT_EXIT) << "the helper aborted (std::terminate), or refused its parent";
     EXPECT_EQ(exit, static_cast<DWORD>(BrokerHelper::Exit::Done)) << BrokerHelper::exitMeaning(exit);
-}
-
-/// SetNamedSecurityInfoW(@p path): owner Administrators and a protected DACL of SYSTEM and Administrators full
-/// control and Users read and execute, inherited by what is under it: what an installer gives Program Files\TaskSmack.
-void protectAsAnInstall(const std::filesystem::path& path)
-{
-    std::vector<std::byte> administrators = wellKnownSid(WinBuiltinAdministratorsSid);
-    constexpr DWORD INHERITED = SUB_CONTAINERS_AND_OBJECTS_INHERIT;
-    const Acl acl({
-        {.sid = wellKnownSid(WinLocalSystemSid), .rights = GENERIC_ALL, .inheritance = INHERITED},
-        {.sid = administrators, .rights = GENERIC_ALL, .inheritance = INHERITED},
-        {.sid = wellKnownSid(WinBuiltinUsersSid), .rights = GENERIC_READ | GENERIC_EXECUTE, .inheritance = INHERITED},
-    });
-    ASSERT_NE(acl.get(), nullptr) << "couldn't make the install's ACL: " << GetLastError();
-    std::wstring name = path.wstring();
-    const DWORD set = SetNamedSecurityInfoW(name.data(),
-                                            SE_FILE_OBJECT,
-                                            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-                                            administrators.data(),
-                                            nullptr,
-                                            acl.get(),
-                                            nullptr);
-    ASSERT_EQ(set, static_cast<DWORD>(ERROR_SUCCESS)) << "couldn't protect " << Core::pathToUtf8(path);
-}
-
-/// %ProgramFiles%.
-[[nodiscard]] std::filesystem::path programFiles()
-{
-    std::array<wchar_t, MAX_PATH> path{};
-    const DWORD length = GetEnvironmentVariableW(L"ProgramFiles", path.data(), static_cast<DWORD>(path.size()));
-    return (length == 0 || length >= path.size()) ? std::filesystem::path(L"C:\\Program Files")
-                                                  : std::filesystem::path(std::wstring(path.data(), length));
 }
 
 /// An install the helper serves: a folder in Program Files only administrators can change, with @p helper as
@@ -190,84 +152,6 @@ class SessionLog
 
   private:
     ScratchFolder m_Folder;
-};
-
-/// A throwaway local account, for an over-the-shoulder elevation: the helper runs as it, TaskSmack as the runner's
-/// own user, so the helper gives the session one action (#2550). A plain user: on the runner UAC is on, so an
-/// administrator's logon through CreateProcessWithLogonW would get the filtered token anyway, and the grant turns
-/// only on the two accounts being different. Deleted on scope exit.
-class ThrowawayAccount
-{
-  public:
-    ThrowawayAccount()
-    {
-        std::random_device random;
-        m_Name = std::format(L"tsci{:08x}", random());
-        // Upper, lower, digits and symbols, 24 characters: any complexity policy takes it.
-        m_Password = std::format(L"Ts!{:08x}{:08x}-qZ9", random(), random());
-        USER_INFO_1 user{};
-        user.usri1_name = m_Name.data();
-        user.usri1_password = m_Password.data();
-        user.usri1_priv = USER_PRIV_USER;
-        user.usri1_flags = UF_SCRIPT | UF_DONT_EXPIRE_PASSWD;
-        DWORD badField = 0;
-        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - NetUserAdd
-        // takes its USER_INFO_1 as bytes
-        auto* userBytes = reinterpret_cast<LPBYTE>(&user);
-        const NET_API_STATUS added = NetUserAdd(nullptr, 1, userBytes, &badField);
-        if (added != NERR_Success)
-        {
-            ADD_FAILURE() << "couldn't add a local account: " << added << " (field " << badField << ")";
-            return;
-        }
-        m_Added = true;
-        m_Sid.resize(SECURITY_MAX_SID_SIZE);
-        auto sidSize = static_cast<DWORD>(m_Sid.size());
-        std::array<wchar_t, 256> domain{};
-        auto domainSize = static_cast<DWORD>(domain.size());
-        SID_NAME_USE use = SidTypeUnknown;
-        if (LookupAccountNameW(nullptr, m_Name.c_str(), m_Sid.data(), &sidSize, domain.data(), &domainSize, &use) == FALSE)
-        {
-            ADD_FAILURE() << "couldn't read the new account's SID: " << GetLastError();
-            m_Sid.clear();
-            return;
-        }
-        m_Sid.resize(sidSize);
-    }
-    ~ThrowawayAccount()
-    {
-        if (m_Added)
-        {
-            NetUserDel(nullptr, m_Name.c_str());
-        }
-    }
-    ThrowawayAccount(const ThrowawayAccount&) = delete;
-    ThrowawayAccount& operator=(const ThrowawayAccount&) = delete;
-    ThrowawayAccount(ThrowawayAccount&&) = delete;
-    ThrowawayAccount& operator=(ThrowawayAccount&&) = delete;
-
-    [[nodiscard]] bool ready() const noexcept
-    {
-        return !m_Sid.empty();
-    }
-    [[nodiscard]] const std::wstring& name() const noexcept
-    {
-        return m_Name;
-    }
-    [[nodiscard]] const std::wstring& password() const noexcept
-    {
-        return m_Password;
-    }
-    [[nodiscard]] const std::vector<std::byte>& sid() const noexcept
-    {
-        return m_Sid;
-    }
-
-  private:
-    std::wstring m_Name;
-    std::wstring m_Password;
-    std::vector<std::byte> m_Sid;
-    bool m_Added = false;
 };
 
 [[nodiscard]] std::optional<DWORD> parsePid(const std::string& text)

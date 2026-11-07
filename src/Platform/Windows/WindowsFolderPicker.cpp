@@ -31,7 +31,8 @@
 namespace Platform::Windows
 {
 
-// LCOV_EXCL_START - the whole file is a modal IFileOpenDialog, which blocks until a user picks or cancels (#2039)
+// LCOV_EXCL_START - the whole file is a modal IFileOpenDialog, which blocks until a user picks or cancels (#2039).
+// CiRealSystemFolderPickerTest shows and cancels it on the CI runner (#3490), a run the coverage job doesn't make.
 // NOLINTBEGIN(misc-include-cleaner) - Windows APIs; Win32 types come from windows.h sub-headers
 namespace
 {

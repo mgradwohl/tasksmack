@@ -52,11 +52,6 @@ if [[ -z "$CLANG_FORMAT" ]]; then
 fi
 warn_llvm_version_skew "$CLANG_FORMAT" clang-format
 
-SEARCH_DIRS=()
-for dir in "${FORMAT_DIRS[@]}"; do
-    SEARCH_DIRS+=("$PROJECT_ROOT/$dir")
-done
-
 if [[ "$CHANGED_ONLY" == "true" ]]; then
     # Files this branch changes (committed, staged, unstaged, untracked); see list_changed_files
     mapfile -t CHANGED_FILES < <(list_changed_files "$PROJECT_ROOT" | grep -E '\.(cpp|h)$' || true)
@@ -77,17 +72,22 @@ if [[ "$CHANGED_ONLY" == "true" ]]; then
         "$CLANG_FORMAT" -i "$full_path"
     done
 else
-    # Count files for progress
-    FILE_COUNT=$(find "${SEARCH_DIRS[@]}" -type f \( -name "*.cpp" -o -name "*.h" \) ! -path "*/build/*" ! -path "*/.git/*" 2>/dev/null | wc -l)
+    # Every source file; none found is never a real result (#3528)
+    mapfile -d '' FILES < <(list_format_files "$PROJECT_ROOT")
+    if [[ ${#FILES[@]} -eq 0 ]]; then
+        echo "Error: no C++ sources found under ${PROJECT_ROOT} (${FORMAT_DIRS[*]})." >&2
+        exit 1
+    fi
+    FILE_COUNT=${#FILES[@]}
     CHECKED_COUNT=0
 
-    while IFS= read -r -d '' file; do
+    for file in "${FILES[@]}"; do
         CHECKED_COUNT=$((CHECKED_COUNT + 1))
         if $VERBOSE; then
             echo "[$CHECKED_COUNT/$FILE_COUNT] Formatting: $(basename "$file")"
         fi
         "$CLANG_FORMAT" -i "$file"
-    done < <(find "${SEARCH_DIRS[@]}" -type f \( -name "*.cpp" -o -name "*.h" \) ! -path "*/build/*" ! -path "*/.git/*" -print0 2>/dev/null)
+    done
 fi
 
 echo "Formatted $FILE_COUNT files."

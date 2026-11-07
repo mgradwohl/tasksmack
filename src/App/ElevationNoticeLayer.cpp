@@ -2,6 +2,7 @@
 
 #include "App/AccessChoice.h"
 #include "App/AccessNoticeDialog.h"
+#include "App/AdministratorHold.h"
 #include "App/ElevationNoticeDialog.h"
 #include "App/ElevationNoticeText.h"
 #include "App/PanelPlatforms.h"
@@ -10,16 +11,12 @@
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Core/Layer.h"
-#include "Domain/PublicationWake.h"
 
 #include <spdlog/spdlog.h>
 
-#include <atomic>
 #include <cstdint>
-#include <expected>
-#include <stop_token>
+#include <optional>
 #include <string>
-#include <thread>
 
 namespace App
 {
@@ -103,29 +100,23 @@ void ElevationNoticeLayer::suppressFutureNotices()
 
 void ElevationNoticeLayer::startAdministrator()
 {
-    if (m_Broker == nullptr || m_Worker.joinable())
+    // No helper, or a hold already under way: the notice finishes with start()'s reason. The worker's
+    // publication wakes the frame loop when the answer comes, so the notice shows it at once (#3156).
+    if (auto started = m_AdministratorHold.start(m_Broker); !started)
     {
-        AccessNoticeDialog::finishAdministrator(m_AccessState, false, "the administrator helper isn't installed");
-        return;
+        AccessNoticeDialog::finishAdministrator(m_AccessState, false, started.error());
     }
-    m_Worker = std::jthread(
-        [this, broker = m_Broker](const std::stop_token& stopToken)
-        {
-            m_AdministratorResult = broker->holdForSession(stopToken);
-            m_AdministratorDone.store(true, std::memory_order_release);
-            Domain::PublicationWake::notify(); // the notice shows the answer at once (#3156)
-        });
 }
 
 void ElevationNoticeLayer::collectAdministrator()
 {
-    if (!m_AdministratorDone.exchange(false, std::memory_order_acquire))
+    const std::optional<AdministratorHold::Result> answer = m_AdministratorHold.take();
+    if (!answer.has_value())
     {
         return;
     }
-    m_Worker.join();
-    const bool succeeded = m_AdministratorResult.has_value();
-    AccessNoticeDialog::finishAdministrator(m_AccessState, succeeded, succeeded ? std::string{} : m_AdministratorResult.error());
+    const bool succeeded = answer->has_value();
+    AccessNoticeDialog::finishAdministrator(m_AccessState, succeeded, succeeded ? std::string{} : answer->error());
     if (succeeded)
     {
         spdlog::info("ElevationNoticeLayer: Administrator for this session: the helper is held until TaskSmack closes");
@@ -136,7 +127,7 @@ void ElevationNoticeLayer::collectAdministrator()
     }
     else
     {
-        spdlog::info("ElevationNoticeLayer: Administrator not started, still Standard: {}", m_AdministratorResult.error());
+        spdlog::info("ElevationNoticeLayer: Administrator not started, still Standard: {}", answer->error());
     }
 }
 

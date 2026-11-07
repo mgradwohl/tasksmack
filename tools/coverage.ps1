@@ -277,8 +277,9 @@ try {
     # Files excluded from coverage: generated/third-party paths and test sources only (benchmarks/
     # holds test-support headers the tests include, #1395). ImGui panel
     # code is deliberately NOT excluded (#1131): untested code has to count against the total.
-    # Keep in sync with tools/coverage.sh COV_IGNORE_REGEX.
-    $IgnoreRegex = ".*(\\|/)(build|_deps|tests|benchmarks|\.cache)(\\|/).*"
+    # build, tests and benchmarks are anchored at the checkout, so one under a folder of that name
+    # still reports its files (#3528). Keep in sync with tools/coverage.sh COV_IGNORE_REGEX.
+    $IgnoreRegex = Get-CoverageIgnoreRegex -Root $ProjectRoot
 
     # llvm-cov only reports files compiled into the binaries it is given, so with the test binary
     # alone everything never linked into TaskSmackTests (panels, layers, Theme.cpp, main.cpp, ...)
@@ -316,6 +317,18 @@ try {
         "-ignore-filename-regex=$IgnoreRegex" `
         | Set-Content -Path $lcovPath -Encoding utf8NoBOM
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    # The ignore regex is anchored at the checkout (#3528), so a root the compiler spelled some other way
+    # would leave tests/ in the report, and a match on the checkout's own path would leave src/ out.
+    # Either is a wrong report, never a real result, so it fails here.
+    $reported = @(Get-Content -LiteralPath $lcovPath | Where-Object { $_.StartsWith('SF:') } |
+            ForEach-Object { [System.IO.Path]::GetRelativePath($ProjectRoot, $_.Substring(3)) })
+    $srcCount = @($reported | Where-Object { $_ -match '^src[\\/]' }).Count
+    $leaked = @($reported | Where-Object { $_ -match '^(build|tests|benchmarks)[\\/]' })
+    if ($srcCount -eq 0 -or $leaked.Count -gt 0) {
+        Write-Error ("The LCOV report has $srcCount file(s) under src\ and $($leaked.Count) that -ignore-filename-regex " +
+            "should have left out (first: $($leaked | Select-Object -First 1)); regex: $IgnoreRegex")
+        exit 1
+    }
     $droppedLines = Remove-ExcludedLcovLine $lcovPath
     Write-Host "Left $droppedLines structurally untestable line(s) out of the LCOV report (#2039, #3221)."
 

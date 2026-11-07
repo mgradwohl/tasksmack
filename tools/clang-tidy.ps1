@@ -125,12 +125,18 @@ function Find-WorkingPython {
     foreach ($candidate in $candidates) {
         $command = Get-Command $candidate.Exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
         if (-not $command) { continue }
+        # The whole output first, then $LASTEXITCODE: "| Select-Object -First 1" stops the pipeline
+        # before the process exits, so $LASTEXITCODE could still hold an earlier command's code and
+        # make a working Python look broken (#3523). The count is checked before indexing: the Store's
+        # python alias can print nothing, and [0] of an empty array throws under strict mode.
         try {
-            $exe = & $command.Source @($candidate.Args) -I -c "import sys; print(sys.executable)" 2>$null | Select-Object -First 1
+            $lines = @(& $command.Source @($candidate.Args) -I -c "import sys; print(sys.executable)" 2>$null)
         } catch {
             continue
         }
-        if ($LASTEXITCODE -eq 0 -and $exe -and (Test-Path -LiteralPath $exe)) {
+        if ($LASTEXITCODE -ne 0 -or $lines.Count -eq 0) { continue }
+        $exe = $lines[0]
+        if ($exe -and (Test-Path -LiteralPath $exe)) {
             return $exe
         }
     }

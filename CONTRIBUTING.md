@@ -205,6 +205,9 @@ python -m pip install --require-hashes -r requirements-glad.txt
 # too, to read every user's crash entries from the journal.
 # -DTASKSMACK_WITH_SDBUS=OFF builds without it even when it is installed.
 sudo apt install libsystemd-dev pkg-config
+# Required: libbpf, for the helper's eBPF counter of each process's UDP bytes (#3366). Configure fails
+# without it.
+sudo apt install libbpf-dev
 ```
 
 ### Windows Pre-Requisites
@@ -782,10 +785,18 @@ Three established ways to get real coverage of such a file's logic:
    Windows helpers in `tests/Support/CiRealSystemWindows.h`). Its `SetUp()` skips the test unless
    `TASKSMACK_CI_REAL_SYSTEM=1` on a GitHub-hosted runner (`GITHUB_ACTIONS=true`,
    `RUNNER_ENVIRONMENT=github-hosted`). CI's "Real-system tests (Windows)" step sets it and runs
-   `TaskSmackTests --gtest_filter=CiRealSystem*` after the normal `ctest`. It fails if none of them ran.
-   - **Rules:** keep every child idle (suspended, or `TaskSmackCiStub.exe`, which only sleeps), and end it
-     and remove what the test made in a scope guard. Skip with the reason when the runner can't do it (no
-     memory compression on a Server image).
+   `TaskSmackTests --gtest_filter=CiRealSystem*` after the normal `ctest`. It fails if none of them ran, or if
+   the runner still has something a test made (a `tsci*` account or profile, a `TaskSmackCi*` service, folder,
+   IFEO key or Run value).
+   - **Rules:** keep every child idle (suspended, or `TaskSmackCiStub.exe`, which only sleeps, or with
+     `--hung-window` shows a window and stops answering it; a service is `TaskSmackCiService.exe`, which only
+     waits to be stopped), and end it and remove what the test made in a scope guard: a registry value, a key,
+     a privilege turned on, a service, a `ThrowawayAccount`. Skip with the reason when the runner can't do
+     it (no memory compression on a Server image), and rather than overwrite a value that was there before.
+   - **TaskSmack.exe itself:** a test that starts the app copies it (`TASKSMACK_APP_PATH`), its assets and Mesa's
+     software OpenGL into a scratch folder, gives it its own `TASKSMACK_CONFIG_DIR` and `TEMP`, and closes it with
+     `WM_CLOSE`, ending it in a scope guard only if it doesn't exit (`test_CiRealSystemWindowsApp.cpp`). Input
+     goes to its window as messages, never as `SendInput`, which reaches whatever has the foreground.
    - **Never locally:** don't set the variable on your own machine. The daytime filter excludes `CiRealSystem*`.
    - **The rule:** a change to a real OS path adds such a test, or the PR says why only a manual check can
      cover it (a UAC prompt, a sign-out, hardware).
@@ -1149,6 +1160,10 @@ Check formatting (no changes):
 ./tools/check-format.sh        # Linux
 pwsh tools/check-format.ps1    # Windows
 ```
+
+Both pairs take the C++ files under `src/`, `tests/` and `benchmarks/`, less any in a `build/` or `.git/` folder
+inside them, and fail when they find none: the folders above the checkout don't count, so one under a `build`
+folder is checked in full (#3528).
 
 ## Coverage
 
@@ -1629,7 +1644,27 @@ python3 tools/check-benchmark-regression.py --baseline perf-data/linux-ci-baseli
     --threshold 40 --threshold-overrides perf-data/linux-ci-thresholds.json
 ```
 
-The script is plain Python, so `bench.ps1` runs can use it the same way.
+On Windows, `bench.ps1 -Baseline <file>` does all of that itself (#3448): it checks the run at the
+checker's defaults plus any `-CheckArgs`, and when that flags regressions it runs the flagged benchmarks
+alone in `-Launches` more separate launches (default 4, 5 in all), each a `bench.ps1` run of its own with the
+same preset, binary, `-Core` and arguments plus the plan's filter, so each is pinned, redacted and given a
+manifest like any run. A launch whose manifest records a different core class from the full run's (its
+pinning failed, say) stops it with exit 2 before anything is combined. It then combines them and checks the
+median across launches at the same thresholds, and exits with that check's code (0 passed, 1 regressions or
+low coverage, 2 unusable input). The flagged names, the launches and the combined run go to
+`<result>.across-launches\` next to the result; `-BudgetSeconds` (default 600) bounds the launches as on CI.
+The checks run as `python -I -X utf8`. `-CheckArgs` refuses the options the script sets itself
+(`--baseline`, `--current`, `--current-manifest`, `--regressions-out`) and any abbreviation of them, since
+the checker's argparse accepts unique prefixes. No Windows CI job runs the benchmarks, so this is for local
+runs, which belong in a quiet window:
+
+```powershell
+pwsh tools/bench.ps1 win-benchmark -Baseline perf-data/win-baseline.json
+# "pwsh -File" can't bind an array, so -CheckArgs takes one token there: the option and its value as one
+pwsh tools/bench.ps1 win-benchmark -Baseline perf-data/win-baseline.json -CheckArgs '--threshold=40'
+# From PowerShell, an array
+& ./tools/bench.ps1 win-benchmark -Baseline perf-data/win-baseline.json -CheckArgs @('--threshold', '40')
+```
 
 This is a *separate* baseline from `perf-data/linux-baseline.json` above, deliberately: that one was
 recorded on a developer machine, and comparing it with hosted `ubuntu-24.04` runners flagged the machine

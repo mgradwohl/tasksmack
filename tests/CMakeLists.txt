@@ -81,12 +81,24 @@ if(WIN32)
         # compile database; about two seconds. Skips when clang-tidy isn't installed.
         add_test(NAME ClangTidyHeadersScript
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-clang-tidy-headers.ps1)
+        # tools/check-format.ps1, tools/clang-format.ps1 and coverage.ps1's ignore regex find the sources of a
+        # checkout under a folder named build (#3528): a junction to the checkout and a small copy, in TEMP.
+        # Skips the two script runs when clang-format isn't installed.
+        add_test(NAME FormatSourcesScript
+            COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-format-sources.ps1)
         # tools/bench.ps1 against a stub benchmark binary: exit-code propagation (#1423) and the
         # provenance manifest (#1424). The stub benchmark is a Python script when CMake's interpreter
         # is passed in (much cheaper to start than PowerShell).
         add_test(NAME BenchScript
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-bench.ps1)
         set_tests_properties(BenchScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_PYTHON=${Python3_EXECUTABLE}")
+        # tools/bench.ps1 -Baseline measures flagged benchmarks across launches with
+        # tools/bench-across-launches.py and checks the median across them (#3448). A stub binary
+        # copies canned runs; no benchmark runs. About 25 seconds alone (a PowerShell start per launch),
+        # so it gets BenchScript's 180 s below.
+        add_test(NAME BenchAcrossLaunchesPs1Script
+            COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-bench-across-launches.ps1)
+        set_tests_properties(BenchAcrossLaunchesPs1Script PROPERTIES ENVIRONMENT "TASKSMACK_TEST_PYTHON=${Python3_EXECUTABLE}")
         # tools/check-prereqs.ps1 reads a two-component ccache version (#2350); one full checker run.
         add_test(NAME CheckPrereqsScript
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-check-prereqs.ps1)
@@ -112,6 +124,10 @@ if(WIN32)
         # Fixture SHA256SUMS files; nothing is downloaded, and winget isn't needed.
         add_test(NAME WingetManifestScript
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-winget-manifest.ps1)
+        # tools/release-smoke-check.ps1 starts each run in an empty work folder (#3530). Only its work-folder
+        # functions run, in TEMP; the smoke check itself launches TaskSmack, so it never runs here.
+        add_test(NAME ReleaseSmokeCheckScript
+            COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-release-smoke-check.ps1)
         # The PowerShell script tests take turns (#2054). Each starts pwsh, several compile C# with
         # Add-Type, and some start further pwsh or stub processes; run together under `ctest -j` on a
         # 4-core CI runner they slowed each other down many times over (CMakeCacheScript, 1.5-4.4 s
@@ -128,20 +144,23 @@ if(WIN32)
         # "Fatal error. Internal CLR error. (0x80131506)" (ctest: SEGFAULT), and only there, so
         # reusable-build-test.yml gives these entries, and no others, a second attempt on that leg.
         set_tests_properties(ResizeCaptureScript EtwCaptureScript EtwAnalysisScript CMakeCacheScript BenchScript
-            CheckPrereqsScript SetupDevScript VerifyWindowsSignaturesScript BuildWindowsInstallerScript
-            ResizePerfSummaryScript WingetManifestScript ClangTidyHeadersScript PROPERTIES
+            BenchAcrossLaunchesPs1Script CheckPrereqsScript SetupDevScript VerifyWindowsSignaturesScript
+            BuildWindowsInstallerScript ResizePerfSummaryScript WingetManifestScript ClangTidyHeadersScript
+            FormatSourcesScript ReleaseSmokeCheckScript PROPERTIES
             RESOURCE_LOCK pwsh-script-tests
             LABELS pwsh-script)
         set_tests_properties(ResizeCaptureScript EtwAnalysisScript CMakeCacheScript CheckPrereqsScript SetupDevScript
             VerifyWindowsSignaturesScript BuildWindowsInstallerScript ResizePerfSummaryScript WingetManifestScript
-            ClangTidyHeadersScript PROPERTIES TIMEOUT 120)
-        set_tests_properties(EtwCaptureScript BenchScript PROPERTIES TIMEOUT 180)
+            ClangTidyHeadersScript FormatSourcesScript ReleaseSmokeCheckScript PROPERTIES TIMEOUT 120)
+        set_tests_properties(EtwCaptureScript BenchScript BenchAcrossLaunchesPs1Script PROPERTIES TIMEOUT 180)
     else()
         # Say so rather than leave the ETW script tests silently missing from ctest (#1187).
         message(WARNING "pwsh (PowerShell 7) not found: the ResizeCaptureScript, EtwCaptureScript, "
-                        "EtwAnalysisScript, CMakeCacheScript, BenchScript, CheckPrereqsScript, SetupDevScript, "
-                        "VerifyWindowsSignaturesScript, BuildWindowsInstallerScript, ResizePerfSummaryScript, "
-                        "WingetManifestScript and ClangTidyHeadersScript tests "
+                        "EtwAnalysisScript, CMakeCacheScript, BenchScript, BenchAcrossLaunchesPs1Script, "
+                        "CheckPrereqsScript, SetupDevScript, VerifyWindowsSignaturesScript, "
+                        "BuildWindowsInstallerScript, ResizePerfSummaryScript, "
+                        "WingetManifestScript, ClangTidyHeadersScript, FormatSourcesScript and "
+                        "ReleaseSmokeCheckScript tests "
                         "are not registered. Install PowerShell 7 to run them.")
     endif()
     # The Authenticode gate on packaging TaskSmackHelper.exe (#2550): the build's own, unsigned
@@ -237,6 +256,15 @@ if(TASKSMACK_BASH AND NOT WIN32)
     add_test(NAME MdLinkAuditScript
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_md_link_audit.py)
     set_tests_properties(MdLinkAuditScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}" TIMEOUT 60)
+endif()
+# Its Windows twin, tools/md-link-audit.ps1, through the same cases, plus the checkout itself with no broken
+# link: it resolved docs/'s root-absolute links against the repository root (#3529). It starts pwsh, so it
+# takes its turn with the PowerShell script tests (#2054) and gets their second attempt on windows-11-arm.
+if(WIN32 AND TASKSMACK_PWSH)
+    add_test(NAME MdLinkAuditPs1Script
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_md_link_audit.py MdLinkAuditPs1Test)
+    set_tests_properties(MdLinkAuditPs1Script PROPERTIES ENVIRONMENT "TASKSMACK_TEST_PWSH=${TASKSMACK_PWSH}"
+        RESOURCE_LOCK pwsh-script-tests LABELS pwsh-script TIMEOUT 120)
 endif()
 
 # tools/resize-perf-summary.awk, measure-idle.sh's ResizePerf summary reader: a window that drew no frame
@@ -687,6 +715,7 @@ set(COMMON_TEST_SOURCES
     App/test_NetInterfaceUtils.cpp
     App/test_PowerStatusText.cpp
     App/test_ElevationNoticeText.cpp
+    App/test_AdministratorHold.cpp # the Access notice's Administrator hold on Domain::Worker (#3343)
     App/test_StatusBarText.cpp
     App/test_UpdateChecker.cpp # the update check's worker, with a fake client and clock (#3093)
     App/test_StartAtLoginSetting.cpp # start at sign-in's worker, with a fake entry (#3093 part 2)
@@ -790,6 +819,16 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     # session end for real, on a disposable runner only (tests/Support/CiRealSystem.h's guard skips them elsewhere)
     Platform/test_CiRealSystemWindows.cpp
     Platform/test_CiRealSystemHelper.cpp
+    # Phase 2 (#3490): the real HKLM IFEO key, Run value and StartupApproved values; Not responding and its wait
+    # chain, the UDP trace's ETW session, SeDebugPrivilege, the critical-process guard, and the elevated-only skips
+    # run as a standard user
+    Platform/test_CiRealSystemWindowsRegistry.cpp
+    Platform/test_CiRealSystemWindowsProcess.cpp
+    # Services: start, stop, restart and the startup type on throwaway services (TaskSmackCiService.exe)
+    Platform/test_CiRealSystemWindowsService.cpp
+    # TaskSmack.exe started on the runner: --minimized, a second start in Task Manager's place, and the folder dialog
+    Platform/test_CiRealSystemWindowsApp.cpp
+    Platform/test_RealSystemPathSupport.cpp  # the path comparison those tests check images with; changes nothing
     Platform/test_HelperLauncher.cpp  # starting the helper with ShellExecuteExW("runas"), through fakes (#2549)
     Platform/test_WindowsTaskManagerReplacement.cpp  # taskmgr.exe's IFEO key, on a scratch HKCU key, and the helper's checks (#3072)
     Platform/test_WindowsUserSessions.cpp  # the Users tab's WTS reader and actions through fakes, and this machine's sessions (#3076)
@@ -1088,6 +1127,8 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/PlatformOpen.cpp
     # The Limited Data notice (#1547), run headless (test_ElevationNoticeDialogRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/AccessNoticeDialog.cpp
+    # The Access notice's Administrator hold on Domain::Worker (#3343), with a test broker (test_AdministratorHold.cpp)
+    ${CMAKE_SOURCE_DIR}/src/App/AdministratorHold.cpp
     ${CMAKE_SOURCE_DIR}/src/App/ElevationNoticeDialog.cpp
     # The Help window (#172), run headless (test_HelpWindowRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/HelpWindow.cpp
@@ -1324,6 +1365,21 @@ if(WIN32)
     tasksmack_apply_windows_platform(TaskSmackCiStub)
     add_dependencies(TaskSmackTests TaskSmackCiStub)
     target_compile_definitions(TaskSmackTests PRIVATE TASKSMACK_CI_STUB_PATH="$<TARGET_FILE:TaskSmackCiStub>")
+
+    # TaskSmackCiService.exe (#3490): the throwaway service the CI real-system service tests install, control
+    # through the real WindowsServiceActions and delete. It only reports itself running until it is stopped.
+    add_executable(TaskSmackCiService WIN32 Support/CiService.cpp)
+    target_compile_features(TaskSmackCiService PRIVATE cxx_std_23)
+    tasksmack_apply_default_warnings(TaskSmackCiService)
+    tasksmack_apply_text_encoding(TaskSmackCiService)
+    tasksmack_apply_windows_platform(TaskSmackCiService)
+    add_dependencies(TaskSmackTests TaskSmackCiService)
+    target_compile_definitions(TaskSmackTests PRIVATE TASKSMACK_CI_SERVICE_PATH="$<TARGET_FILE:TaskSmackCiService>")
+
+    # TaskSmack.exe itself (#3490), which test_CiRealSystemWindowsApp.cpp copies and starts on the runner. Only its
+    # path: CI's build makes every target, and a TaskSmackTests build of its own needn't relink the app for tests
+    # that skip off the runner (a missing copy fails them there).
+    target_compile_definitions(TaskSmackTests PRIVATE TASKSMACK_APP_PATH="$<TARGET_FILE:TaskSmack>")
 endif()
 
 # test_BundledThemes.cpp checks the shipped theme files themselves, from the source tree.

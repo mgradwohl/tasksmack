@@ -23,6 +23,7 @@
 #include "Platform/Linux/HelperSandboxMode.h"
 #include "Platform/Linux/PkexecBroker.h"
 #include "Platform/Linux/PolkitTextAgent.h"
+#include "Platform/Linux/PosixGuards.h"
 #include "Platform/Linux/ProcParsing.h"
 #include "Platform/Linux/ProcStatusSecurityParser.h"
 #include "Platform/Linux/SystemdBus.h"
@@ -60,10 +61,12 @@
 #include <fcntl.h>
 #include <grp.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <sched.h>
 #include <signal.h> // NOLINT(modernize-deprecated-headers) - POSIX signal.h provides kill(), csignal does not
 #include <spawn.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -1144,6 +1147,137 @@ TEST(TasksmackHelperRootTest, KeepsOnlyItsCapabilitiesAndServesEveryRequestOnAno
     EXPECT_EQ(child.terminatingSignal(), SIGKILL);
     pair.closeClient();
     EXPECT_EQ(helper.exitCode(), 0);
+}
+
+// #3491 item 5: Close connection through the real helper on another user's socket. A child running as OTHER_USER
+// connects to a loopback listener this test holds; the helper, dropped to its kept capabilities under the
+// enforcing filter, copies the child's descriptor (pidfd_getfd) and shuts it down, so this end reads end of file.
+// Root, on a disposable CI runner only (CI's root step).
+TEST(TasksmackHelperRootTest, ClosesAnotherUsersTcpConnection)
+{
+    // Real-system tests run only on a disposable GitHub-hosted runner, never under sudo on a developer machine,
+    // in WSL or on a self-hosted runner (#3491, #3489).
+    if (const std::optional<std::string> why = ::TestSupport::ciRealSystemSkipReason())
+    {
+        GTEST_SKIP() << *why;
+    }
+    if (::geteuid() != 0)
+    {
+        GTEST_SKIP() << "Needs root: sudo build/debug/tests/TaskSmackTests --gtest_filter='TasksmackHelperRootTest.*'";
+    }
+    const int listener = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    ASSERT_GE(listener, 0);
+    const Posix::FdGuard listening(listener);
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    socklen_t length = sizeof(address);
+    // NOLINTBEGIN(cppcoreguidelines-pro-type-reinterpret-cast) - the BSD socket API takes sockaddr*
+    ASSERT_EQ(::bind(listener, reinterpret_cast<sockaddr*>(&address), sizeof(address)), 0);
+    ASSERT_EQ(::listen(listener, 1), 0);
+    ASSERT_EQ(::getsockname(listener, reinterpret_cast<sockaddr*>(&address), &length), 0);
+    // NOLINTEND(cppcoreguidelines-pro-type-reinterpret-cast)
+
+    std::array<int, 2> report{-1, -1}; // the child writes its connected descriptor's number here
+    ASSERT_EQ(::pipe2(report.data(), O_CLOEXEC), 0);
+    const pid_t child = ::fork();
+    ASSERT_GE(child, 0);
+    if (child == 0)
+    {
+        if (::setgroups(0, nullptr) != 0 || ::setgid(OTHER_USER) != 0 || ::setuid(OTHER_USER) != 0)
+        {
+            ::_exit(1);
+        }
+        const int connected = ::socket(AF_INET, SOCK_STREAM, 0);
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - the BSD socket API takes sockaddr*
+        if (connected < 0 || ::connect(connected, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) != 0)
+        {
+            ::_exit(2);
+        }
+        if (::write(report[1], &connected, sizeof(connected)) != static_cast<ssize_t>(sizeof(connected)))
+        {
+            ::_exit(3);
+        }
+        for (;;)
+        {
+            ::pause();
+        }
+    }
+    struct Reap
+    {
+        pid_t pid;
+        ~Reap()
+        {
+            ::kill(pid, SIGKILL);
+            ::waitpid(pid, nullptr, 0);
+        }
+    } const reap{.pid = child};
+    ::close(report[1]);
+    int childFd = -1;
+    ASSERT_EQ(::read(report[0], &childFd, sizeof(childFd)), static_cast<ssize_t>(sizeof(childFd))) << "the child didn't connect";
+    ::close(report[0]);
+    const int accepted = ::accept4(listener, nullptr, nullptr, SOCK_CLOEXEC);
+    ASSERT_GE(accepted, 0);
+    const Posix::FdGuard ours(accepted);
+
+    struct stat info{};
+    ASSERT_EQ(::stat(std::format("/proc/{}/fd/{}", child, childFd).c_str(), &info), 0);
+    std::ifstream statFile(std::format("/proc/{}/stat", child));
+    const std::string statLine((std::istreambuf_iterator<char>(statFile)), std::istreambuf_iterator<char>());
+    const ProcessTarget target{.pid = child, .startTimeTicks = ProcParsing::parseStatStartTime(statLine).value_or(0)};
+    ASSERT_NE(target.startTimeTicks, 0U);
+    ASSERT_EQ(statusField(target.pid, "Uid").substr(0, 5), "61234");
+
+    SocketPair pair;
+    ASSERT_TRUE(pair.valid());
+    HelperProcess helper(pair.server());
+    ASSERT_TRUE(helper.started());
+    pair.closeServer();
+    std::uint32_t id = 1;
+    ASSERT_TRUE(std::holds_alternative<Broker::HelloReply>(roundTrip(pair.client(), id++, Broker::Hello{}).message));
+    const auto reply = roundTrip(pair.client(), id++, Broker::CloseConnectionRequest{.target = target, .socketInode = info.st_ino});
+    const auto closed = actionResult(reply.message);
+    if (!closed.success && closed.errorMessage.contains("Linux 5.6"))
+    {
+        GTEST_SKIP() << "pidfd_getfd() needs Linux 5.6";
+    }
+    ASSERT_TRUE(closed.success) << closed.errorMessage;
+
+    pollfd ready{.fd = accepted, .events = POLLIN, .revents = 0};
+    ASSERT_EQ(::poll(&ready, 1, 5000), 1) << "the connection didn't end";
+    std::array<char, 1> byte{};
+    EXPECT_EQ(::recv(accepted, byte.data(), byte.size(), MSG_DONTWAIT), 0) << "end of file: the helper shut the child's end down";
+}
+
+// #3491 item 2 (#2320, #2326, #2329, #2330, #2891): "Authenticate and retry" end to end. The real pkexec, through a
+// running polkitd, starts the helper installed where the packages put it (/usr/libexec/tasksmack, its policy in
+// /usr/share/polkit-1/actions), and the helper, now root, reads PID 1's environment, which only root can. CI's
+// step installs pkexec and polkitd, the helper and its policy, and a polkit rule that allows the runner's user
+// without a password; the password dialog stays a manual check. Run unprivileged, on a disposable runner only.
+TEST(PkexecRealSystemTest, TheInstalledHelperRunsAsRootThroughPkexec)
+{
+    if (const std::optional<std::string> why = ::TestSupport::ciRealSystemSkipReason())
+    {
+        GTEST_SKIP() << *why;
+    }
+    constexpr const char* INSTALLED_HELPER = "/usr/libexec/tasksmack/tasksmack-helper";
+    if (::geteuid() == 0 || !std::filesystem::exists(INSTALLED_HELPER))
+    {
+        GTEST_SKIP() << "Runs unprivileged, with the helper installed at " << INSTALLED_HELPER;
+    }
+    PkexecBroker broker(INSTALLED_HELPER); // launched through "pkexec", as the app does
+    const auto connected = broker.connect(std::stop_token{});
+    ASSERT_TRUE(connected.has_value()) << connected.error();
+
+    std::ifstream statFile("/proc/1/stat");
+    const std::string statLine((std::istreambuf_iterator<char>(statFile)), std::istreambuf_iterator<char>());
+    const ProcessTarget init{.pid = 1, .startTimeTicks = ProcParsing::parseStatStartTime(statLine).value_or(0)};
+    ASSERT_NE(init.startTimeTicks, 0U);
+    const auto response = broker.call(Broker::EnvironmentRequest{.target = init}, std::stop_token{});
+    ASSERT_TRUE(response.has_value()) << response.error();
+    ASSERT_TRUE(std::holds_alternative<Broker::EnvironmentReply>(*response));
+    EXPECT_EQ(std::get<Broker::EnvironmentReply>(*response).result.status, EnvironmentReadStatus::Ok)
+        << "PID 1's environment is root's to read: the helper runs as root through pkexec";
 }
 
 /// What `systemctl show -p <property> --value <unit>` prints, trimmed (#3491).

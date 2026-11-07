@@ -3,15 +3,18 @@
 /// platform call: start/poll, the stop token (a new one per start), no restart while busy, the
 /// destructor requesting a stop and waiting, work that throws (a std::exception or anything else)
 /// turned into the Failed result on the worker and never rethrown by poll(), and an adopted answer
-/// (a promise) dropped rather than waited for.
+/// (a promise) dropped rather than waited for. Since #3343 each start() runs on a Domain::Worker of
+/// its own: a stop before the work starts, shutdown with the work queued, and a start out of memory.
 
 #include "App/Panels/BackgroundTask.h"
+#include "Domain/AllocationFailureHook.h"
 #include "Domain/PublicationWake.h"
 
 #include <gtest/gtest.h>
 
 #include <atomic>
 #include <chrono>
+#include <cstdint> // NOLINT(misc-include-cleaner) - std::int64_t, in the test compiled only where the allocation hook is
 #include <future>
 #include <memory>
 #include <new>
@@ -245,7 +248,7 @@ TEST(BackgroundTaskTest, AnAdoptedAnswerIsPolledLikeWork)
 
 TEST(BackgroundTaskTest, AnAdoptedAnswerIsDroppedRatherThanWaitedFor)
 {
-    auto answer = std::make_shared<std::promise<FakeResult>>();
+    const auto answer = std::make_shared<std::promise<FakeResult>>();
     {
         Task task(THREAD_NAME, &failed);
         task.adopt(answer->get_future());
@@ -275,6 +278,114 @@ TEST(BackgroundTaskTest, WorkInFlightMovesWithTheTask)
     moved.requestStop(); // the moved-to task holds the work's stop source
     gate.set_value();
     EXPECT_EQ(moved.poll(true).value_or(FakeResult{}).value, 1);
+}
+
+// #3343: the work runs as a Domain::Worker's job, moved out and released on the worker before its result is
+// published, so what it captured is gone by the time poll() hands the result over.
+TEST(BackgroundTaskTest, TheWorkIsReleasedBeforeItsResultIsTakenIn)
+{
+    Task task(THREAD_NAME, &failed);
+    const auto captured = std::make_shared<int>(4);
+    ASSERT_FALSE(task.start([captured] { return FakeResult{.value = *captured, .error = {}}; }).has_value());
+    const std::optional<FakeResult> result = task.poll(true);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result.value_or(FakeResult{}).value, 4);
+    EXPECT_EQ(captured.use_count(), 1);
+}
+
+// #3343: a stop requested before the worker has taken the work off its queue still reaches it, through the
+// task's own stop source: the work sees it as soon as it starts.
+TEST(BackgroundTaskTest, AStopRequestedBeforeTheWorkStartsStillReachesIt)
+{
+    Task task(THREAD_NAME, &failed);
+    for (int run = 0; run < 50; ++run)
+    {
+        ASSERT_FALSE(task.start([](const std::stop_token& token) { return FakeResult{.value = waitForStop(token) ? 1 : 0, .error = {}}; })
+                         .has_value());
+        task.requestStop(); // most often before the worker's thread has taken the job
+        ASSERT_EQ(task.poll(true).value_or(FakeResult{}).value, 1) << "run " << run;
+    }
+}
+
+// #3343 shutdown: a task destroyed with its work just started -- still on its worker's queue, or running --
+// requests a stop and waits for it. The work always runs, once, and sees the stop; it is never dropped unrun
+// (a view's last action, a setting written at exit, still happens).
+TEST(BackgroundTaskTest, DestroyedWithWorkQueuedItRunsTheWorkOnceStoppedAndWaits)
+{
+    std::atomic<int> ran{0};
+    std::atomic<int> stopped{0};
+    constexpr int RUNS = 50;
+    for (int run = 0; run < RUNS; ++run)
+    {
+        Task task(THREAD_NAME, &failed);
+        ASSERT_FALSE(task.start(
+                             [&ran, &stopped](const std::stop_token& token)
+                             {
+                                 ran.fetch_add(1);
+                                 if (waitForStop(token))
+                                 {
+                                     stopped.fetch_add(1);
+                                 }
+                                 return FakeResult{};
+                             })
+                         .has_value());
+    }
+    EXPECT_EQ(ran.load(), RUNS);
+    EXPECT_EQ(stopped.load(), RUNS);
+}
+
+// #3343: a task whose result was taken in starts the next work on a new worker, so a worker that failed
+// past its work (its terminal Failed state) never holds up the next start.
+TEST(BackgroundTaskTest, AWorkerThatFailedPastTheWorkDoesNotHoldUpTheNextStart)
+{
+    Task task(THREAD_NAME, &failedUnlessUnbuildable);
+    ASSERT_FALSE(task.start([]() -> FakeResult { throw std::runtime_error(UNBUILDABLE); }).has_value());
+    EXPECT_EQ(task.poll(true).value_or(FakeResult{}).error, "Unknown error");
+    ASSERT_FALSE(task.start([] { return FakeResult{.value = 8, .error = {}}; }).has_value());
+    EXPECT_EQ(task.poll(true).value_or(FakeResult{}).value, 8);
+}
+
+// #3343: start() under allocation failure, at each of its allocations in turn (the stop source, the worker, the
+// job, its stop state, the thread). Each one that fails answers the Failed result at once, starts nothing and
+// leaves the task idle; the first start that allocates in full runs as usual. Skipped where the hook is
+// compiled out (Windows, sanitizer builds: AllocationFailureHook.h); the Linux debug and release builds run it.
+TEST(BackgroundTaskTest, AStartThatRunsOutOfMemoryIsTheFailedResultAndStartsNothing)
+{
+#ifdef TASKSMACK_NO_ALLOCATOR_HOOK
+    GTEST_SKIP() << TASKSMACK_NO_ALLOCATOR_HOOK;
+#else
+    std::atomic<int> ran{0};
+    Task task(THREAD_NAME, &failed);
+    bool started = false;
+    for (std::int64_t failAt = 0; failAt < 64 && !started; ++failAt)
+    {
+        std::optional<FakeResult> failure;
+        bool reached = false;
+        {
+            const TestSupport::FailAllocationAfter failNext(failAt);
+            failure = task.start(
+                [&ran]
+                {
+                    ran.fetch_add(1);
+                    return FakeResult{.value = 6, .error = {}};
+                });
+            reached = !TestSupport::allocationFailurePending();
+        }
+        if (!reached)
+        {
+            ASSERT_FALSE(failure.has_value()) << "no allocation failed at " << failAt << ", yet the start failed";
+            started = true;
+            break;
+        }
+        ASSERT_TRUE(failure.has_value()) << "the allocation " << failAt << " failed, yet the start answered nothing";
+        EXPECT_EQ(failure.value_or(FakeResult{}).value, -1);
+        EXPECT_FALSE(task.busy()) << failAt;
+        EXPECT_FALSE(task.poll(true).has_value()) << failAt;
+    }
+    ASSERT_TRUE(started);
+    EXPECT_EQ(task.poll(true).value_or(FakeResult{}).value, 6);
+    EXPECT_EQ(ran.load(), 1); // only the start that succeeded ran its work
+#endif
 }
 
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables) - the hook takes a plain function

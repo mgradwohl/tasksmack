@@ -2,8 +2,9 @@
 
 /// @file CiRealSystemWindows.h
 /// @brief What the Windows CI real-system tests (#3489) share: a standard user's token made from the runner's
-/// administrator one, idle child processes that end on scope exit, and finding a process by its image. Only the
-/// CiRealSystem* suites use it, behind CiRealSystem.h's guard.
+/// administrator one, idle child processes that end on scope exit, finding a process by its image, an install folder
+/// in Program Files only administrators can change, an environment variable set for a child, and a throwaway local
+/// account (#3490). Only the CiRealSystem* suites use it, behind CiRealSystem.h's guard.
 
 #ifdef _WIN32
 
@@ -22,7 +23,10 @@
 #endif
 #include <windows.h>
 #include <aclapi.h>
+#include <lm.h>
+#include <sddl.h>
 #include <tlhelp32.h>
+#include <userenv.h>
 // clang-format on
 
 #include <array>
@@ -39,6 +43,9 @@
 #include <thread>
 #include <utility>
 #include <vector>
+
+#pragma comment(lib, "netapi32.lib")
+#pragma comment(lib, "userenv.lib")
 
 namespace TestSupport::CiRealSystem
 {
@@ -367,11 +374,39 @@ struct StartOptions
     return {path.data(), size};
 }
 
-/// Whether @p first and @p second are the same path, ignoring case as NTFS does.
-[[nodiscard]] inline bool samePath(std::wstring_view first, std::wstring_view second)
+/// Whether @p first and @p second are the same text, ignoring case as NTFS does: for a file name or an extension.
+[[nodiscard]] inline bool sameText(std::wstring_view first, std::wstring_view second)
 {
     return CompareStringOrdinal(first.data(), static_cast<int>(first.size()), second.data(), static_cast<int>(second.size()), TRUE) ==
            CSTR_EQUAL;
+}
+
+/// @p path in one spelling: backslashes (CMake's $<TARGET_FILE> gives forward slashes), no "." or ".." components,
+/// and, for a path that exists, each 8.3 short component (a runner's %TEMP% under C:\Users\RUNNER~1) in its long form,
+/// as QueryFullProcessImageNameW gives it.
+[[nodiscard]] inline std::wstring normalisedPath(std::wstring_view path)
+{
+    std::wstring text = std::filesystem::path(path).lexically_normal().make_preferred().wstring();
+    const DWORD needed = GetLongPathNameW(text.c_str(), nullptr, 0);
+    if (needed == 0)
+    {
+        return text; // it doesn't exist (any more): the spelling as given
+    }
+    std::wstring longer(needed, L'\0');
+    const DWORD length = GetLongPathNameW(text.c_str(), longer.data(), needed);
+    if (length == 0 || length >= needed)
+    {
+        return text;
+    }
+    longer.resize(length);
+    return longer;
+}
+
+/// Whether @p first and @p second name the same path: the same once each is normalisedPath()'d, ignoring case as
+/// NTFS does.
+[[nodiscard]] inline bool samePath(std::wstring_view first, std::wstring_view second)
+{
+    return sameText(normalisedPath(first), normalisedPath(second));
 }
 
 /// The PIDs of the running processes whose executable file is named @p exeName (Toolhelp's szExeFile).
@@ -387,7 +422,7 @@ struct StartOptions
     entry.dwSize = sizeof(entry);
     for (BOOL more = Process32FirstW(snapshot.get(), &entry); more != FALSE; more = Process32NextW(snapshot.get(), &entry))
     {
-        if (samePath(&entry.szExeFile[0], exeName))
+        if (sameText(&entry.szExeFile[0], exeName))
         {
             pids.push_back(entry.th32ProcessID);
         }
@@ -488,6 +523,189 @@ inline void copyFile(const std::filesystem::path& from, const std::filesystem::p
     std::filesystem::copy_file(from, to, std::filesystem::copy_options::overwrite_existing, error);
     EXPECT_FALSE(error) << "couldn't copy " << Core::pathToUtf8(from) << " to " << Core::pathToUtf8(to) << ": " << error.message();
 }
+
+/// SetNamedSecurityInfoW(@p path): owner Administrators and a protected DACL of SYSTEM and Administrators full
+/// control and Users read and execute, inherited by what is under it: what an installer gives Program Files\TaskSmack.
+inline void protectAsAnInstall(const std::filesystem::path& path)
+{
+    std::vector<std::byte> administrators = wellKnownSid(WinBuiltinAdministratorsSid);
+    constexpr DWORD INHERITED = SUB_CONTAINERS_AND_OBJECTS_INHERIT;
+    const Acl acl({
+        {.sid = wellKnownSid(WinLocalSystemSid), .rights = GENERIC_ALL, .inheritance = INHERITED},
+        {.sid = administrators, .rights = GENERIC_ALL, .inheritance = INHERITED},
+        {.sid = wellKnownSid(WinBuiltinUsersSid), .rights = GENERIC_READ | GENERIC_EXECUTE, .inheritance = INHERITED},
+    });
+    ASSERT_NE(acl.get(), nullptr) << "couldn't make the install's ACL: " << GetLastError();
+    std::wstring name = path.wstring();
+    const DWORD set = SetNamedSecurityInfoW(name.data(),
+                                            SE_FILE_OBJECT,
+                                            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                                            administrators.data(),
+                                            nullptr,
+                                            acl.get(),
+                                            nullptr);
+    ASSERT_EQ(set, static_cast<DWORD>(ERROR_SUCCESS)) << "couldn't protect " << Core::pathToUtf8(path);
+}
+
+/// %ProgramFiles%.
+[[nodiscard]] inline std::filesystem::path programFiles()
+{
+    std::array<wchar_t, MAX_PATH> path{};
+    const DWORD length = GetEnvironmentVariableW(L"ProgramFiles", path.data(), static_cast<DWORD>(path.size()));
+    return (length == 0 || length >= path.size()) ? std::filesystem::path(L"C:\\Program Files")
+                                                  : std::filesystem::path(std::wstring(path.data(), length));
+}
+
+/// This test binary's own path, which a test starts again as its child (with another token, say).
+[[nodiscard]] inline std::filesystem::path ownExecutable()
+{
+    std::array<wchar_t, 32'768> path{};
+    const DWORD length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+    return {std::wstring(path.data(), length)};
+}
+
+/// Sets environment variable @p name for this process (so a child started now inherits it) until scope exit,
+/// then puts back the value it had, or unsets it when it had none (TEMP, say, which the test itself still needs).
+class ScopedVariable
+{
+  public:
+    ScopedVariable(std::wstring name, const std::wstring& value) : m_Name(std::move(name))
+    {
+        const DWORD needed = GetEnvironmentVariableW(m_Name.c_str(), nullptr, 0);
+        if (needed > 0)
+        {
+            std::wstring previous(needed, L'\0');
+            const DWORD length = GetEnvironmentVariableW(m_Name.c_str(), previous.data(), needed);
+            if (length > 0 && length < needed)
+            {
+                previous.resize(length);
+                m_Previous = std::move(previous);
+            }
+        }
+        EXPECT_NE(SetEnvironmentVariableW(m_Name.c_str(), value.c_str()), FALSE) << GetLastError();
+    }
+    ~ScopedVariable()
+    {
+        SetEnvironmentVariableW(m_Name.c_str(), m_Previous.has_value() ? m_Previous->c_str() : nullptr);
+    }
+    ScopedVariable(const ScopedVariable&) = delete;
+    ScopedVariable& operator=(const ScopedVariable&) = delete;
+    ScopedVariable(ScopedVariable&&) = delete;
+    ScopedVariable& operator=(ScopedVariable&&) = delete;
+
+  private:
+    std::wstring m_Name;
+    std::optional<std::wstring> m_Previous;
+};
+
+/// A throwaway local standard account (USER_PRIV_USER, a member of Users only), named tsci<8 hex digits>, with a
+/// password made at random here, which nothing logs. It is another account than the runner's: the helper test's
+/// over-the-shoulder elevation runs the helper as it (#2550), and the standard-user test runs a child as it, since
+/// with UAC off the runner has no unelevated token of its own. Deleted on scope exit, with the profile a logon
+/// with LOGON_WITH_PROFILE made for it.
+class ThrowawayAccount
+{
+  public:
+    ThrowawayAccount()
+    {
+        std::random_device random;
+        m_Name = std::format(L"tsci{:08x}", random());
+        // Upper, lower, digits and symbols, 31 characters, 96 random bits: any complexity policy takes it.
+        m_Password = std::format(L"Ts!{:08x}{:08x}{:08x}-qZ9", random(), random(), random());
+        USER_INFO_1 user{};
+        user.usri1_name = m_Name.data();
+        user.usri1_password = m_Password.data();
+        user.usri1_priv = USER_PRIV_USER;
+        user.usri1_flags = UF_SCRIPT | UF_DONT_EXPIRE_PASSWD;
+        DWORD badField = 0;
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - NetUserAdd takes its USER_INFO_1 as bytes
+        auto* userBytes = reinterpret_cast<LPBYTE>(&user);
+        const NET_API_STATUS added = NetUserAdd(nullptr, 1, userBytes, &badField);
+        if (added != NERR_Success)
+        {
+            ADD_FAILURE() << "couldn't add a local account: " << added << " (field " << badField << ")";
+            return;
+        }
+        m_Added = true;
+        m_Sid.resize(SECURITY_MAX_SID_SIZE);
+        auto sidSize = static_cast<DWORD>(m_Sid.size());
+        std::array<wchar_t, 256> domain{};
+        auto domainSize = static_cast<DWORD>(domain.size());
+        SID_NAME_USE use = SidTypeUnknown;
+        if (LookupAccountNameW(nullptr, m_Name.c_str(), m_Sid.data(), &sidSize, domain.data(), &domainSize, &use) == FALSE)
+        {
+            ADD_FAILURE() << "couldn't read the new account's SID: " << GetLastError();
+            m_Sid.clear();
+            return;
+        }
+        m_Sid.resize(sidSize);
+    }
+    ~ThrowawayAccount()
+    {
+        if (!m_Added)
+        {
+            return;
+        }
+        try
+        {
+            deleteProfile();
+        }
+        catch (...) // NOLINT(bugprone-empty-catch) - out of memory: the profile stays on the throwaway runner
+        {}
+        NetUserDel(nullptr, m_Name.c_str());
+    }
+    ThrowawayAccount(const ThrowawayAccount&) = delete;
+    ThrowawayAccount& operator=(const ThrowawayAccount&) = delete;
+    ThrowawayAccount(ThrowawayAccount&&) = delete;
+    ThrowawayAccount& operator=(ThrowawayAccount&&) = delete;
+
+    [[nodiscard]] bool ready() const noexcept
+    {
+        return !m_Sid.empty();
+    }
+    [[nodiscard]] const std::wstring& name() const noexcept
+    {
+        return m_Name;
+    }
+    /// For a logon only: never put it in a message, a log or a recorded property.
+    [[nodiscard]] const std::wstring& password() const noexcept
+    {
+        return m_Password;
+    }
+    [[nodiscard]] const std::vector<std::byte>& sid() const noexcept
+    {
+        return m_Sid;
+    }
+
+  private:
+    /// The profile a logon with LOGON_WITH_PROFILE made, if one did (it is in ProfileList then). Windows may hold
+    /// it loaded a moment after the account's last process exits, so the delete is retried for a few seconds.
+    void deleteProfile()
+    {
+        LPWSTR sidText = nullptr;
+        if (m_Sid.empty() || ConvertSidToStringSidW(m_Sid.data(), &sidText) == FALSE)
+        {
+            return;
+        }
+        const std::wstring profileKey = std::wstring(L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\ProfileList\\") + sidText;
+        HKEY key = nullptr;
+        if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, profileKey.c_str(), 0, KEY_READ, &key) == ERROR_SUCCESS)
+        {
+            RegCloseKey(key);
+            constexpr int ATTEMPTS = 100;
+            for (int attempt = 0; attempt < ATTEMPTS && DeleteProfileW(sidText, nullptr, nullptr) == FALSE; ++attempt)
+            {
+                std::this_thread::sleep_for(POLL_INTERVAL);
+            }
+        }
+        LocalFree(sidText);
+    }
+
+    std::wstring m_Name;
+    std::wstring m_Password;
+    std::vector<std::byte> m_Sid;
+    bool m_Added = false;
+};
 
 } // namespace TestSupport::CiRealSystem
 

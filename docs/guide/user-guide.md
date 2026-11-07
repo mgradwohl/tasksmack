@@ -463,7 +463,7 @@ The Process Details **Overview** tab has a collapsible **Environment** section, 
 - **Another user's process** shows "Not readable (permission denied)". **Linux:** the kernel lets only the process's own user, or root / `CAP_SYS_PTRACE`, read it. **Windows:** a process TaskSmack can't open to read its memory: another user's, an elevated one while TaskSmack isn't elevated, or a protected process (antimalware, some system processes). A process that has exited shows "Process exited". Until TaskSmack has confirmed which process holds the PID (its start time), the section shows "Not available yet" and reads nothing; it tries again at the next 3-second refresh.
 - Control characters and invalid UTF-8 in names and values are shown escaped (`\n`, `\xFF`); on Windows the block's UTF-16 is converted to UTF-8 first.
 - TaskSmack never writes environment values to its log.
-- **Windows:** a 32-bit process (one running under WOW64, such as an older x86 program on 64-bit Windows) shows "Could not be read: a 32-bit process (WOW64), whose environment TaskSmack does not read yet": its environment is laid out differently in memory, which a later version will read. Reading as an administrator (the **Authenticate to read** button Linux offers for another user's process) is not offered for this section on Windows yet.
+- **Windows:** a 32-bit process (one running under WOW64, such as an older x86 program on 64-bit Windows) is read too, from its 32-bit PEB, which holds its live environment. Reading as an administrator (the **Authenticate to read** button Linux offers for another user's process) is not offered for this section on Windows yet.
 
 ### Connections
 
@@ -893,7 +893,7 @@ The following table summarizes capabilities that differ between Windows and Linu
 | Load average (1/5/15 min) | ✅ | ❌ |
 | Pressure stall information (CPU, memory, I/O) | ✅ (`/proc/pressure`, when the kernel has PSI) | ❌ |
 | Shared memory per process | ✅ (`/proc/[pid]/statm`) | ✅ (the shareable working set: working set less private working set) |
-| Process environment variables (Process Details) | ✅ (`/proc/[pid]/environ`, own user's processes, or root / `CAP_SYS_PTRACE`) | ✅ (the environment block in the process's memory; processes TaskSmack can open for reading: own user's, or every user's when elevated; 32-bit (WOW64) processes not yet: [#3364](https://github.com/mgradwohl/tasksmack/issues/3364)) |
+| Process environment variables (Process Details) | ✅ (`/proc/[pid]/environ`, own user's processes, or root / `CAP_SYS_PTRACE`) | ✅ (the environment block in the process's memory; processes TaskSmack can open for reading: own user's, or every user's when elevated; 32-bit (WOW64) processes included) |
 | Process security context (Process Details) | ✅ (`/proc/[pid]/status`: IDs, groups, capabilities, `no_new_privs`, seccomp; security label; cgroup) | ✅ (process token: user, session, integrity level, elevation, AppContainer, virtualization, privileges, groups) |
 | Connections tab (every socket on the machine) | ✅ (netlink socket tables, TaskSmack's own network namespace) | ❌ (not yet: [#3356](https://github.com/mgradwohl/tasksmack/issues/3356)) |
 | Close connection (Connections tab) | ✅ (TCP only; Linux 5.6 or later) | ❌ (not yet: [#3358](https://github.com/mgradwohl/tasksmack/issues/3358)) |

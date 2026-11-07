@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
-"""Tests for tools/md-link-audit.sh, the docs-hygiene link check.
+"""Tests for tools/md-link-audit.sh and its Windows twin tools/md-link-audit.ps1, the docs-hygiene link check.
 
 - Code isn't scanned for links (#3001): an inline code span (any number of backticks) or a fenced block
   holding "[a][b]" is code, not a reference link, while a real "[text][missing]" is still reported.
-- Under docs/, a root-absolute link resolves from the docsify site root, docs/ (#2953).
+- Under docs/, a root-absolute link resolves from the docsify site root, docs/ (#2953), in an inline
+  link and in a reference definition; elsewhere it resolves from the repository root. The .ps1 resolved
+  both against the repository root (#3529).
 
-The script runs against a scratch tree passed as its repository root. Needs bash.
+The script runs against a scratch tree passed as its repository root. MdLinkAuditTest runs the .sh and
+needs bash. MdLinkAuditPs1Test runs the .ps1 with the PowerShell 7 in TASKSMACK_TEST_PWSH, and skips
+without it; it also checks the checkout itself has no broken link, as CI's .sh run does.
 """
 
 import os
@@ -18,6 +22,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BASH = os.environ.get("TASKSMACK_TEST_BASH") or shutil.which("bash") or "bash"
+PWSH = os.environ.get("TASKSMACK_TEST_PWSH")
 
 
 class MdLinkAuditTest(unittest.TestCase):
@@ -25,13 +30,37 @@ class MdLinkAuditTest(unittest.TestCase):
         self.root = Path(tempfile.mkdtemp(prefix="md_link_audit_"))
         self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
 
-    def audit(self):
+    SCRIPT = "md-link-audit.sh"
+
+    def command(self, root, tools_dir=REPO_ROOT / "tools"):
+        """The audit of @p root, or of the checkout @p tools_dir is in when @p root is None."""
+        return [BASH, str(tools_dir / self.SCRIPT)] + ([str(root)] if root is not None else [])
+
+    def audit(self, root=None):
         return subprocess.run(
-            [BASH, str(REPO_ROOT / "tools" / "md-link-audit.sh"), str(self.root)],
+            self.command(root or self.root),
             capture_output=True,
             text=True,
             check=False,
         )
+
+    def test_with_no_root_it_audits_its_own_checkout_from_any_directory(self):
+        # The root defaults to the script's checkout, not the current directory (#3529): run from tools/ of a
+        # scratch checkout with no argument, its broken link is still found.
+        tools_dir = self.root / "tools"
+        tools_dir.mkdir()
+        shutil.copy2(REPO_ROOT / "tools" / self.SCRIPT, tools_dir / self.SCRIPT)
+        (self.root / "README.md").write_text("[Gone](missing.md)\n", encoding="utf-8")
+        result = subprocess.run(
+            self.command(None, tools_dir),
+            capture_output=True,
+            text=True,
+            check=False,
+            cwd=tools_dir,
+        )
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("Broken internal link findings: 1", result.stdout)
+        self.assertIn("README.md:1: missing.md", result.stdout)
 
     def test_code_spans_and_fenced_blocks_are_not_links_but_a_real_missing_reference_is(self):
         (self.root / "README.md").write_text(
@@ -63,9 +92,68 @@ class MdLinkAuditTest(unittest.TestCase):
 
     def test_a_root_absolute_link_under_docs_resolves_from_docs(self):
         (self.root / "docs" / "guide").mkdir(parents=True)
-        (self.root / "docs" / "guide" / "page.md").write_text("# Page\n", encoding="utf-8")
-        (self.root / "docs" / "_sidebar.md").write_text("- [Page](/guide/page.md)\n", encoding="utf-8")
+        (self.root / "docs" / "guide" / "page.md").write_text("# Page\n\n## Section\n", encoding="utf-8")
+        (self.root / "docs" / "_sidebar.md").write_text(
+            textwrap.dedent(
+                """\
+                - [Page](/guide/page.md)
+                - [Section](/guide/page.md#section)
+                - [By reference][page]
+
+                [page]: /guide/page.md#section
+                """
+            ),
+            encoding="utf-8",
+        )
+        # Outside docs/, the same kind of link resolves from the repository root.
+        (self.root / "README.md").write_text("[Guide](/docs/guide/page.md)\n", encoding="utf-8")
         result = self.audit()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Broken internal link findings: 0", result.stdout)
+
+    def test_a_missing_root_absolute_target_under_docs_is_reported_against_docs(self):
+        (self.root / "docs").mkdir()
+        (self.root / "docs" / "_sidebar.md").write_text("- [Gone](/guide/gone.md)\n", encoding="utf-8")
+        # It exists at the repository root, so only a lookup from docs/ reports it.
+        (self.root / "guide").mkdir()
+        (self.root / "guide" / "gone.md").write_text("# Gone\n", encoding="utf-8")
+        result = self.audit()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("Broken internal link findings: 1", result.stdout)
+        self.assertIn("docs/_sidebar.md:1: /guide/gone.md", result.stdout)
+
+
+@unittest.skipUnless(PWSH, "TASKSMACK_TEST_PWSH not set")
+class MdLinkAuditPs1Test(MdLinkAuditTest):
+    SCRIPT = "md-link-audit.ps1"
+
+    def command(self, root, tools_dir=REPO_ROOT / "tools"):
+        return [PWSH, "-NoLogo", "-NoProfile", "-File", str(tools_dir / self.SCRIPT)] + (
+            ["-RepoRoot", str(root)] if root is not None else []
+        )
+
+    def test_a_root_given_as_an_8dot3_short_path_still_resolves_docs_links_from_docs(self):
+        # A CI runner's TEMP is C:\Users\RUNNER~1\..., while the scanned files come back with long names, so
+        # the "is this page under docs/" check must compare the two spellings as one path (#3529).
+        import ctypes
+
+        root = self.root / "a long checkout directory name"
+        (root / "docs" / "guide").mkdir(parents=True)
+        (root / "docs" / "guide" / "page.md").write_text("# Page\n", encoding="utf-8")
+        (root / "docs" / "_sidebar.md").write_text("- [Page](/guide/page.md)\n- [Gone](/guide/gone.md)\n", encoding="utf-8")
+        buffer = ctypes.create_unicode_buffer(32768)
+        if not ctypes.windll.kernel32.GetShortPathNameW(str(root), buffer, len(buffer)) or not buffer.value:
+            self.skipTest("GetShortPathNameW failed")
+        short = buffer.value
+        if os.path.basename(short).lower() == root.name.lower():
+            self.skipTest("8.3 names are disabled on this volume")
+        result = self.audit(Path(short))
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("Broken internal link findings: 1", result.stdout)
+        self.assertIn("docs/_sidebar.md:2: /guide/gone.md", result.stdout)
+
+    def test_the_checkout_has_no_broken_link(self):
+        result = self.audit(REPO_ROOT)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("Broken internal link findings: 0", result.stdout)
 

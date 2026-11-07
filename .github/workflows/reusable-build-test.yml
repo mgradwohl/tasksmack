@@ -317,8 +317,37 @@ jobs:
           # real-system guard reads these three (tests/Support/CiRealSystem.h).
           sudo --preserve-env=TASKSMACK_CI_REAL_SYSTEM,GITHUB_ACTIONS,RUNNER_ENVIRONMENT \
             build/debug/tests/TaskSmackTests --gtest_filter='TasksmackHelperRootTest.*:DetachedSpawnTest.AsRoot*' 2>&1 | tee helper-root-test.log
-          if grep -q '\[  SKIPPED \]' helper-root-test.log || ! grep -q '\[  PASSED  \] 3 tests' helper-root-test.log; then
+          if grep -q '\[  SKIPPED \]' helper-root-test.log || ! grep -q '\[  PASSED  \] 4 tests' helper-root-test.log; then
             echo "::error title=Helper root test::TasksmackHelperRootTest and DetachedSpawnTest.AsRoot* didn't all run and pass as root"
+            exit 1
+          fi
+
+      # "Authenticate and retry" end to end (#3491 item 2): the real pkexec and polkitd start the helper from
+      # where the packages install it, and PkexecRealSystemTest checks it runs as root. The same rule as
+      # release.yml's validate-linux-helper allows the runner's user without a password; the dialog itself
+      # stays a manual check. Unprivileged, and a skip fails the step as in the root step above.
+      - name: Helper through pkexec (Linux)
+        if: runner.os == 'Linux' && inputs.build && inputs.build_type == 'debug'
+        env:
+          TASKSMACK_CI_REAL_SYSTEM: '1'
+        run: |
+          set -o pipefail
+          sudo timeout --kill-after=10s 300s apt-get update -q
+          sudo timeout --kill-after=10s 300s apt-get install -y --no-install-recommends pkexec polkitd
+          sudo install -D -m 0755 build/debug/bin/tasksmack-helper /usr/libexec/tasksmack/tasksmack-helper
+          sudo install -D -m 0644 assets/linux/app.tasksmack.TaskSmack.helper.policy \
+            /usr/share/polkit-1/actions/app.tasksmack.TaskSmack.helper.policy
+          user="$(id -un)"
+          printf '%s\n' \
+            'polkit.addRule(function (action, subject) {' \
+            "    if (action.id == \"app.tasksmack.TaskSmack.helper\" && subject.user == \"$user\") {" \
+            '        return polkit.Result.YES;' \
+            '    }' \
+            '});' | sudo tee /etc/polkit-1/rules.d/49-tasksmack-ci.rules
+          sudo systemctl restart polkit
+          build/debug/tests/TaskSmackTests --gtest_filter='PkexecRealSystemTest.*' 2>&1 | tee pkexec-real-test.log
+          if grep -q '\[  SKIPPED \]' pkexec-real-test.log || ! grep -q '\[  PASSED  \] 1 test' pkexec-real-test.log; then
+            echo "::error title=Helper through pkexec::PkexecRealSystemTest didn't run and pass"
             exit 1
           fi
 
@@ -358,7 +387,8 @@ jobs:
       # TASKSMACK_CI_REAL_SYSTEM=1 on a GitHub-hosted runner (GITHUB_ACTIONS, RUNNER_ENVIRONMENT, which the runner
       # sets): only this step asks, and the ctest above saw them skip. One process, so they run serially. The step
       # fails when none ran, so a guard that stops seeing CI can't pass as a run of skips; each case's result is
-      # in the Job Summary and the artifact (ci-real-system-results.json).
+      # in the Job Summary and the artifact (ci-real-system-results.json). Then it checks the runner for anything a
+      # test made and left (throwaway accounts and services, scratch registry values and Program Files folders).
       - name: Real-system tests (Windows)
         if: always() && runner.os == 'Windows' && runner.arch != 'ARM64' && inputs.build && steps.build-windows.outcome == 'success'
         shell: pwsh
@@ -368,6 +398,8 @@ jobs:
           BUILD_DIR: build/win-${{ inputs.build_type }}
         run: |
           $results = "$env:BUILD_DIR/ci-real-system-results.json"
+          $ifeo = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options'
+          $debuggerBefore = (Get-ItemProperty "$ifeo\taskmgr.exe" -ErrorAction SilentlyContinue).Debugger
           & "$env:BUILD_DIR/tests/TaskSmackTests.exe" --gtest_filter='CiRealSystem*' "--gtest_output=json:$results"
           $code = $LASTEXITCODE
           if (-not (Test-Path $results)) {
@@ -391,6 +423,22 @@ jobs:
             exit 1
           }
           Write-Host "$ran of $(@($cases).Count) CiRealSystem tests ran"
+          # The runner's state after them (#3490): each test removes what it made in a scope guard, and the later
+          # steps share the runner, so anything left is an error.
+          $left = @()
+          $left += Get-LocalUser | Where-Object Name -match '^tsci[0-9a-f]{8}$' | ForEach-Object { "account $($_.Name)" }
+          $left += Get-ChildItem "$env:SystemDrive\Users" -Directory -Filter 'tsci*' | ForEach-Object { "profile $($_.FullName)" }
+          $left += Get-Service -Name 'TaskSmackCi*' -ErrorAction SilentlyContinue | ForEach-Object { "service $($_.Name)" }
+          $left += Get-Process -Name 'TaskSmack' -ErrorAction SilentlyContinue | ForEach-Object { "process TaskSmack.exe $($_.Id)" }
+          $left += Get-ChildItem $env:ProgramFiles -Directory -Filter 'TaskSmackCi*' | ForEach-Object { "folder $($_.FullName)" }
+          $left += Get-ChildItem $ifeo | Where-Object PSChildName -like 'TaskSmackCi*' | ForEach-Object { "IFEO key $($_.PSChildName)" }
+          if ((Get-ItemProperty "$ifeo\taskmgr.exe" -ErrorAction SilentlyContinue).Debugger -ne $debuggerBefore) { $left += 'a changed taskmgr.exe IFEO Debugger' }
+          foreach ($key in 'Run', 'Explorer\StartupApproved\Run') { foreach ($hive in 'HKCU', 'HKLM') {
+            $path = "${hive}:\Software\Microsoft\Windows\CurrentVersion\$key"
+            $left += (Get-Item $path -ErrorAction SilentlyContinue).Property | Where-Object { $_ -like 'TaskSmack*' } | ForEach-Object { "value $path\$_" }
+          } }
+          foreach ($entry in $left) { Write-Host "::error title=Real-system tests::left on the runner: $entry" }
+          if ($left.Count -gt 0) { exit 1 }
           exit $code
 
       # windows-11-arm (arm64.yml) runs the same ctest, in two parts (#2832). On that runner, and never

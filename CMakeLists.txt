@@ -197,6 +197,7 @@ set(TASKSMACK_SOURCES
     src/App/DemoLayer.cpp
     src/App/DemoOverride.cpp
     src/App/AccessNoticeDialog.cpp
+    src/App/AdministratorHold.cpp # the Access notice's Administrator hold, on Domain::Worker (#3343)
     src/App/ElevationNoticeDialog.cpp
     src/App/ElevationNoticeLayer.cpp
     src/App/HelpLayer.cpp
@@ -440,6 +441,19 @@ if(UNIX AND NOT APPLE AND TASKSMACK_WITH_SDBUS)
     else()
         message(STATUS "libsystemd not found (install libsystemd-dev): the Boot performance section will be unavailable")
     endif()
+endif()
+
+# libbpf on Linux (#3366): required. The privileged helper loads a small CO-RE eBPF program that counts each
+# process's UDP bytes, for the opt-in "Count UDP traffic per process" (the Windows side uses ETW). A hard build
+# dependency (maintainer, 2026-11-06), so every Linux build has it; the .deb then depends on libbpf1
+# (CPACK_DEBIAN_PACKAGE_SHLIBDEPS). An INTERFACE target, as tasksmack_sdbus is.
+add_library(tasksmack_bpf INTERFACE)
+if(UNIX AND NOT APPLE)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(LIBBPF REQUIRED IMPORTED_TARGET libbpf)
+    target_link_libraries(tasksmack_bpf INTERFACE PkgConfig::LIBBPF)
+    target_compile_definitions(tasksmack_bpf INTERFACE TASKSMACK_HAS_LIBBPF=1)
+    message(STATUS "libbpf ${LIBBPF_VERSION}: per-process UDP bytes through the helper's eBPF counter (#3366)")
 endif()
 
 # libcurl on Linux (#3238): the opt-in update check's HTTPS client (LinuxHttpsClient), a build dependency the

@@ -46,7 +46,6 @@
 #include <string>
 #include <string_view>
 #include <thread>
-#include <utility>
 #include <vector>
 
 #ifndef TASKSMACK_CI_STUB_PATH
@@ -93,35 +92,6 @@ constexpr std::wstring_view REALTIME_CHILD_FILTER = L"--gtest_filter=CiRealSyste
 /// <start ticks>", and the file it writes its result to.
 constexpr std::string_view REALTIME_CHILD_TARGET = "TASKSMACK_CI_REALTIME_CHILD_TARGET";
 constexpr std::string_view REALTIME_CHILD_RESULT = "TASKSMACK_CI_REALTIME_CHILD_RESULT";
-
-/// This test binary's own path, which the standard-user test starts again as its child.
-[[nodiscard]] std::filesystem::path ownExecutable()
-{
-    std::array<wchar_t, 32'768> path{};
-    const DWORD length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
-    return {std::wstring(path.data(), length)};
-}
-
-/// Sets environment variable @p name for this process (so a child started now inherits it) until scope exit.
-class ScopedVariable
-{
-  public:
-    ScopedVariable(std::wstring name, const std::wstring& value) : m_Name(std::move(name))
-    {
-        EXPECT_NE(SetEnvironmentVariableW(m_Name.c_str(), value.c_str()), FALSE) << GetLastError();
-    }
-    ~ScopedVariable()
-    {
-        SetEnvironmentVariableW(m_Name.c_str(), nullptr);
-    }
-    ScopedVariable(const ScopedVariable&) = delete;
-    ScopedVariable& operator=(const ScopedVariable&) = delete;
-    ScopedVariable(ScopedVariable&&) = delete;
-    ScopedVariable& operator=(ScopedVariable&&) = delete;
-
-  private:
-    std::wstring m_Name;
-};
 
 // The child half of the test below: run by a copy of this binary that the test starts with a standard user's
 // primary token, it sets Realtime through the real WindowsProcessActions as that user, and writes what came back.

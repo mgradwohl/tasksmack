@@ -20,13 +20,16 @@
 
 #if defined(__has_feature)
 #if __has_feature(address_sanitizer) || __has_feature(memory_sanitizer) || __has_feature(thread_sanitizer)
+// NOLINTNEXTLINE(cppcoreguidelines-macro-usage) - tested with #ifdef, which a constexpr can't be
 #define TASKSMACK_NO_ALLOCATOR_HOOK "the sanitizer runtime owns operator new"
 #endif
 #endif
 #if !defined(TASKSMACK_NO_ALLOCATOR_HOOK) && (defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__))
+// NOLINTNEXTLINE(cppcoreguidelines-macro-usage) - tested with #ifdef, which a constexpr can't be
 #define TASKSMACK_NO_ALLOCATOR_HOOK "the sanitizer runtime owns operator new"
 #endif
 #if !defined(TASKSMACK_NO_ALLOCATOR_HOOK) && defined(_WIN32)
+// NOLINTNEXTLINE(cppcoreguidelines-macro-usage) - tested with #ifdef, which a constexpr can't be
 #define TASKSMACK_NO_ALLOCATOR_HOOK "the Windows C runtime does not support failing a replaced operator new on demand"
 #endif
 

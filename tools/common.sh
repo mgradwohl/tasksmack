@@ -161,6 +161,38 @@ warn_llvm_version_skew() {
 # shellcheck disable=SC2034  # used by the scripts that source this file
 FORMAT_DIRS=(src tests benchmarks)
 
+# The C++ sources (*.cpp, *.h) the format scripts check and format, NUL-separated full paths: every
+# one under FORMAT_DIRS, less any inside a build or .git directory. find runs from the root, so its
+# -path patterns see the path relative to it, never the full path: a checkout that itself sits under a
+# folder named build (/build/tasksmack) still finds its files (#3528). Get-FormatSourceFile in
+# common.ps1 is the twin.
+# Usage: list_format_files "/path/to/repo"
+list_format_files() {
+    local root="$1" file
+    (cd "$root" && find "${FORMAT_DIRS[@]}" -type f \( -name "*.cpp" -o -name "*.h" \) \
+        ! -path "*/build/*" ! -path "*/.git/*" -print0 2>/dev/null || true) |
+        while IFS= read -r -d '' file; do
+            printf '%s/%s\0' "$root" "$file"
+        done
+}
+
+# The -ignore-filename-regex llvm-cov gets in tools/coverage.sh: generated and third-party sources
+# (any _deps or .cache directory) and the project's own build, tests and benchmarks directories. Those
+# three are anchored at the root: llvm-cov matches the whole recorded path, so an unanchored "build"
+# or "tests" segment matched a checkout under such a folder and left every file out of the report
+# (#3528). The root is matched as given and as its physical path (symlinks resolved), since CMake may
+# record either. Get-CoverageIgnoreRegex in common.ps1 is the twin.
+# Usage: coverage_ignore_regex "/path/to/repo"
+coverage_ignore_regex() {
+    local root="$1" physical roots
+    physical="$(cd "$root" && pwd -P)"
+    roots="$(printf '%s' "$root" | sed 's/[][\.^$|?*+(){}]/\\&/g')"
+    if [[ "$physical" != "$root" ]]; then
+        roots="${roots}|$(printf '%s' "$physical" | sed 's/[][\.^$|?*+(){}]/\\&/g')"
+    fi
+    printf '^(%s)/(build|tests|benchmarks)/|/(_deps|\\.cache)/' "$roots"
+}
+
 # List the files this branch changes, for the --changed-only modes of clang-format.sh and
 # clang-tidy.sh: everything that differs from the merge-base with origin/main (or local main) --
 # commits already on the branch, staged and unstaged edits -- plus untracked files that aren't

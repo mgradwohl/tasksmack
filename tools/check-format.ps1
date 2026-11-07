@@ -32,13 +32,16 @@ if (-not $ClangFormat) {
 }
 Write-LlvmVersionSkewWarning -ToolPath $ClangFormat -Name 'clang-format'
 
-# Find all source files
-$searchDirs = Get-FormatSourceDir -Root $ProjectRoot
-$files = Get-ChildItem -Path $searchDirs -Recurse -Include "*.cpp", "*.h" -ErrorAction SilentlyContinue |
-         Where-Object { $_.FullName -notmatch "\\build\\" -and $_.FullName -notmatch "\\.git\\" }
+# Find all source files. None found is never a real result (a filter that matched the checkout's own
+# path once passed with "All 0 files", #3528), so it fails.
+$files = @(Get-FormatSourceFile -Root $ProjectRoot)
+$fileCount = $files.Count
+if ($fileCount -eq 0) {
+    Write-Host "No C++ sources found under $ProjectRoot (src, tests, benchmarks)." -ForegroundColor Red
+    exit 1
+}
 
 $failed = 0
-$fileCount = ($files | Measure-Object).Count
 
 foreach ($file in $files) {
     if ($ShowDetails) {

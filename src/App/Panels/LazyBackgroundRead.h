@@ -2,10 +2,11 @@
 
 // The lazy background read shared by Process Details' on-demand sections (Environment #179,
 // Connections #799, Modules #802, Open files #183, Security #1526): one read at a time on a worker
-// thread, started only while the section was drawn open on the last frame, once when it opens or the
-// selection changes and then every refresh interval -- or, constructed ON_DEMAND (Open files), only
-// after request() (a button), with no refresh. The view keeps its rows, sort and filter; this keeps
-// the cadence, the worker and the staleness checks, so each section's update() is the same few lines:
+// thread (a BackgroundTask, so a Domain::Worker per read, #3343), started only while the section was
+// drawn open on the last frame, once when it opens or the selection changes and then every refresh
+// interval -- or, constructed ON_DEMAND (Open files), only after request() (a button), with no refresh.
+// The view keeps its rows, sort and filter; this keeps the cadence, the worker and the staleness
+// checks, so each section's update() is the same few lines:
 //
 //     if (auto result = m_Read.takeFinished(target, false)) applyResult(*result);
 //     if (!m_Read.due(deltaSeconds) || reader == nullptr || !reader->hasX()) return false;
