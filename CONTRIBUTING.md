@@ -1634,7 +1634,19 @@ python3 tools/check-benchmark-regression.py --baseline perf-data/linux-ci-baseli
     --threshold 40 --threshold-overrides perf-data/linux-ci-thresholds.json
 ```
 
-The script is plain Python, so `bench.ps1` runs can use it the same way.
+On Windows, `bench.ps1 -Baseline <file>` does all of that itself (#3448): it checks the run at the
+checker's defaults (plus any `-CheckArgs`, e.g. `-CheckArgs @('--threshold', '40')`), and when that flags
+regressions it runs the flagged benchmarks alone in `-Launches` more separate launches (default 4, 5 in all),
+each a `bench.ps1` run of its own with the same preset, binary, `-Core` and arguments plus the plan's filter,
+so each is pinned, redacted and given a manifest like any run. It then combines them and checks the median
+across launches at the same thresholds, and exits with that check's code (0 passed, 1 regressions or low
+coverage, 2 unusable input). The flagged names, the launches and the combined run go to
+`<result>.across-launches\` next to the result; `-BudgetSeconds` (default 600) bounds the launches as on CI.
+No Windows CI job runs the benchmarks, so this is for local runs, which belong in a quiet window:
+
+```powershell
+pwsh tools/bench.ps1 win-benchmark -Baseline perf-data/win-baseline.json
+```
 
 This is a *separate* baseline from `perf-data/linux-baseline.json` above, deliberately: that one was
 recorded on a developer machine, and comparing it with hosted `ubuntu-24.04` runners flagged the machine

@@ -92,6 +92,12 @@ if(WIN32)
         add_test(NAME BenchScript
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-bench.ps1)
         set_tests_properties(BenchScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_PYTHON=${Python3_EXECUTABLE}")
+        # tools/bench.ps1 -Baseline measures flagged benchmarks across launches with
+        # tools/bench-across-launches.py and checks the median across them (#3448). A stub binary
+        # copies canned runs; no benchmark runs. About 25 seconds (a PowerShell start per launch).
+        add_test(NAME BenchAcrossLaunchesPs1Script
+            COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-bench-across-launches.ps1)
+        set_tests_properties(BenchAcrossLaunchesPs1Script PROPERTIES ENVIRONMENT "TASKSMACK_TEST_PYTHON=${Python3_EXECUTABLE}")
         # tools/check-prereqs.ps1 reads a two-component ccache version (#2350); one full checker run.
         add_test(NAME CheckPrereqsScript
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-check-prereqs.ps1)

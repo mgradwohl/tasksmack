@@ -24,7 +24,35 @@
     the TASKSMACK_BENCH_LOAD_SAMPLE_MS environment variable changes the sample length (the script
     tests shorten it).
 
-    Compare a run against a baseline with tools/check-benchmark-regression.py.
+    Compare a run against a baseline with tools/check-benchmark-regression.py, or pass -Baseline
+    and the script does it, measuring any flagged benchmark across launches (#3448): see -Baseline.
+.PARAMETER Baseline
+    A baseline result to check this run against once it succeeds (#3448). The run is checked with
+    tools/check-benchmark-regression.py at its default thresholds plus any -CheckArgs. When it flags
+    regressions, the flagged benchmarks alone run again in -Launches more separate launches of the
+    binary (each a bench.ps1 run of its own with the same preset, binary, -Core and arguments, and a
+    --benchmark_filter from tools/bench-across-launches.py plan), each one's median across all the
+    launches' medians replaces its row in a copy of the run (bench-across-launches.py combine), and
+    that copy is checked again at the same thresholds and coverage. This is the maintainer's decision
+    on #3448 (2026-11-05), as heavy-checks.yml does on Linux (#3476): not best-of-N, and no threshold
+    changes, so a benchmark slow in most launches still fails. The launches, the flagged names and the
+    combined run go to <result>.across-launches\ next to the result. The script then exits with the
+    check's exit code: 0 passed, 1 regressions or low coverage, 2 an unusable input. A coverage loss
+    alone has nothing to re-measure and fails as it is. Needs Python (-Python).
+.PARAMETER Launches
+    With -Baseline: how many more launches the flagged benchmarks get, 5 in all with the full run.
+    Defaults to 4, as heavy-checks.yml.
+.PARAMETER BudgetSeconds
+    With -Baseline: the time the further launches may take. tools/bench-across-launches.py plan
+    estimates them from the full run's own timings and refuses past it, and no launch starts once it
+    is spent; either way the flags stand as regressions. Defaults to 600, as heavy-checks.yml.
+.PARAMETER CheckArgs
+    With -Baseline: more arguments for both checks, e.g. @('--threshold', '40'). The script sets
+    --baseline, --current, --current-manifest and --regressions-out itself, so they are refused.
+.PARAMETER Python
+    With -Baseline: the Python interpreter for the check. Defaults to the checkout's
+    .venv\Scripts\python.exe when there is one, then python3 or python on PATH (not the Microsoft
+    Store alias).
 .PARAMETER Preset
     The CMake preset whose build holds the benchmark binary. Defaults to win-benchmark.
 .PARAMETER BenchmarkBinary
@@ -61,6 +89,8 @@
     pwsh tools/bench.ps1 win-benchmark -Core any --benchmark_filter=ProcessModel
 .EXAMPLE
     python tools/check-benchmark-regression.py --baseline perf-data/win-baseline.json --current perf-data/win-benchmark-<timestamp>.json
+.EXAMPLE
+    pwsh tools/bench.ps1 win-benchmark -Baseline perf-data/win-baseline.json
 #>
 
 [CmdletBinding()]
@@ -76,6 +106,19 @@ param(
     # No default here: unset means "performance on a hybrid CPU, any elsewhere" (Select-BenchCore).
     [ValidateSet('performance', 'any')]
     [string]$Core,
+
+    # Check the run against a baseline, measuring flagged benchmarks across launches (#3448).
+    [string]$Baseline,
+
+    [ValidateRange(1, 100)]
+    [int]$Launches = 4,
+
+    [ValidateRange(0, [double]::MaxValue)]
+    [double]$BudgetSeconds = 600,
+
+    [string[]]$CheckArgs = @(),
+
+    [string]$Python,
 
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$ExtraArgs = @()
@@ -93,7 +136,8 @@ try { [Console]::OutputEncoding = $OutputEncoding } catch { Write-Verbose "Conso
 # its exit code is captured, skipping the manifest and the redaction of its partial output (#1423).
 $PSNativeCommandUseErrorActionPreference = $false
 
-$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$benchScriptPath = $MyInvocation.MyCommand.Path
+$scriptDir = Split-Path -Parent $benchScriptPath
 $repoRoot = Split-Path -Parent $scriptDir
 # Read-CMakeCache and ConvertTo-CMakeUpper, shared with profile-etw-common.ps1 (#1479).
 . (Join-Path $scriptDir 'cmake-cache.ps1')
@@ -124,6 +168,44 @@ foreach ($arg in $ExtraArgs) {
     if ($arg -match '^--benchmark_out(_format)?(=|$)') {
         Write-Error -Message "'$arg' is not allowed: bench.ps1 sets the benchmark output file and format itself. Use -OutputDirectory (or TASKSMACK_BENCH_OUT_DIR) to choose where results are written." -ErrorAction Continue
         exit 2
+    }
+}
+
+function Find-BenchPython {
+    # The interpreter for -Baseline's checks: -Python, else the checkout's .venv, else python3 or
+    # python on PATH, leaving out the Microsoft Store alias (it opens the Store instead of running).
+    # $null when there is none.
+    param([string]$Requested, [string]$RepoRoot)
+    if ($Requested) {
+        $path = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Requested)
+        return $(if (Test-Path -LiteralPath $path -PathType Leaf) { $path } else { $null })
+    }
+    $venv = Join-Path $RepoRoot '.venv\Scripts\python.exe'
+    if (Test-Path -LiteralPath $venv -PathType Leaf) { return $venv }
+    $found = @(Get-Command python3, python -CommandType Application -ErrorAction SilentlyContinue |
+            Where-Object { $_.Source -notlike '*\WindowsApps\*' } | Select-Object -First 1 -ExpandProperty Source)
+    return $(if ($found.Count -gt 0) { $found[0] } else { $null })
+}
+
+# -Baseline is checked before the run, so a mistake fails now and not after a 25-minute run. Exit
+# code 2, a usage error.
+$pythonExe = $null
+if ($Baseline) {
+    $Baseline = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Baseline)
+    if (-not (Test-Path -LiteralPath $Baseline -PathType Leaf)) {
+        Write-Error -Message "Baseline not found: $Baseline" -ErrorAction Continue
+        exit 2
+    }
+    $pythonExe = Find-BenchPython -Requested $Python -RepoRoot $repoRoot
+    if (-not $pythonExe) {
+        Write-Error -Message "-Baseline needs Python: none found$(if ($Python) { " at '$Python'" } else { ' (.venv, python3 or python on PATH)' }). Pass -Python <path>." -ErrorAction Continue
+        exit 2
+    }
+    foreach ($arg in $CheckArgs) {
+        if ($arg -match '^--(baseline|current|current-manifest|regressions-out)(=|$)') {
+            Write-Error -Message "'$arg' is not allowed in -CheckArgs: bench.ps1 sets it for each check itself." -ErrorAction Continue
+            exit 2
+        }
     }
 }
 
@@ -876,6 +958,89 @@ function Invoke-ResultRedaction {
     $json | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath $outFile -Encoding utf8
 }
 
+function Invoke-AcrossLaunches {
+    # -Baseline (#3448): check $First against $Baseline and, when it flags regressions, measure the
+    # flagged benchmarks across launches and check the median across them, as heavy-checks.yml's
+    # "Re-measure flagged benchmarks across launches" does on Linux (#3476), with the same
+    # tools/bench-across-launches.py. $Launch runs one further launch: it gets the filter and a
+    # directory of its own and returns @{ ExitCode; Result }. Returns the exit code the script ends
+    # with: the last check's (0 passed, 1 regressions or low coverage, 2 unusable input), 1 when the
+    # flags stand (over budget, or nothing to re-measure), or a failed launch's own exit code.
+    param(
+        [string]$Python,
+        [string]$ToolsDirectory,
+        [string]$Baseline,
+        [string]$First,
+        [string]$FirstManifest,
+        [string]$WorkDirectory,
+        [int]$Launches,
+        [double]$BudgetSeconds,
+        [string[]]$CheckArgs,
+        [scriptblock]$Launch
+    )
+    $checker = Join-Path $ToolsDirectory 'check-benchmark-regression.py'
+    $helper = Join-Path $ToolsDirectory 'bench-across-launches.py'
+    New-Item -ItemType Directory -Path $WorkDirectory -Force | Out-Null
+    $regressions = Join-Path $WorkDirectory 'regressions.json'
+    $nativeExit = { if ($null -eq $LASTEXITCODE) { 2 } else { $LASTEXITCODE } }
+
+    Write-Host ""
+    Write-Host "Checking against $Baseline"
+    & $Python $checker --baseline $Baseline --current $First @CheckArgs --regressions-out $regressions | Out-Host
+    $checked = & $nativeExit
+    # Only flagged regressions are re-measured; a pass, or a usage error, stands.
+    if ($checked -ne 1) { return $checked }
+
+    # The budget runs from here. plan refuses (exit 1) when there is nothing to re-measure (a coverage
+    # loss alone) or the estimate is over budget, and says which.
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    Write-Host ""
+    $planOut = @(& $Python $helper plan --current $First --regressions $regressions --launches $Launches --budget-seconds $BudgetSeconds)
+    $planned = & $nativeExit
+    if ($planned -ne 0) {
+        if ($planned -eq 1) { Write-Host "The flags stand as regressions." }
+        return $planned
+    }
+    $filter = [string]$planOut[-1]
+
+    $results = [Collections.Generic.List[string]]::new()
+    $total = $Launches + 1
+    for ($index = 2; $index -le $total; $index++) {
+        if ($clock.Elapsed.TotalSeconds -ge $BudgetSeconds) {
+            Write-Host "Out of time: launch $index of $total not started, past the $($BudgetSeconds)s budget. The flags stand as regressions."
+            return 1
+        }
+        $directory = Join-Path $WorkDirectory "launch-$index"
+        New-Item -ItemType Directory -Path $directory -Force | Out-Null
+        Write-Host ""
+        Write-Host "Launch $index of ${total}: --benchmark_filter=$filter"
+        $launched = & $Launch $filter $directory
+        if ($launched.ExitCode -ne 0) {
+            Write-Error -Message "Launch $index failed (exit $($launched.ExitCode))." -ErrorAction Continue
+            return $launched.ExitCode
+        }
+        if (-not $launched.Result -or -not (Test-Path -LiteralPath $launched.Result -PathType Leaf)) {
+            Write-Error -Message "Launch $index's result not found (RESULT=$($launched.Result))." -ErrorAction Continue
+            return 2
+        }
+        $results.Add($launched.Result)
+    }
+
+    # A flagged benchmark with no usable median in some launch fails here (exit 2), not quietly.
+    $combined = Join-Path $WorkDirectory 'combined.json'
+    Write-Host ""
+    & $Python $helper combine --first $First --regressions $regressions --baseline $Baseline --output $combined @results | Out-Host
+    $combinedExit = & $nativeExit
+    if ($combinedExit -ne 0) { return $combinedExit }
+
+    # The same check on the combined run, with the full run's manifest (the core-class check).
+    $manifestArgs = if ($FirstManifest -and (Test-Path -LiteralPath $FirstManifest -PathType Leaf)) { @('--current-manifest', $FirstManifest) } else { @() }
+    Write-Host ""
+    Write-Host "Checking the median across $total launches against $Baseline"
+    & $Python $checker --baseline $Baseline --current $combined @manifestArgs @CheckArgs | Out-Host
+    return (& $nativeExit)
+}
+
 # The preset as the file names and the manifest carry it (#1445 review): a user or host name in
 # it becomes <user> / <host> (Hide-NameIdentity), and "user" / "host" in the file names, so
 # neither the files nor the manifest's result_file and --benchmark_out carry it.
@@ -1024,10 +1189,40 @@ if ($manifestError) {
     throw "Writing the provenance manifest '$manifestFile' failed: $manifestError"
 }
 
+# -Baseline (#3448): the check, with any flagged benchmark measured across launches. Each further
+# launch is this script again in a process of its own, with the same preset, binary, -Core and
+# arguments plus the plan's --benchmark_filter (Google Benchmark takes the last one), so it is pinned,
+# sampled, redacted and given a manifest the same way. Its output is shown and its RESULT= line read.
+$checkExit = 0
+if ($Baseline) {
+    $pwshExe = (Get-Process -Id $PID).Path
+    $launchOne = {
+        param([string]$Filter, [string]$Directory)
+        $childArgs = @('-NoProfile', '-File', $benchScriptPath, $Preset, '-BenchmarkBinary', $benchBin, '-OutputDirectory', $Directory)
+        if ($Core) { $childArgs += @('-Core', $Core) }
+        $childArgs += @($ExtraArgs) + @("--benchmark_filter=$Filter")
+        $lines = @(& $pwshExe @childArgs | ForEach-Object { Write-Host $_; $_ })
+        $code = if ($null -eq $LASTEXITCODE) { 2 } else { $LASTEXITCODE }
+        $resultLine = @($lines | Where-Object { "$_" -like 'RESULT=*' } | Select-Object -Last 1)
+        [pscustomobject]@{ ExitCode = $code; Result = $(if ($resultLine.Count -gt 0) { "$($resultLine[0])".Substring('RESULT='.Length) } else { $null }) }
+    }
+    $checkExit = Invoke-AcrossLaunches -Python $pythonExe -ToolsDirectory $scriptDir -Baseline $Baseline -First $outFile `
+        -FirstManifest $manifestFile -WorkDirectory ([IO.Path]::ChangeExtension($outFile, '.across-launches')) `
+        -Launches $Launches -BudgetSeconds $BudgetSeconds -CheckArgs $CheckArgs -Launch $launchOne
+}
+
 Write-Host ""
 Write-Host "Results written to: $outFile"
 Write-Host "Provenance manifest: $manifestFile"
-Write-Host "Compare against a baseline (median per benchmark, regressions over the threshold fail):"
-Write-Host "  python tools/check-benchmark-regression.py --baseline perf-data/win-baseline.json --current $outFile"
-# Machine-readable result path, printed only on success; kept in step with bench.sh (#2249).
+if ($Baseline) {
+    Write-Host "Checked against ${Baseline}: $(if ($checkExit -eq 0) { 'passed' } else { "failed (exit $checkExit)" })"
+}
+else {
+    Write-Host "Compare against a baseline (median per benchmark, regressions over the threshold fail):"
+    Write-Host "  python tools/check-benchmark-regression.py --baseline perf-data/win-baseline.json --current $outFile"
+    Write-Host "  (or pass -Baseline, which measures any flagged benchmark across launches, #3448)"
+}
+# Machine-readable result path, printed only on success; kept in step with bench.sh (#2249). With
+# -Baseline the run succeeded either way, and the exit code is the check's.
 Write-Host "RESULT=$outFile"
+exit $checkExit
