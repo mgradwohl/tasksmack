@@ -34,6 +34,7 @@
 #include <format>
 #include <fstream>
 #include <functional>
+#include <future>
 #include <iterator>
 #include <limits>
 #include <map>
@@ -44,6 +45,7 @@
 #include <string_view>
 #include <system_error>
 #include <thread>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -702,7 +704,7 @@ TEST(LinuxProcessActionsTest, SetSchedPolicyChangesEveryThread)
                                            std::pair{SchedPolicy::Normal, SCHED_OTHER},
                                            std::pair{SchedPolicy::Idle, SCHED_IDLE}})
     {
-        const auto result = actions.setSchedPolicy(target, policy, Platform::RealtimeThreads::Keep);
+        const auto result = actions.setSchedPolicy(target, policy, 0, Platform::RealtimeThreads::Keep);
         ASSERT_TRUE(result.success) << result.errorMessage;
         for (const id_t tid : tids)
         {
@@ -711,7 +713,7 @@ TEST(LinuxProcessActionsTest, SetSchedPolicyChangesEveryThread)
     }
 }
 
-TEST(LinuxProcessActionsTest, SetSchedPolicyRefusesRealTimeAnInvalidPidAndAReusedOne)
+TEST(LinuxProcessActionsTest, SetSchedPolicyRefusesDeadlineABadPriorityAnInvalidPidAndAReusedOne)
 {
     LinuxProcessActions actions;
     const SleepingChild child;
@@ -719,20 +721,82 @@ TEST(LinuxProcessActionsTest, SetSchedPolicyRefusesRealTimeAnInvalidPidAndAReuse
     // The child inherits the runner's policy (Batch or Idle under some CI runners): it must stay as it started.
     const int initial = schedulerOf(static_cast<id_t>(child.target().pid));
     ASSERT_GE(initial, 0);
-    for (const SchedPolicy policy : {SchedPolicy::Fifo, SchedPolicy::RoundRobin, SchedPolicy::Deadline, SchedPolicy::Unknown})
+    for (const SchedPolicy policy : {SchedPolicy::Deadline, SchedPolicy::Unknown})
     {
-        const ProcessActionResult refused = actions.setSchedPolicy(child.target(), policy, Platform::RealtimeThreads::Keep);
+        const ProcessActionResult refused = actions.setSchedPolicy(child.target(), policy, 0, Platform::RealtimeThreads::Keep);
         EXPECT_FALSE(refused.success);
         EXPECT_FALSE(refused.permissionDenied) << "no password helps: the helper refuses it too";
-        EXPECT_EQ(refused.errorMessage, "Only the Normal, Batch and Idle scheduling policies can be set");
+        EXPECT_EQ(refused.errorMessage, "Only the Normal, Batch, Idle, FIFO and round robin scheduling policies can be set");
     }
+    // #3219: real time needs a priority from 1 to 99, and the others take none.
+    for (const auto& [policy, priority] : {std::pair{SchedPolicy::Fifo, 0}, std::pair{SchedPolicy::RoundRobin, 100}})
+    {
+        const ProcessActionResult refused = actions.setSchedPolicy(child.target(), policy, priority, Platform::RealtimeThreads::Keep);
+        EXPECT_FALSE(refused.success);
+        EXPECT_FALSE(refused.permissionDenied);
+        EXPECT_EQ(refused.errorMessage, std::format("A real-time priority runs from 1 to 99, not {}", priority));
+    }
+    EXPECT_EQ(actions.setSchedPolicy(child.target(), SchedPolicy::Normal, 5, Platform::RealtimeThreads::Keep).errorMessage,
+              "The Normal policy takes no real-time priority (asked for 5)");
     EXPECT_EQ(schedulerOf(static_cast<id_t>(child.target().pid)), initial);
-    EXPECT_EQ(actions.setSchedPolicy({.pid = 0, .startTimeTicks = 1}, SchedPolicy::Batch, Platform::RealtimeThreads::Keep).errorMessage,
+    EXPECT_EQ(actions.setSchedPolicy({.pid = 0, .startTimeTicks = 1}, SchedPolicy::Batch, 0, Platform::RealtimeThreads::Keep).errorMessage,
               "Invalid PID");
     // A different start time: the PID now names another process, and nothing is changed.
     const ProcessTarget other{.pid = child.target().pid, .startTimeTicks = child.target().startTimeTicks + 1};
-    EXPECT_FALSE(actions.setSchedPolicy(other, SchedPolicy::Batch, Platform::RealtimeThreads::Keep).success);
+    EXPECT_FALSE(actions.setSchedPolicy(other, SchedPolicy::Batch, 0, Platform::RealtimeThreads::Keep).success);
     EXPECT_EQ(schedulerOf(static_cast<id_t>(child.target().pid)), initial);
+}
+
+// #3219: a child set to round robin at priority 1, the least real time there is, on every thread, then back to
+// Normal. Only where this user may: CAP_SYS_NICE, or an RLIMIT_RTPRIO of at least 1 (the audio group often has
+// one); else skipped, since an unprivileged real-time request is refused by design.
+TEST(LinuxProcessActionsTest, SetSchedPolicySetsRoundRobinWhereThisUserMay)
+{
+    const std::optional<std::string> status = [] -> std::optional<std::string>
+    {
+        std::ifstream file("/proc/self/status");
+        if (!file)
+        {
+            return std::nullopt;
+        }
+        return std::string((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    }();
+    const bool hasCap = ProcPrivileges::canSetRealtimeSchedPolicy(status ? ProcPrivileges::parseCapEff(*status) : std::nullopt);
+    rlimit rtprio{};
+    const bool hasLimit = ::getrlimit(RLIMIT_RTPRIO, &rtprio) == 0 && rtprio.rlim_cur >= 1;
+    if (!hasCap && !hasLimit)
+    {
+        GTEST_SKIP() << "this user may not set real time: no CAP_SYS_NICE and RLIMIT_RTPRIO is 0";
+    }
+    const SleepingChild child(2);
+    ASSERT_TRUE(child.started());
+    ASSERT_TRUE(child.threadsReady());
+    const ProcessTarget target = child.target();
+    const std::vector<id_t> tids = listThreads(target.pid);
+    ASSERT_GE(tids.size(), 3U);
+
+    LinuxProcessActions actions;
+    EXPECT_EQ(actions.actionCapabilities().canSetRealtimeSchedPolicy, hasCap);
+    const ProcessActionResult result = actions.setSchedPolicy(target, SchedPolicy::RoundRobin, 1, Platform::RealtimeThreads::Keep);
+    if (!result.success && result.permissionDenied)
+    {
+        // A cgroup with RT group scheduling and no real-time budget refuses it however privileged the caller.
+        GTEST_SKIP() << "the kernel refused real time here: " << result.errorMessage;
+    }
+    ASSERT_TRUE(result.success) << result.errorMessage;
+    for (const id_t tid : tids)
+    {
+        EXPECT_EQ(schedulerOf(tid), SCHED_RR) << "thread " << tid;
+        sched_param param{};
+        ASSERT_EQ(sched_getparam(static_cast<pid_t>(tid), &param), 0);
+        EXPECT_EQ(param.sched_priority, 1) << "thread " << tid;
+    }
+    // Back to time sharing: leaving real time for Normal needs no privilege. The dialog warned (Change): every thread.
+    ASSERT_TRUE(actions.setSchedPolicy(target, SchedPolicy::Normal, 0, Platform::RealtimeThreads::Change).success);
+    for (const id_t tid : tids)
+    {
+        EXPECT_EQ(schedulerOf(tid), SCHED_OTHER) << "thread " << tid;
+    }
 }
 
 // =============================================================================
@@ -888,7 +952,7 @@ TEST(LinuxProcessActionsTest, InitAndKernelThreadsKeepTheirPriorityAndAffinity)
         for (const ProcessActionResult& result : {actions.setPriority(target, 19),
                                                   actions.setIoPriority(target, IoPriorityClass::Idle, 0),
                                                   actions.setAffinity(target, CpuAffinity::fromMask(1)),
-                                                  actions.setSchedPolicy(target, SchedPolicy::Idle, Platform::RealtimeThreads::Keep)})
+                                                  actions.setSchedPolicy(target, SchedPolicy::Idle, 0, Platform::RealtimeThreads::Keep)})
         {
             EXPECT_FALSE(result.success);
             EXPECT_FALSE(result.permissionDenied) << "no password helps";
@@ -1610,6 +1674,7 @@ struct FaultPlan
     int pollCalls = 0;
     int schedulerNow = 0;                    ///< What sched_getscheduler returns (#3086): a policy, SCHED_RESET_ON_FORK, or -1 (fails)
     std::function<int(id_t)> schedulerByTid; ///< Or, when set, what it returns for each thread
+    int lastSetPriority = -1;                ///< The sched_priority the last sched_setscheduler was given (#3219)
 };
 
 FaultPlan& plan()
@@ -1674,6 +1739,12 @@ int fakeSetAffinity(id_t /*tid*/, std::size_t setSize, const cpu_set_t* set)
     return plan().setErrno != 0 ? fail(plan().setErrno) : 0;
 }
 
+int fakeSetScheduler(id_t tid, int policy, int priority)
+{
+    plan().lastSetPriority = priority;
+    return fakeSet(tid, policy);
+}
+
 int fakeGetScheduler(id_t tid)
 {
     if (plan().schedulerByTid)
@@ -1704,7 +1775,7 @@ class LinuxProcessActionsFaultTest : public ::testing::Test
                                                        .ioprioSet = &fakeSet,
                                                        .ioprioGet = &fakeIoprioGet,
                                                        .setAffinity = &fakeSetAffinity,
-                                                       .setScheduler = &fakeSet,
+                                                       .setScheduler = &fakeSetScheduler,
                                                        .getScheduler = &fakeGetScheduler}};
 };
 
@@ -2089,17 +2160,17 @@ TEST_F(LinuxProcessActionsFaultTest, AffinityWithoutTheCallIsUnavailable)
 TEST_F(LinuxProcessActionsFaultTest, SchedPolicyKeepsAThreadsResetOnFork)
 {
     plan().schedulerNow = SCHED_RR | SCHED_RESET_ON_FORK; // the dialog warned: real-time threads change
-    ASSERT_TRUE(m_Actions.setSchedPolicy(ownTarget(), SchedPolicy::Normal, Platform::RealtimeThreads::Change).success);
+    ASSERT_TRUE(m_Actions.setSchedPolicy(ownTarget(), SchedPolicy::Normal, 0, Platform::RealtimeThreads::Change).success);
     EXPECT_EQ(plan().lastSetValue, SCHED_OTHER | SCHED_RESET_ON_FORK);
 
     plan().schedulerNow = SCHED_BATCH; // no flag: none added
-    ASSERT_TRUE(m_Actions.setSchedPolicy(ownTarget(), SchedPolicy::Idle, Platform::RealtimeThreads::Keep).success);
+    ASSERT_TRUE(m_Actions.setSchedPolicy(ownTarget(), SchedPolicy::Idle, 0, Platform::RealtimeThreads::Keep).success);
     EXPECT_EQ(plan().lastSetValue, SCHED_IDLE);
 
     // A policy that can't be read isn't guessed at: the change fails with why, and nothing is set.
     plan().schedulerNow = -1;
     const int callsBefore = plan().setCalls;
-    const ProcessActionResult unread = m_Actions.setSchedPolicy(ownTarget(), SchedPolicy::Batch, Platform::RealtimeThreads::Keep);
+    const ProcessActionResult unread = m_Actions.setSchedPolicy(ownTarget(), SchedPolicy::Batch, 0, Platform::RealtimeThreads::Keep);
     EXPECT_FALSE(unread.success);
     EXPECT_EQ(unread.errorMessage, "Process not found - may have already exited") << "the read's ESRCH";
     EXPECT_EQ(plan().setCalls, callsBefore);
@@ -2131,7 +2202,7 @@ TEST_F(LinuxProcessActionsFaultTest, RealTimeWorkersUnderANormalMainThreadKeepTh
         threads = listThreads(self).size();
     }
     ASSERT_GE(threads, 2U);
-    const ProcessActionResult mixed = m_Actions.setSchedPolicy(ownTarget(), SchedPolicy::Batch, Platform::RealtimeThreads::Keep);
+    const ProcessActionResult mixed = m_Actions.setSchedPolicy(ownTarget(), SchedPolicy::Batch, 0, Platform::RealtimeThreads::Keep);
     ASSERT_TRUE(mixed.success) << mixed.errorMessage;
     EXPECT_EQ(static_cast<std::size_t>(plan().setCalls), 1U) << "only the main thread";
     EXPECT_TRUE(mixed.successNote.contains("real-time thread")) << mixed.successNote;
@@ -2141,9 +2212,33 @@ TEST_F(LinuxProcessActionsFaultTest, RealTimeWorkersUnderANormalMainThreadKeepTh
     {
         return SCHED_RR | SCHED_RESET_ON_FORK;
     };
-    ASSERT_TRUE(m_Actions.setSchedPolicy(ownTarget(), SchedPolicy::Normal, Platform::RealtimeThreads::Change).success);
+    ASSERT_TRUE(m_Actions.setSchedPolicy(ownTarget(), SchedPolicy::Normal, 0, Platform::RealtimeThreads::Change).success);
     EXPECT_EQ(static_cast<std::size_t>(plan().setCalls), threads) << "a real-time main thread: every thread, as chosen";
     EXPECT_EQ(plan().lastSetValue, SCHED_OTHER | SCHED_RESET_ON_FORK);
+}
+
+// #3219: a request for real time is an explicit, confirmed choice of real time for the process, so under a Normal
+// main thread every thread gets it, the real-time workers too (they aren't kept, and no note says so). Aimed at a
+// child, since this process is never set real time.
+TEST_F(LinuxProcessActionsFaultTest, ARealtimeRequestSetsRealtimeWorkersToo)
+{
+    const SleepingChild child(2);
+    ASSERT_TRUE(child.started());
+    ASSERT_TRUE(child.threadsReady());
+    const pid_t main = child.target().pid;
+    plan().schedulerByTid = [main](id_t tid)
+    {
+        return static_cast<pid_t>(tid) == main ? SCHED_OTHER : SCHED_FIFO;
+    };
+    const std::size_t threads = listThreads(main).size();
+    ASSERT_GE(threads, 3U);
+    const ProcessActionResult result =
+        m_Actions.setSchedPolicy(child.target(), SchedPolicy::RoundRobin, 10, Platform::RealtimeThreads::Keep);
+    ASSERT_TRUE(result.success) << result.errorMessage;
+    EXPECT_EQ(static_cast<std::size_t>(plan().setCalls), threads) << "every thread, the FIFO workers included";
+    EXPECT_EQ(plan().lastSetValue, SCHED_RR);
+    EXPECT_EQ(plan().lastSetPriority, 10);
+    EXPECT_FALSE(result.successNote.contains("real-time thread")) << result.successNote;
 }
 
 // #3086: a process that turned real time after the dialog opened on Normal (no warning shown: Keep) keeps every
@@ -2156,7 +2251,7 @@ TEST_F(LinuxProcessActionsFaultTest, RealTimeAfterTheDialogOpenedIsNeverDemotedW
     {
         return SCHED_FIFO;
     };
-    const ProcessActionResult kept = m_Actions.setSchedPolicy(ownTarget(), SchedPolicy::Normal, Platform::RealtimeThreads::Keep);
+    const ProcessActionResult kept = m_Actions.setSchedPolicy(ownTarget(), SchedPolicy::Normal, 0, Platform::RealtimeThreads::Keep);
     ASSERT_TRUE(kept.success) << kept.errorMessage;
     EXPECT_EQ(plan().setCalls, 0) << "no thread is taken off real time";
     EXPECT_TRUE(kept.successNote.contains("real-time thread")) << kept.successNote;
@@ -2170,26 +2265,123 @@ TEST_F(LinuxProcessActionsFaultTest, SchedPolicyReachesEveryThread)
                                            std::pair{SchedPolicy::Idle, SCHED_IDLE}})
     {
         plan() = FaultPlan{};
-        const ProcessActionResult result = m_Actions.setSchedPolicy(ownTarget(), policy, Platform::RealtimeThreads::Keep);
+        const ProcessActionResult result = m_Actions.setSchedPolicy(ownTarget(), policy, 0, Platform::RealtimeThreads::Keep);
         EXPECT_TRUE(result.success) << result.errorMessage;
         EXPECT_GE(static_cast<std::size_t>(plan().setCalls), listThreads(ownTarget().pid).size()) << "one per thread of this process";
         EXPECT_EQ(plan().pollCalls, 1);
         EXPECT_EQ(plan().lastSetValue, expected);
+        EXPECT_EQ(plan().lastSetPriority, 0);
     }
 }
 
-// #3086: real time, Deadline and an unread policy are refused before sched_setscheduler(2) is reached, so the
-// helper, which links this, can't be made to set one.
-TEST_F(LinuxProcessActionsFaultTest, SchedPolicyRefusesRealTimeBeforeTheCall)
+// #3219: FIFO and round robin reach every thread with their priority. Aimed at a sleeping child, since this
+// process itself is never set real time; the fake calls answer for the kernel, so the child isn't changed.
+TEST_F(LinuxProcessActionsFaultTest, RealtimeSchedPolicyReachesEveryThreadWithItsPriority)
 {
-    for (const SchedPolicy policy : {SchedPolicy::Fifo, SchedPolicy::RoundRobin, SchedPolicy::Deadline, SchedPolicy::Unknown})
+    const SleepingChild child(2);
+    ASSERT_TRUE(child.started());
+    ASSERT_TRUE(child.threadsReady());
+    for (const auto& [policy, expected, priority] :
+         {std::tuple{SchedPolicy::Fifo, SCHED_FIFO, 1}, std::tuple{SchedPolicy::RoundRobin, SCHED_RR, 99}})
     {
-        const ProcessActionResult refused = m_Actions.setSchedPolicy(ownTarget(), policy, Platform::RealtimeThreads::Keep);
+        plan() = FaultPlan{};
+        const ProcessActionResult result = m_Actions.setSchedPolicy(child.target(), policy, priority, Platform::RealtimeThreads::Keep);
+        EXPECT_TRUE(result.success) << result.errorMessage;
+        EXPECT_GE(plan().setCalls, 3) << "one per thread of the child";
+        EXPECT_EQ(plan().lastSetValue, expected);
+        EXPECT_EQ(plan().lastSetPriority, priority);
+    }
+    // A thread's SCHED_RESET_ON_FORK is kept for real time too.
+    plan() = FaultPlan{};
+    plan().schedulerNow = SCHED_OTHER | SCHED_RESET_ON_FORK;
+    ASSERT_TRUE(m_Actions.setSchedPolicy(child.target(), SchedPolicy::RoundRobin, 10, Platform::RealtimeThreads::Keep).success);
+    EXPECT_EQ(plan().lastSetValue, SCHED_RR | SCHED_RESET_ON_FORK);
+}
+
+// #3219: this process is never set real time (TaskSmack's UI thread, or the root helper itself), before any call;
+// the time-sharing policies stay allowed for it.
+TEST_F(LinuxProcessActionsFaultTest, RealtimeForThisProcessIsRefusedBeforeTheCall)
+{
+    for (const SchedPolicy policy : {SchedPolicy::Fifo, SchedPolicy::RoundRobin})
+    {
+        const ProcessActionResult refused = m_Actions.setSchedPolicy(ownTarget(), policy, 50, Platform::RealtimeThreads::Keep);
+        EXPECT_FALSE(refused.success);
+        EXPECT_FALSE(refused.permissionDenied) << "no password helps: the helper refuses it too";
+        EXPECT_TRUE(refused.errorMessage.contains("never runs under a real-time policy")) << refused.errorMessage;
+    }
+    EXPECT_EQ(plan().setCalls, 0);
+    EXPECT_TRUE(m_Actions.setSchedPolicy(ownTarget(), SchedPolicy::Batch, 0, Platform::RealtimeThreads::Keep).success);
+}
+
+// #3219: one of this process's thread IDs names this process too (and every thread would be changed), so it is
+// refused by its thread group, not let through because the TID isn't getpid().
+TEST_F(LinuxProcessActionsFaultTest, RealtimeForAThreadOfThisProcessIsRefused)
+{
+    std::promise<pid_t> started;
+    std::promise<void> done;
+    std::thread worker(
+        [&started, finished = done.get_future()]() mutable
+        {
+            started.set_value(::gettid());
+            finished.wait();
+        });
+    const pid_t tid = started.get_future().get();
+    ASSERT_NE(tid, ::getpid());
+    std::ifstream stat(std::format("/proc/self/task/{}/stat", tid));
+    const std::string line((std::istreambuf_iterator<char>(stat)), std::istreambuf_iterator<char>());
+    const ProcessTarget thread{.pid = static_cast<std::int32_t>(tid), .startTimeTicks = ProcParsing::parseStatStartTime(line).value_or(0)};
+    const ProcessActionResult refused = m_Actions.setSchedPolicy(thread, SchedPolicy::RoundRobin, 10, Platform::RealtimeThreads::Keep);
+    done.set_value();
+    worker.join();
+    EXPECT_FALSE(refused.success);
+    EXPECT_FALSE(refused.permissionDenied);
+    EXPECT_TRUE(refused.errorMessage.contains(std::format("is a thread of PID {}", ::getpid()))) << refused.errorMessage;
+    EXPECT_EQ(plan().setCalls, 0);
+}
+
+// #3219: the helper adds its client, TaskSmack, to the processes never set real time (refuseRealtimeFor()); the
+// time-sharing policies stay allowed for it.
+TEST_F(LinuxProcessActionsFaultTest, RealtimeForTheHelpersClientIsRefused)
+{
+    const SleepingChild client;
+    ASSERT_TRUE(client.started());
+    ASSERT_TRUE(m_Actions.setSchedPolicy(client.target(), SchedPolicy::Fifo, 99, Platform::RealtimeThreads::Keep).success)
+        << "not protected yet";
+    plan() = FaultPlan{};
+    m_Actions.refuseRealtimeFor(client.target().pid);
+    const ProcessActionResult refused = m_Actions.setSchedPolicy(client.target(), SchedPolicy::Fifo, 99, Platform::RealtimeThreads::Keep);
+    EXPECT_FALSE(refused.success);
+    EXPECT_FALSE(refused.permissionDenied);
+    EXPECT_TRUE(refused.errorMessage.contains("TaskSmack (or its helper)")) << refused.errorMessage;
+    EXPECT_EQ(plan().setCalls, 0);
+    EXPECT_TRUE(m_Actions.setSchedPolicy(client.target(), SchedPolicy::Batch, 0, Platform::RealtimeThreads::Keep).success);
+}
+
+// #3086, #3219: Deadline, an unread policy and a priority the policy doesn't take are refused before
+// sched_setscheduler(2) is reached, so the helper, which links this, can't be made to set one.
+TEST_F(LinuxProcessActionsFaultTest, SchedPolicyRefusesWhatItCantSetBeforeTheCall)
+{
+    const SleepingChild child;
+    ASSERT_TRUE(child.started());
+    for (const SchedPolicy policy : {SchedPolicy::Deadline, SchedPolicy::Unknown})
+    {
+        const ProcessActionResult refused = m_Actions.setSchedPolicy(child.target(), policy, 0, Platform::RealtimeThreads::Keep);
         EXPECT_FALSE(refused.success);
         EXPECT_FALSE(refused.permissionDenied);
     }
+    for (const auto& [policy, priority] : {std::pair{SchedPolicy::Fifo, 0},
+                                           std::pair{SchedPolicy::RoundRobin, 100},
+                                           std::pair{SchedPolicy::Fifo, -1},
+                                           std::pair{SchedPolicy::Normal, 5},
+                                           std::pair{SchedPolicy::Idle, 1},
+                                           std::pair{SchedPolicy::Deadline, 10}})
+    {
+        const ProcessActionResult refused = m_Actions.setSchedPolicy(child.target(), policy, priority, Platform::RealtimeThreads::Keep);
+        EXPECT_FALSE(refused.success) << static_cast<int>(policy) << " " << priority;
+        EXPECT_FALSE(refused.permissionDenied);
+    }
     // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange) - the out-of-range value is the point
-    EXPECT_FALSE(m_Actions.setSchedPolicy(ownTarget(), static_cast<SchedPolicy>(0xEE), Platform::RealtimeThreads::Keep).success);
+    EXPECT_FALSE(m_Actions.setSchedPolicy(ownTarget(), static_cast<SchedPolicy>(0xEE), 0, Platform::RealtimeThreads::Keep).success);
     EXPECT_EQ(plan().setCalls, 0);
     EXPECT_EQ(plan().pollCalls, 0);
 }
@@ -2197,19 +2389,37 @@ TEST_F(LinuxProcessActionsFaultTest, SchedPolicyRefusesRealTimeBeforeTheCall)
 TEST_F(LinuxProcessActionsFaultTest, SchedPolicyErrorsSayWhy)
 {
     plan().setErrno = EPERM;
-    const ProcessActionResult denied = m_Actions.setSchedPolicy(ownTarget(), SchedPolicy::Normal, Platform::RealtimeThreads::Keep);
+    const ProcessActionResult denied = m_Actions.setSchedPolicy(ownTarget(), SchedPolicy::Normal, 0, Platform::RealtimeThreads::Keep);
     EXPECT_FALSE(denied.success);
     EXPECT_TRUE(denied.permissionDenied) << "an administrator may: Authenticate and retry";
     EXPECT_TRUE(denied.errorMessage.contains("CAP_SYS_NICE")) << denied.errorMessage;
     EXPECT_TRUE(denied.errorMessage.contains("Idle")) << "leaving Idle is one reason: " << denied.errorMessage;
     plan().setErrno = EINVAL;
-    const ProcessActionResult invalid = m_Actions.setSchedPolicy(ownTarget(), SchedPolicy::Batch, Platform::RealtimeThreads::Keep);
+    const ProcessActionResult invalid = m_Actions.setSchedPolicy(ownTarget(), SchedPolicy::Batch, 0, Platform::RealtimeThreads::Keep);
     EXPECT_FALSE(invalid.permissionDenied);
     EXPECT_TRUE(invalid.errorMessage.contains("Batch")) << invalid.errorMessage;
+    // #3219: real time refused names what lets it: CAP_SYS_NICE or an RLIMIT_RTPRIO; and a priority the kernel won't take.
+    const SleepingChild child;
+    ASSERT_TRUE(child.started());
+    plan().setErrno = EPERM;
+    const ProcessActionResult realtimeDenied =
+        m_Actions.setSchedPolicy(child.target(), SchedPolicy::Fifo, 50, Platform::RealtimeThreads::Keep);
+    EXPECT_TRUE(realtimeDenied.permissionDenied) << "the helper may: Authenticate and retry";
+    EXPECT_TRUE(realtimeDenied.errorMessage.contains("CAP_SYS_NICE")) << realtimeDenied.errorMessage;
+    EXPECT_TRUE(realtimeDenied.errorMessage.contains("RLIMIT_RTPRIO of at least 50")) << realtimeDenied.errorMessage;
+    EXPECT_TRUE(realtimeDenied.errorMessage.contains("another user")) << realtimeDenied.errorMessage;
+    EXPECT_TRUE(realtimeDenied.errorMessage.contains("cpu.rt_runtime_us")) << realtimeDenied.errorMessage;
+    EXPECT_TRUE(realtimeDenied.errorMessage.contains("FIFO 50")) << realtimeDenied.errorMessage;
+    plan().setErrno = EINVAL;
+    const ProcessActionResult realtimeInvalid =
+        m_Actions.setSchedPolicy(child.target(), SchedPolicy::RoundRobin, 7, Platform::RealtimeThreads::Keep);
+    EXPECT_FALSE(realtimeInvalid.permissionDenied);
+    EXPECT_TRUE(realtimeInvalid.errorMessage.contains("priority 7")) << realtimeInvalid.errorMessage;
     plan().setErrno = 0;
     plan().openErrno = ENOSYS;
     const int callsBefore = plan().setCalls;
-    EXPECT_TRUE(m_Actions.setSchedPolicy(ownTarget(), SchedPolicy::Batch, Platform::RealtimeThreads::Keep).errorMessage.contains("pidfd"));
+    EXPECT_TRUE(
+        m_Actions.setSchedPolicy(ownTarget(), SchedPolicy::Batch, 0, Platform::RealtimeThreads::Keep).errorMessage.contains("pidfd"));
     EXPECT_EQ(plan().setCalls, callsBefore) << "never sent to the bare PID";
 }
 
@@ -2223,7 +2433,7 @@ TEST_F(LinuxProcessActionsFaultTest, SchedPolicyWithoutTheCallIsUnavailable)
                                                      .ioprioSet = &fakeSet,
                                                      .ioprioGet = &fakeIoprioGet}};
     EXPECT_FALSE(actions.actionCapabilities().canSetSchedPolicy);
-    EXPECT_EQ(actions.setSchedPolicy(ownTarget(), SchedPolicy::Batch, Platform::RealtimeThreads::Keep).errorMessage,
+    EXPECT_EQ(actions.setSchedPolicy(ownTarget(), SchedPolicy::Batch, 0, Platform::RealtimeThreads::Keep).errorMessage,
               "Setting the scheduling policy isn't available on this system");
     EXPECT_EQ(plan().setCalls, 0);
 }
@@ -2268,14 +2478,14 @@ TEST_F(LinuxProcessActionsFaultTest, SchedPolicyWhenTheThreadsCantBeListedSaysWh
                                                      .setPriority = &fakeSet,
                                                      .ioprioSet = &fakeSet,
                                                      .ioprioGet = &fakeIoprioGet,
-                                                     .setScheduler = &fakeSet,
+                                                     .setScheduler = &fakeSetScheduler,
                                                      .getScheduler = &fakeGetScheduler,
                                                      .listThreads = &failingListThreads}};
     g_ListThreadsError = std::errc::no_such_file_or_directory;
-    EXPECT_EQ(actions.setSchedPolicy(ownTarget(), SchedPolicy::Batch, Platform::RealtimeThreads::Keep).errorMessage,
+    EXPECT_EQ(actions.setSchedPolicy(ownTarget(), SchedPolicy::Batch, 0, Platform::RealtimeThreads::Keep).errorMessage,
               "Process not found - may have already exited");
     g_ListThreadsError = std::errc::permission_denied;
-    const std::string denied = actions.setSchedPolicy(ownTarget(), SchedPolicy::Batch, Platform::RealtimeThreads::Keep).errorMessage;
+    const std::string denied = actions.setSchedPolicy(ownTarget(), SchedPolicy::Batch, 0, Platform::RealtimeThreads::Keep).errorMessage;
     EXPECT_TRUE(denied.starts_with("Can't list the threads of process")) << denied;
     EXPECT_EQ(plan().setCalls, 0);
 }

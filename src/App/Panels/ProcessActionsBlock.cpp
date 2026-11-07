@@ -195,7 +195,8 @@ Heights render(const Context& context, const ProcessDetailsLayout::TopRowLayout&
                                                                                                       context.target,
                                                                                                       context.currentAffinity,
                                                                                                       context.efficiencyMode,
-                                                                                                      context.currentSchedPolicy);
+                                                                                                      context.currentSchedPolicy,
+                                                                                                      context.currentRtPriority);
                                                                   context.actionsView->renderResultLine();
                                                                   ImGui::PopTextWrapPos();
                                                               });

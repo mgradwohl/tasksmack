@@ -332,10 +332,10 @@ constexpr std::array REFUSED{
     SYS_mq_timedreceive,
     SYS_mq_notify,
     SYS_mq_getsetattr,
-    // CAP_SYS_NICE beyond the helper's job (nice, I/O priority, affinity, and a scheduling policy of Normal, Batch or
-    // Idle, which sched_setscheduler's own rule below holds it to, #3086): real-time scheduling, which can starve every
-    // CPU (#3219 will revisit it), and other processes' memory placement. sched_setattr stays refused: the helper
-    // never needs it, and its policy is in a struct the filter can't read.
+    // CAP_SYS_NICE beyond the helper's job (nice, I/O priority, affinity, and a scheduling policy of Normal, Batch,
+    // Idle, FIFO or round robin, which sched_setscheduler's own rule below holds it to, #3086, #3219): Deadline
+    // scheduling and other processes' memory placement. sched_setattr stays refused: the helper never needs it, its
+    // policy is in a struct the filter can't read, and it is the only way to ask for SCHED_DEADLINE.
     SYS_sched_setattr,
     SYS_migrate_pages,
     SYS_move_pages,
@@ -539,20 +539,30 @@ std::vector<sock_filter> program([[maybe_unused]] Mode mode, [[maybe_unused]] pi
         code.blockFor(
             call, {load(argLow(0)), jump(BPF_JMP | BPF_JEQ | BPF_K, static_cast<std::uint32_t>(self), 0, 1), ret(ALLOW), ret(fail(EPERM))});
     }
-    // sched_setscheduler: Set scheduling policy (#3086), to SCHED_OTHER, SCHED_BATCH or SCHED_IDLE only, the three the
-    // broker protocol's decoder and LinuxProcessControl both hold it to, each with or without SCHED_RESET_ON_FORK
-    // (kept when the thread already had it). Real time (SCHED_FIFO, SCHED_RR) and Deadline fail as permission denied
-    // would; #3219 will revisit real time.
+    // sched_setscheduler: Set scheduling policy, to SCHED_OTHER, SCHED_BATCH or SCHED_IDLE (#3086) for any thread, or the
+    // real-time SCHED_FIFO or SCHED_RR (#3219) for any thread but the helper's own, the five the broker protocol's
+    // decoder and LinuxProcessControl hold it to, each with or without SCHED_RESET_ON_FORK (kept when the thread already
+    // had it), which is masked off before the compare. Real time is acceptable here: the decoder and LinuxProcessControl
+    // both check the priority (1 to 99) and refuse real time for the helper and its client, TaskSmack; the UI warns and
+    // confirms first; and the kernel's RT throttling still holds real-time tasks to sched_rt_runtime_us of each period.
+    // The filter itself refuses real time for pid 0 (the caller) and the helper's own PID, so code run in the helper by
+    // a bug can't make the helper real time either; it can't see the priority, which is behind a pointer.
+    // SCHED_DEADLINE and any other value fail as permission denied would.
     constexpr auto RESET = static_cast<std::uint32_t>(SCHED_RESET_ON_FORK);
     code.blockFor(SYS_sched_setscheduler,
                   {
                       load(argLow(1)),
-                      jump(BPF_JMP | BPF_JEQ | BPF_K, static_cast<std::uint32_t>(SCHED_OTHER), 6, 0),
-                      jump(BPF_JMP | BPF_JEQ | BPF_K, static_cast<std::uint32_t>(SCHED_BATCH), 5, 0),
-                      jump(BPF_JMP | BPF_JEQ | BPF_K, static_cast<std::uint32_t>(SCHED_IDLE), 4, 0),
-                      jump(BPF_JMP | BPF_JEQ | BPF_K, static_cast<std::uint32_t>(SCHED_OTHER) | RESET, 3, 0),
-                      jump(BPF_JMP | BPF_JEQ | BPF_K, static_cast<std::uint32_t>(SCHED_BATCH) | RESET, 2, 0),
-                      jump(BPF_JMP | BPF_JEQ | BPF_K, static_cast<std::uint32_t>(SCHED_IDLE) | RESET, 1, 0),
+                      statement(BPF_ALU | BPF_AND | BPF_K, ~RESET),
+                      jump(BPF_JMP | BPF_JEQ | BPF_K, static_cast<std::uint32_t>(SCHED_OTHER), 9, 0), // to ALLOW
+                      jump(BPF_JMP | BPF_JEQ | BPF_K, static_cast<std::uint32_t>(SCHED_BATCH), 8, 0),
+                      jump(BPF_JMP | BPF_JEQ | BPF_K, static_cast<std::uint32_t>(SCHED_IDLE), 7, 0),
+                      jump(BPF_JMP | BPF_JEQ | BPF_K, static_cast<std::uint32_t>(SCHED_FIFO), 2, 0), // to the pid check
+                      jump(BPF_JMP | BPF_JEQ | BPF_K, static_cast<std::uint32_t>(SCHED_RR), 1, 0),
+                      ret(fail(EPERM)),
+                      // Real time: not for the caller (pid 0) or the helper itself.
+                      load(argLow(0)),
+                      jump(BPF_JMP | BPF_JEQ | BPF_K, 0, 1, 0),
+                      jump(BPF_JMP | BPF_JEQ | BPF_K, static_cast<std::uint32_t>(self), 0, 1),
                       ret(fail(EPERM)),
                       ret(ALLOW),
                   });

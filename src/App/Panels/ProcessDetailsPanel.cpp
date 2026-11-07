@@ -1017,6 +1017,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
             .currentAffinity = m_HasSnapshot ? &proc.cpuAffinity : nullptr,
             .efficiencyMode = m_HasSnapshot && Detail::isInEfficiencyMode(proc),
             .currentSchedPolicy = m_HasSnapshot ? proc.schedPolicy : Platform::SchedPolicy::Unknown,
+            .currentRtPriority = m_HasSnapshot ? proc.rtPriority : 0U,
             // A priority change for this process running in the Processes table holds these controls (#3467).
             .priorityHeldElsewhere = m_PriorityHeldElsewhere,
         };

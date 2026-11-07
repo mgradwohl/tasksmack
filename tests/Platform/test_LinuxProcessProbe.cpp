@@ -133,6 +133,17 @@ TEST(LinuxProcessProbeTest, ReducedPrivilegesMatchesEuidAndEffectiveCapabilities
     EXPECT_EQ(caps.hasReducedPrivileges, caps.missingPrivileges != 0);
 }
 
+// #3219: a status's thread group, the process a thread ID belongs to.
+TEST(ProcPrivilegesTest, ParsesTheThreadGroup)
+{
+    EXPECT_EQ(ProcPrivileges::parseTgid("Name:\tworker\nTgid:\t4242\nPid:\t4250\n"), 4242);
+    EXPECT_EQ(ProcPrivileges::parseTgid("Tgid:\t 7 \n"), 7);
+    EXPECT_EQ(ProcPrivileges::parseTgid("Pid:\t4250\n"), std::nullopt);
+    EXPECT_EQ(ProcPrivileges::parseTgid("Tgid:\t\n"), std::nullopt);
+    EXPECT_EQ(ProcPrivileges::parseTgid("Tgid:\tx12\n"), std::nullopt);
+    EXPECT_EQ(ProcPrivileges::parseTgid("Tgid:\t0\n"), std::nullopt);
+}
+
 // #2303: the /proc mount's hidepid= and gid= from mountinfo, its words and numbers; the last /proc wins.
 TEST(ProcPrivilegesTest, ParsesTheProcMountsHidepidAndGid)
 {

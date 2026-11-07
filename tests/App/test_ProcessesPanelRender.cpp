@@ -1296,6 +1296,45 @@ TEST_F(ProcessesPanelRenderTest, ARefusedSchedulingPolicyOffersAuthenticateAndRe
     panel->onDetach();
 }
 
+// #3219: real time from the row menu: RR shows the warning, Apply asks to confirm naming the process, and Set sets RR
+// at the slider's priority (50 for a process not on real time); refused for want of permission, Authenticate and
+// retry sends the same policy and priority through runAuthorized().
+TEST_F(ProcessesPanelRenderTest, RoundRobinFromTheRowMenuIsSetAfterTheConfirm)
+{
+    TestMocks::MockProcessActions* actions = nullptr;
+    const auto panel = schedPolicyPanel(Platform::SchedPolicy::Normal, actions);
+    attachAndSeed(*panel);
+    Core::ActiveTabChangedEvent shown("Processes");
+    panel->onEvent(shown);
+    ASSERT_NE(actions, nullptr);
+    actions->setSchedPolicyResult(Platform::ProcessActionResult::denied("Permission denied"));
+    renderUntilLoaded(*panel);
+    const std::optional<std::int32_t> menuPid = openARowMenu(*panel);
+    ASSERT_TRUE(menuPid.has_value());
+    pressPopupItem(*panel, ICON_FA_CLOCK " Set scheduling policy...###SetSchedPolicy");
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    pressModalButton(*panel, "RR");
+    EXPECT_TRUE(renderAndCapture(*panel).contains("starve everything else"));
+    pressModalFilledButton(*panel, "Apply");
+    const std::string confirm = renderAndCapture(*panel);
+    EXPECT_TRUE(confirm.contains(std::format("(PID {}) to RR 50?", menuPid.value_or(-1)))) << confirm;
+    EXPECT_EQ(actions->setSchedPolicyCount(), 0) << "nothing is set before the confirm";
+    pressModalFilledButton(*panel, "Set");
+    panel->waitForRowActionForTesting();
+    EXPECT_EQ(actions->setSchedPolicyCount(), 1);
+    EXPECT_EQ(actions->lastSchedPolicy(), Platform::SchedPolicy::RoundRobin);
+    EXPECT_EQ(actions->lastRtPriority(), 50);
+    EXPECT_EQ(actions->lastTarget().pid, menuPid.value_or(-1));
+    ASSERT_TRUE(panel->offersAuthenticateAndRetry());
+    panel->retryRowActionAuthorizedForTesting();
+    panel->waitForRowActionForTesting();
+    EXPECT_EQ(actions->lastAuthorizedAction().kind, Platform::AuthorizedAction::Kind::SetSchedPolicy);
+    EXPECT_EQ(actions->lastAuthorizedAction().schedPolicy, Platform::SchedPolicy::RoundRobin);
+    EXPECT_EQ(actions->lastAuthorizedAction().rtPriority, 50);
+    panel->onDetach();
+}
+
 // #3086: no Set scheduling policy... where the platform can't set one (Windows), nor for a selection of several.
 TEST_F(ProcessesPanelRenderTest, TheRowMenuOffersSetSchedulingPolicyOnlyWhereThePlatformCan)
 {

@@ -329,7 +329,7 @@ TEST(BrokerProtocolTest, EveryRequestRoundTrips)
     const Request affinity = AffinityRequest{.target = TARGET, .cpus = cpus};
     EXPECT_EQ(roundTrip(affinity), affinity);
 
-    // #3086 (v15): the three policies the helper may set.
+    // #3086 (v15): the three time-sharing policies the helper may set, at priority 0.
     for (const SchedPolicy policy : {SchedPolicy::Normal, SchedPolicy::Batch, SchedPolicy::Idle})
     {
         for (const RealtimeThreads realtime : {RealtimeThreads::Keep, RealtimeThreads::Change})
@@ -338,26 +338,49 @@ TEST(BrokerProtocolTest, EveryRequestRoundTrips)
             EXPECT_EQ(roundTrip(request), request);
         }
     }
+    // #3219 (v16): real time with its priority, at both ends of 1 to 99.
+    for (const SchedPolicy policy : {SchedPolicy::Fifo, SchedPolicy::RoundRobin})
+    {
+        for (const std::int32_t rtPriority : {1, 50, 99})
+        {
+            const Request request = SchedPolicyRequest{.target = TARGET, .policy = policy, .rtPriority = rtPriority};
+            EXPECT_EQ(roundTrip(request), request) << static_cast<int>(policy) << " " << rtPriority;
+        }
+    }
 }
 
-// #3086: the helper is never asked for real time (#3219), Deadline or a policy past the enum: the decoder refuses
-// every policy but Normal, Batch and Idle, whatever the encoder was given.
-TEST(BrokerProtocolTest, ASchedulingPolicyOtherThanNormalBatchOrIdleIsRefused)
+// #3086, #3219: the helper is never asked for Deadline, a policy past the enum, or a priority the policy doesn't
+// take: the decoder refuses every pair but Normal, Batch or Idle at 0 and FIFO or RR at 1 to 99, whatever the
+// encoder was given.
+TEST(BrokerProtocolTest, ASchedulingPolicyOrPriorityItCantSetIsRefused)
 {
-    for (const SchedPolicy policy : {SchedPolicy::Fifo, SchedPolicy::RoundRobin, SchedPolicy::Deadline, SchedPolicy::Unknown})
+    for (const SchedPolicy policy : {SchedPolicy::Deadline, SchedPolicy::Unknown})
     {
         EXPECT_FALSE(decodeRequest(encodeRequest(1, Request{SchedPolicyRequest{.target = TARGET, .policy = policy}})).has_value())
             << static_cast<int>(policy);
     }
+    const auto refused = [](SchedPolicy policy, std::int32_t priority)
+    {
+        return !decodeRequest(encodeRequest(1, Request{SchedPolicyRequest{.target = TARGET, .policy = policy, .rtPriority = priority}}))
+                    .has_value();
+    };
+    EXPECT_TRUE(refused(SchedPolicy::Fifo, 0)) << "real time needs a priority";
+    EXPECT_TRUE(refused(SchedPolicy::RoundRobin, 0));
+    EXPECT_TRUE(refused(SchedPolicy::Fifo, 100)) << "past 99";
+    EXPECT_TRUE(refused(SchedPolicy::RoundRobin, -1));
+    EXPECT_TRUE(refused(SchedPolicy::Normal, 5)) << "time sharing takes no priority";
+    EXPECT_TRUE(refused(SchedPolicy::Idle, 1));
+    EXPECT_TRUE(refused(SchedPolicy::Deadline, 10));
     // A byte past the enum: the policy follows the 12-byte target.
     std::vector<std::uint8_t> past = encodeRequest(1, Request{SchedPolicyRequest{.target = TARGET, .policy = SchedPolicy::Batch}});
     past[4 + HEADER_BYTES + 12] = 0xFF;
     EXPECT_FALSE(decodeRequest(past).has_value());
-    // A RealtimeThreads byte past Change is refused, never read as consent to take real-time threads off real time.
+    // A RealtimeThreads byte past Change is refused, never read as consent to take real-time threads off real time:
+    // it follows the target, the policy byte and the 4-byte priority (v16).
     std::vector<std::uint8_t> consent = encodeRequest(1, Request{SchedPolicyRequest{.target = TARGET, .policy = SchedPolicy::Batch}});
-    consent[4 + HEADER_BYTES + 13] = 2;
+    consent[4 + HEADER_BYTES + 17] = 2;
     EXPECT_FALSE(decodeRequest(consent).has_value());
-    // And short ones: no RealtimeThreads byte, then no policy byte either.
+    // And short ones: no RealtimeThreads byte, then the priority cut short (v16).
     std::vector<std::uint8_t> shortFrame = encodeRequest(1, Request{SchedPolicyRequest{.target = TARGET, .policy = SchedPolicy::Idle}});
     for (int dropped = 0; dropped < 2; ++dropped)
     {

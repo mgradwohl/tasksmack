@@ -204,6 +204,12 @@ int main(int argc, char* const* argv)
     try
     {
         Platform::LinuxProcessControl actions;
+        // Never real time for TaskSmack, the client (#3219), as for the helper itself (LinuxProcessControl's own PID).
+        // Its PID is the socket's peer credentials (SO_PEERCRED, checked above), not getppid() alone: the kernel
+        // recorded it when TaskSmack made the socketpair, so it names the process at the other end of this
+        // connection whatever the helper's parent becomes later (reparented if TaskSmack exits); the check above
+        // already requires the two to agree.
+        actions.refuseRealtimeFor(static_cast<std::int32_t>(peer->pid));
         // Process Details' reads of another user's process (#2309).
         Platform::LinuxProcessEnvironmentReader environment;
         Platform::LinuxProcessModulesReader modules;

@@ -45,6 +45,7 @@
 #include <format>
 #include <fstream>
 #include <future>
+#include <iostream>
 #include <iterator>
 #include <memory>
 #include <optional>
@@ -62,6 +63,7 @@
 #include <grp.h>
 #include <netinet/in.h>
 #include <poll.h>
+#include <sched.h>
 #include <signal.h> // NOLINT(modernize-deprecated-headers) - POSIX signal.h provides kill(), csignal does not
 #include <spawn.h>
 #include <sys/socket.h>
@@ -1104,6 +1106,32 @@ TEST(TasksmackHelperRootTest, KeepsOnlyItsCapabilitiesAndServesEveryRequestOnAno
     expectAction(Broker::IoPriorityRequest{.target = target, .ioClass = IoPriorityClass::Realtime, .level = 3}, "Realtime I/O");
     expectAction(Broker::IoPriorityRequest{.target = target, .ioClass = IoPriorityClass::Idle, .level = 0}, "Idle I/O");
     expectAction(Broker::AffinityRequest{.target = target, .cpus = CpuAffinity::fromMask(1)}, "affinity");
+    // Real time on a real kernel (#3219): the helper sets round robin at a priority past the target's RLIMIT_RTPRIO,
+    // which only its CAP_SYS_NICE allows, then takes it back to Normal. The target sleeps, so it can't starve anything.
+    // Where RT group scheduling gives the target's cgroup no real-time runtime, the kernel refuses even root: this test,
+    // as root, tries first, and only a refusal of its own skips the segment, so a helper refusal still fails.
+    sched_param rtParam{.sched_priority = 10};
+    const bool kernelAllowsRealtime = ::sched_setscheduler(target.pid, SCHED_RR, &rtParam) == 0;
+    const int rootErrno = errno;
+    sched_param normalParam{.sched_priority = 0};
+    static_cast<void>(::sched_setscheduler(target.pid, SCHED_OTHER, &normalParam));
+    if (kernelAllowsRealtime)
+    {
+        expectAction(Broker::SchedPolicyRequest{.target = target, .policy = SchedPolicy::RoundRobin, .rtPriority = 10}, "round robin");
+        EXPECT_EQ(::sched_getscheduler(target.pid), SCHED_RR);
+        sched_param read{};
+        EXPECT_EQ(::sched_getparam(target.pid, &read), 0);
+        EXPECT_EQ(read.sched_priority, 10);
+        expectAction(
+            Broker::SchedPolicyRequest{.target = target, .policy = SchedPolicy::Normal, .realtimeThreads = RealtimeThreads::Change},
+            "back to Normal"); // Change: its now real-time thread is demoted too, as when the dialog's warning is accepted
+        EXPECT_EQ(::sched_getscheduler(target.pid), SCHED_OTHER);
+    }
+    else
+    {
+        std::cout << "[ NOTE     ] real-time segment skipped: the kernel refuses SCHED_RR here even to root ("
+                  << std::system_category().message(rootErrno) << "), as RT group scheduling with no runtime does\n";
+    }
     expectAction(Broker::SignalRequest{.target = target, .signal = Broker::Signal::Suspend}, "suspend");
     expectAction(Broker::SignalRequest{.target = target, .signal = Broker::Signal::Resume}, "resume");
 
