@@ -2,13 +2,14 @@
 // and a manual check. A window that stops answering reads as Not responding, and its wait chain leads to the
 // thread it waits on (#3084, #3211); the UDP trace counts a process's datagrams from a real ETW session and leaves
 // none behind (#1492); SeDebugPrivilege is enabled on a real token (#2128); the critical-process guard refuses
-// a critical process with the real IsProcessCritical, its one changing call a fake (#2556); and the tests that skip
-// because the runner is elevated run again as a throwaway standard account. They need an elevated runner and change
-// what runs on it, so they run only where CiRealSystem.h's guard lets them; each ends what it starts and puts back
-// what it changes.
+// a critical process with the real IsProcessCritical, its one changing call a fake (#2556); a 32-bit (WOW64)
+// process's environment is read through its PEB32 (#3364); and the tests that skip because the runner is elevated
+// run again as a throwaway standard account. They need an elevated runner and change what runs on it, so they run
+// only where CiRealSystem.h's guard lets them; each ends what it starts and puts back what it changes.
 
 #include "Core/Utf8Path.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IProcessEnvironment.h"
 #include "Platform/IUdpTrafficCollector.h"
 #include "Platform/ProcessTypes.h"
 #include "Platform/WaitChain.h"
@@ -17,6 +18,7 @@
 #include "Platform/Windows/WindowsHandles.h"
 #include "Platform/Windows/WindowsProcessActions.h"
 #include "Platform/Windows/WindowsProcessActionsMath.h"
+#include "Platform/Windows/WindowsProcessEnvironmentReader.h"
 #include "Platform/Windows/WindowsProcessProbe.h"
 #include "Support/CiRealSystem.h"
 #include "Support/CiRealSystemWindows.h"
@@ -554,6 +556,66 @@ TEST_F(CiRealSystemCriticalProcessTest, ACriticalProcessIsRefusedAPriorityChange
     EXPECT_FALSE(result.permissionDenied) << "a critical process is refused, not retried as administrator";
     EXPECT_EQ(result.errorMessage, Platform::criticalProcessRefusal(target.pid, Platform::GuardedAction::Priority));
     EXPECT_EQ(priorityCalls().load(), 0) << "the guard let a priority change on critical process " << target.pid << " through";
+}
+
+// --- #3364: a 32-bit (WOW64) process's environment ----------------------------------------------------------
+
+class CiRealSystemWow64EnvironmentTest : public TestSupport::CiRealSystemTest
+{};
+
+TEST_F(CiRealSystemWow64EnvironmentTest, A32BitCmdsEnvironmentIsReadThroughItsPeb32)
+{
+    // SysWOW64's cmd.exe, idle at "pause" (its console has no window, so no key ever comes), started with a
+    // variable it inherits; the reader finds it behind the 32-bit PEB. The Child ends it on scope exit.
+    std::array<wchar_t, MAX_PATH> wow64{};
+    const UINT length = GetSystemWow64DirectoryW(wow64.data(), static_cast<UINT>(wow64.size()));
+    if (length == 0 || length >= wow64.size())
+    {
+        GTEST_SKIP() << "this Windows has no WOW64 (GetSystemWow64DirectoryW: " << GetLastError() << ")";
+    }
+    const std::filesystem::path cmd32 = std::filesystem::path(std::wstring(wow64.data(), length)) / L"cmd.exe";
+    if (!std::filesystem::exists(cmd32))
+    {
+        GTEST_SKIP() << "no 32-bit cmd.exe at " << Core::pathToUtf8(cmd32);
+    }
+    constexpr std::string_view NAME = "TASKSMACK_CI_WOW64_ENVIRONMENT_3364";
+    const std::wstring suffix = uniqueSuffix();
+    std::optional<Child> started;
+    {
+        const ScopedVariable variable(L"TASKSMACK_CI_WOW64_ENVIRONMENT_3364", L"caf\u00E9 32-bit " + suffix);
+        started.emplace(start(cmd32, {.parameters = L"/d /c pause"}));
+    }
+    const Child& child = *started;
+    ASSERT_NE(child.process(), nullptr);
+    USHORT machine = IMAGE_FILE_MACHINE_UNKNOWN;
+    USHORT native = IMAGE_FILE_MACHINE_UNKNOWN;
+    ASSERT_NE(IsWow64Process2(child.process(), &machine, &native), FALSE) << GetLastError();
+    ASSERT_EQ(machine, IMAGE_FILE_MACHINE_I386) << "SysWOW64's cmd.exe isn't running as x86";
+
+    std::string want = "caf\xC3\xA9 32-bit ";
+    for (const wchar_t c : suffix)
+    {
+        want += static_cast<char>(c); // hex digits: ASCII
+    }
+    Platform::Windows::WindowsProcessEnvironmentReader reader;
+    Platform::EnvironmentReadResult result;
+    std::optional<std::string> value;
+    const auto deadline = std::chrono::steady_clock::now() + STARTUP_WAIT;
+    for (bool first = true; first || std::chrono::steady_clock::now() < deadline; first = false)
+    {
+        ASSERT_FALSE(child.exitCode(0ms).has_value()) << "the 32-bit cmd.exe exited";
+        result = reader.readEnvironment(child.target());
+        const auto found = std::ranges::find(result.variables, NAME, &Platform::EnvironmentVariable::name);
+        value = (found == result.variables.end()) ? std::nullopt : std::optional(found->value);
+        if (value.has_value())
+        {
+            break;
+        }
+        std::this_thread::sleep_for(POLL_INTERVAL);
+    }
+    ASSERT_EQ(result.status, Platform::EnvironmentReadStatus::Ok) << result.detail;
+    EXPECT_FALSE(result.truncated);
+    EXPECT_EQ(value, std::optional<std::string>(want));
 }
 
 // --- The tests that skip only because the runner is elevated, run unelevated ----------------------------------

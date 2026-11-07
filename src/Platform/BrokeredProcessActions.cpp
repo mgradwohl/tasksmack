@@ -74,7 +74,12 @@ Broker::Request brokerRequestFor(const AuthorizedAction& action)
     case Kind::SetAffinity:
         return Broker::AffinityRequest{.target = action.target, .cpus = action.cpus};
     case Kind::SetSchedPolicy:
-        return Broker::SchedPolicyRequest{.target = action.target, .policy = action.schedPolicy, .realtimeThreads = action.realtimeThreads};
+        return Broker::SchedPolicyRequest{
+            .target = action.target,
+            .policy = action.schedPolicy,
+            .rtPriority = action.rtPriority,
+            .realtimeThreads = action.realtimeThreads,
+        };
     case Kind::SendSignal:
         return Broker::SignalRequest{.target = action.target, .signal = brokerSignalFor(action.signal)};
     case Kind::SetEfficiencyMode:
@@ -116,6 +121,11 @@ ProcessActionCapabilities BrokeredProcessActions::actionCapabilities() const
     if (capabilities.canSetIoPriority && !capabilities.ioPriorityHints && m_Broker != nullptr && m_Broker->lastSeenConnected())
     {
         capabilities.canSetRealtimeIoPriority = true; // the helper, as root, has CAP_SYS_NICE
+    }
+    // Real-time FIFO and round robin (#3219), the same way: the helper keeps CAP_SYS_NICE.
+    if (capabilities.canSetSchedPolicy && m_Broker != nullptr && m_Broker->lastSeenConnected())
+    {
+        capabilities.canSetRealtimeSchedPolicy = true;
     }
     return capabilities;
 }
@@ -209,11 +219,19 @@ ProcessActionResult BrokeredProcessActions::setAffinity(const ProcessTarget& tar
     return retried(m_Inner->setAffinity(target, cpus), {.kind = AuthorizedAction::Kind::SetAffinity, .target = target, .cpus = cpus});
 }
 
-ProcessActionResult BrokeredProcessActions::setSchedPolicy(const ProcessTarget& target, SchedPolicy policy, RealtimeThreads realtimeThreads)
+ProcessActionResult BrokeredProcessActions::setSchedPolicy(const ProcessTarget& target,
+                                                           SchedPolicy policy,
+                                                           std::int32_t rtPriority,
+                                                           RealtimeThreads realtimeThreads)
 {
-    return retried(
-        m_Inner->setSchedPolicy(target, policy, realtimeThreads),
-        {.kind = AuthorizedAction::Kind::SetSchedPolicy, .target = target, .schedPolicy = policy, .realtimeThreads = realtimeThreads});
+    return retried(m_Inner->setSchedPolicy(target, policy, rtPriority, realtimeThreads),
+                   {
+                       .kind = AuthorizedAction::Kind::SetSchedPolicy,
+                       .target = target,
+                       .schedPolicy = policy,
+                       .realtimeThreads = realtimeThreads,
+                       .rtPriority = rtPriority,
+                   });
 }
 
 ProcessActionResult BrokeredProcessActions::closeConnection(const ProcessTarget& target, std::uint64_t socketInode)

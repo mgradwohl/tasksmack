@@ -29,7 +29,7 @@ constexpr float PAIR_GAP_EM = 1.5F;
 /// More column pairs than the rows have now are taken only with this much width to spare, in ems
 /// (CpuDetailsText::ColumnFit::growMarginPx): about a value's change of width from one sample to the next.
 constexpr float GROW_MARGIN_EM = 1.0F;
-/// A font-size change smaller than this is not a change (the size moves in whole preset steps).
+/// A font-size change smaller than this is not a change (the size moves in whole points).
 constexpr float FONT_SIZE_TOLERANCE_PX = 0.01F;
 
 void textView(std::string_view text)

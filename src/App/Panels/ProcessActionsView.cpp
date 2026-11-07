@@ -2,7 +2,6 @@
 
 #include "AuthorizeWording.h"
 #include "Platform/CpuAffinity.h"
-#include "Platform/CurrentProcess.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/SchedPolicy.h"
 #include "ProcessActionConfirm.h"
@@ -19,6 +18,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <format>
 #include <optional>
 #include <string>
@@ -42,7 +42,8 @@ void ProcessActionsView::renderControls(Platform::IProcessActions* actions,
                                         const Platform::ProcessTarget& target,
                                         const Platform::CpuAffinity* currentAffinity,
                                         bool efficiencyMode,
-                                        Platform::SchedPolicy currentSchedPolicy)
+                                        Platform::SchedPolicy currentSchedPolicy,
+                                        std::uint32_t currentRtPriority)
 {
     // No name, PID or header of its own: the view sits in the Overview's Actions block, under that
     // block's header and beside the Identity block that names the process (#1493). Its result line
@@ -52,7 +53,8 @@ void ProcessActionsView::renderControls(Platform::IProcessActions* actions,
     const bool anyBeforeAffinity = anyButton || capabilities.syscallTrace != Platform::SyscallTraceAvailability::Unsupported;
     renderSetAffinityButton(actions, capabilities, processName, target, currentAffinity, anyBeforeAffinity);
     const bool anyBeforeSchedPolicy = anyBeforeAffinity || capabilities.canSetAffinity;
-    renderSetSchedPolicyButton(capabilities, processName, target, currentSchedPolicy, anyBeforeSchedPolicy);
+    renderSetSchedPolicyButton(
+        capabilities, processName, target, {.policy = currentSchedPolicy, .rtPriority = currentRtPriority}, anyBeforeSchedPolicy);
     const bool anyBeforeDump = anyBeforeSchedPolicy || capabilities.canSetSchedPolicy;
     renderCreateDumpButton(actions, capabilities, processName, target, anyBeforeDump);
     const bool anyBeforeWaitChain = anyBeforeDump || DumpDetail::offersCreateDump(capabilities, 0);
@@ -93,7 +95,7 @@ void ProcessActionsView::renderAnalyzeWaitChainButton(Platform::IProcessActions*
     if (pressed && !disabled)
     {
         // The process is captured now; the dialog reads and names only it.
-        m_WaitChainDialog->open(actions, target, processName, Platform::currentProcessId());
+        m_WaitChainDialog->open(actions, target, processName, m_OwnPid);
     }
     ImGui::SetItemTooltip("%s", WaitChainDetail::ANALYZE_WAIT_CHAIN_TOOLTIP);
 }
@@ -242,7 +244,7 @@ void ProcessActionsView::renderAffinityDialog(Platform::IProcessActions* actions
 void ProcessActionsView::renderSetSchedPolicyButton(const Platform::ProcessActionCapabilities& capabilities,
                                                     const std::string& processName,
                                                     const Platform::ProcessTarget& target,
-                                                    Platform::SchedPolicy current,
+                                                    CurrentSchedPolicy current,
                                                     bool afterButtons)
 {
     if (!capabilities.canSetSchedPolicy)
@@ -267,9 +269,16 @@ void ProcessActionsView::renderSetSchedPolicyButton(const Platform::ProcessActio
     if (pressed && !noTarget)
     {
         // The process is captured now; the dialog acts only on it (renderSchedPolicyDialog()).
-        m_SchedPolicyDialog.open(target, processName, current);
+        m_SchedPolicyDialog.open(target,
+                                 processName,
+                                 current.policy,
+                                 current.rtPriority,
+                                 {
+                                     .ownPid = m_OwnPid, // never offered real time (#3219)
+                                     .realtimeNeedsNoPassword = capabilities.canSetRealtimeSchedPolicy,
+                                 });
     }
-    ImGui::SetItemTooltip("Normal, Batch or Idle: how the kernel shares the CPU with this process");
+    ImGui::SetItemTooltip("Normal, Batch, Idle, or real-time FIFO or RR: how the kernel shares the CPU with this process");
 }
 
 void ProcessActionsView::renderSchedPolicyDialog(Platform::IProcessActions* actions, const Platform::ProcessTarget& liveTarget)
@@ -278,8 +287,8 @@ void ProcessActionsView::renderSchedPolicyDialog(Platform::IProcessActions* acti
     {
         m_SchedPolicyDialog.dismiss(); // another process is shown now: never act on the old one
     }
-    const std::optional<Platform::SchedPolicy> policy = m_SchedPolicyDialog.render();
-    if (!policy.has_value())
+    const std::optional<SchedPolicySetting> setting = m_SchedPolicyDialog.render();
+    if (!setting.has_value())
     {
         return;
     }
@@ -288,14 +297,16 @@ void ProcessActionsView::renderSchedPolicyDialog(Platform::IProcessActions* acti
     runAction(
         actions,
         std::format("Setting the scheduling policy of PID {}...", target.pid),
-        [actions, target, policy = *policy, realtime] { return actions->setSchedPolicy(target, policy, realtime); },
-        [name = m_SchedPolicyDialog.name(), pid = target.pid, policy = *policy](const Platform::ProcessActionResult& result)
-        { return schedPolicyResultMessage(name, pid, policy, result); },
+        [actions, target, setting = *setting, realtime]
+        { return actions->setSchedPolicy(target, setting.policy, setting.rtPriority, realtime); },
+        [name = m_SchedPolicyDialog.name(), pid = target.pid, setting = *setting](const Platform::ProcessActionResult& result)
+        { return schedPolicyResultMessage(name, pid, setting, result); },
         Platform::AuthorizedAction{
             .kind = Platform::AuthorizedAction::Kind::SetSchedPolicy,
             .target = target,
-            .schedPolicy = *policy,
+            .schedPolicy = setting->policy,
             .realtimeThreads = realtime,
+            .rtPriority = setting->rtPriority,
         });
 }
 

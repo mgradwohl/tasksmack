@@ -325,7 +325,8 @@ jobs:
       # "Authenticate and retry" end to end (#3491 item 2): the real pkexec and polkitd start the helper from
       # where the packages install it, and PkexecRealSystemTest checks it runs as root. The same rule as
       # release.yml's validate-linux-helper allows the runner's user without a password; the dialog itself
-      # stays a manual check. Unprivileged, and a skip fails the step as in the root step above.
+      # stays a manual check. Unprivileged, and a skip fails the step as in the root step above. The second
+      # half asks for a password through TaskSmack's own text agent (#3381).
       - name: Helper through pkexec (Linux)
         if: runner.os == 'Linux' && inputs.build && inputs.build_type == 'debug'
         env:
@@ -348,6 +349,28 @@ jobs:
           build/debug/tests/TaskSmackTests --gtest_filter='PkexecRealSystemTest.*' 2>&1 | tee pkexec-real-test.log
           if grep -q '\[  SKIPPED \]' pkexec-real-test.log || ! grep -q '\[  PASSED  \] 1 test' pkexec-real-test.log; then
             echo "::error title=Helper through pkexec::PkexecRealSystemTest didn't run and pass"
+            exit 1
+          fi
+          # Then the #3381 path: an AUTH_ADMIN rule with the runner's user as the administrator, a throwaway
+          # password for it, and TaskSmack's own text agent asking for it on a pseudo-terminal, which
+          # PkexecTextAgentRealSystemTest answers. The password is masked and lives only on this runner.
+          password="$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+          echo "::add-mask::$password"
+          printf '%s:%s\n' "$user" "$password" | sudo chpasswd
+          printf '%s\n' \
+            'polkit.addAdminRule(function (action, subject) {' \
+            "    return [\"unix-user:$user\"];" \
+            '});' \
+            'polkit.addRule(function (action, subject) {' \
+            "    if (action.id == \"app.tasksmack.TaskSmack.helper\" && subject.user == \"$user\") {" \
+            '        return polkit.Result.AUTH_ADMIN;' \
+            '    }' \
+            '});' | sudo tee /etc/polkit-1/rules.d/49-tasksmack-ci.rules
+          sudo systemctl restart polkit
+          TASKSMACK_CI_RUNNER_PASSWORD="$password" build/debug/tests/TaskSmackTests \
+            --gtest_filter='PkexecTextAgentRealSystemTest.*' 2>&1 | tee pkexec-text-agent-test.log
+          if grep -q '\[  SKIPPED \]' pkexec-text-agent-test.log || ! grep -q '\[  PASSED  \] 1 test' pkexec-text-agent-test.log; then
+            echo "::error title=Helper through pkexec::PkexecTextAgentRealSystemTest didn't run and pass"
             exit 1
           fi
 
@@ -429,6 +452,7 @@ jobs:
           $left += Get-LocalUser | Where-Object Name -match '^tsci[0-9a-f]{8}$' | ForEach-Object { "account $($_.Name)" }
           $left += Get-ChildItem "$env:SystemDrive\Users" -Directory -Filter 'tsci*' | ForEach-Object { "profile $($_.FullName)" }
           $left += Get-Service -Name 'TaskSmackCi*' -ErrorAction SilentlyContinue | ForEach-Object { "service $($_.Name)" }
+          $left += Get-Process -Name 'TaskSmack' -ErrorAction SilentlyContinue | ForEach-Object { "process TaskSmack.exe $($_.Id)" }
           $left += Get-ChildItem $env:ProgramFiles -Directory -Filter 'TaskSmackCi*' | ForEach-Object { "folder $($_.FullName)" }
           $left += Get-ChildItem $ifeo | Where-Object PSChildName -like 'TaskSmackCi*' | ForEach-Object { "IFEO key $($_.PSChildName)" }
           if ((Get-ItemProperty "$ifeo\taskmgr.exe" -ErrorAction SilentlyContinue).Debugger -ne $debuggerBefore) { $left += 'a changed taskmgr.exe IFEO Debugger' }

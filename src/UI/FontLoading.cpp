@@ -3,6 +3,7 @@
 #include "Core/Utf8Path.h"
 #include "UI/DpiScale.h"
 #include "UI/FontFileCache.h"
+#include "UI/FontPointSize.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/TabularDigits.h"
 #include "UI/Theme.h"
@@ -131,93 +132,87 @@ void loadAllFonts(FontFileCache& fontFiles, const std::filesystem::path& assetsD
     // NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays,modernize-avoid-c-arrays) - ImGui API requires null-terminated C array for the glyph ranges
     static constexpr ImWchar ICON_RANGES[] = {ICON_MIN_FA, ICON_MAX_FA, 0};
 
-    spdlog::info("Pre-baking fonts for all {} size presets with FreeType renderer", FONT_SIZE_COUNT);
+    // One set of fonts, at the Font size setting (#3375): a change of size rebuilds the atlas at the
+    // next frame boundary (UILayer), as a change of display scale does.
+    const int pointSize = theme.fontPointSize();
+    const FontPointSizes fontCfg = fontPointSizesFor(pointSize);
+    spdlog::info("Building fonts at {} pt with FreeType renderer", pointSize);
 
     // Inter's widest digit, so every digit can be given its width (#1201). Read from the bytes the
-    // atlas is built from; measured once for all the presets.
+    // atlas is built from.
     const std::optional<float> digitRatio = widestDigitAdvanceRatio(fontFiles.get(fontPath));
     if (!digitRatio.has_value())
     {
         spdlog::warn("Could not measure the digits of {}; numbers will use proportional digits", Core::pathToUtf8(fontPath));
     }
 
-    // Load fonts for all size presets into a single atlas
-    for (const auto size : ALL_FONT_SIZES)
+    // Font Awesome merged into the font added just before, at its size, monospaced.
+    const auto mergeIcons = [&](float sizePx)
     {
-        const auto& fontCfg = theme.fontConfig(size);
+        if (!hasIconFont)
+        {
+            return;
+        }
+        ImFontConfig iconConfig;
+        iconConfig.Flags |= ImFontFlags_NoLoadError;
+        iconConfig.MergeMode = true;
+        iconConfig.PixelSnapH = true;
+        iconConfig.GlyphMinAdvanceX = sizePx; // Make icons monospaced
+        addFontFromFile(fontFiles, iconFontPath, sizePx, &iconConfig, ICON_RANGES);
+    };
 
-        const float fontSizeRegular = pointsToPixels(fontCfg.regularPt);
-        const float fontSizeLarge = pointsToPixels(fontCfg.largePt);
-
-        spdlog::debug("Loading {} fonts: {}pt = {:.1f}px, {}pt = {:.1f}px",
-                      fontCfg.name,
-                      fontCfg.regularPt,
-                      fontSizeRegular,
-                      fontCfg.largePt,
-                      fontSizeLarge);
-
-        ImFont* fontRegular = addBodyFont(fontFiles, fontPath, fontSizeRegular, digitRatio);
-        if (fontRegular == nullptr)
+    // Inter at sizePx with the icons merged in, or ImGui's embedded font when Inter can't be read.
+    const auto addInterWithIcons = [&](float sizePx)
+    {
+        ImFont* font = addBodyFont(fontFiles, fontPath, sizePx, digitRatio);
+        if (font == nullptr)
         {
             spdlog::warn("Could not load Inter font from {}, using default", Core::pathToUtf8(fontPath));
             ImFontConfig defaultFontConfig;
-            defaultFontConfig.SizePixels = fontSizeRegular;
-            fontRegular = imguiIO.Fonts->AddFontDefault(&defaultFontConfig);
+            defaultFontConfig.SizePixels = sizePx;
+            font = imguiIO.Fonts->AddFontDefault(&defaultFontConfig);
         }
+        mergeIcons(sizePx);
+        return font;
+    };
 
-        // Merge icon font into regular font
-        if (hasIconFont)
-        {
-            ImFontConfig iconConfig;
-            iconConfig.Flags |= ImFontFlags_NoLoadError;
-            iconConfig.MergeMode = true;
-            iconConfig.PixelSnapH = true;
-            iconConfig.GlyphMinAdvanceX = fontSizeRegular; // Make icons monospaced
-            addFontFromFile(fontFiles, iconFontPath, fontSizeRegular, &iconConfig, ICON_RANGES);
-        }
+    const float fontSizeRegular = pointsToPixels(fontCfg.regularPt);
+    const float fontSizeLarge = pointsToPixels(fontCfg.largePt);
+    spdlog::debug("Loading fonts: {}pt = {:.1f}px, {}pt = {:.1f}px, charts {}pt",
+                  fontCfg.regularPt,
+                  fontSizeRegular,
+                  fontCfg.largePt,
+                  fontSizeLarge,
+                  fontCfg.chartPt);
 
-        ImFont* fontLarge = addBodyFont(fontFiles, fontPath, fontSizeLarge, digitRatio);
-        if (fontLarge == nullptr)
-        {
-            ImFontConfig defaultFontConfig;
-            defaultFontConfig.SizePixels = fontSizeLarge;
-            fontLarge = imguiIO.Fonts->AddFontDefault(&defaultFontConfig);
-        }
+    ImFont* fontRegular = addInterWithIcons(fontSizeRegular);
+    ImFont* fontLarge = addInterWithIcons(fontSizeLarge);
 
-        // Merge icon font into large font
-        if (hasIconFont)
-        {
-            ImFontConfig iconConfig;
-            iconConfig.Flags |= ImFontFlags_NoLoadError;
-            iconConfig.MergeMode = true;
-            iconConfig.PixelSnapH = true;
-            iconConfig.GlyphMinAdvanceX = fontSizeLarge;
-            addFontFromFile(fontFiles, iconFontPath, fontSizeLarge, &iconConfig, ICON_RANGES);
-        }
-
-        // Bold at the body size, for section headers (#1200): the same size as the text beneath them,
-        // so a header row is exactly as tall as before and the layout around it is unchanged, but a
-        // weight apart from it. One per preset, with the icons merged in for the header's glyph;
-        // nothing else needs a bold face, so no large bold is loaded. Optional: without
-        // the file Theme::boldFont() hands out the regular font.
-        ImFontConfig boldConfig;
-        boldConfig.Flags = ImFontFlags_NoLoadError;
-        ImFont* fontBold = addFontFromFile(fontFiles, boldFontPath, fontSizeRegular, &boldConfig);
-        if (fontBold != nullptr && hasIconFont)
-        {
-            ImFontConfig iconConfig;
-            iconConfig.Flags |= ImFontFlags_NoLoadError;
-            iconConfig.MergeMode = true;
-            iconConfig.PixelSnapH = true;
-            iconConfig.GlyphMinAdvanceX = fontSizeRegular;
-            addFontFromFile(fontFiles, iconFontPath, fontSizeRegular, &iconConfig, ICON_RANGES);
-        }
-
-        // Register with theme for instant switching. The bold font after the rest: registerFonts()
-        // resets it.
-        theme.registerFonts(size, fontRegular, fontLarge);
-        theme.registerBoldFont(size, fontBold);
+    // Bold at the body size, for section headers (#1200): the same size as the text beneath them,
+    // so a header row is exactly as tall as before and the layout around it is unchanged, but a
+    // weight apart from it. With the icons merged in for the header's glyph; nothing else needs a
+    // bold face, so no large bold is loaded. Optional: without the file Theme::boldFont() hands out
+    // the regular font.
+    ImFontConfig boldConfig;
+    boldConfig.Flags = ImFontFlags_NoLoadError;
+    ImFont* fontBold = addFontFromFile(fontFiles, boldFontPath, fontSizeRegular, &boldConfig);
+    if (fontBold != nullptr)
+    {
+        mergeIcons(fontSizeRegular);
     }
+
+    // Chart text, a little smaller than the body text above 8 pt (chartFontPointSize()). At the
+    // body size it is the regular font itself, so nothing more is added.
+    ImFont* fontChart = nullptr;
+    if (chartFontPointSize(pointSize) != pointSize)
+    {
+        fontChart = addInterWithIcons(pointsToPixels(fontCfg.chartPt));
+    }
+
+    // Register with theme. The bold and chart fonts after the rest: registerFonts() resets them.
+    theme.registerFonts(pointSize, fontRegular, fontLarge);
+    theme.registerBoldFont(fontBold);
+    theme.registerChartFont(fontChart);
 
     // The title bar's two physical sizes. Both are given in points and converted against the
     // measured display scale, like every other font here, so the bar tracks display density; and
@@ -265,7 +260,7 @@ void loadAllFonts(FontFileCache& fontFiles, const std::filesystem::path& assetsD
     // The icon glyphs are otherwise merged into each body font at that font's size, so the controls
     // drawn under the globally pushed Theme::regularFont() grew and shrank with the Font Size
     // setting even once their boxes were fixed -- a 6x difference in rendered glyph area between the
-    // Small and Even Huger presets. Sizing it from the bar keeps the glyphs proportional to the bar
+    // old Small and Even Huger sizes. Sizing it from the bar keeps the glyphs proportional to the bar
     // they sit in, and independent of the body font like the rest of the chrome.
     //
     // The ratio is set against the rest of the bar's contents rather than picked for looks: the
@@ -288,12 +283,12 @@ void loadAllFonts(FontFileCache& fontFiles, const std::filesystem::path& assetsD
         }
     }
 
-    spdlog::info("Pre-baked {} fonts into atlas using FreeType, from {} font files", imguiIO.Fonts->Fonts.Size, fontFiles.fileCount());
+    spdlog::info("Built {} fonts into atlas using FreeType, from {} font files", imguiIO.Fonts->Fonts.Size, fontFiles.fileCount());
 }
 
 void loadFallbackFonts(FontFileCache& fontFiles, const std::filesystem::path& assetsDir, float displayScale)
 {
-    // ImGui's embedded font at each preset's sizes: no font files needed, so it cannot fail the way
+    // ImGui's embedded font at the Font size setting's sizes: no font files needed, so it cannot fail the way
     // loadAllFonts() can. The Sixtyfour wordmark stays unregistered, which the title bar already
     // handles.
     //
@@ -325,19 +320,21 @@ void loadFallbackFonts(FontFileCache& fontFiles, const std::filesystem::path& as
         addFontFromFile(fontFiles, iconFontPath, sizePx, &iconConfig, ICON_RANGES);
     };
 
-    for (const auto size : ALL_FONT_SIZES)
+    const int pointSize = theme.fontPointSize();
+    const FontPointSizes fontCfg = fontPointSizesFor(pointSize);
+    const auto addDefault = [&](float points)
     {
-        const auto& fontCfg = theme.fontConfig(size);
-        ImFontConfig regularConfig;
-        regularConfig.SizePixels = computePointsToPixels(fontCfg.regularPt, displayScale);
-        ImFont* regular = imguiIO.Fonts->AddFontDefault(&regularConfig);
-        mergeIcons(regularConfig.SizePixels);
-        ImFontConfig largeConfig;
-        largeConfig.SizePixels = computePointsToPixels(fontCfg.largePt, displayScale);
-        ImFont* large = imguiIO.Fonts->AddFontDefault(&largeConfig);
-        mergeIcons(largeConfig.SizePixels);
-        theme.registerFonts(size, regular, large);
-    }
+        ImFontConfig config;
+        config.SizePixels = computePointsToPixels(points, displayScale);
+        ImFont* font = imguiIO.Fonts->AddFontDefault(&config);
+        mergeIcons(config.SizePixels);
+        return font;
+    };
+    ImFont* regular = addDefault(fontCfg.regularPt);
+    ImFont* large = addDefault(fontCfg.largePt);
+    ImFont* chart = chartFontPointSize(pointSize) != pointSize ? addDefault(fontCfg.chartPt) : nullptr;
+    theme.registerFonts(pointSize, regular, large);
+    theme.registerChartFont(chart);
 
     if (hasIconFont)
     {

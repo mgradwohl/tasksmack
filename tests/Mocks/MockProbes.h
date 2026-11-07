@@ -784,16 +784,20 @@ class MockProcessActions : public Platform::IProcessActions
         return m_SetAffinityCount;
     }
 
-    /// setSchedPolicy() (#3086): records the target and policy, and returns setSchedPolicyResult()'s (ok by default).
+    /// setSchedPolicy() (#3086): records the target, policy and real-time priority (#3219), and returns
+    /// setSchedPolicyResult()'s (ok by default).
     void setSchedPolicyResult(Platform::ProcessActionResult result)
     {
         m_SetSchedPolicyResult = std::move(result);
     }
-    [[nodiscard]] Platform::ProcessActionResult
-    setSchedPolicy(const Platform::ProcessTarget& target, Platform::SchedPolicy policy, Platform::RealtimeThreads realtimeThreads) override
+    [[nodiscard]] Platform::ProcessActionResult setSchedPolicy(const Platform::ProcessTarget& target,
+                                                               Platform::SchedPolicy policy,
+                                                               std::int32_t rtPriority,
+                                                               Platform::RealtimeThreads realtimeThreads) override
     {
         m_LastTarget = target;
         m_LastSchedPolicy = policy;
+        m_LastRtPriority = rtPriority;
         m_LastRealtimeThreads = realtimeThreads;
         ++m_SetSchedPolicyCount;
         return m_SetSchedPolicyResult;
@@ -805,6 +809,10 @@ class MockProcessActions : public Platform::IProcessActions
     [[nodiscard]] Platform::SchedPolicy lastSchedPolicy() const
     {
         return m_LastSchedPolicy;
+    }
+    [[nodiscard]] std::int32_t lastRtPriority() const
+    {
+        return m_LastRtPriority;
     }
     [[nodiscard]] Platform::RealtimeThreads lastRealtimeThreads() const
     {
@@ -1208,6 +1216,7 @@ class MockProcessActions : public Platform::IProcessActions
     Platform::CpuAffinity m_LastAffinity;
     int m_SetSchedPolicyCount = 0;
     Platform::SchedPolicy m_LastSchedPolicy = Platform::SchedPolicy::Unknown;
+    std::int32_t m_LastRtPriority = -1;
     Platform::RealtimeThreads m_LastRealtimeThreads = Platform::RealtimeThreads::Keep;
     Platform::ProcessActionResult m_SetSchedPolicyResult = Platform::ProcessActionResult::ok();
     Platform::ProcessActionResult m_RunAuthorizedResult = Platform::ProcessActionResult::ok();

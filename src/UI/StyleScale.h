@@ -11,12 +11,12 @@ namespace UI
 {
 
 /// Point size the base ImGuiStyle literals in Theme::applyImGuiStyle() were authored against: the
-/// Medium preset, on a 1.0 display scale. Keeping this explicit is what makes the scale factor
+/// default 8 pt font size (UI::FONT_POINT_SIZE_DEFAULT), on a 1.0 display scale. Keeping this explicit is what makes the scale factor
 /// exactly 1.0 for the default configuration, so the app looks unchanged there.
 inline constexpr float STYLE_REFERENCE_PT = 8.0F;
 
 /// Floor on the scale factor. Only a guard against a degenerate font or display scale producing a
-/// zero-size style; the smallest real preset (Small, 7pt) is 0.875, well above it.
+/// zero-size style; the smallest font size (7 pt) is 0.875, well above it.
 inline constexpr float STYLE_SCALE_MIN = 0.25F;
 
 /// Factor the ImGuiStyle size literals are multiplied by, so padding, spacing, indents, scrollbars
@@ -45,7 +45,7 @@ inline constexpr float STYLE_SCALE_MIN = 0.25F;
 /// sizes to zero for any factor below 1.0 and so forced a clamp that stopped the Small preset
 /// shrinking at all.
 ///
-/// @param regularPt     Body-text point size of the active font preset (Theme::fontConfig()).
+/// @param regularPt     Body-text point size of the Font size setting (Theme::fontConfig()).
 /// @param displayScale  UI scale in window units (UI::windowUnitScale); 1.0 at 96 DPI.
 [[nodiscard]] inline float computeStyleScale(float regularPt, float displayScale) noexcept
 {

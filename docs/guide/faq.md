@@ -68,7 +68,7 @@ Each value needs a different kernel check, so one capability alone doesn't resto
 | I/O | Opening `/proc/[pid]/io` (owner-only) **and** ptrace read access to the process | `CAP_DAC_READ_SEARCH` + `CAP_SYS_PTRACE` |
 | Network | Reading the `/proc/[pid]/fd/*` links, which needs ptrace read access to the process | `CAP_DAC_READ_SEARCH` + `CAP_SYS_PTRACE` |
 | End, suspend or resume another user's process | Sending it a signal | `CAP_KILL` |
-| Raise a priority (nice below 0, the Realtime I/O class, leaving the Idle scheduling policy); another user's priority, CPU affinity or scheduling policy | `setpriority`, `ioprio_set`, `sched_setaffinity`, `sched_setscheduler` | `CAP_SYS_NICE` |
+| Raise a priority (nice below 0, the Realtime I/O class, a real-time FIFO or RR scheduling policy past your `RLIMIT_RTPRIO`, leaving the Idle scheduling policy); another user's priority, CPU affinity or scheduling policy | `setpriority`, `ioprio_set`, `sched_setaffinity`, `sched_setscheduler` | `CAP_SYS_NICE` |
 
 With `CAP_DAC_READ_SEARCH` alone, only FD counts come back. The last two only matter for acting on processes: without them those actions are refused, and the startup notice's **What does Administrator add?** table lists them. `CAP_SYS_PTRACE` lets TaskSmack inspect any process on the system, and `CAP_KILL` lets it end any process, so grant them only if you are comfortable with that; running as root (with its normal capabilities) is the alternative, but root alone isn't enough in a container or hardened service that drops capabilities — allow them there. Re-apply the capabilities after each update.
 

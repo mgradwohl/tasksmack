@@ -43,7 +43,7 @@ namespace UI::Widgets
 inline constexpr float HISTORY_PLOT_MIN_HEIGHT_EM = 8.4375F;
 
 /// Shortest a stacked history chart may be in ems of its own axis text, when that text is
-/// the body size (Small and Medium; see UI::chartFontSize()): 11.25 is the proportion the Medium preset had when its chart
+/// the body size (7 and 8 pt; see UI::chartFontPointSize()): 11.25 is the proportion the Medium preset had when its chart
 /// text was 8px in a 90px chart, which kept six Y-axis labels (and, while charts had one, a legend row)
 /// inside the plot. Moving chart text up to the body size at Medium (#1194) without this would have
 /// clipped them.

@@ -19,6 +19,7 @@
 #include "App/Panels/ProcessSchedPolicyDialog.h"
 #include "App/Panels/ProcessWaitChainDialog.h"
 #include "Platform/CpuAffinity.h"
+#include "Platform/CurrentProcess.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/SchedPolicy.h"
 #include "ProcessDetailsPanel_ActionHelpers.h"
@@ -392,7 +393,8 @@ class ProcessActionsView
     /// dialog with @p currentAffinity's CPUs ticked (null: every CPU), for the process captured now.
     ///
     /// Then "Set scheduling policy..." where the platform can (#3086, Linux), placed the same way; it opens
-    /// the policy dialog with @p currentSchedPolicy chosen when it offers that one, for the process captured now.
+    /// the policy dialog with @p currentSchedPolicy chosen when it offers that one (FIFO and RR at
+    /// @p currentRtPriority, #3219), for the process captured now.
     ///
     /// Then "Create dump file..." where the platform can write one (#807), placed the same way; it asks
     /// to confirm a dump of the process captured now, into the temp folder.
@@ -409,7 +411,8 @@ class ProcessActionsView
                         const Platform::ProcessTarget& target,
                         const Platform::CpuAffinity* currentAffinity = nullptr,
                         bool efficiencyMode = false,
-                        Platform::SchedPolicy currentSchedPolicy = Platform::SchedPolicy::Unknown);
+                        Platform::SchedPolicy currentSchedPolicy = Platform::SchedPolicy::Unknown,
+                        std::uint32_t currentRtPriority = 0);
 
     /// Draws the last action's result line, when there is one, with "Authenticate and retry" beside a
     /// permission refusal the platform can retry as an administrator (#2308).
@@ -872,12 +875,18 @@ class ProcessActionsView
     /// The affinity dialog while it is open; closed unapplied once @p liveTarget moves on. Apply sets
     /// the CPUs through @p actions (null: unavailable) and shows the result line.
     void renderAffinityDialog(Platform::IProcessActions* actions, const Platform::ProcessTarget& liveTarget);
+    /// The process's policy and real-time priority, as the snapshot has them, for the dialog to open with.
+    struct CurrentSchedPolicy
+    {
+        Platform::SchedPolicy policy = Platform::SchedPolicy::Unknown;
+        std::uint32_t rtPriority = 0;
+    };
     /// Set scheduling policy... (#3086): at the row's end at its own width, as the affinity button is. A press
-    /// opens the dialog for @p target, with @p current chosen when it is Normal, Batch or Idle.
+    /// opens the dialog for @p target, with @p current chosen when the dialog offers it (any but Deadline).
     void renderSetSchedPolicyButton(const Platform::ProcessActionCapabilities& capabilities,
                                     const std::string& processName,
                                     const Platform::ProcessTarget& target,
-                                    Platform::SchedPolicy current,
+                                    CurrentSchedPolicy current,
                                     bool afterButtons);
     /// The scheduling policy dialog while it is open; closed unapplied once @p liveTarget moves on. Apply sets
     /// the policy through @p actions (null: unavailable) and shows the result line.
@@ -928,9 +937,10 @@ class ProcessActionsView
     std::uint64_t m_RunGeneration = 0; // m_Generation when the running action started
     // The process the running action sets the priority of: Set Realtime priority (#3429, #3467). None for any other.
     std::optional<Platform::ProcessTarget> m_RunPriorityTarget;
-    const char* m_PriorityHoldReason = nullptr;   // Another priority change runs: this view's wait, saying why (#3429, #3467)
-    ProcessAffinityDialog m_AffinityDialog;       // Set affinity... (#1887)
-    ProcessSchedPolicyDialog m_SchedPolicyDialog; // Set scheduling policy... (#3086)
+    const char* m_PriorityHoldReason = nullptr;           // Another priority change runs: this view's wait, saying why (#3429, #3467)
+    ProcessAffinityDialog m_AffinityDialog;               // Set affinity... (#1887)
+    ProcessSchedPolicyDialog m_SchedPolicyDialog;         // Set scheduling policy... (#3086)
+    std::int32_t m_OwnPid = Platform::currentProcessId(); // TaskSmack's own PID, taken once: never real time (#3219)
     // The dialog's CPU layout, read once on its worker (#3182). Its worker uses the panel's IProcessActions
     // until it finishes: the panel declares this view after its actions, so its destructor's wait goes first.
     AffinityLayoutRead m_AffinityLayout;

@@ -7,8 +7,10 @@
 // process_vm_*, sockets other than its broker socket (fd 0), open_by_handle_at, mounts, namespaces, BPF,
 // io_uring, keyrings and changing its IDs or capabilities. Its own job stays allowed: reading /proc, the
 // journal, coredumps and firmware files, pidfd_send_signal, setpriority, ioprio_set, sched_setaffinity,
-// sched_setscheduler to Normal, Batch or Idle only (#3086: the filter checks the policy, as the broker protocol's
-// decoder and LinuxProcessControl do; real time stays refused, and #3219 will revisit it), and
+// sched_setscheduler to Normal, Batch, Idle (#3086) or the real-time FIFO and round robin (#3219) only (the filter
+// checks the policy, as the broker protocol's decoder and LinuxProcessControl do, and refuses real time for the
+// helper itself; those two check the real-time priority and refuse real time for the helper and TaskSmack too;
+// Deadline and sched_setattr stay refused), and
 // for Close connection (#3066) pidfd_getfd and shutdown: the copied descriptor is shut down and closed at once,
 // but code running in the helper could copy another process's descriptors with it, as CAP_SYS_PTRACE allows.
 //

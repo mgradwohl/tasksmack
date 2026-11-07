@@ -58,5 +58,37 @@ TEST(SchedPolicyTest, OrderIsByPolicyThenRealTimePriority)
     EXPECT_TRUE(compareSchedPolicy(SchedPolicy::RoundRobin, 5, SchedPolicy::RoundRobin, 5) == 0);
 }
 
+// #3219: Set scheduling policy may set every policy but Deadline (and Unknown), and real time takes 1 to 99.
+TEST(SchedPolicyTest, EveryPolicyButDeadlineIsSettableWithItsPriority)
+{
+    for (const SchedPolicy policy : {SchedPolicy::Normal, SchedPolicy::Batch, SchedPolicy::Idle})
+    {
+        EXPECT_TRUE(isSettableSchedPolicy(policy));
+        EXPECT_FALSE(isRealtimeSchedPolicy(policy));
+        EXPECT_TRUE(isValidSchedPolicySetting(policy, 0));
+        EXPECT_FALSE(isValidSchedPolicySetting(policy, 1));
+        EXPECT_GE(settableSchedPolicyToLinux(policy), 0);
+    }
+    for (const SchedPolicy policy : {SchedPolicy::Fifo, SchedPolicy::RoundRobin})
+    {
+        EXPECT_TRUE(isSettableSchedPolicy(policy));
+        EXPECT_TRUE(isRealtimeSchedPolicy(policy));
+        EXPECT_FALSE(isValidSchedPolicySetting(policy, 0));
+        EXPECT_TRUE(isValidSchedPolicySetting(policy, 1));
+        EXPECT_TRUE(isValidSchedPolicySetting(policy, 99));
+        EXPECT_FALSE(isValidSchedPolicySetting(policy, 100));
+        EXPECT_FALSE(isValidSchedPolicySetting(policy, -1));
+    }
+    EXPECT_EQ(settableSchedPolicyToLinux(SchedPolicy::Fifo), 1);
+    EXPECT_EQ(settableSchedPolicyToLinux(SchedPolicy::RoundRobin), 2);
+    for (const SchedPolicy policy : {SchedPolicy::Deadline, SchedPolicy::Unknown})
+    {
+        EXPECT_FALSE(isSettableSchedPolicy(policy));
+        EXPECT_FALSE(isValidSchedPolicySetting(policy, 0));
+        EXPECT_FALSE(isValidSchedPolicySetting(policy, 10));
+        EXPECT_EQ(settableSchedPolicyToLinux(policy), -1);
+    }
+}
+
 } // namespace
 } // namespace Platform

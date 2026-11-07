@@ -87,6 +87,7 @@ struct Context
     bool efficiencyMode = false;                            ///< The process is in Efficiency mode: its checkbox is ticked (#3071)
     /// The process's scheduling policy, chosen in the Set scheduling policy dialog when it offers it (#3086)
     Platform::SchedPolicy currentSchedPolicy = Platform::SchedPolicy::Unknown;
+    std::uint32_t currentRtPriority = 0; ///< FIFO's or RR's priority, the slider's start (#3219)
     /// Why the priority controls wait for a priority change of this process in the Processes table, or
     /// null when none runs there (#3467, PriorityChangesInFlight::holdReason()): the slider's Apply, its
     /// retry, Set Realtime... and Set Realtime priority's retry are held meanwhile.

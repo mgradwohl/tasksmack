@@ -36,10 +36,10 @@ struct LinuxProcessSyscalls
     int (*ioprioGet)(pid_t pid) = nullptr;            ///< ioprio_get(IOPRIO_WHO_PROCESS, pid): the value
     /// sched_setaffinity(tid, setSize, set): the set is a CPU_ALLOC()ed cpu_set_t of setSize bytes (#1887).
     int (*setAffinity)(id_t tid, std::size_t setSize, const cpu_set_t* set) = nullptr;
-    /// sched_setscheduler(tid, policy, {sched_priority = 0}) (#3086): SCHED_OTHER, SCHED_BATCH or SCHED_IDLE only,
-    /// with SCHED_RESET_ON_FORK OR'ed in when the thread already had it; setSchedPolicy() never passes a real-time
-    /// policy.
-    int (*setScheduler)(id_t tid, int policy) = nullptr;
+    /// sched_setscheduler(tid, policy, {sched_priority = priority}) (#3086): SCHED_OTHER, SCHED_BATCH or SCHED_IDLE
+    /// with priority 0, or SCHED_FIFO or SCHED_RR with 1 to 99 (#3219), with SCHED_RESET_ON_FORK OR'ed in when the
+    /// thread already had it; setSchedPolicy() never passes SCHED_DEADLINE or any other pair.
+    int (*setScheduler)(id_t tid, int policy, int priority) = nullptr;
     /// sched_getscheduler(2): a thread's policy, SCHED_RESET_ON_FORK included, so setSchedPolicy() keeps that flag
     /// (#3086). Null reads as no flag.
     int (*getScheduler)(id_t tid) = nullptr;
@@ -140,6 +140,13 @@ class LinuxProcessControl : public IProcessActions
     LinuxProcessControl(LinuxProcessControl&&) noexcept;
     LinuxProcessControl& operator=(LinuxProcessControl&&) noexcept;
 
+    /// Adds @p pid to the processes setSchedPolicy() never sets real time (#3219): this process always is; the helper
+    /// adds its client, TaskSmack, whose PID it has from its socket's peer credentials.
+    void refuseRealtimeFor(std::int32_t pid)
+    {
+        m_NoRealtimePids.push_back(pid);
+    }
+
     [[nodiscard]] ProcessActionCapabilities actionCapabilities() const override;
     [[nodiscard]] ProcessActionResult terminate(const ProcessTarget& target) override;
     [[nodiscard]] ProcessActionResult kill(const ProcessTarget& target) override;
@@ -151,9 +158,10 @@ class LinuxProcessControl : public IProcessActions
     [[nodiscard]] ProcessActionResult setIoPriority(const ProcessTarget& target, IoPriorityClass ioClass, int32_t level) override;
     [[nodiscard]] IoPriorityReadResult getIoPriority(const ProcessTarget& target) override;
     [[nodiscard]] ProcessActionResult setAffinity(const ProcessTarget& target, const CpuAffinity& cpus) override;
-    /// Normal, Batch or Idle on every thread (#3086); any other policy is refused before sched_setscheduler(2).
+    /// Normal, Batch or Idle (#3086), or FIFO or round robin at 1 to 99 (#3219), on every thread; any other pair, and
+    /// real time for this process itself, is refused before sched_setscheduler(2).
     [[nodiscard]] ProcessActionResult
-    setSchedPolicy(const ProcessTarget& target, SchedPolicy policy, RealtimeThreads realtimeThreads) override;
+    setSchedPolicy(const ProcessTarget& target, SchedPolicy policy, std::int32_t rtPriority, RealtimeThreads realtimeThreads) override;
     /// Efficiency mode (#3202, LinuxEfficiencyMode.h): on, nice 19 for every thread and, where it may and the
     /// process is alone in its cgroup, the cgroup's cpu.weight at 1; off, what on changed put back.
     [[nodiscard]] ProcessActionResult setEfficiencyMode(const ProcessTarget& target, bool on) override;
@@ -176,6 +184,8 @@ class LinuxProcessControl : public IProcessActions
 
     LinuxProcessSyscalls m_Syscalls;
     bool m_CanSetRealtimeIoPriority = false;        // CAP_SYS_NICE or CAP_SYS_ADMIN, read at construction (#1540)
+    bool m_CanSetRealtimeSchedPolicy = false;       // CAP_SYS_NICE, read at construction (#3219)
+    std::vector<std::int32_t> m_NoRealtimePids;     // Never set real time, by thread group: this process, and the helper's client
     std::shared_ptr<EfficiencyMemory> m_Efficiency; // behind a pointer: shared (#3330), and its mutex is immovable
 };
 

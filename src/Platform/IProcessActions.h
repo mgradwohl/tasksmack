@@ -282,8 +282,9 @@ struct AuthorizedAction
     std::int32_t level = 4;
     // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
     CpuAffinity cpus{};
-    SchedPolicy schedPolicy = SchedPolicy::Normal;           ///< SetSchedPolicy: Normal, Batch or Idle
+    SchedPolicy schedPolicy = SchedPolicy::Normal;           ///< SetSchedPolicy: Normal, Batch, Idle, FIFO or round robin
     RealtimeThreads realtimeThreads = RealtimeThreads::Keep; ///< SetSchedPolicy: whether the dialog warned
+    std::int32_t rtPriority = 0;                             ///< SetSchedPolicy: 1 to 99 for FIFO and round robin, else 0 (#3219)
 };
 
 /// Run new task (#3065): a program to start, as Task Manager's File > Run new task.
@@ -318,8 +319,13 @@ struct ProcessActionCapabilities
     /// setAffinity(): which processors the process may run on (#1887 Linux: sched_setaffinity;
     /// #1881 Windows).
     bool canSetAffinity = false;
-    /// setSchedPolicy(): the CPU scheduling policy, Normal, Batch or Idle (#3086 Linux: sched_setscheduler).
+    /// setSchedPolicy(): the CPU scheduling policy, Normal, Batch, Idle, FIFO or RR (#3086, #3219 Linux: sched_setscheduler).
     bool canSetSchedPolicy = false;
+    /// The real-time FIFO and round robin policies too, without asking for a password (#3219): CAP_SYS_NICE in
+    /// TaskSmack's own effective set, read once at construction, or the privileged helper connected. False doesn't
+    /// hide them: a user with an RLIMIT_RTPRIO (the audio group, say) may set them unprivileged, and a refusal
+    /// offers Authenticate and retry where the helper exists.
+    bool canSetRealtimeSchedPolicy = false;
     /// launchSyscallTrace(): found once, when the implementation is constructed, never per frame.
     SyscallTraceAvailability syscallTrace = SyscallTraceAvailability::Unsupported;
     /// createDump(): a full-memory dump file of the process (#807; Windows: MiniDumpWriteDump).
@@ -460,18 +466,21 @@ class IProcessActions
         return ProcessActionResult::error("Setting CPU affinity isn't available on this system");
     }
 
-    /// Sets the target's CPU scheduling policy (#3086) on every one of its threads: Normal, Batch or Idle
-    /// only; any other policy is refused before the OS is asked (real time is #3219). A thread under a
-    /// real-time policy changes only with RealtimeThreads::Change, which the dialog passes only when it warned
-    /// that the process runs real time; with Keep it is left as it is and the result says so. Refused, as every
-    /// action is, unless the process at the target's PID is the target. The default refuses it as
-    /// unsupported, matching ProcessActionCapabilities::canSetSchedPolicy's default (false), which an
-    /// implementation that does not override this must leave as it is.
+    /// Sets the target's CPU scheduling policy (#3086) on every one of its threads: Normal, Batch or Idle with
+    /// @p rtPriority 0, or the real-time FIFO or round robin with @p rtPriority from 1 to 99 (#3219); any other
+    /// pair (Deadline included) is refused before the OS is asked (isValidSchedPolicySetting()), as is real time
+    /// for the calling process itself. Setting Normal, Batch or Idle changes a thread under a real-time policy only
+    /// with RealtimeThreads::Change, which the dialog passes only when it warned that the process runs real time;
+    /// with Keep it is left as it is and the result says so. Refused, as every action is, unless the process at
+    /// the target's PID is the target. The default refuses it as unsupported, matching
+    /// ProcessActionCapabilities::canSetSchedPolicy's default (false), which an implementation that does not
+    /// override this must leave as it is.
     [[nodiscard]] virtual ProcessActionResult
-    setSchedPolicy(const ProcessTarget& target, SchedPolicy policy, RealtimeThreads realtimeThreads)
+    setSchedPolicy(const ProcessTarget& target, SchedPolicy policy, std::int32_t rtPriority, RealtimeThreads realtimeThreads)
     {
         static_cast<void>(target);
         static_cast<void>(policy);
+        static_cast<void>(rtPriority);
         static_cast<void>(realtimeThreads);
         return ProcessActionResult::error("Setting the scheduling policy isn't available on this system");
     }
