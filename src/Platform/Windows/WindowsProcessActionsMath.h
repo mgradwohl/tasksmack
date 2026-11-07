@@ -614,7 +614,7 @@ ioPriorityHintToSet(IoPriorityClass ioClass, std::int32_t level, int32_t pid)
     {
         if (status == NT_STATUS_ACCESS_DENIED)
         {
-            return std::unexpected(std::format("Access denied: can't read the I/O priority of process {}", pid));
+            return std::unexpected(ioPriorityReadDeniedMessage(pid));
         }
         return std::unexpected(std::format("Failed to read the I/O priority of process {}: NTSTATUS 0x{:08X}", pid, status));
     }

@@ -895,16 +895,15 @@ IoPriorityReadResult WindowsProcessActions::getIoPriority(const ProcessTarget& t
         return std::unexpected(std::format("I/O priority is not available on this Windows (process {})", target.pid));
     }
     // The identity check every action makes, so the value read is the target's, never a reused PID's.
-    const VerifiedProcess process =
-        openVerified(m_Fns,
-                     target,
-                     PROCESS_QUERY_LIMITED_INFORMATION,
-                     [&target](DWORD error)
-                     {
-                         return error == ERROR_ACCESS_DENIED
-                                  ? std::format("Access denied: can't read the I/O priority of process {}", target.pid)
-                                  : actionOpenFailure(error, target.pid, GuardedAction::IoPriority, false);
-                     });
+    const VerifiedProcess process = openVerified(m_Fns,
+                                                 target,
+                                                 PROCESS_QUERY_LIMITED_INFORMATION,
+                                                 [&target](DWORD error)
+                                                 {
+                                                     return error == ERROR_ACCESS_DENIED
+                                                              ? ioPriorityReadDeniedMessage(target.pid)
+                                                              : actionOpenFailure(error, target.pid, GuardedAction::IoPriority, false);
+                                                 });
     if (!process.result.success)
     {
         return std::unexpected(process.result.errorMessage);

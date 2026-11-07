@@ -46,6 +46,10 @@ void ProcessIoPriorityView::render(Platform::IProcessActions* actions,
     // The current value is read off the UI thread by updateRead(), from the panel's update path (#2734).
     markDrawn();
     syncToProcess();
+    // Windows (#3362): another user's or an elevated process often refuses the read, but the helper can make the
+    // identity-checked set, so Apply goes ahead with the current value unknown. Cheap: reports what was found at
+    // construction (IProcessActions::actionCapabilities()).
+    allowApplyWhenReadDenied(windowsHints && actions != nullptr && actions->actionCapabilities().canAuthorizeInteractively);
 
     // Its own ID scope: the nice control above has an "Apply" button too.
     ImGui::PushID("io_priority");

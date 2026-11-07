@@ -982,6 +982,7 @@ TEST_F(WindowsIoPriorityTest, AReadThatWindowsRefusesSaysSo)
     const IoPriorityReadResult denied = actions.getIoPriority(IO_TARGET);
     ASSERT_FALSE(denied.has_value());
     EXPECT_EQ(denied.error(), "Access denied: can't read the I/O priority of process 4343");
+    EXPECT_TRUE(isIoPriorityReadDenied(denied.error())) << "the view lets Apply go through the helper";
 
     FakeIo::queryStatus = 0;
     FakeIo::openError = ERROR_ACCESS_DENIED;

@@ -11,6 +11,7 @@
 #include <optional>
 #include <stop_token>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -145,6 +146,23 @@ struct IoPriority
 
 /// The I/O priority read for a process, or the message saying why it could not be read.
 using IoPriorityReadResult = std::expected<IoPriority, std::string>;
+
+/// How a read the OS refused for want of access begins (Windows, #3362): another user's or an elevated
+/// process. The set may still succeed through the elevated helper, so the control lets Apply go ahead
+/// with the current value unknown (ProcessIoPriorityView).
+inline constexpr std::string_view IO_PRIORITY_READ_DENIED = "Access denied: can't read the I/O priority of process ";
+
+/// The message for a read of @p pid's I/O priority refused for want of access.
+[[nodiscard]] inline std::string ioPriorityReadDeniedMessage(std::int32_t pid)
+{
+    return std::format("{}{}", IO_PRIORITY_READ_DENIED, pid);
+}
+
+/// Whether @p error is ioPriorityReadDeniedMessage()'s.
+[[nodiscard]] constexpr bool isIoPriorityReadDenied(std::string_view error) noexcept
+{
+    return error.starts_with(IO_PRIORITY_READ_DENIED);
+}
 /// Whether IProcessActions::launchSyscallTrace() can open a system call tracer on this machine (#182).
 enum class SyscallTraceAvailability : std::uint8_t
 {

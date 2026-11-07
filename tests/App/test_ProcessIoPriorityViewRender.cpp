@@ -438,6 +438,28 @@ TEST_F(ProcessIoPriorityViewRenderTest, WindowsHintsStepFromHighToVeryLowAndAppl
     EXPECT_EQ(mock.lastSetIoPriority(), hint(Platform::IoPriorityHint::High));
 }
 
+TEST_F(ProcessIoPriorityViewRenderTest, AReadRefusedForAccessEnablesApplyOnlyWhereTheHelperCanRetry)
+{
+    for (const bool helper : {false, true})
+    {
+        SCOPED_TRACE(helper ? "helper" : "no helper");
+        TestMocks::MockProcessActions mock;
+        mock.setCapabilities(
+            {.canSetPriority = true, .canSetIoPriority = true, .ioPriorityHints = true, .canAuthorizeInteractively = helper});
+        mock.setIoPriorityReadResult(std::unexpected(Platform::ioPriorityReadDeniedMessage(TARGET_A.pid)));
+        ProcessPriorityView view;
+        const auto body = [&]
+        {
+            draw(view, mock, NICE_AND_HINTS, NICE, TARGET_A);
+        };
+        runFrame(body);
+        runFrame(body);
+        view.ioPriorityView().editIoPriority(hint(Platform::IoPriorityHint::VeryLow), TARGET_A);
+        runFrame(body);
+        EXPECT_EQ(view.ioPriorityView().canApply(TARGET_A), helper);
+    }
+}
+
 TEST_F(ProcessIoPriorityViewRenderTest, WindowsHintsOfferNoResetAndNeverCritical)
 {
     TestMocks::MockProcessActions mock;

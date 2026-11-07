@@ -493,13 +493,24 @@ class ProcessIoPriorityView
     }
 
     /// Whether Apply is enabled for @p liveTarget: there is a pending edit, the current I/O priority
-    /// of @p liveTarget has been read (the counterpart of the nice control's snapshot), both the
+    /// of @p liveTarget has been read (the counterpart of the nice control's snapshot), or its read was
+    /// refused for want of access while allowApplyWhenReadDenied() is on, both the
     /// edit's target and @p liveTarget know the start time, and they are the same process
     /// (Detail::isSameEditTarget()).
     [[nodiscard]] bool canApply(const Platform::ProcessTarget& liveTarget) const noexcept
     {
-        return m_Changed && hasCurrentFor(liveTarget) && m_EditTarget.startTimeTicks != 0 && liveTarget.startTimeTicks != 0 &&
-               Detail::isSameEditTarget(m_EditTarget, liveTarget);
+        return m_Changed && (hasCurrentFor(liveTarget) || readDeniedFor(liveTarget)) && m_EditTarget.startTimeTicks != 0 &&
+               liveTarget.startTimeTicks != 0 && Detail::isSameEditTarget(m_EditTarget, liveTarget);
+    }
+
+    /// Lets Apply go ahead with the current value unknown when the read was refused for want of access
+    /// (Platform::isIoPriorityReadDenied(), #3362): on Windows another user's or an elevated process often
+    /// refuses the read, while the set, identity-checked as every action, can still be made through the
+    /// elevated helper. render() turns it on with Windows' hints where the actions can retry as an
+    /// administrator (ProcessActionCapabilities::canAuthorizeInteractively).
+    void allowApplyWhenReadDenied(bool allow) noexcept
+    {
+        m_ApplyWhenReadDenied = allow;
     }
 
     /// Whether there is a pending edit that Apply cannot send yet for want of process details.
@@ -669,6 +680,13 @@ class ProcessIoPriorityView
     }
 
     /// Whether m_Current was read for exactly @p liveTarget.
+    /// Whether the read of exactly @p liveTarget was refused for want of access, and Apply may go ahead anyway.
+    [[nodiscard]] bool readDeniedFor(const Platform::ProcessTarget& liveTarget) const noexcept
+    {
+        return m_ApplyWhenReadDenied && !m_Current.has_value() && m_CurrentTarget.pid == liveTarget.pid &&
+               m_CurrentTarget.startTimeTicks == liveTarget.startTimeTicks && Platform::isIoPriorityReadDenied(m_ReadError);
+    }
+
     [[nodiscard]] bool hasCurrentFor(const Platform::ProcessTarget& liveTarget) const noexcept
     {
         return m_Current.has_value() && m_CurrentTarget.pid == liveTarget.pid &&
@@ -683,7 +701,8 @@ class ProcessIoPriorityView
     std::optional<Platform::IoPriority> m_Current;
     Platform::ProcessTarget m_CurrentTarget = NO_TARGET;
     std::string m_ReadError;
-    std::uint64_t m_Generation = 0; // Bumped by a selection change: a running apply's result is then dropped
+    bool m_ApplyWhenReadDenied = false; // allowApplyWhenReadDenied()'s
+    std::uint64_t m_Generation = 0;     // Bumped by a selection change: a running apply's result is then dropped
     std::optional<Retry> m_Retry;
     // The current value's read and its cadence. Destroying the view waits for at most one read, which
     // touches only the panel's actions.

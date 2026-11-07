@@ -149,6 +149,41 @@ TEST(ProcessIoPriorityViewTest, AWindowsHintIsAppliedAsItsClassAndLevel)
     EXPECT_EQ(mock.lastTarget(), TARGET_A);
 }
 
+TEST(ProcessIoPriorityViewTest, AReadRefusedForAccessStillLetsApplyGoThroughTheHelper)
+{
+    // Windows (#3362): another user's process refuses the read, but the set can still be made as an
+    // administrator, so with allowApplyWhenReadDenied() Apply goes ahead with the current value unknown.
+    TestMocks::MockProcessActions mock;
+    ProcessIoPriorityView view;
+    mock.setIoPriorityReadResult(std::unexpected(Platform::ioPriorityReadDeniedMessage(TARGET_A.pid)));
+    (void) readFrame(view, &mock, TARGET_A, 0.0F);
+    ASSERT_FALSE(view.currentIoPriority().has_value());
+    EXPECT_TRUE(Platform::isIoPriorityReadDenied(view.readError())) << view.readError();
+    view.editIoPriority(windowsHint(Platform::IoPriorityHint::Low), TARGET_A);
+
+    EXPECT_FALSE(view.canApply(TARGET_A)) << "not without the helper";
+    view.allowApplyWhenReadDenied(true);
+    EXPECT_TRUE(view.canApply(TARGET_A));
+    EXPECT_FALSE(view.canApply(TARGET_A_REUSED)) << "still only the process the edit was made for";
+
+    view.apply(&mock, TARGET_A);
+    view.update(/*wait=*/true);
+    ASSERT_EQ(mock.setIoPriorityCount(), 1);
+    EXPECT_EQ(mock.lastSetIoPriority(), windowsHint(Platform::IoPriorityHint::Low));
+    EXPECT_EQ(mock.lastTarget(), TARGET_A) << "the identity-checked set, with the start time";
+}
+
+TEST(ProcessIoPriorityViewTest, AReadThatFailedForAnotherReasonKeepsApplyDisabled)
+{
+    TestMocks::MockProcessActions mock;
+    ProcessIoPriorityView view;
+    view.allowApplyWhenReadDenied(true);
+    mock.setIoPriorityReadResult(std::unexpected(std::string("Process not found - may have already exited")));
+    (void) readFrame(view, &mock, TARGET_A, 0.0F);
+    view.editIoPriority(windowsHint(Platform::IoPriorityHint::Low), TARGET_A);
+    EXPECT_FALSE(view.canApply(TARGET_A));
+}
+
 TEST(ProcessIoPriorityViewTest, NormalizeHoldsTheLevel)
 {
     EXPECT_EQ(Detail::normalizeIoPriority({.ioClass = IoPriorityClass::BestEffort, .level = 12}).level, 7);
