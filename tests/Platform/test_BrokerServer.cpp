@@ -1112,7 +1112,8 @@ TEST(TasksmackHelperRootTest, KeepsOnlyItsCapabilitiesAndServesEveryRequestOnAno
     sched_param rtParam{};
     EXPECT_EQ(::sched_getparam(target.pid, &rtParam), 0);
     EXPECT_EQ(rtParam.sched_priority, 10);
-    expectAction(Broker::SchedPolicyRequest{.target = target, .policy = SchedPolicy::Normal}, "back to Normal");
+    expectAction(Broker::SchedPolicyRequest{.target = target, .policy = SchedPolicy::Normal, .realtimeThreads = RealtimeThreads::Change},
+                 "back to Normal"); // Change: its now real-time thread is demoted too, as when the dialog's warning is accepted
     EXPECT_EQ(::sched_getscheduler(target.pid), SCHED_OTHER);
     expectAction(Broker::SignalRequest{.target = target, .signal = Broker::Signal::Suspend}, "suspend");
     expectAction(Broker::SignalRequest{.target = target, .signal = Broker::Signal::Resume}, "resume");
