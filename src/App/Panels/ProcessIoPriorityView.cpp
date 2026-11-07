@@ -73,7 +73,10 @@ void ProcessIoPriorityView::render(Platform::IProcessActions* actions,
                                    ? Detail::IoStop{.index = Detail::ioHintStopFor(m_Edit), .inherited = false}
                                    : Detail::ioStopFor(m_Edit, currentNice.value_or(Domain::Priority::NORMAL_NICE), realtimeSettable);
     const Detail::DiscretePick pick = Detail::renderDiscretePrioritySlider(slider, shown.index, shown.inherited);
-    if (pick.index != shown.index && pick.index >= 0)
+    // On Windows an unknown value (a refused read) shows as Normal, a stand-in: choosing Normal itself is then an
+    // edit to the Normal hint, so Apply can send it (#3362).
+    const bool choseStandIn = windowsHints && pick.selected && m_Edit.ioClass != Platform::IoPriorityClass::WindowsHint;
+    if ((pick.index != shown.index || choseStandIn) && pick.index >= 0)
     {
         editIoPriority(windowsHints ? Detail::ioHintForStop(pick.index) : Detail::ioPriorityForStop(pick.index, realtimeSettable), target);
     }

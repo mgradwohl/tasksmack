@@ -65,7 +65,13 @@ class ProcessIoPriorityViewRenderTest : public ::testing::Test
     /// The I/O slider's ID in the window runFrame() draws into: under the view's "io_priority" scope.
     [[nodiscard]] static ImGuiID ioSliderId()
     {
-        const ImGuiID scope = ImHashStr("io_priority", 0, ImGui::GetCurrentWindow()->ID);
+        return ioSliderIdIn(ImGui::GetCurrentWindow());
+    }
+
+    /// The I/O slider's ID in @p window, from outside a frame.
+    [[nodiscard]] static ImGuiID ioSliderIdIn(const ImGuiWindow* window)
+    {
+        const ImGuiID scope = ImHashStr("io_priority", 0, window->ID);
         return ImHashStr(Detail::IO_PRIORITY_SLIDER_ID, 0, scope);
     }
 
@@ -458,6 +464,60 @@ TEST_F(ProcessIoPriorityViewRenderTest, AReadRefusedForAccessEnablesApplyOnlyWhe
         runFrame(body);
         EXPECT_EQ(view.ioPriorityView().canApply(TARGET_A), helper);
     }
+}
+
+TEST_F(ProcessIoPriorityViewRenderTest, ClickingNormalAfterARefusedReadQueuesNormal)
+{
+    // The read refused, the slider shows Normal as a stand-in for the unknown value; clicking Normal itself must
+    // still be an edit to the Normal hint, so Apply can send it through the helper.
+    TestMocks::MockProcessActions mock;
+    mock.setCapabilities({.canSetPriority = true, .canSetIoPriority = true, .ioPriorityHints = true, .canAuthorizeInteractively = true});
+    mock.setIoPriorityReadResult(std::unexpected(Platform::ioPriorityReadDeniedMessage(TARGET_A.pid)));
+    ProcessPriorityView view;
+    const auto body = [&]
+    {
+        draw(view, mock, NICE_AND_HINTS, NICE, TARGET_A);
+    };
+    runFrame(body);
+    runFrame(body);
+    ASSERT_FALSE(view.ioPriorityView().currentIoPriority().has_value());
+    ASSERT_EQ(Detail::ioHintStopFor(view.ioPriorityView().shownIoPriority()), 1) << "Normal shown as the stand-in";
+
+    // Find the I/O slider's track by hovering: a row of it, then its left and right ends.
+    const auto hoveredAt = [&](float x, float y)
+    {
+        ImGui::GetIO().AddMousePosEvent(x, y);
+        runFrame(body);
+        return ImGui::GetHoveredID() == ioSliderIdIn(ImGui::FindWindowByName("Details"));
+    };
+    constexpr float PROBE_X = 200.0F;
+    float row = -1.0F;
+    for (int step = 0; step < 300 && row < 0.0F; ++step)
+    {
+        const float y = 2.0F * static_cast<float>(step);
+        if (hoveredAt(PROBE_X, y))
+        {
+            row = y;
+        }
+    }
+    ASSERT_GE(row, 0.0F) << "the I/O slider was never hovered";
+    float left = PROBE_X;
+    while (left > 0.0F && hoveredAt(left - 1.0F, row))
+    {
+        left -= 1.0F;
+    }
+    float right = PROBE_X;
+    while (right < 1600.0F && hoveredAt(right + 1.0F, row))
+    {
+        right += 1.0F;
+    }
+    ASSERT_GT(right - left, 30.0F);
+
+    // Normal is the second of four stops: a third of the way along the track.
+    click(ImVec2(left + ((right - left) / 3.0F), row), body);
+    EXPECT_TRUE(view.ioPriorityView().hasPendingEdit());
+    EXPECT_EQ(view.ioPriorityView().shownIoPriority(), hint(Platform::IoPriorityHint::Normal));
+    EXPECT_TRUE(view.ioPriorityView().canApply(TARGET_A));
 }
 
 TEST_F(ProcessIoPriorityViewRenderTest, WindowsHintsOfferNoResetAndNeverCritical)

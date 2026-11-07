@@ -63,6 +63,10 @@ struct DiscretePick
     std::int32_t index = 0;   ///< The stop picked this frame, or @p shown when nothing was picked
     float rightEdge = 0.0F;   ///< Where the control ends, from the cursor's x, for right-aligning a button under it
     bool labelsShown = false; ///< Whether the stops' scale labels were drawn (fitDiscreteTrack())
+    /// Whether the user chose a stop this frame (a click on the track, or a pick that moved), even the one
+    /// already shown: a caller showing a stand-in for an unknown value (Windows' I/O priority, #3362) takes
+    /// that as a choice of it.
+    bool selected = false;
 };
 
 /// Draws @p slider's discrete mode (#1538) showing stop @p shown (PRIORITY_STOP_BEYOND_START for its

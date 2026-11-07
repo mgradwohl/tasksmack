@@ -504,6 +504,7 @@ DiscretePick renderDiscretePrioritySlider(const DiscretePrioritySlider& slider, 
     // Interactive through an invisible button whose label names the stop shown (its ID stays put)
     ImGui::InvisibleButton(shownStop.itemLabel, ImVec2(metrics.sliderWidth, metrics.sliderHeight));
     const std::int32_t picked = sliderInputStop(ctx, shownIndex);
+    const bool selected = ImGui::IsItemActivated() || picked != shownIndex;
     if (ImGui::IsItemHovered())
     {
         ImGui::SetTooltip("%s", slider.tooltip);
@@ -511,7 +512,7 @@ DiscretePick renderDiscretePrioritySlider(const DiscretePrioritySlider& slider, 
 
     // Ticks, and the stops' names under them where there is room for all of them
     drawDiscreteScale(ctx.drawList, ctx, shownIndex, fit.showLabels);
-    return {.index = picked, .rightEdge = lead + metrics.sliderWidth, .labelsShown = fit.showLabels};
+    return {.index = picked, .rightEdge = lead + metrics.sliderWidth, .labelsShown = fit.showLabels, .selected = selected};
 }
 
 } // namespace Detail
