@@ -443,6 +443,19 @@ if(UNIX AND NOT APPLE AND TASKSMACK_WITH_SDBUS)
     endif()
 endif()
 
+# libbpf on Linux (#3366): required. The privileged helper loads a small CO-RE eBPF program that counts each
+# process's UDP bytes, for the opt-in "Count UDP traffic per process" (the Windows side uses ETW). A hard build
+# dependency (maintainer, 2026-11-06), so every Linux build has it; the .deb then depends on libbpf1
+# (CPACK_DEBIAN_PACKAGE_SHLIBDEPS). An INTERFACE target, as tasksmack_sdbus is.
+add_library(tasksmack_bpf INTERFACE)
+if(UNIX AND NOT APPLE)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(LIBBPF REQUIRED IMPORTED_TARGET libbpf)
+    target_link_libraries(tasksmack_bpf INTERFACE PkgConfig::LIBBPF)
+    target_compile_definitions(tasksmack_bpf INTERFACE TASKSMACK_HAS_LIBBPF=1)
+    message(STATUS "libbpf ${LIBBPF_VERSION}: per-process UDP bytes through the helper's eBPF counter (#3366)")
+endif()
+
 # libcurl on Linux (#3238): the opt-in update check's HTTPS client (LinuxHttpsClient), a build dependency the
 # .deb then depends on (CPACK_DEBIAN_PACKAGE_SHLIBDEPS). Found with pkg-config, as libsystemd is: without it
 # (or with TASKSMACK_WITH_CURL=OFF) the app still builds and the update check isn't offered.
