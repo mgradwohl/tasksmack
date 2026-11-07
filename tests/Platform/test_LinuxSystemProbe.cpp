@@ -1068,6 +1068,52 @@ TEST(LinuxSystemProbeTest, AnInterfacesKindComesFromItsSysfsTypeAndDevType)
     }
 }
 
+// #3374: every ARP type the classifier names, by its /sys/class/net/<iface>/type alone (no DEVTYPE, no wireless
+// directory): loopback under another name, the three 802.11 types a monitor-mode or raw Wi-Fi device reports, PPP,
+// the IPv4 and IPv6 tunnels and GRE, and a type that isn't a number.
+TEST(LinuxSystemProbeTest, EveryArpTypeTheClassifierNamesIsReadFromSysfs)
+{
+    ScopedTempDir proc("ts_test_sys_net_arp");
+    ScopedTempDir sys("ts_test_sys_class_net_arp");
+    std::filesystem::create_directories(proc.path / "net");
+    using Platform::NetInterfaceKind;
+    const std::vector<std::tuple<std::string_view, std::string_view, NetInterfaceKind>> cases{
+        {"lb0", "772", NetInterfaceKind::Loopback},
+        {"mon0", "801", NetInterfaceKind::WiFi},
+        {"prism0", "802", NetInterfaceKind::WiFi},
+        {"radio0", "803", NetInterfaceKind::WiFi},
+        {"ppp0", "512", NetInterfaceKind::Tunnel},
+        {"tunl0", "768", NetInterfaceKind::Tunnel},
+        {"ip6tnl0", "769", NetInterfaceKind::Tunnel},
+        {"gre0", "778", NetInterfaceKind::Tunnel},
+        {"ip6gre0", "823", NetInterfaceKind::Tunnel},
+        {"bad0", "ethernet", NetInterfaceKind::Unknown},
+    };
+    {
+        std::ofstream netDev(proc.path / "net" / "dev");
+        netDev << NET_DEV_HEADER;
+        for (const auto& [name, arpType, kind] : cases)
+        {
+            netDev << netDevLine(name, 100, 10);
+        }
+    }
+    for (const auto& [name, arpType, kind] : cases)
+    {
+        addSysfsInterface(sys.path, name, false);
+        std::ofstream(sys.path / name / "type") << arpType << "\n";
+    }
+
+    LinuxSystemProbe probe(proc.path, sys.path);
+    const auto counters = probe.read();
+    ASSERT_EQ(counters.networkInterfaces.size(), cases.size());
+    for (const auto& [name, arpType, kind] : cases)
+    {
+        const auto found = std::ranges::find_if(counters.networkInterfaces, [name](const auto& iface) { return iface.name == name; });
+        ASSERT_NE(found, counters.networkInterfaces.end()) << name;
+        EXPECT_EQ(found->kind, kind) << name << " (type " << arpType << ")";
+    }
+}
+
 TEST(LinuxSystemProbeTest, AnInterfaceMissingFromSysfsHasAnUnknownKind)
 {
     ScopedTempDir proc("ts_test_sys_net_kind_missing");
