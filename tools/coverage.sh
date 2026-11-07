@@ -145,12 +145,16 @@ done
 # below takes them with the rest. A failure or a skip counts as a failed suite.
 if [[ "${TASKSMACK_COVERAGE_ROOT:-0}" == 1 ]]; then
     ROOT_PROFILE_DIR="${BUILD_DIR}/coverage-root"
+    # The CI real-system tests (#3491) skip unless TASKSMACK_CI_REAL_SYSTEM and a disposable runner are set, so
+    # they're left out here (#3524): CI's PR root step runs them, and this pass keeps its no-skip, exact-count check.
+    ROOT_TEST_FILTER='TasksmackHelperRootTest.*:DetachedSpawnTest.AsRoot*'
+    ROOT_TEST_FILTER+=':-TasksmackHelperRootTest.ActsOnARealUnitUnderItsSandbox:TasksmackHelperRootTest.ClosesAnotherUsersTcpConnection'
     mkdir -p "$ROOT_PROFILE_DIR" && chmod 1777 "$ROOT_PROFILE_DIR"
     root_log="$(mktemp "${TMPDIR:-/tmp}/tasksmack-coverage-root.XXXXXX")"
     root_status=0
     # shellcheck disable=SC2024 # the log is meant to be the invoking user's file, not root's
     sudo -n env LLVM_PROFILE_FILE="${ROOT_PROFILE_DIR}/coverage-%c%p.profraw" ./tests/TaskSmackTests \
-        --gtest_filter='TasksmackHelperRootTest.*:DetachedSpawnTest.AsRoot*' >"$root_log" 2>&1 || root_status=$?
+        --gtest_filter="${ROOT_TEST_FILTER}" >"$root_log" 2>&1 || root_status=$?
     if [[ $root_status -ne 0 ]] || grep -q '\[  SKIPPED \]' "$root_log" || ! grep -q '\[  PASSED  \] 2 tests' "$root_log"; then
         echo "Warning: the root tests (TasksmackHelperRootTest, DetachedSpawnTest.AsRoot*) didn't run and pass as root (exit code ${root_status}); its log:" >&2
         tail -n 30 "$root_log" >&2 || true
