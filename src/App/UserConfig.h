@@ -7,7 +7,7 @@
 #include "Domain/SamplingConfig.h"
 #include "Domain/UpdateCheck.h"
 #include "Platform/ThreadName.h"
-#include "UI/Theme.h"
+#include "UI/FontPointSize.h"
 
 #include <atomic>
 #include <cstdint>
@@ -37,11 +37,13 @@ struct UserSettings
     // Theme
     std::string themeId = "arctic-fire";
 
-    // Font size
-    UI::FontSize fontSize = UI::FontSize::Medium;
+    // Font size (#3375), [font] point_size: the body text size in whole points, FONT_POINT_SIZE_MIN to
+    // FONT_POINT_SIZE_MAX (UI/FontPointSize.h). The old named size, [font] size, is still read when there is no
+    // point size, and dropped on the next save.
+    int fontPointSize = UI::FONT_POINT_SIZE_DEFAULT;
 
     // Group by (#3068): what the Processes table groups by, [process_table] group_by. Written only when
-    // it isn't None. Beside fontSize, so the two one-byte fields share their padding.
+    // it isn't None.
     ProcessGrouping::GroupBy processGroupBy = ProcessGrouping::GroupBy::None;
 
     // Process table column visibility

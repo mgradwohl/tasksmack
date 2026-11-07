@@ -16,6 +16,7 @@
 #include "Platform/ThreadName.h"
 #include "ProcessColumnConfig.h"
 #include "UI/ChartWidgets.h"
+#include "UI/FontPointSize.h"
 #include "UI/InterfaceScale.h"
 #include "UI/Theme.h"
 
@@ -126,6 +127,36 @@ void migrateLegacyProcessColumns(toml::table& document, const toml::table& mine)
             columns->erase(key);
         }
     }
+}
+
+/// The named font size of a config.toml from before point sizes (#3375), `[font] size = "large"`, as `[font]
+/// point_size = 10`, unless the file has a point size already that reads as a number (which then wins, as it does on
+/// load: readSettings()). The name goes either way, so the file doesn't keep a setting nothing reads. Read from the
+/// file as it is now, so a named size edited in while TaskSmack ran is kept too; an unknown name is just dropped, and
+/// reads as the default, as on load. A point size that isn't a number (a hand edit, `point_size = "big"`) is ignored
+/// on load, so it is replaced: by the name's size, or else by @p sessionPoints, the size this session has; kept, it
+/// would lose the name's size on the next load once the name is gone. Runs after the owned keys are merged in: a size
+/// changed in this session is written as a point size by then.
+void migrateLegacyFontSize(toml::table& document, int sessionPoints)
+{
+    auto* font = document.get_as<toml::table>("font");
+    if (font == nullptr || !font->contains("size"))
+    {
+        return;
+    }
+    if (!(*font)["point_size"].value<double>().has_value())
+    {
+        const auto name = (*font)["size"].value<std::string>();
+        if (const std::optional<int> named = name.has_value() ? UI::legacyFontSizePoints(*name) : std::nullopt)
+        {
+            font->insert_or_assign("point_size", *named);
+        }
+        else if (font->contains("point_size"))
+        {
+            font->insert_or_assign("point_size", UI::clampFontPointSize(sessionPoints));
+        }
+    }
+    font->erase("size");
 }
 
 constexpr int WINDOW_POS_ABS_MAX = 100'000;
@@ -250,33 +281,15 @@ void readSettings(const toml::table& config, UserSettings& settings)
         settings.themeId = *theme;
     }
 
-    // Font size
-    if (auto fontSizeStr = config["font"]["size"].value<std::string>())
+    // Font size (#3375): [font] point_size, rounded and clamped to the range when hand-edited. A file from before point
+    // sizes has only the named size, [font] size, which reads as the point size it was; an unknown name is the default.
+    if (auto points = config["font"]["point_size"].value<double>())
     {
-        if (*fontSizeStr == "small")
-        {
-            settings.fontSize = UI::FontSize::Small;
-        }
-        else if (*fontSizeStr == "medium")
-        {
-            settings.fontSize = UI::FontSize::Medium;
-        }
-        else if (*fontSizeStr == "large")
-        {
-            settings.fontSize = UI::FontSize::Large;
-        }
-        else if (*fontSizeStr == "extra-large")
-        {
-            settings.fontSize = UI::FontSize::ExtraLarge;
-        }
-        else if (*fontSizeStr == "huge")
-        {
-            settings.fontSize = UI::FontSize::Huge;
-        }
-        else if (*fontSizeStr == "even-huger")
-        {
-            settings.fontSize = UI::FontSize::EvenHuger;
-        }
+        settings.fontPointSize = UI::fontPointSizeFromConfig(*points);
+    }
+    else if (auto name = config["font"]["size"].value<std::string>())
+    {
+        settings.fontPointSize = UI::legacyFontSizePoints(*name).value_or(UI::FONT_POINT_SIZE_DEFAULT);
     }
 
     // Note: panels visibility is no longer used (removed in favor of tabbed UI)
@@ -513,33 +526,6 @@ void readSettings(const toml::table& config, UserSettings& settings)
 
 [[nodiscard]] toml::table buildTable(const UserSettings& settings)
 {
-    // Convert font size to string
-    std::string fontSizeStr;
-    switch (settings.fontSize)
-    {
-    case UI::FontSize::Small:
-        fontSizeStr = "small";
-        break;
-    case UI::FontSize::Medium:
-        fontSizeStr = "medium";
-        break;
-    case UI::FontSize::Large:
-        fontSizeStr = "large";
-        break;
-    case UI::FontSize::ExtraLarge:
-        fontSizeStr = "extra-large";
-        break;
-    case UI::FontSize::Huge:
-        fontSizeStr = "huge";
-        break;
-    case UI::FontSize::EvenHuger:
-        fontSizeStr = "even-huger";
-        break;
-    default:
-        fontSizeStr = "medium";
-        break;
-    }
-
     // Build process columns table: only the columns whose visibility the user chose (#1376). The
     // others are left out so they keep following the defaults, which can change -- a new column, or
     // one this system can't fill (#1210) -- and a column the user resets is removed from the file.
@@ -613,7 +599,7 @@ void readSettings(const toml::table& config, UserSettings& settings)
             },
         },
         {"theme", toml::table{{"id", settings.themeId}}},
-        {"font", toml::table{{"size", fontSizeStr}}},
+        {"font", toml::table{{"point_size", UI::clampFontPointSize(settings.fontPointSize)}}},
         {"window", windowTable},
         {"process_columns", processColumnsTable},
         {"process_meters", processMetersTable},
@@ -1006,6 +992,8 @@ bool UserConfig::writeSettings(const UserSettings& settings)
     // A new file gets every setting; an existing one -- even one created or repaired since startup --
     // gets only the keys whose value TaskSmack changed from its baseline.
     UserConfigHelpers::mergeOwnedKeys(document, fileExists ? buildTable(m_Synced) : toml::table{}, mine);
+    // A file from before point sizes (#3375) gets the point size its named size meant, and loses the name.
+    migrateLegacyFontSize(document, settings.fontPointSize);
     // No chosen column left (all reset, or none ever chosen): no empty [process_columns] header.
     if (const auto* columns = document.get_as<toml::table>("process_columns"); columns != nullptr && columns->empty())
     {
@@ -1050,6 +1038,8 @@ bool UserConfig::writeSettings(const UserSettings& settings)
             "on integrated GPUs\n";
     text << "#   [ui] interface_scale: the size of text and controls in percent (100-300), in place of the display's own "
             "scale; 0 = Auto (the display's). For a display that reports the wrong scale, such as WSLg's 100%\n";
+    text << "#   [font] point_size: the size of body text in points (7-32, default 8); headings are 2 points larger. It "
+            "replaces the named size of earlier versions, [font] size\n";
     text << "#   [window] width/height/x/y: the window's normal (restored) size and position, kept while it is maximized; "
             "a position off every connected display is ignored at startup\n";
     text << "#   [window] maximized: reopen maximized; Restore returns to width/height/x/y\n";
@@ -1306,7 +1296,7 @@ void UserConfig::applyToApplication() const
 
     // Apply theme and font size
     theme.setThemeById(m_Settings.themeId);
-    theme.setFontSize(m_Settings.fontSize);
+    theme.setFontPointSize(m_Settings.fontPointSize);                 // UILayer rebuilds the fonts at it next frame (#3375)
     theme.setInterfaceScalePercent(m_Settings.interfaceScalePercent); // UILayer rebuilds at it next frame (#3376)
 
     // Push the anti-aliasing preference and the smoothing knobs into UI (which must not depend on
@@ -1323,7 +1313,7 @@ void UserConfig::captureFromApplication()
 
     // Capture current theme and font size
     m_Settings.themeId = theme.currentThemeId();
-    m_Settings.fontSize = theme.currentFontSize();
+    m_Settings.fontPointSize = theme.fontPointSize();
 }
 
 } // namespace App

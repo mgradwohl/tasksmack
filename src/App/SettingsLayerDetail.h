@@ -4,7 +4,7 @@
 /// @brief Internal implementation details for SettingsLayer, exposed for testing.
 /// @note These functions and types are not part of the public API and may change.
 
-#include "UI/Theme.h"
+#include "UI/FontPointSize.h"
 
 #include <algorithm>
 #include <array>
@@ -19,24 +19,31 @@ namespace App::Detail
 {
 
 // ========================================
-// Font size options
+// Font size options: every whole point size (#3375)
 // ========================================
 struct FontSizeOption
 {
     std::string_view label;
-    UI::FontSize value;
+    int points;
 };
 
-inline constexpr std::array<FontSizeOption, 6> FONT_SIZE_OPTIONS = {
+inline constexpr std::array<FontSizeOption, 26> FONT_SIZE_OPTIONS = {
     {
-        {.label = "Small", .value = UI::FontSize::Small},
-        {.label = "Medium", .value = UI::FontSize::Medium},
-        {.label = "Large", .value = UI::FontSize::Large},
-        {.label = "Extra Large", .value = UI::FontSize::ExtraLarge},
-        {.label = "Huge", .value = UI::FontSize::Huge},
-        {.label = "Largest", .value = UI::FontSize::EvenHuger},
+        {.label = "7 pt", .points = 7},   {.label = "8 pt", .points = 8},   {.label = "9 pt", .points = 9},
+        {.label = "10 pt", .points = 10}, {.label = "11 pt", .points = 11}, {.label = "12 pt", .points = 12},
+        {.label = "13 pt", .points = 13}, {.label = "14 pt", .points = 14}, {.label = "15 pt", .points = 15},
+        {.label = "16 pt", .points = 16}, {.label = "17 pt", .points = 17}, {.label = "18 pt", .points = 18},
+        {.label = "19 pt", .points = 19}, {.label = "20 pt", .points = 20}, {.label = "21 pt", .points = 21},
+        {.label = "22 pt", .points = 22}, {.label = "23 pt", .points = 23}, {.label = "24 pt", .points = 24},
+        {.label = "25 pt", .points = 25}, {.label = "26 pt", .points = 26}, {.label = "27 pt", .points = 27},
+        {.label = "28 pt", .points = 28}, {.label = "29 pt", .points = 29}, {.label = "30 pt", .points = 30},
+        {.label = "31 pt", .points = 31}, {.label = "32 pt", .points = 32},
     },
 };
+static_assert(FONT_SIZE_OPTIONS.front().points == UI::FONT_POINT_SIZE_MIN && FONT_SIZE_OPTIONS.back().points == UI::FONT_POINT_SIZE_MAX &&
+                  FONT_SIZE_OPTIONS.size() ==
+                      static_cast<std::size_t>(UI::FONT_POINT_SIZE_MAX) - static_cast<std::size_t>(UI::FONT_POINT_SIZE_MIN) + 1,
+              "one Font size option per point size in the setting's range");
 
 // ========================================
 // Interface scale options (percent; 0 = Auto) (#3376)

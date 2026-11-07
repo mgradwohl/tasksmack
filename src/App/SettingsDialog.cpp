@@ -9,6 +9,7 @@
 #include "UI/ChromeLayout.h"
 #include "UI/ChromeWidgets.h"
 #include "UI/DialogMetrics.h"
+#include "UI/FontPointSize.h"
 #include "UI/FrameOutline.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
@@ -108,7 +109,7 @@ void load(State& state, const UserSettings& settings, std::vector<UI::Discovered
     state.themeChoice = ComboState{
         .index = (themeIt != state.themes.end()) ? std::optional{static_cast<std::size_t>(themeIt - state.themes.begin())} : std::nullopt,
     };
-    state.fontSizeChoice = ComboState{.index = optionIndexOf(FONT_SIZE_OPTIONS, settings.fontSize, &Detail::FontSizeOption::value)};
+    state.fontSizeChoice = ComboState{.index = optionIndexOf(FONT_SIZE_OPTIONS, settings.fontPointSize, &Detail::FontSizeOption::points)};
     state.interfaceScaleChoice =
         ComboState{.index = optionIndexOf(INTERFACE_SCALE_OPTIONS, settings.interfaceScalePercent, &Detail::InterfaceScaleOption::percent)};
     state.refreshRateChoice =
@@ -136,7 +137,7 @@ void resetToDefaults(State& state)
     state.themeChoice = (themeIt != state.themes.end())
                           ? ComboState{.index = static_cast<std::size_t>(themeIt - state.themes.begin()), .touched = true}
                           : state.themeChoice; // The default theme's file is missing: leave the choice as it is
-    state.fontSizeChoice = Detail::defaultChoice(FONT_SIZE_OPTIONS, defaults.fontSize, &Detail::FontSizeOption::value);
+    state.fontSizeChoice = Detail::defaultChoice(FONT_SIZE_OPTIONS, defaults.fontPointSize, &Detail::FontSizeOption::points);
     state.interfaceScaleChoice =
         Detail::defaultChoice(INTERFACE_SCALE_OPTIONS, defaults.interfaceScalePercent, &Detail::InterfaceScaleOption::percent);
     state.refreshRateChoice = Detail::defaultChoice(REFRESH_RATE_OPTIONS, defaults.refreshIntervalMs, &Detail::RefreshRateOption::valueMs);
@@ -375,10 +376,15 @@ Action render(State& state)
         ImGui::SetNextItemWidth(appearanceComboWidth);
 
         // NOLINT comments below: label is always initialized from a string literal, so .data() is null-terminated
-        // The font size always matches an option (the enum has no other values), but a Ctrl+= change
-        // while the dialog is open moves it, so the preview follows the live setting.
-        const auto liveFontIndex = optionIndexOf(FONT_SIZE_OPTIONS, UserConfig::get().settings().fontSize, &Detail::FontSizeOption::value);
-        const std::size_t fontPreviewIndex = (state.fontSizeChoice.touched ? state.fontSizeChoice.index : liveFontIndex).value_or(1);
+        // The font size always matches an option (a point size is clamped to the options' range when it is read
+        // or set, #3375), but a Ctrl+= change while the dialog is open moves it, so the preview follows the live
+        // setting.
+        constexpr auto DEFAULT_FONT_INDEX =
+            static_cast<std::size_t>(UI::FONT_POINT_SIZE_DEFAULT) - static_cast<std::size_t>(UI::FONT_POINT_SIZE_MIN);
+        const auto liveFontIndex =
+            optionIndexOf(FONT_SIZE_OPTIONS, UserConfig::get().settings().fontPointSize, &Detail::FontSizeOption::points);
+        const std::size_t fontPreviewIndex =
+            (state.fontSizeChoice.touched ? state.fontSizeChoice.index : liveFontIndex).value_or(DEFAULT_FONT_INDEX);
         const char* currentFontSize = FONT_SIZE_OPTIONS[fontPreviewIndex].label.data(); // NOLINT(bugprone-suspicious-stringview-data-usage)
         if (UI::Widgets::beginOutlinedCombo("##FontSize", currentFontSize))
         {
@@ -397,6 +403,8 @@ Action render(State& state)
             }
             UI::Widgets::endOutlinedCombo();
         }
+        ImGui::SetItemTooltip("The size of text, in points; headings are 2 points larger. 8 pt is the default. "
+                              "Ctrl+= and Ctrl+- change it a point at a time");
 
         // Interface scale (#3376): the size of text and controls in place of the display's own scale, for a display
         // that misreports it. Auto shows what the display reports, so it never hides what it picked.
