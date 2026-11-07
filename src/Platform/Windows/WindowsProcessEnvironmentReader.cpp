@@ -25,6 +25,7 @@
 #include <cstring>
 #include <expected>
 #include <format>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string>
@@ -57,6 +58,41 @@ constexpr std::size_t PARAMETERS_ENVIRONMENT_SIZE_OFFSET = READER_IS_64_BIT ? 0x
 static_assert(PEB_PROCESS_PARAMETERS_OFFSET == (READER_IS_64_BIT ? 0x20 : 0x10));
 static_assert(PARAMETERS_ENVIRONMENT_OFFSET == (READER_IS_64_BIT ? 0x80 : 0x48));
 
+/// ProcessWow64Information, NtQueryInformationProcess's class 26: a ULONG_PTR, the address of a WOW64
+/// process's 32-bit PEB, or 0 for a process that doesn't run under WOW64 (#3364).
+constexpr ULONG PROCESS_WOW64_INFORMATION_CLASS = 26;
+
+/// The layout of a target's PEB and process parameters, as far as the reader follows them: the size of
+/// their pointers (and of EnvironmentSize, a ULONG_PTR), the offsets of the three fields read, and the
+/// highest address a pointer of that size can hold.
+struct PebLayout
+{
+    std::size_t pointerBytes = 0;
+    std::size_t parametersOffset = 0;      ///< PEB::ProcessParameters
+    std::size_t environmentOffset = 0;     ///< RTL_USER_PROCESS_PARAMETERS::Environment
+    std::size_t environmentSizeOffset = 0; ///< RTL_USER_PROCESS_PARAMETERS::EnvironmentSize
+    std::uintptr_t highestAddress = 0;
+};
+
+/// The reader's own pointer size: the PEB PROCESS_BASIC_INFORMATION points at.
+constexpr PebLayout NATIVE_LAYOUT{
+    .pointerBytes = sizeof(void*),
+    .parametersOffset = PEB_PROCESS_PARAMETERS_OFFSET,
+    .environmentOffset = PARAMETERS_ENVIRONMENT_OFFSET,
+    .environmentSizeOffset = PARAMETERS_ENVIRONMENT_SIZE_OFFSET,
+    .highestAddress = std::numeric_limits<std::uintptr_t>::max(),
+};
+
+/// A WOW64 process's PEB32 and RTL_USER_PROCESS_PARAMETERS32 (#3364): the 32-bit build's offsets above,
+/// with 32-bit pointers, so nothing they point at lies above 4 GiB.
+constexpr PebLayout WOW64_LAYOUT{
+    .pointerBytes = 4,
+    .parametersOffset = 0x10,
+    .environmentOffset = 0x48,
+    .environmentSizeOffset = 0x290,
+    .highestAddress = 0xFFFF'FFFFU,
+};
+
 /// The block is read a page at a time: a page is readable whole or not at all, so a read never fails
 /// part-way for want of the next page (ERROR_PARTIAL_COPY), and the last page of a block whose
 /// EnvironmentSize overstates it is still read.
@@ -79,15 +115,17 @@ constexpr std::size_t READ_PAGE_BYTES = 4096;
     return reinterpret_cast<LPCVOID>(address); // NOLINT(performance-no-int-to-ptr) - another process's address
 }
 
-/// One pointer-sized field of the target at @p address (a pointer, or the ULONG_PTR EnvironmentSize),
-/// or the Win32 error of the read.
+/// One pointer-sized field of @p layout at @p address in the target (a pointer, or the ULONG_PTR
+/// EnvironmentSize), zero-extended, or the Win32 error of the read. A read short of the field is
+/// ERROR_PARTIAL_COPY: nothing of a partly read field is used.
 [[nodiscard]] std::expected<std::uintptr_t, DWORD>
-readPointer(const ProcessEnvironmentFunctions& api, HANDLE process, std::uintptr_t address)
+readField(const ProcessEnvironmentFunctions& api, HANDLE process, const PebLayout& layout, std::uintptr_t address)
 {
-    std::uintptr_t value = 0;
+    static_assert(WOW64_LAYOUT.pointerBytes <= sizeof(std::uintptr_t));
+    std::uintptr_t value = 0; // little-endian: a 4-byte field fills the low bytes, the rest stay 0
     SIZE_T read = 0;
-    const BOOL ok = api.readProcessMemory(process, remote(address), &value, sizeof(value), &read);
-    if (ok == 0 || read != sizeof(value))
+    const BOOL ok = api.readProcessMemory(process, remote(address), &value, layout.pointerBytes, &read);
+    if (ok == 0 || read != layout.pointerBytes)
     {
         return std::unexpected((ok == 0) ? GetLastError() : static_cast<DWORD>(ERROR_PARTIAL_COPY));
     }
@@ -190,10 +228,18 @@ struct BlockRead
     return machine == IMAGE_FILE_MACHINE_I386 || machine == IMAGE_FILE_MACHINE_ARMNT;
 }
 
-/// Whether @p process runs with the reader's pointer size, so its PEB and process parameters have the
-/// layouts read here: decided by the pointer size each machine implies (is32BitMachine()), not by
-/// whether either runs under WOW64, which an x64 process on ARM64 Windows does with a 64-bit PEB.
-[[nodiscard]] std::expected<bool, std::string> sameBitness(const ProcessEnvironmentFunctions& api, HANDLE process)
+/// Which PEB of @p process holds its live environment.
+enum class TargetPeb : std::uint8_t
+{
+    Native,      ///< The reader's pointer size: the PEB ProcessBasicInformation gives
+    Wow64,       ///< A 32-bit process seen from the 64-bit reader: its PEB32 (ProcessWow64Information)
+    Unreachable, ///< A 64-bit process seen from a 32-bit reader, whose memory it cannot address
+};
+
+/// Which PEB of @p process to read: decided by the pointer size each machine implies
+/// (is32BitMachine()), not by whether either runs under WOW64, which an x64 process on ARM64 Windows
+/// does with a 64-bit PEB.
+[[nodiscard]] std::expected<TargetPeb, std::string> targetPeb(const ProcessEnvironmentFunctions& api, HANDLE process)
 {
     USHORT targetMachine = IMAGE_FILE_MACHINE_UNKNOWN;
     USHORT ownMachine = IMAGE_FILE_MACHINE_UNKNOWN;
@@ -206,7 +252,166 @@ struct BlockRead
     {
         return std::unexpected("TaskSmack's own architecture could not be read: " + errorText(GetLastError()));
     }
-    return is32BitMachine(targetMachine) == is32BitMachine(ownMachine);
+    const bool target32 = is32BitMachine(targetMachine);
+    const bool own32 = !READER_IS_64_BIT || is32BitMachine(ownMachine);
+    if (target32 == own32)
+    {
+        return TargetPeb::Native;
+    }
+    return target32 ? TargetPeb::Wow64 : TargetPeb::Unreachable;
+}
+
+/// How a failed NtQueryInformationProcess reports.
+[[nodiscard]] EnvironmentReadResult queryFailure(LONG status)
+{
+    switch (static_cast<std::uint32_t>(status))
+    {
+    case NT_STATUS_ACCESS_DENIED:
+        return failure(EnvironmentReadStatus::PermissionDenied);
+    case NT_STATUS_PROCESS_IS_TERMINATING:
+        return failure(EnvironmentReadStatus::ProcessExited);
+    default:
+        return failure(EnvironmentReadStatus::Failed,
+                       std::format("NtQueryInformationProcess failed: NTSTATUS 0x{:08X}", static_cast<std::uint32_t>(status)));
+    }
+}
+
+/// The address of @p process's PEB of the kind @p which names (Native or Wow64), or the failure to report.
+[[nodiscard]] std::expected<std::uintptr_t, EnvironmentReadResult>
+pebAddress(const ProcessEnvironmentFunctions& api, HANDLE process, TargetPeb which)
+{
+    if (api.ntQueryInformationProcess == nullptr)
+    {
+        return std::unexpected(failure(EnvironmentReadStatus::Failed, "NtQueryInformationProcess is not available"));
+    }
+    ULONG written = 0;
+    if (which == TargetPeb::Wow64)
+    {
+        ULONG_PTR peb32 = 0;
+        const LONG status = api.ntQueryInformationProcess(process, PROCESS_WOW64_INFORMATION_CLASS, &peb32, sizeof(peb32), &written);
+        if (status < 0)
+        {
+            return std::unexpected(queryFailure(status));
+        }
+        if (written < sizeof(peb32) || peb32 == 0 || peb32 > WOW64_LAYOUT.highestAddress)
+        {
+            // IsWow64Process2 said 32-bit, yet there is no 32-bit PEB (or none a 32-bit pointer reaches).
+            return std::unexpected(failure(EnvironmentReadStatus::Failed, "the 32-bit process has no 32-bit PEB"));
+        }
+        return static_cast<std::uintptr_t>(peb32);
+    }
+    PROCESS_BASIC_INFORMATION information{};
+    const LONG status =
+        api.ntQueryInformationProcess(process, PROCESS_BASIC_INFORMATION_CLASS, &information, sizeof(information), &written);
+    if (status < 0)
+    {
+        return std::unexpected(queryFailure(status));
+    }
+    if (written < sizeof(information) || information.PebBaseAddress == nullptr)
+    {
+        // A minimal process (System, Registry, Memory Compression) has no PEB; one still starting may not yet.
+        return std::unexpected(failure(EnvironmentReadStatus::Failed, "the process has no PEB"));
+    }
+    return reinterpret_cast<std::uintptr_t>(information.PebBaseAddress);
+}
+
+/// Whether @p address is a multiple of @p alignment (a power of two).
+[[nodiscard]] constexpr bool isAligned(std::uintptr_t address, std::size_t alignment) noexcept
+{
+    return (address & (alignment - 1)) == 0;
+}
+
+/// Whether the @p bytes bytes from @p address all lie at or below @p highest, without overflowing.
+[[nodiscard]] constexpr bool fits(std::uintptr_t address, std::size_t bytes, std::uintptr_t highest) noexcept
+{
+    return address <= highest && bytes - 1 <= highest - address;
+}
+
+/// The environment behind the PEB at @p peb in @p process, whose PEB and process parameters have
+/// @p layout. Every address is checked before it is followed: a corrupt or hostile pointer that is
+/// misaligned, or whose field would run past what a pointer of the layout's size reaches, is Failed.
+[[nodiscard]] EnvironmentReadResult
+readEnvironmentAt(const ProcessEnvironmentFunctions& api, HANDLE process, std::uintptr_t peb, const PebLayout& layout)
+{
+    if (!isAligned(peb, layout.pointerBytes) || !fits(peb, layout.parametersOffset + layout.pointerBytes, layout.highestAddress))
+    {
+        return failure(EnvironmentReadStatus::Failed, "the PEB's address is not valid");
+    }
+
+    // PEB::ProcessParameters, then its Environment and EnvironmentSize.
+    const std::expected<std::uintptr_t, DWORD> parameters = readField(api, process, layout, peb + layout.parametersOffset);
+    if (!parameters.has_value())
+    {
+        return readFailure(api, process, parameters.error(), "the PEB");
+    }
+    if (*parameters == 0)
+    {
+        return failure(EnvironmentReadStatus::Failed, "the process has no process parameters yet");
+    }
+    if (!isAligned(*parameters, layout.pointerBytes) ||
+        !fits(*parameters, layout.environmentSizeOffset + layout.pointerBytes, layout.highestAddress))
+    {
+        return failure(EnvironmentReadStatus::Failed, "the PEB points at process parameters at an address that is not valid");
+    }
+    const std::expected<std::uintptr_t, DWORD> environment = readField(api, process, layout, *parameters + layout.environmentOffset);
+    if (!environment.has_value())
+    {
+        return readFailure(api, process, environment.error(), "the process parameters");
+    }
+    if (*environment == 0)
+    {
+        return {.status = EnvironmentReadStatus::Ok, .variables = {}, .truncated = false, .detail = {}}; // no block: nothing set
+    }
+    if (!isAligned(*environment, sizeof(wchar_t)))
+    {
+        return failure(EnvironmentReadStatus::Failed,
+                       "the process parameters point at an environment block at an address that is not valid");
+    }
+    const std::expected<std::uintptr_t, DWORD> size = readField(api, process, layout, *parameters + layout.environmentSizeOffset);
+    if (!size.has_value())
+    {
+        return readFailure(api, process, size.error(), "the process parameters");
+    }
+
+    // The block: as far as EnvironmentSize says, under the cap -- its terminator ends it sooner, before
+    // any slack the allocation has past it -- or, where EnvironmentSize is 0, as far as the terminator;
+    // and never past the highest address the layout's pointers reach.
+    const auto declared = static_cast<std::size_t>(*size);
+    const bool sized = declared != 0 && declared <= ENVIRONMENT_BLOCK_READ_CAP_BYTES;
+    const std::size_t wanted = sized ? declared : ENVIRONMENT_BLOCK_READ_CAP_BYTES;
+    const std::uintptr_t room = layout.highestAddress - *environment; // one less than the bytes from it to the top
+    const std::size_t limit = (room < wanted) ? static_cast<std::size_t>(room) + 1 : wanted;
+    const BlockRead block = readBlock(api, process, *environment, limit);
+    if (block.bytes.empty() && block.error != 0)
+    {
+        return readFailure(api, process, block.error, "the environment block");
+    }
+    // Cut at the cap (or the top of the address space) before the size, or at a page that could not be
+    // read before the terminator: what follows is unknown.
+    const bool truncated = (block.reachedLimit && (!sized || limit < declared)) || block.error != 0;
+
+    // UTF-16 to UTF-8 with the NULs kept (the length is explicit), then the NUL-separated NAME=value
+    // entries as /proc/[pid]/environ's are parsed, escaped for display. Never logged, at any level: the
+    // values are routinely secrets (#179).
+    const std::size_t chars = block.bytes.size() / sizeof(wchar_t);
+    std::wstring text(chars, L'\0');
+    if (chars > 0)
+    {
+        std::memcpy(text.data(), block.bytes.data(), chars * sizeof(wchar_t));
+    }
+    const std::string utf8 = WinString::wideToUtf8(std::wstring_view{text});
+    EnvironmentReadResult result{
+        .status = EnvironmentReadStatus::Ok,
+        .variables = Environment::parseEnvironBlock(utf8),
+        .truncated = truncated,
+        .detail = {},
+    };
+    if (result.variables.size() > ENVIRONMENT_VARIABLE_CAP)
+    {
+        result.variables.resize(ENVIRONMENT_VARIABLE_CAP);
+        result.truncated = true;
+    }
+    return result;
 }
 
 } // namespace
@@ -236,109 +441,24 @@ EnvironmentReadResult WindowsProcessEnvironmentReader::readEnvironment(const Pro
     }
     const InjectableHandle process = std::move(*opened);
 
-    // The layouts read are the reader's own; a process of the other pointer size keeps its block behind
-    // a PEB of the other layout, which isn't read yet (see the header).
-    const std::expected<bool, std::string> same = sameBitness(m_Api, process.get());
-    if (!same.has_value())
+    // A process of the reader's own pointer size keeps its live block behind the PEB that
+    // ProcessBasicInformation gives. A 32-bit (WOW64) one seen from the 64-bit reader keeps it behind its
+    // PEB32 instead (#3364): it has a 64-bit PEB too, but that one holds only the block it started with.
+    const std::expected<TargetPeb, std::string> which = targetPeb(m_Api, process.get());
+    if (!which.has_value())
     {
-        return failure(EnvironmentReadStatus::Failed, same.error());
+        return failure(EnvironmentReadStatus::Failed, which.error());
     }
-    if (!*same)
+    if (*which == TargetPeb::Unreachable)
     {
-        return failure(EnvironmentReadStatus::Failed,
-                       READER_IS_64_BIT ? "a 32-bit process (WOW64), whose environment TaskSmack does not read yet"
-                                        : "a 64-bit process, whose environment this 32-bit TaskSmack cannot read");
+        return failure(EnvironmentReadStatus::Failed, "a 64-bit process, whose environment this 32-bit TaskSmack cannot read");
     }
-
-    // The PEB's address.
-    if (m_Api.ntQueryInformationProcess == nullptr)
+    const std::expected<std::uintptr_t, EnvironmentReadResult> peb = pebAddress(m_Api, process.get(), *which);
+    if (!peb.has_value())
     {
-        return failure(EnvironmentReadStatus::Failed, "NtQueryInformationProcess is not available");
+        return peb.error();
     }
-    PROCESS_BASIC_INFORMATION information{};
-    ULONG written = 0;
-    const LONG status =
-        m_Api.ntQueryInformationProcess(process.get(), PROCESS_BASIC_INFORMATION_CLASS, &information, sizeof(information), &written);
-    if (status < 0)
-    {
-        switch (static_cast<std::uint32_t>(status))
-        {
-        case NT_STATUS_ACCESS_DENIED:
-            return failure(EnvironmentReadStatus::PermissionDenied);
-        case NT_STATUS_PROCESS_IS_TERMINATING:
-            return failure(EnvironmentReadStatus::ProcessExited);
-        default:
-            return failure(EnvironmentReadStatus::Failed,
-                           std::format("NtQueryInformationProcess failed: NTSTATUS 0x{:08X}", static_cast<std::uint32_t>(status)));
-        }
-    }
-    if (written < sizeof(information) || information.PebBaseAddress == nullptr)
-    {
-        // A minimal process (System, Registry, Memory Compression) has no PEB; one still starting may not yet.
-        return failure(EnvironmentReadStatus::Failed, "the process has no PEB");
-    }
-    const auto peb = reinterpret_cast<std::uintptr_t>(information.PebBaseAddress);
-
-    // PEB::ProcessParameters, then its Environment and EnvironmentSize.
-    const std::expected<std::uintptr_t, DWORD> parameters = readPointer(m_Api, process.get(), peb + PEB_PROCESS_PARAMETERS_OFFSET);
-    if (!parameters.has_value())
-    {
-        return readFailure(m_Api, process.get(), parameters.error(), "the PEB");
-    }
-    if (*parameters == 0)
-    {
-        return failure(EnvironmentReadStatus::Failed, "the process has no process parameters yet");
-    }
-    const std::expected<std::uintptr_t, DWORD> environment = readPointer(m_Api, process.get(), *parameters + PARAMETERS_ENVIRONMENT_OFFSET);
-    if (!environment.has_value())
-    {
-        return readFailure(m_Api, process.get(), environment.error(), "the process parameters");
-    }
-    if (*environment == 0)
-    {
-        return {.status = EnvironmentReadStatus::Ok, .variables = {}, .truncated = false, .detail = {}}; // no block: nothing set
-    }
-    const std::expected<std::uintptr_t, DWORD> size = readPointer(m_Api, process.get(), *parameters + PARAMETERS_ENVIRONMENT_SIZE_OFFSET);
-    if (!size.has_value())
-    {
-        return readFailure(m_Api, process.get(), size.error(), "the process parameters");
-    }
-
-    // The block: as far as EnvironmentSize says, under the cap -- its terminator ends it sooner, before
-    // any slack the allocation has past it -- or, where EnvironmentSize is 0, as far as the terminator.
-    const auto declared = static_cast<std::size_t>(*size);
-    const bool sized = declared != 0 && declared <= ENVIRONMENT_BLOCK_READ_CAP_BYTES;
-    const std::size_t limit = sized ? declared : ENVIRONMENT_BLOCK_READ_CAP_BYTES;
-    const BlockRead block = readBlock(m_Api, process.get(), *environment, limit);
-    if (block.bytes.empty() && block.error != 0)
-    {
-        return readFailure(m_Api, process.get(), block.error, "the environment block");
-    }
-    // Cut at the cap, or at a page that could not be read before the terminator: what follows is unknown.
-    const bool truncated = (block.reachedLimit && !sized) || block.error != 0;
-
-    // UTF-16 to UTF-8 with the NULs kept (the length is explicit), then the NUL-separated NAME=value
-    // entries as /proc/[pid]/environ's are parsed, escaped for display. Never logged, at any level: the
-    // values are routinely secrets (#179).
-    const std::size_t chars = block.bytes.size() / sizeof(wchar_t);
-    std::wstring text(chars, L'\0');
-    if (chars > 0)
-    {
-        std::memcpy(text.data(), block.bytes.data(), chars * sizeof(wchar_t));
-    }
-    const std::string utf8 = WinString::wideToUtf8(std::wstring_view{text});
-    EnvironmentReadResult result{
-        .status = EnvironmentReadStatus::Ok,
-        .variables = Environment::parseEnvironBlock(utf8),
-        .truncated = truncated,
-        .detail = {},
-    };
-    if (result.variables.size() > ENVIRONMENT_VARIABLE_CAP)
-    {
-        result.variables.resize(ENVIRONMENT_VARIABLE_CAP);
-        result.truncated = true;
-    }
-    return result;
+    return readEnvironmentAt(m_Api, process.get(), *peb, (*which == TargetPeb::Wow64) ? WOW64_LAYOUT : NATIVE_LAYOUT);
 }
 
 // NOLINTEND(misc-include-cleaner)

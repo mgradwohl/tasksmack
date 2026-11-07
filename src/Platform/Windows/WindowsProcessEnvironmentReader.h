@@ -11,13 +11,17 @@
 // of function pointers, the system's by default, so tests feed it a fake process's memory and denials
 // (test_WindowsProcessEnvironmentReader.cpp). Values are never logged (#179).
 //
-// The layouts read are those of the reader's own pointer size (64-bit for the x64 and ARM64 builds).
-// A process of the other size -- a 32-bit (WOW64) process seen from the 64-bit build -- keeps its
-// environment behind a PEB of the 32-bit layout, which this first cut does not read: it reports
-// Failed, saying so in the detail. (Such a process has a 64-bit PEB of the layout read here as well,
-// but that one holds only the block it started with, which would pass for current.) A follow-up can
-// read the 32-bit PEB, found with NtQueryInformationProcess(ProcessWow64Information). Reading as an
-// administrator through the elevated helper (canReadAuthorized(), #2517) is a later step too.
+// A process of the reader's own pointer size (64-bit for the x64 and ARM64 builds) is read through the
+// PEB above. A 32-bit (WOW64) process seen from the 64-bit build -- x86 on x64 or ARM64 Windows, or
+// ARM32 on the ARM64 Windows that still runs it -- keeps its live environment behind its 32-bit PEB
+// (#3364): NtQueryInformationProcess(ProcessWow64Information) gives that PEB32's address, and the same
+// three fields are read from PEB32 and RTL_USER_PROCESS_PARAMETERS32, with 32-bit pointers. (Such a
+// process has a 64-bit PEB as well, but that one holds only the block it started with, which would
+// pass for current.) An x64 process emulated on ARM64 has a 64-bit PEB and is read as a native one.
+// Each pointer is checked before it is followed: aligned for its field, and with what it points at
+// within the addresses a pointer of its size reaches; the block is never read past 4 GiB for a 32-bit
+// process. Reading as an administrator through the elevated helper (canReadAuthorized(), #2517) is a
+// later step: the Windows helper reads no environments (HelperMain.cpp).
 
 #ifdef _WIN32
 // clang-format off
@@ -51,7 +55,8 @@ inline constexpr std::size_t ENVIRONMENT_VARIABLE_CAP = 4096;
 /// handle openProcess returns is closed through closeHandle, so a fake handle never reaches the real
 /// CloseHandle. isWow64Process2 is also asked about this process (GetCurrentProcess()); the pointer
 /// size each answer's machine implies (x86 and ARM32 are 32-bit; UNKNOWN, AMD64 and ARM64 are 64-bit)
-/// tells the reader's own from the target's.
+/// tells the reader's own from the target's. ntQueryInformationProcess is asked for ProcessBasicInformation
+/// (class 0) for a process of the reader's size, and for ProcessWow64Information (class 26) for a 32-bit one.
 struct ProcessEnvironmentFunctions
 {
     using OpenProcessFn = HANDLE(WINAPI*)(DWORD, BOOL, DWORD);

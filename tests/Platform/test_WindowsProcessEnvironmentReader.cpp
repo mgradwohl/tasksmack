@@ -4,9 +4,11 @@
 /// serves: the NAME=value entries (a "=C:=C:\" drive entry, a non-ASCII value, an empty value, a
 /// control character, an entry without '='), nothing past the terminator, a denied open, a reused PID,
 /// an unknown start time, the block-size and variable-count caps, the scan to the double NUL when
-/// EnvironmentSize is 0 (its terminator straddling a page), a 32-bit (WOW64) target refused with its
-/// reason, failures of each step with theirs, a process that exits mid-read, and the handle closed
-/// exactly once. Plus one read of this test process through the real calls.
+/// EnvironmentSize is 0 (its terminator straddling a page), failures of each step with theirs, a
+/// process that exits mid-read, and the handle closed exactly once. A 32-bit (WOW64) target is read
+/// through its PEB32 from a canned 32-bit memory image (#3364): a normal block, a truncated one, an
+/// oversized EnvironmentSize, one near the top of its 4 GiB, misaligned pointers and a missing PEB32.
+/// Plus one read of this test process through the real calls.
 
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessEnvironment.h"
@@ -54,6 +56,13 @@ constexpr std::size_t PEB_PROCESS_PARAMETERS = 0x20;
 constexpr std::size_t PARAMETERS_ENVIRONMENT = 0x80;
 constexpr std::size_t PARAMETERS_ENVIRONMENT_SIZE = 0x3F0;
 
+// A WOW64 target's 32-bit memory, laid out the same way from WOW64_BASE (below 4 GiB) in a second buffer:
+// its PEB32, RTL_USER_PROCESS_PARAMETERS32 a page on, its block two pages on, with 32-bit pointers.
+constexpr std::uintptr_t WOW64_BASE = 0x7EFD'0000U;
+constexpr std::size_t PEB32_PROCESS_PARAMETERS = 0x10;
+constexpr std::size_t PARAMETERS32_ENVIRONMENT = 0x48;
+constexpr std::size_t PARAMETERS32_ENVIRONMENT_SIZE = 0x290;
+
 /// The answers the fakes give and what they saw; each test starts from a fresh one.
 struct FakeProcess
 {
@@ -66,6 +75,12 @@ struct FakeProcess
     std::uintptr_t pebAddress = REMOTE_BASE;           // what it reports; 0 for no PEB
     DWORD readError = 0;                               // non-zero: every ReadProcessMemory fails with it
     std::vector<std::byte> memory;                     // the target's memory from REMOTE_BASE; a read past its end fails
+    std::uintptr_t peb32Address = 0;                   // what ProcessWow64Information reports; 0: not WOW64
+    LONG wow64QueryStatus = 0;                         // ... and its NTSTATUS
+    std::uintptr_t wow64Base = WOW64_BASE;             // where wow64Memory starts
+    std::vector<std::byte> wow64Memory;                // the target's 32-bit memory from wow64Base
+    int wow64Queries = 0;
+    std::uintptr_t highestEnd = 0; // one past the highest byte any read asked for
     int opens = 0;
     int closes = 0;
     int reads = 0;
@@ -129,6 +144,19 @@ BOOL WINAPI fakeIsWow64Process2(HANDLE process, USHORT* machine, USHORT* native)
 LONG NTAPI fakeNtQueryInformationProcess(HANDLE process, ULONG informationClass, PVOID information, ULONG length, PULONG written)
 {
     EXPECT_EQ(process, fakeProcessHandle());
+    if (informationClass == 26U) // ProcessWow64Information: the PEB32's address
+    {
+        ++fake().wow64Queries;
+        EXPECT_EQ(length, static_cast<ULONG>(sizeof(ULONG_PTR)));
+        if (fake().wow64QueryStatus < 0)
+        {
+            return fake().wow64QueryStatus;
+        }
+        const ULONG_PTR peb32 = fake().peb32Address;
+        std::memcpy(information, &peb32, sizeof(peb32));
+        *written = sizeof(peb32);
+        return 0;
+    }
     EXPECT_EQ(informationClass, 0U); // ProcessBasicInformation
     EXPECT_EQ(length, static_cast<ULONG>(sizeof(PROCESS_BASIC_INFORMATION)));
     if (fake().queryStatus < 0)
@@ -156,25 +184,36 @@ BOOL WINAPI fakeReadProcessMemory(HANDLE process, LPCVOID address, LPVOID buffer
         return FALSE;
     }
     const auto remote = reinterpret_cast<std::uintptr_t>(address);
-    if (remote < REMOTE_BASE || remote - REMOTE_BASE + size > fake().memory.size())
+    fake().highestEnd = std::max(fake().highestEnd, remote + size);
+    const auto serve = [&](std::uintptr_t base, const std::vector<std::byte>& mapped) -> bool
     {
-        SetLastError(ERROR_PARTIAL_COPY); // past the fake's mapped memory
-        return FALSE;
+        if (remote < base || remote - base > mapped.size() || size > mapped.size() - (remote - base))
+        {
+            return false;
+        }
+        std::memcpy(buffer, mapped.data() + (remote - base), size);
+        *read = size;
+        return true;
+    };
+    if (serve(REMOTE_BASE, fake().memory) || serve(fake().wow64Base, fake().wow64Memory))
+    {
+        return TRUE;
     }
-    std::memcpy(buffer, fake().memory.data() + (remote - REMOTE_BASE), size);
-    *read = size;
-    return TRUE;
+    SetLastError(ERROR_PARTIAL_COPY); // past the fake's mapped memory
+    return FALSE;
 }
 
 ProcessEnvironmentFunctions fakeApi()
 {
-    return {.openProcess = &fakeOpenProcess,
-            .closeHandle = &fakeCloseHandle,
-            .getProcessTimes = &fakeGetProcessTimes,
-            .getExitCodeProcess = &fakeGetExitCodeProcess,
-            .isWow64Process2 = &fakeIsWow64Process2,
-            .ntQueryInformationProcess = &fakeNtQueryInformationProcess,
-            .readProcessMemory = &fakeReadProcessMemory};
+    return {
+        .openProcess = &fakeOpenProcess,
+        .closeHandle = &fakeCloseHandle,
+        .getProcessTimes = &fakeGetProcessTimes,
+        .getExitCodeProcess = &fakeGetExitCodeProcess,
+        .isWow64Process2 = &fakeIsWow64Process2,
+        .ntQueryInformationProcess = &fakeNtQueryInformationProcess,
+        .readProcessMemory = &fakeReadProcessMemory,
+    };
 }
 
 /// Writes @p value at @p offset of the fake's memory.
@@ -200,6 +239,34 @@ void layOut(std::wstring_view block, std::uintptr_t environmentSize, std::size_t
     {
         std::memcpy(fake().memory.data() + BLOCK_OFFSET, block.data(), blockBytes);
     }
+}
+
+/// Writes the 32-bit @p value at @p offset of the fake's 32-bit memory.
+void poke32(std::size_t offset, std::uint32_t value)
+{
+    std::memcpy(fake().wow64Memory.data() + offset, &value, sizeof(value));
+}
+
+/// Lays the fake WOW64 process's 32-bit memory out as layOut() does the 64-bit one: a PEB32 at
+/// wow64Base pointing at its process parameters a page on, those at @p block two pages on with
+/// @p environmentSize as EnvironmentSize, then @p slack bytes of 0xCC, mapped to a page boundary.
+/// ProcessWow64Information reports the PEB32; IsWow64Process2 says x86.
+void layOutWow64(std::wstring_view block, std::uint32_t environmentSize, std::size_t slack = 0)
+{
+    const std::size_t blockBytes = block.size() * sizeof(wchar_t);
+    const std::size_t used = BLOCK_OFFSET + blockBytes + slack;
+    fake().wow64Memory.assign(((used + PAGE - 1) / PAGE) * PAGE, std::byte{0xCC});
+    std::fill_n(fake().wow64Memory.begin(), BLOCK_OFFSET, std::byte{0});
+    const auto base = static_cast<std::uint32_t>(fake().wow64Base);
+    poke32(PEB32_PROCESS_PARAMETERS, base + static_cast<std::uint32_t>(PARAMETERS_OFFSET));
+    poke32(PARAMETERS_OFFSET + PARAMETERS32_ENVIRONMENT, base + static_cast<std::uint32_t>(BLOCK_OFFSET));
+    poke32(PARAMETERS_OFFSET + PARAMETERS32_ENVIRONMENT_SIZE, environmentSize);
+    if (blockBytes > 0)
+    {
+        std::memcpy(fake().wow64Memory.data() + BLOCK_OFFSET, block.data(), blockBytes);
+    }
+    fake().peb32Address = fake().wow64Base;
+    fake().targetMachine = IMAGE_FILE_MACHINE_I386;
 }
 
 /// @p entries as an environment block: each ended by a NUL, then the terminating NUL.
@@ -240,12 +307,14 @@ TEST_F(WindowsProcessEnvironmentReaderTest, ReadsEveryVariableFromTheBlock)
 {
     // A drive's working directory entry, a path, an empty value, non-ASCII (BMP and a surrogate pair),
     // a control character, and an entry without '='; then the terminator, then slack the size covers.
-    const std::wstring block = joinBlock({L"=C:=C:\\Users\\me",
-                                          L"PATH=C:\\Windows;C:\\Windows\\System32",
-                                          L"EMPTY=",
-                                          L"UNICODE=caf\u00E9 \u00DF \U0001F600",
-                                          L"TAB=a\tb",
-                                          L"NOEQUALS"});
+    const std::wstring block = joinBlock({
+        L"=C:=C:\\Users\\me",
+        L"PATH=C:\\Windows;C:\\Windows\\System32",
+        L"EMPTY=",
+        L"UNICODE=caf\u00E9 \u00DF \U0001F600",
+        L"TAB=a\tb",
+        L"NOEQUALS",
+    });
     layOut(block, (block.size() * sizeof(wchar_t)) + 64, 64);
 
     WindowsProcessEnvironmentReader reader(fakeApi());
@@ -310,25 +379,197 @@ TEST_F(WindowsProcessEnvironmentReaderTest, ReusedPidAndUnknownIdentityAreNotRea
     EXPECT_EQ(fake().reads, 0);
 }
 
-TEST_F(WindowsProcessEnvironmentReaderTest, AWow64TargetIsFailedWithItsReason)
+TEST_F(WindowsProcessEnvironmentReaderTest, AWow64TargetIsReadThroughItsPeb32)
 {
-    layOut(joinBlock({L"A=1"}), 10);
-    fake().targetMachine = IMAGE_FILE_MACHINE_I386;
+    // The 64-bit PEB holds the block the process started with; the PEB32 the live
+    // one, which is read.
+    layOut(joinBlock({L"STALE=from the 64-bit PEB"}), 64);
+    const std::wstring block = joinBlock({L"=C:=C:\\Program Files (x86)", L"PATH=C:\\Windows\\SysWOW64", L"EMPTY=", L"UNICODE=caf\u00E9"});
+    layOutWow64(block, static_cast<std::uint32_t>((block.size() * sizeof(wchar_t)) + 32), 32);
+
     WindowsProcessEnvironmentReader reader(fakeApi());
-    const EnvironmentReadResult result = reader.readEnvironment(TARGET);
-    EXPECT_EQ(result.status, EnvironmentReadStatus::Failed);
-    EXPECT_TRUE(result.detail.contains("32-bit")) << result.detail;
-    EXPECT_TRUE(result.variables.empty());
-    EXPECT_EQ(fake().reads, 0); // nothing of its memory is read
+    EnvironmentReadResult result = reader.readEnvironment(TARGET);
+    ASSERT_EQ(result.status, EnvironmentReadStatus::Ok) << result.detail;
+    EXPECT_FALSE(result.truncated);
+    ASSERT_EQ(result.variables.size(), 4U);
+    EXPECT_EQ(result.variables[0].name, "=C:");
+    EXPECT_EQ(result.variables[0].value, "C:\\Program Files (x86)");
+    EXPECT_EQ(valueOf(result, "PATH"), std::optional<std::string>("C:\\Windows\\SysWOW64"));
+    EXPECT_EQ(valueOf(result, "EMPTY"), std::optional<std::string>(""));
+    EXPECT_EQ(valueOf(result, "UNICODE"), std::optional<std::string>("caf\xC3\xA9"));
+    EXPECT_FALSE(valueOf(result, "STALE").has_value());
+    EXPECT_EQ(fake().wow64Queries, 1);
+    EXPECT_EQ(fake().reads, 4); // the three 32-bit fields, then the block
+    EXPECT_LE(fake().highestEnd,
+              WOW64_BASE + (3 * PAGE)); // nothing of the 64-bit PEB's memory read
+    EXPECT_LE(fake().bytesRequested, (3 * sizeof(std::uint32_t)) + PAGE);
 
-    fake().targetMachine = IMAGE_FILE_MACHINE_ARMNT; // ARM32 under WOW64 on ARM64, the same
-    EXPECT_EQ(reader.readEnvironment(TARGET).status, EnvironmentReadStatus::Failed);
+    fake().targetMachine = IMAGE_FILE_MACHINE_ARMNT; // ARM32 under WOW64 on
+                                                     // ARM64: the same 32-bit PEB
+    result = reader.readEnvironment(TARGET);
+    ASSERT_EQ(result.status, EnvironmentReadStatus::Ok) << result.detail;
+    EXPECT_EQ(result.variables.size(), 4U);
 
     fake().targetMachine = IMAGE_FILE_MACHINE_I386;
-    fake().selfMachine = IMAGE_FILE_MACHINE_AMD64; // an x64 TaskSmack emulated on ARM64 is 64-bit all the same
-    EXPECT_EQ(reader.readEnvironment(TARGET).status, EnvironmentReadStatus::Failed);
+    fake().selfMachine = IMAGE_FILE_MACHINE_AMD64; // an x64 TaskSmack emulated on
+                                                   // ARM64 is 64-bit all the same
+    result = reader.readEnvironment(TARGET);
+    ASSERT_EQ(result.status, EnvironmentReadStatus::Ok) << result.detail;
+    EXPECT_EQ(result.variables.size(), 4U);
 }
 
+TEST_F(WindowsProcessEnvironmentReaderTest, ANativeTargetNeverAsksForAPeb32)
+{
+    layOut(joinBlock({L"A=1"}), 10);
+    WindowsProcessEnvironmentReader reader(fakeApi());
+    ASSERT_EQ(reader.readEnvironment(TARGET).status, EnvironmentReadStatus::Ok);
+    EXPECT_EQ(fake().wow64Queries, 0);
+}
+
+TEST_F(WindowsProcessEnvironmentReaderTest, AWow64BlockWithNoTerminatorBeforeUnmappedMemoryIsTruncated)
+{
+    // A page the block fills with no terminator, EnvironmentSize 0; the next page
+    // is unmapped.
+    std::wstring block = L"A=1";
+    block += L'\0';
+    block += L"B=";
+    block.resize(PAGE / sizeof(wchar_t), L'x');
+    layOutWow64(block, 0);
+    WindowsProcessEnvironmentReader reader(fakeApi());
+    EnvironmentReadResult result = reader.readEnvironment(TARGET);
+    ASSERT_EQ(result.status, EnvironmentReadStatus::Ok) << result.detail;
+    EXPECT_TRUE(result.truncated);
+    ASSERT_EQ(result.variables.size(), 2U);
+    EXPECT_EQ(result.variables[1].value.size(), (PAGE / sizeof(wchar_t)) - 6);
+
+    // Process parameters cut short inside EnvironmentSize: that field fails,
+    // nothing of it is guessed.
+    fake().wow64Memory.resize(PARAMETERS_OFFSET + PARAMETERS32_ENVIRONMENT_SIZE + 2);
+    result = reader.readEnvironment(TARGET);
+    EXPECT_EQ(result.status, EnvironmentReadStatus::Failed);
+    EXPECT_TRUE(result.detail.contains("process parameters")) << result.detail;
+}
+
+TEST_F(WindowsProcessEnvironmentReaderTest, AnOversizedWow64EnvironmentSizeStopsAtTheTerminatorOrTheCap)
+{
+    // EnvironmentSize far past the cap: read only as far as the terminator.
+    layOutWow64(joinBlock({L"A=1", L"B=2"}), 0xFFFF'FFFFU);
+    WindowsProcessEnvironmentReader reader(fakeApi());
+    EnvironmentReadResult result = reader.readEnvironment(TARGET);
+    ASSERT_EQ(result.status, EnvironmentReadStatus::Ok) << result.detail;
+    EXPECT_FALSE(result.truncated);
+    EXPECT_EQ(result.variables.size(), 2U);
+
+    // ... and with no terminator, no further than the cap.
+    std::wstring huge;
+    for (int i = 0; i < 600; ++i)
+    {
+        std::wstring entry = L"V" + std::to_wstring(i) + L"=";
+        entry.resize(1023, L'x');
+        huge += entry;
+        huge += L'\0';
+    }
+    layOutWow64(huge, 0xFFFF'FFFFU);
+    fake().bytesRequested = 0;
+    result = reader.readEnvironment(TARGET);
+    ASSERT_EQ(result.status, EnvironmentReadStatus::Ok) << result.detail;
+    EXPECT_TRUE(result.truncated);
+    EXPECT_EQ(result.variables.size(), ENVIRONMENT_BLOCK_READ_CAP_BYTES / 2048);
+    EXPECT_LE(fake().bytesRequested, ENVIRONMENT_BLOCK_READ_CAP_BYTES + (3 * sizeof(std::uint32_t)));
+    EXPECT_LE(fake().largestRead, PAGE);
+}
+
+TEST_F(WindowsProcessEnvironmentReaderTest, AWow64BlockIsNeverReadPastFourGiB)
+{
+    // The block on the 32-bit address space's last page, with no terminator and
+    // an EnvironmentSize that runs past 4 GiB: the read stops at 0xFFFFFFFF and
+    // says truncated.
+    fake().wow64Base = 0xFFFF'D000U;
+    std::wstring block = L"A=1";
+    block += L'\0';
+    block += L"B=";
+    block.resize(PAGE / sizeof(wchar_t), L'x');
+    layOutWow64(block, 0x10000);
+    WindowsProcessEnvironmentReader reader(fakeApi());
+    const EnvironmentReadResult result = reader.readEnvironment(TARGET);
+    ASSERT_EQ(result.status, EnvironmentReadStatus::Ok) << result.detail;
+    EXPECT_TRUE(result.truncated);
+    EXPECT_EQ(result.variables.size(), 2U);
+    EXPECT_EQ(fake().highestEnd, std::uintptr_t{0x1'0000'0000ULL});
+}
+
+TEST_F(WindowsProcessEnvironmentReaderTest, MisalignedWow64PointersAreNotFollowed)
+{
+    layOutWow64(joinBlock({L"A=1"}), 10);
+    WindowsProcessEnvironmentReader reader(fakeApi());
+
+    // An environment block at an odd address: its UTF-16 can't start there.
+    poke32(PARAMETERS_OFFSET + PARAMETERS32_ENVIRONMENT, static_cast<std::uint32_t>(WOW64_BASE + BLOCK_OFFSET + 1));
+    EnvironmentReadResult result = reader.readEnvironment(TARGET);
+    EXPECT_EQ(result.status, EnvironmentReadStatus::Failed);
+    EXPECT_TRUE(result.detail.contains("environment block")) << result.detail;
+    EXPECT_EQ(fake().reads,
+              2); // ProcessParameters and Environment; neither the size nor the block
+    EXPECT_TRUE(result.variables.empty());
+
+    // Process parameters at an address that is not 4-byte aligned.
+    poke32(PARAMETERS_OFFSET + PARAMETERS32_ENVIRONMENT, static_cast<std::uint32_t>(WOW64_BASE + BLOCK_OFFSET));
+    poke32(PEB32_PROCESS_PARAMETERS, static_cast<std::uint32_t>(WOW64_BASE + PARAMETERS_OFFSET + 2));
+    fake().reads = 0;
+    result = reader.readEnvironment(TARGET);
+    EXPECT_EQ(result.status, EnvironmentReadStatus::Failed);
+    EXPECT_TRUE(result.detail.contains("process parameters")) << result.detail;
+    EXPECT_EQ(fake().reads, 1);
+
+    // Process parameters whose EnvironmentSize would lie past 4 GiB.
+    poke32(PEB32_PROCESS_PARAMETERS, 0xFFFF'FF00U);
+    fake().reads = 0;
+    EXPECT_EQ(reader.readEnvironment(TARGET).status, EnvironmentReadStatus::Failed);
+    EXPECT_EQ(fake().reads, 1);
+
+    // A misaligned PEB32: nothing read.
+    poke32(PEB32_PROCESS_PARAMETERS, static_cast<std::uint32_t>(WOW64_BASE + PARAMETERS_OFFSET));
+    fake().peb32Address = WOW64_BASE + 1;
+    fake().reads = 0;
+    result = reader.readEnvironment(TARGET);
+    EXPECT_EQ(result.status, EnvironmentReadStatus::Failed);
+    EXPECT_TRUE(result.detail.contains("PEB")) << result.detail;
+    EXPECT_EQ(fake().reads, 0);
+}
+
+TEST_F(WindowsProcessEnvironmentReaderTest, AWow64TargetWithoutAUsablePeb32SaysSo)
+{
+    layOutWow64(joinBlock({L"A=1"}), 10);
+    WindowsProcessEnvironmentReader reader(fakeApi());
+
+    fake().peb32Address = 0; // IsWow64Process2 says x86, ProcessWow64Information says not WOW64
+    EnvironmentReadResult result = reader.readEnvironment(TARGET);
+    EXPECT_EQ(result.status, EnvironmentReadStatus::Failed);
+    EXPECT_TRUE(result.detail.contains("32-bit PEB")) << result.detail;
+
+    fake().peb32Address = std::uintptr_t{0x1'0000'0000ULL}; // past what a 32-bit pointer reaches
+    EXPECT_EQ(reader.readEnvironment(TARGET).status, EnvironmentReadStatus::Failed);
+    EXPECT_EQ(fake().reads, 0);
+    fake().peb32Address = WOW64_BASE;
+
+    fake().wow64QueryStatus = static_cast<LONG>(0xC0000022); // STATUS_ACCESS_DENIED
+    EXPECT_EQ(reader.readEnvironment(TARGET).status, EnvironmentReadStatus::PermissionDenied);
+    fake().wow64QueryStatus = static_cast<LONG>(0xC000010A); // STATUS_PROCESS_IS_TERMINATING
+    EXPECT_EQ(reader.readEnvironment(TARGET).status, EnvironmentReadStatus::ProcessExited);
+    fake().wow64QueryStatus = static_cast<LONG>(0xC0000005);
+    result = reader.readEnvironment(TARGET);
+    EXPECT_EQ(result.status, EnvironmentReadStatus::Failed);
+    EXPECT_TRUE(result.detail.contains("NTSTATUS 0xC0000005")) << result.detail;
+    fake().wow64QueryStatus = 0;
+
+    poke32(PEB32_PROCESS_PARAMETERS, 0); // still starting
+    result = reader.readEnvironment(TARGET);
+    EXPECT_EQ(result.status, EnvironmentReadStatus::Failed);
+    EXPECT_TRUE(result.detail.contains("process parameters")) << result.detail;
+
+    fake().readError = ERROR_ACCESS_DENIED;
+    EXPECT_EQ(reader.readEnvironment(TARGET).status, EnvironmentReadStatus::PermissionDenied);
+}
 TEST_F(WindowsProcessEnvironmentReaderTest, AnEmulatedX64TargetOnArm64IsReadLikeANativeOne)
 {
     // ARM64 Windows runs x64 processes under its WOW64 infrastructure, and IsWow64Process2 may report
@@ -505,8 +746,10 @@ TEST(WindowsProcessEnvironmentReaderRealTest, ReadsThisProcessesOwnEnvironment)
     FILETIME kernelTime{};
     FILETIME userTime{};
     ASSERT_NE(GetProcessTimes(GetCurrentProcess(), &creation, &exitTime, &kernelTime, &userTime), 0);
-    const ProcessTarget self{.pid = static_cast<std::int32_t>(GetCurrentProcessId()),
-                             .startTimeTicks = (static_cast<std::uint64_t>(creation.dwHighDateTime) << 32U) | creation.dwLowDateTime};
+    const ProcessTarget self{
+        .pid = static_cast<std::int32_t>(GetCurrentProcessId()),
+        .startTimeTicks = (static_cast<std::uint64_t>(creation.dwHighDateTime) << 32U) | creation.dwLowDateTime,
+    };
     WindowsProcessEnvironmentReader reader;
     EXPECT_TRUE(reader.hasEnvironment());
     const EnvironmentReadResult result = reader.readEnvironment(self);
