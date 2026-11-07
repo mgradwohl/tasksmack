@@ -36,9 +36,9 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdlib>
+#include <expected>
 #include <filesystem>
 #include <fstream>
-#include <future>
 #include <ios>
 #include <iterator>
 #include <optional>
@@ -294,13 +294,41 @@ TEST_F(CiRealSystemAppLaunchTest, ASecondStartInTaskManagersPlaceShowsTheRunning
 
 // --- The folder dialog (#2001) -----------------------------------------------------------------------------------
 
-class CiRealSystemFolderPickerTest : public TestSupport::CiRealSystemTest
-{};
+/// The variables that hand the child run its dialog's title and starting folder; unset, the child test skips.
+constexpr std::wstring_view FOLDER_DIALOG_TITLE_VARIABLE = L"TASKSMACK_CI_FOLDER_DIALOG_TITLE";
+constexpr std::wstring_view FOLDER_DIALOG_START_VARIABLE = L"TASKSMACK_CI_FOLDER_DIALOG_START";
+/// The child run's one test.
+constexpr std::wstring_view FOLDER_DIALOG_CHILD_TEST = L"CiRealSystemFolderPickerChildTest.ShowsTheDialogUntilItIsAnswered";
 
-/// The visible dialog of this process titled @p title, within @p timeout; null when there is none, or once
-/// @p done (the call that shows it) has returned.
-[[nodiscard]] HWND
-dialogTitled(const std::wstring& title, const std::future<Platform::FolderChoice>& done, std::chrono::milliseconds timeout)
+/// @p name's value, as text; empty when it isn't set.
+[[nodiscard]] std::wstring variable(std::wstring_view name)
+{
+    const std::wstring key(name);
+    const DWORD needed = GetEnvironmentVariableW(key.c_str(), nullptr, 0);
+    if (needed == 0)
+    {
+        return {};
+    }
+    std::wstring value(needed, L'\0');
+    const DWORD length = GetEnvironmentVariableW(key.c_str(), value.data(), needed);
+    value.resize(length < needed ? length : 0);
+    return value;
+}
+
+/// How many times @p needle is in @p text.
+[[nodiscard]] std::size_t occurrences(std::string_view text, std::string_view needle)
+{
+    std::size_t count = 0;
+    for (std::size_t at = text.find(needle); at != std::string_view::npos; at = text.find(needle, at + needle.size()))
+    {
+        ++count;
+    }
+    return count;
+}
+
+/// The visible dialog of @p child titled @p title, within @p timeout; null when there is none, or once the child
+/// has exited.
+[[nodiscard]] HWND dialogTitled(const std::wstring& title, const Child& child, std::chrono::milliseconds timeout)
 {
     const auto deadline = std::chrono::steady_clock::now() + timeout;
     for (bool first = true; first || std::chrono::steady_clock::now() < deadline; first = false)
@@ -311,11 +339,11 @@ dialogTitled(const std::wstring& title, const std::future<Platform::FolderChoice
         {
             GetWindowThreadProcessId(dialog, &owner);
         }
-        if (dialog != nullptr && owner == GetCurrentProcessId() && IsWindowVisible(dialog) != FALSE)
+        if (dialog != nullptr && owner == child.pid() && IsWindowVisible(dialog) != FALSE)
         {
             return dialog;
         }
-        if (done.wait_for(0ms) == std::future_status::ready)
+        if (child.exitCode(0ms).has_value())
         {
             return nullptr;
         }
@@ -324,36 +352,77 @@ dialogTitled(const std::wstring& title, const std::future<Platform::FolderChoice
     return nullptr;
 }
 
+/// Run only as CiRealSystemFolderPickerTest's child: the modal dialog blocks until it is answered, so it is shown
+/// in a process of its own, which the parent can end, and never in the process running the other tests.
+class CiRealSystemFolderPickerChildTest : public TestSupport::CiRealSystemTest
+{
+  protected:
+    void SetUp() override
+    {
+        TestSupport::CiRealSystemTest::SetUp();
+        if (!IsSkipped() && variable(FOLDER_DIALOG_TITLE_VARIABLE).empty())
+        {
+            GTEST_SKIP() << "runs only as CiRealSystemFolderPickerTest's child, "
+                            "which shows the dialog it answers";
+        }
+    }
+};
+
+TEST_F(CiRealSystemFolderPickerChildTest, ShowsTheDialogUntilItIsAnswered)
+{
+    // The real IFileOpenDialog (FOS_PICKFOLDERS), on a worker thread as the Processes tab runs it; the parent answers.
+    const std::wstring title = variable(FOLDER_DIALOG_TITLE_VARIABLE);
+    const std::filesystem::path initial(variable(FOLDER_DIALOG_START_VARIABLE));
+    Platform::FolderChoice result = std::unexpected(std::string("the dialog's thread didn't run"));
+    {
+        // A raw jthread, not a Domain::Worker: one blocking call in a fresh STA, joined right here.
+        const std::jthread picker([&result, &initial, &title] { result = Platform::Windows::pickFolder(nullptr, initial, title); });
+    }
+    ASSERT_TRUE(result.has_value()) << result.error();
+    EXPECT_FALSE(result->has_value()) << "a cancelled dialog chose " << Core::pathToUtf8(result->value_or(std::filesystem::path()));
+}
+
+class CiRealSystemFolderPickerTest : public TestSupport::CiRealSystemTest
+{};
+
 TEST_F(CiRealSystemFolderPickerTest, TheFolderDialogShowsAndIsCancelled)
 {
-    // The real IFileOpenDialog (FOS_PICKFOLDERS), on a worker thread as the Processes tab runs it. Cancel is
-    // pressed as a click on it would (WM_COMMAND IDCANCEL to the dialog), so no input reaches another window.
-    const ScratchFolder initial(std::filesystem::temp_directory_path() / (L"TaskSmackCiFolder." + uniqueSuffix()));
+    // This binary again, running only the child test, which shows the dialog. Cancel is pressed as a click on it
+    // would (WM_COMMAND IDCANCEL to the dialog), so no input reaches another window. Nothing here waits on the modal
+    // itself: the child is ended if it hasn't exited by the deadline, and its report says how it went.
+    const ScratchFolder folder(std::filesystem::temp_directory_path() / (L"TaskSmackCiFolder." + uniqueSuffix()));
     const std::wstring title = L"TaskSmack CI folder dialog " + uniqueSuffix();
-    std::promise<Platform::FolderChoice> chosen;
-    std::future<Platform::FolderChoice> done = chosen.get_future();
-    // A raw jthread, not a Domain::Worker: one blocking call in a fresh STA, while this thread watches for its window.
-    const std::jthread picker([&chosen, &initial, &title]
-                              { chosen.set_value(Platform::Windows::pickFolder(nullptr, initial.path(), title)); });
+    const std::filesystem::path report = folder.path() / L"report.json";
+    Child child;
+    {
+        const ScopedVariable titleVariable(std::wstring(FOLDER_DIALOG_TITLE_VARIABLE), title);
+        const ScopedVariable startVariable(std::wstring(FOLDER_DIALOG_START_VARIABLE), folder.path().wstring());
+        const std::wstring parameters =
+            L"--gtest_filter=" + std::wstring(FOLDER_DIALOG_CHILD_TEST) + L" \"--gtest_output=json:" + report.wstring() + L"\"";
+        child = start(ownExecutable(), {.parameters = parameters});
+    }
+    ASSERT_NE(child.process(), nullptr);
 
-    HWND dialog = dialogTitled(title, done, STARTUP_WAIT);
-    EXPECT_NE(dialog, nullptr) << "the folder dialog never showed";
+    HWND dialog = dialogTitled(title, child, STARTUP_WAIT);
+    EXPECT_NE(dialog, nullptr) << "the folder dialog never showed (the child's exit status " << child.exitCode(0ms).value_or(STILL_ACTIVE)
+                               << ")";
     if (dialog != nullptr)
     {
         PostMessageW(dialog, WM_COMMAND, MAKEWPARAM(IDCANCEL, BN_CLICKED), 0);
     }
-    // However it went, the worker must return before the jthread joins: close whatever is still up.
-    for (int attempt = 0; attempt < 10 && done.wait_for(CLOSE_WAIT / 10) != std::future_status::ready; ++attempt)
+    std::optional<DWORD> exit = child.exitCode(CLOSE_WAIT);
+    if (!exit.has_value())
     {
-        if (HWND still = FindWindowW(L"#32770", title.c_str()); still != nullptr)
-        {
-            PostMessageW(still, WM_CLOSE, 0, 0);
-        }
+        ADD_FAILURE() << "the folder dialog didn't close on IDCANCEL; the child is ended";
+        child.end();
+        exit = child.exitCode(0ms);
     }
-    ASSERT_EQ(done.wait_for(CLOSE_WAIT), std::future_status::ready) << "the folder dialog didn't close";
-    const Platform::FolderChoice result = done.get();
-    ASSERT_TRUE(result.has_value()) << result.error();
-    EXPECT_FALSE(result->has_value()) << "a cancelled dialog chose " << Core::pathToUtf8(result->value_or(std::filesystem::path()));
+    std::ifstream in(report, std::ios::binary);
+    const std::string json{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+    ASSERT_FALSE(json.empty()) << "the child run wrote no report; its exit status " << exit.value_or(STILL_ACTIVE);
+    EXPECT_EQ(exit.value_or(STILL_ACTIVE), 0U) << json;
+    EXPECT_EQ(occurrences(json, "\"result\": \"COMPLETED\""), 1U) << json;
+    EXPECT_EQ(occurrences(json, "\"failure\""), 0U) << json;
 }
 
 } // namespace
