@@ -40,8 +40,9 @@ constexpr const char* REALTIME_WARNING =
     "TaskSmack included. The kernel's RT throttling (/proc/sys/kernel/sched_rt_runtime_us, by default 95% of each second) "
     "leaves the rest a little time to recover. When it shares the CPU with other real-time work, prefer RR over FIFO.";
 constexpr const char* REALTIME_MAY_BE_REFUSED =
-    "TaskSmack lacks CAP_SYS_NICE, so this works only within your user's RLIMIT_RTPRIO; past it, the change is refused, "
-    "and Authenticate and retry is offered where the TaskSmack helper is installed.";
+    "TaskSmack lacks CAP_SYS_NICE, so the kernel may refuse this: it allows real time up to the process's RLIMIT_RTPRIO "
+    "(0 unless one was granted, as an audio group often is), or a priority lower than one it already runs at. Where the "
+    "TaskSmack helper is installed, a refusal offers Authenticate and retry.";
 constexpr const char* OWN_PROCESS_NO_REALTIME = "This is TaskSmack itself, which never runs real time: its window would stop responding.";
 
 // Floor on the footer's buttons, in ems, as for the other action dialogs (ProcessActionConfirm).
