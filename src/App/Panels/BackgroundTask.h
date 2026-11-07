@@ -3,21 +3,26 @@
 // One piece of work at a time on a worker thread of its own, its result taken in on the UI thread
 // (#2139): the worker slot every App view that waits on a slow platform call shares -- a dump, a
 // service or startup action, the System Information and crash history reads, the lazy Process Details
-// reads. It owns the rules each of those sites used to restate:
+// reads. Each start() runs its work as the one job of a new Domain::Worker (#3343), so the worker's rules
+// hold for every caller; this owns the rules each of those sites used to restate:
 //
 //  - The work's exception is caught on the worker and turned into the view's Failed result there, so
-//    the UI thread gets a plain Result through the future and never an exception object (#1685, #1706:
-//    the message buffer of a std::runtime_error is reference-counted inside the C++ runtime, invisibly
-//    to ThreadSanitizer).
-//  - No thread to run it on (std::system_error from std::async) is the Failed result too, at once.
-//  - poll() never rethrows: what can still come through the future (building the Failed result threw,
-//    bad_alloc) is taken in as the Failed result with the unknown-error detail, unread.
+//    the UI thread gets a plain Result and never an exception object (#1685, #1706: the message buffer
+//    of a std::runtime_error is reference-counted inside the C++ runtime, invisibly to ThreadSanitizer).
+//  - What can still throw on the worker past the work (building the Failed result, or publishing the
+//    result: bad_alloc) ends the worker in its Failed state, never std::terminate; poll() reports that as
+//    the Failed result with the unknown-error detail, the exception unread.
+//  - No thread to run it on, or no memory to start it, is the Failed result too, at once, from start().
 //  - Each start() gets a new stop token; requestStop() is for work that polls it (a dump, a service
-//    action, #1591). The destructor and move assignment request a stop, then wait.
-//  - Once the result is ready, the worker wakes the frame loop (Domain::PublicationWake, #3156), so a
-//    static tab shows it at once rather than at its slow floor. The result goes through a promise the
-//    worker fills before it wakes the loop: a wake from inside the work, before std::async made its
-//    future ready, could bring a frame that polls too early.
+//    action, #1591). The destructor and move assignment request a stop, then wait for the work: work
+//    started always runs, never dropped unrun, as a view's last action (a setting written at exit) needs.
+//  - The result is the worker's final publication, which wakes the frame loop (Domain::PublicationWake,
+//    #3156) once it is published, so a static tab shows it at once and a frame the wake brings finds it.
+//  - No thread sits idle between starts: once poll() takes the result in, the worker is closed (its thread
+//    ends by itself) and destroyed at the next start() or with this, when there is nothing left to wait for.
+//
+// One exception to the worker: adopt() takes in an answer something else delivers (a promise filled from
+// SDL's event pump) as a std::future. No thread of ours runs it, so there is no work to put on a worker.
 //
 // Typical use:
 //
@@ -29,17 +34,16 @@
 //
 // Free of ImGui; tested in tests/App/test_BackgroundTask.cpp.
 
-#include "Domain/PublicationWake.h"
-#include "Platform/ThreadName.h"
+#include "Domain/Worker.h"
 
 #include <chrono>
 #include <exception>
 #include <future>
+#include <memory>
 #include <optional>
 #include <stop_token>
 #include <string>
 #include <string_view>
-#include <system_error>
 #include <type_traits>
 #include <utility>
 
@@ -56,6 +60,8 @@ template<typename Result> class BackgroundTask
 
     /// The detail of work that threw something other than a std::exception, unless the view names its own.
     static constexpr std::string_view UNKNOWN_ERROR = "Unknown error";
+    /// The detail of work that couldn't be queued on its new worker (no memory for its stop state).
+    static constexpr std::string_view NOT_QUEUED = "No memory to start the work";
 
     /// @param threadName     The worker's name (Platform/ThreadName.h, 15 bytes at most); must outlive this.
     /// @param failed         Builds a Failed result from a detail.
@@ -74,15 +80,16 @@ template<typename Result> class BackgroundTask
     BackgroundTask(const BackgroundTask&) = delete;
     BackgroundTask& operator=(const BackgroundTask&) = delete;
 
-    /// Work in flight moves with it: the worker shares only the future's and the stop token's state.
+    /// Work in flight moves with it: the worker is held by pointer, and shares only the stop token's state.
     BackgroundTask(BackgroundTask&& other) noexcept
         : m_ThreadName(other.m_ThreadName),
           m_Failed(other.m_Failed),
           m_UnknownDetail(other.m_UnknownDetail),
           m_Future(std::move(other.m_Future)),
-          m_Worker(std::move(other.m_Worker)),
           m_Stop(std::move(other.m_Stop)),
-          m_Adopted(std::exchange(other.m_Adopted, false))
+          m_Adopted(std::exchange(other.m_Adopted, false)),
+          m_Retired(std::move(other.m_Retired)),
+          m_Running(std::move(other.m_Running))
     {}
 
     /// Requests a stop and waits for this task's own work first, as the destructor does.
@@ -96,69 +103,54 @@ template<typename Result> class BackgroundTask
             m_Failed = other.m_Failed;
             m_UnknownDetail = other.m_UnknownDetail;
             m_Future = std::move(other.m_Future);
-            m_Worker = std::move(other.m_Worker);
             m_Stop = std::move(other.m_Stop);
             m_Adopted = std::exchange(other.m_Adopted, false);
+            m_Retired = std::move(other.m_Retired); // this task's own goes: its work finished, so nothing is waited on
+            m_Running = std::move(other.m_Running); // likewise, after wait()
         }
         return *this;
     }
 
-    /// Starts @p work on a worker named threadName, with a new stop token: @p work is invoked as
+    /// Starts @p work on a new worker named threadName, with a new stop token: @p work is invoked as
     /// work(std::stop_token) when it takes one, else as work(). It must own (copy, or share) everything
     /// it uses, or the caller keeps that alive until the work finishes (destroying this waits for it).
     /// Does nothing while busy(): the work in flight is never replaced or waited for here.
-    /// @return The Failed result when no thread could be started; nullopt when the work started (or
-    ///         another was still in flight).
+    /// @return The Failed result when no thread could be started, or there was no memory to start the work;
+    ///         nullopt when the work started (or another was still in flight).
     template<typename Work> [[nodiscard]] std::optional<Result> start(Work work)
     {
         if (busy())
         {
             return std::nullopt;
         }
-        m_Stop = std::stop_source{}; // a stop of earlier work does not carry over
+        // The last work's worker, closed when its result was taken in: its thread has ended, or is ending with
+        // nothing left to do, so this join waits on no work.
+        m_Retired.reset();
         m_Adopted = false;
+        std::string detail;
         try
         {
-            std::promise<Result> promise;
-            std::future<Result> result = promise.get_future();
-            // Replacing a finished worker's future waits for its thread, which at most is still waking
-            // the loop: poll() took its result already.
-            m_Worker = std::async(std::launch::async,
-                                  [promise = std::move(promise),
-                                   work = std::move(work),
-                                   stopToken = m_Stop.get_token(),
-                                   name = m_ThreadName,
-                                   failed = m_Failed,
-                                   unknown = m_UnknownDetail] mutable
-                                  {
-                                      // Best effort: a std::async thread may come from a pool (MSVC) and keep the name.
-                                      static_cast<void>(Platform::setCurrentThreadName(name));
-                                      try
-                                      {
-                                          // The work is moved out and released here, before the result is
-                                          // ready, rather than with the worker's future.
-                                          Result result = [&work, &stopToken, failed, unknown]
-                                          {
-                                              auto ownedWork = std::move(work);
-                                              return runOrFailed(ownedWork, stopToken, failed, unknown);
-                                          }();
-                                          promise.set_value(std::move(result));
-                                      }
-                                      catch (...)
-                                      {
-                                          // Building the Failed result threw (bad_alloc): poll() takes it in
-                                          // unread, as the Failed result with the unknown-error detail.
-                                          promise.set_exception(std::current_exception());
-                                      }
-                                      Domain::PublicationWake::notify(); // the result is ready (#3156)
-                                  });
-            m_Future = std::move(result);
+            m_Stop = std::stop_source{}; // a stop of earlier work does not carry over
+            auto worker = std::make_unique<TaskWorker>(
+                typename TaskWorker::Options{.threadName = m_ThreadName, .capacity = 1, .admission = Domain::Admission::Refuse},
+                makeBody(m_Failed, m_UnknownDetail));
+            const Domain::SubmitResult submitted =
+                worker->submit(Job{.work = std::make_unique<HeldWork<Work>>(std::move(work)), .stop = m_Stop});
+            if (submitted == Domain::SubmitResult::Queued)
+            {
+                m_Running = std::move(worker);
+                return std::nullopt;
+            }
+            // A new worker answers Closed only when its thread couldn't start (it is Failed and says so), and
+            // Refused only when the job's stop state couldn't be made.
+            detail = submitted == Domain::SubmitResult::Closed ? worker->failure() : std::string(NOT_QUEUED);
         }
-        catch (const std::system_error& e)
+        catch (const std::exception& e)
         {
-            return m_Failed(std::string(e.what()));
+            // No memory for the stop source, the worker or the job: nothing was started.
+            detail = e.what();
         }
-        return std::nullopt;
+        return m_Failed(std::move(detail));
     }
 
     /// Takes in an answer something else delivers instead of a worker: a promise filled from SDL's
@@ -178,28 +170,48 @@ template<typename Result> class BackgroundTask
     /// Whether work was started (or an answer adopted) and its result not taken in yet.
     [[nodiscard]] bool busy() const noexcept
     {
-        return m_Future.valid();
+        return m_Running != nullptr || m_Future.valid();
     }
 
     /// The result, once the work has finished (or, with @p wait, after waiting for it); nullopt while
     /// none is in flight or it is still running. Never rethrows: see the file comment.
     [[nodiscard]] std::optional<Result> poll(bool wait = false)
     {
-        if (!m_Future.valid() || (!wait && m_Future.wait_for(std::chrono::seconds(0)) != std::future_status::ready))
+        if (m_Future.valid())
+        {
+            return pollAdopted(wait);
+        }
+        if (m_Running == nullptr)
         {
             return std::nullopt;
         }
-        m_Adopted = false;
+        if (wait)
+        {
+            waitForRunning();
+        }
+        // The publication first, then the state: a worker that published has finished its work, and one that
+        // failed publishes nothing after.
+        const std::shared_ptr<const Publication> published = m_Running->latest();
+        if (published->version == 0 && m_Running->state() == Domain::WorkerState::Running)
+        {
+            return std::nullopt;
+        }
+        const std::shared_ptr<Result> answer = published->version != 0 ? published->value : nullptr;
+        retire();
+        if (answer == nullptr)
+        {
+            // The worker failed past the work (building its Failed result, or publishing the result, threw:
+            // bad_alloc). The exception was contained on the worker and is not read here (#1685).
+            return m_Failed(std::string(m_UnknownDetail));
+        }
         try
         {
-            return m_Future.get();
+            // Moved, not copied: the worker never touches a result once it is published, and this is its only reader.
+            return std::optional<Result>(std::move(*answer));
         }
         catch (...)
         {
-            // The worker turns throwing work into the Failed result itself (runOrFailed()), so only
-            // building that result can land here (bad_alloc), or a broken promise of an adopted answer.
-            // The exception object is not read: it was thrown on another thread (#1685).
-            return m_Failed(std::string(m_UnknownDetail));
+            return m_Failed(std::string(m_UnknownDetail)); // moving the result threw (bad_alloc)
         }
     }
 
@@ -218,21 +230,77 @@ template<typename Result> class BackgroundTask
             m_Future = {};
             m_Adopted = false;
         }
-        try
+        if (m_Running != nullptr)
         {
-            // The worker's thread, which ends after it fills the result and wakes the loop.
-            if (m_Worker.valid())
-            {
-                m_Worker.wait();
-            }
+            waitForRunning();
         }
-        catch (...) // NOLINT(bugprone-empty-catch): wait() on a valid future does not throw
-        {}
     }
 
   private:
+    /// The work, type-erased, so one worker type runs every Work a view starts.
+    class ErasedWork
+    {
+      public:
+        ErasedWork() = default;
+        virtual ~ErasedWork() = default;
+        ErasedWork(const ErasedWork&) = delete;
+        ErasedWork& operator=(const ErasedWork&) = delete;
+        ErasedWork(ErasedWork&&) = delete;
+        ErasedWork& operator=(ErasedWork&&) = delete;
+
+        /// The work's result, or the Failed result for work that threw (runOrFailed()).
+        [[nodiscard]] virtual Result run(const std::stop_token& stopToken, FailedFn failed, std::string_view unknown) = 0;
+    };
+
+    template<typename Work> class HeldWork final : public ErasedWork
+    {
+      public:
+        explicit HeldWork(Work&& work) : m_Work(std::move(work))
+        {}
+        [[nodiscard]] Result run(const std::stop_token& stopToken, FailedFn failed, std::string_view unknown) override
+        {
+            return runOrFailed(m_Work, stopToken, failed, unknown);
+        }
+
+      private:
+        Work m_Work;
+    };
+
+    /// The worker's one job: the work, and the stop source requestStop() signals (it shares m_Stop's state).
+    struct Job
+    {
+        std::unique_ptr<ErasedWork> work;
+        std::stop_source stop;
+    };
+
+    /// What the worker publishes: the result, once. A pointer, so a Result needn't be default-constructible,
+    /// and poll() moves it out rather than copying it.
+    using TaskWorker = Domain::Worker<Job, std::shared_ptr<Result>>;
+    using Publication = TaskWorker::Publication;
+
+    /// The job's body: runs the work and publishes its result.
+    [[nodiscard]] static TaskWorker::Body makeBody(FailedFn failed, std::string_view unknown)
+    {
+        return [failed, unknown](Job& job, const std::stop_token& workerStop, TaskWorker::JobContext& context)
+        {
+            // The worker's own cancel (its stop(), were it destroyed with the work still running) reaches the work
+            // too, through the stop source the work polls. It runs under the worker's lock, and only signals.
+            std::stop_source& stop = job.stop;
+            const std::stop_callback link(workerStop, [&stop] noexcept { static_cast<void>(stop.request_stop()); });
+            Result result = [&job, &stop, failed, unknown]
+            {
+                // The work is moved out and released here, before the result is published.
+                const std::unique_ptr<ErasedWork> work = std::move(job.work);
+                return work->run(stop.get_token(), failed, unknown);
+            }();
+            // No memory for the publication throws, which fails the worker: poll() reports that.
+            context.finish(std::make_shared<Result>(std::move(result)));
+        };
+    }
+
     /// Runs on the worker: @p work, or the Failed result for work that threw, its message copied here on
-    /// the thread that threw it. Only building the Failed result itself (bad_alloc) can still escape, to poll().
+    /// the thread that threw it. Only building the Failed result itself (bad_alloc) can still escape, to the
+    /// worker's own boundary.
     template<typename Work>
     [[nodiscard]] static Result runOrFailed(Work& work, const std::stop_token& stopToken, FailedFn failed, std::string_view unknown)
     {
@@ -257,16 +325,58 @@ template<typename Result> class BackgroundTask
         }
     }
 
+    /// poll() of an adopted answer.
+    [[nodiscard]] std::optional<Result> pollAdopted(bool wait)
+    {
+        if (!wait && m_Future.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+        {
+            return std::nullopt;
+        }
+        m_Adopted = false;
+        try
+        {
+            return m_Future.get();
+        }
+        catch (...)
+        {
+            // A broken promise, or an exception the answering side set; not read, as it was made on another
+            // thread (#1685).
+            return m_Failed(std::string(m_UnknownDetail));
+        }
+    }
+
+    /// Waits until the running work has finished: published its result, or failed.
+    void waitForRunning() noexcept
+    {
+        try
+        {
+            while (!m_Running->waitUntilIdle(std::chrono::seconds(1)))
+            {
+                // Work that runs for longer than a second: go on waiting, as for any other.
+            }
+        }
+        catch (...) // NOLINT(bugprone-empty-catch): a wait that throws (std::system_error) gives up; the worker's stop() still joins
+        {}
+    }
+
+    /// Closes the finished work's worker, so its thread ends by itself, and keeps it until the next start()
+    /// (or this) destroys it: the UI thread never joins a thread that is still finishing its bookkeeping.
+    void retire() noexcept
+    {
+        static_cast<void>(m_Running->close()); // nothing is queued: its one job has run
+        m_Retired = std::move(m_Running);
+    }
+
     std::string_view m_ThreadName;
     FailedFn m_Failed;
     std::string_view m_UnknownDetail;
-    // The result: the worker's promise, or an adopted answer.
-    std::future<Result> m_Future;
-    // The worker's thread. A future from std::async waits for its thread when destroyed;
-    // ~BackgroundTask() waits explicitly first, after requesting a stop.
-    std::future<void> m_Worker;
+    std::future<Result> m_Future;              // an adopted answer (adopt()); a worker's result is its publication
     std::stop_source m_Stop{std::nostopstate}; // the work in flight's; a new one per start()
     bool m_Adopted = false;                    // m_Future is adopt()'s: answered elsewhere, dropped rather than waited for
+    // Destroyed last to first, after ~BackgroundTask() waited for the work: the running worker stops and joins,
+    // then the retired one, whose thread has ended.
+    std::unique_ptr<TaskWorker> m_Retired; // the last work's worker, closed when its result was taken in
+    std::unique_ptr<TaskWorker> m_Running; // the work in flight's, until poll() takes its result in
 };
 
 } // namespace App

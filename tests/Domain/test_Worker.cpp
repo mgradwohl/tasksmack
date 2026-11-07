@@ -1080,6 +1080,38 @@ TEST(WorkerTest, TheDestructorEndsAWorkerWithQueuedWork)
     EXPECT_EQ(queued.alive.use_count(), 1);
 }
 
+// close() is stop() without the wait (App::BackgroundTask, #3343): it cancels the job in flight and drops the
+// queue at once, but returns while the job is still finishing; the destructor joins after.
+TEST(WorkerTest, CloseCancelsAndDropsWithoutWaitingForTheJobInFlight)
+{
+    Ran ran;
+    std::binary_semaphore release{0};
+    std::atomic<bool> released{false};
+    const TestJob queued{.id = 2};
+    {
+        TestWorker worker(options(4, Admission::Refuse),
+                          [&ran, &release, &released](TestJob& job, const std::stop_token& stop, TestWorker::JobContext& /*out*/)
+                          {
+                              Gate never;
+                              static_cast<void>(never.pass(stop));
+                              // Held past its stop until the test lets it go: a close() that waited would time out here.
+                              released = release.try_acquire_for(WAIT);
+                              ran.add(job.id);
+                          });
+        EXPECT_EQ(worker.submit({.id = 1}), SubmitResult::Queued);
+        EXPECT_EQ(worker.submit(queued), SubmitResult::Queued);
+        ASSERT_TRUE(waitBusy(worker));
+        EXPECT_EQ(worker.close(), 1U);
+        EXPECT_EQ(worker.state(), WorkerState::Stopped);
+        EXPECT_EQ(worker.submit({.id = 3}), SubmitResult::Closed);
+        EXPECT_EQ(queued.alive.use_count(), 1); // dropped unrun, at once
+        EXPECT_EQ(worker.close(), 0U);          // again: nothing left
+        release.release();
+    }
+    EXPECT_TRUE(released.load()) << "close() waited for the job in flight";
+    EXPECT_EQ(ran.ids(), (std::vector<int>{1}));
+}
+
 TEST(WorkerTest, AWorkerNeverSubmittedToStartsNoThreadAndStopsCleanly)
 {
     TestWorker worker(options(1, Admission::Refuse),
