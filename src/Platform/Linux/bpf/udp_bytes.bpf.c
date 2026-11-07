@@ -11,10 +11,13 @@
 //   - kretprobe, where fexit can't attach: the return register.
 // The kernel accepts a tracing program only under a GPL-compatible license string, hence the dual license.
 
-#include <bpf/bpf_helpers.h>
-#include <bpf/bpf_tracing.h>
+// The kernel's uapi types first: libbpf's headers use __u32/__u64 and struct pt_regs without including them.
+// clang-format off
 #include <linux/bpf.h>
 #include <linux/ptrace.h>
+#include <bpf/bpf_helpers.h>
+#include <bpf/bpf_tracing.h>
+// clang-format on
 
 // Matches Platform::UdpByteCounts in UdpByteCounter.h: the map's value layout is the user-space contract.
 struct udp_bytes
