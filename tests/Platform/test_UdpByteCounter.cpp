@@ -9,11 +9,14 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <iostream>
 #include <memory>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <bpf/libbpf.h>
@@ -59,8 +62,10 @@ TEST(UdpByteCounterTest, EachAttemptLoadsOnlyItsModesProgramsAndIpv6OnlyWhenAske
     EXPECT_TRUE(udpProgramWanted("kretprobe/udpv6_sendmsg", KRETPROBE_BOTH));
     EXPECT_TRUE(udpProgramWanted("fentry/udpv6_sendmsg", FEXIT_BOTH));
     EXPECT_FALSE(udpProgramWanted("fentry/udpv6_sendmsg", FEXIT_V4));
-    EXPECT_TRUE(udpProgramWanted("kprobe/udp_recvmsg", KRETPROBE_BOTH));
-    EXPECT_FALSE(udpProgramWanted("kprobe/udp_recvmsg", FEXIT_BOTH));
+    EXPECT_TRUE(udpProgramWanted("kprobe/skb_consume_udp", KRETPROBE_BOTH));
+    EXPECT_TRUE(udpProgramWanted("kprobe/skb_consume_udp", {.mode = UdpAttachMode::Kretprobe, .ipv6 = false}));
+    EXPECT_FALSE(udpProgramWanted("kprobe/skb_consume_udp", FEXIT_BOTH));
+    EXPECT_FALSE(udpProgramWanted("kprobe/skb_free_udp", KRETPROBE_BOTH));
     EXPECT_FALSE(udpProgramWanted("fentry/udp_recvmsg", KRETPROBE_BOTH));
     EXPECT_FALSE(udpProgramWanted("fexit/tcp_sendmsg", FEXIT_BOTH));
     EXPECT_FALSE(udpProgramWanted("license", FEXIT_BOTH));
@@ -76,7 +81,8 @@ struct ObjectCloser
 
 // Opening an object parses it without the kernel, so this runs unprivileged: the build embedded what the loader
 // expects. Each mode has a return program for all four functions, an entry program for udpv6_sendmsg (its
-// IPv4-mapped sends aren't counted twice) and, for kprobes, entry programs for the receives (their flags).
+// IPv4-mapped sends aren't counted twice). The kprobe mode counts both receives at skb_consume_udp's entry instead
+// of at their return, where a blocked receive would hold one of the kernel's few return slots.
 TEST(UdpByteCounterTest, TheEmbeddedObjectHasEachModesProgramsAndATgidKeyedMap)
 {
     std::unique_ptr<bpf_object, ObjectCloser> object(
@@ -95,12 +101,9 @@ TEST(UdpByteCounterTest, TheEmbeddedObjectHasEachModesProgramsAndATgidKeyedMap)
         "fexit/udp_sendmsg",
         "fexit/udpv6_recvmsg",
         "fexit/udpv6_sendmsg",
-        "kprobe/udp_recvmsg",
-        "kprobe/udpv6_recvmsg",
+        "kprobe/skb_consume_udp",
         "kprobe/udpv6_sendmsg",
-        "kretprobe/udp_recvmsg",
         "kretprobe/udp_sendmsg",
-        "kretprobe/udpv6_recvmsg",
         "kretprobe/udpv6_sendmsg",
     };
     EXPECT_EQ(sections, expected);
@@ -110,7 +113,7 @@ TEST(UdpByteCounterTest, TheEmbeddedObjectHasEachModesProgramsAndATgidKeyedMap)
         const auto wanted =
             std::ranges::count_if(sections, [&attempt](const std::string& section) { return udpProgramWanted(section, attempt); });
         const bool fexit = attempt.mode == UdpAttachMode::Fexit;
-        EXPECT_EQ(wanted, fexit ? (attempt.ipv6 ? 5 : 2) : (attempt.ipv6 ? 7 : 3));
+        EXPECT_EQ(wanted, fexit ? (attempt.ipv6 ? 5 : 2) : (attempt.ipv6 ? 4 : 2));
     }
 
     const bpf_map* map = bpf_object__find_map_by_name(object.get(), "udp_bytes_by_tgid");
@@ -135,12 +138,25 @@ TEST(UdpByteCounterTest, WithoutRootLoadingFailsAndSaysWhy)
 
 // A child sends datagrams to its own sockets and reads them back, so its tgid both sends and receives:
 //   - over IPv4, each datagram peeked at (MSG_PEEK, not counted: it stays queued) and then received;
-//   - from an IPv6 socket to its own IPv4-mapped address, which udpv6_sendmsg hands to udp_sendmsg: counted once.
+//   - from an IPv6 socket to its own IPv4-mapped address, which udpv6_sendmsg hands to udp_sendmsg: counted once;
+//   - to many threads already blocked in recv(), more than the kernel's default kretprobe slots (2 per CPU, at
+//     least 10): every one is counted, as no receive holds a slot while it waits.
 constexpr int DATAGRAMS = 8;
 constexpr std::size_t DATAGRAM_BYTES = 1000;
 constexpr int MAPPED_DATAGRAMS = 4;
 constexpr std::size_t MAPPED_DATAGRAM_BYTES = 500;
-constexpr std::uint64_t EXPECTED_BYTES = (DATAGRAMS * DATAGRAM_BYTES) + (MAPPED_DATAGRAMS * MAPPED_DATAGRAM_BYTES);
+constexpr std::size_t BLOCKED_BYTES = 100;
+
+/// How many receivers block at once: past the default kretprobe slots on this machine.
+[[nodiscard]] std::size_t blockedReceivers()
+{
+    return (4 * std::max(1U, std::thread::hardware_concurrency())) + 32;
+}
+
+[[nodiscard]] std::uint64_t expectedBytes()
+{
+    return (DATAGRAMS * DATAGRAM_BYTES) + (MAPPED_DATAGRAMS * MAPPED_DATAGRAM_BYTES) + (blockedReceivers() * BLOCKED_BYTES);
+}
 
 /// Binds @p sock to @p address (port 0) and reads back the port it got; false on a failure.
 template<typename Address> [[nodiscard]] bool bindToItself(int sock, Address& address)
@@ -192,7 +208,48 @@ template<typename Address> [[nodiscard]] bool echo(int sock, const Address& addr
     {
         ::_exit(4);
     }
-    ::_exit(0);
+    // The receivers block first; then one datagram for each.
+    std::vector<int> receivers;
+    std::vector<sockaddr_in> addresses;
+    for (std::size_t i = 0; i < blockedReceivers(); ++i)
+    {
+        sockaddr_in address = v4;
+        address.sin_port = 0;
+        const int sock = ::socket(AF_INET, SOCK_DGRAM, 0);
+        if (!bindToItself(sock, address))
+        {
+            ::_exit(5);
+        }
+        receivers.push_back(sock);
+        addresses.push_back(address);
+    }
+    std::atomic<std::size_t> received{0};
+    std::vector<std::jthread> threads;
+    for (const int sock : receivers)
+    {
+        threads.emplace_back(
+            [sock, &received]
+            {
+                std::array<char, BLOCKED_BYTES> buffer{};
+                if (::recv(sock, buffer.data(), buffer.size(), 0) == static_cast<ssize_t>(BLOCKED_BYTES))
+                {
+                    ++received;
+                }
+            });
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds{300}); // every receiver is in recv() by now
+    const std::array<char, BLOCKED_BYTES> payload{};
+    for (const sockaddr_in& address : addresses)
+    {
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast): the sockets API takes sockaddr*
+        if (::sendto(sock4, payload.data(), payload.size(), 0, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) !=
+            static_cast<ssize_t>(BLOCKED_BYTES))
+        {
+            ::_exit(6);
+        }
+    }
+    threads.clear(); // joins them
+    ::_exit(received == receivers.size() ? 0 : 7);
 }
 
 class UdpByteCounterRootTest : public ::TestSupport::CiRealSystemTest, public ::testing::WithParamInterface<UdpAttachMode>
@@ -235,8 +292,8 @@ TEST_P(UdpByteCounterRootTest, CountsTheBytesAChildSendsAndReceivesOnceEach)
     const std::vector<UdpByteCounts> counts = counter->read();
     const auto entry = std::ranges::find(counts, static_cast<std::uint32_t>(child), &UdpByteCounts::tgid);
     ASSERT_NE(entry, counts.end()) << "no entry for the child's tgid among " << counts.size();
-    EXPECT_EQ(entry->txBytes, EXPECTED_BYTES) << "the IPv4-mapped sends must count once";
-    EXPECT_EQ(entry->rxBytes, EXPECTED_BYTES) << "a peek must not count";
+    EXPECT_EQ(entry->txBytes, expectedBytes()) << "the IPv4-mapped sends must count once";
+    EXPECT_EQ(entry->rxBytes, expectedBytes()) << "a peek must not count, and every blocked receive must";
 }
 
 INSTANTIATE_TEST_SUITE_P(EachMode,
