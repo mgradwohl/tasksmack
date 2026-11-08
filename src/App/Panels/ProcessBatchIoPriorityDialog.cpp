@@ -141,7 +141,9 @@ std::optional<Platform::IoPriority> ProcessBatchIoPriorityDialog::render()
     const Detail::IoStop shown = m_WindowsHints ? Detail::IoStop{.index = Detail::ioHintStopFor(m_Priority), .inherited = false}
                                                 : Detail::ioStopFor(m_Priority, Domain::Priority::NORMAL_NICE, m_RealtimeSettable);
     const Detail::DiscretePick picked = Detail::renderDiscretePrioritySlider(slider, shown.index, shown.inherited);
-    if (picked.index != shown.index && picked.index >= 0)
+    // A click on the hollow stop chooses it too (#3566's review): it stands for the class never set at nice 0's level,
+    // but each process inherits from its own nice value, so choosing it makes that level explicit for all of them.
+    if (picked.index >= 0 && (picked.index != shown.index || (picked.selected && shown.inherited)))
     {
         pick(m_WindowsHints ? Detail::ioHintForStop(picked.index) : Detail::ioPriorityForStop(picked.index, m_RealtimeSettable));
     }

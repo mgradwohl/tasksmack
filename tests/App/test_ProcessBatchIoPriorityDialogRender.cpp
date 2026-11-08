@@ -8,6 +8,7 @@
 #include "App/Panels/ProcessBatchAction.h"
 #include "App/Panels/ProcessBatchIoPriorityDialog.h"
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
+#include "App/Panels/ProcessIoPriorityView.h"
 #include "Mocks/MockProbes.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IoPriorityTypes.h"
@@ -248,6 +249,71 @@ TEST_F(ProcessBatchIoPriorityDialogRenderTest, ApplySetsThePickedValueOnEveryLis
     ASSERT_TRUE(flow.result.has_value());
     EXPECT_TRUE(flow.result->ok);
     EXPECT_EQ(flow.result->text, "I/O priority set to idle for 3 processes");
+}
+
+// #3566's review: the dialog shows the class never set hollow at best-effort 4 (nice 0's level), but each process
+// inherits from its own nice value. Clicking that hollow stop must choose best-effort 4 for all of them, not leave
+// the class unset, which would give a process at nice 10 best-effort 6.
+TEST_F(ProcessBatchIoPriorityDialogRenderTest, ClickingTheHollowDefaultStopChoosesItExplicitly)
+{
+    FlowHarness flow;
+    flow.chooseMenuItem(runFrame);
+    ASSERT_EQ(flow.dialog.value().ioClass, Platform::IoPriorityClass::None);
+    const auto body = [&]
+    {
+        flow.frame();
+    };
+
+    // Find the slider's track by hovering: a row of it, then its left and right ends.
+    const ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
+    ASSERT_NE(modal, nullptr);
+    const ImGuiID sliderId = ImHashStr(Detail::IO_PRIORITY_SLIDER_ID, 0, modal->ID);
+    const ImVec2 origin = modal->Pos;
+    const ImVec2 extent = modal->Size;
+    const auto hoveredAt = [&](float x, float y)
+    {
+        ImGui::GetIO().AddMousePosEvent(x, y);
+        runFrame(body);
+        return ImGui::GetHoveredID() == sliderId;
+    };
+    const float probeX = origin.x + (extent.x * 0.5F);
+    float row = -1.0F;
+    for (float y = origin.y; y < origin.y + extent.y && row < 0.0F; y += 2.0F)
+    {
+        if (hoveredAt(probeX, y))
+        {
+            row = y;
+        }
+    }
+    ASSERT_GE(row, 0.0F) << "the I/O slider was never hovered";
+    float left = probeX;
+    while (left > origin.x && hoveredAt(left - 1.0F, row))
+    {
+        left -= 1.0F;
+    }
+    float right = probeX;
+    while (right < origin.x + extent.x && hoveredAt(right + 1.0F, row))
+    {
+        right += 1.0F;
+    }
+    ASSERT_GT(right - left, 30.0F);
+
+    // Without Realtime the slider has nine stops, best-effort 0 to 7 then Idle: best-effort 4 is half way along.
+    const ImVec2 stop(left + ((right - left) * 4.0F / 8.0F), row);
+    ImGui::GetIO().AddMousePosEvent(stop.x, stop.y);
+    runFrame(body);
+    ImGui::GetIO().AddMouseButtonEvent(0, true);
+    runFrame(body);
+    ImGui::GetIO().AddMouseButtonEvent(0, false);
+    runFrame(body);
+    EXPECT_EQ(flow.dialog.value(), (Platform::IoPriority{.ioClass = Platform::IoPriorityClass::BestEffort, .level = 4}))
+        << "the click chose the stop it landed on";
+
+    pressModalFilledButton("Apply to 3 processes");
+    runFrame(body);
+    runFrame(body);
+    EXPECT_EQ(flow.mock.setIoPriorityCount(), 3);
+    EXPECT_EQ(flow.mock.lastSetIoPriority(), (Platform::IoPriority{.ioClass = Platform::IoPriorityClass::BestEffort, .level = 4}));
 }
 
 TEST(ProcessBatchIoPriorityDialogTest, APickIsNormalisedAsTheSliderWouldMakeIt)
