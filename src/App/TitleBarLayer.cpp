@@ -299,8 +299,12 @@ void TitleBarLayer::onSDLEvent(SDL_Event* event)
             beginWindowInteraction(*event);
         }
     }
-    else if ((event->type == SDL_EVENT_MOUSE_BUTTON_UP && event->button.button == SDL_BUTTON_LEFT) ||
-             event->type == SDL_EVENT_WINDOW_FOCUS_LOST)
+    else if (event->type == SDL_EVENT_MOUSE_BUTTON_UP && event->button.button == SDL_BUTTON_LEFT)
+    {
+        finishInteractionAtRelease(*event);
+        endWindowInteraction();
+    }
+    else if (event->type == SDL_EVENT_WINDOW_FOCUS_LOST)
     {
         endWindowInteraction();
     }
@@ -561,6 +565,12 @@ void TitleBarLayer::updateWindowInteraction()
 
     if ((mouseButtons & SDL_BUTTON_LMASK) == 0U)
     {
+        // Released without the button-up reaching onSDLEvent() first. Not finished at the pointer read
+        // now (#882, #3552 CI): this poll says only that the button is up, not where it went up. On X11
+        // a pushed or synthetic press has no real button behind it, so the poll ends it at once with
+        // the pointer wherever the real one is, and a test seam reports the release as (0, 0). Moving
+        // or sizing the window to that would drag it somewhere the press never went. The button-up
+        // event carries the release's own position, and finishInteractionAtRelease() uses it.
         endWindowInteraction();
         return;
     }
@@ -579,7 +589,12 @@ void TitleBarLayer::updateWindowInteraction()
 
 void TitleBarLayer::updateDrag(const int mx, const int my, Core::Window& window, double& restoreMs, double& setPositionMs)
 {
-    const DragTracker::Step step = m_Drag.step(mx, my);
+    applyDragStep(m_Drag.step(mx, my), mx, my, window, restoreMs, setPositionMs);
+}
+
+void TitleBarLayer::applyDragStep(
+    const DragTracker::Step& step, const int mx, const int my, Core::Window& window, double& restoreMs, double& setPositionMs)
+{
     switch (step.kind)
     {
     case DragTracker::Step::Kind::None:
@@ -672,6 +687,72 @@ void TitleBarLayer::updateResize(
     }
 }
 
+void TitleBarLayer::finishInteractionAtRelease(const SDL_Event& buttonUp)
+{
+    // Windows only, where Core holds frames during a resize (Application::run(), #882) and so a release
+    // can follow motion no step saw. Elsewhere every pointer sample is stepped, from the same source the
+    // steps use (queryMouseState()); the release's window origin plus local coordinates is a second
+    // source, and on X11 the origin SDL reports can lag a move just asked for, so a finish there could
+    // pull the window back by that lag (#3552 CI).
+    if (m_InteractionMode == InteractionMode::None || !Core::VideoBackend::isWindows())
+    {
+        return;
+    }
+    const auto& window = Core::Application::get().getWindow();
+    SDL_Window* sdlWindow = window.getHandle();
+    if (sdlWindow == nullptr || buttonUp.button.windowID != SDL_GetWindowID(sdlWindow))
+    {
+        return;
+    }
+    // The release's own pointer position, as beginWindowInteraction() takes the press's: the window's
+    // origin plus the event's window-local coordinates (SDL captures the mouse during the press, so they
+    // are relative to this window even outside it).
+    const auto [windowOriginX, windowOriginY] = window.getPosition();
+    finishInteractionAt(windowOriginX + static_cast<int>(buttonUp.button.x), windowOriginY + static_cast<int>(buttonUp.button.y));
+}
+
+void TitleBarLayer::finishInteractionAt(const int mx, const int my)
+{
+    // While Core holds frames during a resize (#882), a move and the release can both come before any
+    // onUpdate() steps the drag or resize, and the release is then the only record of where the pointer
+    // ended. A drag off a maximize is held too: the restore changes the size.
+    auto& window = Core::Application::get().getWindow();
+    SDL_Window* sdlWindow = window.getHandle();
+    if (sdlWindow == nullptr)
+    {
+        return;
+    }
+    if (m_InteractionMode == InteractionMode::Drag)
+    {
+        double restoreMs = 0.0;
+        double setPositionMs = 0.0;
+        applyDragStep(m_Drag.finish(mx, my), mx, my, window, restoreMs, setPositionMs);
+        return;
+    }
+    if (m_InteractionMode != InteractionMode::Resize)
+    {
+        return;
+    }
+    const auto [windowOriginX, windowOriginY] = window.getPosition();
+    const auto [minimumWidth, minimumHeight] = window.getMinimumSize();
+    const std::optional<WindowRect> target = m_Resize.finish(mx, my, minimumWidth, minimumHeight);
+    if (!target.has_value())
+    {
+        return;
+    }
+    if (target->x != windowOriginX || target->y != windowOriginY)
+    {
+        window.setPosition(target->x, target->y);
+    }
+    if (const auto [liveWidth, liveHeight] = window.getSize(); target->width != liveWidth || target->height != liveHeight)
+    {
+        Core::traceResizePerfSDL(Core::ResizePerfOperation::FinalSizeCommit,
+                                 target->width,
+                                 target->height,
+                                 [&] { return SDL_SetWindowSize(sdlWindow, target->width, target->height); });
+    }
+    Core::Application::get().signalWindowGeometryChanged();
+}
 void TitleBarLayer::endWindowInteraction()
 {
     if (const std::optional<std::pair<int, int>> pending = m_Resize.pendingSize();

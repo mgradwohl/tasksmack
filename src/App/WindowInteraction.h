@@ -73,6 +73,19 @@ class DragTracker
         return {.kind = Step::Kind::Move, .x = targetX, .y = targetY};
     }
 
+    /// The release, with the pointer at (@p mouseX, @p mouseY) in global coordinates: the step that takes
+    /// the window to where the pointer was let go, before the drag is cleared. A drag step has no
+    /// throttle, so this is the decision step() makes; it is its own call because the release must be
+    /// applied even when no frame stepped the drag since the last motion: Core holds frames while the
+    /// size changes (#882), and a drag off a maximize changes it (the restore), so a move and the
+    /// release can both come within one hold. Below the threshold a maximized window stays maximized
+    /// (a bare click); past it the release restores it under the pointer (Restore, then
+    /// rebaseAfterRestore()), as a moving sample would have.
+    [[nodiscard]] Step finish(int mouseX, int mouseY) noexcept
+    {
+        return step(mouseX, mouseY);
+    }
+
     /// After a Restore, with the pointer now at (@p mouseX, @p mouseY): where to put the restored
     /// window, @p restoredWidth wide, so the pointer keeps its place on the title bar: its proportion
     /// across (computeRestoreFromMaximizedDragX()) and its distance below the top
@@ -269,6 +282,33 @@ class ResizeTracker
     [[nodiscard]] std::optional<std::pair<int, int>> pendingSize() const noexcept
     {
         return m_Pending;
+    }
+
+    /// The window's final rectangle for a release with the pointer at @p mouseX, @p mouseY (global),
+    /// with the window's minimum size, or nothing when the window already has it. Unlike step(), no
+    /// commit interval applies: the release is the end of the drag. It covers pointer motion no step()
+    /// saw: the frames that call step() may be held while the size changes (Core's resize present
+    /// bound, #882), and a move followed by a release within one hold reaches only the release, which
+    /// carries the pointer position. Records the rectangle as applied.
+    [[nodiscard]] std::optional<WindowRect> finish(int mouseX, int mouseY, int minWidth, int minHeight) noexcept
+    {
+        const WindowRect target = computeResizeGeometry(m_Edge,
+                                                        m_Start.x,
+                                                        m_Start.y,
+                                                        m_Start.width,
+                                                        m_Start.height,
+                                                        mouseX - m_StartMouseX,
+                                                        mouseY - m_StartMouseY,
+                                                        minWidth,
+                                                        minHeight);
+        m_Pending.reset();
+        if (target.x == m_LastApplied.x && target.y == m_LastApplied.y && target.width == m_LastApplied.width &&
+            target.height == m_LastApplied.height)
+        {
+            return std::nullopt;
+        }
+        m_LastApplied = target;
+        return target;
     }
 
     /// After a size commit: whether to raise a WindowResizedEvent for the window's new @p pixelWidth x

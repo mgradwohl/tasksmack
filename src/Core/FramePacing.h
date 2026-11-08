@@ -231,6 +231,81 @@ nextConsecutiveSkippedRenders(std::uint32_t consecutiveSkippedRenders, bool skip
                needsResizeRedraw, forceInteractionRedraw, hadEvents, geometryChangedLastFrame, isHidden, skipRenderThisFrame);
 }
 
+/// The shortest time between frame starts while the window's size is changing (#882): at most 20
+/// presents a second, the idle frame rate. #3511's supervised run on main after #3518 (Intel Arc 140T,
+/// SetWindowPos every 16 ms) still hit one 2.5 s SDL_GL_SwapWindow, about 44 presents into the burst,
+/// each at a new back-buffer size; the event loop itself stayed responsive. Holding the presents to
+/// one per 50 ms means about a third as many presents at a changing size in a 16 ms burst (each one
+/// still at the current size), and still lets the content follow the drag. 50 ms is the low end of
+/// the 50-100 ms range #882's next step proposed: the supervised run decides whether it is enough.
+inline constexpr double RESIZE_PRESENT_MIN_INTERVAL_SECONDS = 0.050;
+
+/// How long after the last size change the window counts as being resized (#882), for
+/// computeResizePresent(). Twice RESIZE_PRESENT_MIN_INTERVAL_SECONDS: the client-side border resize
+/// (TitleBarLayer) changes the size only in a frame, so while its frames are held the size can't
+/// change; the window must still count as being resized when the held frame is due, or every pointer
+/// event after it would present at once again.
+inline constexpr double RESIZE_BURST_WINDOW_SECONDS = 2.0 * RESIZE_PRESENT_MIN_INTERVAL_SECONDS;
+
+/// What computeResizePresent() decided for one loop iteration.
+enum class ResizePresent : std::uint8_t
+{
+    Unbounded,   ///< Not bounded: the frame logic as it was (no size change lately, or the last frame is old enough)
+    Hold,        ///< Draw and present nothing this iteration: wait for an event, or until the hold ends
+    PresentOwed, ///< A held frame is due: draw and present it now, at the current size
+};
+
+/// computeResizePresent()'s inputs, all from the loop's own clock (Application::getTime()).
+struct ResizePresentInput
+{
+    double nowSeconds = 0.0;
+    /// When the framebuffer size last changed (a WindowResizedEvent at a new size); -infinity before any.
+    double lastSizeChangeSeconds = -std::numeric_limits<double>::infinity();
+    /// When the last frame started: the last present, or the attempt at one.
+    double lastFrameStartSeconds = 0.0;
+    /// An earlier iteration's move/resize frame (computeShouldRenderInteractionFrame()) was held
+    /// (ResizePresent::Hold), and no frame has been drawn since.
+    bool frameOwed = false;
+    /// RESIZE_PRESENT_MIN_INTERVAL_SECONDS where the bound applies, 0 where it doesn't (no hold ever).
+    double minIntervalSeconds = RESIZE_PRESENT_MIN_INTERVAL_SECONDS;
+    /// RESIZE_BURST_WINDOW_SECONDS.
+    double burstWindowSeconds = RESIZE_BURST_WINDOW_SECONDS;
+};
+
+/// The present bound during an interactive resize (#882): while the size changed within the burst
+/// window, at most one frame starts per minimum interval. An iteration that would draw sooner holds
+/// instead: it draws nothing, presents nothing, and waits for the next event or the end of the hold
+/// (resizePresentHoldMs()), so the event pump keeps running and every event is still handled at
+/// once. Once the interval has passed, the held frame is owed and is drawn at the then-current size,
+/// with everything the held iterations' events changed: the content is current whenever it presents,
+/// and a held frame is never lost, so the last size of a drag always gets its present (the settle
+/// frame), at most one interval after the frame before it. Outside a burst nothing changes, so
+/// ordinary frames are never starved: an animation, input or idle frame is held only while the size is
+/// changing, and then only until the interval ends.
+///
+/// Drawing cadence only: the samplers keep the Settings interval on their own threads (#2731).
+[[nodiscard]] constexpr auto computeResizePresent(const ResizePresentInput& input) noexcept -> ResizePresent
+{
+    const bool resizing = (input.nowSeconds - input.lastSizeChangeSeconds) < input.burstWindowSeconds;
+    if (resizing && (input.nowSeconds - input.lastFrameStartSeconds) < input.minIntervalSeconds)
+    {
+        return ResizePresent::Hold;
+    }
+    return input.frameOwed ? ResizePresent::PresentOwed : ResizePresent::Unbounded;
+}
+
+/// How long a held iteration (ResizePresent::Hold) may wait for an event, in milliseconds: until the
+/// minimum interval since the last frame start has passed, when the owed frame is due. Rounded up to
+/// whole milliseconds (SDL_WaitEventTimeout's unit), so the wait doesn't end just short of it and hold
+/// once more; never negative, and never longer than one interval (a clock step back counts as no time
+/// elapsed, as in computeIdleWaitMs()).
+[[nodiscard]] inline auto resizePresentHoldMs(double nowSeconds, double lastFrameStartSeconds, double minIntervalSeconds) noexcept -> int
+{
+    const double elapsedSeconds = std::max(0.0, nowSeconds - lastFrameStartSeconds);
+    const double remainingMs = (minIntervalSeconds - elapsedSeconds) * 1000.0;
+    return static_cast<int>(std::ceil(std::max(0.0, remainingMs)));
+}
+
 /// Whether the regular frame is paced at @p frameRateCap (computeFrameRateCap()) rather than left to the
 /// idle wait: whenever a cap applies and the move/resize path didn't render this iteration (#3511). A
 /// grace iteration with nothing new defers its move/resize frame (computeShouldRenderInteractionFrame());
@@ -246,13 +321,16 @@ nextConsecutiveSkippedRenders(std::uint32_t consecutiveSkippedRenders, bool skip
 /// (@p idleWaitWokeOnEvent): that event goes through the next iteration's drain first, so the frame
 /// after a wake shows its effect (#1409). Rendering straight after the wake drew the old state and
 /// left the event for the drain after it. Nor while the hidden window draws no frames at all
-/// (@p hiddenDrawsNoFrames, computeHiddenWait(), #3156).
+/// (@p hiddenDrawsNoFrames, computeHiddenWait(), #3156). Nor in an iteration that holds its present
+/// during an interactive resize (@p resizePresentHeld, computeResizePresent(), #882): the owed frame
+/// comes once the hold ends.
 [[nodiscard]] constexpr auto computeShouldRenderRegularFrame(bool idleWaitWokeOnEvent,
                                                              bool didImmediateResizeRedraw,
                                                              bool skipRenderThisFrame,
-                                                             bool hiddenDrawsNoFrames) noexcept -> bool
+                                                             bool hiddenDrawsNoFrames,
+                                                             bool resizePresentHeld) noexcept -> bool
 {
-    return !idleWaitWokeOnEvent && !didImmediateResizeRedraw && !skipRenderThisFrame && !hiddenDrawsNoFrames;
+    return !idleWaitWokeOnEvent && !didImmediateResizeRedraw && !skipRenderThisFrame && !hiddenDrawsNoFrames && !resizePresentHeld;
 }
 
 /// Whether to sleep (rather than render immediately) when the event queue is empty.
