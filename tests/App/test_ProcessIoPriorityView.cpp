@@ -11,6 +11,8 @@
 #include "Domain/SamplingConfig.h"
 #include "Mocks/MockProbes.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IoPriorityTypes.h"
+#include "Platform/SchedPolicy.h"
 
 #include <gtest/gtest.h>
 
@@ -256,6 +258,35 @@ TEST(ProcessIoPriorityViewTest, TheDefaultSitsAtTheNiceDerivedLevelInherited)
         const Detail::IoStop without = Detail::ioStopFor(none, nice, false);
         EXPECT_EQ(without.index, level) << "nice " << nice;
         EXPECT_TRUE(without.inherited);
+    }
+}
+
+// #3565: a class never set is served in the class its CPU policy gives (the kernel's task_nice_ioclass()), so the hollow
+// stop and the header say that class: Realtime under FIFO, round robin and Deadline, Idle under SCHED_IDLE.
+TEST(ProcessIoPriorityViewTest, TheDefaultSitsInTheClassTheCpuPolicyGives)
+{
+    using Platform::SchedPolicy;
+    const Platform::IoPriority none{.ioClass = Platform::IoPriorityClass::None, .level = 0};
+    for (const SchedPolicy policy : {SchedPolicy::Fifo, SchedPolicy::RoundRobin, SchedPolicy::Deadline})
+    {
+        const Detail::IoStop withRealtime = Detail::ioStopFor(none, 0, true, policy);
+        EXPECT_EQ(withRealtime.index, 4) << "realtime 4, from nice 0";
+        EXPECT_TRUE(withRealtime.inherited);
+        const Detail::IoStop without = Detail::ioStopFor(none, 0, false, policy);
+        EXPECT_EQ(without.index, Detail::PRIORITY_STOP_BEYOND_START) << "the slider without Realtime shows it beyond its start";
+        EXPECT_TRUE(without.inherited);
+        EXPECT_EQ(Detail::describeIoPriority(none, 0, policy), "default (realtime 4 from nice)");
+    }
+    const Detail::IoStop idle = Detail::ioStopFor(none, 0, true, SchedPolicy::Idle);
+    EXPECT_EQ(idle.index, 2 * Detail::IO_LEVEL_COUNT) << "the Idle stop";
+    EXPECT_TRUE(idle.inherited);
+    EXPECT_EQ(Detail::ioStopFor(none, 0, false, SchedPolicy::Idle).index, Detail::IO_LEVEL_COUNT);
+    EXPECT_EQ(Detail::describeIoPriority(none, 0, SchedPolicy::Idle), "default (idle)");
+    // Normal and Batch, like an unknown policy, keep the best-effort level nice derives.
+    for (const SchedPolicy policy : {SchedPolicy::Normal, SchedPolicy::Batch, SchedPolicy::Unknown})
+    {
+        EXPECT_EQ(Detail::ioStopFor(none, 0, true, policy).index, Detail::IO_LEVEL_COUNT + 4);
+        EXPECT_EQ(Detail::describeIoPriority(none, 0, policy), "default (best-effort 4 from nice)");
     }
 }
 

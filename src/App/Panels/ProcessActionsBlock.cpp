@@ -223,22 +223,22 @@ Heights render(const Context& context, const ProcessDetailsLayout::TopRowLayout&
                 {
                     ProcessPriorityView::setCurrentPriorityTooltip(context.currentNice);
                 }
-                heights.priority =
-                    renderRows(fixedHeight,
-                               [&]
-                               {
-                                   // The error lines wrap at the card's edge too.
-                                   ImGui::PushTextWrapPos(0.0F);
-                                   // Apply waits while Set Realtime priority or Efficiency mode is asked about or
-                                   // runs (#3429, #3467), or
-                                   // a change for this process runs in the Processes table (#3467).
-                                   context.priorityView->holdForOtherPriorityChange(context.actionsView->priorityChangeInFlight()
-                                                                                        ? ACTIONS_CARD_HOLD_REASON
-                                                                                        : context.priorityHeldElsewhere);
-                                   context.priorityView->render(context.actions, context.capabilities, context.currentNice, context.target);
-                                   renderSetRealtimeButton(context);
-                                   ImGui::PopTextWrapPos();
-                               });
+                heights.priority = renderRows(
+                    fixedHeight,
+                    [&]
+                    {
+                        // The error lines wrap at the card's edge too.
+                        ImGui::PushTextWrapPos(0.0F);
+                        // Apply waits while Set Realtime priority or Efficiency mode is asked about or
+                        // runs (#3429, #3467), or
+                        // a change for this process runs in the Processes table (#3467).
+                        context.priorityView->holdForOtherPriorityChange(
+                            context.actionsView->priorityChangeInFlight() ? ACTIONS_CARD_HOLD_REASON : context.priorityHeldElsewhere);
+                        context.priorityView->render(
+                            context.actions, context.capabilities, context.currentNice, context.target, context.currentSchedPolicy);
+                        renderSetRealtimeButton(context);
+                        ImGui::PopTextWrapPos();
+                    });
             });
     }
     return heights;
