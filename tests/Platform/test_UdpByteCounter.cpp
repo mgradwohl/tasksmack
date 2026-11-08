@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <iostream>
 #include <memory>
 #include <set>
 #include <string>
@@ -129,6 +130,7 @@ TEST(UdpByteCounterTest, WithoutRootLoadingFailsAndSaysWhy)
     const auto counter = UdpByteCounter::load();
     ASSERT_FALSE(counter.has_value());
     EXPECT_FALSE(counter.error().empty());
+    std::cout << "[ NOTE     ] " << counter.error() << '\n'; // what a user without the helper's root would see
 }
 
 // A child sends datagrams to its own sockets and reads them back, so its tgid both sends and receives:
