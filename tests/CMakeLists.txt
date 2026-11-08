@@ -645,6 +645,7 @@ set(COMMON_TEST_SOURCES
     Platform/test_BrokeredUserSessions.cpp  # another user's Windows session through the helper (#3076)
     Platform/test_TaskManagerReplacement.cpp  # Replace Task Manager's paths, state machine and service (#3072)
     Platform/test_BrokeredSystemInfoProbe.cpp
+    Platform/test_BrokeredUdpTrafficCollector.cpp  # Linux's UDP collector through the helper (#3366)
     Platform/test_ThreadName.cpp
     Platform/test_CurrentProcess.cpp
     Platform/test_Factory.cpp
@@ -1164,6 +1165,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/Platform/BrokeredServiceActions.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/BrokeredUserSessions.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/BrokeredSystemInfoProbe.cpp
+    ${CMAKE_SOURCE_DIR}/src/Platform/BrokeredUdpTrafficCollector.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/BrokerRequestMapping.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/TaskManagerReplacementService.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/CurrentProcess.cpp

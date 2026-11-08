@@ -21,6 +21,10 @@
 namespace Platform
 {
 
+/// The helper's argument that has it load the counter at its start (#3366): HelperMain reads it, PkexecBroker
+/// passes it.
+inline constexpr std::string_view UDP_BYTES_ARGUMENT = "--udp-bytes";
+
 /// How the program is attached: fexit where the kernel has BTF trampolines and bpf_get_func_ret (5.17+),
 /// kretprobes otherwise.
 enum class UdpAttachMode : std::uint8_t

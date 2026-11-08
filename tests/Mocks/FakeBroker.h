@@ -122,15 +122,65 @@ class FakeBroker final : public Platform::IPrivilegedBroker
         return m_Held && m_Connected;
     }
 
+    /// countUdpBytes() as PkexecBroker's (#3366): it stands either way, and succeeds only while the session is held.
+    [[nodiscard]] std::expected<void, std::string> countUdpBytes(const std::stop_token& /*stopToken*/) override
+    {
+        m_CountUdp = true;
+        if (!heldForSession())
+        {
+            return std::unexpected(std::string("Needs an Administrator session"));
+        }
+        const std::scoped_lock lock(m_Mutex);
+        if (!m_CountUdpFailure.empty())
+        {
+            // A failed or dismissed restart of the session's helper: PkexecBroker is left disconnected.
+            m_Connected = false;
+            return std::unexpected(m_CountUdpFailure);
+        }
+        return {};
+    }
+
+    /// What countUdpBytes() does in a held session: succeed by default, or fail with this reason (and disconnect).
+    void setCountUdpFailure(std::string reason)
+    {
+        const std::scoped_lock lock(m_Mutex);
+        m_CountUdpFailure = std::move(reason);
+    }
+
+    void stopCountingUdpBytes() noexcept override
+    {
+        m_CountUdp = false;
+    }
+
+    /// Whether countUdpBytes() stands.
+    [[nodiscard]] bool countingUdp() const noexcept
+    {
+        return m_CountUdp;
+    }
+
     /// callIfIdle() as call(), counted: the sampler's reads must use it (#2369).
     [[nodiscard]] std::expected<Platform::Broker::Response, std::string> callIfIdle(const Platform::Broker::Request& request,
                                                                                     std::chrono::milliseconds /*timeout*/) override
     {
+        std::function<void()> after;
         {
             const std::scoped_lock lock(m_Mutex);
             ++m_IdleCallCount;
+            after = m_AfterIdleCall;
         }
-        return call(request, std::stop_token{});
+        auto response = call(request, std::stop_token{});
+        if (after)
+        {
+            after(); // between the reply and what the caller does with it, as another worker could act there
+        }
+        return response;
+    }
+
+    /// Runs after each callIfIdle() has its response and before it returns, with no lock held (#3366).
+    void setAfterIdleCall(std::function<void()> after)
+    {
+        const std::scoped_lock lock(m_Mutex);
+        m_AfterIdleCall = std::move(after);
     }
 
     /// How many of the calls were callIfIdle().
@@ -180,6 +230,8 @@ class FakeBroker final : public Platform::IPrivilegedBroker
     Answer m_Answer;
     std::vector<Platform::Broker::Request> m_Requests;
     std::string m_ConnectFailure;
+    std::string m_CountUdpFailure;
+    std::function<void()> m_AfterIdleCall;
     int m_ConnectCount = 0;
     int m_IdleCallCount = 0;
     mutable std::atomic<int> m_ConnectedCalls{0};
@@ -188,6 +240,7 @@ class FakeBroker final : public Platform::IPrivilegedBroker
     std::atomic<bool> m_ReadsOtherUsers{true};
     std::atomic<bool> m_HoldsSessions{false};
     std::atomic<bool> m_Held{false};
+    std::atomic<bool> m_CountUdp{false};
 };
 
 } // namespace Mocks

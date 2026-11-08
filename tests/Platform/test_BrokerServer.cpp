@@ -2197,6 +2197,67 @@ TEST(PkexecBrokerTest, HoldingTheSessionStartsTheHelperOnce)
     EXPECT_FALSE(broker.heldForSession()); // nothing to hold once the helper is gone
 }
 
+/// The UDP status the broker's helper answers a ReadUdpBytes with.
+[[nodiscard]] std::optional<Broker::UdpBytesStatus> udpStatusOf(PkexecBroker& broker)
+{
+    const auto response = broker.call(Broker::UdpBytesRequest{}, std::stop_token{});
+    const auto* const udp = response.has_value() ? std::get_if<Broker::UdpBytesReply>(&*response) : nullptr;
+    return udp != nullptr ? std::optional(udp->status) : std::nullopt;
+}
+
+// #3366: counting UDP needs an Administrator session, and then a helper started with --udp-bytes. Outside one the
+// broker starts nothing (no prompt), but the request stands for the session's first helper; within one, a helper
+// started without the flag is replaced by one with it. A one-off helper (not held) never gets the flag. Run
+// unprivileged here, a helper given the flag can't load the counter and says Failed, which only such a helper says.
+TEST(PkexecBrokerTest, CountingUdpStartsAHelperWithTheFlagOnlyInAHeldSession)
+{
+    PkexecBroker broker(TASKSMACK_HELPER_PATH, {}, HelperSandbox::Mode::Enforce);
+    const auto refused = broker.countUdpBytes(std::stop_token{});
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error(), "Needs an Administrator session");
+    EXPECT_FALSE(broker.connected()) << "nothing started outside a held session";
+
+    // The refused request stood, so a held session's first helper counts.
+    ASSERT_TRUE(broker.holdForSession(std::stop_token{}).has_value());
+    EXPECT_NE(udpStatusOf(broker), Broker::UdpBytesStatus::NotCounting) << "the session's helper was started counting";
+    broker.stopCountingUdpBytes();
+    broker.disconnect();
+    ASSERT_TRUE(broker.holdForSession(std::stop_token{}).has_value());
+    EXPECT_EQ(udpStatusOf(broker), Broker::UdpBytesStatus::NotCounting) << "held, but started without the flag";
+
+    ASSERT_TRUE(broker.countUdpBytes(std::stop_token{}).has_value());
+    EXPECT_TRUE(broker.heldForSession()) << "the new helper is held too";
+    const auto status = udpStatusOf(broker);
+    ASSERT_TRUE(status.has_value());
+    EXPECT_NE(*status, Broker::UdpBytesStatus::NotCounting) << "the new helper was started with --udp-bytes";
+    EXPECT_EQ(*status, ::geteuid() == 0 ? Broker::UdpBytesStatus::Ok : Broker::UdpBytesStatus::Failed);
+    ASSERT_TRUE(broker.countUdpBytes(std::stop_token{}).has_value()) << "already counting: no restart";
+
+    broker.stopCountingUdpBytes();
+    broker.disconnect();
+    ASSERT_TRUE(broker.holdForSession(std::stop_token{}).has_value());
+    EXPECT_EQ(udpStatusOf(broker), Broker::UdpBytesStatus::NotCounting) << "the next helper starts without it";
+
+    // A held session whose helper has ended holds nothing: asking to count then starts nothing and prompts for nothing.
+    broker.disconnect();
+    EXPECT_FALSE(broker.heldForSession());
+    const auto ended = broker.countUdpBytes(std::stop_token{});
+    ASSERT_FALSE(ended.has_value());
+    EXPECT_EQ(ended.error(), "Needs an Administrator session");
+    EXPECT_FALSE(broker.connected());
+    broker.stopCountingUdpBytes();
+
+    // A one-off helper, as "Authenticate and retry" starts, never counts: it must still end when idle.
+    PkexecBroker oneOff(TASKSMACK_HELPER_PATH, {}, HelperSandbox::Mode::Enforce);
+    ASSERT_FALSE(oneOff.countUdpBytes(std::stop_token{}).has_value());
+    ASSERT_TRUE(oneOff.connect(std::stop_token{}).has_value());
+    EXPECT_EQ(udpStatusOf(oneOff), Broker::UdpBytesStatus::NotCounting);
+    // Choosing Administrator then replaces that one-off helper with one that counts, rather than holding it as is.
+    ASSERT_TRUE(oneOff.holdForSession(std::stop_token{}).has_value());
+    EXPECT_TRUE(oneOff.heldForSession());
+    EXPECT_NE(udpStatusOf(oneOff), Broker::UdpBytesStatus::NotCounting);
+}
+
 TEST(PkexecBrokerTest, AConnectedHelperIsHeldWithoutAnotherStart)
 {
     PkexecBroker broker(TASKSMACK_HELPER_PATH, {});

@@ -82,8 +82,6 @@ namespace
 
 /// The socket TaskSmack passes: its stdin.
 constexpr int CLIENT_FD = 0;
-/// Asks the helper to count every process's UDP bytes (#3366).
-constexpr std::string_view UDP_BYTES_ARGUMENT = "--udp-bytes";
 /// How long the helper waits for a request before it exits; TaskSmack starts it again when needed.
 constexpr std::chrono::minutes IDLE_TIMEOUT{5};
 
@@ -150,7 +148,7 @@ struct Arguments
         {
             arguments.enforce = true;
         }
-        else if (text == UDP_BYTES_ARGUMENT && !arguments.udpBytes)
+        else if (text == Platform::UDP_BYTES_ARGUMENT && !arguments.udpBytes)
         {
             arguments.udpBytes = true;
         }

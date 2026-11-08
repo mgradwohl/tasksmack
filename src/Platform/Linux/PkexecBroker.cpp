@@ -3,6 +3,7 @@
 #include "Platform/BrokerProtocol.h"
 #include "Platform/Linux/BrokerSocket.h"
 #include "Platform/Linux/HelperSandboxMode.h"
+#include "Platform/Linux/UdpByteCounter.h" // UDP_BYTES_ARGUMENT (#3366)
 
 #include <spdlog/spdlog.h>
 
@@ -216,6 +217,13 @@ std::expected<void, std::string> PkexecBroker::connectWithin(const std::stop_tok
     {
         arguments.emplace_back(HelperSandbox::ENFORCE_ARGUMENT);
     }
+    // The UDP counter loads only at the helper's start, as root (#3366), and only for a held session's helper: a
+    // counting helper never ends idle, which a one-off "Authenticate and retry" helper must.
+    const bool countUdp = m_CountUdp.load() && m_ForSession.load();
+    if (countUdp)
+    {
+        arguments.emplace_back(UDP_BYTES_ARGUMENT);
+    }
     std::vector<char*> argv;
     argv.reserve(arguments.size() + 1);
     for (std::string& argument : arguments)
@@ -261,7 +269,9 @@ std::expected<void, std::string> PkexecBroker::connectWithin(const std::stop_tok
                 ? std::string("the helper didn't answer the handshake")
                 : std::format("the helper speaks protocol version {}, TaskSmack {}", hello->version, Broker::PROTOCOL_VERSION));
     }
+    m_HelperCountsUdp = countUdp;
     m_Connected = true;
+    ++m_SessionsStarted;
     return {};
 }
 
@@ -271,6 +281,12 @@ std::expected<void, std::string> PkexecBroker::holdForSession(const std::stop_to
     const bool wasHeld = m_ForSession.exchange(true);
     {
         const std::scoped_lock lock(m_Mutex);
+        if (m_Connected.load() && m_CountUdp.load() && !m_HelperCountsUdp)
+        {
+            // A one-off helper ("Authenticate and retry") started without the UDP counter, which loads only at a
+            // start: the session's helper is a new one that counts (#3366). One prompt, as for any start.
+            closeLocked();
+        }
         if (m_Connected.load())
         {
             // A helper an earlier "Authenticate and retry" started is held by a Hello again: no prompt.
@@ -298,6 +314,38 @@ bool PkexecBroker::heldForSession() const noexcept
     // Atomics only, no poll: the status-bar chip asks every frame on the UI thread (#2728). A helper that
     // has hung up is noticed by the next call or connected() on a worker, as the readers make each refresh.
     return m_ForSession.load() && m_Connected.load();
+}
+
+std::expected<void, std::string> PkexecBroker::countUdpBytes(const std::stop_token& stopToken)
+{
+    m_CountUdp = true;
+    // The live session, not just the request for one: a held helper that has since ended leaves nothing held, and
+    // nothing starts or prompts until the user chooses Administrator again (the request stands for that). connected()
+    // looks at the channel first, as heldForSession() reads only what was last seen; this is a worker.
+    static_cast<void>(connected());
+    if (!heldForSession())
+    {
+        return std::unexpected("Needs an Administrator session"); // nothing prompts outside one (maintainer, 2026-11-07)
+    }
+    {
+        const std::scoped_lock lock(m_Mutex);
+        if (m_Connected.load() && m_HelperCountsUdp)
+        {
+            return {};
+        }
+        closeLocked(); // a helper started without the counter can't load it now, as nobody: start one that does
+    }
+    return connect(stopToken); // the Hello asks to be held again, as m_ForSession stands
+}
+
+std::uint64_t PkexecBroker::sessionsStarted() const noexcept
+{
+    return m_SessionsStarted.load();
+}
+
+void PkexecBroker::stopCountingUdpBytes() noexcept
+{
+    m_CountUdp = false;
 }
 
 void PkexecBroker::disconnect()

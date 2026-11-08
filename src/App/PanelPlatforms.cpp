@@ -8,6 +8,7 @@
 #include "Panels/SystemMetricsPanel.h"
 #include "Platform/BrokeredProcessActions.h"
 #include "Platform/BrokeredSystemInfoProbe.h"
+#include "Platform/BrokeredUdpTrafficCollector.h"
 #ifdef _WIN32
 #include "Platform/BrokeredUserSessions.h" // the Users tab's helper decorator: Windows only (#3076)
 #endif
@@ -97,7 +98,10 @@ ProcessesPanelPlatform makeProcessesPanelPlatform(const Synthetic::Scenario* sce
         .probe = (scenario == nullptr) ? Platform::withPrivilegedBroker(Synthetic::makeProcessProbe(scenario), sharedPrivilegedBroker())
                                        : Synthetic::makeProcessProbe(scenario),
         .actions = processActionsFor(scenario),
-        .udpCollector = Synthetic::makeUdpTrafficCollector(scenario),
+        // Windows' ETW collector, or on Linux the helper's eBPF counter through the broker (#3366).
+        .udpCollector = (scenario == nullptr)
+                          ? Platform::withPrivilegedBroker(Synthetic::makeUdpTrafficCollector(scenario), sharedPrivilegedBroker())
+                          : Synthetic::makeUdpTrafficCollector(scenario),
         .icons = Synthetic::makeProcessIconSource(scenario),
     };
 #ifndef _WIN32

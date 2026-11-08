@@ -13,9 +13,11 @@
 #include "LinuxEfficiencyMode.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessProbe.h"
+#include "Platform/IUdpTrafficCollector.h"
 #include "Platform/PlatformConfig.h"
 #include "Platform/ProcessArchitecture.h"
 #include "Platform/SchedPolicy.h"
+#include "Platform/UdpTrafficSamples.h"
 #include "UserNameLookup.h"
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
@@ -496,8 +498,11 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
     const bool hasNetworkCounters = m_HasNetworkCounters;
+    const std::shared_ptr<IUdpTrafficCollector> udp = udpCollector();
+    const bool udpDelivering = udp != nullptr && udp->isDelivering(); // #3366
 #else
     const bool hasNetworkCounters = false;
+    const bool udpDelivering = false; // no socket readings to add UDP to
 #endif
 
     // Missing privileges (#2303): reading other users' FD counts, I/O and network attribution needs
@@ -529,9 +534,10 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
         .hasSwapBytes = true,    // From /proc/[pid]/status VmSwap (#1885)
         // From /proc/[pid]/smaps_rollup (Linux 4.14+), for one process at a time (#1885)
         .hasMemoryRollup = std::filesystem::exists(m_ProcRoot / "self" / "smaps_rollup", ignored),
-        .hasCpuAffinity = true,                         // From status Cpus_allowed_list
-        .hasNetworkCounters = hasNetworkCounters,       // From Netlink INET_DIAG (if available)
-        .hasUdpNetworkCounters = false,                 // sock_diag has no UDP byte counters (#1101)
+        .hasCpuAffinity = true,                   // From status Cpus_allowed_list
+        .hasNetworkCounters = hasNetworkCounters, // From Netlink INET_DIAG (if available)
+        // sock_diag has no UDP byte counters (#1101): only the helper's eBPF counter, while it delivers (#3366)
+        .hasUdpNetworkCounters = hasNetworkCounters && udpDelivering,
         .hasPowerUsage = m_HasPowerCap,                 // Available if RAPL is detected
         .hasStatus = true,                              // From cgroup freezer state
         .hasContainer = true,                           // From /proc/[pid]/cgroup paths
@@ -1591,6 +1597,7 @@ SocketTrafficReading LinuxProcessProbe::readSocketTraffic() const
         // A failed reading (returned above) leaves them alone: its sockets are unknown, not closed.
         const std::scoped_lock lock{m_UnownedSocketsMutex};
         m_UnownedSocketsFirstSeen.clear();
+        appendUdpTraffic(reading);
         return reading;
     }
 
@@ -1662,7 +1669,44 @@ SocketTrafficReading LinuxProcessProbe::readSocketTraffic() const
         }
         m_UnownedSocketsFirstSeen = std::move(unowned);
     }
+    appendUdpTraffic(reading);
     return reading;
+}
+
+void LinuxProcessProbe::appendUdpTraffic(SocketTrafficReading& reading) const
+{
+    const std::shared_ptr<IUdpTrafficCollector> udp = udpCollector();
+    if (udp == nullptr)
+    {
+        return;
+    }
+    // Sampled once per reading Domain folds in: a cached TCP reading comes back with the same time, and Domain skips
+    // it, so a UDP sample taken for it (a run's seeding reading, say) would be lost. It gets the last rows instead.
+    {
+        const std::scoped_lock lock(m_UdpCollectorMutex);
+        if (reading.sampleTimeNs != 0 && reading.sampleTimeNs == m_UdpReadingTimeNs)
+        {
+            UdpTraffic::appendSamples(reading.sockets, m_UdpRows);
+            return;
+        }
+    }
+    std::vector<UdpProcessTraffic> traffic = udp->sample(); // a broker call: not under the lock
+    UdpTraffic::appendSamples(reading.sockets, traffic);
+    const std::scoped_lock lock(m_UdpCollectorMutex);
+    m_UdpReadingTimeNs = reading.sampleTimeNs;
+    m_UdpRows = std::move(traffic);
+}
+
+void LinuxProcessProbe::setUdpTrafficCollector(const std::shared_ptr<IUdpTrafficCollector>& collector)
+{
+    const std::scoped_lock lock(m_UdpCollectorMutex);
+    m_UdpCollector = collector;
+}
+
+std::shared_ptr<IUdpTrafficCollector> LinuxProcessProbe::udpCollector() const
+{
+    const std::scoped_lock lock(m_UdpCollectorMutex);
+    return m_UdpCollector;
 }
 
 std::pair<LinuxProcessProbe::InodeToPidSnapshot, bool> LinuxProcessProbe::claimInodeMapRebuild(std::chrono::milliseconds maxAge) const
