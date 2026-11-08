@@ -318,7 +318,9 @@ bool PkexecBroker::heldForSession() const noexcept
 std::expected<void, std::string> PkexecBroker::countUdpBytes(const std::stop_token& stopToken)
 {
     m_CountUdp = true;
-    if (!m_ForSession.load())
+    // The live session, not just the request for one: a held helper that has since ended leaves nothing held, and
+    // nothing starts or prompts until the user chooses Administrator again (the request stands for that).
+    if (!heldForSession())
     {
         return std::unexpected("Needs an Administrator session"); // nothing prompts outside one (maintainer, 2026-11-07)
     }

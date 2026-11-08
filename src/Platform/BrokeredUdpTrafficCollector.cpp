@@ -104,19 +104,23 @@ std::vector<UdpProcessTraffic> BrokeredUdpTrafficCollector::sample()
     }
     if (reply == nullptr || reply->status != Broker::UdpBytesStatus::Ok)
     {
-        // A helper that ended took its counter with it, and the next one counts from zero (taken below as a reset).
+        // Domain drops this collector's connections with this empty reading, so the next counting one starts them anew:
+        //   - a helper that ended took its counter with it, and its successor counts from zero, so no baseline;
+        //   - one that couldn't read its map, or isn't counting, may still be counting: the next reading is a baseline.
+        // "The helper ended" only for a helper that delivered: before the first one, the reason start() gave stands
+        // (such as "Needs an Administrator session").
+        const bool hadHelper = m_Delivering.load();
         std::string problem;
         if (helperGone)
         {
-            problem = "The helper ended";
-        }
-        else if (reply->status == Broker::UdpBytesStatus::NotCounting)
-        {
-            problem = "The helper isn't counting UDP";
+            m_Baseline.clear();
+            m_NeedBaseline = false;
+            problem = hadHelper ? std::string("The helper ended") : m_Problem;
         }
         else
         {
-            problem = reply->detail;
+            m_NeedBaseline = true;
+            problem = reply->status == Broker::UdpBytesStatus::NotCounting ? std::string("The helper isn't counting UDP") : reply->detail;
         }
         if (problem != m_Problem)
         {
@@ -130,7 +134,8 @@ std::vector<UdpProcessTraffic> BrokeredUdpTrafficCollector::sample()
     }
     if (m_NeedBaseline)
     {
-        // The run's first totals: from here on only what's counted after them.
+        // The first counting reading since the run started, or since a read failed: from here on only what's counted
+        // after it.
         m_Baseline.clear();
         for (const UdpByteCounts& process : reply->processes)
         {
@@ -142,13 +147,20 @@ std::vector<UdpProcessTraffic> BrokeredUdpTrafficCollector::sample()
     m_Last.reserve(reply->processes.size());
     for (const UdpByteCounts& process : reply->processes)
     {
-        auto [sentBase, receivedBase] = m_Baseline[process.tgid];
-        if (process.txBytes < sentBase || process.rxBytes < receivedBase)
+        // Only the processes in the baseline have an entry; any other counts from zero (no entry kept for it).
+        std::uint64_t sentBase = 0;
+        std::uint64_t receivedBase = 0;
+        if (const auto base = m_Baseline.find(process.tgid); base != m_Baseline.end())
         {
-            // Below its baseline: a new helper's counter, from zero. Its totals are new bytes.
-            sentBase = 0;
-            receivedBase = 0;
-            m_Baseline[process.tgid] = {0, 0};
+            if (process.txBytes < base->second.first || process.rxBytes < base->second.second)
+            {
+                m_Baseline.erase(base); // below its baseline: a new helper's counter, from zero
+            }
+            else
+            {
+                sentBase = base->second.first;
+                receivedBase = base->second.second;
+            }
         }
         m_Last.push_back({.pid = process.tgid, .bytesSent = process.txBytes - sentBase, .bytesReceived = process.rxBytes - receivedBase});
     }
