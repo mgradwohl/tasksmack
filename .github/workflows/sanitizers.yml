@@ -47,11 +47,8 @@ jobs:
         uses: ./.github/actions/setup-python-glad
 
       - name: Setup ccache
-
         id: ccache
-
         # A failed fetch of ccache itself (a GitHub releases outage) builds without it: slower, not red.
-
         continue-on-error: true
         uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
         with:
@@ -61,6 +58,13 @@ jobs:
           max-size: 1250M  # ASan+UBSan, about 560 MB a build (#3100); same key as ci.yml's job
           save: true
           evict-old-files: job
+
+      # A failed ccache setup can leave an empty or unverified ccache on PATH: CMake mustn't find
+      # it (cmake/CompilerOptions.cmake reads TASKSMACK_NO_CCACHE), so the build runs without one.
+      - name: Build without ccache (its setup failed)
+        if: steps.ccache.outcome == 'failure'
+        shell: bash
+        run: echo "TASKSMACK_NO_CCACHE=1" >> "$GITHUB_ENV"
 
       # Restore only; reusable-build-test.yml's main-branch builds save it (#1406).
       - name: Restore FetchContent dependencies
@@ -101,11 +105,8 @@ jobs:
         uses: ./.github/actions/setup-python-glad
 
       - name: Setup ccache
-
         id: ccache
-
         # A failed fetch of ccache itself (a GitHub releases outage) builds without it: slower, not red.
-
         continue-on-error: true
         uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
         with:
@@ -119,6 +120,13 @@ jobs:
           # Main runs drop entries this build didn't touch, so the saved cache tracks the tree.
           save: ${{ github.ref == 'refs/heads/main' }}
           evict-old-files: job
+
+      # A failed ccache setup can leave an empty or unverified ccache on PATH: CMake mustn't find
+      # it (cmake/CompilerOptions.cmake reads TASKSMACK_NO_CCACHE), so the build runs without one.
+      - name: Build without ccache (its setup failed)
+        if: steps.ccache.outcome == 'failure'
+        shell: bash
+        run: echo "TASKSMACK_NO_CCACHE=1" >> "$GITHUB_ENV"
 
       # Restore only; reusable-build-test.yml's main-branch builds save it (#1406).
       - name: Restore FetchContent dependencies

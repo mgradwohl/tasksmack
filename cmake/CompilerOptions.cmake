@@ -31,8 +31,9 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_COLOR_DIAGNOSTICS ON)
 
-# Compiler caching (ccache/sccache) - required for development
-if(TASKSMACK_ENABLE_CCACHE)
+# Compiler caching (ccache/sccache) - required for development. CI sets TASKSMACK_NO_CCACHE in the environment when its
+# ccache setup failed, so a half-installed ccache on PATH is never found (#3561).
+if(TASKSMACK_ENABLE_CCACHE AND "$ENV{TASKSMACK_NO_CCACHE}" STREQUAL "")
     # Self-heal stale cache entries (common on Windows package upgrades)
     # so find_program can re-discover valid launcher paths.
     if(DEFINED CCACHE_PROGRAM AND CCACHE_PROGRAM AND NOT EXISTS "${CCACHE_PROGRAM}")

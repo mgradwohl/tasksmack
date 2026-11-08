@@ -177,6 +177,13 @@ jobs:
           # The post step prints `ccache -s -vv`: hits, misses and why calls were uncacheable.
           verbose: 2
 
+      # A failed ccache setup can leave an empty or unverified ccache on PATH: CMake mustn't find
+      # it (cmake/CompilerOptions.cmake reads TASKSMACK_NO_CCACHE), so the build runs without one.
+      - name: Build without ccache (its setup failed)
+        if: steps.ccache.outcome == 'failure'
+        shell: bash
+        run: echo "TASKSMACK_NO_CCACHE=1" >> "$GITHUB_ENV"
+
       # inode_cache: remember each source and header's hash by file ID and timestamps, so a hit
       # doesn't re-hash every include. ccache leaves it off by default on Windows (#1875).
       - name: Configure ccache (Windows)

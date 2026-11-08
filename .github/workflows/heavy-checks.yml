@@ -91,11 +91,8 @@ jobs:
         run: ./tools/check-prereqs.sh
 
       - name: Setup ccache
-
         id: ccache
-
         # A failed fetch of ccache itself (a GitHub releases outage) builds without it: slower, not red.
-
         continue-on-error: true
         uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
         with:
@@ -109,6 +106,13 @@ jobs:
           # Main runs drop entries this build didn't touch, so the saved cache tracks the tree.
           save: ${{ github.ref == 'refs/heads/main' }}
           evict-old-files: job
+
+      # A failed ccache setup can leave an empty or unverified ccache on PATH: CMake mustn't find
+      # it (cmake/CompilerOptions.cmake reads TASKSMACK_NO_CCACHE), so the build runs without one.
+      - name: Build without ccache (its setup failed)
+        if: steps.ccache.outcome == 'failure'
+        shell: bash
+        run: echo "TASKSMACK_NO_CCACHE=1" >> "$GITHUB_ENV"
 
       # Restore only; reusable-build-test.yml's main-branch builds save it (#1406).
       - name: Restore FetchContent dependencies
@@ -233,11 +237,8 @@ jobs:
           llvm-version: ${{ env.LLVM_SEMVER_VERSION }}
 
       - name: Setup ccache
-
         id: ccache
-
         # A failed fetch of ccache itself (a GitHub releases outage) builds without it: slower, not red.
-
         continue-on-error: true
         uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
         with:
@@ -255,6 +256,13 @@ jobs:
           evict-old-files: job
           # The post step prints `ccache -s -vv`: hits, misses and why calls were uncacheable.
           verbose: 2
+
+      # A failed ccache setup can leave an empty or unverified ccache on PATH: CMake mustn't find
+      # it (cmake/CompilerOptions.cmake reads TASKSMACK_NO_CCACHE), so the build runs without one.
+      - name: Build without ccache (its setup failed)
+        if: steps.ccache.outcome == 'failure'
+        shell: bash
+        run: echo "TASKSMACK_NO_CCACHE=1" >> "$GITHUB_ENV"
 
       # inode_cache: remember each source and header's hash by file ID and timestamps, so a hit
       # doesn't re-hash every include. ccache leaves it off by default on Windows (#1875).
@@ -408,11 +416,8 @@ jobs:
         uses: ./.github/actions/setup-python-glad
 
       - name: Setup ccache
-
         id: ccache
-
         # A failed fetch of ccache itself (a GitHub releases outage) builds without it: slower, not red.
-
         continue-on-error: true
         uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
         with:
@@ -426,6 +431,13 @@ jobs:
           # Main runs drop entries this build didn't touch, so the saved cache tracks the tree.
           save: ${{ github.ref == 'refs/heads/main' }}
           evict-old-files: job
+
+      # A failed ccache setup can leave an empty or unverified ccache on PATH: CMake mustn't find
+      # it (cmake/CompilerOptions.cmake reads TASKSMACK_NO_CCACHE), so the build runs without one.
+      - name: Build without ccache (its setup failed)
+        if: steps.ccache.outcome == 'failure'
+        shell: bash
+        run: echo "TASKSMACK_NO_CCACHE=1" >> "$GITHUB_ENV"
 
       # Restore only; reusable-build-test.yml's main-branch builds save it (#1406).
       - name: Restore FetchContent dependencies
@@ -626,11 +638,8 @@ jobs:
         uses: ./.github/actions/setup-python-glad
 
       - name: Setup ccache
-
         id: ccache
-
         # A failed fetch of ccache itself (a GitHub releases outage) builds without it: slower, not red.
-
         continue-on-error: true
         uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
         with:
@@ -644,6 +653,13 @@ jobs:
           # Main runs drop entries this build didn't touch, so the saved cache tracks the tree.
           save: ${{ github.ref == 'refs/heads/main' }}
           evict-old-files: job
+
+      # A failed ccache setup can leave an empty or unverified ccache on PATH: CMake mustn't find
+      # it (cmake/CompilerOptions.cmake reads TASKSMACK_NO_CCACHE), so the build runs without one.
+      - name: Build without ccache (its setup failed)
+        if: steps.ccache.outcome == 'failure'
+        shell: bash
+        run: echo "TASKSMACK_NO_CCACHE=1" >> "$GITHUB_ENV"
 
       # Restore only; reusable-build-test.yml's main-branch builds save it (#1406).
       - name: Restore FetchContent dependencies
@@ -866,11 +882,8 @@ jobs:
         uses: ./.github/actions/setup-python-glad
 
       - name: Setup ccache
-
         id: ccache
-
         # A failed fetch of ccache itself (a GitHub releases outage) builds without it: slower, not red.
-
         continue-on-error: true
         uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
         with:
@@ -879,6 +892,13 @@ jobs:
           max-size: 500M
           save: ${{ github.ref == 'refs/heads/main' }}
           evict-old-files: job
+
+      # A failed ccache setup can leave an empty or unverified ccache on PATH: CMake mustn't find
+      # it (cmake/CompilerOptions.cmake reads TASKSMACK_NO_CCACHE), so the build runs without one.
+      - name: Build without ccache (its setup failed)
+        if: steps.ccache.outcome == 'failure'
+        shell: bash
+        run: echo "TASKSMACK_NO_CCACHE=1" >> "$GITHUB_ENV"
 
       - name: Restore FetchContent dependencies
         uses: ./.github/actions/fetchcontent-cache
