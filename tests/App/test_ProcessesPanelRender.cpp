@@ -3645,7 +3645,17 @@ TEST_F(ProcessesPanelRenderTest, AppMembershipFollowsTheTablesAppGroupFromTheWho
                 .icons = nullptr,
             };
         });
-    attachAndSeed(*panel); // never shown: the table's render cache is empty
+    // onAttach() alone, not attachAndSeed(): waitForFirstSample() and onUpdate() adopt the seed into the table's
+    // render cache. The seed's publication is waited for through the model (findSnapshot()), so the cache stays
+    // empty and appMembership() can only answer from the model's generation.
+    panel->onAttach();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!panel->findSnapshot(30).has_value() && std::chrono::steady_clock::now() < deadline)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_TRUE(panel->findSnapshot(30).has_value()) << "the sampler thread did not publish the seed in time";
+    ASSERT_EQ(panel->adoptedProcessCount(), 0U) << "the render cache adopted a generation";
 
     const ProcessGrouping::AppMembership shell = panel->appMembership(21, 0);
     EXPECT_EQ(shell.key, FAMILY);
@@ -3668,6 +3678,7 @@ TEST_F(ProcessesPanelRenderTest, AppMembershipFollowsTheTablesAppGroupFromTheWho
     EXPECT_EQ(panel->appMembership(999, 0), ProcessGrouping::AppMembership{}) << "the generation doesn't list it";
     EXPECT_EQ(panel->appMembership(-1, 0), ProcessGrouping::AppMembership{}) << "nothing is selected";
     EXPECT_EQ(panel->appMembership(21, 0), shell) << "asked again, the same answer";
+    EXPECT_EQ(panel->adoptedProcessCount(), 0U) << "appMembership() adopted into the render cache";
     panel->onDetach();
 }
 
