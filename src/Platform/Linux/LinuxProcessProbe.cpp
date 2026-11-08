@@ -498,11 +498,12 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
     const bool hasNetworkCounters = m_HasNetworkCounters;
+    const std::shared_ptr<IUdpTrafficCollector> udp = udpCollector();
+    const bool udpDelivering = udp != nullptr && udp->isDelivering(); // #3366
 #else
     const bool hasNetworkCounters = false;
+    const bool udpDelivering = false; // no socket readings to add UDP to
 #endif
-    const std::shared_ptr<IUdpTrafficCollector> udp = udpCollector();
-    const bool udpDelivering = udp != nullptr && udp->isDelivering();
 
     // Missing privileges (#2303): reading other users' FD counts, I/O and network attribution needs
     // CAP_DAC_READ_SEARCH and CAP_SYS_PTRACE; signalling them CAP_KILL; raising priority, the Realtime

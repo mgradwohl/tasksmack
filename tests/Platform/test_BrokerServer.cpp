@@ -2243,6 +2243,10 @@ TEST(PkexecBrokerTest, CountingUdpStartsAHelperWithTheFlagOnlyInAHeldSession)
     ASSERT_FALSE(oneOff.countUdpBytes(std::stop_token{}).has_value());
     ASSERT_TRUE(oneOff.connect(std::stop_token{}).has_value());
     EXPECT_EQ(udpStatusOf(oneOff), Broker::UdpBytesStatus::NotCounting);
+    // Choosing Administrator then replaces that one-off helper with one that counts, rather than holding it as is.
+    ASSERT_TRUE(oneOff.holdForSession(std::stop_token{}).has_value());
+    EXPECT_TRUE(oneOff.heldForSession());
+    EXPECT_NE(udpStatusOf(oneOff), Broker::UdpBytesStatus::NotCounting);
 }
 
 TEST(PkexecBrokerTest, AConnectedHelperIsHeldWithoutAnotherStart)
