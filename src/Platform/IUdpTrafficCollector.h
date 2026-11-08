@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace Platform
@@ -66,6 +67,20 @@ class IUdpTrafficCollector
     /// process whose counters have not grown for a while is left out from then on, and starts again
     /// from 0 if it sends again (Domain takes it as new then). Empty when stopped.
     [[nodiscard]] virtual std::vector<UdpProcessTraffic> sample() = 0;
+
+    /// Why it isn't counting, in a sentence the UI can show; empty while it counts, or for a collector that says
+    /// nothing more than start() did (the default). Cheap: no I/O (#3366).
+    [[nodiscard]] virtual std::string problem() const
+    {
+        return {};
+    }
+
+    /// Whether counting can't work on this system as it is (Linux: the helper couldn't load or read its counter), so
+    /// the UI shouldn't offer to turn it on. False by default (#3366).
+    [[nodiscard]] virtual bool unsupported() const
+    {
+        return false;
+    }
 };
 
 } // namespace Platform

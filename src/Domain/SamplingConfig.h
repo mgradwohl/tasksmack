@@ -206,6 +206,12 @@ inline constexpr int STARTUP_IMPACT_REFRESH_SECONDS = 600;
 // with each sample, on the sampler thread, so a table added or removed shows at the next one.
 inline constexpr int STARTUP_CRON_REFRESH_SECONDS = 60;
 
+// How often the Windows Startup tab walks Task Scheduler's folders for the tasks that start at sign-in or boot
+// (#3424), at most. A walk reads every task's definition through the Task Scheduler API, a few hundred
+// milliseconds, so it isn't done on every Startup sample; the cached tasks' programs are still resolved with
+// each one. A task TaskSmack switches on or off is read again at the next sample, without waiting for this.
+inline constexpr int STARTUP_SCHEDULED_TASKS_REFRESH_SECONDS = 60;
+
 // The opt-in update check (#3093) - fixed, not configurable. With "Check for updates daily" on,
 // TaskSmack asks GitHub's releases API for the latest release at most once per this many hours,
 // measured on the wall clock from the last check, which config.toml keeps across restarts. A failed

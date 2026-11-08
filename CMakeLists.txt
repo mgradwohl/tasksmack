@@ -208,6 +208,7 @@ set(TASKSMACK_SOURCES
     src/App/RenderMetricsOverride.cpp
     src/App/SettingsDialog.cpp
     src/App/SettingsLayer.cpp
+    src/App/UdpCountingStatus.cpp # what Count UDP traffic per process is doing, for Settings (#3366)
     src/App/TaskManagerNoticeLayer.cpp # Replace Task Manager's startup check (#3072)
     src/App/TaskManagerReplacementController.cpp
     src/App/TaskManagerReplacementRows.cpp
@@ -418,6 +419,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsStartupProbe.cpp
     src/Platform/Windows/WindowsStartupImpact.cpp # the last sign-in's per-process startup cost, from WDI (#3073)
     src/Platform/Windows/WindowsStartupActions.cpp
+    src/Platform/Windows/WindowsScheduledTasks.cpp # the Startup tab's logon and boot scheduled tasks (#3424)
     src/Platform/Windows/WindowsServiceActions.cpp
     src/Platform/Windows/WindowsServiceProbe.cpp
     src/Platform/Windows/WinString.cpp
@@ -700,6 +702,7 @@ elseif(WIN32)
         src/Platform/Windows/WindowsStartupProbe.h
         src/Platform/Windows/WindowsStartupImpact.h
         src/Platform/Windows/WindowsStartupActions.h
+        src/Platform/Windows/WindowsScheduledTasks.h
         src/Platform/Windows/WindowsServiceProbe.h
         src/Platform/Windows/WindowsServiceConfig.h
         src/Platform/Windows/WindowsServiceActions.h

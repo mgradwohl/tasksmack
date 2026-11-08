@@ -1350,11 +1350,11 @@ inline Platform::CpuCounters makeIdleCpu(uint64_t totalTicks = 10000)
 /// @param totalTicks Total ticks to distribute
 inline Platform::CpuCounters makeCpuAtUsage(double usagePercent, uint64_t totalTicks = 10000)
 {
-    auto activeTicks = static_cast<uint64_t>(static_cast<double>(totalTicks) * usagePercent / 100.0);
-    auto idleTicks = totalTicks - activeTicks;
+    const auto activeTicks = static_cast<uint64_t>(static_cast<double>(totalTicks) * usagePercent / 100.0);
+    const auto idleTicks = totalTicks - activeTicks;
     // Split active between user and system (2:1 ratio)
-    auto userTicks = activeTicks * 2 / 3;
-    auto sysTicks = activeTicks - userTicks;
+    const auto userTicks = activeTicks * 2 / 3;
+    const auto sysTicks = activeTicks - userTicks;
     return makeCpuCounters(userTicks, 0, sysTicks, idleTicks);
 }
 
@@ -1388,7 +1388,7 @@ inline Platform::MemoryCounters makeMemoryCounters(uint64_t total,
 /// @param totalBytes Total memory in bytes
 inline Platform::MemoryCounters makeMemoryAtUsage(double usagePercent, uint64_t totalBytes = 16ULL * 1024 * 1024 * 1024)
 {
-    auto availableBytes = static_cast<uint64_t>(static_cast<double>(totalBytes) * (100.0 - usagePercent) / 100.0);
+    const auto availableBytes = static_cast<uint64_t>(static_cast<double>(totalBytes) * (100.0 - usagePercent) / 100.0);
     return makeMemoryCounters(totalBytes, availableBytes);
 }
 
