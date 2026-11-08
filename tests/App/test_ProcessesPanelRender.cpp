@@ -791,6 +791,50 @@ TEST_F(ProcessesPanelRenderTest, CreateDumpFromTheRowMenuAsksFirst)
     panel->onDetach();
 }
 
+// #3566's review: the batch I/O priority dialog asks the actions what they can do when it opens, not the copy taken
+// when the platform was adopted. On Linux, authenticating later connects the helper, which can set the Realtime
+// class, so the slider then offers Realtime as Process Details' does.
+TEST_F(ProcessesPanelRenderTest, TheBatchIoPriorityDialogOffersRealtimeOnceTheActionsCanSetIt)
+{
+    TestMocks::MockProcessActions* actions = nullptr;
+    auto panel = std::make_unique<ProcessesPanel>(
+        [&actions]
+        {
+            auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+            for (const auto& counters : {
+                     TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0),
+                     TestMocks::makeProcessCounters(100, "server", 'R', 200, 50, 1000, std::uint64_t{8} << 20U, 1),
+                     TestMocks::makeProcessCounters(101, "worker", 'S', 30, 10, 1100, std::uint64_t{2} << 20U, 100),
+                 })
+            {
+                probe->withProcess(counters);
+            }
+            auto mock = std::make_unique<TestMocks::MockProcessActions>();
+            mock->setCapabilities({.canTerminate = true, .canKill = true, .canSetIoPriority = true});
+            actions = mock.get();
+            return ProcessesPanelPlatform{.probe = std::move(probe), .actions = std::move(mock), .icons = nullptr};
+        },
+        [](Core::Event&) {});
+    attachAndSeed(*panel);
+    Core::ActiveTabChangedEvent shown("Processes");
+    panel->onEvent(shown);
+    ASSERT_NE(actions, nullptr);
+    renderUntilLoaded(*panel);
+
+    // As the helper connecting does after adoption: now the actions can set Realtime.
+    actions->setCapabilities({.canTerminate = true, .canKill = true, .canSetIoPriority = true, .canSetRealtimeIoPriority = true});
+    selectAll(*panel);
+    ASSERT_EQ(panel->selectionCount(), 3U);
+    ASSERT_TRUE(openARowMenu(*panel).has_value());
+    pressPopupItem(*panel, "###SetIoPriority");
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    EXPECT_TRUE(panel->batchIoPriorityDialogForTesting().isPending());
+    EXPECT_EQ(panel->batchIoPriorityDialogForTesting().count(), 3U);
+    EXPECT_TRUE(panel->batchIoPriorityDialogForTesting().realtimeSettable()) << "asked when the dialog opened";
+    panel->onDetach();
+}
+
 /// An attached panel reading init (1), server (100) and worker (101), each with Status @p status, over mock
 /// actions that can turn Efficiency mode on and off (#3071); @p actions is left pointing at them.
 [[nodiscard]] std::unique_ptr<ProcessesPanel> efficiencyModePanel(const std::string& status, TestMocks::MockProcessActions*& actions)

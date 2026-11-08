@@ -4204,9 +4204,11 @@ void ProcessesPanel::requestSelectionIoPriority()
     {
         return;
     }
-    // The slider Process Details draws: Realtime only where it can be set, Windows' hints there.
-    m_BatchIoPriorityDialog.open(
-        std::move(targets), m_OwnPid, m_ActionCapabilities.canSetRealtimeIoPriority, m_ActionCapabilities.ioPriorityHints);
+    // The slider Process Details draws: Realtime only where it can be set, Windows' hints there. Asked now, not
+    // from m_ActionCapabilities: authenticating on Linux connects the helper later, which can set Realtime
+    // (#3566's review). actionCapabilities() is cheap and never blocks, as Process Details reads it each frame.
+    const Platform::ProcessActionCapabilities can = m_ProcessActions ? m_ProcessActions->actionCapabilities() : m_ActionCapabilities;
+    m_BatchIoPriorityDialog.open(std::move(targets), m_OwnPid, can.canSetRealtimeIoPriority, can.ioPriorityHints);
 }
 
 void ProcessesPanel::renderBatchIoPriorityDialog()

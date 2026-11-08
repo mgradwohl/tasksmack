@@ -83,6 +83,12 @@ class ProcessBatchIoPriorityDialog
         return m_Listed;
     }
 
+    /// Whether the slider offers Linux's Realtime class: what open() was told the platform can set now.
+    [[nodiscard]] bool realtimeSettable() const noexcept
+    {
+        return m_RealtimeSettable;
+    }
+
     /// The Apply button's label: "Apply to 5 processes".
     [[nodiscard]] const std::string& applyLabel() const noexcept
     {

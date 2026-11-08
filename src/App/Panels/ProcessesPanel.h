@@ -414,6 +414,12 @@ class ProcessesPanel : public Panel
         m_RowActionRun.update(/*wait=*/true);
     }
 
+    /// The row menu's batch I/O priority dialog (#3551), for tests: open after Set I/O priority for N processes...
+    [[nodiscard]] const ProcessBatchIoPriorityDialog& batchIoPriorityDialogForTesting() const noexcept
+    {
+        return m_BatchIoPriorityDialog;
+    }
+
     /// The row menu's wait chain dialog (#3084), for tests: open after Analyze wait chain... is chosen.
     [[nodiscard]] ProcessWaitChainDialog& waitChainDialogForTesting() noexcept
     {
