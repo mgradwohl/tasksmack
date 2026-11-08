@@ -203,13 +203,17 @@ void readExecAction(ITaskDefinition* definition, Math::TaskRecord& record)
 }
 
 /// What the Startup tab needs of @p task. Its action, author and principal are read only when it starts at sign-in
-/// or boot: the walk's cost is mostly the definitions, and most tasks have other triggers.
-[[nodiscard]] Math::TaskRecord readRecord(IRegisteredTask* task)
+/// or boot: the walk's cost is mostly the definitions, and most tasks have other triggers. An enabled state that
+/// can't be read is the HRESULT that says why: guessing it would let a switch skip the write it needs.
+[[nodiscard]] TaskReading readRecord(IRegisteredTask* task)
 {
     Math::TaskRecord record;
     record.path = readString(task, &IRegisteredTask::get_Path);
     VARIANT_BOOL enabled = VARIANT_TRUE;
-    static_cast<void>(task->get_Enabled(&enabled));
+    if (const HRESULT read = task->get_Enabled(&enabled); FAILED(read))
+    {
+        return std::unexpected(static_cast<std::int32_t>(read));
+    }
     record.enabled = enabled != VARIANT_FALSE;
 
     ComPtr<ITaskDefinition> definition;
@@ -286,9 +290,9 @@ class TaskSchedulerApi final : public ScheduledTaskApi
         return paths;
     }
 
-    [[nodiscard]] std::vector<Math::TaskRecord> tasks(const std::string& folderPath) override
+    [[nodiscard]] std::vector<TaskReading> tasks(const std::string& folderPath) override
     {
-        std::vector<Math::TaskRecord> records;
+        std::vector<TaskReading> records;
         const ComPtr<ITaskFolder> folder = open(folderPath);
         ComPtr<IRegisteredTaskCollection> collection;
         LONG count = 0;
@@ -309,7 +313,7 @@ class TaskSchedulerApi final : public ScheduledTaskApi
         return records;
     }
 
-    [[nodiscard]] std::expected<Math::TaskRecord, std::int32_t> task(const std::string& path) override
+    [[nodiscard]] TaskReading task(const std::string& path) override
     {
         ComPtr<IRegisteredTask> registered;
         if (const HRESULT result = find(path, registered); FAILED(result))
@@ -424,11 +428,12 @@ std::optional<std::vector<Math::TaskRecord>> readStartupTasks(ScheduledTaskApi& 
     {
         auto [folder, depth] = std::move(pending.back());
         pending.pop_back();
-        for (Math::TaskRecord& task : api.tasks(folder))
+        for (TaskReading& task : api.tasks(folder))
         {
-            if (Math::startsAtSignInOrBoot(task.triggers))
+            // A task whose state can't be read is left out: listed, it would show a state nobody read.
+            if (task.has_value() && Math::startsAtSignInOrBoot(task->triggers))
             {
-                found.push_back(std::move(task));
+                found.push_back(std::move(*task));
             }
         }
         if (depth < Math::MAX_FOLDER_DEPTH)
@@ -462,7 +467,8 @@ StartupActionResult setStartupTaskEnabled(ScheduledTaskApi& api, const StartupEn
         return StartupActionResult::failed(Math::taskErrorText(static_cast<std::uint32_t>(connected)));
     }
     // Read again here: it may have gone, or been switched elsewhere, since the list was read.
-    const std::expected<Math::TaskRecord, std::int32_t> current = api.task(path);
+    // Its enabled state too: one that can't be read fails the switch, rather than skip a write it may need.
+    const TaskReading current = api.task(path);
     if (!current.has_value())
     {
         return StartupActionResult::failed(Math::taskErrorText(static_cast<std::uint32_t>(current.error())));

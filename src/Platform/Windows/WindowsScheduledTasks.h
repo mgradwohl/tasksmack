@@ -22,6 +22,9 @@
 namespace Platform::Windows
 {
 
+/// One task as read, or the HRESULT that says why it couldn't be.
+using TaskReading = std::expected<ScheduledTaskMath::TaskRecord, std::int32_t>;
+
 /// The Task Scheduler calls the Startup tab makes: the real COM API (makeTaskSchedulerApi), or a test's fake.
 /// One is made, used and destroyed on one thread, inside a ComScope the caller holds, so every COM object it
 /// holds is released before COM is uninitialised. Paths are full ("\Vendor\Updater"), UTF-8; results are
@@ -41,10 +44,11 @@ class ScheduledTaskApi
     [[nodiscard]] virtual std::int32_t connect() = 0;
     /// The full paths of @p folder's own subfolders; empty when it has none or can't be read.
     [[nodiscard]] virtual std::vector<std::string> subfolders(const std::string& folder) = 0;
-    /// The tasks registered in @p folder itself, hidden ones included; empty when it can't be read.
-    [[nodiscard]] virtual std::vector<ScheduledTaskMath::TaskRecord> tasks(const std::string& folder) = 0;
-    /// The task at @p path, or the HRESULT that says why it can't be read.
-    [[nodiscard]] virtual std::expected<ScheduledTaskMath::TaskRecord, std::int32_t> task(const std::string& path) = 0;
+    /// The tasks registered in @p folder itself, hidden ones included; empty when it can't be read. A task whose
+    /// enabled state can't be read is the HRESULT that says why, never a guess.
+    [[nodiscard]] virtual std::vector<TaskReading> tasks(const std::string& folder) = 0;
+    /// The task at @p path, or the HRESULT that says why it (or its enabled state) can't be read.
+    [[nodiscard]] virtual TaskReading task(const std::string& path) = 0;
     /// Enables or disables the task at @p path (IRegisteredTask::put_Enabled).
     [[nodiscard]] virtual std::int32_t setEnabled(const std::string& path, bool enabled) = 0;
     /// The names a task's principal may give the current user by: "DOMAIN\user", "user" and the SID string.

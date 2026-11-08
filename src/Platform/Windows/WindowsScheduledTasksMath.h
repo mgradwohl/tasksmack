@@ -9,6 +9,8 @@
 #include "Platform/IStartupProbe.h"
 
 #include <algorithm>
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <format>
 #include <span>
@@ -92,21 +94,66 @@ struct TaskRecord
                                [userId](const std::string& name) { return !name.empty() && Platform::equalsIgnoreCase(userId, name); });
 }
 
-/// The command line an exec action runs: @p path, quoted when it holds a space and isn't quoted already, then
-/// @p arguments. Empty when there is no path (a COM handler task).
+/// The command line an exec action runs: @p path, quoted unless it is already, then @p arguments. Empty when there is
+/// no path (a COM handler task).
 [[nodiscard]] inline std::string taskCommand(std::string_view path, std::string_view arguments)
 {
     if (path.empty())
     {
         return {};
     }
-    std::string command = (path.contains(' ') && !path.starts_with('"')) ? std::format("\"{}\"", path) : std::string(path);
+    // Always quoted: the action keeps the program and its arguments apart, and an unquoted, extensionless Path
+    // ("cmd" before "/c C:\Vendor\up.exe") would otherwise run into them when the command line is read back.
+    std::string command = path.starts_with('"') ? std::string(path) : std::format("\"{}\"", path);
     if (!arguments.empty())
     {
         command += ' ';
         command += arguments;
     }
     return command;
+}
+
+/// Whether @p path names a %VARIABLE% whose value depends on the account it is expanded for (%USERPROFILE%,
+/// %APPDATA%, %TEMP%...): anything but the machine-wide folders and settings, which are the same for every account
+/// (%SystemRoot%, %ProgramFiles%, %ProgramData%...). A task that runs as another account expands those in its own
+/// environment, so TaskSmack's own value would name the wrong file. ASCII case-insensitive; a lone % is no variable.
+[[nodiscard]] constexpr bool usesAccountVariables(std::string_view path) noexcept
+{
+    constexpr std::array<std::string_view, 16> MACHINE_WIDE{
+        "SystemRoot",
+        "windir",
+        "SystemDrive",
+        "ProgramFiles",
+        "ProgramFiles(x86)",
+        "ProgramW6432",
+        "CommonProgramFiles",
+        "CommonProgramFiles(x86)",
+        "CommonProgramW6432",
+        "ProgramData",
+        "ALLUSERSPROFILE",
+        "PUBLIC",
+        "ComSpec",
+        "PROCESSOR_ARCHITECTURE",
+        "NUMBER_OF_PROCESSORS",
+        "OS",
+    };
+    std::size_t start = path.find('%');
+    while (start != std::string_view::npos)
+    {
+        const std::size_t end = path.find('%', start + 1);
+        if (end == std::string_view::npos)
+        {
+            return false;
+        }
+        const std::string_view name = path.substr(start + 1, end - start - 1);
+        if (!name.empty() &&
+            std::ranges::none_of(MACHINE_WIDE, [name](std::string_view known) { return Platform::equalsIgnoreCase(name, known); }))
+        {
+            return true;
+        }
+        start = path.find('%', end + 1);
+    }
+    return false;
 }
 
 /// The SHLoadIndirectString source an indirect Author names: "$(@%SystemRoot%\x.dll,-600)" gives

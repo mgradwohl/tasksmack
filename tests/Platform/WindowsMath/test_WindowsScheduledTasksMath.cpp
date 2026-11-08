@@ -60,12 +60,28 @@ TEST(ScheduledTaskMathTest, TheCurrentUsersTaskIsMatchedByNameOrSid)
     EXPECT_FALSE(runsAsUser("alice", unknown));
 }
 
-TEST(ScheduledTaskMathTest, TheCommandQuotesAPathWithSpaces)
+TEST(ScheduledTaskMathTest, TheCommandQuotesEveryPath)
 {
-    EXPECT_EQ(taskCommand("C:\\Program Files\\A\\a.exe", "/x"), "\"C:\\Program Files\\A\\a.exe\" /x");
-    EXPECT_EQ(taskCommand("\"C:\\Program Files\\A\\a.exe\"", "/x"), "\"C:\\Program Files\\A\\a.exe\" /x");
-    EXPECT_EQ(taskCommand("%windir%\\system32\\sc.exe", ""), "%windir%\\system32\\sc.exe");
+    EXPECT_EQ(taskCommand(R"(C:\Program Files\A\a.exe)", "/x"), R"("C:\Program Files\A\a.exe" /x)");
+    EXPECT_EQ(taskCommand(R"("C:\Program Files\A\a.exe")", "/x"), R"("C:\Program Files\A\a.exe" /x)");
+    EXPECT_EQ(taskCommand(R"(%windir%\system32\sc.exe)", ""), R"("%windir%\system32\sc.exe")");
     EXPECT_EQ(taskCommand("", "/x"), "") << "a COM handler task runs no command line";
+    // An extensionless program keeps its boundary: the .exe in its arguments isn't taken for the program (#3558).
+    EXPECT_EQ(taskCommand("cmd", R"(/c C:\Vendor\updater.exe)"), R"("cmd" /c C:\Vendor\updater.exe)");
+    EXPECT_EQ(StartupMath::executableFromCommandLine(taskCommand("cmd", R"(/c C:\Vendor\updater.exe)")), "cmd");
+}
+
+TEST(ScheduledTaskMathTest, AccountVariablesAreToldFromMachineWideOnes)
+{
+    EXPECT_TRUE(usesAccountVariables(R"(%USERPROFILE%\Tools\a.exe)"));
+    EXPECT_TRUE(usesAccountVariables(R"(%LocalAppData%\Vendor\up.exe)"));
+    EXPECT_TRUE(usesAccountVariables(R"(%SystemRoot%\x\%TEMP%\a.exe)")) << "any account variable counts";
+    EXPECT_FALSE(usesAccountVariables(R"(%SystemRoot%\System32\sc.exe)"));
+    EXPECT_FALSE(usesAccountVariables(R"(%programfiles(x86)%\A\a.exe)"));
+    EXPECT_FALSE(usesAccountVariables(R"(%ProgramData%\A\a.exe)"));
+    EXPECT_FALSE(usesAccountVariables(R"(C:\Vendor\100%\a.exe)")) << "a lone % names no variable";
+    EXPECT_FALSE(usesAccountVariables(R"(C:\Vendor\a.exe)"));
+    EXPECT_FALSE(usesAccountVariables(""));
 }
 
 TEST(ScheduledTaskMathTest, AnIndirectAuthorNamesItsResource)
@@ -94,7 +110,7 @@ TEST(ScheduledTaskMathTest, ATaskBecomesAnEntry)
     task.userId = "S-1-5-21-9";
     const StartupEntry entry = taskEntry(task, me);
     EXPECT_EQ(entry.registrationName, "\\Vendor\\Updater");
-    EXPECT_EQ(entry.command, "C:\\Vendor\\up.exe");
+    EXPECT_EQ(entry.command, R"("C:\Vendor\up.exe")");
     EXPECT_EQ(entry.location, StartupLocation::ScheduledTaskUser);
     EXPECT_EQ(entry.scope, StartupScope::User);
     EXPECT_EQ(entry.scope, StartupMath::scopeOf(entry.location));

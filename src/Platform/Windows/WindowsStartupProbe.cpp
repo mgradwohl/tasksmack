@@ -1074,7 +1074,16 @@ struct WindowsStartupProbe::Impl
         for (const Windows::ScheduledTaskMath::TaskRecord& task : scheduledTasks)
         {
             StartupEntry entry = Windows::ScheduledTaskMath::taskEntry(task, currentUserNames);
-            resolveTarget(entry, entry.registrationName, seenPaths);
+            if (entry.location == StartupLocation::ScheduledTaskMachine && Windows::ScheduledTaskMath::usesAccountVariables(task.execPath))
+            {
+                // Another account's %USERPROFILE% or %APPDATA% isn't TaskSmack's: expanded here it would name this
+                // user's file, so the program is left unresolved (its command still shows as written).
+                nameEntry(entry, Windows::StartupMath::startupDisplayName({}, {}, entry.registrationName));
+            }
+            else
+            {
+                resolveTarget(entry, entry.registrationName, seenPaths);
+            }
             if (entry.publisher.empty())
             {
                 entry.publisher = task.author;

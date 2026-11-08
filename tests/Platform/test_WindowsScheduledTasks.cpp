@@ -6,6 +6,7 @@
 /// again only at its cadence or after a switch. The real Task Scheduler is never read or written here.
 
 #include "Domain/SamplingConfig.h"
+#include "Platform/AsciiCase.h"
 #include "Platform/IStartupActions.h"
 #include "Platform/IStartupProbe.h"
 #include "Platform/Windows/WindowsScheduledTasks.h"
@@ -35,6 +36,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -49,7 +51,8 @@ using Math::TaskRecord;
 constexpr std::int32_t FAKE_S_OK = 0;
 constexpr auto ACCESS_DENIED = static_cast<std::int32_t>(Math::HRESULT_ACCESS_DENIED);
 constexpr auto NOT_FOUND = static_cast<std::int32_t>(Math::HRESULT_FILE_NOT_FOUND);
-constexpr auto RPC_UNAVAILABLE = static_cast<std::int32_t>(0x800706BAU); // RPC_S_SERVER_UNAVAILABLE
+constexpr auto RPC_UNAVAILABLE = static_cast<std::int32_t>(0x800706BAU);     // RPC_S_SERVER_UNAVAILABLE
+constexpr auto UNSPECIFIED_FAILURE = static_cast<std::int32_t>(0x80004005U); // E_FAIL
 
 /// The fake Task Scheduler's folders and tasks, and what was asked of it.
 struct FakeScheduler
@@ -63,6 +66,18 @@ struct FakeScheduler
     int apisMade = 0;
     std::vector<std::string> foldersRead;
     std::vector<std::pair<std::string, bool>> writes;
+    /// Tasks whose enabled state reads as this error (IRegisteredTask::get_Enabled failing), by path.
+    std::map<std::string, std::int32_t> unreadable;
+
+    /// @p task as the API reads it: its record, or the error its enabled state reads as.
+    [[nodiscard]] Windows::TaskReading reading(const TaskRecord& task) const
+    {
+        if (const auto it = unreadable.find(task.path); it != unreadable.end())
+        {
+            return std::unexpected(it->second);
+        }
+        return task;
+    }
 
     [[nodiscard]] TaskRecord* find(const std::string& path)
     {
@@ -93,20 +108,28 @@ class FakeApi final : public Windows::ScheduledTaskApi
         const auto it = m_State.subfolders.find(folder);
         return it == m_State.subfolders.end() ? std::vector<std::string>{} : it->second;
     }
-    [[nodiscard]] std::vector<TaskRecord> tasks(const std::string& folder) override
+    [[nodiscard]] std::vector<Windows::TaskReading> tasks(const std::string& folder) override
     {
         m_State.foldersRead.push_back(folder);
-        const auto it = m_State.tasks.find(folder);
-        return it == m_State.tasks.end() ? std::vector<TaskRecord>{} : it->second;
+        std::vector<Windows::TaskReading> readings;
+        if (const auto it = m_State.tasks.find(folder); it != m_State.tasks.end())
+        {
+            readings.reserve(it->second.size());
+            for (const TaskRecord& task : it->second)
+            {
+                readings.push_back(m_State.reading(task));
+            }
+        }
+        return readings;
     }
-    [[nodiscard]] std::expected<TaskRecord, std::int32_t> task(const std::string& path) override
+    [[nodiscard]] Windows::TaskReading task(const std::string& path) override
     {
         const TaskRecord* found = m_State.find(path);
         if (found == nullptr)
         {
             return std::unexpected(NOT_FOUND);
         }
-        return *found;
+        return m_State.reading(*found);
     }
     [[nodiscard]] std::int32_t setEnabled(const std::string& path, bool enabled) override
     {
@@ -230,7 +253,32 @@ TEST_F(WindowsScheduledTasksTest, NoConnectionReadsNothing)
     EXPECT_TRUE(m_Scheduler.foldersRead.empty());
 }
 
+TEST_F(WindowsScheduledTasksTest, ATaskWhoseStateCantBeReadIsLeftOut)
+{
+    m_Scheduler.tasks["\\"] = {makeTask("\\Unreadable", {LOGON}), makeTask("\\Readable", {BOOT})};
+    m_Scheduler.unreadable["\\Unreadable"] = UNSPECIFIED_FAILURE;
+    FakeApi api(m_Scheduler);
+    const auto found = Windows::readStartupTasks(api);
+    ASSERT_TRUE(found.has_value());
+    EXPECT_EQ(pathsOf(found.value_or(std::vector<TaskRecord>{})), (std::vector<std::string>{"\\Readable"}));
+}
+
 // --- The switch ----------------------------------------------------------------------------------------------
+
+TEST_F(WindowsScheduledTasksTest, AStateThatCantBeReadFailsTheSwitchWithoutAWrite)
+{
+    // Its record says enabled, but the read failed: an Enable mustn't take that for "already so" (#3558).
+    m_Scheduler.tasks["\\"] = {makeTask("\\Mine", {LOGON})};
+    m_Scheduler.unreadable["\\Mine"] = UNSPECIFIED_FAILURE;
+    FakeApi api(m_Scheduler);
+    const std::uint64_t before = Windows::scheduledTaskChanges().load();
+    const StartupActionResult enabled = Windows::setStartupTaskEnabled(api, taskEntryAt("\\Mine"), true);
+    EXPECT_FALSE(enabled.ok);
+    EXPECT_EQ(enabled.message, "Task Scheduler error 0x80004005");
+    EXPECT_FALSE(Windows::setStartupTaskEnabled(api, taskEntryAt("\\Mine"), false).ok);
+    EXPECT_TRUE(m_Scheduler.writes.empty());
+    EXPECT_EQ(Windows::scheduledTaskChanges().load(), before);
+}
 
 TEST_F(WindowsScheduledTasksTest, DisablesAndEnablesByPathAndCountsTheChange)
 {
@@ -435,6 +483,60 @@ TEST_F(WindowsScheduledTasksTest, TheProbeWalksAtItsCadenceOrAfterASwitch)
     m_Scheduler.connectResult = RPC_UNAVAILABLE;
     now += std::chrono::seconds(Domain::Sampling::STARTUP_SCHEDULED_TASKS_REFRESH_SECONDS);
     EXPECT_TRUE(probe.enumerate().empty());
+}
+
+/// Whether @p path ends with @p tail, ASCII case-insensitively.
+[[nodiscard]] bool endsWithIgnoreCase(std::string_view path, std::string_view tail)
+{
+    return path.size() >= tail.size() && Platform::equalsIgnoreCase(path.substr(path.size() - tail.size()), tail);
+}
+
+TEST_F(WindowsScheduledTasksTest, AnExtensionlessProgramIsFoundBeforeItsArguments)
+{
+    // Path "cmd", Arguments "/c C:\Vendor\updater.exe": the program is cmd.exe on the search path, not the
+    // arguments' .exe joined to it (#3558).
+    TaskRecord task = makeTask("\\Wrapper", {LOGON});
+    task.execPath = "cmd";
+    task.execArguments = R"(/c C:\Vendor\updater.exe)";
+    m_Scheduler.tasks["\\"] = {task};
+    WindowsStartupProbe probe(emptyRegistry(), factoryFor(m_Scheduler));
+    const std::vector<StartupEntry> entries = probe.enumerate();
+    ASSERT_EQ(entries.size(), 1U);
+    EXPECT_EQ(entries[0].command, R"("cmd" /c C:\Vendor\updater.exe)");
+    EXPECT_TRUE(endsWithIgnoreCase(entries[0].executablePath, R"(\cmd.exe)")) << entries[0].executablePath;
+    EXPECT_EQ(entries[0].target, StartupTargetState::Present);
+}
+
+TEST_F(WindowsScheduledTasksTest, AnotherAccountsVariablesAreNotExpandedAsTaskSmacks)
+{
+    TaskRecord theirs = makeTask("\\TheirUpdater", {BOOT}, "SYSTEM");
+    theirs.execPath = R"(%LOCALAPPDATA%\Vendor\updater.exe)";
+    theirs.author = "Vendor Inc.";
+    TaskRecord machineWide = makeTask("\\Shell", {BOOT}, "SYSTEM");
+    machineWide.execPath = R"(%SystemRoot%\System32\cmd.exe)";
+    TaskRecord mine = makeTask("\\MyTool", {LOGON}, "alice");
+    mine.execPath = R"(%USERPROFILE%\Tools\tool.exe)";
+    m_Scheduler.tasks["\\"] = {theirs, machineWide, mine};
+    WindowsStartupProbe probe(emptyRegistry(), factoryFor(m_Scheduler));
+    const std::vector<StartupEntry> entries = probe.enumerate();
+
+    const StartupEntry* unresolved = entryAt(entries, "\\TheirUpdater");
+    ASSERT_NE(unresolved, nullptr);
+    EXPECT_EQ(unresolved->name, "TheirUpdater");
+    EXPECT_EQ(unresolved->command, R"("%LOCALAPPDATA%\Vendor\updater.exe")") << "shown as written";
+    EXPECT_TRUE(unresolved->executablePath.empty()) << "not this user's %LOCALAPPDATA%: " << unresolved->executablePath;
+    EXPECT_EQ(unresolved->target, StartupTargetState::Unresolved);
+    EXPECT_EQ(unresolved->publisher, "Vendor Inc.");
+
+    const StartupEntry* shell = entryAt(entries, "\\Shell");
+    ASSERT_NE(shell, nullptr);
+    EXPECT_TRUE(endsWithIgnoreCase(shell->executablePath, R"(\System32\cmd.exe)")) << shell->executablePath;
+    EXPECT_EQ(shell->target, StartupTargetState::Present) << "machine-wide variables are the same for every account";
+
+    const StartupEntry* tool = entryAt(entries, "\\MyTool");
+    ASSERT_NE(tool, nullptr);
+    EXPECT_FALSE(tool->executablePath.empty());
+    EXPECT_FALSE(tool->executablePath.contains('%')) << "the current user's own task expands as TaskSmack does";
 }
 
 TEST_F(WindowsScheduledTasksTest, AProbeWithoutTheSeamListsNoTasks)
