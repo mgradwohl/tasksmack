@@ -442,6 +442,12 @@ jobs:
           include-what-you-use --version
 
       - name: Setup ccache
+
+        id: ccache
+
+        # A failed fetch of ccache itself (a GitHub releases outage) builds without it: slower, not red.
+
+        continue-on-error: true
         uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
         with:
           # The action's pinned, SHA-256-verified ccache (4.13.6): Ubuntu's 4.9.1 lacks the
@@ -577,6 +583,12 @@ jobs:
         uses: ./.github/actions/setup-python-glad
 
       - name: Setup ccache
+
+        id: ccache
+
+        # A failed fetch of ccache itself (a GitHub releases outage) builds without it: slower, not red.
+
+        continue-on-error: true
         uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
         with:
           # The action's pinned, SHA-256-verified ccache (4.13.6): Ubuntu's 4.9.1 lacks the

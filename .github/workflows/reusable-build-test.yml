@@ -148,6 +148,9 @@ jobs:
       # Skipped when nothing is built (the nightly clang-tidy-only run): with evict-old-files a
       # build-less main run would save an empty cache.
       - name: Setup ccache
+        id: ccache
+        # A failed fetch of ccache itself (a GitHub releases outage) builds without it: slower, not red.
+        continue-on-error: true
         if: inputs.build
         uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
         with:
@@ -177,7 +180,7 @@ jobs:
       # inode_cache: remember each source and header's hash by file ID and timestamps, so a hit
       # doesn't re-hash every include. ccache leaves it off by default on Windows (#1875).
       - name: Configure ccache (Windows)
-        if: inputs.build && runner.os == 'Windows'
+        if: inputs.build && runner.os == 'Windows' && steps.ccache.outcome == 'success'
         shell: bash
         run: |
           ccache --set-config=inode_cache=true
