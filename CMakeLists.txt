@@ -298,6 +298,7 @@ set(TASKSMACK_SOURCES
     src/Platform/BrokeredServiceActions.cpp  # service actions through the helper, no polkit prompt each (#2728)
     src/Platform/BrokeredUserSessions.cpp    # another user's Windows session disconnected or signed out by the helper (#3076)
     src/Platform/BrokeredSystemInfoProbe.cpp # System Information's root-only facts through the helper (#2310)
+    src/Platform/BrokeredUdpTrafficCollector.cpp # per-process UDP bytes from the helper's eBPF counter (#3366)
     src/Platform/BrokerRequestMapping.cpp    # what either OS's helper does with each request (#2517)
     src/Platform/TaskManagerReplacementService.cpp # Replace Task Manager's read and change (#3072)
     src/Platform/PublicIpLookup.cpp          # what either OS's public IP lookup does with a reply (#3117)

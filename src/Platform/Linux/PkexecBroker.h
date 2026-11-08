@@ -91,6 +91,9 @@ class PkexecBroker final : public IPrivilegedBroker
 
     [[nodiscard]] std::expected<void, std::string> holdForSession(const std::stop_token& stopToken) override;
     [[nodiscard]] bool heldForSession() const noexcept override;
+    /// Within a held session, starts a helper with --udp-bytes unless the running one has it (#3366).
+    [[nodiscard]] std::expected<void, std::string> countUdpBytes(const std::stop_token& stopToken) override;
+    void stopCountingUdpBytes() noexcept override;
 
     [[nodiscard]] bool connected() const noexcept override;
     [[nodiscard]] bool lastSeenConnected() const noexcept override
@@ -133,6 +136,8 @@ class PkexecBroker final : public IPrivilegedBroker
     std::uint32_t m_Unanswered = 0;               // a timed-out callIfIdle() request whose reply is still to come, or 0 (#2406)
     std::atomic<bool> m_Connecting{false};        // a connect is asking for the password (#2391)
     std::atomic<bool> m_ForSession{false};        // holdForSession() succeeded: each Hello asks to be held (#2728)
+    std::atomic<bool> m_CountUdp{false};          // countUdpBytes() stands: each helper starts with --udp-bytes (#3366)
+    bool m_HelperCountsUdp = false;               // under m_Mutex: the running helper was started with --udp-bytes
     mutable std::atomic<bool> m_Connected{false}; // cleared by connected() too, once the helper has hung up
 };
 

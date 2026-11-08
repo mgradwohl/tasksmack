@@ -3,6 +3,7 @@
 #include "Platform/BrokerProtocol.h"
 #include "Platform/Linux/BrokerSocket.h"
 #include "Platform/Linux/HelperSandboxMode.h"
+#include "Platform/Linux/UdpByteCounter.h" // UDP_BYTES_ARGUMENT (#3366)
 
 #include <spdlog/spdlog.h>
 
@@ -216,6 +217,12 @@ std::expected<void, std::string> PkexecBroker::connectWithin(const std::stop_tok
     {
         arguments.emplace_back(HelperSandbox::ENFORCE_ARGUMENT);
     }
+    // The UDP counter loads only at the helper's start, as root (#3366).
+    const bool countUdp = m_CountUdp.load();
+    if (countUdp)
+    {
+        arguments.emplace_back(UDP_BYTES_ARGUMENT);
+    }
     std::vector<char*> argv;
     argv.reserve(arguments.size() + 1);
     for (std::string& argument : arguments)
@@ -261,6 +268,7 @@ std::expected<void, std::string> PkexecBroker::connectWithin(const std::stop_tok
                 ? std::string("the helper didn't answer the handshake")
                 : std::format("the helper speaks protocol version {}, TaskSmack {}", hello->version, Broker::PROTOCOL_VERSION));
     }
+    m_HelperCountsUdp = countUdp;
     m_Connected = true;
     return {};
 }
@@ -298,6 +306,29 @@ bool PkexecBroker::heldForSession() const noexcept
     // Atomics only, no poll: the status-bar chip asks every frame on the UI thread (#2728). A helper that
     // has hung up is noticed by the next call or connected() on a worker, as the readers make each refresh.
     return m_ForSession.load() && m_Connected.load();
+}
+
+std::expected<void, std::string> PkexecBroker::countUdpBytes(const std::stop_token& stopToken)
+{
+    m_CountUdp = true;
+    if (!m_ForSession.load())
+    {
+        return std::unexpected("Needs an Administrator session"); // nothing prompts outside one (maintainer, 2026-11-07)
+    }
+    {
+        const std::scoped_lock lock(m_Mutex);
+        if (m_Connected.load() && m_HelperCountsUdp)
+        {
+            return {};
+        }
+        closeLocked(); // a helper started without the counter can't load it now, as nobody: start one that does
+    }
+    return connect(stopToken); // the Hello asks to be held again, as m_ForSession stands
+}
+
+void PkexecBroker::stopCountingUdpBytes() noexcept
+{
+    m_CountUdp = false;
 }
 
 void PkexecBroker::disconnect()

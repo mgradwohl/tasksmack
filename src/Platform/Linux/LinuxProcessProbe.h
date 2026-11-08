@@ -2,6 +2,7 @@
 
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessProbe.h"
+#include "Platform/IUdpTrafficCollector.h"
 #include "Platform/PlatformConfig.h"
 #include "Platform/ProcessArchitecture.h"
 #include "Platform/ProcessTypes.h"
@@ -82,6 +83,11 @@ class LinuxProcessProbe : public IProcessProbe
     /// @param ttlMs Time-to-live in milliseconds for cached socket stats
     /// Use this to override the default cache TTL at runtime (e.g., from user config)
     void setSocketStatsCacheTtl(std::chrono::milliseconds ttlMs) override;
+
+    /// The opt-in UDP collector (#3366): the helper's eBPF counter, read through the broker. While it delivers, a
+    /// complete readSocketTraffic() also carries each process's UDP bytes as one synthetic connection
+    /// (UdpTraffic::appendSamples()), and capabilities() reports hasUdpNetworkCounters. May be null.
+    void setUdpTrafficCollector(const std::shared_ptr<IUdpTrafficCollector>& collector) override;
 
     /// Every TCP socket's cumulative byte counters from Netlink INET_DIAG, each attributed to the
     /// process holding it via the inode-to-PID map. Raw readings only: Domain accumulates them into
@@ -181,6 +187,8 @@ class LinuxProcessProbe : public IProcessProbe
     // does not yet implement the std::atomic<std::shared_ptr<T>> specialization, so a
     // plain mutex is used instead.)
     mutable std::mutex m_SocketStatsMutex;
+    mutable std::mutex m_UdpCollectorMutex;               // guards m_UdpCollector (#3366)
+    std::shared_ptr<IUdpTrafficCollector> m_UdpCollector; // the helper's UDP counter; may be null
     std::shared_ptr<NetlinkSocketStats> m_SocketStats;
     bool m_HasNetworkCounters = false;
     std::string m_OwnNetNamespace; // "net:[...]" of this process; empty when unreadable (#2398)
@@ -414,6 +422,10 @@ class LinuxProcessProbe : public IProcessProbe
 
     /// Thread-safe copy of the current NetlinkSocketStats instance (see m_SocketStats).
     [[nodiscard]] std::shared_ptr<NetlinkSocketStats> socketStats() const;
+    /// The UDP collector, if one is set (#3366).
+    [[nodiscard]] std::shared_ptr<IUdpTrafficCollector> udpCollector() const;
+    /// Adds the UDP collector's counters to a complete @p reading, while it delivers (#3366).
+    void appendUdpTraffic(SocketTrafficReading& reading) const;
 #endif
 };
 

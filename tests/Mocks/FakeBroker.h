@@ -122,6 +122,28 @@ class FakeBroker final : public Platform::IPrivilegedBroker
         return m_Held && m_Connected;
     }
 
+    /// countUdpBytes() as PkexecBroker's (#3366): it stands either way, and succeeds only while the session is held.
+    [[nodiscard]] std::expected<void, std::string> countUdpBytes(const std::stop_token& /*stopToken*/) override
+    {
+        m_CountUdp = true;
+        if (!heldForSession())
+        {
+            return std::unexpected(std::string("Needs an Administrator session"));
+        }
+        return {};
+    }
+
+    void stopCountingUdpBytes() noexcept override
+    {
+        m_CountUdp = false;
+    }
+
+    /// Whether countUdpBytes() stands.
+    [[nodiscard]] bool countingUdp() const noexcept
+    {
+        return m_CountUdp;
+    }
+
     /// callIfIdle() as call(), counted: the sampler's reads must use it (#2369).
     [[nodiscard]] std::expected<Platform::Broker::Response, std::string> callIfIdle(const Platform::Broker::Request& request,
                                                                                     std::chrono::milliseconds /*timeout*/) override
@@ -188,6 +210,7 @@ class FakeBroker final : public Platform::IPrivilegedBroker
     std::atomic<bool> m_ReadsOtherUsers{true};
     std::atomic<bool> m_HoldsSessions{false};
     std::atomic<bool> m_Held{false};
+    std::atomic<bool> m_CountUdp{false};
 };
 
 } // namespace Mocks

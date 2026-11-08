@@ -89,6 +89,22 @@ class IPrivilegedBroker
         return 0;
     }
 
+    /// Asks the helper to count every process's UDP bytes (#3366, Linux: its eBPF counter, loaded only at its start).
+    /// Only within an Administrator session (maintainer, 2026-11-07): not held, it changes nothing, prompts for
+    /// nothing, and the error says so. Held by a helper that wasn't started counting, it starts another that is,
+    /// which may prompt, so it blocks like connect(): a worker, never the UI thread. Every helper started while it
+    /// stands counts too, until stopCountingUdpBytes(). The default is for transports that count UDP some other way
+    /// (Windows: ETW in TaskSmack itself).
+    [[nodiscard]] virtual std::expected<void, std::string> countUdpBytes([[maybe_unused]] const std::stop_token& stopToken)
+    {
+        return std::unexpected("This helper doesn't count UDP bytes");
+    }
+
+    /// Undoes countUdpBytes() for the next helper started. The one running keeps counting until it ends: stopping it
+    /// would end the Administrator session for nothing. Non-blocking.
+    virtual void stopCountingUdpBytes() noexcept
+    {}
+
     /// Sends @p request and waits for its response, for at most the transport's bounded wait or until
     /// @p stopToken is stopped. Blocking: call it from a worker (ProcessActionRun, #2305), never the
     /// UI thread. The error is why there is no response (not connected, broken channel, timed out).

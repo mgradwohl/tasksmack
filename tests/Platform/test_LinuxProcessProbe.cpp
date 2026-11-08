@@ -21,6 +21,7 @@
 
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessProbe.h"
+#include "Platform/IUdpTrafficCollector.h"
 #include "Platform/Linux/ElfArchitecture.h"
 #include "Platform/Linux/LinuxProcessProbe.h"
 #include "Platform/Linux/ProcFdScan.h"
@@ -29,6 +30,7 @@
 #include "Platform/ProcessArchitecture.h"
 #include "Platform/ProcessTypes.h"
 #include "Platform/ScopedTempDir.h"
+#include "Platform/UdpTrafficSamples.h"
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
 #include "Domain/SocketTrafficAccumulator.h"
@@ -2394,6 +2396,88 @@ TEST(LinuxProcessProbeTest, ReadSocketTrafficReportsRawAttributedSocketCounters)
     ASSERT_EQ(third.sockets.size(), 1U);
     EXPECT_EQ(third.sockets[0].bytesReceived, 3'000U) << "the raw cumulative counter, not a delta";
     EXPECT_EQ(third.sockets[0].pid, 4242);
+}
+
+/// A UDP collector whose totals and delivery a test sets (#3366).
+class FakeUdpCollector final : public Platform::IUdpTrafficCollector
+{
+  public:
+    [[nodiscard]] Platform::UdpCollectorStartResult start() override
+    {
+        return Platform::UdpCollectorStartResult::Started;
+    }
+    void stop() override
+    {}
+    [[nodiscard]] bool isDelivering() const override
+    {
+        return delivering;
+    }
+    [[nodiscard]] std::vector<Platform::UdpProcessTraffic> sample() override
+    {
+        return delivering ? traffic : std::vector<Platform::UdpProcessTraffic>{};
+    }
+
+    bool delivering = false;
+    std::vector<Platform::UdpProcessTraffic> traffic;
+};
+
+// #3366: while the helper's UDP counter delivers, a complete reading carries each process's UDP bytes as one more
+// connection (UdpTraffic::socketKey), and the probe reports UDP counters; a failed reading carries none.
+TEST(LinuxProcessProbeTest, TheUdpCollectorsTotalsJoinACompleteReadingAsOneConnectionAProcess)
+{
+    ScopedTempDir proc("ts_test_proc_net_udp");
+    writeFile(proc.path / "4242" / "stat",
+              "4242 (app) S 1 4242 4242 0 -1 4194304 0 0 0 0 10 5 0 0 20 0 1 0 12345 0 0 "
+              "18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n");
+    writeFile(proc.path / "stat", "cpu  100 0 100 800 0 0 0 0 0 0\n");
+    std::filesystem::create_directories(proc.path / "4242" / "fd");
+    std::filesystem::create_symlink("socket:[11]", proc.path / "4242" / "fd" / "3");
+
+    using Platform::TestSupport::FakeSocket;
+    using Platform::TestSupport::ScriptedNetlinkTransport;
+    std::size_t reading = 0;
+    auto transport = std::make_unique<ScriptedNetlinkTransport>();
+    auto* script = transport.get();
+    auto stats = std::make_shared<Platform::NetlinkSocketStats>(std::move(transport), std::chrono::milliseconds{0});
+    script->onRequest = [&](const ScriptedNetlinkTransport::Request& request) -> ScriptedNetlinkTransport::Reply
+    {
+        if (request.family != AF_INET)
+        {
+            return Platform::TestSupport::completeDump(request, {});
+        }
+        if (reading++ == 2)
+        {
+            return {Platform::TestSupport::errorDatagram(request.sequence, ScriptedNetlinkTransport::PORT_ID, -ENOBUFS)};
+        }
+        return Platform::TestSupport::completeDump(request, std::vector<FakeSocket>{{.inode = 11, .bytesReceived = 10, .bytesSent = 20}});
+    };
+
+    LinuxProcessProbe probe(proc.path);
+    probe.setSocketStatsForTesting(stats);
+    auto udp = std::make_shared<FakeUdpCollector>();
+    probe.setUdpTrafficCollector(udp);
+    ASSERT_TRUE(probe.capabilities().hasNetworkCounters);
+    EXPECT_FALSE(probe.capabilities().hasUdpNetworkCounters) << "not delivering yet";
+    (void) probe.enumerate();
+
+    const auto tcpOnly = probe.readSocketTraffic();
+    ASSERT_EQ(tcpOnly.sockets.size(), 1U) << "a collector that isn't delivering adds nothing";
+
+    udp->delivering = true;
+    udp->traffic = {{.pid = 4242, .bytesSent = 700, .bytesReceived = 300}, {.pid = 77, .bytesSent = 1, .bytesReceived = 2}};
+    EXPECT_TRUE(probe.capabilities().hasUdpNetworkCounters);
+    const auto withUdp = probe.readSocketTraffic();
+    ASSERT_EQ(withUdp.sockets.size(), 3U);
+    const auto udp4242 = std::ranges::find(withUdp.sockets, Platform::UdpTraffic::socketKey(4242), &Platform::SocketTrafficSample::key);
+    ASSERT_NE(udp4242, withUdp.sockets.end());
+    EXPECT_EQ(udp4242->pid, 4242);
+    EXPECT_EQ(udp4242->ownerStartTimeTicks, 0U) << "matched by PID alone";
+    EXPECT_EQ(udp4242->bytesSent, 700U);
+    EXPECT_EQ(udp4242->bytesReceived, 300U);
+
+    const auto failed = probe.readSocketTraffic();
+    EXPECT_EQ(failed.sampleTimeNs, 0U);
+    EXPECT_TRUE(failed.sockets.empty()) << "a failed reading carries no UDP either: it isn't a reading at all";
 }
 
 TEST(LinuxProcessProbeTest, ANewSocketIsAttributedInTheReadingItFirstAppearsIn)
