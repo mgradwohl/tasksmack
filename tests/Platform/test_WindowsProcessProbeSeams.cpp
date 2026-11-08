@@ -9,6 +9,7 @@
 #include "Platform/IUdpTrafficCollector.h"
 #include "Platform/ImageSignature.h"
 #include "Platform/ProcessTypes.h"
+#include "Platform/Windows/WindowsAppIdentity.h"
 #include "Platform/Windows/WindowsEtwNetCollector.h"
 #include "Platform/Windows/WindowsEtwNetMath.h"
 #include "Platform/Windows/WindowsHandles.h"
@@ -26,11 +27,15 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <format>
 #include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <optional>
+#include <span>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <utility>
@@ -1727,6 +1732,271 @@ TEST_F(WindowsProcessProbeSeamTest, AnUnreadableImagePathIsNeverSentForASignatur
     (void) probe.enumerate();
     fake().now += std::chrono::hours(1);
     EXPECT_EQ(find(probe.enumerate()).signature.get().signature, ImageSignature::NotChecked);
+}
+
+// --- The app a process belongs to (#3457) ---------------------------------------------------------
+
+/// What the app-identity fakes answer, and how often they were asked.
+struct FakeApps
+{
+    Windows::PackageIdentity package;
+    std::map<std::uint32_t, std::string> windowIds; ///< By PID: the AppUserModelID its window sets
+    std::map<std::string, std::string> names;       ///< By AppUserModelID: the Start menu's name
+    int packageReads = 0;
+    int walks = 0;
+    std::vector<std::uint32_t> lastWalkPids;
+    int nameLookups = 0;
+};
+
+FakeApps& fakeApps()
+{
+    static FakeApps state;
+    return state;
+}
+
+Windows::PackageIdentity fakePackageIdentity(HANDLE /*process*/)
+{
+    ++fakeApps().packageReads;
+    return fakeApps().package;
+}
+
+void fakeWindowAppIds(std::span<const std::uint32_t> pids, std::vector<Windows::WindowAppId>& found)
+{
+    ++fakeApps().walks;
+    fakeApps().lastWalkPids.assign(pids.begin(), pids.end());
+    found.clear();
+    for (const std::uint32_t pid : pids)
+    {
+        if (const auto it = fakeApps().windowIds.find(pid); it != fakeApps().windowIds.end())
+        {
+            found.push_back({.pid = pid, .appUserModelId = it->second});
+        }
+    }
+}
+
+std::string fakeAppDisplayName(const std::string& appUserModelId)
+{
+    ++fakeApps().nameLookups;
+    const auto it = fakeApps().names.find(appUserModelId);
+    return (it != fakeApps().names.end()) ? it->second : std::string{};
+}
+
+WindowsProcessProbeFunctions appFunctions()
+{
+    WindowsProcessProbeFunctions functions = fakeFunctions();
+    functions.app = {
+        .packageIdentity = &fakePackageIdentity,
+        .windowAppIds = &fakeWindowAppIds,
+        .appDisplayName = &fakeAppDisplayName,
+    };
+    return functions;
+}
+
+class WindowsProcessAppIdentityTest : public WindowsProcessProbeSeamTest
+{
+  protected:
+    void SetUp() override
+    {
+        WindowsProcessProbeSeamTest::SetUp();
+        fakeApps() = FakeApps{};
+    }
+};
+
+// A packaged process: its package is read once, with its first handle, and named once; past every TTL
+// neither is read again, and its windows are never walked for an ID. A reused PID is a new process.
+TEST_F(WindowsProcessAppIdentityTest, APackageIsReadAndNamedOnceAProcess)
+{
+    fakeApps().package = {
+        .family = "Microsoft.WindowsTerminal_8wekyb3d8bbwe",
+        .appUserModelId = "Microsoft.WindowsTerminal_8wekyb3d8bbwe!App",
+    };
+    fakeApps().names["Microsoft.WindowsTerminal_8wekyb3d8bbwe!App"] = "Windows Terminal";
+    WindowsProcessProbe probe(appFunctions());
+    EXPECT_TRUE(probe.capabilities().hasAppIds);
+    const ProcessCounters first = find(probe.enumerate());
+    EXPECT_EQ(first.packageFamily, "Microsoft.WindowsTerminal_8wekyb3d8bbwe");
+    EXPECT_EQ(first.appUserModelId, "Microsoft.WindowsTerminal_8wekyb3d8bbwe!App");
+    EXPECT_EQ(first.appName, "Windows Terminal");
+
+    fakeApps().package = {};
+    for (int sample = 0; sample < 3; ++sample)
+    {
+        fake().now += std::chrono::hours(1);
+        const ProcessCounters again = find(probe.enumerate());
+        EXPECT_EQ(again.packageFamily, "Microsoft.WindowsTerminal_8wekyb3d8bbwe");
+        EXPECT_EQ(again.appName, "Windows Terminal");
+    }
+    EXPECT_EQ(fakeApps().packageReads, 1);
+    EXPECT_EQ(fakeApps().nameLookups, 1);
+    EXPECT_EQ(std::ranges::count(fakeApps().lastWalkPids, PID), 0) << "a packaged process's windows aren't looked at";
+
+    fake().processes.front().createTime += 1; // The PID now belongs to a new, unpackaged process
+    EXPECT_TRUE(find(probe.enumerate()).packageFamily.empty());
+    EXPECT_EQ(fakeApps().packageReads, 2);
+}
+
+// An unpackaged process: its windows are looked at from the sample after it is first listed, again only
+// once a heavy TTL has passed, and no more once one sets an AppUserModelID, which it then keeps.
+TEST_F(WindowsProcessAppIdentityTest, AnUnpackagedProcesssWindowsAreLookedAtUntilOneSetsAnId)
+{
+    WindowsProcessProbe probe(appFunctions());
+    EXPECT_TRUE(find(probe.enumerate()).appUserModelId.empty());
+    EXPECT_EQ(fakeApps().walks, 0) << "a process first listed has no cache entry to look for yet";
+
+    EXPECT_TRUE(find(probe.enumerate()).appUserModelId.empty());
+    EXPECT_EQ(fakeApps().walks, 1);
+    EXPECT_EQ(fakeApps().lastWalkPids, (std::vector<std::uint32_t>{PID}));
+    (void) probe.enumerate();
+    EXPECT_EQ(fakeApps().walks, 1) << "not again before the heavy TTL";
+
+    fakeApps().windowIds[PID] = "Contoso.Editor";
+    fakeApps().names["Contoso.Editor"] = "Contoso Editor";
+    fake().now += std::chrono::hours(1);
+    const ProcessCounters found = find(probe.enumerate());
+    EXPECT_EQ(fakeApps().walks, 2);
+    EXPECT_EQ(found.appUserModelId, "Contoso.Editor");
+    EXPECT_EQ(found.appName, "Contoso Editor");
+    EXPECT_TRUE(found.packageFamily.empty());
+
+    fakeApps().windowIds.clear();
+    fake().now += std::chrono::hours(1);
+    EXPECT_EQ(find(probe.enumerate()).appUserModelId, "Contoso.Editor") << "kept once found";
+    EXPECT_EQ(fakeApps().walks, 2) << "no walk while nothing is due";
+}
+
+// A first sample with many apps names a few of them a sample, the rest on the next; a name is asked once per
+// AppUserModelID, however many processes share it.
+TEST_F(WindowsProcessAppIdentityTest, NamesAreLookedUpAFewASampleAndOnceAnId)
+{
+    fake().processes.clear();
+    for (DWORD i = 0; i < 6; ++i)
+    {
+        fake().processes.push_back(
+            FakeProcess{.pid = 100 + i, .createTime = 133'000'000'000'000'000 + i, .name = L"app.exe", .threadIds = {}});
+        fakeApps().windowIds[100 + i] = (i < 5) ? std::format("App.{}", i) : std::string("App.0");
+    }
+    WindowsProcessProbe probe(appFunctions());
+    (void) probe.enumerate(); // Listed
+    const std::vector<ProcessCounters> walked = probe.enumerate();
+    EXPECT_EQ(fakeApps().walks, 1);
+    const auto withIds = std::ranges::count_if(walked, [](const ProcessCounters& p) { return !p.appUserModelId.empty(); });
+    EXPECT_EQ(withIds, 6) << "every ID is found in the one walk";
+    EXPECT_EQ(fakeApps().nameLookups, 4) << "but only four are named a sample";
+
+    (void) probe.enumerate();
+    EXPECT_EQ(fakeApps().nameLookups, 5) << "the fifth ID next sample; App.0's second process uses the first's answer";
+    (void) probe.enumerate();
+    EXPECT_EQ(fakeApps().nameLookups, 5);
+}
+
+// Without the reads (a test's table, or the calls missing) Group: App isn't offered and nothing is read.
+TEST_F(WindowsProcessAppIdentityTest, WithoutTheReadsThereAreNoAppIds)
+{
+    WindowsProcessProbe probe(fakeFunctions());
+    EXPECT_FALSE(probe.capabilities().hasAppIds);
+    (void) probe.enumerate();
+    const ProcessCounters p = find(probe.enumerate());
+    EXPECT_TRUE(p.packageFamily.empty());
+    EXPECT_TRUE(p.appUserModelId.empty());
+
+    WindowsProcessProbeFunctions windowsOnly = fakeFunctions();
+    windowsOnly.app.windowAppIds = &fakeWindowAppIds;
+    EXPECT_TRUE(WindowsProcessProbe(windowsOnly).capabilities().hasAppIds);
+}
+
+// A process that can't be opened has no package read, but its windows are still looked at: that needs no handle.
+TEST_F(WindowsProcessAppIdentityTest, AnUnopenableProcesssWindowsAreStillLookedAt)
+{
+    fake().failOpenProcess = true;
+    fakeApps().windowIds[PID] = "Contoso.Admin";
+    WindowsProcessProbe probe(appFunctions());
+    (void) probe.enumerate();
+    EXPECT_EQ(find(probe.enumerate()).appUserModelId, "Contoso.Admin");
+    EXPECT_EQ(fakeApps().packageReads, 0);
+}
+
+// A window's ID, then the package's once a handle opens: the name follows the new ID, not the old one's.
+TEST_F(WindowsProcessAppIdentityTest, TheNameFollowsAChangedAppUserModelId)
+{
+    fake().failOpenProcess = true;
+    fakeApps().windowIds[PID] = "Contoso.Window";
+    fakeApps().names["Contoso.Window"] = "Window Name";
+    fakeApps().names["Contoso.App_1a2b3c!App"] = "Packaged Name";
+    WindowsProcessProbe probe(appFunctions());
+    (void) probe.enumerate();
+    const ProcessCounters fromWindow = find(probe.enumerate());
+    EXPECT_EQ(fromWindow.appUserModelId, "Contoso.Window");
+    EXPECT_EQ(fromWindow.appName, "Window Name");
+
+    fake().failOpenProcess = false;
+    fakeApps().package = {.family = "Contoso.App_1a2b3c", .appUserModelId = "Contoso.App_1a2b3c!App"};
+    fake().now += std::chrono::hours(1); // The next handle opens with the details' TTL
+    const ProcessCounters fromPackage = find(probe.enumerate());
+    EXPECT_EQ(fromPackage.packageFamily, "Contoso.App_1a2b3c");
+    EXPECT_EQ(fromPackage.appUserModelId, "Contoso.App_1a2b3c!App");
+    EXPECT_EQ(fromPackage.appName, "Packaged Name");
+    EXPECT_EQ(fakeApps().nameLookups, 2);
+}
+
+// #3457: nothing the per-window work throws escapes the EnumWindows callback, an allocation failure or anything
+// else: the callback stops the walk (FALSE) and records it. A visit that says stop stops it too, unrecorded.
+TEST(WindowsAppIdentityTest, AThrowingWindowVisitStopsTheWalkInsideTheCallback)
+{
+    int calls = 0;
+    Windows::WindowVisitor outOfMemory{
+        .visit = [&calls](HWND /*window*/) -> bool
+        {
+            ++calls;
+            throw std::bad_alloc();
+        },
+        .failed = false,
+    };
+    EXPECT_EQ(Windows::guardedWindowCallback(nullptr, reinterpret_cast<LPARAM>(&outOfMemory)), FALSE);
+    EXPECT_TRUE(outOfMemory.failed);
+
+    Windows::WindowVisitor otherError{
+        .visit = [](HWND /*window*/) -> bool { throw std::runtime_error("per-window work failed"); },
+        .failed = false,
+    };
+    EXPECT_EQ(Windows::guardedWindowCallback(nullptr, reinterpret_cast<LPARAM>(&otherError)), FALSE);
+    EXPECT_TRUE(otherError.failed);
+
+    Windows::WindowVisitor carriesOn{.visit = [](HWND /*window*/) { return true; }, .failed = false};
+    EXPECT_EQ(Windows::guardedWindowCallback(nullptr, reinterpret_cast<LPARAM>(&carriesOn)), TRUE);
+    EXPECT_FALSE(carriesOn.failed);
+    Windows::WindowVisitor stops{.visit = [](HWND /*window*/) { return false; }, .failed = false};
+    EXPECT_EQ(Windows::guardedWindowCallback(nullptr, reinterpret_cast<LPARAM>(&stops)), FALSE);
+    EXPECT_FALSE(stops.failed);
+    Windows::WindowVisitor noVisit;
+    EXPECT_EQ(Windows::guardedWindowCallback(nullptr, reinterpret_cast<LPARAM>(&noVisit)), FALSE);
+    EXPECT_EQ(Windows::guardedWindowCallback(nullptr, 0), FALSE);
+
+    // Through the real walk over this desktop's windows (it changes nothing): the first window's throw ends it.
+    calls = 0;
+    outOfMemory.failed = false;
+    static_cast<void>(EnumWindows(&Windows::guardedWindowCallback, reinterpret_cast<LPARAM>(&outOfMemory)));
+    EXPECT_LE(calls, 1);
+    EXPECT_EQ(outOfMemory.failed, calls == 1);
+}
+
+// The real reads: TaskSmackTests itself is unpackaged, a walk for no processes finds nothing, and the probe's
+// own table points at them.
+TEST(WindowsAppIdentityTest, TheRealReadsOnThisUnpackagedTestProcess)
+{
+    const Windows::PackageIdentity self = Windows::readPackageIdentity(GetCurrentProcess());
+    EXPECT_TRUE(self.family.empty());
+    EXPECT_TRUE(self.appUserModelId.empty());
+    EXPECT_TRUE(Windows::readPackageIdentity(nullptr).family.empty());
+
+    std::vector<Windows::WindowAppId> found{{.pid = 1, .appUserModelId = "stale"}};
+    Windows::windowAppUserModelIds({}, found);
+    EXPECT_TRUE(found.empty());
+    EXPECT_TRUE(Windows::appDisplayName("").empty());
+
+    const WindowsProcessProbeFunctions real = WindowsProcessProbe::systemFunctions();
+    EXPECT_EQ(real.app.packageIdentity, &Windows::readPackageIdentity);
+    EXPECT_EQ(real.app.windowAppIds, &Windows::windowAppUserModelIds);
+    EXPECT_EQ(real.app.appDisplayName, &Windows::appDisplayName);
 }
 
 } // namespace

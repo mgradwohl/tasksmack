@@ -173,6 +173,10 @@ struct ProcessSnapshot
     std::string publisher;    // Software publisher/vendor (Windows PE version info; empty if not available)
     std::string container;    // Container: "docker:1a2b3c4d5e6f", "lxc:web" (Linux cgroups; empty if in none)
     std::string services;     // Services it runs, comma-joined: "sshd.service", "Dhcp, EventLog" (#1886, #1880)
+    // The app it belongs to on Windows (#3457), as ProcessCounters reads it: Group: App's key and name
+    std::string packageFamily;  // A packaged app's package family: "Microsoft.WindowsTerminal_8wekyb3d8bbwe"
+    std::string appUserModelId; // Its AppUserModelID, a packaged app's or the one a desktop app's window sets
+    std::string appName;        // The Start menu's name for that AppUserModelID ("Windows Terminal"); may be empty
     std::string
         processType; // Process type: "App", "Background Process", and "Windows Process" (Windows) or "System Process" (Linux, #3430)
     std::string architecture; // Architecture it runs as: "x64", "ARM64", "x64 (emulated)", "x86 (WOW64)" (#2394; empty if unread)

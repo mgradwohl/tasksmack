@@ -121,6 +121,8 @@ void ShellPanels::update(float deltaTime)
         static_cast<void>(m_Processes.watchedSamplesSince(m_ProcessDetails.lastSampleVersion(), m_PendingSamples));
     }
     m_ProcessDetails.updateWithSamples(m_PendingSamples, deltaTime);
+    // Its App row names the App group the table puts it in (#3457), worked out from the whole generation.
+    m_ProcessDetails.setAppMembership(m_Processes.appMembership(selectedPid, m_ProcessDetails.selectedStartTicks()));
 
     // The service list is read while the Services tab is shown, and also while the Processes table
     // shows its Services column or Process Details' Services section is open (#1880), or, on Windows,

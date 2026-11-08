@@ -744,8 +744,8 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
         // leave it out free of -Wmissing-designated-field-initializers.
         std::string_view tooltip{}; // NOLINT(readability-redundant-member-init)
     };
-    // At most ten rows a table (Started by, Publisher, Signature, Services, Affinity, Policy, Type, Container and
-    // Architecture are optional), held in place.
+    // At most ten rows a table (Started by, Publisher, Signature, Services, Affinity, Policy, Type, Container, App
+    // and Architecture are optional; App is Windows' and Policy and Container Linux's), held in place.
     struct InfoRows
     {
         std::array<InfoRow, 10> rows{};
@@ -917,6 +917,16 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     if (!proc.container.empty())
     {
         runtimeRows.add({.label = "Container", .value = proc.container, .color = theme.scheme().textMuted});
+    }
+    if (!m_AppMembership.label.empty())
+    {
+        // The App group the table puts it in (#3457), its own or its parent's, and where that comes from on hover.
+        runtimeRows.add({
+            .label = "App",
+            .value = m_AppMembership.label,
+            .color = m_AppMembership.inherited ? theme.scheme().textMuted : theme.scheme().textPrimary,
+            .tooltip = m_AppMembership.tooltip,
+        });
     }
     if (!proc.architecture.empty())
     {

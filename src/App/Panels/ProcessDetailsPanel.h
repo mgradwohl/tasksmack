@@ -2,6 +2,7 @@
 
 #include "App/KeyboardShortcuts.h"
 #include "App/Panel.h"
+#include "App/Panels/ProcessGrouping.h"
 #include "App/SelectOverride.h"
 #include "Core/Event.h"
 #include "Domain/CrashHistory.h"
@@ -226,6 +227,23 @@ class ProcessDetailsPanel : public Panel
         return m_SelectedPid;
     }
 
+    /// The selected process's start time, with selectedPid() its exact identity (#1503).
+    [[nodiscard]] std::uint64_t selectedStartTicks() const noexcept
+    {
+        return m_SelectedStartTicks;
+    }
+
+    /// The App group the selected process is in, as the Processes table's Group: App puts it (#3457):
+    /// ProcessesPanel::appMembership(), from the whole generation, so a helper that follows its parent's
+    /// app shows it here too. Drawn as the Runtime card's App row; empty, no row.
+    void setAppMembership(const ProcessGrouping::AppMembership& membership)
+    {
+        if (membership != m_AppMembership)
+        {
+            m_AppMembership = membership;
+        }
+    }
+
     /// Whether the pane shows a running process: one is selected, a sample of it has arrived, and it
     /// has not exited. False while it shows the empty, "Process not found" or "Process exited" state.
     [[nodiscard]] bool showsRunningProcess() const noexcept
@@ -330,8 +348,9 @@ class ProcessDetailsPanel : public Panel
     [[nodiscard]] const Domain::ProcessSnapshot& cachedSnapshot() const;
 
     std::int32_t m_SelectedPid = -1;
-    std::uint64_t m_SelectedStartTicks = 0; // With m_SelectedPid, the selected process's exact identity (#1503)
-    Detail::SampleIntake m_SampleIntake;    // Where history recording is in the watched process's samples (#1098)
+    ProcessGrouping::AppMembership m_AppMembership; // The Runtime card's App row (#3457); set every frame
+    std::uint64_t m_SelectedStartTicks = 0;         // With m_SelectedPid, the selected process's exact identity (#1503)
+    Detail::SampleIntake m_SampleIntake;            // Where history recording is in the watched process's samples (#1098)
     float m_LastDeltaSeconds = 0.0F;
     bool m_IsActiveTab = false;
 

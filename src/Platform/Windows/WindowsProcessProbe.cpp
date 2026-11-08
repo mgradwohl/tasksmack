@@ -37,6 +37,7 @@
 #undef min
 
 #include "WinString.h"
+#include "WindowsAppIdentity.h"
 #include "WindowsConversions.h"
 #include "WindowsElevation.h"
 #include "WindowsHandles.h"
@@ -79,6 +80,12 @@ namespace
 using ProcessFunctions = WindowsProcessProbeFunctions::Process;
 using SystemFunctions = WindowsProcessProbeFunctions::System;
 using TokenFunctions = WindowsProcessProbeFunctions::Token;
+
+/// How many AppUserModelIDs a sample asks the Start menu to name (#3457): a first sample with many apps
+/// spreads its lookups over the next few samples rather than holding one up.
+constexpr std::size_t APP_NAME_LOOKUPS_PER_SAMPLE = 4;
+/// The most AppUserModelID names kept; past it the cache starts again (a machine runs tens of apps).
+constexpr std::size_t APP_NAME_CACHE_MAX = 512;
 
 /// The bytes of the SID @p sid points at, when it lies whole inside @p buffer (the TokenUser read it
 /// came in) and is valid; empty otherwise, and the name it gets is then not cached.
@@ -955,6 +962,12 @@ WindowsProcessProbeFunctions WindowsProcessProbe::systemFunctions()
                 .getThreadGroupAffinity = &GetThreadGroupAffinity,
                 .processMachine = &Windows::processMachine,
             },
+        .app =
+            {
+                .packageIdentity = &Windows::readPackageIdentity,
+                .windowAppIds = &Windows::windowAppUserModelIds,
+                .appDisplayName = &Windows::appDisplayName,
+            },
         .energyMeter = Windows::EnergyMeterFunctions{},
         .signature = Windows::systemSignatureFunctions(),
         .signatureWorker =
@@ -1101,6 +1114,11 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
     {
         m_Fns.system.hungWindowProcesses(m_HungWindowPids);
     }
+
+    // The app each process belongs to (#3457): a few names a sample, and one window walk for the unpackaged
+    // processes last sample listed whose windows are due to be looked at for an AppUserModelID.
+    m_AppNameLookupsLeft = APP_NAME_LOOKUPS_PER_SAMPLE;
+    lookForWindowAppIds(m_Fns.system.steadyNow());
 
     for (std::size_t offset = 0; (offset + sizeof(SystemProcessInfo)) <= snapshotBytes;)
     {
@@ -1282,7 +1300,8 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid,
         counters.cpuAffinity = cache.cpuAffinity;
         counters.nice = cache.nice;
         counters.priorityClass = cache.priorityClass;
-        updateSignature(cache, counters); // The worker's answer, once in (#3070)
+        updateSignature(cache, counters);            // The worker's answer, once in (#3070)
+        updateAppIdentity(cache, counters, nullptr); // The app it belongs to, as read so far (#3457)
     }
 
     const DetailRefreshPlan plan =
@@ -1332,6 +1351,12 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid,
         cache.architecture = MachineMath::windowsArchitectureLabel(m_Fns.process.processMachine(hProcess.get()), m_NativeMachine);
         cache.architectureRead = true;
         counters.architecture = cache.architecture;
+    }
+
+    if (!cache.packageRead)
+    {
+        // Its package can't change while it runs (#3457): read once, with the first handle that opens.
+        updateAppIdentity(cache, counters, hProcess.get());
     }
 
     if (plan.priority)
@@ -1447,6 +1472,93 @@ void WindowsProcessProbe::updateSignature(DetailCacheEntry& cache, ProcessCounte
     }
 }
 
+void WindowsProcessProbe::updateAppIdentity(DetailCacheEntry& cache, ProcessCounters& counters, HANDLE hProcess)
+{
+    if (!cache.packageRead && hProcess != nullptr)
+    {
+        if (m_Fns.app.packageIdentity != nullptr)
+        {
+            Windows::PackageIdentity package = m_Fns.app.packageIdentity(hProcess);
+            cache.packageFamily = std::move(package.family);
+            if (!package.appUserModelId.empty())
+            {
+                cache.setAppUserModelId(std::move(package.appUserModelId)); // The package's, over a window's
+            }
+        }
+        cache.packageRead = true;
+    }
+    if (!cache.appNameRead && !cache.appUserModelId.empty())
+    {
+        if (const auto known = m_AppNames.find(cache.appUserModelId); known != m_AppNames.end())
+        {
+            cache.appName = known->second;
+            cache.appNameRead = true;
+        }
+        else if (m_Fns.app.appDisplayName == nullptr)
+        {
+            cache.appNameRead = true; // Nothing names it
+        }
+        else if (m_AppNameLookupsLeft > 0)
+        {
+            --m_AppNameLookupsLeft;
+            if (m_AppNames.size() >= APP_NAME_CACHE_MAX)
+            {
+                m_AppNames.clear();
+            }
+            cache.appName = m_AppNames.emplace(cache.appUserModelId, m_Fns.app.appDisplayName(cache.appUserModelId)).first->second;
+            cache.appNameRead = true;
+        }
+        // Else this sample's lookups are spent: named on a later one.
+    }
+    counters.packageFamily = cache.packageFamily;
+    counters.appUserModelId = cache.appUserModelId;
+    counters.appName = cache.appName;
+}
+
+void WindowsProcessProbe::lookForWindowAppIds(std::chrono::steady_clock::time_point now)
+{
+    if (m_Fns.app.windowAppIds == nullptr)
+    {
+        return;
+    }
+    // A packaged process's app is its package; a process whose window already gave an ID keeps it.
+    const auto due = [now](const DetailCacheEntry& entry)
+    {
+        return entry.packageFamily.empty() && entry.appUserModelId.empty() && now >= entry.nextWindowAppIdLook;
+    };
+    m_WindowAppIdPids.clear();
+    for (const auto& [key, entry] : m_DetailCache)
+    {
+        if (due(entry))
+        {
+            m_WindowAppIdPids.push_back(key.pid);
+        }
+    }
+    if (m_WindowAppIdPids.empty())
+    {
+        return;
+    }
+    std::ranges::sort(m_WindowAppIdPids);
+    const auto duplicates = std::ranges::unique(m_WindowAppIdPids);
+    m_WindowAppIdPids.erase(duplicates.begin(), duplicates.end());
+    m_Fns.app.windowAppIds(m_WindowAppIdPids, m_WindowAppIds);
+    for (auto& [key, entry] : m_DetailCache)
+    {
+        if (!due(entry))
+        {
+            continue;
+        }
+        if (const auto found = std::ranges::find(m_WindowAppIds, key.pid, &Windows::WindowAppId::pid); found != m_WindowAppIds.end())
+        {
+            entry.setAppUserModelId(found->appUserModelId); // Named with its details (updateAppIdentity())
+        }
+        else
+        {
+            entry.nextWindowAppIdLook = now + m_HeavyDetailTTL; // No window sets one yet: look again later
+        }
+    }
+}
+
 CpuAffinity WindowsProcessProbe::readCpuAffinity(HANDLE hProcess, std::span<const std::byte> threadRecords)
 {
     if (m_ProcessorGroups.size() > 1)
@@ -1542,11 +1654,13 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
         // Linux's RAPL counter is (#2587); false where no meter has a package channel. (A fabricated
         // figure, 1 J per sample shared out by CPU time, once stood in for it: #1028.)
         .hasPowerUsage = m_HasPackageEnergy.load(std::memory_order_acquire),
-        .hasStatus = true,       // Extended basic information (Suspended) and power throttling (Efficiency Mode)
-        .hasPublisher = true,    // From GetFileVersionInfo on process image path
-        .hasContainer = false,   // cgroup containers are Linux's
-        .hasServices = false,    // Matched by PID from the service list, by Domain::ProcessModel (#1880)
-        .hasAppUnits = false,    // No systemd units: the services matched are SCM services, not apps (#3428)
+        .hasStatus = true,     // Extended basic information (Suspended) and power throttling (Efficiency Mode)
+        .hasPublisher = true,  // From GetFileVersionInfo on process image path
+        .hasContainer = false, // cgroup containers are Linux's
+        .hasServices = false,  // Matched by PID from the service list, by Domain::ProcessModel (#1880)
+        .hasAppUnits = false,  // No systemd units: the services matched are SCM services, not apps (#3428)
+        // The package family, else the AppUserModelID its window sets: Group: App (#3457)
+        .hasAppIds = m_Fns.app.packageIdentity != nullptr || m_Fns.app.windowAppIds != nullptr,
         .hasProcessType = true,  // Classified from path + GetGuiResources
         .hasArchitecture = true, // ProcessMachineTypeInfo, else IsWow64Process2 (#2394)
         // WinVerifyTrust on each image, embedded and through the catalogs, on the signature worker (#3070)

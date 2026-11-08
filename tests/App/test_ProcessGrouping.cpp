@@ -8,10 +8,12 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -104,7 +106,11 @@ TEST(ProcessGroupingTest, KeysByMode)
 TEST(ProcessGroupingTest, ByUserTotalsEachUsersProcesses)
 {
     std::vector<Domain::ProcessSnapshot> snapshots{
-        proc("firefox", "", "", 20.0, 300), proc("sshd", "", "", 1.0, 10), proc("bash", "", "", 2.0, 20), proc("ghost", "", "", 0.5, 5)};
+        proc("firefox", "", "", 20.0, 300),
+        proc("sshd", "", "", 1.0, 10),
+        proc("bash", "", "", 2.0, 20),
+        proc("ghost", "", "", 0.5, 5),
+    };
     snapshots[0].user = "alice";
     snapshots[1].user = "root";
     snapshots[2].user = "alice";
@@ -280,6 +286,229 @@ TEST(ProcessGroupingTest, SessionsDemandFollowsTheUsersTabAndUserGrouping)
     EXPECT_FALSE(ProcessGrouping::USER_GROUPS_SHOW_SESSIONS);
     static_assert(ProcessGrouping::sessionsDemand(true, false, GroupBy::None, false));
     static_assert(!ProcessGrouping::sessionsDemand(false, true, GroupBy::User, ProcessGrouping::USER_GROUPS_SHOW_SESSIONS));
+}
+
+// --- Group: App on Windows (#3457) ----------------------------------------------------------------
+
+[[nodiscard]] Domain::ProcessSnapshot
+windowsProc(std::int32_t pid, std::int32_t parentPid, const char* name, const char* family, const char* aumid)
+{
+    Domain::ProcessSnapshot s = proc(name, "", "", 0.0, 0);
+    s.pid = pid;
+    s.parentPid = parentPid;
+    s.startTimeTicks = 1000 + static_cast<std::uint64_t>(pid);
+    s.packageFamily = family;
+    s.appUserModelId = aumid;
+    return s;
+}
+
+// The key is the package family, then the AppUserModelID (a packaged one's "<family>!<app>" being its family),
+// then the app Linux reads from the systemd unit; none of them is Ungrouped.
+TEST(ProcessGroupingAppTest, TheKeyIsThePackageThenTheAppUserModelIdThenTheUnit)
+{
+    Domain::ProcessSnapshot p = proc("WindowsTerminal.exe", "app-gnome-firefox-4521.scope", "", 0.0, 0);
+    p.packageFamily = "Microsoft.WindowsTerminal_8wekyb3d8bbwe";
+    p.appUserModelId = "Contoso.Other";
+    EXPECT_EQ(ProcessGrouping::groupKey(p, GroupBy::App), "Microsoft.WindowsTerminal_8wekyb3d8bbwe");
+
+    p.packageFamily.clear();
+    EXPECT_EQ(ProcessGrouping::groupKey(p, GroupBy::App), "Contoso.Other");
+    p.appUserModelId = "Microsoft.WindowsTerminal_8wekyb3d8bbwe!App";
+    EXPECT_EQ(ProcessGrouping::groupKey(p, GroupBy::App), "Microsoft.WindowsTerminal_8wekyb3d8bbwe");
+    p.appUserModelId = "!odd";
+    EXPECT_EQ(ProcessGrouping::groupKey(p, GroupBy::App), "!odd");
+
+    p.appUserModelId.clear();
+    EXPECT_EQ(ProcessGrouping::groupKey(p, GroupBy::App), "firefox"); // the fallback: today's key
+    p.serviceNames = {};
+    EXPECT_EQ(ProcessGrouping::groupKey(p, GroupBy::App), "");
+}
+
+// A header names the app as the Start menu does, else a package by its name without the publisher ID,
+// else by its key; Process Details' App row says the same, with what it is read from on hover.
+TEST(ProcessGroupingAppTest, LabelsAndTheDetailsRow)
+{
+    Domain::ProcessSnapshot p =
+        windowsProc(1, 0, "WindowsTerminal.exe", "Microsoft.WindowsTerminal_8wekyb3d8bbwe", "Microsoft.WindowsTerminal_8wekyb3d8bbwe!App");
+    EXPECT_EQ(ProcessGrouping::appGroupLabel(p, ProcessGrouping::ownAppKey(p)), "Microsoft.WindowsTerminal");
+    EXPECT_EQ(ProcessGrouping::appDetailsTooltip(p),
+              "Package family: Microsoft.WindowsTerminal_8wekyb3d8bbwe\nAppUserModelID: Microsoft.WindowsTerminal_8wekyb3d8bbwe!App");
+    p.appName = "Windows Terminal";
+    EXPECT_EQ(ProcessGrouping::appGroupLabel(p, ProcessGrouping::ownAppKey(p)), "Windows Terminal");
+
+    const Domain::ProcessSnapshot chrome = windowsProc(2, 0, "chrome.exe", "", "Chrome");
+    EXPECT_EQ(ProcessGrouping::appGroupLabel(chrome, "Chrome"), "Chrome");
+    EXPECT_EQ(ProcessGrouping::appDetailsTooltip(chrome), "AppUserModelID: Chrome");
+
+    const Domain::ProcessSnapshot none = windowsProc(3, 0, "notepad.exe", "", "");
+    EXPECT_EQ(ProcessGrouping::appDetailsTooltip(none), "");
+}
+
+// An AppUserModelID with nothing before its '!' names no package (as ownAppKey() reads it): its key is the
+// whole ID, its label too, and what it starts doesn't follow it as a packaged app's helpers would.
+TEST(ProcessGroupingAppTest, ABangWithNoFamilyBeforeItIsNoPackage)
+{
+    const Domain::ProcessSnapshot odd = windowsProc(1, 0, "odd.exe", "", "!odd");
+    EXPECT_FALSE(ProcessGrouping::ownAppIsPackage(odd));
+    EXPECT_EQ(ProcessGrouping::ownAppKey(odd), "!odd");
+    EXPECT_EQ(ProcessGrouping::appGroupLabel(odd, "!odd"), "!odd");
+    EXPECT_TRUE(ProcessGrouping::ownAppIsPackage(windowsProc(2, 0, "app.exe", "", "Contoso.App_1a2b!App")));
+    EXPECT_TRUE(ProcessGrouping::ownAppIsPackage(windowsProc(3, 0, "app.exe", "Contoso.App_1a2b", "")));
+
+    const std::vector<Domain::ProcessSnapshot> s{odd, windowsProc(4, 1, "child.exe", "", "")};
+    EXPECT_EQ(ProcessGrouping::appKeys(s), (std::vector<std::string>{"!odd", ""})) << "a different program isn't a package's helper";
+}
+
+// Process Details' App row says what the table's Group: App says: a terminal's shell is in the terminal's
+// group, named for it, and marked as there through its parent; the terminal is its own, its package on hover;
+// a Linux app's process says its unit; a process in no app has no row.
+TEST(ProcessGroupingAppTest, TheDetailsRowFollowsTheTablesGroup)
+{
+    std::vector<Domain::ProcessSnapshot> s{
+        windowsProc(20, 0, "WindowsTerminal.exe", "Microsoft.WindowsTerminal_8wekyb3d8bbwe", ""),
+        windowsProc(21, 20, "pwsh.exe", "", ""),
+        windowsProc(30, 0, "notepad.exe", "", ""),
+        proc("firefox", "app-gnome-firefox-4521.scope", "", 0.0, 0),
+    };
+    s[0].appName = "Windows Terminal";
+    s[3].pid = 40;
+
+    const ProcessGrouping::AppMembership shell = ProcessGrouping::appMembershipAt(s, 1);
+    EXPECT_EQ(shell.key, "Microsoft.WindowsTerminal_8wekyb3d8bbwe");
+    EXPECT_EQ(shell.label, "Windows Terminal");
+    EXPECT_TRUE(shell.inherited);
+    EXPECT_TRUE(shell.tooltip.contains("through a parent process")) << shell.tooltip;
+    EXPECT_TRUE(shell.tooltip.contains("Windows Terminal")) << shell.tooltip;
+
+    const ProcessGrouping::AppMembership terminal = ProcessGrouping::appMembershipAt(s, 0);
+    EXPECT_EQ(terminal.label, "Windows Terminal");
+    EXPECT_FALSE(terminal.inherited);
+    EXPECT_EQ(terminal.tooltip, "Package family: Microsoft.WindowsTerminal_8wekyb3d8bbwe");
+
+    EXPECT_EQ(ProcessGrouping::appMembershipAt(s, 2), ProcessGrouping::AppMembership{});
+
+    const ProcessGrouping::AppMembership firefox = ProcessGrouping::appMembershipAt(s, 3);
+    EXPECT_EQ(firefox.label, "firefox");
+    EXPECT_EQ(firefox.tooltip, "From its systemd unit: app-gnome-firefox-4521.scope");
+
+    EXPECT_EQ(ProcessGrouping::appMembershipAt(s, 99), ProcessGrouping::AppMembership{});
+}
+
+// A process with no app of its own follows a parent whose app is a package, or one running the same program,
+// through any depth; anything else stays Ungrouped. A parent started after the child is a reused PID, and a
+// PID loop ends.
+TEST(ProcessGroupingAppTest, HelpersFollowTheirParentsApp)
+{
+    std::vector<Domain::ProcessSnapshot> s{
+        windowsProc(10, 1, "explorer.exe", "", "Microsoft.Windows.Explorer"),                      // 0
+        windowsProc(20, 10, "WindowsTerminal.exe", "Microsoft.WindowsTerminal_8wekyb3d8bbwe", ""), // 1: packaged
+        windowsProc(21, 20, "pwsh.exe", "", ""),                                                   // 2: its shell
+        windowsProc(22, 21, "git.exe", "", ""),                                                    // 3: the shell's child
+        windowsProc(30, 10, "chrome.exe", "", "Chrome"),                                           // 4: a desktop app
+        windowsProc(31, 30, "chrome.exe", "", ""),                                                 // 5: its renderer
+        windowsProc(32, 30, "notepad.exe", "", ""),                                                // 6: another program it started
+        windowsProc(40, 10, "notepad.exe", "", ""),                                                // 7: started by Explorer
+        windowsProc(50, 51, "loop.exe", "", ""),                                                   // 8: a PID loop
+        windowsProc(51, 50, "loop.exe", "", ""),                                                   // 9
+        windowsProc(61, 60, "chrome.exe", "", ""),                                                 // 10: parent PID reused by...
+        windowsProc(60, 0, "chrome.exe", "", "Chrome"),                                            // 11: ...a later process
+    };
+    s[11].startTimeTicks = s[10].startTimeTicks + 1;
+    const std::vector<std::string> keys = ProcessGrouping::appKeys(s);
+    ASSERT_EQ(keys.size(), s.size());
+    EXPECT_EQ(keys[0], "Microsoft.Windows.Explorer");
+    EXPECT_EQ(keys[1], "Microsoft.WindowsTerminal_8wekyb3d8bbwe");
+    EXPECT_EQ(keys[2], "Microsoft.WindowsTerminal_8wekyb3d8bbwe");
+    EXPECT_EQ(keys[3], "Microsoft.WindowsTerminal_8wekyb3d8bbwe");
+    EXPECT_EQ(keys[4], "Chrome");
+    EXPECT_EQ(keys[5], "Chrome");
+    EXPECT_EQ(keys[6], "") << "a different program a desktop app starts is its own";
+    EXPECT_EQ(keys[7], "") << "Explorer's AppUserModelID isn't inherited by what it starts";
+    EXPECT_EQ(keys[8], "");
+    EXPECT_EQ(keys[9], "");
+    EXPECT_EQ(keys[10], "") << "a parent PID now held by a later process isn't its parent";
+    EXPECT_EQ(keys[11], "Chrome");
+
+    // The groups: each named by the process that is the app, the Start menu's name first.
+    s[1].appName = "Windows Terminal";
+    std::vector<std::size_t> order(s.size());
+    for (std::size_t i = 0; i < order.size(); ++i)
+    {
+        order[i] = i;
+    }
+    const std::vector<ProcessGrouping::Group> groups =
+        ProcessGrouping::buildGroups(s, order, GroupBy::App, s.size(), ProcessColumn::Name, true);
+    const auto group = [&groups](std::string_view key) -> const ProcessGrouping::Group*
+    {
+        const auto it = std::ranges::find(groups, key, &ProcessGrouping::Group::key);
+        return it != groups.end() ? &*it : nullptr;
+    };
+    ASSERT_NE(group("Microsoft.WindowsTerminal_8wekyb3d8bbwe"), nullptr);
+    EXPECT_EQ(group("Microsoft.WindowsTerminal_8wekyb3d8bbwe")->label, "Windows Terminal");
+    EXPECT_EQ(group("Microsoft.WindowsTerminal_8wekyb3d8bbwe")->members, (std::vector<std::size_t>{1, 2, 3}));
+    ASSERT_NE(group("Chrome"), nullptr);
+    EXPECT_EQ(group("Chrome")->label, "Chrome");
+    EXPECT_EQ(group("Chrome")->totals.processes, 3U);
+    ASSERT_NE(group(""), nullptr);
+    EXPECT_EQ(groups.back().key, "") << "Ungrouped last";
+}
+
+// A follower listed before the app itself doesn't name the group: the app does, whichever comes first.
+TEST(ProcessGroupingAppTest, TheAppNamesItsGroupNotAFollower)
+{
+    std::vector<Domain::ProcessSnapshot> s{
+        windowsProc(21, 20, "pwsh.exe", "", ""),
+        windowsProc(20, 0, "WindowsTerminal.exe", "Microsoft.WindowsTerminal_8wekyb3d8bbwe", ""),
+    };
+    s[0].appName = "Not this";
+    s[1].appName = "Windows Terminal";
+    const auto groups = ProcessGrouping::buildGroups(s, {0, 1}, GroupBy::App, s.size(), ProcessColumn::Name, true);
+    ASSERT_EQ(groups.size(), 1U);
+    EXPECT_EQ(groups[0].label, "Windows Terminal");
+}
+
+// However deep a packaged app's tree, and listed deepest first, every process in it follows the app: no
+// depth limit cuts the walk, and no ancestor is resolved by where the walk started.
+TEST(ProcessGroupingAppTest, ADeepChainListedChildFirstFollowsTheApp)
+{
+    constexpr std::int32_t DEPTH = 200;
+    std::vector<Domain::ProcessSnapshot> s;
+    for (std::int32_t pid = DEPTH; pid > 1; --pid)
+    {
+        s.push_back(windowsProc(pid, pid - 1, "pwsh.exe", "", "")); // The deepest first
+    }
+    s.push_back(windowsProc(1, 0, "WindowsTerminal.exe", "Microsoft.WindowsTerminal_8wekyb3d8bbwe", ""));
+    const std::vector<std::string> keys = ProcessGrouping::appKeys(s);
+    ASSERT_EQ(keys.size(), s.size());
+    for (std::size_t i = 0; i < keys.size(); ++i)
+    {
+        EXPECT_EQ(keys[i], "Microsoft.WindowsTerminal_8wekyb3d8bbwe") << "process " << s[i].pid;
+    }
+}
+
+// A filter that shows only a follower still names the group for the app, read from every process.
+TEST(ProcessGroupingAppTest, AFilteredGroupIsStillNamedForItsApp)
+{
+    std::vector<Domain::ProcessSnapshot> s{
+        windowsProc(20, 0, "WindowsTerminal.exe", "Microsoft.WindowsTerminal_8wekyb3d8bbwe", ""),
+        windowsProc(21, 20, "pwsh.exe", "", ""),
+    };
+    s[0].appName = "Windows Terminal";
+    const auto groups = ProcessGrouping::buildGroups(s, {1}, GroupBy::App, s.size(), ProcessColumn::Name, true); // pwsh only
+    ASSERT_EQ(groups.size(), 1U);
+    EXPECT_EQ(groups[0].key, "Microsoft.WindowsTerminal_8wekyb3d8bbwe");
+    EXPECT_EQ(groups[0].label, "Windows Terminal");
+    EXPECT_EQ(groups[0].members, (std::vector<std::size_t>{1}));
+}
+
+// Windows offers Group: App once its probe reads app IDs (#3457).
+TEST(ProcessGroupingAppTest, AppIdsOfferGroupByApp)
+{
+    Platform::ProcessCapabilities windows;
+    windows.hasServices = true;
+    windows.hasAppIds = true;
+    EXPECT_EQ(ProcessGrouping::offeredGroupModes(windows), (std::vector{GroupBy::None, GroupBy::Unit, GroupBy::App, GroupBy::User}));
+    EXPECT_EQ(ProcessGrouping::effectiveGroupBy(GroupBy::App, windows), GroupBy::App);
 }
 
 } // namespace
