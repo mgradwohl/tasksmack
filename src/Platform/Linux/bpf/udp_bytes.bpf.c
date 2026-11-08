@@ -17,6 +17,7 @@
 //   - A return is an int: it's read as one, so a negative errno is never taken for bytes.
 //   - udpv6_sendmsg hands a send to an IPv4-mapped address to udp_sendmsg: that inner send isn't counted again.
 //   - A MSG_PEEK receive leaves the datagram queued: it isn't counted; the receive that takes it is.
+//   - A MSG_ERRQUEUE read returns an outgoing packet's error or timestamp report: it isn't counted.
 // The kernel accepts a tracing program only under a GPL-compatible license string, hence the dual license.
 
 // The kernel's uapi types first: libbpf's headers use __u32/__u64 and struct pt_regs without including them.
@@ -27,7 +28,8 @@
 #include <bpf/bpf_tracing.h>
 // clang-format on
 
-#define TASKSMACK_MSG_PEEK 2 // <sys/socket.h>'s MSG_PEEK, which the BPF target doesn't include
+#define TASKSMACK_MSG_PEEK 2          // <sys/socket.h>'s MSG_PEEK and MSG_ERRQUEUE, which the BPF target doesn't
+#define TASKSMACK_MSG_ERRQUEUE 0x2000 // include
 
 // Matches Platform::UdpByteCounts: the map's value layout is the user-space contract.
 struct udp_bytes
@@ -45,14 +47,26 @@ struct
     __type(value, struct udp_bytes);
 } udp_bytes_by_tgid SEC(".maps");
 
-// The threads inside udpv6_sendmsg, keyed by pid_tgid: an udp_sendmsg under one is its IPv4-mapped send.
+// The threads inside udpv6_sendmsg, keyed by pid_tgid, with the socket it sends on. udp_sendmsg on that same socket
+// is its IPv4-mapped send: udp_sendmsg only ever sees an IPv6 socket through udpv6_sendmsg, so matching the socket
+// (not just the thread) keeps a marker whose return was missed from hiding the thread's own IPv4 sends.
+struct
+{
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 16384);
+    __type(key, __u64);
+    __type(value, __u64);
+} in_udpv6_send SEC(".maps");
+
+// The kprobe mode's udp_sendmsg calls that are udpv6_sendmsg's, from entry to return, keyed by pid_tgid. Written at
+// every entry, so a missed return leaves nothing that outlives the thread's next send.
 struct
 {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __uint(max_entries, 16384);
     __type(key, __u64);
     __type(value, __u8);
-} in_udpv6_send SEC(".maps");
+} udp_send_nested SEC(".maps");
 
 static __always_inline void count(int ret, int is_tx)
 {
@@ -83,11 +97,10 @@ static __always_inline void count(int ret, int is_tx)
     }
 }
 
-static __always_inline void enterUdpv6Send(void)
+static __always_inline void enterUdpv6Send(__u64 sk)
 {
     const __u64 thread = bpf_get_current_pid_tgid();
-    const __u8 one = 1;
-    bpf_map_update_elem(&in_udpv6_send, &thread, &one, BPF_ANY);
+    bpf_map_update_elem(&in_udpv6_send, &thread, &sk, BPF_ANY);
 }
 
 static __always_inline void exitUdpv6Send(int ret)
@@ -97,14 +110,12 @@ static __always_inline void exitUdpv6Send(int ret)
     count(ret, 1);
 }
 
-static __always_inline void exitUdpSend(int ret)
+/// Whether udp_sendmsg on @p sk is udpv6_sendmsg's IPv4-mapped send.
+static __always_inline int isNestedSend(__u64 sk)
 {
     const __u64 thread = bpf_get_current_pid_tgid();
-    if (bpf_map_lookup_elem(&in_udpv6_send, &thread))
-    {
-        return; // udpv6_sendmsg's IPv4-mapped send: counted when udpv6_sendmsg returns
-    }
-    count(ret, 1);
+    const __u64* marked = bpf_map_lookup_elem(&in_udpv6_send, &thread);
+    return marked && *marked == sk;
 }
 
 // fentry/fexit: the return value, and for a receive its flags, whichever arity the kernel's function has.
@@ -114,13 +125,19 @@ static __always_inline int fexitRet(void* ctx)
     return bpf_get_func_ret(ctx, &ret) == 0 ? (int) ret : -1;
 }
 
+static __always_inline __u64 fexitArg(void* ctx, __u32 n)
+{
+    __u64 value = 0;
+    return bpf_get_func_arg(ctx, n, &value) == 0 ? value : 0;
+}
+
 static __always_inline void fexitReceive(void* ctx)
 {
     __u64 flags = 0;
     const __u64 flagsArg = bpf_get_func_arg_cnt(ctx) >= 6 ? 4 : 3;
-    if (bpf_get_func_arg(ctx, (__u32) flagsArg, &flags) != 0 || (flags & TASKSMACK_MSG_PEEK) != 0)
+    if (bpf_get_func_arg(ctx, (__u32) flagsArg, &flags) != 0 || (flags & (TASKSMACK_MSG_PEEK | TASKSMACK_MSG_ERRQUEUE)) != 0)
     {
-        return; // a peek leaves the datagram queued
+        return; // a peek leaves the datagram queued; an error queue read returns an outgoing packet's report
     }
     count(fexitRet(ctx), 0);
 }
@@ -128,7 +145,7 @@ static __always_inline void fexitReceive(void* ctx)
 SEC("fentry/udpv6_sendmsg")
 int udpv6_sendmsg_entry(void* ctx)
 {
-    enterUdpv6Send();
+    enterUdpv6Send(fexitArg(ctx, 0));
     return 0;
 }
 
@@ -142,7 +159,10 @@ int udpv6_sendmsg_exit(void* ctx)
 SEC("fexit/udp_sendmsg")
 int udp_sendmsg_exit(void* ctx)
 {
-    exitUdpSend(fexitRet(ctx));
+    if (!isNestedSend(fexitArg(ctx, 0)))
+    {
+        count(fexitRet(ctx), 1); // udpv6_sendmsg's IPv4-mapped send is counted when udpv6_sendmsg returns
+    }
     return 0;
 }
 
@@ -162,9 +182,9 @@ int udpv6_recvmsg_exit(void* ctx)
 
 // kprobe/kretprobe.
 SEC("kprobe/udpv6_sendmsg")
-int BPF_KPROBE(udpv6_sendmsg_enter)
+int BPF_KPROBE(udpv6_sendmsg_enter, void* sk)
 {
-    enterUdpv6Send();
+    enterUdpv6Send((__u64) sk);
     return 0;
 }
 
@@ -175,10 +195,27 @@ int BPF_KRETPROBE(udpv6_sendmsg_ret, int ret)
     return 0;
 }
 
+// The socket is only an argument at entry: whether this call is udpv6_sendmsg's is decided there, for the return.
+SEC("kprobe/udp_sendmsg")
+int BPF_KPROBE(udp_sendmsg_enter, void* sk)
+{
+    const __u64 thread = bpf_get_current_pid_tgid();
+    const __u8 nested = (__u8) isNestedSend((__u64) sk);
+    bpf_map_update_elem(&udp_send_nested, &thread, &nested, BPF_ANY);
+    return 0;
+}
+
 SEC("kretprobe/udp_sendmsg")
 int BPF_KRETPROBE(udp_sendmsg_ret, int ret)
 {
-    exitUdpSend(ret);
+    const __u64 thread = bpf_get_current_pid_tgid();
+    const __u8* nested = bpf_map_lookup_elem(&udp_send_nested, &thread);
+    const int skip = nested && *nested;
+    bpf_map_delete_elem(&udp_send_nested, &thread);
+    if (!skip)
+    {
+        count(ret, 1); // udpv6_sendmsg's IPv4-mapped send is counted when udpv6_sendmsg returns
+    }
     return 0;
 }
 
