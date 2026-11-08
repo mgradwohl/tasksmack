@@ -8,12 +8,10 @@
 #include <algorithm>
 #include <array>
 #include <cerrno>
-#include <charconv>
 #include <cstdarg>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
-#include <cstring>
 #include <expected>
 #include <format>
 #include <memory>
@@ -27,7 +25,6 @@
 
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
-#include <sys/utsname.h>
 
 namespace Platform
 {
@@ -58,53 +55,6 @@ static_assert(sizeof(MapValue) == 16);
 std::string errnoText(int error)
 {
     return std::error_code(error, std::generic_category()).message();
-}
-
-/// Whether this kernel's udp_recvmsg takes (sk, msg, len, flags, addr_len), as since 5.19, rather than the older
-/// six arguments with noblock before flags. Only the kprobe mode needs it; fexit counts the arguments itself.
-[[nodiscard]] bool recvmsgHasFiveArguments() noexcept
-{
-    utsname name{};
-    if (::uname(&name) != 0)
-    {
-        return true;
-    }
-    // The release string's leading "M.m"; anything else counts as a current kernel.
-    const std::span<const char> release(name.release);
-    const char* const begin = release.data();
-    const char* const end = std::to_address(std::ranges::find(release, '\0')); // the terminator, or the array's end
-    unsigned major = 0;
-    unsigned minor = 0;
-    const auto [afterMajor, majorError] = std::from_chars(begin, end, major);
-    if (majorError != std::errc{} || afterMajor == end || *afterMajor != '.' ||
-        std::from_chars(afterMajor + 1, end, minor).ec != std::errc{}) // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic)
-    {
-        return true;
-    }
-    return major > 5 || (major == 5 && minor >= 19);
-}
-
-/// Sets the program's RECV_FLAGS_ARG, its only read-only global, before the object loads.
-[[nodiscard]] bool setRecvFlagsArg(const bpf_object* object, int position) noexcept
-{
-    const bpf_map* map = nullptr;
-    bpf_object__for_each_map(map, object)
-    {
-        const std::string_view name(bpf_map__name(map));
-        if (!bpf_map__is_internal(map) || !name.ends_with(".rodata"))
-        {
-            continue;
-        }
-        std::size_t size = 0;
-        void* data = bpf_map__initial_value(map, &size);
-        if (data == nullptr || size != sizeof(int))
-        {
-            return false;
-        }
-        std::memcpy(data, &position, sizeof(int));
-        return true;
-    }
-    return false;
 }
 
 /// The most of libbpf's warnings one attempt keeps, and the most of their end a failure's reason quotes.
@@ -213,6 +163,12 @@ struct LinkDestroyer
 };
 using LinkPtr = std::unique_ptr<bpf_link, LinkDestroyer>;
 
+/// Whether the program in @p section runs when its function returns (fexit, kretprobe) rather than on entry.
+[[nodiscard]] bool isReturnProgram(std::string_view section) noexcept
+{
+    return section.starts_with("fexit/") || section.starts_with("kretprobe/");
+}
+
 } // namespace
 
 std::span<const UdpAttachAttempt> udpAttachAttempts() noexcept
@@ -237,7 +193,8 @@ bool udpProgramWanted(std::string_view section, const UdpAttachAttempt& attempt)
     {
         return attempt.ipv6;
     }
-    return function.starts_with("udp_");
+    // skb_consume_udp: the kprobe mode's receives, IPv4's and IPv6's alike.
+    return function.starts_with("udp_") || function == "skb_consume_udp";
 }
 
 // Links are destroyed before the object closes: they're declared after it.
@@ -289,10 +246,6 @@ std::expected<UdpByteCounter, std::string> UdpByteCounter::load(std::span<const 
         {
             bpf_program__set_autoload(program, udpProgramWanted(bpf_program__section_name(program), attempt));
         }
-        if (!setRecvFlagsArg(object.get(), recvmsgHasFiveArguments() ? 3 : 4))
-        {
-            return std::unexpected("the BPF object has no RECV_FLAGS_ARG to set");
-        }
 
         if (const int error = bpf_object__load(object.get()); error != 0)
         {
@@ -303,25 +256,30 @@ std::expected<UdpByteCounter, std::string> UdpByteCounter::load(std::span<const 
 
         auto state = std::make_unique<State>();
         bool attached = true;
-        bpf_object__for_each_program(program, object.get())
+        // Every return program before any entry program: an entry hook alone (udpv6_sendmsg's marks its thread)
+        // could leave state that no return clears, for a call that began before the return hook was there.
+        for (const bool returns : {true, false})
         {
-            if (!bpf_program__autoload(program))
+            bpf_object__for_each_program(program, object.get())
             {
-                continue;
+                if (!attached || !bpf_program__autoload(program) || isReturnProgram(bpf_program__section_name(program)) != returns)
+                {
+                    continue;
+                }
+                // Owned at once, so a failed allocation below still detaches it.
+                LinkPtr link(bpf_program__attach(program));
+                if (!link)
+                {
+                    const int attachError = errno;
+                    lastError = withLibbpfLog(
+                        std::format("{}: attaching {} failed: {}", label, bpf_program__section_name(program), errnoText(attachError)),
+                        captured);
+                    spdlog::debug("UDP byte counter: {}", lastError);
+                    attached = false;
+                    break;
+                }
+                state->links.push_back(std::move(link));
             }
-            // Owned at once, so a failed allocation below still detaches it.
-            LinkPtr link(bpf_program__attach(program));
-            if (!link)
-            {
-                const int attachError = errno;
-                lastError = withLibbpfLog(
-                    std::format("{}: attaching {} failed: {}", label, bpf_program__section_name(program), errnoText(attachError)),
-                    captured);
-                spdlog::debug("UDP byte counter: {}", lastError);
-                attached = false;
-                break;
-            }
-            state->links.push_back(std::move(link));
         }
         if (!attached)
         {

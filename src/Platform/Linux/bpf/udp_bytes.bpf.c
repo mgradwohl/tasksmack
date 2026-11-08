@@ -8,8 +8,10 @@
 // Two attach modes, loaded one at a time by UdpByteCounter.cpp:
 //   - fentry/fexit (5.17+ with BTF): bpf_get_func_ret and bpf_get_func_arg_cnt work whatever the function's
 //     arity, so the 6-argument udp_recvmsg of older kernels and the 5-argument one since 5.19 both work.
-//   - kprobe/kretprobe, where fexit can't attach: the return register, and the flags argument stashed at entry
-//     from the position RECV_FLAGS_ARG names (the loader sets it from the kernel's version).
+//   - kprobe/kretprobe, where fexit can't attach: the sends' return register, and the receives at an entry probe on
+//     skb_consume_udp(sk, skb, len), which udp_recvmsg and udpv6_recvmsg call once the datagram is copied, with the
+//     length they return (negated for a peek). A kretprobe on a receive would hold one of the kernel's few return
+//     slots while it blocks, and calls past them go uncounted; an entry probe holds none.
 //
 // What it counts once and what it doesn't:
 //   - A return is an int: it's read as one, so a negative errno is never taken for bytes.
@@ -26,10 +28,6 @@
 // clang-format on
 
 #define TASKSMACK_MSG_PEEK 2 // <sys/socket.h>'s MSG_PEEK, which the BPF target doesn't include
-
-// The 0-based position of udp_recvmsg's and udpv6_recvmsg's flags argument, for the kprobe mode: 3 since 5.19
-// (sk, msg, len, flags, addr_len), 4 before (sk, msg, len, noblock, flags, addr_len). Set by the loader.
-const volatile int RECV_FLAGS_ARG = 3;
 
 // Matches Platform::UdpByteCounts: the map's value layout is the user-space contract.
 struct udp_bytes
@@ -55,15 +53,6 @@ struct
     __type(key, __u64);
     __type(value, __u8);
 } in_udpv6_send SEC(".maps");
-
-// The kprobe mode's receive flags, from entry to return, keyed by pid_tgid.
-struct
-{
-    __uint(type, BPF_MAP_TYPE_LRU_HASH);
-    __uint(max_entries, 16384);
-    __type(key, __u64);
-    __type(value, __u32);
-} recv_flags SEC(".maps");
 
 static __always_inline void count(int ret, int is_tx)
 {
@@ -171,32 +160,7 @@ int udpv6_recvmsg_exit(void* ctx)
     return 0;
 }
 
-// kprobe/kretprobe: the flags are only in the registers at entry, so they're kept for the return.
-static __always_inline void kprobeReceive(struct pt_regs* ctx)
-{
-    const __u64 thread = bpf_get_current_pid_tgid();
-    // Both registers read at their fixed offsets, then one chosen: left to itself the compiler turns the choice
-    // into one load at a computed offset into the context, which the verifier refuses (EACCES).
-    __u64 fourth = PT_REGS_PARM4(ctx);
-    __u64 fifth = PT_REGS_PARM5(ctx);
-    barrier_var(fourth);
-    barrier_var(fifth);
-    const __u32 flags = (__u32) (RECV_FLAGS_ARG == 4 ? fifth : fourth);
-    bpf_map_update_elem(&recv_flags, &thread, &flags, BPF_ANY);
-}
-
-static __always_inline void kretprobeReceive(int ret)
-{
-    const __u64 thread = bpf_get_current_pid_tgid();
-    const __u32* flags = bpf_map_lookup_elem(&recv_flags, &thread);
-    const int peek = flags && (*flags & TASKSMACK_MSG_PEEK) != 0;
-    bpf_map_delete_elem(&recv_flags, &thread);
-    if (!peek)
-    {
-        count(ret, 0);
-    }
-}
-
+// kprobe/kretprobe.
 SEC("kprobe/udpv6_sendmsg")
 int BPF_KPROBE(udpv6_sendmsg_enter)
 {
@@ -218,31 +182,12 @@ int BPF_KRETPROBE(udp_sendmsg_ret, int ret)
     return 0;
 }
 
-SEC("kprobe/udp_recvmsg")
-int BPF_KPROBE(udp_recvmsg_enter)
+// Both receives, IPv4 and IPv6: the third argument is what udp_recvmsg or udpv6_recvmsg will return, negated for
+// a peek, so count() takes only what was received.
+SEC("kprobe/skb_consume_udp")
+int BPF_KPROBE(skb_consume_udp_enter, void* sk, void* skb, int len)
 {
-    kprobeReceive(ctx);
-    return 0;
-}
-
-SEC("kretprobe/udp_recvmsg")
-int BPF_KRETPROBE(udp_recvmsg_ret, int ret)
-{
-    kretprobeReceive(ret);
-    return 0;
-}
-
-SEC("kprobe/udpv6_recvmsg")
-int BPF_KPROBE(udpv6_recvmsg_enter)
-{
-    kprobeReceive(ctx);
-    return 0;
-}
-
-SEC("kretprobe/udpv6_recvmsg")
-int BPF_KRETPROBE(udpv6_recvmsg_ret, int ret)
-{
-    kretprobeReceive(ret);
+    count(len, 0);
     return 0;
 }
 
