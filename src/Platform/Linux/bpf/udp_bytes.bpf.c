@@ -175,7 +175,13 @@ int udpv6_recvmsg_exit(void* ctx)
 static __always_inline void kprobeReceive(struct pt_regs* ctx)
 {
     const __u64 thread = bpf_get_current_pid_tgid();
-    const __u32 flags = (__u32) (RECV_FLAGS_ARG == 4 ? PT_REGS_PARM5(ctx) : PT_REGS_PARM4(ctx));
+    // Both registers read at their fixed offsets, then one chosen: left to itself the compiler turns the choice
+    // into one load at a computed offset into the context, which the verifier refuses (EACCES).
+    __u64 fourth = PT_REGS_PARM4(ctx);
+    __u64 fifth = PT_REGS_PARM5(ctx);
+    barrier_var(fourth);
+    barrier_var(fifth);
+    const __u32 flags = (__u32) (RECV_FLAGS_ARG == 4 ? fifth : fourth);
     bpf_map_update_elem(&recv_flags, &thread, &flags, BPF_ANY);
 }
 

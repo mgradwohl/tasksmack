@@ -159,27 +159,38 @@ class CaptureScope
     {
         return 0;
     }
-    std::array<char, 4096> line{};
-    const int length = std::vsnprintf(line.data(), line.size(), format, args); // NOLINT(cert-err33-c): the length is checked
-    if (length > 0)
+    // Formatted whole, however long: the verifier's log comes as one message, and its last line says why.
+    std::va_list copy;
+    va_copy(copy, args);
+    const int length = std::vsnprintf(nullptr, 0, format, copy); // NOLINT(cert-err33-c): the length is checked
+    va_end(copy);
+    if (length <= 0)
     {
-        std::string_view text(line.data(), std::min<std::size_t>(static_cast<std::size_t>(length), line.size() - 1));
+        return 0;
+    }
+    try
+    {
+        std::string line(static_cast<std::size_t>(length) + 1, '\0');
+        static_cast<void>(std::vsnprintf(line.data(), line.size(), format, args));
+        line.resize(static_cast<std::size_t>(length));
+        std::string_view text(line);
         while (text.ends_with('\n'))
         {
             text.remove_suffix(1);
         }
-        // NOLINTNEXTLINE(bugprone-exception-escape): spdlog catches its own formatting and sink errors
         spdlog::debug("libbpf: {}", text);
-        if (t_Capture != nullptr && t_Capture->size() + text.size() + 1 <= CAPTURE_BYTES)
+        if (t_Capture != nullptr)
         {
-            try
+            // The end matters most: keep the last CAPTURE_BYTES of what libbpf said.
+            t_Capture->append(text).push_back('\n');
+            if (t_Capture->size() > CAPTURE_BYTES)
             {
-                t_Capture->append(text).push_back('\n');
+                t_Capture->erase(0, t_Capture->size() - CAPTURE_BYTES);
             }
-            catch (...) // NOLINT(bugprone-empty-catch): the log is a courtesy; an allocation failure only loses it
-            {}
         }
     }
+    catch (...) // NOLINT(bugprone-empty-catch): the log is a courtesy; an allocation failure only loses it
+    {}
     return 0;
 }
 
