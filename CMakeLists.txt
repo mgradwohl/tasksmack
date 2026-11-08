@@ -450,7 +450,9 @@ endif()
 add_library(tasksmack_bpf INTERFACE)
 if(UNIX AND NOT APPLE)
     find_package(PkgConfig REQUIRED)
-    pkg_check_modules(LIBBPF REQUIRED IMPORTED_TARGET libbpf)
+    # 1.0 or newer: before it, bpf_object__open_mem() and bpf_program__attach() return error pointers rather than
+    # null unless strict mode is set, and UdpByteCounter's null checks would take a failed attach for a hook (#3549).
+    pkg_check_modules(LIBBPF REQUIRED IMPORTED_TARGET libbpf>=1.0)
     target_link_libraries(tasksmack_bpf INTERFACE PkgConfig::LIBBPF)
     target_compile_definitions(tasksmack_bpf INTERFACE TASKSMACK_HAS_LIBBPF=1)
     message(STATUS "libbpf ${LIBBPF_VERSION}: per-process UDP bytes through the helper's eBPF counter (#3366)")
