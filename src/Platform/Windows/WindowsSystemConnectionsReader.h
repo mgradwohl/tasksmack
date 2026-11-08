@@ -8,15 +8,17 @@
 //      tables list every user's sockets with their owning PID, so no process is opened. A table that
 //      can't be read is left out, as Linux leaves out a /proc/net table; the read fails only when none
 //      can be read. A family Windows doesn't run (ERROR_NOT_SUPPORTED: IPv6 removed) reads as empty.
-//   2. One NtQuerySystemInformation(SystemProcessInformation) snapshot for every holder's name and
-//      creation time (the identity a ProcessTarget names), again without opening any process. A PID the
-//      snapshot doesn't list (it exited meanwhile), or a failed snapshot, leaves the name and start time
-//      empty; PID 0 (TIME_WAIT rows, which no process holds) is nobody's.
+//   2. Each holder's name and creation time (the identity a ProcessTarget names) from
+//      NtQuerySystemInformation(SystemProcessInformation) snapshots taken just before and just after the
+//      tables, again without opening any process. A PID whose process is the same in both held its sockets
+//      throughout; one that exited or was reused in between (missing from either, or a different creation
+//      time) is withheld as PID 0, nobody's, so its row never selects a stranger (#3573). PID 0 (TIME_WAIT
+//      rows, which no process holds) is nobody's too. A failed snapshot leaves the PIDs, unnamed.
 //   3. Sent/s and Received/s (#3079): TCP EStats data counters (GetPerTcp[6]ConnectionEStats) for each
 //      ESTABLISHED connection, collection enabled once per connection (EStatsEnableTracker, #1418). Only
 //      an elevated TaskSmack may enable it, so without administrator no EStats call is made and every
-//      read says why in ratesUnavailable. An elevated read refused (a policy or driver) stops the reads
-//      for good, saying so, as the process probe does (classifyEStatsProbe(), #1161).
+//      read says why in ratesUnavailable. Every elevated read is judged (classifyEStatsProbe(), #1161):
+//      a refusal (a policy or driver), even after reads that worked, stops the reads for good, saying so.
 //
 // UDP sockets have no counters and stay UNCONN, as in Process Details. Nothing here changes or closes a
 // connection (Close connection on Windows is #3358).
@@ -33,6 +35,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <unordered_map>
@@ -98,13 +101,16 @@ class WindowsSystemConnectionsReader final : public ISystemConnectionsReader
     {
         Unknown,    ///< Not yet asked: the first read decides
         Trying,     ///< Elevated: read, until a real sample says whether it works
-        On,         ///< A real sample read connections' counters
+        On,         ///< A real sample read connections' counters; later samples are still judged
         NeedsAdmin, ///< Not elevated: never read
         Refused,    ///< Elevated, but refused or broken on real connections: no longer read
     };
 
     /// Fills @p row's byte counters from TCP EStats, when it is ESTABLISHED and EStats is read.
     template<typename OwnerRowT> void readCounters(const OwnerRowT& ownerRow, SystemConnection& row);
+
+    /// Every process now, by PID, through m_SnapshotBuffer; nullopt when the snapshot can't be taken.
+    [[nodiscard]] std::optional<std::unordered_map<std::uint32_t, SnapshotIdentity>> takeSnapshot();
 
     /// Updates m_RatesState from one read's tallies.
     void judgeRates(const EStatsSampleCounts& counts);

@@ -47,8 +47,6 @@
 #include "Platform/IProcessConnections.h"
 #include "WindowsSocketTables.h"
 
-#include <cstdint>
-
 namespace Platform::Windows
 {
 

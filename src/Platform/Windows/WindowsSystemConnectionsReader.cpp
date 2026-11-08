@@ -115,9 +115,25 @@ template<typename OwnerRowT> void WindowsSystemConnectionsReader::readCounters(c
     }
 }
 
+std::optional<std::unordered_map<std::uint32_t, SnapshotIdentity>> WindowsSystemConnectionsReader::takeSnapshot()
+{
+    const std::optional<std::size_t> written =
+        WindowsCommitPaging::querySystemInformationInto(m_Api.ntQuerySystemInformation,
+                                                        SYSTEM_PROCESS_INFORMATION_CLASS,
+                                                        m_SnapshotBuffer,
+                                                        WindowsCommitPaging::PROCESS_INFORMATION_INITIAL_BYTES);
+    if (!written.has_value())
+    {
+        return std::nullopt;
+    }
+    return snapshotIdentities(std::span<const std::byte>(m_SnapshotBuffer).first(*written));
+}
+
 void WindowsSystemConnectionsReader::judgeRates(const EStatsSampleCounts& counts)
 {
-    if (m_RatesState != RatesState::Trying)
+    // Every sample is judged, not just until the first success (#3573): a refusal after reads that worked (a
+    // policy applied, or a driver loaded, since) is reported too.
+    if (m_RatesState != RatesState::Trying && m_RatesState != RatesState::On)
     {
         return;
     }
@@ -125,6 +141,7 @@ void WindowsSystemConnectionsReader::judgeRates(const EStatsSampleCounts& counts
     {
     case EStatsProbeResult::Available:
         m_RatesState = RatesState::On;
+        m_InconclusiveSamples = 0; // a sane read ends the streak
         break;
     case EStatsProbeResult::Unavailable:
         m_RatesState = RatesState::Refused;
@@ -149,6 +166,8 @@ SystemConnectionsRead WindowsSystemConnectionsReader::read()
     }
     const bool readingRates = m_RatesState == RatesState::Trying || m_RatesState == RatesState::On;
     m_Counts = {};
+    // The processes before the tables; the ones after are taken once they are read.
+    const std::optional<std::unordered_map<std::uint32_t, SnapshotIdentity>> before = takeSnapshot();
 
     SystemConnectionsRead result{.status = SystemConnectionsStatus::Ok, .connections = {}, .detail = {}, .ratesUnavailable = {}};
     auto keep = [this, &result](const auto& ownerRow)
@@ -191,33 +210,45 @@ SystemConnectionsRead WindowsSystemConnectionsReader::read()
         // A connection missing from a complete walk has closed: forgotten (#1418).
         m_EStatsEnabled.endSample(tcpComplete);
         judgeRates(m_Counts);
+        if (m_RatesState == RatesState::Refused)
+        {
+            // Refused this read: no row shows counters beside the reason.
+            for (SystemConnection& row : result.connections)
+            {
+                row.hasByteCounters = false;
+                row.bytesSent = 0;
+                row.bytesReceived = 0;
+            }
+        }
     }
     if (tablesRead == 0)
     {
         return {.status = SystemConnectionsStatus::Failed, .connections = {}, .detail = std::move(lastError), .ratesUnavailable = {}};
     }
 
-    // Each holder's name and identity, from one snapshot for the whole read.
-    const std::optional<std::size_t> written =
-        WindowsCommitPaging::querySystemInformationInto(m_Api.ntQuerySystemInformation,
-                                                        SYSTEM_PROCESS_INFORMATION_CLASS,
-                                                        m_SnapshotBuffer,
-                                                        WindowsCommitPaging::PROCESS_INFORMATION_INITIAL_BYTES);
-    if (written.has_value())
+    // Each holder's name and identity, from the snapshots either side of the tables (#3573): a PID whose process
+    // is the same one in both (same creation time) held its sockets throughout, since a PID is reused only once
+    // its process is gone. One that changed, or is missing from either, may name a stranger: such a row is
+    // nobody's (PID 0), so it selects nothing. With either snapshot unreadable, the PIDs stay, unnamed.
+    if (const std::optional<std::unordered_map<std::uint32_t, SnapshotIdentity>> after = takeSnapshot();
+        before.has_value() && after.has_value())
     {
-        const std::unordered_map<std::uint32_t, SnapshotIdentity> identities =
-            snapshotIdentities(std::span<const std::byte>(m_SnapshotBuffer).first(*written));
         for (SystemConnection& row : result.connections)
         {
             if (row.pid == 0)
             {
                 continue; // TIME_WAIT: no process holds it
             }
-            if (const auto found = identities.find(static_cast<std::uint32_t>(row.pid)); found != identities.end())
+            const auto pid = static_cast<std::uint32_t>(row.pid);
+            const auto then = before->find(pid);
+            const auto now = after->find(pid);
+            if (then == before->end() || now == after->end() || then->second.createTime != now->second.createTime)
             {
-                row.startTimeTicks = found->second.createTime;
-                row.processName = found->second.name;
+                row.pid = 0; // it exited, or its PID was reused, while the tables were read
+                continue;
             }
+            row.startTimeTicks = now->second.createTime;
+            row.processName = now->second.name;
         }
     }
 

@@ -6,6 +6,7 @@
 /// elevated, the reason when not, and when an elevated read is refused. Plus a CiRealSystem test that opens a
 /// loopback TCP listener and client in this process and finds both, held by this PID.
 
+#include "Domain/ProcessConnections.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/ISystemConnections.h"
 #include "Platform/Windows/WindowsElevation.h"
@@ -40,7 +41,7 @@ namespace
 
 constexpr DWORD BROWSER_PID = 4242;
 constexpr DWORD SERVER_PID = 777;
-constexpr DWORD GONE_PID = 999; // in the tables, not in the snapshot
+constexpr DWORD GONE_PID = 999; // in the tables, not in the snapshots
 constexpr std::uint64_t BROWSER_START = 0x01DB'0000'1234'5678ULL;
 constexpr std::uint64_t SERVER_START = 0x01DB'0000'8765'4321ULL;
 constexpr LONG STATUS_INFO_LENGTH_MISMATCH_NT = static_cast<LONG>(0xC0000004L);
@@ -140,7 +141,9 @@ struct FakeSystem
     FakeTable udp4;
     FakeTable udp6;
     std::vector<FakeProcess> processes;
-    LONG snapshotStatus = 0; // non-zero: the snapshot fails with it
+    std::vector<FakeProcess> processesAfter; // what snapshots list from the read's second on, if set (#3573)
+    LONG snapshotStatus = 0;                 // non-zero: the snapshot fails with it
+    int snapshots = 0;                       // snapshots taken
     bool elevated = false;
     ULONG setStatus = NO_ERROR;
     ULONG getStatus = NO_ERROR;
@@ -229,8 +232,10 @@ LONG NTAPI fakeNtQuerySystemInformation(ULONG infoClass, PVOID data, ULONG lengt
     {
         return fake().snapshotStatus;
     }
+    const std::vector<FakeProcess>& processes =
+        (fake().snapshots > 0 && !fake().processesAfter.empty()) ? fake().processesAfter : fake().processes;
     std::size_t needed = 0;
-    for (const FakeProcess& process : fake().processes)
+    for (const FakeProcess& process : processes)
     {
         needed += entryBytes(process);
     }
@@ -239,7 +244,8 @@ LONG NTAPI fakeNtQuerySystemInformation(ULONG infoClass, PVOID data, ULONG lengt
     {
         return STATUS_INFO_LENGTH_MISMATCH_NT;
     }
-    writeSnapshot(std::span<std::byte>(static_cast<std::byte*>(data), length), fake().processes);
+    writeSnapshot(std::span<std::byte>(static_cast<std::byte*>(data), length), processes);
+    ++fake().snapshots;
     return 0;
 }
 
@@ -399,13 +405,14 @@ TEST_F(WindowsSystemConnectionsReaderTest, ListsEveryRowOfTheFourTablesWithItsHo
     EXPECT_EQ(closing->pid, 0); // no process holds it
     EXPECT_TRUE(closing->processName.empty());
 
-    // A holder the snapshot no longer lists (it exited between the two reads): its PID, no name or identity.
+    // A holder the snapshots don't list (it exited): nobody's, so the row selects no stranger (#3573).
     const SystemConnection* gone = findLocal(read, ConnectionProtocol::Tcp, ConnectionFamily::IPv4, 52146);
     ASSERT_NE(gone, nullptr);
     EXPECT_EQ(gone->connection.state, ConnectionState::CloseWait);
-    EXPECT_EQ(gone->pid, static_cast<std::int32_t>(GONE_PID));
+    EXPECT_EQ(gone->pid, 0);
     EXPECT_TRUE(gone->processName.empty());
     EXPECT_EQ(gone->startTimeTicks, 0U);
+    EXPECT_EQ(fake().snapshots, 2); // one either side of the tables
 
     const SystemConnection* v6 = findLocal(read, ConnectionProtocol::Tcp, ConnectionFamily::IPv6, 52200);
     ASSERT_NE(v6, nullptr);
@@ -471,6 +478,24 @@ TEST_F(WindowsSystemConnectionsReaderTest, ElevatedEstablishedConnectionsGetESta
     EXPECT_EQ(findLocal(next, ConnectionProtocol::Tcp, ConnectionFamily::IPv4, 52144)->bytesSent, 3000U);
 }
 
+// #3573: a refusal after reads that worked is reported too: every sample is judged, not only until the first success.
+TEST_F(WindowsSystemConnectionsReaderTest, ARefusalAfterReadsThatWorkedIsReported)
+{
+    fake().elevated = true;
+    const SystemConnectionsRead worked = m_Reader.read();
+    EXPECT_TRUE(worked.ratesUnavailable.empty());
+    EXPECT_TRUE(findLocal(worked, ConnectionProtocol::Tcp, ConnectionFamily::IPv4, 52144)->hasByteCounters);
+
+    fake().getStatus = ERROR_ACCESS_DENIED; // a policy applied since
+    const SystemConnectionsRead refused = m_Reader.read();
+    EXPECT_EQ(refused.ratesUnavailable, RATES_REFUSED);
+    EXPECT_TRUE(std::ranges::none_of(refused.connections, [](const SystemConnection& c) { return c.hasByteCounters; }));
+
+    const int gets = fake().gets;
+    EXPECT_EQ(m_Reader.read().ratesUnavailable, RATES_REFUSED);
+    EXPECT_EQ(fake().gets, gets); // and then no longer asked
+}
+
 TEST_F(WindowsSystemConnectionsReaderTest, ElevatedButRefusedSaysSoAndStopsAsking)
 {
     fake().elevated = true;
@@ -531,6 +556,69 @@ TEST_F(WindowsSystemConnectionsReaderTest, AFamilyWindowsDoesNotRunReadsAsEmpty)
     const SystemConnectionsRead read = m_Reader.read();
     EXPECT_EQ(read.status, SystemConnectionsStatus::Ok);
     EXPECT_TRUE(read.connections.empty());
+}
+
+// #3573: a holder that exited while the tables were read, its PID reused by another process before the second
+// snapshot, is withheld (PID 0, no name or identity); a holder the same in both snapshots keeps its identity.
+TEST_F(WindowsSystemConnectionsReaderTest, APidReusedWhileTheTablesWereReadNamesNobody)
+{
+    fake().processesAfter = fake().processes;
+    for (FakeProcess& process : fake().processesAfter)
+    {
+        if (process.pid == SERVER_PID)
+        {
+            process.createTime = SERVER_START + 1; // a new process under the old PID
+            process.name = L"stranger.exe";
+        }
+    }
+    const SystemConnectionsRead read = m_Reader.read();
+    ASSERT_EQ(read.status, SystemConnectionsStatus::Ok);
+    for (const SystemConnection* reused : {
+             findLocal(read, ConnectionProtocol::Tcp, ConnectionFamily::IPv4, 8080),
+             findLocal(read, ConnectionProtocol::Udp, ConnectionFamily::IPv4, 5353),
+         })
+    {
+        ASSERT_NE(reused, nullptr);
+        EXPECT_EQ(reused->pid, 0);
+        EXPECT_TRUE(reused->processName.empty());
+        EXPECT_EQ(reused->startTimeTicks, 0U);
+    }
+    const SystemConnection* browser = findLocal(read, ConnectionProtocol::Tcp, ConnectionFamily::IPv4, 52144);
+    ASSERT_NE(browser, nullptr);
+    EXPECT_EQ(browser->pid, static_cast<std::int32_t>(BROWSER_PID));
+    EXPECT_EQ(browser->startTimeTicks, BROWSER_START);
+    EXPECT_EQ(browser->processName, "msedge.exe");
+}
+
+// #3573: the same link-local endpoints on two interfaces are two sockets, kept apart by their scope IDs.
+TEST_F(WindowsSystemConnectionsReaderTest, ScopeIdsKeepLinkLocalConnectionsOnTwoInterfacesApart)
+{
+    constexpr std::array<std::uint8_t, 16> LINK_LOCAL{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01};
+    std::vector<MIB_TCP6ROW_OWNER_PID> rows(2, tcp6Row(BROWSER_PID, MIB_TCP_STATE_ESTAB, 52300, 445));
+    for (MIB_TCP6ROW_OWNER_PID& row : rows)
+    {
+        std::ranges::copy(LINK_LOCAL, std::begin(row.ucLocalAddr));
+        std::ranges::copy(LINK_LOCAL, std::begin(row.ucRemoteAddr));
+    }
+    rows[0].dwLocalScopeId = 12;
+    rows[0].dwRemoteScopeId = 12;
+    rows[1].dwLocalScopeId = 7;
+    rows[1].dwRemoteScopeId = 7;
+    fake().tcp6.bytes = makeTable<MIB_TCP6TABLE_OWNER_PID, MIB_TCP6ROW_OWNER_PID>(rows);
+    const SystemConnectionsRead read = m_Reader.read();
+    std::vector<const SystemConnection*> linkLocal;
+    for (const SystemConnection& c : read.connections)
+    {
+        if (c.connection.family == ConnectionFamily::IPv6 && c.connection.local.port == 52300)
+        {
+            linkLocal.push_back(&c);
+        }
+    }
+    ASSERT_EQ(linkLocal.size(), 2U);
+    EXPECT_EQ(linkLocal[0]->connection.local.scopeId, 12U);
+    EXPECT_EQ(linkLocal[0]->connection.remote.scopeId, 12U);
+    EXPECT_EQ(linkLocal[1]->connection.local.scopeId, 7U);
+    EXPECT_NE(Domain::Connections::socketKey(linkLocal[0]->connection), Domain::Connections::socketKey(linkLocal[1]->connection));
 }
 
 TEST_F(WindowsSystemConnectionsReaderTest, AFailedSnapshotLeavesThePidsWithoutNames)

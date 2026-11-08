@@ -137,8 +137,8 @@ ProcessConnection toConnection(const MIB_TCP6ROW_OWNER_PID& row) noexcept
     return {
         .protocol = ConnectionProtocol::Tcp,
         .family = ConnectionFamily::IPv6,
-        .local = {.address = ipv6Address(row.ucLocalAddr), .port = toHostPort(row.dwLocalPort)},
-        .remote = {.address = ipv6Address(row.ucRemoteAddr), .port = toHostPort(row.dwRemotePort)},
+        .local = {.address = ipv6Address(row.ucLocalAddr), .port = toHostPort(row.dwLocalPort), .scopeId = row.dwLocalScopeId},
+        .remote = {.address = ipv6Address(row.ucRemoteAddr), .port = toHostPort(row.dwRemotePort), .scopeId = row.dwRemoteScopeId},
         .state = toConnectionState(row.dwState),
     };
 }
@@ -150,7 +150,8 @@ ProcessConnection toConnection(const MIB_UDPROW_OWNER_PID& row) noexcept
 
 ProcessConnection toConnection(const MIB_UDP6ROW_OWNER_PID& row) noexcept
 {
-    return unconnectedUdp(ConnectionFamily::IPv6, {.address = ipv6Address(row.ucLocalAddr), .port = toHostPort(row.dwLocalPort)});
+    return unconnectedUdp(ConnectionFamily::IPv6,
+                          {.address = ipv6Address(row.ucLocalAddr), .port = toHostPort(row.dwLocalPort), .scopeId = row.dwLocalScopeId});
 }
 
 } // namespace Platform::Windows

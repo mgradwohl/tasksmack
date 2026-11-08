@@ -41,7 +41,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -144,8 +143,8 @@ inline constexpr std::array<SocketTable, 4> SOCKET_TABLES{SocketTable::Tcp4, Soc
 [[nodiscard]] std::uint16_t toHostPort(DWORD tablePort) noexcept;
 
 /// One table row as a ProcessConnection. Addresses are copied in network byte order (an IPv4 address's
-/// DWORD already is, in memory). A UDP row has no remote end and no state: remote all zero, Closed
-/// (bound but unconnected; the tables do not say whether a UDP socket called connect()).
+/// DWORD already is, in memory), an IPv6 row's scope IDs with them (#3573). A UDP row has no remote end and no state: remote all zero,
+/// Closed (bound but unconnected; the tables do not say whether a UDP socket called connect()).
 [[nodiscard]] ProcessConnection toConnection(const MIB_TCPROW_OWNER_PID& row) noexcept;
 [[nodiscard]] ProcessConnection toConnection(const MIB_TCP6ROW_OWNER_PID& row) noexcept;
 [[nodiscard]] ProcessConnection toConnection(const MIB_UDPROW_OWNER_PID& row) noexcept;

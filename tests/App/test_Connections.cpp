@@ -226,6 +226,31 @@ class ListReader final : public Platform::ISystemConnectionsReader
 };
 
 // #3186: a model needs a reader.
+// #3573: the same link-local endpoints on two interfaces are two rows: their scope IDs are in the selection key,
+// which the new and closed highlights use too.
+TEST(ConnectionsViewTest, LinkLocalSocketsOnTwoInterfacesAreDifferentRows)
+{
+    SystemConnection onWifi =
+        socket(300, "smb", ConnectionProtocol::Tcp, {0, 0, 0, 0}, 52300, {0, 0, 0, 0}, 445, ConnectionState::Established);
+    onWifi.connection.family = ConnectionFamily::IPv6;
+    onWifi.connection.local.address = {0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01};
+    onWifi.connection.remote.address = onWifi.connection.local.address;
+    onWifi.connection.local.scopeId = 12;
+    onWifi.connection.remote.scopeId = 12;
+    SystemConnection onEthernet = onWifi;
+    onEthernet.connection.local.scopeId = 7;
+    onEthernet.connection.remote.scopeId = 7;
+    EXPECT_NE(selectionKey(onWifi), selectionKey(onEthernet));
+
+    Domain::ConnectionsPublication pub;
+    pub.version = 1;
+    pub.connections = {onWifi, onEthernet};
+    ConnectionsViewState state;
+    refreshConnectionRows(pub, state, 1.0);
+    EXPECT_EQ(state.liveCount, 2U);
+    EXPECT_NE(state.rows[0].local, state.rows[1].local); // "[fe80::1%12]:52300" and "[fe80::1%7]:52300"
+}
+
 TEST(ConnectionsModelTest, ANullReaderIsRefused)
 {
     EXPECT_THROW(Domain::ConnectionsModel(nullptr), std::invalid_argument);
