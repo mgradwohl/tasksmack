@@ -10,6 +10,7 @@
 #include "App/StartAtLoginSetting.h"
 #include "App/TaskManagerReplacementController.h"
 #include "App/TaskManagerReplacementText.h"
+#include "App/UdpCountingStatus.h"
 #include "App/UserConfig.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
@@ -470,9 +471,8 @@ TEST_F(SettingsLayerRenderTest, ResetThenSaveWritesTheDefaultsAndRaisesTheirEven
     EXPECT_EQ(m_Seen.udpEventTrace, std::vector<bool>{defaults.udpEventTrace}); // the Processes panel starts or stops it now
 }
 
-#ifdef _WIN32
-// #2040: the checkbox exists only on Windows (#1492). Ticking it and saving raises the event the
-// Processes panel starts the trace on; unticking it and saving raises it again, to stop it.
+// #2040: ticking the checkbox and saving raises the event the Processes panel starts counting on; unticking it and
+// saving raises it again, to stop it. On both platforms since #3366.
 TEST_F(SettingsLayerRenderTest, TheUdpCheckboxIsSavedAndRaisesItsEvent)
 {
     UserSettings& settings = UserConfig::get().settings();
@@ -509,7 +509,22 @@ TEST_F(SettingsLayerRenderTest, TheUdpCheckboxPutBackBeforeSaveRaisesNothing)
     EXPECT_FALSE(settings.udpEventTrace);
     EXPECT_TRUE(m_Seen.udpEventTrace.empty()); // unchanged: the trace is left as it is
 }
-#endif
+
+// #3366: what the Processes panel's collector last published reaches the open dialog, every frame.
+TEST_F(SettingsLayerRenderTest, TheUdpCountersPublishedStatusReachesTheDialog)
+{
+    publishUdpCountingStatus({.delivering = false, .unsupported = true, .problem = "kretprobe: loading failed: no BTF"});
+    ASSERT_TRUE(openDialog());
+    EXPECT_TRUE(layer().dialogState().udpUnsupported);
+    EXPECT_EQ(layer().dialogState().udpProblem, "kretprobe: loading failed: no BTF");
+
+    publishUdpCountingStatus({.delivering = true, .unsupported = false, .problem = {}});
+    static_cast<void>(settle());
+    EXPECT_TRUE(layer().dialogState().udpDelivering);
+    EXPECT_FALSE(layer().dialogState().udpUnsupported);
+    ASSERT_FALSE(closeDialog());
+    publishUdpCountingStatus({}); // as a run starts
+}
 
 // #3072: Replace Task Manager's rows show only with a controller, it is read again as the dialog opens, and
 // a click on the toggle starts the change at once, on the controller's worker, without Save.

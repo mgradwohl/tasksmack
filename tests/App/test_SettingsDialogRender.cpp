@@ -478,9 +478,8 @@ TEST_F(SettingsDialogRenderTest, TheLimitedDataNoticeCheckboxEditsTheState)
     EXPECT_FALSE(m_State.showPrivilegeNotice);
 }
 
-#ifdef _WIN32
-// #2040: Windows only (#1492). The checkbox edits the state, which Save hands the layer; the
-// stored value is loaded into it, and Reset to defaults puts it back off.
+// #2040: the checkbox edits the state, which Save hands the layer; the stored value is loaded into it, and Reset to
+// defaults puts it back off. On both platforms since #3366.
 TEST_F(SettingsDialogRenderTest, TheUdpCheckboxEditsTheState)
 {
     ASSERT_FALSE(m_State.udpEventTrace);
@@ -491,6 +490,25 @@ TEST_F(SettingsDialogRenderTest, TheUdpCheckboxEditsTheState)
     pressInBody(SettingsDialog::UDP_EVENT_TRACE_LABEL);
     (void) runFrame();
     EXPECT_FALSE(m_State.udpEventTrace);
+}
+
+#ifndef _WIN32
+// #3366: a counter this system can't load isn't offered: off, the checkbox doesn't turn on; on (the setting stored
+// before the counter failed), it still turns off.
+TEST_F(SettingsDialogRenderTest, AnUnsupportedUdpCounterCanBeTurnedOffButNotOn)
+{
+    m_State.udpUnsupported = true;
+    m_State.udpProblem = "fexit: loading failed: Operation not permitted";
+    ASSERT_TRUE(openAndSettle().open);
+    pressInBody(SettingsDialog::UDP_EVENT_TRACE_LABEL);
+    (void) runFrame();
+    EXPECT_FALSE(m_State.udpEventTrace) << "disabled while off";
+
+    m_State.udpEventTrace = true;
+    (void) runFrame();
+    pressInBody(SettingsDialog::UDP_EVENT_TRACE_LABEL);
+    (void) runFrame();
+    EXPECT_FALSE(m_State.udpEventTrace) << "an enabled preference can still be turned off";
 }
 #endif
 

@@ -4,6 +4,7 @@
 // counterpart of Windows' ETW collector. It asks the broker to start a helper that counts, but only within an
 // Administrator session (maintainer, 2026-11-07), and reads the helper's totals once per socket-traffic reading.
 
+#include "Platform/BrokerProtocol.h"
 #include "Platform/IPrivilegedBroker.h"
 #include "Platform/IUdpTrafficCollector.h"
 
@@ -51,7 +52,17 @@ class BrokeredUdpTrafficCollector final : public IUdpTrafficCollector
     [[nodiscard]] bool unsupported() const override;
 
   private:
-    void setProblem(std::string problem);
+    void setProblem(const std::string& problem);
+    /// Copies @p problem into the snapshot problem() reads, under its own short lock.
+    void publishProblem(const std::string& problem) noexcept;
+    /// sample()'s reading folded in under m_Mutex; a changed reason to log goes to @p warning, for sample() to log once
+    /// the lock is released.
+    [[nodiscard]] std::vector<UdpProcessTraffic> fold(std::uint64_t run,
+                                                      const Broker::UdpBytesReply* reply,
+                                                      bool helperGone,
+                                                      std::uint64_t session,
+                                                      std::uint64_t sessionBefore,
+                                                      std::string& warning);
 
     std::shared_ptr<IPrivilegedBroker> m_Broker;
     std::atomic<bool> m_Running{false};
@@ -64,6 +75,8 @@ class BrokeredUdpTrafficCollector final : public IUdpTrafficCollector
     bool m_Seeding = false;                // the next counting reading only seeds Domain's baseline (sent unreadable)
     std::vector<UdpProcessTraffic> m_Last; // the last totals, for a reading the helper was too busy to answer
     std::string m_Problem;
+    mutable std::mutex m_StatusMutex; // guards m_StatusProblem alone: held only to copy it, never across I/O or logging
+    std::string m_StatusProblem;      // what problem() returns: m_Problem, as each fold, start() or setProblem() left it
 };
 
 /// Linux's UDP collector: @p collector when the platform made one (Windows' ETW), else one through @p broker, or
