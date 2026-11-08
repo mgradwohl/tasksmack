@@ -154,6 +154,27 @@ TEST(StartupActionsDetailTest, XdgAutostartEntries)
     EXPECT_TRUE(AutoDetail::confirmQuestion({.enable = false, .entry = system}).contains("autostart file is kept"));
 }
 
+// #3424: Windows' scheduled tasks. The user's own switch without elevation; another account's needs it; Windows'
+// own are read-only, whoever asks; disabling one stops it on every trigger, which the confirm says.
+TEST(StartupActionsDetailTest, ScheduledTasks)
+{
+    auto mine = entry("Updater", StartupLocation::ScheduledTaskUser);
+    mine.scope = Platform::StartupScope::User; // a task that runs as the current user
+    EXPECT_TRUE(AutoDetail::blockedReason(mine, USER).empty());
+    EXPECT_TRUE(AutoDetail::isApplicable(false, mine, USER));
+    const auto system = entry("Agent", StartupLocation::ScheduledTaskMachine);
+    EXPECT_EQ(AutoDetail::blockedReason(system, USER), "Requires administrator");
+    EXPECT_TRUE(AutoDetail::isApplicable(false, system, ADMIN));
+    auto windows = entry("Cleanup", StartupLocation::ScheduledTaskMachine);
+    windows.osComponent = true;
+    windows.notSwitchableReason = "One of Windows' own scheduled tasks";
+    EXPECT_EQ(AutoDetail::blockedReason(windows, ADMIN), "One of Windows' own scheduled tasks");
+    EXPECT_FALSE(AutoDetail::isApplicable(false, windows, ADMIN));
+    const std::string question = AutoDetail::confirmQuestion({.enable = false, .entry = mine});
+    EXPECT_TRUE(question.contains("on any other trigger")) << question;
+    EXPECT_TRUE(question.contains("kept in Task Scheduler")) << question;
+}
+
 TEST(StartupActionsDetailTest, TextsNameTheEntryAndTheOutcome)
 {
     const StartupActionRequest disable{.enable = false, .entry = entry("OneDrive", StartupLocation::RunUser)};

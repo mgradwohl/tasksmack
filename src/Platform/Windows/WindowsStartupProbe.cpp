@@ -1,5 +1,6 @@
 #include "WindowsStartupProbe.h"
 
+#include "Domain/SamplingConfig.h"
 #include "Platform/IStartupProbe.h"
 
 #include <spdlog/spdlog.h>
@@ -34,11 +35,15 @@
 #include "ComScope.h"
 #include "WinString.h"
 #include "WindowsConversions.h"
+#include "WindowsScheduledTasks.h"
+#include "WindowsScheduledTasksMath.h"
 #include "WindowsStartupImpact.h"
 #include "WindowsStartupProbeMath.h"
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -704,6 +709,13 @@ std::optional<PackageManifest> parsePackageManifest(std::string_view xml)
 struct WindowsStartupProbe::Impl
 {
     Windows::StartupProbeFunctions api;
+    Windows::ScheduledTaskApiFactory makeScheduledTasks; ///< Null: no scheduled tasks are read (#3424).
+    NowFunction now;
+    /// The tasks the last walk found that start at sign-in or boot, their Author resolved.
+    std::vector<Windows::ScheduledTaskMath::TaskRecord> scheduledTasks;
+    std::vector<std::string> currentUserNames;                             ///< The names the last walk's principal match used.
+    std::optional<Clock::time_point> scheduledTasksRead;                   ///< When the last walk ran; nullopt before the first.
+    std::uint64_t scheduledTaskChangesSeen = 0;                            ///< Windows::scheduledTaskChanges() at that walk.
     std::unordered_map<std::wstring, CachedVersionStrings> versionStrings; ///< By lower-cased path.
     /// By lower-cased package full name, which names the version: an update reads the new manifest.
     std::unordered_map<std::wstring, ResolvedPackage> packages;
@@ -1011,6 +1023,66 @@ struct WindowsStartupProbe::Impl
         }
     }
 
+    /// Walks Task Scheduler's folders again when the last walk is older than the cadence, or TaskSmack has
+    /// switched a task since (#3424). COM must be usable on the calling thread. A Task Scheduler that can't be
+    /// connected to lists no tasks until a later walk can.
+    void refreshScheduledTasks()
+    {
+        if (!makeScheduledTasks)
+        {
+            return;
+        }
+        const Clock::time_point when = now();
+        // Read before the walk: a switch made while it runs is walked again next time.
+        const std::uint64_t changes = Windows::scheduledTaskChanges().load(std::memory_order_relaxed);
+        if (scheduledTasksRead && changes == scheduledTaskChangesSeen &&
+            when - *scheduledTasksRead < std::chrono::seconds(Domain::Sampling::STARTUP_SCHEDULED_TASKS_REFRESH_SECONDS))
+        {
+            return;
+        }
+        scheduledTasksRead = when;
+        scheduledTaskChangesSeen = changes;
+        const std::unique_ptr<Windows::ScheduledTaskApi> tasks = makeScheduledTasks();
+        std::optional<std::vector<Windows::ScheduledTaskMath::TaskRecord>> read = tasks ? Windows::readStartupTasks(*tasks) : std::nullopt;
+        if (!read)
+        {
+            spdlog::debug("WindowsStartupProbe: the Task Scheduler couldn't be read; no scheduled tasks are listed");
+            scheduledTasks.clear();
+            return;
+        }
+        currentUserNames = tasks->currentUserNames();
+        for (Windows::ScheduledTaskMath::TaskRecord& task : *read)
+        {
+            // Windows' own tasks name their author by a resource string ("$(@%SystemRoot%...,-600)"): loaded
+            // once per walk, not with each sample.
+            if (const std::string source = Windows::ScheduledTaskMath::indirectSource(task.author); !source.empty())
+            {
+                std::array<wchar_t, 256> text{};
+                const std::wstring wide = WinString::utf8ToWide(source);
+                task.author = SUCCEEDED(api.loadIndirectString(wide.c_str(), text.data(), static_cast<UINT>(text.size()), nullptr))
+                                ? WinString::wideToUtf8(text.data())
+                                : std::string();
+            }
+        }
+        scheduledTasks = std::move(*read);
+    }
+
+    /// The cached scheduled tasks as entries (#3424), each named by its task's name, its program resolved from its
+    /// command, and published by its program's CompanyName, else the task's Author.
+    void readScheduledTasks(std::vector<StartupEntry>& entries, std::unordered_set<std::wstring>& seenPaths)
+    {
+        for (const Windows::ScheduledTaskMath::TaskRecord& task : scheduledTasks)
+        {
+            StartupEntry entry = Windows::ScheduledTaskMath::taskEntry(task, currentUserNames);
+            resolveTarget(entry, entry.registrationName, seenPaths);
+            if (entry.publisher.empty())
+            {
+                entry.publisher = task.author;
+            }
+            entries.push_back(std::move(entry));
+        }
+    }
+
     void readStartupFolder(const KNOWNFOLDERID& folderId,
                            StartupLocation location,
                            HKEY approvedRoot,
@@ -1063,12 +1135,17 @@ struct WindowsStartupProbe::Impl
     }
 };
 
-WindowsStartupProbe::WindowsStartupProbe() : WindowsStartupProbe(Windows::StartupProbeFunctions{})
+WindowsStartupProbe::WindowsStartupProbe() : WindowsStartupProbe(Windows::StartupProbeFunctions{}, &Windows::makeTaskSchedulerApi)
 {}
 
-WindowsStartupProbe::WindowsStartupProbe(const Windows::StartupProbeFunctions& functions) : m_Impl(std::make_unique<Impl>())
+WindowsStartupProbe::WindowsStartupProbe(const Windows::StartupProbeFunctions& functions,
+                                         Windows::ScheduledTaskApiFactory scheduledTasks,
+                                         NowFunction now)
+    : m_Impl(std::make_unique<Impl>())
 {
     m_Impl->api = functions;
+    m_Impl->makeScheduledTasks = std::move(scheduledTasks);
+    m_Impl->now = now ? std::move(now) : NowFunction([] { return Clock::now(); });
 }
 
 WindowsStartupProbe::~WindowsStartupProbe() = default;
@@ -1110,6 +1187,11 @@ std::vector<StartupEntry> WindowsStartupProbe::enumerate()
     m_Impl->readStartupFolder(FOLDERID_Startup, StartupLocation::StartupFolderUser, HKEY_CURRENT_USER, com.usable(), entries, seenPaths);
     m_Impl->readStartupFolder(
         FOLDERID_CommonStartup, StartupLocation::StartupFolderCommon, HKEY_LOCAL_MACHINE, com.usable(), entries, seenPaths);
+    if (com.usable())
+    {
+        m_Impl->refreshScheduledTasks(); // its COM objects are released here, inside the ComScope
+    }
+    m_Impl->readScheduledTasks(entries, seenPaths);
     // After the ComScope: resolving a manifest's ms-resource names loads the package's resources.
     m_Impl->readPackagedTasks(entries);
 

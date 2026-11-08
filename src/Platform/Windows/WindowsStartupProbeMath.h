@@ -99,6 +99,8 @@ struct ApprovedKey
     case StartupLocation::SystemdSystemUnit:
     case StartupLocation::CronUser: // Linux's (#3425)
     case StartupLocation::CronSystem:
+    case StartupLocation::ScheduledTaskUser: // Task Scheduler keeps its own enabled state (#3424)
+    case StartupLocation::ScheduledTaskMachine:
         break;
     }
     return std::nullopt;
@@ -160,11 +162,13 @@ encodeStartupApproved(std::span<const std::uint8_t> existing, bool enabled, std:
     case StartupLocation::RunOnceUser:
     case StartupLocation::StartupFolderUser:
     case StartupLocation::PackagedApp:
+    case StartupLocation::ScheduledTaskUser:
         return StartupScope::User;
     case StartupLocation::RunMachine:
     case StartupLocation::RunMachine32:
     case StartupLocation::RunOnceMachine:
     case StartupLocation::StartupFolderCommon:
+    case StartupLocation::ScheduledTaskMachine:
     default:
         return StartupScope::Machine;
     }
@@ -259,8 +263,9 @@ startupDisplayName(std::string_view fileDescription, std::string_view executable
 /// The Name column's text for an entry at @p location (#1971): a RunOnce entry (HKCU or HKLM) is
 /// shown by its @p registrationName, the registry value name, since RunOnce clean-up commands often
 /// share one program (cmd.exe) and neither Task Manager nor Settings lists them under any other name;
-/// every other entry by @p programName (startupDisplayName's result, or a packaged app's manifest
-/// name). A RunOnce entry with no value name falls back to @p programName.
+/// a scheduled task (#3424) by its own name, the last part of its path @p registrationName; every other
+/// entry by @p programName (startupDisplayName's result, or a packaged app's manifest name). A RunOnce
+/// entry with no value name, or a task with no path, falls back to @p programName.
 [[nodiscard]] inline std::string startupEntryName(StartupLocation location, std::string_view programName, std::string_view registrationName)
 {
     switch (location)
@@ -284,6 +289,14 @@ startupDisplayName(std::string_view fileDescription, std::string_view executable
     case StartupLocation::SystemdSystemUnit:
     case StartupLocation::CronUser: // Linux's (#3425)
     case StartupLocation::CronSystem:
+        break;
+    case StartupLocation::ScheduledTaskUser:
+    case StartupLocation::ScheduledTaskMachine:
+        // By the task's own name, the last part of its path, as Task Scheduler and Autoruns list it (#3424).
+        if (const std::string_view leaf = registrationName.substr(registrationName.find_last_of('\\') + 1); !leaf.empty())
+        {
+            return std::string(leaf);
+        }
         break;
     }
     return std::string(programName);

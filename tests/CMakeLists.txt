@@ -777,6 +777,7 @@ set(WINDOWS_MATH_TEST_SOURCES
     Platform/WindowsMath/test_WindowsProcessProbeMath.cpp
     Platform/WindowsMath/test_WindowsStartupProbeMath.cpp
     Platform/WindowsMath/test_WindowsStartupImpact.cpp  # the WDI StartupInfo sign-in measurements (#3073)
+    Platform/WindowsMath/test_WindowsScheduledTasksMath.cpp  # scheduled tasks' triggers, owners and wording (#3424)
     Platform/WindowsMath/test_WindowsOsInfoMath.cpp
     Platform/WindowsMath/test_WindowsStorageSmartMath.cpp  # ATA SMART pages, thresholds and return status as AtaHealth (#2588)
     Platform/WindowsMath/test_WindowsServiceActionsMath.cpp
@@ -825,6 +826,8 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     # run as a standard user
     Platform/test_CiRealSystemWindowsRegistry.cpp
     Platform/test_CiRealSystemWindowsProcess.cpp
+    # The Startup tab's scheduled tasks (#3424): a throwaway logon task listed, disabled, enabled and deleted
+    Platform/test_CiRealSystemWindowsScheduledTask.cpp
     # Services: start, stop, restart and the startup type on throwaway services (TaskSmackCiService.exe)
     Platform/test_CiRealSystemWindowsService.cpp
     # TaskSmack.exe started on the runner: --minimized, a second start in Task Manager's place, and the folder dialog
@@ -863,6 +866,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsStartupProbe.cpp
     Platform/test_WindowsStartupProbeSeams.cpp
     Platform/test_WindowsStartupActions.cpp
+    Platform/test_WindowsScheduledTasks.cpp  # the Startup tab's scheduled tasks through a fake Task Scheduler (#3424)
     Platform/test_WindowsSystemInfoProbe.cpp
     Platform/test_WindowsSystemInfoProbeSeams.cpp
     Platform/test_WindowsSystemInfoLiveReaders.cpp

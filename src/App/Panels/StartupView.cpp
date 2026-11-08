@@ -153,7 +153,8 @@ void renderStartupTooltip(const Platform::StartupEntry& entry)
 void rebuildRowsIfStale(const Domain::StartupPublication& publication, StartupViewState& state)
 {
     const bool newSample = state.rowsVersion != publication.version || state.enabledLabels.size() != publication.entries.size();
-    if (!newSample && state.rowsFilter == state.filter && state.rowsColumn == state.sortColumn && state.rowsAscending == state.ascending)
+    if (!newSample && state.rowsFilter == state.filter && state.rowsColumn == state.sortColumn && state.rowsAscending == state.ascending &&
+        state.rowsShowOsComponents == state.showOsComponents)
     {
         return;
     }
@@ -163,17 +164,21 @@ void rebuildRowsIfStale(const Domain::StartupPublication& publication, StartupVi
         state.enabledLabels.reserve(publication.entries.size());
         state.iconKeys.clear();
         state.iconKeys.reserve(publication.entries.size());
+        state.osComponentCount = 0;
         for (const auto& entry : publication.entries)
         {
             state.enabledLabels.push_back(startupEnabledLabel(entry));
             state.iconKeys.push_back(Domain::iconFileKey(startupIconPath(entry)));
+            state.osComponentCount += entry.osComponent ? 1U : 0U;
         }
     }
-    state.rows = buildStartupRows(publication.entries, state.filter, state.sortColumn, state.ascending, publication.impacts);
+    state.rows =
+        buildStartupRows(publication.entries, state.filter, state.sortColumn, state.ascending, publication.impacts, state.showOsComponents);
     state.rowsVersion = publication.version;
     state.rowsFilter = state.filter;
     state.rowsColumn = state.sortColumn;
     state.rowsAscending = state.ascending;
+    state.rowsShowOsComponents = state.showOsComponents;
 }
 
 } // namespace
@@ -211,6 +216,10 @@ std::string_view startupLocationLabel(Platform::StartupLocation location) noexce
         return "cron (your crontab)";
     case CronSystem:
         return "cron (system)";
+    case ScheduledTaskUser:
+        return "Scheduled task";
+    case ScheduledTaskMachine:
+        return "Scheduled task (all users)";
     default:
         return "";
     }
@@ -300,6 +309,13 @@ std::string startupRegistrationLabel(const Platform::StartupEntry& entry)
             return "Startup task: " + entry.packageFamily + "!" + entry.registrationName;
         }
         return {};
+    case ScheduledTaskUser:
+    case ScheduledTaskMachine:
+        if (!entry.registrationName.empty())
+        {
+            return "Scheduled task: " + entry.registrationName;
+        }
+        return {};
     case StartupFolderUser:
     case StartupFolderCommon:
     default:
@@ -352,13 +368,18 @@ std::vector<std::size_t> buildStartupRows(std::span<const Platform::StartupEntry
                                           std::string_view filter,
                                           StartupColumn column,
                                           bool ascending,
-                                          std::span<const Domain::StartupEntryImpact> impacts)
+                                          std::span<const Domain::StartupEntryImpact> impacts,
+                                          bool showOsComponents)
 {
     std::vector<std::size_t> rows;
     rows.reserve(entries.size());
     for (std::size_t i = 0; i < entries.size(); ++i)
     {
         const auto& entry = entries[i];
+        if (entry.osComponent && !showOsComponents)
+        {
+            continue;
+        }
         if (containsIgnoreCase(entry.name, filter) || containsIgnoreCase(entry.registrationName, filter) ||
             containsIgnoreCase(entry.programName, filter) || containsIgnoreCase(entry.publisher, filter) ||
             containsIgnoreCase(entry.command, filter))
@@ -415,6 +436,13 @@ void renderFilterBar(const Domain::StartupPublication& publication, StartupViewS
     rebuildRowsIfStale(publication, state);
     ImGui::SameLine();
     ImGui::TextColored(scheme.textMuted, "%zu of %zu startup apps", state.rows.size(), publication.entries.size());
+    // Only where there are such entries (Windows' own scheduled tasks, #3424); the table's own rebuild below takes a click in.
+    if (state.osComponentCount > 0)
+    {
+        ImGui::SameLine();
+        static_cast<void>(UI::Widgets::outlinedCheckbox("Show Microsoft entries", &state.showOsComponents));
+        ImGui::SetItemTooltip("Show Windows' own scheduled tasks (%zu), which are read-only here", state.osComponentCount);
+    }
 }
 
 /// The table's columns, in StartupColumn order, each tagged with its StartupColumn as the user ID the

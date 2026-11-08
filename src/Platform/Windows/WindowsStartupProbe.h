@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Platform/IStartupProbe.h"
+#include "WindowsScheduledTasks.h"
 
 // clang-format off
 #ifndef WIN32_LEAN_AND_MEAN
@@ -15,7 +16,9 @@
 #include <shlwapi.h>
 // clang-format on
 
+#include <chrono>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -95,12 +98,26 @@ struct PackageManifest
 /// publisher and the name shown, #1873; cached per file until its last-write time changes), and the current user's packaged apps' startup
 /// tasks (#1798): those whose state is recorded under StartupMath::PACKAGED_TASKS_KEY and whose installed package's manifest still declares
 /// them, named from the manifest (cached per package version).
+///
+/// And the scheduled tasks with an enabled logon or boot trigger (#3424), through the Task Scheduler API on the
+/// calling thread, in the same COM scope as the shortcuts. Walking every folder takes a few hundred milliseconds, so
+/// the tasks are read with the first enumerate() and then at most every
+/// Sampling::STARTUP_SCHEDULED_TASKS_REFRESH_SECONDS, or straight away once TaskSmack has switched one
+/// (Windows::scheduledTaskChanges()); each enumerate() between resolves the cached tasks' programs as it does the
+/// others'.
 class WindowsStartupProbe : public IStartupProbe
 {
   public:
+    using Clock = std::chrono::steady_clock;
+    using NowFunction = std::function<Clock::time_point()>;
+
     WindowsStartupProbe();
-    /// Make every registry and known-folder call through @p functions (tests, #1722).
-    explicit WindowsStartupProbe(const Windows::StartupProbeFunctions& functions);
+    /// Make every registry and known-folder call through @p functions (tests, #1722), and the Task Scheduler
+    /// calls through @p scheduledTasks (#3424): none (null) lists no scheduled tasks. @p now times their cadence.
+    explicit WindowsStartupProbe(
+        const Windows::StartupProbeFunctions& functions,
+        Windows::ScheduledTaskApiFactory scheduledTasks = nullptr,
+        NowFunction now = [] { return Clock::now(); });
     ~WindowsStartupProbe() override;
 
     WindowsStartupProbe(const WindowsStartupProbe&) = delete;

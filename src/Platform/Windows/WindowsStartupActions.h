@@ -18,6 +18,7 @@
 
 #include "Platform/IStartupActions.h"
 #include "Platform/IStartupProbe.h"
+#include "WindowsScheduledTasks.h"
 
 namespace Platform
 {
@@ -54,13 +55,19 @@ struct StartupRegistryFunctions
 /// A packaged app's startup task (#1873) is changed as Settings > Apps > Startup changes it: its State
 /// under StartupMath::PACKAGED_TASKS_KEY\<family>\<TaskId> becomes Enabled (2), or DisabledByUser (1)
 /// with LastDisabledTime set to now (Unix seconds); nothing else is written. The key is opened, never
-/// created, and a task whose State a policy sets (3 or 4) is refused. Stateless beyond its fixed
-/// function table, so safe from any thread.
+/// created, and a task whose State a policy sets (3 or 4) is refused.
+///
+/// A scheduled task (#3424) is switched through the Task Scheduler API, IRegisteredTask::put_Enabled, inside a
+/// ComScope of the call's own: never deleted, and one of Windows' own (under \Microsoft\) refused
+/// (Windows::setStartupTaskEnabled). Stateless beyond its fixed function tables, so safe from any thread.
 class WindowsStartupActions final : public IStartupActions
 {
   public:
     /// @param elevated Whether TaskSmack runs elevated, for capabilities().elevated.
-    explicit WindowsStartupActions(bool elevated, Windows::StartupRegistryFunctions api = {});
+    /// @param scheduledTasks Makes the Task Scheduler API a scheduled task's switch uses (tests: a fake).
+    explicit WindowsStartupActions(bool elevated,
+                                   Windows::StartupRegistryFunctions api = {},
+                                   Windows::ScheduledTaskApiFactory scheduledTasks = &Windows::makeTaskSchedulerApi);
 
     [[nodiscard]] StartupActionCapabilities capabilities() const override;
     [[nodiscard]] StartupActionResult setEnabled(const StartupEntry& entry, bool enabled) override;
@@ -68,6 +75,7 @@ class WindowsStartupActions final : public IStartupActions
   private:
     bool m_Elevated;
     Windows::StartupRegistryFunctions m_Api;
+    Windows::ScheduledTaskApiFactory m_ScheduledTasks;
 };
 
 } // namespace Platform

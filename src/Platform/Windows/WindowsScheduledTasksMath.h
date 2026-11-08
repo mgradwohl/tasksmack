@@ -1,0 +1,158 @@
+#pragma once
+
+// Pure helpers behind the Startup tab's scheduled tasks (#3424): which triggers count as starting at sign-in
+// or boot, whose task is the current user's, which are Windows' own, the command a task's exec action runs,
+// and the words a Task Scheduler error is shown in. No Windows header, so the tests build on every platform
+// (tests/Platform/WindowsMath/); WindowsScheduledTasks.cpp checks the constants against taskschd.h.
+
+#include "Platform/AsciiCase.h"
+#include "Platform/IStartupProbe.h"
+
+#include <algorithm>
+#include <cstdint>
+#include <format>
+#include <span>
+#include <string>
+#include <string_view>
+#include <vector>
+
+namespace Platform::Windows::ScheduledTaskMath
+{
+
+/// TASK_TRIGGER_TYPE2's TASK_TRIGGER_BOOT: when the machine starts.
+inline constexpr int TRIGGER_BOOT = 8;
+/// TASK_TRIGGER_TYPE2's TASK_TRIGGER_LOGON: when a user (or a given user) signs in.
+inline constexpr int TRIGGER_LOGON = 9;
+
+/// HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED), E_ACCESSDENIED.
+inline constexpr std::uint32_t HRESULT_ACCESS_DENIED = 0x80070005U;
+/// HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND): no task at that path.
+inline constexpr std::uint32_t HRESULT_FILE_NOT_FOUND = 0x80070002U;
+/// HRESULT_FROM_WIN32(ERROR_PATH_NOT_FOUND): no folder at that path.
+inline constexpr std::uint32_t HRESULT_PATH_NOT_FOUND = 0x80070003U;
+
+/// Why one of Windows' own tasks can't be switched here: read-only, as the issue and Autoruns' default have it.
+inline constexpr std::string_view MICROSOFT_TASK_REASON =
+    "One of Windows' own scheduled tasks: TaskSmack leaves it as Windows set it (an administrator can change it in Task Scheduler)";
+
+/// How deep the walk from the root folder goes: Task Scheduler's own folders are a few levels deep, so this
+/// only stops a runaway walk.
+inline constexpr int MAX_FOLDER_DEPTH = 16;
+
+/// One of a task's triggers.
+struct TaskTrigger
+{
+    int type = 0;        ///< TASK_TRIGGER_TYPE2.
+    bool enabled = true; ///< ITrigger::get_Enabled: a disabled trigger never fires.
+};
+
+/// One registered task, as WindowsScheduledTasks reads it through the Task Scheduler API. Strings are UTF-8.
+struct TaskRecord
+{
+    std::string path; ///< Its full path, "\Vendor\Updater" (IRegisteredTask::get_Path).
+    bool enabled = true;
+    std::vector<TaskTrigger> triggers;
+    std::string execPath;      ///< The first exec action's Path, as written (environment variables, maybe quoted); empty when none.
+    std::string execArguments; ///< That action's Arguments.
+    /// RegistrationInfo's Author: a name, or an indirect string ("$(@%SystemRoot%\system32\x.dll,-600)").
+    std::string author;
+    /// The Principal's UserId: "DOMAIN\user", "user", a SID ("S-1-5-18"), "SYSTEM"; empty for a group's task.
+    std::string userId;
+};
+
+/// Whether a trigger of @p type starts a task at sign-in or boot.
+[[nodiscard]] constexpr bool isStartupTrigger(int type) noexcept
+{
+    return type == TRIGGER_LOGON || type == TRIGGER_BOOT;
+}
+
+/// Whether any of @p triggers that is enabled starts the task at sign-in or boot: the tasks the Startup tab lists.
+[[nodiscard]] constexpr bool startsAtSignInOrBoot(std::span<const TaskTrigger> triggers) noexcept
+{
+    return std::ranges::any_of(triggers, [](const TaskTrigger& trigger) { return trigger.enabled && isStartupTrigger(trigger.type); });
+}
+
+/// Whether the task at @p path is one of Windows' own: under \Microsoft\, whatever the case.
+[[nodiscard]] constexpr bool isMicrosoftTask(std::string_view path) noexcept
+{
+    constexpr std::string_view PREFIX = "\\Microsoft\\";
+    return path.size() > PREFIX.size() && Platform::equalsIgnoreCase(path.substr(0, PREFIX.size()), PREFIX);
+}
+
+/// Whether a task whose principal is @p userId runs as the current user, known by @p currentUser ("DOMAIN\user",
+/// "user" and the SID string; ASCII case-insensitive). A task with no UserId (a group's) runs for whoever signs
+/// in, so it isn't the current user's own.
+[[nodiscard]] constexpr bool runsAsUser(std::string_view userId, std::span<const std::string> currentUser) noexcept
+{
+    if (userId.empty())
+    {
+        return false;
+    }
+    return std::ranges::any_of(currentUser,
+                               [userId](const std::string& name) { return !name.empty() && Platform::equalsIgnoreCase(userId, name); });
+}
+
+/// The command line an exec action runs: @p path, quoted when it holds a space and isn't quoted already, then
+/// @p arguments. Empty when there is no path (a COM handler task).
+[[nodiscard]] inline std::string taskCommand(std::string_view path, std::string_view arguments)
+{
+    if (path.empty())
+    {
+        return {};
+    }
+    std::string command = (path.contains(' ') && !path.starts_with('"')) ? std::format("\"{}\"", path) : std::string(path);
+    if (!arguments.empty())
+    {
+        command += ' ';
+        command += arguments;
+    }
+    return command;
+}
+
+/// The SHLoadIndirectString source an indirect Author names: "$(@%SystemRoot%\x.dll,-600)" gives
+/// "@%SystemRoot%\x.dll,-600". Empty when @p author is plain text.
+[[nodiscard]] inline std::string indirectSource(std::string_view author)
+{
+    if (author.size() > 4 && author.starts_with("$(@") && author.ends_with(')'))
+    {
+        return std::string(author.substr(2, author.size() - 3));
+    }
+    return {};
+}
+
+/// A failed Task Scheduler call's HRESULT, in words the result line shows as they stand.
+[[nodiscard]] inline std::string taskErrorText(std::uint32_t hresult)
+{
+    if (hresult == HRESULT_ACCESS_DENIED)
+    {
+        return "Requires administrator";
+    }
+    if (hresult == HRESULT_FILE_NOT_FOUND || hresult == HRESULT_PATH_NOT_FOUND)
+    {
+        return "The scheduled task is no longer registered";
+    }
+    return std::format("Task Scheduler error 0x{:08X}", hresult);
+}
+
+/// The Startup tab's entry for @p task (one that startsAtSignInOrBoot): registered under its path and shown by its
+/// own name (StartupMath::startupEntryName), its exec action's command, the current user's (@p currentUser) or the
+/// machine's, and Windows' own tasks marked osComponent and read-only. The program and publisher are the probe's
+/// to fill from the command; the Author stands in for a publisher the program doesn't name.
+[[nodiscard]] inline StartupEntry taskEntry(const TaskRecord& task, std::span<const std::string> currentUser)
+{
+    StartupEntry entry;
+    entry.registrationName = task.path;
+    entry.command = taskCommand(task.execPath, task.execArguments);
+    const bool own = runsAsUser(task.userId, currentUser);
+    entry.location = own ? StartupLocation::ScheduledTaskUser : StartupLocation::ScheduledTaskMachine;
+    entry.scope = own ? StartupScope::User : StartupScope::Machine;
+    entry.enabled = task.enabled;
+    entry.osComponent = isMicrosoftTask(task.path);
+    if (entry.osComponent)
+    {
+        entry.notSwitchableReason = std::string(MICROSOFT_TASK_REASON);
+    }
+    return entry;
+}
+
+} // namespace Platform::Windows::ScheduledTaskMath

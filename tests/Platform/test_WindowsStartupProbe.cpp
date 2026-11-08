@@ -68,7 +68,19 @@ TEST(WindowsStartupProbeTest, EnumeratesWithoutFailing)
         EXPECT_FALSE(entry.registrationName.empty()) << entry.name; // #1873: every entry is registered under a name
         EXPECT_EQ(entry.packageFamily.empty(), entry.location != StartupLocation::PackagedApp) << entry.name;
         EXPECT_EQ(entry.scope, Windows::StartupMath::scopeOf(entry.location)) << entry.name;
-        EXPECT_LE(entry.location, StartupLocation::PackagedApp) << entry.name;
+        // A Windows location: the registry, the Startup folders, a packaged app or a scheduled task (#3424).
+        EXPECT_TRUE(entry.location <= StartupLocation::PackagedApp || entry.location == StartupLocation::ScheduledTaskUser ||
+                    entry.location == StartupLocation::ScheduledTaskMachine)
+            << entry.name;
+        if (entry.location == StartupLocation::ScheduledTaskUser || entry.location == StartupLocation::ScheduledTaskMachine)
+        {
+            EXPECT_TRUE(entry.registrationName.starts_with('\\')) << entry.registrationName; // the task's full path
+            EXPECT_EQ(entry.osComponent, entry.registrationName.starts_with("\\Microsoft\\")) << entry.registrationName;
+        }
+        else
+        {
+            EXPECT_FALSE(entry.osComponent) << entry.name;
+        }
         if (entry.enabled)
         {
             EXPECT_EQ(entry.disabledAtUnixSeconds, 0U) << entry.name;
