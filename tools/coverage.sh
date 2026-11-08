@@ -168,15 +168,18 @@ if [[ "${TASKSMACK_COVERAGE_ROOT:-0}" == 1 ]]; then
         --gtest_filter="${ROOT_TEST_FILTER}" >"$root_log" 2>&1 || root_status=$?
     # The CI real-system tests among them (#3491) skip here, with ciRealSystemSkipReason()'s message
     # (tests/Support/CiRealSystem.h): they need TASKSMACK_CI_REAL_SYSTEM on a disposable runner, which CI's PR root
-    # step has and this job doesn't. Those skips are expected (#3557), so a new such test needs no exclusion here
-    # (#3524 excluded two by name). Any other skip is not, and every listed test must pass or skip that way.
+    # step has, and this job only when TASKSMACK_COVERAGE_REAL_SYSTEM asks for it. Without it those skips are expected
+    # (#3557), so a new such test needs no exclusion here (#3524 excluded two by name). With it they aren't: a guard
+    # that still skips (a runner variable missing) would publish coverage without the paths it was asked to count.
+    # Any other skip never is, and every listed test must pass or skip as expected.
     read -r root_guarded root_unexpected < <(awk '
         /^\[ RUN      \] / { test = $4; guarded = 0; next }
         /^a CI real-system test: / { guarded = 1 }
         /^\[  SKIPPED \] / && test != "" && $4 == test { if (guarded) g++; else u++; test = "" }
         END { print g + 0, u + 0 }' "$root_log")
     root_passed="$(sed -n 's/^\[  PASSED  \] \([0-9][0-9]*\) tests*\..*/\1/p' "$root_log" | tail -n 1)"
-    if [[ $root_status -ne 0 || $root_unexpected -ne 0 || -z "$root_passed" || $root_passed -eq 0 ||
+    if [[ $root_status -ne 0 || $root_unexpected -ne 0 || ($ROOT_REAL_SYSTEM -eq 1 && $root_guarded -ne 0) ||
+        -z "$root_passed" || $root_passed -eq 0 ||
         $((root_passed + root_guarded)) -ne $root_listed ]]; then
         echo "Warning: the root tests (TasksmackHelperRootTest, DetachedSpawnTest.AsRoot*) didn't run and pass as root" \
             "(exit code ${root_status}; ${root_listed} listed, ${root_passed:-0} passed, ${root_guarded} CI real-system skips," \
