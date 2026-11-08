@@ -33,6 +33,11 @@ Options:
 Environment:
   TASKSMACK_COVERAGE_ROOT=1  Also run TasksmackHelperRootTest as root with sudo -n, so the helper's
                              privilege drop is counted (CI's coverage job sets it; needs passwordless sudo)
+  TASKSMACK_COVERAGE_REAL_SYSTEM=1
+                             And let that root pass run the CI real-system tests among them (the helper's
+                             real units and sockets, the eBPF UDP counter, #3374): it passes
+                             TASKSMACK_CI_REAL_SYSTEM=1 to them, which their guard honours only on a
+                             disposable GitHub-hosted runner. CI's coverage job only; never set it locally
 EOF
     exit "$exit_code"
 }
@@ -146,14 +151,20 @@ done
 # failed suite, and so does any test the filter selects that neither passed nor skipped that way.
 if [[ "${TASKSMACK_COVERAGE_ROOT:-0}" == 1 ]]; then
     ROOT_PROFILE_DIR="${BUILD_DIR}/coverage-root"
-    ROOT_TEST_FILTER='TasksmackHelperRootTest.*:DetachedSpawnTest.AsRoot*'
+    ROOT_TEST_FILTER='TasksmackHelperRootTest.*:DetachedSpawnTest.AsRoot*:*/UdpByteCounterRootTest.*'
+    # The CI real-system tests' guard (tests/Support/CiRealSystem.h) reads these three; sudo drops them, so they're
+    # passed by name. TASKSMACK_CI_REAL_SYSTEM is 1 only when CI's coverage job asks for it (#3374), so anywhere else
+    # those tests skip as guarded, which the counts below accept.
+    ROOT_REAL_SYSTEM=0
+    [[ "${TASKSMACK_COVERAGE_REAL_SYSTEM:-0}" == 1 ]] && ROOT_REAL_SYSTEM=1
     # Every test the filter selects ("  TestName" lines under each "Suite." line), counted before the run.
     root_listed="$(./tests/TaskSmackTests --gtest_filter="${ROOT_TEST_FILTER}" --gtest_list_tests | grep -c '^  ' || true)"
     mkdir -p "$ROOT_PROFILE_DIR" && chmod 1777 "$ROOT_PROFILE_DIR"
     root_log="$(mktemp "${TMPDIR:-/tmp}/tasksmack-coverage-root.XXXXXX")"
     root_status=0
     # shellcheck disable=SC2024 # the log is meant to be the invoking user's file, not root's
-    sudo -n env LLVM_PROFILE_FILE="${ROOT_PROFILE_DIR}/coverage-%c%p.profraw" ./tests/TaskSmackTests \
+    sudo -n env LLVM_PROFILE_FILE="${ROOT_PROFILE_DIR}/coverage-%c%p.profraw" TASKSMACK_CI_REAL_SYSTEM="${ROOT_REAL_SYSTEM}" \
+        GITHUB_ACTIONS="${GITHUB_ACTIONS:-}" RUNNER_ENVIRONMENT="${RUNNER_ENVIRONMENT:-}" ./tests/TaskSmackTests \
         --gtest_filter="${ROOT_TEST_FILTER}" >"$root_log" 2>&1 || root_status=$?
     # The CI real-system tests among them (#3491) skip here, with ciRealSystemSkipReason()'s message
     # (tests/Support/CiRealSystem.h): they need TASKSMACK_CI_REAL_SYSTEM on a disposable runner, which CI's PR root

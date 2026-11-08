@@ -134,6 +134,9 @@ jobs:
           # And the helper's privilege drop runs as root under the runner's sudo, counted through
           # continuous mode (#3058, #3108).
           TASKSMACK_COVERAGE_ROOT: '1'
+          # And that root pass runs the CI real-system tests among them (#3374, maintainer 2026-11-08): this is a
+          # disposable GitHub-hosted runner, as their guard requires.
+          TASKSMACK_COVERAGE_REAL_SYSTEM: '1'
         run: |
           set -o pipefail
           xvfb-run -s "-screen 0 1920x1080x24 -noreset" ./tools/coverage.sh -v 2>&1 | tee coverage-output.txt
