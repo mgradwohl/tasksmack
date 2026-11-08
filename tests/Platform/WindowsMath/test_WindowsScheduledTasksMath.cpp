@@ -110,6 +110,42 @@ TEST(ScheduledTaskMathTest, ATasksProgramIsFoundWhereTaskSchedulerFindsIt)
     EXPECT_EQ(taskProgramPath("", R"(C:\Vendor)", SYSTEM, exists), "");
 }
 
+TEST(ScheduledTaskMathTest, ADriveRootedProgramIsOnTheWorkingDirectorysDrive)
+{
+    const auto exists = [](const std::string& path)
+    {
+        return path == R"(D:\Windows\System32\cmd.exe)";
+    };
+    constexpr std::string_view SYSTEM = R"(C:\Windows\System32)";
+
+    // Rooted on the working directory's drive, not joined inside that directory (#3569).
+    EXPECT_EQ(taskProgramPath(R"(\Windows\System32\cmd.exe)", R"(D:\Vendor)", SYSTEM, exists), R"(D:\Windows\System32\cmd.exe)");
+    EXPECT_EQ(taskProgramPath(R"("\Tools\gone.exe")", R"(c:\Vendor\)", SYSTEM, exists), R"(c:\Tools\gone.exe)")
+        << "that file there, found or not";
+    EXPECT_EQ(taskProgramPath("/Tools/run", "E:", SYSTEM, exists), "E:/Tools/run");
+    // A drive TaskSmack can't tell: no working directory, an unknown one, or one that isn't on a drive.
+    EXPECT_EQ(taskProgramPath(R"(\Windows\System32\cmd.exe)", "", SYSTEM, exists), "");
+    EXPECT_EQ(taskProgramPath(R"(\Windows\System32\cmd.exe)", std::nullopt, SYSTEM, exists), "");
+    EXPECT_EQ(taskProgramPath(R"(\Tools\a.exe)", R"(\\server\share\Vendor)", SYSTEM, exists), "");
+    EXPECT_EQ(taskProgramPath(R"(\Tools\a.exe)", "Vendor", SYSTEM, exists), "");
+}
+
+TEST(ScheduledTaskMathTest, AnUnknownWorkingDirectoryIsNotTakenForNone)
+{
+    const auto exists = [](const std::string& path)
+    {
+        return path == R"(C:\Windows\System32\cmd.exe)";
+    };
+    constexpr std::string_view SYSTEM = R"(C:\Windows\System32)";
+
+    // Another account's %USERPROFILE%\Tools might hold its own cmd.exe: System32's isn't taken for it (#3569).
+    EXPECT_EQ(taskProgramPath("cmd", std::nullopt, SYSTEM, exists), "");
+    EXPECT_EQ(taskProgramPath(R"(bin\run.exe)", std::nullopt, SYSTEM, exists), "");
+    EXPECT_EQ(taskProgramPath(R"(C:\Windows\System32\cmd.exe)", std::nullopt, SYSTEM, exists), R"(C:\Windows\System32\cmd.exe)")
+        << "an absolute path needs no working directory";
+    EXPECT_EQ(taskProgramPath("cmd", "", SYSTEM, exists), R"(C:\Windows\System32\cmd.exe)") << "none set: System32";
+}
+
 TEST(ScheduledTaskMathTest, AccountVariablesAreToldFromMachineWideOnes)
 {
     EXPECT_TRUE(usesAccountVariables(R"(%USERPROFILE%\Tools\a.exe)"));

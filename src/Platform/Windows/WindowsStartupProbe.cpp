@@ -1077,7 +1077,7 @@ struct WindowsStartupProbe::Impl
     /// System32 only; never in TaskSmack's own working directory or PATH. Empty, unresolved, when it can't be told.
     /// Another account's %USERPROFILE% or %APPDATA% isn't TaskSmack's: expanded here it would name this user's file,
     /// so a task at @p location ScheduledTaskMachine whose Path names one is unresolved, and its working directory
-    /// counts as unknown when that names one.
+    /// counts as unknown when that names one: then only an absolute Path is resolved, with no System32 fallback.
     [[nodiscard]] static std::string taskProgram(const Windows::ScheduledTaskMath::TaskRecord& task, StartupLocation location)
     {
         namespace TaskMath = Windows::ScheduledTaskMath;
@@ -1086,16 +1086,17 @@ struct WindowsStartupProbe::Impl
         {
             return {};
         }
-        const std::string workingDirectory = (otherAccount && TaskMath::usesAccountVariables(task.workingDirectory))
-                                               ? std::string()
-                                               : Windows::expandEnvironmentStrings(task.workingDirectory);
+        // Unknown (nullopt), not unset: an unknown folder might hold its own copy of a bare name (#3569).
+        const std::optional<std::string> workingDirectory = (otherAccount && TaskMath::usesAccountVariables(task.workingDirectory))
+                                                              ? std::nullopt
+                                                              : std::optional(Windows::expandEnvironmentStrings(task.workingDirectory));
         std::array<wchar_t, MAX_PATH> system{};
         const UINT systemChars = GetSystemDirectoryW(system.data(), static_cast<UINT>(system.size()));
         const std::string systemDirectory = (systemChars > 0 && systemChars < system.size())
                                               ? WinString::wideToUtf8(std::wstring_view(system.data(), systemChars))
                                               : std::string();
         return TaskMath::taskProgramPath(Windows::expandEnvironmentStrings(task.execPath),
-                                         workingDirectory,
+                                         workingDirectory ? std::optional<std::string_view>(*workingDirectory) : std::nullopt,
                                          systemDirectory,
                                          [](const std::string& path)
                                          {
