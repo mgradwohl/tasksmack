@@ -160,21 +160,22 @@ inline constexpr std::array<ProcessColumn, 1> COLUMNS_INSERTED_SINCE_IDS_FROZE =
 /// (COLUMNS_INSERTED_SINCE_IDS_FROZE) takes the next unused one. So a column added mid-order never inherits the saved
 /// width, order or sort of the column after it, as it would if the ID were the position (#3551). Unique, and every ID
 /// is below processColumnCount().
-[[nodiscard]] constexpr auto persistentColumnId(ProcessColumn col) -> std::uint32_t
+[[nodiscard]] constexpr auto persistentColumnId(ProcessColumn col) noexcept -> std::uint32_t
 {
     constexpr std::size_t FROZEN_COUNT = static_cast<std::size_t>(ProcessColumn::Count) - COLUMNS_INSERTED_SINCE_IDS_FROZE.size();
     std::size_t insertedBefore = 0;
-    for (std::size_t i = 0; i < COLUMNS_INSERTED_SINCE_IDS_FROZE.size(); ++i)
+    std::size_t shipped = 0; // Where each inserted column comes in COLUMNS_INSERTED_SINCE_IDS_FROZE
+    for (const ProcessColumn inserted : COLUMNS_INSERTED_SINCE_IDS_FROZE)
     {
-        const ProcessColumn inserted = COLUMNS_INSERTED_SINCE_IDS_FROZE.at(i);
         if (inserted == col)
         {
-            return static_cast<std::uint32_t>(FROZEN_COUNT + i);
+            return static_cast<std::uint32_t>(FROZEN_COUNT + shipped);
         }
         if (toIndex(inserted) < toIndex(col))
         {
             ++insertedBefore;
         }
+        ++shipped;
     }
     return static_cast<std::uint32_t>(toIndex(col) - insertedBefore);
 }
