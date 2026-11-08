@@ -2414,9 +2414,11 @@ class FakeUdpCollector final : public Platform::IUdpTrafficCollector
     }
     [[nodiscard]] std::vector<Platform::UdpProcessTraffic> sample() override
     {
+        ++samples;
         return delivering ? traffic : std::vector<Platform::UdpProcessTraffic>{};
     }
 
+    int samples = 0;
     bool delivering = false;
     std::vector<Platform::UdpProcessTraffic> traffic;
 };
@@ -2478,6 +2480,42 @@ TEST(LinuxProcessProbeTest, TheUdpCollectorsTotalsJoinACompleteReadingAsOneConne
     const auto failed = probe.readSocketTraffic();
     EXPECT_EQ(failed.sampleTimeNs, 0U);
     EXPECT_TRUE(failed.sockets.empty()) << "a failed reading carries no UDP either: it isn't a reading at all";
+}
+
+// #3366: a cached socket reading (the same time) comes back with the UDP rows it had, not a new UDP sample: Domain
+// skips a reading it has seen, so a sample taken for it (a run's seeding one, say) would never be folded in.
+TEST(LinuxProcessProbeTest, ACachedReadingGetsTheSameUdpRowsAndOnlyANewOneSamplesAgain)
+{
+    ScopedTempDir proc("ts_test_proc_net_udp_cache");
+    writeFile(proc.path / "stat", "cpu  100 0 100 800 0 0 0 0 0 0\n");
+    using Platform::TestSupport::FakeSocket;
+    using Platform::TestSupport::ScriptedNetlinkTransport;
+    auto transport = std::make_unique<ScriptedNetlinkTransport>();
+    auto* script = transport.get();
+    // A long cache, as socket_stats_cache_ttl_ms makes it: the next reading is the same one.
+    auto stats = std::make_shared<Platform::NetlinkSocketStats>(std::move(transport), std::chrono::hours{1});
+    script->onRequest = [](const ScriptedNetlinkTransport::Request& request) -> ScriptedNetlinkTransport::Reply
+    {
+        return Platform::TestSupport::completeDump(request, std::vector<FakeSocket>{{.inode = 11, .bytesReceived = 1, .bytesSent = 2}});
+    };
+
+    LinuxProcessProbe probe(proc.path);
+    probe.setSocketStatsForTesting(stats);
+    auto udp = std::make_shared<FakeUdpCollector>();
+    udp->delivering = true;
+    udp->traffic = {{.pid = 9, .bytesSent = 50, .bytesReceived = 60, .generation = 3, .readable = false}};
+    probe.setUdpTrafficCollector(udp);
+
+    const auto first = probe.readSocketTraffic();
+    udp->traffic = {{.pid = 9, .bytesSent = 99, .bytesReceived = 99, .generation = 3, .readable = true}};
+    const auto cached = probe.readSocketTraffic();
+    ASSERT_NE(first.sampleTimeNs, 0U);
+    ASSERT_EQ(cached.sampleTimeNs, first.sampleTimeNs);
+    EXPECT_EQ(udp->samples, 1) << "the cached reading took no UDP sample";
+    const auto row = std::ranges::find(cached.sockets, Platform::UdpTraffic::socketKey(9, 3), &Platform::SocketTrafficSample::key);
+    ASSERT_NE(row, cached.sockets.end());
+    EXPECT_EQ(row->bytesSent, 50U) << "the rows the reading had";
+    EXPECT_FALSE(row->readable) << "a seeding row stays one, for the one reading Domain folds";
 }
 
 TEST(LinuxProcessProbeTest, ANewSocketIsAttributedInTheReadingItFirstAppearsIn)

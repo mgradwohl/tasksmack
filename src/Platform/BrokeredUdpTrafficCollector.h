@@ -13,8 +13,6 @@
 #include <memory>
 #include <mutex>
 #include <string>
-#include <unordered_map>
-#include <utility>
 #include <vector>
 
 namespace Platform
@@ -35,9 +33,11 @@ class BrokeredUdpTrafficCollector final : public IUdpTrafficCollector
     void stop() override;
     /// Whether the last reading came from a helper that counts.
     [[nodiscard]] bool isDelivering() const override;
-    /// Every process's UDP bytes since this run's first counting reading (its baseline: a helper that kept counting
-    /// while this was stopped doesn't have those bytes counted again), or the last ones when the helper was busy.
-    /// Empty when stopped, or when the helper isn't counting or has ended (the reason is in problem()).
+    /// Every process's cumulative UDP bytes, as the helper counts them, for Domain to compare reading by reading. The
+    /// first reading of a run, or after a failed one, is sent unreadable, so it only sets the baseline (a helper that
+    /// kept counting meanwhile has older bytes in it); a busy helper's reading is the last one again, unreadable; a
+    /// new helper's counters are another generation. Empty when stopped, or when the helper isn't counting or has
+    /// ended (the reason is in problem()).
     [[nodiscard]] std::vector<UdpProcessTraffic> sample() override;
 
     /// Why it isn't counting, as start() or the helper last said; empty while it counts or before start().
@@ -49,11 +49,12 @@ class BrokeredUdpTrafficCollector final : public IUdpTrafficCollector
     std::shared_ptr<IPrivilegedBroker> m_Broker;
     std::atomic<bool> m_Running{false};
     std::atomic<bool> m_Delivering{false};
-    mutable std::mutex m_Mutex;  // guards the members below, and m_Running's changes
-    std::uint64_t m_Run = 0;     // one more each start() and stop(): a read of another run publishes nothing
-    bool m_NeedBaseline = false; // the run's first counting reading sets m_Baseline
-    std::unordered_map<std::uint32_t, std::pair<std::uint64_t, std::uint64_t>> m_Baseline; // tgid -> (sent, received)
-    std::vector<UdpProcessTraffic> m_Last; // the last totals past the baseline, for a reading the helper was too busy for
+    mutable std::mutex m_Mutex;            // guards the members below, and m_Running's changes
+    std::uint64_t m_Run = 0;               // one more each start() and stop(): a read of another run publishes nothing
+    std::uint32_t m_Generation = 0;        // the counters' generation (UdpProcessTraffic::generation)
+    std::uint64_t m_Session = 0;           // the broker's sessionsStarted() when last read: a change is another helper
+    bool m_Seeding = false;                // the next counting reading only seeds Domain's baseline (sent unreadable)
+    std::vector<UdpProcessTraffic> m_Last; // the last totals, for a reading the helper was too busy to answer
     std::string m_Problem;
 };
 

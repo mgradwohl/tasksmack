@@ -1,12 +1,16 @@
-// Linux's UDP collector through the privileged helper (#3366): it counts only within an Administrator session,
-// reads the helper's totals once per sample past each run's baseline, and keeps the last ones when the helper is
-// busy. Shared code (the broker interface and the protocol), so it builds and runs on Windows too.
+// Linux's UDP collector through the privileged helper (#3366): it counts only within an Administrator session and
+// passes the helper's cumulative totals to Domain's SocketTrafficAccumulator, marking which reading is only a baseline
+// (a run's first, a busy helper's repeat) and which counter is another (a new run or helper). Shared code (the broker
+// interface, the protocol and Domain), so it builds and runs on Windows too.
 
+#include "Domain/SocketTrafficAccumulator.h"
 #include "Mocks/FakeBroker.h"
 #include "Platform/BrokerProtocol.h"
 #include "Platform/BrokeredUdpTrafficCollector.h"
 #include "Platform/IUdpTrafficCollector.h"
+#include "Platform/ProcessTypes.h"
 #include "Platform/UdpByteCounts.h"
+#include "Platform/UdpTrafficSamples.h"
 
 #include <gtest/gtest.h>
 
@@ -32,7 +36,7 @@ using Mocks::FakeBroker;
     return broker;
 }
 
-/// Answers each ReadUdpBytes with one process's growing totals: sent @p sent, received @p received.
+/// Answers each ReadUdpBytes with @p processes' totals.
 void answerWith(FakeBroker& broker, std::vector<UdpByteCounts> processes)
 {
     broker.setAnswer(
@@ -46,16 +50,15 @@ void answerStatus(FakeBroker& broker, Broker::UdpBytesStatus status, std::string
                      { return Broker::Response{Broker::UdpBytesReply{.status = status, .detail = detail, .processes = {}}}; });
 }
 
-[[nodiscard]] const UdpProcessTraffic* find(const std::vector<UdpProcessTraffic>& traffic, std::uint32_t pid)
+void answerBusy(FakeBroker& broker)
 {
-    for (const UdpProcessTraffic& process : traffic)
-    {
-        if (process.pid == pid)
-        {
-            return &process;
-        }
-    }
-    return nullptr;
+    broker.setAnswer([](const Broker::Request&) -> std::expected<Broker::Response, std::string> { return std::unexpected("busy"); });
+}
+
+[[nodiscard]] UdpProcessTraffic only(const std::vector<UdpProcessTraffic>& traffic)
+{
+    EXPECT_EQ(traffic.size(), 1U);
+    return traffic.empty() ? UdpProcessTraffic{} : traffic.front();
 }
 
 TEST(BrokeredUdpTrafficCollectorTest, WithoutAnAdministratorSessionItPromptsForNothingAndCountsOnceOneStarts)
@@ -70,16 +73,18 @@ TEST(BrokeredUdpTrafficCollectorTest, WithoutAnAdministratorSessionItPromptsForN
     EXPECT_FALSE(collector.isDelivering());
     EXPECT_EQ(collector.problem(), "Needs an Administrator session") << "no helper ever ran, so none ended";
 
-    // The user chooses Administrator: the session's helper counts, and readings deliver from its first one.
+    // The user chooses Administrator: the session's helper is a new one, counting from zero, so its totals are new.
     broker->setHoldsSessions(true);
     ASSERT_TRUE(broker->holdForSession(std::stop_token{}).has_value());
     answerWith(*broker, {{.tgid = 3, .txBytes = 4, .rxBytes = 5}});
-    ASSERT_EQ(collector.sample().size(), 1U);
+    const UdpProcessTraffic first = only(collector.sample());
+    EXPECT_TRUE(first.readable);
+    EXPECT_EQ(first.bytesSent, 4U);
     EXPECT_TRUE(collector.isDelivering());
     EXPECT_TRUE(collector.problem().empty());
 }
 
-TEST(BrokeredUdpTrafficCollectorTest, InAHeldSessionItReadsWhatTheHelperCountsAfterTheRunsFirstReading)
+TEST(BrokeredUdpTrafficCollectorTest, ItPassesTheHelpersTotalsOnAndTheRunsFirstReadingOnlySeedsTheBaseline)
 {
     auto broker = heldBroker();
     BrokeredUdpTrafficCollector collector(broker);
@@ -88,100 +93,47 @@ TEST(BrokeredUdpTrafficCollectorTest, InAHeldSessionItReadsWhatTheHelperCountsAf
     EXPECT_EQ(collector.start(), UdpCollectorStartResult::Started) << "already running";
 
     answerWith(*broker, {{.tgid = 7, .txBytes = 100, .rxBytes = 50}});
-    const std::vector<UdpProcessTraffic> baseline = collector.sample();
-    ASSERT_EQ(baseline.size(), 1U);
-    EXPECT_EQ(baseline[0].bytesSent, 0U) << "the run's first totals are its baseline";
+    const UdpProcessTraffic seed = only(collector.sample());
+    EXPECT_FALSE(seed.readable) << "the helper may have counted these before this run";
+    EXPECT_EQ(seed.bytesSent, 100U) << "the helper's own totals";
     EXPECT_TRUE(collector.isDelivering());
 
-    answerWith(*broker, {{.tgid = 7, .txBytes = 160, .rxBytes = 80}, {.tgid = 9, .txBytes = 1, .rxBytes = 2}});
-    const std::vector<UdpProcessTraffic> traffic = collector.sample();
-    ASSERT_EQ(traffic.size(), 2U);
-    ASSERT_NE(find(traffic, 7), nullptr);
-    EXPECT_EQ(find(traffic, 7)->bytesSent, 60U);
-    EXPECT_EQ(find(traffic, 7)->bytesReceived, 30U);
-    ASSERT_NE(find(traffic, 9), nullptr);
-    EXPECT_EQ(find(traffic, 9)->bytesSent, 1U) << "a process first seen after the baseline counts in full";
+    answerWith(*broker, {{.tgid = 7, .txBytes = 160, .rxBytes = 80}});
+    const UdpProcessTraffic next = only(collector.sample());
+    EXPECT_TRUE(next.readable);
+    EXPECT_EQ(next.bytesSent, 160U);
+    EXPECT_EQ(next.bytesReceived, 80U);
+    EXPECT_EQ(next.generation, seed.generation);
     EXPECT_EQ(broker->idleCallCount(), 2) << "the sampler's read never waits on another call";
 }
 
-// Turned off and on again with the same helper still counting: what it counted meanwhile, and before, isn't counted
-// again as new connections.
-TEST(BrokeredUdpTrafficCollectorTest, EnableDisableEnableCountsOnlyWhatComesAfterEachStart)
-{
-    auto broker = heldBroker();
-    BrokeredUdpTrafficCollector collector(broker);
-    ASSERT_EQ(collector.start(), UdpCollectorStartResult::Started);
-    answerWith(*broker, {{.tgid = 7, .txBytes = 100, .rxBytes = 100}});
-    (void) collector.sample();
-    answerWith(*broker, {{.tgid = 7, .txBytes = 150, .rxBytes = 100}});
-    ASSERT_EQ(find(collector.sample(), 7)->bytesSent, 50U);
-
-    collector.stop();
-    EXPECT_TRUE(collector.sample().empty());
-    ASSERT_EQ(collector.start(), UdpCollectorStartResult::Started);
-    answerWith(*broker, {{.tgid = 7, .txBytes = 900, .rxBytes = 700}}); // what the helper counted while it was off
-    EXPECT_EQ(find(collector.sample(), 7)->bytesSent, 0U);
-    answerWith(*broker, {{.tgid = 7, .txBytes = 910, .rxBytes = 700}});
-    EXPECT_EQ(find(collector.sample(), 7)->bytesSent, 10U);
-}
-
-TEST(BrokeredUdpTrafficCollectorTest, ANewHelpersCounterBelowTheBaselineIsTakenFromZero)
-{
-    auto broker = heldBroker();
-    BrokeredUdpTrafficCollector collector(broker);
-    ASSERT_EQ(collector.start(), UdpCollectorStartResult::Started);
-    answerWith(*broker, {{.tgid = 7, .txBytes = 1000, .rxBytes = 1000}});
-    (void) collector.sample();
-    answerWith(*broker, {{.tgid = 7, .txBytes = 30, .rxBytes = 20}}); // a new helper, counting from zero
-    const std::vector<UdpProcessTraffic> traffic = collector.sample();
-    const UdpProcessTraffic* process = find(traffic, 7);
-    ASSERT_NE(process, nullptr);
-    EXPECT_EQ(process->bytesSent, 30U);
-    EXPECT_EQ(process->bytesReceived, 20U);
-}
-
-// A helper that ended took its counter with it: its successor's totals are all new, past no old baseline.
-TEST(BrokeredUdpTrafficCollectorTest, AReplacementHelpersTotalsCountInFullAfterTheOldOneEnded)
-{
-    auto broker = heldBroker();
-    BrokeredUdpTrafficCollector collector(broker);
-    ASSERT_EQ(collector.start(), UdpCollectorStartResult::Started);
-    answerWith(*broker, {{.tgid = 7, .txBytes = 100, .rxBytes = 100}});
-    (void) collector.sample(); // the baseline
-    answerWith(*broker, {{.tgid = 7, .txBytes = 120, .rxBytes = 100}});
-    ASSERT_EQ(find(collector.sample(), 7)->bytesSent, 20U);
-
-    broker->setConnected(false); // the helper ended
-    EXPECT_TRUE(collector.sample().empty());
-    broker->setConnected(true); // its successor, counting from zero, already past the old baseline
-    answerWith(*broker, {{.tgid = 7, .txBytes = 150, .rxBytes = 90}});
-    const std::vector<UdpProcessTraffic> traffic = collector.sample();
-    ASSERT_NE(find(traffic, 7), nullptr);
-    EXPECT_EQ(find(traffic, 7)->bytesSent, 150U);
-    EXPECT_EQ(find(traffic, 7)->bytesReceived, 90U);
-}
-
-// A failed read empties a reading, so Domain drops the connections; the same helper may have kept counting, so the
-// next counting reading is a baseline rather than the run's whole totals again.
-TEST(BrokeredUdpTrafficCollectorTest, AFailedReadIsFollowedByAFreshBaselineNotARecount)
+TEST(BrokeredUdpTrafficCollectorTest, EachRunAndEachNewHelperIsAnotherGeneration)
 {
     auto broker = heldBroker();
     BrokeredUdpTrafficCollector collector(broker);
     ASSERT_EQ(collector.start(), UdpCollectorStartResult::Started);
     answerWith(*broker, {{.tgid = 7, .txBytes = 100, .rxBytes = 0}});
-    (void) collector.sample();
-    answerWith(*broker, {{.tgid = 7, .txBytes = 200, .rxBytes = 0}});
-    ASSERT_EQ(find(collector.sample(), 7)->bytesSent, 100U);
+    const std::uint32_t firstRun = only(collector.sample()).generation;
 
-    answerStatus(*broker, Broker::UdpBytesStatus::Failed, "the kernel refused reading the UDP byte counter");
+    collector.stop();
     EXPECT_TRUE(collector.sample().empty());
-    answerWith(*broker, {{.tgid = 7, .txBytes = 300, .rxBytes = 0}});
-    EXPECT_EQ(find(collector.sample(), 7)->bytesSent, 0U) << "rebaselined: nothing counted twice";
-    answerWith(*broker, {{.tgid = 7, .txBytes = 310, .rxBytes = 0}});
-    EXPECT_EQ(find(collector.sample(), 7)->bytesSent, 10U);
+    ASSERT_EQ(collector.start(), UdpCollectorStartResult::Started);
+    answerWith(*broker, {{.tgid = 7, .txBytes = 900, .rxBytes = 0}}); // the same helper counted on while this was off
+    const UdpProcessTraffic resumed = only(collector.sample());
+    EXPECT_NE(resumed.generation, firstRun) << "another connection to Domain";
+    EXPECT_FALSE(resumed.readable) << "only a baseline: 900 includes bytes from before";
+
+    // Another reader restarts the helper between two samples: its counter starts from zero, and it's new.
+    broker->setConnected(false);
+    ASSERT_TRUE(broker->connect(std::stop_token{}).has_value());
+    answerWith(*broker, {{.tgid = 7, .txBytes = 150, .rxBytes = 0}});
+    const UdpProcessTraffic replaced = only(collector.sample());
+    EXPECT_NE(replaced.generation, resumed.generation);
+    EXPECT_TRUE(replaced.readable) << "all of a new counter's bytes are new";
+    EXPECT_EQ(replaced.bytesSent, 150U);
 }
 
-TEST(BrokeredUdpTrafficCollectorTest, ABusyHelperLeavesTheLastTotalsStandingAndAnEndedOneStopsDelivering)
+TEST(BrokeredUdpTrafficCollectorTest, ABusyHelperSendsTheLastTotalsUnreadableAndAnEndedOneStopsDelivering)
 {
     auto broker = heldBroker();
     BrokeredUdpTrafficCollector collector(broker);
@@ -189,12 +141,12 @@ TEST(BrokeredUdpTrafficCollectorTest, ABusyHelperLeavesTheLastTotalsStandingAndA
     answerWith(*broker, {{.tgid = 7, .txBytes = 100, .rxBytes = 50}});
     (void) collector.sample();
     answerWith(*broker, {{.tgid = 7, .txBytes = 140, .rxBytes = 50}});
-    ASSERT_EQ(find(collector.sample(), 7)->bytesSent, 40U);
+    (void) collector.sample();
 
-    broker->setAnswer([](const Broker::Request&) -> std::expected<Broker::Response, std::string> { return std::unexpected("busy"); });
-    const std::vector<UdpProcessTraffic> busy = collector.sample();
-    ASSERT_EQ(busy.size(), 1U);
-    EXPECT_EQ(busy[0].bytesSent, 40U);
+    answerBusy(*broker);
+    const UdpProcessTraffic busy = only(collector.sample());
+    EXPECT_EQ(busy.bytesSent, 140U);
+    EXPECT_FALSE(busy.readable) << "kept open, re-baselined next time";
     EXPECT_TRUE(collector.isDelivering());
 
     broker->setConnected(false); // the helper exited
@@ -203,15 +155,21 @@ TEST(BrokeredUdpTrafficCollectorTest, ABusyHelperLeavesTheLastTotalsStandingAndA
     EXPECT_EQ(collector.problem(), "The helper ended");
 }
 
-TEST(BrokeredUdpTrafficCollectorTest, AHelperThatIsntCountingDeliversNothingAndSaysWhy)
+TEST(BrokeredUdpTrafficCollectorTest, AFailedReadIsFollowedByASeedingReading)
 {
     auto broker = heldBroker();
-    answerStatus(*broker, Broker::UdpBytesStatus::Failed, "fexit: loading failed: no BTF");
     BrokeredUdpTrafficCollector collector(broker);
     ASSERT_EQ(collector.start(), UdpCollectorStartResult::Started);
+    answerWith(*broker, {{.tgid = 7, .txBytes = 100, .rxBytes = 0}});
+    (void) collector.sample();
+    answerWith(*broker, {{.tgid = 7, .txBytes = 200, .rxBytes = 0}});
+    EXPECT_TRUE(only(collector.sample()).readable);
+
+    answerStatus(*broker, Broker::UdpBytesStatus::Failed, "the kernel refused reading the UDP byte counter");
     EXPECT_TRUE(collector.sample().empty());
-    EXPECT_FALSE(collector.isDelivering());
-    EXPECT_EQ(collector.problem(), "fexit: loading failed: no BTF");
+    EXPECT_EQ(collector.problem(), "the kernel refused reading the UDP byte counter");
+    answerWith(*broker, {{.tgid = 7, .txBytes = 300, .rxBytes = 0}});
+    EXPECT_FALSE(only(collector.sample()).readable) << "the same helper kept counting: a baseline, not new bytes";
 
     answerStatus(*broker, Broker::UdpBytesStatus::NotCounting, {});
     EXPECT_TRUE(collector.sample().empty());
@@ -274,6 +232,66 @@ TEST(BrokeredUdpTrafficCollectorTest, StoppingForgetsTheTotalsAndTheNextHelperDo
     EXPECT_FALSE(broker->countingUdp());
     EXPECT_FALSE(collector.isDelivering());
     EXPECT_TRUE(collector.sample().empty());
+}
+
+/// One refresh of Domain's accumulator with the collector's sample for process 7, at @p timeNs; its sent total after.
+[[nodiscard]] std::uint64_t
+foldSample(Domain::SocketTrafficAccumulator& accumulator, BrokeredUdpTrafficCollector& collector, std::uint64_t timeNs)
+{
+    SocketTrafficReading reading{.sockets = {}, .sampleTimeNs = timeNs};
+    UdpTraffic::appendSamples(reading.sockets, collector.sample());
+    ProcessCounters process;
+    process.pid = 7;
+    process.startTimeTicks = 1000;
+    std::vector<ProcessCounters> processes{process};
+    accumulator.apply(reading, processes);
+    return processes.front().netSentBytes;
+}
+
+// Through Domain: steady traffic of 100 bytes a reading, a run resumed on a helper that counted on meanwhile, a busy
+// read and a new helper. No reading credits more than one interval's bytes, and none of the bytes from before the run.
+TEST(BrokeredUdpTrafficCollectorTest, ThroughTheAccumulatorNoReadingCreditsMoreThanItsInterval)
+{
+    auto broker = heldBroker();
+    BrokeredUdpTrafficCollector collector(broker);
+    Domain::SocketTrafficAccumulator accumulator;
+    ASSERT_EQ(collector.start(), UdpCollectorStartResult::Started);
+    std::uint64_t total = 0;
+    std::uint64_t counter = 10'000; // counted before this run
+    std::uint64_t timeNs = 1'000;
+    const auto step = [&](bool busy)
+    {
+        counter += 100;
+        if (busy)
+        {
+            answerBusy(*broker);
+        }
+        else
+        {
+            answerWith(*broker, {{.tgid = 7, .txBytes = counter, .rxBytes = 0}});
+        }
+        const std::uint64_t after = foldSample(accumulator, collector, timeNs += 1'000);
+        EXPECT_LE(after - total, 100U) << "at " << timeNs;
+        total = after;
+    };
+    for (int i = 0; i < 4; ++i)
+    {
+        step(false);
+    }
+    step(true); // the helper was busy: that interval goes uncounted, not doubled into the next
+    for (int i = 0; i < 3; ++i)
+    {
+        step(false);
+    }
+    EXPECT_GT(total, 0U);
+    EXPECT_LT(total, 800U) << "none of the 10,000 bytes from before the run";
+
+    // A new helper, counting from zero: its first bytes are new.
+    broker->setConnected(false);
+    ASSERT_TRUE(broker->connect(std::stop_token{}).has_value());
+    counter = 0;
+    step(false);
+    EXPECT_GT(total, 0U);
 }
 
 TEST(BrokeredUdpTrafficCollectorTest, ThePlatformsOwnCollectorComesFirstAndNoBrokerMeansNone)

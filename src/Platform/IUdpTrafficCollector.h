@@ -14,6 +14,12 @@ struct UdpProcessTraffic
     std::uint32_t pid = 0;
     std::uint64_t bytesSent = 0;
     std::uint64_t bytesReceived = 0;
+    /// Which counter these are (#3366): a collector whose counters can start over (Linux: a new run, or a new helper
+    /// counting from zero) changes it then, so Domain takes them as another connection. 0 for one that never does.
+    std::uint32_t generation = 0;
+    /// False when this reading couldn't be taken and the counters are the last ones, sent again, or are the first of a
+    /// counter that was already counting: Domain then only re-baselines them (SocketTrafficSample::readable).
+    bool readable = true;
 };
 
 /// Why start() left the collector stopped, or that it runs.
