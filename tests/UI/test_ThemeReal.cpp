@@ -115,22 +115,36 @@ TEST_F(ThemeRealTest, FontSizeAndDisplayScaleScaleTheStyle)
 {
     Theme& theme = Theme::get();
     theme.setDisplayScale(1.0F);
-    theme.setFontSize(FontSize::Medium);
+    theme.setFontPointSize(FONT_POINT_SIZE_DEFAULT);
     static_cast<void>(theme.applyPendingStyleChanges());
-    const float mediumScale = theme.styleScale();
-    const float mediumRegular = theme.fontConfig().regularPt;
+    const float defaultScale = theme.styleScale();
+    EXPECT_FLOAT_EQ(defaultScale, 1.0F); // the reference configuration: the style as authored
+    const float defaultRegular = theme.fontConfig().regularPt;
 
-    theme.setFontSize(FontSize::Large);
+    theme.setFontPointSize(10);
     static_cast<void>(theme.applyPendingStyleChanges());
-    EXPECT_EQ(theme.currentFontSize(), FontSize::Large);
-    EXPECT_GT(theme.fontConfig().regularPt, mediumRegular);
-    EXPECT_GT(theme.styleScale(), mediumScale);
+    EXPECT_EQ(theme.fontPointSize(), 10);
+    EXPECT_GT(theme.fontConfig().regularPt, defaultRegular);
+    EXPECT_FLOAT_EQ(theme.styleScale(), 10.0F / 8.0F);
 
     theme.setDisplayScale(2.0F);
     static_cast<void>(theme.applyPendingStyleChanges());
     EXPECT_FLOAT_EQ(theme.displayScale(), 2.0F);
     theme.setDisplayScale(1.0F);
-    theme.setFontSize(FontSize::Medium);
+    theme.setFontPointSize(FONT_POINT_SIZE_DEFAULT);
+    static_cast<void>(theme.applyPendingStyleChanges());
+}
+
+// #3375: a size outside the setting's range is clamped to it.
+TEST_F(ThemeRealTest, AnOutOfRangeFontSizeIsClamped)
+{
+    Theme& theme = Theme::get();
+    const int original = theme.fontPointSize();
+    theme.setFontPointSize(FONT_POINT_SIZE_MAX + 10);
+    EXPECT_EQ(theme.fontPointSize(), FONT_POINT_SIZE_MAX);
+    theme.setFontPointSize(0);
+    EXPECT_EQ(theme.fontPointSize(), FONT_POINT_SIZE_MIN);
+    theme.setFontPointSize(original);
     static_cast<void>(theme.applyPendingStyleChanges());
 }
 
@@ -144,28 +158,55 @@ TEST_F(ThemeRealTest, AnUnknownThemeIdKeepsTheCurrentOne)
     EXPECT_EQ(theme.currentThemeId(), "mocha");
 }
 
-TEST_F(ThemeRealTest, TheFontSizeStepsThroughEveryPresetAndStopsAtTheEnds)
+// Ctrl+= and Ctrl+- (#3375): a point at a time, stopping at the ends of the range.
+TEST_F(ThemeRealTest, TheFontSizeStepsAPointAtATimeAndStopsAtTheEnds)
 {
     Theme& theme = Theme::get();
-    const FontSize original = theme.currentFontSize();
-    theme.setFontSize(FontSize::Small);
-    // Ctrl+= walks up one preset at a time, then has nowhere to go.
-    for (const FontSize expected : {FontSize::Medium, FontSize::Large, FontSize::ExtraLarge, FontSize::Huge, FontSize::EvenHuger})
+    const int original = theme.fontPointSize();
+    theme.setFontPointSize(FONT_POINT_SIZE_MIN);
+    for (int expected = FONT_POINT_SIZE_MIN + 1; expected <= FONT_POINT_SIZE_MAX; ++expected)
     {
         EXPECT_TRUE(theme.increaseFontSize());
-        EXPECT_EQ(theme.currentFontSize(), expected);
+        EXPECT_EQ(theme.fontPointSize(), expected);
     }
     EXPECT_FALSE(theme.increaseFontSize());
-    EXPECT_EQ(theme.currentFontSize(), FontSize::EvenHuger);
-    // Ctrl+- walks back down, then stops at Small.
-    for (const FontSize expected : {FontSize::Huge, FontSize::ExtraLarge, FontSize::Large, FontSize::Medium, FontSize::Small})
+    EXPECT_EQ(theme.fontPointSize(), FONT_POINT_SIZE_MAX);
+    for (int expected = FONT_POINT_SIZE_MAX - 1; expected >= FONT_POINT_SIZE_MIN; --expected)
     {
         EXPECT_TRUE(theme.decreaseFontSize());
-        EXPECT_EQ(theme.currentFontSize(), expected);
+        EXPECT_EQ(theme.fontPointSize(), expected);
     }
     EXPECT_FALSE(theme.decreaseFontSize());
-    EXPECT_EQ(theme.currentFontSize(), FontSize::Small);
-    theme.setFontSize(original);
+    EXPECT_EQ(theme.fontPointSize(), FONT_POINT_SIZE_MIN);
+    theme.setFontPointSize(original);
+    static_cast<void>(theme.applyPendingStyleChanges());
+}
+
+// #3375: the registered fonts remember the size they were built at, so UILayer can tell when the setting has moved
+// away from it and the atlas needs rebuilding.
+TEST_F(ThemeRealTest, TheFontsNeedARebuildOnlyWhenTheSettingMovesAwayFromTheirSize)
+{
+    Theme& theme = Theme::get();
+    const int original = theme.fontPointSize();
+    theme.clearFontRegistrations();
+    EXPECT_EQ(theme.fontsBuiltPointSize(), 0);
+    EXPECT_FALSE(theme.fontsNeedRebuild()); // nothing built yet: the first build is UILayer's onAttach()
+
+    ImFont* font = ImGui::GetIO().Fonts->AddFontDefault();
+    theme.setFontPointSize(10);
+    theme.registerFonts(10, font, font);
+    EXPECT_EQ(theme.fontsBuiltPointSize(), 10);
+    EXPECT_FALSE(theme.fontsNeedRebuild());
+
+    theme.setFontPointSize(14);
+    EXPECT_TRUE(theme.fontsNeedRebuild());
+    theme.setFontPointSize(10); // back before the next frame: nothing to rebuild
+    EXPECT_FALSE(theme.fontsNeedRebuild());
+
+    theme.clearFontRegistrations();
+    EXPECT_FALSE(theme.fontsNeedRebuild());
+    theme.setFontPointSize(original);
+    static_cast<void>(theme.applyPendingStyleChanges());
 }
 
 TEST_F(ThemeRealTest, AnOutOfRangeThemeIndexChangesNothing)
@@ -196,31 +237,28 @@ TEST_F(ThemeRealTest, ClearingTheFontRegistrationsForgetsThemAndBumpsTheGenerati
 {
     Theme& theme = Theme::get();
     ImFont* font = ImGui::GetIO().Fonts->AddFontDefault();
-    for (const FontSize size :
-         {FontSize::Small, FontSize::Medium, FontSize::Large, FontSize::ExtraLarge, FontSize::Huge, FontSize::EvenHuger})
-    {
-        theme.registerFonts(size, font, font);
-    }
+    theme.registerFonts(theme.fontPointSize(), font, font);
     theme.registerTitleFont(font);
-    EXPECT_EQ(theme.chartFont(), font);
+    EXPECT_EQ(theme.chartFont(), font); // no chart font of its own: the regular one
     const auto generation = theme.fontGeneration();
 
     // UILayer's onDetach(): the atlas the fonts lived in is about to go, so nothing may keep them.
     theme.clearFontRegistrations();
     EXPECT_EQ(theme.chartFont(), nullptr);
+    EXPECT_EQ(theme.fontsBuiltPointSize(), 0);
     EXPECT_GT(theme.fontGeneration(), generation); // font-dependent caches rebuild
 }
 
 // #2338: the headless UI training driver pushed the body font with PushFont(font, 0.0F), which keeps
-// the size current at the start of the frame -- the atlas's first font, Small -- so a Medium run drew
-// its text at the Small size. UILayer and the driver both go through pushRegularFont(), which must
-// select the configured preset's own size.
-TEST_F(ThemeRealTest, PushRegularFontSelectsTheConfiguredPresetsSizeNotTheFramesStartingSize)
+// the size current at the start of the frame -- the atlas's first font -- so a run drew its text at
+// that font's size. UILayer and the driver both go through pushRegularFont(), which must select the
+// registered body font's own size.
+TEST_F(ThemeRealTest, PushRegularFontSelectsTheBodyFontsSizeNotTheFramesStartingSize)
 {
     constexpr float SMALL_PX = 10.0F;
     constexpr float MEDIUM_PX = 20.0F;
     Theme& theme = Theme::get();
-    const FontSize original = theme.currentFontSize();
+    const int original = theme.fontPointSize();
 
     ImGuiIO& io = ImGui::GetIO();
     io.IniFilename = nullptr;
@@ -228,16 +266,15 @@ TEST_F(ThemeRealTest, PushRegularFontSelectsTheConfiguredPresetsSizeNotTheFrames
     io.DisplaySize = ImVec2(800.0F, 600.0F);
     io.DeltaTime = 1.0F / 60.0F;
     io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures; // no renderer: ImGui owns the atlas
-    // Registered in the same order as UI::loadAllFonts(): Small first, so it is the frame's default.
+    // A smaller font first, so it is the frame's default, then the body font.
     ImFontConfig smallConfig;
     smallConfig.SizePixels = SMALL_PX;
-    ImFont* small = io.Fonts->AddFontDefault(&smallConfig);
+    static_cast<void>(io.Fonts->AddFontDefault(&smallConfig));
     ImFontConfig mediumConfig;
     mediumConfig.SizePixels = MEDIUM_PX;
     ImFont* medium = io.Fonts->AddFontDefault(&mediumConfig);
-    theme.registerFonts(FontSize::Small, small, small);
-    theme.registerFonts(FontSize::Medium, medium, medium);
-    theme.setFontSize(FontSize::Medium);
+    theme.setFontPointSize(FONT_POINT_SIZE_DEFAULT);
+    theme.registerFonts(FONT_POINT_SIZE_DEFAULT, medium, medium);
     static_cast<void>(theme.applyPendingStyleChanges());
 
     ImGui::NewFrame();
@@ -253,7 +290,7 @@ TEST_F(ThemeRealTest, PushRegularFontSelectsTheConfiguredPresetsSizeNotTheFrames
     }
     ImGui::EndFrame();
 
-    // No font registered for the preset: nothing is pushed, and the caller has nothing to pop.
+    // No font registered: nothing is pushed, and the caller has nothing to pop.
     theme.clearFontRegistrations();
     ImGui::NewFrame();
     const ImFont* fontBefore = ImGui::GetFont();
@@ -263,7 +300,7 @@ TEST_F(ThemeRealTest, PushRegularFontSelectsTheConfiguredPresetsSizeNotTheFrames
     EXPECT_FLOAT_EQ(ImGui::GetFontSize(), sizeBefore);
     ImGui::EndFrame();
 
-    theme.setFontSize(original);
+    theme.setFontPointSize(original);
     static_cast<void>(theme.applyPendingStyleChanges());
 }
 

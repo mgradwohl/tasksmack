@@ -321,6 +321,8 @@ TEST(BrokerProtocolTest, EveryRequestRoundTrips)
     EXPECT_EQ(roundTrip(priority), priority);
     const Request io = IoPriorityRequest{.target = TARGET, .ioClass = IoPriorityClass::Realtime, .level = 0};
     EXPECT_EQ(roundTrip(io), io);
+    const Request hint = IoPriorityRequest{.target = TARGET, .ioClass = IoPriorityClass::WindowsHint, .level = 3}; // v18 (#3362)
+    EXPECT_EQ(roundTrip(hint), hint);
 
     CpuAffinity cpus;
     cpus.set(0);
@@ -597,11 +599,15 @@ TEST(BrokerProtocolTest, RefusesAnythingButExactlyAKnownFrame)
 
 TEST(BrokerProtocolTest, RefusesOutOfRangeEnumsCountsAndStrings)
 {
-    // An I/O class past Idle: its byte follows the 12-byte target.
+    // An I/O class past WindowsHint (#3362): its byte follows the 12-byte target.
     std::vector<std::uint8_t> io =
         encodeRequest(1, Request{IoPriorityRequest{.target = TARGET, .ioClass = IoPriorityClass::Idle, .level = 0}});
     io[4 + HEADER_BYTES + 12] = 7;
     EXPECT_FALSE(decodeRequest(io).has_value());
+    io[4 + HEADER_BYTES + 12] = static_cast<std::uint8_t>(IoPriorityClass::WindowsHint) + 1;
+    EXPECT_FALSE(decodeRequest(io).has_value());
+    io[4 + HEADER_BYTES + 12] = static_cast<std::uint8_t>(IoPriorityClass::WindowsHint);
+    EXPECT_TRUE(decodeRequest(io).has_value());
 
     // An affinity claiming more words than any CPU count allows.
     std::vector<std::uint8_t> affinity = encodeRequest(1, Request{AffinityRequest{.target = TARGET, .cpus = CpuAffinity::fromMask(1)}});

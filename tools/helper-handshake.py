@@ -52,6 +52,7 @@ HELLO_PAYLOADS = {
     15: lambda version: struct.pack("<HB", version, 0),  # Hello unchanged; SetSchedPolicy added (#3086)
     16: lambda version: struct.pack("<HB", version, 0),  # Hello unchanged; ReadMemoryMap added (#3089)
     17: lambda version: struct.pack("<HB", version, 0),  # Hello unchanged; SetSchedPolicy carries a real-time priority (#3219)
+    18: lambda version: struct.pack("<HB", version, 0),  # Hello unchanged; SetIoPriority takes Windows hints (#3362)
 }
 
 

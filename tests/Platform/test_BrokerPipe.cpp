@@ -1238,8 +1238,11 @@ TEST(BrokerPipeServeTest, OnlyActionsWindowsDoesAndTheHelloPutOffTheIdleExit)
     EXPECT_TRUE(BrokerPipeServer::putsOffTheWindowsIdleExit(Broker::SignalRequest{.target = TARGET, .signal = Signal::Resume}));
     // And Efficiency mode (#3071).
     EXPECT_TRUE(BrokerPipeServer::putsOffTheWindowsIdleExit(Broker::EfficiencyModeRequest{.target = TARGET, .on = true}));
+    // And an I/O priority hint (#3362).
+    EXPECT_TRUE(BrokerPipeServer::putsOffTheWindowsIdleExit(Broker::IoPriorityRequest{}));
     // What Windows always refuses keeps nothing alive.
-    EXPECT_FALSE(BrokerPipeServer::putsOffTheWindowsIdleExit(Broker::IoPriorityRequest{}));
+    EXPECT_FALSE(BrokerPipeServer::putsOffTheWindowsIdleExit(Broker::CloseConnectionRequest{.target = TARGET, .socketInode = 1}));
+    EXPECT_FALSE(BrokerPipeServer::putsOffTheWindowsIdleExit(Broker::SchedPolicyRequest{.target = TARGET}));
     // Nor does a read.
     EXPECT_FALSE(BrokerPipeServer::putsOffTheWindowsIdleExit(Broker::ModulesRequest{.target = TARGET}));
     EXPECT_FALSE(BrokerPipeServer::putsOffTheWindowsIdleExit(Broker::CrashesRequest{}));
@@ -1248,7 +1251,8 @@ TEST(BrokerPipeServeTest, OnlyActionsWindowsDoesAndTheHelloPutOffTheIdleExit)
     EXPECT_TRUE(BrokerPipeServer::isActionWindowsDoes(Broker::SignalRequest{.target = TARGET, .signal = Signal::Suspend}));
     EXPECT_TRUE(BrokerPipeServer::isActionWindowsDoes(Broker::SignalRequest{.target = TARGET, .signal = Signal::Resume}));
     EXPECT_TRUE(BrokerPipeServer::isActionWindowsDoes(Broker::EfficiencyModeRequest{.target = TARGET, .on = false}));
-    EXPECT_FALSE(BrokerPipeServer::isActionWindowsDoes(Broker::IoPriorityRequest{}));
+    EXPECT_TRUE(BrokerPipeServer::isActionWindowsDoes(Broker::IoPriorityRequest{})) << "#3362";
+    EXPECT_FALSE(BrokerPipeServer::isActionWindowsDoes(Broker::CloseConnectionRequest{}));
     EXPECT_FALSE(BrokerPipeServer::isActionWindowsDoes(Broker::Hello{}));
 }
 
@@ -1268,12 +1272,13 @@ TEST(BrokerPipeServeTest, RequestsWindowsAlwaysRefusesDontPutOffTheIdleExit)
     ASSERT_TRUE(send(pair.client.get(), Broker::encodeRequest(1, Broker::Hello{})));
     ASSERT_TRUE(receiveResponse(pair.client.get()).has_value());
 
-    // An I/O priority is the one action Windows always refuses (Suspend and Resume are real since #2582).
+    // Closing a connection and a scheduling policy are actions Windows always refuses (Suspend and Resume are real
+    // since #2582, an I/O priority hint since #3362).
     const std::array<Broker::Request, 4> refused{
-        Broker::IoPriorityRequest{.target = TARGET, .ioClass = IoPriorityClass::Idle, .level = 0},
-        Broker::IoPriorityRequest{.target = TARGET, .ioClass = IoPriorityClass::BestEffort, .level = 4},
-        Broker::IoPriorityRequest{.target = TARGET, .ioClass = IoPriorityClass::Idle, .level = 0},
-        Broker::IoPriorityRequest{.target = TARGET, .ioClass = IoPriorityClass::BestEffort, .level = 7},
+        Broker::CloseConnectionRequest{.target = TARGET, .socketInode = 1},
+        Broker::SchedPolicyRequest{.target = TARGET},
+        Broker::CloseConnectionRequest{.target = TARGET, .socketInode = 2},
+        Broker::SchedPolicyRequest{.target = TARGET},
     };
     std::uint32_t id = 2;
     for (const Broker::Request& request : refused)
@@ -1303,12 +1308,13 @@ TEST(BrokerPipeServeTest, ActionsWindowsDoesPutOffTheIdleExit)
     auto served = serveGrantAsync(pair.server.get(), stepping(clock, IDLE / 2), IDLE, clock.clock(), BrokerPipeServer::Grant::Session);
     ASSERT_TRUE(send(pair.client.get(), Broker::encodeRequest(1, Broker::Hello{})));
     ASSERT_TRUE(receiveResponse(pair.client.get()).has_value());
-    const std::array<Broker::Request, 5> actions{
+    const std::array<Broker::Request, 6> actions{
         Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Terminate},
         Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Suspend}, // #2582
         Broker::PriorityRequest{.target = TARGET, .nice = 0},
         Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Resume}, // #2582
         Broker::AffinityRequest{.target = TARGET, .cpus = {}},
+        Broker::IoPriorityRequest{.target = TARGET, .ioClass = IoPriorityClass::WindowsHint, .level = 1}, // #3362
     };
     std::uint32_t id = 2;
     for (const Broker::Request& request : actions)
@@ -1363,7 +1369,7 @@ TEST(BrokerPipeServeTest, AOneActionSessionEndsAfterAnActionWindowsRefusesToo)
     {
         GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
     }
-    for (const Broker::Request& action : {Broker::Request{Broker::IoPriorityRequest{}},
+    for (const Broker::Request& action : {Broker::Request{Broker::CloseConnectionRequest{}},
                                           Broker::Request{Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Suspend}},
                                           Broker::Request{Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Resume}},
                                           Broker::Request{Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Kill}}})

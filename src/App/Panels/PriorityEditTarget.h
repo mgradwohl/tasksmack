@@ -1,7 +1,7 @@
 #pragma once
 
 // The rule shared by Process Details' priority edits -- the nice value / priority class
-// (ProcessPriorityView) and the Linux I/O priority (ProcessIoPriorityView, #803) -- for whether an
+// (ProcessPriorityView) and the I/O priority (ProcessIoPriorityView, #803, #3362) -- for whether an
 // edit made for one process may still be applied to the process the panel shows now.
 
 #include "Platform/IProcessActions.h"

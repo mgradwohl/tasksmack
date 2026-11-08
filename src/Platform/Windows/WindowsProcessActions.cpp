@@ -6,6 +6,7 @@
 #include "Platform/WaitChain.h"
 #include "WindowsAffinityMath.h"
 #include "WindowsConversions.h"
+#include "WindowsDebugPrivilege.h"
 #include "WindowsFileLocation.h"
 #include "WindowsFolderPicker.h"
 #include "WindowsHandles.h"
@@ -409,6 +410,12 @@ guardRefusal(const WindowsProcessFunctions& fns, HANDLE process, const ProcessTa
     return fns.getPriorityClass != nullptr && fns.setPriorityClass != nullptr;
 }
 
+/// Whether the table has the calls the I/O priority reads and sets with (#3362).
+[[nodiscard]] bool hasIoPriority(const WindowsProcessFunctions& fns) noexcept
+{
+    return fns.ntQueryInformationProcess != nullptr && fns.ntSetInformationProcess != nullptr;
+}
+
 /// Whether the table has every call Efficiency mode makes (#3071).
 [[nodiscard]] bool hasEfficiencyMode(const WindowsProcessFunctions& fns) noexcept
 {
@@ -465,6 +472,10 @@ WindowsProcessFunctions realWindowsProcessFunctions() noexcept
 #else
         .runProgram = Windows::realRunProgramFunctions(),
 #endif
+        .ntQueryInformationProcess = Windows::ntQueryInformationProcess(),
+        .ntSetInformationProcess = Windows::ntSetInformationProcess(),
+        .enableIncreaseBasePriority = []
+        { return Windows::enableIncreaseBasePriorityPrivilegeIfElevated() == Windows::DebugPrivilegeResult::Enabled; },
     };
 }
 
@@ -487,8 +498,9 @@ ProcessActionCapabilities WindowsProcessActions::actionCapabilities() const
         .canContinue = m_Fns.ntResumeProcess != nullptr,      // NtResumeProcess (#2582)
         .canSetPriority = true,                               // SetPriorityClass
         .canSetRealtimePriority = hasRealtimePriority(m_Fns), // and read back with GetPriorityClass (#3429)
-        .canSetIoPriority = false,                            // No ionice equivalent (#803)
-        .canSetRealtimeIoPriority = false,
+        .canSetIoPriority = hasIoPriority(m_Fns),             // NtSetInformationProcess(ProcessIoPriority) (#3362)
+        .canSetRealtimeIoPriority = false,                    // Linux's class: Windows has hints, High through the helper
+        .ioPriorityHints = true,
         // SetProcessAffinityMask, or CPU sets across processor groups (#1881); needs the groups' sizes
         .canSetAffinity = !m_GroupSizes.empty(),
         .syscallTrace = SyscallTraceAvailability::Unsupported,
@@ -817,19 +829,92 @@ ProcessActionResult WindowsProcessActions::setEfficiencyMode(const ProcessTarget
     return ProcessActionResult::ok(std::string{note});
 }
 
-// NOLINTEND(misc-include-cleaner)
-ProcessActionResult
-WindowsProcessActions::setIoPriority(const ProcessTarget& target, [[maybe_unused]] IoPriorityClass ioClass, [[maybe_unused]] int32_t level)
+ProcessActionResult WindowsProcessActions::setIoPriority(const ProcessTarget& target, IoPriorityClass ioClass, int32_t level)
 {
-    return ProcessActionResult::error(std::format("I/O priority is not supported on Windows; nothing sent to process {}", target.pid));
+    if (!hasIoPriority(m_Fns))
+    {
+        return ProcessActionResult::error(
+            std::format("I/O priority is not available on this Windows; nothing sent to process {}", target.pid));
+    }
+    // Only Very low to High, and only Windows' hints: refused before anything is opened.
+    std::expected<IoPriorityHint, std::string> hint = ioPriorityHintToSet(ioClass, level, target.pid);
+    if (!hint.has_value())
+    {
+        spdlog::warn("{}", hint.error());
+        return ProcessActionResult::error(std::move(hint.error()));
+    }
+    spdlog::debug("Setting I/O priority {} for PID {}", ioPriorityHintName(*hint), target.pid);
+    if (auto refused = systemPidResult(target, GuardedAction::IoPriority))
+    {
+        return std::move(*refused);
+    }
+
+    VerifiedProcess process = openForAction(m_Fns,
+                                            target,
+                                            PROCESS_SET_INFORMATION,
+                                            [&target](DWORD error, bool isProtected)
+                                            { return actionOpenFailure(error, target.pid, GuardedAction::IoPriority, isProtected); });
+    if (!process.result.success)
+    {
+        spdlog::warn("{}", process.result.errorMessage);
+        return std::move(process.result);
+    }
+    // Very low starves a critical process's paging and file I/O as surely as the Idle class starves its CPU (#2556).
+    if (auto refused = guardRefusal(m_Fns, process.handle.get(), target, GuardedAction::IoPriority))
+    {
+        return std::move(*refused);
+    }
+
+    // NtSetInformationProcess checks SeIncreaseBasePriorityPrivilege for High and doesn't enable it for the call,
+    // so an elevated TaskSmack (or the helper) enables it first. Not elevated, Windows refuses, and the refusal is
+    // a permission one.
+    if (*hint == IoPriorityHint::High && m_Fns.enableIncreaseBasePriority != nullptr)
+    {
+        static_cast<void>(m_Fns.enableIncreaseBasePriority());
+    }
+    auto value = static_cast<ULONG>(*hint);
+    const auto status =
+        static_cast<std::uint32_t>(m_Fns.ntSetInformationProcess(process.handle.get(), PROCESS_IO_PRIORITY_CLASS, &value, sizeof(value)));
+    const bool isProtectedProcess = status == NT_STATUS_ACCESS_DENIED && isProtected(m_Fns, process.handle.get());
+    ProcessActionResult result = ioPrioritySetResult(status, target.pid, *hint, isProtectedProcess);
+    if (result.success)
+    {
+        spdlog::info("Set I/O priority {} for PID {}", ioPriorityHintName(*hint), target.pid);
+    }
+    else
+    {
+        spdlog::warn("{}", result.errorMessage);
+    }
+    return result;
 }
 
 IoPriorityReadResult WindowsProcessActions::getIoPriority(const ProcessTarget& target)
 {
-    return std::unexpected(std::format("I/O priority is not supported on Windows (process {})", target.pid));
+    if (!hasIoPriority(m_Fns))
+    {
+        return std::unexpected(std::format("I/O priority is not available on this Windows (process {})", target.pid));
+    }
+    // The identity check every action makes, so the value read is the target's, never a reused PID's.
+    const VerifiedProcess process = openVerified(m_Fns,
+                                                 target,
+                                                 PROCESS_QUERY_LIMITED_INFORMATION,
+                                                 [&target](DWORD error)
+                                                 {
+                                                     return error == ERROR_ACCESS_DENIED
+                                                              ? ioPriorityReadDeniedMessage(target.pid)
+                                                              : actionOpenFailure(error, target.pid, GuardedAction::IoPriority, false);
+                                                 });
+    if (!process.result.success)
+    {
+        return std::unexpected(process.result.errorMessage);
+    }
+    ULONG value = 0;
+    ULONG written = 0;
+    const auto status = static_cast<std::uint32_t>(
+        m_Fns.ntQueryInformationProcess(process.handle.get(), PROCESS_IO_PRIORITY_CLASS, &value, sizeof(value), &written));
+    return ioPriorityReadResult(status, value, target.pid);
 }
 
-// NOLINTBEGIN(misc-include-cleaner) - Windows APIs; Win32 types come from windows.h sub-headers
 ProcessActionResult WindowsProcessActions::setAffinity(const ProcessTarget& target, const CpuAffinity& cpus)
 {
     if (target.pid <= 0)

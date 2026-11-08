@@ -72,7 +72,8 @@ namespace Platform::Broker
 /// 15: SetSchedPolicy, a process's CPU scheduling policy set to Normal, Batch or Idle (#3086, Linux).
 /// 16: ReadMemoryMap, another user's process's memory map for Process Details (#3089).
 /// 17: SetSchedPolicy carries a real-time priority, and may set FIFO or round robin with 1 to 99 (#3219, Linux).
-inline constexpr std::uint16_t PROTOCOL_VERSION = 17;
+/// 18: SetIoPriority's class can be WindowsHint, a Windows I/O priority hint (#3362, Windows).
+inline constexpr std::uint16_t PROTOCOL_VERSION = 18;
 /// The largest frame either side accepts, header included.
 inline constexpr std::size_t MAX_MESSAGE_BYTES = std::size_t{8} << 20U;
 /// The most processes one ReadProcessCounters asks about (#2728); a sampler with more asks for the first.
@@ -1196,13 +1197,14 @@ namespace Detail
     return PriorityRequest{.target = target, .nice = reader.i32()};
 }
 
-/// A SetIoPriority request's payload: the target, the class (refused when past Idle), then the level.
+/// A SetIoPriority request's payload: the target, the class (refused when past WindowsHint), then the level.
+/// Each platform's actions refuse the other's classes, and a level out of range, again.
 [[nodiscard]] inline IoPriorityRequest decodeIoPriorityRequest(Reader& reader)
 {
     const ProcessTarget target = reader.target();
     const std::uint8_t value = reader.u8();
     IoPriorityClass ioClass = IoPriorityClass::BestEffort;
-    if (value <= static_cast<std::uint8_t>(IoPriorityClass::Idle))
+    if (value <= static_cast<std::uint8_t>(IoPriorityClass::WindowsHint))
     {
         ioClass = static_cast<IoPriorityClass>(value);
     }

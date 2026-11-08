@@ -117,7 +117,8 @@ ProcessActionCapabilities BrokeredProcessActions::actionCapabilities() const
     // The connection as last seen, not looked at here (#3182): Process Details asks every frame, on the
     // UI thread, so this makes no pipe or socket call. A helper that has just exited is found gone by
     // the sampler's next read, or by the action's own retry, which then offers Authenticate and retry.
-    if (capabilities.canSetIoPriority && m_Broker != nullptr && m_Broker->lastSeenConnected())
+    // Windows' hints have no Realtime class: High is offered anyway, and a refusal is retried (#3362).
+    if (capabilities.canSetIoPriority && !capabilities.ioPriorityHints && m_Broker != nullptr && m_Broker->lastSeenConnected())
     {
         capabilities.canSetRealtimeIoPriority = true; // the helper, as root, has CAP_SYS_NICE
     }
