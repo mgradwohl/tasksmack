@@ -47,6 +47,19 @@ struct ResizePerfLoopTiming
     double waitMs = 0.0;
     double vsyncMs = 0.0;
     double frameMs = 0.0;
+    /// The timeout the loop's last event wait asked SDL_WaitEventTimeout() for, in milliseconds; -1
+    /// when it made none (waitMs is then a paced delay or 0). #3552's supervised run logged a 1,375 ms
+    /// wait in an idle iteration whose wait could ask for at most 500 ms (the static floor): the rest
+    /// was spent inside SDL's event pump, not in the loop. Logging the timeout tells that apart from a
+    /// wait that simply ran its course.
+    int waitTimeoutMs = -1;
+
+    /// How far the last event wait ran past the timeout it asked for (0 when it didn't, or made none):
+    /// time spent inside SDL_WaitEventTimeout()'s message pump rather than waiting.
+    [[nodiscard]] double waitOverrunMs() const noexcept
+    {
+        return (waitTimeoutMs < 0) ? 0.0 : std::max(0.0, waitMs - static_cast<double>(waitTimeoutMs));
+    }
 
     /// Includes logging, instrumentation, bookkeeping and scheduling outside timed phases.
     [[nodiscard]] double otherMs(double wallMs) const noexcept

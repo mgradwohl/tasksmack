@@ -2753,6 +2753,25 @@ TEST(ResizePerfLoopTimingTest, AccountsForWaitDrainTransitionAndUnmeasuredOverhe
     EXPECT_DOUBLE_EQ(timing.otherMs(2062.999), 0.0);
 }
 
+TEST(ResizePerfLoopTimingTest, AWaitPastItsOwnTimeoutReportsTheOverrun)
+{
+    // #3552's supervised run: an idle wait could ask for at most the 500 ms static floor, and took
+    // 1,375.571 ms; the 875.571 ms past it were spent in SDL's message pump.
+    Core::ResizePerfLoopTiming timing;
+    timing.waitMs = 1375.571;
+    timing.waitTimeoutMs = 500;
+    EXPECT_NEAR(timing.waitOverrunMs(), 875.571, 1e-9);
+    // A wait that ends on an event, or on its timeout, has none.
+    timing.waitMs = 120.0;
+    EXPECT_DOUBLE_EQ(timing.waitOverrunMs(), 0.0);
+    timing.waitMs = 500.0;
+    EXPECT_DOUBLE_EQ(timing.waitOverrunMs(), 0.0);
+    // A paced delay is not an event wait: no timeout, no overrun.
+    timing.waitMs = 2000.0;
+    timing.waitTimeoutMs = -1;
+    EXPECT_DOUBLE_EQ(timing.waitOverrunMs(), 0.0);
+}
+
 TEST(ResizePerfTraceStatsTest, FrameTailCountsResetWithIntervalNotRollingWindow)
 {
     Core::ResizePerfTraceStats stats;

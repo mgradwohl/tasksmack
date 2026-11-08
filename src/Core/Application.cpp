@@ -593,6 +593,7 @@ void Application::run()
         if (traced)
         {
             loopTiming.waitMs = resizePerfElapsedMs(waitStart, SDL_GetPerformanceCounter());
+            loopTiming.waitTimeoutMs = timeoutMs;
         }
         return outcome;
     };
@@ -606,8 +607,10 @@ void Application::run()
         resizePerfOperations().loops.record(wallMs);
         if (wallMs > 100.0)
         {
+            // waitTimeout and waitOverrun at the end of the line, so the summary scripts' keys are unaffected:
+            // a wait far past its own timeout was spent in SDL's message pump, not waiting (#3552).
             spdlog::info("ResizePerfLoop: beginCounter={} endCounter={} wall={:.3f} ms drain={:.3f} ms wait={:.3f} ms "
-                         "vsync={:.3f} ms framePhases={:.3f} ms other={:.3f} ms",
+                         "vsync={:.3f} ms framePhases={:.3f} ms other={:.3f} ms waitTimeout={} ms waitOverrun={:.3f} ms",
                          loopStart,
                          end,
                          wallMs,
@@ -615,7 +618,9 @@ void Application::run()
                          loopTiming.waitMs,
                          loopTiming.vsyncMs,
                          loopTiming.frameMs,
-                         loopTiming.otherMs(wallMs));
+                         loopTiming.otherMs(wallMs),
+                         loopTiming.waitTimeoutMs,
+                         loopTiming.waitOverrunMs());
         }
     };
 
@@ -1005,6 +1010,7 @@ void Application::run()
                 if (traceResizePerfThisFrame)
                 {
                     loopTiming.waitMs = resizePerfElapsedMs(waitStart, SDL_GetPerformanceCounter());
+                    loopTiming.waitTimeoutMs = -1; // a paced delay, not an event wait
                 }
             }
             lastFrameStart = getTime();
@@ -1094,6 +1100,7 @@ void Application::run()
                 if (traceResizePerfThisFrame)
                 {
                     loopTiming.waitMs = resizePerfElapsedMs(waitStart, SDL_GetPerformanceCounter());
+                    loopTiming.waitTimeoutMs = -1; // a paced delay, not an event wait
                 }
             }
         }
