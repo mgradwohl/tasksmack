@@ -1322,6 +1322,42 @@ TEST(LinuxProcessProbeTest, TheIoPriorityIsReadForEachProcessButAKernelThread)
     EXPECT_EQ(std::ranges::count(asked, 102), 0) << "nor is it read";
 }
 
+TEST(LinuxProcessProbeTest, AnIoPriorityReadThatOutlivesItsProcessIsUnknown)
+{
+    // #3551: ioprio_get(2) takes a PID. A process reaped during the read could have handed its PID on, so a value read
+    // after its /proc directory stopped resolving is never shown as its own.
+    ScopedTempDir proc("ts_test_proc_ioprio_exit");
+    const auto stat = [](int pid)
+    {
+        return std::to_string(pid) + " (app) S 1 " + std::to_string(pid) + " " + std::to_string(pid) +
+               " 0 -1 4194304 0 0 0 0 10 5 0 0 20 0 1 0 12345 0 0 18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n";
+    };
+    writeFile(proc.path / "stat", "cpu  100 0 100 800 0 0 0 0 0 0\n");
+    writeFile(proc.path / "200" / "stat", stat(200));
+    writeFile(proc.path / "201" / "stat", stat(201));
+
+    LinuxProcessProbe probe(proc.path);
+    probe.setIoPriorityReaderForTesting(
+        [&proc](std::int32_t pid)
+        {
+            if (pid == 201)
+            {
+                std::filesystem::remove(proc.path / "201" / "stat"); // reaped while it was asked
+            }
+            constexpr int BEST_EFFORT_2 = (2 << 13) | 2;
+            return BEST_EFFORT_2;
+        });
+    const std::vector<ProcessCounters> processes = probe.enumerate();
+    const auto byPid = [&processes](std::int32_t pid)
+    {
+        return std::ranges::find(processes, pid, &ProcessCounters::pid);
+    };
+    ASSERT_NE(byPid(200), processes.end());
+    ASSERT_NE(byPid(201), processes.end());
+    EXPECT_EQ(byPid(200)->ioPriority, (Platform::IoPriority{.ioClass = Platform::IoPriorityClass::BestEffort, .level = 2}));
+    EXPECT_FALSE(byPid(201)->ioPriority.has_value()) << "read after the process's /proc entry went away";
+}
+
 TEST(LinuxProcessProbeTest, PssAndUssAreReadFromSmapsRollupForOneProcess)
 {
     // #1885: smaps_rollup, read on demand for one process; its presence under self says the kernel has it.

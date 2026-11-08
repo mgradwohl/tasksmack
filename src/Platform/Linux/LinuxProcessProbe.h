@@ -305,11 +305,13 @@ class LinuxProcessProbe : public IProcessProbe
     /// The online CPUs, from <cpuSysfsRoot>/online, or nullopt if it can't be read or parsed (#1384).
     [[nodiscard]] static std::optional<CpuAffinity> readOnlineCpus(const std::filesystem::path& cpuSysfsRoot);
 
+    /// Reads @p pid's I/O priority into @p counters.ioPriority (#3551); left unknown for a kernel thread, and when
+    /// @p pidDirFd (the process's /proc/[pid], opened before the read) no longer resolves after it: ioprio_get(2)
+    /// takes a PID, which could name a process that reused it.
+    void readIoPriority(int pidDirFd, std::int32_t pid, ProcessCounters& counters) const;
     /// Set the command (and the full name, where comm was cut) from /proc/[pid]/cmdline, through
     /// `pidDirFd`: from `previous`'s entry for this process while it is fresh, otherwise read. The
     /// process's entry, if it has one now, moves to `seen` (see m_CmdlineCache).
-    /// Reads @p pid's I/O priority into @p counters.ioPriority (#3551); left unknown for a kernel thread.
-    void readIoPriority(std::int32_t pid, ProcessCounters& counters) const;
     void readProcessCommand(int pidDirFd,
                             ProcessCounters& counters,
                             CmdlineCache& previous,

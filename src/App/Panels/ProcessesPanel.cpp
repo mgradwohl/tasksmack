@@ -211,8 +211,8 @@ void drawPrimaryRowMarker(const ImVec4& color)
 
 [[nodiscard]] constexpr auto toImGuiId(ProcessColumn col) noexcept -> ImGuiID
 {
-    // Safe: ProcessColumn is a small uint8_t-backed enum; ImGuiID is a wider unsigned type.
-    return ImGuiID{std::to_underlying(col)};
+    // The column's persistent ID, never its position (#3551): a saved layout is matched to columns by it.
+    return ImGuiID{persistentColumnId(col)};
 }
 
 [[nodiscard]] auto columnFromUserId(ImGuiID id) -> std::optional<ProcessColumn>
@@ -723,7 +723,7 @@ void ioPriorityCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& f
         return;
     }
     // Worded here, without allocating, from the snapshot's class, level and nice.
-    const Detail::IoPriorityText label = Detail::ioPriorityText(*proc.ioPriority, proc.nice);
+    const Detail::IoPriorityText label = Detail::ioPriorityText(*proc.ioPriority, proc.nice, proc.schedPolicy);
     renderLeftAlignedText(label.view(), fmt.ioPriorityWidth);
 }
 
@@ -2264,7 +2264,7 @@ void ProcessesPanel::renderContent()
             const ImGuiTableColumnSortSpecs& spec = sortSpecs->Specs[0];
             const bool ascending = (spec.SortDirection == ImGuiSortDirection_Ascending);
 
-            // Use ColumnUserID to get ProcessColumn (we set user_id = enum value)
+            // Use ColumnUserID to get ProcessColumn (we set user_id = persistentColumnId(), #3551)
             const std::optional<ProcessColumn> sortColOpt = columnFromUserId(spec.ColumnUserID);
             if (!sortColOpt.has_value())
             {

@@ -420,7 +420,7 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
             continue;
         }
 
-        readIoPriority(pid, counters);
+        readIoPriority(pidDirFd.get(), pid, counters);
         parseProcessStatm(pidDirFd.get(), counters);
         parseProcessStatus(pidDirFd.get(), pid, counters, onlineCpus); // Owner, peak RSS (after statm) and CPU affinity
         readProcessArchitecture(pidDirFd.get(), counters, previousArchitectures, seenArchitectures); // While the name is comm
@@ -861,7 +861,7 @@ void LinuxProcessProbe::applyStatus(std::string_view text, ProcessCounters& coun
     }
 }
 
-void LinuxProcessProbe::readIoPriority(std::int32_t pid, ProcessCounters& counters) const
+void LinuxProcessProbe::readIoPriority(int pidDirFd, std::int32_t pid, ProcessCounters& counters) const
 {
     // A kernel thread has no I/O priority of its own to show (the column's em dash), and its read is skipped. Right
     // after parseProcessStat(), only a kernel thread (PF_KTHREAD) has the SYSTEM type: cgroup facts come later.
@@ -882,6 +882,13 @@ void LinuxProcessProbe::readIoPriority(std::int32_t pid, ProcessCounters& counte
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg,misc-include-cleaner) - syscall(2) is variadic; SYS_ioprio_get as above
         value = static_cast<int>(::syscall(SYS_ioprio_get, IoPrio::WHO_PROCESS, pid));
 #endif
+    }
+    // ioprio_get(2) has no pidfd form: the PID could have been reused by another process between the listing and the
+    // read. The PID can only be reused once this process is reaped, and then its /proc directory, opened before the read,
+    // resolves nothing more. So a value is kept only while it still resolves the process's stat file.
+    if (::faccessat(pidDirFd, "stat", F_OK, 0) != 0)
+    {
+        return; // exited (and perhaps reused) during the read: unknown
     }
     counters.ioPriority = IoPrio::decode(value);
 }

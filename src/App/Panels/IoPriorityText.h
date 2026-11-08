@@ -7,6 +7,7 @@
 
 #include "Domain/PriorityConfig.h"
 #include "Platform/IoPriorityTypes.h"
+#include "Platform/SchedPolicy.h"
 
 #include <algorithm>
 #include <array>
@@ -41,6 +42,27 @@ namespace App::Detail
     return "Normal";
 }
 
+/// The class the kernel serves a process whose I/O class was never set in (block/ioprio.c's task_nice_ioclass()): idle
+/// under SCHED_IDLE, real time under a real-time CPU policy (FIFO, round robin, Deadline), best-effort otherwise, and
+/// best-effort while the policy isn't known.
+[[nodiscard]] constexpr Platform::IoPriorityClass inheritedIoClass(Platform::SchedPolicy policy) noexcept
+{
+    switch (policy)
+    {
+    case Platform::SchedPolicy::Idle:
+        return Platform::IoPriorityClass::Idle;
+    case Platform::SchedPolicy::Fifo:
+    case Platform::SchedPolicy::RoundRobin:
+    case Platform::SchedPolicy::Deadline:
+        return Platform::IoPriorityClass::Realtime;
+    case Platform::SchedPolicy::Unknown:
+    case Platform::SchedPolicy::Batch:
+    case Platform::SchedPolicy::Normal:
+        break;
+    }
+    return Platform::IoPriorityClass::BestEffort;
+}
+
 /// An I/O priority's words, in a fixed buffer (ioPriorityText()).
 class IoPriorityText
 {
@@ -51,7 +73,8 @@ class IoPriorityText
     }
 
   private:
-    friend IoPriorityText ioPriorityText(const Platform::IoPriority& priority, std::optional<std::int32_t> nice);
+    friend IoPriorityText
+    ioPriorityText(const Platform::IoPriority& priority, std::optional<std::int32_t> nice, Platform::SchedPolicy policy);
 
     template<typename... Args> void format(std::format_string<Args...> pattern, Args&&... args)
     {
@@ -65,9 +88,12 @@ class IoPriorityText
 };
 
 /// The words for @p priority: "realtime 0", "best-effort 4", "idle"; for a class never set "default (best-effort N
-/// from nice)", N being the level the kernel derives from @p nice (just "default (from nice)" while it isn't known); a
-/// Windows hint's name, or "unknown (N)" for a hint Windows doesn't define.
-[[nodiscard]] inline IoPriorityText ioPriorityText(const Platform::IoPriority& priority, std::optional<std::int32_t> nice)
+/// from nice)", N being the level the kernel derives from @p nice (just "default (from nice)" while it isn't known),
+/// or under a CPU @p policy that makes the kernel serve it in another class "default (realtime N from nice)" and
+/// "default (idle)" (inheritedIoClass()); a Windows hint's name, or "unknown (N)" for a hint Windows doesn't define.
+[[nodiscard]] inline IoPriorityText ioPriorityText(const Platform::IoPriority& priority,
+                                                   std::optional<std::int32_t> nice,
+                                                   Platform::SchedPolicy policy = Platform::SchedPolicy::Unknown)
 {
     IoPriorityText text;
     switch (priority.ioClass)
@@ -93,9 +119,20 @@ class IoPriorityText
         break;
     case Platform::IoPriorityClass::None:
     default:
-        if (nice.has_value())
+    {
+        const Platform::IoPriorityClass inherited = inheritedIoClass(policy);
+        const std::string_view className = (inherited == Platform::IoPriorityClass::Realtime) ? "realtime" : "best-effort";
+        if (inherited == Platform::IoPriorityClass::Idle)
         {
-            text.format("default (best-effort {} from nice)", Domain::Priority::ioLevelForNice(*nice));
+            text.format("default (idle)");
+        }
+        else if (nice.has_value())
+        {
+            text.format("default ({} {} from nice)", className, Domain::Priority::ioLevelForNice(*nice));
+        }
+        else if (inherited == Platform::IoPriorityClass::Realtime)
+        {
+            text.format("default (realtime, from nice)");
         }
         else
         {
@@ -103,13 +140,16 @@ class IoPriorityText
         }
         break;
     }
+    }
     return text;
 }
 
-/// Where @p priority sorts, lower first being served first: real time 0-7, then best-effort 0-7 (a class never set at
-/// the level @p nice derives, as the kernel serves it), then idle; Windows' hints from Critical to Very low. An
-/// unknown I/O priority sorts after every known one.
-[[nodiscard]] constexpr std::int32_t ioPriorityRank(const std::optional<Platform::IoPriority>& priority, std::int32_t nice) noexcept
+/// Where @p priority sorts, lower first being served first: real time 0-7, then best-effort 0-7, then idle; a class
+/// never set where the kernel serves it, in the class @p policy gives (inheritedIoClass()) at the level @p nice derives;
+/// Windows' hints from Critical to Very low. An unknown I/O priority sorts after every known one.
+[[nodiscard]] constexpr std::int32_t ioPriorityRank(const std::optional<Platform::IoPriority>& priority,
+                                                    std::int32_t nice,
+                                                    Platform::SchedPolicy policy = Platform::SchedPolicy::Unknown) noexcept
 {
     constexpr std::int32_t LEVELS = 8;
     if (!priority.has_value())
@@ -123,7 +163,15 @@ class IoPriorityText
     case Platform::IoPriorityClass::BestEffort:
         return LEVELS + priority->level;
     case Platform::IoPriorityClass::None:
-        return LEVELS + Domain::Priority::ioLevelForNice(nice);
+        switch (inheritedIoClass(policy))
+        {
+        case Platform::IoPriorityClass::Realtime:
+            return Domain::Priority::ioLevelForNice(nice);
+        case Platform::IoPriorityClass::Idle:
+            return 2 * LEVELS;
+        default:
+            return LEVELS + Domain::Priority::ioLevelForNice(nice);
+        }
     case Platform::IoPriorityClass::Idle:
         return 2 * LEVELS;
     case Platform::IoPriorityClass::WindowsHint:

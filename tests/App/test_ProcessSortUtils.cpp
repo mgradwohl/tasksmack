@@ -4,6 +4,8 @@
 #include "Domain/ProcessSnapshot.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/ImageSignature.h"
+#include "Platform/IoPriorityTypes.h"
+#include "Platform/SchedPolicy.h"
 #include "UI/Format.h"
 
 #include <gtest/gtest.h>
@@ -188,6 +190,26 @@ TEST(ProcessSortUtilsTest, IoPrioritySortsHighestFirstWithUnknownLast)
         EXPECT_FALSE(ProcessSortUtils::compareColumnKey(unknown, idle, ProcessColumn::IoPriority, ascending)) << ascending;
         EXPECT_FALSE(ProcessSortUtils::compareColumnKey(unknown, unknown, ProcessColumn::IoPriority, ascending));
     }
+}
+
+// The review of #3551: a process whose I/O class was never set sorts where the kernel serves it, in the class its CPU
+// policy gives: an unset FIFO process before an explicit best-effort 0, an unset SCHED_IDLE one after best-effort 7.
+TEST(ProcessSortUtilsTest, AnUnsetIoClassSortsByTheClassItsCpuPolicyGives)
+{
+    ProcessSnapshot unsetFifo = makeSnapshot(false);
+    unsetFifo.ioPriority = Platform::IoPriority{.ioClass = Platform::IoPriorityClass::None, .level = 0};
+    unsetFifo.nice = 0;
+    unsetFifo.schedPolicy = Platform::SchedPolicy::Fifo;
+    ProcessSnapshot unsetIdle = unsetFifo;
+    unsetIdle.schedPolicy = Platform::SchedPolicy::Idle;
+    ProcessSnapshot bestEffort0 = makeSnapshot(false);
+    bestEffort0.ioPriority = Platform::IoPriority{.ioClass = Platform::IoPriorityClass::BestEffort, .level = 0};
+    ProcessSnapshot bestEffort7 = makeSnapshot(false);
+    bestEffort7.ioPriority = Platform::IoPriority{.ioClass = Platform::IoPriorityClass::BestEffort, .level = 7};
+    EXPECT_TRUE(ProcessSortUtils::compareColumnKey(unsetFifo, bestEffort0, ProcessColumn::IoPriority, true));
+    EXPECT_FALSE(ProcessSortUtils::compareColumnKey(bestEffort0, unsetFifo, ProcessColumn::IoPriority, true));
+    EXPECT_TRUE(ProcessSortUtils::compareColumnKey(bestEffort7, unsetIdle, ProcessColumn::IoPriority, true));
+    EXPECT_FALSE(ProcessSortUtils::compareColumnKey(unsetIdle, bestEffort7, ProcessColumn::IoPriority, true));
 }
 
 TEST(ProcessSortUtilsTest, GpuEngineComparesByCountBeforeFirstName)

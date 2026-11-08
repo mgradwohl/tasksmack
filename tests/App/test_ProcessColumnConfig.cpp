@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <string>
 #include <string_view>
@@ -244,6 +245,27 @@ TEST(ProcessColumnConfigTest, ToIndexReturnsCorrectValues)
     EXPECT_EQ(toIndex(ProcessColumn::Policy), 21);       // Scheduling policy (#3086) — after Priority(20)
     EXPECT_EQ(toIndex(ProcessColumn::IoPriority), 22);   // I/O priority (#3551) — after Policy
     EXPECT_EQ(toIndex(ProcessColumn::GdiObjects), 26);   // GDI count — after Handles(25); Private and Swap (#1885) sit before them
+}
+
+TEST(ProcessColumnConfigTest, PersistentIdsAreUniqueAndOnlyAnInsertedColumnTakesANewOne)
+{
+    // #3551: a saved table layout is matched to columns by these IDs, so a column inserted mid-order must not take
+    // the ID the column after it was saved with.
+    std::vector<bool> seen(processColumnCount(), false);
+    for (const ProcessColumn col : allProcessColumns())
+    {
+        const std::uint32_t id = persistentColumnId(col);
+        ASSERT_LT(id, processColumnCount());
+        EXPECT_FALSE(seen.at(id)) << "two columns share ID " << id;
+        seen.at(id) = true;
+    }
+    // Before I/O Priority each keeps its position; after it each keeps the ID it had before the insertion.
+    EXPECT_EQ(persistentColumnId(ProcessColumn::PID), 0U);
+    EXPECT_EQ(persistentColumnId(ProcessColumn::Policy), 21U);
+    EXPECT_EQ(persistentColumnId(ProcessColumn::Affinity), 22U);
+    EXPECT_EQ(persistentColumnId(ProcessColumn::IoRead), toIndex(ProcessColumn::IoRead) - 1);
+    EXPECT_EQ(persistentColumnId(ProcessColumn::Command), toIndex(ProcessColumn::Command) - 1);
+    EXPECT_EQ(persistentColumnId(ProcessColumn::IoPriority), processColumnCount() - 1); // The next unused ID
 }
 
 TEST(ProcessColumnConfigTest, ToIndexIsMonotonic)

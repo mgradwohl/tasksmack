@@ -50,8 +50,8 @@ template<typename T> [[nodiscard]] constexpr std::optional<T> readingSortKey(boo
     {
         return a.ioPriority.has_value();
     }
-    const std::int32_t left = Detail::ioPriorityRank(a.ioPriority, a.nice);
-    const std::int32_t right = Detail::ioPriorityRank(b.ioPriority, b.nice);
+    const std::int32_t left = Detail::ioPriorityRank(a.ioPriority, a.nice, a.schedPolicy);
+    const std::int32_t right = Detail::ioPriorityRank(b.ioPriority, b.nice, b.schedPolicy);
     return ascending ? left < right : left > right;
 }
 

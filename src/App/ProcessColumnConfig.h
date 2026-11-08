@@ -148,6 +148,37 @@ enum class ProcessColumn : std::uint8_t
     return static_cast<std::size_t>(std::to_underlying(col));
 }
 
+/// The columns inserted into ProcessColumn's order since the persistent IDs were frozen (#3551), in the order they
+/// shipped. Append a new column here wherever it goes in the order, and never remove or reorder one.
+inline constexpr std::array<ProcessColumn, 1> COLUMNS_INSERTED_SINCE_IDS_FROZE = {
+    ProcessColumn::IoPriority, // #3551
+};
+
+/// A column's persistent ID: the UserID its table column is set up with, which ImGui saves with the column's width,
+/// order and sort in the stored layout (#952) and matches a saved column by on the next launch. It never changes once a
+/// column ships: a column in the order the IDs were frozen at keeps its place there as its ID, and an inserted column
+/// (COLUMNS_INSERTED_SINCE_IDS_FROZE) takes the next unused one. So a column added mid-order never inherits the saved
+/// width, order or sort of the column after it, as it would if the ID were the position (#3551). Unique, and every ID
+/// is below processColumnCount().
+[[nodiscard]] constexpr auto persistentColumnId(ProcessColumn col) -> std::uint32_t
+{
+    constexpr std::size_t FROZEN_COUNT = static_cast<std::size_t>(ProcessColumn::Count) - COLUMNS_INSERTED_SINCE_IDS_FROZE.size();
+    std::size_t insertedBefore = 0;
+    for (std::size_t i = 0; i < COLUMNS_INSERTED_SINCE_IDS_FROZE.size(); ++i)
+    {
+        const ProcessColumn inserted = COLUMNS_INSERTED_SINCE_IDS_FROZE.at(i);
+        if (inserted == col)
+        {
+            return static_cast<std::uint32_t>(FROZEN_COUNT + i);
+        }
+        if (toIndex(inserted) < toIndex(col))
+        {
+            ++insertedBefore;
+        }
+    }
+    return static_cast<std::uint32_t>(toIndex(col) - insertedBefore);
+}
+
 /// Column metadata for display and configuration
 struct ProcessColumnInfo
 {
