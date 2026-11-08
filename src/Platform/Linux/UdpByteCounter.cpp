@@ -1,5 +1,6 @@
 #include "UdpByteCounter.h"
 
+#include "Platform/UdpByteCounts.h"
 #include "UdpBytesBpfObject.h" // generated: bpf/udp_bytes.bpf.c, compiled and embedded (cmake/BpfObject.cmake)
 
 #include <spdlog/spdlog.h>

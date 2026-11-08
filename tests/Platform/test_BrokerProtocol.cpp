@@ -1063,6 +1063,60 @@ TEST(BrokerProtocolTest, CrashesRoundTrip)
     EXPECT_FALSE(decodeResponse(bytes).has_value());
 }
 
+// #3366: every process's UDP bytes from the Linux helper's eBPF counter.
+TEST(BrokerProtocolTest, UdpBytesRoundTripsEveryFieldAndBadRepliesAreRefused)
+{
+    EXPECT_EQ(roundTrip(Request{UdpBytesRequest{}}), Request{UdpBytesRequest{}});
+    const Response counting = UdpBytesReply{
+        .status = UdpBytesStatus::Ok,
+        .detail = {},
+        .processes = {{.tgid = 7, .txBytes = 8000, .rxBytes = 6000}, {.tgid = 0xFFFFFFFFU, .txBytes = UINT64_MAX, .rxBytes = 0}}};
+    EXPECT_EQ(roundTrip(counting), counting);
+    const Response failed = UdpBytesReply{.status = UdpBytesStatus::Failed, .detail = "no BTF", .processes = {}};
+    EXPECT_EQ(roundTrip(failed), failed);
+    const Response off = UdpBytesReply{.status = UdpBytesStatus::NotCounting, .detail = {}, .processes = {}};
+    EXPECT_EQ(roundTrip(off), off);
+
+    // Offsets in a one-process reply with an empty detail: status, detail (its count), count, then the process.
+    const std::vector<std::uint8_t> good = encodeResponse(
+        1, Response{UdpBytesReply{.status = UdpBytesStatus::Ok, .detail = {}, .processes = {{.tgid = 1, .txBytes = 2, .rxBytes = 3}}}});
+    ASSERT_TRUE(decodeResponse(good).has_value());
+    constexpr std::size_t STATUS = 4 + HEADER_BYTES;
+    constexpr std::size_t COUNT = STATUS + 1 + 4;
+    const auto refusedWith = [&good](std::size_t at, std::uint8_t value)
+    {
+        std::vector<std::uint8_t> bytes = good;
+        bytes[at] = value;
+        return !decodeResponse(bytes).has_value();
+    };
+    EXPECT_TRUE(refusedWith(STATUS, static_cast<std::uint8_t>(UdpBytesStatus::Failed) + 1)) << "a status past Failed";
+    EXPECT_TRUE(refusedWith(COUNT, 2)) << "a count past the processes there";
+    EXPECT_TRUE(refusedWith(COUNT, 0)) << "a process left over";
+
+    // A count past MAX_UDP_BYTE_PROCESSES is refused before any process is read.
+    std::vector<std::uint8_t> tooMany =
+        encodeResponse(1, Response{UdpBytesReply{.status = UdpBytesStatus::Ok, .detail = {}, .processes = {}}});
+    const auto huge = static_cast<std::uint32_t>(MAX_UDP_BYTE_PROCESSES + 1);
+    for (std::size_t i = 0; i < 4; ++i)
+    {
+        tooMany[COUNT + i] = static_cast<std::uint8_t>(huge >> (8U * i));
+    }
+    EXPECT_FALSE(decodeResponse(tooMany).has_value());
+
+    // A reply with more than the cap carries the first MAX_UDP_BYTE_PROCESSES.
+    UdpBytesReply big{.status = UdpBytesStatus::Ok, .detail = {}, .processes = {}};
+    big.processes.resize(MAX_UDP_BYTE_PROCESSES + 3);
+    const auto decoded = decodeResponse(encodeResponse(1, Response{big}));
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_EQ(std::get<UdpBytesReply>(decoded->message).processes.size(), MAX_UDP_BYTE_PROCESSES);
+
+    // ReadUdpBytes has no payload: a byte after the header is refused.
+    std::vector<std::uint8_t> request = encodeRequest(1, Request{UdpBytesRequest{}});
+    request.push_back(0);
+    request[0] = static_cast<std::uint8_t>(request[0] + 1);
+    EXPECT_FALSE(decodeRequest(request).has_value());
+}
+
 // #2417: the decoders' refusals of a well-framed message that is the wrong way round or out of range.
 TEST(BrokerProtocolTest, NoResponseDecodesAsARequestAndNoRequestAsAResponse)
 {
@@ -1079,6 +1133,7 @@ TEST(BrokerProtocolTest, NoResponseDecodesAsARequestAndNoRequestAsAResponse)
         CrashesReply{},
         ThreadsReply{.result = {.status = ThreadsReadStatus::Ok, .threads = {}, .detail = {}}},
         MemoryMapReply{.result = {.status = MemoryMapReadStatus::Ok, .mappings = {}, .detail = {}}},
+        UdpBytesReply{},
     };
     for (const Response& response : responses)
     {
@@ -1105,6 +1160,7 @@ TEST(BrokerProtocolTest, NoResponseDecodesAsARequestAndNoRequestAsAResponse)
         ThreadActionRequest{.target = TARGET, .tid = 9, .action = ThreadAction::Resume},
         SchedPolicyRequest{.target = TARGET, .policy = SchedPolicy::Batch},
         MemoryMapRequest{.target = TARGET},
+        UdpBytesRequest{},
     };
     for (const Request& request : requests)
     {
@@ -1264,6 +1320,7 @@ TEST(BrokerProtocolTest, TheFuzzCorpusHasADecodableSeedForEveryMessageKind)
                                    MessageKind::ListHiddenProcesses,
                                    MessageKind::ReadThreads,
                                    MessageKind::ReadMemoryMap,
+                                   MessageKind::ReadUdpBytes,
                                    MessageKind::ActionResult,
                                    MessageKind::EnvironmentResult,
                                    MessageKind::ModulesResult,
@@ -1277,6 +1334,7 @@ TEST(BrokerProtocolTest, TheFuzzCorpusHasADecodableSeedForEveryMessageKind)
                                    MessageKind::ServiceActionResult,
                                    MessageKind::ThreadsResult,
                                    MessageKind::MemoryMapResult,
+                                   MessageKind::UdpBytesResult,
                                    MessageKind::Error})
     {
         EXPECT_TRUE(seeded.contains(kind)) << "no seed for kind " << static_cast<int>(kind);
@@ -1385,6 +1443,14 @@ TEST(BrokerProtocolTest, ListRepliesCompareByEveryFieldOfEveryEntry)
         [](MemoryMapReply& m) { m.result.truncated = true; },
         [](MemoryMapReply& m) { m.result.mappings[0].end = 3; },
         [](MemoryMapReply& m) { m.result.mappings[0].pssBytes = 0; });
+
+    expectEveryFieldCompared(
+        UdpBytesReply{.status = UdpBytesStatus::Ok, .detail = "d", .processes = {{.tgid = 1, .txBytes = 2, .rxBytes = 3}}},
+        [](UdpBytesReply& m) { m.status = UdpBytesStatus::Failed; },
+        [](UdpBytesReply& m) { m.detail = "e"; },
+        [](UdpBytesReply& m) { m.processes[0].tgid = 4; },
+        [](UdpBytesReply& m) { m.processes[0].txBytes = 4; },
+        [](UdpBytesReply& m) { m.processes[0].rxBytes = 4; });
 
     ProcessConnection connection;
     connection.local.port = 80;

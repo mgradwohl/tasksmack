@@ -302,6 +302,31 @@ TEST(BrokerRequestMappingTest, ACrashesRequestIsReadThroughItsFunction)
     EXPECT_TRUE(std::holds_alternative<Broker::ErrorReply>(BrokerServer::handleRequest(Broker::CrashesRequest{}, actions)));
 }
 
+// #3366: every process's UDP bytes, through the Linux helper's counter; a helper without one (Windows') says so.
+TEST(BrokerRequestMappingTest, AUdpBytesRequestIsReadThroughItsFunction)
+{
+    TestMocks::MockProcessActions actions;
+    BrokerServer::Readers readers;
+    readers.udpBytes = []
+    {
+        return Broker::UdpBytesReply{
+            .status = Broker::UdpBytesStatus::Ok, .detail = {}, .processes = {{.tgid = 5, .txBytes = 6, .rxBytes = 7}}};
+    };
+    const Broker::Response response = BrokerServer::handleRequest(Broker::UdpBytesRequest{}, actions, readers);
+    ASSERT_TRUE(std::holds_alternative<Broker::UdpBytesReply>(response));
+    EXPECT_EQ(std::get<Broker::UdpBytesReply>(response).processes.at(0).txBytes, 6U);
+
+    readers.udpBytes = []() -> Broker::UdpBytesReply
+    {
+        throw std::runtime_error("map gone");
+    };
+    const Broker::Response failed = BrokerServer::handleRequest(Broker::UdpBytesRequest{}, actions, readers);
+    ASSERT_TRUE(std::holds_alternative<Broker::UdpBytesReply>(failed));
+    EXPECT_EQ(std::get<Broker::UdpBytesReply>(failed).status, Broker::UdpBytesStatus::Failed);
+
+    EXPECT_TRUE(std::holds_alternative<Broker::ErrorReply>(BrokerServer::handleRequest(Broker::UdpBytesRequest{}, actions)));
+}
+
 TEST(BrokerRequestMappingTest, AMemoryRollupRequestIsReadThroughItsFunction)
 {
     TestMocks::MockProcessActions actions;

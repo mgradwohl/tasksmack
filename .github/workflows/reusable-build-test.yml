@@ -319,7 +319,7 @@ jobs:
           # real-system guard reads these three (tests/Support/CiRealSystem.h).
           sudo --preserve-env=TASKSMACK_CI_REAL_SYSTEM,GITHUB_ACTIONS,RUNNER_ENVIRONMENT \
             build/debug/tests/TaskSmackTests --gtest_filter='TasksmackHelperRootTest.*:DetachedSpawnTest.AsRoot*:*/UdpByteCounterRootTest.*' 2>&1 | tee helper-root-test.log
-          if grep -q '\[  SKIPPED \]' helper-root-test.log || ! grep -q '\[  PASSED  \] 6 tests' helper-root-test.log; then
+          if grep -q '\[  SKIPPED \]' helper-root-test.log || ! grep -q '\[  PASSED  \] 7 tests' helper-root-test.log; then
             echo "::error title=Helper root test::TasksmackHelperRootTest, DetachedSpawnTest.AsRoot* and UdpByteCounterRootTest didn't all run and pass as root"
             exit 1
           fi

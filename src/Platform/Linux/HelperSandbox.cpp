@@ -578,11 +578,13 @@ program([[maybe_unused]] Mode mode, [[maybe_unused]] pid_t self, [[maybe_unused]
     if (udpByteMap)
     {
         code.blockFor(SYS_bpf,
-                      {load(argLow(0)),
-                       jump(BPF_JMP | BPF_JEQ | BPF_K, static_cast<std::uint32_t>(BPF_MAP_LOOKUP_ELEM), 1, 0),
-                       jump(BPF_JMP | BPF_JEQ | BPF_K, static_cast<std::uint32_t>(BPF_MAP_GET_NEXT_KEY), 0, 1),
-                       ret(ALLOW),
-                       ret(fail(EPERM))});
+                      {
+                          load(argLow(0)),
+                          jump(BPF_JMP | BPF_JEQ | BPF_K, static_cast<std::uint32_t>(BPF_MAP_LOOKUP_ELEM), 1, 0),
+                          jump(BPF_JMP | BPF_JEQ | BPF_K, static_cast<std::uint32_t>(BPF_MAP_GET_NEXT_KEY), 0, 1),
+                          ret(ALLOW),
+                          ret(fail(EPERM)),
+                      });
     }
     for (const long call : REFUSED)
     {
