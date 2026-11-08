@@ -35,11 +35,10 @@ runs:
     #    (gh release view -R pal1000/mesa-dist-win <ver> --json assets).
     #  - ARM64: mmozeiko/build-mesa 26.2.5's mesa-llvmpipe-arm64-<ver>.7z (#2214). To update, take
     #    the new release's asset digest (gh release view -R mmozeiko/build-mesa <ver> --json assets).
-    - name: Fetch Mesa llvmpipe
-      id: fetch
+    - name: Pick the Mesa llvmpipe build
+      id: pin
       shell: pwsh
       env:
-        COPY_TO: ${{ inputs.copy-to }}
         MESA_ARCH: ${{ runner.arch }}
       run: |
         $ErrorActionPreference = 'Stop'
@@ -47,27 +46,58 @@ runs:
           $version = '26.2.4'
           $url = "https://github.com/pal1000/mesa-dist-win/releases/download/$version/mesa3d-$version-release-msvc.7z"
           $sha256 = '351fc8c8b695878ffb3eaa044b3ead08672a48b1a045e3c3e3975811df0f6695'
-          $members = @('x64/opengl32.dll', 'x64/libgallium_wgl.dll')
         } elseif ($env:MESA_ARCH -eq 'ARM64') {
           $version = '26.2.5'
           $url = "https://github.com/mmozeiko/build-mesa/releases/download/$version/mesa-llvmpipe-arm64-$version.7z"
           $sha256 = 'e7df75398d50e07a68bbffa5cff2ece4c85e5f8ef8bda497f560dd04fe60cbbd'
-          $members = @('opengl32.dll')
         } else {
           Write-Error "No pinned Mesa llvmpipe build for runner architecture $env:MESA_ARCH"
           exit 1
         }
+        $archive = Join-Path (Join-Path $env:RUNNER_TEMP 'mesa-archive') ([System.IO.Path]::GetFileName($url))
+        "url=$url" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+        "sha256=$sha256" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+        "archive=$archive" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+    # The archive, keyed by its own SHA-256, so a GitHub releases outage doesn't fail every Windows
+    # display-test job: only a run with nothing cached yet downloads it. Whatever the cache gives back is
+    # checked against the pinned hash below before anything in it is used. Saved from main only, as the
+    # ccache entries are (#1406): a pull request reads main's entry and never adds its own to the quota.
+    - name: Restore the Mesa archive
+      id: cache
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.pin.outputs.archive }}
+        key: mesa-llvmpipe-${{ runner.arch }}-${{ steps.pin.outputs.sha256 }}
+
+    - name: Fetch Mesa llvmpipe
+      id: fetch
+      shell: pwsh
+      env:
+        COPY_TO: ${{ inputs.copy-to }}
+        MESA_ARCH: ${{ runner.arch }}
+        MESA_URL: ${{ steps.pin.outputs.url }}
+        MESA_SHA256: ${{ steps.pin.outputs.sha256 }}
+        MESA_ARCHIVE: ${{ steps.pin.outputs.archive }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $members = if ($env:MESA_ARCH -eq 'X64') { @('x64/opengl32.dll', 'x64/libgallium_wgl.dll') } else { @('opengl32.dll') }
+        $archive = $env:MESA_ARCHIVE
         $mesaRoot = Join-Path $env:RUNNER_TEMP 'mesa'
-        $archive = Join-Path $mesaRoot ([System.IO.Path]::GetFileName($url))
         # Each architecture's DLLs end up in their own directory: the x64 archive keeps them under
         # x64/, the ARM64 one at its top level, so that one is extracted into arm64/.
         $dllDir = Join-Path $mesaRoot $env:MESA_ARCH.ToLowerInvariant()
         $extractRoot = if ($env:MESA_ARCH -eq 'X64') { $mesaRoot } else { $dllDir }
-        New-Item -ItemType Directory -Force -Path $mesaRoot, $extractRoot | Out-Null
-        Invoke-WebRequest -Uri $url -OutFile $archive -MaximumRetryCount 3 -RetryIntervalSec 5
-        $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
-        if ($actual -ne $sha256) {
-          Write-Error "Mesa archive SHA-256 mismatch: expected $sha256, got $actual"
+        New-Item -ItemType Directory -Force -Path $mesaRoot, $extractRoot, (Split-Path -Parent $archive) | Out-Null
+        $hashOf = { param($path) (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() }
+        if ((Test-Path -LiteralPath $archive) -and ((& $hashOf $archive) -eq $env:MESA_SHA256)) {
+          Write-Host "Mesa archive from the cache: $archive"
+        } else {
+          Invoke-WebRequest -Uri $env:MESA_URL -OutFile $archive -MaximumRetryCount 3 -RetryIntervalSec 5
+        }
+        $actual = & $hashOf $archive
+        if ($actual -ne $env:MESA_SHA256) {
+          Write-Error "Mesa archive SHA-256 mismatch: expected $env:MESA_SHA256, got $actual"
           exit 1
         }
         # Windows' own bsdtar reads .7z; an unqualified 'tar' can resolve to Git's GNU tar, which can't.
@@ -81,3 +111,10 @@ runs:
           Copy-Item -Path (Join-Path $dllDir '*.dll') -Destination $env:COPY_TO
           Write-Host "Copied Mesa's OpenGL DLLs ($env:MESA_ARCH) to $env:COPY_TO"
         }
+
+    - name: Save the Mesa archive
+      if: steps.cache.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.pin.outputs.archive }}
+        key: mesa-llvmpipe-${{ runner.arch }}-${{ steps.pin.outputs.sha256 }}
