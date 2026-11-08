@@ -80,6 +80,10 @@ if(CLANG_TIDY_EXE)
     # - glad_gl_core_33: ensures GLAD headers are generated before clang-tidy runs
     # - copy-compile-commands (optional): keeps the source-root copy fresh when enabled
     add_dependencies(run-clang-tidy generate-clang-tidy-compile-commands glad_gl_core_33)
+    # - tasksmack_bpf_object (Linux): the eBPF UDP counter's embedded object, which UdpByteCounter.cpp includes (#3366)
+    if(TARGET tasksmack_bpf_object)
+        add_dependencies(run-clang-tidy tasksmack_bpf_object)
+    endif()
     if(TARGET copy-compile-commands)
         add_dependencies(run-clang-tidy copy-compile-commands)
     endif()

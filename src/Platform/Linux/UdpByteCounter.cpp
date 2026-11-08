@@ -7,9 +7,12 @@
 #include <algorithm>
 #include <array>
 #include <cerrno>
+#include <charconv>
 #include <cstdarg>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <expected>
 #include <format>
 #include <memory>
@@ -17,11 +20,13 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
+#include <sys/utsname.h>
 
 namespace Platform
 {
@@ -31,6 +36,8 @@ namespace
 
 constexpr std::string_view OBJECT_NAME = "udp_bytes";
 constexpr std::string_view MAP_NAME = "udp_bytes_by_tgid";
+/// The map's max_entries in bpf/udp_bytes.bpf.c: a read returns at most this many processes.
+constexpr std::size_t MAP_ENTRIES = 16384;
 
 constexpr std::array<UdpAttachAttempt, 4> ATTEMPTS{
     UdpAttachAttempt{.mode = UdpAttachMode::Fexit, .ipv6 = true},
@@ -50,6 +57,53 @@ static_assert(sizeof(MapValue) == 16);
 std::string errnoText(int error)
 {
     return std::error_code(error, std::generic_category()).message();
+}
+
+/// Whether this kernel's udp_recvmsg takes (sk, msg, len, flags, addr_len), as since 5.19, rather than the older
+/// six arguments with noblock before flags. Only the kprobe mode needs it; fexit counts the arguments itself.
+[[nodiscard]] bool recvmsgHasFiveArguments() noexcept
+{
+    utsname name{};
+    if (::uname(&name) != 0)
+    {
+        return true;
+    }
+    // The release string's leading "M.m"; anything else counts as a current kernel.
+    const std::span<const char> release(name.release);
+    const char* const begin = release.data();
+    const char* const end = std::to_address(std::ranges::find(release, '\0')); // the terminator, or the array's end
+    unsigned major = 0;
+    unsigned minor = 0;
+    const auto [afterMajor, majorError] = std::from_chars(begin, end, major);
+    if (majorError != std::errc{} || afterMajor == end || *afterMajor != '.' ||
+        std::from_chars(afterMajor + 1, end, minor).ec != std::errc{}) // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+    {
+        return true;
+    }
+    return major > 5 || (major == 5 && minor >= 19);
+}
+
+/// Sets the program's RECV_FLAGS_ARG, its only read-only global, before the object loads.
+[[nodiscard]] bool setRecvFlagsArg(const bpf_object* object, int position) noexcept
+{
+    const bpf_map* map = nullptr;
+    bpf_object__for_each_map(map, object)
+    {
+        const std::string_view name(bpf_map__name(map));
+        if (!bpf_map__is_internal(map) || !name.ends_with(".rodata"))
+        {
+            continue;
+        }
+        std::size_t size = 0;
+        void* data = bpf_map__initial_value(map, &size);
+        if (data == nullptr || size != sizeof(int))
+        {
+            return false;
+        }
+        std::memcpy(data, &position, sizeof(int));
+        return true;
+    }
+    return false;
 }
 
 // libbpf's own messages go to the debug log rather than stderr: a failed fexit attempt is expected on older
@@ -102,13 +156,17 @@ std::span<const UdpAttachAttempt> udpAttachAttempts() noexcept
 
 bool udpProgramWanted(std::string_view section, const UdpAttachAttempt& attempt) noexcept
 {
-    const std::string_view prefix = attempt.mode == UdpAttachMode::Fexit ? "fexit/" : "kretprobe/";
-    if (!section.starts_with(prefix))
+    // Each mode's entry and return programs.
+    const std::array<std::string_view, 2> prefixes = attempt.mode == UdpAttachMode::Fexit
+                                                       ? std::array<std::string_view, 2>{"fentry/", "fexit/"}
+                                                       : std::array<std::string_view, 2>{"kprobe/", "kretprobe/"};
+    const auto* const prefix = std::ranges::find_if(prefixes, [section](std::string_view p) { return section.starts_with(p); });
+    if (prefix == prefixes.end())
     {
         return false;
     }
     std::string_view function = section;
-    function.remove_prefix(prefix.size()); // starts_with above: no throwing substr in a noexcept function
+    function.remove_prefix(prefix->size()); // starts_with above: no throwing substr in a noexcept function
     if (function.starts_with("udpv6_"))
     {
         return attempt.ipv6;
@@ -134,10 +192,15 @@ UdpByteCounter& UdpByteCounter::operator=(UdpByteCounter&& other) noexcept = def
 
 std::expected<UdpByteCounter, std::string> UdpByteCounter::load()
 {
+    return load(ATTEMPTS);
+}
+
+std::expected<UdpByteCounter, std::string> UdpByteCounter::load(std::span<const UdpAttachAttempt> attempts)
+{
     libbpf_set_print(libbpfPrint);
 
     std::string lastError = "no attach mode was tried";
-    for (const UdpAttachAttempt& attempt : ATTEMPTS)
+    for (const UdpAttachAttempt& attempt : attempts)
     {
         const char* modeName = attempt.mode == UdpAttachMode::Fexit ? "fexit" : "kretprobe";
         const std::string label = std::format("{}{}", modeName, attempt.ipv6 ? "" : " (IPv4 only)");
@@ -158,6 +221,10 @@ std::expected<UdpByteCounter, std::string> UdpByteCounter::load()
         {
             bpf_program__set_autoload(program, udpProgramWanted(bpf_program__section_name(program), attempt));
         }
+        if (!setRecvFlagsArg(object.get(), recvmsgHasFiveArguments() ? 3 : 4))
+        {
+            return std::unexpected("the BPF object has no RECV_FLAGS_ARG to set");
+        }
 
         if (const int error = bpf_object__load(object.get()); error != 0)
         {
@@ -174,15 +241,16 @@ std::expected<UdpByteCounter, std::string> UdpByteCounter::load()
             {
                 continue;
             }
-            bpf_link* link = bpf_program__attach(program);
-            if (link == nullptr)
+            // Owned at once, so a failed allocation below still detaches it.
+            LinkPtr link(bpf_program__attach(program));
+            if (!link)
             {
                 lastError = std::format("{}: attaching {} failed: {}", label, bpf_program__section_name(program), errnoText(errno));
                 spdlog::debug("UDP byte counter: {}", lastError);
                 attached = false;
                 break;
             }
-            state->links.emplace_back(link);
+            state->links.push_back(std::move(link));
         }
         if (!attached)
         {
@@ -212,14 +280,22 @@ std::vector<UdpByteCounts> UdpByteCounter::read() const
     {
         return counts;
     }
+    // A key that aged out of the LRU map between two calls makes the next call start over from the first, so
+    // the walk is bounded (at most the map's size in processes, twice that in steps) and skips a tgid it already
+    // has.
+    std::unordered_set<std::uint32_t> seen;
     std::uint32_t key = 0;
     std::uint32_t next = 0;
     const void* previous = nullptr; // nullptr asks for the first key
-    while (bpf_map_get_next_key(m_State->mapFd, previous, &next) == 0)
+    for (std::size_t step = 0; step < 2 * MAP_ENTRIES && counts.size() < MAP_ENTRIES; ++step)
     {
+        if (bpf_map_get_next_key(m_State->mapFd, previous, &next) != 0)
+        {
+            break; // the last key
+        }
         MapValue value;
         // An entry can age out of the LRU map between the two calls; skip it.
-        if (bpf_map_lookup_elem(m_State->mapFd, &next, &value) == 0)
+        if (seen.insert(next).second && bpf_map_lookup_elem(m_State->mapFd, &next, &value) == 0)
         {
             counts.push_back({.tgid = next, .txBytes = value.tx, .rxBytes = value.rx});
         }
