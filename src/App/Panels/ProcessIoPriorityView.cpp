@@ -113,7 +113,9 @@ void ProcessIoPriorityView::render(Platform::IProcessActions* actions,
         }
         if (ImGui::IsItemHovered())
         {
-            ImGui::SetTooltip("Follow the nice value again (best-effort, at the level it derives); Apply sets it");
+            // The class never set follows the CPU policy as well as nice (inheritedIoClass(), #3566's review).
+            ImGui::SetTooltip("Follow the CPU scheduling policy and nice value again: best-effort at the level nice derives, or "
+                              "realtime under a real-time policy, idle under SCHED_IDLE; Apply sets it");
         }
         if (stacked)
         {

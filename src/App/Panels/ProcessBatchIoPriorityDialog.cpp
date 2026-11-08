@@ -156,7 +156,9 @@ std::optional<Platform::IoPriority> ProcessBatchIoPriorityDialog::render()
         {
             pick(defaultValue(false));
         }
-        ImGui::SetItemTooltip("Follow each process's nice value again (best-effort, at the level it derives)");
+        // The class never set follows the CPU policy as well as nice (inheritedIoClass(), #3566's review).
+        ImGui::SetItemTooltip("Follow each process's CPU scheduling policy and nice value again: best-effort at the level nice "
+                              "derives, or realtime under a real-time policy, idle under SCHED_IDLE");
     }
     ImGui::Spacing();
     ImGui::PushTextWrapPos(0.0F);
