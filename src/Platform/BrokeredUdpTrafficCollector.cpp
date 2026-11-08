@@ -39,6 +39,7 @@ UdpCollectorStartResult BrokeredUdpTrafficCollector::start()
     const bool held = m_Broker->heldForSession();
     const std::stop_token never; // a prompt, if any, is the user's to answer or dismiss
     const auto counting = m_Broker->countUdpBytes(never);
+    std::uint64_t startVersion = 0;
     {
         const std::scoped_lock lock(m_Mutex);
         // A new run: whatever a read of an earlier one brings back is dropped, its counters are another generation (new
@@ -52,8 +53,9 @@ UdpCollectorStartResult BrokeredUdpTrafficCollector::start()
         m_Last.clear();
         m_Problem = counting.has_value() ? std::string{} : counting.error();
         m_Running = true;
+        startVersion = ++m_ProblemVersion;
     }
-    publishProblem(counting.has_value() ? std::string{} : counting.error());
+    publishProblem(counting.has_value() ? std::string{} : counting.error(), startVersion);
     if (counting.has_value())
     {
         spdlog::info("UDP traffic per process: counting through the helper");
@@ -120,6 +122,7 @@ std::vector<UdpProcessTraffic> BrokeredUdpTrafficCollector::fold(std::uint64_t r
 {
     std::vector<UdpProcessTraffic> traffic;
     std::string problem;
+    std::uint64_t version = 0;
     {
         const std::scoped_lock lock(m_Mutex);
         traffic = [&] -> std::vector<UdpProcessTraffic>
@@ -217,8 +220,9 @@ std::vector<UdpProcessTraffic> BrokeredUdpTrafficCollector::fold(std::uint64_t r
             return traffic;
         }();
         problem = m_Problem;
+        version = ++m_ProblemVersion;
     }
-    publishProblem(problem); // the UI's snapshot, outside m_Mutex
+    publishProblem(problem, version); // the UI's snapshot, outside m_Mutex
     return traffic;
 }
 
@@ -233,13 +237,16 @@ std::string BrokeredUdpTrafficCollector::problem() const
     return m_StatusProblem;
 }
 
-void BrokeredUdpTrafficCollector::publishProblem(const std::string& problem) noexcept
+void BrokeredUdpTrafficCollector::publishProblem(const std::string& problem, std::uint64_t version) noexcept
 {
     try
     {
+        // Each change of m_Problem takes the next version under m_Mutex, and is published after it's released: a
+        // version older than the snapshot's lost a race with a later change (start() against a sample), so it's dropped.
         const std::scoped_lock lock(m_StatusMutex);
-        if (m_StatusProblem != problem)
+        if (version > m_StatusVersion)
         {
+            m_StatusVersion = version;
             m_StatusProblem = problem;
         }
     }
@@ -249,11 +256,13 @@ void BrokeredUdpTrafficCollector::publishProblem(const std::string& problem) noe
 
 void BrokeredUdpTrafficCollector::setProblem(const std::string& problem)
 {
+    std::uint64_t version = 0;
     {
         const std::scoped_lock lock(m_Mutex);
         m_Problem = problem;
+        version = ++m_ProblemVersion;
     }
-    publishProblem(problem);
+    publishProblem(problem, version);
 }
 
 std::shared_ptr<IUdpTrafficCollector> withPrivilegedBroker(std::shared_ptr<IUdpTrafficCollector> collector,

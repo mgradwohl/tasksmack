@@ -53,8 +53,8 @@ class BrokeredUdpTrafficCollector final : public IUdpTrafficCollector
 
   private:
     void setProblem(const std::string& problem);
-    /// Copies @p problem into the snapshot problem() reads, under its own short lock.
-    void publishProblem(const std::string& problem) noexcept;
+    /// Copies @p problem into the snapshot problem() reads, under its own short lock, unless a later @p version is there.
+    void publishProblem(const std::string& problem, std::uint64_t version) noexcept;
     /// sample()'s reading folded in under m_Mutex; a changed reason to log goes to @p warning, for sample() to log once
     /// the lock is released.
     [[nodiscard]] std::vector<UdpProcessTraffic> fold(std::uint64_t run,
@@ -75,8 +75,10 @@ class BrokeredUdpTrafficCollector final : public IUdpTrafficCollector
     bool m_Seeding = false;                // the next counting reading only seeds Domain's baseline (sent unreadable)
     std::vector<UdpProcessTraffic> m_Last; // the last totals, for a reading the helper was too busy to answer
     std::string m_Problem;
-    mutable std::mutex m_StatusMutex; // guards m_StatusProblem alone: held only to copy it, never across I/O or logging
-    std::string m_StatusProblem;      // what problem() returns: m_Problem, as each fold, start() or setProblem() left it
+    std::uint64_t m_ProblemVersion = 0; // one more each time m_Problem is set, under m_Mutex
+    mutable std::mutex m_StatusMutex;   // guards m_StatusProblem alone: held only to copy it, never across I/O or logging
+    std::uint64_t m_StatusVersion = 0;  // the version m_StatusProblem came from
+    std::string m_StatusProblem;        // what problem() returns: m_Problem, as each fold, start() or setProblem() left it
 };
 
 /// Linux's UDP collector: @p collector when the platform made one (Windows' ETW), else one through @p broker, or

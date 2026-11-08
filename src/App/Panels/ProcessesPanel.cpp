@@ -1226,6 +1226,20 @@ void ProcessesPanel::adoptPlatform()
     // The UDP event trace's collector (#1492), started by the hook if Settings had it on; the toggle
     // and detach go through this panel from here.
     m_UdpCollector = std::move(contents->udpCollector);
+#ifndef _WIN32
+    // Adopted, and no collector: no helper to count through (it isn't installed, or TaskSmack runs as root), which an
+    // Administrator session can't change, so Settings says so and doesn't offer the counter (#3366). Only now: until
+    // the platform is adopted, a missing collector means nothing yet.
+    if (!m_UdpCollector)
+    {
+        m_UdpStatus = UdpCountingStatus{
+            .delivering = false,
+            .unsupported = true,
+            .problem = "TaskSmack's helper isn't available (it isn't installed, or TaskSmack runs as root)",
+        };
+        publishUdpCountingStatus(m_UdpStatus);
+    }
+#endif
     // The icons beside the names (#1800), loaded on their own worker as rows are first drawn.
     m_IconView.attach(std::move(contents->icons));
     // Find handles (#3067): its readers, searched on the dialog's own worker.
