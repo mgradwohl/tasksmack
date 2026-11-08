@@ -234,21 +234,28 @@ sessionsDemand(bool usersTabShown, bool processesTabShown, GroupBy groupBy, bool
         }
         return it->second;
     };
-    constexpr std::size_t MAX_DEPTH = 64; // Deeper than any real process tree; it ends a PID loop too
     std::vector<std::size_t> chain;
+    std::vector<bool> onChain(snapshots.size(), false); // The walk's processes, so a PID loop ends it
     for (std::size_t start = 0; start < snapshots.size(); ++start)
     {
-        // Up through the processes with no app of their own, to one already resolved or one that ends the walk.
+        // Up through the processes with no app of their own, to one already resolved, one with an app, one with
+        // no parent listed, or one whose parent is already on the walk (a PID loop). However deep the tree and in
+        // whatever order it is listed, every process above the start is resolved by its own ancestors alone.
+        for (const std::size_t index : chain)
+        {
+            onChain[index] = false;
+        }
         chain.clear();
         std::size_t current = start;
-        while (!resolved[current].done && chain.size() < MAX_DEPTH && ownAppKey(snapshots[current]).empty())
+        while (!resolved[current].done && ownAppKey(snapshots[current]).empty())
         {
             const std::optional<std::size_t> parent = parentOf(current);
-            if (!parent.has_value() || *parent == start || std::ranges::find(chain, *parent) != chain.end())
+            if (!parent.has_value() || *parent == current || onChain[*parent])
             {
                 break;
             }
             chain.push_back(current);
+            onChain[current] = true;
             current = *parent;
         }
         if (!resolved[current].done)
@@ -281,6 +288,32 @@ sessionsDemand(bool usersTabShown, bool processesTabShown, GroupBy groupBy, bool
         keys.push_back(std::move(r.key));
     }
     return keys;
+}
+
+/// What each App group's header says (#3457), by key: named by a process in @p snapshots that is the app itself,
+/// not one following it (appGroupLabel()), the first with the Start menu's name, else the first that is the app.
+/// Read from every process, not only those a filter shows, so a group filtered down to a terminal's shell is
+/// still named for the terminal.
+[[nodiscard]] inline std::unordered_map<std::string, std::string> appGroupLabels(const std::vector<Domain::ProcessSnapshot>& snapshots)
+{
+    std::unordered_map<std::string, std::string> labels;
+    std::unordered_map<std::string, bool> named; // Whether the label is the Start menu's name, which nothing replaces
+    for (const Domain::ProcessSnapshot& proc : snapshots)
+    {
+        std::string key = ownAppKey(proc);
+        if (key.empty())
+        {
+            continue;
+        }
+        auto [isNamed, added] = named.try_emplace(key, false);
+        if (added || (!isNamed->second && !proc.appName.empty()))
+        {
+            isNamed->second = !proc.appName.empty();
+            std::string label = appGroupLabel(proc, key);
+            labels.insert_or_assign(std::move(key), std::move(label));
+        }
+    }
+    return labels;
 }
 
 /// The group @p proc belongs to under @p mode, or empty for none (Ungrouped). By App it is its own app
@@ -323,8 +356,9 @@ sessionsDemand(bool usersTabShown, bool processesTabShown, GroupBy groupBy, bool
     std::vector<Group> groups;
     std::unordered_map<std::string, std::size_t> byKey;
     const bool byApp = mode == GroupBy::App;
-    std::vector<std::string> followedApps = byApp ? appKeys(snapshots) : std::vector<std::string>{};
-    std::vector<bool> namedByApp; // By App: whether the group's label came from a process that is the app and names it
+    const std::vector<std::string> followedApps = byApp ? appKeys(snapshots) : std::vector<std::string>{};
+    const std::unordered_map<std::string, std::string> appLabels =
+        byApp ? appGroupLabels(snapshots) : std::unordered_map<std::string, std::string>{};
     for (const std::size_t index : order)
     {
         if (index >= snapshots.size())
@@ -333,20 +367,19 @@ sessionsDemand(bool usersTabShown, bool processesTabShown, GroupBy groupBy, bool
         }
         const Domain::ProcessSnapshot& proc = snapshots[index];
         std::string key = byApp ? followedApps[index] : groupKey(proc, mode);
-        auto [slot, added] = byKey.try_emplace(key, groups.size());
+        auto [slot, added] = byKey.try_emplace(std::move(key), groups.size());
         if (added)
         {
-            std::string label = key;
-            groups.push_back(Group{.key = std::move(key), .label = std::move(label), .totals = {}, .members = {}});
-            namedByApp.push_back(false);
+            const std::string& newKey = slot->first;
+            const auto named = appLabels.find(newKey);
+            groups.push_back(Group{
+                .key = newKey,
+                .label = (named != appLabels.end()) ? named->second : newKey,
+                .totals = {},
+                .members = {},
+            });
         }
         Group& group = groups[slot->second];
-        if (byApp && !group.key.empty() && !namedByApp[slot->second] && ownAppKey(proc) == group.key)
-        {
-            // Named by a process that is the app, not by one following it; the first that has a name keeps it.
-            group.label = appGroupLabel(proc, group.key);
-            namedByApp[slot->second] = !proc.appName.empty();
-        }
         group.members.push_back(index);
         if (index < liveCount)
         {

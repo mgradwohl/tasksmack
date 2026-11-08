@@ -106,7 +106,11 @@ TEST(ProcessGroupingTest, KeysByMode)
 TEST(ProcessGroupingTest, ByUserTotalsEachUsersProcesses)
 {
     std::vector<Domain::ProcessSnapshot> snapshots{
-        proc("firefox", "", "", 20.0, 300), proc("sshd", "", "", 1.0, 10), proc("bash", "", "", 2.0, 20), proc("ghost", "", "", 0.5, 5)};
+        proc("firefox", "", "", 20.0, 300),
+        proc("sshd", "", "", 1.0, 10),
+        proc("bash", "", "", 2.0, 20),
+        proc("ghost", "", "", 0.5, 5),
+    };
     snapshots[0].user = "alice";
     snapshots[1].user = "root";
     snapshots[2].user = "alice";
@@ -412,6 +416,40 @@ TEST(ProcessGroupingAppTest, TheAppNamesItsGroupNotAFollower)
     const auto groups = ProcessGrouping::buildGroups(s, {0, 1}, GroupBy::App, s.size(), ProcessColumn::Name, true);
     ASSERT_EQ(groups.size(), 1U);
     EXPECT_EQ(groups[0].label, "Windows Terminal");
+}
+
+// However deep a packaged app's tree, and listed deepest first, every process in it follows the app: no
+// depth limit cuts the walk, and no ancestor is resolved by where the walk started.
+TEST(ProcessGroupingAppTest, ADeepChainListedChildFirstFollowsTheApp)
+{
+    constexpr std::int32_t DEPTH = 200;
+    std::vector<Domain::ProcessSnapshot> s;
+    for (std::int32_t pid = DEPTH; pid > 1; --pid)
+    {
+        s.push_back(windowsProc(pid, pid - 1, "pwsh.exe", "", "")); // The deepest first
+    }
+    s.push_back(windowsProc(1, 0, "WindowsTerminal.exe", "Microsoft.WindowsTerminal_8wekyb3d8bbwe", ""));
+    const std::vector<std::string> keys = ProcessGrouping::appKeys(s);
+    ASSERT_EQ(keys.size(), s.size());
+    for (std::size_t i = 0; i < keys.size(); ++i)
+    {
+        EXPECT_EQ(keys[i], "Microsoft.WindowsTerminal_8wekyb3d8bbwe") << "process " << s[i].pid;
+    }
+}
+
+// A filter that shows only a follower still names the group for the app, read from every process.
+TEST(ProcessGroupingAppTest, AFilteredGroupIsStillNamedForItsApp)
+{
+    std::vector<Domain::ProcessSnapshot> s{
+        windowsProc(20, 0, "WindowsTerminal.exe", "Microsoft.WindowsTerminal_8wekyb3d8bbwe", ""),
+        windowsProc(21, 20, "pwsh.exe", "", ""),
+    };
+    s[0].appName = "Windows Terminal";
+    const auto groups = ProcessGrouping::buildGroups(s, {1}, GroupBy::App, s.size(), ProcessColumn::Name, true); // pwsh only
+    ASSERT_EQ(groups.size(), 1U);
+    EXPECT_EQ(groups[0].key, "Microsoft.WindowsTerminal_8wekyb3d8bbwe");
+    EXPECT_EQ(groups[0].label, "Windows Terminal");
+    EXPECT_EQ(groups[0].members, (std::vector<std::size_t>{1}));
 }
 
 // Windows offers Group: App once its probe reads app IDs (#3457).

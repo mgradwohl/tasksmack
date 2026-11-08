@@ -33,6 +33,7 @@
 #include <string_view>
 #include <thread>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 // Windows headers must be in correct order:
@@ -335,6 +336,18 @@ class WindowsProcessProbe : public IProcessProbe
         bool packageRead = false;                                  // Whether the package was read
         bool appNameRead = false;                                  // Whether appName was asked for appUserModelId
         std::chrono::steady_clock::time_point nextWindowAppIdLook; // When its windows are next looked at
+
+        /// Take @p id as the process's AppUserModelID; a different one than before drops the name read for the
+        /// old one, so the name follows the ID (updateAppIdentity() reads it again).
+        void setAppUserModelId(std::string id)
+        {
+            if (id != appUserModelId)
+            {
+                appUserModelId = std::move(id);
+                appName.clear();
+                appNameRead = false;
+            }
+        }
         // Slow-changing fields cached with light/heavy TTL to avoid redundant Win32 calls.
         CpuAffinity cpuAffinity;       // readCpuAffinity() (heavy TTL)
         std::int32_t nice = 0;         // GetPriorityClass → nice value (heavy TTL, or when the base priority changes)

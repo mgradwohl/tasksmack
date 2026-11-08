@@ -24,6 +24,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cwchar>
+#include <memory>
 #include <span>
 #include <string>
 #include <utility>
@@ -58,6 +59,34 @@ template<typename Fn> [[nodiscard]] std::string readAppModelString(const Fn& rea
     text.resize(std::wcslen(text.c_str()));
     return WinString::wideToUtf8(text);
 }
+
+/// PropVariantClear on a PROPVARIANT when the scope that read it ends, however it ends.
+class PropVariantClearer
+{
+  public:
+    explicit PropVariantClearer(PROPVARIANT* value) noexcept : m_Value(value)
+    {}
+    ~PropVariantClearer()
+    {
+        static_cast<void>(PropVariantClear(m_Value));
+    }
+    PropVariantClearer(const PropVariantClearer&) = delete;
+    PropVariantClearer& operator=(const PropVariantClearer&) = delete;
+    PropVariantClearer(PropVariantClearer&&) = delete;
+    PropVariantClearer& operator=(PropVariantClearer&&) = delete;
+
+  private:
+    PROPVARIANT* m_Value;
+};
+
+/// Frees a string the shell allocated with CoTaskMemAlloc.
+struct CoTaskMemDeleter
+{
+    void operator()(wchar_t* text) const noexcept
+    {
+        CoTaskMemFree(text);
+    }
+};
 
 struct WindowWalk
 {
@@ -99,13 +128,13 @@ BOOL CALLBACK collectAppWindow(HWND window, LPARAM param)
     }
     PROPVARIANT value{};
     PropVariantInit(&value);
+    const PropVariantClearer clearer(&value); // Cleared however this returns, a throwing conversion included
     std::string id;
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access) - PROPVARIANT is a tagged union; vt says which
     if (SUCCEEDED(store->GetValue(APP_USER_MODEL_ID_KEY, &value)) && value.vt == VT_LPWSTR && value.pwszVal != nullptr)
     {
         id = WinString::wideToUtf8(value.pwszVal); // NOLINT(cppcoreguidelines-pro-type-union-access) - checked vt above
     }
-    static_cast<void>(PropVariantClear(&value));
     return id;
 }
 
@@ -167,12 +196,13 @@ std::string appDisplayName(const std::string& appUserModelId)
         return {};
     }
     PWSTR name = nullptr;
-    if (FAILED(item->GetDisplayName(SIGDN_NORMALDISPLAY, &name)) || name == nullptr)
+    const HRESULT named = item->GetDisplayName(SIGDN_NORMALDISPLAY, &name);
+    const std::unique_ptr<wchar_t, CoTaskMemDeleter> owned(name); // Freed however this returns
+    if (FAILED(named) || owned == nullptr)
     {
         return {};
     }
-    const std::string text = WinString::wideToUtf8(name);
-    CoTaskMemFree(name);
+    const std::string text = WinString::wideToUtf8(owned.get());
     // A name the Apps folder doesn't know comes back as the parsing name itself: no name, then.
     return (text == appUserModelId) ? std::string{} : text;
 }

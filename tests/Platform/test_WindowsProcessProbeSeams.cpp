@@ -1913,6 +1913,29 @@ TEST_F(WindowsProcessAppIdentityTest, AnUnopenableProcesssWindowsAreStillLookedA
     EXPECT_EQ(fakeApps().packageReads, 0);
 }
 
+// A window's ID, then the package's once a handle opens: the name follows the new ID, not the old one's.
+TEST_F(WindowsProcessAppIdentityTest, TheNameFollowsAChangedAppUserModelId)
+{
+    fake().failOpenProcess = true;
+    fakeApps().windowIds[PID] = "Contoso.Window";
+    fakeApps().names["Contoso.Window"] = "Window Name";
+    fakeApps().names["Contoso.App_1a2b3c!App"] = "Packaged Name";
+    WindowsProcessProbe probe(appFunctions());
+    (void) probe.enumerate();
+    const ProcessCounters fromWindow = find(probe.enumerate());
+    EXPECT_EQ(fromWindow.appUserModelId, "Contoso.Window");
+    EXPECT_EQ(fromWindow.appName, "Window Name");
+
+    fake().failOpenProcess = false;
+    fakeApps().package = {.family = "Contoso.App_1a2b3c", .appUserModelId = "Contoso.App_1a2b3c!App"};
+    fake().now += std::chrono::hours(1); // The next handle opens with the details' TTL
+    const ProcessCounters fromPackage = find(probe.enumerate());
+    EXPECT_EQ(fromPackage.packageFamily, "Contoso.App_1a2b3c");
+    EXPECT_EQ(fromPackage.appUserModelId, "Contoso.App_1a2b3c!App");
+    EXPECT_EQ(fromPackage.appName, "Packaged Name");
+    EXPECT_EQ(fakeApps().nameLookups, 2);
+}
+
 // The real reads: TaskSmackTests itself is unpackaged, a walk for no processes finds nothing, and the probe's
 // own table points at them.
 TEST(WindowsAppIdentityTest, TheRealReadsOnThisUnpackagedTestProcess)

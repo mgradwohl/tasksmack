@@ -1482,7 +1482,7 @@ void WindowsProcessProbe::updateAppIdentity(DetailCacheEntry& cache, ProcessCoun
             cache.packageFamily = std::move(package.family);
             if (!package.appUserModelId.empty())
             {
-                cache.appUserModelId = std::move(package.appUserModelId);
+                cache.setAppUserModelId(std::move(package.appUserModelId)); // The package's, over a window's
             }
         }
         cache.packageRead = true;
@@ -1550,7 +1550,7 @@ void WindowsProcessProbe::lookForWindowAppIds(std::chrono::steady_clock::time_po
         }
         if (const auto found = std::ranges::find(m_WindowAppIds, key.pid, &Windows::WindowAppId::pid); found != m_WindowAppIds.end())
         {
-            entry.appUserModelId = found->appUserModelId; // Named with its details (updateAppIdentity())
+            entry.setAppUserModelId(found->appUserModelId); // Named with its details (updateAppIdentity())
         }
         else
         {
