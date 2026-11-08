@@ -168,11 +168,14 @@ TEST(BrokeredUdpTrafficCollectorTest, AFailedReadIsFollowedByASeedingReading)
     answerWith(*broker, {{.tgid = 7, .txBytes = 200, .rxBytes = 0}});
     EXPECT_TRUE(only(collector.sample()).readable);
 
+    EXPECT_FALSE(collector.unsupported());
     answerStatus(*broker, Broker::UdpBytesStatus::Failed, "the kernel refused reading the UDP byte counter");
     EXPECT_TRUE(collector.sample().empty());
     EXPECT_EQ(collector.problem(), "the kernel refused reading the UDP byte counter");
+    EXPECT_TRUE(collector.unsupported()) << "Settings then doesn't offer to turn it on";
     answerWith(*broker, {{.tgid = 7, .txBytes = 300, .rxBytes = 0}});
     EXPECT_TRUE(only(collector.sample()).baselineOnly) << "the same helper kept counting: a baseline, not new bytes";
+    EXPECT_FALSE(collector.unsupported()) << "it counts again";
 
     answerStatus(*broker, Broker::UdpBytesStatus::NotCounting, {});
     EXPECT_TRUE(collector.sample().empty());

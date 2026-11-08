@@ -179,7 +179,7 @@ TEST_F(ProcessDetailsPanelRenderTest, ASetuidProcessSaysWhoStartedIt)
     EXPECT_FALSE(renderAndCapture(*panel).contains("Started by"));
 
     Domain::ProcessSample setuid = sampleAt(1.0, 10.0);
-    auto snapshot = std::make_shared<Domain::ProcessSnapshot>(*setuid.snapshot);
+    const auto snapshot = std::make_shared<Domain::ProcessSnapshot>(*setuid.snapshot);
     snapshot->user = "root";
     snapshot->realUser = "alice";
     setuid.snapshot = snapshot;
@@ -307,6 +307,39 @@ TEST_F(ProcessDetailsPanelRenderTest, TheOptionalRowsShowWhenTheProcessHasThem)
     EXPECT_TRUE(text.contains("docker:1a2b3c4d5e6f")) << text;
     EXPECT_TRUE(text.contains("Services")) << text;
     EXPECT_TRUE(text.contains("nginx.service")) << text;
+}
+
+// #3457: the Runtime card's App row says the App group the Processes table puts the process in, as
+// ProcessesPanel::appMembership() hands it over (ShellPanels), its parent's app for a helper too; with no
+// membership there is no row.
+TEST_F(ProcessDetailsPanelRenderTest, TheAppRowShowsTheTablesAppGroup)
+{
+    const auto panel = activePanel();
+    panel->setSelectedPid(PID, START_TICKS);
+    const auto render = [&panel](double second)
+    {
+        const std::vector samples{sampleAt(second, 10.0)};
+        panel->updateWithSamples(samples, 1.0F);
+        static_cast<void>(renderAndCapture(*panel));
+        return renderAndCapture(*panel);
+    };
+
+    std::string text = render(1.0);
+    EXPECT_FALSE(text.contains("Windows Terminal")) << text;
+
+    panel->setAppMembership({
+        .key = "Microsoft.WindowsTerminal_8wekyb3d8bbwe",
+        .label = "Windows Terminal",
+        .tooltip = "In Windows Terminal's group through a parent process: it has no package or AppUserModelID of its own",
+        .inherited = true,
+    });
+    text = render(2.0);
+    EXPECT_TRUE(text.contains("App")) << text;
+    EXPECT_TRUE(text.contains("Windows Terminal")) << text;
+
+    panel->setAppMembership({});
+    text = render(3.0);
+    EXPECT_FALSE(text.contains("Windows Terminal")) << "no membership, no row:\n" << text;
 }
 
 // #3070: where the platform checks signatures (Windows) the Identity card has a Signature row, as the

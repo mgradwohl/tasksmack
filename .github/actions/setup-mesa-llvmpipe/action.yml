@@ -81,7 +81,9 @@ runs:
         MESA_ARCHIVE: ${{ steps.pin.outputs.archive }}
       run: |
         $ErrorActionPreference = 'Stop'
-        $members = if ($env:MESA_ARCH -eq 'X64') { @('x64/opengl32.dll', 'x64/libgallium_wgl.dll') } else { @('opengl32.dll') }
+        # @( ) keeps it an array: an if expression unrolls a one-element array to a plain string, which @members
+        # would then splat as its characters (tar: "o: Not found in archive", the ARM64 job on main after #3561).
+        $members = @(if ($env:MESA_ARCH -eq 'X64') { 'x64/opengl32.dll', 'x64/libgallium_wgl.dll' } else { 'opengl32.dll' })
         $archive = $env:MESA_ARCHIVE
         $mesaRoot = Join-Path $env:RUNNER_TEMP 'mesa'
         # Each architecture's DLLs end up in their own directory: the x64 archive keeps them under

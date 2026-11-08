@@ -4,6 +4,7 @@
 // counterpart of Windows' ETW collector. It asks the broker to start a helper that counts, but only within an
 // Administrator session (maintainer, 2026-11-07), and reads the helper's totals once per socket-traffic reading.
 
+#include "Platform/BrokerProtocol.h"
 #include "Platform/IPrivilegedBroker.h"
 #include "Platform/IUdpTrafficCollector.h"
 
@@ -45,14 +46,28 @@ class BrokeredUdpTrafficCollector final : public IUdpTrafficCollector
     [[nodiscard]] std::vector<UdpProcessTraffic> sample() override;
 
     /// Why it isn't counting, as start() or the helper last said; empty while it counts or before start().
-    [[nodiscard]] std::string problem() const;
+    [[nodiscard]] std::string problem() const override;
+    /// Whether the helper last said it couldn't load or read its counter (UdpBytesStatus::Failed): this system can't
+    /// count, until a helper does.
+    [[nodiscard]] bool unsupported() const override;
 
   private:
-    void setProblem(std::string problem);
+    void setProblem(const std::string& problem);
+    /// Copies @p problem into the snapshot problem() reads, under its own short lock, unless a later @p version is there.
+    void publishProblem(const std::string& problem, std::uint64_t version) noexcept;
+    /// sample()'s reading folded in under m_Mutex; a changed reason to log goes to @p warning, for sample() to log once
+    /// the lock is released.
+    [[nodiscard]] std::vector<UdpProcessTraffic> fold(std::uint64_t run,
+                                                      const Broker::UdpBytesReply* reply,
+                                                      bool helperGone,
+                                                      std::uint64_t session,
+                                                      std::uint64_t sessionBefore,
+                                                      std::string& warning);
 
     std::shared_ptr<IPrivilegedBroker> m_Broker;
     std::atomic<bool> m_Running{false};
     std::atomic<bool> m_Delivering{false};
+    std::atomic<bool> m_Unsupported{false};
     mutable std::mutex m_Mutex;            // guards the members below, and m_Running's changes
     std::uint64_t m_Run = 0;               // one more each start() and stop(): a read of another run publishes nothing
     std::uint32_t m_Generation = 0;        // the counters' generation (UdpProcessTraffic::generation)
@@ -60,6 +75,10 @@ class BrokeredUdpTrafficCollector final : public IUdpTrafficCollector
     bool m_Seeding = false;                // the next counting reading only seeds Domain's baseline (sent unreadable)
     std::vector<UdpProcessTraffic> m_Last; // the last totals, for a reading the helper was too busy to answer
     std::string m_Problem;
+    std::uint64_t m_ProblemVersion = 0; // one more each time m_Problem is set, under m_Mutex
+    mutable std::mutex m_StatusMutex;   // guards m_StatusProblem alone: held only to copy it, never across I/O or logging
+    std::uint64_t m_StatusVersion = 0;  // the version m_StatusProblem came from
+    std::string m_StatusProblem;        // what problem() returns: m_Problem, as each fold, start() or setProblem() left it
 };
 
 /// Linux's UDP collector: @p collector when the platform made one (Windows' ETW), else one through @p broker, or

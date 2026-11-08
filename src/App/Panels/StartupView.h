@@ -73,12 +73,14 @@ startupImpactTooltip(const Domain::StartupEntryImpact& impact, std::uint64_t sig
 /// and then the location break ties) in either direction. Other columns' ties keep the name order
 /// the model sorted. By Startup impact (#3073), from None through Not measured, Low and Medium to High,
 /// and within a rating by CPU time, then disk I/O; @p impacts is by index into @p entries, and an entry
-/// past its end counts as Not measured.
+/// past its end counts as Not measured. Entries that are part of the OS (osComponent: Windows' own scheduled
+/// tasks, #3424) are left out unless @p showOsComponents.
 [[nodiscard]] std::vector<std::size_t> buildStartupRows(std::span<const Platform::StartupEntry> entries,
                                                         std::string_view filter,
                                                         StartupColumn column,
                                                         bool ascending,
-                                                        std::span<const Domain::StartupEntryImpact> impacts = {});
+                                                        std::span<const Domain::StartupEntryImpact> impacts = {},
+                                                        bool showOsComponents = true);
 
 /// What the view drew this frame.
 enum class StartupViewContent : std::uint8_t
@@ -96,6 +98,8 @@ struct StartupViewState
     std::string filter;
     StartupColumn sortColumn = StartupColumn::Enabled; ///< The default (#1597): enabled entries first.
     bool ascending = true;
+    /// "Show Microsoft entries" (#3424): Windows' own scheduled tasks are hidden until it is ticked, as in Autoruns.
+    bool showOsComponents = false;
 
     std::vector<std::size_t> rows;
     std::vector<std::string> enabledLabels; ///< Per entry of the publication, not per row.
@@ -104,6 +108,8 @@ struct StartupViewState
     std::string rowsFilter;
     StartupColumn rowsColumn = StartupColumn::Enabled;
     bool rowsAscending = true;
+    bool rowsShowOsComponents = false;
+    std::size_t osComponentCount = 0; ///< How many of the publication's entries are osComponent: 0 hides the checkbox.
 
     std::string unavailableHeading; ///< The empty state's heading when there is no startup list.
 

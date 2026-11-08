@@ -66,8 +66,13 @@ struct State
     bool showPrivilegeNotice = true;
     bool showProcessIcons = true;      ///< The programs' icons beside process names (#1800)
     bool highlightNewProcesses = true; ///< Tint the rows of processes that just started, and keep those that just exited (#3060)
-    bool udpEventTrace = false;        ///< Windows only (#1492); shown and saved there
-    bool checkForUpdates = false;      ///< "Check for updates daily" (#3093); off by default
+    bool udpEventTrace = false;        ///< Count UDP traffic per process (#1492 Windows, #3366 Linux)
+    /// Set by SettingsLayer every frame from the Processes panel's collector (#3366), never by load(): what counting
+    /// UDP is doing, shown beside the setting; unsupported keeps it from being turned on.
+    bool udpDelivering = false;
+    bool udpUnsupported = false;
+    std::string udpProblem{};     // NOLINT(readability-redundant-member-init) - {} lets designated initializers omit it
+    bool checkForUpdates = false; ///< "Check for updates daily" (#3093); off by default
     /// Set by SettingsLayer from the shell's UpdateCheckStatusEvent (#3093), never by load(): whether the
     /// update check is offered here (its rows are hidden otherwise), whether one is running (Check now is
     /// disabled until it ends), and the line about the last check this session.

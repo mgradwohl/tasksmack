@@ -699,6 +699,7 @@ set(COMMON_TEST_SOURCES
     App/test_BackgroundTask.cpp
     App/test_BackgroundOpen.cpp # links, files and folders opened on a worker (#3155)
     App/test_UdpTraceSwitch.cpp # the UDP event trace started and stopped on a worker (#3155)
+    App/test_UdpCountingStatus.cpp  # Count UDP traffic per process's status for Settings (#3366)
     App/test_CoalescingWriter.cpp
     App/test_LazyBackgroundRead.cpp
     App/test_AffinityLayoutRead.cpp # the Set affinity dialog's CPU layout, read once on a worker (#3182)
@@ -780,6 +781,7 @@ set(WINDOWS_MATH_TEST_SOURCES
     Platform/WindowsMath/test_WindowsProcessProbeMath.cpp
     Platform/WindowsMath/test_WindowsStartupProbeMath.cpp
     Platform/WindowsMath/test_WindowsStartupImpact.cpp  # the WDI StartupInfo sign-in measurements (#3073)
+    Platform/WindowsMath/test_WindowsScheduledTasksMath.cpp  # scheduled tasks' triggers, owners and wording (#3424)
     Platform/WindowsMath/test_WindowsOsInfoMath.cpp
     Platform/WindowsMath/test_WindowsStorageSmartMath.cpp  # ATA SMART pages, thresholds and return status as AtaHealth (#2588)
     Platform/WindowsMath/test_WindowsServiceActionsMath.cpp
@@ -828,6 +830,8 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     # run as a standard user
     Platform/test_CiRealSystemWindowsRegistry.cpp
     Platform/test_CiRealSystemWindowsProcess.cpp
+    # The Startup tab's scheduled tasks (#3424): a throwaway logon task listed, disabled, enabled and deleted
+    Platform/test_CiRealSystemWindowsScheduledTask.cpp
     # Services: start, stop, restart and the startup type on throwaway services (TaskSmackCiService.exe)
     Platform/test_CiRealSystemWindowsService.cpp
     # TaskSmack.exe started on the runner: --minimized, a second start in Task Manager's place, and the folder dialog
@@ -866,6 +870,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsStartupProbe.cpp
     Platform/test_WindowsStartupProbeSeams.cpp
     Platform/test_WindowsStartupActions.cpp
+    Platform/test_WindowsScheduledTasks.cpp  # the Startup tab's scheduled tasks through a fake Task Scheduler (#3424)
     Platform/test_WindowsSystemInfoProbe.cpp
     Platform/test_WindowsSystemInfoProbeSeams.cpp
     Platform/test_WindowsSystemInfoLiveReaders.cpp
@@ -1123,6 +1128,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/SettingsDialog.cpp
     # The Settings layer around it (#1395), run headless through its seam (test_SettingsLayerRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/SettingsLayer.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/UdpCountingStatus.cpp
     # Replace Task Manager's controller, rows and startup notice (#3072)
     ${CMAKE_SOURCE_DIR}/src/App/TaskManagerReplacementController.cpp
     ${CMAKE_SOURCE_DIR}/src/App/TaskManagerReplacementRows.cpp

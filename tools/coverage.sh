@@ -142,21 +142,34 @@ done
 # opening files long before it exits, when LLVM would write its profile, so this run uses continuous
 # mode (%c): each process's profile is opened and mapped at startup, before the drop, and its counters
 # are written through the mapping. Its profiles go to a world-writable folder of their own; the merge
-# below takes them with the rest. A failure or a skip counts as a failed suite.
+# below takes them with the rest. A failure, or a skip for any other reason than the one below, counts as a
+# failed suite, and so does any test the filter selects that neither passed nor skipped that way.
 if [[ "${TASKSMACK_COVERAGE_ROOT:-0}" == 1 ]]; then
     ROOT_PROFILE_DIR="${BUILD_DIR}/coverage-root"
-    # The CI real-system tests (#3491) skip unless TASKSMACK_CI_REAL_SYSTEM and a disposable runner are set, so
-    # they're left out here (#3524): CI's PR root step runs them, and this pass keeps its no-skip, exact-count check.
     ROOT_TEST_FILTER='TasksmackHelperRootTest.*:DetachedSpawnTest.AsRoot*'
-    ROOT_TEST_FILTER+=':-TasksmackHelperRootTest.ActsOnARealUnitUnderItsSandbox:TasksmackHelperRootTest.ClosesAnotherUsersTcpConnection'
+    # Every test the filter selects ("  TestName" lines under each "Suite." line), counted before the run.
+    root_listed="$(./tests/TaskSmackTests --gtest_filter="${ROOT_TEST_FILTER}" --gtest_list_tests | grep -c '^  ' || true)"
     mkdir -p "$ROOT_PROFILE_DIR" && chmod 1777 "$ROOT_PROFILE_DIR"
     root_log="$(mktemp "${TMPDIR:-/tmp}/tasksmack-coverage-root.XXXXXX")"
     root_status=0
     # shellcheck disable=SC2024 # the log is meant to be the invoking user's file, not root's
     sudo -n env LLVM_PROFILE_FILE="${ROOT_PROFILE_DIR}/coverage-%c%p.profraw" ./tests/TaskSmackTests \
         --gtest_filter="${ROOT_TEST_FILTER}" >"$root_log" 2>&1 || root_status=$?
-    if [[ $root_status -ne 0 ]] || grep -q '\[  SKIPPED \]' "$root_log" || ! grep -q '\[  PASSED  \] 2 tests' "$root_log"; then
-        echo "Warning: the root tests (TasksmackHelperRootTest, DetachedSpawnTest.AsRoot*) didn't run and pass as root (exit code ${root_status}); its log:" >&2
+    # The CI real-system tests among them (#3491) skip here, with ciRealSystemSkipReason()'s message
+    # (tests/Support/CiRealSystem.h): they need TASKSMACK_CI_REAL_SYSTEM on a disposable runner, which CI's PR root
+    # step has and this job doesn't. Those skips are expected (#3557), so a new such test needs no exclusion here
+    # (#3524 excluded two by name). Any other skip is not, and every listed test must pass or skip that way.
+    read -r root_guarded root_unexpected < <(awk '
+        /^\[ RUN      \] / { test = $4; guarded = 0; next }
+        /^a CI real-system test: / { guarded = 1 }
+        /^\[  SKIPPED \] / && test != "" && $4 == test { if (guarded) g++; else u++; test = "" }
+        END { print g + 0, u + 0 }' "$root_log")
+    root_passed="$(sed -n 's/^\[  PASSED  \] \([0-9][0-9]*\) tests*\..*/\1/p' "$root_log" | tail -n 1)"
+    if [[ $root_status -ne 0 || $root_unexpected -ne 0 || -z "$root_passed" || $root_passed -eq 0 ||
+        $((root_passed + root_guarded)) -ne $root_listed ]]; then
+        echo "Warning: the root tests (TasksmackHelperRootTest, DetachedSpawnTest.AsRoot*) didn't run and pass as root" \
+            "(exit code ${root_status}; ${root_listed} listed, ${root_passed:-0} passed, ${root_guarded} CI real-system skips," \
+            "${root_unexpected} other skips); its log:" >&2
         tail -n 30 "$root_log" >&2 || true
         FAILED_SUITES+=("TaskSmackTests (the root tests, as root)")
     fi

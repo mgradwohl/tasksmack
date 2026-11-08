@@ -32,6 +32,7 @@
 #include "App/Panels/UdpTraceSwitch.h"
 #include "App/ProcessColumnConfig.h"
 #include "App/SelectOverride.h"
+#include "App/UdpCountingStatus.h"
 #include "Core/Event.h"
 #include "Domain/BackgroundSampler.h"
 #include "Domain/PriorityConfig.h"
@@ -564,6 +565,7 @@ class ProcessesPanel : public Panel
     std::shared_ptr<Platform::IUdpTrafficCollector> m_UdpCollector;
     // Starts and stops it on a worker when the toggle changes (#3155), never on the UI thread.
     UdpTraceSwitch m_UdpSwitch;
+    UdpCountingStatus m_UdpStatus; // what was last published for Settings (#3366)
     void applyUdpEventTrace(bool enabled);
     /// Logs a switch that failed to run (it threw, or had no thread).
     static void logUdpSwitch(const std::optional<UdpTraceSwitch::Outcome>& outcome);

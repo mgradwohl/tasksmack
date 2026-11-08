@@ -73,10 +73,10 @@ struct UserSettings
     // Lower values = fresher data but more kernel queries.
     int socketStatsCacheTtlMs = Domain::Sampling::SOCKET_STATS_CACHE_TTL_MS_DEFAULT;
 
-    // Count UDP per process (Windows only), [sampling] udp_event_trace. Off by default: per-process
-    // network counters are TCP only. On, and with TaskSmack running as administrator, the Processes
-    // panel starts an ETW session on the kernel's network provider to count UDP too (#1492). Settings
-    // toggles it; the change applies at once.
+    // Count UDP per process, [sampling] udp_event_trace. Off by default: per-process network counters
+    // are TCP only. On, the Processes panel counts UDP too: on Windows, running as administrator, with
+    // an ETW session on the kernel's network provider (#1492); on Linux, in an Administrator session,
+    // through the helper's eBPF counter (#3366). Settings toggles it; the change applies at once.
     bool udpEventTrace = false;
 
     // Metrics Calculation Parameters

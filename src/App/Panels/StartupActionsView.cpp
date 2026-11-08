@@ -60,6 +60,13 @@ std::string confirmQuestion(const StartupActionRequest& request)
 {
     using enum Platform::StartupLocation;
     const Platform::StartupLocation location = request.entry.location;
+    if (location == ScheduledTaskUser || location == ScheduledTaskMachine)
+    {
+        // A disabled task runs on none of its triggers, not only at sign-in or boot (#3424).
+        return std::format("Disable {}? The scheduled task won't run at all, at sign-in, at startup or on any other trigger, until it "
+                           "is enabled again. It is kept in Task Scheduler, so nothing is removed.",
+                           request.entry.name);
+    }
     std::string_view kept = "Its registry entry or shortcut is kept, so nothing is removed.";
     if (location == PackagedApp)
     {
