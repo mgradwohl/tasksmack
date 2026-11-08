@@ -376,7 +376,7 @@ Windows has no per-process UDP byte counter that an ordinary program can read. T
 
 #### Counting UDP on Linux
 
-The kernel's socket statistics carry byte counts for TCP connections only. With **Count UDP traffic per process** turned on, TaskSmack's helper loads a small eBPF program that adds up the bytes each process sends and receives over UDP, both IPv4 and IPv6. It does that only in an Administrator session: click **Standard** in the status bar and enter the administrator password. Once the helper's first count arrives, the network column tooltips change from "TCP only" to "TCP and UDP".
+The kernel's socket statistics carry byte counts for TCP connections only. With **Count UDP traffic per process** turned on, TaskSmack's helper loads a small eBPF program that adds up the bytes each process sends and receives over UDP: IPv4, and IPv6 too where its hooks can attach. Where they can't (IPv6 turned off, or its module not loaded), only IPv4 is counted, though the tooltips still say "TCP and UDP". It does that only in an Administrator session: click **Standard** in the status bar and enter the administrator password. Once the helper's first count arrives, the network column tooltips change from "TCP only" to "TCP and UDP".
 
 - **Off by default.** Turned on outside an Administrator session, it asks for nothing and counts nothing until you start one. Turned on during one, it restarts the helper with the counter, which may ask for the password again.
 - **The helper loads the program as root, before it gives root up.** From then on it only reads the program's totals. A helper that's counting stays up until TaskSmack closes, so the totals never restart after an idle stretch.

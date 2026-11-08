@@ -45,7 +45,10 @@ class BrokeredUdpTrafficCollector final : public IUdpTrafficCollector
     [[nodiscard]] std::vector<UdpProcessTraffic> sample() override;
 
     /// Why it isn't counting, as start() or the helper last said; empty while it counts or before start().
-    [[nodiscard]] std::string problem() const;
+    [[nodiscard]] std::string problem() const override;
+    /// Whether the helper last said it couldn't load or read its counter (UdpBytesStatus::Failed): this system can't
+    /// count, until a helper does.
+    [[nodiscard]] bool unsupported() const override;
 
   private:
     void setProblem(std::string problem);
@@ -53,6 +56,7 @@ class BrokeredUdpTrafficCollector final : public IUdpTrafficCollector
     std::shared_ptr<IPrivilegedBroker> m_Broker;
     std::atomic<bool> m_Running{false};
     std::atomic<bool> m_Delivering{false};
+    std::atomic<bool> m_Unsupported{false};
     mutable std::mutex m_Mutex;            // guards the members below, and m_Running's changes
     std::uint64_t m_Run = 0;               // one more each start() and stop(): a read of another run publishes nothing
     std::uint32_t m_Generation = 0;        // the counters' generation (UdpProcessTraffic::generation)

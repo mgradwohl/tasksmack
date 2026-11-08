@@ -49,6 +49,7 @@
 #include "App/ProcessColumnConfig.h"
 #include "App/SelectOverride.h"
 #include "App/SyntheticScenario.h"
+#include "App/UdpCountingStatus.h"
 #include "App/UserConfig.h"
 #include "AuthorizeWording.h"
 #include "Core/Application.h"
@@ -1390,6 +1391,20 @@ void ProcessesPanel::onUpdate(float deltaTime)
 {
     // The UDP event trace's switch (#3155): a finished one taken in, and one asked for meanwhile started.
     logUdpSwitch(m_UdpSwitch.update());
+    // What the UDP counter is doing, for Settings (#3366): three reads under the collector's own short lock, no I/O.
+    if (m_UdpCollector)
+    {
+        UdpCountingStatus status{
+            .delivering = m_UdpCollector->isDelivering(),
+            .unsupported = m_UdpCollector->unsupported(),
+            .problem = m_UdpCollector->problem(),
+        };
+        if (status != m_UdpStatus)
+        {
+            m_UdpStatus = status;
+            publishUdpCountingStatus(std::move(status));
+        }
+    }
     if (m_RowActionResultSeconds > 0.0F)
     {
         m_RowActionResultSeconds = std::max(0.0F, m_RowActionResultSeconds - std::max(0.0F, deltaTime));

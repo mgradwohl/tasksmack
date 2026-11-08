@@ -150,6 +150,7 @@ std::vector<UdpProcessTraffic> BrokeredUdpTrafficCollector::sample()
         else
         {
             m_Seeding = true;
+            m_Unsupported = reply->status == Broker::UdpBytesStatus::Failed;
             problem = reply->status == Broker::UdpBytesStatus::NotCounting ? std::string("The helper isn't counting UDP") : reply->detail;
         }
         if (problem != m_Problem)
@@ -179,6 +180,7 @@ std::vector<UdpProcessTraffic> BrokeredUdpTrafficCollector::sample()
         });
     }
     m_Delivering = true;
+    m_Unsupported = false;
     m_Problem.clear();
     std::vector<UdpProcessTraffic> traffic = m_Last;
     if (seeding)
@@ -189,6 +191,11 @@ std::vector<UdpProcessTraffic> BrokeredUdpTrafficCollector::sample()
         }
     }
     return traffic;
+}
+
+bool BrokeredUdpTrafficCollector::unsupported() const
+{
+    return m_Unsupported.load();
 }
 
 std::string BrokeredUdpTrafficCollector::problem() const

@@ -564,17 +564,36 @@ Action render(State& state)
         // some CPU under heavy UDP and runs only as administrator (#1492), and on Linux the helper's eBPF counter, which
         // it loads only in an Administrator session (#3366).
         ImGui::Spacing();
-        UI::Widgets::outlinedCheckbox(UDP_EVENT_TRACE_LABEL, &state.udpEventTrace);
 #ifdef _WIN32
+        UI::Widgets::outlinedCheckbox(UDP_EVENT_TRACE_LABEL, &state.udpEventTrace);
         ImGui::SetItemTooltip("Net Sent and Net Received count TCP only unless this is on. On, and with TaskSmack running as "
                               "administrator, TaskSmack starts a Windows network event trace (ETW) to count UDP too: QUIC/HTTP3, "
                               "video calls, games, DNS. It costs some CPU when there is a lot of UDP traffic.");
         ImGui::TextColored(theme.scheme().textMuted, "Needs TaskSmack running as administrator.");
 #else
+        // A counter this system can't load isn't offered (#3366), though one already on can still be turned off.
+        const bool offUnsupported = state.udpUnsupported && !state.udpEventTrace;
+        ImGui::BeginDisabled(offUnsupported);
+        UI::Widgets::outlinedCheckbox(UDP_EVENT_TRACE_LABEL, &state.udpEventTrace);
+        ImGui::EndDisabled();
         ImGui::SetItemTooltip("Net Sent and Net Received count TCP only unless this is on. On, and in an Administrator session, "
                               "TaskSmack's helper counts UDP too with a small eBPF program in the kernel: QUIC/HTTP3, video calls, "
                               "games, DNS. Turning it on during a session restarts the helper, which may ask for the password.");
-        ImGui::TextColored(theme.scheme().textMuted, "Needs an Administrator session: click Standard in the status bar.");
+        // Wrapped to the dialog's row budget, so a large font or a narrow window doesn't clip or widen it.
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + appearanceComboWidth + valueColumn);
+        if (state.udpEventTrace && state.udpDelivering)
+        {
+            ImGui::TextColored(theme.scheme().textMuted, "Counting UDP through the helper.");
+        }
+        else if (state.udpUnsupported)
+        {
+            ImGui::TextColored(theme.scheme().textWarning, "This system can't count UDP per process: %s", state.udpProblem.c_str());
+        }
+        else
+        {
+            ImGui::TextColored(theme.scheme().textMuted, "Needs an Administrator session: click Standard in the status bar.");
+        }
+        ImGui::PopTextWrapPos();
 #endif
 
         UI::Widgets::sectionGap();
