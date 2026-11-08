@@ -130,7 +130,21 @@ class FakeBroker final : public Platform::IPrivilegedBroker
         {
             return std::unexpected(std::string("Needs an Administrator session"));
         }
+        const std::scoped_lock lock(m_Mutex);
+        if (!m_CountUdpFailure.empty())
+        {
+            // A failed or dismissed restart of the session's helper: PkexecBroker is left disconnected.
+            m_Connected = false;
+            return std::unexpected(m_CountUdpFailure);
+        }
         return {};
+    }
+
+    /// What countUdpBytes() does in a held session: succeed by default, or fail with this reason (and disconnect).
+    void setCountUdpFailure(std::string reason)
+    {
+        const std::scoped_lock lock(m_Mutex);
+        m_CountUdpFailure = std::move(reason);
     }
 
     void stopCountingUdpBytes() noexcept override
@@ -202,6 +216,7 @@ class FakeBroker final : public Platform::IPrivilegedBroker
     Answer m_Answer;
     std::vector<Platform::Broker::Request> m_Requests;
     std::string m_ConnectFailure;
+    std::string m_CountUdpFailure;
     int m_ConnectCount = 0;
     int m_IdleCallCount = 0;
     mutable std::atomic<int> m_ConnectedCalls{0};

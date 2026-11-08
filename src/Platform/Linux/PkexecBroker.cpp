@@ -280,6 +280,12 @@ std::expected<void, std::string> PkexecBroker::holdForSession(const std::stop_to
     const bool wasHeld = m_ForSession.exchange(true);
     {
         const std::scoped_lock lock(m_Mutex);
+        if (m_Connected.load() && m_CountUdp.load() && !m_HelperCountsUdp)
+        {
+            // A one-off helper ("Authenticate and retry") started without the UDP counter, which loads only at a
+            // start: the session's helper is a new one that counts (#3366). One prompt, as for any start.
+            closeLocked();
+        }
         if (m_Connected.load())
         {
             // A helper an earlier "Authenticate and retry" started is held by a Hello again: no prompt.
