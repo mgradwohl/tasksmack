@@ -35,6 +35,7 @@
 #include "Core/WindowEvents.h"
 #include "LogWarningGuard.h"
 #include "Platform/CurrentProcess.h"
+#include "ScratchConfigDir.h"
 #include "UI/Theme.h"
 #include "UI/UILayer.h"
 
@@ -303,11 +304,13 @@ struct RunResult
 
 /// A fresh directory with a non-ASCII name under the system's temporary directory (a screenshot path
 /// can have one, #1648), removed with everything in it when the test ends.
-class ScreenshotOnDisplayTest : public ::testing::Test
+class ScreenshotOnDisplayTest : public TestSupport::ScratchConfigDirTest
 {
   protected:
     void SetUp() override
     {
+        // Its own config directory too (#2932): ShellLayer loads and saves the process-wide config.
+        TestSupport::ScratchConfigDirTest::SetUp();
         std::random_device random;
         constexpr int MAX_ATTEMPTS = 100;
         for (int attempt = 0; attempt < MAX_ATTEMPTS; ++attempt)
@@ -326,6 +329,7 @@ class ScreenshotOnDisplayTest : public ::testing::Test
     {
         std::error_code ec;
         std::filesystem::remove_all(m_Dir, ec);
+        TestSupport::ScratchConfigDirTest::TearDown();
     }
 
     std::filesystem::path m_Dir;
@@ -557,9 +561,11 @@ TEST_F(ScreenshotOnDisplayTest, ADemoScriptPlaysWhileTheSequenceIsCaptured)
 
 // TASKSMACK_DEMO (#2827) playing every kind of step the test above doesn't (#3374): a tab and a theme no one
 // registered (each warned and skipped, never stopping the script), the own process selected by PID, Process
-// Details at its Network tab with the Modules section expanded, the machine tab at Cores, each dialog opened and
-// closed again, and the Render Metrics overlay shown and hidden. Every step is due before the last capture, so
-// all fourteen are issued; the unknown theme leaves the startup theme, and metrics=off leaves the overlay hidden.
+// Details at its Overview with the Modules section opened (taken only while the Overview is drawn) and then at its
+// Network tab, the machine tab at Cores, each dialog opened and closed again, and the Render Metrics overlay shown
+// and hidden. Every step is due before the last capture, so all fifteen are issued; Modules was drawn open (its
+// lazy read was taken in), the main tab ends on the machine tab, the unknown theme leaves the startup theme, and
+// metrics=off leaves the overlay hidden.
 TEST_F(ScreenshotOnDisplayTest, ADemoScriptPlaysEveryKindOfStep)
 {
     if (!hasDisplay())
@@ -568,11 +574,11 @@ TEST_F(ScreenshotOnDisplayTest, ADemoScriptPlaysEveryKindOfStep)
     }
 
     const std::filesystem::path given = m_Dir / "steps.png";
-    const ScreenshotEnv screenshotEnv(Core::pathToUtf8(given) + ";after=0;frames=4;fps=1");
+    const ScreenshotEnv screenshotEnv(Core::pathToUtf8(given) + ";after=0;frames=5;fps=1");
     const std::string script = "0.2:tab=nosuchtab,0.3:select=pid:" + std::to_string(Platform::currentProcessId()) +
-                               ",0.5:details=network,0.7:section=modules,0.9:machine=cores,1.1:open=help,1.3:close=dialog,"
-                               "1.4:open=about,1.6:close=dialog,1.7:open=settings,1.9:close=dialog,2:theme=nosuchtheme,"
-                               "2.1:metrics=on,2.2:metrics=off";
+                               ",0.5:details=overview,0.7:section=modules,1.2:details=network,1.4:machine=cores,1.6:open=help,"
+                               "1.8:close=dialog,1.9:open=about,2.1:close=dialog,2.2:open=settings,2.4:close=dialog,"
+                               "2.5:theme=nosuchtheme,2.6:metrics=on,2.7:metrics=off";
     const DemoEnv demoEnv(script);
     ASSERT_TRUE(screenshotEnv.set());
     ASSERT_TRUE(demoEnv.set());
@@ -582,7 +588,7 @@ TEST_F(ScreenshotOnDisplayTest, ADemoScriptPlaysEveryKindOfStep)
     const App::DemoOverride::ParseResult parsedDemo = DemoEnv::parseFromEnvironment();
     ASSERT_TRUE(parsedDemo.steps.has_value()) << parsedDemo.warning;
     const std::vector<App::DemoOverride::Step> steps = parsedDemo.steps.value_or(std::vector<App::DemoOverride::Step>{});
-    ASSERT_EQ(steps.size(), 14U) << App::DemoOverride::describe(steps);
+    ASSERT_EQ(steps.size(), 15U) << App::DemoOverride::describe(steps);
     // The two steps that name nothing are warned about and skipped (DemoLayer), on purpose here (#2718).
     TestSupport::expectLogWarning("'nosuchtab' names no tab; skipped");
     TestSupport::expectLogWarning("'nosuchtheme' is not a loaded theme; skipped");
@@ -592,6 +598,8 @@ TEST_F(ScreenshotOnDisplayTest, ADemoScriptPlaysEveryKindOfStep)
     bool demoStarted = false;
     std::size_t stepsIssued = 0;
     bool renderMetricsShown = true;
+    bool sectionStillPending = true;
+    bool modulesRead = false;
     try
     {
         Core::Application app(smallWindow("ScreenshotOnDisplayDemoStepsTest"));
@@ -613,6 +621,8 @@ TEST_F(ScreenshotOnDisplayTest, ADemoScriptPlaysEveryKindOfStep)
         demoStarted = demo.started();
         stepsIssued = demo.stepsIssued();
         renderMetricsShown = shell.renderMetricsShown();
+        sectionStillPending = shell.processDetailsPanelForTesting().sectionRequestPendingForTesting();
+        modulesRead = shell.processDetailsPanelForTesting().modulesViewForTesting().hasRead();
     }
     catch (const std::exception& e)
     {
@@ -621,11 +631,13 @@ TEST_F(ScreenshotOnDisplayTest, ADemoScriptPlaysEveryKindOfStep)
 
     EXPECT_FALSE(run.observed.timedOut) << "the hook didn't close the window in time";
     EXPECT_EQ(run.outcome, App::ScreenshotLayer::Outcome::Written);
-    EXPECT_EQ(run.framesWritten, 4);
+    EXPECT_EQ(run.framesWritten, 5);
     EXPECT_EQ(run.observed.closeRequests, 1) << "close=dialog closed the dialogs, not the window";
     EXPECT_TRUE(demoStarted) << "the script's clock never started";
-    EXPECT_EQ(stepsIssued, 14U) << "every step was due before the last capture, the skipped ones included";
-    EXPECT_FALSE(run.observed.lastTab.empty()) << "details= and machine= changed the main tab";
+    EXPECT_EQ(stepsIssued, 15U) << "every step was due before the last capture, the skipped ones included";
+    EXPECT_FALSE(sectionStillPending) << "section=modules was taken while the Overview was drawn";
+    EXPECT_TRUE(modulesRead) << "the Modules section was drawn open, so its read ran";
+    EXPECT_EQ(run.observed.lastTab, "SystemOverview") << "machine=cores selected the machine tab (ShellLayer's id)";
     EXPECT_EQ(run.observed.lastThemeId, run.observed.firstThemeId) << "theme=nosuchtheme left the startup theme";
     EXPECT_FALSE(renderMetricsShown) << "metrics=off hid the overlay metrics=on showed";
 }

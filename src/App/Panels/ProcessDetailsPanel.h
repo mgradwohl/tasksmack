@@ -305,6 +305,18 @@ class ProcessDetailsPanel : public Panel
     }
 
     /// Test seam (#2117): the Actions block's view, with the dump's state (ProcessActionsView::dumpView()).
+    /// Whether a section asked for (requestSection()) still waits for the Overview to be drawn, for tests.
+    [[nodiscard]] bool sectionRequestPendingForTesting() const noexcept
+    {
+        return m_RequestedSection.has_value();
+    }
+
+    /// The Overview's Modules section, for tests: hasRead() once it was drawn open and its read taken in.
+    [[nodiscard]] const ProcessModulesView& modulesViewForTesting() const noexcept
+    {
+        return m_ModulesView;
+    }
+
     [[nodiscard]] ProcessActionsView& actionsViewForTesting() noexcept
     {
         return m_ActionsView;
