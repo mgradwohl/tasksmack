@@ -56,6 +56,7 @@
 #include "WindowsStartAtLogin.h"
 #include "WindowsStartupActions.h"
 #include "WindowsStartupProbe.h"
+#include "WindowsSystemConnectionsReader.h"
 #include "WindowsSystemInfoProbe.h"
 #include "WindowsSystemProbe.h"
 #include "WindowsTaskManagerInstall.h"
@@ -150,8 +151,8 @@ std::unique_ptr<IProcessModulesReader> makeProcessModulesReader()
 
 std::unique_ptr<ISystemConnectionsReader> makeSystemConnectionsReader()
 {
-    // The Connections tab (#3066) says it isn't available until the Windows lane adds a reader.
-    return std::make_unique<UnsupportedSystemConnectionsReader>();
+    // The Connections tab (#3066): every owner-PID TCP and UDP table row, with TCP EStats rates when elevated (#3356).
+    return std::make_unique<Windows::WindowsSystemConnectionsReader>();
 }
 
 std::unique_ptr<IUserSessions> makeUserSessions()

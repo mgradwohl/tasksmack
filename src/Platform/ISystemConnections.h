@@ -2,8 +2,8 @@
 
 // Every TCP and UDP socket on the machine, with the process holding it (#3066): the Connections tab.
 // Linux dumps the kernel's socket tables (netlink INET_DIAG, else /proc/net) and finds each socket's
-// owner from the processes' file descriptors; Windows (the Windows lane's part) would read
-// GetExtendedTcpTable and GetExtendedUdpTable.
+// owner from the processes' file descriptors; Windows (#3356) reads GetExtendedTcpTable and
+// GetExtendedUdpTable, whose rows name their owner.
 //
 // Sampled on the Connections tab's own worker, at the Settings interval, only while the tab is shown.
 // The App composition root creates the reader (Platform::makeSystemConnectionsReader()).
@@ -24,8 +24,9 @@ struct SystemConnection
     std::int32_t pid = 0;             ///< 0 when no process TaskSmack can see holds it (TIME_WAIT, another user's)
     std::uint64_t startTimeTicks = 0; ///< The holder's start time, with pid its identity; 0 when unknown
     std::string processName;          ///< The holder's name (comm), or empty
-    // The socket's byte counters since it opened (#3079), where the platform has them: TCP on Linux (tcp_info's
-    // bytes_acked and bytes_received). The model turns two readings into rates.
+    // The socket's byte counters (#3079), where the platform has them: TCP on Linux (tcp_info's bytes_acked and
+    // bytes_received, since it opened), an ESTABLISHED TCP connection on Windows run as administrator (TCP EStats'
+    // data counters, since TaskSmack enabled them). The model turns two readings into rates.
     std::uint64_t bytesSent = 0;
     std::uint64_t bytesReceived = 0;
     bool hasByteCounters = false;
@@ -37,7 +38,7 @@ struct SystemConnection
 enum class SystemConnectionsStatus : std::uint8_t
 {
     Ok,          ///< `connections` holds every socket that could be read.
-    Unsupported, ///< This run can't list the machine's sockets (synthetic runs, Windows for now).
+    Unsupported, ///< This run can't list the machine's sockets (synthetic runs).
     Failed,      ///< No socket table could be read.
 };
 
@@ -46,6 +47,9 @@ struct SystemConnectionsRead
     SystemConnectionsStatus status = SystemConnectionsStatus::Unsupported;
     std::vector<SystemConnection> connections;
     std::string detail; ///< For Failed, what failed; else empty.
+    /// Why no TCP socket has byte counters this read, for the Sent/s and Received/s dash (Windows without
+    /// administrator, #3356); empty when they are read.
+    std::string ratesUnavailable;
 };
 
 /// Lists every TCP and UDP socket on request.

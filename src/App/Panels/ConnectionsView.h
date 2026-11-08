@@ -48,7 +48,13 @@ struct ConnectionRow
     Domain::ConnectionRate rate; ///< Sent and received per second (#3079); unknown for UDP and a socket's first reading
     std::string sent;            ///< "12.3 KiB/s", or empty while the rate is unknown
     std::string received;
+    std::string rateNote; ///< Why the rate is unknown, for the dash's tooltip (rateDashReason()); empty while it is known
 };
+
+/// Why @p connection's Sent/s and Received/s show a dash: UDP has no byte counters; a TCP socket without them
+/// gets the platform's reason, @p ratesUnavailable, when it gave one (Windows without administrator, #3356); one
+/// with them has no rate until its second reading.
+[[nodiscard]] std::string_view rateDashReason(const Platform::SystemConnection& connection, std::string_view ratesUnavailable);
 
 /// Formats @p publication's sockets, in its order.
 [[nodiscard]] std::vector<ConnectionRow> buildConnectionRows(const Domain::ConnectionsPublication& publication);

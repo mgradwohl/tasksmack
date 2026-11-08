@@ -68,6 +68,7 @@ void ConnectionsModel::sample()
     auto next = std::make_shared<ConnectionsPublication>();
     next->status = read.status;
     next->detail = std::move(read.detail);
+    next->ratesUnavailable = std::move(read.ratesUnavailable);
     next->connections = std::move(read.connections);
     // The table's default order, once per sample here rather than per frame in the UI: by holder (those
     // without one last), then the socket.
