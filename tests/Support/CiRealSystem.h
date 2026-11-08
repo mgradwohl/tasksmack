@@ -6,8 +6,9 @@
 /// only a disposable CI runner may run.
 ///
 /// Every such test is in a suite named CiRealSystem*, derived from CiRealSystemTest, so it skips unless both:
-///   - TASKSMACK_CI_REAL_SYSTEM=1, which only the CI step that runs the group sets
-///     (.github/workflows/reusable-build-test.yml, "Real-system tests (Windows)");
+///   - TASKSMACK_CI_REAL_SYSTEM=1, which only CI sets: the steps that run the group
+///     (.github/workflows/reusable-build-test.yml, "Real-system tests (Windows)" and "Helper root test (Linux)")
+///     and Heavy Checks' coverage root pass (tools/coverage.sh, TASKSMACK_COVERAGE_REAL_SYSTEM, #3374);
 ///   - the runner looks disposable: GITHUB_ACTIONS=true and RUNNER_ENVIRONMENT=github-hosted, which a
 ///     self-hosted runner or a developer's machine doesn't have.
 /// The daytime test filter excludes CiRealSystem* as well (AGENTS.md), and that step fails when the whole group
