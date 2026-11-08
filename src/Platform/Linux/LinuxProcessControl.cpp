@@ -8,6 +8,7 @@
 #include "LinuxProcessActionsDetail.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IoPriorityTypes.h"
 #include "Platform/SchedPolicy.h"
 #include "PosixGuards.h"
 #include "PriorityErrorMessage.h"

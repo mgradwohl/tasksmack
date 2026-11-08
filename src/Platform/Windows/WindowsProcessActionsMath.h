@@ -4,6 +4,7 @@
 
 #include "Domain/PriorityConfig.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IoPriorityTypes.h"
 #include "Platform/ProcessTypes.h"
 
 // clang-format off

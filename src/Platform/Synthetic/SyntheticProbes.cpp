@@ -1,6 +1,7 @@
 #include "SyntheticProbes.h"
 
 #include "Platform/IProcessActions.h"
+#include "Platform/IoPriorityTypes.h"
 #include "Platform/ProcessTypes.h"
 #include "Platform/StorageTypes.h"
 #include "Platform/SystemTypes.h"

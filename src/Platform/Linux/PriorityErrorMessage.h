@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Platform/IProcessActions.h"
+#include "Platform/IoPriorityTypes.h"
 #include "Platform/SchedPolicy.h"
 
 #include <cerrno>

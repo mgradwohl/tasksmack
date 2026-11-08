@@ -30,6 +30,7 @@
 #include "Domain/PriorityConfig.h"
 #include "Domain/SamplingConfig.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IoPriorityTypes.h"
 #include "Platform/ThreadName.h"
 #include "PriorityEditTarget.h"
 #include "ProcessDetailsPanel_PriorityHelpers.h"
