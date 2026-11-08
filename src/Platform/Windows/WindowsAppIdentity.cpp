@@ -88,31 +88,23 @@ struct CoTaskMemDeleter
     }
 };
 
-struct WindowWalk
-{
-    std::span<const std::uint32_t> pids;
-    std::vector<std::pair<std::uint32_t, HWND>> windows;
-};
-
-/// EnumWindows' callback for windowAppUserModelIds(): each visible, unowned top-level window of a process asked about.
-BOOL CALLBACK collectAppWindow(HWND window, LPARAM param)
+/// windowAppUserModelIds()' work for one window: keeps each visible, unowned, answering top-level window of a
+/// process in @p pids (sorted). Its push can throw; guardedWindowCallback() keeps that inside the callback.
+void collectAppWindow(HWND window, std::span<const std::uint32_t> pids, std::vector<std::pair<std::uint32_t, HWND>>& windows)
 {
     if (IsWindowVisible(window) == FALSE || GetWindow(window, GW_OWNER) != nullptr || IsHungAppWindow(window) != FALSE)
     {
-        return TRUE;
+        return;
     }
     DWORD pid = 0;
     if (GetWindowThreadProcessId(window, &pid) == 0 || pid == 0)
     {
-        return TRUE;
+        return;
     }
-    // NOLINTNEXTLINE(performance-no-int-to-ptr,cppcoreguidelines-pro-type-reinterpret-cast) - EnumWindows' LPARAM
-    auto* walk = reinterpret_cast<WindowWalk*>(param);
-    if (std::ranges::binary_search(walk->pids, static_cast<std::uint32_t>(pid)))
+    if (std::ranges::binary_search(pids, static_cast<std::uint32_t>(pid)))
     {
-        walk->windows.emplace_back(static_cast<std::uint32_t>(pid), window);
+        windows.emplace_back(static_cast<std::uint32_t>(pid), window);
     }
-    return TRUE;
 }
 
 /// The explicit AppUserModelID @p window sets, empty when it sets none.
@@ -140,6 +132,25 @@ BOOL CALLBACK collectAppWindow(HWND window, LPARAM param)
 
 } // namespace
 
+BOOL CALLBACK guardedWindowCallback(HWND window, LPARAM param) noexcept
+{
+    // NOLINTNEXTLINE(performance-no-int-to-ptr,cppcoreguidelines-pro-type-reinterpret-cast) - EnumWindows' LPARAM
+    auto* visitor = reinterpret_cast<WindowVisitor*>(param);
+    if (visitor == nullptr || !visitor->visit)
+    {
+        return FALSE;
+    }
+    try
+    {
+        return visitor->visit(window) ? TRUE : FALSE;
+    }
+    catch (...) // Nothing may unwind through user32's frames: stop the walk and say why
+    {
+        visitor->failed = true;
+        return FALSE;
+    }
+}
+
 PackageIdentity readPackageIdentity(HANDLE process)
 {
     PackageIdentity identity;
@@ -163,10 +174,23 @@ void windowAppUserModelIds(std::span<const std::uint32_t> pids, std::vector<Wind
     {
         return;
     }
-    WindowWalk walk{.pids = pids, .windows = {}};
-    // The callback never stops the walk; a failure leaves what was collected.
-    static_cast<void>(EnumWindows(&collectAppWindow, reinterpret_cast<LPARAM>(&walk)));
-    for (const auto& [pid, window] : walk.windows)
+    std::vector<std::pair<std::uint32_t, HWND>> windows;
+    WindowVisitor visitor{
+        .visit =
+            [pids, &windows](HWND window)
+        {
+            collectAppWindow(window, pids, windows);
+            return true; // Every window: the walk stops only if this throws
+        },
+        .failed = false,
+    };
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - EnumWindows' LPARAM
+    static_cast<void>(EnumWindows(&guardedWindowCallback, reinterpret_cast<LPARAM>(&visitor)));
+    if (visitor.failed)
+    {
+        return; // A walk cut short (out of memory) finds nothing; its processes are looked at again later
+    }
+    for (const auto& [pid, window] : windows)
     {
         if (std::ranges::find(found, pid, &WindowAppId::pid) != found.end())
         {

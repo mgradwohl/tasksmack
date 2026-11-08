@@ -95,6 +95,7 @@
 #include <cstdint>
 #include <format>
 #include <functional>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -2451,6 +2452,42 @@ std::optional<Domain::ProcessSnapshot> ProcessesPanel::findSnapshot(std::int32_t
     // active (see renderContent()), so it would go stale while e.g. the Process Details
     // tab is showing — this must always reflect the latest published snapshot.
     return m_ProcessModel->findSnapshot(pid);
+}
+
+const ProcessGrouping::AppMembership& ProcessesPanel::appMembership(std::int32_t pid, std::uint64_t startTicks)
+{
+    if (!m_ProcessModel || pid == -1)
+    {
+        m_AppMembership = {};
+        m_AppMembershipPid = -1;
+        return m_AppMembership;
+    }
+    // One atomic load when nothing new is published; an O(1) refcount bump when something is.
+    std::uint64_t newVersion = m_AppGenerationVersion;
+    if (m_ProcessModel->tryCopySnapshotsIfNewer(m_AppGenerationVersion, m_AppGeneration, newVersion))
+    {
+        m_AppGenerationVersion = newVersion;
+    }
+    if (m_AppMembershipVersion == m_AppGenerationVersion && m_AppMembershipPid == pid && m_AppMembershipStartTicks == startTicks)
+    {
+        return m_AppMembership;
+    }
+    m_AppMembership = {};
+    if (m_AppGeneration)
+    {
+        const std::vector<Domain::ProcessSnapshot>& generation = *m_AppGeneration;
+        const auto it = std::ranges::find_if(generation,
+                                             [pid, startTicks](const Domain::ProcessSnapshot& proc)
+                                             { return proc.pid == pid && (startTicks == 0 || proc.startTimeTicks == startTicks); });
+        if (it != generation.end())
+        {
+            m_AppMembership = ProcessGrouping::appMembershipAt(generation, static_cast<std::size_t>(std::distance(generation.begin(), it)));
+        }
+    }
+    m_AppMembershipVersion = m_AppGenerationVersion;
+    m_AppMembershipPid = pid;
+    m_AppMembershipStartTicks = startTicks;
+    return m_AppMembership;
 }
 
 void ProcessesPanel::watchProcess(std::int32_t pid)

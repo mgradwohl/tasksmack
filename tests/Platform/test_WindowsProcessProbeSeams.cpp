@@ -32,8 +32,10 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <utility>
@@ -1934,6 +1936,47 @@ TEST_F(WindowsProcessAppIdentityTest, TheNameFollowsAChangedAppUserModelId)
     EXPECT_EQ(fromPackage.appUserModelId, "Contoso.App_1a2b3c!App");
     EXPECT_EQ(fromPackage.appName, "Packaged Name");
     EXPECT_EQ(fakeApps().nameLookups, 2);
+}
+
+// #3457: nothing the per-window work throws escapes the EnumWindows callback, an allocation failure or anything
+// else: the callback stops the walk (FALSE) and records it. A visit that says stop stops it too, unrecorded.
+TEST(WindowsAppIdentityTest, AThrowingWindowVisitStopsTheWalkInsideTheCallback)
+{
+    int calls = 0;
+    Windows::WindowVisitor outOfMemory{
+        .visit = [&calls](HWND /*window*/) -> bool
+        {
+            ++calls;
+            throw std::bad_alloc();
+        },
+        .failed = false,
+    };
+    EXPECT_EQ(Windows::guardedWindowCallback(nullptr, reinterpret_cast<LPARAM>(&outOfMemory)), FALSE);
+    EXPECT_TRUE(outOfMemory.failed);
+
+    Windows::WindowVisitor otherError{
+        .visit = [](HWND /*window*/) -> bool { throw std::runtime_error("per-window work failed"); },
+        .failed = false,
+    };
+    EXPECT_EQ(Windows::guardedWindowCallback(nullptr, reinterpret_cast<LPARAM>(&otherError)), FALSE);
+    EXPECT_TRUE(otherError.failed);
+
+    Windows::WindowVisitor carriesOn{.visit = [](HWND /*window*/) { return true; }, .failed = false};
+    EXPECT_EQ(Windows::guardedWindowCallback(nullptr, reinterpret_cast<LPARAM>(&carriesOn)), TRUE);
+    EXPECT_FALSE(carriesOn.failed);
+    Windows::WindowVisitor stops{.visit = [](HWND /*window*/) { return false; }, .failed = false};
+    EXPECT_EQ(Windows::guardedWindowCallback(nullptr, reinterpret_cast<LPARAM>(&stops)), FALSE);
+    EXPECT_FALSE(stops.failed);
+    Windows::WindowVisitor noVisit;
+    EXPECT_EQ(Windows::guardedWindowCallback(nullptr, reinterpret_cast<LPARAM>(&noVisit)), FALSE);
+    EXPECT_EQ(Windows::guardedWindowCallback(nullptr, 0), FALSE);
+
+    // Through the real walk over this desktop's windows (it changes nothing): the first window's throw ends it.
+    calls = 0;
+    outOfMemory.failed = false;
+    static_cast<void>(EnumWindows(&Windows::guardedWindowCallback, reinterpret_cast<LPARAM>(&outOfMemory)));
+    EXPECT_LE(calls, 1);
+    EXPECT_EQ(outOfMemory.failed, calls == 1);
 }
 
 // The real reads: TaskSmackTests itself is unpackaged, a walk for no processes finds nothing, and the probe's

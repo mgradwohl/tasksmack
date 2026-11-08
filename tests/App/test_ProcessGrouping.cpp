@@ -334,15 +334,64 @@ TEST(ProcessGroupingAppTest, LabelsAndTheDetailsRow)
     EXPECT_EQ(ProcessGrouping::appDetailsTooltip(p),
               "Package family: Microsoft.WindowsTerminal_8wekyb3d8bbwe\nAppUserModelID: Microsoft.WindowsTerminal_8wekyb3d8bbwe!App");
     p.appName = "Windows Terminal";
-    EXPECT_EQ(ProcessGrouping::appDetailsValue(p), "Windows Terminal");
+    EXPECT_EQ(ProcessGrouping::appGroupLabel(p, ProcessGrouping::ownAppKey(p)), "Windows Terminal");
 
     const Domain::ProcessSnapshot chrome = windowsProc(2, 0, "chrome.exe", "", "Chrome");
-    EXPECT_EQ(ProcessGrouping::appDetailsValue(chrome), "Chrome");
+    EXPECT_EQ(ProcessGrouping::appGroupLabel(chrome, "Chrome"), "Chrome");
     EXPECT_EQ(ProcessGrouping::appDetailsTooltip(chrome), "AppUserModelID: Chrome");
 
     const Domain::ProcessSnapshot none = windowsProc(3, 0, "notepad.exe", "", "");
-    EXPECT_EQ(ProcessGrouping::appDetailsValue(none), "");
     EXPECT_EQ(ProcessGrouping::appDetailsTooltip(none), "");
+}
+
+// An AppUserModelID with nothing before its '!' names no package (as ownAppKey() reads it): its key is the
+// whole ID, its label too, and what it starts doesn't follow it as a packaged app's helpers would.
+TEST(ProcessGroupingAppTest, ABangWithNoFamilyBeforeItIsNoPackage)
+{
+    const Domain::ProcessSnapshot odd = windowsProc(1, 0, "odd.exe", "", "!odd");
+    EXPECT_FALSE(ProcessGrouping::ownAppIsPackage(odd));
+    EXPECT_EQ(ProcessGrouping::ownAppKey(odd), "!odd");
+    EXPECT_EQ(ProcessGrouping::appGroupLabel(odd, "!odd"), "!odd");
+    EXPECT_TRUE(ProcessGrouping::ownAppIsPackage(windowsProc(2, 0, "app.exe", "", "Contoso.App_1a2b!App")));
+    EXPECT_TRUE(ProcessGrouping::ownAppIsPackage(windowsProc(3, 0, "app.exe", "Contoso.App_1a2b", "")));
+
+    const std::vector<Domain::ProcessSnapshot> s{odd, windowsProc(4, 1, "child.exe", "", "")};
+    EXPECT_EQ(ProcessGrouping::appKeys(s), (std::vector<std::string>{"!odd", ""})) << "a different program isn't a package's helper";
+}
+
+// Process Details' App row says what the table's Group: App says: a terminal's shell is in the terminal's
+// group, named for it, and marked as there through its parent; the terminal is its own, its package on hover;
+// a Linux app's process says its unit; a process in no app has no row.
+TEST(ProcessGroupingAppTest, TheDetailsRowFollowsTheTablesGroup)
+{
+    std::vector<Domain::ProcessSnapshot> s{
+        windowsProc(20, 0, "WindowsTerminal.exe", "Microsoft.WindowsTerminal_8wekyb3d8bbwe", ""),
+        windowsProc(21, 20, "pwsh.exe", "", ""),
+        windowsProc(30, 0, "notepad.exe", "", ""),
+        proc("firefox", "app-gnome-firefox-4521.scope", "", 0.0, 0),
+    };
+    s[0].appName = "Windows Terminal";
+    s[3].pid = 40;
+
+    const ProcessGrouping::AppMembership shell = ProcessGrouping::appMembershipAt(s, 1);
+    EXPECT_EQ(shell.key, "Microsoft.WindowsTerminal_8wekyb3d8bbwe");
+    EXPECT_EQ(shell.label, "Windows Terminal");
+    EXPECT_TRUE(shell.inherited);
+    EXPECT_TRUE(shell.tooltip.contains("through a parent process")) << shell.tooltip;
+    EXPECT_TRUE(shell.tooltip.contains("Windows Terminal")) << shell.tooltip;
+
+    const ProcessGrouping::AppMembership terminal = ProcessGrouping::appMembershipAt(s, 0);
+    EXPECT_EQ(terminal.label, "Windows Terminal");
+    EXPECT_FALSE(terminal.inherited);
+    EXPECT_EQ(terminal.tooltip, "Package family: Microsoft.WindowsTerminal_8wekyb3d8bbwe");
+
+    EXPECT_EQ(ProcessGrouping::appMembershipAt(s, 2), ProcessGrouping::AppMembership{});
+
+    const ProcessGrouping::AppMembership firefox = ProcessGrouping::appMembershipAt(s, 3);
+    EXPECT_EQ(firefox.label, "firefox");
+    EXPECT_EQ(firefox.tooltip, "From its systemd unit: app-gnome-firefox-4521.scope");
+
+    EXPECT_EQ(ProcessGrouping::appMembershipAt(s, 99), ProcessGrouping::AppMembership{});
 }
 
 // A process with no app of its own follows a parent whose app is a package, or one running the same program,

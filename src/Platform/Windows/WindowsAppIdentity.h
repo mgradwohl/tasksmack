@@ -19,6 +19,7 @@
 // clang-format on
 
 #include <cstdint>
+#include <functional>
 #include <span>
 #include <string>
 #include <vector>
@@ -40,12 +41,25 @@ struct WindowAppId
     std::string appUserModelId;
 };
 
+/// One EnumWindows walk's per-window work, for guardedWindowCallback().
+struct WindowVisitor
+{
+    std::function<bool(HWND)> visit; ///< Called for each top-level window; false stops the walk
+    bool failed = false;             ///< Whether visit threw, which stopped the walk
+};
+
+/// EnumWindows' callback for a WindowVisitor passed as its LPARAM: calls its visit, and catches whatever that
+/// throws (an allocation failure, or anything else), so nothing unwinds through user32. A throw stops the walk
+/// (FALSE) and sets failed; so does a null visitor or an empty visit.
+BOOL CALLBACK guardedWindowCallback(HWND window, LPARAM param) noexcept; // NOLINT(misc-include-cleaner) - Win32 types
+
 /// The package @p process (opened with PROCESS_QUERY_LIMITED_INFORMATION) runs in.
 [[nodiscard]] PackageIdentity readPackageIdentity(HANDLE process); // NOLINT(misc-include-cleaner) - HANDLE
 
 /// For each process in @p pids (sorted), the explicit AppUserModelID of the first of its visible, unowned
 /// top-level windows that sets one, into @p found (cleared first; at most one per process, in no order).
-/// One EnumWindows pass over the desktop; a hung window is skipped.
+/// One EnumWindows pass over the desktop (guardedWindowCallback()); a hung window is skipped. A walk that fails
+/// part-way (the per-window work threw) finds nothing.
 void windowAppUserModelIds(std::span<const std::uint32_t> pids, std::vector<WindowAppId>& found);
 
 /// The name the shell's Apps folder (shell:AppsFolder) shows for @p appUserModelId, empty when it has none

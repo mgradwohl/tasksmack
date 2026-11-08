@@ -149,10 +149,12 @@ sessionsDemand(bool usersTabShown, bool processesTabShown, GroupBy groupBy, bool
     return proc.serviceNames.empty() ? std::string{} : appFromUnit(proc.serviceNames[0]);
 }
 
-/// Whether @p proc's own app (ownAppKey()) is a package: its family, or a packaged app's AppUserModelID.
+/// Whether @p proc's own app (ownAppKey()) is a package: its family, or a packaged app's AppUserModelID,
+/// "<family>!<app>" with a family before the '!' (as ownAppKey() reads it; "!odd" is no package's).
 [[nodiscard]] inline bool ownAppIsPackage(const Domain::ProcessSnapshot& proc)
 {
-    return !proc.packageFamily.empty() || proc.appUserModelId.contains('!');
+    const std::size_t bang = proc.appUserModelId.find('!');
+    return !proc.packageFamily.empty() || (bang != std::string::npos && bang > 0);
 }
 
 /// What an App group's header calls the app @p proc names by its own identity @p key (#3457): the name the
@@ -172,18 +174,7 @@ sessionsDemand(bool usersTabShown, bool processesTabShown, GroupBy groupBy, bool
     return key;
 }
 
-/// Process Details' App row (#3457): the app as its App group's header names it, empty for a process with no
-/// package or AppUserModelID of its own (Linux's app is in its Services row).
-[[nodiscard]] inline std::string appDetailsValue(const Domain::ProcessSnapshot& proc)
-{
-    if (proc.packageFamily.empty() && proc.appUserModelId.empty())
-    {
-        return {};
-    }
-    return appGroupLabel(proc, ownAppKey(proc));
-}
-
-/// The App row's tooltip: the package family and AppUserModelID the app is read from.
+/// The App row's tooltip for a process's own app: the package family and AppUserModelID it is read from.
 [[nodiscard]] inline std::string appDetailsTooltip(const Domain::ProcessSnapshot& proc)
 {
     std::string tooltip;
@@ -314,6 +305,59 @@ sessionsDemand(bool usersTabShown, bool processesTabShown, GroupBy groupBy, bool
         }
     }
     return labels;
+}
+
+/// The App group a process is in, as Group: App puts it (#3457), for Process Details' App row: the same group
+/// the table shows, its own app's or the one it follows from a parent (appKeys()), named as the group's
+/// header names it (appGroupLabels()). Empty (no row) for a process in no app.
+struct AppMembership
+{
+    std::string key;        ///< The group's key; empty for none
+    std::string label;      ///< What the row says: the group's header
+    std::string tooltip;    ///< Where it comes from: its package and AppUserModelID, its unit, or its parent's app
+    bool inherited = false; ///< In its group through a parent, with no app of its own
+
+    [[nodiscard]] bool operator==(const AppMembership&) const = default;
+};
+
+/// @p proc's App membership, given its group @p key from appKeys() and the generation's @p labels.
+[[nodiscard]] inline AppMembership
+appMembership(const Domain::ProcessSnapshot& proc, const std::string& key, const std::unordered_map<std::string, std::string>& labels)
+{
+    if (key.empty())
+    {
+        return {};
+    }
+    AppMembership membership;
+    membership.key = key;
+    const auto named = labels.find(key);
+    membership.label = (named != labels.end()) ? named->second : key;
+    membership.inherited = ownAppKey(proc) != key;
+    if (membership.inherited)
+    {
+        membership.tooltip = "In " + membership.label + "'s group through a parent process: it has no package or AppUserModelID of its own";
+    }
+    else
+    {
+        membership.tooltip = appDetailsTooltip(proc);
+        if (membership.tooltip.empty() && !proc.serviceNames.empty())
+        {
+            membership.tooltip = "From its systemd unit: " + proc.serviceNames[0];
+        }
+    }
+    return membership;
+}
+
+/// The App membership of the process at @p index in @p snapshots, from the whole generation: what
+/// appKeys() and appGroupLabels() make of it, as the table's Group: App does. Empty past the end.
+[[nodiscard]] inline AppMembership appMembershipAt(const std::vector<Domain::ProcessSnapshot>& snapshots, std::size_t index)
+{
+    if (index >= snapshots.size())
+    {
+        return {};
+    }
+    const std::vector<std::string> keys = appKeys(snapshots);
+    return appMembership(snapshots[index], keys[index], appGroupLabels(snapshots));
 }
 
 /// The group @p proc belongs to under @p mode, or empty for none (Ungrouped). By App it is its own app

@@ -226,6 +226,12 @@ class ProcessesPanel : public Panel
     /// Always reflects the latest published data; returns std::nullopt if not found.
     [[nodiscard]] std::optional<Domain::ProcessSnapshot> findSnapshot(std::int32_t pid) const;
 
+    /// The App group process @p pid, started at @p startTicks, is in within the table's latest generation, as
+    /// Group: App puts it (#3457): its own app or the one it follows from a parent. For Process Details' App
+    /// row, so it agrees with the table. Worked out once a generation, and once a selection; empty for a
+    /// process the generation doesn't list.
+    [[nodiscard]] const ProcessGrouping::AppMembership& appMembership(std::int32_t pid, std::uint64_t startTicks);
+
     /// Have the process model keep a sample of process @p pid from every generation it publishes
     /// (Domain::ProcessModel::watchProcess()). pid <= 0 stops watching.
     void watchProcess(std::int32_t pid);
@@ -736,6 +742,14 @@ class ProcessesPanel : public Panel
     std::shared_ptr<const std::vector<Domain::ProcessSnapshot>> m_CachedRenderSnapshots =
         std::make_shared<const std::vector<Domain::ProcessSnapshot>>();
     std::uint64_t m_CachedSnapshotVersion = std::numeric_limits<std::uint64_t>::max();
+    // appMembership()'s generation (#3457): its own reference to the model's latest, not the render cache,
+    // which follows the model only while this tab shows; then its answer and what it was worked out for.
+    std::shared_ptr<const std::vector<Domain::ProcessSnapshot>> m_AppGeneration;
+    std::uint64_t m_AppGenerationVersion = std::numeric_limits<std::uint64_t>::max();
+    ProcessGrouping::AppMembership m_AppMembership;
+    std::uint64_t m_AppMembershipVersion = std::numeric_limits<std::uint64_t>::max();
+    std::int32_t m_AppMembershipPid = -1;
+    std::uint64_t m_AppMembershipStartTicks = 0;
     // Processes that just exited, kept as dimmed rows for a moment (#3060): the generation before
     // m_CachedRenderSnapshots' (to tell which exited), and those still shown.
     std::shared_ptr<const std::vector<Domain::ProcessSnapshot>> m_PreviousGeneration;
