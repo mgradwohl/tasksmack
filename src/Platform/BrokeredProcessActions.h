@@ -28,6 +28,7 @@
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/IProcessThreads.h"
+#include "Platform/IoPriorityTypes.h"
 #include "Platform/SchedPolicy.h"
 
 #include <chrono>

@@ -16,6 +16,7 @@
 #include <format>
 #include <limits>
 #include <optional>
+#include <ranges>
 #include <string_view>
 #include <tuple>
 #include <utility>
@@ -76,6 +77,13 @@ class IoPriorityText
     friend IoPriorityText
     ioPriorityText(const Platform::IoPriority& priority, std::optional<std::int32_t> nice, Platform::SchedPolicy policy);
 
+    /// @p words as they are, for the texts with no value in them.
+    void assign(std::string_view words) noexcept
+    {
+        const auto copied = std::ranges::copy(words | std::views::take(m_Chars.size()), m_Chars.begin());
+        m_Size = static_cast<std::size_t>(copied.out - m_Chars.begin());
+    }
+
     template<typename... Args> void format(std::format_string<Args...> pattern, Args&&... args)
     {
         constexpr auto CAPACITY = static_cast<std::ptrdiff_t>(std::tuple_size_v<decltype(m_Chars)>);
@@ -115,7 +123,7 @@ class IoPriorityText
         text.format("best-effort {}", priority.level);
         break;
     case Platform::IoPriorityClass::Idle:
-        text.format("idle");
+        text.assign("idle");
         break;
     case Platform::IoPriorityClass::None:
     default:
@@ -124,7 +132,7 @@ class IoPriorityText
         const std::string_view className = (inherited == Platform::IoPriorityClass::Realtime) ? "realtime" : "best-effort";
         if (inherited == Platform::IoPriorityClass::Idle)
         {
-            text.format("default (idle)");
+            text.assign("default (idle)");
         }
         else if (nice.has_value())
         {
@@ -132,11 +140,11 @@ class IoPriorityText
         }
         else if (inherited == Platform::IoPriorityClass::Realtime)
         {
-            text.format("default (realtime, from nice)");
+            text.assign("default (realtime, from nice)");
         }
         else
         {
-            text.format("default (from nice)");
+            text.assign("default (from nice)");
         }
         break;
     }
