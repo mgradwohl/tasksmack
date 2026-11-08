@@ -307,6 +307,8 @@ jobs:
       # (#3298, #3491) runs here too: a RunAs's supplementary groups need root to set, and it ran only in
       # heavy-checks' coverage pass before. TASKSMACK_CI_REAL_SYSTEM lets TasksmackHelperRootTest.ActsOnARealUnitUnderItsSandbox
       # (#3491) create, drive and remove a runtime unit on this disposable runner; it skips anywhere else.
+      # UdpByteCounterRootTest (#3366) loads the helper's eBPF UDP byte counter in each attach mode (fexit and
+      # kretprobe), which needs root, and checks it counts a child's datagrams once each.
       - name: Helper root test (Linux)
         if: runner.os == 'Linux' && inputs.build && inputs.build_type == 'debug'
         env:
@@ -316,9 +318,9 @@ jobs:
           # Named, not -E: this runner's sudo refuses to preserve the whole environment and ignores -E. The
           # real-system guard reads these three (tests/Support/CiRealSystem.h).
           sudo --preserve-env=TASKSMACK_CI_REAL_SYSTEM,GITHUB_ACTIONS,RUNNER_ENVIRONMENT \
-            build/debug/tests/TaskSmackTests --gtest_filter='TasksmackHelperRootTest.*:DetachedSpawnTest.AsRoot*' 2>&1 | tee helper-root-test.log
-          if grep -q '\[  SKIPPED \]' helper-root-test.log || ! grep -q '\[  PASSED  \] 4 tests' helper-root-test.log; then
-            echo "::error title=Helper root test::TasksmackHelperRootTest and DetachedSpawnTest.AsRoot* didn't all run and pass as root"
+            build/debug/tests/TaskSmackTests --gtest_filter='TasksmackHelperRootTest.*:DetachedSpawnTest.AsRoot*:*/UdpByteCounterRootTest.*' 2>&1 | tee helper-root-test.log
+          if grep -q '\[  SKIPPED \]' helper-root-test.log || ! grep -q '\[  PASSED  \] 6 tests' helper-root-test.log; then
+            echo "::error title=Helper root test::TasksmackHelperRootTest, DetachedSpawnTest.AsRoot* and UdpByteCounterRootTest didn't all run and pass as root"
             exit 1
           fi
 
@@ -558,12 +560,12 @@ jobs:
       # Analysis (Windows)", the required check of that name, for Windows.
 
       # A full build already built it; the nightly clang-tidy-only run builds just the generated
-      # GL loader the sources include.
+      # headers the sources include: the GL loader, and on Linux the eBPF UDP counter's object (#3366).
       - name: Build GLAD for clang-tidy (Linux)
         if: >-
           !cancelled() && inputs.clang_tidy && steps.select.outputs.mode != 'none' &&
           steps.configure-linux.outcome == 'success'
-        run: cmake --build --preset ${{ inputs.build_type }} --target glad_gl_core_33
+        run: cmake --build --preset ${{ inputs.build_type }} --target glad_gl_core_33 tasksmack_bpf_object
 
       - name: Build GLAD for clang-tidy (Windows)
         if: >-
