@@ -22,11 +22,13 @@
 #include "App/Panels/ProcessColumnAvailability.h"
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
 #include "App/Panels/ProcessDumpView.h"
+#include "App/Panels/ProcessGrouping.h"
 #include "App/Panels/ProcessPins.h"
 #include "App/Panels/ProcessRowFormat.h"
 #include "App/Panels/ProcessRowMeter.h"
 #include "App/Panels/ProcessSignatureText.h"
 #include "App/Panels/ProcessTreeIndent.h"
+#include "App/Panels/ProcessWaitChainDialog.h"
 #include "App/Panels/ProcessesPanel.h"
 #include "App/Panels/StuckProcesses.h"
 #include "App/ProcessColumnConfig.h"
@@ -47,10 +49,12 @@
 #include "Platform/CpuAffinity.h"
 #include "Platform/GPUTypes.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IProcessOpenFiles.h"
 #include "Platform/IServiceProbe.h"
 #include "Platform/ImageSignature.h"
 #include "Platform/ProcessTypes.h"
 #include "Platform/SchedPolicy.h"
+#include "Platform/WaitChain.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 
@@ -138,7 +142,10 @@ class ProcessesPanelRenderTest : public ::testing::Test
                     .withProcess(TestMocks::makeProcessCounters(100, "server", 'R', 200, 50, 1000, std::uint64_t{8} << 20U, 1))
                     .withProcess(TestMocks::makeProcessCounters(101, "worker", 'S', 30, 10, 1100, std::uint64_t{2} << 20U, 100));
                 return ProcessesPanelPlatform{
-                    .probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>(), .icons = nullptr};
+                    .probe = std::move(probe),
+                    .actions = std::make_unique<TestMocks::MockProcessActions>(),
+                    .icons = nullptr,
+                };
             },
             std::move(raiseEvent));
         panel->setGpuModel(gpuModel);
@@ -417,7 +424,10 @@ class ProcessesPanelRenderTest : public ::testing::Test
                     probe->withProcess(process);
                 }
                 return ProcessesPanelPlatform{
-                    .probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>(), .icons = nullptr};
+                    .probe = std::move(probe),
+                    .actions = std::make_unique<TestMocks::MockProcessActions>(),
+                    .icons = nullptr,
+                };
             },
             [](Core::Event& /*event*/) {}); // selection events, which these tests do not read
         attachAndSeed(*panel);
@@ -640,19 +650,24 @@ TEST_F(ProcessesPanelRenderTest, CopyPidPutsThePidOnTheClipboard)
 // #1891: the row menu's Copy Name and Copy Command Line copy that process's, to the panel's clipboard.
 TEST_F(ProcessesPanelRenderTest, CopyNameAndCopyCommandLinePutThemOnTheClipboard)
 {
-    auto panel = std::make_unique<ProcessesPanel>(
+    const auto panel = std::make_unique<ProcessesPanel>(
         []
         {
             auto probe = std::make_unique<TestMocks::MockProcessProbe>();
-            for (auto counters : {TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0),
-                                  TestMocks::makeProcessCounters(100, "server", 'R', 200, 50, 1000, std::uint64_t{8} << 20U, 1),
-                                  TestMocks::makeProcessCounters(101, "worker", 'S', 30, 10, 1100, std::uint64_t{2} << 20U, 100)})
+            for (auto counters : {
+                     TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0),
+                     TestMocks::makeProcessCounters(100, "server", 'R', 200, 50, 1000, std::uint64_t{8} << 20U, 1),
+                     TestMocks::makeProcessCounters(101, "worker", 'S', 30, 10, 1100, std::uint64_t{2} << 20U, 100),
+                 })
             {
                 counters.command = "/usr/bin/" + counters.name + " --flag";
                 probe->withProcess(counters);
             }
             return ProcessesPanelPlatform{
-                .probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>(), .icons = nullptr};
+                .probe = std::move(probe),
+                .actions = std::make_unique<TestMocks::MockProcessActions>(),
+                .icons = nullptr,
+            };
         },
         [](Core::Event&) {});
     attachAndSeed(*panel);
@@ -722,7 +737,7 @@ TEST_F(ProcessesPanelRenderTest, SuspendAndResumeFromTheRowMenuAreConfirmedThenS
 TEST_F(ProcessesPanelRenderTest, CreateDumpFromTheRowMenuAsksFirst)
 {
     TestMocks::MockProcessActions* actions = nullptr;
-    auto panel = std::make_unique<ProcessesPanel>(
+    const auto panel = std::make_unique<ProcessesPanel>(
         [&actions]
         {
             auto probe = std::make_unique<TestMocks::MockProcessProbe>();
@@ -761,12 +776,15 @@ TEST_F(ProcessesPanelRenderTest, CreateDumpFromTheRowMenuAsksFirst)
 [[nodiscard]] std::unique_ptr<ProcessesPanel> efficiencyModePanel(const std::string& status, TestMocks::MockProcessActions*& actions)
 {
     auto panel = std::make_unique<ProcessesPanel>(
+        // NOLINTNEXTLINE(bugprone-exception-escape): MSVC's debug std::string copy allocates its container proxy; a throw there is a test failure
         [&actions, status]
         {
             auto probe = std::make_unique<TestMocks::MockProcessProbe>();
-            for (auto counters : {TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0),
-                                  TestMocks::makeProcessCounters(100, "server", 'R', 200, 50, 1000, std::uint64_t{8} << 20U, 1),
-                                  TestMocks::makeProcessCounters(101, "worker", 'S', 30, 10, 1100, std::uint64_t{2} << 20U, 100)})
+            for (auto counters : {
+                     TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0),
+                     TestMocks::makeProcessCounters(100, "server", 'R', 200, 50, 1000, std::uint64_t{8} << 20U, 1),
+                     TestMocks::makeProcessCounters(101, "worker", 'S', 30, 10, 1100, std::uint64_t{2} << 20U, 100),
+                 })
             {
                 counters.status = status;
                 probe->withProcess(counters);
@@ -910,13 +928,15 @@ TEST_F(ProcessesPanelRenderTest, SetRealtimePriorityFromTheRowMenuWarnsThenSetsR
 TEST_F(ProcessesPanelRenderTest, AnalyzeWaitChainFromTheRowMenuReadsThatProcesssChains)
 {
     TestMocks::MockProcessActions* actions = nullptr;
-    auto panel = std::make_unique<ProcessesPanel>(
+    const auto panel = std::make_unique<ProcessesPanel>(
         [&actions]
         {
             auto probe = std::make_unique<TestMocks::MockProcessProbe>();
-            for (auto counters : {TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0),
-                                  TestMocks::makeProcessCounters(100, "server", 'R', 200, 50, 1000, std::uint64_t{8} << 20U, 1),
-                                  TestMocks::makeProcessCounters(101, "worker", 'S', 30, 10, 1100, std::uint64_t{2} << 20U, 100)})
+            for (const auto& counters : {
+                     TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0),
+                     TestMocks::makeProcessCounters(100, "server", 'R', 200, 50, 1000, std::uint64_t{8} << 20U, 1),
+                     TestMocks::makeProcessCounters(101, "worker", 'S', 30, 10, 1100, std::uint64_t{2} << 20U, 100),
+                 })
             {
                 probe->withProcess(counters);
             }
@@ -1162,13 +1182,15 @@ TEST_F(ProcessesPanelRenderTest, SetAffinityFromTheRowMenuAppliesTheDialogsCpus)
     // Every process may run on CPU 0 only, and the actions can set an affinity (#1887) on a PC with
     // two CPUs online, a layout read once on the sampler thread with the actions (#3182).
     TestMocks::MockAffinityLayoutActions* actions = nullptr;
-    auto panel = std::make_unique<ProcessesPanel>(
+    const auto panel = std::make_unique<ProcessesPanel>(
         [&actions]
         {
             auto probe = std::make_unique<TestMocks::MockProcessProbe>();
-            for (auto counters : {TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0),
-                                  TestMocks::makeProcessCounters(100, "server", 'R', 200, 50, 1000, std::uint64_t{8} << 20U, 1),
-                                  TestMocks::makeProcessCounters(101, "worker", 'S', 30, 10, 1100, std::uint64_t{2} << 20U, 100)})
+            for (auto counters : {
+                     TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0),
+                     TestMocks::makeProcessCounters(100, "server", 'R', 200, 50, 1000, std::uint64_t{8} << 20U, 1),
+                     TestMocks::makeProcessCounters(101, "worker", 'S', 30, 10, 1100, std::uint64_t{2} << 20U, 100),
+                 })
             {
                 counters.cpuAffinity = Platform::CpuAffinity::fromMask(0b1U);
                 probe->withProcess(counters);
@@ -1217,9 +1239,11 @@ TEST_F(ProcessesPanelRenderTest, SetAffinityFromTheRowMenuAppliesTheDialogsCpus)
         [&actions, policy]
         {
             auto probe = std::make_unique<TestMocks::MockProcessProbe>();
-            for (auto counters : {TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0),
-                                  TestMocks::makeProcessCounters(100, "server", 'R', 200, 50, 1000, std::uint64_t{8} << 20U, 1),
-                                  TestMocks::makeProcessCounters(101, "worker", 'S', 30, 10, 1100, std::uint64_t{2} << 20U, 100)})
+            for (auto counters : {
+                     TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0),
+                     TestMocks::makeProcessCounters(100, "server", 'R', 200, 50, 1000, std::uint64_t{8} << 20U, 1),
+                     TestMocks::makeProcessCounters(101, "worker", 'S', 30, 10, 1100, std::uint64_t{2} << 20U, 100),
+                 })
             {
                 counters.schedPolicy = policy;
                 probe->withProcess(counters);
@@ -1398,7 +1422,7 @@ TEST_F(ProcessesPanelRenderTest, ARowActionRunsOffTheFrameAndShowsItsProgress)
 {
     std::atomic<bool> gate{false};
     GatedKillActions* actions = nullptr;
-    auto panel = std::make_unique<ProcessesPanel>(
+    const auto panel = std::make_unique<ProcessesPanel>(
         [&gate, &actions]
         {
             auto probe = std::make_unique<TestMocks::MockProcessProbe>();
@@ -1723,12 +1747,14 @@ TEST_F(ProcessesPanelRenderTest, TheMeterMenuTurnsAMeterOn)
 TEST_F(ProcessesPanelRenderTest, ChosenColumnsThisSystemCantFillShowTheDash)
 {
     ProcessColumnSettings& columns = UserConfig::get().settings().processColumns;
-    for (const ProcessColumn col : {ProcessColumn::Publisher,
-                                    ProcessColumn::Type,
-                                    ProcessColumn::Architecture,
-                                    ProcessColumn::Container,
-                                    ProcessColumn::GpuEngine,
-                                    ProcessColumn::GpuDevice})
+    for (const ProcessColumn col : {
+             ProcessColumn::Publisher,
+             ProcessColumn::Type,
+             ProcessColumn::Architecture,
+             ProcessColumn::Container,
+             ProcessColumn::GpuEngine,
+             ProcessColumn::GpuDevice,
+         })
     {
         columns.setVisible(col, true);
     }
@@ -1746,7 +1772,7 @@ TEST_F(ProcessesPanelRenderTest, ChosenColumnsThisSystemCantFillShowTheDash)
 TEST_F(ProcessesPanelRenderTest, TheTypeColumnShowsEachProcesssTypeOrTheDash)
 {
     UserConfig::get().settings().processColumns.setVisible(ProcessColumn::Type, true);
-    auto panel = std::make_unique<ProcessesPanel>(
+    const auto panel = std::make_unique<ProcessesPanel>(
         []
         {
             auto probe = std::make_unique<TestMocks::MockProcessProbe>();
@@ -1758,7 +1784,10 @@ TEST_F(ProcessesPanelRenderTest, TheTypeColumnShowsEachProcesssTypeOrTheDash)
             caps.hasProcessType = true;
             probe->setCapabilities(caps);
             return ProcessesPanelPlatform{
-                .probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>(), .icons = nullptr};
+                .probe = std::move(probe),
+                .actions = std::make_unique<TestMocks::MockProcessActions>(),
+                .icons = nullptr,
+            };
         },
         std::function<void(Core::Event&)>{});
     attachAndSeed(*panel);
@@ -1776,7 +1805,7 @@ TEST_F(ProcessesPanelRenderTest, TheTypeColumnShowsEachProcesssTypeOrTheDash)
 TEST_F(ProcessesPanelRenderTest, TheArchitectureColumnShowsEachProcesssArchitectureOrTheDash)
 {
     UserConfig::get().settings().processColumns.setVisible(ProcessColumn::Architecture, true);
-    auto panel = std::make_unique<ProcessesPanel>(
+    const auto panel = std::make_unique<ProcessesPanel>(
         []
         {
             auto probe = std::make_unique<TestMocks::MockProcessProbe>();
@@ -1789,7 +1818,10 @@ TEST_F(ProcessesPanelRenderTest, TheArchitectureColumnShowsEachProcesssArchitect
             caps.hasArchitecture = true;
             probe->setCapabilities(caps);
             return ProcessesPanelPlatform{
-                .probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>(), .icons = nullptr};
+                .probe = std::move(probe),
+                .actions = std::make_unique<TestMocks::MockProcessActions>(),
+                .icons = nullptr,
+            };
         },
         std::function<void(Core::Event&)>{});
     attachAndSeed(*panel);
@@ -1810,7 +1842,7 @@ TEST_F(ProcessesPanelRenderTest, TheArchitectureColumnShowsEachProcesssArchitect
 TEST_F(ProcessesPanelRenderTest, ThePolicyCellIsFormattedWhenDrawnFromTheStoredPolicy)
 {
     UserConfig::get().settings().processColumns.setVisible(ProcessColumn::Policy, true);
-    auto panel = std::make_unique<ProcessesPanel>(
+    const auto panel = std::make_unique<ProcessesPanel>(
         []
         {
             auto probe = std::make_unique<TestMocks::MockProcessProbe>();
@@ -1831,7 +1863,10 @@ TEST_F(ProcessesPanelRenderTest, ThePolicyCellIsFormattedWhenDrawnFromTheStoredP
             caps.hasSchedPolicy = true;
             probe->setCapabilities(caps);
             return ProcessesPanelPlatform{
-                .probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>(), .icons = nullptr};
+                .probe = std::move(probe),
+                .actions = std::make_unique<TestMocks::MockProcessActions>(),
+                .icons = nullptr,
+            };
         },
         std::function<void(Core::Event&)>{});
     attachAndSeed(*panel);
@@ -1855,7 +1890,7 @@ TEST_F(ProcessesPanelRenderTest, ThePolicyCellIsFormattedWhenDrawnFromTheStoredP
 TEST_F(ProcessesPanelRenderTest, TheSignatureColumnShowsTheVerifiedSignerOrWhyNot)
 {
     UserConfig::get().settings().processColumns.setVisible(ProcessColumn::Signature, true);
-    auto panel = std::make_unique<ProcessesPanel>(
+    const auto panel = std::make_unique<ProcessesPanel>(
         []
         {
             auto probe = std::make_unique<TestMocks::MockProcessProbe>();
@@ -1883,7 +1918,10 @@ TEST_F(ProcessesPanelRenderTest, TheSignatureColumnShowsTheVerifiedSignerOrWhyNo
             caps.hasSignature = true;
             probe->setCapabilities(caps);
             return ProcessesPanelPlatform{
-                .probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>(), .icons = nullptr};
+                .probe = std::move(probe),
+                .actions = std::make_unique<TestMocks::MockProcessActions>(),
+                .icons = nullptr,
+            };
         },
         std::function<void(Core::Event&)>{});
     attachAndSeed(*panel);
@@ -1892,7 +1930,7 @@ TEST_F(ProcessesPanelRenderTest, TheSignatureColumnShowsTheVerifiedSignerOrWhyNo
     renderUntilLoaded(*panel);
     const std::string text = renderAndCapture(*panel);
     EXPECT_TRUE(text.contains("Signature")) << text;
-    EXPECT_TRUE(text.contains(std::string(ProcessSignatureText::VERIFIED_MARK))) << text;
+    EXPECT_TRUE(text.contains(ProcessSignatureText::VERIFIED_MARK)) << text;
     EXPECT_TRUE(text.contains("Microsoft Windows")) << text;
     EXPECT_TRUE(text.contains("Unsigned")) << text;
     EXPECT_TRUE(text.contains("Invalid")) << text;
@@ -2169,7 +2207,7 @@ TEST_F(ProcessesPanelRenderTest, CtrlAThenF9KillsEverySelectedProcessAfterOneCon
     static_cast<void>(renderAndCapture(*panel));
     const ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
     ASSERT_NE(modal, nullptr);
-    EXPECT_TRUE(std::string_view(modal->Name).contains("3")) << modal->Name; // one dialog for all three
+    EXPECT_TRUE(std::string_view(modal->Name).contains('3')) << modal->Name; // one dialog for all three
     EXPECT_EQ(actions->killCount(), 0);
 
     pressModalFilledButton(*panel, "Kill");
@@ -3132,15 +3170,18 @@ TEST_F(ProcessesPanelRenderTest, OnAttachLeavesThePlatformFactoryToTheSamplerThr
 // thread -- draws the toolbar and an empty table, not a crash; the rows appear once the seed arrives.
 TEST_F(ProcessesPanelRenderTest, TheFirstFrameDrawsWithoutASnapshot)
 {
-    auto gate = std::make_shared<std::latch>(1); // holds the factory, so no publication can arrive yet
-    auto panel = std::make_unique<ProcessesPanel>(
+    const auto gate = std::make_shared<std::latch>(1); // holds the factory, so no publication can arrive yet
+    const auto panel = std::make_unique<ProcessesPanel>(
         [gate]
         {
             gate->wait();
             auto probe = std::make_unique<TestMocks::MockProcessProbe>();
             probe->withProcess(TestMocks::makeProcessCounters(100, "server", 'R', 200, 50, 1000, std::uint64_t{8} << 20U, 1));
             return ProcessesPanelPlatform{
-                .probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>(), .icons = nullptr};
+                .probe = std::move(probe),
+                .actions = std::make_unique<TestMocks::MockProcessActions>(),
+                .icons = nullptr,
+            };
         });
     panel->onAttach();
     Core::ActiveTabChangedEvent shown("Processes");
@@ -3246,7 +3287,10 @@ class ProcessesPanelExitingRowsTest : public ProcessesPanelRenderTest
                     .withProcess(TestMocks::makeProcessCounters(101, "worker", 'S', 30, 10, 1100, std::uint64_t{2} << 20U, 100));
                 probeOut = probe.get();
                 return ProcessesPanelPlatform{
-                    .probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>(), .icons = nullptr};
+                    .probe = std::move(probe),
+                    .actions = std::make_unique<TestMocks::MockProcessActions>(),
+                    .icons = nullptr,
+                };
             });
         attachAndSeed(*panel);
         Core::ActiveTabChangedEvent shown("Processes");
@@ -3336,7 +3380,7 @@ TEST_F(ProcessesPanelRenderTest, RunNewTaskStartsTheCommandAndRemembersIt)
 {
     UserConfig::get().settings().recentCommands = {"htop"};
     TestMocks::MockProcessActions* actions = nullptr;
-    auto panel = std::make_unique<ProcessesPanel>(
+    const auto panel = std::make_unique<ProcessesPanel>(
         [&actions]
         {
             auto probe = std::make_unique<TestMocks::MockProcessProbe>();
@@ -3454,7 +3498,7 @@ TEST_F(ProcessesPanelRenderTest, ACancelledRunNewTaskShowsInTheNormalTextColour)
 TEST_F(ProcessesPanelRenderTest, GroupByContainerShowsHeadersWithTotalsAndCollapses)
 {
     UserConfig::get().settings().processGroupBy = ProcessGrouping::GroupBy::Container;
-    auto panel = std::make_unique<ProcessesPanel>(
+    const auto panel = std::make_unique<ProcessesPanel>(
         []
         {
             auto probe = std::make_unique<TestMocks::MockProcessProbe>();
@@ -3469,7 +3513,10 @@ TEST_F(ProcessesPanelRenderTest, GroupByContainerShowsHeadersWithTotalsAndCollap
                 .withProcess(web)
                 .withProcess(worker);
             return ProcessesPanelPlatform{
-                .probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>(), .icons = nullptr};
+                .probe = std::move(probe),
+                .actions = std::make_unique<TestMocks::MockProcessActions>(),
+                .icons = nullptr,
+            };
         });
     attachAndSeed(*panel);
     Core::ActiveTabChangedEvent shown("Processes");
@@ -3570,6 +3617,71 @@ TEST_F(ProcessesPanelRenderTest, TheGroupControlOffersOnlyTheModesThisSystemHasD
     panel->onDetach(); // TearDown restores the settings
 }
 
+// #3457: appMembership(), what Process Details' App row says, is the App group Group: App puts the process in,
+// worked out from the model's whole latest generation: a terminal's shell is in the terminal's group, named for
+// it and marked as there through its parent; the terminal is in its own; a process in no app, one the generation
+// doesn't list, one started at another time and no selection are in none. It reads the model, not the table's
+// render cache, so it answers while the Processes tab has never been shown.
+TEST_F(ProcessesPanelRenderTest, AppMembershipFollowsTheTablesAppGroupFromTheWholeGeneration)
+{
+    static constexpr std::string_view FAMILY = "Microsoft.WindowsTerminal_8wekyb3d8bbwe";
+    const auto panel = std::make_unique<ProcessesPanel>(
+        []
+        {
+            auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+            auto terminal = TestMocks::makeProcessCounters(20, "WindowsTerminal.exe", 'S', 200, 50, 1000, std::uint64_t{8} << 20U, 1);
+            terminal.packageFamily = FAMILY;
+            terminal.appName = "Windows Terminal";
+            Platform::ProcessCapabilities caps;
+            caps.hasAppIds = true; // Group: App is offered where app IDs are read (#3457)
+            probe->setCapabilities(caps);
+            probe->withProcess(TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0))
+                .withProcess(terminal)
+                .withProcess(TestMocks::makeProcessCounters(21, "pwsh.exe", 'S', 30, 10, 1100, std::uint64_t{2} << 20U, 20))
+                .withProcess(TestMocks::makeProcessCounters(30, "notepad.exe", 'S', 30, 10, 1200, std::uint64_t{2} << 20U, 1));
+            return ProcessesPanelPlatform{
+                .probe = std::move(probe),
+                .actions = std::make_unique<TestMocks::MockProcessActions>(),
+                .icons = nullptr,
+            };
+        });
+    // onAttach() alone, not attachAndSeed(): waitForFirstSample() and onUpdate() adopt the seed into the table's
+    // render cache. The seed's publication is waited for through the model (findSnapshot()), so the cache stays
+    // empty and appMembership() can only answer from the model's generation.
+    panel->onAttach();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!panel->findSnapshot(30).has_value() && std::chrono::steady_clock::now() < deadline)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_TRUE(panel->findSnapshot(30).has_value()) << "the sampler thread did not publish the seed in time";
+    ASSERT_EQ(panel->adoptedProcessCount(), 0U) << "the render cache adopted a generation";
+
+    const ProcessGrouping::AppMembership shell = panel->appMembership(21, 0);
+    EXPECT_EQ(shell.key, FAMILY);
+    EXPECT_EQ(shell.label, "Windows Terminal");
+    EXPECT_TRUE(shell.inherited);
+    EXPECT_TRUE(shell.tooltip.contains("through a parent process")) << shell.tooltip;
+
+    const std::optional<Domain::ProcessSnapshot> terminalSnapshot = panel->findSnapshot(20);
+    ASSERT_TRUE(terminalSnapshot.has_value());
+    const std::uint64_t terminalTicks = terminalSnapshot.has_value() ? terminalSnapshot->startTimeTicks : 0;
+    const ProcessGrouping::AppMembership terminal = panel->appMembership(20, terminalTicks);
+    EXPECT_EQ(terminal.key, FAMILY);
+    EXPECT_EQ(terminal.label, "Windows Terminal");
+    EXPECT_FALSE(terminal.inherited);
+    EXPECT_EQ(terminal.tooltip, std::format("Package family: {}", FAMILY));
+
+    EXPECT_EQ(panel->appMembership(20, terminalTicks + 1), ProcessGrouping::AppMembership{})
+        << "a process started at another time is another process";
+    EXPECT_EQ(panel->appMembership(30, 0), ProcessGrouping::AppMembership{}) << "notepad is in no app";
+    EXPECT_EQ(panel->appMembership(999, 0), ProcessGrouping::AppMembership{}) << "the generation doesn't list it";
+    EXPECT_EQ(panel->appMembership(-1, 0), ProcessGrouping::AppMembership{}) << "nothing is selected";
+    EXPECT_EQ(panel->appMembership(21, 0), shell) << "asked again, the same answer";
+    EXPECT_EQ(panel->adoptedProcessCount(), 0U) << "appMembership() adopted into the render cache";
+    panel->onDetach();
+}
+
 // #3067: the toolbar's Find handles opens its dialog; a query typed there searches every process's open
 // files on the dialog's worker and lists each process holding a match, with the count in the status line.
 // #3335: a search whose worker returned without its done publication reads as stopped, with its last counts, not
@@ -3603,15 +3715,17 @@ TEST_F(ProcessesPanelRenderTest, AFindHandlesReaderThatThrowsEndsTheSearchAndSay
             throw std::runtime_error("injected reader failure");
         }
     };
-    auto panel = std::make_unique<ProcessesPanel>(
+    const auto panel = std::make_unique<ProcessesPanel>(
         []
         {
             auto probe = std::make_unique<TestMocks::MockProcessProbe>();
             probe->withProcess(TestMocks::makeProcessCounters(42, "soffice", 'S', 30, 10, 200, std::uint64_t{4} << 20U, 1));
-            return ProcessesPanelPlatform{.probe = std::move(probe),
-                                          .actions = std::make_unique<TestMocks::MockProcessActions>(),
-                                          .icons = nullptr,
-                                          .openFiles = std::make_unique<ThrowingOpenFiles>()};
+            return ProcessesPanelPlatform{
+                .probe = std::move(probe),
+                .actions = std::make_unique<TestMocks::MockProcessActions>(),
+                .icons = nullptr,
+                .openFiles = std::make_unique<ThrowingOpenFiles>(),
+            };
         });
     attachAndSeed(*panel);
     Core::ActiveTabChangedEvent shown("Processes");
@@ -3654,7 +3768,7 @@ TEST_F(ProcessesPanelRenderTest, AFindHandlesReaderThatThrowsEndsTheSearchAndSay
 
 TEST_F(ProcessesPanelRenderTest, FindHandlesListsTheProcessesHoldingAFile)
 {
-    auto panel = std::make_unique<ProcessesPanel>(
+    const auto panel = std::make_unique<ProcessesPanel>(
         []
         {
             auto probe = std::make_unique<TestMocks::MockProcessProbe>();
@@ -3671,10 +3785,12 @@ TEST_F(ProcessesPanelRenderTest, FindHandlesListsTheProcessesHoldingAFile)
                 held.files.push_back(std::move(open));
             }
             files->setResult(std::move(held));
-            return ProcessesPanelPlatform{.probe = std::move(probe),
-                                          .actions = std::make_unique<TestMocks::MockProcessActions>(),
-                                          .icons = nullptr,
-                                          .openFiles = std::move(files)};
+            return ProcessesPanelPlatform{
+                .probe = std::move(probe),
+                .actions = std::make_unique<TestMocks::MockProcessActions>(),
+                .icons = nullptr,
+                .openFiles = std::move(files),
+            };
         });
     attachAndSeed(*panel);
     Core::ActiveTabChangedEvent shown("Processes");
@@ -4181,7 +4297,7 @@ TEST_F(ProcessesPanelRenderTest, F7AndF8AtTheEndOfThePriorityRangeSayWhy)
     {
         const bool raise = direction == NiceStep::Direction::Raise;
         TestMocks::MockProcessActions* actions = nullptr;
-        auto panel = std::make_unique<ProcessesPanel>(
+        const auto panel = std::make_unique<ProcessesPanel>(
             [&actions, raise]
             {
                 auto probe = std::make_unique<TestMocks::MockProcessProbe>();
@@ -4223,7 +4339,7 @@ TEST_F(ProcessesPanelRenderTest, SuspendAndResumeFromTheRowMenuOnASelectionAreCo
     for (const Detail::ProcessAction action : {Detail::ProcessAction::Stop, Detail::ProcessAction::Resume})
     {
         TestMocks::MockProcessActions* actions = nullptr;
-        auto panel = std::make_unique<ProcessesPanel>(
+        const auto panel = std::make_unique<ProcessesPanel>(
             [&actions]
             {
                 auto probe = std::make_unique<TestMocks::MockProcessProbe>();
@@ -4285,7 +4401,7 @@ TEST_F(ProcessesPanelRenderTest, GroupHeadersTotalEachColumnInItsUnit)
     {
         columns.setVisible(col, true);
     }
-    auto panel = std::make_unique<ProcessesPanel>(
+    const auto panel = std::make_unique<ProcessesPanel>(
         []
         {
             auto probe = std::make_unique<TestMocks::MockProcessProbe>();
@@ -4303,7 +4419,10 @@ TEST_F(ProcessesPanelRenderTest, GroupHeadersTotalEachColumnInItsUnit)
             probe->setCapabilities(caps);
             probe->withProcess(web);
             return ProcessesPanelPlatform{
-                .probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>(), .icons = nullptr};
+                .probe = std::move(probe),
+                .actions = std::make_unique<TestMocks::MockProcessActions>(),
+                .icons = nullptr,
+            };
         },
         [](Core::Event& /*event*/) {});
     attachAndSeed(*panel);
@@ -4450,12 +4569,16 @@ TEST_F(ProcessesPanelRenderTest, AnOverlongNameCantBePinned)
     UserConfig::get().settings().pinnedProcesses.clear();
     const std::string longName(ProcessPins::MAX_NAME_BYTES + 1, 'n');
     const auto panel = std::make_unique<ProcessesPanel>(
+        // NOLINTNEXTLINE(bugprone-exception-escape): MSVC's debug std::string copy allocates its container proxy; a throw there is a test failure
         [longName]
         {
             auto probe = std::make_unique<TestMocks::MockProcessProbe>();
             probe->withProcess(TestMocks::makeProcessCounters(9, longName, 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0));
             return ProcessesPanelPlatform{
-                .probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>(), .icons = nullptr};
+                .probe = std::move(probe),
+                .actions = std::make_unique<TestMocks::MockProcessActions>(),
+                .icons = nullptr,
+            };
         },
         [](Core::Event& /*event*/) {});
     attachAndSeed(*panel);
@@ -4516,7 +4639,10 @@ TEST_F(ProcessesPanelRenderTest, APlatformNoFrameAdoptedIsReleasedOnDetach)
             auto probe = std::make_unique<TestMocks::MockProcessProbe>();
             probe->withProcess(TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0));
             return ProcessesPanelPlatform{
-                .probe = std::move(probe), .actions = std::make_unique<TrackedActions>(destroyed), .icons = nullptr};
+                .probe = std::move(probe),
+                .actions = std::make_unique<TrackedActions>(destroyed),
+                .icons = nullptr,
+            };
         },
         [](Core::Event& /*event*/) {});
     attachAndSeed(*panel);
@@ -4588,10 +4714,12 @@ TEST_F(ProcessesPanelRenderTest, TheToolbarsFindHandlesButtonOpensTheDialog)
         {
             auto probe = std::make_unique<TestMocks::MockProcessProbe>();
             probe->withProcess(TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0));
-            return ProcessesPanelPlatform{.probe = std::move(probe),
-                                          .actions = std::make_unique<TestMocks::MockProcessActions>(),
-                                          .icons = nullptr,
-                                          .openFiles = std::make_unique<TestMocks::MockProcessOpenFilesReader>()};
+            return ProcessesPanelPlatform{
+                .probe = std::move(probe),
+                .actions = std::make_unique<TestMocks::MockProcessActions>(),
+                .icons = nullptr,
+                .openFiles = std::make_unique<TestMocks::MockProcessOpenFilesReader>(),
+            };
         });
     attachAndSeed(*panel);
     Core::ActiveTabChangedEvent shown("Processes");
@@ -4633,7 +4761,10 @@ TEST_F(ProcessesPanelRenderTest, ThePolicyColumnShowsEachProcesssPolicyOrTheDash
             caps.hasSchedPolicy = true;
             probe->setCapabilities(caps);
             return ProcessesPanelPlatform{
-                .probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>(), .icons = nullptr};
+                .probe = std::move(probe),
+                .actions = std::make_unique<TestMocks::MockProcessActions>(),
+                .icons = nullptr,
+            };
         },
         std::function<void(Core::Event&)>{});
     attachAndSeed(*panel);
@@ -4678,7 +4809,10 @@ TEST_F(ProcessesPanelRenderTest, AProcessStuckInDiskSleepHasItsRowTinted)
             probe->withProcess(TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0))
                 .withProcess(TestMocks::makeProcessCounters(77, "nfs-reader", 'D', 30, 10, 200, std::uint64_t{2} << 20U, 1));
             return ProcessesPanelPlatform{
-                .probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>(), .icons = nullptr};
+                .probe = std::move(probe),
+                .actions = std::make_unique<TestMocks::MockProcessActions>(),
+                .icons = nullptr,
+            };
         },
         [](Core::Event& /*event*/) {});
     attachAndSeed(*panel);
