@@ -1276,6 +1276,20 @@ TEST(TasksmackHelperRootTest, CountsUdpBytesAfterDroppingRootUnderItsSandbox)
     pair.closeServer();
     ASSERT_EQ(readUdpBytes(pair.client()).status, Broker::UdpBytesStatus::Ok); // loaded, and the Hello is done
     EXPECT_EQ(statusField(helper.pid(), "Uid").substr(0, 5), "65534") << "it reads the map as nobody";
+    // Of the counter, the helper holds its links and the totals map alone: no other map, such as in_udpv6_send with
+    // its kernel socket addresses, for the map reads its sandbox allows to reach (#3554).
+    std::size_t maps = 0;
+    std::size_t programs = 0;
+    std::error_code fdError;
+    for (const auto& fd : std::filesystem::directory_iterator("/proc/" + std::to_string(helper.pid()) + "/fd", fdError))
+    {
+        std::error_code linkError;
+        const std::string target = std::filesystem::read_symlink(fd.path(), linkError).string();
+        maps += target == "anon_inode:bpf-map" ? 1U : 0U;
+        programs += target == "anon_inode:bpf-prog" ? 1U : 0U;
+    }
+    EXPECT_EQ(maps, 1U);
+    EXPECT_EQ(programs, 0U);
 
     constexpr int DATAGRAMS = 4;
     constexpr std::size_t BYTES = 700;

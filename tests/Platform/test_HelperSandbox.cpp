@@ -12,6 +12,7 @@
 #include <cerrno>
 #include <csignal>
 #include <cstdlib>
+#include <iostream>
 #include <string>
 
 // NOLINTBEGIN(misc-include-cleaner) - kernel and syscall headers: include-cleaner lacks mappings for
@@ -359,14 +360,24 @@ TEST_F(HelperSandboxTest, TheUdpCounterReadsItsMapAndLoadsNothing)
         static_assert(MAP_COMMAND_BYTES <= sizeof(attr));
         return errorOf(::syscall(SYS_bpf, command, &attr, MAP_COMMAND_BYTES));
     };
+    // The kernel's own answer without a filter: EBADF where unprivileged map commands on an fd work (about 6.5 on),
+    // EPERM before it with kernel.unprivileged_bpf_disabled set, where only the refusals below say anything.
+    const bool kernelReachesTheFd = bpf(BPF_MAP_LOOKUP_ELEM) == EBADF && bpf(BPF_MAP_GET_NEXT_KEY) == EBADF;
     for (const HelperSandbox::Mode mode : {HelperSandbox::Mode::Enforce, HelperSandbox::Mode::Log})
     {
-        EXPECT_EQ(underFilter(mode, [&bpf] { return bpf(BPF_MAP_LOOKUP_ELEM); }, -1, true), EBADF) << "a map read";
-        EXPECT_EQ(underFilter(mode, [&bpf] { return bpf(BPF_MAP_GET_NEXT_KEY); }, -1, true), EBADF) << "a map walk";
+        if (kernelReachesTheFd)
+        {
+            EXPECT_EQ(underFilter(mode, [&bpf] { return bpf(BPF_MAP_LOOKUP_ELEM); }, -1, true), EBADF) << "a map read";
+            EXPECT_EQ(underFilter(mode, [&bpf] { return bpf(BPF_MAP_GET_NEXT_KEY); }, -1, true), EBADF) << "a map walk";
+        }
         EXPECT_EQ(underFilter(mode, [&bpf] { return bpf(BPF_MAP_UPDATE_ELEM); }, -1, true), EPERM) << "a map write";
         EXPECT_EQ(underFilter(mode, [&bpf] { return bpf(BPF_PROG_LOAD); }, -1, true), EPERM) << "a program load";
         EXPECT_EQ(underFilter(mode, [&bpf] { return bpf(BPF_MAP_CREATE); }, -1, true), EPERM) << "a new map";
         EXPECT_EQ(underFilter(mode, [&bpf] { return bpf(BPF_MAP_LOOKUP_ELEM); }), EPERM) << "no counter";
+    }
+    if (!kernelReachesTheFd)
+    {
+        std::cout << "[ NOTE     ] this kernel refuses unprivileged map commands before the fd; only the refusals were checked\n";
     }
 }
 

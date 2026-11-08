@@ -1,5 +1,6 @@
 #include "UdpByteCounter.h"
 
+#include "Platform/Linux/PosixGuards.h"
 #include "Platform/UdpByteCounts.h"
 #include "UdpBytesBpfObject.h" // generated: bpf/udp_bytes.bpf.c, compiled and embedded (cmake/BpfObject.cmake)
 
@@ -26,6 +27,7 @@
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
 #include <bpf/libbpf_version.h>
+#include <fcntl.h>
 
 // libbpf 1.0 made a failed open or attach return null (and set errno), which the checks below rely on; before it,
 // they returned error pointers that aren't null (CMakeLists.txt requires 1.0 too).
@@ -203,11 +205,14 @@ bool udpProgramWanted(std::string_view section, const UdpAttachAttempt& attempt)
 }
 
 // Links are destroyed before the object closes: they're declared after it.
+// Only the links and the totals map's own descriptor outlive load(): the object, its programs' descriptors and its
+// other maps are closed once the programs attach (the links keep them attached, and the kernel keeps what they
+// use). in_udpv6_send holds kernel socket addresses, so a helper that still held it could read kernel pointers
+// through the map reads its sandbox allows (#3554).
 struct UdpByteCounter::State
 {
-    ObjectPtr object;
     std::vector<LinkPtr> links;
-    int mapFd = -1;
+    Posix::FdGuard map{-1};
     UdpAttachAttempt attempt;
 };
 
@@ -298,9 +303,14 @@ std::expected<UdpByteCounter, std::string> UdpByteCounter::load(std::span<const 
         {
             return std::unexpected(std::format("the BPF object has no {} map", MAP_NAME));
         }
-        state->mapFd = bpf_map__fd(map);
+        // A descriptor of its own, so closing the object leaves the totals map, and only it, open.
+        state->map = Posix::FdGuard(::fcntl(bpf_map__fd(map), F_DUPFD_CLOEXEC, 0));
+        if (state->map.get() < 0)
+        {
+            return std::unexpected(std::format("couldn't keep the {} map: {}", MAP_NAME, errnoText(errno)));
+        }
         state->attempt = attempt;
-        state->object = std::move(object);
+        object.reset(); // the programs stay attached through their links
         spdlog::info("UDP byte counter attached with {}", label);
         return UdpByteCounter(std::move(state));
     }
@@ -310,7 +320,7 @@ std::expected<UdpByteCounter, std::string> UdpByteCounter::load(std::span<const 
 std::expected<std::vector<UdpByteCounts>, std::string> UdpByteCounter::read() const
 {
     std::vector<UdpByteCounts> counts;
-    if (!m_State || m_State->mapFd < 0)
+    if (!m_State || m_State->map.get() < 0)
     {
         return std::unexpected("the UDP byte counter isn't loaded");
     }
@@ -323,7 +333,7 @@ std::expected<std::vector<UdpByteCounts>, std::string> UdpByteCounter::read() co
     const void* previous = nullptr; // nullptr asks for the first key
     for (std::size_t step = 0; step < 2 * MAP_ENTRIES && counts.size() < MAP_ENTRIES; ++step)
     {
-        if (const int error = bpf_map_get_next_key(m_State->mapFd, previous, &next); error != 0)
+        if (const int error = bpf_map_get_next_key(m_State->map.get(), previous, &next); error != 0)
         {
             if (error == -ENOENT)
             {
@@ -335,7 +345,7 @@ std::expected<std::vector<UdpByteCounts>, std::string> UdpByteCounter::read() co
         }
         MapValue value;
         // An entry can age out of the LRU map between the two calls; skip it.
-        if (seen.insert(next).second && bpf_map_lookup_elem(m_State->mapFd, &next, &value) == 0)
+        if (seen.insert(next).second && bpf_map_lookup_elem(m_State->map.get(), &next, &value) == 0)
         {
             counts.push_back({.tgid = next, .txBytes = value.tx, .rxBytes = value.rx});
         }
@@ -352,7 +362,7 @@ UdpAttachAttempt UdpByteCounter::attempt() const noexcept
 
 int UdpByteCounter::mapFd() const noexcept
 {
-    return m_State ? m_State->mapFd : -1;
+    return m_State ? m_State->map.get() : -1;
 }
 
 } // namespace Platform
