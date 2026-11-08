@@ -10,6 +10,7 @@
 #include "CgroupService.h"
 #include "Domain/SamplingConfig.h"
 #include "ElfArchitecture.h"
+#include "IoPriority.h"
 #include "LinuxEfficiencyMode.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessProbe.h"
@@ -61,6 +62,7 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <pwd.h>
+#include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/utsname.h>
 #include <unistd.h>
@@ -418,6 +420,7 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
             continue;
         }
 
+        readIoPriority(pid, counters);
         parseProcessStatm(pidDirFd.get(), counters);
         parseProcessStatus(pidDirFd.get(), pid, counters, onlineCpus); // Owner, peak RSS (after statm) and CPU affinity
         readProcessArchitecture(pidDirFd.get(), counters, previousArchitectures, seenArchitectures); // While the name is comm
@@ -546,6 +549,7 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
         .hasProcessType = true,                         // From the cgroup path and parent PID (#3430)
         .hasArchitecture = true,                        // The ELF header of /proc/[pid]/exe (#2394)
         .hasSchedPolicy = true,                         // /proc/[pid]/stat fields 40-41 (#3086)
+        .hasIoPriority = true,                          // ioprio_get(2), which needs no privilege (#3551)
         .hasReducedPrivileges = missingPrivileges != 0, // Data or actions limited (#2303)
         .networkCountersBlocked = false,                // Linux gaps are privilege gaps (#1358)
         .hasSharedMemory = true,                        // From /proc/[pid]/statm
@@ -855,6 +859,22 @@ void LinuxProcessProbe::applyStatus(std::string_view text, ProcessCounters& coun
 
         p = (lineEnd < end) ? lineEnd + 1 : end;
     }
+}
+
+void LinuxProcessProbe::readIoPriority(std::int32_t pid, ProcessCounters& counters) const
+{
+    // A kernel thread has no I/O priority of its own to show (the column's em dash), and its read is skipped. Right
+    // after parseProcessStat(), only a kernel thread (PF_KTHREAD) has the SYSTEM type: cgroup facts come later.
+    if (counters.processType == CgroupProcessType::SYSTEM)
+    {
+        return;
+    }
+    // One cheap syscall, no privilege needed, by PID: a process that exited since the listing gives ESRCH, a negative
+    // value, which decode() takes for unknown.
+    const int value = m_IoPriorityReader ? m_IoPriorityReader(pid)
+                                         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - syscall(2) is variadic
+                                         : static_cast<int>(::syscall(SYS_ioprio_get, IoPrio::WHO_PROCESS, pid));
+    counters.ioPriority = IoPrio::decode(value);
 }
 
 void LinuxProcessProbe::readProcessCommand(

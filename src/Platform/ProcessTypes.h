@@ -2,6 +2,7 @@
 
 #include "Platform/CpuAffinity.h"
 #include "Platform/ImageSignature.h"
+#include "Platform/IoPriorityTypes.h"
 #include "Platform/SchedPolicy.h"
 
 #include <cstdint>
@@ -59,6 +60,9 @@ struct ProcessCounters
     // and 40. Unknown where it isn't read (Windows).
     SchedPolicy schedPolicy = SchedPolicy::Unknown;
     std::uint32_t rtPriority = 0;
+    // The I/O priority (#3551): Linux's ioprio_get(2) class and level, read each sample; nullopt for a kernel thread,
+    // a process it couldn't be read for, or where it isn't read (Windows until its probe does).
+    std::optional<IoPriority> ioPriority;
 
     std::uint64_t startTimeTicks = 0; // For PID reuse detection (raw platform ticks)
     std::uint64_t startTimeEpoch = 0; // Process start time (Unix epoch seconds)
@@ -276,6 +280,7 @@ struct ProcessCapabilities
         false; // Whether process type classification is available (Windows: App/Background/Windows; Linux: App/Background/System, #3430)
     bool hasArchitecture = false;      // Whether ProcessCounters::architecture is filled (#2394)
     bool hasSchedPolicy = false;       // Whether ProcessCounters::schedPolicy is filled (#3086)
+    bool hasIoPriority = false;        // Whether ProcessCounters::ioPriority is read (#3551)
     bool hasSignature = false;         // Whether ProcessCounters::signature is filled (#3070; Windows: WinVerifyTrust)
     bool hasGdiObjects = false;        // Whether GDI object count is available (Windows-only via GetGuiResources)
     bool hasReducedPrivileges = false; // True when the process lacks the privileges to read some data, or act

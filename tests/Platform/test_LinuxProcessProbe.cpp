@@ -494,6 +494,9 @@ TEST(LinuxProcessProbeTest, EnumerateFindsOurOwnProcess)
     // (or SCHED_BATCH / SCHED_IDLE where a CI harness lowers it), never as unknown.
     EXPECT_NE(it->schedPolicy, SchedPolicy::Unknown);
     EXPECT_TRUE(probe.capabilities().hasSchedPolicy);
+    // #3551: and the I/O priority, which ioprio_get(2) reads for any process without privilege.
+    EXPECT_TRUE(it->ioPriority.has_value());
+    EXPECT_TRUE(probe.capabilities().hasIoPriority);
 
     // Verify handle count (file descriptors) is populated for our own process
     // We can read our own /proc/[pid]/fd directory
@@ -1277,6 +1280,46 @@ TEST(LinuxProcessProbeTest, PrivateAndSwapAreRssAnonAndVmSwapFromStatus)
     const ProcessCapabilities caps = probe.capabilities();
     EXPECT_TRUE(caps.hasPrivateBytes);
     EXPECT_TRUE(caps.hasSwapBytes);
+}
+
+// #3551: each process's I/O priority comes from ioprio_get(2) by PID (here the test's reader), decoded; a kernel thread
+// (PF_KTHREAD) isn't read and stays unknown, and so does a process whose read fails (it exited: ESRCH).
+TEST(LinuxProcessProbeTest, TheIoPriorityIsReadForEachProcessButAKernelThread)
+{
+    ScopedTempDir proc("ts_test_proc_ioprio");
+    const auto stat = [](int pid, std::string_view name, std::uint32_t flags)
+    {
+        return std::to_string(pid) + " (" + std::string(name) + ") S 1 " + std::to_string(pid) + " " + std::to_string(pid) + " 0 -1 " +
+               std::to_string(flags) + " 0 0 0 0 10 5 0 0 20 0 1 0 12345 0 0 18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n";
+    };
+    writeFile(proc.path / "stat", "cpu  100 0 100 800 0 0 0 0 0 0\n");
+    writeFile(proc.path / "100" / "stat", stat(100, "rsync", 0x400000U));
+    writeFile(proc.path / "101" / "stat", stat(101, "gone", 0x400000U));
+    writeFile(proc.path / "102" / "stat", stat(102, "kworker/0:1", 0x00200000U)); // PF_KTHREAD
+
+    LinuxProcessProbe probe(proc.path);
+    std::vector<std::int32_t> asked;
+    probe.setIoPriorityReaderForTesting(
+        [&asked](std::int32_t pid)
+        {
+            asked.push_back(pid);
+            constexpr int IDLE = 3 << 13;
+            constexpr int BEST_EFFORT_6 = (2 << 13) | 6;
+            return pid == 100 ? IDLE : (pid == 101 ? -1 : BEST_EFFORT_6);
+        });
+    EXPECT_TRUE(probe.capabilities().hasIoPriority);
+    const std::vector<ProcessCounters> processes = probe.enumerate();
+    const auto byPid = [&processes](std::int32_t pid)
+    {
+        return std::ranges::find(processes, pid, &ProcessCounters::pid);
+    };
+    ASSERT_NE(byPid(100), processes.end());
+    ASSERT_NE(byPid(101), processes.end());
+    ASSERT_NE(byPid(102), processes.end());
+    EXPECT_EQ(byPid(100)->ioPriority, (Platform::IoPriority{.ioClass = Platform::IoPriorityClass::Idle, .level = 0}));
+    EXPECT_FALSE(byPid(101)->ioPriority.has_value()) << "a failed read is unknown";
+    EXPECT_FALSE(byPid(102)->ioPriority.has_value()) << "a kernel thread has none to show";
+    EXPECT_EQ(std::ranges::count(asked, 102), 0) << "nor is it read";
 }
 
 TEST(LinuxProcessProbeTest, PssAndUssAreReadFromSmapsRollupForOneProcess)

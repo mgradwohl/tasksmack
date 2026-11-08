@@ -1348,6 +1348,7 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
     snapshot.architecture = current.architecture; // and the architecture it runs as (#2394)
     snapshot.schedPolicy = current.schedPolicy;   // its scheduling policy (#3086)
     snapshot.rtPriority = current.rtPriority;
+    snapshot.ioPriority = current.ioPriority;         // its I/O priority (#3551)
     snapshot.signature = current.signature;           // the image's signature (#3070)
     snapshot.gdiObjectCount = current.gdiObjectCount; // Pass through GDI object count from platform probe
     snapshot.memoryBytes = current.rssBytes;

@@ -24,6 +24,7 @@
 // Everything but render() is defined here, free of ImGui, so the state can be tested against a mock
 // IProcessActions without an ImGui context (test_ProcessIoPriorityView.cpp).
 
+#include "App/Panels/IoPriorityText.h"
 #include "App/Panels/LazyBackgroundRead.h"
 #include "App/Panels/ProcessActionRun.h"
 #include "Domain/PriorityConfig.h"
@@ -224,25 +225,6 @@ struct IoStop
 // system's) is shown beyond the start, hollow, as Windows' Realtime priority class is (#1538).
 // ---------------------------------------------------------------------------------------------------
 
-/// The hint's name as the control shows it: "Very low", "Low", "Normal", "High", "Critical".
-[[nodiscard]] constexpr std::string_view ioPriorityHintName(Platform::IoPriorityHint hint) noexcept
-{
-    switch (hint)
-    {
-    case Platform::IoPriorityHint::VeryLow:
-        return "Very low";
-    case Platform::IoPriorityHint::Low:
-        return "Low";
-    case Platform::IoPriorityHint::High:
-        return "High";
-    case Platform::IoPriorityHint::Critical:
-        return "Critical";
-    case Platform::IoPriorityHint::Normal:
-        break;
-    }
-    return "Normal";
-}
-
 /// The hints the slider offers, highest first (stop 0 is High).
 inline constexpr std::array<Platform::IoPriorityHint, 4> IO_HINT_ORDER = {
     Platform::IoPriorityHint::High,
@@ -338,30 +320,11 @@ inline constexpr DiscretePrioritySlider IO_HINT_SLIDER{
 static_assert(IO_HINT_ORDER[0] == Platform::IoPriorityHint::High && IO_HINT_ORDER[1] == Platform::IoPriorityHint::Normal &&
               IO_HINT_ORDER[2] == Platform::IoPriorityHint::Low && IO_HINT_ORDER[3] == Platform::IoPriorityHint::VeryLow);
 
-/// The current I/O priority as the header shows it, in ionice(1)'s words: "best-effort 4", "idle",
-/// "realtime 0", or for a class never set "default (best-effort N from nice)", N being the level the
-/// kernel derives from @p nice (just "default (from nice)" while the nice value is not known). A Windows
-/// hint (#3362) is its name: "Very low", "Normal", "High".
+/// The current I/O priority as the header shows it: ioPriorityText()'s words (IoPriorityText.h), which the Processes
+/// table's I/O Priority column shows too (#3551).
 [[nodiscard]] inline std::string describeIoPriority(const Platform::IoPriority& priority, std::optional<std::int32_t> nice)
 {
-    switch (priority.ioClass)
-    {
-    case Platform::IoPriorityClass::WindowsHint:
-    {
-        const std::optional<Platform::IoPriorityHint> hint = Platform::ioPriorityHintFromLevel(priority.level);
-        return hint.has_value() ? std::string(ioPriorityHintName(*hint)) : std::format("unknown ({})", priority.level);
-    }
-    case Platform::IoPriorityClass::Realtime:
-        return std::format("realtime {}", priority.level);
-    case Platform::IoPriorityClass::BestEffort:
-        return std::format("best-effort {}", priority.level);
-    case Platform::IoPriorityClass::Idle:
-        return "idle";
-    case Platform::IoPriorityClass::None:
-    default:
-        return nice.has_value() ? std::format("default (best-effort {} from nice)", Domain::Priority::ioLevelForNice(*nice))
-                                : std::string("default (from nice)");
-    }
+    return std::string(ioPriorityText(priority, nice).view());
 }
 
 } // namespace Detail

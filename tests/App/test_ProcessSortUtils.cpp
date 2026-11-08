@@ -35,6 +35,8 @@ using Domain::ProcessSnapshot;
     snap.pid = i;
     snap.parentPid = i;
     snap.nice = i;
+    // "Low" is served first (#3551): best-effort 1 before best-effort 2.
+    snap.ioPriority = Platform::IoPriority{.ioClass = Platform::IoPriorityClass::BestEffort, .level = i};
     snap.threadCount = i;
     snap.handleCount = i;
 
@@ -165,6 +167,27 @@ TEST(ProcessSortUtilsTest, ServicesSortByTextIgnoringCaseWithNoneLast)
     none.services.clear();
     EXPECT_TRUE(ProcessSortUtils::compareColumnKey(host, none, ProcessColumn::Services, true));
     EXPECT_TRUE(ProcessSortUtils::compareColumnKey(host, none, ProcessColumn::Services, false));
+}
+
+// #3551: the I/O Priority column sorts the highest-served first ascending and the reverse descending, with a process
+// whose I/O priority is unknown (a kernel thread) after every known one both ways.
+TEST(ProcessSortUtilsTest, IoPrioritySortsHighestFirstWithUnknownLast)
+{
+    ProcessSnapshot realtime = makeSnapshot(false);
+    realtime.ioPriority = Platform::IoPriority{.ioClass = Platform::IoPriorityClass::Realtime, .level = 0};
+    ProcessSnapshot idle = makeSnapshot(false);
+    idle.ioPriority = Platform::IoPriority{.ioClass = Platform::IoPriorityClass::Idle, .level = 0};
+    ProcessSnapshot unknown = makeSnapshot(false);
+    unknown.ioPriority.reset();
+    EXPECT_TRUE(ProcessSortUtils::compareColumnKey(realtime, idle, ProcessColumn::IoPriority, true));
+    EXPECT_FALSE(ProcessSortUtils::compareColumnKey(idle, realtime, ProcessColumn::IoPriority, true));
+    EXPECT_TRUE(ProcessSortUtils::compareColumnKey(idle, realtime, ProcessColumn::IoPriority, false));
+    for (const bool ascending : {true, false})
+    {
+        EXPECT_TRUE(ProcessSortUtils::compareColumnKey(idle, unknown, ProcessColumn::IoPriority, ascending)) << ascending;
+        EXPECT_FALSE(ProcessSortUtils::compareColumnKey(unknown, idle, ProcessColumn::IoPriority, ascending)) << ascending;
+        EXPECT_FALSE(ProcessSortUtils::compareColumnKey(unknown, unknown, ProcessColumn::IoPriority, ascending));
+    }
 }
 
 TEST(ProcessSortUtilsTest, GpuEngineComparesByCountBeforeFirstName)
