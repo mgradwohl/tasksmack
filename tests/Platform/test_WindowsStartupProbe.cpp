@@ -7,6 +7,7 @@
 #include "Platform/Windows/ComPtr.h"
 #include "Platform/Windows/WinString.h"
 #include "Platform/Windows/WindowsHandles.h"
+#include "Platform/Windows/WindowsScheduledTasksMath.h"
 #include "Platform/Windows/WindowsStartupProbe.h"
 #include "Platform/Windows/WindowsStartupProbeMath.h"
 
@@ -75,7 +76,7 @@ TEST(WindowsStartupProbeTest, EnumeratesWithoutFailing)
         if (entry.location == StartupLocation::ScheduledTaskUser || entry.location == StartupLocation::ScheduledTaskMachine)
         {
             EXPECT_TRUE(entry.registrationName.starts_with('\\')) << entry.registrationName; // the task's full path
-            EXPECT_EQ(entry.osComponent, entry.registrationName.starts_with("\\Microsoft\\")) << entry.registrationName;
+            EXPECT_EQ(entry.osComponent, Windows::ScheduledTaskMath::isMicrosoftTask(entry.registrationName)) << entry.registrationName;
         }
         else
         {

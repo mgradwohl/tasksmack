@@ -507,6 +507,39 @@ TEST_F(WindowsScheduledTasksTest, AnExtensionlessProgramIsFoundBeforeItsArgument
     EXPECT_EQ(entries[0].target, StartupTargetState::Present);
 }
 
+TEST_F(WindowsScheduledTasksTest, RelativeProgramsAreFoundInTheTasksWorkingDirectoryOnly)
+{
+    // A bare name that isn't in System32, with no working directory: not looked for in TaskSmack's own folder
+    // or PATH, which aren't the task's.
+    TaskRecord bare = makeTask("\\Bare", {LOGON});
+    bare.execPath = "tasksmack-no-such-updater";
+    // A relative path in the task's working directory: that file there, missing here.
+    TaskRecord relative = makeTask("\\Relative", {LOGON});
+    relative.execPath = R"(bin\tool.exe)";
+    relative.workingDirectory = R"(C:\No Such Vendor)";
+    // A relative path with no working directory can't be told.
+    TaskRecord nowhere = makeTask("\\Nowhere", {LOGON});
+    nowhere.execPath = R"(bin\tool.exe)";
+    m_Scheduler.tasks["\\"] = {bare, relative, nowhere};
+    WindowsStartupProbe probe(emptyRegistry(), factoryFor(m_Scheduler));
+    const std::vector<StartupEntry> entries = probe.enumerate();
+
+    const StartupEntry* bareEntry = entryAt(entries, "\\Bare");
+    ASSERT_NE(bareEntry, nullptr);
+    EXPECT_TRUE(bareEntry->executablePath.empty()) << bareEntry->executablePath;
+    EXPECT_EQ(bareEntry->target, StartupTargetState::Unresolved);
+
+    const StartupEntry* relativeEntry = entryAt(entries, "\\Relative");
+    ASSERT_NE(relativeEntry, nullptr);
+    EXPECT_EQ(relativeEntry->executablePath, R"(C:\No Such Vendor\bin\tool.exe)");
+    EXPECT_EQ(relativeEntry->target, StartupTargetState::Missing);
+
+    const StartupEntry* nowhereEntry = entryAt(entries, "\\Nowhere");
+    ASSERT_NE(nowhereEntry, nullptr);
+    EXPECT_TRUE(nowhereEntry->executablePath.empty()) << nowhereEntry->executablePath;
+    EXPECT_EQ(nowhereEntry->target, StartupTargetState::Unresolved);
+}
+
 TEST_F(WindowsScheduledTasksTest, AnotherAccountsVariablesAreNotExpandedAsTaskSmacks)
 {
     TaskRecord theirs = makeTask("\\TheirUpdater", {BOOT}, "SYSTEM");

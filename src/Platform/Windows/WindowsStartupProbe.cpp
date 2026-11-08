@@ -961,14 +961,19 @@ struct WindowsStartupProbe::Impl
     /// Fills `entry`'s executable, target state and publisher from its command, and names it (#1873):
     /// its program's FileDescription, else the program's file name, else @p fallbackName. A RunOnce
     /// entry is shown by its value name instead, with the program's name kept in programName (#1971).
-    void resolveTarget(StartupEntry& entry, std::string_view fallbackName, std::unordered_set<std::wstring>& seenPaths)
+    /// @p executable, when given, is the program already found (a scheduled task's, #3424), in place of the one
+    /// resolveStartupExecutable finds from the command; empty leaves it unresolved.
+    void resolveTarget(StartupEntry& entry,
+                       std::string_view fallbackName,
+                       std::unordered_set<std::wstring>& seenPaths,
+                       const std::optional<std::string>& executable = std::nullopt)
     {
         nameEntry(entry, Windows::StartupMath::startupDisplayName({}, {}, fallbackName));
         if (entry.command.empty())
         {
             return; // a shortcut whose target couldn't be read
         }
-        entry.executablePath = Windows::resolveStartupExecutable(entry.command);
+        entry.executablePath = executable ? *executable : Windows::resolveStartupExecutable(entry.command);
         nameEntry(entry, Windows::StartupMath::startupDisplayName({}, entry.executablePath, fallbackName));
         if (entry.executablePath.empty())
         {
@@ -1067,6 +1072,38 @@ struct WindowsStartupProbe::Impl
         scheduledTasks = std::move(*read);
     }
 
+    /// The program @p task's exec action runs, as Task Scheduler finds it (ScheduledTaskMath::taskProgramPath): its
+    /// Path and WorkingDirectory expanded, a relative or bare one looked for in that directory, else (a bare name) in
+    /// System32 only; never in TaskSmack's own working directory or PATH. Empty, unresolved, when it can't be told.
+    /// Another account's %USERPROFILE% or %APPDATA% isn't TaskSmack's: expanded here it would name this user's file,
+    /// so a task at @p location ScheduledTaskMachine whose Path names one is unresolved, and its working directory
+    /// counts as unknown when that names one.
+    [[nodiscard]] static std::string taskProgram(const Windows::ScheduledTaskMath::TaskRecord& task, StartupLocation location)
+    {
+        namespace TaskMath = Windows::ScheduledTaskMath;
+        const bool otherAccount = location == StartupLocation::ScheduledTaskMachine;
+        if (otherAccount && TaskMath::usesAccountVariables(task.execPath))
+        {
+            return {};
+        }
+        const std::string workingDirectory = (otherAccount && TaskMath::usesAccountVariables(task.workingDirectory))
+                                               ? std::string()
+                                               : Windows::expandEnvironmentStrings(task.workingDirectory);
+        std::array<wchar_t, MAX_PATH> system{};
+        const UINT systemChars = GetSystemDirectoryW(system.data(), static_cast<UINT>(system.size()));
+        const std::string systemDirectory = (systemChars > 0 && systemChars < system.size())
+                                              ? WinString::wideToUtf8(std::wstring_view(system.data(), systemChars))
+                                              : std::string();
+        return TaskMath::taskProgramPath(Windows::expandEnvironmentStrings(task.execPath),
+                                         workingDirectory,
+                                         systemDirectory,
+                                         [](const std::string& path)
+                                         {
+                                             const DWORD attributes = GetFileAttributesW(WinString::utf8ToWide(path).c_str());
+                                             return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0;
+                                         });
+    }
+
     /// The cached scheduled tasks as entries (#3424), each named by its task's name, its program resolved from its
     /// command, and published by its program's CompanyName, else the task's Author.
     void readScheduledTasks(std::vector<StartupEntry>& entries, std::unordered_set<std::wstring>& seenPaths)
@@ -1074,16 +1111,7 @@ struct WindowsStartupProbe::Impl
         for (const Windows::ScheduledTaskMath::TaskRecord& task : scheduledTasks)
         {
             StartupEntry entry = Windows::ScheduledTaskMath::taskEntry(task, currentUserNames);
-            if (entry.location == StartupLocation::ScheduledTaskMachine && Windows::ScheduledTaskMath::usesAccountVariables(task.execPath))
-            {
-                // Another account's %USERPROFILE% or %APPDATA% isn't TaskSmack's: expanded here it would name this
-                // user's file, so the program is left unresolved (its command still shows as written).
-                nameEntry(entry, Windows::StartupMath::startupDisplayName({}, {}, entry.registrationName));
-            }
-            else
-            {
-                resolveTarget(entry, entry.registrationName, seenPaths);
-            }
+            resolveTarget(entry, entry.registrationName, seenPaths, taskProgram(task, entry.location));
             if (entry.publisher.empty())
             {
                 entry.publisher = task.author;

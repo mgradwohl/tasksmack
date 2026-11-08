@@ -166,9 +166,13 @@ template<typename Interface, typename Getter> [[nodiscard]] std::string readStri
         {
             continue;
         }
-        VARIANT_BOOL enabled = VARIANT_TRUE;
-        static_cast<void>(trigger->get_Enabled(&enabled)); // left enabled when it can't be read
-        triggers.push_back({.type = static_cast<int>(type), .enabled = enabled != VARIANT_FALSE});
+        VARIANT_BOOL enabled = VARIANT_FALSE;
+        const bool enabledRead = SUCCEEDED(trigger->get_Enabled(&enabled));
+        // A trigger whose enabled state can't be read is skipped, as one whose type can't be.
+        if (const auto read = Math::readTrigger(true, static_cast<int>(type), enabledRead, enabled != VARIANT_FALSE))
+        {
+            triggers.push_back(*read);
+        }
     }
     return triggers;
 }
@@ -198,6 +202,7 @@ void readExecAction(ITaskDefinition* definition, Math::TaskRecord& record)
         }
         record.execPath = readString(exec.get(), &IExecAction::get_Path);
         record.execArguments = readString(exec.get(), &IExecAction::get_Arguments);
+        record.workingDirectory = readString(exec.get(), &IExecAction::get_WorkingDirectory);
         return;
     }
 }

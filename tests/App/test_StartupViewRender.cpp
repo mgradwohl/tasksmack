@@ -308,9 +308,19 @@ TEST(StartupViewTest, Labels)
     EXPECT_EQ(startupLocationLabel(StartupLocation::XdgAutostartUser), "Autostart (your folder)");
     EXPECT_EQ(startupLocationLabel(StartupLocation::XdgAutostartSystem), "Autostart (system)");
     Platform::StartupEntry otherDesktop;
+    otherDesktop.location = StartupLocation::XdgAutostartSystem;
     otherDesktop.enabled = false;
     otherDesktop.notSwitchableReason = "Starts only in KDE";
     EXPECT_EQ(startupEnabledLabel(otherDesktop), "Not started here");
+    // #3424: read-only isn't "doesn't apply here": one of Windows' own tasks, disabled, is Disabled.
+    Platform::StartupEntry windowsTask;
+    windowsTask.location = StartupLocation::ScheduledTaskMachine;
+    windowsTask.enabled = false;
+    windowsTask.osComponent = true;
+    windowsTask.notSwitchableReason = "One of Windows' own scheduled tasks";
+    EXPECT_EQ(startupEnabledLabel(windowsTask), "Disabled");
+    windowsTask.enabled = true;
+    EXPECT_EQ(startupEnabledLabel(windowsTask), "Enabled");
 }
 
 // The Windows-only Startup tab's remaining branches (#1395, Windows half).
@@ -472,6 +482,15 @@ TEST_F(StartupViewRenderTest, ShowMicrosoftEntriesBringsBackWindowsOwnTasks)
     state.showOsComponents = true; // as a click on the checkbox sets it
     static_cast<void>(captureFrame(publication, state));
     EXPECT_EQ(state.rows.size(), 5U);
+
+    // Disabled, it reads Disabled, not "Not started here": it is read-only, not for another desktop.
+    publication.entries.back().enabled = false;
+    publication.entries.back().notSwitchableReason = "One of Windows' own scheduled tasks";
+    publication.version = 6;
+    const std::string drawn = captureFrame(publication, state);
+    ASSERT_EQ(state.enabledLabels.size(), 5U);
+    EXPECT_EQ(state.enabledLabels.back(), "Disabled");
+    EXPECT_FALSE(drawn.contains("Not started here"));
 }
 
 TEST(StartupViewTest, RegistrationLabelNamesTheValueOrTheTask)

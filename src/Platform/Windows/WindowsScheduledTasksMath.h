@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <format>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -56,11 +57,98 @@ struct TaskRecord
     std::vector<TaskTrigger> triggers;
     std::string execPath;      ///< The first exec action's Path, as written (environment variables, maybe quoted); empty when none.
     std::string execArguments; ///< That action's Arguments.
+    /// That action's WorkingDirectory, as written: where a relative Path is found. Empty when none is set.
+    std::string workingDirectory;
     /// RegistrationInfo's Author: a name, or an indirect string ("$(@%SystemRoot%\system32\x.dll,-600)").
     std::string author;
     /// The Principal's UserId: "DOMAIN\user", "user", a SID ("S-1-5-18"), "SYSTEM"; empty for a group's task.
     std::string userId;
 };
+
+/// One trigger as read: its @p type and @p enabled state, when each read (@p typeRead, @p enabledRead) succeeded.
+/// Nullopt when either failed: a trigger whose state is a guess is left out, not taken for an enabled one.
+[[nodiscard]] constexpr std::optional<TaskTrigger> readTrigger(bool typeRead, int type, bool enabledRead, bool enabled) noexcept
+{
+    if (!typeRead || !enabledRead)
+    {
+        return std::nullopt;
+    }
+    return TaskTrigger{.type = type, .enabled = enabled};
+}
+
+/// The program a task's exec action runs, where Task Scheduler finds it, or empty when TaskSmack can't tell (the
+/// probe shows it unresolved). @p program is the action's Path with its variables expanded, quotes allowed;
+/// @p workingDirectory its expanded WorkingDirectory (empty when none, or when it can't be told for this account);
+/// @p systemDirectory Windows' System32. @p exists says whether a file is at a path.
+///   - An absolute path ("C:\A\a.exe", "\\server\share\a.exe") is the program.
+///   - A relative or bare one is found in the working directory, with ".exe" added when it has no extension.
+///     A relative path with a folder in it is that file there, found or not (it shows as missing).
+///   - Without a working directory, only a bare name ("cmd") is looked for, and only in System32, never in
+///     TaskSmack's own working directory or PATH, which aren't the task's.
+template<typename Exists>
+[[nodiscard]] std::string
+taskProgramPath(std::string_view program, std::string_view workingDirectory, std::string_view systemDirectory, Exists exists)
+{
+    if (program.size() >= 2 && program.front() == '"' && program.back() == '"')
+    {
+        program = program.substr(1, program.size() - 2);
+    }
+    if (program.empty())
+    {
+        return {};
+    }
+    const bool driveAbsolute = program.size() >= 3 && program[1] == ':' && (program[2] == '\\' || program[2] == '/');
+    if (driveAbsolute || program.starts_with("\\\\") || program.starts_with("//"))
+    {
+        return std::string(program);
+    }
+    if (program.contains(':'))
+    {
+        return {}; // drive-relative ("C:a.exe"): relative to a current directory TaskSmack can't know
+    }
+    const bool hasFolder = program.find_first_of("\\/") != std::string_view::npos;
+    const std::string_view leaf = program.substr(program.find_last_of("\\/") + 1);
+    const bool hasExtension = leaf.contains('.');
+    // @p folder\program, whatever separators @p folder ends with.
+    const auto join = [program](std::string_view folder)
+    {
+        while (!folder.empty() && (folder.back() == '\\' || folder.back() == '/'))
+        {
+            folder.remove_suffix(1);
+        }
+        return std::format("{}\\{}", folder, program);
+    };
+    // That file, or with ".exe" added when it isn't there and has no extension; empty when neither is.
+    const auto findIn = [&](std::string_view folder) -> std::string
+    {
+        std::string candidate = join(folder);
+        if (exists(candidate))
+        {
+            return candidate;
+        }
+        if (!hasExtension && exists(candidate + ".exe"))
+        {
+            return candidate + ".exe";
+        }
+        return {};
+    };
+    if (!workingDirectory.empty())
+    {
+        if (std::string found = findIn(workingDirectory); !found.empty())
+        {
+            return found;
+        }
+        if (hasFolder)
+        {
+            return join(workingDirectory) + (hasExtension ? "" : ".exe");
+        }
+    }
+    if (!hasFolder && !systemDirectory.empty())
+    {
+        return findIn(systemDirectory);
+    }
+    return {};
+}
 
 /// Whether a trigger of @p type starts a task at sign-in or boot.
 [[nodiscard]] constexpr bool isStartupTrigger(int type) noexcept

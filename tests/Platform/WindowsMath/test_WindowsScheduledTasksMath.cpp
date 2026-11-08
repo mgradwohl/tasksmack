@@ -10,8 +10,11 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace Platform::Windows::ScheduledTaskMath
@@ -69,6 +72,42 @@ TEST(ScheduledTaskMathTest, TheCommandQuotesEveryPath)
     // An extensionless program keeps its boundary: the .exe in its arguments isn't taken for the program (#3558).
     EXPECT_EQ(taskCommand("cmd", R"(/c C:\Vendor\updater.exe)"), R"("cmd" /c C:\Vendor\updater.exe)");
     EXPECT_EQ(StartupMath::executableFromCommandLine(taskCommand("cmd", R"(/c C:\Vendor\updater.exe)")), "cmd");
+}
+
+TEST(ScheduledTaskMathTest, ATriggerWhoseTypeOrStateCantBeReadIsSkipped)
+{
+    const std::optional<TaskTrigger> read = readTrigger(true, TRIGGER_LOGON, true, false);
+    ASSERT_TRUE(read.has_value());
+    EXPECT_EQ(read.value_or(TaskTrigger{}).type, TRIGGER_LOGON);
+    EXPECT_FALSE(read.value_or(TaskTrigger{.type = 0, .enabled = true}).enabled);
+    EXPECT_FALSE(readTrigger(true, TRIGGER_LOGON, false, true).has_value()) << "not taken for an enabled logon trigger";
+    EXPECT_FALSE(readTrigger(false, TRIGGER_BOOT, true, true).has_value());
+}
+
+TEST(ScheduledTaskMathTest, ATasksProgramIsFoundWhereTaskSchedulerFindsIt)
+{
+    const std::vector<std::string> files{R"(C:\Vendor\tool.exe)", R"(C:\Vendor\bin\run.exe)", R"(C:\Windows\System32\cmd.exe)"};
+    const auto exists = [&files](const std::string& path)
+    {
+        return std::ranges::find(files, path) != files.end();
+    };
+    constexpr std::string_view SYSTEM = R"(C:\Windows\System32)";
+
+    EXPECT_EQ(taskProgramPath(R"(C:\Elsewhere\a.exe)", "", SYSTEM, exists), R"(C:\Elsewhere\a.exe)") << "absolute: as written";
+    EXPECT_EQ(taskProgramPath(R"("C:\Program Files\A\a.exe")", "", SYSTEM, exists), R"(C:\Program Files\A\a.exe)");
+    EXPECT_EQ(taskProgramPath(R"(\\server\share\a.exe)", "", SYSTEM, exists), R"(\\server\share\a.exe)");
+    // In the working directory, with .exe added to an extensionless name.
+    EXPECT_EQ(taskProgramPath("tool", R"(C:\Vendor\)", SYSTEM, exists), R"(C:\Vendor\tool.exe)");
+    EXPECT_EQ(taskProgramPath(R"(bin\run.exe)", R"(C:\Vendor)", SYSTEM, exists), R"(C:\Vendor\bin\run.exe)");
+    EXPECT_EQ(taskProgramPath(R"(bin\gone)", R"(C:\Vendor)", SYSTEM, exists), R"(C:\Vendor\bin\gone.exe)")
+        << "a relative path is that file there, found or not";
+    // A bare name not in the working directory, or without one, is looked for in System32 only.
+    EXPECT_EQ(taskProgramPath("cmd", R"(C:\Vendor)", SYSTEM, exists), R"(C:\Windows\System32\cmd.exe)");
+    EXPECT_EQ(taskProgramPath("cmd", "", SYSTEM, exists), R"(C:\Windows\System32\cmd.exe)");
+    EXPECT_EQ(taskProgramPath("tool", "", SYSTEM, exists), "") << "not TaskSmack's own folder or PATH";
+    EXPECT_EQ(taskProgramPath(R"(bin\run.exe)", "", SYSTEM, exists), "") << "relative, with no working directory";
+    EXPECT_EQ(taskProgramPath("C:run.exe", R"(C:\Vendor)", SYSTEM, exists), "") << "drive-relative";
+    EXPECT_EQ(taskProgramPath("", R"(C:\Vendor)", SYSTEM, exists), "");
 }
 
 TEST(ScheduledTaskMathTest, AccountVariablesAreToldFromMachineWideOnes)

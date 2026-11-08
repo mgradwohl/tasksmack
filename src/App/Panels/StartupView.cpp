@@ -338,7 +338,11 @@ std::string startupEnabledLabel(const Platform::StartupEntry& entry)
     {
         return entry.enabled ? "Enabled by policy" : "Disabled by policy";
     }
-    if (!entry.notSwitchableReason.empty() && !entry.enabled)
+    // An autostart entry for another desktop (#2541) isn't disabled, it doesn't apply here. Being read-only says
+    // nothing of the state: a disabled read-only entry elsewhere (one of Windows' own tasks, #3424) is "Disabled".
+    const bool autostart =
+        entry.location == Platform::StartupLocation::XdgAutostartUser || entry.location == Platform::StartupLocation::XdgAutostartSystem;
+    if (autostart && !entry.notSwitchableReason.empty() && !entry.enabled)
     {
         return "Not started here"; // its tooltip and the actions say why
     }
