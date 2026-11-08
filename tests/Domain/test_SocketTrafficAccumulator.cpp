@@ -820,5 +820,32 @@ TEST(SocketTrafficAccumulatorTest, OnlyAFoldingApplyPrunesExitedProcesses)
     EXPECT_EQ(both[1].netReceivedBytes, 110U);
 }
 
+// #3366: a baseline-only sample's counters are read but may hold bytes from before this interval (a UDP counter that
+// was already counting): they're the baseline, crediting nothing, and the next reading credits the growth from them --
+// unlike an unreadable first sighting, whose next readable sample only sets the baseline.
+TEST(SocketTrafficAccumulatorTest, ABaselineOnlySampleSetsTheBaselineAndTheNextReadingCreditsGrowthFromIt)
+{
+    SocketTrafficAccumulator accumulator;
+    std::vector processes{process(10)};
+    read(accumulator, {{.key = 1, .pid = 10, .bytesReceived = 50, .bytesSent = 50}}, processes); // the first reading
+    EXPECT_EQ(processes[0].netSentBytes, 0U);
+
+    // A new connection, baseline-only: its 10,000 are not credited as a new connection's would be.
+    read(accumulator,
+         {{.key = 1, .pid = 10, .bytesReceived = 50, .bytesSent = 50}, {.key = 2, .pid = 10, .bytesSent = 10'000, .baselineOnly = true}},
+         processes);
+    EXPECT_EQ(processes[0].netSentBytes, 0U);
+    read(accumulator, {{.key = 1, .pid = 10, .bytesReceived = 50, .bytesSent = 50}, {.key = 2, .pid = 10, .bytesSent = 10'060}}, processes);
+    EXPECT_EQ(processes[0].netSentBytes, 60U) << "the growth from the baseline, in the very next reading";
+
+    // An existing connection sent baseline-only is re-baselined, crediting nothing for this interval.
+    read(accumulator,
+         {{.key = 1, .pid = 10, .bytesReceived = 50, .bytesSent = 50}, {.key = 2, .pid = 10, .bytesSent = 20'000, .baselineOnly = true}},
+         processes);
+    EXPECT_EQ(processes[0].netSentBytes, 60U);
+    read(accumulator, {{.key = 1, .pid = 10, .bytesReceived = 50, .bytesSent = 50}, {.key = 2, .pid = 10, .bytesSent = 20'005}}, processes);
+    EXPECT_EQ(processes[0].netSentBytes, 65U);
+}
+
 } // namespace
 } // namespace Domain

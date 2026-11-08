@@ -37,6 +37,7 @@ inline void appendSamples(std::vector<SocketTrafficSample>& sockets, std::span<c
             .bytesReceived = process.bytesReceived,
             .bytesSent = process.bytesSent,
             .readable = process.readable,
+            .baselineOnly = process.baselineOnly,
         });
     }
 }
