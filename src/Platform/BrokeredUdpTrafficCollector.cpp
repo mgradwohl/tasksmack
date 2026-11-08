@@ -81,7 +81,14 @@ std::vector<UdpProcessTraffic> BrokeredUdpTrafficCollector::sample()
     {
         m_Delivering = false;
         m_Last.clear();
-        m_Problem = reply->status == Broker::UdpBytesStatus::NotCounting ? std::string("The helper isn't counting UDP") : reply->detail;
+        std::string problem =
+            reply->status == Broker::UdpBytesStatus::NotCounting ? std::string("The helper isn't counting UDP") : reply->detail;
+        if (problem != m_Problem)
+        {
+            // Once per change, not per reading.
+            spdlog::warn("UDP traffic per process: {}; the counters stay TCP only", problem);
+        }
+        m_Problem = std::move(problem);
         return {};
     }
     m_Last.clear();

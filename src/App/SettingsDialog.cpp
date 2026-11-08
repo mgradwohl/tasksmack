@@ -306,6 +306,7 @@ Action render(State& state)
             checkboxWidth(PRIVILEGE_NOTICE_LABEL),
             checkboxWidth(PROCESS_ICONS_LABEL),
             checkboxWidth(HIGHLIGHT_NEW_LABEL),
+            checkboxWidth(UDP_EVENT_TRACE_LABEL), // #3366
             state.updateCheckOffered ? checkboxWidth(CHECK_UPDATES_LABEL) : 0.0F,
             state.startAtLoginOffered ? checkboxWidth(START_AT_LOGIN_LABEL) : 0.0F,
             Core::VideoBackend::isWayland() ? checkboxWidth(NATIVE_DECORATIONS_LABEL) : 0.0F,
@@ -559,15 +560,21 @@ Action render(State& state)
             UI::Widgets::endOutlinedCombo();
         }
 
-#ifdef _WIN32
-        // Per-process network counters are TCP only by default; UDP needs a kernel event trace,
-        // which costs some CPU under heavy UDP and runs only as administrator (#1492).
+        // Per-process network counters are TCP only by default. UDP needs a kernel event trace on Windows, which costs
+        // some CPU under heavy UDP and runs only as administrator (#1492), and on Linux the helper's eBPF counter, which
+        // it loads only in an Administrator session (#3366).
         ImGui::Spacing();
         UI::Widgets::outlinedCheckbox(UDP_EVENT_TRACE_LABEL, &state.udpEventTrace);
+#ifdef _WIN32
         ImGui::SetItemTooltip("Net Sent and Net Received count TCP only unless this is on. On, and with TaskSmack running as "
                               "administrator, TaskSmack starts a Windows network event trace (ETW) to count UDP too: QUIC/HTTP3, "
                               "video calls, games, DNS. It costs some CPU when there is a lot of UDP traffic.");
         ImGui::TextColored(theme.scheme().textMuted, "Needs TaskSmack running as administrator.");
+#else
+        ImGui::SetItemTooltip("Net Sent and Net Received count TCP only unless this is on. On, and in an Administrator session, "
+                              "TaskSmack's helper counts UDP too with a small eBPF program in the kernel: QUIC/HTTP3, video calls, "
+                              "games, DNS. Turning it on during a session restarts the helper, which may ask for the password.");
+        ImGui::TextColored(theme.scheme().textMuted, "Needs an Administrator session: click Standard in the status bar.");
 #endif
 
         UI::Widgets::sectionGap();
