@@ -21,6 +21,7 @@
 #include "App/Panels/ProcessActionRun.h"
 #include "Domain/PriorityConfig.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/SchedPolicy.h"
 #include "PriorityEditTarget.h"
 #include "ProcessDetailsPanel_PriorityHelpers.h"
 #include "ProcessIoPriorityView.h"
@@ -103,11 +104,13 @@ class ProcessPriorityView
     /// @p currentNice is the process's nice value from its latest snapshot, or nullopt before the first
     /// snapshot (the control then shows 0 and Apply stays disabled). Apply also stays disabled while
     /// @p target's start time is unknown (0), which no platform will act on. An edit is made for @p target, and
-    /// Apply sets it on @p target through @p actions (null gives an "unavailable" error).
+    /// Apply sets it on @p target through @p actions (null gives an "unavailable" error). @p schedPolicy, the
+    /// process's CPU policy, says which I/O class a class never set is served in (#3565).
     void render(Platform::IProcessActions* actions,
                 const Platform::ProcessActionCapabilities& capabilities,
                 std::optional<std::int32_t> currentNice,
-                const Platform::ProcessTarget& target);
+                const Platform::ProcessTarget& target,
+                Platform::SchedPolicy schedPolicy = Platform::SchedPolicy::Unknown);
 
     /// Whether render() labels its rows: only when it draws two, the priority and the I/O priority
     /// (Linux), which the labels tell apart. With the priority row alone (Windows) the Priority card's
