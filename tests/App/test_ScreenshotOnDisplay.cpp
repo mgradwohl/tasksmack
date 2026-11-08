@@ -33,6 +33,7 @@
 #include "Core/Utf8Path.h"
 #include "Core/Window.h"
 #include "Core/WindowEvents.h"
+#include "LogWarningGuard.h"
 #include "Platform/CurrentProcess.h"
 #include "UI/Theme.h"
 #include "UI/UILayer.h"
@@ -582,6 +583,9 @@ TEST_F(ScreenshotOnDisplayTest, ADemoScriptPlaysEveryKindOfStep)
     ASSERT_TRUE(parsedDemo.steps.has_value()) << parsedDemo.warning;
     const std::vector<App::DemoOverride::Step> steps = parsedDemo.steps.value_or(std::vector<App::DemoOverride::Step>{});
     ASSERT_EQ(steps.size(), 14U) << App::DemoOverride::describe(steps);
+    // The two steps that name nothing are warned about and skipped (DemoLayer), on purpose here (#2718).
+    TestSupport::expectLogWarning("'nosuchtab' names no tab; skipped");
+    TestSupport::expectLogWarning("'nosuchtheme' is not a loaded theme; skipped");
 
     // Composed as main.cpp's runApp() composes it, as in the test above.
     RunResult run;
