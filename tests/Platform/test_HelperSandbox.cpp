@@ -12,12 +12,14 @@
 #include <cerrno>
 #include <csignal>
 #include <cstdlib>
+#include <iostream>
 #include <string>
 
 // NOLINTBEGIN(misc-include-cleaner) - kernel and syscall headers: include-cleaner lacks mappings for
 // SYS_*, BPF_*, SECCOMP_*, PR_*, O_*, PROT_*, MAP_*, RLIMIT_*, FIOCLEX and the W* macros
 #include <fcntl.h>
 #include <linux/audit.h>
+#include <linux/bpf.h>
 #include <linux/filter.h>
 #include <linux/seccomp.h>
 #include <netinet/in.h>
@@ -43,14 +45,15 @@ namespace
 /// Exit status of a child whose filter didn't go in.
 constexpr int NOT_INSTALLED = 100;
 
-/// Runs @p body in a forked child under the filter in @p mode, with @p busFd as its held system bus. @return
-/// the child's exit status (body's return value), or minus the signal that killed it.
-template<typename Body> [[nodiscard]] int underFilter(HelperSandbox::Mode mode, Body body, int busFd = -1)
+/// Runs @p body in a forked child under the filter in @p mode, with @p busFd as its held system bus and, with
+/// @p udpByteMap, the UDP counter's map reads allowed (#3366). @return the child's exit status (body's return
+/// value), or minus the signal that killed it.
+template<typename Body> [[nodiscard]] int underFilter(HelperSandbox::Mode mode, Body body, int busFd = -1, bool udpByteMap = false)
 {
     const pid_t pid = ::fork();
     if (pid == 0)
     {
-        if (::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 || !HelperSandbox::installFilter(mode, busFd))
+        if (::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 || !HelperSandbox::installFilter(mode, busFd, udpByteMap))
         {
             ::_exit(NOT_INSTALLED);
         }
@@ -338,6 +341,43 @@ TEST_F(HelperSandboxTest, TheHeldBusAloneCarriesSendmsgAndRecvmsg)
     for (const int fd : {bus[0], bus[1], other[0], other[1]})
     {
         ::close(fd);
+    }
+}
+
+// #3366: a helper counting UDP bytes reads its eBPF map with BPF_MAP_GET_NEXT_KEY and BPF_MAP_LOOKUP_ELEM, and
+// nothing else of bpf(): loading a program or creating a map stays refused, and without the counter every
+// command is. A bad map fd gets past the filter to the kernel's EBADF (unprivileged map commands on an fd work
+// from about 6.5, whatever kernel.unprivileged_bpf_disabled says).
+TEST_F(HelperSandboxTest, TheUdpCounterReadsItsMapAndLoadsNothing)
+{
+    const auto bpf = [](int command)
+    {
+        // Only the map commands' leading fields (map_fd, key, value, flags): the uapi header's whole union can be
+        // larger than this kernel takes, which it refuses with EINVAL before it looks at the fd.
+        union bpf_attr attr{};
+        attr.map_fd = static_cast<std::uint32_t>(-1);
+        constexpr std::size_t MAP_COMMAND_BYTES = 32;
+        static_assert(MAP_COMMAND_BYTES <= sizeof(attr));
+        return errorOf(::syscall(SYS_bpf, command, &attr, MAP_COMMAND_BYTES));
+    };
+    // The kernel's own answer without a filter: EBADF where unprivileged map commands on an fd work (about 6.5 on),
+    // EPERM before it with kernel.unprivileged_bpf_disabled set, where only the refusals below say anything.
+    const bool kernelReachesTheFd = bpf(BPF_MAP_LOOKUP_ELEM) == EBADF && bpf(BPF_MAP_GET_NEXT_KEY) == EBADF;
+    for (const HelperSandbox::Mode mode : {HelperSandbox::Mode::Enforce, HelperSandbox::Mode::Log})
+    {
+        if (kernelReachesTheFd)
+        {
+            EXPECT_EQ(underFilter(mode, [&bpf] { return bpf(BPF_MAP_LOOKUP_ELEM); }, -1, true), EBADF) << "a map read";
+            EXPECT_EQ(underFilter(mode, [&bpf] { return bpf(BPF_MAP_GET_NEXT_KEY); }, -1, true), EBADF) << "a map walk";
+        }
+        EXPECT_EQ(underFilter(mode, [&bpf] { return bpf(BPF_MAP_UPDATE_ELEM); }, -1, true), EPERM) << "a map write";
+        EXPECT_EQ(underFilter(mode, [&bpf] { return bpf(BPF_PROG_LOAD); }, -1, true), EPERM) << "a program load";
+        EXPECT_EQ(underFilter(mode, [&bpf] { return bpf(BPF_MAP_CREATE); }, -1, true), EPERM) << "a new map";
+        EXPECT_EQ(underFilter(mode, [&bpf] { return bpf(BPF_MAP_LOOKUP_ELEM); }), EPERM) << "no counter";
+    }
+    if (!kernelReachesTheFd)
+    {
+        std::cout << "[ NOTE     ] this kernel refuses unprivileged map commands before the fd; only the refusals were checked\n";
     }
 }
 

@@ -31,12 +31,15 @@ enum class SessionEnd : std::uint8_t
 /// the rest of the session, #2728), or @p stopToken is stopped. The first
 /// frame must be a Hello of this protocol version; until then nothing else is acted on. A frame that
 /// doesn't decode gets an ErrorReply, and the session goes on. The idle timeout runs on @p clock,
-/// steady_clock unless a test steps it (#2546).
+/// steady_clock unless a test steps it (#2546). @p heldFromStart holds the session from the start, as a Hello
+/// with forSession would: a helper whose UDP counter is running (#3366) never ends idle, so its totals stay
+/// continuous.
 [[nodiscard]] SessionEnd serve(int fd,
                                IProcessActions& actions,
                                std::chrono::milliseconds idleTimeout,
                                const std::stop_token& stopToken,
                                const Readers& readers = {},
-                               const Broker::IdleClock& clock = {});
+                               const Broker::IdleClock& clock = {},
+                               bool heldFromStart = false);
 
 } // namespace Platform::BrokerServer

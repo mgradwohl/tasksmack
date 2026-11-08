@@ -12,11 +12,13 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <filesystem>
 #include <iostream>
 #include <memory>
 #include <set>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <vector>
 
@@ -317,6 +319,22 @@ template<typename Address> [[nodiscard]] bool echo(int sock, const Address& addr
     ::_exit(sendToAClosedPortAndReadTheError() ? 0 : 9);
 }
 
+/// How many of this process's open descriptors link to @p target ("anon_inode:bpf-map", ...).
+[[nodiscard]] std::size_t openDescriptorsOf(std::string_view target)
+{
+    std::size_t count = 0;
+    std::error_code error;
+    for (const auto& entry : std::filesystem::directory_iterator("/proc/self/fd", error))
+    {
+        std::error_code linkError;
+        if (std::filesystem::read_symlink(entry.path(), linkError).string() == target)
+        {
+            ++count;
+        }
+    }
+    return count;
+}
+
 /// A file descriptor for the newest BPF map named @p name (the counter this test loaded), or -1. Root only.
 [[nodiscard]] int mapNamed(std::string_view name)
 {
@@ -370,6 +388,10 @@ TEST_P(UdpByteCounterRootTest, CountsTheBytesAChildSendsAndReceivesOnceEach)
     ASSERT_TRUE(counter.has_value()) << counter.error();
     EXPECT_EQ(counter->attempt(), attempts[0]);
     EXPECT_GE(counter->mapFd(), 0);
+    // Only the totals map stays open: no program descriptors, and not in_udpv6_send, whose values are kernel socket
+    // addresses (#3554).
+    EXPECT_EQ(openDescriptorsOf("anon_inode:bpf-map"), 1U);
+    EXPECT_EQ(openDescriptorsOf("anon_inode:bpf-prog"), 0U);
 
     std::array<int, 2> go{-1, -1};
     ASSERT_EQ(::pipe(go.data()), 0);
@@ -396,7 +418,9 @@ TEST_P(UdpByteCounterRootTest, CountsTheBytesAChildSendsAndReceivesOnceEach)
     ASSERT_TRUE(WIFEXITED(status));
     ASSERT_EQ(WEXITSTATUS(status), 0);
 
-    const std::vector<UdpByteCounts> counts = counter->read();
+    const auto read = counter->read();
+    ASSERT_TRUE(read.has_value()) << read.error();
+    const std::vector<UdpByteCounts>& counts = *read;
     const auto entry = std::ranges::find(counts, static_cast<std::uint32_t>(child), &UdpByteCounts::tgid);
     ASSERT_NE(entry, counts.end()) << "no entry for the child's tgid among " << counts.size();
     EXPECT_EQ(entry->txBytes, expectedTxBytes()) << "the IPv4-mapped sends once, and the IPv4 sends despite the stale marker";

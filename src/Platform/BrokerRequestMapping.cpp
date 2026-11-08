@@ -166,6 +166,23 @@ namespace
     }
 }
 
+/// Every process's UDP bytes (#3366): the counter's totals, as the helper read them.
+[[nodiscard]] Broker::Response handleUdpBytes(const Readers& readers)
+{
+    if (!readers.udpBytes)
+    {
+        return Broker::ErrorReply{.message = "This helper doesn't count UDP bytes"};
+    }
+    try
+    {
+        return readers.udpBytes();
+    }
+    catch (...)
+    {
+        return Broker::UdpBytesReply{.status = Broker::UdpBytesStatus::Failed, .detail = "The helper couldn't read its UDP counter"};
+    }
+}
+
 /// Process Details' threads (#3069): the reader checks the target's identity itself.
 [[nodiscard]] Broker::Response handleThreads(const Broker::ThreadsRequest& read, const Readers& readers)
 {
@@ -405,6 +422,10 @@ Broker::Response handleRequest(const Broker::Request& request, IProcessActions& 
     if (const auto* read = std::get_if<Broker::MemoryMapRequest>(&request))
     {
         return handleMemoryMap(*read, readers);
+    }
+    if (std::holds_alternative<Broker::UdpBytesRequest>(request))
+    {
+        return handleUdpBytes(readers);
     }
     if (const auto* read = std::get_if<Broker::MemoryRollupRequest>(&request))
     {

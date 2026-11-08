@@ -28,12 +28,14 @@ SessionEnd serve(int fd,
                  std::chrono::milliseconds idleTimeout,
                  const std::stop_token& stopToken,
                  const Readers& readers,
-                 const Broker::IdleClock& clock)
+                 const Broker::IdleClock& clock,
+                 bool heldFromStart)
 {
     bool greeted = false;
     // Held for the session (#2728): a Hello asked for it, and the session then ends only when TaskSmack
-    // closes the socket, the session is stopped or the channel breaks.
-    bool held = false;
+    // closes the socket, the session is stopped or the channel breaks. A helper counting UDP bytes is held
+    // from the start (#3366).
+    bool held = heldFromStart;
     // The idle timeout runs from the last request the user made: reads come on their own timers, so they
     // don't keep the helper alive (#2369, #2405).
     auto lastActivity = Broker::idleNow(clock);

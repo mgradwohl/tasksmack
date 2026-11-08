@@ -39,6 +39,7 @@
 #include "Platform/Linux/SystemdActions.h"
 #include "Platform/Linux/SystemdBus.h"
 #include "Platform/Linux/SystemdJournal.h"
+#include "Platform/Linux/UdpByteCounter.h"
 #include "Platform/PlatformConfig.h"
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
@@ -56,8 +57,10 @@
 #include <optional>
 #include <span>
 #include <stop_token>
+#include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 
 #include <sys/types.h>
 #include <unistd.h>
@@ -79,6 +82,8 @@ namespace
 
 /// The socket TaskSmack passes: its stdin.
 constexpr int CLIENT_FD = 0;
+/// Asks the helper to count every process's UDP bytes (#3366).
+constexpr std::string_view UDP_BYTES_ARGUMENT = "--udp-bytes";
 /// How long the helper waits for a request before it exits; TaskSmack starts it again when needed.
 constexpr std::chrono::minutes IDLE_TIMEOUT{5};
 
@@ -123,6 +128,68 @@ constexpr int EXIT_UNTRUSTED_PEER = 3;
     }
 }
 
+/// The command line: `--broker`, then optionally the sandbox's mode and `--udp-bytes`, in either order.
+struct Arguments
+{
+    bool enforce = false;  ///< --seccomp=enforce (#2752)
+    bool udpBytes = false; ///< --udp-bytes: load the eBPF UDP counter before dropping root (#3366)
+};
+
+/// The arguments, or nullopt when they aren't the helper's.
+[[nodiscard]] std::optional<Arguments> parseArguments(std::span<char* const> argv)
+{
+    if (argv.size() < 2 || std::string_view(argv[1]) != "--broker")
+    {
+        return std::nullopt;
+    }
+    Arguments arguments;
+    for (const char* const argument : argv.subspan(2))
+    {
+        const std::string_view text(argument);
+        if (text == Platform::HelperSandbox::ENFORCE_ARGUMENT && !arguments.enforce)
+        {
+            arguments.enforce = true;
+        }
+        else if (text == UDP_BYTES_ARGUMENT && !arguments.udpBytes)
+        {
+            arguments.udpBytes = true;
+        }
+        else
+        {
+            return std::nullopt;
+        }
+    }
+    return arguments;
+}
+
+/// The UDP counter's state: loaded, or why not (#3366).
+struct UdpCounting
+{
+    std::optional<Platform::UdpByteCounter> counter;
+    std::string failure; ///< Why it didn't load, when asked to
+    bool asked = false;
+};
+
+/// Every process's UDP totals for a ReadUdpBytes (#3366).
+[[nodiscard]] Platform::Broker::UdpBytesReply udpBytes(const UdpCounting& counting)
+{
+    using Platform::Broker::UdpBytesStatus;
+    if (!counting.asked)
+    {
+        return {.status = UdpBytesStatus::NotCounting, .detail = {}, .processes = {}};
+    }
+    if (!counting.counter.has_value())
+    {
+        return {.status = UdpBytesStatus::Failed, .detail = counting.failure, .processes = {}};
+    }
+    auto processes = counting.counter->read();
+    if (!processes.has_value())
+    {
+        return {.status = UdpBytesStatus::Failed, .detail = std::move(processes.error()), .processes = {}};
+    }
+    return {.status = UdpBytesStatus::Ok, .detail = {}, .processes = std::move(*processes)};
+}
+
 /// @p request done over the held system bus (#2728), when @p busHeld and its unit is a service's name.
 [[nodiscard]] Platform::ServiceActionResult serviceAction(const Platform::Broker::ServiceActionRequest& request, bool busHeld)
 {
@@ -158,14 +225,14 @@ constexpr int EXIT_UNTRUSTED_PEER = 3;
 
 int main(int argc, char* const* argv)
 {
-    // NOLINTBEGIN(cppcoreguidelines-pro-bounds-pointer-arithmetic) - argv
-    const bool enforce = argc == 3 && std::string_view(argv[2]) == Platform::HelperSandbox::ENFORCE_ARGUMENT;
-    if ((argc != 2 && !enforce) || std::string_view(argv[1]) != "--broker")
-    // NOLINTEND(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+    const std::optional<Arguments> arguments = parseArguments(std::span(argv, static_cast<std::size_t>(argc)));
+    if (!arguments.has_value())
     {
-        std::fputs("tasksmack-helper: started by TaskSmack only (--broker [--seccomp=enforce], with its socket as stdin)\n", stderr);
+        std::fputs("tasksmack-helper: started by TaskSmack only (--broker [--seccomp=enforce] [--udp-bytes], with its socket as stdin)\n",
+                   stderr);
         return EXIT_USAGE;
     }
+    const bool enforce = arguments->enforce;
     namespace Socket = Platform::BrokerSocket;
     const std::optional<uid_t> expectedUid = expectedClientUid();
     const std::optional<Socket::PeerCredentials> peer =
@@ -179,6 +246,22 @@ int main(int argc, char* const* argv)
     // service actions go over this one connection as root, so systemd asks for no password. Only where
     // systemd is the init system; without it, service actions say so.
     const bool systemBusHeld = holdSystemBus();
+    // The eBPF UDP counter (#3366), loaded and attached as root and before the sandbox, which refuses
+    // BPF_PROG_LOAD: afterwards the helper only reads its map. A load failure is reported to TaskSmack, which
+    // still counts TCP.
+    UdpCounting udpCounting{.counter = std::nullopt, .failure = {}, .asked = arguments->udpBytes};
+    if (udpCounting.asked)
+    {
+        auto loaded = Platform::UdpByteCounter::load();
+        if (loaded.has_value())
+        {
+            udpCounting.counter.emplace(std::move(*loaded));
+        }
+        else
+        {
+            udpCounting.failure = std::move(loaded.error());
+        }
+    }
     // Before any request, reader or thread: keep only what the protocol needs of root (#2640).
     if (Platform::HelperPrivileges::dropToKeptCapabilities(Platform::HelperPrivileges::NOBODY) ==
         Platform::HelperPrivileges::DropResult::Failed)
@@ -196,7 +279,8 @@ int main(int argc, char* const* argv)
         std::fputs("tasksmack-helper: no seccomp filter for this architecture; serving without one\n", stderr);
     }
     else if (!Platform::HelperSandbox::installFilter(enforce ? Platform::HelperSandbox::Mode::Enforce : Platform::HelperSandbox::Mode::Log,
-                                                     Platform::SystemdBus::heldSystemBusFd()))
+                                                     Platform::SystemdBus::heldSystemBusFd(),
+                                                     udpCounting.counter.has_value()))
     {
         std::fputs("tasksmack-helper: couldn't install its seccomp filter; not serving\n", stderr);
         return EXIT_FAILED;
@@ -243,6 +327,8 @@ int main(int argc, char* const* argv)
             { return serviceAction(request, systemBusHeld); },
             // System Information's root-only firmware files (#2310): only the ones FirmwareFile names
             .firmwareFile = [](Platform::Broker::FirmwareFile file) { return Platform::Linux::readFirmwareFileAt("/", file); },
+            // Every process's UDP bytes from the counter loaded above (#3366)
+            .udpBytes = [&udpCounting] { return udpBytes(udpCounting); },
             // Every user's crashes: the journal and core files as root (#2310)
             .crashes =
                 [coredumpUid]
@@ -257,7 +343,9 @@ int main(int argc, char* const* argv)
             },
         };
         const std::stop_source never;
-        switch (Platform::BrokerServer::serve(CLIENT_FD, actions, IDLE_TIMEOUT, never.get_token(), readers))
+        // A running UDP counter holds the session (#3366): an idle exit would restart every total from zero.
+        switch (Platform::BrokerServer::serve(
+            CLIENT_FD, actions, IDLE_TIMEOUT, never.get_token(), readers, {}, udpCounting.counter.has_value()))
         {
         case Platform::BrokerServer::SessionEnd::ClientClosed:
         case Platform::BrokerServer::SessionEnd::Idle:

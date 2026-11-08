@@ -553,16 +553,17 @@ class SteppedSession
   public:
     static constexpr std::chrono::milliseconds IDLE = std::chrono::hours{1};
 
-    explicit SteppedSession(SocketPair& pair) : m_Pair(pair)
+    explicit SteppedSession(SocketPair& pair, bool heldFromStart = false) : m_Pair(pair)
     {
         m_Readers.memoryRollup = [clock = m_Clock](std::int32_t, std::uint64_t) -> MemoryRollupRead
         {
             clock.step(IDLE * 2);
             return MemoryRollup{};
         };
-        m_Session = std::async(std::launch::async,
-                               [this, &pair, idle = m_Clock.clock()]
-                               { return BrokerServer::serve(pair.server(), m_Actions, IDLE, std::stop_token{}, m_Readers, idle); });
+        m_Session =
+            std::async(std::launch::async,
+                       [this, &pair, idle = m_Clock.clock(), heldFromStart]
+                       { return BrokerServer::serve(pair.server(), m_Actions, IDLE, std::stop_token{}, m_Readers, idle, heldFromStart); });
     }
 
     // A held session ends only when the client closes: closed here, a failed assertion can't leave the
@@ -603,6 +604,22 @@ TEST(BrokerServeTest, ASessionHeldFromItsHelloNeverEndsIdleAndEndsWhenTheClientC
     const auto hello = roundTrip(pair.client(), 1, Broker::Hello{.forSession = true});
     ASSERT_TRUE(std::holds_alternative<Broker::HelloReply>(hello.message));
     ASSERT_TRUE(std::get<Broker::HelloReply>(hello.message).accepted);
+    for (std::uint32_t id = 2; id <= 4; ++id) // each read leaves the clock two idle timeouts on
+    {
+        EXPECT_TRUE(readsPssAndUss(pair, id)) << id;
+    }
+    EXPECT_EQ(served.session().wait_for(std::chrono::milliseconds{200}), std::future_status::timeout);
+    pair.closeClient();
+    EXPECT_EQ(served.session().get(), BrokerServer::SessionEnd::ClientClosed);
+}
+
+// #3366: a helper counting UDP bytes is held from its start, so its totals never restart after an idle stretch.
+TEST(BrokerServeTest, ASessionHeldFromItsStartNeverEndsIdle)
+{
+    SocketPair pair;
+    ASSERT_TRUE(pair.valid());
+    SteppedSession served(pair, true);
+    ASSERT_TRUE(std::holds_alternative<Broker::HelloReply>(roundTrip(pair.client(), 1, Broker::Hello{}).message));
     for (std::uint32_t id = 2; id <= 4; ++id) // each read leaves the clock two idle timeouts on
     {
         EXPECT_TRUE(readsPssAndUss(pair, id)) << id;
@@ -802,7 +819,10 @@ TEST(PkexecBrokerTest, AServiceActionWaitsLongerThanTheHelperCanTake)
 class HelperProcess
 {
   public:
-    explicit HelperProcess(int stdinFd, const char* argument = "--broker", const char* sandbox = HelperSandbox::ENFORCE_ARGUMENT)
+    explicit HelperProcess(int stdinFd,
+                           const char* argument = "--broker",
+                           const char* sandbox = HelperSandbox::ENFORCE_ARGUMENT,
+                           const char* extra = nullptr)
     {
         posix_spawn_file_actions_t files{};
         posix_spawn_file_actions_init(&files);
@@ -810,7 +830,17 @@ class HelperProcess
         std::string path = TASKSMACK_HELPER_PATH;
         std::string arg = argument;
         std::string sandboxArg = sandbox != nullptr ? sandbox : "";
-        std::array<char*, 4> argv{path.data(), arg.data(), sandbox != nullptr ? sandboxArg.data() : nullptr, nullptr};
+        std::string extraArg = extra != nullptr ? extra : "";
+        std::vector<char*> argv{path.data(), arg.data()};
+        if (sandbox != nullptr)
+        {
+            argv.push_back(sandboxArg.data());
+        }
+        if (extra != nullptr)
+        {
+            argv.push_back(extraArg.data());
+        }
+        argv.push_back(nullptr);
         if (::posix_spawn(&m_Pid, path.c_str(), &files, nullptr, argv.data(), environ) != 0)
         {
             m_Pid = -1;
@@ -993,6 +1023,62 @@ TEST(TasksmackHelperTest, RefusesToRunWithoutBroker)
     EXPECT_EQ(helper.exitCode(), 2);
 }
 
+// #3366: --udp-bytes may follow the sandbox's mode; an argument it doesn't know, or one given twice, is refused.
+TEST(TasksmackHelperTest, RefusesAnArgumentItDoesntKnowOrOneGivenTwice)
+{
+    for (const char* extra : {"--bogus", HelperSandbox::ENFORCE_ARGUMENT})
+    {
+        const SocketPair pair;
+        ASSERT_TRUE(pair.valid());
+        HelperProcess helper(pair.server(), "--broker", HelperSandbox::ENFORCE_ARGUMENT, extra);
+        ASSERT_TRUE(helper.started());
+        EXPECT_EQ(helper.exitCode(), 2) << extra;
+    }
+}
+
+/// The helper's answer to a ReadUdpBytes, after a Hello.
+[[nodiscard]] Broker::UdpBytesReply readUdpBytes(int client)
+{
+    const auto hello = roundTrip(client, 1, Broker::Hello{});
+    EXPECT_TRUE(std::holds_alternative<Broker::HelloReply>(hello.message));
+    const auto reply = roundTrip(client, 2, Broker::UdpBytesRequest{});
+    EXPECT_TRUE(std::holds_alternative<Broker::UdpBytesReply>(reply.message));
+    const auto* udp = std::get_if<Broker::UdpBytesReply>(&reply.message);
+    return udp != nullptr ? *udp : Broker::UdpBytesReply{};
+}
+
+// #3366: without --udp-bytes the helper isn't counting, and says so rather than failing.
+TEST(TasksmackHelperTest, IsntCountingUdpBytesUnlessAsked)
+{
+    SocketPair pair;
+    ASSERT_TRUE(pair.valid());
+    HelperProcess helper(pair.server());
+    ASSERT_TRUE(helper.started());
+    pair.closeServer();
+    EXPECT_EQ(readUdpBytes(pair.client()).status, Broker::UdpBytesStatus::NotCounting);
+    pair.closeClient();
+    EXPECT_EQ(helper.exitCode(), 0);
+}
+
+// #3366: asked to count but not started as root, it can't load the program; it says why and serves the rest.
+TEST(TasksmackHelperTest, SaysWhyItCouldntLoadTheUdpCounterAndServesTheRest)
+{
+    if (::geteuid() == 0)
+    {
+        GTEST_SKIP() << "as root the counter loads: TasksmackHelperRootTest covers that";
+    }
+    SocketPair pair;
+    ASSERT_TRUE(pair.valid());
+    HelperProcess helper(pair.server(), "--broker", HelperSandbox::ENFORCE_ARGUMENT, "--udp-bytes");
+    ASSERT_TRUE(helper.started());
+    pair.closeServer();
+    const Broker::UdpBytesReply reply = readUdpBytes(pair.client());
+    EXPECT_EQ(reply.status, Broker::UdpBytesStatus::Failed);
+    EXPECT_FALSE(reply.detail.empty());
+    pair.closeClient();
+    EXPECT_EQ(helper.exitCode(), 0);
+}
+
 /// A field of /proc/<pid>/status ("CapEff", "NoNewPrivs"), or empty.
 [[nodiscard]] std::string statusField(pid_t pid, std::string_view key)
 {
@@ -1171,6 +1257,85 @@ TEST(TasksmackHelperRootTest, KeepsOnlyItsCapabilitiesAndServesEveryRequestOnAno
 // connects to a loopback listener this test holds; the helper, dropped to its kept capabilities under the
 // enforcing filter, copies the child's descriptor (pidfd_getfd) and shuts it down, so this end reads end of file.
 // Root, on a disposable CI runner only (CI's root step).
+// #3366: started as root with --udp-bytes, the helper loads its eBPF counter before it drops root and installs
+// its enforcing filter, then reads the map as nobody: a child's datagrams are in its answer.
+TEST(TasksmackHelperRootTest, CountsUdpBytesAfterDroppingRootUnderItsSandbox)
+{
+    if (const std::optional<std::string> why = ::TestSupport::ciRealSystemSkipReason())
+    {
+        GTEST_SKIP() << *why;
+    }
+    if (::geteuid() != 0)
+    {
+        GTEST_SKIP() << "Needs root: sudo build/debug/tests/TaskSmackTests --gtest_filter='TasksmackHelperRootTest.*'";
+    }
+    SocketPair pair;
+    ASSERT_TRUE(pair.valid());
+    HelperProcess helper(pair.server(), "--broker", HelperSandbox::ENFORCE_ARGUMENT, "--udp-bytes");
+    ASSERT_TRUE(helper.started());
+    pair.closeServer();
+    ASSERT_EQ(readUdpBytes(pair.client()).status, Broker::UdpBytesStatus::Ok); // loaded, and the Hello is done
+    EXPECT_EQ(statusField(helper.pid(), "Uid").substr(0, 5), "65534") << "it reads the map as nobody";
+    // Of the counter, the helper holds its links and the totals map alone: no other map, such as in_udpv6_send with
+    // its kernel socket addresses, for the map reads its sandbox allows to reach (#3554).
+    std::size_t maps = 0;
+    std::size_t programs = 0;
+    std::error_code fdError;
+    for (const auto& fd : std::filesystem::directory_iterator("/proc/" + std::to_string(helper.pid()) + "/fd", fdError))
+    {
+        std::error_code linkError;
+        const std::string target = std::filesystem::read_symlink(fd.path(), linkError).string();
+        maps += target == "anon_inode:bpf-map" ? 1U : 0U;
+        programs += target == "anon_inode:bpf-prog" ? 1U : 0U;
+    }
+    EXPECT_EQ(maps, 1U);
+    EXPECT_EQ(programs, 0U);
+
+    constexpr int DATAGRAMS = 4;
+    constexpr std::size_t BYTES = 700;
+    const pid_t child = ::fork();
+    ASSERT_GE(child, 0);
+    if (child == 0)
+    {
+        const int sock = ::socket(AF_INET, SOCK_DGRAM, 0);
+        sockaddr_in address{};
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        socklen_t length = sizeof(address);
+        std::array<char, BYTES> buffer{};
+        // NOLINTBEGIN(cppcoreguidelines-pro-type-reinterpret-cast) - the BSD socket API takes sockaddr*
+        if (sock < 0 || ::bind(sock, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0 ||
+            ::getsockname(sock, reinterpret_cast<sockaddr*>(&address), &length) != 0)
+        {
+            ::_exit(2);
+        }
+        for (int i = 0; i < DATAGRAMS; ++i)
+        {
+            if (::sendto(sock, buffer.data(), BYTES, 0, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != BYTES ||
+                ::recv(sock, buffer.data(), BYTES, 0) != BYTES)
+            {
+                ::_exit(3);
+            }
+        }
+        // NOLINTEND(cppcoreguidelines-pro-type-reinterpret-cast)
+        ::_exit(0);
+    }
+    int status = 0;
+    ASSERT_EQ(::waitpid(child, &status, 0), child);
+    ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+
+    const auto reply = roundTrip(pair.client(), 3, Broker::UdpBytesRequest{});
+    ASSERT_TRUE(std::holds_alternative<Broker::UdpBytesReply>(reply.message));
+    const Broker::UdpBytesReply& udp = std::get<Broker::UdpBytesReply>(reply.message);
+    ASSERT_EQ(udp.status, Broker::UdpBytesStatus::Ok) << udp.detail;
+    const auto entry = std::ranges::find(udp.processes, static_cast<std::uint32_t>(child), &UdpByteCounts::tgid);
+    ASSERT_NE(entry, udp.processes.end()) << "no entry for the child among " << udp.processes.size();
+    EXPECT_EQ(entry->txBytes, DATAGRAMS * BYTES);
+    EXPECT_EQ(entry->rxBytes, DATAGRAMS * BYTES);
+    pair.closeClient();
+    EXPECT_EQ(helper.exitCode(), 0);
+}
+
 TEST(TasksmackHelperRootTest, ClosesAnotherUsersTcpConnection)
 {
     // Real-system tests run only on a disposable GitHub-hosted runner, never under sudo on a developer machine,
