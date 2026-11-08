@@ -271,6 +271,7 @@ std::expected<void, std::string> PkexecBroker::connectWithin(const std::stop_tok
     }
     m_HelperCountsUdp = countUdp;
     m_Connected = true;
+    ++m_SessionsStarted;
     return {};
 }
 
@@ -319,7 +320,9 @@ std::expected<void, std::string> PkexecBroker::countUdpBytes(const std::stop_tok
 {
     m_CountUdp = true;
     // The live session, not just the request for one: a held helper that has since ended leaves nothing held, and
-    // nothing starts or prompts until the user chooses Administrator again (the request stands for that).
+    // nothing starts or prompts until the user chooses Administrator again (the request stands for that). connected()
+    // looks at the channel first, as heldForSession() reads only what was last seen; this is a worker.
+    static_cast<void>(connected());
     if (!heldForSession())
     {
         return std::unexpected("Needs an Administrator session"); // nothing prompts outside one (maintainer, 2026-11-07)
@@ -333,6 +336,11 @@ std::expected<void, std::string> PkexecBroker::countUdpBytes(const std::stop_tok
         closeLocked(); // a helper started without the counter can't load it now, as nobody: start one that does
     }
     return connect(stopToken); // the Hello asks to be held again, as m_ForSession stands
+}
+
+std::uint64_t PkexecBroker::sessionsStarted() const noexcept
+{
+    return m_SessionsStarted.load();
 }
 
 void PkexecBroker::stopCountingUdpBytes() noexcept

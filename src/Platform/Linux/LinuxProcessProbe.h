@@ -187,8 +187,12 @@ class LinuxProcessProbe : public IProcessProbe
     // does not yet implement the std::atomic<std::shared_ptr<T>> specialization, so a
     // plain mutex is used instead.)
     mutable std::mutex m_SocketStatsMutex;
-    mutable std::mutex m_UdpCollectorMutex;               // guards m_UdpCollector (#3366)
+    mutable std::mutex m_UdpCollectorMutex;               // guards the three below (#3366)
     std::shared_ptr<IUdpTrafficCollector> m_UdpCollector; // the helper's UDP counter; may be null
+    // The UDP rows added to the last socket reading, and its time: a cached reading (the same time) gets the same rows,
+    // so each UDP sample goes with exactly one reading Domain folds in (it skips a reading it has seen).
+    mutable std::uint64_t m_UdpReadingTimeNs = 0;
+    mutable std::vector<UdpProcessTraffic> m_UdpRows;
     std::shared_ptr<NetlinkSocketStats> m_SocketStats;
     bool m_HasNetworkCounters = false;
     std::string m_OwnNetNamespace; // "net:[...]" of this process; empty when unreadable (#2398)

@@ -1675,11 +1675,26 @@ SocketTrafficReading LinuxProcessProbe::readSocketTraffic() const
 
 void LinuxProcessProbe::appendUdpTraffic(SocketTrafficReading& reading) const
 {
-    if (const std::shared_ptr<IUdpTrafficCollector> udp = udpCollector(); udp != nullptr)
+    const std::shared_ptr<IUdpTrafficCollector> udp = udpCollector();
+    if (udp == nullptr)
     {
-        const std::vector<UdpProcessTraffic> traffic = udp->sample();
-        UdpTraffic::appendSamples(reading.sockets, traffic);
+        return;
     }
+    // Sampled once per reading Domain folds in: a cached TCP reading comes back with the same time, and Domain skips
+    // it, so a UDP sample taken for it (a run's seeding reading, say) would be lost. It gets the last rows instead.
+    {
+        const std::scoped_lock lock(m_UdpCollectorMutex);
+        if (reading.sampleTimeNs != 0 && reading.sampleTimeNs == m_UdpReadingTimeNs)
+        {
+            UdpTraffic::appendSamples(reading.sockets, m_UdpRows);
+            return;
+        }
+    }
+    std::vector<UdpProcessTraffic> traffic = udp->sample(); // a broker call: not under the lock
+    UdpTraffic::appendSamples(reading.sockets, traffic);
+    const std::scoped_lock lock(m_UdpCollectorMutex);
+    m_UdpReadingTimeNs = reading.sampleTimeNs;
+    m_UdpRows = std::move(traffic);
 }
 
 void LinuxProcessProbe::setUdpTrafficCollector(const std::shared_ptr<IUdpTrafficCollector>& collector)
