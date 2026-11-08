@@ -1,15 +1,16 @@
 // CI real-system tests on Windows, phase 1 (#3489; tracker #3492): the real OS paths of Realtime priority
-// (#3465), Run new task (#3471), Compressed memory (#3482) and Open file location (#3461), which until now had
-// only fakes plus a manual check. They change the machine (a process at Realtime, programs started through the
-// shell, an Explorer window), so they run only on a disposable GitHub-hosted runner, where the runner's user is an
-// administrator whose tests run elevated (UAC is on): CiRealSystem.h's guard skips them everywhere else. Every
-// child is idle (a suspended cmd.exe, or TaskSmackCiStub.exe, which only sleeps) and ends on scope exit.
+// (#3465), the I/O priority hint (#3362), Run new task (#3471), Compressed memory (#3482) and Open file location (#3461), which until now
+// had only fakes plus a manual check. They change the machine (a process at Realtime, programs started through the shell, an Explorer
+// window), so they run only on a disposable GitHub-hosted runner, where the runner's user is an administrator whose tests run elevated (UAC
+// is on): CiRealSystem.h's guard skips them everywhere else. Every child is idle (a suspended cmd.exe, or TaskSmackCiStub.exe, which only
+// sleeps) and ends on scope exit.
 
 #include "Core/Utf8Path.h"
 #include "Domain/PriorityConfig.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/SystemTypes.h"
 #include "Platform/Windows/WindowsHandles.h"
+#include "Platform/Windows/WindowsNtQuery.h"
 #include "Platform/Windows/WindowsProcessActions.h"
 #include "Platform/Windows/WindowsProcessActionsMath.h"
 #include "Platform/Windows/WindowsRunProgram.h"
@@ -148,6 +149,68 @@ TEST_F(CiRealSystemRealtimeTest, AStandardUserGetsHighAndTheReadBackSaysSo)
     EXPECT_EQ(message, Platform::REALTIME_NEEDS_ADMIN_MESSAGE);
     EXPECT_EQ(GetPriorityClass(target.process()), static_cast<DWORD>(HIGH_PRIORITY_CLASS));
 }
+
+// --- #3362: I/O priority -------------------------------------------------------------------------------------
+
+class CiRealSystemIoPriorityTest : public TestSupport::CiRealSystemTest
+{};
+
+/// @p process's I/O priority hint, read with ntdll's own call rather than through WindowsProcessActions, so the
+/// test checks what Windows holds; nullopt when it can't be read.
+[[nodiscard]] std::optional<ULONG> rawIoPriorityHint(HANDLE process)
+{
+    auto* const query = Platform::Windows::ntQueryInformationProcess();
+    if (query == nullptr)
+    {
+        return std::nullopt;
+    }
+    ULONG hint = 0;
+    ULONG written = 0;
+    if (query(process, Platform::PROCESS_IO_PRIORITY_CLASS, &hint, sizeof(hint), &written) < 0)
+    {
+        return std::nullopt;
+    }
+    return hint;
+}
+
+/// Sets @p hint on @p stub through the real WindowsProcessActions, reads it back both ways, then puts back the
+/// hint the stub had.
+void setReadBackAndRestore(const Child& stub, Platform::IoPriorityHint hint)
+{
+    Platform::WindowsProcessActions actions;
+    const Platform::IoPriorityReadResult before = actions.getIoPriority(stub.target());
+    ASSERT_TRUE(before.has_value()) << before.error();
+    ASSERT_EQ(before->ioClass, Platform::IoPriorityClass::WindowsHint);
+
+    const ProcessActionResult set =
+        actions.setIoPriority(stub.target(), Platform::IoPriorityClass::WindowsHint, static_cast<std::int32_t>(hint));
+    EXPECT_TRUE(set.success) << set.errorMessage;
+    const Platform::IoPriorityReadResult after = actions.getIoPriority(stub.target());
+    ASSERT_TRUE(after.has_value()) << after.error();
+    EXPECT_EQ(after->level, static_cast<std::int32_t>(hint));
+    EXPECT_EQ(rawIoPriorityHint(stub.process()), static_cast<ULONG>(hint)) << "what Windows holds";
+
+    const ProcessActionResult restored = actions.setIoPriority(stub.target(), Platform::IoPriorityClass::WindowsHint, before->level);
+    EXPECT_TRUE(restored.success) << restored.errorMessage;
+    EXPECT_EQ(rawIoPriorityHint(stub.process()), static_cast<ULONG>(before->level)) << "the stub's own hint is put back";
+}
+
+TEST_F(CiRealSystemIoPriorityTest, LowIsSetOnTheStubReadBackAndRestored)
+{
+    const Child stub = start(TASKSMACK_CI_STUB_PATH);
+    ASSERT_NE(stub.process(), nullptr);
+    setReadBackAndRestore(stub, Platform::IoPriorityHint::Low);
+}
+
+TEST_F(CiRealSystemIoPriorityTest, AnAdministratorSetsHighWithThePrivilegeEnabledForIt)
+{
+    // NtSetInformationProcess checks SeIncreaseBasePriorityPrivilege for High and doesn't enable it for the call,
+    // so this is the path where WindowsProcessActions enables it first (the runner's tests run elevated).
+    const Child stub = start(TASKSMACK_CI_STUB_PATH);
+    ASSERT_NE(stub.process(), nullptr);
+    setReadBackAndRestore(stub, Platform::IoPriorityHint::High);
+}
+
 // --- #3471: Run new task -------------------------------------------------------------------------------------
 
 class CiRealSystemRunTaskTest : public TestSupport::CiRealSystemTest

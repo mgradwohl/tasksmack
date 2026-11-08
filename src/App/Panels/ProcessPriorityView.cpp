@@ -326,7 +326,7 @@ void drawPriorityScaleLabels(const PrioritySliderContext& ctx)
 
 // Renders the process-priority section: the current priority, the platform's control (the gradient
 // slider, or the Windows priority-class combo), the Apply button and the error line; then, where the
-// platform can set it (Linux), the I/O priority control (#803). No-op if the process actions support
+// platform can set it (Linux, and Windows since #3362), the I/O priority control (#803). No-op if the process actions support
 // neither.
 void ProcessPriorityView::render(Platform::IProcessActions* actions,
                                  const Platform::ProcessActionCapabilities& capabilities,
@@ -346,10 +346,10 @@ void ProcessPriorityView::render(Platform::IProcessActions* actions,
     {
         renderNiceControl(actions, currentNice, target, labelsRows(capabilities));
     }
-    // The I/O priority (#803) under the nice control, with its own edit and Apply; Linux only.
+    // The I/O priority (#803; Windows' hints, #3362) under the nice control, with its own edit and Apply.
     if (capabilities.canSetIoPriority)
     {
-        m_IoPriorityView.render(actions, currentNice, target, capabilities.canSetRealtimeIoPriority);
+        m_IoPriorityView.render(actions, currentNice, target, capabilities.canSetRealtimeIoPriority, capabilities.ioPriorityHints);
     }
 }
 
@@ -504,6 +504,7 @@ DiscretePick renderDiscretePrioritySlider(const DiscretePrioritySlider& slider, 
     // Interactive through an invisible button whose label names the stop shown (its ID stays put)
     ImGui::InvisibleButton(shownStop.itemLabel, ImVec2(metrics.sliderWidth, metrics.sliderHeight));
     const std::int32_t picked = sliderInputStop(ctx, shownIndex);
+    const bool selected = ImGui::IsItemActivated() || picked != shownIndex;
     if (ImGui::IsItemHovered())
     {
         ImGui::SetTooltip("%s", slider.tooltip);
@@ -511,7 +512,7 @@ DiscretePick renderDiscretePrioritySlider(const DiscretePrioritySlider& slider, 
 
     // Ticks, and the stops' names under them where there is room for all of them
     drawDiscreteScale(ctx.drawList, ctx, shownIndex, fit.showLabels);
-    return {.index = picked, .rightEdge = lead + metrics.sliderWidth, .labelsShown = fit.showLabels};
+    return {.index = picked, .rightEdge = lead + metrics.sliderWidth, .labelsShown = fit.showLabels, .selected = selected};
 }
 
 } // namespace Detail

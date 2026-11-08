@@ -1865,6 +1865,12 @@ TEST_F(LinuxProcessActionsFaultTest, AnIoPriorityClassOutOfRangeIsRefused)
     EXPECT_FALSE(result.success);
     EXPECT_EQ(result.errorMessage, "Invalid I/O priority class");
     EXPECT_EQ(plan().setCalls, 0);
+
+    // Windows' hint (#3362), which the broker protocol carries since v18, isn't a Linux class.
+    const ProcessActionResult hint = m_Actions.setIoPriority(ownTarget(), IoPriorityClass::WindowsHint, 1);
+    EXPECT_FALSE(hint.success);
+    EXPECT_EQ(hint.errorMessage, "Invalid I/O priority class");
+    EXPECT_EQ(plan().setCalls, 0);
 }
 
 TEST_F(LinuxProcessActionsFaultTest, ATraceWithoutAPidfdIsRefusedBeforeAnythingOpens)

@@ -44,9 +44,10 @@ bool isActionWindowsDoes(const Broker::Request& request) noexcept
     // Efficiency mode (#3071); Replace Task Manager (#3072), which isn't a process action but is one the
     // user chose, so it is the one action of an over-the-shoulder session too. The Users tab's Disconnect and
     // Sign out of another user's session (#3076), and one thread suspended, resumed or ended (#3069), are
-    // actions the user chose and confirmed as well.
+    // actions the user chose and confirmed as well. An I/O priority hint (#3362): High needs an administrator.
     return std::holds_alternative<Broker::SignalRequest>(request) || std::holds_alternative<Broker::PriorityRequest>(request) ||
-           std::holds_alternative<Broker::AffinityRequest>(request) || std::holds_alternative<Broker::EfficiencyModeRequest>(request) ||
+           std::holds_alternative<Broker::IoPriorityRequest>(request) || std::holds_alternative<Broker::AffinityRequest>(request) ||
+           std::holds_alternative<Broker::EfficiencyModeRequest>(request) ||
            std::holds_alternative<Broker::TaskManagerReplacementRequest>(request) ||
            std::holds_alternative<Broker::SessionActionRequest>(request) || std::holds_alternative<Broker::ThreadActionRequest>(request);
 }
