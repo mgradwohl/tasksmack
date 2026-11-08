@@ -15,8 +15,10 @@
 
 #pragma comment(lib, "advapi32.lib")
 
+#include "ComScope.h"
 #include "WinString.h"
 #include "WindowsConversions.h"
+#include "WindowsScheduledTasks.h"
 #include "WindowsStartupProbeMath.h"
 
 #include <array>
@@ -27,6 +29,7 @@
 #include <span>
 #include <string>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace Platform
@@ -122,7 +125,10 @@ setPackagedTaskEnabled(const Windows::StartupRegistryFunctions& api, const Start
 
 } // namespace
 
-WindowsStartupActions::WindowsStartupActions(bool elevated, Windows::StartupRegistryFunctions api) : m_Elevated(elevated), m_Api(api)
+WindowsStartupActions::WindowsStartupActions(bool elevated,
+                                             Windows::StartupRegistryFunctions api,
+                                             Windows::ScheduledTaskApiFactory scheduledTasks)
+    : m_Elevated(elevated), m_Api(api), m_ScheduledTasks(std::move(scheduledTasks))
 {}
 
 StartupActionCapabilities WindowsStartupActions::capabilities() const
@@ -135,6 +141,21 @@ StartupActionResult WindowsStartupActions::setEnabled(const StartupEntry& entry,
     if (entry.location == StartupLocation::PackagedApp)
     {
         return setPackagedTaskEnabled(m_Api, entry, enabled);
+    }
+    if (entry.location == StartupLocation::ScheduledTaskUser || entry.location == StartupLocation::ScheduledTaskMachine)
+    {
+        // The API's COM objects are released before the ComScope uninitialises COM: declared after it.
+        const ComScope com;
+        if (!com.usable())
+        {
+            return StartupActionResult::failed("COM couldn't be initialised to reach the Task Scheduler");
+        }
+        const std::unique_ptr<Windows::ScheduledTaskApi> tasks = m_ScheduledTasks ? m_ScheduledTasks() : nullptr;
+        if (!tasks)
+        {
+            return StartupActionResult::failed("The Task Scheduler isn't available");
+        }
+        return Windows::setStartupTaskEnabled(*tasks, entry, enabled);
     }
     const auto approvedKey = Math::approvedKeyFor(entry.location);
     if (!approvedKey)

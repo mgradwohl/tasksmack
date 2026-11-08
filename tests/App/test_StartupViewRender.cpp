@@ -63,24 +63,28 @@ entry(const char* name, const char* publisher, StartupLocation location, bool en
 
 [[nodiscard]] Platform::StartupCapabilities supported()
 {
-    return {.canEnumerate = true,
-            .hasEnabledState = true,
-            .hasDisabledTime = true,
-            .hasPublisher = true,
-            .canResolveShortcuts = true,
-            .hasImpact = true,
-            .unavailableReason = {}};
+    return {
+        .canEnumerate = true,
+        .hasEnabledState = true,
+        .hasDisabledTime = true,
+        .hasPublisher = true,
+        .canResolveShortcuts = true,
+        .hasImpact = true,
+        .unavailableReason = {},
+    };
 }
 
 /// Can list entries, but without the enabled state or anything optional.
 [[nodiscard]] Platform::StartupCapabilities enumerateOnly()
 {
-    return {.canEnumerate = true,
-            .hasEnabledState = false,
-            .hasDisabledTime = false,
-            .hasPublisher = false,
-            .canResolveShortcuts = false,
-            .unavailableReason = {}};
+    return {
+        .canEnumerate = true,
+        .hasEnabledState = false,
+        .hasDisabledTime = false,
+        .hasPublisher = false,
+        .canResolveShortcuts = false,
+        .unavailableReason = {},
+    };
 }
 
 /// Elevated actions that are never run here: the tests only draw the action bar.
@@ -304,9 +308,19 @@ TEST(StartupViewTest, Labels)
     EXPECT_EQ(startupLocationLabel(StartupLocation::XdgAutostartUser), "Autostart (your folder)");
     EXPECT_EQ(startupLocationLabel(StartupLocation::XdgAutostartSystem), "Autostart (system)");
     Platform::StartupEntry otherDesktop;
+    otherDesktop.location = StartupLocation::XdgAutostartSystem;
     otherDesktop.enabled = false;
     otherDesktop.notSwitchableReason = "Starts only in KDE";
     EXPECT_EQ(startupEnabledLabel(otherDesktop), "Not started here");
+    // #3424: read-only isn't "doesn't apply here": one of Windows' own tasks, disabled, is Disabled.
+    Platform::StartupEntry windowsTask;
+    windowsTask.location = StartupLocation::ScheduledTaskMachine;
+    windowsTask.enabled = false;
+    windowsTask.osComponent = true;
+    windowsTask.notSwitchableReason = "One of Windows' own scheduled tasks";
+    EXPECT_EQ(startupEnabledLabel(windowsTask), "Disabled");
+    windowsTask.enabled = true;
+    EXPECT_EQ(startupEnabledLabel(windowsTask), "Enabled");
 }
 
 // The Windows-only Startup tab's remaining branches (#1395, Windows half).
@@ -429,6 +443,54 @@ TEST_F(StartupViewRenderTest, RightClickSelectsTheRowTheBarActsOn)
     auto edge = entry("Microsoft Edge", "Microsoft Corporation", StartupLocation::RunUser, true);
     edge.registrationName = "MicrosoftEdgeAutoLaunch_575A7C";
     return edge;
+}
+
+// #3424: Windows' scheduled tasks are labelled by where they are, their path is in the tooltip, and Windows' own
+// are hidden until "Show Microsoft entries" is ticked, which is offered only when there are some.
+TEST(StartupViewTest, ScheduledTasksAreLabelledAndWindowsOwnAreHiddenByDefault)
+{
+    EXPECT_EQ(startupLocationLabel(StartupLocation::ScheduledTaskUser), "Scheduled task");
+    EXPECT_EQ(startupLocationLabel(StartupLocation::ScheduledTaskMachine), "Scheduled task (all users)");
+    auto task = entry("Updater", "Vendor", StartupLocation::ScheduledTaskUser, true);
+    task.registrationName = "\\Vendor\\Updater";
+    EXPECT_EQ(startupRegistrationLabel(task), "Scheduled task: \\Vendor\\Updater");
+
+    auto windows = entry("Cleanup", "Microsoft Corporation", StartupLocation::ScheduledTaskMachine, true);
+    windows.registrationName = R"(\Microsoft\Windows\Setup\Cleanup)";
+    windows.osComponent = true;
+    const std::vector<Platform::StartupEntry> entries{task, windows};
+    EXPECT_EQ(buildStartupRows(entries, "", StartupColumn::Name, true, {}, false), (std::vector<std::size_t>{0}));
+    EXPECT_EQ(buildStartupRows(entries, "", StartupColumn::Name, true, {}, true), (std::vector<std::size_t>{1, 0}))
+        << "Cleanup, then Updater";
+}
+
+TEST_F(StartupViewRenderTest, ShowMicrosoftEntriesBringsBackWindowsOwnTasks)
+{
+    Domain::StartupPublication publication = makePublication();
+    StartupViewState state;
+    EXPECT_FALSE(captureFrame(publication, state).contains("Show Microsoft entries")) << "no such entries, no checkbox";
+
+    auto windows = entry("Cleanup", "Microsoft Corporation", StartupLocation::ScheduledTaskMachine, true);
+    windows.registrationName = R"(\Microsoft\Windows\Setup\Cleanup)";
+    windows.osComponent = true;
+    publication.entries.push_back(windows);
+    publication.version = 5;
+    EXPECT_TRUE(captureFrame(publication, state).contains("Show Microsoft entries"));
+    EXPECT_EQ(state.rows.size(), 4U);
+    EXPECT_EQ(state.osComponentCount, 1U);
+
+    state.showOsComponents = true; // as a click on the checkbox sets it
+    static_cast<void>(captureFrame(publication, state));
+    EXPECT_EQ(state.rows.size(), 5U);
+
+    // Disabled, it reads Disabled, not "Not started here": it is read-only, not for another desktop.
+    publication.entries.back().enabled = false;
+    publication.entries.back().notSwitchableReason = "One of Windows' own scheduled tasks";
+    publication.version = 6;
+    const std::string drawn = captureFrame(publication, state);
+    ASSERT_EQ(state.enabledLabels.size(), 5U);
+    EXPECT_EQ(state.enabledLabels.back(), "Disabled");
+    EXPECT_FALSE(drawn.contains("Not started here"));
 }
 
 TEST(StartupViewTest, RegistrationLabelNamesTheValueOrTheTask)
@@ -582,7 +644,11 @@ TEST(StartupViewTest, ImpactLabelsAreTaskManagersWords)
 TEST(StartupViewTest, ImpactTooltipGivesTheMeasuredFiguresOrWhyThereAreNone)
 {
     const Domain::StartupEntryImpact high{
-        .cpuUs = 2'345'678, .diskBytes = 12'000'000, .processCount = 2, .rating = Domain::StartupImpact::High};
+        .cpuUs = 2'345'678,
+        .diskBytes = 12'000'000,
+        .processCount = 2,
+        .rating = Domain::StartupImpact::High,
+    };
     const std::string measured = startupImpactTooltip(high, 1792774334, "");
     EXPECT_TRUE(measured.starts_with("At the sign-in at 2026-10-2")) << measured; // local time
     EXPECT_TRUE(measured.contains("\nCPU time: 2")) << measured;

@@ -9,24 +9,27 @@ namespace Platform
 
 /// Where a startup entry is registered (#801). The Windows registry keys are under
 /// Software\Microsoft\Windows\CurrentVersion; the folders are the Start menu's Startup folders; a packaged
-/// app's startup task is declared in its package manifest (#1798). On Linux, an XDG autostart file (#2541).
+/// app's startup task is declared in its package manifest (#1798); a scheduled task, in Task Scheduler (#3424). On
+/// Linux, an XDG autostart file (#2541).
 enum class StartupLocation : std::uint8_t
 {
-    RunUser,             ///< HKCU ...\Run
-    RunMachine,          ///< HKLM ...\Run (64-bit view)
-    RunMachine32,        ///< HKLM ...\Run, 32-bit view (WOW6432Node)
-    RunOnceUser,         ///< HKCU ...\RunOnce
-    RunOnceMachine,      ///< HKLM ...\RunOnce
-    StartupFolderUser,   ///< The user's Startup folder
-    StartupFolderCommon, ///< The all-users Startup folder
-    PackagedApp,         ///< A packaged (MSIX / Store) app's windows.startupTask, for the current user
-    XdgAutostartUser,    ///< Linux: a file in ~/.config/autostart only (#2541)
-    XdgAutostartSystem,  ///< Linux: a file in /etc/xdg/autostart (or another $XDG_CONFIG_DIRS), which the
-                         ///< user's copy of the same name, when there is one, switches
-    SystemdUserUnit,     ///< Linux: a .service or .timer enabled in ~/.config/systemd/user (#3082)
-    SystemdSystemUnit,   ///< Linux: a user .service or .timer enabled for every user, in /etc/systemd/user (#3082)
-    CronUser,            ///< Linux: a job in the user's own crontab (#3425)
-    CronSystem,          ///< Linux: a job in /etc/crontab or /etc/cron.d, which names the user it runs as (#3425)
+    RunUser,              ///< HKCU ...\Run
+    RunMachine,           ///< HKLM ...\Run (64-bit view)
+    RunMachine32,         ///< HKLM ...\Run, 32-bit view (WOW6432Node)
+    RunOnceUser,          ///< HKCU ...\RunOnce
+    RunOnceMachine,       ///< HKLM ...\RunOnce
+    StartupFolderUser,    ///< The user's Startup folder
+    StartupFolderCommon,  ///< The all-users Startup folder
+    PackagedApp,          ///< A packaged (MSIX / Store) app's windows.startupTask, for the current user
+    XdgAutostartUser,     ///< Linux: a file in ~/.config/autostart only (#2541)
+    XdgAutostartSystem,   ///< Linux: a file in /etc/xdg/autostart (or another $XDG_CONFIG_DIRS), which the
+                          ///< user's copy of the same name, when there is one, switches
+    SystemdUserUnit,      ///< Linux: a .service or .timer enabled in ~/.config/systemd/user (#3082)
+    SystemdSystemUnit,    ///< Linux: a user .service or .timer enabled for every user, in /etc/systemd/user (#3082)
+    CronUser,             ///< Linux: a job in the user's own crontab (#3425)
+    CronSystem,           ///< Linux: a job in /etc/crontab or /etc/cron.d, which names the user it runs as (#3425)
+    ScheduledTaskUser,    ///< Windows: a Task Scheduler task with a logon or boot trigger that runs as the current user (#3424)
+    ScheduledTaskMachine, ///< Windows: such a task that runs as another account (SYSTEM, a group, another user) (#3424)
 };
 
 /// Whether an entry starts for the current user only or for every user of the machine.
@@ -57,8 +60,8 @@ struct StartupEntry
     /// RunOnce entry, whose tooltip shows it. Empty for a packaged app's startup task.
     std::string programName;
     /// The name the entry is registered under, which identifies it (#1873): the Run or RunOnce value
-    /// name, the Startup folder file's name with its extension ("Tool.lnk"), or a packaged startup task's
-    /// TaskId. May equal name.
+    /// name, the Startup folder file's name with its extension ("Tool.lnk"), a packaged startup task's
+    /// TaskId, or a scheduled task's full path ("\Vendor\Updater", #3424). May equal name.
     std::string registrationName;
     /// For a packaged app's startup task, its package family name ("Contoso.Chat_8wekyb3d8bbwe"), which
     /// with registrationName (the TaskId) identifies the task. Empty for any other entry.
@@ -80,6 +83,9 @@ struct StartupEntry
     /// Why its enabled state can't be changed here, when the platform knows a reason of its own (Linux: an
     /// autostart entry for another desktop, "Starts only in KDE"). Empty otherwise.
     std::string notSwitchableReason;
+    /// Part of the operating system itself (Windows: a scheduled task under \Microsoft\, #3424): hidden
+    /// unless the Startup tab's "Show Microsoft entries" is on, as Autoruns hides them.
+    bool osComponent = false;
     std::uint64_t disabledAtUnixSeconds = 0; ///< When it was disabled (Unix seconds); 0 when unknown or enabled.
     std::string publisher;                   ///< The executable's version-resource CompanyName, or the package's publisher.
     StartupTargetState target = StartupTargetState::Unresolved;
