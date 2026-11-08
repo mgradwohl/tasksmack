@@ -195,6 +195,13 @@ class SocketTrafficAccumulator
                 next.insert_or_assign(sample.key, unread);
                 continue;
             }
+            if (sample.baselineOnly)
+            {
+                // Counters read, but they may predate this interval (#3366): the baseline, crediting nothing. The next
+                // reading measures growth from here.
+                next.insert_or_assign(sample.key, SocketState{.bytesReceived = sample.bytesReceived, .bytesSent = sample.bytesSent});
+                continue;
+            }
             SocketState state{.bytesReceived = sample.bytesReceived, .bytesSent = sample.bytesSent};
             Totals credit;
             // Whether `credit` is growth since an earlier sighting of this same connection, which an

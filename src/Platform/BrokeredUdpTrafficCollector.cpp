@@ -90,6 +90,9 @@ std::vector<UdpProcessTraffic> BrokeredUdpTrafficCollector::sample()
         }
         run = m_Run;
     }
+    // The helper before and after the read: one replaced meanwhile (another worker reconnected it) leaves the reply's
+    // counter unknown, the old helper's or the new one's, so it's dropped.
+    const std::uint64_t sessionBefore = m_Broker->sessionsStarted();
     const auto response = m_Broker->callIfIdle(Broker::UdpBytesRequest{}, SAMPLE_TIMEOUT);
     const auto* const reply = response.has_value() ? std::get_if<Broker::UdpBytesReply>(&*response) : nullptr;
     const bool helperGone = reply == nullptr && !m_Broker->connected();
@@ -98,6 +101,17 @@ std::vector<UdpProcessTraffic> BrokeredUdpTrafficCollector::sample()
     if (run != m_Run || !m_Running.load())
     {
         return {}; // stopped, or stopped and started again, while this read was out
+    }
+    if (session != sessionBefore)
+    {
+        // Domain takes the empty reading as the old helper's connections closed; the next reading is the new helper's,
+        // another generation, counted from zero.
+        m_Session = session;
+        ++m_Generation;
+        m_Seeding = false;
+        m_Delivering = false;
+        m_Last.clear();
+        return {};
     }
     if (session != m_Session)
     {
@@ -169,7 +183,7 @@ std::vector<UdpProcessTraffic> BrokeredUdpTrafficCollector::sample()
     {
         for (UdpProcessTraffic& process : traffic)
         {
-            process.readable = false; // only their baseline: they may hold bytes from before this run
+            process.baselineOnly = true; // the baseline: they may hold bytes from before this run
         }
     }
     return traffic;

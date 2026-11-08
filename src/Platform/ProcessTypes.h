@@ -179,6 +179,9 @@ struct SocketTrafficSample
     // (Windows: a failed or garbage EStats read); its byte fields are then ignored. Reported rather
     // than left out so Domain doesn't take it as closed, and back as new (#1256).
     bool readable = true;
+    // Readable, but its counters may hold bytes from before this interval (#3366: the first reading of a UDP counter
+    // that was already counting): they become the connection's baseline, and nothing is credited for them.
+    bool baselineOnly = false;
 };
 
 /// A process's /proc/<pid> files as text (Linux, #2728): what tasksmack-helper reads of a process hidepid
