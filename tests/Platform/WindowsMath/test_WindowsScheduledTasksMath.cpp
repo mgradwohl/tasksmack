@@ -114,7 +114,7 @@ TEST(ScheduledTaskMathTest, ADriveRootedProgramIsOnTheWorkingDirectorysDrive)
 {
     const auto exists = [](const std::string& path)
     {
-        return path == R"(D:\Windows\System32\cmd.exe)";
+        return path == R"(D:\Windows\System32\cmd.exe)" || path == R"(D:\Tools\run.exe)" || path == R"(D:\Tools\plain)";
     };
     constexpr std::string_view SYSTEM = R"(C:\Windows\System32)";
 
@@ -122,7 +122,11 @@ TEST(ScheduledTaskMathTest, ADriveRootedProgramIsOnTheWorkingDirectorysDrive)
     EXPECT_EQ(taskProgramPath(R"(\Windows\System32\cmd.exe)", R"(D:\Vendor)", SYSTEM, exists), R"(D:\Windows\System32\cmd.exe)");
     EXPECT_EQ(taskProgramPath(R"("\Tools\gone.exe")", R"(c:\Vendor\)", SYSTEM, exists), R"(c:\Tools\gone.exe)")
         << "that file there, found or not";
-    EXPECT_EQ(taskProgramPath("/Tools/run", "E:", SYSTEM, exists), "E:/Tools/run");
+    // An extensionless one gets ".exe" when only that file is there, as a relative one does.
+    EXPECT_EQ(taskProgramPath(R"(\Tools\run)", R"(D:\Vendor)", SYSTEM, exists), R"(D:\Tools\run.exe)");
+    EXPECT_EQ(taskProgramPath(R"(\Tools\plain)", R"(D:\Vendor)", SYSTEM, exists), R"(D:\Tools\plain)")
+        << "the file as written, when it's there";
+    EXPECT_EQ(taskProgramPath("/Tools/gone", "E:", SYSTEM, exists), "E:/Tools/gone.exe") << "found or not";
     // A drive TaskSmack can't tell: no working directory, an unknown one, or one that isn't on a drive.
     EXPECT_EQ(taskProgramPath(R"(\Windows\System32\cmd.exe)", "", SYSTEM, exists), "");
     EXPECT_EQ(taskProgramPath(R"(\Windows\System32\cmd.exe)", std::nullopt, SYSTEM, exists), "");
