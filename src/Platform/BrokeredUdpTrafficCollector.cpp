@@ -33,8 +33,14 @@ UdpCollectorStartResult BrokeredUdpTrafficCollector::start()
     if (!counting.has_value())
     {
         setProblem(counting.error());
-        // Asked again once an Administrator session starts; the broker counts from then on.
-        return m_Broker->heldForSession() ? UdpCollectorStartResult::Failed : UdpCollectorStartResult::NotElevated;
+        if (m_Broker->heldForSession())
+        {
+            return UdpCollectorStartResult::Failed; // the session's helper couldn't be restarted with the counter
+        }
+        // No session yet: the request stands, so the session's helper counts once one is chosen, and sample() reads it
+        // from then on. Until then each reading finds no counting helper and adds nothing.
+        m_Running = true;
+        return UdpCollectorStartResult::NotElevated;
     }
     setProblem({});
     m_Running = true;

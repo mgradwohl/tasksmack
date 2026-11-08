@@ -217,8 +217,9 @@ std::expected<void, std::string> PkexecBroker::connectWithin(const std::stop_tok
     {
         arguments.emplace_back(HelperSandbox::ENFORCE_ARGUMENT);
     }
-    // The UDP counter loads only at the helper's start, as root (#3366).
-    const bool countUdp = m_CountUdp.load();
+    // The UDP counter loads only at the helper's start, as root (#3366), and only for a held session's helper: a
+    // counting helper never ends idle, which a one-off "Authenticate and retry" helper must.
+    const bool countUdp = m_CountUdp.load() && m_ForSession.load();
     if (countUdp)
     {
         arguments.emplace_back(UDP_BYTES_ARGUMENT);

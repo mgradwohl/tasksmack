@@ -34,16 +34,24 @@ void answerWith(FakeBroker& broker, Broker::UdpBytesReply reply)
     broker.setAnswer([reply](const Broker::Request&) -> std::expected<Broker::Response, std::string> { return Broker::Response{reply}; });
 }
 
-TEST(BrokeredUdpTrafficCollectorTest, WithoutAnAdministratorSessionItPromptsForNothingAndSaysSo)
+TEST(BrokeredUdpTrafficCollectorTest, WithoutAnAdministratorSessionItPromptsForNothingAndCountsOnceOneStarts)
 {
-    auto broker = std::make_shared<FakeBroker>();
+    auto broker = std::make_shared<FakeBroker>(false);
     BrokeredUdpTrafficCollector collector(broker);
     EXPECT_EQ(collector.start(), UdpCollectorStartResult::NotElevated);
     EXPECT_EQ(broker->connectCount(), 0) << "no helper started, no prompt";
     EXPECT_EQ(collector.problem(), "Needs an Administrator session");
+    EXPECT_TRUE(broker->countingUdp()) << "the request stands for the session's helper";
     EXPECT_TRUE(collector.sample().empty());
-    EXPECT_TRUE(broker->requests().empty()) << "not started: nothing is read";
     EXPECT_FALSE(collector.isDelivering());
+
+    // The user chooses Administrator: the session's helper counts, and the next reading has its totals.
+    broker->setHoldsSessions(true);
+    ASSERT_TRUE(broker->holdForSession(std::stop_token{}).has_value());
+    answerWith(*broker, {.status = Broker::UdpBytesStatus::Ok, .detail = {}, .processes = {{.tgid = 3, .txBytes = 4, .rxBytes = 5}}});
+    ASSERT_EQ(collector.sample().size(), 1U);
+    EXPECT_TRUE(collector.isDelivering());
+    EXPECT_TRUE(collector.problem().empty());
 }
 
 TEST(BrokeredUdpTrafficCollectorTest, InAHeldSessionItReadsTheHelpersTotalsAsTheProcessesUdpBytes)

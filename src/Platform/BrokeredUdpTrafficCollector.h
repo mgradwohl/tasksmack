@@ -26,7 +26,8 @@ class BrokeredUdpTrafficCollector final : public IUdpTrafficCollector
     explicit BrokeredUdpTrafficCollector(std::shared_ptr<IPrivilegedBroker> broker);
 
     /// Asks the broker for a counting helper (IPrivilegedBroker::countUdpBytes()). NotElevated without an
-    /// Administrator session, where nothing prompts; Failed when no counting helper could be started.
+    /// Administrator session, where nothing prompts, but it stays armed: once a session's helper counts, sample()
+    /// delivers. Failed when the session's helper couldn't be restarted with the counter.
     [[nodiscard]] UdpCollectorStartResult start() override;
     void stop() override;
     /// Whether the last reading came from a helper that counts.
