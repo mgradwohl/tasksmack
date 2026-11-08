@@ -374,6 +374,8 @@ class ProcessDetailsPanel : public Panel
         std::string signature;        ///< The Signature column's text, with the check mark when verified (#3070)
         std::string signatureTooltip; ///< How it is signed, or why not (Platform::signatureTooltip())
         std::string schedPolicy;      ///< The Policy column's text, "FIFO 50"; empty if unread (#3086)
+        std::string app;              ///< The app it belongs to, as Group: App names it; empty for none (#3457)
+        std::string appTooltip;       ///< The package family and AppUserModelID it is read from
     } m_BasicInfoText;
     // The Overview's state for the shared chart-height rule (#959); the Network and GPU tabs' are
     // m_Charts'.

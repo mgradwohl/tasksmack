@@ -127,6 +127,16 @@ struct ProcessCounters
     // are matched to processes by PID from the service list instead (Domain::ProcessModel).
     std::string services;
 
+    // The app a process belongs to on Windows (#3457), what Group: App groups it by: a packaged app's package
+    // family name (GetPackageFamilyName) and AppUserModelID (GetApplicationUserModelId), read once per process;
+    // an unpackaged one's explicit AppUserModelID from its top-level window (SHGetPropertyStoreForWindow,
+    // PKEY_AppUserModel_ID), looked for until one is found. appName is the name the Start menu gives that
+    // AppUserModelID ("Windows Terminal"), empty when it gives none. All empty on Linux, whose app comes from
+    // the systemd unit in `services`.
+    std::string packageFamily;
+    std::string appUserModelId;
+    std::string appName;
+
     // Process type classification (the Type column). Windows: "App", "Background Process", "Windows Process";
     // Linux: "App", "Background Process", "System Process", from the cgroup path and parent PID (#3430). Empty if
     // not available.
@@ -257,6 +267,8 @@ struct ProcessCapabilities
                                         // (app-*/snap.* scopes and services, App::ProcessGrouping::appFromUnit()).
                                         // Linux: from /proc/[pid]/cgroup. Windows: false, its services are SCM
                                         // services, not apps (#3428)
+    bool hasAppIds = false;             // Whether ProcessCounters::packageFamily / appUserModelId are read, so
+                                        // Group: App has an app to group by (Windows, #3457)
     bool hasProcessType =
         false; // Whether process type classification is available (Windows: App/Background/Windows; Linux: App/Background/System, #3430)
     bool hasArchitecture = false;      // Whether ProcessCounters::architecture is filled (#2394)

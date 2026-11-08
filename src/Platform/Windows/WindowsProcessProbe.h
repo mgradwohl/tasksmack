@@ -46,6 +46,7 @@
 #include <mstcpip.h>
 // clang-format on
 
+#include "WindowsAppIdentity.h"
 #include "WindowsEnergyMeter.h"
 #include "WindowsHandles.h"
 #include "WindowsNtQuery.h"
@@ -133,6 +134,20 @@ struct WindowsProcessProbeFunctions
         /// IsWow64Process2), read once per process for its architecture (#2394). Nullable: not read.
         std::uint16_t (*processMachine)(HANDLE) = nullptr;
     } process;
+
+    /// The app a process belongs to (#3457, WindowsAppIdentity.h), for Group: App. Each is nullable: that
+    /// part of the app identity is then not read.
+    struct App
+    {
+        /// The package a process runs in, read once per process with its first handle.
+        Windows::PackageIdentity (*packageIdentity)(HANDLE) = nullptr;
+        /// The AppUserModelIDs the top-level windows of the processes asked about set: one window walk for
+        /// all of them, made when an unpackaged process's heavy TTL has passed since it was last looked for.
+        void (*windowAppIds)(std::span<const std::uint32_t> pids, std::vector<Windows::WindowAppId>& found) = nullptr;
+        /// The Start menu's name for an AppUserModelID, asked once per ID.
+        std::string (*appDisplayName)(const std::string& appUserModelId) = nullptr;
+    };
+    App app{}; // NOLINT(readability-redundant-member-init) - keeps the tables that leave it out warning-free
 
     /// The EMI energy meter device calls behind per-process power (#2587), opened on the probe's
     /// one-shot opener thread. Nullable (nullopt): no energy meter is looked for, and power is not
@@ -312,6 +327,14 @@ class WindowsProcessProbe : public IProcessProbe
         bool architectureRead = false;                 // Whether architecture above was read (with the first handle opened)
         bool signatureRequested = false;               // Whether the worker was asked to check the image (#3070)
         std::optional<std::int32_t> gdiObjectCount;    // GetGuiResources (light TTL, #1156)
+        // The app it belongs to (#3457): the package read once, with the first handle; an unpackaged process's
+        // window AppUserModelID looked for on the heavy TTL until one is found (lookForWindowAppIds()).
+        std::string packageFamily;
+        std::string appUserModelId;
+        std::string appName;
+        bool packageRead = false;                                  // Whether the package was read
+        bool appNameRead = false;                                  // Whether appName was asked for appUserModelId
+        std::chrono::steady_clock::time_point nextWindowAppIdLook; // When its windows are next looked at
         // Slow-changing fields cached with light/heavy TTL to avoid redundant Win32 calls.
         CpuAffinity cpuAffinity;       // readCpuAffinity() (heavy TTL)
         std::int32_t nice = 0;         // GetPriorityClass → nice value (heavy TTL, or when the base priority changes)
@@ -327,6 +350,14 @@ class WindowsProcessProbe : public IProcessProbe
     /// (#3070): once the image path is read, the first call requests the check, later ones take the answer
     /// when the worker has it. No-op without a worker, or before the path is known.
     void updateSignature(DetailCacheEntry& cache, ProcessCounters& counters);
+
+    /// Fill @p counters' app from @p cache (#3457), reading the package with @p hProcess the first time one
+    /// is open, and the app's name while it is unread and this sample's name lookups last.
+    void updateAppIdentity(DetailCacheEntry& cache, ProcessCounters& counters, HANDLE hProcess);
+
+    /// One window walk for the processes seen last sample that are unpackaged, have no AppUserModelID yet,
+    /// and are due to be looked for (#3457); found IDs go into their cache entries. No walk when none is due.
+    void lookForWindowAppIds(std::chrono::steady_clock::time_point now);
 
     /// Refresh TTL-cached details for a single process (opens a handle only when a TTL expired, or
     /// the base priority changed: planDetailRefresh()).
@@ -390,6 +421,12 @@ class WindowsProcessProbe : public IProcessProbe
     std::vector<std::byte> m_SnapshotBuffer;     // Reused buffer for NtQuerySystemInformation snapshots
     std::vector<std::uint32_t> m_HungWindowPids; // This sample's processes with a hung window (#3084), sorted; reused
     AccountNameCache m_AccountNames;             // Owners' account names by SID, for the heavy reads (#2982)
+    // The Start menu's names by AppUserModelID (#3457), empty for one it doesn't name; cleared when it grows
+    // past a cap. m_AppNameLookupsLeft is this sample's budget of lookups not yet in it.
+    std::unordered_map<std::string, std::string> m_AppNames;
+    std::size_t m_AppNameLookupsLeft = 0;
+    std::vector<std::uint32_t> m_WindowAppIdPids;     // lookForWindowAppIds()' processes; reused
+    std::vector<Windows::WindowAppId> m_WindowAppIds; // and what their windows set; reused
 
     // The EMI package energy meters (#2587). The opener thread stores the opened meter under the
     // mutex and then raises m_HasPackageEnergy; readPackageEnergy() (const, on the sampler thread)

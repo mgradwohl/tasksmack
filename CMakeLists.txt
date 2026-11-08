@@ -364,6 +364,7 @@ set(PLATFORM_SOURCES_LINUX
 
 set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsProcessProbe.cpp
+    src/Platform/Windows/WindowsAppIdentity.cpp # a process's package family and AppUserModelID: Group: App (#3457)
     src/Platform/Windows/WindowsEtwNetCollector.cpp
     src/Platform/Windows/WindowsProcessActions.cpp
     src/Platform/Windows/WindowsDebugPrivilege.cpp
@@ -664,6 +665,7 @@ elseif(WIN32)
         src/Platform/Windows/WindowsWaitChainMath.h
         src/Platform/Windows/WindowsProcessDumpMath.h
         src/Platform/Windows/WindowsProcessMachine.h
+        src/Platform/Windows/WindowsAppIdentity.h
         src/Platform/Windows/WindowsProcessMachineMath.h
         src/Platform/Windows/WindowsFolderPicker.h
         src/Platform/Windows/WindowsFileLocation.h

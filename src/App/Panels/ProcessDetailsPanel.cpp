@@ -3,6 +3,7 @@
 #include "App/Panel.h"
 #include "App/PanelPlatforms.h"
 #include "App/Panels/ProcessArchitectureNote.h"
+#include "App/Panels/ProcessGrouping.h"
 #include "App/Panels/ProcessSignatureText.h"
 #include "App/Panels/ProcessStateColor.h"
 #include "App/Panels/ProcessTypeColor.h"
@@ -744,8 +745,8 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
         // leave it out free of -Wmissing-designated-field-initializers.
         std::string_view tooltip{}; // NOLINT(readability-redundant-member-init)
     };
-    // At most ten rows a table (Started by, Publisher, Signature, Services, Affinity, Policy, Type, Container and
-    // Architecture are optional), held in place.
+    // At most ten rows a table (Started by, Publisher, Signature, Services, Affinity, Policy, Type, Container, App
+    // and Architecture are optional; App is Windows' and Policy and Container Linux's), held in place.
     struct InfoRows
     {
         std::array<InfoRow, 10> rows{};
@@ -844,6 +845,8 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
             fresh.signatureTooltip = Platform::signatureTooltip(proc.signature.get());
         }
         fresh.schedPolicy = Platform::schedPolicyLabel(proc.schedPolicy, proc.rtPriority); // The Policy column's (#3086)
+        fresh.app = ProcessGrouping::appDetailsValue(proc);                                // What Group: App groups it by (#3457)
+        fresh.appTooltip = ProcessGrouping::appDetailsTooltip(proc);
         fresh.keepAlive = ownedSnapshot ? m_CachedSnapshot : nullptr;
         fresh.key = ownedSnapshot ? &proc : nullptr;
         text = std::move(fresh);
@@ -917,6 +920,11 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     if (!proc.container.empty())
     {
         runtimeRows.add({.label = "Container", .value = proc.container, .color = theme.scheme().textMuted});
+    }
+    if (!text.app.empty())
+    {
+        // Windows: the app Group: App puts it under (#3457), its package family and AppUserModelID on hover.
+        runtimeRows.add({.label = "App", .value = text.app, .color = theme.scheme().textPrimary, .tooltip = text.appTooltip});
     }
     if (!proc.architecture.empty())
     {

@@ -33,8 +33,8 @@ enum class GroupBy : std::uint8_t
     None,
     Unit,      ///< The systemd unit the process's cgroup names (Linux); the first service it hosts (Windows)
     Container, ///< Its container ("docker:1a2b3c4d5e6f")
-    App,       ///< The app its unit was launched as: a desktop app, a Flatpak or a Snap
-    User,      ///< The account it runs as (domain and user on Windows, #3377): per-user totals (#3076)
+    App,  ///< Its app: Linux, the desktop app, Flatpak or Snap its unit was launched as; Windows, its package or AppUserModelID (#3457)
+    User, ///< The account it runs as (domain and user on Windows, #3377): per-user totals (#3076)
 };
 
 /// The label of the group for processes in none.
@@ -130,7 +130,161 @@ sessionsDemand(bool usersTabShown, bool processesTabShown, GroupBy groupBy, bool
     return {};
 }
 
-/// The group @p proc belongs to under @p mode, or empty for none (Ungrouped). By user it is the account the
+/// The app @p proc belongs to by its own identity (#3457), or empty: its package family (a packaged app's, on
+/// Windows), else its AppUserModelID (a packaged app's "<family>!<app>" is its family, so a process whose
+/// package couldn't be read joins the rest of its package), else the app its systemd unit was launched as
+/// (Linux, appFromUnit()).
+[[nodiscard]] inline std::string ownAppKey(const Domain::ProcessSnapshot& proc)
+{
+    if (!proc.packageFamily.empty())
+    {
+        return proc.packageFamily;
+    }
+    if (!proc.appUserModelId.empty())
+    {
+        const std::string_view id = proc.appUserModelId;
+        const std::size_t bang = id.find('!');
+        return std::string((bang != std::string_view::npos && bang > 0) ? id.substr(0, bang) : id);
+    }
+    return proc.serviceNames.empty() ? std::string{} : appFromUnit(proc.serviceNames[0]);
+}
+
+/// Whether @p proc's own app (ownAppKey()) is a package: its family, or a packaged app's AppUserModelID.
+[[nodiscard]] inline bool ownAppIsPackage(const Domain::ProcessSnapshot& proc)
+{
+    return !proc.packageFamily.empty() || proc.appUserModelId.contains('!');
+}
+
+/// What an App group's header calls the app @p proc names by its own identity @p key (#3457): the name the
+/// Start menu gives it, else a package's name without its publisher ID ("Microsoft.WindowsTerminal"), else
+/// the key itself.
+[[nodiscard]] inline std::string appGroupLabel(const Domain::ProcessSnapshot& proc, const std::string& key)
+{
+    if (!proc.appName.empty())
+    {
+        return proc.appName;
+    }
+    if (ownAppIsPackage(proc))
+    {
+        const std::size_t underscore = key.rfind('_');
+        return (underscore != std::string::npos && underscore > 0) ? key.substr(0, underscore) : key;
+    }
+    return key;
+}
+
+/// Process Details' App row (#3457): the app as its App group's header names it, empty for a process with no
+/// package or AppUserModelID of its own (Linux's app is in its Services row).
+[[nodiscard]] inline std::string appDetailsValue(const Domain::ProcessSnapshot& proc)
+{
+    if (proc.packageFamily.empty() && proc.appUserModelId.empty())
+    {
+        return {};
+    }
+    return appGroupLabel(proc, ownAppKey(proc));
+}
+
+/// The App row's tooltip: the package family and AppUserModelID the app is read from.
+[[nodiscard]] inline std::string appDetailsTooltip(const Domain::ProcessSnapshot& proc)
+{
+    std::string tooltip;
+    if (!proc.packageFamily.empty())
+    {
+        tooltip = "Package family: " + proc.packageFamily;
+    }
+    if (!proc.appUserModelId.empty())
+    {
+        tooltip += (tooltip.empty() ? "" : "\n") + std::string("AppUserModelID: ") + proc.appUserModelId;
+    }
+    return tooltip;
+}
+
+/// Each process's App group (#3457), by index into @p snapshots: its own (ownAppKey()), else the one it
+/// follows from its parent, as Task Manager puts an app's helpers under it. A process with no app of its
+/// own follows a parent whose app is a package (a packaged app's shells and helpers, unpackaged
+/// themselves), or a parent running the same program (a browser's renderers under the browser). Anything
+/// else, such as a program Explorer starts, is its own. A parent is the process with the parent PID that
+/// started no later than the child, so a reused PID isn't taken for one.
+[[nodiscard]] inline std::vector<std::string> appKeys(const std::vector<Domain::ProcessSnapshot>& snapshots)
+{
+    struct Resolved
+    {
+        std::string key;
+        bool fromPackage = false;
+        bool done = false;
+    };
+    std::vector<Resolved> resolved(snapshots.size());
+    std::unordered_map<std::int32_t, std::size_t> byPid;
+    byPid.reserve(snapshots.size());
+    for (std::size_t i = 0; i < snapshots.size(); ++i)
+    {
+        byPid.try_emplace(snapshots[i].pid, i);
+    }
+    const auto parentOf = [&snapshots, &byPid](std::size_t child) -> std::optional<std::size_t>
+    {
+        const Domain::ProcessSnapshot& proc = snapshots[child];
+        const auto it = byPid.find(proc.parentPid);
+        if (proc.parentPid == proc.pid || it == byPid.end() || it->second == child)
+        {
+            return std::nullopt;
+        }
+        const Domain::ProcessSnapshot& parent = snapshots[it->second];
+        if (parent.startTimeTicks != 0 && proc.startTimeTicks != 0 && parent.startTimeTicks > proc.startTimeTicks)
+        {
+            return std::nullopt; // Started after the child: a process that reused the parent's PID
+        }
+        return it->second;
+    };
+    constexpr std::size_t MAX_DEPTH = 64; // Deeper than any real process tree; it ends a PID loop too
+    std::vector<std::size_t> chain;
+    for (std::size_t start = 0; start < snapshots.size(); ++start)
+    {
+        // Up through the processes with no app of their own, to one already resolved or one that ends the walk.
+        chain.clear();
+        std::size_t current = start;
+        while (!resolved[current].done && chain.size() < MAX_DEPTH && ownAppKey(snapshots[current]).empty())
+        {
+            const std::optional<std::size_t> parent = parentOf(current);
+            if (!parent.has_value() || *parent == start || std::ranges::find(chain, *parent) != chain.end())
+            {
+                break;
+            }
+            chain.push_back(current);
+            current = *parent;
+        }
+        if (!resolved[current].done)
+        {
+            resolved[current] = Resolved{
+                .key = ownAppKey(snapshots[current]),
+                .fromPackage = ownAppIsPackage(snapshots[current]),
+                .done = true,
+            };
+        }
+        // Back down the chain: each follows the process above it where the rule lets it.
+        for (std::size_t step = chain.size(); step-- > 0;)
+        {
+            const std::size_t child = chain[step];
+            const std::size_t above = (step + 1 < chain.size()) ? chain[step + 1] : current;
+            Resolved& r = resolved[child];
+            r.done = true;
+            const Resolved& parent = resolved[above];
+            if (!parent.key.empty() && (parent.fromPackage || snapshots[child].name == snapshots[above].name))
+            {
+                r.key = parent.key;
+                r.fromPackage = parent.fromPackage;
+            }
+        }
+    }
+    std::vector<std::string> keys;
+    keys.reserve(resolved.size());
+    for (Resolved& r : resolved)
+    {
+        keys.push_back(std::move(r.key));
+    }
+    return keys;
+}
+
+/// The group @p proc belongs to under @p mode, or empty for none (Ungrouped). By App it is its own app
+/// (ownAppKey()); buildGroups() then puts a process with none under the app it follows (appKeys()). By user it is the account the
 /// process names (UserGrouping::processAccountKey()); buildGroups() then gives a Windows process that names
 /// no domain to the one account with its name.
 [[nodiscard]] inline std::string groupKey(const Domain::ProcessSnapshot& proc, GroupBy mode)
@@ -142,7 +296,7 @@ sessionsDemand(bool usersTabShown, bool processesTabShown, GroupBy groupBy, bool
     case GroupBy::Container:
         return proc.container;
     case GroupBy::App:
-        return proc.serviceNames.empty() ? std::string{} : appFromUnit(proc.serviceNames[0]);
+        return ownAppKey(proc);
     case GroupBy::User:
         return UserGrouping::processAccountKey(proc);
     case GroupBy::None:
@@ -168,6 +322,9 @@ sessionsDemand(bool usersTabShown, bool processesTabShown, GroupBy groupBy, bool
     }
     std::vector<Group> groups;
     std::unordered_map<std::string, std::size_t> byKey;
+    const bool byApp = mode == GroupBy::App;
+    std::vector<std::string> followedApps = byApp ? appKeys(snapshots) : std::vector<std::string>{};
+    std::vector<bool> namedByApp; // By App: whether the group's label came from a process that is the app and names it
     for (const std::size_t index : order)
     {
         if (index >= snapshots.size())
@@ -175,14 +332,21 @@ sessionsDemand(bool usersTabShown, bool processesTabShown, GroupBy groupBy, bool
             continue;
         }
         const Domain::ProcessSnapshot& proc = snapshots[index];
-        std::string key = groupKey(proc, mode);
+        std::string key = byApp ? followedApps[index] : groupKey(proc, mode);
         auto [slot, added] = byKey.try_emplace(key, groups.size());
         if (added)
         {
             std::string label = key;
             groups.push_back(Group{.key = std::move(key), .label = std::move(label), .totals = {}, .members = {}});
+            namedByApp.push_back(false);
         }
         Group& group = groups[slot->second];
+        if (byApp && !group.key.empty() && !namedByApp[slot->second] && ownAppKey(proc) == group.key)
+        {
+            // Named by a process that is the app, not by one following it; the first that has a name keeps it.
+            group.label = appGroupLabel(proc, group.key);
+            namedByApp[slot->second] = !proc.appName.empty();
+        }
         group.members.push_back(index);
         if (index < liveCount)
         {
@@ -247,9 +411,9 @@ sessionsDemand(bool usersTabShown, bool processesTabShown, GroupBy groupBy, bool
 inline constexpr std::array<GroupBy, 5> ALL_GROUP_MODES = {GroupBy::None, GroupBy::Unit, GroupBy::Container, GroupBy::App, GroupBy::User};
 
 /// Whether the Group control offers @p mode on a system whose probe reports @p caps (#3428): Container
-/// needs the container (Linux cgroups), App the systemd unit an app was launched in; offered anywhere
-/// else, every process would land under Ungrouped. None, Unit and User are offered everywhere (Unit's
-/// data on Windows comes from the service list, which grouping by Unit asks for, #3386).
+/// needs the container (Linux cgroups), App the systemd unit an app was launched in (Linux) or the package
+/// and AppUserModelID (Windows, #3457); offered anywhere else, every process would land under Ungrouped. None, Unit and User are offered
+/// everywhere (Unit's data on Windows comes from the service list, which grouping by Unit asks for, #3386).
 [[nodiscard]] constexpr bool groupModeOffered(GroupBy mode, const Platform::ProcessCapabilities& caps) noexcept
 {
     switch (mode)
@@ -257,7 +421,7 @@ inline constexpr std::array<GroupBy, 5> ALL_GROUP_MODES = {GroupBy::None, GroupB
     case GroupBy::Container:
         return caps.hasContainer;
     case GroupBy::App:
-        return caps.hasAppUnits;
+        return caps.hasAppUnits || caps.hasAppIds;
     case GroupBy::None:
     case GroupBy::Unit:
     case GroupBy::User:

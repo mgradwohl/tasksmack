@@ -1895,6 +1895,10 @@ void ProcessesPanel::renderContent()
     {
         ImGui::SetItemTooltip("Group processes by systemd unit, container, app or user, each group under a row with its totals");
     }
+    else if (groupCaps.hasAppIds)
+    {
+        ImGui::SetItemTooltip("Group processes by service, app or user, each group under a row with its totals");
+    }
     else
     {
         ImGui::SetItemTooltip("Group processes by service or user, each group under a row with its totals");

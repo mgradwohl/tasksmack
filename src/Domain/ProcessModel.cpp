@@ -1337,9 +1337,13 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
     snapshot.displayState = translateState(current.state);
     snapshot.status = processStatusText(current.status, current.notResponding); // The probe's, and Not responding (#3084)
     snapshot.notResponding = current.notResponding;
-    snapshot.publisher = current.publisher;       // Pass through publisher from platform probe
-    snapshot.container = current.container;       // Pass through container from platform probe
-    snapshot.services = current.services;         // and its services (#1886)
+    snapshot.publisher = current.publisher; // Pass through publisher from platform probe
+    snapshot.container = current.container; // Pass through container from platform probe
+    snapshot.services = current.services;   // and its services (#1886)
+    // The app it belongs to on Windows (#3457)
+    snapshot.packageFamily = current.packageFamily;
+    snapshot.appUserModelId = current.appUserModelId;
+    snapshot.appName = current.appName;
     snapshot.processType = current.processType;   // Pass through process type from platform probe
     snapshot.architecture = current.architecture; // and the architecture it runs as (#2394)
     snapshot.schedPolicy = current.schedPolicy;   // its scheduling policy (#3086)
