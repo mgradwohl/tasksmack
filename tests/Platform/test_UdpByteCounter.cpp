@@ -16,15 +16,18 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
+#include <bpf/bpf.h>
 #include <bpf/libbpf.h>
 
 // NOLINTBEGIN(misc-include-cleaner) - socket and process headers: include-cleaner lacks mappings for AF_*, SOCK_*
 // and the W* macros
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -102,6 +105,7 @@ TEST(UdpByteCounterTest, TheEmbeddedObjectHasEachModesProgramsAndATgidKeyedMap)
         "fexit/udpv6_recvmsg",
         "fexit/udpv6_sendmsg",
         "kprobe/skb_consume_udp",
+        "kprobe/udp_sendmsg",
         "kprobe/udpv6_sendmsg",
         "kretprobe/udp_sendmsg",
         "kretprobe/udpv6_sendmsg",
@@ -113,7 +117,7 @@ TEST(UdpByteCounterTest, TheEmbeddedObjectHasEachModesProgramsAndATgidKeyedMap)
         const auto wanted =
             std::ranges::count_if(sections, [&attempt](const std::string& section) { return udpProgramWanted(section, attempt); });
         const bool fexit = attempt.mode == UdpAttachMode::Fexit;
-        EXPECT_EQ(wanted, fexit ? (attempt.ipv6 ? 5 : 2) : (attempt.ipv6 ? 4 : 2));
+        EXPECT_EQ(wanted, fexit ? (attempt.ipv6 ? 5 : 2) : (attempt.ipv6 ? 5 : 3));
     }
 
     const bpf_map* map = bpf_object__find_map_by_name(object.get(), "udp_bytes_by_tgid");
@@ -140,12 +144,17 @@ TEST(UdpByteCounterTest, WithoutRootLoadingFailsAndSaysWhy)
 //   - over IPv4, each datagram peeked at (MSG_PEEK, not counted: it stays queued) and then received;
 //   - from an IPv6 socket to its own IPv4-mapped address, which udpv6_sendmsg hands to udp_sendmsg: counted once;
 //   - to many threads already blocked in recv(), more than the kernel's default kretprobe slots (2 per CPU, at
-//     least 10): every one is counted, as no receive holds a slot while it waits.
+//     least 10): every one is counted, as no receive holds a slot while it waits;
+//   - over IPv4 while its thread carries a stale "inside udpv6_sendmsg" marker the parent planted (as a missed
+//     kretprobe would leave): still counted, as the marker names another socket;
+//   - to a closed port with IP_RECVERR, then the ICMP report read from the error queue: the send counts, the
+//     report (which carries the payload) doesn't.
 constexpr int DATAGRAMS = 8;
 constexpr std::size_t DATAGRAM_BYTES = 1000;
 constexpr int MAPPED_DATAGRAMS = 4;
 constexpr std::size_t MAPPED_DATAGRAM_BYTES = 500;
 constexpr std::size_t BLOCKED_BYTES = 100;
+constexpr std::size_t ERRQUEUE_BYTES = 50;
 
 /// How many receivers block at once: past the default kretprobe slots on this machine.
 [[nodiscard]] std::size_t blockedReceivers()
@@ -153,9 +162,14 @@ constexpr std::size_t BLOCKED_BYTES = 100;
     return (4 * std::max(1U, std::thread::hardware_concurrency())) + 32;
 }
 
-[[nodiscard]] std::uint64_t expectedBytes()
+[[nodiscard]] std::uint64_t expectedRxBytes()
 {
     return (DATAGRAMS * DATAGRAM_BYTES) + (MAPPED_DATAGRAMS * MAPPED_DATAGRAM_BYTES) + (blockedReceivers() * BLOCKED_BYTES);
+}
+
+[[nodiscard]] std::uint64_t expectedTxBytes()
+{
+    return expectedRxBytes() + ERRQUEUE_BYTES;
 }
 
 /// Binds @p sock to @p address (port 0) and reads back the port it got; false on a failure.
@@ -185,8 +199,55 @@ template<typename Address> [[nodiscard]] bool echo(int sock, const Address& addr
     return true;
 }
 
-[[noreturn]] void sendAndReceiveUdp()
+/// Sends ERRQUEUE_BYTES to a port nothing listens on, with IP_RECVERR, and reads the ICMP report back from the
+/// error queue: false if any step fails.
+[[nodiscard]] bool sendToAClosedPortAndReadTheError()
 {
+    sockaddr_in closed{};
+    closed.sin_family = AF_INET;
+    closed.sin_addr.s_addr = ::htonl(INADDR_LOOPBACK);
+    const int probe = ::socket(AF_INET, SOCK_DGRAM, 0);
+    if (!bindToItself(probe, closed) || ::close(probe) != 0) // the port it got is free again, with no listener
+    {
+        return false;
+    }
+    const int sock = ::socket(AF_INET, SOCK_DGRAM, 0);
+    const int on = 1;
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast): the sockets API takes sockaddr*
+    if (sock < 0 || ::setsockopt(sock, IPPROTO_IP, IP_RECVERR, &on, sizeof(on)) != 0 ||
+        ::connect(sock, reinterpret_cast<const sockaddr*>(&closed), sizeof(closed)) != 0)
+    {
+        return false;
+    }
+    const std::array<char, ERRQUEUE_BYTES> payload{};
+    if (::send(sock, payload.data(), payload.size(), 0) != static_cast<ssize_t>(ERRQUEUE_BYTES))
+    {
+        return false;
+    }
+    pollfd waiting{.fd = sock, .events = 0, .revents = 0}; // POLLERR is always reported
+    if (::poll(&waiting, 1, 2000) != 1 || (waiting.revents & POLLERR) == 0)
+    {
+        return false;
+    }
+    std::array<char, ERRQUEUE_BYTES> buffer{};
+    std::array<char, 512> control{};
+    iovec io{.iov_base = buffer.data(), .iov_len = buffer.size()};
+    msghdr message{};
+    message.msg_iov = &io;
+    message.msg_iovlen = 1;
+    message.msg_control = control.data();
+    message.msg_controllen = control.size();
+    return ::recvmsg(sock, &message, MSG_ERRQUEUE) == static_cast<ssize_t>(ERRQUEUE_BYTES);
+}
+
+[[noreturn]] void sendAndReceiveUdp(int go)
+{
+    // The parent plants its stale marker for this thread first.
+    char ready = 0;
+    if (::read(go, &ready, 1) != 1)
+    {
+        ::_exit(8);
+    }
     sockaddr_in v4{};
     v4.sin_family = AF_INET;
     v4.sin_addr.s_addr = ::htonl(INADDR_LOOPBACK);
@@ -249,7 +310,39 @@ template<typename Address> [[nodiscard]] bool echo(int sock, const Address& addr
         }
     }
     threads.clear(); // joins them
-    ::_exit(received == receivers.size() ? 0 : 7);
+    if (received != receivers.size())
+    {
+        ::_exit(7);
+    }
+    ::_exit(sendToAClosedPortAndReadTheError() ? 0 : 9);
+}
+
+/// A file descriptor for the newest BPF map named @p name (the counter this test loaded), or -1. Root only.
+[[nodiscard]] int mapNamed(std::string_view name)
+{
+    int found = -1;
+    std::uint32_t id = 0;
+    while (bpf_map_get_next_id(id, &id) == 0)
+    {
+        const int fd = bpf_map_get_fd_by_id(id);
+        if (fd < 0)
+        {
+            continue;
+        }
+        bpf_map_info info{};
+        std::uint32_t length = sizeof(info);
+        if (bpf_map_get_info_by_fd(fd, &info, &length) == 0 && name == std::string_view(info.name))
+        {
+            if (found >= 0)
+            {
+                ::close(found);
+            }
+            found = fd; // ids only grow: the last one found is the newest
+            continue;
+        }
+        ::close(fd);
+    }
+    return found;
 }
 
 class UdpByteCounterRootTest : public ::TestSupport::CiRealSystemTest, public ::testing::WithParamInterface<UdpAttachMode>
@@ -278,12 +371,26 @@ TEST_P(UdpByteCounterRootTest, CountsTheBytesAChildSendsAndReceivesOnceEach)
     EXPECT_EQ(counter->attempt(), attempts[0]);
     EXPECT_GE(counter->mapFd(), 0);
 
+    std::array<int, 2> go{-1, -1};
+    ASSERT_EQ(::pipe(go.data()), 0);
     const pid_t child = ::fork();
     ASSERT_GE(child, 0);
     if (child == 0)
     {
-        sendAndReceiveUdp();
+        ::close(go[1]);
+        sendAndReceiveUdp(go[0]);
     }
+    ::close(go[0]);
+    // A marker its thread's next IPv4 sends must not be hidden by: another socket's, as a missed udpv6_sendmsg
+    // return in the kprobe mode would leave.
+    const int markers = mapNamed("in_udpv6_send");
+    ASSERT_GE(markers, 0);
+    const std::uint64_t thread = (static_cast<std::uint64_t>(child) << 32U) | static_cast<std::uint32_t>(child);
+    const std::uint64_t otherSocket = 0xDEAD0000ULL;
+    EXPECT_EQ(bpf_map_update_elem(markers, &thread, &otherSocket, BPF_ANY), 0);
+    ::close(markers);
+    ASSERT_EQ(::write(go[1], "g", 1), 1);
+    ::close(go[1]);
     int status = 0;
     ASSERT_EQ(::waitpid(child, &status, 0), child);
     ASSERT_TRUE(WIFEXITED(status));
@@ -292,8 +399,8 @@ TEST_P(UdpByteCounterRootTest, CountsTheBytesAChildSendsAndReceivesOnceEach)
     const std::vector<UdpByteCounts> counts = counter->read();
     const auto entry = std::ranges::find(counts, static_cast<std::uint32_t>(child), &UdpByteCounts::tgid);
     ASSERT_NE(entry, counts.end()) << "no entry for the child's tgid among " << counts.size();
-    EXPECT_EQ(entry->txBytes, expectedBytes()) << "the IPv4-mapped sends must count once";
-    EXPECT_EQ(entry->rxBytes, expectedBytes()) << "a peek must not count, and every blocked receive must";
+    EXPECT_EQ(entry->txBytes, expectedTxBytes()) << "the IPv4-mapped sends once, and the IPv4 sends despite the stale marker";
+    EXPECT_EQ(entry->rxBytes, expectedRxBytes()) << "every blocked receive, and no peek or error-queue read";
 }
 
 INSTANTIATE_TEST_SUITE_P(EachMode,
