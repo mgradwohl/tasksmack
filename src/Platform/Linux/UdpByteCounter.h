@@ -52,6 +52,8 @@ class UdpByteCounter
     /// Loads and attaches the program, trying each of udpAttachAttempts() until one works. Needs root. The error
     /// names what the last attempt couldn't do.
     [[nodiscard]] static std::expected<UdpByteCounter, std::string> load();
+    /// The same with only @p attempts, in order: for the tests, which load each mode on its own.
+    [[nodiscard]] static std::expected<UdpByteCounter, std::string> load(std::span<const UdpAttachAttempt> attempts);
 
     ~UdpByteCounter();
     UdpByteCounter(const UdpByteCounter&) = delete;

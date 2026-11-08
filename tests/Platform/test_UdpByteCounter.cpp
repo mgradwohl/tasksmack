@@ -56,6 +56,11 @@ TEST(UdpByteCounterTest, EachAttemptLoadsOnlyItsModesProgramsAndIpv6OnlyWhenAske
     EXPECT_FALSE(udpProgramWanted("kretprobe/udp_sendmsg", FEXIT_BOTH));
     EXPECT_FALSE(udpProgramWanted("fexit/udp_sendmsg", KRETPROBE_BOTH));
     EXPECT_TRUE(udpProgramWanted("kretprobe/udpv6_sendmsg", KRETPROBE_BOTH));
+    EXPECT_TRUE(udpProgramWanted("fentry/udpv6_sendmsg", FEXIT_BOTH));
+    EXPECT_FALSE(udpProgramWanted("fentry/udpv6_sendmsg", FEXIT_V4));
+    EXPECT_TRUE(udpProgramWanted("kprobe/udp_recvmsg", KRETPROBE_BOTH));
+    EXPECT_FALSE(udpProgramWanted("kprobe/udp_recvmsg", FEXIT_BOTH));
+    EXPECT_FALSE(udpProgramWanted("fentry/udp_recvmsg", KRETPROBE_BOTH));
     EXPECT_FALSE(udpProgramWanted("fexit/tcp_sendmsg", FEXIT_BOTH));
     EXPECT_FALSE(udpProgramWanted("license", FEXIT_BOTH));
 }
@@ -69,7 +74,8 @@ struct ObjectCloser
 };
 
 // Opening an object parses it without the kernel, so this runs unprivileged: the build embedded what the loader
-// expects, and every attempt has all four functions' programs (two for IPv4 only).
+// expects. Each mode has a return program for all four functions, an entry program for udpv6_sendmsg (its
+// IPv4-mapped sends aren't counted twice) and, for kprobes, entry programs for the receives (their flags).
 TEST(UdpByteCounterTest, TheEmbeddedObjectHasEachModesProgramsAndATgidKeyedMap)
 {
     std::unique_ptr<bpf_object, ObjectCloser> object(
@@ -83,10 +89,14 @@ TEST(UdpByteCounterTest, TheEmbeddedObjectHasEachModesProgramsAndATgidKeyedMap)
         sections.emplace(bpf_program__section_name(program));
     }
     const std::set<std::string> expected{
+        "fentry/udpv6_sendmsg",
         "fexit/udp_recvmsg",
         "fexit/udp_sendmsg",
         "fexit/udpv6_recvmsg",
         "fexit/udpv6_sendmsg",
+        "kprobe/udp_recvmsg",
+        "kprobe/udpv6_recvmsg",
+        "kprobe/udpv6_sendmsg",
         "kretprobe/udp_recvmsg",
         "kretprobe/udp_sendmsg",
         "kretprobe/udpv6_recvmsg",
@@ -98,7 +108,8 @@ TEST(UdpByteCounterTest, TheEmbeddedObjectHasEachModesProgramsAndATgidKeyedMap)
     {
         const auto wanted =
             std::ranges::count_if(sections, [&attempt](const std::string& section) { return udpProgramWanted(section, attempt); });
-        EXPECT_EQ(wanted, attempt.ipv6 ? 4 : 2);
+        const bool fexit = attempt.mode == UdpAttachMode::Fexit;
+        EXPECT_EQ(wanted, fexit ? (attempt.ipv6 ? 5 : 2) : (attempt.ipv6 ? 7 : 3));
     }
 
     const bpf_map* map = bpf_object__find_map_by_name(object.get(), "udp_bytes_by_tgid");
@@ -120,39 +131,69 @@ TEST(UdpByteCounterTest, WithoutRootLoadingFailsAndSaysWhy)
     EXPECT_FALSE(counter.error().empty());
 }
 
-// A child sends datagrams to its own socket and reads them back, so its tgid both sends and receives. Each is
-// one call into udp_sendmsg or udp_recvmsg.
+// A child sends datagrams to its own sockets and reads them back, so its tgid both sends and receives:
+//   - over IPv4, each datagram peeked at (MSG_PEEK, not counted: it stays queued) and then received;
+//   - from an IPv6 socket to its own IPv4-mapped address, which udpv6_sendmsg hands to udp_sendmsg: counted once.
 constexpr int DATAGRAMS = 8;
 constexpr std::size_t DATAGRAM_BYTES = 1000;
+constexpr int MAPPED_DATAGRAMS = 4;
+constexpr std::size_t MAPPED_DATAGRAM_BYTES = 500;
+constexpr std::uint64_t EXPECTED_BYTES = (DATAGRAMS * DATAGRAM_BYTES) + (MAPPED_DATAGRAMS * MAPPED_DATAGRAM_BYTES);
+
+/// Binds @p sock to @p address (port 0) and reads back the port it got; false on a failure.
+template<typename Address> [[nodiscard]] bool bindToItself(int sock, Address& address)
+{
+    socklen_t length = sizeof(address);
+    // NOLINTBEGIN(cppcoreguidelines-pro-type-reinterpret-cast): the sockets API takes sockaddr*
+    return sock >= 0 && ::bind(sock, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0 &&
+           ::getsockname(sock, reinterpret_cast<sockaddr*>(&address), &length) == 0;
+    // NOLINTEND(cppcoreguidelines-pro-type-reinterpret-cast)
+}
+
+/// Sends @p count datagrams of @p bytes to @p sock's own @p address and receives each, peeking first when asked.
+template<typename Address> [[nodiscard]] bool echo(int sock, const Address& address, int count, std::size_t bytes, bool peekFirst)
+{
+    std::array<char, DATAGRAM_BYTES> buffer{};
+    const auto size = static_cast<ssize_t>(bytes);
+    for (int i = 0; i < count; ++i)
+    {
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast): the sockets API takes sockaddr*
+        if (::sendto(sock, buffer.data(), bytes, 0, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) != size ||
+            (peekFirst && ::recv(sock, buffer.data(), bytes, MSG_PEEK) != size) || ::recv(sock, buffer.data(), bytes, 0) != size)
+        {
+            return false;
+        }
+    }
+    return true;
+}
 
 [[noreturn]] void sendAndReceiveUdp()
 {
-    const int sock = ::socket(AF_INET, SOCK_DGRAM, 0);
-    sockaddr_in address{};
-    address.sin_family = AF_INET;
-    address.sin_addr.s_addr = ::htonl(INADDR_LOOPBACK);
-    socklen_t length = sizeof(address);
-    // NOLINTBEGIN(cppcoreguidelines-pro-type-reinterpret-cast): the sockets API takes sockaddr*
-    if (sock < 0 || ::bind(sock, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0 ||
-        ::getsockname(sock, reinterpret_cast<sockaddr*>(&address), &length) != 0)
+    sockaddr_in v4{};
+    v4.sin_family = AF_INET;
+    v4.sin_addr.s_addr = ::htonl(INADDR_LOOPBACK);
+    const int sock4 = ::socket(AF_INET, SOCK_DGRAM, 0);
+    if (!bindToItself(sock4, v4) || !echo(sock4, v4, DATAGRAMS, DATAGRAM_BYTES, true))
     {
         ::_exit(2);
     }
-    std::array<char, DATAGRAM_BYTES> buffer{};
-    for (int i = 0; i < DATAGRAMS; ++i)
+    sockaddr_in6 mapped{};
+    mapped.sin6_family = AF_INET6;
+    if (::inet_pton(AF_INET6, "::ffff:127.0.0.1", &mapped.sin6_addr) != 1)
     {
-        if (::sendto(sock, buffer.data(), buffer.size(), 0, reinterpret_cast<sockaddr*>(&address), sizeof(address)) !=
-                static_cast<ssize_t>(buffer.size()) ||
-            ::recv(sock, buffer.data(), buffer.size(), 0) != static_cast<ssize_t>(buffer.size()))
-        {
-            ::_exit(3);
-        }
+        ::_exit(3);
     }
-    // NOLINTEND(cppcoreguidelines-pro-type-reinterpret-cast)
+    const int sock6 = ::socket(AF_INET6, SOCK_DGRAM, 0);
+    const int off = 0;
+    if (sock6 < 0 || ::setsockopt(sock6, IPPROTO_IPV6, IPV6_V6ONLY, &off, sizeof(off)) != 0 || !bindToItself(sock6, mapped) ||
+        !echo(sock6, mapped, MAPPED_DATAGRAMS, MAPPED_DATAGRAM_BYTES, false))
+    {
+        ::_exit(4);
+    }
     ::_exit(0);
 }
 
-class UdpByteCounterRootTest : public ::TestSupport::CiRealSystemTest
+class UdpByteCounterRootTest : public ::TestSupport::CiRealSystemTest, public ::testing::WithParamInterface<UdpAttachMode>
 {
   protected:
     void SetUp() override
@@ -169,12 +210,13 @@ class UdpByteCounterRootTest : public ::TestSupport::CiRealSystemTest
     }
 };
 
-TEST_F(UdpByteCounterRootTest, CountsTheBytesAChildSendsAndReceivesUnderItsTgid)
+// Each mode on its own: a GitHub-hosted Ubuntu runner has BTF, a 6.x kernel and IPv6, so both attach there.
+TEST_P(UdpByteCounterRootTest, CountsTheBytesAChildSendsAndReceivesOnceEach)
 {
-    auto counter = UdpByteCounter::load();
+    const std::array attempts{UdpAttachAttempt{.mode = GetParam(), .ipv6 = true}};
+    auto counter = UdpByteCounter::load(attempts);
     ASSERT_TRUE(counter.has_value()) << counter.error();
-    // A GitHub-hosted Ubuntu runner has BTF and a 6.x kernel, so the fexit programs attach there, with IPv6.
-    EXPECT_EQ(counter->attempt(), (UdpAttachAttempt{.mode = UdpAttachMode::Fexit, .ipv6 = true}));
+    EXPECT_EQ(counter->attempt(), attempts[0]);
     EXPECT_GE(counter->mapFd(), 0);
 
     const pid_t child = ::fork();
@@ -193,9 +235,15 @@ TEST_F(UdpByteCounterRootTest, CountsTheBytesAChildSendsAndReceivesUnderItsTgid)
     const std::vector<UdpByteCounts>& counts = *read;
     const auto entry = std::ranges::find(counts, static_cast<std::uint32_t>(child), &UdpByteCounts::tgid);
     ASSERT_NE(entry, counts.end()) << "no entry for the child's tgid among " << counts.size();
-    EXPECT_EQ(entry->txBytes, DATAGRAMS * DATAGRAM_BYTES);
-    EXPECT_EQ(entry->rxBytes, DATAGRAMS * DATAGRAM_BYTES);
+    EXPECT_EQ(entry->txBytes, EXPECTED_BYTES) << "the IPv4-mapped sends must count once";
+    EXPECT_EQ(entry->rxBytes, EXPECTED_BYTES) << "a peek must not count";
 }
+
+INSTANTIATE_TEST_SUITE_P(EachMode,
+                         UdpByteCounterRootTest,
+                         ::testing::Values(UdpAttachMode::Fexit, UdpAttachMode::Kretprobe),
+                         [](const ::testing::TestParamInfo<UdpAttachMode>& info)
+                         { return info.param == UdpAttachMode::Fexit ? std::string("Fexit") : std::string("Kretprobe"); });
 
 } // namespace
 } // namespace Platform
