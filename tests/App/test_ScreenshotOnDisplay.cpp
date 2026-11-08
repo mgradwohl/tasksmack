@@ -33,6 +33,7 @@
 #include "Core/Utf8Path.h"
 #include "Core/Window.h"
 #include "Core/WindowEvents.h"
+#include "Platform/CurrentProcess.h"
 #include "UI/Theme.h"
 #include "UI/UILayer.h"
 
@@ -551,6 +552,78 @@ TEST_F(ScreenshotOnDisplayTest, ADemoScriptPlaysWhileTheSequenceIsCaptured)
     EXPECT_TRUE(hasMoreThanOneColour(last));
     EXPECT_NE(first.rgba, last.rgba) << "the first and the last frame are the same image";
     EXPECT_NE(dominantColour(first), dominantColour(last)) << "the window background did not change with the theme";
+}
+
+// TASKSMACK_DEMO (#2827) playing every kind of step the test above doesn't (#3374): a tab and a theme no one
+// registered (each warned and skipped, never stopping the script), the own process selected by PID, Process
+// Details at its Network tab with the Modules section expanded, the machine tab at Cores, each dialog opened and
+// closed again, and the Render Metrics overlay shown and hidden. Every step is due before the last capture, so
+// all fourteen are issued; the unknown theme leaves the startup theme, and metrics=off leaves the overlay hidden.
+TEST_F(ScreenshotOnDisplayTest, ADemoScriptPlaysEveryKindOfStep)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    const std::filesystem::path given = m_Dir / "steps.png";
+    const ScreenshotEnv screenshotEnv(Core::pathToUtf8(given) + ";after=0;frames=4;fps=1");
+    const std::string script = "0.2:tab=nosuchtab,0.3:select=pid:" + std::to_string(Platform::currentProcessId()) +
+                               ",0.5:details=network,0.7:section=modules,0.9:machine=cores,1.1:open=help,1.3:close=dialog,"
+                               "1.4:open=about,1.6:close=dialog,1.7:open=settings,1.9:close=dialog,2:theme=nosuchtheme,"
+                               "2.1:metrics=on,2.2:metrics=off";
+    const DemoEnv demoEnv(script);
+    ASSERT_TRUE(screenshotEnv.set());
+    ASSERT_TRUE(demoEnv.set());
+    const App::ScreenshotOverride::ParseResult parsedShot = ScreenshotEnv::parseFromEnvironment();
+    ASSERT_TRUE(parsedShot.request.has_value()) << parsedShot.warning;
+    const App::ScreenshotOverride::Request request = parsedShot.request.value_or(App::ScreenshotOverride::Request{});
+    const App::DemoOverride::ParseResult parsedDemo = DemoEnv::parseFromEnvironment();
+    ASSERT_TRUE(parsedDemo.steps.has_value()) << parsedDemo.warning;
+    const std::vector<App::DemoOverride::Step> steps = parsedDemo.steps.value_or(std::vector<App::DemoOverride::Step>{});
+    ASSERT_EQ(steps.size(), 14U) << App::DemoOverride::describe(steps);
+
+    // Composed as main.cpp's runApp() composes it, as in the test above.
+    RunResult run;
+    bool demoStarted = false;
+    std::size_t stepsIssued = 0;
+    bool renderMetricsShown = true;
+    try
+    {
+        Core::Application app(smallWindow("ScreenshotOnDisplayDemoStepsTest"));
+        app.pushLayer<UI::UILayer>();
+        App::TitleBarLayer* titleBar = app.getWindow().isBorderless() ? &app.pushLayer<App::TitleBarLayer>() : nullptr;
+        auto& shell = app.pushLayer<App::ShellLayer>();
+        shell.setTitleBar(titleBar);
+        app.pushLayer<App::HelpLayer>();
+        app.pushLayer<App::AboutLayer>();
+        app.pushLayer<App::SettingsLayer>();
+        app.pushLayer<App::ElevationNoticeLayer>();
+        const App::DemoLayer& demo =
+            app.pushLayer<App::DemoLayer>(steps, shell, App::RenderMetricsOverride::csvBesideScreenshot(request.path));
+        const App::ScreenshotLayer& screenshot = app.pushLayer<App::ScreenshotLayer>(request, &shell);
+        app.pushLayer<ObserverLayer>(run.observed);
+        app.run();
+        run.outcome = screenshot.outcome();
+        run.framesWritten = screenshot.framesWritten();
+        demoStarted = demo.started();
+        stepsIssued = demo.stepsIssued();
+        renderMetricsShown = shell.renderMetricsShown();
+    }
+    catch (const std::exception& e)
+    {
+        FAIL() << "Application failed after the display probe passed: " << e.what();
+    }
+
+    EXPECT_FALSE(run.observed.timedOut) << "the hook didn't close the window in time";
+    EXPECT_EQ(run.outcome, App::ScreenshotLayer::Outcome::Written);
+    EXPECT_EQ(run.framesWritten, 4);
+    EXPECT_EQ(run.observed.closeRequests, 1) << "close=dialog closed the dialogs, not the window";
+    EXPECT_TRUE(demoStarted) << "the script's clock never started";
+    EXPECT_EQ(stepsIssued, 14U) << "every step was due before the last capture, the skipped ones included";
+    EXPECT_FALSE(run.observed.lastTab.empty()) << "details= and machine= changed the main tab";
+    EXPECT_EQ(run.observed.lastThemeId, run.observed.firstThemeId) << "theme=nosuchtheme left the startup theme";
+    EXPECT_FALSE(renderMetricsShown) << "metrics=off hid the overlay metrics=on showed";
 }
 
 } // namespace
