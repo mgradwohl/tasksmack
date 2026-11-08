@@ -16,6 +16,7 @@
 #include <format>
 #include <limits>
 #include <optional>
+#include <ranges>
 #include <string_view>
 #include <tuple>
 #include <utility>
@@ -79,8 +80,8 @@ class IoPriorityText
     /// @p words as they are, for the texts with no value in them.
     void assign(std::string_view words) noexcept
     {
-        m_Size = std::min(words.size(), m_Chars.size());
-        std::copy_n(words.data(), m_Size, m_Chars.data());
+        const auto copied = std::ranges::copy(words | std::views::take(m_Chars.size()), m_Chars.begin());
+        m_Size = static_cast<std::size_t>(copied.out - m_Chars.begin());
     }
 
     template<typename... Args> void format(std::format_string<Args...> pattern, Args&&... args)
