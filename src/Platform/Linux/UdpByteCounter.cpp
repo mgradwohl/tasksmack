@@ -24,6 +24,11 @@
 
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
+#include <bpf/libbpf_version.h>
+
+// libbpf 1.0 made a failed open or attach return null (and set errno), which the checks below rely on; before it,
+// they returned error pointers that aren't null (CMakeLists.txt requires 1.0 too).
+static_assert(LIBBPF_MAJOR_VERSION >= 1, "UdpByteCounter needs libbpf 1.0 or newer");
 
 namespace Platform
 {
