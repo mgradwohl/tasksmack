@@ -62,7 +62,7 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <pwd.h>
-#include <sys/syscall.h>
+#include <sys/syscall.h> // NOLINT(misc-include-cleaner): SYS_ioprio_get, which include-cleaner has no mapping for
 #include <sys/types.h>
 #include <sys/utsname.h>
 #include <unistd.h>
@@ -871,9 +871,18 @@ void LinuxProcessProbe::readIoPriority(std::int32_t pid, ProcessCounters& counte
     }
     // One cheap syscall, no privilege needed, by PID: a process that exited since the listing gives ESRCH, a negative
     // value, which decode() takes for unknown.
-    const int value = m_IoPriorityReader ? m_IoPriorityReader(pid)
-                                         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - syscall(2) is variadic
-                                         : static_cast<int>(::syscall(SYS_ioprio_get, IoPrio::WHO_PROCESS, pid));
+    int value = -1;
+    if (m_IoPriorityReader)
+    {
+        value = m_IoPriorityReader(pid);
+    }
+    else
+    {
+#ifdef SYS_ioprio_get
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg,misc-include-cleaner) - syscall(2) is variadic; SYS_ioprio_get as above
+        value = static_cast<int>(::syscall(SYS_ioprio_get, IoPrio::WHO_PROCESS, pid));
+#endif
+    }
     counters.ioPriority = IoPrio::decode(value);
 }
 

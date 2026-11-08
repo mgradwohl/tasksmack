@@ -51,9 +51,9 @@ class IoPriorityText
     }
 
   private:
-    friend IoPriorityText ioPriorityText(const Platform::IoPriority& priority, std::optional<std::int32_t> nice) noexcept;
+    friend IoPriorityText ioPriorityText(const Platform::IoPriority& priority, std::optional<std::int32_t> nice);
 
-    template<typename... Args> void format(std::format_string<Args...> pattern, Args&&... args) noexcept
+    template<typename... Args> void format(std::format_string<Args...> pattern, Args&&... args)
     {
         constexpr auto CAPACITY = static_cast<std::ptrdiff_t>(std::tuple_size_v<decltype(m_Chars)>);
         const auto result = std::format_to_n(m_Chars.data(), CAPACITY, pattern, std::forward<Args>(args)...);
@@ -67,7 +67,7 @@ class IoPriorityText
 /// The words for @p priority: "realtime 0", "best-effort 4", "idle"; for a class never set "default (best-effort N
 /// from nice)", N being the level the kernel derives from @p nice (just "default (from nice)" while it isn't known); a
 /// Windows hint's name, or "unknown (N)" for a hint Windows doesn't define.
-[[nodiscard]] inline IoPriorityText ioPriorityText(const Platform::IoPriority& priority, std::optional<std::int32_t> nice) noexcept
+[[nodiscard]] inline IoPriorityText ioPriorityText(const Platform::IoPriority& priority, std::optional<std::int32_t> nice)
 {
     IoPriorityText text;
     switch (priority.ioClass)

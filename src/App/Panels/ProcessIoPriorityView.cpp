@@ -3,6 +3,7 @@
 #include "AuthorizeWording.h"
 #include "Domain/PriorityConfig.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IoPriorityTypes.h"
 #include "ProcessDetailsLayout.h"
 #include "ProcessDetailsPanel_PriorityHelpers.h"
 #include "ProcessPriorityView.h"
