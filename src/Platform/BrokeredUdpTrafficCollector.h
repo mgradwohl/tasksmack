@@ -26,18 +26,22 @@ class BrokeredUdpTrafficCollector final : public IUdpTrafficCollector
 
     explicit BrokeredUdpTrafficCollector(std::shared_ptr<IPrivilegedBroker> broker);
 
-    /// Asks the broker for a counting helper (IPrivilegedBroker::countUdpBytes()). NotElevated without an
-    /// Administrator session, where nothing prompts, but it stays armed: once a session's helper counts, sample()
-    /// delivers. Failed when the session's helper couldn't be restarted with the counter.
+    /// Asks the broker for a counting helper (IPrivilegedBroker::countUdpBytes()). NotElevated without a live
+    /// Administrator session, where nothing prompts; Failed when the session's helper couldn't be restarted with the
+    /// counter. Either way it stays armed, as the request stands in the broker: once a session's helper counts,
+    /// sample() delivers; and a later start() asks again. Started at once when it already runs with nothing in the way.
     [[nodiscard]] UdpCollectorStartResult start() override;
     void stop() override;
     /// Whether the last reading came from a helper that counts.
     [[nodiscard]] bool isDelivering() const override;
-    /// Every process's cumulative UDP bytes, as the helper counts them, for Domain to compare reading by reading. The
-    /// first reading of a run, or after a failed one, is sent unreadable, so it only sets the baseline (a helper that
-    /// kept counting meanwhile has older bytes in it); a busy helper's reading is the last one again, unreadable; a
-    /// new helper's counters are another generation. Empty when stopped, or when the helper isn't counting or has
-    /// ended (the reason is in problem()).
+    /// Every process's cumulative UDP bytes, as the helper counts them, for Domain to compare reading by reading:
+    ///  - the first counting reading of a run, or after a failed one, is baseline-only (readable, baselineOnly): Domain
+    ///    takes it as the baseline, crediting nothing, as a helper that kept counting meanwhile has older bytes in it,
+    ///    and the very next reading credits the growth from it;
+    ///  - a busy helper's reading is the last one again, unreadable (readable false): Domain credits nothing for it and
+    ///    re-baselines on the next readable one, whose growth spans it;
+    ///  - a new helper's counters are another generation: new connections, counted from their first bytes.
+    /// Empty when stopped, or when the helper isn't counting or has ended (the reason is in problem()).
     [[nodiscard]] std::vector<UdpProcessTraffic> sample() override;
 
     /// Why it isn't counting, as start() or the helper last said; empty while it counts or before start().

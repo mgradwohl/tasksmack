@@ -25,25 +25,26 @@ BrokeredUdpTrafficCollector::BrokeredUdpTrafficCollector(std::shared_ptr<IPrivil
 
 UdpCollectorStartResult BrokeredUdpTrafficCollector::start()
 {
-    if (m_Running.load())
     {
-        return UdpCollectorStartResult::Started;
+        const std::scoped_lock lock(m_Mutex);
+        if (m_Running.load() && m_Problem.empty())
+        {
+            return UdpCollectorStartResult::Started; // already counting, or asked with nothing in the way
+        }
     }
-    // Asked before the request: a failed or dismissed restart of the session's helper leaves it disconnected, which
-    // afterwards would read as no session at all.
+    // Whether the session is held, as it is now: connected() looks at the channel first (this is a worker), so a held
+    // helper that has exited unnoticed isn't taken for a session. Read before the request, as a failed or dismissed
+    // restart of the session's helper leaves it disconnected, which afterwards would read as no session at all.
+    static_cast<void>(m_Broker->connected());
     const bool held = m_Broker->heldForSession();
     const std::stop_token never; // a prompt, if any, is the user's to answer or dismiss
     const auto counting = m_Broker->countUdpBytes(never);
-    if (!counting.has_value() && held)
-    {
-        setProblem(counting.error());
-        return UdpCollectorStartResult::Failed; // stays stopped, so the next start() tries again
-    }
     {
         const std::scoped_lock lock(m_Mutex);
         // A new run: whatever a read of an earlier one brings back is dropped, its counters are another generation (new
         // connections to Domain), and its first reading only sets their baseline, as a helper that kept counting while
-        // this was stopped has totals from before.
+        // this was stopped has totals from before. Armed even when the request failed: it stands in the broker, so the
+        // session's next helper counts, and sample() delivers from then on whenever that is.
         ++m_Run;
         ++m_Generation;
         m_Session = m_Broker->sessionsStarted();
@@ -52,14 +53,15 @@ UdpCollectorStartResult BrokeredUdpTrafficCollector::start()
         m_Problem = counting.has_value() ? std::string{} : counting.error();
         m_Running = true;
     }
-    if (!counting.has_value())
+    if (counting.has_value())
     {
-        // No session yet: the request stands, so the session's helper counts once one is chosen, and sample() reads it
-        // from then on. Until then each reading finds no counting helper and adds nothing.
-        return UdpCollectorStartResult::NotElevated;
+        spdlog::info("UDP traffic per process: counting through the helper");
+        return UdpCollectorStartResult::Started;
     }
-    spdlog::info("UDP traffic per process: counting through the helper");
-    return UdpCollectorStartResult::Started;
+    spdlog::info("UDP traffic per process: {}; counting once a session's helper counts", counting.error());
+    // A held session whose helper couldn't be restarted with the counter (a dismissed prompt) is a failure; without a
+    // session it's the Administrator requirement. Either way a later start() asks again.
+    return held ? UdpCollectorStartResult::Failed : UdpCollectorStartResult::NotElevated;
 }
 
 void BrokeredUdpTrafficCollector::stop()

@@ -179,9 +179,10 @@ TEST(BrokeredUdpTrafficCollectorTest, AFailedReadIsFollowedByASeedingReading)
     EXPECT_EQ(collector.problem(), "The helper isn't counting UDP");
 }
 
-// The session's helper couldn't be restarted with the counter (a dismissed prompt): that's a failure, not a missing
-// session, though the broker is left disconnected; and the next start() tries again.
-TEST(BrokeredUdpTrafficCollectorTest, AFailedRestartInAHeldSessionIsAFailureAndTheNextStartRetries)
+// The session's helper couldn't be restarted with the counter (a dismissed prompt): a failure, not a missing session,
+// though the broker is left disconnected. It stays armed, so the session's next helper counts without another start(),
+// and a later start() asks again rather than reporting it runs.
+TEST(BrokeredUdpTrafficCollectorTest, AFailedRestartInAHeldSessionIsAFailureThatStaysArmed)
 {
     auto broker = heldBroker();
     broker->setCountUdpFailure("the prompt was dismissed");
@@ -189,12 +190,28 @@ TEST(BrokeredUdpTrafficCollectorTest, AFailedRestartInAHeldSessionIsAFailureAndT
     EXPECT_EQ(collector.start(), UdpCollectorStartResult::Failed);
     EXPECT_EQ(collector.problem(), "the prompt was dismissed");
     EXPECT_TRUE(collector.sample().empty());
-    EXPECT_TRUE(broker->requests().empty()) << "stopped: nothing is read";
+    EXPECT_EQ(collector.start(), UdpCollectorStartResult::NotElevated) << "asked again: no session now, not \"Started\"";
 
+    // The user chooses Administrator again: the session's helper counts, and the armed collector delivers.
     broker->setCountUdpFailure({});
     broker->setConnected(true);
     ASSERT_TRUE(broker->holdForSession(std::stop_token{}).has_value());
-    EXPECT_EQ(collector.start(), UdpCollectorStartResult::Started) << "tried again, not taken for running";
+    answerWith(*broker, {{.tgid = 7, .txBytes = 9, .rxBytes = 0}});
+    EXPECT_FALSE(collector.sample().empty());
+    EXPECT_TRUE(collector.isDelivering());
+    EXPECT_EQ(collector.start(), UdpCollectorStartResult::Started) << "counting: asked once, answered at once";
+}
+
+// At launch a held helper may have exited without anyone noticing yet: that isn't a session, so start() reports the
+// Administrator requirement, not a failed restart, and stays armed for the next one.
+TEST(BrokeredUdpTrafficCollectorTest, AHeldHelperThatExitedUnnoticedIsNoSession)
+{
+    auto broker = heldBroker();
+    broker->setConnected(false); // gone, and only connected() would find out
+    BrokeredUdpTrafficCollector collector(broker);
+    EXPECT_EQ(collector.start(), UdpCollectorStartResult::NotElevated);
+    EXPECT_EQ(collector.problem(), "Needs an Administrator session");
+    EXPECT_TRUE(broker->countingUdp());
 }
 
 // A read in flight when stop() runs publishes nothing: the totals stay cleared and delivery off.
