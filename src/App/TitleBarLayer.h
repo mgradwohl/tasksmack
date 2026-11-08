@@ -109,10 +109,22 @@ class TitleBarLayer : public Core::Layer
     void handleTitleBarDoubleClick(const SDL_Event& event) const;
     void updateWindowInteraction();
     void updateDrag(int mx, int my, Core::Window& window, double& restoreMs, double& setPositionMs);
+    /// Applies one drag step (DragTracker::step() or finish()) taken with the pointer at (@p mx, @p my).
+    void applyDragStep(const DragTracker::Step& step, int mx, int my, Core::Window& window, double& restoreMs, double& setPositionMs);
     /// Moves a window dragged off a maximize back under the pointer if the window manager's late
     /// restore moved it away (RestoreSettle, #2761). @p setPositionMs accumulates the move's time.
     void settleRestore(Core::Window& window, double& setPositionMs);
     void updateResize(int mx, int my, Core::Window& window, double& setPositionMs, double& setSizeMs, double& raiseResizeEventMs);
+    /// A client-side drag's or resize's release with the pointer at (@p mx, @p my), global: moves or
+    /// sizes the window for where the pointer was let go, motion no update saw included
+    /// (DragTracker::finish(), ResizeTracker::finish(), #882), before endWindowInteraction() clears it.
+    /// Core holds whole frames while the size changes, so a move and the release can both come before
+    /// any onUpdate() steps the interaction.
+    void finishInteractionAt(int mx, int my);
+    /// finishInteractionAt() for the left button-up @p buttonUp, with the pointer it carries. Windows
+    /// only, where Core holds frames during a resize; a release found by polling the button is never
+    /// finished, since the poll doesn't say where the button went up.
+    void finishInteractionAtRelease(const SDL_Event& buttonUp);
     void endWindowInteraction();
 
     /// Query the current mouse position and button mask together, using whichever SDL query is

@@ -220,6 +220,54 @@ TEST(RestoreSettleTest, StopEndsItAndNothingHappensBeforeAStart)
     EXPECT_FALSE(settle.check(940, 730, 0.2).has_value());
 }
 
+TEST(DragTrackerTest, ADragOffAMaximizeThenAMoveAndAReleaseWithinAHeldFrameEndsUnderThePointer)
+{
+    // #882 review: the restore changes the size, so Core holds the frames that step the drag. The press
+    // and restore come first; then the pointer moves on and is released within one hold, so no step()
+    // sees that move and the release is the last word.
+    DragTracker drag;
+    drag.begin(1440, 10, 0, 0, true, 1920);
+    ASSERT_EQ(drag.step(1450, 10).kind, DragKind::Restore);
+    ASSERT_EQ(drag.rebaseAfterRestore(800, 1450, 10), std::pair(850, 0));
+
+    // The hold: the pointer goes to (1530, 90) and is released there.
+    const DragTracker::Step released = drag.finish(1530, 90);
+    EXPECT_EQ(released.kind, DragKind::Move);
+    EXPECT_EQ(released.x, 930) << "the restored window follows the pointer to the release";
+    EXPECT_EQ(released.y, 80);
+    EXPECT_EQ(drag.finish(1530, 90).kind, DragKind::None) << "already there";
+}
+
+TEST(DragTrackerTest, AReleasePastTheThresholdBeforeAnyStepRestoresTheMaximizedWindow)
+{
+    // The whole drag off the maximize inside one hold: press, move past the threshold, release. The
+    // release restores the window (then rebaseAfterRestore() places it under the pointer).
+    DragTracker drag;
+    drag.begin(1440, 10, 0, 0, true, 1920);
+    EXPECT_EQ(drag.finish(1500, 120).kind, DragKind::Restore);
+    EXPECT_EQ(drag.rebaseAfterRestore(800, 1500, 120), std::pair(900, 110));
+}
+
+TEST(DragTrackerTest, AReleaseWithinTheThresholdLeavesTheWindowMaximized)
+{
+    // A bare click on a maximized title bar: no restore at the release either.
+    DragTracker drag;
+    drag.begin(960, 10, 0, 0, true, 1920);
+    EXPECT_EQ(drag.finish(962, 11).kind, DragKind::None);
+    EXPECT_TRUE(drag.pendingRestore());
+}
+
+TEST(DragTrackerTest, AReleaseOfANormalWindowDragMovesItToTheReleasePointer)
+{
+    DragTracker drag;
+    drag.begin(500, 20, 100, 50, false, 0);
+    ASSERT_EQ(drag.step(510, 20).kind, DragKind::Move);
+    const DragTracker::Step released = drag.finish(560, 70);
+    EXPECT_EQ(released.kind, DragKind::Move);
+    EXPECT_EQ(released.x, 160);
+    EXPECT_EQ(released.y, 100);
+}
+
 // ---- Resize -----------------------------------------------------------------------------------
 
 constexpr WindowRect START{.x = 100, .y = 100, .width = 800, .height = 600};
@@ -332,6 +380,56 @@ TEST(ResizeTrackerTest, BeginStartsAFreshResize)
     // A reset tracker (as after the drag ends) has no edge.
     resize = {};
     EXPECT_EQ(resize.edge(), ResizeEdge::None);
+}
+
+TEST(ResizeTrackerTest, AMoveThenAReleaseWithinAHeldFrameEndsAtTheReleasePointer)
+{
+    // #882 review: while Core holds frames during a resize, no onUpdate() steps the tracker, so a move
+    // and the release can both come in one hold. The release's pointer is the last target, and the
+    // window ends at it, not at the size committed before the hold.
+    ResizeTracker resize;
+    resize.begin(ResizeEdge::Right, 900, 400, START, 10.0);
+    const ResizeTracker::Step committed = resize.step(950, 400, MIN_W, MIN_H, 10.0 + LATER);
+    ASSERT_TRUE(committed.commitSize);
+    ASSERT_EQ(committed.width, 850);
+    // The hold: the pointer moves on to x = 1010 and is released there; no step() sees it.
+    const std::optional<WindowRect> released = resize.finish(1010, 400, MIN_W, MIN_H);
+    ASSERT_TRUE(released.has_value());
+    const WindowRect rect = released.value_or(WindowRect{});
+    EXPECT_EQ(rect.width, 910) << "the last pointer target";
+    EXPECT_EQ(rect.height, 600);
+    EXPECT_EQ(rect.x, START.x);
+    EXPECT_EQ(rect.y, START.y);
+    EXPECT_FALSE(resize.pendingSize().has_value());
+}
+
+TEST(ResizeTrackerTest, AReleaseInsideTheCommitIntervalStillEndsAtThePointer)
+{
+    // A held-back size (within the commit interval) and further unseen motion: the release wins, with
+    // the left edge's origin moved to match.
+    ResizeTracker resize;
+    resize.begin(ResizeEdge::Left, 100, 400, START, 10.0);
+    static_cast<void>(resize.step(80, 400, MIN_W, MIN_H, 10.01));
+    ASSERT_EQ(resize.pendingSize(), std::optional(std::pair(820, 600)));
+    const std::optional<WindowRect> released = resize.finish(60, 400, MIN_W, MIN_H);
+    ASSERT_TRUE(released.has_value());
+    const WindowRect rect = released.value_or(WindowRect{});
+    EXPECT_EQ(rect.x, 60);
+    EXPECT_EQ(rect.width, 840);
+    EXPECT_FALSE(resize.pendingSize().has_value()) << "nothing left for endWindowInteraction() to commit";
+}
+
+TEST(ResizeTrackerTest, AReleaseWhereTheLastStepLeftTheWindowChangesNothing)
+{
+    ResizeTracker resize;
+    resize.begin(ResizeEdge::Bottom, 400, 700, START, 10.0);
+    ASSERT_TRUE(resize.step(400, 760, MIN_W, MIN_H, 10.0 + LATER).commitSize);
+    EXPECT_FALSE(resize.finish(400, 760, MIN_W, MIN_H).has_value());
+    // The minimum still holds at the release.
+    const std::optional<WindowRect> released = resize.finish(400, 100, MIN_W, MIN_H);
+    ASSERT_TRUE(released.has_value());
+    const WindowRect rect = released.value_or(WindowRect{});
+    EXPECT_EQ(rect.height, MIN_H);
 }
 
 } // namespace

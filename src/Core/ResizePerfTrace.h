@@ -47,6 +47,19 @@ struct ResizePerfLoopTiming
     double waitMs = 0.0;
     double vsyncMs = 0.0;
     double frameMs = 0.0;
+    /// The timeout the loop's last event wait asked SDL_WaitEventTimeout() for, in milliseconds; -1
+    /// when it made none (waitMs is then a paced delay or 0). #3552's supervised run logged a 1,375 ms
+    /// wait in an idle iteration whose wait could ask for at most 500 ms (the static floor): the rest
+    /// was spent inside SDL's event pump, not in the loop. Logging the timeout tells that apart from a
+    /// wait that simply ran its course.
+    int waitTimeoutMs = -1;
+
+    /// How far the last event wait ran past the timeout it asked for (0 when it didn't, or made none):
+    /// time spent inside SDL_WaitEventTimeout()'s message pump rather than waiting.
+    [[nodiscard]] double waitOverrunMs() const noexcept
+    {
+        return (waitTimeoutMs < 0) ? 0.0 : std::max(0.0, waitMs - static_cast<double>(waitTimeoutMs));
+    }
 
     /// Includes logging, instrumentation, bookkeeping and scheduling outside timed phases.
     [[nodiscard]] double otherMs(double wallMs) const noexcept
@@ -130,6 +143,14 @@ struct ResizePerfTraceStats
     /// since the last one (FramePacing::isDeferredInteractionFrame, #3511). Logged as deferredFrames, at
     /// the end of the line; before #3511 each of these was one more resizeFrame.
     std::uint32_t deferredInteractionFrames = 0;
+    /// Iterations whose move/resize frame would have presented, but were held by the resize present
+    /// bound (FramePacing::computeResizePresent, #882): the size was changing and the last frame
+    /// started less than RESIZE_PRESENT_MIN_INTERVAL_SECONDS before. Logged as heldPresents, at the end
+    /// of the line.
+    std::uint32_t heldResizePresents = 0;
+    /// Held frames drawn once their hold ended (ResizePresent::PresentOwed, #882), the last one of a
+    /// drag among them. Logged as owedPresents, at the end of the line.
+    std::uint32_t owedResizePresents = 0;
     /// Max wall time for any single event (poll + dispatch) inside the drain loop, which checks its
     /// budget after every event (#1410). Logged as maxSingleEvent; it was maxPollBatch, a 4-event
     /// interval, so the two are not comparable across captures.
@@ -266,6 +287,8 @@ struct ResizePerfTraceStats
         p0BudgetCapHits = 0;
         skippedRenderFrames = 0;
         deferredInteractionFrames = 0;
+        heldResizePresents = 0;
+        owedResizePresents = 0;
         maxSingleEventMs = 0.0;
         loopIntervals = 0;
         loopIntervalMs = 0.0;
@@ -339,7 +362,7 @@ inline void logResizePerfTraceSummary(const ResizePerfTraceStats& stats, const s
                  "update avg/p95/p99/max={:.3f}/{:.3f}/{:.3f}/{:.3f} ms "
                  "render avg/p95/p99/max={:.3f}/{:.3f}/{:.3f}/{:.3f} ms "
                  "post avg/p95/p99/max={:.3f}/{:.3f}/{:.3f}/{:.3f} ms "
-                 "swap avg/p95/p99/max={:.3f}/{:.3f}/{:.3f}/{:.3f} ms deferredFrames={}",
+                 "swap avg/p95/p99/max={:.3f}/{:.3f}/{:.3f}/{:.3f} ms deferredFrames={} heldPresents={} owedPresents={}",
                  reason,
                  stats.eventBatches,
                  stats.drainedEvents,
@@ -382,7 +405,9 @@ inline void logResizePerfTraceSummary(const ResizePerfTraceStats& stats, const s
                  swapP95,
                  swapP99,
                  stats.maxSwapMs,
-                 stats.deferredInteractionFrames);
+                 stats.deferredInteractionFrames,
+                 stats.heldResizePresents,
+                 stats.owedResizePresents);
 }
 
 } // namespace Core
