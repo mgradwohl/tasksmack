@@ -5092,10 +5092,12 @@ class FirstRunDriverLayer : public Core::Layer
             {
                 continue;
             }
+            // Each column is set up with its persistent ID (App::persistentColumnId(), #3551), in ProcessColumn's order.
             bool ids = true;
-            for (int column = 0; column < table->ColumnsCount; ++column)
+            for (const App::ProcessColumn col : App::allProcessColumns())
             {
-                ids = ids && std::cmp_equal(table->Columns[column].UserData, column);
+                const ImGuiTableColumn& column = table->Columns[static_cast<int>(App::toIndex(col))];
+                ids = ids && std::cmp_equal(column.UserData, App::persistentColumnId(col));
             }
             if (ids)
             {
