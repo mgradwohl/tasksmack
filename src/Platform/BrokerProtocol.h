@@ -37,6 +37,7 @@
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/IUserSessions.h"
 #include "Platform/SchedPolicy.h"
+#include "Platform/UdpByteCounts.h"
 
 #include <algorithm>
 #include <array>
@@ -73,7 +74,8 @@ namespace Platform::Broker
 /// 16: ReadMemoryMap, another user's process's memory map for Process Details (#3089).
 /// 17: SetSchedPolicy carries a real-time priority, and may set FIFO or round robin with 1 to 99 (#3219, Linux).
 /// 18: SetIoPriority's class can be WindowsHint, a Windows I/O priority hint (#3362, Windows).
-inline constexpr std::uint16_t PROTOCOL_VERSION = 18;
+/// 19: ReadUdpBytes, every process's UDP bytes from the Linux helper's eBPF counter (#3366, Linux).
+inline constexpr std::uint16_t PROTOCOL_VERSION = 19;
 /// The largest frame either side accepts, header included.
 inline constexpr std::size_t MAX_MESSAGE_BYTES = std::size_t{8} << 20U;
 /// The most processes one ReadProcessCounters asks about (#2728); a sampler with more asks for the first.
@@ -99,6 +101,8 @@ inline constexpr std::size_t MAX_THREADS = std::size_t{1} << 16U;
 /// The most mappings a MemoryMapReply carries (#3089); a read with more keeps the first. A frame holds fewer
 /// (at least 35 bytes each) when they are many, and says it was cut.
 inline constexpr std::size_t MAX_MEMORY_MAPPINGS = std::size_t{1} << 18U;
+/// The most processes a UdpBytesReply carries (#3366): the eBPF counter's map holds no more.
+inline constexpr std::size_t MAX_UDP_BYTE_PROCESSES = std::size_t{1} << 14U;
 /// The largest firmware file a FirmwareFileReply carries; SMBIOS tables are a few KiB to some tens.
 inline constexpr std::size_t MAX_FIRMWARE_FILE_BYTES = std::size_t{1} << 20U;
 /// The frame header after the length: version, kind, request id.
@@ -130,6 +134,7 @@ enum class MessageKind : std::uint16_t // NOLINT(performance-enum-size): 16 bits
     ListHiddenProcesses = 40,    ///< The processes hidepid hides from TaskSmack, as their /proc files' text (#2728)
     ReadThreads = 41,            ///< Another user's process's threads, for Process Details (#3069)
     ReadMemoryMap = 42,          ///< Another user's process's memory map, for Process Details (#3089)
+    ReadUdpBytes = 43,           ///< Every process's UDP bytes, from the helper's eBPF counter (#3366, Linux)
     ActionResult = 48,           ///< The answer to a process action
     EnvironmentResult = 49,      ///< The answer to ReadEnvironment
     ModulesResult = 50,          ///< The answer to ReadModules
@@ -143,6 +148,7 @@ enum class MessageKind : std::uint16_t // NOLINT(performance-enum-size): 16 bits
     ServiceActionResult = 58,    ///< The answer to ServiceAction
     ThreadsResult = 59,          ///< The answer to ReadThreads
     MemoryMapResult = 60,        ///< The answer to ReadMemoryMap
+    UdpBytesResult = 61,         ///< The answer to ReadUdpBytes
     Error = 63,                  ///< A request the helper refused to read (malformed, or a kind it doesn't do)
 };
 
@@ -607,6 +613,31 @@ struct CrashesRequest
     friend bool operator==(const CrashesRequest&, const CrashesRequest&) = default;
 };
 
+/// Read every process's UDP bytes from the helper's eBPF counter (#3366, Linux): no fields. The helper
+/// counts only when TaskSmack started it with --udp-bytes, for "Count UDP traffic per process".
+struct UdpBytesRequest
+{
+    friend bool operator==(const UdpBytesRequest&, const UdpBytesRequest&) = default;
+};
+
+/// Whether the helper's UDP counter is running.
+enum class UdpBytesStatus : std::uint8_t
+{
+    Ok,          ///< Counting: the processes are its totals
+    NotCounting, ///< Not started with --udp-bytes: the setting is off
+    Failed,      ///< It couldn't load, attach or read the counter; the detail says why
+};
+
+/// The answer to UdpBytesRequest: each process's totals since the helper loaded the counter, at most
+/// MAX_UDP_BYTE_PROCESSES.
+struct UdpBytesReply
+{
+    UdpBytesStatus status = UdpBytesStatus::NotCounting;
+    std::string detail{};                   // NOLINT(readability-redundant-member-init) - {} lets designated initializers omit it
+    std::vector<UdpByteCounts> processes{}; // NOLINT(readability-redundant-member-init)
+    friend bool operator==(const UdpBytesReply&, const UdpBytesReply&) = default;
+};
+
 /// The answer to CrashesRequest: the Linux facts of CrashesInfo (the Windows-only fields stay empty), at
 /// most CRASH_LIST_MAX events.
 struct CrashesReply
@@ -675,7 +706,8 @@ using Request = std::variant<Hello,
                              SessionActionRequest,
                              ThreadActionRequest,
                              SchedPolicyRequest,
-                             MemoryMapRequest>;
+                             MemoryMapRequest,
+                             UdpBytesRequest>;
 using Response = std::variant<HelloReply,
                               ActionResult,
                               ErrorReply,
@@ -690,7 +722,8 @@ using Response = std::variant<HelloReply,
                               HiddenProcessesReply,
                               ServiceActionReply,
                               ThreadsReply,
-                              MemoryMapReply>;
+                              MemoryMapReply,
+                              UdpBytesReply>;
 
 /// A decoded frame: its request id and message.
 template<typename Message> struct Decoded
@@ -1136,6 +1169,12 @@ namespace Detail
     return MessageKind::ReadCrashes;
 }
 
+/// ReadUdpBytes: no payload (#3366).
+[[nodiscard]] inline MessageKind encodePayload(Writer& /*writer*/, const UdpBytesRequest& /*udp*/)
+{
+    return MessageKind::ReadUdpBytes;
+}
+
 /// SetAffinity: the target, then the CPU set's word count and words.
 [[nodiscard]] inline MessageKind encodePayload(Writer& writer, const AffinityRequest& affinity)
 {
@@ -1464,6 +1503,8 @@ namespace Detail
         return Detail::finish<Request>(reader, id, Detail::decodeFirmwareFileRequest(reader));
     case MessageKind::ReadCrashes:
         return Detail::finish<Request>(reader, id, CrashesRequest{});
+    case MessageKind::ReadUdpBytes:
+        return Detail::finish<Request>(reader, id, UdpBytesRequest{});
     case MessageKind::HelloReply:
     case MessageKind::ActionResult:
     case MessageKind::EnvironmentResult:
@@ -1478,6 +1519,7 @@ namespace Detail
     case MessageKind::ServiceActionResult:
     case MessageKind::ThreadsResult:
     case MessageKind::MemoryMapResult:
+    case MessageKind::UdpBytesResult:
     case MessageKind::Error:
         break;
     }
@@ -1829,6 +1871,25 @@ inline constexpr std::array<std::optional<std::uint64_t> MemoryMapping::*, 8> SI
     return MessageKind::HiddenProcessesResult;
 }
 
+/// UdpBytesResult (#3366): status, detail, count; a process: its tgid, bytes sent, bytes received. Every entry
+/// takes the same bytes, so MAX_UDP_BYTE_PROCESSES of them always fit a frame: the count is the only cap.
+[[nodiscard]] inline MessageKind encodePayload(Writer& writer, const UdpBytesReply& udp)
+{
+    static_assert(MAX_UDP_BYTE_PROCESSES * (4 + 8 + 8) <= listRoom(1 + 4 + MAX_STRING_BYTES + 4));
+    writer.u8(static_cast<std::uint8_t>(udp.status));
+    writer.text(udp.detail);
+    const std::size_t count = std::min(udp.processes.size(), MAX_UDP_BYTE_PROCESSES);
+    writer.u32(static_cast<std::uint32_t>(count));
+    for (std::size_t i = 0; i < count; ++i)
+    {
+        const UdpByteCounts& process = udp.processes[i];
+        writer.u32(process.tgid);
+        writer.u64(process.txBytes);
+        writer.u64(process.rxBytes);
+    }
+    return MessageKind::UdpBytesResult;
+}
+
 /// FirmwareFileResult: the status, then up to MAX_FIRMWARE_FILE_BYTES of the file.
 [[nodiscard]] inline MessageKind encodePayload(Writer& writer, const FirmwareFileReply& firmware)
 {
@@ -2021,6 +2082,37 @@ namespace Detail
     for (std::uint32_t i = 0; reader.ok() && i < count; ++i)
     {
         reply.result.files.push_back(decodeOpenFile(reader));
+    }
+    return reply;
+}
+
+/// A UdpBytesResult's payload (#3366): the status (refused past Failed), detail, a count (refused past
+/// MAX_UDP_BYTE_PROCESSES), then each process's tgid and two byte counts.
+[[nodiscard]] inline UdpBytesReply decodeUdpBytesReply(Reader& reader)
+{
+    UdpBytesReply reply;
+    const std::uint8_t value = reader.u8();
+    if (value <= static_cast<std::uint8_t>(UdpBytesStatus::Failed))
+    {
+        reply.status = static_cast<UdpBytesStatus>(value);
+    }
+    else
+    {
+        reader.fail();
+    }
+    reply.detail = reader.text();
+    const std::uint32_t count = reader.u32();
+    if (count > MAX_UDP_BYTE_PROCESSES)
+    {
+        reader.fail();
+    }
+    for (std::uint32_t i = 0; reader.ok() && i < count; ++i)
+    {
+        UdpByteCounts process;
+        process.tgid = reader.u32();
+        process.txBytes = reader.u64();
+        process.rxBytes = reader.u64();
+        reply.processes.push_back(process);
     }
     return reply;
 }
@@ -2444,6 +2536,8 @@ namespace Detail
         return Detail::finish<Response>(reader, id, Detail::decodeThreadsReply(reader));
     case MessageKind::MemoryMapResult:
         return Detail::finish<Response>(reader, id, Detail::decodeMemoryMapReply(reader));
+    case MessageKind::UdpBytesResult:
+        return Detail::finish<Response>(reader, id, Detail::decodeUdpBytesReply(reader));
     case MessageKind::Hello:
     case MessageKind::Signal:
     case MessageKind::SetPriority:
@@ -2467,6 +2561,7 @@ namespace Detail
     case MessageKind::ThreadAction:
     case MessageKind::ReadThreads:
     case MessageKind::ReadMemoryMap:
+    case MessageKind::ReadUdpBytes:
         break;
     }
     return std::unexpected("Not a response");

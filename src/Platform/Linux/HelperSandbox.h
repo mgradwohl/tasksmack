@@ -39,17 +39,19 @@ namespace Platform::HelperSandbox
 /// The BPF program installFilter() loads, for @p mode, for the process @p self (the only one it may
 /// signal by number); empty when !supported(). sendmsg() and recvmsg() are allowed on @p busFd only, the
 /// system bus connection held for service actions (SystemdBus::heldSystemBusFd(), #3294; -1: none, both
-/// refused). For tests and review.
-[[nodiscard]] std::vector<sock_filter> program(Mode mode, pid_t self, int busFd = -1);
+/// refused). With @p udpByteMap, bpf() is allowed for BPF_MAP_LOOKUP_ELEM and BPF_MAP_GET_NEXT_KEY only, so the
+/// helper can read its eBPF UDP counter's map (#3366); every other bpf() command, and every one without it, is
+/// refused. For tests and review.
+[[nodiscard]] std::vector<sock_filter> program(Mode mode, pid_t self, int busFd = -1, bool udpByteMap = false);
 
 /// Loads what the helper needs after the filter goes in, while it can still load code: libsystemd's
 /// decompressors (zstd, xz, lz4), which it dlopen()s the first time a journal field needs one. A library
 /// that isn't installed is skipped. Call before installFilter().
 void preloadLibraries() noexcept;
 
-/// Installs program(@p mode, its pid, @p busFd) on this process (one thread: call before starting any). Needs no_new_privs,
+/// Installs program(@p mode, its pid, @p busFd, @p udpByteMap) on this process (one thread: call before starting any). Needs no_new_privs,
 /// which HelperPrivileges::dropToKeptCapabilities() sets. @return false when it couldn't (the helper
 /// must not serve) or when !supported().
-[[nodiscard]] bool installFilter(Mode mode, int busFd = -1) noexcept;
+[[nodiscard]] bool installFilter(Mode mode, int busFd = -1, bool udpByteMap = false) noexcept;
 
 } // namespace Platform::HelperSandbox

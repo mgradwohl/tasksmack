@@ -8,6 +8,8 @@
 // capabilities and installs its sandbox, and afterwards only reads the map (BPF_MAP_GET_NEXT_KEY and
 // BPF_MAP_LOOKUP_ELEM on the map's fd). The program stays attached for as long as this object lives.
 
+#include "Platform/UdpByteCounts.h"
+
 #include <cstdint>
 #include <expected>
 #include <memory>
@@ -18,14 +20,6 @@
 
 namespace Platform
 {
-
-/// One process's UDP totals since the counter was loaded. The map's value is `{tx, rx}`, as two u64s.
-struct UdpByteCounts
-{
-    std::uint32_t tgid = 0;
-    std::uint64_t txBytes = 0;
-    std::uint64_t rxBytes = 0;
-};
 
 /// How the program is attached: fexit where the kernel has BTF trampolines and bpf_get_func_ret (5.17+),
 /// kretprobes otherwise.
@@ -65,8 +59,8 @@ class UdpByteCounter
     UdpByteCounter(UdpByteCounter&& other) noexcept;
     UdpByteCounter& operator=(UdpByteCounter&& other) noexcept;
 
-    /// Every process's totals in the map, in no particular order. Empty if the map can't be read.
-    [[nodiscard]] std::vector<UdpByteCounts> read() const;
+    /// Every process's totals in the map, in no particular order, or why the kernel refused reading it.
+    [[nodiscard]] std::expected<std::vector<UdpByteCounts>, std::string> read() const;
 
     /// How the program attached.
     [[nodiscard]] UdpAttachAttempt attempt() const noexcept;

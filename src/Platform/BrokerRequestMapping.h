@@ -65,6 +65,10 @@ struct Readers
     /// System Information's privileged firmware files (#2310)
     // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
     std::function<Broker::FirmwareFileReply(Broker::FirmwareFile)> firmwareFile{};
+    /// Every process's UDP bytes from the eBPF counter (#3366): Linux's helper, which loaded it at startup when
+    /// TaskSmack asked. A helper without it (Windows': ETW counts in TaskSmack itself) answers with an error.
+    // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
+    std::function<Broker::UdpBytesReply()> udpBytes{};
     /// System Information's Recent crashes, every user's (#2310)
     // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
     std::function<CrashesInfo()> crashes{};

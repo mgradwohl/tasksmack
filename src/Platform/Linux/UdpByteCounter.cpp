@@ -8,6 +8,7 @@
 #include <array>
 #include <cerrno>
 #include <cstdarg>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <expected>
@@ -31,6 +32,8 @@ namespace
 
 constexpr std::string_view OBJECT_NAME = "udp_bytes";
 constexpr std::string_view MAP_NAME = "udp_bytes_by_tgid";
+/// The map's max_entries in bpf/udp_bytes.bpf.c, and Broker::MAX_UDP_BYTE_PROCESSES.
+constexpr std::size_t MAP_ENTRIES = 16384;
 
 constexpr std::array<UdpAttachAttempt, 4> ATTEMPTS{
     UdpAttachAttempt{.mode = UdpAttachMode::Fexit, .ipv6 = true},
@@ -205,18 +208,30 @@ std::expected<UdpByteCounter, std::string> UdpByteCounter::load()
     return std::unexpected(lastError);
 }
 
-std::vector<UdpByteCounts> UdpByteCounter::read() const
+std::expected<std::vector<UdpByteCounts>, std::string> UdpByteCounter::read() const
 {
     std::vector<UdpByteCounts> counts;
     if (!m_State || m_State->mapFd < 0)
     {
-        return counts;
+        return std::unexpected("the UDP byte counter isn't loaded");
     }
     std::uint32_t key = 0;
     std::uint32_t next = 0;
     const void* previous = nullptr; // nullptr asks for the first key
-    while (bpf_map_get_next_key(m_State->mapFd, previous, &next) == 0)
+    // A key that aged out of the LRU map between two calls makes the next call start over from the first, so
+    // the walk is bounded: at most the map's size in entries, and twice that in steps.
+    for (std::size_t step = 0; step < 2 * MAP_ENTRIES && counts.size() < MAP_ENTRIES; ++step)
     {
+        if (const int error = bpf_map_get_next_key(m_State->mapFd, previous, &next); error != 0)
+        {
+            if (error == -ENOENT)
+            {
+                return counts; // the last key
+            }
+            // Before about 6.5, with kernel.unprivileged_bpf_disabled set, a helper that dropped root may not read
+            // its own map (maintainer, 2026-11-07: report it; TCP still counts).
+            return std::unexpected(std::format("the kernel refused reading the UDP byte counter: {}", errnoText(-error)));
+        }
         MapValue value;
         // An entry can age out of the LRU map between the two calls; skip it.
         if (bpf_map_lookup_elem(m_State->mapFd, &next, &value) == 0)

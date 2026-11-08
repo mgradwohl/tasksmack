@@ -15,6 +15,7 @@
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <linux/audit.h>
+#include <linux/bpf.h> // BPF_MAP_LOOKUP_ELEM, BPF_MAP_GET_NEXT_KEY (#3366)
 #include <linux/filter.h>
 #include <linux/seccomp.h>
 #include <sched.h>
@@ -452,7 +453,8 @@ bool supported() noexcept
 #endif
 }
 
-std::vector<sock_filter> program([[maybe_unused]] Mode mode, [[maybe_unused]] pid_t self, [[maybe_unused]] int busFd)
+std::vector<sock_filter>
+program([[maybe_unused]] Mode mode, [[maybe_unused]] pid_t self, [[maybe_unused]] int busFd, [[maybe_unused]] bool udpByteMap)
 {
 #if defined(__x86_64__) || defined(__aarch64__)
     Program code;
@@ -570,6 +572,18 @@ std::vector<sock_filter> program([[maybe_unused]] Mode mode, [[maybe_unused]] pi
 #ifdef SYS_openat2
     code.returnFor(SYS_openat2, fail(ENOSYS));
 #endif
+    // bpf(): reading the UDP counter's map only (#3366). The map's fd is inside bpf_attr, out of the filter's
+    // reach, but the helper holds no other map, and loading a program or creating a map stays refused. Without
+    // the counter, REFUSED below refuses every bpf() command.
+    if (udpByteMap)
+    {
+        code.blockFor(SYS_bpf,
+                      {load(argLow(0)),
+                       jump(BPF_JMP | BPF_JEQ | BPF_K, static_cast<std::uint32_t>(BPF_MAP_LOOKUP_ELEM), 1, 0),
+                       jump(BPF_JMP | BPF_JEQ | BPF_K, static_cast<std::uint32_t>(BPF_MAP_GET_NEXT_KEY), 0, 1),
+                       ret(ALLOW),
+                       ret(fail(EPERM))});
+    }
     for (const long call : REFUSED)
     {
         code.returnFor(call, fail(EPERM));
@@ -590,11 +604,11 @@ void preloadLibraries() noexcept
     }
 }
 
-bool installFilter(Mode mode, int busFd) noexcept
+bool installFilter(Mode mode, int busFd, bool udpByteMap) noexcept
 {
     try
     {
-        std::vector<sock_filter> code = program(mode, ::getpid(), busFd);
+        std::vector<sock_filter> code = program(mode, ::getpid(), busFd, udpByteMap);
         if (code.empty() || code.size() > USHRT_MAX)
         {
             return false;

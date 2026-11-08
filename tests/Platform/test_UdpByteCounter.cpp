@@ -188,7 +188,9 @@ TEST_F(UdpByteCounterRootTest, CountsTheBytesAChildSendsAndReceivesUnderItsTgid)
     ASSERT_TRUE(WIFEXITED(status));
     ASSERT_EQ(WEXITSTATUS(status), 0);
 
-    const std::vector<UdpByteCounts> counts = counter->read();
+    const auto read = counter->read();
+    ASSERT_TRUE(read.has_value()) << read.error();
+    const std::vector<UdpByteCounts>& counts = *read;
     const auto entry = std::ranges::find(counts, static_cast<std::uint32_t>(child), &UdpByteCounts::tgid);
     ASSERT_NE(entry, counts.end()) << "no entry for the child's tgid among " << counts.size();
     EXPECT_EQ(entry->txBytes, DATAGRAMS * DATAGRAM_BYTES);

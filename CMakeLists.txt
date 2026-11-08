@@ -1014,6 +1014,7 @@ if(UNIX AND NOT APPLE)
         src/Platform/Linux/NetlinkSocketStats.cpp
         src/Platform/Linux/SystemdJournal.cpp # every user's crashes for System Information (#2310)
         src/Platform/Linux/SystemdUnitActions.cpp # service actions over the bus it holds (#2728)
+        src/Platform/Linux/UdpByteCounter.cpp # the eBPF UDP counter it loads before dropping root (#3366)
     )
     target_compile_features(tasksmack-helper PRIVATE cxx_std_23)
     tasksmack_apply_linux_toolchain(tasksmack-helper)
@@ -1022,6 +1023,8 @@ if(UNIX AND NOT APPLE)
     tasksmack_apply_privileged_hardening(tasksmack-helper) # runs as root: full RELRO, CET/BTI, FORTIFY 3 (#2640)
     target_include_directories(tasksmack-helper PRIVATE ${TaskSmack_SOURCE_DIR}/src ${TaskSmack_BINARY_DIR}/generated)
     target_link_libraries(tasksmack-helper PRIVATE spdlog::spdlog_header_only)
+    target_link_libraries(tasksmack-helper PRIVATE tasksmack_bpf) # libbpf, for the UDP counter (#3366)
+    add_dependencies(tasksmack-helper tasksmack_bpf_object)  # its embedded BPF object
     if(TARGET tasksmack_sdbus)
         target_link_libraries(tasksmack-helper PRIVATE tasksmack_sdbus) # sd-journal, when libsystemd is installed
     endif()
