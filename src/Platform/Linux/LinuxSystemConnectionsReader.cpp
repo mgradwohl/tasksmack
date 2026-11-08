@@ -126,10 +126,12 @@ SystemConnectionsRead LinuxSystemConnectionsReader::read()
     }
     if (tablesRead == 0)
     {
-        return {.status = SystemConnectionsStatus::Failed,
-                .connections = {},
-                .detail = std::generic_category().message(lastError),
-                .ratesUnavailable = {}};
+        return {
+            .status = SystemConnectionsStatus::Failed,
+            .connections = {},
+            .detail = std::generic_category().message(lastError),
+            .ratesUnavailable = {},
+        };
     }
 
     // Who holds each socket: every process's descriptors, walked once per read.
