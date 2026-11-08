@@ -169,6 +169,7 @@ struct RowFormatOptions
     bool hasProcessType = true;
     bool hasArchitecture = true; // #2394
     bool hasSchedPolicy = true;  // #3086
+    bool hasIoPriority = true;   // #3551
     bool hasSignature = true;    // #3070
 };
 
@@ -341,6 +342,7 @@ struct RowFormatCache
     LazyTextWidth processTypeWidth;
     LazyTextWidth architectureWidth; // #2394
     LazyTextWidth schedPolicyWidth;  // #3086
+    LazyTextWidth ioPriorityWidth;   // #3551
     LazyTextWidth signatureWidth;    // #3070: of the snapshot's signature text
 
     // Whether this system can fill the free-text columns drawn straight from the snapshot (#1210):
@@ -353,6 +355,7 @@ struct RowFormatCache
     bool processTypeSupported = true;
     bool architectureSupported = true; // #2394
     bool schedPolicySupported = true;  // #3086
+    bool ioPrioritySupported = true;   // #3551
     bool signatureSupported = true;    // #3070
     bool gpuSupported = true;          // GPU Engine and GPU Device; GPU % and GPU Memory carry their own tone
     bool npuSupported = true;          // NPU Engine (#1799); NPU % and NPU Memory carry their own tone
@@ -383,6 +386,7 @@ struct RowFormatCache
     fmt.processTypeSupported = options.hasProcessType;
     fmt.architectureSupported = options.hasArchitecture;
     fmt.schedPolicySupported = options.hasSchedPolicy;
+    fmt.ioPrioritySupported = options.hasIoPriority;
     fmt.signatureSupported = options.hasSignature;
     fmt.gpuSupported = options.hasPerProcessGpu;
     fmt.npuSupported = options.hasPerProcessNpu; // Apart from the GPU's (#1827)

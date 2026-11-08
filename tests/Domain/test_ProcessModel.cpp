@@ -3800,6 +3800,29 @@ TEST(ProcessModelTest, TheSchedulingPolicyReachesTheSnapshotWithItsLabel)
     EXPECT_EQ(Platform::schedPolicyText(snaps[0].schedPolicy, snaps[0].rtPriority).view(), "FIFO 50");
 }
 
+TEST(ProcessModelTest, TheIoPriorityReachesTheSnapshot)
+{
+    // #3551: the probe's I/O priority passes through as read, unknown included; it's worded where it's drawn.
+    auto probe = std::make_unique<MockProcessProbe>();
+    Platform::ProcessCounters known = makeCounter(100, "rsync", 'S', 1000, 500);
+    known.ioPriority = Platform::IoPriority{.ioClass = Platform::IoPriorityClass::Idle, .level = 0};
+    const Platform::ProcessCounters unknown = makeCounter(101, "kworker/0:1", 'I', 1000, 500);
+    probe->setCounters({known, unknown});
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    const auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 2U);
+    const auto byPid = [&snaps](std::int32_t pid)
+    {
+        return *std::ranges::find(snaps, pid, &Domain::ProcessSnapshot::pid);
+    };
+    EXPECT_EQ(byPid(100).ioPriority, (Platform::IoPriority{.ioClass = Platform::IoPriorityClass::Idle, .level = 0}));
+    EXPECT_FALSE(byPid(101).ioPriority.has_value());
+}
+
 TEST(ProcessModelTest, WhenProbeReturnsBackgroundProcessType_ThenSnapshotContainsIt)
 {
     auto probe = std::make_unique<MockProcessProbe>();

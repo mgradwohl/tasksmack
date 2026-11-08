@@ -2,6 +2,7 @@
 
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IoPriorityTypes.h"
 #include "WindowsAffinityMath.h"
 #include "WindowsFileLocation.h"
 #include "WindowsNtQuery.h"

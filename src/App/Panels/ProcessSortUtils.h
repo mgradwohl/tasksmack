@@ -1,5 +1,6 @@
 #pragma once
 
+#include "App/Panels/IoPriorityText.h"
 #include "App/ProcessColumnConfig.h"
 #include "Domain/PriorityConfig.h"
 #include "Domain/ProcessSnapshot.h"
@@ -38,6 +39,20 @@ template<typename T> [[nodiscard]] constexpr std::optional<T> readingSortKey(boo
         return ascending ? (a[0] < b[0]) : (b[0] < a[0]);
     }
     return false;
+}
+
+/// The I/O Priority column's order (#3551): ascending, the highest-served first (real time, best-effort 0-7, idle;
+/// Windows' hints from Critical down), descending the reverse; a process whose I/O priority is unknown (a kernel
+/// thread, an unreadable one) after every known one, in both directions.
+[[nodiscard]] inline bool compareIoPriority(const Domain::ProcessSnapshot& a, const Domain::ProcessSnapshot& b, bool ascending)
+{
+    if (a.ioPriority.has_value() != b.ioPriority.has_value())
+    {
+        return a.ioPriority.has_value();
+    }
+    const std::int32_t left = Detail::ioPriorityRank(a.ioPriority, a.nice, a.schedPolicy);
+    const std::int32_t right = Detail::ioPriorityRank(b.ioPriority, b.nice, b.schedPolicy);
+    return ascending ? left < right : left > right;
 }
 
 /// The Services column's text as it sorts (#1880): A to Z ignoring case (Windows names services in
@@ -161,6 +176,8 @@ compareColumnKey(const Domain::ProcessSnapshot& a, const Domain::ProcessSnapshot
         const std::strong_ordering order = Platform::compareSchedPolicy(a.schedPolicy, a.rtPriority, b.schedPolicy, b.rtPriority);
         return ascending ? order < 0 : order > 0;
     }
+    case ProcessColumn::IoPriority: // Highest first, by the kernel's order, an unknown one last either way (#3551)
+        return compareIoPriority(a, b, ascending);
     case ProcessColumn::GdiObjects:
         return compare(a.gdiObjectCount, b.gdiObjectCount);
     default:

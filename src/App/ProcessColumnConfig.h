@@ -44,7 +44,8 @@ enum class ProcessColumn : std::uint8_t
     Swap,
     // Scheduling - how is it scheduled?
     Priority,
-    Policy, // The CPU scheduling policy, "Normal" or "FIFO 50" (Linux, #3086)
+    Policy,     // The CPU scheduling policy, "Normal" or "FIFO 50" (Linux, #3086)
+    IoPriority, // The I/O priority, "best-effort 4" or "idle" (#3551)
     Affinity,
     Threads,
     Handles,
@@ -105,6 +106,7 @@ enum class ProcessColumn : std::uint8_t
         // Scheduling
         ProcessColumn::Priority,
         ProcessColumn::Policy,
+        ProcessColumn::IoPriority,
         ProcessColumn::Affinity,
         ProcessColumn::Threads,
         ProcessColumn::Handles,
@@ -144,6 +146,38 @@ enum class ProcessColumn : std::uint8_t
 {
     // Explicit: ProcessColumn is a small, contiguous enum used as an index.
     return static_cast<std::size_t>(std::to_underlying(col));
+}
+
+/// The columns inserted into ProcessColumn's order since the persistent IDs were frozen (#3551), in the order they
+/// shipped. Append a new column here wherever it goes in the order, and never remove or reorder one.
+inline constexpr std::array<ProcessColumn, 1> COLUMNS_INSERTED_SINCE_IDS_FROZE = {
+    ProcessColumn::IoPriority, // #3551
+};
+
+/// A column's persistent ID: the UserID its table column is set up with, which ImGui saves with the column's width,
+/// order and sort in the stored layout (#952) and matches a saved column by on the next launch. It never changes once a
+/// column ships: a column in the order the IDs were frozen at keeps its place there as its ID, and an inserted column
+/// (COLUMNS_INSERTED_SINCE_IDS_FROZE) takes the next unused one. So a column added mid-order never inherits the saved
+/// width, order or sort of the column after it, as it would if the ID were the position (#3551). Unique, and every ID
+/// is below processColumnCount().
+[[nodiscard]] constexpr auto persistentColumnId(ProcessColumn col) noexcept -> std::uint32_t
+{
+    constexpr std::size_t FROZEN_COUNT = static_cast<std::size_t>(ProcessColumn::Count) - COLUMNS_INSERTED_SINCE_IDS_FROZE.size();
+    std::size_t insertedBefore = 0;
+    std::size_t shipped = 0; // Where each inserted column comes in COLUMNS_INSERTED_SINCE_IDS_FROZE
+    for (const ProcessColumn inserted : COLUMNS_INSERTED_SINCE_IDS_FROZE)
+    {
+        if (inserted == col)
+        {
+            return static_cast<std::uint32_t>(FROZEN_COUNT + shipped);
+        }
+        if (toIndex(inserted) < toIndex(col))
+        {
+            ++insertedBefore;
+        }
+        ++shipped;
+    }
+    return static_cast<std::uint32_t>(toIndex(col) - insertedBefore);
 }
 
 /// Column metadata for display and configuration
@@ -216,6 +250,8 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
         {.name="Priority", .menuName="Priority", .configKey="nice", .defaultWidth=85.0F, .defaultVisible=false, .canHide=true, .description="Process priority: Windows priority class (Realtime, High, Above Normal, Normal, Below Normal, Idle), or the nice value's level elsewhere"},
         // Scheduling policy (Linux, #3086)
         {.name="Policy", .menuName="Scheduling Policy", .configKey="policy", .defaultWidth=80.0F, .defaultVisible=false, .canHide=true, .description="The CPU scheduling policy (Linux): Normal (SCHED_OTHER), Batch, Idle, Deadline, or real time with its priority, FIFO 50 or RR 10"},
+        // The I/O priority (#3551), as Process Details words it
+        {.name="I/O Priority", .menuName="I/O Priority", .configKey="io_priority", .defaultWidth=150.0F, .defaultVisible=false, .canHide=true, .description="The I/O priority, as ionice names it on Linux: best-effort 0 (highest) to 7, realtime, idle, or a default derived from the nice value"},
         // Affinity
         {.name="Affinity", .menuName="CPU Affinity", .configKey="affinity", .defaultWidth=100.0F, .defaultVisible=false, .canHide=true, .description="CPU cores this process can run on"},
         // Threads
@@ -301,6 +337,7 @@ enum class ColumnAlign : std::uint8_t
     case ProcessColumn::Type:
     case ProcessColumn::Architecture:
     case ProcessColumn::Policy:
+    case ProcessColumn::IoPriority:
     case ProcessColumn::GpuEngine:
     case ProcessColumn::GpuDevice:
     case ProcessColumn::NpuEngine:

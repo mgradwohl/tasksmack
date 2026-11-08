@@ -685,6 +685,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessPriorityView.cpp
     App/test_ProcessPriorityViewRender.cpp
     App/test_ProcessIoPriorityView.cpp
+    App/test_IoPriorityText.cpp  # the I/O priority's words and order, shared with the I/O Priority column (#3551)
     App/test_ProcessIoPriorityViewRender.cpp
     App/test_ProcessEnvironmentMasking.cpp
     App/test_ProcessEnvironmentView.cpp

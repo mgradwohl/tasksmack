@@ -11,6 +11,7 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/ISystemProbe.h"
+#include "Platform/IoPriorityTypes.h"
 #include "Platform/ProcessTypes.h"
 #include "Platform/StorageTypes.h"
 #include "Platform/SystemTypes.h"

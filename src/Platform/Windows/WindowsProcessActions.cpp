@@ -3,6 +3,7 @@
 #include "Domain/PriorityConfig.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IoPriorityTypes.h"
 #include "Platform/WaitChain.h"
 #include "WindowsAffinityMath.h"
 #include "WindowsConversions.h"

@@ -13,6 +13,7 @@
 #include "Platform/IProcessProbe.h"
 #include "Platform/IProcessThreads.h"
 #include "Platform/IUdpTrafficCollector.h"
+#include "Platform/IoPriorityTypes.h"
 #include "Platform/ProcessTypes.h"
 #include "Platform/SchedPolicy.h"
 #include "Platform/WaitChain.h"

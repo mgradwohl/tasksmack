@@ -36,6 +36,7 @@
 #include "Platform/IServiceProbe.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/IUserSessions.h"
+#include "Platform/IoPriorityTypes.h"
 #include "Platform/SchedPolicy.h"
 #include "Platform/UdpByteCounts.h"
 

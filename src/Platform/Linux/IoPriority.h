@@ -7,6 +7,7 @@
 
 #include "Domain/PriorityConfig.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IoPriorityTypes.h"
 
 #include <optional>
 #include <string_view>

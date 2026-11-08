@@ -140,6 +140,13 @@ class LinuxProcessProbe : public IProcessProbe
     /// change /proc/stat before totalCpuTime() is called and check the total was taken with the
     /// processes' stat reads (#1119). Not thread-safe against a concurrent enumerate(); set it before
     /// sampling starts.
+    /// Test seam: what reads a process's raw ioprio value (#3551) in place of ioprio_get(2), so a test's fake /proc
+    /// isn't read against the real processes that happen to have its PIDs.
+    void setIoPriorityReaderForTesting(std::function<int(std::int32_t pid)> reader)
+    {
+        m_IoPriorityReader = std::move(reader);
+    }
+
     void setEnumerateTailHookForTesting(std::function<void()> hook)
     {
         m_EnumerateTailHook = std::move(hook);
@@ -162,7 +169,8 @@ class LinuxProcessProbe : public IProcessProbe
     // interval) instead of re-reading after the tail and reintroducing the skew.
     static constexpr std::uint64_t NO_CAPTURED_TOTAL = std::numeric_limits<std::uint64_t>::max();
     mutable std::atomic<std::uint64_t> m_TotalCpuTimeAtEnumerate = NO_CAPTURED_TOTAL;
-    std::function<void()> m_EnumerateTailHook; // See setEnumerateTailHookForTesting()
+    std::function<void()> m_EnumerateTailHook;           // See setEnumerateTailHookForTesting()
+    std::function<int(std::int32_t)> m_IoPriorityReader; // See setIoPriorityReaderForTesting(); empty: ioprio_get(2)
     bool m_HasPowerCap = false;
     // How /proc is mounted (hidepid, gid=) and whether TaskSmack is in its group: read once at
     // construction, for the PROCESSES_HIDDEN privilege bit (#2303). Remounting /proc is rare enough.
@@ -297,6 +305,10 @@ class LinuxProcessProbe : public IProcessProbe
     /// The online CPUs, from <cpuSysfsRoot>/online, or nullopt if it can't be read or parsed (#1384).
     [[nodiscard]] static std::optional<CpuAffinity> readOnlineCpus(const std::filesystem::path& cpuSysfsRoot);
 
+    /// Reads @p pid's I/O priority into @p counters.ioPriority (#3551); left unknown for a kernel thread, and when
+    /// @p pidDirFd (the process's /proc/[pid], opened before the read) no longer resolves after it: ioprio_get(2)
+    /// takes a PID, which could name a process that reused it.
+    void readIoPriority(int pidDirFd, std::int32_t pid, ProcessCounters& counters) const;
     /// Set the command (and the full name, where comm was cut) from /proc/[pid]/cmdline, through
     /// `pidDirFd`: from `previous`'s entry for this process while it is fresh, otherwise read. The
     /// process's entry, if it has one now, moves to `seen` (see m_CmdlineCache).

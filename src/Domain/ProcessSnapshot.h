@@ -2,6 +2,7 @@
 
 #include "Platform/CpuAffinity.h"
 #include "Platform/ImageSignature.h"
+#include "Platform/IoPriorityTypes.h"
 #include "Platform/SchedPolicy.h"
 #include "PriorityConfig.h"
 
@@ -160,6 +161,9 @@ struct ProcessSnapshot
     // snapshot made every copy of the published snapshots dearer (#3244).
     Platform::SchedPolicy schedPolicy = Platform::SchedPolicy::Unknown;
     std::uint32_t rtPriority = 0;
+    // The I/O priority (#3551), as the probe read it; worded where it's drawn. nullopt: a kernel thread, unreadable, or
+    // not read on this platform.
+    std::optional<Platform::IoPriority> ioPriority;
 
     // Strings at the end (reduce padding and improve cache for hot integer/float fields)
     std::string name;

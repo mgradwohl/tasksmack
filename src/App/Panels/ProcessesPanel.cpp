@@ -7,6 +7,7 @@
 #include "App/Panels/FindHandlesDialog.h"
 #include "App/Panels/GpuSection.h"
 #include "App/Panels/IncrementalSearch.h"
+#include "App/Panels/IoPriorityText.h"
 #include "App/Panels/NewProcessHighlight.h"
 #include "App/Panels/NiceStep.h"
 #include "App/Panels/PriorityChangesInFlight.h"
@@ -211,8 +212,8 @@ void drawPrimaryRowMarker(const ImVec4& color)
 
 [[nodiscard]] constexpr auto toImGuiId(ProcessColumn col) noexcept -> ImGuiID
 {
-    // Safe: ProcessColumn is a small uint8_t-backed enum; ImGuiID is a wider unsigned type.
-    return ImGuiID{std::to_underlying(col)};
+    // The column's persistent ID, never its position (#3551): a saved layout is matched to columns by it.
+    return ImGuiID{persistentColumnId(col)};
 }
 
 [[nodiscard]] auto columnFromUserId(ImGuiID id) -> std::optional<ProcessColumn>
@@ -707,6 +708,26 @@ void schedPolicyCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& 
     renderLeftAlignedText(label.view(), fmt.schedPolicyWidth);
 }
 
+/// The process's I/O priority (#3551), left-aligned, in Process Details' words: "best-effort 4", "idle",
+/// "default (best-effort 4 from nice)". The unavailable dash where this system doesn't read it, and the unreadable one
+/// for a kernel thread or a process it couldn't be read for.
+void ioPriorityCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& fmt, const ProcessCellWidths& widths)
+{
+    if (!fmt.ioPrioritySupported)
+    {
+        renderUnavailableTextCell(ProcessRowFormat::UNSUPPORTED_CELL_REASON, widths.unavailableText);
+        return;
+    }
+    if (!proc.ioPriority.has_value())
+    {
+        renderUnavailableTextCell(ProcessRowFormat::UNREADABLE_CELL_REASON, widths.unavailableText);
+        return;
+    }
+    // Worded here, without allocating, from the snapshot's class, level and nice.
+    const Detail::IoPriorityText label = Detail::ioPriorityText(*proc.ioPriority, proc.nice, proc.schedPolicy);
+    renderLeftAlignedText(label.view(), fmt.ioPriorityWidth);
+}
+
 /// The image's Authenticode signature (#3070), left-aligned: a check mark (in the success colour) and the
 /// signer when Windows verifies it, "Unsigned" or "Invalid" in the warning and error colours, "Not
 /// checked" muted when the check failed. Hovering it says how it is signed, or why not. The unavailable
@@ -802,6 +823,7 @@ constexpr std::array<ProcessCellEntry, processColumnCount()> CELL_RENDERERS = {
         // Scheduling
         {.column = ProcessColumn::Priority, .render = &priorityCell},
         {.column = ProcessColumn::Policy, .render = &schedPolicyCell},
+        {.column = ProcessColumn::IoPriority, .render = &ioPriorityCell},
         {.column = ProcessColumn::Affinity, .render = &rightAlignedCell<&RowFormatCache::affinity>},
         {.column = ProcessColumn::Threads, .render = &rightAlignedCell<&RowFormatCache::threads>},
         {.column = ProcessColumn::Handles, .render = &rightAlignedCell<&RowFormatCache::handles>},
@@ -2271,7 +2293,7 @@ void ProcessesPanel::renderContent()
             const ImGuiTableColumnSortSpecs& spec = sortSpecs->Specs[0];
             const bool ascending = (spec.SortDirection == ImGuiSortDirection_Ascending);
 
-            // Use ColumnUserID to get ProcessColumn (we set user_id = enum value)
+            // Use ColumnUserID to get ProcessColumn (we set user_id = persistentColumnId(), #3551)
             const std::optional<ProcessColumn> sortColOpt = columnFromUserId(spec.ColumnUserID);
             if (!sortColOpt.has_value())
             {

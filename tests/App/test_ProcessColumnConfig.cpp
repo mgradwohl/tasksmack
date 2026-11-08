@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <string>
 #include <string_view>
@@ -117,11 +118,11 @@ TEST(ProcessColumnConfigTest, NoHeaderIsASingleLetterOrContainsPlus)
 TEST(ProcessColumnConfigTest, ConfigKeysAreUnchanged)
 {
     constexpr auto expected = std::to_array<std::string_view>({
-        "pid",        "name",       "user",         "ppid",        "publisher",   "signature", "container", "services",    "state",
-        "status",     "type",       "architecture", "cpu_percent", "mem_percent", "resident",  "virtual",   "shared",      "peak_resident",
-        "private",    "swap",       "nice",         "policy",      "affinity",    "threads",   "handles",   "gdi_objects", "cpu_time",
-        "start_time", "io_read",    "io_write",     "page_faults", "net_sent",    "net_recv",  "power",     "gpu_percent", "gpu_memory",
-        "gpu_engine", "gpu_device", "npu_percent",  "npu_memory",  "npu_engine",  "command",
+        "pid",        "name",       "user",         "ppid",        "publisher",   "signature",  "container", "services", "state",
+        "status",     "type",       "architecture", "cpu_percent", "mem_percent", "resident",   "virtual",   "shared",   "peak_resident",
+        "private",    "swap",       "nice",         "policy",      "io_priority", "affinity",   "threads",   "handles",  "gdi_objects",
+        "cpu_time",   "start_time", "io_read",      "io_write",    "page_faults", "net_sent",   "net_recv",  "power",    "gpu_percent",
+        "gpu_memory", "gpu_engine", "gpu_device",   "npu_percent", "npu_memory",  "npu_engine", "command",
     });
     ASSERT_EQ(expected.size(), processColumnCount());
     for (const auto col : allProcessColumns())
@@ -242,7 +243,29 @@ TEST(ProcessColumnConfigTest, ToIndexReturnsCorrectValues)
     EXPECT_EQ(toIndex(ProcessColumn::Type), 10);         // Process type — after State(8) and Status(9)
     EXPECT_EQ(toIndex(ProcessColumn::Architecture), 11); // Architecture (#2394) — after Type
     EXPECT_EQ(toIndex(ProcessColumn::Policy), 21);       // Scheduling policy (#3086) — after Priority(20)
-    EXPECT_EQ(toIndex(ProcessColumn::GdiObjects), 25);   // GDI count — after Handles(24); Private and Swap (#1885) sit before them
+    EXPECT_EQ(toIndex(ProcessColumn::IoPriority), 22);   // I/O priority (#3551) — after Policy
+    EXPECT_EQ(toIndex(ProcessColumn::GdiObjects), 26);   // GDI count — after Handles(25); Private and Swap (#1885) sit before them
+}
+
+TEST(ProcessColumnConfigTest, PersistentIdsAreUniqueAndOnlyAnInsertedColumnTakesANewOne)
+{
+    // #3551: a saved table layout is matched to columns by these IDs, so a column inserted mid-order must not take
+    // the ID the column after it was saved with.
+    std::vector<bool> seen(processColumnCount(), false);
+    for (const ProcessColumn col : allProcessColumns())
+    {
+        const std::uint32_t id = persistentColumnId(col);
+        ASSERT_LT(id, processColumnCount());
+        EXPECT_FALSE(seen.at(id)) << "two columns share ID " << id;
+        seen.at(id) = true;
+    }
+    // Before I/O Priority each keeps its position; after it each keeps the ID it had before the insertion.
+    EXPECT_EQ(persistentColumnId(ProcessColumn::PID), 0U);
+    EXPECT_EQ(persistentColumnId(ProcessColumn::Policy), 21U);
+    EXPECT_EQ(persistentColumnId(ProcessColumn::Affinity), 22U);
+    EXPECT_EQ(persistentColumnId(ProcessColumn::IoRead), toIndex(ProcessColumn::IoRead) - 1);
+    EXPECT_EQ(persistentColumnId(ProcessColumn::Command), toIndex(ProcessColumn::Command) - 1);
+    EXPECT_EQ(persistentColumnId(ProcessColumn::IoPriority), processColumnCount() - 1); // The next unused ID
 }
 
 TEST(ProcessColumnConfigTest, ToIndexIsMonotonic)
