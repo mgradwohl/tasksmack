@@ -5,7 +5,8 @@
 // calls through IProcessActions, so it is unit-tested with MockProcessActions
 // (test_ProcessBatchAction.cpp). The single-process wording and dispatch it builds on are in
 // ProcessDetailsPanel_ActionHelpers.h. A batch priority change (#1484) runs the same way, with the
-// nice value carried alongside (runBatchPriority()).
+// nice value carried alongside (runBatchPriority()), and a batch I/O priority change (#3551) with the
+// class and level (runBatchIoPriority()).
 //
 // Each process is acted on by its ProcessTarget (PID and start time), exactly as a single action is:
 // the platform refuses any whose PID now belongs to another process (#973), and that refusal is
@@ -14,16 +15,19 @@
 // A confirmed batch runs on a worker (ProcessBatchRun.h, #2142), not the frame: a run takes a stop
 // token, checked before each target, and counts the targets it has done for the toolbar's progress.
 
+#include "App/Panels/IoPriorityText.h"
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
 #include "App/Panels/ProcessDetailsPanel_PriorityHelpers.h"
 #include "Domain/PriorityConfig.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IoPriorityTypes.h"
 
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <format>
 #include <iterator>
+#include <optional>
 #include <span>
 #include <stop_token>
 #include <string>
@@ -44,8 +48,9 @@ inline constexpr std::size_t RESULT_FAILURE_LIMIT = 3;
 /// The system's init process (systemd and the like) on Linux.
 inline constexpr std::int32_t INIT_PID = 1;
 
-/// One process a batch action is for: its identity, its name for the dialog and the result, and its
-/// priority when it was picked (the batch priority dialog's list, #1539; empty when not known).
+/// One process a batch action is for: its identity, its name for the dialog and the result, and the
+/// priority the dialog lists for it when it was picked: its priority for the batch priority dialog
+/// (#1539), its I/O priority for the batch I/O priority dialog (#3551); empty when not known.
 struct BatchTarget
 {
     Platform::ProcessTarget target;
@@ -79,6 +84,29 @@ template<typename SnapshotRange, typename SelectedPredicate>
                 .target = target,
                 .name = snapshot.name,
                 .priority = std::string(Domain::Priority::getProcessPriorityLabel(snapshot.priorityClass, snapshot.nice)),
+            });
+        }
+    }
+    return targets;
+}
+
+/// As resolveTargets(), with each target's current I/O priority (#3551) for the batch I/O priority
+/// dialog's list, in the words of the Processes table's I/O Priority column; empty when not known.
+template<typename SnapshotRange, typename SelectedPredicate>
+[[nodiscard]] std::vector<BatchTarget> resolveIoPriorityTargets(const SnapshotRange& snapshots, SelectedPredicate isSelected)
+{
+    std::vector<BatchTarget> targets;
+    for (const auto& snapshot : snapshots)
+    {
+        const Platform::ProcessTarget target{.pid = snapshot.pid, .startTimeTicks = snapshot.startTimeTicks};
+        if (isSelected(target))
+        {
+            targets.push_back({
+                .target = target,
+                .name = snapshot.name,
+                .priority = snapshot.ioPriority.has_value()
+                              ? std::string(Detail::ioPriorityText(*snapshot.ioPriority, snapshot.nice, snapshot.schedPolicy).view())
+                              : std::string(),
             });
         }
     }
@@ -502,6 +530,69 @@ formatBatchPriorityResultMessage(std::int32_t nice, const BatchResult& result, b
     std::string text = (result.succeeded == 0)
                          ? std::format("Could not set priority to {} for {}", value, processCountText(result.attempted))
                          : std::format("Priority set to {} for {} of {}; {} failed",
+                                       value,
+                                       result.succeeded,
+                                       processCountText(result.attempted),
+                                       result.failed());
+    appendFailures(text, result);
+    return {.ok = false, .text = std::move(text)};
+}
+
+// ---------------------------------------------------------------------------------------------------
+// Batch I/O priority (#3551): one I/O priority -- an ionice class and level on Linux, a hint on Windows
+// -- set on every selected process, picked and confirmed in one dialog that lists them
+// (ProcessBatchIoPriorityDialog), and summarised in the same one line as the batch priority above.
+// ---------------------------------------------------------------------------------------------------
+
+/// Whether the Processes table's row menu offers "Set I/O priority for N processes...": only for a row
+/// of a multi-selection (@p batchCount, 0 for a single row, whose I/O priority stays in Process
+/// Details), and only where the platform can set I/O priority.
+[[nodiscard]] constexpr bool offersBatchIoPriority(const Platform::ProcessActionCapabilities& capabilities, std::size_t batchCount) noexcept
+{
+    return batchCount > 1 && capabilities.canSetIoPriority;
+}
+
+/// The I/O priority a batch sets, in the I/O Priority column's words: "best-effort 4", "idle", "High";
+/// "default (from nice)" for the class never set, which follows each process's own nice value.
+[[nodiscard]] inline std::string ioPriorityValueText(const Platform::IoPriority& priority)
+{
+    return std::string(Detail::ioPriorityText(priority, std::nullopt).view());
+}
+
+/// Sets @p priority on every target through @p actions (runBatch()), TaskSmack's own process last. The
+/// platform refuses what it always refuses for one process: on Linux PID 1 and kernel threads, on
+/// Windows the System and critical processes. @p stopToken and @p done as runBatch()'s.
+[[nodiscard]] inline BatchResult runBatchIoPriority(Platform::IProcessActions& actions,
+                                                    std::span<const BatchTarget> targets,
+                                                    const Platform::IoPriority& priority,
+                                                    std::int32_t ownPid,
+                                                    const std::stop_token& stopToken = {},
+                                                    std::atomic<std::size_t>* done = nullptr)
+{
+    return runBatch(
+        targets,
+        ownPid,
+        [&actions, priority](const Platform::ProcessTarget& target)
+        { return actions.setIoPriority(target, priority.ioClass, priority.level); },
+        stopToken,
+        done);
+}
+
+/// The toolbar's one-line result for a batch I/O priority change, naming what was applied: "I/O
+/// priority set to idle for 5 processes", or "I/O priority set to idle for 3 of 5 processes; 2 failed:
+/// PID 1 (systemd): ...", or "Could not set I/O priority to realtime 0 for 5 processes: ...". The first
+/// RESULT_FAILURE_LIMIT failures are quoted and the rest counted. `ok` only when every one succeeded.
+[[nodiscard]] inline Detail::ActionResultMessage formatBatchIoPriorityResultMessage(const Platform::IoPriority& priority,
+                                                                                    const BatchResult& result)
+{
+    const std::string value = ioPriorityValueText(priority);
+    if (result.failed() == 0)
+    {
+        return {.ok = true, .text = std::format("I/O priority set to {} for {}", value, processCountText(result.attempted))};
+    }
+    std::string text = (result.succeeded == 0)
+                         ? std::format("Could not set I/O priority to {} for {}", value, processCountText(result.attempted))
+                         : std::format("I/O priority set to {} for {} of {}; {} failed",
                                        value,
                                        result.succeeded,
                                        processCountText(result.attempted),

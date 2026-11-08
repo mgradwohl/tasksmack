@@ -9,6 +9,7 @@
 #include "App/Panels/ProcessActionRun.h"
 #include "App/Panels/ProcessAffinityDialog.h"
 #include "App/Panels/ProcessBatchAction.h"
+#include "App/Panels/ProcessBatchIoPriorityDialog.h"
 #include "App/Panels/ProcessBatchPriorityDialog.h"
 #include "App/Panels/ProcessBatchRun.h"
 #include "App/Panels/ProcessColumnAvailability.h"
@@ -589,6 +590,8 @@ class ProcessesPanel : public Panel
     // The row menu's "Set priority for N processes..." (#1484): picks the value, then the batch
     // confirmation above sets it.
     ProcessBatchPriorityDialog m_BatchPriorityDialog;
+    // The row menu's "Set I/O priority for N processes..." (#3551): its own confirmation, as the one above.
+    ProcessBatchIoPriorityDialog m_BatchIoPriorityDialog;
     ProcessAffinityDialog m_AffinityDialog;       // The row menu's Set affinity... (#1887)
     ProcessSchedPolicyDialog m_SchedPolicyDialog; // The row menu's Set scheduling policy... (#3086)
     RunTaskDialog m_RunTaskDialog;                // The toolbar's Run new task... (#3065)
@@ -990,6 +993,14 @@ class ProcessesPanel : public Panel
     /// The batch priority dialog (#1484), which lists the processes and is its own confirmation
     /// (#1539); on Apply, sets the picked value on each of them by identity.
     void renderBatchPriorityDialog();
+
+    /// Opens the batch I/O priority dialog for every selected process still listed (#3551). None left:
+    /// nothing happens.
+    void requestSelectionIoPriority();
+
+    /// The batch I/O priority dialog (#3551), its own confirmation as the batch priority dialog is; on
+    /// Apply, sets the picked I/O priority on each listed process by identity.
+    void renderBatchIoPriorityDialog();
     /// Shows a batch's one-line result in the toolbar, refreshing at once when any process was acted on (#2142).
     void showBatchOutcome(ProcessBatch::BatchRunOutcome outcome);
 

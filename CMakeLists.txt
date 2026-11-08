@@ -233,6 +233,7 @@ set(TASKSMACK_SOURCES
     src/App/Panels/ProcessDetailsPanel.cpp
     src/App/Panels/ProcessDetailsCharts.cpp
     src/App/Panels/ProcessActionConfirm.cpp
+    src/App/Panels/ProcessBatchIoPriorityDialog.cpp
     src/App/Panels/ProcessBatchPriorityDialog.cpp
     src/App/Panels/ProcessAffinityDialog.cpp
     src/App/Panels/ProcessSchedPolicyDialog.cpp # Set scheduling policy (#3086)

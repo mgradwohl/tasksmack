@@ -23,6 +23,16 @@
 namespace App
 {
 
+namespace ProcessBatch
+{
+
+/// The affected processes, a row each (name, PID, and the priority or I/O priority it has now) in a
+/// bordered list, then "+N more" for the ones folded away: the confirmation a batch priority dialog
+/// carries itself (#1539). Shared by the batch priority and batch I/O priority dialogs (#3551).
+void renderTargetList(const ListedTargets& listed);
+
+} // namespace ProcessBatch
+
 class ProcessBatchPriorityDialog
 {
   public:

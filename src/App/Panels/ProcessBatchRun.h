@@ -19,6 +19,7 @@
 #include "App/Panels/ProcessBatchAction.h"
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IoPriorityTypes.h"
 #include "Platform/ThreadName.h"
 
 #include <atomic>
@@ -59,6 +60,9 @@ struct BatchRunOutcome
 
 /// The label batchProgressText() gives a batch priority change.
 inline constexpr std::string_view SET_PRIORITY_PROGRESS_LABEL = "Set priority";
+
+/// The label batchProgressText() gives a batch I/O priority change (#3551).
+inline constexpr std::string_view SET_IO_PRIORITY_PROGRESS_LABEL = "Set I/O priority";
 
 class BatchRun
 {
@@ -104,6 +108,29 @@ class BatchRun
             {
                 const BatchResult result = runBatchPriority(*actions, targets, nice, ownPid, stopToken, done.get());
                 return BatchRunOutcome{.message = formatBatchPriorityResultMessage(nice, result), .anySucceeded = result.succeeded > 0};
+            });
+    }
+
+    /// Sets @p priority on every target, through @p actions, on the worker (runBatchIoPriority(), #3551).
+    /// Returns as startAction() does.
+    [[nodiscard]] std::optional<BatchRunOutcome> startIoPriority(Platform::IProcessActions& actions,
+                                                                 std::vector<BatchTarget> targets,
+                                                                 Platform::IoPriority priority,
+                                                                 std::int32_t ownPid)
+    {
+        if (busy())
+        {
+            return std::nullopt;
+        }
+        begin(SET_IO_PRIORITY_PROGRESS_LABEL, targets.size());
+        return m_Task.start(
+            [actions = &actions, targets = std::move(targets), priority, ownPid, done = m_Done](const std::stop_token& stopToken)
+            {
+                const BatchResult result = runBatchIoPriority(*actions, targets, priority, ownPid, stopToken, done.get());
+                return BatchRunOutcome{
+                    .message = formatBatchIoPriorityResultMessage(priority, result),
+                    .anySucceeded = result.succeeded > 0,
+                };
             });
     }
 
