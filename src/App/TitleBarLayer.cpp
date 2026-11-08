@@ -565,9 +565,12 @@ void TitleBarLayer::updateWindowInteraction()
 
     if ((mouseButtons & SDL_BUTTON_LMASK) == 0U)
     {
-        // Released without the button-up reaching onSDLEvent() first: finish at the pointer read now,
-        // as the button-up would have (#882), then end.
-        finishInteractionAt(globalMouseX, globalMouseY);
+        // Released without the button-up reaching onSDLEvent() first. Not finished at the pointer read
+        // now (#882, #3552 CI): this poll says only that the button is up, not where it went up. On X11
+        // a pushed or synthetic press has no real button behind it, so the poll ends it at once with
+        // the pointer wherever the real one is, and a test seam reports the release as (0, 0). Moving
+        // or sizing the window to that would drag it somewhere the press never went. The button-up
+        // event carries the release's own position, and finishInteractionAtRelease() uses it.
         endWindowInteraction();
         return;
     }
@@ -686,7 +689,12 @@ void TitleBarLayer::updateResize(
 
 void TitleBarLayer::finishInteractionAtRelease(const SDL_Event& buttonUp)
 {
-    if (m_InteractionMode == InteractionMode::None)
+    // Windows only, where Core holds frames during a resize (Application::run(), #882) and so a release
+    // can follow motion no step saw. Elsewhere every pointer sample is stepped, from the same source the
+    // steps use (queryMouseState()); the release's window origin plus local coordinates is a second
+    // source, and on X11 the origin SDL reports can lag a move just asked for, so a finish there could
+    // pull the window back by that lag (#3552 CI).
+    if (m_InteractionMode == InteractionMode::None || !Core::VideoBackend::isWindows())
     {
         return;
     }

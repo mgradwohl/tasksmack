@@ -121,7 +121,9 @@ class TitleBarLayer : public Core::Layer
     /// Core holds whole frames while the size changes, so a move and the release can both come before
     /// any onUpdate() steps the interaction.
     void finishInteractionAt(int mx, int my);
-    /// finishInteractionAt() for the left button-up @p buttonUp, with the pointer it carries.
+    /// finishInteractionAt() for the left button-up @p buttonUp, with the pointer it carries. Windows
+    /// only, where Core holds frames during a resize; a release found by polling the button is never
+    /// finished, since the poll doesn't say where the button went up.
     void finishInteractionAtRelease(const SDL_Event& buttonUp);
     void endWindowInteraction();
 
