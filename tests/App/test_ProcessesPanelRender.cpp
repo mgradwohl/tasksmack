@@ -116,10 +116,15 @@ class ProcessesPanelRenderTest : public ::testing::Test
         io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;
         io.Fonts->AddFontDefault();
         m_Settings = UserConfig::get().settings(); // the menus write the column and meter settings
+        // A panel without a UDP collector publishes "unavailable" process-wide (#3366): each test starts from none, and
+        // TearDown() puts back what was there, so no other suite's test depends on these having run.
+        m_UdpStatus = App::udpCountingStatus();
+        App::publishUdpCountingStatus({});
     }
 
     void TearDown() override
     {
+        App::publishUdpCountingStatus(m_UdpStatus);
         UserConfig::get().settings() = m_Settings;
         ImPlot::DestroyContext(m_ImPlot);
         ImGui::DestroyContext(m_ImGui);
@@ -470,6 +475,7 @@ class ProcessesPanelRenderTest : public ::testing::Test
 
   private:
     UserSettings m_Settings;
+    App::UdpCountingStatus m_UdpStatus;
     TestMocks::FakeClipboard m_Clipboard;
     ImGuiContext* m_ImGui = nullptr;
     ImPlotContext* m_ImPlot = nullptr;
@@ -480,13 +486,11 @@ class ProcessesPanelRenderTest : public ::testing::Test
 // Settings that this system can't count UDP per process, and why; before that, nothing is said.
 TEST_F(ProcessesPanelRenderTest, AnAdoptedPlatformWithNoUdpCollectorIsPublishedAsUnavailable)
 {
-    App::publishUdpCountingStatus({});
     const auto panel = attachedPanel();
     const App::UdpCountingStatus status = App::udpCountingStatus();
     EXPECT_TRUE(status.unsupported);
     EXPECT_FALSE(status.delivering);
     EXPECT_NE(status.problem.find("helper isn't available"), std::string::npos) << status.problem;
-    App::publishUdpCountingStatus({});
 }
 #endif
 

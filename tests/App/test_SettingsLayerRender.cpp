@@ -72,6 +72,10 @@ class SettingsLayerRenderTest : public ::testing::Test
         m_OriginalPath = UserConfig::get().configPath();
         m_OriginalSettings = UserConfig::get().settings();
         m_OriginalFontSize = UI::Theme::get().fontPointSize();
+        // The UDP counter's published status is process-wide (#3366): each test starts from none, whatever an
+        // earlier one (a Processes panel without a collector) left, and TearDown() puts the last one back.
+        m_OriginalUdpStatus = udpCountingStatus();
+        publishUdpCountingStatus({});
         std::error_code ec;
         const std::filesystem::path base = std::filesystem::temp_directory_path(ec);
         ASSERT_FALSE(ec);
@@ -135,6 +139,7 @@ class SettingsLayerRenderTest : public ::testing::Test
     void TearDown() override
     {
         m_Layer.reset();
+        publishUdpCountingStatus(m_OriginalUdpStatus);
         UI::Theme::get().setFontPointSize(m_OriginalFontSize);
         UserConfig::get().resetConfigPathForTesting(m_OriginalPath);
         UserConfig::get().settings() = m_OriginalSettings;
@@ -272,6 +277,7 @@ class SettingsLayerRenderTest : public ::testing::Test
     std::filesystem::path m_OriginalPath;
     UserSettings m_OriginalSettings;
     int m_OriginalFontSize = UI::FONT_POINT_SIZE_DEFAULT;
+    UdpCountingStatus m_OriginalUdpStatus;
 };
 
 TEST_F(SettingsLayerRenderTest, StaysClosedUntilOpenSettingsIsRaised)
