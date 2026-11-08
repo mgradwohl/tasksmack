@@ -698,6 +698,7 @@ set(COMMON_TEST_SOURCES
     App/test_BackgroundTask.cpp
     App/test_BackgroundOpen.cpp # links, files and folders opened on a worker (#3155)
     App/test_UdpTraceSwitch.cpp # the UDP event trace started and stopped on a worker (#3155)
+    App/test_UdpCountingStatus.cpp  # Count UDP traffic per process's status for Settings (#3366)
     App/test_CoalescingWriter.cpp
     App/test_LazyBackgroundRead.cpp
     App/test_AffinityLayoutRead.cpp # the Set affinity dialog's CPU layout, read once on a worker (#3182)
@@ -1119,6 +1120,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/SettingsDialog.cpp
     # The Settings layer around it (#1395), run headless through its seam (test_SettingsLayerRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/SettingsLayer.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/UdpCountingStatus.cpp
     # Replace Task Manager's controller, rows and startup notice (#3072)
     ${CMAKE_SOURCE_DIR}/src/App/TaskManagerReplacementController.cpp
     ${CMAKE_SOURCE_DIR}/src/App/TaskManagerReplacementRows.cpp

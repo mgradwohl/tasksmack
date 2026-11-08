@@ -208,6 +208,7 @@ set(TASKSMACK_SOURCES
     src/App/RenderMetricsOverride.cpp
     src/App/SettingsDialog.cpp
     src/App/SettingsLayer.cpp
+    src/App/UdpCountingStatus.cpp # what Count UDP traffic per process is doing, for Settings (#3366)
     src/App/TaskManagerNoticeLayer.cpp # Replace Task Manager's startup check (#3072)
     src/App/TaskManagerReplacementController.cpp
     src/App/TaskManagerReplacementRows.cpp

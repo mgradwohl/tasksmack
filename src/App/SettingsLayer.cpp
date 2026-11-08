@@ -12,6 +12,7 @@
 #include "App/SyntheticScenario.h"
 #include "App/TaskManagerReplacementController.h"
 #include "App/ThemeChange.h"
+#include "App/UdpCountingStatus.h"
 #include "App/UserConfig.h"
 #include "Core/Application.h"
 #include "Core/ApplicationEvents.h"
@@ -240,6 +241,12 @@ void SettingsLayer::onRender()
     static_cast<void>(m_Open.poll());
     m_State.openingPath = m_Open.busy();
     syncStartAtLogin();
+    {
+        UdpCountingStatus udp = udpCountingStatus(); // #3366
+        m_State.udpDelivering = udp.delivering;
+        m_State.udpUnsupported = udp.unsupported;
+        m_State.udpProblem = std::move(udp.problem);
+    }
     if (m_TaskManager != nullptr)
     {
         m_TaskManager->poll();
