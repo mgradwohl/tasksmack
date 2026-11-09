@@ -582,7 +582,7 @@ Action render(State& state)
         ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + appearanceComboWidth + valueColumn);
         if (state.udpEventTrace && state.udpDelivering)
         {
-            ImGui::TextColored(theme.scheme().textMuted, "Counting UDP through the helper.");
+            ImGui::TextColored(theme.scheme().textMuted, "Counting UDP.");
         }
         else if (state.udpUnsupported)
         {

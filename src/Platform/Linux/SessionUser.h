@@ -18,6 +18,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <grp.h>
@@ -55,15 +56,19 @@ inline constexpr std::array<std::string_view, 12> KEPT_VARIABLES{
     "DESKTOP_SESSION",
 };
 
-/// The user an elevated TaskSmack was started for and their session environment, or nullopt to start
-/// programs as TaskSmack itself: not root (@p effectiveUid isn't 0), root's own session (no SUDO_UID or
-/// PKEXEC_UID, or one naming root), or a user the passwd database doesn't know.
-/// @p env looks up one of TaskSmack's variables; @p account, a user's passwd entry; @p exists, a path.
-[[nodiscard]] inline std::optional<DetachedSpawn::RunAs>
-invokingUserSession(uid_t effectiveUid,
-                    const std::function<std::optional<std::string>(std::string_view)>& env,
-                    const std::function<std::optional<Account>(uid_t)>& account,
-                    const std::function<bool(const std::string&)>& exists)
+/// A user sudo or pkexec names and their passwd entry.
+struct InvokingUser
+{
+    uid_t uid = 0;
+    Account account;
+};
+
+/// The user an elevated TaskSmack was started for, in the same cases as invokingUserSession(): nullopt when not root
+/// (@p effectiveUid isn't 0), for root's own session (no SUDO_UID or PKEXEC_UID, or one naming root), or for a user
+/// the passwd database doesn't know. SUDO_UID is asked first.
+[[nodiscard]] inline std::optional<InvokingUser> invokingUser(uid_t effectiveUid,
+                                                              const std::function<std::optional<std::string>(std::string_view)>& env,
+                                                              const std::function<std::optional<Account>(uid_t)>& account)
 {
     if (effectiveUid != 0)
     {
@@ -80,20 +85,40 @@ invokingUserSession(uid_t effectiveUid,
     {
         return std::nullopt;
     }
-    const std::optional<Account> user = account(static_cast<uid_t>(uid));
+    std::optional<Account> user = account(static_cast<uid_t>(uid));
     if (!user.has_value())
     {
         return std::nullopt;
     }
+    return InvokingUser{.uid = static_cast<uid_t>(uid), .account = std::move(*user)};
+}
 
-    DetachedSpawn::RunAs runAs{.uid = static_cast<uid_t>(uid), .gid = user->gid, .environment = {}, .groups = user->groups};
-    std::vector<std::string>& environment = runAs.environment;
-    environment.push_back("HOME=" + user->home);
-    environment.push_back("USER=" + user->name);
-    environment.push_back("LOGNAME=" + user->name);
-    if (!user->shell.empty())
+/// The user an elevated TaskSmack was started for and their session environment, or nullopt to start
+/// programs as TaskSmack itself: not root (@p effectiveUid isn't 0), root's own session (no SUDO_UID or
+/// PKEXEC_UID, or one naming root), or a user the passwd database doesn't know.
+/// @p env looks up one of TaskSmack's variables; @p account, a user's passwd entry; @p exists, a path.
+[[nodiscard]] inline std::optional<DetachedSpawn::RunAs>
+invokingUserSession(uid_t effectiveUid,
+                    const std::function<std::optional<std::string>(std::string_view)>& env,
+                    const std::function<std::optional<Account>(uid_t)>& account,
+                    const std::function<bool(const std::string&)>& exists)
+{
+    const std::optional<InvokingUser> invoking = invokingUser(effectiveUid, env, account);
+    if (!invoking.has_value())
     {
-        environment.push_back("SHELL=" + user->shell);
+        return std::nullopt;
+    }
+    const uid_t uid = invoking->uid;
+    const Account& user = invoking->account;
+
+    DetachedSpawn::RunAs runAs{.uid = uid, .gid = user.gid, .environment = {}, .groups = user.groups};
+    std::vector<std::string>& environment = runAs.environment;
+    environment.push_back("HOME=" + user.home);
+    environment.push_back("USER=" + user.name);
+    environment.push_back("LOGNAME=" + user.name);
+    if (!user.shell.empty())
+    {
+        environment.push_back("SHELL=" + user.shell);
     }
     for (const std::string_view name : KEPT_VARIABLES)
     {
@@ -173,6 +198,18 @@ invokingUserSession(uid_t effectiveUid,
         account->groups = userGroups(account->name, account->gid);
     }
     return account;
+}
+
+/// The home directory of the user this process was started for as root (#3580): invokingUser()'s, for this process's
+/// effective uid, environment and passwd database. An Administrator session keeps that user's settings there.
+[[nodiscard]] inline std::optional<std::string> invokingUserHome()
+{
+    std::optional<InvokingUser> invoking = invokingUser(::geteuid(), &processVariable, &systemAccount);
+    if (!invoking.has_value() || invoking->account.home.empty())
+    {
+        return std::nullopt;
+    }
+    return std::move(invoking->account.home);
 }
 
 /// invokingUserSession() for this process: its effective uid, environment and passwd database.

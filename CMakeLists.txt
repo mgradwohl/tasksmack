@@ -361,6 +361,8 @@ set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/DRMGPUProbe.cpp
     src/Platform/Linux/ROCmGPUProbe.cpp
     src/Platform/Linux/NetlinkSocketStats.cpp
+    src/Platform/Linux/UdpByteCounter.cpp # the eBPF UDP counter: the helper's, and root's in-process one (#3366, #3580)
+    src/Platform/Linux/LinuxUdpTrafficCollector.cpp # counts UDP in this process when TaskSmack runs as root (#3580)
     src/Platform/Linux/Factory.cpp
 )
 
@@ -907,8 +909,10 @@ function(tasksmack_configure_app_target target)
         tasksmack_apply_windows_platform(${target})
     elseif(UNIX AND NOT APPLE)
         # tasksmack_sdbus: libsystemd and TASKSMACK_HAS_SDBUS when found (#1525); tasksmack_curl: libcurl (#3238);
-        # tasksmack_polkit_agent: libpolkit-agent-1 (#3380)
-        target_link_libraries(${target} PRIVATE dl tasksmack_sdbus tasksmack_curl tasksmack_polkit_agent)
+        # tasksmack_polkit_agent: libpolkit-agent-1 (#3380); tasksmack_bpf: libbpf, for root's in-process UDP counter
+        # (#3580), with the embedded BPF object it opens
+        target_link_libraries(${target} PRIVATE dl tasksmack_sdbus tasksmack_curl tasksmack_polkit_agent tasksmack_bpf)
+        add_dependencies(${target} tasksmack_bpf_object)
     endif()
 endfunction()
 

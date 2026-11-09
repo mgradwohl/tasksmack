@@ -100,6 +100,43 @@ TEST(SessionUserTest, ProgramsStartAsTaskSmackWhenThereIsNoOtherUser)
     EXPECT_FALSE(sessionFor(0, {{"SUDO_UID", "1234"}}).has_value()) << "no such user";
 }
 
+// #3580: the user whose settings an Administrator session keeps, in the same cases as their session above.
+TEST(SessionUserTest, TheInvokingUserIsSudosThenPkexecsAndOnlyForRoot)
+{
+    const auto lookup = [](uid_t uid) -> std::optional<Account>
+    {
+        return uid == 1000
+                 ? std::optional<Account>(Account{.gid = 1001, .name = "someone", .home = "/home/someone", .shell = {}, .groups = {}})
+                 : std::nullopt;
+    };
+    const auto env = [](const std::map<std::string, std::string>& variables)
+    {
+        return [variables](std::string_view name) -> std::optional<std::string>
+        {
+            const auto it = variables.find(std::string(name));
+            return it != variables.end() ? std::optional<std::string>(it->second) : std::nullopt;
+        };
+    };
+    const std::optional<InvokingUser> pkexec = invokingUser(0, env({{"PKEXEC_UID", "1000"}}), lookup);
+    ASSERT_TRUE(pkexec.has_value());
+    EXPECT_EQ(pkexec.value_or(InvokingUser{}).uid, 1000U);
+    EXPECT_EQ(pkexec.value_or(InvokingUser{}).account.home, "/home/someone");
+    EXPECT_TRUE(invokingUser(0, env({{"SUDO_UID", "1000"}, {"PKEXEC_UID", "1234"}}), lookup).has_value()) << "SUDO_UID first";
+    EXPECT_FALSE(invokingUser(1000, env({{"PKEXEC_UID", "1000"}}), lookup).has_value()) << "not root";
+    EXPECT_FALSE(invokingUser(0, env({}), lookup).has_value()) << "root's own session";
+    EXPECT_FALSE(invokingUser(0, env({{"PKEXEC_UID", "0"}}), lookup).has_value());
+    EXPECT_FALSE(invokingUser(0, env({{"PKEXEC_UID", "1234"}}), lookup).has_value()) << "no such user";
+}
+
+TEST(SessionUserTest, ThisUsersProcessHasNoInvokingUserHome)
+{
+    if (::geteuid() == 0)
+    {
+        GTEST_SKIP() << "run as root, whoever started it may be named";
+    }
+    EXPECT_FALSE(invokingUserHome().has_value());
+}
+
 // #3221: the passwd and environment sources invokingUserSession() reads as root, read here as this user.
 TEST(SessionUserTest, TheSystemSourcesReadThisUsersEntryAndVariables)
 {

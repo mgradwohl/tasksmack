@@ -1,6 +1,7 @@
 #include "LinuxPathProvider.h"
 
 #include "Platform/ConfigDirectory.h"
+#include "SessionUser.h"
 #include "UserNameLookup.h"
 
 #include <cstdlib>
@@ -76,7 +77,10 @@ std::filesystem::path LinuxPathProvider::getUserConfigDir() const
     {
         cwd.clear();
     }
-    return ConfigDirectory::configDirectoryFrom(readEnv("XDG_CONFIG_HOME"), readEnv("HOME"), passwdHome, cwd).directory;
+    // Run as root for a user (sudo, pkexec), that user's directory, as UserConfig's (#3580).
+    return ConfigDirectory::configDirectoryFor(
+               readEnv("XDG_CONFIG_HOME"), readEnv("HOME"), passwdHome, cwd, SessionUser::invokingUserHome())
+        .directory;
 }
 
 } // namespace Platform
