@@ -149,6 +149,40 @@ TEST(CronTabTest, TheProgramIsTheShellCommandsFirstWord)
     }
 }
 
+// #3374: the shell-word reader's rarer paths, as sh reads them: escapes inside double quotes (\$ \` \" \\ and a
+// line continuation; any other backslash is kept), an expansion inside them, an unterminated quote or a trailing
+// backslash, a backslash-newline outside quotes, a bracket glob next to the [[ keyword, a name that can't be a shell
+// variable (not an assignment, so it is the program), and env and exec options this doesn't follow.
+TEST(CronTabTest, TheShellWordReaderFollowsShQuotingAndStopsWhereOnlyTheShellKnows)
+{
+    using Kind = CronTab::Program::Kind;
+    const std::vector<ProgramCase> cases = {
+        {R"("/opt/my \"q\" tools" --now)", Kind::Executable, R"(/opt/my "q" tools)", std::nullopt},
+        {R"("/opt/\$HOME/run")", Kind::Executable, "/opt/$HOME/run", std::nullopt},
+        {R"("/opt/a\\b/run")", Kind::Executable, R"(/opt/a\b/run)", std::nullopt},
+        {"\"/opt/ru\\\nn\"", Kind::Executable, "/opt/run", std::nullopt},
+        {R"("/opt/\x/run")", Kind::Executable, R"(/opt/\x/run)", std::nullopt},
+        {R"("/opt/`id`/run")", Kind::Unknown, "", std::nullopt},
+        {R"("/opt/unterminated)", Kind::Unknown, "", std::nullopt},
+        {"run\\", Kind::Unknown, "", std::nullopt},
+        {"ru\\\nn --all", Kind::Executable, "run", std::nullopt},
+        {"/opt/run[12].sh", Kind::Unknown, "", std::nullopt},
+        {"[[ -x /usr/sbin/x ]] && /usr/sbin/x", Kind::ShellBuiltin, "[[", std::nullopt},
+        {"1VAR=x run", Kind::Executable, "1VAR=x", std::nullopt},
+        {"=x run", Kind::Executable, "=x", std::nullopt},
+        {"env --split-string='run --x'", Kind::Unknown, "", std::nullopt},
+        {"env --default-signal=TERM run", Kind::Unknown, "", std::nullopt},
+        {"exec -a name /usr/bin/run", Kind::Unknown, "", std::nullopt},
+    };
+    for (const ProgramCase& c : cases)
+    {
+        const CronTab::Program found = CronTab::program(c.command);
+        EXPECT_EQ(found.kind, c.kind) << c.command;
+        EXPECT_EQ(found.word, c.word) << c.command;
+        EXPECT_EQ(found.path, c.path) << c.command;
+    }
+}
+
 // #3441 review: env -i, env - and env -u PATH (in any spelling) remove the PATH the job inherits, so env's execvp()
 // searches its default; a PATH= after them sets it again, and unsetting another variable leaves PATH alone.
 TEST(CronTabTest, EnvThatRemovesPathIsTold)
