@@ -236,6 +236,9 @@ struct Observed
     bool aboutSeen = false;
     bool settingsSeen = false;
     bool dialogShownOnLastFrame = false;
+    // The theme the first frame of a screenshot sequence was captured in, when the observer is told how many have
+    // been written; empty until then (#3585).
+    std::string themeAtFirstCapture;
 };
 
 /// Pushed last, after ScreenshotLayer: counts the frames, notes the drawable's size and the theme on
@@ -246,8 +249,13 @@ class ObserverLayer : public Core::Layer
   public:
     /// @p closeWhen, when given, asks for the window's normal close (as Close does) once it has held for
     /// CLOSE_AFTER_FRAMES frames in a row: a test that runs until a script is done, however slow its frames are.
-    explicit ObserverLayer(Observed& observed, std::function<bool()> closeWhen = {})
-        : Layer("ScreenshotObserver"), m_Observed(observed), m_CloseWhen(std::move(closeWhen))
+    /// @p capturesWritten, when given, is a screenshot sequence's count so far: the theme of the frame the
+    /// first one was taken in is noted (ScreenshotLayer, pushed before this layer, writes it in the same frame).
+    explicit ObserverLayer(Observed& observed, std::function<bool()> closeWhen = {}, std::function<int()> capturesWritten = {})
+        : Layer("ScreenshotObserver"),
+          m_Observed(observed),
+          m_CloseWhen(std::move(closeWhen)),
+          m_CapturesWritten(std::move(capturesWritten))
     {}
 
     void onAttach() override
@@ -279,6 +287,10 @@ class ObserverLayer : public Core::Layer
         if (m_Observed.frames == 1)
         {
             m_Observed.firstThemeId = m_Observed.lastThemeId;
+        }
+        if (m_CapturesWritten && m_Observed.themeAtFirstCapture.empty() && m_CapturesWritten() >= 1)
+        {
+            m_Observed.themeAtFirstCapture = m_Observed.lastThemeId;
         }
         if (m_CloseWhen && !m_CloseAsked)
         {
@@ -322,6 +334,7 @@ class ObserverLayer : public Core::Layer
 
     Observed& m_Observed;
     std::function<bool()> m_CloseWhen;
+    std::function<int()> m_CapturesWritten;
     int m_HeldFrames = 0;
     bool m_CloseAsked = false;
     double m_Start = 0.0;
@@ -563,7 +576,7 @@ TEST_F(ScreenshotOnDisplayTest, ADemoScriptPlaysWhileTheSequenceIsCaptured)
         app.pushLayer<App::ElevationNoticeLayer>();
         const App::DemoLayer& demo = app.pushLayer<App::DemoLayer>(steps, shell, metricsCsv);
         const App::ScreenshotLayer& screenshot = app.pushLayer<App::ScreenshotLayer>(request, &shell);
-        app.pushLayer<ObserverLayer>(run.observed);
+        app.pushLayer<ObserverLayer>(run.observed, std::function<bool()>{}, [&screenshot] { return screenshot.framesWritten(); });
         app.run();
         run.outcome = screenshot.outcome();
         run.framesWritten = screenshot.framesWritten();
@@ -603,8 +616,19 @@ TEST_F(ScreenshotOnDisplayTest, ADemoScriptPlaysWhileTheSequenceIsCaptured)
     EXPECT_EQ((std::pair{last.width, last.height}), run.capturedSize);
     EXPECT_TRUE(hasMoreThanOneColour(first));
     EXPECT_TRUE(hasMoreThanOneColour(last));
-    EXPECT_NE(first.rgba, last.rgba) << "the first and the last frame are the same image";
-    EXPECT_NE(dominantColour(first), dominantColour(last)) << "the window background did not change with the theme";
+    // The sequence shows the theme change when its first frame was captured before theme= ran. With slow frames (a
+    // sanitizer build, #3579) the theme can be applied during ScreenshotLayer's settle frames, before the first
+    // capture: then both frames are in dracula, which the theme ids above still check (#3585's review).
+    ASSERT_FALSE(run.observed.themeAtFirstCapture.empty()) << "the first capture's theme was noted";
+    if (run.observed.themeAtFirstCapture != "dracula")
+    {
+        EXPECT_NE(first.rgba, last.rgba) << "the first and the last frame are the same image";
+        EXPECT_NE(dominantColour(first), dominantColour(last)) << "the window background did not change with the theme";
+    }
+    else
+    {
+        EXPECT_EQ(dominantColour(first), dominantColour(last)) << "both frames were captured in dracula";
+    }
 }
 
 // TASKSMACK_DEMO (#2827) playing every kind of step the test above doesn't (#3374): a tab and a theme no one
