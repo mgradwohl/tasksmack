@@ -1534,6 +1534,28 @@ TEST(LinuxProcessProbeTest, ARecordFromTheFilesTextIsTheOneEnumerateBuilds)
     EXPECT_FALSE(built->networkCountersAvailable);
 }
 
+// #3572: under hidepid the helper reads a hidden process's I/O priority, and processFromFiles() decodes it as
+// readIoPriority() does its own: a kernel thread has none to show, and an unread value stays unknown.
+TEST(LinuxProcessProbeTest, ARecordFromFilesTakesTheIoPriorityTheHelperRead)
+{
+    const LinuxProcessProbe probe(std::filesystem::temp_directory_path());
+    const std::string stat = "6363 (svc) S 1 0 0 0 -1 4194304 0 0 0 0 0 0 0 0 20 0 1 0 88 0 0\n";
+    constexpr int IDLE = 3 << 13;
+    const auto withValue = probe.processFromFiles(6363, {.stat = stat, .cmdline = std::string("svc\0", 4), .ioprio = IDLE});
+    ASSERT_TRUE(withValue.has_value());
+    EXPECT_EQ(withValue->ioPriority, (Platform::IoPriority{.ioClass = Platform::IoPriorityClass::Idle, .level = 0}));
+
+    const auto unread = probe.processFromFiles(6363, {.stat = stat, .cmdline = std::string("svc\0", 4)});
+    ASSERT_TRUE(unread.has_value());
+    EXPECT_FALSE(unread->ioPriority.has_value()) << "the helper couldn't confirm it, so unknown";
+
+    // PF_KTHREAD (0x00200000) in stat's flags: a kernel thread shows the dash, whatever the helper read.
+    const std::string kthreadStat = "6464 (kworker/0:1) S 2 0 0 0 -1 2097152 0 0 0 0 0 0 0 0 20 0 1 0 89 0 0\n";
+    const auto kthread = probe.processFromFiles(6464, {.stat = kthreadStat, .cmdline = std::string{}, .ioprio = IDLE});
+    ASSERT_TRUE(kthread.has_value());
+    EXPECT_FALSE(kthread->ioPriority.has_value());
+}
+
 TEST(LinuxProcessProbeTest, ARecordFromFilesNeedsItsStatAndTreatsAZombieOrAnUnreadCommandLineAsEnumerateDoes)
 {
     const LinuxProcessProbe probe(std::filesystem::temp_directory_path());
