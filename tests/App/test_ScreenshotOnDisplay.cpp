@@ -57,6 +57,7 @@
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <ios>
 #include <iterator>
 #include <map>
@@ -243,7 +244,10 @@ struct Observed
 class ObserverLayer : public Core::Layer
 {
   public:
-    explicit ObserverLayer(Observed& observed) : Layer("ScreenshotObserver"), m_Observed(observed)
+    /// @p closeWhen, when given, asks for the window's normal close (as Close does) once it has held for
+    /// CLOSE_AFTER_FRAMES frames in a row: a test that runs until a script is done, however slow its frames are.
+    explicit ObserverLayer(Observed& observed, std::function<bool()> closeWhen = {})
+        : Layer("ScreenshotObserver"), m_Observed(observed), m_CloseWhen(std::move(closeWhen))
     {}
 
     void onAttach() override
@@ -276,6 +280,15 @@ class ObserverLayer : public Core::Layer
         {
             m_Observed.firstThemeId = m_Observed.lastThemeId;
         }
+        if (m_CloseWhen && !m_CloseAsked)
+        {
+            m_HeldFrames = m_CloseWhen() ? m_HeldFrames + 1 : 0;
+            if (m_HeldFrames >= CLOSE_AFTER_FRAMES)
+            {
+                m_CloseAsked = true;
+                Core::Application::get().getWindow().requestClose();
+            }
+        }
         if (Core::Application::getTime() - m_Start > TIMEOUT_SECONDS)
         {
             m_Observed.timedOut = true;
@@ -304,7 +317,13 @@ class ObserverLayer : public Core::Layer
     // Room for the every-step demo test's 12-frame sequence under a sanitizer's slow frames (#3582).
     static constexpr double TIMEOUT_SECONDS = 45.0;
 
+    // Frames the close condition must hold first: the last step's frame drawn, and one more.
+    static constexpr int CLOSE_AFTER_FRAMES = 3;
+
     Observed& m_Observed;
+    std::function<bool()> m_CloseWhen;
+    int m_HeldFrames = 0;
+    bool m_CloseAsked = false;
     double m_Start = 0.0;
 };
 
@@ -495,8 +514,8 @@ TEST_F(ScreenshotOnDisplayTest, ASequenceWritesItsNumberedFramesInOrderThenClose
 
 // TASKSMACK_DEMO (#2827) with a sequence: no startup selection, so the script's clock and the
 // screenshot's settle (after=0) start on the first frame. The first capture follows SETTLE_FRAMES frames
-// later and the third one 2 s after that (fps=1), so the script's tab= at 0.5 s and theme= at 1 s have
-// both been issued, through the shell's own request paths, by the third frame -- which therefore shows
+// later and the eighth one 7 s after that (fps=1), so the script's tab= at 0.5 s and theme= at 1 s have
+// both been issued, through the shell's own request paths, by the eighth frame -- which therefore shows
 // the Processes tab in the dracula theme, in another colour than the first frame's startup theme.
 TEST_F(ScreenshotOnDisplayTest, ADemoScriptPlaysWhileTheSequenceIsCaptured)
 {
@@ -506,7 +525,9 @@ TEST_F(ScreenshotOnDisplayTest, ADemoScriptPlaysWhileTheSequenceIsCaptured)
     }
 
     const std::filesystem::path given = m_Dir / "demo.png";
-    const ScreenshotEnv screenshotEnv(Core::pathToUtf8(given) + ";after=0;frames=3;fps=1");
+    // Eight captures, a second apart: DemoLayer issues one step a frame (#3582), and a sanitizer build's frames can
+    // take over a second each (#3579), so the four steps need four frames after the clock starts.
+    const ScreenshotEnv screenshotEnv(Core::pathToUtf8(given) + ";after=0;frames=8;fps=1");
     // metrics=on then metrics=export (#2923): with TASKSMACK_RENDER_METRICS unset the CSV lands beside the
     // screenshot, as main.cpp resolves it; the last frame is captured with the overlay on.
     const DemoEnv demoEnv("0.5:tab=processes,1:theme=dracula,1:metrics=on,1.5:metrics=export");
@@ -558,7 +579,7 @@ TEST_F(ScreenshotOnDisplayTest, ADemoScriptPlaysWhileTheSequenceIsCaptured)
 
     EXPECT_FALSE(run.observed.timedOut) << "the hook didn't close the window in time";
     EXPECT_EQ(run.outcome, App::ScreenshotLayer::Outcome::Written);
-    EXPECT_EQ(run.framesWritten, 3);
+    EXPECT_EQ(run.framesWritten, 8);
     EXPECT_EQ(run.observed.closeRequests, 1);
     EXPECT_TRUE(demoStarted) << "the script's clock never started";
     EXPECT_EQ(stepsIssued, 4U) << "every step was due before the last capture";
@@ -576,7 +597,7 @@ TEST_F(ScreenshotOnDisplayTest, ADemoScriptPlaysWhileTheSequenceIsCaptured)
     }
 
     const Png first = decodePng(App::ScreenshotOverride::frameFileName(given, 1));
-    const Png last = decodePng(App::ScreenshotOverride::frameFileName(given, 3));
+    const Png last = decodePng(App::ScreenshotOverride::frameFileName(given, 8));
     ASSERT_GT(first.width, 0) << "not a PNG: " << stbi_failure_reason();
     ASSERT_GT(last.width, 0) << "not a PNG: " << stbi_failure_reason();
     EXPECT_EQ((std::pair{last.width, last.height}), run.capturedSize);
@@ -602,20 +623,12 @@ TEST_F(ScreenshotOnDisplayTest, ADemoScriptPlaysEveryKindOfStep)
         GTEST_SKIP() << "No display available (headless environment)";
     }
 
-    const std::filesystem::path given = m_Dir / "steps.png";
-    // Twelve captures, a second apart: the script ends at 6.9 s, and DemoLayer issues one step a frame (#3582), so
-    // even frames as slow as a second each (a sanitizer build) leave every step issued and drawn before the last.
-    const ScreenshotEnv screenshotEnv(Core::pathToUtf8(given) + ";after=0;frames=12;fps=1");
     const std::string script = "0.2:tab=nosuchtab,0.3:select=pid:" + std::to_string(Platform::currentProcessId()) +
                                ",1.3:details=overview,1.8:section=modules,2.8:details=network,3.3:machine=cores,3.8:open=help,"
                                "4.3:close=dialog,4.8:open=about,5.3:close=dialog,5.8:open=settings,6.3:close=dialog,"
                                "6.5:theme=nosuchtheme,6.7:metrics=on,6.9:metrics=off";
     const DemoEnv demoEnv(script);
-    ASSERT_TRUE(screenshotEnv.set());
     ASSERT_TRUE(demoEnv.set());
-    const App::ScreenshotOverride::ParseResult parsedShot = ScreenshotEnv::parseFromEnvironment();
-    ASSERT_TRUE(parsedShot.request.has_value()) << parsedShot.warning;
-    const App::ScreenshotOverride::Request request = parsedShot.request.value_or(App::ScreenshotOverride::Request{});
     const App::DemoOverride::ParseResult parsedDemo = DemoEnv::parseFromEnvironment();
     ASSERT_TRUE(parsedDemo.steps.has_value()) << parsedDemo.warning;
     const std::vector<App::DemoOverride::Step> steps = parsedDemo.steps.value_or(std::vector<App::DemoOverride::Step>{});
@@ -624,7 +637,10 @@ TEST_F(ScreenshotOnDisplayTest, ADemoScriptPlaysEveryKindOfStep)
     TestSupport::expectLogWarning("'nosuchtab' names no tab; skipped");
     TestSupport::expectLogWarning("'nosuchtheme' is not a loaded theme; skipped");
 
-    // Composed as main.cpp's runApp() composes it, as in the test above.
+    // Composed as main.cpp's runApp() composes it, as in the test above, but with no screenshot sequence: a
+    // sequence ends after a fixed number of frames, and DemoLayer issues one step a frame (#3582), so a sanitizer
+    // build's slow frames (over a second each, #3579) could end it before the script. The observer closes the
+    // window instead, the way Close does, once every step has been issued and drawn, however slow the frames.
     RunResult run;
     bool demoStarted = false;
     std::size_t stepsIssued = 0;
@@ -642,13 +658,9 @@ TEST_F(ScreenshotOnDisplayTest, ADemoScriptPlaysEveryKindOfStep)
         app.pushLayer<App::AboutLayer>();
         app.pushLayer<App::SettingsLayer>();
         app.pushLayer<App::ElevationNoticeLayer>();
-        const App::DemoLayer& demo =
-            app.pushLayer<App::DemoLayer>(steps, shell, App::RenderMetricsOverride::csvBesideScreenshot(request.path));
-        const App::ScreenshotLayer& screenshot = app.pushLayer<App::ScreenshotLayer>(request, &shell);
-        app.pushLayer<ObserverLayer>(run.observed);
+        const App::DemoLayer& demo = app.pushLayer<App::DemoLayer>(steps, shell, m_Dir / "steps-metrics.csv");
+        app.pushLayer<ObserverLayer>(run.observed, [&demo, total = steps.size()] { return demo.stepsIssued() == total; });
         app.run();
-        run.outcome = screenshot.outcome();
-        run.framesWritten = screenshot.framesWritten();
         demoStarted = demo.started();
         stepsIssued = demo.stepsIssued();
         renderMetricsShown = shell.renderMetricsShown();
@@ -660,12 +672,10 @@ TEST_F(ScreenshotOnDisplayTest, ADemoScriptPlaysEveryKindOfStep)
         FAIL() << "Application failed after the display probe passed: " << e.what();
     }
 
-    EXPECT_FALSE(run.observed.timedOut) << "the hook didn't close the window in time";
-    EXPECT_EQ(run.outcome, App::ScreenshotLayer::Outcome::Written);
-    EXPECT_EQ(run.framesWritten, 12);
-    EXPECT_EQ(run.observed.closeRequests, 1) << "close=dialog closed the dialogs, not the window";
+    EXPECT_FALSE(run.observed.timedOut) << "the script didn't finish in time";
+    EXPECT_EQ(run.observed.closeRequests, 1) << "close=dialog closed the dialogs, not the window: only the observer's close";
     EXPECT_TRUE(demoStarted) << "the script's clock never started";
-    EXPECT_EQ(stepsIssued, 15U) << "every step was due before the last capture, the skipped ones included";
+    EXPECT_EQ(stepsIssued, 15U) << "every step was issued, the skipped ones included";
     EXPECT_FALSE(sectionStillPending) << "section=modules was taken while the Overview was drawn";
     EXPECT_TRUE(modulesRead) << "the Modules section was drawn open, so its read ran";
     EXPECT_EQ(run.observed.lastTab, "SystemOverview") << "machine=cores selected the machine tab (ShellLayer's id)";
