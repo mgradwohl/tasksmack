@@ -81,7 +81,9 @@ constexpr const char* LOGIN1_MANAGER = "org.freedesktop.login1.Manager";
     const bool interactive = sd_bus_get_allow_interactive_authorization(bus) > 0;
     ServiceActionResult failure = ServiceActionResult::failed(SystemdActions::errorText(name, message, timedOut(raw, result), interactive));
     const bool authorizationRequired = name == SystemdActions::INTERACTIVE_AUTHORIZATION_REQUIRED;
-    failure.needsAuthorization = authorizationRequired && !interactive;
+    // Nothing is offered to finish it with a password: a Linux session that isn't Administrator never asks after it
+    // starts (#3580), and the text says how to start one.
+    failure.needsAuthorization = false;
     failure.authorizationUnavailable = authorizationRequired && interactive;
     return failure;
 }

@@ -105,7 +105,8 @@ TEST(SystemdActionsTest, RunningMeansAStopWouldTakeItDown)
 TEST(SystemdActionsTest, RefusalsAfterAllowingAPromptSayWhatHappenedToIt)
 {
     using SystemdActions::errorText;
-    EXPECT_EQ(errorText(SystemdActions::INTERACTIVE_AUTHORIZATION_REQUIRED, "", false), "Requires administrator");
+    EXPECT_EQ(errorText(SystemdActions::INTERACTIVE_AUTHORIZATION_REQUIRED, "", false),
+              "Requires administrator: start TaskSmack (Administrator)");
     EXPECT_EQ(errorText(SystemdActions::INTERACTIVE_AUTHORIZATION_REQUIRED, "", false, true),
               "No authentication agent is running to ask for the password");
     EXPECT_EQ(errorText("org.freedesktop.DBus.Error.AccessDenied", "", false, true), "Authentication was canceled or refused");
@@ -133,8 +134,9 @@ TEST(SystemdActionsTest, RefusalsReadInTheUsersTerms)
     // polkit's answer to an unprivileged caller that won't be prompted (#2006), and plain denial.
     EXPECT_EQ(SystemdActions::errorText(
                   "org.freedesktop.DBus.Error.InteractiveAuthorizationRequired", "Interactive authentication required.", false),
-              "Requires administrator");
-    EXPECT_EQ(SystemdActions::errorText("org.freedesktop.DBus.Error.AccessDenied", "x", false), "Requires administrator");
+              "Requires administrator: start TaskSmack (Administrator)");
+    EXPECT_EQ(SystemdActions::errorText("org.freedesktop.DBus.Error.AccessDenied", "x", false),
+              "Requires administrator: start TaskSmack (Administrator)");
     EXPECT_EQ(SystemdActions::errorText("org.freedesktop.DBus.Error.ServiceUnknown", "x", false), "systemd isn't running");
     EXPECT_EQ(SystemdActions::errorText("org.freedesktop.systemd1.NoSuchUnit", "x", false), "No such service");
     EXPECT_TRUE(SystemdActions::errorText("org.freedesktop.systemd1.UnitMasked", "x", false).contains("masked"));
@@ -178,7 +180,7 @@ TEST(LinuxServiceActionsTest, ActsOnlyWhereSystemdRunsAndNeverOffersADelayedStar
     EXPECT_TRUE(caps.canRestart);
     EXPECT_TRUE(caps.canSetStartType);
     EXPECT_FALSE(caps.canDelayStart);
-    EXPECT_TRUE(caps.canAuthorizeInteractively); // polkit, through systemd (#2304)
+    EXPECT_FALSE(caps.canAuthorizeInteractively); // nothing asks for a password after TaskSmack starts (#3580)
 
     const TestSupport::ScopedTempDir bare("ts_service_actions_bare");
     LinuxServiceActions withoutSystemd(bare.path, /*built=*/true);
@@ -493,7 +495,7 @@ TEST_F(SystemdActionsFakeTest, AnUnprivilegedStartIsRefusedAsRequiringAdministra
     const std::stop_source stop;
     const ServiceActionResult result = SystemdBus::startUnit("cron.service", stop.get_token(), QUICK);
     EXPECT_FALSE(result.ok);
-    EXPECT_EQ(result.message, "Requires administrator");
+    EXPECT_EQ(result.message, "Requires administrator: start TaskSmack (Administrator)");
 }
 
 // #2304: the plain call never lets polkit prompt, and its refusal says a prompt could allow it; the
@@ -518,8 +520,8 @@ TEST_F(SystemdActionsFakeTest, OnlyTheAuthorizedRetryLetsPolkitPrompt)
 
     const ServiceActionResult plain = SystemdBus::startUnit("cron.service", stop.get_token(), QUICK);
     EXPECT_FALSE(plain.ok);
-    EXPECT_EQ(plain.message, "Requires administrator");
-    EXPECT_TRUE(plain.needsAuthorization);
+    EXPECT_EQ(plain.message, "Requires administrator: start TaskSmack (Administrator)");
+    EXPECT_FALSE(plain.needsAuthorization) << "no retry is offered after TaskSmack starts (#3580)";
     EXPECT_FALSE(plain.authorizationUnavailable);
 
     const ServiceActionResult retried = SystemdBus::startUnit("cron.service", stop.get_token(), QUICK, /*allowInteractive=*/true);
@@ -948,8 +950,10 @@ TEST_F(SystemdActionsFakeTest, EachRefusedUnitFileStepStopsTheChange)
     m_Bus.addRawMethod(SYSTEMD_PATH, MANAGER, "Reload", refuse);
     ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
 
-    EXPECT_EQ(SystemdBus::setUnitStartType("cron.service", ServiceStartType::Automatic).message, "Requires administrator");
-    EXPECT_EQ(SystemdBus::setUnitStartType("cron.service", ServiceStartType::Disabled).message, "Requires administrator");
+    EXPECT_EQ(SystemdBus::setUnitStartType("cron.service", ServiceStartType::Automatic).message,
+              "Requires administrator: start TaskSmack (Administrator)");
+    EXPECT_EQ(SystemdBus::setUnitStartType("cron.service", ServiceStartType::Disabled).message,
+              "Requires administrator: start TaskSmack (Administrator)");
     EXPECT_TRUE(calls().empty()) << "nothing past the refused step";
 }
 
@@ -995,7 +999,7 @@ TEST_F(SystemdActionsFakeTest, ARefusedReloadAfterTheChangeIsReported)
 
     const ServiceActionResult manual = SystemdBus::setUnitStartType("cron.service", ServiceStartType::Manual);
     EXPECT_FALSE(manual.ok);
-    EXPECT_EQ(manual.message, "Requires administrator");
+    EXPECT_EQ(manual.message, "Requires administrator: start TaskSmack (Administrator)");
     EXPECT_EQ(calls(), (std::vector<std::string>{"UnmaskUnitFiles cron.service", "DisableUnitFiles cron.service"}));
 }
 
