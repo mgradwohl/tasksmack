@@ -49,6 +49,8 @@ class AdministratorLauncherTest(unittest.TestCase):
 
     def test_the_launcher_runs_pkexec_on_the_installed_tasksmack(self):
         self.assertEqual(self.entry["Exec"], f"pkexec {INSTALLED_TASKSMACK}")
+        # Listed only where pkexec is installed: the .deb only recommends it.
+        self.assertEqual(self.entry["TryExec"], "pkexec")
         self.assertEqual(self.entry["Type"], "Application")
         self.assertEqual(self.entry["Terminal"], "false")
         self.assertEqual(self.entry["Name"], "TaskSmack (Administrator)")
