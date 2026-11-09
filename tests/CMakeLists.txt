@@ -740,6 +740,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessBatchRun.cpp
     App/test_ProcessActionRun.cpp
     App/test_ProcessBatchPriorityDialogRender.cpp
+    App/test_ProcessBatchIoPriorityDialogRender.cpp  # Set I/O priority for N processes (#3551)
     App/test_ProcessAffinityDialog.cpp
     App/test_ProcessSchedPolicyDialog.cpp  # Set scheduling policy (#3086)
     App/test_AboutDialogRender.cpp
@@ -1044,9 +1045,11 @@ add_executable(TaskSmackTests
     # test_ProcessConnectionsViewRender.cpp), the Modules section (test_ProcessModulesViewRender.cpp, #802),
     # the Open files section (test_ProcessOpenFilesViewRender.cpp, #183), the Security section
     # (test_ProcessSecurityViewRender.cpp, #1526), and the batch priority dialog (#1484,
-    # test_ProcessBatchPriorityDialogRender.cpp)
+    # test_ProcessBatchPriorityDialogRender.cpp), and the batch I/O priority dialog (#3551,
+    # test_ProcessBatchIoPriorityDialogRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessActionConfirm.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessBatchPriorityDialog.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessBatchIoPriorityDialog.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessAffinityDialog.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessSchedPolicyDialog.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/RunTaskDialog.cpp

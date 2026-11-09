@@ -59,9 +59,12 @@ constexpr float WINDOWS_DIALOG_WIDTH_EM = 30.0F;
     return std::min(wanted, UI::DialogMetrics::computeDialogMaxExtent(ImGui::GetMainViewport()->WorkSize.x));
 }
 
-/// The affected processes, a row each (name, PID, current priority) in a bordered list, then "+N more"
-/// for the ones folded away: the confirmation the dialog carries itself (#1539).
-void renderTargetList(const ProcessBatch::ListedTargets& listed)
+} // namespace
+
+namespace ProcessBatch
+{
+
+void renderTargetList(const ListedTargets& listed)
 {
     const auto& theme = UI::Theme::get();
     const ImGuiStyle& style = ImGui::GetStyle();
@@ -78,7 +81,7 @@ void renderTargetList(const ProcessBatch::ListedTargets& listed)
         ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch, 3.0F);
         ImGui::TableSetupColumn("PID", ImGuiTableColumnFlags_WidthStretch, 1.0F);
         ImGui::TableSetupColumn("Priority", ImGuiTableColumnFlags_WidthStretch, 2.0F);
-        for (const ProcessBatch::BatchTarget* target : listed.listed)
+        for (const BatchTarget* target : listed.listed)
         {
             ImGui::TableNextRow();
             ImGui::TableNextColumn();
@@ -100,7 +103,7 @@ void renderTargetList(const ProcessBatch::ListedTargets& listed)
     ImGui::PopStyleColor(2);
 }
 
-} // namespace
+} // namespace ProcessBatch
 
 void ProcessBatchPriorityDialog::open(std::vector<ProcessBatch::BatchTarget> targets, std::int32_t ownPid)
 {
@@ -167,7 +170,7 @@ std::optional<std::int32_t> ProcessBatchPriorityDialog::render()
     // To which processes: listed here, so Apply is the confirmation (no second dialog, #1539).
     ImGui::Spacing();
     (void) UI::Widgets::sectionHeader(ICON_FA_LIST, "Processes");
-    renderTargetList(m_Listed);
+    ProcessBatch::renderTargetList(m_Listed);
     if (!m_Warnings.empty())
     {
         ImGui::PushTextWrapPos(0.0F);

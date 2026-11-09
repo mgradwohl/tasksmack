@@ -70,6 +70,7 @@
 #include "Platform/CurrentProcess.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/ImageSignature.h"
+#include "Platform/IoPriorityTypes.h"
 #include "Platform/ProcessTypes.h"
 #include "Platform/SchedPolicy.h"
 #include "Platform/ThreadName.h"
@@ -2013,6 +2014,8 @@ void ProcessesPanel::renderContent()
 
     // The row menu's batch priority dialog (#1484); a picked value goes on to the confirmation below.
     renderBatchPriorityDialog();
+    // And its batch I/O priority dialog (#3551), applied on its own Apply.
+    renderBatchIoPriorityDialog();
     // The row menu's Set affinity... (#1887), applied on its own Apply.
     renderAffinityDialog();
     // The row menu's Set scheduling policy... (#3086), applied on its own Apply.
@@ -3375,8 +3378,9 @@ void ProcessesPanel::applyKeyboardInput(const std::vector<Domain::ProcessSnapsho
     // So is a dump's confirm, progress or result (#807), and a batch still running on its worker (#2142),
     // and the wait chain dialog (#3084), which has an End process confirmation of its own.
     const bool rowActionPending = m_ShowRowActionConfirm || m_RowAction.pending() || m_BatchPriorityDialog.isPending() ||
-                                  m_AffinityDialog.isPending() || m_SchedPolicyDialog.isPending() || m_RunTaskDialog.isOpen() ||
-                                  m_FindHandlesDialog.isOpen() || m_DumpView.active() || m_WaitChainDialog.isOpen() || rowActionRunning();
+                                  m_BatchIoPriorityDialog.isPending() || m_AffinityDialog.isPending() || m_SchedPolicyDialog.isPending() ||
+                                  m_RunTaskDialog.isOpen() || m_FindHandlesDialog.isOpen() || m_DumpView.active() ||
+                                  m_WaitChainDialog.isOpen() || rowActionRunning();
     if (killRequested && m_Selection.size() > 1)
     {
         // Only while at least one selected row is visible: with every selected row filtered out, F9
@@ -3739,6 +3743,16 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
         if (ImGui::MenuItem(label.c_str(), nullptr, false, actionsIdle))
         {
             requestSelectionPriority();
+        }
+    }
+    // And one I/O priority for the whole selection (#3551), in a dialog of its own; a single process's
+    // stays in Process Details, as its priority does.
+    if (ProcessBatch::offersBatchIoPriority(can, batchCount))
+    {
+        const std::string label = std::format("{} Set I/O priority for {} processes...###SetIoPriority", ICON_FA_HARD_DRIVE, batchCount);
+        if (ImGui::MenuItem(label.c_str(), nullptr, false, actionsIdle))
+        {
+            requestSelectionIoPriority();
         }
     }
     // One process's CPUs (#1887), in its own dialog: a selection's processes rarely want the same set.
@@ -4179,6 +4193,50 @@ void ProcessesPanel::renderBatchPriorityDialog()
     }
     m_BatchPriorityTargets = std::move(identities);
     m_BatchPrioritySkipped = skipped;
+}
+
+void ProcessesPanel::requestSelectionIoPriority()
+{
+    // As requestSelectionPriority(), with each process's current I/O priority for the dialog's list.
+    std::vector<ProcessBatch::BatchTarget> targets = ProcessBatch::resolveIoPriorityTargets(
+        *m_CachedRenderSnapshots, [this](const Platform::ProcessTarget& target) { return m_Selection.contains(target); });
+    if (targets.empty())
+    {
+        return;
+    }
+    // The slider Process Details draws: Realtime only where it can be set, Windows' hints there. Asked now, not
+    // from m_ActionCapabilities: authenticating on Linux connects the helper later, which can set Realtime
+    // (#3566's review). actionCapabilities() is cheap and never blocks, as Process Details reads it each frame.
+    const Platform::ProcessActionCapabilities can = m_ProcessActions ? m_ProcessActions->actionCapabilities() : m_ActionCapabilities;
+    m_BatchIoPriorityDialog.open(std::move(targets), m_OwnPid, can.canSetRealtimeIoPriority, can.ioPriorityHints);
+}
+
+void ProcessesPanel::renderBatchIoPriorityDialog()
+{
+    const std::optional<Platform::IoPriority> priority = m_BatchIoPriorityDialog.render();
+    if (!priority.has_value())
+    {
+        return;
+    }
+    // Apply: the dialog listed these processes, so it was the confirmation. Every one in turn, by
+    // identity, TaskSmack itself last, on the batch's worker (#2142); one summary line naming the I/O
+    // priority applied when it finishes.
+    if (!m_ProcessActions)
+    {
+        showBatchOutcome({.message = {.ok = false, .text = "Process actions unavailable"}, .anySucceeded = false});
+        return;
+    }
+    if (m_BatchRun.busy())
+    {
+        return; // startIoPriority() starts nothing while another batch runs, and the menu offers none meanwhile
+    }
+    std::vector<ProcessBatch::BatchTarget> targets(m_BatchIoPriorityDialog.targets().begin(), m_BatchIoPriorityDialog.targets().end());
+    if (std::optional<ProcessBatch::BatchRunOutcome> failed =
+            m_BatchRun.startIoPriority(*m_ProcessActions, std::move(targets), *priority, m_OwnPid);
+        failed.has_value())
+    {
+        showBatchOutcome(std::move(*failed));
+    }
 }
 
 void ProcessesPanel::showBatchOutcome(ProcessBatch::BatchRunOutcome outcome)

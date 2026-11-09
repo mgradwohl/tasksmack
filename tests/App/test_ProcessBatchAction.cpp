@@ -10,6 +10,8 @@
 #include "Domain/ProcessSnapshot.h"
 #include "Mocks/MockProbes.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IoPriorityTypes.h"
+#include "Platform/SchedPolicy.h"
 
 #include <gtest/gtest.h>
 
@@ -51,6 +53,14 @@ class RecordingProcessActions : public TestMocks::MockProcessActions
     [[nodiscard]] Platform::ProcessActionResult setPriority(const Platform::ProcessTarget& target, std::int32_t nice) override
     {
         nices.push_back(nice);
+        return record(target);
+    }
+    /// And each I/O priority set (#3551), in call order with `calls`.
+    std::vector<Platform::IoPriority> ioPriorities;
+    [[nodiscard]] Platform::ProcessActionResult
+    setIoPriority(const Platform::ProcessTarget& target, Platform::IoPriorityClass ioClass, std::int32_t level) override
+    {
+        ioPriorities.push_back({.ioClass = ioClass, .level = level});
         return record(target);
     }
 
@@ -477,6 +487,101 @@ TEST(ProcessBatchActionTest, PriorityAllFailedSaysWhatCouldNotBeSet)
     EXPECT_EQ(msg.text,
               "Could not set priority to High for 2 processes: PID 100 (proc0): Operation not permitted; PID 101 (proc1): Operation not "
               "permitted");
+}
+
+// ========== Batch I/O priority (#3551) ==========
+
+constexpr Platform::IoPriority IDLE{.ioClass = Platform::IoPriorityClass::Idle, .level = 0};
+constexpr Platform::IoPriority BEST_EFFORT_6{.ioClass = Platform::IoPriorityClass::BestEffort, .level = 6};
+
+TEST(ProcessBatchActionTest, BatchIoPriorityIsOfferedOnlyForASelectionWhereThePlatformCanSetIt)
+{
+    constexpr Platform::ProcessActionCapabilities CAN{.canSetIoPriority = true};
+    constexpr Platform::ProcessActionCapabilities CANNOT{.canSetPriority = true, .canSetIoPriority = false};
+    EXPECT_TRUE(offersBatchIoPriority(CAN, 2));
+    EXPECT_TRUE(offersBatchIoPriority(CAN, 50));
+    EXPECT_FALSE(offersBatchIoPriority(CAN, 0)); // A single row: Process Details' control
+    EXPECT_FALSE(offersBatchIoPriority(CAN, 1));
+    EXPECT_FALSE(offersBatchIoPriority(CANNOT, 5));
+}
+
+TEST(ProcessBatchActionTest, IoPriorityValueTextUsesTheColumnsWords)
+{
+    EXPECT_EQ(ioPriorityValueText(IDLE), "idle");
+    EXPECT_EQ(ioPriorityValueText(BEST_EFFORT_6), "best-effort 6");
+    EXPECT_EQ(ioPriorityValueText({.ioClass = Platform::IoPriorityClass::Realtime, .level = 0}), "realtime 0");
+    // The class never set follows each process's own nice value, so no level is named.
+    EXPECT_EQ(ioPriorityValueText({.ioClass = Platform::IoPriorityClass::None, .level = 0}), "default (from nice)");
+    EXPECT_EQ(ioPriorityValueText({.ioClass = Platform::IoPriorityClass::WindowsHint,
+                                   .level = static_cast<std::int32_t>(Platform::IoPriorityHint::VeryLow)}),
+              "Very low");
+}
+
+TEST(ProcessBatchActionTest, IoPriorityTargetsCarryTheirCurrentIoPriority)
+{
+    // The batch I/O priority dialog lists each process's I/O priority when it was picked; unknown is empty.
+    std::vector<Domain::ProcessSnapshot> snaps{
+        snapshot(10, 1000, 501, "a"), snapshot(11, 1100, 502, "b"), snapshot(12, 1200, 503, "c"), snapshot(13, 1300, 504, "d")};
+    snaps[0].ioPriority = IDLE;
+    snaps[1].ioPriority = Platform::IoPriority{.ioClass = Platform::IoPriorityClass::None, .level = 0};
+    snaps[1].nice = 10;
+    snaps[2].ioPriority = Platform::IoPriority{.ioClass = Platform::IoPriorityClass::None, .level = 0};
+    snaps[2].schedPolicy = Platform::SchedPolicy::Fifo; // served in the real-time class, as the column words it
+    const ProcessSelection::IdentitySet selected{
+        {.pid = 10, .startTimeTicks = 1000},
+        {.pid = 11, .startTimeTicks = 1100},
+        {.pid = 12, .startTimeTicks = 1200},
+        {.pid = 13, .startTimeTicks = 1300},
+    };
+    const std::vector<BatchTarget> targets =
+        resolveIoPriorityTargets(snaps, [&](const Platform::ProcessTarget& id) { return selected.contains(id); });
+    ASSERT_EQ(targets.size(), 4U);
+    EXPECT_EQ(targets[0].priority, "idle");
+    EXPECT_EQ(targets[1].priority, "default (best-effort 6 from nice)");
+    EXPECT_EQ(targets[2].priority, "default (realtime 4 from nice)");
+    EXPECT_EQ(targets[3].priority, ""); // unknown
+    EXPECT_EQ(targets[3].target.startTimeTicks, 1300U);
+}
+
+TEST(ProcessBatchActionTest, IoPriorityRunsEveryTargetByIdentityWithTheValueAndTaskSmackLast)
+{
+    RecordingProcessActions actions;
+    const std::vector<BatchTarget> targets{target(10, "a"), target(OWN_PID, "TaskSmack"), target(12, "c")};
+    const BatchResult result = runBatchIoPriority(actions, targets, BEST_EFFORT_6, OWN_PID);
+    EXPECT_EQ(result.attempted, 3U);
+    EXPECT_EQ(result.succeeded, 3U);
+    ASSERT_EQ(actions.calls.size(), 3U);
+    EXPECT_EQ(actions.calls[0].pid, 10);
+    EXPECT_EQ(actions.calls[0].startTimeTicks, 100U);
+    EXPECT_EQ(actions.calls[1].pid, 12);
+    EXPECT_EQ(actions.calls[2].pid, OWN_PID);
+    EXPECT_EQ(actions.ioPriorities, (std::vector<Platform::IoPriority>{BEST_EFFORT_6, BEST_EFFORT_6, BEST_EFFORT_6}));
+    EXPECT_TRUE(actions.nices.empty()); // Never the nice value
+}
+
+TEST(ProcessBatchActionTest, IoPriorityResultLineNamesTheAppliedValue)
+{
+    const BatchResult all{.attempted = 4, .succeeded = 4, .firstFailures = {}};
+    const Detail::ActionResultMessage ok = formatBatchIoPriorityResultMessage(IDLE, all);
+    EXPECT_TRUE(ok.ok);
+    EXPECT_EQ(ok.text, "I/O priority set to idle for 4 processes");
+}
+
+TEST(ProcessBatchActionTest, IoPriorityPartialAndTotalFailuresReadWell)
+{
+    // PID 1 and kernel threads refuse on Linux, as for one process: the rest are changed.
+    RecordingProcessActions actions;
+    actions.failing = {101};
+    const BatchResult some = runBatchIoPriority(actions, numberedTargets(3), IDLE, OWN_PID);
+    const Detail::ActionResultMessage partial = formatBatchIoPriorityResultMessage(IDLE, some);
+    EXPECT_FALSE(partial.ok);
+    EXPECT_EQ(partial.text, "I/O priority set to idle for 2 of 3 processes; 1 failed: PID 101 (proc1): Operation not permitted");
+
+    actions.failing = {100, 101};
+    const BatchResult none = runBatchIoPriority(actions, numberedTargets(2), BEST_EFFORT_6, OWN_PID);
+    EXPECT_EQ(formatBatchIoPriorityResultMessage(BEST_EFFORT_6, none).text,
+              "Could not set I/O priority to best-effort 6 for 2 processes: PID 100 (proc0): Operation not permitted; PID 101 (proc1): "
+              "Operation not permitted");
 }
 
 } // namespace
