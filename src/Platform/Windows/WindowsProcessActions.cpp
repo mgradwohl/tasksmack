@@ -832,7 +832,9 @@ ProcessActionResult WindowsProcessActions::setEfficiencyMode(const ProcessTarget
 
     // Forgotten only once restored: a refused class change, retried through the helper, still sends it (#3327).
     const std::optional<std::uint32_t> remembered = priorities.find(target);
-    const std::optional<std::uint32_t> restore = priorityClassToRestore(remembered, current);
+    const bool realtimeRetry = current == HIGH_PRIORITY_CLASS && priorities.isRealtimeRetry(target);
+    const std::optional<std::uint32_t> restore =
+        realtimeRetry ? std::optional<std::uint32_t>{REALTIME_PRIORITY_CLASS} : priorityClassToRestore(remembered, current);
     if (restore.has_value() && m_Fns.setPriorityClass(process.handle.get(), *restore) == FALSE)
     {
         const DWORD error = GetLastError();
@@ -843,21 +845,39 @@ ProcessActionResult WindowsProcessActions::setEfficiencyMode(const ProcessTarget
                            error,
                            efficiencyModePriorityFailure(error, target.pid, false));
     }
+    std::string note{efficiencyModeOffNote(remembered, restore)};
     if (restore == REALTIME_PRIORITY_CLASS)
     {
-        // Without SeIncreaseBasePriorityPrivilege, Windows quietly sets High (#3429): read back as setPriority() does,
-        // and keep Realtime remembered for the administrator retry, which sets it again (priorityClassToRestore(), #3590).
-        if (ProcessActionResult readBack = realtimeReadBackResult(m_Fns.getPriorityClass(process.handle.get()), target.pid);
-            !readBack.success)
+        // Without SeIncreaseBasePriorityPrivilege, Windows quietly sets High (#3429): read back as setPriority() does.
+        // High keeps Realtime remembered and marks the off for the administrator retry, which is asked to set it
+        // (efficiencyNiceToRestore(), #3590). An unreadable class keeps the read-back's note.
+        ProcessActionResult readBack = realtimeReadBackResult(m_Fns.getPriorityClass(process.handle.get()), target.pid);
+        if (!readBack.success)
         {
+            if (readBack.permissionDenied)
+            {
+                priorities.markRealtimeRetry(target);
+            }
             spdlog::warn("Efficiency mode off for PID {}: Realtime not restored: {}", target.pid, readBack.errorMessage);
             return efficiencyModeRealtimeRestoreRefusal(std::move(readBack), target.pid);
         }
+        if (!readBack.successNote.empty())
+        {
+            note = note.empty() ? std::move(readBack.successNote) : note + "; " + readBack.successNote;
+        }
     }
     static_cast<void>(priorities.take(target));
-    const std::string_view note = efficiencyModeOffNote(remembered, restore);
     spdlog::info("Turned Efficiency mode off for PID {}{}", target.pid, note.empty() ? std::string{} : std::format(" ({})", note));
-    return ProcessActionResult::ok(std::string{note});
+    return ProcessActionResult::ok(std::move(note));
+}
+
+std::optional<std::int32_t> WindowsProcessActions::efficiencyNiceToRestore(const ProcessTarget& target) const
+{
+    if (m_EfficiencyPriorities->isRealtimeRetry(target))
+    {
+        return REALTIME_CLASS_NICE;
+    }
+    return std::nullopt;
 }
 
 std::optional<std::uint32_t> WindowsProcessActions::efficiencyPriorityClassToRestore(const ProcessTarget& target) const

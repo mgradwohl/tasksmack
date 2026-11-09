@@ -191,6 +191,9 @@ class WindowsProcessActions : public IProcessActions
     /// denied is permissionDenied, so the elevated helper can retry it. A failure to lower the class undoes
     /// the throttling, so a refused "on" changes nothing.
     [[nodiscard]] ProcessActionResult setEfficiencyMode(const ProcessTarget& target, bool on) override;
+    /// Realtime's nice while @p target's off is the retry of a Realtime restore Windows set High for (#3590): the
+    /// helper, as an administrator, is asked to set Realtime as a priority change, so it never infers it from High.
+    [[nodiscard]] std::optional<std::int32_t> efficiencyNiceToRestore(const ProcessTarget& target) const override;
     /// The class remembered for @p target's off (#3327), left remembered.
     [[nodiscard]] std::optional<std::uint32_t> efficiencyPriorityClassToRestore(const ProcessTarget& target) const override;
     /// Remembers @p priorityClass for @p target's off (#3327), as an on here does; one of Windows' six classes only.

@@ -1658,6 +1658,10 @@ class TaskSmackAndHelper
     {
         return m_Broker->requests().size();
     }
+    [[nodiscard]] Broker::Request lastHelperRequest() const
+    {
+        return m_Broker->requests().back();
+    }
 
   private:
     static HANDLE WINAPI taskSmackOpen(DWORD access, BOOL inherit, DWORD pid)
@@ -1831,6 +1835,8 @@ TEST_F(WindowsEfficiencyModeTest, AnOffWhoseRealtimeCameOutHighIsARefusalThatKee
               "needs administrator rights.");
     EXPECT_EQ(FakeEco::priorityClass, static_cast<DWORD>(HIGH_PRIORITY_CLASS));
     EXPECT_EQ(actions.efficiencyPriorityClassToRestore(ecoTarget(7309)), std::optional<std::uint32_t>{REALTIME_PRIORITY_CLASS});
+    EXPECT_EQ(actions.efficiencyNiceToRestore(ecoTarget(7309)), std::optional<std::int32_t>{REALTIME_CLASS_NICE})
+        << "the helper is asked for Realtime, as a priority change";
 
     // The retry, with the privilege: the process is at High now, and Realtime is set again, not left.
     FakeEco::realtimeGives = REALTIME_PRIORITY_CLASS;
@@ -1838,6 +1844,41 @@ TEST_F(WindowsEfficiencyModeTest, AnOffWhoseRealtimeCameOutHighIsARefusalThatKee
     ASSERT_TRUE(retried.success) << retried.errorMessage;
     EXPECT_EQ(FakeEco::priorityClass, static_cast<DWORD>(REALTIME_PRIORITY_CLASS));
     EXPECT_FALSE(actions.efficiencyPriorityClassToRestore(ecoTarget(7309)).has_value()) << "spent";
+    EXPECT_FALSE(actions.efficiencyNiceToRestore(ecoTarget(7309)).has_value()) << "the retry is spent too";
+}
+
+// #3590 review: a High someone chose after the on is theirs, though Realtime is remembered. The off leaves it, and
+// asks the helper for nothing.
+TEST_F(WindowsEfficiencyModeTest, AHighSomeoneChoseAfterTheOnIsLeftThoughRealtimeIsRemembered)
+{
+    WindowsProcessActions actions(FakeEco::functions(), std::make_shared<EfficiencyModePriorities>());
+    FakeEco::priorityClass = REALTIME_PRIORITY_CLASS;
+    ASSERT_TRUE(actions.setEfficiencyMode(ecoTarget(7311), true).success);
+    FakeEco::priorityClass = HIGH_PRIORITY_CLASS; // someone else picked High
+    EXPECT_FALSE(actions.efficiencyNiceToRestore(ecoTarget(7311)).has_value());
+
+    const auto off = actions.setEfficiencyMode(ecoTarget(7311), false);
+    ASSERT_TRUE(off.success) << off.errorMessage;
+    EXPECT_EQ(FakeEco::classesSet, (std::vector<DWORD>{IDLE_PRIORITY_CLASS})) << "no class set by the off";
+    EXPECT_EQ(FakeEco::priorityClass, static_cast<DWORD>(HIGH_PRIORITY_CLASS));
+    EXPECT_FALSE(actions.efficiencyPriorityClassToRestore(ecoTarget(7311)).has_value());
+}
+
+// #3590 review: a Realtime restore whose class can't be read back is a success that keeps the read-back's warning.
+TEST_F(WindowsEfficiencyModeTest, ARealtimeRestoreThatCantBeReadBackKeepsItsWarning)
+{
+    WindowsProcessActions actions(FakeEco::functions(), std::make_shared<EfficiencyModePriorities>());
+    FakeEco::priorityClass = REALTIME_PRIORITY_CLASS;
+    ASSERT_TRUE(actions.setEfficiencyMode(ecoTarget(7312), true).success);
+    FakeEco::priorityClass = IDLE_PRIORITY_CLASS;
+    // The class before the off reads as 0 too: an unreadable class is restored as at Idle.
+    FakeEco::unreadable = true;
+    const auto off = actions.setEfficiencyMode(ecoTarget(7312), false);
+    ASSERT_TRUE(off.success) << off.errorMessage;
+    EXPECT_EQ(FakeEco::classesSet.back(), static_cast<DWORD>(REALTIME_PRIORITY_CLASS));
+    EXPECT_EQ(off.successNote, realtimeReadBackResult(0, 7312).successNote);
+    EXPECT_FALSE(off.successNote.empty());
+    EXPECT_FALSE(actions.efficiencyPriorityClassToRestore(ecoTarget(7312)).has_value());
 }
 
 // #3590 review, across processes: the on and the off both run in an unprivileged TaskSmack, whose restore of Realtime
@@ -1852,7 +1893,9 @@ TEST_F(WindowsEfficiencyModeTest, ARealtimeTheUnprivilegedOffCouldntRestoreIsRes
 
     const auto off = sides.setEfficiencyMode(ecoTarget(7310), false);
     ASSERT_TRUE(off.success) << off.errorMessage;
-    EXPECT_EQ(sides.helperRequests(), 1U) << "the refusal went to the helper";
+    EXPECT_EQ(sides.helperRequests(), 1U) << "the refusal went to the helper, asked for Realtime";
+    EXPECT_EQ(sides.lastHelperRequest(), (Broker::Request{Broker::PriorityRequest{.target = ecoTarget(7310), .nice = REALTIME_CLASS_NICE}}))
+        << "an explicit Realtime, never inferred from High";
     EXPECT_EQ(FakeEco::classesSet, (std::vector<DWORD>{IDLE_PRIORITY_CLASS, REALTIME_PRIORITY_CLASS, REALTIME_PRIORITY_CLASS}))
         << "TaskSmack's Realtime, which came out High, then the helper's";
     EXPECT_EQ(FakeEco::priorityClass, static_cast<DWORD>(REALTIME_PRIORITY_CLASS));
@@ -1993,8 +2036,8 @@ TEST(WindowsEfficiencyModeMathTest, TheClassRestoredIsTheOneRememberedWhileThePr
     EXPECT_EQ(priorityClassToRestore(HIGH_PRIORITY_CLASS, 0), std::optional<uint32_t>{HIGH_PRIORITY_CLASS}) << "unreadable now";
     EXPECT_EQ(priorityClassToRestore(std::nullopt, 0), std::optional<uint32_t>{NORMAL_PRIORITY_CLASS});
     EXPECT_FALSE(priorityClassToRestore(IDLE_PRIORITY_CLASS, BELOW_NORMAL_PRIORITY_CLASS).has_value()) << "changed since";
-    // #3590: a remembered Realtime at High is a downgraded restore, set again; High otherwise is someone's choice.
-    EXPECT_EQ(priorityClassToRestore(REALTIME_PRIORITY_CLASS, HIGH_PRIORITY_CLASS), std::optional<uint32_t>{REALTIME_PRIORITY_CLASS});
+    // #3590: High is someone's choice, even with Realtime remembered; only an explicit retry sets Realtime again.
+    EXPECT_FALSE(priorityClassToRestore(REALTIME_PRIORITY_CLASS, HIGH_PRIORITY_CLASS).has_value());
     EXPECT_FALSE(priorityClassToRestore(HIGH_PRIORITY_CLASS, HIGH_PRIORITY_CLASS).has_value());
     EXPECT_FALSE(priorityClassToRestore(std::nullopt, HIGH_PRIORITY_CLASS).has_value());
     EXPECT_FALSE(priorityClassToRestore(REALTIME_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS).has_value());
