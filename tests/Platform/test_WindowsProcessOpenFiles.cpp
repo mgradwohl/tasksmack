@@ -4,8 +4,8 @@
 /// learned once, hang-prone access masks never touched, a handle that never answers abandoned under the
 /// timeout and skipped after (by the same process only, not one reusing its PID), the count cap, a denied
 /// open, a reused PID, every handle duplicated with DUPLICATE_SAME_ACCESS and closed; long, NT-only and
-/// unnamable paths, failed calls and too many stuck namers.
-/// Plus one read of this test process through the real calls.
+/// unnamable paths, failed calls and too many stuck namers; a batch's one walk for every read (#3357).
+/// Plus reads of this test process through the real calls, outside a batch and in one.
 
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessOpenFiles.h"
@@ -597,6 +597,147 @@ TEST_F(WindowsProcessOpenFilesTest, TooManyStuckNamersListTheRestUnnamed)
     releaseAndDrain(reader);
 }
 
+// #3357: inside a batch, the reads take their handles from the one walk the batch began with: the table is walked
+// once however many reads follow, a handle opened since isn't listed, and the reads still check the process and
+// name its handles as a read outside a batch does. After the batch, a read walks the table again.
+TEST_F(WindowsProcessOpenFilesTest, ABatchWalksTheHandleTableOnceForEveryRead)
+{
+    WindowsProcessOpenFilesReader reader(fakeApi());
+    EXPECT_FALSE(reader.inBatch());
+    reader.beginBatch();
+    ASSERT_TRUE(reader.inBatch());
+    EXPECT_EQ(fake().snapshotCalls, 2); // the File type's probe, then the batch's walk
+    fake().handles.push_back({
+        .pid = TARGET.pid,
+        .value = 0x80,
+        .typeIndex = FILE_TYPE_INDEX,
+        .access = READ_WRITE_ACCESS,
+        .fileType = FILE_TYPE_DISK,
+        .path = L"C:\\Data\\opened-after.txt",
+        .hangs = false,
+    });
+    for (int read = 0; read < 3; ++read)
+    {
+        const OpenFilesReadResult result = reader.readOpenFiles(TARGET);
+        ASSERT_EQ(result.status, OpenFilesReadStatus::Ok);
+        ASSERT_EQ(result.files.size(), 4U); // as outside a batch, and not the handle opened since
+        EXPECT_EQ(result.files[0].path, "\\\\srv\\share\\a.log");
+        EXPECT_EQ(result.files[1].path, "C:\\Data\\My File.txt");
+        EXPECT_EQ(result.files[2].kind, OpenFileKind::Pipe);
+        EXPECT_EQ(result.files[3].kind, OpenFileKind::Other); // the hang-prone mask, still never touched
+    }
+    EXPECT_EQ(fake().snapshotCalls, 2) << "no walk per read";
+    EXPECT_EQ(fake().processOpens.load(), 1 + 3) << "the NUL probe, then each read still opens and checks its process";
+
+    // A refused or reused process reads as it would outside a batch.
+    fake().openError = ERROR_ACCESS_DENIED;
+    EXPECT_EQ(reader.readOpenFiles(TARGET).status, OpenFilesReadStatus::PermissionDenied);
+    fake().openError = 0;
+    fake().creationTicks = START_TICKS + 1;
+    EXPECT_EQ(reader.readOpenFiles(TARGET).status, OpenFilesReadStatus::ProcessExited);
+    fake().creationTicks = START_TICKS;
+
+    reader.endBatch();
+    EXPECT_FALSE(reader.inBatch());
+    const OpenFilesReadResult after = reader.readOpenFiles(TARGET);
+    EXPECT_EQ(fake().snapshotCalls, 3);
+    ASSERT_EQ(after.files.size(), 5U);
+    EXPECT_EQ(after.files[4].path, "C:\\Data\\opened-after.txt");
+}
+
+// #3357: a batch whose walk fails holds nothing, so each read walks the table itself and says why it can't; one that
+// can't learn the File type does the same.
+TEST_F(WindowsProcessOpenFilesTest, ABatchWhoseWalkFailsLeavesTheReadsToWalkThemselves)
+{
+    WindowsProcessOpenFilesReader reader(fakeApi());
+    fake().snapshotStatus = static_cast<LONG>(0xC0000022L);
+    reader.beginBatch();
+    EXPECT_FALSE(reader.inBatch());
+    EXPECT_EQ(reader.readOpenFiles(TARGET).status, OpenFilesReadStatus::Failed);
+    fake().snapshotStatus = 0;
+    const int before = fake().snapshotCalls;
+    EXPECT_EQ(reader.readOpenFiles(TARGET).status, OpenFilesReadStatus::Ok);
+    EXPECT_EQ(fake().snapshotCalls, before + 2) << "the File type's probe, then the read's own walk";
+    reader.endBatch();
+
+    WindowsProcessOpenFilesReader noType(fakeApi());
+    fake().createFileFails = true;
+    noType.beginBatch();
+    EXPECT_FALSE(noType.inBatch());
+    EXPECT_EQ(noType.readOpenFiles(TARGET).detail, "Could not identify file handles");
+    fake().createFileFails = false;
+    noType.endBatch();
+
+    WindowsProcessOpenFilesReader neverBegun(fakeApi());
+    neverBegun.endBatch(); // ending a batch never begun is harmless
+    EXPECT_FALSE(neverBegun.inBatch());
+}
+
+// #3357: the batch's grouping: every handle of the one type, ordered by PID, each process's in the table's order;
+// a PID with none finds none.
+TEST(WindowsProcessOpenFilesSnapshotTest, FileHandlesByProcessGroupsOneTypeByPid)
+{
+    const std::vector<SystemHandleEntry> entries{
+        {
+            .object = nullptr,
+            .uniqueProcessId = 30,
+            .handleValue = 0x10,
+            .grantedAccess = 0,
+            .creatorBackTraceIndex = 0,
+            .objectTypeIndex = FILE_TYPE_INDEX,
+            .handleAttributes = 0,
+            .reserved = 0,
+        },
+        {
+            .object = nullptr,
+            .uniqueProcessId = 10,
+            .handleValue = 0x20,
+            .grantedAccess = 0,
+            .creatorBackTraceIndex = 0,
+            .objectTypeIndex = FILE_TYPE_INDEX,
+            .handleAttributes = 0,
+            .reserved = 0,
+        },
+        {
+            .object = nullptr,
+            .uniqueProcessId = 30,
+            .handleValue = 0x08,
+            .grantedAccess = 0,
+            .creatorBackTraceIndex = 0,
+            .objectTypeIndex = FILE_TYPE_INDEX,
+            .handleAttributes = 0,
+            .reserved = 0,
+        },
+        {
+            .object = nullptr,
+            .uniqueProcessId = 10,
+            .handleValue = 0x30,
+            .grantedAccess = 0,
+            .creatorBackTraceIndex = 0,
+            .objectTypeIndex = 5,
+            .handleAttributes = 0,
+            .reserved = 0,
+        }, // not a File
+    };
+    std::vector<std::byte> buffer((2 * sizeof(ULONG_PTR)) + (entries.size() * sizeof(SystemHandleEntry)));
+    const ULONG_PTR count = entries.size();
+    std::memcpy(buffer.data(), &count, sizeof(count));
+    std::memcpy(buffer.data() + (2 * sizeof(ULONG_PTR)), entries.data(), entries.size() * sizeof(SystemHandleEntry));
+
+    const std::vector<SystemHandleEntry> grouped = fileHandlesByProcess(buffer, FILE_TYPE_INDEX);
+    ASSERT_EQ(grouped.size(), 3U);
+    EXPECT_EQ(grouped[0].uniqueProcessId, 10U);
+    EXPECT_EQ(grouped[1].handleValue, 0x10U); // PID 30's, in the table's order
+    EXPECT_EQ(grouped[2].handleValue, 0x08U);
+
+    const std::span<const SystemHandleEntry> thirty = handlesOfProcessIn(grouped, 30);
+    ASSERT_EQ(thirty.size(), 2U);
+    EXPECT_EQ(thirty[0].handleValue, 0x10U);
+    EXPECT_EQ(handlesOfProcessIn(grouped, 10).size(), 1U);
+    EXPECT_TRUE(handlesOfProcessIn(grouped, 20).empty());
+    EXPECT_TRUE(fileHandlesByProcess(std::span(buffer).first(3), FILE_TYPE_INDEX).empty());
+}
+
 TEST(WindowsProcessOpenFilesSnapshotTest, ClampsACountLargerThanTheBuffer)
 {
     std::vector<std::byte> buffer((2 * sizeof(ULONG_PTR)) + sizeof(SystemHandleEntry));
@@ -634,6 +775,37 @@ TEST(WindowsProcessOpenFilesRealTest, ReadsThisProcess)
     ASSERT_NE(found, result.files.end());
     EXPECT_EQ(found->kind, OpenFileKind::File);
     EXPECT_TRUE(found->path.ends_with("ts_open_files_probe.txt")) << found->path;
+}
+
+// #3357: the same read inside a batch, through the real calls: the one walk finds this process's file.
+TEST(WindowsProcessOpenFilesRealTest, ReadsThisProcessInABatch)
+{
+    FILETIME creation{};
+    FILETIME exitTime{};
+    FILETIME kernelTime{};
+    FILETIME userTime{};
+    ASSERT_NE(GetProcessTimes(GetCurrentProcess(), &creation, &exitTime, &kernelTime, &userTime), 0);
+    const ProcessTarget self{
+        .pid = static_cast<std::int32_t>(GetCurrentProcessId()),
+        .startTimeTicks = (static_cast<std::uint64_t>(creation.dwHighDateTime) << 32U) | creation.dwLowDateTime,
+    };
+    std::array<wchar_t, MAX_PATH + 1> temp{};
+    ASSERT_GT(GetTempPathW(MAX_PATH, temp.data()), 0U);
+    const std::wstring path = std::wstring(temp.data()) + L"ts_open_files_batch_probe.txt";
+    auto* const file =
+        CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_FLAG_DELETE_ON_CLOSE, nullptr);
+    ASSERT_NE(file, INVALID_HANDLE_VALUE);
+
+    WindowsProcessOpenFilesReader reader;
+    reader.beginBatch();
+    EXPECT_TRUE(reader.inBatch());
+    const OpenFilesReadResult result = reader.readOpenFiles(self);
+    reader.endBatch();
+    CloseHandle(file);
+    ASSERT_EQ(result.status, OpenFilesReadStatus::Ok);
+    const auto found = std::ranges::find(result.files, reinterpret_cast<std::uint64_t>(file), &OpenFile::descriptor);
+    ASSERT_NE(found, result.files.end());
+    EXPECT_TRUE(found->path.ends_with("ts_open_files_batch_probe.txt")) << found->path;
 }
 
 } // namespace

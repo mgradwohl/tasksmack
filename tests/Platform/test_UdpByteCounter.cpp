@@ -1,6 +1,8 @@
 // The helper's eBPF UDP byte counter (#3366). The attach plan and the embedded object are checked unprivileged;
 // loading needs root, so UdpByteCounterRootTest runs only in CI's sudo step on a disposable runner.
 
+#include "Platform/IUdpTrafficCollector.h"
+#include "Platform/Linux/LinuxUdpTrafficCollector.h"
 #include "Platform/Linux/UdpByteCounter.h"
 #include "Support/CiRealSystem.h"
 #include "UdpBytesBpfObject.h"
@@ -12,6 +14,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <expected>
 #include <filesystem>
 #include <iostream>
 #include <memory>
@@ -20,6 +23,7 @@
 #include <string_view>
 #include <system_error>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <bpf/bpf.h>
@@ -425,6 +429,53 @@ TEST_P(UdpByteCounterRootTest, CountsTheBytesAChildSendsAndReceivesOnceEach)
     ASSERT_NE(entry, counts.end()) << "no entry for the child's tgid among " << counts.size();
     EXPECT_EQ(entry->txBytes, expectedTxBytes()) << "the IPv4-mapped sends once, and the IPv4 sends despite the stale marker";
     EXPECT_EQ(entry->rxBytes, expectedRxBytes()) << "every blocked receive, and no peek or error-queue read";
+}
+
+// Root's in-process collector (#3580) over the real counter, in this mode: what the child sent and received is what it
+// reports for the child, as all new bytes.
+TEST_P(UdpByteCounterRootTest, RootsInProcessCollectorReportsWhatTheCounterCountedForAChild)
+{
+    const std::array attempts{UdpAttachAttempt{.mode = GetParam(), .ipv6 = true}};
+    LinuxUdpTrafficCollector collector(
+        [&attempts]() -> std::expected<LinuxUdpTrafficCollector::Read, std::string>
+        {
+            auto loaded = UdpByteCounter::load(attempts);
+            if (!loaded.has_value())
+            {
+                return std::unexpected(std::move(loaded.error()));
+            }
+            auto counter = std::make_shared<UdpByteCounter>(std::move(*loaded));
+            return LinuxUdpTrafficCollector::Read{[counter] { return counter->read(); }};
+        });
+    ASSERT_EQ(collector.start(), UdpCollectorStartResult::Started) << collector.problem();
+
+    std::array<int, 2> go{-1, -1};
+    ASSERT_EQ(::pipe(go.data()), 0);
+    const pid_t child = ::fork();
+    ASSERT_GE(child, 0);
+    if (child == 0)
+    {
+        ::close(go[1]);
+        sendAndReceiveUdp(go[0]);
+    }
+    ::close(go[0]);
+    ASSERT_EQ(::write(go[1], "g", 1), 1);
+    ::close(go[1]);
+    int status = 0;
+    ASSERT_EQ(::waitpid(child, &status, 0), child);
+    ASSERT_TRUE(WIFEXITED(status));
+    ASSERT_EQ(WEXITSTATUS(status), 0);
+
+    const std::vector<UdpProcessTraffic> traffic = collector.sample();
+    EXPECT_TRUE(collector.isDelivering()) << collector.problem();
+    const auto entry = std::ranges::find(traffic, static_cast<std::uint32_t>(child), &UdpProcessTraffic::pid);
+    ASSERT_NE(entry, traffic.end()) << "no entry for the child among " << traffic.size();
+    EXPECT_EQ(entry->bytesSent, expectedTxBytes());
+    EXPECT_EQ(entry->bytesReceived, expectedRxBytes());
+    EXPECT_TRUE(entry->readable);
+    EXPECT_FALSE(entry->baselineOnly);
+    collector.stop();
+    EXPECT_EQ(openDescriptorsOf("anon_inode:bpf-map"), 0U) << "stop() unloads the counter";
 }
 
 INSTANTIATE_TEST_SUITE_P(EachMode,

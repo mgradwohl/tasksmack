@@ -1401,6 +1401,19 @@ TEST(BrokeredOpenFilesReaderTest, AnInProcessReadAndAReadWithoutABrokerNeverReac
     EXPECT_EQ(inner->readCount(), 1);
 }
 
+// #3357: a search's batch reaches the reader inside, so its in-process reads come from one walk of the handle table.
+TEST(BrokeredOpenFilesReaderTest, ABatchIsTheInnerReaders)
+{
+    auto inner = std::make_unique<TestMocks::MockProcessOpenFilesReader>();
+    const TestMocks::MockProcessOpenFilesReader* const raw = inner.get();
+    BrokeredOpenFilesReader reader(std::move(inner), nullptr);
+    reader.beginBatch();
+    EXPECT_EQ(raw->batchesBegun(), 1);
+    EXPECT_EQ(raw->batchesEnded(), 0);
+    reader.endBatch();
+    EXPECT_EQ(raw->batchesEnded(), 1);
+}
+
 TEST(BrokeredOpenFilesReaderTest, AHelperThatCantAnswerSaysWhy)
 {
     OpenFilesReadResult denied;
@@ -1552,6 +1565,11 @@ TEST(ProcessReaderDefaultsTest, AReaderWithoutAnAuthorizedPathOffersNoneAndReads
     EXPECT_EQ(files.readAuthorized(TARGET, std::stop_token{}).status, OpenFilesReadStatus::PermissionDenied);
     EXPECT_EQ(files.reads, 1);
     EXPECT_EQ(files.handlesScanned(), 0U);
+    // No batch of its own (#3357): reads inside one read as usual.
+    files.beginBatch();
+    EXPECT_EQ(files.readOpenFiles(TARGET).status, OpenFilesReadStatus::PermissionDenied);
+    files.endBatch();
+    EXPECT_EQ(files.reads, 2);
 
     RequiredOnlyConnectionsReader connections;
     EXPECT_FALSE(connections.canReadAuthorized());

@@ -2,6 +2,7 @@
 
 #include "App/UserConfigHelpers.h"
 #include "Domain/SamplingConfig.h"
+#include "Platform/ConfigDirectory.h"
 
 #include <gtest/gtest.h>
 #include <toml++/toml.hpp>
@@ -146,6 +147,28 @@ using App::UserConfigHelpers::configDirectoryFrom;
 {
     ADD_FAILURE() << "the passwd entry was read although $HOME is set";
     return std::nullopt;
+}
+
+// #3580: run as root for a user (sudo, pkexec), TaskSmack keeps that user's settings, not root's.
+TEST(UserConfigHelpersTest, RootRunForAUserUsesThatUsersConfigWhenHomeIsRoots)
+{
+    using Platform::ConfigDirectory::configDirectoryFor;
+    // pkexec, and sudo: HOME is root's, and root's XDG_CONFIG_HOME, if any, is ignored too.
+    EXPECT_EQ(configDirectoryFor(std::nullopt, "/root", noPasswdLookup, "/cwd", "/home/u").directory,
+              std::filesystem::path("/home/u/.config/tasksmack"));
+    EXPECT_EQ(configDirectoryFor("/root/.xdg", "/root", noPasswdLookup, "/cwd", "/home/u").directory,
+              std::filesystem::path("/home/u/.config/tasksmack"));
+    EXPECT_EQ(configDirectoryFor(std::nullopt, std::nullopt, noPasswdLookup, "/cwd", "/home/u").directory,
+              std::filesystem::path("/home/u/.config/tasksmack"))
+        << "no HOME at all: the user's, never root's passwd entry";
+    // sudo -E: HOME is the user's own, so their environment decides as usual, XDG_CONFIG_HOME included.
+    EXPECT_EQ(configDirectoryFor("/home/u/.xdg", "/home/u", noPasswdLookup, "/cwd", "/home/u").directory,
+              std::filesystem::path("/home/u/.xdg/tasksmack"));
+    // Not run for another user: unchanged.
+    EXPECT_EQ(configDirectoryFor(std::nullopt, "/root", noPasswdLookup, "/cwd", std::nullopt).directory,
+              std::filesystem::path("/root/.config/tasksmack"));
+    EXPECT_EQ(configDirectoryFor("/home/u/.xdg", "/home/u", noPasswdLookup, "/cwd", std::nullopt).directory,
+              std::filesystem::path("/home/u/.xdg/tasksmack"));
 }
 
 TEST(UserConfigHelpersTest, ConfigDirectoryIsXdgConfigHomesWhenItIsSafe)

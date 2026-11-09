@@ -104,17 +104,14 @@ ProcessesPanelPlatform makeProcessesPanelPlatform(const Synthetic::Scenario* sce
                           : Synthetic::makeUdpTrafficCollector(scenario),
         .icons = Synthetic::makeProcessIconSource(scenario),
     };
-#ifndef _WIN32
     // Find handles (#3067): the readers Process Details uses, another user's processes through the helper.
-    // Not on Windows yet: its open-files reader walks the whole system handle table for each process, so a
-    // search of every process needs the single-pass reader the Windows lane is adding.
+    // A search reads the open files in one batch (#3357): on Windows, one pass over the system handle table.
     platform.openFiles = (scenario == nullptr)
                            ? Platform::withPrivilegedBroker(Synthetic::makeProcessOpenFilesReader(scenario), sharedPrivilegedBroker())
                            : Synthetic::makeProcessOpenFilesReader(scenario);
     platform.modules = (scenario == nullptr)
                          ? Platform::withPrivilegedBroker(Synthetic::makeProcessModulesReader(scenario), sharedPrivilegedBroker())
                          : Synthetic::makeProcessModulesReader(scenario);
-#endif
     return platform;
 }
 

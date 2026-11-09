@@ -184,7 +184,7 @@ inline constexpr std::string_view INTERACTIVE_AUTHORIZATION_REQUIRED = "org.free
     }
     if (errorName == INTERACTIVE_AUTHORIZATION_REQUIRED || errorName == "org.freedesktop.DBus.Error.AccessDenied")
     {
-        return "Requires administrator";
+        return "Requires administrator: start TaskSmack (Administrator)";
     }
     if (errorName == "org.freedesktop.DBus.Error.ServiceUnknown" || errorName == "org.freedesktop.DBus.Error.NameHasNoOwner")
     {
