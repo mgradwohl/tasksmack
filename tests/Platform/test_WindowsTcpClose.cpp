@@ -10,6 +10,7 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/Windows/WindowsElevation.h"
 #include "Platform/Windows/WindowsProcessActions.h"
+#include "Platform/Windows/WindowsProcessActionsMath.h"
 #include "Platform/Windows/WindowsTcpClose.h"
 #include "Support/CiRealSystem.h"
 
@@ -20,6 +21,7 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -199,6 +201,7 @@ TEST_F(WindowsTcpCloseTest, NothingIsSetForAConnectionThatIsGoneMovedOrNoConnect
     FakeTcp::reset({row(HOLDER_PID, MIB_TCP_STATE_LISTEN)});
     EXPECT_EQ(closeTcpConnectionOf(fns, HOLDER_PID, CONNECTION).errorMessage,
               "This socket is listening for connections, so there is no connection to close");
+    EXPECT_TRUE(FakeTcp::rowsSet.empty()) << "a listener is never set";
     for (const DWORD closed : {
              static_cast<DWORD>(MIB_TCP_STATE_TIME_WAIT),
              static_cast<DWORD>(MIB_TCP_STATE_CLOSED),
@@ -207,6 +210,7 @@ TEST_F(WindowsTcpCloseTest, NothingIsSetForAConnectionThatIsGoneMovedOrNoConnect
     {
         FakeTcp::reset({row(HOLDER_PID, closed)});
         EXPECT_EQ(closeTcpConnectionOf(fns, HOLDER_PID, CONNECTION).errorMessage, "The connection is already closed") << closed;
+        EXPECT_TRUE(FakeTcp::rowsSet.empty()) << "state " << closed << " is never set";
     }
 
     FakeTcp::reset({row(HOLDER_PID, MIB_TCP_STATE_ESTAB)});
@@ -319,6 +323,56 @@ TEST_F(WindowsTcpCloseTest, WithoutSetTcpEntryThereIsNoCloseConnection)
     // A test's table without it, as the other suites build theirs, never resets a real connection.
     EXPECT_FALSE(WindowsProcessActions(WindowsProcessFunctions{}).actionCapabilities().canCloseConnections);
     EXPECT_NE(realWindowsProcessFunctions().tcpClose.setTcpEntry, nullptr);
+}
+
+/// IsProcessCritical() fakes: the process is critical, or the call fails.
+struct FakeCritical
+{
+    static constexpr DWORD CHECK_ERROR = ERROR_INVALID_HANDLE;
+
+    static BOOL WINAPI critical(HANDLE /*process*/, PBOOL isCritical)
+    {
+        *isCritical = TRUE;
+        return TRUE;
+    }
+    static BOOL WINAPI fails(HANDLE /*process*/, PBOOL /*isCritical*/)
+    {
+        SetLastError(CHECK_ERROR);
+        return FALSE;
+    }
+};
+
+// A critical process's connections are left alone, as Linux leaves init's (#3295), and so are those of one whose
+// criticality can't be read: refused before the table is read, and never as a permission refusal, since no
+// administrator makes it safe.
+TEST_F(WindowsTcpCloseTest, ACriticalProcessOrAnUnknownOneIsRefusedWithNoRetry)
+{
+    const ProcessTarget self = thisProcess();
+    FakeTcp::reset({row(self.pid, MIB_TCP_STATE_ESTAB)});
+    struct Case
+    {
+        BOOL(WINAPI* isProcessCritical)(HANDLE, PBOOL);
+        std::string message;
+    };
+    for (const Case& c : {
+             Case{
+                 .isProcessCritical = &FakeCritical::critical,
+                 .message = criticalProcessRefusal(self.pid, GuardedAction::CloseConnection),
+             },
+             Case{.isProcessCritical = &FakeCritical::fails, .message = criticalCheckFailure(self.pid, FakeCritical::CHECK_ERROR)},
+             Case{.isProcessCritical = nullptr, .message = criticalCheckFailure(self.pid, ERROR_CALL_NOT_IMPLEMENTED)},
+         })
+    {
+        WindowsProcessFunctions fns = actionsFunctions();
+        fns.isProcessCritical = c.isProcessCritical;
+        WindowsProcessActions actions(fns);
+        const ProcessActionResult refused = actions.closeTcpConnection(self, CONNECTION);
+        EXPECT_FALSE(refused.success) << c.message;
+        EXPECT_FALSE(refused.permissionDenied) << c.message << ": no administrator retry";
+        EXPECT_EQ(refused.errorMessage, c.message);
+        EXPECT_EQ(FakeTcp::tableCalls, 0) << c.message;
+        EXPECT_TRUE(FakeTcp::rowsSet.empty()) << c.message;
+    }
 }
 
 /// Winsock, started for the test's lifetime.
