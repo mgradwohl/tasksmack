@@ -6,7 +6,8 @@
 // (Platform::makeProcessOpenFilesReader()) and hands it to the panel.
 //
 // Linux reads /proc/[pid]/fd (ProcFdParser.h); Windows enumerates the system handle table filtered
-// to the process and names its File handles (WindowsProcessOpenFiles.h). Neither spawns lsof.
+// to the process and names its File handles (WindowsProcessOpenFiles.h). Neither spawns lsof. Find
+// handles (Domain/HandleSearch.h) reads every process through the same reader, in one batch.
 
 #include "Platform/IProcessActions.h"
 
@@ -108,6 +109,18 @@ class IProcessOpenFilesReader
     {
         return 0;
     }
+
+    /// Many processes are about to be read in a row (Find handles, #3357), until endBatch(). A reader whose
+    /// every read walks a system-wide table (Windows' handle table) may walk it once here and answer the
+    /// reads from that walk, so a search of every process costs one walk, not one per process. Process
+    /// Details' single reads never call it, so they always read fresh. The default does nothing (Linux
+    /// reads each process's own /proc/[pid]/fd). On the thread that reads, before the first read.
+    virtual void beginBatch()
+    {}
+
+    /// The batch beginBatch() began is over: later reads walk the table again. The default does nothing.
+    virtual void endBatch() noexcept
+    {}
 };
 
 /// The reader for a run that cannot list another process's open files (synthetic scenarios).

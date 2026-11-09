@@ -176,7 +176,7 @@ TEST_F(LogindSessionsTest, EverySessionIsReadWithItsPropertiesAndTheCurrentOneMa
     EXPECT_FALSE(ssh.current);
 }
 
-TEST_F(LogindSessionsTest, LockAndSignOutGoToLogindAndAnotherUsersSessionNeedsTheRetry)
+TEST_F(LogindSessionsTest, LockAndSignOutGoToLogindAndAnotherUsersSessionIsRefused)
 {
     serveLogind();
     ASSERT_TRUE(m_Bus.start(LOGIN1)) << m_Bus.error();
@@ -187,11 +187,11 @@ TEST_F(LogindSessionsTest, LockAndSignOutGoToLogindAndAnotherUsersSessionNeedsTh
     const ServiceActionResult disconnect = SystemdBus::sessionAction("2", SessionAction::Disconnect, true, stop.get_token());
     EXPECT_FALSE(disconnect.ok);
     EXPECT_EQ(disconnect.message, SystemdBus::DISCONNECT_UNSUPPORTED);
-    // bob's session: refused without a prompt, with the retry offered; allowed to prompt, it goes through.
+    // bob's session: refused without a prompt, with no retry offered (#3580); allowed to prompt, it goes through.
     const ServiceActionResult refused = SystemdBus::sessionAction("5", SessionAction::SignOut, false, stop.get_token());
     EXPECT_FALSE(refused.ok);
-    EXPECT_TRUE(refused.needsAuthorization);
-    EXPECT_EQ(refused.message, "Requires administrator");
+    EXPECT_FALSE(refused.needsAuthorization);
+    EXPECT_EQ(refused.message, "Requires administrator: start TaskSmack (Administrator)");
     EXPECT_TRUE(SystemdBus::sessionAction("5", SessionAction::SignOut, true, stop.get_token()).ok);
     // A session that has gone since the list was read.
     const ServiceActionResult gone = SystemdBus::sessionAction("9", SessionAction::Lock, false, stop.get_token());

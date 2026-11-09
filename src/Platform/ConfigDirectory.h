@@ -79,4 +79,21 @@ struct ConfigDirectoryChoice
     return {.directory = fallback, .warning = {}};
 }
 
+/// configDirectoryFrom() for a TaskSmack run as root for a user (#3580): @p invokingUserHome is the home directory of the
+/// user sudo or pkexec names (SessionUser::invokingUserHome()), nullopt otherwise. Such a session keeps that user's
+/// settings, not root's. When $HOME is theirs (sudo -E) the environment decides as usual; otherwise (pkexec, and sudo,
+/// set HOME to root's) it's their home's .config/tasksmack, and the environment's XDG_CONFIG_HOME, root's, is ignored.
+[[nodiscard]] inline auto configDirectoryFor(const std::optional<std::string>& xdgConfigHome,
+                                             const std::optional<std::string>& home,
+                                             const std::function<std::optional<std::filesystem::path>()>& passwdHome,
+                                             const std::filesystem::path& currentPath,
+                                             const std::optional<std::string>& invokingUserHome) -> ConfigDirectoryChoice
+{
+    if (invokingUserHome.has_value() && home != invokingUserHome)
+    {
+        return configDirectoryFrom(std::nullopt, invokingUserHome, passwdHome, currentPath);
+    }
+    return configDirectoryFrom(xdgConfigHome, home, passwdHome, currentPath);
+}
+
 } // namespace Platform::ConfigDirectory

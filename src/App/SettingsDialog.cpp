@@ -576,14 +576,13 @@ Action render(State& state)
         ImGui::BeginDisabled(offUnsupported);
         UI::Widgets::outlinedCheckbox(UDP_EVENT_TRACE_LABEL, &state.udpEventTrace);
         ImGui::EndDisabled();
-        ImGui::SetItemTooltip("Net Sent and Net Received count TCP only unless this is on. On, and in an Administrator session, "
-                              "TaskSmack's helper counts UDP too with a small eBPF program in the kernel: QUIC/HTTP3, video calls, "
-                              "games, DNS. Turning it on during a session restarts the helper, which may ask for the password.");
+        ImGui::SetItemTooltip("Net Sent and Net Received count TCP only unless this is on. On, with TaskSmack started as administrator, "
+                              "it counts UDP too with a small eBPF program in the kernel: QUIC/HTTP3, video calls, games, DNS.");
         // Wrapped to the dialog's row budget, so a large font or a narrow window doesn't clip or widen it.
         ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + appearanceComboWidth + valueColumn);
         if (state.udpEventTrace && state.udpDelivering)
         {
-            ImGui::TextColored(theme.scheme().textMuted, "Counting UDP through the helper.");
+            ImGui::TextColored(theme.scheme().textMuted, "Counting UDP.");
         }
         else if (state.udpUnsupported)
         {
@@ -591,7 +590,7 @@ Action render(State& state)
         }
         else
         {
-            ImGui::TextColored(theme.scheme().textMuted, "Needs an Administrator session: click Standard in the status bar.");
+            ImGui::TextColored(theme.scheme().textMuted, "Needs TaskSmack started as administrator: TaskSmack (Administrator), or sudo.");
         }
         ImGui::PopTextWrapPos();
 #endif

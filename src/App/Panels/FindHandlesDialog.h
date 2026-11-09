@@ -42,14 +42,16 @@ struct FindHandlesAction
 /// generation to @p publish. @p cancel is the search's own: the dialog's Stop signals it as well as the worker's job
 /// in flight, so a search stopped while still queued on the worker reads nothing (and asks for no password) once it
 /// runs. Otherwise the walk stops on @p workerStop: the worker's cancel (Stop, once the job is in flight), its stop
-/// and its destructor.
+/// and its destructor. @p sources is what to read for each process (HandleSearch::run()): an administrator's search reads only
+/// the sources the first search was refused (#3357); empty reads both.
 void runFindHandlesSearch(std::span<const Domain::HandleSearch::SearchProcess> processes,
                           const Domain::HandleSearch::Readers& readers,
                           bool authorized,
                           Domain::HandleSearch::SearchPublication start,
                           const std::stop_source& cancel,
                           const std::stop_token& workerStop,
-                          const Domain::HandleSearch::Publish& publish) noexcept;
+                          const Domain::HandleSearch::Publish& publish,
+                          std::span<const Domain::HandleSearch::SearchSources> sources = {}) noexcept;
 
 /// A results column of the Find handles table.
 enum class FindHandlesColumn : std::uint8_t
@@ -129,6 +131,7 @@ class FindHandlesDialog
     struct SearchJob
     {
         std::vector<Domain::HandleSearch::SearchProcess> processes;
+        std::vector<Domain::HandleSearch::SearchSources> sources; ///< Per process; empty reads both (#3357)
         Domain::HandleSearch::Readers readers;
         bool authorized = false;
         Domain::HandleSearch::SearchPublication start;
@@ -141,9 +144,12 @@ class FindHandlesDialog
     [[nodiscard]] bool jobActive() const noexcept;
     /// Ends the search just begun as one that couldn't start, so the status line says so.
     void failToStart() noexcept;
-    /// Starts a search of @p processes on the worker; @p start carries the query and anything found before.
-    void
-    startSearch(std::vector<Domain::HandleSearch::SearchProcess> processes, bool authorized, Domain::HandleSearch::SearchPublication start);
+    /// Starts a search of @p processes on the worker, reading @p sources of each (empty: both); @p start carries the query and
+    /// anything found before.
+    void startSearch(std::vector<Domain::HandleSearch::SearchProcess> processes,
+                     std::vector<Domain::HandleSearch::SearchSources> sources,
+                     bool authorized,
+                     Domain::HandleSearch::SearchPublication start);
     /// The query row: the box, Find and Stop. True when a search should start.
     [[nodiscard]] bool renderQueryRow();
     [[nodiscard]] std::optional<FindHandlesAction> renderResults(const Domain::HandleSearch::SearchPublication& publication);

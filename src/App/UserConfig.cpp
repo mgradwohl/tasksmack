@@ -54,6 +54,8 @@
 // clang-format on
 #else
 #include "App/NewFileOwner.h"
+#include "Platform/ConfigDirectory.h"
+#include "Platform/Linux/SessionUser.h"
 
 #include <array>
 #include <cerrno>
@@ -679,9 +681,14 @@ auto UserConfig::getConfigDirectory() -> std::filesystem::path
     // Fallback to current directory
     return std::filesystem::current_path();
 #else
-    // Linux: XDG_CONFIG_HOME or ~/.config, decided by UserConfigHelpers::configDirectoryFrom() (#1891).
-    const UserConfigHelpers::ConfigDirectoryChoice choice = UserConfigHelpers::configDirectoryFrom(
-        readEnvVarString("XDG_CONFIG_HOME"), readEnvVarString("HOME"), passwdHomeDirectory, std::filesystem::current_path());
+    // Linux: XDG_CONFIG_HOME or ~/.config, decided by Platform::ConfigDirectory::configDirectoryFor() (#1891): run as
+    // root for a user (sudo, pkexec), that user's (#3580).
+    const UserConfigHelpers::ConfigDirectoryChoice choice =
+        Platform::ConfigDirectory::configDirectoryFor(readEnvVarString("XDG_CONFIG_HOME"),
+                                                      readEnvVarString("HOME"),
+                                                      passwdHomeDirectory,
+                                                      std::filesystem::current_path(),
+                                                      Platform::SessionUser::invokingUserHome());
     if (!choice.warning.empty())
     {
         spdlog::warn("{}", choice.warning);

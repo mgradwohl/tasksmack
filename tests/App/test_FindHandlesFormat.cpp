@@ -89,6 +89,11 @@ TEST(FindHandlesStatusTest, EveryPartOfTheStatusLine)
     EXPECT_EQ(App::findHandlesStatus(done, true),
               "12 processes searched \xC2\xB7 4 found (the first ones) \xC2\xB7 3 couldn't be read \xC2\xB7 2 failed "
               "\xC2\xB7 1 ended first");
+    // #3357: processes some of whose handles weren't named in time (Windows) come after those that ended.
+    done.partlyNamed = 2;
+    EXPECT_EQ(App::findHandlesStatus(done, true),
+              "12 processes searched \xC2\xB7 4 found (the first ones) \xC2\xB7 3 couldn't be read \xC2\xB7 2 failed "
+              "\xC2\xB7 1 ended first \xC2\xB7 2 only partly read");
 
     // Nothing unusual: just the counts, with no "(the first ones)" and none of the optional parts.
     Domain::HandleSearch::SearchPublication clean = Domain::HandleSearch::startFor("libssl", 5, 1);
