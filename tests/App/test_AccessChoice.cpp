@@ -1,6 +1,6 @@
 /// @file test_AccessChoice.cpp
-/// @brief Standard or Administrator (#2728): the startup notice's decision over every combination of
-/// platform, elevation, token, helper and setting, and each platform's wording, checked in one run.
+/// @brief Standard or Administrator (#2728): each platform's wording, and the access table the Standard note
+/// expands.
 
 #include "App/AccessChoice.h"
 #include "App/AccessTable.h"
@@ -20,91 +20,6 @@ namespace
 {
 
 constexpr std::array<AccessPlatform, 2> PLATFORMS{AccessPlatform::Windows, AccessPlatform::Linux};
-constexpr std::array<TokenType, 2> TOKENS{TokenType::AdminCapable, TokenType::StandardUser};
-constexpr std::array<bool, 2> BOTH{false, true};
-
-/// Calls @p check with every combination of inputs.
-template<typename Check> void forEveryInput(const Check& check)
-{
-    for (const AccessPlatform platform : PLATFORMS)
-    {
-        for (const bool elevated : BOTH)
-        {
-            for (const TokenType token : TOKENS)
-            {
-                for (const bool helperInstalled : BOTH)
-                {
-                    for (const bool noticeEnabled : BOTH)
-                    {
-                        check(NoticeInputs{.platform = platform,
-                                           .elevated = elevated,
-                                           .token = token,
-                                           .helperInstalled = helperInstalled,
-                                           .noticeEnabled = noticeEnabled});
-                    }
-                }
-            }
-        }
-    }
-}
-
-TEST(AccessChoiceTest, StandardIsTheDefaultInEveryCase)
-{
-    // Decision 2: TaskSmack always starts as Standard and never chooses Administrator on its own.
-    forEveryInput([](const NoticeInputs& inputs) { EXPECT_EQ(decideNotice(inputs).defaultChoice, Choice::Standard); });
-}
-
-TEST(AccessChoiceTest, TheNoticeShowsOnlyWhileNotElevatedAndTurnedOn)
-{
-    forEveryInput([](const NoticeInputs& inputs) { EXPECT_EQ(decideNotice(inputs).show, !inputs.elevated && inputs.noticeEnabled); });
-}
-
-TEST(AccessChoiceTest, LinuxOffersAdministratorOnlyWithTheHelperAndSaysHowToGetIt)
-{
-    const NoticeDecision with = decideNotice({.platform = AccessPlatform::Linux, .helperInstalled = true});
-    EXPECT_TRUE(with.administrator.enabled);
-    EXPECT_TRUE(with.administrator.note.empty());
-
-    const NoticeDecision without = decideNotice({.platform = AccessPlatform::Linux, .helperInstalled = false});
-    EXPECT_FALSE(without.administrator.enabled);
-    EXPECT_TRUE(without.administrator.note.contains("TaskSmack (Administrator)")); // how to start one (#3580)
-    EXPECT_TRUE(without.administrator.note.contains("sudo"));                      // today's remedy stays
-}
-
-TEST(AccessChoiceTest, WindowsOffersAdministratorWithoutAHelperAndWarnsAStandardUser)
-{
-    // Windows' Administrator restarts TaskSmack elevated: the zip, with no helper, offers it too.
-    const NoticeDecision admin =
-        decideNotice({.platform = AccessPlatform::Windows, .token = TokenType::AdminCapable, .helperInstalled = false});
-    EXPECT_TRUE(admin.administrator.enabled);
-    EXPECT_TRUE(admin.administrator.note.empty());
-
-    const NoticeDecision standard = decideNotice({.platform = AccessPlatform::Windows, .token = TokenType::StandardUser});
-    EXPECT_TRUE(standard.administrator.enabled);
-    EXPECT_EQ(standard.administrator.note, STANDARD_USER_NOTE);
-}
-
-TEST(AccessChoiceTest, TheTokenMattersOnlyOnWindowsAndTheHelperOnlyOnLinux)
-{
-    forEveryInput(
-        [](const NoticeInputs& inputs)
-        {
-            NoticeInputs other = inputs;
-            if (inputs.platform == AccessPlatform::Linux)
-            {
-                other.token = inputs.token == TokenType::AdminCapable ? TokenType::StandardUser : TokenType::AdminCapable;
-            }
-            else
-            {
-                other.helperInstalled = !inputs.helperInstalled;
-            }
-            const NoticeDecision a = decideNotice(inputs);
-            const NoticeDecision b = decideNotice(other);
-            EXPECT_EQ(a.show, b.show);
-            EXPECT_EQ(a.administrator.enabled, b.administrator.enabled);
-            EXPECT_EQ(a.administrator.note, b.administrator.note);
-        });
-}
 
 TEST(AccessChoiceTest, EachPlatformSaysItInItsOwnWords)
 {

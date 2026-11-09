@@ -13,7 +13,6 @@
 #include "Panels/SystemInfoPanel.h"
 #include "Panels/SystemMetricsPanel.h"
 #include "Platform/IHttpsClient.h"
-#include "Platform/IPrivilegedBroker.h"
 #include "Platform/ProcessTypes.h"
 #include "SelectOverride.h"
 #include "ShellHost.h"
@@ -194,16 +193,12 @@ class ShellLayer : public Core::Layer
     // dispatched in the first onUpdate() after the process probe's first generation (which says whether
     // privileges are reduced, #2731), with all layers stacked.
     bool m_PendingPrivilegeNotice = false;
-    /// The privileged broker the access chip asks whether the session is held (#2728), resolved on the
-    /// first update; null where there is none (no helper, a synthetic run) or off Linux.
-    std::shared_ptr<Platform::IPrivilegedBroker> m_AccessBroker;
-    bool m_AccessBrokerResolved = false;
     /// The window title last set (#2728): whether it says "(Administrator)", nullopt before the first.
     std::optional<bool> m_TitleSaysAdministrator;
-    /// Whether the title and the access chip say Administrator (#2728): the helper is held for the session,
-    /// or nothing is limited on a real machine. A synthetic run never is (#3004): its probe limits nothing
+    /// Whether the title and the access chip say Administrator (#2728): nothing is limited on a real machine, as when
+    /// TaskSmack was started as root (#3580). A synthetic run never is (#3004): its probe limits nothing
     /// because its machine is a stand-in, and its process actions are all refused.
-    [[nodiscard]] bool isAdministratorSession(const Platform::ProcessCapabilities& capabilities) const;
+    [[nodiscard]] static bool isAdministratorSession(const Platform::ProcessCapabilities& capabilities);
 
     // Display scale the base minimum window size was last set for. With native decorations nothing
     // else sets the minimum, so it is re-applied when the scale changes (#943).

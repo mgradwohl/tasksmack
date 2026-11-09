@@ -1,12 +1,9 @@
 /// @file test_AccessNoticeDialogRender.cpp
-/// @brief Standard or Administrator, the startup notice (#2728), headless: Continue as Standard and Escape
-/// close it as Standard; Administrator asks the caller to start it and waits, disabled, for how it went;
-/// a refused prompt leaves it open with a note; it is centred and stays inside a small window; and the
-/// Administrator option is disabled, with its reason, where the decision says so.
+/// @brief The Linux Standard note (#2728, #3580), headless: it says how to start an Administrator session and
+/// offers nothing that elevates this one; OK and Escape close it; it is centred and stays inside a small window.
 
 #include "App/AccessChoice.h"
 #include "App/AccessNoticeDialog.h"
-#include "App/Panels/AuthorizeWording.h"
 
 #include <gtest/gtest.h>
 #include <imgui.h>
@@ -23,7 +20,7 @@ using AccessChoice::AccessPlatform;
 
 struct Frame
 {
-    AccessNoticeDialog::Choice choice = AccessNoticeDialog::Choice::None;
+    bool closed = false; ///< render() said OK or Escape closed it
     bool open = false;
     std::string text; ///< What the notice drew
     ImVec2 pos;
@@ -61,7 +58,7 @@ class AccessNoticeDialogRenderTest : public ::testing::Test
         ImGui::Begin("Main", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
         ImGui::End();
         ImGui::LogToBuffer();
-        frame.choice = AccessNoticeDialog::render(m_State);
+        frame.closed = AccessNoticeDialog::render(m_State);
         frame.text = GImGui->LogBuffer.c_str();
         ImGui::LogFinish();
         frame.open = ImGui::IsPopupOpen(AccessNoticeDialog::POPUP_ID);
@@ -74,27 +71,23 @@ class AccessNoticeDialogRenderTest : public ::testing::Test
         return frame;
     }
 
-    /// Frames until the notice has settled; the choice any of them reported, if one did.
+    /// Frames until the note has settled; whether any of them reported it closed.
     Frame settle()
     {
         Frame last;
-        AccessNoticeDialog::Choice seen = AccessNoticeDialog::Choice::None;
+        bool closed = false;
         for (int frame = 0; frame < SETTLE_FRAMES; ++frame)
         {
             last = runFrame();
-            if (last.choice != AccessNoticeDialog::Choice::None)
-            {
-                seen = last.choice;
-            }
+            closed = closed || last.closed;
         }
-        last.choice = seen;
+        last.closed = closed;
         return last;
     }
 
-    Frame open(const AccessChoice::NoticeInputs& inputs)
+    Frame open()
     {
-        m_State.platform = inputs.platform;
-        AccessNoticeDialog::requestOpen(m_State, AccessChoice::decideNotice(inputs));
+        AccessNoticeDialog::requestOpen(m_State);
         return settle();
     }
 
@@ -113,72 +106,38 @@ class AccessNoticeDialogRenderTest : public ::testing::Test
     ImGuiContext* m_Context = nullptr;
 };
 
-TEST_F(AccessNoticeDialogRenderTest, ContinueAsStandardClosesItAsStandard)
+TEST_F(AccessNoticeDialogRenderTest, ItSaysHowToStartAnAdministratorSessionAndOffersNothingThatElevatesThisOne)
 {
-    const Frame opened = open({.platform = AccessPlatform::Linux, .helperInstalled = true});
+    const Frame opened = open();
     ASSERT_TRUE(opened.open);
-    EXPECT_TRUE(opened.text.contains("running as Standard"));
-    press(AccessNoticeDialog::CONTINUE_LABEL);
+    EXPECT_TRUE(opened.text.contains("Some data is limited"));
+    EXPECT_TRUE(opened.text.contains("(Administrator)")) << "how to start one (#3580)";
+    EXPECT_TRUE(opened.text.contains("sudo"));
+    EXPECT_FALSE(opened.text.contains("Authenticate")) << "no button switches this session";
+    EXPECT_FALSE(opened.text.contains("password")) << "nothing asks for one after TaskSmack starts";
+}
+
+TEST_F(AccessNoticeDialogRenderTest, OkClosesIt)
+{
+    ASSERT_TRUE(open().open);
+    press(AccessNoticeDialog::OK_LABEL);
     const Frame closed = settle();
-    EXPECT_EQ(closed.choice, AccessNoticeDialog::Choice::Standard);
+    EXPECT_TRUE(closed.closed);
     EXPECT_FALSE(closed.open);
 }
 
-TEST_F(AccessNoticeDialogRenderTest, EscapeIsContinueAsStandard)
+TEST_F(AccessNoticeDialogRenderTest, EscapeClosesIt)
 {
-    ASSERT_TRUE(open({.platform = AccessPlatform::Linux, .helperInstalled = true}).open);
+    ASSERT_TRUE(open().open);
     ImGui::GetIO().AddKeyEvent(ImGuiKey_Escape, true);
-    EXPECT_EQ(runFrame().choice, AccessNoticeDialog::Choice::Standard);
+    EXPECT_TRUE(runFrame().closed);
     ImGui::GetIO().AddKeyEvent(ImGuiKey_Escape, false);
     EXPECT_FALSE(settle().open);
 }
 
-TEST_F(AccessNoticeDialogRenderTest, AdministratorWaitsForThePromptThenClosesWhenItSucceeds)
-{
-    ASSERT_TRUE(open({.platform = AccessPlatform::Linux, .helperInstalled = true}).open);
-    press(AuthorizeWording::LINUX_WORDING.switchSession);
-    const Frame asked = settle();
-    EXPECT_EQ(asked.choice, AccessNoticeDialog::Choice::Administrator);
-    EXPECT_TRUE(asked.open);
-    EXPECT_TRUE(m_State.authenticating);
-    EXPECT_TRUE(asked.text.contains(AccessNoticeDialog::WAITING_TEXT));
-
-    // While the prompt is up, neither Continue nor Escape closes it.
-    press(AccessNoticeDialog::CONTINUE_LABEL);
-    EXPECT_TRUE(settle().open);
-
-    AccessNoticeDialog::finishAdministrator(m_State, true, {});
-    const Frame done = settle();
-    EXPECT_FALSE(done.open);
-    EXPECT_EQ(done.choice, AccessNoticeDialog::Choice::None) << "closed as Administrator, not as Standard";
-}
-
-TEST_F(AccessNoticeDialogRenderTest, ARefusedPromptLeavesItOpenAsStandardWithANote)
-{
-    ASSERT_TRUE(open({.platform = AccessPlatform::Linux, .helperInstalled = true}).open);
-    press(AuthorizeWording::LINUX_WORDING.switchSession);
-    (void) settle();
-    AccessNoticeDialog::finishAdministrator(m_State, false, "the password prompt was dismissed");
-    const Frame after = settle();
-    EXPECT_TRUE(after.open);
-    EXPECT_FALSE(m_State.authenticating);
-    EXPECT_TRUE(after.text.contains("Still Standard: the password prompt was dismissed"));
-}
-
-TEST_F(AccessNoticeDialogRenderTest, WithoutTheHelperAdministratorIsDisabledAndSaysHowToStartOne)
-{
-    const Frame opened = open({.platform = AccessPlatform::Linux, .helperInstalled = false});
-    ASSERT_TRUE(opened.open);
-    EXPECT_TRUE(opened.text.contains("(Administrator)")) << "a session never elevates after it starts (#3580)";
-    press(AuthorizeWording::LINUX_WORDING.switchSession);
-    const Frame pressed = settle();
-    EXPECT_EQ(pressed.choice, AccessNoticeDialog::Choice::None) << "a disabled button is never reported";
-    EXPECT_FALSE(m_State.authenticating);
-}
-
 TEST_F(AccessNoticeDialogRenderTest, TheTableShowsWhatAdministratorAddsAndWhatItNeverDoes)
 {
-    ASSERT_TRUE(open({.platform = AccessPlatform::Linux, .helperInstalled = true}).open);
+    ASSERT_TRUE(open().open);
     const ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
     ASSERT_NE(modal, nullptr);
     ImGui::ActivateItemByID(ImHashStr(AccessNoticeDialog::TABLE_HEADER, 0, modal->ID));
@@ -190,7 +149,7 @@ TEST_F(AccessNoticeDialogRenderTest, TheTableShowsWhatAdministratorAddsAndWhatIt
 
 TEST_F(AccessNoticeDialogRenderTest, ItIsCentredAndStaysInsideASmallWindow)
 {
-    Frame opened = open({.platform = AccessPlatform::Linux, .helperInstalled = true});
+    Frame opened = open();
     const ImVec2 display = ImGui::GetIO().DisplaySize;
     EXPECT_NEAR(opened.pos.x + (opened.size.x * 0.5F), display.x * 0.5F, 1.0F);
     EXPECT_NEAR(opened.pos.y + (opened.size.y * 0.5F), display.y * 0.5F, 1.0F);
