@@ -430,7 +430,7 @@ TEST_F(WindowsSystemConnectionsReaderTest, ListsEveryRowOfTheFourTablesWithItsHo
     ASSERT_NE(udp6, nullptr);
     EXPECT_EQ(udp6->connection.local.address, V6_LOCAL);
 
-    // Nothing names a socket to close on Windows yet (#3358).
+    // Windows has no socket inodes: Close connection names a connection by its endpoints (#3358).
     EXPECT_TRUE(std::ranges::all_of(read.connections, [](const SystemConnection& c) { return c.socketInode == 0; }));
 }
 

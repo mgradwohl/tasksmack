@@ -74,7 +74,10 @@ void ConnectionsPanel::onAttach()
     {
         m_Actions = makeConnectionsPanelActions(Synthetic::activeScenario());
     }
-    m_CanClose = m_Actions != nullptr && m_Actions->actionCapabilities().canCloseConnections;
+    const Platform::ProcessActionCapabilities capabilities =
+        m_Actions != nullptr ? m_Actions->actionCapabilities() : Platform::ProcessActionCapabilities{};
+    m_CanClose = capabilities.canCloseConnections;
+    m_CloseKey = capabilities.connectionCloseKey;
 }
 
 void ConnectionsPanel::onDetach()
@@ -147,11 +150,11 @@ void ConnectionsPanel::renderContent()
     m_CloseControl.update(ImGui::GetIO().DeltaTime);
     renderCloseResultLine();
     if (const std::optional<ConnectionsViewAction> action =
-            renderConnectionsView(m_Publication.get(), m_Model->hasConnections(), m_ViewState, m_CanClose))
+            renderConnectionsView(m_Publication.get(), m_Model->hasConnections(), m_ViewState, m_CanClose, m_CloseKey))
     {
         if (action->close.has_value())
         {
-            m_CloseControl.request(*action->close);
+            m_CloseControl.request(*action->close, m_CloseKey);
         }
         Core::ProcessSelectedEvent selected(action->pid, action->startTimeTicks);
         raiseEvent(selected);

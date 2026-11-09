@@ -21,7 +21,7 @@
 //      a refusal (a policy or driver), even after reads that worked, stops the reads for good, saying so.
 //
 // UDP sockets have no counters and stay UNCONN, as in Process Details. Nothing here changes or closes a
-// connection (Close connection on Windows is #3358).
+// connection (Close connection on Windows, #3358, names one by its endpoints: WindowsTcpClose.h).
 //
 // Not thread-safe: the Connections tab's model calls read() under its sample mutex, on the tab's sampler
 // thread. The constructor makes no call, so the reader can be built on the UI thread.

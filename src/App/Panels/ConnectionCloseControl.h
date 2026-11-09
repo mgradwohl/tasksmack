@@ -14,6 +14,7 @@
 #include "App/Panels/ProcessActionRun.h"
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IProcessConnections.h"
 
 #include <format>
 #include <optional>
@@ -41,10 +42,10 @@ class ConnectionCloseControl
 {
   public:
     /// The row menu's "Close connection..." on @p row: the confirm opens, naming it. Ignored while a close
-    /// runs, or for a socket that can't be closed (closeConnectionRefusal()).
-    void request(const ConnectionRow& row)
+    /// runs, or for a socket that can't be closed (closeConnectionRefusal(), with @p key, #3358).
+    void request(const ConnectionRow& row, Platform::ConnectionCloseKey key = Platform::ConnectionCloseKey::SocketInode)
     {
-        if (busy() || !closeConnectionRefusal(row.connection).empty())
+        if (busy() || !closeConnectionRefusal(row.connection, key).empty())
         {
             return;
         }
@@ -87,19 +88,34 @@ class ConnectionCloseControl
         const ConnectionRow row = std::move(*m_Pending);
         m_Pending.reset();
         m_ShowConfirm = false;
-        if (actions == nullptr || !actions->actionCapabilities().canCloseConnections)
+        const Platform::ProcessActionCapabilities capabilities =
+            actions != nullptr ? actions->actionCapabilities() : Platform::ProcessActionCapabilities{};
+        if (!capabilities.canCloseConnections)
         {
             finish(row, Platform::ProcessActionResult::error("Closing connections isn't available"));
             return;
         }
+        // By inode (Linux), or by the IPv4 TCP endpoints where Windows names a connection by them (#3358).
+        const bool byEndpoints = capabilities.connectionCloseKey == Platform::ConnectionCloseKey::Tcp4Endpoints;
         Platform::AuthorizedAction retry;
         retry.kind = Platform::AuthorizedAction::Kind::CloseConnection;
         retry.target = {.pid = row.connection.pid, .startTimeTicks = row.connection.startTimeTicks};
-        retry.socketInode = row.connection.socketInode;
+        if (byEndpoints)
+        {
+            retry.tcpConnection = Platform::tcpConnectionToClose(row.connection.connection);
+        }
+        else
+        {
+            retry.socketInode = row.connection.socketInode;
+        }
         m_RunRow = row;
         static_cast<void>(m_Run.start(
             std::format("Closing {}'s connection to {}...", row.process, row.remote),
-            [actions, retry] { return actions->closeConnection(retry.target, retry.socketInode); },
+            [actions, retry, byEndpoints]
+            {
+                return byEndpoints ? actions->closeTcpConnection(retry.target, retry.tcpConnection)
+                                   : actions->closeConnection(retry.target, retry.socketInode);
+            },
             [this, actions, retry](const Platform::ProcessActionResult& result)
             {
                 finish(m_RunRow, result);

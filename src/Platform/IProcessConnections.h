@@ -15,6 +15,7 @@
 
 #include "Platform/IProcessActions.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <stop_token>
@@ -89,6 +90,18 @@ struct ProcessConnection
     ConnectionEndpoint remote;
     ConnectionState state = ConnectionState::Unknown;
 };
+
+/// @p connection's endpoints as closeTcpConnection() names them (#3358): the first 4 bytes of each address, and
+/// each port. Meaningful for an IPv4 TCP connection only; the caller refuses any other first.
+[[nodiscard]] constexpr TcpConnectionToClose tcpConnectionToClose(const ProcessConnection& connection) noexcept
+{
+    TcpConnectionToClose endpoints;
+    std::copy_n(connection.local.address.begin(), endpoints.localAddress.size(), endpoints.localAddress.begin());
+    std::copy_n(connection.remote.address.begin(), endpoints.remoteAddress.size(), endpoints.remoteAddress.begin());
+    endpoints.localPort = connection.local.port;
+    endpoints.remotePort = connection.remote.port;
+    return endpoints;
+}
 
 /// The outcome of IProcessConnectionsReader::readConnections(): a status, and the sockets when Ok.
 struct ConnectionsReadResult

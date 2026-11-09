@@ -86,7 +86,11 @@ Broker::Request brokerRequestFor(const AuthorizedAction& action)
     case Kind::SetEfficiencyMode:
         return Broker::EfficiencyModeRequest{.target = action.target, .on = action.efficiencyMode};
     case Kind::CloseConnection:
-        return Broker::CloseConnectionRequest{.target = action.target, .socketInode = action.socketInode};
+        return Broker::CloseConnectionRequest{
+            .target = action.target,
+            .socketInode = action.socketInode,
+            .tcpConnection = action.tcpConnection,
+        };
     case Kind::ThreadAction:
         return Broker::ThreadActionRequest{
             .target = action.target,
@@ -239,6 +243,12 @@ ProcessActionResult BrokeredProcessActions::closeConnection(const ProcessTarget&
 {
     return retried(m_Inner->closeConnection(target, socketInode),
                    {.kind = AuthorizedAction::Kind::CloseConnection, .target = target, .socketInode = socketInode});
+}
+
+ProcessActionResult BrokeredProcessActions::closeTcpConnection(const ProcessTarget& target, const TcpConnectionToClose& connection)
+{
+    return retried(m_Inner->closeTcpConnection(target, connection),
+                   {.kind = AuthorizedAction::Kind::CloseConnection, .target = target, .tcpConnection = connection});
 }
 
 ProcessActionResult

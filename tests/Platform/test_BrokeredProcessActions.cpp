@@ -878,6 +878,33 @@ TEST(BrokeredProcessActionsTest, CloseConnectionRefusedInProcessIsRetriedThrough
               (Broker::Request{Broker::CloseConnectionRequest{.target = TARGET, .socketInode = 9}}));
 }
 
+// #3358: on Windows the connection is named by its IPv4 TCP endpoints. Refused in process (SetTcpEntry needs an
+// administrator), it is retried through the helper as a CloseConnection request carrying them, with no inode.
+TEST(BrokeredProcessActionsTest, ATcpConnectionRefusedInProcessIsRetriedThroughTheHelperByItsEndpoints)
+{
+    const TcpConnectionToClose connection{
+        .localAddress = {10, 0, 0, 5},
+        .localPort = 52144,
+        .remoteAddress = {142, 250, 80, 46},
+        .remotePort = 443,
+    };
+    const Fixture f(/*connected=*/true);
+    EXPECT_TRUE(f.actions->closeTcpConnection(TARGET, connection).success);
+    EXPECT_TRUE(f.broker->requests().empty()) << "closed in process: the helper isn't asked";
+
+    f.inner->setCloseConnectionResult(ProcessActionResult::denied("Closing a connection needs administrator rights"));
+    EXPECT_TRUE(f.actions->closeTcpConnection(TARGET, connection).success);
+    EXPECT_EQ(f.inner->closeTcpConnectionCount(), 2);
+    EXPECT_EQ(f.inner->closeConnectionCount(), 0);
+    const Broker::Request expected{Broker::CloseConnectionRequest{.target = TARGET, .socketInode = 0, .tcpConnection = connection}};
+    const std::vector<Broker::Request> requests = f.broker->requests();
+    ASSERT_EQ(requests.size(), 1U);
+    EXPECT_EQ(requests[0], expected);
+    // "Authenticate and retry" sends the same.
+    EXPECT_EQ((brokerRequestFor({.kind = AuthorizedAction::Kind::CloseConnection, .target = TARGET, .tcpConnection = connection})),
+              expected);
+}
+
 // #3069: one thread of another user's process, refused in process, is retried through the helper as a
 // ThreadAction carrying the thread and the action; "Authenticate and retry" sends the same.
 TEST(BrokeredProcessActionsTest, AThreadActionRefusedInProcessIsRetriedThroughTheHelper)

@@ -76,7 +76,8 @@ namespace Platform::Broker
 /// 17: SetSchedPolicy carries a real-time priority, and may set FIFO or round robin with 1 to 99 (#3219, Linux).
 /// 18: SetIoPriority's class can be WindowsHint, a Windows I/O priority hint (#3362, Windows).
 /// 19: ReadUdpBytes, every process's UDP bytes from the Linux helper's eBPF counter (#3366, Linux).
-inline constexpr std::uint16_t PROTOCOL_VERSION = 19;
+/// 20: CloseConnection carries an IPv4 TCP connection's endpoints, which name it on Windows (#3358, Windows).
+inline constexpr std::uint16_t PROTOCOL_VERSION = 20;
 /// The largest frame either side accepts, header included.
 inline constexpr std::size_t MAX_MESSAGE_BYTES = std::size_t{8} << 20U;
 /// The most processes one ReadProcessCounters asks about (#2728); a sampler with more asks for the first.
@@ -237,11 +238,14 @@ struct EfficiencyModeRequest
 };
 
 /// Shut down one of a process's sockets (#3066, protocol v10): IProcessActions::closeConnection(). The inode names
-/// the socket; the helper finds it among the target's descriptors after the identity check.
+/// the socket; the helper finds it among the target's descriptors after the identity check. On Windows (#3358,
+/// protocol v20) the inode is 0 and the IPv4 TCP endpoints name it instead: IProcessActions::closeTcpConnection().
 struct CloseConnectionRequest
 {
     ProcessTarget target;
     std::uint64_t socketInode = 0;
+    // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
+    TcpConnectionToClose tcpConnection{};
     friend bool operator==(const CloseConnectionRequest&, const CloseConnectionRequest&) = default;
 };
 
@@ -1042,11 +1046,22 @@ namespace Detail
     return MessageKind::SetEfficiencyMode;
 }
 
-/// CloseConnection (#3066): the target, then the socket's inode.
+/// CloseConnection (#3066): the target, the socket's inode, then the IPv4 TCP endpoints (#3358): the local
+/// address's 4 bytes and port, then the remote's.
 [[nodiscard]] inline MessageKind encodePayload(Writer& writer, const CloseConnectionRequest& close)
 {
     writer.target(close.target);
     writer.u64(close.socketInode);
+    const auto endpoint = [&writer](const std::array<std::uint8_t, 4>& address, std::uint16_t port)
+    {
+        for (const std::uint8_t byte : address)
+        {
+            writer.u8(byte);
+        }
+        writer.u16(port);
+    };
+    endpoint(close.tcpConnection.localAddress, close.tcpConnection.localPort);
+    endpoint(close.tcpConnection.remoteAddress, close.tcpConnection.remotePort);
     return MessageKind::CloseConnection;
 }
 
@@ -1405,6 +1420,26 @@ namespace Detail
     return request;
 }
 
+/// A CloseConnection payload (#3066): the target, the socket's inode, then the IPv4 TCP endpoints (#3358). Any
+/// values decode: the helper's actions refuse a socket or connection the target doesn't hold.
+[[nodiscard]] inline CloseConnectionRequest decodeCloseConnectionRequest(Reader& reader)
+{
+    CloseConnectionRequest request;
+    request.target = reader.target();
+    request.socketInode = reader.u64();
+    const auto endpoint = [&reader](std::array<std::uint8_t, 4>& address, std::uint16_t& port)
+    {
+        for (std::uint8_t& byte : address)
+        {
+            byte = reader.u8();
+        }
+        port = reader.u16();
+    };
+    endpoint(request.tcpConnection.localAddress, request.tcpConnection.localPort);
+    endpoint(request.tcpConnection.remoteAddress, request.tcpConnection.remotePort);
+    return request;
+}
+
 /// A ListHiddenProcesses payload: the count (refused past MAX_VISIBLE_PIDS), then the visible PIDs.
 [[nodiscard]] inline HiddenProcessesRequest decodeHiddenProcessesRequest(Reader& reader)
 {
@@ -1470,10 +1505,7 @@ namespace Detail
     case MessageKind::SetEfficiencyMode:
         return Detail::finish<Request>(reader, id, EfficiencyModeRequest{.target = reader.target(), .on = reader.flag()});
     case MessageKind::CloseConnection:
-    {
-        const ProcessTarget target = reader.target();
-        return Detail::finish<Request>(reader, id, CloseConnectionRequest{.target = target, .socketInode = reader.u64()});
-    }
+        return Detail::finish<Request>(reader, id, Detail::decodeCloseConnectionRequest(reader));
     case MessageKind::TaskManagerReplacement:
         return Detail::finish<Request>(reader, id, Detail::decodeTaskManagerReplacementRequest(reader));
     case MessageKind::SessionAction:
