@@ -14,7 +14,6 @@
 #include "KeyboardInput.h"
 #include "KeyboardShortcuts.h"
 #include "MainTabBarView.h"
-#include "PanelPlatforms.h"
 #include "Panels/NiceStep.h"
 #include "Panels/ProcessDetailsPanel.h"
 #include "Panels/ProcessIconView.h"
@@ -238,10 +237,9 @@ void ShellLayer::onAttach()
     m_PendingPrivilegeNotice = UserConfig::get().settings().showPrivilegeNotice && !SelectOverride::testHookActive();
 }
 
-bool ShellLayer::isAdministratorSession(const Platform::ProcessCapabilities& capabilities) const
+bool ShellLayer::isAdministratorSession(const Platform::ProcessCapabilities& capabilities)
 {
-    const bool held = m_AccessBroker != nullptr && m_AccessBroker->heldForSession();
-    return held || (!capabilities.hasReducedPrivileges && Synthetic::activeScenario() == nullptr);
+    return !capabilities.hasReducedPrivileges && Synthetic::activeScenario() == nullptr;
 }
 
 void ShellLayer::updateSystemTabLabel()
@@ -491,17 +489,6 @@ void ShellLayer::onUpdate(float deltaTime)
     {
         m_PendingStartupSettings = false;
         ShellPanels::raiseStartupSettings([this](Core::Event& event) { m_Host->raiseEvent(event); });
-    }
-
-    // The access chip's broker, on the UI thread its prompt belongs to (#2728); Linux only, where
-    // Administrator is the session-held helper.
-    if (!m_AccessBrokerResolved)
-    {
-        m_AccessBrokerResolved = true;
-        if constexpr (AccessChoice::HOST == AccessChoice::AccessPlatform::Linux)
-        {
-            m_AccessBroker = privilegedBroker(Synthetic::activeScenario());
-        }
     }
 
     // "TaskSmack (Administrator)" while the session is (#2728), on Linux, whose access chip says the same;
