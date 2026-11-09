@@ -178,6 +178,23 @@ std::vector<ConnectionRow> ConnectionChangeTracker::closedRows() const
     return rows;
 }
 
+std::string_view rateDashReason(const Platform::SystemConnection& connection, std::string_view ratesUnavailable)
+{
+    if (connection.connection.protocol != Platform::ConnectionProtocol::Tcp)
+    {
+        return "UDP sockets have no byte counters, so they have no rate.";
+    }
+    if (connection.hasByteCounters)
+    {
+        return "The rate shows from the socket's second reading.";
+    }
+    if (!ratesUnavailable.empty())
+    {
+        return ratesUnavailable;
+    }
+    return "No byte counters could be read for this socket.";
+}
+
 std::vector<ConnectionRow> buildConnectionRows(const Domain::ConnectionsPublication& publication)
 {
     std::vector<ConnectionRow> rows;
@@ -204,6 +221,7 @@ std::vector<ConnectionRow> buildConnectionRows(const Domain::ConnectionsPublicat
             .rate = rate,
             .sent = rate.known ? UI::Format::formatBytesPerSec(rate.sentPerSec) : std::string(),
             .received = rate.known ? UI::Format::formatBytesPerSec(rate.receivedPerSec) : std::string(),
+            .rateNote = rate.known ? std::string() : std::string(rateDashReason(c, publication.ratesUnavailable)),
         });
     }
     return rows;
@@ -360,14 +378,18 @@ namespace
     UI::Widgets::cellText(row.remote);
     ImGui::TableNextColumn();
     UI::Widgets::cellText(row.closed ? std::string("Closed") : row.state);
-    // Sent and received per second (#3079): a dash where the platform has no counters (UDP) or on a socket's
-    // first reading.
+    // Sent and received per second (#3079): a dash where the platform has no counters (UDP, Windows without
+    // administrator) or on a socket's first reading, saying which on hover.
     for (const std::string* rate : {&row.sent, &row.received})
     {
         ImGui::TableNextColumn();
         if (rate->empty())
         {
             ImGui::TextDisabled("\xE2\x80\x94");
+            if (!row.rateNote.empty())
+            {
+                ImGui::SetItemTooltip("%s", row.rateNote.c_str());
+            }
         }
         else
         {
@@ -388,9 +410,8 @@ renderConnectionsView(const Domain::ConnectionsPublication* publication, bool ha
 {
     if (!hasConnections)
     {
-        UI::Widgets::renderEmptyState(
-            ICON_FA_NETWORK_WIRED "  Connections aren't available",
-            "TaskSmack lists the machine's TCP and UDP sockets on Linux. Windows support is coming: issue #3356.");
+        UI::Widgets::renderEmptyState(ICON_FA_NETWORK_WIRED "  Connections aren't available",
+                                      "This run of TaskSmack doesn't list the machine's TCP and UDP sockets.");
         return std::nullopt;
     }
     if (publication == nullptr || publication->version == 0)
@@ -400,7 +421,7 @@ renderConnectionsView(const Domain::ConnectionsPublication* publication, bool ha
     }
     if (publication->status == Platform::SystemConnectionsStatus::Failed)
     {
-        const std::string detail = "The kernel's socket tables couldn't be read: " + publication->detail;
+        const std::string detail = "The system's socket tables couldn't be read: " + publication->detail;
         UI::Widgets::renderEmptyState(ICON_FA_TRIANGLE_EXCLAMATION "  Connections couldn't be read", detail.c_str());
         return std::nullopt;
     }

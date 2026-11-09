@@ -7,7 +7,8 @@
 //      against the target's, so a reused PID reads as ProcessExited. The handle stays open for the rest
 //      of the read: it pins the PID, so the process checked is the one whose rows are kept.
 //   2. GetExtendedTcpTable(TCP_TABLE_OWNER_PID_ALL) and GetExtendedUdpTable(UDP_TABLE_OWNER_PID), each
-//      for AF_INET and AF_INET6, kept only for rows whose owning PID is the target's.
+//      for AF_INET and AF_INET6 (WindowsSocketTables.h, shared with the Connections tab's reader, #3356),
+//      kept only for rows whose owning PID is the target's.
 //
 // Unlike Linux, the tables list every user's sockets with their owning PID, so the sockets themselves
 // are never refused. Only step 1 can be: a process TaskSmack may not open even for limited query
@@ -44,8 +45,7 @@
 
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
-
-#include <cstdint>
+#include "WindowsSocketTables.h"
 
 namespace Platform::Windows
 {
@@ -53,10 +53,8 @@ namespace Platform::Windows
 /// The calls WindowsProcessConnectionsReader makes: iphlpapi's and kernel32's, or a test's fakes.
 struct ProcessConnectionsFunctions
 {
-    // NOLINTBEGIN(misc-include-cleaner) - TCP_TABLE_CLASS/UDP_TABLE_CLASS come from iprtrmib.h via iphlpapi.h
-    using GetExtendedTcpTableFn = DWORD(WINAPI*)(PVOID, PDWORD, BOOL, ULONG, TCP_TABLE_CLASS, ULONG);
-    using GetExtendedUdpTableFn = DWORD(WINAPI*)(PVOID, PDWORD, BOOL, ULONG, UDP_TABLE_CLASS, ULONG);
-    // NOLINTEND(misc-include-cleaner)
+    using GetExtendedTcpTableFn = SocketTableFunctions::GetExtendedTcpTableFn;
+    using GetExtendedUdpTableFn = SocketTableFunctions::GetExtendedUdpTableFn;
     using OpenProcessFn = HANDLE(WINAPI*)(DWORD, BOOL, DWORD);
     using CloseHandleFn = BOOL(WINAPI*)(HANDLE);
     using GetProcessTimesFn = BOOL(WINAPI*)(HANDLE, LPFILETIME, LPFILETIME, LPFILETIME, LPFILETIME);
@@ -69,27 +67,6 @@ struct ProcessConnectionsFunctions
     GetProcessTimesFn getProcessTimes = &::GetProcessTimes;
     GetExitCodeProcessFn getExitCodeProcess = &::GetExitCodeProcess;
 };
-
-/// Tries at copying one socket table before giving up: a busy machine opens sockets between the call
-/// that says how big the table is and the one that copies it.
-inline constexpr int MAX_TABLE_ATTEMPTS = 4;
-
-/// A MIB_TCP_STATE (MIB_TCP_STATE_CLOSED .. MIB_TCP_STATE_DELETE_TCB) as a Platform::ConnectionState.
-/// DELETE_TCB (a control block being torn down) reads as Closed; anything else unknown as Unknown.
-/// That includes 0, which is no MIB_TCP_STATE but which Windows build 26300 reports for many rows,
-/// listeners among them (#3257): such a row is shown as UNKNOWN, never guessed as Closed or Listen.
-[[nodiscard]] ConnectionState toConnectionState(DWORD mibState) noexcept;
-
-/// A table row's port: the port in network byte order in the DWORD's low 16 bits, as a host-order number.
-[[nodiscard]] std::uint16_t toHostPort(DWORD tablePort) noexcept;
-
-/// One table row as a ProcessConnection. Addresses are copied in network byte order (an IPv4 address's
-/// DWORD already is, in memory). A UDP row has no remote end and no state: remote all zero, Closed
-/// (bound but unconnected; the tables do not say whether a UDP socket called connect()).
-[[nodiscard]] ProcessConnection toConnection(const MIB_TCPROW_OWNER_PID& row) noexcept;
-[[nodiscard]] ProcessConnection toConnection(const MIB_TCP6ROW_OWNER_PID& row) noexcept;
-[[nodiscard]] ProcessConnection toConnection(const MIB_UDPROW_OWNER_PID& row) noexcept;
-[[nodiscard]] ProcessConnection toConnection(const MIB_UDP6ROW_OWNER_PID& row) noexcept;
 
 /// Stateless: each read opens, reads and closes on its own, so reads may run on any thread.
 class WindowsProcessConnectionsReader final : public IProcessConnectionsReader

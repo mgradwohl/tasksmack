@@ -1,6 +1,7 @@
 // The Connections tab (#3066): its model, the table's rows, filter and sort, and the panel on display
 // (sampling only while shown; a row click selects its process).
 
+#include "App/Panel.h"
 #include "App/Panels/ConnectionCloseControl.h"
 #include "App/Panels/ConnectionsPanel.h"
 #include "App/Panels/ConnectionsView.h"
@@ -17,10 +18,12 @@
 #include <imgui.h>
 #include <imgui_internal.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cfloat>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -69,10 +72,12 @@ using TestMocks::MockProcessActions;
 
 [[nodiscard]] std::vector<SystemConnection> sampleSockets()
 {
-    return {socket(0, "", ConnectionProtocol::Tcp, {10, 0, 0, 5}, 52145, {142, 250, 80, 46}, 443, ConnectionState::TimeWait),
-            socket(300, "firefox", ConnectionProtocol::Tcp, {10, 0, 0, 5}, 52144, {142, 250, 80, 46}, 443, ConnectionState::Established),
-            socket(100, "cupsd", ConnectionProtocol::Tcp, {127, 0, 0, 1}, 631, {0, 0, 0, 0}, 0, ConnectionState::Listen),
-            socket(200, "avahi-daemon", ConnectionProtocol::Udp, {0, 0, 0, 0}, 5353, {0, 0, 0, 0}, 0, ConnectionState::Unknown)};
+    return {
+        socket(0, "", ConnectionProtocol::Tcp, {10, 0, 0, 5}, 52145, {142, 250, 80, 46}, 443, ConnectionState::TimeWait),
+        socket(300, "firefox", ConnectionProtocol::Tcp, {10, 0, 0, 5}, 52144, {142, 250, 80, 46}, 443, ConnectionState::Established),
+        socket(100, "cupsd", ConnectionProtocol::Tcp, {127, 0, 0, 1}, 631, {0, 0, 0, 0}, 0, ConnectionState::Listen),
+        socket(200, "avahi-daemon", ConnectionProtocol::Udp, {0, 0, 0, 0}, 5353, {0, 0, 0, 0}, 0, ConnectionState::Unknown),
+    };
 }
 
 class FakeReader final : public Platform::ISystemConnectionsReader
@@ -87,7 +92,7 @@ class FakeReader final : public Platform::ISystemConnectionsReader
     [[nodiscard]] Platform::SystemConnectionsRead read() override
     {
         ++*m_Reads;
-        return {.status = Platform::SystemConnectionsStatus::Ok, .connections = sampleSockets(), .detail = {}};
+        return {.status = Platform::SystemConnectionsStatus::Ok, .connections = sampleSockets(), .detail = {}, .ratesUnavailable = {}};
     }
 
   private:
@@ -97,7 +102,7 @@ class FakeReader final : public Platform::ISystemConnectionsReader
 
 TEST(ConnectionsModelTest, PublishesByHolderNameWithHolderlessSocketsLast)
 {
-    auto reads = std::make_shared<std::atomic<int>>(0);
+    const auto reads = std::make_shared<std::atomic<int>>(0);
     Domain::ConnectionsModel model(std::make_unique<FakeReader>(reads));
     EXPECT_TRUE(model.hasConnections());
     EXPECT_EQ(model.publication()->version, 0U);
@@ -210,9 +215,9 @@ class ListReader final : public Platform::ISystemConnectionsReader
     {
         if (!m_Failure.empty())
         {
-            return {.status = Platform::SystemConnectionsStatus::Failed, .connections = {}, .detail = m_Failure};
+            return {.status = Platform::SystemConnectionsStatus::Failed, .connections = {}, .detail = m_Failure, .ratesUnavailable = {}};
         }
-        return {.status = Platform::SystemConnectionsStatus::Ok, .connections = m_Sockets, .detail = {}};
+        return {.status = Platform::SystemConnectionsStatus::Ok, .connections = m_Sockets, .detail = {}, .ratesUnavailable = {}};
     }
 
   private:
@@ -221,6 +226,31 @@ class ListReader final : public Platform::ISystemConnectionsReader
 };
 
 // #3186: a model needs a reader.
+// #3573: the same link-local endpoints on two interfaces are two rows: their scope IDs are in the selection key,
+// which the new and closed highlights use too.
+TEST(ConnectionsViewTest, LinkLocalSocketsOnTwoInterfacesAreDifferentRows)
+{
+    SystemConnection onWifi =
+        socket(300, "smb", ConnectionProtocol::Tcp, {0, 0, 0, 0}, 52300, {0, 0, 0, 0}, 445, ConnectionState::Established);
+    onWifi.connection.family = ConnectionFamily::IPv6;
+    onWifi.connection.local.address = {0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01};
+    onWifi.connection.remote.address = onWifi.connection.local.address;
+    onWifi.connection.local.scopeId = 12;
+    onWifi.connection.remote.scopeId = 12;
+    SystemConnection onEthernet = onWifi;
+    onEthernet.connection.local.scopeId = 7;
+    onEthernet.connection.remote.scopeId = 7;
+    EXPECT_NE(selectionKey(onWifi), selectionKey(onEthernet));
+
+    Domain::ConnectionsPublication pub;
+    pub.version = 1;
+    pub.connections = {onWifi, onEthernet};
+    ConnectionsViewState state;
+    refreshConnectionRows(pub, state, 1.0);
+    EXPECT_EQ(state.liveCount, 2U);
+    EXPECT_NE(state.rows[0].local, state.rows[1].local); // "[fe80::1%12]:52300" and "[fe80::1%7]:52300"
+}
+
 TEST(ConnectionsModelTest, ANullReaderIsRefused)
 {
     EXPECT_THROW(Domain::ConnectionsModel(nullptr), std::invalid_argument);
@@ -233,7 +263,8 @@ TEST(ConnectionsModelTest, SameNameSocketsOrderByPidProtocolThenLocalEndpoint)
         socket(9, "svc", ConnectionProtocol::Tcp, {10, 0, 0, 1}, 80, {0, 0, 0, 0}, 0, ConnectionState::Listen),
         socket(3, "svc", ConnectionProtocol::Udp, {10, 0, 0, 1}, 53, {0, 0, 0, 0}, 0, ConnectionState::Unknown),
         socket(3, "svc", ConnectionProtocol::Tcp, {10, 0, 0, 2}, 22, {0, 0, 0, 0}, 0, ConnectionState::Listen),
-        socket(3, "svc", ConnectionProtocol::Tcp, {10, 0, 0, 1}, 22, {0, 0, 0, 0}, 0, ConnectionState::Listen)}));
+        socket(3, "svc", ConnectionProtocol::Tcp, {10, 0, 0, 1}, 22, {0, 0, 0, 0}, 0, ConnectionState::Listen),
+    }));
     model.sample();
     const auto pub = model.publication();
     ASSERT_EQ(pub->connections.size(), 4U);
@@ -350,9 +381,54 @@ TEST(ConnectionRatesTest, RatesComeFromTwoReadingsOfTheSameSocket)
 }
 
 // #3079: the model keeps each reading's counters for the next, and the view shows the rates, sortable.
+// #3356: the dash says why there is no rate: UDP has no counters, a TCP socket without them gets the platform's
+// reason (Windows without administrator) or a plain one, and one with counters waits for its second reading.
+TEST(ConnectionRatesTest, TheDashSaysWhyThereIsNoRate)
+{
+    const SystemConnection tcp =
+        socket(300, "firefox", ConnectionProtocol::Tcp, {10, 0, 0, 5}, 52144, {142, 250, 80, 46}, 443, ConnectionState::Established);
+    const SystemConnection udp =
+        socket(200, "avahi-daemon", ConnectionProtocol::Udp, {0, 0, 0, 0}, 5353, {0, 0, 0, 0}, 0, ConnectionState::Unknown);
+    EXPECT_TRUE(rateDashReason(udp, "run as administrator").contains("UDP"));
+    EXPECT_EQ(rateDashReason(tcp, "run as administrator"), "run as administrator");
+    EXPECT_TRUE(rateDashReason(tcp, "").contains("No byte counters"));
+    EXPECT_TRUE(rateDashReason(withBytes(tcp, 1, 1), "run as administrator").contains("second reading"));
+
+    class NoRates final : public Platform::ISystemConnectionsReader
+    {
+      public:
+        [[nodiscard]] bool hasConnections() const override
+        {
+            return true;
+        }
+        [[nodiscard]] Platform::SystemConnectionsRead read() override
+        {
+            return {
+                .status = Platform::SystemConnectionsStatus::Ok,
+                .connections = sampleSockets(),
+                .detail = {},
+                .ratesUnavailable = "run as administrator",
+            };
+        }
+    };
+    Domain::ConnectionsModel model(std::make_unique<NoRates>());
+    model.sample();
+    EXPECT_EQ(model.publication()->ratesUnavailable, "run as administrator"); // the reader's reason, published
+
+    Domain::ConnectionsPublication pub;
+    pub.version = 1;
+    pub.connections = {tcp, udp};
+    pub.rates = {Domain::ConnectionRate{.known = true, .sentPerSec = 1.0, .receivedPerSec = 2.0}, Domain::ConnectionRate{}};
+    pub.ratesUnavailable = "run as administrator";
+    const std::vector<ConnectionRow> rows = buildConnectionRows(pub);
+    ASSERT_EQ(rows.size(), 2U);
+    EXPECT_TRUE(rows[0].rateNote.empty()); // a known rate has no dash
+    EXPECT_TRUE(rows[1].rateNote.contains("UDP"));
+}
+
 TEST(ConnectionRatesTest, TheModelPublishesRatesFromItsSecondSampleAndTheViewSortsByThem)
 {
-    auto list = std::make_shared<std::vector<SystemConnection>>();
+    const auto list = std::make_shared<std::vector<SystemConnection>>();
     class SharedReader final : public Platform::ISystemConnectionsReader
     {
       public:
@@ -364,7 +440,7 @@ TEST(ConnectionRatesTest, TheModelPublishesRatesFromItsSecondSampleAndTheViewSor
         }
         [[nodiscard]] Platform::SystemConnectionsRead read() override
         {
-            return {.status = Platform::SystemConnectionsStatus::Ok, .connections = *m_Sockets, .detail = {}};
+            return {.status = Platform::SystemConnectionsStatus::Ok, .connections = *m_Sockets, .detail = {}, .ratesUnavailable = {}};
         }
 
       private:
@@ -642,12 +718,12 @@ class ConnectionsPanelRenderTest : public ::testing::Test
 
 TEST_F(ConnectionsPanelRenderTest, SamplesOnlyOnceShownAndAClickSelectsTheHolder)
 {
-    auto reads = std::make_shared<std::atomic<int>>(0);
+    const auto reads = std::make_shared<std::atomic<int>>(0);
     std::vector<std::int32_t> selected;
     ConnectionsPanel panel([reads] { return std::make_unique<FakeReader>(reads); },
                            [&selected](Core::Event& event)
                            {
-                               if (auto* e = dynamic_cast<Core::ProcessSelectedEvent*>(&event))
+                               if (const auto* e = dynamic_cast<const Core::ProcessSelectedEvent*>(&event))
                                {
                                    selected.push_back(e->getPid());
                                }
@@ -685,13 +761,14 @@ TEST_F(ConnectionsPanelRenderTest, SamplesOnlyOnceShownAndAClickSelectsTheHolder
 
 TEST_F(ConnectionsPanelRenderTest, AnUnsupportedReaderSaysSoAndNeverSamples)
 {
-    auto reads = std::make_shared<std::atomic<int>>(0);
+    const auto reads = std::make_shared<std::atomic<int>>(0);
     ConnectionsPanel panel([reads] { return std::make_unique<FakeReader>(reads, false); }, [](Core::Event&) {});
     panel.onAttach();
     show(panel, "Connections");
     const std::string text = frame(panel);
     EXPECT_TRUE(text.contains("Connections aren't available"));
-    EXPECT_TRUE(text.contains("#3356")); // the parity issue for Windows (#3431)
+    EXPECT_TRUE(text.contains("doesn't list the machine's TCP and UDP sockets")) << text;
+    EXPECT_FALSE(text.contains("#3356")); // both platforms list them now (#3356)
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     EXPECT_EQ(reads->load(), 0);
     panel.onDetach();
@@ -710,7 +787,7 @@ TEST_F(ConnectionsPanelRenderTest, AFailedReadSaysWhyAndADoubleClickShowsDetails
     EXPECT_TRUE(failed.contains("Permission denied")) << failed;
     failing.onDetach();
 
-    auto reads = std::make_shared<std::atomic<int>>(0);
+    const auto reads = std::make_shared<std::atomic<int>>(0);
     int detailsShown = 0;
     ConnectionsPanel panel([reads] { return std::make_unique<FakeReader>(reads); },
                            [&detailsShown](Core::Event& event)
@@ -761,7 +838,7 @@ TEST_F(ConnectionsPanelRenderTest, AFailedReadSaysWhyAndADoubleClickShowsDetails
 // through the panel's actions, and the result line says so. Without the capability there is no menu.
 TEST_F(ConnectionsPanelRenderTest, TheRowMenuClosesAConnectionAfterTheConfirm)
 {
-    auto reads = std::make_shared<std::atomic<int>>(0);
+    const auto reads = std::make_shared<std::atomic<int>>(0);
     MockProcessActions* actions = nullptr;
     ConnectionsPanel panel([reads] { return std::make_unique<FakeReader>(reads); },
                            [](Core::Event&) {},
@@ -782,8 +859,12 @@ TEST_F(ConnectionsPanelRenderTest, TheRowMenuClosesAConnectionAfterTheConfirm)
     ASSERT_GT(row.y, 0.0F);
 
     closeFirefoxFromTheMenu(row, [&panel] { return frame(panel); });
-    ASSERT_TRUE(panel.closeControl().pending().has_value());
-    EXPECT_EQ(panel.closeControl().pending()->process, "firefox");
+    const auto pending = panel.closeControl().pending();
+    ASSERT_TRUE(pending.has_value());
+    if (pending.has_value()) // the check clang-tidy sees; ASSERT_TRUE has already returned when it is empty
+    {
+        EXPECT_EQ(pending->process, "firefox");
+    }
     const std::string confirm = frame(panel);
     EXPECT_TRUE(confirm.contains("Close the connection firefox (PID 300)")) << confirm;
 

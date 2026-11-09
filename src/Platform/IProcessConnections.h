@@ -73,6 +73,11 @@ struct ConnectionEndpoint
 {
     std::array<std::uint8_t, 16> address{};
     std::uint16_t port = 0;
+    /// An IPv6 address's scope (zone) ID, the interface a link-local fe80:: address is on, so the same
+    /// link-local endpoints on two interfaces are two sockets (#3573). 0 when there is none, or the platform
+    /// doesn't say: Windows' owner-PID tables do; Linux's netlink and /proc/net socket tables don't (only
+    /// INET_DIAG's bound-device index, which is another thing), and the elevated helper's reply leaves it out.
+    std::uint32_t scopeId = 0;
 };
 
 /// One TCP or UDP socket the process holds.

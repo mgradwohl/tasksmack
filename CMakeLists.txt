@@ -388,6 +388,8 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsFileLocation.cpp # Open file location: SHOpenFolderAndSelectItems, or explorer.exe /select (#3426)
     src/Platform/Windows/WindowsRunProgram.cpp # Run new task: ShellExecuteExW, runas for administrator (#3427)
     src/Platform/Windows/WindowsProcessConnections.cpp
+    src/Platform/Windows/WindowsSocketTables.cpp # the owner-PID socket tables both connections readers copy (#3356)
+    src/Platform/Windows/WindowsSystemConnectionsReader.cpp # the Connections tab: every socket on the machine (#3356)
     src/Platform/Windows/WindowsProcessEnvironmentReader.cpp # a process's environment block, out of its PEB (#2569)
     src/Platform/Windows/WindowsProcessIconSource.cpp
     src/Platform/Windows/WindowsProcessModules.cpp
@@ -677,6 +679,8 @@ elseif(WIN32)
         src/Platform/Windows/WindowsFileLocation.h
         src/Platform/Windows/WindowsRunProgram.h
         src/Platform/Windows/WindowsProcessConnections.h
+        src/Platform/Windows/WindowsSocketTables.h
+        src/Platform/Windows/WindowsSystemConnectionsReader.h
         src/Platform/Windows/WindowsProcessEnvironmentReader.h
         src/Platform/Windows/WindowsProcessIconSource.h
         src/Platform/Windows/WindowsProcessIconMath.h
@@ -1061,6 +1065,7 @@ if(WIN32)
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsProcessModules.cpp
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsProcessOpenFiles.cpp
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsProcessConnections.cpp
+        ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsSocketTables.cpp
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsProcessThreads.cpp # Process Details threads of another user's process (#3069)
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsTaskManagerReplacement.cpp # Replace Task Manager's IFEO Debugger (#3072)
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsUserSessions.cpp # another user's session disconnected or signed out (#3076)
