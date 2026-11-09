@@ -334,6 +334,43 @@ jobs:
             exit 1
           fi
 
+      # An Administrator session on Linux is TaskSmack started as root (#3580): here with sudo, as the "TaskSmack
+      # (Administrator)" launcher's pkexec would, keeping the display. It must open on the X display, draw, and close
+      # by itself (TASKSMACK_SCREENSHOT: a PNG once startup has settled, then the normal close), and keep the runner
+      # user's settings: config.toml lands in their ~/.config/tasksmack, owned by them, and root's stays untouched.
+      - name: Root launch (Linux)
+        if: runner.os == 'Linux' && inputs.build && inputs.build_type == 'debug'
+        env:
+          TASKSMACK_SCREENSHOT: ${{ runner.temp }}/root-launch.png
+        run: |
+          set -o pipefail
+          user="$(id -un)"
+          config="$HOME/.config/tasksmack"
+          rm -rf "$config"
+          sudo rm -rf /root/.config/tasksmack
+          # Named, not -E: this runner's sudo ignores -E (see "Helper root test (Linux)"). xvfb-run sets DISPLAY and
+          # XAUTHORITY for the command it runs.
+          xvfb-run -a -s "-screen 0 1280x800x24 -noreset" \
+            sudo --preserve-env=DISPLAY,XAUTHORITY,TASKSMACK_SCREENSHOT \
+            timeout --kill-after=10s 120s build/debug/bin/TaskSmack 2>&1 | tee root-launch.log
+          failed=0
+          if [[ ! -s "$TASKSMACK_SCREENSHOT" ]]; then
+            echo "::error title=Root launch::TaskSmack as root wrote no screenshot: it didn't reach a frame"
+            failed=1
+          fi
+          if [[ ! -f "$config/config.toml" ]]; then
+            echo "::error title=Root launch::TaskSmack as root didn't save $config/config.toml, the runner user's settings"
+            failed=1
+          elif [[ "$(stat -c %U "$config/config.toml")" != "$user" || "$(stat -c %U "$config")" != "$user" ]]; then
+            echo "::error title=Root launch::$config or its config.toml isn't owned by $user"
+            failed=1
+          fi
+          if sudo test -e /root/.config/tasksmack; then
+            echo "::error title=Root launch::TaskSmack as root wrote root's own config, not the runner user's"
+            failed=1
+          fi
+          exit "$failed"
+
       # "Authenticate and retry" end to end (#3491 item 2): the real pkexec and polkitd start the helper from
       # where the packages install it, and PkexecRealSystemTest checks it runs as root. The same rule as
       # release.yml's validate-linux-helper allows the runner's user without a password; the dialog itself
