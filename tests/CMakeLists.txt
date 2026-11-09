@@ -917,6 +917,7 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_BrokerServer.cpp  # the privileged helper's server and tasksmack-helper itself (#2307)
     Platform/test_HelperSandbox.cpp  # tasksmack-helper's seccomp allow-list (#2752)
     Platform/test_UdpByteCounter.cpp  # the helper's eBPF UDP byte counter (#3366)
+    Platform/test_LinuxUdpTrafficCollector.cpp  # root's in-process UDP collector (#3580)
     Platform/test_SyscallTrace.cpp
     Platform/test_LinuxCoreDump.cpp  # "Create dump file" on Linux: names, gcore command, refusals (#807)
     Platform/test_DetachedSpawn.cpp
@@ -1264,8 +1265,8 @@ if(UNIX AND NOT APPLE)
     # tasksmack_sdbus: libsystemd and TASKSMACK_HAS_SDBUS when found, as for the app (#1525). No X11:
     # Core/X11WindowManager.cpp dlopen()s libX11, as for the app and the benchmarks (#1702).
     target_link_libraries(TaskSmackTests PRIVATE ${CMAKE_DL_LIBS} tasksmack_sdbus tasksmack_curl tasksmack_polkit_agent)
-    # The helper's eBPF UDP byte counter (#3366): its loader, and the embedded BPF object it opens.
-    target_sources(TaskSmackTests PRIVATE ${CMAKE_SOURCE_DIR}/src/Platform/Linux/UdpByteCounter.cpp)
+    # The eBPF UDP byte counter (#3366; its loader is among the platform sources, #3580): libbpf, and the embedded BPF
+    # object it opens.
     target_link_libraries(TaskSmackTests PRIVATE tasksmack_bpf)
     add_dependencies(TaskSmackTests tasksmack_bpf_object)
 
