@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=TaskSmack (Administrator)
+GenericName=System Monitor
+Comment=TaskSmack with administrator rights: every process, every action, and UDP traffic per process
+Exec=pkexec /usr/bin/TaskSmack
+Icon=app.tasksmack.TaskSmack
+Terminal=false
+Categories=System;Monitor;
+Keywords=system;monitor;task;manager;cpu;memory;process;administrator;root;
+StartupNotify=true
+StartupWMClass=TaskSmack

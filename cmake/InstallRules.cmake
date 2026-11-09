@@ -148,6 +148,21 @@ if(UNIX AND NOT APPLE)
     )
 endif()
 
+# "TaskSmack (Administrator)" (#3580): a second launcher that runs pkexec /usr/bin/TaskSmack, and the polkit
+# action that lets pkexec start it with the display. In the "administrator" component, which the .deb and .rpm
+# carry (cmake/CPackProjectConfig.cmake.in): the action names TaskSmack's path in a system install, which the
+# portable .tar.gz doesn't have; from one, start TaskSmack with sudo instead.
+if(UNIX AND NOT APPLE)
+    install(FILES ${CMAKE_SOURCE_DIR}/assets/linux/app.tasksmack.TaskSmack.Administrator.desktop
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/applications
+        COMPONENT administrator
+    )
+    install(FILES ${CMAKE_SOURCE_DIR}/assets/linux/app.tasksmack.TaskSmack.Administrator.policy
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/polkit-1/actions
+        COMPONENT administrator
+    )
+endif()
+
 # Windows' elevated helper (#2550; #2517), beside TaskSmack.exe, where TaskSmack starts it from: the
 # "windows_helper" component, which the .zip and the NSIS installer carry only when
 # TASKSMACK_PACKAGE_WINDOWS_HELPER is on, for an Authenticode-signed build (cmake/Packaging.cmake). It
