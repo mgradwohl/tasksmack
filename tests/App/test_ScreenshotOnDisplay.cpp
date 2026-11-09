@@ -12,14 +12,17 @@
 /// Mesa llvmpipe on Windows CI, where TASKSMACK_REQUIRE_DISPLAY=1 turns a missing one into a failure);
 /// skipped elsewhere.
 
+#include "App/AboutDialog.h"
 #include "App/AboutLayer.h"
 #include "App/DemoLayer.h"
 #include "App/DemoOverride.h"
 #include "App/ElevationNoticeLayer.h"
 #include "App/HelpLayer.h"
+#include "App/HelpWindow.h"
 #include "App/RenderMetricsOverride.h"
 #include "App/ScreenshotLayer.h"
 #include "App/ScreenshotOverride.h"
+#include "App/SettingsDialog.h"
 #include "App/SettingsLayer.h"
 #include "App/ShellLayer.h"
 #include "App/TitleBarLayer.h"
@@ -33,11 +36,16 @@
 #include "Core/Utf8Path.h"
 #include "Core/Window.h"
 #include "Core/WindowEvents.h"
+#include "LogWarningGuard.h"
+#include "Platform/CurrentProcess.h"
+#include "ScratchConfigDir.h"
 #include "UI/Theme.h"
 #include "UI/UILayer.h"
 
 #include <SDL3/SDL_stdinc.h>
 #include <gtest/gtest.h>
+#include <imgui.h>
+#include <imgui_internal.h> // FindWindowByName(), GetTopMostPopupModal(): the dialogs a frame drew
 // NOLINTNEXTLINE(misc-include-cleaner) - stb_image.h's declarations; the implementation is Platform/StbImage.cpp
 #include <stb_image.h>
 
@@ -221,6 +229,12 @@ struct Observed
     std::string lastTab;      ///< The last ActiveTabChangedEvent's tab, by registered id; empty if none
     std::string firstThemeId; ///< UI::Theme's theme after the first frame
     std::string lastThemeId;  ///< ... and after the last
+    // The dialogs a frame drew (a demo's open= and close=, #3374): each seen at least once, and what the last
+    // frame still showed.
+    bool helpSeen = false;
+    bool aboutSeen = false;
+    bool settingsSeen = false;
+    bool dialogShownOnLastFrame = false;
 };
 
 /// Pushed last, after ScreenshotLayer: counts the frames, notes the drawable's size and the theme on
@@ -235,6 +249,21 @@ class ObserverLayer : public Core::Layer
     void onAttach() override
     {
         m_Start = Core::Application::getTime();
+    }
+
+    // Last of the layers, so the dialog layers have drawn this frame: the Help window, and the modal on top.
+    void onRender() override
+    {
+        const ImGuiWindow* help = ImGui::FindWindowByName(App::HelpWindow::WINDOW_ID);
+        const bool helpShown = help != nullptr && help->Active;
+        const ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
+        const std::string_view modalName = (modal != nullptr) ? std::string_view(modal->Name) : std::string_view();
+        const bool aboutShown = modalName.starts_with(App::AboutDialog::POPUP_ID);
+        const bool settingsShown = modalName.starts_with(App::SettingsDialog::POPUP_ID);
+        m_Observed.helpSeen = m_Observed.helpSeen || helpShown;
+        m_Observed.aboutSeen = m_Observed.aboutSeen || aboutShown;
+        m_Observed.settingsSeen = m_Observed.settingsSeen || settingsShown;
+        m_Observed.dialogShownOnLastFrame = helpShown || aboutShown || settingsShown;
     }
 
     void onPostRender() override
@@ -301,11 +330,13 @@ struct RunResult
 
 /// A fresh directory with a non-ASCII name under the system's temporary directory (a screenshot path
 /// can have one, #1648), removed with everything in it when the test ends.
-class ScreenshotOnDisplayTest : public ::testing::Test
+class ScreenshotOnDisplayTest : public TestSupport::ScratchConfigDirTest
 {
   protected:
     void SetUp() override
     {
+        // Its own config directory too (#2932): ShellLayer loads and saves the process-wide config.
+        TestSupport::ScratchConfigDirTest::SetUp();
         std::random_device random;
         constexpr int MAX_ATTEMPTS = 100;
         for (int attempt = 0; attempt < MAX_ATTEMPTS; ++attempt)
@@ -324,6 +355,7 @@ class ScreenshotOnDisplayTest : public ::testing::Test
     {
         std::error_code ec;
         std::filesystem::remove_all(m_Dir, ec);
+        TestSupport::ScratchConfigDirTest::TearDown();
     }
 
     std::filesystem::path m_Dir;
@@ -551,6 +583,95 @@ TEST_F(ScreenshotOnDisplayTest, ADemoScriptPlaysWhileTheSequenceIsCaptured)
     EXPECT_TRUE(hasMoreThanOneColour(last));
     EXPECT_NE(first.rgba, last.rgba) << "the first and the last frame are the same image";
     EXPECT_NE(dominantColour(first), dominantColour(last)) << "the window background did not change with the theme";
+}
+
+// TASKSMACK_DEMO (#2827) playing every kind of step the test above doesn't (#3374): a tab and a theme no one
+// registered (each warned and skipped, never stopping the script), the own process selected by PID, Process
+// Details at its Overview with the Modules section opened (taken only while the Overview is drawn) and then at its
+// Network tab, the machine tab at Cores, each dialog opened and closed again, and the Render Metrics overlay shown
+// and hidden. Every step is due before the last capture, so all fifteen are issued; Modules was drawn open (its
+// lazy read was taken in), each dialog was drawn and none is left, the main tab ends on the machine tab, the unknown
+// theme leaves the startup theme, and metrics=off leaves the overlay hidden. DemoLayer plays a script by its clock,
+// so the steps are half a second or more apart, many frames: the selection a full second before the Overview, the
+// Overview a frame or more before section=, and the Modules read a second before the script leaves the Overview.
+TEST_F(ScreenshotOnDisplayTest, ADemoScriptPlaysEveryKindOfStep)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    const std::filesystem::path given = m_Dir / "steps.png";
+    const ScreenshotEnv screenshotEnv(Core::pathToUtf8(given) + ";after=0;frames=8;fps=1");
+    const std::string script = "0.2:tab=nosuchtab,0.3:select=pid:" + std::to_string(Platform::currentProcessId()) +
+                               ",1.3:details=overview,1.8:section=modules,2.8:details=network,3.3:machine=cores,3.8:open=help,"
+                               "4.3:close=dialog,4.8:open=about,5.3:close=dialog,5.8:open=settings,6.3:close=dialog,"
+                               "6.5:theme=nosuchtheme,6.7:metrics=on,6.9:metrics=off";
+    const DemoEnv demoEnv(script);
+    ASSERT_TRUE(screenshotEnv.set());
+    ASSERT_TRUE(demoEnv.set());
+    const App::ScreenshotOverride::ParseResult parsedShot = ScreenshotEnv::parseFromEnvironment();
+    ASSERT_TRUE(parsedShot.request.has_value()) << parsedShot.warning;
+    const App::ScreenshotOverride::Request request = parsedShot.request.value_or(App::ScreenshotOverride::Request{});
+    const App::DemoOverride::ParseResult parsedDemo = DemoEnv::parseFromEnvironment();
+    ASSERT_TRUE(parsedDemo.steps.has_value()) << parsedDemo.warning;
+    const std::vector<App::DemoOverride::Step> steps = parsedDemo.steps.value_or(std::vector<App::DemoOverride::Step>{});
+    ASSERT_EQ(steps.size(), 15U) << App::DemoOverride::describe(steps);
+    // The two steps that name nothing are warned about and skipped (DemoLayer), on purpose here (#2718).
+    TestSupport::expectLogWarning("'nosuchtab' names no tab; skipped");
+    TestSupport::expectLogWarning("'nosuchtheme' is not a loaded theme; skipped");
+
+    // Composed as main.cpp's runApp() composes it, as in the test above.
+    RunResult run;
+    bool demoStarted = false;
+    std::size_t stepsIssued = 0;
+    bool renderMetricsShown = true;
+    bool sectionStillPending = true;
+    bool modulesRead = false;
+    try
+    {
+        Core::Application app(smallWindow("ScreenshotOnDisplayDemoStepsTest"));
+        app.pushLayer<UI::UILayer>();
+        App::TitleBarLayer* titleBar = app.getWindow().isBorderless() ? &app.pushLayer<App::TitleBarLayer>() : nullptr;
+        auto& shell = app.pushLayer<App::ShellLayer>();
+        shell.setTitleBar(titleBar);
+        app.pushLayer<App::HelpLayer>();
+        app.pushLayer<App::AboutLayer>();
+        app.pushLayer<App::SettingsLayer>();
+        app.pushLayer<App::ElevationNoticeLayer>();
+        const App::DemoLayer& demo =
+            app.pushLayer<App::DemoLayer>(steps, shell, App::RenderMetricsOverride::csvBesideScreenshot(request.path));
+        const App::ScreenshotLayer& screenshot = app.pushLayer<App::ScreenshotLayer>(request, &shell);
+        app.pushLayer<ObserverLayer>(run.observed);
+        app.run();
+        run.outcome = screenshot.outcome();
+        run.framesWritten = screenshot.framesWritten();
+        demoStarted = demo.started();
+        stepsIssued = demo.stepsIssued();
+        renderMetricsShown = shell.renderMetricsShown();
+        sectionStillPending = shell.processDetailsPanelForTesting().sectionRequestPendingForTesting();
+        modulesRead = shell.processDetailsPanelForTesting().modulesViewForTesting().hasRead();
+    }
+    catch (const std::exception& e)
+    {
+        FAIL() << "Application failed after the display probe passed: " << e.what();
+    }
+
+    EXPECT_FALSE(run.observed.timedOut) << "the hook didn't close the window in time";
+    EXPECT_EQ(run.outcome, App::ScreenshotLayer::Outcome::Written);
+    EXPECT_EQ(run.framesWritten, 8);
+    EXPECT_EQ(run.observed.closeRequests, 1) << "close=dialog closed the dialogs, not the window";
+    EXPECT_TRUE(demoStarted) << "the script's clock never started";
+    EXPECT_EQ(stepsIssued, 15U) << "every step was due before the last capture, the skipped ones included";
+    EXPECT_FALSE(sectionStillPending) << "section=modules was taken while the Overview was drawn";
+    EXPECT_TRUE(modulesRead) << "the Modules section was drawn open, so its read ran";
+    EXPECT_EQ(run.observed.lastTab, "SystemOverview") << "machine=cores selected the machine tab (ShellLayer's id)";
+    EXPECT_TRUE(run.observed.helpSeen) << "open=help drew the Help window";
+    EXPECT_TRUE(run.observed.aboutSeen) << "open=about opened the About dialog";
+    EXPECT_TRUE(run.observed.settingsSeen) << "open=settings opened the Settings dialog";
+    EXPECT_FALSE(run.observed.dialogShownOnLastFrame) << "each close=dialog closed what was open";
+    EXPECT_EQ(run.observed.lastThemeId, run.observed.firstThemeId) << "theme=nosuchtheme left the startup theme";
+    EXPECT_FALSE(renderMetricsShown) << "metrics=off hid the overlay metrics=on showed";
 }
 
 } // namespace
