@@ -13,10 +13,12 @@
 #ifdef _WIN32
 #define TASKSMACK_AUTHORIZE_RETRY "Retry as administrator"
 #define TASKSMACK_AUTHORIZE_READ "Read as administrator"
+#define TASKSMACK_AUTHORIZE_SEARCH "Search them as administrator too"
 #define TASKSMACK_AUTHORIZE_ASKS "Asks Windows for an administrator's approval (a UAC prompt)"
 #else
 #define TASKSMACK_AUTHORIZE_RETRY "Authenticate and retry"
 #define TASKSMACK_AUTHORIZE_READ "Authenticate to read"
+#define TASKSMACK_AUTHORIZE_SEARCH "Authenticate to search them too"
 #define TASKSMACK_AUTHORIZE_ASKS "Asks for an administrator's password"
 #endif
 // NOLINTEND(cppcoreguidelines-macro-usage)
@@ -32,10 +34,13 @@ inline constexpr const char* READ_TEXT = TASKSMACK_AUTHORIZE_READ;
 /// The buttons' labels: the lock, then the words.
 inline constexpr const char* RETRY_LABEL = ICON_FA_LOCK "  " TASKSMACK_AUTHORIZE_RETRY;
 inline constexpr const char* READ_LABEL = ICON_FA_LOCK "  " TASKSMACK_AUTHORIZE_READ;
+/// Find handles' button beside the processes a search couldn't read (#3067, #3357), which searches them again.
+inline constexpr const char* SEARCH_LABEL = ICON_FA_LOCK " " TASKSMACK_AUTHORIZE_SEARCH;
 
 /// The tooltips: what the button asks for, then what it does.
 inline constexpr const char* RETRY_TOOLTIP = TASKSMACK_AUTHORIZE_ASKS ", then does it as the administrator";
 inline constexpr const char* READ_TOOLTIP = TASKSMACK_AUTHORIZE_ASKS ", then reads it as the administrator";
+inline constexpr const char* SEARCH_TOOLTIP = TASKSMACK_AUTHORIZE_ASKS ", then searches the processes this run may not read";
 inline constexpr const char* PRIORITY_TOOLTIP = TASKSMACK_AUTHORIZE_ASKS ", then sets the priority as the administrator";
 inline constexpr const char* IO_PRIORITY_TOOLTIP = TASKSMACK_AUTHORIZE_ASKS ", then sets the I/O priority as the administrator";
 
@@ -75,4 +80,5 @@ inline constexpr PlatformWording LINUX_WORDING{
 
 #undef TASKSMACK_AUTHORIZE_RETRY
 #undef TASKSMACK_AUTHORIZE_READ
+#undef TASKSMACK_AUTHORIZE_SEARCH
 #undef TASKSMACK_AUTHORIZE_ASKS

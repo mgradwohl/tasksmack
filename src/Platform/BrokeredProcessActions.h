@@ -164,6 +164,9 @@ class BrokeredOpenFilesReader final : public IProcessOpenFilesReader
     [[nodiscard]] std::size_t handlesScanned() const noexcept override;
     [[nodiscard]] bool canReadAuthorized() const override;
     [[nodiscard]] OpenFilesReadResult readAuthorized(const ProcessTarget& target, const std::stop_token& stopToken) override;
+    /// The inner reader's batch (#3357): its own reads come from one walk; the helper's each read for themselves.
+    void beginBatch() override;
+    void endBatch() noexcept override;
 
   private:
     [[nodiscard]] OpenFilesReadResult viaBroker(const ProcessTarget& target, const std::stop_token& stopToken);
