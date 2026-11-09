@@ -67,8 +67,8 @@ TEST(AccessChoiceTest, LinuxOffersAdministratorOnlyWithTheHelperAndSaysHowToGetI
 
     const NoticeDecision without = decideNotice({.platform = AccessPlatform::Linux, .helperInstalled = false});
     EXPECT_FALSE(without.administrator.enabled);
-    EXPECT_TRUE(without.administrator.note.contains(".deb or .rpm"));
-    EXPECT_TRUE(without.administrator.note.contains("sudo")); // today's remedy stays
+    EXPECT_TRUE(without.administrator.note.contains("TaskSmack (Administrator)")); // how to start one (#3580)
+    EXPECT_TRUE(without.administrator.note.contains("sudo"));                      // today's remedy stays
 }
 
 TEST(AccessChoiceTest, WindowsOffersAdministratorWithoutAHelperAndWarnsAStandardUser)

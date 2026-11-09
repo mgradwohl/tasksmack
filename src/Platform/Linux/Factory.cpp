@@ -25,8 +25,6 @@
 #include "LinuxSystemProbe.h"
 #include "LinuxUdpTrafficCollector.h"
 #include "LinuxUserSessions.h"
-#include "PkexecBroker.h"
-#include "Platform/HostEnvironment.h"
 #include "Platform/IDiskProbe.h"
 #include "Platform/IGPUProbe.h"
 #include "Platform/IHttpsClient.h"
@@ -54,14 +52,8 @@
 #include "Platform/ITaskManagerReplacement.h"
 #include "Platform/IUdpTrafficCollector.h"
 #include "Platform/IUserSessions.h"
-#include "PolkitTextAgent.h"
 
-#include <cstdlib>
 #include <memory>
-#include <stop_token>
-#include <string>
-
-#include <unistd.h>
 
 namespace Platform
 {
@@ -91,23 +83,10 @@ std::unique_ptr<IProcessActions> makeProcessActions()
 
 std::shared_ptr<IPrivilegedBroker> makePrivilegedBroker(void* /*ownerWindow*/)
 {
-    // Root needs no helper, and a refusal to root is nothing an administrator can cure. Without the
-    // installed helper polkit has no action for it, so nothing is offered (#2308).
-    if (::geteuid() == 0 || ::access(PkexecBroker::INSTALLED_HELPER_PATH, X_OK) != 0)
-    {
-        return nullptr;
-    }
-    auto broker = std::make_shared<PkexecBroker>(PkexecBroker::INSTALLED_HELPER_PATH);
-    // With no desktop polkit agent (WSL has none; nor has a session without a display), pkexec's own text agent fails on
-    // polkit 127 with "No session for cookie" (#3380): TaskSmack's own, in this process, asks in its terminal instead.
-    // A desktop session's agent keeps the prompt, in its own dialog.
-    if (Platform::runningUnderWsl() ||
-        (std::getenv("DISPLAY") == nullptr && std::getenv("WAYLAND_DISPLAY") == nullptr)) // NOLINT(concurrency-mt-unsafe)
-    {
-        broker->setTextAgent([](const std::stop_token& stopToken, std::string& error) -> std::shared_ptr<void>
-                             { return PolkitTextAgent::start(stopToken, error); });
-    }
-    return broker;
+    // A Linux session is Administrator for its whole life or not at all (#3580): TaskSmack started as root, with the
+    // "TaskSmack (Administrator)" launcher or sudo, needs no helper, and a Standard one never asks for a password
+    // after it starts. So no broker, and nothing offers "Authenticate and retry" or "Authenticate to read".
+    return nullptr;
 }
 
 std::unique_ptr<IProcessIconSource> makeProcessIconSource()

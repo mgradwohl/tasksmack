@@ -165,11 +165,11 @@ TEST_F(AccessNoticeDialogRenderTest, ARefusedPromptLeavesItOpenAsStandardWithANo
     EXPECT_TRUE(after.text.contains("Still Standard: the password prompt was dismissed"));
 }
 
-TEST_F(AccessNoticeDialogRenderTest, WithoutTheHelperAdministratorIsDisabledAndSaysWhy)
+TEST_F(AccessNoticeDialogRenderTest, WithoutTheHelperAdministratorIsDisabledAndSaysHowToStartOne)
 {
     const Frame opened = open({.platform = AccessPlatform::Linux, .helperInstalled = false});
     ASSERT_TRUE(opened.open);
-    EXPECT_TRUE(opened.text.contains(".deb or .rpm"));
+    EXPECT_TRUE(opened.text.contains("(Administrator)")) << "a session never elevates after it starts (#3580)";
     press(AuthorizeWording::LINUX_WORDING.switchSession);
     const Frame pressed = settle();
     EXPECT_EQ(pressed.choice, AccessNoticeDialog::Choice::None) << "a disabled button is never reported";
