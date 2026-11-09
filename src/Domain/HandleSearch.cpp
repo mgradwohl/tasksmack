@@ -249,7 +249,11 @@ void walk(std::span<const SearchProcess> processes,
       private:
         Platform::IProcessOpenFilesReader* m_Reader;
     };
-    const BatchScope batch(readers.openFiles);
+    // Only when some process is to have its open files read: a retry of refused modules alone walks no table.
+    // A process past the end of `sources` reads both.
+    const bool readsOpenFiles =
+        processes.size() > sources.size() || std::ranges::any_of(sources.first(processes.size()), &SearchSources::openFiles);
+    const BatchScope batch(readsOpenFiles ? readers.openFiles : nullptr);
 
     std::size_t sincePublish = 0;
     std::size_t index = 0; // the process's place in processes, and its sources' in sources

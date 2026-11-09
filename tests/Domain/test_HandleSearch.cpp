@@ -851,4 +851,57 @@ TEST(HandleSearchTest, ProcessesOfAndSourcesOfKeepTheDeniedOrder)
     EXPECT_EQ(files.read, (std::vector<std::int32_t>{1, 2}));
     EXPECT_EQ(mods.read, (std::vector<std::int32_t>{2}));
 }
+// #3357: the open-files batch (on Windows, a walk of the whole handle table) is begun only when some process in the run
+// is to have its open files read: an administrator's retry of refused modules alone begins none, and a run that reads
+// one process's open files begins exactly one.
+TEST(HandleSearchTest, ABatchIsBegunOnlyWhenSomeProcessReadsItsOpenFiles)
+{
+    FakeOpenFiles files;
+    files.authorizedFiles[1] = openFiles({});
+    files.authorizedFiles[2] = openFiles({});
+    FakeModules mods;
+    mods.authorizedResults[1] = modules({});
+    mods.authorizedResults[2] = modules({});
+    const std::vector<SearchProcess> processes{process(1, "a"), process(2, "b")};
+    Domain::PublicationSlot<SearchPublication> slot;
+    const std::stop_source stop;
+
+    const std::vector<SearchSources> modulesOnly{{.openFiles = false, .modules = true}, {.openFiles = false, .modules = true}};
+    run(processes,
+        {.openFiles = &files, .modules = &mods},
+        true,
+        startFor("x", processes.size(), 1),
+        publishTo(slot),
+        stop.get_token(),
+        modulesOnly);
+    EXPECT_EQ(files.batchesBegun, 0) << "no open files to read: no table walked";
+    EXPECT_EQ(files.batchesEnded, 0);
+    EXPECT_EQ(files.authorizedReads, 0);
+    EXPECT_EQ(mods.authorizedRead, (std::vector<std::int32_t>{1, 2}));
+
+    const std::vector<SearchSources> mixed{{.openFiles = false, .modules = true}, {.openFiles = true, .modules = false}};
+    run(processes,
+        {.openFiles = &files, .modules = &mods},
+        true,
+        startFor("x", processes.size(), 10),
+        publishTo(slot),
+        stop.get_token(),
+        mixed);
+    EXPECT_EQ(files.batchesBegun, 1);
+    EXPECT_EQ(files.batchesEnded, 1);
+    EXPECT_EQ(files.authorizedReads, 1);
+    EXPECT_EQ(files.readsInBatch, 1);
+
+    // Sources for fewer processes than the run has: the rest read both, so a batch is begun.
+    const std::vector<SearchSources> partial{{.openFiles = false, .modules = true}};
+    run(processes,
+        {.openFiles = &files, .modules = &mods},
+        true,
+        startFor("x", processes.size(), 20),
+        publishTo(slot),
+        stop.get_token(),
+        partial);
+    EXPECT_EQ(files.batchesBegun, 2);
+    EXPECT_EQ(files.batchesEnded, 2);
+}
 } // namespace
