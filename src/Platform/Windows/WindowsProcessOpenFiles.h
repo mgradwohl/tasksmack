@@ -17,6 +17,11 @@
 //      skipped on later reads of the same process (its PID and start time: a reused PID starts over),
 //      at most MAX_HUNG_HANDLES are remembered, and at most MAX_STUCK_NAMERS namers are ever left waiting.
 //
+// Find handles reads every process in one batch (beginBatch(), #3357): step 2 then runs once, at the batch's
+// start, keeping every process's File handles grouped by PID (fileHandlesByProcess()), and each read in the
+// batch takes its process's from there. Steps 1, 3 and 4 run per read as before, so a search of every process
+// costs one table walk, not one per process. Reads outside a batch (Process Details) walk the table each time.
+//
 // The calls it makes are a table of function pointers, the system's by default, so tests feed it
 // fixed handle tables, denials and a handle that hangs (test_WindowsProcessOpenFiles.cpp).
 
@@ -67,6 +72,13 @@ inline constexpr ULONG SYSTEM_EXTENDED_HANDLE_INFORMATION = 64;
 /// The handles of @p pid in @p snapshot (a SYSTEM_HANDLE_INFORMATION_EX: a count, a reserved word,
 /// then the entries). A count larger than the buffer holds is clamped to what it holds.
 [[nodiscard]] std::vector<SystemHandleEntry> handlesOfProcess(std::span<const std::byte> snapshot, ULONG_PTR pid);
+
+/// Every handle of object type @p typeIndex in @p snapshot, ordered by PID; each process's keep the table's order.
+/// A count larger than the buffer holds is clamped to what it holds.
+[[nodiscard]] std::vector<SystemHandleEntry> fileHandlesByProcess(std::span<const std::byte> snapshot, USHORT typeIndex);
+
+/// @p pid's entries in @p byProcess, a fileHandlesByProcess() result.
+[[nodiscard]] std::span<const SystemHandleEntry> handlesOfProcessIn(std::span<const SystemHandleEntry> byProcess, ULONG_PTR pid) noexcept;
 
 /// Whether a handle with @p grantedAccess is one whose queries are known to block (synchronous named
 /// pipes): it is listed but never touched. The well-known list also has 0x0012019F, but that is plain
@@ -130,6 +142,13 @@ class WindowsProcessOpenFilesReader final : public IProcessOpenFilesReader
     [[nodiscard]] bool hasOpenFiles() const override;
     [[nodiscard]] OpenFilesReadResult readOpenFiles(const ProcessTarget& target) override;
     [[nodiscard]] std::size_t handlesScanned() const noexcept override;
+    /// One walk of the handle table for the reads until endBatch(). A walk that fails (or no memory to group it)
+    /// leaves the reads to walk it themselves, each reporting a failure as it would outside a batch.
+    void beginBatch() override;
+    void endBatch() noexcept override;
+
+    /// Whether a batch's walk is held (tests).
+    [[nodiscard]] bool inBatch() const noexcept;
 
     /// Namers still waiting on a handle that did not answer (tests).
     [[nodiscard]] std::size_t stuckNamerCount();
@@ -146,12 +165,17 @@ class WindowsProcessOpenFilesReader final : public IProcessOpenFilesReader
     [[nodiscard]] std::optional<USHORT> fileTypeIndex();
     /// Frees m_Snapshot between reads.
     void releaseSnapshot() noexcept;
+    /// @p pid's File handles (type @p fileType): from the batch's walk when one is held, else from a walk now. An
+    /// error message when the walk fails.
+    [[nodiscard]] std::optional<std::string> fileHandlesOf(ULONG_PTR pid, USHORT fileType, std::vector<SystemHandleEntry>& into);
 
     ProcessOpenFilesFunctions m_Api;
     std::chrono::milliseconds m_HandleTimeout;
     std::vector<std::byte> m_Snapshot;   // only during a read
     std::size_t m_SnapshotBytesHint = 0; // the size the table last needed, to start the next read there
     std::optional<USHORT> m_FileTypeIndex;
+    /// The batch's File handles, by PID (fileHandlesByProcess()), while a batch is held (#3357).
+    std::optional<std::vector<SystemHandleEntry>> m_Batch;
     std::vector<std::shared_ptr<NamingState>> m_StuckNamers;
     /// A handle that did not answer, and the process (PID and start time) it belongs to.
     struct HungHandle

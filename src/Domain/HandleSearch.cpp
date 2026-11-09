@@ -123,6 +123,10 @@ void addProcess(const SearchProcess& process,
             addMatch(process, kindOf(file.kind), file.path, file.deleted, loweredQuery, into);
         }
         into.truncated = into.truncated || files.truncated;
+        if (files.namesIncomplete)
+        {
+            ++into.partlyNamed;
+        }
     }
     if (modulesOk)
     {
@@ -184,6 +188,34 @@ void walk(std::span<const SearchProcess> processes,
           const std::stop_token& stopToken)
 {
     const std::string loweredQuery = lowered(current.query);
+
+    // One batch for the walk (#3357): on Windows, one pass over the system handle table for every process, not one
+    // pass each. Ended however the walk ends, a throw included.
+    struct BatchScope
+    {
+        explicit BatchScope(Platform::IProcessOpenFilesReader* reader) : m_Reader(reader)
+        {
+            if (m_Reader != nullptr)
+            {
+                m_Reader->beginBatch();
+            }
+        }
+        ~BatchScope()
+        {
+            if (m_Reader != nullptr)
+            {
+                m_Reader->endBatch();
+            }
+        }
+        BatchScope(const BatchScope&) = delete;
+        BatchScope& operator=(const BatchScope&) = delete;
+        BatchScope(BatchScope&&) = delete;
+        BatchScope& operator=(BatchScope&&) = delete;
+
+      private:
+        Platform::IProcessOpenFilesReader* m_Reader;
+    };
+    const BatchScope batch(readers.openFiles);
 
     std::size_t sincePublish = 0;
     for (const SearchProcess& process : processes)

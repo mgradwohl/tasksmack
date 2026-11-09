@@ -14,6 +14,7 @@
 #include <map>
 #include <memory>
 #include <new>
+#include <span>
 #include <stdexcept>
 #include <stop_token>
 #include <string>
@@ -90,15 +91,32 @@ class FakeOpenFiles final : public Platform::IProcessOpenFilesReader
     std::map<std::int32_t, Platform::OpenFilesReadResult> authorizedFiles;
     std::vector<std::int32_t> read;
     int authorizedReads = 0;
+    int batchesBegun = 0;
+    int batchesEnded = 0;
+    int readsInBatch = 0; ///< Reads made between beginBatch() and endBatch()
+    bool inBatch = false;
 
     [[nodiscard]] bool hasOpenFiles() const override
     {
         return true;
     }
 
+    void beginBatch() override
+    {
+        ++batchesBegun;
+        inBatch = true;
+    }
+
+    void endBatch() noexcept override
+    {
+        ++batchesEnded;
+        inBatch = false;
+    }
+
     [[nodiscard]] Platform::OpenFilesReadResult readOpenFiles(const Platform::ProcessTarget& target) override
     {
         read.push_back(target.pid);
+        readsInBatch += inBatch ? 1 : 0;
         const auto found = results.find(target.pid);
         return found != results.end() ? found->second : filesStatus(Platform::OpenFilesReadStatus::PermissionDenied);
     }
@@ -107,6 +125,7 @@ class FakeOpenFiles final : public Platform::IProcessOpenFilesReader
                                                                const std::stop_token& /*stopToken*/) override
     {
         ++authorizedReads;
+        readsInBatch += inBatch ? 1 : 0;
         const auto found = authorizedFiles.find(target.pid);
         return found != authorizedFiles.end() ? found->second : filesStatus(Platform::OpenFilesReadStatus::Failed);
     }
@@ -412,10 +431,22 @@ class ThrowingOpenFiles final : public Platform::IProcessOpenFilesReader
   public:
     std::int32_t throwOn = 0;
     int kind = 0; ///< 0: std::runtime_error, 1: std::bad_alloc, 2: not a std::exception
+    int batchesBegun = 0;
+    int batchesEnded = 0;
 
     [[nodiscard]] bool hasOpenFiles() const override
     {
         return true;
+    }
+
+    void beginBatch() override
+    {
+        ++batchesBegun;
+    }
+
+    void endBatch() noexcept override
+    {
+        ++batchesEnded;
     }
 
     [[nodiscard]] Platform::OpenFilesReadResult readOpenFiles(const Platform::ProcessTarget& target) override
@@ -494,6 +525,9 @@ TEST(HandleSearchTest, AReaderOrAllocationFailureEndsTheWalkAsDoneWithItsReason)
         publishTo(slot),
         stop.get_token());
     EXPECT_EQ(slot.load()->failure, "The search stopped: an unknown error");
+    // #3357: each failed walk still ended the batch it began.
+    EXPECT_EQ(files.batchesBegun, 3);
+    EXPECT_EQ(files.batchesEnded, 3);
 
     // A search after the failures runs to its end, with no failure.
     files.throwOn = 0;
@@ -613,6 +647,71 @@ TEST(HandleSearchTest, AnAdministratorSearchAddsTheDeniedProcessesToTheFirstResu
     ASSERT_EQ(second->matches.size(), 2U);
     EXPECT_EQ(second->matches[1].process, "postgres");
     EXPECT_EQ(files.authorizedReads, 1);
+}
+
+// #3357: a search reads every process's open files inside one batch (on Windows, one pass over the system handle
+// table), begun before the first read and ended after the last, an administrator's search too.
+TEST(HandleSearchTest, RunReadsEveryProcessInOneBatch)
+{
+    FakeOpenFiles files;
+    std::vector<SearchProcess> processes;
+    for (std::int32_t pid = 1; pid <= 20; ++pid)
+    {
+        processes.push_back(process(pid, "p" + std::to_string(pid)));
+        files.results[pid] = openFiles({file(Platform::OpenFileKind::File, "/tmp/file-" + std::to_string(pid))});
+    }
+    files.authorizedFiles[1] = openFiles({});
+    Domain::PublicationSlot<SearchPublication> slot;
+    std::stop_source stop;
+    run(processes,
+        {.openFiles = &files, .modules = nullptr},
+        false,
+        startFor("file", processes.size(), 1),
+        publishTo(slot),
+        stop.get_token());
+    EXPECT_EQ(files.batchesBegun, 1);
+    EXPECT_EQ(files.batchesEnded, 1);
+    EXPECT_FALSE(files.inBatch);
+    EXPECT_EQ(files.readsInBatch, 20) << "every read inside the batch";
+
+    run(std::span(processes).first(1),
+        {.openFiles = &files, .modules = nullptr},
+        true,
+        startFor("file", 1, 10),
+        publishTo(slot),
+        stop.get_token());
+    EXPECT_EQ(files.batchesBegun, 2);
+    EXPECT_EQ(files.batchesEnded, 2);
+    EXPECT_EQ(files.readsInBatch, 21);
+
+    // A search stopped before it reads anything still ends the batch it began.
+    stop.request_stop();
+    run(processes,
+        {.openFiles = &files, .modules = nullptr},
+        false,
+        startFor("file", processes.size(), 20),
+        publishTo(slot),
+        stop.get_token());
+    EXPECT_EQ(files.batchesBegun, 3);
+    EXPECT_EQ(files.batchesEnded, 3);
+    EXPECT_EQ(files.readsInBatch, 21);
+}
+
+// #3357: a process read whose names were incomplete (a Windows handle that didn't answer in time) is counted, so the
+// status line can say a match among them may be missing. One whose names were all read isn't.
+TEST(HandleSearchTest, AddProcessCountsAProcessWhoseNamesWereIncomplete)
+{
+    SearchPublication into = startFor("x", 3, 1);
+    Platform::OpenFilesReadResult partial = openFiles({file(Platform::OpenFileKind::Other, "")});
+    partial.namesIncomplete = true;
+    addProcess(process(1, "a"), partial, modules({}), "x", into);
+    addProcess(process(2, "b"), openFiles({}), modules({}), "x", into);
+    Platform::OpenFilesReadResult refused = filesStatus(Platform::OpenFilesReadStatus::PermissionDenied);
+    refused.namesIncomplete = true; // not a read: not counted
+    addProcess(process(3, "c"), refused, modulesStatus(Platform::ModulesReadStatus::PermissionDenied), "x", into);
+    EXPECT_EQ(into.partlyNamed, 1U);
+    EXPECT_EQ(into.searched, 3U);
+    EXPECT_EQ(into.denied.size(), 1U);
 }
 
 } // namespace

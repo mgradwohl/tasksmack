@@ -1734,6 +1734,24 @@ class MockProcessOpenFilesReader : public Platform::IProcessOpenFilesReader
         return m_ReadCount;
     }
 
+    /// beginBatch() / endBatch() (#3357): counted.
+    void beginBatch() override
+    {
+        ++m_BatchesBegun;
+    }
+    void endBatch() noexcept override
+    {
+        ++m_BatchesEnded;
+    }
+    [[nodiscard]] int batchesBegun() const
+    {
+        return m_BatchesBegun;
+    }
+    [[nodiscard]] int batchesEnded() const
+    {
+        return m_BatchesEnded;
+    }
+
     /// readAuthorized() (#2309): offered when set, returning @p result and counting its calls.
     void setAuthorizedResult(Platform::OpenFilesReadResult result)
     {
@@ -1761,6 +1779,8 @@ class MockProcessOpenFilesReader : public Platform::IProcessOpenFilesReader
     Platform::OpenFilesReadResult m_AuthorizedResult;
     Platform::OpenFilesReadResult m_Result;
     int m_ReadCount = 0;
+    int m_BatchesBegun = 0;
+    int m_BatchesEnded = 0;
 };
 
 // =============================================================================

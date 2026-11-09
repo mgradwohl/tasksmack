@@ -2,7 +2,8 @@
 
 // Find handles (#3067): which processes hold a file, folder, library or socket whose name contains a
 // query ("what's locking this file?"). One search walks every process the latest snapshot lists through
-// the open-files (IProcessOpenFiles.h) and modules (IProcessModules.h) readers Process Details uses, on a
+// the open-files (IProcessOpenFiles.h) and modules (IProcessModules.h) readers Process Details uses, the
+// open-files reader in one batch (beginBatch(), #3357: one pass over Windows' handle table), on a
 // worker, and publishes its matches in batches as it goes. Searching is pure here; the worker that runs
 // it (a Domain::Worker, #3343) belongs to the Find handles dialog.
 
@@ -67,8 +68,11 @@ struct SearchPublication
     std::size_t searched = 0; ///< Processes read so far, whether or not they could be.
     /// Processes the OS wouldn't let this run read (another user's): an administrator can search them.
     std::vector<SearchProcess> denied;
-    std::size_t exited = 0;  ///< Processes that ended before they were read.
-    std::size_t failed = 0;  ///< Processes whose read failed some other way.
+    std::size_t exited = 0; ///< Processes that ended before they were read.
+    std::size_t failed = 0; ///< Processes whose read failed some other way.
+    /// Processes read, but some of whose handles weren't named: a handle didn't answer in time (Windows), so a match
+    /// among them may be missing.
+    std::size_t partlyNamed = 0;
     bool truncated = false;  ///< It stopped at MAX_MATCHES, or a process had more than a read lists.
     bool done = false;       ///< The walk finished (or was stopped).
     bool authorized = false; ///< This search read as an administrator.

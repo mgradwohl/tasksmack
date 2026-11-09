@@ -484,6 +484,16 @@ std::size_t BrokeredOpenFilesReader::handlesScanned() const noexcept
     return m_Inner->handlesScanned();
 }
 
+void BrokeredOpenFilesReader::beginBatch()
+{
+    m_Inner->beginBatch();
+}
+
+void BrokeredOpenFilesReader::endBatch() noexcept
+{
+    m_Inner->endBatch();
+}
+
 OpenFilesReadResult BrokeredOpenFilesReader::readOpenFiles(const ProcessTarget& target)
 {
     OpenFilesReadResult result = m_Inner->readOpenFiles(target);

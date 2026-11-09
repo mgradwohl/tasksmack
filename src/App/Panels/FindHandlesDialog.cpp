@@ -1,5 +1,6 @@
 #include "FindHandlesDialog.h"
 
+#include "AuthorizeWording.h"
 #include "Domain/HandleSearch.h"
 #include "Domain/Worker.h"
 #include "Platform/AsciiCase.h"
@@ -90,6 +91,10 @@ std::string findHandlesStatus(const SearchPublication& publication, bool workerR
     if (publication.exited > 0)
     {
         status += std::format(" \xC2\xB7 {} ended first", publication.exited);
+    }
+    if (publication.partlyNamed > 0)
+    {
+        status += std::format(" \xC2\xB7 {} only partly read", publication.partlyNamed); // a handle didn't answer (Windows)
     }
     if (!publication.failure.empty())
     {
@@ -451,16 +456,17 @@ std::optional<FindHandlesAction> FindHandlesDialog::render(const ProcessList& pr
     action = renderResults(shown);
     ImGui::TextColored(theme.scheme().textMuted, "%s", findHandlesStatus(shown, workerReturned).c_str());
 
-    // Another user's processes: an administrator can search them, after one password prompt.
+    // Another user's processes (or, on Windows, an elevated or protected one): an administrator can search them,
+    // after one prompt.
     if (shown.done && !shown.denied.empty() && m_Capabilities.authorize)
     {
         ImGui::SameLine();
-        if (ImGui::SmallButton(ICON_FA_LOCK " Authenticate to search them too"))
+        if (ImGui::SmallButton(AuthorizeWording::SEARCH_LABEL))
         {
             std::vector<Domain::HandleSearch::SearchProcess> denied = shown.denied;
             startSearch(std::move(denied), true, Domain::HandleSearch::startAuthorizedAfter(shown, shown.version + 1));
         }
-        ImGui::SetItemTooltip("Asks for an administrator's password, then searches the processes this run may not read");
+        ImGui::SetItemTooltip("%s", AuthorizeWording::SEARCH_TOOLTIP);
     }
 
     const UI::Widgets::DialogFooterButton closeButton{.label = CLOSE_LABEL, .fills = nullptr, .tooltip = nullptr};

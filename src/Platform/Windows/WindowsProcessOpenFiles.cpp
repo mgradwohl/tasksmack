@@ -19,6 +19,7 @@
 #include <format>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <optional>
 #include <span>
 #include <string>
@@ -203,7 +204,11 @@ void runNamer(const std::shared_ptr<WindowsProcessOpenFilesReader::NamingState>&
 
 } // namespace
 
-std::vector<SystemHandleEntry> handlesOfProcess(std::span<const std::byte> snapshot, ULONG_PTR pid)
+namespace
+{
+
+/// Every entry of @p snapshot (a SYSTEM_HANDLE_INFORMATION_EX) that @p keep accepts, in the table's order.
+template<typename Keep> [[nodiscard]] std::vector<SystemHandleEntry> entriesWhere(std::span<const std::byte> snapshot, Keep keep)
 {
     std::vector<SystemHandleEntry> handles;
     constexpr std::size_t HEADER_BYTES = 2 * sizeof(ULONG_PTR); // NumberOfHandles, Reserved
@@ -219,12 +224,33 @@ std::vector<SystemHandleEntry> handlesOfProcess(std::span<const std::byte> snaps
     {
         SystemHandleEntry entry;
         std::memcpy(&entry, snapshot.data() + HEADER_BYTES + (i * sizeof(SystemHandleEntry)), sizeof(entry));
-        if (entry.uniqueProcessId == pid)
+        if (keep(entry))
         {
             handles.push_back(entry);
         }
     }
     return handles;
+}
+
+} // namespace
+
+std::vector<SystemHandleEntry> handlesOfProcess(std::span<const std::byte> snapshot, ULONG_PTR pid)
+{
+    return entriesWhere(snapshot, [pid](const SystemHandleEntry& entry) { return entry.uniqueProcessId == pid; });
+}
+
+std::vector<SystemHandleEntry> fileHandlesByProcess(std::span<const std::byte> snapshot, USHORT typeIndex)
+{
+    std::vector<SystemHandleEntry> handles =
+        entriesWhere(snapshot, [typeIndex](const SystemHandleEntry& entry) { return entry.objectTypeIndex == typeIndex; });
+    std::ranges::stable_sort(handles, {}, &SystemHandleEntry::uniqueProcessId);
+    return handles;
+}
+
+std::span<const SystemHandleEntry> handlesOfProcessIn(std::span<const SystemHandleEntry> byProcess, ULONG_PTR pid) noexcept
+{
+    const auto [first, last] = std::ranges::equal_range(byProcess, pid, {}, &SystemHandleEntry::uniqueProcessId);
+    return {first, last};
 }
 
 WindowsProcessOpenFilesReader::WindowsProcessOpenFilesReader() : WindowsProcessOpenFilesReader(ProcessOpenFilesFunctions{})
@@ -255,6 +281,59 @@ bool WindowsProcessOpenFilesReader::hasOpenFiles() const
 std::size_t WindowsProcessOpenFilesReader::handlesScanned() const noexcept
 {
     return m_HandlesScanned.load(std::memory_order_relaxed);
+}
+
+void WindowsProcessOpenFilesReader::beginBatch()
+{
+    m_Batch.reset();
+    if (!hasOpenFiles())
+    {
+        return;
+    }
+    const std::optional<USHORT> fileType = fileTypeIndex();
+    if (!fileType.has_value() || querySnapshot().has_value())
+    {
+        return; // each read walks the table itself, and says why it can't
+    }
+    try
+    {
+        m_Batch = fileHandlesByProcess(m_Snapshot, *fileType);
+    }
+    catch (const std::bad_alloc&)
+    {
+        m_Batch.reset(); // no memory to group them: each read walks the table itself
+    }
+    releaseSnapshot();
+}
+
+void WindowsProcessOpenFilesReader::endBatch() noexcept
+{
+    m_Batch.reset();
+}
+
+bool WindowsProcessOpenFilesReader::inBatch() const noexcept
+{
+    return m_Batch.has_value();
+}
+
+std::optional<std::string>
+WindowsProcessOpenFilesReader::fileHandlesOf(ULONG_PTR pid, USHORT fileType, std::vector<SystemHandleEntry>& into)
+{
+    if (m_Batch.has_value())
+    {
+        const std::span<const SystemHandleEntry> held = handlesOfProcessIn(*m_Batch, pid);
+        into.assign(held.begin(), held.end());
+        return std::nullopt;
+    }
+    if (std::optional<std::string> error = querySnapshot())
+    {
+        return error;
+    }
+    into = entriesWhere(m_Snapshot,
+                        [pid, fileType](const SystemHandleEntry& entry)
+                        { return entry.uniqueProcessId == pid && entry.objectTypeIndex == fileType; });
+    releaseSnapshot();
+    return std::nullopt;
 }
 
 std::size_t WindowsProcessOpenFilesReader::stuckNamerCount()
@@ -361,13 +440,14 @@ OpenFilesReadResult WindowsProcessOpenFilesReader::readOpenFiles(const ProcessTa
     {
         return resultOf(OpenFilesReadStatus::Failed, "Could not identify file handles");
     }
-    if (const std::optional<std::string> error = querySnapshot())
+    const auto pid = static_cast<ULONG_PTR>(target.pid);
+    std::vector<SystemHandleEntry> handles;
+    if (const std::optional<std::string> error = fileHandlesOf(pid, *fileType, handles))
     {
         return resultOf(OpenFilesReadStatus::Failed, *error);
     }
 
     OpenFilesReadResult result = resultOf(OpenFilesReadStatus::Ok);
-    const auto pid = static_cast<ULONG_PTR>(target.pid);
     // A different process under this PID (its start time differs) inherits none of the old one's hung handles.
     std::erase_if(m_HungHandles, [&](const HungHandle& hung) { return hung.pid == pid && hung.startTimeTicks != target.startTimeTicks; });
     const auto isHung = [&](ULONG_PTR handleValue)
@@ -379,12 +459,8 @@ OpenFilesReadResult WindowsProcessOpenFilesReader::readOpenFiles(const ProcessTa
     };
     std::vector<SystemHandleEntry> fileHandles;
     std::vector<OpenFile> skipped; // known to hang: listed, never touched
-    for (const SystemHandleEntry& entry : handlesOfProcess(m_Snapshot, pid))
+    for (const SystemHandleEntry& entry : handles)
     {
-        if (entry.objectTypeIndex != *fileType)
-        {
-            continue;
-        }
         if (fileHandles.size() + skipped.size() >= MAX_OPEN_FILES)
         {
             result.truncated = true;
@@ -400,7 +476,6 @@ OpenFilesReadResult WindowsProcessOpenFilesReader::readOpenFiles(const ProcessTa
             fileHandles.push_back(entry);
         }
     }
-    releaseSnapshot();
 
     // Too many namers already stuck on handles that never answered: list the rest unnamed.
     if (stuckNamerCount() >= MAX_STUCK_NAMERS)
