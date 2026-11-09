@@ -826,6 +826,7 @@ BrokeredProcessProbe::HiddenListing BrokeredProcessProbe::listHiddenProcesses(st
                                                                                .cmdline = hidden.cmdline,
                                                                                .io = hidden.io,
                                                                                .cgroup = hidden.cgroup,
+                                                                               .ioprio = hidden.ioprio,
                                                                            });
         // The helper's listing names the process its stat was read from; a record from other text isn't it.
         if (process.has_value() && process->startTimeTicks == hidden.target.startTimeTicks)

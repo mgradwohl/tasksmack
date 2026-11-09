@@ -209,6 +209,7 @@ struct ProcFileTexts
     std::optional<std::string> cmdline{}; ///< nullopt when it couldn't be read; empty for a kernel thread
     std::string io{};                     ///< Empty when unreadable: its I/O is then unavailable
     std::string cgroup{};
+    std::optional<std::int32_t> ioprio{}; ///< ioprio_get(2)'s raw value, identity-checked (#3572); nullopt when unread
 };
 // NOLINTEND(readability-redundant-member-init)
 

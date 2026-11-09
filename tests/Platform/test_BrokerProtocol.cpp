@@ -483,7 +483,8 @@ TEST(BrokerProtocolTest, HiddenProcessesRoundTripAndRefuseTooManyOrAStrayCommand
                                     .status = "Name:\tsshd\nUid:\t0\t0\t0\t0\n",
                                     .cmdline = std::string("sshd: alice\0", 12),
                                     .io = "read_bytes: 1\nwrite_bytes: 2\n",
-                                    .cgroup = "0::/system.slice/ssh.service\n"},
+                                    .cgroup = "0::/system.slice/ssh.service\n",
+                                    .ioprio = (2 << 13) | 4}, // #3572: best-effort 4
                       HiddenProcess{.target = {.pid = 7, .startTimeTicks = 9}, .stat = "7 (k) S 2", .cmdline = std::nullopt}},
         .truncated = true};
     EXPECT_EQ(roundTrip(reply), reply);

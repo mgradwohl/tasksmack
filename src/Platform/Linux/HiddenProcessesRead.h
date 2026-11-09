@@ -5,8 +5,11 @@
 // files -- stat, statm, status, cmdline, io and cgroup, never a path the request names -- read by
 // tasksmack-helper, whose CAP_SYS_PTRACE hidepid lets see them. TaskSmack parses the text with its own
 // probe's parsers (LinuxProcessProbe::processFromFiles()). As MemoryRollupRead.h: one open of each process's
-// directory, so every file read through it is that process's, the one its stat names.
+// directory, so every file read through it is that process's, the one its stat names. With them goes the raw
+// value ioprio_get(2) gives (#3572), which takes a PID: kept only while that directory still resolves after the
+// call, as LinuxProcessProbe::readIoPriority() keeps its own, since a PID is reused only once its process is reaped.
 
+#include "IoPriority.h"
 #include "Platform/BrokerProtocol.h"
 #include "Platform/IProcessProbe.h"
 #include "PosixGuards.h"
@@ -19,6 +22,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <span>
 #include <string>
@@ -28,6 +32,7 @@
 
 #include <dirent.h>
 #include <fcntl.h>
+#include <sys/syscall.h> // NOLINT(misc-include-cleaner): SYS_ioprio_get, which include-cleaner has no mapping for
 #include <unistd.h>
 
 namespace Platform::Linux
@@ -68,13 +73,28 @@ namespace HiddenProcessesDetail
     return text;
 }
 
+/// ioprio_get(2) for @p pid: its raw value, or a negative one when it failed (the process exited).
+[[nodiscard]] inline int readIoprio(std::int32_t pid) noexcept
+{
+#ifdef SYS_ioprio_get
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg,misc-include-cleaner) - syscall(2) is variadic; SYS_ioprio_get as above
+    return static_cast<int>(::syscall(SYS_ioprio_get, IoPrio::WHO_PROCESS, pid));
+#else
+    static_cast<void>(pid);
+    return -1;
+#endif
+}
+
 } // namespace HiddenProcessesDetail
 
 /// The processes under @p procRoot ("/proc") whose PIDs aren't in @p visiblePids, each with its files'
-/// text; a process whose stat can't be read (it exited) is left out. Past MAX_HIDDEN_PROCESSES the reply
-/// says it was cut.
-[[nodiscard]] inline Broker::HiddenProcessesReply listHiddenProcessesAt(const std::filesystem::path& procRoot,
-                                                                        std::span<const std::int32_t> visiblePids)
+/// text and its I/O priority as @p readIoprio gives it (ioprio_get(2); a test's fake /proc passes its own, so the
+/// real processes that happen to have its PIDs aren't asked); a process whose stat can't be read (it exited) is
+/// left out. Past MAX_HIDDEN_PROCESSES the reply says it was cut.
+[[nodiscard]] inline Broker::HiddenProcessesReply
+listHiddenProcessesAt(const std::filesystem::path& procRoot,
+                      std::span<const std::int32_t> visiblePids,
+                      const std::function<int(std::int32_t)>& readIoprio = HiddenProcessesDetail::readIoprio)
 {
     std::vector<std::int32_t> visible(visiblePids.begin(), visiblePids.end());
     std::ranges::sort(visible);
@@ -117,6 +137,12 @@ namespace HiddenProcessesDetail
         process.cmdline = HiddenProcessesDetail::readAt(pidDirFd.get(), "cmdline");
         process.io = HiddenProcessesDetail::readAt(pidDirFd.get(), "io").value_or(std::string{});
         process.cgroup = HiddenProcessesDetail::readAt(pidDirFd.get(), "cgroup").value_or(std::string{});
+        // A negative value is a failure (the process exited); one read after its directory stopped resolving may
+        // be another process's, which took the PID once this one was reaped.
+        if (const int ioprio = readIoprio(pid); ioprio >= 0 && ::faccessat(pidDirFd.get(), "stat", F_OK, 0) == 0)
+        {
+            process.ioprio = ioprio;
+        }
         reply.processes.push_back(std::move(process));
     }
     return reply;

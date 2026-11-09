@@ -2118,6 +2118,9 @@ TEST(PkexecBrokerTest, TheHelperListsTheProcessesTaskSmackDoesntSee)
     EXPECT_EQ(found->target, child.target());
     EXPECT_FALSE(found->status.empty());
     EXPECT_TRUE(found->cmdline.has_value());
+    // #3572: and its I/O priority, read by the real helper under its enforcing filter (ioprio_get is allowed) and
+    // kept because the child's /proc directory still resolved after the call.
+    EXPECT_TRUE(found->ioprio.has_value());
 }
 
 // #2728: the helper's service actions go over the system bus it opened before its sandbox; under the

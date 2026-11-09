@@ -77,7 +77,8 @@ namespace Platform::Broker
 /// 18: SetIoPriority's class can be WindowsHint, a Windows I/O priority hint (#3362, Windows).
 /// 19: ReadUdpBytes, every process's UDP bytes from the Linux helper's eBPF counter (#3366, Linux).
 /// 20: CloseConnection carries an IPv4 TCP connection's endpoints, which name it on Windows (#3358, Windows).
-inline constexpr std::uint16_t PROTOCOL_VERSION = 20;
+/// 21: HiddenProcessesResult carries each hidden process's raw I/O priority, read by the helper (#3572, Linux).
+inline constexpr std::uint16_t PROTOCOL_VERSION = 21;
 /// The largest frame either side accepts, header included.
 inline constexpr std::size_t MAX_MESSAGE_BYTES = std::size_t{8} << 20U;
 /// The most processes one ReadProcessCounters asks about (#2728); a sampler with more asks for the first.
@@ -538,6 +539,9 @@ struct HiddenProcess
     std::optional<std::string> cmdline{}; ///< nullopt when it couldn't be read; empty for a kernel thread
     std::string io{};                     ///< Empty when unreadable
     std::string cgroup{};
+    /// The raw value ioprio_get(2) gave (#3572), kept only while the process's /proc directory still resolved
+    /// after the call; nullopt when it wasn't read, failed, or the process may have handed its PID on.
+    std::optional<std::int32_t> ioprio{};
     friend bool operator==(const HiddenProcess&, const HiddenProcess&) = default;
 };
 // NOLINTEND(readability-redundant-member-init)
@@ -1873,8 +1877,9 @@ inline constexpr std::array<std::optional<std::uint64_t> MemoryMapping::*, 8> SI
     return MessageKind::ServiceActionResult;
 }
 
-/// HiddenProcessesResult (#2728): truncated, count; a process: its target, five texts and the command
-/// line's flag and text. As many processes as fit in one frame, and it says when it was cut.
+/// HiddenProcessesResult (#2728): truncated, count; a process: its target, five texts, the command
+/// line's flag and text, and the I/O priority's flag and value (#3572). As many processes as fit in one
+/// frame, and it says when it was cut.
 [[nodiscard]] inline MessageKind encodePayload(Writer& writer, const HiddenProcessesReply& hidden)
 {
     constexpr std::size_t ROOM = listRoom(1 + 4);
@@ -1885,7 +1890,7 @@ inline constexpr std::array<std::optional<std::uint64_t> MemoryMapping::*, 8> SI
                                              {
                                                  return 4 + 8 + textBytes(process.stat) + textBytes(process.statm) +
                                                         textBytes(process.status) + 1 + textBytes(process.cmdline.value_or(std::string{})) +
-                                                        textBytes(process.io) + textBytes(process.cgroup);
+                                                        textBytes(process.io) + textBytes(process.cgroup) + 1 + 4;
                                              });
     writer.u8((hidden.truncated || count < hidden.processes.size()) ? 1 : 0);
     writer.u32(static_cast<std::uint32_t>(count));
@@ -1900,6 +1905,8 @@ inline constexpr std::array<std::optional<std::uint64_t> MemoryMapping::*, 8> SI
         writer.text(process.cmdline.value_or(std::string{}));
         writer.text(process.io);
         writer.text(process.cgroup);
+        writer.u8(process.ioprio.has_value() ? 1 : 0);
+        writer.i32(process.ioprio.value_or(0));
     }
     return MessageKind::HiddenProcessesResult;
 }
@@ -2414,6 +2421,16 @@ namespace Detail
         }
         process.io = reader.text();
         process.cgroup = reader.text();
+        const bool ioprioRead = reader.flag();
+        const std::int32_t ioprio = reader.i32();
+        if (ioprioRead)
+        {
+            process.ioprio = ioprio;
+        }
+        else if (ioprio != 0)
+        {
+            reader.fail(); // an I/O priority it says it didn't read
+        }
         reply.processes.push_back(std::move(process));
     }
     return reply;

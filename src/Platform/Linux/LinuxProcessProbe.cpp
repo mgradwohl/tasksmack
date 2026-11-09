@@ -1159,6 +1159,12 @@ std::optional<ProcessCounters> LinuxProcessProbe::processFromFiles(std::int32_t 
     counters.handleCountAvailable = false;
     counters.networkCountersAvailable = false;
     applyIo(files.io, counters);
+    // The I/O priority the helper read (#3572), as readIoPriority() takes its own: none for a kernel thread, which
+    // applyStat() has typed SYSTEM by now, and none when the helper couldn't confirm it was this process's.
+    if (files.ioprio.has_value() && counters.processType != CgroupProcessType::SYSTEM)
+    {
+        counters.ioPriority = IoPrio::decode(*files.ioprio);
+    }
     FactsByCgroup factsByCgroup;
     applyCgroupFacts(files.cgroup, m_CgroupRoot, factsByCgroup, counters);
     applyEfficiencyStatus(counters);

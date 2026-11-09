@@ -25,6 +25,13 @@ namespace
 
 using TestSupport::ScopedTempDir;
 
+/// A fake /proc's I/O priority reader: never ioprio_get(2), which would ask the real processes that happen to have
+/// its PIDs. Fails for every process, as for one that exited.
+int noIoprio(std::int32_t /*pid*/)
+{
+    return -1;
+}
+
 void writeFile(const std::filesystem::path& path, std::string_view contents)
 {
     std::filesystem::create_directories(path.parent_path());
@@ -55,7 +62,7 @@ TEST(HiddenProcessesReadTest, ListsEveryProcessNotAmongTheVisibleWithItsFilesTex
     std::filesystem::create_directories(proc.path / "sys");
 
     const std::vector<std::int32_t> visible{300, 1};
-    Broker::HiddenProcessesReply reply = listHiddenProcessesAt(proc.path, visible);
+    Broker::HiddenProcessesReply reply = listHiddenProcessesAt(proc.path, visible, noIoprio);
     std::ranges::sort(reply.processes, {}, [](const Broker::HiddenProcess& process) { return process.target.pid; });
     ASSERT_EQ(reply.processes.size(), 2U);
     EXPECT_FALSE(reply.truncated);
@@ -79,12 +86,42 @@ TEST(HiddenProcessesReadTest, AnUnreadableCommandLineIsUnreadNotEmptyAndAMissing
     writeProcess(proc.path, 100, 11);
     std::filesystem::remove(proc.path / "100" / "cmdline");
     std::filesystem::remove(proc.path / "100" / "io");
-    const Broker::HiddenProcessesReply reply = listHiddenProcessesAt(proc.path, {});
+    const Broker::HiddenProcessesReply reply = listHiddenProcessesAt(proc.path, {}, noIoprio);
     ASSERT_EQ(reply.processes.size(), 1U);
     EXPECT_FALSE(reply.processes.front().cmdline.has_value()) << "unread, so not taken for a kernel thread";
     EXPECT_TRUE(reply.processes.front().io.empty());
 
-    EXPECT_TRUE(listHiddenProcessesAt(proc.path / "missing", {}).processes.empty());
+    EXPECT_TRUE(listHiddenProcessesAt(proc.path / "missing", {}, noIoprio).processes.empty());
+}
+
+// #3572: each hidden process's I/O priority, read by PID, kept only while its directory still resolves after the
+// read: a process reaped meanwhile could have handed its PID on. A failed read is no value either.
+TEST(HiddenProcessesReadTest, CarriesEachProcessIoPriorityReadWhileItsDirectoryResolves)
+{
+    const ScopedTempDir proc("hidden_processes_ioprio");
+    writeProcess(proc.path, 100, 11);
+    writeProcess(proc.path, 200, 22);
+    writeProcess(proc.path, 300, 33);
+    constexpr int BEST_EFFORT_4 = (2 << 13) | 4;
+    std::vector<std::int32_t> asked;
+    Broker::HiddenProcessesReply reply = listHiddenProcessesAt(proc.path,
+                                                               {},
+                                                               [&proc, &asked](std::int32_t pid)
+                                                               {
+                                                                   asked.push_back(pid);
+                                                                   if (pid == 200)
+                                                                   {
+                                                                       std::filesystem::remove(proc.path / "200" / "stat"); // reaped
+                                                                   }
+                                                                   return pid == 300 ? -1 : BEST_EFFORT_4;
+                                                               });
+    std::ranges::sort(reply.processes, {}, [](const Broker::HiddenProcess& process) { return process.target.pid; });
+    ASSERT_EQ(reply.processes.size(), 3U);
+    EXPECT_EQ(reply.processes[0].ioprio, std::optional<std::int32_t>{BEST_EFFORT_4});
+    EXPECT_FALSE(reply.processes[1].ioprio.has_value()) << "read after its directory stopped resolving";
+    EXPECT_FALSE(reply.processes[2].ioprio.has_value()) << "the read failed";
+    std::ranges::sort(asked);
+    EXPECT_EQ(asked, (std::vector<std::int32_t>{100, 200, 300}));
 }
 
 } // namespace
