@@ -1612,6 +1612,7 @@ class TaskSmackAndHelper
     TaskSmackAndHelper()
     {
         s_Denied = false;
+        s_Unprivileged = false;
         restartTaskSmack();
         startNewHelper();
     }
@@ -1621,11 +1622,18 @@ class TaskSmackAndHelper
     {
         s_Denied = denied;
     }
+    /// TaskSmack runs without SeIncreaseBasePriorityPrivilege (#3590): its Realtime comes out High, as Windows sets it;
+    /// the elevated helper's doesn't.
+    static void unprivilegedTaskSmack(bool unprivileged) noexcept
+    {
+        s_Unprivileged = unprivileged;
+    }
     /// TaskSmack started again: what it remembered is gone.
     void restartTaskSmack()
     {
         WindowsProcessFunctions fns = FakeEco::functions();
         fns.openProcess = &taskSmackOpen;
+        fns.setPriorityClass = &taskSmackSetPriorityClass;
         auto inner = std::make_unique<WindowsProcessActions>(fns, std::make_shared<EfficiencyModePriorities>());
         m_TaskSmackInner = inner.get();
         m_Broker = std::make_shared<Mocks::FakeBroker>(/*connected=*/true);
@@ -1662,6 +1670,18 @@ class TaskSmackAndHelper
         return FakeEco::openProcess(access, inherit, pid);
     }
 
+    static BOOL WINAPI taskSmackSetPriorityClass(HANDLE process, DWORD newClass)
+    {
+        const DWORD realtimeGives = FakeEco::realtimeGives;
+        if (s_Unprivileged)
+        {
+            FakeEco::realtimeGives = HIGH_PRIORITY_CLASS;
+        }
+        const BOOL result = FakeEco::setPriorityClass(process, newClass);
+        FakeEco::realtimeGives = realtimeGives;
+        return result;
+    }
+
     [[nodiscard]] std::expected<Broker::Response, std::string> helperAnswer(const Broker::Request& request) const
     {
         const auto received = Broker::decodeRequest(Broker::encodeRequest(1, request));
@@ -1679,6 +1699,7 @@ class TaskSmackAndHelper
     }
 
     static inline bool s_Denied = false;
+    static inline bool s_Unprivileged = false;
     std::unique_ptr<WindowsProcessActions> m_Helper;
     std::shared_ptr<Mocks::FakeBroker> m_Broker;
     WindowsProcessActions* m_TaskSmackInner = nullptr; // owned by m_TaskSmack
@@ -1792,6 +1813,50 @@ TEST_F(WindowsEfficiencyModeTest, AnOffsClassReplacesAStaleOneTheSameHelperKeptF
     EXPECT_EQ(sides.helperRequests(), 2U);
     EXPECT_EQ(FakeEco::classesSet, (std::vector<DWORD>{IDLE_PRIORITY_CLASS})) << "the Idle it had, not the stale High";
     EXPECT_TRUE(off.successNote.empty()) << off.successNote;
+}
+
+// #3590 review: an unprivileged off restoring a remembered Realtime gets High from Windows. It is a permission
+// refusal that keeps Realtime remembered, never a success that forgets it.
+TEST_F(WindowsEfficiencyModeTest, AnOffWhoseRealtimeCameOutHighIsARefusalThatKeepsRealtime)
+{
+    WindowsProcessActions actions(FakeEco::functions(), std::make_shared<EfficiencyModePriorities>());
+    FakeEco::priorityClass = REALTIME_PRIORITY_CLASS;
+    ASSERT_TRUE(actions.setEfficiencyMode(ecoTarget(7309), true).success);
+    FakeEco::realtimeGives = HIGH_PRIORITY_CLASS;
+    const auto off = actions.setEfficiencyMode(ecoTarget(7309), false);
+    EXPECT_FALSE(off.success);
+    EXPECT_TRUE(off.permissionDenied) << "the administrator retry is offered";
+    EXPECT_EQ(off.errorMessage,
+              "Efficiency mode was turned off for process 7309, but its Realtime priority wasn't restored: Windows set High: Realtime "
+              "needs administrator rights.");
+    EXPECT_EQ(FakeEco::priorityClass, static_cast<DWORD>(HIGH_PRIORITY_CLASS));
+    EXPECT_EQ(actions.efficiencyPriorityClassToRestore(ecoTarget(7309)), std::optional<std::uint32_t>{REALTIME_PRIORITY_CLASS});
+
+    // The retry, with the privilege: the process is at High now, and Realtime is set again, not left.
+    FakeEco::realtimeGives = REALTIME_PRIORITY_CLASS;
+    const auto retried = actions.setEfficiencyMode(ecoTarget(7309), false);
+    ASSERT_TRUE(retried.success) << retried.errorMessage;
+    EXPECT_EQ(FakeEco::priorityClass, static_cast<DWORD>(REALTIME_PRIORITY_CLASS));
+    EXPECT_FALSE(actions.efficiencyPriorityClassToRestore(ecoTarget(7309)).has_value()) << "spent";
+}
+
+// #3590 review, across processes: the on and the off both run in an unprivileged TaskSmack, whose restore of Realtime
+// comes out High. That refusal goes to the elevated helper with Realtime, which sets it, and TaskSmack then forgets it.
+TEST_F(WindowsEfficiencyModeTest, ARealtimeTheUnprivilegedOffCouldntRestoreIsRestoredByTheHelper)
+{
+    TaskSmackAndHelper sides;
+    TaskSmackAndHelper::unprivilegedTaskSmack(true);
+    FakeEco::priorityClass = REALTIME_PRIORITY_CLASS;
+    ASSERT_TRUE(sides.setEfficiencyMode(ecoTarget(7310), true).success);
+    EXPECT_EQ(sides.helperRequests(), 0U) << "turned on in TaskSmack";
+
+    const auto off = sides.setEfficiencyMode(ecoTarget(7310), false);
+    ASSERT_TRUE(off.success) << off.errorMessage;
+    EXPECT_EQ(sides.helperRequests(), 1U) << "the refusal went to the helper";
+    EXPECT_EQ(FakeEco::classesSet, (std::vector<DWORD>{IDLE_PRIORITY_CLASS, REALTIME_PRIORITY_CLASS, REALTIME_PRIORITY_CLASS}))
+        << "TaskSmack's Realtime, which came out High, then the helper's";
+    EXPECT_EQ(FakeEco::priorityClass, static_cast<DWORD>(REALTIME_PRIORITY_CLASS));
+    EXPECT_FALSE(sides.taskSmackRemembers(ecoTarget(7310)).has_value()) << "spent";
 }
 
 TEST_F(WindowsEfficiencyModeTest, OnlyARealPriorityClassIsRememberedForAnOff)
@@ -1928,6 +1993,11 @@ TEST(WindowsEfficiencyModeMathTest, TheClassRestoredIsTheOneRememberedWhileThePr
     EXPECT_EQ(priorityClassToRestore(HIGH_PRIORITY_CLASS, 0), std::optional<uint32_t>{HIGH_PRIORITY_CLASS}) << "unreadable now";
     EXPECT_EQ(priorityClassToRestore(std::nullopt, 0), std::optional<uint32_t>{NORMAL_PRIORITY_CLASS});
     EXPECT_FALSE(priorityClassToRestore(IDLE_PRIORITY_CLASS, BELOW_NORMAL_PRIORITY_CLASS).has_value()) << "changed since";
+    // #3590: a remembered Realtime at High is a downgraded restore, set again; High otherwise is someone's choice.
+    EXPECT_EQ(priorityClassToRestore(REALTIME_PRIORITY_CLASS, HIGH_PRIORITY_CLASS), std::optional<uint32_t>{REALTIME_PRIORITY_CLASS});
+    EXPECT_FALSE(priorityClassToRestore(HIGH_PRIORITY_CLASS, HIGH_PRIORITY_CLASS).has_value());
+    EXPECT_FALSE(priorityClassToRestore(std::nullopt, HIGH_PRIORITY_CLASS).has_value());
+    EXPECT_FALSE(priorityClassToRestore(REALTIME_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS).has_value());
 }
 
 // #3281: an off that finds nothing remembered (the on ran in the helper, or before a restart) puts the

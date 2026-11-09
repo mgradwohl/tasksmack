@@ -711,10 +711,16 @@ ioPriorityHintToSet(IoPriorityClass ioClass, std::int32_t level, int32_t pid)
 
 /// The priority class to set when Efficiency mode is turned off (#3071), from the class @p remembered when
 /// it was turned on (nullopt: unknown) and the process's class now, @p current (0: unreadable). Efficiency
-/// mode left it at Idle: back to the remembered class, or Normal when that isn't known. At any other
-/// class someone changed it since, so it is left as it is (nullopt).
+/// mode left it at Idle: back to the remembered class, or Normal when that isn't known. A remembered
+/// Realtime at High is a restore Windows downgraded for want of the privilege (#3590), so the retry, as an
+/// administrator, sets Realtime again. At any other class someone changed it since, so it is left as it
+/// is (nullopt).
 [[nodiscard]] constexpr std::optional<uint32_t> priorityClassToRestore(std::optional<uint32_t> remembered, uint32_t current) noexcept
 {
+    if (remembered == REALTIME_PRIORITY_CLASS && current == HIGH_PRIORITY_CLASS)
+    {
+        return remembered;
+    }
     if (current != 0 && current != IDLE_PRIORITY_CLASS)
     {
         return std::nullopt;
@@ -754,6 +760,16 @@ ioPriorityHintToSet(IoPriorityClass ioClass, std::int32_t level, int32_t pid)
         return {};
     }
     return "its priority was set to Normal, as the class it had before Efficiency mode isn't known";
+}
+
+/// Why an off that restored a remembered Realtime class came out otherwise (#3590), from the Realtime read back
+/// (realtimeReadBackResult(): High is a permission refusal, so the elevated helper's retry sets Realtime) for
+/// process @p pid: the power throttling is already handed back, and the class is still remembered.
+[[nodiscard]] inline ProcessActionResult efficiencyModeRealtimeRestoreRefusal(ProcessActionResult readBack, int32_t pid)
+{
+    readBack.errorMessage = std::format(
+        "Efficiency mode was turned off for process {}, but its Realtime priority wasn't restored: {}", pid, readBack.errorMessage);
+    return readBack;
 }
 
 /// The priority classes Efficiency mode replaced with Idle, per process (#3071), so turning it off

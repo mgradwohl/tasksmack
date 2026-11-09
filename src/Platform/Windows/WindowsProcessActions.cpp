@@ -843,6 +843,17 @@ ProcessActionResult WindowsProcessActions::setEfficiencyMode(const ProcessTarget
                            error,
                            efficiencyModePriorityFailure(error, target.pid, false));
     }
+    if (restore == REALTIME_PRIORITY_CLASS)
+    {
+        // Without SeIncreaseBasePriorityPrivilege, Windows quietly sets High (#3429): read back as setPriority() does,
+        // and keep Realtime remembered for the administrator retry, which sets it again (priorityClassToRestore(), #3590).
+        if (ProcessActionResult readBack = realtimeReadBackResult(m_Fns.getPriorityClass(process.handle.get()), target.pid);
+            !readBack.success)
+        {
+            spdlog::warn("Efficiency mode off for PID {}: Realtime not restored: {}", target.pid, readBack.errorMessage);
+            return efficiencyModeRealtimeRestoreRefusal(std::move(readBack), target.pid);
+        }
+    }
     static_cast<void>(priorities.take(target));
     const std::string_view note = efficiencyModeOffNote(remembered, restore);
     spdlog::info("Turned Efficiency mode off for PID {}{}", target.pid, note.empty() ? std::string{} : std::format(" ({})", note));
