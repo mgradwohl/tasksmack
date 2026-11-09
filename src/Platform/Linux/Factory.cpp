@@ -55,6 +55,8 @@
 
 #include <memory>
 
+#include <unistd.h>
+
 namespace Platform
 {
 
