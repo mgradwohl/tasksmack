@@ -45,11 +45,13 @@ bool isActionWindowsDoes(const Broker::Request& request) noexcept
     // user chose, so it is the one action of an over-the-shoulder session too. The Users tab's Disconnect and
     // Sign out of another user's session (#3076), and one thread suspended, resumed or ended (#3069), are
     // actions the user chose and confirmed as well. An I/O priority hint (#3362): High needs an administrator.
+    // Close connection (#3358): SetTcpEntry needs an administrator for any connection.
     return std::holds_alternative<Broker::SignalRequest>(request) || std::holds_alternative<Broker::PriorityRequest>(request) ||
            std::holds_alternative<Broker::IoPriorityRequest>(request) || std::holds_alternative<Broker::AffinityRequest>(request) ||
            std::holds_alternative<Broker::EfficiencyModeRequest>(request) ||
            std::holds_alternative<Broker::TaskManagerReplacementRequest>(request) ||
-           std::holds_alternative<Broker::SessionActionRequest>(request) || std::holds_alternative<Broker::ThreadActionRequest>(request);
+           std::holds_alternative<Broker::SessionActionRequest>(request) || std::holds_alternative<Broker::ThreadActionRequest>(request) ||
+           std::holds_alternative<Broker::CloseConnectionRequest>(request);
 }
 
 bool isRead(const Broker::Request& request) noexcept
@@ -57,10 +59,10 @@ bool isRead(const Broker::Request& request) noexcept
     // Every kind is sorted into the Hello, an action or a read. One added to Broker::Request must be
     // sorted here too, or a one-action session (#2550) and the over-the-shoulder read filter
     // (BrokerHelper::readsOnlyOwnProcesses) might let it through: revisit both, then this count.
-    // ServiceActionRequest, CloseConnectionRequest (#3066) and SchedPolicyRequest (#3086, Linux only) are actions
-    // Windows' helper doesn't do (an ErrorReply), so they are neither here.
-    // TaskManagerReplacementRequest (#3072), SessionActionRequest (#3076) and ThreadActionRequest (#3069) are actions
-    // (isActionWindowsDoes()).
+    // ServiceActionRequest and SchedPolicyRequest (#3086, Linux only) are actions Windows' helper doesn't do (an
+    // ErrorReply), so they are neither here.
+    // TaskManagerReplacementRequest (#3072), SessionActionRequest (#3076), ThreadActionRequest (#3069) and
+    // CloseConnectionRequest (#3358) are actions (isActionWindowsDoes()).
     static_assert(std::variant_size_v<Broker::Request> == 24, "sort the new request kind into an action or a read");
     return std::holds_alternative<Broker::EnvironmentRequest>(request) || std::holds_alternative<Broker::ModulesRequest>(request) ||
            std::holds_alternative<Broker::OpenFilesRequest>(request) || std::holds_alternative<Broker::ConnectionsRequest>(request) ||

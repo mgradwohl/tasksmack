@@ -8,6 +8,7 @@
 #include "WindowsNtQuery.h"
 #include "WindowsProcessDump.h"
 #include "WindowsRunProgram.h"
+#include "WindowsTcpClose.h"
 
 // clang-format off
 #ifndef WIN32_LEAN_AND_MEAN
@@ -104,6 +105,9 @@ struct WindowsProcessFunctions
     /// (#3362; Windows::enableIncreaseBasePriorityPrivilegeIfElevated()); true when it is enabled. Null: not
     /// tried, and Windows decides by the token as it stands, as in a test's table.
     bool (*enableIncreaseBasePriority)() = nullptr;
+    /// The IPv4 TCP table and SetTcpEntry, for Close connection (#3358). Null setTcpEntry: no Close connection
+    /// (canCloseConnections false), as in a test's table, so no test resets a connection it didn't make.
+    Windows::TcpCloseFunctions tcpClose{};
 };
 
 /// The real Win32 calls.
@@ -216,6 +220,12 @@ class WindowsProcessActions : public IProcessActions
     [[nodiscard]] ProcessActionResult runProgram(const RunProgramRequest& request) override;
     [[nodiscard]] ProcessActionResult
     actOnThread(const ProcessTarget& target, std::int32_t tid, std::uint64_t threadCreateTime, ThreadAction action) override;
+    /// Close connection (#3358): the IPv4 TCP connection reset with SetTcpEntry(MIB_TCP_STATE_DELETE_TCB)
+    /// (Windows::closeTcpConnectionOf()), as TCPView's. Refused for PID 4 before anything is opened, then through the
+    /// identity check (a limited-query handle, held while the table is read again and the entry set) and the
+    /// critical-process guard, as a priority change. Windows lets only an administrator set a connection's state,
+    /// so a refusal is permissionDenied and the elevated helper can retry it.
+    [[nodiscard]] ProcessActionResult closeTcpConnection(const ProcessTarget& target, const TcpConnectionToClose& connection) override;
 
     /// Also refuses thread actions on @p pid's threads (#3069): in the elevated helper, the TaskSmack it
     /// serves, whose suspended or ended thread could freeze or corrupt it. 0: none but this process's own.

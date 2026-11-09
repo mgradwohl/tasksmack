@@ -78,6 +78,7 @@ class BrokeredProcessActions final : public IProcessActions
     setSchedPolicy(const ProcessTarget& target, SchedPolicy policy, std::int32_t rtPriority, RealtimeThreads realtimeThreads) override;
     [[nodiscard]] ProcessActionResult setEfficiencyMode(const ProcessTarget& target, bool on) override;
     [[nodiscard]] ProcessActionResult closeConnection(const ProcessTarget& target, std::uint64_t socketInode) override;
+    [[nodiscard]] ProcessActionResult closeTcpConnection(const ProcessTarget& target, const TcpConnectionToClose& connection) override;
     [[nodiscard]] ProcessActionResult
     actOnThread(const ProcessTarget& target, std::int32_t tid, std::uint64_t threadCreateTime, ThreadAction action) override;
 

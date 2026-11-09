@@ -4,6 +4,7 @@
 #include "Domain/ConnectionsModel.h"
 #include "Domain/ProcessConnections.h"
 #include "Platform/AsciiCase.h"
+#include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/ISystemConnections.h"
 #include "UI/CellText.h"
@@ -259,12 +260,17 @@ orderConnectionRows(const std::vector<ConnectionRow>& rows, std::string_view fil
     return order;
 }
 
-std::string_view closeConnectionRefusal(const Platform::SystemConnection& connection)
+std::string_view closeConnectionRefusal(const Platform::SystemConnection& connection, Platform::ConnectionCloseKey key)
 {
     using Platform::ConnectionState;
+    const bool byEndpoints = key == Platform::ConnectionCloseKey::Tcp4Endpoints;
     if (connection.connection.protocol != Platform::ConnectionProtocol::Tcp)
     {
         return "Only a TCP connection can be closed";
+    }
+    if (byEndpoints && connection.connection.family != Platform::ConnectionFamily::IPv4)
+    {
+        return IPV6_CLOSE_REFUSAL; // SetTcpEntry has no IPv6 twin (#3358)
     }
     switch (connection.connection.state)
     {
@@ -275,10 +281,18 @@ std::string_view closeConnectionRefusal(const Platform::SystemConnection& connec
         break;
     case ConnectionState::Listen:
         return "A listening socket has no connection to close";
+    case ConnectionState::Unknown:
+        // Windows reports state 0 for many rows (#3257): one with a peer is a connection, which the close looks up
+        // again, and refuses if it is a listener after all.
+        if (byEndpoints && connection.connection.remote.port != 0)
+        {
+            break;
+        }
+        [[fallthrough]];
     default:
         return "The connection is already closing";
     }
-    if (connection.pid == 0 || connection.startTimeTicks == 0 || connection.socketInode == 0)
+    if (connection.pid == 0 || connection.startTimeTicks == 0 || (!byEndpoints && connection.socketInode == 0))
     {
         return "No process TaskSmack can see holds this socket";
     }
@@ -405,8 +419,11 @@ namespace
 
 } // namespace
 
-std::optional<ConnectionsViewAction>
-renderConnectionsView(const Domain::ConnectionsPublication* publication, bool hasConnections, ConnectionsViewState& state, bool canClose)
+std::optional<ConnectionsViewAction> renderConnectionsView(const Domain::ConnectionsPublication* publication,
+                                                           bool hasConnections,
+                                                           ConnectionsViewState& state,
+                                                           bool canClose,
+                                                           Platform::ConnectionCloseKey closeKey)
 {
     if (!hasConnections)
     {
@@ -500,7 +517,7 @@ renderConnectionsView(const Domain::ConnectionsPublication* publication, bool ha
     {
         if (state.menuRow.has_value())
         {
-            const std::string refusal(closeConnectionRefusal(state.menuRow->connection));
+            const std::string refusal(closeConnectionRefusal(state.menuRow->connection, closeKey));
             if (ImGui::MenuItem(ICON_FA_XMARK "  Close connection...", nullptr, false, refusal.empty()))
             {
                 action = ConnectionsViewAction{

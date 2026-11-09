@@ -1240,8 +1240,10 @@ TEST(BrokerPipeServeTest, OnlyActionsWindowsDoesAndTheHelloPutOffTheIdleExit)
     EXPECT_TRUE(BrokerPipeServer::putsOffTheWindowsIdleExit(Broker::EfficiencyModeRequest{.target = TARGET, .on = true}));
     // And an I/O priority hint (#3362).
     EXPECT_TRUE(BrokerPipeServer::putsOffTheWindowsIdleExit(Broker::IoPriorityRequest{}));
+    // And Close connection (#3358), which only an administrator can do.
+    EXPECT_TRUE(BrokerPipeServer::putsOffTheWindowsIdleExit(Broker::CloseConnectionRequest{.target = TARGET, .socketInode = 1}));
     // What Windows always refuses keeps nothing alive.
-    EXPECT_FALSE(BrokerPipeServer::putsOffTheWindowsIdleExit(Broker::CloseConnectionRequest{.target = TARGET, .socketInode = 1}));
+    EXPECT_FALSE(BrokerPipeServer::putsOffTheWindowsIdleExit(Broker::ServiceActionRequest{}));
     EXPECT_FALSE(BrokerPipeServer::putsOffTheWindowsIdleExit(Broker::SchedPolicyRequest{.target = TARGET}));
     // Nor does a read.
     EXPECT_FALSE(BrokerPipeServer::putsOffTheWindowsIdleExit(Broker::ModulesRequest{.target = TARGET}));
@@ -1252,7 +1254,7 @@ TEST(BrokerPipeServeTest, OnlyActionsWindowsDoesAndTheHelloPutOffTheIdleExit)
     EXPECT_TRUE(BrokerPipeServer::isActionWindowsDoes(Broker::SignalRequest{.target = TARGET, .signal = Signal::Resume}));
     EXPECT_TRUE(BrokerPipeServer::isActionWindowsDoes(Broker::EfficiencyModeRequest{.target = TARGET, .on = false}));
     EXPECT_TRUE(BrokerPipeServer::isActionWindowsDoes(Broker::IoPriorityRequest{})) << "#3362";
-    EXPECT_FALSE(BrokerPipeServer::isActionWindowsDoes(Broker::CloseConnectionRequest{}));
+    EXPECT_TRUE(BrokerPipeServer::isActionWindowsDoes(Broker::CloseConnectionRequest{})) << "#3358";
     EXPECT_FALSE(BrokerPipeServer::isActionWindowsDoes(Broker::Hello{}));
 }
 
@@ -1272,12 +1274,12 @@ TEST(BrokerPipeServeTest, RequestsWindowsAlwaysRefusesDontPutOffTheIdleExit)
     ASSERT_TRUE(send(pair.client.get(), Broker::encodeRequest(1, Broker::Hello{})));
     ASSERT_TRUE(receiveResponse(pair.client.get()).has_value());
 
-    // Closing a connection and a scheduling policy are actions Windows always refuses (Suspend and Resume are real
-    // since #2582, an I/O priority hint since #3362).
+    // A systemd service action and a scheduling policy are actions Windows always refuses (Suspend and Resume are
+    // real since #2582, an I/O priority hint since #3362, Close connection since #3358).
     const std::array<Broker::Request, 4> refused{
-        Broker::CloseConnectionRequest{.target = TARGET, .socketInode = 1},
+        Broker::ServiceActionRequest{},
         Broker::SchedPolicyRequest{.target = TARGET},
-        Broker::CloseConnectionRequest{.target = TARGET, .socketInode = 2},
+        Broker::ServiceActionRequest{},
         Broker::SchedPolicyRequest{.target = TARGET},
     };
     std::uint32_t id = 2;
@@ -1369,7 +1371,8 @@ TEST(BrokerPipeServeTest, AOneActionSessionEndsAfterAnActionWindowsRefusesToo)
     {
         GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
     }
-    for (const Broker::Request& action : {Broker::Request{Broker::CloseConnectionRequest{}},
+    for (const Broker::Request& action : {Broker::Request{Broker::ServiceActionRequest{}},
+                                          Broker::Request{Broker::CloseConnectionRequest{}},
                                           Broker::Request{Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Suspend}},
                                           Broker::Request{Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Resume}},
                                           Broker::Request{Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Kill}}})
@@ -1409,8 +1412,8 @@ TEST(BrokerPipeServeTest, EveryRequestKindIsTheHelloAnActionOrARead)
     EXPECT_FALSE(BrokerPipeServer::isActionWindowsDoes(Broker::ServiceActionRequest{})) << "an ErrorReply";
     EXPECT_FALSE(BrokerPipeServer::isRead(Broker::EfficiencyModeRequest{.target = TARGET, .on = true})) << "an action (#3071)";
     EXPECT_FALSE(BrokerPipeServer::isRead(Broker::CloseConnectionRequest{.target = TARGET, .socketInode = 1}));
-    EXPECT_FALSE(BrokerPipeServer::isActionWindowsDoes(Broker::CloseConnectionRequest{.target = TARGET, .socketInode = 1}))
-        << "an ErrorReply (#3066)";
+    EXPECT_TRUE(BrokerPipeServer::isActionWindowsDoes(Broker::CloseConnectionRequest{.target = TARGET, .socketInode = 1}))
+        << "SetTcpEntry as an administrator (#3358)";
     EXPECT_TRUE(BrokerPipeServer::isRead(Broker::ThreadsRequest{.target = TARGET})) << "Process Details' threads (#3069)";
     const Broker::ThreadActionRequest threadAction{.target = TARGET, .tid = 8, .action = ThreadAction::End};
     EXPECT_FALSE(BrokerPipeServer::isRead(threadAction)) << "an action (#3069)";

@@ -79,6 +79,8 @@ class ConnectionsPanel : public Panel
     // control (and its worker, waited for) is destroyed first.
     std::unique_ptr<Platform::IProcessActions> m_Actions;
     bool m_CanClose = false; ///< The actions can close connections (read once, at attach)
+    /// How they name the socket they close (#3358), read with m_CanClose.
+    Platform::ConnectionCloseKey m_CloseKey = Platform::ConnectionCloseKey::SocketInode;
     ConnectionCloseControl m_CloseControl;
 };
 

@@ -626,6 +626,92 @@ TEST(ConnectionCloseTest, NothingIsClosedWhenCancelledRefusedOrUnavailable)
     EXPECT_TRUE(control.result().text.contains("isn't available"));
 }
 
+// #3358: where the platform names a connection by its IPv4 TCP endpoints (Windows' SetTcpEntry), no inode is needed,
+// an IPv6 connection is refused, and a row whose state the table doesn't give (state 0, #3257) can be closed when it
+// has a peer.
+TEST(ConnectionCloseTest, ByEndpointsAnIPv4ConnectionNeedsNoInodeAndIPv6IsRefused)
+{
+    constexpr auto KEY = Platform::ConnectionCloseKey::Tcp4Endpoints;
+    SystemConnection windows = firefoxToGoogle();
+    windows.socketInode = 0;
+    EXPECT_EQ(closeConnectionRefusal(windows, KEY), "");
+    EXPECT_EQ(closeConnectionRefusal(windows), "No process TaskSmack can see holds this socket") << "by inode, it needs one";
+
+    SystemConnection ipv6 = windows;
+    ipv6.connection.family = ConnectionFamily::IPv6;
+    EXPECT_EQ(closeConnectionRefusal(ipv6, KEY), IPV6_CLOSE_REFUSAL);
+    EXPECT_EQ(closeConnectionRefusal(ipv6, KEY), "Can't close an IPv6 connection on Windows");
+    ipv6.socketInode = 7;
+    EXPECT_EQ(closeConnectionRefusal(ipv6), "") << "Linux closes IPv6 by inode";
+
+    SystemConnection unknown = windows;
+    unknown.connection.state = ConnectionState::Unknown;
+    EXPECT_EQ(closeConnectionRefusal(unknown, KEY), "");
+    unknown.connection.remote.port = 0;
+    EXPECT_EQ(closeConnectionRefusal(unknown, KEY), "The connection is already closing") << "no peer: a listener, maybe";
+
+    SystemConnection listening = windows;
+    listening.connection.state = ConnectionState::Listen;
+    EXPECT_EQ(closeConnectionRefusal(listening, KEY), "A listening socket has no connection to close");
+    SystemConnection udp = windows;
+    udp.connection.protocol = ConnectionProtocol::Udp;
+    EXPECT_EQ(closeConnectionRefusal(udp, KEY), "Only a TCP connection can be closed");
+    SystemConnection nobody = windows;
+    nobody.pid = 0;
+    EXPECT_EQ(closeConnectionRefusal(nobody, KEY), "No process TaskSmack can see holds this socket");
+    SystemConnection noStartTime = windows;
+    noStartTime.startTimeTicks = 0;
+    EXPECT_EQ(closeConnectionRefusal(noStartTime, KEY), "No process TaskSmack can see holds this socket");
+}
+
+TEST(ConnectionCloseTest, ByEndpointsTheCloseAndItsRetryNameTheTcpConnection)
+{
+    constexpr auto KEY = Platform::ConnectionCloseKey::Tcp4Endpoints;
+    Platform::ProcessActionCapabilities caps = closingCapabilities(true);
+    caps.connectionCloseKey = KEY;
+    MockProcessActions actions;
+    actions.setCapabilities(caps);
+    actions.setCloseConnectionResult(Platform::ProcessActionResult::denied("Closing a connection needs administrator rights"));
+    actions.setRunAuthorizedResult(Platform::ProcessActionResult::ok());
+    SystemConnection windows = firefoxToGoogle();
+    windows.socketInode = 0;
+    const Platform::TcpConnectionToClose expected{
+        .localAddress = {10, 0, 0, 5},
+        .localPort = 52144,
+        .remoteAddress = {142, 250, 80, 46},
+        .remotePort = 443,
+    };
+
+    ConnectionCloseControl control;
+    control.request(rowFor(windows));
+    EXPECT_FALSE(control.pending().has_value()) << "by inode, a socket without one opens no confirm";
+    control.request(rowFor(windows), KEY);
+    ASSERT_TRUE(control.pending().has_value());
+    control.confirm(&actions);
+    control.update(0.0F, true);
+    EXPECT_EQ(actions.closeTcpConnectionCount(), 1);
+    EXPECT_EQ(actions.closeConnectionCount(), 0);
+    EXPECT_EQ(actions.lastTcpConnection(), expected);
+    EXPECT_EQ(actions.lastTarget().pid, 300);
+    EXPECT_EQ(actions.lastTarget().startTimeTicks, 1300U);
+    EXPECT_EQ(control.result().text,
+              "Couldn't close firefox's connection to 142.250.80.46:443: Closing a connection needs administrator rights");
+    ASSERT_TRUE(control.offersAuthenticateAndRetry());
+
+    control.retryAuthorized();
+    control.update(0.0F, true);
+    EXPECT_EQ(actions.lastAuthorizedAction().kind, Platform::AuthorizedAction::Kind::CloseConnection);
+    EXPECT_EQ(actions.lastAuthorizedAction().tcpConnection, expected);
+    EXPECT_EQ(actions.lastAuthorizedAction().socketInode, 0U);
+    EXPECT_TRUE(control.result().ok);
+    EXPECT_TRUE(control.takeClosed());
+
+    SystemConnection ipv6 = windows;
+    ipv6.connection.family = ConnectionFamily::IPv6;
+    control.request(rowFor(ipv6), KEY);
+    EXPECT_FALSE(control.pending().has_value()) << "an IPv6 connection opens no confirm";
+}
+
 /// Right-clicks the firefox row of @p panel's table (the second row by process name: avahi-daemon, cupsd,
 /// firefox, Unknown) and picks the menu's first item, Close connection...
 void closeFirefoxFromTheMenu(ImVec2 firstRow, const std::function<std::string()>& nextFrame)

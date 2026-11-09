@@ -50,7 +50,8 @@ enum class Grant : std::uint8_t
 [[nodiscard]] bool isRead(const Broker::Request& request) noexcept;
 
 /// Whether @p request is an action Windows does: end, kill, suspend, resume (#2582), a priority, an
-/// affinity, an I/O priority hint (#3362), Efficiency mode (#3071), or Replace Task Manager (#3072).
+/// affinity, an I/O priority hint (#3362), Efficiency mode (#3071), Replace Task Manager (#3072), or Close
+/// connection (#3358).
 [[nodiscard]] bool isActionWindowsDoes(const Broker::Request& request) noexcept;
 
 /// Whether @p request puts off the Windows helper's idle exit: Broker::putsOffTheIdleExit()'s Hello

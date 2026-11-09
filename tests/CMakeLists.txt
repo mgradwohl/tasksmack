@@ -842,6 +842,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsProcessIdentity.cpp
     Platform/test_WindowsProcessConnections.cpp
     Platform/test_WindowsSystemConnectionsReader.cpp  # the Connections tab's reader through fakes, and a real loopback pair in CI (#3356)
+    Platform/test_WindowsTcpClose.cpp  # Close connection through a fake SetTcpEntry, and a real loopback reset in CI (#3358)
     Platform/test_WindowsProcessEnvironmentReader.cpp  # the environment block out of a fake process's PEB, and this process's own (#2569)
     Platform/test_WindowsProcessIconSource.cpp
     Platform/test_WindowsPackageLogo.cpp

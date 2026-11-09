@@ -389,6 +389,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsRunProgram.cpp # Run new task: ShellExecuteExW, runas for administrator (#3427)
     src/Platform/Windows/WindowsProcessConnections.cpp
     src/Platform/Windows/WindowsSocketTables.cpp # the owner-PID socket tables both connections readers copy (#3356)
+    src/Platform/Windows/WindowsTcpClose.cpp # Close connection: SetTcpEntry(MIB_TCP_STATE_DELETE_TCB) (#3358)
     src/Platform/Windows/WindowsSystemConnectionsReader.cpp # the Connections tab: every socket on the machine (#3356)
     src/Platform/Windows/WindowsProcessEnvironmentReader.cpp # a process's environment block, out of its PEB (#2569)
     src/Platform/Windows/WindowsProcessIconSource.cpp
@@ -680,6 +681,7 @@ elseif(WIN32)
         src/Platform/Windows/WindowsRunProgram.h
         src/Platform/Windows/WindowsProcessConnections.h
         src/Platform/Windows/WindowsSocketTables.h
+        src/Platform/Windows/WindowsTcpClose.h
         src/Platform/Windows/WindowsSystemConnectionsReader.h
         src/Platform/Windows/WindowsProcessEnvironmentReader.h
         src/Platform/Windows/WindowsProcessIconSource.h
@@ -1066,6 +1068,7 @@ if(WIN32)
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsProcessOpenFiles.cpp
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsProcessConnections.cpp
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsSocketTables.cpp
+        ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsTcpClose.cpp # Close connection as an administrator (#3358)
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsProcessThreads.cpp # Process Details threads of another user's process (#3069)
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsTaskManagerReplacement.cpp # Replace Task Manager's IFEO Debugger (#3072)
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsUserSessions.cpp # another user's session disconnected or signed out (#3076)
