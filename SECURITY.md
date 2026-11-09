@@ -28,25 +28,21 @@ If you discover a security vulnerability in this project, please report it respo
 
 ## Scope
 
-Reports about TaskSmack itself are in scope, and in particular about its privileged helpers: on Linux,
-`tasksmack-helper` (started through `pkexec` for a polkit action, installed by the `.deb`), and on Windows,
-`TaskSmackHelper.exe` (started elevated through UAC). Each helper serves only the TaskSmack that started it
-and answers a fixed set of requests.
+Reports about TaskSmack itself are in scope, and in particular about its privileged parts: on Linux, TaskSmack
+started as root ("TaskSmack (Administrator)", through `pkexec` for its polkit action, or `sudo`), and on Windows,
+`TaskSmackHelper.exe` (started elevated through UAC), which serves only the TaskSmack that started it and
+answers a fixed set of requests.
 
 ## Security Practices
 
 - **Sanitizers:** ASan, UBSan and TSan run in CI on Linux; an MSan preset is also available.
 - **Static analysis:** clang-tidy (warnings fail the build), CodeQL, OSV-Scanner, dependency review and
   OpenSSF Scorecard.
-- **Fuzzing:** ClusterFuzzLite fuzzes the parsers and the helper's request protocol.
+- **Fuzzing:** ClusterFuzzLite fuzzes the parsers and the Windows helper's request protocol.
 - **Hardening:** release builds use `-fstack-protector-strong` everywhere, plus `_FORTIFY_SOURCE=2` and PIE on
-  Linux. The Linux helper, which `pkexec` starts as root (it then serves as `nobody` with four capabilities), adds full RELRO with immediate binding, stack-clash protection,
-  CET on x86-64, PAC return-address signing on AArch64 (BTI isn't enforced there: Ubuntu 24.04's glibc startup
-  objects have no BTI landing pads, so no executable linked on it can carry the BTI note;
-  [#2786](https://github.com/mgradwohl/tasksmack/issues/2786)), `_FORTIFY_SOURCE=3`
-  and libc++'s fast hardening mode, and at run time keeps only the four capabilities its requests need, with
-  `no_new_privs` set, under a seccomp allow-list that refuses writing files, exec, loading code, ptrace, new
-  sockets and file-handle opens (it logs any other call it doesn't list; a later release kills on them); the Windows helper links with Control Flow Guard and CET shadow-stack compatibility. Debug
+  Linux. The Windows helper links with Control Flow Guard and CET shadow-stack compatibility. On Linux there is
+  no separate helper (#3580): TaskSmack is either started as root for its whole session or runs as you, and
+  never elevates after it starts. Debug
   builds use `-ftrivial-auto-var-init=pattern` to expose uninitialized variables.
 - **Dependencies:** fetched with CMake FetchContent at pinned versions, and kept current by Renovate.
 - **CI:** builds and tests on every pull request and push to `main`, plus nightly checks.

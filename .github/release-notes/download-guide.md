@@ -13,9 +13,9 @@ Keep it in step with the asset names in CONTRIBUTING.md's "Release Artifacts".
 |---|---|---|
 | **Windows, most PCs** (Intel or AMD) | **`TaskSmack-{{VERSION}}-win64.exe`** | The installer. **Recommended**: it installs to Program Files, adds a Start menu entry and an uninstaller, and is needed for **Retry as administrator**. |
 | Windows on Arm (Snapdragon X, Surface Pro 9 5G and later) | **`TaskSmack-{{VERSION}}-windows-arm64.exe`** | The same installer, for ARM64. |
-| **Ubuntu 24.04+ / Debian 13+**, x64 | **`TaskSmack-{{VERSION}}-Linux.deb`** | Install with `sudo apt install ./TaskSmack-{{VERSION}}-Linux.deb`, then run `TaskSmack`. Includes the polkit helper for **Authenticate and retry**. |
+| **Ubuntu 24.04+ / Debian 13+**, x64 | **`TaskSmack-{{VERSION}}-Linux.deb`** | Install with `sudo apt install ./TaskSmack-{{VERSION}}-Linux.deb`, then run `TaskSmack`. Adds **TaskSmack (Administrator)** to the applications menu, which starts it as root to see and act on every process. |
 | Ubuntu 24.04+ / Debian 13+, ARM64 | **`TaskSmack-{{VERSION}}-linux-aarch64.deb`** | The same `.deb`, for ARM64. |
-| Other Linux (Fedora 39+, RHEL 10+, Arch, …) | `TaskSmack-{{VERSION}}-Linux.tar.gz` (x64) or `TaskSmack-{{VERSION}}-linux-aarch64.tar.gz` (ARM64) | Unpack it and run `TaskSmack`. It has no privileged helper. |
+| Other Linux (Fedora 39+, RHEL 10+, Arch, …) | `TaskSmack-{{VERSION}}-Linux.tar.gz` (x64) or `TaskSmack-{{VERSION}}-linux-aarch64.tar.gz` (ARM64) | Unpack it and run `bin/TaskSmack`, or `sudo ./bin/TaskSmack` to see and act on every process. |
 
 - **Portable Windows build:** `TaskSmack-{{VERSION}}-win64.zip` / `-windows-arm64.zip` run without installing. Retry as administrator only works when TaskSmack sits in a folder only administrators can change, which is where the installer puts it.
 - **Not sure which architecture you have?**

@@ -37,7 +37,7 @@ See [Implemented Features](docs/dev/completed-features.md) for the detailed ship
 ## Why TaskSmack
 
 - **One app on Linux and Windows.** The same window, keys and themes on both, with each platform's own depth rather than a lowest common denominator.
-- **Acts on other users' processes without running as root.** On Linux, a small polkit helper does the privileged reads and actions after asking for an administrator's password; on Windows, a helper does the same through UAC (signed, from v0.9.1). TaskSmack itself stays unprivileged.
+- **Administrator when you start it that way, Standard otherwise.** On Linux, **TaskSmack (Administrator)** (or `sudo`) starts it as root to see and act on every process; started normally, it never asks for a password after it starts. On Windows, a helper acts on other accounts' processes through UAC (signed, from v0.9.1).
 - **Deep process inspection.** Security context (capabilities, seccomp and LSM labels on Linux; token integrity on Windows), modules, open files, per-process connections, crash history, and dumps (gcore on Linux; snapshot minidumps on Windows).
 - **GPU, NPU and power per process.** GPU use on NVIDIA, AMD and Intel, NPU use where the platform reports it, and per-process power on Linux, in the same table as CPU and memory.
 - **A System Information report.** Firmware, memory modules, storage, sensors, drivers and recent crashes, plus boot performance, BitLocker and HVCI status on Windows, exportable as text or JSON.
@@ -61,7 +61,7 @@ The [User Guide](docs/guide/user-guide.md#feature-overview) has a screenshot of 
 | Windows 10 version 1903 or later | Supported |
 | macOS and other operating systems | Not supported |
 
-Linux 5.10 is the first kernel that lets the privileged helper set the Realtime I/O class with only `CAP_SYS_NICE`; every current distribution ships it or newer (Debian 11, Ubuntu 22.04, RHEL 9, and later). The prebuilt Linux packages also need glibc 2.38 or newer (Ubuntu 24.04, Debian 13, Fedora 39, RHEL 10, or later); on an older distribution, build from source. See the [User Guide](docs/guide/user-guide.md#operating-system).
+Linux 5.10 is the first kernel that lets `CAP_SYS_NICE` alone set the Realtime I/O class; every current distribution ships it or newer (Debian 11, Ubuntu 22.04, RHEL 9, and later). The prebuilt Linux packages also need glibc 2.38 or newer (Ubuntu 24.04, Debian 13, Fedora 39, RHEL 10, or later); on an older distribution, build from source. See the [User Guide](docs/guide/user-guide.md#operating-system).
 
 Windows 10 version 1903 is the first release that honours the application manifest's UTF-8 process code page (`activeCodePage`), which TaskSmack relies on for UTF-8 text throughout.
 
@@ -83,7 +83,7 @@ The Linux packages need glibc 2.38 or newer (Ubuntu 24.04, Debian 13, Fedora 39,
 
 Each package comes for x64 and ARM64. The x64 files are `TaskSmack-<version>-Linux.deb`, `-Linux.tar.gz`, `-win64.exe` and `-win64.zip`; the ARM64 ones are `TaskSmack-<version>-linux-aarch64.deb`, `-linux-aarch64.tar.gz`, `-windows-arm64.exe` and `-windows-arm64.zip` (Windows on Arm, such as Snapdragon X PCs).
 
-On Linux, the `.deb` also installs a small privileged helper and its polkit action, which let TaskSmack act on or read another user's process after asking for an administrator's password (**Authenticate and retry**, **Authenticate to read**); the `.tar.gz` doesn't include them. See the [FAQ](docs/guide/faq.md#process-io-fds-or-network-show-na-on-linux). On Windows, the Authenticode-signed installers and `.zip`s (x64 and ARM64, from v0.9.1) carry `TaskSmackHelper.exe` for the same purpose (**Retry as administrator**). It works only from a folder that only an administrator can change, which is where the installer puts TaskSmack; see [Acting as an administrator on Windows](docs/guide/faq.md#acting-as-an-administrator-on-windows).
+On Linux, the `.deb` also adds **TaskSmack (Administrator)** to the applications menu: it starts TaskSmack as root through `pkexec`, after one administrator's password, to see and act on every process. From the `.tar.gz`, run `sudo ./bin/TaskSmack`. A session started normally never asks for a password. See the [FAQ](docs/guide/faq.md#process-io-fds-or-network-show-na-on-linux). On Windows, the Authenticode-signed installers and `.zip`s (x64 and ARM64, from v0.9.1) carry `TaskSmackHelper.exe` for the same purpose (**Retry as administrator**). It works only from a folder that only an administrator can change, which is where the installer puts TaskSmack; see [Acting as an administrator on Windows](docs/guide/faq.md#acting-as-an-administrator-on-windows).
 
 Published x64 packages are built with default compiler optimizations and run on any x86-64 CPU (no AVX2 required). Building from source lets you target a different microarchitecture; see the [User Guide](docs/guide/user-guide.md#system-requirements).
 
