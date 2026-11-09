@@ -777,12 +777,17 @@ class MockProcessActions : public Platform::IProcessActions
         m_EfficiencyClasses.insert_or_assign({target.pid, target.startTimeTicks}, priorityClass);
         m_EfficiencyLog.push_back(std::format("remember 0x{:X}", priorityClass));
     }
+    void setEfficiencyPriorityClassToRestore(const Platform::ProcessTarget& target, std::uint32_t priorityClass) override
+    {
+        m_EfficiencyClasses.insert_or_assign({target.pid, target.startTimeTicks}, priorityClass);
+        m_EfficiencyLog.push_back(std::format("set 0x{:X}", priorityClass));
+    }
     void forgetEfficiencyPriorityClass(const Platform::ProcessTarget& target) override
     {
         m_EfficiencyClasses.erase({target.pid, target.startTimeTicks});
         m_EfficiencyLog.emplace_back("forget");
     }
-    /// Efficiency mode's calls in order (#3327): "on", "off", "remember 0x<class>" and "forget".
+    /// Efficiency mode's calls in order (#3327): "on", "off", "remember 0x<class>", "set 0x<class>" and "forget".
     [[nodiscard]] const std::vector<std::string>& efficiencyLog() const
     {
         return m_EfficiencyLog;

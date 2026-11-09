@@ -781,10 +781,7 @@ class EfficiencyModePriorities
         }
         const Key key{target.pid, target.startTimeTicks};
         const std::scoped_lock lock(m_Mutex);
-        if (!m_Classes.contains(key) && m_Classes.size() >= MAX_REMEMBERED)
-        {
-            m_Classes.erase(m_Classes.begin());
-        }
+        makeRoomFor(key);
         if (priorityClass == IDLE_PRIORITY_CLASS)
         {
             m_Classes.try_emplace(key, priorityClass);
@@ -793,6 +790,22 @@ class EfficiencyModePriorities
         {
             m_Classes.insert_or_assign(key, priorityClass);
         }
+    }
+
+    /// @p priorityClass is what @p target's off restores, whatever was remembered before (#3327): the class an off's
+    /// request to the helper carries, TaskSmack's, which knows of every on since. Unlike remember(), Idle replaces a
+    /// class too: TaskSmack's on found the process at Idle, so a class this helper kept from an earlier on is stale.
+    /// 0 (unreadable) remembers nothing.
+    void assign(const ProcessTarget& target, uint32_t priorityClass)
+    {
+        if (priorityClass == 0)
+        {
+            return;
+        }
+        const Key key{target.pid, target.startTimeTicks};
+        const std::scoped_lock lock(m_Mutex);
+        makeRoomFor(key);
+        m_Classes.insert_or_assign(key, priorityClass);
     }
 
     /// The class remembered for @p target, still remembered (#3327: sent with an off the helper finishes), or nullopt.
@@ -829,6 +842,16 @@ class EfficiencyModePriorities
 
   private:
     using Key = std::pair<int32_t, uint64_t>; // PID, start time
+
+    /// Drops the lowest PID's class when @p key is new and MAX_REMEMBERED are held. m_Mutex is held.
+    void makeRoomFor(const Key& key)
+    {
+        if (!m_Classes.contains(key) && m_Classes.size() >= MAX_REMEMBERED)
+        {
+            m_Classes.erase(m_Classes.begin());
+        }
+    }
+
     mutable std::mutex m_Mutex;
     std::map<Key, uint32_t> m_Classes;
 };

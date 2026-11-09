@@ -572,10 +572,20 @@ class IProcessActions
     }
 
     /// Remembers @p priorityClass as the class Efficiency mode's on replaced for @p target (#3327, Windows), as this
-    /// object's own on does: an on the helper ran, from its reply (ProcessActionResult::priorityClassBefore), or, in the
-    /// helper, the class an off's request carries, which its off then restores. 0, or a value that isn't a priority
-    /// class, remembers nothing. By default nothing is remembered.
+    /// object's own on does: an on the helper ran, from its reply (ProcessActionResult::priorityClassBefore). As an on
+    /// does, Idle (an on again) keeps a class already remembered. 0, or a value that isn't a priority class,
+    /// remembers nothing. By default nothing is remembered.
     virtual void rememberEfficiencyPriorityClass(const ProcessTarget& target, std::uint32_t priorityClass)
+    {
+        static_cast<void>(target);
+        static_cast<void>(priorityClass);
+    }
+
+    /// In the helper (#3327, Windows): @p priorityClass, carried by an off's request, is what that off restores for
+    /// @p target, replacing whatever this helper remembers, Idle included. TaskSmack has seen every on since, while
+    /// this helper may hold a class from an earlier on whose off ran elsewhere. 0, or a value that isn't a priority
+    /// class, changes nothing. By default nothing is remembered.
+    virtual void setEfficiencyPriorityClassToRestore(const ProcessTarget& target, std::uint32_t priorityClass)
     {
         static_cast<void>(target);
         static_cast<void>(priorityClass);

@@ -862,6 +862,14 @@ void WindowsProcessActions::rememberEfficiencyPriorityClass(const ProcessTarget&
     }
 }
 
+void WindowsProcessActions::setEfficiencyPriorityClassToRestore(const ProcessTarget& target, std::uint32_t priorityClass)
+{
+    if (isPriorityClass(priorityClass))
+    {
+        m_EfficiencyPriorities->assign(target, priorityClass);
+    }
+}
+
 void WindowsProcessActions::forgetEfficiencyPriorityClass(const ProcessTarget& target)
 {
     static_cast<void>(m_EfficiencyPriorities->take(target));

@@ -1769,6 +1769,31 @@ TEST_F(WindowsEfficiencyModeTest, AClassNeitherSideKnowsAnyMoreGoesToNormalSayin
     EXPECT_EQ(off.successNote, efficiencyModeOffNote(std::nullopt, NORMAL_PRIORITY_CLASS));
 }
 
+// #3590 review: the same helper across two cycles. The first on ran in it (from High) and the off in TaskSmack, so the
+// helper still holds High. The second on runs in TaskSmack from Idle, and its off, in that helper, must restore the
+// Idle TaskSmack sends, not the High the helper kept: an off's class replaces the helper's, Idle included.
+TEST_F(WindowsEfficiencyModeTest, AnOffsClassReplacesAStaleOneTheSameHelperKeptFromAnEarlierCycle)
+{
+    TaskSmackAndHelper sides;
+    FakeEco::priorityClass = HIGH_PRIORITY_CLASS;
+    TaskSmackAndHelper::denyTaskSmack(true);
+    ASSERT_TRUE(sides.setEfficiencyMode(ecoTarget(7308), true).success); // the helper remembers High
+    TaskSmackAndHelper::denyTaskSmack(false);
+    ASSERT_TRUE(sides.setEfficiencyMode(ecoTarget(7308), false).success); // TaskSmack's off: High, and forgotten here
+    EXPECT_EQ(FakeEco::classesSet.back(), static_cast<DWORD>(HIGH_PRIORITY_CLASS));
+
+    FakeEco::priorityClass = IDLE_PRIORITY_CLASS; // someone put it at Idle
+    ASSERT_TRUE(sides.setEfficiencyMode(ecoTarget(7308), true).success);
+    EXPECT_EQ(sides.taskSmackRemembers(ecoTarget(7308)), std::optional<std::uint32_t>{IDLE_PRIORITY_CLASS});
+    TaskSmackAndHelper::denyTaskSmack(true);
+    FakeEco::classesSet.clear();
+    const auto off = sides.setEfficiencyMode(ecoTarget(7308), false);
+    ASSERT_TRUE(off.success) << off.errorMessage;
+    EXPECT_EQ(sides.helperRequests(), 2U);
+    EXPECT_EQ(FakeEco::classesSet, (std::vector<DWORD>{IDLE_PRIORITY_CLASS})) << "the Idle it had, not the stale High";
+    EXPECT_TRUE(off.successNote.empty()) << off.successNote;
+}
+
 TEST_F(WindowsEfficiencyModeTest, OnlyARealPriorityClassIsRememberedForAnOff)
 {
     WindowsProcessActions actions(FakeEco::functions(), std::make_shared<EfficiencyModePriorities>());
@@ -1777,6 +1802,14 @@ TEST_F(WindowsEfficiencyModeTest, OnlyARealPriorityClassIsRememberedForAnOff)
     EXPECT_FALSE(actions.efficiencyPriorityClassToRestore(ecoTarget(7306)).has_value());
     actions.rememberEfficiencyPriorityClass(ecoTarget(7306), HIGH_PRIORITY_CLASS);
     EXPECT_EQ(actions.efficiencyPriorityClassToRestore(ecoTarget(7306)), std::optional<std::uint32_t>{HIGH_PRIORITY_CLASS});
+    // An on's Idle keeps the class remembered; an off request's Idle replaces it (#3590), and only a real class does.
+    actions.rememberEfficiencyPriorityClass(ecoTarget(7306), IDLE_PRIORITY_CLASS);
+    EXPECT_EQ(actions.efficiencyPriorityClassToRestore(ecoTarget(7306)), std::optional<std::uint32_t>{HIGH_PRIORITY_CLASS});
+    actions.setEfficiencyPriorityClassToRestore(ecoTarget(7306), 0x12345U);
+    actions.setEfficiencyPriorityClassToRestore(ecoTarget(7306), 0);
+    EXPECT_EQ(actions.efficiencyPriorityClassToRestore(ecoTarget(7306)), std::optional<std::uint32_t>{HIGH_PRIORITY_CLASS});
+    actions.setEfficiencyPriorityClassToRestore(ecoTarget(7306), IDLE_PRIORITY_CLASS);
+    EXPECT_EQ(actions.efficiencyPriorityClassToRestore(ecoTarget(7306)), std::optional<std::uint32_t>{IDLE_PRIORITY_CLASS});
     actions.forgetEfficiencyPriorityClass(ecoTarget(7306));
     EXPECT_FALSE(actions.efficiencyPriorityClassToRestore(ecoTarget(7306)).has_value());
 

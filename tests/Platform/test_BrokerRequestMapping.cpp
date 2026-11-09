@@ -168,15 +168,16 @@ TEST(BrokerRequestMappingTest, EfficiencyModeReachesItsAction)
     EXPECT_EQ(refused.errorMessage, "Process 4242 is a critical system process");
 }
 
-// #3327 (v22): an off carrying the class TaskSmack remembers is remembered first, so the helper's off restores it
-// though it never saw the on; one carrying 0 (unknown) remembers nothing. An on's reply carries the class it replaced.
+// #3327 (v22): an off carrying the class TaskSmack remembers sets it first, replacing the helper's, so the helper's
+// off restores it though it never saw the on; one carrying 0 (unknown) sets nothing. An on's reply carries the class it
+// replaced.
 TEST(BrokerRequestMappingTest, AnEfficiencyOffRemembersTheClassItCarriesFirstAndAnOnRepliesWithTheClassItReplaced)
 {
     TestMocks::MockProcessActions actions;
     ASSERT_TRUE(actionResult(BrokerServer::handleRequest(
                                  Broker::EfficiencyModeRequest{.target = TARGET, .on = false, .restorePriorityClass = 0x80}, actions))
                     .success);
-    EXPECT_EQ(actions.efficiencyLog(), (std::vector<std::string>{"remember 0x80", "off"}));
+    EXPECT_EQ(actions.efficiencyLog(), (std::vector<std::string>{"set 0x80", "off"}));
     EXPECT_EQ(actions.efficiencyPriorityClassToRestore(TARGET), std::optional<std::uint32_t>{0x80});
 
     ASSERT_TRUE(actionResult(BrokerServer::handleRequest(Broker::EfficiencyModeRequest{.target = TARGET, .on = false}, actions)).success);
