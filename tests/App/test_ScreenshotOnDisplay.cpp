@@ -301,7 +301,8 @@ class ObserverLayer : public Core::Layer
     }
 
   private:
-    static constexpr double TIMEOUT_SECONDS = 20.0;
+    // Room for the every-step demo test's 12-frame sequence under a sanitizer's slow frames (#3582).
+    static constexpr double TIMEOUT_SECONDS = 45.0;
 
     Observed& m_Observed;
     double m_Start = 0.0;
@@ -602,7 +603,9 @@ TEST_F(ScreenshotOnDisplayTest, ADemoScriptPlaysEveryKindOfStep)
     }
 
     const std::filesystem::path given = m_Dir / "steps.png";
-    const ScreenshotEnv screenshotEnv(Core::pathToUtf8(given) + ";after=0;frames=8;fps=1");
+    // Twelve captures, a second apart: the script ends at 6.9 s, and DemoLayer issues one step a frame (#3582), so
+    // even frames as slow as a second each (a sanitizer build) leave every step issued and drawn before the last.
+    const ScreenshotEnv screenshotEnv(Core::pathToUtf8(given) + ";after=0;frames=12;fps=1");
     const std::string script = "0.2:tab=nosuchtab,0.3:select=pid:" + std::to_string(Platform::currentProcessId()) +
                                ",1.3:details=overview,1.8:section=modules,2.8:details=network,3.3:machine=cores,3.8:open=help,"
                                "4.3:close=dialog,4.8:open=about,5.3:close=dialog,5.8:open=settings,6.3:close=dialog,"
@@ -659,7 +662,7 @@ TEST_F(ScreenshotOnDisplayTest, ADemoScriptPlaysEveryKindOfStep)
 
     EXPECT_FALSE(run.observed.timedOut) << "the hook didn't close the window in time";
     EXPECT_EQ(run.outcome, App::ScreenshotLayer::Outcome::Written);
-    EXPECT_EQ(run.framesWritten, 8);
+    EXPECT_EQ(run.framesWritten, 12);
     EXPECT_EQ(run.observed.closeRequests, 1) << "close=dialog closed the dialogs, not the window";
     EXPECT_TRUE(demoStarted) << "the script's clock never started";
     EXPECT_EQ(stepsIssued, 15U) << "every step was due before the last capture, the skipped ones included";
