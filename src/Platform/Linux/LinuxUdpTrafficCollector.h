@@ -55,12 +55,19 @@ class LinuxUdpTrafficCollector final : public IUdpTrafficCollector
     Load m_Load;
     std::atomic<bool> m_Delivering{false};
     std::atomic<bool> m_Unsupported{false};
-    mutable std::mutex m_Mutex;   // guards the members below; held only to read or change them, never over a load or read
+    std::mutex m_Mutex;           // guards the members below; never held over a load or read, nor taken by problem()
     std::shared_ptr<Read> m_Read; // the loaded counter's read; null when stopped
     std::uint64_t m_Run = 0;      // one more each start() and stop(): a read of another run publishes nothing
     std::uint32_t m_Generation = 0;
     bool m_Seeding = false; // the next reading read only sets Domain's baseline
     std::string m_Problem;
+    /// Guards m_StatusProblem alone, which problem() copies on the UI thread every frame: held only to copy it, so
+    /// the UI never waits behind a sample's conversion under m_Mutex (#3589 review). Taken after m_Mutex, never before.
+    mutable std::mutex m_StatusMutex;
+    std::string m_StatusProblem;
+
+    /// Copies m_Problem into m_StatusProblem. Called with m_Mutex held.
+    void publishProblem();
 };
 
 } // namespace Platform

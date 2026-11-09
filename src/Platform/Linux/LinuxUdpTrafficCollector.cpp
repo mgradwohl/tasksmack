@@ -56,6 +56,7 @@ UdpCollectorStartResult LinuxUdpTrafficCollector::start()
         spdlog::warn("UDP traffic per process: the eBPF counter didn't load: {}; the counters stay TCP only", loaded.error());
         const std::scoped_lock lock(m_Mutex);
         m_Problem = std::move(loaded.error());
+        publishProblem();
         m_Unsupported = true;
         return UdpCollectorStartResult::Failed;
     }
@@ -66,6 +67,7 @@ UdpCollectorStartResult LinuxUdpTrafficCollector::start()
         m_Seeding = false; // a new counter counts from zero: its first reading is all new bytes
         m_Read = std::make_shared<Read>(std::move(*loaded));
         m_Problem.clear();
+        publishProblem();
         m_Unsupported = false;
     }
     spdlog::info("UDP traffic per process: counting in TaskSmack's own process (running as root)");
@@ -118,6 +120,7 @@ std::vector<UdpProcessTraffic> LinuxUdpTrafficCollector::sample()
                 warning = totals.error(); // logged once the lock is released, once per change
             }
             m_Problem = std::move(totals.error());
+            publishProblem();
             m_Delivering = false;
             m_Seeding = true;
         }
@@ -137,7 +140,11 @@ std::vector<UdpProcessTraffic> LinuxUdpTrafficCollector::sample()
                     .baselineOnly = seeding,
                 });
             }
-            m_Problem.clear();
+            if (!m_Problem.empty())
+            {
+                m_Problem.clear();
+                publishProblem();
+            }
             m_Delivering = true;
         }
     }
@@ -150,8 +157,14 @@ std::vector<UdpProcessTraffic> LinuxUdpTrafficCollector::sample()
 
 std::string LinuxUdpTrafficCollector::problem() const
 {
-    const std::scoped_lock lock(m_Mutex);
-    return m_Problem;
+    const std::scoped_lock lock(m_StatusMutex);
+    return m_StatusProblem;
+}
+
+void LinuxUdpTrafficCollector::publishProblem()
+{
+    const std::scoped_lock lock(m_StatusMutex);
+    m_StatusProblem = m_Problem;
 }
 
 bool LinuxUdpTrafficCollector::unsupported() const
