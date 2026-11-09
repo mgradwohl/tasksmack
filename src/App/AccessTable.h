@@ -6,9 +6,9 @@
 // including that every Linux MissingPrivilege bit has a row, so a new privilege can't go unexplained.
 //
 // It describes Administrator as the design makes it: nothing limited. On Windows that is TaskSmack
-// restarted elevated. On Linux it is the session-held helper (#2872), and the rows marked
-// needsHelperCoverage are reads the helper doesn't do yet; the notice mustn't promise them until it
-// does.
+// restarted elevated. On Linux it is TaskSmack started as root, "TaskSmack (Administrator)" or sudo, for
+// the whole session (#3580): a Standard session is never elevated after it starts, so its column says what
+// it gets, never a prompt to finish it.
 
 #include "App/AccessChoice.h"
 #include "Platform/ProcessTypes.h"
@@ -29,51 +29,38 @@ struct Row
     /// Linux: the ProcessCapabilities::missingPrivileges bit (Platform::MissingPrivilege) this row
     /// explains; 0 for a row no bit stands for.
     std::uint8_t missingPrivilege = 0;
-    /// Linux: Administrator gives this only once the session-held helper does the read (#2728's
-    /// "Coverage" list); false where it already does.
-    bool needsHelperCoverage = false;
 };
 
 inline constexpr std::array LINUX_ROWS{
     Row{
         .item = "Other users' processes: open files count, I/O and network",
         .standard = "Not readable",
-        .administrator = "Read through the helper",
+        .administrator = "Read",
         .missingPrivilege = Platform::MissingPrivilege::READ_OTHERS,
-        .needsHelperCoverage = true,
     },
-    Row{.item = "Other users' processes: PSS and USS memory", .standard = "Not readable", .administrator = "Read through the helper"},
+    Row{.item = "Other users' processes: PSS and USS memory", .standard = "Not readable", .administrator = "Read"},
     Row{
         .item = "Ending, suspending or resuming other users' processes",
-        .standard = "Refused; Authenticate and retry asks each time",
+        .standard = "Refused",
         .administrator = "Done",
         .missingPrivilege = Platform::MissingPrivilege::SIGNAL_OTHERS,
     },
     Row{
         .item = "Raising priority, real-time I/O and policies, leaving the Idle policy, other users' priority, affinity and policy",
-        .standard = "Refused; Authenticate and retry asks each time",
+        .standard = "Refused",
         .administrator = "Done",
         .missingPrivilege = Platform::MissingPrivilege::RAISE_PRIORITY,
     },
     Row{
         .item = "Processes hidden by /proc's hidepid",
         .standard = "Not listed",
-        .administrator = "Listed through the helper",
+        .administrator = "Listed",
         .missingPrivilege = Platform::MissingPrivilege::PROCESSES_HIDDEN,
-        .needsHelperCoverage = true,
     },
-    Row{
-        .item = "System Information: serial numbers, UUIDs, SMBIOS and memory modules",
-        .standard = "Hidden; Authenticate to read",
-        .administrator = "Shown",
-    },
-    Row{.item = "Other users' crash reports", .standard = "Hidden; Authenticate to read", .administrator = "Shown"},
-    Row{
-        .item = "Service actions",
-        .standard = "systemd asks for a password each time",
-        .administrator = "Done without asking again",
-        .needsHelperCoverage = true,
-    },
+    Row{.item = "System Information: serial numbers, UUIDs, SMBIOS and memory modules", .standard = "Hidden", .administrator = "Shown"},
+    Row{.item = "Other users' crash reports", .standard = "Hidden", .administrator = "Shown"},
+    Row{.item = "Service actions", .standard = "Refused unless a polkit rule allows them", .administrator = "Done"},
+    Row{.item = "UDP traffic per process (opt-in, Settings)", .standard = "Not counted", .administrator = "Counted when turned on"},
 };
 
 inline constexpr std::array WINDOWS_ROWS{
