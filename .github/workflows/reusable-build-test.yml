@@ -318,7 +318,8 @@ jobs:
       # heavy-checks' coverage pass before. TASKSMACK_CI_REAL_SYSTEM lets TasksmackHelperRootTest.ActsOnARealUnitUnderItsSandbox
       # (#3491) create, drive and remove a runtime unit on this disposable runner; it skips anywhere else.
       # UdpByteCounterRootTest (#3366) loads the helper's eBPF UDP byte counter in each attach mode (fexit and
-      # kretprobe), which needs root, and checks it counts a child's datagrams once each.
+      # kretprobe), which needs root, and checks it counts a child's datagrams once each, read directly and through
+      # root's in-process collector (#3580).
       - name: Helper root test (Linux)
         if: runner.os == 'Linux' && inputs.build && inputs.build_type == 'debug'
         env:
@@ -329,7 +330,7 @@ jobs:
           # real-system guard reads these three (tests/Support/CiRealSystem.h).
           sudo --preserve-env=TASKSMACK_CI_REAL_SYSTEM,GITHUB_ACTIONS,RUNNER_ENVIRONMENT \
             build/debug/tests/TaskSmackTests --gtest_filter='TasksmackHelperRootTest.*:DetachedSpawnTest.AsRoot*:*/UdpByteCounterRootTest.*' 2>&1 | tee helper-root-test.log
-          if grep -q '\[  SKIPPED \]' helper-root-test.log || ! grep -q '\[  PASSED  \] 7 tests' helper-root-test.log; then
+          if grep -q '\[  SKIPPED \]' helper-root-test.log || ! grep -q '\[  PASSED  \] 9 tests' helper-root-test.log; then
             echo "::error title=Helper root test::TasksmackHelperRootTest, DetachedSpawnTest.AsRoot* and UdpByteCounterRootTest didn't all run and pass as root"
             exit 1
           fi
