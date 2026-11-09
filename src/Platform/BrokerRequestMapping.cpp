@@ -69,8 +69,13 @@ namespace
         return Broker::ActionResult::from(
             actions.setSchedPolicy(policy->target, policy->policy, policy->rtPriority, policy->realtimeThreads));
     }
+    // By its inode (Linux, #3066), or with none, by its IPv4 TCP endpoints (Windows, #3358).
     if (const auto* close = std::get_if<Broker::CloseConnectionRequest>(&request))
     {
+        if (close->socketInode == 0 && close->tcpConnection != TcpConnectionToClose{})
+        {
+            return Broker::ActionResult::from(actions.closeTcpConnection(close->target, close->tcpConnection));
+        }
         return Broker::ActionResult::from(actions.closeConnection(close->target, close->socketInode));
     }
     if (const auto* efficiency = std::get_if<Broker::EfficiencyModeRequest>(&request))

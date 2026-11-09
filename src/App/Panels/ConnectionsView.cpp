@@ -4,6 +4,7 @@
 #include "Domain/ConnectionsModel.h"
 #include "Domain/ProcessConnections.h"
 #include "Platform/AsciiCase.h"
+#include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/ISystemConnections.h"
 #include "UI/CellText.h"
@@ -178,6 +179,23 @@ std::vector<ConnectionRow> ConnectionChangeTracker::closedRows() const
     return rows;
 }
 
+std::string_view rateDashReason(const Platform::SystemConnection& connection, std::string_view ratesUnavailable)
+{
+    if (connection.connection.protocol != Platform::ConnectionProtocol::Tcp)
+    {
+        return "UDP sockets have no byte counters, so they have no rate.";
+    }
+    if (connection.hasByteCounters)
+    {
+        return "The rate shows from the socket's second reading.";
+    }
+    if (!ratesUnavailable.empty())
+    {
+        return ratesUnavailable;
+    }
+    return "No byte counters could be read for this socket.";
+}
+
 std::vector<ConnectionRow> buildConnectionRows(const Domain::ConnectionsPublication& publication)
 {
     std::vector<ConnectionRow> rows;
@@ -204,6 +222,7 @@ std::vector<ConnectionRow> buildConnectionRows(const Domain::ConnectionsPublicat
             .rate = rate,
             .sent = rate.known ? UI::Format::formatBytesPerSec(rate.sentPerSec) : std::string(),
             .received = rate.known ? UI::Format::formatBytesPerSec(rate.receivedPerSec) : std::string(),
+            .rateNote = rate.known ? std::string() : std::string(rateDashReason(c, publication.ratesUnavailable)),
         });
     }
     return rows;
@@ -241,12 +260,17 @@ orderConnectionRows(const std::vector<ConnectionRow>& rows, std::string_view fil
     return order;
 }
 
-std::string_view closeConnectionRefusal(const Platform::SystemConnection& connection)
+std::string_view closeConnectionRefusal(const Platform::SystemConnection& connection, Platform::ConnectionCloseKey key)
 {
     using Platform::ConnectionState;
+    const bool byEndpoints = key == Platform::ConnectionCloseKey::Tcp4Endpoints;
     if (connection.connection.protocol != Platform::ConnectionProtocol::Tcp)
     {
         return "Only a TCP connection can be closed";
+    }
+    if (byEndpoints && connection.connection.family != Platform::ConnectionFamily::IPv4)
+    {
+        return IPV6_CLOSE_REFUSAL; // SetTcpEntry has no IPv6 twin (#3358)
     }
     switch (connection.connection.state)
     {
@@ -257,10 +281,18 @@ std::string_view closeConnectionRefusal(const Platform::SystemConnection& connec
         break;
     case ConnectionState::Listen:
         return "A listening socket has no connection to close";
+    case ConnectionState::Unknown:
+        // Windows reports state 0 for many rows (#3257): one with a peer is a connection, which the close looks up
+        // again, and refuses if it is a listener after all.
+        if (byEndpoints && connection.connection.remote.port != 0)
+        {
+            break;
+        }
+        [[fallthrough]];
     default:
         return "The connection is already closing";
     }
-    if (connection.pid == 0 || connection.startTimeTicks == 0 || connection.socketInode == 0)
+    if (connection.pid == 0 || connection.startTimeTicks == 0 || (!byEndpoints && connection.socketInode == 0))
     {
         return "No process TaskSmack can see holds this socket";
     }
@@ -360,14 +392,18 @@ namespace
     UI::Widgets::cellText(row.remote);
     ImGui::TableNextColumn();
     UI::Widgets::cellText(row.closed ? std::string("Closed") : row.state);
-    // Sent and received per second (#3079): a dash where the platform has no counters (UDP) or on a socket's
-    // first reading.
+    // Sent and received per second (#3079): a dash where the platform has no counters (UDP, Windows without
+    // administrator) or on a socket's first reading, saying which on hover.
     for (const std::string* rate : {&row.sent, &row.received})
     {
         ImGui::TableNextColumn();
         if (rate->empty())
         {
             ImGui::TextDisabled("\xE2\x80\x94");
+            if (!row.rateNote.empty())
+            {
+                ImGui::SetItemTooltip("%s", row.rateNote.c_str());
+            }
         }
         else
         {
@@ -383,14 +419,16 @@ namespace
 
 } // namespace
 
-std::optional<ConnectionsViewAction>
-renderConnectionsView(const Domain::ConnectionsPublication* publication, bool hasConnections, ConnectionsViewState& state, bool canClose)
+std::optional<ConnectionsViewAction> renderConnectionsView(const Domain::ConnectionsPublication* publication,
+                                                           bool hasConnections,
+                                                           ConnectionsViewState& state,
+                                                           bool canClose,
+                                                           Platform::ConnectionCloseKey closeKey)
 {
     if (!hasConnections)
     {
-        UI::Widgets::renderEmptyState(
-            ICON_FA_NETWORK_WIRED "  Connections aren't available",
-            "TaskSmack lists the machine's TCP and UDP sockets on Linux. Windows support is coming: issue #3356.");
+        UI::Widgets::renderEmptyState(ICON_FA_NETWORK_WIRED "  Connections aren't available",
+                                      "This run of TaskSmack doesn't list the machine's TCP and UDP sockets.");
         return std::nullopt;
     }
     if (publication == nullptr || publication->version == 0)
@@ -400,7 +438,7 @@ renderConnectionsView(const Domain::ConnectionsPublication* publication, bool ha
     }
     if (publication->status == Platform::SystemConnectionsStatus::Failed)
     {
-        const std::string detail = "The kernel's socket tables couldn't be read: " + publication->detail;
+        const std::string detail = "The system's socket tables couldn't be read: " + publication->detail;
         UI::Widgets::renderEmptyState(ICON_FA_TRIANGLE_EXCLAMATION "  Connections couldn't be read", detail.c_str());
         return std::nullopt;
     }
@@ -479,7 +517,7 @@ renderConnectionsView(const Domain::ConnectionsPublication* publication, bool ha
     {
         if (state.menuRow.has_value())
         {
-            const std::string refusal(closeConnectionRefusal(state.menuRow->connection));
+            const std::string refusal(closeConnectionRefusal(state.menuRow->connection, closeKey));
             if (ImGui::MenuItem(ICON_FA_XMARK "  Close connection...", nullptr, false, refusal.empty()))
             {
                 action = ConnectionsViewAction{

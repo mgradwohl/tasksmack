@@ -178,6 +178,33 @@ TEST(BrokerRequestMappingTest, CloseConnectionReachesItsAction)
     EXPECT_EQ(actions.closeConnectionCount(), 1);
     EXPECT_EQ(actions.lastSocketInode(), 81234U);
     EXPECT_EQ(actions.lastTarget(), TARGET);
+    EXPECT_EQ(actions.closeTcpConnectionCount(), 0);
+}
+
+// #3358: one with no inode and IPv4 TCP endpoints (Windows) reaches closeTcpConnection() with them; one with neither
+// reaches closeConnection(), which refuses inode 0.
+TEST(BrokerRequestMappingTest, CloseConnectionByEndpointsReachesTheTcpClose)
+{
+    const Platform::TcpConnectionToClose connection{
+        .localAddress = {127, 0, 0, 1},
+        .localPort = 50000,
+        .remoteAddress = {127, 0, 0, 1},
+        .remotePort = 8080,
+    };
+    TestMocks::MockProcessActions actions;
+    actions.setCloseConnectionResult(Platform::ProcessActionResult::denied("Closing a connection needs administrator rights"));
+    const Broker::ActionResult refused = actionResult(BrokerServer::handleRequest(
+        Broker::CloseConnectionRequest{.target = TARGET, .socketInode = 0, .tcpConnection = connection}, actions));
+    EXPECT_FALSE(refused.success);
+    EXPECT_EQ(refused.errorMessage, "Closing a connection needs administrator rights");
+    EXPECT_EQ(actions.closeTcpConnectionCount(), 1);
+    EXPECT_EQ(actions.closeConnectionCount(), 0);
+    EXPECT_EQ(actions.lastTcpConnection(), connection);
+    EXPECT_EQ(actions.lastTarget(), TARGET);
+
+    static_cast<void>(BrokerServer::handleRequest(Broker::CloseConnectionRequest{.target = TARGET}, actions));
+    EXPECT_EQ(actions.closeConnectionCount(), 1);
+    EXPECT_EQ(actions.closeTcpConnectionCount(), 1);
 }
 
 // #3069: a ThreadAction request reaches actOnThread() with its target, thread and action; the actions' refusal

@@ -8,7 +8,8 @@
 //   TASKSMACK_DEMO="1:tab=processes,3:select=name:explorer.exe,5:details=network,8:theme=dracula"
 //
 // The value is read once, at startup (main() calls active()). It is a comma-separated list of
-// <seconds>:<action>=<value> steps. The seconds (up to three decimals, not decreasing from step to
+// <seconds>:<action>=<value> steps (DemoLayer issues one a frame, so steps due together, or a slow frame's
+// backlog, are each drawn, a frame apart, #3582). The seconds (up to three decimals, not decreasing from step to
 // step, at most MAX_STEP_SECONDS) count from the moment the startup selections (TASKSMACK_TAB,
 // TASKSMACK_SELECT_PID/_NAME) have taken effect: the point ScreenshotLayer waits for too, so a
 // screenshot sequence with after=0 records the script from its start. The actions:

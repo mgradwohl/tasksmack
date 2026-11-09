@@ -688,6 +688,26 @@ class MockProcessActions : public Platform::IProcessActions
         return m_CloseConnectionCount;
     }
 
+    /// closeTcpConnection() (#3358): records the target and endpoints, counts the call, returns the set close result.
+    [[nodiscard]] Platform::ProcessActionResult closeTcpConnection(const Platform::ProcessTarget& target,
+                                                                   const Platform::TcpConnectionToClose& connection) override
+    {
+        m_LastTarget = target;
+        m_LastTcpConnection = connection;
+        ++m_CloseTcpConnectionCount;
+        return m_CloseConnectionResult;
+    }
+
+    [[nodiscard]] int closeTcpConnectionCount() const
+    {
+        return m_CloseTcpConnectionCount;
+    }
+
+    [[nodiscard]] const Platform::TcpConnectionToClose& lastTcpConnection() const
+    {
+        return m_LastTcpConnection;
+    }
+
     void setThreadActionResult(Platform::ProcessActionResult result)
     {
         m_ThreadActionResult = std::move(result);
@@ -1201,6 +1221,8 @@ class MockProcessActions : public Platform::IProcessActions
     int m_EfficiencyModeCount = 0;
     int m_CloseConnectionCount = 0;
     std::uint64_t m_LastSocketInode = 0;
+    int m_CloseTcpConnectionCount = 0;
+    Platform::TcpConnectionToClose m_LastTcpConnection;
     Platform::ProcessActionResult m_CloseConnectionResult = Platform::ProcessActionResult::ok();
     int m_ThreadActionCount = 0;
     std::int32_t m_LastThreadId = 0;

@@ -16,6 +16,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -193,20 +194,22 @@ void DemoLayer::onUpdate(float /*deltaTime*/)
     {
         return;
     }
-    // Every step whose time has come, in order: before any layer renders, so this frame shows them.
+    // The step whose time has come, before any layer renders, so this frame shows it. One a frame (#3582): when a
+    // slow frame leaves several due, each still gets a frame of its own, so open=help is drawn before the
+    // close=dialog after it, and the next one follows on the very next frame.
     const double elapsed = Core::Application::getTime() - m_StartTime;
-    while (m_Next < m_Steps.size() && static_cast<double>(m_Steps[m_Next].timeMs) / DemoOverride::MILLIS_PER_SECOND <= elapsed)
+    if (m_Next < m_Steps.size() && static_cast<double>(m_Steps[m_Next].timeMs) / DemoOverride::MILLIS_PER_SECOND <= elapsed)
     {
         const DemoOverride::Step& step = m_Steps[m_Next];
         spdlog::info("{}: step {} of {}: {}", DemoOverride::ENV_VAR, m_Next + 1, m_Steps.size(), DemoOverride::describe(step));
         issue(step);
         ++m_Next;
     }
-    // The next step comes on time, not at the loop's slow floor (#3156).
+    // The next step comes on time, not at the loop's slow floor (#3156), and at once when it is due already.
     if (m_Next < m_Steps.size())
     {
         const double nextStepSeconds = static_cast<double>(m_Steps[m_Next].timeMs) / DemoOverride::MILLIS_PER_SECOND;
-        Core::AnimationRequest::requestFrameWithin(nextStepSeconds - elapsed);
+        Core::AnimationRequest::requestFrameWithin(std::max(0.0, nextStepSeconds - elapsed));
     }
 }
 

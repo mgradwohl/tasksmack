@@ -5,6 +5,7 @@
 #include "Platform/SchedPolicy.h"
 #include "Platform/WaitChain.h"
 
+#include <array>
 #include <cstdint>
 #include <expected>
 #include <filesystem>
@@ -74,6 +75,26 @@ struct ProcessTarget
     /// The same process: the same PID and the same start time. The Processes table's selection is
     /// keyed on this exact identity, never on a hash of it (#1503).
     [[nodiscard]] friend constexpr bool operator==(const ProcessTarget&, const ProcessTarget&) noexcept = default;
+};
+
+/// An IPv4 TCP connection, by its endpoints: what closeTcpConnection() closes (#3358). Windows names no socket by
+/// an inode, and SetTcpEntry() takes the four endpoint values, so they are the connection's name. Addresses in
+/// network byte order, ports as host-order numbers.
+struct TcpConnectionToClose
+{
+    std::array<std::uint8_t, 4> localAddress{};
+    std::uint16_t localPort = 0;
+    std::array<std::uint8_t, 4> remoteAddress{};
+    std::uint16_t remotePort = 0;
+
+    [[nodiscard]] friend constexpr bool operator==(const TcpConnectionToClose&, const TcpConnectionToClose&) noexcept = default;
+};
+
+/// How the platform names the socket Close connection closes (#3358): ProcessActionCapabilities::connectionCloseKey.
+enum class ConnectionCloseKey : std::uint8_t
+{
+    SocketInode,   ///< closeConnection(), by the socket's inode (Linux, #3066)
+    Tcp4Endpoints, ///< closeTcpConnection(), by an IPv4 TCP connection's endpoints (Windows: SetTcpEntry, with no IPv6 twin)
 };
 
 /// Whether the process found at a target's PID is the process the target names.
@@ -245,8 +266,11 @@ struct AuthorizedAction
     Kind kind = Kind::Terminate;
     ProcessTarget target;
     ProcessSignal signal = ProcessSignal::Hangup;
-    bool efficiencyMode = false;        ///< SetEfficiencyMode: on (true) or off
-    std::uint64_t socketInode = 0;      ///< CloseConnection: the socket, by inode
+    bool efficiencyMode = false;   ///< SetEfficiencyMode: on (true) or off
+    std::uint64_t socketInode = 0; ///< CloseConnection: the socket, by inode
+    /// CloseConnection on Windows (#3358): the IPv4 TCP connection, by its endpoints; all zero for one named by inode.
+    // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
+    TcpConnectionToClose tcpConnection{};
     std::int32_t tid = 0;               ///< ThreadAction: the thread
     std::uint64_t threadCreateTime = 0; ///< ThreadAction: when the thread confirmed was created (ProcessThread::createTime)
     ThreadAction threadAction = ThreadAction::Suspend;
@@ -328,8 +352,11 @@ struct ProcessActionCapabilities
     /// readWaitChains(): what each of a process's threads waits on, as Task Manager's "Analyze wait chain"
     /// (#3084; Windows: the Wait Chain Traversal API). False on Linux, where the UI offers no such item.
     bool canAnalyzeWaitChain = false;
-    /// closeConnection(): shut down one of a process's sockets (#3066; Linux: pidfd_getfd() and shutdown()).
+    /// closeConnection(): shut down one of a process's sockets (#3066; Linux: pidfd_getfd() and shutdown()), or
+    /// closeTcpConnection(): reset an IPv4 TCP connection (#3358; Windows: SetTcpEntry(MIB_TCP_STATE_DELETE_TCB)).
     bool canCloseConnections = false;
+    /// Which of the two closes a connection, and so what names it (#3358): its inode, or its IPv4 TCP endpoints.
+    ConnectionCloseKey connectionCloseKey = ConnectionCloseKey::SocketInode;
     /// actOnThread(): suspend, resume or end one thread of a process (#3069; Windows: SuspendThread, ResumeThread,
     /// TerminateThread). False on Linux, where Process Details' Threads section offers no row menu.
     bool canActOnThreads = false;
@@ -539,6 +566,19 @@ class IProcessActions
     {
         static_cast<void>(target);
         static_cast<void>(socketInode);
+        return ProcessActionResult::error("Closing a connection isn't available on this system");
+    }
+
+    /// Resets the IPv4 TCP connection @p connection that the process holds (#3358), as TCPView's Close Connection:
+    /// Windows deletes its control block (SetTcpEntry(MIB_TCP_STATE_DELETE_TCB)) and sends the peer a reset, and
+    /// the process gets an error on its next use of the socket. The same identity check as terminate(); the
+    /// connection is looked up again just before, and refused when the process no longer holds it, when it is a
+    /// listener, or when it has no remote end. Used where connectionCloseKey is Tcp4Endpoints; the default refuses
+    /// it, matching canCloseConnections' default (false).
+    [[nodiscard]] virtual ProcessActionResult closeTcpConnection(const ProcessTarget& target, const TcpConnectionToClose& connection)
+    {
+        static_cast<void>(target);
+        static_cast<void>(connection);
         return ProcessActionResult::error("Closing a connection isn't available on this system");
     }
 

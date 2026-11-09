@@ -179,6 +179,12 @@ namespace Domain::Connections
     const std::string port = (endpoint.port == 0) ? std::string("*") : std::to_string(endpoint.port);
     if (family == Platform::ConnectionFamily::IPv6)
     {
+        // A link-local address's zone, as netstat writes it ("[fe80::1%12]:443"), so two interfaces' tell apart.
+        const bool linkLocal = endpoint.address[0] == 0xfe && (endpoint.address[1] & 0xc0U) == 0x80;
+        if (linkLocal && endpoint.scopeId != 0)
+        {
+            return std::format("[{}%{}]:{}", address, endpoint.scopeId, port);
+        }
         return std::format("[{}]:{}", address, port);
     }
     return std::format("{}:{}", address, port);
@@ -217,10 +223,15 @@ namespace Domain::Connections
     {
         return order;
     }
-    return a.port <=> b.port;
+    if (const auto order = a.port <=> b.port; order != 0)
+    {
+        return order;
+    }
+    return a.scopeId <=> b.scopeId;
 }
 
-/// A socket's identity across readings: its protocol, family and both endpoints (FNV-1a over them; a collision
+/// A socket's identity across readings: its protocol, family and both endpoints, scope IDs included (#3573: the
+/// same link-local endpoints on two interfaces are two sockets) (FNV-1a over them; a collision
 /// only mixes up a highlight or a rate for a moment). The Connections tab keys its rates (#3079) on it, and its
 /// selection and new and closed highlights (#3066) on it with the holder and the inode mixed in (#3288).
 [[nodiscard]] constexpr std::uint64_t socketKey(const Platform::ProcessConnection& connection) noexcept
@@ -243,6 +254,7 @@ namespace Domain::Connections
             mix(byte);
         }
         mix(endpoint->port);
+        mix(endpoint->scopeId);
     }
     return hash;
 }

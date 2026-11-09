@@ -6,6 +6,7 @@
 // so the formatting, the filter and the sort are tested without an ImGui context.
 
 #include "Domain/ConnectionsModel.h"
+#include "Platform/IProcessActions.h"
 #include "Platform/ISystemConnections.h"
 
 #include <cstddef>
@@ -15,7 +16,6 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 namespace App
@@ -48,7 +48,13 @@ struct ConnectionRow
     Domain::ConnectionRate rate; ///< Sent and received per second (#3079); unknown for UDP and a socket's first reading
     std::string sent;            ///< "12.3 KiB/s", or empty while the rate is unknown
     std::string received;
+    std::string rateNote; ///< Why the rate is unknown, for the dash's tooltip (rateDashReason()); empty while it is known
 };
+
+/// Why @p connection's Sent/s and Received/s show a dash: UDP has no byte counters; a TCP socket without them
+/// gets the platform's reason, @p ratesUnavailable, when it gave one (Windows without administrator, #3356); one
+/// with them has no rate until its second reading.
+[[nodiscard]] std::string_view rateDashReason(const Platform::SystemConnection& connection, std::string_view ratesUnavailable);
 
 /// Formats @p publication's sockets, in its order.
 [[nodiscard]] std::vector<ConnectionRow> buildConnectionRows(const Domain::ConnectionsPublication& publication);
@@ -64,8 +70,14 @@ orderConnectionRows(const std::vector<ConnectionRow>& rows, std::string_view fil
 /// Why @p connection can't be closed (#3066), or empty when it can. Only a TCP connection that has, or is
 /// making, a peer can be shut down, and only through the process holding it: a listening socket is no
 /// connection, UDP has none to end, and a socket TaskSmack sees no holder for (TIME_WAIT, another user's)
-/// has nobody to ask.
-[[nodiscard]] std::string_view closeConnectionRefusal(const Platform::SystemConnection& connection);
+/// has nobody to ask. @p key is how the platform names the socket it closes (#3358): by inode, a socket with
+/// none has no holder TaskSmack sees; by IPv4 TCP endpoints (Windows' SetTcpEntry), an IPv6 connection can't be
+/// closed, and a connection whose state the table doesn't give (Windows' state 0, #3257) can when it has a peer.
+[[nodiscard]] std::string_view closeConnectionRefusal(const Platform::SystemConnection& connection,
+                                                      Platform::ConnectionCloseKey key = Platform::ConnectionCloseKey::SocketInode);
+
+/// What closeConnectionRefusal() says of an IPv6 connection where only IPv4 can be closed (#3358).
+inline constexpr std::string_view IPV6_CLOSE_REFUSAL = "Can't close an IPv6 connection on Windows";
 
 /// A socket's identity across generations: its protocol, family and both endpoints.
 [[nodiscard]] std::uint64_t selectionKey(const Platform::SystemConnection& connection) noexcept;
@@ -146,10 +158,12 @@ struct ConnectionsViewAction
 void refreshConnectionRows(const Domain::ConnectionsPublication& publication, ConnectionsViewState& state, double now);
 
 /// With @p canClose (the platform can close connections, #3066), a right-click opens the row menu with
-/// "Close connection...".
-[[nodiscard]] std::optional<ConnectionsViewAction> renderConnectionsView(const Domain::ConnectionsPublication* publication,
-                                                                         bool hasConnections,
-                                                                         ConnectionsViewState& state,
-                                                                         bool canClose = false);
+/// "Close connection...", offered or refused by closeConnectionRefusal() with @p closeKey (#3358).
+[[nodiscard]] std::optional<ConnectionsViewAction>
+renderConnectionsView(const Domain::ConnectionsPublication* publication,
+                      bool hasConnections,
+                      ConnectionsViewState& state,
+                      bool canClose = false,
+                      Platform::ConnectionCloseKey closeKey = Platform::ConnectionCloseKey::SocketInode);
 
 } // namespace App

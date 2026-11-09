@@ -106,6 +106,23 @@ TEST(BrokerProtocolTest, CloseConnectionRoundTrips)
     EXPECT_EQ(Detail::readFrame(bytes).value_or(Detail::Frame{}).kind, MessageKind::CloseConnection);
 }
 
+// #3358 (v20): on Windows, CloseConnection names the IPv4 TCP connection by its endpoints, every byte and both ports.
+TEST(BrokerProtocolTest, CloseConnectionCarriesTheTcpEndpoints)
+{
+    const Request request{CloseConnectionRequest{
+        .target = TARGET,
+        .socketInode = 0,
+        .tcpConnection = {.localAddress = {10, 0, 0, 5}, .localPort = 0xFFFE, .remoteAddress = {142, 250, 80, 255}, .remotePort = 443},
+    }};
+    EXPECT_EQ(roundTrip(request), request);
+    std::vector<std::uint8_t> bytes = encodeRequest(4, request);
+    // The target, the inode, then 4 address bytes and a 2-byte port for each end.
+    ASSERT_EQ(bytes.size(), 4U + HEADER_BYTES + 4U + 8U + 8U + 12U);
+    bytes.pop_back(); // a frame cut short of the remote port is refused
+    bytes[0] = static_cast<std::uint8_t>(bytes.size() - 4U);
+    EXPECT_FALSE(decodeRequest(bytes).has_value());
+}
+
 // #3069 (v14): one thread's Suspend, Resume or End carries its target, the TID and the action, byte for byte.
 TEST(BrokerProtocolTest, ThreadActionRoundTripsAndRefusesWhatIsntOne)
 {

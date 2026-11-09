@@ -15,6 +15,7 @@
 
 #include "Platform/IProcessActions.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <stop_token>
@@ -73,6 +74,11 @@ struct ConnectionEndpoint
 {
     std::array<std::uint8_t, 16> address{};
     std::uint16_t port = 0;
+    /// An IPv6 address's scope (zone) ID, the interface a link-local fe80:: address is on, so the same
+    /// link-local endpoints on two interfaces are two sockets (#3573). 0 when there is none, or the platform
+    /// doesn't say: Windows' owner-PID tables do; Linux's netlink and /proc/net socket tables don't (only
+    /// INET_DIAG's bound-device index, which is another thing), and the elevated helper's reply leaves it out.
+    std::uint32_t scopeId = 0;
 };
 
 /// One TCP or UDP socket the process holds.
@@ -84,6 +90,18 @@ struct ProcessConnection
     ConnectionEndpoint remote;
     ConnectionState state = ConnectionState::Unknown;
 };
+
+/// @p connection's endpoints as closeTcpConnection() names them (#3358): the first 4 bytes of each address, and
+/// each port. Meaningful for an IPv4 TCP connection only; the caller refuses any other first.
+[[nodiscard]] constexpr TcpConnectionToClose tcpConnectionToClose(const ProcessConnection& connection) noexcept
+{
+    TcpConnectionToClose endpoints;
+    std::copy_n(connection.local.address.begin(), endpoints.localAddress.size(), endpoints.localAddress.begin());
+    std::copy_n(connection.remote.address.begin(), endpoints.remoteAddress.size(), endpoints.remoteAddress.begin());
+    endpoints.localPort = connection.local.port;
+    endpoints.remotePort = connection.remote.port;
+    return endpoints;
+}
 
 /// The outcome of IProcessConnectionsReader::readConnections(): a status, and the sockets when Ok.
 struct ConnectionsReadResult

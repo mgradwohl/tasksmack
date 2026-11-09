@@ -17,6 +17,7 @@
 #include "WindowsProcessDumpMath.h"
 #include "WindowsProcessIdentity.h"
 #include "WindowsRunProgram.h"
+#include "WindowsTcpClose.h"
 #ifndef TASKSMACK_NO_WAIT_CHAINS
 #include "WindowsWaitChain.h"
 #endif
@@ -477,6 +478,7 @@ WindowsProcessFunctions realWindowsProcessFunctions() noexcept
         .ntSetInformationProcess = Windows::ntSetInformationProcess(),
         .enableIncreaseBasePriority = []
         { return Windows::enableIncreaseBasePriorityPrivilegeIfElevated() == Windows::DebugPrivilegeResult::Enabled; },
+        .tcpClose = Windows::realTcpCloseFunctions(),
     };
 }
 
@@ -513,9 +515,10 @@ ProcessActionCapabilities WindowsProcessActions::actionCapabilities() const
         .canRunProgram = m_Fns.runProgram.shellExecute != nullptr, // ShellExecuteExW, as Run new task (#3427)
         // The runas verb's UAC prompt, unless TaskSmack is elevated already, when every task it starts is too.
         .canRunProgramAsAdministrator = m_Fns.runProgram.shellExecute != nullptr && !m_Elevated,
-        .canSetEfficiencyMode = hasEfficiencyMode(m_Fns), // EcoQoS and the Idle class, as Task Manager (#3071)
-        .canAnalyzeWaitChain = HAS_WAIT_CHAINS,           // GetThreadWaitChain, as Task Manager's Analyze wait chain (#3084)
-        .canCloseConnections = false,
+        .canSetEfficiencyMode = hasEfficiencyMode(m_Fns),             // EcoQoS and the Idle class, as Task Manager (#3071)
+        .canAnalyzeWaitChain = HAS_WAIT_CHAINS,                       // GetThreadWaitChain, as Task Manager's Analyze wait chain (#3084)
+        .canCloseConnections = m_Fns.tcpClose.setTcpEntry != nullptr, // SetTcpEntry(MIB_TCP_STATE_DELETE_TCB), IPv4 (#3358)
+        .connectionCloseKey = ConnectionCloseKey::Tcp4Endpoints,
         .canActOnThreads = hasThreadActions(m_Fns), // SuspendThread, ResumeThread, TerminateThread (#3069)
     };
 }
@@ -1187,6 +1190,37 @@ WindowsProcessActions::actOnThread(const ProcessTarget& target, std::int32_t tid
                  target.pid,
                  previous);
     return ProcessActionResult::ok(threadActionNote(action, previous));
+}
+
+ProcessActionResult WindowsProcessActions::closeTcpConnection(const ProcessTarget& target, const TcpConnectionToClose& connection)
+{
+    if (m_Fns.tcpClose.setTcpEntry == nullptr)
+    {
+        return IProcessActions::closeTcpConnection(target, connection);
+    }
+    // The kernel's own sockets (SMB, HTTP.sys) are left alone, as Linux leaves init's and kernel threads' (#3295).
+    if (auto refused = systemPidResult(target, GuardedAction::CloseConnection))
+    {
+        return std::move(*refused);
+    }
+    // Only the identity check needs the handle (openVerified() asks for PROCESS_QUERY_LIMITED_INFORMATION, which
+    // anyone may have of another user's process); held until the entry is set, so the PID can't pass to another
+    // process between the check and the table read below.
+    VerifiedProcess process = openForAction(m_Fns,
+                                            target,
+                                            0,
+                                            [&target](DWORD error, bool isProtected)
+                                            { return actionOpenFailure(error, target.pid, GuardedAction::CloseConnection, isProtected); });
+    if (!process.result.success)
+    {
+        spdlog::warn("{}", process.result.errorMessage);
+        return std::move(process.result);
+    }
+    if (auto refused = guardRefusal(m_Fns, process.handle.get(), target, GuardedAction::CloseConnection))
+    {
+        return std::move(*refused);
+    }
+    return Windows::closeTcpConnectionOf(m_Fns.tcpClose, target.pid, connection);
 }
 
 ProcessActionResult WindowsProcessActions::runProgram(const RunProgramRequest& request)

@@ -215,6 +215,8 @@ enum class GuardedAction : std::uint8_t
     SuspendThread, ///< SuspendThread on one of its threads (#3069)
     EndThread,     ///< TerminateThread on one of its threads (#3069)
     IoPriority,    ///< NtSetInformationProcess(ProcessIoPriority) (#3362)
+    /// SetTcpEntry(MIB_TCP_STATE_DELETE_TCB) on one of its connections (#3358)
+    CloseConnection,
 };
 
 /// What TaskSmack won't do, worded to follow "TaskSmack won't".
@@ -236,6 +238,8 @@ enum class GuardedAction : std::uint8_t
         return "end its threads";
     case GuardedAction::IoPriority:
         return "change its I/O priority";
+    case GuardedAction::CloseConnection:
+        return "close its connections";
     case GuardedAction::End:
         break;
     }
@@ -281,7 +285,7 @@ inline constexpr int32_t SYSTEM_PROCESS_PID = 4;
 [[nodiscard]] inline std::string protectedProcessRefusal(int32_t pid, GuardedAction action = GuardedAction::End)
 {
     if (action == GuardedAction::Priority || action == GuardedAction::Affinity || action == GuardedAction::EfficiencyMode ||
-        action == GuardedAction::IoPriority)
+        action == GuardedAction::IoPriority || action == GuardedAction::CloseConnection)
     {
         return std::format("Process {} is a protected process (a system or anti-malware service); Windows won't let even an "
                            "administrator {}",
@@ -535,6 +539,8 @@ inline constexpr std::uint32_t NT_STATUS_PROCESS_IS_TERMINATING = 0xC000010AU;
         return std::format("Access denied: can't end the threads of process {}. It may run elevated or as another user.", pid);
     case GuardedAction::IoPriority:
         return std::format("Access denied: can't change the I/O priority of process {}. It may run elevated or as another user.", pid);
+    case GuardedAction::CloseConnection:
+        return std::format("Access denied: can't close the connections of process {}. It may run elevated or as another user.", pid);
     case GuardedAction::End:
         break;
     }
