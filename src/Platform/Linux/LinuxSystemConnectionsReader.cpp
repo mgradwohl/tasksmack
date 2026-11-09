@@ -126,7 +126,12 @@ SystemConnectionsRead LinuxSystemConnectionsReader::read()
     }
     if (tablesRead == 0)
     {
-        return {.status = SystemConnectionsStatus::Failed, .connections = {}, .detail = std::generic_category().message(lastError)};
+        return {
+            .status = SystemConnectionsStatus::Failed,
+            .connections = {},
+            .detail = std::generic_category().message(lastError),
+            .ratesUnavailable = {},
+        };
     }
 
     // Who holds each socket: every process's descriptors, walked once per read.
@@ -134,7 +139,7 @@ SystemConnectionsRead LinuxSystemConnectionsReader::read()
     const std::unordered_map<std::uint64_t, SocketOwner> owners = buildInodeToPidMap(m_ProcRoot);
 #endif
     std::unordered_map<std::int32_t, std::string> names; // each holder's name, read once per read
-    SystemConnectionsRead result{.status = SystemConnectionsStatus::Ok, .connections = {}, .detail = {}};
+    SystemConnectionsRead result{.status = SystemConnectionsStatus::Ok, .connections = {}, .detail = {}, .ratesUnavailable = {}};
     result.connections.reserve(sockets.size());
     for (const InetSockets::RawInetSocket& socket : sockets)
     {

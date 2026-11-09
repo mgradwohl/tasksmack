@@ -31,6 +31,7 @@ struct ConnectionsPublication
     std::uint64_t version = 0; ///< 0 until the first sample.
     Platform::SystemConnectionsStatus status = Platform::SystemConnectionsStatus::Unsupported;
     std::string detail;                                  ///< For Failed, what failed.
+    std::string ratesUnavailable;                        ///< Why TCP sockets have no rates (#3356), or empty
     std::vector<Platform::SystemConnection> connections; ///< By process name, then PID, protocol and local endpoint.
     std::vector<ConnectionRate> rates;                   ///< Parallel to connections (#3079)
 };

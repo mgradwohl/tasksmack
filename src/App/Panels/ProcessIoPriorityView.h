@@ -31,6 +31,7 @@
 #include "Domain/SamplingConfig.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IoPriorityTypes.h"
+#include "Platform/SchedPolicy.h"
 #include "Platform/ThreadName.h"
 #include "PriorityEditTarget.h"
 #include "ProcessDetailsPanel_PriorityHelpers.h"
@@ -179,8 +180,13 @@ struct IoStop
 };
 
 /// The stop for @p priority on the slider with Realtime (@p realtimeSettable) or without. A class never
-/// set sits at the Best-effort level the kernel derives from @p nice (ioLevelForNice()), marked inherited.
-[[nodiscard]] constexpr IoStop ioStopFor(const Platform::IoPriority& priority, std::int32_t nice, bool realtimeSettable) noexcept
+/// set sits, marked inherited, where the kernel serves it (#3565): in the class its CPU @p policy gives
+/// (inheritedIoClass(): Realtime under FIFO, round robin and Deadline, Idle under SCHED_IDLE, Best-effort
+/// otherwise) at the level it derives from @p nice (ioLevelForNice()); Realtime the slider lacks is beyond its start.
+[[nodiscard]] constexpr IoStop ioStopFor(const Platform::IoPriority& priority,
+                                         std::int32_t nice,
+                                         bool realtimeSettable,
+                                         Platform::SchedPolicy policy = Platform::SchedPolicy::Unknown) noexcept
 {
     const std::int32_t bestEffortStart = realtimeSettable ? IO_LEVEL_COUNT : 0;
     const std::int32_t level = Domain::Priority::clampIoLevel(priority.level);
@@ -194,7 +200,15 @@ struct IoStop
         return {.index = bestEffortStart + IO_LEVEL_COUNT, .inherited = false};
     case Platform::IoPriorityClass::None:
     default:
-        return {.index = bestEffortStart + Domain::Priority::ioLevelForNice(nice), .inherited = true};
+        switch (inheritedIoClass(policy))
+        {
+        case Platform::IoPriorityClass::Realtime:
+            return {.index = realtimeSettable ? Domain::Priority::ioLevelForNice(nice) : PRIORITY_STOP_BEYOND_START, .inherited = true};
+        case Platform::IoPriorityClass::Idle:
+            return {.index = bestEffortStart + IO_LEVEL_COUNT, .inherited = true};
+        default:
+            return {.index = bestEffortStart + Domain::Priority::ioLevelForNice(nice), .inherited = true};
+        }
     }
 }
 
@@ -322,10 +336,12 @@ static_assert(IO_HINT_ORDER[0] == Platform::IoPriorityHint::High && IO_HINT_ORDE
               IO_HINT_ORDER[2] == Platform::IoPriorityHint::Low && IO_HINT_ORDER[3] == Platform::IoPriorityHint::VeryLow);
 
 /// The current I/O priority as the header shows it: ioPriorityText()'s words (IoPriorityText.h), which the Processes
-/// table's I/O Priority column shows too (#3551).
-[[nodiscard]] inline std::string describeIoPriority(const Platform::IoPriority& priority, std::optional<std::int32_t> nice)
+/// table's I/O Priority column shows too (#3551), for a class never set in the class the CPU @p policy gives (#3565).
+[[nodiscard]] inline std::string describeIoPriority(const Platform::IoPriority& priority,
+                                                    std::optional<std::int32_t> nice,
+                                                    Platform::SchedPolicy policy = Platform::SchedPolicy::Unknown)
 {
-    return std::string(ioPriorityText(priority, nice).view());
+    return std::string(ioPriorityText(priority, nice, policy).view());
 }
 
 } // namespace Detail
@@ -346,7 +362,8 @@ class ProcessIoPriorityView
                 std::optional<std::int32_t> currentNice,
                 const Platform::ProcessTarget& target,
                 bool realtimeSettable,
-                bool windowsHints = false);
+                bool windowsHints = false,
+                Platform::SchedPolicy schedPolicy = Platform::SchedPolicy::Unknown);
 
     /// A different process was selected: drop the edit, its target, the error line and the value read
     /// for the previous process.

@@ -14,6 +14,7 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <new>
@@ -28,6 +29,7 @@ namespace ConnectionsModelAllocationFailureFakes
 {
 
 /// The sockets the test sets, read as they are.
+// NOLINTNEXTLINE(misc-use-internal-linkage) - outside the anonymous namespace on purpose, as said above
 class ListedSockets final : public Platform::ISystemConnectionsReader
 {
   public:
@@ -39,7 +41,7 @@ class ListedSockets final : public Platform::ISystemConnectionsReader
     }
     [[nodiscard]] Platform::SystemConnectionsRead read() override
     {
-        return {.status = Platform::SystemConnectionsStatus::Ok, .connections = *m_Sockets, .detail = {}};
+        return {.status = Platform::SystemConnectionsStatus::Ok, .connections = *m_Sockets, .detail = {}, .ratesUnavailable = {}};
     }
 
   private:
@@ -89,8 +91,8 @@ TEST(ConnectionsModelAllocationFailureTest, AFailedSampleLeavesTheNextRatesRight
     for (std::int64_t failAt = 0; failAt < MAX_ALLOCATIONS; ++failAt)
     {
         SCOPED_TRACE("failing allocation " + std::to_string(failAt));
-        auto now = std::make_shared<Domain::ConnectionsModel::Clock::time_point>(std::chrono::hours(1));
-        auto listed = std::make_shared<std::vector<Platform::SystemConnection>>(sockets(0));
+        const auto now = std::make_shared<Domain::ConnectionsModel::Clock::time_point>(std::chrono::hours(1));
+        const auto listed = std::make_shared<std::vector<Platform::SystemConnection>>(sockets(0));
         Domain::ConnectionsModel model(std::make_unique<ConnectionsModelAllocationFailureFakes::ListedSockets>(listed),
                                        [now] { return *now; });
         model.sample();
@@ -101,15 +103,17 @@ TEST(ConnectionsModelAllocationFailureTest, AFailedSampleLeavesTheNextRatesRight
         bool fired = false;
         {
             const FailAllocationAfter guard(failAt);
+            bool threw = false;
             try
             {
                 model.sample();
             }
             catch (const std::bad_alloc&)
             {
-                // the failure this test injects; the hook says whether it fired
+                threw = true; // the failure this test injects
             }
-            fired = !TestSupport::allocationFailurePending();
+            // The hook says whether it fired; a sample that caught its own failure still counts.
+            fired = threw || !TestSupport::allocationFailurePending();
         }
         if (!fired)
         {

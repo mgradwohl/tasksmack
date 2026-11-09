@@ -4,6 +4,7 @@
 #include "Domain/PriorityConfig.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IoPriorityTypes.h"
+#include "Platform/SchedPolicy.h"
 #include "ProcessDetailsLayout.h"
 #include "ProcessDetailsPanel_PriorityHelpers.h"
 #include "ProcessPriorityView.h"
@@ -37,7 +38,8 @@ void ProcessIoPriorityView::render(Platform::IProcessActions* actions,
                                    std::optional<std::int32_t> currentNice,
                                    const Platform::ProcessTarget& target,
                                    bool realtimeSettable,
-                                   bool windowsHints)
+                                   bool windowsHints,
+                                   Platform::SchedPolicy schedPolicy)
 {
     // An apply finished on its worker since the last frame (#2305): its result first, so the read
     // below sees the read it asks for.
@@ -55,8 +57,8 @@ void ProcessIoPriorityView::render(Platform::IProcessActions* actions,
     // Its own ID scope: the nice control above has an "Apply" button too.
     ImGui::PushID("io_priority");
 
-    const std::string currentDetail =
-        m_Current.has_value() ? "current: " + Detail::describeIoPriority(*m_Current, currentNice) : std::string("current: unknown");
+    const std::string currentDetail = m_Current.has_value() ? "current: " + Detail::describeIoPriority(*m_Current, currentNice, schedPolicy)
+                                                            : std::string("current: unknown");
     ImGui::TextUnformatted("I/O priority");
     if (ImGui::IsItemHovered())
     {
@@ -70,9 +72,9 @@ void ProcessIoPriorityView::render(Platform::IProcessActions* actions,
     const Detail::DiscretePrioritySlider& linuxSlider =
         realtimeSettable ? Detail::IO_PRIORITY_SLIDER : Detail::IO_PRIORITY_SLIDER_NO_REALTIME;
     const Detail::DiscretePrioritySlider& slider = windowsHints ? Detail::IO_HINT_SLIDER : linuxSlider;
-    const Detail::IoStop shown = windowsHints
-                                   ? Detail::IoStop{.index = Detail::ioHintStopFor(m_Edit), .inherited = false}
-                                   : Detail::ioStopFor(m_Edit, currentNice.value_or(Domain::Priority::NORMAL_NICE), realtimeSettable);
+    const Detail::IoStop shown =
+        windowsHints ? Detail::IoStop{.index = Detail::ioHintStopFor(m_Edit), .inherited = false}
+                     : Detail::ioStopFor(m_Edit, currentNice.value_or(Domain::Priority::NORMAL_NICE), realtimeSettable, schedPolicy);
     const Detail::DiscretePick pick = Detail::renderDiscretePrioritySlider(slider, shown.index, shown.inherited);
     // On Windows an unknown value (a refused read) shows as Normal, a stand-in: choosing Normal itself is then an
     // edit to the Normal hint, so Apply can send it (#3362).

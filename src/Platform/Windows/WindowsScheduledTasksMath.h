@@ -78,16 +78,21 @@ struct TaskRecord
 
 /// The program a task's exec action runs, where Task Scheduler finds it, or empty when TaskSmack can't tell (the
 /// probe shows it unresolved). @p program is the action's Path with its variables expanded, quotes allowed;
-/// @p workingDirectory its expanded WorkingDirectory (empty when none, or when it can't be told for this account);
-/// @p systemDirectory Windows' System32. @p exists says whether a file is at a path.
+/// @p workingDirectory its expanded WorkingDirectory: empty when the task sets none, nullopt when it sets one that
+/// can't be told for this account (another account's %USERPROFILE%); @p systemDirectory Windows' System32.
+/// @p exists says whether a file is at a path.
 ///   - An absolute path ("C:\A\a.exe", "\\server\share\a.exe") is the program.
+///   - A drive-rooted one ("\Windows\System32\cmd.exe") is on the working directory's drive, with ".exe" added
+///     as for a relative one, and can't be told when that drive isn't known (#3569).
 ///   - A relative or bare one is found in the working directory, with ".exe" added when it has no extension.
 ///     A relative path with a folder in it is that file there, found or not (it shows as missing).
-///   - Without a working directory, only a bare name ("cmd") is looked for, and only in System32, never in
-///     TaskSmack's own working directory or PATH, which aren't the task's.
+///   - A bare name ("cmd") not found there is looked for in System32 only, never in TaskSmack's own working
+///     directory or PATH, which aren't the task's.
+///   - A relative or bare one whose working directory is unknown can't be told: that folder might hold its own
+///     cmd.exe, so System32's isn't taken for it (#3569).
 template<typename Exists>
 [[nodiscard]] std::string
-taskProgramPath(std::string_view program, std::string_view workingDirectory, std::string_view systemDirectory, Exists exists)
+taskProgramPath(std::string_view program, std::optional<std::string_view> workingDirectory, std::string_view systemDirectory, Exists exists)
 {
     if (program.size() >= 2 && program.front() == '"' && program.back() == '"')
     {
@@ -106,9 +111,30 @@ taskProgramPath(std::string_view program, std::string_view workingDirectory, std
     {
         return {}; // drive-relative ("C:a.exe"): relative to a current directory TaskSmack can't know
     }
-    const bool hasFolder = program.find_first_of("\\/") != std::string_view::npos;
     const std::string_view leaf = program.substr(program.find_last_of("\\/") + 1);
     const bool hasExtension = leaf.contains('.');
+    if (program.front() == '\\' || program.front() == '/')
+    {
+        // Drive-rooted: on the working directory's drive ("C:\Vendor" gives "C:"), not inside that directory.
+        const std::string_view folder = workingDirectory.value_or(std::string_view{});
+        const char letter = Platform::foldAscii(folder.empty() ? '\0' : folder.front());
+        if (folder.size() < 2 || folder[1] != ':' || letter < 'a' || letter > 'z')
+        {
+            return {};
+        }
+        // That file, or with ".exe" added when it has no extension, found or not, as a relative path is.
+        std::string candidate = std::format("{}{}", folder.substr(0, 2), program);
+        if (hasExtension || exists(candidate))
+        {
+            return candidate;
+        }
+        return candidate + ".exe";
+    }
+    if (!workingDirectory)
+    {
+        return {}; // a relative or bare name in a working directory TaskSmack can't tell
+    }
+    const bool hasFolder = program.find_first_of("\\/") != std::string_view::npos;
     // @p folder\program, whatever separators @p folder ends with.
     const auto join = [program](std::string_view folder)
     {
@@ -132,15 +158,15 @@ taskProgramPath(std::string_view program, std::string_view workingDirectory, std
         }
         return {};
     };
-    if (!workingDirectory.empty())
+    if (!workingDirectory->empty())
     {
-        if (std::string found = findIn(workingDirectory); !found.empty())
+        if (std::string found = findIn(*workingDirectory); !found.empty())
         {
             return found;
         }
         if (hasFolder)
         {
-            return join(workingDirectory) + (hasExtension ? "" : ".exe");
+            return join(*workingDirectory) + (hasExtension ? "" : ".exe");
         }
     }
     if (!hasFolder && !systemDirectory.empty())

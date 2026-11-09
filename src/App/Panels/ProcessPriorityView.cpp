@@ -10,6 +10,7 @@
 
 #ifndef _WIN32
 #include "Domain/PriorityConfig.h" // NORMAL_NICE for the nice slider's 0 key; the Windows stops have none
+#include "Platform/SchedPolicy.h"
 #endif
 
 #include <imgui.h>
@@ -331,7 +332,8 @@ void drawPriorityScaleLabels(const PrioritySliderContext& ctx)
 void ProcessPriorityView::render(Platform::IProcessActions* actions,
                                  const Platform::ProcessActionCapabilities& capabilities,
                                  std::optional<std::int32_t> currentNice,
-                                 const Platform::ProcessTarget& target)
+                                 const Platform::ProcessTarget& target,
+                                 Platform::SchedPolicy schedPolicy)
 {
     // An apply finished on its worker since the last frame (#2305): its result line, now.
     update();
@@ -349,7 +351,8 @@ void ProcessPriorityView::render(Platform::IProcessActions* actions,
     // The I/O priority (#803; Windows' hints, #3362) under the nice control, with its own edit and Apply.
     if (capabilities.canSetIoPriority)
     {
-        m_IoPriorityView.render(actions, currentNice, target, capabilities.canSetRealtimeIoPriority, capabilities.ioPriorityHints);
+        m_IoPriorityView.render(
+            actions, currentNice, target, capabilities.canSetRealtimeIoPriority, capabilities.ioPriorityHints, schedPolicy);
     }
 }
 

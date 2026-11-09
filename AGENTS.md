@@ -171,7 +171,8 @@ or a targeted suite filter. The display suites open windows and drive the mouse.
 
 CI real-system tests (#3489): a suite named `CiRealSystem*`, derived from `TestSupport::CiRealSystemTest`
 (`tests/Support/CiRealSystem.h`), changes the machine it runs on, so it skips unless `TASKSMACK_CI_REAL_SYSTEM=1`
-on a GitHub-hosted runner. Only the CI step "Real-system tests (Windows)" sets it. Never set it locally; the
+on a GitHub-hosted runner. Only CI sets it: the steps "Real-system tests (Windows)" and "Helper root test (Linux)",
+and Heavy Checks' coverage root pass (#3374). Never set it locally; the
 daytime filter excludes the group too. A change to a real OS path adds such a test, or the PR says why only a
 manual check can cover it.
 

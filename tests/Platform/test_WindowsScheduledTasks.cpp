@@ -572,6 +572,58 @@ TEST_F(WindowsScheduledTasksTest, AnotherAccountsVariablesAreNotExpandedAsTaskSm
     EXPECT_FALSE(tool->executablePath.contains('%')) << "the current user's own task expands as TaskSmack does";
 }
 
+TEST_F(WindowsScheduledTasksTest, AnotherAccountsUnknownWorkingDirectoryGetsNoSystem32Fallback)
+{
+    // Path "cmd" in another account's %USERPROFILE%\Tools: that folder might hold its own cmd.exe, so System32's
+    // isn't shown for it (#3569).
+    TaskRecord theirs = makeTask("\\TheirShell", {BOOT}, "SYSTEM");
+    theirs.execPath = "cmd";
+    theirs.workingDirectory = R"(%USERPROFILE%\Tools)";
+    // The same Path with no working directory set at all is System32's cmd.exe.
+    TaskRecord unset = makeTask("\\Shell", {BOOT}, "SYSTEM");
+    unset.execPath = "cmd";
+    m_Scheduler.tasks["\\"] = {theirs, unset};
+    WindowsStartupProbe probe(emptyRegistry(), factoryFor(m_Scheduler));
+    const std::vector<StartupEntry> entries = probe.enumerate();
+
+    const StartupEntry* unknown = entryAt(entries, "\\TheirShell");
+    ASSERT_NE(unknown, nullptr);
+    EXPECT_TRUE(unknown->executablePath.empty()) << unknown->executablePath;
+    EXPECT_EQ(unknown->target, StartupTargetState::Unresolved);
+
+    const StartupEntry* shell = entryAt(entries, "\\Shell");
+    ASSERT_NE(shell, nullptr);
+    EXPECT_TRUE(endsWithIgnoreCase(shell->executablePath, R"(\System32\cmd.exe)")) << shell->executablePath;
+    EXPECT_EQ(shell->target, StartupTargetState::Present);
+}
+
+TEST_F(WindowsScheduledTasksTest, ADriveRootedProgramIsOnItsWorkingDirectorysDrive)
+{
+    // "\Windows\System32\cmd.exe" with Start in "%SystemDrive%\No Such Vendor" is the system drive's cmd.exe,
+    // not a file inside that folder (#3569).
+    TaskRecord rooted = makeTask("\\Rooted", {LOGON});
+    rooted.execPath = R"(\Windows\System32\cmd.exe)";
+    rooted.workingDirectory = R"(%SystemDrive%\No Such Vendor)";
+    // With no working directory, its drive can't be told.
+    TaskRecord driveless = makeTask("\\Driveless", {LOGON});
+    driveless.execPath = R"(\Windows\System32\cmd.exe)";
+    m_Scheduler.tasks["\\"] = {rooted, driveless};
+    WindowsStartupProbe probe(emptyRegistry(), factoryFor(m_Scheduler));
+    const std::vector<StartupEntry> entries = probe.enumerate();
+
+    const StartupEntry* rootedEntry = entryAt(entries, "\\Rooted");
+    ASSERT_NE(rootedEntry, nullptr);
+    EXPECT_TRUE(endsWithIgnoreCase(rootedEntry->executablePath, R"(:\Windows\System32\cmd.exe)")) << rootedEntry->executablePath;
+    EXPECT_FALSE(rootedEntry->executablePath.contains("No Such Vendor")) << rootedEntry->executablePath;
+    EXPECT_EQ(rootedEntry->executablePath.size(), std::string_view(R"(C:\Windows\System32\cmd.exe)").size());
+    EXPECT_EQ(rootedEntry->target, StartupTargetState::Present);
+
+    const StartupEntry* drivelessEntry = entryAt(entries, "\\Driveless");
+    ASSERT_NE(drivelessEntry, nullptr);
+    EXPECT_TRUE(drivelessEntry->executablePath.empty()) << drivelessEntry->executablePath;
+    EXPECT_EQ(drivelessEntry->target, StartupTargetState::Unresolved);
+}
+
 TEST_F(WindowsScheduledTasksTest, AProbeWithoutTheSeamListsNoTasks)
 {
     m_Scheduler.tasks["\\"] = {makeTask("\\First", {LOGON})};

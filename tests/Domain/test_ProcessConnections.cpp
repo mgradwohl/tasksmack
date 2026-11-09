@@ -104,6 +104,28 @@ TEST(ProcessConnectionsFormatTest, EndpointsBracketIPv6AndShowPortZeroAsAStar)
               "[2001:db8::1]:443");
 }
 
+// #3573: the same link-local endpoints on two interfaces are two sockets: their scope IDs tell them apart in the
+// key the Connections tab's rates, selection and highlights use, in the order, and in the text.
+TEST(ProcessConnectionsFormatTest, ScopeIdsTellLinkLocalEndpointsOnTwoInterfacesApart)
+{
+    Platform::ProcessConnection onWifi;
+    onWifi.protocol = Platform::ConnectionProtocol::Tcp;
+    onWifi.family = ConnectionFamily::IPv6;
+    onWifi.local = {.address = v6({0xfe80, 0, 0, 0, 0x1234, 0, 0, 1}), .port = 52000, .scopeId = 12};
+    onWifi.remote = {.address = v6({0xfe80, 0, 0, 0, 0x1234, 0, 0, 2}), .port = 445, .scopeId = 12};
+    Platform::ProcessConnection onEthernet = onWifi;
+    onEthernet.local.scopeId = 7;
+    onEthernet.remote.scopeId = 7;
+    EXPECT_NE(socketKey(onWifi), socketKey(onEthernet));
+    EXPECT_EQ(socketKey(onWifi), socketKey(Platform::ProcessConnection(onWifi)));
+    EXPECT_TRUE(compareEndpoints(ConnectionFamily::IPv6, onEthernet.local, ConnectionFamily::IPv6, onWifi.local) < 0);
+    EXPECT_EQ(formatEndpoint(ConnectionFamily::IPv6, onWifi.local), "[fe80::1234:0:0:1%12]:52000");
+    // A global address's scope isn't shown (Windows reports none for one anyway).
+    EXPECT_EQ(formatEndpoint(ConnectionFamily::IPv6,
+                             ConnectionEndpoint{.address = v6({0x2001, 0xdb8, 0, 0, 0, 0, 0, 1}), .port = 443, .scopeId = 3}),
+              "[2001:db8::1]:443");
+}
+
 TEST(ProcessConnectionsFormatTest, AnEndpointsPortSuffixIsItsPortWithTheColonAndAnyClosingBracket)
 {
     // What a cell too narrow for the endpoint keeps (#1942).
@@ -140,17 +162,19 @@ TEST(ProcessConnectionsFormatTest, LiveConnectionsSortFirstThenListenersAndUnkno
     EXPECT_LT(stateSortRank(ConnectionState::Established), stateSortRank(ConnectionState::Listen));
     EXPECT_LT(stateSortRank(ConnectionState::Listen), stateSortRank(ConnectionState::Closed));
     EXPECT_LT(stateSortRank(ConnectionState::Closed), stateSortRank(ConnectionState::TimeWait));
-    for (const ConnectionState state : {ConnectionState::Established,
-                                        ConnectionState::SynSent,
-                                        ConnectionState::SynReceived,
-                                        ConnectionState::FinWait1,
-                                        ConnectionState::FinWait2,
-                                        ConnectionState::TimeWait,
-                                        ConnectionState::Closed,
-                                        ConnectionState::CloseWait,
-                                        ConnectionState::LastAck,
-                                        ConnectionState::Listen,
-                                        ConnectionState::Closing})
+    for (const ConnectionState state : {
+             ConnectionState::Established,
+             ConnectionState::SynSent,
+             ConnectionState::SynReceived,
+             ConnectionState::FinWait1,
+             ConnectionState::FinWait2,
+             ConnectionState::TimeWait,
+             ConnectionState::Closed,
+             ConnectionState::CloseWait,
+             ConnectionState::LastAck,
+             ConnectionState::Listen,
+             ConnectionState::Closing,
+         })
     {
         EXPECT_LT(stateSortRank(state), stateSortRank(ConnectionState::Unknown));
     }
