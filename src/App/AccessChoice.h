@@ -71,10 +71,10 @@ struct NoticeDecision
     AdministratorOption administrator;
 };
 
-/// Linux without the helper: the packages install it; until then, today's remedy.
+/// Linux (#3580): a session is Administrator only when TaskSmack was started as root, so the option says how to start one.
 inline constexpr std::string_view NO_HELPER_NOTE =
-    "Install the .deb or .rpm package to enable Administrator. Without it, run TaskSmack with sudo, or grant it the "
-    "capabilities it needs (CAP_SYS_PTRACE, CAP_DAC_READ_SEARCH).";
+    "To see and act on everything, close TaskSmack and start TaskSmack (Administrator) from your applications menu, or "
+    "run it with sudo. A session never becomes Administrator after it starts.";
 /// A Windows standard user: UAC asks for another account's credentials.
 inline constexpr std::string_view STANDARD_USER_NOTE = "An administrator's name and password will be needed.";
 

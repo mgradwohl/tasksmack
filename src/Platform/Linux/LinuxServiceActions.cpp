@@ -30,7 +30,7 @@ ServiceActionCapabilities LinuxServiceActions::capabilities() const
     caps.canSetStartType = m_Available;
     caps.canDelayStart = false; // systemd has no delayed automatic start (#2006)
     caps.elevated = ::geteuid() == 0;
-    caps.canAuthorizeInteractively = m_Available; // polkit, through systemd (#2304)
+    caps.canAuthorizeInteractively = false; // nothing asks for a password after TaskSmack starts (#3580)
     return caps;
 }
 
