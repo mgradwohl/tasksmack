@@ -168,6 +168,32 @@ TEST(BrokerRequestMappingTest, EfficiencyModeReachesItsAction)
     EXPECT_EQ(refused.errorMessage, "Process 4242 is a critical system process");
 }
 
+// #3327 (v22): an off carrying the class TaskSmack remembers is remembered first, so the helper's off restores it
+// though it never saw the on; one carrying 0 (unknown) remembers nothing. An on's reply carries the class it replaced.
+TEST(BrokerRequestMappingTest, AnEfficiencyOffRemembersTheClassItCarriesFirstAndAnOnRepliesWithTheClassItReplaced)
+{
+    TestMocks::MockProcessActions actions;
+    ASSERT_TRUE(actionResult(BrokerServer::handleRequest(
+                                 Broker::EfficiencyModeRequest{.target = TARGET, .on = false, .restorePriorityClass = 0x80}, actions))
+                    .success);
+    EXPECT_EQ(actions.efficiencyLog(), (std::vector<std::string>{"remember 0x80", "off"}));
+    EXPECT_EQ(actions.efficiencyPriorityClassToRestore(TARGET), std::optional<std::uint32_t>{0x80});
+
+    ASSERT_TRUE(actionResult(BrokerServer::handleRequest(Broker::EfficiencyModeRequest{.target = TARGET, .on = false}, actions)).success);
+    EXPECT_EQ(actions.efficiencyLog().back(), "off") << "nothing to remember";
+    EXPECT_EQ(actions.efficiencyLog().size(), 3U);
+    // An on ignores the field: only an off restores a class.
+    Platform::ProcessActionResult turnedOn = Platform::ProcessActionResult::ok();
+    turnedOn.priorityClassBefore = 0x4000; // Below normal
+    actions.setEfficiencyModeResult(turnedOn);
+    const Broker::ActionResult on = actionResult(
+        BrokerServer::handleRequest(Broker::EfficiencyModeRequest{.target = TARGET, .on = true, .restorePriorityClass = 0x80}, actions));
+    EXPECT_TRUE(on.success);
+    EXPECT_EQ(on.priorityClassBefore, 0x4000U);
+    EXPECT_EQ(actions.efficiencyLog().back(), "on");
+    EXPECT_EQ(actions.efficiencyLog().size(), 4U);
+}
+
 // #3066: a CloseConnection request reaches closeConnection() with its target and socket inode.
 TEST(BrokerRequestMappingTest, CloseConnectionReachesItsAction)
 {

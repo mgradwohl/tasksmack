@@ -78,8 +78,14 @@ namespace
         }
         return Broker::ActionResult::from(actions.closeConnection(close->target, close->socketInode));
     }
+    // An off with the class TaskSmack remembers the on replaced (#3327): remembered here first, so the off restores it
+    // though this helper never saw the on. The on's reply carries the class it replaced back.
     if (const auto* efficiency = std::get_if<Broker::EfficiencyModeRequest>(&request))
     {
+        if (!efficiency->on && efficiency->restorePriorityClass != 0)
+        {
+            actions.rememberEfficiencyPriorityClass(efficiency->target, efficiency->restorePriorityClass);
+        }
         return Broker::ActionResult::from(actions.setEfficiencyMode(efficiency->target, efficiency->on));
     }
     // One thread suspended, resumed or ended (#3069): the actions check the thread is the target's.

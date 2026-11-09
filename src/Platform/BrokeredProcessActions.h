@@ -103,10 +103,13 @@ class BrokeredProcessActions final : public IProcessActions
     /// through the helper.
     [[nodiscard]] ProcessActionResult retried(ProcessActionResult result, const AuthorizedAction& action);
     /// @p action's request. An Efficiency mode off whose on ran in process is a priority change to the nice that on
-    /// found (#3296): the helper never saw the on, and would otherwise put back nice 0.
+    /// found (#3296): the helper never saw the on, and would otherwise put back nice 0. On Windows such an off carries
+    /// the priority class TaskSmack remembers the on replaced (#3327), for the helper to restore rather than Normal.
     [[nodiscard]] Broker::Request requestFor(const AuthorizedAction& action) const;
     /// @p result of @p request, the helper's. After such a priority change, the in-process off runs again: the nice
-    /// is no longer 19, so it puts back only the cgroup weight (the helper writes no files) and forgets the on.
+    /// is no longer 19, so it puts back only the cgroup weight (the helper writes no files) and forgets the on. On
+    /// Windows (#3327), an on the helper ran is remembered in process, by the class its reply says it replaced, and
+    /// an off the helper ran forgets it.
     [[nodiscard]] ProcessActionResult finished(ProcessActionResult result, const AuthorizedAction& action, const Broker::Request& request);
 
     std::unique_ptr<IProcessActions> m_Inner;

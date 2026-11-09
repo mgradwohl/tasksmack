@@ -33,6 +33,7 @@
 #include <cstdint>
 #include <expected>
 #include <filesystem>
+#include <format>
 #include <functional>
 #include <map>
 #include <memory>
@@ -757,12 +758,34 @@ class MockProcessActions : public Platform::IProcessActions
         m_LastTarget = target;
         m_LastEfficiencyMode = on;
         ++m_EfficiencyModeCount;
+        m_EfficiencyLog.emplace_back(on ? "on" : "off");
         return m_EfficiencyModeResult;
     }
     [[nodiscard]] std::optional<std::int32_t> efficiencyNiceToRestore(const Platform::ProcessTarget& target) const override
     {
         static_cast<void>(target);
         return m_EfficiencyNiceToRestore;
+    }
+    /// The class rememberEfficiencyPriorityClass() remembered for @p target, by PID and start time (#3327).
+    [[nodiscard]] std::optional<std::uint32_t> efficiencyPriorityClassToRestore(const Platform::ProcessTarget& target) const override
+    {
+        const auto found = m_EfficiencyClasses.find({target.pid, target.startTimeTicks});
+        return found == m_EfficiencyClasses.end() ? std::nullopt : std::optional<std::uint32_t>{found->second};
+    }
+    void rememberEfficiencyPriorityClass(const Platform::ProcessTarget& target, std::uint32_t priorityClass) override
+    {
+        m_EfficiencyClasses.insert_or_assign({target.pid, target.startTimeTicks}, priorityClass);
+        m_EfficiencyLog.push_back(std::format("remember 0x{:X}", priorityClass));
+    }
+    void forgetEfficiencyPriorityClass(const Platform::ProcessTarget& target) override
+    {
+        m_EfficiencyClasses.erase({target.pid, target.startTimeTicks});
+        m_EfficiencyLog.emplace_back("forget");
+    }
+    /// Efficiency mode's calls in order (#3327): "on", "off", "remember 0x<class>" and "forget".
+    [[nodiscard]] const std::vector<std::string>& efficiencyLog() const
+    {
+        return m_EfficiencyLog;
     }
 
     [[nodiscard]] Platform::ProcessActionResult setPriority(const Platform::ProcessTarget& target, int32_t nice) override
@@ -1231,6 +1254,8 @@ class MockProcessActions : public Platform::IProcessActions
     Platform::ProcessActionResult m_ThreadActionResult = Platform::ProcessActionResult::ok();
     bool m_LastEfficiencyMode = false;
     std::optional<std::int32_t> m_EfficiencyNiceToRestore;
+    std::map<std::pair<std::int32_t, std::uint64_t>, std::uint32_t> m_EfficiencyClasses; // PID and start time (#3327)
+    std::vector<std::string> m_EfficiencyLog;
     Platform::ProcessActionResult m_EfficiencyModeResult = Platform::ProcessActionResult::ok();
     int m_SetPriorityCount = 0;
     int m_SetIoPriorityCount = 0;

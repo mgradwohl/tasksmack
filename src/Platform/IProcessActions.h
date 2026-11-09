@@ -37,6 +37,10 @@ struct ProcessActionResult
     /// prompt dismissed, ERROR_CANCELLED), so the UI says it was cancelled rather than that it failed
     /// (Run new task, #3427). False for every other failure.
     bool cancelled = false;
+    /// On a successful Efficiency mode on (Windows, #3327), the priority class it replaced with Idle (GetPriorityClass's
+    /// value), so TaskSmack remembers it wherever the on ran: the elevated helper's reply carries it back. 0 for every
+    /// other result, and when the class couldn't be read.
+    std::uint32_t priorityClassBefore = 0;
 
     static ProcessActionResult ok(std::string note = {})
     {
@@ -555,6 +559,32 @@ class IProcessActions
     {
         static_cast<void>(target);
         return std::nullopt;
+    }
+
+    /// The priority class Efficiency mode's on replaced for @p target, as this TaskSmack remembers it (#3327, Windows):
+    /// an off the elevated helper finishes carries it, since the helper may never have seen the on (it ran here, or in
+    /// an earlier helper), so the helper restores it rather than Normal. Still remembered afterwards. nullopt when none
+    /// is, and by default.
+    [[nodiscard]] virtual std::optional<std::uint32_t> efficiencyPriorityClassToRestore(const ProcessTarget& target) const
+    {
+        static_cast<void>(target);
+        return std::nullopt;
+    }
+
+    /// Remembers @p priorityClass as the class Efficiency mode's on replaced for @p target (#3327, Windows), as this
+    /// object's own on does: an on the helper ran, from its reply (ProcessActionResult::priorityClassBefore), or, in the
+    /// helper, the class an off's request carries, which its off then restores. 0, or a value that isn't a priority
+    /// class, remembers nothing. By default nothing is remembered.
+    virtual void rememberEfficiencyPriorityClass(const ProcessTarget& target, std::uint32_t priorityClass)
+    {
+        static_cast<void>(target);
+        static_cast<void>(priorityClass);
+    }
+
+    /// Forgets the class remembered for @p target (#3327, Windows): the helper turned Efficiency mode off, so it is spent.
+    virtual void forgetEfficiencyPriorityClass(const ProcessTarget& target)
+    {
+        static_cast<void>(target);
     }
 
     /// Shuts down the socket with inode @p socketInode that the process holds (#3066), as Process Explorer's and

@@ -161,6 +161,12 @@ Broker::Request BrokeredProcessActions::requestFor(const AuthorizedAction& actio
         {
             return Broker::PriorityRequest{.target = action.target, .nice = *nice};
         }
+        // Windows (#3327): the class TaskSmack remembers the on replaced, which the helper may never have seen.
+        return Broker::EfficiencyModeRequest{
+            .target = action.target,
+            .on = false,
+            .restorePriorityClass = m_Inner->efficiencyPriorityClassToRestore(action.target).value_or(0),
+        };
     }
     return brokerRequestFor(action);
 }
@@ -168,8 +174,25 @@ Broker::Request BrokeredProcessActions::requestFor(const AuthorizedAction& actio
 ProcessActionResult
 BrokeredProcessActions::finished(ProcessActionResult result, const AuthorizedAction& action, const Broker::Request& request)
 {
-    if (!result.success || action.kind != AuthorizedAction::Kind::SetEfficiencyMode ||
-        !std::holds_alternative<Broker::PriorityRequest>(request))
+    if (!result.success || action.kind != AuthorizedAction::Kind::SetEfficiencyMode)
+    {
+        return result;
+    }
+    // Windows (#3327): TaskSmack, not the helper, keeps the class an on replaced, so a later off restores it
+    // wherever it runs; an off the helper finished has spent it.
+    if (std::holds_alternative<Broker::EfficiencyModeRequest>(request))
+    {
+        if (!action.efficiencyMode)
+        {
+            m_Inner->forgetEfficiencyPriorityClass(action.target);
+        }
+        else if (result.priorityClassBefore != 0)
+        {
+            m_Inner->rememberEfficiencyPriorityClass(action.target, result.priorityClassBefore);
+        }
+        return result;
+    }
+    if (!std::holds_alternative<Broker::PriorityRequest>(request))
     {
         return result;
     }

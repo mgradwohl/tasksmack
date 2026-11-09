@@ -22,6 +22,7 @@
 #include <expected>
 #include <format>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -721,11 +722,30 @@ ioPriorityHintToSet(IoPriorityClass ioClass, std::int32_t level, int32_t pid)
     return remembered.value_or(static_cast<uint32_t>(NORMAL_PRIORITY_CLASS));
 }
 
+/// Whether @p priorityClass is one of Windows' six priority classes (#3327): the only values remembered for an
+/// Efficiency mode off to restore, whoever names them (an off's request to the helper carries one).
+[[nodiscard]] constexpr bool isPriorityClass(uint32_t priorityClass) noexcept
+{
+    switch (priorityClass)
+    {
+    case IDLE_PRIORITY_CLASS:
+    case BELOW_NORMAL_PRIORITY_CLASS:
+    case NORMAL_PRIORITY_CLASS:
+    case ABOVE_NORMAL_PRIORITY_CLASS:
+    case HIGH_PRIORITY_CLASS:
+    case REALTIME_PRIORITY_CLASS:
+        return true;
+    default:
+        return false;
+    }
+}
+
 /// The ProcessActionResult::successNote for turning Efficiency mode off (#3281), from the class
 /// @p remembered when it was turned on and the class @p restored (priorityClassToRestore()). With nothing
-/// remembered, because the on ran in another process (TaskSmackHelper.exe, or TaskSmack before a restart),
-/// the process was put at Normal rather than the class it had before, which may differ; the note says so.
-/// Empty otherwise: the remembered class was restored, or the class was left as someone changed it.
+/// remembered, by this TaskSmack or by the helper that ran the on (#3327: TaskSmack restarted since, or the
+/// class couldn't be read), the process was put at Normal rather than the class it had before, which may
+/// differ; the note says so. Empty otherwise: the remembered class was restored, or the class was left as
+/// someone changed it.
 [[nodiscard]] constexpr std::string_view efficiencyModeOffNote(std::optional<uint32_t> remembered,
                                                                std::optional<uint32_t> restored) noexcept
 {
@@ -737,12 +757,14 @@ ioPriorityHintToSet(IoPriorityClass ioClass, std::int32_t level, int32_t pid)
 }
 
 /// The priority classes Efficiency mode replaced with Idle, per process (#3071), so turning it off
-/// restores each. One for the whole TaskSmack process (sharedEfficiencyModePriorities()): the Processes
-/// table and Process Details each have their own WindowsProcessActions, and either may turn off what the
-/// other turned on. Thread-safe: actions run on the panels' workers. At most MAX_REMEMBERED processes;
-/// past that the lowest PID's is dropped, and that process goes back to Normal instead. Only this
-/// process's: an on that ran in TaskSmackHelper.exe, or before a restart, isn't here, and the off puts the
-/// process at Normal and says so (efficiencyModeOffNote(), #3281).
+/// restores each. Keyed on the PID and the start time, so a process given a reused PID inherits nothing.
+/// One for the whole TaskSmack process (sharedEfficiencyModePriorities()): the Processes table and Process
+/// Details each have their own WindowsProcessActions, and either may turn off what the other turned on.
+/// TaskSmack's also holds the class of an on the elevated helper ran, from its reply, and sends it with an
+/// off the helper finishes (#3327), so the class survives the helper's exit. Thread-safe: actions run on
+/// the panels' workers. At most MAX_REMEMBERED processes; past that the lowest PID's is dropped, and that
+/// process goes back to Normal instead. Not kept across a restart: an off then puts the process at Normal
+/// and says so (efficiencyModeOffNote(), #3281).
 class EfficiencyModePriorities
 {
   public:
@@ -773,6 +795,18 @@ class EfficiencyModePriorities
         }
     }
 
+    /// The class remembered for @p target, still remembered (#3327: sent with an off the helper finishes), or nullopt.
+    [[nodiscard]] std::optional<uint32_t> find(const ProcessTarget& target) const
+    {
+        const std::scoped_lock lock(m_Mutex);
+        const auto found = m_Classes.find(Key{target.pid, target.startTimeTicks});
+        if (found == m_Classes.end())
+        {
+            return std::nullopt;
+        }
+        return found->second;
+    }
+
     /// The class remembered for @p target, forgotten now (Efficiency mode is being turned off), or nullopt.
     [[nodiscard]] std::optional<uint32_t> take(const ProcessTarget& target)
     {
@@ -799,10 +833,11 @@ class EfficiencyModePriorities
     std::map<Key, uint32_t> m_Classes;
 };
 
-/// The one EfficiencyModePriorities every WindowsProcessActions in this process shares.
-[[nodiscard]] inline EfficiencyModePriorities& sharedEfficiencyModePriorities()
+/// The one EfficiencyModePriorities every WindowsProcessActions in this process shares, unless a test gives one its own
+/// (a TaskSmack's and a helper's, #3327).
+[[nodiscard]] inline const std::shared_ptr<EfficiencyModePriorities>& sharedEfficiencyModePriorities()
 {
-    static EfficiencyModePriorities priorities;
+    static const std::shared_ptr<EfficiencyModePriorities> priorities = std::make_shared<EfficiencyModePriorities>();
     return priorities;
 }
 

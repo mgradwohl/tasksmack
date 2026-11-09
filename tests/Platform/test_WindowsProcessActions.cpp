@@ -7,6 +7,10 @@
 /// and for real only on a child process the test starts itself.
 
 #include "Domain/PriorityConfig.h"
+#include "Mocks/FakeBroker.h"
+#include "Platform/BrokerProtocol.h"
+#include "Platform/BrokerRequestMapping.h"
+#include "Platform/BrokeredProcessActions.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/ProcessTypes.h"
@@ -33,12 +37,15 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
+#include <expected>
 #include <filesystem>
 #include <format>
 #include <fstream>
 #include <ios>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <stop_token>
 #include <string>
@@ -1591,6 +1598,203 @@ TEST_F(WindowsEfficiencyModeTest, WithoutItsCallsThereIsNoEfficiencyModeAndNothi
 }
 
 // =============================================================================
+// #3327: TaskSmack remembers the class Efficiency mode's on replaced, wherever the on ran, and an off restores it
+// wherever it runs. TaskSmack and its elevated helper each have their own WindowsProcessActions and memory, over
+// FakeEco's one process, and the requests and replies go through the protocol's own encoder and decoder.
+// =============================================================================
+
+namespace
+{
+
+class TaskSmackAndHelper
+{
+  public:
+    TaskSmackAndHelper()
+    {
+        s_Denied = false;
+        restartTaskSmack();
+        startNewHelper();
+    }
+
+    /// Refuses TaskSmack's own open, as Windows does for an elevated or another user's process; never the helper's.
+    static void denyTaskSmack(bool denied) noexcept
+    {
+        s_Denied = denied;
+    }
+    /// TaskSmack started again: what it remembered is gone.
+    void restartTaskSmack()
+    {
+        WindowsProcessFunctions fns = FakeEco::functions();
+        fns.openProcess = &taskSmackOpen;
+        auto inner = std::make_unique<WindowsProcessActions>(fns, std::make_shared<EfficiencyModePriorities>());
+        m_TaskSmackInner = inner.get();
+        m_Broker = std::make_shared<Mocks::FakeBroker>(/*connected=*/true);
+        m_Broker->setAnswer([this](const Broker::Request& request) { return helperAnswer(request); });
+        m_TaskSmack = std::make_unique<BrokeredProcessActions>(std::move(inner), m_Broker);
+    }
+    /// The helper exited (its idle timeout, or an over-the-shoulder session's one action) and a new one started.
+    void startNewHelper()
+    {
+        m_Helper = std::make_unique<WindowsProcessActions>(FakeEco::functions(), std::make_shared<EfficiencyModePriorities>());
+    }
+
+    [[nodiscard]] ProcessActionResult setEfficiencyMode(const ProcessTarget& target, bool on)
+    {
+        return m_TaskSmack->setEfficiencyMode(target, on);
+    }
+    [[nodiscard]] std::optional<std::uint32_t> taskSmackRemembers(const ProcessTarget& target) const
+    {
+        return m_TaskSmackInner->efficiencyPriorityClassToRestore(target);
+    }
+    [[nodiscard]] std::size_t helperRequests() const
+    {
+        return m_Broker->requests().size();
+    }
+
+  private:
+    static HANDLE WINAPI taskSmackOpen(DWORD access, BOOL inherit, DWORD pid)
+    {
+        if (s_Denied)
+        {
+            SetLastError(ERROR_ACCESS_DENIED);
+            return nullptr;
+        }
+        return FakeEco::openProcess(access, inherit, pid);
+    }
+
+    [[nodiscard]] std::expected<Broker::Response, std::string> helperAnswer(const Broker::Request& request) const
+    {
+        const auto received = Broker::decodeRequest(Broker::encodeRequest(1, request));
+        if (!received.has_value())
+        {
+            return std::unexpected(received.error());
+        }
+        const Broker::Response answer = BrokerServer::handleRequest(received->message, *m_Helper);
+        const auto replied = Broker::decodeResponse(Broker::encodeResponse(received->requestId, answer));
+        if (!replied.has_value())
+        {
+            return std::unexpected(replied.error());
+        }
+        return replied->message;
+    }
+
+    static inline bool s_Denied = false;
+    std::unique_ptr<WindowsProcessActions> m_Helper;
+    std::shared_ptr<Mocks::FakeBroker> m_Broker;
+    WindowsProcessActions* m_TaskSmackInner = nullptr; // owned by m_TaskSmack
+    std::unique_ptr<BrokeredProcessActions> m_TaskSmack;
+};
+
+} // namespace
+
+TEST_F(WindowsEfficiencyModeTest, OnInTaskSmackThenOffInTheHelperRestoresTheClassItHad)
+{
+    TaskSmackAndHelper sides;
+    FakeEco::priorityClass = HIGH_PRIORITY_CLASS;
+    ASSERT_TRUE(sides.setEfficiencyMode(ecoTarget(7301), true).success);
+    EXPECT_EQ(sides.helperRequests(), 0U) << "turned on in TaskSmack";
+
+    TaskSmackAndHelper::denyTaskSmack(true); // the off is the helper's, which never saw the on
+    const auto off = sides.setEfficiencyMode(ecoTarget(7301), false);
+    ASSERT_TRUE(off.success) << off.errorMessage;
+    EXPECT_EQ(sides.helperRequests(), 1U);
+    EXPECT_EQ(FakeEco::classesSet, (std::vector<DWORD>{IDLE_PRIORITY_CLASS, HIGH_PRIORITY_CLASS})) << "High, not Normal";
+    EXPECT_TRUE(off.successNote.empty()) << off.successNote;
+    EXPECT_FALSE(sides.taskSmackRemembers(ecoTarget(7301)).has_value()) << "spent";
+}
+
+TEST_F(WindowsEfficiencyModeTest, OnInTheHelperThenOffInTaskSmackRestoresTheClassItHad)
+{
+    TaskSmackAndHelper sides;
+    FakeEco::priorityClass = BELOW_NORMAL_PRIORITY_CLASS;
+    TaskSmackAndHelper::denyTaskSmack(true);
+    ASSERT_TRUE(sides.setEfficiencyMode(ecoTarget(7302), true).success);
+    EXPECT_EQ(sides.helperRequests(), 1U);
+    EXPECT_EQ(sides.taskSmackRemembers(ecoTarget(7302)), std::optional<std::uint32_t>{BELOW_NORMAL_PRIORITY_CLASS})
+        << "from the helper's reply";
+
+    sides.startNewHelper(); // the helper's memory is gone, and the off doesn't need it
+    TaskSmackAndHelper::denyTaskSmack(false);
+    const auto off = sides.setEfficiencyMode(ecoTarget(7302), false);
+    ASSERT_TRUE(off.success) << off.errorMessage;
+    EXPECT_EQ(sides.helperRequests(), 1U) << "turned off in TaskSmack";
+    EXPECT_EQ(FakeEco::classesSet, (std::vector<DWORD>{IDLE_PRIORITY_CLASS, BELOW_NORMAL_PRIORITY_CLASS}));
+    EXPECT_TRUE(off.successNote.empty()) << off.successNote;
+}
+
+TEST_F(WindowsEfficiencyModeTest, OnInAHelperThatHasSinceExitedIsRestoredByTheNextHelper)
+{
+    TaskSmackAndHelper sides;
+    FakeEco::priorityClass = ABOVE_NORMAL_PRIORITY_CLASS;
+    TaskSmackAndHelper::denyTaskSmack(true);
+    ASSERT_TRUE(sides.setEfficiencyMode(ecoTarget(7303), true).success);
+    sides.startNewHelper();
+    const auto off = sides.setEfficiencyMode(ecoTarget(7303), false);
+    ASSERT_TRUE(off.success) << off.errorMessage;
+    EXPECT_EQ(sides.helperRequests(), 2U);
+    EXPECT_EQ(FakeEco::classesSet, (std::vector<DWORD>{IDLE_PRIORITY_CLASS, ABOVE_NORMAL_PRIORITY_CLASS}));
+    EXPECT_TRUE(off.successNote.empty()) << off.successNote;
+}
+
+TEST_F(WindowsEfficiencyModeTest, AProcessGivenAReusedPidInheritsNoClassAndGoesToNormalSayingSo)
+{
+    TaskSmackAndHelper sides;
+    FakeEco::priorityClass = HIGH_PRIORITY_CLASS;
+    TaskSmackAndHelper::denyTaskSmack(true);
+    ASSERT_TRUE(sides.setEfficiencyMode(ecoTarget(7304), true).success);
+
+    // That process exits, and another starts with its PID, at Idle.
+    FakeEco::creationTicks = 5678;
+    FakeEco::priorityClass = IDLE_PRIORITY_CLASS;
+    const ProcessTarget reused{.pid = 7304, .startTimeTicks = 5678};
+    const auto off = sides.setEfficiencyMode(reused, false);
+    ASSERT_TRUE(off.success) << off.errorMessage;
+    EXPECT_EQ(FakeEco::classesSet.back(), static_cast<DWORD>(NORMAL_PRIORITY_CLASS)) << "not the first process's High";
+    EXPECT_EQ(off.successNote, efficiencyModeOffNote(std::nullopt, NORMAL_PRIORITY_CLASS));
+    EXPECT_EQ(sides.taskSmackRemembers(ecoTarget(7304)), std::optional<std::uint32_t>{HIGH_PRIORITY_CLASS}) << "the first's is untouched";
+}
+
+TEST_F(WindowsEfficiencyModeTest, AClassNeitherSideKnowsAnyMoreGoesToNormalSayingSo)
+{
+    TaskSmackAndHelper sides;
+    FakeEco::priorityClass = HIGH_PRIORITY_CLASS;
+    TaskSmackAndHelper::denyTaskSmack(true);
+    ASSERT_TRUE(sides.setEfficiencyMode(ecoTarget(7305), true).success);
+
+    sides.restartTaskSmack(); // TaskSmack restarted, and its helper with it
+    sides.startNewHelper();
+    const auto off = sides.setEfficiencyMode(ecoTarget(7305), false);
+    ASSERT_TRUE(off.success) << off.errorMessage;
+    EXPECT_EQ(FakeEco::classesSet, (std::vector<DWORD>{IDLE_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS}));
+    EXPECT_EQ(off.successNote, efficiencyModeOffNote(std::nullopt, NORMAL_PRIORITY_CLASS));
+}
+
+TEST_F(WindowsEfficiencyModeTest, OnlyARealPriorityClassIsRememberedForAnOff)
+{
+    WindowsProcessActions actions(FakeEco::functions(), std::make_shared<EfficiencyModePriorities>());
+    actions.rememberEfficiencyPriorityClass(ecoTarget(7306), 0x12345U); // no such class: a request can carry anything
+    actions.rememberEfficiencyPriorityClass(ecoTarget(7306), 0);
+    EXPECT_FALSE(actions.efficiencyPriorityClassToRestore(ecoTarget(7306)).has_value());
+    actions.rememberEfficiencyPriorityClass(ecoTarget(7306), HIGH_PRIORITY_CLASS);
+    EXPECT_EQ(actions.efficiencyPriorityClassToRestore(ecoTarget(7306)), std::optional<std::uint32_t>{HIGH_PRIORITY_CLASS});
+    actions.forgetEfficiencyPriorityClass(ecoTarget(7306));
+    EXPECT_FALSE(actions.efficiencyPriorityClassToRestore(ecoTarget(7306)).has_value());
+
+    // A refused class change keeps the class, so the helper's retry still restores it.
+    actions.rememberEfficiencyPriorityClass(ecoTarget(7306), HIGH_PRIORITY_CLASS);
+    FakeEco::priorityClass = IDLE_PRIORITY_CLASS;
+    FakeEco::classError = ERROR_ACCESS_DENIED;
+    EXPECT_FALSE(actions.setEfficiencyMode(ecoTarget(7306), false).success);
+    EXPECT_EQ(actions.efficiencyPriorityClassToRestore(ecoTarget(7306)), std::optional<std::uint32_t>{HIGH_PRIORITY_CLASS});
+
+    // An on's result carries the class it replaced.
+    FakeEco::classError = 0;
+    FakeEco::priorityClass = BELOW_NORMAL_PRIORITY_CLASS;
+    EXPECT_EQ(actions.setEfficiencyMode(ecoTarget(7307), true).priorityClassBefore,
+              static_cast<std::uint32_t>(BELOW_NORMAL_PRIORITY_CLASS));
+}
+
+// =============================================================================
 // Set Realtime priority (#3429): through the same faked calls, never a real process's class
 // =============================================================================
 
@@ -1786,13 +1990,40 @@ TEST(WindowsProcessActionsTest, EfficiencyModeOffWithNothingRememberedSetsNormal
 
     WindowsProcessActions actions;
     ASSERT_TRUE(actions.setEfficiencyMode(child.target(), true).success);
-    EXPECT_EQ(sharedEfficiencyModePriorities().take(child.target()), std::optional<uint32_t>{BELOW_NORMAL_PRIORITY_CLASS})
+    EXPECT_EQ(sharedEfficiencyModePriorities()->take(child.target()), std::optional<uint32_t>{BELOW_NORMAL_PRIORITY_CLASS})
         << "forgotten here, as when the on ran elsewhere";
 
     const auto off = actions.setEfficiencyMode(child.target(), false);
     ASSERT_TRUE(off.success) << off.errorMessage;
     EXPECT_EQ(GetPriorityClass(process.get()), static_cast<DWORD>(NORMAL_PRIORITY_CLASS));
     EXPECT_EQ(off.successNote, efficiencyModeOffNote(std::nullopt, NORMAL_PRIORITY_CLASS));
+}
+
+// #3327, the real calls on this test's own suspended child only: one actions object with a memory of its own turns
+// Efficiency mode on (as a helper would) and says the class it replaced; another, whose memory is told that class
+// (as an off's request tells the next helper), turns it off and restores Below normal, not Normal.
+TEST(WindowsProcessActionsTest, EfficiencyModeOffElsewhereRestoresTheClassTheOnReplaced)
+{
+    const SuspendedChild child;
+    ASSERT_TRUE(child.started());
+    const Windows::UniqueHandle process(
+        OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_INFORMATION, FALSE, static_cast<DWORD>(child.target().pid)));
+    ASSERT_TRUE(process);
+    ASSERT_NE(SetPriorityClass(process.get(), BELOW_NORMAL_PRIORITY_CLASS), FALSE);
+
+    WindowsProcessActions onSide(realWindowsProcessFunctions(), std::make_shared<EfficiencyModePriorities>());
+    const auto on = onSide.setEfficiencyMode(child.target(), true);
+    ASSERT_TRUE(on.success) << on.errorMessage;
+    EXPECT_EQ(on.priorityClassBefore, static_cast<std::uint32_t>(BELOW_NORMAL_PRIORITY_CLASS));
+    EXPECT_EQ(GetPriorityClass(process.get()), static_cast<DWORD>(IDLE_PRIORITY_CLASS));
+
+    WindowsProcessActions offSide(realWindowsProcessFunctions(), std::make_shared<EfficiencyModePriorities>());
+    offSide.rememberEfficiencyPriorityClass(child.target(), on.priorityClassBefore);
+    const auto off = offSide.setEfficiencyMode(child.target(), false);
+    ASSERT_TRUE(off.success) << off.errorMessage;
+    EXPECT_EQ(GetPriorityClass(process.get()), static_cast<DWORD>(BELOW_NORMAL_PRIORITY_CLASS));
+    EXPECT_TRUE(off.successNote.empty()) << off.successNote;
+    EXPECT_FALSE(offSide.efficiencyPriorityClassToRestore(child.target()).has_value()) << "spent";
 }
 
 // =============================================================================
