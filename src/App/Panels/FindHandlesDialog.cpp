@@ -136,13 +136,14 @@ void runFindHandlesSearch(std::span<const Domain::HandleSearch::SearchProcess> p
                           SearchPublication start,
                           const std::stop_source& cancel,
                           const std::stop_token& workerStop,
-                          const Domain::HandleSearch::Publish& publish) noexcept
+                          const Domain::HandleSearch::Publish& publish,
+                          std::span<const Domain::HandleSearch::SearchSources> sources) noexcept
 {
     // Stop pressed while the job was queued signalled only the search's own source: then it runs with that token,
     // already signalled, and reads nothing. Otherwise it runs with the worker's, which Stop signals too
     // (cancelCurrent()) once the job is in flight, as do the worker's stop and destructor.
     const std::stop_token stop = cancel.stop_requested() ? cancel.get_token() : workerStop;
-    Domain::HandleSearch::run(processes, readers, authorized, std::move(start), publish, stop);
+    Domain::HandleSearch::run(processes, readers, authorized, std::move(start), publish, stop, sources);
 }
 
 FindHandlesDialog::~FindHandlesDialog()
@@ -220,7 +221,10 @@ void FindHandlesDialog::failToStart() noexcept
     {}
 }
 
-void FindHandlesDialog::startSearch(std::vector<Domain::HandleSearch::SearchProcess> processes, bool authorized, SearchPublication start)
+void FindHandlesDialog::startSearch(std::vector<Domain::HandleSearch::SearchProcess> processes,
+                                    std::vector<Domain::HandleSearch::SearchSources> sources,
+                                    bool authorized,
+                                    SearchPublication start)
 {
     try
     {
@@ -250,27 +254,30 @@ void FindHandlesDialog::startSearch(std::vector<Domain::HandleSearch::SearchProc
                     // Every generation wakes the frame loop (the worker's finish() and progress()),
                     // so the progress line moves as the walk does. run() catches what publishing
                     // throws.
-                    runFindHandlesSearch(job.processes,
-                                         job.readers,
-                                         job.authorized,
-                                         std::move(job.start),
-                                         job.cancel,
-                                         stop,
-                                         [&context](SearchPublication generation)
-                                         {
-                                             if (generation.done)
-                                             {
-                                                 context.finish(std::move(generation));
-                                             }
-                                             else
-                                             {
-                                                 context.progress(std::move(generation));
-                                             }
-                                         });
+                    runFindHandlesSearch(
+                        job.processes,
+                        job.readers,
+                        job.authorized,
+                        std::move(job.start),
+                        job.cancel,
+                        stop,
+                        [&context](SearchPublication generation)
+                        {
+                            if (generation.done)
+                            {
+                                context.finish(std::move(generation));
+                            }
+                            else
+                            {
+                                context.progress(std::move(generation));
+                            }
+                        },
+                        job.sources);
                 });
         }
         SearchJob job{
             .processes = std::move(processes),
+            .sources = std::move(sources),
             .readers =
                 {
                     .openFiles = m_Capabilities.openFiles ? m_OpenFiles.get() : nullptr,
@@ -446,7 +453,7 @@ std::optional<FindHandlesAction> FindHandlesDialog::render(const ProcessList& pr
         const std::uint64_t version = (last != nullptr ? last->version : 0) + 1;
         Domain::HandleSearch::SearchPublication start = Domain::HandleSearch::startFor(m_Query, all.size(), version);
         m_Selected.reset();
-        startSearch(std::move(all), false, std::move(start));
+        startSearch(std::move(all), {}, false, std::move(start));
     }
 
     const bool workerReturned = !jobActive(); // before the load, as in searching()
@@ -463,8 +470,11 @@ std::optional<FindHandlesAction> FindHandlesDialog::render(const ProcessList& pr
         ImGui::SameLine();
         if (ImGui::SmallButton(AuthorizeWording::SEARCH_LABEL))
         {
-            std::vector<Domain::HandleSearch::SearchProcess> denied = shown.denied;
-            startSearch(std::move(denied), true, Domain::HandleSearch::startAuthorizedAfter(shown, shown.version + 1));
+            // Only the sources each process was refused (#3357): what was read already isn't found twice.
+            startSearch(Domain::HandleSearch::processesOf(shown.denied),
+                        Domain::HandleSearch::sourcesOf(shown.denied),
+                        true,
+                        Domain::HandleSearch::startAuthorizedAfter(shown, shown.version + 1));
         }
         ImGui::SetItemTooltip("%s", AuthorizeWording::SEARCH_TOOLTIP);
     }

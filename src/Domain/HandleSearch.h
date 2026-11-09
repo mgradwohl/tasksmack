@@ -48,6 +48,24 @@ struct SearchProcess
     std::string name;
 };
 
+/// Which of a process's sources a read covers: its open files, its loaded modules, or both.
+struct SearchSources
+{
+    bool openFiles = true;
+    bool modules = true;
+
+    friend bool operator==(const SearchSources&, const SearchSources&) = default;
+};
+
+/// A process one or both of whose sources the OS wouldn't let this run read (another user's, or on Windows an
+/// elevated one), and which those were (#3357): the two readers need different rights, so one can be refused while
+/// the other reads. An administrator's search reads only the refused ones, so no match is found twice.
+struct DeniedProcess
+{
+    SearchProcess process;
+    SearchSources refused;
+};
+
 /// One handle whose name contains the query.
 struct HandleMatch
 {
@@ -66,8 +84,9 @@ struct SearchPublication
     std::vector<HandleMatch> matches;
     std::size_t total = 0;    ///< Processes to search.
     std::size_t searched = 0; ///< Processes read so far, whether or not they could be.
-    /// Processes the OS wouldn't let this run read (another user's): an administrator can search them.
-    std::vector<SearchProcess> denied;
+    /// Processes with a source the OS wouldn't let this run read (another user's, or on Windows an elevated one), and
+    /// which: an administrator can search those (processesOf(), sourcesOf()).
+    std::vector<DeniedProcess> denied;
     std::size_t exited = 0; ///< Processes that ended before they were read.
     std::size_t failed = 0; ///< Processes whose read failed some other way.
     /// Processes read, but some of whose handles weren't named: a handle didn't answer in time (Windows), so a match
@@ -92,7 +111,9 @@ struct SearchPublication
 [[nodiscard]] std::string_view kindLabel(HandleKind kind) noexcept;
 
 /// What one process's reads add to @p into: its open files' and modules' matches, then its counts.
-/// A process both readers refuse counts as denied; one either reports exited counts as exited.
+/// A source a reader refuses makes the process denied for that source (#3357), even when the other source was read.
+/// One neither source read, and either reports exited, counts as exited. A source not read comes as a default
+/// (Unsupported) result.
 void addProcess(const SearchProcess& process,
                 const Platform::OpenFilesReadResult& files,
                 const Platform::ModulesReadResult& modules,
@@ -120,12 +141,21 @@ using Publish = std::function<void(SearchPublication generation)>;
 /// Throws nothing (#3335): a reader that throws, or an allocation (or a publication) that fails, ends the walk
 /// with a done publication that says why (failure), so the worker never takes TaskSmack down. When even that
 /// one can't be made, the last generation handed over stands, and the worker returning ends the search.
+/// @p sources says which sources to read for each process, sources[i] for processes[i] (an administrator's search
+/// reads only the ones refused, sourcesOf()); empty, or past its end, reads both.
 void run(std::span<const SearchProcess> processes,
          const Readers& readers,
          bool authorized,
          SearchPublication start,
          const Publish& publish,
-         const std::stop_token& stopToken) noexcept;
+         const std::stop_token& stopToken,
+         std::span<const SearchSources> sources = {}) noexcept;
+
+/// @p denied's processes, in order: what an administrator's search walks.
+[[nodiscard]] std::vector<SearchProcess> processesOf(std::span<const DeniedProcess> denied);
+
+/// @p denied's refused sources, in order: what an administrator's search reads for each (run()'s @p sources).
+[[nodiscard]] std::vector<SearchSources> sourcesOf(std::span<const DeniedProcess> denied);
 
 /// The first generation of a new search for @p query over @p total processes, at @p version.
 [[nodiscard]] SearchPublication startFor(std::string_view query, std::size_t total, std::uint64_t version);

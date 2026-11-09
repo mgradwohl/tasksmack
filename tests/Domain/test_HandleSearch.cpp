@@ -131,10 +131,15 @@ class FakeOpenFiles final : public Platform::IProcessOpenFilesReader
     }
 };
 
+/// Answers each PID with what the test set; a PID it wasn't given is denied. readAuthorized() reads as an administrator
+/// from `authorizedResults` once any is set (#3357), and counts its calls; until then it reads as readModules().
 class FakeModules final : public Platform::IProcessModulesReader
 {
   public:
     std::map<std::int32_t, Platform::ModulesReadResult> results;
+    std::map<std::int32_t, Platform::ModulesReadResult> authorizedResults;
+    std::vector<std::int32_t> read;
+    std::vector<std::int32_t> authorizedRead;
 
     [[nodiscard]] bool hasModules() const override
     {
@@ -143,8 +148,21 @@ class FakeModules final : public Platform::IProcessModulesReader
 
     [[nodiscard]] Platform::ModulesReadResult readModules(const Platform::ProcessTarget& target) override
     {
+        read.push_back(target.pid);
         const auto found = results.find(target.pid);
         return found != results.end() ? found->second : modulesStatus(Platform::ModulesReadStatus::PermissionDenied);
+    }
+
+    [[nodiscard]] Platform::ModulesReadResult readAuthorized(const Platform::ProcessTarget& target,
+                                                             const std::stop_token& /*stopToken*/) override
+    {
+        if (authorizedResults.empty())
+        {
+            return readModules(target);
+        }
+        authorizedRead.push_back(target.pid);
+        const auto found = authorizedResults.find(target.pid);
+        return found != authorizedResults.end() ? found->second : modulesStatus(Platform::ModulesReadStatus::Failed);
     }
 };
 
@@ -227,7 +245,7 @@ TEST(HandleSearchTest, AddProcessCountsByWhicheverReaderSaidSo)
                "x",
                into);
     ASSERT_EQ(into.denied.size(), 1U);
-    EXPECT_EQ(into.denied[0].target.pid, 3);
+    EXPECT_EQ(into.denied[0].process.target.pid, 3);
 
     // No open-files reader, but the modules read failed: a failure.
     addProcess(process(4, "odd"),
@@ -287,13 +305,14 @@ TEST(HandleSearchTest, AnAdministratorSearchOnAFullResultIsMarkedTruncated)
     ASSERT_EQ(first->matches.size(), MAX_MATCHES);
     ASSERT_EQ(first->denied.size(), 1U);
 
-    const std::vector<SearchProcess> denied = first->denied;
+    const std::vector<SearchProcess> denied = processesOf(first->denied);
     run(denied,
         {.openFiles = &files, .modules = nullptr},
         true,
         startAuthorizedAfter(*first, first->version + 1),
         publishTo(slot),
-        stop.get_token());
+        stop.get_token(),
+        sourcesOf(first->denied));
     const std::shared_ptr<const SearchPublication> second = slot.load();
     EXPECT_TRUE(second->done);
     EXPECT_TRUE(second->truncated);
@@ -360,7 +379,8 @@ TEST(HandleSearchTest, AddProcessCountsDeniedExitedAndFailedReads)
     addProcess(process(4, "none"), {}, {}, "x", into);
     EXPECT_EQ(into.searched, 4U);
     ASSERT_EQ(into.denied.size(), 1U);
-    EXPECT_EQ(into.denied[0].target.pid, 1);
+    EXPECT_EQ(into.denied[0].process.target.pid, 1);
+    EXPECT_EQ(into.denied[0].refused, (SearchSources{.openFiles = true, .modules = true}));
     EXPECT_EQ(into.exited, 1U);
     EXPECT_EQ(into.failed, 1U);
 }
@@ -405,7 +425,7 @@ TEST(HandleSearchTest, RunWalksEveryProcessAndPublishesBatchesThenDone)
     // file-1 and file-10 .. file-19
     EXPECT_EQ(last->matches.size(), 11U);
     ASSERT_EQ(last->denied.size(), 1U);
-    EXPECT_EQ(last->denied[0].target.pid, 40);
+    EXPECT_EQ(last->denied[0].process.target.pid, 40);
     // Two batches of 16, then the final generation, each one version on from the start.
     EXPECT_EQ(last->version, 5U + 3U);
     EXPECT_EQ(files.read.size(), 40U);
@@ -608,7 +628,7 @@ TEST(HandleSearchTest, AnAdministratorSearchDoesNotCarryTheFirstSearchsFailure)
     SearchPublication failed = startFor("x", 2, 4);
     failed.done = true;
     failed.failure = "The search stopped: injected reader failure";
-    failed.denied.push_back(process(7, "other"));
+    failed.denied.push_back(DeniedProcess{.process = process(7, "other"), .refused = {}});
     const SearchPublication again = startAuthorizedAfter(failed, 5);
     EXPECT_TRUE(again.failure.empty()) << again.failure;
     EXPECT_FALSE(again.done);
@@ -632,13 +652,14 @@ TEST(HandleSearchTest, AnAdministratorSearchAddsTheDeniedProcessesToTheFirstResu
     ASSERT_EQ(first->matches.size(), 1U);
     ASSERT_EQ(first->denied.size(), 1U);
 
-    const std::vector<SearchProcess> denied = first->denied;
+    const std::vector<SearchProcess> denied = processesOf(first->denied);
     run(denied,
         {.openFiles = &files, .modules = nullptr},
         true,
         startAuthorizedAfter(*first, first->version + 1),
         publishTo(slot),
-        stop.get_token());
+        stop.get_token(),
+        sourcesOf(first->denied));
     const std::shared_ptr<const SearchPublication> second = slot.load();
     EXPECT_TRUE(second->done);
     EXPECT_TRUE(second->authorized);
@@ -714,4 +735,120 @@ TEST(HandleSearchTest, AddProcessCountsAProcessWhoseNamesWereIncomplete)
     EXPECT_EQ(into.denied.size(), 1U);
 }
 
+// #3357: the two readers need different rights, so one source can be refused while the other reads. The matches the
+// read one found are kept, the process is denied for the refused source only, and an administrator's search reads
+// just that source: no match is found twice, and the read source isn't asked for again.
+TEST(HandleSearchTest, FilesReadModulesRefusedRetriesOnlyTheModules)
+{
+    FakeOpenFiles files;
+    files.results[1] = openFiles({file(Platform::OpenFileKind::File, "C:\\srv\\data.db")});
+    files.authorizedFiles[1] = openFiles({file(Platform::OpenFileKind::File, "C:\\srv\\data.db")}); // would duplicate
+    FakeModules mods;                                                                               // pid 1's modules refused
+    mods.authorizedResults[1] = modules({"C:\\srv\\data.dll"});
+    const std::vector<SearchProcess> processes{process(1, "server")};
+    Domain::PublicationSlot<SearchPublication> slot;
+    const std::stop_source stop;
+    run(processes,
+        {.openFiles = &files, .modules = &mods},
+        false,
+        startFor("data.d", processes.size(), 1),
+        publishTo(slot),
+        stop.get_token());
+    const std::shared_ptr<const SearchPublication> first = slot.load();
+    ASSERT_EQ(first->matches.size(), 1U) << "the open file's match is kept";
+    EXPECT_EQ(first->matches[0].kind, HandleKind::File);
+    ASSERT_EQ(first->denied.size(), 1U) << "denied for its modules, so the administrator's search is offered";
+    EXPECT_EQ(first->denied[0].process.target.pid, 1);
+    EXPECT_EQ(first->denied[0].refused, (SearchSources{.openFiles = false, .modules = true}));
+    EXPECT_EQ(first->searched, 1U);
+
+    const std::vector<SearchProcess> denied = processesOf(first->denied);
+    run(denied,
+        {.openFiles = &files, .modules = &mods},
+        true,
+        startAuthorizedAfter(*first, first->version + 1),
+        publishTo(slot),
+        stop.get_token(),
+        sourcesOf(first->denied));
+    const std::shared_ptr<const SearchPublication> second = slot.load();
+    EXPECT_TRUE(second->done);
+    EXPECT_EQ(files.authorizedReads, 0) << "the open files were read already: not asked for again";
+    EXPECT_EQ(mods.authorizedRead, (std::vector<std::int32_t>{1}));
+    ASSERT_EQ(second->matches.size(), 2U) << "the file once, then the module";
+    EXPECT_EQ(second->matches[0].kind, HandleKind::File);
+    EXPECT_EQ(second->matches[1].kind, HandleKind::Library);
+    EXPECT_EQ(second->matches[1].path, "C:\\srv\\data.dll");
+    EXPECT_TRUE(second->denied.empty());
+    EXPECT_EQ(second->searched, 1U);
+}
+
+TEST(HandleSearchTest, ModulesReadFilesRefusedRetriesOnlyTheFiles)
+{
+    FakeOpenFiles files; // pid 1's open files refused
+    files.authorizedFiles[1] = openFiles({file(Platform::OpenFileKind::File, "C:\\srv\\data.db")});
+    FakeModules mods;
+    mods.results[1] = modules({"C:\\srv\\data.dll"});
+    mods.authorizedResults[1] = modules({"C:\\srv\\data.dll"}); // would duplicate
+    const std::vector<SearchProcess> processes{process(1, "server")};
+    Domain::PublicationSlot<SearchPublication> slot;
+    const std::stop_source stop;
+    run(processes,
+        {.openFiles = &files, .modules = &mods},
+        false,
+        startFor("data.d", processes.size(), 1),
+        publishTo(slot),
+        stop.get_token());
+    const std::shared_ptr<const SearchPublication> first = slot.load();
+    ASSERT_EQ(first->matches.size(), 1U);
+    EXPECT_EQ(first->matches[0].kind, HandleKind::Library);
+    ASSERT_EQ(first->denied.size(), 1U);
+    EXPECT_EQ(first->denied[0].refused, (SearchSources{.openFiles = true, .modules = false}));
+
+    run(processesOf(first->denied),
+        {.openFiles = &files, .modules = &mods},
+        true,
+        startAuthorizedAfter(*first, first->version + 1),
+        publishTo(slot),
+        stop.get_token(),
+        sourcesOf(first->denied));
+    const std::shared_ptr<const SearchPublication> second = slot.load();
+    EXPECT_EQ(files.authorizedReads, 1);
+    EXPECT_TRUE(mods.authorizedRead.empty()) << "the modules were read already: not asked for again";
+    EXPECT_EQ(mods.read.size(), 1U) << "only the first search read them";
+    ASSERT_EQ(second->matches.size(), 2U) << "the module once, then the file";
+    EXPECT_EQ(second->matches[1].kind, HandleKind::File);
+    EXPECT_TRUE(second->denied.empty());
+    EXPECT_EQ(second->searched, 1U);
+}
+
+// #3357: processesOf() and sourcesOf() line up with the denied list, and run() reads, for each process, the sources
+// given for it: those past the end of the list read both.
+TEST(HandleSearchTest, ProcessesOfAndSourcesOfKeepTheDeniedOrder)
+{
+    const std::vector<DeniedProcess> denied{
+        {.process = process(4, "a"), .refused = {.openFiles = true, .modules = true}},
+        {.process = process(9, "b"), .refused = {.openFiles = false, .modules = true}},
+    };
+    const std::vector<SearchProcess> processes = processesOf(denied);
+    ASSERT_EQ(processes.size(), 2U);
+    EXPECT_EQ(processes[0].target.pid, 4);
+    EXPECT_EQ(processes[1].name, "b");
+    EXPECT_EQ(sourcesOf(denied), (std::vector<SearchSources>{{.openFiles = true, .modules = true}, {.openFiles = false, .modules = true}}));
+    EXPECT_TRUE(processesOf({}).empty());
+
+    // Fewer sources than processes: the rest read both.
+    FakeOpenFiles files;
+    files.results[1] = openFiles({});
+    files.results[2] = openFiles({});
+    FakeModules mods;
+    mods.results[1] = modules({});
+    mods.results[2] = modules({});
+    const std::vector<SearchProcess> two{process(1, "x"), process(2, "y")};
+    const std::vector<SearchSources> one{{.openFiles = true, .modules = false}};
+    Domain::PublicationSlot<SearchPublication> slot;
+    const std::stop_source stop;
+    run(two, {.openFiles = &files, .modules = &mods}, false, startFor("q", two.size(), 1), publishTo(slot), stop.get_token(), one);
+    EXPECT_EQ(files.read, (std::vector<std::int32_t>{1, 2}));
+    EXPECT_EQ(mods.read, (std::vector<std::int32_t>{2}));
+}
 } // namespace

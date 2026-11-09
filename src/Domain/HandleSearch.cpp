@@ -13,6 +13,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace Domain::HandleSearch
 {
@@ -136,18 +137,28 @@ void addProcess(const SearchProcess& process,
         }
         into.truncated = into.truncated || modules.truncated;
     }
+    // Each source refused on its own (#3357): Windows' readers need different rights, so the open files can be read
+    // while the modules are refused, or the other way round, and an administrator's search reads only what was refused.
+    const SearchSources refused{
+        .openFiles = files.status == Platform::OpenFilesReadStatus::PermissionDenied,
+        .modules = modules.status == Platform::ModulesReadStatus::PermissionDenied,
+    };
+    const bool anyRefused = refused.openFiles || refused.modules;
     if (filesOk || modulesOk)
     {
+        if (anyRefused)
+        {
+            into.denied.push_back(DeniedProcess{.process = process, .refused = refused});
+        }
         return;
     }
     if (files.status == Platform::OpenFilesReadStatus::ProcessExited || modules.status == Platform::ModulesReadStatus::ProcessExited)
     {
         ++into.exited;
     }
-    else if (files.status == Platform::OpenFilesReadStatus::PermissionDenied ||
-             modules.status == Platform::ModulesReadStatus::PermissionDenied)
+    else if (anyRefused)
     {
-        into.denied.push_back(process);
+        into.denied.push_back(DeniedProcess{.process = process, .refused = refused});
     }
     else if (files.status != Platform::OpenFilesReadStatus::Unsupported || modules.status != Platform::ModulesReadStatus::Unsupported)
     {
@@ -162,6 +173,28 @@ SearchPublication startFor(std::string_view query, std::size_t total, std::uint6
     start.query = std::string(query);
     start.total = total;
     return start;
+}
+
+std::vector<SearchProcess> processesOf(std::span<const DeniedProcess> denied)
+{
+    std::vector<SearchProcess> processes;
+    processes.reserve(denied.size());
+    for (const DeniedProcess& entry : denied)
+    {
+        processes.push_back(entry.process);
+    }
+    return processes;
+}
+
+std::vector<SearchSources> sourcesOf(std::span<const DeniedProcess> denied)
+{
+    std::vector<SearchSources> sources;
+    sources.reserve(denied.size());
+    for (const DeniedProcess& entry : denied)
+    {
+        sources.push_back(entry.refused);
+    }
+    return sources;
 }
 
 SearchPublication startAuthorizedAfter(const SearchPublication& previous, std::uint64_t version)
@@ -181,6 +214,7 @@ namespace
 
 /// The walk itself: run()'s, which catches what this throws.
 void walk(std::span<const SearchProcess> processes,
+          std::span<const SearchSources> sources,
           const Readers& readers,
           bool authorized,
           SearchPublication& current,
@@ -218,6 +252,7 @@ void walk(std::span<const SearchProcess> processes,
     const BatchScope batch(readers.openFiles);
 
     std::size_t sincePublish = 0;
+    std::size_t index = 0; // the process's place in processes, and its sources' in sources
     for (const SearchProcess& process : processes)
     {
         if (stopToken.stop_requested())
@@ -231,15 +266,18 @@ void walk(std::span<const SearchProcess> processes,
             current.truncated = true;
             break;
         }
-        // Each reader confirms the process's identity (start time) itself, so a reused PID reads as exited.
+        // Each reader confirms the process's identity (start time) itself, so a reused PID reads as exited. Only the
+        // sources asked for are read: an administrator's search reads just the ones the first search was refused.
+        const SearchSources asked = index < sources.size() ? sources[index] : SearchSources{};
+        ++index;
         Platform::OpenFilesReadResult files;
         Platform::ModulesReadResult modules;
-        if (readers.openFiles != nullptr)
+        if (readers.openFiles != nullptr && asked.openFiles)
         {
             files = authorized ? readers.openFiles->readAuthorized(process.target, stopToken)
                                : readers.openFiles->readOpenFiles(process.target);
         }
-        if (readers.modules != nullptr)
+        if (readers.modules != nullptr && asked.modules)
         {
             modules =
                 authorized ? readers.modules->readAuthorized(process.target, stopToken) : readers.modules->readModules(process.target);
@@ -279,12 +317,13 @@ void run(std::span<const SearchProcess> processes,
          bool authorized,
          SearchPublication start,
          const Publish& publish,
-         const std::stop_token& stopToken) noexcept
+         const std::stop_token& stopToken,
+         std::span<const SearchSources> sources) noexcept
 {
     SearchPublication current = std::move(start);
     try
     {
-        walk(processes, readers, authorized, current, publish, stopToken);
+        walk(processes, sources, readers, authorized, current, publish, stopToken);
     }
     catch (const std::exception& error)
     {
