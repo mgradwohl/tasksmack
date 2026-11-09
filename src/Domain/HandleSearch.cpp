@@ -222,6 +222,10 @@ void walk(std::span<const SearchProcess> processes,
           const std::stop_token& stopToken)
 {
     const std::string loweredQuery = lowered(current.query);
+    if (stopToken.stop_requested())
+    {
+        return; // stopped before it began: no batch, so no table walked for a search that reads nothing
+    }
 
     // One batch for the walk (#3357): on Windows, one pass over the system handle table for every process, not one
     // pass each. Ended however the walk ends, a throw included.

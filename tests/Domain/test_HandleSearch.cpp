@@ -705,7 +705,7 @@ TEST(HandleSearchTest, RunReadsEveryProcessInOneBatch)
     EXPECT_EQ(files.batchesEnded, 2);
     EXPECT_EQ(files.readsInBatch, 21);
 
-    // A search stopped before it reads anything still ends the batch it began.
+    // A search stopped before it begins opens no batch, so no table is walked for it, and still ends done.
     stop.request_stop();
     run(processes,
         {.openFiles = &files, .modules = nullptr},
@@ -713,9 +713,12 @@ TEST(HandleSearchTest, RunReadsEveryProcessInOneBatch)
         startFor("file", processes.size(), 20),
         publishTo(slot),
         stop.get_token());
-    EXPECT_EQ(files.batchesBegun, 3);
-    EXPECT_EQ(files.batchesEnded, 3);
+    EXPECT_EQ(files.batchesBegun, 2);
+    EXPECT_EQ(files.batchesEnded, 2);
     EXPECT_EQ(files.readsInBatch, 21);
+    ASSERT_NE(slot.load(), nullptr);
+    EXPECT_TRUE(slot.load()->done);
+    EXPECT_EQ(slot.load()->searched, 0U);
 }
 
 // #3357: a process read whose names were incomplete (a Windows handle that didn't answer in time) is counted, so the
