@@ -345,11 +345,6 @@ add_test(NAME TidyCacheScript
 add_test(NAME TidyFindingsScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_tidy_findings.py)
 
-# tools/helper-handshake.py checks the installed helper in the release workflow (#2723); its Hello must
-# match the C++ encoder's.
-add_test(NAME HelperHandshakeScript
-    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_helper_handshake.py)
-
 # The NSIS uninstaller's Replace Task Manager step (cmake/CPackProjectConfig.cmake.in, #3072), run against a
 # fake registry: it removes only a TaskSmack's taskmgr.exe IFEO Debugger, and the key only when TaskSmack made it.
 add_test(NAME NsisIfeoUninstallStep
@@ -649,11 +644,9 @@ set(COMMON_TEST_SOURCES
     Platform/test_BrokerProtocol.cpp
     Platform/test_BrokerRequestMapping.cpp  # what either helper does with each request (#2517)
     Platform/test_BrokeredProcessActions.cpp
-    Platform/test_BrokeredServiceActions.cpp  # service actions through the helper (#2728)
     Platform/test_BrokeredUserSessions.cpp  # another user's Windows session through the helper (#3076)
     Platform/test_TaskManagerReplacement.cpp  # Replace Task Manager's paths, state machine and service (#3072)
     Platform/test_BrokeredSystemInfoProbe.cpp
-    Platform/test_BrokeredUdpTrafficCollector.cpp  # Linux's UDP collector through the helper (#3366)
     Platform/test_ThreadName.cpp
     Platform/test_CurrentProcess.cpp
     Platform/test_Factory.cpp
@@ -906,16 +899,12 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_LinuxProcessProbe.cpp
     Platform/test_LinuxSystemInfoProbe.cpp
     Platform/test_Nl80211.cpp  # Wi-Fi rates and standard from nl80211 (#2591)
-    Platform/test_ProcessCountersRead.cpp  # FD counts and I/O the helper reads for the sampler (#2728)
-    Platform/test_HiddenProcessesRead.cpp  # the processes hidepid hides, as the helper lists them (#2728)
     Platform/test_LinuxPublicIp.cpp
     Platform/test_NetworkTextProperties.cpp
     Platform/test_LinuxSystemProbe.cpp
     Core/test_RuntimeDir.cpp
     Platform/test_LinuxProcessActions.cpp
-    Platform/test_BrokerServer.cpp  # the privileged helper's server and tasksmack-helper itself (#2307)
-    Platform/test_HelperSandbox.cpp  # tasksmack-helper's seccomp allow-list (#2752)
-    Platform/test_UdpByteCounter.cpp  # the helper's eBPF UDP byte counter (#3366)
+    Platform/test_UdpByteCounter.cpp  # the eBPF UDP byte counter root loads (#3366, #3580)
     Platform/test_LinuxUdpTrafficCollector.cpp  # root's in-process UDP collector (#3580)
     Platform/test_SyscallTrace.cpp
     Platform/test_LinuxCoreDump.cpp  # "Create dump file" on Linux: names, gcore command, refusals (#807)
@@ -1180,10 +1169,8 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/Platform/ThreadName.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/ThreadApartment.cpp # the sampler thread's COM apartment (#2731)
     ${CMAKE_SOURCE_DIR}/src/Platform/BrokeredProcessActions.cpp
-    ${CMAKE_SOURCE_DIR}/src/Platform/BrokeredServiceActions.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/BrokeredUserSessions.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/BrokeredSystemInfoProbe.cpp
-    ${CMAKE_SOURCE_DIR}/src/Platform/BrokeredUdpTrafficCollector.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/BrokerRequestMapping.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/TaskManagerReplacementService.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/CurrentProcess.cpp
@@ -1261,7 +1248,7 @@ tasksmack_apply_linux_toolchain(TaskSmackTests)
 if(UNIX AND NOT APPLE)
     # tasksmack_sdbus: libsystemd and TASKSMACK_HAS_SDBUS when found, as for the app (#1525). No X11:
     # Core/X11WindowManager.cpp dlopen()s libX11, as for the app and the benchmarks (#1702).
-    target_link_libraries(TaskSmackTests PRIVATE ${CMAKE_DL_LIBS} tasksmack_sdbus tasksmack_curl tasksmack_polkit_agent)
+    target_link_libraries(TaskSmackTests PRIVATE ${CMAKE_DL_LIBS} tasksmack_sdbus tasksmack_curl)
     # The eBPF UDP byte counter (#3366; its loader is among the platform sources, #3580): libbpf, and the embedded BPF
     # object it opens.
     target_link_libraries(TaskSmackTests PRIVATE tasksmack_bpf)
@@ -1317,12 +1304,6 @@ endif()
 target_compile_definitions(TaskSmackTests PRIVATE
     TASKSMACK_BROKER_FUZZ_CORPUS_DIR="${CMAKE_SOURCE_DIR}/tests/fuzz/corpus/fuzz_broker_protocol"
 )
-
-# test_BrokerServer.cpp runs the privileged helper binary directly over a socketpair (#2307).
-if(TARGET tasksmack-helper)
-    add_dependencies(TaskSmackTests tasksmack-helper)
-    target_compile_definitions(TaskSmackTests PRIVATE TASKSMACK_HELPER_PATH="$<TARGET_FILE:tasksmack-helper>")
-endif()
 
 # test_BrokerHelper.cpp runs TaskSmackHelper.exe directly, unelevated, as this user (#2517). The helper
 # serves only the TaskSmack.exe beside it that started it, from an install its user can't change (#2549).

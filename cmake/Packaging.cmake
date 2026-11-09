@@ -20,8 +20,9 @@ set(CPACK_PACKAGE_ICON "${CMAKE_SOURCE_DIR}/assets/icons/tasksmack.ico")
 # (googletest, rapidcheck) and benchmarks/ install into their own third_party/tests/benchmarks
 # components, so nothing a dependency installs ends up in a package (#1398).
 set(CPACK_INSTALL_CMAKE_PROJECTS "${CMAKE_BINARY_DIR};${PROJECT_NAME};Unspecified;/")
-# The .deb and .rpm add the privileged helper and its polkit policy (the "helper" component,
-# cmake/InstallRules.cmake; #2307): cmake/CPackProjectConfig.cmake.in widens the list above for them.
+# The .deb and .rpm add the "TaskSmack (Administrator)" launcher and its polkit action (the
+# "administrator" component, cmake/InstallRules.cmake; #3580): cmake/CPackProjectConfig.cmake.in widens
+# the list above for them. pkexec stays recommended: the launcher and Run new task's "Run as administrator" use it.
 # The .zip and the NSIS installer add TaskSmackHelper.exe (the "windows_helper" component; #2550) only
 # for a build that is Authenticode-signed (#2302), and then check both executables' signatures first.
 if(WIN32 AND TARGET TaskSmackHelper AND TASKSMACK_PACKAGE_WINDOWS_HELPER)
