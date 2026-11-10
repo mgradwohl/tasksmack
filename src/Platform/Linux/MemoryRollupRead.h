@@ -1,8 +1,7 @@
 #pragma once
 
 // One process's PSS and USS from /proc/[pid]/smaps_rollup (#1885), checked against its start time, and
-// why there are none (#2309): shared by LinuxProcessProbe, as itself, and tasksmack-helper, with its capabilities, which
-// reads another user's process for it.
+// why there are none (#2309), for LinuxProcessProbe.
 
 #include "Platform/IProcessProbe.h"
 #include "PosixGuards.h"

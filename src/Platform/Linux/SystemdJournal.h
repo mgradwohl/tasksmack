@@ -19,10 +19,6 @@ namespace Platform::SystemdJournal
 /// Each read looks systemd-coredump's user up first (lookUpCoredumpUid()).
 [[nodiscard]] LinuxCoredumps::JournalReader makeCoredumpJournalReader();
 
-/// The same reader, given systemd-coredump's user ID instead of looking it up: tasksmack-helper looks it
-/// up once, before its seccomp filter leaves NSS no sockets or modules to load (#2752).
-[[nodiscard]] LinuxCoredumps::JournalReader makeCoredumpJournalReader(std::optional<std::uint32_t> coredumpUid);
-
 /// The user systemd-coredump drops to, through NSS (getpwnam_r), or nullopt when there is none (or this
 /// build reads no journal). Thread-safe.
 [[nodiscard]] std::optional<std::uint32_t> lookUpCoredumpUid();

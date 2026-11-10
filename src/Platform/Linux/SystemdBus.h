@@ -129,18 +129,6 @@ struct UnitWait
     std::chrono::milliseconds poll{100};
 };
 
-/// tasksmack-helper (#2728): opens the system bus now -- while it is still root and before its seccomp
-/// sandbox, which forbids a new socket -- and keeps it; every later startUnit(), stopUnit() and
-/// setUnitStartType() then uses that connection, as root, instead of opening its own. The reason it
-/// couldn't, or nullopt. TaskSmack itself never calls it.
-[[nodiscard]] std::optional<std::string> holdSystemBusForActions();
-/// The held connection's socket (holdSystemBusForActions()), or -1 when none is held: the one descriptor
-/// tasksmack-helper's seccomp filter lets sendmsg() and recvmsg() use, which sd-bus moves every message with
-/// (#3294).
-[[nodiscard]] int heldSystemBusFd() noexcept;
-/// Test seam: closes the held connection, so later actions open their own again.
-void releaseHeldSystemBusForTesting();
-
 /// Starts the unit @p name (Manager.StartUnit, mode "replace") and waits until it is running, it
 /// fails, @p wait runs out or @p stopToken is stopped (#2006). Unless @p allowInteractive, polkit is
 /// never let prompt: refused unprivileged, it says "Requires administrator", and the result's

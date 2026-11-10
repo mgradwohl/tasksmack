@@ -15,7 +15,7 @@ namespace Platform
 /// than showing a stranger's map.
 ///
 /// The kernel serves smaps to the process's own user, or with ptrace read access (root, or CAP_SYS_PTRACE:
-/// tasksmack-helper, which reads it for another user's process through this same reader); otherwise the
+/// TaskSmack started as administrator); otherwise the
 /// open fails with EACCES and the result is PermissionDenied. It reads only that fixed file of the
 /// process's own directory, never a path a request names.
 class LinuxProcessMemoryMapReader final : public IProcessMemoryMapReader

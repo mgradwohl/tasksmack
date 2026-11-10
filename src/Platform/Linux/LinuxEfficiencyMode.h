@@ -5,8 +5,8 @@
 // process is alone in its cgroup, the cgroup's cpu.weight lowered to 1, the minimum: under cgroup v2's CPU
 // controller nice only ranks a cgroup's own processes, so the weight is what keeps it behind other cgroups'
 // work. A process sharing its cgroup (a terminal tab's shell and what it started) keeps the cgroup's weight,
-// which would slow its neighbours too, and tasksmack-helper can't write cgroup files (its sandbox opens
-// nothing for writing), so the weight is a bonus and nice 19 is what Efficiency mode is: the probe reports
+// which would slow its neighbours too, and a cgroup TaskSmack's user doesn't own can't be written, so the
+// weight is a bonus and nice 19 is what Efficiency mode is: the probe reports
 // a process at nice 19 as in it (EFFICIENCY_MODE_STATUS).
 //
 // Off puts back what On changed: the nice and weight remembered for that process, or nice 0 and the default

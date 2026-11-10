@@ -1,6 +1,6 @@
 #pragma once
 
-// What LinuxProcessControl (the process-control half, linked into tasksmack-helper) and
+// What LinuxProcessControl (the process-control half) and
 // LinuxProcessActions (which adds the system call trace and dump files) both need (#2640). Internal to
 // those two; defined in LinuxProcessControl.cpp.
 
