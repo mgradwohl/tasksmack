@@ -537,6 +537,31 @@ TEST_F(UdpTrafficCollectorRootTest, TheDefaultCollectorLoadsTheCounterAndStopUnl
     EXPECT_EQ(openDescriptorsOf("anon_inode:bpf-map"), 0U) << "stop() unloads the counter";
 }
 
+// #3374: a counter moved from holds nothing: it reads nothing, says so, and has no map; the one moved to keeps the
+// program attached and its single map open, through construction and assignment both.
+TEST_F(UdpTrafficCollectorRootTest, AMovedFromCounterReadsNothingAndTheOneMovedToKeepsTheMap)
+{
+    auto loaded = UdpByteCounter::load();
+    ASSERT_TRUE(loaded.has_value()) << loaded.error();
+    const UdpAttachAttempt attached = loaded->attempt();
+
+    UdpByteCounter moved(std::move(*loaded));
+    const auto& movedFrom = *loaded; // NOLINT(bugprone-use-after-move): what a moved-from counter does is the test
+    EXPECT_EQ(movedFrom.mapFd(), -1);
+    EXPECT_EQ(movedFrom.attempt(), UdpAttachAttempt{});
+    const auto nothing = movedFrom.read();
+    ASSERT_FALSE(nothing.has_value());
+    EXPECT_EQ(nothing.error(), "the UDP byte counter isn't loaded");
+
+    auto other = UdpByteCounter::load();
+    ASSERT_TRUE(other.has_value()) << other.error();
+    *other = std::move(moved); // the counter other held is unloaded; moved's map and program carry over
+    EXPECT_EQ(other->attempt(), attached);
+    EXPECT_GE(other->mapFd(), 0);
+    EXPECT_TRUE(other->read().has_value());
+    EXPECT_EQ(openDescriptorsOf("anon_inode:bpf-map"), 1U);
+}
+
 INSTANTIATE_TEST_SUITE_P(EachMode,
                          UdpByteCounterRootTest,
                          ::testing::Values(UdpAttachMode::Fexit, UdpAttachMode::Kretprobe),
