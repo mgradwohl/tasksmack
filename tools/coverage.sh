@@ -31,7 +31,8 @@ Options:
   -h, --help         Show this help
 
 Environment:
-  TASKSMACK_COVERAGE_ROOT=1  Also run the root tests (DetachedSpawnTest.AsRoot*, UdpByteCounterRootTest) as root
+  TASKSMACK_COVERAGE_ROOT=1  Also run the root tests (DetachedSpawnTest.AsRoot*, UdpByteCounterRootTest,
+                             UdpTrafficCollectorRootTest, SessionUserRootTest) as root
                              with sudo -n, so their paths are counted (CI's coverage job sets it; needs passwordless sudo)
   TASKSMACK_COVERAGE_REAL_SYSTEM=1
                              And let that root pass run the CI real-system tests among them (the eBPF
@@ -140,8 +141,9 @@ for run in "TaskSmackTests||" "TaskSmackThemeTests||" "TaskSmackAppTests|-UiScen
     fi
 done
 
-# A RunAs's supplementary groups (#3298) and the eBPF UDP counter (#3366, #3580), as root (#3058, #3108):
-# DetachedSpawnTest.AsRoot* and UdpByteCounterRootTest skip unless they run as root, so with
+# A RunAs's supplementary groups (#3298), the eBPF UDP counter and root's collector over it (#3366, #3580), and
+# an Administrator session's invoking user (#3580, #3374), as root (#3058, #3108): DetachedSpawnTest.AsRoot*,
+# UdpByteCounterRootTest, UdpTrafficCollectorRootTest and SessionUserRootTest skip unless they run as root, so with
 # TASKSMACK_COVERAGE_ROOT=1 (CI's coverage job, where sudo needs no password) they run once more under
 # sudo. Their children end with _exit() or drop root first, so this run uses continuous mode (%c): each
 # process's profile is opened and mapped at startup, and its counters are written through the mapping. Its profiles go to a world-writable folder of their own; the merge
@@ -149,7 +151,7 @@ done
 # failed suite, and so does any test the filter selects that neither passed nor skipped that way.
 if [[ "${TASKSMACK_COVERAGE_ROOT:-0}" == 1 ]]; then
     ROOT_PROFILE_DIR="${BUILD_DIR}/coverage-root"
-    ROOT_TEST_FILTER='DetachedSpawnTest.AsRoot*:*/UdpByteCounterRootTest.*'
+    ROOT_TEST_FILTER='DetachedSpawnTest.AsRoot*:*/UdpByteCounterRootTest.*:UdpTrafficCollectorRootTest.*:SessionUserRootTest.*'
     # The CI real-system tests' guard (tests/Support/CiRealSystem.h) reads these three; sudo drops them, so they're
     # passed by name. TASKSMACK_CI_REAL_SYSTEM is 1 only when CI's coverage job asks for it (#3374), so anywhere else
     # those tests skip as guarded, which the counts below accept.
@@ -179,7 +181,7 @@ if [[ "${TASKSMACK_COVERAGE_ROOT:-0}" == 1 ]]; then
     if [[ $root_status -ne 0 || $root_unexpected -ne 0 || ($ROOT_REAL_SYSTEM -eq 1 && $root_guarded -ne 0) ||
         -z "$root_passed" || $root_passed -eq 0 ||
         $((root_passed + root_guarded)) -ne $root_listed ]]; then
-        echo "Warning: the root tests (DetachedSpawnTest.AsRoot*, UdpByteCounterRootTest) didn't run and pass as root" \
+        echo "Warning: the root tests (${ROOT_TEST_FILTER}) didn't run and pass as root" \
             "(exit code ${root_status}; ${root_listed} listed, ${root_passed:-0} passed, ${root_guarded} CI real-system skips," \
             "${root_unexpected} other skips); its log:" >&2
         tail -n 30 "$root_log" >&2 || true

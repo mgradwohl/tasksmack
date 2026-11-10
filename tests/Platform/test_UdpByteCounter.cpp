@@ -478,6 +478,36 @@ TEST_P(UdpByteCounterRootTest, RootsInProcessCollectorReportsWhatTheCounterCount
     EXPECT_EQ(openDescriptorsOf("anon_inode:bpf-map"), 0U) << "stop() unloads the counter";
 }
 
+// #3374: the collector Factory builds as root, with the counter's own attach plan, loads and unloads the real counter.
+// Not per mode, so outside CI's PR root step: the coverage job's root pass runs it (tools/coverage.sh).
+class UdpTrafficCollectorRootTest : public ::TestSupport::CiRealSystemTest
+{
+  protected:
+    void SetUp() override
+    {
+        ::TestSupport::CiRealSystemTest::SetUp();
+        if (IsSkipped())
+        {
+            return;
+        }
+        if (::geteuid() != 0)
+        {
+            GTEST_SKIP() << "loading the BPF program needs root: the coverage job runs this suite under sudo";
+        }
+    }
+};
+
+TEST_F(UdpTrafficCollectorRootTest, TheDefaultCollectorLoadsTheCounterAndStopUnloadsIt)
+{
+    LinuxUdpTrafficCollector collector;
+    ASSERT_EQ(collector.start(), UdpCollectorStartResult::Started) << collector.problem();
+    EXPECT_FALSE(collector.unsupported());
+    EXPECT_TRUE(collector.problem().empty());
+    EXPECT_EQ(openDescriptorsOf("anon_inode:bpf-map"), 1U);
+    collector.stop();
+    EXPECT_EQ(openDescriptorsOf("anon_inode:bpf-map"), 0U) << "stop() unloads the counter";
+}
+
 INSTANTIATE_TEST_SUITE_P(EachMode,
                          UdpByteCounterRootTest,
                          ::testing::Values(UdpAttachMode::Fexit, UdpAttachMode::Kretprobe),
