@@ -292,3 +292,30 @@ if(CMAKE_BUILD_TYPE MATCHES "^(Release|RelWithDebInfo)$")
         message(STATUS "Security hardening flags enabled (Windows release)")
     endif()
 endif()
+
+# Extra hardening for TaskSmack on Linux (#3605), which runs as root in an Administrator session (#3580):
+# the profile tasksmack-helper had (#2640) before #3603 deleted it, on top of the release flags above:
+#   -Wl,-z,relro,-z,now: full RELRO, every symbol bound at load, so the GOT is read-only (lld's default
+#                        is partial RELRO with lazy binding), in every build type
+#   -fstack-clash-protection: probe each stack page, so a large allocation can't jump the guard page
+#   -fcf-protection=full (x86-64) / -mbranch-protection=standard (AArch64): CET IBT+SHSTK or BTI+PAC
+#   -D_FORTIFY_SOURCE=3: also checks sizes known only at run time (needs optimization: release only)
+#   _LIBCPP_HARDENING_MODE_FAST: libc++'s cheap bounds and precondition checks
+# The app's objects (TaskSmackApp) and the executable take it; the third-party libraries keep their own flags.
+function(tasksmack_apply_privileged_hardening target)
+    if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        return()
+    endif()
+    target_link_options(${target} PRIVATE -Wl,-z,relro,-z,now)
+    target_compile_options(${target} PRIVATE -fstack-clash-protection)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
+        target_compile_options(${target} PRIVATE -fcf-protection=full)
+    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
+        target_compile_options(${target} PRIVATE -mbranch-protection=standard)
+    endif()
+    target_compile_definitions(${target} PRIVATE _LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST)
+    if(CMAKE_BUILD_TYPE MATCHES "^(Release|RelWithDebInfo)$")
+        # After the directory-wide -D_FORTIFY_SOURCE=2 above, so it replaces it
+        target_compile_options(${target} PRIVATE -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3)
+    endif()
+endfunction()
