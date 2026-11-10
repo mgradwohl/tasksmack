@@ -11,7 +11,7 @@
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
-#include "Platform/IProcessProbe.h"
+#include "Platform/IProcessThreads.h"
 #include "Platform/Windows/BrokerHelper.h"
 #include "Platform/Windows/BrokerPipe.h"
 #include "Platform/Windows/BrokerPipeServer.h"
@@ -561,9 +561,9 @@ constexpr std::string_view GONE_DETAIL = "the process has exited";
         {
             return Broker::ConnectionsReply{.result = {.status = ConnectionsReadStatus::Ok, .connections = {}, .detail = {}}};
         }
-        if (std::holds_alternative<Broker::FirmwareFileRequest>(request))
+        if (std::holds_alternative<Broker::ThreadsRequest>(request))
         {
-            return Broker::FirmwareFileReply{.status = Broker::FirmwareFileStatus::Ok, .bytes = {0x5F, 0x53, 0x4D, 0x5F}};
+            return Broker::ThreadsReply{.result = {.status = ThreadsReadStatus::Ok, .threads = {}, .detail = {}}};
         }
         return Broker::ActionResult{.success = true, .errorMessage = {}, .successNote = {}};
     };
@@ -672,7 +672,8 @@ TEST(HelperLauncherTest, AHelperApprovedForAnotherAccountTakesReadAsAdministrato
     EXPECT_FALSE(broker.readsOtherUsers());
 
     // Every read the helper refuses this way carries the explanation: the process reads that have
-    // words, and the system-wide reads' ErrorReply, through callIfIdle() as through call().
+    // words, and the ErrorReply of a read it refuses outright (threads, #3069), through callIfIdle() as
+    // through call().
     const auto files = broker.call(Broker::OpenFilesRequest{.target = THEIRS}, {});
     ASSERT_TRUE(files.has_value()) << files.error();
     ASSERT_TRUE(std::holds_alternative<Broker::OpenFilesReply>(*files));
@@ -683,10 +684,10 @@ TEST(HelperLauncherTest, AHelperApprovedForAnotherAccountTakesReadAsAdministrato
     ASSERT_TRUE(std::holds_alternative<Broker::ConnectionsReply>(*connections));
     EXPECT_EQ(std::get<Broker::ConnectionsReply>(*connections).result.status, ConnectionsReadStatus::Failed);
     EXPECT_EQ(std::get<Broker::ConnectionsReply>(*connections).result.detail, HelperLauncher::OTHER_USERS_READS_UNAVAILABLE);
-    const auto firmware = broker.callIfIdle(Broker::FirmwareFileRequest{}, WAIT);
-    ASSERT_TRUE(firmware.has_value()) << firmware.error();
-    ASSERT_TRUE(std::holds_alternative<Broker::ErrorReply>(*firmware));
-    EXPECT_EQ(std::get<Broker::ErrorReply>(*firmware).message, HelperLauncher::OTHER_USERS_READS_UNAVAILABLE);
+    const auto threads = broker.callIfIdle(Broker::ThreadsRequest{.target = THEIRS}, WAIT);
+    ASSERT_TRUE(threads.has_value()) << threads.error();
+    ASSERT_TRUE(std::holds_alternative<Broker::ErrorReply>(*threads));
+    EXPECT_EQ(std::get<Broker::ErrorReply>(*threads).message, HelperLauncher::OTHER_USERS_READS_UNAVAILABLE);
     EXPECT_FALSE(broker.readsOtherUsers());
 
     // The lesson is this broker's: another TaskSmack's starts afresh.
@@ -768,19 +769,19 @@ TEST(HelperLauncherTest, AHelperRunningAsTaskSmacksUserKeepsReadAsAdministrator)
     EXPECT_EQ(theirs.result.status, ModulesReadStatus::Ok) << "another account's process: read, as the session is this user's";
     EXPECT_TRUE(broker.readsOtherUsers());
 
-    // A read that fails in other words, and a system-wide read that is answered, teach nothing.
+    // A read that fails in other words, and a threads read that is answered, teach nothing.
     const Broker::ModulesReply gone = modulesReply(broker.call(Broker::ModulesRequest{.target = GONE}, {}));
     EXPECT_EQ(gone.result.status, ModulesReadStatus::Failed);
     EXPECT_EQ(gone.result.detail, GONE_DETAIL) << "left as the helper said it";
     EXPECT_TRUE(broker.readsOtherUsers());
-    const auto firmware = broker.call(Broker::FirmwareFileRequest{}, {});
-    ASSERT_TRUE(firmware.has_value()) << firmware.error();
-    EXPECT_TRUE(std::holds_alternative<Broker::FirmwareFileReply>(*firmware));
+    const auto threads = broker.call(Broker::ThreadsRequest{.target = THEIRS}, {});
+    ASSERT_TRUE(threads.has_value()) << threads.error();
+    EXPECT_TRUE(std::holds_alternative<Broker::ThreadsReply>(*threads));
     EXPECT_TRUE(broker.readsOtherUsers());
 }
 
 // Only the helper's own refusal teaches: not a transport failure, an action, a read refused without
-// words (the environment's, the memory rollup's) or one that failed in other words; and nothing after
+// words (the environment's, the threads') or one that failed in other words; and nothing after
 // gives the lesson back while no new helper starts.
 TEST(HelperLauncherTest, OnlyTheHelpersOwnRefusalTeachesTheBroker)
 {
@@ -801,7 +802,7 @@ TEST(HelperLauncherTest, OnlyTheHelpersOwnRefusalTeachesTheBroker)
     const std::array<Broker::Response, 4> silent{
         Broker::ActionResult{.success = false, .errorMessage = std::string(BrokerHelper::OTHER_USERS_READ_REFUSED), .successNote = {}},
         Broker::EnvironmentReply{.result = {.status = EnvironmentReadStatus::Failed, .variables = {}}},
-        Broker::MemoryRollupReply{.result = std::unexpected(MemoryRollupFailure::Unavailable)},
+        Broker::ThreadsReply{.result = {.status = ThreadsReadStatus::Failed, .threads = {}, .detail = {}}},
         Broker::ModulesReply{.result = {.status = ModulesReadStatus::Failed, .modules = {}, .detail = "access is denied"}}};
     for (const Broker::Response& answer : silent) // `silent` outlives every answer given from it
     {
@@ -810,10 +811,10 @@ TEST(HelperLauncherTest, OnlyTheHelpersOwnRefusalTeachesTheBroker)
         EXPECT_TRUE(broker.readsOtherUsers()) << "answer " << answer.index();
     }
 
-    // The helper's refusal of a system-wide read, through callIfIdle(): learned, and reworded.
+    // The helper's refusal of a read it answers with an ErrorReply (threads), through callIfIdle(): learned, and reworded.
     inner.setAnswer([](const Broker::Request&)
                     { return Broker::Response{Broker::ErrorReply{.message = std::string(BrokerHelper::OTHER_USERS_READ_REFUSED)}}; });
-    const auto refused = broker.callIfIdle(Broker::CrashesRequest{}, WAIT);
+    const auto refused = broker.callIfIdle(Broker::ThreadsRequest{.target = THEIRS}, WAIT);
     ASSERT_TRUE(refused.has_value()) << refused.error();
     ASSERT_TRUE(std::holds_alternative<Broker::ErrorReply>(*refused));
     EXPECT_EQ(std::get<Broker::ErrorReply>(*refused).message, HelperLauncher::OTHER_USERS_READS_UNAVAILABLE);

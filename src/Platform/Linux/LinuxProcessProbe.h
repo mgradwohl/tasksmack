@@ -73,11 +73,6 @@ class LinuxProcessProbe : public IProcessProbe
     [[nodiscard]] std::optional<PackageEnergyReading> readPackageEnergy() const override;
     [[nodiscard]] MemoryRollupRead readMemoryRollup(std::int32_t pid, std::uint64_t startTimeTicks) const override;
 
-    /// @p pid's record from @p files alone, through the same parsers as enumerate(): nullopt when its stat
-    /// doesn't parse. What the files can't say is left unknown: its FD count and network counters (the
-    /// helper's counters read supplies those) and its architecture.
-    [[nodiscard]] std::optional<ProcessCounters> processFromFiles(std::int32_t pid, const ProcFileTexts& files) const override;
-
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
     /// Set the socket stats cache TTL (Linux only)
     /// @param ttlMs Time-to-live in milliseconds for cached socket stats

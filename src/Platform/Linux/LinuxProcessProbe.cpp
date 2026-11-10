@@ -1136,41 +1136,6 @@ void LinuxProcessProbe::applyIo(std::string_view ioText, ProcessCounters& counte
     }
 }
 
-std::optional<ProcessCounters> LinuxProcessProbe::processFromFiles(std::int32_t pid, const ProcFileTexts& files) const
-{
-    ProcessCounters counters{};
-    if (pid <= 0 || !applyStat(files.stat, pid, counters))
-    {
-        return std::nullopt;
-    }
-    applyStatm(files.statm, counters);
-    applyStatus(files.status, counters, readOnlineCpus(m_CpuSysfsRoot));
-    // As readProcessCommand(), without its cache: a zombie is <defunct>, an unread command line leaves the
-    // command empty rather than calling it a kernel thread.
-    if (counters.state == 'Z')
-    {
-        counters.command = counters.name + " <defunct>";
-    }
-    else if (files.cmdline.has_value())
-    {
-        applyCmdline(counters, std::vector<char>(files.cmdline->begin(), files.cmdline->end()));
-    }
-    // Only the helper's counters read can list its fds, and its sockets: unknown until that fills them.
-    counters.handleCountAvailable = false;
-    counters.networkCountersAvailable = false;
-    applyIo(files.io, counters);
-    // The I/O priority the helper read (#3572), as readIoPriority() takes its own: none for a kernel thread, which
-    // applyStat() has typed SYSTEM by now, and none when the helper couldn't confirm it was this process's.
-    if (files.ioprio.has_value() && counters.processType != CgroupProcessType::SYSTEM)
-    {
-        counters.ioPriority = IoPrio::decode(*files.ioprio);
-    }
-    FactsByCgroup factsByCgroup;
-    applyCgroupFacts(files.cgroup, m_CgroupRoot, factsByCgroup, counters);
-    applyEfficiencyStatus(counters);
-    return counters;
-}
-
 bool LinuxProcessProbe::inAnotherNetworkNamespace(int pidDirFd) const
 {
     if (m_OwnNetNamespace.empty())

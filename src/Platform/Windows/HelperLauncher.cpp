@@ -64,10 +64,10 @@ namespace
 }
 
 /// Whether @p response is a read the helper refused because it runs as another account than
-/// TaskSmack's user (BrokerHelper::readsOnlyOwnProcesses()): a process read, or a system-wide one
-/// answered with an ErrorReply, that carries BrokerHelper::OTHER_USERS_READ_REFUSED. Its words are then
-/// replaced by @p explanation. An environment or memory rollup refused the same way carries no words,
-/// so it teaches nothing: both are refused the same way for other reasons too.
+/// TaskSmack's user (BrokerHelper::readsOnlyOwnProcesses()): a process read, or one answered with an
+/// ErrorReply, that carries BrokerHelper::OTHER_USERS_READ_REFUSED. Its words are then replaced by
+/// @p explanation. An environment refused the same way carries no words, so it teaches nothing: it is
+/// refused the same way for other reasons too.
 [[nodiscard]] bool refusedForAnotherAccount(Broker::Response& response, std::string_view explanation)
 {
     const auto reworded = [explanation](std::string& words)
@@ -93,7 +93,7 @@ namespace
     }
     if (auto* const error = std::get_if<Broker::ErrorReply>(&response))
     {
-        return reworded(error->message); // a system-wide read: the firmware, every user's crashes
+        return reworded(error->message); // a read without a reply that carries words: threads (#3069)
     }
     return false;
 }

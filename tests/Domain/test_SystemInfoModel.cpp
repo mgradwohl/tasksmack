@@ -73,7 +73,7 @@ class FakeSystemInfoProbe final : public Platform::ISystemInfoProbe
     }
 
     /// The helper authorize() starts turns out to read only the user's own processes (#2769): from
-    /// then on this can't read as an administrator, as BrokeredSystemInfoProbe's answer changes.
+    /// then on this can't read as an administrator, as a helper-backed probe's answer would change.
     void takeAuthorizationBackOnAuthorize() noexcept
     {
         m_TakeBackOnAuthorize = true;

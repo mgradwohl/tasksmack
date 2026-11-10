@@ -7,7 +7,6 @@
 #include "Panels/StartupPanel.h"
 #include "Panels/SystemMetricsPanel.h"
 #include "Platform/BrokeredProcessActions.h"
-#include "Platform/BrokeredSystemInfoProbe.h"
 #ifdef _WIN32
 #include "Platform/BrokeredUserSessions.h" // the Users tab's helper decorator: Windows only (#3076)
 #endif
@@ -89,10 +88,9 @@ std::shared_ptr<TaskManagerReplacementController> makeTaskManagerReplacementCont
 
 ProcessesPanelPlatform makeProcessesPanelPlatform(const Synthetic::Scenario* scenario)
 {
-    // PSS and USS of another user's process through the helper, once it runs (#2309).
+    // The probe reads every process itself: no helper read joins it since protocol v23 (#3580).
     ProcessesPanelPlatform platform{
-        .probe = (scenario == nullptr) ? Platform::withPrivilegedBroker(Synthetic::makeProcessProbe(scenario), sharedPrivilegedBroker())
-                                       : Synthetic::makeProcessProbe(scenario),
+        .probe = Synthetic::makeProcessProbe(scenario),
         .actions = processActionsFor(scenario),
         // Windows' ETW collector, or on Linux the eBPF counter TaskSmack loads when started as root (#3366, #3580).
         .udpCollector = Synthetic::makeUdpTrafficCollector(scenario),
@@ -149,11 +147,7 @@ ProcessDetailsReaders makeProcessDetailsReaders(const Synthetic::Scenario* scena
 
 std::unique_ptr<Platform::IProcessMemoryMapReader> makeProcessMemoryMapReader(const Synthetic::Scenario* scenario)
 {
-    if (scenario != nullptr)
-    {
-        return Synthetic::makeProcessMemoryMapReader(scenario);
-    }
-    return Platform::withPrivilegedBroker(Synthetic::makeProcessMemoryMapReader(scenario), sharedPrivilegedBroker());
+    return Synthetic::makeProcessMemoryMapReader(scenario); // no helper reads memory maps (#3580)
 }
 
 std::unique_ptr<Platform::IProcessActions> makeConnectionsPanelActions(const Synthetic::Scenario* scenario)
@@ -188,8 +182,8 @@ StartupPanelPlatform makeStartupPanelPlatform(const Synthetic::Scenario* /*scena
 
 std::unique_ptr<Platform::ISystemInfoProbe> makeSystemInfoPanelProbe(const Synthetic::Scenario* /*scenario*/)
 {
-    // The facts readable by root only, through the helper (#2310)
-    return Platform::withPrivilegedBroker(Platform::makeSystemInfoProbe(), sharedPrivilegedBroker());
+    // No helper reads firmware files since #3580: a Linux run as root reads them itself.
+    return Platform::makeSystemInfoProbe();
 }
 
 std::shared_ptr<Platform::IHttpsClient> makeUpdateCheckClient(const Synthetic::Scenario* scenario, bool testHookActive)
@@ -226,7 +220,7 @@ std::shared_ptr<Platform::ISystemInfoProbe> makeCrashHistoryProbe(const Syntheti
         return nullptr;
     }
     // Its own probe: the System tab's model keeps its probe to itself, under its read lock.
-    return crashHistoryProbe(Platform::makeSystemInfoProbe(), sharedPrivilegedBroker());
+    return Platform::makeSystemInfoProbe();
 }
 
 std::shared_ptr<Platform::IPrivilegedBroker> privilegedBroker(const Synthetic::Scenario* scenario)
@@ -237,15 +231,6 @@ std::shared_ptr<Platform::IPrivilegedBroker> privilegedBroker(const Synthetic::S
 void Detail::setSharedPrivilegedBrokerForTesting(std::shared_ptr<Platform::IPrivilegedBroker> broker)
 {
     brokerForTesting() = std::move(broker);
-}
-
-std::shared_ptr<Platform::ISystemInfoProbe> crashHistoryProbe(std::unique_ptr<Platform::ISystemInfoProbe> probe,
-                                                              std::shared_ptr<Platform::IPrivilegedBroker> broker)
-{
-    // Every user's crashes once the helper runs, as System Information reads them: both publish to the
-    // one crash history, so an unbrokered read here would take the other users' crashes away again
-    // (#2416). readCrashes() uses only a helper already running; it never asks for the password.
-    return Platform::withPrivilegedBroker(std::move(probe), std::move(broker));
 }
 
 } // namespace App
