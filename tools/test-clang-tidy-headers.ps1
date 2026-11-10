@@ -9,7 +9,8 @@
 #     own CMakePresets.json (Windows Python's CRLF output and Windows paths, #3500 review), also with
 #     a stand-in Python whose CR survives $(...), as under MSYS2 and Cygwin (#3517);
 #   - a malformed database fails both scripts and leaves no temporary directory in TEMP (#3517);
-#   - clang-tidy.ps1's Python lookup isn't misled by an earlier command's exit code (#3523).
+#   - clang-tidy.ps1's Python lookup isn't misled by an earlier command's exit code (#3523);
+#   - clang-tidy.ps1 -Files a,b under pwsh -File analyzes both files, not one comma-joined path (#3615).
 # Registered in CTest on Windows with PowerShell 7; can also run directly with pwsh -File. Skips (passes)
 # when clang-tidy isn't installed.
 #Requires -Version 7
@@ -122,6 +123,19 @@ try {
             Assert-ReportsHeaderFinding "clang-tidy.ps1 -BuildDir ($form database, from $root)" $output $LASTEXITCODE
         }
     }
+
+    # ── clang-tidy.ps1 -Files a,b under pwsh -File, which passes the list as one string (#3615) ──
+    # The fixture twice, relative and absolute, with a space after the comma and a trailing comma:
+    # both paths must reach clang-tidy, and the empty element must be dropped.
+    $relativeCpp = "$fixtureRel\HeaderFinding.cpp"
+    $absoluteCpp = Join-Path $repoRoot $relativeCpp
+    $output = & pwsh -NoLogo -NoProfile -File (Join-Path $repoRoot 'tools\clang-tidy.ps1') -BuildDir (Join-Path $scratch 'arguments-0') `
+        -Files "$relativeCpp, $absoluteCpp," -Jobs 1 -ShowDetails *>&1 | Out-String
+    $code = $LASTEXITCODE
+    Assert-True ($output -match 'Running clang-tidy on 2 files') "clang-tidy.ps1 -Files 'a, b,' under pwsh -File did not analyze 2 files:`n$output"
+    Assert-True (([regex]::Matches($output, 'Analyzing: .*HeaderFinding\.cpp')).Count -eq 2) "clang-tidy.ps1 -Files 'a, b,' under pwsh -File did not analyze both paths:`n$output"
+    Assert-True ($output -notmatch 'HeaderFinding\.cpp,') "clang-tidy.ps1 -Files 'a, b,' under pwsh -File kept the comma-joined string as one path:`n$output"
+    Assert-ReportsHeaderFinding -What 'clang-tidy.ps1 -Files a,b (pwsh -File)' -Output $output -Code $code
 
     if (-not $gitBash) {
         Write-Host 'Git Bash not found; the clang-tidy.sh hand-off was not tested'
