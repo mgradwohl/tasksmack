@@ -10,6 +10,7 @@
 
 #include "Platform/UdpByteCounts.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <memory>
@@ -45,6 +46,23 @@ struct UdpAttachAttempt
 
 /// Whether the program in ELF section `section` (such as "fexit/udpv6_recvmsg") is loaded for `attempt`.
 [[nodiscard]] bool udpProgramWanted(std::string_view section, const UdpAttachAttempt& attempt) noexcept;
+
+/// How a failed attempt's reason quotes libbpf's warnings (the verifier's log among them), for the tests (#3374).
+namespace UdpLibbpfLog
+{
+
+/// The most of libbpf's warnings one attempt keeps, and the most of their end a failure's reason quotes.
+inline constexpr std::size_t CAPTURE_BYTES = 16384;
+inline constexpr std::size_t QUOTED_BYTES = 800;
+
+/// Adds @p line, one of libbpf's warnings, to @p capture, keeping only its last CAPTURE_BYTES: the end says why.
+void keep(std::string& capture, std::string_view line);
+
+/// @p reason, with the last QUOTED_BYTES of @p captured (trailing newlines dropped), or @p reason alone when libbpf
+/// said nothing.
+[[nodiscard]] std::string withLog(std::string reason, std::string_view captured);
+
+} // namespace UdpLibbpfLog
 
 class UdpByteCounter
 {
