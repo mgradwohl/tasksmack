@@ -1,7 +1,7 @@
 #pragma once
 
-// One process's UDP bytes sent and received (#3366), as the Linux helper's eBPF counter sums them
-// (Linux/UdpByteCounter.h) and the broker protocol carries them (UdpBytesReply).
+// One process's UDP bytes sent and received (#3366), as Linux's eBPF counter sums them (Linux/UdpByteCounter.h),
+// which TaskSmack loads itself when started as root (#3580).
 
 #include <cstdint>
 

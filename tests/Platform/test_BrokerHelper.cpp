@@ -1431,12 +1431,13 @@ TEST(BrokerHelperTest, AnOverTheShoulderSessionReadsOnlyTheUsersOwnProcesses)
     ASSERT_TRUE(std::holds_alternative<Broker::EnvironmentReply>(environment));
     EXPECT_EQ(std::get<Broker::EnvironmentReply>(environment).result.status, EnvironmentReadStatus::Failed);
 
-    const auto rollup = handler(Broker::MemoryRollupRequest{.target = theirs});
-    ASSERT_TRUE(std::holds_alternative<Broker::MemoryRollupReply>(rollup));
-    EXPECT_FALSE(std::get<Broker::MemoryRollupReply>(rollup).result.has_value());
-
-    EXPECT_TRUE(std::holds_alternative<Broker::ErrorReply>(handler(Broker::CrashesRequest{}))) << "every user's crashes";
-    EXPECT_TRUE(std::holds_alternative<Broker::ErrorReply>(handler(Broker::FirmwareFileRequest{})));
+    // A read the filter doesn't name (threads, #3069) is refused outright, whoever's process it is.
+    for (const ProcessTarget& target : {mine, theirs})
+    {
+        const auto threads = handler(Broker::ThreadsRequest{.target = target});
+        ASSERT_TRUE(std::holds_alternative<Broker::ErrorReply>(threads));
+        EXPECT_EQ(std::get<Broker::ErrorReply>(threads).message, BrokerHelper::OTHER_USERS_READ_REFUSED);
+    }
     EXPECT_EQ(counting.calls->load(), 1) << "no refused read reached the readers";
 
     // Actions aren't limited by owner: ending another account's process is what the administrator approved.
@@ -1457,8 +1458,7 @@ TEST(BrokerHelperTest, AnOverTheShoulderSessionPassesEachReadOfTheUsersOwnProces
     const std::vector<Broker::Request> reads = {Broker::EnvironmentRequest{.target = mine},
                                                 Broker::ModulesRequest{.target = mine},
                                                 Broker::OpenFilesRequest{.target = mine},
-                                                Broker::ConnectionsRequest{.target = mine},
-                                                Broker::MemoryRollupRequest{.target = mine}};
+                                                Broker::ConnectionsRequest{.target = mine}};
     for (const Broker::Request& read : reads)
     {
         static_cast<void>(handler(read));

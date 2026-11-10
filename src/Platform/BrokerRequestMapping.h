@@ -1,6 +1,6 @@
 #pragma once
 
-// What the privileged helper does with each BrokerProtocol request (#2307, #2309, #2310): TaskSmackHelper.exe
+// What the privileged helper does with each BrokerProtocol request (#2307, #2309): TaskSmackHelper.exe
 // on Windows (Windows/BrokerPipeServer.h, #2517), which hands it its own actions and readers; the transport and
 // its session rules stay the helper's. Linux had one too, until #3580: a Linux session is now Administrator
 // (TaskSmack started as root) or Standard for its whole life.
@@ -12,66 +12,33 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
-#include "Platform/IProcessMemoryMap.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
-#include "Platform/IProcessProbe.h"
 #include "Platform/IProcessThreads.h"
 #include "Platform/IServiceActions.h"
-#include "Platform/ISystemInfoProbe.h"
 
-#include <cstdint>
 #include <functional>
-#include <optional>
-#include <span>
 
 namespace Platform::BrokerServer
 {
 
-/// The readers the helper answers Process Details' and System Information's reads through (#2309,
-/// #2310); a read without its reader is an ErrorReply.
+/// The readers the helper answers Process Details' reads through (#2309); a read without its reader is an
+/// ErrorReply.
 struct Readers
 {
     IProcessEnvironmentReader* environment = nullptr;
     IProcessModulesReader* modules = nullptr;
     IProcessOpenFilesReader* openFiles = nullptr;
     IProcessConnectionsReader* connections = nullptr;
-    IProcessThreadsReader* threads = nullptr;     ///< Process Details' threads (#3069)
-    IProcessMemoryMapReader* memoryMap = nullptr; ///< Process Details' memory map (#3089)
-    /// PSS and USS: process ID and start time to the read's result.
-    // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
-    std::function<MemoryRollupRead(std::int32_t, std::uint64_t)> memoryRollup{};
-    /// One process's FD count, I/O bytes and (when asked) socket inodes, for ReadProcessCounters (#2728); nullopt when the target has
-    /// exited or its PID now names another process.
-    // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
-    std::function<std::optional<Broker::ProcessCountersEntry>(const ProcessTarget&, bool withSockets)> processCounters{};
-    /// The processes hidepid hides from TaskSmack, as their /proc files' text (#2728): every one whose PID
-    /// isn't among the visible PIDs given.
-    // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
-    std::function<Broker::HiddenProcessesReply(std::span<const std::int32_t>)> hiddenProcesses{};
-    /// A service started, stopped, restarted or given a start type (#2728): Linux's helper, as root over the
-    /// system bus it opened before its sandbox. The reader checks the unit name.
-    // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
-    std::function<ServiceActionResult(const Broker::ServiceActionRequest&)> serviceAction{};
+    IProcessThreadsReader* threads = nullptr; ///< Process Details' threads (#3069)
     /// Replace Task Manager (#3072): Windows' helper sets or clears taskmgr.exe's IFEO Debugger, for the
-    /// TaskSmack.exe beside it only. A helper without it (Linux's) answers with an error.
+    /// TaskSmack.exe beside it only. A helper without it answers with an error.
     // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
     std::function<Broker::ActionResult(const Broker::TaskManagerReplacementRequest&)> taskManagerReplacement{};
     /// The Users tab's Disconnect and Sign out of another user's session (#3076): Windows' helper, after it
-    /// checks the session against a fresh list. A helper without it (Linux's: polkit authorizes there)
-    /// answers with an error.
+    /// checks the session against a fresh list. A helper without it answers with an error.
     // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
     std::function<ServiceActionResult(const Broker::SessionActionRequest&)> sessionAction{};
-    /// System Information's privileged firmware files (#2310)
-    // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
-    std::function<Broker::FirmwareFileReply(Broker::FirmwareFile)> firmwareFile{};
-    /// Every process's UDP bytes from the eBPF counter (#3366): Linux's helper, which loaded it at startup when
-    /// TaskSmack asked. A helper without it (Windows': ETW counts in TaskSmack itself) answers with an error.
-    // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
-    std::function<Broker::UdpBytesReply()> udpBytes{};
-    /// System Information's Recent crashes, every user's (#2310)
-    // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
-    std::function<CrashesInfo()> crashes{};
 };
 
 /// The answer to @p request: a HelloReply to the handshake, an ActionResult to a process action through

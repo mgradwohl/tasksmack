@@ -1042,7 +1042,7 @@ TEST_F(ProcessDetailsPanelRenderTest, TheIoSliderGainsRealtimeOnceTheActionsCanS
                                                       /*wait=*/true);
     ASSERT_EQ(mock->getIoPriorityCount(), 1);
 
-    caps.canSetRealtimeIoPriority = true; // The helper connected
+    caps.canSetRealtimeIoPriority = true; // CAP_SYS_NICE: an Administrator session (#3580)
     mock->setCapabilities(caps);
     static_cast<void>(renderAndCapture(panel));
     EXPECT_TRUE(panel.actionCapabilities().canSetRealtimeIoPriority);
@@ -1081,8 +1081,8 @@ TEST_F(ProcessDetailsPanelRenderTest, TheIoSliderGainsRealtimeOnceTheActionsCanS
 }
 
 // #3182: the panel asks for the actions' capabilities every frame, on the UI thread. Through the helper's
-// broker that read the helper's connection as last seen, never connected(), which peeks at the pipe or
-// polls the socket: no frame makes a call on the channel, while the Realtime stops still follow the helper.
+// broker they never call connected(), which peeks at the pipe: no frame makes a call on the channel. And since
+// #3580 a running helper adds no Realtime I/O stop: that was the Linux helper's.
 TEST_F(ProcessDetailsPanelRenderTest, EveryFramesCapabilitiesReadTheHelpersConnectionWithoutAskingTheBroker)
 {
     auto inner = std::make_unique<TestMocks::MockProcessActions>();
@@ -1102,13 +1102,14 @@ TEST_F(ProcessDetailsPanelRenderTest, EveryFramesCapabilitiesReadTheHelpersConne
     EXPECT_TRUE(panel.actionCapabilities().canAuthorizeInteractively);
     EXPECT_FALSE(panel.actionCapabilities().canSetRealtimeIoPriority);
 
-    broker->setConnected(true); // "Authenticate and retry" started the helper, on a worker
+    broker->setConnected(true); // "Retry as administrator" started the helper, on a worker
     for (int frame = 0; frame < 5; ++frame)
     {
         panel.updateWithSamples(samples, 1.0F);
         static_cast<void>(renderAndCapture(panel));
     }
-    EXPECT_TRUE(panel.actionCapabilities().canSetRealtimeIoPriority);
+    EXPECT_TRUE(panel.actionCapabilities().canAuthorizeInteractively);
+    EXPECT_FALSE(panel.actionCapabilities().canSetRealtimeIoPriority) << "the helper adds no Realtime class (#3580)";
     EXPECT_EQ(broker->connectedCallCount(), 0) << "no frame looked at the helper's channel";
 }
 

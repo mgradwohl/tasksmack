@@ -4,16 +4,12 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
-#include "Platform/IProcessMemoryMap.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
-#include "Platform/IProcessProbe.h"
 #include "Platform/IProcessThreads.h"
 #include "Platform/IServiceActions.h"
 
 #include <exception>
-#include <expected>
-#include <optional>
 #include <string>
 #include <utility>
 #include <variant>
@@ -62,13 +58,6 @@ namespace
     {
         return Broker::ActionResult::from(actions.setAffinity(affinity->target, affinity->cpus));
     }
-    // Normal, Batch or Idle with priority 0, or FIFO or round robin with 1 to 99 (#3086, #3219): the decoder refused
-    // any other pair, Deadline included, and the actions refuse it again.
-    if (const auto* policy = std::get_if<Broker::SchedPolicyRequest>(&request))
-    {
-        return Broker::ActionResult::from(
-            actions.setSchedPolicy(policy->target, policy->policy, policy->rtPriority, policy->realtimeThreads));
-    }
     // By its inode (Linux, #3066), or with none, by its IPv4 TCP endpoints (Windows, #3358).
     if (const auto* close = std::get_if<Broker::CloseConnectionRequest>(&request))
     {
@@ -102,8 +91,8 @@ namespace
 namespace
 {
 
-// One handler per read kind (#2514). Each runs with the helper's privilege (root on Linux, elevated on
-// Windows) for the TaskSmack that started it, so each says what it allows. A reader that throws gives
+// One handler per read kind (#2514). Each runs with the helper's privilege (elevated, on Windows) for the
+// TaskSmack that started it, so each says what it allows. A reader that throws gives
 // its kind's failure, never an escaped exception.
 
 /// Process Details' environment (#2309): the reader checks the target's identity (PID and start time)
@@ -160,41 +149,6 @@ namespace
     }
 }
 
-/// Process Details' memory map (#3089): the reader checks the target's identity itself, and reads only that
-/// process's own smaps.
-[[nodiscard]] Broker::Response handleMemoryMap(const Broker::MemoryMapRequest& read, const Readers& readers)
-{
-    if (readers.memoryMap == nullptr)
-    {
-        return Broker::ErrorReply{.message = "This helper doesn't read memory maps"};
-    }
-    try
-    {
-        return Broker::MemoryMapReply{.result = readers.memoryMap->readMemoryMap(read.target)};
-    }
-    catch (...)
-    {
-        return Broker::MemoryMapReply{.result = {.status = MemoryMapReadStatus::Failed, .mappings = {}, .detail = {}}};
-    }
-}
-
-/// Every process's UDP bytes (#3366): the counter's totals, as the helper read them.
-[[nodiscard]] Broker::Response handleUdpBytes(const Readers& readers)
-{
-    if (!readers.udpBytes)
-    {
-        return Broker::ErrorReply{.message = "This helper doesn't count UDP bytes"};
-    }
-    try
-    {
-        return readers.udpBytes();
-    }
-    catch (...)
-    {
-        return Broker::UdpBytesReply{.status = Broker::UdpBytesStatus::Failed, .detail = "The helper couldn't read its UDP counter"};
-    }
-}
-
 /// Process Details' threads (#3069): the reader checks the target's identity itself.
 [[nodiscard]] Broker::Response handleThreads(const Broker::ThreadsRequest& read, const Readers& readers)
 {
@@ -229,88 +183,7 @@ namespace
     }
 }
 
-/// The Memory section's PSS and USS (#2309): the read checks the target's start time before trusting
-/// what it reads (smaps_rollup on Linux).
-[[nodiscard]] Broker::Response handleMemoryRollup(const Broker::MemoryRollupRequest& read, const Readers& readers)
-{
-    if (!readers.memoryRollup)
-    {
-        return Broker::ErrorReply{.message = "This helper doesn't read PSS and USS"};
-    }
-    try
-    {
-        return Broker::MemoryRollupReply{.result = readers.memoryRollup(read.target.pid, read.target.startTimeTicks)};
-    }
-    catch (...)
-    {
-        return Broker::MemoryRollupReply{.result = std::unexpected(MemoryRollupFailure::Unavailable)};
-    }
-}
-
-/// Many processes' FD counts and I/O bytes (#2728): an entry for each target its reader still finds, in order.
-[[nodiscard]] Broker::Response handleProcessCounters(const Broker::ProcessCountersRequest& read, const Readers& readers)
-{
-    if (!readers.processCounters)
-    {
-        return Broker::ErrorReply{.message = "This helper doesn't read process counters"};
-    }
-    Broker::ProcessCountersReply reply;
-    reply.entries.reserve(read.targets.size());
-    for (const ProcessTarget& target : read.targets)
-    {
-        try
-        {
-            if (std::optional<Broker::ProcessCountersEntry> entry = readers.processCounters(target, read.withSockets))
-            {
-                reply.entries.push_back(std::move(*entry));
-            }
-        }
-        catch (...)
-        {
-            continue; // that one process is left out; the others' counters still go back
-        }
-    }
-    return reply;
-}
-
-/// The processes hidepid hides from TaskSmack (#2728). A helper without the reader answers with an error,
-/// which TaskSmack takes as "this helper never lists them" and doesn't ask again. A reader that throws
-/// lists none this time, marked truncated, so the next refresh asks again (#3032): one failed read, a
-/// process gone mid-walk or a failed allocation, isn't the helper lacking the reader.
-[[nodiscard]] Broker::Response handleHiddenProcesses(const Broker::HiddenProcessesRequest& read, const Readers& readers)
-{
-    if (!readers.hiddenProcesses)
-    {
-        return Broker::ErrorReply{.message = "This helper doesn't list hidden processes"};
-    }
-    try
-    {
-        return readers.hiddenProcesses(read.visiblePids);
-    }
-    catch (...)
-    {
-        return Broker::HiddenProcessesReply{.processes = {}, .truncated = true};
-    }
-}
-
-/// A service action (#2728): a helper without the reader (Windows') answers with an error.
-[[nodiscard]] Broker::Response handleServiceAction(const Broker::ServiceActionRequest& request, const Readers& readers)
-{
-    if (!readers.serviceAction)
-    {
-        return Broker::ErrorReply{.message = "This helper doesn't act on services"};
-    }
-    try
-    {
-        return Broker::ServiceActionReply{.result = readers.serviceAction(request)};
-    }
-    catch (const std::exception& error)
-    {
-        return Broker::ServiceActionReply{.result = ServiceActionResult::failed(std::string("The service action failed: ") + error.what())};
-    }
-}
-
-/// Replace Task Manager (#3072): a helper without the handler (Linux's) answers with an error. The handler
+/// Replace Task Manager (#3072): a helper without the handler answers with an error. The handler
 /// checks the path itself; one that throws is a failed ActionResult.
 [[nodiscard]] Broker::Response handleTaskManagerReplacement(const Broker::TaskManagerReplacementRequest& request, const Readers& readers)
 {
@@ -332,7 +205,7 @@ namespace
     }
 }
 
-/// A session's Disconnect or Sign out (#3076): a helper without the handler (Linux's) answers with an error.
+/// A session's Disconnect or Sign out (#3076): a helper without the handler answers with an error.
 [[nodiscard]] Broker::Response handleSessionAction(const Broker::SessionActionRequest& request, const Readers& readers)
 {
     if (!readers.sessionAction)
@@ -346,41 +219,6 @@ namespace
     catch (const std::exception& error)
     {
         return Broker::ServiceActionReply{.result = ServiceActionResult::failed(std::string("The session action failed: ") + error.what())};
-    }
-}
-
-/// System Information's privileged firmware facts (#2310): only the files FirmwareFile names, never a path.
-[[nodiscard]] Broker::Response handleFirmwareFile(const Broker::FirmwareFileRequest& read, const Readers& readers)
-{
-    if (!readers.firmwareFile)
-    {
-        return Broker::ErrorReply{.message = "This helper doesn't read firmware files"};
-    }
-    try
-    {
-        return readers.firmwareFile(read.file);
-    }
-    catch (...)
-    {
-        return Broker::FirmwareFileReply{.status = Broker::FirmwareFileStatus::Unreadable, .bytes = {}};
-    }
-}
-
-/// Every user's crashes (#2310). On Linux: journal entries the reader trust-checks, and cores from the
-/// coredump directory only.
-[[nodiscard]] Broker::Response handleCrashes(const Readers& readers)
-{
-    if (!readers.crashes)
-    {
-        return Broker::ErrorReply{.message = "This helper doesn't read crashes"};
-    }
-    try
-    {
-        return Broker::CrashesReply{.info = readers.crashes()};
-    }
-    catch (...)
-    {
-        return Broker::ErrorReply{.message = "The crash read failed"};
     }
 }
 
@@ -431,34 +269,6 @@ Broker::Response handleRequest(const Broker::Request& request, IProcessActions& 
     {
         return handleThreads(*read, readers);
     }
-    if (const auto* read = std::get_if<Broker::MemoryMapRequest>(&request))
-    {
-        return handleMemoryMap(*read, readers);
-    }
-    if (std::holds_alternative<Broker::UdpBytesRequest>(request))
-    {
-        return handleUdpBytes(readers);
-    }
-    if (const auto* read = std::get_if<Broker::MemoryRollupRequest>(&request))
-    {
-        return handleMemoryRollup(*read, readers);
-    }
-    if (const auto* read = std::get_if<Broker::FirmwareFileRequest>(&request))
-    {
-        return handleFirmwareFile(*read, readers);
-    }
-    if (const auto* read = std::get_if<Broker::ProcessCountersRequest>(&request))
-    {
-        return handleProcessCounters(*read, readers);
-    }
-    if (const auto* read = std::get_if<Broker::HiddenProcessesRequest>(&request))
-    {
-        return handleHiddenProcesses(*read, readers);
-    }
-    if (const auto* service = std::get_if<Broker::ServiceActionRequest>(&request))
-    {
-        return handleServiceAction(*service, readers);
-    }
     if (const auto* replacement = std::get_if<Broker::TaskManagerReplacementRequest>(&request))
     {
         return handleTaskManagerReplacement(*replacement, readers);
@@ -466,10 +276,6 @@ Broker::Response handleRequest(const Broker::Request& request, IProcessActions& 
     if (const auto* session = std::get_if<Broker::SessionActionRequest>(&request))
     {
         return handleSessionAction(*session, readers);
-    }
-    if (std::holds_alternative<Broker::CrashesRequest>(request))
-    {
-        return handleCrashes(readers);
     }
     return handleAction(request, actions);
 }

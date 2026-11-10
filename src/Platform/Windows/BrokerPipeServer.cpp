@@ -59,20 +59,13 @@ bool isRead(const Broker::Request& request) noexcept
     // Every kind is sorted into the Hello, an action or a read. One added to Broker::Request must be
     // sorted here too, or a one-action session (#2550) and the over-the-shoulder read filter
     // (BrokerHelper::readsOnlyOwnProcesses) might let it through: revisit both, then this count.
-    // ServiceActionRequest and SchedPolicyRequest (#3086, Linux only) are actions Windows' helper doesn't do (an
-    // ErrorReply), so they are neither here.
     // TaskManagerReplacementRequest (#3072), SessionActionRequest (#3076), ThreadActionRequest (#3069) and
-    // CloseConnectionRequest (#3358) are actions (isActionWindowsDoes()).
-    static_assert(std::variant_size_v<Broker::Request> == 24, "sort the new request kind into an action or a read");
+    // CloseConnectionRequest (#3358) are actions (isActionWindowsDoes()). Protocol v23 dropped the kinds only
+    // Linux's helper served (#3580).
+    static_assert(std::variant_size_v<Broker::Request> == 15, "sort the new request kind into an action or a read");
     return std::holds_alternative<Broker::EnvironmentRequest>(request) || std::holds_alternative<Broker::ModulesRequest>(request) ||
            std::holds_alternative<Broker::OpenFilesRequest>(request) || std::holds_alternative<Broker::ConnectionsRequest>(request) ||
-           std::holds_alternative<Broker::MemoryRollupRequest>(request) || std::holds_alternative<Broker::FirmwareFileRequest>(request) ||
-           std::holds_alternative<Broker::CrashesRequest>(request) ||
-           std::holds_alternative<Broker::ProcessCountersRequest>(request) || // Windows reads every process itself: an ErrorReply
-           std::holds_alternative<Broker::HiddenProcessesRequest>(request) || // Windows has no hidepid: an ErrorReply
-           std::holds_alternative<Broker::ThreadsRequest>(request) ||         // Process Details' threads (#3069)
-           std::holds_alternative<Broker::MemoryMapRequest>(request) || // its memory map (#3089): an ErrorReply until Windows reads one
-           std::holds_alternative<Broker::UdpBytesRequest>(request);    // #3366: Windows counts UDP with ETW itself, an ErrorReply
+           std::holds_alternative<Broker::ThreadsRequest>(request); // Process Details' threads (#3069)
 }
 
 bool putsOffTheWindowsIdleExit(const Broker::Request& request) noexcept
