@@ -706,12 +706,12 @@ TEST(ProcessModelTest, FindSnapshotReturnsMatchingProcessAmongMultiple)
     model.refresh();
 
     const auto found = model.findSnapshot(200);
-    ASSERT_TRUE(found.has_value());
+    ASSERT_NE(found, nullptr);
     EXPECT_EQ(found->pid, 200);
     EXPECT_EQ(found->name, "beta");
 }
 
-TEST(ProcessModelTest, FindSnapshotReturnsNulloptForUnknownPid)
+TEST(ProcessModelTest, FindSnapshotReturnsNullForUnknownPid)
 {
     auto probe = std::make_unique<MockProcessProbe>();
     auto* rawProbe = probe.get();
@@ -722,7 +722,7 @@ TEST(ProcessModelTest, FindSnapshotReturnsNulloptForUnknownPid)
     Domain::ProcessModel model(std::move(probe));
     model.refresh();
 
-    EXPECT_FALSE(model.findSnapshot(999).has_value());
+    EXPECT_EQ(model.findSnapshot(999), nullptr);
 }
 
 TEST(ProcessModelTest, FindSnapshotReflectsLatestRefreshEvenWithoutCopyingFullVector)
@@ -737,7 +737,7 @@ TEST(ProcessModelTest, FindSnapshotReflectsLatestRefreshEvenWithoutCopyingFullVe
     model.refresh();
 
     const auto before = model.findSnapshot(100);
-    ASSERT_TRUE(before.has_value());
+    ASSERT_NE(before, nullptr);
     EXPECT_DOUBLE_EQ(before->cpuPercent, 0.0);
 
     rawProbe->setCounters({makeCounter(100, "test", 'R', 2000, 0, 5000)});
@@ -745,8 +745,34 @@ TEST(ProcessModelTest, FindSnapshotReflectsLatestRefreshEvenWithoutCopyingFullVe
     model.refresh();
 
     const auto after = model.findSnapshot(100);
-    ASSERT_TRUE(after.has_value());
+    ASSERT_NE(after, nullptr);
     EXPECT_GT(after->cpuPercent, 0.0);
+    EXPECT_DOUBLE_EQ(before->cpuPercent, 0.0) << "a held result keeps its own generation's row";
+}
+
+// #3601: findSnapshot() shares the published row instead of copying it.
+TEST(ProcessModelTest, FindSnapshotSharesThePublishedRowInsteadOfCopyingIt)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+
+    rawProbe->setCounters({makeCounter(100, "alpha", 'R', 1000, 0, 5000), makeCounter(200, "beta", 'S', 2000, 0, 6000)});
+    rawProbe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    const auto found = model.findSnapshot(200);
+    ASSERT_NE(found, nullptr);
+    EXPECT_EQ(found.get(), model.findSnapshot(200).get()) << "two lookups share one row";
+
+    std::shared_ptr<const std::vector<Domain::ProcessSnapshot>> rows;
+    std::uint64_t version = 0;
+    ASSERT_TRUE(model.tryCopySnapshotsIfNewer(0, rows, version));
+    ASSERT_NE(rows, nullptr);
+    const auto published = std::ranges::find(*rows, 200, &Domain::ProcessSnapshot::pid);
+    ASSERT_NE(published, rows->end());
+    EXPECT_EQ(found.get(), &*published) << "the row is the published generation's own";
 }
 
 // =============================================================================
