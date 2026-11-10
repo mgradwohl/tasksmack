@@ -137,7 +137,7 @@ try {
   # Section, key and the value as TaskSmack writes it.
   $fixtureSettings = @(
     @('theme', 'id', "'dracula'"),
-    @('font', 'size', "'large'"),
+    @('font', 'point_size', '10'),
     @('sampling', 'interval_ms', '2000'),
     @('sampling', 'history_max_seconds', '600'),
     @('ui', 'show_privilege_notice', 'false'),
