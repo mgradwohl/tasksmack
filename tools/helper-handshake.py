@@ -56,6 +56,7 @@ HELLO_PAYLOADS = {
     19: lambda version: struct.pack("<HB", version, 0),  # Hello unchanged; ReadUdpBytes added (#3366)
     20: lambda version: struct.pack("<HB", version, 0),  # Hello unchanged; CloseConnection carries TCP endpoints (#3358)
     21: lambda version: struct.pack("<HB", version, 0),  # Hello unchanged; HiddenProcessesResult carries the I/O priority (#3572)
+    22: lambda version: struct.pack("<HB", version, 0),  # Hello unchanged; Efficiency mode carries a priority class (#3327)
 }
 
 

@@ -41,6 +41,7 @@
 #include <expected>
 #include <filesystem>
 #include <format>
+#include <memory>
 #include <optional>
 #include <stop_token>
 #include <string>
@@ -486,11 +487,22 @@ WindowsProcessActions::WindowsProcessActions() : WindowsProcessActions(realWindo
 {}
 
 WindowsProcessActions::WindowsProcessActions(WindowsProcessFunctions functions)
+    : WindowsProcessActions(functions, sharedEfficiencyModePriorities())
+{}
+
+WindowsProcessActions::WindowsProcessActions(WindowsProcessFunctions functions,
+                                             std::shared_ptr<EfficiencyModePriorities> efficiencyPriorities)
     : m_Fns(functions),
       m_GroupSizes((m_Fns.readGroupSizes != nullptr) ? m_Fns.readGroupSizes() : std::vector<std::uint32_t>{}),
       // Constant for the process's life, so read once: actionCapabilities() is asked every frame (#3182).
-      m_Elevated(m_Fns.runProgram.shellExecute != nullptr && m_Fns.runProgram.isElevated != nullptr && m_Fns.runProgram.isElevated())
-{}
+      m_Elevated(m_Fns.runProgram.shellExecute != nullptr && m_Fns.runProgram.isElevated != nullptr && m_Fns.runProgram.isElevated()),
+      m_EfficiencyPriorities(std::move(efficiencyPriorities))
+{
+    if (m_EfficiencyPriorities == nullptr)
+    {
+        m_EfficiencyPriorities = sharedEfficiencyModePriorities();
+    }
+}
 
 ProcessActionCapabilities WindowsProcessActions::actionCapabilities() const
 {
@@ -797,7 +809,7 @@ ProcessActionResult WindowsProcessActions::setEfficiencyMode(const ProcessTarget
         return callFailure(
             m_Fns, process.handle.get(), target, GuardedAction::EfficiencyMode, error, efficiencyModeFailure(error, target.pid, on));
     }
-    EfficiencyModePriorities& priorities = sharedEfficiencyModePriorities();
+    EfficiencyModePriorities& priorities = *m_EfficiencyPriorities;
     if (on)
     {
         if (m_Fns.setPriorityClass(process.handle.get(), IDLE_PRIORITY_CLASS) == FALSE)
@@ -813,11 +825,16 @@ ProcessActionResult WindowsProcessActions::setEfficiencyMode(const ProcessTarget
         }
         priorities.remember(target, current);
         spdlog::info("Turned Efficiency mode on for PID {} (priority class was 0x{:X})", target.pid, current);
-        return ProcessActionResult::ok();
+        ProcessActionResult turnedOn = ProcessActionResult::ok();
+        turnedOn.priorityClassBefore = current; // for TaskSmack to remember when this is the helper (#3327)
+        return turnedOn;
     }
 
-    const std::optional<std::uint32_t> remembered = priorities.take(target);
-    const std::optional<std::uint32_t> restore = priorityClassToRestore(remembered, current);
+    // Forgotten only once restored: a refused class change, retried through the helper, still sends it (#3327).
+    const std::optional<std::uint32_t> remembered = priorities.find(target);
+    const bool realtimeRetry = current == HIGH_PRIORITY_CLASS && priorities.isRealtimeRetry(target);
+    const std::optional<std::uint32_t> restore =
+        realtimeRetry ? std::optional<std::uint32_t>{REALTIME_PRIORITY_CLASS} : priorityClassToRestore(remembered, current);
     if (restore.has_value() && m_Fns.setPriorityClass(process.handle.get(), *restore) == FALSE)
     {
         const DWORD error = GetLastError();
@@ -828,9 +845,65 @@ ProcessActionResult WindowsProcessActions::setEfficiencyMode(const ProcessTarget
                            error,
                            efficiencyModePriorityFailure(error, target.pid, false));
     }
-    const std::string_view note = efficiencyModeOffNote(remembered, restore);
+    std::string note{efficiencyModeOffNote(remembered, restore)};
+    if (restore == REALTIME_PRIORITY_CLASS)
+    {
+        // Without SeIncreaseBasePriorityPrivilege, Windows quietly sets High (#3429): read back as setPriority() does.
+        // High keeps Realtime remembered and marks the off for the administrator retry, which is asked to set it
+        // (efficiencyNiceToRestore(), #3590). An unreadable class keeps the read-back's note.
+        ProcessActionResult readBack = realtimeReadBackResult(m_Fns.getPriorityClass(process.handle.get()), target.pid);
+        if (!readBack.success)
+        {
+            if (readBack.permissionDenied)
+            {
+                priorities.markRealtimeRetry(target);
+            }
+            spdlog::warn("Efficiency mode off for PID {}: Realtime not restored: {}", target.pid, readBack.errorMessage);
+            return efficiencyModeRealtimeRestoreRefusal(std::move(readBack), target.pid);
+        }
+        if (!readBack.successNote.empty())
+        {
+            note = note.empty() ? std::move(readBack.successNote) : note + "; " + readBack.successNote;
+        }
+    }
+    static_cast<void>(priorities.take(target));
     spdlog::info("Turned Efficiency mode off for PID {}{}", target.pid, note.empty() ? std::string{} : std::format(" ({})", note));
-    return ProcessActionResult::ok(std::string{note});
+    return ProcessActionResult::ok(std::move(note));
+}
+
+std::optional<std::int32_t> WindowsProcessActions::efficiencyNiceToRestore(const ProcessTarget& target) const
+{
+    if (m_EfficiencyPriorities->isRealtimeRetry(target))
+    {
+        return REALTIME_CLASS_NICE;
+    }
+    return std::nullopt;
+}
+
+std::optional<std::uint32_t> WindowsProcessActions::efficiencyPriorityClassToRestore(const ProcessTarget& target) const
+{
+    return m_EfficiencyPriorities->find(target);
+}
+
+void WindowsProcessActions::rememberEfficiencyPriorityClass(const ProcessTarget& target, std::uint32_t priorityClass)
+{
+    if (isPriorityClass(priorityClass))
+    {
+        m_EfficiencyPriorities->remember(target, priorityClass);
+    }
+}
+
+void WindowsProcessActions::setEfficiencyPriorityClassToRestore(const ProcessTarget& target, std::uint32_t priorityClass)
+{
+    if (isPriorityClass(priorityClass))
+    {
+        m_EfficiencyPriorities->assign(target, priorityClass);
+    }
+}
+
+void WindowsProcessActions::forgetEfficiencyPriorityClass(const ProcessTarget& target)
+{
+    static_cast<void>(m_EfficiencyPriorities->take(target));
 }
 
 ProcessActionResult WindowsProcessActions::setIoPriority(const ProcessTarget& target, IoPriorityClass ioClass, int32_t level)

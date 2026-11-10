@@ -78,7 +78,9 @@ namespace Platform::Broker
 /// 19: ReadUdpBytes, every process's UDP bytes from the Linux helper's eBPF counter (#3366, Linux).
 /// 20: CloseConnection carries an IPv4 TCP connection's endpoints, which name it on Windows (#3358, Windows).
 /// 21: HiddenProcessesResult carries each hidden process's raw I/O priority, read by the helper (#3572, Linux).
-inline constexpr std::uint16_t PROTOCOL_VERSION = 21;
+/// 22: SetEfficiencyMode carries the priority class an off restores, and ActionResult the class an on replaced, so
+///     TaskSmack remembers it wherever the on ran (#3327, Windows).
+inline constexpr std::uint16_t PROTOCOL_VERSION = 22;
 /// The largest frame either side accepts, header included.
 inline constexpr std::size_t MAX_MESSAGE_BYTES = std::size_t{8} << 20U;
 /// The most processes one ReadProcessCounters asks about (#2728); a sampler with more asks for the first.
@@ -230,11 +232,15 @@ struct SchedPolicyRequest
     friend bool operator==(const SchedPolicyRequest&, const SchedPolicyRequest&) = default;
 };
 
-/// Turn Efficiency mode on or off for a process (#3071, protocol v9): IProcessActions::setEfficiencyMode().
+/// Turn Efficiency mode on or off for a process (#3071, protocol v9): IProcessActions::setEfficiencyMode(). An off
+/// carries the priority class TaskSmack remembers the on replaced (#3327, protocol v22; Windows): the helper restores
+/// it, though the on ran in TaskSmack or in an earlier helper. 0: TaskSmack doesn't know it, and the helper's off
+/// restores what it remembers itself, or Normal, saying so.
 struct EfficiencyModeRequest
 {
     ProcessTarget target;
     bool on = false;
+    std::uint32_t restorePriorityClass = 0; ///< An off: the Windows priority class to restore; 0 unknown
     friend bool operator==(const EfficiencyModeRequest&, const EfficiencyModeRequest&) = default;
 };
 
@@ -675,15 +681,24 @@ struct ActionResult
     bool success = false;
     std::string errorMessage;
     std::string successNote;
+    /// An Efficiency mode on's: the priority class it replaced, for TaskSmack to remember (#3327, protocol v22); else 0.
+    std::uint32_t priorityClassBefore = 0;
     friend bool operator==(const ActionResult&, const ActionResult&) = default;
 
     [[nodiscard]] static ActionResult from(const ProcessActionResult& result)
     {
-        return {.success = result.success, .errorMessage = result.errorMessage, .successNote = result.successNote};
+        return {
+            .success = result.success,
+            .errorMessage = result.errorMessage,
+            .successNote = result.successNote,
+            .priorityClassBefore = result.priorityClassBefore,
+        };
     }
     [[nodiscard]] ProcessActionResult toProcessActionResult() const
     {
-        return success ? ProcessActionResult::ok(successNote) : ProcessActionResult::error(errorMessage);
+        ProcessActionResult result = success ? ProcessActionResult::ok(successNote) : ProcessActionResult::error(errorMessage);
+        result.priorityClassBefore = priorityClassBefore;
+        return result;
     }
 };
 
@@ -1042,11 +1057,12 @@ namespace Detail
     return MessageKind::SetIoPriority;
 }
 
-/// SetEfficiencyMode (#3071): the target, then whether it is turned on (0 or 1).
+/// SetEfficiencyMode (#3071): the target, whether it is turned on (0 or 1), then the class an off restores (#3327).
 [[nodiscard]] inline MessageKind encodePayload(Writer& writer, const EfficiencyModeRequest& efficiency)
 {
     writer.target(efficiency.target);
     writer.u8(efficiency.on ? 1U : 0U);
+    writer.u32(efficiency.restorePriorityClass);
     return MessageKind::SetEfficiencyMode;
 }
 
@@ -1507,7 +1523,9 @@ namespace Detail
     case MessageKind::SetSchedPolicy:
         return Detail::finish<Request>(reader, id, Detail::decodeSchedPolicyRequest(reader));
     case MessageKind::SetEfficiencyMode:
-        return Detail::finish<Request>(reader, id, EfficiencyModeRequest{.target = reader.target(), .on = reader.flag()});
+        // Any class decodes (#3327): the helper's actions remember only a real priority class.
+        return Detail::finish<Request>(
+            reader, id, EfficiencyModeRequest{.target = reader.target(), .on = reader.flag(), .restorePriorityClass = reader.u32()});
     case MessageKind::CloseConnection:
         return Detail::finish<Request>(reader, id, Detail::decodeCloseConnectionRequest(reader));
     case MessageKind::TaskManagerReplacement:
@@ -1576,12 +1594,13 @@ namespace Detail
     return MessageKind::HelloReply;
 }
 
-/// ActionResult: success, the error message, then the success note.
+/// ActionResult: success, the error message, the success note, then the priority class an Efficiency mode on replaced (#3327).
 [[nodiscard]] inline MessageKind encodePayload(Writer& writer, const ActionResult& result)
 {
     writer.u8(result.success ? 1 : 0);
     writer.text(result.errorMessage);
     writer.text(result.successNote);
+    writer.u32(result.priorityClassBefore);
     return MessageKind::ActionResult;
 }
 
@@ -1990,13 +2009,20 @@ namespace Detail
     return HelloReply{.version = version, .accepted = reader.flag()};
 }
 
-/// An ActionResult's payload: the success flag, the error message, then the success note.
+/// An ActionResult's payload: the success flag, the error message, the success note, then the priority class an
+/// Efficiency mode on replaced (#3327).
 [[nodiscard]] inline ActionResult decodeActionResult(Reader& reader)
 {
     const bool success = reader.flag();
     std::string errorMessage = reader.text();
     std::string successNote = reader.text();
-    return ActionResult{.success = success, .errorMessage = std::move(errorMessage), .successNote = std::move(successNote)};
+    const std::uint32_t priorityClassBefore = reader.u32();
+    return ActionResult{
+        .success = success,
+        .errorMessage = std::move(errorMessage),
+        .successNote = std::move(successNote),
+        .priorityClassBefore = priorityClassBefore,
+    };
 }
 
 /// An EnvironmentResult's payload: the status (refused past Failed), truncated, a count (refused past

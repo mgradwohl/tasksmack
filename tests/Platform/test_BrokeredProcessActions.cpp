@@ -29,6 +29,7 @@
 #include <stop_token>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace Platform
@@ -858,6 +859,73 @@ TEST(BrokeredProcessActionsTest, AnEfficiencyOffThroughTheHelperPutsBackTheRemem
     ASSERT_EQ(f.broker->requests().size(), 4U);
     EXPECT_EQ(f.broker->requests()[3], (Broker::Request{Broker::EfficiencyModeRequest{.target = TARGET, .on = false}}));
     EXPECT_EQ(f.inner->efficiencyModeCount(), 5);
+}
+
+// #3327 (Windows): the helper's on replies with the class it replaced, and TaskSmack remembers it; the off the
+// helper finishes carries that class back, so the helper restores it though it never saw the on (or exited since),
+// and TaskSmack forgets it once that off succeeds. The retry and "Authenticate and retry" alike.
+TEST(BrokeredProcessActionsTest, TheHelpersOnIsRememberedInProcessAndItsOffCarriesTheClassBack)
+{
+    constexpr std::uint32_t HIGH_CLASS = 0x80;
+    const Fixture f(/*connected=*/true);
+    f.broker->setAnswer(
+        [](const Broker::Request& request) -> std::expected<Broker::Response, std::string>
+        {
+            const auto& efficiency = std::get<Broker::EfficiencyModeRequest>(request);
+            return Broker::ActionResult{
+                .success = true,
+                .errorMessage = {},
+                .successNote = {},
+                .priorityClassBefore = efficiency.on ? HIGH_CLASS : 0U,
+            };
+        });
+    f.inner->setEfficiencyModeResult(ProcessActionResult::denied("Access denied"));
+
+    ASSERT_TRUE(f.actions->setEfficiencyMode(TARGET, true).success);
+    EXPECT_EQ(f.inner->efficiencyPriorityClassToRestore(TARGET), std::optional<std::uint32_t>{HIGH_CLASS}) << "remembered here";
+
+    ASSERT_TRUE(f.actions->setEfficiencyMode(TARGET, false).success);
+    ASSERT_EQ(f.broker->requests().size(), 2U);
+    EXPECT_EQ(f.broker->requests()[1],
+              (Broker::Request{Broker::EfficiencyModeRequest{.target = TARGET, .on = false, .restorePriorityClass = HIGH_CLASS}}));
+    EXPECT_FALSE(f.inner->efficiencyPriorityClassToRestore(TARGET).has_value()) << "spent";
+    EXPECT_EQ(f.inner->efficiencyLog(), (std::vector<std::string>{"on", "remember 0x80", "off", "forget"}));
+
+    // "Authenticate and retry": the in-process off is tried first, then the helper's carries the class.
+    f.inner->rememberEfficiencyPriorityClass(TARGET, HIGH_CLASS);
+    const AuthorizedAction off{.kind = AuthorizedAction::Kind::SetEfficiencyMode, .target = TARGET, .efficiencyMode = false};
+    ASSERT_TRUE(f.actions->runAuthorized(off, std::stop_token{}).success);
+    EXPECT_EQ(f.broker->requests().back(),
+              (Broker::Request{Broker::EfficiencyModeRequest{.target = TARGET, .on = false, .restorePriorityClass = HIGH_CLASS}}));
+    EXPECT_FALSE(f.inner->efficiencyPriorityClassToRestore(TARGET).has_value());
+
+    // Another process given the same PID (a reused one) has nothing remembered: its off carries 0, and the helper
+    // falls back to what it remembers itself, or Normal, saying so.
+    f.inner->rememberEfficiencyPriorityClass(TARGET, HIGH_CLASS);
+    const ProcessTarget reused{.pid = TARGET.pid, .startTimeTicks = TARGET.startTimeTicks + 1};
+    ASSERT_TRUE(f.actions->setEfficiencyMode(reused, false).success);
+    EXPECT_EQ(f.broker->requests().back(), (Broker::Request{Broker::EfficiencyModeRequest{.target = reused, .on = false}}));
+    EXPECT_EQ(f.inner->efficiencyPriorityClassToRestore(TARGET), std::optional<std::uint32_t>{HIGH_CLASS}) << "the first's is kept";
+}
+
+// #3327: a helper's on or off that fails remembers and forgets nothing, and an on whose class the helper couldn't
+// read (0) isn't remembered.
+TEST(BrokeredProcessActionsTest, AFailedOrUnreadHelperEfficiencyChangeLeavesTheMemoryAlone)
+{
+    const Fixture f(/*connected=*/true);
+    f.inner->setEfficiencyModeResult(ProcessActionResult::denied("Access denied"));
+    f.broker->setAnswer([](const Broker::Request&) -> std::expected<Broker::Response, std::string>
+                        { return Broker::ActionResult{.success = false, .errorMessage = "Process not found", .successNote = {}}; });
+    f.inner->rememberEfficiencyPriorityClass(TARGET, 0x4000);
+    EXPECT_FALSE(f.actions->setEfficiencyMode(TARGET, false).success);
+    EXPECT_EQ(f.inner->efficiencyPriorityClassToRestore(TARGET), std::optional<std::uint32_t>{0x4000}) << "a failed off keeps it";
+
+    f.broker->setAnswer([](const Broker::Request&) -> std::expected<Broker::Response, std::string>
+                        { return Broker::ActionResult{.success = true, .errorMessage = {}, .successNote = {}}; });
+    const ProcessTarget other{.pid = 77, .startTimeTicks = 5};
+    ASSERT_TRUE(f.actions->setEfficiencyMode(other, true).success);
+    EXPECT_FALSE(f.inner->efficiencyPriorityClassToRestore(other).has_value()) << "no class in the reply";
+    EXPECT_EQ(f.inner->efficiencyLog(), (std::vector<std::string>{"remember 0x4000", "off", "on"}));
 }
 
 // #3066: closing another user's process's socket, refused in process, is retried through the helper as a
