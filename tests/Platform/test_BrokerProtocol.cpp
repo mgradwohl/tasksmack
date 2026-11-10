@@ -596,15 +596,6 @@ TEST(BrokerProtocolTest, AHellosSessionFlagIsOneByteOfZeroOrOne)
     EXPECT_FALSE(decodeRequest(bytes).has_value());
 }
 
-TEST(BrokerProtocolTest, ATransportWithoutASessionHelperRefusesToHoldOne)
-{
-    // Windows' Administrator restarts TaskSmack elevated (#2728); only the Linux helper is held.
-    Mocks::FakeBroker broker;
-    const auto held = broker.holdForSession(std::stop_token{});
-    EXPECT_FALSE(held.has_value());
-    EXPECT_FALSE(broker.heldForSession());
-}
-
 TEST(BrokerProtocolTest, RefusesAnythingButExactlyAKnownFrame)
 {
     const std::vector<std::uint8_t> good = encodeRequest(1, Request{SignalRequest{.target = TARGET, .signal = Signal::Kill}});

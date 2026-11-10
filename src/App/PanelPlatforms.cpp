@@ -8,12 +8,8 @@
 #include "Panels/SystemMetricsPanel.h"
 #include "Platform/BrokeredProcessActions.h"
 #include "Platform/BrokeredSystemInfoProbe.h"
-#include "Platform/BrokeredUdpTrafficCollector.h"
 #ifdef _WIN32
 #include "Platform/BrokeredUserSessions.h" // the Users tab's helper decorator: Windows only (#3076)
-#endif
-#ifndef _WIN32
-#include "Platform/BrokeredServiceActions.h" // the services panel's helper decorator: Linux only
 #endif
 #include "Platform/Factory.h"
 #include "Platform/IDiskProbe.h"
@@ -98,10 +94,8 @@ ProcessesPanelPlatform makeProcessesPanelPlatform(const Synthetic::Scenario* sce
         .probe = (scenario == nullptr) ? Platform::withPrivilegedBroker(Synthetic::makeProcessProbe(scenario), sharedPrivilegedBroker())
                                        : Synthetic::makeProcessProbe(scenario),
         .actions = processActionsFor(scenario),
-        // Windows' ETW collector, or on Linux the helper's eBPF counter through the broker (#3366).
-        .udpCollector = (scenario == nullptr)
-                          ? Platform::withPrivilegedBroker(Synthetic::makeUdpTrafficCollector(scenario), sharedPrivilegedBroker())
-                          : Synthetic::makeUdpTrafficCollector(scenario),
+        // Windows' ETW collector, or on Linux the eBPF counter TaskSmack loads when started as root (#3366, #3580).
+        .udpCollector = Synthetic::makeUdpTrafficCollector(scenario),
         .icons = Synthetic::makeProcessIconSource(scenario),
     };
     // Find handles (#3067): the readers Process Details uses, another user's processes through the helper.
@@ -183,16 +177,8 @@ std::shared_ptr<Platform::IUserSessions> makeUsersPanelSessions(const Synthetic:
 
 ServicesPanelPlatform makeServicesPanelPlatform(const Synthetic::Scenario* /*scenario*/)
 {
-#ifdef _WIN32
+    // No helper does service actions: Windows' doesn't, and Linux has none (#3580).
     return {.probe = Platform::makeServiceProbe(), .actions = Platform::makeServiceActions()};
-#else
-    // A refused action goes to a running helper, and Authenticate and retry starts it (#2728). Windows'
-    // helper doesn't do service actions, so Windows keeps its own.
-    return {
-        .probe = Platform::makeServiceProbe(),
-        .actions = Platform::withPrivilegedBroker(Platform::makeServiceActions(), sharedPrivilegedBroker()),
-    };
-#endif
 }
 
 StartupPanelPlatform makeStartupPanelPlatform(const Synthetic::Scenario* /*scenario*/)
