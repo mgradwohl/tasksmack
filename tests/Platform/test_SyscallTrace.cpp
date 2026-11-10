@@ -10,13 +10,19 @@
 
 #include <array>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <map>
 #include <optional>
 #include <set>
 #include <span>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
+
+#include <sys/stat.h>
 
 namespace Platform::SyscallTrace
 {
@@ -41,6 +47,100 @@ struct FakeExecutables
     {
         return findExecutable(name, pathEnv, fs);
     };
+}
+
+// --- onlyRootCouldPlace (#3605) ----------------------------------------------------------------------
+
+/// A fake stat(): each listed path's owner and mode; anything else doesn't exist.
+[[nodiscard]] auto ownershipOver(const std::map<std::string, PathOwnership>& entries)
+{
+    return [&entries](const std::string& path) -> std::optional<PathOwnership>
+    {
+        const auto it = entries.find(path);
+        return it != entries.end() ? std::optional<PathOwnership>(it->second) : std::nullopt;
+    };
+}
+
+constexpr std::uint32_t ROOT_DIR = 0040755;
+constexpr std::uint32_t ROOT_TOOL = 0100755;
+
+TEST(SyscallTraceTest, ARootOwnedToolInRootOwnedDirectoriesIsOneOnlyRootCouldPlace)
+{
+    const std::map<std::string, PathOwnership> fs{
+        {"/", {.uid = 0, .mode = ROOT_DIR}},
+        {"/usr", {.uid = 0, .mode = ROOT_DIR}},
+        {"/usr/bin", {.uid = 0, .mode = ROOT_DIR}},
+        {"/usr/bin/strace", {.uid = 0, .mode = ROOT_TOOL}},
+    };
+    EXPECT_TRUE(onlyRootCouldPlace("/usr/bin/strace", ownershipOver(fs)));
+}
+
+TEST(SyscallTraceTest, AToolAUserOwnsOrCouldReplaceIsNot)
+{
+    std::map<std::string, PathOwnership> fs{
+        {"/", {.uid = 0, .mode = ROOT_DIR}},
+        {"/home", {.uid = 0, .mode = ROOT_DIR}},
+        {"/home/someone", {.uid = 1000, .mode = 0040755}},
+        {"/home/someone/bin", {.uid = 1000, .mode = 0040755}},
+        {"/home/someone/bin/strace", {.uid = 0, .mode = ROOT_TOOL}},
+        {"/tmp", {.uid = 0, .mode = 0041777}},
+        {"/tmp/gcore", {.uid = 0, .mode = ROOT_TOOL}},
+        {"/usr", {.uid = 0, .mode = ROOT_DIR}},
+        {"/usr/local", {.uid = 0, .mode = 0042775}},
+        {"/usr/local/bin", {.uid = 0, .mode = ROOT_DIR}},
+        {"/usr/local/bin/xterm", {.uid = 0, .mode = ROOT_TOOL}},
+        {"/usr/bin", {.uid = 0, .mode = ROOT_DIR}},
+        {"/usr/bin/mine", {.uid = 1000, .mode = ROOT_TOOL}},
+        {"/usr/bin/shared", {.uid = 0, .mode = 0100775}},
+    };
+    const auto ownership = ownershipOver(fs);
+    EXPECT_FALSE(onlyRootCouldPlace("/home/someone/bin/strace", ownership)) << "a directory above it is the user's";
+    EXPECT_FALSE(onlyRootCouldPlace("/tmp/gcore", ownership)) << "anyone can write /tmp";
+    EXPECT_FALSE(onlyRootCouldPlace("/usr/local/bin/xterm", ownership)) << "a group can write /usr/local";
+    EXPECT_FALSE(onlyRootCouldPlace("/usr/bin/mine", ownership)) << "the file is a user's";
+    EXPECT_FALSE(onlyRootCouldPlace("/usr/bin/shared", ownership)) << "a group can write the file";
+    EXPECT_FALSE(onlyRootCouldPlace("/usr/bin/missing", ownership));
+    EXPECT_FALSE(onlyRootCouldPlace("usr/bin/strace", ownership)) << "not absolute";
+}
+
+// The same check over this machine's filesystem, as TaskSmack makes it as root: the shell the system installed is one
+// only root could place, and a file this test writes to the temp directory isn't.
+TEST(SyscallTraceTest, OnThisMachineTheSystemShellPassesAndATempFileDoesNot)
+{
+    const auto realOwnership = [](const std::string& path) -> std::optional<PathOwnership>
+    {
+        struct stat info{};
+        if (::lstat(path.c_str(), &info) != 0)
+        {
+            return std::nullopt;
+        }
+        return PathOwnership{.uid = info.st_uid, .mode = info.st_mode};
+    };
+    std::error_code ec;
+    const std::filesystem::path shell = std::filesystem::canonical("/bin/sh", ec);
+    ASSERT_FALSE(ec) << ec.message();
+    EXPECT_TRUE(onlyRootCouldPlace(shell.native(), realOwnership)) << shell;
+
+    const std::filesystem::path temp = std::filesystem::temp_directory_path() / "tasksmack-3605-tool";
+    {
+        std::ofstream(temp) << "#!/bin/sh\n";
+    }
+    const std::filesystem::path resolved = std::filesystem::canonical(temp, ec);
+    ASSERT_FALSE(ec) << ec.message();
+    EXPECT_FALSE(onlyRootCouldPlace(resolved.native(), realOwnership)) << resolved;
+    std::filesystem::remove(temp, ec);
+}
+
+TEST(SyscallTraceTest, AsRootToolsAreLookedUpOnlyInTheSystemsOwnDirectories)
+{
+    const FakeExecutables fs{{"/home/someone/bin/strace", "/usr/bin/strace", "/usr/local/sbin/gcore"}};
+    EXPECT_EQ(findExecutable("strace", ROOT_TOOL_PATH, fs), std::optional<std::string>("/usr/bin/strace"));
+    EXPECT_EQ(findExecutable("gcore", ROOT_TOOL_PATH, fs), std::optional<std::string>("/usr/local/sbin/gcore"));
+    for (const std::string_view dir : {"/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"})
+    {
+        EXPECT_TRUE(ROOT_TOOL_PATH.contains(dir)) << dir;
+    }
+    EXPECT_FALSE(ROOT_TOOL_PATH.contains("home"));
 }
 
 // --- findExecutable --------------------------------------------------------------------------------
