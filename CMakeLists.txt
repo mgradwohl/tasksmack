@@ -897,6 +897,7 @@ add_library(TaskSmackApp OBJECT
     ${TASKSMACK_HEADERS}
 )
 tasksmack_configure_app_target(TaskSmackApp)
+tasksmack_apply_privileged_hardening(TaskSmackApp) # runs as root in an Administrator session (#3605)
 
 # Precompiled headers, for the app's sources; main.cpp, alone in TaskSmack, is not worth one.
 if(TASKSMACK_ENABLE_PCH)
@@ -910,6 +911,7 @@ add_executable(TaskSmack WIN32
     $<TARGET_OBJECTS:TaskSmackApp>
 )
 tasksmack_configure_app_target(TaskSmack)
+tasksmack_apply_privileged_hardening(TaskSmack)
 
 # Embed custom manifest on Windows (for DPI awareness and OS compatibility)
 if(WIN32 AND EXISTS ${CMAKE_BINARY_DIR}/app.manifest)
