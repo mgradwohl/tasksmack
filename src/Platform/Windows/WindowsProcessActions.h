@@ -22,11 +22,15 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <memory>
+#include <optional>
 #include <stop_token>
 #include <vector>
 
 namespace Platform
 {
+
+class EfficiencyModePriorities;
 
 // NOLINTBEGIN(misc-include-cleaner) - Win32 types come from windows.h sub-headers
 
@@ -137,6 +141,9 @@ class WindowsProcessActions : public IProcessActions
     WindowsProcessActions();
     /// As above, making its Win32 calls through @p functions (tests: calls that fail on demand).
     explicit WindowsProcessActions(WindowsProcessFunctions functions);
+    /// As above, remembering Efficiency mode's classes in @p efficiencyPriorities rather than the process's shared one
+    /// (sharedEfficiencyModePriorities()): tests, for a TaskSmack's and a helper's memory in one process (#3327).
+    WindowsProcessActions(WindowsProcessFunctions functions, std::shared_ptr<EfficiencyModePriorities> efficiencyPriorities);
     ~WindowsProcessActions() override = default;
 
     WindowsProcessActions(const WindowsProcessActions&) = delete;
@@ -177,13 +184,24 @@ class WindowsProcessActions : public IProcessActions
     [[nodiscard]] CpuAffinityLayout affinityLayout() const override;
     /// Efficiency mode (#3071), as Task Manager's: on sets ProcessPowerThrottling's execution-speed
     /// throttling (EcoQoS: the efficient cores, lower clocks) and the Idle priority class, remembering the
-    /// class it had (sharedEfficiencyModePriorities()); off hands power throttling back to Windows and,
-    /// while the process is still at Idle, restores that class, or Normal when it isn't known, with a
-    /// successNote saying so (#3281). Refused for PID 4 and for a protected or critical process, through
-    /// the same identity check and guard as a priority change; access denied is permissionDenied, so the
-    /// elevated helper can retry it. A failure to lower the class undoes the throttling, so a refused "on"
-    /// changes nothing.
+    /// class it had (sharedEfficiencyModePriorities()) and returning it (priorityClassBefore, #3327); off
+    /// hands power throttling back to Windows and, while the process is still at Idle, restores that class,
+    /// or Normal when it isn't known, with a successNote saying so (#3281). Refused for PID 4 and for a
+    /// protected or critical process, through the same identity check and guard as a priority change; access
+    /// denied is permissionDenied, so the elevated helper can retry it. A failure to lower the class undoes
+    /// the throttling, so a refused "on" changes nothing.
     [[nodiscard]] ProcessActionResult setEfficiencyMode(const ProcessTarget& target, bool on) override;
+    /// Realtime's nice while @p target's off is the retry of a Realtime restore Windows set High for (#3590): the
+    /// helper, as an administrator, is asked to set Realtime as a priority change, so it never infers it from High.
+    [[nodiscard]] std::optional<std::int32_t> efficiencyNiceToRestore(const ProcessTarget& target) const override;
+    /// The class remembered for @p target's off (#3327), left remembered.
+    [[nodiscard]] std::optional<std::uint32_t> efficiencyPriorityClassToRestore(const ProcessTarget& target) const override;
+    /// Remembers @p priorityClass for @p target's off (#3327), as an on here does; one of Windows' six classes only.
+    void rememberEfficiencyPriorityClass(const ProcessTarget& target, std::uint32_t priorityClass) override;
+    /// @p priorityClass, from an off's request, replaces the class remembered for @p target, Idle included (#3327).
+    void setEfficiencyPriorityClassToRestore(const ProcessTarget& target, std::uint32_t priorityClass) override;
+    /// Forgets the class remembered for @p target (#3327).
+    void forgetEfficiencyPriorityClass(const ProcessTarget& target) override;
     /// A full-memory minidump through dbghelp's MiniDumpWriteDump (#807), as Task Manager writes one;
     /// see Windows::writeProcessDump(). Opens the process through the same identity check as every
     /// action, and says why when that is refused: a protected process, one elevated or another user's.
@@ -244,6 +262,7 @@ class WindowsProcessActions : public IProcessActions
     std::vector<std::uint32_t> m_GroupSizes; // Each processor group's maximum processor count, read at construction
     bool m_Elevated = false;                 // TaskSmack's token elevated, read at construction (#3427)
     DWORD m_ThreadActionRefusedPid = 0;      // refuseThreadActionsOn()'s
+    std::shared_ptr<EfficiencyModePriorities> m_EfficiencyPriorities; // Efficiency mode's replaced classes (#3071, #3327)
 };
 
 } // namespace Platform

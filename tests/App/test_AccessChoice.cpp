@@ -68,14 +68,27 @@ TEST(AccessTableTest, EveryRowSaysWhatEachSessionGetsAndTheTableEndsWithWhatIsNe
     }
 }
 
-TEST(AccessTableTest, WindowsRowsNeedNoHelperAndExplainNoLinuxBit)
+TEST(AccessTableTest, WindowsRowsExplainNoLinuxBit)
 {
-    // Windows' Administrator is TaskSmack restarted elevated: no row waits on the helper, and its
-    // missingPrivileges is always 0.
+    // Windows' Administrator is TaskSmack restarted elevated: its missingPrivileges is always 0.
     for (const AccessTable::Row& row : AccessTable::rowsFor(AccessPlatform::Windows))
     {
-        EXPECT_FALSE(row.needsHelperCoverage) << row.item;
         EXPECT_EQ(row.missingPrivilege, 0U) << row.item;
+    }
+}
+
+// #3580: a Linux Standard session is never elevated after it starts, so no row offers a password prompt or a
+// helper, and Administrator (TaskSmack started as root) gets every row.
+TEST(AccessTableTest, LinuxRowsOfferNoPromptAndNoHelper)
+{
+    for (const AccessTable::Row& row : AccessTable::rowsFor(AccessPlatform::Linux))
+    {
+        for (const std::string_view cell : {row.standard, row.administrator})
+        {
+            EXPECT_FALSE(cell.contains("Authenticate")) << row.item;
+            EXPECT_FALSE(cell.contains("helper")) << row.item;
+            EXPECT_FALSE(cell.contains("asks")) << row.item;
+        }
     }
 }
 

@@ -33,8 +33,7 @@ void wrappedText(std::string_view text)
     ImGui::PopTextWrapPos();
 }
 
-/// The access table's rows a session gets today: a Linux row still waiting on the helper's coverage
-/// isn't promised (AccessTable.h).
+/// The access table (AccessTable.h): what a Standard session gets, and what an Administrator one adds.
 void renderAccessTable(AccessChoice::AccessPlatform platform)
 {
     constexpr ImGuiTableFlags FLAGS = ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp;
@@ -46,10 +45,6 @@ void renderAccessTable(AccessChoice::AccessPlatform platform)
         ImGui::TableHeadersRow();
         for (const AccessTable::Row& row : AccessTable::rowsFor(platform))
         {
-            if (row.needsHelperCoverage)
-            {
-                continue;
-            }
             ImGui::TableNextRow();
             for (const std::string_view cell : {row.item, row.standard, row.administrator})
             {
