@@ -131,8 +131,9 @@ jobs:
           TASKSMACK_REQUIRE_DISPLAY: '1'
           # And the D-Bus fake suites must run, not skip (#2133).
           TASKSMACK_REQUIRE_SDBUS: '1'
-          # And the helper's privilege drop runs as root under the runner's sudo, counted through
-          # continuous mode (#3058, #3108).
+          # And the root tests (tools/coverage.sh's root pass: a RunAs's groups, the eBPF UDP counter, an
+          # Administrator session's invoking user) run under the runner's sudo, counted through continuous
+          # mode (#3058, #3108, #3580).
           TASKSMACK_COVERAGE_ROOT: '1'
           # And that root pass runs the CI real-system tests among them (#3374, maintainer 2026-11-08): this is a
           # disposable GitHub-hosted runner, as their guard requires.
