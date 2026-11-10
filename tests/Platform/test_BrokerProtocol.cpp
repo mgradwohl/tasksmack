@@ -89,12 +89,35 @@ TEST(BrokerProtocolTest, EfficiencyModeRoundTripsAndRefusesAStrayFlag)
     }
     std::vector<std::uint8_t> bytes = encodeRequest(1, Request{EfficiencyModeRequest{.target = TARGET, .on = true}});
     EXPECT_EQ(bytes[6], static_cast<std::uint8_t>(MessageKind::SetEfficiencyMode));
-    ASSERT_EQ(bytes.size(), 4U + HEADER_BYTES + 4U + 8U + 1U); // the target's PID and start time, then the flag
-    bytes.back() = 2;                                          // the flag is the payload's last byte
+    // The target's PID and start time, the flag, then the class an off restores (v21).
+    ASSERT_EQ(bytes.size(), 4U + HEADER_BYTES + 4U + 8U + 1U + 4U);
+    const std::size_t flagAt = 4U + HEADER_BYTES + 4U + 8U;
+    bytes[flagAt] = 2;
     EXPECT_FALSE(decodeRequest(bytes).has_value());
-    bytes.pop_back(); // and a frame without it is short
+    bytes[flagAt] = 1;
+    bytes.pop_back(); // and a frame cut short of the class is short
     bytes[0] = static_cast<std::uint8_t>(bytes.size() - 4U);
     EXPECT_FALSE(decodeRequest(bytes).has_value());
+}
+
+// #3327 (v22): an off carries the Windows priority class TaskSmack remembers the on replaced, all 32 bits, and an
+// ActionResult the class an on replaced, so either side's memory survives the other's.
+TEST(BrokerProtocolTest, EfficiencyModeCarriesTheClassToRestoreAndTheReplyTheClassReplaced)
+{
+    const Request off = EfficiencyModeRequest{.target = TARGET, .on = false, .restorePriorityClass = 0x89ABCDEFU};
+    EXPECT_EQ(roundTrip(off), off);
+    const Response replaced = ActionResult{.success = true, .errorMessage = {}, .successNote = {}, .priorityClassBefore = 0x80000000U};
+    EXPECT_EQ(roundTrip(replaced), replaced);
+    std::vector<std::uint8_t> bytes = encodeResponse(1, replaced);
+    bytes.pop_back(); // a reply cut short of the class is refused
+    bytes[0] = static_cast<std::uint8_t>(bytes.size() - 4U);
+    EXPECT_FALSE(decodeResponse(bytes).has_value());
+
+    // ActionResult's class reaches ProcessActionResult and back.
+    ProcessActionResult result = ProcessActionResult::ok();
+    result.priorityClassBefore = 0x4000;
+    EXPECT_EQ(ActionResult::from(result).priorityClassBefore, 0x4000U);
+    EXPECT_EQ(ActionResult::from(result).toProcessActionResult().priorityClassBefore, 0x4000U);
 }
 
 // #3066: CloseConnection carries its target and the socket's inode, the full 64 bits.

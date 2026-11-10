@@ -144,7 +144,9 @@ TEST_F(AccessNoticeDialogRenderTest, TheTableShowsWhatAdministratorAddsAndWhatIt
     const Frame expanded = settle();
     EXPECT_TRUE(expanded.text.contains("Other users' crash reports"));
     EXPECT_TRUE(expanded.text.contains("Never, even as Administrator"));
-    EXPECT_FALSE(expanded.text.contains("Processes hidden by /proc's hidepid")) << "the helper doesn't list them yet";
+    EXPECT_TRUE(expanded.text.contains("Processes hidden by /proc's hidepid")) << "root lists them (#3580)";
+    EXPECT_FALSE(expanded.text.contains("Authenticate")) << "a Standard session is never elevated after it starts";
+    EXPECT_FALSE(expanded.text.contains("helper"));
 }
 
 TEST_F(AccessNoticeDialogRenderTest, ItIsCentredAndStaysInsideASmallWindow)

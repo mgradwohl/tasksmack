@@ -22,8 +22,10 @@
 #include <expected>
 #include <format>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -711,7 +713,10 @@ ioPriorityHintToSet(IoPriorityClass ioClass, std::int32_t level, int32_t pid)
 /// The priority class to set when Efficiency mode is turned off (#3071), from the class @p remembered when
 /// it was turned on (nullopt: unknown) and the process's class now, @p current (0: unreadable). Efficiency
 /// mode left it at Idle: back to the remembered class, or Normal when that isn't known. At any other
-/// class someone changed it since, so it is left as it is (nullopt).
+/// class someone changed it since, so it is left as it is (nullopt): High included, even with Realtime
+/// remembered (#3590). Only an off this TaskSmack's own Realtime restore came out High for, recorded as
+/// such (EfficiencyModePriorities::markRealtimeRetry()), sets Realtime again, and as a priority change
+/// (WindowsProcessActions::efficiencyNiceToRestore()).
 [[nodiscard]] constexpr std::optional<uint32_t> priorityClassToRestore(std::optional<uint32_t> remembered, uint32_t current) noexcept
 {
     if (current != 0 && current != IDLE_PRIORITY_CLASS)
@@ -721,11 +726,30 @@ ioPriorityHintToSet(IoPriorityClass ioClass, std::int32_t level, int32_t pid)
     return remembered.value_or(static_cast<uint32_t>(NORMAL_PRIORITY_CLASS));
 }
 
+/// Whether @p priorityClass is one of Windows' six priority classes (#3327): the only values remembered for an
+/// Efficiency mode off to restore, whoever names them (an off's request to the helper carries one).
+[[nodiscard]] constexpr bool isPriorityClass(uint32_t priorityClass) noexcept
+{
+    switch (priorityClass)
+    {
+    case IDLE_PRIORITY_CLASS:
+    case BELOW_NORMAL_PRIORITY_CLASS:
+    case NORMAL_PRIORITY_CLASS:
+    case ABOVE_NORMAL_PRIORITY_CLASS:
+    case HIGH_PRIORITY_CLASS:
+    case REALTIME_PRIORITY_CLASS:
+        return true;
+    default:
+        return false;
+    }
+}
+
 /// The ProcessActionResult::successNote for turning Efficiency mode off (#3281), from the class
 /// @p remembered when it was turned on and the class @p restored (priorityClassToRestore()). With nothing
-/// remembered, because the on ran in another process (TaskSmackHelper.exe, or TaskSmack before a restart),
-/// the process was put at Normal rather than the class it had before, which may differ; the note says so.
-/// Empty otherwise: the remembered class was restored, or the class was left as someone changed it.
+/// remembered, by this TaskSmack or by the helper that ran the on (#3327: TaskSmack restarted since, or the
+/// class couldn't be read), the process was put at Normal rather than the class it had before, which may
+/// differ; the note says so. Empty otherwise: the remembered class was restored, or the class was left as
+/// someone changed it.
 [[nodiscard]] constexpr std::string_view efficiencyModeOffNote(std::optional<uint32_t> remembered,
                                                                std::optional<uint32_t> restored) noexcept
 {
@@ -736,13 +760,26 @@ ioPriorityHintToSet(IoPriorityClass ioClass, std::int32_t level, int32_t pid)
     return "its priority was set to Normal, as the class it had before Efficiency mode isn't known";
 }
 
+/// Why an off that restored a remembered Realtime class came out otherwise (#3590), from the Realtime read back
+/// (realtimeReadBackResult(): High is a permission refusal, so the elevated helper's retry sets Realtime) for
+/// process @p pid: the power throttling is already handed back, and the class is still remembered, marked for the
+/// retry when it came out High (EfficiencyModePriorities::markRealtimeRetry()).
+[[nodiscard]] inline ProcessActionResult efficiencyModeRealtimeRestoreRefusal(ProcessActionResult readBack, int32_t pid)
+{
+    readBack.errorMessage = std::format(
+        "Efficiency mode was turned off for process {}, but its Realtime priority wasn't restored: {}", pid, readBack.errorMessage);
+    return readBack;
+}
+
 /// The priority classes Efficiency mode replaced with Idle, per process (#3071), so turning it off
-/// restores each. One for the whole TaskSmack process (sharedEfficiencyModePriorities()): the Processes
-/// table and Process Details each have their own WindowsProcessActions, and either may turn off what the
-/// other turned on. Thread-safe: actions run on the panels' workers. At most MAX_REMEMBERED processes;
-/// past that the lowest PID's is dropped, and that process goes back to Normal instead. Only this
-/// process's: an on that ran in TaskSmackHelper.exe, or before a restart, isn't here, and the off puts the
-/// process at Normal and says so (efficiencyModeOffNote(), #3281).
+/// restores each. Keyed on the PID and the start time, so a process given a reused PID inherits nothing.
+/// One for the whole TaskSmack process (sharedEfficiencyModePriorities()): the Processes table and Process
+/// Details each have their own WindowsProcessActions, and either may turn off what the other turned on.
+/// TaskSmack's also holds the class of an on the elevated helper ran, from its reply, and sends it with an
+/// off the helper finishes (#3327), so the class survives the helper's exit. Thread-safe: actions run on
+/// the panels' workers. At most MAX_REMEMBERED processes; past that the lowest PID's is dropped, and that
+/// process goes back to Normal instead. Not kept across a restart: an off then puts the process at Normal
+/// and says so (efficiencyModeOffNote(), #3281).
 class EfficiencyModePriorities
 {
   public:
@@ -759,10 +796,7 @@ class EfficiencyModePriorities
         }
         const Key key{target.pid, target.startTimeTicks};
         const std::scoped_lock lock(m_Mutex);
-        if (!m_Classes.contains(key) && m_Classes.size() >= MAX_REMEMBERED)
-        {
-            m_Classes.erase(m_Classes.begin());
-        }
+        makeRoomFor(key);
         if (priorityClass == IDLE_PRIORITY_CLASS)
         {
             m_Classes.try_emplace(key, priorityClass);
@@ -770,7 +804,56 @@ class EfficiencyModePriorities
         else
         {
             m_Classes.insert_or_assign(key, priorityClass);
+            m_RealtimeRetries.erase(key); // a new on: whatever an earlier off left is gone
         }
+    }
+
+    /// @p priorityClass is what @p target's off restores, whatever was remembered before (#3327): the class an off's
+    /// request to the helper carries, TaskSmack's, which knows of every on since. Unlike remember(), Idle replaces a
+    /// class too: TaskSmack's on found the process at Idle, so a class this helper kept from an earlier on is stale.
+    /// 0 (unreadable) remembers nothing.
+    void assign(const ProcessTarget& target, uint32_t priorityClass)
+    {
+        if (priorityClass == 0)
+        {
+            return;
+        }
+        const Key key{target.pid, target.startTimeTicks};
+        const std::scoped_lock lock(m_Mutex);
+        makeRoomFor(key);
+        m_Classes.insert_or_assign(key, priorityClass);
+        m_RealtimeRetries.erase(key);
+    }
+
+    /// @p target's off restored its remembered Realtime and Windows set High (#3590): the retry, as an administrator,
+    /// is asked to set Realtime. Only while a class is remembered; take() forgets it with the class.
+    void markRealtimeRetry(const ProcessTarget& target)
+    {
+        const Key key{target.pid, target.startTimeTicks};
+        const std::scoped_lock lock(m_Mutex);
+        if (const auto found = m_Classes.find(key); found != m_Classes.end() && found->second == REALTIME_PRIORITY_CLASS)
+        {
+            m_RealtimeRetries.insert(key);
+        }
+    }
+
+    /// Whether @p target's off is the retry of a Realtime restore Windows set High for (markRealtimeRetry()).
+    [[nodiscard]] bool isRealtimeRetry(const ProcessTarget& target) const
+    {
+        const std::scoped_lock lock(m_Mutex);
+        return m_RealtimeRetries.contains(Key{target.pid, target.startTimeTicks});
+    }
+
+    /// The class remembered for @p target, still remembered (#3327: sent with an off the helper finishes), or nullopt.
+    [[nodiscard]] std::optional<uint32_t> find(const ProcessTarget& target) const
+    {
+        const std::scoped_lock lock(m_Mutex);
+        const auto found = m_Classes.find(Key{target.pid, target.startTimeTicks});
+        if (found == m_Classes.end())
+        {
+            return std::nullopt;
+        }
+        return found->second;
     }
 
     /// The class remembered for @p target, forgotten now (Efficiency mode is being turned off), or nullopt.
@@ -783,6 +866,7 @@ class EfficiencyModePriorities
             return std::nullopt;
         }
         const uint32_t priorityClass = found->second;
+        m_RealtimeRetries.erase(found->first);
         m_Classes.erase(found);
         return priorityClass;
     }
@@ -795,14 +879,27 @@ class EfficiencyModePriorities
 
   private:
     using Key = std::pair<int32_t, uint64_t>; // PID, start time
+
+    /// Drops the lowest PID's class when @p key is new and MAX_REMEMBERED are held. m_Mutex is held.
+    void makeRoomFor(const Key& key)
+    {
+        if (!m_Classes.contains(key) && m_Classes.size() >= MAX_REMEMBERED)
+        {
+            m_RealtimeRetries.erase(m_Classes.begin()->first);
+            m_Classes.erase(m_Classes.begin());
+        }
+    }
+
     mutable std::mutex m_Mutex;
     std::map<Key, uint32_t> m_Classes;
+    std::set<Key> m_RealtimeRetries; // markRealtimeRetry()'s, each with a class in m_Classes
 };
 
-/// The one EfficiencyModePriorities every WindowsProcessActions in this process shares.
-[[nodiscard]] inline EfficiencyModePriorities& sharedEfficiencyModePriorities()
+/// The one EfficiencyModePriorities every WindowsProcessActions in this process shares, unless a test gives one its own
+/// (a TaskSmack's and a helper's, #3327).
+[[nodiscard]] inline const std::shared_ptr<EfficiencyModePriorities>& sharedEfficiencyModePriorities()
 {
-    static EfficiencyModePriorities priorities;
+    static const std::shared_ptr<EfficiencyModePriorities> priorities = std::make_shared<EfficiencyModePriorities>();
     return priorities;
 }
 
