@@ -201,11 +201,10 @@ python -m pip install --require-hashes -r requirements-glad.txt
 # Services tab (systemd), and on the System Information page Boot performance (#1525), disk SMART
 # health (udisks2), crash details (systemd-coredump's journal entries), and each network adapter's
 # DNS, Wi-Fi and DHCP details (systemd-resolved, NetworkManager, systemd-networkd). Found with
-# pkg-config at configure time; without it those say they are unavailable. tasksmack-helper links it
-# too, to read every user's crash entries from the journal.
+# pkg-config at configure time; without it those say they are unavailable.
 # -DTASKSMACK_WITH_SDBUS=OFF builds without it even when it is installed.
 sudo apt install libsystemd-dev pkg-config
-# Required: libbpf, for the helper's eBPF counter of each process's UDP bytes (#3366). Configure fails
+# Required: libbpf, for the eBPF counter of each process's UDP bytes that TaskSmack loads as root (#3366). Configure fails
 # without it.
 sudo apt install libbpf-dev
 ```
@@ -503,11 +502,9 @@ The application target is `TaskSmack`.
 
 - Windows: the binary is under `build/win-debug/bin/TaskSmack.exe` (or your selected preset)
 - Linux: the binary is under `build/debug/bin/TaskSmack` (or your selected preset)
-- Linux: `tasksmack-helper` is built beside it, but TaskSmack only uses the installed
-  `/usr/libexec/tasksmack/tasksmack-helper` with its polkit policy. To try **Authenticate and retry**
-  from a source build, install a `.deb`/`.rpm` built with `cpack` (see Packaging below), or install
-  just that component from a `release` build (which links libc++ statically) with
-  `sudo cmake --install build/release --prefix /usr --component helper`.
+- Linux: to try an Administrator session from a source build, run it with `sudo` (`sudo build/debug/bin/TaskSmack`).
+  The "TaskSmack (Administrator)" launcher needs the binary at `/usr/bin/TaskSmack`, which a `.deb`/`.rpm`
+  built with `cpack` installs (see Packaging below).
 
 ## Test
 
@@ -1304,7 +1301,7 @@ ClusterFuzzLite continuously exercises these parsers with libFuzzer and AddressS
 | `fuzz_networkd_json` | systemd-networkd's link description: the JSON parser and the DHCPv4 lease read from it (`Platform/Linux/NetworkdLinkJson.h`) | `tests/fuzz/corpus/fuzz_networkd_json/` |
 | `fuzz_dns_message` | the DNS reply parser for the opt-in public IP lookup, the only parser fed bytes from the network (`Platform/DnsMessage.h`) | `tests/fuzz/corpus/fuzz_dns_message/` |
 | `fuzz_desktop_entry` | the `.desktop` entry parser and its `Exec` splitting (`Platform/Linux/DesktopEntryIcons.h`) | `tests/fuzz/corpus/fuzz_desktop_entry/` |
-| `fuzz_broker_protocol` | the privileged helper's request decoder, which reads what an unprivileged process sends (`Platform/BrokerProtocol.h`) | `tests/fuzz/corpus/fuzz_broker_protocol/` |
+| `fuzz_broker_protocol` | the Windows helper's request decoder, which reads what an unprivileged process sends (`Platform/BrokerProtocol.h`) | `tests/fuzz/corpus/fuzz_broker_protocol/` |
 
 Pull requests that change `tests/fuzz/**`, `.clusterfuzzlite/**`, the `cflite_*.yml` workflows,
 any fuzzed parser (the headers in the table above, `UserConfig.{cpp,h}`, `UserConfigHelpers.h`,
@@ -2801,8 +2798,8 @@ release can sign it; see [Windows code signing](#windows-code-signing).
 
 What a package contains, and what it depends on (#1398):
 
-- Only the executable, the runtime assets, the Linux desktop entry and icons, the privileged helpers
-  described below, and the licences (`LICENSE`, plus the third-party licences under `share/doc/tasksmack/third_party/` on Linux or
+- Only the executable, the runtime assets, the Linux desktop entries, icons and the Administrator launcher's
+  polkit action, Windows' privileged helper described below, and the licences (`LICENSE`, plus the third-party licences under `share/doc/tasksmack/third_party/` on Linux or
   `third_party_licenses/` in the Windows `.zip`). Every library TaskSmack is built from is linked
   statically, so no headers, `.a`/`.lib` files, or CMake/pkg-config files belong in a package.
   Whatever the FetchContent dependencies' own install rules declare goes into a `third_party`
@@ -2814,18 +2811,14 @@ What a package contains, and what it depends on (#1398):
   list no `libc++*.so`. Debug and the sanitizer presets keep the shared libc++.
 - The `.deb`'s `Depends` come from `dpkg-shlibdeps`, plus the libraries SDL3 `dlopen()`s that it
   can't see (X11, GL/EGL), listed in `cmake/Packaging.cmake`; Wayland, the other X11 extensions,
-  Mesa's drivers and `pkexec | policykit-1` (for the helper below) are `Recommends`.
-- Linux's privileged helper, `tasksmack-helper` (#2307), and its polkit action are the `helper`
-  install component: the helper goes to `${CMAKE_INSTALL_LIBEXECDIR}/tasksmack/` and
-  `assets/linux/app.tasksmack.TaskSmack.helper.policy` to `${CMAKE_INSTALL_DATADIR}/polkit-1/actions/`
-  (`cmake/InstallRules.cmake`). Only the `.deb` and `.rpm` package that component
-  (`cmake/CPackProjectConfig.cmake.in`); the `.tar.gz` doesn't, and TaskSmack then offers no
-  **Authenticate and retry** / **Authenticate to read**. TaskSmack starts the helper with `pkexec` from
-  the fixed path `/usr/libexec/tasksmack/tasksmack-helper` (`PkexecBroker::INSTALLED_HELPER_PATH`),
-  which is also the policy's `org.freedesktop.policykit.exec.path`, so a package must use the `/usr`
-  prefix and the default `libexec` directory. The action is `app.tasksmack.TaskSmack.helper`, with
-  `auth_admin_keep` for an active session and `auth_admin` otherwise. The helper links only Platform
-  code (no SDL, ImGui, GL or config), and TaskSmack doesn't offer it when it already runs as root.
+  Mesa's drivers and `pkexec | policykit-1` (for the Administrator launcher below) are `Recommends`.
+- Linux has no privileged helper (#3580): a session is Administrator for its whole life, started as root,
+  or Standard. The "TaskSmack (Administrator)" launcher
+  (`assets/linux/app.tasksmack.TaskSmack.Administrator.desktop`) and its polkit action
+  (`assets/linux/app.tasksmack.TaskSmack.Administrator.policy`, `app.tasksmack.TaskSmack.administrator`,
+  `auth_admin` every launch, `allow_gui`) are the `administrator` install component, which only the `.deb`
+  and `.rpm` package (`cmake/CPackProjectConfig.cmake.in`). The launcher runs `pkexec /usr/bin/TaskSmack`,
+  the path the action's `org.freedesktop.policykit.exec.path` names, so a package must use the `/usr` prefix.
 - Windows' elevated helper, `TaskSmackHelper.exe` (#2550), installs beside `TaskSmack.exe`
   (`cmake --install` always installs it, in the `windows_helper` component). The `.zip` and the NSIS
   installer carry it only with `-DTASKSMACK_PACKAGE_WINDOWS_HELPER=ON`, which is for
@@ -3299,7 +3292,7 @@ checks its SHA-256 against the pinned one and the release's asset digest. Then i
 and runs v0.8.0 for 5 seconds from the fixture `config.toml`, in `$HOME/.config/tasksmack`, where both
 versions read it. It installs this run's `.deb` over it, which must exit 0 with no dpkg file conflict
 and upgrade `tasksmack` in place. Every file the new `.deb` ships must be installed as it ships it (docs
-and man pages aside, which the image's dpkg doesn't unpack), the helper and its polkit policy checked by name, and no v0.8.0 file the new `.deb` dropped may be left
+and man pages aside, which the image's dpkg doesn't unpack), the Administrator launcher and its polkit action checked by name, and no v0.8.0 file the new `.deb` dropped (v0.8.0's helper among them) may be left
 over. Last, it starts the upgraded `TaskSmack` with no `TASKSMACK_CONFIG_DIR`, so it finds v0.8.0's file
 itself. That run gets the same checks as the second smoke launch: a clean quit, no `[error]` line, and
 the fixture's settings kept. Windows has no package to upgrade from yet: the `.zip` is portable, and v0.9.1
@@ -3307,7 +3300,7 @@ publishes the first installer, so an installer upgrade check can follow once a r
 
 Both jobs also check what the packages contain, since a bundled dependency's own `install()` rules
 can ship development files to users: the `.deb`'s listing (`dpkg -c`) may hold nothing outside
-`usr/bin`, `usr/libexec/tasksmack` and `usr/share/{tasksmack,applications,icons,doc,metainfo,pixmaps,man,polkit-1}`, and the `.zip`
+`usr/bin` and `usr/share/{tasksmack,applications,icons,doc,metainfo,pixmaps,man,polkit-1}`, and the `.zip`
 may hold no `*.lib`/`*.a` files and no `include/` or `lib/cmake/` directories.
 
 `verify-published-release` runs after `create-release` and checks what users actually download (#2721),
