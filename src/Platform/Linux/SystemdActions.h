@@ -58,7 +58,7 @@ struct StartTypeSteps
     }
 }
 
-/// Whether @p name may be acted on through tasksmack-helper (#2728): a service's unit name as systemd writes
+/// Whether @p name is a service's unit name (#2728) as systemd writes
 /// one -- 1 to 255 bytes of letters, digits and ":-_.\\@", ending in ".service" after at least one more --
 /// so a request can't name a path, another kind of unit, or an option.
 [[nodiscard]] constexpr bool isServiceUnitName(std::string_view name) noexcept

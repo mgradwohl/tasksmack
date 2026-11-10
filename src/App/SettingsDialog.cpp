@@ -561,8 +561,8 @@ Action render(State& state)
         }
 
         // Per-process network counters are TCP only by default. UDP needs a kernel event trace on Windows, which costs
-        // some CPU under heavy UDP and runs only as administrator (#1492), and on Linux the helper's eBPF counter, which
-        // it loads only in an Administrator session (#3366).
+        // some CPU under heavy UDP and runs only as administrator (#1492), and on Linux an eBPF counter TaskSmack loads only
+        // when started as root (#3366, #3580).
         ImGui::Spacing();
 #ifdef _WIN32
         UI::Widgets::outlinedCheckbox(UDP_EVENT_TRACE_LABEL, &state.udpEventTrace);

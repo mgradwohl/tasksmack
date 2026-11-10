@@ -1126,7 +1126,7 @@ void LinuxProcessProbe::parseProcessIo(int pidDirFd, ProcessCounters& counters)
 
 void LinuxProcessProbe::applyIo(std::string_view ioText, ProcessCounters& counters)
 {
-    // read_bytes and write_bytes, parsed as tasksmack-helper parses them for other users' processes (#2728).
+    // read_bytes and write_bytes (#2728).
     const std::optional<Linux::ProcIoParser::ProcIo> io = Linux::ProcIoParser::parse(ioText);
     counters.ioCountersAvailable = io.has_value();
     if (io.has_value())

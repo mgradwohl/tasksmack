@@ -1,9 +1,9 @@
 #pragma once
 
-// What the privileged helper does with each BrokerProtocol request (#2307, #2309, #2310), shared by
-// both helpers (#2181, decision 4: one protocol): tasksmack-helper on Linux (Linux/BrokerServer.h) and
-// TaskSmackHelper.exe on Windows (Windows/BrokerPipeServer.h, #2517). Each hands it its own platform's
-// actions and readers; the transport and its session rules stay the helper's.
+// What the privileged helper does with each BrokerProtocol request (#2307, #2309, #2310): TaskSmackHelper.exe
+// on Windows (Windows/BrokerPipeServer.h, #2517), which hands it its own actions and readers; the transport and
+// its session rules stay the helper's. Linux had one too, until #3580: a Linux session is now Administrator
+// (TaskSmack started as root) or Standard for its whole life.
 //
 // handleRequest() is a pure mapping, unit-tested with mocks. It checks nothing about a target itself:
 // the platform's actions and readers re-verify each one (PID and start time) before they act or read.

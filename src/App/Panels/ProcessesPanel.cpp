@@ -1251,15 +1251,15 @@ void ProcessesPanel::adoptPlatform()
     // and detach go through this panel from here.
     m_UdpCollector = std::move(contents->udpCollector);
 #ifndef _WIN32
-    // Adopted, and no collector: no helper to count through (it isn't installed, or TaskSmack runs as root), which an
-    // Administrator session can't change, so Settings says so and doesn't offer the counter (#3366). Only now: until
-    // the platform is adopted, a missing collector means nothing yet.
+    // Adopted, and no collector: a Standard session, since only TaskSmack started as root loads the counter (#3580).
+    // The setting stays on offer, and counts from the next Administrator session; Settings says what it needs. Only
+    // now: until the platform is adopted, a missing collector means nothing yet.
     if (!m_UdpCollector)
     {
         m_UdpStatus = UdpCountingStatus{
             .delivering = false,
-            .unsupported = true,
-            .problem = "TaskSmack's helper isn't available (it isn't installed, or TaskSmack runs as root)",
+            .unsupported = false,
+            .problem = "Needs TaskSmack started as administrator: TaskSmack (Administrator), or sudo",
         };
         publishUdpCountingStatus(m_UdpStatus);
     }
