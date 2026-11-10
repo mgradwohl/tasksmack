@@ -7,7 +7,8 @@
 // watches one way a session ends: TaskSmack killed, TaskSmack closing the pipe, the idle timeout (the short-idle
 // copy of the helper, 3 s), and an over-the-shoulder elevation's one action (a throwaway local account,
 // deleted after). Each also checks the helper's exit status is Exit::Done, never std::terminate's abort (3) or a
-// fail-fast. And a copy in a folder its user can change is refused, with the same standard user's token.
+// fail-fast. And a copy in a folder its user can change is refused, with the same standard user's token. A served
+// session also reads a process's environment for TaskSmack (#3610).
 // CiRealSystem.h's guard skips all of it anywhere but such a runner.
 
 #include "Platform/IProcessActions.h"
@@ -344,6 +345,20 @@ TEST_F(CiRealSystemHelperTest, AnOverTheShoulderElevationExitsAfterItsOneAction)
     expectSessionDone(session.helperExit(EXIT_WITHIN));
     EXPECT_TRUE(session.victimEnded()) << "the helper served the action";
     EXPECT_EQ(session.taskSmack().exitCode(0ms), std::nullopt) << "TaskSmack still runs, the pipe open: the one action ended it";
+}
+
+TEST_F(CiRealSystemHelperTest, ReadsAProcesssEnvironmentForTaskSmack)
+{
+    // #3610: the helper reads environments (HelperMain.cpp gives it the in-process reader), so "Authenticate to
+    // read" on Process Details' Environment gets the variables, not "This helper doesn't read environments". The
+    // victim and TaskSmack both inherit the marker; TaskSmack checks the helper's read of the victim has it, with
+    // the same value. Run as the standard user, with no UAC prompt: the elevated hop is the manual check's.
+    const ScopedVariable marker(L"TASKSMACK_CI_HELPER_ENVIRONMENT_3610", L"read-by-the-helper-" + uniqueSuffix());
+    const ProtectedInstall install(TASKSMACK_WINDOWS_HELPER_PATH);
+    ServedSession session(install, L"environment");
+    ASSERT_TRUE(session.helperLaunched());
+    ASSERT_TRUE(session.reached("environment matched"));
+    EXPECT_EQ(session.helperExit(0ms), std::nullopt) << "the read ended the session";
 }
 
 TEST_F(CiRealSystemHelperTest, ACopyInAFolderItsUserCanChangeIsRefused)
