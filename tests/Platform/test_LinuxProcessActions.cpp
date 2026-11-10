@@ -1356,7 +1356,7 @@ TEST(LinuxProcessActionsDumpTest, DumpsAreOfferedOnlyWhereGcoreIsInstalled)
     EXPECT_EQ(refused.error(), DUMP_UNSUPPORTED_MESSAGE);
 }
 
-// #2640: tasksmack-helper links only LinuxProcessControl, which starts no other program: no system call
+// #2640: LinuxProcessControl, the process-control half, starts no other program: no system call
 // trace and no dump files, however the machine is set up, and both refused as unsupported. Everything
 // else it reports as LinuxProcessActions does, with strace, a terminal and gcore all found.
 TEST(LinuxProcessControlTest, OffersNoTraceOrDumpButTheSameControlAsLinuxProcessActions)
@@ -2343,24 +2343,6 @@ TEST_F(LinuxProcessActionsFaultTest, RealtimeForAThreadOfThisProcessIsRefused)
     EXPECT_FALSE(refused.permissionDenied);
     EXPECT_TRUE(refused.errorMessage.contains(std::format("is a thread of PID {}", ::getpid()))) << refused.errorMessage;
     EXPECT_EQ(plan().setCalls, 0);
-}
-
-// #3219: the helper adds its client, TaskSmack, to the processes never set real time (refuseRealtimeFor()); the
-// time-sharing policies stay allowed for it.
-TEST_F(LinuxProcessActionsFaultTest, RealtimeForTheHelpersClientIsRefused)
-{
-    const SleepingChild client;
-    ASSERT_TRUE(client.started());
-    ASSERT_TRUE(m_Actions.setSchedPolicy(client.target(), SchedPolicy::Fifo, 99, Platform::RealtimeThreads::Keep).success)
-        << "not protected yet";
-    plan() = FaultPlan{};
-    m_Actions.refuseRealtimeFor(client.target().pid);
-    const ProcessActionResult refused = m_Actions.setSchedPolicy(client.target(), SchedPolicy::Fifo, 99, Platform::RealtimeThreads::Keep);
-    EXPECT_FALSE(refused.success);
-    EXPECT_FALSE(refused.permissionDenied);
-    EXPECT_TRUE(refused.errorMessage.contains("TaskSmack (or its helper)")) << refused.errorMessage;
-    EXPECT_EQ(plan().setCalls, 0);
-    EXPECT_TRUE(m_Actions.setSchedPolicy(client.target(), SchedPolicy::Batch, 0, Platform::RealtimeThreads::Keep).success);
 }
 
 // #3086, #3219: Deadline, an unread policy and a priority the policy doesn't take are refused before

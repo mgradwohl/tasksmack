@@ -1,9 +1,9 @@
 #pragma once
 
 // The client side of the privileged broker (#2306; #2181): a connected elevated helper that does one
-// BrokerProtocol request at a time. Each platform's transport implements it, a socketpair to a
-// pkexec-launched helper on Linux (#2307) and a named pipe on Windows (#2311), so the decorators that
-// retry a refused action or read through it (#2308, #2309) are shared. App owns one and hands it to the
+// BrokerProtocol request at a time. Windows' named pipe implements it (#2311), and the decorators that
+// retry a refused action or read through it (#2308, #2309) are shared code. Linux has no helper: a session
+// there is Administrator for its whole life or not at all (#3580). App owns one and hands it to the
 // factories at construction; nothing makes one per frame.
 
 #include "Platform/BrokerProtocol.h"
@@ -49,25 +49,6 @@ class IPrivilegedBroker
     /// helper isn't installed, it didn't answer).
     [[nodiscard]] virtual std::expected<void, std::string> connect(const std::stop_token& stopToken) = 0;
 
-    /// "Authenticate for this session" (#2728): starts the helper if it isn't running (one prompt, so
-    /// blocking like connect(): a worker, never the UI thread) and keeps it for the rest of TaskSmack's
-    /// session instead of letting it exit when idle. A helper started later, after this one ended, is
-    /// held too. A refused or dismissed prompt leaves the session as it was: the error says why. The
-    /// default is for transports whose Administrator is something else (Windows restarts elevated).
-    [[nodiscard]] virtual std::expected<void, std::string> holdForSession(const std::stop_token& stopToken)
-    {
-        static_cast<void>(stopToken);
-        return std::unexpected(std::string("this platform's Administrator session doesn't use the helper"));
-    }
-
-    /// Whether the session is Administrator through the helper (#2728): holdForSession() succeeded and
-    /// the helper it holds is still connected, as last seen. Cheap and non-blocking, for the UI thread:
-    /// it makes no system call, so a helper that has just exited reads as held until a call finds out.
-    [[nodiscard]] virtual bool heldForSession() const noexcept
-    {
-        return false;
-    }
-
     /// Whether the helper, once started, can read processes that aren't TaskSmack's user's own (#2550):
     /// what "Authenticate to read" is for. False where every elevation runs as another account and the
     /// helper then reads only the user's own processes (a standard user's Windows TaskSmack, whose UAC
@@ -88,22 +69,6 @@ class IPrivilegedBroker
     {
         return 0;
     }
-
-    /// Asks the helper to count every process's UDP bytes (#3366, Linux: its eBPF counter, loaded only at its start).
-    /// Only within an Administrator session (maintainer, 2026-11-07): not held, it starts nothing, prompts for
-    /// nothing, and the error says so, but it stands, so the session's helper counts once one is chosen. Held by a
-    /// helper that wasn't started counting, it starts another that is, which may prompt, so it blocks like
-    /// connect(): a worker, never the UI thread. It stands until stopCountingUdpBytes(). The default is for
-    /// transports that count UDP some other way (Windows: ETW in TaskSmack itself).
-    [[nodiscard]] virtual std::expected<void, std::string> countUdpBytes([[maybe_unused]] const std::stop_token& stopToken)
-    {
-        return std::unexpected("This helper doesn't count UDP bytes");
-    }
-
-    /// Undoes countUdpBytes() for the next helper started. The one running keeps counting until it ends: stopping it
-    /// would end the Administrator session for nothing. Non-blocking.
-    virtual void stopCountingUdpBytes() noexcept
-    {}
 
     /// Sends @p request and waits for its response, for at most the transport's bounded wait or until
     /// @p stopToken is stopped. Blocking: call it from a worker (ProcessActionRun, #2305), never the

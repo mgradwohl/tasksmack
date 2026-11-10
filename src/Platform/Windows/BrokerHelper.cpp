@@ -7,7 +7,6 @@
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
-#include "Platform/IProcessProbe.h"
 #include "Platform/ThreadName.h"
 #include "Platform/Windows/BrokerPipe.h"
 #include "Platform/Windows/BrokerPipeServer.h"
@@ -789,15 +788,7 @@ BrokerPipeServer::RequestHandler readsOnlyOwnProcesses(BrokerPipeServer::Request
             }
             return Broker::ConnectionsReply{.result = {.status = ConnectionsReadStatus::Failed, .connections = {}, .detail = refusal}};
         }
-        if (const auto* read = std::get_if<Broker::MemoryRollupRequest>(&request))
-        {
-            if (owned(read->target))
-            {
-                return handler(request);
-            }
-            return Broker::MemoryRollupReply{.result = std::unexpected(MemoryRollupFailure::Unavailable)};
-        }
-        // System-wide reads (firmware, every user's crashes), and any read kind not named above.
+        // Any read kind not named above (threads, #3069).
         return Broker::ErrorReply{.message = refusal};
     };
 }

@@ -181,6 +181,45 @@ template<typename IsExecutable>
     return std::nullopt;
 }
 
+/// Where TaskSmack running as root looks for the tools it runs as root (strace, gcore, a terminal, pkexec), in place
+/// of $PATH (#3605): sudo's default secure_path. A `sudo -E` or a preserved PATH can't put a user's own directory
+/// first.
+inline constexpr std::string_view ROOT_TOOL_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+
+/// Who owns a path, and its permission bits, as stat() reports them.
+struct PathOwnership
+{
+    std::uint32_t uid = 0;
+    std::uint32_t mode = 0;
+};
+
+/// Whether a tool at @p resolved (absolute, symlinks already resolved) is one only root could have put there
+/// (#3605): it and every directory above it are owned by root and writable by no group or other user. A file in
+/// /tmp, a home directory or a group-writable /usr/local fails. @p ownership(path) stats one path, or nullopt.
+template<typename Ownership> [[nodiscard]] bool onlyRootCouldPlace(std::string_view resolved, const Ownership& ownership)
+{
+    constexpr std::uint32_t GROUP_OR_OTHER_WRITE = 0022; // S_IWGRP | S_IWOTH
+    if (!resolved.starts_with('/'))
+    {
+        return false;
+    }
+    std::string_view path = resolved;
+    for (;;)
+    {
+        const std::optional<PathOwnership> entry = ownership(std::string(path));
+        if (!entry.has_value() || entry->uid != 0 || (entry->mode & GROUP_OR_OTHER_WRITE) != 0)
+        {
+            return false;
+        }
+        if (path == "/")
+        {
+            return true;
+        }
+        const std::size_t slash = path.rfind('/');
+        path = slash == 0 ? std::string_view("/") : path.substr(0, slash);
+    }
+}
+
 /// The terminal to run strace in: the one $TERMINAL names when it can be found (@p envTerminal, a name
 /// or an absolute path; empty when unset), else the first of FALLBACK_TERMINALS that can.
 /// @p find(name) resolves a name to an executable path, or nullopt (findExecutable() over PATH).

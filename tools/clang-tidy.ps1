@@ -11,7 +11,8 @@
 .PARAMETER Jobs
     Number of parallel jobs (default: number of CPU cores)
 .PARAMETER Files
-    Specific files to analyze (default: all source files)
+    Specific files to analyze (default: all source files). A comma-separated list works from any
+    shell: pwsh -File passes -Files a.cpp,b.cpp as one string, which the script splits (#3615).
 .PARAMETER ChangedOnly
     Only analyze C++ files changed on this branch (vs. its merge-base with main, plus untracked).
     Ignored when -Files is given.
@@ -60,6 +61,10 @@ $ErrorActionPreference = "Stop"
 # Without a console (a detached process) setting it throws; the default is kept then.
 $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 try { [Console]::OutputEncoding = $OutputEncoding } catch { Write-Verbose "Console encoding unchanged: $_" }
+
+# pwsh -File hands "-Files a.cpp,b.cpp" over as the one string "a.cpp,b.cpp"; only -Command and a
+# call from PowerShell parse the comma as an array (#3615). Split every element so both work.
+$Files = @($Files | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = Split-Path -Parent $ScriptDir

@@ -300,7 +300,7 @@ TEST_F(ProcessSchedPolicyDialogRenderTest, RealtimeWarnsAndAsksToConfirmBeforeIt
     EXPECT_TRUE(text.contains("Set audio (PID 42) to RR 30?")) << text;
     EXPECT_TRUE(text.contains("round robin policy at priority 30")) << text;
     EXPECT_TRUE(text.contains("RLIMIT_RTPRIO")) << "the may-be-refused note is repeated at the confirm: " << text;
-    EXPECT_TRUE(text.contains("Authenticate and retry")) << text;
+    EXPECT_FALSE(text.contains("Authenticate")) << "nothing is retried with a password after TaskSmack starts (#3580): " << text;
 
     press("Back", false);
     EXPECT_FALSE(frame(dialog).has_value());

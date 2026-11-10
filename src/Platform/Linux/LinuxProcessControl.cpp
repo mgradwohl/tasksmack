@@ -1182,20 +1182,19 @@ ProcessActionResult LinuxProcessControl::setSchedPolicy(const ProcessTarget& tar
     {
         return ProcessActionResult::error(*refused);
     }
-    // Never real time for this process or the helper's client, TaskSmack (#3219): its UI thread, or the root helper,
-    // spinning at a real-time priority could starve the desktop the user needs to undo it. Compared by thread group,
+    // Never real time for TaskSmack itself (#3219): its UI thread spinning at a real-time priority could starve the
+    // desktop the user needs to undo it. Compared by thread group,
     // since one of the process's thread IDs names the same process and every one of its threads would be changed.
     if (isRealtimeSchedPolicy(policy))
     {
         const std::int32_t process = threadGroupOf(target.pid);
         if (std::ranges::find(m_NoRealtimePids, process) != m_NoRealtimePids.end())
         {
-            const std::string self =
-                process == target.pid
-                    ? std::format("PID {} is TaskSmack (or its helper), which never runs under a real-time policy", target.pid)
-                    : std::format("PID {} is a thread of PID {}, TaskSmack (or its helper), which never runs under a real-time policy",
-                                  target.pid,
-                                  process);
+            const std::string self = process == target.pid
+                                       ? std::format("PID {} is TaskSmack, which never runs under a real-time policy", target.pid)
+                                       : std::format("PID {} is a thread of PID {}, TaskSmack, which never runs under a real-time policy",
+                                                     target.pid,
+                                                     process);
             spdlog::info("Not setting scheduling policy: {}", self);
             return ProcessActionResult::error(self);
         }

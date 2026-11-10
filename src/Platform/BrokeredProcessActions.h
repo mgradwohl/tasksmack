@@ -1,8 +1,8 @@
 #pragma once
 
 // Process actions that an administrator can finish (#2308; #2181): an IProcessActions decorator over the
-// in-process implementation and the privileged broker (IPrivilegedBroker: the pkexec-started helper on
-// Linux, #2307). Each action is tried in-process first, as before. Only a failure the OS gave for want of
+// in-process implementation and the privileged broker (IPrivilegedBroker: Windows' elevated helper, #2311;
+// Linux has none since #3580). Each action is tried in-process first, as before. Only a failure the OS gave for want of
 // permission (ProcessActionResult::permissionDenied) goes further:
 //
 // - while the helper is running (the user authenticated a few minutes ago), the action is retried through
@@ -23,24 +23,18 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
-#include "Platform/IProcessMemoryMap.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
-#include "Platform/IProcessProbe.h"
 #include "Platform/IProcessThreads.h"
 #include "Platform/IoPriorityTypes.h"
 #include "Platform/SchedPolicy.h"
 
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <stop_token>
-#include <unordered_map>
-#include <vector>
 
 namespace Platform
 {
@@ -50,8 +44,9 @@ namespace Platform
 [[nodiscard]] std::unique_ptr<IProcessActions> withPrivilegedBroker(std::unique_ptr<IProcessActions> actions,
                                                                     std::shared_ptr<IPrivilegedBroker> broker);
 
-/// The broker request that does @p action.
-[[nodiscard]] Broker::Request brokerRequestFor(const AuthorizedAction& action);
+/// The broker request that does @p action; nullopt for one no request does: SetSchedPolicy, Linux's, whose
+/// request protocol v23 dropped with the Linux helper (#3580).
+[[nodiscard]] std::optional<Broker::Request> brokerRequestFor(const AuthorizedAction& action);
 
 /// The Signal request's value for @p signal (#3063).
 [[nodiscard]] Broker::Signal brokerSignalFor(ProcessSignal signal) noexcept;
@@ -61,9 +56,8 @@ class BrokeredProcessActions final : public IProcessActions
   public:
     BrokeredProcessActions(std::unique_ptr<IProcessActions> inner, std::shared_ptr<IPrivilegedBroker> broker);
 
-    /// The in-process capabilities, plus canAuthorizeInteractively; and the Realtime I/O class while
-    /// the helper runs, which can set it, as the broker last saw it (IPrivilegedBroker::lastSeenConnected(),
-    /// #3182). Cheap for the UI thread every frame: no pipe or socket call.
+    /// The in-process capabilities, plus canAuthorizeInteractively. Cheap for the UI thread every frame: no
+    /// pipe call.
     [[nodiscard]] ProcessActionCapabilities actionCapabilities() const override;
 
     [[nodiscard]] ProcessActionResult terminate(const ProcessTarget& target) override;
@@ -74,6 +68,7 @@ class BrokeredProcessActions final : public IProcessActions
     [[nodiscard]] ProcessActionResult setPriority(const ProcessTarget& target, std::int32_t nice) override;
     [[nodiscard]] ProcessActionResult setIoPriority(const ProcessTarget& target, IoPriorityClass ioClass, std::int32_t level) override;
     [[nodiscard]] ProcessActionResult setAffinity(const ProcessTarget& target, const CpuAffinity& cpus) override;
+    /// The in-process actions' own (#3580): no helper request sets a scheduling policy.
     [[nodiscard]] ProcessActionResult
     setSchedPolicy(const ProcessTarget& target, SchedPolicy policy, std::int32_t rtPriority, RealtimeThreads realtimeThreads) override;
     [[nodiscard]] ProcessActionResult setEfficiencyMode(const ProcessTarget& target, bool on) override;
@@ -82,7 +77,8 @@ class BrokeredProcessActions final : public IProcessActions
     [[nodiscard]] ProcessActionResult
     actOnThread(const ProcessTarget& target, std::int32_t tid, std::uint64_t threadCreateTime, ThreadAction action) override;
 
-    /// Asks for the password if the helper isn't running, then does @p action through it.
+    /// Asks for the password if the helper isn't running, then does @p action through it; an error, with no
+    /// prompt, for one no request does (brokerRequestFor()).
     [[nodiscard]] ProcessActionResult runAuthorized(const AuthorizedAction& action, const std::stop_token& stopToken) override;
 
     // Not actions an administrator finishes: the in-process implementation's own.
@@ -105,7 +101,7 @@ class BrokeredProcessActions final : public IProcessActions
     /// @p action's request. An Efficiency mode off whose on ran in process is a priority change to the nice that on
     /// found (#3296): the helper never saw the on, and would otherwise put back nice 0. On Windows such an off carries
     /// the priority class TaskSmack remembers the on replaced (#3327), for the helper to restore rather than Normal.
-    [[nodiscard]] Broker::Request requestFor(const AuthorizedAction& action) const;
+    [[nodiscard]] std::optional<Broker::Request> requestFor(const AuthorizedAction& action) const;
     /// @p result of @p request, the helper's. After such a priority change, the in-process off runs again: the nice
     /// is no longer 19, so it puts back only the cgroup weight (the helper writes no files) and forgets the on. On
     /// Windows (#3327), an on the helper ran is remembered in process, by the class its reply says it replaced, and
@@ -214,94 +210,6 @@ class BrokeredThreadsReader final : public IProcessThreadsReader
     std::shared_ptr<IPrivilegedBroker> m_Broker;
 };
 
-/// Process Details' memory map that an administrator can finish (#3089), as BrokeredThreadsReader.
-class BrokeredMemoryMapReader final : public IProcessMemoryMapReader
-{
-  public:
-    BrokeredMemoryMapReader(std::unique_ptr<IProcessMemoryMapReader> inner, std::shared_ptr<IPrivilegedBroker> broker);
-
-    [[nodiscard]] bool hasMemoryMap() const override;
-    [[nodiscard]] MemoryMapReadResult readMemoryMap(const ProcessTarget& target) override;
-    [[nodiscard]] bool canReadAuthorized() const override;
-    [[nodiscard]] MemoryMapReadResult readAuthorized(const ProcessTarget& target, const std::stop_token& stopToken) override;
-
-  private:
-    [[nodiscard]] MemoryMapReadResult viaBroker(const ProcessTarget& target, const std::stop_token& stopToken);
-
-    std::unique_ptr<IProcessMemoryMapReader> m_Inner;
-    std::shared_ptr<IPrivilegedBroker> m_Broker;
-};
-
-/// The process probe, with Process Details' PSS and USS (#2309) read through the helper while it runs
-/// when the in-process read is refused (another user's process), and each refresh's refused FD counts and
-/// I/O bytes the same way, in one ReadProcessCounters (#2728); the processes hidepid hides from it are
-/// listed by the helper (ListHiddenProcesses) and joined to the list. That request also brings, at the inode map's
-/// cadence, the socket inodes of processes whose /proc/<pid>/fd links were refused, so readSocketTraffic()
-/// attributes their connections too. Everything else is the inner probe's.
-/// There is no prompt here: the figures follow once the user has authenticated for anything else.
-class BrokeredProcessProbe final : public IProcessProbe
-{
-  public:
-    BrokeredProcessProbe(std::unique_ptr<IProcessProbe> inner, std::shared_ptr<IPrivilegedBroker> broker);
-
-    [[nodiscard]] std::vector<ProcessCounters> enumerate() override;
-    [[nodiscard]] ProcessCapabilities capabilities() const override;
-    [[nodiscard]] std::uint64_t totalCpuTime() const override;
-    [[nodiscard]] long ticksPerSecond() const override;
-    [[nodiscard]] std::uint64_t systemTotalMemory() const override;
-    [[nodiscard]] std::optional<PackageEnergyReading> readPackageEnergy() const override;
-    [[nodiscard]] SocketTrafficReading readSocketTraffic() const override;
-    [[nodiscard]] MemoryRollupRead readMemoryRollup(std::int32_t pid, std::uint64_t startTimeTicks) const override;
-    [[nodiscard]] std::optional<ProcessCounters> processFromFiles(std::int32_t pid, const ProcFileTexts& files) const override;
-    void setSocketStatsCacheTtl(std::chrono::milliseconds ttlMs) override;
-    void setUdpTrafficCollector(const std::shared_ptr<IUdpTrafficCollector>& collector) override;
-
-  private:
-    /// What listHiddenProcesses() did.
-    enum class HiddenListing : std::uint8_t
-    {
-        NotAsked, ///< nothing hidden, no helper, or one that doesn't list them
-        Listed,   ///< the helper listed them, and they were appended
-        Skipped,  ///< the helper was busy or slow, or its read failed: the last listing still stands (#3031)
-    };
-
-    /// Appends the processes hidepid hides from the inner probe, listed by a running helper (#2728), when
-    /// its capabilities say some are hidden.
-    [[nodiscard]] HiddenListing listHiddenProcesses(std::vector<ProcessCounters>& counters);
-
-    /// Fills in @p counters' refused FD counts and I/O bytes from the helper, on the sampler's thread, and
-    /// when due its socket owners.
-    void readRefusedCounters(std::vector<ProcessCounters>& counters);
-
-    /// A process the helper read the socket inodes of: the owner readSocketTraffic() credits.
-    struct SocketOwner
-    {
-        std::int32_t pid = 0;
-        std::uint64_t startTimeTicks = 0;
-    };
-
-    std::unique_ptr<IProcessProbe> m_Inner;
-    std::shared_ptr<IPrivilegedBroker> m_Broker;
-    /// The helper answered ReadProcessCounters with an error (a helper that doesn't read them, as Windows'
-    /// doesn't need to): not asked again.
-    bool m_CountersRefused = false;
-    /// The helper answered ListHiddenProcesses with an error: not asked again.
-    bool m_HiddenRefused = false;
-    /// The hidden processes as the last listing gave them, counters read and all: carried over, marked
-    /// heldOver, into a refresh whose listing is skipped, so they don't drop out and back in (#3031).
-    std::vector<ProcessCounters> m_LastHidden;
-    /// When the helper last read socket inodes: again every INODE_PID_CACHE_TTL_MS, as the inner map rebuilds.
-    std::chrono::steady_clock::time_point m_SocketsReadAt;
-    /// From the last socket read: each inode's owner, and the processes whose sockets were all read.
-    mutable std::mutex m_SocketOwnersMutex;
-    std::unordered_map<std::uint64_t, SocketOwner> m_SocketOwners;
-    std::unordered_map<std::int32_t, std::uint64_t> m_SocketsReadFor; // PID to start time
-};
-
-/// @p probe decorated with @p broker, or @p probe as it is when there is no broker.
-[[nodiscard]] std::unique_ptr<IProcessProbe> withPrivilegedBroker(std::unique_ptr<IProcessProbe> probe,
-                                                                  std::shared_ptr<IPrivilegedBroker> broker);
-
 /// @p reader decorated with @p broker, or @p reader as it is when there is no broker.
 [[nodiscard]] std::unique_ptr<IProcessEnvironmentReader> withPrivilegedBroker(std::unique_ptr<IProcessEnvironmentReader> reader,
                                                                               std::shared_ptr<IPrivilegedBroker> broker);
@@ -312,8 +220,6 @@ class BrokeredProcessProbe final : public IProcessProbe
 
 [[nodiscard]] std::unique_ptr<IProcessConnectionsReader> withPrivilegedBroker(std::unique_ptr<IProcessConnectionsReader> reader,
                                                                               std::shared_ptr<IPrivilegedBroker> broker);
-[[nodiscard]] std::unique_ptr<IProcessMemoryMapReader> withPrivilegedBroker(std::unique_ptr<IProcessMemoryMapReader> reader,
-                                                                            std::shared_ptr<IPrivilegedBroker> broker);
 [[nodiscard]] std::unique_ptr<IProcessThreadsReader> withPrivilegedBroker(std::unique_ptr<IProcessThreadsReader> reader,
                                                                           std::shared_ptr<IPrivilegedBroker> broker);
 

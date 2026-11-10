@@ -1518,8 +1518,8 @@ jobs:
         # cmake/InstallRules.cmake's rules are shared with every bundled dependency's own
         # install() calls, so a dependency that installs its static libraries, headers or CMake
         # package files (or a TaskSmack rule with a bare "." destination) silently ships them
-        # to users under /usr. Allow exactly the executable, the privileged helper and its polkit
-        # action, and the app's data, desktop entry, icons, docs, AppStream metadata and man pages;
+        # to users under /usr. Allow exactly the executable, the app's data, desktop entries, icons,
+        # docs, AppStream metadata and man pages, and the Administrator launcher's polkit action;
         # fail on anything else.
         run: |
           shopt -s nullglob
@@ -1529,11 +1529,11 @@ jobs:
             exit 1
           fi
           dpkg -c "${debs[0]}"
-          # usr/libexec/tasksmack and usr/share/polkit-1: the privileged helper and its polkit action (#2307).
-          allowed='^(|usr/|usr/share/|usr/bin/[^/]*|usr/libexec/|usr/libexec/tasksmack(/.*)?|usr/share/(tasksmack|applications|icons|doc|metainfo|pixmaps|man|polkit-1)(/.*)?)$'
+          # usr/share/polkit-1: the "TaskSmack (Administrator)" launcher's polkit action (#3580).
+          allowed='^(|usr/|usr/share/|usr/bin/[^/]*|usr/share/(tasksmack|applications|icons|doc|metainfo|pixmaps|man|polkit-1)(/.*)?)$'
           unexpected=$(dpkg-deb --fsys-tarfile "${debs[0]}" | tar -tf - | sed -e 's|^\./||' | grep -Ev "$allowed" || true)
           if [[ -n "$unexpected" ]]; then
-            echo "The .deb ships files outside usr/bin, usr/libexec/tasksmack and usr/share/{tasksmack,applications,icons,doc,metainfo,pixmaps,man,polkit-1}:" >&2
+            echo "The .deb ships files outside usr/bin and usr/share/{tasksmack,applications,icons,doc,metainfo,pixmaps,man,polkit-1}:" >&2
             echo "$unexpected" >&2
             exit 1
           fi
@@ -1554,66 +1554,6 @@ jobs:
             exit 1
           fi
           echo "Installed binary: $BIN"
-
-      - name: Verify the privileged helper's hardening
-        # tasksmack-helper runs as root, so it is built with full RELRO, immediate binding and CET
-        # (x86-64) or BTI/PAC (AArch64) (#2640, cmake/CompilerOptions.cmake's
-        # tasksmack_apply_privileged_hardening()). A toolchain or flag change that silently drops
-        # one fails here. The CET/BTI note survives only when every linked object has it, so it's
-        # checked on the packaged binary, not assumed (the CET note is confirmed on release dry
-        # runs). On arm64 the BTI/PAC note can't survive the link (#2786): Ubuntu 24.04's glibc
-        # startup objects (Scrt1.o, crti.o, crtn.o) aren't built with branch protection and have
-        # no BTI landing pads, so lld drops the note from every executable linked there, and
-        # -z force-bti would fault at _start. A missing note is therefore a warning on arm64.
-        # PAC doesn't depend on the note, so what is fatal there is the helper's own code losing
-        # it: main() must open with paciasp, which -mbranch-protection=standard emits.
-        # RELRO and BIND_NOW are fatal on both.
-        env:
-          ARCH: ${{ matrix.arch }}
-        run: |
-          apt-get install -y binutils
-          HELPER=$(dpkg -L tasksmack | grep -E '/tasksmack-helper$')
-          if [[ -z "$HELPER" || ! -x "$HELPER" ]]; then
-            echo "tasksmack-helper missing or not executable after .deb install" >&2
-            exit 1
-          fi
-          failed=0
-          if ! readelf -d "$HELPER" | grep -Eq 'FLAGS_1.*NOW'; then
-            echo "$HELPER: no BIND_NOW (FLAGS_1 NOW): the GOT is bound lazily" >&2
-            failed=1
-          fi
-          if ! readelf -lW "$HELPER" | grep -q GNU_RELRO; then
-            echo "$HELPER: no GNU_RELRO segment" >&2
-            failed=1
-          fi
-          notes=$(readelf -n "$HELPER")
-          summary="full RELRO, BIND_NOW and the CPU control-flow note as expected"
-          if [[ "$ARCH" == "x64" ]]; then
-            if ! grep -Eq 'x86 feature: IBT, SHSTK' <<<"$notes"; then
-              echo "$HELPER: no x86 IBT/SHSTK property note (CET)" >&2
-              failed=1
-            fi
-          else
-            # PAC: the helper's own code signs its return addresses (see the step comment).
-            first=$(objdump -d --no-show-raw-insn --disassemble=main "$HELPER" |
-              awk '/<main>:/{getline; sub(/^[[:space:]]*[0-9a-f]+:[[:space:]]*/, ""); print $1; exit}')
-            if [[ "$first" != "paciasp" ]]; then
-              echo "$HELPER: main() opens with '${first:-nothing}', not paciasp: the helper lost -mbranch-protection=standard (PAC)" >&2
-              failed=1
-            fi
-            if grep -Eq 'AArch64 feature: BTI, PAC' <<<"$notes"; then
-              summary="full RELRO, BIND_NOW, PAC and the BTI/PAC note"
-            else
-              msg="$HELPER has no AArch64 BTI/PAC property note, as expected on Ubuntu 24.04: its glibc"
-              msg+=" startup objects lack BTI landing pads, so BTI isn't enforced. PAC is checked and present (#2786)."
-              echo "::warning title=arm64 tasksmack-helper: PAC, no BTI::$msg"
-              summary="full RELRO, BIND_NOW and PAC as expected; no BTI/PAC note (Ubuntu 24.04's glibc startup objects, #2786)"
-            fi
-          fi
-          if [[ "$failed" -ne 0 ]]; then
-            exit 1
-          fi
-          echo "$HELPER: $summary."
 
       - name: Install mesa software rendering
         # llvmpipe (via SDL's "offscreen" video driver, below) needs no X server at all --
@@ -1763,8 +1703,8 @@ jobs:
 
       - name: Install this run's .deb over v0.8.0
         # apt must upgrade in place with exit 0 and no file conflict, leave every file the new .deb
-        # ships installed as it ships it (the privileged helper and its polkit policy by name, #2307),
-        # and remove every v0.8.0 file the new .deb no longer ships.
+        # ships installed as it ships it (the Administrator launcher and its polkit action by name,
+        # #3580), and remove every v0.8.0 file the new .deb no longer ships, v0.8.0's helper among them.
         run: |
           shopt -s nullglob
           debs=(dist/*.deb)
@@ -1802,8 +1742,8 @@ jobs:
           dpkg-deb -x "$new" /tmp/new-deb
           dpkg-deb -x "/tmp/v080/$V080_DEB" /tmp/old-deb
           failed=0
-          for required in usr/libexec/tasksmack/tasksmack-helper \
-            usr/share/polkit-1/actions/app.tasksmack.TaskSmack.helper.policy; do
+          for required in usr/share/applications/app.tasksmack.TaskSmack.Administrator.desktop \
+            usr/share/polkit-1/actions/app.tasksmack.TaskSmack.Administrator.policy; do
             if [[ ! -f "/tmp/new-deb/$required" ]]; then
               echo "The new .deb doesn't ship /$required." >&2
               failed=1
@@ -1841,7 +1781,7 @@ jobs:
         run: |
           settings=(
             "theme id 'dracula'"
-            "font size 'large'"
+            "font point_size 10"
             "sampling interval_ms 2000"
             "sampling history_max_seconds 600"
             "ui show_privilege_notice false"
@@ -1895,63 +1835,6 @@ jobs:
             exit 1
           fi
           echo "The upgraded TaskSmack started from v0.8.0's config.toml, quit by itself and kept its settings."
-
-  validate-linux-helper:
-    name: Validate the Installed Helper and Its polkit Policy (x64)
-    needs: [build-linux]
-    # A VM runner, not validate-linux-package's container: pkexec needs a running polkitd and systemd,
-    # and the job installs a polkit rule (#2723). #2489's manual check, apart from the password
-    # dialog itself: the policy registers, and the installed helper answers TaskSmack's handshake
-    # through pkexec.
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    permissions:
-      contents: read
-      actions: read  # Required to download the linux-packages-x64 artifact from this run
-    steps:
-      # Only the handshake client and the protocol header it reads its version from.
-      - name: Check out the handshake client
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          path: repo
-          sparse-checkout: |
-            tools/helper-handshake.py
-            src/Platform/BrokerProtocol.h
-          sparse-checkout-cone-mode: false
-          persist-credentials: false
-
-      - name: Download Linux packages
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: linux-packages-x64
-          path: dist/
-
-      - name: Install the .deb with pkexec and polkitd
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ./dist/*.deb pkexec polkitd
-
-      - name: The helper's polkit action is registered
-        # pkaction exits non-zero for an action polkit doesn't know. The exec.path annotation is what
-        # makes pkexec show the app's own prompt and apply auth_admin_keep.
-        run: |
-          pkaction --action-id app.tasksmack.TaskSmack.helper --verbose | tee pkaction.txt
-          grep -q 'org.freedesktop.policykit.exec.path -> /usr/libexec/tasksmack/tasksmack-helper' pkaction.txt
-
-      - name: Allow the runner's user without a password
-        # A rule for the CI runner only: the password dialog is the part that stays a manual check.
-        run: |
-          user="$(id -un)"
-          printf '%s\n' \
-            'polkit.addRule(function (action, subject) {' \
-            "    if (action.id == \"app.tasksmack.TaskSmack.helper\" && subject.user == \"$user\") {" \
-            '        return polkit.Result.YES;' \
-            '    }' \
-            '});' | sudo tee /etc/polkit-1/rules.d/49-tasksmack-ci.rules
-          sudo systemctl restart polkit
-
-      - name: The installed helper answers the handshake through pkexec
-        run: python3 repo/tools/helper-handshake.py --timeout 60
 
   validate-windows-package:
     name: Validate Windows Release Artifacts (${{ matrix.arch }})
@@ -2518,7 +2401,7 @@ jobs:
 
   create-release:
     name: Create GitHub Release
-    needs: [validate, build-linux, build-windows, sign-windows, build-windows-installer, sign-windows-installer, validate-linux-package, validate-linux-upgrade, validate-linux-helper, validate-windows-package]
+    needs: [validate, build-linux, build-windows, sign-windows, build-windows-installer, sign-windows-installer, validate-linux-package, validate-linux-upgrade, validate-windows-package]
     # Every job it needs must succeed, except sign-windows and sign-windows-installer, which are skipped
     # while signing is off (SIGNING_ENABLED, only on a dry run). Without this `if:`, those skips would
     # skip the release too.
@@ -2526,7 +2409,7 @@ jobs:
       ${{ !cancelled() && needs.build-linux.result == 'success' && needs.build-windows.result == 'success' &&
       needs.build-windows-installer.result == 'success' &&
       needs.validate-linux-package.result == 'success' && needs.validate-linux-upgrade.result == 'success' &&
-      needs.validate-linux-helper.result == 'success' && needs.validate-windows-package.result == 'success' &&
+      needs.validate-windows-package.result == 'success' &&
       (needs.sign-windows.result == 'success' ||
       (needs.validate.outputs.signing != 'true' && needs.sign-windows.result == 'skipped')) &&
       (needs.sign-windows-installer.result == 'success' ||

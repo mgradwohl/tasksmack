@@ -1,15 +1,16 @@
 #pragma once
 
-// The helper's per-process UDP byte counter (#3366): loads bpf/udp_bytes.bpf.c, which sums each process's UDP
-// bytes sent and received into a map keyed by tgid, and reads that map. The Linux side of "Count UDP traffic per
-// process" (Windows counts with ETW).
+// The per-process UDP byte counter (#3366): loads bpf/udp_bytes.bpf.c, which sums each process's UDP bytes sent and
+// received into a map keyed by tgid, and reads that map. The Linux side of "Count UDP traffic per process" (Windows
+// counts with ETW), loaded by TaskSmack started as root (LinuxUdpTrafficCollector, #3580).
 //
-// Loading needs root (CAP_BPF and CAP_PERFMON, or CAP_SYS_ADMIN): the helper loads at startup, before it drops its
-// capabilities and installs its sandbox, and afterwards only reads the map (BPF_MAP_GET_NEXT_KEY and
-// BPF_MAP_LOOKUP_ELEM on the map's fd). The program stays attached for as long as this object lives.
+// Loading needs root (CAP_BPF and CAP_PERFMON, or CAP_SYS_ADMIN); afterwards it only reads the map
+// (BPF_MAP_GET_NEXT_KEY and BPF_MAP_LOOKUP_ELEM on the map's fd). The program stays attached for as long as this
+// object lives.
 
 #include "Platform/UdpByteCounts.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <memory>
@@ -20,10 +21,6 @@
 
 namespace Platform
 {
-
-/// The helper's argument that has it load the counter at its start (#3366): HelperMain reads it, PkexecBroker
-/// passes it.
-inline constexpr std::string_view UDP_BYTES_ARGUMENT = "--udp-bytes";
 
 /// How the program is attached: fexit where the kernel has BTF trampolines and bpf_get_func_ret (5.17+),
 /// kretprobes otherwise.
@@ -50,6 +47,23 @@ struct UdpAttachAttempt
 /// Whether the program in ELF section `section` (such as "fexit/udpv6_recvmsg") is loaded for `attempt`.
 [[nodiscard]] bool udpProgramWanted(std::string_view section, const UdpAttachAttempt& attempt) noexcept;
 
+/// How a failed attempt's reason quotes libbpf's warnings (the verifier's log among them), for the tests (#3374).
+namespace UdpLibbpfLog
+{
+
+/// The most of libbpf's warnings one attempt keeps, and the most of their end a failure's reason quotes.
+inline constexpr std::size_t CAPTURE_BYTES = 16384;
+inline constexpr std::size_t QUOTED_BYTES = 800;
+
+/// Adds @p line, one of libbpf's warnings, to @p capture, keeping only its last CAPTURE_BYTES: the end says why.
+void keep(std::string& capture, std::string_view line);
+
+/// @p reason, with the last QUOTED_BYTES of @p captured (trailing newlines dropped), or @p reason alone when libbpf
+/// said nothing.
+[[nodiscard]] std::string withLog(std::string reason, std::string_view captured);
+
+} // namespace UdpLibbpfLog
+
 class UdpByteCounter
 {
   public:
@@ -71,7 +85,7 @@ class UdpByteCounter
     /// How the program attached.
     [[nodiscard]] UdpAttachAttempt attempt() const noexcept;
 
-    /// The map's file descriptor, for the helper's seccomp filter to allow the map syscalls on.
+    /// The map's file descriptor: the one BPF descriptor left open once the program is attached.
     [[nodiscard]] int mapFd() const noexcept;
 
   private:

@@ -81,6 +81,32 @@ using Posix::FdGuard;
     return ::stat(path.c_str(), &info) == 0 && S_ISREG(info.st_mode) && ::access(path.c_str(), X_OK) == 0;
 }
 
+/// As isExecutableFile(), for a tool TaskSmack runs as root (#3605): also one only root could have put where it
+/// resolves to (SyscallTrace::onlyRootCouldPlace()).
+[[nodiscard]] bool isRootTrustedExecutable(const std::string& path)
+{
+    if (!isExecutableFile(path))
+    {
+        return false;
+    }
+    std::error_code ec;
+    const std::filesystem::path resolved = std::filesystem::canonical(path, ec);
+    if (ec)
+    {
+        return false;
+    }
+    return SyscallTrace::onlyRootCouldPlace(resolved.native(),
+                                            [](const std::string& entry) -> std::optional<SyscallTrace::PathOwnership>
+                                            {
+                                                struct stat info{};
+                                                if (::lstat(entry.c_str(), &info) != 0)
+                                                {
+                                                    return std::nullopt;
+                                                }
+                                                return SyscallTrace::PathOwnership{.uid = info.st_uid, .mode = info.st_mode};
+                                            });
+}
+
 /// The value of environment variable @p name, or empty when unset.
 [[nodiscard]] std::string_view environmentValue(const char* name)
 {
@@ -454,10 +480,13 @@ ProcessActionCapabilities LinuxProcessActions::actionCapabilities() const
 
 SyscallTrace::Tools LinuxProcessActions::discoverSyscallTraceTools()
 {
-    const std::string_view pathEnv = environmentValue("PATH");
-    const auto find = [pathEnv](std::string_view name)
+    // As root, these run as root: only from the system's own directories, and only files root put there (#3605).
+    const bool root = ::geteuid() == 0;
+    const std::string_view pathEnv = root ? SyscallTrace::ROOT_TOOL_PATH : environmentValue("PATH");
+    bool (*const usable)(const std::string&) = root ? &isRootTrustedExecutable : &isExecutableFile;
+    const auto find = [pathEnv, usable](std::string_view name)
     {
-        return SyscallTrace::findExecutable(name, pathEnv, isExecutableFile);
+        return SyscallTrace::findExecutable(name, pathEnv, usable);
     };
     SyscallTrace::Tools tools;
     tools.tracerPath = find("strace").value_or(std::string{});

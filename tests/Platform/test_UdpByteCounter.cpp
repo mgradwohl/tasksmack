@@ -134,6 +134,35 @@ TEST(UdpByteCounterTest, TheEmbeddedObjectHasEachModesProgramsAndATgidKeyedMap)
     EXPECT_EQ(bpf_map__max_entries(map), 16384U);
 }
 
+// #3374: a failed attempt's reason quotes the end of libbpf's warnings, where the verifier says why it refused.
+TEST(UdpByteCounterTest, AFailuresReasonQuotesOnlyTheEndOfWhatLibbpfSaid)
+{
+    EXPECT_EQ(UdpLibbpfLog::withLog("fexit: loading failed", ""), "fexit: loading failed");
+    EXPECT_EQ(UdpLibbpfLog::withLog("fexit: loading failed", "\n\n"), "fexit: loading failed") << "only newlines is nothing said";
+    EXPECT_EQ(UdpLibbpfLog::withLog("x", "R1 invalid mem access\n"), "x; libbpf: ...R1 invalid mem access");
+
+    const std::string longLog = std::string(UdpLibbpfLog::QUOTED_BYTES, 'a') + "the last line\n";
+    const std::string quoted = UdpLibbpfLog::withLog("x", longLog);
+    const std::string_view prefix = "x; libbpf: ...";
+    ASSERT_TRUE(quoted.starts_with(prefix));
+    EXPECT_EQ(quoted.size(), prefix.size() + UdpLibbpfLog::QUOTED_BYTES);
+    EXPECT_TRUE(quoted.ends_with("aaathe last line"));
+}
+
+TEST(UdpByteCounterTest, AnAttemptKeepsOnlyTheLastOfLibbpfsWarnings)
+{
+    std::string capture;
+    UdpLibbpfLog::keep(capture, "first");
+    UdpLibbpfLog::keep(capture, "second");
+    EXPECT_EQ(capture, "first\nsecond\n");
+
+    UdpLibbpfLog::keep(capture, std::string(UdpLibbpfLog::CAPTURE_BYTES, 'v'));
+    UdpLibbpfLog::keep(capture, "why it refused");
+    EXPECT_EQ(capture.size(), UdpLibbpfLog::CAPTURE_BYTES);
+    EXPECT_TRUE(capture.ends_with("v\nwhy it refused\n"));
+    EXPECT_FALSE(capture.contains("first")) << "the oldest warnings go first";
+}
+
 TEST(UdpByteCounterTest, WithoutRootLoadingFailsAndSaysWhy)
 {
     if (::geteuid() == 0)
@@ -474,6 +503,36 @@ TEST_P(UdpByteCounterRootTest, RootsInProcessCollectorReportsWhatTheCounterCount
     EXPECT_EQ(entry->bytesReceived, expectedRxBytes());
     EXPECT_TRUE(entry->readable);
     EXPECT_FALSE(entry->baselineOnly);
+    collector.stop();
+    EXPECT_EQ(openDescriptorsOf("anon_inode:bpf-map"), 0U) << "stop() unloads the counter";
+}
+
+// #3374: the collector Factory builds as root, with the counter's own attach plan, loads and unloads the real counter.
+// Not per mode, so outside CI's PR root step: the coverage job's root pass runs it (tools/coverage.sh).
+class UdpTrafficCollectorRootTest : public ::TestSupport::CiRealSystemTest
+{
+  protected:
+    void SetUp() override
+    {
+        ::TestSupport::CiRealSystemTest::SetUp();
+        if (IsSkipped())
+        {
+            return;
+        }
+        if (::geteuid() != 0)
+        {
+            GTEST_SKIP() << "loading the BPF program needs root: the coverage job runs this suite under sudo";
+        }
+    }
+};
+
+TEST_F(UdpTrafficCollectorRootTest, TheDefaultCollectorLoadsTheCounterAndStopUnloadsIt)
+{
+    LinuxUdpTrafficCollector collector;
+    ASSERT_EQ(collector.start(), UdpCollectorStartResult::Started) << collector.problem();
+    EXPECT_FALSE(collector.unsupported());
+    EXPECT_TRUE(collector.problem().empty());
+    EXPECT_EQ(openDescriptorsOf("anon_inode:bpf-map"), 1U);
     collector.stop();
     EXPECT_EQ(openDescriptorsOf("anon_inode:bpf-map"), 0U) << "stop() unloads the counter";
 }

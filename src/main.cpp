@@ -35,9 +35,6 @@
 #include "Platform/Factory.h"
 #include "Platform/Windows/WinString.h"
 #endif
-#if defined(__linux__)
-#include "Platform/Linux/PolkitTextAgent.h" // run as its own polkit text agent (#3380)
-#endif
 #include "UI/Format.h"
 #include "UI/UILayer.h"
 #include "version.h"
@@ -534,13 +531,6 @@ auto main(int argc, char** argv) -> int
 {
     // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic) - argv is argc C strings, as the C++ standard gives them
     const std::vector<std::string> arguments(argv, argv + std::max(argc, 0));
-#if defined(__linux__)
-    // TaskSmack started as its own polkit text agent (#3380), before anything of the app's: no window, no config.
-    if (arguments.size() == 2 && arguments[1] == Platform::PolkitTextAgent::AGENT_ARGUMENT)
-    {
-        return Platform::PolkitTextAgent::runAgent();
-    }
-#endif
     return runAppGuarded(App::parseLaunchOptions(arguments));
 }
 #endif

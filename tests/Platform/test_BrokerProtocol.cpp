@@ -10,13 +10,9 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
-#include "Platform/IProcessMemoryMap.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
-#include "Platform/IProcessProbe.h"
 #include "Platform/IServiceActions.h"
-#include "Platform/IServiceProbe.h"
-#include "Platform/ISystemInfoProbe.h"
 #include "Platform/IUserSessions.h"
 
 #include <gtest/gtest.h>
@@ -339,11 +335,6 @@ TEST(BrokerProtocolTest, TaskManagerReplacementRefusesWhatIsntExactlyOne)
 TEST(BrokerProtocolTest, EveryRequestRoundTrips)
 {
     EXPECT_EQ(roundTrip(Request{Hello{}}), Request{Hello{}});
-    EXPECT_EQ(roundTrip(Request{Hello{.forSession = true}}), Request{Hello{.forSession = true}});
-    const Request counters = ProcessCountersRequest{.targets = {TARGET, ProcessTarget{.pid = 7, .startTimeTicks = 9}}};
-    EXPECT_EQ(roundTrip(counters), counters);
-    const Request withSockets = ProcessCountersRequest{.targets = {TARGET}, .withSockets = true};
-    EXPECT_EQ(roundTrip(withSockets), withSockets);
     for (const Signal signal : {Signal::Terminate,
                                 Signal::Kill,
                                 Signal::Suspend,
@@ -370,66 +361,6 @@ TEST(BrokerProtocolTest, EveryRequestRoundTrips)
     cpus.set(130); // past the first word
     const Request affinity = AffinityRequest{.target = TARGET, .cpus = cpus};
     EXPECT_EQ(roundTrip(affinity), affinity);
-
-    // #3086 (v15): the three time-sharing policies the helper may set, at priority 0.
-    for (const SchedPolicy policy : {SchedPolicy::Normal, SchedPolicy::Batch, SchedPolicy::Idle})
-    {
-        for (const RealtimeThreads realtime : {RealtimeThreads::Keep, RealtimeThreads::Change})
-        {
-            const Request request = SchedPolicyRequest{.target = TARGET, .policy = policy, .realtimeThreads = realtime};
-            EXPECT_EQ(roundTrip(request), request);
-        }
-    }
-    // #3219 (v16): real time with its priority, at both ends of 1 to 99.
-    for (const SchedPolicy policy : {SchedPolicy::Fifo, SchedPolicy::RoundRobin})
-    {
-        for (const std::int32_t rtPriority : {1, 50, 99})
-        {
-            const Request request = SchedPolicyRequest{.target = TARGET, .policy = policy, .rtPriority = rtPriority};
-            EXPECT_EQ(roundTrip(request), request) << static_cast<int>(policy) << " " << rtPriority;
-        }
-    }
-}
-
-// #3086, #3219: the helper is never asked for Deadline, a policy past the enum, or a priority the policy doesn't
-// take: the decoder refuses every pair but Normal, Batch or Idle at 0 and FIFO or RR at 1 to 99, whatever the
-// encoder was given.
-TEST(BrokerProtocolTest, ASchedulingPolicyOrPriorityItCantSetIsRefused)
-{
-    for (const SchedPolicy policy : {SchedPolicy::Deadline, SchedPolicy::Unknown})
-    {
-        EXPECT_FALSE(decodeRequest(encodeRequest(1, Request{SchedPolicyRequest{.target = TARGET, .policy = policy}})).has_value())
-            << static_cast<int>(policy);
-    }
-    const auto refused = [](SchedPolicy policy, std::int32_t priority)
-    {
-        return !decodeRequest(encodeRequest(1, Request{SchedPolicyRequest{.target = TARGET, .policy = policy, .rtPriority = priority}}))
-                    .has_value();
-    };
-    EXPECT_TRUE(refused(SchedPolicy::Fifo, 0)) << "real time needs a priority";
-    EXPECT_TRUE(refused(SchedPolicy::RoundRobin, 0));
-    EXPECT_TRUE(refused(SchedPolicy::Fifo, 100)) << "past 99";
-    EXPECT_TRUE(refused(SchedPolicy::RoundRobin, -1));
-    EXPECT_TRUE(refused(SchedPolicy::Normal, 5)) << "time sharing takes no priority";
-    EXPECT_TRUE(refused(SchedPolicy::Idle, 1));
-    EXPECT_TRUE(refused(SchedPolicy::Deadline, 10));
-    // A byte past the enum: the policy follows the 12-byte target.
-    std::vector<std::uint8_t> past = encodeRequest(1, Request{SchedPolicyRequest{.target = TARGET, .policy = SchedPolicy::Batch}});
-    past[4 + HEADER_BYTES + 12] = 0xFF;
-    EXPECT_FALSE(decodeRequest(past).has_value());
-    // A RealtimeThreads byte past Change is refused, never read as consent to take real-time threads off real time:
-    // it follows the target, the policy byte and the 4-byte priority (v16).
-    std::vector<std::uint8_t> consent = encodeRequest(1, Request{SchedPolicyRequest{.target = TARGET, .policy = SchedPolicy::Batch}});
-    consent[4 + HEADER_BYTES + 17] = 2;
-    EXPECT_FALSE(decodeRequest(consent).has_value());
-    // And short ones: no RealtimeThreads byte, then the priority cut short (v16).
-    std::vector<std::uint8_t> shortFrame = encodeRequest(1, Request{SchedPolicyRequest{.target = TARGET, .policy = SchedPolicy::Idle}});
-    for (int dropped = 0; dropped < 2; ++dropped)
-    {
-        shortFrame.pop_back();
-        shortFrame[0] = static_cast<std::uint8_t>(shortFrame.size() - 4);
-        EXPECT_FALSE(decodeRequest(shortFrame).has_value()) << dropped;
-    }
 }
 
 TEST(BrokerProtocolTest, EveryResponseRoundTrips)
@@ -447,94 +378,17 @@ TEST(BrokerProtocolTest, EveryResponseRoundTrips)
 TEST(BrokerProtocolTest, TheFrameIsLittleEndianWithItsLengthVersionKindAndId)
 {
     const std::vector<std::uint8_t> bytes = encodeRequest(0x01020304, Request{Hello{}});
-    ASSERT_EQ(bytes.size(), 4U + HEADER_BYTES + 3U); // a Hello's payload: the version, then forSession
-    EXPECT_EQ(bytes[0], HEADER_BYTES + 3U);          // length, low byte first
+    ASSERT_EQ(bytes.size(), 4U + HEADER_BYTES + 2U); // a Hello's payload: the version (v23, #3580: no forSession)
+    EXPECT_EQ(bytes[0], HEADER_BYTES + 2U);          // length, low byte first
     EXPECT_EQ(bytes[4], PROTOCOL_VERSION & 0xFFU);
     EXPECT_EQ(bytes[6], static_cast<std::uint8_t>(MessageKind::Hello));
     EXPECT_EQ(bytes[8], 0x04U); // request id, little-endian
     EXPECT_EQ(bytes[11], 0x01U);
 }
 
-TEST(BrokerProtocolTest, ProcessCountersRoundTripAndRefuseTooManyOrAStrayFlag)
+// #3076: a session action's result, a ServiceActionReply (#2728).
+TEST(BrokerProtocolTest, ServiceActionRepliesRoundTripAndRefuseAStrayFlag)
 {
-    const Response reply = ProcessCountersReply{
-        .entries = {
-            ProcessCountersEntry{
-                .target = TARGET, .handleCountRead = true, .handleCount = 57, .ioRead = true, .readBytes = 123456, .writeBytes = 7890},
-            ProcessCountersEntry{.target = {.pid = 7, .startTimeTicks = 9}, .handleCountRead = true, .handleCount = 3},
-            ProcessCountersEntry{.target = {.pid = 8, .startTimeTicks = 9}, .socketsRead = true, .socketInodes = {11, 12}},
-            ProcessCountersEntry{.target = {.pid = 9, .startTimeTicks = 9}, .socketsRead = true, .socketInodes = {}},
-        }};
-    EXPECT_EQ(roundTrip(reply), reply);
-    EXPECT_EQ(roundTrip(Response{ProcessCountersReply{}}), Response{ProcessCountersReply{}});
-
-    // A count past MAX_COUNTER_TARGETS is refused before any target is read.
-    std::vector<std::uint8_t> request = encodeRequest(1, Request{ProcessCountersRequest{.targets = {TARGET}}});
-    const std::uint32_t tooMany = static_cast<std::uint32_t>(MAX_COUNTER_TARGETS) + 1;
-    std::memcpy(request.data() + 4 + HEADER_BYTES + 1, &tooMany, sizeof(tooMany)); // after withSockets
-    EXPECT_FALSE(decodeRequest(request).has_value());
-    // withSockets is one byte of zero or one.
-    request = encodeRequest(1, Request{ProcessCountersRequest{.targets = {TARGET}}});
-    request.at(4 + HEADER_BYTES) = 2;
-    EXPECT_FALSE(decodeRequest(request).has_value());
-
-    // An entry's flags byte has three bits; any other is refused.
-    std::vector<std::uint8_t> bytes = encodeResponse(1, reply);
-    const std::size_t firstFlags = 4 + HEADER_BYTES + 4 + 4 + 8;
-    ASSERT_EQ(bytes.at(firstFlags), 3U);
-    bytes.at(firstFlags) = 8;
-    EXPECT_FALSE(decodeResponse(bytes).has_value());
-    // Socket inodes without the sockets bit are refused: the first entry, given one.
-    bytes = encodeResponse(1, reply);
-    const std::size_t firstInodeCount = firstFlags + 1 + 4 + 8 + 8;
-    ASSERT_EQ(bytes.at(firstInodeCount), 0U);
-    bytes.at(firstInodeCount) = 1;
-    EXPECT_FALSE(decodeResponse(bytes).has_value());
-}
-
-// #2728: the processes hidepid hides, as their /proc files' text.
-TEST(BrokerProtocolTest, HiddenProcessesRoundTripAndRefuseTooManyOrAStrayCommandLine)
-{
-    const Request request = HiddenProcessesRequest{.visiblePids = {1, 2, 4242}};
-    EXPECT_EQ(roundTrip(request), request);
-    EXPECT_EQ(roundTrip(Request{HiddenProcessesRequest{}}), Request{HiddenProcessesRequest{}});
-
-    const Response reply = HiddenProcessesReply{
-        .processes = {HiddenProcess{.target = TARGET,
-                                    .stat = "4242 (sshd) S 1 ...",
-                                    .statm = "1 2 3 0 0 0 0",
-                                    .status = "Name:\tsshd\nUid:\t0\t0\t0\t0\n",
-                                    .cmdline = std::string("sshd: alice\0", 12),
-                                    .io = "read_bytes: 1\nwrite_bytes: 2\n",
-                                    .cgroup = "0::/system.slice/ssh.service\n",
-                                    .ioprio = (2 << 13) | 4}, // #3572: best-effort 4
-                      HiddenProcess{.target = {.pid = 7, .startTimeTicks = 9}, .stat = "7 (k) S 2", .cmdline = std::nullopt}},
-        .truncated = true};
-    EXPECT_EQ(roundTrip(reply), reply);
-
-    // A count past MAX_VISIBLE_PIDS is refused before any PID is read.
-    std::vector<std::uint8_t> bytes = encodeRequest(1, request);
-    const std::uint32_t tooMany = static_cast<std::uint32_t>(MAX_VISIBLE_PIDS) + 1;
-    std::memcpy(bytes.data() + 4 + HEADER_BYTES, &tooMany, sizeof(tooMany));
-    EXPECT_FALSE(decodeRequest(bytes).has_value());
-
-    // A command line the flag says wasn't read is refused: the flag set to 0 with the text still there.
-    const Response unread = HiddenProcessesReply{.processes = {HiddenProcess{.target = TARGET, .cmdline = std::string("x")}}};
-    std::vector<std::uint8_t> response = encodeResponse(1, unread);
-    const std::size_t cmdlineFlag = 4 + HEADER_BYTES + 1 + 4 + 4 + 8 + (3 * 4);
-    ASSERT_EQ(response.at(cmdlineFlag), 1U);
-    response.at(cmdlineFlag) = 0;
-    EXPECT_FALSE(decodeResponse(response).has_value());
-}
-
-// #2728: a service action and its result.
-TEST(BrokerProtocolTest, ServiceActionsRoundTripAndRefuseAnUnknownActionStartTypeOrFlag)
-{
-    for (const ServiceAction action : {ServiceAction::Start, ServiceAction::Stop, ServiceAction::Restart, ServiceAction::SetStartType})
-    {
-        const Request request = ServiceActionRequest{.action = action, .unit = "cron.service", .startType = ServiceStartType::Disabled};
-        EXPECT_EQ(roundTrip(request), request);
-    }
     ServiceActionResult refused = ServiceActionResult::failed("Requires administrator");
     refused.needsAuthorization = true;
     const Response reply = ServiceActionReply{.result = refused};
@@ -542,67 +396,10 @@ TEST(BrokerProtocolTest, ServiceActionsRoundTripAndRefuseAnUnknownActionStartTyp
     EXPECT_EQ(roundTrip(Response{ServiceActionReply{.result = ServiceActionResult::succeeded()}}),
               Response{ServiceActionReply{.result = ServiceActionResult::succeeded()}});
 
-    // An action past SetStartType, or a start type past System, is refused.
-    std::vector<std::uint8_t> bytes = encodeRequest(1, Request{ServiceActionRequest{.action = ServiceAction::Start, .unit = "a.service"}});
-    bytes.at(4 + HEADER_BYTES) = static_cast<std::uint8_t>(ServiceAction::SetStartType) + 1;
-    EXPECT_FALSE(decodeRequest(bytes).has_value());
-    bytes = encodeRequest(1, Request{ServiceActionRequest{.action = ServiceAction::Start, .unit = "a.service"}});
-    bytes.back() = static_cast<std::uint8_t>(ServiceStartType::System) + 1;
-    EXPECT_FALSE(decodeRequest(bytes).has_value());
     // The reply's flags have four bits; any other is refused.
     std::vector<std::uint8_t> answer = encodeResponse(1, reply);
     answer.at(4 + HEADER_BYTES) = 16;
     EXPECT_FALSE(decodeResponse(answer).has_value());
-}
-
-TEST(BrokerProtocolTest, HiddenProcessesPastAFrameAreCutAndSaySo)
-{
-    // Big enough that a frame holds fewer than all: each process takes its texts at MAX_STRING_BYTES.
-    const std::string big(MAX_STRING_BYTES, 'x');
-    HiddenProcessesReply many;
-    for (std::int32_t pid = 1; pid <= 60; ++pid) // about 192 KiB each: some 42 fit in 8 MiB
-    {
-        many.processes.push_back(HiddenProcess{.target = {.pid = pid, .startTimeTicks = 1}, .stat = big, .statm = big, .status = big});
-    }
-    const Response decoded = roundTrip(Response{many});
-    ASSERT_TRUE(std::holds_alternative<HiddenProcessesReply>(decoded));
-    const auto& cut = std::get<HiddenProcessesReply>(decoded);
-    EXPECT_LT(cut.processes.size(), many.processes.size());
-    EXPECT_FALSE(cut.processes.empty());
-    EXPECT_TRUE(cut.truncated);
-}
-
-TEST(BrokerProtocolTest, AnEntryWhoseSocketsWouldPassTheCapGoesWithoutThem)
-{
-    ProcessCountersEntry many{.target = TARGET, .socketsRead = true};
-    many.socketInodes.resize(MAX_COUNTER_SOCKET_INODES - 1, 5);
-    ProcessCountersEntry past{.target = {.pid = 7, .startTimeTicks = 9}, .handleCountRead = true, .handleCount = 2, .socketsRead = true};
-    past.socketInodes = {1, 2};
-    const Response decoded = roundTrip(Response{ProcessCountersReply{.entries = {many, past}}});
-    ASSERT_TRUE(std::holds_alternative<ProcessCountersReply>(decoded));
-    const auto& entries = std::get<ProcessCountersReply>(decoded).entries;
-    ASSERT_EQ(entries.size(), 2U);
-    EXPECT_EQ(entries[0].socketInodes.size(), MAX_COUNTER_SOCKET_INODES - 1);
-    EXPECT_FALSE(entries[1].socketsRead) << "two more would pass MAX_COUNTER_SOCKET_INODES";
-    EXPECT_TRUE(entries[1].socketInodes.empty());
-    EXPECT_EQ(entries[1].handleCount, 2) << "the rest of it still goes";
-}
-
-TEST(BrokerProtocolTest, AHellosSessionFlagIsOneByteOfZeroOrOne)
-{
-    std::vector<std::uint8_t> bytes = encodeRequest(1, Request{Hello{.forSession = true}});
-    ASSERT_EQ(bytes.back(), 1U);
-    bytes.back() = 2;
-    EXPECT_FALSE(decodeRequest(bytes).has_value());
-}
-
-TEST(BrokerProtocolTest, ATransportWithoutASessionHelperRefusesToHoldOne)
-{
-    // Windows' Administrator restarts TaskSmack elevated (#2728); only the Linux helper is held.
-    Mocks::FakeBroker broker;
-    const auto held = broker.holdForSession(std::stop_token{});
-    EXPECT_FALSE(held.has_value());
-    EXPECT_FALSE(broker.heldForSession());
 }
 
 TEST(BrokerProtocolTest, RefusesAnythingButExactlyAKnownFrame)
@@ -802,113 +599,6 @@ TEST(BrokerProtocolTest, ThreadsRoundTripAndBadRepliesAreRefused)
     EXPECT_FALSE(decodeResponse(tooMany).has_value());
 }
 
-/// A memory map with one mapping of every shape the wire carries (#3089): Linux's measured sizes, a missing
-/// SwapPss, Windows' reserved and guard regions with no sizes.
-MemoryMapReadResult memoryMapSample()
-{
-    MemoryMapReadResult map{.status = MemoryMapReadStatus::Ok, .mappings = {}, .detail = {}};
-    map.truncated = true;
-    MemoryMapping libc{.start = 0x7f3a1c028000,
-                       .end = 0x7f3a1c1bd000,
-                       .readable = true,
-                       .executable = true,
-                       .kind = MemoryMappingKind::Image,
-                       .path = "/usr/lib/libc.so.6",
-                       .fileOffset = 0x28000};
-    libc.residentBytes = 1200 * 1024;
-    libc.pssBytes = 40 * 1024;
-    libc.sharedCleanBytes = 1196 * 1024;
-    libc.sharedDirtyBytes = 0;
-    libc.privateCleanBytes = 4 * 1024;
-    libc.privateDirtyBytes = 0;
-    libc.swapBytes = 0;
-    libc.swapPssBytes = 0xFFFF'FFFF'FFFF'FC00ULL;
-    map.mappings.push_back(libc);
-    MemoryMapping deleted{.start = 0x1000,
-                          .end = 0x2000,
-                          .readable = true,
-                          .writable = true,
-                          .shared = true,
-                          .kind = MemoryMappingKind::File,
-                          .path = "/memfd:jit space",
-                          .deleted = true};
-    deleted.residentBytes = 4096; // and nothing else measured
-    map.mappings.push_back(deleted);
-    map.mappings.push_back(
-        MemoryMapping{.start = 0x10000, .end = 0x20000, .guard = true, .reserved = true, .kind = MemoryMappingKind::Anonymous});
-    map.mappings.push_back(MemoryMapping{.start = 0xffffffffff600000,
-                                         .end = 0xffffffffff601000,
-                                         .executable = true,
-                                         .kind = MemoryMappingKind::System,
-                                         .path = "[vsyscall]"});
-    map.mappings.push_back(MemoryMapping{.start = 5, .end = 5, .kind = MemoryMappingKind::Other, .path = "[anon:x]"});
-    return map;
-}
-
-// #3089: another user's process's memory map, as the helper reads it.
-TEST(BrokerProtocolTest, MemoryMapRoundTripsEveryFieldAndBadRepliesAreRefused)
-{
-    EXPECT_EQ(roundTrip(Request{MemoryMapRequest{.target = TARGET}}), Request{MemoryMapRequest{.target = TARGET}});
-    const Response reply = MemoryMapReply{.result = memoryMapSample()};
-    EXPECT_EQ(roundTrip(reply), reply);
-    const Response refused = MemoryMapReply{.result = {.status = MemoryMapReadStatus::PermissionDenied, .mappings = {}, .detail = "no"}};
-    EXPECT_EQ(roundTrip(refused), refused);
-
-    // Offsets in a one-mapping reply with an empty detail: status, detail, truncated, count, then the mapping's
-    // start, end, flags, kind, path, offset, presence byte and sizes.
-    MemoryMapReadResult one{.status = MemoryMapReadStatus::Ok, .mappings = {memoryMapSample().mappings[0]}, .detail = {}};
-    const std::vector<std::uint8_t> good = encodeResponse(1, Response{MemoryMapReply{.result = one}});
-    ASSERT_TRUE(decodeResponse(good).has_value());
-    constexpr std::size_t STATUS = 4 + HEADER_BYTES;
-    constexpr std::size_t COUNT = STATUS + 1 + 4 + 1;
-    constexpr std::size_t START = COUNT + 4;
-    constexpr std::size_t END = START + 8;
-    constexpr std::size_t FLAGS = END + 8;
-    constexpr std::size_t KIND = FLAGS + 1;
-    const auto refusedWith = [&good](std::size_t at, std::uint8_t value)
-    {
-        std::vector<std::uint8_t> bytes = good;
-        bytes[at] = value;
-        return !decodeResponse(bytes).has_value();
-    };
-    EXPECT_TRUE(refusedWith(STATUS, static_cast<std::uint8_t>(MemoryMapReadStatus::Failed) + 1)) << "a status past Failed";
-    EXPECT_TRUE(refusedWith(FLAGS, 0x80)) << "a flag bit past DELETED";
-    EXPECT_TRUE(refusedWith(KIND, static_cast<std::uint8_t>(MemoryMappingKind::Other) + 1)) << "a kind past Other";
-    EXPECT_TRUE(refusedWith(END + 5, 0x00)) << "an end before its start";
-    EXPECT_TRUE(refusedWith(COUNT, 2)) << "a count past the mappings there";
-    // A presence bit with no size after it, or one more size than it says, leaves the frame the wrong length.
-    const std::size_t present = KIND + 1 + 4 + one.mappings[0].path.size() + 8;
-    EXPECT_TRUE(refusedWith(present, 0x7F)) << "fewer sizes than the presence byte names";
-    EXPECT_TRUE(refusedWith(present, 0xFF - 1)) << "a size the presence byte doesn't name";
-
-    // A count past MAX_MEMORY_MAPPINGS is refused before any mapping is read.
-    std::vector<std::uint8_t> tooMany =
-        encodeResponse(1, Response{MemoryMapReply{.result = {.status = MemoryMapReadStatus::Ok, .mappings = {}, .detail = {}}}});
-    const auto huge = static_cast<std::uint32_t>(MAX_MEMORY_MAPPINGS + 1);
-    for (std::size_t i = 0; i < 4; ++i)
-    {
-        tooMany[COUNT + i] = static_cast<std::uint8_t>(huge >> (8U * i));
-    }
-    EXPECT_FALSE(decodeResponse(tooMany).has_value());
-}
-
-// More mappings than a frame holds go back as many as fit, marked truncated, never as a frame the protocol refuses.
-TEST(BrokerProtocolTest, MemoryMapsPastOneFrameAreCutAndSaySo)
-{
-    MemoryMapReadResult map{.status = MemoryMapReadStatus::Ok, .mappings = {}, .detail = {}};
-    const MemoryMapping big{.start = 0, .end = 4096, .kind = MemoryMappingKind::File, .path = std::string(4000, 'p')};
-    map.mappings.assign((MAX_MESSAGE_BYTES / 4000) + 10, big);
-    const std::vector<std::uint8_t> bytes = encodeResponse(1, Response{MemoryMapReply{.result = map}});
-    EXPECT_LE(bytes.size(), MAX_MESSAGE_BYTES);
-    const auto decoded = decodeResponse(bytes);
-    ASSERT_TRUE(decoded.has_value());
-    const auto* reply = std::get_if<MemoryMapReply>(&decoded->message);
-    ASSERT_NE(reply, nullptr);
-    EXPECT_TRUE(reply->result.truncated);
-    EXPECT_LT(reply->result.mappings.size(), map.mappings.size());
-    EXPECT_GT(reply->result.mappings.size(), 0U);
-}
-
 TEST(BrokerProtocolTest, OpenFilesPastOneFrameAreCutAndSaySo)
 {
     OpenFilesReadResult files;
@@ -1035,129 +725,6 @@ TEST(BrokerProtocolTest, ConnectionsRoundTripAndBadEnumsAreRefused)
     EXPECT_FALSE(decodeResponse(bytes).has_value());
 }
 
-TEST(BrokerProtocolTest, MemoryRollupsRoundTrip)
-{
-    EXPECT_EQ(roundTrip(Request{MemoryRollupRequest{.target = TARGET}}), Request{MemoryRollupRequest{.target = TARGET}});
-    const Response figures = MemoryRollupReply{.result = MemoryRollup{.pssBytes = 2560000, .ussBytes = 2048000, .swapPssBytes = 65536}};
-    EXPECT_EQ(roundTrip(figures), figures);
-    const Response refused = MemoryRollupReply{.result = std::unexpected(MemoryRollupFailure::PermissionDenied)};
-    EXPECT_EQ(roundTrip(refused), refused);
-    const Response absent = MemoryRollupReply{.result = std::unexpected(MemoryRollupFailure::Unavailable)};
-    EXPECT_EQ(roundTrip(absent), absent);
-
-    std::vector<std::uint8_t> bytes = encodeResponse(1, figures);
-    bytes[4 + HEADER_BYTES] = 9; // no such failure
-    EXPECT_FALSE(decodeResponse(bytes).has_value());
-}
-
-TEST(BrokerProtocolTest, FirmwareFilesRoundTrip)
-{
-    for (const FirmwareFile file : {FirmwareFile::SmbiosEntryPoint,
-                                    FirmwareFile::SmbiosTable,
-                                    FirmwareFile::ProductSerial,
-                                    FirmwareFile::ProductUuid,
-                                    FirmwareFile::BoardSerial})
-    {
-        EXPECT_EQ(roundTrip(Request{FirmwareFileRequest{.file = file}}), Request{FirmwareFileRequest{.file = file}});
-    }
-    const Response table = FirmwareFileReply{.status = FirmwareFileStatus::Ok, .bytes = {0x11, 0x15, 0x00, 0x00, 0x7F}};
-    EXPECT_EQ(roundTrip(table), table);
-    const Response missing = FirmwareFileReply{.status = FirmwareFileStatus::NotFound, .bytes = {}};
-    EXPECT_EQ(roundTrip(missing), missing);
-
-    std::vector<std::uint8_t> request = encodeRequest(1, FirmwareFileRequest{.file = FirmwareFile::BoardSerial});
-    request[4 + HEADER_BYTES] = 5; // no such file: the helper never maps it to a path
-    EXPECT_FALSE(decodeRequest(request).has_value());
-
-    std::vector<std::uint8_t> reply = encodeResponse(1, table);
-    reply[4 + HEADER_BYTES] = 3; // no such status
-    EXPECT_FALSE(decodeResponse(reply).has_value());
-}
-
-TEST(BrokerProtocolTest, CrashesRoundTrip)
-{
-    EXPECT_EQ(roundTrip(Request{CrashesRequest{}}), Request{CrashesRequest{}});
-    CrashesReply reply;
-    reply.info.available = true;
-    reply.info.family = OsFamily::Linux;
-    reply.info.listed = true;
-    reply.info.journalRead = true;
-    reply.info.capped = true;
-    CrashEvent own;
-    own.unixSeconds = 1'760'000'000;
-    own.application = "python3";
-    own.pid = 4242;
-    own.uid = 1000;
-    own.coreBytes = 1 << 20;
-    own.coreKept = true;
-    own.signal = "SIGSEGV";
-    own.executable = "/usr/bin/python3.12";
-    CrashEvent others;
-    others.unixSeconds = 1'759'000'000;
-    others.application = "postgres";
-    others.signal = "SIGABRT";
-    reply.info.events = {own, others};
-    EXPECT_EQ(roundTrip(Response{reply}), Response{reply});
-
-    std::vector<std::uint8_t> bytes = encodeResponse(1, reply);
-    bytes[4 + HEADER_BYTES + 1] = 9; // no such OS family
-    EXPECT_FALSE(decodeResponse(bytes).has_value());
-}
-
-// #3366: every process's UDP bytes from the Linux helper's eBPF counter.
-TEST(BrokerProtocolTest, UdpBytesRoundTripsEveryFieldAndBadRepliesAreRefused)
-{
-    EXPECT_EQ(roundTrip(Request{UdpBytesRequest{}}), Request{UdpBytesRequest{}});
-    const Response counting = UdpBytesReply{
-        .status = UdpBytesStatus::Ok,
-        .detail = {},
-        .processes = {{.tgid = 7, .txBytes = 8000, .rxBytes = 6000}, {.tgid = 0xFFFFFFFFU, .txBytes = UINT64_MAX, .rxBytes = 0}}};
-    EXPECT_EQ(roundTrip(counting), counting);
-    const Response failed = UdpBytesReply{.status = UdpBytesStatus::Failed, .detail = "no BTF", .processes = {}};
-    EXPECT_EQ(roundTrip(failed), failed);
-    const Response off = UdpBytesReply{.status = UdpBytesStatus::NotCounting, .detail = {}, .processes = {}};
-    EXPECT_EQ(roundTrip(off), off);
-
-    // Offsets in a one-process reply with an empty detail: status, detail (its count), count, then the process.
-    const std::vector<std::uint8_t> good = encodeResponse(
-        1, Response{UdpBytesReply{.status = UdpBytesStatus::Ok, .detail = {}, .processes = {{.tgid = 1, .txBytes = 2, .rxBytes = 3}}}});
-    ASSERT_TRUE(decodeResponse(good).has_value());
-    constexpr std::size_t STATUS = 4 + HEADER_BYTES;
-    constexpr std::size_t COUNT = STATUS + 1 + 4;
-    const auto refusedWith = [&good](std::size_t at, std::uint8_t value)
-    {
-        std::vector<std::uint8_t> bytes = good;
-        bytes[at] = value;
-        return !decodeResponse(bytes).has_value();
-    };
-    EXPECT_TRUE(refusedWith(STATUS, static_cast<std::uint8_t>(UdpBytesStatus::Failed) + 1)) << "a status past Failed";
-    EXPECT_TRUE(refusedWith(COUNT, 2)) << "a count past the processes there";
-    EXPECT_TRUE(refusedWith(COUNT, 0)) << "a process left over";
-
-    // A count past MAX_UDP_BYTE_PROCESSES is refused before any process is read.
-    std::vector<std::uint8_t> tooMany =
-        encodeResponse(1, Response{UdpBytesReply{.status = UdpBytesStatus::Ok, .detail = {}, .processes = {}}});
-    const auto huge = static_cast<std::uint32_t>(MAX_UDP_BYTE_PROCESSES + 1);
-    for (std::size_t i = 0; i < 4; ++i)
-    {
-        tooMany[COUNT + i] = static_cast<std::uint8_t>(huge >> (8U * i));
-    }
-    EXPECT_FALSE(decodeResponse(tooMany).has_value());
-
-    // A reply with more than the cap carries the first MAX_UDP_BYTE_PROCESSES.
-    UdpBytesReply big{.status = UdpBytesStatus::Ok, .detail = {}, .processes = {}};
-    big.processes.resize(MAX_UDP_BYTE_PROCESSES + 3);
-    const auto decoded = decodeResponse(encodeResponse(1, Response{big}));
-    ASSERT_TRUE(decoded.has_value());
-    EXPECT_EQ(std::get<UdpBytesReply>(decoded->message).processes.size(), MAX_UDP_BYTE_PROCESSES);
-
-    // ReadUdpBytes has no payload: a byte after the header is refused.
-    std::vector<std::uint8_t> request = encodeRequest(1, Request{UdpBytesRequest{}});
-    request.push_back(0);
-    request[0] = static_cast<std::uint8_t>(request[0] + 1);
-    EXPECT_FALSE(decodeRequest(request).has_value());
-}
-
 // #2417: the decoders' refusals of a well-framed message that is the wrong way round or out of range.
 TEST(BrokerProtocolTest, NoResponseDecodesAsARequestAndNoRequestAsAResponse)
 {
@@ -1169,12 +736,8 @@ TEST(BrokerProtocolTest, NoResponseDecodesAsARequestAndNoRequestAsAResponse)
         ModulesReply{.result = {.status = ModulesReadStatus::Ok, .modules = {}, .detail = {}}},
         OpenFilesReply{},
         ConnectionsReply{.result = {.status = ConnectionsReadStatus::Ok, .connections = {}, .detail = {}}},
-        MemoryRollupReply{},
-        FirmwareFileReply{.status = FirmwareFileStatus::Ok, .bytes = {}},
-        CrashesReply{},
         ThreadsReply{.result = {.status = ThreadsReadStatus::Ok, .threads = {}, .detail = {}}},
-        MemoryMapReply{.result = {.status = MemoryMapReadStatus::Ok, .mappings = {}, .detail = {}}},
-        UdpBytesReply{},
+        ServiceActionReply{},
     };
     for (const Response& response : responses)
     {
@@ -1194,14 +757,8 @@ TEST(BrokerProtocolTest, NoResponseDecodesAsARequestAndNoRequestAsAResponse)
         ModulesRequest{.target = TARGET},
         OpenFilesRequest{.target = TARGET},
         ConnectionsRequest{.target = TARGET},
-        MemoryRollupRequest{.target = TARGET},
-        FirmwareFileRequest{.file = FirmwareFile::ProductUuid},
-        CrashesRequest{},
         ThreadsRequest{.target = TARGET},
         ThreadActionRequest{.target = TARGET, .tid = 9, .action = ThreadAction::Resume},
-        SchedPolicyRequest{.target = TARGET, .policy = SchedPolicy::Batch},
-        MemoryMapRequest{.target = TARGET},
-        UdpBytesRequest{},
     };
     for (const Request& request : requests)
     {
@@ -1261,12 +818,6 @@ TEST(BrokerProtocolTest, ReplyListsWithABadStatusOrTooManyEntriesAreRefused)
     EXPECT_TRUE(refused(connections, PAYLOAD, 0xEE));
     EXPECT_TRUE(refused(connections, PAYLOAD + 1 + 4 + 3, 0x7F));
     EXPECT_TRUE(refused(connections, PAYLOAD + 1 + 4 + 4 + 1 + 1 + 18 + 18, 0xEE)); // no such state
-
-    // Crashes: available, family, listed, accessDenied, reason (4), capped, journalRead,
-    // journal reason (4), otherUsersHidden, count (4).
-    const std::vector<std::uint8_t> crashes = encodeResponse(1, CrashesReply{});
-    ASSERT_TRUE(decodeResponse(crashes).has_value());
-    EXPECT_TRUE(refused(crashes, PAYLOAD + 1 + 1 + 1 + 1 + 4 + 1 + 1 + 4 + 1 + 3, 0x7F));
 }
 
 TEST(BrokerProtocolTest, RepliesCompareByEveryFigure)
@@ -1292,13 +843,6 @@ TEST(BrokerProtocolTest, RepliesCompareByEveryFigure)
     EXPECT_FALSE(home == otherName);
     EXPECT_FALSE(home == otherStatus);
     EXPECT_FALSE(home == fewer);
-
-    const MemoryRollupReply figures{.result = MemoryRollup{.pssBytes = 1, .ussBytes = 2, .swapPssBytes = 3}};
-    const MemoryRollupReply refusedRollup{.result = std::unexpected(MemoryRollupFailure::PermissionDenied)};
-    const MemoryRollupReply absent{.result = std::unexpected(MemoryRollupFailure::Unavailable)};
-    EXPECT_FALSE(figures == refusedRollup);
-    EXPECT_FALSE(refusedRollup == absent);
-    EXPECT_FALSE(figures == (MemoryRollupReply{.result = MemoryRollup{.pssBytes = 1, .ussBytes = 2, .swapPssBytes = 4}}));
 }
 
 TEST(BrokerProtocolTest, TheWriterCountsWhatItHasWritten)
@@ -1310,16 +854,6 @@ TEST(BrokerProtocolTest, TheWriterCountsWhatItHasWritten)
     writer.text("abc");
     EXPECT_EQ(writer.size(), 1U + 4U + 4U + 3U);
     EXPECT_EQ(writer.frame(MessageKind::Error, 1).size(), 4U + HEADER_BYTES + writer.size());
-}
-
-TEST(BrokerProtocolTest, AFirmwareFileIsCappedAtItsLimit)
-{
-    const std::vector<std::uint8_t> big(MAX_FIRMWARE_FILE_BYTES + 10, 0xAB);
-    const auto decoded = decodeResponse(encodeResponse(1, FirmwareFileReply{.status = FirmwareFileStatus::Ok, .bytes = big}));
-    ASSERT_TRUE(decoded.has_value());
-    const auto* reply = std::get_if<FirmwareFileReply>(&decoded->message);
-    ASSERT_NE(reply, nullptr);
-    EXPECT_EQ(reply->bytes.size(), MAX_FIRMWARE_FILE_BYTES);
 }
 
 // #2643: fuzz_broker_protocol's seed corpus has a seed for every message kind, and each one still
@@ -1343,39 +877,23 @@ TEST(BrokerProtocolTest, TheFuzzCorpusHasADecodableSeedForEveryMessageKind)
                                    MessageKind::SetPriority,
                                    MessageKind::SetIoPriority,
                                    MessageKind::SetAffinity,
-                                   MessageKind::ServiceAction,
                                    MessageKind::SetEfficiencyMode,
                                    MessageKind::CloseConnection,
                                    MessageKind::TaskManagerReplacement,
                                    MessageKind::SessionAction,
                                    MessageKind::ThreadAction,
-                                   MessageKind::SetSchedPolicy,
                                    MessageKind::ReadEnvironment,
                                    MessageKind::ReadModules,
                                    MessageKind::ReadOpenFiles,
                                    MessageKind::ReadConnections,
-                                   MessageKind::ReadMemoryRollup,
-                                   MessageKind::ReadFirmwareFile,
-                                   MessageKind::ReadCrashes,
-                                   MessageKind::ReadProcessCounters,
-                                   MessageKind::ListHiddenProcesses,
                                    MessageKind::ReadThreads,
-                                   MessageKind::ReadMemoryMap,
-                                   MessageKind::ReadUdpBytes,
                                    MessageKind::ActionResult,
                                    MessageKind::EnvironmentResult,
                                    MessageKind::ModulesResult,
                                    MessageKind::OpenFilesResult,
                                    MessageKind::ConnectionsResult,
-                                   MessageKind::MemoryRollupResult,
-                                   MessageKind::FirmwareFileResult,
-                                   MessageKind::CrashesResult,
-                                   MessageKind::ProcessCountersResult,
-                                   MessageKind::HiddenProcessesResult,
                                    MessageKind::ServiceActionResult,
                                    MessageKind::ThreadsResult,
-                                   MessageKind::MemoryMapResult,
-                                   MessageKind::UdpBytesResult,
                                    MessageKind::Error})
     {
         EXPECT_TRUE(seeded.contains(kind)) << "no seed for kind " << static_cast<int>(kind);
@@ -1409,11 +927,6 @@ TEST(BrokerProtocolTest, ResultRepliesCompareByEveryField)
         [](ServiceActionReply& m) { m.result.cancelled = true; },
         [](ServiceActionReply& m) { m.result.needsAuthorization = true; },
         [](ServiceActionReply& m) { m.result.authorizationUnavailable = true; });
-    expectEveryFieldCompared(
-        MemoryRollupReply{.result = MemoryRollup{.pssBytes = 1, .ussBytes = 2, .swapPssBytes = 3}},
-        [](MemoryRollupReply& m) { m.result->pssBytes = 9; },
-        [](MemoryRollupReply& m) { m.result->ussBytes = 9; },
-        [](MemoryRollupReply& m) { m.result->swapPssBytes = 9; });
 }
 
 TEST(BrokerProtocolTest, ListRepliesCompareByEveryFieldOfEveryEntry)
@@ -1476,23 +989,6 @@ TEST(BrokerProtocolTest, ListRepliesCompareByEveryFieldOfEveryEntry)
         [](ThreadsReply& m) { m.result.threads[0].suspendCount = 1; },
         [](ThreadsReply& m) { m.result.threads[0].createTime = 7; });
 
-    MemoryMapReadResult map{.status = MemoryMapReadStatus::Ok, .mappings = {MemoryMapping{.start = 1, .end = 2}}, .detail = "d"};
-    expectEveryFieldCompared(
-        MemoryMapReply{.result = map},
-        [](MemoryMapReply& m) { m.result.status = MemoryMapReadStatus::Failed; },
-        [](MemoryMapReply& m) { m.result.detail = "e"; },
-        [](MemoryMapReply& m) { m.result.truncated = true; },
-        [](MemoryMapReply& m) { m.result.mappings[0].end = 3; },
-        [](MemoryMapReply& m) { m.result.mappings[0].pssBytes = 0; });
-
-    expectEveryFieldCompared(
-        UdpBytesReply{.status = UdpBytesStatus::Ok, .detail = "d", .processes = {{.tgid = 1, .txBytes = 2, .rxBytes = 3}}},
-        [](UdpBytesReply& m) { m.status = UdpBytesStatus::Failed; },
-        [](UdpBytesReply& m) { m.detail = "e"; },
-        [](UdpBytesReply& m) { m.processes[0].tgid = 4; },
-        [](UdpBytesReply& m) { m.processes[0].txBytes = 4; },
-        [](UdpBytesReply& m) { m.processes[0].rxBytes = 4; });
-
     ProcessConnection connection;
     connection.local.port = 80;
     connection.remote.port = 5000;
@@ -1510,52 +1006,8 @@ TEST(BrokerProtocolTest, ListRepliesCompareByEveryFieldOfEveryEntry)
         [](ConnectionsReply& m) { m.result.connections[0].state = ConnectionState::Unknown; });
 }
 
-TEST(BrokerProtocolTest, CrashesRepliesCompareByEveryFieldOfEveryEvent)
-{
-    CrashesReply crashes;
-    crashes.info = {.available = true,
-                    .family = OsFamily::Linux,
-                    .listed = true,
-                    .accessDenied = false,
-                    .unavailableReason = "r",
-                    .capped = false,
-                    .journalRead = true,
-                    .journalUnavailableReason = "j",
-                    .otherUsersHidden = false,
-                    .events = {}};
-    CrashEvent event;
-    event.unixSeconds = 1;
-    event.application = "a";
-    event.pid = 2U;
-    event.uid = 3U;
-    event.coreBytes = 4;
-    event.coreKept = true;
-    event.signal = "SIGSEGV";
-    event.executable = "/bin/a";
-    crashes.info.events.push_back(event);
-    expectEveryFieldCompared(
-        crashes,
-        [](CrashesReply& m) { m.info.available = false; },
-        [](CrashesReply& m) { m.info.family = OsFamily::Windows; },
-        [](CrashesReply& m) { m.info.listed = false; },
-        [](CrashesReply& m) { m.info.accessDenied = true; },
-        [](CrashesReply& m) { m.info.unavailableReason = "s"; },
-        [](CrashesReply& m) { m.info.capped = true; },
-        [](CrashesReply& m) { m.info.journalRead = false; },
-        [](CrashesReply& m) { m.info.journalUnavailableReason = "k"; },
-        [](CrashesReply& m) { m.info.otherUsersHidden = true; },
-        [](CrashesReply& m) { m.info.events[0].unixSeconds = 9; },
-        [](CrashesReply& m) { m.info.events[0].application = "b"; },
-        [](CrashesReply& m) { m.info.events[0].pid.reset(); },
-        [](CrashesReply& m) { m.info.events[0].uid.reset(); },
-        [](CrashesReply& m) { m.info.events[0].coreBytes = 9; },
-        [](CrashesReply& m) { m.info.events[0].coreKept = false; },
-        [](CrashesReply& m) { m.info.events[0].signal = "SIGABRT"; },
-        [](CrashesReply& m) { m.info.events[0].executable = "/bin/b"; });
-}
-
-// #3221: a reader that has already failed reads no text or blob, and a blob past its limit fails it.
-TEST(BrokerProtocolTest, AFailedReaderReadsNoTextOrBlobAndABlobPastItsLimitFails)
+// #3221: a reader that has already failed reads no text, and a text longer than any may be fails it.
+TEST(BrokerProtocolTest, AFailedReaderReadsNoTextAndATextPastItsCapFails)
 {
     const std::vector<std::uint8_t> twoBytes{1, 2};
     Detail::Reader text(twoBytes);
@@ -1564,27 +1016,7 @@ TEST(BrokerProtocolTest, AFailedReaderReadsNoTextOrBlobAndABlobPastItsLimitFails
     EXPECT_TRUE(text.text().empty());
     EXPECT_FALSE(text.ok());
 
-    Detail::Reader blob(twoBytes);
-    static_cast<void>(blob.u32());
-    EXPECT_TRUE(blob.blob(16).empty());
-    EXPECT_FALSE(blob.ok());
-
-    Detail::Writer writer;
-    writer.blob(std::vector<std::uint8_t>(8, 0xAB), 8);
-    const std::vector<std::uint8_t> eight = writer.frame(MessageKind::Error, 1);
-    Detail::Reader tooBig(std::span(eight).subspan(4 + HEADER_BYTES));
-    EXPECT_TRUE(tooBig.blob(7).empty()); // eight bytes against a limit of seven
-    EXPECT_FALSE(tooBig.ok());
-
-    // A length within the limit for more bytes than are left, and a text longer than any may be.
-    Detail::Writer shortBlob;
-    shortBlob.u32(8);
-    shortBlob.u32(0);
-    const std::vector<std::uint8_t> four = shortBlob.frame(MessageKind::Error, 1);
-    Detail::Reader cut(std::span(four).subspan(4 + HEADER_BYTES));
-    EXPECT_TRUE(cut.blob(16).empty());
-    EXPECT_FALSE(cut.ok());
-
+    // A text longer than any may be.
     Detail::Writer longText;
     longText.u32(static_cast<std::uint32_t>(MAX_STRING_BYTES + 1));
     const std::vector<std::uint8_t> declared = longText.frame(MessageKind::Error, 1);
@@ -1609,16 +1041,16 @@ TEST(BrokerProtocolTest, APayloadThatEndsEarlyIsAMalformedMessage)
     ASSERT_FALSE(response.has_value());
     EXPECT_EQ(response.error(), "A malformed message");
 
-    Detail::Writer fewerPids;
-    fewerPids.u32(3);
-    fewerPids.i32(1); // one PID of the three it says
-    EXPECT_FALSE(decodeRequest(fewerPids.frame(MessageKind::ListHiddenProcesses, 1)).has_value());
+    Detail::Writer fewerWords;
+    fewerWords.target(TARGET);
+    fewerWords.u32(3);
+    fewerWords.u64(1); // one affinity word of the three it says
+    EXPECT_FALSE(decodeRequest(fewerWords.frame(MessageKind::SetAffinity, 1)).has_value());
 
     // And bytes left over after the last field are refused the same way.
     Detail::Writer trailing;
     trailing.u16(PROTOCOL_VERSION);
-    trailing.u8(0);
-    trailing.u8(0); // one byte more than a Hello has
+    trailing.u8(0); // one byte more than a Hello has (v23, #3580: its version only)
     const auto extra = decodeRequest(trailing.frame(MessageKind::Hello, 1));
     ASSERT_FALSE(extra.has_value());
     EXPECT_EQ(extra.error(), "A malformed message");
@@ -1648,38 +1080,18 @@ TEST(BrokerProtocolTest, EveryFlagAnEncoderWritesRoundTripsSet)
         ASSERT_TRUE(std::holds_alternative<ServiceActionReply>(service));
         EXPECT_EQ(std::get<ServiceActionReply>(service), ServiceActionReply{.result = outcome});
     }
-
-    CrashesReply crashes;
-    crashes.info.accessDenied = true;
-    crashes.info.otherUsersHidden = true;
-    const Response crashed = roundTrip(Response{crashes});
-    ASSERT_TRUE(std::holds_alternative<CrashesReply>(crashed));
-    EXPECT_TRUE(std::get<CrashesReply>(crashed).info.accessDenied);
-    EXPECT_TRUE(std::get<CrashesReply>(crashed).info.otherUsersHidden);
 }
 
 // #3221: the reply lists' caps and enums, refused when the count or a value is past them.
 TEST(BrokerProtocolTest, ReplyListsPastTheirCapsOrWithAStrayFamilyAreRefused)
 {
-    Detail::Writer counters;
-    counters.u32(static_cast<std::uint32_t>(MAX_COUNTER_TARGETS + 1));
-    EXPECT_FALSE(decodeResponse(counters.frame(MessageKind::ProcessCountersResult, 1)).has_value());
-
-    Detail::Writer hidden;
-    hidden.u8(0);
-    hidden.u32(static_cast<std::uint32_t>(MAX_HIDDEN_PROCESSES + 1));
-    EXPECT_FALSE(decodeResponse(hidden.frame(MessageKind::HiddenProcessesResult, 1)).has_value());
-
-    // One entry that says it has more socket inodes than a whole reply may carry.
-    Detail::Writer inodes;
-    inodes.u32(1);
-    inodes.target(TARGET);
-    inodes.u8(4); // its sockets were read
-    inodes.i32(0);
-    inodes.u64(0);
-    inodes.u64(0);
-    inodes.u32(static_cast<std::uint32_t>(MAX_COUNTER_SOCKET_INODES + 1));
-    EXPECT_FALSE(decodeResponse(inodes.frame(MessageKind::ProcessCountersResult, 1)).has_value());
+    // Modules: status, an empty detail, truncated, then a count past MAX_MODULES.
+    Detail::Writer modules;
+    modules.u8(0);
+    modules.text({});
+    modules.u8(0);
+    modules.u32(static_cast<std::uint32_t>(MAX_MODULES + 1));
+    EXPECT_FALSE(decodeResponse(modules.frame(MessageKind::ModulesResult, 1)).has_value());
 
     // Status, an empty detail and a count, then the connection's protocol and family.
     constexpr std::size_t FAMILY = 4 + HEADER_BYTES + 1 + 4 + 4 + 1;
@@ -1693,9 +1105,11 @@ TEST(BrokerProtocolTest, ReplyListsPastTheirCapsOrWithAStrayFamilyAreRefused)
 // #3221: the requests the newest kinds name aren't responses, and a kind neither side knows is neither.
 TEST(BrokerProtocolTest, TheNewerRequestKindsAndAnUnknownKindAreNotResponses)
 {
-    for (const Request& request : {Request{ProcessCountersRequest{.targets = {TARGET}, .withSockets = false}},
-                                   Request{HiddenProcessesRequest{.visiblePids = {1}}},
-                                   Request{ServiceActionRequest{.action = ServiceAction::Start, .unit = "cron.service"}}})
+    for (const Request& request :
+         {Request{CloseConnectionRequest{.target = TARGET, .socketInode = 5}},
+          Request{TaskManagerReplacementRequest{.change = TaskManagerChange::Clear, .path = {}, .replaceOther = false}},
+          Request{SessionActionRequest{.action = SessionAction::SignOut, .sessionId = 2, .user = "u", .domain = "d", .logonUsec = 1}},
+          Request{ThreadActionRequest{.target = TARGET, .tid = 9, .action = ThreadAction::End}}})
     {
         const auto decoded = decodeResponse(encodeRequest(3, request));
         ASSERT_FALSE(decoded.has_value()) << request.index();

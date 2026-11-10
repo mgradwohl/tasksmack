@@ -1,41 +1,40 @@
 #include "BrokeredProcessActions.h"
 
-#include "Domain/SamplingConfig.h"
 #include "Platform/BrokerProtocol.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/IPrivilegedBroker.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
-#include "Platform/IProcessMemoryMap.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
-#include "Platform/IProcessProbe.h"
 #include "Platform/IProcessThreads.h"
-#include "Platform/IUdpTrafficCollector.h"
 #include "Platform/IoPriorityTypes.h"
-#include "Platform/ProcessTypes.h"
 #include "Platform/SchedPolicy.h"
 #include "Platform/WaitChain.h"
 
-#include <algorithm>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <filesystem>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <stop_token>
 #include <string>
-#include <unordered_map>
+#include <string_view>
 #include <utility>
 #include <variant>
-#include <vector>
 
 namespace Platform
 {
+
+namespace
+{
+
+/// What runAuthorized() says of an action no broker request does (#3580).
+constexpr std::string_view NOT_THROUGH_THE_HELPER = "Setting a scheduling policy isn't available through the administrator helper";
+
+} // namespace
 
 Broker::Signal brokerSignalFor(ProcessSignal signal) noexcept
 {
@@ -55,7 +54,7 @@ Broker::Signal brokerSignalFor(ProcessSignal signal) noexcept
     return Broker::Signal::Hangup; // unreachable: every signal is above
 }
 
-Broker::Request brokerRequestFor(const AuthorizedAction& action)
+std::optional<Broker::Request> brokerRequestFor(const AuthorizedAction& action)
 {
     using Kind = AuthorizedAction::Kind;
     switch (action.kind)
@@ -75,12 +74,7 @@ Broker::Request brokerRequestFor(const AuthorizedAction& action)
     case Kind::SetAffinity:
         return Broker::AffinityRequest{.target = action.target, .cpus = action.cpus};
     case Kind::SetSchedPolicy:
-        return Broker::SchedPolicyRequest{
-            .target = action.target,
-            .policy = action.schedPolicy,
-            .rtPriority = action.rtPriority,
-            .realtimeThreads = action.realtimeThreads,
-        };
+        return std::nullopt; // Linux's, and Linux has no helper since #3580: protocol v23 has no SetSchedPolicy
     case Kind::SendSignal:
         return Broker::SignalRequest{.target = action.target, .signal = brokerSignalFor(action.signal)};
     case Kind::SetEfficiencyMode:
@@ -119,19 +113,9 @@ ProcessActionCapabilities BrokeredProcessActions::actionCapabilities() const
 {
     ProcessActionCapabilities capabilities = m_Inner->actionCapabilities();
     capabilities.canAuthorizeInteractively = (m_Broker != nullptr);
-    // The connection as last seen, not looked at here (#3182): Process Details asks every frame, on the
-    // UI thread, so this makes no pipe or socket call. A helper that has just exited is found gone by
-    // the sampler's next read, or by the action's own retry, which then offers Authenticate and retry.
-    // Windows' hints have no Realtime class: High is offered anyway, and a refusal is retried (#3362).
-    if (capabilities.canSetIoPriority && !capabilities.ioPriorityHints && m_Broker != nullptr && m_Broker->lastSeenConnected())
-    {
-        capabilities.canSetRealtimeIoPriority = true; // the helper, as root, has CAP_SYS_NICE
-    }
-    // Real-time FIFO and round robin (#3219), the same way: the helper keeps CAP_SYS_NICE.
-    if (capabilities.canSetSchedPolicy && m_Broker != nullptr && m_Broker->lastSeenConnected())
-    {
-        capabilities.canSetRealtimeSchedPolicy = true;
-    }
+    // No pipe call here: Process Details asks every frame, on the UI thread. Windows' I/O hints have no Realtime
+    // class: High is offered anyway, and a refusal is retried (#3362). The Realtime I/O class and real-time
+    // scheduling the Linux helper could set went with it (#3580).
     return capabilities;
 }
 
@@ -141,8 +125,12 @@ ProcessActionResult BrokeredProcessActions::retried(ProcessActionResult result, 
     {
         return result;
     }
-    const Broker::Request request = requestFor(action);
-    const std::expected<Broker::Response, std::string> response = m_Broker->call(request, std::stop_token{});
+    const std::optional<Broker::Request> request = requestFor(action);
+    if (!request.has_value())
+    {
+        return result; // not an action the helper does (#3580): the refusal stands
+    }
+    const std::expected<Broker::Response, std::string> response = m_Broker->call(*request, std::stop_token{});
     if (!response.has_value())
     {
         // The helper exited, timed out or broke between connected() and the call (#2414). The refusal
@@ -150,10 +138,10 @@ ProcessActionResult BrokeredProcessActions::retried(ProcessActionResult result, 
         result.errorMessage += " (the administrator helper couldn't be asked: " + response.error() + ")";
         return result;
     }
-    return finished(actionResultOf(response), action, request);
+    return finished(actionResultOf(response), action, *request);
 }
 
-Broker::Request BrokeredProcessActions::requestFor(const AuthorizedAction& action) const
+std::optional<Broker::Request> BrokeredProcessActions::requestFor(const AuthorizedAction& action) const
 {
     if (action.kind == AuthorizedAction::Kind::SetEfficiencyMode && !action.efficiencyMode)
     {
@@ -252,14 +240,7 @@ ProcessActionResult BrokeredProcessActions::setSchedPolicy(const ProcessTarget& 
                                                            std::int32_t rtPriority,
                                                            RealtimeThreads realtimeThreads)
 {
-    return retried(m_Inner->setSchedPolicy(target, policy, rtPriority, realtimeThreads),
-                   {
-                       .kind = AuthorizedAction::Kind::SetSchedPolicy,
-                       .target = target,
-                       .schedPolicy = policy,
-                       .realtimeThreads = realtimeThreads,
-                       .rtPriority = rtPriority,
-                   });
+    return m_Inner->setSchedPolicy(target, policy, rtPriority, realtimeThreads); // Linux's: no helper retries it (#3580)
 }
 
 ProcessActionResult BrokeredProcessActions::closeConnection(const ProcessTarget& target, std::uint64_t socketInode)
@@ -299,6 +280,10 @@ ProcessActionResult BrokeredProcessActions::runAuthorized(const AuthorizedAction
     {
         return ProcessActionResult::error("Acting as an administrator isn't available");
     }
+    if (!brokerRequestFor(action).has_value()) // before any prompt: the helper couldn't do it
+    {
+        return ProcessActionResult::error(std::string(NOT_THROUGH_THE_HELPER));
+    }
     // An Efficiency mode off with no nice left to put back (someone changed it since the refusal) may need no
     // administrator now, and only the in-process off puts back the weight and forgets the on (#3296).
     if (action.kind == AuthorizedAction::Kind::SetEfficiencyMode && !action.efficiencyMode &&
@@ -316,8 +301,12 @@ ProcessActionResult BrokeredProcessActions::runAuthorized(const AuthorizedAction
             return ProcessActionResult::error("Couldn't act as an administrator: " + connected.error());
         }
     }
-    const Broker::Request request = requestFor(action);
-    return finished(actionResultOf(m_Broker->call(request, stopToken)), action, request);
+    const std::optional<Broker::Request> request = requestFor(action);
+    if (!request.has_value())
+    {
+        return ProcessActionResult::error(std::string(NOT_THROUGH_THE_HELPER));
+    }
+    return finished(actionResultOf(m_Broker->call(*request, stopToken)), action, *request);
 }
 
 IoPriorityReadResult BrokeredProcessActions::getIoPriority(const ProcessTarget& target)
@@ -704,363 +693,6 @@ ThreadsReadResult BrokeredThreadsReader::viaBroker(const ProcessTarget& target, 
         return reply->result;
     }
     return {.status = ThreadsReadStatus::Failed, .threads = {}, .detail = "The administrator helper gave an unexpected answer"};
-}
-
-std::unique_ptr<IProcessMemoryMapReader> withPrivilegedBroker(std::unique_ptr<IProcessMemoryMapReader> reader,
-                                                              std::shared_ptr<IPrivilegedBroker> broker)
-{
-    if (broker == nullptr || reader == nullptr || !reader->hasMemoryMap())
-    {
-        return reader;
-    }
-    return std::make_unique<BrokeredMemoryMapReader>(std::move(reader), std::move(broker));
-}
-
-BrokeredMemoryMapReader::BrokeredMemoryMapReader(std::unique_ptr<IProcessMemoryMapReader> inner, std::shared_ptr<IPrivilegedBroker> broker)
-    : m_Inner(std::move(inner)), m_Broker(std::move(broker))
-{}
-
-bool BrokeredMemoryMapReader::hasMemoryMap() const
-{
-    return m_Inner->hasMemoryMap();
-}
-
-MemoryMapReadResult BrokeredMemoryMapReader::readMemoryMap(const ProcessTarget& target)
-{
-    MemoryMapReadResult result = m_Inner->readMemoryMap(target);
-    // Exited too: under hidepid=2 another user's live process is invisible here, and the helper, which checks
-    // the target's start time itself, still sees it (#3495 review).
-    const bool retry = result.status == MemoryMapReadStatus::PermissionDenied || result.status == MemoryMapReadStatus::ProcessExited;
-    if (!retry || m_Broker == nullptr || !m_Broker->connected())
-    {
-        return result;
-    }
-    return viaBroker(target, std::stop_token{});
-}
-
-bool BrokeredMemoryMapReader::canReadAuthorized() const
-{
-    return m_Broker != nullptr && m_Broker->readsOtherUsers();
-}
-
-MemoryMapReadResult BrokeredMemoryMapReader::readAuthorized(const ProcessTarget& target, const std::stop_token& stopToken)
-{
-    if (!canReadAuthorized()) // no helper, or none that could read it (#2550)
-    {
-        return m_Inner->readMemoryMap(target);
-    }
-    if (!m_Broker->connected() && !m_Broker->connect(stopToken).has_value())
-    {
-        return {.status = MemoryMapReadStatus::PermissionDenied, .mappings = {}, .detail = {}}; // the refusal stands
-    }
-    return viaBroker(target, stopToken);
-}
-
-MemoryMapReadResult BrokeredMemoryMapReader::viaBroker(const ProcessTarget& target, const std::stop_token& stopToken)
-{
-    const std::expected<Broker::Response, std::string> response = m_Broker->call(Broker::MemoryMapRequest{.target = target}, stopToken);
-    if (!response.has_value())
-    {
-        return {
-            .status = MemoryMapReadStatus::Failed,
-            .mappings = {},
-            .detail = "The administrator helper couldn't be asked: " + response.error(),
-        };
-    }
-    if (const auto* reply = std::get_if<Broker::MemoryMapReply>(&*response))
-    {
-        return reply->result;
-    }
-    return {.status = MemoryMapReadStatus::Failed, .mappings = {}, .detail = "The administrator helper gave an unexpected answer"};
-}
-
-std::unique_ptr<IProcessProbe> withPrivilegedBroker(std::unique_ptr<IProcessProbe> probe, std::shared_ptr<IPrivilegedBroker> broker)
-{
-    if (broker == nullptr || probe == nullptr || !probe->capabilities().hasMemoryRollup)
-    {
-        return probe;
-    }
-    return std::make_unique<BrokeredProcessProbe>(std::move(probe), std::move(broker));
-}
-
-BrokeredProcessProbe::BrokeredProcessProbe(std::unique_ptr<IProcessProbe> inner, std::shared_ptr<IPrivilegedBroker> broker)
-    : m_Inner(std::move(inner)), m_Broker(std::move(broker))
-{}
-
-std::vector<ProcessCounters> BrokeredProcessProbe::enumerate()
-{
-    std::vector<ProcessCounters> counters = m_Inner->enumerate();
-    const std::size_t visible = counters.size();
-    const HiddenListing listing = listHiddenProcesses(counters);
-    if (listing == HiddenListing::Skipped)
-    {
-        // The helper is busy with another call, perhaps a service action that waits up to a minute: the
-        // hidden processes as last listed, so the Domain keeps them and their history (#3031).
-        for (const ProcessCounters& last : m_LastHidden)
-        {
-            counters.push_back(last);
-            counters.back().heldOver = true;
-        }
-    }
-    readRefusedCounters(counters); // the hidden processes' FD counts, I/O and network too
-    if (listing == HiddenListing::Listed)
-    {
-        m_LastHidden.assign(counters.begin() + static_cast<std::ptrdiff_t>(visible), counters.end());
-    }
-    else if (listing == HiddenListing::NotAsked)
-    {
-        m_LastHidden.clear();
-    }
-    return counters;
-}
-
-BrokeredProcessProbe::HiddenListing BrokeredProcessProbe::listHiddenProcesses(std::vector<ProcessCounters>& counters)
-{
-    if (m_HiddenRefused || m_Broker == nullptr || !m_Broker->connected() ||
-        (m_Inner->capabilities().missingPrivileges & MissingPrivilege::PROCESSES_HIDDEN) == 0)
-    {
-        return HiddenListing::NotAsked;
-    }
-    Broker::HiddenProcessesRequest request;
-    request.visiblePids.reserve(counters.size());
-    for (const ProcessCounters& process : counters)
-    {
-        request.visiblePids.push_back(process.pid);
-    }
-    // As the counters read: on the sampler's thread, never behind another call, and briefly; a skipped read
-    // leaves the hidden processes out until the next refresh.
-    constexpr std::chrono::milliseconds HIDDEN_TIMEOUT{1000};
-    const std::expected<Broker::Response, std::string> response = m_Broker->callIfIdle(request, HIDDEN_TIMEOUT);
-    if (!response.has_value())
-    {
-        return HiddenListing::Skipped;
-    }
-    if (std::holds_alternative<Broker::ErrorReply>(*response))
-    {
-        m_HiddenRefused = true; // a helper that doesn't list them: not asked again
-        return HiddenListing::NotAsked;
-    }
-    const auto* reply = std::get_if<Broker::HiddenProcessesReply>(&*response);
-    if (reply == nullptr)
-    {
-        return HiddenListing::Skipped;
-    }
-    if (reply->truncated && reply->processes.empty())
-    {
-        return HiddenListing::Skipped; // the helper's read failed this time (#3032)
-    }
-    for (const Broker::HiddenProcess& hidden : reply->processes)
-    {
-        std::optional<ProcessCounters> process = m_Inner->processFromFiles(hidden.target.pid,
-                                                                           ProcFileTexts{
-                                                                               .stat = hidden.stat,
-                                                                               .statm = hidden.statm,
-                                                                               .status = hidden.status,
-                                                                               .cmdline = hidden.cmdline,
-                                                                               .io = hidden.io,
-                                                                               .cgroup = hidden.cgroup,
-                                                                               .ioprio = hidden.ioprio,
-                                                                           });
-        // The helper's listing names the process its stat was read from; a record from other text isn't it.
-        if (process.has_value() && process->startTimeTicks == hidden.target.startTimeTicks)
-        {
-            counters.push_back(std::move(*process));
-        }
-    }
-    return HiddenListing::Listed;
-}
-
-void BrokeredProcessProbe::readRefusedCounters(std::vector<ProcessCounters>& counters)
-{
-    if (m_CountersRefused || m_Broker == nullptr || !m_Broker->connected())
-    {
-        return;
-    }
-    // Sockets at the inner inode-to-PID map's cadence, not every refresh: reading every link is the costly part.
-    const auto now = std::chrono::steady_clock::now();
-    Broker::ProcessCountersRequest request;
-    request.withSockets = now - m_SocketsReadAt >= std::chrono::milliseconds{Domain::Sampling::INODE_PID_CACHE_TTL_MS} &&
-                          m_Inner->capabilities().hasNetworkCounters;
-    for (const ProcessCounters& process : counters)
-    {
-        // A carried-over record keeps what its own refresh read (#3031).
-        const bool refused = !process.heldOver && (!process.handleCountAvailable || !process.ioCountersAvailable ||
-                                                   (request.withSockets && !process.networkCountersAvailable));
-        if (refused && request.targets.size() < Broker::MAX_COUNTER_TARGETS)
-        {
-            request.targets.push_back({.pid = process.pid, .startTimeTicks = process.startTimeTicks});
-        }
-    }
-    // Between socket reads, the last one's processes keep their connections' attribution.
-    const auto keepAttribution = [this, &counters]
-    {
-        const std::scoped_lock lock(m_SocketOwnersMutex);
-        for (ProcessCounters& process : counters)
-        {
-            if (const auto read = m_SocketsReadFor.find(process.pid);
-                read != m_SocketsReadFor.end() && read->second == process.startTimeTicks)
-            {
-                process.networkCountersAvailable = true;
-            }
-        }
-    };
-    if (request.targets.empty())
-    {
-        keepAttribution();
-        return;
-    }
-    // As the PSS read: on the sampler's thread, never behind another call, and briefly; a skipped read
-    // shows the refusals until the next refresh.
-    constexpr std::chrono::milliseconds COUNTERS_TIMEOUT{1000};
-    const std::expected<Broker::Response, std::string> response = m_Broker->callIfIdle(request, COUNTERS_TIMEOUT);
-    if (!response.has_value())
-    {
-        keepAttribution();
-        return;
-    }
-    if (std::holds_alternative<Broker::ErrorReply>(*response))
-    {
-        m_CountersRefused = true;
-        return;
-    }
-    const auto* reply = std::get_if<Broker::ProcessCountersReply>(&*response);
-    if (reply == nullptr)
-    {
-        keepAttribution();
-        return;
-    }
-    if (request.withSockets)
-    {
-        m_SocketsReadAt = now;
-        std::unordered_map<std::uint64_t, SocketOwner> owners;
-        std::unordered_map<std::int32_t, std::uint64_t> readFor;
-        for (const Broker::ProcessCountersEntry& entry : reply->entries)
-        {
-            if (!entry.socketsRead)
-            {
-                continue;
-            }
-            readFor.insert_or_assign(entry.target.pid, entry.target.startTimeTicks);
-            for (const std::uint64_t inode : entry.socketInodes)
-            {
-                owners.insert_or_assign(inode, SocketOwner{.pid = entry.target.pid, .startTimeTicks = entry.target.startTimeTicks});
-            }
-        }
-        const std::scoped_lock lock(m_SocketOwnersMutex);
-        m_SocketOwners = std::move(owners);
-        m_SocketsReadFor = std::move(readFor);
-    }
-    keepAttribution();
-    // Entries come in the request's order, which is the counters', with gone processes left out.
-    auto process = counters.begin();
-    for (const Broker::ProcessCountersEntry& entry : reply->entries)
-    {
-        process = std::find_if(process,
-                               counters.end(),
-                               [&entry](const ProcessCounters& candidate)
-                               { return candidate.pid == entry.target.pid && candidate.startTimeTicks == entry.target.startTimeTicks; });
-        if (process == counters.end())
-        {
-            break;
-        }
-        if (!process->handleCountAvailable && entry.handleCountRead)
-        {
-            process->handleCount = entry.handleCount;
-            process->handleCountAvailable = true;
-        }
-        if (!process->ioCountersAvailable && entry.ioRead)
-        {
-            process->readBytes = entry.readBytes;
-            process->writeBytes = entry.writeBytes;
-            process->ioCountersAvailable = true;
-        }
-    }
-}
-
-ProcessCapabilities BrokeredProcessProbe::capabilities() const
-{
-    return m_Inner->capabilities();
-}
-
-std::uint64_t BrokeredProcessProbe::totalCpuTime() const
-{
-    return m_Inner->totalCpuTime();
-}
-
-long BrokeredProcessProbe::ticksPerSecond() const
-{
-    return m_Inner->ticksPerSecond();
-}
-
-std::uint64_t BrokeredProcessProbe::systemTotalMemory() const
-{
-    return m_Inner->systemTotalMemory();
-}
-
-std::optional<PackageEnergyReading> BrokeredProcessProbe::readPackageEnergy() const
-{
-    return m_Inner->readPackageEnergy();
-}
-
-SocketTrafficReading BrokeredProcessProbe::readSocketTraffic() const
-{
-    SocketTrafficReading reading = m_Inner->readSocketTraffic();
-    // The connections the inner map left unowned, held by processes whose fd links only the helper reads.
-    const std::scoped_lock lock(m_SocketOwnersMutex);
-    if (m_SocketOwners.empty())
-    {
-        return reading;
-    }
-    for (SocketTrafficSample& sample : reading.sockets)
-    {
-        if (sample.pid != 0)
-        {
-            continue;
-        }
-        if (const auto owner = m_SocketOwners.find(sample.key); owner != m_SocketOwners.end())
-        {
-            sample.pid = owner->second.pid;
-            sample.ownerStartTimeTicks = owner->second.startTimeTicks;
-        }
-    }
-    return reading;
-}
-
-std::optional<ProcessCounters> BrokeredProcessProbe::processFromFiles(std::int32_t pid, const ProcFileTexts& files) const
-{
-    return m_Inner->processFromFiles(pid, files);
-}
-
-MemoryRollupRead BrokeredProcessProbe::readMemoryRollup(std::int32_t pid, std::uint64_t startTimeTicks) const
-{
-    MemoryRollupRead read = m_Inner->readMemoryRollup(pid, startTimeTicks);
-    if (read.has_value() || read.error() != MemoryRollupFailure::PermissionDenied || m_Broker == nullptr || !m_Broker->connected())
-    {
-        return read;
-    }
-    // On the sampler's thread: never behind another call, and briefly, so the Processes table never stalls
-    // on the helper (#2369). A skipped read just shows the refusal until the next refresh.
-    constexpr std::chrono::milliseconds ROLLUP_TIMEOUT{1000};
-    const std::expected<Broker::Response, std::string> response =
-        m_Broker->callIfIdle(Broker::MemoryRollupRequest{.target = {.pid = pid, .startTimeTicks = startTimeTicks}}, ROLLUP_TIMEOUT);
-    if (response.has_value())
-    {
-        if (const auto* reply = std::get_if<Broker::MemoryRollupReply>(&*response))
-        {
-            return reply->result;
-        }
-    }
-    return read; // the helper couldn't be asked: the refusal stands
-}
-
-void BrokeredProcessProbe::setSocketStatsCacheTtl(std::chrono::milliseconds ttlMs)
-{
-    m_Inner->setSocketStatsCacheTtl(ttlMs);
-}
-
-void BrokeredProcessProbe::setUdpTrafficCollector(const std::shared_ptr<IUdpTrafficCollector>& collector)
-{
-    m_Inner->setUdpTrafficCollector(collector);
 }
 
 } // namespace Platform

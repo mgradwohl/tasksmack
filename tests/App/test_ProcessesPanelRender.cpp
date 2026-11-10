@@ -492,15 +492,15 @@ class ProcessesPanelRenderTest : public ::testing::Test
 };
 
 #ifndef _WIN32
-// #3366: once its platform is adopted with no UDP collector (no helper installed, or running as root), the panel tells
-// Settings that this system can't count UDP per process, and why; before that, nothing is said.
-TEST_F(ProcessesPanelRenderTest, AnAdoptedPlatformWithNoUdpCollectorIsPublishedAsUnavailable)
+// #3366, #3580: once its platform is adopted with no UDP collector (a Standard session: only TaskSmack started as root
+// loads the counter), the panel tells Settings what counting needs, and keeps the setting on offer.
+TEST_F(ProcessesPanelRenderTest, AnAdoptedPlatformWithNoUdpCollectorSaysCountingNeedsAdministrator)
 {
     const auto panel = attachedPanel();
     const App::UdpCountingStatus status = App::udpCountingStatus();
-    EXPECT_TRUE(status.unsupported);
+    EXPECT_FALSE(status.unsupported) << "the setting stays on offer for the next Administrator session";
     EXPECT_FALSE(status.delivering);
-    EXPECT_NE(status.problem.find("helper isn't available"), std::string::npos) << status.problem;
+    EXPECT_NE(status.problem.find("TaskSmack (Administrator)"), std::string::npos) << status.problem;
 }
 #endif
 

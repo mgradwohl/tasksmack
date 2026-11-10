@@ -41,8 +41,8 @@ constexpr const char* REALTIME_WARNING =
     "leaves the rest a little time to recover. When it shares the CPU with other real-time work, prefer RR over FIFO.";
 constexpr const char* REALTIME_MAY_BE_REFUSED =
     "TaskSmack lacks CAP_SYS_NICE, so the kernel may refuse this: it allows real time up to the process's RLIMIT_RTPRIO "
-    "(0 unless one was granted, as an audio group often is), or a priority lower than one it already runs at. Where the "
-    "TaskSmack helper is installed, a refusal offers Authenticate and retry.";
+    "(0 unless one was granted, as an audio group often is), or a priority lower than one it already runs at. Started as "
+    "administrator (TaskSmack (Administrator), or sudo), TaskSmack has it.";
 constexpr const char* OWN_PROCESS_NO_REALTIME = "This is TaskSmack itself, which never runs real time: its window would stop responding.";
 
 // Floor on the footer's buttons, in ems, as for the other action dialogs (ProcessActionConfirm).

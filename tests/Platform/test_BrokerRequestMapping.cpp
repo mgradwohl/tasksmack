@@ -1,6 +1,6 @@
-// Tests for the privileged helper's request mapping (#2307, #2309, #2310), which both helpers share
-// (#2517): handleRequest() onto IProcessActions and the readers, with mocks. The transports' session
-// loops have their own tests: test_BrokerServer.cpp (Linux) and test_BrokerPipe.cpp (Windows).
+// Tests for the privileged helper's request mapping (#2307, #2309), Windows' helper's since #3580 (#2517):
+// handleRequest() onto IProcessActions and the readers, with mocks. The pipe's session loop has its own
+// tests: test_BrokerPipe.cpp (Windows).
 
 #include "Mocks/MockProbes.h"
 #include "Platform/BrokerProtocol.h"
@@ -9,20 +9,16 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
-#include "Platform/IProcessMemoryMap.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
-#include "Platform/IProcessProbe.h"
 #include "Platform/IProcessThreads.h"
 #include "Platform/IServiceActions.h"
-#include "Platform/ISystemInfoProbe.h"
 #include "Platform/IUserSessions.h"
 
 #include <gtest/gtest.h>
 
 #include <cstdint>
 #include <optional>
-#include <span>
 #include <stdexcept>
 #include <string>
 #include <variant>
@@ -114,38 +110,6 @@ TEST(BrokerRequestMappingTest, PriorityIoPriorityAndAffinityReachTheirActions)
     EXPECT_EQ(actions.setAffinityCount(), 1);
     EXPECT_EQ(actions.lastAffinity(), CpuAffinity::fromMask(0b101));
     EXPECT_EQ(actions.lastTarget(), TARGET);
-}
-
-// #3086: a SetSchedPolicy request reaches setSchedPolicy() with its target and policy, and its refusal comes back.
-TEST(BrokerRequestMappingTest, ASchedulingPolicyReachesItsAction)
-{
-    TestMocks::MockProcessActions actions;
-    EXPECT_TRUE(
-        actionResult(BrokerServer::handleRequest(Broker::SchedPolicyRequest{.target = TARGET, .policy = SchedPolicy::Batch}, actions))
-            .success);
-    EXPECT_EQ(actions.setSchedPolicyCount(), 1);
-    EXPECT_EQ(actions.lastSchedPolicy(), SchedPolicy::Batch);
-    EXPECT_EQ(actions.lastRealtimeThreads(), Platform::RealtimeThreads::Keep);
-    EXPECT_EQ(actions.lastTarget(), TARGET);
-
-    actions.setSchedPolicyResult(ProcessActionResult::error("PID 1 is init"));
-    const Broker::ActionResult refused = actionResult(BrokerServer::handleRequest(
-        Broker::SchedPolicyRequest{.target = TARGET, .policy = SchedPolicy::Idle, .realtimeThreads = Platform::RealtimeThreads::Change},
-        actions));
-    EXPECT_FALSE(refused.success);
-    EXPECT_EQ(refused.errorMessage, "PID 1 is init");
-    EXPECT_EQ(actions.lastSchedPolicy(), SchedPolicy::Idle);
-    EXPECT_EQ(actions.lastRtPriority(), 0);
-    EXPECT_EQ(actions.lastRealtimeThreads(), Platform::RealtimeThreads::Change) << "the warning reaches the action";
-
-    // #3219: real time reaches it with its priority.
-    actions.setSchedPolicyResult(ProcessActionResult::ok());
-    EXPECT_TRUE(
-        actionResult(BrokerServer::handleRequest(
-                         Broker::SchedPolicyRequest{.target = TARGET, .policy = SchedPolicy::RoundRobin, .rtPriority = 10}, actions))
-            .success);
-    EXPECT_EQ(actions.lastSchedPolicy(), SchedPolicy::RoundRobin);
-    EXPECT_EQ(actions.lastRtPriority(), 10);
 }
 
 // #3071: a SetEfficiencyMode request reaches setEfficiencyMode() with its target and whether it is on.
@@ -320,174 +284,8 @@ TEST(BrokerRequestMappingTest, AConnectionsRequestIsReadThroughItsReader)
         std::holds_alternative<Broker::ErrorReply>(BrokerServer::handleRequest(Broker::ConnectionsRequest{.target = TARGET}, actions)));
 }
 
-TEST(BrokerRequestMappingTest, AFirmwareFileRequestIsReadThroughItsFunction)
-{
-    TestMocks::MockProcessActions actions;
-    std::optional<Broker::FirmwareFile> asked;
-    BrokerServer::Readers readers;
-    readers.firmwareFile = [&asked](Broker::FirmwareFile file)
-    {
-        asked = file;
-        return Broker::FirmwareFileReply{.status = Broker::FirmwareFileStatus::Ok, .bytes = {1, 2, 3}};
-    };
-    const Broker::Response response =
-        BrokerServer::handleRequest(Broker::FirmwareFileRequest{.file = Broker::FirmwareFile::ProductUuid}, actions, readers);
-    ASSERT_TRUE(std::holds_alternative<Broker::FirmwareFileReply>(response));
-    EXPECT_EQ(std::get<Broker::FirmwareFileReply>(response).bytes, (std::vector<std::uint8_t>{1, 2, 3}));
-    EXPECT_EQ(asked, Broker::FirmwareFile::ProductUuid);
-    EXPECT_TRUE(std::holds_alternative<Broker::ErrorReply>(
-        BrokerServer::handleRequest(Broker::FirmwareFileRequest{.file = Broker::FirmwareFile::ProductUuid}, actions)));
-}
-
-TEST(BrokerRequestMappingTest, ACrashesRequestIsReadThroughItsFunction)
-{
-    TestMocks::MockProcessActions actions;
-    BrokerServer::Readers readers;
-    readers.crashes = []
-    {
-        CrashesInfo info;
-        info.available = true;
-        info.listed = true;
-        return info;
-    };
-    const Broker::Response response = BrokerServer::handleRequest(Broker::CrashesRequest{}, actions, readers);
-    ASSERT_TRUE(std::holds_alternative<Broker::CrashesReply>(response));
-    EXPECT_TRUE(std::get<Broker::CrashesReply>(response).info.listed);
-    EXPECT_TRUE(std::holds_alternative<Broker::ErrorReply>(BrokerServer::handleRequest(Broker::CrashesRequest{}, actions)));
-}
-
-// #3366: every process's UDP bytes, through the Linux helper's counter; a helper without one (Windows') says so.
-TEST(BrokerRequestMappingTest, AUdpBytesRequestIsReadThroughItsFunction)
-{
-    TestMocks::MockProcessActions actions;
-    BrokerServer::Readers readers;
-    readers.udpBytes = []
-    {
-        return Broker::UdpBytesReply{
-            .status = Broker::UdpBytesStatus::Ok, .detail = {}, .processes = {{.tgid = 5, .txBytes = 6, .rxBytes = 7}}};
-    };
-    const Broker::Response response = BrokerServer::handleRequest(Broker::UdpBytesRequest{}, actions, readers);
-    ASSERT_TRUE(std::holds_alternative<Broker::UdpBytesReply>(response));
-    EXPECT_EQ(std::get<Broker::UdpBytesReply>(response).processes.at(0).txBytes, 6U);
-
-    readers.udpBytes = []() -> Broker::UdpBytesReply
-    {
-        throw std::runtime_error("map gone");
-    };
-    const Broker::Response failed = BrokerServer::handleRequest(Broker::UdpBytesRequest{}, actions, readers);
-    ASSERT_TRUE(std::holds_alternative<Broker::UdpBytesReply>(failed));
-    EXPECT_EQ(std::get<Broker::UdpBytesReply>(failed).status, Broker::UdpBytesStatus::Failed);
-
-    EXPECT_TRUE(std::holds_alternative<Broker::ErrorReply>(BrokerServer::handleRequest(Broker::UdpBytesRequest{}, actions)));
-}
-
-TEST(BrokerRequestMappingTest, AMemoryRollupRequestIsReadThroughItsFunction)
-{
-    TestMocks::MockProcessActions actions;
-    ProcessTarget asked;
-    BrokerServer::Readers readers;
-    readers.memoryRollup = [&asked](std::int32_t pid, std::uint64_t start) -> MemoryRollupRead
-    {
-        asked = {.pid = pid, .startTimeTicks = start};
-        return MemoryRollup{.pssBytes = 1, .ussBytes = 2, .swapPssBytes = 3};
-    };
-    const Broker::Response response = BrokerServer::handleRequest(Broker::MemoryRollupRequest{.target = TARGET}, actions, readers);
-    ASSERT_TRUE(std::holds_alternative<Broker::MemoryRollupReply>(response));
-    EXPECT_TRUE(std::get<Broker::MemoryRollupReply>(response).result.has_value());
-    EXPECT_EQ(asked, TARGET);
-    EXPECT_TRUE(
-        std::holds_alternative<Broker::ErrorReply>(BrokerServer::handleRequest(Broker::MemoryRollupRequest{.target = TARGET}, actions)));
-}
-
-TEST(BrokerRequestMappingTest, AProcessCountersRequestReadsEachTargetAndLeavesOutTheGoneOrThrowing)
-{
-    TestMocks::MockProcessActions actions;
-    const ProcessTarget gone{.pid = 8, .startTimeTicks = 1};
-    const ProcessTarget throwing{.pid = 9, .startTimeTicks = 1};
-    BrokerServer::Readers readers;
-    bool askedForSockets = false;
-    readers.processCounters = [&](const ProcessTarget& target, bool withSockets) -> std::optional<Broker::ProcessCountersEntry>
-    {
-        askedForSockets = askedForSockets || withSockets;
-        if (target == gone)
-        {
-            return std::nullopt;
-        }
-        if (target == throwing)
-        {
-            throw std::runtime_error("boom");
-        }
-        return Broker::ProcessCountersEntry{.target = target, .handleCountRead = true, .handleCount = 4};
-    };
-    const Broker::Response response = BrokerServer::handleRequest(
-        Broker::ProcessCountersRequest{.targets = {TARGET, gone, throwing}, .withSockets = true}, actions, readers);
-    ASSERT_TRUE(std::holds_alternative<Broker::ProcessCountersReply>(response));
-    const auto& entries = std::get<Broker::ProcessCountersReply>(response).entries;
-    ASSERT_EQ(entries.size(), 1U);
-    EXPECT_EQ(entries.front().target, TARGET);
-    EXPECT_EQ(entries.front().handleCount, 4);
-    EXPECT_TRUE(askedForSockets) << "the request's withSockets reaches the reader";
-    // A helper without the reader (Windows', which reads every process itself) says so.
-    EXPECT_TRUE(std::holds_alternative<Broker::ErrorReply>(
-        BrokerServer::handleRequest(Broker::ProcessCountersRequest{.targets = {TARGET}}, actions)));
-}
-
-TEST(BrokerRequestMappingTest, AHiddenProcessesRequestGoesToItsReaderWithTheVisiblePids)
-{
-    TestMocks::MockProcessActions actions;
-    BrokerServer::Readers readers;
-    std::vector<std::int32_t> seen;
-    readers.hiddenProcesses = [&seen](std::span<const std::int32_t> visible)
-    {
-        seen.assign(visible.begin(), visible.end());
-        return Broker::HiddenProcessesReply{.processes = {Broker::HiddenProcess{.target = TARGET, .stat = "x"}}, .truncated = false};
-    };
-    const Broker::Response response = BrokerServer::handleRequest(Broker::HiddenProcessesRequest{.visiblePids = {1, 2}}, actions, readers);
-    ASSERT_TRUE(std::holds_alternative<Broker::HiddenProcessesReply>(response));
-    EXPECT_EQ(std::get<Broker::HiddenProcessesReply>(response).processes.size(), 1U);
-    EXPECT_EQ(seen, (std::vector<std::int32_t>{1, 2}));
-
-    // One that throws lists none this time, marked truncated, so TaskSmack asks again (#3032); only a helper
-    // without the reader (Windows', which has no hidepid) answers with the error that stops it asking.
-    readers.hiddenProcesses = [](std::span<const std::int32_t>) -> Broker::HiddenProcessesReply
-    {
-        throw std::runtime_error("boom");
-    };
-    const Broker::Response thrown = BrokerServer::handleRequest(Broker::HiddenProcessesRequest{}, actions, readers);
-    ASSERT_TRUE(std::holds_alternative<Broker::HiddenProcessesReply>(thrown));
-    EXPECT_EQ(std::get<Broker::HiddenProcessesReply>(thrown), (Broker::HiddenProcessesReply{.processes = {}, .truncated = true}));
-    EXPECT_TRUE(std::holds_alternative<Broker::ErrorReply>(BrokerServer::handleRequest(Broker::HiddenProcessesRequest{}, actions)));
-}
-
-TEST(BrokerRequestMappingTest, AServiceActionGoesToItsReaderAndAThrowIsAFailedResult)
-{
-    TestMocks::MockProcessActions actions;
-    BrokerServer::Readers readers;
-    Broker::ServiceActionRequest seen;
-    readers.serviceAction = [&seen](const Broker::ServiceActionRequest& request)
-    {
-        seen = request;
-        return ServiceActionResult::succeeded();
-    };
-    const Broker::ServiceActionRequest stop{.action = ServiceAction::Stop, .unit = "cron.service", .startType = ServiceStartType::Unknown};
-    const Broker::Response response = BrokerServer::handleRequest(stop, actions, readers);
-    ASSERT_TRUE(std::holds_alternative<Broker::ServiceActionReply>(response));
-    EXPECT_TRUE(std::get<Broker::ServiceActionReply>(response).result.ok);
-    EXPECT_EQ(seen, stop);
-
-    readers.serviceAction = [](const Broker::ServiceActionRequest&) -> ServiceActionResult
-    {
-        throw std::runtime_error("boom");
-    };
-    const Broker::Response threw = BrokerServer::handleRequest(stop, actions, readers);
-    ASSERT_TRUE(std::holds_alternative<Broker::ServiceActionReply>(threw));
-    EXPECT_FALSE(std::get<Broker::ServiceActionReply>(threw).result.ok);
-    // A helper without the reader (Windows') answers with an error.
-    EXPECT_TRUE(std::holds_alternative<Broker::ErrorReply>(BrokerServer::handleRequest(stop, actions)));
-}
-
 // #3072: Replace Task Manager goes to its handler, which answers with an ActionResult; one that throws is a
-// failed result, and a helper without the handler (Linux's) answers with an error.
+// failed result, and a helper without the handler answers with an error.
 TEST(BrokerRequestMappingTest, ReplaceTaskManagerGoesToItsHandlerAndAThrowIsAFailedResult)
 {
     TestMocks::MockProcessActions actions;
@@ -518,7 +316,7 @@ TEST(BrokerRequestMappingTest, ReplaceTaskManagerGoesToItsHandlerAndAThrowIsAFai
 }
 
 // #3076: a session's Disconnect or Sign out goes to its handler (Windows' helper), answered with a
-// ServiceActionReply; one that throws is a failed result, and a helper without it (Linux's) answers with an error.
+// ServiceActionReply; one that throws is a failed result, and a helper without it answers with an error.
 TEST(BrokerRequestMappingTest, ASessionActionGoesToItsHandlerAndAThrowIsAFailedResult)
 {
     TestMocks::MockProcessActions actions;
@@ -606,18 +404,6 @@ TEST(BrokerRequestMappingTest, AReadThatThrowsIsAFailedReadNotAnEndedHelper)
     ThrowingOpenFilesReader openFiles;
     ThrowingConnectionsReader connections;
     BrokerServer::Readers readers{.environment = &environment, .modules = &modules, .openFiles = &openFiles, .connections = &connections};
-    readers.memoryRollup = [](std::int32_t /*pid*/, std::uint64_t /*start*/) -> MemoryRollupRead
-    {
-        throw std::runtime_error("boom");
-    };
-    readers.firmwareFile = [](Broker::FirmwareFile /*file*/) -> Broker::FirmwareFileReply
-    {
-        throw std::runtime_error("boom");
-    };
-    readers.crashes = []() -> CrashesInfo
-    {
-        throw std::runtime_error("boom");
-    };
 
     const Broker::Response env = BrokerServer::handleRequest(Broker::EnvironmentRequest{.target = TARGET}, actions, readers);
     ASSERT_TRUE(std::holds_alternative<Broker::EnvironmentReply>(env));
@@ -634,21 +420,6 @@ TEST(BrokerRequestMappingTest, AReadThatThrowsIsAFailedReadNotAnEndedHelper)
     const Broker::Response sockets = BrokerServer::handleRequest(Broker::ConnectionsRequest{.target = TARGET}, actions, readers);
     ASSERT_TRUE(std::holds_alternative<Broker::ConnectionsReply>(sockets));
     EXPECT_EQ(std::get<Broker::ConnectionsReply>(sockets).result.status, ConnectionsReadStatus::Failed);
-
-    const Broker::Response rollup = BrokerServer::handleRequest(Broker::MemoryRollupRequest{.target = TARGET}, actions, readers);
-    ASSERT_TRUE(std::holds_alternative<Broker::MemoryRollupReply>(rollup));
-    const MemoryRollupRead& read = std::get<Broker::MemoryRollupReply>(rollup).result;
-    ASSERT_FALSE(read.has_value());
-    EXPECT_EQ(read.error(), MemoryRollupFailure::Unavailable);
-
-    const Broker::Response firmware =
-        BrokerServer::handleRequest(Broker::FirmwareFileRequest{.file = Broker::FirmwareFile::SmbiosTable}, actions, readers);
-    ASSERT_TRUE(std::holds_alternative<Broker::FirmwareFileReply>(firmware));
-    EXPECT_EQ(std::get<Broker::FirmwareFileReply>(firmware).status, Broker::FirmwareFileStatus::Unreadable);
-
-    const Broker::Response crashes = BrokerServer::handleRequest(Broker::CrashesRequest{}, actions, readers);
-    ASSERT_TRUE(std::holds_alternative<Broker::ErrorReply>(crashes));
-    EXPECT_EQ(std::get<Broker::ErrorReply>(crashes).message, "The crash read failed");
 }
 
 TEST(BrokerRequestMappingTest, AnOpenFilesRequestWithoutAReaderIsRefused)
@@ -711,60 +482,6 @@ TEST(BrokerRequestMappingTest, AThreadsRequestIsReadThroughItsReader)
     const Broker::Response failed = BrokerServer::handleRequest(Broker::ThreadsRequest{.target = TARGET}, actions, readers);
     ASSERT_TRUE(std::holds_alternative<Broker::ThreadsReply>(failed));
     EXPECT_EQ(std::get<Broker::ThreadsReply>(failed).result.status, ThreadsReadStatus::Failed);
-}
-
-/// A memory map reader that counts its reads and answers one mapping at the target's PID, or throws (#3089).
-class FakeMemoryMapReader final : public IProcessMemoryMapReader
-{
-  public:
-    explicit FakeMemoryMapReader(bool throws = false) : m_Throws(throws)
-    {}
-    [[nodiscard]] bool hasMemoryMap() const override
-    {
-        return true;
-    }
-    [[nodiscard]] MemoryMapReadResult readMemoryMap(const ProcessTarget& target) override
-    {
-        ++m_Reads;
-        if (m_Throws)
-        {
-            throw std::runtime_error("boom");
-        }
-        MemoryMapReadResult result{.status = MemoryMapReadStatus::Ok, .mappings = {}, .detail = {}};
-        result.mappings.push_back(
-            {.start = static_cast<std::uint64_t>(target.pid), .end = 0x10000, .kind = MemoryMappingKind::Heap, .path = "[heap]"});
-        return result;
-    }
-    int m_Reads = 0;
-
-  private:
-    bool m_Throws = false;
-};
-
-// #3089: another user's process's memory map, read by the helper's reader, refused without one.
-TEST(BrokerRequestMappingTest, AMemoryMapRequestIsReadThroughItsReader)
-{
-    TestMocks::MockProcessActions actions;
-    FakeMemoryMapReader memoryMap;
-    BrokerServer::Readers readers;
-    readers.memoryMap = &memoryMap;
-    const Broker::Response response = BrokerServer::handleRequest(Broker::MemoryMapRequest{.target = TARGET}, actions, readers);
-    ASSERT_TRUE(std::holds_alternative<Broker::MemoryMapReply>(response));
-    EXPECT_EQ(memoryMap.m_Reads, 1);
-    const MemoryMapReadResult& result = std::get<Broker::MemoryMapReply>(response).result;
-    EXPECT_EQ(result.status, MemoryMapReadStatus::Ok);
-    ASSERT_EQ(result.mappings.size(), 1U);
-    EXPECT_EQ(result.mappings[0].start, static_cast<std::uint64_t>(TARGET.pid));
-
-    const Broker::Response none = BrokerServer::handleRequest(Broker::MemoryMapRequest{.target = TARGET}, actions);
-    ASSERT_TRUE(std::holds_alternative<Broker::ErrorReply>(none));
-    EXPECT_EQ(std::get<Broker::ErrorReply>(none).message, "This helper doesn't read memory maps");
-
-    FakeMemoryMapReader throwing(true);
-    readers.memoryMap = &throwing;
-    const Broker::Response failed = BrokerServer::handleRequest(Broker::MemoryMapRequest{.target = TARGET}, actions, readers);
-    ASSERT_TRUE(std::holds_alternative<Broker::MemoryMapReply>(failed));
-    EXPECT_EQ(std::get<Broker::MemoryMapReply>(failed).result.status, MemoryMapReadStatus::Failed);
 }
 
 TEST(BrokerRequestMappingTest, AnActionThatThrowsANonStandardExceptionIsAFailedResult)

@@ -59,9 +59,8 @@ void preparePanelPlatforms(const Synthetic::Scenario* scenario);
 /// never reach real /proc entries), or the platform's.
 [[nodiscard]] ProcessDetailsReaders makeProcessDetailsReaders(const Synthetic::Scenario* scenario);
 
-/// Process Details' memory map reader (#3089): the platform's, whose refusal of another user's process goes
-/// to the shared helper once it runs (and "Authenticate to read" starts it), or @p scenario's, which reads
-/// nothing. Making it reads nothing; the Memory map section's view calls it on its worker.
+/// Process Details' memory map reader (#3089): the platform's, or @p scenario's, which reads nothing. Making it
+/// reads nothing; the Memory map section's view calls it on its worker.
 [[nodiscard]] std::unique_ptr<Platform::IProcessMemoryMapReader> makeProcessMemoryMapReader(const Synthetic::Scenario* scenario);
 
 /// The Connections tab's process actions, for Close connection (#3066): the scenario's, or the platform's,
@@ -95,12 +94,6 @@ void preparePanelPlatforms(const Synthetic::Scenario* scenario);
 
 /// The probe the shared crash history reads (#1675), or null in a synthetic run: no crash history.
 [[nodiscard]] std::shared_ptr<Platform::ISystemInfoProbe> makeCrashHistoryProbe(const Synthetic::Scenario* scenario);
-
-/// The crash history's probe over the platform's @p probe: through @p broker, the helper System
-/// Information's probe shares, so both read every user's crashes once it runs (#2416). makeCrashHistoryProbe()'s
-/// seam, for tests.
-[[nodiscard]] std::shared_ptr<Platform::ISystemInfoProbe> crashHistoryProbe(std::unique_ptr<Platform::ISystemInfoProbe> probe,
-                                                                            std::shared_ptr<Platform::IPrivilegedBroker> broker);
 
 /// The one privileged broker the panels share, for the startup notice's Administrator choice (#2728):
 /// null in a synthetic run and where there is none (no helper installed, already root). Made on first

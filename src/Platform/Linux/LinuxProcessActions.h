@@ -12,8 +12,7 @@ namespace Platform
 {
 
 /// Linux implementation of IProcessActions: LinuxProcessControl's signals, nice, I/O priority and CPU
-/// affinity, plus the actions that start another program. TaskSmack uses this; tasksmack-helper links
-/// only LinuxProcessControl (#2640).
+/// affinity, plus the actions that start another program.
 ///
 /// launchSyscallTrace() opens a terminal running `strace -p` (#182). strace and the terminal are looked
 /// up once, at construction (discoverSyscallTraceTools()), and actionCapabilities() reports what was

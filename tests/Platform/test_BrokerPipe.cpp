@@ -7,7 +7,7 @@
 #include "Platform/BrokerSessionRules.h"
 #include "Platform/IPrivilegedBroker.h"
 #include "Platform/IProcessActions.h"
-#include "Platform/IProcessProbe.h"
+#include "Platform/IProcessModules.h"
 #include "Platform/IUserSessions.h"
 #include "Platform/ThreadName.h"
 #include "Platform/Windows/BrokerPipe.h"
@@ -1154,11 +1154,11 @@ TEST(BrokerPipeServeTest, ReadsDontPutOffTheIdleExit)
     ASSERT_TRUE(send(pair.client.get(), Broker::encodeRequest(1, Broker::Hello{})));
     ASSERT_TRUE(receiveResponse(pair.client.get()).has_value());
 
-    // PSS/USS reads, as the sampler's come: every one is answered, and the last takes the clock to the idle
-    // timeout after the Hello, which ends the session.
+    // Module reads, as Process Details' refresh timer sends them: every one is answered, and the last takes the clock
+    // to the idle timeout after the Hello, which ends the session.
     for (std::uint32_t id = 2; id < 2 + READS; ++id)
     {
-        ASSERT_TRUE(send(pair.client.get(), Broker::encodeRequest(id, Broker::MemoryRollupRequest{.target = TARGET})));
+        ASSERT_TRUE(send(pair.client.get(), Broker::encodeRequest(id, Broker::ModulesRequest{.target = TARGET})));
         ASSERT_TRUE(receiveResponse(pair.client.get()).has_value()) << "read " << id << " ended the session early";
     }
     const auto status = served.wait_for(WAIT);
@@ -1242,12 +1242,9 @@ TEST(BrokerPipeServeTest, OnlyActionsWindowsDoesAndTheHelloPutOffTheIdleExit)
     EXPECT_TRUE(BrokerPipeServer::putsOffTheWindowsIdleExit(Broker::IoPriorityRequest{}));
     // And Close connection (#3358), which only an administrator can do.
     EXPECT_TRUE(BrokerPipeServer::putsOffTheWindowsIdleExit(Broker::CloseConnectionRequest{.target = TARGET, .socketInode = 1}));
-    // What Windows always refuses keeps nothing alive.
-    EXPECT_FALSE(BrokerPipeServer::putsOffTheWindowsIdleExit(Broker::ServiceActionRequest{}));
-    EXPECT_FALSE(BrokerPipeServer::putsOffTheWindowsIdleExit(Broker::SchedPolicyRequest{.target = TARGET}));
-    // Nor does a read.
+    // A read keeps nothing alive.
     EXPECT_FALSE(BrokerPipeServer::putsOffTheWindowsIdleExit(Broker::ModulesRequest{.target = TARGET}));
-    EXPECT_FALSE(BrokerPipeServer::putsOffTheWindowsIdleExit(Broker::CrashesRequest{}));
+    EXPECT_FALSE(BrokerPipeServer::putsOffTheWindowsIdleExit(Broker::ConnectionsRequest{.target = TARGET}));
 
     EXPECT_TRUE(BrokerPipeServer::isActionWindowsDoes(Broker::SignalRequest{.target = TARGET, .signal = Signal::Kill}));
     EXPECT_TRUE(BrokerPipeServer::isActionWindowsDoes(Broker::SignalRequest{.target = TARGET, .signal = Signal::Suspend}));
@@ -1256,43 +1253,6 @@ TEST(BrokerPipeServeTest, OnlyActionsWindowsDoesAndTheHelloPutOffTheIdleExit)
     EXPECT_TRUE(BrokerPipeServer::isActionWindowsDoes(Broker::IoPriorityRequest{})) << "#3362";
     EXPECT_TRUE(BrokerPipeServer::isActionWindowsDoes(Broker::CloseConnectionRequest{})) << "#3358";
     EXPECT_FALSE(BrokerPipeServer::isActionWindowsDoes(Broker::Hello{}));
-}
-
-TEST(BrokerPipeServeTest, RequestsWindowsAlwaysRefusesDontPutOffTheIdleExit)
-{
-    if (const auto why = brokerRefusesThisUser())
-    {
-        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
-    }
-    PipePair pair = connectedPair();
-    ASSERT_TRUE(pair.server && pair.client);
-    // Each request steps the idle clock by a quarter of the timeout; the fourth takes it to the timeout
-    // after the Hello, unless one of them put the exit off.
-    constexpr std::chrono::milliseconds IDLE = 1h;
-    const SteppedClock clock;
-    auto served = serveGrantAsync(pair.server.get(), stepping(clock, IDLE / 4), IDLE, clock.clock(), BrokerPipeServer::Grant::Session);
-    ASSERT_TRUE(send(pair.client.get(), Broker::encodeRequest(1, Broker::Hello{})));
-    ASSERT_TRUE(receiveResponse(pair.client.get()).has_value());
-
-    // A systemd service action and a scheduling policy are actions Windows always refuses (Suspend and Resume are
-    // real since #2582, an I/O priority hint since #3362, Close connection since #3358).
-    const std::array<Broker::Request, 4> refused{
-        Broker::ServiceActionRequest{},
-        Broker::SchedPolicyRequest{.target = TARGET},
-        Broker::ServiceActionRequest{},
-        Broker::SchedPolicyRequest{.target = TARGET},
-    };
-    std::uint32_t id = 2;
-    for (const Broker::Request& request : refused)
-    {
-        ASSERT_TRUE(send(pair.client.get(), Broker::encodeRequest(id, request)));
-        ASSERT_TRUE(receiveResponse(pair.client.get()).has_value()) << "request " << id << " ended the session early";
-        ++id;
-    }
-    const auto status = served.wait_for(WAIT);
-    pair.client.reset(); // a session they put off would wait out IDLE for real; this ends it now
-    ASSERT_EQ(status, std::future_status::ready) << "a request Windows refuses put off the idle exit";
-    EXPECT_EQ(served.get(), BrokerPipeServer::SessionEnd::Idle);
 }
 
 TEST(BrokerPipeServeTest, ActionsWindowsDoesPutOffTheIdleExit)
@@ -1349,7 +1309,7 @@ TEST(BrokerPipeServeTest, AOneActionSessionEndsOnceItsActionIsAnswered)
     // Reads aren't the action.
     ASSERT_TRUE(send(pair.client.get(), Broker::encodeRequest(2, Broker::ModulesRequest{.target = TARGET})));
     ASSERT_TRUE(receiveResponse(pair.client.get()).has_value());
-    ASSERT_TRUE(send(pair.client.get(), Broker::encodeRequest(3, Broker::CrashesRequest{})));
+    ASSERT_TRUE(send(pair.client.get(), Broker::encodeRequest(3, Broker::ConnectionsRequest{.target = TARGET})));
     ASSERT_TRUE(receiveResponse(pair.client.get()).has_value());
     EXPECT_NE(served.wait_for(0ms), std::future_status::ready);
 
@@ -1363,7 +1323,7 @@ TEST(BrokerPipeServeTest, AOneActionSessionEndsOnceItsActionIsAnswered)
 }
 
 // The rule fails closed (#2577 review, finding 2): any request that isn't the Hello or a read is the
-// one action, even one Windows refuses today, so an action kind Windows does later is limited too.
+// one action, whatever its handler answers, so an action kind Windows does later is limited too.
 // Suspend and Resume, real actions since #2582, are the one action like Kill.
 TEST(BrokerPipeServeTest, AOneActionSessionEndsAfterAnActionWindowsRefusesToo)
 {
@@ -1371,11 +1331,12 @@ TEST(BrokerPipeServeTest, AOneActionSessionEndsAfterAnActionWindowsRefusesToo)
     {
         GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
     }
-    for (const Broker::Request& action : {Broker::Request{Broker::ServiceActionRequest{}},
-                                          Broker::Request{Broker::CloseConnectionRequest{}},
-                                          Broker::Request{Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Suspend}},
-                                          Broker::Request{Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Resume}},
-                                          Broker::Request{Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Kill}}})
+    for (const Broker::Request& action :
+         {Broker::Request{Broker::ThreadActionRequest{.target = TARGET, .tid = 8, .action = ThreadAction::Suspend}},
+          Broker::Request{Broker::CloseConnectionRequest{}},
+          Broker::Request{Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Suspend}},
+          Broker::Request{Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Resume}},
+          Broker::Request{Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Kill}}})
     {
         const PipePair pair = connectedPair();
         ASSERT_TRUE(pair.server && pair.client);
@@ -1403,13 +1364,6 @@ TEST(BrokerPipeServeTest, EveryRequestKindIsTheHelloAnActionOrARead)
     EXPECT_TRUE(BrokerPipeServer::isRead(Broker::ModulesRequest{.target = TARGET}));
     EXPECT_TRUE(BrokerPipeServer::isRead(Broker::OpenFilesRequest{.target = TARGET}));
     EXPECT_TRUE(BrokerPipeServer::isRead(Broker::ConnectionsRequest{.target = TARGET}));
-    EXPECT_TRUE(BrokerPipeServer::isRead(Broker::MemoryRollupRequest{.target = TARGET}));
-    EXPECT_TRUE(BrokerPipeServer::isRead(Broker::FirmwareFileRequest{}));
-    EXPECT_TRUE(BrokerPipeServer::isRead(Broker::CrashesRequest{}));
-    EXPECT_TRUE(BrokerPipeServer::isRead(Broker::ProcessCountersRequest{.targets = {TARGET}}));
-    EXPECT_TRUE(BrokerPipeServer::isRead(Broker::HiddenProcessesRequest{.visiblePids = {TARGET.pid}}));
-    EXPECT_FALSE(BrokerPipeServer::isRead(Broker::ServiceActionRequest{}));
-    EXPECT_FALSE(BrokerPipeServer::isActionWindowsDoes(Broker::ServiceActionRequest{})) << "an ErrorReply";
     EXPECT_FALSE(BrokerPipeServer::isRead(Broker::EfficiencyModeRequest{.target = TARGET, .on = true})) << "an action (#3071)";
     EXPECT_FALSE(BrokerPipeServer::isRead(Broker::CloseConnectionRequest{.target = TARGET, .socketInode = 1}));
     EXPECT_TRUE(BrokerPipeServer::isActionWindowsDoes(Broker::CloseConnectionRequest{.target = TARGET, .socketInode = 1}))
@@ -1429,13 +1383,8 @@ TEST(BrokerPipeServeTest, EveryRequestKindIsTheHelloAnActionOrARead)
     EXPECT_FALSE(BrokerPipeServer::isRead(signOut)) << "an action (#3076)";
     EXPECT_TRUE(BrokerPipeServer::isActionWindowsDoes(signOut));
     EXPECT_TRUE(BrokerPipeServer::putsOffTheWindowsIdleExit(signOut));
-    // #3086: a scheduling policy is Linux only, an ErrorReply here.
-    const Broker::SchedPolicyRequest schedPolicy{.target = TARGET, .policy = SchedPolicy::Batch};
-    EXPECT_FALSE(BrokerPipeServer::isRead(schedPolicy));
-    EXPECT_FALSE(BrokerPipeServer::isActionWindowsDoes(schedPolicy)) << "an ErrorReply (#3086)";
-    EXPECT_TRUE(BrokerPipeServer::isRead(Broker::MemoryMapRequest{.target = TARGET})) << "Process Details' memory map (#3089)";
-    EXPECT_TRUE(BrokerPipeServer::isRead(Broker::UdpBytesRequest{})) << "a read: an ErrorReply on Windows (#3366)";
-    static_assert(std::variant_size_v<Broker::Request> == 24, "a new request kind: add it above");
+    // Protocol v23 (#3580) dropped the kinds only Linux's helper served.
+    static_assert(std::variant_size_v<Broker::Request> == 15, "a new request kind: add it above");
 }
 
 TEST(BrokerPipeServeTest, AOneActionSessionIsntKeptOpenByGreetingAgain)
@@ -1663,7 +1612,7 @@ TEST(PipeBrokerTest, AHelperThatExitsIsNoLongerConnected)
     EXPECT_EQ(broker.call(killRequest(), {}).error_or(""), "not connected");
 }
 
-/// A handler whose first PSS/USS read waits until the test sets @p release (or WAIT passes), and whose
+/// A handler whose first modules read waits until the test sets @p release (or WAIT passes), and whose
 /// other requests are answered at once: a read that is slow for as long as the test needs, not for a
 /// guessed time.
 [[nodiscard]] BrokerPipeServer::RequestHandler firstReadWaitsFor(const std::shared_ptr<std::promise<void>>& release)
@@ -1671,13 +1620,13 @@ TEST(PipeBrokerTest, AHelperThatExitsIsNoLongerConnected)
     auto reads = std::make_shared<std::atomic<int>>(0);
     return [reads, released = release->get_future().share()](const Broker::Request& request) -> Broker::Response
     {
-        if (std::holds_alternative<Broker::MemoryRollupRequest>(request))
+        if (std::holds_alternative<Broker::ModulesRequest>(request))
         {
             if (++*reads == 1)
             {
                 static_cast<void>(released.wait_for(WAIT));
             }
-            return Broker::MemoryRollupReply{.result = std::unexpected(MemoryRollupFailure::Unavailable)};
+            return Broker::ModulesReply{.result = {.status = ModulesReadStatus::Failed, .modules = {}, .detail = {}}};
         }
         return Broker::ActionResult{.success = true, .errorMessage = {}, .successNote = {}};
     };
@@ -1694,7 +1643,7 @@ TEST(PipeBrokerTest, ACallIfIdleThatTimesOutKeepsTheSessionAndItsLateReplyIsDrop
     PipeBroker broker(helper.launcher());
     ASSERT_TRUE(broker.connectWithin({}, WAIT).has_value());
 
-    const auto slow = broker.callIfIdle(Broker::MemoryRollupRequest{.target = TARGET}, 100ms);
+    const auto slow = broker.callIfIdle(Broker::ModulesRequest{.target = TARGET}, 100ms);
     ASSERT_FALSE(slow.has_value());
     EXPECT_EQ(slow.error(), "the helper didn't answer in time");
     EXPECT_TRUE(broker.connected()) << "a slow read is skipped, not the session (#2406)";
@@ -1717,8 +1666,8 @@ TEST(PipeBrokerTest, ALateReplyIsTakenBeforeTheNextCallIfIdleAsks)
     InProcessHelper helper(serving(firstReadWaitsFor(release), WAIT));
     PipeBroker broker(helper.launcher());
     ASSERT_TRUE(broker.connectWithin({}, WAIT).has_value());
-    ASSERT_FALSE(broker.callIfIdle(Broker::MemoryRollupRequest{.target = TARGET}, 50ms).has_value());
-    EXPECT_EQ(broker.callIfIdle(Broker::MemoryRollupRequest{.target = TARGET}, 50ms).error_or(""), "busy")
+    ASSERT_FALSE(broker.callIfIdle(Broker::ModulesRequest{.target = TARGET}, 50ms).has_value());
+    EXPECT_EQ(broker.callIfIdle(Broker::ModulesRequest{.target = TARGET}, 50ms).error_or(""), "busy")
         << "the late reply isn't in yet, so this read is skipped";
 
     // Busy until the late reply is in; then that is taken and this read asked.
@@ -1728,10 +1677,10 @@ TEST(PipeBrokerTest, ALateReplyIsTakenBeforeTheNextCallIfIdleAsks)
     while (!read.has_value() && read.error() == "busy" && since(start) < WAIT)
     {
         std::this_thread::sleep_for(10ms);
-        read = broker.callIfIdle(Broker::MemoryRollupRequest{.target = TARGET}, WAIT);
+        read = broker.callIfIdle(Broker::ModulesRequest{.target = TARGET}, WAIT);
     }
     ASSERT_TRUE(read.has_value()) << read.error();
-    EXPECT_TRUE(std::holds_alternative<Broker::MemoryRollupReply>(*read));
+    EXPECT_TRUE(std::holds_alternative<Broker::ModulesReply>(*read));
     EXPECT_TRUE(broker.connected());
 }
 TEST(PipeBrokerTest, ACallIfIdleWhileACallIsWaitingIsBusy)

@@ -1,6 +1,5 @@
 // systemd service control over D-Bus (#2006 phase 2): starting and stopping units and setting their start
-// types. Split out of SystemdUnits.cpp (#2728) so tasksmack-helper links these alone, not the services
-// read: it holds one system bus connection, opened before its sandbox (holdSystemBusForActions()).
+// types, apart from the services read (SystemdUnits.cpp, #2728). Each action opens its own system bus connection.
 
 #include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
@@ -60,14 +59,6 @@ constexpr const char* LOGIN1 = "org.freedesktop.login1";
 constexpr const char* LOGIN1_PATH = "/org/freedesktop/login1";
 constexpr const char* LOGIN1_MANAGER = "org.freedesktop.login1.Manager";
 
-/// The connection holdSystemBusForActions() opened, which every later action borrows; null until then
-/// (TaskSmack itself opens one per action). tasksmack-helper serves one request at a time, so one thread.
-[[nodiscard]] std::unique_ptr<Bus>& heldBus()
-{
-    static std::unique_ptr<Bus> bus;
-    return bus;
-}
-
 /// A failed call on @p bus as a ServiceActionResult, in the user's terms (SystemdActions::errorText()).
 /// Whether @p bus allowed a password prompt decides how a polkit refusal reads, and whether a retry
 /// that allows one is worth offering (#2304).
@@ -94,11 +85,7 @@ constexpr const char* LOGIN1_MANAGER = "org.freedesktop.login1.Manager";
 /// case where polkit's agent may ask for a password.
 [[nodiscard]] std::optional<std::string> openForAction(Bus& bus, bool allowInteractive)
 {
-    if (const std::unique_ptr<Bus>& held = heldBus(); held != nullptr)
-    {
-        bus.borrow(held->get()); // tasksmack-helper's, opened before its sandbox (holdSystemBusForActions())
-    }
-    else if (const int result = openSystemBus(bus); result < 0)
+    if (const int result = openSystemBus(bus); result < 0)
     {
         return std::string("The system bus couldn't be reached: ") + std::strerror(-result); // NOLINT(concurrency-mt-unsafe)
     }
@@ -432,60 +419,6 @@ changeUnitFile(sd_bus* bus, const char* method, std::string_view name, bool with
 
 } // namespace
 
-std::optional<std::string> holdSystemBusForActions()
-{
-    if (heldBus() != nullptr)
-    {
-        return std::nullopt;
-    }
-    // Built rather than sd_bus_open_system()'d, so it can refuse descriptors before it starts: the sandbox lets
-    // recvmsg() read this socket (#3294), and with no SCM_RIGHTS negotiated nothing can arrive on it as an fd.
-    // The address is sd_bus_open_system()'s: $DBUS_SYSTEM_BUS_ADDRESS, else the standard socket.
-    auto bus = std::make_unique<Bus>();
-    const char* address = std::getenv("DBUS_SYSTEM_BUS_ADDRESS"); // NOLINT(concurrency-mt-unsafe) - one thread, before any
-    int result = sd_bus_new(bus->out());
-    if (result >= 0)
-    {
-        result = sd_bus_set_address(bus->get(), address != nullptr ? address : "unix:path=/run/dbus/system_bus_socket");
-    }
-    if (result >= 0)
-    {
-        result = sd_bus_set_bus_client(bus->get(), 1);
-    }
-    if (result >= 0)
-    {
-        result = sd_bus_negotiate_fds(bus->get(), 0);
-    }
-    if (result >= 0)
-    {
-        result = sd_bus_start(bus->get());
-    }
-    // The handshake now, as root and before the sandbox: sd-bus would otherwise finish it on first use.
-    const char* uniqueName = nullptr;
-    if (result >= 0)
-    {
-        result = sd_bus_get_unique_name(bus->get(), &uniqueName);
-    }
-    if (result < 0)
-    {
-        return std::string("The system bus couldn't be reached: ") + std::strerror(-result); // NOLINT(concurrency-mt-unsafe)
-    }
-    (void) sd_bus_set_method_call_timeout(bus->get(), CALL_TIMEOUT_USEC);
-    heldBus() = std::move(bus);
-    return std::nullopt;
-}
-
-int heldSystemBusFd() noexcept
-{
-    const std::unique_ptr<Bus>& held = heldBus();
-    return held != nullptr ? sd_bus_get_fd(held->get()) : -1;
-}
-
-void releaseHeldSystemBusForTesting()
-{
-    heldBus().reset();
-}
-
 ServiceActionResult startUnit(std::string_view name, const std::stop_token& stopToken, UnitWait wait, bool allowInteractive)
 {
     Bus bus;
@@ -629,19 +562,6 @@ ServiceActionResult sessionAction(std::string_view id, SessionAction action, boo
 }
 
 #else
-
-std::optional<std::string> holdSystemBusForActions()
-{
-    return "This build has no systemd support (it was built without libsystemd)";
-}
-
-int heldSystemBusFd() noexcept
-{
-    return -1;
-}
-
-void releaseHeldSystemBusForTesting()
-{}
 
 ServiceActionResult startUnit(std::string_view /*name*/, const std::stop_token& /*stopToken*/, UnitWait /*wait*/, bool /*allowInteractive*/)
 {

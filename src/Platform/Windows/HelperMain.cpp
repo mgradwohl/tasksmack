@@ -120,8 +120,7 @@ int WINAPI wWinMain(HINSTANCE /*instance*/, HINSTANCE /*previous*/, LPWSTR /*com
         // No thread of TaskSmack's is suspended, resumed or ended here (#3069), as none of the helper's own is.
         actions.refuseThreadActionsOn(parsed->parentPid);
         // Process Details' reads of an elevated or another user's process (#2309). Windows has no
-        // environment (#179) or PSS/USS reader, and reads firmware and crashes unelevated, so those
-        // requests get the mapping's ErrorReply.
+        // environment reader (#179), so that request gets the mapping's ErrorReply.
         Platform::Windows::WindowsProcessModulesReader modules;
         Platform::Windows::WindowsProcessOpenFilesReader openFiles;
         Platform::Windows::WindowsProcessConnectionsReader connections;

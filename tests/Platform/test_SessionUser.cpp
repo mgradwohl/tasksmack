@@ -7,11 +7,13 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <charconv>
 #include <cstdlib>
 #include <map>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 #include <sys/types.h>
@@ -135,6 +137,26 @@ TEST(SessionUserTest, ThisUsersProcessHasNoInvokingUserHome)
         GTEST_SKIP() << "run as root, whoever started it may be named";
     }
     EXPECT_FALSE(invokingUserHome().has_value());
+}
+
+// #3374: an Administrator session started with sudo keeps the sudo user's settings, read from this process's own
+// environment and passwd database. Only as root: the coverage job's root pass runs it under sudo.
+TEST(SessionUserRootTest, UnderSudoTheInvokingUserHomeIsTheSudoUsers)
+{
+    if (::geteuid() != 0)
+    {
+        GTEST_SKIP() << "needs root: the coverage job's root pass runs this suite under sudo";
+    }
+    const std::optional<std::string> sudoUid = processVariable("SUDO_UID");
+    uid_t uid = 0;
+    if (!sudoUid.has_value() || std::from_chars(sudoUid->data(), sudoUid->data() + sudoUid->size(), uid).ec != std::errc{} || uid == 0)
+    {
+        GTEST_SKIP() << "root, but not started through sudo by another user";
+    }
+    const std::optional<Account> account = systemAccount(uid);
+    ASSERT_TRUE(account.has_value()) << "SUDO_UID " << *sudoUid << " has no passwd entry";
+    ASSERT_FALSE(account->home.empty());
+    EXPECT_EQ(invokingUserHome(), std::optional<std::string>(account->home));
 }
 
 // #3221: the passwd and environment sources invokingUserSession() reads as root, read here as this user.

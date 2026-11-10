@@ -10,17 +10,12 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
-#include "Platform/IProcessMemoryMap.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
-#include "Platform/IProcessProbe.h"
 #include "Platform/IProcessThreads.h"
-#include "Platform/IUdpTrafficCollector.h"
-#include "Platform/ProcessTypes.h"
 
 #include <gtest/gtest.h>
 
-#include <chrono>
 #include <cstdint>
 #include <expected>
 #include <filesystem>
@@ -183,50 +178,38 @@ TEST(BrokeredProcessActionsTest, EachActionMapsToItsRequest)
               (Broker::Request{Broker::PriorityRequest{.target = TARGET, .nice = -10}}));
     EXPECT_EQ((brokerRequestFor({.kind = AuthorizedAction::Kind::SetAffinity, .target = TARGET, .cpus = cpus})),
               (Broker::Request{Broker::AffinityRequest{.target = TARGET, .cpus = cpus}}));
-    EXPECT_EQ((brokerRequestFor({.kind = AuthorizedAction::Kind::SetSchedPolicy, .target = TARGET, .schedPolicy = SchedPolicy::Idle})),
-              (Broker::Request{Broker::SchedPolicyRequest{.target = TARGET, .policy = SchedPolicy::Idle}}));
-    // #3219: a real-time policy carries its priority to the helper.
-    EXPECT_EQ((brokerRequestFor(
-                  {.kind = AuthorizedAction::Kind::SetSchedPolicy, .target = TARGET, .schedPolicy = SchedPolicy::Fifo, .rtPriority = 70})),
-              (Broker::Request{Broker::SchedPolicyRequest{.target = TARGET, .policy = SchedPolicy::Fifo, .rtPriority = 70}}));
+    // #3580: protocol v23 has no SetSchedPolicy, Linux's, whose helper is gone: no request does it.
+    EXPECT_FALSE(
+        brokerRequestFor({.kind = AuthorizedAction::Kind::SetSchedPolicy, .target = TARGET, .schedPolicy = SchedPolicy::Idle}).has_value());
 }
 
-// #3219: real-time scheduling needs no password while the helper runs (it keeps CAP_SYS_NICE), as the Realtime I/O
-// class; where the platform can't set a policy at all, it is never offered.
-TEST(BrokeredProcessActionsTest, RealtimeSchedulingNeedsNoPasswordWhileTheHelperRuns)
+// #3580: the Realtime I/O class and real-time scheduling are the in-process actions' own: a running helper adds
+// neither, as Linux's did.
+TEST(BrokeredProcessActionsTest, ARunningHelperAddsNoRealtimeCapability)
 {
-    const Fixture f(/*connected=*/false);
-    f.inner->setCapabilities({.canSetSchedPolicy = true});
-    EXPECT_FALSE(f.actions->actionCapabilities().canSetRealtimeSchedPolicy);
-    f.broker->setConnected(true);
-    EXPECT_TRUE(f.actions->actionCapabilities().canSetRealtimeSchedPolicy);
-    f.inner->setCapabilities({});
-    EXPECT_FALSE(f.actions->actionCapabilities().canSetRealtimeSchedPolicy);
-    EXPECT_EQ(f.broker->connectedCallCount(), 0);
-}
-
-TEST(BrokeredProcessActionsTest, TheRealtimeIoClassIsOfferedWhileTheHelperRuns)
-{
-    const Fixture f(/*connected=*/false);
+    const Fixture f(/*connected=*/true);
+    f.inner->setCapabilities({.canSetIoPriority = true, .canSetSchedPolicy = true});
     EXPECT_FALSE(f.actions->actionCapabilities().canSetRealtimeIoPriority);
-    f.broker->setConnected(true);
+    EXPECT_FALSE(f.actions->actionCapabilities().canSetRealtimeSchedPolicy);
+    f.inner->setCapabilities(
+        {.canSetIoPriority = true, .canSetRealtimeIoPriority = true, .canSetSchedPolicy = true, .canSetRealtimeSchedPolicy = true});
     EXPECT_TRUE(f.actions->actionCapabilities().canSetRealtimeIoPriority);
+    EXPECT_TRUE(f.actions->actionCapabilities().canSetRealtimeSchedPolicy);
 }
 
-// #3182: the capabilities are asked for every frame on the UI thread, so they read the helper's connection
-// as the broker last saw it, never connected(), which peeks at the pipe or polls the socket.
+// #3182: the capabilities are asked for every frame on the UI thread, so they never call connected(), which peeks
+// at the pipe.
 TEST(BrokeredProcessActionsTest, TheCapabilitiesNeverLookAtTheHelpersChannel)
 {
     const Fixture f(/*connected=*/true);
     for (int frame = 0; frame < 100; ++frame)
     {
-        EXPECT_TRUE(f.actions->actionCapabilities().canSetRealtimeIoPriority);
+        EXPECT_TRUE(f.actions->actionCapabilities().canAuthorizeInteractively);
     }
-    f.broker->setConnected(false); // a worker's connected() or call found the helper gone
-    EXPECT_FALSE(f.actions->actionCapabilities().canSetRealtimeIoPriority);
     EXPECT_EQ(f.broker->connectedCallCount(), 0);
 
-    // An action still looks, on the worker it runs on, before it retries through the helper.
+    // An action still looks, on the worker it runs on, before it retries through the helper: here it finds it gone.
+    f.broker->setConnected(false);
     f.inner->setKillResult(ProcessActionResult::denied("Permission denied"));
     EXPECT_FALSE(f.actions->kill(TARGET).success);
     EXPECT_EQ(f.broker->connectedCallCount(), 1);
@@ -460,290 +443,6 @@ TEST(BrokeredConnectionsReaderTest, ARefusedReadGoesThroughARunningHelperAndOthe
     EXPECT_TRUE(reader.canReadAuthorized());
     EXPECT_EQ(reader.readAuthorized(TARGET, std::stop_token{}).status, ConnectionsReadStatus::Ok);
     EXPECT_EQ(broker->connectCount(), 1);
-}
-
-// --- BrokeredProcessProbe (#2309) ----------------------------------------------------------------------
-
-TEST(BrokeredProcessProbeTest, ARefusedMemoryRollupIsReadThroughARunningHelper)
-{
-    auto broker = std::make_shared<Mocks::FakeBroker>(true);
-    broker->setAnswer(
-        [](const Broker::Request&)
-        { return Broker::Response{Broker::MemoryRollupReply{.result = MemoryRollup{.pssBytes = 7, .ussBytes = 5, .swapPssBytes = 0}}}; });
-    auto owned = std::make_unique<TestMocks::MockProcessProbe>();
-    owned->setMemoryRollupDenied(TARGET.pid);
-    owned->setMemoryRollup(99, MemoryRollup{.pssBytes = 1, .ussBytes = 1, .swapPssBytes = 0});
-    const std::unique_ptr<IProcessProbe> probe = withPrivilegedBroker(std::move(owned), broker);
-
-    const MemoryRollupRead own = probe->readMemoryRollup(99, 1);
-    EXPECT_TRUE(own.has_value());
-    EXPECT_TRUE(broker->requests().empty()); // read in-process
-
-    const MemoryRollupRead other = probe->readMemoryRollup(TARGET.pid, TARGET.startTimeTicks);
-    ASSERT_TRUE(other.has_value());
-    EXPECT_EQ(other.value_or(MemoryRollup{}).pssBytes, 7U);
-    ASSERT_EQ(broker->requests().size(), 1U);
-    EXPECT_EQ(broker->requests().front(), (Broker::Request{Broker::MemoryRollupRequest{.target = TARGET}}));
-    EXPECT_EQ(broker->idleCallCount(), 1) << "the sampler's read never queues behind another call (#2369)";
-
-    broker->setConnected(false); // no helper running: the refusal stands, and nothing prompts
-    const MemoryRollupRead refused = probe->readMemoryRollup(TARGET.pid, TARGET.startTimeTicks);
-    ASSERT_FALSE(refused.has_value());
-    EXPECT_EQ(refused.error(), MemoryRollupFailure::PermissionDenied);
-    EXPECT_EQ(broker->connectCount(), 0);
-}
-
-/// A process as the probe read it: @p readable says whether its FD count and I/O were.
-[[nodiscard]] ProcessCounters countersOf(const ProcessTarget& target, bool readable)
-{
-    ProcessCounters counters;
-    counters.pid = target.pid;
-    counters.startTimeTicks = target.startTimeTicks;
-    counters.handleCount = readable ? 10 : 0;
-    counters.handleCountAvailable = readable;
-    counters.ioCountersAvailable = readable;
-    return counters;
-}
-
-TEST(BrokeredProcessProbeTest, RefusedFdCountsAndIoAreReadThroughARunningHelperInOneCall)
-{
-    const ProcessTarget mine{.pid = 99, .startTimeTicks = 1};
-    const ProcessTarget gone{.pid = 98, .startTimeTicks = 2};
-    auto broker = std::make_shared<Mocks::FakeBroker>(true);
-    broker->setAnswer(
-        [](const Broker::Request&)
-        {
-            return Broker::Response{Broker::ProcessCountersReply{
-                .entries = {Broker::ProcessCountersEntry{
-                    .target = TARGET, .handleCountRead = true, .handleCount = 57, .ioRead = true, .readBytes = 1000, .writeBytes = 2000}}}};
-        });
-    auto owned = std::make_unique<TestMocks::MockProcessProbe>();
-    owned->setCounters({countersOf(mine, true), countersOf(TARGET, false), countersOf(gone, false)});
-    BrokeredProcessProbe probe(std::move(owned), broker);
-
-    const std::vector<ProcessCounters> counters = probe.enumerate();
-    ASSERT_EQ(broker->requests().size(), 1U);
-    EXPECT_EQ(broker->requests().front(), (Broker::Request{Broker::ProcessCountersRequest{.targets = {TARGET, gone}}}));
-    EXPECT_EQ(broker->idleCallCount(), 1) << "the sampler never queues behind another call";
-    ASSERT_EQ(counters.size(), 3U);
-    EXPECT_EQ(counters[0].handleCount, 10) << "read in-process, left alone";
-    EXPECT_TRUE(counters[1].handleCountAvailable);
-    EXPECT_EQ(counters[1].handleCount, 57);
-    EXPECT_TRUE(counters[1].ioCountersAvailable);
-    EXPECT_EQ(counters[1].writeBytes, 2000U);
-    EXPECT_FALSE(counters[2].handleCountAvailable) << "gone: no entry, still refused";
-
-    broker->setConnected(false); // no helper: nothing asked, nothing prompts
-    static_cast<void>(probe.enumerate());
-    EXPECT_EQ(broker->requests().size(), 1U);
-    EXPECT_EQ(broker->connectCount(), 0);
-}
-
-// #2728: another user's sockets, which the probe's inode map can't own without reading its fd links, are
-// attributed from the helper's socket inodes, asked for at the map's cadence rather than every refresh.
-TEST(BrokeredProcessProbeTest, TheHelpersSocketInodesAttributeConnectionsTheProbeLeftUnowned)
-{
-    constexpr std::uint64_t INODE = 4242;
-    auto broker = std::make_shared<Mocks::FakeBroker>(true);
-    broker->setAnswer(
-        [](const Broker::Request&)
-        {
-            return Broker::Response{Broker::ProcessCountersReply{.entries = {Broker::ProcessCountersEntry{.target = TARGET,
-                                                                                                          .handleCountRead = true,
-                                                                                                          .handleCount = 5,
-                                                                                                          .ioRead = false,
-                                                                                                          .readBytes = 0,
-                                                                                                          .writeBytes = 0,
-                                                                                                          .socketsRead = true,
-                                                                                                          .socketInodes = {INODE}}}}};
-        });
-    auto owned = std::make_unique<TestMocks::MockProcessProbe>();
-    ProcessCapabilities caps;
-    caps.hasNetworkCounters = true;
-    owned->setCapabilities(caps);
-    ProcessCounters listed = countersOf(TARGET, true); // its FDs listed and its I/O read, but not its links
-    listed.networkCountersAvailable = false;
-    owned->setCounters({listed});
-    SocketTrafficReading traffic;
-    traffic.sampleTimeNs = 1;
-    traffic.sockets = {SocketTrafficSample{.key = INODE, .pid = 0, .bytesReceived = 10, .bytesSent = 20},
-                       SocketTrafficSample{.key = INODE + 1, .pid = 0, .bytesReceived = 1, .bytesSent = 1}};
-    owned->setSocketTraffic(traffic);
-    BrokeredProcessProbe probe(std::move(owned), broker);
-
-    EXPECT_TRUE(probe.readSocketTraffic().sockets.front().pid == 0) << "nothing from the helper yet";
-    const std::vector<ProcessCounters> counters = probe.enumerate();
-    ASSERT_EQ(broker->requests().size(), 1U);
-    EXPECT_EQ(broker->requests().front(), (Broker::Request{Broker::ProcessCountersRequest{.targets = {TARGET}, .withSockets = true}}));
-    ASSERT_EQ(counters.size(), 1U);
-    EXPECT_TRUE(counters.front().networkCountersAvailable);
-    const SocketTrafficReading attributed = probe.readSocketTraffic();
-    ASSERT_EQ(attributed.sockets.size(), 2U);
-    EXPECT_EQ(attributed.sockets[0].pid, TARGET.pid);
-    EXPECT_EQ(attributed.sockets[0].ownerStartTimeTicks, TARGET.startTimeTicks);
-    EXPECT_EQ(attributed.sockets[1].pid, 0) << "not among the helper's inodes: still unowned";
-
-    // The next refresh, before the map's cadence comes round: nothing else refused, so nothing asked, and
-    // the last read's attribution stands.
-    const std::vector<ProcessCounters> again = probe.enumerate();
-    EXPECT_EQ(broker->requests().size(), 1U);
-    ASSERT_EQ(again.size(), 1U);
-    EXPECT_TRUE(again.front().networkCountersAvailable);
-}
-
-// #2728: when the probe says processes are hidden (hidepid), a running helper lists them, their records are
-// built from the files' text, and the counters read then covers them like any refused process.
-TEST(BrokeredProcessProbeTest, ProcessesHidepidHidesAreListedByTheHelperAndJoinTheList)
-{
-    const ProcessTarget mine{.pid = 99, .startTimeTicks = 1};
-    const ProcessTarget stale{.pid = 77, .startTimeTicks = 5};
-    auto broker = std::make_shared<Mocks::FakeBroker>(true);
-    broker->setAnswer(
-        [&stale](const Broker::Request& request)
-        {
-            if (std::holds_alternative<Broker::HiddenProcessesRequest>(request))
-            {
-                return Broker::Response{
-                    Broker::HiddenProcessesReply{.processes = {Broker::HiddenProcess{.target = TARGET, .stat = "hidden"},
-                                                               Broker::HiddenProcess{.target = stale, .stat = "reused"}},
-                                                 .truncated = false}};
-            }
-            return Broker::Response{Broker::ProcessCountersReply{
-                .entries = {Broker::ProcessCountersEntry{.target = TARGET, .handleCountRead = true, .handleCount = 12}}}};
-        });
-    auto owned = std::make_unique<TestMocks::MockProcessProbe>();
-    ProcessCapabilities caps;
-    caps.missingPrivileges = MissingPrivilege::PROCESSES_HIDDEN;
-    owned->setCapabilities(caps);
-    owned->setCounters({countersOf(mine, true)});
-    owned->setProcessFromFiles(
-        [&stale](std::int32_t pid, const ProcFileTexts& files) -> std::optional<ProcessCounters>
-        {
-            ProcessCounters built = countersOf({.pid = pid, .startTimeTicks = TARGET.startTimeTicks}, false);
-            built.name = files.stat;
-            if (files.stat == "reused")
-            {
-                built.startTimeTicks = stale.startTimeTicks + 1; // its PID names another process by now
-            }
-            return built;
-        });
-    BrokeredProcessProbe probe(std::move(owned), broker);
-
-    const std::vector<ProcessCounters> counters = probe.enumerate();
-    ASSERT_GE(broker->requests().size(), 2U);
-    EXPECT_EQ(broker->requests().front(), (Broker::Request{Broker::HiddenProcessesRequest{.visiblePids = {mine.pid}}}));
-    ASSERT_EQ(counters.size(), 2U) << "the hidden process joins; the one whose start time changed doesn't";
-    EXPECT_EQ(counters[1].pid, TARGET.pid);
-    EXPECT_EQ(counters[1].name, "hidden");
-    EXPECT_TRUE(counters[1].handleCountAvailable) << "the counters read covered it";
-    EXPECT_EQ(counters[1].handleCount, 12);
-    EXPECT_EQ(broker->idleCallCount(), static_cast<int>(broker->requests().size())) << "never behind another call";
-}
-
-TEST(BrokeredProcessProbeTest, NothingHiddenOrAHelperThatRefusesMeansNoListing)
-{
-    auto broker = std::make_shared<Mocks::FakeBroker>(true);
-    broker->setAnswer([](const Broker::Request&) { return Broker::Response{Broker::ErrorReply{.message = "not here"}}; });
-    auto owned = std::make_unique<TestMocks::MockProcessProbe>();
-    auto* raw = owned.get();
-    owned->setCounters({countersOf(TARGET, true)});
-    BrokeredProcessProbe probe(std::move(owned), broker);
-    static_cast<void>(probe.enumerate());
-    EXPECT_TRUE(broker->requests().empty()) << "nothing hidden, nothing refused: nothing asked";
-
-    ProcessCapabilities caps;
-    caps.missingPrivileges = MissingPrivilege::PROCESSES_HIDDEN;
-    raw->setCapabilities(caps);
-    static_cast<void>(probe.enumerate());
-    static_cast<void>(probe.enumerate());
-    EXPECT_EQ(broker->requests().size(), 1U) << "a helper that answers with an error is asked once";
-}
-
-// #3032: a helper whose reader failed once lists none that time, marked truncated, which isn't a refusal:
-// the next refresh asks again and takes what it lists.
-TEST(BrokeredProcessProbeTest, AListingThatFailedOnceIsAskedForAgain)
-{
-    auto broker = std::make_shared<Mocks::FakeBroker>(true);
-    bool failed = false;
-    broker->setAnswer(
-        [&failed](const Broker::Request&)
-        {
-            if (!failed)
-            {
-                failed = true;
-                return Broker::Response{Broker::HiddenProcessesReply{.processes = {}, .truncated = true}};
-            }
-            return Broker::Response{
-                Broker::HiddenProcessesReply{.processes = {Broker::HiddenProcess{.target = TARGET, .stat = "hidden"}}, .truncated = false}};
-        });
-    auto owned = std::make_unique<TestMocks::MockProcessProbe>();
-    ProcessCapabilities caps;
-    caps.missingPrivileges = MissingPrivilege::PROCESSES_HIDDEN;
-    owned->setCapabilities(caps);
-    owned->setProcessFromFiles([](std::int32_t pid, const ProcFileTexts& /*files*/) -> std::optional<ProcessCounters>
-                               { return countersOf({.pid = pid, .startTimeTicks = TARGET.startTimeTicks}, true); });
-    BrokeredProcessProbe probe(std::move(owned), broker);
-
-    EXPECT_TRUE(probe.enumerate().empty()) << "none listed the first time";
-    const std::vector<ProcessCounters> again = probe.enumerate();
-    EXPECT_EQ(broker->requests().size(), 2U) << "asked again after the failed listing";
-    ASSERT_EQ(again.size(), 1U);
-    EXPECT_EQ(again.front().pid, TARGET.pid);
-}
-
-// #3031: a refresh whose listing is skipped (the helper busy with another call) carries the last listing
-// over, marked heldOver, so the hidden processes don't drop out and back in; a refresh with nothing hidden
-// forgets it.
-TEST(BrokeredProcessProbeTest, ASkippedListingCarriesTheLastOneOver)
-{
-    auto broker = std::make_shared<Mocks::FakeBroker>(true);
-    bool busy = false;
-    broker->setAnswer(
-        [&busy](const Broker::Request&) -> std::expected<Broker::Response, std::string>
-        {
-            if (busy)
-            {
-                return std::unexpected(std::string("busy"));
-            }
-            return Broker::Response{
-                Broker::HiddenProcessesReply{.processes = {Broker::HiddenProcess{.target = TARGET, .stat = "hidden"}}, .truncated = false}};
-        });
-    auto owned = std::make_unique<TestMocks::MockProcessProbe>();
-    auto* raw = owned.get();
-    ProcessCapabilities caps;
-    caps.missingPrivileges = MissingPrivilege::PROCESSES_HIDDEN;
-    owned->setCapabilities(caps);
-    owned->setProcessFromFiles([](std::int32_t pid, const ProcFileTexts& /*files*/) -> std::optional<ProcessCounters>
-                               { return countersOf({.pid = pid, .startTimeTicks = TARGET.startTimeTicks}, true); });
-    BrokeredProcessProbe probe(std::move(owned), broker);
-
-    const std::vector<ProcessCounters> listed = probe.enumerate();
-    ASSERT_EQ(listed.size(), 1U);
-    EXPECT_FALSE(listed.front().heldOver);
-
-    busy = true;
-    const std::vector<ProcessCounters> skipped = probe.enumerate();
-    ASSERT_EQ(skipped.size(), 1U) << "the last listing, carried over";
-    EXPECT_EQ(skipped.front().pid, TARGET.pid);
-    EXPECT_TRUE(skipped.front().heldOver);
-    EXPECT_EQ(probe.enumerate().size(), 1U) << "for as long as the helper stays busy";
-
-    raw->setCapabilities(ProcessCapabilities{}); // nothing hidden any more
-    EXPECT_TRUE(probe.enumerate().empty());
-    raw->setCapabilities(caps);
-    EXPECT_TRUE(probe.enumerate().empty()) << "the old listing was forgotten";
-}
-
-TEST(BrokeredProcessProbeTest, AHelperThatRefusesProcessCountersIsntAskedAgain)
-{
-    auto broker = std::make_shared<Mocks::FakeBroker>(true);
-    broker->setAnswer([](const Broker::Request&) { return Broker::Response{Broker::ErrorReply{.message = "not here"}}; });
-    auto owned = std::make_unique<TestMocks::MockProcessProbe>();
-    owned->setCounters({countersOf(TARGET, false)});
-    BrokeredProcessProbe probe(std::move(owned), broker);
-    static_cast<void>(probe.enumerate());
-    static_cast<void>(probe.enumerate());
-    EXPECT_EQ(broker->requests().size(), 1U) << "Windows' helper answers with an error: asked once";
 }
 
 // --- Every action, and every call the decorators only pass on (#2417) --------------------------------
@@ -1018,75 +717,34 @@ TEST(BrokeredProcessActionsTest, RunAuthorizedTurnsEfficiencyModeOnThroughTheHel
     EXPECT_EQ(f.inner->efficiencyModeCount(), 0);
 }
 
-// #3086: a scheduling policy refused in process for want of permission (another user's process, or leaving
-// Idle) is retried through the helper as a SetSchedPolicy; one the process accepts never reaches it, and a
-// plain refusal (init) isn't retried.
-TEST(BrokeredProcessActionsTest, ASchedulingPolicyRefusedInProcessIsRetriedThroughTheHelper)
-{
-    Fixture f(/*connected=*/true);
-    EXPECT_TRUE(f.actions->setSchedPolicy(TARGET, SchedPolicy::Batch, 0, Platform::RealtimeThreads::Keep).success);
-    EXPECT_TRUE(f.broker->requests().empty()) << "done in process: the helper isn't asked";
-
-    f.inner->setSchedPolicyResult(ProcessActionResult::denied("Permission denied: process 4242 belongs to another user"));
-    EXPECT_TRUE(f.actions->setSchedPolicy(TARGET, SchedPolicy::Normal, 0, Platform::RealtimeThreads::Change).success);
-    EXPECT_EQ(f.inner->setSchedPolicyCount(), 2);
-    EXPECT_EQ(f.inner->lastRealtimeThreads(), Platform::RealtimeThreads::Change);
-    std::vector<Broker::Request> requests = f.broker->requests();
-    ASSERT_EQ(requests.size(), 1U);
-    EXPECT_EQ(requests[0],
-              (Broker::Request{Broker::SchedPolicyRequest{
-                  .target = TARGET, .policy = SchedPolicy::Normal, .realtimeThreads = Platform::RealtimeThreads::Change}}))
-        << "the dialog's warning travels with the retry";
-
-    f.inner->setSchedPolicyResult(ProcessActionResult::error("PID 1 is init"));
-    EXPECT_FALSE(f.actions->setSchedPolicy(TARGET, SchedPolicy::Idle, 0, Platform::RealtimeThreads::Keep).success);
-    EXPECT_EQ(f.broker->requests().size(), 1U);
-
-    // The capability is the inner actions', passed through.
-    TestMocks::MockProcessActions* inner = f.inner;
-    inner->setCapabilities({.canSetSchedPolicy = true});
-    EXPECT_TRUE(f.actions->actionCapabilities().canSetSchedPolicy);
-    inner->setCapabilities({});
-    EXPECT_FALSE(f.actions->actionCapabilities().canSetSchedPolicy);
-}
-
-// #3086: "Authenticate and retry" after a refused policy starts the helper and sends it the policy.
-TEST(BrokeredProcessActionsTest, RunAuthorizedSetsASchedulingPolicyThroughTheHelper)
-{
-    const Fixture f(/*connected=*/false);
-    const ProcessActionResult result = f.actions->runAuthorized(
-        {.kind = AuthorizedAction::Kind::SetSchedPolicy, .target = TARGET, .schedPolicy = SchedPolicy::Normal}, std::stop_token{});
-    EXPECT_TRUE(result.success) << result.errorMessage;
-    EXPECT_EQ(f.broker->connectCount(), 1);
-    const std::vector<Broker::Request> requests = f.broker->requests();
-    ASSERT_EQ(requests.size(), 1U);
-    EXPECT_EQ(requests.front(), (Broker::Request{Broker::SchedPolicyRequest{.target = TARGET, .policy = SchedPolicy::Normal}}));
-    EXPECT_EQ(f.inner->setSchedPolicyCount(), 0);
-}
-
-// #3219: real time refused in process (no CAP_SYS_NICE, past RLIMIT_RTPRIO) is retried through the helper with its
-// priority, and so is Authenticate and retry.
-TEST(BrokeredProcessActionsTest, ARealtimePolicyIsRetriedThroughTheHelperWithItsPriority)
+// #3580: a scheduling policy is Linux's, and no helper sets one since protocol v23: setSchedPolicy() is the in-process
+// actions', a permission refusal included, and runAuthorized() refuses it without a prompt.
+TEST(BrokeredProcessActionsTest, ASchedulingPolicyNeverReachesTheHelper)
 {
     const Fixture f(/*connected=*/true);
-    f.inner->setSchedPolicyResult(ProcessActionResult::denied("Permission denied: setting process 4242 to the real-time RR 20 policy"));
-    EXPECT_TRUE(f.actions->setSchedPolicy(TARGET, SchedPolicy::RoundRobin, 20, Platform::RealtimeThreads::Keep).success);
+    EXPECT_TRUE(f.actions->setSchedPolicy(TARGET, SchedPolicy::Batch, 0, Platform::RealtimeThreads::Keep).success);
+    f.inner->setSchedPolicyResult(ProcessActionResult::denied("Permission denied: process 4242 belongs to another user"));
+    const ProcessActionResult refused = f.actions->setSchedPolicy(TARGET, SchedPolicy::RoundRobin, 20, Platform::RealtimeThreads::Change);
+    EXPECT_TRUE(refused.permissionDenied) << "the refusal stands";
+    EXPECT_EQ(f.inner->setSchedPolicyCount(), 2);
     EXPECT_EQ(f.inner->lastRtPriority(), 20);
-    std::vector<Broker::Request> requests = f.broker->requests();
-    ASSERT_EQ(requests.size(), 1U);
-    EXPECT_EQ(requests[0],
-              (Broker::Request{Broker::SchedPolicyRequest{.target = TARGET, .policy = SchedPolicy::RoundRobin, .rtPriority = 20}}));
+    EXPECT_EQ(f.inner->lastRealtimeThreads(), Platform::RealtimeThreads::Change);
+    EXPECT_TRUE(f.broker->requests().empty());
 
     const Fixture fresh(/*connected=*/false);
-    EXPECT_TRUE(
-        fresh.actions
-            ->runAuthorized(
-                {.kind = AuthorizedAction::Kind::SetSchedPolicy, .target = TARGET, .schedPolicy = SchedPolicy::Fifo, .rtPriority = 99},
-                std::stop_token{})
-            .success);
-    requests = fresh.broker->requests();
-    ASSERT_EQ(requests.size(), 1U);
-    EXPECT_EQ(requests[0], (Broker::Request{Broker::SchedPolicyRequest{.target = TARGET, .policy = SchedPolicy::Fifo, .rtPriority = 99}}));
+    const ProcessActionResult authorized = fresh.actions->runAuthorized(
+        {.kind = AuthorizedAction::Kind::SetSchedPolicy, .target = TARGET, .schedPolicy = SchedPolicy::Normal}, std::stop_token{});
+    EXPECT_FALSE(authorized.success);
+    EXPECT_EQ(authorized.errorMessage, "Setting a scheduling policy isn't available through the administrator helper");
+    EXPECT_EQ(fresh.broker->connectCount(), 0) << "no prompt for what the helper can't do";
+    EXPECT_TRUE(fresh.broker->requests().empty());
+    EXPECT_EQ(fresh.inner->setSchedPolicyCount(), 0);
+
+    // The capability is the inner actions', passed through.
+    f.inner->setCapabilities({.canSetSchedPolicy = true});
+    EXPECT_TRUE(f.actions->actionCapabilities().canSetSchedPolicy);
+    f.inner->setCapabilities({});
+    EXPECT_FALSE(f.actions->actionCapabilities().canSetSchedPolicy);
 }
 
 TEST(BrokeredProcessActionsTest, AnAffinityTheProcessAcceptsNeverReachesTheHelper)
@@ -1592,124 +1250,6 @@ TEST(ProcessReaderDefaultsTest, TheUnsupportedReadersReadNothing)
     EXPECT_EQ(connections.readConnections(TARGET).status, ConnectionsReadStatus::Unsupported);
 }
 
-// --- BrokeredProcessProbe's pass-through calls (#2417) --------------------------------------------------
-
-/// A probe that answers each call with a figure of its own and records the settings it is given, so the
-/// decorator is seen to pass each one on.
-class RecordingProbe final : public IProcessProbe
-{
-  public:
-    [[nodiscard]] std::vector<ProcessCounters> enumerate() override
-    {
-        ProcessCounters counters;
-        counters.pid = 77;
-        return {counters};
-    }
-    [[nodiscard]] ProcessCapabilities capabilities() const override
-    {
-        ProcessCapabilities caps;
-        caps.hasMemoryRollup = true;
-        return caps;
-    }
-    [[nodiscard]] std::uint64_t totalCpuTime() const override
-    {
-        return 1234;
-    }
-    [[nodiscard]] long ticksPerSecond() const override
-    {
-        return 250;
-    }
-    [[nodiscard]] std::uint64_t systemTotalMemory() const override
-    {
-        return 8192;
-    }
-    [[nodiscard]] std::optional<PackageEnergyReading> readPackageEnergy() const override
-    {
-        return PackageEnergyReading{.energyUj = 55U, .maxRangeUj = 100U, .busyCpuTicks = std::nullopt, .otherPackages = {}};
-    }
-    [[nodiscard]] SocketTrafficReading readSocketTraffic() const override
-    {
-        return {.sockets = {}, .sampleTimeNs = 999};
-    }
-    [[nodiscard]] MemoryRollupRead readMemoryRollup(std::int32_t /*pid*/, std::uint64_t /*startTimeTicks*/) const override
-    {
-        return std::unexpected(rollupFailure);
-    }
-    void setSocketStatsCacheTtl(std::chrono::milliseconds ttlMs) override
-    {
-        *lastTtl = ttlMs;
-    }
-    void setUdpTrafficCollector(const std::shared_ptr<IUdpTrafficCollector>& /*collector*/) override
-    {
-        ++*collectorSets;
-    }
-
-    MemoryRollupFailure rollupFailure = MemoryRollupFailure::PermissionDenied;
-    // Shared, so the test still sees them once the decorator owns the probe.
-    std::shared_ptr<std::chrono::milliseconds> lastTtl = std::make_shared<std::chrono::milliseconds>(0);
-    std::shared_ptr<int> collectorSets = std::make_shared<int>(0);
-};
-
-TEST(BrokeredProcessProbeTest, EveryOtherCallIsTheInnerProbes)
-{
-    auto owned = std::make_unique<RecordingProbe>();
-    const std::shared_ptr<std::chrono::milliseconds> lastTtl = owned->lastTtl;
-    const std::shared_ptr<int> collectorSets = owned->collectorSets;
-    const std::unique_ptr<IProcessProbe> probe = withPrivilegedBroker(std::move(owned), std::make_shared<Mocks::FakeBroker>(true));
-
-    const std::vector<ProcessCounters> counters = probe->enumerate();
-    ASSERT_EQ(counters.size(), 1U);
-    EXPECT_EQ(counters.front().pid, 77);
-    EXPECT_TRUE(probe->capabilities().hasMemoryRollup);
-    EXPECT_EQ(probe->totalCpuTime(), 1234U);
-    EXPECT_EQ(probe->ticksPerSecond(), 250);
-    EXPECT_EQ(probe->systemTotalMemory(), 8192U);
-    const std::optional<PackageEnergyReading> energy = probe->readPackageEnergy();
-    ASSERT_TRUE(energy.has_value());
-    EXPECT_EQ(energy.value_or(PackageEnergyReading{}).energyUj, std::optional<std::uint64_t>{55U});
-    EXPECT_EQ(probe->readSocketTraffic().sampleTimeNs, 999U);
-
-    probe->setSocketStatsCacheTtl(std::chrono::milliseconds{750});
-    EXPECT_EQ(*lastTtl, std::chrono::milliseconds{750});
-    probe->setUdpTrafficCollector(nullptr);
-    EXPECT_EQ(*collectorSets, 1);
-}
-
-TEST(BrokeredProcessProbeTest, OnlyAPermissionRefusalGoesToTheHelperAndAFailedCallLeavesIt)
-{
-    auto unavailable = std::make_unique<RecordingProbe>();
-    unavailable->rollupFailure = MemoryRollupFailure::Unavailable;
-    auto broker = std::make_shared<Mocks::FakeBroker>(true);
-    const BrokeredProcessProbe gone(std::move(unavailable), broker);
-    const MemoryRollupRead absent = gone.readMemoryRollup(TARGET.pid, TARGET.startTimeTicks);
-    ASSERT_FALSE(absent.has_value());
-    EXPECT_EQ(absent.error(), MemoryRollupFailure::Unavailable);
-    EXPECT_TRUE(broker->requests().empty()); // the helper can't read a process that isn't there
-
-    const auto expectRefusalStands = [](const std::shared_ptr<Mocks::FakeBroker>& helper)
-    {
-        const BrokeredProcessProbe refused(std::make_unique<RecordingProbe>(), helper);
-        const MemoryRollupRead read = refused.readMemoryRollup(TARGET.pid, TARGET.startTimeTicks);
-        ASSERT_FALSE(read.has_value());
-        EXPECT_EQ(read.error(), MemoryRollupFailure::PermissionDenied); // the refusal stands
-        EXPECT_EQ(helper->idleCallCount(), 1);
-    };
-    expectRefusalStands(failingBroker("busy"));
-    expectRefusalStands(confusedBroker());
-}
-
-TEST(BrokeredProcessProbeTest, TheFactoryWrapsOnlyAProbeThatReadsMemoryRollups)
-{
-    auto broker = std::make_shared<Mocks::FakeBroker>(true);
-    EXPECT_EQ(withPrivilegedBroker(std::unique_ptr<IProcessProbe>{}, broker), nullptr);
-    auto plain = std::make_unique<TestMocks::MockProcessProbe>(); // hasMemoryRollup is off by default
-    const IProcessProbe* const raw = plain.get();
-    EXPECT_EQ(withPrivilegedBroker(std::unique_ptr<IProcessProbe>(std::move(plain)), broker).get(), raw);
-    auto alone = std::make_unique<RecordingProbe>();
-    const IProcessProbe* const rawAlone = alone.get();
-    EXPECT_EQ(withPrivilegedBroker(std::unique_ptr<IProcessProbe>(std::move(alone)), nullptr).get(), rawAlone);
-}
-
 // --- BrokeredThreadsReader (#3069) --------------------------------------------------------------------
 
 /// A threads reader answering @p result every time, counting its reads.
@@ -1801,125 +1341,6 @@ TEST(BrokeredThreadsReaderTest, AHelperThatCantAnswerSaysWhy)
     BrokeredThreadsReader confused(std::make_unique<ScriptedThreadsReader>(threadsWith(ThreadsReadStatus::PermissionDenied)), odd);
     const ThreadsReadResult unexpected = confused.readThreads(TARGET);
     EXPECT_EQ(unexpected.status, ThreadsReadStatus::Failed);
-    EXPECT_EQ(unexpected.detail, "The administrator helper gave an unexpected answer");
-}
-
-// --- BrokeredMemoryMapReader (#3089) ------------------------------------------------------------------
-
-/// A memory map reader answering @p result every time, counting its reads.
-class ScriptedMemoryMapReader final : public IProcessMemoryMapReader
-{
-  public:
-    explicit ScriptedMemoryMapReader(MemoryMapReadResult result, bool has = true) : m_Result(std::move(result)), m_Has(has)
-    {}
-    [[nodiscard]] bool hasMemoryMap() const override
-    {
-        return m_Has;
-    }
-    [[nodiscard]] MemoryMapReadResult readMemoryMap(const ProcessTarget& /*target*/) override
-    {
-        ++m_Reads;
-        return m_Result;
-    }
-    int m_Reads = 0;
-
-  private:
-    MemoryMapReadResult m_Result;
-    bool m_Has = true;
-};
-
-[[nodiscard]] MemoryMapReadResult memoryMapWith(MemoryMapReadStatus status)
-{
-    return {.status = status, .mappings = {}, .detail = {}};
-}
-
-TEST(BrokeredMemoryMapReaderTest, ARefusedReadGoesThroughARunningHelperAndOtherwiseWaitsForTheUi)
-{
-    auto broker = std::make_shared<Mocks::FakeBroker>(true);
-    broker->setAnswer(
-        [](const Broker::Request&)
-        {
-            MemoryMapReadResult read = memoryMapWith(MemoryMapReadStatus::Ok);
-            read.mappings.push_back({.start = 0x1000, .end = 0x2000, .kind = MemoryMappingKind::Stack, .path = "[stack]"});
-            return Broker::Response{Broker::MemoryMapReply{.result = read}};
-        });
-    BrokeredMemoryMapReader reader(std::make_unique<ScriptedMemoryMapReader>(memoryMapWith(MemoryMapReadStatus::PermissionDenied)), broker);
-    EXPECT_TRUE(reader.hasMemoryMap());
-    const MemoryMapReadResult viaHelper = reader.readMemoryMap(TARGET);
-    EXPECT_EQ(viaHelper.status, MemoryMapReadStatus::Ok);
-    ASSERT_EQ(viaHelper.mappings.size(), 1U);
-    EXPECT_EQ(viaHelper.mappings[0].path, "[stack]");
-    ASSERT_EQ(broker->requests().size(), 1U);
-    EXPECT_EQ(broker->requests().front(), (Broker::Request{Broker::MemoryMapRequest{.target = TARGET}}));
-
-    // No helper running: the refusal stands until the user chooses Authenticate to read, which starts it.
-    broker->setConnected(false);
-    EXPECT_EQ(reader.readMemoryMap(TARGET).status, MemoryMapReadStatus::PermissionDenied);
-    EXPECT_TRUE(reader.canReadAuthorized());
-    EXPECT_EQ(reader.readAuthorized(TARGET, std::stop_token{}).status, MemoryMapReadStatus::Ok);
-    EXPECT_EQ(broker->connectCount(), 1);
-
-    // A read the reader makes itself, or one that failed some other way, goes nowhere near the helper.
-    BrokeredMemoryMapReader own(std::make_unique<ScriptedMemoryMapReader>(memoryMapWith(MemoryMapReadStatus::Ok)), broker);
-    EXPECT_EQ(own.readMemoryMap(TARGET).status, MemoryMapReadStatus::Ok);
-    BrokeredMemoryMapReader gone(std::make_unique<ScriptedMemoryMapReader>(memoryMapWith(MemoryMapReadStatus::ProcessExited)), broker);
-    broker->setConnected(false);
-    EXPECT_EQ(gone.readMemoryMap(TARGET).status, MemoryMapReadStatus::ProcessExited) << "no helper running";
-    EXPECT_EQ(broker->requests().size(), 2U);
-
-    // #3495 review: under hidepid=2 another user's live process reads as gone here, so with the helper running a
-    // locally absent target goes to it too; it checks the start time itself and says exited for a mismatch.
-    broker->setConnected(true);
-    EXPECT_EQ(gone.readMemoryMap(TARGET).status, MemoryMapReadStatus::Ok) << "hidden here, read by the helper";
-    EXPECT_EQ(broker->requests().size(), 3U);
-    broker->setAnswer([](const Broker::Request&)
-                      { return Broker::Response{Broker::MemoryMapReply{.result = memoryMapWith(MemoryMapReadStatus::ProcessExited)}}; });
-    EXPECT_EQ(gone.readMemoryMap(TARGET).status, MemoryMapReadStatus::ProcessExited) << "the helper's start-time check refuses it";
-}
-
-TEST(BrokeredMemoryMapReaderTest, TheFactoryWrapsOnlyAReaderThatCanReadAndAWithoutHelperRefusalStands)
-{
-    auto broker = std::make_shared<Mocks::FakeBroker>(false);
-    EXPECT_EQ(withPrivilegedBroker(std::unique_ptr<IProcessMemoryMapReader>{}, broker), nullptr);
-    auto unsupported = std::make_unique<UnsupportedProcessMemoryMapReader>();
-    const IProcessMemoryMapReader* const rawUnsupported = unsupported.get();
-    EXPECT_EQ(withPrivilegedBroker(std::unique_ptr<IProcessMemoryMapReader>(std::move(unsupported)), broker).get(), rawUnsupported);
-    EXPECT_TRUE(withPrivilegedBroker(std::unique_ptr<IProcessMemoryMapReader>(
-                                         std::make_unique<ScriptedMemoryMapReader>(memoryMapWith(MemoryMapReadStatus::Ok))),
-                                     broker)
-                    ->canReadAuthorized());
-    auto plain = std::make_unique<ScriptedMemoryMapReader>(memoryMapWith(MemoryMapReadStatus::Ok));
-    const IProcessMemoryMapReader* const rawPlain = plain.get();
-    EXPECT_EQ(withPrivilegedBroker(std::unique_ptr<IProcessMemoryMapReader>(std::move(plain)), nullptr).get(), rawPlain);
-
-    auto owned = std::make_unique<ScriptedMemoryMapReader>(memoryMapWith(MemoryMapReadStatus::PermissionDenied));
-    ScriptedMemoryMapReader* const inner = owned.get();
-    BrokeredMemoryMapReader alone(std::move(owned), nullptr);
-    EXPECT_FALSE(alone.canReadAuthorized());
-    EXPECT_EQ(alone.readAuthorized(TARGET, std::stop_token{}).status, MemoryMapReadStatus::PermissionDenied);
-    EXPECT_EQ(alone.readMemoryMap(TARGET).status, MemoryMapReadStatus::PermissionDenied);
-    EXPECT_EQ(inner->m_Reads, 2);
-
-    broker->setConnectFailure("the password prompt was dismissed");
-    BrokeredMemoryMapReader dismissed(std::make_unique<ScriptedMemoryMapReader>(memoryMapWith(MemoryMapReadStatus::PermissionDenied)),
-                                      broker);
-    EXPECT_EQ(dismissed.readAuthorized(TARGET, std::stop_token{}).status, MemoryMapReadStatus::PermissionDenied);
-    EXPECT_TRUE(broker->requests().empty());
-}
-
-TEST(BrokeredMemoryMapReaderTest, AHelperThatCantAnswerSaysWhy)
-{
-    BrokeredMemoryMapReader broken(std::make_unique<ScriptedMemoryMapReader>(memoryMapWith(MemoryMapReadStatus::PermissionDenied)),
-                                   failingBroker("the channel broke"));
-    const MemoryMapReadResult failed = broken.readMemoryMap(TARGET);
-    EXPECT_EQ(failed.status, MemoryMapReadStatus::Failed);
-    EXPECT_TRUE(failed.detail.contains("the channel broke")) << failed.detail;
-
-    auto odd = std::make_shared<Mocks::FakeBroker>(true);
-    odd->setAnswer([](const Broker::Request&) { return Broker::Response{Broker::ErrorReply{.message = "no"}}; });
-    BrokeredMemoryMapReader confused(std::make_unique<ScriptedMemoryMapReader>(memoryMapWith(MemoryMapReadStatus::PermissionDenied)), odd);
-    const MemoryMapReadResult unexpected = confused.readMemoryMap(TARGET);
-    EXPECT_EQ(unexpected.status, MemoryMapReadStatus::Failed);
     EXPECT_EQ(unexpected.detail, "The administrator helper gave an unexpected answer");
 }
 

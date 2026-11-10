@@ -17,7 +17,8 @@
 .PARAMETER Report
     Report only; don't fail on issues
 .PARAMETER Files
-    Specific files to analyze, relative to the repository root (default: all of src/)
+    Specific files to analyze, relative to the repository root (default: all of src/). Separate
+    them with spaces, or with commas: -Files a.cpp,b.cpp works under pwsh -File too (#3615).
 .EXAMPLE
     .\tools\iwyu.ps1 -Report
 .EXAMPLE
@@ -45,6 +46,9 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# pwsh -File hands "-Files a.cpp,b.cpp" over as the one string "a.cpp,b.cpp" (#3615); split it.
+$Files = @($Files | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $scriptPath = Join-Path $scriptDir 'iwyu.sh'

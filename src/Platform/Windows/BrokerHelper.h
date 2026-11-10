@@ -275,8 +275,7 @@ inline constexpr std::string_view OTHER_USERS_READ_REFUSED =
 
 /// @p handler for an over-the-shoulder session (#2550): a read of a process that @p ownedByUser says
 /// isn't TaskSmack's user's is refused with OTHER_USERS_READ_REFUSED, as a failed read of its kind, and
-/// never reaches @p handler; a system-wide read (firmware, crashes), or any other kind of read, is
-/// refused outright (BrokerPipeServer::isRead()). The Hello and actions pass through.
+/// never reaches @p handler; any other kind of read is refused outright (BrokerPipeServer::isRead()). The Hello and actions pass through.
 [[nodiscard]] BrokerPipeServer::RequestHandler readsOnlyOwnProcesses(BrokerPipeServer::RequestHandler handler,
                                                                      std::function<bool(const ProcessTarget&)> ownedByUser);
 

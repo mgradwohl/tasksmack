@@ -1,8 +1,7 @@
 #pragma once
 
-// /proc/[pid]/io's read_bytes and write_bytes (#2728): pure parsing, shared by LinuxProcessProbe, which
-// reads its own user's processes, and tasksmack-helper, which reads other users' for it
-// (ProcessCountersRead.h). Fuzzed through the probe's tests' corpus like the other /proc parsers.
+// /proc/[pid]/io's read_bytes and write_bytes (#2728): pure parsing, for LinuxProcessProbe. Fuzzed through the
+// probe's tests' corpus like the other /proc parsers.
 
 #include <algorithm>
 #include <charconv>

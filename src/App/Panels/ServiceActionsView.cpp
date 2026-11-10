@@ -457,12 +457,8 @@ void ServiceActionsView::renderActionBar(const Platform::ServiceInfo* selected)
     {
         // Kept enabled: a service's own permissions may still allow the change.
         ImGui::TextColored(scheme.textMuted, ICON_FA_CIRCLE_INFO "  Requires administrator for most services");
-        ImGui::SetItemTooltip("%s",
-                              m_Capabilities.canAuthorizeInteractively
-                                  ? "TaskSmack isn't running as root. polkit may allow some services as they are; the others report "
-                                    "\"Requires administrator\" and offer Authenticate and retry, which asks for your password."
-                                  : "TaskSmack isn't running as administrator. Some services may still be allowed, by their own "
-                                    "permissions on Windows or by polkit on Linux; the others report \"Requires administrator\".");
+        ImGui::SetItemTooltip("TaskSmack isn't running as administrator. Some services may still be allowed, by their own "
+                              "permissions on Windows or by a polkit rule on Linux; the others report \"Requires administrator\".");
     }
     else if (selected == nullptr)
     {

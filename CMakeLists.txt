@@ -296,10 +296,7 @@ set(TASKSMACK_SOURCES
     src/Platform/ThreadName.cpp
     src/Platform/ThreadApartment.cpp         # a sampler thread's COM apartment (#2731)
     src/Platform/BrokeredProcessActions.cpp  # retries a refused action through the privileged helper (#2308)
-    src/Platform/BrokeredServiceActions.cpp  # service actions through the helper, no polkit prompt each (#2728)
     src/Platform/BrokeredUserSessions.cpp    # another user's Windows session disconnected or signed out by the helper (#3076)
-    src/Platform/BrokeredSystemInfoProbe.cpp # System Information's root-only facts through the helper (#2310)
-    src/Platform/BrokeredUdpTrafficCollector.cpp # per-process UDP bytes from the helper's eBPF counter (#3366)
     src/Platform/BrokerRequestMapping.cpp    # what either OS's helper does with each request (#2517)
     src/Platform/TaskManagerReplacementService.cpp # Replace Task Manager's read and change (#3072)
     src/Platform/PublicIpLookup.cpp          # what either OS's public IP lookup does with a reply (#3117)
@@ -317,12 +314,6 @@ set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/LinuxProcessProbe.cpp
     src/Platform/Linux/LinuxProcessControl.cpp
     src/Platform/Linux/LinuxProcessActions.cpp
-    # The privileged broker (#2307): its socket transport and the helper side, which tests drive directly
-    src/Platform/Linux/BrokerSocket.cpp
-    src/Platform/Linux/BrokerServer.cpp
-    src/Platform/Linux/HelperPrivileges.cpp
-    src/Platform/Linux/HelperSandbox.cpp
-    src/Platform/Linux/PkexecBroker.cpp
     src/Platform/Linux/LinuxProcessIconSource.cpp
     src/Platform/Linux/DetachedSpawn.cpp
     src/Platform/Linux/LinuxProcessEnvironmentReader.cpp
@@ -334,14 +325,12 @@ set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/LinuxStartup.cpp # the Startup tab: XDG autostart entries (#2541)
     src/Platform/Linux/CommandOutput.cpp # a short command's output, for crontab -l (#3425)
     src/Platform/Linux/LinuxHttpsClient.cpp # the update check's HTTPS client: libcurl (#3238)
-    src/Platform/Linux/PolkitTextAgent.cpp # the password prompt where no desktop polkit agent runs: libpolkit-agent-1 (#3380)
-    src/Platform/Linux/PolkitTextAgentRun.cpp # its child side, the only file with polkit's headers (#3380)
     src/Platform/Linux/LinuxStartAtLogin.cpp # start at sign-in: an XDG autostart entry (#3254)
     src/Platform/Linux/LinuxProcessOpenFilesReader.cpp
     src/Platform/Linux/LinuxProcessSecurityReader.cpp
     src/Platform/Linux/LinuxSystemProbe.cpp
     src/Platform/Linux/SystemdUnits.cpp
-    src/Platform/Linux/SystemdUnitActions.cpp # start, stop and start types; tasksmack-helper links it too (#2728)
+    src/Platform/Linux/SystemdUnitActions.cpp # start, stop and start types (#2006)
     src/Platform/Linux/LogindSessions.cpp # the Users tab's sessions (#3076)
     src/Platform/Linux/UDisks2Smart.cpp
     src/Platform/Linux/NetworkManager.cpp
@@ -361,7 +350,7 @@ set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/DRMGPUProbe.cpp
     src/Platform/Linux/ROCmGPUProbe.cpp
     src/Platform/Linux/NetlinkSocketStats.cpp
-    src/Platform/Linux/UdpByteCounter.cpp # the eBPF UDP counter: the helper's, and root's in-process one (#3366, #3580)
+    src/Platform/Linux/UdpByteCounter.cpp # the eBPF UDP counter root loads in-process (#3366, #3580)
     src/Platform/Linux/LinuxUdpTrafficCollector.cpp # counts UDP in this process when TaskSmack runs as root (#3580)
     src/Platform/Linux/Factory.cpp
 )
@@ -452,7 +441,7 @@ if(UNIX AND NOT APPLE AND TASKSMACK_WITH_SDBUS)
     endif()
 endif()
 
-# libbpf on Linux (#3366): required. The privileged helper loads a small CO-RE eBPF program that counts each
+# libbpf on Linux (#3366): required. TaskSmack started as root loads a small CO-RE eBPF program that counts each
 # process's UDP bytes, for the opt-in "Count UDP traffic per process" (the Windows side uses ETW). A hard build
 # dependency (maintainer, 2026-11-06), so every Linux build has it; the .deb then depends on libbpf1
 # (CPACK_DEBIAN_PACKAGE_SHLIBDEPS). An INTERFACE target, as tasksmack_sdbus is.
@@ -464,7 +453,7 @@ if(UNIX AND NOT APPLE)
     pkg_check_modules(LIBBPF REQUIRED IMPORTED_TARGET libbpf>=1.0)
     target_link_libraries(tasksmack_bpf INTERFACE PkgConfig::LIBBPF)
     target_compile_definitions(tasksmack_bpf INTERFACE TASKSMACK_HAS_LIBBPF=1)
-    message(STATUS "libbpf ${LIBBPF_VERSION}: per-process UDP bytes through the helper's eBPF counter (#3366)")
+    message(STATUS "libbpf ${LIBBPF_VERSION}: per-process UDP bytes from the eBPF counter TaskSmack loads as root (#3366, #3580)")
 endif()
 include(cmake/BpfObject.cmake) # compiles and embeds the counter's BPF program
 
@@ -484,27 +473,6 @@ if(UNIX AND NOT APPLE AND TASKSMACK_WITH_CURL)
         message(STATUS "libcurl ${LIBCURL_VERSION}: the update check can be offered")
     else()
         message(STATUS "libcurl not found (install libcurl4-openssl-dev): the update check will not be offered")
-    endif()
-endif()
-
-# libpolkit-agent-1 on Linux (#3380): polkit's text agent, registered in TaskSmack's own process where no desktop agent
-# runs (WSL, no display), since pkexec's own fails on polkit 127. A build dependency the .deb then depends on
-# (CPACK_DEBIAN_PACKAGE_SHLIBDEPS); without it the app still builds, and pkexec's own agent asks, as before. Its GLib
-# headers are system includes, out of our warnings.
-option(TASKSMACK_WITH_POLKIT_AGENT "Ask for the helper's password with polkit's text agent when no desktop agent runs (Linux)" ON)
-add_library(tasksmack_polkit_agent INTERFACE)
-if(UNIX AND NOT APPLE AND TASKSMACK_WITH_POLKIT_AGENT)
-    find_package(PkgConfig QUIET)
-    if(PkgConfig_FOUND)
-        pkg_check_modules(POLKIT_AGENT QUIET polkit-agent-1)
-    endif()
-    if(POLKIT_AGENT_FOUND)
-        target_include_directories(tasksmack_polkit_agent SYSTEM INTERFACE ${POLKIT_AGENT_INCLUDE_DIRS})
-        target_link_libraries(tasksmack_polkit_agent INTERFACE ${POLKIT_AGENT_LINK_LIBRARIES})
-        target_compile_definitions(tasksmack_polkit_agent INTERFACE TASKSMACK_HAS_POLKIT_AGENT=1)
-        message(STATUS "libpolkit-agent-1 ${POLKIT_AGENT_VERSION}: TaskSmack can ask for the helper's password itself")
-    else()
-        message(STATUS "libpolkit-agent-1 not found (install libpolkit-agent-1-dev): pkexec's own agent asks for the password")
     endif()
 endif()
 
@@ -909,9 +877,8 @@ function(tasksmack_configure_app_target target)
         tasksmack_apply_windows_platform(${target})
     elseif(UNIX AND NOT APPLE)
         # tasksmack_sdbus: libsystemd and TASKSMACK_HAS_SDBUS when found (#1525); tasksmack_curl: libcurl (#3238);
-        # tasksmack_polkit_agent: libpolkit-agent-1 (#3380); tasksmack_bpf: libbpf, for root's in-process UDP counter
-        # (#3580), with the embedded BPF object it opens
-        target_link_libraries(${target} PRIVATE dl tasksmack_sdbus tasksmack_curl tasksmack_polkit_agent tasksmack_bpf)
+        # tasksmack_bpf: libbpf, for root's in-process UDP counter (#3580), with the embedded BPF object it opens
+        target_link_libraries(${target} PRIVATE dl tasksmack_sdbus tasksmack_curl tasksmack_bpf)
         add_dependencies(${target} tasksmack_bpf_object)
     endif()
 endfunction()
@@ -1009,51 +976,10 @@ if(TASKSMACK_BUILD_UI_TRAINING)
     unset(_is_multi_config)
 endif()
 
-# tasksmack-helper (#2307; #2181): the privileged broker TaskSmack starts with pkexec when the user
-# authenticates for an action it can't do itself. Platform sources only -- no SDL, ImGui, GL, config
-# or themes -- so as little as possible runs as root. Of the process actions it links only the
-# process-control half (LinuxProcessControl), so nothing that starts strace, gcore or a terminal is in it,
-# and it never searches PATH for them (#2640). Linux only; Windows has its own transport (#2311).
-if(UNIX AND NOT APPLE)
-    add_executable(tasksmack-helper
-        src/Platform/Linux/HelperMain.cpp
-        src/Platform/Linux/HelperPrivileges.cpp # drops to the capabilities its requests need (#2640)
-        src/Platform/Linux/HelperSandbox.cpp # its seccomp allow-list (#2752)
-        src/Platform/BrokerRequestMapping.cpp
-        src/Platform/Linux/BrokerServer.cpp
-        src/Platform/Linux/BrokerSocket.cpp
-        src/Platform/Linux/LinuxProcessControl.cpp # not LinuxProcessActions: no trace, dump or spawn (#2640)
-        src/Platform/Linux/LinuxProcessEnvironmentReader.cpp
-        src/Platform/Linux/LinuxProcessModulesReader.cpp
-        src/Platform/Linux/LinuxProcessOpenFilesReader.cpp
-        src/Platform/Linux/LinuxProcessThreadsReader.cpp # Process Details threads of another user's process (#3069)
-        src/Platform/Linux/LinuxProcessMemoryMapReader.cpp # another user's process's memory map (#3089)
-        src/Platform/Linux/LinuxProcessConnectionsReader.cpp
-        src/Platform/Linux/NetlinkSocketStats.cpp
-        src/Platform/Linux/SystemdJournal.cpp # every user's crashes for System Information (#2310)
-        src/Platform/Linux/SystemdUnitActions.cpp # service actions over the bus it holds (#2728)
-        src/Platform/Linux/UdpByteCounter.cpp # the eBPF UDP counter it loads before dropping root (#3366)
-    )
-    target_compile_features(tasksmack-helper PRIVATE cxx_std_23)
-    tasksmack_apply_linux_toolchain(tasksmack-helper)
-    tasksmack_apply_default_warnings(tasksmack-helper)
-    tasksmack_apply_text_encoding(tasksmack-helper)
-    tasksmack_apply_privileged_hardening(tasksmack-helper) # runs as root: full RELRO, CET/BTI, FORTIFY 3 (#2640)
-    target_include_directories(tasksmack-helper PRIVATE ${TaskSmack_SOURCE_DIR}/src ${TaskSmack_BINARY_DIR}/generated)
-    target_link_libraries(tasksmack-helper PRIVATE spdlog::spdlog_header_only)
-    target_link_libraries(tasksmack-helper PRIVATE tasksmack_bpf) # libbpf, for the UDP counter (#3366)
-    add_dependencies(tasksmack-helper tasksmack_bpf_object)  # its embedded BPF object
-    if(TARGET tasksmack_sdbus)
-        target_link_libraries(tasksmack-helper PRIVATE tasksmack_sdbus) # sd-journal, when libsystemd is installed
-    endif()
-    # Beside TaskSmack in the build tree, where the tests find it.
-    set_target_properties(tasksmack-helper PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
-endif()
-
 # TaskSmackHelper.exe (#2517; #2181): the elevated broker TaskSmack starts with ShellExecuteExW("runas")
 # when the user chooses an action it can't do itself. Platform sources only -- no SDL, ImGui, GL, config
 # or themes -- so as little as possible runs elevated. A Windows-subsystem program, so starting it opens
-# no console window. Windows only; Linux has tasksmack-helper above.
+# no console window. Windows only.
 if(WIN32)
     # The sources, definitions and libraries are lists, so the tests' short-idle copy of the helper
     # (tests/CMakeLists.txt, TaskSmackHelperShortIdle, #3489) is built from exactly the same ones.

@@ -163,14 +163,6 @@ LinuxCoredumps::JournalReader makeCoredumpJournalReader()
     };
 }
 
-LinuxCoredumps::JournalReader makeCoredumpJournalReader(std::optional<std::uint32_t> coredumpUid)
-{
-    return [coredumpUid](std::uint64_t sinceUsec, std::size_t maxEntries)
-    {
-        return readCoredumpEntries(sinceUsec, maxEntries, coredumpUid);
-    };
-}
-
 #else
 
 std::optional<std::uint32_t> lookUpCoredumpUid()
@@ -186,11 +178,6 @@ LinuxCoredumps::JournalReader makeCoredumpJournalReader()
         read.error = "This build has no systemd support (it was built without libsystemd)";
         return read;
     };
-}
-
-LinuxCoredumps::JournalReader makeCoredumpJournalReader(std::optional<std::uint32_t> /*coredumpUid*/)
-{
-    return makeCoredumpJournalReader();
 }
 
 #endif

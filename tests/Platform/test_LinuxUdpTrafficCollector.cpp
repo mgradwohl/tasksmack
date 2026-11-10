@@ -13,6 +13,8 @@
 #include <utility>
 #include <vector>
 
+#include <unistd.h>
+
 namespace Platform
 {
 namespace
@@ -94,6 +96,20 @@ TEST(LinuxUdpTrafficCollectorTest, ALoadThatFailsIsUnsupportedWithItsReasonUntil
     EXPECT_EQ(collector.start(), UdpCollectorStartResult::Started);
     EXPECT_FALSE(collector.unsupported());
     EXPECT_TRUE(collector.problem().empty());
+}
+
+// #3374: the collector Factory builds loads the real counter, which refuses without root and says why.
+TEST(LinuxUdpTrafficCollectorTest, WithoutRootTheRealCounterDoesNotLoadAndSaysWhy)
+{
+    if (::geteuid() == 0)
+    {
+        GTEST_SKIP() << "running as root, where loading can succeed: UdpTrafficCollectorRootTest covers that";
+    }
+    LinuxUdpTrafficCollector collector;
+    EXPECT_EQ(collector.start(), UdpCollectorStartResult::Failed);
+    EXPECT_TRUE(collector.unsupported());
+    EXPECT_FALSE(collector.problem().empty());
+    EXPECT_TRUE(collector.sample().empty());
 }
 
 TEST(LinuxUdpTrafficCollectorTest, AReadTheKernelRefusesIsEmptyAndTheNextOneReadOnlySetsTheBaseline)
