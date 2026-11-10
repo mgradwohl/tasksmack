@@ -77,6 +77,14 @@ names. perf-data/win-baseline.json has its manifest committed beside it (#3447);
 system CPU load each manifest recorded before and after its run is printed, for reading a noisy
 comparison.
 
+The machine (#3623): each run's CPU is printed, from Google Benchmark's context (the logical CPU
+count, its MHz reading and the cache sizes) and, when the run's manifest records one, the CPU model.
+Hosted runners of one label land on different CPU models: GitHub's ubuntu-26.04 has put this job on AMD
+EPYC hosts (L2 512 KiB or 1 MiB a core, L3 32 MiB) and on Intel Xeon hosts (L2 1.25 or 2 MiB, L3 48 to
+480 MiB), and on some of those every ns-scale benchmark reads ~50% slower than on the hosts the CI
+baseline was measured on. When the two runs' cache layouts differ, a NOTE line says so, so a flag on
+another CPU model can be told from a code change at a glance. It changes no exit code.
+
 --regressions-out FILE writes the regressed benchmarks' names, {"regressions": [...]}, once the
 comparison has run (an empty list when none regressed). heavy-checks.yml hands them to
 tools/bench-across-launches.py, which re-measures them in further separate launches, and this
@@ -288,6 +296,52 @@ def describe_load(manifest: dict | None) -> str | None:
     return f"{percent('before_percent')} before, {percent('after_percent')} after"
 
 
+def load_context(path: Path) -> dict:
+    """The Google Benchmark "context" object of the run at path, or {} when it has none."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    context = data.get("context") if isinstance(data, dict) else None
+    return context if isinstance(context, dict) else {}
+
+
+def cache_layout(context: dict) -> tuple[tuple[int, str, int], ...] | None:
+    """The run's caches as (level, type, size in bytes), sorted, or None when the context lists none."""
+    caches = context.get("caches")
+    if not isinstance(caches, list):
+        return None
+    layout = []
+    for cache in caches:
+        if not isinstance(cache, dict):
+            return None
+        level, kind, size = cache.get("level"), cache.get("type"), cache.get("size")
+        if not isinstance(level, int) or not isinstance(kind, str) or not isinstance(size, int):
+            return None
+        layout.append((level, kind, size))
+    return tuple(sorted(layout)) or None
+
+
+def describe_size(size: int) -> str:
+    return f"{size // (1024 * 1024)} MiB" if size >= 1024 * 1024 and size % (1024 * 1024) == 0 else f"{size // 1024} KiB"
+
+
+def describe_cpu(context: dict, manifest: dict | None) -> str:
+    """One line for the machine a run was measured on, e.g.
+    "AMD EPYC 7763 64-Core Processor, 4 x 3243 MHz, L1d 32 KiB, L1i 32 KiB, L2 512 KiB, L3 32 MiB"."""
+    parts = []
+    machine = manifest.get("machine") if isinstance(manifest, dict) else None
+    if isinstance(machine, dict) and isinstance(machine.get("cpu_model"), str) and machine["cpu_model"]:
+        parts.append(machine["cpu_model"])
+    cpus, mhz = context.get("num_cpus"), context.get("mhz_per_cpu")
+    if isinstance(cpus, int) and not isinstance(cpus, bool) and isinstance(mhz, (int, float)) and is_valid_time(mhz):
+        parts.append(f"{cpus} x {mhz:.0f} MHz")
+    names = {"Data": "d", "Instruction": "i", "Unified": ""}
+    for level, kind, size in cache_layout(context) or ():
+        parts.append(f"L{level}{names.get(kind, kind)} {describe_size(size)}")
+    return ", ".join(parts) if parts else "not recorded"
+
+
 def finite_percentage(min_value: float, max_value: float | None = None):
     """argparse type factory: a finite float within [min_value, max_value].
 
@@ -495,6 +549,15 @@ def main() -> int:
     print(f"Absolute noise floor: {args.min_abs_delta_ns:.2f}ns")
     print(f"Minimum required coverage: {args.min_coverage:.1f}%")
     print(f"Core placement: {placement_note}")
+    contexts = {"baseline": load_context(args.baseline), "current": load_context(args.current)}
+    for side in ("baseline", "current"):
+        print(f"CPU, {side} run: {describe_cpu(contexts[side], manifests[side])}")
+    layouts = [cache_layout(contexts[side]) for side in ("baseline", "current")]
+    if None not in layouts and layouts[0] != layouts[1]:
+        print(
+            "NOTE: the runs were on different CPU models (their cache layouts differ). A slowdown across "
+            "many benchmarks alike may be the host, not the code (#3623)."
+        )
     for side in ("baseline", "current"):
         load = describe_load(manifests[side])
         if load is not None:

@@ -34,6 +34,13 @@ on:
         type: choice
         options: [all, benchmark, coverage]
         default: all
+      second_runner_benchmarks:
+        description: >-
+          Testing the benchmark gate's second runner (#3623): comma-separated benchmark names to hand
+          to benchmark-second-runner as if they had been flagged, when the first runner flags none.
+          Empty (the default) hands over only real flags.
+        type: string
+        default: ''
 
 # Pushes to main or a release/* branch get one group per commit and are never cancelled, so
 # back-to-back merges each get a complete run and a regression is blamed on the commit that caused
@@ -626,6 +633,9 @@ jobs:
     timeout-minutes: 45
     permissions:
       contents: read
+    outputs:
+      # 'true' when flags stood after the re-measurement across launches and went to benchmark-second-runner.
+      second-runner: ${{ steps.handoff.outputs.handed }}
     steps:
       # When the job started, for the re-measurement's time budget (#3476).
       - name: Record the job start
@@ -698,7 +708,18 @@ jobs:
             exit 1
           fi
           cp "$latest_json" perf-data/benchmark-current.json
+          # Its manifest as the sidecar the check reads, for the CPU model it records (#3623).
+          cp "${latest_json%.json}.manifest.json" perf-data/benchmark-current.manifest.json
           echo "BENCHMARK_JSON=$latest_json" >> "$GITHUB_ENV"
+
+      # #3623: ubuntu-26.04 runners land on different CPU models (AMD EPYC and Intel Xeon hosts), and on some
+      # the ns-scale benchmarks read ~50% slower than on the hosts the baseline was measured on. Google
+      # Benchmark's context gives only the MHz and the caches, so the model is logged here for the summary.
+      - name: Describe the runner's CPU
+        run: |
+          { echo "Runner CPU:"
+            lscpu | grep -E '^(Model name|CPU\(s\)|CPU max MHz|BogoMIPS|L1d|L1i|L2|L3|Hypervisor vendor):' || true
+          } | tee runner-cpu.txt
 
       # perf-data/linux-ci-baseline.json was recorded on this same ubuntu-26.04 hosted-runner
       # class (see CONTRIBUTING.md's "Refreshing the CI benchmark baseline" section for the
@@ -813,20 +834,84 @@ jobs:
               --output perf-data/benchmark-across-launches.json \
               "${results[@]}" 2>&1 | tee -a benchmark-across-launches-output.txt )
           echo "" | tee -a benchmark-across-launches-output.txt
-          # The same arguments as "Check for regression": the same thresholds and overrides.
+          # The same arguments as "Check for regression": the same thresholds and overrides. The names that
+          # still stand go to the second runner (#3623).
           python3 tools/check-benchmark-regression.py \
             --baseline perf-data/linux-ci-baseline.json \
             --current  perf-data/benchmark-across-launches.json \
             --threshold 40 \
             --threshold-overrides perf-data/linux-ci-thresholds.json \
+            --regressions-out "$RUNNER_TEMP/regressions-standing.json" \
             2>&1 | tee -a benchmark-across-launches-output.txt
           echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+      # A second runner before failing (#3623). Every launch above ran on this one host, so a host that is a
+      # slower CPU model than the baseline's reads slow in all of them alike: the Intel Xeon hosts at 2300 MHz
+      # (L2 2 MiB, L3 260 MiB) flagged 10 and 11 ~12 ns history accessors at +41-50% on #3589's Linux UDP
+      # change and #3617's test-only one, while the AMD EPYC hosts passed the commits around them. So flags
+      # that stand here go to benchmark-second-runner, a fresh runner that re-measures them in 5 launches of
+      # this same binary and decides the gate: one slow host can't fail it alone, and a real regression, slow
+      # on any host, still fails there. A coverage loss alone has no names and fails here, as before.
+      # Not a wider threshold or an exclusion: the same benchmarks are checked at the same limits.
+      - name: Hand the standing flags to a second runner
+        id: handoff
+        if: >-
+          (steps.regression-check.outputs.exit_code == '1' && steps.across-launches.outputs.exit_code == '1') ||
+          (steps.regression-check.outputs.exit_code == '0' && github.event_name == 'workflow_dispatch' &&
+          inputs.second_runner_benchmarks != '')
+        env:
+          FORCED_NAMES: ${{ inputs.second_runner_benchmarks }}
+        run: |
+          # The names the re-check left standing; the first check's when the re-measurement didn't get that
+          # far (over budget or out of time).
+          standing="$RUNNER_TEMP/regressions-standing.json"
+          [[ -f "$standing" ]] || standing="$RUNNER_TEMP/regressions.json"
+          mkdir -p "$RUNNER_TEMP/second-runner"
+          count=$(python3 - "$standing" "$RUNNER_TEMP/second-runner/regressions.json" <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          source, out = Path(sys.argv[1]), Path(sys.argv[2])
+          names = json.loads(source.read_text(encoding="utf-8"))["regressions"] if source.is_file() else []
+          if not names:
+              # workflow_dispatch's second_runner_benchmarks, to exercise this path on a clean run.
+              names = [n.strip() for n in os.environ.get("FORCED_NAMES", "").split(",") if n.strip()]
+          out.write_text(json.dumps({"regressions": names}) + "\n", encoding="utf-8")
+          print(len(names))
+          PY
+          )
+          if [[ "$count" -eq 0 ]]; then
+            echo "No benchmark names to hand over (a coverage loss alone): the result stands." \
+              | tee -a benchmark-across-launches-output.txt
+            echo "handed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          cp build/benchmark/bin/TaskSmackBenchmarks perf-data/benchmark-current.json "$RUNNER_TEMP/second-runner/"
+          if [[ -f build/benchmark/bin/TaskSmackBenchmarks.buildinfo.json ]]; then
+            cp build/benchmark/bin/TaskSmackBenchmarks.buildinfo.json "$RUNNER_TEMP/second-runner/"
+          fi
+          echo "${count} flagged benchmark(s) go to benchmark-second-runner, a fresh runner, which decides the gate (#3623)." \
+            | tee -a benchmark-across-launches-output.txt
+          echo "handed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the second runner's input
+        if: steps.handoff.outputs.handed == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: benchmark-second-runner-input
+          path: ${{ runner.temp }}/second-runner/
+          if-no-files-found: error
+          retention-days: 1
 
       - name: Add benchmark summary to workflow summary
         if: always()
         run: |
           echo "## Benchmark Regression Check" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [[ -f runner-cpu.txt ]]; then
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            cat runner-cpu.txt >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
           if [[ -f benchmark-regression-output.txt ]]; then
             echo '```' >> "$GITHUB_STEP_SUMMARY"
             cat benchmark-regression-output.txt >> "$GITHUB_STEP_SUMMARY"
@@ -848,18 +933,173 @@ jobs:
           name: benchmark-results
           path: |
             perf-data/benchmark-current.json
+            perf-data/benchmark-current.manifest.json
+            runner-cpu.txt
             benchmark-regression-output.txt
             perf-data/benchmark-across-launches.json
             perf-data/launches/
             benchmark-across-launches-output.txt
           retention-days: 7
 
-      # A flag fails the job unless the re-measurement ran and passed. When it was skipped (a usage
-      # error, exit 2) or refused (over budget), its exit_code is '1' or empty, so the flag stands.
+      # A flag fails the job unless the re-measurement ran and passed, or the flags went to the second runner,
+      # which then decides. When the re-measurement was skipped (a usage error, exit 2) or refused (over budget),
+      # its exit_code is '1' or empty, so the flag stands, and goes to the second runner.
       - name: Fail on regression
-        if: steps.regression-check.outputs.exit_code != '0' && steps.across-launches.outputs.exit_code != '0'
+        if: >-
+          steps.regression-check.outputs.exit_code != '0' && steps.across-launches.outputs.exit_code != '0' &&
+          steps.handoff.outputs.handed != 'true'
         run: |
           echo "One or more benchmarks regressed beyond the threshold vs. the CI baseline, and stayed past it as the median across launches (or weren't re-measured). See the job summary for each launch's value." >&2
+          echo "If this is a real, accepted regression (not noise), refresh perf-data/linux-ci-baseline.json per CONTRIBUTING.md's baseline-refresh procedure." >&2
+          exit 1
+
+  # The benchmark gate's second runner (#3623): see "Hand the standing flags to a second runner" above. It
+  # builds nothing: it runs benchmark-regression's own binary (a Release build, libc++ and SDL3 linked in
+  # statically) on a fresh runner, the flagged benchmarks alone in 5 separate launches, and checks the
+  # median across them against the same baseline at the same thresholds, as part of the whole run for the
+  # same coverage. The first runner's values aren't counted. Its verdict is the gate's.
+  benchmark-second-runner:
+    needs: benchmark-regression
+    if: needs.benchmark-regression.outputs.second-runner == 'true'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # bench.sh needs Python 3.14+ for its manifest and redaction.
+      - name: Setup Python for GLAD
+        uses: ./.github/actions/setup-python-glad
+
+      - name: Download the first runner's flags and binary
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: benchmark-second-runner-input
+          path: second-runner
+
+      - name: Describe the runner's CPU
+        run: |
+          { echo "Runner CPU:"
+            lscpu | grep -E '^(Model name|CPU\(s\)|CPU max MHz|BogoMIPS|L1d|L1i|L2|L3|Hypervisor vendor):' || true
+          } | tee runner-cpu.txt
+
+      # An artifact doesn't keep the execute bit. A library this runner lacks fails here, by name.
+      - name: Check the binary runs here
+        run: |
+          chmod +x second-runner/TaskSmackBenchmarks
+          if ldd second-runner/TaskSmackBenchmarks | grep 'not found'; then
+            echo "ERROR: the benchmark binary needs a library this runner doesn't have." >&2
+            exit 1
+          fi
+
+      # The same launches as benchmark-regression's "Re-measure flagged benchmarks across launches", all 5
+      # on this runner, bounded by MAX_SECONDS: tools/bench-across-launches.py estimates them from the first
+      # runner's full run and refuses past it, and the launches share a hard deadline at it. Out of time,
+      # the flags stand.
+      - name: Re-measure the flagged benchmarks on this runner
+        id: second-runner
+        env:
+          LAUNCHES: '5'
+          MAX_SECONDS: '1200'
+        run: |
+          now=$(date +%s)
+          deadline=$(( now + MAX_SECONDS ))
+          out_of_time() {
+            echo "Out of time: $1, past the ${MAX_SECONDS}s budget. The flags stand as regressions." \
+              | tee -a benchmark-second-runner-output.txt
+            echo "exit_code=1" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+          planned=0
+          filter=$(python3 tools/bench-across-launches.py plan \
+                     --current second-runner/benchmark-current.json \
+                     --regressions second-runner/regressions.json \
+                     --launches "$LAUNCHES" --budget-seconds "$MAX_SECONDS" \
+                     2> benchmark-second-runner-output.txt) || planned=$?
+          cat benchmark-second-runner-output.txt
+          if [[ "$planned" -ne 0 ]]; then
+            echo "exit_code=1" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          results=()
+          for launch in $(seq 1 "$LAUNCHES"); do
+            remaining=$(( deadline - $(date +%s) ))
+            if (( remaining <= 0 )); then
+              out_of_time "launch ${launch} of ${LAUNCHES} not started"
+            fi
+            echo "::group::Launch ${launch} of ${LAUNCHES}"
+            mkdir -p "perf-data/second-runner/${launch}"
+            status=0
+            ( set -o pipefail
+              TASKSMACK_BENCH_BIN="$PWD/second-runner/TaskSmackBenchmarks" \
+              TASKSMACK_BENCH_OUT_DIR="perf-data/second-runner/${launch}" timeout --kill-after=10s "${remaining}s" \
+                ./tools/bench.sh benchmark -- --benchmark_filter="$filter" | tee "$RUNNER_TEMP/launch-${launch}.txt" ) \
+              || status=$?
+            echo "::endgroup::"
+            if (( status == 124 || status == 137 )); then
+              rm -rf "perf-data/second-runner/${launch}"
+              out_of_time "launch ${launch} of ${LAUNCHES} stopped after ${remaining}s"
+            elif (( status != 0 )); then
+              echo "ERROR: launch ${launch} failed (exit ${status})" >&2
+              exit "$status"
+            fi
+            result=$(sed -n 's/^RESULT=//p' "$RUNNER_TEMP/launch-${launch}.txt" | tail -n 1)
+            if [[ -z "$result" || ! -f "$result" ]]; then
+              echo "ERROR: launch ${launch}'s output JSON not found (bench.sh printed RESULT=${result})" >&2
+              exit 1
+            fi
+            results+=("$result")
+          done
+          # The first runner's full run supplies the other benchmarks, for the same coverage; its values of the
+          # flagged ones aren't counted.
+          ( set -o pipefail
+            python3 tools/bench-across-launches.py combine \
+              --first second-runner/benchmark-current.json --exclude-first \
+              --regressions second-runner/regressions.json \
+              --baseline perf-data/linux-ci-baseline.json \
+              --output perf-data/benchmark-second-runner.json \
+              "${results[@]}" 2>&1 | tee -a benchmark-second-runner-output.txt )
+          echo "" | tee -a benchmark-second-runner-output.txt
+          # The same arguments as benchmark-regression's checks: the same thresholds and overrides.
+          python3 tools/check-benchmark-regression.py \
+            --baseline perf-data/linux-ci-baseline.json \
+            --current  perf-data/benchmark-second-runner.json \
+            --threshold 40 \
+            --threshold-overrides perf-data/linux-ci-thresholds.json \
+            2>&1 | tee -a benchmark-second-runner-output.txt
+          echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Add the second runner's summary to the workflow summary
+        if: always()
+        run: |
+          echo "## Benchmark Regression Check, second runner (#3623)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          for file in runner-cpu.txt benchmark-second-runner-output.txt; do
+            if [[ -f "$file" ]]; then
+              echo '```' >> "$GITHUB_STEP_SUMMARY"
+              cat "$file" >> "$GITHUB_STEP_SUMMARY"
+              echo '```' >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+
+      - name: Upload the second runner's results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: benchmark-second-runner-results
+          path: |
+            runner-cpu.txt
+            benchmark-second-runner-output.txt
+            perf-data/benchmark-second-runner.json
+            perf-data/second-runner/
+          retention-days: 7
+
+      # The gate's verdict: flags that stand here too, or weren't re-measured (over budget, out of time), fail.
+      - name: Fail on regression
+        if: steps.second-runner.outputs.exit_code != '0'
+        run: |
+          echo "The flagged benchmarks regressed beyond the threshold vs. the CI baseline on a second runner too, as the median across its launches (or weren't re-measured). See both jobs' summaries for each launch's value and each runner's CPU." >&2
           echo "If this is a real, accepted regression (not noise), refresh perf-data/linux-ci-baseline.json per CONTRIBUTING.md's baseline-refresh procedure." >&2
           exit 1
 

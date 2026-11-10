@@ -1,8 +1,8 @@
 """Reads one step of a GitHub Actions workflow so a test can run its `run:` script (#2478).
 
 Only the shapes this repository's workflows use are understood: a step starts with `- name: <name>`,
-its `env:` values are plain scalars or `|`/`|-` block scalars, and its `run:` is a `|` block. Standard
-library only, like the tools/check-*.py checkers, so it needs no PyYAML.
+its `env:` values are plain scalars or `|`/`|-` block scalars, its `run:` is a `|` block, and its `if:` is a
+plain or a `>-` folded scalar. Standard library only, like the tools/check-*.py checkers, so it needs no PyYAML.
 """
 
 from __future__ import annotations
@@ -96,6 +96,11 @@ def find_step(workflow: Path, name: str, job: str | None = None) -> Step:
                 step.run, index = _block(lines, index + 1, keys)
                 if value not in ("|", "|-"):
                     step.run = value
+                continue
+            if key == "if" and value in (">", ">-"):
+                # A folded condition: its lines joined by spaces, as YAML folds them (no more-indented lines).
+                folded, index = _block(lines, index + 1, keys)
+                step.condition = " ".join(line.strip() for line in folded.splitlines())
                 continue
             if key in ("if", "uses", "shell"):
                 setattr(step, {"if": "condition"}.get(key, key), value)
