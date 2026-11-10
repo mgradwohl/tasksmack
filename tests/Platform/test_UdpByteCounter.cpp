@@ -134,6 +134,35 @@ TEST(UdpByteCounterTest, TheEmbeddedObjectHasEachModesProgramsAndATgidKeyedMap)
     EXPECT_EQ(bpf_map__max_entries(map), 16384U);
 }
 
+// #3374: a failed attempt's reason quotes the end of libbpf's warnings, where the verifier says why it refused.
+TEST(UdpByteCounterTest, AFailuresReasonQuotesOnlyTheEndOfWhatLibbpfSaid)
+{
+    EXPECT_EQ(UdpLibbpfLog::withLog("fexit: loading failed", ""), "fexit: loading failed");
+    EXPECT_EQ(UdpLibbpfLog::withLog("fexit: loading failed", "\n\n"), "fexit: loading failed") << "only newlines is nothing said";
+    EXPECT_EQ(UdpLibbpfLog::withLog("x", "R1 invalid mem access\n"), "x; libbpf: ...R1 invalid mem access");
+
+    const std::string longLog = std::string(UdpLibbpfLog::QUOTED_BYTES, 'a') + "the last line\n";
+    const std::string quoted = UdpLibbpfLog::withLog("x", longLog);
+    const std::string_view prefix = "x; libbpf: ...";
+    ASSERT_TRUE(quoted.starts_with(prefix));
+    EXPECT_EQ(quoted.size(), prefix.size() + UdpLibbpfLog::QUOTED_BYTES);
+    EXPECT_TRUE(quoted.ends_with("aaathe last line"));
+}
+
+TEST(UdpByteCounterTest, AnAttemptKeepsOnlyTheLastOfLibbpfsWarnings)
+{
+    std::string capture;
+    UdpLibbpfLog::keep(capture, "first");
+    UdpLibbpfLog::keep(capture, "second");
+    EXPECT_EQ(capture, "first\nsecond\n");
+
+    UdpLibbpfLog::keep(capture, std::string(UdpLibbpfLog::CAPTURE_BYTES, 'v'));
+    UdpLibbpfLog::keep(capture, "why it refused");
+    EXPECT_EQ(capture.size(), UdpLibbpfLog::CAPTURE_BYTES);
+    EXPECT_TRUE(capture.ends_with("v\nwhy it refused\n"));
+    EXPECT_FALSE(capture.contains("first")) << "the oldest warnings go first";
+}
+
 TEST(UdpByteCounterTest, WithoutRootLoadingFailsAndSaysWhy)
 {
     if (::geteuid() == 0)
