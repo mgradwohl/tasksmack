@@ -873,10 +873,23 @@ ProcessActionResult WindowsProcessActions::setEfficiencyMode(const ProcessTarget
 
 std::optional<std::int32_t> WindowsProcessActions::efficiencyNiceToRestore(const ProcessTarget& target) const
 {
-    if (m_EfficiencyPriorities->isRealtimeRetry(target))
+    if (!m_EfficiencyPriorities->isRealtimeRetry(target))
+    {
+        return std::nullopt;
+    }
+    // The retry restores Realtime only over the High the refused restore left (#3606). A class someone chose since
+    // (or one that can't be read) is theirs: the mark goes, and the off is the ordinary one, which leaves it alone.
+    // Asked before the administrator is, and again just before the helper's request goes (BrokeredProcessActions).
+    const VerifiedProcess process =
+        openVerified(m_Fns, target, PROCESS_QUERY_LIMITED_INFORMATION, [](DWORD error) { return std::format("error {}", error); });
+    const DWORD current = process.result.success && m_Fns.getPriorityClass != nullptr ? m_Fns.getPriorityClass(process.handle.get()) : 0;
+    if (current == HIGH_PRIORITY_CLASS)
     {
         return REALTIME_CLASS_NICE;
     }
+    spdlog::info(
+        "Efficiency mode off for PID {}: class 0x{:X}, not the High the refused Realtime left; no Realtime retry", target.pid, current);
+    m_EfficiencyPriorities->clearRealtimeRetry(target);
     return std::nullopt;
 }
 

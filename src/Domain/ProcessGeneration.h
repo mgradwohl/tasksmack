@@ -45,6 +45,14 @@ class ProcessGeneration
         return m_Rows;
     }
 
+    /// The row of the process with @p pid, or nullptr: one probe of the PID index, whatever the row count (#3601). A
+    /// PID listed twice (one reused within a single read) maps to its last listing.
+    [[nodiscard]] const ProcessSnapshot* find(std::int32_t pid) const noexcept
+    {
+        const std::size_t row = m_Index.find(pid);
+        return row < m_Rows.size() ? &m_Rows[row] : nullptr;
+    }
+
     /// The row of the process with @p pid that started at @p startTimeTicks, or nullptr. A PID listed twice (one
     /// reused within a single read) maps to its last listing; when that one is the other process, the rows are
     /// walked for this one, as rare as the reuse.

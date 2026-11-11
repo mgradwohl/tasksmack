@@ -1178,7 +1178,7 @@ TEST_F(ProcessesPanelRenderTest, APanelThatWasNeverAttachedHasNothingToReport)
         []
         { return ProcessesPanelPlatform{.probe = std::make_unique<TestMocks::MockProcessProbe>(), .actions = nullptr, .icons = nullptr}; },
         [](Core::Event&) {});
-    EXPECT_FALSE(panel.findSnapshot(1).has_value());
+    EXPECT_EQ(panel.findSnapshot(1), nullptr);
     EXPECT_FALSE(panel.hasReducedPrivileges());
     ProcessesPanel unattached(
         []
@@ -3714,11 +3714,11 @@ TEST_F(ProcessesPanelRenderTest, AppMembershipFollowsTheTablesAppGroupFromTheWho
     // empty and appMembership() can only answer from the model's generation.
     panel->onAttach();
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-    while (!panel->findSnapshot(30).has_value() && std::chrono::steady_clock::now() < deadline)
+    while (panel->findSnapshot(30) == nullptr && std::chrono::steady_clock::now() < deadline)
     {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    ASSERT_TRUE(panel->findSnapshot(30).has_value()) << "the sampler thread did not publish the seed in time";
+    ASSERT_NE(panel->findSnapshot(30), nullptr) << "the sampler thread did not publish the seed in time";
     ASSERT_EQ(panel->adoptedProcessCount(), 0U) << "the render cache adopted a generation";
 
     const ProcessGrouping::AppMembership shell = panel->appMembership(21, 0);
@@ -3727,9 +3727,9 @@ TEST_F(ProcessesPanelRenderTest, AppMembershipFollowsTheTablesAppGroupFromTheWho
     EXPECT_TRUE(shell.inherited);
     EXPECT_TRUE(shell.tooltip.contains("through a parent process")) << shell.tooltip;
 
-    const std::optional<Domain::ProcessSnapshot> terminalSnapshot = panel->findSnapshot(20);
-    ASSERT_TRUE(terminalSnapshot.has_value());
-    const std::uint64_t terminalTicks = terminalSnapshot.has_value() ? terminalSnapshot->startTimeTicks : 0;
+    const std::shared_ptr<const Domain::ProcessSnapshot> terminalSnapshot = panel->findSnapshot(20);
+    ASSERT_NE(terminalSnapshot, nullptr);
+    const std::uint64_t terminalTicks = terminalSnapshot != nullptr ? terminalSnapshot->startTimeTicks : 0;
     const ProcessGrouping::AppMembership terminal = panel->appMembership(20, terminalTicks);
     EXPECT_EQ(terminal.key, FAMILY);
     EXPECT_EQ(terminal.label, "Windows Terminal");
@@ -4665,12 +4665,12 @@ TEST_F(ProcessesPanelRenderTest, FindSnapshotReadsTheModelsLatestSnapshot)
 {
     const auto panel = attachedPanel();
     renderUntilLoaded(*panel);
-    const std::optional<Domain::ProcessSnapshot> server = panel->findSnapshot(100);
-    ASSERT_TRUE(server.has_value());
-    EXPECT_EQ(server.value_or(Domain::ProcessSnapshot{}).name, "server");
-    EXPECT_FALSE(panel->findSnapshot(424242).has_value());
+    const std::shared_ptr<const Domain::ProcessSnapshot> server = panel->findSnapshot(100);
+    ASSERT_NE(server, nullptr);
+    EXPECT_EQ(server != nullptr ? server->name : std::string{}, "server");
+    EXPECT_EQ(panel->findSnapshot(424242), nullptr);
     panel->onDetach();
-    EXPECT_FALSE(panel->findSnapshot(100).has_value()) << "detached: no model";
+    EXPECT_EQ(panel->findSnapshot(100), nullptr) << "detached: no model";
 }
 
 /// Mock actions that say when they are destroyed.

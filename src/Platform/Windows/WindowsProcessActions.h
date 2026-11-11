@@ -193,6 +193,8 @@ class WindowsProcessActions : public IProcessActions
     [[nodiscard]] ProcessActionResult setEfficiencyMode(const ProcessTarget& target, bool on) override;
     /// Realtime's nice while @p target's off is the retry of a Realtime restore Windows set High for (#3590): the
     /// helper, as an administrator, is asked to set Realtime as a priority change, so it never infers it from High.
+    /// Only while the process is still at that High, read now (#3606): at any other class the retry mark is cleared
+    /// and nullopt answered, so the ordinary off runs and leaves a class someone changed it to since.
     [[nodiscard]] std::optional<std::int32_t> efficiencyNiceToRestore(const ProcessTarget& target) const override;
     /// The class remembered for @p target's off (#3327), left remembered.
     [[nodiscard]] std::optional<std::uint32_t> efficiencyPriorityClassToRestore(const ProcessTarget& target) const override;

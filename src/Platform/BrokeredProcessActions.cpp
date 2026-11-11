@@ -301,6 +301,8 @@ ProcessActionResult BrokeredProcessActions::runAuthorized(const AuthorizedAction
             return ProcessActionResult::error("Couldn't act as an administrator: " + connected.error());
         }
     }
+    // requestFor() asks efficiencyNiceToRestore() again: authorizing takes as long as the user does, and a Windows
+    // Realtime retry whose process left the High since is sent as the ordinary off, never as Realtime (#3606).
     const std::optional<Broker::Request> request = requestFor(action);
     if (!request.has_value())
     {
