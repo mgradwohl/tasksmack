@@ -622,5 +622,80 @@ class CheckBenchmarkRegressionTest(unittest.TestCase):
         self.assertIn("System CPU load, current run: 38.0% before, unknown after", output)
 
 
+
+def context(mhz: float, l1d: int, l2: int, l3: int) -> dict:
+    """A Google Benchmark context for a 4-vCPU hosted runner, sizes in KiB."""
+    return {
+        "num_cpus": 4,
+        "mhz_per_cpu": mhz,
+        "caches": [
+            {"type": "Data", "level": 1, "size": l1d * 1024, "num_sharing": 2},
+            {"type": "Instruction", "level": 1, "size": 32 * 1024, "num_sharing": 2},
+            {"type": "Unified", "level": 2, "size": l2 * 1024, "num_sharing": 2},
+            {"type": "Unified", "level": 3, "size": l3 * 1024, "num_sharing": 4},
+        ],
+    }
+
+
+# The hosts of #3623: the AMD EPYC class perf-data/linux-ci-baseline.json was measured on, and the Intel Xeon
+# class that read the ~12 ns history accessors +45% on test-only commits.
+EPYC = context(3240, 32, 512, 32768)
+XEON = context(2300, 48, 2048, 266240)
+
+
+class RunnerCpuTest(unittest.TestCase):
+    """#3623: each run's CPU is printed, and a run on another CPU model is pointed out. No exit code changes."""
+
+    def run_gate(self, baseline_context: dict | None, current_context: dict | None, current_ns: float = 100.0,
+                 current_manifest: dict | None = None):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            paths = {}
+            for stem, ctx, ns in (("baseline", baseline_context, 100.0), ("current", current_context, current_ns)):
+                path = write_run(tmp_path, f"{stem}.json", {"BM_A": ns})
+                if ctx is not None:
+                    data = json.loads(path.read_text(encoding="utf-8"))
+                    data["context"] = ctx
+                    path.write_text(json.dumps(data), encoding="utf-8")
+                paths[stem] = path
+            if current_manifest is not None:
+                (tmp_path / "current.manifest.json").write_text(json.dumps(current_manifest), encoding="utf-8")
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT), "--baseline", str(paths["baseline"]), "--current", str(paths["current"]),
+                 "--threshold", "40"],
+                capture_output=True, encoding="utf-8", env={**os.environ, "PYTHONUTF8": "1"}, check=False,
+            )
+        return result.returncode, result.stdout + result.stderr
+
+    def test_each_runs_cpu_is_printed_with_the_manifests_model(self):
+        manifest = {"machine": {"cpu_model": "Intel(R) Xeon(R) Platinum 8573C"}}
+        code, output = self.run_gate(EPYC, XEON, current_manifest=manifest)
+        self.assertEqual(code, 0, output)
+        self.assertIn("CPU, baseline run: 4 x 3240 MHz, L1d 32 KiB, L1i 32 KiB, L2 512 KiB, L3 32 MiB", output)
+        self.assertIn("CPU, current run: Intel(R) Xeon(R) Platinum 8573C, 4 x 2300 MHz, L1d 48 KiB, L1i 32 KiB, "
+                      "L2 2 MiB, L3 260 MiB", output)
+
+    def test_another_cpu_model_is_noted_and_changes_no_exit_code(self):
+        code, output = self.run_gate(EPYC, XEON, current_ns=145.0)
+        self.assertEqual(code, 1, "a flag on another CPU model is still a flag here; the workflow re-measures it")
+        self.assertIn("NOTE: the runs were on different CPU models", output)
+        code, output = self.run_gate(EPYC, XEON)
+        self.assertEqual(code, 0, output)
+
+    def test_the_same_cpu_model_at_another_clock_is_not_noted(self):
+        # The EPYC hosts read anywhere from 2747 to 3268 MHz: the clock alone doesn't name the model.
+        code, output = self.run_gate(EPYC, context(2747.43, 32, 512, 32768))
+        self.assertEqual(code, 0, output)
+        self.assertIn("CPU, current run: 4 x 2747 MHz", output)
+        self.assertNotIn("NOTE:", output)
+
+    def test_a_run_with_no_context_says_so(self):
+        code, output = self.run_gate(None, {"num_cpus": 4, "mhz_per_cpu": "fast", "caches": "none"})
+        self.assertEqual(code, 0, output)
+        self.assertIn("CPU, baseline run: not recorded", output)
+        self.assertIn("CPU, current run: not recorded", output)
+        self.assertNotIn("NOTE:", output)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1640,6 +1640,23 @@ python3 tools/check-benchmark-regression.py --baseline perf-data/linux-ci-baseli
     --threshold 40 --threshold-overrides perf-data/linux-ci-thresholds.json
 ```
 
+**Flags that stand go to a second runner** (#3623). Every launch above runs on one host, and `ubuntu-26.04`
+lands on different CPU models: AMD EPYC hosts (L2 512 KiB or 1 MiB a core, L3 32 MiB), which the baseline
+was measured on, and Intel Xeon hosts (L2 1.25 or 2 MiB, L3 48 to 480 MiB). On the Xeon hosts at 2300 and
+2800 MHz the ~12 ns `StorageModel`/`SystemModel` history accessors read +41-50% in every launch, so a
+test-only commit failed the gate. So the job logs the runner's CPU model (`lscpu`) in its summary and
+uploads the run's manifest, and `check-benchmark-regression.py` prints each run's CPU (Google Benchmark's
+MHz and caches, plus the manifest's model) with a NOTE when the two runs' cache layouts differ. When flags
+still stand after the launches (or weren't re-measured: over budget, out of time), the job hands the names,
+its binary and its full run to `benchmark-second-runner` instead of failing. That job runs on a fresh
+runner, builds nothing, runs the flagged benchmarks alone in 5 launches of the same binary
+(`bench-across-launches.py combine --exclude-first`, so the first host's values aren't counted, while its
+full run supplies every other benchmark for coverage), and checks the median at the same thresholds and
+overrides. Its result is the gate's: one slow host can't fail it alone, and a real regression, slow on any
+host, still fails. A coverage loss alone has no names to hand over and fails the first job as before. To
+exercise the path, dispatch Heavy Checks with `second_runner_benchmarks` set to comma-separated benchmark
+names: on a run that flags nothing, they're handed over as if flagged.
+
 On Windows, `bench.ps1 -Baseline <file>` does all of that itself (#3448): it checks the run at the
 checker's defaults plus any `-CheckArgs`, and when that flags regressions it runs the flagged benchmarks
 alone in `-Launches` more separate launches (default 4, 5 in all), each a `bench.ps1` run of its own with the

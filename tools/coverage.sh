@@ -151,7 +151,7 @@ done
 # failed suite, and so does any test the filter selects that neither passed nor skipped that way.
 if [[ "${TASKSMACK_COVERAGE_ROOT:-0}" == 1 ]]; then
     ROOT_PROFILE_DIR="${BUILD_DIR}/coverage-root"
-    ROOT_TEST_FILTER='DetachedSpawnTest.AsRoot*:*/UdpByteCounterRootTest.*:UdpTrafficCollectorRootTest.*:SessionUserRootTest.*'
+    ROOT_TEST_FILTER='DetachedSpawnTest.AsRoot*:*/UdpByteCounterRootTest.*:UdpTrafficCollectorRootTest.*:SessionUserRootTest.*:RootCapabilitiesRootTest.*'
     # The CI real-system tests' guard (tests/Support/CiRealSystem.h) reads these three; sudo drops them, so they're
     # passed by name. TASKSMACK_CI_REAL_SYSTEM is 1 only when CI's coverage job asks for it (#3374), so anywhere else
     # those tests skip as guarded, which the counts below accept.

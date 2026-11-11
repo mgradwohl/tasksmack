@@ -6,7 +6,7 @@ Usage:
     bench-across-launches.py plan --current FIRST.json --regressions REGRESSIONS.json \
         [--launches 4] [--budget-seconds 600]
     bench-across-launches.py combine --first FIRST.json --regressions REGRESSIONS.json \
-        --output COMBINED.json [--baseline BASELINE.json] LAUNCH.json ...
+        --output COMBINED.json [--baseline BASELINE.json] [--exclude-first] LAUNCH.json ...
 
 On a shared hosted runner one launch of the benchmark binary can read a ns-scale benchmark 40-80%
 slower than the next launch of the same binary: where the heap and the code land, and the noisy
@@ -39,6 +39,14 @@ flagged benchmark's launches are printed, against --baseline when it is given, s
 (slow in every launch) reads as one at a glance. A flagged benchmark with no usable median in any
 launch (missing, skipped, errored, or not a finite positive time) fails the combine (exit 2) rather
 than letting the check pass on less data.
+
+combine --exclude-first (#3623): the launches ran on another machine than FIRST.json, the second runner
+heavy-checks.yml hands the flags to when they stand on the first. Some hosted runners are a slower CPU
+than the ones the baseline was measured on (Intel Xeon hosts at 2300 and 2800 MHz, against the AMD EPYC
+ones), and there every launch is slow alike, so the first runner's own re-measurement can't tell the
+host from the code. The flagged benchmarks' medians then come from the LAUNCH.json files alone, so the
+second runner's verdict is its own; FIRST.json still supplies every other benchmark, for the same
+coverage, and the output's context is the first LAUNCH.json's: the machine that measured them.
 
 Exit codes: 0 done; 1 (plan) nothing to re-measure, or over budget; 2 usage error or unusable input.
 """
@@ -181,12 +189,14 @@ def describe(ns: float, unit: str) -> str:
 def combine(args: argparse.Namespace) -> int:
     names = load_regressions(args.regressions)
     first = load_run(args.first)
-    launches = [first] + [load_run(path) for path in args.launches]
+    others = [load_run(path) for path in args.launches]
+    launches = others if args.exclude_first else [first] + others
     baseline = load_run(args.baseline) if args.baseline is not None else None
 
     replaced: dict[str, dict] = {}
     unusable: list[str] = []
-    print(f"Median across {len(launches)} separate launches, for the {len(names)} flagged benchmark(s):")
+    where = " on this runner (the first runner's values not counted)" if args.exclude_first else ""
+    print(f"Median across {len(launches)} separate launches{where}, for the {len(names)} flagged benchmark(s):")
     for name in names:
         rows = [median_row(launch, name) for launch in launches]
         missing = [str(i + 1) for i, row in enumerate(rows) if row is None]
@@ -231,8 +241,10 @@ def combine(args: argparse.Namespace) -> int:
             benchmarks.append(entry)
         elif entry.get("aggregate_name") == "median":
             benchmarks.append(replaced[name])
-    context = dict(first.get("context", {}))
+    context = dict((launches[0] if args.exclude_first else first).get("context", {}))
     context["tasksmack_across_launches"] = {"launches": len(launches), "benchmarks": names}
+    if args.exclude_first:
+        context["tasksmack_across_launches"]["first_counted"] = False
     args.output.write_text(json.dumps({"context": context, "benchmarks": benchmarks}, indent=2) + "\n", encoding="utf-8")
     return 0
 
@@ -264,6 +276,9 @@ def main(argv: list[str]) -> int:
     combiner.add_argument("--regressions", required=True, type=Path, help="check-benchmark-regression.py --regressions-out")
     combiner.add_argument("--output", required=True, type=Path)
     combiner.add_argument("--baseline", type=Path, default=None, help="print each launch against this baseline")
+    combiner.add_argument(
+        "--exclude-first", action="store_true",
+        help="the launches ran on another runner: take the flagged medians from them alone (#3623)")
     combiner.add_argument("launches", nargs="+", type=Path, help="the further launches' JSON files")
     try:
         args = parser.parse_args(argv)

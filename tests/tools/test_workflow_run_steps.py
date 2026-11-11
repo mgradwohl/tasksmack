@@ -3,7 +3,10 @@
 
 - heavy-checks.yml benchmark-regression "Check for regression" and "Re-measure flagged benchmarks across
   launches": a flagged benchmark runs in 4 more launches (a stub bench.sh), and the median across the 5 is
-  checked at the same thresholds, so one slow launch passes and a real regression stays red (#3476).
+  checked at the same thresholds, so one slow launch passes and a real regression stays red (#3476). Flags
+  that stand go to benchmark-second-runner ("Hand the standing flags to a second runner"), whose "Re-measure
+  the flagged benchmarks on this runner" decides the gate from 5 launches of its own, so one slow host
+  can't fail it alone and a real regression still does (#3623).
 - renovate.yml "Select dry-run mode": a scheduled or `disabled` run must not set RENOVATE_DRY_RUN,
   which Renovate reads as a dry run whatever its value (#2527).
 - sanitizers.yml "Add sanitizer summary to workflow summary": the report's file name is printed in
@@ -177,6 +180,8 @@ class HeavyChecksAcrossLaunchesTests(unittest.TestCase):
         (self.stub / "count").write_text("1\n", encoding="utf-8", newline="\n")
         shutil.copy(REPO / "perf-data" / "linux-ci-thresholds.json", self.work / "perf-data" / "linux-ci-thresholds.json")
         self.write_run("linux-ci-baseline.json", self.BASELINE)
+        (self.work / "build" / "benchmark" / "bin").mkdir(parents=True)
+        (self.work / "build" / "benchmark" / "bin" / "TaskSmackBenchmarks").write_text("binary\n", encoding="utf-8")
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -219,12 +224,34 @@ class HeavyChecksAcrossLaunchesTests(unittest.TestCase):
         remeasure, remeasure_out = self.run_step(self.REMEASURE, extra_env)
         return check_out["exit_code"], remeasure, remeasure_out
 
-    def fails(self, check_exit: str, remeasure_exit: str | None) -> bool:
+    def fails(self, check_exit: str, remeasure_exit: str | None, handed: str | None = None) -> bool:
         """The "Fail on regression" step's `if:`, as the workflow writes it."""
         condition = find_step(self.WORKFLOW, "Fail on regression", job=self.JOB).condition
         self.assertEqual(
-            condition, "steps.regression-check.outputs.exit_code != '0' && steps.across-launches.outputs.exit_code != '0'")
-        return check_exit != "0" and (remeasure_exit or "") != "0"
+            condition, "steps.regression-check.outputs.exit_code != '0' && steps.across-launches.outputs.exit_code != '0' "
+                       "&& steps.handoff.outputs.handed != 'true'")
+        return check_exit != "0" and (remeasure_exit or "") != "0" and (handed or "") != "true"
+
+    HANDOFF = "Hand the standing flags to a second runner"
+
+    def handoff(self, check_exit: str, remeasure_exit: str | None, forced: str = "") -> tuple[str | None, list[str] | None]:
+        """Runs the handoff step when its `if:` holds (on a dispatch when `forced`): its `handed` output and the
+        names it handed over."""
+        step = find_step(self.WORKFLOW, self.HANDOFF, job=self.JOB)
+        self.assertEqual(step.condition, (
+            "(steps.regression-check.outputs.exit_code == '1' && steps.across-launches.outputs.exit_code == '1') || "
+            "(steps.regression-check.outputs.exit_code == '0' && github.event_name == 'workflow_dispatch' && "
+            "inputs.second_runner_benchmarks != '')"))
+        if not ((check_exit == "1" and remeasure_exit == "1") or (check_exit == "0" and forced)):
+            return None, None
+        result, outputs = self.run_step(self.HANDOFF, {"FORCED_NAMES": forced})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        handed_dir = self.runner_temp / "second-runner"
+        names = json.loads((handed_dir / "regressions.json").read_text(encoding="utf-8"))["regressions"]
+        if outputs["handed"] == "true":
+            self.assertTrue((handed_dir / "TaskSmackBenchmarks").is_file())
+            self.assertTrue((handed_dir / "benchmark-current.json").is_file())
+        return outputs["handed"], names
 
     def test_the_remeasure_runs_only_on_a_flag_and_rechecks_at_the_same_thresholds(self):
         names = step_names(self.WORKFLOW, self.JOB)
@@ -247,7 +274,14 @@ class HeavyChecksAcrossLaunchesTests(unittest.TestCase):
     def test_a_clean_run_never_remeasures(self):
         check_exit, remeasure, outputs = self.gate(dict(self.BASELINE), [])
         self.assertEqual(check_exit, "0")
+        self.assertEqual(self.handoff(check_exit, None), (None, None), "nothing goes to the second runner")
         self.assertFalse(self.fails(check_exit, None))
+
+    def test_a_dispatch_can_send_named_benchmarks_to_the_second_runner(self):
+        check_exit, _, _ = self.gate(dict(self.BASELINE), [])
+        handed, names = self.handoff(check_exit, None, forced=" BM_Big, BM_Steady ,")
+        self.assertEqual((handed, names), ("true", ["BM_Big", "BM_Steady"]))
+        self.assertFalse(self.fails(check_exit, None, handed))
 
     def test_one_slow_launch_passes(self):
         footprint = "BM_HistoryBuffer_MemoryFootprint/iterations:10000"
@@ -276,6 +310,28 @@ class HeavyChecksAcrossLaunchesTests(unittest.TestCase):
         report = (self.work / "benchmark-across-launches-output.txt").read_text(encoding="utf-8")
         self.assertIn("median: 1590.00ns (+59.0%)", report)
         self.assertIn("FAILED: 1 benchmark(s) regressed", report)
+        # #3623: every launch ran on this one host, so the flags that stand go to a second runner, which decides.
+        handed, names = self.handoff(check_exit, outputs["exit_code"])
+        self.assertEqual((handed, names), ("true", ["BM_Big"]))
+        self.assertFalse(self.fails(check_exit, outputs["exit_code"], handed), "the second runner's verdict is the gate's")
+
+    def test_only_the_flags_that_still_stand_are_handed_over(self):
+        footprint = "BM_HistoryBuffer_MemoryFootprint/iterations:10000"
+        first = {**self.BASELINE, "BM_Big": 1600.0, footprint: 6.6}
+        launches = [{"BM_Big": t, footprint: 4.4} for t in (1580.0, 1620.0, 1010.0, 1590.0)]
+        check_exit, remeasure, outputs = self.gate(first, launches)
+        self.assertEqual(outputs["exit_code"], "1")
+        self.assertEqual(self.handoff(check_exit, outputs["exit_code"]), ("true", ["BM_Big"]))
+
+    def test_a_coverage_loss_alone_is_not_handed_over(self):
+        # BM_Steady missing: 2 of 3 is under the 90% floor, with no regression to re-measure.
+        first = {name: ns for name, ns in self.BASELINE.items() if name != "BM_Steady"}
+        check_exit, remeasure, outputs = self.gate(first, [])
+        self.assertEqual(check_exit, "1")
+        self.assertEqual(outputs["exit_code"], "1", "nothing to re-measure")
+        handed, names = self.handoff(check_exit, outputs["exit_code"])
+        self.assertEqual((handed, names), ("false", []))
+        self.assertTrue(self.fails(check_exit, outputs["exit_code"], handed))
 
     def test_no_time_left_leaves_the_flag_standing(self):
         first = {**self.BASELINE, "BM_Big": 1600.0}
@@ -285,6 +341,8 @@ class HeavyChecksAcrossLaunchesTests(unittest.TestCase):
         self.assertTrue(self.fails(check_exit, outputs["exit_code"]))
         self.assertFalse((self.stub / "filters.log").exists(), "no launch started")
         self.assertIn("flags stand as regressions", (self.work / "benchmark-across-launches-output.txt").read_text(encoding="utf-8"))
+        # The second runner has a budget of its own.
+        self.assertEqual(self.handoff(check_exit, outputs["exit_code"]), ("true", ["BM_Big"]))
 
     @unittest.skipIf(os.name == "nt", "timeout's process-group kill is POSIX; the step runs on Linux")
     def test_a_launch_past_the_deadline_is_stopped_and_the_flag_stands(self):
@@ -335,6 +393,134 @@ class HeavyChecksAcrossLaunchesTests(unittest.TestCase):
         self.assertNotEqual(remeasure.returncode, 0, remeasure.stdout)
         self.assertNotIn("exit_code", outputs)
         self.assertIn("no usable median in launch 3", remeasure.stdout + remeasure.stderr)
+
+
+class HeavyChecksSecondRunnerTests(unittest.TestCase):
+    """#3623: flags that stood on benchmark-regression's runner are re-measured on a fresh runner, in 5 launches
+    of the same binary, and that runner's median decides. A slow host can't fail the gate alone; a real
+    regression, slow on any host, still fails it."""
+
+    WORKFLOW = WORKFLOWS / "heavy-checks.yml"
+    JOB = "benchmark-second-runner"
+    REMEASURE = "Re-measure the flagged benchmarks on this runner"
+    BASELINE = {"BM_StorageModel_LatestSnapshot": 12.1, "BM_SystemModel_PerCoreHistory": 12.1, "BM_Big": 1000.0}
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.work = self.tmp / "work"
+        self.stub = self.tmp / "stub"
+        self.runner_temp = self.tmp / "runner"
+        for directory in (self.work / "tools", self.work / "perf-data", self.work / "second-runner", self.stub,
+                          self.runner_temp):
+            directory.mkdir(parents=True)
+        for script in ("check-benchmark-regression.py", "bench-across-launches.py"):
+            shutil.copy(REPO / "tools" / script, self.work / "tools" / script)
+        bench_sh = self.work / "tools" / "bench.sh"
+        bench_sh.write_text(BENCH_SH_STUB, encoding="utf-8", newline="\n")
+        bench_sh.chmod(bench_sh.stat().st_mode | stat.S_IXUSR)
+        (self.stub / "write_launch.py").write_text(BENCH_LAUNCH_WRITER, encoding="utf-8")
+        # This runner's launches are numbered from 1.
+        (self.stub / "count").write_text("0\n", encoding="utf-8", newline="\n")
+        shutil.copy(REPO / "perf-data" / "linux-ci-thresholds.json", self.work / "perf-data" / "linux-ci-thresholds.json")
+        self.write_run(self.work / "perf-data" / "linux-ci-baseline.json", self.BASELINE)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    @staticmethod
+    def write_run(path: Path, timings: dict[str, float]) -> None:
+        rows = [{"name": f"{bm}_median", "run_name": bm, "aggregate_name": "median", "real_time": ns, "cpu_time": ns,
+                 "time_unit": "ns"} for bm, ns in timings.items()]
+        path.write_text(json.dumps({"benchmarks": rows}), encoding="utf-8")
+
+    def second_runner(self, first: dict[str, float], flagged: list[str], launches: list[dict[str, float]],
+                      extra_env: dict[str, str] | None = None):
+        """benchmark-regression handed over `first` and `flagged`; `launches` are this runner's 5."""
+        self.write_run(self.work / "second-runner" / "benchmark-current.json", first)
+        (self.work / "second-runner" / "regressions.json").write_text(json.dumps({"regressions": flagged}), encoding="utf-8")
+        (self.stub / "launches.json").write_text(
+            json.dumps({str(i + 1): timings for i, timings in enumerate(launches)}), encoding="utf-8")
+        step = find_step(self.WORKFLOW, self.REMEASURE, job=self.JOB)
+        output = self.tmp / "output"
+        output.write_text("", encoding="utf-8")
+        script = (
+            "set -e\n"
+            f'python3() {{ "{posix(Path(sys.executable))}" "$@"; }}\n'
+            f'cd "{posix(self.work)}"\n' + step.run
+        )
+        env = {key: value.strip("'") for key, value in step.env.items()}
+        result = run_bash(script, self.tmp, {
+            **env, "RUNNER_TEMP": posix(self.runner_temp), "GITHUB_OUTPUT": posix(output), "STUB_DIR": posix(self.stub),
+            "STUB_PYTHON": posix(Path(sys.executable)), "PYTHONUTF8": "1", **(extra_env or {}),
+        })
+        outputs = dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines() if "=" in line)
+        report_path = self.work / "benchmark-second-runner-output.txt"
+        report = report_path.read_text(encoding="utf-8") if report_path.exists() else ""
+        return result, outputs, report
+
+    def fails(self, exit_code: str | None) -> bool:
+        condition = find_step(self.WORKFLOW, "Fail on regression", job=self.JOB).condition
+        self.assertEqual(condition, "steps.second-runner.outputs.exit_code != '0'")
+        return (exit_code or "") != "0"
+
+    def test_the_job_runs_only_on_a_handoff_and_checks_at_the_same_limits(self):
+        text = self.WORKFLOW.read_text(encoding="utf-8")
+        job = text.split(f"\n  {self.JOB}:\n", 1)[1].split("\n  # ", 1)[0]
+        self.assertIn("    needs: benchmark-regression\n", job)
+        self.assertIn("    if: needs.benchmark-regression.outputs.second-runner == 'true'\n", job)
+        first_job = text.split("\n  benchmark-regression:\n", 1)[1]
+        self.assertIn("      second-runner: ${{ steps.handoff.outputs.handed }}\n", first_job)
+        remeasure = find_step(self.WORKFLOW, self.REMEASURE, job=self.JOB)
+        for argument in ("--threshold 40", "--threshold-overrides perf-data/linux-ci-thresholds.json", "--exclude-first"):
+            self.assertEqual(remeasure.run.count(argument), 1, argument)
+        self.assertEqual(remeasure.run.count("--baseline perf-data/linux-ci-baseline.json"), 2)
+        self.assertNotIn("--min-coverage", remeasure.run)
+        self.assertEqual(remeasure.env["LAUNCHES"], "'5'")
+        timeout = int(re.search(r"^    timeout-minutes: (\d+)$", job, re.MULTILINE).group(1))
+        self.assertLess(int(remeasure.env["MAX_SECONDS"].strip("'")), timeout * 60 - 300, "room for setup and upload")
+
+    def test_a_slow_first_host_passes_on_a_normal_one(self):
+        # #3623: 12.1 -> 17.9 ns on an Intel Xeon host for #3617's test-only change; ~12 ns on the EPYC ones.
+        flagged = ["BM_StorageModel_LatestSnapshot", "BM_SystemModel_PerCoreHistory"]
+        first = {**self.BASELINE, flagged[0]: 17.9, flagged[1]: 17.3}
+        launches = [{flagged[0]: t, flagged[1]: t} for t in (12.2, 12.0, 17.5, 12.3, 12.1)]
+        result, outputs, report = self.second_runner(first, flagged, launches)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(outputs["exit_code"], "0", report)
+        self.assertFalse(self.fails(outputs["exit_code"]))
+        self.assertEqual(len((self.stub / "filters.log").read_text(encoding="utf-8").splitlines()), 5, "5 launches here")
+        self.assertIn("Median across 5 separate launches on this runner (the first runner's values not counted)", report)
+        self.assertNotIn("17.90ns", report, "the first host's value isn't one of the launches")
+        self.assertIn("median: 12.20ns (+0.8%)", report)
+        self.assertIn("Coverage: 100.0% (3 of 3", report)
+
+    def test_a_real_regression_fails_on_the_second_runner_too(self):
+        first = {**self.BASELINE, "BM_Big": 1600.0}
+        launches = [{"BM_Big": t} for t in (1580.0, 1620.0, 1010.0, 1590.0, 1610.0)]
+        result, outputs, report = self.second_runner(first, ["BM_Big"], launches)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(outputs["exit_code"], "1")
+        self.assertTrue(self.fails(outputs["exit_code"]))
+        self.assertIn("FAILED: 1 benchmark(s) regressed", report)
+
+    def test_over_budget_the_flags_stand(self):
+        first = {**self.BASELINE, "BM_Big": 1600.0}
+        # 1 s a launch for a benchmark with no timed repetitions, 5 s for 5: over a 4 s budget.
+        result, outputs, report = self.second_runner(first, ["BM_Big"], [], {"MAX_SECONDS": "4"})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(outputs["exit_code"], "1")
+        self.assertTrue(self.fails(outputs["exit_code"]))
+        self.assertFalse((self.stub / "filters.log").exists(), "no launch started")
+        self.assertIn("flags stand as regressions", report)
+
+    def test_a_failed_launch_fails_the_step(self):
+        first = {**self.BASELINE, "BM_Big": 1600.0}
+        launches = [{"BM_Big": 1000.0}, {}, {"BM_Big": 1000.0}, {"BM_Big": 1000.0}, {"BM_Big": 1000.0}]
+        result, outputs, report = self.second_runner(first, ["BM_Big"], launches)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertNotIn("exit_code", outputs)
+        self.assertIn("no usable median in launch 2", result.stdout + result.stderr)
 
 
 class RenovateDryRunTests(unittest.TestCase):
