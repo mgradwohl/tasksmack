@@ -192,7 +192,8 @@ class SharedClock
 /// The model's snapshot of @p pid, or an empty one (PID 0) when it lists none.
 [[nodiscard]] ProcessSnapshot snapshotOf(const ProcessModel& model, std::int32_t pid)
 {
-    return model.findSnapshot(pid).value_or(ProcessSnapshot{});
+    const auto found = model.findSnapshot(pid);
+    return found != nullptr ? *found : ProcessSnapshot{};
 }
 
 TEST(ProcessServicesModelTest, AReusedPidDoesNotInheritTheServicesOfThePidsEarlierProcess)

@@ -72,4 +72,14 @@ TEST(ProcessGenerationTest, FindMatchesTheWholeIdentityIncludingAPidListedTwice)
     EXPECT_EQ(generation.find(102, 10), nullptr);
 }
 
+// #3601: a lookup by PID alone is one probe of the index, so a PID listed twice finds its last listing.
+TEST(ProcessGenerationTest, FindByPidAloneUsesTheIndexAndAPidListedTwiceFindsItsLastListing)
+{
+    const Domain::ProcessGeneration generation({row(100, 0, 10), row(101, 0, 10), row(100, 0, 20)});
+    EXPECT_EQ(generation.find(100), &generation.rows()[2]);
+    EXPECT_EQ(generation.find(101), &generation.rows()[1]);
+    EXPECT_EQ(generation.find(102), nullptr);
+    EXPECT_EQ(Domain::ProcessGeneration{}.find(1), nullptr);
+}
+
 } // namespace
