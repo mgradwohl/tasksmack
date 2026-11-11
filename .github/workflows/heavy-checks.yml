@@ -968,6 +968,16 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # The system packages benchmark-regression's binary links against (libOpenGL, libGLX, libbpf, libcurl,
+      # libsystemd: install-llvm.sh's SYSTEM_PACKAGES), from the same action that job installs them with. A fresh
+      # runner image lacks libOpenGL.so.0 (#3623). No ninja or ccache: nothing is built here.
+      - name: Setup LLVM
+        uses: ./.github/actions/setup-llvm
+        with:
+          llvm-version: ${{ env.LLVM_VERSION }}
+          install-ninja: 'false'
+          install-ccache: 'false'
+
       # bench.sh needs Python 3.14+ for its manifest and redaction.
       - name: Setup Python for GLAD
         uses: ./.github/actions/setup-python-glad
@@ -988,7 +998,8 @@ jobs:
       - name: Check the binary runs here
         run: |
           chmod +x second-runner/TaskSmackBenchmarks
-          if ldd second-runner/TaskSmackBenchmarks | grep 'not found'; then
+          ldd second-runner/TaskSmackBenchmarks | tee "$RUNNER_TEMP/ldd.txt"
+          if grep 'not found' "$RUNNER_TEMP/ldd.txt"; then
             echo "ERROR: the benchmark binary needs a library this runner doesn't have." >&2
             exit 1
           fi
