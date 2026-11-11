@@ -68,13 +68,33 @@ Acquire::https::Timeout "15";
 APT_CONFIG
 # x64 only: arm64 packages live on ports.ubuntu.com, not archive.ubuntu.com, so the
 # ubuntu-26.04-arm image's mirror list is left as it is (#2214).
-if [[ -f /etc/apt/apt-mirrors.txt && "$(dpkg --print-architecture)" == 'amd64' ]]; then
-  echo 'https://archive.ubuntu.com/ubuntu/' |
-    sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+# The first of these that serves the release's InRelease within 10 s is used: the standard archive
+# over http, then over https, then Azure's. On 2026-11-11 archive.ubuntu.com's https timed out on the
+# runners for hours while its http and Azure's mirror worked, and pinning https failed every x64 job.
+# Plain http is safe for apt: InRelease is signed, and every package is checked against it.
+if [[ "$(dpkg --print-architecture)" == 'amd64' ]]; then
+  # shellcheck source=/dev/null # the runner's own os-release
+  codename=$(. /etc/os-release && echo "${VERSION_CODENAME}")
+  mirror=''
+  for candidate in http://archive.ubuntu.com/ubuntu https://archive.ubuntu.com/ubuntu https://azure.archive.ubuntu.com/ubuntu; do
+    if curl -fsS -o /dev/null --max-time 10 "${candidate}/dists/${codename}/InRelease"; then
+      mirror=$candidate
+      break
+    fi
+    echo "::notice::Ubuntu mirror ${candidate} didn't answer for ${codename}; trying the next."
+  done
+  if [[ -n "$mirror" ]]; then
+    echo "Using Ubuntu mirror ${mirror}"
+    if [[ -f /etc/apt/apt-mirrors.txt ]]; then
+      echo "${mirror}/" | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+    fi
+    sudo sed -i -E \
+      "s#https?://(azure\.)?archive\.ubuntu\.com/ubuntu/?#${mirror}/#g" \
+      /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || true
+  else
+    echo "::warning::No Ubuntu mirror answered within 10 s; leaving the runner's mirror list as it is."
+  fi
 fi
-sudo sed -i \
-  's|https\?://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
-  /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || true
 
 # Always include GUI dependencies; libcurl for the update check's HTTPS client (#3238); libbpf for
 # the UDP byte counter TaskSmack loads as root (#3366, #3580; libbpf required on Linux).

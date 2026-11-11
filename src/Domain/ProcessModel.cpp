@@ -797,17 +797,15 @@ std::vector<ProcessSnapshot> ProcessModel::snapshots() const
     return m_Generation->rows();
 }
 
-std::optional<ProcessSnapshot> ProcessModel::findSnapshot(std::int32_t pid) const
+std::shared_ptr<const ProcessSnapshot> ProcessModel::findSnapshot(std::int32_t pid) const
 {
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    for (const auto& snap : m_Generation->rows())
+    const ProcessSnapshot* row = m_Generation->find(pid);
+    if (row == nullptr)
     {
-        if (snap.pid == pid)
-        {
-            return snap;
-        }
+        return nullptr;
     }
-    return std::nullopt;
+    return {m_Generation, row}; // shares the generation's ownership: no copy of the row
 }
 
 std::shared_ptr<const ProcessSnapshot> ProcessModel::copyProcess(const std::vector<ProcessSnapshot>& snapshots, std::int32_t pid)
