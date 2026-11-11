@@ -38,12 +38,10 @@ inputs:
       apt.llvm.org rebuilds it every few days and keeps only the newest (#3393), so pinning the
       whole build string broke releases on its own (#3307, #3392). The exact build string is the
       caller's to record (record-build-inputs.sh beside this action).
-      Setting it also turns on the LLVM package cache: the apt.llvm.org .debs of that release are
-      restored from the Actions cache (key: release, OS image, architecture, package set), so a
-      warm run installs without reaching apt.llvm.org at all. On a miss they are staged in
-      package-cache-path for the caller to save (outputs below); this action never saves, so a
-      workflow that saves is visible to tools/check-cache-prune-triggers.py. Leave empty (the
-      default) for no check and no cache.
+      Setting it also changes the LLVM package cache (see "LLVM package cache key" below): the
+      key names the release instead of the week, only the exact key is restored, and on a miss
+      the .debs are staged in package-cache-path for the caller to save (outputs below), since
+      the release's own jobs decide which runs save. Leave empty (the default) for no check.
     required: false
     default: ''
   generate-test-locales:
@@ -55,19 +53,20 @@ inputs:
 
 outputs:
   package-cache-key:
-    description: 'expect-release only: the LLVM package cache key'
+    description: 'The LLVM package cache key'
     value: ${{ steps.package-cache-key.outputs.key }}
   package-cache-path:
-    description: 'expect-release only: the directory the LLVM .debs are restored to and staged in'
+    description: 'The directory the LLVM .debs are restored to and staged in'
     value: ${{ steps.package-cache-key.outputs.path }}
   package-cache-hit:
-    description: "expect-release only: 'true' when LLVM was installed from the cached .debs"
+    description: "'true' when LLVM was installed from the exact key's cached .debs"
     value: ${{ steps.install.outputs.cache-hit }}
   package-cache-staged:
     description: >-
-      expect-release only: 'true' after a cache miss once every installed LLVM .deb of the release
-      is staged in package-cache-path; the caller saves it with actions/cache/save under
-      package-cache-key (main and release/* runs only, as the repo's other caches)
+      'true' after a cache miss once every installed LLVM .deb is staged in package-cache-path.
+      Without expect-release this action saves it itself (main and release/* runs only); with
+      expect-release the caller saves it with actions/cache/save under package-cache-key (main and
+      release/* runs only, as the repo's other caches)
     value: ${{ steps.install.outputs.staged }}
 
 runs:
@@ -103,16 +102,24 @@ runs:
           /etc/apt/sources.list.d/packages-microsoft-prod.list
         sudo find /etc/apt/sources.list.d/ -name '*microsoft*' -delete 2>/dev/null || true
 
-    # The LLVM package cache (#3393), for callers that pin a release (expect-release). The key names
-    # everything that decides which .debs a run needs: the release, the OS image (Ubuntu 24.04 and
-    # 26.04 are different apt.llvm.org repositories), the architecture and the requested packages.
-    # Only an exact hit is used, never a restore-key, since a partial set can't install. A cached
-    # set keeps installing the snapshot it was saved from after apt.llvm.org moves on, which is the
-    # point: a warm run is independent of apt.llvm.org's state and reachability. Bump the -v suffix
-    # to discard a bad entry; a new release gets a new key by itself.
+    # The LLVM package cache (#3393; every caller since #3635), so a warm run installs LLVM without
+    # reaching apt.llvm.org at all: an apt.llvm.org outage (2026-11-11) otherwise fails every Linux
+    # job. The key names everything that decides which .debs a run needs: the LLVM version, the OS
+    # image (Ubuntu 24.04 and 26.04 are different apt.llvm.org repositories), the architecture and
+    # the requested apt.llvm.org packages (a hash of the optional ones, so callers with clang-tidy or
+    # clang-format keep their own entry). A cached set keeps installing the snapshot it was saved
+    # from after apt.llvm.org moves on, which is the point. Bump the -v suffix to discard a bad entry.
+    #   - Without expect-release: the key ends in the ISO week (-2026-W46), so the first run of a week
+    #     on main refreshes from apt.llvm.org and saves, and every later run that week is a hit. The
+    #     restore-key (the same key without the week) falls back to the newest earlier week's entry;
+    #     install-llvm.sh tries apt.llvm.org for a fresh set then, and installs that older entry with a
+    #     warning when apt.llvm.org is down. cache-prune.yml keeps only each set's newest week on main
+    #     (tools/cache-prune-stale.py), so there is one live entry per set (~160 MB each).
+    #   - With expect-release: the key names the release instead of the week, and only the exact key is
+    #     used, never a restore-key, so a release can't build with another release's snapshot; a new
+    #     release gets a new key by itself.
     - name: LLVM package cache key
       id: package-cache-key
-      if: inputs.expect-release != ''
       shell: bash
       env:
         EXPECT_RELEASE: ${{ inputs.expect-release }}
@@ -120,29 +127,43 @@ runs:
         INSTALL_CLANG_TIDY: ${{ inputs.install-clang-tidy }}
         LLVM_VERSION: ${{ inputs.llvm-version }}
       run: |
-        if [[ ! "$EXPECT_RELEASE" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-          echo "::error::expect-release must be an X.Y.Z LLVM release, not '$EXPECT_RELEASE'."
+        VER="${LLVM_VERSION:-23}"
+        if [[ ! "$VER" =~ ^[0-9]+$ ]]; then
+          echo "::error::llvm-version must be a numeric major version, not '$VER'."
           exit 1
         fi
-        if [[ "${EXPECT_RELEASE%%.*}" != "${LLVM_VERSION:-23}" ]]; then
-          echo "::error::expect-release $EXPECT_RELEASE is not in llvm-version ${LLVM_VERSION:-23}'s major."
-          exit 1
+        if [[ -n "$EXPECT_RELEASE" ]]; then
+          if [[ ! "$EXPECT_RELEASE" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::expect-release must be an X.Y.Z LLVM release, not '$EXPECT_RELEASE'."
+            exit 1
+          fi
+          if [[ "${EXPECT_RELEASE%%.*}" != "$VER" ]]; then
+            echo "::error::expect-release $EXPECT_RELEASE is not in llvm-version ${VER}'s major."
+            exit 1
+          fi
         fi
         # shellcheck disable=SC1091
         image=$(. /etc/os-release && echo "${ID}${VERSION_ID}")
         # The optional apt.llvm.org packages (install-llvm.sh's LLVM_PACKAGES); clangd is always in.
         packages="format=${INSTALL_CLANG_FORMAT} tidy=${INSTALL_CLANG_TIDY}"
         set_id=$(printf '%s' "$packages" | sha256sum | cut -c1-12)
-        echo "key=Linux-llvm-debs-${EXPECT_RELEASE}-${image}-${RUNNER_ARCH}-${set_id}-v1" >> "$GITHUB_OUTPUT"
+        if [[ -n "$EXPECT_RELEASE" ]]; then
+          echo "key=Linux-llvm-debs-${EXPECT_RELEASE}-${image}-${RUNNER_ARCH}-${set_id}-v1" >> "$GITHUB_OUTPUT"
+          echo "restore-keys=" >> "$GITHUB_OUTPUT"
+        else
+          family="Linux-llvm-debs-${VER}-${image}-${RUNNER_ARCH}-${set_id}-v1"
+          echo "key=${family}-$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+          echo "restore-keys=${family}-" >> "$GITHUB_OUTPUT"
+        fi
         echo "path=${RUNNER_TEMP}/llvm-debs" >> "$GITHUB_OUTPUT"
 
     - name: Restore the LLVM package cache
       id: package-cache
-      if: inputs.expect-release != ''
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ steps.package-cache-key.outputs.path }}
         key: ${{ steps.package-cache-key.outputs.key }}
+        restore-keys: ${{ steps.package-cache-key.outputs.restore-keys }}
 
     - name: Install LLVM ${{ inputs.llvm-version }}
       id: install
@@ -150,6 +171,7 @@ runs:
       env:
         CACHE_DIR: ${{ steps.package-cache-key.outputs.path }}
         CACHE_RESTORED: ${{ steps.package-cache.outputs.cache-hit }}
+        CACHE_MATCHED_KEY: ${{ steps.package-cache.outputs.cache-matched-key }}
         EXPECT_RELEASE: ${{ inputs.expect-release }}
         INSTALL_CCACHE: ${{ inputs.install-ccache }}
         INSTALL_CLANGD: ${{ inputs.install-clangd }}
@@ -157,8 +179,23 @@ runs:
         INSTALL_CLANG_TIDY: ${{ inputs.install-clang-tidy }}
         INSTALL_NINJA: ${{ inputs.install-ninja }}
         LLVM_VERSION: ${{ inputs.llvm-version }}
-      # The cache-hit path, apt.llvm.org's installer and the retries are in the script (#3393).
+      # The cache-hit path, apt.llvm.org's installer, the retries and the older-entry fallback are in
+      # the script (#3393, #3635).
       run: bash "$GITHUB_ACTION_PATH/install-llvm.sh"
+
+    # Without expect-release, this action saves the set it staged after a miss. Only main and
+    # release/* save, as the repo's other caches (#1406); a pull request reads its base branch's
+    # entry. Saving here makes every workflow that uses this action a cache saver to
+    # tools/check-cache-prune-triggers.py, so each is in cache-prune.yml's list. Two jobs that miss
+    # in the same week race to save one key; the loser only warns.
+    - name: Save the LLVM package cache (main and release/* only)
+      if: >-
+        inputs.expect-release == '' && steps.install.outputs.staged == 'true' &&
+        (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/'))
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.package-cache-key.outputs.path }}
+        key: ${{ steps.package-cache-key.outputs.key }}
 
     - name: Assert the LLVM release
       if: inputs.expect-release != ''

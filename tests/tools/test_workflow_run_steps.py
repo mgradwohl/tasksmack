@@ -33,6 +33,10 @@
   notes": the job waits out a missing or draft release and fails once its limit passes, then replaces
   release.yml's placeholder body with tools/compose-release-notes.py's notes and never edits notes
   someone wrote (#3144). `gh` is a stub; the composer and the guide's template are the real ones.
+- .github/actions/setup-llvm "LLVM package cache key" and install-llvm.sh: every caller gets a weekly LLVM
+  package cache key with a restore-key, a pinned release keeps its exact key (#3393), and the script
+  installs an exact hit without apt.llvm.org, refreshes an older entry and falls back to it when
+  apt.llvm.org is down, and still fails a cold miss (#3635). sudo, apt-get, curl and dpkg are stubs.
 
 Each step is read from the workflow file itself (tests/tools/workflow_steps.py), its `${{ }}`
 expressions replaced by fixed values, and run with bash (pwsh for the pwsh step). Needs bash; the
@@ -1442,6 +1446,294 @@ class ChangelogReleaseNotesTests(unittest.TestCase):
         self.assertIn("release notes already set; left as is", result.stdout)
         self.assertFalse(any(call.startswith("release edit") for call in self.calls()), self.calls())
         self.assertFalse((self.fixtures / "edited.md").exists())
+
+
+SETUP_LLVM = REPO / ".github" / "actions" / "setup-llvm"
+
+OS_RELEASE = 'ID=ubuntu\nVERSION_ID="26.04"\nPRETTY_NAME="Ubuntu 26.04 LTS"\n'
+
+
+class SetupLlvmCacheKeyTests(unittest.TestCase):
+    """#3635: every setup-llvm caller gets a weekly LLVM package cache key with a restore-key to the newest
+    earlier week; a pinned release (#3393) keeps its exact key and gets no restore-key."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        (self.tmp / "os-release").write_text(OS_RELEASE, encoding="utf-8", newline="\n")
+        step = find_step(SETUP_LLVM / "action.yml", "LLVM package cache key")
+        self.assertEqual(step.condition, "", "every caller gets the cache, not only expect-release")
+        # The runner's /etc/os-release, from a fixture, so the image part doesn't depend on the test machine.
+        self.script = step.run.replace("/etc/os-release", posix(self.tmp / "os-release"))
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def outputs(self, **inputs: str) -> tuple[subprocess.CompletedProcess, dict[str, str]]:
+        out = self.tmp / "out.txt"
+        out.write_text("", encoding="utf-8")
+        env = {
+            "EXPECT_RELEASE": "",
+            "INSTALL_CLANG_FORMAT": "false",
+            "INSTALL_CLANG_TIDY": "false",
+            "LLVM_VERSION": "23",
+            "RUNNER_ARCH": "X64",
+            "RUNNER_TEMP": posix(self.tmp),
+            "GITHUB_OUTPUT": posix(out),
+            **inputs,
+        }
+        result = run_bash(self.script, self.tmp, env)
+        values = dict(line.split("=", 1) for line in out.read_text(encoding="utf-8").splitlines() if line)
+        return result, values
+
+    def test_without_a_release_the_key_ends_in_the_week_and_falls_back_to_earlier_weeks(self):
+        result, out = self.outputs()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertRegex(out["key"], r"^Linux-llvm-debs-23-ubuntu26\.04-X64-[0-9a-f]{12}-v1-\d{4}-W\d{2}$")
+        self.assertEqual(out["restore-keys"], re.sub(r"\d{4}-W\d{2}$", "", out["key"]))
+        self.assertTrue(out["path"].endswith("/llvm-debs"))
+
+    def test_a_release_keeps_its_exact_key_and_no_restore_key(self):
+        result, out = self.outputs(EXPECT_RELEASE="23.1.6")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        # The key of the entries release.yml has saved since #3393, unchanged.
+        set_id = hashlib.sha256(b"format=false tidy=false").hexdigest()[:12]
+        self.assertEqual(out["key"], f"Linux-llvm-debs-23.1.6-ubuntu26.04-X64-{set_id}-v1")
+        self.assertEqual(out["restore-keys"], "")
+
+    def test_each_package_set_and_architecture_has_its_own_entry(self):
+        keys = set()
+        for inputs in (
+            {},
+            {"INSTALL_CLANG_TIDY": "true"},
+            {"INSTALL_CLANG_FORMAT": "true", "INSTALL_CLANG_TIDY": "true"},
+            {"RUNNER_ARCH": "ARM64"},
+        ):
+            result, out = self.outputs(**inputs)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            keys.add(out["restore-keys"])
+        self.assertEqual(len(keys), 4, keys)
+
+    def test_a_bad_version_or_release_fails(self):
+        for inputs in ({"LLVM_VERSION": "23.1"}, {"EXPECT_RELEASE": "23.1"}, {"EXPECT_RELEASE": "22.1.8"}):
+            with self.subTest(inputs=inputs):
+                result, _ = self.outputs(**inputs)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("::error::", result.stdout)
+
+    def test_the_restore_passes_the_restore_key_and_the_install_sees_the_matched_key(self):
+        restore = find_step(SETUP_LLVM / "action.yml", "Restore the LLVM package cache")
+        self.assertEqual(restore.condition, "")
+        text = (SETUP_LLVM / "action.yml").read_text(encoding="utf-8")
+        self.assertIn("restore-keys: ${{ steps.package-cache-key.outputs.restore-keys }}", text)
+        install = find_step(SETUP_LLVM / "action.yml", "Install LLVM ${{ inputs.llvm-version }}")
+        self.assertEqual(install.env["CACHE_MATCHED_KEY"], "${{ steps.package-cache.outputs.cache-matched-key }}")
+
+    def test_the_action_saves_only_without_a_release_and_only_on_main_and_release_branches(self):
+        save = find_step(SETUP_LLVM / "action.yml", "Save the LLVM package cache (main and release/* only)")
+        self.assertTrue(save.uses.startswith("actions/cache/save@"), save.uses)
+        # Its `if:` is a folded block, which workflow_steps doesn't read: the text between the name and `uses:`.
+        text = (SETUP_LLVM / "action.yml").read_text(encoding="utf-8")
+        after = text[text.index("- name: Save the LLVM package cache (main and release/* only)") :]
+        condition = " ".join(after[: after.index("uses:")].split())
+        for clause in (
+            "inputs.expect-release == ''",
+            "steps.install.outputs.staged == 'true'",
+            "github.ref == 'refs/heads/main'",
+            "startsWith(github.ref, 'refs/heads/release/')",
+        ):
+            self.assertIn(clause, condition)
+
+
+# Stubs for install-llvm.sh, as shell functions ahead of the script, so no real command can answer whichever
+# bash runs it (Git Bash rebuilds PATH from the Windows one). sudo runs `timeout ... <command>` as <command>
+# and drops everything else (tee, sed, rm, install), so nothing touches the machine. apt-get, curl, dpkg,
+# dpkg-query, sha256sum and sleep answer from the environment and log each call to $STUB_LOG.
+LLVM_STUBS = r"""
+sudo() {
+  echo "sudo $*" >> "$STUB_LOG"
+  if [[ "$1" == timeout ]]; then
+    shift
+    while [[ "$1" == --* ]]; do shift; done
+    shift
+    "$@"
+    return
+  fi
+  if [[ "$1" == tee ]]; then cat > /dev/null; fi
+  return 0
+}
+apt-get() {
+  echo "apt-get $*" >> "$STUB_LOG"
+  if [[ "$1" == download ]]; then
+    shift
+    local pin
+    for pin in "$@"; do
+      : > "${pin%%=*}_$(printf '%s' "${pin#*=}" | sed 's/:/%3a/g')_amd64.deb"
+    done
+  fi
+  if [[ "$1" == update ]]; then return "${APT_UPDATE_EXIT:-0}"; fi
+  return 0
+}
+curl() {
+  echo "curl $*" >> "$STUB_LOG"
+  if [[ "${CURL_EXIT:-0}" != 0 ]]; then return "$CURL_EXIT"; fi
+  local out=''
+  while (( $# )); do
+    if [[ "$1" == --output ]]; then out=$2; shift; fi
+    shift
+  done
+  printf '#!/usr/bin/env bash\necho "llvm.sh $*" >> "$STUB_LOG"\nexit "${LLVM_SH_EXIT:-0}"\n' > "$out"
+}
+dpkg() { echo amd64; }
+dpkg-query() {
+  if [[ "$2" == '-f=${Version}' ]]; then echo "$CLANG_VERSION"; return 0; fi
+  cat "$DPKG_LIST"
+}
+sha256sum() { cat > /dev/null; return "${SHA_EXIT:-0}"; }
+sleep() { :; }
+"""
+
+NEW_BUILD = "1:23.1.6~++20261110+abc-1~exp1~20261110.1"
+OLD_BUILD = "1:23.1.6~++20261103+def-1~exp1~20261103.1"
+LLVM_NAMED = ["clang-23", "lldb-23", "lld-23", "clangd-23", "libc++-23-dev", "libc++abi-23-dev"]
+
+
+class SetupLlvmInstallTests(unittest.TestCase):
+    """#3635: install-llvm.sh installs from the exact cache entry without apt.llvm.org, refreshes an older
+    entry from apt.llvm.org and falls back to it when apt.llvm.org is down, and still fails a cold miss."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.cache = self.tmp / "llvm-debs"
+        self.work = self.tmp / "work"
+        self.work.mkdir()
+        self.log = self.tmp / "calls.log"
+        self.out = self.tmp / "out.txt"
+        dpkg_list = self.tmp / "dpkg.txt"
+        installed = [f"ii {pkg}={NEW_BUILD}" for pkg in LLVM_NAMED + ["libllvm23", "libclang-cpp23"]]
+        dpkg_list.write_text("\n".join(installed + ["ii libc6=2.42-0ubuntu1"]) + "\n", encoding="utf-8")
+        self.dpkg_list = dpkg_list
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def fill_cache(self, build: str, packages: list[str] | None = None) -> None:
+        self.cache.mkdir(exist_ok=True)
+        for pkg in packages if packages is not None else LLVM_NAMED + ["libllvm23"]:
+            (self.cache / f"{pkg}_{build.replace(':', '%3a')}_amd64.deb").write_text("", encoding="utf-8")
+
+    def run_install(self, **env: str) -> tuple[subprocess.CompletedProcess, dict[str, str], list[str]]:
+        self.log.write_text("", encoding="utf-8")
+        self.out.write_text("", encoding="utf-8")
+        script = LLVM_STUBS + (SETUP_LLVM / "install-llvm.sh").read_text(encoding="utf-8")
+        full_env = {
+            "STUB_LOG": posix(self.log),
+            "GITHUB_OUTPUT": posix(self.out),
+            "DPKG_LIST": posix(self.dpkg_list),
+            "CLANG_VERSION": NEW_BUILD,
+            "LLVM_VERSION": "23",
+            "EXPECT_RELEASE": "",
+            "CACHE_DIR": posix(self.cache),
+            "CACHE_RESTORED": "false",
+            "CACHE_MATCHED_KEY": "",
+            "INSTALL_NINJA": "true",
+            "INSTALL_CCACHE": "true",
+            "INSTALL_CLANG_FORMAT": "false",
+            "INSTALL_CLANG_TIDY": "false",
+            **env,
+        }
+        result = run_bash(script, self.work, full_env)
+        outputs = dict(line.split("=", 1) for line in self.out.read_text(encoding="utf-8").splitlines() if line)
+        return result, outputs, self.log.read_text(encoding="utf-8").splitlines()
+
+    @staticmethod
+    def llvm_sh_tries(calls: list[str]) -> int:
+        return sum(1 for call in calls if call.startswith("llvm.sh "))
+
+    def staged(self) -> list[str]:
+        return sorted(path.name for path in self.cache.glob("*.deb"))
+
+    def test_an_exact_hit_installs_the_cached_debs_without_apt_llvm_org(self):
+        self.fill_cache(NEW_BUILD)
+        result, out, calls = self.run_install(CACHE_RESTORED="true", CACHE_MATCHED_KEY="k-2026-W46")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(out, {"cache-hit": "true", "staged": "false"})
+        self.assertFalse([call for call in calls if call.startswith("curl") or "llvm.sh" in call], calls)
+        install = [call for call in calls if call.startswith("apt-get install")]
+        self.assertEqual(len(install), 1, calls)
+        self.assertIn("clang-23_", install[0])
+        self.assertIn("ninja-build", install[0])
+
+    def test_an_exact_hit_missing_a_package_goes_to_apt_llvm_org(self):
+        self.fill_cache(NEW_BUILD)
+        result, out, calls = self.run_install(CACHE_RESTORED="true", INSTALL_CLANG_TIDY="true")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("The LLVM package cache has no clang-tidy-23", result.stdout)
+        self.assertEqual(out["cache-hit"], "false")
+        self.assertEqual(self.llvm_sh_tries(calls), 1, calls)
+
+    def test_a_miss_installs_from_apt_llvm_org_and_stages_clangs_build(self):
+        result, out, calls = self.run_install()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(out, {"cache-hit": "false", "staged": "true"})
+        self.assertEqual(self.llvm_sh_tries(calls), 1, calls)
+        # clang's own build: the named packages and the libraries they pulled in, never libc6.
+        build = NEW_BUILD.replace(":", "%3a")
+        expected = [f"{pkg}_{build}_amd64.deb" for pkg in LLVM_NAMED + ["libclang-cpp23", "libllvm23"]]
+        self.assertEqual(self.staged(), sorted(expected))
+
+    def test_a_cold_miss_still_fails_when_apt_llvm_org_is_down(self):
+        result, out, calls = self.run_install(LLVM_SH_EXIT="124")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.llvm_sh_tries(calls), 4, calls)
+        self.assertIn("::error::", result.stdout)
+        self.assertNotIn("staged", out)
+
+    def test_an_older_entry_is_refreshed_from_apt_llvm_org(self):
+        self.fill_cache(OLD_BUILD)
+        result, out, calls = self.run_install(CACHE_MATCHED_KEY="k-2026-W45")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(out, {"cache-hit": "false", "staged": "true"})
+        self.assertIn("refreshing it from apt.llvm.org", result.stdout)
+        self.assertTrue(self.staged() and all(NEW_BUILD.replace(":", "%3a") in name for name in self.staged()))
+
+    def test_an_older_entry_stands_in_when_apt_llvm_org_is_down(self):
+        for failure in ({"LLVM_SH_EXIT": "124"}, {"CURL_EXIT": "28"}):
+            with self.subTest(failure=failure):
+                self.fill_cache(OLD_BUILD)
+                result, out, calls = self.run_install(CACHE_MATCHED_KEY="k-2026-W45", **failure)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(out, {"cache-hit": "false", "staged": "false"})
+                self.assertLessEqual(self.llvm_sh_tries(calls), 2, calls)
+                self.assertIn("::warning::apt.llvm.org failed", result.stdout)
+                # A job that passes on the older entry shows no error annotation.
+                self.assertNotIn("::error::", result.stdout)
+                install = [call for call in calls if call.startswith("apt-get install")][-1]
+                self.assertIn("--allow-downgrades", install)
+                self.assertIn(f"clang-23_{OLD_BUILD.replace(':', '%3a')}_amd64.deb", install)
+                # Not saved again under this week's key.
+                self.assertTrue(all(OLD_BUILD.replace(":", "%3a") in name for name in self.staged()))
+
+    def test_a_changed_installer_fails_even_with_an_older_entry(self):
+        self.fill_cache(OLD_BUILD)
+        result, _, calls = self.run_install(CACHE_MATCHED_KEY="k-2026-W45", SHA_EXIT="1")
+        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+        self.assertEqual(self.llvm_sh_tries(calls), 0, calls)
+
+    def test_a_release_never_uses_an_older_entry(self):
+        # #3393: a release restores only its exact key; a matched key alone is no hit and no fallback.
+        self.fill_cache(OLD_BUILD)
+        result, out, calls = self.run_install(EXPECT_RELEASE="23.1.6", CACHE_MATCHED_KEY="k", LLVM_SH_EXIT="124")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.llvm_sh_tries(calls), 4, calls)
+
+    def test_a_release_miss_stages_every_package_of_the_release(self):
+        result, out, _ = self.run_install(EXPECT_RELEASE="23.1.6")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(out["staged"], "true")
+        self.assertEqual(len(self.staged()), len(LLVM_NAMED) + 2)
+        self.assertIn("Staged 8 LLVM 23.1.6 .debs", result.stdout)
 
 
 if __name__ == "__main__":

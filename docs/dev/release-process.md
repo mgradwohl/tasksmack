@@ -262,6 +262,11 @@ the one place that pins it, for both architectures (#3393).
   snapshot it saved after apt.llvm.org moves on. Release runs on `main` and `release/*` (dry runs) save it on a
   miss; a tag run only restores, from main's entry. So run a dry run from main before tagging, and both builds of
   the tag install the same snapshot.
+- **Every other Linux job (#3635):** Setup LLVM caches their `.deb`s too, keyed by LLVM major, OS image,
+  architecture, package set and ISO week. The week's first run on `main` refreshes from apt.llvm.org and saves;
+  later runs install from the cache. A run that finds only an earlier week's entry tries apt.llvm.org for a fresh
+  one and, if it's down, installs the older entry with a warning. Only a job with no entry at all needs
+  apt.llvm.org up. `cache-prune.yml` keeps each set's newest week.
 - **When a bump is due:** apt.llvm.org's `llvm-toolchain-<codename>-23` follows LLVM's `release/23.x` branch, so
   it moves to each new point release too, and stops serving the old one. That's roughly every two weeks: it moved
   from 23.1.5 to 23.1.6 on 2026-11-03, between two jobs of this change's own dry run. A warm cache keeps building
