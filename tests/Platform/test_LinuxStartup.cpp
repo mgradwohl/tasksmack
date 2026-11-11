@@ -368,6 +368,30 @@ TEST(SystemdUnitFileTest, ReadsWhatTheStartupTabShows)
     EXPECT_TRUE(SystemdUnitFile::parse("").description.empty());
 }
 
+// #3374: what systemd tolerates in a unit file, read the way it reads it.
+TEST(SystemdUnitFileTest, ReadsEditedFilesAsSystemdDoes)
+{
+    // CRLF line ends, tabs around keys and values, ; comments, a line with no =, and no newline at the end.
+    const SystemdUnitFile::Unit edited = SystemdUnitFile::parse("[Unit]\r\n; old\r\n\tDescription =\tFirst\t\r\nDescription=Second\r\n"
+                                                                "not a setting\r\n[Service]\r\nExecStart=\r\nExecStart=@+-/usr/bin/run x");
+    EXPECT_EQ(edited.description, "First") << "the first Description= wins";
+    EXPECT_EQ(edited.execStart, "/usr/bin/run x") << "an empty ExecStart= is skipped; the prefixes go";
+
+    // Settings outside their own section don't count, and the first schedule of any kind wins.
+    const SystemdUnitFile::Unit timer = SystemdUnitFile::parse("[Service]\nOnCalendar=hourly\nDescription=wrong\n[Timer]\nOnBootSec="
+                                                               "5min\nOnCalendar=daily\nOnStartupSec=1h\n[Install]\nExecStart=/bin/no\n");
+    EXPECT_EQ(timer.schedule, "OnBootSec=5min");
+    EXPECT_TRUE(timer.description.empty());
+    EXPECT_TRUE(timer.execStart.empty());
+    EXPECT_EQ(SystemdUnitFile::parse("[Timer]\nOnUnitActiveSec=10m\n").schedule, "OnUnitActiveSec=10m");
+
+    // An unterminated quote runs to the end of the value; tabs separate words too.
+    EXPECT_EQ(SystemdUnitFile::parse("[Install]\nWantedBy=a.target\t\"b c.target\n").wantedBy,
+              (std::vector<std::string>{"a.target", "b c.target"}));
+    EXPECT_EQ(SystemdUnitFile::parse("[Install]\nWantedBy='' x.target\n").wantedBy, (std::vector<std::string>{"x.target"}))
+        << "an empty quoted word is no target";
+}
+
 TEST(SystemdUnitFileTest, TheDirectoriesFollowXdgConfigHome)
 {
     const SystemdUserDirs defaults = systemdUserDirs("/home/u", "");
