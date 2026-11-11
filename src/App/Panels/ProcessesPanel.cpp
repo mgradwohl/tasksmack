@@ -2493,15 +2493,15 @@ Platform::ProcessCapabilities ProcessesPanel::processCapabilities() const
     return m_CachedCapabilities;
 }
 
-std::optional<Domain::ProcessSnapshot> ProcessesPanel::findSnapshot(std::int32_t pid) const
+std::shared_ptr<const Domain::ProcessSnapshot> ProcessesPanel::findSnapshot(std::int32_t pid) const
 {
     if (!m_ProcessModel)
     {
-        return std::nullopt;
+        return nullptr;
     }
-    // Delegates to ProcessModel::findSnapshot(), which searches under its own lock and
-    // copies only the matching entry, instead of copying the entire snapshot vector
-    // just to scan it here. Deliberately does NOT use
+    // Delegates to ProcessModel::findSnapshot(), which looks the PID up in the published
+    // generation's index under its own lock and shares the matching row, instead of copying
+    // the entire snapshot vector just to scan it here. Deliberately does NOT use
     // m_CachedRenderSnapshots: that cache is only refreshed while this panel's tab is
     // active (see renderContent()), so it would go stale while e.g. the Process Details
     // tab is showing — this must always reflect the latest published snapshot.

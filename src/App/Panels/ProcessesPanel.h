@@ -224,9 +224,9 @@ class ProcessesPanel : public Panel
         return m_CachedRenderSnapshots->size();
     }
 
-    /// Find a single snapshot by PID without copying the full snapshot vector.
-    /// Always reflects the latest published data; returns std::nullopt if not found.
-    [[nodiscard]] std::optional<Domain::ProcessSnapshot> findSnapshot(std::int32_t pid) const;
+    /// The model's latest published snapshot of @p pid (Domain::ProcessModel::findSnapshot()), shared, not copied;
+    /// nullptr if not found or detached.
+    [[nodiscard]] std::shared_ptr<const Domain::ProcessSnapshot> findSnapshot(std::int32_t pid) const;
 
     /// The App group process @p pid, started at @p startTicks, is in within the table's latest generation, as
     /// Group: App puts it (#3457): its own app or the one it follows from a parent. For Process Details' App

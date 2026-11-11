@@ -143,10 +143,11 @@ static void BM_ProcessModel_GetSnapshots(benchmark::State& state)
 BENCHMARK(BM_ProcessModel_GetSnapshots);
 
 // Benchmark process lookup by PID through ProcessModel::findSnapshot(), the lookup the app makes
-// (ProcessesPanel::findSnapshot() delegates to it): a linear search under the model's lock that
-// copies only the matching snapshot. It used to copy the whole vector with snapshots() and search
-// the copy, which made it a second GetSnapshots: the copy was nearly all of its time, and that
-// copy's cost swings about 40% between hosted-runner CPU classes (#2332).
+// (ProcessesPanel::findSnapshot() delegates to it): one probe of the published generation's PID
+// index under the model's lock, returning a pointer that shares the row (#3601). It used to copy
+// the whole vector with snapshots() and search the copy, which made it a second GetSnapshots
+// (#2332); then a linear search that copied the matching row, whose cost grew with every string
+// ProcessSnapshot gained (#3601).
 static void BM_ProcessModel_FindByPid(benchmark::State& state)
 {
     auto probe = Platform::makeProcessProbe();
