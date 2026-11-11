@@ -324,9 +324,9 @@ jobs:
           # Named, not -E: this runner's sudo refuses to preserve the whole environment and ignores -E. The
           # real-system guard reads these three (tests/Support/CiRealSystem.h).
           sudo --preserve-env=TASKSMACK_CI_REAL_SYSTEM,GITHUB_ACTIONS,RUNNER_ENVIRONMENT \
-            build/debug/tests/TaskSmackTests --gtest_filter='DetachedSpawnTest.AsRoot*:*/UdpByteCounterRootTest.*:RootCapabilitiesRootTest.*' 2>&1 | tee root-test.log
-          if grep -q '\[  SKIPPED \]' root-test.log || ! grep -q '\[  PASSED  \] 6 tests' root-test.log; then
-            echo "::error title=Root tests::DetachedSpawnTest.AsRoot*, UdpByteCounterRootTest and RootCapabilitiesRootTest didn't all run and pass as root"
+            build/debug/tests/TaskSmackTests --gtest_filter='DetachedSpawnTest.AsRoot*:*/UdpByteCounterRootTest.*:RootCapabilitiesRootTest.*:LinuxProcessActionsRootTest.*' 2>&1 | tee root-test.log
+          if grep -q '\[  SKIPPED \]' root-test.log || ! grep -q '\[  PASSED  \] 7 tests' root-test.log; then
+            echo "::error title=Root tests::DetachedSpawnTest.AsRoot*, UdpByteCounterRootTest, RootCapabilitiesRootTest and LinuxProcessActionsRootTest didn't all run and pass as root"
             exit 1
           fi
 

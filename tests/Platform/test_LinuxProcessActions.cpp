@@ -29,6 +29,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <expected>
 #include <filesystem>
 #include <format>
@@ -4212,6 +4213,68 @@ TEST(LinuxEfficiencyModeRealTest, TheRealCgroupFileCallsStayUnderTheCgroupRoot)
     const std::optional<std::string> own = real.procCgroup(static_cast<std::int32_t>(::getpid()));
     ASSERT_TRUE(own.has_value());
     EXPECT_FALSE(own->empty());
+}
+
+// #3620, #3374: as root, a tool TaskSmack runs as root comes only from the system's own directories. A fake strace,
+// gcore, pkexec and terminal first on PATH, and an absolute $TERMINAL, all in a temp directory, are each passed
+// over. Only as root: CI's PR root step and the coverage job's root pass run this suite.
+TEST(LinuxProcessActionsRootTest, AsRootToolsComeOnlyFromTheSystemsOwnDirectories)
+{
+    if (::geteuid() != 0)
+    {
+        GTEST_SKIP() << "needs root: CI runs this suite under sudo";
+    }
+    const TestSupport::ScopedTempDir planted("tasksmack-3620-tools");
+    for (const char* name : {"strace", "gcore", "pkexec", "xterm", "xdg-open"})
+    {
+        const std::filesystem::path fake = planted.path / name;
+        std::ofstream(fake) << "#!/bin/sh\nexit 0\n";
+        std::filesystem::permissions(fake,
+                                     std::filesystem::perms::owner_all | std::filesystem::perms::group_read |
+                                         std::filesystem::perms::group_exec | std::filesystem::perms::others_read |
+                                         std::filesystem::perms::others_exec);
+    }
+    // NOLINTBEGIN(concurrency-mt-unsafe) - the test's own environment, restored below
+    const char* const oldPath = std::getenv("PATH");
+    const std::string savedPath = oldPath != nullptr ? oldPath : "";
+    const char* const oldTerminal = std::getenv("TERMINAL");
+    const std::optional<std::string> savedTerminal = oldTerminal != nullptr ? std::optional<std::string>(oldTerminal) : std::nullopt;
+    ASSERT_EQ(::setenv("PATH", (planted.path.string() + ":" + savedPath).c_str(), 1), 0);
+    ASSERT_EQ(::setenv("TERMINAL", (planted.path / "xterm").c_str(), 1), 0);
+    const SyscallTrace::Tools tools = LinuxProcessActions::discoverSyscallTraceTools();
+    static_cast<void>(::setenv("PATH", savedPath.c_str(), 1));
+    if (savedTerminal.has_value())
+    {
+        static_cast<void>(::setenv("TERMINAL", savedTerminal->c_str(), 1));
+    }
+    else
+    {
+        static_cast<void>(::unsetenv("TERMINAL"));
+    }
+    // NOLINTEND(concurrency-mt-unsafe)
+
+    const std::string plantedDir = planted.path.string();
+    const auto fromSystem = [&plantedDir](const std::string& path)
+    {
+        if (path.empty())
+        {
+            return true; // not installed on this runner: nothing was taken from the planted directory either
+        }
+        if (path.starts_with(plantedDir))
+        {
+            return false;
+        }
+        const std::string dir = std::filesystem::path(path).parent_path().string();
+        return std::string_view(SyscallTrace::ROOT_TOOL_PATH).contains(dir);
+    };
+    EXPECT_TRUE(fromSystem(tools.tracerPath)) << tools.tracerPath;
+    EXPECT_TRUE(fromSystem(tools.coreDumperPath)) << tools.coreDumperPath;
+    EXPECT_TRUE(fromSystem(tools.elevatorPath)) << tools.elevatorPath;
+    EXPECT_TRUE(fromSystem(tools.folderOpenerPath)) << tools.folderOpenerPath;
+    if (tools.terminal.has_value())
+    {
+        EXPECT_TRUE(fromSystem(tools.terminal->path)) << tools.terminal->path;
+    }
 }
 
 } // namespace
