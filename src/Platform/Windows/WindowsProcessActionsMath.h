@@ -837,6 +837,14 @@ class EfficiencyModePriorities
         }
     }
 
+    /// @p target's off is no longer a Realtime retry (#3606): the process left the High the refused restore set, so
+    /// the class someone chose since stands. The remembered class stays, for the ordinary off to forget.
+    void clearRealtimeRetry(const ProcessTarget& target)
+    {
+        const std::scoped_lock lock(m_Mutex);
+        m_RealtimeRetries.erase(Key{target.pid, target.startTimeTicks});
+    }
+
     /// Whether @p target's off is the retry of a Realtime restore Windows set High for (markRealtimeRetry()).
     [[nodiscard]] bool isRealtimeRetry(const ProcessTarget& target) const
     {

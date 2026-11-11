@@ -43,6 +43,7 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <functional>
 #include <ios>
 #include <limits>
 #include <memory>
@@ -1654,6 +1655,21 @@ class TaskSmackAndHelper
     {
         return m_TaskSmackInner->efficiencyPriorityClassToRestore(target);
     }
+    /// Whether TaskSmack's helper runs: without one, a refusal comes back for Retry as administrator (#3606).
+    void helperRunning(bool running) noexcept
+    {
+        m_Broker->setConnected(running);
+    }
+    /// What happens while the user answers Retry as administrator's prompt.
+    void whileAuthorizing(std::function<void()> meanwhile)
+    {
+        m_Broker->setOnConnect(std::move(meanwhile));
+    }
+    /// Retry as administrator for @p action: the helper is started (after whileAuthorizing()'s change) and asked.
+    [[nodiscard]] ProcessActionResult runAuthorized(const AuthorizedAction& action)
+    {
+        return m_TaskSmack->runAuthorized(action, std::stop_token{});
+    }
     [[nodiscard]] std::size_t helperRequests() const
     {
         return m_Broker->requests().size();
@@ -1900,6 +1916,99 @@ TEST_F(WindowsEfficiencyModeTest, ARealtimeTheUnprivilegedOffCouldntRestoreIsRes
         << "TaskSmack's Realtime, which came out High, then the helper's";
     EXPECT_EQ(FakeEco::priorityClass, static_cast<DWORD>(REALTIME_PRIORITY_CLASS));
     EXPECT_FALSE(sides.taskSmackRemembers(ecoTarget(7310)).has_value()) << "spent";
+}
+
+// #3606: an unprivileged off's Realtime came out High, and with no helper running the refusal offers Retry as
+// administrator. Another tool then puts the process at Normal. The retry must not overwrite that with Realtime: it
+// falls back to the ordinary off, which leaves Normal and asks the helper for nothing.
+TEST_F(WindowsEfficiencyModeTest, TheRealtimeRetryLeavesANormalSetAfterTheRefusal)
+{
+    TaskSmackAndHelper sides;
+    TaskSmackAndHelper::unprivilegedTaskSmack(true);
+    sides.helperRunning(false);
+    FakeEco::priorityClass = REALTIME_PRIORITY_CLASS;
+    ASSERT_TRUE(sides.setEfficiencyMode(ecoTarget(7313), true).success);
+    const auto refused = sides.setEfficiencyMode(ecoTarget(7313), false);
+    ASSERT_FALSE(refused.success);
+    ASSERT_TRUE(refused.permissionDenied) << "Retry as administrator is offered";
+    ASSERT_EQ(FakeEco::priorityClass, static_cast<DWORD>(HIGH_PRIORITY_CLASS));
+
+    FakeEco::priorityClass = NORMAL_PRIORITY_CLASS; // another tool's change, before the retry
+    FakeEco::classesSet.clear();
+    const auto retried =
+        sides.runAuthorized({.kind = AuthorizedAction::Kind::SetEfficiencyMode, .target = ecoTarget(7313), .efficiencyMode = false});
+    ASSERT_TRUE(retried.success) << retried.errorMessage;
+    EXPECT_EQ(FakeEco::priorityClass, static_cast<DWORD>(NORMAL_PRIORITY_CLASS)) << "the later Normal stands";
+    EXPECT_TRUE(FakeEco::classesSet.empty()) << "no class set by the retry";
+    EXPECT_EQ(sides.helperRequests(), 0U) << "the ordinary off ran in TaskSmack; no PriorityRequest to Realtime";
+    EXPECT_FALSE(sides.taskSmackRemembers(ecoTarget(7313)).has_value()) << "spent by the ordinary off";
+}
+
+// #3606: the same change, made while the user answers the prompt, after the first check passed. The class is read
+// again just before the helper's request goes, so the helper gets the ordinary off, never Realtime.
+TEST_F(WindowsEfficiencyModeTest, TheRealtimeRetryLeavesANormalSetWhileItWasAuthorized)
+{
+    TaskSmackAndHelper sides;
+    TaskSmackAndHelper::unprivilegedTaskSmack(true);
+    sides.helperRunning(false);
+    FakeEco::priorityClass = REALTIME_PRIORITY_CLASS;
+    ASSERT_TRUE(sides.setEfficiencyMode(ecoTarget(7314), true).success);
+    ASSERT_TRUE(sides.setEfficiencyMode(ecoTarget(7314), false).permissionDenied);
+    ASSERT_EQ(FakeEco::priorityClass, static_cast<DWORD>(HIGH_PRIORITY_CLASS));
+
+    sides.whileAuthorizing([] { FakeEco::priorityClass = NORMAL_PRIORITY_CLASS; });
+    FakeEco::classesSet.clear();
+    const auto retried =
+        sides.runAuthorized({.kind = AuthorizedAction::Kind::SetEfficiencyMode, .target = ecoTarget(7314), .efficiencyMode = false});
+    ASSERT_TRUE(retried.success) << retried.errorMessage;
+    ASSERT_EQ(sides.helperRequests(), 1U);
+    EXPECT_EQ(sides.lastHelperRequest(),
+              (Broker::Request{
+                  Broker::EfficiencyModeRequest{.target = ecoTarget(7314), .on = false, .restorePriorityClass = REALTIME_PRIORITY_CLASS}}))
+        << "the ordinary off, never a PriorityRequest to Realtime";
+    EXPECT_EQ(FakeEco::priorityClass, static_cast<DWORD>(NORMAL_PRIORITY_CLASS)) << "the helper's off leaves Normal";
+    EXPECT_TRUE(FakeEco::classesSet.empty()) << "no class set by the retry";
+    EXPECT_FALSE(sides.taskSmackRemembers(ecoTarget(7314)).has_value()) << "spent by the helper's off";
+}
+
+// #3606: with the process still at the High the refused restore left, Retry as administrator asks the helper for
+// Realtime, as before.
+TEST_F(WindowsEfficiencyModeTest, TheRealtimeRetryStillRestoresRealtimeOverTheHighItLeft)
+{
+    TaskSmackAndHelper sides;
+    TaskSmackAndHelper::unprivilegedTaskSmack(true);
+    sides.helperRunning(false);
+    FakeEco::priorityClass = REALTIME_PRIORITY_CLASS;
+    ASSERT_TRUE(sides.setEfficiencyMode(ecoTarget(7315), true).success);
+    ASSERT_TRUE(sides.setEfficiencyMode(ecoTarget(7315), false).permissionDenied);
+
+    const auto retried =
+        sides.runAuthorized({.kind = AuthorizedAction::Kind::SetEfficiencyMode, .target = ecoTarget(7315), .efficiencyMode = false});
+    ASSERT_TRUE(retried.success) << retried.errorMessage;
+    ASSERT_EQ(sides.helperRequests(), 1U);
+    EXPECT_EQ(sides.lastHelperRequest(),
+              (Broker::Request{Broker::PriorityRequest{.target = ecoTarget(7315), .nice = REALTIME_CLASS_NICE}}));
+    EXPECT_EQ(FakeEco::priorityClass, static_cast<DWORD>(REALTIME_PRIORITY_CLASS));
+    EXPECT_FALSE(sides.taskSmackRemembers(ecoTarget(7315)).has_value()) << "spent";
+}
+
+// #3606: a marked retry whose process is now at another class answers no nice and loses the mark for good, so
+// putting it back at High afterwards doesn't revive the retry.
+TEST_F(WindowsEfficiencyModeTest, ARealtimeRetryWhoseProcessLeftHighIsCleared)
+{
+    WindowsProcessActions actions(FakeEco::functions(), std::make_shared<EfficiencyModePriorities>());
+    FakeEco::priorityClass = REALTIME_PRIORITY_CLASS;
+    ASSERT_TRUE(actions.setEfficiencyMode(ecoTarget(7316), true).success);
+    FakeEco::realtimeGives = HIGH_PRIORITY_CLASS;
+    ASSERT_TRUE(actions.setEfficiencyMode(ecoTarget(7316), false).permissionDenied);
+    EXPECT_EQ(actions.efficiencyNiceToRestore(ecoTarget(7316)), std::optional<std::int32_t>{REALTIME_CLASS_NICE});
+
+    FakeEco::priorityClass = NORMAL_PRIORITY_CLASS;
+    EXPECT_FALSE(actions.efficiencyNiceToRestore(ecoTarget(7316)).has_value());
+    FakeEco::priorityClass = HIGH_PRIORITY_CLASS; // someone's High now, not the refused restore's
+    EXPECT_FALSE(actions.efficiencyNiceToRestore(ecoTarget(7316)).has_value()) << "the mark is gone";
+    EXPECT_EQ(actions.efficiencyPriorityClassToRestore(ecoTarget(7316)), std::optional<std::uint32_t>{REALTIME_PRIORITY_CLASS})
+        << "the remembered class stays for the ordinary off";
 }
 
 TEST_F(WindowsEfficiencyModeTest, OnlyARealPriorityClassIsRememberedForAnOff)

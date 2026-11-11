@@ -120,9 +120,12 @@ class ProcessModel : public ISamplable
     /// Get latest computed snapshots (copy for thread safety).
     [[nodiscard]] std::vector<ProcessSnapshot> snapshots() const;
 
-    /// Find a single snapshot by PID without copying the full snapshot vector.
-    /// Always reflects the latest published data, unlike a version-gated render cache.
-    [[nodiscard]] std::optional<ProcessSnapshot> findSnapshot(std::int32_t pid) const;
+    /// The latest published snapshot of process @p pid, or nullptr when it isn't listed. Always reflects the latest
+    /// published data, unlike a version-gated render cache. The lookup goes through the generation's PID index, and
+    /// the result is an aliasing pointer into that immutable generation, so nothing is copied (#3601): a copy of the
+    /// row cost a heap allocation for each of its long strings. Holding the pointer keeps that generation alive. A
+    /// PID listed twice in one read maps to its last listing.
+    [[nodiscard]] std::shared_ptr<const ProcessSnapshot> findSnapshot(std::int32_t pid) const;
 
     /// Copy the snapshot generation only when a newer version exists. "Copy" is a shared_ptr
     /// assignment (an O(1) refcount bump), not a deep copy of the underlying vector: the
