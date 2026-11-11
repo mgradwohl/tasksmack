@@ -1734,7 +1734,8 @@ class SetupLlvmCacheKeyTests(unittest.TestCase):
 # Stubs for install-llvm.sh, as shell functions ahead of the script, so no real command can answer whichever
 # bash runs it (Git Bash rebuilds PATH from the Windows one). sudo runs `timeout ... <command>` as <command>
 # and drops everything else (tee, sed, rm, install), so nothing touches the machine. apt-get, curl, dpkg,
-# dpkg-query, sha256sum and sleep answer from the environment and log each call to $STUB_LOG.
+# dpkg-query, sha256sum and sleep answer from the environment and log each call to $STUB_LOG. curl tells the
+# Ubuntu mirror probe (#3637), which always answers, from apt.llvm.org, which CURL_EXIT can take down.
 LLVM_STUBS = r"""
 sudo() {
   echo "sudo $*" >> "$STUB_LOG"
@@ -1762,6 +1763,7 @@ apt-get() {
 }
 curl() {
   echo "curl $*" >> "$STUB_LOG"
+  if [[ "$*" != *apt.llvm.org* ]]; then return 0; fi
   if [[ "${CURL_EXIT:-0}" != 0 ]]; then return "$CURL_EXIT"; fi
   local out=''
   while (( $# )); do
@@ -1813,6 +1815,10 @@ class SetupLlvmInstallTests(unittest.TestCase):
         self.log.write_text("", encoding="utf-8")
         self.out.write_text("", encoding="utf-8")
         script = LLVM_STUBS + (SETUP_LLVM / "install-llvm.sh").read_text(encoding="utf-8")
+        # The runner's /etc/os-release (the mirror probe reads its codename), from a fixture.
+        os_release = self.tmp / "os-release"
+        os_release.write_text(OS_RELEASE + "VERSION_CODENAME=resolute\n", encoding="utf-8", newline="\n")
+        script = script.replace("/etc/os-release", posix(os_release))
         full_env = {
             "STUB_LOG": posix(self.log),
             "GITHUB_OUTPUT": posix(self.out),
@@ -1845,7 +1851,7 @@ class SetupLlvmInstallTests(unittest.TestCase):
         result, out, calls = self.run_install(CACHE_RESTORED="true", CACHE_MATCHED_KEY="k-2026-W46")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(out, {"cache-hit": "true", "staged": "false"})
-        self.assertFalse([call for call in calls if call.startswith("curl") or "llvm.sh" in call], calls)
+        self.assertFalse([call for call in calls if "apt.llvm.org" in call or "llvm.sh" in call], calls)
         install = [call for call in calls if call.startswith("apt-get install")]
         self.assertEqual(len(install), 1, calls)
         self.assertIn("clang-23_", install[0])
