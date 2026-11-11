@@ -1555,6 +1555,45 @@ jobs:
           fi
           echo "Installed binary: $BIN"
 
+      - name: Verify TaskSmack's root hardening
+        # An Administrator session runs TaskSmack itself as root (#3580), so it is built with full
+        # RELRO, immediate binding and CET (x86-64) or BTI/PAC (AArch64) (#3605,
+        # cmake/CompilerOptions.cmake's tasksmack_apply_privileged_hardening(), the profile
+        # tasksmack-helper had under #2640). A toolchain or flag change that silently drops one fails
+        # here. RELRO and BIND_NOW are fatal on both architectures, and so is PAC on arm64: main()
+        # must open with paciasp, which -mbranch-protection=standard emits. The CET and BTI property
+        # notes aren't checked: they survive the link only when every linked object has them, and
+        # the FetchContent libraries (SDL, imgui, FreeType, ...) aren't built with them; on arm64,
+        # Ubuntu 24.04's glibc startup objects lack BTI landing pads as well (#2786).
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          apt-get install -y binutils
+          BIN=$(dpkg -L tasksmack | grep -E '/bin/TaskSmack$')
+          failed=0
+          if ! readelf -d "$BIN" | grep -Eq 'FLAGS_1.*NOW'; then
+            echo "$BIN: no BIND_NOW (FLAGS_1 NOW): the GOT is bound lazily" >&2
+            failed=1
+          fi
+          if ! readelf -lW "$BIN" | grep -q GNU_RELRO; then
+            echo "$BIN: no GNU_RELRO segment" >&2
+            failed=1
+          fi
+          summary="full RELRO and BIND_NOW as expected"
+          if [[ "$ARCH" == "arm64" ]]; then
+            first=$(objdump -d --no-show-raw-insn --disassemble=main "$BIN" |
+              awk '/<main>:/{getline; sub(/^[[:space:]]*[0-9a-f]+:[[:space:]]*/, ""); print $1; exit}')
+            if [[ "$first" != "paciasp" ]]; then
+              echo "$BIN: main() opens with '${first:-nothing}', not paciasp: TaskSmack lost -mbranch-protection=standard (PAC)" >&2
+              failed=1
+            fi
+            summary="full RELRO, BIND_NOW and PAC as expected"
+          fi
+          if [[ "$failed" -ne 0 ]]; then
+            exit 1
+          fi
+          echo "$BIN: $summary."
+
       - name: Install mesa software rendering
         # llvmpipe (via SDL's "offscreen" video driver, below) needs no X server at all --
         # simpler and stronger than an Xvfb-backed smoke check, and this is the same
