@@ -3,6 +3,7 @@
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/IUdpTrafficCollector.h"
+#include "Platform/IoPriorityTypes.h"
 #include "Platform/ProcessTypes.h"
 #include "WindowsProcessProbeMath.h"
 
@@ -328,6 +329,7 @@ class WindowsProcessProbe : public IProcessProbe
         bool architectureRead = false;                 // Whether architecture above was read (with the first handle opened)
         bool signatureRequested = false;               // Whether the worker was asked to check the image (#3070)
         std::optional<std::int32_t> gdiObjectCount;    // GetGuiResources (light TTL, #1156)
+        std::optional<IoPriority> ioPriority;          // The I/O priority hint (light TTL, #3563)
         // The app it belongs to (#3457): the package read once, with the first handle; an unpackaged process's
         // window AppUserModelID looked for on the heavy TTL until one is found (lookForWindowAppIds()).
         std::string packageFamily;

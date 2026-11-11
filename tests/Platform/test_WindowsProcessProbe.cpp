@@ -5,9 +5,11 @@
 /// WindowsMath/test_WindowsProcessProbeMath.cpp; the tests here need the real probe or
 /// Windows types (the MIB_TCPROW conversions in WindowsTcpRows.h).
 
+#include "Platform/IoPriorityTypes.h"
 #include "Platform/ProcessTypes.h"
 #include "Platform/Windows/WinString.h"
 #include "Platform/Windows/WindowsHandles.h"
+#include "Platform/Windows/WindowsNtQuery.h"
 #include "Platform/Windows/WindowsProcessActionsMath.h"
 #include "Platform/Windows/WindowsProcessMachine.h"
 #include "Platform/Windows/WindowsProcessMachineMath.h"
@@ -106,6 +108,7 @@ TEST(WindowsProcessProbeTest, CapabilitiesReportedCorrectly)
     EXPECT_TRUE(caps.hasUser);
     EXPECT_TRUE(caps.hasCommand);
     EXPECT_TRUE(caps.hasNice);
+    EXPECT_TRUE(caps.hasIoPriority); // NtQueryInformationProcess(ProcessIoPriority), the I/O priority hint (#3563)
 
     // New capabilities for issues #184, #185, #195
     EXPECT_TRUE(caps.hasPublisher);
@@ -531,6 +534,42 @@ TEST(WindowsProcessProbeTest, PriorityChangeShowsOnTheNextSample)
     EXPECT_EQ(changed, priorityClassToNice(otherClass));
     ASSERT_NE(restored, FALSE);
     EXPECT_EQ(ourNice(), priorityClassToNice(originalClass));
+}
+
+TEST(WindowsProcessProbeTest, OurIoPriorityHintIsReadAsItIsSet)
+{
+    // #3563: the I/O Priority column reads each process's hint. This test lowers its own process's hint, which
+    // needs no privilege and changes nothing outside this process, and restores it before it checks.
+    const auto setFn = Windows::ntSetInformationProcess();
+    ASSERT_NE(setFn, nullptr);
+    const auto ourPid = static_cast<std::int32_t>(GetCurrentProcessId());
+    const auto ourIoPriority = [ourPid] -> std::optional<IoPriority>
+    {
+        WindowsProcessProbe probe; // A fresh probe: the hint is cached for a light TTL
+        const auto processes = probe.enumerate();
+        const auto it = std::ranges::find_if(processes, [ourPid](const ProcessCounters& p) { return p.pid == ourPid; });
+        return it != processes.end() ? it->ioPriority : std::nullopt;
+    };
+
+    const std::optional<IoPriority> original = ourIoPriority();
+    ASSERT_TRUE(original.has_value());
+    const IoPriority originalValue = original.value_or(IoPriority{});
+    EXPECT_EQ(originalValue.ioClass, IoPriorityClass::WindowsHint);
+    const std::optional<IoPriorityHint> readHint = ioPriorityHintFromLevel(originalValue.level);
+    ASSERT_TRUE(readHint.has_value());
+    const IoPriorityHint originalHint = readHint.value_or(IoPriorityHint::Normal);
+    ASSERT_LE(originalHint, IoPriorityHint::Normal) << "a test process above Normal couldn't be put back unprivileged";
+
+    const IoPriorityHint lower = (originalHint == IoPriorityHint::Low) ? IoPriorityHint::VeryLow : IoPriorityHint::Low;
+    auto value = static_cast<ULONG>(lower);
+    ASSERT_GE(setFn(GetCurrentProcess(), PROCESS_IO_PRIORITY_CLASS, &value, sizeof(value)), 0);
+    const std::optional<IoPriority> changed = ourIoPriority();
+    value = static_cast<ULONG>(originalHint);
+    const LONG restored = setFn(GetCurrentProcess(), PROCESS_IO_PRIORITY_CLASS, &value, sizeof(value));
+
+    EXPECT_EQ(changed, (IoPriority{.ioClass = IoPriorityClass::WindowsHint, .level = static_cast<std::int32_t>(lower)}));
+    ASSERT_GE(restored, 0);
+    EXPECT_EQ(ourIoPriority(), original);
 }
 
 TEST(WindowsProcessProbeTest, AChildInEfficiencyModeShowsItAndAPlainOneDoesNot)

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Platform/CpuAffinity.h"
+#include "Platform/IoPriorityTypes.h"
 #include "Platform/ProcessTypes.h"
 
 #include <algorithm>
@@ -184,10 +185,29 @@ struct PowerThrottlingMasks
     return std::string_view{};
 }
 
+/// The I/O priority the Processes table's I/O Priority column shows for a process (#3563), from
+/// NtQueryInformationProcess(ProcessIoPriority)'s NTSTATUS @p status, the IO_PRIORITY_HINT @p value it wrote
+/// and the @p written byte count it reported. Windows' hints have no Linux class to map onto: each is itself,
+/// an IoPriority of class WindowsHint whose level is the hint as Windows numbers it (IoPriorityHint: VeryLow 0,
+/// Low 1, Normal 2, High 3, Critical 4), which IoPriorityText words and ranks as Process Details does.
+/// std::nullopt, which the column shows as the dash, for a failed read (access denied: the System process, a
+/// protected one), a short one, and a hint Windows doesn't define (MaxIoPriorityTypes and beyond): never guessed.
+[[nodiscard]] constexpr std::optional<IoPriority>
+sampledIoPriority(std::uint32_t status, std::uint32_t value, std::uint32_t written) noexcept
+{
+    constexpr std::uint32_t NT_ERROR_OR_WARNING_BIT = 0x80000000U; // NT_SUCCESS() is a non-negative NTSTATUS
+    if ((status & NT_ERROR_OR_WARNING_BIT) != 0 || written < sizeof(std::uint32_t) ||
+        value > static_cast<std::uint32_t>(IoPriorityHint::Critical))
+    {
+        return std::nullopt;
+    }
+    return IoPriority{.ioClass = IoPriorityClass::WindowsHint, .level = static_cast<std::int32_t>(value)};
+}
+
 /// Which TTL-cached details getProcessDetails() refreshes for one process this sample (#1156).
 struct DetailRefreshPlan
 {
-    bool light = false;    // Status, GDI objects
+    bool light = false;    // Status, GDI objects, I/O priority hint (#3563)
     bool heavy = false;    // Owner, command line, publisher, affinity, classification
     bool priority = false; // Priority class (GetPriorityClass)
 
