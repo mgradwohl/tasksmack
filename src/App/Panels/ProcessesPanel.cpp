@@ -46,6 +46,7 @@
 #include "App/Panels/RunTaskDialog.h"
 #include "App/Panels/RunTaskHistory.h"
 #include "App/Panels/StuckProcesses.h"
+#include "App/Panels/UserGrouping.h"
 #include "App/PlatformOpen.h"
 #include "App/ProcessColumnConfig.h"
 #include "App/SelectOverride.h"
@@ -138,7 +139,7 @@ constexpr std::string_view COLUMNS_LABEL = ICON_FA_TABLE_COLUMNS " Columns";
 constexpr const char* COLUMNS_POPUP_ID = "##ColumnsMenu";
 constexpr const char* SORT_MENU_POPUP_ID = "##SortMenu"; // F6 (#3097)
 constexpr const char* ROW_MENU_POPUP_ID = "##ProcessRowMenu";
-constexpr const char* FILTER_HINT = ICON_FA_MAGNIFYING_GLASS "  Filter by name or command...";
+constexpr const char* FILTER_HINT = ICON_FA_MAGNIFYING_GLASS "  Filter by name, command or user...";
 // Tree view's Expand all and Collapse all (#838): icon buttons, explained by their tooltips.
 constexpr const char* EXPAND_ALL_BUTTON = ICON_FA_ANGLES_DOWN "##ExpandAll";
 constexpr const char* COLLAPSE_ALL_BUTTON = ICON_FA_ANGLES_UP "##CollapseAll";
@@ -523,13 +524,6 @@ void unitAlignedCell(const Domain::ProcessSnapshot& /*proc*/, const RowFormatCac
     renderUnitAlignedText(fmt.*Cell, widths.*UnitSlot);
 }
 
-/// Free text from the snapshot, left-aligned.
-template<std::string Domain::ProcessSnapshot::* Text, ProcessRowFormat::LazyTextWidth RowFormatCache::* Width>
-void leftAlignedCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& fmt, const ProcessCellWidths& /*widths*/)
-{
-    renderLeftAlignedText(proc.*Text, fmt.*Width);
-}
-
 /// Free text from the snapshot, left-aligned; blank when the process has none, and the unavailable
 /// dash when this system cannot fill the column at all (`Supported`, ProcessColumnAvailability::
 /// textCell(), #1210). Blank, not a dash, for an empty value: no status is a process in neither
@@ -634,6 +628,13 @@ void priorityCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& /*f
     // instead of an AlignedCellText.
     const std::string_view priorityLabel = Domain::Priority::getProcessPriorityLabel(proc.priorityClass, proc.nice);
     renderRightAlignedText(priorityLabel, widths.priorityLabelWidth(priorityLabel));
+}
+
+/// The owner, left-aligned: its user name, or "CORP\alice" when two accounts with processes share that
+/// name (RowFormatCache::qualifiedUser, #3328).
+void userCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& fmt, const ProcessCellWidths& /*widths*/)
+{
+    renderLeftAlignedText(fmt.qualifiedUser.empty() ? std::string_view{proc.user} : std::string_view{fmt.qualifiedUser}, fmt.userWidth);
 }
 
 /// The command line, left-aligned, or the name in brackets when there is none
@@ -787,7 +788,7 @@ constexpr std::array<ProcessCellEntry, processColumnCount()> CELL_RENDERERS = {
         {.column = ProcessColumn::PID, .render = nullptr},  // drawn by renderProcessRow() (the selectable)
         {.column = ProcessColumn::Name, .render = nullptr}, // drawn by renderProcessRow() (tree indent and expander)
         // Identity
-        {.column = ProcessColumn::User, .render = &leftAlignedCell<&Domain::ProcessSnapshot::user, &RowFormatCache::userWidth>},
+        {.column = ProcessColumn::User, .render = &userCell},
         {.column = ProcessColumn::PPID, .render = &rightAlignedCell<&RowFormatCache::ppid>},
         {
             .column = ProcessColumn::Publisher,
@@ -1725,6 +1726,9 @@ void ProcessesPanel::renderContent()
         {
             ++m_CollapseGeneration;
         }
+        // The user names two accounts share, for the User cells built for this generation (#3328): computed
+        // here, keyed as the cache is, so every entry stamped with this generation agrees with it.
+        m_SharedUserNames = UserGrouping::sharedUserNames(currentSnapshots);
         m_RowFormatCachePrunedVersion = m_CachedSnapshotVersion;
     }
 
@@ -1773,11 +1777,12 @@ void ProcessesPanel::renderContent()
         m_CachedFilteredIndices.clear();
         m_CachedFilteredIndices.reserve(currentSnapshots.size());
 
-        // Case-insensitive, in the name or the command line, as the user guide says (#838)
+        // Case-insensitive, in the name, the command line or the owner's account, as the user guide says (#838, #3328)
         for (size_t i = 0; i < currentSnapshots.size(); ++i)
         {
-            if (ProcessFilterCache::matches(currentSnapshots[i].name, currentSnapshots[i].command, searchTerm) ||
-                m_Pins.contains(currentSnapshots[i].name)) // a pinned process stays in view (#3061)
+            const Domain::ProcessSnapshot& candidate = currentSnapshots[i];
+            if (ProcessFilterCache::matches(candidate.name, candidate.command, candidate.userDomain, candidate.user, searchTerm) ||
+                m_Pins.contains(candidate.name)) // a pinned process stays in view (#3061)
             {
                 m_CachedFilteredIndices.push_back(i);
             }
@@ -2614,13 +2619,11 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, const
     // TextSizeCache::populate(), not with the font's address, which a rebuilt
     // font atlas can reuse (#943).
     const Platform::ProcessCapabilities caps = processCapabilities();
-    const RowFormatCache& fmt = ProcessRowFormat::getOrBuildRowFormatCache(
-        m_RowFormatCache,
-        proc,
-        m_CachedSnapshotVersion,
-        m_TextSizeCache.stamp,
-        ProcessColumnAvailability::rowFormatOptions(
-            caps, ProcessColumnAvailability::gpuSupportOfGeneration(m_CachedGpuSupport, m_GpuSupport.accelerator)));
+    ProcessRowFormat::RowFormatOptions options = ProcessColumnAvailability::rowFormatOptions(
+        caps, ProcessColumnAvailability::gpuSupportOfGeneration(m_CachedGpuSupport, m_GpuSupport.accelerator));
+    options.qualifyUser = UserGrouping::isSharedUserName(m_SharedUserNames, proc.user); // CORP\alice beside PC\alice (#3328)
+    const RowFormatCache& fmt =
+        ProcessRowFormat::getOrBuildRowFormatCache(m_RowFormatCache, proc, m_CachedSnapshotVersion, m_TextSizeCache.stamp, options);
 
     // Render all columns
     int colIdx = 0;

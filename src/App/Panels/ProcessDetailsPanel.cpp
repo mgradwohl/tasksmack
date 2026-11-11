@@ -12,6 +12,7 @@
 #include "Core/Application.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
+#include "Domain/AccountName.h"
 #include "Domain/Numeric.h"
 #include "Domain/ProcessServices.h"
 #include "Domain/ProcessSnapshot.h"
@@ -819,6 +820,9 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
         };
         fresh.pid = std::to_string(proc.pid);
         fresh.parentPid = std::to_string(proc.parentPid);
+        // The owner with its domain wherever it is known, as the User column writes a name two accounts share,
+        // so PC\alice and CORP\alice never look alike here (#3328); Linux has no domain.
+        fresh.user = proc.user.empty() ? std::string("-") : Domain::AccountName::qualified(proc.userDomain, proc.user);
         fresh.started = (proc.startTimeEpoch > 0) ? UI::Format::formatEpochDateTimeShort(proc.startTimeEpoch) : std::string("-");
         fresh.threads = proc.threadCount > 0 ? formatCountLocale(proc.threadCount) : std::string("-");
         fresh.handles = "N/A"; // unreadable, e.g. another user's process without root (#1110)
@@ -856,7 +860,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     identityRows.add({.label = "Parent PID", .value = text.parentPid, .color = theme.scheme().textPrimary});
     identityRows.add({
         .label = "User",
-        .value = proc.user.empty() ? std::string_view{"-"} : std::string_view{proc.user},
+        .value = text.user,
         .color = theme.scheme().textPrimary,
     });
     if (!proc.realUser.empty())

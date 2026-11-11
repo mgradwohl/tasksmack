@@ -505,5 +505,62 @@ TEST(UserGroupsTest, ABareNameJoinsItsAccountWhenTheAccountsProcessesAreFiltered
     }
 }
 
+// #3328: the names the User column writes with their domain are the ones two accounts with processes share,
+// counted ignoring ASCII case as Windows compares account names; a process with no domain counts for none.
+TEST(SharedUserNamesTest, ANameIsSharedOnlyWhenTwoAccountsHaveProcesses)
+{
+    const std::vector<Domain::ProcessSnapshot> snapshots{
+        processOf(10, "PC", "alice", 1.0),
+        processOf(11, "CORP", "Alice", 1.0), // Another account, its name in another case
+        processOf(12, "pc", "ALICE", 1.0),   // PC\alice again
+        processOf(13, "PC", "bob", 1.0),
+        processOf(14, "pc", "Bob", 1.0), // PC\bob again: one account
+        processOf(15, "NT AUTHORITY", "SYSTEM", 1.0),
+        process(16, "carol", 1.0, 100), // No domain: Linux, or one not read
+        processOf(17, "PC", "carol", 1.0),
+        processOf(18, "PC", "", 1.0), // No user read
+        processOf(19, "CORP", "", 1.0),
+    };
+    const std::vector<std::string> shared = sharedUserNames(snapshots);
+    ASSERT_EQ(shared.size(), 1U);
+    EXPECT_EQ(shared[0], "alice"); // As its first process spells it
+    EXPECT_TRUE(isSharedUserName(shared, "alice"));
+    EXPECT_TRUE(isSharedUserName(shared, "ALICE"));
+    EXPECT_FALSE(isSharedUserName(shared, "bob"));
+    EXPECT_FALSE(isSharedUserName(shared, "carol"));
+    EXPECT_FALSE(isSharedUserName(shared, "SYSTEM"));
+    EXPECT_FALSE(isSharedUserName(shared, ""));
+}
+
+TEST(SharedUserNamesTest, LinuxProcessesNameNoDomainSoNoNameIsShared)
+{
+    const std::vector<Domain::ProcessSnapshot> snapshots{
+        process(1, "root", 1.0, 100),
+        process(2, "alice", 1.0, 100),
+        process(3, "Alice", 1.0, 100), // Two Linux accounts, but neither has a domain to write
+    };
+    EXPECT_TRUE(sharedUserNames(snapshots).empty());
+    EXPECT_TRUE(sharedUserNames({}).empty());
+    EXPECT_FALSE(isSharedUserName({}, "alice"));
+}
+
+TEST(SharedUserNamesTest, EverySharedNameIsFoundWhateverItsPlaceInTheSortedList)
+{
+    std::vector<Domain::ProcessSnapshot> snapshots;
+    for (const char* name : {"dave", "Bob", "erin", "alice", "carol"})
+    {
+        snapshots.push_back(processOf(1, "PC", name, 1.0));
+        snapshots.push_back(processOf(2, "CORP", name, 1.0));
+    }
+    const std::vector<std::string> shared = sharedUserNames(snapshots);
+    EXPECT_EQ(shared, (std::vector<std::string>{"alice", "Bob", "carol", "dave", "erin"})); // Sorted ignoring case
+    for (const char* name : {"ALICE", "bob", "Carol", "dave", "Erin"})
+    {
+        EXPECT_TRUE(isSharedUserName(shared, name)) << name;
+    }
+    EXPECT_FALSE(isSharedUserName(shared, "frank"));
+    EXPECT_FALSE(isSharedUserName(shared, "aaron"));
+}
+
 } // namespace
 } // namespace App::UserGrouping

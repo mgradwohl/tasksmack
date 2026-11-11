@@ -13,6 +13,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <vector>
 
 namespace App::ProcessSortUtils
@@ -87,8 +88,8 @@ compareColumnKey(const Domain::ProcessSnapshot& a, const Domain::ProcessSnapshot
     {
     case ProcessColumn::PID:
         return compare(a.pid, b.pid);
-    case ProcessColumn::User:
-        return compare(a.user, b.user);
+    case ProcessColumn::User: // By user name, then domain, so PC\alice's and CORP\alice's rows don't interleave (#3328)
+        return compare(std::tie(a.user, a.userDomain), std::tie(b.user, b.userDomain));
     case ProcessColumn::CpuPercent:
         return compare(a.cpuPercent, b.cpuPercent);
     case ProcessColumn::MemPercent:

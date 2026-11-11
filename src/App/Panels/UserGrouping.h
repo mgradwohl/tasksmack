@@ -17,6 +17,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace App::UserGrouping
@@ -51,6 +52,15 @@ struct UserRow
 /// Windows compares them) for a process that names its owner's domain, else its user name as it is (Linux,
 /// or a Windows owner whose domain wasn't read); empty when its user couldn't be read.
 [[nodiscard]] std::string processAccountKey(const Domain::ProcessSnapshot& proc);
+
+/// The short names two or more accounts in @p snapshots share (#3328): "alice" when PC\\alice and CORP\\alice
+/// both have a process. Accounts and names compare ignoring ASCII case, as buildUserGroups() counts them, and
+/// only a process that names its domain counts, so on Linux there are none. Sorted ignoring ASCII case, for
+/// isSharedUserName(); the Processes table's User column writes DOMAIN\\user for these names only.
+[[nodiscard]] std::vector<std::string> sharedUserNames(const std::vector<Domain::ProcessSnapshot>& snapshots);
+
+/// Whether @p user is one of @p shared (sharedUserNames()), ignoring ASCII case.
+[[nodiscard]] bool isSharedUserName(const std::vector<std::string>& shared, std::string_view user) noexcept;
 
 /// Group: User's groups of @p order (indices into @p snapshots, already filtered and sorted), as
 /// ProcessGrouping::buildGroups() builds the other modes': a group per account (processAccountKey()), so

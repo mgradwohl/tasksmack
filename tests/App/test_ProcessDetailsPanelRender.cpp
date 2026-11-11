@@ -191,6 +191,36 @@ TEST_F(ProcessDetailsPanelRenderTest, ASetuidProcessSaysWhoStartedIt)
     EXPECT_TRUE(text.contains("alice")) << text;
 }
 
+// #3328: the User row writes the owner's domain wherever the probe read one (Windows), so PC\alice and
+// CORP\alice never look alike; with none (Linux) it is the user name alone, and "-" when unread.
+TEST_F(ProcessDetailsPanelRenderTest, TheUserRowWritesTheOwnersDomainWhenKnown)
+{
+    const auto panel = activePanel();
+    panel->setSelectedPid(PID, START_TICKS);
+    const auto showOwner = [&panel](double at, std::string domain, std::string user)
+    {
+        Domain::ProcessSample sample = sampleAt(at, 10.0);
+        const auto snapshot = std::make_shared<Domain::ProcessSnapshot>(*sample.snapshot);
+        snapshot->user = std::move(user);
+        snapshot->userDomain = std::move(domain);
+        sample.snapshot = snapshot;
+        const std::vector samples{sample};
+        panel->updateWithSamples(samples, 1.0F);
+        static_cast<void>(renderAndCapture(*panel));
+        return renderAndCapture(*panel);
+    };
+
+    std::string text = showOwner(0.0, "CORP", "alice");
+    EXPECT_TRUE(text.contains("CORP\\alice")) << text;
+
+    text = showOwner(1.0, "", "alice");
+    EXPECT_TRUE(text.contains("alice")) << text;
+    EXPECT_FALSE(text.contains("\\alice")) << text;
+
+    text = showOwner(2.0, "CORP", ""); // A domain with no user name is no account to write
+    EXPECT_FALSE(text.contains("CORP")) << text;
+}
+
 TEST_F(ProcessDetailsPanelRenderTest, NothingSelectedSaysSo)
 {
     const auto panel = activePanel();

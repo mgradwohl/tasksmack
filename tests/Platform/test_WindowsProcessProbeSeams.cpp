@@ -1099,6 +1099,47 @@ TEST_F(WindowsProcessProbeSeamTest, AnotherAccountIsAskedForItsOwnName)
     EXPECT_EQ(fake().lookupCalls, 2);
 }
 
+// #3328: two accounts with one user name, PC\alice and CORP\alice, each keep their own domain, the Processes
+// table's User column and Process Details write it from; the name cache, keyed by SID, gives a later process
+// of the first account its domain without asking again.
+TEST_F(WindowsProcessProbeSeamTest, TwoAccountsWithOneUserNameEachKeepTheirOwnDomain)
+{
+    fake().sidRid = 1001;
+    WindowsProcessProbe probe(fakeFunctions());
+    const ProcessCounters local = find(probe.enumerate());
+    EXPECT_EQ(local.user, "alice");
+    EXPECT_EQ(local.userDomain, "PC");
+
+    fake().sidRid = 1002; // Another SID with the same user name
+    fake().domain = L"CORP";
+    fake().processes.push_back(processWithPid(PID + 4));
+    auto processes = probe.enumerate();
+    const auto corp = std::ranges::find(processes, static_cast<std::int32_t>(PID + 4), &ProcessCounters::pid);
+    ASSERT_NE(corp, processes.end());
+    EXPECT_EQ(corp->user, "alice");
+    EXPECT_EQ(corp->userDomain, "CORP");
+    EXPECT_EQ(find(processes).userDomain, "PC"); // Still within its heavy TTL
+    EXPECT_EQ(fake().lookupCalls, 2);
+
+    fake().sidRid = 1001;         // A new process of the first account
+    fake().domain = L"ELSEWHERE"; // What a lookup would say now: the cache answers instead
+    fake().processes.push_back(processWithPid(PID + 8));
+    processes = probe.enumerate();
+    const auto again = std::ranges::find(processes, static_cast<std::int32_t>(PID + 8), &ProcessCounters::pid);
+    ASSERT_NE(again, processes.end());
+    EXPECT_EQ(again->userDomain, "PC");
+    EXPECT_EQ(fake().lookupCalls, 2);
+}
+
+// #3328: an account the lookup names no domain for keeps an empty one, so its name is written alone.
+TEST_F(WindowsProcessProbeSeamTest, AnAccountWithNoDomainKeepsAnEmptyOne)
+{
+    fake().domain = L"";
+    const ProcessCounters process = sampleOne();
+    EXPECT_EQ(process.user, "alice");
+    EXPECT_TRUE(process.userDomain.empty());
+}
+
 TEST_F(WindowsProcessProbeSeamTest, AFailedLookupIsNotCachedAndIsAskedAgain)
 {
     fake().failLookup = true;
