@@ -170,6 +170,45 @@ class BenchAcrossLaunchesTest(unittest.TestCase):
                 self.assertIn("BM_A: no usable median in launch 3", err)
                 self.assertIsNone(combined, "nothing for the gate to pass on")
 
+    def test_exclude_first_takes_the_medians_from_the_second_runner_alone(self) -> None:
+        # #3623: the first runner was a slower CPU, slow in every launch; the second runner's launches decide.
+        first = launch({"BM_A": 150.0, "BM_B": 10.0})
+        first["context"] = {"host_name": "redacted", "mhz_per_cpu": 2300}
+        others = [launch({"BM_A": t}) for t in (101.0, 99.0, 160.0, 100.0, 102.0)]
+        others[0]["context"] = {"host_name": "redacted", "mhz_per_cpu": 3243}
+        paths = [self.write(f"second-{i + 1}.json", data) for i, data in enumerate(others)]
+        out = self.root / "combined.json"
+        code, stdout, err = self.call(
+            "combine", "--first", self.write("first.json", first), "--exclude-first",
+            "--regressions", self.write("regressions.json", {"regressions": ["BM_A"]}), "--output", out,
+            "--baseline", self.write("baseline.json", launch({"BM_A": 100.0})), *paths)
+        self.assertEqual(code, 0, err)
+        combined = json.loads(out.read_text(encoding="utf-8"))
+        row = next(e for e in combined["benchmarks"] if e["run_name"] == "BM_A")
+        self.assertEqual(row["real_time"], 101.0, "median of 101, 99, 160, 100, 102: the first runner's 150 not counted")
+        self.assertEqual(row["tasksmack_launch_real_times"], [101.0, 99.0, 160.0, 100.0, 102.0])
+        self.assertEqual(
+            [e for e in combined["benchmarks"] if e["run_name"] == "BM_B"],
+            [e for e in first["benchmarks"] if e["run_name"] == "BM_B"],
+            "an unflagged benchmark is still the full run's, for the same coverage",
+        )
+        self.assertEqual(combined["context"]["mhz_per_cpu"], 3243, "the context of the machine that measured them")
+        self.assertEqual(combined["context"]["tasksmack_across_launches"],
+                         {"launches": 5, "benchmarks": ["BM_A"], "first_counted": False})
+        self.assertIn("Median across 5 separate launches on this runner (the first runner's values not counted)", stdout)
+        self.assertIn("launch 1: 101.00ns (+1.0%)", stdout)
+        self.assertNotIn("150.00ns", stdout)
+
+    def test_exclude_first_still_fails_closed_on_a_missing_launch(self) -> None:
+        first = launch({"BM_A": 150.0})
+        paths = [self.write("second-1.json", launch({"BM_A": 100.0})), self.write("second-2.json", launch({"BM_B": 1.0}))]
+        code, _, err = self.call(
+            "combine", "--first", self.write("first.json", first), "--exclude-first",
+            "--regressions", self.write("regressions.json", {"regressions": ["BM_A"]}),
+            "--output", self.root / "combined.json", *paths)
+        self.assertEqual(code, 2)
+        self.assertIn("BM_A: no usable median in launch 2", err)
+
     def test_combine_rejects_bad_input(self) -> None:
         good = self.write("good.json", launch({"BM_A": 1.0}))
         regressions = self.write("regressions.json", {"regressions": ["BM_A"]})

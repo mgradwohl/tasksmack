@@ -35,6 +35,12 @@
 #include "Platform/Factory.h"
 #include "Platform/Windows/WinString.h"
 #endif
+#ifdef __linux__
+#include "Domain/ProcessSecurity.h"
+#include "Platform/Linux/RootCapabilities.h"
+
+#include <system_error>
+#endif
 #include "UI/Format.h"
 #include "UI/UILayer.h"
 #include "version.h"
@@ -94,6 +100,11 @@ auto initializeLocale() -> const Core::LocaleSetup::Summary&
 
 auto runApp(const App::LaunchOptions& launch) -> int
 {
+#ifdef __linux__
+    // An Administrator session keeps only the capabilities TaskSmack uses (#3621). First, before any thread
+    // starts: capabilities are per thread, and each thread made later inherits the narrowed sets. Logged below.
+    const Platform::RootCapabilities::DropResult capabilityDrop = Platform::RootCapabilities::dropUnused();
+#endif
     const Core::LocaleSetup::Summary& localeSummary = initializeLocale();
 
 // Required on Windows to see console output when launching from an IDE or debugger. Debug-only
@@ -249,6 +260,26 @@ auto runApp(const App::LaunchOptions& launch) -> int
     }
     spdlog::debug("Compiler: {} {}", tasksmack::Version::COMPILER_ID, tasksmack::Version::COMPILER_VERSION);
     spdlog::debug("Built: {} {}", tasksmack::Version::BUILD_DATE, tasksmack::Version::BUILD_TIME);
+
+#ifdef __linux__
+    if (capabilityDrop.dropped)
+    {
+        spdlog::info("Administrator session: kept {} of root's capabilities (#3621): {}",
+                     Domain::ProcessSecurity::capabilityNames(capabilityDrop.after.effective).size(),
+                     Domain::ProcessSecurity::capabilitySetText(capabilityDrop.after.effective));
+        if (capabilityDrop.threads > 1)
+        {
+            spdlog::warn("Administrator session: {} threads were running when root's capabilities were narrowed; only the "
+                         "first was narrowed",
+                         capabilityDrop.threads);
+        }
+    }
+    else if (capabilityDrop.root)
+    {
+        spdlog::warn("Administrator session: root's capabilities couldn't be narrowed (#3621): {}",
+                     std::error_code(capabilityDrop.error, std::generic_category()).message());
+    }
+#endif
 
 #ifdef _WIN32
     // Elevated, enable SeDebugPrivilege (#2128) before any probe or action opens a process, so

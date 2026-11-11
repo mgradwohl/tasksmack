@@ -910,6 +910,7 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_LinuxCoreDump.cpp  # "Create dump file" on Linux: names, gcore command, refusals (#807)
     Platform/test_DetachedSpawn.cpp
     Platform/test_SessionUser.cpp  # whom a run as root opens links and folders as (#2461)
+    Platform/test_RootCapabilities.cpp  # what an Administrator session keeps of root's capabilities (#3621)
     Platform/test_LinuxStartup.cpp  # the Startup tab on Linux: XDG autostart (#2541)
     Platform/test_CronTab.cpp # cron tables for the Linux Startup tab (#3425)
     Platform/test_CommandOutput.cpp # a short command's output, for crontab -l (#3425)
