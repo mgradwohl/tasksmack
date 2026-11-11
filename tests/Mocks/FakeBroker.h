@@ -84,17 +84,33 @@ class FakeBroker final : public Platform::IPrivilegedBroker
         m_ConnectFailure = std::move(reason);
     }
 
-    [[nodiscard]] std::expected<void, std::string> connect(const std::stop_token& /*stopToken*/) override
+    /// Run by each connect() that connects, after it does, as the time a user takes over the password prompt (#3606):
+    /// what changes while the administrator is asked.
+    void setOnConnect(std::function<void()> onConnect)
     {
         const std::scoped_lock lock(m_Mutex);
-        ++m_ConnectCount;
-        if (!m_ConnectFailure.empty())
+        m_OnConnect = std::move(onConnect);
+    }
+
+    [[nodiscard]] std::expected<void, std::string> connect(const std::stop_token& /*stopToken*/) override
+    {
+        std::function<void()> onConnect;
         {
-            return std::unexpected(m_ConnectFailure);
+            const std::scoped_lock lock(m_Mutex);
+            ++m_ConnectCount;
+            if (!m_ConnectFailure.empty())
+            {
+                return std::unexpected(m_ConnectFailure);
+            }
+            if (!m_Connected.exchange(true))
+            {
+                ++m_SessionsStarted;
+            }
+            onConnect = m_OnConnect;
         }
-        if (!m_Connected.exchange(true))
+        if (onConnect)
         {
-            ++m_SessionsStarted;
+            onConnect();
         }
         return {};
     }
@@ -172,6 +188,7 @@ class FakeBroker final : public Platform::IPrivilegedBroker
     std::vector<Platform::Broker::Request> m_Requests;
     std::string m_ConnectFailure;
     std::function<void()> m_AfterIdleCall;
+    std::function<void()> m_OnConnect;
     int m_ConnectCount = 0;
     int m_IdleCallCount = 0;
     mutable std::atomic<int> m_ConnectedCalls{0};
