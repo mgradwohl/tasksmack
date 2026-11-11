@@ -38,6 +38,8 @@
 #ifdef __linux__
 #include "Domain/ProcessSecurity.h"
 #include "Platform/Linux/RootCapabilities.h"
+
+#include <system_error>
 #endif
 #include "UI/Format.h"
 #include "UI/UILayer.h"
@@ -49,7 +51,6 @@
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
-#include <system_error>
 #include <utility>
 #ifdef _WIN32
 // spdlog's msvc_sink.h is itself guarded on _WIN32; the other sinks are portable.
