@@ -163,6 +163,36 @@ TEST(UdpByteCounterTest, AnAttemptKeepsOnlyTheLastOfLibbpfsWarnings)
     EXPECT_FALSE(capture.contains("first")) << "the oldest warnings go first";
 }
 
+// #3634: an attempt's capture holds libbpf's warnings only while it's open, in this thread's own storage.
+TEST(UdpByteCounterTest, AnAttemptsCaptureKeepsWarningsOnlyWhileItsOpen)
+{
+    UdpLibbpfLog::note("before any capture"); // no capture open: nothing is kept
+    {
+        const UdpLibbpfLog::Capture capture;
+        EXPECT_TRUE(capture.text().empty()) << "a capture starts empty, whatever came before";
+        UdpLibbpfLog::note("R1 invalid mem access");
+        UdpLibbpfLog::note("processed 12 insns");
+        EXPECT_EQ(capture.text(), "R1 invalid mem access\nprocessed 12 insns\n");
+    }
+    UdpLibbpfLog::note("after the capture closed");
+    {
+        const UdpLibbpfLog::Capture next;
+        EXPECT_TRUE(next.text().empty()) << "the last attempt's warnings and the ones after it closed are gone";
+        UdpLibbpfLog::note("this attempt");
+        EXPECT_EQ(next.text(), "this attempt\n");
+    }
+    std::string otherThreads;
+    std::thread(
+        [&otherThreads]
+        {
+            const UdpLibbpfLog::Capture capture;
+            UdpLibbpfLog::note("on another thread");
+            otherThreads = capture.text();
+        })
+        .join();
+    EXPECT_EQ(otherThreads, "on another thread\n") << "each thread has its own capture";
+}
+
 TEST(UdpByteCounterTest, WithoutRootLoadingFailsAndSaysWhy)
 {
     if (::geteuid() == 0)
