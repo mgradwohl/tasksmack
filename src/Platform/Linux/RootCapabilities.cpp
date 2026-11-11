@@ -7,7 +7,7 @@
 #include <string>
 
 #include <linux/capability.h>
-#include <sys/syscall.h>
+#include <sys/syscall.h> // NOLINT(misc-include-cleaner): SYS_capget and SYS_capset, which include-cleaner has no mapping for
 #include <unistd.h>
 
 namespace Platform::RootCapabilities
@@ -58,6 +58,7 @@ DropResult dropUnused() noexcept
     // The raw syscalls, in version 3's two 32-bit words, so there's no libcap dependency.
     __user_cap_header_struct header{.version = _LINUX_CAPABILITY_VERSION_3, .pid = 0};
     std::array<__user_cap_data_struct, _LINUX_CAPABILITY_U32S_3> data{};
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg,misc-include-cleaner) - syscall(2) is variadic; SYS_capget as above
     if (::syscall(SYS_capget, &header, data.data()) != 0)
     {
         result.error = errno;
@@ -84,6 +85,7 @@ DropResult dropUnused() noexcept
         data[word].inheritable = split(wanted.inheritable, word);
     }
     header = {.version = _LINUX_CAPABILITY_VERSION_3, .pid = 0};
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg,misc-include-cleaner) - syscall(2) is variadic; SYS_capset as above
     if (::syscall(SYS_capset, &header, data.data()) != 0)
     {
         result.error = errno;
