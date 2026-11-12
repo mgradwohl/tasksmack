@@ -316,6 +316,7 @@ set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/LinuxProcessActions.cpp
     src/Platform/Linux/LinuxProcessIconSource.cpp
     src/Platform/Linux/DetachedSpawn.cpp
+    src/Platform/Linux/RootCapabilities.cpp # an Administrator session keeps only the capabilities it uses (#3621)
     src/Platform/Linux/LinuxProcessEnvironmentReader.cpp
     src/Platform/Linux/LinuxProcessConnectionsReader.cpp
     src/Platform/Linux/LinuxSystemConnectionsReader.cpp # the Connections tab (#3066)
@@ -996,6 +997,7 @@ if(WIN32)
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsProcessActions.cpp
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsProcessIdentity.cpp
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsProcessMachine.cpp
+        ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsProcessEnvironmentReader.cpp # Process Details' environment of another user's process (#3610)
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsProcessModules.cpp
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsProcessOpenFiles.cpp
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsProcessConnections.cpp

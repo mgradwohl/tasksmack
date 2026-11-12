@@ -11,7 +11,9 @@ name: Cache Prune
 # quota, so least-recently-used eviction never has to touch a live entry (such as the Windows LLVM
 # cache). The TRAP caches weren't pruned until #3101: 20-30 a day kept the repository over its limit,
 # and the eviction took main's clang-tidy result caches, which only pull requests read between
-# nightly saves. Other entries (LLVM, setup-python) have a single live key and are left alone.
+# nightly saves. setup-llvm's weekly LLVM package entries, Linux-llvm-debs-<major>-...-v<N>-<ISO week>,
+# keep only each package set's newest week (#3635). Other entries (the release-pinned LLVM packages,
+# the Windows LLVM cache, setup-python) have a single live key and are left alone.
 # tools/cache-prune-stale.py decides what a family is; a non-x64 runner's entries carry its
 # architecture in the key, so x64 and ARM64 each keep their own newest entry (#2528).
 # workflow_run always runs this file from the default branch, with this file's permissions.
@@ -29,6 +31,7 @@ on:
       - Static Analysis
       - Manual Build
       - Release
+      - Copilot Setup Steps
     types: [completed]
     branches: [main]
   workflow_dispatch:

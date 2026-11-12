@@ -18,9 +18,11 @@ A family is a key with its per-save part removed:
   - <OS>[-<ARCH>]-cmake-checks-<preset>-<hash>-v<N>  (.github/actions/cmake-check-cache)
   - <OS>-tidy-results-<run id>-<attempt> (.github/actions/tidy-result-cache, #1785)
   - codeql-trap-<N>-<CLI version>-<language>-<commit SHA>  (github/codeql-action's TRAP cache, #3101)
+  - <OS>-llvm-debs-<major>-<image>-<ARCH>-<set>-v<N>-<ISO week>  (.github/actions/setup-llvm, #3635)
 
 Restores only ever use the newest entry of a family, so every older one is stale. Anything else (the
-LLVM, IWYU and setup-python caches) has a single live key and is never picked.
+release-pinned LLVM packages, <OS>-llvm-debs-<release>-...-v<N> with no week; the Windows LLVM, IWYU
+and setup-python caches) has a single live key and is never picked.
 
 The CodeQL TRAP cache is saved once per analyzed commit of the default branch (about 640 MB each, and
 main analyzes 20-30 commits on a busy day), which main's own runs never read back ("Analyzing default
@@ -50,6 +52,7 @@ FAMILY_RULES: tuple[tuple[re.Pattern[str], re.Pattern[str], str], ...] = (
     (re.compile(r"-cmake-checks-"), re.compile(r"-[0-9a-f]+-v\d+$"), ""),
     (re.compile(r"-tidy-results-"), re.compile(r"-\d+-\d+$"), ""),
     (re.compile(r"^codeql-trap-"), re.compile(r"-[0-9a-f]{40}$"), ""),
+    (re.compile(r"-llvm-debs-"), re.compile(r"-\d{4}-W\d{2}$"), ""),
 )
 
 

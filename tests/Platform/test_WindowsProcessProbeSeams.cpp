@@ -8,6 +8,7 @@
 #include "Platform/CpuAffinity.h"
 #include "Platform/IUdpTrafficCollector.h"
 #include "Platform/ImageSignature.h"
+#include "Platform/IoPriorityTypes.h"
 #include "Platform/ProcessTypes.h"
 #include "Platform/Windows/WindowsAppIdentity.h"
 #include "Platform/Windows/WindowsEtwNetCollector.h"
@@ -152,6 +153,9 @@ struct FakeWin // NOLINT(clang-analyzer-optin.performance.Padding)
     ULONG powerControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED; // EcoQoS on: Efficiency Mode
     ULONG powerStateMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
     std::vector<ULONG> infoClasses; // Every NtQueryInformationProcess class asked for
+    // ProcessIoPriority (#3563): the IO_PRIORITY_HINT it reads, or the NTSTATUS it fails with
+    ULONG ioPriorityHint = 2; // IoPriorityNormal, every process's default
+    LONG ioPriorityStatus = 0;
     bool failGdiOnLimitedHandle = false;
     bool failGdi = false;
     DWORD gdiObjects = 7;
@@ -452,6 +456,21 @@ LONG NTAPI fakeNtQueryInformationProcess(HANDLE /*process*/, ULONG infoClass, PV
         info.flags = fake().statusFlags;
         std::memcpy(buffer, &info, sizeof(info));
         *returned = sizeof(info);
+        return 0;
+    }
+    if (infoClass == PROCESS_IO_PRIORITY_CLASS)
+    {
+        // One ULONG, as Windows reads it; refused for any other buffer size.
+        if (length != sizeof(ULONG))
+        {
+            return STATUS_INFO_LENGTH_MISMATCH_NT;
+        }
+        if (fake().ioPriorityStatus < 0)
+        {
+            return fake().ioPriorityStatus;
+        }
+        std::memcpy(buffer, &fake().ioPriorityHint, sizeof(ULONG));
+        *returned = sizeof(ULONG);
         return 0;
     }
     if (infoClass != COMMAND_LINE)
@@ -976,6 +995,93 @@ TEST_F(WindowsProcessProbeSeamTest, AnUnreadableStatusKeepsTheLastOneRead)
     EXPECT_EQ(process.user, "alice");
 
     EXPECT_TRUE(sampleOne().status.empty()); // A process never read has no status
+}
+
+// --- I/O priority hint (#3563) ---------------------------------------------------------------
+
+/// The I/O priority the probe reads for @p hint: the hint itself, in the WindowsHint class.
+std::optional<IoPriority> hintPriority(IoPriorityHint hint)
+{
+    return IoPriority{.ioClass = IoPriorityClass::WindowsHint, .level = static_cast<std::int32_t>(hint)};
+}
+
+/// The ProcessIoPriority reads the probe has made so far.
+std::ptrdiff_t ioPriorityReads()
+{
+    return std::ranges::count(fake().infoClasses, PROCESS_IO_PRIORITY_CLASS);
+}
+
+TEST_F(WindowsProcessProbeSeamTest, EachHintIsReadForTheIoPriorityColumnOnTheHandleAlreadyOpen)
+{
+    for (const IoPriorityHint hint :
+         {IoPriorityHint::VeryLow, IoPriorityHint::Low, IoPriorityHint::Normal, IoPriorityHint::High, IoPriorityHint::Critical})
+    {
+        fake() = FakeWin{};
+        fake().ioPriorityHint = static_cast<ULONG>(hint);
+        WindowsProcessProbe probe(fakeFunctions());
+        EXPECT_TRUE(probe.capabilities().hasIoPriority);
+        const ProcessCounters process = find(probe.enumerate());
+        EXPECT_EQ(process.ioPriority, hintPriority(hint)) << static_cast<int>(hint);
+        EXPECT_EQ(ioPriorityReads(), 1);
+        EXPECT_EQ(fake().openProcessCalls, 1) << "no handle of its own";
+    }
+}
+
+TEST_F(WindowsProcessProbeSeamTest, ADeniedIoPriorityReadIsUnknownAndTheOtherDetailsStillRead)
+{
+    fake().ioPriorityStatus = STATUS_ACCESS_DENIED_NT; // The System process, a protected one
+    const ProcessCounters process = sampleOne();
+    EXPECT_FALSE(process.ioPriority.has_value()) << "the dash, never a guessed Normal";
+    EXPECT_EQ(process.user, "alice");
+    EXPECT_EQ(process.status, "Efficiency Mode");
+}
+
+TEST_F(WindowsProcessProbeSeamTest, AHintWindowsDoesNotDefineIsUnknown)
+{
+    fake().ioPriorityHint = 5; // MaxIoPriorityTypes
+    EXPECT_FALSE(sampleOne().ioPriority.has_value());
+    fake().ioPriorityHint = 0xFFFFFFFFU;
+    EXPECT_FALSE(sampleOne().ioPriority.has_value());
+}
+
+TEST_F(WindowsProcessProbeSeamTest, AnUnopenableProcessHasNoIoPriority)
+{
+    fake().failOpenProcess = true;
+    EXPECT_FALSE(sampleOne().ioPriority.has_value());
+    EXPECT_EQ(ioPriorityReads(), 0);
+}
+
+TEST_F(WindowsProcessProbeSeamTest, WithoutNtQueryInformationProcessTheIoPriorityIsNotClaimed)
+{
+    WindowsProcessProbeFunctions functions = fakeFunctions();
+    functions.process.ntQueryInformationProcess = nullptr;
+    WindowsProcessProbe probe(functions);
+    EXPECT_FALSE(probe.capabilities().hasIoPriority);
+    EXPECT_FALSE(find(probe.enumerate()).ioPriority.has_value());
+}
+
+TEST_F(WindowsProcessProbeSeamTest, TheIoPriorityIsReadOnTheLightCadenceAndAFailedRereadIsUnknown)
+{
+    WindowsProcessProbe probe(fakeFunctions());
+    EXPECT_EQ(find(probe.enumerate()).ioPriority, hintPriority(IoPriorityHint::Normal));
+
+    // Before the light TTL: the cached hint, with no read and no handle.
+    fake().ioPriorityHint = static_cast<ULONG>(IoPriorityHint::Low);
+    EXPECT_EQ(find(probe.enumerate()).ioPriority, hintPriority(IoPriorityHint::Normal));
+    EXPECT_EQ(ioPriorityReads(), 1);
+    EXPECT_EQ(fake().openProcessCalls, 1);
+
+    // Past it: read again, on the light details' handle.
+    fake().now += std::chrono::hours(1);
+    EXPECT_EQ(find(probe.enumerate()).ioPriority, hintPriority(IoPriorityHint::Low));
+    EXPECT_EQ(ioPriorityReads(), 2);
+    EXPECT_EQ(fake().openProcessCalls, 2);
+
+    // A read refused later is unknown, not the hint read before.
+    fake().ioPriorityStatus = STATUS_ACCESS_DENIED_NT;
+    fake().now += std::chrono::hours(1);
+    EXPECT_FALSE(find(probe.enumerate()).ioPriority.has_value());
+    EXPECT_FALSE(find(probe.enumerate()).ioPriority.has_value()) << "and the cache keeps it unknown";
 }
 
 TEST_F(WindowsProcessProbeSeamTest, NoNtQueryInformationProcessLeavesTheCommandLineAndFrozenStateUnread)

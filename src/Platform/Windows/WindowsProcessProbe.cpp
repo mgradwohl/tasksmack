@@ -5,6 +5,7 @@
 #include "Platform/AsciiCase.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/IUdpTrafficCollector.h"
+#include "Platform/IoPriorityTypes.h"
 #include "Platform/ThreadName.h"
 #include "Platform/Windows/WindowsEtwNetMath.h"
 #include "WindowsEnergyMeter.h"
@@ -362,6 +363,22 @@ constexpr ULONG PROCESS_INFO_BASIC = 0; // ProcessBasicInformation
         return std::nullopt;
     }
     return windowsProcessStatus(readExtendedBasicFlags(fns, hProcess), readPowerThrottling(fns, hProcess));
+}
+
+/// The process's I/O priority hint (#3563): NtQueryInformationProcess(ProcessIoPriority), one ULONG on the
+/// PROCESS_QUERY_LIMITED_INFORMATION handle the light details already hold. std::nullopt where it can't be read
+/// (sampledIoPriority()), or without ntdll's export.
+[[nodiscard]] std::optional<IoPriority> readIoPriority(const ProcessFunctions& fns, HANDLE hProcess)
+{
+    auto* fn = fns.ntQueryInformationProcess;
+    if (hProcess == nullptr || fn == nullptr)
+    {
+        return std::nullopt;
+    }
+    ULONG value = 0;
+    ULONG written = 0;
+    const auto status = static_cast<std::uint32_t>(fn(hProcess, PROCESS_IO_PRIORITY_CLASS, &value, sizeof(value), &written));
+    return sampledIoPriority(status, value, written);
 }
 
 // ProcessCommandLineInformation (Windows 8.1+): the command line from the process's PEB, as a
@@ -1297,6 +1314,7 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid,
         counters.processType = cache.processType;
         counters.architecture = cache.architecture;
         counters.gdiObjectCount = cache.gdiObjectCount;
+        counters.ioPriority = cache.ioPriority;
         counters.cpuAffinity = cache.cpuAffinity;
         counters.nice = cache.nice;
         counters.priorityClass = cache.priorityClass;
@@ -1407,6 +1425,11 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid,
             counters.status = *status;
         }
 
+        // The I/O priority hint (#3563), on the light cadence as the status is, with the handle already open: one
+        // ULONG read, no handle of its own. Unlike the status, a failed read is unknown (the dash), not the last
+        // value: the column never shows a hint it didn't read this time.
+        counters.ioPriority = readIoPriority(m_Fns.process, hProcess.get());
+
         // GDI objects change as the process draws, so on the light cadence (#1156), with the handle
         // already open. A refused read is retried with PROCESS_QUERY_INFORMATION (see
         // getProcessGdiObjectCount), and the handle that worked is shared with classifyProcessType.
@@ -1429,6 +1452,7 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid,
 
         cache.status = counters.status;
         cache.gdiObjectCount = counters.gdiObjectCount;
+        cache.ioPriority = counters.ioPriority;
         if (canCache)
         {
             cache.nextLightRefresh = now + m_LightDetailTTL;
@@ -1663,6 +1687,8 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
         .hasAppIds = m_Fns.app.packageIdentity != nullptr || m_Fns.app.windowAppIds != nullptr,
         .hasProcessType = true,  // Classified from path + GetGuiResources
         .hasArchitecture = true, // ProcessMachineTypeInfo, else IsWow64Process2 (#2394)
+        // The I/O priority hint, NtQueryInformationProcess(ProcessIoPriority) on the light cadence (#3563)
+        .hasIoPriority = m_Fns.process.ntQueryInformationProcess != nullptr,
         // WinVerifyTrust on each image, embedded and through the catalogs, on the signature worker (#3070)
         .hasSignature = m_Signatures != nullptr,
         .hasGdiObjects = true, // From GetGuiResources(GR_GDIOBJECTS)
