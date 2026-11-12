@@ -18,6 +18,7 @@
 #include "Platform/Windows/WindowsDebugPrivilege.h"
 #include "Platform/Windows/WindowsProcessActions.h"
 #include "Platform/Windows/WindowsProcessConnections.h"
+#include "Platform/Windows/WindowsProcessEnvironmentReader.h"
 #include "Platform/Windows/WindowsProcessModules.h"
 #include "Platform/Windows/WindowsProcessOpenFiles.h"
 #include "Platform/Windows/WindowsProcessThreads.h"
@@ -119,8 +120,9 @@ int WINAPI wWinMain(HINSTANCE /*instance*/, HINSTANCE /*previous*/, LPWSTR /*com
         Platform::WindowsProcessActions actions;
         // No thread of TaskSmack's is suspended, resumed or ended here (#3069), as none of the helper's own is.
         actions.refuseThreadActionsOn(parsed->parentPid);
-        // Process Details' reads of an elevated or another user's process (#2309). Windows has no
-        // environment reader (#179), so that request gets the mapping's ErrorReply.
+        // Process Details' reads of an elevated or another user's process (#2309). The environment is
+        // read by the same direct reader TaskSmack uses in process (#2569), never a brokered one (#3610).
+        Platform::Windows::WindowsProcessEnvironmentReader environment;
         Platform::Windows::WindowsProcessModulesReader modules;
         Platform::Windows::WindowsProcessOpenFilesReader openFiles;
         Platform::Windows::WindowsProcessConnectionsReader connections;
@@ -135,7 +137,7 @@ int WINAPI wWinMain(HINSTANCE /*instance*/, HINSTANCE /*previous*/, LPWSTR /*com
         // WTS list first (not session 0, still there, someone signed in to it).
         const Platform::Windows::WtsCalls sessions = Platform::Windows::realWtsCalls();
         const Platform::BrokerServer::Readers readers{
-            .environment = nullptr,
+            .environment = &environment,
             .modules = &modules,
             .openFiles = &openFiles,
             .connections = &connections,

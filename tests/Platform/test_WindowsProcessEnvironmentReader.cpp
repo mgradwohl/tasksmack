@@ -8,8 +8,12 @@
 /// process that exits mid-read, and the handle closed exactly once. A 32-bit (WOW64) target is read
 /// through its PEB32 from a canned 32-bit memory image (#3364): a normal block, a truncated one, an
 /// oversized EnvironmentSize, one near the top of its 4 GiB, misaligned pointers and a missing PEB32.
-/// Plus one read of this test process through the real calls.
+/// Plus one read of this test process through the real calls, and one through the helper's request
+/// mapping with the reader TaskSmackHelper.exe serves (#3610).
 
+#include "Mocks/MockProbes.h"
+#include "Platform/BrokerProtocol.h"
+#include "Platform/BrokerRequestMapping.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/Windows/WindowsProcessEnvironmentReader.h"
@@ -34,6 +38,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 namespace Platform::Windows
@@ -765,6 +770,36 @@ TEST(WindowsProcessEnvironmentReaderRealTest, ReadsThisProcessesOwnEnvironment)
     // Gone again once unset: the block is the live one, not a copy from when the process started.
     ASSERT_NE(SetEnvironmentVariableW(NAME, nullptr), 0);
     EXPECT_FALSE(valueOf(reader.readEnvironment(self), "TASKSMACK_TEST_ENVIRONMENT_READER_2569").has_value());
+}
+
+/// TaskSmackHelper.exe's environment read (#3610): its request mapping, given the reader HelperMain.cpp builds,
+/// answers an EnvironmentRequest with the variables, not "This helper doesn't read environments". Run on this
+/// process, which needs no elevation; the elevated hop itself is the CI real-system test's
+/// (test_CiRealSystemHelper.cpp) and the manual check's.
+TEST(WindowsProcessEnvironmentReaderRealTest, TheHelpersRequestMappingReadsThroughIt)
+{
+    constexpr const wchar_t* NAME = L"TASKSMACK_TEST_HELPER_ENVIRONMENT_3610";
+    ASSERT_NE(SetEnvironmentVariableW(NAME, L"through the helper"), 0);
+
+    FILETIME creation{};
+    FILETIME exitTime{};
+    FILETIME kernelTime{};
+    FILETIME userTime{};
+    ASSERT_NE(GetProcessTimes(GetCurrentProcess(), &creation, &exitTime, &kernelTime, &userTime), 0);
+    const ProcessTarget self{
+        .pid = static_cast<std::int32_t>(GetCurrentProcessId()),
+        .startTimeTicks = (static_cast<std::uint64_t>(creation.dwHighDateTime) << 32U) | creation.dwLowDateTime,
+    };
+    TestMocks::MockProcessActions actions;
+    WindowsProcessEnvironmentReader environment;
+    const Broker::Response response =
+        BrokerServer::handleRequest(Broker::EnvironmentRequest{.target = self}, actions, {.environment = &environment});
+    ASSERT_NE(SetEnvironmentVariableW(NAME, nullptr), 0);
+
+    ASSERT_TRUE(std::holds_alternative<Broker::EnvironmentReply>(response)) << "the helper refused the read";
+    const EnvironmentReadResult& result = std::get<Broker::EnvironmentReply>(response).result;
+    ASSERT_EQ(result.status, EnvironmentReadStatus::Ok) << result.detail;
+    EXPECT_EQ(valueOf(result, "TASKSMACK_TEST_HELPER_ENVIRONMENT_3610"), std::optional<std::string>("through the helper"));
 }
 
 } // namespace
