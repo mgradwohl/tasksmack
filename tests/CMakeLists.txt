@@ -401,14 +401,22 @@ add_test(NAME StartupWiringScript
 # against stubs and fixtures (#2478). The Main Health and CodeQL cases also need jq on bash's PATH, and
 # the release.yml cases pwsh on PATH; each is skipped without.
 if(TASKSMACK_BASH)
+    # setup-llvm's cache-key and install cases (#3635) run install-llvm.sh dozens of times and have their own
+    # entry (#3643): together with the rest they outran the 120 s timeout on the slow bash spawns of the
+    # windows-11-arm runner. WorkflowRunStepsScript runs everything else.
     add_test(NAME WorkflowRunStepsScript
-        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_workflow_run_steps.py)
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_workflow_run_steps.py --skip-setup-llvm)
     set_tests_properties(WorkflowRunStepsScript PROPERTIES
         ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}"
         # The release.yml cases start pwsh (#2964), so it takes its turn with the pwsh script tests
         # (#2054) and gets their second attempt on windows-11-arm (#2832, #2991).
         RESOURCE_LOCK pwsh-script-tests
         LABELS pwsh-script
+        TIMEOUT 120)
+    add_test(NAME SetupLlvmInstallScript
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_workflow_run_steps.py --only-setup-llvm)
+    set_tests_properties(SetupLlvmInstallScript PROPERTIES
+        ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}"
         TIMEOUT 120)
 endif()
 
