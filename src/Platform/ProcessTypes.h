@@ -60,8 +60,9 @@ struct ProcessCounters
     // and 40. Unknown where it isn't read (Windows).
     SchedPolicy schedPolicy = SchedPolicy::Unknown;
     std::uint32_t rtPriority = 0;
-    // The I/O priority (#3551): Linux's ioprio_get(2) class and level, read each sample; nullopt for a kernel thread,
-    // a process it couldn't be read for, or where it isn't read (Windows until its probe does).
+    // The I/O priority (#3551): Linux's ioprio_get(2) class and level, read each sample; Windows' I/O priority hint
+    // (class WindowsHint), read on the light detail cadence (#3563). nullopt for a kernel thread, or a process it
+    // couldn't be read for.
     std::optional<IoPriority> ioPriority;
 
     std::uint64_t startTimeTicks = 0; // For PID reuse detection (raw platform ticks)
