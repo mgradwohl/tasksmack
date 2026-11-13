@@ -16,6 +16,7 @@
 #include "Panels/StartupPanel.h"
 #include "Panels/SystemMetricsPanel.h"
 #include "Platform/IDiskProbe.h"
+#include "Platform/IElevatedRestart.h"
 #include "Platform/IGPUProbe.h"
 #include "Platform/IHttpsClient.h"
 #include "Platform/IPrivilegedBroker.h"
@@ -102,6 +103,11 @@ void preparePanelPlatforms(const Synthetic::Scenario* scenario);
 /// null in a synthetic run and where there is none (no helper installed, already root). Made on first
 /// use; call it on the UI thread, as its prompt belongs to the main window.
 [[nodiscard]] std::shared_ptr<Platform::IPrivilegedBroker> privilegedBroker(const Synthetic::Scenario* scenario);
+
+/// Restart as administrator (#2728): the platform's (Windows', when TaskSmack isn't elevated), owned by the main
+/// window; null in a synthetic run, on Linux and in an elevated TaskSmack. Call it on the UI thread, as its
+/// owner window handle is an SDL query.
+[[nodiscard]] std::shared_ptr<Platform::IElevatedRestart> makeElevatedRestart(const Synthetic::Scenario* scenario);
 
 /// Replace Task Manager's controller (#3072), shared by the Settings rows and the startup notice: over the
 /// platform's (Windows'), whose changes go through the shared helper; unsupported in a synthetic run and on

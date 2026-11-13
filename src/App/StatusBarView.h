@@ -38,7 +38,7 @@ inline constexpr const char* DISMISS_UPDATE_LABEL = ICON_FA_XMARK "##DismissUpda
 /// What the bar shows this frame.
 struct Input
 {
-    /// The access chip, where the platform has one (Linux, #2728); nullopt: the plain lock icon below.
+    /// The access chip (#2728); nullopt: the plain lock icon below, when reducedPrivileges.
     std::optional<AccessChip> access;
     bool reducedPrivileges = false;      ///< The lock icon: some details of other users' processes are unavailable
     bool networkCountersBlocked = false; ///< The network icon: per-process network counters are blocked (#1358)

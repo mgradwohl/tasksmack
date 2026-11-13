@@ -1,6 +1,5 @@
 #include "ShellLayer.h"
 
-#include "AccessChoice.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/EnvRead.h"
 #include "Core/Event.h"
@@ -503,18 +502,15 @@ void ShellLayer::onUpdate(float deltaTime)
         ShellPanels::raiseStartupSettings([this](Core::Event& event) { m_Host->raiseEvent(event); });
     }
 
-    // "TaskSmack (Administrator)" while the session is (#2728), on Linux, whose access chip says the same;
-    // set only when that changes.
-    if constexpr (AccessChoice::HOST == AccessChoice::AccessPlatform::Linux)
+    // "TaskSmack (Administrator)" while the session is (#2728), as the access chip says; set only when that
+    // changes.
+    if (m_ProcessesPanel.firstSnapshotAdopted())
     {
-        if (m_ProcessesPanel.firstSnapshotAdopted())
+        const bool administrator = isAdministratorSession(m_ProcessesPanel.processCapabilities());
+        if (m_TitleSaysAdministrator != administrator)
         {
-            const bool administrator = isAdministratorSession(m_ProcessesPanel.processCapabilities());
-            if (m_TitleSaysAdministrator != administrator)
-            {
-                m_TitleSaysAdministrator = administrator;
-                m_Host->setWindowTitle(administrator ? "TaskSmack (Administrator)" : "TaskSmack");
-            }
+            m_TitleSaysAdministrator = administrator;
+            m_Host->setWindowTitle(administrator ? "TaskSmack (Administrator)" : "TaskSmack");
         }
     }
 
@@ -972,14 +968,11 @@ void ShellLayer::renderStatusBar()
     const Platform::ProcessCapabilities capabilities = m_ProcessesPanel.processCapabilities();
     // When native OS decorations replace the custom title bar (see #745), its Settings/Help buttons
     // don't exist, so the status bar carries them.
-    // Standard or Administrator (#2728), on Linux: Administrator when nothing is limited (root, or every
-    // capability granted) or the helper is held for the session; Windows keeps the plain lock until
-    // TaskSmack can restart itself elevated.
-    std::optional<StatusBarView::AccessChip> access;
-    if constexpr (AccessChoice::HOST == AccessChoice::AccessPlatform::Linux)
-    {
-        access = isAdministratorSession(capabilities) ? StatusBarView::AccessChip::Administrator : StatusBarView::AccessChip::Standard;
-    }
+    // Standard or Administrator (#2728): Administrator when nothing is limited (Linux: root, or every capability
+    // granted; Windows: elevated). Standard's chip opens the startup notice, whose Restart as administrator...
+    // is Windows' way to Administrator.
+    const std::optional<StatusBarView::AccessChip> access =
+        isAdministratorSession(capabilities) ? StatusBarView::AccessChip::Administrator : StatusBarView::AccessChip::Standard;
     const StatusBarView::Action action = StatusBarView::render({
         .access = access,
         .reducedPrivileges = capabilities.hasReducedPrivileges,

@@ -103,7 +103,7 @@ bool testHookActive()
         const char* value = read(variable);
         return value != nullptr && !Platform::trimAscii(value).empty();
     };
-    return Core::ConfigDirOverride::active().has_value() || set(ScreenshotOverride::ENV_VAR) || set(DemoOverride::ENV_VAR) ||
+    return Core::ConfigDirOverride::fromTestHook() || set(ScreenshotOverride::ENV_VAR) || set(DemoOverride::ENV_VAR) ||
            set(RenderMetricsOverride::ENV_VAR) ||
            anyTestHookActive(read(MAIN_TAB_ENV_VAR),
                              read(PID_ENV_VAR),

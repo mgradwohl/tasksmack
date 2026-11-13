@@ -9,7 +9,10 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdint>
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace App
@@ -83,6 +86,55 @@ TEST(LaunchOptionsTest, TheSignInEntrysCommandStartsMinimized)
     ASSERT_TRUE(command.ends_with(" --minimized"));
     const std::string argument = command.substr(command.rfind(' ') + 1);
     EXPECT_TRUE(parseLaunchOptions(std::vector<std::string>{program, argument}).minimized);
+}
+
+// #2728: an elevated restart is started with the Standard TaskSmack's PID and creation time, and the launching
+// user's config directory (Platform/IElevatedRestart.h).
+TEST(LaunchOptionsTest, AnElevatedRestartReadsTheHandOffAndTheConfigDirectory)
+{
+    const LaunchOptions options = parseLaunchOptions(std::vector<std::string>{
+        "TaskSmack.exe",
+        "--handoff",
+        "4242",
+        "133000000000000000",
+        "--config-dir",
+        R"(C:\Users\Pat Smith\AppData\Roaming\TaskSmack)",
+    });
+    EXPECT_EQ(options.handoffPid, std::optional<std::uint32_t>{4242});
+    EXPECT_EQ(options.handoffStartTicks, 133'000'000'000'000'000ULL);
+    EXPECT_EQ(options.configDir, std::optional<std::string>{R"(C:\Users\Pat Smith\AppData\Roaming\TaskSmack)"});
+    EXPECT_TRUE(options.ignored.empty());
+    EXPECT_FALSE(options.minimized);
+}
+
+TEST(LaunchOptionsTest, AConfigDirectoryWithoutAHandOffIsIgnored)
+{
+    const LaunchOptions options = parseLaunchOptions(std::vector<std::string>{"TaskSmack.exe", "--config-dir", R"(C:\elsewhere)"});
+    EXPECT_FALSE(options.configDir.has_value()) << "only an elevated restart hands one over";
+    EXPECT_FALSE(options.handoffPid.has_value());
+    EXPECT_EQ(options.ignored, (std::vector<std::string>{"--config-dir"}));
+}
+
+TEST(LaunchOptionsTest, AHandOffWithoutAWholePidAndStartIsIgnored)
+{
+    for (const auto& [pid, ticks] : {
+             std::pair{std::string("0"), std::string("5")},
+             std::pair{std::string("-1"), std::string("5")},
+             std::pair{std::string("12x"), std::string("5")},
+             std::pair{std::string("99999999999"), std::string("5")},
+             std::pair{std::string("42"), std::string("0")},
+             std::pair{std::string("42"), std::string("x")},
+             std::pair{std::string("42"), std::string("")},
+         })
+    {
+        const LaunchOptions options =
+            parseLaunchOptions(std::vector<std::string>{"TaskSmack.exe", "--handoff", pid, ticks, "--config-dir", R"(C:\dir)"});
+        EXPECT_FALSE(options.handoffPid.has_value()) << pid << " " << ticks;
+        EXPECT_FALSE(options.configDir.has_value()) << pid << " " << ticks;
+    }
+    const LaunchOptions noStart = parseLaunchOptions(std::vector<std::string>{"TaskSmack.exe", "--handoff", "42"});
+    EXPECT_FALSE(noStart.handoffPid.has_value()) << "a PID without its creation time binds to nothing";
+    EXPECT_EQ(noStart.ignored, (std::vector<std::string>{"--handoff", "42"}));
 }
 
 } // namespace

@@ -1,8 +1,8 @@
 /// @file test_AccessNoticeOnDisplay.cpp
 /// @brief The startup notice in a real Core::Application (#2728): OpenElevationNoticeEvent opens it, and its OK
-/// closes it. On Linux it is the Standard note (#3580), which offers nothing that elevates the session; Windows
-/// still shows the Limited Data notice. With TASKSMACK_UI_CAPTURE_DIR set, the open notice is saved there as
-/// access-notice.png.
+/// (Continue as Standard on Windows) closes it. On Linux it is the Standard note (#3580), which offers nothing that
+/// elevates the session. The layer is given no restart, so nothing here can raise a UAC prompt. With TASKSMACK_UI_CAPTURE_DIR set, the open
+/// notice is saved there as access-notice.png.
 ///
 /// Needs a display with a GL 3.3 core context (Xvfb in Linux CI, where TASKSMACK_REQUIRE_DISPLAY=1
 /// turns a missing one into a failure); skipped elsewhere, like UiLayersOnDisplayTest.
@@ -175,7 +175,7 @@ TEST(AccessNoticeOnDisplayTest, OkClosesIt)
     {
         GTEST_SKIP() << "No display available (headless environment)";
     }
-    const char* label = LINUX ? App::AccessNoticeDialog::OK_LABEL : "OK";
+    const char* label = LINUX ? App::AccessNoticeDialog::OK_LABEL : App::AccessNoticeDialog::CONTINUE_LABEL;
     const NoticeObserved observed = runNotice(label);
     EXPECT_FALSE(observed.timedOut);
     EXPECT_TRUE(observed.opened);

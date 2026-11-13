@@ -31,6 +31,7 @@
 #include "Core/LogFileSink.h"
 #include "Core/Utf8Path.h"
 #include "Core/WindowConstants.h"
+#include "Platform/IElevatedRestart.h"
 #ifdef _WIN32
 #include "Platform/Factory.h"
 #include "Platform/Windows/WinString.h"
@@ -58,6 +59,7 @@
 #endif
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdio> // NOLINT(misc-include-cleaner) - FILE* is used only in the _WIN32 console-attach branch below
 #include <cstdlib>
@@ -133,6 +135,39 @@ auto runApp(const App::LaunchOptions& launch) -> int
     // LCOV_EXCL_STOP
 #endif
 
+    // Restarted as administrator (#2728, the hand-off in Platform/IElevatedRestart.h): wait for the Standard
+    // TaskSmack to close where this account may open it, then take the launching user's config directory only if it
+    // passes the checks for a directory handed over from the less-privileged side; otherwise keep this account's
+    // own. The instance lock below, tried again for a while, covers a Standard copy this one couldn't wait on.
+    // Logged below. A Linux session is never restarted (#3580), so there the arguments are ignored.
+#ifdef _WIN32
+    const bool handoffSession = launch.handoffPid.has_value();
+    std::optional<Platform::HandoffWait> handoffWait;
+    std::string handoffDirRefused;
+    if (handoffSession)
+    {
+        handoffWait = Platform::waitForHandoff(*launch.handoffPid, launch.handoffStartTicks);
+        if (launch.configDir.has_value())
+        {
+            const std::filesystem::path handedOver = Core::utf8ToPath(*launch.configDir);
+            if (handoffWait == Platform::HandoffWait::NotThatProcess)
+            {
+                handoffDirRefused = "the process it names isn't the TaskSmack that restarted this one";
+            }
+            else if (const auto checked = Platform::checkHandedOverConfigDir(handedOver); !checked.has_value())
+            {
+                handoffDirRefused = checked.error();
+            }
+            else
+            {
+                Core::ConfigDirOverride::adoptHandedOver(handedOver);
+            }
+        }
+    }
+#else
+    constexpr bool handoffSession = false;
+#endif
+
     // Load user configuration early so we can apply window geometry before creating the SDL window.
     auto& userConfig = App::UserConfig::get();
 
@@ -142,9 +177,12 @@ auto runApp(const App::LaunchOptions& launch) -> int
     // Taken before the file logger below opens tasksmack-debug.log, which truncates it: a rejected
     // second launch must not erase the running instance's log. Its warning goes to the default
     // (console) logger.
+    // An elevated restart tries it again while the Standard copy it replaces closes (#2728): that copy holds it
+    // until it has saved its settings, so the settings below are read only after its last save.
     const std::filesystem::path instanceLockPath = App::instanceLockPath(userConfig.configPath().parent_path());
-    const App::InstanceLock instanceLock(instanceLockPath);
-    if (const std::optional<int> lockExitCode = App::exitCodeForLockStatus(instanceLock.status()); lockExitCode.has_value())
+    const std::unique_ptr<App::InstanceLock> instanceLock =
+        App::acquireInstanceLock(instanceLockPath, handoffSession ? Platform::HANDOFF_LOCK_PATIENCE : std::chrono::milliseconds{0});
+    if (const std::optional<int> lockExitCode = App::exitCodeForLockStatus(instanceLock->status()); lockExitCode.has_value())
     {
         spdlog::warn("TaskSmack is already running with the settings in {}; exiting", Core::pathToUtf8(instanceLockPath.parent_path()));
 #ifdef _WIN32
@@ -213,8 +251,47 @@ auto runApp(const App::LaunchOptions& launch) -> int
     // Logged here rather than when it is read (UserConfig::get() above), so it reaches the log file.
     if (const auto& configDir = Core::ConfigDirOverride::active(); configDir.has_value())
     {
-        spdlog::info("Config directory (test hook {}): {}", Core::ConfigDirOverride::ENV_VAR, Core::pathToUtf8(*configDir));
+        if (Core::ConfigDirOverride::fromTestHook())
+        {
+            spdlog::info("Config directory (test hook {}): {}", Core::ConfigDirOverride::ENV_VAR, Core::pathToUtf8(*configDir));
+        }
+        else
+        {
+            spdlog::info("Config directory (the launching user's, handed over): {}", Core::pathToUtf8(*configDir));
+        }
     }
+#ifdef _WIN32
+    if (handoffWait.has_value())
+    {
+        constexpr auto describe = [](Platform::HandoffWait wait)
+        {
+            switch (wait)
+            {
+            case Platform::HandoffWait::Exited:
+                return "which closed";
+            case Platform::HandoffWait::NotRunning:
+                return "which had already closed";
+            case Platform::HandoffWait::NotThatProcess:
+                return "but that PID is another process's, so it wasn't waited for";
+            case Platform::HandoffWait::Unopenable:
+                return "which this account may not open, so the instance lock was the hand-off";
+            case Platform::HandoffWait::TimedOut:
+                return "which was still running after the wait";
+            }
+            return "";
+        };
+        spdlog::info("Restarted as administrator for TaskSmack PID {}, {}", launch.handoffPid.value_or(0), describe(*handoffWait));
+    }
+    if (!handoffDirRefused.empty())
+    {
+        spdlog::warn("Not using the handed-over settings folder ({}); using this account's own", handoffDirRefused);
+    }
+#else
+    if (launch.handoffPid.has_value())
+    {
+        spdlog::info("Ignoring {}: nothing restarts a Linux session (#3580)", Platform::HANDOFF_ARGUMENT);
+    }
+#endif
 
 #ifndef NDEBUG
     spdlog::set_level(spdlog::level::debug);
@@ -316,14 +393,14 @@ auto runApp(const App::LaunchOptions& launch) -> int
         demoMetricsCsv = App::RenderMetricsOverride::csvBesideScreenshot(screenshot->path);
     }
 
-    if (instanceLock.status() == App::InstanceLock::Status::Unavailable)
+    if (instanceLock->status() == App::InstanceLock::Status::Unavailable)
     {
         spdlog::warn(
-            "Can't take the single-instance lock {}: {}; starting anyway", Core::pathToUtf8(instanceLockPath), instanceLock.error());
+            "Can't take the single-instance lock {}: {}; starting anyway", Core::pathToUtf8(instanceLockPath), instanceLock->error());
     }
-    else if (!instanceLock.error().empty())
+    else if (!instanceLock->error().empty())
     {
-        spdlog::warn("Single-instance lock {}: {}", Core::pathToUtf8(instanceLockPath), instanceLock.error()); // #2437
+        spdlog::warn("Single-instance lock {}: {}", Core::pathToUtf8(instanceLockPath), instanceLock->error()); // #2437
     }
 
     userConfig.load();
@@ -428,7 +505,8 @@ auto runApp(const App::LaunchOptions& launch) -> int
                                         config.saveInBackground();
                                     });
         appRef.pushLayer<App::SettingsLayer>().setTaskManagerReplacement(taskManager);
-        appRef.pushLayer<App::ElevationNoticeLayer>();
+        // The startup notice, Standard or Administrator (#2728), with Windows' Restart as administrator.
+        appRef.pushLayer<App::ElevationNoticeLayer>(App::makeElevatedRestart(App::Synthetic::activeScenario()));
         appRef.pushLayer<App::TaskManagerNoticeLayer>(taskManager);
 
         // The demo script's layer (#2827), after the layers its steps make requests of: a step is issued

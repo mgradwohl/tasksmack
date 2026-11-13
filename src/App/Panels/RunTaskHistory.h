@@ -55,4 +55,13 @@ inline constexpr std::size_t MAX_COMMAND_BYTES = 4096;
     return recent;
 }
 
+/// The recent commands Run new task offers from @p stored: none when they were read from a config folder an
+/// elevated restart was handed (@p handedOver, #2728). That folder is the less-privileged side's, and anything
+/// running as that user could have planted a command there for this elevated session to run with one click.
+/// What is run in the session is still remembered, ahead of them.
+[[nodiscard]] inline std::vector<std::string> offered(const std::vector<std::string>& stored, bool handedOver)
+{
+    return handedOver ? std::vector<std::string>{} : stored;
+}
+
 } // namespace App::RunTaskHistory

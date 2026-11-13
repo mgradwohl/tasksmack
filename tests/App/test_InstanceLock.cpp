@@ -3,13 +3,16 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <optional>
 #include <random>
 #include <string>
 #include <system_error>
+#include <thread>
 
 #ifndef _WIN32
 #include <sys/stat.h>
@@ -255,5 +258,35 @@ TEST_F(InstanceLockTest, AnotherProcessIsToldTaskSmackIsAlreadyRunning)
 }
 #endif
 
+// #2728: an elevated restart takes the lock the Standard copy holds once that copy closes, trying again for a while,
+// as it may not be able to open that process to wait for it.
+TEST_F(InstanceLockTest, AcquireTriesAgainUntilTheHolderLetsGo)
+{
+    const std::filesystem::path path = instanceLockPath(m_Dir);
+    auto holder = std::make_unique<InstanceLock>(path);
+    ASSERT_EQ(holder->status(), InstanceLock::Status::Acquired);
+    std::thread release(
+        [&holder]
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds{300});
+            holder.reset();
+        });
+    const std::unique_ptr<InstanceLock> lock = acquireInstanceLock(path, std::chrono::seconds{10}, std::chrono::milliseconds{20});
+    release.join();
+    EXPECT_EQ(lock->status(), InstanceLock::Status::Acquired);
+}
+
+TEST_F(InstanceLockTest, AcquireWithNoPatienceTriesOnce)
+{
+    const std::filesystem::path path = instanceLockPath(m_Dir);
+    const InstanceLock holder(path);
+    ASSERT_EQ(holder.status(), InstanceLock::Status::Acquired);
+    const auto started = std::chrono::steady_clock::now();
+    const std::unique_ptr<InstanceLock> lock = acquireInstanceLock(path, std::chrono::milliseconds{0});
+    EXPECT_EQ(lock->status(), InstanceLock::Status::HeldByAnotherInstance);
+    EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds{5}) << "no wait";
+    const std::unique_ptr<InstanceLock> patient = acquireInstanceLock(path, std::chrono::milliseconds{100}, std::chrono::milliseconds{20});
+    EXPECT_EQ(patient->status(), InstanceLock::Status::HeldByAnotherInstance) << "still held when its patience ran out";
+}
 } // namespace
 } // namespace App

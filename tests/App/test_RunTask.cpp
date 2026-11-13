@@ -106,6 +106,14 @@ TEST(CommandWordsTest, QuoteProgramMakesAProgramThatSplitsBack)
     EXPECT_EQ(Platform::CommandWords::quoteProgram(""), R"("")");
 }
 
+// #2728: an elevated session doesn't offer the commands a handed-over config folder holds: anything running as the
+// launching user could have planted one there to be run as administrator with one click.
+TEST(RunTaskHistoryTest, AHandedOverConfigOffersNoRecentCommands)
+{
+    const std::vector<std::string> stored{"notepad", "cmd /c evil.bat"};
+    EXPECT_EQ(RunTaskHistory::offered(stored, false), stored);
+    EXPECT_TRUE(RunTaskHistory::offered(stored, true).empty());
+}
 TEST(RunTaskHistoryTest, RememberPutsTheCommandFirstOnceAndCaps)
 {
     std::vector<std::string> recent{"htop", "konsole"};

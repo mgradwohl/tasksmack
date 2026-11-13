@@ -12,6 +12,7 @@
 #endif
 #include "Platform/Factory.h"
 #include "Platform/IDiskProbe.h"
+#include "Platform/IElevatedRestart.h"
 #include "Platform/IGPUProbe.h"
 #include "Platform/IHttpsClient.h"
 #include "Platform/IPrivilegedBroker.h"
@@ -75,6 +76,15 @@ void preparePanelPlatforms(const Synthetic::Scenario* scenario)
     // Made now, on the UI thread: its owner window handle is an SDL query (mainNativeWindow()), and the
     // factories below, which share it, run on the panels' sampler threads from here on (#2731).
     (void) sharedPrivilegedBroker();
+}
+
+std::shared_ptr<Platform::IElevatedRestart> makeElevatedRestart(const Synthetic::Scenario* scenario)
+{
+    if (scenario != nullptr)
+    {
+        return nullptr; // a synthetic run restarts nothing real
+    }
+    return Platform::makeElevatedRestart(mainNativeWindow());
 }
 
 std::shared_ptr<TaskManagerReplacementController> makeTaskManagerReplacementController(const Synthetic::Scenario* scenario)

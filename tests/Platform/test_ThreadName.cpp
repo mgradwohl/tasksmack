@@ -88,6 +88,7 @@ TEST(ThreadNameTest, EveryTaskSmackThreadNameFitsLinuxLimit)
         Platform::WAIT_CHAIN_READ_THREAD_NAME,
         Platform::PROCESS_ACTION_THREAD_NAME,
         Platform::HELPER_LAUNCH_THREAD_NAME,
+        Platform::ELEVATED_RESTART_THREAD_NAME,
         Platform::SETTINGS_SAVE_THREAD_NAME,
         Platform::SIGNATURE_CHECK_THREAD_NAME,
     };

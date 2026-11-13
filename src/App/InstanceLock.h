@@ -1,7 +1,9 @@
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
 
@@ -99,5 +101,13 @@ inline constexpr int ALREADY_RUNNING_EXIT_CODE = 75;
     }
     return std::nullopt;
 }
+
+/// Takes the lock on @p lockPath; while another process holds it, tries again every @p retryEvery until
+/// @p patience has passed, then returns the last try. An elevated restart (#2728) waits so for the Standard copy,
+/// which holds the lock until it has saved its settings and closed: the lock itself is the hand-off, as the
+/// elevated copy may not be able to open that process to wait on it. Zero @p patience: one try, as before.
+[[nodiscard]] std::unique_ptr<InstanceLock> acquireInstanceLock(const std::filesystem::path& lockPath,
+                                                                std::chrono::milliseconds patience,
+                                                                std::chrono::milliseconds retryEvery = std::chrono::milliseconds{100});
 
 } // namespace App

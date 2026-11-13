@@ -108,6 +108,7 @@ inline constexpr std::string_view START_AT_LOGIN_THREAD_NAME = "ts-sign-in";
 /// The thread that starts TaskSmack's Windows administrator helper, and sits behind its UAC prompt for
 /// as long as that is up (PipeBroker::launch(), #2549; named in #2768).
 inline constexpr std::string_view HELPER_LAUNCH_THREAD_NAME = "ts-uac-launch";
+inline constexpr std::string_view ELEVATED_RESTART_THREAD_NAME = "ts-uac-restart";
 /// The worker in the Windows administrator helper (TaskSmackHelper.exe) that waits on TaskSmack's process
 /// and ends the helper's session when it exits (BrokerHelper::ProcessWatch, #2517; on Domain::Worker, #3343).
 inline constexpr std::string_view BROKER_WATCH_THREAD_NAME = "ts-parent-watch";

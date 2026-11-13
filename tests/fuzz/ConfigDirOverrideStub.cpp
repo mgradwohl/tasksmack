@@ -3,7 +3,8 @@
 // UserConfig.cpp asks Core::ConfigDirOverride::active() for the TASKSMACK_CONFIG_DIR test hook. The
 // real active() reads the variable through SDL_getenv(), and the fuzz build has no SDL (see
 // .clusterfuzzlite/fetch-deps.sh). The fuzzer exercises parseSettings(), never the config
-// directory, so "no override" -- TaskSmack's behaviour with the variable unset -- is all it needs.
+// directory, so "no override" -- TaskSmack's behaviour with the variable unset -- is all it needs. With no
+// override, nothing was handed over by an elevated restart either (handedOver(), #2728), which UserConfig's save asks.
 
 #include "Core/ConfigDirOverride.h"
 
@@ -17,6 +18,11 @@ const std::optional<std::filesystem::path>& active()
 {
     static const std::optional<std::filesystem::path> none;
     return none;
+}
+
+bool handedOver()
+{
+    return false;
 }
 
 } // namespace Core::ConfigDirOverride

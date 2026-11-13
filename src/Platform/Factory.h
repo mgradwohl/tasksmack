@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Platform/IDiskProbe.h"
+#include "Platform/IElevatedRestart.h"
 #include "Platform/IGPUProbe.h"
 #include "Platform/IHttpsClient.h"
 #include "Platform/IPathProvider.h"
@@ -28,7 +29,11 @@
 #include "Platform/IUdpTrafficCollector.h"
 #include "Platform/IUserSessions.h"
 
+#include <cstdint>
+#include <expected>
+#include <filesystem>
 #include <memory>
+#include <string>
 
 namespace Platform
 {
@@ -141,7 +146,25 @@ namespace Platform
 /// autostart entry is written (agent:WSL's part): the row is hidden there. Making it reads nothing.
 [[nodiscard]] std::shared_ptr<IStartAtLogin> makeStartAtLogin();
 
+/// Restart as administrator (#2728): TaskSmack started again elevated, through the UAC prompt, owned by
+/// @p ownerWindow (an HWND, or null). Null on Linux, whose Administrator session is started as one (#3580), and
+/// in a TaskSmack that is already elevated. Reads the token's elevation type once; starts nothing.
+[[nodiscard]] std::shared_ptr<IElevatedRestart> makeElevatedRestart(void* ownerWindow);
+
 #ifdef _WIN32
+/// The elevated copy's wait for the Standard TaskSmack that restarted it (#2728), process @p pid created at
+/// @p startTicks, to exit: bounded, so a Standard copy that hangs doesn't stop it, and skipped for a PID another
+/// process has taken. Another account's elevation often may not open the process (Unopenable); the instance
+/// lock, tried again for HANDOFF_LOCK_PATIENCE, is the hand-off then (main.cpp). Called once, by main.cpp,
+/// before anything else.
+HandoffWait waitForHandoff(std::uint32_t pid, std::uint64_t startTicks);
+
+/// Whether the config directory an elevated restart was handed (--config-dir, #2728) may be used: a real folder
+/// in a user's profile, with no junction or link on its path, owned by no administrator or system account, its
+/// config.toml and lock file neither links nor hard links; held open from then on so it can't be swapped. The
+/// error says why not (Windows::ElevatedRestart::checkConfigDir(), the trust boundary in IElevatedRestart.h).
+[[nodiscard]] std::expected<void, std::string> checkHandedOverConfigDir(const std::filesystem::path& dir);
+
 /// Brings the window of another running TaskSmack.exe to the front (#3072): what Ctrl+Shift+Esc does
 /// when TaskSmack replaces Task Manager and one already runs. False when there is none to show.
 bool showRunningTaskSmack();

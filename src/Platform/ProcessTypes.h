@@ -283,8 +283,8 @@ struct ProcessCapabilities
     // hasReducedPrivileges. Linux: always false (its gaps are hasReducedPrivileges).
     bool networkCountersBlocked = false;
     bool hasSharedMemory = false; // Whether ProcessCounters::sharedBytes is filled (Linux: statm; Windows: shareable working set)
-    // Which permissions are missing, as MissingPrivilege bits (#2303), so the Limited Data notice and the
-    // status bar can say what each one blocks. Linux only; 0 elsewhere (Windows keeps its own notice).
+    // Which permissions are missing, as MissingPrivilege bits (#2303), so the access table (App/AccessTable.h)
+    // can say what each one blocks. Linux only; 0 elsewhere.
     std::uint8_t missingPrivileges = 0;
     // How many bits ProcessCounters::pageFaultCount is kept in by the OS before it wraps to 0 (#1184).
     // Linux: 64 (minflt + majflt, unsigned long). Windows: 32 (SYSTEM_PROCESS_INFORMATION's ULONG
