@@ -984,6 +984,47 @@ TEST_F(ConnectionsPanelRenderTest, TheRowMenuClosesAConnectionAfterTheConfirm)
     unable.onDetach();
 }
 
+// #3079, #3374: the Sent and Received columns sort by rate with an unknown rate below every known one, so it is last
+// when sorting busiest first and first the other way; equal rates tie, and the two columns sort independently.
+TEST(ConnectionsSortTest, UnknownRatesSortBelowKnownOnesAndEqualRatesTie)
+{
+    const auto withRate = [](ConnectionRow row, bool known, double sent, double received)
+    {
+        row.rate = {.known = known, .sentPerSec = sent, .receivedPerSec = received};
+        return row;
+    };
+    const SystemConnection base = firefoxToGoogle();
+    SystemConnection second = base;
+    second.pid = 301;
+    second.connection.local.port = 52200;
+    SystemConnection third = base;
+    third.pid = 302;
+    third.connection.local.port = 52300;
+    const std::vector<ConnectionRow> rows{
+        withRate(rowFor(base), true, 10.0, 5.0),    // 0
+        withRate(rowFor(second), true, 10.0, 50.0), // 1: the same Sent as 0
+        withRate(rowFor(third), false, 0.0, 0.0),   // 2: not yet known
+    };
+
+    const std::vector<std::size_t> busiestSent = orderConnectionRows(rows, "", ConnectionsColumn::Sent, false);
+    ASSERT_EQ(busiestSent.size(), 3U);
+    EXPECT_EQ(busiestSent.back(), 2U) << "an unknown rate after every known one";
+    const std::vector<std::size_t> quietestSent = orderConnectionRows(rows, "", ConnectionsColumn::Sent, true);
+    EXPECT_EQ(quietestSent.front(), 2U) << "and before them the other way";
+
+    const std::vector<std::size_t> busiestReceived = orderConnectionRows(rows, "", ConnectionsColumn::Received, false);
+    EXPECT_EQ(busiestReceived, (std::vector<std::size_t>{1, 0, 2}));
+    const std::vector<std::size_t> quietestReceived = orderConnectionRows(rows, "", ConnectionsColumn::Received, true);
+    EXPECT_EQ(quietestReceived, (std::vector<std::size_t>{2, 0, 1}));
+
+    // Two unknown rates, and two equal known ones, compare equal both ways: the sort stays a strict weak order.
+    const std::vector<ConnectionRow> unknowns{withRate(rowFor(base), false, 0.0, 0.0), withRate(rowFor(second), false, 0.0, 0.0)};
+    EXPECT_EQ(orderConnectionRows(unknowns, "", ConnectionsColumn::Sent, true).size(), 2U);
+    const std::vector<std::size_t> tiedUp = orderConnectionRows(rows, "", ConnectionsColumn::Sent, true);
+    EXPECT_EQ(tiedUp.front(), 2U);
+    EXPECT_NE(tiedUp[1], tiedUp[2]);
+}
+
 // #3669: with no helper to retry it, a refused close offers Restart as administrator... beside its line, and a press
 // raises the elevation notice.
 TEST_F(ConnectionsPanelRenderTest, WithNoHelperARefusedCloseOffersRestartAsAdministrator)

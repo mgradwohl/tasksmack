@@ -630,6 +630,7 @@ set(COMMON_TEST_SOURCES
     Platform/test_DnsMessage.cpp
     Platform/test_PublicIpLookup.cpp  # what either OS's public IP lookup does with a reply (#3117)
     Platform/test_Sha256.cpp  # SHA-256 for Look up on VirusTotal (#3094)
+    Platform/test_PlatformInterfaceDefaults.cpp  # the Platform interfaces' default methods (#3374)
     Platform/test_LinuxDiskSmart.cpp
     Platform/test_SmbiosParser.cpp
     Platform/test_PartitionTable.cpp
@@ -740,6 +741,7 @@ set(COMMON_TEST_SOURCES
     App/test_LaunchOptions.cpp # --minimized on the command line (#3093 part 2)
     App/test_StatusBarViewRender.cpp
     App/test_FontSizeChange.cpp
+    App/test_InterfaceScaleChange.cpp # the Interface scale setting's one change path (#3376)
     App/test_KeyboardShortcuts.cpp
     App/test_ProcessTableNavigation.cpp
     App/test_ProcessSelection.cpp

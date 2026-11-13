@@ -2607,6 +2607,37 @@ TEST_F(UserConfigSaveLoadFixture, AHandedOverFolderIsNeverWrittenThroughALink)
     EXPECT_EQ(parsed(target)["theme"]["id"].value<std::string>(), "arctic-fire") << "not written through the link";
 }
 
+#ifndef _WIN32
+// #2728, #3374: the handed-over config folder itself swapped for a link after the startup check is refused too:
+// an elevated save writes nothing into the folder the link points at.
+TEST_F(UserConfigSaveLoadFixture, AHandedOverFolderSwappedForALinkIsNotSavedInto)
+{
+    writeFile(m_ConfigPath, "[theme]\nid = \"arctic-fire\"\n");
+    // NOLINTNEXTLINE(performance-unnecessary-copy-initialization) - a copy: active() changes below
+    const std::optional<std::filesystem::path> previous = Core::ConfigDirOverride::active();
+    Core::ConfigDirOverride::adoptHandedOver(m_TempDir);
+    auto& config = UserConfig::get();
+    config.load();
+
+    // The folder moves away and a link to it takes its place.
+    std::filesystem::path real = m_TempDir;
+    real += "-real";
+    std::error_code ec;
+    std::filesystem::rename(m_TempDir, real, ec);
+    ASSERT_FALSE(ec) << ec.message();
+    std::filesystem::create_directory_symlink(real, m_TempDir, ec);
+    ASSERT_FALSE(ec) << ec.message();
+
+    config.settings().themeId = "mocha";
+    config.save();
+    Core::ConfigDirOverride::setActiveForTesting(previous);
+
+    EXPECT_EQ(parsed(real / "config.toml")["theme"]["id"].value<std::string>(), "arctic-fire") << "nothing saved through the link";
+    std::filesystem::remove(m_TempDir, ec); // the link; TearDown finds nothing left to remove
+    std::filesystem::rename(real, m_TempDir, ec);
+}
+#endif
+
 TEST_F(UserConfigSaveLoadFixture, ConfigCreatedBeforeTheFirstSaveKeepsItsOtherSettings)
 {
     // No file at startup, then one is created (or repaired) before TaskSmack's first save: only

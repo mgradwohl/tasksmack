@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <optional>
 #include <span>
 #include <vector>
@@ -182,10 +183,12 @@ class Socket
     int m_Fd;
 };
 
-/// Sends @p request and calls @p onMessage(message) for each reply message until NLMSG_DONE, an error, a
-/// non-multipart reply or a timeout. @return false on a failure (an error reply counts).
-template<typename OnMessage>
-[[nodiscard]] bool exchange(int fd, const std::vector<std::byte>& request, std::uint32_t seq, const OnMessage& onMessage)
+} // namespace
+
+bool exchange(int fd,
+              const std::vector<std::byte>& request,
+              std::uint32_t seq,
+              const std::function<void(std::span<const std::byte>)>& onMessage)
 {
     if (::send(fd, request.data(), request.size(), 0) != static_cast<ssize_t>(request.size()))
     {
@@ -230,8 +233,6 @@ template<typename OnMessage>
     }
     return false;
 }
-
-} // namespace
 
 std::vector<std::byte> familyRequest(std::uint32_t seq)
 {
