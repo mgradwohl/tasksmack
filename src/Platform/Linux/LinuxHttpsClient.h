@@ -14,8 +14,11 @@
 
 #include "Platform/IHttpsClient.h"
 
+#include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <expected>
+#include <functional>
 #include <optional>
 #include <stop_token>
 #include <string>
@@ -39,6 +42,38 @@ namespace LinuxHttpsDetail
 
 /// Appends @p chunk to @p body unless that would pass @p maxBytes. @return false (body unchanged) when it would.
 [[nodiscard]] bool appendCapped(std::string& body, std::string_view chunk, std::size_t maxBytes);
+
+/// The most redirects one request follows, each checked by redirectRefusal() first.
+inline constexpr int MAX_REDIRECTS = 5;
+
+/// One transfer of followRedirects()'s chain: how it ended, and for a reply its status and where it redirects.
+struct TransferStep
+{
+    enum class End : std::uint8_t
+    {
+        Reply,   ///< A reply came: status, location and body say what
+        TooLong, ///< The body passed the request's maxBodyBytes
+        Stopped, ///< The stop token ended it
+        Failed,  ///< The transfer failed; failure says why
+    };
+    End end = End::Reply;
+    std::string failure;                 ///< Failed: why, as get() reports it ("libcurl: ...")
+    int status = 0;                      ///< Reply: the HTTP status
+    std::optional<std::string> location; ///< Reply: the absolute URL it redirects to, when it names one
+    std::string body;                    ///< Reply: the body
+};
+
+/// Transfers one URL, given the time left for the whole request.
+using TransferFunction = std::function<TransferStep(const std::string& url, std::chrono::milliseconds left)>;
+
+/// get()'s redirect chain (#3238, tested through a fake @p transfer, #3374): @p transfer for @p url, then for the
+/// URL each 3xx reply's location names, until a reply that isn't a redirect. Every transfer shares the time to
+/// @p deadline, and none starts once it has passed. A redirect redirectRefusal() refuses, one past MAX_REDIRECTS,
+/// a body past @p maxBodyBytes, a stop and a failed transfer each end it with why.
+[[nodiscard]] std::expected<HttpsResponse, std::string> followRedirects(std::string url,
+                                                                        std::chrono::steady_clock::time_point deadline,
+                                                                        std::size_t maxBodyBytes,
+                                                                        const TransferFunction& transfer);
 
 } // namespace LinuxHttpsDetail
 

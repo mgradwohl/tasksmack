@@ -598,5 +598,116 @@ TEST(DetachedSpawnTest, FailureMessagesNameTheProgramAndTheCause)
               "Could not prepare to start /usr/bin/xterm: " + std::system_category().message(EMFILE));
 }
 
+// --- Setup and fork failures no real system gives on demand, through SpawnHooks (#3374) ---
+
+int failingOpenDevNull()
+{
+    errno = EMFILE;
+    return -1;
+}
+
+int failingPipe2(int* /*fds*/, int /*flags*/)
+{
+    errno = ENFILE;
+    return -1;
+}
+
+pid_t failingFork()
+{
+    errno = EAGAIN;
+    return -1;
+}
+
+/// Counts fork calls in this process image: the intermediate child inherits the count, so its own fork (the
+/// second) fails while TaskSmack's (the first) is real. Async-signal-safe: a plain int and fork(2).
+int g_ForkCalls = 0;
+
+pid_t secondForkFails()
+{
+    if (++g_ForkCalls == 2)
+    {
+        errno = EAGAIN;
+        return -1;
+    }
+    return ::fork();
+}
+
+int failingDup2(int /*from*/, int /*to*/)
+{
+    errno = EBADF;
+    return -1;
+}
+
+/// How many descriptors this process has open now.
+[[nodiscard]] std::size_t openDescriptorCount()
+{
+    std::size_t count = 0;
+    for ([[maybe_unused]] const auto& entry : std::filesystem::directory_iterator("/proc/self/fd"))
+    {
+        ++count;
+    }
+    return count;
+}
+
+/// Runs spawnDetached() on a fake terminal with @p hooks; checks it started nothing and left no child.
+[[nodiscard]] SpawnFailure spawnThatFails(const Detail::SpawnHooks& hooks, const char* dirName)
+{
+    const ScopedTempDir dir(dirName);
+    const std::filesystem::path terminal = writeFakeTerminal(dir.path, {}, 0);
+    const std::vector<std::string> argv{terminal.string()};
+    const auto result = Detail::spawnDetached(argv, hooks);
+    errno = 0;
+    EXPECT_EQ(waitNoHang(-1), -1) << "no child left to reap";
+    EXPECT_EQ(errno, ECHILD);
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    EXPECT_FALSE(std::filesystem::exists(dir.path / "argv.txt")) << "nothing ran";
+    return result.has_value() ? SpawnFailure{.stage = SpawnFailure::Stage::Setup, .error = 0} : result.error();
+}
+
+TEST(DetachedSpawnTest, NoDevNullOrNoPipeFailsSetupAndLeaksNoDescriptor)
+{
+    const std::size_t before = openDescriptorCount();
+    Detail::SpawnHooks noDevNull;
+    noDevNull.openDevNull = &failingOpenDevNull;
+    const SpawnFailure open = spawnThatFails(noDevNull, "tasksmack_detached_spawn_open");
+    EXPECT_EQ(open.stage, SpawnFailure::Stage::Setup);
+    EXPECT_EQ(open.error, EMFILE);
+
+    Detail::SpawnHooks noPipe;
+    noPipe.pipe2 = &failingPipe2;
+    const SpawnFailure pipe = spawnThatFails(noPipe, "tasksmack_detached_spawn_pipe");
+    EXPECT_EQ(pipe.stage, SpawnFailure::Stage::Setup);
+    EXPECT_EQ(pipe.error, ENFILE);
+    EXPECT_EQ(openDescriptorCount(), before) << "/dev/null closed again when the pipe failed";
+}
+
+TEST(DetachedSpawnTest, AFailedForkInTaskSmackOrInTheIntermediateChildIsAForkFailure)
+{
+    Detail::SpawnHooks first;
+    first.fork = &failingFork;
+    const SpawnFailure taskSmacks = spawnThatFails(first, "tasksmack_detached_spawn_fork1");
+    EXPECT_EQ(taskSmacks.stage, SpawnFailure::Stage::Fork);
+    EXPECT_EQ(taskSmacks.error, EAGAIN);
+
+    g_ForkCalls = 0;
+    Detail::SpawnHooks second;
+    second.fork = &secondForkFails;
+    const SpawnFailure intermediates = spawnThatFails(second, "tasksmack_detached_spawn_fork2");
+    EXPECT_EQ(intermediates.stage, SpawnFailure::Stage::Fork) << "reported through the pipe by the intermediate child";
+    EXPECT_EQ(intermediates.error, EAGAIN);
+    EXPECT_EQ(g_ForkCalls, 1) << "TaskSmack's own count: the second call was the child's";
+    EXPECT_EQ(spawnFailureMessage(intermediates, "/usr/bin/xterm"),
+              std::format("Could not start a process for /usr/bin/xterm: {}", std::system_category().message(EAGAIN)));
+}
+
+TEST(DetachedSpawnTest, StandardDescriptorsThatCantBeReplacedAreAnExecFailure)
+{
+    Detail::SpawnHooks hooks;
+    hooks.dup2 = &failingDup2;
+    const SpawnFailure failure = spawnThatFails(hooks, "tasksmack_detached_spawn_dup2");
+    EXPECT_EQ(failure.stage, SpawnFailure::Stage::Exec) << "reported by the detached child before execve()";
+    EXPECT_EQ(failure.error, EBADF);
+}
+
 } // namespace
 } // namespace Platform::DetachedSpawn

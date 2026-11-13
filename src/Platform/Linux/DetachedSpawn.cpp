@@ -114,7 +114,8 @@ struct ChildPlan
     const struct sigaction* defaultAction = nullptr;
     // NOLINTNEXTLINE(misc-include-cleaner) - sigset_t is provided by <signal.h>
     const sigset_t* emptyMask = nullptr;
-    bool switchUser = false; ///< RunAs given: become uid/gid before execve() (#2461).
+    int (*dup2)(int, int) = nullptr; ///< ::dup2, or the test's (SpawnHooks::dup2)
+    bool switchUser = false;         ///< RunAs given: become uid/gid before execve() (#2461).
     uid_t uid = 0;
     gid_t gid = 0;
     const gid_t* groups = nullptr; ///< The supplementary groups to set (#3298), groupCount of them
@@ -214,6 +215,13 @@ void markInheritedFdsCloseOnExec(const ChildPlan& plan) noexcept
     }
 }
 
+/// /dev/null, read-write and close-on-exec, for the detached child's stdin, stdout and stderr.
+[[nodiscard]] int openDevNull() noexcept
+{
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic by definition
+    return ::open("/dev/null", O_RDWR | O_CLOEXEC);
+}
+
 /// The detached program's process: reset what it would otherwise inherit from TaskSmack, then exec.
 /// Never returns. Async-signal-safe calls only (signal(7)).
 [[noreturn]] void execDetached(const ChildPlan& plan) noexcept
@@ -231,7 +239,8 @@ void markInheritedFdsCloseOnExec(const ChildPlan& plan) noexcept
     // stdin/stdout/stderr on /dev/null: the terminal draws its own window and must not write into
     // whatever TaskSmack was started from. dup2() clears close-on-exec on the copies. /dev/null and the
     // report pipe are above STDERR_FILENO, so these never overwrite the pipe.
-    if (::dup2(plan.devNull, STDIN_FILENO) < 0 || ::dup2(plan.devNull, STDOUT_FILENO) < 0 || ::dup2(plan.devNull, STDERR_FILENO) < 0)
+    if (plan.dup2(plan.devNull, STDIN_FILENO) < 0 || plan.dup2(plan.devNull, STDOUT_FILENO) < 0 ||
+        plan.dup2(plan.devNull, STDERR_FILENO) < 0)
     {
         writeReport(plan.reportFd, SpawnFailure::Stage::Exec, errno);
         ::_exit(127);
@@ -457,14 +466,13 @@ std::expected<void, SpawnFailure> Detail::spawnDetached(std::span<const std::str
 
     // Opened first, then each moved above STDERR_FILENO: with 0-2 closed, /dev/null would be 0 and
     // the pipe 1 and 2, and the child's dup2() onto 0-2 would replace the report pipe with /dev/null.
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic by definition
-    const int devNullRaw = ::open("/dev/null", O_RDWR | O_CLOEXEC);
+    const int devNullRaw = hooks.openDevNull != nullptr ? hooks.openDevNull() : openDevNull();
     if (devNullRaw < 0)
     {
         return std::unexpected(SpawnFailure{.stage = SpawnFailure::Stage::Setup, .error = errno});
     }
     std::array<int, 2> reportPipe{-1, -1};
-    if (::pipe2(reportPipe.data(), O_CLOEXEC) != 0)
+    if ((hooks.pipe2 != nullptr ? hooks.pipe2 : &::pipe2)(reportPipe.data(), O_CLOEXEC) != 0)
     {
         const int err = errno;
         ::close(devNullRaw);
@@ -502,6 +510,7 @@ std::expected<void, SpawnFailure> Detail::spawnDetached(std::span<const std::str
         .fdLimit = descriptorLimit(),
         .defaultAction = &defaultAction,
         .emptyMask = &emptyMask,
+        .dup2 = hooks.dup2 != nullptr ? hooks.dup2 : &::dup2,
         .switchUser = runAs != nullptr,
         .uid = runAs != nullptr ? runAs->uid : 0,
         .gid = runAs != nullptr ? runAs->gid : 0,
@@ -510,12 +519,13 @@ std::expected<void, SpawnFailure> Detail::spawnDetached(std::span<const std::str
     };
 
     const auto setsidFn = hooks.setsid != nullptr ? hooks.setsid : &::setsid;
+    const auto forkFn = hooks.fork != nullptr ? hooks.fork : &::fork;
     if (hooks.beforeFork != nullptr)
     {
         hooks.beforeFork();
     }
 
-    const pid_t intermediate = ::fork();
+    const pid_t intermediate = forkFn();
     if (intermediate < 0)
     {
         return std::unexpected(SpawnFailure{.stage = SpawnFailure::Stage::Fork, .error = errno});
@@ -531,7 +541,7 @@ std::expected<void, SpawnFailure> Detail::spawnDetached(std::span<const std::str
             writeReport(plan.reportFd, SpawnFailure::Stage::Setup, errno);
             ::_exit(1);
         }
-        const pid_t program = ::fork();
+        const pid_t program = forkFn();
         if (program < 0)
         {
             writeReport(plan.reportFd, SpawnFailure::Stage::Fork, errno);

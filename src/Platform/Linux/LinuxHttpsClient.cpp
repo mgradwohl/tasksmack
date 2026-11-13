@@ -3,22 +3,22 @@
 #include "Platform/IHttpsClient.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <expected>
+#include <format>
 #include <optional>
 #include <stop_token>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #ifdef TASKSMACK_HAS_CURL
 #include <array>
 #include <cerrno>
-#include <chrono>
 #include <ctime>
-#include <format>
 #include <memory>
 #include <mutex>
-#include <utility>
 
 #include <curl/curl.h>
 #include <curl/curlver.h>
@@ -128,6 +128,46 @@ bool appendCapped(std::string& body, std::string_view chunk, std::size_t maxByte
     }
     body.append(chunk);
     return true;
+}
+
+std::expected<HttpsResponse, std::string>
+followRedirects(std::string url, std::chrono::steady_clock::time_point deadline, std::size_t maxBodyBytes, const TransferFunction& transfer)
+{
+    int redirects = 0;
+    for (;;)
+    {
+        // The whole request, every redirect included, shares one budget, as WinHTTP's steps do.
+        const auto left = std::chrono::ceil<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
+        if (left.count() <= 0)
+        {
+            return std::unexpected(std::string("libcurl: Timeout was reached"));
+        }
+        TransferStep step = transfer(url, left);
+        switch (step.end)
+        {
+        case TransferStep::End::TooLong:
+            return std::unexpected(std::format("The reply was longer than {} bytes", maxBodyBytes));
+        case TransferStep::End::Stopped:
+            return std::unexpected(std::string("Stopped"));
+        case TransferStep::End::Failed:
+            return std::unexpected(std::move(step.failure));
+        case TransferStep::End::Reply:
+            break;
+        }
+        if (step.status < 300 || step.status > 399 || !step.location.has_value())
+        {
+            return HttpsResponse{.body = std::move(step.body), .status = step.status};
+        }
+        if (++redirects > MAX_REDIRECTS)
+        {
+            return std::unexpected(std::format("More than {} redirects", MAX_REDIRECTS));
+        }
+        if (std::optional<std::string> refused = redirectRefusal(*step.location))
+        {
+            return std::unexpected(std::move(*refused));
+        }
+        url = std::move(*step.location);
+    }
 }
 
 } // namespace LinuxHttpsDetail
@@ -240,9 +280,6 @@ class SigpipeBlock
 
 // NOLINTEND(misc-include-cleaner)
 
-/// The most redirects one request follows, each checked by redirectRefusal() first.
-constexpr int MAX_REDIRECTS = 5;
-
 } // namespace
 
 bool LinuxHttpsClient::built() noexcept
@@ -331,37 +368,38 @@ std::expected<HttpsResponse, std::string> LinuxHttpsClient::get(const HttpsReque
     curl_easy_setopt(handle, CURLOPT_ERRORBUFFER, detail.data());
     // NOLINTEND(cppcoreguidelines-pro-type-vararg)
 
-    int redirects = 0;
-    for (;;)
+    // One transfer of the chain followRedirects() walks: the same handle, each with the time left.
+    const auto transferOne = [&](const std::string& target, std::chrono::milliseconds left) -> LinuxHttpsDetail::TransferStep
     {
-        // The whole request, every redirect included, shares one budget, as WinHTTP's steps do.
-        const auto left = std::chrono::ceil<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
-        if (left.count() <= 0)
-        {
-            return std::unexpected(std::string("libcurl: Timeout was reached"));
-        }
+        using Step = LinuxHttpsDetail::TransferStep;
         const long leftMs = static_cast<long>(left.count());
         transfer.body.clear();
         detail.front() = '\0';
         // NOLINTBEGIN(cppcoreguidelines-pro-type-vararg) - libcurl's variadic C API
-        curl_easy_setopt(handle, CURLOPT_URL, url.c_str());
+        curl_easy_setopt(handle, CURLOPT_URL, target.c_str());
         curl_easy_setopt(handle, CURLOPT_CONNECTTIMEOUT_MS, leftMs);
         curl_easy_setopt(handle, CURLOPT_TIMEOUT_MS, leftMs);
         // NOLINTEND(cppcoreguidelines-pro-type-vararg)
         const CURLcode result = curl_easy_perform(handle);
         if (transfer.tooLong)
         {
-            return std::unexpected(std::format("The reply was longer than {} bytes", request.maxBodyBytes));
+            return Step{.end = Step::End::TooLong, .failure = {}, .status = 0, .location = std::nullopt, .body = {}};
         }
         if (result == CURLE_ABORTED_BY_CALLBACK && stop.stop_requested())
         {
-            return std::unexpected(std::string("Stopped"));
+            return Step{.end = Step::End::Stopped, .failure = {}, .status = 0, .location = std::nullopt, .body = {}};
         }
         if (result != CURLE_OK)
         {
             const std::string_view why(detail.data());
-            return std::unexpected(why.empty() ? std::format("libcurl: {}", curl_easy_strerror(result))
-                                               : std::format("libcurl: {}: {}", curl_easy_strerror(result), why));
+            return Step{
+                .end = Step::End::Failed,
+                .failure = why.empty() ? std::format("libcurl: {}", curl_easy_strerror(result))
+                                       : std::format("libcurl: {}: {}", curl_easy_strerror(result), why),
+                .status = 0,
+                .location = std::nullopt,
+                .body = {},
+            };
         }
         long status = 0;
         const char* location = nullptr;
@@ -369,20 +407,15 @@ std::expected<HttpsResponse, std::string> LinuxHttpsClient::get(const HttpsReque
         curl_easy_getinfo(handle, CURLINFO_RESPONSE_CODE, &status);
         curl_easy_getinfo(handle, CURLINFO_REDIRECT_URL, &location);
         // NOLINTEND(cppcoreguidelines-pro-type-vararg)
-        if (status < 300 || status > 399 || location == nullptr)
-        {
-            return HttpsResponse{.body = std::move(transfer.body), .status = static_cast<int>(status)};
-        }
-        if (++redirects > MAX_REDIRECTS)
-        {
-            return std::unexpected(std::format("More than {} redirects", MAX_REDIRECTS));
-        }
-        if (std::optional<std::string> refused = LinuxHttpsDetail::redirectRefusal(location))
-        {
-            return std::unexpected(std::move(*refused));
-        }
-        url = location;
-    }
+        return Step{
+            .end = Step::End::Reply,
+            .failure = {},
+            .status = static_cast<int>(status),
+            .location = location != nullptr ? std::optional<std::string>(location) : std::nullopt,
+            .body = std::move(transfer.body),
+        };
+    };
+    return LinuxHttpsDetail::followRedirects(std::move(url), deadline, request.maxBodyBytes, transferOne);
 }
 
 #else
