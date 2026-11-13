@@ -61,7 +61,8 @@ void preparePanelPlatforms(const Synthetic::Scenario* scenario);
 [[nodiscard]] ProcessDetailsReaders makeProcessDetailsReaders(const Synthetic::Scenario* scenario);
 
 /// Process Details' memory map reader (#3089): the platform's, or @p scenario's, which reads nothing. Making it
-/// reads nothing; the Memory map section's view calls it on its worker.
+/// reads nothing; the Memory map section's view calls it on its worker. makeProcessDetailsReaders() hands
+/// the panel one.
 [[nodiscard]] std::unique_ptr<Platform::IProcessMemoryMapReader> makeProcessMemoryMapReader(const Synthetic::Scenario* scenario);
 
 /// The Connections tab's process actions, for Close connection (#3066): the scenario's, or the platform's,

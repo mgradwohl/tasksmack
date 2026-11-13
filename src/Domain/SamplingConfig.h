@@ -161,6 +161,12 @@ inline constexpr int PROCESS_IO_PRIORITY_REFRESH_MS = 2000;
 // process loads and unloads modules rarely after startup, so a slow re-read is enough to notice one.
 inline constexpr int PROCESS_MODULES_REFRESH_MS = 3000;
 
+// How often Process Details re-reads the selected process's memory map (milliseconds) (#3089)
+// On demand, like the modules: only for the selected process, only while its Memory map section is open.
+// A read walks the whole address space (VirtualQueryEx region by region on Windows; smaps, which walks the
+// page tables, on Linux), so it is slower than the other sections' and its re-read slower to match.
+inline constexpr int PROCESS_MEMORY_MAP_REFRESH_MS = 5000;
+
 // How often Process Details re-reads the selected process's security context (milliseconds) (#1526)
 // On demand, like the modules: only for the selected process, only while its Security section is open.
 // Credentials change rarely (setuid(), a capability drop), so a slow re-read is enough to notice one.

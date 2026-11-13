@@ -18,6 +18,7 @@
 #include "Platform/VulkanInfo.h"
 #include "Platform/Windows/DXGIGPUProbeMath.h"
 #include "Platform/Windows/WindowsCommitPaging.h"
+#include "Platform/Windows/WindowsDevicePaths.h"
 #include "Platform/Windows/WindowsDevices.h"
 #include "Platform/Windows/WindowsDriverNodes.h"
 #include "Platform/Windows/WindowsGraphics.h"
@@ -208,8 +209,8 @@ TEST(WindowsSystemInfoProbeTest, ReadsCommitAndPageFiles)
 
 TEST(WindowsSystemInfoProbeTest, NtPathsBecomeDosPaths)
 {
-    using WindowsCommitPaging::ntPathToDosPath;
-    const std::vector<WindowsCommitPaging::DriveDevice> drives{
+    using WindowsDevicePaths::ntPathToDosPath;
+    const std::vector<WindowsDevicePaths::DriveDevice> drives{
         {.letter = L'C', .device = L"\\Device\\HarddiskVolume3"},
         {.letter = L'D', .device = L"\\Device\\HarddiskVolume1"},
     };
@@ -1104,11 +1105,13 @@ BOOL WINAPI bigLayoutIoControl(
     std::uint32_t number = 1;
     while (number <= 40)
     {
-        entries.push_back({.offset = number * PartitionTable::TestData::MIB,
-                           .length = PartitionTable::TestData::MIB,
-                           .number = number,
-                           .mbrType = 0,
-                           .gptType = PartitionTable::TestData::BASIC_DATA});
+        entries.push_back({
+            .offset = number * PartitionTable::TestData::MIB,
+            .length = PartitionTable::TestData::MIB,
+            .number = number,
+            .mbrType = 0,
+            .gptType = PartitionTable::TestData::BASIC_DATA,
+        });
         ++number;
     }
     const std::vector<std::byte> layout = PartitionTable::TestData::driveLayout(PartitionTable::STYLE_GPT, entries);
@@ -1214,12 +1217,14 @@ int g_VulkanReads = 0;                  // NOLINT(cppcoreguidelines-avoid-non-co
         .instanceVersion = Vulkan::makeApiVersion(1, 4, 304),
         .devices =
             {
-                {.vendorId = 0x10DE,
-                 .deviceId = 0x2786,
-                 .apiVersion = Vulkan::makeApiVersion(1, 3, 0),
-                 .driverVersion = 1,
-                 .driverId = 4,
-                 .luid = luidBytes(3)},
+                {
+                    .vendorId = 0x10DE,
+                    .deviceId = 0x2786,
+                    .apiVersion = Vulkan::makeApiVersion(1, 3, 0),
+                    .driverVersion = 1,
+                    .driverId = 4,
+                    .luid = luidBytes(3),
+                },
                 {
                     .vendorId = 0x10DE,
                     .deviceId = 0x2786,

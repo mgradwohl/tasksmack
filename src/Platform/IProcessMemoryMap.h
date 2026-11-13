@@ -149,8 +149,7 @@ class IProcessMemoryMapReader
     }
 };
 
-/// The reader for a run that cannot read another process's memory map (synthetic scenarios, and Windows
-/// until its lane's reader lands).
+/// The reader for a run that cannot read another process's memory map (synthetic scenarios).
 class UnsupportedProcessMemoryMapReader final : public IProcessMemoryMapReader
 {
   public:

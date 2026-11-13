@@ -705,6 +705,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessConnectionsView.cpp
     App/test_ProcessConnectionsViewRender.cpp
     App/test_ProcessModulesViewRender.cpp
+    App/test_ProcessMemoryMapViewRender.cpp # Process Details Memory map (#3089)
     App/test_ProcessThreadsView.cpp # Process Details Threads (#3069)
     App/test_ProcessCrashHistoryView.cpp
     App/test_ProcessOpenFilesViewRender.cpp
@@ -862,6 +863,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsProcessIconSource.cpp
     Platform/test_WindowsPackageLogo.cpp
     Platform/test_WindowsProcessModules.cpp
+    Platform/test_WindowsProcessMemoryMap.cpp  # the region walk through fakes, the decoding, device paths, this process's own (#3089)
     Platform/test_WindowsProcessOpenFiles.cpp
     Platform/test_WindowsProcessSecurity.cpp
     Platform/test_WindowsThreadActions.cpp  # one thread's Suspend, Resume and End: the guard table through fakes, and a test thread of its own (#3069)
@@ -1055,6 +1057,7 @@ add_executable(TaskSmackTests
     # test_ProcessPriorityViewRender.cpp, test_ProcessIoPriorityViewRender.cpp,
     # test_ProcessDetailsChartsRender.cpp, test_ProcessEnvironmentViewRender.cpp,
     # test_ProcessConnectionsViewRender.cpp), the Modules section (test_ProcessModulesViewRender.cpp, #802),
+    # the Memory map section (test_ProcessMemoryMapViewRender.cpp, #3089),
     # the Open files section (test_ProcessOpenFilesViewRender.cpp, #183), the Security section
     # (test_ProcessSecurityViewRender.cpp, #1526), and the batch priority dialog (#1484,
     # test_ProcessBatchPriorityDialogRender.cpp), and the batch I/O priority dialog (#3551,
@@ -1076,6 +1079,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessEnvironmentView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessConnectionsView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessModulesView.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessMemoryMapView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessThreadsView.cpp
     # Process Details' Recent crashes line (#1675), run headless (test_ProcessCrashHistoryView.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessCrashHistoryView.cpp

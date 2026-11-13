@@ -41,6 +41,8 @@ inline constexpr std::string_view STARTUP_SAMPLER_THREAD_NAME = "ts-sampler-auto
 inline constexpr std::string_view CONNECTIONS_READ_THREAD_NAME = "ts-conn-read";
 /// The worker that runs one Process Details Modules read at a time (#802).
 inline constexpr std::string_view MODULES_READ_THREAD_NAME = "ts-mod-read";
+/// The worker that runs one Process Details Memory map read at a time (#3089).
+inline constexpr std::string_view MEMORY_MAP_READ_THREAD_NAME = "ts-mmap-read";
 /// The worker that runs one Process Details Threads read at a time (#3069).
 inline constexpr std::string_view THREADS_READ_THREAD_NAME = "ts-thr-read";
 /// The worker that runs one Process Details Open files read at a time (#183).
