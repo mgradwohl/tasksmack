@@ -1,6 +1,7 @@
 // Process Details' Threads section (#3069): its cadence, CPU % from two reads, sort, filter and statuses
 // against a mock reader, and its real ImGui render, headless.
 
+#include "App/Panels/AuthorizeWording.h"
 #include "App/Panels/ProcessActionConfirm.h"
 #include "App/Panels/ProcessThreadsView.h"
 #include "App/Panels/ThreadActionControl.h"
@@ -8,6 +9,7 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessThreads.h"
 #include "UI/Format.h"
+#include "UI/IconsFontAwesome6.h"
 
 #include <gtest/gtest.h>
 #include <imgui.h>
@@ -883,6 +885,82 @@ TEST_F(ProcessThreadsViewRenderTest, EachStateDrawsItsOwnLine)
     const std::string filtered = drawOnce(view);
     EXPECT_TRUE(filtered.contains("No threads match the filter")) << filtered;
     EXPECT_FALSE(filtered.contains("pool-1")) << filtered;
+}
+
+/// The open popup on top of the stack, or null.
+[[nodiscard]] ImGuiWindow* topPopupWindow()
+{
+    ImGuiContext& g = *GImGui;
+    return g.OpenPopupStack.empty() ? nullptr : g.OpenPopupStack.back().Window;
+}
+
+// #3069, #3374: the row menu's items request their action for the thread the menu was opened on; the confirm's
+// button runs it, the line above the table says it's running until the result is taken in, and a refusal an
+// administrator could redo offers Authenticate and retry. Resume is offered only for a suspended thread.
+TEST_F(ProcessThreadsViewRenderTest, TheRowMenuRequestsTheActionAndItsConfirmRunsIt)
+{
+    TestMocks::MockProcessActions actions;
+    actions.setCapabilities(threadActionCapabilities(/*canAuthorize=*/true));
+    actions.setThreadActionResult(Platform::ProcessActionResult::denied("Access denied: can't suspend thread 105"));
+    ProcessThreadsView view(1);
+    ThreadsReadResult read = threads({thread(100, "server", 1), thread(105, "pool-1", 2)});
+    read.windowsPriorities = true;
+    apply(view, read, 0.0);
+    view.setThreadActions(true, "server");
+    static_cast<void>(view.update(nullptr, TARGET, 0.0F, 1000)); // the process shown
+
+    view.openRowMenu(105);
+    static_cast<void>(drawOnce(view)); // the popup's first frame sizes it
+    std::string captured = drawOnce(view);
+    ASSERT_TRUE(captured.contains("thread 105 (pool-1)")) << captured;
+    ImGuiWindow* menu = topPopupWindow();
+    ASSERT_NE(menu, nullptr);
+    // Resume: not offered for a running thread, so pressing it requests nothing.
+    ImGui::ActivateItemByID(ImHashStr(ICON_FA_PLAY "  Resume thread...", 0, menu->ID));
+    static_cast<void>(drawOnce(view));
+    EXPECT_FALSE(view.actionControl().pending().has_value());
+    ImGui::ActivateItemByID(ImHashStr(ICON_FA_PAUSE "  Suspend thread...", 0, menu->ID));
+    static_cast<void>(drawOnce(view));
+    ASSERT_TRUE(view.actionControl().pending().has_value());
+    EXPECT_EQ(view.actionControl().pending()->tid, 105);
+    EXPECT_EQ(view.actionControl().pending()->action, Platform::ThreadAction::Suspend);
+
+    // The confirm's own button (Suspend isn't destructive: the plain one) runs it.
+    static_cast<void>(drawConfirmOnce(view, &actions, TARGET));
+    static_cast<void>(drawConfirmOnce(view, &actions, TARGET));
+    const ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
+    ASSERT_NE(modal, nullptr);
+    ImGui::ActivateItemByID(ImHashStr("Suspend Thread", 0, modal->ID));
+    static_cast<void>(drawConfirmOnce(view, &actions, TARGET));
+    static_cast<void>(drawConfirmOnce(view, &actions, TARGET));
+    EXPECT_TRUE(view.actionControl().busy());
+    captured = drawOnce(view);
+    EXPECT_TRUE(captured.contains(view.actionControl().pendingText())) << "running, until its result is taken in:\n" << captured;
+
+    view.actionControl().update(0.0F, /*wait=*/true);
+    EXPECT_EQ(actions.threadActionCount(), 1);
+    EXPECT_EQ(actions.lastThreadId(), 105);
+    static_cast<void>(drawOnce(view));
+    captured = drawOnce(view);
+    EXPECT_TRUE(captured.contains("Access denied: can't suspend thread 105")) << captured;
+    EXPECT_TRUE(captured.contains(AuthorizeWording::RETRY_LABEL)) << captured;
+}
+
+// #3069, #3374: a confirm whose process is no longer shown when it would first be drawn is dropped unseen.
+TEST_F(ProcessThreadsViewRenderTest, AConfirmForAProcessNoLongerShownIsDroppedBeforeItIsDrawn)
+{
+    TestMocks::MockProcessActions actions;
+    actions.setCapabilities(threadActionCapabilities());
+    ProcessThreadsView view(1);
+    apply(view, threads({thread(105, "worker", 1)}), 0.0);
+    view.setThreadActions(true, "server");
+    static_cast<void>(view.update(nullptr, TARGET, 0.0F, 1000));
+    view.requestThreadAction(view.rows()[0].thread, Platform::ThreadAction::Suspend);
+    ASSERT_TRUE(view.actionControl().pending().has_value());
+
+    static_cast<void>(drawConfirmOnce(view, &actions, {.pid = 200, .startTimeTicks = 1}));
+    EXPECT_FALSE(view.actionControl().pending().has_value());
+    EXPECT_EQ(actions.threadActionCount(), 0);
 }
 
 } // namespace
