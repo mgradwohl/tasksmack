@@ -345,7 +345,7 @@ struct ProcessActionCapabilities
     /// FileManager1 over D-Bus or xdg-open; Windows: SHOpenFolderAndSelectItems or explorer.exe /select, #3426).
     bool canOpenFileLocation = false;
     /// imageSha256(): the SHA-256 of a process's executable can be read (#3094, Look up on VirusTotal; Linux:
-    /// /proc/<pid>/exe; Windows: #3646).
+    /// /proc/<pid>/exe; Windows: the file QueryFullProcessImageNameW names, #3646).
     bool canHashImage = false;
     /// runProgram(): Run new task can start a program (#3065), and with administrator rights too where
     /// canRunProgramAsAdministrator says so (Linux: pkexec is installed, or TaskSmack runs as root; Windows,

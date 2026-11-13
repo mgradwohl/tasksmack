@@ -24,6 +24,7 @@
 #include <stop_token>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace Platform
 {
@@ -60,6 +61,44 @@ std::string errorText(std::string_view step, std::uint32_t error)
         break;
     }
     return std::format("{}: {} ({})", step, meaning, error);
+}
+
+std::expected<std::vector<std::wstring>, std::string> headerLines(const HttpsRequest& request)
+{
+    const auto breaksTheLine = [](std::string_view value)
+    {
+        return std::ranges::any_of(value, [](char c) { return c == '\r' || c == '\n' || c == '\0'; });
+    };
+    if (breaksTheLine(request.accept))
+    {
+        return std::unexpected(std::string("The request's Accept header holds a line break"));
+    }
+    // A name is an RFC 9110 token; a value can't end the header or the request (header injection).
+    const auto tokenCharacter = [](char c)
+    {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+               std::string_view("!#$%&'*+-.^_`|~").contains(c);
+    };
+    std::vector<std::wstring> lines;
+    lines.reserve(request.headers.size());
+    for (const auto& [name, value] : request.headers)
+    {
+        if (name.empty() || !std::ranges::all_of(name, tokenCharacter))
+        {
+            return std::unexpected(std::string("A request header's name isn't a header token"));
+        }
+        if (breaksTheLine(value))
+        {
+            return std::unexpected(std::string("A request header's value holds a line break"));
+        }
+        const std::wstring wideValue = WinString::utf8ToWide(value);
+        if (wideValue.empty() && !value.empty())
+        {
+            return std::unexpected(std::string("A request header's value isn't UTF-8"));
+        }
+        lines.push_back(WinString::utf8ToWide(name) + L": " + wideValue);
+    }
+    return lines;
 }
 
 void Completion::begin()
@@ -375,6 +414,12 @@ std::expected<HttpsResponse, std::string> WindowsHttpsClient::get(const HttpsReq
     {
         return std::unexpected(std::string("The request's host, path or User-Agent is empty or isn't UTF-8"));
     }
+    // Checked before anything is opened. Neither the lines nor a refusal is logged: a value may be a secret.
+    const auto extraHeaders = WindowsHttpsDetail::headerLines(request);
+    if (!extraHeaders.has_value())
+    {
+        return std::unexpected(extraHeaders.error());
+    }
 
     const auto deadline = std::chrono::steady_clock::now() + request.timeout;
     const InternetHandle session(
@@ -410,6 +455,16 @@ std::expected<HttpsResponse, std::string> WindowsHttpsClient::get(const HttpsReq
     if (const int ms = remainingMs(deadline); m_Fns.setTimeouts(handle.get(), ms, ms, ms, ms) == FALSE)
     {
         return lastError("WinHttpSetTimeouts");
+    }
+    // The extra headers (#3646), one call each; a failure names the call and its error, never the header.
+    for (const std::wstring& line : *extraHeaders)
+    {
+        if (m_Fns.addRequestHeaders(
+                handle.get(), line.c_str(), static_cast<DWORD>(line.size()), WINHTTP_ADDREQ_FLAG_ADD | WINHTTP_ADDREQ_FLAG_REPLACE) ==
+            FALSE)
+        {
+            return lastError("WinHttpAddRequestHeaders");
+        }
     }
 
     std::wstring headers;
