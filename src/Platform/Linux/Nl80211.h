@@ -7,6 +7,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <span>
 #include <string>
@@ -96,6 +97,16 @@ struct Station
 /// The station a GET_STATION reply @p message (one netlink message, header included) describes; nullopt
 /// when it isn't one or has no station info.
 [[nodiscard]] std::optional<Station> parseStation(std::span<const std::byte> message, std::uint16_t familyId);
+
+/// Sends @p request on the netlink socket @p fd and calls @p onMessage with each reply message to sequence @p seq
+/// (header included), until NLMSG_DONE, an error reply, a reply that isn't multipart, a malformed message, 64
+/// datagrams or the socket's receive timeout. Messages to another sequence are passed over. @return false on a
+/// failure, an error reply included; true on NLMSG_DONE, an acknowledgement (an error reply of 0) or a single reply.
+/// readStation()'s exchanges; declared here for its tests (#3374).
+[[nodiscard]] bool exchange(int fd,
+                            const std::vector<std::byte>& request,
+                            std::uint32_t seq,
+                            const std::function<void(std::span<const std::byte>)>& onMessage);
 
 /// The adapter's station, read now over a generic netlink socket; nullopt when nl80211 isn't there, the
 /// adapter isn't associated, or the read failed or timed out. Blocking, bounded by a receive timeout.

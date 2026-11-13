@@ -5,6 +5,8 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
+#include <cerrno>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -17,6 +19,8 @@
 #include <linux/genetlink.h>
 #include <linux/netlink.h>
 #include <linux/nl80211.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 namespace Platform
 {
@@ -201,6 +205,128 @@ TEST(Nl80211Test, AnAdapterWithoutWifiHasNoStation)
     const auto started = std::chrono::steady_clock::now();
     EXPECT_FALSE(Nl80211::readStation(1).has_value());
     EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds(3));
+}
+
+// --- exchange(): the reply loop, over a socket pair standing in for the kernel's netlink socket (#3374) ---
+
+/// A netlink header of @p type, @p flags and sequence @p seq with @p payload after it, its length as given or the
+/// real one.
+[[nodiscard]] Bytes reply(std::uint16_t type,
+                          std::uint16_t flags,
+                          std::uint32_t seq,
+                          const Bytes& payload = {},
+                          std::optional<std::uint32_t> length = std::nullopt)
+{
+    Bytes out;
+    put<std::uint32_t>(out, length.value_or(static_cast<std::uint32_t>(NLMSG_HDRLEN + payload.size())));
+    put<std::uint16_t>(out, type);
+    put<std::uint16_t>(out, flags);
+    put<std::uint32_t>(out, seq);
+    put<std::uint32_t>(out, 0);
+    out.insert(out.end(), payload.begin(), payload.end());
+    return out;
+}
+
+/// Two connected SOCK_SEQPACKET ends: exchange() talks on first, the test answers on second, a datagram at a time.
+class NetlinkExchangeTest : public ::testing::Test
+{
+  protected:
+    void SetUp() override
+    {
+        ASSERT_EQ(::socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, m_Fds.data()), 0) << std::strerror(errno);
+    }
+    void TearDown() override
+    {
+        for (const int fd : m_Fds)
+        {
+            if (fd >= 0)
+            {
+                ::close(fd);
+            }
+        }
+    }
+
+    /// Queues @p datagram for exchange() to receive.
+    void answer(const Bytes& datagram) const
+    {
+        ASSERT_EQ(::send(m_Fds[1], datagram.data(), datagram.size(), 0), static_cast<ssize_t>(datagram.size()));
+    }
+
+    /// Runs exchange() for sequence 2, counting the messages it hands over.
+    [[nodiscard]] bool run(int& messages) const
+    {
+        messages = 0;
+        return Nl80211::exchange(m_Fds[0], Bytes(NLMSG_HDRLEN), 2, [&messages](std::span<const std::byte> /*message*/) { ++messages; });
+    }
+
+    /// The peer sends nothing more: exchange()'s next receive sees the end. (Its request still goes: the peer's
+    /// receiving side stays open, so no SIGPIPE.)
+    void endPeer() const
+    {
+        ASSERT_EQ(::shutdown(m_Fds[1], SHUT_WR), 0) << std::strerror(errno);
+    }
+
+  private:
+    std::array<int, 2> m_Fds{-1, -1};
+};
+
+TEST_F(NetlinkExchangeTest, AMultipartReplyRunsUntilDoneAndPassesOverOtherSequences)
+{
+    answer(concat({reply(0x1C, NLM_F_MULTI, 2, Bytes(4)), reply(0x1C, NLM_F_MULTI, 9, Bytes(4)), reply(0x1C, NLM_F_MULTI, 2, Bytes(4))}));
+    answer(reply(NLMSG_DONE, NLM_F_MULTI, 2, Bytes(4)));
+    int messages = 0;
+    EXPECT_TRUE(run(messages));
+    EXPECT_EQ(messages, 2) << "sequence 9's message isn't this exchange's";
+}
+
+TEST_F(NetlinkExchangeTest, ASingleReplyEndsTheExchange)
+{
+    answer(concat({reply(0x1C, 0, 2, Bytes(4)), reply(0x1C, 0, 2, Bytes(4))}));
+    int messages = 0;
+    EXPECT_TRUE(run(messages));
+    EXPECT_EQ(messages, 1);
+}
+
+TEST_F(NetlinkExchangeTest, AnAcknowledgementSucceedsAndAnErrorReplyFails)
+{
+    int messages = 0;
+    answer(reply(NLMSG_ERROR, 0, 2, value<std::int32_t>(0)));
+    EXPECT_TRUE(run(messages)) << "an error reply of 0 is an acknowledgement";
+
+    answer(reply(NLMSG_ERROR, 0, 2, value<std::int32_t>(-ENODEV)));
+    EXPECT_FALSE(run(messages));
+
+    answer(reply(NLMSG_ERROR, 0, 2)); // too short to hold the error
+    EXPECT_FALSE(run(messages));
+    EXPECT_EQ(messages, 0);
+}
+
+TEST_F(NetlinkExchangeTest, AMalformedLengthFails)
+{
+    int messages = 0;
+    answer(reply(0x1C, NLM_F_MULTI, 2, Bytes(4), NLMSG_HDRLEN - 1));
+    EXPECT_FALSE(run(messages)) << "shorter than its own header";
+
+    answer(reply(0x1C, NLM_F_MULTI, 2, Bytes(4), 4096));
+    EXPECT_FALSE(run(messages)) << "longer than the datagram";
+    EXPECT_EQ(messages, 0);
+}
+
+TEST_F(NetlinkExchangeTest, AClosedSocketOrAnEndlessReplyFails)
+{
+    int messages = 0;
+    for (int datagram = 0; datagram < 64; ++datagram)
+    {
+        answer(reply(0x1C, NLM_F_MULTI, 2, Bytes(4)));
+    }
+    answer(reply(NLMSG_DONE, NLM_F_MULTI, 2, Bytes(4))); // the 65th: never read
+    EXPECT_FALSE(run(messages)) << "bounded at 64 datagrams";
+    EXPECT_EQ(messages, 64);
+
+    int drained = 0;
+    EXPECT_TRUE(run(drained)) << "the DONE left over";
+    endPeer();
+    EXPECT_FALSE(run(messages)) << "nothing more to receive";
 }
 
 } // namespace
