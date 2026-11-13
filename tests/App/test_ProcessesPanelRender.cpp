@@ -5372,5 +5372,110 @@ TEST_F(ProcessesPanelRenderTest, AProcessStuckInDiskSleepHasItsRowTinted)
     panel->onDetach();
 }
 
+/// An attached panel reading init (1), server (100) and worker (101), with I/O priorities read for the first two
+/// (#3551) and none for the worker, over mock actions that can set an I/O priority; @p actions is left pointing at them.
+[[nodiscard]] std::unique_ptr<ProcessesPanel> ioPriorityPanel(TestMocks::MockProcessActions*& actions)
+{
+    auto panel = std::make_unique<ProcessesPanel>(
+        [&actions]
+        {
+            auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+            Platform::ProcessCapabilities caps = probe->capabilities();
+            caps.hasIoPriority = true;
+            probe->setCapabilities(caps);
+            auto init = TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0);
+            init.ioPriority = Platform::IoPriority{.ioClass = Platform::IoPriorityClass::Idle, .level = 0};
+            auto server = TestMocks::makeProcessCounters(100, "server", 'R', 200, 50, 1000, std::uint64_t{8} << 20U, 1);
+            server.ioPriority = Platform::IoPriority{.ioClass = Platform::IoPriorityClass::BestEffort, .level = 2};
+            auto worker = TestMocks::makeProcessCounters(101, "worker", 'S', 30, 10, 1100, std::uint64_t{2} << 20U, 100);
+            for (const auto& counters : {init, server, worker})
+            {
+                probe->withProcess(counters);
+            }
+            auto mock = std::make_unique<TestMocks::MockProcessActions>();
+            mock->setCapabilities({.canTerminate = true, .canKill = true, .canSetIoPriority = true});
+            actions = mock.get();
+            return ProcessesPanelPlatform{.probe = std::move(probe), .actions = std::move(mock), .icons = nullptr};
+        },
+        [](Core::Event&) {});
+    attachAndSeed(*panel);
+    Core::ActiveTabChangedEvent shown("Processes");
+    panel->onEvent(shown);
+    return panel;
+}
+
+// #3551, #3374: Set I/O priority for N processes... sets it on every process the dialog listed when Apply is pressed,
+// on the batch's worker, and the toolbar names the priority and the count.
+TEST_F(ProcessesPanelRenderTest, TheBatchIoPriorityDialogsApplySetsItOnEveryListedProcess)
+{
+    TestMocks::MockProcessActions* actions = nullptr;
+    const auto panel = ioPriorityPanel(actions);
+    ASSERT_NE(actions, nullptr);
+    renderUntilLoaded(*panel);
+    selectAll(*panel);
+    ASSERT_EQ(panel->selectionCount(), 3U);
+    ASSERT_TRUE(openARowMenu(*panel).has_value());
+    pressPopupItem(*panel, "###SetIoPriority");
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    ASSERT_TRUE(panel->batchIoPriorityDialogForTesting().isPending());
+    pressModalFilledButton(*panel, "Apply to 3 processes");
+    ASSERT_TRUE(updateUntilBatchResult(*panel, "I/O priority set to")); // from the batch's worker (#2142)
+    EXPECT_TRUE(renderAndCapture(*panel).contains("for 3 processes"));
+    EXPECT_EQ(actions->setIoPriorityCount(), 3);
+    panel->onDetach();
+}
+
+// #3551, #3374: the I/O priority column shows each process's class and level as read, and a process whose I/O
+// priority couldn't be read gets the unavailable cell, not a made-up value.
+TEST_F(ProcessesPanelRenderTest, TheIoPriorityColumnShowsWhatWasReadAndMarksWhatWasnt)
+{
+    ProcessColumnSettings& settings = UserConfig::get().settings().processColumns;
+    for (const ProcessColumn col : allProcessColumns())
+    {
+        settings.setVisible(col, col == ProcessColumn::IoPriority);
+    }
+    TestMocks::MockProcessActions* actions = nullptr;
+    const auto panel = ioPriorityPanel(actions);
+    renderUntilLoaded(*panel);
+    static_cast<void>(renderAndCapture(*panel));
+    const std::string text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains(getColumnInfo(ProcessColumn::IoPriority).name)) << text;
+    EXPECT_TRUE(text.contains("best-effort 2")) << text;
+    EXPECT_TRUE(text.contains("idle")) << text;
+    EXPECT_FALSE(text.contains("default")) << "the worker's unread priority isn't worded as one:\n" << text;
+    panel->onDetach();
+}
+
+// #3467, #3374: when every selected process has a priority change running in Process Details, Set priority for N
+// processes... sets none, starts no batch, and says why at once.
+TEST_F(ProcessesPanelRenderTest, ABatchPriorityChangeWithEveryProcessHeldElsewhereSetsNone)
+{
+    PriorityChangesInFlight changes;
+    TestMocks::MockProcessActions* actions = nullptr;
+    const auto panel = attachedPanelWithActions([](Core::Event&) {}, actions);
+    panel->setPriorityChanges(&changes);
+    ASSERT_NE(actions, nullptr);
+    renderUntilLoaded(*panel);
+    selectAll(*panel);
+    ASSERT_EQ(panel->selectionCount(), 3U);
+    const std::array details{
+        Platform::ProcessTarget{.pid = 1, .startTimeTicks = mockStartTicks(1)},
+        Platform::ProcessTarget{.pid = 100, .startTimeTicks = mockStartTicks(100)},
+        Platform::ProcessTarget{.pid = 101, .startTimeTicks = mockStartTicks(101)},
+    };
+    changes.publish(PriorityChangesInFlight::Panel::ProcessDetails, details);
+
+    ASSERT_TRUE(openARowMenu(*panel).has_value());
+    pressPopupItem(*panel, std::format("{} Set priority for 3 processes...###SetPriority", ICON_FA_GAUGE_HIGH));
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    ASSERT_NE(ImGui::GetTopMostPopupModal(), nullptr);
+    pressModalFilledButton(*panel, "Apply to 3 processes");
+    ASSERT_TRUE(updateUntilBatchResult(*panel, "Priority not set; 3 processes skipped"));
+    EXPECT_EQ(actions->setPriorityCount(), 0);
+    panel->onDetach();
+}
+
 } // namespace
 } // namespace App
