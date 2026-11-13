@@ -2,7 +2,6 @@
 
 #include "App/TitleBarGeometry.h"
 #include "App/TitleBarView.h"
-#include "App/WindowsSystemMenu.h"
 #include "Core/AnimationRequest.h"
 #include "Core/Application.h"
 #include "Core/ApplicationEvents.h"
@@ -29,6 +28,8 @@
 #include <utility>
 
 #ifdef _WIN32
+#include "App/WindowsSystemMenu.h"
+
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
