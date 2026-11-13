@@ -41,12 +41,14 @@ void AboutLayer::onUpdate([[maybe_unused]] float deltaTime)
 
 void AboutLayer::onRender()
 {
-    // A finished open frees the links; a failure is in the log, as the opener writes it.
+    // A finished open frees the links; a failure is in the log, as the opener writes it, and a link an
+    // elevated TaskSmack didn't open is named in the dialog (#3658).
     static_cast<void>(m_Open.poll());
-    if (const std::string_view url = AboutDialog::render(m_OpenRequested, m_CloseRequested, m_Icon, m_Open.busy()); !url.empty())
+    if (const std::string_view url = AboutDialog::render(m_OpenRequested, m_CloseRequested, m_Icon, m_Open.busy(), m_Open.withheld());
+        !url.empty())
     {
-        // ShellExecuteW or xdg-open, on the worker: never on the UI thread (#3155).
-        static_cast<void>(m_Open.start(BackgroundOpen::openUtf8(std::string(url))));
+        // ShellExecuteW, Explorer's shell or xdg-open, on the worker: never on the UI thread (#3155).
+        static_cast<void>(m_Open.start(BackgroundOpen::openUtf8(std::string(url)), std::string(url)));
     }
 }
 
@@ -85,6 +87,7 @@ void AboutLayer::onGraphicsContextLost()
 void AboutLayer::requestOpen()
 {
     m_OpenRequested = true;
+    m_Open.clearWithheld(); // a notice was for the dialog shown before
 }
 
 void AboutLayer::loadIcon()

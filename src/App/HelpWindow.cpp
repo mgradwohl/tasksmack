@@ -4,6 +4,7 @@
 #include "App/HelpContent.h"
 #include "App/KeyboardShortcuts.h"
 #include "App/ProcessColumnConfig.h"
+#include "App/WithheldOpenNotice.h"
 #include "UI/ChromeWidgets.h"
 #include "UI/DialogMetrics.h"
 #include "UI/FrameOutline.h"
@@ -191,6 +192,7 @@ void renderLinks(State& state)
     (void) UI::Widgets::sectionHeader(ICON_FA_CIRCLE_QUESTION, "More help");
     link(HelpContent::USER_GUIDE_LINK_LABEL, HelpContent::USER_GUIDE_URL, state);
     link(HelpContent::ISSUES_LINK_LABEL, HelpContent::ISSUES_URL, state);
+    WithheldOpenNotice::draw(state.withheld); // the link an elevated TaskSmack didn't open (#3658)
 }
 
 } // namespace

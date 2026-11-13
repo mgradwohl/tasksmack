@@ -463,7 +463,7 @@ void ShellLayer::onEvent(Core::Event& event)
         {
             if (m_UpdateButton.active && !m_UpdateButton.url.empty())
             {
-                static_cast<void>(m_UpdateLinkOpen.start(BackgroundOpen::openUtf8(m_UpdateButton.url)));
+                static_cast<void>(m_UpdateLinkOpen.start(BackgroundOpen::openUtf8(m_UpdateButton.url), m_UpdateButton.url));
             }
             return false;
         });
@@ -975,7 +975,6 @@ void ShellLayer::renderStatusBar()
         isAdministratorSession(capabilities) ? StatusBarView::AccessChip::Administrator : StatusBarView::AccessChip::Standard;
     const StatusBarView::Action action = StatusBarView::render({
         .access = access,
-        .reducedPrivileges = capabilities.hasReducedPrivileges,
         .networkCountersBlocked = capabilities.networkCountersBlocked,
         .processText = m_StatusProcessText,
         .intervalText = m_StatusIntervalText,
@@ -983,13 +982,21 @@ void ShellLayer::renderStatusBar()
         .fps = m_ShowRenderMetrics ? std::optional<float>(m_FpsCounter.displayedFps()) : std::nullopt,
         .frameTimeSeconds = m_FpsCounter.displayedFrameTime(),
         .updateNotice = m_UpdateNoticeLabel.empty() ? nullptr : m_UpdateNoticeLabel.c_str(),
+        .updateWithheld = m_UpdateLinkOpen.withheld(),
     });
     // A finished link open frees the notice for the next click.
     static_cast<void>(m_UpdateLinkOpen.poll());
-    if (action == StatusBarView::Action::OpenUpdate && !m_UpdateNoticeUrl.empty())
+    if (action == StatusBarView::Action::OpenUpdate && !m_UpdateLinkOpen.withheld().empty())
+    {
+        // An elevated TaskSmack didn't open it (#3658): the tooltip said so, and this click copies the link for the
+        // user to open, on the UI thread, as ImGui's clipboard asks.
+        ImGui::SetClipboardText(m_UpdateLinkOpen.withheld().c_str());
+        m_UpdateLinkOpen.clearWithheld();
+    }
+    else if (action == StatusBarView::Action::OpenUpdate && !m_UpdateNoticeUrl.empty())
     {
         // In the browser, on a worker (#3155); a second click while it opens is ignored.
-        static_cast<void>(m_UpdateLinkOpen.start(BackgroundOpen::openUtf8(m_UpdateNoticeUrl)));
+        static_cast<void>(m_UpdateLinkOpen.start(BackgroundOpen::openUtf8(m_UpdateNoticeUrl), m_UpdateNoticeUrl));
     }
     else if (action == StatusBarView::Action::DismissUpdate)
     {

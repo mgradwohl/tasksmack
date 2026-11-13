@@ -384,6 +384,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsTaskManagerInstall.cpp # Program Files, and who can change an elevated copy (#3280)
     src/Platform/Windows/WindowsUserSessions.cpp # the Users tab's WTS sessions, Disconnect and Sign out (#3076)
     src/Platform/Windows/WindowsFolderPicker.cpp
+    src/Platform/Windows/UnelevatedShell.cpp # an elevated TaskSmack's links and folders opened through Explorer, unelevated (#3658)
     src/Platform/Windows/WindowsFileLocation.cpp # Open file location: SHOpenFolderAndSelectItems, or explorer.exe /select (#3426)
     src/Platform/Windows/WindowsRunProgram.cpp # Run new task: ShellExecuteExW, runas for administrator (#3427)
     src/Platform/Windows/WindowsProcessConnections.cpp
@@ -658,6 +659,7 @@ elseif(WIN32)
         src/Platform/Windows/WindowsAppIdentity.h
         src/Platform/Windows/WindowsProcessMachineMath.h
         src/Platform/Windows/WindowsFolderPicker.h
+        src/Platform/Windows/UnelevatedShell.h
         src/Platform/Windows/WindowsFileLocation.h
         src/Platform/Windows/WindowsRunProgram.h
         src/Platform/Windows/WindowsProcessConnections.h

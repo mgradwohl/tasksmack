@@ -2,6 +2,7 @@
 
 #include "App/DialogGeometry.h"
 #include "App/HelpContent.h"
+#include "App/WithheldOpenNotice.h"
 #include "UI/ChromeLayout.h"
 #include "UI/ChromeWidgets.h"
 #include "UI/DialogMetrics.h"
@@ -257,7 +258,7 @@ void renderCredits(Links& links)
 
 } // namespace
 
-std::string_view render(bool& openRequested, bool& closeRequested, const UI::Texture& icon, bool linksBusy)
+std::string_view render(bool& openRequested, bool& closeRequested, const UI::Texture& icon, bool linksBusy, std::string_view withheld)
 {
     if (!openRequested && !ImGui::IsPopupOpen(POPUP_ID))
     {
@@ -329,6 +330,11 @@ std::string_view render(bool& openRequested, bool& closeRequested, const UI::Tex
     ImGui::BeginChild("##AboutBody", ImVec2(0.0F, 0.0F), ImGuiChildFlags_AutoResizeY);
     renderHeader(icon, emPx);
     UI::Widgets::sectionGap();
+    if (!withheld.empty())
+    {
+        WithheldOpenNotice::draw(withheld); // the link an elevated TaskSmack didn't open (#3658)
+        UI::Widgets::sectionGap();
+    }
     Links links{.activatedUrl = {}, .busy = linksBusy};
     renderDetails(links);
     UI::Widgets::sectionGap();

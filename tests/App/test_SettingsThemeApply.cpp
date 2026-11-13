@@ -4,6 +4,7 @@
 /// UI::Theme and its bundled themes, which TaskSmackTests' theme stub can't list; the config goes to the
 /// temporary directory AppTestsMain.cpp gives every test in this binary.
 
+#include "App/PlatformOpen.h"
 #include "App/SettingsDialog.h"
 #include "App/SettingsLayer.h"
 #include "App/UserConfig.h"
@@ -43,8 +44,9 @@ class SettingsThemeApplyTest : public ::testing::Test
         UI::Theme::get().loadThemes(std::filesystem::path(TASKSMACK_SOURCE_THEMES_DIR));
         m_OriginalTheme = UI::Theme::get().currentThemeId();
         m_OriginalSettings = UserConfig::get().settings();
-        m_Layer = std::make_unique<SettingsLayer>(
-            [](Core::Event&) {}, [](const std::filesystem::path&) { return true; }, [] { return std::filesystem::temp_directory_path(); });
+        m_Layer = std::make_unique<SettingsLayer>([](Core::Event&) {},
+                                                  [](const std::filesystem::path&) { return PlatformOpen::OpenResult::Opened; },
+                                                  [] { return std::filesystem::temp_directory_path(); });
     }
 
     void TearDown() override

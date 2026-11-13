@@ -101,6 +101,9 @@ struct State
     /// Set by SettingsLayer while Edit Config File's or Open Themes Folder's open still runs on its worker
     /// (#3155): both buttons are disabled until it is done, so a double click opens one window.
     bool openingPath = false;
+    /// Set by SettingsLayer: the file or folder an elevated TaskSmack didn't open (BackgroundOpen::withheld(),
+    /// #3658), named under the buttons for the user to open; empty for none.
+    std::string withheldPath;
 
     // Previews for stored values that aren't among the options ("Custom (750 ms)"), built on open.
     std::string customThemePreview;

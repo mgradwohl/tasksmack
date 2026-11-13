@@ -1,6 +1,7 @@
 #pragma once
 
 #include "App/BackgroundOpen.h"
+#include "App/PlatformOpen.h"
 #include "App/SettingsDialog.h"
 #include "App/StartAtLoginSetting.h"
 #include "App/TaskManagerReplacementController.h"
@@ -31,9 +32,10 @@ class SettingsLayer : public Core::Layer
     /// @p raiseEvent instead of Core::Application, the Edit Config and Open Themes Folder buttons hand
     /// their path to @p openPath instead of the system handler, and the themes folder is made under
     /// @p userConfigDir instead of the Application's config directory. Lets the layer run headless.
-    /// @p openPath is called on the layer's open worker (#3155), never on the UI thread.
+    /// @p openPath is called on the layer's open worker (#3155), never on the UI thread; its result is the
+    /// open's, PlatformOpen::OpenResult::Withheld as an elevated TaskSmack's that Windows' shell refused (#3658).
     SettingsLayer(std::function<void(Core::Event&)> raiseEvent,
-                  std::function<bool(const std::filesystem::path&)> openPath,
+                  std::function<PlatformOpen::OpenResult(const std::filesystem::path&)> openPath,
                   std::function<std::filesystem::path()> userConfigDir);
     ~SettingsLayer() override;
 
@@ -91,9 +93,9 @@ class SettingsLayer : public Core::Layer
     [[nodiscard]] std::filesystem::path userThemesDir() const;
 
     SettingsDialog::State m_State;
-    std::function<void(Core::Event&)> m_RaiseEvent;               ///< Set by the test seam only; else the Application
-    std::function<bool(const std::filesystem::path&)> m_OpenPath; ///< Set by the test seam only; else PlatformOpen
-    std::function<std::filesystem::path()> m_UserConfigDir;       ///< Set by the test seam only; else the Application's
+    std::function<void(Core::Event&)> m_RaiseEvent;                                   ///< Set by the test seam only; else the Application
+    std::function<PlatformOpen::OpenResult(const std::filesystem::path&)> m_OpenPath; ///< Set by the test seam only; else PlatformOpen
+    std::function<std::filesystem::path()> m_UserConfigDir;                           ///< Set by the test seam only; else the Application's
     // Start at sign-in (#3093, part 2): the entry's reads and writes, on its own worker.
     StartAtLoginSetting m_StartAtLogin;
     bool m_StartupCheckPending = false;       ///< The startup check's status hasn't come in yet (#3276)

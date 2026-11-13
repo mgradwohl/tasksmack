@@ -13,6 +13,7 @@
 #include "App/InstanceLock.h"
 #include "App/LaunchOptions.h"
 #include "App/PanelPlatforms.h"
+#include "App/Panels/RestartAsAdministratorButton.h"
 #include "App/RenderMetricsOverride.h"
 #include "App/ScreenshotLayer.h"
 #include "App/ScreenshotOverride.h"
@@ -27,6 +28,7 @@
 #include "Core/ConfigDirOverride.h"
 // NOLINTNEXTLINE(misc-include-cleaner) - used in the NDEBUG (release) branch below, invisible to debug-config analysis
 #include "Core/EnvRead.h"
+#include "Core/Event.h"
 #include "Core/LocaleSetup.h"
 #include "Core/LogFileSink.h"
 #include "Core/Utf8Path.h"
@@ -434,6 +436,7 @@ auto runApp(const App::LaunchOptions& launch) -> int
         // CRITICAL: Manually detach all layers BEFORE clearing the Application singleton.
         // Reason: Layer onDetach() methods may call Application::get() to save state.
         // If we let ~Application() run during setInstance(nullptr), those calls will fail.
+        App::RestartAsAdministrator::setOffered({}); // its press raises through the Application, going now
         appRef.detachAllLayers();
         // Explicitly destroy the Application singleton to ensure SDL_Quit()
         // and other teardown happen before main()/WinMain() returns.
@@ -506,7 +509,14 @@ auto runApp(const App::LaunchOptions& launch) -> int
                                     });
         appRef.pushLayer<App::SettingsLayer>().setTaskManagerReplacement(taskManager);
         // The startup notice, Standard or Administrator (#2728), with Windows' Restart as administrator.
-        appRef.pushLayer<App::ElevationNoticeLayer>(App::makeElevatedRestart(App::Synthetic::activeScenario()));
+        auto elevatedRestart = App::makeElevatedRestart(App::Synthetic::activeScenario());
+        // Where there's no helper to do a refused action or read as an administrator (the .zip, a copy the user can
+        // change), the refusal offers Restart as administrator..., which opens this notice (#3658).
+        if (elevatedRestart != nullptr && App::privilegedBroker(App::Synthetic::activeScenario()) == nullptr)
+        {
+            App::RestartAsAdministrator::setOffered([](Core::Event& event) { Core::Application::get().raiseEvent(event); });
+        }
+        appRef.pushLayer<App::ElevationNoticeLayer>(std::move(elevatedRestart));
         appRef.pushLayer<App::TaskManagerNoticeLayer>(taskManager);
 
         // The demo script's layer (#2827), after the layers its steps make requests of: a step is issued

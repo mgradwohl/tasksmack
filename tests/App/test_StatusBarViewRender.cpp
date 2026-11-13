@@ -1,6 +1,6 @@
 /// @file test_StatusBarViewRender.cpp
-/// @brief The status bar, headless (#1547): the process count and update interval, the limited-data
-/// and blocked-network icons only when they apply, Settings and Help only when native decorations
+/// @brief The status bar, headless (#1547): the process count and update interval, the access chip
+/// and the blocked-network icon only when they apply, Settings and Help only when native decorations
 /// leave no custom title bar and each reporting its action, the frame-rate readout only while Render
 /// Metrics is on, and the lower-priority parts left out at a narrow window rather than overlapping.
 
@@ -37,14 +37,17 @@ class StatusBarViewRenderTest : public ::testing::Test
         io.DeltaTime = 1.0F / 60.0F;
         io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures; // ImGui owns the font atlas
         io.Fonts->AddFontDefault();
-        m_Input = {.access = std::nullopt,
-                   .reducedPrivileges = false,
-                   .networkCountersBlocked = false,
-                   .processText = PROCESSES,
-                   .intervalText = INTERVAL,
-                   .showControls = false,
-                   .fps = std::nullopt,
-                   .frameTimeSeconds = 0.0F};
+        m_Input = {
+            .access = std::nullopt,
+            .networkCountersBlocked = false,
+            .processText = PROCESSES,
+            .intervalText = INTERVAL,
+            .showControls = false,
+            .fps = std::nullopt,
+            .frameTimeSeconds = 0.0F,
+            .updateNotice = nullptr,
+            .updateWithheld = {},
+        };
     }
 
     void TearDown() override
@@ -97,17 +100,15 @@ TEST_F(StatusBarViewRenderTest, ShowsTheProcessCountAndTheInterval)
 TEST_F(StatusBarViewRenderTest, TheIconsShowOnlyWhenTheyApply)
 {
     EXPECT_FALSE(frame().contains(ICON_FA_LOCK));
-    m_Input.reducedPrivileges = true;
-    EXPECT_TRUE(frame().contains(ICON_FA_LOCK));
+    EXPECT_FALSE(frame().contains(ICON_FA_NETWORK_WIRED));
     m_Input.networkCountersBlocked = true;
     EXPECT_TRUE(frame().contains(ICON_FA_NETWORK_WIRED));
 }
 
-// #2728: where the platform has the access chip, it replaces the plain lock: Standard with a lock,
-// which offers Administrator when clicked, or Administrator with a shield, which offers nothing.
+// #2728: the access chip, on both platforms: Standard with a lock, which offers Administrator when
+// clicked, or Administrator with a shield, which offers nothing.
 TEST_F(StatusBarViewRenderTest, TheAccessChipSaysStandardOrAdministratorAndStandardOffersAdministrator)
 {
-    m_Input.reducedPrivileges = true;
     m_Input.access = StatusBarView::AccessChip::Standard;
     const std::string standard = frame();
     EXPECT_TRUE(standard.contains(ICON_FA_LOCK " Standard")) << standard;
@@ -163,7 +164,7 @@ TEST_F(StatusBarViewRenderTest, ANarrowWindowLeavesOutTheLowerPriorityParts)
 // #1395: hovering along the bar shows what each icon and button means.
 TEST_F(StatusBarViewRenderTest, EachIconAndButtonExplainsItselfOnHover)
 {
-    m_Input.reducedPrivileges = true;
+    m_Input.access = StatusBarView::AccessChip::Standard;
     m_Input.networkCountersBlocked = true;
     m_Input.showControls = true;
     static_cast<void>(frame());
@@ -181,7 +182,7 @@ TEST_F(StatusBarViewRenderTest, EachIconAndButtonExplainsItselfOnHover)
         static_cast<void>(frame());
         seen += frame();
     }
-    EXPECT_TRUE(seen.contains("Limited: some details of other users' processes, or actions on them, are unavailable")) << seen;
+    EXPECT_TRUE(seen.contains("Standard: some details of other users' processes, or actions on them, are unavailable")) << seen;
     EXPECT_TRUE(seen.contains("Per-process network counters are blocked on this system")) << seen;
     EXPECT_TRUE(seen.contains("Settings (F2)")) << seen;
     EXPECT_TRUE(seen.contains("Help: keyboard shortcuts, columns and tabs (F1)")) << seen;
@@ -209,6 +210,33 @@ TEST_F(StatusBarViewRenderTest, TheUpdateNoticeOpensItsPageAndCanBeDismissed)
     press(StatusBarView::DISMISS_UPDATE_LABEL);
     static_cast<void>(frame());
     EXPECT_EQ(m_LastAction, Action::DismissUpdate);
+}
+
+// #3658: an elevated TaskSmack that didn't open the release page (Windows' shell couldn't open it as the user)
+// says so in the notice's tooltip, naming the link, and a click is still the notice's action (ShellLayer copies it).
+TEST_F(StatusBarViewRenderTest, AWithheldUpdateLinkIsNamedInTheNoticesTooltip)
+{
+    m_Input.updateNotice = NOTICE;
+    m_Input.updateWithheld = "https://github.com/mgradwohl/tasksmack/releases/tag/v0.10.0";
+    static_cast<void>(frame());
+    ImGuiWindow* bar = ImGui::FindWindowByName("##StatusBar");
+    ASSERT_NE(bar, nullptr);
+    ImGui::BringWindowToDisplayFront(bar);
+    const float y = bar->Pos.y + (bar->Size.y * 0.5F);
+    std::string seen;
+    const int steps = static_cast<int>(bar->Size.x / 4.0F);
+    for (int step = 0; step < steps; ++step) // a 4 px sweep along the bar
+    {
+        ImGui::GetIO().AddMousePosEvent(bar->Pos.x + 2.0F + (4.0F * static_cast<float>(step)), y);
+        static_cast<void>(frame());
+        seen += frame();
+    }
+    EXPECT_TRUE(seen.contains("Open it yourself: https://github.com/mgradwohl/tasksmack/releases/tag/v0.10.0")) << seen;
+    EXPECT_TRUE(seen.contains("Click to copy the link.")) << seen;
+    EXPECT_FALSE(seen.contains("Nothing is downloaded or installed")) << seen;
+    press(StatusBarView::UPDATE_NOTICE_ID);
+    static_cast<void>(frame());
+    EXPECT_EQ(m_LastAction, Action::OpenUpdate);
 }
 
 TEST_F(StatusBarViewRenderTest, ANarrowWindowLeavesTheUpdateNoticeOutBeforeTheStatus)

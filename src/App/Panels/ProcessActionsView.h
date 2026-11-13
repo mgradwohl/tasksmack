@@ -18,6 +18,7 @@
 #include "App/Panels/ProcessDumpView.h"
 #include "App/Panels/ProcessSchedPolicyDialog.h"
 #include "App/Panels/ProcessWaitChainDialog.h"
+#include "App/Panels/RestartAsAdministratorButton.h"
 #include "App/Panels/VirusTotalLookup.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/CurrentProcess.h"
@@ -441,6 +442,13 @@ class ProcessActionsView
         return m_PriorityHoldReason == nullptr || !Detail::changesPriority(m_Retry->action.kind);
     }
 
+    /// Whether the result line offers "Restart as administrator..." (#3658): the action was refused for want of
+    /// permission, and there is no helper to retry it, but TaskSmack can restart elevated.
+    [[nodiscard]] bool offersRestartAsAdministrator() const noexcept
+    {
+        return m_OfferRestart && !m_ActionRun.busy();
+    }
+
     /// Why this view's priority changes for the shown process wait, or null when they needn't (#3429,
     /// #3467): the Priority card's Apply (or its retry) runs, or the Processes table has a priority change
     /// for the process in flight. The Efficiency mode checkbox is greyed out with @p reason meanwhile, and
@@ -563,6 +571,7 @@ class ProcessActionsView
             {
                 m_LastResult = {};
                 m_Retry.reset();
+                m_OfferRestart = false;
             }
         }
     }
@@ -580,7 +589,8 @@ class ProcessActionsView
         m_DumpView.onSelectionChanged(); // its confirm only: a dump already running goes on
         m_LastResult = {};
         m_Retry.reset(); // never offer to retry an action on a process no longer shown
-        ++m_Generation;  // an action still running reports to nobody: its process is no longer shown (#2389)
+        m_OfferRestart = false;
+        ++m_Generation; // an action still running reports to nobody: its process is no longer shown (#2389)
     }
 
     /// Whether a confirm is requested, open, or holds a captured action and target.
@@ -817,9 +827,16 @@ class ProcessActionsView
                     return; // the selection changed while it ran: not this process's result to show (#2389)
                 }
                 showResult(format(result));
-                if (result.permissionDenied && retry.has_value() && actions->actionCapabilities().canAuthorizeInteractively)
+                const bool helperCanRedo = actions->actionCapabilities().canAuthorizeInteractively;
+                if (result.permissionDenied && retry.has_value() && helperCanRedo)
                 {
                     m_Retry = Retry{.action = *retry, .actions = actions, .format = format};
+                    m_ResultSecondsLeft = Detail::AUTHORIZE_RESULT_SECONDS;
+                }
+                // No helper to redo it (#3658): Restart as administrator... instead, where TaskSmack can restart.
+                else if (RestartAsAdministrator::offersRestart(result.permissionDenied, helperCanRedo, RestartAsAdministrator::offered()))
+                {
+                    m_OfferRestart = true;
                     m_ResultSecondsLeft = Detail::AUTHORIZE_RESULT_SECONDS;
                 }
             }));
@@ -863,6 +880,7 @@ class ProcessActionsView
         m_LastResult = std::move(message);
         m_ResultSecondsLeft = Detail::ACTION_RESULT_SECONDS;
         m_Retry.reset();
+        m_OfferRestart = false;
     }
 
     void renderResultFeedback();
@@ -947,6 +965,7 @@ class ProcessActionsView
         ResultFormat format;
     };
     std::optional<Retry> m_Retry;
+    bool m_OfferRestart = false;       ///< offersRestartAsAdministrator(): the last result was refused, with no helper (#3658)
     std::uint64_t m_Generation = 0;    // bumped by onSelectionChanged() (#2389)
     std::uint64_t m_RunGeneration = 0; // m_Generation when the running action started
     // The process the running action sets the priority of: Set Realtime priority (#3429, #3467). None for any other.

@@ -43,6 +43,9 @@ struct State
     bool linksBusy = false;
     /// The URL of the link clicked on the frame render() returned Action::OpenLink.
     std::string_view linkUrl;
+    /// Set by HelpLayer: the link an elevated TaskSmack didn't open (BackgroundOpen::withheld(), #3658), named
+    /// under the links for the user to open; empty for none.
+    std::string_view withheld;
 };
 
 /// Opens the window (F1, the ? buttons) and brings it to the front, or only to the front when it is

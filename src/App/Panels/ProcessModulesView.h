@@ -134,6 +134,13 @@ class ProcessModulesView
         return m_HasRead && m_Status == Platform::ModulesReadStatus::PermissionDenied && m_Read.canAuthorize() && !m_Read.inFlight();
     }
 
+    /// Whether the last read was refused for want of permission, with no read in flight: where no helper can
+    /// read it as an administrator, the status line offers "Restart as administrator..." (#3658).
+    [[nodiscard]] bool readRefusedForPermission() const noexcept
+    {
+        return m_HasRead && m_Status == Platform::ModulesReadStatus::PermissionDenied && !m_Read.inFlight();
+    }
+
     /// "Authenticate to read" was pressed: the next update() reads as an administrator.
     void requestAuthorizedRead() noexcept
     {

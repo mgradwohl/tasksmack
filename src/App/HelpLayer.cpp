@@ -34,9 +34,11 @@ void HelpLayer::onUpdate([[maybe_unused]] float deltaTime)
 
 void HelpLayer::onRender()
 {
-    // A finished open frees the links; a failure is in the log, as the opener writes it.
+    // A finished open frees the links; a failure is in the log, as the opener writes it, and a link an
+    // elevated TaskSmack didn't open is named under the links (#3658).
     static_cast<void>(m_Open.poll());
     m_State.linksBusy = m_Open.busy();
+    m_State.withheld = m_Open.withheld();
     switch (HelpWindow::render(m_State))
     {
     case HelpWindow::Action::OpenAbout:
@@ -46,8 +48,8 @@ void HelpLayer::onRender()
         break;
     }
     case HelpWindow::Action::OpenLink:
-        // ShellExecuteW or xdg-open, on the worker: never on the UI thread (#3155).
-        static_cast<void>(m_Open.start(BackgroundOpen::openUtf8(std::string(m_State.linkUrl))));
+        // ShellExecuteW, Explorer's shell or xdg-open, on the worker: never on the UI thread (#3155).
+        static_cast<void>(m_Open.start(BackgroundOpen::openUtf8(std::string(m_State.linkUrl)), std::string(m_State.linkUrl)));
         break;
     case HelpWindow::Action::None:
         break;

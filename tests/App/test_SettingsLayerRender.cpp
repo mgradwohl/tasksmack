@@ -5,6 +5,7 @@
 /// worker (#3155), or raise Core::OpenAboutEvent. UserConfig is redirected to a temporary directory,
 /// never the user's config.
 
+#include "App/PlatformOpen.h"
 #include "App/SettingsDialog.h"
 #include "App/SettingsLayer.h"
 #include "App/StartAtLoginSetting.h"
@@ -14,6 +15,7 @@
 #include "App/UserConfig.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
+#include "Core/Utf8Path.h"
 #include "Domain/StartAtLogin.h"
 #include "Mocks/FakeStartAtLogin.h"
 #include "Mocks/FakeTaskManagerReplacement.h"
@@ -25,6 +27,7 @@
 #include <imgui.h>
 #include <imgui_internal.h> // GetTopMostPopupModal(), ImHashStr(), ActivateItemByID(): the modal and its controls
 
+#include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -131,7 +134,7 @@ class SettingsLayerRenderTest : public ::testing::Test
                     static_cast<void>(m_HoldOpens->wait_for(std::chrono::seconds(30)));
                 }
                 m_Seen.opened.push_back(path);
-                return true;
+                return m_OpenResult.load();
             },
             [this] { return m_TempDir; });
     }
@@ -251,6 +254,22 @@ class SettingsLayerRenderTest : public ::testing::Test
         static_cast<void>(runFrame());
     }
 
+    /// One frame, as runFrame() draws it, and the text it drew (ImGui's own logging).
+    std::string frameText()
+    {
+        ImGui::NewFrame();
+        ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
+        ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
+        ImGui::Begin("Main", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
+        ImGui::End();
+        ImGui::LogToBuffer(); // after the main window, as test_AccessNoticeDialogRender.cpp logs a layer's modal
+        m_Layer->onRender();
+        std::string captured = GImGui->LogBuffer.c_str();
+        ImGui::LogFinish();
+        ImGui::Render();
+        return captured;
+    }
+
     /// Waits for an open the layer started on its worker, and takes it in (#3155).
     void waitForOpen()
     {
@@ -268,6 +287,8 @@ class SettingsLayerRenderTest : public ::testing::Test
     Seen m_Seen;
     /// Set before a press: the opener waits for it, as a slow shell extension would (#3155).
     std::optional<std::shared_future<void>> m_HoldOpens;
+    /// What the opener answers: Withheld, as an elevated TaskSmack's open that Windows' shell refused (#3658).
+    std::atomic<PlatformOpen::OpenResult> m_OpenResult{PlatformOpen::OpenResult::Opened};
     std::filesystem::path m_ConfigPath;
     std::filesystem::path m_TempDir;
 
@@ -431,6 +452,26 @@ TEST_F(SettingsLayerRenderTest, AnOpenStillRunningHoldsNoFrameAndRefusesASecond)
     waitForOpen();
     ASSERT_EQ(m_Seen.opened.size(), 2U);
     EXPECT_EQ(m_Seen.opened.back(), m_ConfigPath);
+}
+
+// #3658: an elevated TaskSmack never opens the editor or Explorer as administrator. When Windows' shell
+// can't open the file as the signed-in user, the dialog names it under the buttons, for the user to open.
+TEST_F(SettingsLayerRenderTest, AWithheldOpenIsNamedInTheDialog)
+{
+    m_OpenResult = PlatformOpen::OpenResult::Withheld;
+    ImGui::GetIO().DisplaySize = ImVec2(1600.0F, 4000.0F); // tall enough that the Advanced section isn't scrolled out
+    ASSERT_TRUE(openDialog());
+    EXPECT_FALSE(frameText().contains("Open it yourself")) << "nothing withheld yet";
+    pressInBody(SettingsDialog::EDIT_CONFIG_LABEL);
+    waitForOpen();
+    ASSERT_EQ(m_Seen.opened.size(), 1U);
+    const std::string text = frameText();
+    EXPECT_TRUE(text.contains("Open it yourself: " + Core::pathToUtf8(m_ConfigPath))) << text;
+
+    m_OpenResult = PlatformOpen::OpenResult::Opened;
+    pressInBody(SettingsDialog::OPEN_THEMES_LABEL);
+    waitForOpen();
+    EXPECT_FALSE(frameText().contains("Open it yourself")) << "an open that worked clears it";
 }
 
 TEST_F(SettingsLayerRenderTest, OpenThemesFolderMakesAndOpensTheUserThemesDirectory)

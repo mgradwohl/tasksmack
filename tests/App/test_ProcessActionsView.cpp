@@ -6,6 +6,8 @@
 
 #include "App/Panels/ProcessActionsView.h"
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
+#include "App/Panels/RestartAsAdministratorButton.h"
+#include "Core/Event.h"
 #include "Mocks/MockProbes.h"
 #include "Platform/IProcessActions.h"
 
@@ -16,6 +18,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace App
 {
@@ -277,6 +280,95 @@ TEST(ProcessActionsViewTest, TheRetryOfferGoesWithASelectionChangeOrItsTimeout)
     EXPECT_FALSE(view.offersAuthenticateAndRetry());
     view.retryAuthorizedForTesting(); // nothing to retry any more
     EXPECT_EQ(mock.runAuthorizedCount(), 0);
+}
+
+// --- Restart as administrator, with no helper (#3658) --------------------------------------------------
+
+/// Offers Restart as administrator... for the test's length, as main.cpp does with no helper, and counts the
+/// notices a press asks for.
+class RestartOffered
+{
+  public:
+    RestartOffered()
+    {
+        RestartAsAdministrator::setOffered([this](Core::Event& event) { m_Raised.push_back(event.getEventType()); });
+    }
+    ~RestartOffered()
+    {
+        RestartAsAdministrator::setOffered({});
+    }
+    RestartOffered(const RestartOffered&) = delete;
+    RestartOffered& operator=(const RestartOffered&) = delete;
+    RestartOffered(RestartOffered&&) = delete;
+    RestartOffered& operator=(RestartOffered&&) = delete;
+
+    [[nodiscard]] const std::vector<Core::EventType>& raised() const noexcept
+    {
+        return m_Raised;
+    }
+
+  private:
+    std::vector<Core::EventType> m_Raised;
+};
+
+TEST(ProcessActionsViewTest, WithNoHelperAPermissionRefusalOffersRestartAsAdministrator)
+{
+    const RestartOffered offered;
+    TestMocks::MockProcessActions mock;
+    mock.setCapabilities({.canKill = true}); // no helper: nothing to retry it with
+    mock.setKillResult(Platform::ProcessActionResult::denied("Permission denied"));
+    ProcessActionsView view;
+    view.requestAction(ProcessAction::Kill, {.pid = 7, .startTimeTicks = 1}, "proc");
+    view.dispatchConfirmed(&mock);
+    view.waitForActionForTesting();
+    EXPECT_FALSE(view.offersAuthenticateAndRetry());
+    ASSERT_TRUE(view.offersRestartAsAdministrator());
+    view.tick(Detail::ACTION_RESULT_SECONDS + 1.0F); // as long as a retry's: time to decide
+    EXPECT_TRUE(view.offersRestartAsAdministrator());
+    view.tick(Detail::AUTHORIZE_RESULT_SECONDS);
+    EXPECT_FALSE(view.offersRestartAsAdministrator());
+
+    view.requestAction(ProcessAction::Kill, {.pid = 7, .startTimeTicks = 1}, "proc");
+    view.dispatchConfirmed(&mock);
+    view.waitForActionForTesting();
+    ASSERT_TRUE(view.offersRestartAsAdministrator());
+    view.onSelectionChanged();
+    EXPECT_FALSE(view.offersRestartAsAdministrator()) << "not for a process no longer shown";
+    EXPECT_TRUE(offered.raised().empty()) << "nothing raised until it is pressed";
+}
+
+TEST(ProcessActionsViewTest, RestartAsAdministratorIsntOfferedWhereTheHelperRetriesOrForOtherFailures)
+{
+    const RestartOffered offered;
+    TestMocks::MockProcessActions mock;
+    mock.setCapabilities({.canKill = true, .canAuthorizeInteractively = true});
+    mock.setKillResult(Platform::ProcessActionResult::denied("Permission denied"));
+    ProcessActionsView view;
+    view.requestAction(ProcessAction::Kill, {.pid = 7, .startTimeTicks = 1}, "proc");
+    view.dispatchConfirmed(&mock);
+    view.waitForActionForTesting();
+    EXPECT_TRUE(view.offersAuthenticateAndRetry());
+    EXPECT_FALSE(view.offersRestartAsAdministrator()) << "the helper's Retry as administrator instead";
+
+    mock.setCapabilities({.canKill = true});
+    mock.setKillResult(Platform::ProcessActionResult::error("Process not found - may have already exited"));
+    view.requestAction(ProcessAction::Kill, {.pid = 7, .startTimeTicks = 1}, "proc");
+    view.dispatchConfirmed(&mock);
+    view.waitForActionForTesting();
+    EXPECT_FALSE(view.offersRestartAsAdministrator()) << "an administrator couldn't do better";
+}
+
+TEST(ProcessActionsViewTest, RestartAsAdministratorIsntOfferedWhereTaskSmackCantRestart)
+{
+    // Elevated already, on Linux, or a synthetic run: main.cpp never offers it.
+    TestMocks::MockProcessActions mock;
+    mock.setCapabilities({.canKill = true});
+    mock.setKillResult(Platform::ProcessActionResult::denied("Permission denied"));
+    ProcessActionsView view;
+    view.requestAction(ProcessAction::Kill, {.pid = 7, .startTimeTicks = 1}, "proc");
+    view.dispatchConfirmed(&mock);
+    view.waitForActionForTesting();
+    EXPECT_FALSE(view.offersRestartAsAdministrator());
 }
 
 // #2389: an action that finishes after the selection changed reports to nobody: no result line and no
