@@ -230,6 +230,7 @@ set(TASKSMACK_SOURCES
     src/App/UserConfig.cpp
     src/App/WindowOverride.cpp
     src/App/Panels/ProcessesPanel.cpp
+    src/App/Panels/ProcessesPanelUserGroups.cpp # Group: User's sessions and their actions, the Users tab folded in (#3377)
     src/App/Panels/ProcessIconView.cpp
     src/App/Panels/ProcessDetailsPanel.cpp
     src/App/Panels/ProcessDetailsCharts.cpp
@@ -272,6 +273,7 @@ set(TASKSMACK_SOURCES
     src/App/Panels/UsersView.cpp
     src/App/Panels/UserGrouping.cpp # who a process or session belongs to: the Users tab and Group: User (#3377)
     src/App/Panels/UserSessionsFeed.cpp # the signed-in sessions, read once for every view that shows them (#3377)
+    src/App/Panels/SessionActionView.cpp # a session's menu and confirm, for the Users tab and Group: User (#3377)
     src/App/Panels/SystemInfoPanel.cpp
     src/App/Panels/SystemInfoSections.cpp
     src/App/Panels/SystemInfoView.cpp

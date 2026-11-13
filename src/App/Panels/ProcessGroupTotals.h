@@ -1,13 +1,14 @@
 #pragma once
 
-// A Group by group (#3068): its key, label, members and the totals its header shows with Σ, and the order
-// groups sort in. Split from ProcessGrouping.h so UserGrouping.h, which ProcessGrouping.h's Group: User
-// calls (#3377), can build groups without the two headers including each other. Pure; tested in
-// test_ProcessGrouping.cpp and test_UserGrouping.cpp.
+// A Group by group (#3068): its key, label, members and the totals its header shows with Σ, Group: User's
+// sign-in sessions (#3377), and the order groups sort in. Split from ProcessGrouping.h so UserGrouping.h, which ProcessGrouping.h's Group:
+// User calls (#3377), can build groups without the two headers including each other. Pure; tested in test_ProcessGrouping.cpp and
+// test_UserGrouping.cpp.
 
 #include "App/ProcessColumnConfig.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Platform/AsciiCase.h"
+#include "Platform/IUserSessions.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -116,19 +117,42 @@ struct Group
     std::string label; ///< What its header says: the key, except under Group: User (UserGrouping::buildUserGroups)
     Totals totals;
     std::vector<std::size_t> members; ///< Indices into the snapshots, in the order given
+    /// Group: User (#3377): the account's sign-in sessions, in the publication's order, drawn under its header;
+    /// none in the other modes, and none for an account that isn't signed in (root, SYSTEM, a service's account).
+    std::vector<Platform::UserSession> sessions;
+    bool current = false;     ///< One of `sessions` is the one TaskSmack runs in
+    bool notReadable = false; ///< The sessions whose user couldn't be read (Windows), one group before Ungrouped
 };
 
+/// Where @p group sorts before its totals are compared (#3377): Group: User's signed-in accounts first, then
+/// every other group, then the sessions whose user couldn't be read, then Ungrouped. The other modes have no
+/// sessions, so only Ungrouped moves there, last as before.
+[[nodiscard]] inline int groupTier(const Group& group) noexcept
+{
+    if (group.key.empty())
+    {
+        return 3;
+    }
+    if (group.notReadable)
+    {
+        return 2;
+    }
+    return group.sessions.empty() ? 1 : 0;
+}
+
 /// Orders @p groups by their totals in @p sortColumn, ascending or not as @p ascending says, and by label A
-/// to Z between equal totals; by label in the sort's direction for a column without totals. Ungrouped comes
-/// last whatever the order.
+/// to Z between equal totals; by label in the sort's direction for a column without totals. Each tier
+/// (groupTier()) is ordered so on its own: signed-in accounts come first and Ungrouped last whatever the order.
 inline void sortGroups(std::vector<Group>& groups, ProcessColumn sortColumn, bool ascending)
 {
     std::ranges::stable_sort(groups,
                              [sortColumn, ascending](const Group& a, const Group& b)
                              {
-                                 if (a.key.empty() != b.key.empty())
+                                 const int tierA = groupTier(a);
+                                 const int tierB = groupTier(b);
+                                 if (tierA != tierB)
                                  {
-                                     return b.key.empty(); // Ungrouped last
+                                     return tierA < tierB; // signed in first, Ungrouped last
                                  }
                                  const std::optional<double> ta = totalFor(a.totals, sortColumn);
                                  const std::optional<double> tb = totalFor(b.totals, sortColumn);

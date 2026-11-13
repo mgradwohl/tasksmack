@@ -5,6 +5,7 @@
 
 #include "App/Panels/ProcessGrouping.h"
 #include "App/Panels/SessionActionControl.h"
+#include "App/Panels/SessionActionView.h"
 #include "App/Panels/UserGrouping.h"
 #include "App/Panels/UserSessionsFeed.h"
 #include "App/Panels/UsersPanel.h"
@@ -14,6 +15,7 @@
 #include "Domain/ProcessModel.h"
 #include "Domain/SamplingConfig.h"
 #include "Domain/UsersModel.h"
+#include "Mocks/FakeUserSessions.h"
 #include "Mocks/MockProbes.h"
 #include "Platform/IServiceActions.h"
 #include "Platform/IUserSessions.h"
@@ -61,73 +63,8 @@ TEST(SessionMenuTest, HasItemsWhenThePlatformCanDoSomething)
     EXPECT_TRUE((SessionMenu{.lock = false, .disconnect = true, .signOut = false}.any()));
 }
 
-/// Sessions a test controls: what read() lists and what act() answers, with each call recorded. Linux's
-/// actions (Lock and Sign out), or with @p windows Windows' (Disconnect and Sign out).
-class FakeSessions final : public Platform::IUserSessions
-{
-  public:
-    explicit FakeSessions(std::vector<UserSession> sessions, bool has = true, bool windows = false)
-        : m_Sessions(std::move(sessions)), m_Has(has), m_Windows(windows)
-    {}
-    [[nodiscard]] bool hasSessions() const override
-    {
-        return m_Has;
-    }
-    [[nodiscard]] Platform::UserSessionsRead read() override
-    {
-        ++m_Reads;
-        if (!m_Failure.empty())
-        {
-            return {.status = Platform::UserSessionsStatus::Failed, .sessions = {}, .detail = m_Failure};
-        }
-        return {.status = Platform::UserSessionsStatus::Ok, .sessions = m_Sessions, .detail = {}};
-    }
-    [[nodiscard]] bool canAct(SessionAction action) const override
-    {
-        return m_Has && (action == SessionAction::SignOut || (action == SessionAction::Disconnect) == m_Windows);
-    }
-    [[nodiscard]] Platform::ServiceActionResult
-    act(std::string_view id, SessionAction action, bool allowInteractive, const std::stop_token& /*stopToken*/) override
-    {
-        const std::scoped_lock lock(m_Mutex);
-        m_Calls.push_back(std::string(actionName(action)) + " " + std::string(id) + (allowInteractive ? " interactive" : ""));
-        if (id == "5" && !allowInteractive)
-        {
-            Platform::ServiceActionResult refused = Platform::ServiceActionResult::failed("Requires administrator");
-            refused.needsAuthorization = true;
-            return refused;
-        }
-        return Platform::ServiceActionResult::succeeded();
-    }
-    [[nodiscard]] std::vector<std::string> calls()
-    {
-        const std::scoped_lock lock(m_Mutex);
-        return m_Calls;
-    }
-    std::string m_Failure;
-    std::atomic<int> m_Reads{0};
-
-  private:
-    [[nodiscard]] static const char* actionName(SessionAction action)
-    {
-        switch (action)
-        {
-        case SessionAction::Lock:
-            return "lock";
-        case SessionAction::Disconnect:
-            return "disconnect";
-        case SessionAction::SignOut:
-            break;
-        }
-        return "signout";
-    }
-
-    std::vector<UserSession> m_Sessions;
-    bool m_Has = true;
-    bool m_Windows = false;
-    std::mutex m_Mutex;
-    std::vector<std::string> m_Calls;
-};
+/// Sessions a test controls (tests/Mocks/FakeUserSessions.h), shared with the Processes table's Group: User tests.
+using FakeSessions = TestMocks::FakeUserSessions;
 
 TEST(UsersModelTest, PublishesTheSessionsByUserThenIdAndAFailedReadsReason)
 {
@@ -304,15 +241,22 @@ TEST(UserSessionsFeedTest, ReadsOnlyOnDemandAndStopsCleanly)
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     EXPECT_EQ(fake->m_Reads.load(), 0) << "read with no view shown";
 
-    // The Processes tab grouped by User shows no sessions yet, so it reads none.
-    feed.setProcessesView(true, ProcessGrouping::GroupBy::User);
+    // The Processes tab grouped any other way reads none; grouped by User, its groups show the sessions, so it
+    // reads them while it is shown (#3377).
+    feed.setProcessesView(true, ProcessGrouping::GroupBy::Unit);
     EXPECT_FALSE(feed.demanded());
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    EXPECT_EQ(fake->m_Reads.load(), 0) << "read for Group: User before it shows sessions";
+    EXPECT_EQ(fake->m_Reads.load(), 0) << "read for Group: Unit";
+    feed.setProcessesView(true, ProcessGrouping::GroupBy::User);
+    EXPECT_TRUE(feed.demanded());
+    ASSERT_TRUE(waitFor([&feed] { return feed.publishedVersion() >= 1; })) << "not read for Group: User";
+    feed.setProcessesView(false, ProcessGrouping::GroupBy::User);
+    EXPECT_FALSE(feed.demanded()) << "the Processes tab hidden";
 
     feed.setUsersTabShown(true);
     EXPECT_TRUE(feed.demanded());
-    ASSERT_TRUE(waitFor([&feed] { return feed.publishedVersion() >= 2; })) << "not read again at the interval";
+    const std::uint64_t shownAt = feed.publishedVersion();
+    ASSERT_TRUE(waitFor([&feed, shownAt] { return feed.publishedVersion() >= shownAt + 2; })) << "not read again at the interval";
 
     // Hidden: the gate closes at once; a read already running may still finish.
     feed.setUsersTabShown(false);

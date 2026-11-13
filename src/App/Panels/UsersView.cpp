@@ -1,6 +1,7 @@
 #include "UsersView.h"
 
 #include "App/Panels/ProcessGroupTotals.h"
+#include "App/Panels/SessionActionView.h"
 #include "App/Panels/UserGrouping.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Domain/UsersModel.h"
@@ -235,44 +236,17 @@ renderUserRow(const UserGrouping::UserRow& row, UsersViewState& state, std::opti
     std::optional<UsersViewAction> action;
     if (state.menuSession.has_value())
     {
-        const UsersViewAction none{
-            .selectPid = 0,
-            .selectStartTimeTicks = 0,
-            .showDetails = false,
-            .lock = std::nullopt,
-            .signOut = std::nullopt,
-            .disconnect = std::nullopt,
-        };
-        if (menu.lock && ImGui::MenuItem(ICON_FA_LOCK "  Lock"))
+        // The items the Processes table's Group: User offers too (SessionActionView, #3377).
+        if (SessionMenuChoice choice = renderSessionMenuItems(menu, *state.menuSession); choice.any())
         {
-            action = none;
-            action->lock = state.menuSession;
-        }
-        if (menu.lock)
-        {
-            ImGui::SetItemTooltip("Lock the session's screen; its user signs back in to unlock it");
-        }
-        // Windows' Disconnect, in Lock's place (#3076): the session stays signed in, its programs running.
-        const bool disconnected = state.menuSession->state == "disconnected";
-        if (menu.disconnect && ImGui::MenuItem(ICON_FA_LINK_SLASH "  Disconnect...", nullptr, false, !disconnected))
-        {
-            action = none;
-            action->disconnect = state.menuSession;
-        }
-        if (menu.disconnect)
-        {
-            ImGui::SetItemTooltip(disconnected ? "The session is already disconnected"
-                                               : "Detach the session from its screen; its programs keep running until its user "
-                                                 "signs back in");
-        }
-        if (menu.signOut && ImGui::MenuItem(ICON_FA_RIGHT_FROM_BRACKET "  Sign out..."))
-        {
-            action = none;
-            action->signOut = state.menuSession;
-        }
-        if (menu.signOut)
-        {
-            ImGui::SetItemTooltip("End the session and every program in it");
+            action = UsersViewAction{
+                .selectPid = 0,
+                .selectStartTimeTicks = 0,
+                .showDetails = false,
+                .lock = std::move(choice.lock),
+                .signOut = std::move(choice.signOut),
+                .disconnect = std::move(choice.disconnect),
+            };
         }
     }
     ImGui::EndPopup();

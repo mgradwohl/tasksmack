@@ -34,6 +34,8 @@ ShellPanels::ShellPanels()
     // One priority change at a time reaches a process, from whichever panel (#3467).
     m_Processes.setPriorityChanges(&m_PriorityChanges);
     m_ProcessDetails.setPriorityChanges(&m_PriorityChanges);
+    // Group: User draws each account's sessions under its header, with their actions (#3377).
+    m_Processes.setUserSessions(&m_UserSessions);
 }
 
 void ShellPanels::prepareAttach()

@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <format>
+#include <limits>
 #include <map>
 #include <optional>
 #include <string>
@@ -205,24 +206,41 @@ std::vector<UserRow> buildUserRows(const std::vector<Platform::UserSession>& ses
     return rows;
 }
 
+namespace
+{
+
+/// "pc\\alice": @p domain and @p user, ASCII case folded, the key of an account that names its domain.
+[[nodiscard]] std::string foldedAccountKey(std::string_view domain, std::string_view user)
+{
+    std::string key;
+    key.reserve(domain.size() + 1 + user.size());
+    for (const char ch : domain)
+    {
+        key += Platform::foldAscii(ch);
+    }
+    key += '\\';
+    for (const char ch : user)
+    {
+        key += Platform::foldAscii(ch);
+    }
+    return key;
+}
+
+/// Whether @p session's user was read, so it belongs to an account (not the Not readable group).
+[[nodiscard]] bool hasReadableUser(const Platform::UserSession& session) noexcept
+{
+    return session.unreadable.empty() && !session.user.empty();
+}
+
+} // namespace
+
 std::string processAccountKey(const Domain::ProcessSnapshot& proc)
 {
     if (proc.user.empty() || proc.userDomain.empty())
     {
         return proc.user;
     }
-    std::string key;
-    key.reserve(proc.userDomain.size() + 1 + proc.user.size());
-    for (const char ch : proc.userDomain)
-    {
-        key += Platform::foldAscii(ch);
-    }
-    key += '\\';
-    for (const char ch : proc.user)
-    {
-        key += Platform::foldAscii(ch);
-    }
-    return key;
+    return foldedAccountKey(proc.userDomain, proc.user);
 }
 
 std::vector<std::string> sharedUserNames(const std::vector<Domain::ProcessSnapshot>& snapshots)
@@ -272,34 +290,66 @@ std::vector<ProcessGrouping::Group> buildUserGroups(const std::vector<Domain::Pr
                                                     const std::vector<std::size_t>& order,
                                                     std::size_t liveCount,
                                                     ProcessColumn sortColumn,
-                                                    bool ascending)
+                                                    bool ascending,
+                                                    const std::vector<Platform::UserSession>& sessions)
 {
     using ProcessGrouping::Group;
     // The accounts come from the whole generation, not from `order` (#3377 review): the filter hides rows,
     // not accounts, so a process with no domain is as ambiguous with PC\alice's process filtered out as with
     // it shown. Short names count ignoring ASCII case, as Windows compares them, so neither the table's order
-    // nor which spelling it meets first changes the answer.
+    // nor which spelling it meets first changes the answer. A signed-in account counts too, processes or not,
+    // as the Users tab's rows did: a process with no domain joins the one account with its name.
     std::unordered_set<std::string> accounts;                        // processAccountKey() of each with a domain
     std::map<std::string_view, std::size_t, NameLess> accountsNamed; // short name -> how many accounts have it
     std::map<std::string_view, std::string, NameLess> accountNamed;  // short name -> an account's key with it
+    const auto countAccount = [&](std::string_view domain, std::string_view user)
+    {
+        if (user.empty() || domain.empty())
+        {
+            return;
+        }
+        if (const auto [account, added] = accounts.insert(foldedAccountKey(domain, user)); added)
+        {
+            ++accountsNamed[user];
+            accountNamed.try_emplace(user, *account);
+        }
+    };
     for (const Domain::ProcessSnapshot& proc : snapshots)
     {
-        if (proc.user.empty() || proc.userDomain.empty())
+        countAccount(proc.userDomain, proc.user);
+    }
+    for (const Platform::UserSession& session : sessions)
+    {
+        if (isSignInSession(session) && hasReadableUser(session))
         {
-            continue;
-        }
-        if (const auto [account, added] = accounts.insert(processAccountKey(proc)); added)
-        {
-            ++accountsNamed[proc.user];
-            accountNamed.try_emplace(proc.user, *account);
+            countAccount(session.domain, session.user);
         }
     }
-    // Then the rows the table shows, in its order: a group only for an account with one of them.
+    // The key of the account @p domain and @p user name: its own, or, with no domain, the one account with the
+    // name when only one has it, else the name alone.
+    const auto keyOf = [&](std::string_view domain, std::string_view user) -> std::string
+    {
+        if (user.empty())
+        {
+            return {};
+        }
+        if (!domain.empty())
+        {
+            return foldedAccountKey(domain, user);
+        }
+        if (const auto sole = accountNamed.find(user); sole != accountNamed.end() && accountsNamed[user] == 1)
+        {
+            return sole->second; // Its domain wasn't read, and only one account has its name
+        }
+        return std::string(user);
+    };
+    // Then the rows the table shows, in its order: a group only for an account with one of them, or signed in.
     std::vector<Group> groups;
     std::unordered_map<std::string, std::size_t> byKey; // key -> its group
     // Each group's names as its lowest-numbered member spells them, whatever the table's order: its label.
     std::vector<AccountLess::Names> names;
-    std::vector<std::size_t> namedBy; // the snapshot index `names` came from
+    std::vector<std::size_t> namedBy; // the snapshot index `names` came from; NAMED_BY_SESSION for a session
+    constexpr std::size_t NAMED_BY_SESSION = std::numeric_limits<std::size_t>::max();
     for (const std::size_t index : order)
     {
         if (index >= snapshots.size())
@@ -307,20 +357,19 @@ std::vector<ProcessGrouping::Group> buildUserGroups(const std::vector<Domain::Pr
             continue;
         }
         const Domain::ProcessSnapshot& proc = snapshots[index];
-        std::string key;
-        if (const auto sole = accountNamed.find(proc.user);
-            proc.userDomain.empty() && sole != accountNamed.end() && accountsNamed[proc.user] == 1)
-        {
-            key = sole->second; // Its domain wasn't read, and only one account has its name
-        }
-        else
-        {
-            key = processAccountKey(proc);
-        }
+        std::string key = keyOf(proc.userDomain, proc.user);
         auto [slot, added] = byKey.try_emplace(key, groups.size());
         if (added)
         {
-            groups.push_back(Group{.key = std::move(key), .label = {}, .totals = {}, .members = {}});
+            groups.push_back(Group{
+                .key = std::move(key),
+                .label = {},
+                .totals = {},
+                .members = {},
+                .sessions = {},
+                .current = false,
+                .notReadable = false,
+            });
             names.emplace_back(proc.userDomain, proc.user);
             namedBy.push_back(index);
         }
@@ -336,10 +385,45 @@ std::vector<ProcessGrouping::Group> buildUserGroups(const std::vector<Domain::Pr
             group.totals.add(proc);
         }
     }
+    // Each sign-in session under its account (#3377), which gets a group of its own when none of its processes
+    // is shown: the filter hides processes, never who is signed in (the maintainer's decision). Sessions whose
+    // user couldn't be read have no account to go to: they share one Not readable group.
+    for (const Platform::UserSession& session : sessions)
+    {
+        if (!isSignInSession(session))
+        {
+            continue;
+        }
+        const bool readable = hasReadableUser(session);
+        std::string key = readable ? keyOf(session.domain, session.user) : std::string(NOT_READABLE_GROUP_KEY);
+        auto [slot, added] = byKey.try_emplace(key, groups.size());
+        if (added)
+        {
+            groups.push_back(Group{
+                .key = std::move(key),
+                .label = {},
+                .totals = {},
+                .members = {},
+                .sessions = {},
+                .current = false,
+                .notReadable = !readable,
+            });
+            names.emplace_back(session.domain, session.user);
+            namedBy.push_back(NAMED_BY_SESSION);
+        }
+        Group& group = groups[slot->second];
+        group.sessions.push_back(session);
+        group.current = group.current || session.current;
+    }
     // The short name, or DOMAIN\user when two accounts in the generation share it, in any case (only a group
     // with a domain gets one, so Linux's alice and Alice stay alice and Alice).
     for (std::size_t g = 0; g < groups.size(); ++g)
     {
+        if (groups[g].notReadable)
+        {
+            groups[g].label = "Not readable";
+            continue;
+        }
         const auto& [domain, user] = names[g];
         const auto named = accountsNamed.find(user);
         const bool shared = named != accountsNamed.end() && named->second > 1;
@@ -458,6 +542,62 @@ std::string disconnectQuestion(const Platform::UserSession& session)
     return std::format("Disconnect {} from {}?\n\nTheir programs keep running, and they sign back in to return to them.",
                        session.user,
                        sessionPlace(session));
+}
+
+std::string groupHeaderName(const ProcessGrouping::Group& group)
+{
+    return group.current ? group.label + "  (you)" : group.label;
+}
+
+std::string groupStatus(const ProcessGrouping::Group& group, std::uint64_t nowUsec)
+{
+    if (group.sessions.size() == 1)
+    {
+        return group.notReadable ? std::string("1 session") : sessionStatus(group.sessions.front(), nowUsec);
+    }
+    return group.sessions.empty() ? std::string{} : std::format("{} sessions", group.sessions.size());
+}
+
+std::string groupHeaderTooltip(const ProcessGrouping::Group& group, bool collapsed)
+{
+    std::string tooltip = collapsed ? "Expand" : "Collapse";
+    if (group.notReadable)
+    {
+        for (const Platform::UserSession& session : group.sessions)
+        {
+            tooltip += std::format(
+                "\nSession {}: its user couldn't be read{}{}", session.id, session.unreadable.empty() ? "" : ": ", session.unreadable);
+        }
+    }
+    else if (!group.sessions.empty())
+    {
+        tooltip += "\nThe \xCE\xA3 totals are of the processes TaskSmack can see"; // Σ
+    }
+    return tooltip;
+}
+
+const Platform::UserSession* headerMenuSession(const ProcessGrouping::Group& group) noexcept
+{
+    if (group.notReadable || group.sessions.size() != 1 || !hasReadableUser(group.sessions.front()))
+    {
+        return nullptr;
+    }
+    return &group.sessions.front();
+}
+
+std::string sessionRowName(const Platform::UserSession& session)
+{
+    std::string name = session.unreadable.empty() ? sessionPlace(session) : "Session " + session.id + " (not readable)";
+    if (session.current)
+    {
+        name += "  (this session)";
+    }
+    return name;
+}
+
+std::string sessionSignInTime(const Platform::UserSession& session)
+{
+    return session.logonUsec == 0 ? std::string{} : UI::Format::formatEpochDateTimeShort(session.logonUsec / USEC_PER_SECOND);
 }
 
 } // namespace App::UserGrouping

@@ -10,6 +10,7 @@
 // (ProcessModel), and rebuilt only when either changes. The rows and the session text come from
 // UserGrouping (buildUserRows(), sessionPlace(), ...), pure and tested without ImGui (test_UserGrouping.cpp).
 
+#include "App/Panels/SessionActionView.h"
 #include "App/Panels/UserGrouping.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Domain/UsersModel.h"
@@ -24,19 +25,6 @@
 
 namespace App
 {
-
-/// Which items a session's row menu has: what the platform's IUserSessions::canAct() allows.
-struct SessionMenu
-{
-    bool lock = false;       ///< Linux
-    bool disconnect = false; ///< Windows
-    bool signOut = false;
-
-    [[nodiscard]] bool any() const noexcept
-    {
-        return lock || disconnect || signOut;
-    }
-};
 
 /// What the user did in the table this frame.
 struct UsersViewAction
