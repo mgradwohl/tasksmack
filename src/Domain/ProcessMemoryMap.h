@@ -199,4 +199,55 @@ constexpr void accumulate(Totals& totals, const Platform::MemoryMapping& mapping
     return text;
 }
 
+/// @p mapping's protection in the words Windows tools use ("Execute/Read", "Read/Write", "Copy on write"),
+/// for the Windows view, where "r-xp" is foreign: "Reserved" for address space with nothing behind it, and
+/// " + Guard" after a guard page's. Copy on write is a writable file mapping that isn't shared (Windows
+/// PAGE_WRITECOPY; on Linux a private writable file mapping reads the same way).
+[[nodiscard]] inline std::string protectionWords(const Platform::MemoryMapping& mapping)
+{
+    if (mapping.reserved)
+    {
+        return "Reserved";
+    }
+    const bool fileBacked = mapping.kind == Platform::MemoryMappingKind::Image || mapping.kind == Platform::MemoryMappingKind::File;
+    const bool copyOnWrite = mapping.writable && !mapping.shared && fileBacked;
+    std::string text;
+    const auto add = [&text](std::string_view word)
+    {
+        if (!text.empty())
+        {
+            text += '/';
+        }
+        text += word;
+    };
+    if (mapping.executable)
+    {
+        add("Execute");
+    }
+    if (copyOnWrite)
+    {
+        add("Copy on write");
+    }
+    else
+    {
+        if (mapping.readable)
+        {
+            add("Read");
+        }
+        if (mapping.writable)
+        {
+            add("Write");
+        }
+    }
+    if (text.empty())
+    {
+        text = "No access";
+    }
+    if (mapping.guard)
+    {
+        text += " + Guard";
+    }
+    return text;
+}
+
 } // namespace Domain::MemoryMap

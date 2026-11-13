@@ -77,8 +77,8 @@ namespace Platform
 /// until its lane adds one).
 [[nodiscard]] std::unique_ptr<IProcessThreadsReader> makeProcessThreadsReader();
 
-/// Creates the platform-appropriate IProcessMemoryMapReader implementation (#3089): smaps on Linux; Windows:
-/// unsupported until its lane's VirtualQueryEx reader lands.
+/// Creates the platform-appropriate IProcessMemoryMapReader implementation (#3089): smaps on Linux,
+/// VirtualQueryEx with GetMappedFileNameW on Windows.
 [[nodiscard]] std::unique_ptr<IProcessMemoryMapReader> makeProcessMemoryMapReader();
 
 /// Creates the platform-appropriate ISystemConnectionsReader implementation (#3066; Windows: unsupported

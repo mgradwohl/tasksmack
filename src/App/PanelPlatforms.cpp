@@ -152,12 +152,15 @@ ProcessDetailsReaders makeProcessDetailsReaders(const Synthetic::Scenario* scena
         .threads = (scenario == nullptr)
                      ? Platform::withPrivilegedBroker(Synthetic::makeProcessThreadsReader(scenario), sharedPrivilegedBroker())
                      : Synthetic::makeProcessThreadsReader(scenario),
+        .memoryMap = App::makeProcessMemoryMapReader(scenario), // qualified: ADL also finds Synthetic's
     };
 }
 
 std::unique_ptr<Platform::IProcessMemoryMapReader> makeProcessMemoryMapReader(const Synthetic::Scenario* scenario)
 {
-    return Synthetic::makeProcessMemoryMapReader(scenario); // no helper reads memory maps (#3580)
+    // No helper reads memory maps (#3580): on Windows another user's or an elevated process's map is read
+    // only by an elevated TaskSmack, in-process.
+    return Synthetic::makeProcessMemoryMapReader(scenario);
 }
 
 std::unique_ptr<Platform::IProcessActions> makeConnectionsPanelActions(const Synthetic::Scenario* scenario)

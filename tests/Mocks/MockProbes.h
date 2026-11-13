@@ -12,6 +12,7 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
+#include "Platform/IProcessMemoryMap.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
@@ -1737,6 +1738,36 @@ class MockProcessModulesReader : public Platform::IProcessModulesReader
     int m_AuthorizedReadCount = 0;
     Platform::ModulesReadResult m_AuthorizedResult;
     Platform::ModulesReadResult m_Result{.status = Platform::ModulesReadStatus::Ok, .modules = {}, .detail = {}};
+    int m_ReadCount = 0;
+};
+
+/// Mock IProcessMemoryMapReader (#3089): returns the result it was given and counts the reads.
+class MockProcessMemoryMapReader : public Platform::IProcessMemoryMapReader
+{
+  public:
+    void setResult(Platform::MemoryMapReadResult result)
+    {
+        m_Result = std::move(result);
+    }
+
+    [[nodiscard]] bool hasMemoryMap() const override
+    {
+        return true;
+    }
+
+    [[nodiscard]] Platform::MemoryMapReadResult readMemoryMap(const Platform::ProcessTarget& /*target*/) override
+    {
+        ++m_ReadCount;
+        return m_Result;
+    }
+
+    [[nodiscard]] int readCount() const
+    {
+        return m_ReadCount;
+    }
+
+  private:
+    Platform::MemoryMapReadResult m_Result{.status = Platform::MemoryMapReadStatus::Ok, .mappings = {}, .detail = {}, .truncated = false};
     int m_ReadCount = 0;
 };
 

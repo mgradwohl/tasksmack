@@ -14,6 +14,7 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
+#include "Platform/IProcessMemoryMap.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessSecurity.h"
@@ -27,6 +28,7 @@
 #include "ProcessDetailsHistory.h"
 #include "ProcessDetailsPanel_HistoryHelpers.h"
 #include "ProcessEnvironmentView.h"
+#include "ProcessMemoryMapView.h"
 #include "ProcessModulesView.h"
 #include "ProcessOpenFilesView.h"
 #include "ProcessPriorityView.h"
@@ -59,7 +61,8 @@ struct ProcessDetailsReaders
     std::unique_ptr<Platform::IProcessModulesReader> modules;
     std::unique_ptr<Platform::IProcessSecurityReader> security;
     std::unique_ptr<Platform::IProcessOpenFilesReader> openFiles;
-    std::unique_ptr<Platform::IProcessThreadsReader> threads; ///< #3069
+    std::unique_ptr<Platform::IProcessThreadsReader> threads;     ///< #3069
+    std::unique_ptr<Platform::IProcessMemoryMapReader> memoryMap; ///< #3089
 };
 
 /// Panel displaying detailed information for a selected process.
@@ -112,6 +115,14 @@ class ProcessDetailsPanel : public Panel
     {
         m_ThreadsReader = std::move(reader);
         m_HasThreads = m_ThreadsReader != nullptr && m_ThreadsReader->hasThreads();
+    }
+
+    /// The Memory map section's reader (#3089); null, the default, hides the section. Call before the first
+    /// update; the default constructor sets the platform's.
+    void setMemoryMapReader(std::unique_ptr<Platform::IProcessMemoryMapReader> reader)
+    {
+        m_MemoryMapReader = std::move(reader);
+        m_HasMemoryMap = m_MemoryMapReader != nullptr && m_MemoryMapReader->hasMemoryMap();
     }
 
     /// With @p readers (PanelPlatforms.h): the default constructor's, made for the active scenario (#2137).
@@ -318,6 +329,12 @@ class ProcessDetailsPanel : public Panel
         return m_ModulesView;
     }
 
+    /// The Overview's Memory map section, for tests: hasRead() once it was drawn open and its read taken in.
+    [[nodiscard]] const ProcessMemoryMapView& memoryMapViewForTesting() const noexcept
+    {
+        return m_MemoryMapView;
+    }
+
     [[nodiscard]] ProcessActionsView& actionsViewForTesting() noexcept
     {
         return m_ActionsView;
@@ -473,6 +490,10 @@ class ProcessDetailsPanel : public Panel
     std::unique_ptr<Platform::IProcessModulesReader> m_ModulesReader;
     bool m_HasModules = false; // m_ModulesReader can list modules here (Windows, Linux; not synthetic runs)
     ProcessModulesView m_ModulesView;
+    // The Overview's Memory map section (#3089), on the same terms, its reader declared before its view.
+    std::unique_ptr<Platform::IProcessMemoryMapReader> m_MemoryMapReader;
+    bool m_HasMemoryMap = false; // m_MemoryMapReader can read a memory map here (Linux, Windows; not synthetic runs)
+    ProcessMemoryMapView m_MemoryMapView;
     std::unique_ptr<Platform::IProcessThreadsReader> m_ThreadsReader; // the Threads section's (#3069)
     bool m_HasThreads = false; // m_ThreadsReader can list threads here (Linux, Windows; not synthetic runs)
     ProcessThreadsView m_ThreadsView{static_cast<std::size_t>(std::thread::hardware_concurrency())};

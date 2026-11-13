@@ -249,6 +249,7 @@ set(TASKSMACK_SOURCES
     src/App/Panels/ProcessEnvironmentView.cpp
     src/App/Panels/ProcessConnectionsView.cpp
     src/App/Panels/ProcessModulesView.cpp
+    src/App/Panels/ProcessMemoryMapView.cpp # Process Details Memory map (#3089)
     src/App/Panels/ProcessThreadsView.cpp # Process Details Threads (#3069)
     src/App/Panels/ProcessCrashHistoryView.cpp
     src/App/Panels/ProcessOpenFilesView.cpp
@@ -392,6 +393,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsProcessEnvironmentReader.cpp # a process's environment block, out of its PEB (#2569)
     src/Platform/Windows/WindowsProcessIconSource.cpp
     src/Platform/Windows/WindowsProcessModules.cpp
+    src/Platform/Windows/WindowsProcessMemoryMap.cpp # a process's memory map: VirtualQueryEx, GetMappedFileNameW (#3089)
     src/Platform/Windows/WindowsProcessOpenFiles.cpp
     src/Platform/Windows/WindowsProcessSecurity.cpp
     src/Platform/Windows/WindowsProcessThreads.cpp # Process Details Threads (#3069)
@@ -667,6 +669,8 @@ elseif(WIN32)
         src/Platform/Windows/WindowsProcessIconMath.h
         src/Platform/Windows/WindowsPackageLogoMath.h
         src/Platform/Windows/WindowsProcessModules.h
+        src/Platform/Windows/WindowsProcessMemoryMap.h
+        src/Platform/Windows/WindowsDevicePaths.h
         src/Platform/Windows/WindowsProcessOpenFiles.h
         src/Platform/Windows/WindowsProcessSecurity.h
         src/Platform/Windows/WindowsProcessThreads.h

@@ -48,6 +48,7 @@
 #include "WindowsProcessConnections.h"
 #include "WindowsProcessEnvironmentReader.h"
 #include "WindowsProcessIconSource.h"
+#include "WindowsProcessMemoryMap.h"
 #include "WindowsProcessModules.h"
 #include "WindowsProcessOpenFiles.h"
 #include "WindowsProcessProbe.h"
@@ -173,8 +174,8 @@ std::unique_ptr<IProcessThreadsReader> makeProcessThreadsReader()
 
 std::unique_ptr<IProcessMemoryMapReader> makeProcessMemoryMapReader()
 {
-    // The memory map (#3089): VirtualQueryEx with GetMappedFileNameW is the Windows lane's; none until then.
-    return std::make_unique<UnsupportedProcessMemoryMapReader>();
+    // The memory map (#3089): VirtualQueryEx's regions, a mapped file's name from GetMappedFileNameW.
+    return std::make_unique<Windows::WindowsProcessMemoryMapReader>();
 }
 
 std::unique_ptr<IProcessOpenFilesReader> makeProcessOpenFilesReader()
