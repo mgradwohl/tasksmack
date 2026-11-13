@@ -2,6 +2,8 @@
 /// @brief What an Administrator session keeps of root's capabilities (#3621).
 
 #include "Platform/Linux/RootCapabilities.h"
+#include "Platform/Linux/UdpByteCounter.h"
+#include "Support/CiRealSystem.h"
 
 #include <gtest/gtest.h>
 
@@ -145,6 +147,38 @@ TEST(RootCapabilitiesRootTest, RootKeepsOnlyTheUsedSetAndAProgramItExecsIsFullRo
     ASSERT_EQ(WEXITSTATUS(status), 0) << "2: the drop didn't leave keptMask(); 3: exec failed";
     ASSERT_TRUE(out.starts_with("CapEff:")) << out;
     EXPECT_EQ(std::stoull(out.substr(7), nullptr, 16), *rootBefore) << "the exec'd program is full root again (D4)";
+}
+
+// #3621: what an Administrator session keeps is enough to load the eBPF UDP counter (#3366), which "Count UDP traffic
+// per process" loads after the drop: CAP_BPF, CAP_PERFMON and CAP_SYS_RESOURCE, without CAP_SYS_ADMIN. In a child, so
+// the test binary keeps its sets; a real-system test, as UdpByteCounterRootTest is.
+TEST(RootCapabilitiesRootTest, TheNarrowedSetStillLoadsTheUdpCounter)
+{
+    if (::geteuid() != 0)
+    {
+        GTEST_SKIP() << "needs root: CI runs this suite under sudo";
+    }
+    ::TestSupport::requireCiRealSystem();
+    if (::testing::Test::IsSkipped())
+    {
+        return;
+    }
+    const pid_t child = ::fork();
+    ASSERT_GE(child, 0);
+    if (child == 0)
+    {
+        const DropResult result = dropUnused();
+        if (!result.dropped)
+        {
+            ::_exit(2);
+        }
+        const auto counter = UdpByteCounter::load();
+        ::_exit(counter.has_value() && counter->read().has_value() ? 0 : 3);
+    }
+    int status = 0;
+    ASSERT_EQ(::waitpid(child, &status, 0), child);
+    ASSERT_TRUE(WIFEXITED(status));
+    EXPECT_EQ(WEXITSTATUS(status), 0) << "2: the drop failed; 3: the counter didn't load or read with the narrowed set";
 }
 
 } // namespace
