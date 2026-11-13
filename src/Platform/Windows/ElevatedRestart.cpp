@@ -238,7 +238,7 @@ AdministratorPrompt promptFor(TOKEN_ELEVATION_TYPE elevationType) noexcept
 
 HandoffWait waitForHandoff(DWORD pid, std::uint64_t startTicks, DWORD timeoutMs, const WaitFunctions& functions)
 {
-    const HANDLE opened = functions.openProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    auto* const opened = functions.openProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
     const DWORD openError = GetLastError();
     const UniqueHandle process(opened);
     if (!process)
@@ -316,7 +316,7 @@ checkConfigDir(const std::filesystem::path& dir, const std::filesystem::path& pr
         {
             return refused(std::format("{} is a junction or link", WinString::wideToUtf8(prefix)));
         }
-        prefix += L"\\";
+        prefix += L'\\';
     }
     const auto ownerIsPrivileged = functions.ownerIsPrivileged != nullptr ? functions.ownerIsPrivileged : &realOwnerIsPrivileged;
     const std::optional<bool> privileged = ownerIsPrivileged(text);

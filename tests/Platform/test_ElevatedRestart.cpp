@@ -174,7 +174,8 @@ TEST(ElevatedRestartTest, TheRestartObjectHandsOverThisProcessAndItsOwnStart)
     EXPECT_EQ(shell.window, OWNER);
     const std::optional<std::uint64_t> ownTicks = BrokerHelper::startTicksOf(GetCurrentProcess());
     ASSERT_TRUE(ownTicks.has_value());
-    EXPECT_EQ(shell.parameters, *parameters(GetCurrentProcessId(), *ownTicks, CONFIG_DIR)) << "on behalf of this process";
+    EXPECT_EQ(shell.parameters, parameters(GetCurrentProcessId(), ownTicks.value_or(0), CONFIG_DIR).value_or(L""))
+        << "on behalf of this process";
 }
 
 TEST(ElevatedRestartTest, OnlyASplitTokenAdministratorIsAskedForConsentAlone)
@@ -276,8 +277,8 @@ constexpr std::wstring_view GOOD_DIR = LR"(C:\Users\pat\AppData\Roaming\TaskSmac
 /// What the fake disk answers.
 struct FakeDisk
 {
-    std::wstring reparseAt;   ///< A path whose attributes say reparse point; empty: none
-    std::wstring missing;     ///< A path that isn't there; empty: none
+    std::wstring reparseAt{}; // NOLINT(readability-redundant-member-init) - designated initializers need every member initialised
+    std::wstring missing{};   // NOLINT(readability-redundant-member-init) - designated initializers need every member initialised
     bool configExists = true; ///< config.toml is there
     DWORD configLinks = 1;    ///< Its hard-link count
     std::optional<bool> privilegedOwner = false;
@@ -377,14 +378,16 @@ TEST(ElevatedRestartConfigDirTest, ALinkedOrHardLinkedConfigIsRefused)
 TEST(ElevatedRestartConfigDirTest, AFolderOutsideAUsersProfileIsRefused)
 {
     fakeDisk() = FakeDisk{};
-    for (const std::wstring_view dir : {std::wstring_view(LR"(C:\Windows\System32)"),
-                                        std::wstring_view(LR"(C:\Users)"),
-                                        std::wstring_view(LR"(C:\Users\pat)"),
-                                        std::wstring_view(LR"(D:\Users\pat\AppData\Roaming\TaskSmack)"),
-                                        std::wstring_view(LR"(C:\Users\pat\..\..\Windows\Temp\x)"),
-                                        std::wstring_view(LR"(\\server\share\Users\pat\TaskSmack)"),
-                                        std::wstring_view(LR"(\\?\C:\Users\pat\AppData\Roaming\TaskSmack)"),
-                                        std::wstring_view(LR"(Users\pat\AppData\Roaming\TaskSmack)")})
+    for (const std::wstring_view dir : {
+             std::wstring_view(LR"(C:\Windows\System32)"),
+             std::wstring_view(LR"(C:\Users)"),
+             std::wstring_view(LR"(C:\Users\pat)"),
+             std::wstring_view(LR"(D:\Users\pat\AppData\Roaming\TaskSmack)"),
+             std::wstring_view(LR"(C:\Users\pat\..\..\Windows\Temp\x)"),
+             std::wstring_view(LR"(\\server\share\Users\pat\TaskSmack)"),
+             std::wstring_view(LR"(\\?\C:\Users\pat\AppData\Roaming\TaskSmack)"),
+             std::wstring_view(LR"(Users\pat\AppData\Roaming\TaskSmack)"),
+         })
     {
         EXPECT_FALSE(check(dir).has_value()) << std::filesystem::path(dir).string();
     }

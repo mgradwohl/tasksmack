@@ -2505,27 +2505,6 @@ TEST_F(UserConfigSaveLoadFixture, SymlinkedConfigKeepsItsLinkAndUpdatesItsTarget
     EXPECT_EQ(parsed(target)["theme"]["id"].value<std::string>(), "mocha");
 }
 
-// #2728: a config folder an elevated restart was handed is the less-privileged side's, so a link planted in it after
-// the startup check sends no elevated write elsewhere: the save is refused and the target left alone.
-TEST_F(UserConfigSaveLoadFixture, AHandedOverFolderIsNeverWrittenThroughALink)
-{
-    const auto& link = m_ConfigPath;
-    const auto target = m_TempDir / "elsewhere.toml";
-    writeFile(target, "[theme]\nid = \"arctic-fire\"\n");
-    std::filesystem::create_symlink(target, link);
-
-    // NOLINTNEXTLINE(performance-unnecessary-copy-initialization) - a copy: active() changes below
-    const std::optional<std::filesystem::path> previous = Core::ConfigDirOverride::active();
-    Core::ConfigDirOverride::adoptHandedOver(m_TempDir);
-    auto& config = UserConfig::get();
-    config.load();
-    config.settings().themeId = "mocha";
-    config.save();
-    Core::ConfigDirOverride::setActiveForTesting(previous);
-
-    EXPECT_TRUE(std::filesystem::is_symlink(link));
-    EXPECT_EQ(parsed(target)["theme"]["id"].value<std::string>(), "arctic-fire") << "not written through the link";
-}
 TEST_F(UserConfigSaveLoadFixture, SymlinkTargetWithALongNameStillSaves)
 {
     // A 250-byte target name is valid under a 255-byte limit; a temporary named after it with a
@@ -2600,6 +2579,33 @@ TEST_F(UserConfigSaveLoadFixture, ALinkIntoAFolderThatCantBeSearchedIsNotSaved)
     EXPECT_FALSE(std::filesystem::exists(locked / "config.toml"));
 }
 #endif
+
+// #2728: a config folder an elevated restart was handed is the less-privileged side's, so a link planted in it after
+// the startup check sends no elevated write elsewhere: the save is refused and the target left alone.
+TEST_F(UserConfigSaveLoadFixture, AHandedOverFolderIsNeverWrittenThroughALink)
+{
+    const auto& link = m_ConfigPath;
+    const auto target = m_TempDir / "elsewhere.toml";
+    writeFile(target, "[theme]\nid = \"arctic-fire\"\n");
+    std::error_code linkError;
+    std::filesystem::create_symlink(target, link, linkError);
+    if (linkError)
+    {
+        GTEST_SKIP() << "can't make a symlink here (Windows needs Developer Mode or the privilege): " << linkError.message();
+    }
+
+    // NOLINTNEXTLINE(performance-unnecessary-copy-initialization) - a copy: active() changes below
+    const std::optional<std::filesystem::path> previous = Core::ConfigDirOverride::active();
+    Core::ConfigDirOverride::adoptHandedOver(m_TempDir);
+    auto& config = UserConfig::get();
+    config.load();
+    config.settings().themeId = "mocha";
+    config.save();
+    Core::ConfigDirOverride::setActiveForTesting(previous);
+
+    EXPECT_TRUE(std::filesystem::is_symlink(link));
+    EXPECT_EQ(parsed(target)["theme"]["id"].value<std::string>(), "arctic-fire") << "not written through the link";
+}
 
 TEST_F(UserConfigSaveLoadFixture, ConfigCreatedBeforeTheFirstSaveKeepsItsOtherSettings)
 {

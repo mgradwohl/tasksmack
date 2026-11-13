@@ -280,7 +280,7 @@ auto runApp(const App::LaunchOptions& launch) -> int
             }
             return "";
         };
-        spdlog::info("Restarted as administrator for TaskSmack PID {}, {}", *launch.handoffPid, describe(*handoffWait));
+        spdlog::info("Restarted as administrator for TaskSmack PID {}, {}", launch.handoffPid.value_or(0), describe(*handoffWait));
     }
     if (!handoffDirRefused.empty())
     {
