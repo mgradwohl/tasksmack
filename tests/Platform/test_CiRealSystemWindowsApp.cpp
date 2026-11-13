@@ -7,11 +7,14 @@
 // display suites have theirs, its own TASKSMACK_CONFIG_DIR and TEMP, and is closed with WM_CLOSE; a scope guard
 // ends it only if it doesn't exit in time.
 //
-// Left manual: the title bar's native system menu (TitleBarLayer::showNativeSystemMenu()). It opens from a click on
-// the title-bar icon, which the runner can reach only with real input, and real input goes to whichever window has
-// the foreground, which a test can't promise on the runner; in a test binary it needs a running Core::Application.
+// The title bar's native system menu (#3161) is shown on a window of a child run's own, through the function the
+// title-bar icon calls (App::showWindowsSystemMenu()), and answered with keys posted to the menu. Only the icon's
+// click that opens it in the app stays manual: that needs real input, which goes to whichever window has the
+// foreground, and the runner can't promise that.
 
 #include "App/InstanceLock.h"
+#include "App/TitleBarView.h"
+#include "App/WindowsSystemMenu.h"
 #include "Core/ConfigDirOverride.h"
 #include "Core/Utf8Path.h"
 #include "Platform/IProcessActions.h"
@@ -39,6 +42,7 @@
 #include <expected>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <ios>
 #include <iterator>
 #include <optional>
@@ -423,6 +427,218 @@ TEST_F(CiRealSystemFolderPickerTest, TheFolderDialogShowsAndIsCancelled)
     EXPECT_EQ(exit.value_or(STILL_ACTIVE), 0U) << json;
     EXPECT_EQ(occurrences(json, "\"result\": \"COMPLETED\""), 1U) << json;
     EXPECT_EQ(occurrences(json, "\"failure\""), 0U) << json;
+}
+
+// --- The title bar's system menu (#3161) -------------------------------------------------------------------------
+
+/// The variables that hand the child run its window's title and the action the menu should come back with (an
+/// App::TitleBarView::Action, as a number); unset, the child test skips.
+constexpr std::wstring_view SYSTEM_MENU_TITLE_VARIABLE = L"TASKSMACK_CI_SYSTEM_MENU_TITLE";
+constexpr std::wstring_view SYSTEM_MENU_EXPECTED_VARIABLE = L"TASKSMACK_CI_SYSTEM_MENU_EXPECTED";
+/// The child run's one test.
+constexpr std::wstring_view SYSTEM_MENU_CHILD_TEST = L"CiRealSystemSystemMenuChildTest.ShowsTheMenuUntilItIsAnswered";
+
+/// A plain top-level window of the child's own for the menu to belong to, shown without activating it and destroyed
+/// on scope exit.
+class MenuOwnerWindow
+{
+  public:
+    explicit MenuOwnerWindow(const std::wstring& title)
+    {
+        WNDCLASSEXW windowClass{};
+        windowClass.cbSize = sizeof(windowClass);
+        windowClass.lpfnWndProc = DefWindowProcW;
+        windowClass.hInstance = GetModuleHandleW(nullptr);
+        windowClass.lpszClassName = CLASS_NAME;
+        m_Registered = RegisterClassExW(&windowClass) != 0;
+        EXPECT_TRUE(m_Registered) << "couldn't register the menu's window class: " << GetLastError();
+        constexpr int ORIGIN = 100;
+        constexpr int SIZE = 400;
+        m_Window = CreateWindowExW(0,
+                                   CLASS_NAME,
+                                   title.c_str(),
+                                   WS_OVERLAPPEDWINDOW,
+                                   ORIGIN,
+                                   ORIGIN,
+                                   SIZE,
+                                   SIZE,
+                                   nullptr,
+                                   nullptr,
+                                   windowClass.hInstance,
+                                   nullptr);
+        EXPECT_NE(m_Window, nullptr) << "couldn't make the menu's window: " << GetLastError();
+        if (m_Window != nullptr)
+        {
+            ShowWindow(m_Window, SW_SHOWNOACTIVATE);
+        }
+    }
+    ~MenuOwnerWindow()
+    {
+        if (m_Window != nullptr)
+        {
+            DestroyWindow(m_Window);
+        }
+        if (m_Registered)
+        {
+            UnregisterClassW(CLASS_NAME, GetModuleHandleW(nullptr));
+        }
+    }
+    MenuOwnerWindow(const MenuOwnerWindow&) = delete;
+    MenuOwnerWindow& operator=(const MenuOwnerWindow&) = delete;
+    MenuOwnerWindow(MenuOwnerWindow&&) = delete;
+    MenuOwnerWindow& operator=(MenuOwnerWindow&&) = delete;
+
+    [[nodiscard]] HWND get() const noexcept
+    {
+        return m_Window;
+    }
+
+  private:
+    static constexpr const wchar_t* CLASS_NAME = L"TaskSmackCiSystemMenuOwner";
+    HWND m_Window = nullptr;
+    bool m_Registered = false;
+};
+
+/// Whether @p menu's item @p command is grayed.
+[[nodiscard]] bool grayed(HMENU menu, UINT command)
+{
+    return (GetMenuState(menu, command, MF_BYCOMMAND) & MF_GRAYED) != 0U;
+}
+
+/// Run only as CiRealSystemSystemMenuTest's child: the modal menu loop blocks until it is answered, so it runs in a
+/// process of its own, which the parent can end, and never in the process running the other tests.
+class CiRealSystemSystemMenuChildTest : public TestSupport::CiRealSystemTest
+{
+  protected:
+    void SetUp() override
+    {
+        TestSupport::CiRealSystemTest::SetUp();
+        if (!IsSkipped() && (variable(SYSTEM_MENU_TITLE_VARIABLE).empty() || variable(SYSTEM_MENU_EXPECTED_VARIABLE).empty()))
+        {
+            GTEST_SKIP() << "runs only as CiRealSystemSystemMenuTest's child, which answers the menu it shows";
+        }
+    }
+};
+
+TEST_F(CiRealSystemSystemMenuChildTest, ShowsTheMenuUntilItIsAnswered)
+{
+    // The real system menu (App::showWindowsSystemMenu(), what the title-bar icon opens) on a window the client-side
+    // maximize would have left restored as far as Windows knows, so the items are TaskSmack's choice, not the OS's.
+    const MenuOwnerWindow window(variable(SYSTEM_MENU_TITLE_VARIABLE));
+    ASSERT_NE(window.get(), nullptr);
+    RECT bounds{};
+    ASSERT_NE(GetWindowRect(window.get(), &bounds), FALSE) << GetLastError();
+    constexpr int ICON_INSET = 20; // where the title-bar icon would be: the menu opens at the click
+    const App::TitleBarView::Action action =
+        App::showWindowsSystemMenu(window.get(), true, bounds.left + ICON_INSET, bounds.top + ICON_INSET);
+    EXPECT_EQ(static_cast<int>(action), std::stoi(variable(SYSTEM_MENU_EXPECTED_VARIABLE)));
+
+    // A maximized window's items, as TitleBarView::systemMenuItems(true) has them (#3161).
+    HMENU menu = GetSystemMenu(window.get(), FALSE);
+    ASSERT_NE(menu, nullptr);
+    EXPECT_FALSE(grayed(menu, SC_RESTORE));
+    EXPECT_TRUE(grayed(menu, SC_MOVE));
+    EXPECT_TRUE(grayed(menu, SC_SIZE));
+    EXPECT_FALSE(grayed(menu, SC_MINIMIZE));
+    EXPECT_TRUE(grayed(menu, SC_MAXIMIZE));
+    EXPECT_FALSE(grayed(menu, SC_CLOSE));
+}
+
+/// The visible popup menu (class #32768) of @p child, within @p timeout; null when there is none, or once the child
+/// has exited.
+[[nodiscard]] HWND popupMenuOf(const Child& child, std::chrono::milliseconds timeout)
+{
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    for (bool first = true; first || std::chrono::steady_clock::now() < deadline; first = false)
+    {
+        for (HWND menu = FindWindowExW(nullptr, nullptr, L"#32768", nullptr); menu != nullptr;
+             menu = FindWindowExW(nullptr, menu, L"#32768", nullptr))
+        {
+            DWORD owner = 0;
+            GetWindowThreadProcessId(menu, &owner);
+            if (owner == child.pid() && IsWindowVisible(menu) != FALSE)
+            {
+                return menu;
+            }
+        }
+        if (child.exitCode(0ms).has_value())
+        {
+            return nullptr;
+        }
+        std::this_thread::sleep_for(POLL_INTERVAL);
+    }
+    return nullptr;
+}
+
+/// Posts a press and release of @p key to @p menu: the modal menu loop reads keys from its thread's queue, so a
+/// posted key answers it as a typed one would, and no input reaches another window.
+void postKey(HWND menu, WPARAM key)
+{
+    const auto scanCode = static_cast<LPARAM>(MapVirtualKeyW(static_cast<UINT>(key), MAPVK_VK_TO_VSC));
+    constexpr LPARAM ONE_REPEAT = 1;
+    constexpr LPARAM SCAN_CODE_SHIFT = 16;
+    constexpr LPARAM WAS_DOWN_AND_RELEASED = 0xC0000000;
+    PostMessageW(menu, WM_KEYDOWN, key, ONE_REPEAT | (scanCode << SCAN_CODE_SHIFT));
+    PostMessageW(menu, WM_KEYUP, key, ONE_REPEAT | (scanCode << SCAN_CODE_SHIFT) | WAS_DOWN_AND_RELEASED);
+}
+
+class CiRealSystemSystemMenuTest : public TestSupport::CiRealSystemTest
+{
+  protected:
+    /// This binary again, running only the child test, which shows the menu and expects @p expected back; the menu is
+    /// answered with @p keys once it shows. Nothing here waits on the modal itself: the child is ended if it hasn't
+    /// exited by the deadline, and its report says how it went.
+    static void answerTheMenuWith(std::initializer_list<WPARAM> keys, App::TitleBarView::Action expected)
+    {
+        const ScratchFolder folder(std::filesystem::temp_directory_path() / (L"TaskSmackCiMenu." + uniqueSuffix()));
+        const std::wstring title = L"TaskSmack CI system menu " + uniqueSuffix();
+        const std::filesystem::path report = folder.path() / L"report.json";
+        Child child;
+        {
+            const ScopedVariable titleVariable(std::wstring(SYSTEM_MENU_TITLE_VARIABLE), title);
+            const ScopedVariable expectedVariable(std::wstring(SYSTEM_MENU_EXPECTED_VARIABLE), std::to_wstring(static_cast<int>(expected)));
+            const std::wstring parameters =
+                L"--gtest_filter=" + std::wstring(SYSTEM_MENU_CHILD_TEST) + L" \"--gtest_output=json:" + report.wstring() + L"\"";
+            child = start(ownExecutable(), {.parameters = parameters});
+        }
+        ASSERT_NE(child.process(), nullptr);
+
+        HWND menu = popupMenuOf(child, STARTUP_WAIT);
+        EXPECT_NE(menu, nullptr) << "the system menu never showed (the child's exit status " << child.exitCode(0ms).value_or(STILL_ACTIVE)
+                                 << ")";
+        if (menu != nullptr)
+        {
+            for (const WPARAM key : keys)
+            {
+                postKey(menu, key);
+            }
+        }
+        std::optional<DWORD> exit = child.exitCode(CLOSE_WAIT);
+        if (!exit.has_value())
+        {
+            ADD_FAILURE() << "the system menu wasn't answered by its keys; the child is ended";
+            child.end();
+            exit = child.exitCode(0ms);
+        }
+        std::ifstream in(report, std::ios::binary);
+        const std::string json{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+        ASSERT_FALSE(json.empty()) << "the child run wrote no report; its exit status " << exit.value_or(STILL_ACTIVE);
+        EXPECT_EQ(exit.value_or(STILL_ACTIVE), 0U) << json;
+        EXPECT_EQ(occurrences(json, "\"result\": \"COMPLETED\""), 1U) << json;
+        EXPECT_EQ(occurrences(json, "\"failure\""), 0U) << json;
+    }
+};
+
+TEST_F(CiRealSystemSystemMenuTest, EscapeDismissesItWithNoAction)
+{
+    answerTheMenuWith({VK_ESCAPE}, App::TitleBarView::Action::None);
+}
+
+TEST_F(CiRealSystemSystemMenuTest, ItsFirstItemOnAMaximizedWindowIsRestore)
+{
+    // Down selects the first item, Restore, which a maximized window's menu enables; Enter picks it, and the menu
+    // returns it for the title bar to carry out client-side rather than posting it to Windows.
+    answerTheMenuWith({VK_DOWN, VK_RETURN}, App::TitleBarView::Action::Restore);
 }
 
 } // namespace
