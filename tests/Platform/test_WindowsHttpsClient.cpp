@@ -50,13 +50,15 @@ namespace
 
 HttpsRequest validRequest()
 {
-    return HttpsRequest{.host = "api.github.com",
-                        .path = "/repos/mgradwohl/tasksmack/releases/latest",
-                        .userAgent = "TaskSmack/0.0.0",
-                        .accept = "application/vnd.github+json",
-                        .timeout = std::chrono::milliseconds(10'000),
-                        .maxBodyBytes = 1024,
-                        .headers = {}};
+    return HttpsRequest{
+        .host = "api.github.com",
+        .path = "/repos/mgradwohl/tasksmack/releases/latest",
+        .userAgent = "TaskSmack/0.0.0",
+        .accept = "application/vnd.github+json",
+        .timeout = std::chrono::milliseconds(10'000),
+        .maxBodyBytes = 1024,
+        .headers = {},
+    };
 }
 
 TEST(WindowsHttpsClientTest, AStopAlreadyRequestedSendsNothing)
@@ -563,7 +565,7 @@ template<typename Body> std::string capturedLog(Body body)
 {
     std::ostringstream log;
     const auto previous = spdlog::default_logger();
-    auto capture = std::make_shared<spdlog::logger>("https-header-test", std::make_shared<spdlog::sinks::ostream_sink_mt>(log));
+    const auto capture = std::make_shared<spdlog::logger>("https-header-test", std::make_shared<spdlog::sinks::ostream_sink_mt>(log));
     capture->set_level(spdlog::level::trace);
     spdlog::set_default_logger(capture);
     body();
