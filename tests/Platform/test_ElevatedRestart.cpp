@@ -1,21 +1,27 @@
 // Tests for ElevatedRestart (#2728): how a Standard TaskSmack asks ShellExecuteExW("runas") to start itself
 // elevated, what it makes of the answers, and how the elevated copy waits for it. ShellExecuteExW, OpenProcess
-// and WaitForSingleObject are fakes here, so no UAC prompt is ever raised, and nothing runs elevated.
+// and WaitForSingleObject are fakes here, so no UAC prompt is ever raised, and nothing runs elevated. The folder
+// check runs on a fake disk, and its real disk calls on folders of this machine's that nothing changes (#3676).
 
 #include "Platform/IElevatedRestart.h"
 #include "Platform/Windows/BrokerHelper.h"
 #include "Platform/Windows/ElevatedRestart.h"
+#include "Platform/Windows/WindowsHandles.h"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <expected>
 #include <filesystem>
+#include <format>
+#include <fstream>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <system_error>
 
 // clang-format off
 #ifndef WIN32_LEAN_AND_MEAN
@@ -119,6 +125,25 @@ TEST(ElevatedRestartTest, NoConfigDirectoryIsRefused)
     EXPECT_FALSE(parameters(7, 9, {}).has_value());
 }
 
+// #3676: a quote in the folder ends its quoted argument early, so the new copy would read another folder, or more
+// arguments, than the one meant. Nothing is started with a command line that doesn't read back as written.
+TEST(ElevatedRestartTest, AConfigDirectoryTheNewCopyWouldReadDifferentlyStartsNothing)
+{
+    const std::filesystem::path quoted(LR"(C:\Users\pat\a" --config-dir "C:\Windows)");
+    const auto line = parameters(7, 9, quoted);
+    ASSERT_FALSE(line.has_value());
+    EXPECT_TRUE(line.error().contains("wouldn't read its own command line")) << line.error();
+
+    const FakeShell& shell = resetFakeShell();
+    for (const std::filesystem::path& dir : {quoted, std::filesystem::path()})
+    {
+        const ElevatedRestartResult result = restart(dir, nullptr, FAKES, 1, TICKS);
+        EXPECT_EQ(result.outcome, ElevatedRestartResult::Outcome::Failed) << dir.string();
+        EXPECT_FALSE(result.detail.empty()) << dir.string();
+    }
+    EXPECT_EQ(shell.calls, 0) << "no prompt for a hand-off that couldn't work";
+}
+
 TEST(ElevatedRestartTest, RestartAsksRunasForThisExecutableWithTheHandOff)
 {
     const FakeShell& shell = resetFakeShell();
@@ -143,10 +168,14 @@ TEST(ElevatedRestartTest, ADeclinedPromptIsDeclinedNotAFailure)
 
 TEST(ElevatedRestartTest, AnotherErrorIsAFailureThatSaysWhy)
 {
-    resetFakeShell(ERROR_ACCESS_DENIED);
-    const ElevatedRestartResult result = restart(CONFIG_DIR, nullptr, FAKES, 1, TICKS);
-    EXPECT_EQ(result.outcome, ElevatedRestartResult::Outcome::Failed);
-    EXPECT_FALSE(result.detail.empty());
+    // Whatever else stops ShellExecuteExW is a failure in Windows' own words: the notice shows them.
+    for (const DWORD error : {DWORD{ERROR_ACCESS_DENIED}, DWORD{ERROR_FILE_NOT_FOUND}, DWORD{ERROR_NO_ASSOCIATION}})
+    {
+        resetFakeShell(error);
+        const ElevatedRestartResult result = restart(CONFIG_DIR, nullptr, FAKES, 1, TICKS);
+        EXPECT_EQ(result.outcome, ElevatedRestartResult::Outcome::Failed) << error;
+        EXPECT_EQ(result.detail, std::system_category().message(static_cast<int>(error))) << error;
+    }
 }
 
 TEST(ElevatedRestartTest, NoProcessBackIsAFailureSoThisCopyDoesNotClose)
@@ -193,6 +222,7 @@ struct FakeWait
     DWORD timeout = 0;
     DWORD openError = ERROR_SUCCESS; ///< ERROR_SUCCESS: open this test's own process
     DWORD answer = WAIT_OBJECT_0;
+    bool synchronizeOnly = false; ///< Open it without the right to read its start time
 };
 
 [[nodiscard]] FakeWait& fakeWait()
@@ -210,7 +240,7 @@ HANDLE WINAPI fakeOpenProcess(DWORD access, BOOL /*inherit*/, DWORD pid)
         SetLastError(fakeWait().openError);
         return nullptr;
     }
-    return OpenProcess(access, FALSE, GetCurrentProcessId());
+    return OpenProcess(fakeWait().synchronizeOnly ? DWORD{SYNCHRONIZE} : access, FALSE, GetCurrentProcessId());
 }
 
 DWORD WINAPI fakeWaitForSingleObject(HANDLE /*handle*/, DWORD timeout)
@@ -240,6 +270,17 @@ TEST(ElevatedRestartTest, TheElevatedCopyWaitsForTheStandardOneBounded)
 
     fakeWait() = FakeWait{.answer = WAIT_FAILED};
     EXPECT_EQ(waitForHandoff(4242, ownTicks(), 5, WAIT_FAKES), HandoffWait::Unopenable) << "the lock decides";
+
+    fakeWait() = FakeWait{.answer = WAIT_ABANDONED};
+    EXPECT_EQ(waitForHandoff(4242, ownTicks(), 5, WAIT_FAKES), HandoffWait::Unopenable) << "any other answer: the lock decides";
+}
+
+// #3676: a process whose start time can't be read can't be told from one that took the PID, so it isn't waited for.
+TEST(ElevatedRestartTest, AProcessWhoseStartCantBeReadIsNotWaitedFor)
+{
+    fakeWait() = FakeWait{.synchronizeOnly = true};
+    EXPECT_EQ(waitForHandoff(4242, ownTicks(), 5, WAIT_FAKES), HandoffWait::NotThatProcess);
+    EXPECT_EQ(fakeWait().timeout, 0U) << "nothing waited on";
 }
 
 TEST(ElevatedRestartTest, OnlyANonexistentPidHasGone)
@@ -284,6 +325,10 @@ struct FakeDisk
     std::optional<bool> privilegedOwner = false;
     bool pinned = true; ///< pin() succeeds
     int pins = 0;
+    std::wstring fileAt{};       // NOLINT(readability-redundant-member-init) - a plain file where a folder should be
+    bool lockExists = false;     ///< tasksmack.lock is there
+    bool configIsFolder = false; ///< config.toml is a folder
+    bool linksKnown = true;      ///< The hard-link count can be read
 };
 
 [[nodiscard]] FakeDisk& fakeDisk()
@@ -299,12 +344,14 @@ DWORD WINAPI fakeAttributes(LPCWSTR path)
     {
         return INVALID_FILE_ATTRIBUTES;
     }
-    const bool file = text.ends_with(L".toml") || text.ends_with(L".lock");
-    if (file && (!fakeDisk().configExists || text.ends_with(L".lock")))
+    const bool config = text.ends_with(L".toml");
+    const bool lock = text.ends_with(L".lock");
+    if ((config && !fakeDisk().configExists) || (lock && !fakeDisk().lockExists))
     {
         return INVALID_FILE_ATTRIBUTES;
     }
-    DWORD attributes = file ? FILE_ATTRIBUTE_NORMAL : FILE_ATTRIBUTE_DIRECTORY;
+    DWORD attributes =
+        (config && !fakeDisk().configIsFolder) || lock || text == fakeDisk().fileAt ? FILE_ATTRIBUTE_NORMAL : FILE_ATTRIBUTE_DIRECTORY;
     if (text == fakeDisk().reparseAt)
     {
         attributes |= FILE_ATTRIBUTE_REPARSE_POINT;
@@ -314,6 +361,10 @@ DWORD WINAPI fakeAttributes(LPCWSTR path)
 
 std::optional<DWORD> fakeLinkCount(const std::wstring& /*path*/)
 {
+    if (!fakeDisk().linksKnown)
+    {
+        return std::nullopt;
+    }
     return fakeDisk().configLinks;
 }
 
@@ -411,6 +462,224 @@ TEST(ElevatedRestartConfigDirTest, AMissingFolderOrOneSwappedBeforeItIsHeldIsRef
 
     fakeDisk() = FakeDisk{.pinned = false};
     EXPECT_FALSE(check(GOOD_DIR).has_value());
+}
+
+/// Why checkConfigDir() refused @p dir under @p profiles with the fake disk, or "(taken)".
+[[nodiscard]] std::string refusal(std::wstring_view dir, std::wstring_view profiles = PROFILES)
+{
+    const auto checked = checkConfigDir(std::filesystem::path(dir), std::filesystem::path(profiles), DISK_FAKES);
+    return checked.has_value() ? std::string("(taken)") : checked.error();
+}
+
+// #3676: each refusal says which check failed, so the log says why the elevated copy fell back to its own folder.
+TEST(ElevatedRestartConfigDirTest, EachRefusalOfThePathSaysWhy)
+{
+    fakeDisk() = FakeDisk{};
+    for (const std::wstring_view dir : {
+             std::wstring_view(LR"(Users\pat\AppData\Roaming\TaskSmack)"),
+             std::wstring_view(LR"(C:Users\pat\AppData\Roaming\TaskSmack)"),
+             std::wstring_view(LR"(C:\Users\pat\.\AppData\Roaming\TaskSmack)"),
+             std::wstring_view(LR"(\\?\C:\Users\pat\AppData\Roaming\TaskSmack)"),
+             std::wstring_view(LR"(\\server\share\Users\pat\TaskSmack)"),
+         })
+    {
+        EXPECT_TRUE(refusal(dir).contains("not a plain local folder path")) << refusal(dir);
+    }
+    EXPECT_TRUE(refusal(LR"(D:\Users\pat\AppData\Roaming\TaskSmack)").contains("not under the user profiles folder")) << "another drive";
+    EXPECT_TRUE(refusal(GOOD_DIR, L"Users").contains("not under the user profiles folder")) << "a profiles folder that isn't absolute";
+    EXPECT_TRUE(refusal(LR"(C:\Users\pat)").contains("not inside a user's profile")) << "a profile itself";
+    EXPECT_TRUE(refusal(LR"(C:\ProgramData\TaskSmack)").contains("not inside a user's profile"));
+    EXPECT_TRUE(refusal(LR"(C:\Users2\pat\TaskSmack)").contains("not inside a user's profile")) << "a folder that only starts alike";
+    EXPECT_EQ(fakeDisk().pins, 0) << "nothing held";
+}
+
+TEST(ElevatedRestartConfigDirTest, AFileWhereAFolderShouldBeIsRefused)
+{
+    fakeDisk() = FakeDisk{.fileAt = LR"(C:\Users\pat\AppData)"};
+    EXPECT_TRUE(refusal(GOOD_DIR).contains("isn't there")) << refusal(GOOD_DIR);
+    fakeDisk() = FakeDisk{.missing = LR"(C:\Users\pat)"};
+    EXPECT_TRUE(refusal(GOOD_DIR).contains("isn't there")) << refusal(GOOD_DIR);
+    EXPECT_EQ(fakeDisk().pins, 0);
+}
+
+// The lock file gets the checks config.toml gets: an elevated TaskSmack opens both.
+TEST(ElevatedRestartConfigDirTest, ALinkedOrHardLinkedLockFileIsRefusedToo)
+{
+    fakeDisk() = FakeDisk{.lockExists = true};
+    EXPECT_EQ(refusal(GOOD_DIR), "(taken)") << "a plain lock file";
+
+    fakeDisk() = FakeDisk{.reparseAt = std::wstring(GOOD_DIR) + L"\\tasksmack.lock", .lockExists = true};
+    EXPECT_TRUE(refusal(GOOD_DIR).contains("its tasksmack.lock is a link or a folder")) << refusal(GOOD_DIR);
+
+    fakeDisk() = FakeDisk{.configExists = false, .configLinks = 2, .lockExists = true};
+    EXPECT_TRUE(refusal(GOOD_DIR).contains("its tasksmack.lock is hard-linked")) << refusal(GOOD_DIR);
+    EXPECT_EQ(fakeDisk().pins, 0);
+}
+
+TEST(ElevatedRestartConfigDirTest, AConfigThatIsAFolderOrWhoseLinksCantBeCountedIsRefused)
+{
+    fakeDisk() = FakeDisk{.configIsFolder = true};
+    EXPECT_TRUE(refusal(GOOD_DIR).contains("its config.toml is a link or a folder")) << refusal(GOOD_DIR);
+
+    fakeDisk() = FakeDisk{.linksKnown = false};
+    EXPECT_TRUE(refusal(GOOD_DIR).contains("its config.toml is hard-linked")) << "a count that can't be read is no proof of one link";
+    EXPECT_EQ(fakeDisk().pins, 0);
+}
+
+TEST(ElevatedRestartConfigDirTest, AFolderOutsideTheRealProfilesFolderIsRefused)
+{
+    // The one-argument check, against this machine's FOLDERID_UserProfiles: refused before the disk is read.
+    std::array<wchar_t, MAX_PATH> system{};
+    const UINT length = GetSystemDirectoryW(system.data(), static_cast<UINT>(system.size()));
+    ASSERT_GT(length, 0U);
+    const auto checked = checkConfigDir(std::filesystem::path(std::wstring(system.data(), length)));
+    ASSERT_FALSE(checked.has_value());
+    EXPECT_TRUE(checked.error().contains("profile")) << checked.error();
+    EXPECT_FALSE(checkConfigDir(std::filesystem::path(L"TaskSmack")).has_value()) << "a relative path";
+}
+
+// The real disk calls (#3676): the owner read, the hard-link count and the hold, each against a folder of this machine's.
+
+/// This machine's system folder (C:\Windows\System32), which TrustedInstaller owns.
+[[nodiscard]] std::filesystem::path systemFolder()
+{
+    std::array<wchar_t, MAX_PATH> system{};
+    const UINT length = GetSystemDirectoryW(system.data(), static_cast<UINT>(system.size()));
+    EXPECT_GT(length, 0U);
+    return {std::wstring(system.data(), length)};
+}
+
+TEST(ElevatedRestartConfigDirTest, TheRealOwnerCheckRefusesAFolderWindowsOwns)
+{
+    // System32, checked against its drive as the profiles folder, with every real call: TrustedInstaller owns it.
+    const std::filesystem::path system = systemFolder();
+    const auto checked = checkConfigDir(system, system.root_path());
+    ASSERT_FALSE(checked.has_value());
+    EXPECT_TRUE(checked.error().contains("owned by an administrator or system account")) << checked.error();
+}
+
+/// An owner check that says every folder is a user's: the real one would refuse a folder an elevated test run made.
+std::optional<bool> userOwned(const std::wstring& /*path*/)
+{
+    return false;
+}
+
+/// Every path a folder, but config.toml and tasksmack.lock, which aren't there: a folder swapped for something else
+/// between the attribute checks and the hold, as far as checkConfigDir() can tell.
+DWORD WINAPI everythingAFolder(LPCWSTR path)
+{
+    const std::wstring_view text(path);
+    return text.ends_with(L".toml") || text.ends_with(L".lock") ? INVALID_FILE_ATTRIBUTES : FILE_ATTRIBUTE_DIRECTORY;
+}
+
+/// As everythingAFolder(), but config.toml is always there, as a plain file.
+DWORD WINAPI configAlwaysThere(LPCWSTR path)
+{
+    const std::wstring_view text(path);
+    if (text.ends_with(L".toml"))
+    {
+        return FILE_ATTRIBUTE_NORMAL;
+    }
+    return everythingAFolder(path);
+}
+
+/// A folder of this test's own under the temp folder, removed at the end.
+class ScratchFolder
+{
+  public:
+    ScratchFolder()
+        : m_Path(std::filesystem::temp_directory_path() / std::format(L"TaskSmack.ElevatedRestartTest.{}", GetCurrentProcessId()))
+    {
+        std::error_code error;
+        std::filesystem::create_directories(configDir(), error);
+        EXPECT_FALSE(error) << error.message();
+    }
+    // NOLINTNEXTLINE(bugprone-exception-escape) - a test fixture: what escapes it ends the run, as a failed test should
+    ~ScratchFolder()
+    {
+        std::error_code error;
+        std::filesystem::remove_all(m_Path, error);
+    }
+    ScratchFolder(const ScratchFolder&) = delete;
+    ScratchFolder& operator=(const ScratchFolder&) = delete;
+    ScratchFolder(ScratchFolder&&) = delete;
+    ScratchFolder& operator=(ScratchFolder&&) = delete;
+
+    /// The folder itself, which stands in for the profiles folder.
+    [[nodiscard]] const std::filesystem::path& root() const noexcept
+    {
+        return m_Path;
+    }
+    /// A config folder inside it, two levels below root(): a profile folder's own, never the profile itself.
+    [[nodiscard]] std::filesystem::path configDir() const
+    {
+        return m_Path / L"pat" / L"TaskSmack";
+    }
+
+  private:
+    std::filesystem::path m_Path;
+};
+
+TEST(ElevatedRestartConfigDirTest, TheRealLinkCountSeesAHardLinkedConfig)
+{
+    const ScratchFolder scratch;
+    const std::filesystem::path config = scratch.configDir() / L"config.toml";
+    std::ofstream(config) << "theme = \"dark\"\n";
+    const std::filesystem::path elsewhere = scratch.root() / L"elsewhere.toml";
+    ASSERT_NE(CreateHardLinkW(elsewhere.c_str(), config.c_str(), nullptr), FALSE) << GetLastError();
+    const ConfigDirFunctions realLinks{.getFileAttributes = &::GetFileAttributesW, .linkCount = nullptr, .ownerIsPrivileged = &userOwned};
+    const auto linked = checkConfigDir(scratch.configDir(), scratch.root(), realLinks);
+    ASSERT_FALSE(linked.has_value());
+    EXPECT_TRUE(linked.error().contains("its config.toml is hard-linked")) << linked.error();
+
+    // A config.toml that is there for the attribute check and gone for the count: refused, not taken as one link.
+    std::filesystem::remove(elsewhere);
+    std::filesystem::remove(config);
+    const ConfigDirFunctions vanished{.getFileAttributes = &configAlwaysThere, .linkCount = nullptr, .ownerIsPrivileged = &userOwned};
+    const auto gone = checkConfigDir(scratch.configDir(), scratch.root(), vanished);
+    ASSERT_FALSE(gone.has_value());
+    EXPECT_TRUE(gone.error().contains("hard-linked")) << gone.error();
+}
+
+TEST(ElevatedRestartConfigDirTest, TheRealHoldRefusesWhatIsNoLongerAFolder)
+{
+    const ScratchFolder scratch;
+    // What passed as a folder is a file, or nothing at all, by the time it is held.
+    const std::filesystem::path file = scratch.configDir() / L"settings";
+    std::ofstream(file) << "not a folder";
+    const ConfigDirFunctions swapped{.getFileAttributes = &everythingAFolder, .linkCount = nullptr, .ownerIsPrivileged = &userOwned};
+    for (const std::filesystem::path& dir : {file, scratch.configDir() / L"gone"})
+    {
+        const auto checked = checkConfigDir(dir, scratch.root(), swapped);
+        ASSERT_FALSE(checked.has_value()) << dir.string();
+        EXPECT_TRUE(checked.error().contains("can't be held open")) << checked.error();
+    }
+}
+
+TEST(ElevatedRestartConfigDirTest, TheRealHoldKeepsTheFolderFromBeingRemoved)
+{
+    // This test program's own folder, held for the rest of the run: it can't be removed while the program runs anyway.
+    std::array<wchar_t, MAX_PATH> image{};
+    const DWORD length = GetModuleFileNameW(nullptr, image.data(), static_cast<DWORD>(image.size()));
+    ASSERT_GT(length, 0U);
+    ASSERT_LT(length, image.size());
+    const std::filesystem::path folder = std::filesystem::path(std::wstring(image.data(), length)).parent_path();
+    ASSERT_TRUE(folder.has_relative_path() && folder.parent_path().has_relative_path()) << folder.string();
+    const ConfigDirFunctions held{.getFileAttributes = &::GetFileAttributesW, .linkCount = nullptr, .ownerIsPrivileged = &userOwned};
+    const auto checked = checkConfigDir(folder, folder.parent_path().parent_path(), held);
+    ASSERT_TRUE(checked.has_value()) << checked.error();
+
+    // Opening it to delete it is refused while it is held: nothing is deleted either way.
+    const UniqueHandle forDelete(CreateFileW(folder.c_str(),
+                                             DELETE,
+                                             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                             nullptr,
+                                             OPEN_EXISTING,
+                                             FILE_FLAG_BACKUP_SEMANTICS,
+                                             nullptr));
+    const DWORD error = GetLastError();
+    EXPECT_FALSE(forDelete) << "the held folder opened for deletion";
+    EXPECT_EQ(error, static_cast<DWORD>(ERROR_SHARING_VIOLATION));
 }
 
 } // namespace

@@ -325,6 +325,9 @@ TEST(BrokerHelperTest, AnythingElseOnTheCommandLineIsRefused)
         {L"--broker", name, L"", L"99"},
         {L"--broker", name, L"1234", L"0"},
         {L"--broker", name, L"1234", L"18446744073709551616"},
+        {L"--broker", name, L"1234", L"123456789012345678901"}, // more digits than any std::uint64_t has (#3676)
+        {L"--broker", name, L"123456789012345678901234567890", L"99"},
+        {L"--broker", name, L"1234", L"99 "},
         {L"--broker", name, L"1234", L"S-1-5-21-1-2-3-1001"},
     };
     for (const auto& arguments : refused)
@@ -732,6 +735,95 @@ TEST(BrokerHelperTest, AnInstallInAFolderItsUserCanChangeIsRefused)
     const std::array<std::wstring, 1> missing{(folder / L"TaskSmack.exe").wstring()};
     EXPECT_FALSE(BrokerHelper::checkUnchangeableBy(token.get(), missing).has_value()) << "a file that isn't there";
     EXPECT_FALSE(BrokerHelper::checkUnchangeableBy(token.get(), {}).has_value()) << "nothing to check";
+}
+
+/// Frees what ConvertStringSecurityDescriptorToSecurityDescriptorW makes.
+struct DescriptorFreer
+{
+    void operator()(void* descriptor) const noexcept
+    {
+        LocalFree(descriptor);
+    }
+};
+
+/// The security descriptor @p sddl describes; null (a test failure) when it doesn't parse.
+[[nodiscard]] std::unique_ptr<void, DescriptorFreer> descriptorOf(const std::wstring& sddl)
+{
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    if (ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1, &descriptor, nullptr) == FALSE)
+    {
+        ADD_FAILURE() << "the descriptor didn't parse: " << GetLastError();
+        return nullptr;
+    }
+    return std::unique_ptr<void, DescriptorFreer>(descriptor);
+}
+
+/// Another user's SID, in no token of this test's.
+constexpr std::wstring_view OUTSIDER = L"S-1-5-21-1111111111-2222222222-3333333333-1001";
+
+// #3676: an access entry the check can't read is a refusal, whoever it names; a conditional allow is read as the allow
+// it is; and an inherit-only or deny entry gives no one the object itself.
+TEST(BrokerHelperTest, TheDescriptorCheckRefusesWhatItCantReadAndReadsConditionalAllows)
+{
+    const UniqueHandle token = standardUserToken();
+    ASSERT_TRUE(token);
+    const std::wstring outsider(OUTSIDER);
+    const std::wstring administrators = L"O:BAG:SYD:PAI(A;;FA;;;SY)(A;;FA;;;BA)";
+
+    const auto passes = descriptorOf(administrators + L"(D;;FA;;;" + outsider + L")(A;OICIIO;FA;;;" + outsider + L")");
+    ASSERT_NE(passes, nullptr);
+    const auto passed = BrokerHelper::checkDescriptor(token.get(), passes.get(), BrokerHelper::FILE_CHANGE_RIGHTS, "the file");
+    EXPECT_TRUE(passed.has_value()) << passed.error();
+
+    const auto objectAce = descriptorOf(administrators + L"(OA;;FA;bf967aba-0de6-11d0-a285-00aa003049e2;;" + outsider + L")");
+    ASSERT_NE(objectAce, nullptr);
+    const auto unread = BrokerHelper::checkDescriptor(token.get(), objectAce.get(), BrokerHelper::FILE_CHANGE_RIGHTS, "the file");
+    ASSERT_FALSE(unread.has_value());
+    EXPECT_TRUE(unread.error().contains("has an access entry this check can't read")) << unread.error();
+
+    const auto conditional = descriptorOf(administrators + L"(XA;;FA;;;" + outsider + L";(Member_of {SID(BA)}))");
+    ASSERT_NE(conditional, nullptr);
+    const auto changeable = BrokerHelper::checkDescriptor(token.get(), conditional.get(), BrokerHelper::FILE_CHANGE_RIGHTS, "the file");
+    ASSERT_FALSE(changeable.has_value());
+    EXPECT_TRUE(changeable.error().contains("can change the file")) << changeable.error();
+}
+
+TEST(BrokerHelperTest, ADescriptorCheckedWithoutAnImpersonationTokenIsRefused)
+{
+    // AccessCheck takes an impersonation token: a process's primary one can't tell who may change anything.
+    UniqueHandle primary;
+    ASSERT_NE(OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, primary.put()), FALSE);
+    const auto descriptor = descriptorOf(L"O:BAG:SYD:PAI(A;;FA;;;SY)(A;;FA;;;BA)");
+    ASSERT_NE(descriptor, nullptr);
+    const auto checked = BrokerHelper::checkDescriptor(primary.get(), descriptor.get(), BrokerHelper::FILE_CHANGE_RIGHTS, "the file");
+    ASSERT_FALSE(checked.has_value());
+    EXPECT_TRUE(checked.error().contains("couldn't tell who may change the file")) << checked.error();
+}
+
+// #3676: a parent handle that can't be queried is refused, never taken as TaskSmack: its token and its image are what
+// say whose and which program it is.
+TEST(BrokerHelperTest, AParentThatCantBeQueriedIsRefused)
+{
+    const UniqueHandle waitOnly(OpenProcess(SYNCHRONIZE, FALSE, GetCurrentProcessId()));
+    ASSERT_TRUE(waitOnly);
+    const std::array<std::wstring, 1> files{systemFile(L"cmd.exe")};
+    const auto install = BrokerHelper::checkUnchangeableByParent(waitOnly.get(), files);
+    ASSERT_FALSE(install.has_value());
+    EXPECT_TRUE(install.error().contains("couldn't open TaskSmack's token")) << install.error();
+
+    const BrokerHelper::Arguments arguments = argumentsForThisProcess(freshName());
+    const auto parent = BrokerHelper::checkParentIsTaskSmack(waitOnly.get(), arguments, selfStartedBy(GetCurrentProcess()));
+    ASSERT_FALSE(parent.has_value());
+    EXPECT_TRUE(parent.error().contains("couldn't read the parent's executable")) << parent.error();
+}
+
+TEST(BrokerHelperTest, APathThatIsntThereHasNoFinalPath)
+{
+    EXPECT_FALSE(BrokerHelper::finalPath(systemFile(L"TaskSmack-3676-not-there.exe")).has_value());
+    const std::wstring cmd = BrokerHelper::finalPath(systemFile(L"cmd.exe")).value_or(L"");
+    ASSERT_FALSE(cmd.empty());
+    EXPECT_FALSE(cmd.starts_with(L"\\\\?\\")) << "without the extended prefix";
+    EXPECT_TRUE(BrokerHelper::sameFile(cmd, systemFile(L"cmd.exe")));
 }
 
 TEST(BrokerHelperTest, ASessionForAParentThatIsntTaskSmackNeverMakesItsPipe)
@@ -1299,6 +1391,143 @@ TEST(BrokerHelperTest, AStoppedSessionEnds)
     EXPECT_TRUE(exit == BrokerHelper::Exit::NoClient || exit == BrokerHelper::Exit::Done) << static_cast<int>(exit);
 }
 
+// #3676: a pipe name another server already holds is never shared: the session makes no pipe, and serves no one.
+TEST(BrokerHelperTest, ASessionWhosePipeNameIsTakenServesNoOne)
+{
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
+    const std::wstring name = freshName();
+    const auto sid = BrokerPipe::userSidOfProcess(GetCurrentProcess());
+    ASSERT_TRUE(sid.has_value()) << sid.error();
+    const auto squatter = BrokerPipe::createServerPipe(name, *sid);
+    ASSERT_TRUE(squatter.has_value()) << squatter.error();
+    const UniqueHandle self = ownProcess();
+    const BrokerPipeServer::RequestHandler handler = [](const Broker::Request&) -> Broker::Response
+    {
+        ADD_FAILURE() << "a request was served";
+        return Broker::ErrorReply{};
+    };
+    EXPECT_EQ(BrokerHelper::serveParent(self.get(), *sid, *sid, name, handler, WAIT, WAIT, {}), BrokerHelper::Exit::NoClient);
+}
+
+/// A session for this process served on a thread, with a client connected to it: how a test sends the helper what
+/// TaskSmack never would. The session ends when the client closes, or on what it is sent.
+class ServedSession
+{
+  public:
+    ServedSession()
+        : m_Self(ownProcess()), m_Name(freshName()), m_User(BrokerPipe::userSidOfProcess(GetCurrentProcess()).value_or(BrokerPipe::Sid{}))
+    {
+        m_Session = std::async(std::launch::async,
+                               [this]
+                               {
+                                   return BrokerHelper::serveParent(m_Self.get(),
+                                                                    m_User,
+                                                                    m_User,
+                                                                    m_Name,
+                                                                    [this](const Broker::Request&) -> Broker::Response
+                                                                    {
+                                                                        ++m_Served;
+                                                                        return Broker::ErrorReply{};
+                                                                    },
+                                                                    WAIT,
+                                                                    WAIT,
+                                                                    {});
+                               });
+        auto client = BrokerPipe::connectToServer(m_Name, GetCurrentProcessId(), m_Self.get(), WAIT, {});
+        EXPECT_TRUE(client.has_value()) << client.error_or("");
+        if (client.has_value())
+        {
+            m_Client = std::move(*client);
+        }
+    }
+    // NOLINTNEXTLINE(bugprone-exception-escape) - a test fixture: a future_error here ends the run, as a failed test should
+    ~ServedSession()
+    {
+        m_Client.reset();
+        if (m_Session.valid())
+        {
+            m_Session.wait();
+        }
+    }
+    ServedSession(const ServedSession&) = delete;
+    ServedSession& operator=(const ServedSession&) = delete;
+    ServedSession(ServedSession&&) = delete;
+    ServedSession& operator=(ServedSession&&) = delete;
+
+    [[nodiscard]] HANDLE client() const noexcept
+    {
+        return m_Client.get();
+    }
+    /// Sends @p bytes as they are, length prefix and all.
+    [[nodiscard]] bool sendRaw(std::span<const std::uint8_t> bytes) const
+    {
+        std::string error;
+        const bool sent = BrokerPipe::sendFrame(m_Client.get(), bytes, WAIT, {}, error);
+        EXPECT_TRUE(sent) << error;
+        return sent;
+    }
+    /// How the session ended, waiting up to WAIT for it to; nullopt when it hasn't.
+    [[nodiscard]] std::optional<BrokerHelper::Exit> ended()
+    {
+        if (m_Session.wait_for(WAIT) != std::future_status::ready)
+        {
+            return std::nullopt;
+        }
+        return m_Session.get();
+    }
+    [[nodiscard]] int served() const noexcept
+    {
+        return m_Served.load();
+    }
+
+  private:
+    UniqueHandle m_Self;
+    std::wstring m_Name;
+    BrokerPipe::Sid m_User;
+    std::atomic<int> m_Served{0};
+    UniqueHandle m_Client;
+    std::future<BrokerHelper::Exit> m_Session; // last: waited for first, while the rest is alive
+};
+
+// #3676: a client whose first frame isn't a request at all is answered with an error, and the session ends as a failure,
+// not as one served; the readers never see it.
+TEST(BrokerHelperTest, ASessionThatStartsWithGarbageEndsAsAFailure)
+{
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
+    ServedSession session;
+    ASSERT_NE(session.client(), nullptr);
+    const std::array<std::uint8_t, 7> garbage{3, 0, 0, 0, 0xDE, 0xAD, 0xBE};
+    ASSERT_TRUE(session.sendRaw(garbage));
+    const auto reply = BrokerPipe::receiveFrame(session.client(), WAIT, {});
+    ASSERT_TRUE(reply.has_value()) << "an error reply first";
+    const auto decoded = Broker::decodeResponse(*reply);
+    ASSERT_TRUE(decoded.has_value()) << decoded.error();
+    EXPECT_TRUE(std::holds_alternative<Broker::ErrorReply>(decoded->message));
+    EXPECT_EQ(session.ended(), std::optional<BrokerHelper::Exit>(BrokerHelper::Exit::Failed));
+    EXPECT_EQ(session.served(), 0);
+}
+
+// #3676: a length larger than the protocol allows is refused before anything is allocated for it, and ends the session.
+TEST(BrokerHelperTest, ASessionSentAnOversizedFrameEndsAsAFailure)
+{
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
+    ServedSession session;
+    ASSERT_NE(session.client(), nullptr);
+    const std::array<std::uint8_t, 4> tooLong{0xFF, 0xFF, 0xFF, 0x7F};
+    ASSERT_TRUE(session.sendRaw(tooLong));
+    EXPECT_EQ(session.ended(), std::optional<BrokerHelper::Exit>(BrokerHelper::Exit::Failed));
+    EXPECT_EQ(session.served(), 0);
+}
+
 // --- An over-the-shoulder elevation (#2550) ------------------------------------------------------------
 // The helper running as another account than TaskSmack's user: an administrator typed their password
 // for a standard user's TaskSmack. One action, a minute at most, and reads of the user's own processes.
@@ -1471,6 +1700,123 @@ TEST(BrokerHelperTest, AnOverTheShoulderSessionPassesEachReadOfTheUsersOwnProces
     ASSERT_TRUE(std::holds_alternative<Broker::ModulesReply>(refused));
     EXPECT_EQ(std::get<Broker::ModulesReply>(refused).result.status, ModulesReadStatus::Failed);
     EXPECT_EQ(unknown.calls->load(), 0);
+}
+
+/// What a batch handler was asked, and answers: each of its targets read Ok with its PID as its detail, the first
+/// @p answers of them only (a reply cut short), or an ErrorReply when @p answers is negative.
+struct BatchReads
+{
+    std::shared_ptr<std::vector<ProcessTarget>> asked = std::make_shared<std::vector<ProcessTarget>>();
+    std::shared_ptr<int> calls = std::make_shared<int>(0);
+    int answers = std::numeric_limits<int>::max();
+
+    [[nodiscard]] BrokerPipeServer::RequestHandler handler() const
+    {
+        return [asked = asked, calls = calls, answers = answers](const Broker::Request& request) -> Broker::Response
+        {
+            ++*calls;
+            const auto* const batch = std::get_if<Broker::OpenFilesBatchRequest>(&request);
+            if (batch == nullptr || answers < 0)
+            {
+                return Broker::ErrorReply{.message = "the readers failed"};
+            }
+            *asked = batch->targets;
+            Broker::OpenFilesBatchReply reply;
+            for (const ProcessTarget& target : batch->targets | std::views::take(answers))
+            {
+                OpenFilesReadResult read;
+                read.status = OpenFilesReadStatus::Ok;
+                read.detail = std::to_string(target.pid);
+                reply.results.push_back(std::move(read));
+            }
+            return reply;
+        };
+    }
+};
+
+/// The details of @p response's batch reply, in order: a PID for a target read, "refused" for one the filter refused.
+[[nodiscard]] std::vector<std::string> batchDetails(const Broker::Response& response)
+{
+    const auto* const reply = std::get_if<Broker::OpenFilesBatchReply>(&response);
+    if (reply == nullptr)
+    {
+        ADD_FAILURE() << "not a batch reply";
+        return {};
+    }
+    std::vector<std::string> details;
+    for (const OpenFilesReadResult& result : reply->results)
+    {
+        if (result.detail == BrokerHelper::OTHER_USERS_READ_REFUSED)
+        {
+            EXPECT_EQ(result.status, OpenFilesReadStatus::Failed);
+            details.emplace_back("refused");
+        }
+        else
+        {
+            details.push_back(result.detail);
+        }
+    }
+    return details;
+}
+
+// #3578, #3676: an over-the-shoulder session's batch of open-files reads sends only the user's own targets to the
+// readers, in one request, and answers every target in the request's order, the others refused as single reads are.
+TEST(BrokerHelperTest, AnOverTheShoulderBatchReadsOnlyTheUsersOwnTargetsInOrder)
+{
+    const ProcessTarget mine{.pid = 1, .startTimeTicks = 1};
+    const ProcessTarget alsoMine{.pid = 3, .startTimeTicks = 3};
+    const ProcessTarget theirs{.pid = 2, .startTimeTicks = 2};
+    const auto isMine = [&mine, &alsoMine](const ProcessTarget& target)
+    {
+        return target == mine || target == alsoMine;
+    };
+
+    const BatchReads reads;
+    const BrokerPipeServer::RequestHandler handler = BrokerHelper::readsOnlyOwnProcesses(reads.handler(), isMine);
+    const auto mixed = handler(Broker::OpenFilesBatchRequest{.targets = {theirs, mine, theirs, alsoMine}});
+    EXPECT_EQ(batchDetails(mixed), (std::vector<std::string>{"refused", "1", "refused", "3"}));
+    EXPECT_EQ(*reads.asked, (std::vector<ProcessTarget>{mine, alsoMine})) << "only the user's own, in one request";
+    EXPECT_EQ(*reads.calls, 1);
+
+    // None of the user's own: every target refused, and nothing reaches the readers.
+    const auto none = handler(Broker::OpenFilesBatchRequest{.targets = {theirs, theirs}});
+    EXPECT_EQ(batchDetails(none), (std::vector<std::string>{"refused", "refused"}));
+    EXPECT_EQ(*reads.calls, 1);
+
+    // Without a way to tell whose a process is, none is the user's.
+    const BatchReads unknown;
+    const auto noOwner = BrokerHelper::readsOnlyOwnProcesses(unknown.handler(), {})(Broker::OpenFilesBatchRequest{.targets = {mine}});
+    EXPECT_EQ(batchDetails(noOwner), (std::vector<std::string>{"refused"}));
+    EXPECT_EQ(*unknown.calls, 0);
+}
+
+TEST(BrokerHelperTest, AnOverTheShoulderBatchCutShortStopsAtTheFirstOwnTargetNotAnswered)
+{
+    const ProcessTarget mine{.pid = 1, .startTimeTicks = 1};
+    const ProcessTarget alsoMine{.pid = 3, .startTimeTicks = 3};
+    const ProcessTarget theirs{.pid = 2, .startTimeTicks = 2};
+    const auto isMine = [&mine, &alsoMine](const ProcessTarget& target)
+    {
+        return target == mine || target == alsoMine;
+    };
+
+    // The readers answered only the first own target: the reply ends before the second, so the client asks again from
+    // there; the refusals before it stand.
+    const BatchReads cut{.answers = 1};
+    const auto handler = BrokerHelper::readsOnlyOwnProcesses(cut.handler(), isMine);
+    EXPECT_EQ(batchDetails(handler(Broker::OpenFilesBatchRequest{.targets = {theirs, mine, theirs, alsoMine, theirs}})),
+              (std::vector<std::string>{"refused", "1", "refused"}));
+
+    // Readers that answered nothing at all, or failed outright: no own target answered, and an ErrorReply as it is.
+    const BatchReads nothing{.answers = 0};
+    EXPECT_EQ(batchDetails(BrokerHelper::readsOnlyOwnProcesses(nothing.handler(),
+                                                               isMine)(Broker::OpenFilesBatchRequest{.targets = {theirs, mine, theirs}})),
+              (std::vector<std::string>{"refused"}));
+    const BatchReads failing{.answers = -1};
+    const auto failed =
+        BrokerHelper::readsOnlyOwnProcesses(failing.handler(), isMine)(Broker::OpenFilesBatchRequest{.targets = {theirs, mine}});
+    ASSERT_TRUE(std::holds_alternative<Broker::ErrorReply>(failed));
+    EXPECT_EQ(std::get<Broker::ErrorReply>(failed).message, "the readers failed");
 }
 
 TEST(BrokerHelperTest, AnOverTheShoulderSessionEndsOnceItsOneActionIsAnswered)

@@ -288,5 +288,18 @@ TEST_F(InstanceLockTest, AcquireWithNoPatienceTriesOnce)
     const std::unique_ptr<InstanceLock> patient = acquireInstanceLock(path, std::chrono::milliseconds{100}, std::chrono::milliseconds{20});
     EXPECT_EQ(patient->status(), InstanceLock::Status::HeldByAnotherInstance) << "still held when its patience ran out";
 }
+
+// #3676: only another instance's lock is waited out. One that can't be taken at all (its folder is a file here) is no
+// Standard copy still closing, so the elevated copy's patience isn't spent on it.
+TEST_F(InstanceLockTest, ALockThatCantBeTakenIsntTriedAgain)
+{
+    const std::filesystem::path notAFolder = m_Dir / "not-a-folder";
+    std::ofstream(notAFolder) << "a file";
+    const auto started = std::chrono::steady_clock::now();
+    const std::unique_ptr<InstanceLock> lock = acquireInstanceLock(instanceLockPath(notAFolder), std::chrono::seconds{30});
+    EXPECT_EQ(lock->status(), InstanceLock::Status::Unavailable);
+    EXPECT_FALSE(lock->error().empty());
+    EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds{5}) << "tried again for its patience";
+}
 } // namespace
 } // namespace App
