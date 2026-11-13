@@ -79,6 +79,11 @@ seed_corpus fuzz_dns_message tests/fuzz/corpus/fuzz_dns_message/*
 build_fuzzer fuzz_release_json src/Domain/UpdateCheck.cpp
 seed_corpus fuzz_release_json tests/fuzz/corpus/fuzz_release_json/*
 
+# Look up on VirusTotal's file-report reader (#3094): the reply VirusTotal's v3 API sends. Seeded with a trimmed
+# report and a NotFoundError answer.
+build_fuzzer fuzz_virustotal_json src/Domain/VirusTotal.cpp
+seed_corpus fuzz_virustotal_json tests/fuzz/corpus/fuzz_virustotal_json/*
+
 # The .desktop entry parser (#2172): header-only, on files any program the user runs can write.
 build_fuzzer fuzz_desktop_entry
 seed_corpus fuzz_desktop_entry tests/fuzz/corpus/fuzz_desktop_entry/*

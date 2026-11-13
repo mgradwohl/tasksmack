@@ -48,7 +48,8 @@ HttpsRequest validRequest()
                         .userAgent = "TaskSmack/0.0.0",
                         .accept = "application/vnd.github+json",
                         .timeout = std::chrono::milliseconds(10'000),
-                        .maxBodyBytes = 1024};
+                        .maxBodyBytes = 1024,
+                        .headers = {}};
 }
 
 TEST(WindowsHttpsClientTest, AStopAlreadyRequestedSendsNothing)

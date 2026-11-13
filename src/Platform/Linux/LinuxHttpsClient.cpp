@@ -60,6 +60,23 @@ std::optional<std::string> refusal(const HttpsRequest& request)
     {
         return "The request's path holds a character a URL path can't";
     }
+    // Extra headers (#3094): a name is an RFC 9110 token, and a value can't end the header or the request.
+    const auto tokenCharacter = [](char c)
+    {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+               std::string_view("!#$%&'*+-.^_`|~").contains(c);
+    };
+    for (const auto& [name, value] : request.headers)
+    {
+        if (name.empty() || !std::ranges::all_of(name, tokenCharacter))
+        {
+            return "A request header's name isn't a header token";
+        }
+        if (std::ranges::any_of(value, [](char c) { return c == '\r' || c == '\n' || c == '\0'; }))
+        {
+            return "A request header's value holds a line break";
+        }
+    }
     return std::nullopt;
 }
 
@@ -95,8 +112,8 @@ std::optional<std::string> redirectRefusal(std::string_view location)
     {
         path.insert(path.begin(), '/');
     }
-    if (const std::optional<std::string> refused =
-            refusal({.host = std::string(host), .path = path, .userAgent = "-", .accept = {}, .timeout = {}, .maxBodyBytes = 0}))
+    if (const std::optional<std::string> refused = refusal(
+            {.host = std::string(host), .path = path, .userAgent = "-", .accept = {}, .timeout = {}, .maxBodyBytes = 0, .headers = {}}))
     {
         return "A redirect to an address the client wouldn't request isn't followed: " + *refused;
     }
@@ -269,6 +286,17 @@ std::expected<HttpsResponse, std::string> LinuxHttpsClient::get(const HttpsReque
     // Only the request's own headers: an empty "Accept:" removes libcurl's default "Accept: */*".
     curl_slist* headers = curl_slist_append(nullptr, request.accept.empty() ? "Accept:" : ("Accept: " + request.accept).c_str());
     const std::unique_ptr<curl_slist, ListDeleter> headerList(headers);
+    for (const auto& [name, value] : request.headers)
+    {
+        // Each appended to the list headerList owns; refusal() has checked them. Never logged: a value can be a key.
+        std::string line = name;
+        line += ": ";
+        line += value;
+        if (const curl_slist* const grown = curl_slist_append(headerList.get(), line.c_str()); grown == nullptr)
+        {
+            return std::unexpected(std::string("libcurl couldn't add a request header"));
+        }
+    }
     Transfer transfer{.body = {}, .maxBytes = request.maxBodyBytes, .tooLong = false, .stop = &stop};
     std::array<char, CURL_ERROR_SIZE> detail{};
     const auto deadline = std::chrono::steady_clock::now() + request.timeout;

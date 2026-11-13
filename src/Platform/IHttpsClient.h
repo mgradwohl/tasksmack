@@ -13,6 +13,8 @@
 #include <expected>
 #include <stop_token>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace Platform
 {
@@ -26,6 +28,9 @@ struct HttpsRequest
     std::string accept;                ///< The Accept header, or empty for none
     std::chrono::milliseconds timeout; ///< The most each step (name lookup, connect, send, receive) may take
     std::size_t maxBodyBytes = 0;      ///< A longer body is a failure, and no more of it is read
+    /// More headers, name then value (#3094: VirusTotal's x-apikey). A name must be a header token and a value may
+    /// hold no CR, LF or NUL, or the request isn't sent. Values are never logged.
+    std::vector<std::pair<std::string, std::string>> headers;
 };
 
 /// What came back.
