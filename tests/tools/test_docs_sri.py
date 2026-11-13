@@ -79,6 +79,14 @@ class DocsSriTest(unittest.TestCase):
         sri.update(self.root, download=fake_download)
         self.assertEqual(sri.check(self.root), [])
 
+    def test_update_writes_lf_line_endings_on_every_platform(self):
+        # On Windows, write_text without newline="\n" turned every "\n" into CRLF, which pre-commit's
+        # mixed-line-ending hook then rejected on the Renovate branches (#3628, #3629).
+        sri.update(self.root, download=fake_download)
+        for name in ("index.html", "cdn-integrity.json"):
+            data = (self.root / "docs" / name).read_bytes()
+            self.assertNotIn(b"\r", data, name)
+
     def test_a_tampered_hash_fails_the_check(self):
         sri.update(self.root, download=fake_download)
         page = self.root / "docs" / "index.html"
