@@ -9,6 +9,7 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
+#include "Platform/IProcessMemoryMap.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessThreads.h"
@@ -801,6 +802,11 @@ TEST(HelperLauncherTest, AHelperApprovedForAnotherAccountTakesReadAsAdministrato
     ASSERT_TRUE(std::holds_alternative<Broker::ConnectionsReply>(*connections));
     EXPECT_EQ(std::get<Broker::ConnectionsReply>(*connections).result.status, ConnectionsReadStatus::Failed);
     EXPECT_EQ(std::get<Broker::ConnectionsReply>(*connections).result.detail, HelperLauncher::OTHER_USERS_READS_UNAVAILABLE);
+    const auto map = broker.call(Broker::MemoryMapRequest{.target = THEIRS}, {}); // #3665
+    ASSERT_TRUE(map.has_value()) << map.error();
+    ASSERT_TRUE(std::holds_alternative<Broker::MemoryMapReply>(*map));
+    EXPECT_EQ(std::get<Broker::MemoryMapReply>(*map).result.status, MemoryMapReadStatus::Failed);
+    EXPECT_EQ(std::get<Broker::MemoryMapReply>(*map).result.detail, HelperLauncher::OTHER_USERS_READS_UNAVAILABLE);
     const auto threads = broker.callIfIdle(Broker::ThreadsRequest{.target = THEIRS}, WAIT);
     ASSERT_TRUE(threads.has_value()) << threads.error();
     ASSERT_TRUE(std::holds_alternative<Broker::ErrorReply>(*threads));

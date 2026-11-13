@@ -23,6 +23,7 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
+#include "Platform/IProcessMemoryMap.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessThreads.h"
@@ -237,6 +238,26 @@ class BrokeredThreadsReader final : public IProcessThreadsReader
     std::shared_ptr<IPrivilegedBroker> m_Broker;
 };
 
+/// Process Details' memory map that an administrator can finish (#3665), as BrokeredThreadsReader: a read the OS
+/// refuses (an elevated or another user's process) goes through a running helper, and "Authenticate to read"
+/// starts one. The helper reads the region list only, with the same identity check (PID and start time).
+class BrokeredMemoryMapReader final : public IProcessMemoryMapReader
+{
+  public:
+    BrokeredMemoryMapReader(std::unique_ptr<IProcessMemoryMapReader> inner, std::shared_ptr<IPrivilegedBroker> broker);
+
+    [[nodiscard]] bool hasMemoryMap() const override;
+    [[nodiscard]] MemoryMapReadResult readMemoryMap(const ProcessTarget& target) override;
+    [[nodiscard]] bool canReadAuthorized() const override;
+    [[nodiscard]] MemoryMapReadResult readAuthorized(const ProcessTarget& target, const std::stop_token& stopToken) override;
+
+  private:
+    [[nodiscard]] MemoryMapReadResult viaBroker(const ProcessTarget& target, const std::stop_token& stopToken);
+
+    std::unique_ptr<IProcessMemoryMapReader> m_Inner;
+    std::shared_ptr<IPrivilegedBroker> m_Broker;
+};
+
 /// @p reader decorated with @p broker, or @p reader as it is when there is no broker.
 [[nodiscard]] std::unique_ptr<IProcessEnvironmentReader> withPrivilegedBroker(std::unique_ptr<IProcessEnvironmentReader> reader,
                                                                               std::shared_ptr<IPrivilegedBroker> broker);
@@ -249,5 +270,7 @@ class BrokeredThreadsReader final : public IProcessThreadsReader
                                                                               std::shared_ptr<IPrivilegedBroker> broker);
 [[nodiscard]] std::unique_ptr<IProcessThreadsReader> withPrivilegedBroker(std::unique_ptr<IProcessThreadsReader> reader,
                                                                           std::shared_ptr<IPrivilegedBroker> broker);
+[[nodiscard]] std::unique_ptr<IProcessMemoryMapReader> withPrivilegedBroker(std::unique_ptr<IProcessMemoryMapReader> reader,
+                                                                            std::shared_ptr<IPrivilegedBroker> broker);
 
 } // namespace Platform

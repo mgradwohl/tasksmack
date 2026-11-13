@@ -6,6 +6,7 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
+#include "Platform/IProcessMemoryMap.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessThreads.h"
@@ -803,6 +804,77 @@ ThreadsReadResult BrokeredThreadsReader::viaBroker(const ProcessTarget& target, 
         return reply->result;
     }
     return {.status = ThreadsReadStatus::Failed, .threads = {}, .detail = "The administrator helper gave an unexpected answer"};
+}
+
+std::unique_ptr<IProcessMemoryMapReader> withPrivilegedBroker(std::unique_ptr<IProcessMemoryMapReader> reader,
+                                                              std::shared_ptr<IPrivilegedBroker> broker)
+{
+    if (broker == nullptr || reader == nullptr || !reader->hasMemoryMap())
+    {
+        return reader;
+    }
+    return std::make_unique<BrokeredMemoryMapReader>(std::move(reader), std::move(broker));
+}
+
+BrokeredMemoryMapReader::BrokeredMemoryMapReader(std::unique_ptr<IProcessMemoryMapReader> inner, std::shared_ptr<IPrivilegedBroker> broker)
+    : m_Inner(std::move(inner)), m_Broker(std::move(broker))
+{}
+
+bool BrokeredMemoryMapReader::hasMemoryMap() const
+{
+    return m_Inner->hasMemoryMap();
+}
+
+MemoryMapReadResult BrokeredMemoryMapReader::readMemoryMap(const ProcessTarget& target)
+{
+    MemoryMapReadResult result = m_Inner->readMemoryMap(target);
+    if (result.status != MemoryMapReadStatus::PermissionDenied || m_Broker == nullptr || !m_Broker->connected())
+    {
+        return result;
+    }
+    return viaBroker(target, std::stop_token{});
+}
+
+bool BrokeredMemoryMapReader::canReadAuthorized() const
+{
+    return m_Broker != nullptr && m_Broker->readsOtherUsers();
+}
+
+MemoryMapReadResult BrokeredMemoryMapReader::readAuthorized(const ProcessTarget& target, const std::stop_token& stopToken)
+{
+    if (!canReadAuthorized()) // no helper, or none that could read it (#2550)
+    {
+        return m_Inner->readMemoryMap(target);
+    }
+    if (!m_Broker->connected() && !m_Broker->connect(stopToken).has_value())
+    {
+        return {.status = MemoryMapReadStatus::PermissionDenied, .mappings = {}, .detail = {}, .truncated = false}; // the refusal stands
+    }
+    return viaBroker(target, stopToken);
+}
+
+MemoryMapReadResult BrokeredMemoryMapReader::viaBroker(const ProcessTarget& target, const std::stop_token& stopToken)
+{
+    const std::expected<Broker::Response, std::string> response = m_Broker->call(Broker::MemoryMapRequest{.target = target}, stopToken);
+    if (!response.has_value())
+    {
+        return {
+            .status = MemoryMapReadStatus::Failed,
+            .mappings = {},
+            .detail = "The administrator helper couldn't be asked: " + response.error(),
+            .truncated = false,
+        };
+    }
+    if (const auto* reply = std::get_if<Broker::MemoryMapReply>(&*response))
+    {
+        return reply->result;
+    }
+    return {
+        .status = MemoryMapReadStatus::Failed,
+        .mappings = {},
+        .detail = "The administrator helper gave an unexpected answer",
+        .truncated = false,
+    };
 }
 
 } // namespace Platform

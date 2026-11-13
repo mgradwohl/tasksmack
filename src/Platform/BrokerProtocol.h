@@ -21,12 +21,14 @@
 // redirect a request. The one path a request carries is Replace Task Manager's (#3072), which the helper
 // takes only when it is the TaskSmack.exe beside it. Its kinds: the handshake, the process actions
 // (#2308), Process Details' reads (#2309), Replace Task Manager (#3072), the Users tab's Disconnect and
-// Sign out of another user's Windows session (#3076), and Find handles' batch of open-files reads (#3578).
+// Sign out of another user's Windows session (#3076), Find handles' batch of open-files reads (#3578), and
+// Process Details' memory map (#3665), a read of the region list only, never of the process's memory.
 
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
+#include "Platform/IProcessMemoryMap.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessThreads.h"
@@ -79,7 +81,10 @@ namespace Platform::Broker
 ///     ReadUdpBytes and their results, and Hello's forSession (#3580). The kinds left keep their numbers.
 /// 24: ReadOpenFilesBatch, many processes' open files from one walk of Windows' handle table, for Find handles'
 ///     administrator pass (#3578), answered with OpenFilesBatchResult. Its kinds take numbers never used before.
-inline constexpr std::uint16_t PROTOCOL_VERSION = 24;
+/// 25: ReadMemoryMap again, now that Windows' helper serves it: an elevated or another user's process's memory map
+///     for Process Details (#3665), answered with MemoryMapResult. The fields are v16's; the kinds take numbers
+///     never used before (45 and 64), as v24's did.
+inline constexpr std::uint16_t PROTOCOL_VERSION = 25;
 /// The largest frame either side accepts, header included.
 inline constexpr std::size_t MAX_MESSAGE_BYTES = std::size_t{8} << 20U;
 /// The longest string field (an error message, a note).
@@ -93,6 +98,10 @@ inline constexpr std::size_t MAX_MODULES = std::size_t{1} << 16U;
 inline constexpr std::size_t MAX_CONNECTIONS = std::size_t{1} << 16U;
 /// The most threads a ThreadsReply carries (#3069); a read with more keeps the first.
 inline constexpr std::size_t MAX_THREADS = std::size_t{1} << 16U;
+/// The most regions a MemoryMapReply carries (#3665): the Windows reader's own cap (Windows::MAX_MEMORY_MAP_REGIONS;
+/// HelperMain.cpp static_asserts it fits), so a read the helper kept whole crosses whole when the frame holds it. A
+/// frame holds fewer (at least 31 bytes each) when their paths are long, and says it was cut.
+inline constexpr std::size_t MAX_MEMORY_MAPPINGS = std::size_t{1} << 16U;
 /// The most processes one ReadOpenFilesBatch names (#3578); a search with more sends several.
 inline constexpr std::size_t MAX_OPEN_FILES_BATCH = 1024;
 /// The frame header after the length: version, kind, request id.
@@ -117,6 +126,7 @@ enum class MessageKind : std::uint16_t // NOLINT(performance-enum-size): 16 bits
     ReadConnections = 35,        ///< Its TCP and UDP sockets (#2309)
     ReadThreads = 41,            ///< Another user's process's threads, for Process Details (#3069)
     ReadOpenFilesBatch = 44,     ///< Many processes' open files from one handle-table walk, for Find handles (#3578)
+    ReadMemoryMap = 45,          ///< An elevated or another user's process's memory map, for Process Details (#3665)
     ActionResult = 48,           ///< The answer to a process action
     EnvironmentResult = 49,      ///< The answer to ReadEnvironment
     ModulesResult = 50,          ///< The answer to ReadModules
@@ -126,6 +136,7 @@ enum class MessageKind : std::uint16_t // NOLINT(performance-enum-size): 16 bits
     ThreadsResult = 59,          ///< The answer to ReadThreads
     OpenFilesBatchResult = 62,   ///< The answer to ReadOpenFilesBatch (#3578)
     Error = 63,                  ///< A request the helper refused to read (malformed, or a kind it doesn't do)
+    MemoryMapResult = 64,        ///< The answer to ReadMemoryMap (#3665)
 };
 
 /// The signals a Signal request sends.
@@ -403,6 +414,27 @@ struct ThreadsReply
     }
 };
 
+/// Read a process's memory map (#3665), as the helper reads it with its rights. It names only the target: the
+/// helper walks that process's address space, never anything the request could choose, and reads nothing out of
+/// its memory.
+struct MemoryMapRequest
+{
+    ProcessTarget target;
+    friend bool operator==(const MemoryMapRequest&, const MemoryMapRequest&) = default;
+};
+
+/// The answer to MemoryMapRequest: the read's result, as IProcessMemoryMapReader returns it.
+struct MemoryMapReply
+{
+    MemoryMapReadResult result;
+
+    friend bool operator==(const MemoryMapReply& left, const MemoryMapReply& right)
+    {
+        return left.result.status == right.result.status && left.result.detail == right.result.detail &&
+               left.result.truncated == right.result.truncated && left.result.mappings == right.result.mappings;
+    }
+};
+
 /// The answer to ConnectionsRequest: the read's result, as IProcessConnectionsReader returns it.
 struct ConnectionsReply
 {
@@ -484,7 +516,8 @@ using Request = std::variant<Hello,
                              TaskManagerReplacementRequest,
                              SessionActionRequest,
                              ThreadActionRequest,
-                             OpenFilesBatchRequest>;
+                             OpenFilesBatchRequest,
+                             MemoryMapRequest>;
 using Response = std::variant<HelloReply,
                               ActionResult,
                               ErrorReply,
@@ -494,7 +527,8 @@ using Response = std::variant<HelloReply,
                               ConnectionsReply,
                               ServiceActionReply,
                               ThreadsReply,
-                              OpenFilesBatchReply>;
+                              OpenFilesBatchReply,
+                              MemoryMapReply>;
 
 /// A decoded frame: its request id and message.
 template<typename Message> struct Decoded
@@ -884,6 +918,13 @@ namespace Detail
     return MessageKind::ReadThreads;
 }
 
+/// ReadMemoryMap (#3665): the target only.
+[[nodiscard]] inline MessageKind encodePayload(Writer& writer, const MemoryMapRequest& map)
+{
+    writer.target(map.target);
+    return MessageKind::ReadMemoryMap;
+}
+
 /// SetAffinity: the target, then the CPU set's word count and words.
 [[nodiscard]] inline MessageKind encodePayload(Writer& writer, const AffinityRequest& affinity)
 {
@@ -1124,6 +1165,8 @@ namespace Detail
         return Detail::finish<Request>(reader, id, ThreadsRequest{.target = reader.target()});
     case MessageKind::ReadOpenFilesBatch:
         return Detail::finish<Request>(reader, id, Detail::decodeOpenFilesBatchRequest(reader));
+    case MessageKind::ReadMemoryMap:
+        return Detail::finish<Request>(reader, id, MemoryMapRequest{.target = reader.target()});
     case MessageKind::HelloReply:
     case MessageKind::ActionResult:
     case MessageKind::EnvironmentResult:
@@ -1133,6 +1176,7 @@ namespace Detail
     case MessageKind::ServiceActionResult:
     case MessageKind::ThreadsResult:
     case MessageKind::OpenFilesBatchResult:
+    case MessageKind::MemoryMapResult:
     case MessageKind::Error:
         break;
     }
@@ -1370,6 +1414,92 @@ inline void writeOpenFilesResult(Writer& writer, const OpenFilesReadResult& resu
         writer.u64(thread.createTime);
     }
     return MessageKind::ThreadsResult;
+}
+
+/// A MemoryMapResult mapping's flag bits, and its sizes in the order their presence bits name them (#3665, as v16).
+namespace MemoryMapWire
+{
+inline constexpr std::uint8_t READABLE = 1U << 0U;
+inline constexpr std::uint8_t WRITABLE = 1U << 1U;
+inline constexpr std::uint8_t EXECUTABLE = 1U << 2U;
+inline constexpr std::uint8_t SHARED = 1U << 3U;
+inline constexpr std::uint8_t GUARD = 1U << 4U;
+inline constexpr std::uint8_t RESERVED = 1U << 5U;
+inline constexpr std::uint8_t DELETED = 1U << 6U;
+inline constexpr std::uint8_t ALL_FLAGS = (1U << 7U) - 1U;
+
+/// Each size field: bit i of a mapping's presence byte says whether SIZES[i] follows. Windows' reader fills none,
+/// but the reply carries what any reader gives, so a fuller one later needs no new version.
+inline constexpr std::array<std::optional<std::uint64_t> MemoryMapping::*, 8> SIZES{
+    &MemoryMapping::residentBytes,
+    &MemoryMapping::pssBytes,
+    &MemoryMapping::sharedCleanBytes,
+    &MemoryMapping::sharedDirtyBytes,
+    &MemoryMapping::privateCleanBytes,
+    &MemoryMapping::privateDirtyBytes,
+    &MemoryMapping::swapBytes,
+    &MemoryMapping::swapPssBytes,
+};
+
+/// The bytes one mapping takes on the wire: start, end, flags, kind, path, file offset, the presence byte, and
+/// each size present.
+[[nodiscard]] inline std::size_t bytesOf(const MemoryMapping& mapping) noexcept
+{
+    std::size_t sizes = 0;
+    for (const auto field : SIZES)
+    {
+        sizes += (mapping.*field).has_value() ? 8 : 0;
+    }
+    return 8 + 8 + 1 + 1 + textBytes(mapping.path) + 8 + 1 + sizes;
+}
+} // namespace MemoryMapWire
+
+/// MemoryMapResult (#3665): status, detail, truncated, count; a mapping: start, end, flag bits, kind, path, file
+/// offset, a presence byte, then each size it names. As many as fit a frame, up to MAX_MEMORY_MAPPINGS, saying it
+/// was cut past them, as a read past its own cap does.
+[[nodiscard]] inline MessageKind encodePayload(Writer& writer, const MemoryMapReply& map)
+{
+    constexpr std::size_t ROOM = listRoom(1 + 4 + MAX_STRING_BYTES + 1 + 4);
+    const std::size_t count = entriesThatFit(std::span(map.result.mappings), MAX_MEMORY_MAPPINGS, ROOM, MemoryMapWire::bytesOf);
+    writer.u8(static_cast<std::uint8_t>(map.result.status));
+    writer.text(map.result.detail);
+    writer.u8((map.result.truncated || count < map.result.mappings.size()) ? 1 : 0);
+    writer.u32(static_cast<std::uint32_t>(count));
+    for (std::size_t i = 0; i < count; ++i)
+    {
+        const MemoryMapping& mapping = map.result.mappings[i];
+        writer.u64(mapping.start);
+        writer.u64(mapping.end);
+        const auto bit = [](bool on, std::uint8_t value)
+        {
+            return on ? value : std::uint8_t{0};
+        };
+        writer.u8(static_cast<std::uint8_t>(bit(mapping.readable, MemoryMapWire::READABLE) |
+                                            bit(mapping.writable, MemoryMapWire::WRITABLE) |
+                                            bit(mapping.executable, MemoryMapWire::EXECUTABLE) |
+                                            bit(mapping.shared, MemoryMapWire::SHARED) | bit(mapping.guard, MemoryMapWire::GUARD) |
+                                            bit(mapping.reserved, MemoryMapWire::RESERVED) | bit(mapping.deleted, MemoryMapWire::DELETED)));
+        writer.u8(static_cast<std::uint8_t>(mapping.kind));
+        writer.text(mapping.path);
+        writer.u64(mapping.fileOffset);
+        std::uint8_t present = 0;
+        for (std::size_t field = 0; field < MemoryMapWire::SIZES.size(); ++field)
+        {
+            if ((mapping.*MemoryMapWire::SIZES[field]).has_value())
+            {
+                present = static_cast<std::uint8_t>(present | (1U << field));
+            }
+        }
+        writer.u8(present);
+        for (const auto field : MemoryMapWire::SIZES)
+        {
+            if (const std::optional<std::uint64_t>& size = mapping.*field; size.has_value())
+            {
+                writer.u64(*size);
+            }
+        }
+    }
+    return MessageKind::MemoryMapResult;
 }
 
 /// ServiceActionResult (#2728): flags (1: ok, 2: cancelled, 4: needs authorization, 8: authorization
@@ -1610,6 +1740,73 @@ namespace Detail
     return reply;
 }
 
+/// A MemoryMapResult's payload (#3665, as v16's): the status (refused past Failed), detail, truncated, a count
+/// (refused past MAX_MEMORY_MAPPINGS), then each mapping, refused when its end is before its start, it sets a flag
+/// bit past DELETED, or its kind is past Other.
+[[nodiscard]] inline MemoryMapReply decodeMemoryMapReply(Reader& reader)
+{
+    MemoryMapReply reply;
+    const std::uint8_t value = reader.u8();
+    if (value <= static_cast<std::uint8_t>(MemoryMapReadStatus::Failed))
+    {
+        reply.result.status = static_cast<MemoryMapReadStatus>(value);
+    }
+    else
+    {
+        reader.fail();
+    }
+    reply.result.detail = reader.text();
+    reply.result.truncated = reader.flag();
+    const std::uint32_t count = reader.u32();
+    if (count > MAX_MEMORY_MAPPINGS)
+    {
+        reader.fail();
+    }
+    for (std::uint32_t i = 0; reader.ok() && i < count; ++i)
+    {
+        MemoryMapping mapping;
+        mapping.start = reader.u64();
+        mapping.end = reader.u64();
+        if (mapping.end < mapping.start)
+        {
+            reader.fail();
+        }
+        const std::uint8_t flags = reader.u8();
+        if ((flags & ~MemoryMapWire::ALL_FLAGS) != 0)
+        {
+            reader.fail();
+        }
+        mapping.readable = (flags & MemoryMapWire::READABLE) != 0;
+        mapping.writable = (flags & MemoryMapWire::WRITABLE) != 0;
+        mapping.executable = (flags & MemoryMapWire::EXECUTABLE) != 0;
+        mapping.shared = (flags & MemoryMapWire::SHARED) != 0;
+        mapping.guard = (flags & MemoryMapWire::GUARD) != 0;
+        mapping.reserved = (flags & MemoryMapWire::RESERVED) != 0;
+        mapping.deleted = (flags & MemoryMapWire::DELETED) != 0;
+        const std::uint8_t kind = reader.u8();
+        if (kind > static_cast<std::uint8_t>(MemoryMappingKind::Other))
+        {
+            reader.fail(); // never cast a byte past the enum: the mapping keeps its default kind
+        }
+        else
+        {
+            mapping.kind = static_cast<MemoryMappingKind>(kind);
+        }
+        mapping.path = reader.text();
+        mapping.fileOffset = reader.u64();
+        const std::uint8_t present = reader.u8();
+        for (std::size_t field = 0; field < MemoryMapWire::SIZES.size(); ++field)
+        {
+            if ((present & (1U << field)) != 0)
+            {
+                mapping.*MemoryMapWire::SIZES[field] = reader.u64();
+            }
+        }
+        reply.result.mappings.push_back(std::move(mapping));
+    }
+    return reply;
+}
+
 /// A ConnectionsResult's payload: the status (refused past Failed), detail, a count (refused past
 /// MAX_CONNECTIONS), then each socket's protocol and family, two endpoints and state, each enum range-checked.
 [[nodiscard]] inline ConnectionsReply decodeConnectionsReply(Reader& reader)
@@ -1719,6 +1916,8 @@ namespace Detail
         return Detail::finish<Response>(reader, id, Detail::decodeThreadsReply(reader));
     case MessageKind::OpenFilesBatchResult:
         return Detail::finish<Response>(reader, id, Detail::decodeOpenFilesBatchReply(reader));
+    case MessageKind::MemoryMapResult:
+        return Detail::finish<Response>(reader, id, Detail::decodeMemoryMapReply(reader));
     case MessageKind::Hello:
     case MessageKind::Signal:
     case MessageKind::SetPriority:
@@ -1735,6 +1934,7 @@ namespace Detail
     case MessageKind::ThreadAction:
     case MessageKind::ReadThreads:
     case MessageKind::ReadOpenFilesBatch:
+    case MessageKind::ReadMemoryMap:
         break;
     }
     return std::unexpected("Not a response");

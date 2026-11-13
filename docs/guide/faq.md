@@ -91,8 +91,8 @@ your settings, and nothing is limited in that session. It always starts as Stand
 Without restarting, TaskSmack itself never runs elevated for this. An action Windows refuses for want of rights, such as
 ending, suspending, re-prioritizing or re-pinning an elevated or another account's process, offers **Retry as
 administrator** beside its error. If your account is an administrator, Process Details' **Modules**,
-**Open files** and **Connections** sections also offer **Read as administrator** when such a process
-refuses to be read. Either button starts `TaskSmackHelper.exe`, TaskSmack's administrator helper,
+**Open files**, **Connections** and **Memory map** sections also offer **Read as administrator** when such a
+process refuses to be read. Either button starts `TaskSmackHelper.exe`, TaskSmack's administrator helper,
 through Windows' own UAC prompt, in front of TaskSmack's window:
 
 - **If your account is an administrator,** the prompt asks you to approve. For a few minutes afterwards,

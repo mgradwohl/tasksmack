@@ -1766,9 +1766,33 @@ class MockProcessMemoryMapReader : public Platform::IProcessMemoryMapReader
         return m_ReadCount;
     }
 
+    /// readAuthorized() (#3665): offered when set, returning @p result and counting its calls.
+    void setAuthorizedResult(Platform::MemoryMapReadResult result)
+    {
+        m_AuthorizedResult = std::move(result);
+        m_CanReadAuthorized = true;
+    }
+    [[nodiscard]] bool canReadAuthorized() const override
+    {
+        return m_CanReadAuthorized;
+    }
+    [[nodiscard]] Platform::MemoryMapReadResult readAuthorized(const Platform::ProcessTarget& /*target*/,
+                                                               const std::stop_token& /*stopToken*/) override
+    {
+        ++m_AuthorizedReadCount;
+        return m_AuthorizedResult;
+    }
+    [[nodiscard]] int authorizedReadCount() const
+    {
+        return m_AuthorizedReadCount;
+    }
+
   private:
     Platform::MemoryMapReadResult m_Result{.status = Platform::MemoryMapReadStatus::Ok, .mappings = {}, .detail = {}, .truncated = false};
     int m_ReadCount = 0;
+    bool m_CanReadAuthorized = false;
+    int m_AuthorizedReadCount = 0;
+    Platform::MemoryMapReadResult m_AuthorizedResult;
 };
 
 /// Mock IProcessSecurityReader (#1526): returns the result it was given and counts the reads.

@@ -13,6 +13,7 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
+#include "Platform/IProcessMemoryMap.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessThreads.h"
@@ -36,7 +37,8 @@ struct Readers
     IProcessModulesReader* modules = nullptr;
     IProcessOpenFilesReader* openFiles = nullptr;
     IProcessConnectionsReader* connections = nullptr;
-    IProcessThreadsReader* threads = nullptr; ///< Process Details' threads (#3069)
+    IProcessThreadsReader* threads = nullptr;     ///< Process Details' threads (#3069)
+    IProcessMemoryMapReader* memoryMap = nullptr; ///< Process Details' memory map (#3665)
     /// Replace Task Manager (#3072): Windows' helper sets or clears taskmgr.exe's IFEO Debugger, for the
     /// TaskSmack.exe beside it only. A helper without it answers with an error.
     // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning

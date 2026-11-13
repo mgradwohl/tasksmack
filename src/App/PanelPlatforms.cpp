@@ -159,9 +159,10 @@ ProcessDetailsReaders makeProcessDetailsReaders(const Synthetic::Scenario* scena
 
 std::unique_ptr<Platform::IProcessMemoryMapReader> makeProcessMemoryMapReader(const Synthetic::Scenario* scenario)
 {
-    // No helper reads memory maps (#3580): on Windows another user's or an elevated process's map is read
-    // only by an elevated TaskSmack, in-process.
-    return Synthetic::makeProcessMemoryMapReader(scenario);
+    // Windows' helper reads an elevated or another user's process's map when TaskSmack's own read is refused, and
+    // "Authenticate to read" starts it (#3665). Linux has no helper (#3580): a root TaskSmack reads every map itself.
+    return (scenario == nullptr) ? Platform::withPrivilegedBroker(Synthetic::makeProcessMemoryMapReader(scenario), sharedPrivilegedBroker())
+                                 : Synthetic::makeProcessMemoryMapReader(scenario);
 }
 
 std::unique_ptr<Platform::IProcessActions> makeConnectionsPanelActions(const Synthetic::Scenario* scenario)

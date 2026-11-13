@@ -37,7 +37,7 @@ enum class MemoryMapReadStatus : std::uint8_t
     Failed,           ///< Any other error.
 };
 
-/// What backs a mapping. The values travel in the helper's MemoryMapResult (Platform/BrokerProtocol.h),
+/// What backs a mapping. The values travel in Windows' helper's MemoryMapResult (BrokerProtocol.h, #3665),
 /// whose decoder refuses one past Other: a new kind goes last, with a protocol version bump.
 enum class MemoryMappingKind : std::uint8_t
 {
@@ -133,8 +133,8 @@ class IProcessMemoryMapReader
     /// time (0) is refused with IdentityUnknown.
     [[nodiscard]] virtual MemoryMapReadResult readMemoryMap(const ProcessTarget& target) = 0;
 
-    /// Whether readAuthorized() can read as an administrator, after a password prompt (Linux: the
-    /// pkexec-started helper). The UI then offers "Authenticate to read" on PermissionDenied.
+    /// Whether readAuthorized() can read as an administrator, after a UAC prompt (Windows' helper,
+    /// BrokeredMemoryMapReader, #3665). The UI then offers "Authenticate to read" on PermissionDenied.
     [[nodiscard]] virtual bool canReadAuthorized() const
     {
         return false;

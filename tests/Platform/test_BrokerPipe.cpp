@@ -1388,8 +1388,13 @@ TEST(BrokerPipeServeTest, EveryRequestKindIsTheHelloAnActionOrARead)
     EXPECT_TRUE(BrokerPipeServer::isRead(batch));
     EXPECT_FALSE(BrokerPipeServer::isActionWindowsDoes(batch));
     EXPECT_FALSE(BrokerPipeServer::putsOffTheWindowsIdleExit(batch));
+    // #3665 (v25): Process Details' memory map is a read, never the one action of a session.
+    const Broker::MemoryMapRequest map{.target = TARGET};
+    EXPECT_TRUE(BrokerPipeServer::isRead(map));
+    EXPECT_FALSE(BrokerPipeServer::isActionWindowsDoes(map));
+    EXPECT_FALSE(BrokerPipeServer::putsOffTheWindowsIdleExit(map));
     // Protocol v23 (#3580) dropped the kinds only Linux's helper served.
-    static_assert(std::variant_size_v<Broker::Request> == 16, "a new request kind: add it above");
+    static_assert(std::variant_size_v<Broker::Request> == 17, "a new request kind: add it above");
 }
 
 TEST(BrokerPipeServeTest, AOneActionSessionIsntKeptOpenByGreetingAgain)

@@ -5,6 +5,7 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
+#include "Platform/IProcessMemoryMap.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/ThreadName.h"
@@ -850,6 +851,17 @@ BrokerPipeServer::RequestHandler readsOnlyOwnProcesses(BrokerPipeServer::Request
                 return handler(request);
             }
             return Broker::ConnectionsReply{.result = {.status = ConnectionsReadStatus::Failed, .connections = {}, .detail = refusal}};
+        }
+        // Process Details' memory map (#3665): the user's own elevated process, never another user's.
+        if (const auto* read = std::get_if<Broker::MemoryMapRequest>(&request))
+        {
+            if (owned(read->target))
+            {
+                return handler(request);
+            }
+            return Broker::MemoryMapReply{
+                .result = {.status = MemoryMapReadStatus::Failed, .mappings = {}, .detail = refusal, .truncated = false},
+            };
         }
         // Any read kind not named above (threads, #3069).
         return Broker::ErrorReply{.message = refusal};
