@@ -33,7 +33,15 @@ class Hasher
     void compress(const std::uint8_t* block) noexcept;
 
     std::array<std::uint32_t, 8> m_State{
-        0x6a09e667U, 0xbb67ae85U, 0x3c6ef372U, 0xa54ff53aU, 0x510e527fU, 0x9b05688cU, 0x1f83d9abU, 0x5be0cd19U};
+        0x6a09e667U,
+        0xbb67ae85U,
+        0x3c6ef372U,
+        0xa54ff53aU,
+        0x510e527fU,
+        0x9b05688cU,
+        0x1f83d9abU,
+        0x5be0cd19U,
+    };
     std::array<std::uint8_t, 64> m_Block{};
     std::size_t m_BlockUsed = 0;
     std::uint64_t m_TotalBytes = 0;
