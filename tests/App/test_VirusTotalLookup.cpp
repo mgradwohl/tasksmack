@@ -66,7 +66,7 @@ TEST(VirusTotalLookupTest, OfferedOnlyWithAHashingPlatformAClientAndAKey)
     Platform::ProcessActionCapabilities hashes;
     hashes.canHashImage = true;
     EXPECT_TRUE(VirusTotalLookup::offered(hashes, {.client = client, .apiKey = KEY, .userAgent = "UA"}));
-    EXPECT_FALSE(VirusTotalLookup::offered({}, {.client = client, .apiKey = KEY, .userAgent = "UA"})) << "Windows until #3646";
+    EXPECT_FALSE(VirusTotalLookup::offered({}, {.client = client, .apiKey = KEY, .userAgent = "UA"})) << "a platform that can't hash";
     EXPECT_FALSE(VirusTotalLookup::offered(hashes, {.client = nullptr, .apiKey = KEY, .userAgent = "UA"})) << "a test or synthetic run";
     EXPECT_FALSE(VirusTotalLookup::offered(hashes, {.client = client, .apiKey = "", .userAgent = "UA"})) << "no key: off";
     EXPECT_FALSE(VirusTotalLookup::offered(hashes, {.client = client, .apiKey = "typo", .userAgent = "UA"}));
