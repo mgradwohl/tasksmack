@@ -732,6 +732,7 @@ set(COMMON_TEST_SOURCES
     App/test_ElevationNoticeText.cpp
     App/test_StatusBarText.cpp
     App/test_UpdateChecker.cpp # the update check's worker, with a fake client and clock (#3093)
+    App/test_VirusTotalLookup.cpp # Look up on VirusTotal's worker half, with a fake client and actions (#3094)
     App/test_StartAtLoginSetting.cpp # start at sign-in's worker, with a fake entry (#3093 part 2)
     App/test_LaunchOptions.cpp # --minimized on the command line (#3093 part 2)
     App/test_StatusBarViewRender.cpp

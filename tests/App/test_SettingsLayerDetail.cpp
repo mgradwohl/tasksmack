@@ -9,9 +9,11 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cstddef>
 #include <format>
 #include <optional>
+#include <string_view>
 
 namespace App::Detail
 {
@@ -225,4 +227,16 @@ TEST(SettingsLayerDetailTest, TheFontSizeOptionsRunFromTheSmallestToTheLargestPo
 }
 
 } // namespace
+// #3094: the VirusTotal key field's text, without what a paste brings around it.
+TEST(SettingsLayerDetailTest, TheKeyFieldIsReadUpToItsEndWithoutSurroundingBlanks)
+{
+    std::array<char, 16> buffer{};
+    EXPECT_TRUE(App::Detail::trimmedKey(buffer).empty());
+    std::string_view(" \tab12\r\n").copy(buffer.data(), 9);
+    EXPECT_EQ(App::Detail::trimmedKey(buffer), "ab12");
+    buffer.fill('\0');
+    std::string_view("a b").copy(buffer.data(), 3);
+    EXPECT_EQ(App::Detail::trimmedKey(buffer), "a b") << "only the ends are trimmed";
+}
+
 } // namespace App::Detail

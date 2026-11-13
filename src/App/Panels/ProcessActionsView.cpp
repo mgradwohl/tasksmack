@@ -13,6 +13,7 @@
 #include "ProcessWaitChainDialog.h"
 #include "UI/Theme.h"
 #include "UI/Widgets.h"
+#include "VirusTotalLookup.h"
 
 #include <imgui.h>
 
@@ -21,6 +22,7 @@
 #include <cstdint>
 #include <format>
 #include <optional>
+#include <stop_token>
 #include <string>
 #include <thread>
 
@@ -65,6 +67,46 @@ void ProcessActionsView::renderControls(Platform::IProcessActions* actions,
                                target,
                                efficiencyMode,
                                anyBeforeWaitChain || WaitChainDetail::offersAnalyzeWaitChain(capabilities, 0));
+    renderVirusTotalButton(actions, capabilities, processName, target, true);
+}
+
+void ProcessActionsView::renderVirusTotalButton(Platform::IProcessActions* actions,
+                                                const Platform::ProcessActionCapabilities& capabilities,
+                                                const std::string& processName,
+                                                const Platform::ProcessTarget& target,
+                                                bool afterButtons)
+{
+    if (!VirusTotalLookup::offered(capabilities, m_VirusTotal))
+    {
+        return;
+    }
+    // As the other buttons: on the row at its own width when it fits, else on a row of its own.
+    const float width = ImGui::CalcTextSize(VirusTotalLookup::MENU_LABEL).x + (2.0F * ImGui::GetStyle().FramePadding.x);
+    if (afterButtons)
+    {
+        const float rowEnd = ImGui::GetItemRectMax().x;
+        const float regionEnd = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+        if (rowEnd + ImGui::GetStyle().ItemSpacing.x + width <= regionEnd)
+        {
+            ImGui::SameLine();
+        }
+    }
+    const bool disabled = target.pid <= 0 || m_ActionRun.busy();
+    ImGui::BeginDisabled(disabled);
+    const bool pressed = ImGui::Button(VirusTotalLookup::MENU_LABEL, ImVec2(width, 0.0F));
+    ImGui::EndDisabled();
+    ImGui::SetItemTooltip("%s", VirusTotalLookup::TOOLTIP);
+    if (pressed && !disabled && actions != nullptr)
+    {
+        // The process and the key are captured now; the worker hashes and asks for this process alone.
+        runAction(
+            actions,
+            std::format("Looking up {} on VirusTotal...", processName),
+            [actions, lookup = m_VirusTotal, target, name = processName](const std::stop_token& stop)
+            { return VirusTotalLookup::lookUp(*actions, lookup, target, name, stop); },
+            [](const Platform::ProcessActionResult& result) { return VirusTotalLookup::format(result); },
+            std::nullopt);
+    }
 }
 
 void ProcessActionsView::renderAnalyzeWaitChainButton(Platform::IProcessActions* actions,

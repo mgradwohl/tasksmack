@@ -13,6 +13,7 @@
 #include "Domain/Numeric.h"
 #include "Domain/SamplingConfig.h"
 #include "Domain/UpdateCheck.h"
+#include "Domain/VirusTotal.h"
 #include "Platform/ThreadName.h"
 #include "ProcessColumnConfig.h"
 #include "UI/ChartWidgets.h"
@@ -402,6 +403,16 @@ void readSettings(const toml::table& config, UserSettings& settings)
     readUpdateText("latest_url", Domain::UpdateCheck::MAX_URL_BYTES, settings.updates.latestUrl);
     readUpdateText("dismissed_version", Domain::UpdateCheck::MAX_VERSION_TEXT_BYTES, settings.updates.dismissedVersion);
 
+    // Look up on VirusTotal's key (#3094): kept only when it is one; anything else is left in the file, unused.
+    if (auto key = config["virustotal"]["api_key"].value<std::string>(); key.has_value() && Domain::VirusTotal::isApiKey(*key))
+    {
+        settings.virusTotalApiKey = std::move(*key);
+    }
+    else if (key.has_value() && !key->empty())
+    {
+        spdlog::warn("config.toml's [virustotal] api_key isn't a VirusTotal API key (64 hex digits); Look up on VirusTotal is off");
+    }
+
     // What the user turned on that an install can turn off (#3276): Start at sign-in, the build that last saw
     // it, and Replace Task Manager. The build is capped here; it is only compared.
     if (auto val = config["windows"]["start_at_sign_in"].value<bool>())
@@ -635,6 +646,10 @@ void readSettings(const toml::table& config, UserSettings& settings)
     if (!windowsTable.empty())
     {
         table.insert("windows", std::move(windowsTable));
+    }
+    if (!settings.virusTotalApiKey.empty()) // only while set (#3094)
+    {
+        table.insert("virustotal", toml::table{{"api_key", settings.virusTotalApiKey}});
     }
     if (!settings.recentCommands.empty()) // only when there are any, so a first run's file is unchanged
     {
@@ -1061,6 +1076,8 @@ bool UserConfig::writeSettings(const UserSettings& settings)
             "false: nothing is sent); last_check, latest_version, latest_url and dismissed_version are written by TaskSmack\n";
     text << "#   [windows] start_at_sign_in, start_at_sign_in_seen_by, replace_task_manager: written by TaskSmack while "
             "Start at sign-in or Replace Task Manager is on, so an upgrade that removed one can put it back\n";
+    text << "#   [virustotal] api_key: your own VirusTotal API key, for Look up on VirusTotal (only an executable's SHA-256 is "
+            "sent); while it is set, TaskSmack saves this file readable by you only\n";
     text << "#   Themes: built-in themes in assets/themes. Add custom .toml themes beside this config under a 'themes' folder.\n\n";
     text << document;
     // Stream exceptions are off, so a failed insertion (say, allocation) only sets badbit; its
@@ -1140,9 +1157,16 @@ bool UserConfig::writeSettings(const UserSettings& settings)
     {
         owner = newFileOwner; // A new config under another user's home, made as root, is theirs (#2121)
     }
-    const std::optional<mode_t> mode = (originalPermissions != std::filesystem::perms::unknown)
-                                         ? std::optional<mode_t>(static_cast<mode_t>(originalPermissions & std::filesystem::perms::mask))
-                                         : std::nullopt;
+    std::optional<mode_t> mode = (originalPermissions != std::filesystem::perms::unknown)
+                                   ? std::optional<mode_t>(static_cast<mode_t>(originalPermissions & std::filesystem::perms::mask))
+                                   : std::nullopt;
+    // A file holding the VirusTotal API key (#3094) is the user's alone: no group or other bits, and (below) no
+    // extended ACL. A new file is created owner-only anyway.
+    const bool holdsSecret = !settings.virusTotalApiKey.empty();
+    if (holdsSecret && mode.has_value())
+    {
+        *mode &= static_cast<mode_t>(S_IRUSR | S_IWUSR);
+    }
     // nullopt: leave the new file's ACL as created (a brand-new config inherits the directory's
     // default ACL, as any new file would).
     std::optional<std::vector<char>> accessAcl;
@@ -1162,6 +1186,10 @@ bool UserConfig::writeSettings(const UserSettings& settings)
             return false;
         }
         accessAcl = std::move(acl);
+    }
+    if (holdsSecret)
+    {
+        accessAcl = std::vector<char>{}; // no extended ACL: an empty one removes any the file had or inherits (#3094)
     }
 #endif
     int fd = -1;

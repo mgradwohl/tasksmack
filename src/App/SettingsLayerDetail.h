@@ -184,4 +184,24 @@ template<typename Option, std::size_t N, typename Value, typename Projection>
     return std::format("Custom ({} seconds)", seconds);
 }
 
+/// The VirusTotal key field's text (#3094), up to its terminator, without the spaces, tabs or line breaks a paste
+/// can bring at either end.
+template<std::size_t N> [[nodiscard]] std::string_view trimmedKey(const std::array<char, N>& buffer) noexcept
+{
+    std::string_view text(buffer.data(), std::char_traits<char>::length(buffer.data()));
+    const auto blank = [](char c)
+    {
+        return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+    };
+    while (!text.empty() && blank(text.front()))
+    {
+        text.remove_prefix(1);
+    }
+    while (!text.empty() && blank(text.back()))
+    {
+        text.remove_suffix(1);
+    }
+    return text;
+}
+
 } // namespace App::Detail

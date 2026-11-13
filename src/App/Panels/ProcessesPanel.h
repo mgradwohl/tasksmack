@@ -40,6 +40,7 @@
 #include "Domain/ProcessRowHistory.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Domain/SamplingConfig.h"
+#include "Platform/IHttpsClient.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessIconSource.h"
 #include "Platform/IProcessModules.h"
@@ -146,6 +147,11 @@ struct ProcessesPanelPlatform
 class ProcessesPanel : public Panel
 {
   public:
+    /// Tests (#3094): the client Look up on VirusTotal asks through, in place of the one onAttach() makes.
+    void setLookupClient(std::shared_ptr<Platform::IHttpsClient> client)
+    {
+        m_LookupClient = std::move(client);
+    }
     /// The probe and actions come from the synthetic scenario when TASKSMACK_SYNTHETIC selects one,
     /// else the platform's (Synthetic::makeProcessProbe(), makeProcessActions()).
     ProcessesPanel();
@@ -562,6 +568,9 @@ class ProcessesPanel : public Panel
     // Process actions from the row menu (#1209), confirmed in the same dialog as Process Details'
     // Actions block. Created at attach, like that panel's: this panel is part of the composition root.
     std::unique_ptr<Platform::IProcessActions> m_ProcessActions;
+    /// Look up on VirusTotal's client (#3094), made in onAttach(); none in a synthetic run or a test run, and the
+    /// tests' setLookupClient().
+    std::shared_ptr<Platform::IHttpsClient> m_LookupClient;
     Platform::ProcessActionCapabilities m_ActionCapabilities;
     Platform::CpuAffinityLayout m_AffinityLayout; // The Set affinity dialog's, read on the sampler thread (#3182)
 
@@ -975,6 +984,8 @@ class ProcessesPanel : public Panel
     void toggleRowEfficiencyMode(const Domain::ProcessSnapshot& proc, bool on);
     /// "Search online" (#3064): a web search for the row's name only, opened on the row action worker.
     void searchRowOnline(const Domain::ProcessSnapshot& proc);
+    /// Look up on VirusTotal (#3094) for the row, on the action worker: its image's SHA-256, with the user's key.
+    void lookUpRowOnVirusTotal(const Domain::ProcessSnapshot& proc);
     /// Group by (#3068): sets the mode, switching Tree view off for a group, and saves it in the settings.
     void setGroupBy(ProcessGrouping::GroupBy groupBy);
     /// Rebuilds m_Groups and m_GroupedRows from the sorted, filtered rows when anything they depend on changed.

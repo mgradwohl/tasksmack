@@ -18,6 +18,7 @@
 #include "App/Panels/ProcessDumpView.h"
 #include "App/Panels/ProcessSchedPolicyDialog.h"
 #include "App/Panels/ProcessWaitChainDialog.h"
+#include "App/Panels/VirusTotalLookup.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/CurrentProcess.h"
 #include "Platform/IProcessActions.h"
@@ -363,6 +364,13 @@ struct RealtimePriorityItem
 class ProcessActionsView
 {
   public:
+    /// Look up on VirusTotal's client and key (#3094), from Process Details each frame: the button shows only when
+    /// VirusTotalLookup::offered() says so.
+    void setVirusTotal(VirusTotalLookup::Context context)
+    {
+        m_VirusTotal = std::move(context);
+    }
+
     /// The process a pending confirm is about, as it was when its button was pressed.
     struct ConfirmTarget
     {
@@ -905,6 +913,12 @@ class ProcessActionsView
                                 bool afterButtons);
     /// Analyze wait chain... (#3084): at the row's end at its own width, as the trace button is. A press
     /// opens the wait chain dialog for @p target, read through @p actions.
+    /// Look up on VirusTotal (#3094), on the row when it fits: hashes the image and asks on the action worker.
+    void renderVirusTotalButton(Platform::IProcessActions* actions,
+                                const Platform::ProcessActionCapabilities& capabilities,
+                                const std::string& processName,
+                                const Platform::ProcessTarget& target,
+                                bool afterButtons);
     void renderAnalyzeWaitChainButton(Platform::IProcessActions* actions,
                                       const Platform::ProcessActionCapabilities& capabilities,
                                       const std::string& processName,
@@ -956,6 +970,7 @@ class ProcessActionsView
     // panel's IProcessActions until it finishes: last, so it is destroyed (and waited for) first, and the
     // panel declares this view after its actions.
     ProcessActionRun m_ActionRun;
+    VirusTotalLookup::Context m_VirusTotal; ///< setVirusTotal()'s (#3094)
 };
 
 } // namespace App

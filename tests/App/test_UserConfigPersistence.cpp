@@ -1262,6 +1262,7 @@ TEST_F(UserConfigSaveLoadFixture, LoadMissingFileLeavesEverySettingAtItsDocument
                  cpuDetailsExpanded,
                  dumpFolder,
                  recentCommands,
+                 virusTotalApiKey,
                  updates,
                  startAtSignIn,
                  startAtSignInSeenBy,
@@ -1305,9 +1306,10 @@ TEST_F(UserConfigSaveLoadFixture, LoadMissingFileLeavesEverySettingAtItsDocument
     EXPECT_TRUE(showProcessIcons);
     EXPECT_TRUE(highlightNewProcesses); // #3060
     EXPECT_TRUE(cpuDetailsExpanded);
-    EXPECT_TRUE(dumpFolder.empty());     // the temp folder
-    EXPECT_TRUE(recentCommands.empty()); // #3065
-    EXPECT_FALSE(updates.enabled);       // #3093: off, and then nothing is sent
+    EXPECT_TRUE(dumpFolder.empty());       // the temp folder
+    EXPECT_TRUE(recentCommands.empty());   // #3065
+    EXPECT_TRUE(virusTotalApiKey.empty()); // Look up on VirusTotal off until a key is given (#3094)
+    EXPECT_FALSE(updates.enabled);         // #3093: off, and then nothing is sent
     EXPECT_EQ(updates.lastCheckUnixSeconds, 0);
     EXPECT_TRUE(updates.latestVersion.empty());
     EXPECT_TRUE(updates.latestUrl.empty());
@@ -2623,6 +2625,41 @@ TEST_F(UserConfigSaveLoadFixture, SaveKeepsTheConfigFilesPermissions)
     config.settings().themeId = "mocha";
     config.save();
     EXPECT_EQ(std::filesystem::status(path).permissions() & std::filesystem::perms::all, restricted);
+}
+
+// #3094: Look up on VirusTotal's key round-trips through [virustotal] api_key, is written only while set, and makes
+// the file owner-only while it is there; one that isn't a key is ignored.
+TEST_F(UserConfigSaveLoadFixture, TheVirusTotalKeyIsKeptOnlyWhileSetAndOnlyForTheUser)
+{
+    auto& config = UserConfig::get();
+    config.save();
+    const auto& path = m_ConfigPath;
+    EXPECT_FALSE(readFile(path).contains("\n[virustotal]\n")) << "no key, no table (the header comment names it)";
+
+    const auto shared = std::filesystem::perms::owner_read | std::filesystem::perms::owner_write | std::filesystem::perms::group_read |
+                        std::filesystem::perms::others_read;
+    std::filesystem::permissions(path, shared);
+    const std::string key = "0123456789abcdef0123456789ABCDEF0123456789abcdef0123456789abcdef";
+    config.settings().virusTotalApiKey = key;
+    config.save();
+    EXPECT_TRUE(readFile(path).contains(key));
+    const auto ownerOnly = std::filesystem::perms::owner_read | std::filesystem::perms::owner_write;
+    EXPECT_EQ(std::filesystem::status(path).permissions() & std::filesystem::perms::all, ownerOnly)
+        << "a file holding the key is the user's alone";
+
+    config.settings().virusTotalApiKey.clear();
+    config.load();
+    EXPECT_EQ(config.settings().virusTotalApiKey, key);
+
+    config.settings().virusTotalApiKey.clear();
+    config.save();
+    EXPECT_FALSE(readFile(path).contains(key)) << "a cleared key leaves the file";
+    config.load();
+    EXPECT_TRUE(config.settings().virusTotalApiKey.empty());
+
+    std::ofstream(path, std::ios::app) << "\n[virustotal]\napi_key = \"not-a-key\"\n";
+    config.load();
+    EXPECT_TRUE(config.settings().virusTotalApiKey.empty()) << "only a key is kept";
 }
 
 TEST_F(UserConfigSaveLoadFixture, StagingFileIsNeverReadableByOthers)
