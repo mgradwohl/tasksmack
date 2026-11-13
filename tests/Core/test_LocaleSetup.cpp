@@ -444,6 +444,23 @@ TEST(LocaleSetupInitializeTest, TheLocaleOverrideDecidesTheDisplayPunctuation)
                 "");
 }
 
+// #3374: an override that names "C" is taken, though "C" is also what an unknown name falls back to: the display
+// locale is the classic one by request. Every machine has it, so this runs where fr_FR.UTF-8 isn't installed.
+TEST(LocaleSetupInitializeTest, AnOverrideNamingCIsTakenNotMistakenForAFallback)
+{
+    EXPECT_EXIT(initializeInChild("C",
+                                  [](const Summary& summary)
+                                  {
+                                      return summary.userLocaleOverridden && userNumberPunctuation().decimalPoint == '.' &&
+                                             userNumberPunctuation().thousandsSep.empty() &&
+                                             std::ranges::none_of(summary.warnings,
+                                                                  [](const std::string& warning)
+                                                                  { return warning.contains("names no available locale"); });
+                                  }),
+                ::testing::ExitedWithCode(0),
+                "");
+}
+
 TEST(LocaleSetupInitializeTest, AnOverrideNamingNoLocaleIsIgnoredWithAWarning)
 {
     EXPECT_EXIT(initializeInChild("xx_NOWHERE",
