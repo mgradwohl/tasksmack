@@ -105,6 +105,9 @@ enum class State : std::uint8_t
     On,        ///< The entry starts this copy
     OtherCopy, ///< The entry starts something else: another copy, or text TaskSmack can't read. Repair rewrites it
     Failed,    ///< It couldn't be read, or changed
+    /// This TaskSmack runs elevated as another account than the session's signed-in user (#3671): the entry it
+    /// would read and write is that account's, so it is left alone, and the checkbox is disabled.
+    OtherAccount,
 };
 
 /// The sign-in entry, as Settings shows it.
@@ -112,6 +115,7 @@ struct Status
 {
     std::string otherProgram; ///< OtherCopy: the program the entry starts; empty when it can't be read
     std::string error;        ///< Failed: why, for the line under the checkbox
+    std::string account;      ///< OtherAccount: the account this TaskSmack runs as
     State state = State::Unknown;
     bool installed = false; ///< This copy is under Program Files; else Settings says to turn this off before moving it
     /// The startup check only (#3276): the uninstaller's mark was there, and is cleared. TaskSmack was
@@ -166,6 +170,16 @@ classify(const std::optional<std::string>& command, std::string_view executable,
     return status;
 }
 
+/// The status of a TaskSmack running elevated as @p account, not as the session's signed-in user (#3671): the
+/// entry isn't read or changed.
+[[nodiscard]] inline Status otherAccount(std::string account)
+{
+    Status status;
+    status.state = State::OtherAccount;
+    status.account = std::move(account);
+    return status;
+}
+
 /// The line Settings shows under the checkbox for @p status, or while a change (on, off, Repair) runs
 /// (@p changing). A read again as Settings opens keeps the last status's line.
 [[nodiscard]] inline std::string statusLine(const Status& status, bool changing)
@@ -190,6 +204,9 @@ classify(const std::optional<std::string>& command, std::string_view executable,
         return "Points to another copy: " + status.otherProgram + ". Repair points it to this copy.";
     case State::Failed:
         return "Couldn't read or change it: " + status.error;
+    case State::OtherAccount:
+        return "Not changed here: this TaskSmack runs as " + (status.account.empty() ? std::string("another account") : status.account) +
+               ", not as you. Change it from the normal TaskSmack, the one you start yourself.";
     }
     return {};
 }

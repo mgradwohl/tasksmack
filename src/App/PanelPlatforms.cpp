@@ -21,6 +21,7 @@
 #include "Platform/IStartAtLogin.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/IUserSessions.h"
+#include "SessionAccountCheck.h"
 #include "SyntheticScenario.h"
 #include "TaskManagerReplacementController.h"
 
@@ -190,7 +191,7 @@ ServicesPanelPlatform makeServicesPanelPlatform(const Synthetic::Scenario* /*sce
 
 StartupPanelPlatform makeStartupPanelPlatform(const Synthetic::Scenario* /*scenario*/)
 {
-    return {.probe = Platform::makeStartupProbe(), .actions = Platform::makeStartupActions()};
+    return {.probe = Platform::makeStartupProbe(), .actions = Platform::makeStartupActions(), .account = sessionAccountCheck()};
 }
 
 std::unique_ptr<Platform::ISystemInfoProbe> makeSystemInfoPanelProbe(const Synthetic::Scenario* /*scenario*/)
@@ -222,6 +223,19 @@ std::shared_ptr<Platform::IStartAtLogin> makeStartAtLoginEntry(const Synthetic::
         return nullptr;
     }
     return Platform::makeStartAtLogin();
+}
+
+std::shared_ptr<SessionAccountCheck> sessionAccountCheck()
+{
+    // Weak: held by what reads it, so the worker goes with the last of them, before the statics do.
+    static std::weak_ptr<SessionAccountCheck> shared;
+    std::shared_ptr<SessionAccountCheck> check = shared.lock();
+    if (check == nullptr)
+    {
+        check = std::make_shared<SessionAccountCheck>([] { return Platform::readSessionAccount(); });
+        shared = check;
+    }
+    return check;
 }
 
 std::unique_ptr<Platform::ISystemInfoProbe> makeSensorProbe(const Synthetic::Scenario* /*scenario*/)

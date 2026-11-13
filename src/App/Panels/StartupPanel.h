@@ -5,6 +5,7 @@
 #include "App/Panels/SamplingGate.h"
 #include "App/Panels/StartupActionsView.h"
 #include "App/Panels/StartupView.h"
+#include "App/SessionAccountCheck.h"
 #include "Domain/BackgroundSampler.h"
 #include "Domain/StartupModel.h"
 #include "Platform/IStartupActions.h"
@@ -21,6 +22,9 @@ struct StartupPanelPlatform
 {
     std::unique_ptr<Platform::IStartupProbe> probe;
     std::shared_ptr<Platform::IStartupActions> actions; ///< Shared, as StartupActionsView holds it
+    /// Whose TaskSmack this is (#3671): in one elevated as another account the per-user entries are read-only.
+    /// Null: the signed-in user's.
+    std::shared_ptr<SessionAccountCheck> account;
 };
 
 /// The Startup tab (#801; enable / disable in phase 2). Owns the StartupModel and samples it on its own

@@ -28,6 +28,7 @@
 #include "Platform/ITaskManagerReplacement.h"
 #include "Platform/IUdpTrafficCollector.h"
 #include "Platform/IUserSessions.h"
+#include "Platform/SessionAccount.h"
 #include "Platform/TaskManagerReplacement.h"
 #include "Platform/TaskManagerReplacementService.h"
 #include "Platform/Windows/BrokerHelper.h"
@@ -56,6 +57,7 @@
 #include "WindowsProcessThreads.h"
 #include "WindowsServiceActions.h"
 #include "WindowsServiceProbe.h"
+#include "WindowsSessionAccount.h"
 #include "WindowsStartAtLogin.h"
 #include "WindowsStartupActions.h"
 #include "WindowsStartupProbe.h"
@@ -248,6 +250,11 @@ std::shared_ptr<IStartAtLogin> makeStartAtLogin()
 {
     // The HKCU Run key's TaskSmack value (#3093 part 2): per-user, no elevation. Reads nothing until asked.
     return std::make_shared<WindowsStartAtLogin>();
+}
+
+SessionAccount readSessionAccount()
+{
+    return Windows::readSessionAccount();
 }
 
 std::shared_ptr<IElevatedRestart> makeElevatedRestart(void* ownerWindow)

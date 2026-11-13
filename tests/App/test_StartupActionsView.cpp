@@ -5,6 +5,7 @@
 /// are a fake: no real startup entry is touched.
 
 #include "App/Panels/StartupActionsView.h"
+#include "App/SessionAccountCheck.h"
 #include "Platform/IStartupActions.h"
 #include "Platform/IStartupProbe.h"
 #include "UI/IconsFontAwesome6.h"
@@ -229,6 +230,64 @@ TEST(StartupActionsViewTest, ARequestWhileBusyIsIgnoredAndTheResultExpires)
     EXPECT_TRUE(view.lastResult().text.empty());
 }
 
+// #3671: in a TaskSmack elevated as another account, the per-user entries are that account's and read-only; the
+// all-users ones stay as they are (an elevated copy changes them).
+TEST(StartupActionsDetailTest, AnotherAccountsPerUserEntriesAreReadOnly)
+{
+    Platform::StartupActionCapabilities other = ADMIN;
+    other.perUserEntriesOtherAccount = true;
+    for (const StartupLocation location :
+         {StartupLocation::RunUser, StartupLocation::StartupFolderUser, StartupLocation::PackagedApp, StartupLocation::ScheduledTaskUser})
+    {
+        auto perUser = entry("OneDrive", location);
+        perUser.scope = Platform::StartupScope::User;
+        EXPECT_EQ(AutoDetail::blockedReason(perUser, other), AutoDetail::OTHER_ACCOUNT_REASON);
+        EXPECT_FALSE(AutoDetail::isApplicable(false, perUser, other));
+        EXPECT_TRUE(AutoDetail::isApplicable(false, perUser, ADMIN)) << "the signed-in user's own elevated copy changes it";
+    }
+    EXPECT_TRUE(AutoDetail::blockedReason(entry("Helper", StartupLocation::RunMachine), other).empty());
+    EXPECT_TRUE(AutoDetail::isApplicable(false, entry("Helper", StartupLocation::RunMachine), other));
+    EXPECT_EQ(AutoDetail::otherAccountScopeLabel("admin"), "admin (administrator)");
+    const std::string note = AutoDetail::otherAccountNote("admin");
+    EXPECT_TRUE(note.contains("runs as admin, not as you")) << note;
+    EXPECT_TRUE(note.contains("normal TaskSmack")) << note;
+}
+
+// The view takes the check's answer once it has one: the Scope label and the read-only per-user entries. An action
+// asked for before then still waits for the answer on the worker, and another account's entry is never changed.
+TEST(StartupActionsViewTest, AnotherAccountsPerUserEntriesAreNeverChanged)
+{
+    const auto fake = std::make_shared<FakeStartupActions>(ADMIN);
+    StartupActionsView view(fake, SessionAccountCheck::known({.otherAccount = true, .account = "admin"}));
+    EXPECT_TRUE(view.perUserScopeLabel().empty()) << "not taken in yet";
+    view.request({.enable = true, .entry = entry("OneDrive", StartupLocation::RunUser, false)}); // before the answer
+    ASSERT_TRUE(waitFinished(view));
+    EXPECT_EQ(fake->enables.load(), 0);
+    EXPECT_FALSE(view.lastResult().ok);
+    EXPECT_TRUE(view.lastResult().text.contains(AutoDetail::OTHER_ACCOUNT_REASON)) << view.lastResult().text;
+
+    view.pollAccount();
+    EXPECT_EQ(view.perUserScopeLabel(), "admin (administrator)");
+    EXPECT_TRUE(view.capabilities().perUserEntriesOtherAccount);
+
+    view.request({.enable = true, .entry = entry("Helper", StartupLocation::RunMachine, false)}); // all users: as before
+    ASSERT_TRUE(waitFinished(view));
+    EXPECT_EQ(fake->enables.load(), 1);
+    EXPECT_TRUE(view.lastResult().ok);
+}
+
+TEST(StartupActionsViewTest, TheSignedInUsersTaskSmackChangesItsOwnEntries)
+{
+    const auto fake = std::make_shared<FakeStartupActions>(ADMIN);
+    StartupActionsView view(fake, SessionAccountCheck::known({}));
+    view.pollAccount();
+    EXPECT_TRUE(view.perUserScopeLabel().empty());
+    EXPECT_FALSE(view.capabilities().perUserEntriesOtherAccount);
+    view.request({.enable = true, .entry = entry("OneDrive", StartupLocation::RunUser, false)});
+    ASSERT_TRUE(waitFinished(view));
+    EXPECT_EQ(fake->enables.load(), 1);
+}
+
 TEST(StartupActionsViewTest, UnsupportedPlatformHasNoActions)
 {
     const StartupActionsView view(std::make_shared<Platform::UnsupportedStartupActions>());
@@ -352,6 +411,46 @@ TEST_F(StartupActionsViewRenderTest, BlockedRowsOfferNoAction)
         EXPECT_FALSE(view.busy());
     }
     EXPECT_EQ(fake->disables.load(), 0);
+}
+
+// #3671: another account's per-user entries offer no action, in the menu or the bar, and the note says whose
+// they are; an all-users entry is offered as before.
+TEST_F(StartupActionsViewRenderTest, AnotherAccountsPerUserRowsOfferNoAction)
+{
+    const auto fake = std::make_shared<FakeStartupActions>(ADMIN);
+    StartupActionsView view(fake, SessionAccountCheck::known({.otherAccount = true, .account = "admin"}));
+    view.pollAccount();
+    const auto perUser = entry("OneDrive", StartupLocation::RunUser);
+    pickMenuItem(view, perUser, ICON_FA_POWER_OFF "  Disable");
+    EXPECT_FALSE(view.confirmRequested());
+    EXPECT_FALSE(view.busy());
+    EXPECT_EQ(fake->disables.load(), 0);
+
+    pickMenuItem(view, entry("Helper", StartupLocation::RunMachine), ICON_FA_POWER_OFF "  Disable");
+    EXPECT_TRUE(view.confirmRequested()) << "an all-users entry is the elevated copy's to change";
+
+    ImGui::NewFrame();
+    ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
+    ImGui::SetNextWindowSize(ImVec2(1200.0F, 800.0F));
+    ImGui::Begin("Startup", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
+    const float before = ImGui::GetCursorPosY();
+    view.renderAccountNote();
+    const float after = ImGui::GetCursorPosY();
+    ImGui::End();
+    ImGui::Render();
+    EXPECT_GT(after, before) << "the note draws a line";
+
+    StartupActionsView own(fake, SessionAccountCheck::known({}));
+    own.pollAccount();
+    ImGui::NewFrame();
+    ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
+    ImGui::SetNextWindowSize(ImVec2(1200.0F, 800.0F));
+    ImGui::Begin("Startup", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
+    const float ownBefore = ImGui::GetCursorPosY();
+    own.renderAccountNote();
+    EXPECT_FLOAT_EQ(ImGui::GetCursorPosY(), ownBefore) << "no note for the signed-in user's own TaskSmack";
+    ImGui::End();
+    ImGui::Render();
 }
 
 } // namespace

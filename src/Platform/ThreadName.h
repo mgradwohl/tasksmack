@@ -107,6 +107,9 @@ inline constexpr std::string_view UPDATE_CHECK_THREAD_NAME = "ts-update-check";
 /// The worker that reads and writes the sign-in entry for Settings' "Start TaskSmack when I sign in"
 /// (#3093, part 2): the HKCU Run key's TaskSmack value on Windows.
 inline constexpr std::string_view START_AT_LOGIN_THREAD_NAME = "ts-sign-in";
+/// The worker that reads, once at startup, whether an elevated TaskSmack runs as another account than the
+/// session's signed-in user (#3671; App::SessionAccountCheck).
+inline constexpr std::string_view SESSION_ACCOUNT_THREAD_NAME = "ts-acct-read";
 /// The thread that starts TaskSmack's Windows administrator helper, and sits behind its UAC prompt for
 /// as long as that is up (PipeBroker::launch(), #2549; named in #2768).
 inline constexpr std::string_view HELPER_LAUNCH_THREAD_NAME = "ts-uac-launch";

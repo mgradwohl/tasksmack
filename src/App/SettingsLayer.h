@@ -2,6 +2,7 @@
 
 #include "App/BackgroundOpen.h"
 #include "App/PlatformOpen.h"
+#include "App/SessionAccountCheck.h"
 #include "App/SettingsDialog.h"
 #include "App/StartAtLoginSetting.h"
 #include "App/TaskManagerReplacementController.h"
@@ -58,8 +59,9 @@ class SettingsLayer : public Core::Layer
 
     /// Start at sign-in (#3093, part 2): reads and writes @p entry instead (tests' fake; null hides the row).
     /// The default constructor's is the platform's (PanelPlatforms::makeStartAtLoginEntry()); the test seam's none.
-    /// onAttach() runs its startup check (#3276); a test that sets one calls onAttach() after.
-    void setStartAtLoginEntry(std::shared_ptr<Platform::IStartAtLogin> entry);
+    /// onAttach() runs its startup check (#3276); a test that sets one calls onAttach() after. @p account says whose
+    /// TaskSmack this is (#3671; null: the signed-in user's).
+    void setStartAtLoginEntry(std::shared_ptr<Platform::IStartAtLogin> entry, std::shared_ptr<SessionAccountCheck> account = nullptr);
 
     /// Tests: waits for the sign-in entry's read or change still running, and takes it in.
     void waitForStartAtLoginForTesting();

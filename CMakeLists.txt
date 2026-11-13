@@ -222,6 +222,7 @@ set(TASKSMACK_SOURCES
     src/App/StatusBarView.cpp
     src/App/UpdateChecker.cpp # the opt-in update check's worker and state (#3093)
     src/App/StartAtLoginSetting.cpp # Settings' start at sign-in: the entry's worker and status (#3093 part 2)
+    src/App/SessionAccountCheck.cpp # whether an elevated TaskSmack runs as another account than the signed-in user (#3671)
     src/App/SyntheticScenario.cpp
     src/App/TitleBarLayer.cpp
     src/App/TitleBarView.cpp
@@ -409,6 +410,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsPublicIp.cpp
     src/Platform/Windows/WindowsHttpsClient.cpp # the update check's HTTPS GET through WinHTTP (#3093)
     src/Platform/Windows/WindowsStartAtLogin.cpp # start at sign-in: the HKCU Run key's TaskSmack value (#3093 part 2)
+    src/Platform/Windows/WindowsSessionAccount.cpp # the token's user against the session's signed-in user (#3671)
     src/Platform/Windows/WindowsDiskProbe.cpp
     src/Platform/Windows/WindowsPathProvider.cpp
     src/Platform/Windows/WindowsBatteryInfo.cpp
@@ -560,9 +562,11 @@ set(TASKSMACK_HEADERS
     src/Domain/UpdateCheck.h
     src/App/UpdateChecker.h
     src/Platform/IStartAtLogin.h
+    src/Platform/SessionAccount.h
     src/Platform/IElevatedRestart.h
     src/Domain/StartAtLogin.h
     src/App/StartAtLoginSetting.h
+    src/App/SessionAccountCheck.h
     src/App/LaunchOptions.h
     src/Platform/ThreadName.h
     src/Platform/Synthetic/SyntheticProbes.h
@@ -719,6 +723,7 @@ elseif(WIN32)
         src/Platform/Windows/WindowsPublicIp.h
         src/Platform/Windows/WindowsHttpsClient.h
         src/Platform/Windows/WindowsStartAtLogin.h
+        src/Platform/Windows/WindowsSessionAccount.h
         src/Platform/Windows/ComScope.h
     )
 endif()

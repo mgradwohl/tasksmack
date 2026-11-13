@@ -4,6 +4,7 @@
 /// rewrites another copy's, and a failing read or write is a Failed status saying why. A fake entry: never
 /// the registry.
 
+#include "App/SessionAccountCheck.h"
 #include "App/StartAtLoginSetting.h"
 #include "Domain/StartAtLogin.h"
 #include "Mocks/FakeStartAtLogin.h"
@@ -277,25 +278,31 @@ TEST_F(StartAtLoginStartupCheckTest, OnlyReadsWhenThereIsNothingToWriteBack)
     };
     const std::vector<Case> cases = {
         {.name = "never turned on", .command = std::nullopt, .intended = false, .seenBy = "", .installed = true, .state = State::Off},
-        {.name = "removed while this build ran",
-         .command = std::nullopt,
-         .intended = true,
-         .seenBy = THIS_BUILD,
-         .installed = true,
-         .state = State::Off},
-        {.name = "a portable copy",
-         .command = std::nullopt,
-         .intended = true,
-         .seenBy = OLD_BUILD,
-         .installed = false,
-         .state = State::Off},
+        {
+            .name = "removed while this build ran",
+            .command = std::nullopt,
+            .intended = true,
+            .seenBy = THIS_BUILD,
+            .installed = true,
+            .state = State::Off,
+        },
+        {
+            .name = "a portable copy",
+            .command = std::nullopt,
+            .intended = true,
+            .seenBy = OLD_BUILD,
+            .installed = false,
+            .state = State::Off,
+        },
         {.name = "there", .command = THIS_COPY_COMMAND, .intended = true, .seenBy = OLD_BUILD, .installed = true, .state = State::On},
-        {.name = "another copy's",
-         .command = R"("E:\Moved\TaskSmack.exe")",
-         .intended = true,
-         .seenBy = OLD_BUILD,
-         .installed = true,
-         .state = State::OtherCopy},
+        {
+            .name = "another copy's",
+            .command = R"("E:\Moved\TaskSmack.exe")",
+            .intended = true,
+            .seenBy = OLD_BUILD,
+            .installed = true,
+            .state = State::OtherCopy,
+        },
     };
     for (const Case& c : cases)
     {
@@ -358,6 +365,57 @@ TEST_F(StartAtLoginStartupCheckTest, ItRunsOnTheWorkerAndIsIgnoredWhileBusy)
     none.startupCheck(true, OLD_BUILD, THIS_BUILD);
     EXPECT_FALSE(none.busy());
     EXPECT_FALSE(none.restoresMissingEntry());
+}
+
+// #3671: a TaskSmack elevated as another account than the session's signed-in user never reads or writes the entry,
+// which is that account's: a read, a change and the startup check all end as OtherAccount, naming it.
+TEST(StartAtLoginOtherAccountTest, AnotherAccountsEntryIsNeverReadOrWritten)
+{
+    const auto entry = std::make_shared<FakeStartAtLogin>(true);
+    entry->with([](FakeStartAtLogin::Data& data) { data.uninstallMark = true; });
+    StartAtLoginSetting setting(entry, SessionAccountCheck::known({.otherAccount = true, .account = "admin"}));
+    EXPECT_TRUE(setting.offered()) << "the row shows, disabled, saying why";
+
+    setting.startupCheck(true, "0.0.1+older", buildIdentity());
+    setting.waitForTesting();
+    EXPECT_EQ(setting.status().state, State::OtherAccount);
+    EXPECT_EQ(setting.status().account, "admin");
+    EXPECT_FALSE(setting.status().known()) << "the checkbox is disabled";
+    EXPECT_FALSE(setting.status().uninstalled);
+
+    setting.refresh();
+    setting.waitForTesting();
+    setting.setEnabled(true);
+    setting.waitForTesting();
+    setting.setEnabled(false);
+    setting.waitForTesting();
+    EXPECT_EQ(setting.status().state, State::OtherAccount);
+    const FakeStartAtLogin::Data data = entry->with([](const FakeStartAtLogin::Data& d) { return d; });
+    EXPECT_EQ(data.reads, 0);
+    EXPECT_EQ(data.writes, 0);
+    EXPECT_EQ(data.removes, 0);
+    EXPECT_EQ(data.markTakes, 0);
+    EXPECT_TRUE(data.uninstallMark);
+}
+
+// The same account (or one the check couldn't tell, which it answers as the same): the entry is the user's.
+TEST(StartAtLoginOtherAccountTest, TheSignedInUsersTaskSmackChangesItAsBefore)
+{
+    const auto entry = std::make_shared<FakeStartAtLogin>();
+    StartAtLoginSetting setting(entry, SessionAccountCheck::known({}));
+    setting.setEnabled(true);
+    setting.waitForTesting();
+    EXPECT_EQ(setting.status().state, State::On);
+    EXPECT_EQ(entry->with([](const FakeStartAtLogin::Data& d) { return d.command; }), std::optional<std::string>(THIS_COPY_COMMAND));
+}
+
+TEST(StartAtLoginOtherAccountTest, TheLineSaysWhoseItIsAndWhereToChangeIt)
+{
+    const std::string line = Domain::StartAtLogin::statusLine(Domain::StartAtLogin::otherAccount("admin"), false);
+    EXPECT_TRUE(line.contains("runs as admin, not as you")) << line;
+    EXPECT_TRUE(line.contains("normal TaskSmack")) << line;
+    EXPECT_TRUE(Domain::StartAtLogin::statusLine(Domain::StartAtLogin::otherAccount(""), false).contains("another account"));
+    EXPECT_EQ(Domain::StartAtLogin::statusLine(Domain::StartAtLogin::otherAccount("admin"), true), "Updating\xE2\x80\xA6");
 }
 
 TEST(StartAtLoginBuildTest, TheBuildIsTheVersionAndTheCommit)

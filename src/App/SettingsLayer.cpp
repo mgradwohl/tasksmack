@@ -6,6 +6,7 @@
 #include "App/PanelPlatforms.h"
 #include "App/PlatformOpen.h"
 #include "App/SelectOverride.h"
+#include "App/SessionAccountCheck.h"
 #include "App/SettingsDialog.h"
 #include "App/SettingsLayerDetail.h"
 #include "App/StartAtLoginSetting.h"
@@ -46,10 +47,25 @@ using Detail::INTERFACE_SCALE_OPTIONS;
 using Detail::pickedOption;
 using Detail::REFRESH_RATE_OPTIONS;
 
-// The sign-in entry (#3093 part 2) is made here, at construction: making it reads nothing. None in a
-// synthetic or test-hook run.
-SettingsLayer::SettingsLayer()
-    : Core::Layer("SettingsLayer"), m_StartAtLogin(makeStartAtLoginEntry(Synthetic::activeScenario(), SelectOverride::testHookActive()))
+namespace
+{
+
+/// The platform's sign-in entry, with the shared account check (#3671), which this starts at startup, on its worker:
+/// the entry is left alone in a TaskSmack elevated as another account. None in a synthetic or test-hook run.
+[[nodiscard]] StartAtLoginSetting makeStartAtLoginSetting()
+{
+    std::shared_ptr<Platform::IStartAtLogin> entry = makeStartAtLoginEntry(Synthetic::activeScenario(), SelectOverride::testHookActive());
+    if (entry == nullptr)
+    {
+        return StartAtLoginSetting{};
+    }
+    return StartAtLoginSetting(std::move(entry), sessionAccountCheck());
+}
+
+} // namespace
+
+// The sign-in entry (#3093 part 2) is made here, at construction: making it reads nothing.
+SettingsLayer::SettingsLayer() : Core::Layer("SettingsLayer"), m_StartAtLogin(makeStartAtLoginSetting())
 {}
 
 SettingsLayer::SettingsLayer(std::function<void(Core::Event&)> raiseEvent,
@@ -98,9 +114,9 @@ void SettingsLayer::waitForPendingOpen()
     static_cast<void>(m_Open.poll());
 }
 
-void SettingsLayer::setStartAtLoginEntry(std::shared_ptr<Platform::IStartAtLogin> entry)
+void SettingsLayer::setStartAtLoginEntry(std::shared_ptr<Platform::IStartAtLogin> entry, std::shared_ptr<SessionAccountCheck> account)
 {
-    m_StartAtLogin = StartAtLoginSetting(std::move(entry));
+    m_StartAtLogin = StartAtLoginSetting(std::move(entry), std::move(account));
     syncStartAtLogin();
 }
 
@@ -136,6 +152,11 @@ void SettingsLayer::rememberStartAtLoginStatus(const Domain::StartAtLogin::Statu
     if (startupCheck)
     {
         takeStartupUninstalled(status.uninstalled);
+    }
+    if (status.state == StartAtLogin::State::OtherAccount)
+    {
+        // Another account's TaskSmack (#3671): what the user chose stays in config.toml as it is, for their own copy.
+        return;
     }
     if (status.state == StartAtLogin::State::On)
     {

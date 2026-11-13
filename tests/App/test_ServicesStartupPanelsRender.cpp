@@ -163,7 +163,7 @@ class ServicesStartupPanelsRenderTest : public ::testing::Test
                 auto probe = std::make_unique<MockStartupProbe>(capabilities);
                 probe->setEntries(entries);
                 fakes.probe = probe.get();
-                return StartupPanelPlatform{.probe = std::move(probe), .actions = fakes.actions};
+                return StartupPanelPlatform{.probe = std::move(probe), .actions = fakes.actions, .account = nullptr};
             });
         panel->onAttach();
         return panel;
