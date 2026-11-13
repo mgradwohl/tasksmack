@@ -520,6 +520,39 @@ TEST_F(SettingsLayerRenderTest, ResetThenSaveWritesTheDefaultsAndRaisesTheirEven
 
 // #2040: ticking the checkbox and saving raises the event the Processes panel starts counting on; unticking it and
 // saving raises it again, to stop it. On both platforms since #3366.
+// #3374: Reset to defaults then Save puts back the settings the defaults test doesn't move: new-process highlighting
+// (#3060), the update check (#3093) and a VirusTotal key (#3094, cleared: the default is none).
+TEST_F(SettingsLayerRenderTest, ResetThenSavePutsBackHighlightingTheUpdateCheckAndTheKey)
+{
+    const UserSettings defaults{};
+    UserSettings& settings = UserConfig::get().settings();
+    settings.highlightNewProcesses = !defaults.highlightNewProcesses;
+    settings.updates.enabled = !defaults.updates.enabled;
+    settings.virusTotalApiKey = std::string(64, 'a');
+    ASSERT_TRUE(openDialog());
+    pressFooter(SettingsDialog::RESET_LABEL);
+    pressSave();
+    EXPECT_FALSE(settle());
+    EXPECT_EQ(settings.highlightNewProcesses, defaults.highlightNewProcesses);
+    EXPECT_EQ(settings.updates.enabled, defaults.updates.enabled);
+    EXPECT_TRUE(settings.virusTotalApiKey.empty());
+}
+
+// #3376, #3374: an Interface scale picked in the combo is saved and handed to the theme at once.
+TEST_F(SettingsLayerRenderTest, APickedInterfaceScaleIsSavedAndReachesTheTheme)
+{
+    UserSettings& settings = UserConfig::get().settings();
+    settings.interfaceScalePercent = 0;
+    UI::Theme::get().setInterfaceScalePercent(0);
+    ASSERT_TRUE(openDialog());
+    pickFromCombo("##InterfaceScale", "150%");
+    pressSave();
+    EXPECT_FALSE(settle());
+    EXPECT_EQ(settings.interfaceScalePercent, 150);
+    EXPECT_EQ(UI::Theme::get().interfaceScalePercent(), 150);
+    UI::Theme::get().setInterfaceScalePercent(0); // the fixture restores the settings, not the theme
+}
+
 TEST_F(SettingsLayerRenderTest, TheUdpCheckboxIsSavedAndRaisesItsEvent)
 {
     UserSettings& settings = UserConfig::get().settings();
