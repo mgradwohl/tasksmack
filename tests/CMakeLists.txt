@@ -615,6 +615,7 @@ set(COMMON_TEST_SOURCES
     App/test_CpuSummaryText.cpp
     App/test_CpuDetailsText.cpp
     App/test_CpuDetailsBlockRender.cpp
+    App/test_NumaNodesText.cpp
     App/test_BatteryDetails.cpp
     Platform/test_CgroupContainer.cpp
     Platform/test_CgroupService.cpp
@@ -1086,6 +1087,7 @@ add_executable(TaskSmackTests
     # overlay, run headless (test_SystemSectionsRender.cpp, test_RenderMetricsOverlay.cpp, #1395)
     ${CMAKE_SOURCE_DIR}/src/App/Panels/MemorySection.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/CpuCoresSection.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/NumaNodesView.cpp # The CPU Cores tab's NUMA nodes card (#3088)
     ${CMAKE_SOURCE_DIR}/src/App/Panels/StorageSection.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/NetworkSection.cpp
     # The GPU tab, run headless (test_GpuSectionRender.cpp, #1545)

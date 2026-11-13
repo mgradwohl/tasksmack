@@ -1486,6 +1486,7 @@ SystemCapabilities Workload::systemCapabilities() noexcept
         .hasSteal = true,
         .hasLoadAvg = true,
         .hasNumaNodes = true,
+        .hasNumaNodeTotals = true,
         .hasCpuFreq = true,
         .hasNetworkCounters = true,
         .hasVirtualizationInfo = false,

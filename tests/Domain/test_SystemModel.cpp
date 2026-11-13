@@ -9,11 +9,13 @@
 /// - Thread-safe operations
 /// - Per-core CPU tracking
 
+#include "Domain/NumaNodes.h"
 #include "Domain/SamplingConfig.h"
 #include "Domain/SharedHistory.h"
 #include "Domain/SystemModel.h"
 #include "Domain/SystemSnapshot.h"
 #include "Mocks/MockProbes.h"
+#include "Platform/CpuAffinity.h"
 #include "Platform/PowerTypes.h"
 #include "Platform/SystemTypes.h"
 #include "PublicationLatency.h"
@@ -759,6 +761,123 @@ TEST(SystemModelTest, PerCoreCpuTracking)
     ASSERT_EQ(snap.cpuPerCore.size(), 2);
     EXPECT_DOUBLE_EQ(snap.cpuPerCore[0].totalPercent, 15.0);
     EXPECT_DOUBLE_EQ(snap.cpuPerCore[1].totalPercent, 30.0);
+}
+
+// =============================================================================
+// NUMA Nodes (#3088)
+// =============================================================================
+
+namespace
+{
+/// Two samples of a four-core machine split into two NUMA nodes, cores 0-1 and 2-3, whose cores are
+/// 10%, 30%, 50% and an unread core 3 (absent from the second sample); with @p caps.
+[[nodiscard]] Domain::SystemSnapshot numaSnapshot(Platform::SystemCapabilities caps)
+{
+    auto probe = std::make_unique<MockSystemProbe>();
+    auto* rawProbe = probe.get();
+    probe->setCapabilities(caps);
+    const auto nodes = []
+    {
+        std::vector<Platform::NumaNode> list(2);
+        list[0].id = 0;
+        list[0].cpus.setRange(0, 1);
+        list[0].memTotalBytes = 8ULL << 30U;
+        list[0].memFreeBytes = 2ULL << 30U;
+        list[1].id = 1;
+        list[1].cpus.setRange(2, 3);
+        list[1].memTotalBytes = 8ULL << 30U;
+        list[1].memFreeBytes = 6ULL << 30U;
+        return list;
+    };
+    auto first = makeSystemCounters(
+        makeCpuCounters(0, 0, 0, 4000),
+        makeMemoryCounters(16ULL << 30U, 8ULL << 30U),
+        0,
+        {makeCpuCounters(0, 0, 0, 1000), makeCpuCounters(0, 0, 0, 1000), makeCpuCounters(0, 0, 0, 1000), makeCpuCounters(0, 0, 0, 1000)});
+    first.numaNodes = nodes();
+    rawProbe->setCounters(first);
+    Domain::SystemModel model(std::move(probe));
+    model.refresh();
+
+    auto second =
+        makeSystemCounters(makeCpuCounters(900, 0, 0, 3100),
+                           makeMemoryCounters(16ULL << 30U, 8ULL << 30U),
+                           0,
+                           {makeCpuCounters(100, 0, 0, 1900), makeCpuCounters(300, 0, 0, 1700), makeCpuCounters(500, 0, 0, 1500)});
+    second.numaNodes = nodes();
+    rawProbe->setCounters(second);
+    model.refresh();
+    return model.snapshot();
+}
+} // namespace
+
+TEST(SystemModelTest, NumaNodesCarryTheirCpusUseAndMemory)
+{
+    Platform::SystemCapabilities caps;
+    caps.hasNumaNodes = true;
+    caps.hasNumaNodeTotals = true; // Linux
+    const auto snap = numaSnapshot(caps);
+
+    EXPECT_TRUE(snap.numaNodeTotalsKnown);
+    ASSERT_EQ(snap.numaNodes.size(), 2U);
+    const Domain::NumaNodeSnapshot& first = snap.numaNodes[0];
+    EXPECT_EQ(first.id, 0);
+    EXPECT_EQ(first.cpuCount, 2U);
+    EXPECT_DOUBLE_EQ(first.cpuPercent, 20.0); // (10% + 30%) / 2
+    EXPECT_EQ(first.memTotalBytes, 8ULL << 30U);
+    EXPECT_EQ(first.memFreeBytes, 2ULL << 30U);
+    EXPECT_EQ(first.memUsedBytes, 6ULL << 30U);
+    // Node 1's core 3 has no reading this sample: its average is core 2's alone.
+    EXPECT_DOUBLE_EQ(snap.numaNodes[1].cpuPercent, 50.0);
+    EXPECT_EQ(snap.numaNodes[1].memUsedBytes, 2ULL << 30U);
+}
+
+TEST(SystemModelTest, NumaNodesWithoutTotalsHaveNoUsedMemory)
+{
+    Platform::SystemCapabilities caps;
+    caps.hasNumaNodes = true; // Windows: available memory only
+    const auto snap = numaSnapshot(caps);
+
+    EXPECT_FALSE(snap.numaNodeTotalsKnown);
+    ASSERT_EQ(snap.numaNodes.size(), 2U);
+    EXPECT_EQ(snap.numaNodes[0].memTotalBytes, 0U);
+    EXPECT_EQ(snap.numaNodes[0].memUsedBytes, 0U);
+    EXPECT_EQ(snap.numaNodes[0].memFreeBytes, 2ULL << 30U);
+}
+
+TEST(SystemModelTest, NumaNodesAreLeftOutWithoutTheCapability)
+{
+    const auto snap = numaSnapshot(Platform::SystemCapabilities{});
+    EXPECT_TRUE(snap.numaNodes.empty());
+    EXPECT_FALSE(snap.numaNodeTotalsKnown);
+}
+
+TEST(NumaNodesTest, CpuPercentIsNaNWithoutAReadingAndUsedSaturates)
+{
+    std::vector<Domain::CpuUsage> perCore(2);
+    perCore[0].totalPercent = std::numeric_limits<double>::quiet_NaN();
+    perCore[1].totalPercent = 40.0;
+
+    Platform::NumaNode cpuLess;
+    cpuLess.id = 3;
+    cpuLess.memTotalBytes = 1024;
+    cpuLess.memFreeBytes = 4096; // More free than total: used reads 0, not a wrapped figure
+    Platform::NumaNode unread;
+    unread.cpus.set(0);
+    Platform::NumaNode beyond; // A processor past the per-core figures has no reading either
+    beyond.cpus.set(1);
+    beyond.cpus.set(200);
+
+    const std::vector<Platform::NumaNode> nodes{cpuLess, unread, beyond};
+    const auto snaps = Domain::numaNodeSnapshots(nodes, perCore, true);
+    ASSERT_EQ(snaps.size(), 3U);
+    EXPECT_EQ(snaps[0].id, 3);
+    EXPECT_EQ(snaps[0].cpuCount, 0U);
+    EXPECT_TRUE(std::isnan(snaps[0].cpuPercent));
+    EXPECT_EQ(snaps[0].memUsedBytes, 0U);
+    EXPECT_TRUE(std::isnan(snaps[1].cpuPercent));
+    EXPECT_DOUBLE_EQ(snaps[2].cpuPercent, 40.0);
+    EXPECT_EQ(snaps[2].cpuCount, 2U);
 }
 
 // =============================================================================

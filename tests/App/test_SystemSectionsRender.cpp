@@ -16,6 +16,8 @@
 #include "Domain/StorageSnapshot.h"
 #include "Domain/SystemModel.h"
 #include "Domain/SystemSnapshot.h"
+#include "Platform/Synthetic/SyntheticProbes.h"
+#include "Platform/Synthetic/SyntheticWorkload.h"
 #include "Platform/SystemTypes.h"
 #include "UI/ChartSmoothing.h"
 #include "UI/ChartWidgets.h"
@@ -1779,6 +1781,80 @@ TEST_F(SystemSectionsRenderTest, AnUnmeasuredDiskTotalHasUnavailableBars)
             EXPECT_GT(hatchVertices(), 0);
         }
     }
+}
+
+// =============================================================================
+// NUMA nodes card (#3088), on the synthetic machine TASKSMACK_SYNTHETIC=numa=N describes
+// =============================================================================
+
+/// The publication of a synthetic 16-core machine with @p nodes NUMA nodes, after two samples (so the
+/// per-core and per-node CPU use have readings), its system probe's capabilities included.
+[[nodiscard]] Domain::SystemPublication syntheticNumaPublication(std::size_t nodes)
+{
+    Platform::Synthetic::WorkloadSpec spec;
+    spec.processes = 50;
+    spec.cores = 16;
+    spec.numaNodes = nodes;
+    const auto workload = std::make_shared<const Platform::Synthetic::Workload>(spec);
+    Domain::SystemModel model(std::make_unique<Platform::Synthetic::SyntheticSystemProbe>(workload));
+    constexpr double FIRST = Platform::Synthetic::Workload::UPTIME_AT_EPOCH_SECONDS;
+    for (const double uptime : {FIRST, FIRST + 2.0})
+    {
+        Platform::SystemCounters counters;
+        workload->systemCountersAt(uptime, counters);
+        model.updateFromCounters(counters, uptime);
+    }
+    const auto publication = model.publication();
+    return (publication != nullptr) ? *publication : Domain::SystemPublication{};
+}
+
+TEST_F(SystemSectionsRenderTest, CpuCoresListsEachNumaNodeOfASyntheticTwoNodeMachine)
+{
+    const Domain::SystemPublication publication = syntheticNumaPublication(2);
+    const Domain::SystemSnapshot& snap = publication.snapshot;
+    ASSERT_EQ(snap.numaNodes.size(), 2U);
+    ASSERT_TRUE(snap.numaNodeTotalsKnown);
+    CpuCoresSection::RenderContext ctx{.publication = &publication};
+    const std::string text = renderAndCapture([&] { CpuCoresSection::renderCpuCoresSection(ctx); });
+
+    EXPECT_NE(text.find("NUMA nodes: 2"), std::string::npos) << text;
+    EXPECT_NE(text.find("0-7"), std::string::npos) << text;
+    EXPECT_NE(text.find("8-15"), std::string::npos) << text;
+    for (const Domain::NumaNodeSnapshot& node : snap.numaNodes)
+    {
+        EXPECT_FALSE(std::isnan(node.cpuPercent)) << "node " << node.id;
+        EXPECT_NE(text.find(UI::Format::formatPercent(node.cpuPercent)), std::string::npos) << text;
+        EXPECT_NE(text.find(UI::Format::formatBytes(static_cast<double>(node.memFreeBytes))), std::string::npos) << text;
+        EXPECT_NE(text.find(UI::Format::formatBytes(static_cast<double>(node.memTotalBytes))), std::string::npos) << text;
+    }
+    EXPECT_GT(childRect("##NumaNodesCard").GetHeight(), 0.0F) << "the card is drawn";
+}
+
+TEST_F(SystemSectionsRenderTest, CpuCoresShowsNoNumaCardOnASingleNodeMachine)
+{
+    const Domain::SystemPublication publication = syntheticNumaPublication(1);
+    ASSERT_EQ(publication.snapshot.numaNodes.size(), 1U);
+    CpuCoresSection::RenderContext ctx{.publication = &publication};
+    const std::string text = renderAndCapture([&] { CpuCoresSection::renderCpuCoresSection(ctx); });
+    EXPECT_EQ(text.find("NUMA nodes"), std::string::npos) << text;
+    EXPECT_EQ(childRect("##NumaNodesCard").GetHeight(), 0.0F);
+}
+
+TEST_F(SystemSectionsRenderTest, NumaCardWithoutTotalsShowsEachNodesAvailableMemory)
+{
+    // As Windows reports the nodes: available memory, no total.
+    Domain::SystemPublication publication = syntheticNumaPublication(2);
+    publication.snapshot.numaNodeTotalsKnown = false;
+    for (Domain::NumaNodeSnapshot& node : publication.snapshot.numaNodes)
+    {
+        node.memTotalBytes = 0;
+        node.memUsedBytes = 0;
+    }
+    publication.snapshot.numaNodes[1].memFreeBytes = 3ULL << 30U;
+    CpuCoresSection::RenderContext ctx{.publication = &publication};
+    const std::string text = renderAndCapture([&] { CpuCoresSection::renderCpuCoresSection(ctx); });
+    EXPECT_NE(text.find("NUMA nodes: 2"), std::string::npos) << text;
+    EXPECT_NE(text.find(UI::Format::formatBytes(static_cast<double>(3ULL << 30U))), std::string::npos) << text;
 }
 
 } // namespace

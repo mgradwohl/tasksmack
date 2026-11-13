@@ -1,6 +1,7 @@
 #include "WindowsSystemProbe.h"
 
 #include "Domain/SamplingConfig.h"
+#include "Platform/CpuAffinity.h"
 #include "Platform/CpuDetails.h"
 #include "Platform/SystemTypes.h"
 
@@ -38,6 +39,7 @@
 #include "WindowsCommitPaging.h"
 #include "WindowsConversions.h"
 #include "WindowsNtQuery.h"
+#include "WindowsProcAddress.h"
 #include "WindowsSystemProbeMath.h"
 
 #include <array>
@@ -444,6 +446,102 @@ namespace
     Windows::keepComForPerfProviders();
     return counter;
 }
+
+/// Whether the NUMA calls are there to read the nodes with (#3088): the node count, each node's memory,
+/// and at least one of the processor-mask calls.
+[[nodiscard]] bool hasNumaFunctions(const WindowsSystemProbeFunctions::Numa& fns) noexcept
+{
+    return fns.getNumaHighestNodeNumber != nullptr && fns.getNumaAvailableMemoryNodeEx != nullptr &&
+           (fns.getNumaNodeProcessorMask2 != nullptr || fns.getNumaNodeProcessorMaskEx != nullptr);
+}
+
+/// A node's available memory (GetNumaAvailableMemoryNodeEx); nullopt when the call fails, as it does for
+/// a number that names no node.
+[[nodiscard]] std::optional<std::uint64_t> numaAvailableBytes(const WindowsSystemProbeFunctions::Numa& fns, USHORT node)
+{
+    ULONGLONG available = 0;
+    if (fns.getNumaAvailableMemoryNodeEx(node, &available) == 0)
+    {
+        return std::nullopt;
+    }
+    return std::uint64_t{available};
+}
+
+/// A node's processor masks, one per processor group it has processors in, appended to @p masks (#3088).
+/// GetNumaNodeProcessorMask2 reports every group's, into @p buffer, grown once when the node has more
+/// groups than it holds; without it (before Windows 11 and Windows Server 2022), or when it fails,
+/// GetNumaNodeProcessorMaskEx reports one group's, which is the whole node on a machine of 64 or fewer
+/// processors. Nothing is appended when neither answers.
+void readNumaNodeMasks(const WindowsSystemProbeFunctions::Numa& fns,
+                       USHORT node,
+                       std::vector<GROUP_AFFINITY>& buffer,
+                       std::vector<NumaGroupMask>& masks)
+{
+    if (fns.getNumaNodeProcessorMask2 != nullptr)
+    {
+        for (int attempt = 0; attempt < 2; ++attempt)
+        {
+            USHORT required = 0;
+            const auto capacity = static_cast<USHORT>(std::min<std::size_t>(buffer.size(), std::numeric_limits<USHORT>::max()));
+            std::ranges::fill(buffer, GROUP_AFFINITY{}); // An entry the call leaves alone names no processor
+            if (fns.getNumaNodeProcessorMask2(node, buffer.data(), capacity, &required) != 0)
+            {
+                // The count it filled; every entry if it doesn't say (empty entries add nothing)
+                const std::size_t filled = (required == 0) ? capacity : std::min<std::size_t>(required, capacity);
+                for (std::size_t i = 0; i < filled; ++i)
+                {
+                    masks.push_back(NumaGroupMask{.group = buffer[i].Group, .mask = static_cast<std::uint64_t>(buffer[i].Mask)});
+                }
+                return;
+            }
+            if (required <= capacity)
+            {
+                break; // Failed for some other reason than room
+            }
+            buffer.resize(required);
+        }
+    }
+    if (fns.getNumaNodeProcessorMaskEx != nullptr)
+    {
+        GROUP_AFFINITY affinity{};
+        if (fns.getNumaNodeProcessorMaskEx(node, &affinity) != 0)
+        {
+            masks.push_back(NumaGroupMask{.group = affinity.Group, .mask = static_cast<std::uint64_t>(affinity.Mask)});
+        }
+    }
+}
+
+/// Lists the NUMA nodes (#3088): every number up to GetNumaHighestNodeNumber that names a node
+/// (isListedNumaNode()), in order, each with its processors numbered as the per-core figures are
+/// (numaNodeCpus()) and its memory left at 0. Empty when the node count can't be read.
+[[nodiscard]] std::vector<NumaNode> readNumaLayout(const WindowsSystemProbeFunctions::Numa& fns,
+                                                   std::span<const std::size_t> groupFirstCoreIds)
+{
+    std::vector<NumaNode> layout;
+    ULONG highest = 0;
+    if (fns.getNumaHighestNodeNumber(&highest) == 0)
+    {
+        return layout;
+    }
+    // Node numbers are USHORTs in every call that takes one.
+    const ULONG last = std::min<ULONG>(highest, std::numeric_limits<USHORT>::max());
+    std::vector<GROUP_AFFINITY> buffer(std::max<std::size_t>(groupFirstCoreIds.size(), 1));
+    std::vector<NumaGroupMask> masks;
+    for (ULONG number = 0; number <= last; ++number)
+    {
+        const auto node = static_cast<USHORT>(number);
+        masks.clear();
+        readNumaNodeMasks(fns, node, buffer, masks);
+        CpuAffinity cpus = numaNodeCpus(masks, groupFirstCoreIds);
+        // Only a node without processors needs its memory read to tell it from a gap.
+        if (!isListedNumaNode(cpus, cpus.empty() ? numaAvailableBytes(fns, node) : std::nullopt))
+        {
+            continue;
+        }
+        layout.push_back(NumaNode{.id = static_cast<int>(number), .cpus = std::move(cpus)});
+    }
+    return layout;
+}
 } // namespace
 
 WindowsSystemProbe::WindowsSystemProbe()
@@ -474,6 +572,12 @@ WindowsSystemProbeFunctions WindowsSystemProbe::systemFunctions()
     fns.nt.ntQuerySystemInformationEx = Windows::ntQuerySystemInformationEx();
     fns.memory.globalMemoryStatusEx = &GlobalMemoryStatusEx;
     fns.memory.getPerformanceInfo = &GetPerformanceInfo;
+    fns.numa.getNumaHighestNodeNumber = &GetNumaHighestNodeNumber;
+    // Windows 11 and Windows Server 2022 on; the SDK version this builds against doesn't declare it.
+    fns.numa.getNumaNodeProcessorMask2 = Windows::getProcAddress<decltype(fns.numa.getNumaNodeProcessorMask2)>(
+        GetModuleHandleW(L"kernel32.dll"), "GetNumaNodeProcessorMask2");
+    fns.numa.getNumaNodeProcessorMaskEx = &GetNumaNodeProcessorMaskEx;
+    fns.numa.getNumaAvailableMemoryNodeEx = &GetNumaAvailableMemoryNodeEx;
     fns.network.getIfTable2 = &GetIfTable2;
     fns.network.freeMibTable = &FreeMibTable;
     fns.network.readAdapterDeviceInstanceId = &readAdapterDeviceInstanceId;
@@ -543,6 +647,14 @@ WindowsSystemProbe::WindowsSystemProbe(std::uint64_t baseCpuMHz,
     // (refreshCpuDetailsIfProcessorsChanged())
     m_CpuDetails.details = readCpuDetails(m_Fns, m_GroupFirstCoreIds, m_CpuDetails.ids);
 
+    // NUMA nodes (#3088): read when the calls are there and Windows answers the node count, which it
+    // does with one node on a machine without NUMA hardware. Decided once; the nodes are listed in read().
+    if (hasNumaFunctions(m_Fns.numa))
+    {
+        ULONG highestNode = 0;
+        m_HasNuma = m_Fns.numa.getNumaHighestNodeNumber(&highestNode) != 0;
+    }
+
     spdlog::debug("WindowsSystemProbe initialized with {} cores, host={}, cpu={}", m_NumCores, m_Hostname, m_CpuModel);
 }
 
@@ -557,6 +669,7 @@ SystemCounters WindowsSystemProbe::read()
     timer.lap(SUB_READ_CPU_DETAILS);
     readMemoryCounters(counters);
     readMemoryCompression(counters);
+    readNuma(counters);
     timer.lap(SUB_READ_MEMORY);
     readUptime(counters);
     readStaticInfo(counters);
@@ -861,6 +974,34 @@ SwapBytes WindowsSystemProbe::readSwap() const
     return totals.has_value() ? swapFromPageFiles(*totals, sysInfo.dwPageSize) : SwapBytes{};
 }
 
+void WindowsSystemProbe::readNuma(SystemCounters& counters)
+{
+    if (!m_HasNuma)
+    {
+        return;
+    }
+    const auto now = m_Fns.now();
+    if (!m_NumaScanned || now - m_NumaScannedAt >= std::chrono::seconds(Domain::Sampling::NUMA_RESCAN_INTERVAL_SECONDS))
+    {
+        // A listing that fails (no node count) is empty until the next one, as Linux's is.
+        m_NumaLayout = readNumaLayout(m_Fns.numa, m_GroupFirstCoreIds);
+        m_NumaScannedAt = now;
+        m_NumaScanned = true;
+    }
+    counters.numaNodes.reserve(m_NumaLayout.size());
+    for (const NumaNode& listed : m_NumaLayout)
+    {
+        const std::optional<std::uint64_t> available = numaAvailableBytes(m_Fns.numa, static_cast<USHORT>(listed.id));
+        if (!available.has_value())
+        {
+            continue; // Gone since the listing (hot-remove), as Linux leaves out a node whose meminfo won't read
+        }
+        // Windows reports no per-node total (hasNumaNodeTotals is false): memTotalBytes stays 0.
+        NumaNode& node = counters.numaNodes.emplace_back(listed);
+        node.memFreeBytes = *available;
+    }
+}
+
 void WindowsSystemProbe::readUptime(SystemCounters& counters)
 {
     // GetTickCount64 returns milliseconds since system start
@@ -936,6 +1077,8 @@ SystemCapabilities WindowsSystemProbe::capabilities() const
         .hasIoWait = false,                    // Windows doesn't expose iowait
         .hasSteal = false,                     // Windows doesn't expose steal time
         .hasLoadAvg = false,                   // Windows doesn't have load average
+        .hasNumaNodes = m_HasNuma,             // GetNumaNodeProcessorMask2 and GetNumaAvailableMemoryNodeEx (#3088)
+        .hasNumaNodeTotals = false,            // Windows reports each node's available memory, not its size
         .hasCpuFreq = true,                    // Current clock: rated base x % Processor Performance (#1184, #1530)
         .hasNetworkCounters = true,            // Via GetIfTable2 (64-bit counters, Unicode names)
         .hasVirtualizationInfo = true,         // Firmware/SLAT/hypervisor status (#809)

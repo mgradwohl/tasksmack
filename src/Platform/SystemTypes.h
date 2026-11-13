@@ -142,13 +142,18 @@ struct ResourcePressure
 /// One NUMA node (#3088): its processors and its memory, raw, as the OS reports them. The Domain layer
 /// derives used memory and per-node CPU use (from cpuPerCore, by the processors in `cpus`).
 ///   Linux: /sys/devices/system/node/node<id>/cpulist, and its meminfo's MemTotal and MemFree.
-///   Windows: GetNumaNodeProcessorMaskEx and GetNumaAvailableMemoryNodeEx.
+///   Windows: GetNumaNodeProcessorMask2 (every processor group) and GetNumaAvailableMemoryNodeEx. Windows
+///   has no per-node total, so memTotalBytes stays 0 there and SystemCapabilities::hasNumaNodeTotals is
+///   false.
 struct NumaNode
 {
-    int id = 0;                      ///< The OS's node number; the numbers need not be contiguous
-    CpuAffinity cpus;                ///< Its logical processors, numbered as cpuPerCore's coreId; empty: CPU-less node
-    std::uint64_t memTotalBytes = 0; ///< 0 for a memoryless node (CPUs only)
-    std::uint64_t memFreeBytes = 0;  ///< Linux: MemFree, free pages only (page cache is not counted as free)
+    int id = 0;       ///< The OS's node number; the numbers need not be contiguous
+    CpuAffinity cpus; ///< Its logical processors, numbered as cpuPerCore's coreId; empty: CPU-less node
+    /// 0 for a memoryless node (CPUs only), and on Windows, which reports no per-node total
+    std::uint64_t memTotalBytes = 0;
+    /// Linux: MemFree, free pages only (page cache is not counted as free). Windows: available memory,
+    /// GetNumaAvailableMemoryNodeEx's free, zeroed and standby (cache) pages, as Task Manager's Available.
+    std::uint64_t memFreeBytes = 0;
 };
 
 /// Combined system counters snapshot.
@@ -229,6 +234,9 @@ struct SystemCapabilities
     bool hasLoadAvg = false;
     bool hasPressure = false;  // /proc/pressure: Linux PSI, when the kernel has it enabled (#3062)
     bool hasNumaNodes = false; // SystemCounters::numaNodes is read (#3088)
+    // NumaNode::memTotalBytes is read (Linux): without it (Windows) a node's total is unknown, 0, and its
+    // memFreeBytes is available memory, standby pages included (#3088).
+    bool hasNumaNodeTotals = false;
     bool hasCpuFreq = false;
     bool hasNetworkCounters = false; // System-wide network byte counters
     // CpuDetails' virtualization fields (firmware, SLAT, hypervisor) mean something here (Windows,

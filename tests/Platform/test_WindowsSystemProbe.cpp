@@ -4,6 +4,7 @@
 /// The pure helpers (WindowsSystemProbeMath.h) are tested on every platform in
 /// WindowsMath/test_WindowsSystemProbeMath.cpp.
 
+#include "Platform/CpuAffinity.h"
 #include "Platform/CpuDetails.h"
 #include "Platform/SystemTypes.h"
 #include "Platform/Windows/CpuBaseClock.h"
@@ -64,6 +65,34 @@ TEST(WindowsSystemProbeTest, CapabilitiesReportedCorrectly)
     EXPECT_FALSE(caps.hasLoadAvg);
     EXPECT_TRUE(caps.hasVirtualizationInfo);         // #809
     EXPECT_TRUE(caps.hasVirtualizationSecurityInfo); // VBS and memory integrity rows (#809, #2592)
+    EXPECT_TRUE(caps.hasNumaNodes);                  // #3088: every supported Windows answers
+    EXPECT_FALSE(caps.hasNumaNodeTotals);
+}
+
+// #3088: this machine's NUMA nodes (one, on most) hold every processor the per-core read samples, each
+// once, and report available memory.
+TEST(WindowsSystemProbeTest, NumaNodesCoverThisMachinesProcessors)
+{
+    WindowsSystemProbe probe;
+    const SystemCounters counters = probe.read();
+    ASSERT_FALSE(counters.numaNodes.empty());
+    std::size_t nodeCpus = 0;
+    std::uint64_t available = 0;
+    for (const NumaNode& node : counters.numaNodes)
+    {
+        nodeCpus += node.cpus.count();
+        available += node.memFreeBytes;
+        EXPECT_EQ(node.memTotalBytes, 0U);
+    }
+    for (const CpuCounters& core : counters.cpuPerCore)
+    {
+        const auto holders =
+            std::ranges::count_if(counters.numaNodes, [&core](const NumaNode& node) { return node.cpus.test(core.coreId); });
+        EXPECT_EQ(holders, 1) << "CPU " << core.coreId;
+    }
+    EXPECT_EQ(nodeCpus, counters.cpuPerCore.size());
+    EXPECT_GT(available, 0U);
+    EXPECT_LE(available, counters.memory.totalBytes);
 }
 
 TEST(WindowsSystemProbeTest, CpuDetailsDescribeThisMachinesTopology)

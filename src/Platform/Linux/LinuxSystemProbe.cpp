@@ -191,6 +191,7 @@ SystemCapabilities LinuxSystemProbe::capabilities() const
         .hasLoadAvg = true,
         .hasPressure = m_HasPressure,
         .hasNumaNodes = m_HasNuma,
+        .hasNumaNodeTotals = m_HasNuma, // each node's meminfo has its MemTotal
         .hasCpuFreq = true,
         .hasNetworkCounters = true,
         .hasVirtualizationInfo = true, // vmx/svm, /dev/kvm, hypervisor detection (#2592)

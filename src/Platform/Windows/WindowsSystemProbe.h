@@ -55,7 +55,9 @@ struct DeferredProcessorPerformance
 /// The Win32/NT calls WindowsSystemProbe makes for CPU, topology, memory (#1719) and network (#1395): the
 /// system's by default (WindowsSystemProbe::systemFunctions()), fakes in tests, so each one failing alone,
 /// the per-core fallbacks, several processor groups and removed network adapters can be tested. Grouped by
-/// area. Every member must be set, except the two NT exports, which are nullable as ntdll's lookups are.
+/// area. Every member must be set, except the two NT exports, which are nullable as ntdll's lookups are, and
+/// the NUMA calls (#3088): without GetNumaHighestNodeNumber or GetNumaAvailableMemoryNodeEx, or without both
+/// processor-mask calls, the NUMA nodes aren't read.
 struct WindowsSystemProbeFunctions
 {
     struct Cpu
@@ -85,6 +87,16 @@ struct WindowsSystemProbeFunctions
         BOOL(WINAPI* getPerformanceInfo)(PPERFORMANCE_INFORMATION, DWORD) = nullptr;
     } memory;
 
+    struct Numa
+    {
+        BOOL(WINAPI* getNumaHighestNodeNumber)(PULONG) = nullptr;
+        /// Every processor group's mask for a node; kernel32 has it from Windows 11 and Windows Server 2022
+        /// (null before: GetNumaNodeProcessorMaskEx is used, which gives one group's).
+        BOOL(WINAPI* getNumaNodeProcessorMask2)(USHORT, PGROUP_AFFINITY, USHORT, PUSHORT) = nullptr;
+        BOOL(WINAPI* getNumaNodeProcessorMaskEx)(USHORT, PGROUP_AFFINITY) = nullptr;
+        BOOL(WINAPI* getNumaAvailableMemoryNodeEx)(USHORT, PULONGLONG) = nullptr;
+    } numa;
+
     struct Network
     {
         /// GetIfTable2, and FreeMibTable, which frees the table it hands out.
@@ -108,8 +120,8 @@ struct WindowsSystemProbeFunctions
 struct SystemReadTiming
 {
     /// "cpu" (GetSystemTimes and the per-core NT query), "cpu-details" (the topology re-read, rare),
-    /// "memory" (GlobalMemoryStatusEx, GetPerformanceInfo, the page files and the process list for
-    /// compressed memory), "uptime", "pdh-freq"
+    /// "memory" (GlobalMemoryStatusEx, GetPerformanceInfo, the page files, the process list for
+    /// compressed memory and the NUMA nodes), "uptime", "pdh-freq"
     /// (the PDH collect) or "ifTable" (GetIfTable2 and the device lookups); empty before the first read().
     std::string_view slowestSubRead;
     std::chrono::steady_clock::duration slowest{};
@@ -198,6 +210,10 @@ class WindowsSystemProbe : public ISystemProbe
     /// @p counters and its id and session into m_MemoryCompression, or, when there is none or the query
     /// fails, neither, and the next search scheduled.
     void searchMemoryCompression(SystemCounters& counters, std::chrono::steady_clock::time_point now);
+    /// The NUMA nodes (#3088): each node's available memory every sample, with its processors as the
+    /// last listing found them. The nodes and their processor masks are listed again every
+    /// NUMA_RESCAN_INTERVAL_SECONDS, since only a hot-add changes them. Nothing when m_HasNuma is false.
+    void readNuma(SystemCounters& counters);
     /// Page-file totals from NtQuerySystemInformation; zero when there is no page file or the
     /// query fails.
     [[nodiscard]] SwapBytes readSwap() const;
@@ -267,6 +283,14 @@ class WindowsSystemProbe : public ISystemProbe
     // ids they describe; read at construction and again when the set of active processors the
     // per-core read samples changes (a processor hot-added). Sampler thread only.
     CpuTopology::CachedCpuDetails m_CpuDetails;
+    // The NUMA nodes (#3088): whether they're read (the calls are there and GetNumaHighestNodeNumber
+    // answered at construction), decided once, so capabilities() reads it without a lock; the last
+    // listing's nodes, each with its id and processors and its memory left at 0; and when it was taken.
+    // Sampler thread only, but for m_HasNuma.
+    bool m_HasNuma = false;
+    bool m_NumaScanned = false;
+    std::vector<NumaNode> m_NumaLayout;
+    std::chrono::steady_clock::time_point m_NumaScannedAt;
     // Set by the first read(), so the second opens m_OpenProcessorPerformance's counter (#3154)
     bool m_FirstReadDone = false;
     // Set when SystemSessionProcessInformation fails (#3483): each sample then searches the whole

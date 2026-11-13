@@ -6,6 +6,7 @@
 /// platform, including Linux CI's sanitizer and coverage jobs (#1133). Tests that need the real
 /// probe stay in test_WindowsSystemProbe.cpp.
 
+#include "Platform/CpuAffinity.h"
 #include "Platform/SystemTypes.h"
 #include "Platform/Windows/WindowsSystemProbeMath.h"
 
@@ -698,6 +699,62 @@ TEST(VirtualizationStatusTest, HypervisorWithoutCpuidCombinesWindowsAndTheFirmwa
     // Without it, a bare-metal table can't rule out Hyper-V running under this Windows
     EXPECT_EQ(hypervisorPresentWithoutCpuid(UNKNOWN, false, false), UNKNOWN);
     EXPECT_EQ(hypervisorPresentWithoutCpuid(UNKNOWN, UNKNOWN, UNKNOWN), UNKNOWN);
+}
+
+// =============================================================================
+// NUMA nodes' processors across processor groups (#3088)
+// =============================================================================
+
+TEST(WindowsSystemProbeMathTest, NumaNodeCpusNumberEachGroupAfterTheEarlierOnes)
+{
+    // Two groups of 48 (a 96-processor machine): group 1's processor 0 is CPU 48.
+    const auto firstIds = processorGroupFirstCoreIds(std::array<std::uint32_t, 2>{48, 48});
+    const std::array<NumaGroupMask, 2> masks{
+        NumaGroupMask{.group = 0, .mask = 0xFFFFFF000000ULL}, // Processors 24-47
+        NumaGroupMask{.group = 1, .mask = 0xFFFFFFULL},       // Processors 0-23 of group 1
+    };
+    EXPECT_EQ(numaNodeCpus(masks, firstIds), CpuAffinity::fromCpuList("24-71"));
+}
+
+TEST(WindowsSystemProbeMathTest, NumaNodeCpusReachPast64)
+{
+    // Two full groups of 64: the second group's processors are CPUs 64-127.
+    const auto firstIds = processorGroupFirstCoreIds(std::array<std::uint32_t, 2>{64, 64});
+    const std::array<NumaGroupMask, 1> masks{NumaGroupMask{.group = 1, .mask = ~std::uint64_t{0}}};
+    const CpuAffinity cpus = numaNodeCpus(masks, firstIds);
+    EXPECT_EQ(cpus, CpuAffinity::fromCpuList("64-127"));
+    EXPECT_EQ(cpus.count(), 64U);
+}
+
+TEST(WindowsSystemProbeMathTest, NumaNodeCpusDropBitsAndGroupsThatNameNoProcessor)
+{
+    const auto firstIds = processorGroupFirstCoreIds(std::array<std::uint32_t, 2>{6, 3});
+    const std::array<NumaGroupMask, 4> masks{
+        NumaGroupMask{.group = 0, .mask = 0xC3}, // Bits 6 and 7 are past group 0's 6 processors
+        NumaGroupMask{.group = 1, .mask = 0x1},
+        NumaGroupMask{.group = 1, .mask = 0x4}, // Combines with the mask before
+        NumaGroupMask{.group = 2, .mask = 0xF}, // No such group
+    };
+    EXPECT_EQ(numaNodeCpus(masks, firstIds), CpuAffinity::fromCpuList("0,1,6,8"));
+}
+
+TEST(WindowsSystemProbeMathTest, CpuLessNumaNodeHasNoCpus)
+{
+    const auto firstIds = processorGroupFirstCoreIds(std::array<std::uint32_t, 1>{8});
+    EXPECT_TRUE(numaNodeCpus({}, firstIds).empty());
+    const std::array<NumaGroupMask, 1> zero{NumaGroupMask{.group = 0, .mask = 0}};
+    EXPECT_TRUE(numaNodeCpus(zero, firstIds).empty());
+    EXPECT_TRUE(numaNodeCpus(zero, {}).empty()) << "no group layout at all";
+}
+
+TEST(WindowsSystemProbeMathTest, NumaNodeIsListedWithProcessorsOrMemory)
+{
+    const CpuAffinity some = CpuAffinity::fromMask(0x3);
+    EXPECT_TRUE(isListedNumaNode(some, std::nullopt)) << "processors, memory not read";
+    EXPECT_TRUE(isListedNumaNode(some, 0)) << "memoryless";
+    EXPECT_TRUE(isListedNumaNode({}, 1024)) << "CPU-less";
+    EXPECT_FALSE(isListedNumaNode({}, 0)) << "neither: nothing to show";
+    EXPECT_FALSE(isListedNumaNode({}, std::nullopt)) << "a gap between node numbers";
 }
 
 } // namespace Platform

@@ -282,6 +282,16 @@ struct Inputs
         unavailable("Base speed", "The rated clock is not reported by this system");
     }
     count("Sockets", cpu.sockets, "The physical package count is not reported by this system");
+    // NUMA nodes (#3088), only on a machine with more than one: the CPU Cores tab lists each node
+    if (snap.numaNodes.size() > 1)
+    {
+        rows.push_back({
+            .label = "NUMA nodes",
+            .value = UI::Format::formatIntLocalized(snap.numaNodes.size()),
+            .available = true,
+            .tooltip = "Each node's processors and memory are listed on the CPU Cores tab",
+        });
+    }
     if (cpu.physicalCores.has_value() && *cpu.physicalCores > 0)
     {
         add("Cores", formatCores(cpu));
