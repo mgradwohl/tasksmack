@@ -1924,6 +1924,26 @@ TEST(FormatDisplayLocaleTest, DisplayIgnoresTheGlobalLocale)
     EXPECT_EQ(UI::Format::formatPercent(42.0), "42%");
 }
 
+// #3374: a locale grouping every digit with a multi-byte separator makes the smallest 64-bit integer longer than
+// formatIntLocalized()'s 64-byte buffer; it is written in full through the larger one, not cut or dropped.
+TEST(FormatDisplayLocaleTest, AnIntegerTooLongForTheFastBufferIsWrittenInFull)
+{
+    const std::string separator = "  "; // six bytes
+    const UI::Format::ScopedDisplayPunctuation oneDigitGroups({.decimalPoint = '.', .thousandsSep = separator, .grouping = "\1"});
+    const std::string digits = "9223372036854775808";
+    std::string expected = "-";
+    for (std::size_t i = 0; i < digits.size(); ++i)
+    {
+        if (i > 0)
+        {
+            expected += separator;
+        }
+        expected += digits[i];
+    }
+    ASSERT_GT(expected.size(), 64U) << "the case under test: past the fast buffer";
+    EXPECT_EQ(UI::Format::formatIntLocalized(std::numeric_limits<std::int64_t>::min()), expected);
+}
+
 TEST(FormatDisplayLocaleTest, OtherFormattersTakeTheDecimalMark)
 {
     const UI::Format::ScopedDisplayPunctuation deDe({.decimalPoint = ',', .thousandsSep = ".", .grouping = "\3"});
