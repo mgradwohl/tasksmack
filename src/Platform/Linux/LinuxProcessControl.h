@@ -160,7 +160,7 @@ class LinuxProcessControl : public IProcessActions
     [[nodiscard]] ProcessActionResult setEfficiencyMode(const ProcessTarget& target, bool on) override;
     /// How many processes its Efficiency mode memory holds (for tests: one that exited is forgotten, #3330).
     [[nodiscard]] std::size_t rememberedEfficiencyCount() const;
-    /// The nice the on remembered for @p target, while it is still at nice 19 (#3296), for an off the helper finishes.
+    /// The nice the on remembered for @p target, while it is still at nice 19 (#3296), for an off made later.
     [[nodiscard]] std::optional<std::int32_t> efficiencyNiceToRestore(const ProcessTarget& target) const override;
     /// The online CPUs and, on a hybrid CPU, their efficiency classes, from sysfs (#1881).
     [[nodiscard]] CpuAffinityLayout affinityLayout() const override;

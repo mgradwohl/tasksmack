@@ -133,7 +133,7 @@ enum class ProtectedProcess : std::uint8_t
     return std::nullopt;
 }
 
-/// Why a signal to `pid` would do nothing, or nullopt. As root (the helper, #2308) the kernel accepts a
+/// Why a signal to `pid` would do nothing, or nullopt. As root (an Administrator session, #3580) the kernel accepts a
 /// signal to a kernel thread or to init and drops it, so TaskSmack would report an action that never
 /// happened (#2447): kernel threads ignore signals, and init drops SIGKILL and SIGSTOP and anything it
 /// has no handler for (systemd re-executes itself on SIGTERM). An error, not a refusal: no password helps.
@@ -151,7 +151,7 @@ enum class ProtectedProcess : std::uint8_t
 /// Why a priority, I/O priority, affinity or scheduling policy change is refused before it's tried (#2641, #3086), as
 /// a signal is (signalWouldDoNothing()): PID 1, whose priority, affinity and policy every service systemd starts inherits,
 /// and kernel threads (kswapd, jbd2/*, kworker/u*), where a low priority or the Idle I/O class can stall
-/// reclaim or the journal for the whole machine. Through the helper they would otherwise succeed.
+/// reclaim or the journal for the whole machine. As root they would otherwise succeed.
 [[nodiscard]] std::optional<std::string> schedulingChangeRefused(std::int32_t pid)
 {
     const std::optional<ProtectedProcess> reason = protectedProcess(pid);
@@ -1365,7 +1365,7 @@ ProcessActionResult LinuxProcessControl::closeConnection(const ProcessTarget& ta
     {
         return ProcessActionResult::error("No process holds this socket, so there is nothing to close");
     }
-    // As every other action (#3295): init's and kernel threads' sockets are left alone, through the helper too.
+    // As every other action (#3295): init's and kernel threads' sockets are left alone, as root too.
     if (const std::optional<ProtectedProcess> reason = protectedProcess(target.pid); reason.has_value())
     {
         return ProcessActionResult::error(
@@ -1407,7 +1407,7 @@ ProcessActionResult LinuxProcessControl::closeConnection(const ProcessTarget& ta
             return ProcessActionResult::error("Closing a connection needs Linux 5.6 or later (pidfd_getfd)");
         }
         const std::string message = std::system_category().message(err);
-        // EPERM: no ptrace access to another user's process, which the helper has (CAP_SYS_PTRACE).
+        // EPERM: no ptrace access to another user's process, which an Administrator session has (CAP_SYS_PTRACE).
         return isPermissionError(err) ? ProcessActionResult::denied(message) : ProcessActionResult::error(message);
     }
     const FdGuard copyGuard(copy);
@@ -1645,7 +1645,7 @@ ProcessActionResult LinuxProcessControl::setEfficiencyMode(const ProcessTarget& 
 
     // The nice: nice 19 on, the remembered one (or 0) off unless someone changed it since. setPriority() makes
     // every check a priority change makes (PID 1 and kernel threads refused, the start time confirmed, every
-    // thread), and a permission refusal from it is one the helper can finish (#2308).
+    // thread), and a permission refusal from it needs an Administrator session (#3580).
     std::optional<std::int32_t> nice = Efficiency::EFFICIENCY_NICE;
     if (!on)
     {

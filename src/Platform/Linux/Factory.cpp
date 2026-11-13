@@ -68,7 +68,7 @@ std::unique_ptr<IProcessProbe> makeProcessProbe()
 std::shared_ptr<IUdpTrafficCollector> makeUdpTrafficCollector()
 {
     // sock_diag has no UDP byte counters (#1101): root loads the eBPF counter in this process (#3580). Without root
-    // there is none, and PanelPlatforms asks the helper's instead (#3366).
+    // there is none: UDP stays uncounted (#3366).
     if (::geteuid() == 0)
     {
         return std::make_shared<LinuxUdpTrafficCollector>();

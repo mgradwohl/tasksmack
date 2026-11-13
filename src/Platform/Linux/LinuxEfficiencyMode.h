@@ -10,7 +10,7 @@
 // a process at nice 19 as in it (EFFICIENCY_MODE_STATUS).
 //
 // Off puts back what On changed: the nice and weight remembered for that process, or nice 0 and the default
-// weight (100) when nothing was remembered (TaskSmack restarted, or the helper turned it on); a nice or
+// weight (100) when nothing was remembered (TaskSmack restarted since); a nice or
 // weight someone changed since On is left alone, as Windows leaves a priority class changed since
 // (priorityClassToRestore()).
 //
