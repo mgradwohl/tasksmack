@@ -740,6 +740,7 @@ set(COMMON_TEST_SOURCES
     App/test_LaunchOptions.cpp # --minimized on the command line (#3093 part 2)
     App/test_StatusBarViewRender.cpp
     App/test_FontSizeChange.cpp
+    App/test_InterfaceScaleChange.cpp # the Interface scale setting's one change path (#3376)
     App/test_KeyboardShortcuts.cpp
     App/test_ProcessTableNavigation.cpp
     App/test_ProcessSelection.cpp
