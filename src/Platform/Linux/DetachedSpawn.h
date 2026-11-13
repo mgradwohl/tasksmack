@@ -90,6 +90,12 @@ struct SpawnHooks
     bool useProcFdList = true;                   ///< false (with useCloseRange false): the RLIMIT_NOFILE walk
     pid_t (*setsid)() = nullptr;                 ///< In the intermediate child; async-signal-safe. nullptr: ::setsid
     void (*beforeFork)() = nullptr;              ///< Called just before fork(), after all setup
+    /// The failures no real system gives on demand (#3374). Each nullptr: the real call. They run where the real
+    /// calls do, so fork and dup2 also in the children: async-signal-safe there.
+    int (*openDevNull)() = nullptr;    ///< nullptr: ::open("/dev/null", O_RDWR | O_CLOEXEC)
+    int (*pipe2)(int*, int) = nullptr; ///< nullptr: ::pipe2
+    pid_t (*fork)() = nullptr;         ///< Both forks: TaskSmack's and the intermediate child's. nullptr: ::fork
+    int (*dup2)(int, int) = nullptr;   ///< In the detached child, onto stdin/stdout/stderr. nullptr: ::dup2
 };
 
 /// spawnDetached() with @p hooks, as @p runAs when not null.
