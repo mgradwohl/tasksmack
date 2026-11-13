@@ -1665,7 +1665,7 @@ TEST_F(ProcessActionsBlockRenderTest, LookUpOnVirusTotalFromTheCardHashesAndShow
     });
     h.actionsView.setVirusTotal({.client = client, .apiKey = std::string(64, 'a'), .userAgent = "UA"});
 
-    // Not offered where the platform can't hash the image (Windows until #3646).
+    // Not offered where the platform can't hash the image (canHashImage false).
     ASSERT_FALSE(runFrame(body));
     EXPECT_FALSE(text.contains(VirusTotalLookup::MENU_LABEL)) << text;
 
