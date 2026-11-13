@@ -13,6 +13,7 @@
 
 #include "App/Panels/BackgroundTask.h"
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
+#include "App/Panels/RestartAsAdministratorButton.h"
 #include "App/Panels/UserGrouping.h"
 #include "Platform/IServiceActions.h"
 #include "Platform/IUserSessions.h"
@@ -121,6 +122,14 @@ class SessionActionControl
         return m_Retry.has_value() && !busy();
     }
 
+    /// Whether the result line offers "Restart as administrator..." in its place (#3669): the action was refused
+    /// for want of an administrator, with no helper to retry it (ServiceActionResult::needsAdministrator), where
+    /// TaskSmack can restart elevated.
+    [[nodiscard]] bool offersRestartAsAdministrator() const noexcept
+    {
+        return m_OfferRestart && !busy();
+    }
+
     /// "Authenticate and retry" was pressed: the refused action again, allowing the password prompt.
     void retryAuthorized()
     {
@@ -149,6 +158,7 @@ class SessionActionControl
             {
                 m_Result = {};
                 m_Retry.reset();
+                m_OfferRestart = false;
             }
         }
     }
@@ -221,6 +231,7 @@ class SessionActionControl
     {
         m_PendingText.clear();
         m_Retry.reset();
+        m_OfferRestart = false;
         const SessionActionWords words = sessionActionWords(m_Running.action);
         const std::string& user = m_Running.session.user;
         if (result.ok)
@@ -235,8 +246,11 @@ class SessionActionControl
             {
                 m_Retry = m_Running;
             }
+            // No helper to retry it (#3669): Restart as administrator... instead, where TaskSmack can restart.
+            m_OfferRestart =
+                RestartAsAdministrator::offersRestart(result.needsAdministrator, m_Retry.has_value(), RestartAsAdministrator::offered());
         }
-        m_ResultSecondsLeft = m_Retry.has_value() ? Detail::AUTHORIZE_RESULT_SECONDS : RESULT_SECONDS;
+        m_ResultSecondsLeft = (m_Retry.has_value() || m_OfferRestart) ? Detail::AUTHORIZE_RESULT_SECONDS : RESULT_SECONDS;
     }
 
     [[nodiscard]] static Platform::ServiceActionResult failed(std::string detail)
@@ -252,6 +266,7 @@ class SessionActionControl
     Retry m_Running;
     bool m_RetryAllowed = false;
     std::optional<Retry> m_Retry;
+    bool m_OfferRestart = false; // offersRestartAsAdministrator(): refused, with no helper (#3669)
     std::string m_PendingText;
     Detail::ActionResultMessage m_Result;
     float m_ResultSecondsLeft = 0.0F;

@@ -19,6 +19,7 @@
 // worker, waited for) is destroyed first.
 
 #include "App/Panels/ProcessActionRun.h"
+#include "App/Panels/RestartAsAdministratorButton.h"
 #include "Domain/PriorityConfig.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/SchedPolicy.h"
@@ -132,6 +133,7 @@ class ProcessPriorityView
     {
         ++m_Generation; // an apply still running reports to nobody: its process is no longer shown
         m_Retry.reset();
+        m_OfferRestart = false;
         m_NiceValue = Domain::Priority::NORMAL_NICE;
         m_Changed = false;
         m_EditTarget = NO_TARGET;
@@ -164,6 +166,7 @@ class ProcessPriorityView
         m_EditTarget = target;
         m_Error.clear();
         m_Retry.reset(); // a new edit replaces the refused one
+        m_OfferRestart = false;
     }
 
     /// Drops a pending edit that may be for a process other than @p liveTarget, which the panel can
@@ -228,6 +231,7 @@ class ProcessPriorityView
             return;
         }
         m_Retry.reset();
+        m_OfferRestart = false;
         m_ApplyTarget = target;
         Platform::AuthorizedAction retry;
         retry.kind = Platform::AuthorizedAction::Kind::SetPriority;
@@ -251,6 +255,14 @@ class ProcessPriorityView
     [[nodiscard]] bool offersAuthenticateAndRetry() const noexcept
     {
         return m_Retry.has_value() && !applying() && !heldForOtherPriorityChange();
+    }
+
+    /// Whether the error line offers "Restart as administrator..." in its place (#3669): the last apply was
+    /// refused for want of permission, there is no helper to retry it, and TaskSmack can restart elevated
+    /// (RestartAsAdministrator::offersRestart()). Gone with the next edit, apply or selection change.
+    [[nodiscard]] bool offersRestartAsAdministrator() const noexcept
+    {
+        return m_OfferRestart && !applying();
     }
 
     /// Whether another priority change for this process is asked about or running elsewhere, and why
@@ -395,16 +407,20 @@ class ProcessPriorityView
     };
 
     /// After an apply's result: offer "Authenticate and retry" when it was refused for want of
-    /// permission and @p actions can ask for authorization.
+    /// permission and @p actions can ask for authorization; with no helper to ask, "Restart as
+    /// administrator..." where TaskSmack can restart elevated (#3669).
     void offerRetry(const Platform::ProcessActionResult& result,
                     Platform::IProcessActions* actions,
                     const Platform::AuthorizedAction& action,
                     std::int32_t revertTo)
     {
-        if (result.permissionDenied && actions->actionCapabilities().canAuthorizeInteractively)
+        const bool helperCanRedo = actions->actionCapabilities().canAuthorizeInteractively;
+        if (result.permissionDenied && helperCanRedo)
         {
             m_Retry = Retry{.action = action, .actions = actions, .revertTo = revertTo};
+            return;
         }
+        m_OfferRestart = RestartAsAdministrator::offersRestart(result.permissionDenied, helperCanRedo, RestartAsAdministrator::offered());
     }
 
     /// An apply's result, on the UI thread.
@@ -429,6 +445,7 @@ class ProcessPriorityView
     std::uint64_t m_Generation = 0; // Bumped by a selection change: a running apply's result is then dropped
     ProcessIoPriorityView m_IoPriorityView;
     std::optional<Retry> m_Retry;
+    bool m_OfferRestart = false;                       // offersRestartAsAdministrator(): the last apply was refused, with no helper (#3669)
     const char* m_HoldReason = nullptr;                // Another priority change runs elsewhere: Apply waits, saying why (#3429, #3467)
     Platform::ProcessTarget m_ApplyTarget = NO_TARGET; // The process the running apply is for (applyingTarget())
     // Last, so it is destroyed (waiting for a running apply) before the state its finish writes.

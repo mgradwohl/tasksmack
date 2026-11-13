@@ -53,6 +53,18 @@ void runFindHandlesSearch(std::span<const Domain::HandleSearch::SearchProcess> p
                           const Domain::HandleSearch::Publish& publish,
                           std::span<const Domain::HandleSearch::SearchSources> sources = {}) noexcept;
 
+/// Whether the status line offers "Search them as administrator too": @p publication's search is done, some
+/// processes refused it, and a reader can read as an administrator (@p canSearchAuthorized, Capabilities::authorize).
+[[nodiscard]] bool findHandlesOffersAuthorizedSearch(const Domain::HandleSearch::SearchPublication& publication,
+                                                     bool canSearchAuthorized) noexcept;
+
+/// Whether it offers "Restart as administrator..." in that one's place (#3669): the search is done and some processes
+/// refused it, with no helper to search them (@p canSearchAuthorized false), where TaskSmack can restart elevated
+/// (@p restartOffered, RestartAsAdministrator::offered()).
+[[nodiscard]] bool findHandlesOffersRestart(const Domain::HandleSearch::SearchPublication& publication,
+                                            bool canSearchAuthorized,
+                                            bool restartOffered) noexcept;
+
 /// A results column of the Find handles table.
 enum class FindHandlesColumn : std::uint8_t
 {

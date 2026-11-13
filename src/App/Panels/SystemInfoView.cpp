@@ -1,6 +1,7 @@
 #include "SystemInfoView.h"
 
 #include "App/Panels/ProcessTableLayout.h"
+#include "App/Panels/RestartAsAdministratorButton.h"
 #include "App/Panels/SystemInfoSections.h"
 #include "Domain/SamplingConfig.h"
 #include "Domain/SensorModel.h"
@@ -208,6 +209,7 @@ renderRowAction(const SystemInfo::Row& row, bool reading, SystemInfoViewState& s
     const char* tooltip = nullptr;
     std::string_view note;
     bool* clickedFlag = nullptr;
+    bool restartStaysEnabled = false; // the restart's flag: never set, so it stays enabled (#3669)
     switch (row.action)
     {
     case SystemInfo::RowAction::None:
@@ -232,6 +234,14 @@ renderRowAction(const SystemInfo::Row& row, bool reading, SystemInfoViewState& s
         note = SystemInfo::AUTHENTICATE_NOTE;
         clickedFlag = &state.authenticateClicked;
         break;
+    case SystemInfo::RowAction::RestartAsAdministrator:
+        // No helper to read them (#3669): the restart, which opens the elevation notice. Never disabled by a press:
+        // the notice can be closed and the button pressed again.
+        label = RestartAsAdministrator::LABEL;
+        tooltip = RestartAsAdministrator::TOOLTIP;
+        note = SystemInfo::RESTART_NOTE;
+        clickedFlag = &restartStaysEnabled;
+        break;
     }
     ImGui::BeginDisabled(reading || *clickedFlag);
     const bool clicked = ImGui::SmallButton(label);
@@ -244,6 +254,11 @@ renderRowAction(const SystemInfo::Row& row, bool reading, SystemInfoViewState& s
     if (!clicked)
     {
         return SystemInfo::RowAction::None;
+    }
+    if (row.action == SystemInfo::RowAction::RestartAsAdministrator)
+    {
+        RestartAsAdministrator::requestRestart(); // Core::OpenElevationNoticeEvent, as every refusal's button raises
+        return row.action;
     }
     *clickedFlag = true;
     return row.action;

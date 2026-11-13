@@ -27,6 +27,7 @@
 #include "App/Panels/IoPriorityText.h"
 #include "App/Panels/LazyBackgroundRead.h"
 #include "App/Panels/ProcessActionRun.h"
+#include "App/Panels/RestartAsAdministratorButton.h"
 #include "Domain/PriorityConfig.h"
 #include "Domain/SamplingConfig.h"
 #include "Platform/IProcessActions.h"
@@ -371,6 +372,7 @@ class ProcessIoPriorityView
     {
         ++m_Generation; // an apply still running reports to nobody: its process is no longer shown
         m_Retry.reset();
+        m_OfferRestart = false;
         m_Edit = {};
         m_Changed = false;
         m_EditTarget = NO_TARGET;
@@ -466,6 +468,7 @@ class ProcessIoPriorityView
         m_EditTarget = target;
         m_Error.clear();
         m_Retry.reset(); // a new edit replaces the refused one
+        m_OfferRestart = false;
     }
 
     /// The user picked class @p ioClass in the combo for @p target. A class with levels keeps the
@@ -544,6 +547,7 @@ class ProcessIoPriorityView
             return;
         }
         m_Retry.reset();
+        m_OfferRestart = false;
         Platform::AuthorizedAction retry;
         retry.kind = Platform::AuthorizedAction::Kind::SetIoPriority;
         retry.target = target;
@@ -557,9 +561,15 @@ class ProcessIoPriorityView
                 if (generation == m_Generation)
                 {
                     finishApply(result);
-                    if (result.permissionDenied && actions->actionCapabilities().canAuthorizeInteractively)
+                    const bool helperCanRedo = actions->actionCapabilities().canAuthorizeInteractively;
+                    if (result.permissionDenied && helperCanRedo)
                     {
                         m_Retry = Retry{.action = retry, .actions = actions};
+                    }
+                    else // no helper to retry it (#3669): Restart as administrator... instead, where TaskSmack can restart
+                    {
+                        m_OfferRestart = RestartAsAdministrator::offersRestart(
+                            result.permissionDenied, helperCanRedo, RestartAsAdministrator::offered());
                     }
                 }
             }));
@@ -569,6 +579,25 @@ class ProcessIoPriorityView
     [[nodiscard]] bool offersAuthenticateAndRetry() const noexcept
     {
         return m_Retry.has_value() && !applying();
+    }
+
+    /// Whether the error line offers "Restart as administrator..." in its place (#3669), as
+    /// ProcessPriorityView's does: the last apply was refused for want of permission, with no helper to
+    /// retry it, where TaskSmack can restart elevated.
+    [[nodiscard]] bool offersRestartAsAdministrator() const noexcept
+    {
+        return m_OfferRestart && !applying();
+    }
+
+    /// Whether the read line offers "Restart as administrator..." (#3669): the read of the process's
+    /// current value was refused for want of access (Platform::isIoPriorityReadDenied()), and with no helper
+    /// (@p helperCanRedo false) Apply stays disabled (allowApplyWhenReadDenied()), so the restart is the way
+    /// on, where TaskSmack can restart elevated. Only Windows offers the restart.
+    [[nodiscard]] bool readRefusalOffersRestart(bool helperCanRedo) const
+    {
+        return !m_Current.has_value() && !m_ReadError.empty() &&
+               RestartAsAdministrator::offersRestart(
+                   Platform::isIoPriorityReadDenied(m_ReadError), helperCanRedo, RestartAsAdministrator::offered());
     }
 
     /// "Authenticate and retry" was pressed: the refused change again, as an administrator, after the
@@ -707,6 +736,7 @@ class ProcessIoPriorityView
     bool m_ApplyWhenReadDenied = false; // allowApplyWhenReadDenied()'s
     std::uint64_t m_Generation = 0;     // Bumped by a selection change: a running apply's result is then dropped
     std::optional<Retry> m_Retry;
+    bool m_OfferRestart = false; // offersRestartAsAdministrator(): the last apply was refused, with no helper (#3669)
     // The current value's read and its cadence. Destroying the view waits for at most one read, which
     // touches only the panel's actions.
     Detail::LazyBackgroundRead<Platform::IoPriorityReadResult> m_Read{

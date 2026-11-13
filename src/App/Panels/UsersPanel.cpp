@@ -3,6 +3,7 @@
 #include "App/Panel.h"
 #include "App/Panels/AuthorizeWording.h"
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
+#include "App/Panels/RestartAsAdministratorButton.h"
 #include "App/Panels/SessionActionControl.h"
 #include "App/Panels/SessionActionView.h"
 #include "App/Panels/UserSessionsFeed.h"
@@ -160,6 +161,11 @@ void UsersPanel::renderActionLine()
             actions->retryAuthorized();
         }
         ImGui::SetItemTooltip("%s", AuthorizeWording::RETRY_TOOLTIP);
+    }
+    else if (actions->offersRestartAsAdministrator())
+    {
+        ImGui::SameLine();
+        static_cast<void>(RestartAsAdministrator::drawButton()); // no helper here: the restart instead (#3669)
     }
 }
 

@@ -12,6 +12,7 @@
 
 #include "App/Panels/ProcessActionRun.h"
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
+#include "App/Panels/RestartAsAdministratorButton.h"
 #include "Platform/IProcessActions.h"
 
 #include <cstdint>
@@ -186,10 +187,21 @@ class ThreadActionControl
                 finish(result);
                 // Never for an action started before the selection changed: the retry would be offered under
                 // another process's Threads section, for a thread of the one no longer shown.
-                if (generation == m_Generation && result.permissionDenied && actions->actionCapabilities().canAuthorizeInteractively)
+                if (generation != m_Generation)
+                {
+                    return;
+                }
+                const bool helperCanRedo = actions->actionCapabilities().canAuthorizeInteractively;
+                if (result.permissionDenied && helperCanRedo)
                 {
                     m_Retry = Retry{.actions = actions, .action = retry};
                     m_ResultSecondsLeft = Detail::AUTHORIZE_RESULT_SECONDS; // time to read it and decide
+                }
+                // No helper to retry it (#3669): Restart as administrator... instead, where TaskSmack can restart.
+                else if (RestartAsAdministrator::offersRestart(result.permissionDenied, helperCanRedo, RestartAsAdministrator::offered()))
+                {
+                    m_OfferRestart = true;
+                    m_ResultSecondsLeft = Detail::AUTHORIZE_RESULT_SECONDS;
                 }
             }));
     }
@@ -198,6 +210,13 @@ class ThreadActionControl
     [[nodiscard]] bool offersAuthenticateAndRetry() const noexcept
     {
         return m_Retry.has_value() && !busy();
+    }
+
+    /// Whether the result line offers "Restart as administrator..." in its place (#3669): the action was refused
+    /// for want of permission, with no helper to retry it, where TaskSmack can restart elevated.
+    [[nodiscard]] bool offersRestartAsAdministrator() const noexcept
+    {
+        return m_OfferRestart && !busy();
     }
 
     /// "Authenticate and retry" was pressed: the refused action again, by the helper as an administrator,
@@ -234,6 +253,7 @@ class ThreadActionControl
             {
                 m_Result = {};
                 m_Retry.reset();
+                m_OfferRestart = false;
             }
         }
     }
@@ -246,6 +266,7 @@ class ThreadActionControl
     {
         ++m_Generation; // an action still running finishes, but offers no retry (it was for the previous process)
         m_Retry.reset();
+        m_OfferRestart = false;
         m_Result = {};
         m_ResultSecondsLeft = 0.0F;
     }
@@ -329,6 +350,7 @@ class ThreadActionControl
     void finish(const Platform::ProcessActionResult& result)
     {
         m_Retry.reset();
+        m_OfferRestart = false;
         const std::string thread = threadLabel(m_RunRequest.tid, m_RunRequest.threadName);
         if (result.success)
         {
@@ -351,6 +373,7 @@ class ThreadActionControl
     std::string m_Question;
     bool m_ShowConfirm = false;
     std::optional<Retry> m_Retry;
+    bool m_OfferRestart = false;      ///< offersRestartAsAdministrator(): refused, with no helper (#3669)
     PendingThreadAction m_RunRequest; ///< The action running (or last run)
     Detail::ActionResultMessage m_Result;
     float m_ResultSecondsLeft = 0.0F;

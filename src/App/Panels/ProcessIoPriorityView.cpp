@@ -8,6 +8,7 @@
 #include "ProcessDetailsLayout.h"
 #include "ProcessDetailsPanel_PriorityHelpers.h"
 #include "ProcessPriorityView.h"
+#include "RestartAsAdministratorButton.h"
 #include "UI/ChromeWidgets.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
@@ -190,6 +191,10 @@ void ProcessIoPriorityView::render(Platform::IProcessActions* actions,
             }
             ImGui::SetItemTooltip("%s", AuthorizeWording::IO_PRIORITY_TOOLTIP);
         }
+        else if (offersRestartAsAdministrator())
+        {
+            static_cast<void>(RestartAsAdministrator::drawButton()); // no helper here: the restart instead (#3669)
+        }
     }
     else if (!m_ReadError.empty())
     {
@@ -197,6 +202,11 @@ void ProcessIoPriorityView::render(Platform::IProcessActions* actions,
         ImGui::PushTextWrapPos(0.0F);
         ImGui::TextColored(theme.scheme().textMuted, ICON_FA_CIRCLE_INFO "  %s", m_ReadError.c_str());
         ImGui::PopTextWrapPos();
+        // A refused read with no helper leaves Apply disabled: the restart is the way on (#3669).
+        if (readRefusalOffersRestart(actions != nullptr && actions->actionCapabilities().canAuthorizeInteractively))
+        {
+            static_cast<void>(RestartAsAdministrator::drawButton());
+        }
     }
     ImGui::PopID();
 }

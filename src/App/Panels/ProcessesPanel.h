@@ -459,6 +459,14 @@ class ProcessesPanel : public Panel
         return m_RowOfferRestart && m_RowActionResultSeconds > 0.0F && !rowActionRunning();
     }
 
+    /// The file an elevated TaskSmack's Open file location didn't show (#3669), while its result is up: the toolbar
+    /// offers Copy beside it, for the user to open it. Empty for none.
+    [[nodiscard]] const std::string& rowWithheldPath() const noexcept
+    {
+        static const std::string none;
+        return (m_RowActionResultSeconds > 0.0F && !rowActionRunning()) ? m_RowWithheldPath : none;
+    }
+
     /// Presses the toolbar's "Authenticate and retry", for tests.
     void retryRowActionAuthorizedForTesting()
     {
@@ -696,6 +704,7 @@ class ProcessesPanel : public Panel
     };
     std::optional<RowRetry> m_RowRetry;
     bool m_RowOfferRestart = false; // offersRestartAsAdministrator(): the last row action was refused, with no helper (#3658)
+    std::string m_RowWithheldPath;  // rowWithheldPath(): the last row action's withheld file (#3669)
     Detail::ActionResultMessage m_RowActionResult; // Shown in the toolbar for a few seconds
     float m_RowActionResultSeconds = 0.0F;
     // The process the row menu was opened on, copied on the same right-press that selected it: the

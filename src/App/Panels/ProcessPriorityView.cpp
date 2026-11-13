@@ -4,6 +4,7 @@
 #include "Platform/IProcessActions.h"
 #include "ProcessDetailsLayout.h"
 #include "ProcessDetailsPanel_PriorityHelpers.h"
+#include "RestartAsAdministratorButton.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 #include "UI/Widgets.h"
@@ -390,6 +391,10 @@ void ProcessPriorityView::renderNiceControl(Platform::IProcessActions* actions,
                 retryAuthorized();
             }
             ImGui::SetItemTooltip("%s", AuthorizeWording::PRIORITY_TOOLTIP);
+        }
+        else if (offersRestartAsAdministrator())
+        {
+            static_cast<void>(RestartAsAdministrator::drawButton()); // no helper here: the restart instead (#3669)
         }
     }
 }

@@ -1,5 +1,6 @@
 #include "SystemInfoSections.h"
 
+#include "App/Panels/RestartAsAdministratorButton.h"
 #include "App/Panels/ServicesView.h"
 #include "Core/GraphicsHostInfo.h"
 #include "Domain/SensorModel.h"
@@ -382,15 +383,39 @@ namespace
     return ask;
 }
 
+/// The row a section with facts an administrator only can read leads with (#2310, #3669): "Authenticate to read"
+/// with @p canAuthenticate (a helper can read them), else "Restart as administrator..." with @p canRestart, else
+/// none. @p label and @p why as authenticateRow()'s.
+void addAdministratorRow(std::vector<Row>& rows,
+                         bool canAuthenticate,
+                         bool canRestart,
+                         std::string_view label = "Readable by root only",
+                         std::string_view why = "Some facts here need an administrator")
+{
+    if (canAuthenticate)
+    {
+        rows.push_back(authenticateRow(label, why));
+        return;
+    }
+    if (canRestart)
+    {
+        Row ask = row(std::string(label),
+                      {},
+                      std::format("{}: \"Restart as administrator...\" restarts TaskSmack as administrator ({})", why, RESTART_NOTE));
+        ask.action = RowAction::RestartAsAdministrator;
+        rows.push_back(std::move(ask));
+    }
+}
+
 } // namespace
 
-Section buildFirmwareSection(const Platform::FirmwareInfo& firmware, bool canAuthenticate)
+Section buildFirmwareSection(const Platform::FirmwareInfo& firmware, bool canAuthenticate, bool canRestart)
 {
     Section section{.title = "Firmware & board", .icon = ICON_FA_MICROCHIP, .rows = {}};
     auto& rows = section.rows;
-    if (canAuthenticate && (firmware.identifiersNeedAdmin || firmware.smbiosVersionNeedsAdmin))
+    if (firmware.identifiersNeedAdmin || firmware.smbiosVersionNeedsAdmin)
     {
-        rows.push_back(authenticateRow());
+        addAdministratorRow(rows, canAuthenticate, canRestart);
     }
     const std::string_view identifierReason = firmware.identifiersNeedAdmin ? NEEDS_ADMIN : NOT_REPORTED;
     rows.push_back(row("Manufacturer", firmware.systemManufacturer));
@@ -434,13 +459,13 @@ Section buildFirmwareSection(const Platform::FirmwareInfo& firmware, bool canAut
     return section;
 }
 
-Section buildMemorySection(const Platform::MemoryModulesInfo& memory, bool canAuthenticate)
+Section buildMemorySection(const Platform::MemoryModulesInfo& memory, bool canAuthenticate, bool canRestart)
 {
     Section section{.title = "Memory modules", .icon = ICON_FA_MEMORY, .rows = {}};
     auto& rows = section.rows;
-    if (canAuthenticate && memory.tableNeedsAdmin)
+    if (memory.tableNeedsAdmin)
     {
-        rows.push_back(authenticateRow());
+        addAdministratorRow(rows, canAuthenticate, canRestart);
     }
     // Without the SMBIOS table there are no modules or slots to list; say why once, in their place.
     const std::string_view tableReason = memory.tableNeedsAdmin ? NEEDS_ADMIN : NOT_REPORTED;
@@ -1609,15 +1634,18 @@ std::string formatCrashValue(const Platform::CrashEvent& event)
     return joinNonEmpty({module.empty() ? app + " crashed" : std::format("{} crashed in {}", app, module), exception, pid}, ", ");
 }
 
-Section buildCrashesSection(const Platform::CrashesInfo& crashes, bool canAuthenticate)
+Section buildCrashesSection(const Platform::CrashesInfo& crashes, bool canAuthenticate, bool canRestart)
 {
     const bool windows = crashes.family == Platform::OsFamily::Windows;
     Section section{.title = windows ? "Recent crashes & hangs" : "Recent crashes", .icon = ICON_FA_TRIANGLE_EXCLAMATION, .rows = {}};
     std::vector<Row>& rows = section.rows;
-    if (canAuthenticate && crashes.otherUsersHidden)
+    if (crashes.otherUsersHidden)
     {
-        rows.push_back(authenticateRow("Other users' crashes",
-                                       "The journal shows you only your own crashes' details, and other users' core files by name"));
+        addAdministratorRow(rows,
+                            canAuthenticate,
+                            canRestart,
+                            "Other users' crashes",
+                            "The journal shows you only your own crashes' details, and other users' core files by name");
     }
     const std::string period = std::format("Last {} days", Platform::CRASH_HISTORY_DAYS);
     const auto plural = [](std::size_t count, std::string_view one, std::string_view many)
@@ -2439,17 +2467,19 @@ std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& s
     {
         return sections;
     }
+    // Where no helper reads what an administrator only can, the restart is offered instead (#3669).
+    const bool canRestart = RestartAsAdministrator::offered();
     if (snapshot.os.family != Platform::OsFamily::Unknown)
     {
         sections.push_back(buildOsSection(snapshot.os, snapshot.readAtUnixSeconds));
     }
     if (snapshot.firmware.available)
     {
-        sections.push_back(buildFirmwareSection(snapshot.firmware, capabilities.canReadAuthorized));
+        sections.push_back(buildFirmwareSection(snapshot.firmware, capabilities.canReadAuthorized, canRestart));
     }
     if (snapshot.memory.available)
     {
-        sections.push_back(buildMemorySection(snapshot.memory, capabilities.canReadAuthorized));
+        sections.push_back(buildMemorySection(snapshot.memory, capabilities.canReadAuthorized, canRestart));
     }
     if (snapshot.paging.available)
     {
@@ -2500,7 +2530,7 @@ std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& s
     }
     if (snapshot.crashes.available)
     {
-        sections.push_back(buildCrashesSection(snapshot.crashes, capabilities.canReadAuthorized)); // the page's last section
+        sections.push_back(buildCrashesSection(snapshot.crashes, capabilities.canReadAuthorized, canRestart)); // the page's last section
     }
     // Further sections (#1514 and on) follow here, in the page's order.
 

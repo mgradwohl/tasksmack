@@ -69,7 +69,7 @@ struct OpenedService
 
 [[nodiscard]] ServiceActionResult lastError()
 {
-    return ServiceActionResult::failed(Math::errorText(GetLastError()));
+    return Math::errorResult(GetLastError());
 }
 
 /// Polls until the service reaches @p target, following the SCM's documented wait (#2127): while the
@@ -171,7 +171,7 @@ ServiceActionResult WindowsServiceActions::start(std::string_view name, const st
     const OpenedService opened = openService(m_Api, name, SERVICE_START | SERVICE_QUERY_STATUS);
     if (opened.error != ERROR_SUCCESS)
     {
-        return ServiceActionResult::failed(Math::errorText(opened.error));
+        return Math::errorResult(opened.error);
     }
     if (m_Api.startService(opened.service.get(), 0, nullptr) == FALSE)
     {
@@ -189,7 +189,7 @@ ServiceActionResult WindowsServiceActions::stop(std::string_view name, const std
     const OpenedService opened = openService(m_Api, name, SERVICE_STOP | SERVICE_QUERY_STATUS);
     if (opened.error != ERROR_SUCCESS)
     {
-        return ServiceActionResult::failed(Math::errorText(opened.error));
+        return Math::errorResult(opened.error);
     }
     SERVICE_STATUS status{};
     if (m_Api.controlService(opened.service.get(), SERVICE_CONTROL_STOP, &status) == FALSE)
@@ -200,7 +200,7 @@ ServiceActionResult WindowsServiceActions::stop(std::string_view name, const std
             // Never stopped along with it: the user decides, knowing which they are.
             return ServiceActionResult::failed(Math::dependentsText(runningDependents(m_Api, name)));
         }
-        return ServiceActionResult::failed(Math::errorText(error));
+        return Math::errorResult(error);
     }
     return waitForState(m_Api, opened.service.get(), SERVICE_STOPPED, "stop", stopToken);
 }
@@ -228,7 +228,7 @@ ServiceActionResult WindowsServiceActions::setStartType(std::string_view name, S
     const OpenedService opened = openService(m_Api, name, SERVICE_CHANGE_CONFIG);
     if (opened.error != ERROR_SUCCESS)
     {
-        return ServiceActionResult::failed(Math::errorText(opened.error));
+        return Math::errorResult(opened.error);
     }
     if (m_Api.changeServiceConfig(opened.service.get(),
                                   SERVICE_NO_CHANGE,

@@ -31,10 +31,22 @@ struct ServiceActionResult
     /// runAuthorized() allowed a prompt, but nothing could show one (no polkit agent in the session):
     /// offering the retry again would only fail the same way.
     bool authorizationUnavailable = false;
+    /// Refused for want of an administrator's rights, with nothing in this TaskSmack that could get them (no
+    /// helper, and no password prompt to ask for): restarting TaskSmack as administrator could do it (#3669).
+    /// Set in process only (the helper never sends it): Windows' "Requires administrator", and a session action
+    /// with no helper (BrokeredUserSessions).
+    bool needsAdministrator = false;
 
     [[nodiscard]] static ServiceActionResult succeeded()
     {
-        return {.ok = true, .message = {}, .cancelled = false, .needsAuthorization = false, .authorizationUnavailable = false};
+        return {
+            .ok = true,
+            .message = {},
+            .cancelled = false,
+            .needsAuthorization = false,
+            .authorizationUnavailable = false,
+            .needsAdministrator = false,
+        };
     }
     [[nodiscard]] static ServiceActionResult failed(std::string message)
     {
@@ -44,6 +56,7 @@ struct ServiceActionResult
             .cancelled = false,
             .needsAuthorization = false,
             .authorizationUnavailable = false,
+            .needsAdministrator = false,
         };
     }
     [[nodiscard]] static ServiceActionResult stopRequested()
@@ -54,6 +67,7 @@ struct ServiceActionResult
             .cancelled = true,
             .needsAuthorization = false,
             .authorizationUnavailable = false,
+            .needsAdministrator = false,
         };
     }
 };

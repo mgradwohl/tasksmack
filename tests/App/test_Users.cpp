@@ -3,6 +3,7 @@
 /// and retry), the sessions' feed, read only on demand (#3377), and the panel, sampled only once shown, its rows and its session menu. The
 /// rows themselves and the session text are UserGrouping's (test_UserGrouping.cpp, #3377).
 
+#include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
 #include "App/Panels/ProcessGrouping.h"
 #include "App/Panels/SessionActionControl.h"
 #include "App/Panels/SessionActionView.h"
@@ -17,9 +18,12 @@
 #include "Domain/UsersModel.h"
 #include "Mocks/FakeUserSessions.h"
 #include "Mocks/MockProbes.h"
+#include "Platform/BrokeredUserSessions.h"
+#include "Platform/IPrivilegedBroker.h"
 #include "Platform/IServiceActions.h"
 #include "Platform/IUserSessions.h"
 #include "Platform/ProcessTypes.h"
+#include "Support/RestartOffered.h"
 
 #include <gtest/gtest.h>
 #include <imgui.h>
@@ -149,6 +153,42 @@ TEST(SessionActionTest, AnotherUsersSessionOffersAuthenticateAndRetryOnce)
     SessionActionControl none(nullptr);
     none.lock(session("2", "alice", 1000));
     EXPECT_FALSE(none.busy());
+}
+
+// #3669: with no helper, another user's session is refused with nothing to retry it (BrokeredUserSessions says how to
+// get the rights), and the line offers Restart as administrator... where TaskSmack can restart elevated.
+TEST(SessionActionTest, WithNoHelperARefusalOffersRestartAsAdministrator)
+{
+    const auto noHelper = std::make_shared<Platform::BrokeredUserSessions>(std::make_unique<FakeSessions>(std::vector<UserSession>{}),
+                                                                           std::shared_ptr<Platform::IPrivilegedBroker>{});
+    SessionActionControl control(noHelper);
+    control.requestSignOut(session("5", "bob", 1001));
+    control.confirm();
+    control.update(0.0F, true);
+    EXPECT_FALSE(control.offersAuthenticateAndRetry());
+    EXPECT_FALSE(control.offersRestartAsAdministrator()) << "elevated, Linux, or a synthetic run: never offered";
+
+    const TestSupport::RestartOffered offered;
+    control.requestSignOut(session("5", "bob", 1001));
+    control.confirm();
+    control.update(0.0F, true);
+    EXPECT_FALSE(control.result().ok);
+    EXPECT_FALSE(control.offersAuthenticateAndRetry());
+    ASSERT_TRUE(control.offersRestartAsAdministrator());
+    control.update(SessionActionControl::RESULT_SECONDS + 1.0F); // as long as a retry's: time to decide
+    EXPECT_TRUE(control.offersRestartAsAdministrator());
+    control.update(Detail::AUTHORIZE_RESULT_SECONDS);
+    EXPECT_FALSE(control.offersRestartAsAdministrator());
+    EXPECT_TRUE(offered.raised().empty()) << "nothing raised until it is pressed";
+
+    // A helper's Authenticate and retry instead, and nothing for a session that went.
+    auto fake = std::make_shared<FakeSessions>(std::vector<UserSession>{});
+    SessionActionControl withHelper(fake);
+    withHelper.requestSignOut(session("5", "bob", 1001));
+    withHelper.confirm();
+    withHelper.update(0.0F, true);
+    EXPECT_TRUE(withHelper.offersAuthenticateAndRetry());
+    EXPECT_FALSE(withHelper.offersRestartAsAdministrator());
 }
 
 // #3076 (Windows): Disconnect asks first, as Sign out does. Another user's session is told its programs keep

@@ -41,10 +41,16 @@ enum class RowAction : std::uint8_t
     /// "Authenticate to read" (#2310): asks for an administrator's password, then reads the facts
     /// readable by root only through the privileged helper.
     AuthenticateToRead,
+    /// "Restart as administrator..." (#3669): where no helper can read the facts an administrator only can, and
+    /// TaskSmack can restart elevated (Windows, RestartAsAdministrator::offered()), opens the notice whose
+    /// Restart as administrator... restarts it, after the UAC prompt.
+    RestartAsAdministrator,
 };
 
 /// The note beside the "Authenticate to read" button (#2310).
 inline constexpr std::string_view AUTHENTICATE_NOTE = "Asks for an administrator's password";
+/// The note beside the "Restart as administrator..." button (#3669).
+inline constexpr std::string_view RESTART_NOTE = "Windows asks for approval (UAC)";
 
 /// The note beside the "Show Wi-Fi details" button (#1782).
 inline constexpr std::string_view WIFI_DETAILS_NOTE = "Windows may ask for location access";
@@ -141,8 +147,9 @@ struct VisibleSection
 
 /// The Firmware & board section (#1513). Serials and the UUID are identifiers; the embedded controller
 /// row is left out when there is none.
-/// With @p canAuthenticate, a fact readable by root only adds an "Authenticate to read" row (#2310).
-[[nodiscard]] Section buildFirmwareSection(const Platform::FirmwareInfo& firmware, bool canAuthenticate = false);
+/// With @p canAuthenticate, a fact readable by root only adds an "Authenticate to read" row (#2310); without it, and
+/// with @p canRestart (RestartAsAdministrator::offered()), a "Restart as administrator..." row (#3669).
+[[nodiscard]] Section buildFirmwareSection(const Platform::FirmwareInfo& firmware, bool canAuthenticate = false, bool canRestart = false);
 
 /// A memory size: whole GiB ("16 GiB") or, under 1 GiB, whole MiB ("512 MiB") when exact, else
 /// UI::Format::formatBytes() ("31.7 GiB"). Empty for 0 (unknown).
@@ -163,8 +170,9 @@ struct VisibleSection
 /// The Memory modules section (#1515): slots used of total, maximum capacity, installed and usable
 /// memory (with the hardware-reserved difference), then one row per populated module, labelled by its
 /// locator. Without the SMBIOS table (Linux, unprivileged) a "Modules" row says it needs administrator.
-/// With @p canAuthenticate, an SMBIOS table readable by root only adds an "Authenticate to read" row (#2310).
-[[nodiscard]] Section buildMemorySection(const Platform::MemoryModulesInfo& memory, bool canAuthenticate = false);
+/// With @p canAuthenticate, an SMBIOS table readable by root only adds an "Authenticate to read" row (#2310); without
+/// it, and with @p canRestart, a "Restart as administrator..." row (#3669).
+[[nodiscard]] Section buildMemorySection(const Platform::MemoryModulesInfo& memory, bool canAuthenticate = false, bool canRestart = false);
 
 /// A commit charge: "12.3 GiB / 31.7 GiB (39%)"; the used figure alone without a limit, empty when
 /// the charge is unknown (0).
@@ -308,8 +316,9 @@ struct VisibleSection
 /// The Recent crashes & hangs section (#1524), titled "Recent crashes" on Linux, the page's last: the counts
 /// of the last CRASH_HISTORY_DAYS days, a muted note when only the newest CRASH_LIST_MAX are listed, then
 /// one row per event, newest first, labelled by its local time.
-/// With @p canAuthenticate, other users' hidden journal entries add an "Authenticate to read" row (#2310).
-[[nodiscard]] Section buildCrashesSection(const Platform::CrashesInfo& crashes, bool canAuthenticate = false);
+/// With @p canAuthenticate, other users' hidden journal entries add an "Authenticate to read" row (#2310); without it,
+/// and with @p canRestart, a "Restart as administrator..." row (#3669).
+[[nodiscard]] Section buildCrashesSection(const Platform::CrashesInfo& crashes, bool canAuthenticate = false, bool canRestart = false);
 
 /// One adapter's summary: "Up, Wi-Fi, MTU 1500, driver iwlwifi", unknown parts left out.
 [[nodiscard]] std::string formatAdapterSummary(const Platform::NetworkAdapter& adapter);

@@ -6,6 +6,7 @@
 #include "Platform/IProcessThreads.h"
 #include "ProcessActionConfirm.h"
 #include "ProcessDetailsPanel_ActionHelpers.h"
+#include "RestartAsAdministratorButton.h"
 #include "ThreadActionControl.h"
 #include "UI/CellText.h"
 #include "UI/FrameOutline.h"
@@ -251,6 +252,10 @@ void ProcessThreadsView::renderActionResult()
             m_ActionControl.retryAuthorized();
         }
         ImGui::SetItemTooltip("%s", AuthorizeWording::RETRY_TOOLTIP);
+    }
+    else if (m_ActionControl.offersRestartAsAdministrator())
+    {
+        static_cast<void>(RestartAsAdministrator::drawButton()); // no helper here: the restart instead (#3669)
     }
 }
 

@@ -41,24 +41,56 @@ struct ProcessActionResult
     /// value), so TaskSmack remembers it wherever the on ran: the elevated helper's reply carries it back. 0 for every
     /// other result, and when the class couldn't be read.
     std::uint32_t priorityClassBefore = 0;
+    /// On failure, the file an elevated TaskSmack didn't show, so that no Explorer window runs as administrator
+    /// (Open file location, #3669): the UI names it, with Copy, for the user to open. UTF-8. Empty for every other
+    /// result, and never sent by the helper (it never opens anything).
+    std::string withheldPath;
 
     static ProcessActionResult ok(std::string note = {})
     {
-        return {.success = true, .errorMessage = {}, .successNote = std::move(note), .permissionDenied = false, .cancelled = false};
+        return {
+            .success = true,
+            .errorMessage = {},
+            .successNote = std::move(note),
+            .permissionDenied = false,
+            .cancelled = false,
+            .withheldPath = {},
+        };
     }
     static ProcessActionResult error(std::string msg)
     {
-        return {.success = false, .errorMessage = std::move(msg), .successNote = {}, .permissionDenied = false, .cancelled = false};
+        return {
+            .success = false,
+            .errorMessage = std::move(msg),
+            .successNote = {},
+            .permissionDenied = false,
+            .cancelled = false,
+            .withheldPath = {},
+        };
     }
     /// A failure for want of permission over the process (permissionDenied).
     static ProcessActionResult denied(std::string msg)
     {
-        return {.success = false, .errorMessage = std::move(msg), .successNote = {}, .permissionDenied = true, .cancelled = false};
+        return {
+            .success = false,
+            .errorMessage = std::move(msg),
+            .successNote = {},
+            .permissionDenied = true,
+            .cancelled = false,
+            .withheldPath = {},
+        };
     }
     /// Called off by the user at a system prompt (cancelled); @p msg says which.
     static ProcessActionResult cancelledByUser(std::string msg)
     {
-        return {.success = false, .errorMessage = std::move(msg), .successNote = {}, .permissionDenied = false, .cancelled = true};
+        return {
+            .success = false,
+            .errorMessage = std::move(msg),
+            .successNote = {},
+            .permissionDenied = false,
+            .cancelled = true,
+            .withheldPath = {},
+        };
     }
 };
 
