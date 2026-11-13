@@ -628,6 +628,7 @@ set(COMMON_TEST_SOURCES
     Platform/test_NetworkdLinkJson.cpp
     Platform/test_DnsMessage.cpp
     Platform/test_PublicIpLookup.cpp  # what either OS's public IP lookup does with a reply (#3117)
+    Platform/test_Sha256.cpp  # SHA-256 for Look up on VirusTotal (#3094)
     Platform/test_LinuxDiskSmart.cpp
     Platform/test_SmbiosParser.cpp
     Platform/test_PartitionTable.cpp
@@ -1185,6 +1186,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/Platform/TaskManagerReplacementService.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/CurrentProcess.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/PublicIpLookup.cpp
+    ${CMAKE_SOURCE_DIR}/src/Platform/Sha256.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/Synthetic/SyntheticProbes.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/Synthetic/SyntheticWorkload.cpp
     # UI source files under test (Note: Theme.cpp excluded - requires ImGui/ImPlot runtime context)

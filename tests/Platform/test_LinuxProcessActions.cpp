@@ -19,6 +19,7 @@
 #include "Platform/Linux/ProcParsing.h"
 #include "Platform/Linux/ProcPrivileges.h"
 #include "Platform/Linux/SyscallTrace.h"
+#include "Platform/Sha256.h"
 #include "ScopedTempDir.h"
 
 #include <gtest/gtest.h>
@@ -2730,6 +2731,52 @@ TEST(FileManagerRevealTest, DeletedSuffixAndParentFolder)
     EXPECT_EQ(FileManagerReveal::parentFolder("/usr/bin/vim"), "/usr/bin");
     EXPECT_EQ(FileManagerReveal::parentFolder("/init"), "/");
     EXPECT_EQ(FileManagerReveal::parentFolder("relative"), "/");
+}
+
+// #3094: the image's SHA-256 is what /proc/<pid>/exe holds, read through the identity check; a stale identity or
+// a stopped read is refused, and nothing is read for a target that isn't the process at its PID. The target is a
+// small program (sleep), not this test binary, which is hundreds of MB in a debug build.
+TEST(LinuxProcessActionsTest, ImageSha256IsTheDigestOfTheProcesssOwnExecutable)
+{
+    const pid_t child = ::fork();
+    ASSERT_GE(child, 0);
+    if (child == 0)
+    {
+        ::execl("/bin/sleep", "sleep", "30", static_cast<char*>(nullptr));
+        ::_exit(127);
+    }
+    const std::string exeLink = "/proc/" + std::to_string(child) + "/exe";
+    std::error_code ec;
+    for (int attempt = 0; attempt < 500 && std::filesystem::read_symlink(exeLink, ec).filename() != "sleep"; ++attempt)
+    {
+        usleep(10'000);
+    }
+    std::ifstream stat("/proc/" + std::to_string(child) + "/stat");
+    const std::string line((std::istreambuf_iterator<char>(stat)), std::istreambuf_iterator<char>());
+    const ProcessTarget target{.pid = static_cast<std::int32_t>(child),
+                               .startTimeTicks = ProcParsing::parseStatStartTime(line).value_or(0)};
+
+    LinuxProcessActions actions;
+    EXPECT_TRUE(actions.actionCapabilities().canHashImage);
+    const auto image = actions.imageSha256(target, std::stop_token{});
+    const auto expected = Sha256::hashFile(std::filesystem::canonical("/bin/sleep"), std::stop_token{});
+    ProcessTarget stale = target;
+    stale.startTimeTicks += 1;
+    const auto refused = actions.imageSha256(stale, std::stop_token{});
+    std::stop_source stop;
+    stop.request_stop();
+    const auto stopped = actions.imageSha256(target, stop.get_token());
+    ::kill(child, SIGKILL);
+    ::waitpid(child, nullptr, 0);
+
+    ASSERT_TRUE(image.has_value()) << image.error();
+    ASSERT_TRUE(expected.has_value()) << expected.error();
+    EXPECT_EQ(*image, Sha256::toHex(*expected));
+    EXPECT_EQ(image->size(), 64U);
+    EXPECT_FALSE(refused.has_value()) << "a reused PID's image is never read";
+    EXPECT_FALSE(actions.imageSha256({.pid = 0, .startTimeTicks = 0}, std::stop_token{}).has_value());
+    ASSERT_FALSE(stopped.has_value());
+    EXPECT_TRUE(stopped.error().contains("Stopped")) << stopped.error();
 }
 
 TEST(LinuxProcessActionsTest, OpenFileLocationAsksTheFileManagerToShowTheExecutable)

@@ -87,6 +87,7 @@ class BrokeredProcessActions final : public IProcessActions
     [[nodiscard]] IoPriorityReadResult getIoPriority(const ProcessTarget& target) override;
     [[nodiscard]] ProcessActionResult launchSyscallTrace(const ProcessTarget& target) override;
     [[nodiscard]] ProcessActionResult openFileLocation(const ProcessTarget& target) override;
+    [[nodiscard]] std::expected<std::string, std::string> imageSha256(const ProcessTarget& target, const std::stop_token& stop) override;
     [[nodiscard]] ProcessActionResult runProgram(const RunProgramRequest& request) override;
     [[nodiscard]] ProcessDumpResult
     createDump(const ProcessTarget& target, const std::filesystem::path& directory, const std::stop_token& stopToken) override;

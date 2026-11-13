@@ -7,6 +7,7 @@
 #include "LinuxProcessControl.h"
 #include "Platform/CommandWords.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/Sha256.h"
 #include "PosixGuards.h"
 #include "ProcPrivileges.h"
 #include "SessionUser.h"
@@ -473,6 +474,7 @@ ProcessActionCapabilities LinuxProcessActions::actionCapabilities() const
 #else
     capabilities.canOpenFileLocation = !m_TraceTools.folderOpenerPath.empty();
 #endif
+    capabilities.canHashImage = true;  // /proc/<pid>/exe (#3094)
     capabilities.canRunProgram = true; // Run new task (#3065)
     capabilities.canRunProgramAsAdministrator = ::geteuid() == 0 || !m_TraceTools.elevatorPath.empty();
     return capabilities;
@@ -569,6 +571,52 @@ ProcessActionResult LinuxProcessActions::launchSyscallTrace(const ProcessTarget&
     }
     spdlog::info("Opened {} running strace on PID {}", terminal.path, target.pid);
     return ProcessActionResult::ok();
+}
+
+std::expected<std::string, std::string> LinuxProcessActions::imageSha256(const ProcessTarget& target, const std::stop_token& stop)
+{
+    if (target.pid <= 0)
+    {
+        return std::unexpected(std::string("Invalid PID"));
+    }
+    // The identity check every action makes, then the read, then the pidfd asked whether the process survived
+    // it: if it did, its PID never changed hands, so /proc/<pid>/exe opened its own image.
+    const PidfdOpen opened = openPidfd(syscalls(), target.pid);
+    if (opened.fd < 0)
+    {
+        return std::unexpected(opened.refusal);
+    }
+    const FdGuard pidfd(opened.fd);
+    if (ProcessActionResult identity = verifyIdentity(target); !identity.success)
+    {
+        return std::unexpected(std::move(identity.errorMessage));
+    }
+    const std::filesystem::path image = std::filesystem::path("/proc") / std::to_string(target.pid) / "exe";
+    std::error_code ec;
+    if (!std::filesystem::exists(image, ec))
+    {
+        return std::unexpected(std::string("It has no executable file (a kernel thread)"));
+    }
+    std::expected<Sha256::Digest, std::string> digest = Sha256::hashFile(image, stop);
+    int exited = syscalls().pollPidfd(pidfd.get());
+    while (exited < 0 && errno == EINTR)
+    {
+        exited = syscalls().pollPidfd(pidfd.get());
+    }
+    if (exited != 0)
+    {
+        return std::unexpected(std::string("The process exited"));
+    }
+    if (!digest.has_value())
+    {
+        // hashFile() names the open's errno in words; errno itself is the poll's by now.
+        if (digest.error().starts_with("couldn't open") && digest.error().contains("ermission denied"))
+        {
+            return std::unexpected(std::string("Its executable can't be read: it belongs to another user"));
+        }
+        return std::unexpected(std::format("Its executable can't be read: {}", digest.error()));
+    }
+    return Sha256::toHex(*digest);
 }
 
 ProcessActionResult LinuxProcessActions::openFileLocation(const ProcessTarget& target)
