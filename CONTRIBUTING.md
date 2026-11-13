@@ -93,6 +93,19 @@ source .venv/bin/activate     # Use the project-local Python environment
 
 The setup script supports Ubuntu and creates `.venv/` for Python 3.14 tooling without changing the system `python` commands. It installs GLAD's hash-locked build dependencies and, unless `--minimal` is used, the development dependencies from `requirements.txt`, plus the coverage/profiling toolchain: `llvm-cov`/`llvm-profdata`, `heaptrack` (see "Linux — Heap allocation profiling" below), and the FlameGraph scripts (see "Linux — CPU profiling" below), cloned to `~/opt/FlameGraph`. Use `--dry-run` to preview what will be installed without making changes, or `--minimal` to install only build tools (skipping coverage/profiling). `perf` itself is deliberately left as a manual step — it's coupled to the running kernel version, and `check-prereqs.sh` detects and prints the exact install command for it.
 
+### Dev Container (Linux)
+
+`.devcontainer/` builds the same environment in a container (#136), for VS Code's Dev Containers extension or GitHub
+Codespaces:
+- **The image** is Ubuntu 26.04, as CI's Linux jobs run, with what `tools/setup-dev.sh` installs: LLVM 23, CMake,
+  Ninja, Python 3.14, the GUI, systemd, libbpf and libcurl headers, and xvfb. The session runs as a non-root `dev`
+  user with sudo.
+- **The first start** makes the project's `.venv` and configures the `debug` preset (`postCreateCommand`). Then
+  `cmake --build --preset debug` builds as on a workstation.
+- **Display tests** need an X server: run them under `xvfb-run`.
+- **CI** builds the image and configures the preset in it whenever `.devcontainer/`, `tools/setup-dev.sh` or the
+  Python requirements change (`.github/workflows/devcontainer.yml`).
+
 ### Automated Setup (Windows)
 
 A clean Windows 10 or 11 has neither git nor PowerShell 7 (`pwsh`), which the setup script runs
