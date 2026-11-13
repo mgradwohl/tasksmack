@@ -439,6 +439,9 @@ TEST_F(ShellLayerDetachTest, TheUpdateNoticeShowsAfterACheckAndCanBeDismissed)
     EXPECT_TRUE(text.contains("TaskSmack v99.0.0 is available")) << text;
     EXPECT_EQ(UserConfig::get().settings().updates.latestVersion, "99.0.0");
     EXPECT_GE(count(Core::EventType::UpdateCheckStatus), 2); // and done
+    // The title bar's update button (#3373) is lit with the same version.
+    EXPECT_TRUE(m_Shell->updateButtonForTesting().active);
+    EXPECT_EQ(m_Shell->updateButtonForTesting().tooltip, "TaskSmack v99.0.0 is available");
 
     const ImGuiWindow* status = ImGui::FindWindowByName("##StatusBar");
     ASSERT_NE(status, nullptr);
@@ -447,6 +450,7 @@ TEST_F(ShellLayerDetachTest, TheUpdateNoticeShowsAfterACheckAndCanBeDismissed)
     static_cast<void>(updateAndCapture(*m_Shell));
     EXPECT_EQ(UserConfig::get().settings().updates.dismissedVersion, "99.0.0");
     EXPECT_FALSE(updateAndCapture(*m_Shell).contains("is available"));
+    EXPECT_TRUE(m_Shell->updateButtonForTesting().active); // the notice is dismissed, not the news
 
     // Check now, from Settings: the next update starts another check.
     Core::CheckForUpdatesEvent checkNow;
@@ -467,6 +471,7 @@ TEST_F(ShellLayerDetachTest, WithoutAClientNoUpdateNoticeShows)
     makeShell(false);
     EXPECT_FALSE(m_Shell->updateCheckerForTesting().offered());
     EXPECT_FALSE(updateAndCapture(*m_Shell).contains("is available"));
+    EXPECT_FALSE(m_Shell->updateButtonForTesting().shown); // no title-bar button either (#3373)
 }
 
 } // namespace

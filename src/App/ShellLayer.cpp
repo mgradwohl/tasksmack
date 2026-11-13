@@ -29,6 +29,7 @@
 #include "StatusBarView.h"
 #include "SyntheticScenario.h"
 #include "TabLabel.h"
+#include "TitleBarButtons.h"
 #include "TitleBarGeometry.h"
 #include "TitleBarLayer.h"
 #include "UI/DpiScale.h"
@@ -454,6 +455,17 @@ void ShellLayer::onEvent(Core::Event& event)
         [this](Core::CheckForUpdatesEvent& /*e*/)
         {
             m_Updates.checkNow();
+            return false;
+        });
+    // The title bar's active update button (#3373): the newer release's page, as the status bar's notice
+    // opens it -- in the browser, on a worker (#3155); a second click while it opens is ignored.
+    dispatcher.dispatch<Core::OpenUpdatePageEvent>(
+        [this](Core::OpenUpdatePageEvent& /*e*/)
+        {
+            if (m_UpdateButton.active && !m_UpdateButton.url.empty())
+            {
+                static_cast<void>(m_UpdateLinkOpen.start(BackgroundOpen::openUtf8(m_UpdateButton.url)));
+            }
             return false;
         });
 
@@ -906,9 +918,22 @@ void ShellLayer::updateUpdateCheck()
 {
     auto& config = UserConfig::get();
     Domain::UpdateCheck::Persisted& state = config.settings().updates;
-    if (m_Updates.update(state))
+    const bool checkChanged = m_Updates.update(state);
+    if (checkChanged)
     {
         config.saveInBackground(); // the last check's time and what it saw, never written on this thread (#2916)
+    }
+
+    // The title bar's update button (#3373), decided again only when what it is decided from may have moved.
+    if (const UpdateButtonKey key{.titleBar = m_TitleBar, .enabled = state.enabled, .checking = m_Updates.checking()};
+        checkChanged || m_UpdateButtonKey != key)
+    {
+        m_UpdateButtonKey = key;
+        m_UpdateButton = m_Updates.titleBarButton(state);
+        if (m_TitleBar != nullptr)
+        {
+            m_TitleBar->setUpdateButton(m_UpdateButton);
+        }
     }
 
     // The notice's label, rebuilt only when what it offers changes.

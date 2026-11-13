@@ -1,5 +1,6 @@
 #pragma once
 
+#include "App/TitleBarButtons.h"
 #include "App/TitleBarGeometry.h"
 #include "App/TitleBarView.h"
 #include "App/WindowInteraction.h"
@@ -29,7 +30,8 @@ namespace App
 /// This layer handles:
 /// - App icon display
 /// - "TaskSmack" title in Sixtyfour pixel font
-/// - About (i), Help (?) and Settings (gear) buttons (emit events)
+/// - Update (circled arrow, #3373; where the update check is offered), About (i), Help (?) and
+///   Settings (gear) buttons (emit events)
 /// - Window controls: minimize, maximize/restore, close
 /// - SDL hit test registration: the OS or compositor runs the title-bar drag and the border resize
 ///   where it can (hitTest()), and the layer runs them itself elsewhere
@@ -66,6 +68,19 @@ class TitleBarLayer : public Core::Layer
         m_ContentMinimumWidthPx = widthPx;
         m_ContentMinimumHeightPx = heightPx;
         m_ContentEstimatedHeightPx = estimatedHeightPx;
+    }
+
+    /// What the update button shows (#3373), from UpdateChecker::titleBarButton(). Set by ShellLayer when
+    /// it changes; drawn, and laid out for the hit test, from the next frame.
+    void setUpdateButton(TitleBarButtons::UpdateButton button)
+    {
+        m_UpdateButton = std::move(button);
+    }
+
+    /// The update button as last set, for the tests.
+    [[nodiscard]] const TitleBarButtons::UpdateButton& updateButton() const noexcept
+    {
+        return m_UpdateButton;
     }
 
     // Cached button bounds for hit testing - see App::ButtonBounds (TitleBarGeometry.h).
@@ -162,6 +177,9 @@ class TitleBarLayer : public Core::Layer
 
     // System menu state
     bool m_ShowSystemMenu = false;
+
+    // The update button (#3373): hidden until ShellLayer says the check is offered.
+    TitleBarButtons::UpdateButton m_UpdateButton;
 
     // Cached button bounds for hit testing
     TitleBarButtonLayout m_ButtonLayout{};

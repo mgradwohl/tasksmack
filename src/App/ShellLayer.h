@@ -18,6 +18,7 @@
 #include "ShellHost.h"
 #include "ShellPanels.h"
 #include "TabLabel.h"
+#include "TitleBarButtons.h"
 #include "TitleBarGeometry.h"
 #include "UpdateChecker.h"
 
@@ -128,6 +129,12 @@ class ShellLayer : public Core::Layer
     [[nodiscard]] UpdateChecker& updateCheckerForTesting() noexcept
     {
         return m_Updates;
+    }
+
+    /// What the title bar's update button was last told (#3373), for tests; hidden before the first update.
+    [[nodiscard]] const TitleBarButtons::UpdateButton& updateButtonForTesting() const noexcept
+    {
+        return m_UpdateButton;
     }
 
     /// Waits for the update notice's link still being opened on its worker (tests).
@@ -280,6 +287,18 @@ class ShellLayer : public Core::Layer
     std::string m_UpdateNoticeUrl;
     std::string m_UpdateNoticeVersion;
     std::optional<UpdateStatus> m_RaisedUpdateStatus;
+    // The title bar's update button (#3373), and what it was last decided from: decided again only when
+    // a check starts or ends, the setting or the checking state moves, or the title bar is (re)set.
+    struct UpdateButtonKey
+    {
+        TitleBarLayer* titleBar = nullptr;
+        bool enabled = false;
+        bool checking = false;
+
+        friend bool operator==(const UpdateButtonKey&, const UpdateButtonKey&) = default;
+    };
+    TitleBarButtons::UpdateButton m_UpdateButton;
+    std::optional<UpdateButtonKey> m_UpdateButtonKey;
     // The notice's link, opened on a worker (#3155), and the checker's own worker: both waited for when
     // destroyed, and both own what their jobs use.
     BackgroundOpen m_UpdateLinkOpen;

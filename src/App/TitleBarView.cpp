@@ -198,7 +198,8 @@ Output render(const Input& input)
         ImGui::PopFont();
     }
 
-    // Right side buttons
+    // Right side buttons. The update button only where the check is offered (#3373).
+    const bool updateShown = input.update != nullptr && input.update->shown;
     const float BUTTON_WIDTH = computeTitleBarButtonWidth(titleBarHeight, TITLE_BAR_BUTTON_ASPECT);
 
     // What the bar needs to show, for the layer's minimum window size (#1207).
@@ -207,10 +208,12 @@ Output render(const Input& input)
                                                       titleBarHeight * TITLE_BAR_TITLE_GAP_RATIO,
                                                       wordmarkWidth,
                                                       BUTTON_WIDTH,
-                                                      titleBarHeight * TITLE_BAR_SEPARATOR_GAP_RATIO);
+                                                      titleBarHeight * TITLE_BAR_SEPARATOR_GAP_RATIO,
+                                                      updateShown);
     const float BUTTON_HEIGHT = titleBarHeight;
     // Where every button is drawn, and so what isPointInControlArea() keeps out of the drag area.
-    output.layout = computeTitleBarButtonLayout(windowWidth, BUTTON_WIDTH, BUTTON_HEIGHT, titleBarHeight * TITLE_BAR_SEPARATOR_GAP_RATIO);
+    output.layout =
+        computeTitleBarButtonLayout(windowWidth, BUTTON_WIDTH, BUTTON_HEIGHT, titleBarHeight * TITLE_BAR_SEPARATOR_GAP_RATIO, updateShown);
     const ImVec2 buttonSize(BUTTON_WIDTH, BUTTON_HEIGHT);
 
     // Window control buttons (right to left: Close, Maximize, Minimize)
@@ -310,6 +313,32 @@ Output render(const Input& input)
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
     {
         tooltip = TitleBarButtons::ABOUT_TOOLTIP;
+    }
+
+    // The update button (#3373), left of About: in the accent colour and clickable while a newer
+    // release is out, greyed out otherwise. Its tooltip says which, so it shows while disabled too.
+    if (updateShown)
+    {
+        ImGui::SetCursorPos(ImVec2(output.layout.update.minX, 0));
+        const bool active = input.update->active;
+        if (active)
+        {
+            ImGui::PushStyleColor(ImGuiCol_Text, UI::Theme::get().accentColor(0));
+        }
+        ImGui::BeginDisabled(!active);
+        if (ImGui::Button(TitleBarButtons::UPDATE_LABEL, buttonSize) && active)
+        {
+            output.action = Action::OpenUpdate;
+        }
+        ImGui::EndDisabled();
+        if (active)
+        {
+            ImGui::PopStyleColor();
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
+        {
+            tooltip = input.update->tooltip.c_str();
+        }
     }
 
     if (pushedChromeIcons)

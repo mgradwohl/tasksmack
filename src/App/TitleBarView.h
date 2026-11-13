@@ -5,6 +5,7 @@
 // to SDL -- the window calls, its minimum size, hit testing, the icon texture -- and carries out the
 // returned action, so the bar can be rendered headless in the tests.
 
+#include "App/TitleBarButtons.h"
 #include "App/TitleBarGeometry.h"
 #include "Core/WindowGeometry.h"
 #include "UI/IconLoader.h"
@@ -57,6 +58,7 @@ enum class Action : std::uint8_t
     Settings,
     Help,
     About,
+    OpenUpdate, ///< The active update button (#3373): open the newer release's page
 };
 
 /// Which of the system menu's items can be chosen. The same rule for the Linux menu the view draws
@@ -120,6 +122,9 @@ struct Input
     bool openSystemMenu = false; ///< Open the Linux system menu this frame (Alt+Space)
     /// The window's title, as the OS shows it: "TaskSmack (Administrator)" in an Administrator session (#2728)
     std::string_view title = "TaskSmack";
+    /// The update button (#3373), left of About; null or not shown: no button, and that stretch of the
+    /// bar stays the drag area.
+    const TitleBarButtons::UpdateButton* update = nullptr;
 };
 
 /// What the frame drew, for the layer's hit testing and minimum size.
