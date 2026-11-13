@@ -115,8 +115,8 @@ class ShellPanels
     static void raiseStartupSettings(const std::function<void(Core::Event&)>& raise);
 
   private:
-    // The signed-in sessions, before every panel that shows them, so it outlives them (#3377). The Users tab
-    // starts and stops it, at its attach and detach.
+    // The signed-in sessions, before every panel that shows them, so it outlives them (#3377): the Users tab
+    // and the Processes table's Group: User. The Users tab starts and stops it, at its attach and detach.
     UserSessionsFeed m_UserSessions;
     // The processes a priority change is asked about or running for, in the Processes table or Process
     // Details (#3467): each panel holds its own priority controls for a process the other has one for.

@@ -171,6 +171,32 @@ TEST(ProcessSortUtilsTest, ServicesSortByTextIgnoringCaseWithNoneLast)
     EXPECT_TRUE(ProcessSortUtils::compareColumnKey(host, none, ProcessColumn::Services, false));
 }
 
+// #3328: the User column sorts by the user name, then the domain, so two accounts sharing a name sort next to each
+// other but never interleave; with no domain (Linux) it is the user name alone, as before.
+TEST(ProcessSortUtilsTest, UserSortsByTheNameThenTheDomain)
+{
+    const auto owned = [](std::string domain, std::string user)
+    {
+        ProcessSnapshot snap = makeSnapshot(false);
+        snap.userDomain = std::move(domain);
+        snap.user = std::move(user);
+        return snap;
+    };
+    const ProcessSnapshot pcAlice = owned("PC", "alice");
+    const ProcessSnapshot corpAlice = owned("CORP", "alice");
+    const ProcessSnapshot pcBob = owned("PC", "bob");
+    const ProcessSnapshot aaron = owned("ZZZ", "aaron");
+    using ProcessSortUtils::compareColumnKey;
+    EXPECT_TRUE(compareColumnKey(corpAlice, pcAlice, ProcessColumn::User, true)); // Same name: by domain
+    EXPECT_FALSE(compareColumnKey(pcAlice, corpAlice, ProcessColumn::User, true));
+    EXPECT_TRUE(compareColumnKey(pcAlice, corpAlice, ProcessColumn::User, false));
+    EXPECT_TRUE(compareColumnKey(pcAlice, pcBob, ProcessColumn::User, true));    // The name first ...
+    EXPECT_TRUE(compareColumnKey(aaron, corpAlice, ProcessColumn::User, true));  // ... whatever the domain
+    EXPECT_FALSE(compareColumnKey(pcAlice, pcAlice, ProcessColumn::User, true)); // Equal both ways
+    EXPECT_FALSE(compareColumnKey(pcAlice, pcAlice, ProcessColumn::User, false));
+    EXPECT_TRUE(compareColumnKey(owned("", "alice"), owned("", "bob"), ProcessColumn::User, true)); // Linux
+}
+
 // #3551: the I/O Priority column sorts the highest-served first ascending and the reverse descending, with a process
 // whose I/O priority is unknown (a kernel thread) after every known one both ways.
 TEST(ProcessSortUtilsTest, IoPrioritySortsHighestFirstWithUnknownLast)

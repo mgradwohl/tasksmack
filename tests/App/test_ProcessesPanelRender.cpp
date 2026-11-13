@@ -31,6 +31,8 @@
 #include "App/Panels/ProcessWaitChainDialog.h"
 #include "App/Panels/ProcessesPanel.h"
 #include "App/Panels/StuckProcesses.h"
+#include "App/Panels/UserGrouping.h"
+#include "App/Panels/UserSessionsFeed.h"
 #include "App/ProcessColumnConfig.h"
 #include "App/SelectOverride.h"
 #include "App/UdpCountingStatus.h"
@@ -45,13 +47,16 @@
 #include "Domain/SamplingConfig.h"
 #include "Domain/ServiceModel.h"
 #include "Mocks/FakeClipboard.h"
+#include "Mocks/FakeUserSessions.h"
 #include "Mocks/MockGPUProbe.h"
 #include "Mocks/MockProbes.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/GPUTypes.h"
+#include "Platform/IHttpsClient.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IServiceProbe.h"
+#include "Platform/IUserSessions.h"
 #include "Platform/ImageSignature.h"
 #include "Platform/ProcessTypes.h"
 #include "Platform/SchedPolicy.h"
@@ -72,20 +77,61 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <expected>
 #include <format>
 #include <functional>
 #include <latch>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <regex>
 #include <sstream>
 #include <stdexcept>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
+
+namespace App::ProcessesPanelRenderTestDetail
+{
+
+/// Look up on VirusTotal's client in these tests (#3094): every request answered with one reply, and kept.
+class FakeLookupClient final : public Platform::IHttpsClient
+{
+  public:
+    explicit FakeLookupClient(Platform::HttpsResponse reply) : m_Reply(std::move(reply))
+    {}
+
+    [[nodiscard]] std::expected<Platform::HttpsResponse, std::string> get(const Platform::HttpsRequest& request,
+                                                                          const std::stop_token& /*stop*/) override
+    {
+        const std::scoped_lock lock(m_Mutex);
+        m_Requests.push_back(request);
+        return m_Reply;
+    }
+
+    [[nodiscard]] std::size_t requestCount() const
+    {
+        const std::scoped_lock lock(m_Mutex);
+        return m_Requests.size();
+    }
+
+    [[nodiscard]] std::string lastPath() const
+    {
+        const std::scoped_lock lock(m_Mutex);
+        return m_Requests.empty() ? std::string{} : m_Requests.back().path;
+    }
+
+  private:
+    mutable std::mutex m_Mutex;
+    Platform::HttpsResponse m_Reply;
+    std::vector<Platform::HttpsRequest> m_Requests;
+};
+
+} // namespace App::ProcessesPanelRenderTestDetail
 
 namespace App
 {
@@ -180,6 +226,39 @@ class ProcessesPanelRenderTest : public ::testing::Test
                 return ProcessesPanelPlatform{.probe = std::move(probe), .actions = std::move(mock), .icons = nullptr};
             },
             std::move(raiseEvent));
+        attachAndSeed(*panel);
+        Core::ActiveTabChangedEvent shown("Processes");
+        panel->onEvent(shown);
+        return panel;
+    }
+
+    /// An attached panel reading three processes with Windows owners (#3328): init (1) as PC\bob, server (100)
+    /// as PC\alice and worker (101) as CORP\alice, so two accounts share the name alice.
+    [[nodiscard]] static std::unique_ptr<ProcessesPanel> attachedPanelWithOwners()
+    {
+        auto panel = std::make_unique<ProcessesPanel>(
+            []
+            {
+                const auto owned = [](Platform::ProcessCounters counters, std::string domain, std::string user)
+                {
+                    counters.userDomain = std::move(domain);
+                    counters.user = std::move(user);
+                    return counters;
+                };
+                auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+                probe
+                    ->withProcess(
+                        owned(TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0), "PC", "bob"))
+                    .withProcess(
+                        owned(TestMocks::makeProcessCounters(100, "server", 'R', 200, 50, 1000, std::uint64_t{8} << 20U, 1), "PC", "alice"))
+                    .withProcess(owned(
+                        TestMocks::makeProcessCounters(101, "worker", 'S', 30, 10, 1100, std::uint64_t{2} << 20U, 100), "CORP", "alice"));
+                return ProcessesPanelPlatform{
+                    .probe = std::move(probe),
+                    .actions = std::make_unique<TestMocks::MockProcessActions>(),
+                    .icons = nullptr,
+                };
+            });
         attachAndSeed(*panel);
         Core::ActiveTabChangedEvent shown("Processes");
         panel->onEvent(shown);
@@ -1123,6 +1202,53 @@ TEST_F(ProcessesPanelRenderTest, OpenFileLocationFromTheRowMenuRunsForThatProces
     panel->onDetach();
 }
 
+// #3094: Look up on VirusTotal is in the row menu with a key and a platform that can hash the image, and runs on the
+// row action worker for that row: the image's hash, then one request for it.
+TEST_F(ProcessesPanelRenderTest, LookUpOnVirusTotalFromTheRowMenuHashesAndAsksOnce)
+{
+    const std::string sha = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    UserConfig::get().settings().virusTotalApiKey = std::string(64, 'a');
+    TestMocks::MockProcessActions* actions = nullptr;
+    const auto panel = panelWithCapabilities({.canHashImage = true}, false, actions);
+    ASSERT_NE(actions, nullptr);
+    actions->setImageSha256Result(sha);
+    const auto client = std::make_shared<ProcessesPanelRenderTestDetail::FakeLookupClient>(Platform::HttpsResponse{
+        .body = R"({"data":{"attributes":{"last_analysis_stats":{"malicious":0,"suspicious":0,"undetected":70,"harmless":0}}}})",
+        .status = 200,
+    });
+    panel->setLookupClient(client);
+    renderUntilLoaded(*panel);
+    ASSERT_TRUE(openARowMenu(*panel).has_value());
+    pressPopupItem(*panel, ICON_FA_SHIELD_HALVED " Look up on VirusTotal###LookUpVirusTotal");
+    static_cast<void>(renderAndCapture(*panel));
+    panel->waitForRowActionForTesting();
+    EXPECT_EQ(actions->imageSha256Count(), 1);
+    EXPECT_EQ(client->requestCount(), 1U);
+    EXPECT_EQ(client->lastPath(), "/api/v3/files/" + sha);
+    panel->onUpdate(1.0F / 60.0F);
+    static_cast<void>(renderAndCapture(*panel));
+    panel->onDetach();
+}
+
+// #3094: without a key there is no item to press, and nothing is hashed or sent.
+TEST_F(ProcessesPanelRenderTest, WithoutAKeyThereIsNoVirusTotalLookup)
+{
+    UserConfig::get().settings().virusTotalApiKey.clear();
+    TestMocks::MockProcessActions* actions = nullptr;
+    const auto panel = panelWithCapabilities({.canHashImage = true}, false, actions);
+    ASSERT_NE(actions, nullptr);
+    const auto client = std::make_shared<ProcessesPanelRenderTestDetail::FakeLookupClient>(Platform::HttpsResponse{});
+    panel->setLookupClient(client);
+    renderUntilLoaded(*panel);
+    ASSERT_TRUE(openARowMenu(*panel).has_value());
+    pressPopupItem(*panel, ICON_FA_SHIELD_HALVED " Look up on VirusTotal###LookUpVirusTotal");
+    static_cast<void>(renderAndCapture(*panel));
+    panel->waitForRowActionForTesting();
+    EXPECT_EQ(actions->imageSha256Count(), 0);
+    EXPECT_EQ(client->requestCount(), 0U);
+    panel->onDetach();
+}
+
 // #3221: a selection requested by PID (a demo script's, #2827) is applied once its process is listed.
 TEST_F(ProcessesPanelRenderTest, ARequestedSelectionSelectsItsProcessOnceListed)
 {
@@ -1178,7 +1304,7 @@ TEST_F(ProcessesPanelRenderTest, APanelThatWasNeverAttachedHasNothingToReport)
         []
         { return ProcessesPanelPlatform{.probe = std::make_unique<TestMocks::MockProcessProbe>(), .actions = nullptr, .icons = nullptr}; },
         [](Core::Event&) {});
-    EXPECT_FALSE(panel.findSnapshot(1).has_value());
+    EXPECT_EQ(panel.findSnapshot(1), nullptr);
     EXPECT_FALSE(panel.hasReducedPrivileges());
     ProcessesPanel unattached(
         []
@@ -2628,6 +2754,42 @@ TEST_F(ProcessesPanelRenderTest, TheFilterKeepsMatchingRowsAndClearingItBringsTh
     panel->onDetach();
 }
 
+// #3328: the User column writes DOMAIN\user for a name two accounts share, so PC\alice's and CORP\alice's
+// rows differ, and the short name for every other owner, so the column stays narrow.
+TEST_F(ProcessesPanelRenderTest, TheUserColumnWritesTheDomainOnlyForANameTwoAccountsShare)
+{
+    const auto panel = attachedPanelWithOwners();
+    renderUntilLoaded(*panel);
+    static_cast<void>(renderAndCapture(*panel));
+    const std::string text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("PC\\alice")) << text;
+    EXPECT_TRUE(text.contains("CORP\\alice")) << text;
+    EXPECT_TRUE(text.contains("bob")) << text;
+    EXPECT_FALSE(text.contains("PC\\bob")) << text; // One account has the name: no domain needed
+    panel->onDetach();
+}
+
+// #3328: the filter finds a process by its owner, by the short name or by DOMAIN\user.
+TEST_F(ProcessesPanelRenderTest, TheFilterFindsAProcessByItsOwnersAccount)
+{
+    const auto panel = attachedPanelWithOwners();
+    renderUntilLoaded(*panel);
+    const ImGuiWindow* shell = ImGui::FindWindowByName("Shell");
+    ASSERT_NE(shell, nullptr);
+    ImGui::ActivateItemByID(ImHashStr("##search", 0, shell->ID));
+    static_cast<void>(renderAndCapture(*panel));
+    for (const char* character : {"c", "o", "r", "p", "\\", "a"})
+    {
+        ImGui::GetIO().AddInputCharactersUTF8(character);
+        static_cast<void>(renderAndCapture(*panel));
+    }
+    static_cast<void>(renderAndCapture(*panel));
+    const std::string text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("worker")) << text;
+    EXPECT_FALSE(text.contains("server")) << text; // PC\alice's
+    panel->onDetach();
+}
+
 TEST_F(ProcessesPanelRenderTest, HoldingCtrlOverTheTablePausesItAndSaysSo)
 {
     SelectionSink events;
@@ -3681,6 +3843,312 @@ TEST_F(ProcessesPanelRenderTest, TheGroupControlOffersOnlyTheModesThisSystemHasD
     panel->onDetach(); // TearDown restores the settings
 }
 
+// --- The Users tab folded into Group: User (#3377) ------------------------------------------------
+
+/// A sign-in session of @p user.
+[[nodiscard]] Platform::UserSession signIn(std::string id, std::string user, std::string state = "active")
+{
+    Platform::UserSession s;
+    s.id = std::move(id);
+    s.user = std::move(user);
+    s.state = std::move(state);
+    s.sessionClass = "user";
+    return s;
+}
+
+/// An attached, shown panel reading init (1) as root, server (100) as alice and worker (101) as bob, with the
+/// signed-in sessions from @p feed, already started, which outlives the panel.
+[[nodiscard]] std::unique_ptr<ProcessesPanel> userSessionsPanel(UserSessionsFeed& feed)
+{
+    auto panel = std::make_unique<ProcessesPanel>(
+        []
+        {
+            const auto owned = [](Platform::ProcessCounters counters, std::string user)
+            {
+                counters.user = std::move(user);
+                return counters;
+            };
+            auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+            probe->withProcess(owned(TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0), "root"))
+                .withProcess(owned(TestMocks::makeProcessCounters(100, "server", 'R', 200, 50, 1000, std::uint64_t{8} << 20U, 1), "alice"))
+                .withProcess(owned(TestMocks::makeProcessCounters(101, "worker", 'S', 30, 10, 1100, std::uint64_t{2} << 20U, 100), "bob"));
+            return ProcessesPanelPlatform{
+                .probe = std::move(probe),
+                .actions = std::make_unique<TestMocks::MockProcessActions>(),
+                .icons = nullptr,
+            };
+        },
+        [](Core::Event& /*event*/) {});
+    panel->setUserSessions(&feed);
+    attachAndSeed(*panel);
+    Core::ActiveTabChangedEvent shown("Processes");
+    panel->onEvent(shown);
+    return panel;
+}
+
+class ProcessesPanelUserGroupsTest : public ProcessesPanelRenderTest
+{
+  protected:
+    /// Draws frames until one shows @p needle (the sessions are read on the feed's thread); that frame's text.
+    [[nodiscard]] static std::string renderUntil(ProcessesPanel& panel, std::string_view needle)
+    {
+        const auto giveUp = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        std::string text = renderAndCapture(panel);
+        while (!text.contains(needle) && std::chrono::steady_clock::now() < giveUp)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            text = renderAndCapture(panel);
+        }
+        return text;
+    }
+
+    /// The middle of the table's Name column at data row @p row (0: the first under the column headers).
+    [[nodiscard]] static ImVec2 rowPoint(int row)
+    {
+        const ImGuiTable* table = processTable();
+        if (table == nullptr)
+        {
+            return {-1.0F, -1.0F};
+        }
+        const float rowHeight = ImGui::GetTextLineHeight() + (ImGui::GetStyle().CellPadding.y * 2.0F);
+        const ImGuiTableColumn& name = table->Columns[static_cast<int>(toIndex(ProcessColumn::Name))];
+        return {(name.MinX + name.MaxX) * 0.5F, table->OuterRect.Min.y + (rowHeight * (1.5F + static_cast<float>(row)))};
+    }
+
+    /// Right-clicks data row @p row, hovering it first, as a pointer would; the frame after the release.
+    static std::string rightClickRow(ProcessesPanel& panel, int row)
+    {
+        const ImVec2 point = rowPoint(row);
+        ImGuiIO& io = ImGui::GetIO();
+        io.AddMousePosEvent(point.x, point.y);
+        static_cast<void>(renderAndCapture(panel));
+        static_cast<void>(renderAndCapture(panel));
+        io.AddMouseButtonEvent(ImGuiMouseButton_Right, true);
+        static_cast<void>(renderAndCapture(panel));
+        io.AddMouseButtonEvent(ImGuiMouseButton_Right, false);
+        static_cast<void>(renderAndCapture(panel)); // the popup's first frame only sizes it
+        std::string text = renderAndCapture(panel);
+        io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
+        return text;
+    }
+
+    /// Draws frames until the session actions' line says @p result.
+    [[nodiscard]] static bool renderUntilResult(ProcessesPanel& panel, std::string_view result)
+    {
+        return renderUntil(panel, result).contains(result);
+    }
+};
+
+// #3377: grouped by User, each signed-in account's sessions are under its header, read only while the table
+// shows them: grouped any other way, or with the tab hidden, nothing is read. The signed-in accounts come
+// first (decision 1), one with no process too; a session row is no process, so a click on it selects nothing.
+TEST_F(ProcessesPanelUserGroupsTest, GroupByUserShowsEachSignedInAccountsSessionsReadOnlyWhileShown)
+{
+    Platform::UserSession desktop = signIn("2", "alice");
+    desktop.seat = "seat0";
+    desktop.tty = "tty2";
+    desktop.type = "wayland";
+    desktop.current = true;
+    auto fake = std::make_shared<TestMocks::FakeUserSessions>(std::vector<Platform::UserSession>{desktop, signIn("9", "carol", "online")});
+    UserSessionsFeed feed([fake] { return fake; });
+    feed.start();
+    feed.setInterval(std::chrono::milliseconds(Domain::Sampling::REFRESH_INTERVAL_MIN_MS));
+    UserConfig::get().settings().processGroupBy = ProcessGrouping::GroupBy::None;
+    const auto panel = userSessionsPanel(feed);
+    renderUntilLoaded(*panel);
+    EXPECT_FALSE(feed.demanded());
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    EXPECT_EQ(fake->m_Reads.load(), 0) << "read while not grouped by User";
+
+    UserConfig::get().settings().processGroupBy = ProcessGrouping::GroupBy::User; // the next frame groups by it
+    const std::string text = renderUntil(*panel, "carol (0)");
+    EXPECT_TRUE(feed.demanded());
+    EXPECT_TRUE(text.contains(ICON_FA_USER "  alice  (you) (1)")) << text;
+    EXPECT_TRUE(text.contains(ICON_FA_DESKTOP "  seat0 \xC2\xB7 tty2 \xC2\xB7 Wayland  (this session)")) << text;
+    EXPECT_TRUE(text.contains("Active")) << text;
+    EXPECT_TRUE(text.contains(ICON_FA_USER "  carol (0)")) << "signed in, with no process: " << text;
+    EXPECT_TRUE(text.contains("Signed in")) << text;
+    EXPECT_LT(text.find("alice  (you)"), text.find("carol (0)")) << text;
+    EXPECT_LT(text.find("carol (0)"), text.find("root (1)")) << "signed in first: " << text;
+    EXPECT_LT(text.find("carol (0)"), text.find("bob (1)")) << text;
+    EXPECT_LT(text.find("seat0"), text.find("server")) << "the sessions under the header, before its processes: " << text;
+
+    // Rows: alice, her session, server, carol, her session, then root's and bob's. A click on a session selects nothing.
+    const ImVec2 session = rowPoint(1);
+    clickAtPoint(*panel, session.x, session.y);
+    EXPECT_EQ(panel->selectedPid(), -1) << "a session row isn't a process";
+    // The keyboard moves to processes only: the first is alice's server, past her session.
+    pressKey(*panel, ImGuiKey_DownArrow);
+    EXPECT_EQ(panel->selectedPid(), 100);
+
+    // Another tab shown: the table reads nothing.
+    Core::ActiveTabChangedEvent hidden("Users");
+    panel->onEvent(hidden);
+    panel->onUpdate(1.0F / 60.0F);
+    EXPECT_FALSE(feed.demanded());
+    panel->onDetach();
+    feed.stop();
+}
+
+// #3377 (Linux): a session's menu has Lock and Sign out..., as the Users tab's had; Sign out asks first, naming
+// the session. Refused for want of an administrator, the toolbar's line offers Authenticate and retry. An
+// account with one session offers the same menu on its header: Lock runs at once.
+TEST_F(ProcessesPanelUserGroupsTest, ASessionsMenuSignsOutAfterAskingAndTheHeaderLocksItsOneSession)
+{
+    auto fake =
+        std::make_shared<TestMocks::FakeUserSessions>(std::vector<Platform::UserSession>{signIn("2", "alice"), signIn("5", "carol")});
+    UserSessionsFeed feed([fake] { return fake; });
+    feed.start();
+    UserConfig::get().settings().processGroupBy = ProcessGrouping::GroupBy::User;
+    const auto panel = userSessionsPanel(feed);
+    renderUntilLoaded(*panel);
+    ASSERT_TRUE(renderUntil(*panel, "carol (0)").contains("carol (0)"));
+    ASSERT_NE(feed.actions(), nullptr);
+
+    // Rows: alice, her session, server, carol, her session. carol's session: Sign out...
+    const std::string menu = rightClickRow(*panel, 4);
+    ASSERT_NE(topPopup(), nullptr) << "the session menu didn't open";
+    EXPECT_TRUE(menu.contains("Lock")) << menu;
+    EXPECT_TRUE(menu.contains("Sign out...")) << menu;
+    EXPECT_FALSE(menu.contains("Disconnect...")) << menu;
+    pressPopupItem(*panel, ICON_FA_RIGHT_FROM_BRACKET "  Sign out...");
+    ASSERT_TRUE(feed.actions()->pending().has_value());
+    EXPECT_EQ(feed.actions()->pending()->id, "5");
+    static_cast<void>(renderAndCapture(*panel));
+    EXPECT_TRUE(renderAndCapture(*panel).contains("Sign out carol")) << "the confirm names the session";
+    pressModalFilledButton(*panel, "Sign out");
+    ASSERT_TRUE(renderUntilResult(*panel, "Couldn't sign out carol's session: Requires administrator"));
+    EXPECT_TRUE(renderAndCapture(*panel).contains(App::AuthorizeWording::RETRY_TEXT)) << "offered in the toolbar";
+    feed.actions()->retryAuthorized();
+    ASSERT_TRUE(renderUntilResult(*panel, "Signed out carol's session"));
+
+    // alice's header: her one session's menu; Lock runs without asking, and the sessions are read again.
+    static_cast<void>(rightClickRow(*panel, 0));
+    ASSERT_NE(topPopup(), nullptr) << "the header's menu didn't open";
+    const int readsBefore = fake->m_Reads.load();
+    pressPopupItem(*panel, ICON_FA_LOCK "  Lock");
+    EXPECT_FALSE(feed.actions()->pending().has_value()) << "Lock doesn't ask";
+    ASSERT_TRUE(renderUntilResult(*panel, "Locked alice's session"));
+    EXPECT_EQ(fake->calls(), (std::vector<std::string>{"signout 5", "signout 5 interactive", "lock 2"}));
+    const auto giveUp = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (fake->m_Reads.load() == readsBefore && std::chrono::steady_clock::now() < giveUp)
+    {
+        static_cast<void>(renderAndCapture(*panel));
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    EXPECT_GT(fake->m_Reads.load(), readsBefore) << "the done action asks for a fresh read";
+    panel->onDetach();
+    feed.stop();
+}
+
+// #3377 (Windows): the menu offers Disconnect... where Linux has Lock, greyed for a session already
+// disconnected; on another, it opens its own confirm.
+TEST_F(ProcessesPanelUserGroupsTest, WindowsSessionMenusOfferDisconnectInLocksPlace)
+{
+    auto fake = std::make_shared<TestMocks::FakeUserSessions>(
+        std::vector<Platform::UserSession>{signIn("1", "alice"), signIn("4", "carol", "disconnected")}, true, true);
+    UserSessionsFeed feed([fake] { return fake; });
+    feed.start();
+    UserConfig::get().settings().processGroupBy = ProcessGrouping::GroupBy::User;
+    const auto panel = userSessionsPanel(feed);
+    renderUntilLoaded(*panel);
+    ASSERT_TRUE(renderUntil(*panel, "Disconnected").contains("carol (0)"));
+
+    // carol's disconnected session: Disconnect... is greyed, so pressing it does nothing.
+    const std::string menu = rightClickRow(*panel, 4);
+    ASSERT_NE(topPopup(), nullptr) << "the session menu didn't open";
+    EXPECT_TRUE(menu.contains("Disconnect...")) << menu;
+    EXPECT_TRUE(menu.contains("Sign out...")) << menu;
+    EXPECT_FALSE(menu.contains("Lock")) << menu;
+    pressPopupItem(*panel, ICON_FA_LINK_SLASH "  Disconnect...");
+    EXPECT_FALSE(feed.actions()->pending().has_value()) << "an already disconnected session";
+    closePopups(*panel);
+
+    // alice's session: Disconnect... asks.
+    static_cast<void>(rightClickRow(*panel, 1));
+    ASSERT_NE(topPopup(), nullptr);
+    pressPopupItem(*panel, ICON_FA_LINK_SLASH "  Disconnect...");
+    ASSERT_TRUE(feed.actions()->pending().has_value());
+    EXPECT_EQ(feed.actions()->pending()->id, "1");
+    EXPECT_EQ(feed.actions()->pendingAction(), Platform::SessionAction::Disconnect);
+    static_cast<void>(renderAndCapture(*panel));
+    EXPECT_TRUE(renderAndCapture(*panel).contains("Disconnect alice")) << "the Disconnect confirm";
+    feed.actions()->cancel();
+    EXPECT_TRUE(fake->calls().empty());
+    panel->onDetach();
+    feed.stop();
+}
+
+// #3377 decision 2: while the filter is on, an account with sign-in sessions and no process it matches still
+// shows, its header and its sessions, with a line saying none matches; an account not signed in doesn't.
+TEST_F(ProcessesPanelUserGroupsTest, AnAccountWithSessionsAndNoMatchingProcessesStillShowsWhileFiltered)
+{
+    auto fake =
+        std::make_shared<TestMocks::FakeUserSessions>(std::vector<Platform::UserSession>{signIn("2", "alice"), signIn("9", "carol")});
+    UserSessionsFeed feed([fake] { return fake; });
+    feed.start();
+    UserConfig::get().settings().processGroupBy = ProcessGrouping::GroupBy::User;
+    const auto panel = userSessionsPanel(feed);
+    renderUntilLoaded(*panel);
+    ASSERT_TRUE(renderUntil(*panel, "carol (0)").contains("carol (0)"));
+    EXPECT_FALSE(renderAndCapture(*panel).contains(UserGrouping::NO_MATCHING_PROCESSES)) << "no filter, nothing to say";
+
+    const ImGuiWindow* shell = ImGui::FindWindowByName("Shell");
+    ASSERT_NE(shell, nullptr);
+    ImGui::ActivateItemByID(ImHashStr("##search", 0, shell->ID));
+    static_cast<void>(renderAndCapture(*panel));
+    for (const char* character : {"w", "o", "r", "k"})
+    {
+        ImGui::GetIO().AddInputCharactersUTF8(character);
+        static_cast<void>(renderAndCapture(*panel));
+    }
+    static_cast<void>(renderAndCapture(*panel));
+    const std::string text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("worker")) << text;
+    EXPECT_FALSE(text.contains("server")) << text;
+    EXPECT_TRUE(text.contains("alice (0)")) << "signed in: still shown, " << text;
+    EXPECT_TRUE(text.contains("carol (0)")) << text;
+    EXPECT_TRUE(text.contains("bob (1)")) << text;
+    EXPECT_FALSE(text.contains("root")) << "not signed in, no match: " << text;
+    EXPECT_TRUE(text.contains(UserGrouping::NO_MATCHING_PROCESSES)) << text;
+    panel->onDetach();
+    feed.stop();
+}
+
+// #3377: a failed read says so in one muted line above the table, which groups the processes as ever; where the
+// platform lists no sessions (a synthetic run), there are no session rows and no message, and nothing is read.
+TEST_F(ProcessesPanelUserGroupsTest, FailedAndUnsupportedSessionReads)
+{
+    auto failing = std::make_shared<TestMocks::FakeUserSessions>(std::vector<Platform::UserSession>{});
+    failing->m_Failure = "systemd-logind isn't running";
+    UserConfig::get().settings().processGroupBy = ProcessGrouping::GroupBy::User;
+    {
+        UserSessionsFeed feed([failing] { return failing; });
+        feed.start();
+        const auto panel = userSessionsPanel(feed);
+        renderUntilLoaded(*panel);
+        const std::string text = renderUntil(*panel, "couldn't be read");
+        EXPECT_TRUE(text.contains("Signed-in sessions couldn't be read: systemd-logind isn't running")) << text;
+        EXPECT_TRUE(text.contains("root (1)")) << text;
+        panel->onDetach();
+        feed.stop();
+    }
+
+    auto unsupported = std::make_shared<TestMocks::FakeUserSessions>(std::vector<Platform::UserSession>{signIn("2", "alice")}, false);
+    UserSessionsFeed feed([unsupported] { return unsupported; });
+    feed.start();
+    const auto panel = userSessionsPanel(feed);
+    renderUntilLoaded(*panel);
+    const std::string text = renderAndCapture(*panel);
+    EXPECT_FALSE(feed.demanded());
+    EXPECT_EQ(unsupported->m_Reads.load(), 0);
+    EXPECT_TRUE(text.contains("alice (1)")) << text;
+    EXPECT_FALSE(text.contains("couldn't be read")) << text;
+    EXPECT_FALSE(text.contains(ICON_FA_USER)) << "no sessions, no signed-in accounts: " << text;
+    panel->onDetach();
+    feed.stop();
+}
+
 // #3457: appMembership(), what Process Details' App row says, is the App group Group: App puts the process in,
 // worked out from the model's whole latest generation: a terminal's shell is in the terminal's group, named for
 // it and marked as there through its parent; the terminal is in its own; a process in no app, one the generation
@@ -3714,11 +4182,11 @@ TEST_F(ProcessesPanelRenderTest, AppMembershipFollowsTheTablesAppGroupFromTheWho
     // empty and appMembership() can only answer from the model's generation.
     panel->onAttach();
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-    while (!panel->findSnapshot(30).has_value() && std::chrono::steady_clock::now() < deadline)
+    while (panel->findSnapshot(30) == nullptr && std::chrono::steady_clock::now() < deadline)
     {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    ASSERT_TRUE(panel->findSnapshot(30).has_value()) << "the sampler thread did not publish the seed in time";
+    ASSERT_NE(panel->findSnapshot(30), nullptr) << "the sampler thread did not publish the seed in time";
     ASSERT_EQ(panel->adoptedProcessCount(), 0U) << "the render cache adopted a generation";
 
     const ProcessGrouping::AppMembership shell = panel->appMembership(21, 0);
@@ -3727,9 +4195,9 @@ TEST_F(ProcessesPanelRenderTest, AppMembershipFollowsTheTablesAppGroupFromTheWho
     EXPECT_TRUE(shell.inherited);
     EXPECT_TRUE(shell.tooltip.contains("through a parent process")) << shell.tooltip;
 
-    const std::optional<Domain::ProcessSnapshot> terminalSnapshot = panel->findSnapshot(20);
-    ASSERT_TRUE(terminalSnapshot.has_value());
-    const std::uint64_t terminalTicks = terminalSnapshot.has_value() ? terminalSnapshot->startTimeTicks : 0;
+    const std::shared_ptr<const Domain::ProcessSnapshot> terminalSnapshot = panel->findSnapshot(20);
+    ASSERT_NE(terminalSnapshot, nullptr);
+    const std::uint64_t terminalTicks = terminalSnapshot != nullptr ? terminalSnapshot->startTimeTicks : 0;
     const ProcessGrouping::AppMembership terminal = panel->appMembership(20, terminalTicks);
     EXPECT_EQ(terminal.key, FAMILY);
     EXPECT_EQ(terminal.label, "Windows Terminal");
@@ -4665,12 +5133,12 @@ TEST_F(ProcessesPanelRenderTest, FindSnapshotReadsTheModelsLatestSnapshot)
 {
     const auto panel = attachedPanel();
     renderUntilLoaded(*panel);
-    const std::optional<Domain::ProcessSnapshot> server = panel->findSnapshot(100);
-    ASSERT_TRUE(server.has_value());
-    EXPECT_EQ(server.value_or(Domain::ProcessSnapshot{}).name, "server");
-    EXPECT_FALSE(panel->findSnapshot(424242).has_value());
+    const std::shared_ptr<const Domain::ProcessSnapshot> server = panel->findSnapshot(100);
+    ASSERT_NE(server, nullptr);
+    EXPECT_EQ(server != nullptr ? server->name : std::string{}, "server");
+    EXPECT_EQ(panel->findSnapshot(424242), nullptr);
     panel->onDetach();
-    EXPECT_FALSE(panel->findSnapshot(100).has_value()) << "detached: no model";
+    EXPECT_EQ(panel->findSnapshot(100), nullptr) << "detached: no model";
 }
 
 /// Mock actions that say when they are destroyed.

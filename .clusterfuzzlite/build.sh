@@ -79,6 +79,11 @@ seed_corpus fuzz_dns_message tests/fuzz/corpus/fuzz_dns_message/*
 build_fuzzer fuzz_release_json src/Domain/UpdateCheck.cpp
 seed_corpus fuzz_release_json tests/fuzz/corpus/fuzz_release_json/*
 
+# Look up on VirusTotal's file-report reader (#3094): the reply VirusTotal's v3 API sends. Seeded with a trimmed
+# report and a NotFoundError answer.
+build_fuzzer fuzz_virustotal_json src/Domain/VirusTotal.cpp
+seed_corpus fuzz_virustotal_json tests/fuzz/corpus/fuzz_virustotal_json/*
+
 # The .desktop entry parser (#2172): header-only, on files any program the user runs can write.
 build_fuzzer fuzz_desktop_entry
 seed_corpus fuzz_desktop_entry tests/fuzz/corpus/fuzz_desktop_entry/*
@@ -119,8 +124,9 @@ seed_corpus fuzz_theme_loader assets/themes/*.toml tests/fuzz/corpus/fuzz_theme_
 # ThemeStub stands in for Theme.cpp (ImGui/ImPlot runtime), exactly as in the unit-test build, and
 # ConfigDirOverrideStub for Core/ConfigDirOverride.cpp, which reads TASKSMACK_CONFIG_DIR through SDL.
 # Platform/ThreadName.cpp names the coalescing save worker UserConfig.cpp starts (#2916).
-build_fuzzer fuzz_user_config src/App/UserConfig.cpp src/Platform/ThreadName.cpp tests/Mocks/ThemeStub.cpp \
-    tests/fuzz/ConfigDirOverrideStub.cpp
+# Domain/VirusTotal.cpp checks [virustotal] api_key as it is read (#3094).
+build_fuzzer fuzz_user_config src/App/UserConfig.cpp src/Domain/VirusTotal.cpp src/Platform/ThreadName.cpp \
+    tests/Mocks/ThemeStub.cpp tests/fuzz/ConfigDirOverrideStub.cpp
 # config.toml as UserConfig::save() writes it (defaults, and every optional key set), plus legacy keys
 # and out-of-range values, and the toml++ regression seeds.
 seed_corpus fuzz_user_config tests/fuzz/corpus/fuzz_user_config/* tests/fuzz/corpus/toml-regressions/*

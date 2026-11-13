@@ -62,6 +62,26 @@ void keep(std::string& capture, std::string_view line);
 /// said nothing.
 [[nodiscard]] std::string withLog(std::string reason, std::string_view captured);
 
+/// One load attempt's capture of libbpf's warnings (#3634). The text lives in this thread's own buffer, never in the
+/// caller's, so no address of the caller's storage is kept anywhere. While one is open, note() keeps what libbpf says;
+/// opening one empties the buffer, and closing it stops note() from adding to it.
+class Capture
+{
+  public:
+    Capture() noexcept;
+    ~Capture();
+    Capture(const Capture&) = delete;
+    Capture& operator=(const Capture&) = delete;
+    Capture(Capture&&) = delete;
+    Capture& operator=(Capture&&) = delete;
+
+    /// What libbpf has said on this thread since this capture opened, its last CAPTURE_BYTES.
+    [[nodiscard]] const std::string& text() const noexcept;
+};
+
+/// Adds @p line, one of libbpf's warnings, to this thread's open Capture (keep()); nothing when none is open.
+void note(std::string_view line);
+
 } // namespace UdpLibbpfLog
 
 class UdpByteCounter

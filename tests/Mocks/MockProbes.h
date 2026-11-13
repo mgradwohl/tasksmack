@@ -39,6 +39,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <stop_token>
 #include <string>
@@ -988,6 +989,25 @@ class MockProcessActions : public Platform::IProcessActions
         m_OpenFileLocationResult = std::move(result);
     }
 
+    /// What imageSha256() returns (#3094): a digest, or the reason it couldn't be read.
+    void setImageSha256Result(std::expected<std::string, std::string> result)
+    {
+        m_ImageSha256Result = std::move(result);
+    }
+
+    [[nodiscard]] std::expected<std::string, std::string> imageSha256(const Platform::ProcessTarget& target,
+                                                                      const std::stop_token& /*stop*/) override
+    {
+        m_LastTarget = target;
+        ++m_ImageSha256Count;
+        return m_ImageSha256Result;
+    }
+
+    [[nodiscard]] int imageSha256Count() const noexcept
+    {
+        return m_ImageSha256Count;
+    }
+
     [[nodiscard]] Platform::ProcessActionResult openFileLocation(const Platform::ProcessTarget& target) override
     {
         m_LastTarget = target;
@@ -1268,6 +1288,8 @@ class MockProcessActions : public Platform::IProcessActions
     Platform::ProcessActionResult m_SyscallTraceResult = Platform::ProcessActionResult::ok();
     int m_OpenFileLocationCount = 0;
     Platform::ProcessActionResult m_OpenFileLocationResult = Platform::ProcessActionResult::ok();
+    std::expected<std::string, std::string> m_ImageSha256Result = std::string(64, 'a');
+    int m_ImageSha256Count = 0;
     int m_RunProgramCount = 0;
     Platform::RunProgramRequest m_LastRunProgram;
     Platform::ProcessActionResult m_RunProgramResult = Platform::ProcessActionResult::ok();
@@ -1762,15 +1784,31 @@ class MockProcessOpenFilesReader : public Platform::IProcessOpenFilesReader
         return true;
     }
 
-    [[nodiscard]] Platform::OpenFilesReadResult readOpenFiles(const Platform::ProcessTarget& /*target*/) override
+    [[nodiscard]] Platform::OpenFilesReadResult readOpenFiles(const Platform::ProcessTarget& target) override
     {
         ++m_ReadCount;
+        m_ReadTargets.push_back(target);
         return m_Result;
     }
 
     [[nodiscard]] int readCount() const
     {
         return m_ReadCount;
+    }
+    /// The targets readOpenFiles() was asked for, in order.
+    [[nodiscard]] const std::vector<Platform::ProcessTarget>& readTargets() const
+    {
+        return m_ReadTargets;
+    }
+
+    /// expectAuthorizedReads() (#3578): each call's targets, recorded.
+    void expectAuthorizedReads(std::span<const Platform::ProcessTarget> targets) override
+    {
+        m_ExpectedReads.emplace_back(targets.begin(), targets.end());
+    }
+    [[nodiscard]] const std::vector<std::vector<Platform::ProcessTarget>>& expectedReads() const
+    {
+        return m_ExpectedReads;
     }
 
     /// beginBatch() / endBatch() (#3357): counted.
@@ -1818,6 +1856,8 @@ class MockProcessOpenFilesReader : public Platform::IProcessOpenFilesReader
     Platform::OpenFilesReadResult m_AuthorizedResult;
     Platform::OpenFilesReadResult m_Result;
     int m_ReadCount = 0;
+    std::vector<Platform::ProcessTarget> m_ReadTargets;
+    std::vector<std::vector<Platform::ProcessTarget>> m_ExpectedReads;
     int m_BatchesBegun = 0;
     int m_BatchesEnded = 0;
 };

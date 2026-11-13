@@ -12,7 +12,7 @@ namespace App
 struct UdpCountingStatus
 {
     bool delivering = false;  ///< UDP is in the per-process counters now
-    bool unsupported = false; ///< The helper couldn't load or read the counter on this system
+    bool unsupported = false; ///< The counter couldn't be loaded or read on this system
     std::string problem{};    // NOLINT(readability-redundant-member-init) - {} lets designated initializers omit it
 
     friend bool operator==(const UdpCountingStatus&, const UdpCountingStatus&) = default;

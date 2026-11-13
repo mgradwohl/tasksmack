@@ -3,12 +3,13 @@
 // The signed-in sessions, read once for every view that shows them (#3377): the sessions the platform lists
 // and acts through, the UsersModel that publishes them, the gate and the sampler that read them at the
 // Settings interval while a view needs them (ProcessGrouping::sessionsDemand()), and the Lock, Disconnect and
-// Sign out worker. ShellPanels owns it; the Users tab draws from it today, and the Processes table's Group:
-// User will too. The views only read its immutable publications on the UI thread: no view calls a probe.
+// Sign out worker. ShellPanels owns it; the Users tab and the Processes table's Group: User draw from it. The
+// views only read its immutable publications on the UI thread: no view calls a probe.
 
 #include "App/Panels/ProcessGrouping.h"
 #include "App/Panels/SamplingGate.h"
 #include "App/Panels/SessionActionControl.h"
+#include "App/Panels/SessionActionView.h"
 #include "Domain/BackgroundSampler.h"
 #include "Domain/SamplingConfig.h"
 #include "Domain/UsersModel.h"
@@ -52,8 +53,9 @@ class UserSessionsFeed
     /// Whether the Users tab is shown, one of sessionsDemand()'s inputs.
     void setUsersTabShown(bool shown);
 
-    /// Whether the Processes tab is shown and how its table is grouped, sessionsDemand()'s other inputs.
-    /// Until Group: User shows sessions (ProcessGrouping::USER_GROUPS_SHOW_SESSIONS), they read nothing.
+    /// Whether the Processes tab is shown and how its table is grouped, sessionsDemand()'s other inputs:
+    /// grouped by User, its groups show each account's sessions. The Processes panel sets them each frame;
+    /// only a change does anything.
     void setProcessesView(bool shown, ProcessGrouping::GroupBy groupBy);
 
     /// The Settings refresh interval (#2731): the sampler's, now or when it starts.
@@ -84,6 +86,17 @@ class UserSessionsFeed
     [[nodiscard]] bool canAct(Platform::SessionAction action) const
     {
         return m_Sessions != nullptr && m_Sessions->canAct(action);
+    }
+
+    /// A session menu's items: each platform's own (#3076), Lock on Linux, Disconnect on Windows, Sign out on
+    /// both; none before start() and after stop().
+    [[nodiscard]] SessionMenu sessionMenu() const
+    {
+        return SessionMenu{
+            .lock = canAct(Platform::SessionAction::Lock),
+            .disconnect = canAct(Platform::SessionAction::Disconnect),
+            .signOut = canAct(Platform::SessionAction::SignOut),
+        };
     }
 
     /// Lock, Disconnect and Sign out, or null before start() and after stop().

@@ -1383,8 +1383,13 @@ TEST(BrokerPipeServeTest, EveryRequestKindIsTheHelloAnActionOrARead)
     EXPECT_FALSE(BrokerPipeServer::isRead(signOut)) << "an action (#3076)";
     EXPECT_TRUE(BrokerPipeServer::isActionWindowsDoes(signOut));
     EXPECT_TRUE(BrokerPipeServer::putsOffTheWindowsIdleExit(signOut));
+    // #3578 (v24): Find handles' batch of open-files reads is a read, never the one action of a session.
+    const Broker::OpenFilesBatchRequest batch{.targets = {TARGET}};
+    EXPECT_TRUE(BrokerPipeServer::isRead(batch));
+    EXPECT_FALSE(BrokerPipeServer::isActionWindowsDoes(batch));
+    EXPECT_FALSE(BrokerPipeServer::putsOffTheWindowsIdleExit(batch));
     // Protocol v23 (#3580) dropped the kinds only Linux's helper served.
-    static_assert(std::variant_size_v<Broker::Request> == 15, "a new request kind: add it above");
+    static_assert(std::variant_size_v<Broker::Request> == 16, "a new request kind: add it above");
 }
 
 TEST(BrokerPipeServeTest, AOneActionSessionIsntKeptOpenByGreetingAgain)

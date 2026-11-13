@@ -79,7 +79,7 @@ class LinuxProcessProbe : public IProcessProbe
     /// Use this to override the default cache TTL at runtime (e.g., from user config)
     void setSocketStatsCacheTtl(std::chrono::milliseconds ttlMs) override;
 
-    /// The opt-in UDP collector (#3366): the helper's eBPF counter, read through the broker. While it delivers, a
+    /// The opt-in UDP collector (#3366): root's in-process eBPF counter (LinuxUdpTrafficCollector, #3580). While it delivers, a
     /// complete readSocketTraffic() also carries each process's UDP bytes as one synthetic connection
     /// (UdpTraffic::appendSamples()), and capabilities() reports hasUdpNetworkCounters. May be null.
     void setUdpTrafficCollector(const std::shared_ptr<IUdpTrafficCollector>& collector) override;
@@ -191,7 +191,7 @@ class LinuxProcessProbe : public IProcessProbe
     // plain mutex is used instead.)
     mutable std::mutex m_SocketStatsMutex;
     mutable std::mutex m_UdpCollectorMutex;               // guards the three below (#3366)
-    std::shared_ptr<IUdpTrafficCollector> m_UdpCollector; // the helper's UDP counter; may be null
+    std::shared_ptr<IUdpTrafficCollector> m_UdpCollector; // root's UDP counter (#3580); null without root
     // The UDP rows added to the last socket reading, and its time: a cached reading (the same time) gets the same rows,
     // so each UDP sample goes with exactly one reading Domain folds in (it skips a reading it has seen).
     mutable std::uint64_t m_UdpReadingTimeNs = 0;

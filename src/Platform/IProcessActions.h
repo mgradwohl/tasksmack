@@ -344,6 +344,9 @@ struct ProcessActionCapabilities
     /// openFileLocation(): the file manager can be asked to show a process's executable (#3064; Linux:
     /// FileManager1 over D-Bus or xdg-open; Windows: SHOpenFolderAndSelectItems or explorer.exe /select, #3426).
     bool canOpenFileLocation = false;
+    /// imageSha256(): the SHA-256 of a process's executable can be read (#3094, Look up on VirusTotal; Linux:
+    /// /proc/<pid>/exe; Windows: the file QueryFullProcessImageNameW names, #3646).
+    bool canHashImage = false;
     /// runProgram(): Run new task can start a program (#3065), and with administrator rights too where
     /// canRunProgramAsAdministrator says so (Linux: pkexec is installed, or TaskSmack runs as root; Windows,
     /// #3427: TaskSmack isn't elevated, so the runas verb's UAC prompt can elevate it, while an elevated
@@ -442,6 +445,18 @@ class IProcessActions
     {
         static_cast<void>(target);
         return ProcessActionResult::error("Opening a file location isn't available on this system");
+    }
+
+    /// The SHA-256 of the program file the target runs (#3094), as 64 lowercase hex digits: what Look up on
+    /// VirusTotal sends, never the file. Refused, as every action is, unless the process at the target's PID is
+    /// the target. Blocking: it reads the whole file, so call it off the UI thread; @p stop abandons it. The
+    /// default refuses it as unsupported, matching ProcessActionCapabilities::canHashImage's default (false),
+    /// which an implementation that does not override this must leave as it is.
+    [[nodiscard]] virtual std::expected<std::string, std::string> imageSha256(const ProcessTarget& target, const std::stop_token& stop)
+    {
+        static_cast<void>(target);
+        static_cast<void>(stop);
+        return std::unexpected(std::string("Hashing a process's executable isn't available on this system"));
     }
 
     /// Starts the program @p request names, detached from TaskSmack (#3065), and returns once it has been

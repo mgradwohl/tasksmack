@@ -26,6 +26,7 @@ using ProcessRowFormat::formatAlignedPercentString;
 using ProcessRowFormat::getOrBuildRowFormatCache;
 using ProcessRowFormat::makeAlignedCellText;
 using ProcessRowFormat::RowFormatCache;
+using ProcessRowFormat::RowFormatOptions;
 using ProcessRowFormat::UNAVAILABLE_CELL_TEXT;
 
 /// Builds a minimal-but-representative snapshot: every field buildRowFormatCache() reads is set
@@ -178,6 +179,26 @@ TEST(ProcessRowFormatTest, BuildRowFormatCacheFormatsEveryField)
     EXPECT_EQ(fmt.pageFaults.text, UI::Format::formatIntLocalized(std::uint64_t{123}));
     EXPECT_EQ(fmt.affinity.text, "0,1");
     EXPECT_EQ(fmt.gdiObjects.text, UI::Format::formatIntLocalized(9));
+}
+
+// #3328: the User cell writes DOMAIN\user only for a row the panel says shares its name with another account;
+// every other row draws the snapshot's own user name, with nothing built for it.
+TEST(ProcessRowFormatTest, TheUserCellIsQualifiedOnlyWhenItsNameIsShared)
+{
+    ProcessSnapshot proc = makeSnapshot();
+    proc.user = "alice";
+    proc.userDomain = "CORP";
+    EXPECT_TRUE(buildRowFormatCache(proc).qualifiedUser.empty()) << "a name one account has needs no domain";
+
+    RowFormatOptions shared;
+    shared.qualifyUser = true;
+    EXPECT_EQ(buildRowFormatCache(proc, shared).qualifiedUser, "CORP\\alice");
+
+    proc.userDomain.clear(); // Its domain wasn't read (or Linux): nothing to add
+    EXPECT_TRUE(buildRowFormatCache(proc, shared).qualifiedUser.empty());
+    proc.userDomain = "CORP";
+    proc.user.clear(); // Its user wasn't read
+    EXPECT_TRUE(buildRowFormatCache(proc, shared).qualifiedUser.empty());
 }
 
 /// Asserts `cell` is the unavailable dash, muted, with `reason` as its tooltip.

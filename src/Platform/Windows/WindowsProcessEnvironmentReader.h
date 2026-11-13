@@ -20,8 +20,9 @@
 // pass for current.) An x64 process emulated on ARM64 has a 64-bit PEB and is read as a native one.
 // Each pointer is checked before it is followed: aligned for its field, and with what it points at
 // within the addresses a pointer of its size reaches; the block is never read past 4 GiB for a 32-bit
-// process. Reading as an administrator through the elevated helper (canReadAuthorized(), #2517) is a
-// later step: the Windows helper reads no environments (HelperMain.cpp).
+// process. TaskSmackHelper.exe reads with this same class (HelperMain.cpp, #3610), so "Authenticate to read"
+// (BrokeredEnvironmentReader::readAuthorized(), #2309) reads an elevated or another user's process as an
+// administrator.
 
 #ifdef _WIN32
 // clang-format off

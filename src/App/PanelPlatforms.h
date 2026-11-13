@@ -86,6 +86,9 @@ void preparePanelPlatforms(const Synthetic::Scenario* scenario);
 /// which has none yet), or null in a synthetic run or while a test hook is set (@p testHookActive), where
 /// the check isn't offered. Making it opens and sends nothing.
 [[nodiscard]] std::shared_ptr<Platform::IHttpsClient> makeUpdateCheckClient(const Synthetic::Scenario* scenario, bool testHookActive);
+/// The client Look up on VirusTotal asks through (#3094): none for a made-up machine or an unattended test run, as
+/// for the update check.
+[[nodiscard]] std::shared_ptr<Platform::IHttpsClient> makeLookupClient(const Synthetic::Scenario* scenario, bool testHookActive);
 
 /// The sign-in entry Settings' "Start TaskSmack when I sign in" reads and writes (#3093, part 2): the
 /// platform's (null on Linux, which has none yet), or null in a synthetic run or while a test hook is set

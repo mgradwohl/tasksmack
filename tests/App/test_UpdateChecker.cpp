@@ -2,8 +2,10 @@
 /// @brief The opt-in update check's worker (#3093), with a fake HTTPS client and an injected clock, so no
 /// test touches the network: nothing is sent while the setting is off or without a client, the first
 /// check when it is on, at most one a day after that (a failed one counting), Check now ahead of the limit,
-/// a restart that keeps the limit and the notice, and Dismiss.
+/// a restart that keeps the limit and the notice, and Dismiss. Also what the title bar's update button
+/// shows for each of those (#3373).
 
+#include "App/TitleBarButtons.h"
 #include "App/UpdateChecker.h"
 #include "Domain/SamplingConfig.h"
 #include "Domain/UpdateCheck.h"
@@ -310,6 +312,119 @@ TEST_F(UpdateCheckerTest, ACheckStillRunningWhenTheCheckerGoesIsWaitedFor)
         UpdateChecker checker = makeChecker(m_Client);
         EXPECT_TRUE(checker.update(m_State));
     } // destroyed with the request in flight: stopped and waited for, not left running
+    EXPECT_EQ(m_Client->requests().size(), 1U);
+}
+
+// ========== The title bar's update button (#3373) ==========
+
+TEST_F(UpdateCheckerTest, TheUpdateButtonIsHiddenWhereTheCheckIsntOffered)
+{
+    m_State.enabled = true;
+    m_State.latestVersion = "0.10.0"; // what another run saw shows nothing here either
+    m_State.latestUrl = RELEASE_PAGE;
+    EXPECT_EQ(makeChecker(nullptr).titleBarButton(m_State), TitleBarButtons::UpdateButton{});
+    EXPECT_FALSE(makeChecker(m_Client, "dev").titleBarButton(m_State).shown);
+}
+
+TEST_F(UpdateCheckerTest, TheUpdateButtonIsInactiveAndSaysSoWhileTheSettingIsOff)
+{
+    const UpdateChecker checker = makeChecker(m_Client);
+    m_State.latestVersion = "0.10.0"; // seen before the setting was turned off: not offered now
+    m_State.latestUrl = RELEASE_PAGE;
+    const TitleBarButtons::UpdateButton button = checker.titleBarButton(m_State);
+    EXPECT_TRUE(button.shown);
+    EXPECT_FALSE(button.active);
+    EXPECT_EQ(button.tooltip, TitleBarButtons::UPDATE_OFF_TOOLTIP);
+    EXPECT_TRUE(button.url.empty());
+    EXPECT_TRUE(m_Client->requests().empty()); // asking sends nothing
+}
+
+TEST_F(UpdateCheckerTest, TheLaunchCheckLightsTheUpdateButtonWithTheNewVersion)
+{
+    UpdateChecker checker = makeChecker(m_Client);
+    m_State.enabled = true;
+    // Before the first update(): nothing seen yet.
+    EXPECT_EQ(checker.titleBarButton(m_State).tooltip, TitleBarButtons::UPDATE_UNKNOWN_TOOLTIP);
+
+    // The first update() starts the check, as TaskSmack starts; until it ends the button says so.
+    ASSERT_TRUE(checker.update(m_State));
+    TitleBarButtons::UpdateButton button = checker.titleBarButton(m_State);
+    EXPECT_FALSE(button.active);
+    EXPECT_EQ(button.tooltip, TitleBarButtons::UPDATE_CHECKING_TOOLTIP);
+
+    checker.waitForCheck();
+    ASSERT_TRUE(checker.update(m_State));
+    button = checker.titleBarButton(m_State);
+    EXPECT_TRUE(button.shown);
+    EXPECT_TRUE(button.active);
+    EXPECT_EQ(button.tooltip, "TaskSmack v0.10.0 is available");
+    EXPECT_EQ(button.url, RELEASE_PAGE);
+    EXPECT_EQ(m_Client->requests().size(), 1U);
+}
+
+TEST_F(UpdateCheckerTest, DismissingTheNoticeLeavesTheUpdateButtonLit)
+{
+    const UpdateChecker checker = makeChecker(m_Client);
+    m_State.enabled = true;
+    m_State.latestVersion = "0.10.0";
+    m_State.latestUrl = RELEASE_PAGE;
+    ASSERT_TRUE(UpdateChecker::dismiss(m_State));
+    ASSERT_FALSE(checker.notice(m_State).has_value());
+    const TitleBarButtons::UpdateButton button = checker.titleBarButton(m_State);
+    EXPECT_TRUE(button.active);
+    EXPECT_EQ(button.tooltip, "TaskSmack v0.10.0 is available");
+    EXPECT_EQ(button.url, RELEASE_PAGE);
+}
+
+TEST_F(UpdateCheckerTest, TheUpdateButtonIsInactiveAndUpToDateOnTheLatestRelease)
+{
+    m_Client->setReply(newerRelease());
+    UpdateChecker checker = makeChecker(m_Client, "0.10.0");
+    m_State.enabled = true;
+    ASSERT_TRUE(runUpdate(checker));
+    const TitleBarButtons::UpdateButton button = checker.titleBarButton(m_State);
+    EXPECT_TRUE(button.shown);
+    EXPECT_FALSE(button.active);
+    EXPECT_EQ(button.tooltip, TitleBarButtons::UPDATE_UP_TO_DATE_TOOLTIP);
+    EXPECT_TRUE(button.url.empty());
+
+    // A dev build of the next version is up to date against the last release too.
+    const UpdateChecker dev = makeChecker(m_Client, "0.11.0-dev");
+    EXPECT_EQ(dev.titleBarButton(m_State).tooltip, TitleBarButtons::UPDATE_UP_TO_DATE_TOOLTIP);
+}
+
+TEST_F(UpdateCheckerTest, AFailedCheckLeavesTheUpdateButtonOnWhatTheLastOneSaw)
+{
+    m_Client->setReply(std::unexpected(std::string("offline")));
+    UpdateChecker checker = makeChecker(m_Client);
+    m_State.enabled = true;
+    ASSERT_TRUE(runUpdate(checker));
+    // No check has ever seen a release: the button doesn't claim TaskSmack is up to date.
+    TitleBarButtons::UpdateButton button = checker.titleBarButton(m_State);
+    EXPECT_FALSE(button.active);
+    EXPECT_EQ(button.tooltip, TitleBarButtons::UPDATE_UNKNOWN_TOOLTIP);
+
+    // One that did, a day before: the failure changes nothing it shows.
+    m_State.latestVersion = "0.10.0";
+    m_State.latestUrl = RELEASE_PAGE;
+    button = checker.titleBarButton(m_State);
+    EXPECT_TRUE(button.active);
+    EXPECT_EQ(button.tooltip, "TaskSmack v0.10.0 is available");
+}
+
+TEST_F(UpdateCheckerTest, ARestartWithinADayLightsTheUpdateButtonWithoutAnotherCheck)
+{
+    m_State.enabled = true;
+    {
+        UpdateChecker first = makeChecker(m_Client);
+        ASSERT_TRUE(runUpdate(first));
+    }
+    m_Now += 2h;
+    UpdateChecker after = makeChecker(m_Client);
+    EXPECT_FALSE(runUpdate(after)); // not due
+    const TitleBarButtons::UpdateButton button = after.titleBarButton(m_State);
+    EXPECT_TRUE(button.active);
+    EXPECT_EQ(button.tooltip, "TaskSmack v0.10.0 is available");
     EXPECT_EQ(m_Client->requests().size(), 1U);
 }
 

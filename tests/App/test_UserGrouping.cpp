@@ -505,5 +505,286 @@ TEST(UserGroupsTest, ABareNameJoinsItsAccountWhenTheAccountsProcessesAreFiltered
     }
 }
 
+// #3328: the names the User column writes with their domain are the ones two accounts with processes share,
+// counted ignoring ASCII case as Windows compares account names; a process with no domain counts for none.
+TEST(SharedUserNamesTest, ANameIsSharedOnlyWhenTwoAccountsHaveProcesses)
+{
+    const std::vector<Domain::ProcessSnapshot> snapshots{
+        processOf(10, "PC", "alice", 1.0),
+        processOf(11, "CORP", "Alice", 1.0), // Another account, its name in another case
+        processOf(12, "pc", "ALICE", 1.0),   // PC\alice again
+        processOf(13, "PC", "bob", 1.0),
+        processOf(14, "pc", "Bob", 1.0), // PC\bob again: one account
+        processOf(15, "NT AUTHORITY", "SYSTEM", 1.0),
+        process(16, "carol", 1.0, 100), // No domain: Linux, or one not read
+        processOf(17, "PC", "carol", 1.0),
+        processOf(18, "PC", "", 1.0), // No user read
+        processOf(19, "CORP", "", 1.0),
+    };
+    const std::vector<std::string> shared = sharedUserNames(snapshots);
+    ASSERT_EQ(shared.size(), 1U);
+    EXPECT_EQ(shared[0], "alice"); // As its first process spells it
+    EXPECT_TRUE(isSharedUserName(shared, "alice"));
+    EXPECT_TRUE(isSharedUserName(shared, "ALICE"));
+    EXPECT_FALSE(isSharedUserName(shared, "bob"));
+    EXPECT_FALSE(isSharedUserName(shared, "carol"));
+    EXPECT_FALSE(isSharedUserName(shared, "SYSTEM"));
+    EXPECT_FALSE(isSharedUserName(shared, ""));
+}
+
+TEST(SharedUserNamesTest, LinuxProcessesNameNoDomainSoNoNameIsShared)
+{
+    const std::vector<Domain::ProcessSnapshot> snapshots{
+        process(1, "root", 1.0, 100),
+        process(2, "alice", 1.0, 100),
+        process(3, "Alice", 1.0, 100), // Two Linux accounts, but neither has a domain to write
+    };
+    EXPECT_TRUE(sharedUserNames(snapshots).empty());
+    EXPECT_TRUE(sharedUserNames({}).empty());
+    EXPECT_FALSE(isSharedUserName({}, "alice"));
+}
+
+TEST(SharedUserNamesTest, EverySharedNameIsFoundWhateverItsPlaceInTheSortedList)
+{
+    std::vector<Domain::ProcessSnapshot> snapshots;
+    for (const char* name : {"dave", "Bob", "erin", "alice", "carol"})
+    {
+        snapshots.push_back(processOf(1, "PC", name, 1.0));
+        snapshots.push_back(processOf(2, "CORP", name, 1.0));
+    }
+    const std::vector<std::string> shared = sharedUserNames(snapshots);
+    EXPECT_EQ(shared, (std::vector<std::string>{"alice", "Bob", "carol", "dave", "erin"})); // Sorted ignoring case
+    for (const char* name : {"ALICE", "bob", "Carol", "dave", "Erin"})
+    {
+        EXPECT_TRUE(isSharedUserName(shared, name)) << name;
+    }
+    EXPECT_FALSE(isSharedUserName(shared, "frank"));
+    EXPECT_FALSE(isSharedUserName(shared, "aaron"));
+}
+
+// --- The Users tab folded into Group: User (#3377) ------------------------------------------------
+
+/// Group: User's groups of @p snapshots taken in @p order, with the sign-in @p sessions, by CPU busiest first.
+[[nodiscard]] std::vector<ProcessGrouping::Group> userGroupsWithSessions(const std::vector<Domain::ProcessSnapshot>& snapshots,
+                                                                         const std::vector<std::size_t>& order,
+                                                                         const std::vector<UserSession>& sessions)
+{
+    return ProcessGrouping::buildGroups(
+        snapshots, order, ProcessGrouping::GroupBy::User, snapshots.size(), ProcessColumn::CpuPercent, false, sessions);
+}
+
+/// Every index into @p snapshots, in order: the table unfiltered.
+[[nodiscard]] std::vector<std::size_t> allOf(const std::vector<Domain::ProcessSnapshot>& snapshots)
+{
+    std::vector<std::size_t> order(snapshots.size());
+    for (std::size_t i = 0; i < order.size(); ++i)
+    {
+        order[i] = i;
+    }
+    return order;
+}
+
+// #3377 decision 1: the accounts with a sign-in session sort ahead of the service accounts, whatever their
+// totals; within each tier the table's sort applies, then the name; Ungrouped stays last. Each account carries
+// its sessions in the publication's order, and a greeter's session is no one's sign-in.
+TEST(UserGroupsWithSessionsTest, SignedInAccountsSortAheadOfServiceAccounts)
+{
+    const std::vector<Domain::ProcessSnapshot> snapshots{
+        process(10, "root", 50.0, 900),
+        process(11, "alice", 5.0, 300),
+        process(12, "messagebus", 20.0, 50),
+        process(13, "bob", 9.0, 100),
+        process(14, "alice", 1.0, 100),
+        process(15, "", 70.0, 10), // its user wasn't read
+        process(16, "gdm", 2.0, 10),
+    };
+    UserSession aliceDesktop = session("2", "alice", 1000);
+    aliceDesktop.current = true;
+    UserSession greeter = session("c1", "gdm", 120);
+    greeter.sessionClass = "greeter";
+    const std::vector<UserSession> sessions{aliceDesktop, session("7", "alice", 1000, "online"), session("5", "bob", 1001), greeter};
+
+    const std::vector<ProcessGrouping::Group> groups = userGroupsWithSessions(snapshots, allOf(snapshots), sessions);
+    ASSERT_EQ(groups.size(), 6U);
+    EXPECT_EQ(groups[0].label, "bob") << "signed in, 9 %: ahead of root's 50 %";
+    EXPECT_EQ(groups[1].label, "alice") << "signed in, 6 %";
+    EXPECT_EQ(groups[2].label, "root") << "the busiest service account, after every signed-in one";
+    EXPECT_EQ(groups[3].label, "messagebus");
+    EXPECT_EQ(groups[4].label, "gdm") << "a greeter's session signs no one in";
+    EXPECT_TRUE(groups[4].sessions.empty());
+    EXPECT_TRUE(groups[5].key.empty()) << "Ungrouped last, busiest or not";
+
+    const ProcessGrouping::Group& alice = groups[1];
+    ASSERT_EQ(alice.sessions.size(), 2U);
+    EXPECT_EQ(alice.sessions[0].id, "2");
+    EXPECT_EQ(alice.sessions[1].id, "7");
+    EXPECT_TRUE(alice.current);
+    EXPECT_EQ(alice.members, (std::vector<std::size_t>{1, 4}));
+    EXPECT_DOUBLE_EQ(alice.totals.cpuPercent, 6.0);
+    EXPECT_FALSE(groups[0].current);
+    EXPECT_FALSE(groups[2].current);
+
+    // Sorted the other way, the tiers stay: signed in first, Ungrouped last.
+    const std::vector<ProcessGrouping::Group> ascending = ProcessGrouping::buildGroups(
+        snapshots, allOf(snapshots), ProcessGrouping::GroupBy::User, snapshots.size(), ProcessColumn::CpuPercent, true, sessions);
+    ASSERT_EQ(ascending.size(), 6U);
+    EXPECT_EQ(ascending[0].label, "alice");
+    EXPECT_EQ(ascending[1].label, "bob");
+    EXPECT_EQ(ascending[2].label, "gdm");
+    EXPECT_TRUE(ascending[5].key.empty());
+
+    // The other modes have no sessions, and their order is as it was.
+    const std::vector<ProcessGrouping::Group> byUnit = ProcessGrouping::buildGroups(
+        snapshots, allOf(snapshots), ProcessGrouping::GroupBy::Unit, snapshots.size(), ProcessColumn::CpuPercent, false, sessions);
+    ASSERT_EQ(byUnit.size(), 1U);
+    EXPECT_TRUE(byUnit[0].sessions.empty());
+}
+
+// #3377 decision 2: the filter hides processes, never who is signed in. An account with sign-in sessions and no
+// process the filter matches still has its group, with its sessions and no members; an account that isn't
+// signed in has none, as before. One TaskSmack can't see any process of (hidepid) shows the same way.
+TEST(UserGroupsWithSessionsTest, AnAccountWithSessionsAndNoMatchingProcessesStillShows)
+{
+    const std::vector<Domain::ProcessSnapshot> snapshots{
+        process(10, "alice", 5.0, 300),
+        process(11, "root", 50.0, 900),
+        process(12, "bob", 9.0, 100),
+    };
+    const std::vector<UserSession> sessions{session("2", "alice", 1000), session("5", "bob", 1001), session("9", "carol", 1002)};
+    // The filter matches root's process only.
+    const std::vector<ProcessGrouping::Group> groups = userGroupsWithSessions(snapshots, {1}, sessions);
+    ASSERT_EQ(groups.size(), 4U);
+    EXPECT_EQ(groups[0].label, "alice");
+    EXPECT_EQ(groups[1].label, "bob");
+    EXPECT_EQ(groups[2].label, "carol") << "signed in, with no process TaskSmack can see";
+    for (std::size_t g = 0; g < 3; ++g)
+    {
+        EXPECT_TRUE(groups[g].members.empty()) << groups[g].label;
+        EXPECT_EQ(groups[g].totals.processes, 0U) << groups[g].label;
+        EXPECT_EQ(groups[g].sessions.size(), 1U) << groups[g].label;
+    }
+    EXPECT_EQ(groups[3].label, "root");
+    EXPECT_EQ(groups[3].members, (std::vector<std::size_t>{1}));
+
+    // Nothing matches: only the signed-in accounts are left.
+    const std::vector<ProcessGrouping::Group> none = userGroupsWithSessions(snapshots, {}, sessions);
+    ASSERT_EQ(none.size(), 3U);
+    EXPECT_EQ(none[0].label, "alice");
+    EXPECT_EQ(none[2].label, "carol");
+}
+
+// #3377 (Windows): a session names its account's domain, so it joins that account's processes, ignoring case as
+// Windows compares names: PC\alice's session is PC\alice's group, never CORP\alice's. A signed-in account with no
+// process is labelled from its session, with its domain when two accounts share the name, and a process whose
+// domain wasn't read joins the one signed-in account with its name.
+TEST(UserGroupsWithSessionsTest, WindowsSessionsJoinTheirAccountByDomainAndName)
+{
+    UserSession local = session("1", "Alice", 0);
+    local.domain = "pc";
+    UserSession remote = session("3", "dave", 0);
+    remote.domain = "CORP";
+    remote.remote = true;
+    UserSession other = session("4", "alice", 0);
+    other.domain = "LAB";
+    const std::vector<Domain::ProcessSnapshot> snapshots{
+        processOf(10, "PC", "alice", 5.0),
+        processOf(11, "CORP", "alice", 7.0),
+        process(12, "dave", 1.0, 100), // its domain wasn't read: CORP\dave is the only dave
+        processOf(13, "NT AUTHORITY", "SYSTEM", 30.0),
+    };
+    const std::vector<ProcessGrouping::Group> groups = userGroupsWithSessions(snapshots, allOf(snapshots), {local, remote, other});
+    ASSERT_EQ(groups.size(), 5U);
+    const ProcessGrouping::Group* pc = groupKeyed(groups, "pc\\alice");
+    const ProcessGrouping::Group* lab = groupKeyed(groups, "lab\\alice");
+    const ProcessGrouping::Group* corp = groupKeyed(groups, "corp\\alice");
+    const ProcessGrouping::Group* dave = groupKeyed(groups, "corp\\dave");
+    ASSERT_NE(pc, nullptr);
+    ASSERT_NE(lab, nullptr);
+    ASSERT_NE(corp, nullptr);
+    ASSERT_NE(dave, nullptr);
+    EXPECT_EQ(pc->members, (std::vector<std::size_t>{0}));
+    ASSERT_EQ(pc->sessions.size(), 1U);
+    EXPECT_EQ(pc->sessions[0].id, "1");
+    EXPECT_EQ(pc->label, "PC\\alice") << "spelled as its process spells it";
+    EXPECT_TRUE(lab->members.empty());
+    EXPECT_EQ(lab->label, "LAB\\alice") << "three accounts are alice: labelled from its session, with its domain";
+    EXPECT_TRUE(corp->sessions.empty()) << "CORP\\alice isn't signed in";
+    EXPECT_EQ(corp->label, "CORP\\alice");
+    EXPECT_EQ(dave->members, (std::vector<std::size_t>{2})) << "the one dave account is the signed-in one";
+    EXPECT_EQ(dave->label, "dave");
+    EXPECT_EQ(groups[3].label, "SYSTEM") << "after the three signed-in accounts";
+    EXPECT_EQ(groups[4].label, "CORP\\alice");
+}
+
+// #3377 (Windows): sessions whose user couldn't be read have no account: they share one Not readable group,
+// after every account and before Ungrouped, which offers no menu on its header.
+TEST(UserGroupsWithSessionsTest, SessionsNotReadableShareOneGroupBeforeUngrouped)
+{
+    UserSession hidden = session("5", "", 0);
+    hidden.unreadable = "Access is denied";
+    UserSession alsoHidden = session("6", "", 0);
+    alsoHidden.unreadable = "Access is denied";
+    const std::vector<Domain::ProcessSnapshot> snapshots{process(10, "", 70.0, 10), process(11, "root", 1.0, 10)};
+    const std::vector<ProcessGrouping::Group> groups = userGroupsWithSessions(snapshots, allOf(snapshots), {hidden, alsoHidden});
+    ASSERT_EQ(groups.size(), 3U);
+    EXPECT_EQ(groups[0].label, "root");
+    EXPECT_TRUE(groups[1].notReadable);
+    EXPECT_EQ(groups[1].label, "Not readable");
+    EXPECT_EQ(groups[1].key, NOT_READABLE_GROUP_KEY);
+    EXPECT_EQ(groups[1].sessions.size(), 2U);
+    EXPECT_TRUE(groups[1].members.empty());
+    EXPECT_TRUE(groups[2].key.empty());
+    EXPECT_EQ(headerMenuSession(groups[1]), nullptr);
+    EXPECT_EQ(groupStatus(groups[1], 0), "2 sessions");
+    const std::string tooltip = groupHeaderTooltip(groups[1], false);
+    EXPECT_TRUE(tooltip.starts_with("Collapse")) << tooltip;
+    EXPECT_TRUE(tooltip.contains("Session 5: its user couldn't be read: Access is denied")) << tooltip;
+    EXPECT_TRUE(tooltip.contains("Session 6")) << tooltip;
+}
+
+// #3377: what a Group: User header and its session rows say, as the Users tab said it: "(you)", the one
+// session's status or how many, the totals' scope in the tooltip, the session's place and "(this session)",
+// and when it was signed in to; the header's menu is its one readable session's.
+TEST(UserGroupsWithSessionsTest, TheHeaderAndSessionRowsSayWhoWhereAndHow)
+{
+    UserSession desktop = session("2", "alice", 1000);
+    desktop.seat = "seat0";
+    desktop.type = "wayland";
+    desktop.current = true;
+    const std::vector<Domain::ProcessSnapshot> snapshots{process(10, "alice", 5.0, 300), process(11, "root", 1.0, 10)};
+    std::vector<ProcessGrouping::Group> groups = userGroupsWithSessions(snapshots, allOf(snapshots), {desktop});
+    ASSERT_EQ(groups.size(), 2U);
+    const ProcessGrouping::Group& alice = groups[0];
+    EXPECT_EQ(groupHeaderName(alice), "alice  (you)");
+    EXPECT_EQ(groupHeaderName(groups[1]), "root");
+    EXPECT_EQ(groupStatus(alice, 0), "Active");
+    EXPECT_EQ(groupStatus(groups[1], 0), "") << "no sessions, no status";
+    ASSERT_NE(headerMenuSession(alice), nullptr);
+    EXPECT_EQ(headerMenuSession(alice)->id, "2");
+    EXPECT_EQ(headerMenuSession(groups[1]), nullptr);
+    EXPECT_EQ(groupHeaderTooltip(groups[1], true), "Expand");
+    EXPECT_EQ(groupHeaderTooltip(alice, false), "Collapse\nThe \xCE\xA3 totals are of the processes TaskSmack can see");
+    EXPECT_EQ(sessionRowName(desktop), "seat0 \xC2\xB7 Wayland  (this session)");
+    EXPECT_EQ(sessionSignInTime(desktop), "") << "Linux doesn't read the sign-in time yet (#3377 PR 4)";
+
+    // Two sessions: the header says how many, and each session's own row has the menu.
+    UserSession ssh = session("7", "alice", 1000, "online");
+    ssh.tty = "pts/0";
+    ssh.remote = true;
+    ssh.remoteHost = "10.0.0.9";
+    groups = userGroupsWithSessions(snapshots, allOf(snapshots), {desktop, ssh});
+    EXPECT_EQ(groupStatus(groups[0], 0), "2 sessions");
+    EXPECT_EQ(headerMenuSession(groups[0]), nullptr);
+    EXPECT_EQ(sessionRowName(ssh), "pts/0 \xC2\xB7 from 10.0.0.9");
+
+    // A session not readable says so; a Windows one knows when it was signed in to.
+    UserSession hidden = session("5", "", 0);
+    hidden.unreadable = "Access is denied";
+    EXPECT_EQ(sessionRowName(hidden), "Session 5 (not readable)");
+    UserSession windows = session("1", "bob", 0);
+    windows.logonUsec = 1'700'000'000'000'000ULL;
+    EXPECT_FALSE(sessionSignInTime(windows).empty());
+}
+
 } // namespace
 } // namespace App::UserGrouping

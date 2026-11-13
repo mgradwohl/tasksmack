@@ -3,7 +3,10 @@
 
 - heavy-checks.yml benchmark-regression "Check for regression" and "Re-measure flagged benchmarks across
   launches": a flagged benchmark runs in 4 more launches (a stub bench.sh), and the median across the 5 is
-  checked at the same thresholds, so one slow launch passes and a real regression stays red (#3476).
+  checked at the same thresholds, so one slow launch passes and a real regression stays red (#3476). Flags
+  that stand go to benchmark-second-runner ("Hand the standing flags to a second runner"), whose "Re-measure
+  the flagged benchmarks on this runner" decides the gate from 5 launches of its own, so one slow host
+  can't fail it alone and a real regression still does (#3623).
 - renovate.yml "Select dry-run mode": a scheduled or `disabled` run must not set RENOVATE_DRY_RUN,
   which Renovate reads as a dry run whatever its value (#2527).
 - sanitizers.yml "Add sanitizer summary to workflow summary": the report's file name is printed in
@@ -33,6 +36,10 @@
   notes": the job waits out a missing or draft release and fails once its limit passes, then replaces
   release.yml's placeholder body with tools/compose-release-notes.py's notes and never edits notes
   someone wrote (#3144). `gh` is a stub; the composer and the guide's template are the real ones.
+- .github/actions/setup-llvm "LLVM package cache key" and install-llvm.sh: every caller gets a weekly LLVM
+  package cache key with a restore-key, a pinned release keeps its exact key (#3393), and the script
+  installs an exact hit without apt.llvm.org, refreshes an older entry and falls back to it when
+  apt.llvm.org is down, and still fails a cold miss (#3635). sudo, apt-get, curl and dpkg are stubs.
 
 Each step is read from the workflow file itself (tests/tools/workflow_steps.py), its `${{ }}`
 expressions replaced by fixed values, and run with bash (pwsh for the pwsh step). Needs bash; the
@@ -173,6 +180,8 @@ class HeavyChecksAcrossLaunchesTests(unittest.TestCase):
         (self.stub / "count").write_text("1\n", encoding="utf-8", newline="\n")
         shutil.copy(REPO / "perf-data" / "linux-ci-thresholds.json", self.work / "perf-data" / "linux-ci-thresholds.json")
         self.write_run("linux-ci-baseline.json", self.BASELINE)
+        (self.work / "build" / "benchmark" / "bin").mkdir(parents=True)
+        (self.work / "build" / "benchmark" / "bin" / "TaskSmackBenchmarks").write_text("binary\n", encoding="utf-8")
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -215,12 +224,34 @@ class HeavyChecksAcrossLaunchesTests(unittest.TestCase):
         remeasure, remeasure_out = self.run_step(self.REMEASURE, extra_env)
         return check_out["exit_code"], remeasure, remeasure_out
 
-    def fails(self, check_exit: str, remeasure_exit: str | None) -> bool:
+    def fails(self, check_exit: str, remeasure_exit: str | None, handed: str | None = None) -> bool:
         """The "Fail on regression" step's `if:`, as the workflow writes it."""
         condition = find_step(self.WORKFLOW, "Fail on regression", job=self.JOB).condition
         self.assertEqual(
-            condition, "steps.regression-check.outputs.exit_code != '0' && steps.across-launches.outputs.exit_code != '0'")
-        return check_exit != "0" and (remeasure_exit or "") != "0"
+            condition, "steps.regression-check.outputs.exit_code != '0' && steps.across-launches.outputs.exit_code != '0' "
+                       "&& steps.handoff.outputs.handed != 'true'")
+        return check_exit != "0" and (remeasure_exit or "") != "0" and (handed or "") != "true"
+
+    HANDOFF = "Hand the standing flags to a second runner"
+
+    def handoff(self, check_exit: str, remeasure_exit: str | None, forced: str = "") -> tuple[str | None, list[str] | None]:
+        """Runs the handoff step when its `if:` holds (on a dispatch when `forced`): its `handed` output and the
+        names it handed over."""
+        step = find_step(self.WORKFLOW, self.HANDOFF, job=self.JOB)
+        self.assertEqual(step.condition, (
+            "(steps.regression-check.outputs.exit_code == '1' && steps.across-launches.outputs.exit_code == '1') || "
+            "(steps.regression-check.outputs.exit_code == '0' && github.event_name == 'workflow_dispatch' && "
+            "inputs.second_runner_benchmarks != '')"))
+        if not ((check_exit == "1" and remeasure_exit == "1") or (check_exit == "0" and forced)):
+            return None, None
+        result, outputs = self.run_step(self.HANDOFF, {"FORCED_NAMES": forced})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        handed_dir = self.runner_temp / "second-runner"
+        names = json.loads((handed_dir / "regressions.json").read_text(encoding="utf-8"))["regressions"]
+        if outputs["handed"] == "true":
+            self.assertTrue((handed_dir / "TaskSmackBenchmarks").is_file())
+            self.assertTrue((handed_dir / "benchmark-current.json").is_file())
+        return outputs["handed"], names
 
     def test_the_remeasure_runs_only_on_a_flag_and_rechecks_at_the_same_thresholds(self):
         names = step_names(self.WORKFLOW, self.JOB)
@@ -243,7 +274,14 @@ class HeavyChecksAcrossLaunchesTests(unittest.TestCase):
     def test_a_clean_run_never_remeasures(self):
         check_exit, remeasure, outputs = self.gate(dict(self.BASELINE), [])
         self.assertEqual(check_exit, "0")
+        self.assertEqual(self.handoff(check_exit, None), (None, None), "nothing goes to the second runner")
         self.assertFalse(self.fails(check_exit, None))
+
+    def test_a_dispatch_can_send_named_benchmarks_to_the_second_runner(self):
+        check_exit, _, _ = self.gate(dict(self.BASELINE), [])
+        handed, names = self.handoff(check_exit, None, forced=" BM_Big, BM_Steady ,")
+        self.assertEqual((handed, names), ("true", ["BM_Big", "BM_Steady"]))
+        self.assertFalse(self.fails(check_exit, None, handed))
 
     def test_one_slow_launch_passes(self):
         footprint = "BM_HistoryBuffer_MemoryFootprint/iterations:10000"
@@ -272,6 +310,28 @@ class HeavyChecksAcrossLaunchesTests(unittest.TestCase):
         report = (self.work / "benchmark-across-launches-output.txt").read_text(encoding="utf-8")
         self.assertIn("median: 1590.00ns (+59.0%)", report)
         self.assertIn("FAILED: 1 benchmark(s) regressed", report)
+        # #3623: every launch ran on this one host, so the flags that stand go to a second runner, which decides.
+        handed, names = self.handoff(check_exit, outputs["exit_code"])
+        self.assertEqual((handed, names), ("true", ["BM_Big"]))
+        self.assertFalse(self.fails(check_exit, outputs["exit_code"], handed), "the second runner's verdict is the gate's")
+
+    def test_only_the_flags_that_still_stand_are_handed_over(self):
+        footprint = "BM_HistoryBuffer_MemoryFootprint/iterations:10000"
+        first = {**self.BASELINE, "BM_Big": 1600.0, footprint: 6.6}
+        launches = [{"BM_Big": t, footprint: 4.4} for t in (1580.0, 1620.0, 1010.0, 1590.0)]
+        check_exit, remeasure, outputs = self.gate(first, launches)
+        self.assertEqual(outputs["exit_code"], "1")
+        self.assertEqual(self.handoff(check_exit, outputs["exit_code"]), ("true", ["BM_Big"]))
+
+    def test_a_coverage_loss_alone_is_not_handed_over(self):
+        # BM_Steady missing: 2 of 3 is under the 90% floor, with no regression to re-measure.
+        first = {name: ns for name, ns in self.BASELINE.items() if name != "BM_Steady"}
+        check_exit, remeasure, outputs = self.gate(first, [])
+        self.assertEqual(check_exit, "1")
+        self.assertEqual(outputs["exit_code"], "1", "nothing to re-measure")
+        handed, names = self.handoff(check_exit, outputs["exit_code"])
+        self.assertEqual((handed, names), ("false", []))
+        self.assertTrue(self.fails(check_exit, outputs["exit_code"], handed))
 
     def test_no_time_left_leaves_the_flag_standing(self):
         first = {**self.BASELINE, "BM_Big": 1600.0}
@@ -281,6 +341,8 @@ class HeavyChecksAcrossLaunchesTests(unittest.TestCase):
         self.assertTrue(self.fails(check_exit, outputs["exit_code"]))
         self.assertFalse((self.stub / "filters.log").exists(), "no launch started")
         self.assertIn("flags stand as regressions", (self.work / "benchmark-across-launches-output.txt").read_text(encoding="utf-8"))
+        # The second runner has a budget of its own.
+        self.assertEqual(self.handoff(check_exit, outputs["exit_code"]), ("true", ["BM_Big"]))
 
     @unittest.skipIf(os.name == "nt", "timeout's process-group kill is POSIX; the step runs on Linux")
     def test_a_launch_past_the_deadline_is_stopped_and_the_flag_stands(self):
@@ -331,6 +393,134 @@ class HeavyChecksAcrossLaunchesTests(unittest.TestCase):
         self.assertNotEqual(remeasure.returncode, 0, remeasure.stdout)
         self.assertNotIn("exit_code", outputs)
         self.assertIn("no usable median in launch 3", remeasure.stdout + remeasure.stderr)
+
+
+class HeavyChecksSecondRunnerTests(unittest.TestCase):
+    """#3623: flags that stood on benchmark-regression's runner are re-measured on a fresh runner, in 5 launches
+    of the same binary, and that runner's median decides. A slow host can't fail the gate alone; a real
+    regression, slow on any host, still fails it."""
+
+    WORKFLOW = WORKFLOWS / "heavy-checks.yml"
+    JOB = "benchmark-second-runner"
+    REMEASURE = "Re-measure the flagged benchmarks on this runner"
+    BASELINE = {"BM_StorageModel_LatestSnapshot": 12.1, "BM_SystemModel_PerCoreHistory": 12.1, "BM_Big": 1000.0}
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.work = self.tmp / "work"
+        self.stub = self.tmp / "stub"
+        self.runner_temp = self.tmp / "runner"
+        for directory in (self.work / "tools", self.work / "perf-data", self.work / "second-runner", self.stub,
+                          self.runner_temp):
+            directory.mkdir(parents=True)
+        for script in ("check-benchmark-regression.py", "bench-across-launches.py"):
+            shutil.copy(REPO / "tools" / script, self.work / "tools" / script)
+        bench_sh = self.work / "tools" / "bench.sh"
+        bench_sh.write_text(BENCH_SH_STUB, encoding="utf-8", newline="\n")
+        bench_sh.chmod(bench_sh.stat().st_mode | stat.S_IXUSR)
+        (self.stub / "write_launch.py").write_text(BENCH_LAUNCH_WRITER, encoding="utf-8")
+        # This runner's launches are numbered from 1.
+        (self.stub / "count").write_text("0\n", encoding="utf-8", newline="\n")
+        shutil.copy(REPO / "perf-data" / "linux-ci-thresholds.json", self.work / "perf-data" / "linux-ci-thresholds.json")
+        self.write_run(self.work / "perf-data" / "linux-ci-baseline.json", self.BASELINE)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    @staticmethod
+    def write_run(path: Path, timings: dict[str, float]) -> None:
+        rows = [{"name": f"{bm}_median", "run_name": bm, "aggregate_name": "median", "real_time": ns, "cpu_time": ns,
+                 "time_unit": "ns"} for bm, ns in timings.items()]
+        path.write_text(json.dumps({"benchmarks": rows}), encoding="utf-8")
+
+    def second_runner(self, first: dict[str, float], flagged: list[str], launches: list[dict[str, float]],
+                      extra_env: dict[str, str] | None = None):
+        """benchmark-regression handed over `first` and `flagged`; `launches` are this runner's 5."""
+        self.write_run(self.work / "second-runner" / "benchmark-current.json", first)
+        (self.work / "second-runner" / "regressions.json").write_text(json.dumps({"regressions": flagged}), encoding="utf-8")
+        (self.stub / "launches.json").write_text(
+            json.dumps({str(i + 1): timings for i, timings in enumerate(launches)}), encoding="utf-8")
+        step = find_step(self.WORKFLOW, self.REMEASURE, job=self.JOB)
+        output = self.tmp / "output"
+        output.write_text("", encoding="utf-8")
+        script = (
+            "set -e\n"
+            f'python3() {{ "{posix(Path(sys.executable))}" "$@"; }}\n'
+            f'cd "{posix(self.work)}"\n' + step.run
+        )
+        env = {key: value.strip("'") for key, value in step.env.items()}
+        result = run_bash(script, self.tmp, {
+            **env, "RUNNER_TEMP": posix(self.runner_temp), "GITHUB_OUTPUT": posix(output), "STUB_DIR": posix(self.stub),
+            "STUB_PYTHON": posix(Path(sys.executable)), "PYTHONUTF8": "1", **(extra_env or {}),
+        })
+        outputs = dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines() if "=" in line)
+        report_path = self.work / "benchmark-second-runner-output.txt"
+        report = report_path.read_text(encoding="utf-8") if report_path.exists() else ""
+        return result, outputs, report
+
+    def fails(self, exit_code: str | None) -> bool:
+        condition = find_step(self.WORKFLOW, "Fail on regression", job=self.JOB).condition
+        self.assertEqual(condition, "steps.second-runner.outputs.exit_code != '0'")
+        return (exit_code or "") != "0"
+
+    def test_the_job_runs_only_on_a_handoff_and_checks_at_the_same_limits(self):
+        text = self.WORKFLOW.read_text(encoding="utf-8")
+        job = text.split(f"\n  {self.JOB}:\n", 1)[1].split("\n  # ", 1)[0]
+        self.assertIn("    needs: benchmark-regression\n", job)
+        self.assertIn("    if: needs.benchmark-regression.outputs.second-runner == 'true'\n", job)
+        first_job = text.split("\n  benchmark-regression:\n", 1)[1]
+        self.assertIn("      second-runner: ${{ steps.handoff.outputs.handed }}\n", first_job)
+        remeasure = find_step(self.WORKFLOW, self.REMEASURE, job=self.JOB)
+        for argument in ("--threshold 40", "--threshold-overrides perf-data/linux-ci-thresholds.json", "--exclude-first"):
+            self.assertEqual(remeasure.run.count(argument), 1, argument)
+        self.assertEqual(remeasure.run.count("--baseline perf-data/linux-ci-baseline.json"), 2)
+        self.assertNotIn("--min-coverage", remeasure.run)
+        self.assertEqual(remeasure.env["LAUNCHES"], "'5'")
+        timeout = int(re.search(r"^    timeout-minutes: (\d+)$", job, re.MULTILINE).group(1))
+        self.assertLess(int(remeasure.env["MAX_SECONDS"].strip("'")), timeout * 60 - 300, "room for setup and upload")
+
+    def test_a_slow_first_host_passes_on_a_normal_one(self):
+        # #3623: 12.1 -> 17.9 ns on an Intel Xeon host for #3617's test-only change; ~12 ns on the EPYC ones.
+        flagged = ["BM_StorageModel_LatestSnapshot", "BM_SystemModel_PerCoreHistory"]
+        first = {**self.BASELINE, flagged[0]: 17.9, flagged[1]: 17.3}
+        launches = [{flagged[0]: t, flagged[1]: t} for t in (12.2, 12.0, 17.5, 12.3, 12.1)]
+        result, outputs, report = self.second_runner(first, flagged, launches)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(outputs["exit_code"], "0", report)
+        self.assertFalse(self.fails(outputs["exit_code"]))
+        self.assertEqual(len((self.stub / "filters.log").read_text(encoding="utf-8").splitlines()), 5, "5 launches here")
+        self.assertIn("Median across 5 separate launches on this runner (the first runner's values not counted)", report)
+        self.assertNotIn("17.90ns", report, "the first host's value isn't one of the launches")
+        self.assertIn("median: 12.20ns (+0.8%)", report)
+        self.assertIn("Coverage: 100.0% (3 of 3", report)
+
+    def test_a_real_regression_fails_on_the_second_runner_too(self):
+        first = {**self.BASELINE, "BM_Big": 1600.0}
+        launches = [{"BM_Big": t} for t in (1580.0, 1620.0, 1010.0, 1590.0, 1610.0)]
+        result, outputs, report = self.second_runner(first, ["BM_Big"], launches)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(outputs["exit_code"], "1")
+        self.assertTrue(self.fails(outputs["exit_code"]))
+        self.assertIn("FAILED: 1 benchmark(s) regressed", report)
+
+    def test_over_budget_the_flags_stand(self):
+        first = {**self.BASELINE, "BM_Big": 1600.0}
+        # 1 s a launch for a benchmark with no timed repetitions, 5 s for 5: over a 4 s budget.
+        result, outputs, report = self.second_runner(first, ["BM_Big"], [], {"MAX_SECONDS": "4"})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(outputs["exit_code"], "1")
+        self.assertTrue(self.fails(outputs["exit_code"]))
+        self.assertFalse((self.stub / "filters.log").exists(), "no launch started")
+        self.assertIn("flags stand as regressions", report)
+
+    def test_a_failed_launch_fails_the_step(self):
+        first = {**self.BASELINE, "BM_Big": 1600.0}
+        launches = [{"BM_Big": 1000.0}, {}, {"BM_Big": 1000.0}, {"BM_Big": 1000.0}, {"BM_Big": 1000.0}]
+        result, outputs, report = self.second_runner(first, ["BM_Big"], launches)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertNotIn("exit_code", outputs)
+        self.assertIn("no usable median in launch 2", result.stdout + result.stderr)
 
 
 class RenovateDryRunTests(unittest.TestCase):
@@ -1444,5 +1634,325 @@ class ChangelogReleaseNotesTests(unittest.TestCase):
         self.assertFalse((self.fixtures / "edited.md").exists())
 
 
+SETUP_LLVM = REPO / ".github" / "actions" / "setup-llvm"
+
+OS_RELEASE = 'ID=ubuntu\nVERSION_ID="26.04"\nPRETTY_NAME="Ubuntu 26.04 LTS"\n'
+
+
+class SetupLlvmCacheKeyTests(unittest.TestCase):
+    """#3635: every setup-llvm caller gets a weekly LLVM package cache key with a restore-key to the newest
+    earlier week; a pinned release (#3393) keeps its exact key and gets no restore-key."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        (self.tmp / "os-release").write_text(OS_RELEASE, encoding="utf-8", newline="\n")
+        step = find_step(SETUP_LLVM / "action.yml", "LLVM package cache key")
+        self.assertEqual(step.condition, "", "every caller gets the cache, not only expect-release")
+        # The runner's /etc/os-release, from a fixture, so the image part doesn't depend on the test machine.
+        self.script = step.run.replace("/etc/os-release", posix(self.tmp / "os-release"))
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def outputs(self, **inputs: str) -> tuple[subprocess.CompletedProcess, dict[str, str]]:
+        out = self.tmp / "out.txt"
+        out.write_text("", encoding="utf-8")
+        env = {
+            "EXPECT_RELEASE": "",
+            "INSTALL_CLANG_FORMAT": "false",
+            "INSTALL_CLANG_TIDY": "false",
+            "LLVM_VERSION": "23",
+            "RUNNER_ARCH": "X64",
+            "RUNNER_TEMP": posix(self.tmp),
+            "GITHUB_OUTPUT": posix(out),
+            **inputs,
+        }
+        result = run_bash(self.script, self.tmp, env)
+        values = dict(line.split("=", 1) for line in out.read_text(encoding="utf-8").splitlines() if line)
+        return result, values
+
+    def test_without_a_release_the_key_ends_in_the_week_and_falls_back_to_earlier_weeks(self):
+        result, out = self.outputs()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertRegex(out["key"], r"^Linux-llvm-debs-23-ubuntu26\.04-X64-[0-9a-f]{12}-v1-\d{4}-W\d{2}$")
+        self.assertEqual(out["restore-keys"], re.sub(r"\d{4}-W\d{2}$", "", out["key"]))
+        self.assertTrue(out["path"].endswith("/llvm-debs"))
+
+    def test_a_release_keeps_its_exact_key_and_no_restore_key(self):
+        result, out = self.outputs(EXPECT_RELEASE="23.1.6")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        # The key of the entries release.yml has saved since #3393, unchanged.
+        set_id = hashlib.sha256(b"format=false tidy=false").hexdigest()[:12]
+        self.assertEqual(out["key"], f"Linux-llvm-debs-23.1.6-ubuntu26.04-X64-{set_id}-v1")
+        self.assertEqual(out["restore-keys"], "")
+
+    def test_each_package_set_and_architecture_has_its_own_entry(self):
+        keys = set()
+        for inputs in (
+            {},
+            {"INSTALL_CLANG_TIDY": "true"},
+            {"INSTALL_CLANG_FORMAT": "true", "INSTALL_CLANG_TIDY": "true"},
+            {"RUNNER_ARCH": "ARM64"},
+        ):
+            result, out = self.outputs(**inputs)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            keys.add(out["restore-keys"])
+        self.assertEqual(len(keys), 4, keys)
+
+    def test_a_bad_version_or_release_fails(self):
+        for inputs in ({"LLVM_VERSION": "23.1"}, {"EXPECT_RELEASE": "23.1"}, {"EXPECT_RELEASE": "22.1.8"}):
+            with self.subTest(inputs=inputs):
+                result, _ = self.outputs(**inputs)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("::error::", result.stdout)
+
+    def test_the_restore_passes_the_restore_key_and_the_install_sees_the_matched_key(self):
+        restore = find_step(SETUP_LLVM / "action.yml", "Restore the LLVM package cache")
+        self.assertEqual(restore.condition, "")
+        text = (SETUP_LLVM / "action.yml").read_text(encoding="utf-8")
+        self.assertIn("restore-keys: ${{ steps.package-cache-key.outputs.restore-keys }}", text)
+        install = find_step(SETUP_LLVM / "action.yml", "Install LLVM ${{ inputs.llvm-version }}")
+        self.assertEqual(install.env["CACHE_MATCHED_KEY"], "${{ steps.package-cache.outputs.cache-matched-key }}")
+
+    def test_the_action_saves_only_without_a_release_and_only_on_main_and_release_branches(self):
+        save = find_step(SETUP_LLVM / "action.yml", "Save the LLVM package cache (main and release/* only)")
+        self.assertTrue(save.uses.startswith("actions/cache/save@"), save.uses)
+        # Its `if:` is a folded block, which workflow_steps doesn't read: the text between the name and `uses:`.
+        text = (SETUP_LLVM / "action.yml").read_text(encoding="utf-8")
+        after = text[text.index("- name: Save the LLVM package cache (main and release/* only)") :]
+        condition = " ".join(after[: after.index("uses:")].split())
+        for clause in (
+            "inputs.expect-release == ''",
+            "steps.install.outputs.staged == 'true'",
+            "github.ref == 'refs/heads/main'",
+            "startsWith(github.ref, 'refs/heads/release/')",
+        ):
+            self.assertIn(clause, condition)
+
+
+# Stubs for install-llvm.sh, as shell functions ahead of the script, so no real command can answer whichever
+# bash runs it (Git Bash rebuilds PATH from the Windows one). sudo runs `timeout ... <command>` as <command>
+# and drops everything else (tee, sed, rm, install), so nothing touches the machine. apt-get, curl, dpkg,
+# dpkg-query, sha256sum and sleep answer from the environment and log each call to $STUB_LOG. curl tells the
+# Ubuntu mirror probe (#3637), which always answers, from apt.llvm.org, which CURL_EXIT can take down.
+LLVM_STUBS = r"""
+sudo() {
+  echo "sudo $*" >> "$STUB_LOG"
+  if [[ "$1" == timeout ]]; then
+    shift
+    while [[ "$1" == --* ]]; do shift; done
+    shift
+    "$@"
+    return
+  fi
+  if [[ "$1" == tee ]]; then cat > /dev/null; fi
+  return 0
+}
+apt-get() {
+  echo "apt-get $*" >> "$STUB_LOG"
+  if [[ "$1" == download ]]; then
+    shift
+    local pin
+    for pin in "$@"; do
+      : > "${pin%%=*}_$(printf '%s' "${pin#*=}" | sed 's/:/%3a/g')_amd64.deb"
+    done
+  fi
+  if [[ "$1" == update ]]; then return "${APT_UPDATE_EXIT:-0}"; fi
+  return 0
+}
+curl() {
+  echo "curl $*" >> "$STUB_LOG"
+  if [[ "$*" != *apt.llvm.org* ]]; then return 0; fi
+  if [[ "${CURL_EXIT:-0}" != 0 ]]; then return "$CURL_EXIT"; fi
+  local out=''
+  while (( $# )); do
+    if [[ "$1" == --output ]]; then out=$2; shift; fi
+    shift
+  done
+  printf '#!/usr/bin/env bash\necho "llvm.sh $*" >> "$STUB_LOG"\nexit "${LLVM_SH_EXIT:-0}"\n' > "$out"
+}
+dpkg() { echo amd64; }
+dpkg-query() {
+  if [[ "$2" == '-f=${Version}' ]]; then echo "$CLANG_VERSION"; return 0; fi
+  cat "$DPKG_LIST"
+}
+sha256sum() { cat > /dev/null; return "${SHA_EXIT:-0}"; }
+sleep() { :; }
+"""
+
+NEW_BUILD = "1:23.1.6~++20261110+abc-1~exp1~20261110.1"
+OLD_BUILD = "1:23.1.6~++20261103+def-1~exp1~20261103.1"
+LLVM_NAMED = ["clang-23", "lldb-23", "lld-23", "clangd-23", "libc++-23-dev", "libc++abi-23-dev"]
+
+
+class SetupLlvmInstallTests(unittest.TestCase):
+    """#3635: install-llvm.sh installs from the exact cache entry without apt.llvm.org, refreshes an older
+    entry from apt.llvm.org and falls back to it when apt.llvm.org is down, and still fails a cold miss."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.cache = self.tmp / "llvm-debs"
+        self.work = self.tmp / "work"
+        self.work.mkdir()
+        self.log = self.tmp / "calls.log"
+        self.out = self.tmp / "out.txt"
+        dpkg_list = self.tmp / "dpkg.txt"
+        installed = [f"ii {pkg}={NEW_BUILD}" for pkg in LLVM_NAMED + ["libllvm23", "libclang-cpp23"]]
+        dpkg_list.write_text("\n".join(installed + ["ii libc6=2.42-0ubuntu1"]) + "\n", encoding="utf-8")
+        self.dpkg_list = dpkg_list
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def fill_cache(self, build: str, packages: list[str] | None = None) -> None:
+        self.cache.mkdir(exist_ok=True)
+        for pkg in packages if packages is not None else LLVM_NAMED + ["libllvm23"]:
+            (self.cache / f"{pkg}_{build.replace(':', '%3a')}_amd64.deb").write_text("", encoding="utf-8")
+
+    def run_install(self, **env: str) -> tuple[subprocess.CompletedProcess, dict[str, str], list[str]]:
+        self.log.write_text("", encoding="utf-8")
+        self.out.write_text("", encoding="utf-8")
+        script = LLVM_STUBS + (SETUP_LLVM / "install-llvm.sh").read_text(encoding="utf-8")
+        # The runner's /etc/os-release (the mirror probe reads its codename), from a fixture.
+        os_release = self.tmp / "os-release"
+        os_release.write_text(OS_RELEASE + "VERSION_CODENAME=resolute\n", encoding="utf-8", newline="\n")
+        script = script.replace("/etc/os-release", posix(os_release))
+        full_env = {
+            "STUB_LOG": posix(self.log),
+            "GITHUB_OUTPUT": posix(self.out),
+            "DPKG_LIST": posix(self.dpkg_list),
+            "CLANG_VERSION": NEW_BUILD,
+            "LLVM_VERSION": "23",
+            "EXPECT_RELEASE": "",
+            "CACHE_DIR": posix(self.cache),
+            "CACHE_RESTORED": "false",
+            "CACHE_MATCHED_KEY": "",
+            "INSTALL_NINJA": "true",
+            "INSTALL_CCACHE": "true",
+            "INSTALL_CLANG_FORMAT": "false",
+            "INSTALL_CLANG_TIDY": "false",
+            **env,
+        }
+        result = run_bash(script, self.work, full_env)
+        outputs = dict(line.split("=", 1) for line in self.out.read_text(encoding="utf-8").splitlines() if line)
+        return result, outputs, self.log.read_text(encoding="utf-8").splitlines()
+
+    @staticmethod
+    def llvm_sh_tries(calls: list[str]) -> int:
+        return sum(1 for call in calls if call.startswith("llvm.sh "))
+
+    def staged(self) -> list[str]:
+        return sorted(path.name for path in self.cache.glob("*.deb"))
+
+    def test_an_exact_hit_installs_the_cached_debs_without_apt_llvm_org(self):
+        self.fill_cache(NEW_BUILD)
+        result, out, calls = self.run_install(CACHE_RESTORED="true", CACHE_MATCHED_KEY="k-2026-W46")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(out, {"cache-hit": "true", "staged": "false"})
+        self.assertFalse([call for call in calls if "apt.llvm.org" in call or "llvm.sh" in call], calls)
+        install = [call for call in calls if call.startswith("apt-get install")]
+        self.assertEqual(len(install), 1, calls)
+        self.assertIn("clang-23_", install[0])
+        self.assertIn("ninja-build", install[0])
+
+    def test_an_exact_hit_missing_a_package_goes_to_apt_llvm_org(self):
+        self.fill_cache(NEW_BUILD)
+        result, out, calls = self.run_install(CACHE_RESTORED="true", INSTALL_CLANG_TIDY="true")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("The LLVM package cache has no clang-tidy-23", result.stdout)
+        self.assertEqual(out["cache-hit"], "false")
+        self.assertEqual(self.llvm_sh_tries(calls), 1, calls)
+
+    def test_a_miss_installs_from_apt_llvm_org_and_stages_clangs_build(self):
+        result, out, calls = self.run_install()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(out, {"cache-hit": "false", "staged": "true"})
+        self.assertEqual(self.llvm_sh_tries(calls), 1, calls)
+        # clang's own build: the named packages and the libraries they pulled in, never libc6.
+        build = NEW_BUILD.replace(":", "%3a")
+        expected = [f"{pkg}_{build}_amd64.deb" for pkg in LLVM_NAMED + ["libclang-cpp23", "libllvm23"]]
+        self.assertEqual(self.staged(), sorted(expected))
+
+    def test_a_cold_miss_still_fails_when_apt_llvm_org_is_down(self):
+        result, out, calls = self.run_install(LLVM_SH_EXIT="124")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.llvm_sh_tries(calls), 4, calls)
+        self.assertIn("::error::", result.stdout)
+        self.assertNotIn("staged", out)
+
+    def test_an_older_entry_is_refreshed_from_apt_llvm_org(self):
+        self.fill_cache(OLD_BUILD)
+        result, out, calls = self.run_install(CACHE_MATCHED_KEY="k-2026-W45")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(out, {"cache-hit": "false", "staged": "true"})
+        self.assertIn("refreshing it from apt.llvm.org", result.stdout)
+        self.assertTrue(self.staged() and all(NEW_BUILD.replace(":", "%3a") in name for name in self.staged()))
+
+    def test_an_older_entry_stands_in_when_apt_llvm_org_is_down(self):
+        for failure in ({"LLVM_SH_EXIT": "124"}, {"CURL_EXIT": "28"}):
+            with self.subTest(failure=failure):
+                self.fill_cache(OLD_BUILD)
+                result, out, calls = self.run_install(CACHE_MATCHED_KEY="k-2026-W45", **failure)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(out, {"cache-hit": "false", "staged": "false"})
+                self.assertLessEqual(self.llvm_sh_tries(calls), 2, calls)
+                self.assertIn("::warning::apt.llvm.org failed", result.stdout)
+                # A job that passes on the older entry shows no error annotation.
+                self.assertNotIn("::error::", result.stdout)
+                install = [call for call in calls if call.startswith("apt-get install")][-1]
+                self.assertIn("--allow-downgrades", install)
+                self.assertIn(f"clang-23_{OLD_BUILD.replace(':', '%3a')}_amd64.deb", install)
+                # Not saved again under this week's key.
+                self.assertTrue(all(OLD_BUILD.replace(":", "%3a") in name for name in self.staged()))
+
+    def test_a_changed_installer_fails_even_with_an_older_entry(self):
+        self.fill_cache(OLD_BUILD)
+        result, _, calls = self.run_install(CACHE_MATCHED_KEY="k-2026-W45", SHA_EXIT="1")
+        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+        self.assertEqual(self.llvm_sh_tries(calls), 0, calls)
+
+    def test_a_release_never_uses_an_older_entry(self):
+        # #3393: a release restores only its exact key; a matched key alone is no hit and no fallback.
+        self.fill_cache(OLD_BUILD)
+        result, out, calls = self.run_install(EXPECT_RELEASE="23.1.6", CACHE_MATCHED_KEY="k", LLVM_SH_EXIT="124")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.llvm_sh_tries(calls), 4, calls)
+
+    def test_a_release_miss_stages_every_package_of_the_release(self):
+        result, out, _ = self.run_install(EXPECT_RELEASE="23.1.6")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(out["staged"], "true")
+        self.assertEqual(len(self.staged()), len(LLVM_NAMED) + 2)
+        self.assertIn("Staged 8 LLVM 23.1.6 .debs", result.stdout)
+
+
+def _is_setup_llvm(test: unittest.TestCase) -> bool:
+    return type(test).__name__.startswith("SetupLlvm")
+
+
+def _filtered(suite: unittest.TestSuite, keep) -> unittest.TestSuite:
+    out = unittest.TestSuite()
+    for item in suite:
+        if isinstance(item, unittest.TestSuite):
+            out.addTests(_filtered(item, keep))
+        elif keep(item):
+            out.addTest(item)
+    return out
+
+
 if __name__ == "__main__":
+    # #3643: the setup-llvm cases (#3635) spawn bash about forty times, so ctest runs them as their own entry,
+    # SetupLlvmInstallScript (--only-setup-llvm), and WorkflowRunStepsScript runs the rest (--skip-setup-llvm).
+    # With neither flag every case runs, as before.
+    flags = {"--only-setup-llvm", "--skip-setup-llvm"}
+    chosen = [arg for arg in sys.argv[1:] if arg in flags]
+    if chosen:
+        sys.argv = [arg for arg in sys.argv if arg not in flags]
+        only = chosen[0] == "--only-setup-llvm"
+        loaded = unittest.defaultTestLoader.loadTestsFromModule(sys.modules[__name__])
+        keep = _is_setup_llvm if only else (lambda test: not _is_setup_llvm(test))
+        result = unittest.TextTestRunner(verbosity=1).run(_filtered(loaded, keep))
+        sys.exit(0 if result.wasSuccessful() else 1)
     unittest.main()

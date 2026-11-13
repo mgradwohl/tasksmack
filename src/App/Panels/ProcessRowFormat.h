@@ -7,6 +7,7 @@
 // no ImGui calls at all -- it only formats strings from a ProcessSnapshot -- so there is no
 // live-context blocker to extracting and testing it directly.
 
+#include "Domain/AccountName.h"
 #include "Domain/ProcessSnapshot.h"
 #include "UI/Format.h"
 
@@ -171,6 +172,9 @@ struct RowFormatOptions
     bool hasSchedPolicy = true;  // #3086
     bool hasIoPriority = true;   // #3551
     bool hasSignature = true;    // #3070
+    /// This row's user name is one two accounts share (UserGrouping::sharedUserNames(), #3328): the User cell
+    /// writes DOMAIN\\user. Set per row by the panel, from the generation the entry is stamped with.
+    bool qualifyUser = false;
 };
 
 /// The first line of a Services cell's tooltip (#1880), above the names one per line: "1 service",
@@ -326,6 +330,9 @@ struct RowFormatCache
     AlignedCellText pageFaults; // countCell(pageFaults), or unavailable
     AlignedCellText affinity;   // formatCpuAffinity             — rarely changes
     AlignedCellText gdiObjects; // countCell(*gdiObjectCount), or unavailable
+    // The User cell's "CORP\\alice" when RowFormatOptions::qualifyUser (#3328); empty when it shows the
+    // snapshot's own user name, as it does for every row on a PC with one account per name.
+    std::string qualifiedUser;
 
     // Widths of the cells drawn straight from the snapshot's own text (#1141); see LazyTextWidth.
     LazyTextWidth pidWidth;
@@ -535,6 +542,10 @@ struct RowFormatCache
     else
     {
         fmt.gdiObjects = proc.gdiObjectCount.has_value() ? countCell(*proc.gdiObjectCount) : unavailableCell(UNREADABLE_CELL_REASON);
+    }
+    if (options.qualifyUser && !proc.user.empty() && !proc.userDomain.empty())
+    {
+        fmt.qualifiedUser = Domain::AccountName::qualified(proc.userDomain, proc.user);
     }
     return fmt;
 }

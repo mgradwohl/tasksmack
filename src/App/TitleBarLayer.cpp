@@ -28,6 +28,8 @@
 #include <utility>
 
 #ifdef _WIN32
+#include "App/WindowsSystemMenu.h"
+
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -159,7 +161,8 @@ void TitleBarLayer::onAttach()
     m_ButtonLayout = computeTitleBarButtonLayout(static_cast<float>(windowWidth),
                                                  computeTitleBarButtonWidth(titleBarHeight, TITLE_BAR_BUTTON_ASPECT),
                                                  titleBarHeight,
-                                                 titleBarHeight * TITLE_BAR_SEPARATOR_GAP_RATIO);
+                                                 titleBarHeight * TITLE_BAR_SEPARATOR_GAP_RATIO,
+                                                 m_UpdateButton.shown);
 
     // The icon texture is loaded by the first renderTitleBar(), at the size the bar draws it; ImGui
     // only knows the framebuffer scale from the first frame on (#1169).
@@ -1010,6 +1013,7 @@ void TitleBarLayer::renderTitleBar()
         .icon = &m_IconTexture,
         .openSystemMenu = std::exchange(m_ShowSystemMenu, false),
         .title = window.title(),
+        .update = &m_UpdateButton,
     });
     // Where every button and the icon were drawn, and so what isPointInControlArea() keeps out of the
     // drag area and where a right-click opens the system menu.
@@ -1064,6 +1068,13 @@ void TitleBarLayer::renderTitleBar()
         Core::Application::get().raiseEvent(event);
         break;
     }
+    case TitleBarView::Action::OpenUpdate:
+    {
+        // The shell opens the release page on a worker, as the status bar's notice does (#3373).
+        Core::OpenUpdatePageEvent event;
+        Core::Application::get().raiseEvent(event);
+        break;
+    }
     case TitleBarView::Action::None:
         break;
     }
@@ -1110,50 +1121,17 @@ void TitleBarLayer::updateMinimumWindowSize(float contentWidth)
 }
 
 #ifdef _WIN32
-// LCOV_EXCL_START - TrackPopupMenu runs a modal menu loop until the user picks or dismisses (#2039)
+// LCOV_EXCL_START - needs a running Core::Application; the menu itself (showWindowsSystemMenu()) is
+// CiRealSystemSystemMenuTest's (#2039, #3490)
 TitleBarView::Action TitleBarLayer::showNativeSystemMenu(bool maximized)
 {
     auto* sdlWindow = Core::Application::get().getWindow().getHandle();
     SDL_PropertiesID const props = SDL_GetWindowProperties(sdlWindow);
-    auto* hwnd = static_cast<HWND>(SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
-    HMENU systemMenu = hwnd != nullptr ? GetSystemMenu(hwnd, FALSE) : nullptr;
-    if (systemMenu == nullptr)
-    {
-        return TitleBarView::Action::None;
-    }
-
-    // Windows enables the items from the OS's own maximized state, which a client-side maximize
-    // doesn't set: it offered Maximize, not Restore, on a maximized window (#3161). Set them as the
-    // Linux menu has them.
-    const TitleBarView::SystemMenuItems items = TitleBarView::systemMenuItems(maximized);
-    const auto enable = [systemMenu](UINT command, bool enabled)
-    {
-        // Returns the item's previous state, or -1 for a menu without it; either way there is nothing to do.
-        static_cast<void>(EnableMenuItem(systemMenu, command, MF_BYCOMMAND | (enabled ? MF_ENABLED : MF_GRAYED)));
-    };
-    enable(SC_RESTORE, items.restore);
-    enable(SC_MOVE, items.move);
-    enable(SC_SIZE, items.size);
-    enable(SC_MINIMIZE, items.minimize);
-    enable(SC_MAXIMIZE, items.maximize);
-    enable(SC_CLOSE, items.close);
-
+    void* hwnd = SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr);
     // At the cursor, which is on the icon that was clicked.
     POINT pt{};
     GetCursorPos(&pt);
-    const int cmd = TrackPopupMenu(systemMenu, TPM_RETURNCMD | TPM_LEFTBUTTON, pt.x, pt.y, 0, hwnd, nullptr);
-    if (cmd == 0)
-    {
-        return TitleBarView::Action::None; // dismissed
-    }
-    const TitleBarView::Action action =
-        TitleBarView::actionForSystemCommand(Core::WindowGeometry::decodeSystemCommand(static_cast<UINT_PTR>(cmd)));
-    if (action == TitleBarView::Action::None)
-    {
-        // Move and Size: Windows' own keyboard move and size loops.
-        PostMessageW(hwnd, WM_SYSCOMMAND, static_cast<WPARAM>(cmd), 0);
-    }
-    return action;
+    return showWindowsSystemMenu(hwnd, maximized, pt.x, pt.y);
 }
 // LCOV_EXCL_STOP
 #endif

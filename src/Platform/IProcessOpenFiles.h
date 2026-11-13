@@ -14,6 +14,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <stop_token>
 #include <string>
 #include <vector>
@@ -121,6 +122,15 @@ class IProcessOpenFilesReader
     /// The batch beginBatch() began is over: later reads walk the table again. The default does nothing.
     virtual void endBatch() noexcept
     {}
+
+    /// The processes this batch will readAuthorized(), in order (#3578): Find handles' administrator pass says so
+    /// after beginBatch(), before the first. A reader that reads as an administrator through another process
+    /// (Windows' helper) may then ask for them all in one request, so the helper walks its handle table once, not
+    /// once per process. A read of a process not named, or after endBatch(), reads it alone. The default does nothing.
+    virtual void expectAuthorizedReads(std::span<const ProcessTarget> targets)
+    {
+        static_cast<void>(targets);
+    }
 };
 
 /// The reader for a run that cannot list another process's open files (synthetic scenarios).

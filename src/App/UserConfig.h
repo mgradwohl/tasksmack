@@ -76,7 +76,7 @@ struct UserSettings
     // Count UDP per process, [sampling] udp_event_trace. Off by default: per-process network counters
     // are TCP only. On, the Processes panel counts UDP too: on Windows, running as administrator, with
     // an ETW session on the kernel's network provider (#1492); on Linux, in an Administrator session,
-    // through the helper's eBPF counter (#3366). Settings toggles it; the change applies at once.
+    // through an eBPF counter TaskSmack loads (#3366, #3580). Settings toggles it; the change applies at once.
     bool udpEventTrace = false;
 
     // Metrics Calculation Parameters
@@ -144,6 +144,10 @@ struct UserSettings
     // Run new task's recent command lines (#3065), newest first, [run_task] recent. Written only when
     // there are any.
     std::vector<std::string> recentCommands;
+
+    // Look up on VirusTotal's API key (#3094), [virustotal] api_key: the user's own, 64 hex digits, or empty (the
+    // action is then not offered). Written only while set; a save then makes config.toml owner-only.
+    std::string virusTotalApiKey;
 
     // The opt-in update check (#3093), [updates]: "Check for updates daily" (check_daily, off by
     // default, and then TaskSmack sends nothing), when the last check started (last_check, Unix

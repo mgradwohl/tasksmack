@@ -54,13 +54,16 @@ class TitleBarViewRenderTest : public ::testing::Test
     TitleBarView::Output frame(bool maximized = false, bool openSystemMenu = false)
     {
         ImGui::NewFrame();
-        const TitleBarView::Output output = TitleBarView::render({.windowWidth = WIDTH,
-                                                                  .windowHeight = HEIGHT,
-                                                                  .barHeight = BAR,
-                                                                  .maximized = maximized,
-                                                                  .resizeBorderPx = BORDER,
-                                                                  .icon = &m_Icon,
-                                                                  .openSystemMenu = openSystemMenu});
+        const TitleBarView::Output output = TitleBarView::render({
+            .windowWidth = WIDTH,
+            .windowHeight = HEIGHT,
+            .barHeight = BAR,
+            .maximized = maximized,
+            .resizeBorderPx = BORDER,
+            .icon = &m_Icon,
+            .openSystemMenu = openSystemMenu,
+            .update = &m_Update,
+        });
         ImGui::Render();
         return output;
     }
@@ -104,12 +107,15 @@ class TitleBarViewRenderTest : public ::testing::Test
     {
         ImGui::NewFrame();
         ImGui::LogToBuffer();
-        static_cast<void>(TitleBarView::render({.windowWidth = WIDTH,
-                                                .windowHeight = HEIGHT,
-                                                .barHeight = BAR,
-                                                .maximized = maximized,
-                                                .icon = &m_Icon,
-                                                .openSystemMenu = false}));
+        static_cast<void>(TitleBarView::render({
+            .windowWidth = WIDTH,
+            .windowHeight = HEIGHT,
+            .barHeight = BAR,
+            .maximized = maximized,
+            .icon = &m_Icon,
+            .openSystemMenu = false,
+            .update = &m_Update,
+        }));
         std::string text = GImGui->LogBuffer.c_str();
         ImGui::LogFinish();
         ImGui::Render();
@@ -137,7 +143,8 @@ class TitleBarViewRenderTest : public ::testing::Test
 
     static constexpr int HOVER_FRAMES = 60; // a second at 60 fps, well past ImGui's tooltip delay
 
-    UI::Texture m_Icon; // Invalid: no GL context here, so no icon is drawn
+    UI::Texture m_Icon;                     // Invalid: no GL context here, so no icon is drawn
+    TitleBarButtons::UpdateButton m_Update; // Hidden, as where the update check isn't offered
 
   private:
     ImGuiContext* m_Context = nullptr;
@@ -156,14 +163,16 @@ TEST_F(TitleBarViewRenderTest, TheBarDrawsTheWindowsTitle)
     {
         ImGui::NewFrame();
         ImGui::LogToBuffer();
-        static_cast<void>(TitleBarView::render({.windowWidth = WIDTH,
-                                                .windowHeight = HEIGHT,
-                                                .barHeight = BAR,
-                                                .maximized = false,
-                                                .resizeBorderPx = BORDER,
-                                                .icon = nullptr,
-                                                .openSystemMenu = false,
-                                                .title = title}));
+        static_cast<void>(TitleBarView::render({
+            .windowWidth = WIDTH,
+            .windowHeight = HEIGHT,
+            .barHeight = BAR,
+            .maximized = false,
+            .resizeBorderPx = BORDER,
+            .icon = nullptr,
+            .openSystemMenu = false,
+            .title = title,
+        }));
         std::string captured = GImGui->LogBuffer.c_str();
         ImGui::LogFinish();
         ImGui::Render();
@@ -345,6 +354,71 @@ TEST_F(TitleBarViewRenderTest, TheAppButtonsSayWhatTheyDoOnHover)
     EXPECT_TRUE(hoverAndRead(output.layout.settings).contains(TitleBarButtons::SETTINGS_TOOLTIP));
     EXPECT_TRUE(hoverAndRead(output.layout.help).contains(TitleBarButtons::HELP_TOOLTIP));
     EXPECT_TRUE(hoverAndRead(output.layout.about).contains(TitleBarButtons::ABOUT_TOOLTIP));
+}
+
+// ========== The update button (#3373) ==========
+
+TEST_F(TitleBarViewRenderTest, TheUpdateButtonIsDrawnOnlyWhereTheCheckIsOffered)
+{
+    const TitleBarView::Output hidden = frame();
+    EXPECT_LE(hidden.layout.update.maxX, hidden.layout.update.minX); // not laid out: the bar there still drags
+    const float hiddenWidth = hidden.contentWidth;
+
+    m_Update = {.tooltip = TitleBarButtons::UPDATE_UP_TO_DATE_TOOLTIP, .url = {}, .shown = true, .active = false};
+    static_cast<void>(frame());
+    const TitleBarView::Output shown = frame();
+    const float buttonWidth = computeTitleBarButtonWidth(BAR, TITLE_BAR_BUTTON_ASPECT);
+    const TitleBarButtonLayout expected =
+        computeTitleBarButtonLayout(WIDTH, buttonWidth, BAR, BAR * TITLE_BAR_SEPARATOR_GAP_RATIO, /*updateButton=*/true);
+    EXPECT_FLOAT_EQ(shown.layout.update.minX, expected.update.minX);
+    EXPECT_FLOAT_EQ(shown.layout.update.maxX, shown.layout.about.minX); // just left of About
+    EXPECT_FLOAT_EQ(shown.layout.about.minX, hidden.layout.about.minX); // which hasn't moved
+    EXPECT_NEAR(shown.contentWidth - hiddenWidth, buttonWidth, 0.01F);  // the minimum width has room for it
+}
+
+TEST_F(TitleBarViewRenderTest, TheActiveUpdateButtonAsksToOpenTheReleasePage)
+{
+    m_Update = {
+        .tooltip = "TaskSmack v0.11.0 is available",
+        .url = "https://github.com/mgradwohl/tasksmack/releases/tag/v0.11.0",
+        .shown = true,
+        .active = true,
+    };
+    static_cast<void>(frame());
+    press(TitleBarButtons::UPDATE_LABEL);
+    EXPECT_EQ(frame().action, Action::OpenUpdate);
+
+    // A real click on it, through the mouse, too.
+    const TitleBarView::Output output = frame();
+    static_cast<void>(moveMouseTo((output.layout.update.minX + output.layout.update.maxX) * 0.5F, BAR * 0.5F));
+    EXPECT_EQ(click().action, Action::OpenUpdate);
+}
+
+TEST_F(TitleBarViewRenderTest, TheInactiveUpdateButtonDoesNothingWhenClicked)
+{
+    m_Update = {.tooltip = TitleBarButtons::UPDATE_UP_TO_DATE_TOOLTIP, .url = {}, .shown = true, .active = false};
+    const TitleBarView::Output output = frame();
+    static_cast<void>(moveMouseTo((output.layout.update.minX + output.layout.update.maxX) * 0.5F, BAR * 0.5F));
+    EXPECT_EQ(click().action, Action::None);
+}
+
+TEST_F(TitleBarViewRenderTest, TheUpdateButtonsTooltipSaysWhetherAnUpdateIsOut)
+{
+    m_Update = {.tooltip = TitleBarButtons::UPDATE_UP_TO_DATE_TOOLTIP, .url = {}, .shown = true, .active = false};
+    TitleBarView::Output output = frame();
+    // Inactive, the tooltip still shows: it says why there is nothing to click.
+    std::string text = hoverAndRead(output.layout.update);
+    EXPECT_TRUE(text.contains("TaskSmack is up to date")) << text;
+
+    m_Update = {
+        .tooltip = "TaskSmack v0.11.0 is available",
+        .url = "https://github.com/mgradwohl/tasksmack/releases/tag/v0.11.0",
+        .shown = true,
+        .active = true,
+    };
+    output = frame();
+    text = hoverAndRead(output.layout.update);
+    EXPECT_TRUE(text.contains("TaskSmack v0.11.0 is available")) << text;
 }
 
 } // namespace

@@ -38,6 +38,7 @@ inline constexpr uint32_t ICON_MAX_FA = 0xf8ff;
 // Status & Info Icons
 // ============================================================================
 #define ICON_FA_CHECK "\xef\x80\x8c"                // U+f00c - Check mark (apply)
+#define ICON_FA_CIRCLE_ARROW_UP "\xef\x82\xaa"      // U+f0aa - Up arrow in circle
 #define ICON_FA_CIRCLE_CHECK "\xef\x81\x98"         // U+f058 - Check in circle
 #define ICON_FA_CIRCLE_EXCLAMATION "\xef\x81\xaa"   // U+f06a - Exclamation in circle
 #define ICON_FA_CIRCLE_INFO "\xef\x81\x9a"          // U+f05a - Info in circle

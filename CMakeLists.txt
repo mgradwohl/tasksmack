@@ -226,9 +226,11 @@ set(TASKSMACK_SOURCES
     src/App/SyntheticScenario.cpp
     src/App/TitleBarLayer.cpp
     src/App/TitleBarView.cpp
+    src/App/WindowsSystemMenu.cpp # the title-bar icon's native system menu (#3161), its body Windows-only
     src/App/UserConfig.cpp
     src/App/WindowOverride.cpp
     src/App/Panels/ProcessesPanel.cpp
+    src/App/Panels/ProcessesPanelUserGroups.cpp # Group: User's sessions and their actions, the Users tab folded in (#3377)
     src/App/Panels/ProcessIconView.cpp
     src/App/Panels/ProcessDetailsPanel.cpp
     src/App/Panels/ProcessDetailsCharts.cpp
@@ -271,6 +273,7 @@ set(TASKSMACK_SOURCES
     src/App/Panels/UsersView.cpp
     src/App/Panels/UserGrouping.cpp # who a process or session belongs to: the Users tab and Group: User (#3377)
     src/App/Panels/UserSessionsFeed.cpp # the signed-in sessions, read once for every view that shows them (#3377)
+    src/App/Panels/SessionActionView.cpp # a session's menu and confirm, for the Users tab and Group: User (#3377)
     src/App/Panels/SystemInfoPanel.cpp
     src/App/Panels/SystemInfoSections.cpp
     src/App/Panels/SystemInfoView.cpp
@@ -291,6 +294,7 @@ set(TASKSMACK_SOURCES
     src/Domain/SystemInfoModel.cpp
     src/Domain/CrashHistory.cpp
     src/Domain/UpdateCheck.cpp # the opt-in update check's decisions (#3093)
+    src/Domain/VirusTotal.cpp # Look up on VirusTotal's request and reply (#3094)
     src/Domain/ProcessIconCache.cpp
     src/Platform/CurrentProcess.cpp
     src/Platform/ThreadName.cpp
@@ -300,6 +304,7 @@ set(TASKSMACK_SOURCES
     src/Platform/BrokerRequestMapping.cpp    # what either OS's helper does with each request (#2517)
     src/Platform/TaskManagerReplacementService.cpp # Replace Task Manager's read and change (#3072)
     src/Platform/PublicIpLookup.cpp          # what either OS's public IP lookup does with a reply (#3117)
+    src/Platform/Sha256.cpp                  # SHA-256 of an executable, for Look up on VirusTotal (#3094)
     # stb_image's implementation, for UI/IconLoader.cpp and the Linux process icons (#1800)
     src/Platform/StbImage.cpp
     # Icons held as image files: desktop entries' PNGs, packaged apps' logos (#1800)
@@ -316,6 +321,7 @@ set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/LinuxProcessActions.cpp
     src/Platform/Linux/LinuxProcessIconSource.cpp
     src/Platform/Linux/DetachedSpawn.cpp
+    src/Platform/Linux/RootCapabilities.cpp # an Administrator session keeps only the capabilities it uses (#3621)
     src/Platform/Linux/LinuxProcessEnvironmentReader.cpp
     src/Platform/Linux/LinuxProcessConnectionsReader.cpp
     src/Platform/Linux/LinuxSystemConnectionsReader.cpp # the Connections tab (#3066)
@@ -996,6 +1002,7 @@ if(WIN32)
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsProcessActions.cpp
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsProcessIdentity.cpp
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsProcessMachine.cpp
+        ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsProcessEnvironmentReader.cpp # Process Details' environment of another user's process (#3610)
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsProcessModules.cpp
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsProcessOpenFiles.cpp
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsProcessConnections.cpp
@@ -1020,7 +1027,8 @@ if(WIN32)
     # picker: WindowsProcessActions.cpp leaves its dump members to IProcessActions' refusals without them.
     # No wait chain reader either (#3084): the helper serves none, so WindowsWaitChain.cpp isn't built in.
     # No Open file location (#3426) and no Run new task (#3427): BrokeredProcessActions keeps both the
-    # user's own, so no shell calls here.
+    # user's own, so no shell calls here. TASKSMACK_NO_FILE_LOCATION also leaves out the image hash for Look
+    # up on VirusTotal (#3646), which BrokeredProcessActions keeps in-process too, so Sha256.cpp isn't built in.
     set(TASKSMACK_WINDOWS_HELPER_DEFINITIONS TASKSMACK_NO_PROCESS_DUMPS TASKSMACK_NO_WAIT_CHAINS TASKSMACK_NO_FILE_LOCATION
         TASKSMACK_NO_RUN_PROGRAM)
     target_compile_definitions(TaskSmackHelper PRIVATE ${TASKSMACK_WINDOWS_HELPER_DEFINITIONS})

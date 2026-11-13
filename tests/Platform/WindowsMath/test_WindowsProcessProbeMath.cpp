@@ -7,6 +7,7 @@
 
 #include "Domain/SocketTrafficAccumulator.h"
 #include "Platform/CpuAffinity.h"
+#include "Platform/IoPriorityTypes.h"
 #include "Platform/ProcessTypes.h"
 #include "Platform/Windows/WindowsProcessProbeMath.h"
 
@@ -215,6 +216,49 @@ TEST(WindowsProcessStatusTest, OnlyNeitherReadIsUnknown)
     EXPECT_EQ(windowsProcessStatus(std::nullopt, std::nullopt), std::nullopt);
     EXPECT_EQ(windowsProcessStatus(0U, std::nullopt), std::optional<std::string_view>{""});
     EXPECT_EQ(windowsProcessStatus(std::nullopt, PowerThrottlingMasks{}), std::optional<std::string_view>{""});
+}
+
+// ==========================================================================
+// sampledIoPriority: the I/O Priority column's value from one ProcessIoPriority read (#3563)
+// ==========================================================================
+
+constexpr std::uint32_t NT_SUCCESS_STATUS = 0;
+constexpr std::uint32_t NT_ACCESS_DENIED_STATUS = 0xC0000022U;
+constexpr std::uint32_t ULONG_BYTES = 4;
+
+TEST(SampledIoPriorityTest, EachHintIsItselfInTheWindowsHintClass)
+{
+    // Windows' hints keep their own numbering (VeryLow 0 to Critical 4) under WindowsHint: none is mapped onto
+    // a Linux class or level, so Process Details and the column word and rank them alike.
+    for (const IoPriorityHint hint :
+         {IoPriorityHint::VeryLow, IoPriorityHint::Low, IoPriorityHint::Normal, IoPriorityHint::High, IoPriorityHint::Critical})
+    {
+        const auto value = static_cast<std::uint32_t>(hint);
+        EXPECT_EQ(sampledIoPriority(NT_SUCCESS_STATUS, value, ULONG_BYTES),
+                  (IoPriority{.ioClass = IoPriorityClass::WindowsHint, .level = static_cast<std::int32_t>(hint)}))
+            << value;
+    }
+    static_assert(sampledIoPriority(NT_SUCCESS_STATUS, 2, ULONG_BYTES)->level == static_cast<std::int32_t>(IoPriorityHint::Normal));
+}
+
+TEST(SampledIoPriorityTest, AFailedReadIsUnknownNotADefault)
+{
+    EXPECT_EQ(sampledIoPriority(NT_ACCESS_DENIED_STATUS, 2, ULONG_BYTES), std::nullopt) << "access denied: the System process";
+    EXPECT_EQ(sampledIoPriority(0x80000005U, 2, ULONG_BYTES), std::nullopt) << "a warning status isn't NT_SUCCESS either";
+    EXPECT_EQ(sampledIoPriority(0xC0000004U, 0, 0), std::nullopt) << "info length mismatch";
+}
+
+TEST(SampledIoPriorityTest, AShortReadIsUnknown)
+{
+    EXPECT_EQ(sampledIoPriority(NT_SUCCESS_STATUS, 0, 0), std::nullopt) << "nothing written: 0 isn't Very low";
+    EXPECT_EQ(sampledIoPriority(NT_SUCCESS_STATUS, 2, 2), std::nullopt);
+}
+
+TEST(SampledIoPriorityTest, AHintWindowsDoesNotDefineIsUnknown)
+{
+    constexpr std::uint32_t MAX_IO_PRIORITY_TYPES = 5; // IO_PRIORITY_HINT's end marker, never a process's hint
+    EXPECT_EQ(sampledIoPriority(NT_SUCCESS_STATUS, MAX_IO_PRIORITY_TYPES, ULONG_BYTES), std::nullopt);
+    EXPECT_EQ(sampledIoPriority(NT_SUCCESS_STATUS, 0xFFFFFFFFU, ULONG_BYTES), std::nullopt);
 }
 
 TEST(PlanDetailRefreshTest, FirstSampleRefreshesEverything)

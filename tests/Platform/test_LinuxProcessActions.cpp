@@ -19,6 +19,7 @@
 #include "Platform/Linux/ProcParsing.h"
 #include "Platform/Linux/ProcPrivileges.h"
 #include "Platform/Linux/SyscallTrace.h"
+#include "Platform/Sha256.h"
 #include "ScopedTempDir.h"
 
 #include <gtest/gtest.h>
@@ -29,6 +30,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <expected>
 #include <filesystem>
 #include <format>
@@ -2731,6 +2733,52 @@ TEST(FileManagerRevealTest, DeletedSuffixAndParentFolder)
     EXPECT_EQ(FileManagerReveal::parentFolder("relative"), "/");
 }
 
+// #3094: the image's SHA-256 is what /proc/<pid>/exe holds, read through the identity check; a stale identity or
+// a stopped read is refused, and nothing is read for a target that isn't the process at its PID. The target is a
+// small program (sleep), not this test binary, which is hundreds of MB in a debug build.
+TEST(LinuxProcessActionsTest, ImageSha256IsTheDigestOfTheProcesssOwnExecutable)
+{
+    const pid_t child = ::fork();
+    ASSERT_GE(child, 0);
+    if (child == 0)
+    {
+        ::execl("/bin/sleep", "sleep", "30", static_cast<char*>(nullptr));
+        ::_exit(127);
+    }
+    const std::string exeLink = "/proc/" + std::to_string(child) + "/exe";
+    std::error_code ec;
+    for (int attempt = 0; attempt < 500 && std::filesystem::read_symlink(exeLink, ec).filename() != "sleep"; ++attempt)
+    {
+        usleep(10'000);
+    }
+    std::ifstream stat("/proc/" + std::to_string(child) + "/stat");
+    const std::string line((std::istreambuf_iterator<char>(stat)), std::istreambuf_iterator<char>());
+    const ProcessTarget target{.pid = static_cast<std::int32_t>(child),
+                               .startTimeTicks = ProcParsing::parseStatStartTime(line).value_or(0)};
+
+    LinuxProcessActions actions;
+    EXPECT_TRUE(actions.actionCapabilities().canHashImage);
+    const auto image = actions.imageSha256(target, std::stop_token{});
+    const auto expected = Sha256::hashFile(std::filesystem::canonical("/bin/sleep"), std::stop_token{});
+    ProcessTarget stale = target;
+    stale.startTimeTicks += 1;
+    const auto refused = actions.imageSha256(stale, std::stop_token{});
+    std::stop_source stop;
+    stop.request_stop();
+    const auto stopped = actions.imageSha256(target, stop.get_token());
+    ::kill(child, SIGKILL);
+    ::waitpid(child, nullptr, 0);
+
+    ASSERT_TRUE(image.has_value()) << image.error();
+    ASSERT_TRUE(expected.has_value()) << expected.error();
+    EXPECT_EQ(*image, Sha256::toHex(*expected));
+    EXPECT_EQ(image->size(), 64U);
+    EXPECT_FALSE(refused.has_value()) << "a reused PID's image is never read";
+    EXPECT_FALSE(actions.imageSha256({.pid = 0, .startTimeTicks = 0}, std::stop_token{}).has_value());
+    ASSERT_FALSE(stopped.has_value());
+    EXPECT_TRUE(stopped.error().contains("Stopped")) << stopped.error();
+}
+
 TEST(LinuxProcessActionsTest, OpenFileLocationAsksTheFileManagerToShowTheExecutable)
 {
     if (::geteuid() == 0)
@@ -4212,6 +4260,68 @@ TEST(LinuxEfficiencyModeRealTest, TheRealCgroupFileCallsStayUnderTheCgroupRoot)
     const std::optional<std::string> own = real.procCgroup(static_cast<std::int32_t>(::getpid()));
     ASSERT_TRUE(own.has_value());
     EXPECT_FALSE(own->empty());
+}
+
+// #3620, #3374: as root, a tool TaskSmack runs as root comes only from the system's own directories. A fake strace,
+// gcore, pkexec and terminal first on PATH, and an absolute $TERMINAL, all in a temp directory, are each passed
+// over. Only as root: CI's PR root step and the coverage job's root pass run this suite.
+TEST(LinuxProcessActionsRootTest, AsRootToolsComeOnlyFromTheSystemsOwnDirectories)
+{
+    if (::geteuid() != 0)
+    {
+        GTEST_SKIP() << "needs root: CI runs this suite under sudo";
+    }
+    const TestSupport::ScopedTempDir planted("tasksmack-3620-tools");
+    for (const char* name : {"strace", "gcore", "pkexec", "xterm", "xdg-open"})
+    {
+        const std::filesystem::path fake = planted.path / name;
+        std::ofstream(fake) << "#!/bin/sh\nexit 0\n";
+        std::filesystem::permissions(fake,
+                                     std::filesystem::perms::owner_all | std::filesystem::perms::group_read |
+                                         std::filesystem::perms::group_exec | std::filesystem::perms::others_read |
+                                         std::filesystem::perms::others_exec);
+    }
+    // NOLINTBEGIN(concurrency-mt-unsafe) - the test's own environment, restored below
+    const char* const oldPath = std::getenv("PATH");
+    const std::string savedPath = oldPath != nullptr ? oldPath : "";
+    const char* const oldTerminal = std::getenv("TERMINAL");
+    const std::optional<std::string> savedTerminal = oldTerminal != nullptr ? std::optional<std::string>(oldTerminal) : std::nullopt;
+    ASSERT_EQ(::setenv("PATH", (planted.path.string() + ":" + savedPath).c_str(), 1), 0);
+    ASSERT_EQ(::setenv("TERMINAL", (planted.path / "xterm").c_str(), 1), 0);
+    const SyscallTrace::Tools tools = LinuxProcessActions::discoverSyscallTraceTools();
+    static_cast<void>(::setenv("PATH", savedPath.c_str(), 1));
+    if (savedTerminal.has_value())
+    {
+        static_cast<void>(::setenv("TERMINAL", savedTerminal->c_str(), 1));
+    }
+    else
+    {
+        static_cast<void>(::unsetenv("TERMINAL"));
+    }
+    // NOLINTEND(concurrency-mt-unsafe)
+
+    const std::string plantedDir = planted.path.string();
+    const auto fromSystem = [&plantedDir](const std::string& path)
+    {
+        if (path.empty())
+        {
+            return true; // not installed on this runner: nothing was taken from the planted directory either
+        }
+        if (path.starts_with(plantedDir))
+        {
+            return false;
+        }
+        const std::string dir = std::filesystem::path(path).parent_path().string();
+        return std::string_view(SyscallTrace::ROOT_TOOL_PATH).contains(dir);
+    };
+    EXPECT_TRUE(fromSystem(tools.tracerPath)) << tools.tracerPath;
+    EXPECT_TRUE(fromSystem(tools.coreDumperPath)) << tools.coreDumperPath;
+    EXPECT_TRUE(fromSystem(tools.elevatorPath)) << tools.elevatorPath;
+    EXPECT_TRUE(fromSystem(tools.folderOpenerPath)) << tools.folderOpenerPath;
+    if (tools.terminal.has_value())
+    {
+        EXPECT_TRUE(fromSystem(tools.terminal->path)) << tools.terminal->path;
+    }
 }
 
 } // namespace

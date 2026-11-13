@@ -196,6 +196,11 @@ std::shared_ptr<Platform::IHttpsClient> makeUpdateCheckClient(const Synthetic::S
     return Platform::makeHttpsClient();
 }
 
+std::shared_ptr<Platform::IHttpsClient> makeLookupClient(const Synthetic::Scenario* scenario, bool testHookActive)
+{
+    return makeUpdateCheckClient(scenario, testHookActive); // the same rule: no request from a made-up machine or a test run
+}
+
 std::shared_ptr<Platform::IStartAtLogin> makeStartAtLoginEntry(const Synthetic::Scenario* scenario, bool testHookActive)
 {
     // Never from a made-up machine or an unattended test run (#3093 part 2): the row isn't offered there.

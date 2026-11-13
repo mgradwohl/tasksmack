@@ -64,27 +64,10 @@ std::string errnoText(int error)
     return std::error_code(error, std::generic_category()).message();
 }
 
-/// libbpf's warnings during the current attempt on this thread (the verifier's log among them), or null.
-thread_local std::string* t_Capture = nullptr; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables): load()'s own
-
-/// Points t_Capture at a buffer for one attempt's warnings, and back at null when it ends.
-class CaptureScope
-{
-  public:
-    explicit CaptureScope(std::string& buffer) noexcept
-    {
-        buffer.clear();
-        t_Capture = &buffer;
-    }
-    ~CaptureScope()
-    {
-        t_Capture = nullptr;
-    }
-    CaptureScope(const CaptureScope&) = delete;
-    CaptureScope& operator=(const CaptureScope&) = delete;
-    CaptureScope(CaptureScope&&) = delete;
-    CaptureScope& operator=(CaptureScope&&) = delete;
-};
+/// This thread's libbpf warnings while a UdpLibbpfLog::Capture is open (#3634): owned here, so no caller's address
+/// is stored.
+thread_local std::string t_CaptureText; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables): load()'s own
+thread_local bool t_Capturing = false;  // NOLINT(cppcoreguidelines-avoid-non-const-global-variables): the same
 
 // libbpf's own messages go to the debug log rather than stderr: a failed fexit attempt is expected on older
 // kernels, and the kretprobe fallback then loads. During an attempt its warnings are also kept, so a failure can
@@ -115,10 +98,7 @@ class CaptureScope
             text.remove_suffix(1);
         }
         spdlog::debug("libbpf: {}", text);
-        if (t_Capture != nullptr)
-        {
-            UdpLibbpfLog::keep(*t_Capture, text);
-        }
+        UdpLibbpfLog::note(text);
     }
     catch (...) // NOLINT(bugprone-empty-catch): the log is a courtesy; an allocation failure only loses it
     {}
@@ -157,6 +137,31 @@ void UdpLibbpfLog::keep(std::string& capture, std::string_view line)
     if (capture.size() > CAPTURE_BYTES)
     {
         capture.erase(0, capture.size() - CAPTURE_BYTES);
+    }
+}
+
+UdpLibbpfLog::Capture::Capture() noexcept
+{
+    t_CaptureText.clear();
+    t_Capturing = true;
+}
+
+UdpLibbpfLog::Capture::~Capture()
+{
+    t_Capturing = false;
+}
+
+// NOLINTNEXTLINE(readability-convert-member-functions-to-static): read through the open capture on purpose
+const std::string& UdpLibbpfLog::Capture::text() const noexcept
+{
+    return t_CaptureText;
+}
+
+void UdpLibbpfLog::note(std::string_view line)
+{
+    if (t_Capturing)
+    {
+        keep(t_CaptureText, line);
     }
 }
 
@@ -232,7 +237,6 @@ std::expected<UdpByteCounter, std::string> UdpByteCounter::load(std::span<const 
     libbpf_set_print(libbpfPrint);
 
     std::string lastError = "no attach mode was tried";
-    std::string captured;
     for (const UdpAttachAttempt& attempt : attempts)
     {
         const char* modeName = attempt.mode == UdpAttachMode::Fexit ? "fexit" : "kretprobe";
@@ -242,7 +246,7 @@ std::expected<UdpByteCounter, std::string> UdpByteCounter::load(std::span<const 
         options.sz = sizeof(options);
         const std::string objectName(OBJECT_NAME);
         options.object_name = objectName.c_str();
-        const CaptureScope capture(captured); // this attempt's libbpf warnings, for its failure's reason
+        const UdpLibbpfLog::Capture capture; // this attempt's libbpf warnings, for its failure's reason
         ObjectPtr object(bpf_object__open_mem(UDP_BYTES_BPF_OBJECT.data(), UDP_BYTES_BPF_OBJECT.size(), &options));
         if (!object)
         {
@@ -258,7 +262,7 @@ std::expected<UdpByteCounter, std::string> UdpByteCounter::load(std::span<const 
 
         if (const int error = bpf_object__load(object.get()); error != 0)
         {
-            lastError = UdpLibbpfLog::withLog(std::format("{}: loading failed: {}", label, errnoText(-error)), captured);
+            lastError = UdpLibbpfLog::withLog(std::format("{}: loading failed: {}", label, errnoText(-error)), capture.text());
             spdlog::debug("UDP byte counter: {}", lastError);
             continue;
         }
@@ -282,7 +286,7 @@ std::expected<UdpByteCounter, std::string> UdpByteCounter::load(std::span<const 
                     const int attachError = errno;
                     lastError = UdpLibbpfLog::withLog(
                         std::format("{}: attaching {} failed: {}", label, bpf_program__section_name(program), errnoText(attachError)),
-                        captured);
+                        capture.text());
                     spdlog::debug("UDP byte counter: {}", lastError);
                     attached = false;
                     break;

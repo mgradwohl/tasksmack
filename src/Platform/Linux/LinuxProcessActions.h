@@ -64,6 +64,9 @@ class LinuxProcessActions : public LinuxProcessControl
     /// user (sudo, pkexec), the folder is opened as that user, in their session, and D-Bus isn't tried:
     /// root's session bus, if it has one, isn't theirs.
     [[nodiscard]] ProcessActionResult openFileLocation(const ProcessTarget& target) override;
+    /// The SHA-256 of what /proc/<pid>/exe opens (#3094): the image the process runs, even when its file has since
+    /// been deleted or replaced. Read through the identity check, and refused if the process exits while it's read.
+    [[nodiscard]] std::expected<std::string, std::string> imageSha256(const ProcessTarget& target, const std::stop_token& stop) override;
     /// Run new task (#3065): the command line's words, its program looked up on PATH, started detached;
     /// as administrator through pkexec (asking for the password itself), or as it is when TaskSmack
     /// already runs as root. Run as root for another user and not as administrator, it starts as that

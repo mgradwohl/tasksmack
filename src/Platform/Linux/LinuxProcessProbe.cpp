@@ -539,7 +539,7 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
         .hasMemoryRollup = std::filesystem::exists(m_ProcRoot / "self" / "smaps_rollup", ignored),
         .hasCpuAffinity = true,                   // From status Cpus_allowed_list
         .hasNetworkCounters = hasNetworkCounters, // From Netlink INET_DIAG (if available)
-        // sock_diag has no UDP byte counters (#1101): only the helper's eBPF counter, while it delivers (#3366)
+        // sock_diag has no UDP byte counters (#1101): only root's eBPF counter, while it delivers (#3366, #3580)
         .hasUdpNetworkCounters = hasNetworkCounters && udpDelivering,
         .hasPowerUsage = m_HasPowerCap,                 // Available if RAPL is detected
         .hasStatus = true,                              // From cgroup freezer state

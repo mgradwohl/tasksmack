@@ -121,4 +121,19 @@ TEST(ProcessFilterMatchTest, TheFilterMatchesTheNameOrTheCommandLine)
     EXPECT_TRUE(matches(NAME, "", "pyth")); // a process whose command line could not be read
 }
 
+// #3328: the filter finds a process by its owner too, by the short name or by DOMAIN\user.
+TEST(ProcessFilterMatchTest, TheFilterMatchesTheOwnersAccount)
+{
+    using App::ProcessFilterCache::matches;
+    constexpr std::string_view NAME = "notepad.exe";
+    constexpr std::string_view COMMAND = "C:\\Windows\\notepad.exe";
+    EXPECT_TRUE(matches(NAME, COMMAND, "CORP", "alice", "alice"));
+    EXPECT_TRUE(matches(NAME, COMMAND, "CORP", "alice", "corp\\al"));
+    EXPECT_TRUE(matches(NAME, COMMAND, "CORP", "alice", "NOTEPAD")); // the name still matches
+    EXPECT_FALSE(matches(NAME, COMMAND, "PC", "alice", "corp\\alice"));
+    EXPECT_TRUE(matches(NAME, COMMAND, "", "root", "root")); // Linux: the user name, no domain
+    EXPECT_FALSE(matches(NAME, COMMAND, "", "", "alice"));
+    EXPECT_TRUE(matches(NAME, COMMAND, "", "", "")); // an empty term keeps every row
+}
+
 } // namespace

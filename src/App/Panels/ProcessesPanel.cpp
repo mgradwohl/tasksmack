@@ -45,7 +45,12 @@
 #include "App/Panels/ProcessWaitChainDialog.h"
 #include "App/Panels/RunTaskDialog.h"
 #include "App/Panels/RunTaskHistory.h"
+#include "App/Panels/SessionActionControl.h"
+#include "App/Panels/SessionActionView.h"
 #include "App/Panels/StuckProcesses.h"
+#include "App/Panels/UserGrouping.h"
+#include "App/Panels/UserSessionsFeed.h"
+#include "App/Panels/VirusTotalLookup.h"
 #include "App/PlatformOpen.h"
 #include "App/ProcessColumnConfig.h"
 #include "App/SelectOverride.h"
@@ -66,9 +71,12 @@
 #include "Domain/ProcessSnapshot.h"
 #include "Domain/ProcessState.h"
 #include "Domain/SamplingConfig.h"
+#include "Domain/UpdateCheck.h"
+#include "Domain/UsersModel.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/CurrentProcess.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IUserSessions.h"
 #include "Platform/ImageSignature.h"
 #include "Platform/IoPriorityTypes.h"
 #include "Platform/ProcessTypes.h"
@@ -80,6 +88,7 @@
 #include "UI/FrameOutline.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
+#include "version.h"
 
 // clang-format off
 #include <imgui.h>
@@ -138,7 +147,7 @@ constexpr std::string_view COLUMNS_LABEL = ICON_FA_TABLE_COLUMNS " Columns";
 constexpr const char* COLUMNS_POPUP_ID = "##ColumnsMenu";
 constexpr const char* SORT_MENU_POPUP_ID = "##SortMenu"; // F6 (#3097)
 constexpr const char* ROW_MENU_POPUP_ID = "##ProcessRowMenu";
-constexpr const char* FILTER_HINT = ICON_FA_MAGNIFYING_GLASS "  Filter by name or command...";
+constexpr const char* FILTER_HINT = ICON_FA_MAGNIFYING_GLASS "  Filter by name, command or user...";
 // Tree view's Expand all and Collapse all (#838): icon buttons, explained by their tooltips.
 constexpr const char* EXPAND_ALL_BUTTON = ICON_FA_ANGLES_DOWN "##ExpandAll";
 constexpr const char* COLLAPSE_ALL_BUTTON = ICON_FA_ANGLES_UP "##CollapseAll";
@@ -523,13 +532,6 @@ void unitAlignedCell(const Domain::ProcessSnapshot& /*proc*/, const RowFormatCac
     renderUnitAlignedText(fmt.*Cell, widths.*UnitSlot);
 }
 
-/// Free text from the snapshot, left-aligned.
-template<std::string Domain::ProcessSnapshot::* Text, ProcessRowFormat::LazyTextWidth RowFormatCache::* Width>
-void leftAlignedCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& fmt, const ProcessCellWidths& /*widths*/)
-{
-    renderLeftAlignedText(proc.*Text, fmt.*Width);
-}
-
 /// Free text from the snapshot, left-aligned; blank when the process has none, and the unavailable
 /// dash when this system cannot fill the column at all (`Supported`, ProcessColumnAvailability::
 /// textCell(), #1210). Blank, not a dash, for an empty value: no status is a process in neither
@@ -634,6 +636,13 @@ void priorityCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& /*f
     // instead of an AlignedCellText.
     const std::string_view priorityLabel = Domain::Priority::getProcessPriorityLabel(proc.priorityClass, proc.nice);
     renderRightAlignedText(priorityLabel, widths.priorityLabelWidth(priorityLabel));
+}
+
+/// The owner, left-aligned: its user name, or "CORP\alice" when two accounts with processes share that
+/// name (RowFormatCache::qualifiedUser, #3328).
+void userCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& fmt, const ProcessCellWidths& /*widths*/)
+{
+    renderLeftAlignedText(fmt.qualifiedUser.empty() ? std::string_view{proc.user} : std::string_view{fmt.qualifiedUser}, fmt.userWidth);
 }
 
 /// The command line, left-aligned, or the name in brackets when there is none
@@ -787,7 +796,7 @@ constexpr std::array<ProcessCellEntry, processColumnCount()> CELL_RENDERERS = {
         {.column = ProcessColumn::PID, .render = nullptr},  // drawn by renderProcessRow() (the selectable)
         {.column = ProcessColumn::Name, .render = nullptr}, // drawn by renderProcessRow() (tree indent and expander)
         // Identity
-        {.column = ProcessColumn::User, .render = &leftAlignedCell<&Domain::ProcessSnapshot::user, &RowFormatCache::userWidth>},
+        {.column = ProcessColumn::User, .render = &userCell},
         {.column = ProcessColumn::PPID, .render = &rightAlignedCell<&RowFormatCache::ppid>},
         {
             .column = ProcessColumn::Publisher,
@@ -1103,6 +1112,11 @@ void ProcessesPanel::onAttach()
     // The synthetic scenario's platform when TASKSMACK_SYNTHETIC selects one (#1413), else the
     // platform's. An injected factory (tests, #1546) replaces both, with no scenario.
     const Synthetic::Scenario* scenario = m_MakePlatform ? nullptr : Synthetic::activeScenario();
+    // Look up on VirusTotal's client (#3094): made here, unused until asked. An injected platform (tests) brings none.
+    if (!m_MakePlatform && m_LookupClient == nullptr)
+    {
+        m_LookupClient = makeLookupClient(scenario, SelectOverride::testHookActive());
+    }
     m_ProcessModel = std::make_shared<Domain::ProcessModel>(Domain::DEFERRED_PROBE);
     m_OwnPid = Platform::currentProcessId(); // A batch naming TaskSmack itself says so (#804)
     // Config-file only (not in Settings), so applied once here, before the first refresh (#1123).
@@ -1334,6 +1348,13 @@ void ProcessesPanel::onDetach()
         m_UdpCollector = std::move(contents->udpCollector);
     }
     m_Handoff.reset();
+    // Group: User's sessions (#3377): the feed reads none for this table any more; it outlives the panel.
+    if (m_UserSessions != nullptr)
+    {
+        m_UserSessions->setProcessesView(false, m_GroupBy);
+    }
+    m_SessionsPublication.reset();
+    m_SessionMenuTarget.reset();
     // While the GL context is current: deletes the icons' textures, and stops their loader (#1800).
     m_IconView.detach();
     // A dump still being written is cancelled and waited for, while its actions are still here (#807).
@@ -1465,6 +1486,11 @@ void ProcessesPanel::onUpdate(float deltaTime)
     m_RowActionRun.update();
     // Neither holds Process Details' priority controls any more once taken in (#3467).
     publishPriorityChanges();
+    // The signed-in sessions are read while this tab shows them, grouped by User (#3377); only a change does anything.
+    if (m_UserSessions != nullptr)
+    {
+        m_UserSessions->setProcessesView(m_IsActiveTab, m_GroupBy);
+    }
 
     if (!m_ProcessModel || !m_Sampler)
     {
@@ -1703,6 +1729,8 @@ void ProcessesPanel::renderContent()
         m_GroupBy = active;
         m_GroupsBuiltFor.reset();
     }
+    // Group: User's sessions (#3377): the newest publication, and the session actions' worker.
+    refreshSessions();
 
     // Prune row format cache entries for processes no longer present, once per new snapshot
     // generation (not per frame). Entries themselves are built lazily, on demand, by
@@ -1725,6 +1753,9 @@ void ProcessesPanel::renderContent()
         {
             ++m_CollapseGeneration;
         }
+        // The user names two accounts share, for the User cells built for this generation (#3328): computed
+        // here, keyed as the cache is, so every entry stamped with this generation agrees with it.
+        m_SharedUserNames = UserGrouping::sharedUserNames(currentSnapshots);
         m_RowFormatCachePrunedVersion = m_CachedSnapshotVersion;
     }
 
@@ -1773,11 +1804,12 @@ void ProcessesPanel::renderContent()
         m_CachedFilteredIndices.clear();
         m_CachedFilteredIndices.reserve(currentSnapshots.size());
 
-        // Case-insensitive, in the name or the command line, as the user guide says (#838)
+        // Case-insensitive, in the name, the command line or the owner's account, as the user guide says (#838, #3328)
         for (size_t i = 0; i < currentSnapshots.size(); ++i)
         {
-            if (ProcessFilterCache::matches(currentSnapshots[i].name, currentSnapshots[i].command, searchTerm) ||
-                m_Pins.contains(currentSnapshots[i].name)) // a pinned process stays in view (#3061)
+            const Domain::ProcessSnapshot& candidate = currentSnapshots[i];
+            if (ProcessFilterCache::matches(candidate.name, candidate.command, candidate.userDomain, candidate.user, searchTerm) ||
+                m_Pins.contains(candidate.name)) // a pinned process stays in view (#3061)
             {
                 m_CachedFilteredIndices.push_back(i);
             }
@@ -1834,8 +1866,15 @@ void ProcessesPanel::renderContent()
     // In tree view, Expand all and Collapse all follow the List | Tree control (#838).
     const float foldButtonWidth = m_TextSizeCache.foldIconWidth + (style.FramePadding.x * 2.0F);
     const float foldButtonsWidth = m_TreeViewEnabled ? (style.ItemSpacing.x + foldButtonWidth) * 2.0F : 0.0F;
+    // Group: User's session actions (#3377) share the line: Lock, Disconnect or Sign out running, or its result,
+    // stands where a row action's would, with its own Authenticate and retry.
+    SessionActionControl* const sessionActions =
+        (m_UserSessions != nullptr && m_GroupBy == ProcessGrouping::GroupBy::User) ? m_UserSessions->actions() : nullptr;
+    const bool sessionBusy = sessionActions != nullptr && sessionActions->busy();
+    const bool showSessionResult = sessionActions != nullptr && !sessionBusy && !sessionActions->result().empty();
+    const bool offerSessionRetry = showSessionResult && sessionActions->offersAuthenticateAndRetry();
     // "Authenticate and retry" beside a refused action's line (#2308) takes its room from the status.
-    const bool offerRetry = offersAuthenticateAndRetry();
+    const bool offerRetry = offerSessionRetry || (!sessionBusy && !showSessionResult && offersAuthenticateAndRetry());
     const float retryButtonWidth = offerRetry ? ImGui::CalcTextSize(AuthorizeWording::RETRY_LABEL).x + (style.FramePadding.x * 2.0F) : 0.0F;
     // Group by (#3068): "Group: None", sized for its widest label so the row doesn't shift.
     const float groupComboWidth = ImGui::CalcTextSize("Group: Container").x + ImGui::GetFrameHeight() + (style.FramePadding.x * 2.0F);
@@ -1856,19 +1895,31 @@ void ProcessesPanel::renderContent()
     const bool batchRunning = rowActionRunning();
     const bool showActionResult = !batchRunning && (m_RowActionResultSeconds > 0.0F) && !m_RowActionResult.empty();
     const std::string* statusSource = &m_CachedSummaryStr;
+    const Detail::ActionResultMessage* shownResult = nullptr; // the result the line shows, in its colour
     if (batchRunning)
     {
         statusSource = m_BatchRun.busy() ? &m_BatchRun.statusText() : &m_RowActionRun.pendingText();
     }
+    else if (sessionBusy)
+    {
+        statusSource = &sessionActions->pendingText();
+    }
+    else if (showSessionResult)
+    {
+        shownResult = &sessionActions->result();
+        statusSource = &shownResult->text;
+    }
     else if (showActionResult)
     {
+        shownResult = &m_RowActionResult;
         statusSource = &m_RowActionResult.text;
     }
     const std::string& statusText = *statusSource;
     const float rightEdgeX = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
     const float summaryW = ImGui::CalcTextSize(m_CachedSummaryStr.c_str(), m_CachedSummaryStr.c_str() + m_CachedSummaryStr.size()).x;
-    const float textW =
-        (batchRunning || showActionResult) ? ImGui::CalcTextSize(statusText.c_str(), statusText.c_str() + statusText.size()).x : summaryW;
+    const float textW = (statusSource != &m_CachedSummaryStr)
+                          ? ImGui::CalcTextSize(statusText.c_str(), statusText.c_str() + statusText.size()).x
+                          : summaryW;
     const float statusMinX = ImGui::GetCursorPosX();
     const ProcessTableLayout::ToolbarStatusLayout statusLayout =
         ProcessTableLayout::layoutToolbarStatus(statusMinX, rightEdgeX, controlsWidth, style.ItemSpacing.x, textW, summaryW);
@@ -1903,10 +1954,10 @@ void ProcessesPanel::renderContent()
     }
     ImGui::SetCursorPosX(statusLayout.x);
     {
-        const bool colored = showActionResult && !m_RowActionResult.neutral; // a cancelled run: the normal colour (#3427)
+        const bool colored = shownResult != nullptr && !shownResult->neutral; // a cancelled run: the normal colour (#3427)
         if (colored)
         {
-            ImGui::PushStyleColor(ImGuiCol_Text, m_RowActionResult.ok ? theme.scheme().textSuccess : theme.scheme().textError);
+            ImGui::PushStyleColor(ImGuiCol_Text, shownResult->ok ? theme.scheme().textSuccess : theme.scheme().textError);
         }
         renderBoundedText(statusText, textW, statusLayout.width);
         if (colored)
@@ -1919,7 +1970,14 @@ void ProcessesPanel::renderContent()
         ImGui::SameLine();
         if (ImGui::SmallButton(AuthorizeWording::RETRY_LABEL))
         {
-            retryRowActionAuthorized();
+            if (offerSessionRetry)
+            {
+                sessionActions->retryAuthorized(); // the refused Lock, Disconnect or Sign out (#3377)
+            }
+            else
+            {
+                retryRowActionAuthorized();
+            }
         }
         ImGui::SetItemTooltip("%s", AuthorizeWording::RETRY_TOOLTIP);
     }
@@ -2046,6 +2104,13 @@ void ProcessesPanel::renderContent()
     {
         m_RowMenuTarget.reset();
     }
+    // Group: User's session menu (#3377), and Sign out's or Disconnect's confirm.
+    renderSessionMenu();
+    if (SessionActionControl* const actions = m_UserSessions != nullptr ? m_UserSessions->actions() : nullptr; actions != nullptr)
+    {
+        renderSessionConfirm(*actions);
+    }
+    renderSessionsReadFailure();
 
     // Always create all columns with stable IDs (using enum value as ID)
     // Hidden columns use ImGuiTableColumnFlags_Disabled
@@ -2493,15 +2558,15 @@ Platform::ProcessCapabilities ProcessesPanel::processCapabilities() const
     return m_CachedCapabilities;
 }
 
-std::optional<Domain::ProcessSnapshot> ProcessesPanel::findSnapshot(std::int32_t pid) const
+std::shared_ptr<const Domain::ProcessSnapshot> ProcessesPanel::findSnapshot(std::int32_t pid) const
 {
     if (!m_ProcessModel)
     {
-        return std::nullopt;
+        return nullptr;
     }
-    // Delegates to ProcessModel::findSnapshot(), which searches under its own lock and
-    // copies only the matching entry, instead of copying the entire snapshot vector
-    // just to scan it here. Deliberately does NOT use
+    // Delegates to ProcessModel::findSnapshot(), which looks the PID up in the published
+    // generation's index under its own lock and shares the matching row, instead of copying
+    // the entire snapshot vector just to scan it here. Deliberately does NOT use
     // m_CachedRenderSnapshots: that cache is only refreshed while this panel's tab is
     // active (see renderContent()), so it would go stale while e.g. the Process Details
     // tab is showing — this must always reflect the latest published snapshot.
@@ -2614,13 +2679,11 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, const
     // TextSizeCache::populate(), not with the font's address, which a rebuilt
     // font atlas can reuse (#943).
     const Platform::ProcessCapabilities caps = processCapabilities();
-    const RowFormatCache& fmt = ProcessRowFormat::getOrBuildRowFormatCache(
-        m_RowFormatCache,
-        proc,
-        m_CachedSnapshotVersion,
-        m_TextSizeCache.stamp,
-        ProcessColumnAvailability::rowFormatOptions(
-            caps, ProcessColumnAvailability::gpuSupportOfGeneration(m_CachedGpuSupport, m_GpuSupport.accelerator)));
+    ProcessRowFormat::RowFormatOptions options = ProcessColumnAvailability::rowFormatOptions(
+        caps, ProcessColumnAvailability::gpuSupportOfGeneration(m_CachedGpuSupport, m_GpuSupport.accelerator));
+    options.qualifyUser = UserGrouping::isSharedUserName(m_SharedUserNames, proc.user); // CORP\alice beside PC\alice (#3328)
+    const RowFormatCache& fmt =
+        ProcessRowFormat::getOrBuildRowFormatCache(m_RowFormatCache, proc, m_CachedSnapshotVersion, m_TextSizeCache.stamp, options);
 
     // Render all columns
     int colIdx = 0;
@@ -3225,12 +3288,13 @@ void ProcessesPanel::collectVisibleRows(const std::vector<Domain::ProcessSnapsho
     }
     if (m_GroupBy != ProcessGrouping::GroupBy::None)
     {
-        // The members of the open groups, in the order drawn; the header rows aren't processes (#3068).
+        // The members of the open groups, in the order drawn; the header rows (#3068) and Group: User's
+        // session rows (#3377) aren't processes, so the keyboard never moves to them.
         rebuildGroupsIfStale(snapshots);
         visible.reserve(m_GroupedRows.size());
         for (const GroupedRow& row : m_GroupedRows)
         {
-            if (!row.header)
+            if (row.kind == GroupedRowKind::Process)
             {
                 visible.push_back(row.procIdx);
             }
@@ -3643,6 +3707,20 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
         searchRowOnline(proc);
     }
     ImGui::SetItemTooltip("Searches the web for \"%s process\". Only the name is sent, never its path or command line.", proc.name.c_str());
+    // Look up on VirusTotal (#3094): only with a key in Settings and a platform that can hash the image.
+    if (const VirusTotalLookup::Context lookup{
+            .client = m_LookupClient,
+            .apiKey = UserConfig::get().settings().virusTotalApiKey,
+            .userAgent = {},
+        };
+        VirusTotalLookup::offered(m_ActionCapabilities, lookup))
+    {
+        if (ImGui::MenuItem(ICON_FA_SHIELD_HALVED " Look up on VirusTotal###LookUpVirusTotal", nullptr, false, actionsIdle))
+        {
+            lookUpRowOnVirusTotal(proc);
+        }
+        ImGui::SetItemTooltip("%s", VirusTotalLookup::TOOLTIP);
+    }
     // "Kill..." for one process, "Kill 5 processes..." for a selection; the "###" part keeps the item's
     // ID the same whichever it says.
     const auto actionItem = [batchCount, actionsIdle](Detail::ProcessAction action, const char* icon, const char* shortcut)
@@ -3868,11 +3946,17 @@ void ProcessesPanel::setGroupBy(ProcessGrouping::GroupBy groupBy)
 
 void ProcessesPanel::rebuildGroupsIfStale(const std::vector<Domain::ProcessSnapshot>& snapshots)
 {
+    // Group: User's sessions (#3377): the publication refreshSessions() took, when it was read.
+    const Domain::UsersPublication* const sessions = (m_GroupBy == ProcessGrouping::GroupBy::User && m_SessionsPublication &&
+                                                      m_SessionsPublication->status == Platform::UserSessionsStatus::Ok)
+                                                       ? m_SessionsPublication.get()
+                                                       : nullptr;
     const GroupsKey key{
         .displayVersion = m_DisplayVersion,
         .filterGeneration = m_FilterGeneration,
         .sortGeneration = m_SortGeneration,
         .collapseGeneration = m_GroupCollapseGeneration,
+        .sessionsVersion = sessions != nullptr ? sessions->version : 0,
         .groupBy = m_GroupBy,
     };
     if (m_GroupsBuiltFor == key)
@@ -3881,20 +3965,35 @@ void ProcessesPanel::rebuildGroupsIfStale(const std::vector<Domain::ProcessSnaps
     }
     m_GroupsBuiltFor = key;
     // The sorted, filtered rows (pinned first, #3061) gathered by group; an exited row (#3060) is listed
-    // under its group but not counted in the totals.
-    m_Groups = ProcessGrouping::buildGroups(snapshots, m_CachedSortedIndices, m_GroupBy, m_LiveRowCount, m_SortColumn, m_SortAscending);
+    // under its group but not counted in the totals. Grouped by User, each signed-in account with its sessions.
+    m_Groups = sessions != nullptr
+                 ? ProcessGrouping::buildGroups(
+                       snapshots, m_CachedSortedIndices, m_GroupBy, m_LiveRowCount, m_SortColumn, m_SortAscending, sessions->sessions)
+                 : ProcessGrouping::buildGroups(snapshots, m_CachedSortedIndices, m_GroupBy, m_LiveRowCount, m_SortColumn, m_SortAscending);
+    const bool filtered = !m_CachedSearchTerm.empty();
     m_GroupedRows.clear();
-    m_GroupedRows.reserve(m_CachedSortedIndices.size() + m_Groups.size());
+    m_GroupedRows.reserve(m_CachedSortedIndices.size() + (m_Groups.size() * 2));
     for (std::size_t g = 0; g < m_Groups.size(); ++g)
     {
-        m_GroupedRows.push_back({.header = true, .group = g, .procIdx = 0});
-        if (m_CollapsedGroups.contains(m_Groups[g].key))
+        const ProcessGrouping::Group& group = m_Groups[g];
+        m_GroupedRows.push_back({.kind = GroupedRowKind::Header, .group = g, .procIdx = 0});
+        if (m_CollapsedGroups.contains(group.key))
         {
             continue;
         }
-        for (const std::size_t member : m_Groups[g].members)
+        // Its sessions first, collapsing with it (#3377).
+        for (std::size_t s = 0; s < group.sessions.size(); ++s)
         {
-            m_GroupedRows.push_back({.header = false, .group = g, .procIdx = member});
+            m_GroupedRows.push_back({.kind = GroupedRowKind::Session, .group = g, .procIdx = s});
+        }
+        // A signed-in account the filter leaves no process of still shows, and says why it has none.
+        if (filtered && group.members.empty() && !group.sessions.empty() && !group.notReadable)
+        {
+            m_GroupedRows.push_back({.kind = GroupedRowKind::NoMatches, .group = g, .procIdx = 0});
+        }
+        for (const std::size_t member : group.members)
+        {
+            m_GroupedRows.push_back({.kind = GroupedRowKind::Process, .group = g, .procIdx = member});
         }
     }
 }
@@ -3909,14 +4008,27 @@ void ProcessesPanel::renderGroupedRows(const std::vector<Domain::ProcessSnapshot
         for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i)
         {
             const GroupedRow& row = m_GroupedRows[static_cast<std::size_t>(i)];
-            if (row.header)
+            switch (row.kind)
             {
+            case GroupedRowKind::Header:
                 renderGroupHeaderRow(row.group);
-            }
-            else if (row.procIdx < snapshots.size())
-            {
-                renderProcessRow(snapshots[row.procIdx],
-                                 {.procIdx = row.procIdx, .depth = 1, .hasChildren = false, .isExpanded = false, .isContext = false});
+                break;
+            case GroupedRowKind::Session:
+                if (const auto& groupSessions = m_Groups[row.group].sessions; row.procIdx < groupSessions.size())
+                {
+                    renderSessionRow(groupSessions[row.procIdx]);
+                }
+                break;
+            case GroupedRowKind::NoMatches:
+                renderNoMatchesRow();
+                break;
+            case GroupedRowKind::Process:
+                if (row.procIdx < snapshots.size())
+                {
+                    renderProcessRow(snapshots[row.procIdx],
+                                     {.procIdx = row.procIdx, .depth = 1, .hasChildren = false, .isExpanded = false, .isContext = false});
+                }
+                break;
             }
         }
     }
@@ -3949,7 +4061,18 @@ void ProcessesPanel::renderGroupHeaderRow(std::size_t groupIndex)
                 }
                 ++m_GroupCollapseGeneration;
             }
-            ImGui::SetItemTooltip("%s", collapsed ? "Expand" : "Collapse");
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) // built only when shown, not every frame
+            {
+                ImGui::SetTooltip("%s", UserGrouping::groupHeaderTooltip(group, collapsed).c_str());
+            }
+            // Group: User (#3377): an account with one sign-in session offers its menu on the header too.
+            if (const Platform::UserSession* const session = UserGrouping::headerMenuSession(group);
+                session != nullptr && m_UserSessions != nullptr && m_UserSessions->sessionMenu().any() &&
+                ImGui::IsItemClicked(ImGuiMouseButton_Right))
+            {
+                m_SessionMenuTarget = *session;
+                ImGui::OpenPopup(m_SessionMenuPopupId);
+            }
             ImGui::PopID();
             continue;
         }
@@ -3959,14 +4082,38 @@ void ProcessesPanel::renderGroupHeaderRow(std::size_t groupIndex)
         }
         if (col == ProcessColumn::Name)
         {
-            const std::string label = std::format("{} {} ({})",
-                                                  collapsed ? ICON_FA_CARET_RIGHT : ICON_FA_CARET_DOWN,
-                                                  group.key.empty() ? ProcessGrouping::UNGROUPED_LABEL : std::string_view(group.label),
-                                                  group.members.size());
+            // A signed-in account (#3377): its icon, "(you)" for TaskSmack's own, and its process count. Not
+            // readable has sessions and never a process, so no count.
+            const char* const caret = collapsed ? ICON_FA_CARET_RIGHT : ICON_FA_CARET_DOWN;
+            std::string label;
+            if (group.key.empty())
+            {
+                label = std::format("{} {} ({})", caret, ProcessGrouping::UNGROUPED_LABEL, group.members.size());
+            }
+            else if (group.notReadable)
+            {
+                label = std::format("{} {}", caret, group.label);
+            }
+            else
+            {
+                label = std::format("{} {}{} ({})",
+                                    caret,
+                                    group.sessions.empty() ? "" : ICON_FA_USER "  ",
+                                    UserGrouping::groupHeaderName(group),
+                                    group.members.size());
+            }
             static_cast<void>(
                 UI::Widgets::cellText(label,
                                       ImGui::CalcTextSize(label.c_str()).x,
                                       {.rightAligned = false, .clippedTooltip = true, .layoutFullText = false, .trailingReservePx = 0.0F}));
+            continue;
+        }
+        if (col == ProcessColumn::Status && !group.sessions.empty())
+        {
+            // Its one session's status, or how many it has (#3377).
+            const auto now = static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+            UI::Widgets::cellText(UserGrouping::groupStatus(group, now));
             continue;
         }
         const std::optional<double> total = ProcessGrouping::totalFor(group.totals, col);
@@ -4045,6 +4192,23 @@ void ProcessesPanel::searchRowOnline(const Domain::ProcessSnapshot& proc)
                      : Platform::ProcessActionResult::error("no web browser could be started");
         },
         [name = proc.name](const Platform::ProcessActionResult& result) { return Detail::formatSearchOnlineResult(name, result); },
+        std::nullopt);
+}
+
+void ProcessesPanel::lookUpRowOnVirusTotal(const Domain::ProcessSnapshot& proc)
+{
+    // This row's identity: a reused PID's image is never hashed (#973).
+    const Platform::ProcessTarget target{.pid = proc.pid, .startTimeTicks = proc.startTimeTicks};
+    VirusTotalLookup::Context lookup{
+        .client = m_LookupClient,
+        .apiKey = UserConfig::get().settings().virusTotalApiKey,
+        .userAgent = Domain::UpdateCheck::userAgent(tasksmack::Version::FULL),
+    };
+    runRowAction(
+        std::format("Looking up {} on VirusTotal...", proc.name),
+        [actions = m_ProcessActions.get(), lookup = std::move(lookup), target, name = proc.name](const std::stop_token& stop)
+        { return VirusTotalLookup::lookUp(*actions, lookup, target, name, stop); },
+        [](const Platform::ProcessActionResult& result) { return VirusTotalLookup::format(result); },
         std::nullopt);
 }
 

@@ -15,20 +15,23 @@
 // serve (a Program Files folder only administrators can change, the parent a standard user), to watch how a
 // served session ends:
 //
-//   TaskSmack.exe session <hold|close|idle> <log> <pid> <start ticks> [<user> <password>]
+//   TaskSmack.exe session <hold|close|idle|environment> <log> <pid> <start ticks> [<user> <password>]
 //
 // It starts the helper (as <user>, through CreateProcessWithLogonW, when one is given: an over-the-shoulder
 // elevation's other account), writes "launched <helper pid>" to <log>,
 // waits until the test makes <log>.ack (it holds the helper by then), and connects. Then:
 //   - hold:  asks the helper to end <pid>, writes "served", and waits;
 //   - close: the same, then closes the pipe (PipeBroker::disconnect()), writes "closed", and waits;
-//   - idle:  writes "connected", and waits, asking nothing.
+//   - idle:  writes "connected", and waits, asking nothing;
+//   - environment: asks the helper for <pid>'s environment (#3610), writes "environment matched" when the read
+//     has ENVIRONMENT_MARKER with the value this process inherited too (the test set it for both), and waits.
 // "Waits" is two minutes at most: the test ends it sooner, or watches the helper end its session meanwhile.
 // A failure is written to <log> as "failed: <why>", exit status 1.
 
 #include "Platform/BrokerProtocol.h"
 #include "Platform/IPrivilegedBroker.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IProcessEnvironment.h"
 #include "Platform/Windows/BrokerHelper.h"
 #include "Platform/Windows/HelperLauncher.h"
 #include "Platform/Windows/PipeBroker.h"
@@ -49,6 +52,7 @@
 #include <chrono>
 #include <cstddef>
 #include <exception>
+#include <expected>
 #include <format>
 #include <fstream>
 #include <ios>
@@ -56,6 +60,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <variant>
 
 namespace
 {
@@ -195,6 +200,46 @@ BOOL WINAPI launchAndNote(SHELLEXECUTEINFOW* info)
     return TRUE;
 }
 
+/// The variable the environment mode looks for in the helper's read (test_CiRealSystemHelper.cpp sets it).
+constexpr const char* ENVIRONMENT_MARKER = "TASKSMACK_CI_HELPER_ENVIRONMENT_3610";
+
+/// What the environment mode found: "matched", or why not. Values are never written, only compared.
+[[nodiscard]] std::string environmentOutcome(const std::expected<Broker::Response, std::string>& response)
+{
+    if (!response.has_value())
+    {
+        return "the call failed: " + response.error();
+    }
+    if (const auto* error = std::get_if<Broker::ErrorReply>(&*response))
+    {
+        return "the helper refused: " + error->message;
+    }
+    const auto* reply = std::get_if<Broker::EnvironmentReply>(&*response);
+    if (reply == nullptr)
+    {
+        return "the helper answered with another reply";
+    }
+    if (reply->result.status != EnvironmentReadStatus::Ok)
+    {
+        return std::format("the read's status was {}: {}", static_cast<int>(reply->result.status), reply->result.detail);
+    }
+    std::array<char, 256> own{};
+    const DWORD length = GetEnvironmentVariableA(ENVIRONMENT_MARKER, own.data(), static_cast<DWORD>(own.size()));
+    if (length == 0 || length >= own.size())
+    {
+        return "this process has no marker to compare";
+    }
+    const std::string_view expected(own.data(), length);
+    for (const EnvironmentVariable& variable : reply->result.variables)
+    {
+        if (variable.name == ENVIRONMENT_MARKER)
+        {
+            return variable.value == expected ? "matched" : "the marker's value differs";
+        }
+    }
+    return std::format("no marker among {} variables", reply->result.variables.size());
+}
+
 /// Writes "failed: <why>" to the session verb's log, and returns 1.
 int sessionFailed(const std::string& why)
 {
@@ -210,7 +255,7 @@ int session(std::span<wchar_t*> arguments)
     // session <mode> <log> <pid> <ticks> [<user> <password>]
     if (arguments.size() != 6 && arguments.size() != 8)
     {
-        return fail("usage: session <hold|close|idle> <log> <pid> <start ticks> [<user> <password>]");
+        return fail("usage: session <hold|close|idle|environment> <log> <pid> <start ticks> [<user> <password>]");
     }
     const std::wstring_view mode(arguments[2]);
     g_SessionLog = arguments[3];
@@ -219,7 +264,7 @@ int session(std::span<wchar_t*> arguments)
         g_LogonUser = arguments[6];
         g_LogonPassword = arguments[7];
     }
-    if (mode != L"hold" && mode != L"close" && mode != L"idle")
+    if (mode != L"hold" && mode != L"close" && mode != L"idle" && mode != L"environment")
     {
         return sessionFailed("unknown mode");
     }
@@ -236,6 +281,15 @@ int session(std::span<wchar_t*> arguments)
     if (mode == L"idle")
     {
         note("connected");
+    }
+    else if (mode == L"environment")
+    {
+        const std::string outcome = environmentOutcome(broker.call(Broker::EnvironmentRequest{.target = target}, {}));
+        if (outcome != "matched")
+        {
+            return sessionFailed("environment: " + outcome);
+        }
+        note("environment matched");
     }
     else
     {

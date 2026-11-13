@@ -27,6 +27,7 @@ enum class EventType : uint8_t
     CloseDialog,
     CheckForUpdates,
     UpdateCheckStatus,
+    OpenUpdatePage,
 };
 
 /// Macro to implement event type boilerplate

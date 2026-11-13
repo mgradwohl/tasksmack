@@ -88,8 +88,7 @@ void UserSessionsFeed::applyDemand()
     {
         return;
     }
-    const bool demanded =
-        ProcessGrouping::sessionsDemand(m_UsersTabShown, m_ProcessesTabShown, m_GroupBy, ProcessGrouping::USER_GROUPS_SHOW_SESSIONS);
+    const bool demanded = ProcessGrouping::sessionsDemand(m_UsersTabShown, m_ProcessesTabShown, m_GroupBy);
     if (demanded == m_Demanded)
     {
         return; // only a change does anything

@@ -3,14 +3,18 @@
 /// a session (a stop already requested, a request with no host, path or User-Agent), the factory, the
 /// wording of its errors, how an asynchronous call's completion is waited for, a whole request through fake
 /// WinHTTP calls (stopped while a call is still running, or unwound by a throw mid-flight, #3342), and real
-/// WinHTTP stopped or timed out against a loopback listener that never answers (#3333). No test reaches past
-/// 127.0.0.1.
+/// WinHTTP stopped or timed out against a loopback listener that never answers (#3333), and the extra headers
+/// (#3646): each added with WinHttpAddRequestHeaders, a CR or LF refused, and no value logged. No test reaches
+/// past 127.0.0.1.
 
 #include "Platform/Factory.h"
 #include "Platform/IHttpsClient.h"
 #include "Platform/Windows/WindowsHttpsClient.h"
 
 #include <gtest/gtest.h>
+#include <spdlog/logger.h>
+#include <spdlog/sinks/ostream_sink.h>
+#include <spdlog/spdlog.h>
 
 #include <algorithm>
 #include <atomic>
@@ -20,12 +24,15 @@
 #include <cstring>
 #include <expected>
 #include <future>
+#include <initializer_list>
 #include <memory>
 #include <mutex>
 #include <new>
 #include <optional>
+#include <sstream>
 #include <stop_token>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -43,12 +50,15 @@ namespace
 
 HttpsRequest validRequest()
 {
-    return HttpsRequest{.host = "api.github.com",
-                        .path = "/repos/mgradwohl/tasksmack/releases/latest",
-                        .userAgent = "TaskSmack/0.0.0",
-                        .accept = "application/vnd.github+json",
-                        .timeout = std::chrono::milliseconds(10'000),
-                        .maxBodyBytes = 1024};
+    return HttpsRequest{
+        .host = "api.github.com",
+        .path = "/repos/mgradwohl/tasksmack/releases/latest",
+        .userAgent = "TaskSmack/0.0.0",
+        .accept = "application/vnd.github+json",
+        .timeout = std::chrono::milliseconds(10'000),
+        .maxBodyBytes = 1024,
+        .headers = {},
+    };
 }
 
 TEST(WindowsHttpsClientTest, AStopAlreadyRequestedSendsNothing)
@@ -222,6 +232,11 @@ struct FakeHttp // NOLINT(clang-analyzer-optin.performance.Padding)
     bool inCall = false;      ///< A blocked call is running
     int closesDuringCall = 0; ///< WinHttpCloseHandle on the request while a call on it was still running
     std::thread::id closeThread;
+    std::vector<std::wstring> addedHeaders; ///< Each line WinHttpAddRequestHeaders was given (#3646)
+    std::vector<DWORD> addedHeaderFlags;    ///< And its flags
+    std::wstring sentHeaders;               ///< What WinHttpSendRequest was given as its headers
+    bool addHeadersFails = false;           ///< WinHttpAddRequestHeaders answers FALSE
+    int opens = 0;                          ///< WinHttpOpen calls
 
     template<typename Predicate> void waitUntil(Predicate predicate)
     {
@@ -311,6 +326,7 @@ HINTERNET WINAPI fakeOpen(LPCWSTR /*agent*/, DWORD /*access*/, LPCWSTR /*proxy*/
 {
     const std::scoped_lock lock(fakeHttp().mutex);
     fakeHttp().openFlags = flags;
+    ++fakeHttp().opens;
     return sessionHandle();
 }
 
@@ -356,14 +372,33 @@ BOOL WINAPI fakeSetTimeouts(HINTERNET /*handle*/, int /*resolve*/, int /*connect
     return TRUE;
 }
 
+BOOL WINAPI fakeAddRequestHeaders(HINTERNET /*handle*/, LPCWSTR headers, DWORD length, DWORD flags)
+{
+    FakeHttp& fake = fakeHttp();
+    const std::scoped_lock lock(fake.mutex);
+    if (fake.addHeadersFails)
+    {
+        ::SetLastError(ERROR_WINHTTP_INCORRECT_HANDLE_STATE);
+        return FALSE;
+    }
+    fake.addedHeaders.emplace_back(headers, length);
+    fake.addedHeaderFlags.push_back(flags);
+    return TRUE;
+}
+
 BOOL WINAPI fakeSendRequest(HINTERNET /*handle*/,
-                            LPCWSTR /*headers*/,
-                            DWORD /*headersLength*/,
+                            LPCWSTR headers,
+                            DWORD headersLength,
                             LPVOID /*optional*/,
                             DWORD /*optionalLength*/,
                             DWORD /*totalLength*/,
                             DWORD_PTR /*context*/)
 {
+    if (headers != nullptr)
+    {
+        const std::scoped_lock lock(fakeHttp().mutex);
+        fakeHttp().sentHeaders.assign(headers, headersLength);
+    }
     reach(Step::Send, WINHTTP_CALLBACK_STATUS_SENDREQUEST_COMPLETE, nullptr, 0);
     return TRUE;
 }
@@ -456,6 +491,7 @@ WindowsHttpsDetail::WinHttpFunctions fakeFunctions()
     fns.setOption = &fakeSetOption;
     fns.setStatusCallback = &fakeSetStatusCallback;
     fns.setTimeouts = &fakeSetTimeouts;
+    fns.addRequestHeaders = &fakeAddRequestHeaders;
     fns.sendRequest = &fakeSendRequest;
     fns.receiveResponse = &fakeReceiveResponse;
     fns.queryHeaders = &fakeQueryHeaders;
@@ -518,6 +554,122 @@ TEST(WindowsHttpsFakeRequestTest, AStepThatNeverCompletesTimesOut)
     const auto response = client.get(request, stop.get_token());
     ASSERT_FALSE(response.has_value());
     EXPECT_TRUE(response.error().contains("timed out")) << response.error();
+    EXPECT_EQ(scope.fake().requestCloses, 1);
+}
+
+// #3646: a dummy, never a real key.
+constexpr std::string_view DUMMY_KEY = "dummy-virustotal-key-0123456789abcdef";
+
+/// Runs @p body with spdlog's default logger writing to a string, at every level, and returns what it wrote.
+template<typename Body> std::string capturedLog(Body body)
+{
+    std::ostringstream log;
+    const auto previous = spdlog::default_logger();
+    const auto capture = std::make_shared<spdlog::logger>("https-header-test", std::make_shared<spdlog::sinks::ostream_sink_mt>(log));
+    capture->set_level(spdlog::level::trace);
+    spdlog::set_default_logger(capture);
+    body();
+    spdlog::set_default_logger(previous);
+    return log.str();
+}
+
+TEST(WindowsHttpsFakeRequestTest, EachExtraHeaderIsAddedOnTheRequestAndNoneIsLogged)
+{
+    FakeHttpScope scope;
+    WindowsHttpsClient client(fakeFunctions());
+    HttpsRequest request = validRequest();
+    request.headers = {{"x-apikey", std::string(DUMMY_KEY)}, {"X-Second", ""}};
+    const std::stop_source stop;
+    std::expected<HttpsResponse, std::string> response;
+    const std::string log = capturedLog([&] { response = client.get(request, stop.get_token()); });
+
+    ASSERT_TRUE(response.has_value()) << response.error();
+    const std::wstring keyLine = L"x-apikey: " + std::wstring(DUMMY_KEY.begin(), DUMMY_KEY.end());
+    EXPECT_EQ(scope.fake().addedHeaders, (std::vector<std::wstring>{keyLine, L"X-Second: "}));
+    for (const DWORD flags : scope.fake().addedHeaderFlags)
+    {
+        EXPECT_EQ(flags, static_cast<DWORD>(WINHTTP_ADDREQ_FLAG_ADD | WINHTTP_ADDREQ_FLAG_REPLACE));
+    }
+    // Accept still goes with the send, and the key only through WinHttpAddRequestHeaders.
+    EXPECT_EQ(scope.fake().sentHeaders, L"Accept: application/vnd.github+json");
+    EXPECT_FALSE(log.contains(DUMMY_KEY)) << log;
+}
+
+TEST(WindowsHttpsFakeRequestTest, ARequestWithNoExtraHeadersAddsNone)
+{
+    FakeHttpScope scope;
+    WindowsHttpsClient client(fakeFunctions());
+    const std::stop_source stop;
+    ASSERT_TRUE(client.get(validRequest(), stop.get_token()).has_value());
+    EXPECT_TRUE(scope.fake().addedHeaders.empty());
+}
+
+TEST(WindowsHttpsFakeRequestTest, AHeaderWithACarriageReturnOrLineFeedIsRefusedBeforeAnythingIsOpened)
+{
+    for (const auto& [name, value] : std::initializer_list<std::pair<std::string, std::string>>{
+             {"x-apikey", std::string(DUMMY_KEY) + "\r\nHost: evil.example"},
+             {"x-apikey", std::string(DUMMY_KEY) + "\nX-Injected: 1"},
+             {"x-apikey", std::string(DUMMY_KEY) + "\r"},
+             {"x-apikey", std::string(DUMMY_KEY) + std::string(1, '\0') + "tail"},
+             {"x\r\napikey", std::string(DUMMY_KEY)},
+             {"x apikey", std::string(DUMMY_KEY)},
+             {"x:apikey", std::string(DUMMY_KEY)},
+             {"", std::string(DUMMY_KEY)},
+         })
+    {
+        FakeHttpScope scope;
+        WindowsHttpsClient client(fakeFunctions());
+        HttpsRequest request = validRequest();
+        request.headers = {{"X-Fine", "ok"}, {name, value}};
+        const std::stop_source stop;
+        std::expected<HttpsResponse, std::string> response;
+        const std::string log = capturedLog([&] { response = client.get(request, stop.get_token()); });
+
+        ASSERT_FALSE(response.has_value());
+        EXPECT_FALSE(response.error().contains(DUMMY_KEY)) << response.error();
+        EXPECT_FALSE(log.contains(DUMMY_KEY)) << log;
+        EXPECT_EQ(scope.fake().opens, 0) << response.error(); // refused before a session was opened
+        EXPECT_TRUE(scope.fake().addedHeaders.empty());
+    }
+}
+
+TEST(WindowsHttpsClientTest, HeaderLinesRefuseALineBreakAndNameNoValue)
+{
+    HttpsRequest request = validRequest();
+    request.headers = {{"x-apikey", std::string(DUMMY_KEY)}};
+    const auto lines = WindowsHttpsDetail::headerLines(request);
+    ASSERT_TRUE(lines.has_value()) << lines.error();
+    ASSERT_EQ(lines->size(), 1U);
+
+    request.headers = {{"x-apikey", std::string(DUMMY_KEY) + "\r\n"}};
+    const auto injected = WindowsHttpsDetail::headerLines(request);
+    ASSERT_FALSE(injected.has_value());
+    EXPECT_EQ(injected.error(), "A request header's value holds a line break");
+
+    request.headers = {{"x-apikey", "\xC3\x28"}}; // not UTF-8
+    EXPECT_FALSE(WindowsHttpsDetail::headerLines(request).has_value());
+
+    HttpsRequest accept = validRequest();
+    accept.accept = "application/json\r\nX-Injected: 1";
+    EXPECT_FALSE(WindowsHttpsDetail::headerLines(accept).has_value());
+}
+
+TEST(WindowsHttpsFakeRequestTest, AHeaderWinHttpRefusesFailsTheRequestNamingTheCallNotTheValue)
+{
+    FakeHttpScope scope;
+    scope.fake().addHeadersFails = true;
+    WindowsHttpsClient client(fakeFunctions());
+    HttpsRequest request = validRequest();
+    request.headers = {{"x-apikey", std::string(DUMMY_KEY)}};
+    const std::stop_source stop;
+    std::expected<HttpsResponse, std::string> response;
+    const std::string log = capturedLog([&] { response = client.get(request, stop.get_token()); });
+
+    ASSERT_FALSE(response.has_value());
+    EXPECT_TRUE(response.error().starts_with("WinHttpAddRequestHeaders: ")) << response.error();
+    EXPECT_FALSE(response.error().contains(DUMMY_KEY));
+    EXPECT_FALSE(log.contains(DUMMY_KEY)) << log;
+    EXPECT_EQ(scope.fake().reached, Step::None); // nothing was sent
     EXPECT_EQ(scope.fake().requestCloses, 1);
 }
 

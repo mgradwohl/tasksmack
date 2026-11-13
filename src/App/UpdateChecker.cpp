@@ -1,5 +1,6 @@
 #include "App/UpdateChecker.h"
 
+#include "App/TitleBarButtons.h"
 #include "Domain/SamplingConfig.h"
 #include "Domain/UpdateCheck.h"
 #include "Platform/IHttpsClient.h"
@@ -88,6 +89,7 @@ void UpdateChecker::start(UpdateCheck::Persisted& state, std::chrono::system_clo
         .accept = std::string(UpdateCheck::ACCEPT_HEADER),
         .timeout = std::chrono::milliseconds(Domain::Sampling::UPDATE_CHECK_TIMEOUT_MS),
         .maxBodyBytes = UpdateCheck::MAX_RESPONSE_BYTES,
+        .headers = {},
     };
     spdlog::debug("Update check: GET https://{}{}", request.host, request.path);
     // The job owns what it uses: the client, the request and the version to compare against.
@@ -150,6 +152,39 @@ bool UpdateChecker::dismiss(UpdateCheck::Persisted& state)
     }
     state.dismissedVersion = state.latestVersion;
     return true;
+}
+
+TitleBarButtons::UpdateButton UpdateChecker::titleBarButton(const UpdateCheck::Persisted& state) const
+{
+    if (!offered())
+    {
+        return {}; // hidden: no client, or a version it can't compare
+    }
+    const auto inactive = [](const char* tooltip)
+    {
+        return TitleBarButtons::UpdateButton{.tooltip = tooltip, .url = {}, .shown = true, .active = false};
+    };
+    if (!state.enabled)
+    {
+        return inactive(TitleBarButtons::UPDATE_OFF_TOOLTIP);
+    }
+    if (checking())
+    {
+        return inactive(TitleBarButtons::UPDATE_CHECKING_TOOLTIP);
+    }
+    // The notice's rule, but for the dismissal: dismissing the status bar's notice hides that notice,
+    // not the news that a newer release is out.
+    UpdateCheck::Persisted undismissed = state;
+    undismissed.dismissedVersion.clear();
+    if (std::optional<UpdateCheck::Notice> newer = notice(undismissed); newer.has_value())
+    {
+        return {.tooltip = UpdateCheck::noticeText(newer->version), .url = std::move(newer->url), .shown = true, .active = true};
+    }
+    if (UpdateCheck::parseVersion(state.latestVersion).has_value())
+    {
+        return inactive(TitleBarButtons::UPDATE_UP_TO_DATE_TOOLTIP);
+    }
+    return inactive(TitleBarButtons::UPDATE_UNKNOWN_TOOLTIP); // no check has seen a release: none yet, or each failed
 }
 
 std::string UpdateChecker::summary() const

@@ -401,14 +401,22 @@ add_test(NAME StartupWiringScript
 # against stubs and fixtures (#2478). The Main Health and CodeQL cases also need jq on bash's PATH, and
 # the release.yml cases pwsh on PATH; each is skipped without.
 if(TASKSMACK_BASH)
+    # setup-llvm's cache-key and install cases (#3635) run install-llvm.sh dozens of times and have their own
+    # entry (#3643): together with the rest they outran the 120 s timeout on the slow bash spawns of the
+    # windows-11-arm runner. WorkflowRunStepsScript runs everything else.
     add_test(NAME WorkflowRunStepsScript
-        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_workflow_run_steps.py)
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_workflow_run_steps.py --skip-setup-llvm)
     set_tests_properties(WorkflowRunStepsScript PROPERTIES
         ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}"
         # The release.yml cases start pwsh (#2964), so it takes its turn with the pwsh script tests
         # (#2054) and gets their second attempt on windows-11-arm (#2832, #2991).
         RESOURCE_LOCK pwsh-script-tests
         LABELS pwsh-script
+        TIMEOUT 120)
+    add_test(NAME SetupLlvmInstallScript
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_workflow_run_steps.py --only-setup-llvm)
+    set_tests_properties(SetupLlvmInstallScript PROPERTIES
+        ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}"
         TIMEOUT 120)
 endif()
 
@@ -477,6 +485,7 @@ set(COMMON_TEST_SOURCES
     Domain/test_ProcessMemoryMap.cpp  # a memory map's totals by kind and file (#3089)
     Domain/test_Numeric.cpp
     Domain/test_SingleLineText.cpp
+    Domain/test_AccountName.cpp # a process owner's DOMAIN\user, written and matched (#3328)
     Domain/test_ProcessEnergyAttribution.cpp
     Domain/test_ProcessModel.cpp
     Domain/test_ProcessRowHistory.cpp
@@ -499,6 +508,7 @@ set(COMMON_TEST_SOURCES
     Domain/test_SystemInfoModel.cpp
     Domain/test_CrashHistory.cpp
     Domain/test_UpdateCheck.cpp # the update check's versions, reply reader and schedule (#3093)
+    Domain/test_VirusTotal.cpp # Look up on VirusTotal's request, reply reader and result line (#3094)
     Domain/test_StartAtLogin.cpp # start at sign-in: the entry's text and what it means for this copy (#3093 part 2)
     Domain/test_StorageModelAllocationFailure.cpp
     Domain/test_ServiceModel.cpp
@@ -618,6 +628,7 @@ set(COMMON_TEST_SOURCES
     Platform/test_NetworkdLinkJson.cpp
     Platform/test_DnsMessage.cpp
     Platform/test_PublicIpLookup.cpp  # what either OS's public IP lookup does with a reply (#3117)
+    Platform/test_Sha256.cpp  # SHA-256 for Look up on VirusTotal (#3094)
     Platform/test_LinuxDiskSmart.cpp
     Platform/test_SmbiosParser.cpp
     Platform/test_PartitionTable.cpp
@@ -721,6 +732,7 @@ set(COMMON_TEST_SOURCES
     App/test_ElevationNoticeText.cpp
     App/test_StatusBarText.cpp
     App/test_UpdateChecker.cpp # the update check's worker, with a fake client and clock (#3093)
+    App/test_VirusTotalLookup.cpp # Look up on VirusTotal's worker half, with a fake client and actions (#3094)
     App/test_StartAtLoginSetting.cpp # start at sign-in's worker, with a fake entry (#3093 part 2)
     App/test_LaunchOptions.cpp # --minimized on the command line (#3093 part 2)
     App/test_StatusBarViewRender.cpp
@@ -813,6 +825,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsProcessActions.cpp
     Platform/test_WindowsProcessActionsSeams.cpp
     Platform/test_WindowsFileLocation.cpp  # Open file location: SHOpenFolderAndSelectItems, then explorer.exe /select, through fakes (#3426)
+    Platform/test_WindowsImageSha256.cpp  # Look up on VirusTotal: the image's SHA-256 through fakes and on this test process (#3646)
     Platform/test_WindowsRunProgram.cpp  # Run new task: ShellExecuteExW open/runas and a cancelled UAC prompt, through fakes (#3427)
     Platform/test_WindowsWaitChain.cpp  # Analyze wait chain: the WCT session through fakes, and one real child (#3084)
     Platform/test_WindowsSignatureCheck.cpp  # WinVerifyTrust, embedded and catalog, through fakes and on notepad.exe (#3070)
@@ -833,7 +846,8 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_CiRealSystemWindowsScheduledTask.cpp
     # Services: start, stop, restart and the startup type on throwaway services (TaskSmackCiService.exe)
     Platform/test_CiRealSystemWindowsService.cpp
-    # TaskSmack.exe started on the runner: --minimized, a second start in Task Manager's place, and the folder dialog
+    # TaskSmack.exe started on the runner: --minimized, a second start in Task Manager's place, the folder dialog and
+    # the title bar's system menu
     Platform/test_CiRealSystemWindowsApp.cpp
     Platform/test_RealSystemPathSupport.cpp  # the path comparison those tests check images with; changes nothing
     Platform/test_HelperLauncher.cpp  # starting the helper with ShellExecuteExW("runas"), through fakes (#2549)
@@ -909,6 +923,7 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_LinuxCoreDump.cpp  # "Create dump file" on Linux: names, gcore command, refusals (#807)
     Platform/test_DetachedSpawn.cpp
     Platform/test_SessionUser.cpp  # whom a run as root opens links and folders as (#2461)
+    Platform/test_RootCapabilities.cpp  # what an Administrator session keeps of root's capabilities (#3621)
     Platform/test_LinuxStartup.cpp  # the Startup tab on Linux: XDG autostart (#2541)
     Platform/test_CronTab.cpp # cron tables for the Linux Startup tab (#3425)
     Platform/test_CommandOutput.cpp # a short command's output, for crontab -l (#3425)
@@ -1081,6 +1096,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessDetailsPanel.cpp
     # The Processes panel as a whole, with a mock probe through its seam (test_ProcessesPanelRender.cpp, #1546)
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessesPanel.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessesPanelUserGroups.cpp
     # The icon beside each process name (#1800): the panels draw it; test_ProcessIconView.cpp runs it
     # headless with a fake texture backend
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessIconView.cpp
@@ -1103,6 +1119,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/Panels/UsersView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/UserGrouping.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/UserSessionsFeed.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/SessionActionView.cpp
     # The System Information page (#1399), run headless (test_SystemInfoView.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/Panels/SystemInfoSections.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/SystemInfoView.cpp
@@ -1122,6 +1139,8 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/WindowOverride.cpp
     # The custom title bar (#1547), run headless (test_TitleBarViewRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/TitleBarView.cpp
+    # Its native Windows system menu, shown and answered for real on the CI runner (test_CiRealSystemWindowsApp.cpp)
+    ${CMAKE_SOURCE_DIR}/src/App/WindowsSystemMenu.cpp
     # The Settings dialog (#1547), run headless (test_SettingsDialogRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/SettingsDialog.cpp
     # The Settings layer around it (#1395), run headless through its seam (test_SettingsLayerRender.cpp)
@@ -1158,6 +1177,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/Domain/SystemInfoModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/CrashHistory.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/UpdateCheck.cpp
+    ${CMAKE_SOURCE_DIR}/src/Domain/VirusTotal.cpp
     # The update check's worker (#3093), with a fake client (test_UpdateChecker.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/UpdateChecker.cpp
     # Start at sign-in's worker (#3093 part 2), with a fake entry (test_StartAtLoginSetting.cpp)
@@ -1173,6 +1193,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/Platform/TaskManagerReplacementService.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/CurrentProcess.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/PublicIpLookup.cpp
+    ${CMAKE_SOURCE_DIR}/src/Platform/Sha256.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/Synthetic/SyntheticProbes.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/Synthetic/SyntheticWorkload.cpp
     # UI source files under test (Note: Theme.cpp excluded - requires ImGui/ImPlot runtime context)

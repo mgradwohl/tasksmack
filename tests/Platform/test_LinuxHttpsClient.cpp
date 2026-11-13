@@ -11,10 +11,12 @@
 
 #include <chrono>
 #include <cstdlib>
+#include <initializer_list>
 #include <memory>
 #include <optional>
 #include <stop_token>
 #include <string>
+#include <utility>
 
 namespace Platform
 {
@@ -63,7 +65,8 @@ class ScopedEnv
             .userAgent = "TaskSmack/test",
             .accept = "application/vnd.github+json",
             .timeout = 2000ms,
-            .maxBodyBytes = 1024};
+            .maxBodyBytes = 1024,
+            .headers = {}};
 }
 
 TEST(LinuxHttpsClientTest, ARequestThatCouldChangeTheUrlOrMissesAFieldIsRefused)
@@ -103,6 +106,24 @@ TEST(LinuxHttpsClientTest, TheBodyStopsAtItsCap)
     std::string empty;
     EXPECT_FALSE(LinuxHttpsDetail::appendCapped(empty, "toolong", 3));
     EXPECT_TRUE(empty.empty());
+}
+
+// #3094: an extra header goes out only with a token name and a value that can't end the line.
+TEST(LinuxHttpsClientTest, AnExtraHeaderThatCouldBreakTheRequestIsRefused)
+{
+    HttpsRequest keyed = validRequest();
+    keyed.headers = {{"x-apikey", std::string(64, 'a')}};
+    EXPECT_EQ(LinuxHttpsDetail::refusal(keyed), std::nullopt);
+    for (const auto& [name, value] : std::initializer_list<std::pair<const char*, const char*>>{
+             {"", "v"}, {"x apikey", "v"}, {"x:apikey", "v"}, {"x\napikey", "v"}, {"x-apikey", "a\r\nHost: evil"}, {"x-apikey", "a\nb"}})
+    {
+        HttpsRequest request = validRequest();
+        request.headers = {{name, value}};
+        EXPECT_TRUE(LinuxHttpsDetail::refusal(request).has_value()) << name << " / " << value;
+    }
+    HttpsRequest nul = validRequest();
+    nul.headers = {{"x-apikey", std::string("a\0b", 3)}};
+    EXPECT_TRUE(LinuxHttpsDetail::refusal(nul).has_value());
 }
 
 TEST(LinuxHttpsClientTest, AStopAlreadyRequestedOrARefusedRequestSendsNothing)

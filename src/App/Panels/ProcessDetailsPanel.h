@@ -10,6 +10,7 @@
 #include "Domain/ProcessSnapshot.h"
 #include "Domain/SamplingConfig.h"
 #include "Domain/ServiceModel.h"
+#include "Platform/IHttpsClient.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
@@ -395,6 +396,7 @@ class ProcessDetailsPanel : public Panel
         std::shared_ptr<const Domain::ProcessSnapshot> keepAlive;
         std::string pid;
         std::string parentPid;
+        std::string user; ///< "PC\alice" on Windows when the domain is known, else the user name, or "-" (#3328)
         std::string started;
         std::string threads;
         std::string handles;
@@ -421,6 +423,7 @@ class ProcessDetailsPanel : public Panel
 
     // Process actions
     std::unique_ptr<Platform::IProcessActions> m_ProcessActions;
+    std::shared_ptr<Platform::IHttpsClient> m_LookupClient; ///< Look up on VirusTotal's (#3094); none in the tests
     Platform::ProcessActionCapabilities m_ActionCapabilities;
     Platform::ProcessCapabilities m_ProcessCapabilities;
     bool m_HasAccelerator = false;    // Shows the NPU tab (setHasAccelerator(), #1869)

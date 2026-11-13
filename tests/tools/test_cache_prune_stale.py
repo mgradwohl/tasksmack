@@ -134,6 +134,26 @@ class StaleEntryTests(unittest.TestCase):
             [f"codeql-trap-1-2.27.3-cpp-{sha(1)}", f"codeql-trap-1-2.27.3-cpp-{sha(2)}"],
         )
 
+    def test_llvm_debs_keep_the_newest_week_per_package_set(self):
+        # #3635: setup-llvm saves one entry per package set per ISO week; the release-pinned entries
+        # (#3393) name the release instead and are never pruned.
+        base = "Linux-llvm-debs-23-ubuntu26.04"
+        rows = [
+            row(60, f"{base}-X64-e88af2d06d55-v1-2026-W45", "2026-11-03T10:00:00Z", 168000000),
+            row(61, f"{base}-X64-e88af2d06d55-v1-2026-W46", "2026-11-10T10:00:00Z", 168000000),
+            row(62, f"{base}-X64-0123456789ab-v1-2026-W45", "2026-11-03T11:00:00Z", 181000000),
+            row(63, f"{base}-ARM64-e88af2d06d55-v1-2026-W44", "2026-10-27T10:00:00Z", 160000000),
+            row(64, f"{base}-ARM64-e88af2d06d55-v1-2026-W46", "2026-11-10T11:00:00Z", 160000000),
+            row(65, "Linux-llvm-debs-23.1.6-ubuntu24.04-X64-e88af2d06d55-v1", "2026-11-04T14:45:21Z", 169000000),
+            row(66, "Linux-llvm-debs-23.1.5-ubuntu24.04-X64-e88af2d06d55-v1", "2026-10-20T14:45:21Z", 169000000),
+        ]
+        self.assertEqual(
+            sorted(stale_keys(rows)),
+            [f"{base}-ARM64-e88af2d06d55-v1-2026-W44", f"{base}-X64-e88af2d06d55-v1-2026-W45"],
+        )
+        self.assertEqual(pruner.family(f"{base}-X64-e88af2d06d55-v1-2026-W46"), f"{base}-X64-e88af2d06d55-v1")
+        self.assertIsNone(pruner.family("Linux-llvm-debs-23.1.6-ubuntu24.04-X64-e88af2d06d55-v1"))
+
     def test_output_fields_and_order(self):
         rows = [
             row(30, "Linux-tidy-results-1-1", "2026-10-10T00:00:00Z", 5),

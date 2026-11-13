@@ -9,14 +9,17 @@
 #include "App/SelectOverride.h"
 #include "App/ShellMetrics.h"
 #include "App/SyntheticScenario.h"
+#include "App/UserConfig.h"
 #include "Core/Application.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
+#include "Domain/AccountName.h"
 #include "Domain/Numeric.h"
 #include "Domain/ProcessServices.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Domain/SamplingConfig.h"
 #include "Domain/ServiceModel.h"
+#include "Domain/UpdateCheck.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
@@ -54,6 +57,7 @@
 #include "UI/TabContent.h"
 #include "UI/Theme.h"
 #include "UI/Widgets.h"
+#include "version.h"
 
 #include <imgui.h>
 #include <spdlog/spdlog.h>
@@ -76,7 +80,10 @@ namespace App
 
 // Constructor (inside App namespace)
 ProcessDetailsPanel::ProcessDetailsPanel() : ProcessDetailsPanel(makeProcessDetailsReaders(Synthetic::activeScenario()))
-{}
+{
+    // Look up on VirusTotal's client (#3094), made with the panel; the tests' constructors bring none.
+    m_LookupClient = makeLookupClient(Synthetic::activeScenario(), SelectOverride::testHookActive());
+}
 
 ProcessDetailsPanel::ProcessDetailsPanel(ProcessDetailsReaders readers)
     : ProcessDetailsPanel(std::move(readers.actions),
@@ -394,6 +401,12 @@ void ProcessDetailsPanel::renderContent()
                                 ? m_PriorityChanges->holdReason(PriorityChangesInFlight::Panel::ProcessDetails, selectedTarget())
                                 : nullptr;
     m_ActionsView.holdPriorityChanges(ProcessActionsBlock::actionsHoldReason(m_PriorityView.applying(), m_PriorityHeldElsewhere));
+    // Look up on VirusTotal (#3094): the key as Settings has it now, so a key set or cleared takes effect at once.
+    m_ActionsView.setVirusTotal({
+        .client = m_LookupClient,
+        .apiKey = UserConfig::get().settings().virusTotalApiKey,
+        .userAgent = Domain::UpdateCheck::userAgent(tasksmack::Version::FULL),
+    });
 
     renderPane(killRequested);
 
@@ -819,6 +832,9 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
         };
         fresh.pid = std::to_string(proc.pid);
         fresh.parentPid = std::to_string(proc.parentPid);
+        // The owner with its domain wherever it is known, as the User column writes a name two accounts share,
+        // so PC\alice and CORP\alice never look alike here (#3328); Linux has no domain.
+        fresh.user = proc.user.empty() ? std::string("-") : Domain::AccountName::qualified(proc.userDomain, proc.user);
         fresh.started = (proc.startTimeEpoch > 0) ? UI::Format::formatEpochDateTimeShort(proc.startTimeEpoch) : std::string("-");
         fresh.threads = proc.threadCount > 0 ? formatCountLocale(proc.threadCount) : std::string("-");
         fresh.handles = "N/A"; // unreadable, e.g. another user's process without root (#1110)
@@ -856,7 +872,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     identityRows.add({.label = "Parent PID", .value = text.parentPid, .color = theme.scheme().textPrimary});
     identityRows.add({
         .label = "User",
-        .value = proc.user.empty() ? std::string_view{"-"} : std::string_view{proc.user},
+        .value = text.user,
         .color = theme.scheme().textPrimary,
     });
     if (!proc.realUser.empty())
