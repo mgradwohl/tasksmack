@@ -1,0 +1,26 @@
+// TaskSmack's dev container (#136): VS Code or Codespaces on Ubuntu 26.04 with the toolchain CI builds with.
+// The image is .devcontainer/Dockerfile (tools/setup-dev.sh); after the first start, postCreateCommand makes the
+// project's Python venv and configures the debug preset. Display tests need an X server: run them under xvfb-run.
+{
+  "name": "TaskSmack",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "remoteUser": "dev",
+  "postCreateCommand": "python3.14 -m venv .venv && .venv/bin/python -m pip install --require-hashes -r requirements-glad.txt && .venv/bin/python -m pip install --require-hashes -r requirements.txt && cmake --preset debug",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "llvm-vs-code-extensions.vscode-clangd",
+        "ms-vscode.cmake-tools",
+        "ms-python.python"
+      ],
+      "settings": {
+        "cmake.useCMakePresets": "always",
+        "clangd.path": "/usr/bin/clangd",
+        "clangd.arguments": ["--compile-commands-dir=${workspaceFolder}/build/debug"]
+      }
+    }
+  }
+}

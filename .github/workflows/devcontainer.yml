@@ -1,0 +1,58 @@
+# The dev container (#136): the image .devcontainer/Dockerfile builds from tools/setup-dev.sh must keep building, and
+# a checkout inside it must pass check-prereqs.sh and configure the debug preset. Run when the image's inputs change.
+name: Dev container
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.devcontainer/**'
+      - 'tools/setup-dev.sh'
+      - 'tools/common.sh'
+      - 'tools/check-prereqs.sh'
+      - 'requirements.txt'
+      - 'requirements-glad.txt'
+      - '.github/workflows/devcontainer.yml'
+  pull_request:
+    paths:
+      - '.devcontainer/**'
+      - 'tools/setup-dev.sh'
+      - 'tools/common.sh'
+      - 'tools/check-prereqs.sh'
+      - 'requirements.txt'
+      - 'requirements-glad.txt'
+      - '.github/workflows/devcontainer.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: devcontainer-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build the image
+        run: docker build --file .devcontainer/Dockerfile --tag tasksmack-dev:ci .
+
+      - name: Check prerequisites and configure inside it
+        # What devcontainer.json's postCreateCommand does, as the image's user, on a copy of the checkout (the
+        # mounted one is owned by the runner's user).
+        run: |
+          docker run --rm --volume "$PWD:/src:ro" tasksmack-dev:ci bash -c '
+            set -euo pipefail
+            cp -r /src /tmp/ws && cd /tmp/ws
+            python3.14 -m venv .venv
+            .venv/bin/python -m pip install --quiet --require-hashes -r requirements-glad.txt
+            .venv/bin/python -m pip install --quiet --require-hashes -r requirements.txt
+            ./tools/check-prereqs.sh
+            cmake --preset debug
+          '
