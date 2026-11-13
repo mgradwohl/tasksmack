@@ -300,6 +300,7 @@ set(TASKSMACK_SOURCES
     src/Platform/BrokerRequestMapping.cpp    # what either OS's helper does with each request (#2517)
     src/Platform/TaskManagerReplacementService.cpp # Replace Task Manager's read and change (#3072)
     src/Platform/PublicIpLookup.cpp          # what either OS's public IP lookup does with a reply (#3117)
+    src/Platform/Sha256.cpp                  # SHA-256 of an executable, for Look up on VirusTotal (#3094)
     # stb_image's implementation, for UI/IconLoader.cpp and the Linux process icons (#1800)
     src/Platform/StbImage.cpp
     # Icons held as image files: desktop entries' PNGs, packaged apps' logos (#1800)

@@ -326,6 +326,11 @@ ProcessActionResult BrokeredProcessActions::openFileLocation(const ProcessTarget
     return m_Inner->openFileLocation(target); // the user's file manager, as the user: never the helper's
 }
 
+std::expected<std::string, std::string> BrokeredProcessActions::imageSha256(const ProcessTarget& target, const std::stop_token& stop)
+{
+    return m_Inner->imageSha256(target, stop); // a file read for Look up on VirusTotal (#3094): never the helper's
+}
+
 ProcessActionResult BrokeredProcessActions::runProgram(const RunProgramRequest& request)
 {
     return m_Inner->runProgram(request); // its own pkexec or UAC prompt when elevated: the helper never starts programs
