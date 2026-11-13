@@ -857,6 +857,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_RealSystemPathSupport.cpp  # the path comparison those tests check images with; changes nothing
     Platform/test_HelperLauncher.cpp  # starting the helper with ShellExecuteExW("runas"), through fakes (#2549)
     Platform/test_ElevatedRestart.cpp  # Restart as administrator: ShellExecuteExW("runas") and the hand-off wait, through fakes (#2728)
+    Platform/test_WindowsFactory.cpp  # every Windows factory product is the Windows one, with Windows' capabilities (#3676)
     Platform/test_WindowsTaskManagerReplacement.cpp  # taskmgr.exe's IFEO key, on a scratch HKCU key, and the helper's checks (#3072)
     Platform/test_WindowsUserSessions.cpp  # the Users tab's WTS reader and actions through fakes, and this machine's sessions (#3076)
     Platform/test_WindowsProcessIdentity.cpp
