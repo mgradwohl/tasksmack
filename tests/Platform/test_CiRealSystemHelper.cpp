@@ -8,7 +8,7 @@
 // copy of the helper, 3 s), and an over-the-shoulder elevation's one action (a throwaway local account,
 // deleted after). Each also checks the helper's exit status is Exit::Done, never std::terminate's abort (3) or a
 // fail-fast. And a copy in a folder its user can change is refused, with the same standard user's token. A served
-// session also reads a process's environment for TaskSmack (#3610).
+// session also reads a process's environment (#3610) and memory map (#3665) for TaskSmack.
 // CiRealSystem.h's guard skips all of it anywhere but such a runner.
 
 #include "Platform/IProcessActions.h"
@@ -358,6 +358,19 @@ TEST_F(CiRealSystemHelperTest, ReadsAProcesssEnvironmentForTaskSmack)
     ServedSession session(install, L"environment");
     ASSERT_TRUE(session.helperLaunched());
     ASSERT_TRUE(session.reached("environment matched"));
+    EXPECT_EQ(session.helperExit(0ms), std::nullopt) << "the read ended the session";
+}
+
+TEST_F(CiRealSystemHelperTest, ReadsAProcesssMemoryMapForTaskSmack)
+{
+    // #3665: the helper reads memory maps (HelperMain.cpp gives it the in-process reader), so "Authenticate to read"
+    // on Process Details' Memory map gets the regions, not "This helper doesn't read memory maps". TaskSmack checks
+    // the helper's read of the victim lists ntdll.dll as an image. Run as the standard user, with no UAC prompt: the
+    // elevated hop is the manual check's.
+    const ProtectedInstall install(TASKSMACK_WINDOWS_HELPER_PATH);
+    ServedSession session(install, L"memorymap");
+    ASSERT_TRUE(session.helperLaunched());
+    ASSERT_TRUE(session.reached("memory map read"));
     EXPECT_EQ(session.helperExit(0ms), std::nullopt) << "the read ended the session";
 }
 

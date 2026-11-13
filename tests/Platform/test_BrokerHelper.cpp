@@ -12,6 +12,7 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
+#include "Platform/IProcessMemoryMap.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/Windows/BrokerHelper.h"
@@ -1660,6 +1661,13 @@ TEST(BrokerHelperTest, AnOverTheShoulderSessionReadsOnlyTheUsersOwnProcesses)
     ASSERT_TRUE(std::holds_alternative<Broker::EnvironmentReply>(environment));
     EXPECT_EQ(std::get<Broker::EnvironmentReply>(environment).result.status, EnvironmentReadStatus::Failed);
 
+    // #3665: another account's process's memory map is refused as a failed read that says why.
+    const auto map = handler(Broker::MemoryMapRequest{.target = theirs});
+    ASSERT_TRUE(std::holds_alternative<Broker::MemoryMapReply>(map));
+    EXPECT_EQ(std::get<Broker::MemoryMapReply>(map).result.status, MemoryMapReadStatus::Failed);
+    EXPECT_TRUE(std::get<Broker::MemoryMapReply>(map).result.mappings.empty());
+    EXPECT_EQ(std::get<Broker::MemoryMapReply>(map).result.detail, BrokerHelper::OTHER_USERS_READ_REFUSED);
+
     // A read the filter doesn't name (threads, #3069) is refused outright, whoever's process it is.
     for (const ProcessTarget& target : {mine, theirs})
     {
@@ -1684,10 +1692,13 @@ TEST(BrokerHelperTest, AnOverTheShoulderSessionPassesEachReadOfTheUsersOwnProces
     const CountingReads counting;
     const BrokerPipeServer::RequestHandler handler =
         BrokerHelper::readsOnlyOwnProcesses(counting.handler(), [](const ProcessTarget&) { return true; });
-    const std::vector<Broker::Request> reads = {Broker::EnvironmentRequest{.target = mine},
-                                                Broker::ModulesRequest{.target = mine},
-                                                Broker::OpenFilesRequest{.target = mine},
-                                                Broker::ConnectionsRequest{.target = mine}};
+    const std::vector<Broker::Request> reads = {
+        Broker::EnvironmentRequest{.target = mine},
+        Broker::ModulesRequest{.target = mine},
+        Broker::OpenFilesRequest{.target = mine},
+        Broker::ConnectionsRequest{.target = mine},
+        Broker::MemoryMapRequest{.target = mine}, // #3665
+    };
     for (const Broker::Request& read : reads)
     {
         static_cast<void>(handler(read));

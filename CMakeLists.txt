@@ -1023,6 +1023,7 @@ if(WIN32)
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsSocketTables.cpp
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsTcpClose.cpp # Close connection as an administrator (#3358)
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsProcessThreads.cpp # Process Details threads of another user's process (#3069)
+        ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsProcessMemoryMap.cpp # Process Details memory map of an elevated or another user's process (#3665)
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsTaskManagerReplacement.cpp # Replace Task Manager's IFEO Debugger (#3072)
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsUserSessions.cpp # another user's session disconnected or signed out (#3076)
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WinString.cpp

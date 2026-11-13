@@ -15,7 +15,7 @@
 // serve (a Program Files folder only administrators can change, the parent a standard user), to watch how a
 // served session ends:
 //
-//   TaskSmack.exe session <hold|close|idle|environment> <log> <pid> <start ticks> [<user> <password>]
+//   TaskSmack.exe session <hold|close|idle|environment|memorymap> <log> <pid> <start ticks> [<user> <password>]
 //
 // It starts the helper (as <user>, through CreateProcessWithLogonW, when one is given: an over-the-shoulder
 // elevation's other account), writes "launched <helper pid>" to <log>,
@@ -24,7 +24,9 @@
 //   - close: the same, then closes the pipe (PipeBroker::disconnect()), writes "closed", and waits;
 //   - idle:  writes "connected", and waits, asking nothing;
 //   - environment: asks the helper for <pid>'s environment (#3610), writes "environment matched" when the read
-//     has ENVIRONMENT_MARKER with the value this process inherited too (the test set it for both), and waits.
+//     has ENVIRONMENT_MARKER with the value this process inherited too (the test set it for both), and waits;
+//   - memorymap: asks the helper for <pid>'s memory map (#3665), writes "memory map read" when the read lists
+//     ntdll.dll as an image (every Windows process maps it), and waits.
 // "Waits" is two minutes at most: the test ends it sooner, or watches the helper end its session meanwhile.
 // A failure is written to <log> as "failed: <why>", exit status 1.
 
@@ -32,6 +34,7 @@
 #include "Platform/IPrivilegedBroker.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessEnvironment.h"
+#include "Platform/IProcessMemoryMap.h"
 #include "Platform/Windows/BrokerHelper.h"
 #include "Platform/Windows/HelperLauncher.h"
 #include "Platform/Windows/PipeBroker.h"
@@ -240,6 +243,36 @@ constexpr const char* ENVIRONMENT_MARKER = "TASKSMACK_CI_HELPER_ENVIRONMENT_3610
     return std::format("no marker among {} variables", reply->result.variables.size());
 }
 
+/// What the memory map mode found (#3665): "read", or why not.
+[[nodiscard]] std::string memoryMapOutcome(const std::expected<Broker::Response, std::string>& response)
+{
+    if (!response.has_value())
+    {
+        return "the call failed: " + response.error();
+    }
+    if (const auto* error = std::get_if<Broker::ErrorReply>(&*response))
+    {
+        return "the helper refused: " + error->message;
+    }
+    const auto* reply = std::get_if<Broker::MemoryMapReply>(&*response);
+    if (reply == nullptr)
+    {
+        return "the helper answered with another reply";
+    }
+    if (reply->result.status != MemoryMapReadStatus::Ok)
+    {
+        return std::format("the read's status was {}: {}", static_cast<int>(reply->result.status), reply->result.detail);
+    }
+    for (const MemoryMapping& mapping : reply->result.mappings)
+    {
+        if (mapping.kind == MemoryMappingKind::Image && mapping.path.ends_with("ntdll.dll"))
+        {
+            return "read";
+        }
+    }
+    return std::format("no ntdll.dll image among {} regions", reply->result.mappings.size());
+}
+
 /// Writes "failed: <why>" to the session verb's log, and returns 1.
 int sessionFailed(const std::string& why)
 {
@@ -255,7 +288,7 @@ int session(std::span<wchar_t*> arguments)
     // session <mode> <log> <pid> <ticks> [<user> <password>]
     if (arguments.size() != 6 && arguments.size() != 8)
     {
-        return fail("usage: session <hold|close|idle|environment> <log> <pid> <start ticks> [<user> <password>]");
+        return fail("usage: session <hold|close|idle|environment|memorymap> <log> <pid> <start ticks> [<user> <password>]");
     }
     const std::wstring_view mode(arguments[2]);
     g_SessionLog = arguments[3];
@@ -264,7 +297,7 @@ int session(std::span<wchar_t*> arguments)
         g_LogonUser = arguments[6];
         g_LogonPassword = arguments[7];
     }
-    if (mode != L"hold" && mode != L"close" && mode != L"idle" && mode != L"environment")
+    if (mode != L"hold" && mode != L"close" && mode != L"idle" && mode != L"environment" && mode != L"memorymap")
     {
         return sessionFailed("unknown mode");
     }
@@ -290,6 +323,15 @@ int session(std::span<wchar_t*> arguments)
             return sessionFailed("environment: " + outcome);
         }
         note("environment matched");
+    }
+    else if (mode == L"memorymap")
+    {
+        const std::string outcome = memoryMapOutcome(broker.call(Broker::MemoryMapRequest{.target = target}, {}));
+        if (outcome != "read")
+        {
+            return sessionFailed("memory map: " + outcome);
+        }
+        note("memory map read");
     }
     else
     {

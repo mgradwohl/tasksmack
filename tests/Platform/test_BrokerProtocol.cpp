@@ -10,6 +10,7 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
+#include "Platform/IProcessMemoryMap.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IServiceActions.h"
@@ -739,6 +740,7 @@ TEST(BrokerProtocolTest, NoResponseDecodesAsARequestAndNoRequestAsAResponse)
         ThreadsReply{.result = {.status = ThreadsReadStatus::Ok, .threads = {}, .detail = {}}},
         ServiceActionReply{},
         OpenFilesBatchReply{.results = {OpenFilesReadResult{}}},
+        MemoryMapReply{.result = {.status = MemoryMapReadStatus::Ok, .mappings = {}, .detail = {}, .truncated = false}},
     };
     for (const Response& response : responses)
     {
@@ -761,6 +763,7 @@ TEST(BrokerProtocolTest, NoResponseDecodesAsARequestAndNoRequestAsAResponse)
         ThreadsRequest{.target = TARGET},
         ThreadActionRequest{.target = TARGET, .tid = 9, .action = ThreadAction::Resume},
         OpenFilesBatchRequest{.targets = {TARGET}},
+        MemoryMapRequest{.target = TARGET},
     };
     for (const Request& request : requests)
     {
@@ -898,6 +901,8 @@ TEST(BrokerProtocolTest, TheFuzzCorpusHasADecodableSeedForEveryMessageKind)
                                    MessageKind::ThreadsResult,
                                    MessageKind::ReadOpenFilesBatch, // v24 (#3578)
                                    MessageKind::OpenFilesBatchResult,
+                                   MessageKind::ReadMemoryMap, // v25 (#3665)
+                                   MessageKind::MemoryMapResult,
                                    MessageKind::Error})
     {
         EXPECT_TRUE(seeded.contains(kind)) << "no seed for kind " << static_cast<int>(kind);
@@ -992,6 +997,20 @@ TEST(BrokerProtocolTest, ListRepliesCompareByEveryFieldOfEveryEntry)
         [](ThreadsReply& m) { m.result.threads[0].waitReason = "Suspended"; },
         [](ThreadsReply& m) { m.result.threads[0].suspendCount = 1; },
         [](ThreadsReply& m) { m.result.threads[0].createTime = 7; });
+
+    const MemoryMapReadResult map{
+        .status = MemoryMapReadStatus::Ok,
+        .mappings = {MemoryMapping{.start = 1, .end = 2}},
+        .detail = "d",
+        .truncated = false,
+    };
+    expectEveryFieldCompared(
+        MemoryMapReply{.result = map},
+        [](MemoryMapReply& m) { m.result.status = MemoryMapReadStatus::Failed; },
+        [](MemoryMapReply& m) { m.result.detail = "e"; },
+        [](MemoryMapReply& m) { m.result.truncated = true; },
+        [](MemoryMapReply& m) { m.result.mappings[0].end = 3; },
+        [](MemoryMapReply& m) { m.result.mappings[0].pssBytes = 0; });
 
     ProcessConnection connection;
     connection.local.port = 80;
@@ -1255,6 +1274,165 @@ TEST(BrokerProtocolTest, OpenFilesBatchRepliesCompareEveryResult)
         [](OpenFilesBatchReply& other) { other.results[0].hexDescriptors = true; },
         [](OpenFilesBatchReply& other) { other.results[0].files.push_back({}); });
     EXPECT_FALSE((OpenFilesBatchRequest{.targets = {TARGET}} == OpenFilesBatchRequest{.targets = {TARGET, TARGET}}));
+}
+
+/// A memory map with one mapping of every shape the wire carries (#3665):
+/// Windows' image, copy-on-write, reserved and guard regions with no sizes, and
+/// a reader's measured sizes, all of them or some, which the reply carries too.
+[[nodiscard]] MemoryMapReadResult memoryMapSample()
+{
+    MemoryMapReadResult map{.status = MemoryMapReadStatus::Ok, .mappings = {}, .detail = {}, .truncated = true};
+    map.mappings.push_back(MemoryMapping{
+        .start = 0x7FF8A1B21000,
+        .end = 0x7FF8A1C32000,
+        .readable = true,
+        .executable = true,
+        .shared = true,
+        .kind = MemoryMappingKind::Image,
+        .path = R"(C:\Windows\System32\ntdll.dll)",
+    });
+    map.mappings.push_back(MemoryMapping{
+        .start = 0x7FF8A1C32000,
+        .end = 0x7FF8A1C34000,
+        .readable = true,
+        .writable = true,
+        .kind = MemoryMappingKind::Image,
+        .path = R"(C:\Windows\System32\ntdll.dll)",
+    });
+    map.mappings.push_back(
+        MemoryMapping{.start = 0x10000, .end = 0x20000, .guard = true, .reserved = true, .kind = MemoryMappingKind::Anonymous});
+    MemoryMapping measured{
+        .start = 0x1000,
+        .end = 0x2000,
+        .readable = true,
+        .writable = true,
+        .shared = true,
+        .kind = MemoryMappingKind::File,
+        .path = R"(D:\Data\cache.bin)",
+        .deleted = true,
+        .fileOffset = 0x28000,
+    };
+    measured.residentBytes = 4096;
+    measured.pssBytes = 2048;
+    measured.sharedCleanBytes = 1;
+    measured.sharedDirtyBytes = 2;
+    measured.privateCleanBytes = 3;
+    measured.privateDirtyBytes = 4;
+    measured.swapBytes = 5;
+    measured.swapPssBytes = 0xFFFF'FFFF'FFFF'FC00ULL;
+    map.mappings.push_back(measured);
+    MemoryMapping some{.start = 0x3000, .end = 0x4000, .kind = MemoryMappingKind::Other};
+    some.residentBytes = 0; // and nothing else measured
+    map.mappings.push_back(some);
+    map.mappings.push_back(MemoryMapping{.start = 5, .end = 5, .kind = MemoryMappingKind::Heap, .path = "[heap]"});
+    map.mappings.push_back(MemoryMapping{.start = 6, .end = 7, .kind = MemoryMappingKind::Stack});
+    map.mappings.push_back(MemoryMapping{.start = 8, .end = 9, .kind = MemoryMappingKind::System});
+    return map;
+}
+
+// #3665 (v25): an elevated or another user's process's memory map, as Windows'
+// helper reads it.
+TEST(BrokerProtocolTest, MemoryMapRoundTripsEveryFieldAndBadRepliesAreRefused)
+{
+    const Request request = MemoryMapRequest{.target = TARGET};
+    const std::vector<std::uint8_t> requestBytes = encodeRequest(3, request);
+    EXPECT_EQ(requestBytes[4], static_cast<std::uint8_t>(PROTOCOL_VERSION));
+    EXPECT_EQ(Detail::readFrame(requestBytes).value_or(Detail::Frame{}).kind, MessageKind::ReadMemoryMap);
+    EXPECT_EQ(requestBytes.size(), 4U + HEADER_BYTES + 4U + 8U) << "the target only: a PID and its start time";
+    EXPECT_EQ(roundTrip(request), request);
+    const Response reply = MemoryMapReply{.result = memoryMapSample()};
+    EXPECT_EQ(roundTrip(reply), reply);
+    for (const MemoryMapReadStatus status : {
+             MemoryMapReadStatus::PermissionDenied,
+             MemoryMapReadStatus::ProcessExited,
+             MemoryMapReadStatus::Unsupported,
+             MemoryMapReadStatus::IdentityUnknown,
+             MemoryMapReadStatus::Failed,
+         })
+    {
+        const Response refused = MemoryMapReply{.result = {.status = status, .mappings = {}, .detail = "no", .truncated = false}};
+        EXPECT_EQ(roundTrip(refused), refused) << static_cast<int>(status);
+    }
+
+    // Offsets in a one-mapping reply with an empty detail: status, detail,
+    // truncated, count, then the mapping's start, end, flags, kind, path, offset,
+    // presence byte and sizes.
+    const MemoryMapReadResult one{
+        .status = MemoryMapReadStatus::Ok,
+        .mappings = {memoryMapSample().mappings[3]},
+        .detail = {},
+        .truncated = false,
+    };
+    const std::vector<std::uint8_t> good = encodeResponse(1, Response{MemoryMapReply{.result = one}});
+    ASSERT_TRUE(decodeResponse(good).has_value());
+    constexpr std::size_t STATUS = 4 + HEADER_BYTES;
+    constexpr std::size_t COUNT = STATUS + 1 + 4 + 1;
+    constexpr std::size_t START = COUNT + 4;
+    constexpr std::size_t END = START + 8;
+    constexpr std::size_t FLAGS = END + 8;
+    constexpr std::size_t KIND = FLAGS + 1;
+    const auto refusedWith = [&good](std::size_t at, std::uint8_t value)
+    {
+        std::vector<std::uint8_t> bytes = good;
+        bytes[at] = value;
+        return !decodeResponse(bytes).has_value();
+    };
+    EXPECT_TRUE(refusedWith(STATUS, static_cast<std::uint8_t>(MemoryMapReadStatus::Failed) + 1)) << "a status past Failed";
+    EXPECT_TRUE(refusedWith(FLAGS, 0x80)) << "a flag bit past DELETED";
+    EXPECT_TRUE(refusedWith(KIND, static_cast<std::uint8_t>(MemoryMappingKind::Other) + 1)) << "a kind past Other";
+    EXPECT_TRUE(refusedWith(END + 1, 0x00)) << "an end before its start";
+    EXPECT_TRUE(refusedWith(COUNT, 2)) << "a count past the mappings there";
+    // A presence bit with no size after it, or one more size than it says, leaves
+    // the frame the wrong length.
+    const std::size_t present = KIND + 1 + 4 + one.mappings[0].path.size() + 8;
+    EXPECT_TRUE(refusedWith(present, 0x7F)) << "fewer sizes than the presence byte names";
+    EXPECT_TRUE(refusedWith(present, 0xFF - 1)) << "a size the presence byte doesn't name";
+
+    // A count past MAX_MEMORY_MAPPINGS is refused before any mapping is read.
+    std::vector<std::uint8_t> tooMany = encodeResponse(
+        1, Response{MemoryMapReply{.result = {.status = MemoryMapReadStatus::Ok, .mappings = {}, .detail = {}, .truncated = false}}});
+    const auto huge = static_cast<std::uint32_t>(MAX_MEMORY_MAPPINGS + 1);
+    for (std::size_t i = 0; i < 4; ++i)
+    {
+        tooMany[COUNT + i] = static_cast<std::uint8_t>(huge >> (8U * i));
+    }
+    EXPECT_FALSE(decodeResponse(tooMany).has_value());
+}
+
+// #3665: more regions than the cap, or than a frame holds, go back as many as
+// fit, marked truncated, never as a frame the protocol refuses; a read the
+// reader itself cut stays cut, and a whole one isn't.
+TEST(BrokerProtocolTest, MemoryMapsPastTheirCapOrOneFrameAreCutAndSaySo)
+{
+    MemoryMapReadResult capped{.status = MemoryMapReadStatus::Ok, .mappings = {}, .detail = {}, .truncated = false};
+    capped.mappings.resize(MAX_MEMORY_MAPPINGS + 1);
+    const Response cappedReply = roundTrip(MemoryMapReply{.result = capped});
+    EXPECT_TRUE(std::get<MemoryMapReply>(cappedReply).result.truncated);
+    EXPECT_EQ(std::get<MemoryMapReply>(cappedReply).result.mappings.size(), MAX_MEMORY_MAPPINGS);
+
+    MemoryMapReadResult map{.status = MemoryMapReadStatus::Ok, .mappings = {}, .detail = {}, .truncated = false};
+    const MemoryMapping big{.start = 0, .end = 4096, .kind = MemoryMappingKind::File, .path = std::string(4000, 'p')};
+    map.mappings.assign((MAX_MESSAGE_BYTES / 4000) + 10, big);
+    const std::vector<std::uint8_t> bytes = encodeResponse(1, Response{MemoryMapReply{.result = map}});
+    EXPECT_LE(bytes.size(), MAX_MESSAGE_BYTES);
+    const auto decoded = decodeResponse(bytes);
+    ASSERT_TRUE(decoded.has_value());
+    const auto* reply = std::get_if<MemoryMapReply>(&decoded->message);
+    ASSERT_NE(reply, nullptr);
+    EXPECT_TRUE(reply->result.truncated);
+    EXPECT_LT(reply->result.mappings.size(), map.mappings.size());
+    EXPECT_GT(reply->result.mappings.size(), 0U);
+
+    MemoryMapReadResult whole{
+        .status = MemoryMapReadStatus::Ok,
+        .mappings = {MemoryMapping{.start = 1, .end = 2}},
+        .detail = {},
+        .truncated = false,
+    };
+    EXPECT_FALSE(std::get<MemoryMapReply>(roundTrip(MemoryMapReply{.result = whole})).result.truncated);
+    whole.truncated = true; // the reader kept only the first MAX_MEMORY_MAP_REGIONS
+    const Response cut = MemoryMapReply{.result = whole};
+    EXPECT_EQ(roundTrip(cut), cut);
 }
 
 } // namespace

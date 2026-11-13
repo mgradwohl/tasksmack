@@ -5,6 +5,7 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
+#include "Platform/IProcessMemoryMap.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessThreads.h"
@@ -227,6 +228,24 @@ namespace
     }
 }
 
+/// Process Details' memory map (#3665): the reader checks the target's identity itself and reads only the region
+/// list, never the process's memory.
+[[nodiscard]] Broker::Response handleMemoryMap(const Broker::MemoryMapRequest& read, const Readers& readers)
+{
+    if (readers.memoryMap == nullptr)
+    {
+        return Broker::ErrorReply{.message = "This helper doesn't read memory maps"};
+    }
+    try
+    {
+        return Broker::MemoryMapReply{.result = readers.memoryMap->readMemoryMap(read.target)};
+    }
+    catch (...)
+    {
+        return Broker::MemoryMapReply{.result = {.status = MemoryMapReadStatus::Failed, .mappings = {}, .detail = {}, .truncated = false}};
+    }
+}
+
 /// Process Details' connections (#2309): the reader checks the target's identity itself.
 [[nodiscard]] Broker::Response handleConnections(const Broker::ConnectionsRequest& read, const Readers& readers)
 {
@@ -333,6 +352,10 @@ Broker::Response handleRequest(const Broker::Request& request, IProcessActions& 
     if (const auto* read = std::get_if<Broker::ThreadsRequest>(&request))
     {
         return handleThreads(*read, readers);
+    }
+    if (const auto* read = std::get_if<Broker::MemoryMapRequest>(&request))
+    {
+        return handleMemoryMap(*read, readers);
     }
     if (const auto* replacement = std::get_if<Broker::TaskManagerReplacementRequest>(&request))
     {

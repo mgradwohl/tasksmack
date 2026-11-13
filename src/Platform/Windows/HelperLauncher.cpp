@@ -100,6 +100,10 @@ namespace
     {
         return reworded(connections->result.detail);
     }
+    if (auto* const map = std::get_if<Broker::MemoryMapReply>(&response))
+    {
+        return reworded(map->result.detail); // Process Details' memory map (#3665)
+    }
     if (auto* const error = std::get_if<Broker::ErrorReply>(&response))
     {
         return reworded(error->message); // a read without a reply that carries words: threads (#3069)

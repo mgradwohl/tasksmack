@@ -19,6 +19,7 @@
 #include "Platform/Windows/WindowsProcessActions.h"
 #include "Platform/Windows/WindowsProcessConnections.h"
 #include "Platform/Windows/WindowsProcessEnvironmentReader.h"
+#include "Platform/Windows/WindowsProcessMemoryMap.h"
 #include "Platform/Windows/WindowsProcessModules.h"
 #include "Platform/Windows/WindowsProcessOpenFiles.h"
 #include "Platform/Windows/WindowsProcessThreads.h"
@@ -58,6 +59,10 @@ static_assert(SESSION_IDLE_TIMEOUT < Platform::Windows::BrokerHelper::IDLE_TIMEO
 #else
 constexpr std::chrono::milliseconds SESSION_IDLE_TIMEOUT{Platform::Windows::BrokerHelper::IDLE_TIMEOUT};
 #endif
+
+// The helper's memory map read keeps no more regions than one reply carries (#3665): a read it kept whole is cut
+// only by the frame's size, and says so.
+static_assert(Platform::Windows::MAX_MEMORY_MAP_REGIONS <= Platform::Broker::MAX_MEMORY_MAPPINGS);
 
 /// The command line's arguments after the program's name, or nothing when it can't be split.
 [[nodiscard]] std::vector<std::wstring_view> arguments(int& count, LPWSTR*& argv)
@@ -129,6 +134,9 @@ int WINAPI wWinMain(HINSTANCE /*instance*/, HINSTANCE /*previous*/, LPWSTR /*com
         // Process Details' threads (#3069). TaskSmack lists them itself, another user's too, so it asks only if
         // its own read is refused.
         Platform::Windows::WindowsProcessThreadsReader threads;
+        // Process Details' memory map (#3665): the same VirtualQueryEx walk TaskSmack makes, which reads the region
+        // list only, never the process's memory; asked only when TaskSmack's own read is refused.
+        Platform::Windows::WindowsProcessMemoryMapReader memoryMap;
         // Replace Task Manager (#3072): taskmgr.exe's IFEO Debugger, set only to the TaskSmack.exe beside
         // this helper, the one checkParentIsTaskSmack() confirmed its parent runs.
         Platform::Windows::WindowsIfeoRegistry ifeo;
@@ -142,6 +150,7 @@ int WINAPI wWinMain(HINSTANCE /*instance*/, HINSTANCE /*previous*/, LPWSTR /*com
             .openFiles = &openFiles,
             .connections = &connections,
             .threads = &threads,
+            .memoryMap = &memoryMap,
             .taskManagerReplacement = [&ifeo, &taskSmack](const Platform::Broker::TaskManagerReplacementRequest& request)
             { return Platform::Windows::handleHelperRequest(request, taskSmack, ifeo, &Helper::sameFile); },
             .sessionAction = [&sessions](const Platform::Broker::SessionActionRequest& request)

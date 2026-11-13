@@ -3,9 +3,10 @@
 /// and its real ImGui render, headless. The text it hands ImGui is captured through ImGui's own logging
 /// (LogToBuffer()): nothing read while collapsed, the count in the header, Windows' rows (no smaps sizes, so
 /// no Resident column, and a Reserved total) and Linux's (resident, PSS and the split, no Reserved), the
-/// protection in Windows' words or maps' letters, and a muted note instead of the tables for a denied or
-/// failed read.
+/// protection in Windows' words or maps' letters, a muted note instead of the tables for a denied or failed
+/// read, and under a denied one the "Authenticate to read" button that reads through Windows' helper (#3665).
 
+#include "App/Panels/AuthorizeWording.h"
 #include "App/Panels/ProcessMemoryMapView.h"
 #include "Mocks/MockProbes.h"
 #include "Platform/IProcessActions.h"
@@ -249,6 +250,39 @@ TEST(ProcessMemoryMapViewTest, StatusLinesAndAFailedReadKeepsNoRows)
     EXPECT_FALSE(view.offersAuthenticateToRead()); // no reader here can read as an administrator
 }
 
+// #3665: an elevated or another user's process: a refused read offers
+// "Authenticate to read" where the reader can read as an administrator
+// (Windows' helper), and the press makes the next update read that way, on the
+// worker.
+TEST(ProcessMemoryMapViewTest, ARefusedReadOffersAuthenticateToReadAndThePressReadsAsAdministrator)
+{
+    ProcessMemoryMapView view;
+    TestMocks::MockProcessMemoryMapReader reader;
+    reader.setResult({.status = MemoryMapReadStatus::PermissionDenied, .mappings = {}, .detail = {}, .truncated = false});
+
+    view.markDrawnOpen();
+    EXPECT_TRUE(view.update(&reader, TARGET, 0.0F));
+    view.finishPendingRead(TARGET);
+    EXPECT_EQ(view.status(), MemoryMapReadStatus::PermissionDenied);
+    EXPECT_TRUE(view.readRefusedForPermission()) << "where no helper can read it, the restart is offered instead";
+    EXPECT_FALSE(view.offersAuthenticateToRead()) << "this reader can't read as an administrator";
+
+    reader.setAuthorizedResult(windowsMap());
+    static_cast<void>(view.update(&reader, TARGET,
+                                  0.0F)); // takes in what the reader can do now
+    ASSERT_TRUE(view.offersAuthenticateToRead());
+    EXPECT_EQ(reader.authorizedReadCount(), 0) << "nothing is read as an administrator until the press";
+
+    view.requestAuthorizedRead();
+    EXPECT_TRUE(view.update(&reader, TARGET, 0.0F));
+    view.finishPendingRead(TARGET);
+    EXPECT_EQ(reader.authorizedReadCount(), 1);
+    EXPECT_EQ(view.status(), MemoryMapReadStatus::Ok);
+    EXPECT_EQ(view.rows().size(), 6U);
+    EXPECT_FALSE(view.offersAuthenticateToRead());
+    EXPECT_FALSE(view.readRefusedForPermission());
+}
+
 class ProcessMemoryMapViewRenderTest : public ::testing::Test
 {
   protected:
@@ -333,6 +367,41 @@ TEST_F(ProcessMemoryMapViewRenderTest, AccessDeniedAndFailedShowANoteNotATable)
     view.applyResult({.status = MemoryMapReadStatus::Failed, .mappings = {}, .detail = "Not enough memory.", .truncated = false});
     text = renderAndCapture(view, true);
     EXPECT_TRUE(text.contains("Could not be read: Not enough memory."));
+}
+
+// #3665: the shared "Authenticate to read" button
+// (Detail::drawAuthenticateToReadButton) is drawn under a refused read's note
+// only while the reader can read as an administrator, and pressing it reads
+// that way: the regions show and the button is gone.
+TEST_F(ProcessMemoryMapViewRenderTest, ARefusedReadDrawsTheAuthenticateButtonAndPressingItReadsAsTheAdministrator)
+{
+    ProcessMemoryMapView view;
+    TestMocks::MockProcessMemoryMapReader reader;
+    reader.setResult({.status = MemoryMapReadStatus::PermissionDenied, .mappings = {}, .detail = {}, .truncated = false});
+    static_cast<void>(renderAndCapture(view, true)); // drawn open, so the first update reads
+    ASSERT_TRUE(view.update(&reader, TARGET, 0.0F));
+    view.finishPendingRead(TARGET);
+    EXPECT_FALSE(renderAndCapture(view, true).contains(AuthorizeWording::READ_TEXT)) << "the reader can't read as an administrator";
+
+    reader.setAuthorizedResult(windowsMap());
+    static_cast<void>(view.update(&reader, TARGET,
+                                  0.0F)); // takes in what the reader can do now
+    ASSERT_TRUE(view.offersAuthenticateToRead());
+    std::string text = renderAndCapture(view, true);
+    EXPECT_TRUE(text.contains("Access denied"));
+    EXPECT_TRUE(text.contains(AuthorizeWording::READ_TEXT));
+    EXPECT_EQ(reader.authorizedReadCount(), 0) << "nothing is read until the button is pressed";
+
+    const ImGuiWindow* details = ImGui::FindWindowByName("Details");
+    ASSERT_NE(details, nullptr);
+    ImGui::ActivateItemByID(ImHashStr(AuthorizeWording::READ_LABEL, 0, details->ID));
+    static_cast<void>(renderAndCapture(view, true)); // the frame the press lands in
+    EXPECT_TRUE(view.update(&reader, TARGET, 0.0F));
+    view.finishPendingRead(TARGET);
+    EXPECT_EQ(reader.authorizedReadCount(), 1);
+    text = renderAndCapture(view, true);
+    EXPECT_FALSE(text.contains(AuthorizeWording::READ_TEXT));
+    EXPECT_TRUE(text.contains("Memory map (6)"));
 }
 
 TEST_F(ProcessMemoryMapViewRenderTest, WindowsShowsReservedButNoSmapsSizes)
