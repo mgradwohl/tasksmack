@@ -70,30 +70,32 @@ template<typename Number> [[nodiscard]] std::optional<Number> parsePositive(cons
         return options;
     }
     std::optional<std::string> configDir;
-    for (std::size_t index = 0; index < own.size(); ++index)
+    // Each argument and the values it takes are consumed from the front of what is left.
+    for (std::span<const std::string> rest = own; !rest.empty();)
     {
-        const std::string& argument = own[index];
-        const bool hasValue = index + 1 < own.size();
+        const std::string& argument = rest.front();
+        std::size_t used = 1;
         if (argument == Domain::StartAtLogin::MINIMIZED_ARGUMENT)
         {
             options.minimized = true;
         }
-        else if (argument == Platform::HANDOFF_ARGUMENT && index + 2 < own.size() &&
-                 Detail::parsePositive<std::uint32_t>(own[index + 1]).has_value() &&
-                 Detail::parsePositive<std::uint64_t>(own[index + 2]).has_value())
+        else if (argument == Platform::HANDOFF_ARGUMENT && rest.size() >= 3 && Detail::parsePositive<std::uint32_t>(rest[1]).has_value() &&
+                 Detail::parsePositive<std::uint64_t>(rest[2]).has_value())
         {
-            options.handoffPid = Detail::parsePositive<std::uint32_t>(own[index + 1]);
-            options.handoffStartTicks = Detail::parsePositive<std::uint64_t>(own[index + 2]).value_or(0);
-            index += 2;
+            options.handoffPid = Detail::parsePositive<std::uint32_t>(rest[1]);
+            options.handoffStartTicks = Detail::parsePositive<std::uint64_t>(rest[2]).value_or(0);
+            used = 3;
         }
-        else if (argument == Platform::CONFIG_DIR_ARGUMENT && hasValue && !own[index + 1].empty())
+        else if (argument == Platform::CONFIG_DIR_ARGUMENT && rest.size() >= 2 && !rest[1].empty())
         {
-            configDir = own[++index];
+            configDir = rest[1];
+            used = 2;
         }
         else
         {
             options.ignored.push_back(argument);
         }
+        rest = rest.subspan(used);
     }
     if (configDir.has_value())
     {
