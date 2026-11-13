@@ -76,7 +76,7 @@ struct UserSettings
     // Count UDP per process, [sampling] udp_event_trace. Off by default: per-process network counters
     // are TCP only. On, the Processes panel counts UDP too: on Windows, running as administrator, with
     // an ETW session on the kernel's network provider (#1492); on Linux, in an Administrator session,
-    // through the helper's eBPF counter (#3366). Settings toggles it; the change applies at once.
+    // through an eBPF counter TaskSmack loads (#3366, #3580). Settings toggles it; the change applies at once.
     bool udpEventTrace = false;
 
     // Metrics Calculation Parameters

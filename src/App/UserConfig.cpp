@@ -1031,8 +1031,8 @@ bool UserConfig::writeSettings(const UserSettings& settings)
     text << "#   [sampling] history_max_seconds: timeline history window (10-1800s)\n";
     text << "#   [sampling] socket_stats_cache_ttl_ms: Linux only; per-process network stat cache TTL (0-5000ms)\n";
     text << "#   [sampling] udp_event_trace: count UDP per process (true/false, default false: TCP only): on Windows "
-            "through a kernel network event trace when TaskSmack runs as administrator, on Linux through the "
-            "helper's eBPF counter in an Administrator session\n";
+            "through a kernel network event trace when TaskSmack runs as administrator, on Linux through an "
+            "eBPF counter in an Administrator session\n";
     text << "#   [metrics] max_sane_rate_bps: network rate ceiling for process and interface rates "
             "(1e9-1e11 bytes/sec); a higher rate is taken for a bad reading and shown as 0 (an interface's is also "
             "a gap in its chart); read at startup\n";

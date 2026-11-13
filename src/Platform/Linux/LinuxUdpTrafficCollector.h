@@ -1,8 +1,8 @@
 #pragma once
 
 // Per-process UDP bytes counted in TaskSmack's own process (#3580): Linux's IUdpTrafficCollector when TaskSmack runs
-// as root. It loads the same eBPF counter the helper loads (UdpByteCounter, #3366) on start() and reads its map once
-// per socket-traffic reading, with no helper and no protocol in between.
+// as root. It loads the eBPF counter (UdpByteCounter, #3366) on start() and reads its map once
+// per socket-traffic reading.
 
 #include "Platform/IUdpTrafficCollector.h"
 #include "Platform/UdpByteCounts.h"
