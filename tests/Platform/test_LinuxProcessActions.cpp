@@ -3884,6 +3884,35 @@ TEST_F(LinuxEfficiencyModeActionTest, AnOffThatCantPutTheWeightBackSaysSoAndKeep
     EXPECT_EQ(m_Control.rememberedEfficiencyCount(), 0U);
 }
 
+// #3332, #3374: after an off that couldn't put the weight back, the weight was raised by someone else and on lowers it
+// again: that on's weight is the one now owed, so the next off puts it back rather than the older one.
+TEST_F(LinuxEfficiencyModeActionTest, AnOnAfterAnUnfinishedOffThatLowersAgainOwesItsOwnWeight)
+{
+    efficiency().files["cpu.weight"] = "50\n";
+    ASSERT_TRUE(m_Control.setEfficiencyMode(ownTarget(), true).success); // 50 lowered to 1
+    efficiency().nice = 19;
+    efficiency().writeErrno = EACCES;
+    const ProcessActionResult unfinished = m_Control.setEfficiencyMode(ownTarget(), false);
+    ASSERT_TRUE(unfinished.success) << unfinished.errorMessage;
+    ASSERT_TRUE(unfinished.successNote.contains("still the minimum")) << unfinished.successNote;
+    ASSERT_EQ(m_Control.rememberedEfficiencyCount(), 1U);
+
+    // Raised to 80 meanwhile; on lowers it again.
+    efficiency().writeErrno = 0;
+    efficiency().files["cpu.weight"] = "80\n";
+    efficiency().nice = 5;
+    ASSERT_TRUE(m_Control.setEfficiencyMode(ownTarget(), true).success);
+    EXPECT_EQ(efficiency().writes.back(), (std::pair<std::string, std::string>{"cpu.weight", "1"}));
+    efficiency().nice = 19;
+    EXPECT_EQ(m_Control.efficiencyNiceToRestore(ownTarget()), std::optional<std::int32_t>(5)) << "the nice this on found";
+    efficiency().writes.clear();
+    const ProcessActionResult off = m_Control.setEfficiencyMode(ownTarget(), false);
+    ASSERT_TRUE(off.success) << off.errorMessage;
+    EXPECT_TRUE(off.successNote.empty()) << off.successNote;
+    EXPECT_EQ(efficiency().writes, (std::vector<std::pair<std::string, std::string>>{{"cpu.weight", "80"}}));
+    EXPECT_EQ(m_Control.rememberedEfficiencyCount(), 0U);
+}
+
 // #3331: on lowered its cgroup's weight; the process has moved to another cgroup since. Off puts the weight back on
 // the cgroup on lowered, not on the one the process is in now; and with that one gone, it says so and forgets.
 TEST_F(LinuxEfficiencyModeActionTest, OffPutsTheWeightBackOnTheCgroupOnLoweredNotTheOneItMovedTo)
