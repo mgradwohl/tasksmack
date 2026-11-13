@@ -225,6 +225,49 @@ std::string processAccountKey(const Domain::ProcessSnapshot& proc)
     return key;
 }
 
+std::vector<std::string> sharedUserNames(const std::vector<Domain::ProcessSnapshot>& snapshots)
+{
+    // A short name -> the first domain seen with it, and whether another domain has it too. The keys view
+    // the snapshots' names, so a process of an account already seen costs a lookup and no allocation.
+    struct Seen
+    {
+        std::string_view domain;
+        bool shared = false;
+    };
+    std::map<std::string_view, Seen, NameLess> byName;
+    for (const Domain::ProcessSnapshot& proc : snapshots)
+    {
+        if (proc.user.empty() || proc.userDomain.empty())
+        {
+            continue;
+        }
+        const auto [found, added] = byName.try_emplace(proc.user, Seen{.domain = proc.userDomain, .shared = false});
+        if (!added && !Platform::equalsIgnoreCase(found->second.domain, proc.userDomain))
+        {
+            found->second.shared = true;
+        }
+    }
+    std::vector<std::string> shared;
+    for (const auto& [name, seen] : byName)
+    {
+        if (seen.shared)
+        {
+            shared.emplace_back(name); // In byName's order: sorted ignoring ASCII case
+        }
+    }
+    return shared;
+}
+
+bool isSharedUserName(const std::vector<std::string>& shared, std::string_view user) noexcept
+{
+    if (user.empty())
+    {
+        return false;
+    }
+    const auto found = std::ranges::lower_bound(shared, user, NameLess{});
+    return found != shared.end() && Platform::equalsIgnoreCase(*found, user);
+}
+
 std::vector<ProcessGrouping::Group> buildUserGroups(const std::vector<Domain::ProcessSnapshot>& snapshots,
                                                     const std::vector<std::size_t>& order,
                                                     std::size_t liveCount,

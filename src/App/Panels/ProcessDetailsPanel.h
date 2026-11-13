@@ -395,6 +395,7 @@ class ProcessDetailsPanel : public Panel
         std::shared_ptr<const Domain::ProcessSnapshot> keepAlive;
         std::string pid;
         std::string parentPid;
+        std::string user; ///< "PC\alice" on Windows when the domain is known, else the user name, or "-" (#3328)
         std::string started;
         std::string threads;
         std::string handles;

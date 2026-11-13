@@ -860,6 +860,9 @@ class ProcessesPanel : public Panel
     // are erased once per new snapshot generation, not per frame, to bound the map's size
     // without adding per-frame cost).
     std::uint64_t m_RowFormatCachePrunedVersion = std::numeric_limits<std::uint64_t>::max();
+    // The user names two accounts share in that generation (UserGrouping::sharedUserNames(), #3328): their
+    // User cells write DOMAIN\user. Computed with the prune, so it changes only with the generation.
+    std::vector<std::string> m_SharedUserNames;
 
     /// Ensure text size cache is populated for current font
     void ensureTextSizeCacheValid();

@@ -186,6 +186,39 @@ class ProcessesPanelRenderTest : public ::testing::Test
         return panel;
     }
 
+    /// An attached panel reading three processes with Windows owners (#3328): init (1) as PC\bob, server (100)
+    /// as PC\alice and worker (101) as CORP\alice, so two accounts share the name alice.
+    [[nodiscard]] static std::unique_ptr<ProcessesPanel> attachedPanelWithOwners()
+    {
+        auto panel = std::make_unique<ProcessesPanel>(
+            []
+            {
+                const auto owned = [](Platform::ProcessCounters counters, std::string domain, std::string user)
+                {
+                    counters.userDomain = std::move(domain);
+                    counters.user = std::move(user);
+                    return counters;
+                };
+                auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+                probe
+                    ->withProcess(
+                        owned(TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0), "PC", "bob"))
+                    .withProcess(
+                        owned(TestMocks::makeProcessCounters(100, "server", 'R', 200, 50, 1000, std::uint64_t{8} << 20U, 1), "PC", "alice"))
+                    .withProcess(owned(
+                        TestMocks::makeProcessCounters(101, "worker", 'S', 30, 10, 1100, std::uint64_t{2} << 20U, 100), "CORP", "alice"));
+                return ProcessesPanelPlatform{
+                    .probe = std::move(probe),
+                    .actions = std::make_unique<TestMocks::MockProcessActions>(),
+                    .icons = nullptr,
+                };
+            });
+        attachAndSeed(*panel);
+        Core::ActiveTabChangedEvent shown("Processes");
+        panel->onEvent(shown);
+        return panel;
+    }
+
     /// A GPU model with one GPU whose probe reports per-process metrics and utilization, and with
     /// @p withNpu, an NPU and per-process NPU data too (#1870, #1827). It publishes what it lists on its first refresh(), as the GPU
     /// sampler's first sample does; until then whether there is an NPU is unknown.
@@ -2625,6 +2658,42 @@ TEST_F(ProcessesPanelRenderTest, TheFilterKeepsMatchingRowsAndClearingItBringsTh
     text = renderAndCapture(*panel);
     EXPECT_TRUE(text.contains("server")) << text;
     EXPECT_TRUE(text.contains("worker")) << text;
+    panel->onDetach();
+}
+
+// #3328: the User column writes DOMAIN\user for a name two accounts share, so PC\alice's and CORP\alice's
+// rows differ, and the short name for every other owner, so the column stays narrow.
+TEST_F(ProcessesPanelRenderTest, TheUserColumnWritesTheDomainOnlyForANameTwoAccountsShare)
+{
+    const auto panel = attachedPanelWithOwners();
+    renderUntilLoaded(*panel);
+    static_cast<void>(renderAndCapture(*panel));
+    const std::string text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("PC\\alice")) << text;
+    EXPECT_TRUE(text.contains("CORP\\alice")) << text;
+    EXPECT_TRUE(text.contains("bob")) << text;
+    EXPECT_FALSE(text.contains("PC\\bob")) << text; // One account has the name: no domain needed
+    panel->onDetach();
+}
+
+// #3328: the filter finds a process by its owner, by the short name or by DOMAIN\user.
+TEST_F(ProcessesPanelRenderTest, TheFilterFindsAProcessByItsOwnersAccount)
+{
+    const auto panel = attachedPanelWithOwners();
+    renderUntilLoaded(*panel);
+    const ImGuiWindow* shell = ImGui::FindWindowByName("Shell");
+    ASSERT_NE(shell, nullptr);
+    ImGui::ActivateItemByID(ImHashStr("##search", 0, shell->ID));
+    static_cast<void>(renderAndCapture(*panel));
+    for (const char* character : {"c", "o", "r", "p", "\\", "a"})
+    {
+        ImGui::GetIO().AddInputCharactersUTF8(character);
+        static_cast<void>(renderAndCapture(*panel));
+    }
+    static_cast<void>(renderAndCapture(*panel));
+    const std::string text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("worker")) << text;
+    EXPECT_FALSE(text.contains("server")) << text; // PC\alice's
     panel->onDetach();
 }
 
