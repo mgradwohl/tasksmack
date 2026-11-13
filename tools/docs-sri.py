@@ -121,8 +121,9 @@ def update(root: Path, download: Callable[[str], bytes] = fetch) -> None:
             attrs = attrs.rstrip() + " " + added
         return f"<{tag.group('name')}{attrs}{tag.group('end')}"
 
-    page.write_text(TAG.sub(rewrite, html), encoding="utf-8")
-    (root / LOCK).write_text(json.dumps(dict(sorted(hashes.items())), indent=2) + "\n", encoding="utf-8")
+    # newline="\n": the repo keeps LF (pre-commit's mixed-line-ending), and Windows would write CRLF.
+    page.write_text(TAG.sub(rewrite, html), encoding="utf-8", newline="\n")
+    (root / LOCK).write_text(json.dumps(dict(sorted(hashes.items())), indent=2) + "\n", encoding="utf-8", newline="\n")
 
 
 def main(argv: list[str] | None = None) -> int:
