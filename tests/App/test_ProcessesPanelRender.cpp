@@ -49,6 +49,7 @@
 #include "Mocks/MockProbes.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/GPUTypes.h"
+#include "Platform/IHttpsClient.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IServiceProbe.h"
@@ -72,20 +73,61 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <expected>
 #include <format>
 #include <functional>
 #include <latch>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <regex>
 #include <sstream>
 #include <stdexcept>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
+
+namespace App::ProcessesPanelRenderTestDetail
+{
+
+/// Look up on VirusTotal's client in these tests (#3094): every request answered with one reply, and kept.
+class FakeLookupClient final : public Platform::IHttpsClient
+{
+  public:
+    explicit FakeLookupClient(Platform::HttpsResponse reply) : m_Reply(std::move(reply))
+    {}
+
+    [[nodiscard]] std::expected<Platform::HttpsResponse, std::string> get(const Platform::HttpsRequest& request,
+                                                                          const std::stop_token& /*stop*/) override
+    {
+        const std::scoped_lock lock(m_Mutex);
+        m_Requests.push_back(request);
+        return m_Reply;
+    }
+
+    [[nodiscard]] std::size_t requestCount() const
+    {
+        const std::scoped_lock lock(m_Mutex);
+        return m_Requests.size();
+    }
+
+    [[nodiscard]] std::string lastPath() const
+    {
+        const std::scoped_lock lock(m_Mutex);
+        return m_Requests.empty() ? std::string{} : m_Requests.back().path;
+    }
+
+  private:
+    mutable std::mutex m_Mutex;
+    Platform::HttpsResponse m_Reply;
+    std::vector<Platform::HttpsRequest> m_Requests;
+};
+
+} // namespace App::ProcessesPanelRenderTestDetail
 
 namespace App
 {
@@ -1153,6 +1195,53 @@ TEST_F(ProcessesPanelRenderTest, OpenFileLocationFromTheRowMenuRunsForThatProces
     // Its result line counts down with the frames after it.
     panel->onUpdate(1.0F / 60.0F);
     static_cast<void>(renderAndCapture(*panel));
+    panel->onDetach();
+}
+
+// #3094: Look up on VirusTotal is in the row menu with a key and a platform that can hash the image, and runs on the
+// row action worker for that row: the image's hash, then one request for it.
+TEST_F(ProcessesPanelRenderTest, LookUpOnVirusTotalFromTheRowMenuHashesAndAsksOnce)
+{
+    const std::string sha = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    UserConfig::get().settings().virusTotalApiKey = std::string(64, 'a');
+    TestMocks::MockProcessActions* actions = nullptr;
+    const auto panel = panelWithCapabilities({.canHashImage = true}, false, actions);
+    ASSERT_NE(actions, nullptr);
+    actions->setImageSha256Result(sha);
+    const auto client = std::make_shared<ProcessesPanelRenderTestDetail::FakeLookupClient>(Platform::HttpsResponse{
+        .body = R"({"data":{"attributes":{"last_analysis_stats":{"malicious":0,"suspicious":0,"undetected":70,"harmless":0}}}})",
+        .status = 200,
+    });
+    panel->setLookupClient(client);
+    renderUntilLoaded(*panel);
+    ASSERT_TRUE(openARowMenu(*panel).has_value());
+    pressPopupItem(*panel, ICON_FA_SHIELD_HALVED " Look up on VirusTotal###LookUpVirusTotal");
+    static_cast<void>(renderAndCapture(*panel));
+    panel->waitForRowActionForTesting();
+    EXPECT_EQ(actions->imageSha256Count(), 1);
+    EXPECT_EQ(client->requestCount(), 1U);
+    EXPECT_EQ(client->lastPath(), "/api/v3/files/" + sha);
+    panel->onUpdate(1.0F / 60.0F);
+    static_cast<void>(renderAndCapture(*panel));
+    panel->onDetach();
+}
+
+// #3094: without a key there is no item to press, and nothing is hashed or sent.
+TEST_F(ProcessesPanelRenderTest, WithoutAKeyThereIsNoVirusTotalLookup)
+{
+    UserConfig::get().settings().virusTotalApiKey.clear();
+    TestMocks::MockProcessActions* actions = nullptr;
+    const auto panel = panelWithCapabilities({.canHashImage = true}, false, actions);
+    ASSERT_NE(actions, nullptr);
+    const auto client = std::make_shared<ProcessesPanelRenderTestDetail::FakeLookupClient>(Platform::HttpsResponse{});
+    panel->setLookupClient(client);
+    renderUntilLoaded(*panel);
+    ASSERT_TRUE(openARowMenu(*panel).has_value());
+    pressPopupItem(*panel, ICON_FA_SHIELD_HALVED " Look up on VirusTotal###LookUpVirusTotal");
+    static_cast<void>(renderAndCapture(*panel));
+    panel->waitForRowActionForTesting();
+    EXPECT_EQ(actions->imageSha256Count(), 0);
+    EXPECT_EQ(client->requestCount(), 0U);
     panel->onDetach();
 }
 

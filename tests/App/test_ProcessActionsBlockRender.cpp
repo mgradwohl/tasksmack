@@ -20,6 +20,7 @@
 #include "Domain/PriorityConfig.h"
 #include "Mocks/MockProbes.h"
 #include "Platform/CpuAffinity.h"
+#include "Platform/IHttpsClient.h"
 #include "Platform/IProcessActions.h"
 #include "UI/Card.h"
 #include "UI/ChartGrid.h"
@@ -52,12 +53,43 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <expected>
 #include <filesystem>
 #include <functional>
 #include <optional>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <thread>
+
+namespace App::ProcessActionsBlockRenderTestDetail
+{
+
+/// Look up on VirusTotal's client in these tests (#3094): every request answered with one reply, and counted.
+class FakeLookupClient final : public Platform::IHttpsClient
+{
+  public:
+    explicit FakeLookupClient(Platform::HttpsResponse reply) : m_Reply(std::move(reply))
+    {}
+
+    [[nodiscard]] std::expected<Platform::HttpsResponse, std::string> get(const Platform::HttpsRequest& /*request*/,
+                                                                          const std::stop_token& /*stop*/) override
+    {
+        m_Requests.fetch_add(1);
+        return m_Reply;
+    }
+
+    [[nodiscard]] int requestCount() const noexcept
+    {
+        return m_Requests.load();
+    }
+
+  private:
+    Platform::HttpsResponse m_Reply;
+    std::atomic<int> m_Requests{0};
+};
+
+} // namespace App::ProcessActionsBlockRenderTestDetail
 
 namespace App
 {
@@ -1610,6 +1642,50 @@ TEST_F(ProcessActionsBlockRenderTest, CreateDumpFromTheCardConfirmsWritesAndName
     (void) runFrame(body);
     EXPECT_FALSE(runFrame(body));
     EXPECT_FALSE(h.actionsView.dumpView().active());
+}
+
+// #3094: Look up on VirusTotal is on the card only with a key, a client and a platform that can hash; pressed, it
+// hashes the shown process's image and asks once, on the card's worker, and the result line says what came back.
+TEST_F(ProcessActionsBlockRenderTest, LookUpOnVirusTotalFromTheCardHashesAndShowsTheVerdict)
+{
+    Harness h;
+    Platform::ProcessActionCapabilities caps = ALL_ACTIONS;
+    std::string text;
+    const auto body = [&]
+    {
+        ImGui::LogToBuffer();
+        (void) ProcessActionsBlock::render(h.context(caps), layoutFor(caps, 1600.0F, 600.0F), infoCardHeight(6.0F));
+        h.actionsView.renderConfirmation(&h.mock, TARGET);
+        text = GImGui->LogBuffer.c_str();
+        ImGui::LogFinish();
+    };
+    const auto client = std::make_shared<ProcessActionsBlockRenderTestDetail::FakeLookupClient>(Platform::HttpsResponse{
+        .body = R"({"data":{"attributes":{"last_analysis_stats":{"malicious":2,"suspicious":0,"undetected":60,"harmless":0}}}})",
+        .status = 200,
+    });
+    h.actionsView.setVirusTotal({.client = client, .apiKey = std::string(64, 'a'), .userAgent = "UA"});
+
+    // Not offered where the platform can't hash the image (Windows until #3646).
+    ASSERT_FALSE(runFrame(body));
+    EXPECT_FALSE(text.contains(VirusTotalLookup::MENU_LABEL)) << text;
+
+    caps.canHashImage = true;
+    h.mock.setImageSha256Result(std::string("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"));
+    ASSERT_FALSE(runFrame(body));
+    EXPECT_TRUE(text.contains(VirusTotalLookup::MENU_LABEL)) << text;
+
+    ImGui::ActivateItemByID(ImHashStr(VirusTotalLookup::MENU_LABEL, 0, actionsWindow()->ID));
+    (void) runFrame(body);
+    h.actionsView.waitForActionForTesting();
+    (void) runFrame(body);
+    EXPECT_EQ(h.mock.imageSha256Count(), 1);
+    EXPECT_EQ(client->requestCount(), 1);
+    EXPECT_TRUE(text.contains("2 of 62 engines flag")) << text;
+
+    // Without a key the button goes.
+    h.actionsView.setVirusTotal({.client = client, .apiKey = {}, .userAgent = "UA"});
+    (void) runFrame(body);
+    EXPECT_FALSE(text.contains(VirusTotalLookup::MENU_LABEL)) << text;
 }
 
 // #3084: Analyze wait chain... where the platform can read one, at its own width; pressing it opens the wait
