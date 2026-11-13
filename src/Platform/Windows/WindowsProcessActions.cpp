@@ -4,6 +4,9 @@
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IoPriorityTypes.h"
+#ifndef TASKSMACK_NO_FILE_LOCATION
+#include "Platform/Sha256.h"
+#endif
 #include "Platform/WaitChain.h"
 #include "WindowsAffinityMath.h"
 #include "WindowsConversions.h"
@@ -71,6 +74,14 @@ constexpr bool HAS_DUMPS = true;
 constexpr bool HAS_WAIT_CHAINS = false;
 #else
 constexpr bool HAS_WAIT_CHAINS = true;
+#endif
+
+// And for the image hash (#3646), under the file-location guard: the helper never serves one either
+// (BrokeredProcessActions keeps both the user's own), so Sha256.cpp stays out of the elevated image.
+#ifdef TASKSMACK_NO_FILE_LOCATION
+constexpr bool HAS_IMAGE_HASH = false;
+#else
+constexpr bool HAS_IMAGE_HASH = true;
 #endif
 
 // NOLINTBEGIN(misc-include-cleaner) - Windows APIs; Win32 types come from windows.h sub-headers
@@ -465,6 +476,7 @@ WindowsProcessFunctions realWindowsProcessFunctions() noexcept
         .terminateThread = &TerminateThread,
         .getThreadTimes = &GetThreadTimes,
         .queryFullProcessImageName = &QueryFullProcessImageNameW,
+        .getExitCodeProcess = &GetExitCodeProcess,
 #ifdef TASKSMACK_NO_FILE_LOCATION
         .fileLocation = {}, // TaskSmackHelper.exe: no shell calls in the elevated image (#3426)
 #else
@@ -524,6 +536,8 @@ ProcessActionCapabilities WindowsProcessActions::actionCapabilities() const
         .dumpsFromSnapshot = HAS_DUMPS,                // PssCaptureSnapshot, else from the running process (#2001)
         .canAuthorizeInteractively = false,            // BrokeredProcessActions sets it when TaskSmackHelper.exe can be used (#2550)
         .canOpenFileLocation = hasFileLocation(m_Fns), // SHOpenFolderAndSelectItems, or explorer.exe /select (#3426)
+        // QueryFullProcessImageNameW, then the file's SHA-256, for Look up on VirusTotal (#3646)
+        .canHashImage = HAS_IMAGE_HASH && m_Fns.queryFullProcessImageName != nullptr,
         .canRunProgram = m_Fns.runProgram.shellExecute != nullptr, // ShellExecuteExW, as Run new task (#3427)
         // The runas verb's UAC prompt, unless TaskSmack is elevated already, when every task it starts is too.
         .canRunProgramAsAdministrator = m_Fns.runProgram.shellExecute != nullptr && !m_Elevated,
@@ -1358,6 +1372,64 @@ ProcessActionResult WindowsProcessActions::openFileLocation(const ProcessTarget&
     }
     path.resize(size);
     return Windows::revealInExplorer(m_Fns.fileLocation, path);
+#endif
+}
+
+std::expected<std::string, std::string> WindowsProcessActions::imageSha256(const ProcessTarget& target, const std::stop_token& stop)
+{
+#ifdef TASKSMACK_NO_FILE_LOCATION
+    // TaskSmackHelper.exe: BrokeredProcessActions never sends it one, and Sha256.cpp isn't built in.
+    return IProcessActions::imageSha256(target, stop);
+#else
+    if (m_Fns.queryFullProcessImageName == nullptr)
+    {
+        return IProcessActions::imageSha256(target, stop);
+    }
+    if (target.pid == SYSTEM_PROCESS_PID)
+    {
+        return std::unexpected(std::string("The System process has no executable file"));
+    }
+    // The identity check every action makes, so the file hashed is the target's, never a reused PID's. The handle
+    // is held until the hash is done, so the exit check below asks the same process.
+    VerifiedProcess process =
+        openVerified(m_Fns, target, PROCESS_QUERY_LIMITED_INFORMATION, [](DWORD error) { return fileLocationOpenFailure(error); });
+    if (!process.result.success)
+    {
+        spdlog::warn("Not hashing the executable of PID {}: {}", target.pid, process.result.errorMessage);
+        return std::unexpected(std::move(process.result.errorMessage));
+    }
+    constexpr DWORD MAX_PATH_CHARS = 32768; // the longest path Windows allows, with its terminator
+    std::wstring path(MAX_PATH_CHARS, L'\0');
+    DWORD size = MAX_PATH_CHARS;
+    if (m_Fns.queryFullProcessImageName(process.handle.get(), 0, path.data(), &size) == 0)
+    {
+        // The kernel's own processes (Registry, Memory Compression, Secure System) have no image file.
+        const DWORD error = GetLastError();
+        std::string message = std::format("Its executable can't be read: {}", std::system_category().message(static_cast<int>(error)));
+        spdlog::warn("Not hashing the executable of PID {}: {}", target.pid, message);
+        return std::unexpected(std::move(message));
+    }
+    path.resize(size);
+    std::expected<Sha256::Digest, std::string> digest = Sha256::hashFile(std::filesystem::path(path), stop);
+    if (!digest.has_value() && stop.stop_requested())
+    {
+        return std::unexpected(std::move(digest.error())); // "Stopped": the worker's owner is going away
+    }
+    // While the process runs its image can't be written, but once it has exited the file at that path may have
+    // been replaced, so a hash read across its exit may not be its image's. (A process that exits with code 259,
+    // STILL_ACTIVE, reads as running: GetExitCodeProcess's documented ambiguity.)
+    DWORD exitCode = 0;
+    if (m_Fns.getExitCodeProcess == nullptr || m_Fns.getExitCodeProcess(process.handle.get(), &exitCode) == 0 || exitCode != STILL_ACTIVE)
+    {
+        return std::unexpected(std::format("Process {} has exited", target.pid));
+    }
+    if (!digest.has_value())
+    {
+        std::string message = std::format("Its executable can't be read: {}", digest.error());
+        spdlog::warn("Not hashing the executable of PID {}: {}", target.pid, message);
+        return std::unexpected(std::move(message));
+    }
+    return Sha256::toHex(*digest);
 #endif
 }
 

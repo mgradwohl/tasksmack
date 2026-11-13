@@ -1025,7 +1025,8 @@ if(WIN32)
     # picker: WindowsProcessActions.cpp leaves its dump members to IProcessActions' refusals without them.
     # No wait chain reader either (#3084): the helper serves none, so WindowsWaitChain.cpp isn't built in.
     # No Open file location (#3426) and no Run new task (#3427): BrokeredProcessActions keeps both the
-    # user's own, so no shell calls here.
+    # user's own, so no shell calls here. TASKSMACK_NO_FILE_LOCATION also leaves out the image hash for Look
+    # up on VirusTotal (#3646), which BrokeredProcessActions keeps in-process too, so Sha256.cpp isn't built in.
     set(TASKSMACK_WINDOWS_HELPER_DEFINITIONS TASKSMACK_NO_PROCESS_DUMPS TASKSMACK_NO_WAIT_CHAINS TASKSMACK_NO_FILE_LOCATION
         TASKSMACK_NO_RUN_PROGRAM)
     target_compile_definitions(TaskSmackHelper PRIVATE ${TASKSMACK_WINDOWS_HELPER_DEFINITIONS})

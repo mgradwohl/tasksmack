@@ -7,7 +7,11 @@
 // one in flight. Each get() opens its own session and closes it, so constructing the client opens nothing
 // and sends nothing.
 //
-// The request carries the User-Agent and Accept headers it is given and nothing else of TaskSmack's:
+// The request carries the User-Agent and Accept headers it is given, and the request's extra headers
+// (WinHttpAddRequestHeaders, #3646: VirusTotal's x-apikey), and nothing else of TaskSmack's. An extra header's
+// name must be a header token and no value may hold CR, LF or NUL, which could end the header and add another,
+// or the request is refused before anything is opened; a header's value is never logged or put in an error.
+// Otherwise nothing of TaskSmack's goes with it:
 // cookies and automatic authentication are off (WINHTTP_DISABLE_COOKIES, WINHTTP_DISABLE_AUTHENTICATION),
 // and WinHTTP's default redirect policy never follows HTTPS to HTTP. The whole request gets the request's
 // timeout. A stop wakes the worker, which closes the request handle itself: WinHTTP lets an asynchronous
@@ -33,6 +37,7 @@
 #include <stop_token>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace Platform
 {
@@ -49,6 +54,7 @@ struct WinHttpFunctions
     BOOL(WINAPI* setOption)(HINTERNET, DWORD, LPVOID, DWORD) = &::WinHttpSetOption;
     WINHTTP_STATUS_CALLBACK(WINAPI* setStatusCallback)(HINTERNET, WINHTTP_STATUS_CALLBACK, DWORD, DWORD_PTR) = &::WinHttpSetStatusCallback;
     BOOL(WINAPI* setTimeouts)(HINTERNET, int, int, int, int) = &::WinHttpSetTimeouts;
+    BOOL(WINAPI* addRequestHeaders)(HINTERNET, LPCWSTR, DWORD, DWORD) = &::WinHttpAddRequestHeaders;
     BOOL(WINAPI* sendRequest)(HINTERNET, LPCWSTR, DWORD, LPVOID, DWORD, DWORD, DWORD_PTR) = &::WinHttpSendRequest;
     BOOL(WINAPI* receiveResponse)(HINTERNET, LPVOID) = &::WinHttpReceiveResponse;
     BOOL(WINAPI* queryHeaders)(HINTERNET, DWORD, LPCWSTR, LPVOID, LPDWORD, LPDWORD) = &::WinHttpQueryHeaders;
@@ -62,6 +68,12 @@ struct WinHttpFunctions
 /// Why the WinHTTP call @p step failed with @p error (GetLastError()), for the debug log:
 /// "WinHttpSendRequest: the request timed out (12002)".
 [[nodiscard]] std::string errorText(std::string_view step, std::uint32_t error);
+
+/// The request's extra headers (#3646) as the lines WinHttpAddRequestHeaders takes, "name: value" each, in order;
+/// or why the request can't be sent: a name that isn't an RFC 9110 token, a value (an extra header's, or Accept's)
+/// holding CR, LF or NUL, which could end the header and start another, or one that isn't UTF-8. The reason names
+/// no value: an extra header may be a secret (VirusTotal's API key).
+[[nodiscard]] std::expected<std::vector<std::wstring>, std::string> headerLines(const HttpsRequest& request);
 
 /// One asynchronous WinHTTP call's completion, as the request's status callback reports it to the worker
 /// waiting for it (#3333). The callback runs on a WinHTTP thread, or on the worker inside the call itself.
