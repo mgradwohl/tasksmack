@@ -154,8 +154,7 @@
 
     // ── docs/index.html: the docs site's jsDelivr pins (#3167) ──────────────
     //    docsify and its plugins, mermaid and prismjs, each pinned in its URL. Each tag also carries an
-    //    SRI hash from docs/cdn-integrity.json: a bump fails pre-commit's check-docs-sri until
-    //    `python -I tools/docs-sri.py --update` is run on the branch and committed.
+    //    SRI hash from docs/cdn-integrity.json, which renovate-docs-sri.yml regenerates on Renovate's branch (#3661).
     {
       customType: 'regex',
       managerFilePatterns: ['/^docs/index\\.html$/'],
@@ -546,9 +545,20 @@
     //    (bumped with the action itself). ──
   ],
 
+  // The docs site's SRI regeneration (#3661, renovate-docs-sri.yml) commits to Renovate's docs branches as
+  // github-actions[bot]; Renovate ignores that author, so it still rebases those branches.
+  gitIgnoredAuthors: ['41898282+github-actions[bot]@users.noreply.github.com'],
   packageRules: [
     {
-      // The docs site's CDN pins (#3167): one PR per package, with majors behind dashboard approval like
+      // The docs site's minor and patch CDN bumps in one PR (#3661): each rewrites docs/cdn-integrity.json, so separate
+      // PRs conflicted with each other once one merged.
+      matchFileNames: ['docs/index.html'],
+      matchDatasources: ['npm'],
+      matchUpdateTypes: ['minor', 'patch'],
+      groupName: 'docs site CDN',
+    },
+    {
+      // The docs site's CDN pins (#3167): a major is one PR per package, behind dashboard approval like
       // the other majors here (docsify 5, docsify-copy-code 3 and mermaid 12 each need the docs browser
       // tests, #2967). Every update also needs its SRI hashes regenerated (see the customManager).
       matchFileNames: ['docs/index.html'],
