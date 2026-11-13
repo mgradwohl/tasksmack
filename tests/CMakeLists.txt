@@ -898,6 +898,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsSystemInfoProbe.cpp
     Platform/test_WindowsSystemInfoProbeSeams.cpp
     Platform/test_WindowsSystemInfoLiveReaders.cpp
+    Platform/test_WindowsStartupLiveReaders.cpp  # the real StartupInfo, Task Scheduler and boot-event readers, read only (#3676)
     Platform/test_WindowsServiceActions.cpp
     Platform/test_WindowsServiceProbe.cpp
     Platform/test_WindowsServiceConfig.cpp
