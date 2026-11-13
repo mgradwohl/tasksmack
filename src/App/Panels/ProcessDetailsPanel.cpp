@@ -9,6 +9,7 @@
 #include "App/SelectOverride.h"
 #include "App/ShellMetrics.h"
 #include "App/SyntheticScenario.h"
+#include "App/UserConfig.h"
 #include "Core/Application.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
@@ -18,6 +19,7 @@
 #include "Domain/ProcessSnapshot.h"
 #include "Domain/SamplingConfig.h"
 #include "Domain/ServiceModel.h"
+#include "Domain/UpdateCheck.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
@@ -55,6 +57,7 @@
 #include "UI/TabContent.h"
 #include "UI/Theme.h"
 #include "UI/Widgets.h"
+#include "version.h"
 
 #include <imgui.h>
 #include <spdlog/spdlog.h>
@@ -77,7 +80,10 @@ namespace App
 
 // Constructor (inside App namespace)
 ProcessDetailsPanel::ProcessDetailsPanel() : ProcessDetailsPanel(makeProcessDetailsReaders(Synthetic::activeScenario()))
-{}
+{
+    // Look up on VirusTotal's client (#3094), made with the panel; the tests' constructors bring none.
+    m_LookupClient = makeLookupClient(Synthetic::activeScenario(), SelectOverride::testHookActive());
+}
 
 ProcessDetailsPanel::ProcessDetailsPanel(ProcessDetailsReaders readers)
     : ProcessDetailsPanel(std::move(readers.actions),
@@ -395,6 +401,12 @@ void ProcessDetailsPanel::renderContent()
                                 ? m_PriorityChanges->holdReason(PriorityChangesInFlight::Panel::ProcessDetails, selectedTarget())
                                 : nullptr;
     m_ActionsView.holdPriorityChanges(ProcessActionsBlock::actionsHoldReason(m_PriorityView.applying(), m_PriorityHeldElsewhere));
+    // Look up on VirusTotal (#3094): the key as Settings has it now, so a key set or cleared takes effect at once.
+    m_ActionsView.setVirusTotal({
+        .client = m_LookupClient,
+        .apiKey = UserConfig::get().settings().virusTotalApiKey,
+        .userAgent = Domain::UpdateCheck::userAgent(tasksmack::Version::FULL),
+    });
 
     renderPane(killRequested);
 

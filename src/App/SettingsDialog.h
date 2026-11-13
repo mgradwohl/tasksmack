@@ -8,6 +8,8 @@
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -37,6 +39,11 @@ inline constexpr const char* UDP_EVENT_TRACE_LABEL = "Count UDP traffic per proc
 // The opt-in update check (#3093): shown where it is offered (Windows and Linux).
 inline constexpr const char* CHECK_UPDATES_LABEL = "Check for updates daily";
 inline constexpr const char* CHECK_UPDATES_NOTE = "Asks GitHub once a day; nothing is downloaded.";
+inline constexpr const char* VIRUSTOTAL_KEY_LABEL = "VirusTotal API key";
+inline constexpr const char* VIRUSTOTAL_KEY_NOTE =
+    "For Look up on VirusTotal: sends only an executable's SHA-256. A free key is at virustotal.com.";
+/// Room for a key (64) plus stray spaces a paste brings, which are trimmed.
+inline constexpr std::size_t VIRUSTOTAL_KEY_BUFFER = 96;
 inline constexpr const char* CHECK_NOW_LABEL = ICON_FA_ARROWS_ROTATE "  Check now";
 // Start at sign-in (#3093, part 2): shown where it is offered (Windows and Linux).
 inline constexpr const char* START_AT_LOGIN_LABEL = "Start TaskSmack when I sign in";
@@ -73,6 +80,9 @@ struct State
     bool udpUnsupported = false;
     std::string udpProblem{};     // NOLINT(readability-redundant-member-init) - {} lets designated initializers omit it
     bool checkForUpdates = false; ///< "Check for updates daily" (#3093); off by default
+    /// Look up on VirusTotal's API key (#3094), as typed: saved when empty (cleared) or a key (64 hex digits), kept
+    /// as it was otherwise. A fixed buffer, as ImGui's InputText edits one.
+    std::array<char, VIRUSTOTAL_KEY_BUFFER> virusTotalApiKey{};
     /// Set by SettingsLayer from the shell's UpdateCheckStatusEvent (#3093), never by load(): whether the
     /// update check is offered here (its rows are hidden otherwise), whether one is running (Check now is
     /// disabled until it ends), and the line about the last check this session.

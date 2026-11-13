@@ -145,6 +145,10 @@ struct UserSettings
     // there are any.
     std::vector<std::string> recentCommands;
 
+    // Look up on VirusTotal's API key (#3094), [virustotal] api_key: the user's own, 64 hex digits, or empty (the
+    // action is then not offered). Written only while set; a save then makes config.toml owner-only.
+    std::string virusTotalApiKey;
+
     // The opt-in update check (#3093), [updates]: "Check for updates daily" (check_daily, off by
     // default, and then TaskSmack sends nothing), when the last check started (last_check, Unix
     // seconds), the latest release it saw (latest_version, latest_url) and the version whose notice the

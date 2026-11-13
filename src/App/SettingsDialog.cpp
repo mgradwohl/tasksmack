@@ -6,6 +6,7 @@
 #include "App/TaskManagerReplacementRows.h"
 #include "App/UserConfig.h"
 #include "Domain/StartAtLogin.h"
+#include "Domain/VirusTotal.h"
 #include "UI/ChromeLayout.h"
 #include "UI/ChromeWidgets.h"
 #include "UI/DialogMetrics.h"
@@ -126,6 +127,9 @@ void load(State& state, const UserSettings& settings, std::vector<UI::Discovered
     state.showProcessIcons = settings.showProcessIcons;
     state.highlightNewProcesses = settings.highlightNewProcesses;
     state.checkForUpdates = settings.updates.enabled;
+    state.virusTotalApiKey.fill('\0');
+    settings.virusTotalApiKey.copy(state.virusTotalApiKey.data(),
+                                   std::min(settings.virusTotalApiKey.size(), state.virusTotalApiKey.size() - 1));
 }
 
 void resetToDefaults(State& state)
@@ -148,6 +152,7 @@ void resetToDefaults(State& state)
     state.showProcessIcons = defaults.showProcessIcons;
     state.highlightNewProcesses = defaults.highlightNewProcesses;
     state.checkForUpdates = defaults.updates.enabled;
+    state.virusTotalApiKey.fill('\0'); // the default is no key: Look up on VirusTotal off
 }
 
 Action render(State& state)
@@ -668,6 +673,32 @@ Action render(State& state)
                 ImGui::SameLine();
                 ImGui::TextUnformatted(state.updateSummary.c_str());
             }
+        }
+
+        // Look up on VirusTotal's API key (#3094): the user's own; empty turns the action off. Masked like a password,
+        // as wide as the other rows, and never logged.
+        ImGui::Spacing();
+        ImGui::TextUnformatted(VIRUSTOTAL_KEY_LABEL);
+        // Sized from the measured rows only, never from the space available, which is last frame's width and
+        // would feed back into the auto-resize.
+        ImGui::SetNextItemWidth(widestOtherRow);
+        ImGui::InputTextWithHint("##VirusTotalApiKey",
+                                 "Empty: Look up on VirusTotal is off",
+                                 state.virusTotalApiKey.data(),
+                                 state.virusTotalApiKey.size(),
+                                 ImGuiInputTextFlags_Password);
+        if (const std::string_view typed = Detail::trimmedKey(state.virusTotalApiKey);
+            !typed.empty() && !Domain::VirusTotal::isApiKey(typed))
+        {
+            ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + widestOtherRow);
+            ImGui::TextColored(theme.scheme().textError, "Not a VirusTotal API key (64 hex digits): it won't be saved");
+            ImGui::PopTextWrapPos();
+        }
+        else
+        {
+            ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + widestOtherRow);
+            ImGui::TextColored(theme.scheme().textMuted, "%s", VIRUSTOTAL_KEY_NOTE);
+            ImGui::PopTextWrapPos();
         }
 
         // Start at sign-in (#3093, part 2), where it is offered.

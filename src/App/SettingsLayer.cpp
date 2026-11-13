@@ -20,6 +20,7 @@
 #include "Core/Layer.h"
 #include "Core/Utf8Path.h"
 #include "Domain/StartAtLogin.h"
+#include "Domain/VirusTotal.h"
 #include "Platform/HostEnvironment.h"
 #include "Platform/IStartAtLogin.h"
 #include "UI/Theme.h"
@@ -32,6 +33,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <utility>
 
@@ -487,6 +489,15 @@ void SettingsLayer::applySettings()
     {
         settings.updates.enabled = m_State.checkForUpdates;
         spdlog::info("Settings: Check for updates daily changed to {}", settings.updates.enabled);
+    }
+
+    // Look up on VirusTotal's key (#3094): saved when cleared or when it is a key; a typo is left unsaved (the field
+    // said so). The key itself is never logged.
+    if (const std::string_view typed = Detail::trimmedKey(m_State.virusTotalApiKey);
+        typed != settings.virusTotalApiKey && (typed.empty() || Domain::VirusTotal::isApiKey(typed)))
+    {
+        settings.virusTotalApiKey = std::string(typed);
+        spdlog::info("Settings: VirusTotal API key {}", typed.empty() ? "cleared" : "set");
     }
 
     // Start at sign-in (#3093 part 2): the entry is the setting. Turned on or off on its worker, only when the

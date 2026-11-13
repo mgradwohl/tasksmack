@@ -47,6 +47,7 @@
 #include "App/Panels/RunTaskHistory.h"
 #include "App/Panels/StuckProcesses.h"
 #include "App/Panels/UserGrouping.h"
+#include "App/Panels/VirusTotalLookup.h"
 #include "App/PlatformOpen.h"
 #include "App/ProcessColumnConfig.h"
 #include "App/SelectOverride.h"
@@ -67,6 +68,7 @@
 #include "Domain/ProcessSnapshot.h"
 #include "Domain/ProcessState.h"
 #include "Domain/SamplingConfig.h"
+#include "Domain/UpdateCheck.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/CurrentProcess.h"
 #include "Platform/IProcessActions.h"
@@ -81,6 +83,7 @@
 #include "UI/FrameOutline.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
+#include "version.h"
 
 // clang-format off
 #include <imgui.h>
@@ -1104,6 +1107,11 @@ void ProcessesPanel::onAttach()
     // The synthetic scenario's platform when TASKSMACK_SYNTHETIC selects one (#1413), else the
     // platform's. An injected factory (tests, #1546) replaces both, with no scenario.
     const Synthetic::Scenario* scenario = m_MakePlatform ? nullptr : Synthetic::activeScenario();
+    // Look up on VirusTotal's client (#3094): made here, unused until asked. An injected platform (tests) brings none.
+    if (!m_MakePlatform && m_LookupClient == nullptr)
+    {
+        m_LookupClient = makeLookupClient(scenario, SelectOverride::testHookActive());
+    }
     m_ProcessModel = std::make_shared<Domain::ProcessModel>(Domain::DEFERRED_PROBE);
     m_OwnPid = Platform::currentProcessId(); // A batch naming TaskSmack itself says so (#804)
     // Config-file only (not in Settings), so applied once here, before the first refresh (#1123).
@@ -3646,6 +3654,20 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
         searchRowOnline(proc);
     }
     ImGui::SetItemTooltip("Searches the web for \"%s process\". Only the name is sent, never its path or command line.", proc.name.c_str());
+    // Look up on VirusTotal (#3094): only with a key in Settings and a platform that can hash the image.
+    if (const VirusTotalLookup::Context lookup{
+            .client = m_LookupClient,
+            .apiKey = UserConfig::get().settings().virusTotalApiKey,
+            .userAgent = {},
+        };
+        VirusTotalLookup::offered(m_ActionCapabilities, lookup))
+    {
+        if (ImGui::MenuItem(ICON_FA_SHIELD_HALVED " Look up on VirusTotal###LookUpVirusTotal", nullptr, false, actionsIdle))
+        {
+            lookUpRowOnVirusTotal(proc);
+        }
+        ImGui::SetItemTooltip("%s", VirusTotalLookup::TOOLTIP);
+    }
     // "Kill..." for one process, "Kill 5 processes..." for a selection; the "###" part keeps the item's
     // ID the same whichever it says.
     const auto actionItem = [batchCount, actionsIdle](Detail::ProcessAction action, const char* icon, const char* shortcut)
@@ -4048,6 +4070,23 @@ void ProcessesPanel::searchRowOnline(const Domain::ProcessSnapshot& proc)
                      : Platform::ProcessActionResult::error("no web browser could be started");
         },
         [name = proc.name](const Platform::ProcessActionResult& result) { return Detail::formatSearchOnlineResult(name, result); },
+        std::nullopt);
+}
+
+void ProcessesPanel::lookUpRowOnVirusTotal(const Domain::ProcessSnapshot& proc)
+{
+    // This row's identity: a reused PID's image is never hashed (#973).
+    const Platform::ProcessTarget target{.pid = proc.pid, .startTimeTicks = proc.startTimeTicks};
+    VirusTotalLookup::Context lookup{
+        .client = m_LookupClient,
+        .apiKey = UserConfig::get().settings().virusTotalApiKey,
+        .userAgent = Domain::UpdateCheck::userAgent(tasksmack::Version::FULL),
+    };
+    runRowAction(
+        std::format("Looking up {} on VirusTotal...", proc.name),
+        [actions = m_ProcessActions.get(), lookup = std::move(lookup), target, name = proc.name](const std::stop_token& stop)
+        { return VirusTotalLookup::lookUp(*actions, lookup, target, name, stop); },
+        [](const Platform::ProcessActionResult& result) { return VirusTotalLookup::format(result); },
         std::nullopt);
 }
 
