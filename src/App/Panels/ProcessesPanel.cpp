@@ -43,6 +43,7 @@
 #include "App/Panels/ProcessTreeIndent.h"
 #include "App/Panels/ProcessTypeColor.h"
 #include "App/Panels/ProcessWaitChainDialog.h"
+#include "App/Panels/RestartAsAdministratorButton.h"
 #include "App/Panels/RunTaskDialog.h"
 #include "App/Panels/RunTaskHistory.h"
 #include "App/Panels/SessionActionControl.h"
@@ -1876,7 +1877,11 @@ void ProcessesPanel::renderContent()
     const bool offerSessionRetry = showSessionResult && sessionActions->offersAuthenticateAndRetry();
     // "Authenticate and retry" beside a refused action's line (#2308) takes its room from the status.
     const bool offerRetry = offerSessionRetry || (!sessionBusy && !showSessionResult && offersAuthenticateAndRetry());
-    const float retryButtonWidth = offerRetry ? ImGui::CalcTextSize(AuthorizeWording::RETRY_LABEL).x + (style.FramePadding.x * 2.0F) : 0.0F;
+    // Or, with no helper to retry it, "Restart as administrator..." in its place (#3658).
+    const bool offerRestart = !offerRetry && !sessionBusy && !showSessionResult && offersRestartAsAdministrator();
+    const char* const retryLabel = offerRetry ? AuthorizeWording::RETRY_LABEL : RestartAsAdministrator::LABEL;
+    const bool offerRetryButton = offerRetry || offerRestart;
+    const float retryButtonWidth = offerRetryButton ? ImGui::CalcTextSize(retryLabel).x + (style.FramePadding.x * 2.0F) : 0.0F;
     // Group by (#3068): "Group: None", sized for its widest label so the row doesn't shift.
     const float groupComboWidth = ImGui::CalcTextSize("Group: Container").x + ImGui::GetFrameHeight() + (style.FramePadding.x * 2.0F);
     // Run new task (#3065), an icon button before Columns, where the platform can start programs.
@@ -1888,7 +1893,7 @@ void ProcessesPanel::renderContent()
     const float controlsWidth = groupComboWidth + style.ItemSpacing.x + (offerRunTask ? runTaskButtonWidth + style.ItemSpacing.x : 0.0F) +
                                 (offerFindHandles ? findButtonWidth + style.ItemSpacing.x : 0.0F) + columnsButtonWidth +
                                 style.ItemSpacing.x + listSegmentWidth + treeSegmentWidth + foldButtonsWidth +
-                                (offerRetry ? retryButtonWidth + style.ItemSpacing.x : 0.0F);
+                                (offerRetryButton ? retryButtonWidth + style.ItemSpacing.x : 0.0F);
 
     // An action's result takes no more room than the count text it stands in for, ellipsized with
     // the full text as its tooltip, so a long platform error cannot push the controls off-screen.
@@ -1981,6 +1986,11 @@ void ProcessesPanel::renderContent()
             }
         }
         ImGui::SetItemTooltip("%s", AuthorizeWording::RETRY_TOOLTIP);
+    }
+    else if (offerRestart)
+    {
+        ImGui::SameLine();
+        static_cast<void>(RestartAsAdministrator::drawButton()); // opens the notice's Restart as administrator... (#3658)
     }
 
     // Group by (#3068): processes under group header rows with Σ totals.
@@ -4191,9 +4201,16 @@ void ProcessesPanel::searchRowOnline(const Domain::ProcessSnapshot& proc)
         std::format("Searching online for {}...", proc.name),
         [url = Detail::searchOnlineUrl(proc.name)]
         {
-            return PlatformOpen::openWithSystemHandler(std::string_view{url})
-                     ? Platform::ProcessActionResult::ok()
-                     : Platform::ProcessActionResult::error("no web browser could be started");
+            switch (PlatformOpen::open(std::string_view{url}))
+            {
+            case PlatformOpen::OpenResult::Opened:
+                return Platform::ProcessActionResult::ok();
+            case PlatformOpen::OpenResult::Withheld: // an elevated TaskSmack never starts the browser elevated (#3658)
+                return Platform::ProcessActionResult::error(PlatformOpen::withheldNotice(url));
+            case PlatformOpen::OpenResult::Failed:
+                break;
+            }
+            return Platform::ProcessActionResult::error("no web browser could be started");
         },
         [name = proc.name](const Platform::ProcessActionResult& result) { return Detail::formatSearchOnlineResult(name, result); },
         std::nullopt);
@@ -4410,6 +4427,7 @@ void ProcessesPanel::renderBatchIoPriorityDialog()
 void ProcessesPanel::showBatchOutcome(ProcessBatch::BatchRunOutcome outcome)
 {
     m_RowRetry.reset();
+    m_RowOfferRestart = false;
     m_RowActionResult = std::move(outcome.message);
     m_RowActionResultSeconds = ROW_ACTION_RESULT_SECONDS;
     if (outcome.anySucceeded)
@@ -4541,11 +4559,17 @@ void ProcessesPanel::runRowAction(std::string pending,
         [this, format = std::move(format), retry = std::move(retry)](const Platform::ProcessActionResult& result)
         {
             showRowActionResult(format(result), result.success);
-            if (result.permissionDenied && retry.has_value() && m_ProcessActions &&
-                m_ProcessActions->actionCapabilities().canAuthorizeInteractively)
+            const bool helperCanRedo = m_ProcessActions && m_ProcessActions->actionCapabilities().canAuthorizeInteractively;
+            if (result.permissionDenied && retry.has_value() && helperCanRedo)
             {
                 m_RowRetry = RowRetry{.action = *retry, .format = format};
                 m_RowActionResultSeconds = Detail::AUTHORIZE_RESULT_SECONDS; // time to read it and decide
+            }
+            // No helper to retry it (#3658): Restart as administrator... instead, where TaskSmack can restart.
+            else if (RestartAsAdministrator::offersRestart(result.permissionDenied, helperCanRedo, RestartAsAdministrator::offered()))
+            {
+                m_RowOfferRestart = true;
+                m_RowActionResultSeconds = Detail::AUTHORIZE_RESULT_SECONDS;
             }
         }));
 }
@@ -4572,6 +4596,7 @@ void ProcessesPanel::retryRowActionAuthorized()
 void ProcessesPanel::showRowActionResult(Detail::ActionResultMessage message, bool succeeded)
 {
     m_RowRetry.reset();
+    m_RowOfferRestart = false;
     m_RowActionResult = std::move(message);
     m_RowActionResultSeconds = ROW_ACTION_RESULT_SECONDS;
     if (succeeded)

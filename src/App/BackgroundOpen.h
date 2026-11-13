@@ -12,9 +12,13 @@
 // file that isn't there yet. Its failure is the platform opener's warning in the log, as before; a job
 // that throws, or one no thread could be started for, is logged here.
 //
+// An elevated TaskSmack opens through the signed-in user's shell, and never elevated (PlatformOpen::open(),
+// #3658). When that shell can't, the open is Withheld: withheld() then names what wasn't opened, for the
+// view to show the user (WithheldOpenNotice.h), until the next start().
+//
 //     BackgroundOpen m_Open;
 //     ImGui::BeginDisabled(m_Open.busy());  // each frame, after m_Open.poll()
-//     if (clicked) static_cast<void>(m_Open.start(BackgroundOpen::openUtf8(url)));
+//     if (clicked) static_cast<void>(m_Open.start(BackgroundOpen::openUtf8(url), url));
 //
 // Free of ImGui; tested in tests/App/test_BackgroundOpen.cpp.
 
@@ -37,42 +41,47 @@ namespace App
 class BackgroundOpen
 {
   public:
-    /// An open, and anything it needs first; runs on the worker. True when the handler was started.
-    using Job = std::function<bool()>;
+    using OpenResult = PlatformOpen::OpenResult;
+    /// An open, and anything it needs first; runs on the worker.
+    using Job = std::function<OpenResult()>;
 
     /// @param threadName The worker's name (Platform/ThreadName.h); must outlive this.
     explicit BackgroundOpen(std::string_view threadName = Platform::SYSTEM_OPEN_THREAD_NAME) noexcept
         : m_Task(threadName, &failedOpen, OPEN_FAILURE)
     {}
 
-    /// Opens @p target (a URL or other UTF-8 string) with the system handler (PlatformOpen).
+    /// Opens @p target (a URL or other UTF-8 string) with the system handler (PlatformOpen::open()).
     [[nodiscard]] static Job openUtf8(std::string target)
     {
         return [target = std::move(target)]
         {
-            return PlatformOpen::openWithSystemHandler(std::string_view{target});
+            return PlatformOpen::open(std::string_view{target});
         };
     }
 
-    /// Opens @p path with the system handler (PlatformOpen), in its native form.
+    /// Opens @p path with the system handler (PlatformOpen::open()), in its native form.
     [[nodiscard]] static Job openPath(std::filesystem::path path)
     {
         return [path = std::move(path)]
         {
-            return PlatformOpen::openWithSystemHandler(path);
+            return PlatformOpen::open(path);
         };
     }
 
     /// Starts @p job on the worker, after taking in an open that has finished. It owns (copies, or
     /// shares) everything it uses. Refused while another still runs: the second click of a double click.
+    /// @param shown What the job opens, as the user would type it (a URL, or a path in UTF-8): withheld()
+    ///              names it when the open is Withheld. A new start clears the last one's.
     /// @return true when it started; false when one still runs, or no thread could be started (logged).
-    [[nodiscard]] bool start(Job job)
+    [[nodiscard]] bool start(Job job, std::string shown = {})
     {
         static_cast<void>(poll());
         if (m_Task.busy())
         {
             return false;
         }
+        m_Withheld.clear();
+        m_Shown = std::move(shown);
         // A failure to start is the Failed result, which failedOpen() has logged.
         return !m_Task.start(std::move(job)).has_value();
     }
@@ -83,11 +92,29 @@ class BackgroundOpen
         return m_Task.busy();
     }
 
-    /// The finished open's result (true: the handler was started), once; nullopt while none has
-    /// finished. With @p wait, waits for one still running first. Call it each frame, so busy() ends.
-    std::optional<bool> poll(bool wait = false)
+    /// The finished open's result, once; nullopt while none has finished. With @p wait, waits for one
+    /// still running first. Call it each frame, so busy() ends and withheld() is set.
+    std::optional<OpenResult> poll(bool wait = false)
     {
-        return m_Task.poll(wait);
+        std::optional<OpenResult> result = m_Task.poll(wait);
+        if (result == OpenResult::Withheld)
+        {
+            m_Withheld = m_Shown;
+        }
+        return result;
+    }
+
+    /// What the last open, Withheld, didn't open (#3658): its start()'s @p shown, for the view to show with
+    /// PlatformOpen::withheldNotice(). Empty when it wasn't withheld, until the next start() or clearWithheld().
+    [[nodiscard]] const std::string& withheld() const noexcept
+    {
+        return m_Withheld;
+    }
+
+    /// Forgets withheld(): the view the notice was shown in has closed.
+    void clearWithheld() noexcept
+    {
+        m_Withheld.clear();
     }
 
     /// Waits for an open still running, leaving its result for poll() (a layer's teardown).
@@ -101,14 +128,16 @@ class BackgroundOpen
     static constexpr std::string_view OPEN_FAILURE = "unknown error";
 
     /// A job that threw, or that no thread could be started for: logged, as the opener logs its own.
-    [[nodiscard]] static bool failedOpen(std::string detail)
+    [[nodiscard]] static OpenResult failedOpen(std::string detail)
     {
         spdlog::warn("Couldn't open with the system handler: {}", detail);
-        return false;
+        return OpenResult::Failed;
     }
 
     // Destroying this waits for an open still running; its job owns all it uses.
-    BackgroundTask<bool> m_Task;
+    BackgroundTask<OpenResult> m_Task;
+    std::string m_Shown;    ///< The open in flight's start() @p shown
+    std::string m_Withheld; ///< withheld()
 };
 
 } // namespace App

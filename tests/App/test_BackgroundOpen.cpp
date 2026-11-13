@@ -2,12 +2,13 @@
 /// @brief App::BackgroundOpen (#3155), the worker About's and Help's links, Settings' buttons and the
 /// dump result's "Open folder" open with the system handler on, never the UI thread: a job runs on its
 /// worker and start() returns at once (pending), its result is taken in once by poll() (completion),
-/// a job that fails or throws is a false result (error), and a second start() while one runs is
-/// refused (the double click). Every job here is a fake: no browser or file manager is started. Also
-/// Platform::SingleThreadedApartment, the STA ShellExecuteW is called in on that worker.
+/// a job that fails or throws is a Failed result (error), a Withheld one (an elevated TaskSmack's, #3658)
+/// names what it didn't open, and a second start() while one runs is refused (the double click). Every job here is a fake: no browser or
+/// file manager is started. Also Platform::SingleThreadedApartment, the STA ShellExecuteW is called in on that worker.
 
 #include "App/BackgroundOpen.h"
 #include "Platform/ThreadApartment.h"
+#include "Platform/ThreadName.h"
 
 #include <gtest/gtest.h>
 
@@ -29,6 +30,7 @@
 #include <future>
 #include <optional>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <thread>
 
@@ -38,6 +40,7 @@ namespace
 {
 
 constexpr std::string_view THREAD_NAME = "ts-test-open";
+using OpenResult = BackgroundOpen::OpenResult;
 
 /// A job that waits until the test releases it, as a slow shell extension would, and counts its runs.
 class HeldJob
@@ -56,8 +59,8 @@ class HeldJob
     HeldJob(HeldJob&&) = delete;
     HeldJob& operator=(HeldJob&&) = delete;
 
-    /// The job: true (the handler started) once released; runs on the open's worker.
-    [[nodiscard]] BackgroundOpen::Job job(bool result = true)
+    /// The job: @p result (Opened: the handler started) once released; runs on the open's worker.
+    [[nodiscard]] BackgroundOpen::Job job(OpenResult result = OpenResult::Opened)
     {
         return [this, result]
         {
@@ -108,9 +111,9 @@ TEST(BackgroundOpenTest, AJobRunsOnTheWorkerAndItsResultIsTakenInOnce)
 
     // Completion: its result, once, and the slot is free.
     held.release();
-    const std::optional<bool> result = open.poll(/*wait=*/true);
+    const std::optional<OpenResult> result = open.poll(/*wait=*/true);
     ASSERT_TRUE(result.has_value());
-    EXPECT_TRUE(result.value_or(false));
+    EXPECT_EQ(result, OpenResult::Opened);
     EXPECT_FALSE(open.busy());
     EXPECT_FALSE(open.poll(true).has_value()) << "taken in once";
     EXPECT_EQ(held.runs(), 1);
@@ -134,28 +137,51 @@ TEST(BackgroundOpenTest, ASecondStartWhileOneRunsIsRefused)
     EXPECT_EQ(held.runs(), 2);
 }
 
-TEST(BackgroundOpenTest, AFailedOpenIsAFalseResult)
+TEST(BackgroundOpenTest, AFailedOpenIsAFailedResult)
 {
     BackgroundOpen open(THREAD_NAME);
-    ASSERT_TRUE(open.start([] { return false; })); // the opener found no handler, and logged why
-    const std::optional<bool> result = open.poll(true);
-    ASSERT_TRUE(result.has_value());
-    EXPECT_FALSE(result.value_or(true));
+    ASSERT_TRUE(open.start([] { return OpenResult::Failed; }, "https://example.invalid/")); // no handler; the opener logged why
+    const std::optional<OpenResult> result = open.poll(true);
+    EXPECT_EQ(result, OpenResult::Failed);
+    EXPECT_TRUE(open.withheld().empty()) << "a failure isn't a withheld open";
 }
 
-TEST(BackgroundOpenTest, AJobThatThrowsIsAFalseResultNotAnException)
+TEST(BackgroundOpenTest, AJobThatThrowsIsAFailedResultNotAnException)
 {
     BackgroundOpen open(THREAD_NAME);
-    ASSERT_TRUE(open.start([]() -> bool { throw std::runtime_error("the shell extension broke"); }));
-    std::optional<bool> result;
+    ASSERT_TRUE(open.start([]() -> OpenResult { throw std::runtime_error("the shell extension broke"); }));
+    std::optional<OpenResult> result;
     EXPECT_NO_THROW(result = open.poll(true));
-    ASSERT_TRUE(result.has_value());
-    EXPECT_FALSE(result.value_or(true));
+    EXPECT_EQ(result, OpenResult::Failed);
 
-    ASSERT_TRUE(open.start([]() -> bool { throw 42; })); // NOLINT(hicpp-exception-baseclass) - not a std::exception, on purpose
+    ASSERT_TRUE(open.start([]() -> OpenResult { throw 42; })); // NOLINT(hicpp-exception-baseclass) - not a std::exception, on purpose
     EXPECT_NO_THROW(result = open.poll(true));
-    ASSERT_TRUE(result.has_value());
-    EXPECT_FALSE(result.value_or(true));
+    EXPECT_EQ(result, OpenResult::Failed);
+}
+
+// #3658: an elevated TaskSmack's open that Windows' shell refused names what it didn't open, once taken in,
+// until the next start() or clearWithheld().
+TEST(BackgroundOpenTest, AWithheldOpenNamesItsTargetUntilTheNextStart)
+{
+    const std::string url = "https://github.com/mgradwohl/tasksmack/issues";
+    BackgroundOpen open(THREAD_NAME);
+    ASSERT_TRUE(open.start([] { return OpenResult::Withheld; }, url));
+    open.wait();
+    EXPECT_TRUE(open.withheld().empty()) << "not before it is taken in";
+    EXPECT_EQ(open.poll(), OpenResult::Withheld);
+    EXPECT_EQ(open.withheld(), url);
+    EXPECT_FALSE(open.poll(true).has_value());
+    EXPECT_EQ(open.withheld(), url) << "kept for the view to show";
+
+    ASSERT_TRUE(open.start([] { return OpenResult::Opened; }, "C:/Users/someone/Desktop"));
+    EXPECT_TRUE(open.withheld().empty()) << "a new open clears it";
+    EXPECT_EQ(open.poll(true), OpenResult::Opened);
+    EXPECT_TRUE(open.withheld().empty());
+
+    ASSERT_TRUE(open.start([] { return OpenResult::Withheld; }, url));
+    EXPECT_EQ(open.poll(true), OpenResult::Withheld);
+    open.clearWithheld();
+    EXPECT_TRUE(open.withheld().empty());
 }
 
 TEST(BackgroundOpenTest, WaitLeavesTheResultAndTheDestructorWaitsForTheJob)
@@ -168,12 +194,12 @@ TEST(BackgroundOpenTest, WaitLeavesTheResultAndTheDestructorWaitsForTheJob)
             {
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
                 ran.store(true);
-                return true;
+                return OpenResult::Opened;
             }));
         open.wait();
         EXPECT_TRUE(ran.load());
         EXPECT_TRUE(open.busy()) << "wait() leaves the result for poll()";
-        EXPECT_TRUE(open.start([] { return true; })) << "start() takes the finished one in first";
+        EXPECT_TRUE(open.start([] { return OpenResult::Opened; })) << "start() takes the finished one in first";
     }
     ran.store(false);
     {
@@ -183,7 +209,7 @@ TEST(BackgroundOpenTest, WaitLeavesTheResultAndTheDestructorWaitsForTheJob)
             {
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
                 ran.store(true);
-                return true;
+                return OpenResult::Opened;
             }));
     } // the destructor waits: the job never outlives what it uses
     EXPECT_TRUE(ran.load());

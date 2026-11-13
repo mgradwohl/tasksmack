@@ -452,6 +452,13 @@ class ProcessesPanel : public Panel
                (!Detail::changesPriority(m_RowRetry->action.kind) || !priorityHeldElsewhere(m_RowRetry->action.target));
     }
 
+    /// Whether the toolbar offers "Restart as administrator..." after a refused row action (#3658): refused for
+    /// want of permission, with no helper to retry it, where TaskSmack can restart elevated.
+    [[nodiscard]] bool offersRestartAsAdministrator() const noexcept
+    {
+        return m_RowOfferRestart && m_RowActionResultSeconds > 0.0F && !rowActionRunning();
+    }
+
     /// Presses the toolbar's "Authenticate and retry", for tests.
     void retryRowActionAuthorizedForTesting()
     {
@@ -688,6 +695,7 @@ class ProcessesPanel : public Panel
         RowResultFormat format;
     };
     std::optional<RowRetry> m_RowRetry;
+    bool m_RowOfferRestart = false; // offersRestartAsAdministrator(): the last row action was refused, with no helper (#3658)
     Detail::ActionResultMessage m_RowActionResult; // Shown in the toolbar for a few seconds
     float m_RowActionResultSeconds = 0.0F;
     // The process the row menu was opened on, copied on the same right-press that selected it: the

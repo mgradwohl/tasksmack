@@ -5,6 +5,7 @@
 #include "App/TaskManagerReplacementController.h"
 #include "App/TaskManagerReplacementRows.h"
 #include "App/UserConfig.h"
+#include "App/WithheldOpenNotice.h"
 #include "Domain/StartAtLogin.h"
 #include "Domain/VirusTotal.h"
 #include "UI/ChromeLayout.h"
@@ -643,6 +644,7 @@ Action render(State& state)
         }
         ImGui::EndDisabled();
         ImGui::PopStyleColor();
+        WithheldOpenNotice::draw(state.withheldPath); // what an elevated TaskSmack didn't open (#3658)
 
         // The notice TaskSmack shows at startup when it runs without the rights to read every
         // process. Its "Don't show again" clears this; here it can be turned back on (#1273).

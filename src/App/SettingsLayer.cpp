@@ -53,7 +53,7 @@ SettingsLayer::SettingsLayer()
 {}
 
 SettingsLayer::SettingsLayer(std::function<void(Core::Event&)> raiseEvent,
-                             std::function<bool(const std::filesystem::path&)> openPath,
+                             std::function<PlatformOpen::OpenResult(const std::filesystem::path&)> openPath,
                              std::function<std::filesystem::path()> userConfigDir)
     : Core::Layer("SettingsLayer"),
       m_RaiseEvent(std::move(raiseEvent)),
@@ -73,19 +73,22 @@ void SettingsLayer::raiseEvent(Core::Event& event) const
 
 void SettingsLayer::startOpen(std::function<void()> prepare, std::filesystem::path path)
 {
-    // ShellExecuteW or xdg-open, and what must be on disk first, on the worker: never on the UI thread
-    // (#3155). Its result is ignored here, as before: the opener logs a failure. The job holds a copy of
-    // the test seam (empty outside the tests) and picks the opener itself.
+    // ShellExecuteW, Explorer's shell or xdg-open, and what must be on disk first, on the worker: never on the
+    // UI thread (#3155). A failure is the opener's to log; a Withheld open (an elevated TaskSmack, #3658) is
+    // named in the dialog. The job holds a copy of the test seam (empty outside the tests) and picks the
+    // opener itself.
     // The analyzer reports the job's capture list (the std::functions moved into it) as a leak; the
     // job, which BackgroundTask owns, owns them. A block, not NOLINTNEXTLINE: the report's line is the
     // capture list's, inside the call.
     // NOLINTBEGIN(clang-analyzer-cplusplus.NewDeleteLeaks)
+    std::string shown = Core::pathToUtf8(path);
     static_cast<void>(m_Open.start(
         [prepare = std::move(prepare), path = std::move(path), seam = m_OpenPath]
         {
             prepare();
-            return seam ? seam(path) : App::PlatformOpen::openWithSystemHandler(path);
-        }));
+            return seam ? seam(path) : App::PlatformOpen::open(path);
+        },
+        std::move(shown)));
     // NOLINTEND(clang-analyzer-cplusplus.NewDeleteLeaks)
 }
 
@@ -239,9 +242,14 @@ void SettingsLayer::onHiddenUpdate()
 
 void SettingsLayer::onRender()
 {
-    // A finished open frees the buttons; a failure is in the log, as the opener writes it.
+    // A finished open frees the buttons; a failure is in the log, as the opener writes it, and a file or
+    // folder an elevated TaskSmack didn't open is named under them (#3658).
     static_cast<void>(m_Open.poll());
     m_State.openingPath = m_Open.busy();
+    if (m_State.withheldPath != m_Open.withheld())
+    {
+        m_State.withheldPath = m_Open.withheld();
+    }
     syncStartAtLogin();
     {
         UdpCountingStatus udp = udpCountingStatus(); // #3366

@@ -11,6 +11,7 @@
 #include "ProcessDumpView.h"
 #include "ProcessSchedPolicyDialog.h"
 #include "ProcessWaitChainDialog.h"
+#include "RestartAsAdministratorButton.h"
 #include "UI/Theme.h"
 #include "UI/Widgets.h"
 #include "VirusTotalLookup.h"
@@ -425,6 +426,10 @@ void ProcessActionsView::renderResultFeedback()
             retryAuthorized();
         }
         ImGui::SetItemTooltip("%s", AuthorizeWording::RETRY_TOOLTIP);
+    }
+    else if (offersRestartAsAdministrator())
+    {
+        static_cast<void>(RestartAsAdministrator::drawButton()); // no helper here: the restart instead (#3658)
     }
     ImGui::Spacing();
 }

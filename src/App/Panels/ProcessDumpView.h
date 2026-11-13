@@ -392,8 +392,11 @@ class ProcessDumpView
     BackgroundTask<Platform::ProcessDumpResult> m_Worker{Platform::DUMP_THREAD_NAME, &DumpDetail::failedWith<Platform::ProcessDumpResult>};
     std::chrono::steady_clock::time_point m_StartedAt;
     std::optional<DumpDetail::DumpMessage> m_Result;
-    // The result's "Open folder", on a worker (#3155): ShellExecuteW or xdg-open.
+    // The result's "Open folder", on a worker (#3155): ShellExecuteW, Explorer's shell or xdg-open.
     BackgroundOpen m_OpenFolder;
+    // "Open folder" was pressed: the result closes once the open is done, or stays to name the folder when
+    // an elevated TaskSmack's open is Withheld (#3658).
+    bool m_DismissAfterOpen = false;
 
     bool m_ShowConfirm = false;
     bool m_DismissConfirm = false;    // the confirm must close unconfirmed at the next render()

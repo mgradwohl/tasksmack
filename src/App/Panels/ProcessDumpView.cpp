@@ -3,6 +3,7 @@
 #include "App/BackgroundOpen.h"
 #include "App/NativeWindow.h"
 #include "App/UserConfig.h"
+#include "App/WithheldOpenNotice.h"
 #include "Core/AnimationRequest.h"
 #include "Core/Application.h"
 #include "Core/ConfigDirOverride.h"
@@ -301,6 +302,7 @@ ProcessDumpView& ProcessDumpView::operator=(ProcessDumpView&& other) noexcept
         m_CancelRequested = other.m_CancelRequested;
         m_Result = std::move(other.m_Result);
         m_OpenFolder = std::move(other.m_OpenFolder);
+        m_DismissAfterOpen = other.m_DismissAfterOpen;
     }
     return *this;
 }
@@ -580,6 +582,7 @@ bool ProcessDumpView::takeFinished(bool wait)
     else
     {
         m_Result = DumpDetail::resultMessage(m_ProcessName, m_Target.pid, result, m_DumpsFromSnapshot);
+        m_OpenFolder.clearWithheld(); // a notice was for the last dump's folder
     }
     m_CancelRequested = false;
     return true;
@@ -611,7 +614,13 @@ void ProcessDumpView::render(Platform::IProcessActions* actions, const Platform:
 {
     static_cast<void>(takeFolderChoice(actions));
     static_cast<void>(takeConfirmCheck(actions));
-    static_cast<void>(m_OpenFolder.poll()); // a failure is in the log, as the opener writes it
+    // A failure is in the log, as the opener writes it. The result pressed Open folder closes now, unless an
+    // elevated TaskSmack withheld the open: then it stays, naming the folder for the user to open (#3658).
+    if (const auto opened = m_OpenFolder.poll();
+        opened.has_value() && std::exchange(m_DismissAfterOpen, false) && *opened != BackgroundOpen::OpenResult::Withheld)
+    {
+        dismissResult();
+    }
 
     // The confirm: closed unconfirmed after a selection change, or once the selection is another
     // process, so it never starts a dump of a process other than the one it names.
@@ -742,6 +751,7 @@ void ProcessDumpView::renderProgressDialog()
         {
             ImGui::TextColored(scheme.textMuted, "%s", result.note.c_str());
         }
+        WithheldOpenNotice::draw(m_OpenFolder.withheld()); // the folder an elevated TaskSmack didn't open (#3658)
     }
     ImGui::PopTextWrapPos();
 
@@ -771,10 +781,15 @@ void ProcessDumpView::renderProgressDialog()
     if (pressed == UI::Widgets::DialogFooterAction::Primary && result.ok)
     {
         // ShellExecuteW or xdg-open, on the worker: never on the UI thread (#3155).
-        static_cast<void>(m_OpenFolder.start(BackgroundOpen::openPath(result.file.parent_path())));
+        // The result stays, its Open folder disabled, until the open is done (render() takes it in): closed
+        // then, or still up to name the folder an elevated TaskSmack didn't open (#3658).
+        m_DismissAfterOpen =
+            m_OpenFolder.start(BackgroundOpen::openPath(result.file.parent_path()), Core::pathToUtf8(result.file.parent_path()));
     }
-    if (pressed == UI::Widgets::DialogFooterAction::Primary || pressed == UI::Widgets::DialogFooterAction::Secondary)
+    if (pressed == UI::Widgets::DialogFooterAction::Secondary ||
+        (pressed == UI::Widgets::DialogFooterAction::Primary && !result.ok)) // Close
     {
+        m_DismissAfterOpen = false;
         dismissResult();
         ImGui::CloseCurrentPopup();
     }

@@ -1,5 +1,6 @@
 #include "StatusBarView.h"
 
+#include "App/PlatformOpen.h"
 #include "App/ShellMetrics.h"
 #include "App/StatusBarText.h"
 #include "UI/Format.h"
@@ -52,7 +53,6 @@ Action render(const Input& input)
 
     if (ImGui::Begin("##StatusBar", nullptr, windowFlags))
     {
-        // Show a persistent lock icon when running without elevated privileges
         // Live, not a startup copy: a probe can withdraw a capability after the first sample (#1254).
         // ProcessesPanel keeps it with its cached snapshot generation, so reading it takes no lock.
         if (input.access.has_value())
@@ -72,15 +72,6 @@ Action render(const Input& input)
                                   standard ? "Standard: some details of other users' processes, or actions on them, are unavailable. "
                                              "Click for Administrator"
                                            : "Administrator: nothing is limited for this session");
-            }
-            ImGui::SameLine();
-        }
-        else if (input.reducedPrivileges)
-        {
-            ImGui::TextColored(theme.scheme().textWarning, ICON_FA_LOCK);
-            if (ImGui::IsItemHovered())
-            {
-                ImGui::SetTooltip("Limited: some details of other users' processes, or actions on them, are unavailable");
             }
             ImGui::SameLine();
         }
@@ -210,7 +201,15 @@ Action render(const Input& input)
             }
             if (ImGui::IsItemHovered())
             {
-                ImGui::SetTooltip("Open the release page on GitHub. Nothing is downloaded or installed.");
+                if (input.updateWithheld.empty())
+                {
+                    ImGui::SetTooltip("Open the release page on GitHub. Nothing is downloaded or installed.");
+                }
+                else
+                {
+                    const std::string withheld = PlatformOpen::withheldNotice(input.updateWithheld);
+                    ImGui::SetTooltip("%s\nClick to copy the link.", withheld.c_str());
+                }
             }
             ImGui::SameLine();
             if (ImGui::SmallButton(DISMISS_UPDATE_LABEL))

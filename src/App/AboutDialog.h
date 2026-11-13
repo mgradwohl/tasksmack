@@ -27,9 +27,12 @@ inline constexpr const char* POPUP_ID = "About TaskSmack";
 /// @param icon           The application icon; an invalid texture leaves its space empty.
 /// @param linksBusy      An open the caller started for a link is still running (#3155): the links are
 ///                       drawn disabled, so a second click opens nothing more until it is done.
+/// @param withheld       What an elevated TaskSmack didn't open (BackgroundOpen::withheld(), #3658): the
+///                       dialog says so and names it, for the user to open; empty for nothing.
 /// @return The URL of the link the user activated this frame, for the caller to open with the system
 ///         handler; empty when none was. Returned rather than opened here so the tests can press a
 ///         link without launching a browser.
-[[nodiscard]] std::string_view render(bool& openRequested, bool& closeRequested, const UI::Texture& icon, bool linksBusy = false);
+[[nodiscard]] std::string_view
+render(bool& openRequested, bool& closeRequested, const UI::Texture& icon, bool linksBusy = false, std::string_view withheld = {});
 
 } // namespace App::AboutDialog
