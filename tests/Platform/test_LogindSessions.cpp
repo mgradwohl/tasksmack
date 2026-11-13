@@ -11,6 +11,8 @@
 
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
+#include <optional>
 #include <stop_token>
 #include <string>
 #include <vector>
@@ -254,6 +256,81 @@ TEST_F(LogindSessionsTest, ABusWithoutLogindIsAFailedReadThatSaysSo)
     EXPECT_EQ(read.status, UserSessionsStatus::Failed);
     EXPECT_EQ(read.detail, "systemd-logind isn't running");
     EXPECT_FALSE(sessions.act("2", SessionAction::Lock, false, {}).ok);
+}
+
+// #3374: a ListSessions reply of the wrong shape is a failed read that says so, not an empty list.
+TEST_F(LogindSessionsTest, ASessionListOfTheWrongShapeIsAFailedRead)
+{
+    m_Bus.addRawMethod(LOGIN1_PATH,
+                       MANAGER,
+                       "ListSessions",
+                       [](sd_bus_message* call) -> int { return sd_bus_reply_method_return(call, "as", 2, "2", "5"); });
+    ASSERT_TRUE(m_Bus.start(LOGIN1)) << m_Bus.error();
+    const SystemdBus::LoginSessionsRead read = SystemdBus::readLoginSessions("2");
+    EXPECT_FALSE(read.ok);
+    EXPECT_EQ(read.error, "systemd-logind's session list couldn't be read");
+    EXPECT_TRUE(read.sessions.empty());
+}
+
+// #3374: a session whose object answers none of its properties (gone between the list and the reads) is still
+// listed, from the list's own fields, with every other field at its default.
+TEST_F(LogindSessionsTest, ASessionWhosePropertiesCantBeReadKeepsTheListsFields)
+{
+    m_Bus.addRawMethod(
+        LOGIN1_PATH,
+        MANAGER,
+        "ListSessions",
+        [](sd_bus_message* call) -> int
+        { return sd_bus_reply_method_return(call, "a(susso)", 1, "7", 1002U, "carol", "seat1", "/org/freedesktop/login1/session/_37"); });
+    ASSERT_TRUE(m_Bus.start(LOGIN1)) << m_Bus.error();
+    const SystemdBus::LoginSessionsRead read = SystemdBus::readLoginSessions("");
+    ASSERT_TRUE(read.ok) << read.error;
+    ASSERT_EQ(read.sessions.size(), 1U);
+    const UserSession& carol = read.sessions[0];
+    EXPECT_EQ(carol.id, "7");
+    EXPECT_EQ(carol.uid, 1002U);
+    EXPECT_EQ(carol.user, "carol");
+    EXPECT_EQ(carol.seat, "seat1");
+    EXPECT_EQ(carol.tty, "");
+    EXPECT_EQ(carol.state, "");
+    EXPECT_FALSE(carol.remote);
+    EXPECT_FALSE(carol.idle);
+    EXPECT_EQ(carol.idleSinceUsec, 0U);
+    EXPECT_EQ(carol.leaderPid, 0);
+    EXPECT_FALSE(carol.current) << "no current session ID: none is marked";
+}
+
+// #3374: an error from logind other than its absence is passed on with its words.
+TEST_F(LogindSessionsTest, AnUnexpectedErrorFromLogindIsPassedOn)
+{
+    m_Bus.addRawMethod(LOGIN1_PATH,
+                       MANAGER,
+                       "ListSessions",
+                       [](sd_bus_message* call) -> int
+                       { return sd_bus_reply_method_errorf(call, "org.freedesktop.DBus.Error.AccessDenied", "Not allowed"); });
+    ASSERT_TRUE(m_Bus.start(LOGIN1)) << m_Bus.error();
+    const SystemdBus::LoginSessionsRead read = SystemdBus::readLoginSessions("2");
+    EXPECT_FALSE(read.ok);
+    EXPECT_TRUE(read.error.starts_with("systemd-logind couldn't be asked: ")) << read.error;
+}
+
+// #3374: with no system bus at all, the read says so rather than that logind is away.
+TEST(LogindSessionsNoBusTest, WithoutASystemBusTheReadSaysSo)
+{
+    const char* saved = std::getenv("DBUS_SYSTEM_BUS_ADDRESS"); // NOLINT(concurrency-mt-unsafe) - single-threaded test
+    const std::optional<std::string> savedAddress = saved != nullptr ? std::optional<std::string>(saved) : std::nullopt;
+    ASSERT_EQ(setenv("DBUS_SYSTEM_BUS_ADDRESS", "unix:path=/nonexistent/tasksmack-test-bus", 1), 0); // NOLINT(concurrency-mt-unsafe)
+    const SystemdBus::LoginSessionsRead read = SystemdBus::readLoginSessions("2");
+    if (savedAddress.has_value())
+    {
+        setenv("DBUS_SYSTEM_BUS_ADDRESS", savedAddress->c_str(), 1); // NOLINT(concurrency-mt-unsafe)
+    }
+    else
+    {
+        unsetenv("DBUS_SYSTEM_BUS_ADDRESS"); // NOLINT(concurrency-mt-unsafe)
+    }
+    EXPECT_FALSE(read.ok);
+    EXPECT_TRUE(read.error.starts_with("The system bus couldn't be reached")) << read.error;
 }
 
 } // namespace
