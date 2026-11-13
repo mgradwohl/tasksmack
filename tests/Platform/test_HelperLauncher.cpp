@@ -33,6 +33,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <stop_token>
 #include <string>
 #include <string_view>
@@ -52,6 +53,7 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <sddl.h>
+#include <objbase.h>
 // clang-format on
 
 namespace Platform::Windows
@@ -307,6 +309,77 @@ TEST(HelperLauncherTest, WithoutItsOwnFullPathNothingIsStarted)
     EXPECT_EQ(fake.calls, 0) << "never a helper found relative to the current directory";
 }
 
+// #3676: a pipe name the helper would read back differently raises no prompt for a helper that couldn't serve it.
+TEST(HelperLauncherTest, AParameterTheHelperWouldMisreadStartsNothing)
+{
+    const FakeShell& fake = resetFakeShell();
+    const auto helper = HelperLauncher::launch(L"\\\\.\\pipe\\TaskSmack.Broker.0123456789abcdef0123456789abcde f", {}, fakes());
+    ASSERT_FALSE(helper.has_value());
+    EXPECT_TRUE(helper.error().contains("wouldn't read its command line as meant")) << helper.error();
+    EXPECT_EQ(fake.calls, 0);
+}
+
+TEST(HelperLauncherTest, EachLaunchErrorIsSaidInWords)
+{
+    EXPECT_EQ(HelperLauncher::launchError(ERROR_CANCELLED), HelperLauncher::PROMPT_DISMISSED);
+    EXPECT_EQ(HelperLauncher::launchError(ERROR_FILE_NOT_FOUND), HelperLauncher::HELPER_MISSING);
+    EXPECT_EQ(HelperLauncher::launchError(ERROR_PATH_NOT_FOUND), HelperLauncher::HELPER_MISSING);
+    for (const DWORD error : {DWORD{ERROR_ACCESS_DENIED}, DWORD{ERROR_NO_ASSOCIATION}, DWORD{ERROR_ELEVATION_REQUIRED}})
+    {
+        EXPECT_EQ(HelperLauncher::launchError(error),
+                  "couldn't start TaskSmackHelper.exe: " + std::system_category().message(static_cast<int>(error)));
+    }
+}
+
+/// ShellExecuteExW through HelperLauncher's default call, opening a file that isn't there in a folder that is, with
+/// no UI: nothing is started and nothing is shown. The answer and the error it left.
+[[nodiscard]] std::pair<BOOL, DWORD> openMissingFile(const std::wstring& path)
+{
+    SHELLEXECUTEINFOW info{};
+    info.cbSize = sizeof(info);
+    info.fMask = SEE_MASK_NOASYNC | SEE_MASK_FLAG_NO_UI;
+    info.lpVerb = L"open";
+    info.lpFile = path.c_str();
+    info.nShow = SW_HIDE;
+    SetLastError(ERROR_SUCCESS);
+    const BOOL started = HelperLauncher::shellExecuteWithCom(&info);
+    return {started, GetLastError()};
+}
+
+// #3676: the default call initialises COM for ShellExecuteExW on a thread without it, leaves a thread's own COM as it
+// is, and hands back the shell's error either way, which launchError() then reads.
+TEST(HelperLauncherTest, TheShellCallKeepsTheShellsErrorWhateverTheThreadsCom)
+{
+    std::error_code error;
+    const std::wstring missing =
+        (std::filesystem::temp_directory_path(error) / std::format(L"TaskSmackHelper-3676-{}-missing.exe", GetCurrentProcessId()))
+            .wstring();
+    ASSERT_FALSE(std::filesystem::exists(missing, error));
+    std::pair<BOOL, DWORD> withoutCom{TRUE, ERROR_SUCCESS};
+    std::pair<BOOL, DWORD> withOwnCom{TRUE, ERROR_SUCCESS};
+    HRESULT ownCom = E_FAIL;
+    std::thread([&withoutCom, &missing] { withoutCom = openMissingFile(missing); }).join();
+    std::thread(
+        [&withOwnCom, &ownCom, &missing]
+        {
+            // The multithreaded apartment: the call's own apartment-threaded initialisation fails, and isn't undone.
+            ownCom = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+            withOwnCom = openMissingFile(missing);
+            if (SUCCEEDED(ownCom))
+            {
+                CoUninitialize();
+            }
+        })
+        .join();
+    ASSERT_TRUE(SUCCEEDED(ownCom)) << ownCom;
+    for (const auto& [started, lastError] : {withoutCom, withOwnCom})
+    {
+        EXPECT_EQ(started, FALSE);
+        EXPECT_TRUE(lastError == ERROR_FILE_NOT_FOUND || lastError == ERROR_PATH_NOT_FOUND) << lastError;
+        EXPECT_EQ(HelperLauncher::launchError(lastError), HelperLauncher::HELPER_MISSING);
+    }
+}
+
 // --- The prompt's owner, and whether the helper is offered at all (#2550) -----------------------------
 
 TEST(HelperLauncherTest, ThePromptBelongsToTheWindowItIsGiven)
@@ -378,7 +451,45 @@ TEST(HelperLauncherTest, AnInstallItsUserCanChangeIsntOfferedTheHelper)
     const auto real = HelperLauncher::availability(false, taskSmackBesideTheBuiltHelper(), &BrokerHelper::checkUnchangeableByParent);
     EXPECT_FALSE(real.has_value()) << "the build folder passed as one only an administrator can change";
 }
+
+TEST(HelperLauncherTest, NoInstallCheckIsARefusal)
+{
+    const auto unchecked = HelperLauncher::availability(false, taskSmackBesideTheBuiltHelper(), nullptr);
+    ASSERT_FALSE(unchecked.has_value());
+    EXPECT_EQ(unchecked.error(), "no install check");
+}
 #endif
+
+// #3676: this process is told from its own token and the machine's UAC policy, read as the factory reads them.
+TEST(HelperLauncherTest, ThisProcessIsToldFromItsOwnTokenAndUacPolicy)
+{
+    UniqueHandle token;
+    ASSERT_NE(OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, token.put()), FALSE);
+    TOKEN_ELEVATION_TYPE type = TokenElevationTypeDefault;
+    DWORD size = 0;
+    ASSERT_NE(GetTokenInformation(token.get(), TokenElevationType, &type, sizeof(type), &size), FALSE);
+    EXPECT_EQ(HelperLauncher::readsOtherUsers(), HelperLauncher::readsOtherUsers(type));
+
+    DWORD mode = 0;
+    DWORD modeSize = sizeof(mode);
+    const LSTATUS read = RegGetValueW(HKEY_LOCAL_MACHINE,
+                                      L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System",
+                                      L"TypeOfAdminApprovalMode",
+                                      RRF_RT_REG_DWORD,
+                                      nullptr,
+                                      &mode,
+                                      &modeSize);
+    EXPECT_EQ(HelperLauncher::administratorProtection(), read == ERROR_SUCCESS && mode == HelperLauncher::ADMINISTRATOR_PROTECTION_MODE)
+        << "absent or unreadable is off";
+
+    // And whether the helper is offered: never to an elevated TaskSmack, whatever its folder.
+    const auto available = HelperLauncher::availability();
+    if (type == TokenElevationTypeFull)
+    {
+        ASSERT_FALSE(available.has_value());
+        EXPECT_TRUE(available.error().contains("already runs as an administrator")) << available.error();
+    }
+}
 
 // #2577 review, finding 1: only a split-token administrator's helper runs as TaskSmack's own user, and
 // so can read other users' processes. A standard user's (Default, unelevated) runs as the administrator
@@ -401,6 +512,12 @@ TEST(HelperLauncherTest, NoHelperBesideTaskSmackIsntOffered)
     ASSERT_FALSE(missing.has_value());
     EXPECT_EQ(missing.error(), HelperLauncher::HELPER_MISSING);
     EXPECT_FALSE(HelperLauncher::availability(false, L"TaskSmack.exe", &passingInstall).has_value()) << "not a full path";
+    // A folder by the helper's name isn't the helper (#3676).
+    std::filesystem::create_directories(folder / L"TaskSmackHelper.exe", error);
+    ASSERT_FALSE(error) << error.message();
+    const auto folderNamedSo = HelperLauncher::availability(false, (folder / L"TaskSmack.exe").wstring(), &passingInstall);
+    ASSERT_FALSE(folderNamedSo.has_value());
+    EXPECT_EQ(folderNamedSo.error(), HelperLauncher::HELPER_MISSING);
     std::filesystem::remove_all(folder, error);
 }
 // --- Through PipeBroker -------------------------------------------------------------------------------
@@ -921,6 +1038,60 @@ TEST(HelperLauncherTest, UnderAdministratorProtectionARefusalLastsWhileTaskSmack
     EXPECT_EQ(modulesReply(broker.call(Broker::ModulesRequest{.target = THEIRS}, {})).result.detail,
               HelperLauncher::ADMINISTRATOR_PROTECTION_READS_UNAVAILABLE);
     EXPECT_FALSE(broker.readsOtherUsers());
+}
+
+/// An open-files read of a batch's: Failed in @p detail's words, or Ok when they are empty.
+[[nodiscard]] OpenFilesReadResult batchResult(std::string_view detail)
+{
+    OpenFilesReadResult result;
+    result.status = detail.empty() ? OpenFilesReadStatus::Ok : OpenFilesReadStatus::Failed;
+    result.detail = detail;
+    return result;
+}
+
+// #3578, #3676: a batch's refused targets carry the explanation, each of them, and teach the broker as a single
+// read's refusal does; a target read, or failed in other words, is left as the helper answered it.
+TEST(HelperLauncherTest, ABatchWithRefusedTargetsTeachesTheBrokerAndExplainsEach)
+{
+    auto fake = std::make_unique<Mocks::FakeBroker>();
+    Mocks::FakeBroker& inner = *fake;
+    HelperLauncher::LearnedReadsBroker broker(std::move(fake));
+    const Broker::OpenFilesBatchRequest batch{.targets = {THEIRS, ownTarget(), GONE}};
+
+    inner.setAnswer([](const Broker::Request&)
+                    { return Broker::Response{Broker::OpenFilesBatchReply{.results = {batchResult({}), batchResult(GONE_DETAIL)}}}; });
+    const auto answered = broker.call(batch, {});
+    ASSERT_TRUE(answered.has_value()) << answered.error();
+    EXPECT_TRUE(broker.readsOtherUsers()) << "nothing refused: nothing learned";
+
+    inner.setAnswer(
+        [](const Broker::Request&)
+        {
+            Broker::OpenFilesBatchReply reply;
+            reply.results = {
+                batchResult(BrokerHelper::OTHER_USERS_READ_REFUSED),
+                batchResult({}),
+                batchResult(GONE_DETAIL),
+                batchResult(BrokerHelper::OTHER_USERS_READ_REFUSED),
+            };
+            return Broker::Response{std::move(reply)};
+        });
+    const auto refused = broker.call(batch, {});
+    ASSERT_TRUE(refused.has_value()) << refused.error();
+    ASSERT_TRUE(std::holds_alternative<Broker::OpenFilesBatchReply>(*refused));
+    const auto& results = std::get<Broker::OpenFilesBatchReply>(*refused).results;
+    ASSERT_EQ(results.size(), 4U);
+    EXPECT_EQ(results[0].detail, HelperLauncher::OTHER_USERS_READS_UNAVAILABLE);
+    EXPECT_EQ(results[1].status, OpenFilesReadStatus::Ok);
+    EXPECT_TRUE(results[1].detail.empty());
+    EXPECT_EQ(results[2].detail, GONE_DETAIL) << "left as the helper said it";
+    EXPECT_EQ(results[3].detail, HelperLauncher::OTHER_USERS_READS_UNAVAILABLE) << "every refused target, not just the first";
+    EXPECT_FALSE(broker.readsOtherUsers());
+}
+
+TEST(HelperLauncherTest, ALearnedReadsBrokerNeedsABroker)
+{
+    EXPECT_THROW(static_cast<void>(HelperLauncher::LearnedReadsBroker(nullptr)), std::invalid_argument);
 }
 
 // A standard user's helper never offered reads (#2550): the broker starts as told, and stays so, through
