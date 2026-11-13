@@ -11,9 +11,15 @@
 // a missing one back after an install (Domain::StartAtLogin::startupAction()). Without a sign-in entry (a
 // synthetic or test-hook run) nothing is offered, read or written.
 //
+// In a TaskSmack elevated as another account than the session's signed-in user (#3671, SessionAccountCheck)
+// the entry is that account's, so nothing is read or written: every read and change ends as
+// Domain::StartAtLogin::otherAccount(), the startup check too, which then neither takes the uninstaller's mark
+// nor writes anything back. The worker asks the check before it touches the entry.
+//
 // Free of ImGui; tested in tests/App/test_StartAtLoginSetting.cpp with a fake entry.
 
 #include "App/Panels/BackgroundTask.h"
+#include "App/SessionAccountCheck.h"
 #include "Domain/StartAtLogin.h"
 #include "Platform/IStartAtLogin.h"
 
@@ -31,8 +37,11 @@ namespace App
 class StartAtLoginSetting
 {
   public:
-    /// @param entry  The sign-in entry (Platform::makeStartAtLogin()), or null: nothing is offered.
-    explicit StartAtLoginSetting(std::shared_ptr<Platform::IStartAtLogin> entry = nullptr);
+    /// @param entry    The sign-in entry (Platform::makeStartAtLogin()), or null: nothing is offered.
+    /// @param account  Whose TaskSmack this is (#3671), asked on the worker before the entry is touched; null: the
+    ///                 signed-in user's, always.
+    explicit StartAtLoginSetting(std::shared_ptr<Platform::IStartAtLogin> entry = nullptr,
+                                 std::shared_ptr<SessionAccountCheck> account = nullptr);
 
     /// Whether the setting is offered here: there is a sign-in entry to read and write.
     [[nodiscard]] bool offered() const noexcept
@@ -90,6 +99,7 @@ class StartAtLoginSetting
     void start(std::optional<bool> enabled);
 
     std::shared_ptr<Platform::IStartAtLogin> m_Entry;
+    std::shared_ptr<SessionAccountCheck> m_Account; ///< Null: the signed-in user's TaskSmack
     Domain::StartAtLogin::Status m_Status;
     std::optional<bool> m_Pending; ///< A change asked for while busy, started once the worker is free
     bool m_Changing = false;       ///< The work running is a change, not a read

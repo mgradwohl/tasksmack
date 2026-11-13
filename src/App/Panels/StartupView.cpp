@@ -614,7 +614,10 @@ void renderStartupRow(const Platform::StartupEntry& entry,
         cellTooltip |= renderImpactCell(*extras.impact, scheme);
     }
     ImGui::TableNextColumn();
-    cellTooltip |= UI::Widgets::cellText(startupScopeLabel(entry.scope)).tooltipShown;
+    // In a TaskSmack elevated as another account, a per-user entry is that account's, and says so (#3671).
+    const std::string_view otherAccount = (extras.actions != nullptr) ? extras.actions->perUserScopeLabel() : std::string_view();
+    const bool otherAccountsEntry = entry.scope == Platform::StartupScope::User && !otherAccount.empty();
+    cellTooltip |= UI::Widgets::cellText(otherAccountsEntry ? otherAccount : startupScopeLabel(entry.scope)).tooltipShown;
     ImGui::TableNextColumn();
     cellTooltip |= UI::Widgets::cellText(startupLocationLabel(entry.location)).tooltipShown;
     ImGui::TableNextColumn();
@@ -692,6 +695,10 @@ StartupViewContent renderStartupView(const Domain::StartupPublication* publicati
 
     const auto& scheme = UI::Theme::get().scheme();
     renderFilterBar(*publication, state, scheme);
+    if (actions != nullptr)
+    {
+        actions->renderAccountNote(); // whose the per-user entries are, when they aren't the user's (#3671)
+    }
     if (actions != nullptr && actions->supported())
     {
         // Looked up by name and location only while a row is selected, so a re-sort or a new sample

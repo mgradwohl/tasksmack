@@ -738,6 +738,7 @@ set(COMMON_TEST_SOURCES
     App/test_UpdateChecker.cpp # the update check's worker, with a fake client and clock (#3093)
     App/test_VirusTotalLookup.cpp # Look up on VirusTotal's worker half, with a fake client and actions (#3094)
     App/test_StartAtLoginSetting.cpp # start at sign-in's worker, with a fake entry (#3093 part 2)
+    App/test_SessionAccountCheck.cpp # whose TaskSmack this is, read once on a worker (#3671)
     App/test_LaunchOptions.cpp # --minimized on the command line (#3093 part 2)
     App/test_StatusBarViewRender.cpp
     App/test_FontSizeChange.cpp
@@ -904,6 +905,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsPublicIp.cpp
     Platform/test_WindowsHttpsClient.cpp # what WinHTTP's client refuses before sending anything (#3093)
     Platform/test_WindowsStartAtLogin.cpp # the Run value through fakes, and a scratch HKCU key (#3093 part 2)
+    Platform/test_WindowsSessionAccount.cpp # the token's user against the session's, through fakes (#3671)
     Platform/test_WinString.cpp
 )
 set(WINDOWS_INTEGRATION_TEST_SOURCES
@@ -1192,6 +1194,8 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/UpdateChecker.cpp
     # Start at sign-in's worker (#3093 part 2), with a fake entry (test_StartAtLoginSetting.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/StartAtLoginSetting.cpp
+    # Whose TaskSmack this is (#3671), with a fake read (test_SessionAccountCheck.cpp)
+    ${CMAKE_SOURCE_DIR}/src/App/SessionAccountCheck.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/ServiceModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/BackgroundSampler.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/SamplerTimingBoard.cpp

@@ -7,6 +7,7 @@
 // no ImGui calls.
 
 #include "App/Panels/BackgroundTask.h"
+#include "App/SessionAccountCheck.h"
 #include "Platform/IStartupActions.h"
 #include "Platform/IStartupProbe.h"
 #include "Platform/ThreadName.h"
@@ -40,6 +41,18 @@ namespace StartupActionsDetail
 /// How long a finished action's result line stays up, in seconds (as on the Services tab).
 inline constexpr float RESULT_SECONDS = 8.0F;
 
+/// Why a per-user entry can't be changed in a TaskSmack elevated as another account (#3671): the menu, the bar,
+/// and an action asked for before the account was known.
+inline constexpr std::string_view OTHER_ACCOUNT_REASON =
+    "This TaskSmack runs as another account, whose entry this is, not yours. Change yours from the normal TaskSmack";
+
+/// The Scope column's text for a per-user entry in a TaskSmack elevated as @p account (#3671): "admin (administrator)".
+[[nodiscard]] std::string otherAccountScopeLabel(std::string_view account);
+
+/// The line above the table in a TaskSmack elevated as @p account (#3671): whose per-user entries these are, and
+/// where to change the user's own.
+[[nodiscard]] std::string otherAccountNote(std::string_view account);
+
 /// Why no action applies to @p entry at all: "" when one may, else the reason the menu and the bar
 /// show ("Requires administrator" for an all-users entry when not elevated; RunOnce has no state; a
 /// policy may set a packaged app's startup task).
@@ -71,7 +84,9 @@ inline constexpr float RESULT_SECONDS = 8.0F;
 class StartupActionsView
 {
   public:
-    explicit StartupActionsView(std::shared_ptr<Platform::IStartupActions> actions);
+    /// @param account  Whose TaskSmack this is (#3671): in one elevated as another account the per-user entries are
+    ///                 read-only, and an action on one is refused on the worker. Null: the signed-in user's.
+    explicit StartupActionsView(std::shared_ptr<Platform::IStartupActions> actions, std::shared_ptr<SessionAccountCheck> account = nullptr);
     /// Waits for an action still running (one registry write).
     ~StartupActionsView();
 
@@ -99,6 +114,21 @@ class StartupActionsView
         return m_Worker.busy();
     }
 
+    /// Takes in the session account check's answer (#3671), once it has one. Each frame, on the UI thread.
+    void pollAccount();
+
+    /// The Scope column's text for a per-user entry: the other account's (otherAccountScopeLabel()) in a TaskSmack
+    /// elevated as another account, else empty (the usual label).
+    [[nodiscard]] std::string_view perUserScopeLabel() const noexcept
+    {
+        return m_PerUserScopeLabel;
+    }
+
+    [[nodiscard]] const Platform::StartupActionCapabilities& capabilities() const noexcept
+    {
+        return m_Capabilities;
+    }
+
     /// Counts the result line down by @p deltaSeconds.
     void tick(float deltaSeconds) noexcept;
 
@@ -106,6 +136,8 @@ class StartupActionsView
     void renderActionBar(const Platform::StartupEntry* selected);
     /// The row's right-click menu; call right after the row's item.
     void renderContextMenu(const Platform::StartupEntry& entry);
+    /// The line saying whose the per-user entries are, in a TaskSmack elevated as another account (#3671).
+    void renderAccountNote() const;
     /// The progress or result line, when there is one.
     void renderResultLine() const;
     /// The confirm dialog while one is pending; call every frame outside the table.
@@ -129,6 +161,10 @@ class StartupActionsView
 
     std::shared_ptr<Platform::IStartupActions> m_Actions;
     Platform::StartupActionCapabilities m_Capabilities;
+    std::shared_ptr<SessionAccountCheck> m_Account; ///< Null: the signed-in user's TaskSmack
+    bool m_AccountTaken = false;                    ///< pollAccount() has the answer
+    std::string m_PerUserScopeLabel;                ///< Empty unless the per-user entries are another account's
+    std::string m_AccountNote;                      ///< Likewise
     std::optional<StartupActionRequest> m_Confirm;
     bool m_ShowConfirm = false;
     std::string m_ConfirmTitle;

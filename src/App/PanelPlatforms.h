@@ -25,6 +25,7 @@
 #include "Platform/IStartAtLogin.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/IUserSessions.h"
+#include "SessionAccountCheck.h"
 #include "TaskManagerReplacementController.h"
 
 #include <memory>
@@ -75,7 +76,8 @@ void preparePanelPlatforms(const Synthetic::Scenario* scenario);
 /// The Services tab's probe and actions: the platform's, in every run.
 [[nodiscard]] ServicesPanelPlatform makeServicesPanelPlatform(const Synthetic::Scenario* scenario);
 
-/// The Startup tab's probe and actions: the platform's, in every run.
+/// The Startup tab's probe and actions: the platform's, in every run; with the shared sessionAccountCheck(), which
+/// makes the per-user entries read-only in a TaskSmack elevated as another account (#3671).
 [[nodiscard]] StartupPanelPlatform makeStartupPanelPlatform(const Synthetic::Scenario* scenario);
 
 /// The System Information tab's probe: the platform's, in every run.
@@ -96,6 +98,12 @@ void preparePanelPlatforms(const Synthetic::Scenario* scenario);
 /// platform's (null on Linux, which has none yet), or null in a synthetic run or while a test hook is set
 /// (@p testHookActive), so no unattended run can ever write it. Making it reads nothing.
 [[nodiscard]] std::shared_ptr<Platform::IStartAtLogin> makeStartAtLoginEntry(const Synthetic::Scenario* scenario, bool testHookActive);
+
+/// Whose TaskSmack this is (#3671): the one check Start at sign-in and the Startup tab share, started on its worker by
+/// the first call (the Settings layer's, at startup) and read once. Its holders keep it alive; the next call after
+/// the last of them is gone starts another. In every run, a synthetic one too: the Startup tab reads the real
+/// platform there. Call it on the UI thread.
+[[nodiscard]] std::shared_ptr<SessionAccountCheck> sessionAccountCheck();
 
 /// The probe the shared crash history reads (#1675), or null in a synthetic run: no crash history.
 [[nodiscard]] std::shared_ptr<Platform::ISystemInfoProbe> makeCrashHistoryProbe(const Synthetic::Scenario* scenario);

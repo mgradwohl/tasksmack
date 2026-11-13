@@ -43,7 +43,7 @@ class FakeStartAtLogin final : public Platform::IStartAtLogin
     };
 
     /// Runs @p change on the data under the lock, and returns what it returns.
-    template<typename Change> auto with(Change change)
+    template<typename Change> auto with(const Change& change)
     {
         const std::scoped_lock lock(m_Mutex);
         return change(m_Data);
@@ -59,7 +59,11 @@ class FakeStartAtLogin final : public Platform::IStartAtLogin
             return std::unexpected(m_Data.readError);
         }
         return Platform::StartAtLoginFacts{
-            .command = m_Data.command, .executable = m_Data.executable, .installed = m_Data.installed, .caseInsensitivePaths = true};
+            .command = m_Data.command,
+            .executable = m_Data.executable,
+            .installed = m_Data.installed,
+            .caseInsensitivePaths = true,
+        };
     }
 
     [[nodiscard]] std::expected<void, std::string> write(std::string_view command) override

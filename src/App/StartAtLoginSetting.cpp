@@ -1,7 +1,9 @@
 #include "App/StartAtLoginSetting.h"
 
+#include "App/SessionAccountCheck.h"
 #include "Domain/StartAtLogin.h"
 #include "Platform/IStartAtLogin.h"
+#include "Platform/SessionAccount.h"
 #include "Platform/ThreadName.h"
 #include "version.h"
 
@@ -20,6 +22,22 @@ namespace StartAtLogin = Domain::StartAtLogin;
 
 namespace
 {
+
+/// On the worker, before the entry is touched (#3671): the status to end with when this TaskSmack runs as another
+/// account than the session's signed-in user (@p account says), else nullopt. Waits for the check's answer.
+[[nodiscard]] std::optional<StartAtLogin::Status> otherAccountStatus(SessionAccountCheck* account)
+{
+    if (account == nullptr)
+    {
+        return std::nullopt;
+    }
+    Platform::SessionAccount session = account->wait();
+    if (!session.otherAccount)
+    {
+        return std::nullopt;
+    }
+    return StartAtLogin::otherAccount(std::move(session.account));
+}
 
 /// The entry as it stands, for this copy.
 [[nodiscard]] StartAtLogin::Status readStatus(Platform::IStartAtLogin& entry)
@@ -102,8 +120,8 @@ std::string buildIdentity()
     return identity;
 }
 
-StartAtLoginSetting::StartAtLoginSetting(std::shared_ptr<Platform::IStartAtLogin> entry)
-    : m_Entry(std::move(entry)), m_Worker(Platform::START_AT_LOGIN_THREAD_NAME, &StartAtLogin::failed)
+StartAtLoginSetting::StartAtLoginSetting(std::shared_ptr<Platform::IStartAtLogin> entry, std::shared_ptr<SessionAccountCheck> account)
+    : m_Entry(std::move(entry)), m_Account(std::move(account)), m_Worker(Platform::START_AT_LOGIN_THREAD_NAME, &StartAtLogin::failed)
 {}
 
 void StartAtLoginSetting::refresh()
@@ -122,9 +140,16 @@ void StartAtLoginSetting::startupCheck(bool intended, std::string seenBy, std::s
     }
     m_Changing = false; // a read, that may write: the line under the box is the status's
     // NOLINTBEGIN(clang-analyzer-cplusplus.NewDeleteLeaks) - the job, which BackgroundTask owns, owns its captures
-    if (std::optional<StartAtLogin::Status> notStarted =
-            m_Worker.start([entry = m_Entry, intended, seenBy = std::move(seenBy), thisBuild = std::move(thisBuild)]
-                           { return checkAtStartup(*entry, intended, seenBy, thisBuild); });
+    if (std::optional<StartAtLogin::Status> notStarted = m_Worker.start(
+            [entry = m_Entry, account = m_Account, intended, seenBy = std::move(seenBy), thisBuild = std::move(thisBuild)]
+            {
+                // Another account's entry: no mark taken, nothing written back (#3671).
+                if (std::optional<StartAtLogin::Status> other = otherAccountStatus(account.get()); other.has_value())
+                {
+                    return std::move(*other);
+                }
+                return checkAtStartup(*entry, intended, seenBy, thisBuild);
+            });
         notStarted.has_value())
     {
         m_Status = std::move(*notStarted);
@@ -153,10 +178,17 @@ void StartAtLoginSetting::start(std::optional<bool> enabled)
     {
         spdlog::info("Settings: Start TaskSmack when I sign in changed to {}", *enabled);
     }
-    // The job owns what it uses: the entry, shared.
+    // The job owns what it uses: the entry and the account check, shared.
     // NOLINTBEGIN(clang-analyzer-cplusplus.NewDeleteLeaks) - the job, which BackgroundTask owns, owns its captures
-    if (std::optional<StartAtLogin::Status> notStarted =
-            m_Worker.start([entry = m_Entry, enabled] { return enabled.has_value() ? change(*entry, *enabled) : readStatus(*entry); });
+    if (std::optional<StartAtLogin::Status> notStarted = m_Worker.start(
+            [entry = m_Entry, account = m_Account, enabled]
+            {
+                if (std::optional<StartAtLogin::Status> other = otherAccountStatus(account.get()); other.has_value())
+                {
+                    return std::move(*other); // another account's entry: not read or changed (#3671)
+                }
+                return enabled.has_value() ? change(*entry, *enabled) : readStatus(*entry);
+            });
         notStarted.has_value())
     {
         m_Status = std::move(*notStarted); // no thread for it: a failed read

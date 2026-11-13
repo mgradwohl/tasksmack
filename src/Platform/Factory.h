@@ -28,6 +28,7 @@
 #include "Platform/ITaskManagerReplacement.h"
 #include "Platform/IUdpTrafficCollector.h"
 #include "Platform/IUserSessions.h"
+#include "Platform/SessionAccount.h"
 
 #include <cstdint>
 #include <expected>
@@ -150,6 +151,13 @@ namespace Platform
 /// @p ownerWindow (an HWND, or null). Null on Linux, whose Administrator session is started as one (#3580), and
 /// in a TaskSmack that is already elevated. Reads the token's elevation type once; starts nothing.
 [[nodiscard]] std::shared_ptr<IElevatedRestart> makeElevatedRestart(void* ownerWindow);
+
+/// Whether TaskSmack runs elevated as another account than the session's signed-in user (#3671), for the per-user
+/// startup it then leaves alone: on Windows, TaskSmack's own token user against WTS's for the current session
+/// (Windows::readSessionAccount()); either unreadable, the same account. Never on Linux, whose Administrator
+/// session is started as one (#3580). Blocking (an account lookup): read once, on a worker
+/// (App::SessionAccountCheck), never on the UI thread.
+[[nodiscard]] SessionAccount readSessionAccount();
 
 #ifdef _WIN32
 /// The elevated copy's wait for the Standard TaskSmack that restarted it (#2728), process @p pid created at

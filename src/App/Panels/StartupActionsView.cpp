@@ -1,8 +1,10 @@
 #include "StartupActionsView.h"
 
 #include "App/Panels/ProcessActionConfirm.h"
+#include "App/SessionAccountCheck.h"
 #include "Platform/IStartupActions.h"
 #include "Platform/IStartupProbe.h"
+#include "Platform/SessionAccount.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 
@@ -27,6 +29,10 @@ std::string_view blockedReason(const Platform::StartupEntry& entry, const Platfo
     {
         return "Startup apps can't be changed on this platform yet";
     }
+    if (caps.perUserEntriesOtherAccount && entry.scope == Platform::StartupScope::User)
+    {
+        return OTHER_ACCOUNT_REASON; // another account's entry: never changed on the user's behalf (#3671)
+    }
     if (entry.setByPolicy)
     {
         return "Set by your administrator or group policy";
@@ -49,6 +55,18 @@ std::string_view blockedReason(const Platform::StartupEntry& entry, const Platfo
 bool isApplicable(bool enable, const Platform::StartupEntry& entry, const Platform::StartupActionCapabilities& caps)
 {
     return entry.enabled != enable && blockedReason(entry, caps).empty();
+}
+
+std::string otherAccountScopeLabel(std::string_view account)
+{
+    return std::format("{} (administrator)", account);
+}
+
+std::string otherAccountNote(std::string_view account)
+{
+    return std::format("This TaskSmack runs as {}, not as you: the per-user entries below are that account's, and can't be changed "
+                       "here. Change yours from the normal TaskSmack, the one you start yourself.",
+                       account);
 }
 
 std::string confirmTitle(const StartupActionRequest& request)
@@ -100,10 +118,32 @@ StartupActionMessage resultMessage(const StartupActionRequest& request, const Pl
 
 namespace AutoDetail = StartupActionsDetail;
 
-StartupActionsView::StartupActionsView(std::shared_ptr<Platform::IStartupActions> actions)
+StartupActionsView::StartupActionsView(std::shared_ptr<Platform::IStartupActions> actions, std::shared_ptr<SessionAccountCheck> account)
     : m_Actions(actions ? std::move(actions) : std::make_shared<Platform::UnsupportedStartupActions>()),
-      m_Capabilities(m_Actions->capabilities())
+      m_Capabilities(m_Actions->capabilities()),
+      m_Account(std::move(account))
 {}
+
+void StartupActionsView::pollAccount()
+{
+    if (m_Account == nullptr || m_AccountTaken)
+    {
+        return;
+    }
+    const std::optional<Platform::SessionAccount> answer = m_Account->result();
+    if (!answer.has_value())
+    {
+        return; // still read: an action asked for meanwhile waits for it on the worker
+    }
+    m_AccountTaken = true;
+    if (!answer->otherAccount)
+    {
+        return;
+    }
+    m_Capabilities.perUserEntriesOtherAccount = true;
+    m_PerUserScopeLabel = AutoDetail::otherAccountScopeLabel(answer->account);
+    m_AccountNote = AutoDetail::otherAccountNote(answer->account);
+}
 
 // A running action is waited for, by m_Worker's destructor: its result must not outlive the view it
 // reports to.
@@ -133,8 +173,17 @@ void StartupActionsView::run(StartupActionRequest request)
     m_Running = request;
     // The worker owns copies of everything it uses; nothing here is shared with it but its result. An
     // action that throws is a failed result, built on the worker (BackgroundTask, #1685, #1706).
-    if (auto failed = m_Worker.start([actions = m_Actions, request = std::move(request)]
-                                     { return actions->setEnabled(request.entry, request.enable); }))
+    // A per-user entry waits for the account check first (#3671): another account's is never changed, even when
+    // asked for before the answer came.
+    if (auto failed = m_Worker.start(
+            [actions = m_Actions, account = m_Account, request = std::move(request)]
+            {
+                if (request.entry.scope == Platform::StartupScope::User && account != nullptr && account->wait().otherAccount)
+                {
+                    return Platform::StartupActionResult::failed(std::string(AutoDetail::OTHER_ACCOUNT_REASON));
+                }
+                return actions->setEnabled(request.entry, request.enable);
+            }))
     {
         m_Result = AutoDetail::resultMessage(m_Running, *failed);
         m_ResultSecondsLeft = AutoDetail::RESULT_SECONDS;
@@ -230,6 +279,18 @@ void StartupActionsView::renderContextMenu(const Platform::StartupEntry& entry)
         ImGui::TextDisabled("%s", reason.c_str());
     }
     ImGui::EndPopup();
+}
+
+void StartupActionsView::renderAccountNote() const
+{
+    if (m_AccountNote.empty())
+    {
+        return;
+    }
+    const auto& scheme = UI::Theme::get().scheme();
+    ImGui::PushStyleColor(ImGuiCol_Text, scheme.textWarning);
+    ImGui::TextWrapped(ICON_FA_CIRCLE_INFO "  %s", m_AccountNote.c_str());
+    ImGui::PopStyleColor();
 }
 
 void StartupActionsView::renderResultLine() const

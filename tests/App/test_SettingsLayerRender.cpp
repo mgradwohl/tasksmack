@@ -6,6 +6,7 @@
 /// never the user's config.
 
 #include "App/PlatformOpen.h"
+#include "App/SessionAccountCheck.h"
 #include "App/SettingsDialog.h"
 #include "App/SettingsLayer.h"
 #include "App/StartAtLoginSetting.h"
@@ -844,6 +845,38 @@ TEST_F(SettingsLayerRememberedStartAtLoginTest, TurningItOnAndOffInSettingsIsRem
     EXPECT_EQ(data().command, std::nullopt);
     EXPECT_FALSE(UserConfig::get().settings().startAtSignIn);
     EXPECT_FALSE(savedFile().contains("start_at_sign_in ="));
+}
+
+// #3671: a TaskSmack elevated as another account (an over-the-shoulder approval) leaves the entry alone: the startup
+// check neither takes the mark nor writes anything back, what the user chose stays in config.toml, and the box is
+// disabled, with the line saying why, so Save changes nothing either.
+TEST_F(SettingsLayerRememberedStartAtLoginTest, AnotherAccountsTaskSmackLeavesTheEntryAlone)
+{
+    layer().setStartAtLoginEntry(m_Entry, SessionAccountCheck::known({.otherAccount = true, .account = "admin"}));
+    auto& settings = UserConfig::get().settings();
+    settings.startAtSignIn = true;
+    settings.startAtSignInSeenBy = "0.0.1+older"; // would be written back for the user's own copy
+    m_Entry->with([](TestSupport::FakeStartAtLogin::Data& d) { d.uninstallMark = true; });
+    attach();
+    EXPECT_EQ(data().reads, 0);
+    EXPECT_EQ(data().writes, 0);
+    EXPECT_EQ(data().markTakes, 0);
+    EXPECT_TRUE(data().uninstallMark) << "the mark is the user's own TaskSmack's to take";
+    EXPECT_TRUE(settings.startAtSignIn);
+    EXPECT_EQ(settings.startAtSignInSeenBy, "0.0.1+older");
+
+    ASSERT_TRUE(openDialog());
+    layer().waitForStartAtLoginForTesting();
+    static_cast<void>(settle());
+    const Domain::StartAtLogin::Status& status = layer().dialogState().startAtLoginStatus;
+    EXPECT_EQ(status.state, Domain::StartAtLogin::State::OtherAccount);
+    EXPECT_TRUE(Domain::StartAtLogin::statusLine(status, false).contains("runs as admin, not as you"));
+    pressInBody(SettingsDialog::START_AT_LOGIN_LABEL); // disabled: nothing ticks
+    pressSave();
+    layer().waitForStartAtLoginForTesting();
+    EXPECT_EQ(data().writes, 0);
+    EXPECT_EQ(data().removes, 0);
+    EXPECT_TRUE(settings.startAtSignIn);
 }
 
 // #3276: uninstalled, then installed again. The uninstaller's mark makes the startup check forget both

@@ -44,7 +44,7 @@ void StartupPanel::onAttach()
     StartupPanelPlatform platform = m_MakePlatform ? m_MakePlatform() : makeStartupPanelPlatform(Synthetic::activeScenario());
     m_Model = std::make_shared<Domain::StartupModel>(std::move(platform.probe));
     m_Gate = std::make_shared<SamplingGate>(m_Model);
-    m_Actions = std::make_unique<StartupActionsView>(std::move(platform.actions));
+    m_Actions = std::make_unique<StartupActionsView>(std::move(platform.actions), std::move(platform.account));
 }
 
 void StartupPanel::onDetach()
@@ -104,6 +104,7 @@ void StartupPanel::renderContent()
     {
         m_Publication = m_Model->publication();
     }
+    m_Actions->pollAccount(); // whose per-user entries these are (#3671), once the check answers
     m_Actions->tick(ImGui::GetIO().DeltaTime);
     if (m_Actions->takeFinished() && m_Sampler)
     {

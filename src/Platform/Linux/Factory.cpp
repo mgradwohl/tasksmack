@@ -53,6 +53,7 @@
 #include "Platform/ITaskManagerReplacement.h"
 #include "Platform/IUdpTrafficCollector.h"
 #include "Platform/IUserSessions.h"
+#include "Platform/SessionAccount.h"
 
 #include <memory>
 
@@ -217,6 +218,12 @@ std::shared_ptr<IStartAtLogin> makeStartAtLogin()
     // A per-user XDG autostart entry (#3254, #3093 part 2): ~/.config/autostart/tasksmack.desktop. Reads
     // nothing until asked.
     return std::make_shared<LinuxStartAtLogin>();
+}
+
+SessionAccount readSessionAccount()
+{
+    // An Administrator session is started as one (#3580): there is no elevated copy of another account's TaskSmack.
+    return {};
 }
 
 std::shared_ptr<IElevatedRestart> makeElevatedRestart(void* /*ownerWindow*/)

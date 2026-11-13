@@ -38,6 +38,10 @@ struct StartupActionCapabilities
     /// ...where changing one writes the machine's own setting (Windows). False where a user's switch for
     /// it is the user's own file (Linux's XDG autostart, #2541).
     bool machineEntriesNeedElevation = true;
+    /// The per-user (User scope) entries are another account's (#3671): TaskSmack runs elevated as an account other
+    /// than the session's signed-in user, so they are that account's, and are not changed. Not the platform's to
+    /// say: App's StartupActionsView sets it from the session account check.
+    bool perUserEntriesOtherAccount = false;
 };
 
 /// Whether an entry registered at @p location has an enabled state that can be changed: RunOnce entries
