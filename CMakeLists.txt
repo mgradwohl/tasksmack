@@ -226,6 +226,7 @@ set(TASKSMACK_SOURCES
     src/App/SyntheticScenario.cpp
     src/App/TitleBarLayer.cpp
     src/App/TitleBarView.cpp
+    src/App/WindowsSystemMenu.cpp # the title-bar icon's native system menu (#3161), its body Windows-only
     src/App/UserConfig.cpp
     src/App/WindowOverride.cpp
     src/App/Panels/ProcessesPanel.cpp

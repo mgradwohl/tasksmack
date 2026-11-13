@@ -844,7 +844,8 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_CiRealSystemWindowsScheduledTask.cpp
     # Services: start, stop, restart and the startup type on throwaway services (TaskSmackCiService.exe)
     Platform/test_CiRealSystemWindowsService.cpp
-    # TaskSmack.exe started on the runner: --minimized, a second start in Task Manager's place, and the folder dialog
+    # TaskSmack.exe started on the runner: --minimized, a second start in Task Manager's place, the folder dialog and
+    # the title bar's system menu
     Platform/test_CiRealSystemWindowsApp.cpp
     Platform/test_RealSystemPathSupport.cpp  # the path comparison those tests check images with; changes nothing
     Platform/test_HelperLauncher.cpp  # starting the helper with ShellExecuteExW("runas"), through fakes (#2549)
@@ -1134,6 +1135,8 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/WindowOverride.cpp
     # The custom title bar (#1547), run headless (test_TitleBarViewRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/TitleBarView.cpp
+    # Its native Windows system menu, shown and answered for real on the CI runner (test_CiRealSystemWindowsApp.cpp)
+    ${CMAKE_SOURCE_DIR}/src/App/WindowsSystemMenu.cpp
     # The Settings dialog (#1547), run headless (test_SettingsDialogRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/SettingsDialog.cpp
     # The Settings layer around it (#1395), run headless through its seam (test_SettingsLayerRender.cpp)

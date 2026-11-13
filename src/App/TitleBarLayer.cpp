@@ -28,6 +28,8 @@
 #include <utility>
 
 #ifdef _WIN32
+#include "App/WindowsSystemMenu.h"
+
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -1119,50 +1121,17 @@ void TitleBarLayer::updateMinimumWindowSize(float contentWidth)
 }
 
 #ifdef _WIN32
-// LCOV_EXCL_START - TrackPopupMenu runs a modal menu loop until the user picks or dismisses (#2039)
+// LCOV_EXCL_START - needs a running Core::Application; the menu itself (showWindowsSystemMenu()) is
+// CiRealSystemSystemMenuTest's (#2039, #3490)
 TitleBarView::Action TitleBarLayer::showNativeSystemMenu(bool maximized)
 {
     auto* sdlWindow = Core::Application::get().getWindow().getHandle();
     SDL_PropertiesID const props = SDL_GetWindowProperties(sdlWindow);
-    auto* hwnd = static_cast<HWND>(SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
-    HMENU systemMenu = hwnd != nullptr ? GetSystemMenu(hwnd, FALSE) : nullptr;
-    if (systemMenu == nullptr)
-    {
-        return TitleBarView::Action::None;
-    }
-
-    // Windows enables the items from the OS's own maximized state, which a client-side maximize
-    // doesn't set: it offered Maximize, not Restore, on a maximized window (#3161). Set them as the
-    // Linux menu has them.
-    const TitleBarView::SystemMenuItems items = TitleBarView::systemMenuItems(maximized);
-    const auto enable = [systemMenu](UINT command, bool enabled)
-    {
-        // Returns the item's previous state, or -1 for a menu without it; either way there is nothing to do.
-        static_cast<void>(EnableMenuItem(systemMenu, command, MF_BYCOMMAND | (enabled ? MF_ENABLED : MF_GRAYED)));
-    };
-    enable(SC_RESTORE, items.restore);
-    enable(SC_MOVE, items.move);
-    enable(SC_SIZE, items.size);
-    enable(SC_MINIMIZE, items.minimize);
-    enable(SC_MAXIMIZE, items.maximize);
-    enable(SC_CLOSE, items.close);
-
+    void* hwnd = SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr);
     // At the cursor, which is on the icon that was clicked.
     POINT pt{};
     GetCursorPos(&pt);
-    const int cmd = TrackPopupMenu(systemMenu, TPM_RETURNCMD | TPM_LEFTBUTTON, pt.x, pt.y, 0, hwnd, nullptr);
-    if (cmd == 0)
-    {
-        return TitleBarView::Action::None; // dismissed
-    }
-    const TitleBarView::Action action =
-        TitleBarView::actionForSystemCommand(Core::WindowGeometry::decodeSystemCommand(static_cast<UINT_PTR>(cmd)));
-    if (action == TitleBarView::Action::None)
-    {
-        // Move and Size: Windows' own keyboard move and size loops.
-        PostMessageW(hwnd, WM_SYSCOMMAND, static_cast<WPARAM>(cmd), 0);
-    }
-    return action;
+    return showWindowsSystemMenu(hwnd, maximized, pt.x, pt.y);
 }
 // LCOV_EXCL_STOP
 #endif
