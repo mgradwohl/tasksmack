@@ -1348,6 +1348,83 @@ TEST(ComputeTitleBarButtonLayoutTest, WhereTheSystemDragsAboutIsAClickNotADrag)
     EXPECT_EQ(hitTest(layout.about.minX - 20.0F, LAYOUT_BAR_H * 0.5F), SDL_HITTEST_DRAGGABLE);
 }
 
+// ========== The update button (#3373) ==========
+// Left of About, and only where the update check is offered: from the same layout the bar draws with
+// and the hit test excludes from the drag area, so a press on it is a click and the bar left of it
+// still drags.
+
+[[nodiscard]] TitleBarButtonLayout sampleLayoutWithUpdate()
+{
+    return computeTitleBarButtonLayout(LAYOUT_RIGHT, LAYOUT_BUTTON_W, LAYOUT_BAR_H, LAYOUT_GAP, /*updateButton=*/true);
+}
+
+TEST(ComputeTitleBarButtonLayoutTest, WithoutTheUpdateButtonItTakesNoPoint)
+{
+    const TitleBarButtonLayout layout = sampleLayout();
+    EXPECT_LE(layout.update.maxX, layout.update.minX); // not set
+    EXPECT_FALSE(computeIsPointOnTitleBarButton(layout.about.minX - (LAYOUT_BUTTON_W * 0.5F), LAYOUT_BAR_H * 0.5F, layout));
+}
+
+TEST(ComputeTitleBarButtonLayoutTest, TheUpdateButtonSitsJustLeftOfAboutAndMovesNothingElse)
+{
+    const TitleBarButtonLayout without = sampleLayout();
+    const TitleBarButtonLayout layout = sampleLayoutWithUpdate();
+    EXPECT_FLOAT_EQ(layout.update.maxX, layout.about.minX);
+    EXPECT_FLOAT_EQ(layout.update.maxX - layout.update.minX, LAYOUT_BUTTON_W);
+    EXPECT_FLOAT_EQ(layout.update.minY, 0.0F);
+    EXPECT_FLOAT_EQ(layout.update.maxY, LAYOUT_BAR_H);
+    EXPECT_FLOAT_EQ(layout.update.minX, LAYOUT_RIGHT - (LAYOUT_BUTTON_W * static_cast<float>(TITLE_BAR_BUTTON_COUNT + 1)) - LAYOUT_GAP);
+    // The other six stay where they were.
+    EXPECT_FLOAT_EQ(layout.about.minX, without.about.minX);
+    EXPECT_FLOAT_EQ(layout.help.minX, without.help.minX);
+    EXPECT_FLOAT_EQ(layout.settings.minX, without.settings.minX);
+    EXPECT_FLOAT_EQ(layout.minimize.minX, without.minimize.minX);
+    EXPECT_FLOAT_EQ(layout.maximize.minX, without.maximize.minX);
+    EXPECT_FLOAT_EQ(layout.close.minX, without.close.minX);
+}
+
+TEST(ComputeTitleBarButtonLayoutTest, TheContentWidthCountsTheUpdateButtonWhenItIsDrawn)
+{
+    const TitleBarButtonLayout layout = sampleLayoutWithUpdate();
+    EXPECT_FLOAT_EQ(computeTitleBarContentWidth(0.0F, 0.0F, 0.0F, 0.0F, LAYOUT_BUTTON_W, LAYOUT_GAP, /*updateButton=*/true),
+                    LAYOUT_RIGHT - layout.update.minX);
+    EXPECT_FLOAT_EQ(computeTitleBarContentWidth(0.0F, 0.0F, 0.0F, 0.0F, LAYOUT_BUTTON_W, LAYOUT_GAP, /*updateButton=*/true) -
+                        computeTitleBarContentWidth(0.0F, 0.0F, 0.0F, 0.0F, LAYOUT_BUTTON_W, LAYOUT_GAP),
+                    LAYOUT_BUTTON_W);
+}
+
+TEST(ComputeTitleBarButtonLayoutTest, TheUpdateButtonIsAClickAndTheBarLeftOfItStillDrags)
+{
+    const TitleBarButtonLayout layout = sampleLayoutWithUpdate();
+    EXPECT_TRUE(computeIsPointOnTitleBarButton(centreX(layout.update), LAYOUT_BAR_H * 0.5F, layout));
+    EXPECT_TRUE(computeIsPointOnTitleBarButton(layout.update.minX, 0.0F, layout));
+    EXPECT_FALSE(computeIsPointOnTitleBarButton(layout.update.minX - 1.0F, LAYOUT_BAR_H * 0.5F, layout));
+    EXPECT_FALSE(computeIsPointOnTitleBarButton(centreX(layout.update), LAYOUT_BAR_H + 1.0F, layout)); // Below the bar
+
+    // What SDL is answered, through the one function the window's callback forwards to, on a backend
+    // that hands the empty bar's drag to the OS or compositor (Windows, native Wayland) and one that
+    // drags client-side (X11): the button is NORMAL either way, the bar left of it DRAGGABLE or NORMAL.
+    for (const bool systemDrag : {true, false})
+    {
+        const WindowHitTestInput input{
+            .windowWidth = static_cast<int>(LAYOUT_RIGHT),
+            .windowHeight = 800,
+            .titleBarHeightPx = LAYOUT_BAR_H,
+            .resizeBorderPx = 8.0F,
+            .buttons = layout,
+            .icon = {},
+            .isMaximized = false,
+            .systemDrag = systemDrag,
+            .systemResize = systemDrag,
+        };
+        EXPECT_EQ(computeWindowHitTestAt(centreX(layout.update), LAYOUT_BAR_H * 0.5F, input), SDL_HITTEST_NORMAL);
+        EXPECT_EQ(computeWindowHitTestAt(layout.update.minX - 20.0F, LAYOUT_BAR_H * 0.5F, input),
+                  systemDrag ? SDL_HITTEST_DRAGGABLE : SDL_HITTEST_NORMAL);
+        // The top resize strip over the button stays the button's, as over the other app buttons.
+        EXPECT_EQ(computeWindowHitTestAt(centreX(layout.update), 1.0F, input), SDL_HITTEST_NORMAL);
+    }
+}
+
 TEST(TitleBarButtonsTest, AboutAndHelpHaveTheirOwnIconsAndTooltips)
 {
     // #1600: the "?" is Help and a new "i" is About, each with its own ImGui ID and tooltip.

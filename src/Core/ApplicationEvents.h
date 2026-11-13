@@ -247,6 +247,16 @@ class UpdateCheckStatusEvent : public Event
     bool m_Checking;
 };
 
+/// The title bar's update button (#3373), while a newer release is out: the shell opens that release's
+/// page in the browser, on a worker, as the status bar's notice does. Nothing is downloaded.
+class OpenUpdatePageEvent : public Event
+{
+  public:
+    OpenUpdatePageEvent() = default;
+
+    EVENT_CLASS_TYPE(OpenUpdatePage)
+};
+
 /// Elevation notice dialog request event - emitted at startup when running without elevated privileges.
 /// Carries the missing permissions (Platform::MissingPrivilege bits, #2303) the Linux text names; 0 elsewhere.
 class OpenElevationNoticeEvent : public Event

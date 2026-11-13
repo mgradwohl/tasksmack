@@ -15,6 +15,7 @@
 // Free of ImGui; tested in tests/App/test_UpdateChecker.cpp with a fake client and clock.
 
 #include "App/Panels/BackgroundTask.h"
+#include "App/TitleBarButtons.h"
 #include "Domain/UpdateCheck.h"
 #include "Platform/IHttpsClient.h"
 
@@ -68,6 +69,13 @@ class UpdateChecker
     /// The notice's Dismiss: its version is not offered again, only a newer one. @return Whether @p state
     /// changed.
     [[nodiscard]] static bool dismiss(Domain::UpdateCheck::Persisted& state);
+
+    /// What the title bar's update button shows for @p state (#3373): hidden where the check isn't
+    /// offered; otherwise active, with the notice's text ("TaskSmack v0.11.0 is available") and the
+    /// release page, while the latest release seen is newer than the running one, whether or not the
+    /// status bar's notice for it was dismissed; and inactive, saying why, while a check runs, the
+    /// setting is off, the running version is the latest, or no check has seen a release yet.
+    [[nodiscard]] TitleBarButtons::UpdateButton titleBarButton(const Domain::UpdateCheck::Persisted& state) const;
 
     /// A line about the last check this session, for Settings: "Checking...", "Up to date: ...",
     /// "TaskSmack v0.10.0 is available", "Couldn't check: ..."; empty before the first.

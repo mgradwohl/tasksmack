@@ -159,7 +159,8 @@ void TitleBarLayer::onAttach()
     m_ButtonLayout = computeTitleBarButtonLayout(static_cast<float>(windowWidth),
                                                  computeTitleBarButtonWidth(titleBarHeight, TITLE_BAR_BUTTON_ASPECT),
                                                  titleBarHeight,
-                                                 titleBarHeight * TITLE_BAR_SEPARATOR_GAP_RATIO);
+                                                 titleBarHeight * TITLE_BAR_SEPARATOR_GAP_RATIO,
+                                                 m_UpdateButton.shown);
 
     // The icon texture is loaded by the first renderTitleBar(), at the size the bar draws it; ImGui
     // only knows the framebuffer scale from the first frame on (#1169).
@@ -1010,6 +1011,7 @@ void TitleBarLayer::renderTitleBar()
         .icon = &m_IconTexture,
         .openSystemMenu = std::exchange(m_ShowSystemMenu, false),
         .title = window.title(),
+        .update = &m_UpdateButton,
     });
     // Where every button and the icon were drawn, and so what isPointInControlArea() keeps out of the
     // drag area and where a right-click opens the system menu.
@@ -1061,6 +1063,13 @@ void TitleBarLayer::renderTitleBar()
     case TitleBarView::Action::About:
     {
         Core::OpenAboutEvent event;
+        Core::Application::get().raiseEvent(event);
+        break;
+    }
+    case TitleBarView::Action::OpenUpdate:
+    {
+        // The shell opens the release page on a worker, as the status bar's notice does (#3373).
+        Core::OpenUpdatePageEvent event;
         Core::Application::get().raiseEvent(event);
         break;
     }
