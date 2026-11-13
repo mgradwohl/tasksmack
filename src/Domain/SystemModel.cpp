@@ -2,6 +2,7 @@
 
 #include "DeferredProbe.h"
 #include "History.h"
+#include "NumaNodes.h"
 #include "Numeric.h"
 #include "Platform/IPowerProbe.h"
 #include "Platform/ISystemProbe.h"
@@ -940,6 +941,13 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters,
     // The power status is read separately, in refresh(): this cycle's reading if there is one, else
     // the last one.
     snap.power = powerStatus.value_or(m_Snapshot.power);
+
+    // NUMA nodes (#3088): after the per-core figures, which give each node's CPU use
+    if (m_Capabilities.hasNumaNodes)
+    {
+        snap.numaNodes = numaNodeSnapshots(counters.numaNodes, snap.cpuPerCore, m_Capabilities.hasNumaNodeTotals);
+        snap.numaNodeTotalsKnown = m_Capabilities.hasNumaNodeTotals;
+    }
 
     // Update history (only after we have valid deltas). Staged first -- everything that allocates,
     // so a std::bad_alloc leaves the model untouched -- then committed without throwing, so every

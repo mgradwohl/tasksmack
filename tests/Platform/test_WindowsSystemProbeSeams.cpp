@@ -7,6 +7,7 @@
 /// test_WindowsSystemProbeNetwork.cpp).
 
 #include "Domain/SamplingConfig.h"
+#include "Platform/CpuAffinity.h"
 #include "Platform/CpuDetails.h"
 #include "Platform/SystemTypes.h"
 #include "Platform/Windows/ProcessorPerformanceCounter.h" // IWYU pragma: keep (destroys the null counter)
@@ -69,6 +70,22 @@ struct PerfEntry
     ULONG interruptCount;
 };
 
+/// One NUMA node as the NUMA fakes report it (#3088): its processor masks (none: CPU-less, or a gap
+/// between node numbers) and its available memory (nullopt: GetNumaAvailableMemoryNodeEx fails).
+struct FakeNumaNode
+{
+    std::vector<GROUP_AFFINITY> masks;
+    std::optional<ULONGLONG> available;
+};
+
+[[nodiscard]] GROUP_AFFINITY groupMask(WORD group, KAFFINITY mask)
+{
+    GROUP_AFFINITY affinity{};
+    affinity.Group = group;
+    affinity.Mask = mask;
+    return affinity;
+}
+
 /// What every fake returns. Each processor group holds `activePerGroup[g]` processors, numbered
 /// from that group's first id (the sum of the earlier groups' maxima).
 struct FakeSystem // NOLINT(clang-analyzer-optin.performance.Padding)
@@ -127,6 +144,14 @@ struct FakeSystem // NOLINT(clang-analyzer-optin.performance.Padding)
     bool sessionListTooSmallAnswersBufferTooSmall = false;
     int sessionListQueries = 0;
     ULONG lastSessionQueried = 0xFFFFFFFF;
+    // NUMA (#3088): the nodes by number (GetNumaHighestNodeNumber is the last one's), whether
+    // GetNumaNodeProcessorMask2 is there and whether the node count answers, and how many times the
+    // processor masks and the memory were asked for. By default one node holding every processor.
+    std::vector<FakeNumaNode> numaNodes{FakeNumaNode{.masks = {groupMask(0, 0xF)}, .available = 6ULL << 30U}};
+    bool numaMask2Available = true;
+    bool failNumaHighest = false;
+    int numaMaskCalls = 0;
+    int numaMemoryCalls = 0;
     // How far the fakes below advance the probe's clock (#2731), in place of the real calls' time
     std::chrono::milliseconds systemTimesTake{0};
     std::chrono::milliseconds memoryStatusTake{0};
@@ -491,6 +516,58 @@ BOOL WINAPI fakeGetPerformanceInfo(PPERFORMANCE_INFORMATION info, DWORD /*size*/
     return TRUE;
 }
 
+BOOL WINAPI fakeGetNumaHighestNodeNumber(PULONG highest)
+{
+    if (fake().failNumaHighest || fake().numaNodes.empty())
+    {
+        return FALSE;
+    }
+    *highest = static_cast<ULONG>(fake().numaNodes.size() - 1);
+    return TRUE;
+}
+
+BOOL WINAPI fakeGetNumaNodeProcessorMask2(USHORT node, PGROUP_AFFINITY masks, USHORT count, PUSHORT required)
+{
+    ++fake().numaMaskCalls;
+    if (node >= fake().numaNodes.size())
+    {
+        return FALSE;
+    }
+    const std::vector<GROUP_AFFINITY>& nodeMasks = fake().numaNodes[node].masks;
+    *required = static_cast<USHORT>(nodeMasks.size());
+    if (nodeMasks.size() > count)
+    {
+        SetLastError(ERROR_INSUFFICIENT_BUFFER);
+        return FALSE;
+    }
+    std::ranges::copy(nodeMasks, std::span<GROUP_AFFINITY>(masks, count).begin());
+    return TRUE;
+}
+
+BOOL WINAPI fakeGetNumaNodeProcessorMaskEx(USHORT node, PGROUP_AFFINITY mask)
+{
+    ++fake().numaMaskCalls;
+    if (node >= fake().numaNodes.size())
+    {
+        return FALSE;
+    }
+    // One group's mask, as the call gives on a machine whose node spans several
+    const std::vector<GROUP_AFFINITY>& nodeMasks = fake().numaNodes[node].masks;
+    *mask = nodeMasks.empty() ? GROUP_AFFINITY{} : nodeMasks.front();
+    return TRUE;
+}
+
+BOOL WINAPI fakeGetNumaAvailableMemoryNodeEx(USHORT node, PULONGLONG bytes)
+{
+    ++fake().numaMemoryCalls;
+    if (node >= fake().numaNodes.size() || !fake().numaNodes[node].available.has_value())
+    {
+        return FALSE;
+    }
+    *bytes = fake().numaNodes[node].available.value_or(0);
+    return TRUE;
+}
+
 [[nodiscard]] WindowsSystemProbeFunctions fakeFunctions()
 {
     WindowsSystemProbeFunctions fns;
@@ -505,6 +582,10 @@ BOOL WINAPI fakeGetPerformanceInfo(PPERFORMANCE_INFORMATION info, DWORD /*size*/
     fns.nt.ntQuerySystemInformationEx = fake().exAvailable ? &fakeNtQuerySystemInformationEx : nullptr;
     fns.memory.globalMemoryStatusEx = &fakeGlobalMemoryStatusEx;
     fns.memory.getPerformanceInfo = &fakeGetPerformanceInfo;
+    fns.numa.getNumaHighestNodeNumber = &fakeGetNumaHighestNodeNumber;
+    fns.numa.getNumaNodeProcessorMask2 = fake().numaMask2Available ? &fakeGetNumaNodeProcessorMask2 : nullptr;
+    fns.numa.getNumaNodeProcessorMaskEx = &fakeGetNumaNodeProcessorMaskEx;
+    fns.numa.getNumaAvailableMemoryNodeEx = &fakeGetNumaAvailableMemoryNodeEx;
     fns.network = WindowsSystemProbe::systemFunctions().network; // Faked in test_WindowsSystemProbeNetwork.cpp
     fns.now = &fakeNow;
     return fns;
@@ -1059,6 +1140,143 @@ TEST_F(WindowsSystemProbeSeamsTest, SystemFunctionsAreAllSet)
     EXPECT_NE(fns.network.freeMibTable, nullptr);
     EXPECT_NE(fns.network.readAdapterDeviceInstanceId, nullptr);
     EXPECT_NE(fns.network.devicePresence, nullptr);
+    EXPECT_NE(fns.numa.getNumaHighestNodeNumber, nullptr);
+    EXPECT_NE(fns.numa.getNumaNodeProcessorMaskEx, nullptr);
+    EXPECT_NE(fns.numa.getNumaAvailableMemoryNodeEx, nullptr);
+    // getNumaNodeProcessorMask2 is null before Windows 11 and Windows Server 2022, so isn't checked.
+}
+
+// #3088: the NUMA nodes, each node's processors numbered across processor groups as the per-core
+// figures are, and its available memory. Windows has no per-node total.
+TEST_F(WindowsSystemProbeSeamsTest, NumaNodesSpanProcessorGroups)
+{
+    fake().maxPerGroup = {4, 4};
+    fake().activePerGroup = {4, 4};
+    fake().activeGroups = 2;
+    fake().numaNodes = {
+        FakeNumaNode{.masks = {groupMask(0, 0x3), groupMask(1, 0x3)}, .available = 3ULL << 30U},
+        FakeNumaNode{.masks = {groupMask(0, 0xC), groupMask(1, 0xC)}, .available = 5ULL << 30U},
+    };
+    auto probe = makeProbe();
+    EXPECT_TRUE(probe.capabilities().hasNumaNodes);
+    EXPECT_FALSE(probe.capabilities().hasNumaNodeTotals);
+
+    const SystemCounters counters = probe.read();
+    ASSERT_EQ(counters.numaNodes.size(), 2U);
+    EXPECT_EQ(counters.numaNodes[0].id, 0);
+    EXPECT_EQ(counters.numaNodes[0].cpus, CpuAffinity::fromCpuList("0,1,4,5"));
+    EXPECT_EQ(counters.numaNodes[0].memFreeBytes, 3ULL << 30U);
+    EXPECT_EQ(counters.numaNodes[0].memTotalBytes, 0U) << "Windows reports no per-node total";
+    EXPECT_EQ(counters.numaNodes[1].id, 1);
+    EXPECT_EQ(counters.numaNodes[1].cpus, CpuAffinity::fromCpuList("2,3,6,7"));
+    EXPECT_EQ(counters.numaNodes[1].memFreeBytes, 5ULL << 30U);
+}
+
+TEST_F(WindowsSystemProbeSeamsTest, NumaMaskBufferGrowsForANodeInMoreGroupsThanItHeld)
+{
+    // One processor group, so the probe's first buffer holds one mask; the node reports two, the second
+    // for a group this machine doesn't have, which names no processor.
+    fake().numaNodes = {FakeNumaNode{.masks = {groupMask(0, 0xF), groupMask(3, 0x1)}, .available = 1ULL << 30U}};
+    auto probe = makeProbe();
+    const SystemCounters counters = probe.read();
+    ASSERT_EQ(counters.numaNodes.size(), 1U);
+    EXPECT_EQ(counters.numaNodes[0].cpus, CpuAffinity::fromCpuList("0-3"));
+    EXPECT_EQ(fake().numaMaskCalls, 2) << "too small once, then answered";
+}
+
+TEST_F(WindowsSystemProbeSeamsTest, NumaWithoutMask2UsesTheOneGroupMask)
+{
+    fake().maxPerGroup = {4, 4};
+    fake().activePerGroup = {4, 4};
+    fake().activeGroups = 2;
+    fake().numaMask2Available = false; // Before Windows 11 and Windows Server 2022
+    fake().numaNodes = {FakeNumaNode{.masks = {groupMask(1, 0xF), groupMask(0, 0xF)}, .available = 1ULL << 30U}};
+    auto probe = makeProbe();
+    const SystemCounters counters = probe.read();
+    ASSERT_EQ(counters.numaNodes.size(), 1U);
+    EXPECT_EQ(counters.numaNodes[0].cpus, CpuAffinity::fromCpuList("4-7")) << "group 1's processors follow group 0's";
+}
+
+TEST_F(WindowsSystemProbeSeamsTest, NumaListsCpuLessAndMemorylessNodesButNotGaps)
+{
+    fake().numaNodes = {
+        FakeNumaNode{.masks = {groupMask(0, 0xF)}, .available = 0},         // Memoryless: processors, no memory free
+        FakeNumaNode{.masks = {}, .available = std::nullopt},               // A gap: names no node
+        FakeNumaNode{.masks = {groupMask(0, 0)}, .available = 2ULL << 30U}, // CPU-less: memory only
+        FakeNumaNode{.masks = {}, .available = 0},                          // Neither: nothing to show
+    };
+    auto probe = makeProbe();
+    const SystemCounters counters = probe.read();
+    ASSERT_EQ(counters.numaNodes.size(), 2U);
+    EXPECT_EQ(counters.numaNodes[0].id, 0);
+    EXPECT_EQ(counters.numaNodes[0].cpus, CpuAffinity::fromCpuList("0-3"));
+    EXPECT_EQ(counters.numaNodes[0].memFreeBytes, 0U);
+    EXPECT_EQ(counters.numaNodes[1].id, 2) << "node numbers are kept, gaps and all";
+    EXPECT_TRUE(counters.numaNodes[1].cpus.empty());
+    EXPECT_EQ(counters.numaNodes[1].memFreeBytes, 2ULL << 30U);
+}
+
+TEST_F(WindowsSystemProbeSeamsTest, NumaMemoryIsReadEverySampleAndTheNodesOnlyAtTheRescanInterval)
+{
+    fake().numaNodes = {
+        FakeNumaNode{.masks = {groupMask(0, 0x3)}, .available = 1ULL << 30U},
+        FakeNumaNode{.masks = {groupMask(0, 0xC)}, .available = 2ULL << 30U},
+    };
+    auto probe = makeProbe();
+    (void) probe.read();
+    EXPECT_EQ(fake().numaMaskCalls, 2);
+    EXPECT_EQ(fake().numaMemoryCalls, 2);
+
+    // Memory moves between samples; the processor masks aren't asked for again.
+    fake().numaNodes[0].available = 7ULL << 20U;
+    fake().numaNodes[1].masks = {groupMask(0, 0x4)};
+    SystemCounters counters = probe.read();
+    EXPECT_EQ(fake().numaMaskCalls, 2);
+    EXPECT_EQ(fake().numaMemoryCalls, 4);
+    ASSERT_EQ(counters.numaNodes.size(), 2U);
+    EXPECT_EQ(counters.numaNodes[0].memFreeBytes, 7ULL << 20U);
+    EXPECT_EQ(counters.numaNodes[1].cpus, CpuAffinity::fromCpuList("2,3")) << "the last listing's processors";
+
+    // After the rescan interval the nodes are listed again.
+    fakeClock() += std::chrono::seconds(Domain::Sampling::NUMA_RESCAN_INTERVAL_SECONDS);
+    counters = probe.read();
+    EXPECT_EQ(fake().numaMaskCalls, 4);
+    ASSERT_EQ(counters.numaNodes.size(), 2U);
+    EXPECT_EQ(counters.numaNodes[1].cpus, CpuAffinity::fromCpuList("2"));
+}
+
+TEST_F(WindowsSystemProbeSeamsTest, NumaNodeWhoseMemoryStopsReadingIsLeftOut)
+{
+    fake().numaNodes = {
+        FakeNumaNode{.masks = {groupMask(0, 0x3)}, .available = 1ULL << 30U},
+        FakeNumaNode{.masks = {groupMask(0, 0xC)}, .available = 2ULL << 30U},
+    };
+    auto probe = makeProbe();
+    (void) probe.read();
+    fake().numaNodes[1].available = std::nullopt; // Removed since the listing
+    const SystemCounters counters = probe.read();
+    ASSERT_EQ(counters.numaNodes.size(), 1U);
+    EXPECT_EQ(counters.numaNodes[0].id, 0);
+}
+
+TEST_F(WindowsSystemProbeSeamsTest, NumaIsNotReadWhenTheNodeCountDoesNotAnswer)
+{
+    fake().failNumaHighest = true;
+    auto probe = makeProbe();
+    EXPECT_FALSE(probe.capabilities().hasNumaNodes);
+    const SystemCounters counters = probe.read();
+    EXPECT_TRUE(counters.numaNodes.empty());
+    EXPECT_EQ(fake().numaMaskCalls, 0);
+    EXPECT_EQ(fake().numaMemoryCalls, 0);
+}
+
+TEST_F(WindowsSystemProbeSeamsTest, NumaIsNotReadWithoutTheCalls)
+{
+    WindowsSystemProbeFunctions fns = fakeFunctions();
+    fns.numa = {};
+    WindowsSystemProbe probe(2'000, nullptr, fns);
+    EXPECT_FALSE(probe.capabilities().hasNumaNodes);
+    EXPECT_TRUE(probe.read().numaNodes.empty());
 }
 
 } // namespace Platform

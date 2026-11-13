@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Platform/CpuAffinity.h"
 #include "Platform/CpuDetails.h"
 #include "Platform/SystemTypes.h"
 
@@ -69,6 +70,18 @@ struct PowerStatus
     bool reportsCapacity = false;   ///< Platform::PowerCapabilities::hasDesignCapacity
     bool reportsCycleCount = false; ///< Platform::PowerCapabilities::hasCycleCount
     bool reportsTechnology = false; ///< Platform::PowerCapabilities::hasTechnology
+};
+
+/// One NUMA node, as the CPU Cores tab lists it (#3088): its processors and their use, and its memory.
+struct NumaNodeSnapshot
+{
+    int id = 0;                      ///< The OS's node number
+    Platform::CpuAffinity cpus;      ///< Its logical processors, numbered as cpuPerCore; empty: CPU-less
+    std::size_t cpuCount = 0;        ///< cpus.count()
+    double cpuPercent = 0.0;         ///< Its processors' average busy %; NaN while none has a reading
+    std::uint64_t memTotalBytes = 0; ///< 0: memoryless, or unknown (SystemSnapshot::numaNodeTotalsKnown false)
+    std::uint64_t memFreeBytes = 0;  ///< Free (Linux) or available (Windows, standby pages included)
+    std::uint64_t memUsedBytes = 0;  ///< Total less free; 0 without a total
 };
 
 /// Immutable, UI-ready system metrics snapshot.
@@ -147,6 +160,13 @@ struct SystemSnapshot
     Platform::ResourcePressure cpuPressure;
     Platform::ResourcePressure memoryPressure;
     Platform::ResourcePressure ioPressure;
+
+    // NUMA nodes (#3088), sorted by id, where the probe reads them (SystemCapabilities::hasNumaNodes);
+    // empty otherwise. A machine without NUMA hardware has one, which the UI doesn't show.
+    // numaNodeTotalsKnown: each node's total memory was read (Linux), so used memory is known; without it
+    // (Windows) memFreeBytes is the node's available memory and there is no total or used figure.
+    std::vector<NumaNodeSnapshot> numaNodes;
+    bool numaNodeTotalsKnown = false;
 
     // CPU frequency in MHz
     std::uint64_t cpuFreqMHz = 0;

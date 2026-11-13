@@ -3,9 +3,11 @@
 // Pure arithmetic extracted from WindowsSystemProbe so it can be unit-tested with fabricated
 // values, without depending on what this machine's page files or processors happen to report.
 
+#include "Platform/CpuAffinity.h"
 #include "Platform/SystemTypes.h"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <compare>
 #include <cstddef>
@@ -232,6 +234,54 @@ std::size_t appendProcessorGroup(
         return *allGroupNow;
     }
     return lastAllGroup.value_or(CpuCounters{});
+}
+
+/// One processor group's part of a NUMA node (#3088): a GROUP_AFFINITY's Group and Mask, bit N being
+/// processor N of that group.
+struct NumaGroupMask
+{
+    std::uint16_t group = 0;
+    std::uint64_t mask = 0;
+};
+
+/// A NUMA node's processors, numbered as the per-core CPU figures are (#3088): processor N of group G is
+/// CPU groupFirstCoreIds[G] + N (processorGroupFirstCoreIds()), so the node's CPUs are the CPU Cores
+/// tab's. A group the layout doesn't have is dropped, and so are bits at or above a group's size (the
+/// next group's first id less its own; the last group's, at most 64, isn't bounded). Masks for the same
+/// group combine. Empty for a node with no processors.
+[[nodiscard]] inline CpuAffinity numaNodeCpus(std::span<const NumaGroupMask> masks, std::span<const std::size_t> groupFirstCoreIds)
+{
+    CpuAffinity cpus;
+    for (const NumaGroupMask& entry : masks)
+    {
+        const std::size_t group = entry.group;
+        if (group >= groupFirstCoreIds.size())
+        {
+            continue;
+        }
+        const std::size_t first = groupFirstCoreIds[group];
+        const std::size_t size = (group + 1 < groupFirstCoreIds.size() && groupFirstCoreIds[group + 1] >= first)
+                                   ? groupFirstCoreIds[group + 1] - first
+                                   : CpuAffinity::BITS_PER_WORD;
+        std::uint64_t bits = (size >= CpuAffinity::BITS_PER_WORD) ? entry.mask : (entry.mask & ((std::uint64_t{1} << size) - 1U));
+        while (bits != 0)
+        {
+            // One setRange() per run of consecutive processors.
+            const auto low = static_cast<std::size_t>(std::countr_zero(bits));
+            const auto run = static_cast<std::size_t>(std::countr_one(bits >> low));
+            cpus.setRange(first + low, first + low + run - 1);
+            bits = (low + run >= CpuAffinity::BITS_PER_WORD) ? 0 : (bits & ~((std::uint64_t{1} << (low + run)) - 1U));
+        }
+    }
+    return cpus;
+}
+
+/// Whether a node number up to GetNumaHighestNodeNumber names a node to list (#3088): one with
+/// processors, or a CPU-less node whose available memory reads and isn't 0. A number in a gap between
+/// nodes has neither, and is left out rather than shown as an empty node.
+[[nodiscard]] inline bool isListedNumaNode(const CpuAffinity& cpus, std::optional<std::uint64_t> availableBytes) noexcept
+{
+    return !cpus.empty() || availableBytes.value_or(0) > 0;
 }
 
 /// IANA ifType values GetIfTable2 reports (ipifcons.h), spelled out so this header stays free of

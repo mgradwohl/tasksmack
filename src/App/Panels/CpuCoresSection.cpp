@@ -3,6 +3,7 @@
 #include "App/Panels/CpuCoreGridIds.h"
 #include "App/Panels/CpuCoreKinds.h"
 #include "App/Panels/CpuSummaryText.h"
+#include "App/Panels/NumaNodesView.h"
 #include "Domain/SharedHistory.h"
 #include "Domain/SystemSnapshot.h"
 #include "UI/ChartGrid.h"
@@ -129,6 +130,9 @@ void renderCpuCoresSection(RenderContext& ctx)
     ImGui::SameLine(0, 0);
     ImGui::TextUnformatted(coreInfo.c_str());
     ImGui::Spacing();
+
+    // The NUMA nodes, on a machine with more than one (#3088): which CPUs below each node holds
+    (void) NumaNodesView::render(snap);
 
     const size_t numCores = snap.cpuPerCore.size();
     if (numCores == 0)
