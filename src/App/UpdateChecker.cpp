@@ -88,6 +88,7 @@ void UpdateChecker::start(UpdateCheck::Persisted& state, std::chrono::system_clo
         .accept = std::string(UpdateCheck::ACCEPT_HEADER),
         .timeout = std::chrono::milliseconds(Domain::Sampling::UPDATE_CHECK_TIMEOUT_MS),
         .maxBodyBytes = UpdateCheck::MAX_RESPONSE_BYTES,
+        .headers = {},
     };
     spdlog::debug("Update check: GET https://{}{}", request.host, request.path);
     // The job owns what it uses: the client, the request and the version to compare against.

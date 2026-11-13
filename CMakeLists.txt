@@ -291,6 +291,7 @@ set(TASKSMACK_SOURCES
     src/Domain/SystemInfoModel.cpp
     src/Domain/CrashHistory.cpp
     src/Domain/UpdateCheck.cpp # the opt-in update check's decisions (#3093)
+    src/Domain/VirusTotal.cpp # Look up on VirusTotal's request and reply (#3094)
     src/Domain/ProcessIconCache.cpp
     src/Platform/CurrentProcess.cpp
     src/Platform/ThreadName.cpp

@@ -508,6 +508,7 @@ set(COMMON_TEST_SOURCES
     Domain/test_SystemInfoModel.cpp
     Domain/test_CrashHistory.cpp
     Domain/test_UpdateCheck.cpp # the update check's versions, reply reader and schedule (#3093)
+    Domain/test_VirusTotal.cpp # Look up on VirusTotal's request, reply reader and result line (#3094)
     Domain/test_StartAtLogin.cpp # start at sign-in: the entry's text and what it means for this copy (#3093 part 2)
     Domain/test_StorageModelAllocationFailure.cpp
     Domain/test_ServiceModel.cpp
@@ -1168,6 +1169,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/Domain/SystemInfoModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/CrashHistory.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/UpdateCheck.cpp
+    ${CMAKE_SOURCE_DIR}/src/Domain/VirusTotal.cpp
     # The update check's worker (#3093), with a fake client (test_UpdateChecker.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/UpdateChecker.cpp
     # Start at sign-in's worker (#3093 part 2), with a fake entry (test_StartAtLoginSetting.cpp)
