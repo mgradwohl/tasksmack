@@ -630,6 +630,7 @@ set(COMMON_TEST_SOURCES
     Platform/test_DnsMessage.cpp
     Platform/test_PublicIpLookup.cpp  # what either OS's public IP lookup does with a reply (#3117)
     Platform/test_Sha256.cpp  # SHA-256 for Look up on VirusTotal (#3094)
+    Platform/test_PlatformInterfaceDefaults.cpp  # the Platform interfaces' default methods (#3374)
     Platform/test_LinuxDiskSmart.cpp
     Platform/test_SmbiosParser.cpp
     Platform/test_PartitionTable.cpp
