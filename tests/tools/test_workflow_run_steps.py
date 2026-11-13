@@ -1928,5 +1928,31 @@ class SetupLlvmInstallTests(unittest.TestCase):
         self.assertIn("Staged 8 LLVM 23.1.6 .debs", result.stdout)
 
 
+def _is_setup_llvm(test: unittest.TestCase) -> bool:
+    return type(test).__name__.startswith("SetupLlvm")
+
+
+def _filtered(suite: unittest.TestSuite, keep) -> unittest.TestSuite:
+    out = unittest.TestSuite()
+    for item in suite:
+        if isinstance(item, unittest.TestSuite):
+            out.addTests(_filtered(item, keep))
+        elif keep(item):
+            out.addTest(item)
+    return out
+
+
 if __name__ == "__main__":
+    # #3643: the setup-llvm cases (#3635) spawn bash about forty times, so ctest runs them as their own entry,
+    # SetupLlvmInstallScript (--only-setup-llvm), and WorkflowRunStepsScript runs the rest (--skip-setup-llvm).
+    # With neither flag every case runs, as before.
+    flags = {"--only-setup-llvm", "--skip-setup-llvm"}
+    chosen = [arg for arg in sys.argv[1:] if arg in flags]
+    if chosen:
+        sys.argv = [arg for arg in sys.argv if arg not in flags]
+        only = chosen[0] == "--only-setup-llvm"
+        loaded = unittest.defaultTestLoader.loadTestsFromModule(sys.modules[__name__])
+        keep = _is_setup_llvm if only else (lambda test: not _is_setup_llvm(test))
+        result = unittest.TextTestRunner(verbosity=1).run(_filtered(loaded, keep))
+        sys.exit(0 if result.wasSuccessful() else 1)
     unittest.main()
