@@ -34,7 +34,9 @@
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <span>
 #include <stop_token>
+#include <vector>
 
 namespace Platform
 {
@@ -163,15 +165,39 @@ class BrokeredOpenFilesReader final : public IProcessOpenFilesReader
     [[nodiscard]] std::size_t handlesScanned() const noexcept override;
     [[nodiscard]] bool canReadAuthorized() const override;
     [[nodiscard]] OpenFilesReadResult readAuthorized(const ProcessTarget& target, const std::stop_token& stopToken) override;
-    /// The inner reader's batch (#3357): its own reads come from one walk; the helper's each read for themselves.
+    /// The inner reader's batch (#3357): its own reads come from one walk. The helper's come from one request when
+    /// the batch names them (expectAuthorizedReads(), #3578), and otherwise each read for itself.
     void beginBatch() override;
     void endBatch() noexcept override;
+    /// Remembers @p targets for the batch (#3578): the first readAuthorized() of one asks the helper for it and the
+    /// ones after it in one OpenFilesBatchRequest (up to Broker::MAX_OPEN_FILES_BATCH), and the reads after take their
+    /// results from that reply. A target the reply didn't reach is asked for in the next. A helper that answers a
+    /// batch with anything but its reply (an ErrorReply: one that doesn't read batches) is asked one process at a
+    /// time for the rest of the batch, as before v24.
+    void expectAuthorizedReads(std::span<const ProcessTarget> targets) override;
 
   private:
+    /// One target the batch expects, and its result once the helper has sent it.
+    struct Expected
+    {
+        ProcessTarget target;
+        bool answered = false;
+        std::optional<OpenFilesReadResult> result; ///< Until its read takes it
+    };
+
     [[nodiscard]] OpenFilesReadResult viaBroker(const ProcessTarget& target, const std::stop_token& stopToken);
+    /// @p target's result from the batch's request, sending it if need be; nullopt when the batch has none for it
+    /// (it isn't expected, or the helper doesn't read batches), and the caller asks for it alone.
+    [[nodiscard]] std::optional<OpenFilesReadResult> fromBatch(const ProcessTarget& target, const std::stop_token& stopToken);
+    /// Sends one OpenFilesBatchRequest for m_Expected's unanswered targets from @p from on, and keeps what comes back.
+    void askBatch(std::size_t from, const std::stop_token& stopToken);
 
     std::unique_ptr<IProcessOpenFilesReader> m_Inner;
     std::shared_ptr<IPrivilegedBroker> m_Broker;
+    bool m_InBatch = false;
+    bool m_BatchUnanswered = false; ///< The helper didn't answer a batch request with its reply: one at a time
+    std::vector<Expected> m_Expected;
+    std::size_t m_NextExpected = 0; ///< Where the next read's lookup starts: reads come in the expected order
 };
 
 /// Process Details' connections list that an administrator can finish (#2309), as BrokeredEnvironmentReader.

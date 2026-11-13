@@ -16,6 +16,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <filesystem>
@@ -1070,6 +1071,210 @@ TEST(BrokeredOpenFilesReaderTest, ABatchIsTheInnerReaders)
     EXPECT_EQ(raw->batchesEnded(), 0);
     reader.endBatch();
     EXPECT_EQ(raw->batchesEnded(), 1);
+}
+
+namespace
+{
+
+/// The helper's answer to a batch: one Ok result per target, each naming its PID in its one file's path, or the
+/// first @p most of them when @p most is set (a reply cut short).
+[[nodiscard]] Broker::Response batchReplyFor(const Broker::OpenFilesBatchRequest& batch, std::size_t most = SIZE_MAX)
+{
+    Broker::OpenFilesBatchReply reply;
+    for (const ProcessTarget& target : batch.targets)
+    {
+        if (reply.results.size() == most)
+        {
+            break;
+        }
+        OpenFilesReadResult result;
+        result.status = OpenFilesReadStatus::Ok;
+        result.files.push_back(
+            {.descriptor = 4, .kind = OpenFileKind::File, .path = std::to_string(target.pid), .flags = std::nullopt, .deleted = false});
+        reply.results.push_back(std::move(result));
+    }
+    return reply;
+}
+
+/// @p count targets, PIDs 100 on.
+[[nodiscard]] std::vector<ProcessTarget> targetsOf(int count)
+{
+    std::vector<ProcessTarget> targets;
+    targets.reserve(static_cast<std::size_t>(count));
+    for (int i = 0; i < count; ++i)
+    {
+        targets.push_back({.pid = 100 + i, .startTimeTicks = 7});
+    }
+    return targets;
+}
+
+} // namespace
+
+// #3578: a batch's administrator reads it was told of are one request to the helper, answered in order.
+TEST(BrokeredOpenFilesReaderTest, ABatchsAuthorizedReadsAreOneRequestForEveryTarget)
+{
+    const auto broker = std::make_shared<Mocks::FakeBroker>(true);
+    broker->setAnswer(
+        [](const Broker::Request& request) -> std::expected<Broker::Response, std::string>
+        {
+            if (const auto* batch = std::get_if<Broker::OpenFilesBatchRequest>(&request))
+            {
+                return batchReplyFor(*batch);
+            }
+            return std::unexpected(std::string("a request one at a time"));
+        });
+    BrokeredOpenFilesReader reader(std::make_unique<TestMocks::MockProcessOpenFilesReader>(), broker);
+    const std::vector<ProcessTarget> targets = targetsOf(5);
+    reader.beginBatch();
+    reader.expectAuthorizedReads(targets);
+    for (const ProcessTarget& target : targets)
+    {
+        const OpenFilesReadResult result = reader.readAuthorized(target, std::stop_token{});
+        ASSERT_EQ(result.status, OpenFilesReadStatus::Ok) << target.pid;
+        EXPECT_EQ(result.files.at(0).path, std::to_string(target.pid)) << "each read gets its own process's result";
+    }
+    reader.endBatch();
+    const std::vector<Broker::Request> requests = broker->requests();
+    ASSERT_EQ(requests.size(), 1U) << "one request, so the helper walks its handle table once";
+    ASSERT_TRUE(std::holds_alternative<Broker::OpenFilesBatchRequest>(requests[0]));
+    EXPECT_EQ(std::get<Broker::OpenFilesBatchRequest>(requests[0]).targets, targets);
+
+    // Once the batch is over, a read is fresh and alone.
+    broker->setAnswer([](const Broker::Request& /*request*/) -> std::expected<Broker::Response, std::string>
+                      { return Broker::Response{Broker::OpenFilesReply{}}; });
+    static_cast<void>(reader.readAuthorized(targets[0], std::stop_token{}));
+    ASSERT_EQ(broker->requests().size(), 2U);
+    EXPECT_TRUE(std::holds_alternative<Broker::OpenFilesRequest>(broker->requests()[1]));
+}
+
+// A reply the frame or the helper's budget cut short: the next read asks again for the rest, in one request.
+TEST(BrokeredOpenFilesReaderTest, TargetsAReplyDidntReachAreAskedForInTheNextRequest)
+{
+    const auto broker = std::make_shared<Mocks::FakeBroker>(true);
+    broker->setAnswer(
+        [](const Broker::Request& request) -> std::expected<Broker::Response, std::string>
+        {
+            if (const auto* batch = std::get_if<Broker::OpenFilesBatchRequest>(&request))
+            {
+                return batchReplyFor(*batch, 2);
+            }
+            return std::unexpected(std::string("a request one at a time"));
+        });
+    BrokeredOpenFilesReader reader(std::make_unique<TestMocks::MockProcessOpenFilesReader>(), broker);
+    const std::vector<ProcessTarget> targets = targetsOf(5);
+    reader.beginBatch();
+    reader.expectAuthorizedReads(targets);
+    for (const ProcessTarget& target : targets)
+    {
+        EXPECT_EQ(reader.readAuthorized(target, std::stop_token{}).files.at(0).path, std::to_string(target.pid));
+    }
+    reader.endBatch();
+    const std::vector<Broker::Request> requests = broker->requests();
+    ASSERT_EQ(requests.size(), 3U) << "2, 2, then 1";
+    EXPECT_EQ(std::get<Broker::OpenFilesBatchRequest>(requests[1]).targets,
+              (std::vector<ProcessTarget>{targets[2], targets[3], targets[4]}));
+    EXPECT_EQ(std::get<Broker::OpenFilesBatchRequest>(requests[2]).targets, (std::vector<ProcessTarget>{targets[4]}));
+}
+
+// A helper that doesn't read batches (an ErrorReply) is asked one process at a time, as before v24.
+TEST(BrokeredOpenFilesReaderTest, AHelperThatDoesntReadBatchesIsAskedOneProcessAtATime)
+{
+    const auto broker = std::make_shared<Mocks::FakeBroker>(true);
+    broker->setAnswer(
+        [](const Broker::Request& request) -> std::expected<Broker::Response, std::string>
+        {
+            if (std::holds_alternative<Broker::OpenFilesBatchRequest>(request))
+            {
+                return Broker::Response{Broker::ErrorReply{.message = "Not a request this helper does"}};
+            }
+            OpenFilesReadResult result;
+            result.status = OpenFilesReadStatus::Ok;
+            return Broker::Response{Broker::OpenFilesReply{.result = result}};
+        });
+    BrokeredOpenFilesReader reader(std::make_unique<TestMocks::MockProcessOpenFilesReader>(), broker);
+    const std::vector<ProcessTarget> targets = targetsOf(3);
+    reader.beginBatch();
+    reader.expectAuthorizedReads(targets);
+    for (const ProcessTarget& target : targets)
+    {
+        EXPECT_EQ(reader.readAuthorized(target, std::stop_token{}).status, OpenFilesReadStatus::Ok);
+    }
+    reader.endBatch();
+    const std::vector<Broker::Request> requests = broker->requests();
+    ASSERT_EQ(requests.size(), 4U) << "the batch once, then each process alone";
+    EXPECT_TRUE(std::holds_alternative<Broker::OpenFilesBatchRequest>(requests[0]));
+    for (std::size_t i = 1; i < requests.size(); ++i)
+    {
+        ASSERT_TRUE(std::holds_alternative<Broker::OpenFilesRequest>(requests[i]));
+        EXPECT_EQ(std::get<Broker::OpenFilesRequest>(requests[i]).target, targets[i - 1]);
+    }
+}
+
+// A batch request the channel can't carry says why for its first target; the rest are asked alone and say so too.
+TEST(BrokeredOpenFilesReaderTest, ABatchTheHelperCouldntBeAskedSaysWhy)
+{
+    const auto broker = std::make_shared<Mocks::FakeBroker>(true);
+    broker->setAnswer([](const Broker::Request& /*request*/) -> std::expected<Broker::Response, std::string>
+                      { return std::unexpected(std::string("timed out")); });
+    BrokeredOpenFilesReader reader(std::make_unique<TestMocks::MockProcessOpenFilesReader>(), broker);
+    const std::vector<ProcessTarget> targets = targetsOf(2);
+    reader.beginBatch();
+    reader.expectAuthorizedReads(targets);
+    const OpenFilesReadResult first = reader.readAuthorized(targets[0], std::stop_token{});
+    EXPECT_EQ(first.status, OpenFilesReadStatus::Failed);
+    EXPECT_NE(first.detail.find("timed out"), std::string::npos) << first.detail;
+    EXPECT_EQ(reader.readAuthorized(targets[1], std::stop_token{}).status, OpenFilesReadStatus::Failed);
+    reader.endBatch();
+    const std::vector<Broker::Request> requests = broker->requests();
+    ASSERT_EQ(requests.size(), 2U);
+    EXPECT_TRUE(std::holds_alternative<Broker::OpenFilesRequest>(requests[1]));
+}
+
+// A read of a process the batch didn't name, or a batch told of none, is a read alone; so is one outside a batch.
+TEST(BrokeredOpenFilesReaderTest, AReadTheBatchDidntNameIsAlone)
+{
+    const auto broker = std::make_shared<Mocks::FakeBroker>(true);
+    broker->setAnswer(
+        [](const Broker::Request& request) -> std::expected<Broker::Response, std::string>
+        {
+            if (const auto* batch = std::get_if<Broker::OpenFilesBatchRequest>(&request))
+            {
+                return batchReplyFor(*batch);
+            }
+            return Broker::Response{Broker::OpenFilesReply{}};
+        });
+    BrokeredOpenFilesReader reader(std::make_unique<TestMocks::MockProcessOpenFilesReader>(), broker);
+    reader.expectAuthorizedReads(targetsOf(2)); // outside a batch: forgotten
+    reader.beginBatch();
+    static_cast<void>(reader.readAuthorized(targetsOf(1)[0], std::stop_token{}));
+    reader.expectAuthorizedReads(targetsOf(2));
+    static_cast<void>(reader.readAuthorized(TARGET, std::stop_token{})); // not one of them
+    reader.endBatch();
+    const std::vector<Broker::Request> requests = broker->requests();
+    ASSERT_EQ(requests.size(), 2U);
+    EXPECT_TRUE(std::holds_alternative<Broker::OpenFilesRequest>(requests[0]));
+    EXPECT_TRUE(std::holds_alternative<Broker::OpenFilesRequest>(requests[1]));
+}
+
+// More targets than one request carries go in several, each at most MAX_OPEN_FILES_BATCH.
+TEST(BrokeredOpenFilesReaderTest, ABatchPastTheRequestCapIsSeveralRequests)
+{
+    const auto broker = std::make_shared<Mocks::FakeBroker>(true);
+    broker->setAnswer([](const Broker::Request& request) -> std::expected<Broker::Response, std::string>
+                      { return batchReplyFor(std::get<Broker::OpenFilesBatchRequest>(request)); });
+    BrokeredOpenFilesReader reader(std::make_unique<TestMocks::MockProcessOpenFilesReader>(), broker);
+    const std::vector<ProcessTarget> targets = targetsOf(static_cast<int>(Broker::MAX_OPEN_FILES_BATCH) + 3);
+    reader.beginBatch();
+    reader.expectAuthorizedReads(targets);
+    for (const ProcessTarget& target : targets)
+    {
+        ASSERT_EQ(reader.readAuthorized(target, std::stop_token{}).status, OpenFilesReadStatus::Ok);
+    }
+    reader.endBatch();
+    const std::vector<Broker::Request> requests = broker->requests();
+    ASSERT_EQ(requests.size(), 2U);
+    EXPECT_EQ(std::get<Broker::OpenFilesBatchRequest>(requests[0]).targets.size(), Broker::MAX_OPEN_FILES_BATCH);
+    EXPECT_EQ(std::get<Broker::OpenFilesBatchRequest>(requests[1]).targets.size(), 3U);
 }
 
 TEST(BrokeredOpenFilesReaderTest, AHelperThatCantAnswerSaysWhy)

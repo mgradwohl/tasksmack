@@ -1,6 +1,7 @@
 #include "BrokerRequestMapping.h"
 
 #include "Platform/BrokerProtocol.h"
+#include "Platform/BrokerSessionRules.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
@@ -13,6 +14,7 @@
 #include <string>
 #include <utility>
 #include <variant>
+#include <vector>
 
 namespace Platform::BrokerServer
 {
@@ -149,6 +151,65 @@ namespace
     }
 }
 
+/// Find handles' administrator pass (#3578): every target read in one batch of the reader's (beginBatch(): on Windows,
+/// one walk of the system handle table), in order. Stops once OPEN_FILES_BATCH_BUDGET has passed, after at least one
+/// read, and answers with the results so far; the client asks again for the rest. A read that throws is that
+/// target's failure, and the rest are still read.
+[[nodiscard]] Broker::Response handleOpenFilesBatch(const Broker::OpenFilesBatchRequest& read, const Readers& readers)
+{
+    if (readers.openFiles == nullptr)
+    {
+        return Broker::ErrorReply{.message = "This helper doesn't list open files"};
+    }
+    struct BatchScope
+    {
+        explicit BatchScope(IProcessOpenFilesReader& reader) : m_Reader(reader)
+        {
+            m_Reader.beginBatch();
+        }
+        ~BatchScope()
+        {
+            m_Reader.endBatch();
+        }
+        BatchScope(const BatchScope&) = delete;
+        BatchScope& operator=(const BatchScope&) = delete;
+        BatchScope(BatchScope&&) = delete;
+        BatchScope& operator=(BatchScope&&) = delete;
+
+      private:
+        IProcessOpenFilesReader& m_Reader;
+    };
+    try
+    {
+        const auto deadline = Broker::idleNow(readers.clock) + OPEN_FILES_BATCH_BUDGET;
+        Broker::OpenFilesBatchReply reply;
+        reply.results.reserve(read.targets.size());
+        const BatchScope batch(*readers.openFiles);
+        for (const ProcessTarget& target : read.targets)
+        {
+            if (!reply.results.empty() && Broker::idleNow(readers.clock) >= deadline)
+            {
+                break; // the rest in the client's next request
+            }
+            try
+            {
+                reply.results.push_back(readers.openFiles->readOpenFiles(target));
+            }
+            catch (...)
+            {
+                OpenFilesReadResult failed;
+                failed.status = OpenFilesReadStatus::Failed;
+                reply.results.push_back(std::move(failed));
+            }
+        }
+        return reply;
+    }
+    catch (...) // the batch's walk, or no memory for the reply
+    {
+        return Broker::ErrorReply{.message = "The open files couldn't be read"};
+    }
+}
+
 /// Process Details' threads (#3069): the reader checks the target's identity itself.
 [[nodiscard]] Broker::Response handleThreads(const Broker::ThreadsRequest& read, const Readers& readers)
 {
@@ -260,6 +321,10 @@ Broker::Response handleRequest(const Broker::Request& request, IProcessActions& 
     if (const auto* read = std::get_if<Broker::OpenFilesRequest>(&request))
     {
         return handleOpenFiles(*read, readers);
+    }
+    if (const auto* read = std::get_if<Broker::OpenFilesBatchRequest>(&request))
+    {
+        return handleOpenFilesBatch(*read, readers);
     }
     if (const auto* read = std::get_if<Broker::ConnectionsRequest>(&request))
     {

@@ -20,8 +20,8 @@
 // by PID *and* start time (ProcessTarget), so the helper re-verifies the process and a reused PID can't
 // redirect a request. The one path a request carries is Replace Task Manager's (#3072), which the helper
 // takes only when it is the TaskSmack.exe beside it. Its kinds: the handshake, the process actions
-// (#2308), Process Details' reads (#2309), Replace Task Manager (#3072) and the Users tab's Disconnect and
-// Sign out of another user's Windows session (#3076).
+// (#2308), Process Details' reads (#2309), Replace Task Manager (#3072), the Users tab's Disconnect and
+// Sign out of another user's Windows session (#3076), and Find handles' batch of open-files reads (#3578).
 
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
@@ -77,7 +77,9 @@ namespace Platform::Broker
 /// 23: the messages only the Linux helper served or only Linux sent are gone: SetSchedPolicy, ServiceAction,
 ///     ReadMemoryRollup, ReadFirmwareFile, ReadCrashes, ReadProcessCounters, ListHiddenProcesses, ReadMemoryMap,
 ///     ReadUdpBytes and their results, and Hello's forSession (#3580). The kinds left keep their numbers.
-inline constexpr std::uint16_t PROTOCOL_VERSION = 23;
+/// 24: ReadOpenFilesBatch, many processes' open files from one walk of Windows' handle table, for Find handles'
+///     administrator pass (#3578), answered with OpenFilesBatchResult. Its kinds take numbers never used before.
+inline constexpr std::uint16_t PROTOCOL_VERSION = 24;
 /// The largest frame either side accepts, header included.
 inline constexpr std::size_t MAX_MESSAGE_BYTES = std::size_t{8} << 20U;
 /// The longest string field (an error message, a note).
@@ -91,6 +93,8 @@ inline constexpr std::size_t MAX_MODULES = std::size_t{1} << 16U;
 inline constexpr std::size_t MAX_CONNECTIONS = std::size_t{1} << 16U;
 /// The most threads a ThreadsReply carries (#3069); a read with more keeps the first.
 inline constexpr std::size_t MAX_THREADS = std::size_t{1} << 16U;
+/// The most processes one ReadOpenFilesBatch names (#3578); a search with more sends several.
+inline constexpr std::size_t MAX_OPEN_FILES_BATCH = 1024;
 /// The frame header after the length: version, kind, request id.
 inline constexpr std::size_t HEADER_BYTES = 2 + 2 + 4;
 
@@ -112,6 +116,7 @@ enum class MessageKind : std::uint16_t // NOLINT(performance-enum-size): 16 bits
     ReadOpenFiles = 34,          ///< Its open files (#2309)
     ReadConnections = 35,        ///< Its TCP and UDP sockets (#2309)
     ReadThreads = 41,            ///< Another user's process's threads, for Process Details (#3069)
+    ReadOpenFilesBatch = 44,     ///< Many processes' open files from one handle-table walk, for Find handles (#3578)
     ActionResult = 48,           ///< The answer to a process action
     EnvironmentResult = 49,      ///< The answer to ReadEnvironment
     ModulesResult = 50,          ///< The answer to ReadModules
@@ -119,6 +124,7 @@ enum class MessageKind : std::uint16_t // NOLINT(performance-enum-size): 16 bits
     ConnectionsResult = 52,      ///< The answer to ReadConnections
     ServiceActionResult = 58,    ///< The answer to SessionAction (#3076)
     ThreadsResult = 59,          ///< The answer to ReadThreads
+    OpenFilesBatchResult = 62,   ///< The answer to ReadOpenFilesBatch (#3578)
     Error = 63,                  ///< A request the helper refused to read (malformed, or a kind it doesn't do)
 };
 
@@ -318,6 +324,18 @@ struct OpenFilesRequest
     friend bool operator==(const OpenFilesRequest&, const OpenFilesRequest&) = default;
 };
 
+/// Whether two open-files reads say the same thing, field by field (OpenFilesReadResult has no operator==).
+[[nodiscard]] inline bool sameOpenFilesResult(const OpenFilesReadResult& left, const OpenFilesReadResult& right)
+{
+    const auto same = [](const OpenFile& a, const OpenFile& b)
+    {
+        return a.descriptor == b.descriptor && a.kind == b.kind && a.path == b.path && a.flags == b.flags && a.deleted == b.deleted;
+    };
+    return left.status == right.status && left.detail == right.detail && left.truncated == right.truncated &&
+           left.namesIncomplete == right.namesIncomplete && left.hexDescriptors == right.hexDescriptors &&
+           std::ranges::equal(left.files, right.files, same);
+}
+
 /// The answer to OpenFilesRequest: the read's result, as IProcessOpenFilesReader returns it.
 struct OpenFilesReply
 {
@@ -325,13 +343,29 @@ struct OpenFilesReply
 
     friend bool operator==(const OpenFilesReply& left, const OpenFilesReply& right)
     {
-        const auto same = [](const OpenFile& a, const OpenFile& b)
-        {
-            return a.descriptor == b.descriptor && a.kind == b.kind && a.path == b.path && a.flags == b.flags && a.deleted == b.deleted;
-        };
-        return left.result.status == right.result.status && left.result.detail == right.result.detail &&
-               left.result.truncated == right.result.truncated && left.result.namesIncomplete == right.result.namesIncomplete &&
-               left.result.hexDescriptors == right.result.hexDescriptors && std::ranges::equal(left.result.files, right.result.files, same);
+        return sameOpenFilesResult(left.result, right.result);
+    }
+};
+
+/// List many processes' open files at once (#3578, protocol v24): Find handles' administrator pass, which the helper
+/// answers from one walk of the system handle table (IProcessOpenFilesReader::beginBatch()) rather than one per
+/// process. One to MAX_OPEN_FILES_BATCH targets; the reader checks each one's identity, as for OpenFilesRequest.
+struct OpenFilesBatchRequest
+{
+    std::vector<ProcessTarget> targets;
+    friend bool operator==(const OpenFilesBatchRequest&, const OpenFilesBatchRequest&) = default;
+};
+
+/// The answer to OpenFilesBatchRequest: the first targets' results, in the request's order. Fewer than it named when
+/// the rest didn't fit one frame or the helper's time for one request (BrokerServer::OPEN_FILES_BATCH_BUDGET): the
+/// client asks again for those. At least one when the request named any, the first cut to fit as an OpenFilesReply is.
+struct OpenFilesBatchReply
+{
+    std::vector<OpenFilesReadResult> results;
+
+    friend bool operator==(const OpenFilesBatchReply& left, const OpenFilesBatchReply& right)
+    {
+        return std::ranges::equal(left.results, right.results, sameOpenFilesResult);
     }
 };
 
@@ -449,7 +483,8 @@ using Request = std::variant<Hello,
                              ThreadsRequest,
                              TaskManagerReplacementRequest,
                              SessionActionRequest,
-                             ThreadActionRequest>;
+                             ThreadActionRequest,
+                             OpenFilesBatchRequest>;
 using Response = std::variant<HelloReply,
                               ActionResult,
                               ErrorReply,
@@ -458,7 +493,8 @@ using Response = std::variant<HelloReply,
                               OpenFilesReply,
                               ConnectionsReply,
                               ServiceActionReply,
-                              ThreadsReply>;
+                              ThreadsReply,
+                              OpenFilesBatchReply>;
 
 /// A decoded frame: its request id and message.
 template<typename Message> struct Decoded
@@ -824,6 +860,18 @@ namespace Detail
     return MessageKind::ReadOpenFiles;
 }
 
+/// ReadOpenFilesBatch (#3578): the count, then each target.
+[[nodiscard]] inline MessageKind encodePayload(Writer& writer, const OpenFilesBatchRequest& batch)
+{
+    const std::size_t count = std::min(batch.targets.size(), MAX_OPEN_FILES_BATCH);
+    writer.u32(static_cast<std::uint32_t>(count));
+    for (std::size_t i = 0; i < count; ++i)
+    {
+        writer.target(batch.targets[i]);
+    }
+    return MessageKind::ReadOpenFilesBatch;
+}
+
 [[nodiscard]] inline MessageKind encodePayload(Writer& writer, const ConnectionsRequest& connections)
 {
     writer.target(connections.target);
@@ -1008,6 +1056,24 @@ namespace Detail
     return request;
 }
 
+/// A ReadOpenFilesBatch payload (#3578): a count, refused at 0 or past MAX_OPEN_FILES_BATCH, then each target.
+[[nodiscard]] inline OpenFilesBatchRequest decodeOpenFilesBatchRequest(Reader& reader)
+{
+    OpenFilesBatchRequest request;
+    const std::uint32_t count = reader.u32();
+    if (count == 0 || count > MAX_OPEN_FILES_BATCH)
+    {
+        reader.fail();
+        return request;
+    }
+    request.targets.reserve(count);
+    for (std::uint32_t i = 0; reader.ok() && i < count; ++i)
+    {
+        request.targets.push_back(reader.target());
+    }
+    return request;
+}
+
 } // namespace Detail
 
 /// The request in @p bytes (one whole frame), or why it was refused.
@@ -1056,6 +1122,8 @@ namespace Detail
         return Detail::finish<Request>(reader, id, ConnectionsRequest{.target = reader.target()});
     case MessageKind::ReadThreads:
         return Detail::finish<Request>(reader, id, ThreadsRequest{.target = reader.target()});
+    case MessageKind::ReadOpenFilesBatch:
+        return Detail::finish<Request>(reader, id, Detail::decodeOpenFilesBatchRequest(reader));
     case MessageKind::HelloReply:
     case MessageKind::ActionResult:
     case MessageKind::EnvironmentResult:
@@ -1064,6 +1132,7 @@ namespace Detail
     case MessageKind::ConnectionsResult:
     case MessageKind::ServiceActionResult:
     case MessageKind::ThreadsResult:
+    case MessageKind::OpenFilesBatchResult:
     case MessageKind::Error:
         break;
     }
@@ -1157,20 +1226,31 @@ namespace Detail
 /// OpenFilesResult: status, detail, three flags, count; a file: descriptor, kind, path, flag, flags, deleted.
 /// As many files as fit in one frame: thousands of long paths could pass MAX_MESSAGE_BYTES, so the list
 /// stops short of it and says it was cut, as a read past MAX_OPEN_FILES does.
-[[nodiscard]] inline MessageKind encodePayload(Writer& writer, const OpenFilesReply& files)
+/// The bytes one OpenFilesResult entry takes: descriptor, kind, path, flag, flags, deleted.
+[[nodiscard]] inline std::size_t openFileBytes(const OpenFile& file) noexcept
 {
-    constexpr std::size_t ROOM = listRoom(1 + 4 + MAX_STRING_BYTES + 3 + 4);
-    const std::size_t count = entriesThatFit(
-        std::span(files.result.files), MAX_OPEN_FILES, ROOM, [](const OpenFile& file) { return 8 + 1 + textBytes(file.path) + 1 + 4 + 1; });
-    writer.u8(static_cast<std::uint8_t>(files.result.status));
-    writer.text(files.result.detail);
-    writer.u8((files.result.truncated || count < files.result.files.size()) ? 1 : 0);
-    writer.u8(files.result.namesIncomplete ? 1 : 0);
-    writer.u8(files.result.hexDescriptors ? 1 : 0);
+    return 8 + 1 + textBytes(file.path) + 1 + 4 + 1;
+}
+
+/// The bytes one open-files result takes before its files: status, detail, three flags, count.
+[[nodiscard]] inline std::size_t openFilesFixedBytes(const OpenFilesReadResult& result) noexcept
+{
+    return 1 + textBytes(result.detail) + 3 + 4;
+}
+
+/// One open-files result (an OpenFilesResult's payload, or one of an OpenFilesBatchResult's): status, detail, three
+/// flags, then its first @p count files, saying it was cut when that is fewer than it holds.
+inline void writeOpenFilesResult(Writer& writer, const OpenFilesReadResult& result, std::size_t count)
+{
+    writer.u8(static_cast<std::uint8_t>(result.status));
+    writer.text(result.detail);
+    writer.u8((result.truncated || count < result.files.size()) ? 1 : 0);
+    writer.u8(result.namesIncomplete ? 1 : 0);
+    writer.u8(result.hexDescriptors ? 1 : 0);
     writer.u32(static_cast<std::uint32_t>(count));
     for (std::size_t i = 0; i < count; ++i)
     {
-        const OpenFile& file = files.result.files[i];
+        const OpenFile& file = result.files[i];
         writer.u64(file.descriptor);
         writer.u8(static_cast<std::uint8_t>(file.kind));
         writer.text(file.path);
@@ -1178,7 +1258,51 @@ namespace Detail
         writer.u32(file.flags.value_or(0));
         writer.u8(file.deleted ? 1 : 0);
     }
+}
+
+[[nodiscard]] inline MessageKind encodePayload(Writer& writer, const OpenFilesReply& files)
+{
+    constexpr std::size_t ROOM = listRoom(1 + 4 + MAX_STRING_BYTES + 3 + 4);
+    writeOpenFilesResult(writer, files.result, entriesThatFit(std::span(files.result.files), MAX_OPEN_FILES, ROOM, openFileBytes));
     return MessageKind::OpenFilesResult;
+}
+
+/// OpenFilesBatchResult (#3578): a count, then each result as an OpenFilesResult's payload. As many whole results as
+/// fit one frame, at most MAX_OPEN_FILES_BATCH; the first, when even it doesn't fit, is cut as an OpenFilesReply is,
+/// so a reply to a request that named any target answers at least one, and the client asks again for the rest.
+[[nodiscard]] inline MessageKind encodePayload(Writer& writer, const OpenFilesBatchReply& batch)
+{
+    const std::size_t limit = std::min(batch.results.size(), MAX_OPEN_FILES_BATCH);
+    std::size_t room = listRoom(4);  // after the count
+    std::vector<std::size_t> counts; // how many of each result's files go
+    counts.reserve(limit);
+    for (std::size_t i = 0; i < limit; ++i)
+    {
+        const OpenFilesReadResult& result = batch.results[i];
+        const std::size_t fixed = openFilesFixedBytes(result);
+        if (fixed > room)
+        {
+            break;
+        }
+        const std::size_t fit = entriesThatFit(std::span(result.files), MAX_OPEN_FILES, room - fixed, openFileBytes);
+        if (i > 0 && fit < std::min(result.files.size(), MAX_OPEN_FILES))
+        {
+            break; // a later result goes whole, or in the next reply
+        }
+        std::size_t used = fixed;
+        for (std::size_t file = 0; file < fit; ++file)
+        {
+            used += openFileBytes(result.files[file]);
+        }
+        room -= used;
+        counts.push_back(fit);
+    }
+    writer.u32(static_cast<std::uint32_t>(counts.size()));
+    for (std::size_t i = 0; i < counts.size(); ++i)
+    {
+        writeOpenFilesResult(writer, batch.results[i], counts[i]);
+    }
+    return MessageKind::OpenFilesBatchResult;
 }
 
 /// ConnectionsResult: status, detail, count; a socket: protocol, family, two endpoints, state. Every socket
@@ -1394,22 +1518,22 @@ namespace Detail
 
 /// An OpenFilesResult's payload: the status (refused past Failed), detail, three flags, a count (refused past
 /// MAX_OPEN_FILES), then each entry as decodeOpenFile reads it.
-[[nodiscard]] inline OpenFilesReply decodeOpenFilesReply(Reader& reader)
+[[nodiscard]] inline OpenFilesReadResult decodeOpenFilesResult(Reader& reader)
 {
-    OpenFilesReply reply;
+    OpenFilesReadResult result;
     const std::uint8_t value = reader.u8();
     if (value <= static_cast<std::uint8_t>(OpenFilesReadStatus::Failed))
     {
-        reply.result.status = static_cast<OpenFilesReadStatus>(value);
+        result.status = static_cast<OpenFilesReadStatus>(value);
     }
     else
     {
         reader.fail();
     }
-    reply.result.detail = reader.text();
-    reply.result.truncated = reader.flag();
-    reply.result.namesIncomplete = reader.flag();
-    reply.result.hexDescriptors = reader.flag();
+    result.detail = reader.text();
+    result.truncated = reader.flag();
+    result.namesIncomplete = reader.flag();
+    result.hexDescriptors = reader.flag();
     const std::uint32_t count = reader.u32();
     if (count > MAX_OPEN_FILES)
     {
@@ -1417,7 +1541,24 @@ namespace Detail
     }
     for (std::uint32_t i = 0; reader.ok() && i < count; ++i)
     {
-        reply.result.files.push_back(decodeOpenFile(reader));
+        result.files.push_back(decodeOpenFile(reader));
+    }
+    return result;
+}
+
+/// An OpenFilesBatchResult's payload (#3578): a count (refused past MAX_OPEN_FILES_BATCH), then each result as
+/// decodeOpenFilesResult reads it.
+[[nodiscard]] inline OpenFilesBatchReply decodeOpenFilesBatchReply(Reader& reader)
+{
+    OpenFilesBatchReply reply;
+    const std::uint32_t count = reader.u32();
+    if (count > MAX_OPEN_FILES_BATCH)
+    {
+        reader.fail();
+    }
+    for (std::uint32_t i = 0; reader.ok() && i < count; ++i)
+    {
+        reply.results.push_back(decodeOpenFilesResult(reader));
     }
     return reply;
 }
@@ -1569,13 +1710,15 @@ namespace Detail
     case MessageKind::ModulesResult:
         return Detail::finish<Response>(reader, id, Detail::decodeModulesReply(reader));
     case MessageKind::OpenFilesResult:
-        return Detail::finish<Response>(reader, id, Detail::decodeOpenFilesReply(reader));
+        return Detail::finish<Response>(reader, id, OpenFilesReply{.result = Detail::decodeOpenFilesResult(reader)});
     case MessageKind::ConnectionsResult:
         return Detail::finish<Response>(reader, id, Detail::decodeConnectionsReply(reader));
     case MessageKind::ServiceActionResult:
         return Detail::finish<Response>(reader, id, Detail::decodeServiceActionReply(reader));
     case MessageKind::ThreadsResult:
         return Detail::finish<Response>(reader, id, Detail::decodeThreadsReply(reader));
+    case MessageKind::OpenFilesBatchResult:
+        return Detail::finish<Response>(reader, id, Detail::decodeOpenFilesBatchReply(reader));
     case MessageKind::Hello:
     case MessageKind::Signal:
     case MessageKind::SetPriority:
@@ -1591,6 +1734,7 @@ namespace Detail
     case MessageKind::SessionAction:
     case MessageKind::ThreadAction:
     case MessageKind::ReadThreads:
+    case MessageKind::ReadOpenFilesBatch:
         break;
     }
     return std::unexpected("Not a response");

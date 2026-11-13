@@ -39,6 +39,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <stop_token>
 #include <string>
@@ -1762,15 +1763,31 @@ class MockProcessOpenFilesReader : public Platform::IProcessOpenFilesReader
         return true;
     }
 
-    [[nodiscard]] Platform::OpenFilesReadResult readOpenFiles(const Platform::ProcessTarget& /*target*/) override
+    [[nodiscard]] Platform::OpenFilesReadResult readOpenFiles(const Platform::ProcessTarget& target) override
     {
         ++m_ReadCount;
+        m_ReadTargets.push_back(target);
         return m_Result;
     }
 
     [[nodiscard]] int readCount() const
     {
         return m_ReadCount;
+    }
+    /// The targets readOpenFiles() was asked for, in order.
+    [[nodiscard]] const std::vector<Platform::ProcessTarget>& readTargets() const
+    {
+        return m_ReadTargets;
+    }
+
+    /// expectAuthorizedReads() (#3578): each call's targets, recorded.
+    void expectAuthorizedReads(std::span<const Platform::ProcessTarget> targets) override
+    {
+        m_ExpectedReads.emplace_back(targets.begin(), targets.end());
+    }
+    [[nodiscard]] const std::vector<std::vector<Platform::ProcessTarget>>& expectedReads() const
+    {
+        return m_ExpectedReads;
     }
 
     /// beginBatch() / endBatch() (#3357): counted.
@@ -1818,6 +1835,8 @@ class MockProcessOpenFilesReader : public Platform::IProcessOpenFilesReader
     Platform::OpenFilesReadResult m_AuthorizedResult;
     Platform::OpenFilesReadResult m_Result;
     int m_ReadCount = 0;
+    std::vector<Platform::ProcessTarget> m_ReadTargets;
+    std::vector<std::vector<Platform::ProcessTarget>> m_ExpectedReads;
     int m_BatchesBegun = 0;
     int m_BatchesEnded = 0;
 };

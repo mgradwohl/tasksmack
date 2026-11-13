@@ -1,5 +1,6 @@
 #include "Domain/HandleSearch.h"
 
+#include "Platform/IProcessActions.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 
@@ -258,6 +259,21 @@ void walk(std::span<const SearchProcess> processes,
     const bool readsOpenFiles =
         processes.size() > sources.size() || std::ranges::any_of(sources.first(processes.size()), &SearchSources::openFiles);
     const BatchScope batch(readsOpenFiles ? readers.openFiles : nullptr);
+    if (authorized && readsOpenFiles && readers.openFiles != nullptr)
+    {
+        // An administrator's pass names the processes whose open files it reads (#3578), so the helper can read them
+        // all from one walk of its handle table: just the ones whose open files were refused.
+        std::vector<Platform::ProcessTarget> targets;
+        targets.reserve(processes.size());
+        for (std::size_t i = 0; i < processes.size(); ++i)
+        {
+            if (i >= sources.size() || sources[i].openFiles)
+            {
+                targets.push_back(processes[i].target);
+            }
+        }
+        readers.openFiles->expectAuthorizedReads(targets);
+    }
 
     std::size_t sincePublish = 0;
     std::size_t index = 0; // the process's place in processes, and its sources' in sources
