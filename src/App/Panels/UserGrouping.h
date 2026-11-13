@@ -7,7 +7,7 @@
 //
 // Pure, free of ImGui and of the panels' state, so it is tested on its own (test_UserGrouping.cpp). The Users
 // tab draws these rows (UsersView), and the table's Group: User is built here (ProcessGrouping::buildGroups()
-// calls buildUserGroups()).
+// calls buildUserGroups()), each signed-in account's sessions under its header, as the Users tab had them.
 
 #include "App/Panels/ProcessGroupTotals.h"
 #include "App/ProcessColumnConfig.h"
@@ -62,6 +62,14 @@ struct UserRow
 /// Whether @p user is one of @p shared (sharedUserNames()), ignoring ASCII case.
 [[nodiscard]] bool isSharedUserName(const std::vector<std::string>& shared, std::string_view user) noexcept;
 
+/// The key of Group: User's group of sessions whose user couldn't be read (Windows, #3377): no account's name
+/// starts with a control character, so no account's group can have it.
+inline constexpr std::string_view NOT_READABLE_GROUP_KEY = "\x1Fnot readable";
+
+/// What the row under a session-only group says while the Processes filter is on (#3377 decision): the account
+/// still shows, its header and its sessions, with this under them.
+inline constexpr std::string_view NO_MATCHING_PROCESSES = "No processes match the filter";
+
 /// Group: User's groups of @p order (indices into @p snapshots, already filtered and sorted), as
 /// ProcessGrouping::buildGroups() builds the other modes': a group per account (processAccountKey()), so
 /// PC\\alice's and CORP\\alice's processes are two groups (#3377). A process that names no domain joins the
@@ -69,12 +77,45 @@ struct UserRow
 /// when none or two have it. A group is labelled with the short name, or DOMAIN\\user when two groups share
 /// the name, spelled as its lowest-numbered process spells it. Names compare ignoring ASCII case wherever an
 /// account has a domain, so the table's order never changes the groups (#3377 review). A member at or past @p liveCount is an exited row
-/// (#3060): listed, not counted. Ordered by ProcessGrouping::sortGroups(), with Ungrouped (a user not read) last.
+/// (#3060): listed, not counted.
+///
+/// The fold of the Users tab (#3377): each account with a sign-in session in @p sessions (isSignInSession())
+/// carries them, in their order, and has a group even when none of its processes is in @p order (one the
+/// filter hides, or one TaskSmack can't see): so a filter never hides who is signed in. An account found
+/// only through a session is labelled as the session names it. Sessions whose user couldn't be read go to one
+/// "Not readable" group (NOT_READABLE_GROUP_KEY). Ordered by ProcessGrouping::sortGroups(): the signed-in
+/// accounts first, then the others, then Not readable, then Ungrouped (a user not read).
 [[nodiscard]] std::vector<ProcessGrouping::Group> buildUserGroups(const std::vector<Domain::ProcessSnapshot>& snapshots,
                                                                   const std::vector<std::size_t>& order,
                                                                   std::size_t liveCount,
                                                                   ProcessColumn sortColumn,
-                                                                  bool ascending);
+                                                                  bool ascending,
+                                                                  const std::vector<Platform::UserSession>& sessions);
+
+/// What a Group: User header's name says (#3377): its label, and "  (you)" when one of its sessions is
+/// TaskSmack's own.
+[[nodiscard]] std::string groupHeaderName(const ProcessGrouping::Group& group);
+
+/// A Group: User header's Status cell at @p nowUsec (#3377): its one session's sessionStatus(), "2 sessions",
+/// or empty for an account with none.
+[[nodiscard]] std::string groupStatus(const ProcessGrouping::Group& group, std::uint64_t nowUsec);
+
+/// A group header's tooltip (#3377): "Expand" or "Collapse" (@p collapsed), and for a Group: User account
+/// with sessions that its Σ totals are of the processes TaskSmack can see, or for Not readable, why each
+/// session's user couldn't be read.
+[[nodiscard]] std::string groupHeaderTooltip(const ProcessGrouping::Group& group, bool collapsed);
+
+/// The session a Group: User header's menu acts on (#3377): the account's one sign-in session, readable;
+/// null with two or more (each has its own row's menu), or none.
+[[nodiscard]] const Platform::UserSession* headerMenuSession(const ProcessGrouping::Group& group) noexcept;
+
+/// A session row's name (#3377, as the Users tab's): its place (sessionPlace()), or "Session 3 (not
+/// readable)", then "  (this session)" for TaskSmack's own.
+[[nodiscard]] std::string sessionRowName(const Platform::UserSession& session);
+
+/// When @p session was signed in to, as the Start time column writes a date and time; empty when the
+/// platform didn't say (Linux until #3377's PR 4).
+[[nodiscard]] std::string sessionSignInTime(const Platform::UserSession& session);
 
 /// Where and how a session is: "seat0 · tty2 · Wayland", "pts/0 · from 10.0.0.9".
 [[nodiscard]] std::string sessionPlace(const Platform::UserSession& session);

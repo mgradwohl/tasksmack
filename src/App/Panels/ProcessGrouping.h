@@ -10,6 +10,7 @@
 #include "App/Panels/UserGrouping.h"
 #include "App/ProcessColumnConfig.h"
 #include "Domain/ProcessSnapshot.h"
+#include "Platform/IUserSessions.h"
 #include "Platform/ProcessTypes.h"
 
 #include <algorithm>
@@ -58,17 +59,12 @@ servicesBackgroundDemand(bool servicesColumnVisible, bool servicesSectionOpen, G
     return servicesColumnVisible || servicesSectionOpen || (unitsFromServiceList && groupBy == GroupBy::Unit);
 }
 
-/// Whether Group: User shows each account's signed-in sessions under its header (#3377). Not yet: the fold
-/// that adds the session rows turns it on, and until then the Processes table reads no sessions.
-inline constexpr bool USER_GROUPS_SHOW_SESSIONS = false;
-
 /// Whether the signed-in sessions are read (App::UserSessionsFeed, #3377): only while a view that shows them
 /// is shown, the Users tab (@p usersTabShown), or the Processes tab (@p processesTabShown) grouped by User
-/// (@p groupBy) once its groups show sessions (@p userGroupsShowSessions). At the Settings interval meanwhile.
-[[nodiscard]] constexpr bool
-sessionsDemand(bool usersTabShown, bool processesTabShown, GroupBy groupBy, bool userGroupsShowSessions) noexcept
+/// (@p groupBy), whose groups show each account's sessions. At the Settings interval meanwhile.
+[[nodiscard]] constexpr bool sessionsDemand(bool usersTabShown, bool processesTabShown, GroupBy groupBy) noexcept
 {
-    return usersTabShown || (userGroupsShowSessions && processesTabShown && groupBy == GroupBy::User);
+    return usersTabShown || (processesTabShown && groupBy == GroupBy::User);
 }
 
 /// The app a systemd unit was launched as, or empty when it isn't an app's:
@@ -385,17 +381,18 @@ appMembership(const Domain::ProcessSnapshot& proc, const std::string& key, const
 /// The groups of @p order (indices into @p snapshots, already filtered and sorted) under @p mode. A
 /// member at or past @p liveCount is an exited row (#3060): listed, not counted. Groups are ordered as
 /// sortGroups() orders them. Group: User matches accounts across processes, so UserGrouping builds it
-/// (buildUserGroups(), #3377).
+/// (buildUserGroups(), #3377), with each account's sign-in sessions from @p sessions; the other modes have none.
 [[nodiscard]] inline std::vector<Group> buildGroups(const std::vector<Domain::ProcessSnapshot>& snapshots,
                                                     const std::vector<std::size_t>& order,
                                                     GroupBy mode,
                                                     std::size_t liveCount,
                                                     ProcessColumn sortColumn,
-                                                    bool ascending)
+                                                    bool ascending,
+                                                    const std::vector<Platform::UserSession>& sessions = {})
 {
     if (mode == GroupBy::User)
     {
-        return UserGrouping::buildUserGroups(snapshots, order, liveCount, sortColumn, ascending);
+        return UserGrouping::buildUserGroups(snapshots, order, liveCount, sortColumn, ascending, sessions);
     }
     std::vector<Group> groups;
     std::unordered_map<std::string, std::size_t> byKey;
@@ -421,6 +418,9 @@ appMembership(const Domain::ProcessSnapshot& proc, const std::string& key, const
                 .label = (named != appLabels.end()) ? named->second : newKey,
                 .totals = {},
                 .members = {},
+                .sessions = {},
+                .current = false,
+                .notReadable = false,
             });
         }
         Group& group = groups[slot->second];

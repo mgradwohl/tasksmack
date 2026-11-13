@@ -30,6 +30,7 @@
 #include "App/Panels/RunTaskDialog.h"
 #include "App/Panels/StuckProcesses.h"
 #include "App/Panels/UdpTraceSwitch.h"
+#include "App/Panels/UserSessionsFeed.h"
 #include "App/ProcessColumnConfig.h"
 #include "App/SelectOverride.h"
 #include "App/UdpCountingStatus.h"
@@ -40,6 +41,7 @@
 #include "Domain/ProcessRowHistory.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Domain/SamplingConfig.h"
+#include "Domain/UsersModel.h"
 #include "Platform/IHttpsClient.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessIconSource.h"
@@ -47,6 +49,7 @@
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/IUdpTrafficCollector.h"
+#include "Platform/IUserSessions.h"
 #include "Platform/ProcessTypes.h"
 
 #include <array>
@@ -341,6 +344,15 @@ class ProcessesPanel : public Panel
     void setPriorityChanges(PriorityChangesInFlight* changes) noexcept
     {
         m_PriorityChanges = changes;
+    }
+
+    /// The signed-in sessions (#3377), from the composition root (ShellPanels), which keeps the feed alive
+    /// longer than the panel: grouped by User, each account's sessions are drawn under its header, with their
+    /// Lock, Disconnect and Sign out, and the panel tells the feed when it needs them read
+    /// (ProcessGrouping::sessionsDemand()). Null (the default, a panel on its own): no sessions.
+    void setUserSessions(UserSessionsFeed* feed) noexcept
+    {
+        m_UserSessions = feed;
     }
 
     /// The GPU model whose probe decides whether per-process GPU usage can be observed (#1210). Set
@@ -720,11 +732,19 @@ class ProcessesPanel : public Panel
     bool m_PinsChanged = false;
     // Group by (#3068): processes under collapsible group header rows with Σ totals. A mode of the List
     // view: choosing a group switches Tree off, and choosing Tree sets the group back to None.
+    enum class GroupedRowKind : std::uint8_t
+    {
+        Header,
+        Session,   ///< Group: User's sign-in session (#3377): not a process, so never selected or moved to
+        Process,   ///< A member
+        NoMatches, ///< Under an account with sessions and no process the filter matches (#3377 decision)
+    };
     struct GroupedRow
     {
-        bool header = false;
-        std::size_t group = 0;   ///< Index into m_Groups
-        std::size_t procIdx = 0; ///< A member's index into the drawn snapshots
+        GroupedRowKind kind = GroupedRowKind::Process;
+        std::size_t group = 0; ///< Index into m_Groups
+        /// A member's index into the drawn snapshots, or a session's into its group's sessions
+        std::size_t procIdx = 0;
     };
     struct GroupsKey
     {
@@ -732,6 +752,7 @@ class ProcessesPanel : public Panel
         std::uint64_t filterGeneration = 0;
         std::uint64_t sortGeneration = 0;
         std::uint64_t collapseGeneration = 0;
+        std::uint64_t sessionsVersion = 0; ///< The sessions' publication Group: User was built with (#3377)
         ProcessGrouping::GroupBy groupBy = ProcessGrouping::GroupBy::None;
         bool operator==(const GroupsKey&) const = default;
     };
@@ -743,6 +764,13 @@ class ProcessesPanel : public Panel
     std::optional<GroupsKey> m_GroupsBuiltFor;
     ProcessColumn m_SortColumn = ProcessColumn::CpuPercent; // the table's sort, for ordering the groups
     bool m_SortAscending = false;
+    // Group: User's sessions (#3377): the feed ShellPanels shares (null on its own), its newest publication,
+    // taken once a frame while grouped by User, and the session a session menu was opened on, copied at the
+    // right-click so a regroup under the menu can't change what it acts on (#1365).
+    UserSessionsFeed* m_UserSessions = nullptr;
+    std::shared_ptr<const Domain::UsersPublication> m_SessionsPublication;
+    std::optional<Platform::UserSession> m_SessionMenuTarget;
+    unsigned int m_SessionMenuPopupId = 0; // ImGuiID of SESSION_MENU_POPUP_ID at the panel's ID stack
 
     // Previous frame's table layout, feeding ProcessTableLayout::computeInnerWidth() (#924)
     float m_OtherColumnsWidth = 0.0F;                  // Everything but the Command column's own content
@@ -993,7 +1021,20 @@ class ProcessesPanel : public Panel
     /// Draws the grouped rows (headers and their members) with a clipper.
     void renderGroupedRows(const std::vector<Domain::ProcessSnapshot>& snapshots);
     /// One group's header row: a click toggles it; its name and count, and Σ totals in the summable columns.
+    /// Under Group: User, a signed-in account's icon, "(you)" and its sessions' status, and a right-click
+    /// opens its one session's menu (#3377).
     void renderGroupHeaderRow(std::size_t groupIndex);
+    /// One of Group: User's sign-in sessions (#3377), under its account's header: where it is and how, its
+    /// status and sign-in time, its tooltip, and its menu on a right-click. Not a process: a click selects nothing.
+    void renderSessionRow(const Platform::UserSession& session);
+    /// The line under an account whose processes the filter hides all of (#3377).
+    static void renderNoMatchesRow();
+    /// The sessions' newest publication while grouped by User, and the feed told what the table needs (#3377).
+    void refreshSessions();
+    /// The sessions' read failure above the table, while grouped by User (#3377).
+    void renderSessionsReadFailure() const;
+    /// The session menu for m_SessionMenuTarget, and the action chosen in it.
+    void renderSessionMenu();
 
     /// Pins or unpins processes named as @p proc (#3061), saving the list in the settings.
     void togglePin(const Domain::ProcessSnapshot& proc);

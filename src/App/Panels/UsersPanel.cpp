@@ -2,9 +2,9 @@
 
 #include "App/Panel.h"
 #include "App/Panels/AuthorizeWording.h"
-#include "App/Panels/ProcessActionConfirm.h"
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
 #include "App/Panels/SessionActionControl.h"
+#include "App/Panels/SessionActionView.h"
 #include "App/Panels/UserSessionsFeed.h"
 #include "App/Panels/UsersView.h"
 #include "Core/Application.h"
@@ -12,7 +12,6 @@
 #include "Core/Event.h"
 #include "Domain/ProcessModel.h"
 #include "Domain/UsersModel.h"
-#include "Platform/IUserSessions.h"
 #include "UI/Theme.h"
 
 #include <imgui.h>
@@ -100,11 +99,7 @@ void UsersPanel::renderContent()
     }
     renderActionLine();
     // Each platform's own items (#3076): Lock on Linux, Disconnect on Windows, Sign out on both.
-    const SessionMenu menu{
-        .lock = m_Feed.canAct(Platform::SessionAction::Lock),
-        .disconnect = m_Feed.canAct(Platform::SessionAction::Disconnect),
-        .signOut = m_Feed.canAct(Platform::SessionAction::SignOut),
-    };
+    const SessionMenu menu = m_Feed.sessionMenu();
     if (const std::optional<UsersViewAction> action = renderUsersView(m_Publication.get(), model->hasSessions(), menu, m_ViewState))
     {
         if (action->selectPid != 0)
@@ -170,24 +165,9 @@ void UsersPanel::renderActionLine()
 
 void UsersPanel::renderConfirm()
 {
-    SessionActionControl* const actions = m_Feed.actions();
-    if (actions == nullptr || !actions->pending().has_value())
+    if (SessionActionControl* const actions = m_Feed.actions(); actions != nullptr)
     {
-        return;
-    }
-    // Sign out loses unsaved work, so its button is the destructive one; a Disconnect keeps every program.
-    const bool signOut = actions->pendingAction() == Platform::SessionAction::SignOut;
-    const char* const title = sessionActionWords(actions->pendingAction()).title;
-    switch (ProcessActionConfirm::renderLabelled(actions->showConfirm(), title, signOut, title, actions->question()))
-    {
-    case ProcessActionConfirm::Outcome::Confirmed:
-        actions->confirm();
-        break;
-    case ProcessActionConfirm::Outcome::Cancelled:
-        actions->cancel();
-        break;
-    case ProcessActionConfirm::Outcome::None:
-        break;
+        renderSessionConfirm(*actions); // as Group: User's (SessionActionView, #3377)
     }
 }
 
