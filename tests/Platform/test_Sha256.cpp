@@ -2,17 +2,19 @@
 /// @brief SHA-256 against the FIPS 180-4 and NIST vectors, and hashFile() (#3094).
 
 #include "Platform/Sha256.h"
-#include "ScopedTempDir.h"
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include <span>
 #include <stop_token>
 #include <string>
 #include <string_view>
+#include <system_error>
 
 namespace Platform::Sha256
 {
@@ -46,8 +48,11 @@ TEST(Sha256Test, PiecesGiveTheSameDigestAsTheWhole)
 
 TEST(Sha256Test, HashesAFileAndSaysWhyItCant)
 {
-    const TestSupport::ScopedTempDir dir("tasksmack-3094-sha256");
-    const auto path = dir.path / "file.bin";
+    // A shared test: its own temp file, as the Linux-only ScopedTempDir isn't built on Windows.
+    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    const std::filesystem::path dir = std::filesystem::temp_directory_path() / ("tasksmack-3094-sha256-" + std::to_string(stamp));
+    std::filesystem::create_directories(dir);
+    const auto path = dir / "file.bin";
     {
         std::ofstream(path, std::ios::binary) << "abc";
     }
@@ -55,7 +60,7 @@ TEST(Sha256Test, HashesAFileAndSaysWhyItCant)
     ASSERT_TRUE(digest.has_value()) << digest.error();
     EXPECT_EQ(toHex(*digest), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
 
-    const auto missing = hashFile(dir.path / "missing", std::stop_token{});
+    const auto missing = hashFile(dir / "missing", std::stop_token{});
     ASSERT_FALSE(missing.has_value());
     EXPECT_TRUE(missing.error().starts_with("couldn't open the file")) << missing.error();
 
@@ -64,6 +69,8 @@ TEST(Sha256Test, HashesAFileAndSaysWhyItCant)
     const auto stopped = hashFile(path, stop.get_token());
     ASSERT_FALSE(stopped.has_value());
     EXPECT_EQ(stopped.error(), "Stopped");
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
 }
 
 } // namespace
