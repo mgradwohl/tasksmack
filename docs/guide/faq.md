@@ -84,7 +84,11 @@ If `/proc` is mounted with `hidepid` (`noaccess`/`1`, `invisible`/`2` or `ptrace
 
 ## Acting as an administrator on Windows
 
-TaskSmack itself never runs elevated for this. An action Windows refuses for want of rights, such as
+To see and act on everything, choose **Restart as administrator...** in the notice TaskSmack shows at startup, or
+in the one the status bar's **Standard** chip opens: TaskSmack restarts elevated after Windows' UAC prompt, with
+your settings, and nothing is limited in that session. It always starts as Standard again next time.
+
+Without restarting, TaskSmack itself never runs elevated for this. An action Windows refuses for want of rights, such as
 ending, suspending, re-prioritizing or re-pinning an elevated or another account's process, offers **Retry as
 administrator** beside its error. If your account is an administrator, Process Details' **Modules**,
 **Open files** and **Connections** sections also offer **Read as administrator** when such a process

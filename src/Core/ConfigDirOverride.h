@@ -11,6 +11,9 @@
 // user themes folder (PathService::userConfigDir()). A relative path is taken from the working
 // directory at startup, and the directory is created if missing. Unset or blank changes nothing.
 //
+// An elevated restart (#2728) hands the launching user's directory over the same way, from its command
+// line (adoptHandedOver()), so the Administrator session keeps that user's settings; that one is no test hook.
+//
 // parse() and resolve() are pure and unit-tested (tests/Core/test_ConfigDirOverride.cpp);
 // ConfigDirOverride.cpp holds active(), the only part that reads the environment and touches the disk.
 
@@ -51,6 +54,15 @@ static_assert(Core::isKnownEnvHook(ENV_VAR)); // listed in KNOWN_ENV_HOOKS (#217
 /// The overriding directory, absolute; nullopt when TASKSMACK_CONFIG_DIR is unset or blank. Read on
 /// the first call, which also creates the directory (a failure is logged as a warning). Thread-safe.
 [[nodiscard]] const std::optional<std::filesystem::path>& active();
+
+/// The launching user's config directory an elevated restart hands over (--config-dir, #2728): active()
+/// returns it, made absolute, from now on, and fromTestHook() is false, as this is no test hook. main.cpp calls
+/// it first thing, before anything reads active(). Not thread-safe for the same reason as setActiveForTesting().
+void adoptHandedOver(const std::filesystem::path& dir);
+
+/// Whether active() is TASKSMACK_CONFIG_DIR's (a test hook), not a handed-over directory; false when there is
+/// no override.
+[[nodiscard]] bool fromTestHook();
 
 /// Testing only: active() returns @p dir from now on (nullopt: no override), so each test can have its
 /// own config directory (tests/App/ScratchConfigDir.h, #2932). The directory isn't created here, and

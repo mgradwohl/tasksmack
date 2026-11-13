@@ -26,6 +26,7 @@
 #include "LinuxUdpTrafficCollector.h"
 #include "LinuxUserSessions.h"
 #include "Platform/IDiskProbe.h"
+#include "Platform/IElevatedRestart.h"
 #include "Platform/IGPUProbe.h"
 #include "Platform/IHttpsClient.h"
 #include "Platform/IPathProvider.h"
@@ -216,6 +217,12 @@ std::shared_ptr<IStartAtLogin> makeStartAtLogin()
     // A per-user XDG autostart entry (#3254, #3093 part 2): ~/.config/autostart/tasksmack.desktop. Reads
     // nothing until asked.
     return std::make_shared<LinuxStartAtLogin>();
+}
+
+std::shared_ptr<IElevatedRestart> makeElevatedRestart(void* /*ownerWindow*/)
+{
+    // A Linux session is Standard or Administrator for its whole life (#3580): nothing restarts it.
+    return nullptr;
 }
 
 } // namespace Platform

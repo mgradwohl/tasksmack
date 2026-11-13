@@ -197,7 +197,6 @@ set(TASKSMACK_SOURCES
     src/App/DemoLayer.cpp
     src/App/DemoOverride.cpp
     src/App/AccessNoticeDialog.cpp
-    src/App/ElevationNoticeDialog.cpp
     src/App/ElevationNoticeLayer.cpp
     src/App/HelpLayer.cpp
     src/App/HelpWindow.cpp
@@ -372,6 +371,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/PipeBroker.cpp
     src/Platform/Windows/BrokerHelper.cpp # TaskSmackHelper.exe's session: parent checks, pipe, serve (#2517)
     src/Platform/Windows/HelperLauncher.cpp # starts TaskSmackHelper.exe elevated: ShellExecuteExW("runas") (#2549)
+    src/Platform/Windows/ElevatedRestart.cpp # Restart as administrator: TaskSmack.exe again with "runas" (#2728)
     src/Platform/Windows/WindowsProcessDump.cpp
     src/Platform/Windows/WindowsProcessMachine.cpp # the machine a process runs as: dumps and the Architecture column (#2394)
     src/Platform/Windows/WindowsProcessIdentity.cpp
@@ -554,6 +554,7 @@ set(TASKSMACK_HEADERS
     src/Domain/UpdateCheck.h
     src/App/UpdateChecker.h
     src/Platform/IStartAtLogin.h
+    src/Platform/IElevatedRestart.h
     src/Domain/StartAtLogin.h
     src/App/StartAtLoginSetting.h
     src/App/LaunchOptions.h
@@ -636,6 +637,7 @@ elseif(WIN32)
         src/Platform/Windows/WindowsProcessActions.h
         src/Platform/Windows/WindowsDebugPrivilege.h
         src/Platform/Windows/WindowsElevation.h
+        src/Platform/Windows/ElevatedRestart.h
         src/Platform/Windows/BrokerPipe.h
         src/Platform/Windows/BrokerPipeServer.h
         src/Platform/Windows/PipeBroker.h

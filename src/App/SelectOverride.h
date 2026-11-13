@@ -660,7 +660,7 @@ struct StartupDialogChoice
 
 /// Whether any test hook is set (#1569): TASKSMACK_TAB, TASKSMACK_SELECT_PID, TASKSMACK_SELECT_NAME,
 /// TASKSMACK_DETAILS_TAB, TASKSMACK_OPEN or TASKSMACK_MACHINE_TAB, each nullptr when unset. A blank value
-/// counts as unset, as it does everywhere else. While one is set, the startup "Limited Data" notice is
+/// counts as unset, as it does everywhere else. While one is set, the startup Standard notice is
 /// not queued: the hooks exist for unattended captures, and dismissing the modal needs input.
 [[nodiscard]] inline bool anyTestHookActive(
     const char* mainTab, const char* pid, const char* name, const char* detailsTab, const char* open, const char* machineTab) noexcept
@@ -670,7 +670,8 @@ struct StartupDialogChoice
 }
 
 /// anyTestHookActive() for the process environment, or TASKSMACK_CONFIG_DIR (#1596), TASKSMACK_SCREENSHOT
-/// or TASKSMACK_DEMO (#2827) or TASKSMACK_RENDER_METRICS (#2923) set.
+/// or TASKSMACK_DEMO (#2827) or TASKSMACK_RENDER_METRICS (#2923) set. A config directory an elevated restart
+/// handed over (#2728) is no test hook.
 [[nodiscard]] bool testHookActive();
 
 /// The dialog TASKSMACK_OPEN asks for, read and logged on the first call. Thread-safe.

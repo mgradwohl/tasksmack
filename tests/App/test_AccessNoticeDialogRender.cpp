@@ -1,6 +1,7 @@
 /// @file test_AccessNoticeDialogRender.cpp
 /// @brief The Linux Standard note (#2728, #3580), headless: it says how to start an Administrator session and
 /// offers nothing that elevates this one; OK and Escape close it; it is centred and stays inside a small window.
+/// On Windows it offers Restart as administrator..., says what the UAC prompt asks for, and how the last restart went.
 
 #include "App/AccessChoice.h"
 #include "App/AccessNoticeDialog.h"
@@ -21,6 +22,7 @@ using AccessChoice::AccessPlatform;
 struct Frame
 {
     bool closed = false; ///< render() said OK or Escape closed it
+    AccessNoticeDialog::Action action = AccessNoticeDialog::Action::None;
     bool open = false;
     std::string text; ///< What the notice drew
     ImVec2 pos;
@@ -58,7 +60,8 @@ class AccessNoticeDialogRenderTest : public ::testing::Test
         ImGui::Begin("Main", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
         ImGui::End();
         ImGui::LogToBuffer();
-        frame.closed = AccessNoticeDialog::render(m_State);
+        frame.action = AccessNoticeDialog::render(m_State);
+        frame.closed = frame.action == AccessNoticeDialog::Action::Closed;
         frame.text = GImGui->LogBuffer.c_str();
         ImGui::LogFinish();
         frame.open = ImGui::IsPopupOpen(AccessNoticeDialog::POPUP_ID);
@@ -76,12 +79,18 @@ class AccessNoticeDialogRenderTest : public ::testing::Test
     {
         Frame last;
         bool closed = false;
+        bool restart = false;
         for (int frame = 0; frame < SETTLE_FRAMES; ++frame)
         {
             last = runFrame();
             closed = closed || last.closed;
+            restart = restart || last.action == AccessNoticeDialog::Action::RestartAsAdministrator;
         }
         last.closed = closed;
+        if (restart)
+        {
+            last.action = AccessNoticeDialog::Action::RestartAsAdministrator;
+        }
         return last;
     }
 
@@ -162,6 +171,102 @@ TEST_F(AccessNoticeDialogRenderTest, ItIsCentredAndStaysInsideASmallWindow)
     EXPECT_GE(opened.pos.y, 0.0F);
     EXPECT_LE(opened.pos.x + opened.size.x, 480.0F);
     EXPECT_LE(opened.pos.y + opened.size.y, 360.0F);
+}
+
+/// The Windows notice (#2728): Restart as administrator... beside the default Continue as Standard.
+class WindowsAccessNoticeDialogRenderTest : public AccessNoticeDialogRenderTest
+{
+  protected:
+    void SetUp() override
+    {
+        AccessNoticeDialogRenderTest::SetUp();
+        m_State.platform = AccessPlatform::Windows;
+        m_State.restart = AccessNoticeDialog::Restart::Ready;
+    }
+};
+
+TEST_F(WindowsAccessNoticeDialogRenderTest, ItOffersRestartAsAdministratorAndSaysWhatWindowsAsks)
+{
+    const Frame opened = open();
+    ASSERT_TRUE(opened.open);
+    EXPECT_TRUE(opened.text.contains(AccessNoticeDialog::CONTINUE_LABEL));
+    EXPECT_TRUE(opened.text.contains("Restart as administrator..."));
+    EXPECT_TRUE(opened.text.contains("restarts TaskSmack elevated"));
+    EXPECT_TRUE(opened.text.contains("Windows asks for approval (UAC)"));
+    EXPECT_FALSE(opened.text.contains("sudo"));
+    EXPECT_FALSE(opened.text.contains("password")) << "an administrator only approves";
+}
+
+TEST_F(WindowsAccessNoticeDialogRenderTest, AStandardUserIsToldAnAdministratorsPasswordIsNeeded)
+{
+    m_State.credentials = true;
+    const Frame opened = open();
+    EXPECT_TRUE(opened.text.contains("name and password")) << opened.text;
+    EXPECT_TRUE(opened.text.contains("Restart as administrator...")) << "the option stays for a standard user";
+}
+
+TEST_F(WindowsAccessNoticeDialogRenderTest, RestartAsksForItAndTheNoticeStaysUp)
+{
+    ASSERT_TRUE(open().open);
+    press(AccessNoticeDialog::RESTART_LABEL);
+    const Frame pressed = settle();
+    EXPECT_EQ(pressed.action, AccessNoticeDialog::Action::RestartAsAdministrator);
+    EXPECT_FALSE(pressed.closed);
+    EXPECT_TRUE(pressed.open) << "it waits there for Windows' answer";
+}
+
+TEST_F(WindowsAccessNoticeDialogRenderTest, WhileWindowsAsksRestartCantBePressedAgain)
+{
+    ASSERT_TRUE(open().open);
+    m_State.restart = AccessNoticeDialog::Restart::Waiting;
+    press(AccessNoticeDialog::RESTART_LABEL);
+    const Frame waiting = settle();
+    EXPECT_EQ(waiting.action, AccessNoticeDialog::Action::None);
+    EXPECT_TRUE(waiting.text.contains(AccessNoticeDialog::WAITING_NOTE));
+}
+
+TEST_F(WindowsAccessNoticeDialogRenderTest, ARunThatCantRestartSaysWhyAndOffersNothing)
+{
+    m_State.restart = AccessNoticeDialog::Restart::Unavailable;
+    ASSERT_TRUE(open().open);
+    press(AccessNoticeDialog::RESTART_LABEL);
+    const Frame frame = settle();
+    EXPECT_EQ(frame.action, AccessNoticeDialog::Action::None);
+    EXPECT_TRUE(frame.text.contains("can't restart itself")) << frame.text;
+}
+
+TEST_F(WindowsAccessNoticeDialogRenderTest, ADeclinedPromptIsSaidAndOpeningAgainClearsIt)
+{
+    m_State.outcome = std::string(AccessNoticeDialog::DECLINED_NOTE);
+    ASSERT_TRUE(settle().text.empty()) << "nothing drawn before it is asked for";
+    AccessNoticeDialog::requestOpen(m_State);
+    EXPECT_TRUE(m_State.outcome.empty()) << "a new open starts without the last answer";
+    m_State.outcome = std::string(AccessNoticeDialog::DECLINED_NOTE);
+    const Frame declined = settle();
+    EXPECT_TRUE(declined.text.contains("didn't restart TaskSmack")) << declined.text;
+}
+
+TEST_F(WindowsAccessNoticeDialogRenderTest, ContinueAsStandardAndEscapeCloseIt)
+{
+    ASSERT_TRUE(open().open);
+    press(AccessNoticeDialog::CONTINUE_LABEL);
+    const Frame closed = settle();
+    EXPECT_TRUE(closed.closed);
+    EXPECT_FALSE(closed.open);
+
+    ASSERT_TRUE(open().open);
+    ImGui::GetIO().AddKeyEvent(ImGuiKey_Escape, true);
+    EXPECT_TRUE(runFrame().closed);
+    ImGui::GetIO().AddKeyEvent(ImGuiKey_Escape, false);
+    EXPECT_FALSE(settle().open);
+}
+
+TEST(AccessNoticeDialogTest, AFailedRestartIsOneSentence)
+{
+    EXPECT_EQ(AccessNoticeDialog::restartFailedNote("Access is denied.\r\n"),
+              "TaskSmack couldn't restart as administrator: Access is denied. It carries on as Standard.");
+    EXPECT_EQ(AccessNoticeDialog::restartFailedNote("no process"),
+              "TaskSmack couldn't restart as administrator: no process. It carries on as Standard.");
 }
 
 } // namespace

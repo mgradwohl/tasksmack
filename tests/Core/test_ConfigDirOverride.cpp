@@ -62,5 +62,26 @@ TEST(ConfigDirOverrideTest, ResolveKeepsThePlatformDirWhenUnset)
     EXPECT_EQ(resolve(parse("  "), platformDir), platformDir);
 }
 
+// #2728: an elevated restart's --config-dir is the launching user's directory, used as the override is, but it
+// is no test hook, so the Administrator session isn't run as an unattended capture.
+TEST(ConfigDirOverrideTest, AHandedOverDirectoryIsUsedButIsNoTestHook)
+{
+    // NOLINTNEXTLINE(performance-unnecessary-copy-initialization) - a copy: active() changes below
+    const std::optional<std::filesystem::path> previous = active();
+    const std::filesystem::path dir = std::filesystem::temp_directory_path() / "handed-over";
+
+    adoptHandedOver(dir);
+    ASSERT_TRUE(active().has_value());
+    EXPECT_EQ(active().value_or(std::filesystem::path{}), dir.lexically_normal());
+    EXPECT_FALSE(fromTestHook());
+
+    setActiveForTesting(dir);
+    EXPECT_TRUE(fromTestHook()) << "an override of a test's own is a test hook again";
+    setActiveForTesting(std::nullopt);
+    EXPECT_FALSE(fromTestHook()) << "no override at all";
+
+    setActiveForTesting(previous);
+}
+
 } // namespace
 } // namespace Core::ConfigDirOverride

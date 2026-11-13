@@ -420,7 +420,7 @@ TEST(SelectOverrideTest, UnknownMainTabWarnsOnceAndStillOpensDetails)
     }
 }
 
-// #1569: the startup "Limited Data" notice is not queued while any hook is set, TASKSMACK_TAB alone included.
+// #1569: the startup Standard notice is not queued while any hook is set, TASKSMACK_TAB alone included.
 TEST(SelectOverrideTest, MainTabAloneIsATestHook)
 {
     using App::SelectOverride::anyTestHookActive;

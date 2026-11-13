@@ -1,41 +1,71 @@
 #include "ElevationNoticeLayer.h"
 
-#include "App/AccessChoice.h"
 #include "App/AccessNoticeDialog.h"
-#include "App/ElevationNoticeDialog.h"
-#include "App/ElevationNoticeText.h"
 #include "App/UserConfig.h"
+#include "Core/Application.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Core/Layer.h"
+#include "Core/Window.h"
+#include "Platform/IElevatedRestart.h"
+#include "Platform/ThreadName.h"
 
 #include <spdlog/spdlog.h>
 
-#include <cstdint>
+#include <filesystem>
+#include <functional>
+#include <memory>
+#include <optional>
+#include <string>
+#include <utility>
 
 namespace App
 {
 
-ElevationNoticeLayer::ElevationNoticeLayer() : Core::Layer("ElevationNoticeLayer")
-{}
+namespace
+{
+
+/// The restart's result for work that threw, or that no thread could be started for.
+Platform::ElevatedRestartResult failedRestart(std::string detail)
+{
+    return {.outcome = Platform::ElevatedRestartResult::Outcome::Failed, .detail = std::move(detail)};
+}
+
+} // namespace
+
+ElevationNoticeLayer::ElevationNoticeLayer(std::shared_ptr<Platform::IElevatedRestart> restart, std::function<void()> closeApplication)
+    : Core::Layer("ElevationNoticeLayer"),
+      m_Restart(std::move(restart)),
+      m_CloseApplication(std::move(closeApplication)),
+      m_RestartWorker(Platform::ELEVATED_RESTART_THREAD_NAME, &failedRestart)
+{
+    if (!m_CloseApplication)
+    {
+        m_CloseApplication = []
+        {
+            Core::Application::get().getWindow().requestClose();
+        };
+    }
+    if (m_Restart != nullptr)
+    {
+        m_AccessState.restart = AccessNoticeDialog::Restart::Ready;
+        m_AccessState.credentials = m_Restart->prompt() == Platform::AdministratorPrompt::Credentials;
+    }
+}
 
 ElevationNoticeLayer::~ElevationNoticeLayer() = default;
 
 void ElevationNoticeLayer::onRender()
 {
-    if constexpr (AccessChoice::HOST == AccessChoice::AccessPlatform::Linux)
+    takeRestartResult();
+    const AccessNoticeDialog::Action action = AccessNoticeDialog::render(m_AccessState);
+    if (action == AccessNoticeDialog::Action::RestartAsAdministrator)
     {
-        if (AccessNoticeDialog::render(m_AccessState) && m_AccessState.dontShowAgain)
-        {
-            suppressFutureNotices();
-        }
+        startRestart();
     }
-    else
+    if (action != AccessNoticeDialog::Action::None && m_AccessState.dontShowAgain)
     {
-        if (ElevationNoticeDialog::render(m_State) && m_State.dontShowAgain)
-        {
-            suppressFutureNotices();
-        }
+        suppressFutureNotices();
     }
 }
 
@@ -44,26 +74,62 @@ void ElevationNoticeLayer::onEvent(Core::Event& event)
     Core::EventDispatcher dispatcher(event);
 
     dispatcher.dispatch<Core::OpenElevationNoticeEvent>(
-        [this](Core::OpenElevationNoticeEvent& open)
+        [this](Core::OpenElevationNoticeEvent& /*open*/)
         {
-            requestOpen(open.missingPrivileges());
+            requestOpen();
             return false; // Don't consume; allow other layers to observe
         });
 }
 
-void ElevationNoticeLayer::requestOpen(std::uint8_t missingPrivileges)
+void ElevationNoticeLayer::requestOpen()
 {
-    if constexpr (AccessChoice::HOST == AccessChoice::AccessPlatform::Linux)
+    // The event comes only for a Standard session whose user hasn't turned the notice off, or from the Standard
+    // chip (ShellLayer).
+    AccessNoticeDialog::requestOpen(m_AccessState);
+}
+
+void ElevationNoticeLayer::startRestart()
+{
+    if (m_Restart == nullptr || m_AccessState.restart != AccessNoticeDialog::Restart::Ready)
     {
-        // The event comes only for a session that isn't root and whose user hasn't turned the note off, or from
-        // the Standard chip (ShellLayer).
-        AccessNoticeDialog::requestOpen(m_AccessState);
+        return;
     }
-    else
+    // The launching user's config directory, which the elevated copy keeps (#2728 decision 4).
+    std::filesystem::path configDir = UserConfig::get().configPath().parent_path();
+    m_AccessState.restart = AccessNoticeDialog::Restart::Waiting;
+    m_AccessState.outcome.clear();
+    spdlog::info("ElevationNoticeLayer: restarting as administrator");
+    if (std::optional<Platform::ElevatedRestartResult> failed =
+            m_RestartWorker.start([restart = m_Restart, configDir = std::move(configDir)] { return restart->restart(configDir); });
+        failed.has_value())
     {
-        m_State.openRequested = true;
-        m_State.dontShowAgain = false;
-        m_State.bodyText = ElevationNoticeText::forCurrentPlatform(missingPrivileges);
+        m_AccessState.restart = AccessNoticeDialog::Restart::Ready;
+        m_AccessState.outcome = AccessNoticeDialog::restartFailedNote(failed->detail);
+    }
+}
+
+void ElevationNoticeLayer::takeRestartResult()
+{
+    const std::optional<Platform::ElevatedRestartResult> result = m_RestartWorker.poll();
+    if (!result.has_value())
+    {
+        return;
+    }
+    m_AccessState.restart = AccessNoticeDialog::Restart::Ready;
+    switch (result->outcome)
+    {
+    case Platform::ElevatedRestartResult::Outcome::Started:
+        spdlog::info("ElevationNoticeLayer: the elevated TaskSmack started; closing this one");
+        m_CloseApplication();
+        break;
+    case Platform::ElevatedRestartResult::Outcome::Declined:
+        spdlog::info("ElevationNoticeLayer: the UAC prompt was declined; carrying on as Standard");
+        m_AccessState.outcome = std::string(AccessNoticeDialog::DECLINED_NOTE);
+        break;
+    case Platform::ElevatedRestartResult::Outcome::Failed:
+        spdlog::warn("ElevationNoticeLayer: couldn't restart as administrator: {}", result->detail);
+        m_AccessState.outcome = AccessNoticeDialog::restartFailedNote(result->detail);
+        break;
     }
 }
 

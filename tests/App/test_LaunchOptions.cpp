@@ -9,6 +9,8 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -83,6 +85,45 @@ TEST(LaunchOptionsTest, TheSignInEntrysCommandStartsMinimized)
     ASSERT_TRUE(command.ends_with(" --minimized"));
     const std::string argument = command.substr(command.rfind(' ') + 1);
     EXPECT_TRUE(parseLaunchOptions(std::vector<std::string>{program, argument}).minimized);
+}
+
+// #2728: an elevated restart is started with the Standard TaskSmack's PID and the launching user's config
+// directory (Platform/IElevatedRestart.h).
+TEST(LaunchOptionsTest, AnElevatedRestartReadsTheHandOffAndTheConfigDirectory)
+{
+    const LaunchOptions options = parseLaunchOptions(std::vector<std::string>{
+        "TaskSmack.exe",
+        "--handoff",
+        "4242",
+        "--config-dir",
+        R"(C:\Users\Pat Smith\AppData\Roaming\TaskSmack)",
+    });
+    EXPECT_EQ(options.handoffPid, std::optional<std::uint32_t>{4242});
+    EXPECT_EQ(options.configDir, std::optional<std::string>{R"(C:\Users\Pat Smith\AppData\Roaming\TaskSmack)"});
+    EXPECT_TRUE(options.ignored.empty());
+    EXPECT_FALSE(options.minimized);
+}
+
+TEST(LaunchOptionsTest, AConfigDirectoryWithoutAHandOffIsIgnored)
+{
+    const LaunchOptions options = parseLaunchOptions(std::vector<std::string>{"TaskSmack.exe", "--config-dir", R"(C:\elsewhere)"});
+    EXPECT_FALSE(options.configDir.has_value()) << "only an elevated restart hands one over";
+    EXPECT_FALSE(options.handoffPid.has_value());
+    EXPECT_EQ(options.ignored, (std::vector<std::string>{"--config-dir"}));
+}
+
+TEST(LaunchOptionsTest, AHandOffWithoutAWholePidIsIgnored)
+{
+    for (const std::string& pid : {std::string("0"), std::string("-1"), std::string("12x"), std::string("99999999999"), std::string("")})
+    {
+        const LaunchOptions options =
+            parseLaunchOptions(std::vector<std::string>{"TaskSmack.exe", "--handoff", pid, "--config-dir", R"(C:\dir)"});
+        EXPECT_FALSE(options.handoffPid.has_value()) << pid;
+        EXPECT_FALSE(options.configDir.has_value()) << pid;
+    }
+    const LaunchOptions last = parseLaunchOptions(std::vector<std::string>{"TaskSmack.exe", "--handoff"});
+    EXPECT_FALSE(last.handoffPid.has_value()) << "no value after it";
+    EXPECT_EQ(last.ignored, (std::vector<std::string>{"--handoff"}));
 }
 
 } // namespace

@@ -133,6 +133,19 @@ auto runApp(const App::LaunchOptions& launch) -> int
     // LCOV_EXCL_STOP
 #endif
 
+    // Restarted as administrator (#2728): first wait for the Standard TaskSmack to close, as it saves the settings
+    // read next and holds the single-instance lock taken after them, then keep the launching user's config
+    // directory, which may not be this account's when another account approved the prompt. Logged below.
+#ifdef _WIN32
+    const bool handoffWaitTimedOut = launch.handoffPid.has_value() && !Platform::waitForHandoff(*launch.handoffPid);
+#else
+    constexpr bool handoffWaitTimedOut = false; // nothing restarts a Linux session (#3580)
+#endif
+    if (launch.configDir.has_value()) // only with a hand-off (LaunchOptions)
+    {
+        Core::ConfigDirOverride::adoptHandedOver(Core::utf8ToPath(*launch.configDir));
+    }
+
     // Load user configuration early so we can apply window geometry before creating the SDL window.
     auto& userConfig = App::UserConfig::get();
 
@@ -213,7 +226,20 @@ auto runApp(const App::LaunchOptions& launch) -> int
     // Logged here rather than when it is read (UserConfig::get() above), so it reaches the log file.
     if (const auto& configDir = Core::ConfigDirOverride::active(); configDir.has_value())
     {
-        spdlog::info("Config directory (test hook {}): {}", Core::ConfigDirOverride::ENV_VAR, Core::pathToUtf8(*configDir));
+        if (Core::ConfigDirOverride::fromTestHook())
+        {
+            spdlog::info("Config directory (test hook {}): {}", Core::ConfigDirOverride::ENV_VAR, Core::pathToUtf8(*configDir));
+        }
+        else
+        {
+            spdlog::info("Config directory (the launching user's, handed over): {}", Core::pathToUtf8(*configDir));
+        }
+    }
+    if (launch.handoffPid.has_value())
+    {
+        spdlog::info("Restarted as administrator for TaskSmack PID {}{}",
+                     *launch.handoffPid,
+                     handoffWaitTimedOut ? ", which was still running after the wait" : "");
     }
 
 #ifndef NDEBUG
@@ -428,7 +454,8 @@ auto runApp(const App::LaunchOptions& launch) -> int
                                         config.saveInBackground();
                                     });
         appRef.pushLayer<App::SettingsLayer>().setTaskManagerReplacement(taskManager);
-        appRef.pushLayer<App::ElevationNoticeLayer>();
+        // The startup notice, Standard or Administrator (#2728), with Windows' Restart as administrator.
+        appRef.pushLayer<App::ElevationNoticeLayer>(App::makeElevatedRestart(App::Synthetic::activeScenario()));
         appRef.pushLayer<App::TaskManagerNoticeLayer>(taskManager);
 
         // The demo script's layer (#2827), after the layers its steps make requests of: a step is issued

@@ -1,6 +1,7 @@
 #include "Platform/Factory.h"
 
 #include "Platform/IDiskProbe.h"
+#include "Platform/IElevatedRestart.h"
 #include "Platform/IGPUProbe.h"
 #include "Platform/IHttpsClient.h"
 #include "Platform/IPathProvider.h"
@@ -30,6 +31,7 @@
 #include "Platform/TaskManagerReplacement.h"
 #include "Platform/TaskManagerReplacementService.h"
 #include "Platform/Windows/BrokerHelper.h"
+#include "Platform/Windows/ElevatedRestart.h"
 #include "Platform/Windows/HelperLauncher.h"
 #include "Platform/Windows/PipeBroker.h"
 #include "WinString.h"
@@ -77,6 +79,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <expected>
 #include <memory>
 #include <string>
@@ -243,6 +246,32 @@ std::shared_ptr<IStartAtLogin> makeStartAtLogin()
 {
     // The HKCU Run key's TaskSmack value (#3093 part 2): per-user, no elevation. Reads nothing until asked.
     return std::make_shared<WindowsStartAtLogin>();
+}
+
+std::shared_ptr<IElevatedRestart> makeElevatedRestart(void* ownerWindow)
+{
+    if (Windows::isProcessElevated())
+    {
+        return nullptr; // already Administrator: nothing to restart into
+    }
+    // What the prompt will ask for, from the token's elevation type: approval for a split-token administrator,
+    // an administrator's name and password for a standard user (or when the type can't be read).
+    TOKEN_ELEVATION_TYPE type = TokenElevationTypeDefault;
+    if (Windows::UniqueHandle token; OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, token.put()) != FALSE)
+    {
+        DWORD size = 0;
+        if (GetTokenInformation(token.get(), TokenElevationType, &type, sizeof(type), &size) == FALSE)
+        {
+            type = TokenElevationTypeDefault;
+        }
+    }
+    return std::make_shared<Windows::ElevatedRestart::WindowsElevatedRestart>(static_cast<HWND>(ownerWindow),
+                                                                              Windows::ElevatedRestart::promptFor(type));
+}
+
+bool waitForHandoff(std::uint32_t pid)
+{
+    return Windows::ElevatedRestart::waitForHandoff(static_cast<DWORD>(pid)) != Windows::ElevatedRestart::HandoffWait::TimedOut;
 }
 
 bool enableDebugPrivilege()

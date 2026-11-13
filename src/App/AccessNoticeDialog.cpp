@@ -2,6 +2,7 @@
 
 #include "App/AccessChoice.h"
 #include "App/AccessTable.h"
+#include "App/Panels/AuthorizeWording.h"
 #include "UI/ChromeWidgets.h"
 #include "UI/DialogMetrics.h"
 #include "UI/FrameOutline.h"
@@ -58,12 +59,39 @@ void renderAccessTable(AccessChoice::AccessPlatform platform)
     wrappedText(AccessTable::neverRowFor(platform));
 }
 
+/// Windows: what Administrator does, what the prompt asks for, and how the last restart went.
+void renderRestartText(const State& state)
+{
+    const auto& scheme = UI::Theme::get().scheme();
+    wrappedText(RESTART_ADMINISTRATOR_TEXT);
+    ImGui::Spacing();
+    if (state.restart == Restart::Unavailable)
+    {
+        ImGui::PushStyleColor(ImGuiCol_Text, scheme.textMuted);
+        wrappedText(RESTART_UNAVAILABLE);
+        ImGui::PopStyleColor();
+        return;
+    }
+    ImGui::PushStyleColor(ImGuiCol_Text, scheme.textMuted);
+    const std::string_view promptNote = state.credentials ? CREDENTIALS_NOTE : CONSENT_NOTE;
+    wrappedText(state.restart == Restart::Waiting ? WAITING_NOTE : promptNote);
+    ImGui::PopStyleColor();
+    if (!state.outcome.empty())
+    {
+        ImGui::Spacing();
+        ImGui::PushStyleColor(ImGuiCol_Text, scheme.textWarning);
+        wrappedText(state.outcome);
+        ImGui::PopStyleColor();
+    }
+}
+
 } // namespace
 
 void requestOpen(State& state)
 {
     state.openRequested = true;
     state.dontShowAgain = false;
+    state.outcome.clear();
 }
 
 float computeWidth(float viewportWidthPx)
@@ -71,11 +99,11 @@ float computeWidth(float viewportWidthPx)
     return std::floor(std::min(WIDTH_EM * ImGui::GetFontSize(), UI::DialogMetrics::computeDialogMaxExtent(viewportWidthPx)));
 }
 
-bool render(State& state)
+Action render(State& state)
 {
     if (!state.openRequested && !ImGui::IsPopupOpen(POPUP_ID))
     {
-        return false;
+        return Action::None;
     }
     if (state.openRequested)
     {
@@ -104,7 +132,7 @@ bool render(State& state)
     UI::Widgets::setNextDialogSizeConstraints(ImVec2(UI::DialogMetrics::computeDialogMaxExtent(viewport->WorkSize.x),
                                                      UI::DialogMetrics::computeDialogMaxExtent(viewport->WorkSize.y)));
 
-    bool closed = false;
+    Action action = Action::None;
     const ImGuiWindowFlags flags = ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking;
     if (ImGui::BeginPopupModal(POPUP_ID, nullptr, flags))
     {
@@ -117,7 +145,15 @@ bool render(State& state)
         ImGui::Spacing();
         wrappedText(STANDARD_TEXT);
         ImGui::Spacing();
-        wrappedText(START_ADMINISTRATOR_TEXT);
+        const bool windows = state.platform == AccessChoice::AccessPlatform::Windows;
+        if (windows)
+        {
+            renderRestartText(state);
+        }
+        else
+        {
+            wrappedText(START_ADMINISTRATOR_TEXT);
+        }
 
         UI::Widgets::sectionGap();
         if (ImGui::CollapsingHeader(TABLE_HEADER))
@@ -130,17 +166,37 @@ bool render(State& state)
         ImGui::SetItemTooltip("Stops this note at startup. The Standard chip in the status bar shows it again, and Settings > "
                               "Advanced > Show limited-data notice turns it back on");
 
-        const UI::Widgets::DialogFooterButton ok{.label = OK_LABEL, .fills = nullptr, .tooltip = nullptr};
-        const UI::Widgets::DialogFooterAction pressed =
-            UI::Widgets::dialogFooter(ok, {}, UI::Widgets::footerButtonWidth({OK_LABEL}, BUTTON_MIN_EM));
-        if (pressed == UI::Widgets::DialogFooterAction::Primary || UI::Widgets::dialogEscapePressed())
+        UI::Widgets::DialogFooterAction pressed = UI::Widgets::DialogFooterAction::None;
+        if (windows)
         {
-            closed = true;
+            // Continue as Standard is the default, rightmost; Restart beside it, disabled while Windows asks.
+            const UI::Widgets::DialogFooterButton standard{.label = CONTINUE_LABEL, .fills = nullptr, .tooltip = nullptr};
+            const UI::Widgets::DialogFooterButton restart{
+                .label = RESTART_LABEL,
+                .fills = nullptr,
+                .tooltip = state.restart == Restart::Unavailable ? RESTART_UNAVAILABLE : AuthorizeWording::WINDOWS_WORDING.promptTooltip,
+                .disabled = state.restart != Restart::Ready,
+            };
+            pressed = UI::Widgets::dialogFooter(
+                standard, restart, UI::Widgets::footerButtonWidth({CONTINUE_LABEL, RESTART_LABEL}, BUTTON_MIN_EM));
+        }
+        else
+        {
+            const UI::Widgets::DialogFooterButton ok{.label = OK_LABEL, .fills = nullptr, .tooltip = nullptr};
+            pressed = UI::Widgets::dialogFooter(ok, {}, UI::Widgets::footerButtonWidth({OK_LABEL}, BUTTON_MIN_EM));
+        }
+        if (pressed == UI::Widgets::DialogFooterAction::Secondary)
+        {
+            action = Action::RestartAsAdministrator; // stays up while Windows asks
+        }
+        else if (pressed == UI::Widgets::DialogFooterAction::Primary || UI::Widgets::dialogEscapePressed())
+        {
+            action = Action::Closed;
             ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();
     }
-    return closed;
+    return action;
 }
 
 } // namespace App::AccessNoticeDialog

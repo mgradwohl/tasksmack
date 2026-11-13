@@ -729,7 +729,6 @@ set(COMMON_TEST_SOURCES
     App/test_TaskManagerReplacementRender.cpp  # its Settings rows and startup notice, headless (#3072)
     App/test_NetInterfaceUtils.cpp
     App/test_PowerStatusText.cpp
-    App/test_ElevationNoticeText.cpp
     App/test_StatusBarText.cpp
     App/test_UpdateChecker.cpp # the update check's worker, with a fake client and clock (#3093)
     App/test_VirusTotalLookup.cpp # Look up on VirusTotal's worker half, with a fake client and actions (#3094)
@@ -756,7 +755,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessSchedPolicyDialog.cpp  # Set scheduling policy (#3086)
     App/test_AboutDialogRender.cpp
     App/test_AccessNoticeDialogRender.cpp  # Standard or Administrator, headless (#2728)
-    App/test_ElevationNoticeDialogRender.cpp
+    App/test_ElevationNoticeLayer.cpp  # the notice's layer: Restart as administrator through a fake restart (#2728)
     App/test_HelpContent.cpp
     App/test_HelpWindowRender.cpp
     App/test_KeyboardInputRender.cpp
@@ -850,6 +849,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_CiRealSystemWindowsApp.cpp
     Platform/test_RealSystemPathSupport.cpp  # the path comparison those tests check images with; changes nothing
     Platform/test_HelperLauncher.cpp  # starting the helper with ShellExecuteExW("runas"), through fakes (#2549)
+    Platform/test_ElevatedRestart.cpp  # Restart as administrator: ShellExecuteExW("runas") and the hand-off wait, through fakes (#2728)
     Platform/test_WindowsTaskManagerReplacement.cpp  # taskmgr.exe's IFEO key, on a scratch HKCU key, and the helper's checks (#3072)
     Platform/test_WindowsUserSessions.cpp  # the Users tab's WTS reader and actions through fakes, and this machine's sessions (#3076)
     Platform/test_WindowsProcessIdentity.cpp
@@ -1152,9 +1152,9 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/AboutDialog.cpp
     ${CMAKE_SOURCE_DIR}/src/App/AboutLayer.cpp
     ${CMAKE_SOURCE_DIR}/src/App/PlatformOpen.cpp
-    # The Limited Data notice (#1547), run headless (test_ElevationNoticeDialogRender.cpp)
+    # The startup notice, Standard or Administrator (#2728), run headless (test_AccessNoticeDialogRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/AccessNoticeDialog.cpp
-    ${CMAKE_SOURCE_DIR}/src/App/ElevationNoticeDialog.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/ElevationNoticeLayer.cpp # its layer and the Windows restart, headless (test_ElevationNoticeLayer.cpp)
     # The Help window (#172), run headless (test_HelpWindowRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/HelpWindow.cpp
     # The PGO UI training plan (#880), pure: test_UiTrainingPlan.cpp
@@ -1406,7 +1406,6 @@ if(WIN32)
 endif()
 
 # test_BundledThemes.cpp checks the shipped theme files themselves, from the source tree.
-# test_ElevationNoticeDialogRender.cpp lays the notice out in the bundled Inter at each font preset (#1986).
 target_compile_definitions(TaskSmackTests PRIVATE TASKSMACK_SOURCE_THEMES_DIR="${CMAKE_SOURCE_DIR}/assets/themes"
                                                   TASKSMACK_SOURCE_ASSETS_DIR="${CMAKE_SOURCE_DIR}/assets")
 # test_UserConfigPersistence.cpp loads a config.toml saved by the released v0.8.0 (#2725).

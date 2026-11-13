@@ -86,7 +86,7 @@ Action render(const Input& input)
         }
         // Per-process network counters denied although TaskSmack already has the rights they need
         // (#1358): the network columns are gone, and running as Administrator would not bring them
-        // back, so this is not the lock icon's "limited data" notice.
+        // back, so this is not the Standard chip's notice.
         if (input.networkCountersBlocked)
         {
             ImGui::TextColored(theme.scheme().textWarning, ICON_FA_NETWORK_WIRED);

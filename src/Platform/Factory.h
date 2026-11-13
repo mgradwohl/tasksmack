@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Platform/IDiskProbe.h"
+#include "Platform/IElevatedRestart.h"
 #include "Platform/IGPUProbe.h"
 #include "Platform/IHttpsClient.h"
 #include "Platform/IPathProvider.h"
@@ -28,6 +29,7 @@
 #include "Platform/IUdpTrafficCollector.h"
 #include "Platform/IUserSessions.h"
 
+#include <cstdint>
 #include <memory>
 
 namespace Platform
@@ -141,7 +143,18 @@ namespace Platform
 /// autostart entry is written (agent:WSL's part): the row is hidden there. Making it reads nothing.
 [[nodiscard]] std::shared_ptr<IStartAtLogin> makeStartAtLogin();
 
+/// Restart as administrator (#2728): TaskSmack started again elevated, through the UAC prompt, owned by
+/// @p ownerWindow (an HWND, or null). Null on Linux, whose Administrator session is started as one (#3580), and
+/// in a TaskSmack that is already elevated. Reads the token's elevation type once; starts nothing.
+[[nodiscard]] std::shared_ptr<IElevatedRestart> makeElevatedRestart(void* ownerWindow);
+
 #ifdef _WIN32
+/// The elevated copy's wait for the Standard TaskSmack that restarted it (#2728), process @p pid, to exit
+/// before the copy reads the settings that one saves as it closes: bounded, so a Standard copy that hangs
+/// doesn't stop it. True when it exited or had gone; false when the wait ran out. Called once, by main.cpp,
+/// before anything else.
+bool waitForHandoff(std::uint32_t pid);
+
 /// Brings the window of another running TaskSmack.exe to the front (#3072): what Ctrl+Shift+Esc does
 /// when TaskSmack replaces Task Manager and one already runs. False when there is none to show.
 bool showRunningTaskSmack();
