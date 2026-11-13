@@ -61,11 +61,30 @@ inline constexpr char DOMAIN_SEPARATOR = '\\';
     {
         return false;
     }
-    const std::string_view head = term.substr(0, separator);
-    const std::string_view tail = term.substr(separator + 1);
-    return head.size() <= domain.size() && tail.size() <= user.size() &&
-           Platform::equalsIgnoreCase(domain.substr(domain.size() - head.size()), head) &&
-           Platform::equalsIgnoreCase(user.substr(0, tail.size()), tail);
+    // Compared character by character, not through substr(), which can throw out_of_range: every index
+    // below is checked to lie inside its string first, and operator[] and foldAscii() can't throw.
+    const std::size_t headSize = separator;
+    const std::size_t tailSize = term.size() - separator - 1;
+    if (headSize > domain.size() || tailSize > user.size())
+    {
+        return false;
+    }
+    const std::size_t domainStart = domain.size() - headSize;
+    for (std::size_t i = 0; i < headSize; ++i)
+    {
+        if (Platform::foldAscii(domain[domainStart + i]) != Platform::foldAscii(term[i]))
+        {
+            return false;
+        }
+    }
+    for (std::size_t i = 0; i < tailSize; ++i)
+    {
+        if (Platform::foldAscii(user[i]) != Platform::foldAscii(term[separator + 1 + i]))
+        {
+            return false;
+        }
+    }
+    return true;
 }
 
 } // namespace Domain::AccountName
