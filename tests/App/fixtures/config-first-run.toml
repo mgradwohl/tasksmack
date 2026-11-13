@@ -22,6 +22,7 @@
 #   [process_table] layout: saved column widths, order and sort (written by TaskSmack; delete it to reset)
 #   [updates] check_daily: ask GitHub once a day whether a newer TaskSmack release exists (true/false, default false: nothing is sent); last_check, latest_version, latest_url and dismissed_version are written by TaskSmack
 #   [windows] start_at_sign_in, start_at_sign_in_seen_by, replace_task_manager: written by TaskSmack while Start at sign-in or Replace Task Manager is on, so an upgrade that removed one can put it back
+#   [virustotal] api_key: your own VirusTotal API key, for Look up on VirusTotal (only an executable's SHA-256 is sent); while it is set, TaskSmack saves this file readable by you only
 #   Themes: built-in themes in assets/themes. Add custom .toml themes beside this config under a 'themes' folder.
 
 config_version = 2
