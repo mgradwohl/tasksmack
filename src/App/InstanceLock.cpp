@@ -1,8 +1,11 @@
 #include "InstanceLock.h"
 
+#include <chrono>
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <system_error>
+#include <thread>
 
 #ifdef _WIN32
 // clang-format off
@@ -92,7 +95,9 @@ InstanceLock::InstanceLock(const std::filesystem::path& lockPath, const Testing&
                                   FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                                   nullptr,
                                   OPEN_ALWAYS,
-                                  FILE_ATTRIBUTE_NORMAL,
+                                  // A link planted where the lock goes is opened itself, never followed: an elevated
+                                  // TaskSmack with a handed-over config folder (#2728) must create nothing elsewhere.
+                                  FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
                                   nullptr);
     if (handle == INVALID_HANDLE_VALUE)
     {
@@ -172,4 +177,17 @@ InstanceLock::~InstanceLock()
 #endif
 }
 
+std::unique_ptr<InstanceLock>
+acquireInstanceLock(const std::filesystem::path& lockPath, std::chrono::milliseconds patience, std::chrono::milliseconds retryEvery)
+{
+    const auto deadline = std::chrono::steady_clock::now() + patience;
+    auto lock = std::make_unique<InstanceLock>(lockPath);
+    while (lock->status() == InstanceLock::Status::HeldByAnotherInstance && std::chrono::steady_clock::now() < deadline)
+    {
+        std::this_thread::sleep_for(retryEvery);
+        lock.reset(); // this one's file handle first, so the next try opens it afresh
+        lock = std::make_unique<InstanceLock>(lockPath);
+    }
+    return lock;
+}
 } // namespace App

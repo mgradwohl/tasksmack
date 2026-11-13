@@ -47,7 +47,7 @@ std::optional<std::filesystem::path>& current()
 }
 
 /// Whether current() was handed over by an elevated restart (adoptHandedOver()).
-bool& handedOver()
+bool& handedOverFlag()
 {
     static bool handed = false;
     return handed;
@@ -65,18 +65,23 @@ void adoptHandedOver(const std::filesystem::path& dir)
     std::error_code ec;
     const std::filesystem::path absolute = std::filesystem::absolute(dir, ec);
     current() = ec ? dir : absolute.lexically_normal();
-    handedOver() = true;
+    handedOverFlag() = true;
+}
+
+bool handedOver()
+{
+    return current().has_value() && handedOverFlag();
 }
 
 bool fromTestHook()
 {
-    return current().has_value() && !handedOver();
+    return current().has_value() && !handedOverFlag();
 }
 
 void setActiveForTesting(std::optional<std::filesystem::path> dir)
 {
     current() = std::move(dir);
-    handedOver() = false;
+    handedOverFlag() = false;
 }
 
 } // namespace Core::ConfigDirOverride

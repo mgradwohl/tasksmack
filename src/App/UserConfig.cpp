@@ -933,6 +933,19 @@ bool UserConfig::writeSettings(const UserSettings& settings)
 #endif
     }
 
+    // A config folder an elevated restart was handed (#2728) is the less-privileged side's: an elevated TaskSmack
+    // writes through no link there, so a link planted after the startup check can't send a write elsewhere.
+    const bool handedOver = Core::ConfigDirOverride::handedOver();
+    if (handedOver)
+    {
+        const std::filesystem::file_status dirStatus = std::filesystem::symlink_status(configDir, ec);
+        if (ec || dirStatus.type() != std::filesystem::file_type::directory)
+        {
+            spdlog::error("Not saving settings: {} is no longer a plain folder", Core::pathToUtf8(configDir));
+            return false;
+        }
+    }
+
     // A symlinked config is written through the link: the temporary file goes beside the link's
     // target and is renamed over the target, so the link survives (renaming over the link itself
     // would replace it with a regular file and leave the target stale, #1222 review).
@@ -952,6 +965,12 @@ bool UserConfig::writeSettings(const UserSettings& settings)
         if (ec || !std::filesystem::is_symlink(linkStatus))
         {
             break;
+        }
+        if (handedOver)
+        {
+            spdlog::error("Not saving settings: {} is a link, which an elevated TaskSmack doesn't write through",
+                          Core::pathToUtf8(destination));
+            return false;
         }
         if (++linkHops > MAX_LINK_HOPS)
         {

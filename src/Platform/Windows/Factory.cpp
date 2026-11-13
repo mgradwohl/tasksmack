@@ -81,6 +81,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -269,9 +270,14 @@ std::shared_ptr<IElevatedRestart> makeElevatedRestart(void* ownerWindow)
                                                                               Windows::ElevatedRestart::promptFor(type));
 }
 
-bool waitForHandoff(std::uint32_t pid)
+HandoffWait waitForHandoff(std::uint32_t pid, std::uint64_t startTicks)
 {
-    return Windows::ElevatedRestart::waitForHandoff(static_cast<DWORD>(pid)) != Windows::ElevatedRestart::HandoffWait::TimedOut;
+    return Windows::ElevatedRestart::waitForHandoff(static_cast<DWORD>(pid), startTicks);
+}
+
+std::expected<void, std::string> checkHandedOverConfigDir(const std::filesystem::path& dir)
+{
+    return Windows::ElevatedRestart::checkConfigDir(dir);
 }
 
 bool enableDebugPrivilege()

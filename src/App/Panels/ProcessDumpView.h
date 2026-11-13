@@ -99,7 +99,12 @@ lowSpaceWarning(const Platform::DumpSpace& space, const std::filesystem::path& d
 /// The folder dumps go to: @p remembered (UserSettings::dumpFolder, UTF-8) while it is an existing
 /// folder, else defaultDumpDirectory(). Asks the file system: on the confirm's worker, never the UI thread.
 [[nodiscard]] std::filesystem::path dumpDirectory(std::string_view remembered);
-/// The folder the user last chose (UserSettings::dumpFolder, UTF-8), from the user's config: read on
+/// The dump folder to use from @p stored (UserSettings::dumpFolder): in a session whose config folder an elevated
+/// restart was handed (@p handedOver, #2728) only @p chosenThisSession, the one this session's user picked with
+/// Save dump to..., as the stored one is the less-privileged side's and an elevated dump there is a write to a
+/// place it chose. Empty: defaultDumpDirectory().
+[[nodiscard]] std::string trustedDumpFolder(std::string_view stored, bool handedOver, std::string_view chosenThisSession);
+/// The folder the user last chose (UserSettings::dumpFolder, UTF-8), from the user's config (trustedDumpFolder()): read on
 /// the UI thread, checked by dumpDirectory() on the confirm's worker (#3155).
 [[nodiscard]] std::string rememberedDumpFolder();
 /// Keeps @p directory as the folder later dumps go to, in the user's config, and saves it.

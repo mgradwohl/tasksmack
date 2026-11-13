@@ -57,6 +57,7 @@
 #include "AuthorizeWording.h"
 #include "Core/Application.h"
 #include "Core/ApplicationEvents.h"
+#include "Core/ConfigDirOverride.h"
 #include "Core/Event.h"
 #include "Domain/BackgroundSampler.h"
 #include "Domain/DeferredProbe.h"
@@ -1975,7 +1976,10 @@ void ProcessesPanel::renderContent()
         ImGui::BeginDisabled(rowActionRunning());
         if (ImGui::Button(ICON_FA_ROCKET "###RunNewTask", ImVec2(runTaskButtonWidth, 0.0F)))
         {
-            m_RunTaskDialog.open(UserConfig::get().settings().recentCommands, m_ActionCapabilities.canRunProgramAsAdministrator);
+            // Not the recent commands of a handed-over config folder in an elevated session (#2728).
+            m_RunTaskDialog.open(
+                RunTaskHistory::offered(UserConfig::get().settings().recentCommands, Core::ConfigDirOverride::handedOver()),
+                m_ActionCapabilities.canRunProgramAsAdministrator);
         }
         ImGui::EndDisabled();
         ImGui::SetItemTooltip("Run new task: start a program, optionally as administrator");

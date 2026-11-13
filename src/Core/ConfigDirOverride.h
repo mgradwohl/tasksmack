@@ -60,6 +60,10 @@ static_assert(Core::isKnownEnvHook(ENV_VAR)); // listed in KNOWN_ENV_HOOKS (#217
 /// it first thing, before anything reads active(). Not thread-safe for the same reason as setActiveForTesting().
 void adoptHandedOver(const std::filesystem::path& dir);
 
+/// Whether active() is a directory an elevated restart handed over (adoptHandedOver()): one the less-privileged
+/// side chose, so UserConfig writes through no link in it, and nothing read from it is offered to run elevated.
+[[nodiscard]] bool handedOver();
+
 /// Whether active() is TASKSMACK_CONFIG_DIR's (a test hook), not a handed-over directory; false when there is
 /// no override.
 [[nodiscard]] bool fromTestHook();

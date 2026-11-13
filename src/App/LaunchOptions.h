@@ -8,10 +8,11 @@
 // Task Manager's own arguments after it (TaskManagerLaunch.h). Those are Task Manager's, not TaskSmack's:
 // the start is marked asTaskManager and none of them is read as TaskSmack's, or listed as ignored.
 //
-// Restarted as administrator (#2728, Platform/IElevatedRestart.h), TaskSmack is given "--handoff <PID>
-// --config-dir <directory>": the Standard TaskSmack to wait for, and the launching user's config directory.
-// The directory is taken only with a hand-off, so --config-dir alone is ignored, as is a hand-off whose PID
-// isn't a whole number.
+// Restarted as administrator (#2728, Platform/IElevatedRestart.h), TaskSmack is given "--handoff <PID> <start
+// ticks> --config-dir <directory>": the Standard TaskSmack to wait for, its creation time, and the launching user's
+// config directory. The directory is taken only with a hand-off, so --config-dir alone is ignored, as is a hand-off
+// whose PID or creation time isn't a whole, non-zero number. main.cpp still checks the directory before it uses it
+// (Platform::checkHandedOverConfigDir()): the command line is the less-privileged side's.
 
 #include "App/TaskManagerLaunch.h"
 #include "Domain/StartAtLogin.h"
@@ -38,22 +39,23 @@ struct LaunchOptions
     bool minimized = false;                  ///< --minimized: start minimized, without taking the focus
     bool asTaskManager = false;              ///< Windows started TaskSmack in place of Task Manager (#3072)
     std::optional<std::uint32_t> handoffPid; ///< --handoff: the Standard TaskSmack this elevated one replaces (#2728)
+    std::uint64_t handoffStartTicks = 0;     ///< --handoff's second value: that process's creation time
     std::optional<std::string> configDir;    ///< --config-dir, with a hand-off: the launching user's (UTF-8)
 };
 
 namespace Detail
 {
-/// @p text as a PID: a whole, non-zero number, nothing else.
-[[nodiscard]] inline std::optional<std::uint32_t> parsePid(const std::string& text) noexcept
+/// @p text as a whole, non-zero number of type @p Number, nothing else.
+template<typename Number> [[nodiscard]] std::optional<Number> parsePositive(const std::string& text) noexcept
 {
-    std::uint32_t pid = 0;
+    Number value = 0;
     const char* const end = std::to_address(text.end());
-    const auto [last, error] = std::from_chars(std::to_address(text.begin()), end, pid);
-    if (error != std::errc{} || last != end || pid == 0)
+    const auto [last, error] = std::from_chars(std::to_address(text.begin()), end, value);
+    if (error != std::errc{} || last != end || value == 0)
     {
         return std::nullopt;
     }
-    return pid;
+    return value;
 }
 } // namespace Detail
 
@@ -76,9 +78,13 @@ namespace Detail
         {
             options.minimized = true;
         }
-        else if (argument == Platform::HANDOFF_ARGUMENT && hasValue && Detail::parsePid(own[index + 1]).has_value())
+        else if (argument == Platform::HANDOFF_ARGUMENT && index + 2 < own.size() &&
+                 Detail::parsePositive<std::uint32_t>(own[index + 1]).has_value() &&
+                 Detail::parsePositive<std::uint64_t>(own[index + 2]).has_value())
         {
-            options.handoffPid = Detail::parsePid(own[++index]);
+            options.handoffPid = Detail::parsePositive<std::uint32_t>(own[index + 1]);
+            options.handoffStartTicks = Detail::parsePositive<std::uint64_t>(own[index + 2]).value_or(0);
+            index += 2;
         }
         else if (argument == Platform::CONFIG_DIR_ARGUMENT && hasValue && !own[index + 1].empty())
         {

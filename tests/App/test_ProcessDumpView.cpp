@@ -5,6 +5,7 @@
 
 #include "App/Panels/ProcessDumpView.h"
 #include "App/UserConfig.h"
+#include "Core/ConfigDirOverride.h"
 #include "Core/Utf8Path.h"
 #include "Mocks/MockProbes.h"
 #include "Platform/IProcessActions.h"
@@ -1190,5 +1191,25 @@ TEST(ProcessDumpViewTest, TheRememberedFolderIsTheConfigsAsWritten)
     config.settings().dumpFolder = original;
 }
 
+// #2728: a hand-off session doesn't dump into a folder its handed-over config names: that folder is the
+// less-privileged side's choice, and an elevated dump there writes where it chose. The session's own Save dump to...
+// choice is used, else the elevated account's default.
+TEST(ProcessDumpViewTest, AHandOffSessionIgnoresTheHandedOverDumpFolder)
+{
+    EXPECT_EQ(DumpDetail::trustedDumpFolder("D:\\Dumps", false, ""), "D:\\Dumps");
+    EXPECT_EQ(DumpDetail::trustedDumpFolder("C:\\Windows\\System32", true, ""), "") << "the default instead";
+    EXPECT_EQ(DumpDetail::trustedDumpFolder("C:\\Windows\\System32", true, "E:\\Mine"), "E:\\Mine") << "chosen in this session";
+
+    auto& config = UserConfig::get();
+    const std::string original = config.settings().dumpFolder;
+    // NOLINTNEXTLINE(performance-unnecessary-copy-initialization) - a copy: active() changes below
+    const std::optional<std::filesystem::path> previous = Core::ConfigDirOverride::active();
+    config.settings().dumpFolder = "C:\\Windows\\System32";
+    Core::ConfigDirOverride::adoptHandedOver(std::filesystem::temp_directory_path());
+    EXPECT_NE(DumpDetail::rememberedDumpFolder(), "C:\\Windows\\System32") << "the handed-over config's folder isn't used";
+    Core::ConfigDirOverride::setActiveForTesting(previous);
+    EXPECT_EQ(DumpDetail::rememberedDumpFolder(), "C:\\Windows\\System32") << "outside a hand-off, as written";
+    config.settings().dumpFolder = original;
+}
 } // namespace
 } // namespace App

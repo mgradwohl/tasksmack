@@ -5,6 +5,7 @@
 #include "App/UserConfig.h"
 #include "Core/AnimationRequest.h"
 #include "Core/Application.h"
+#include "Core/ConfigDirOverride.h"
 #include "Core/SaveFileDialog.h"
 #include "Core/Utf8Path.h"
 #include "Core/Window.h"
@@ -20,6 +21,7 @@
 
 #include <SDL3/SDL_video.h>
 #include <imgui.h>
+#include <spdlog/spdlog.h>
 
 #include <algorithm>
 #include <chrono>
@@ -79,15 +81,43 @@ std::filesystem::path dumpDirectory(std::string_view remembered)
     return defaultDumpDirectory();
 }
 
+namespace
+{
+/// The folder chosen with Save dump to... in this session (UTF-8), which a hand-off session trusts (#2728).
+[[nodiscard]] std::string& folderChosenThisSession()
+{
+    static std::string chosen;
+    return chosen;
+}
+} // namespace
+
+std::string trustedDumpFolder(std::string_view stored, bool handedOver, std::string_view chosenThisSession)
+{
+    return std::string(handedOver ? chosenThisSession : stored);
+}
+
 std::string rememberedDumpFolder()
 {
-    return UserConfig::get().settings().dumpFolder;
+    const std::string& stored = UserConfig::get().settings().dumpFolder;
+    const bool handedOver = Core::ConfigDirOverride::handedOver();
+    if (handedOver && !stored.empty() && stored != folderChosenThisSession())
+    {
+        static bool logged = false; // once a session, not at every dump
+        if (!std::exchange(logged, true))
+        {
+            spdlog::info("Not writing dumps to {}: it came from a handed-over settings folder (#2728); using this account's "
+                         "default unless Save dump to... chooses another",
+                         stored);
+        }
+    }
+    return trustedDumpFolder(stored, handedOver, folderChosenThisSession());
 }
 
 void rememberDumpDirectory(const std::filesystem::path& directory)
 {
     auto& config = UserConfig::get();
     std::string folder = Core::pathToUtf8(directory);
+    folderChosenThisSession() = folder; // chosen in Windows' folder dialog by this session's user
     if (config.settings().dumpFolder == folder)
     {
         return;
