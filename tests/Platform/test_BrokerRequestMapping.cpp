@@ -17,6 +17,7 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cstdint>
 #include <optional>
 #include <stdexcept>
@@ -420,6 +421,87 @@ TEST(BrokerRequestMappingTest, AReadThatThrowsIsAFailedReadNotAnEndedHelper)
     const Broker::Response sockets = BrokerServer::handleRequest(Broker::ConnectionsRequest{.target = TARGET}, actions, readers);
     ASSERT_TRUE(std::holds_alternative<Broker::ConnectionsReply>(sockets));
     EXPECT_EQ(std::get<Broker::ConnectionsReply>(sockets).result.status, ConnectionsReadStatus::Failed);
+}
+
+// #3578 (v24): a batch is read in one of the reader's batches (on Windows, one handle-table walk), every target in order.
+TEST(BrokerRequestMappingTest, AnOpenFilesBatchIsReadInOneBatchInOrder)
+{
+    TestMocks::MockProcessActions actions;
+    TestMocks::MockProcessOpenFilesReader openFiles;
+    OpenFilesReadResult read;
+    read.status = OpenFilesReadStatus::Ok;
+    read.files.push_back({.descriptor = 4, .kind = OpenFileKind::File, .path = "C:\\a.txt", .flags = std::nullopt, .deleted = false});
+    openFiles.setResult(read);
+    const BrokerServer::Readers readers{.openFiles = &openFiles};
+    constexpr ProcessTarget SECOND{.pid = 8, .startTimeTicks = 3};
+    constexpr ProcessTarget THIRD{.pid = 9, .startTimeTicks = 4};
+
+    const Broker::Response response =
+        BrokerServer::handleRequest(Broker::OpenFilesBatchRequest{.targets = {TARGET, SECOND, THIRD}}, actions, readers);
+    ASSERT_TRUE(std::holds_alternative<Broker::OpenFilesBatchReply>(response));
+    const auto& results = std::get<Broker::OpenFilesBatchReply>(response).results;
+    ASSERT_EQ(results.size(), 3U);
+    EXPECT_EQ(results[2].files.at(0).path, "C:\\a.txt");
+    EXPECT_EQ(openFiles.batchesBegun(), 1) << "one walk for the request";
+    EXPECT_EQ(openFiles.batchesEnded(), 1);
+    EXPECT_EQ(openFiles.readTargets(), (std::vector<ProcessTarget>{TARGET, SECOND, THIRD}));
+
+    const Broker::Response none = BrokerServer::handleRequest(Broker::OpenFilesBatchRequest{.targets = {TARGET}}, actions);
+    ASSERT_TRUE(std::holds_alternative<Broker::ErrorReply>(none));
+    EXPECT_EQ(std::get<Broker::ErrorReply>(none).message, "This helper doesn't list open files");
+}
+
+// The helper answers within its budget with the results so far (at least one), and a read that throws is its target's failure.
+TEST(BrokerRequestMappingTest, AnOpenFilesBatchStopsAtItsBudgetAndAThrowIsThatTargetsFailure)
+{
+    TestMocks::MockProcessActions actions;
+    auto now = std::chrono::steady_clock::time_point{};
+    /// Each read takes `step` of the test's clock; the second throws.
+    class SlowReader final : public TestMocks::MockProcessOpenFilesReader
+    {
+      public:
+        explicit SlowReader(std::chrono::steady_clock::time_point& now) : m_Now(&now)
+        {}
+        [[nodiscard]] OpenFilesReadResult readOpenFiles(const ProcessTarget& target) override
+        {
+            *m_Now += step;
+            if (++m_Reads == 2)
+            {
+                throw std::runtime_error("the walk broke");
+            }
+            return MockProcessOpenFilesReader::readOpenFiles(target);
+        }
+
+        std::chrono::seconds step{3};
+
+      private:
+        std::chrono::steady_clock::time_point* m_Now;
+        int m_Reads = 0;
+    };
+    SlowReader openFiles(now);
+    OpenFilesReadResult read;
+    read.status = OpenFilesReadStatus::Ok;
+    openFiles.setResult(read);
+    const BrokerServer::Readers readers{.openFiles = &openFiles, .clock = [&now] { return now; }};
+    constexpr ProcessTarget SECOND{.pid = 8, .startTimeTicks = 3};
+    constexpr ProcessTarget THIRD{.pid = 9, .startTimeTicks = 4};
+
+    const Broker::Response response =
+        BrokerServer::handleRequest(Broker::OpenFilesBatchRequest{.targets = {TARGET, SECOND, THIRD}}, actions, readers);
+    ASSERT_TRUE(std::holds_alternative<Broker::OpenFilesBatchReply>(response));
+    const auto& results = std::get<Broker::OpenFilesBatchReply>(response).results;
+    ASSERT_EQ(results.size(), 2U) << "6 s of reads passes the 4 s budget: the third waits for the next request";
+    EXPECT_EQ(results[0].status, OpenFilesReadStatus::Ok);
+    EXPECT_EQ(results[1].status, OpenFilesReadStatus::Failed);
+    EXPECT_EQ(openFiles.batchesEnded(), 1);
+
+    // A first read that spends the whole budget is still answered, alone.
+    openFiles.step = std::chrono::seconds{5};
+    const Broker::Response one = BrokerServer::handleRequest(Broker::OpenFilesBatchRequest{.targets = {THIRD, SECOND}}, actions, readers);
+    ASSERT_TRUE(std::holds_alternative<Broker::OpenFilesBatchReply>(one));
+    ASSERT_EQ(std::get<Broker::OpenFilesBatchReply>(one).results.size(), 1U);
+    EXPECT_EQ(std::get<Broker::OpenFilesBatchReply>(one).results[0].status, OpenFilesReadStatus::Ok);
+    EXPECT_EQ(openFiles.readTargets().back(), THIRD);
 }
 
 TEST(BrokerRequestMappingTest, AnOpenFilesRequestWithoutAReaderIsRefused)

@@ -61,11 +61,12 @@ bool isRead(const Broker::Request& request) noexcept
     // (BrokerHelper::readsOnlyOwnProcesses) might let it through: revisit both, then this count.
     // TaskManagerReplacementRequest (#3072), SessionActionRequest (#3076), ThreadActionRequest (#3069) and
     // CloseConnectionRequest (#3358) are actions (isActionWindowsDoes()). Protocol v23 dropped the kinds only
-    // Linux's helper served (#3580).
-    static_assert(std::variant_size_v<Broker::Request> == 15, "sort the new request kind into an action or a read");
+    // Linux's helper served (#3580). OpenFilesBatchRequest (#3578) is a read: Find handles' open files.
+    static_assert(std::variant_size_v<Broker::Request> == 16, "sort the new request kind into an action or a read");
     return std::holds_alternative<Broker::EnvironmentRequest>(request) || std::holds_alternative<Broker::ModulesRequest>(request) ||
            std::holds_alternative<Broker::OpenFilesRequest>(request) || std::holds_alternative<Broker::ConnectionsRequest>(request) ||
-           std::holds_alternative<Broker::ThreadsRequest>(request); // Process Details' threads (#3069)
+           std::holds_alternative<Broker::ThreadsRequest>(request) ||      // Process Details' threads (#3069)
+           std::holds_alternative<Broker::OpenFilesBatchRequest>(request); // Find handles' administrator pass (#3578)
 }
 
 bool putsOffTheWindowsIdleExit(const Broker::Request& request) noexcept

@@ -736,6 +736,65 @@ bool runsAs(const ProcessTarget& target, const BrokerPipe::Sid& user)
     return owner.has_value() && *owner == user;
 }
 
+namespace
+{
+
+/// readsOnlyOwnProcesses() for a batch of open-files reads (#3578): the user's own targets go to @p handler in one
+/// request, and each other target is refused as an OpenFilesRequest's would be, in the request's order. Stops before
+/// the first own target the handler didn't answer (its reply was cut short), so the client asks again from there.
+/// An answer that isn't a batch's (an ErrorReply) is the reply as it is.
+[[nodiscard]] Broker::Response ownProcessesOfBatch(const Broker::OpenFilesBatchRequest& read,
+                                                   const BrokerPipeServer::RequestHandler& handler,
+                                                   const std::function<bool(const ProcessTarget&)>& owned,
+                                                   const std::string& refusal)
+{
+    std::vector<bool> isOwn;
+    isOwn.reserve(read.targets.size());
+    Broker::OpenFilesBatchRequest own;
+    for (const ProcessTarget& target : read.targets)
+    {
+        isOwn.push_back(owned(target));
+        if (isOwn.back())
+        {
+            own.targets.push_back(target);
+        }
+    }
+    Broker::OpenFilesBatchReply answered;
+    if (!own.targets.empty())
+    {
+        Broker::Response response = handler(Broker::Request{std::move(own)});
+        auto* const reply = std::get_if<Broker::OpenFilesBatchReply>(&response);
+        if (reply == nullptr)
+        {
+            return response;
+        }
+        answered = std::move(*reply);
+    }
+    Broker::OpenFilesBatchReply merged;
+    merged.results.reserve(read.targets.size());
+    std::size_t next = 0; // the next of answered's results
+    for (const bool mine : isOwn)
+    {
+        if (!mine)
+        {
+            OpenFilesReadResult refused;
+            refused.status = OpenFilesReadStatus::Failed;
+            refused.detail = refusal;
+            merged.results.push_back(std::move(refused));
+            continue;
+        }
+        if (next == answered.results.size())
+        {
+            break;
+        }
+        merged.results.push_back(std::move(answered.results[next]));
+        ++next;
+    }
+    return merged;
+}
+
+} // namespace
+
 BrokerPipeServer::RequestHandler readsOnlyOwnProcesses(BrokerPipeServer::RequestHandler handler,
                                                        std::function<bool(const ProcessTarget&)> ownedByUser)
 {
@@ -779,6 +838,10 @@ BrokerPipeServer::RequestHandler readsOnlyOwnProcesses(BrokerPipeServer::Request
             refused.status = OpenFilesReadStatus::Failed;
             refused.detail = refusal;
             return Broker::OpenFilesReply{.result = std::move(refused)};
+        }
+        if (const auto* read = std::get_if<Broker::OpenFilesBatchRequest>(&request))
+        {
+            return ownProcessesOfBatch(*read, handler, owned, refusal);
         }
         if (const auto* read = std::get_if<Broker::ConnectionsRequest>(&request))
         {

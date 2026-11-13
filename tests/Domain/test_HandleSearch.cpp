@@ -95,10 +95,23 @@ class FakeOpenFiles final : public Platform::IProcessOpenFilesReader
     int batchesEnded = 0;
     int readsInBatch = 0; ///< Reads made between beginBatch() and endBatch()
     bool inBatch = false;
+    std::vector<std::vector<std::int32_t>> expected; ///< Each expectAuthorizedReads()'s PIDs (#3578)
+    bool expectedInBatch = true;                     ///< Every expectAuthorizedReads() came inside a batch
 
     [[nodiscard]] bool hasOpenFiles() const override
     {
         return true;
+    }
+
+    void expectAuthorizedReads(std::span<const Platform::ProcessTarget> targets) override
+    {
+        expectedInBatch = expectedInBatch && inBatch;
+        std::vector<std::int32_t> pids;
+        for (const Platform::ProcessTarget& target : targets)
+        {
+            pids.push_back(target.pid);
+        }
+        expected.push_back(std::move(pids));
     }
 
     void beginBatch() override
@@ -854,6 +867,53 @@ TEST(HandleSearchTest, ProcessesOfAndSourcesOfKeepTheDeniedOrder)
     EXPECT_EQ(files.read, (std::vector<std::int32_t>{1, 2}));
     EXPECT_EQ(mods.read, (std::vector<std::int32_t>{2}));
 }
+// #3578: an administrator's pass names, inside its batch, just the processes whose open files it reads (those
+// refused, and any past the sources list), so the helper reads them in one request; a first search names none.
+TEST(HandleSearchTest, AnAdministratorPassNamesTheProcessesWhoseOpenFilesItReads)
+{
+    FakeOpenFiles files;
+    files.results[1] = openFiles({});
+    files.authorizedFiles[1] = openFiles({});
+    files.authorizedFiles[3] = openFiles({});
+    files.authorizedFiles[4] = openFiles({});
+    FakeModules mods;
+    mods.authorizedResults[2] = modules({});
+    const std::vector<SearchProcess> processes{process(1, "a"), process(2, "b"), process(3, "c"), process(4, "d")};
+    Domain::PublicationSlot<SearchPublication> slot;
+    const std::stop_source stop;
+
+    run(processes, {.openFiles = &files, .modules = &mods}, false, startFor("x", processes.size(), 1), publishTo(slot), stop.get_token());
+    EXPECT_TRUE(files.expected.empty()) << "a first search reads in-process: nothing to name";
+
+    const std::vector<SearchSources> refused{
+        {.openFiles = true, .modules = false},
+        {.openFiles = false, .modules = true},
+        {.openFiles = true, .modules = true},
+    }; // the fourth reads both
+    run(processes,
+        {.openFiles = &files, .modules = &mods},
+        true,
+        startFor("x", processes.size(), 10),
+        publishTo(slot),
+        stop.get_token(),
+        refused);
+    ASSERT_EQ(files.expected.size(), 1U);
+    EXPECT_EQ(files.expected[0], (std::vector<std::int32_t>{1, 3, 4}));
+    EXPECT_TRUE(files.expectedInBatch);
+    EXPECT_EQ(files.authorizedReads, 3);
+
+    // A retry of refused modules alone names nothing: no batch, no request.
+    const std::vector<SearchSources> modulesOnly(processes.size(), SearchSources{.openFiles = false, .modules = true});
+    run(processes,
+        {.openFiles = &files, .modules = &mods},
+        true,
+        startFor("x", processes.size(), 20),
+        publishTo(slot),
+        stop.get_token(),
+        modulesOnly);
+    EXPECT_EQ(files.expected.size(), 1U);
+}
+
 // #3357: the open-files batch (on Windows, a walk of the whole handle table) is begun only when some process in the run
 // is to have its open files read: an administrator's retry of refused modules alone begins none, and a run that reads
 // one process's open files begins exactly one.

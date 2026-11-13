@@ -87,6 +87,15 @@ namespace
     {
         return reworded(files->result.detail);
     }
+    if (auto* const batch = std::get_if<Broker::OpenFilesBatchReply>(&response))
+    {
+        bool any = false; // each of a batch's refused targets (#3578), every one reworded
+        for (OpenFilesReadResult& result : batch->results)
+        {
+            any = reworded(result.detail) || any;
+        }
+        return any;
+    }
     if (auto* const connections = std::get_if<Broker::ConnectionsReply>(&response))
     {
         return reworded(connections->result.detail);

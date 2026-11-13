@@ -738,6 +738,7 @@ TEST(BrokerProtocolTest, NoResponseDecodesAsARequestAndNoRequestAsAResponse)
         ConnectionsReply{.result = {.status = ConnectionsReadStatus::Ok, .connections = {}, .detail = {}}},
         ThreadsReply{.result = {.status = ThreadsReadStatus::Ok, .threads = {}, .detail = {}}},
         ServiceActionReply{},
+        OpenFilesBatchReply{.results = {OpenFilesReadResult{}}},
     };
     for (const Response& response : responses)
     {
@@ -759,6 +760,7 @@ TEST(BrokerProtocolTest, NoResponseDecodesAsARequestAndNoRequestAsAResponse)
         ConnectionsRequest{.target = TARGET},
         ThreadsRequest{.target = TARGET},
         ThreadActionRequest{.target = TARGET, .tid = 9, .action = ThreadAction::Resume},
+        OpenFilesBatchRequest{.targets = {TARGET}},
     };
     for (const Request& request : requests)
     {
@@ -894,6 +896,8 @@ TEST(BrokerProtocolTest, TheFuzzCorpusHasADecodableSeedForEveryMessageKind)
                                    MessageKind::ConnectionsResult,
                                    MessageKind::ServiceActionResult,
                                    MessageKind::ThreadsResult,
+                                   MessageKind::ReadOpenFilesBatch, // v24 (#3578)
+                                   MessageKind::OpenFilesBatchResult,
                                    MessageKind::Error})
     {
         EXPECT_TRUE(seeded.contains(kind)) << "no seed for kind " << static_cast<int>(kind);
@@ -1128,6 +1132,129 @@ TEST(BrokerProtocolTest, AListsRoomIsTheFrameLessItsFixedBytes)
     {
         EXPECT_EQ(Detail::listRoom(fixed), MAX_MESSAGE_BYTES - (4 + HEADER_BYTES) - fixed);
     }
+}
+
+// #3578 (v24): Find handles' administrator pass asks for many processes' open files in one request.
+TEST(BrokerProtocolTest, AnOpenFilesBatchRoundTripsInOrder)
+{
+    constexpr ProcessTarget OTHER{.pid = 77, .startTimeTicks = 5};
+    const Request request = OpenFilesBatchRequest{.targets = {TARGET, OTHER}};
+    const std::vector<std::uint8_t> bytes = encodeRequest(3, request);
+    EXPECT_EQ(bytes[4], static_cast<std::uint8_t>(PROTOCOL_VERSION));
+    EXPECT_EQ(Detail::readFrame(bytes).value_or(Detail::Frame{}).kind, MessageKind::ReadOpenFilesBatch);
+    EXPECT_EQ(bytes.size(), 4U + HEADER_BYTES + 4U + (std::size_t{2} * (4U + 8U))); // a count, then each PID and start time
+    EXPECT_EQ(roundTrip(request), request);
+
+    OpenFilesReadResult read;
+    read.status = OpenFilesReadStatus::Ok;
+    read.hexDescriptors = true;
+    read.namesIncomplete = true;
+    read.files.push_back({.descriptor = 0x44, .kind = OpenFileKind::File, .path = "C:\\x.log", .flags = std::nullopt, .deleted = false});
+    OpenFilesReadResult refused;
+    refused.status = OpenFilesReadStatus::PermissionDenied;
+    refused.detail = "Access is denied.";
+    const Response reply = OpenFilesBatchReply{.results = {read, refused, OpenFilesReadResult{}}};
+    EXPECT_EQ(roundTrip(reply), reply);
+    const auto decoded = decodeResponse(encodeResponse(1, reply));
+    ASSERT_TRUE(decoded.has_value());
+    const auto& results = std::get<OpenFilesBatchReply>(decoded->message).results;
+    ASSERT_EQ(results.size(), 3U);
+    EXPECT_EQ(results[0].files.at(0).path, "C:\\x.log");
+    EXPECT_EQ(results[1].status, OpenFilesReadStatus::PermissionDenied);
+    EXPECT_EQ(results[2].status, OpenFilesReadStatus::Unsupported);
+}
+
+TEST(BrokerProtocolTest, AnOpenFilesBatchOfNoneOrPastItsCapIsRefused)
+{
+    Detail::Writer none;
+    none.u32(0);
+    EXPECT_FALSE(decodeRequest(none.frame(MessageKind::ReadOpenFilesBatch, 1)).has_value());
+
+    Detail::Writer tooMany;
+    tooMany.u32(static_cast<std::uint32_t>(MAX_OPEN_FILES_BATCH + 1));
+    for (std::size_t i = 0; i <= MAX_OPEN_FILES_BATCH; ++i)
+    {
+        tooMany.target(TARGET);
+    }
+    EXPECT_FALSE(decodeRequest(tooMany.frame(MessageKind::ReadOpenFilesBatch, 1)).has_value());
+
+    Detail::Writer shortList; // says two, carries one
+    shortList.u32(2);
+    shortList.target(TARGET);
+    EXPECT_FALSE(decodeRequest(shortList.frame(MessageKind::ReadOpenFilesBatch, 1)).has_value());
+
+    Detail::Writer tooManyResults;
+    tooManyResults.u32(static_cast<std::uint32_t>(MAX_OPEN_FILES_BATCH + 1));
+    EXPECT_FALSE(decodeResponse(tooManyResults.frame(MessageKind::OpenFilesBatchResult, 1)).has_value());
+
+    Detail::Writer badStatus; // one result whose status is past Failed
+    badStatus.u32(1);
+    badStatus.u8(static_cast<std::uint8_t>(OpenFilesReadStatus::Failed) + 1);
+    badStatus.text("");
+    badStatus.u8(0);
+    badStatus.u8(0);
+    badStatus.u8(0);
+    badStatus.u32(0);
+    EXPECT_FALSE(decodeResponse(badStatus.frame(MessageKind::OpenFilesBatchResult, 1)).has_value());
+
+    // A request names at most the cap: an encoder handed more sends the first MAX_OPEN_FILES_BATCH.
+    OpenFilesBatchRequest many;
+    many.targets.assign(MAX_OPEN_FILES_BATCH + 5, TARGET);
+    const auto decoded = decodeRequest(encodeRequest(1, Request{many}));
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_EQ(std::get<OpenFilesBatchRequest>(decoded->message).targets.size(), MAX_OPEN_FILES_BATCH);
+}
+
+// A batch's results past one frame wait for the next reply, whole; the first is cut to fit, so a reply always answers one.
+TEST(BrokerProtocolTest, AnOpenFilesBatchPastOneFrameSendsTheWholeResultsThatFit)
+{
+    OpenFilesReadResult big;
+    big.status = OpenFilesReadStatus::Ok;
+    const std::string longPath(MAX_STRING_BYTES, 'p'); // about 127 of these fill a frame
+    for (std::uint64_t fd = 0; fd < 50; ++fd)
+    {
+        big.files.push_back({.descriptor = fd, .kind = OpenFileKind::File, .path = longPath, .flags = std::nullopt, .deleted = false});
+    }
+    const OpenFilesBatchReply three{.results = {big, big, big}}; // 150 paths: two fit whole, not three
+    const std::vector<std::uint8_t> bytes = encodeResponse(1, Response{three});
+    EXPECT_LE(bytes.size(), MAX_MESSAGE_BYTES);
+    const auto decoded = decodeResponse(bytes);
+    ASSERT_TRUE(decoded.has_value()) << decoded.error();
+    const auto& results = std::get<OpenFilesBatchReply>(decoded->message).results;
+    ASSERT_EQ(results.size(), 2U);
+    EXPECT_FALSE(results[0].truncated);
+    EXPECT_FALSE(results[1].truncated);
+    EXPECT_EQ(results[1].files.size(), 50U);
+
+    OpenFilesReadResult huge = big; // alone past a frame: cut, as a single reply's is
+    for (std::uint64_t fd = 50; fd < 200; ++fd)
+    {
+        huge.files.push_back({.descriptor = fd, .kind = OpenFileKind::File, .path = longPath, .flags = std::nullopt, .deleted = false});
+    }
+    const auto first = decodeResponse(encodeResponse(1, Response{OpenFilesBatchReply{.results = {huge, big}}}));
+    ASSERT_TRUE(first.has_value()) << first.error();
+    const auto& cut = std::get<OpenFilesBatchReply>(first->message).results;
+    ASSERT_EQ(cut.size(), 1U);
+    EXPECT_TRUE(cut[0].truncated);
+    EXPECT_GT(cut[0].files.size(), 100U);
+    EXPECT_LT(cut[0].files.size(), 200U);
+}
+
+TEST(BrokerProtocolTest, OpenFilesBatchRepliesCompareEveryResult)
+{
+    OpenFilesReadResult read;
+    read.status = OpenFilesReadStatus::Ok;
+    const OpenFilesBatchReply base{.results = {read, read}};
+    expectEveryFieldCompared(
+        base,
+        [](OpenFilesBatchReply& other) { other.results.pop_back(); },
+        [](OpenFilesBatchReply& other) { other.results[1].status = OpenFilesReadStatus::Failed; },
+        [](OpenFilesBatchReply& other) { other.results[0].detail = "x"; },
+        [](OpenFilesBatchReply& other) { other.results[0].truncated = true; },
+        [](OpenFilesBatchReply& other) { other.results[0].namesIncomplete = true; },
+        [](OpenFilesBatchReply& other) { other.results[0].hexDescriptors = true; },
+        [](OpenFilesBatchReply& other) { other.results[0].files.push_back({}); });
+    EXPECT_FALSE((OpenFilesBatchRequest{.targets = {TARGET}} == OpenFilesBatchRequest{.targets = {TARGET, TARGET}}));
 }
 
 } // namespace

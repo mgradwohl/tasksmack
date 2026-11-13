@@ -19,11 +19,13 @@
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <span>
 #include <stop_token>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <variant>
+#include <vector>
 
 namespace Platform
 {
@@ -511,11 +513,108 @@ std::size_t BrokeredOpenFilesReader::handlesScanned() const noexcept
 void BrokeredOpenFilesReader::beginBatch()
 {
     m_Inner->beginBatch();
+    m_InBatch = true;
+    m_BatchUnanswered = false;
+    m_Expected.clear();
+    m_NextExpected = 0;
 }
 
 void BrokeredOpenFilesReader::endBatch() noexcept
 {
+    m_InBatch = false;
+    m_BatchUnanswered = false;
+    m_Expected.clear();
+    m_NextExpected = 0;
     m_Inner->endBatch();
+}
+
+void BrokeredOpenFilesReader::expectAuthorizedReads(std::span<const ProcessTarget> targets)
+{
+    if (!m_InBatch)
+    {
+        return; // outside a batch every read is fresh
+    }
+    m_Expected.clear();
+    m_Expected.reserve(targets.size());
+    for (const ProcessTarget& target : targets)
+    {
+        m_Expected.push_back(Expected{.target = target, .answered = false, .result = std::nullopt});
+    }
+    m_NextExpected = 0;
+}
+
+std::optional<OpenFilesReadResult> BrokeredOpenFilesReader::fromBatch(const ProcessTarget& target, const std::stop_token& stopToken)
+{
+    if (!m_InBatch || m_BatchUnanswered || m_Expected.empty())
+    {
+        return std::nullopt;
+    }
+    // Reads come in the order expected, so the lookup starts where the last one left off, then wraps.
+    std::optional<std::size_t> found;
+    for (std::size_t step = 0; step < m_Expected.size() && !found.has_value(); ++step)
+    {
+        const std::size_t index = (m_NextExpected + step) % m_Expected.size();
+        if (m_Expected[index].target == target)
+        {
+            found = index;
+        }
+    }
+    if (!found.has_value())
+    {
+        return std::nullopt;
+    }
+    m_NextExpected = *found + 1;
+    Expected& expected = m_Expected[*found];
+    if (!expected.answered)
+    {
+        askBatch(*found, stopToken);
+    }
+    if (!expected.result.has_value())
+    {
+        return std::nullopt; // not answered, or already taken: read alone
+    }
+    std::optional<OpenFilesReadResult> result = std::move(expected.result);
+    expected.result.reset();
+    return result;
+}
+
+void BrokeredOpenFilesReader::askBatch(std::size_t from, const std::stop_token& stopToken)
+{
+    Broker::OpenFilesBatchRequest request;
+    std::vector<std::size_t> asked; // the m_Expected index of each target in the request
+    for (std::size_t index = from; index < m_Expected.size() && request.targets.size() < Broker::MAX_OPEN_FILES_BATCH; ++index)
+    {
+        if (!m_Expected[index].answered)
+        {
+            request.targets.push_back(m_Expected[index].target);
+            asked.push_back(index);
+        }
+    }
+    std::expected<Broker::Response, std::string> response = m_Broker->call(request, stopToken);
+    if (!response.has_value())
+    {
+        // The channel broke or timed out: the first target says why, and the rest are asked for one at a time, as
+        // before (the broker's next call then says it isn't connected).
+        m_BatchUnanswered = true;
+        OpenFilesReadResult failed;
+        failed.status = OpenFilesReadStatus::Failed;
+        failed.detail = "The administrator helper couldn't be asked: " + response.error();
+        m_Expected[from].answered = true;
+        m_Expected[from].result = std::move(failed);
+        return;
+    }
+    auto* const reply = std::get_if<Broker::OpenFilesBatchReply>(&*response);
+    if (reply == nullptr || reply->results.empty() || reply->results.size() > asked.size())
+    {
+        m_BatchUnanswered = true; // a helper that doesn't read batches: one process at a time from here
+        return;
+    }
+    for (std::size_t i = 0; i < reply->results.size(); ++i)
+    {
+        Expected& expected = m_Expected[asked[i]];
+        expected.answered = true;
+        expected.result = std::move(reply->results[i]);
+    }
 }
 
 OpenFilesReadResult BrokeredOpenFilesReader::readOpenFiles(const ProcessTarget& target)
@@ -544,6 +643,10 @@ OpenFilesReadResult BrokeredOpenFilesReader::readAuthorized(const ProcessTarget&
         OpenFilesReadResult refused; // the refusal stands
         refused.status = OpenFilesReadStatus::PermissionDenied;
         return refused;
+    }
+    if (std::optional<OpenFilesReadResult> batched = fromBatch(target, stopToken); batched.has_value())
+    {
+        return std::move(*batched);
     }
     return viaBroker(target, stopToken);
 }

@@ -4,8 +4,9 @@
 // query ("what's locking this file?"). One search walks every process the latest snapshot lists through
 // the open-files (IProcessOpenFiles.h) and modules (IProcessModules.h) readers Process Details uses, the
 // open-files reader in one batch (beginBatch(), #3357: one pass over Windows' handle table), on a
-// worker, and publishes its matches in batches as it goes. Searching is pure here; the worker that runs
-// it (a Domain::Worker, #3343) belongs to the Find handles dialog.
+// worker, and publishes its matches in batches as it goes. An administrator's pass names the processes
+// it reads in that batch (expectAuthorizedReads(), #3578), so the helper reads them in one request. Searching is pure here; the worker that
+// runs it (a Domain::Worker, #3343) belongs to the Find handles dialog.
 
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessModules.h"
