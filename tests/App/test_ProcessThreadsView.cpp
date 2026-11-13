@@ -2,11 +2,13 @@
 // against a mock reader, and its real ImGui render, headless.
 
 #include "App/Panels/ProcessActionConfirm.h"
+#include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
 #include "App/Panels/ProcessThreadsView.h"
 #include "App/Panels/ThreadActionControl.h"
 #include "Mocks/MockProbes.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessThreads.h"
+#include "Support/RestartOffered.h"
 #include "UI/Format.h"
 
 #include <gtest/gtest.h>
@@ -883,6 +885,67 @@ TEST_F(ProcessThreadsViewRenderTest, EachStateDrawsItsOwnLine)
     const std::string filtered = drawOnce(view);
     EXPECT_TRUE(filtered.contains("No threads match the filter")) << filtered;
     EXPECT_FALSE(filtered.contains("pool-1")) << filtered;
+}
+
+// #3669: with no helper to retry it, a refused thread action offers Restart as administrator... in the retry's place,
+// for as long as a retry's line stays, and never for a process no longer shown.
+TEST(ThreadActionControlTest, WithNoHelperARefusalOffersRestartAsAdministrator)
+{
+    const TestSupport::RestartOffered offered;
+    TestMocks::MockProcessActions actions;
+    actions.setCapabilities(threadActionCapabilities(/*canAuthorize=*/false));
+    actions.setThreadActionResult(Platform::ProcessActionResult::denied("Access denied: can't end thread 7 of process 100"));
+    ThreadActionControl control;
+    const PendingThreadAction end{
+        .target = TARGET, .tid = 7, .threadCreateTime = 70, .threadName = {}, .processName = "svc", .action = Platform::ThreadAction::End};
+    control.request(end);
+    control.confirm(&actions);
+    control.update(0.0F, true);
+    EXPECT_FALSE(control.offersAuthenticateAndRetry());
+    ASSERT_TRUE(control.offersRestartAsAdministrator());
+    control.update(ThreadActionControl::RESULT_SECONDS + 1.0F); // as long as a retry's: time to decide
+    EXPECT_TRUE(control.offersRestartAsAdministrator());
+    control.update(Detail::AUTHORIZE_RESULT_SECONDS);
+    EXPECT_FALSE(control.offersRestartAsAdministrator());
+
+    control.request(end);
+    control.confirm(&actions);
+    control.update(0.0F, true);
+    ASSERT_TRUE(control.offersRestartAsAdministrator());
+    control.onSelectionChanged();
+    EXPECT_FALSE(control.offersRestartAsAdministrator()) << "not for a process no longer shown";
+    EXPECT_TRUE(offered.raised().empty()) << "nothing raised until it is pressed";
+
+    // With a helper, its Retry as administrator; for another failure, neither.
+    actions.setCapabilities(threadActionCapabilities(/*canAuthorize=*/true));
+    control.request(end);
+    control.confirm(&actions);
+    control.update(0.0F, true);
+    EXPECT_TRUE(control.offersAuthenticateAndRetry());
+    EXPECT_FALSE(control.offersRestartAsAdministrator());
+    actions.setCapabilities(threadActionCapabilities(/*canAuthorize=*/false));
+    actions.setThreadActionResult(Platform::ProcessActionResult::error("The thread has exited"));
+    control.request(end);
+    control.confirm(&actions);
+    control.update(0.0F, true);
+    EXPECT_FALSE(control.offersRestartAsAdministrator());
+}
+
+TEST(ThreadActionControlTest, RestartAsAdministratorIsntOfferedWhereTaskSmackCantRestart)
+{
+    TestMocks::MockProcessActions actions;
+    actions.setCapabilities(threadActionCapabilities(/*canAuthorize=*/false));
+    actions.setThreadActionResult(Platform::ProcessActionResult::denied("Access denied"));
+    ThreadActionControl control;
+    control.request({.target = TARGET,
+                     .tid = 7,
+                     .threadCreateTime = 70,
+                     .threadName = {},
+                     .processName = "svc",
+                     .action = Platform::ThreadAction::Suspend});
+    control.confirm(&actions);
+    control.update(0.0F, true);
+    EXPECT_FALSE(control.offersRestartAsAdministrator()) << "elevated, Linux, or a synthetic run";
 }
 
 } // namespace

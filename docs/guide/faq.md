@@ -133,7 +133,9 @@ signed UAC prompt would then hand it administrator rights. So a portable copy un
 into your Downloads, Desktop or another folder you own, or an install under your user profile, can't use
 the helper: TaskSmack then doesn't offer the buttons. In their place, a refused action or read offers
 **Restart as administrator...**, which opens the Standard notice and its own **Restart as administrator...**:
-the whole of TaskSmack restarts elevated, which doesn't need the helper. Everything else works as before.
+the whole of TaskSmack restarts elevated, which doesn't need the helper. Every refusal offers it: Process
+Details' actions, reads, Priority and I/O priority, and thread actions; the Processes toolbar; **Close
+connection**; the Users tab's session actions; the Services tab; Find handles; and System Information. Everything else works as before.
 
 The helper ships only in the Authenticode-signed installers and `.zip`s, x64 and ARM64, from v0.9.1
 ([#2302](https://github.com/mgradwohl/tasksmack/issues/2302)), so that its UAC prompt names TaskSmack's
@@ -143,7 +145,7 @@ TaskSmack is already running as administrator, it needs no helper and offers nei
 
 **Links and folders from an elevated TaskSmack.** Restarted as administrator, TaskSmack still opens links
 (About, Help, **Search online**, the update notice) and folders and files (a dump's **Open folder**,
-Settings' **Edit Config File** and **Open Themes Folder**) as you: it asks Explorer to open them, so the
+Settings' **Edit Config File** and **Open Themes Folder**, **Open file location**) as you: it asks Explorer to open them, so the
 browser, editor or Explorer window isn't elevated. When Explorer isn't running or can't open it,
 TaskSmack never opens it as administrator instead; it shows the link or path, with a **Copy** button,
 for you to open.

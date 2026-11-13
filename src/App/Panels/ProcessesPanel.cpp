@@ -58,6 +58,7 @@
 #include "App/SyntheticScenario.h"
 #include "App/UdpCountingStatus.h"
 #include "App/UserConfig.h"
+#include "App/WithheldOpenNotice.h"
 #include "AuthorizeWording.h"
 #include "Core/Application.h"
 #include "Core/ApplicationEvents.h"
@@ -1877,11 +1878,25 @@ void ProcessesPanel::renderContent()
     const bool offerSessionRetry = showSessionResult && sessionActions->offersAuthenticateAndRetry();
     // "Authenticate and retry" beside a refused action's line (#2308) takes its room from the status.
     const bool offerRetry = offerSessionRetry || (!sessionBusy && !showSessionResult && offersAuthenticateAndRetry());
-    // Or, with no helper to retry it, "Restart as administrator..." in its place (#3658).
-    const bool offerRestart = !offerRetry && !sessionBusy && !showSessionResult && offersRestartAsAdministrator();
-    const char* const retryLabel = offerRetry ? AuthorizeWording::RETRY_LABEL : RestartAsAdministrator::LABEL;
-    const bool offerRetryButton = offerRetry || offerRestart;
-    const float retryButtonWidth = offerRetryButton ? ImGui::CalcTextSize(retryLabel).x + (style.FramePadding.x * 2.0F) : 0.0F;
+    // Or, with no helper to retry it, "Restart as administrator..." in its place (#3658): a row action's, or the
+    // Group: User session action's (#3669).
+    const bool offerSessionRestart = showSessionResult && !offerSessionRetry && sessionActions->offersRestartAsAdministrator();
+    const bool offerRestart =
+        !offerRetry && (offerSessionRestart || (!sessionBusy && !showSessionResult && offersRestartAsAdministrator()));
+    // Or Copy, beside the file an elevated TaskSmack's Open file location didn't show (#3669).
+    const bool offerCopyWithheld = !offerRetry && !offerRestart && !sessionBusy && !showSessionResult && !rowWithheldPath().empty();
+    const char* retryLabel = WithheldOpenNotice::COPY_LABEL;
+    if (offerRetry)
+    {
+        retryLabel = AuthorizeWording::RETRY_LABEL;
+    }
+    else if (offerRestart)
+    {
+        retryLabel = RestartAsAdministrator::LABEL;
+    }
+    const bool offerRetryButton = offerRetry || offerRestart || offerCopyWithheld;
+    const float retryButtonWidth =
+        offerRetryButton ? ImGui::CalcTextSize(retryLabel, nullptr, true).x + (style.FramePadding.x * 2.0F) : 0.0F;
     // Group by (#3068): "Group: None", sized for its widest label so the row doesn't shift.
     const float groupComboWidth = ImGui::CalcTextSize("Group: Container").x + ImGui::GetFrameHeight() + (style.FramePadding.x * 2.0F);
     // Run new task (#3065), an icon button before Columns, where the platform can start programs.
@@ -1991,6 +2006,15 @@ void ProcessesPanel::renderContent()
     {
         ImGui::SameLine();
         static_cast<void>(RestartAsAdministrator::drawButton()); // opens the notice's Restart as administrator... (#3658)
+    }
+    else if (offerCopyWithheld)
+    {
+        ImGui::SameLine();
+        if (ImGui::SmallButton(WithheldOpenNotice::COPY_LABEL))
+        {
+            ImGui::SetClipboardText(m_RowWithheldPath.c_str());
+        }
+        ImGui::SetItemTooltip("Copy its path, to open it yourself");
     }
 
     // Group by (#3068): processes under group header rows with Σ totals.
@@ -4428,6 +4452,7 @@ void ProcessesPanel::showBatchOutcome(ProcessBatch::BatchRunOutcome outcome)
 {
     m_RowRetry.reset();
     m_RowOfferRestart = false;
+    m_RowWithheldPath.clear();
     m_RowActionResult = std::move(outcome.message);
     m_RowActionResultSeconds = ROW_ACTION_RESULT_SECONDS;
     if (outcome.anySucceeded)
@@ -4559,6 +4584,12 @@ void ProcessesPanel::runRowAction(std::string pending,
         [this, format = std::move(format), retry = std::move(retry)](const Platform::ProcessActionResult& result)
         {
             showRowActionResult(format(result), result.success);
+            if (!result.withheldPath.empty())
+            {
+                // Not shown, so no Explorer window runs elevated (#3669): Copy beside it, with time to use it.
+                m_RowWithheldPath = result.withheldPath;
+                m_RowActionResultSeconds = Detail::AUTHORIZE_RESULT_SECONDS;
+            }
             const bool helperCanRedo = m_ProcessActions && m_ProcessActions->actionCapabilities().canAuthorizeInteractively;
             if (result.permissionDenied && retry.has_value() && helperCanRedo)
             {
@@ -4597,6 +4628,7 @@ void ProcessesPanel::showRowActionResult(Detail::ActionResultMessage message, bo
 {
     m_RowRetry.reset();
     m_RowOfferRestart = false;
+    m_RowWithheldPath.clear();
     m_RowActionResult = std::move(message);
     m_RowActionResultSeconds = ROW_ACTION_RESULT_SECONDS;
     if (succeeded)

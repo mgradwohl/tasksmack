@@ -10,6 +10,7 @@
 #include "Domain/PriorityConfig.h"
 #include "Mocks/MockProbes.h"
 #include "Platform/IProcessActions.h"
+#include "Support/RestartOffered.h"
 
 #include <gtest/gtest.h>
 
@@ -550,6 +551,58 @@ TEST(ProcessPriorityViewTest, NoRetryIsOfferedWhereThePlatformCannotAskOrAfterAN
     ASSERT_TRUE(view.offersAuthenticateAndRetry());
     view.editNice(3, TARGET_A); // a new edit replaces the refused one
     EXPECT_FALSE(view.offersAuthenticateAndRetry());
+}
+
+// #3669: with no helper to retry it, a permission refusal offers Restart as administrator... in its place, where
+// TaskSmack can restart elevated, until the next edit or selection change.
+TEST(ProcessPriorityViewTest, WithNoHelperAPermissionRefusalOffersRestartAsAdministrator)
+{
+    const TestSupport::RestartOffered offered;
+    TestMocks::MockProcessActions mock;
+    mock.setCapabilities({.canSetPriority = true}); // no helper
+    mock.setPriorityResult(Platform::ProcessActionResult::denied("Permission denied"));
+    ProcessPriorityView view;
+    view.editNice(-5, TARGET_A);
+    view.apply(&mock, TARGET_A, NICE_OF_A);
+    view.update(/*wait=*/true);
+    EXPECT_FALSE(view.offersAuthenticateAndRetry());
+    ASSERT_TRUE(view.offersRestartAsAdministrator());
+    view.editNice(3, TARGET_A); // a new edit replaces the refused one
+    EXPECT_FALSE(view.offersRestartAsAdministrator());
+
+    view.apply(&mock, TARGET_A, NICE_OF_A);
+    view.update(/*wait=*/true);
+    ASSERT_TRUE(view.offersRestartAsAdministrator());
+    view.onSelectionChanged();
+    EXPECT_FALSE(view.offersRestartAsAdministrator()) << "not for a process no longer shown";
+    EXPECT_TRUE(offered.raised().empty()) << "nothing raised until it is pressed";
+}
+
+TEST(ProcessPriorityViewTest, RestartAsAdministratorIsntOfferedWithAHelperForOtherFailuresOrWhereTaskSmackCantRestart)
+{
+    TestMocks::MockProcessActions mock;
+    mock.setCapabilities({.canSetPriority = true});
+    mock.setPriorityResult(Platform::ProcessActionResult::denied("Permission denied"));
+    ProcessPriorityView view;
+    view.editNice(-5, TARGET_A);
+    view.apply(&mock, TARGET_A, NICE_OF_A);
+    view.update(/*wait=*/true);
+    EXPECT_FALSE(view.offersRestartAsAdministrator()) << "elevated, Linux, or a synthetic run: never offered";
+
+    const TestSupport::RestartOffered offered;
+    mock.setCapabilities({.canSetPriority = true, .canAuthorizeInteractively = true});
+    view.editNice(-6, TARGET_A);
+    view.apply(&mock, TARGET_A, NICE_OF_A);
+    view.update(/*wait=*/true);
+    EXPECT_TRUE(view.offersAuthenticateAndRetry());
+    EXPECT_FALSE(view.offersRestartAsAdministrator()) << "the helper's Retry as administrator instead";
+
+    mock.setCapabilities({.canSetPriority = true});
+    mock.setPriorityResult(Platform::ProcessActionResult::error("Process not found - may have already exited"));
+    view.editNice(-7, TARGET_A);
+    view.apply(&mock, TARGET_A, NICE_OF_A);
+    view.update(/*wait=*/true);
+    EXPECT_FALSE(view.offersRestartAsAdministrator()) << "an administrator couldn't do better";
 }
 
 } // namespace

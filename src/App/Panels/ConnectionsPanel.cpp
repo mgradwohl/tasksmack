@@ -7,6 +7,7 @@
 #include "App/Panels/ConnectionsView.h"
 #include "App/Panels/ProcessActionConfirm.h"
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
+#include "App/Panels/RestartAsAdministratorButton.h"
 #include "App/Panels/SamplingGate.h"
 #include "App/SyntheticScenario.h"
 #include "Core/Application.h"
@@ -195,6 +196,11 @@ void ConnectionsPanel::renderCloseResultLine()
             m_CloseControl.retryAuthorized();
         }
         ImGui::SetItemTooltip("%s", AuthorizeWording::RETRY_TOOLTIP);
+    }
+    else if (m_CloseControl.offersRestartAsAdministrator())
+    {
+        ImGui::SameLine();
+        static_cast<void>(RestartAsAdministrator::drawButton()); // no helper here: the restart instead (#3669)
     }
 }
 

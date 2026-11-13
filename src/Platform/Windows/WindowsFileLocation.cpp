@@ -2,7 +2,9 @@
 
 #include "ComScope.h"
 #include "Platform/IProcessActions.h"
+#include "UnelevatedShell.h"
 #include "WinString.h"
+#include "WindowsElevation.h"
 
 #include <spdlog/spdlog.h>
 
@@ -78,6 +80,18 @@ std::wstring realExplorerPath()
     folder.resize(length);
     return folder + L"\\explorer.exe";
 }
+
+bool realIsElevated()
+{
+    static const bool elevated = isProcessElevated(); // can't change while the process runs
+    return elevated;
+}
+
+std::string realSelectUnelevated(const std::wstring& explorer, const std::wstring& commandArguments)
+{
+    const auto ran = UnelevatedShell::run(explorer, commandArguments);
+    return ran.has_value() ? std::string{} : ran.error();
+}
 // LCOV_EXCL_STOP
 
 [[nodiscard]] std::string hresultText(HRESULT hr)
@@ -89,7 +103,13 @@ std::wstring realExplorerPath()
 
 FileLocationFunctions realFileLocationFunctions() noexcept
 {
-    return {.selectInFolder = &realSelectInFolder, .startProcess = &realStartProcess, .explorerPath = &realExplorerPath};
+    return {
+        .selectInFolder = &realSelectInFolder,
+        .startProcess = &realStartProcess,
+        .explorerPath = &realExplorerPath,
+        .isElevated = &realIsElevated,
+        .selectUnelevated = &realSelectUnelevated,
+    };
 }
 
 std::wstring explorerSelectCommandLine(std::wstring_view path)
@@ -98,6 +118,24 @@ std::wstring explorerSelectCommandLine(std::wstring_view path)
     commandLine += path;
     commandLine += L'"';
     return commandLine;
+}
+
+std::wstring explorerSelectArguments(std::wstring_view path)
+{
+    std::wstring arguments = L"/select,\"";
+    arguments += path;
+    arguments += L'"';
+    return arguments;
+}
+
+ProcessActionResult withheldFileLocation(const std::string& utf8Path)
+{
+    ProcessActionResult result = ProcessActionResult::error(
+        std::format("Not opened, so that Explorer doesn't run as administrator: Windows' shell couldn't open it as you. "
+                    "Open it yourself: {}",
+                    utf8Path));
+    result.withheldPath = utf8Path;
+    return result;
 }
 
 ProcessActionResult revealInExplorer(const FileLocationFunctions& fns, const std::wstring& path)
@@ -112,6 +150,24 @@ ProcessActionResult revealInExplorer(const FileLocationFunctions& fns, const std
         return ProcessActionResult::error("Its executable's path isn't a valid file path");
     }
     const std::string utf8Path = WinString::wideToUtf8(path);
+    if (fns.isElevated != nullptr && fns.isElevated())
+    {
+        // Elevated (#3669): the signed-in user's Explorer, or nothing. SHOpenFolderAndSelectItems and explorer.exe
+        // started here could both run an Explorer window as administrator.
+        const std::wstring explorer = (fns.explorerPath != nullptr) ? fns.explorerPath() : std::wstring{};
+        if (fns.selectUnelevated == nullptr || explorer.empty())
+        {
+            spdlog::warn("TaskSmack runs as administrator, and has no way to show {} as the signed-in user", utf8Path);
+            return withheldFileLocation(utf8Path);
+        }
+        if (const std::string failed = fns.selectUnelevated(explorer, explorerSelectArguments(path)); !failed.empty())
+        {
+            spdlog::warn("TaskSmack runs as administrator, and Explorer couldn't show {} as the signed-in user: {}", utf8Path, failed);
+            return withheldFileLocation(utf8Path);
+        }
+        spdlog::info("Asked Explorer to show {}, unelevated", utf8Path);
+        return ProcessActionResult::ok();
+    }
     HRESULT shellResult = E_NOTIMPL;
     if (fns.selectInFolder != nullptr)
     {

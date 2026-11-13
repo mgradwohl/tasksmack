@@ -16,6 +16,7 @@
 #include "Mocks/UnsupportedSystemInfoProbe.h"
 #include "Platform/IServiceProbe.h"
 #include "Platform/ISystemInfoProbe.h"
+#include "Support/RestartOffered.h"
 #include "UI/Format.h"
 #include "UI/Sparkline.h"
 
@@ -321,6 +322,38 @@ TEST(SystemInfoSectionsTest, FirmwareRootOnlyRowsSayWhy)
     readable.identifiersNeedAdmin = false;
     readable.smbiosVersionNeedsAdmin = false;
     EXPECT_EQ(findRow(SystemInfo::buildFirmwareSection(readable, true), "Readable by root only"), nullptr);
+}
+
+// #3669: with no helper to read them, where TaskSmack can restart elevated, the section leads with Restart as
+// administrator... instead; with a helper, its Authenticate to read; with neither, nothing.
+TEST(SystemInfoSectionsTest, WithNoHelperRootOnlyFactsOfferRestartAsAdministrator)
+{
+    Platform::FirmwareInfo rootOnly;
+    rootOnly.available = true;
+    rootOnly.identifiersNeedAdmin = true;
+    const Section restart = SystemInfo::buildFirmwareSection(rootOnly, /*canAuthenticate=*/false, /*canRestart=*/true);
+    ASSERT_FALSE(restart.rows.empty());
+    EXPECT_EQ(restart.rows.front().action, SystemInfo::RowAction::RestartAsAdministrator);
+    EXPECT_TRUE(restart.rows.front().unavailableReason.contains("Restart as administrator...")) << restart.rows.front().unavailableReason;
+    EXPECT_EQ(SystemInfo::buildFirmwareSection(rootOnly, true, true).rows.front().action, SystemInfo::RowAction::AuthenticateToRead)
+        << "the helper's read first";
+
+    Platform::MemoryModulesInfo table;
+    table.available = true;
+    table.tableNeedsAdmin = true;
+    EXPECT_EQ(SystemInfo::buildMemorySection(table, false, true).rows.front().action, SystemInfo::RowAction::RestartAsAdministrator);
+    EXPECT_NE(SystemInfo::buildMemorySection(table, false, false).rows.front().action, SystemInfo::RowAction::RestartAsAdministrator);
+
+    Platform::CrashesInfo crashes;
+    crashes.otherUsersHidden = true;
+    EXPECT_EQ(SystemInfo::buildCrashesSection(crashes, false, true).rows.front().action, SystemInfo::RowAction::RestartAsAdministrator);
+
+    Platform::FirmwareInfo readable;
+    readable.available = true;
+    for (const Row& item : SystemInfo::buildFirmwareSection(readable, false, true).rows)
+    {
+        EXPECT_EQ(item.action, SystemInfo::RowAction::None) << "nothing refused, nothing offered: " << item.label;
+    }
 }
 
 TEST(SystemInfoSectionsTest, FirmwareSectionFollowsTheOsSection)
@@ -3652,6 +3685,31 @@ TEST(SystemInfoSectionsTest, ValuesForTheLessCommonCombinations)
     noOs.version = 1;
     const std::vector<Section> sections = SystemInfo::buildSystemInfoSections(noOs);
     EXPECT_TRUE(std::ranges::none_of(sections, [](const Section& s) { return s.title == "Operating system"; }));
+}
+
+// #3669: the page builds the restart's row where main.cpp offers it, and draws its button.
+TEST_F(SystemInfoViewRenderTest, WithNoHelperTheRestartRowDrawsItsButton)
+{
+    const TestSupport::RestartOffered offered;
+    const Platform::SystemInfoCapabilities supported{.hasOs = true, .unavailableReason = {}};
+    Domain::SystemInfoSnapshot snap = snapshot();
+    snap.firmware.available = true;
+    snap.firmware.identifiersNeedAdmin = true;
+    SystemInfoViewState state;
+    std::string text;
+    static_cast<void>(runFrame(
+        [&]
+        {
+            ImGui::LogToBuffer();
+            const SystemInfoViewResult result = renderSystemInfoView(&snap, supported, false, state);
+            text = GImGui->LogBuffer.c_str();
+            ImGui::LogFinish();
+            return result;
+        }));
+    EXPECT_TRUE(text.contains("Restart as administrator...")) << text;
+    EXPECT_TRUE(text.contains(SystemInfo::RESTART_NOTE)) << text;
+    EXPECT_FALSE(text.contains("Authenticate to read")) << text;
+    EXPECT_TRUE(offered.raised().empty()) << "nothing raised until it is pressed";
 }
 
 } // namespace

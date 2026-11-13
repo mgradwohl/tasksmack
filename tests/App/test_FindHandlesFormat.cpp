@@ -177,4 +177,28 @@ TEST(FindHandlesSearchTest, TheWorkersStopReachesTheSearchAndAnUnstoppedOneReads
     EXPECT_EQ(published.back().searched, 2U);
 }
 
+// #3669: refused processes offer the helper's "Search them as administrator too", or with no helper, Restart as
+// administrator... where TaskSmack can restart elevated; neither before the search is done or with none refused.
+TEST(FindHandlesOfferTest, RefusedProcessesOfferTheHelpersSearchOrTheRestart)
+{
+    Domain::HandleSearch::SearchPublication refused;
+    refused.done = true;
+    refused.denied.push_back(Domain::HandleSearch::DeniedProcess{});
+    EXPECT_TRUE(App::findHandlesOffersAuthorizedSearch(refused, /*canSearchAuthorized=*/true));
+    EXPECT_FALSE(App::findHandlesOffersRestart(refused, true, true)) << "the helper's search instead";
+    EXPECT_FALSE(App::findHandlesOffersAuthorizedSearch(refused, false));
+    EXPECT_TRUE(App::findHandlesOffersRestart(refused, /*canSearchAuthorized=*/false, /*restartOffered=*/true));
+    EXPECT_FALSE(App::findHandlesOffersRestart(refused, false, false)) << "elevated, Linux, or a synthetic run";
+
+    Domain::HandleSearch::SearchPublication running = refused;
+    running.done = false;
+    EXPECT_FALSE(App::findHandlesOffersAuthorizedSearch(running, true));
+    EXPECT_FALSE(App::findHandlesOffersRestart(running, false, true)) << "not until the search is done";
+
+    Domain::HandleSearch::SearchPublication allRead;
+    allRead.done = true;
+    EXPECT_FALSE(App::findHandlesOffersAuthorizedSearch(allRead, true));
+    EXPECT_FALSE(App::findHandlesOffersRestart(allRead, false, true)) << "nothing was refused";
+}
+
 } // namespace

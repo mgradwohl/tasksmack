@@ -4,6 +4,7 @@
 // tab shows, start types to SCM codes, and the dependents message. No Windows header, so the tests
 // build on every platform (tests/Platform/WindowsMath/).
 
+#include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
 
 #include <algorithm>
@@ -113,6 +114,15 @@ class PendingWait
     default:
         return std::format("Windows error {}", code);
     }
+}
+
+/// A failed service call's result for Win32 error @p code: errorText()'s words, and for ERROR_ACCESS_DENIED
+/// needsAdministrator, so the Services tab can offer Restart as administrator... where TaskSmack can (#3669).
+[[nodiscard]] inline ServiceActionResult errorResult(std::uint32_t code)
+{
+    ServiceActionResult result = ServiceActionResult::failed(errorText(code));
+    result.needsAdministrator = (code == 5); // ERROR_ACCESS_DENIED
+    return result;
 }
 
 /// The message for a stop refused because these services, still running, depend on it.

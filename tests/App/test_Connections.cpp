@@ -5,6 +5,8 @@
 #include "App/Panels/ConnectionCloseControl.h"
 #include "App/Panels/ConnectionsPanel.h"
 #include "App/Panels/ConnectionsView.h"
+#include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
+#include "App/Panels/RestartAsAdministratorButton.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Domain/ConnectionsModel.h"
@@ -13,6 +15,7 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/ISystemConnections.h"
+#include "Support/RestartOffered.h"
 
 #include <gtest/gtest.h>
 #include <imgui.h>
@@ -979,6 +982,56 @@ TEST_F(ConnectionsPanelRenderTest, TheRowMenuClosesAConnectionAfterTheConfirm)
     EXPECT_EQ(GImGui->OpenPopupStack.Size, 0) << "a row menu opened";
     EXPECT_FALSE(unable.closeControl().pending().has_value());
     unable.onDetach();
+}
+
+// #3669: with no helper to retry it, a refused close offers Restart as administrator... beside its line, and a press
+// raises the elevation notice.
+TEST_F(ConnectionsPanelRenderTest, WithNoHelperARefusedCloseOffersRestartAsAdministrator)
+{
+    const TestSupport::RestartOffered offered;
+    const auto reads = std::make_shared<std::atomic<int>>(0);
+    ConnectionsPanel panel([reads] { return std::make_unique<FakeReader>(reads); }, [](Core::Event&) {});
+    panel.onAttach();
+    MockProcessActions actions;
+    actions.setCapabilities(closingCapabilities(false)); // no helper
+    actions.setCloseConnectionResult(Platform::ProcessActionResult::denied("Closing a connection needs administrator rights"));
+    panel.closeControl().request(rowFor(firefoxToGoogle()));
+    panel.closeControl().confirm(&actions);
+    panel.closeControl().update(0.0F, true);
+    EXPECT_FALSE(panel.closeControl().offersAuthenticateAndRetry());
+    ASSERT_TRUE(panel.closeControl().offersRestartAsAdministrator());
+    const std::string text = frame(panel);
+    EXPECT_TRUE(text.contains("Restart as administrator...")) << text;
+    EXPECT_TRUE(offered.raised().empty());
+
+    ImGui::ActivateItemByID(ImHashStr(RestartAsAdministrator::LABEL, 0, ImGui::FindWindowByName("Shell")->ID));
+    static_cast<void>(frame(panel));
+    EXPECT_TRUE(offered.raisedTheNoticeOnce());
+
+    // The line, and the offer with it, goes after a while.
+    panel.closeControl().update(Detail::AUTHORIZE_RESULT_SECONDS + 1.0F);
+    EXPECT_FALSE(panel.closeControl().offersRestartAsAdministrator());
+    panel.onDetach();
+}
+
+TEST(ConnectionCloseTest, RestartAsAdministratorIsntOfferedWithAHelperOrWhereTaskSmackCantRestart)
+{
+    MockProcessActions actions;
+    actions.setCapabilities(closingCapabilities(false));
+    actions.setCloseConnectionResult(Platform::ProcessActionResult::denied("Operation not permitted"));
+    ConnectionCloseControl control;
+    control.request(rowFor(firefoxToGoogle()));
+    control.confirm(&actions);
+    control.update(0.0F, true);
+    EXPECT_FALSE(control.offersRestartAsAdministrator()) << "elevated, Linux, or a synthetic run";
+
+    const TestSupport::RestartOffered offered;
+    actions.setCapabilities(closingCapabilities(true));
+    control.request(rowFor(firefoxToGoogle()));
+    control.confirm(&actions);
+    control.update(0.0F, true);
+    EXPECT_TRUE(control.offersAuthenticateAndRetry());
+    EXPECT_FALSE(control.offersRestartAsAdministrator()) << "the helper's Retry as administrator instead";
 }
 
 } // namespace

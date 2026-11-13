@@ -113,8 +113,10 @@ ServiceActionResult BrokeredUserSessions::actOnConfirmed(const UserSession& conf
     }
     if (m_Broker == nullptr)
     {
-        // Nothing could finish it: no retry is offered, only how to get the rights.
+        // Nothing could finish it: no retry is offered, only how to get the rights, and where TaskSmack can
+        // restart elevated, Restart as administrator... (#3669).
         result.needsAuthorization = false;
+        result.needsAdministrator = true;
         result.message += NO_HELPER;
         return result;
     }

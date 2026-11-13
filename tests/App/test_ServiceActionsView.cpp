@@ -5,9 +5,11 @@
 /// running action cancelled by cancel() or the view's destruction (#1591), through a gated fake that
 /// returns only once its stop token is stopped. The actions are fakes: no real service is touched.
 
+#include "App/Panels/RestartAsAdministratorButton.h"
 #include "App/Panels/ServiceActionsView.h"
 #include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
+#include "Support/RestartOffered.h"
 #include "UI/IconsFontAwesome6.h"
 
 #include <gtest/gtest.h>
@@ -525,6 +527,77 @@ TEST(ServiceActionsDetailTest, AStartConfirmationNamesTheService)
     EXPECT_TRUE(SvcDetail::confirmQuestion(start).starts_with("Start Spooler service (Spooler)?")) << SvcDetail::confirmQuestion(start);
 }
 
+/// Windows' service control with no prompt to ask (#3669): every action is refused "Requires administrator", with
+/// needsAdministrator (ServiceActionMath::errorResult()'s ERROR_ACCESS_DENIED), or with another failure.
+class AdministratorOnlyServiceActions final : public Platform::IServiceActions
+{
+  public:
+    bool forWantOfAdministrator = true;
+
+    [[nodiscard]] Platform::ServiceActionCapabilities capabilities() const override
+    {
+        Platform::ServiceActionCapabilities caps = ALL;
+        caps.canAuthorizeInteractively = false;
+        return caps;
+    }
+    [[nodiscard]] Platform::ServiceActionResult start(std::string_view /*name*/, const std::stop_token& /*stopToken*/) override
+    {
+        return refused();
+    }
+    [[nodiscard]] Platform::ServiceActionResult stop(std::string_view /*name*/, const std::stop_token& /*stopToken*/) override
+    {
+        return refused();
+    }
+    [[nodiscard]] Platform::ServiceActionResult restart(std::string_view /*name*/, const std::stop_token& /*stopToken*/) override
+    {
+        return refused();
+    }
+    [[nodiscard]] Platform::ServiceActionResult setStartType(std::string_view /*name*/, Platform::ServiceStartType /*type*/) override
+    {
+        return refused();
+    }
+
+  private:
+    [[nodiscard]] Platform::ServiceActionResult refused() const
+    {
+        if (!forWantOfAdministrator)
+        {
+            return Platform::ServiceActionResult::failed("The service no longer exists");
+        }
+        Platform::ServiceActionResult result = Platform::ServiceActionResult::failed("Requires administrator");
+        result.needsAdministrator = true;
+        return result;
+    }
+};
+
+TEST(ServiceActionsViewTest, RestartAsAdministratorIsOfferedOnlyForARefusalAnAdministratorCouldDo)
+{
+    const auto fake = std::make_shared<AdministratorOnlyServiceActions>();
+    ServiceActionsView view(fake);
+    view.request(SvcDetail::makeRequest(ServiceActionKind::Start, service("Spooler", ServiceState::Stopped)));
+    ASSERT_TRUE(waitFinished(view));
+    EXPECT_FALSE(view.lastResult().offersRestart) << "elevated, Linux, or a synthetic run: never offered";
+
+    const TestSupport::RestartOffered offered;
+    view.request(SvcDetail::makeRequest(ServiceActionKind::Start, service("Spooler", ServiceState::Stopped)));
+    ASSERT_TRUE(waitFinished(view));
+    EXPECT_FALSE(view.lastResult().canAuthorize);
+    EXPECT_TRUE(view.lastResult().offersRestart);
+
+    fake->forWantOfAdministrator = false;
+    view.request(SvcDetail::makeRequest(ServiceActionKind::Start, service("Spooler", ServiceState::Stopped)));
+    ASSERT_TRUE(waitFinished(view));
+    EXPECT_FALSE(view.lastResult().offersRestart) << "an administrator couldn't do better";
+
+    // A prompt that could allow it (Linux's polkit) offers its Authenticate and retry instead.
+    ServiceActionsView prompting(std::make_shared<AuthorizingServiceActions>());
+    prompting.request(SvcDetail::makeRequest(ServiceActionKind::Start, service("cron.service", ServiceState::Stopped)));
+    ASSERT_TRUE(waitFinished(prompting));
+    EXPECT_TRUE(prompting.lastResult().canAuthorize);
+    EXPECT_FALSE(prompting.lastResult().offersRestart);
+    EXPECT_TRUE(offered.raised().empty());
+}
+
 class ServiceActionsViewRenderTest : public ::testing::Test
 {
   protected:
@@ -865,6 +938,22 @@ TEST_F(ServiceActionsViewRenderTest, RunningActionShowsProgressAndDisablesTheBar
 
     view.cancel();
     // The destructor waits for the cancelled worker; the gate returns once its token is stopped.
+}
+
+// #3669: the result line's Restart as administrator... raises the elevation notice.
+TEST_F(ServiceActionsViewRenderTest, ARefusalWithNoPromptOffersRestartAsAdministratorWhichRaisesTheNotice)
+{
+    const TestSupport::RestartOffered offered;
+    ServiceActionsView view(std::make_shared<AdministratorOnlyServiceActions>());
+    const Platform::ServiceInfo row = service("Spooler", ServiceState::Stopped);
+    view.request(SvcDetail::makeRequest(ServiceActionKind::Start, row));
+    ASSERT_TRUE(waitFinished(view));
+    const std::string text = barFrame(view, &row);
+    EXPECT_TRUE(text.contains("Restart as administrator...")) << text;
+    EXPECT_FALSE(text.contains("Authenticate and retry")) << text;
+
+    clickBarButton(view, &row, RestartAsAdministrator::LABEL);
+    EXPECT_TRUE(offered.raisedTheNoticeOnce());
 }
 
 } // namespace

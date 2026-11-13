@@ -8,6 +8,7 @@
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/ThreadName.h"
+#include "RestartAsAdministratorButton.h"
 #include "UI/CellText.h"
 #include "UI/ChromeWidgets.h"
 #include "UI/DialogMetrics.h"
@@ -67,6 +68,16 @@ using Domain::HandleSearch::SearchPublication;
 }
 
 } // namespace
+
+bool findHandlesOffersAuthorizedSearch(const SearchPublication& publication, bool canSearchAuthorized) noexcept
+{
+    return publication.done && !publication.denied.empty() && canSearchAuthorized;
+}
+
+bool findHandlesOffersRestart(const SearchPublication& publication, bool canSearchAuthorized, bool restartOffered) noexcept
+{
+    return RestartAsAdministrator::offersRestart(publication.done && !publication.denied.empty(), canSearchAuthorized, restartOffered);
+}
 
 std::string findHandlesStatus(const SearchPublication& publication, bool workerReturned)
 {
@@ -465,7 +476,7 @@ std::optional<FindHandlesAction> FindHandlesDialog::render(const ProcessList& pr
 
     // Another user's processes (or, on Windows, an elevated or protected one): an administrator can search them,
     // after one prompt.
-    if (shown.done && !shown.denied.empty() && m_Capabilities.authorize)
+    if (findHandlesOffersAuthorizedSearch(shown, m_Capabilities.authorize))
     {
         ImGui::SameLine();
         if (ImGui::SmallButton(AuthorizeWording::SEARCH_LABEL))
@@ -477,6 +488,12 @@ std::optional<FindHandlesAction> FindHandlesDialog::render(const ProcessList& pr
                         Domain::HandleSearch::startAuthorizedAfter(shown, shown.version + 1));
         }
         ImGui::SetItemTooltip("%s", AuthorizeWording::SEARCH_TOOLTIP);
+    }
+    // With no helper to search them, "Restart as administrator..." in its place (#3669).
+    else if (findHandlesOffersRestart(shown, m_Capabilities.authorize, RestartAsAdministrator::offered()))
+    {
+        ImGui::SameLine();
+        static_cast<void>(RestartAsAdministrator::drawButton());
     }
 
     const UI::Widgets::DialogFooterButton closeButton{.label = CLOSE_LABEL, .fills = nullptr, .tooltip = nullptr};

@@ -13,6 +13,7 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IoPriorityTypes.h"
 #include "Platform/SchedPolicy.h"
+#include "Support/RestartOffered.h"
 
 #include <gtest/gtest.h>
 
@@ -788,6 +789,54 @@ TEST(ProcessIoPriorityViewTest, APermissionRefusalOffersAuthenticateAndRetry)
     ASSERT_TRUE(view.offersAuthenticateAndRetry());
     view.onSelectionChanged();
     EXPECT_FALSE(view.offersAuthenticateAndRetry());
+}
+
+// #3669: as for the nice control, a refusal with no helper offers Restart as administrator... in the retry's place.
+TEST(ProcessIoPriorityViewTest, WithNoHelperAPermissionRefusalOffersRestartAsAdministrator)
+{
+    const TestSupport::RestartOffered offered;
+    TestMocks::MockProcessActions mock;
+    mock.setCapabilities({.canSetIoPriority = true}); // no helper
+    mock.setIoPriorityResult(Platform::ProcessActionResult::denied("Permission denied"));
+    ProcessIoPriorityView view;
+    readCurrent(view, mock, TARGET_A, BEST_EFFORT_4);
+    view.editIoPriority(IDLE, TARGET_A);
+    view.apply(&mock, TARGET_A);
+    view.update(/*wait=*/true);
+    EXPECT_FALSE(view.offersAuthenticateAndRetry());
+    ASSERT_TRUE(view.offersRestartAsAdministrator());
+    view.onSelectionChanged();
+    EXPECT_FALSE(view.offersRestartAsAdministrator());
+
+    mock.setCapabilities({.canSetIoPriority = true, .canAuthorizeInteractively = true});
+    readCurrent(view, mock, TARGET_A, BEST_EFFORT_4);
+    view.editIoPriority(IDLE, TARGET_A);
+    view.apply(&mock, TARGET_A);
+    view.update(/*wait=*/true);
+    EXPECT_TRUE(view.offersAuthenticateAndRetry());
+    EXPECT_FALSE(view.offersRestartAsAdministrator()) << "the helper's Retry as administrator instead";
+    EXPECT_TRUE(offered.raised().empty());
+}
+
+// #3669: Windows refuses another user's or an elevated process's read, and with no helper Apply stays disabled, so
+// the read line offers the restart where TaskSmack can restart elevated.
+TEST(ProcessIoPriorityViewTest, ARefusedReadWithNoHelperOffersRestartAsAdministrator)
+{
+    TestMocks::MockProcessActions mock;
+    mock.setCapabilities({.canSetIoPriority = true});
+    mock.setIoPriorityReadResult(std::unexpected(Platform::ioPriorityReadDeniedMessage(TARGET_A.pid)));
+    ProcessIoPriorityView view;
+    (void) readFrame(view, &mock, TARGET_A, 0.0F);
+    EXPECT_FALSE(view.readRefusalOffersRestart(/*helperCanRedo=*/false)) << "not offered where TaskSmack can't restart";
+
+    const TestSupport::RestartOffered offered;
+    EXPECT_TRUE(view.readRefusalOffersRestart(/*helperCanRedo=*/false));
+    EXPECT_FALSE(view.readRefusalOffersRestart(/*helperCanRedo=*/true)) << "the helper's identity-checked Apply instead";
+
+    mock.setIoPriorityReadResult(std::unexpected(std::string("Process not found - may have already exited")));
+    ProcessIoPriorityView gone;
+    (void) readFrame(gone, &mock, TARGET_A, 0.0F);
+    EXPECT_FALSE(gone.readRefusalOffersRestart(false)) << "an administrator couldn't read it either";
 }
 
 } // namespace

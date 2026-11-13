@@ -48,6 +48,9 @@ struct ServiceActionMessage
     bool ok = false;
     std::string text;          ///< Empty when there is nothing to show.
     bool canAuthorize = false; ///< Offer "Authenticate and retry" beside it (#2304)
+    /// Offer "Restart as administrator..." beside it (#3669): refused for want of an administrator, with no
+    /// password prompt to retry it, where TaskSmack can restart elevated (Windows).
+    bool offersRestart = false;
 };
 
 namespace ServiceActionsDetail

@@ -2,6 +2,7 @@
 /// @brief WindowsServiceActionsMath.h (#1577): error codes to messages, the dependents message, and
 /// start types to SCM codes, and the SCM wait's clock (#2127). No Windows header, so these run on every platform.
 
+#include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
 #include "Platform/Windows/WindowsServiceActionsMath.h"
 
@@ -19,6 +20,22 @@ namespace
 TEST(WindowsServiceActionsMathTest, AccessDeniedRequiresAdministrator)
 {
     EXPECT_EQ(errorText(5), "Requires administrator");
+}
+
+// #3669: access denied is the one refusal a restart as administrator could cure.
+TEST(WindowsServiceActionsMathTest, OnlyAccessDeniedNeedsAnAdministrator)
+{
+    const ServiceActionResult denied = errorResult(5);
+    EXPECT_FALSE(denied.ok);
+    EXPECT_EQ(denied.message, "Requires administrator");
+    EXPECT_TRUE(denied.needsAdministrator);
+    EXPECT_FALSE(denied.needsAuthorization) << "no password prompt on Windows";
+    for (const std::uint32_t code : {1051U, 1058U, 1060U, 1062U})
+    {
+        const ServiceActionResult other = errorResult(code);
+        EXPECT_EQ(other.message, errorText(code)) << code;
+        EXPECT_FALSE(other.needsAdministrator) << code;
+    }
 }
 
 TEST(WindowsServiceActionsMathTest, KnownErrorsHaveReadableMessages)

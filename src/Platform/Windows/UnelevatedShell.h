@@ -30,6 +30,11 @@ namespace Platform::Windows::UnelevatedShell
 /// The error names the step that failed: Explorer not running, or its answer.
 [[nodiscard]] std::expected<void, std::string> open(const std::wstring& target);
 
+/// Starts @p file (a program, as ShellExecuteW's lpFile) with @p arguments through Explorer's shell, as open()
+/// does: the program runs as the signed-in user, unelevated. An elevated TaskSmack's Open file location runs
+/// `explorer.exe /select,"<path>"` this way (#3669), so the Explorer window it opens never runs elevated.
+[[nodiscard]] std::expected<void, std::string> run(const std::wstring& file, const std::wstring& arguments);
+
 } // namespace Platform::Windows::UnelevatedShell
 
 #endif

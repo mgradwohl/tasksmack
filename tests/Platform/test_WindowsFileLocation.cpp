@@ -40,6 +40,9 @@ struct FakeShell
     static inline std::vector<std::wstring> selected;     // each path selectInFolder() was given
     static inline std::vector<std::wstring> applications; // each application startProcess() was given
     static inline std::vector<std::wstring> commandLines; // and its command line
+    static inline bool elevated = false;                  // isElevated()'s answer (#3669)
+    static inline std::string unelevatedFailure;          // selectUnelevated()'s answer: empty, it ran
+    static inline std::vector<std::wstring> unelevated;   // each explorer and arguments selectUnelevated() was given
 
     static void reset()
     {
@@ -49,6 +52,9 @@ struct FakeShell
         selected.clear();
         applications.clear();
         commandLines.clear();
+        elevated = false;
+        unelevatedFailure.clear();
+        unelevated.clear();
     }
 
     static HRESULT selectInFolder(const std::wstring& path)
@@ -67,9 +73,25 @@ struct FakeShell
         return noExplorer ? std::wstring{} : std::wstring(L"C:\\Windows\\explorer.exe");
     }
 
+    static bool isElevated()
+    {
+        return elevated;
+    }
+    static std::string selectUnelevated(const std::wstring& explorer, const std::wstring& commandArguments)
+    {
+        unelevated.push_back(explorer + L" " + commandArguments);
+        return unelevatedFailure;
+    }
+
     [[nodiscard]] static Windows::FileLocationFunctions functions()
     {
-        return {.selectInFolder = &selectInFolder, .startProcess = &startProcess, .explorerPath = &explorerPath};
+        return {
+            .selectInFolder = &selectInFolder,
+            .startProcess = &startProcess,
+            .explorerPath = &explorerPath,
+            .isElevated = &isElevated,
+            .selectUnelevated = &selectUnelevated,
+        };
     }
 };
 
@@ -284,6 +306,57 @@ TEST_F(WindowsFileLocationTest, AReusedPidAndTheSystemProcessAreRefused)
     EXPECT_EQ(actions.openFileLocation({.pid = 0, .startTimeTicks = FakeProcess::TARGET_TICKS}).errorMessage, "Invalid PID");
     EXPECT_TRUE(FakeShell::selected.empty());
     EXPECT_TRUE(FakeShell::applications.empty());
+}
+
+// #3669: an elevated TaskSmack asks the signed-in user's Explorer to run explorer.exe /select, and never calls
+// SHOpenFolderAndSelectItems or starts explorer.exe itself, either of which could run Explorer as administrator.
+TEST_F(WindowsFileLocationTest, ElevatedItAsksTheSignedInUsersExplorer)
+{
+    FakeShell::reset();
+    FakeShell::elevated = true;
+    const ProcessActionResult result = Windows::revealInExplorer(FakeShell::functions(), L"C:\\Program Files\\App, Inc\\app.exe");
+    EXPECT_TRUE(result.success) << result.errorMessage;
+    ASSERT_EQ(FakeShell::unelevated.size(), 1U);
+    EXPECT_EQ(FakeShell::unelevated.front(), L"C:\\Windows\\explorer.exe /select,\"C:\\Program Files\\App, Inc\\app.exe\"");
+    EXPECT_TRUE(FakeShell::selected.empty()) << "SHOpenFolderAndSelectItems from an elevated process";
+    EXPECT_TRUE(FakeShell::applications.empty()) << "explorer.exe started elevated";
+}
+
+TEST_F(WindowsFileLocationTest, ElevatedWithNoWayAsTheUserItWithholdsAndNamesThePath)
+{
+    FakeShell::reset();
+    FakeShell::elevated = true;
+    FakeShell::unelevatedFailure = "Explorer isn't running";
+    ProcessActionResult result = Windows::revealInExplorer(FakeShell::functions(), L"C:\\Tools\\app.exe");
+    EXPECT_FALSE(result.success);
+    EXPECT_EQ(result.withheldPath, "C:\\Tools\\app.exe");
+    EXPECT_TRUE(result.errorMessage.contains("C:\\Tools\\app.exe")) << result.errorMessage;
+    EXPECT_FALSE(result.permissionDenied);
+    EXPECT_TRUE(FakeShell::selected.empty());
+    EXPECT_TRUE(FakeShell::applications.empty()) << "no explorer.exe /select fallback while elevated";
+
+    // No unelevated way at all, or no explorer.exe path: the same.
+    FakeShell::reset();
+    FakeShell::elevated = true;
+    Windows::FileLocationFunctions none = FakeShell::functions();
+    none.selectUnelevated = nullptr;
+    result = Windows::revealInExplorer(none, L"C:\\Tools\\app.exe");
+    EXPECT_EQ(result.withheldPath, "C:\\Tools\\app.exe");
+    EXPECT_TRUE(FakeShell::selected.empty());
+    EXPECT_TRUE(FakeShell::applications.empty());
+    FakeShell::noExplorer = true;
+    result = Windows::revealInExplorer(FakeShell::functions(), L"C:\\Tools\\app.exe");
+    EXPECT_EQ(result.withheldPath, "C:\\Tools\\app.exe");
+    EXPECT_TRUE(FakeShell::unelevated.empty());
+
+    // Not elevated: as before, and nothing is withheld.
+    FakeShell::reset();
+    result = Windows::revealInExplorer(FakeShell::functions(), L"C:\\Tools\\app.exe");
+    EXPECT_TRUE(result.success);
+    EXPECT_TRUE(result.withheldPath.empty());
+    EXPECT_EQ(FakeShell::selected.size(), 1U);
+    EXPECT_TRUE(FakeShell::unelevated.empty());
+    EXPECT_EQ(Windows::explorerSelectArguments(L"C:\\a b\\c.exe"), L"/select,\"C:\\a b\\c.exe\"");
 }
 
 } // namespace

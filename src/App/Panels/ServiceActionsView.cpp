@@ -1,6 +1,7 @@
 #include "ServiceActionsView.h"
 
 #include "App/Panels/ProcessActionConfirm.h"
+#include "App/Panels/RestartAsAdministratorButton.h"
 #include "App/Panels/ServicesView.h"
 #include "Platform/AsciiCase.h"
 #include "Platform/IServiceActions.h"
@@ -364,7 +365,12 @@ bool ServiceActionsView::takeFinished()
     // stops it being offered this session (#2304).
     m_AuthorizationUnavailable = m_AuthorizationUnavailable || result->authorizationUnavailable;
     m_Result.canAuthorize = result->needsAuthorization && m_Capabilities.canAuthorizeInteractively && !m_AuthorizationUnavailable;
-    m_ResultSecondsLeft = m_Result.canAuthorize ? SvcDetail::AUTHORIZE_RESULT_SECONDS : SvcDetail::RESULT_SECONDS;
+    // Refused for want of an administrator, with no prompt to retry it (Windows' "Requires administrator"):
+    // Restart as administrator... where TaskSmack can restart elevated (#3669).
+    m_Result.offersRestart =
+        RestartAsAdministrator::offersRestart(result->needsAdministrator, m_Result.canAuthorize, RestartAsAdministrator::offered());
+    m_ResultSecondsLeft =
+        (m_Result.canAuthorize || m_Result.offersRestart) ? SvcDetail::AUTHORIZE_RESULT_SECONDS : SvcDetail::RESULT_SECONDS;
     return true;
 }
 
@@ -520,6 +526,11 @@ void ServiceActionsView::renderResultLine()
                 retryAuthorized();
             }
             ImGui::SetItemTooltip("Shows your system's authentication prompt (polkit) and runs it again");
+        }
+        else if (m_Result.offersRestart)
+        {
+            ImGui::SameLine();
+            static_cast<void>(RestartAsAdministrator::drawButton()); // opens the notice's Restart as administrator... (#3669)
         }
     }
 }

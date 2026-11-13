@@ -71,10 +71,9 @@ class Bstr
     return value;
 }
 
-} // namespace
-
 // LCOV_EXCL_START - asks Explorer to start the default handler (a browser, editor or Explorer window); no test may (#2039)
-std::expected<void, std::string> open(const std::wstring& target)
+/// open() and run(): IShellDispatch2::ShellExecute of @p target with @p arguments (none when empty), in Explorer.
+[[nodiscard]] std::expected<void, std::string> shellExecute(const std::wstring& target, const std::wstring& arguments)
 {
     // On the open worker, in an STA for the calls, as the shell's objects ask of their callers.
     const ComScope com;
@@ -166,14 +165,40 @@ std::expected<void, std::string> open(const std::wstring& target)
     show.vt = VT_I4;
     show.lVal = SW_SHOWNORMAL;
     // NOLINTEND(cppcoreguidelines-pro-type-union-access)
-    const VARIANT arguments = emptyVariant();
+    const Bstr parameters(arguments.c_str());
+    if (!arguments.empty() && parameters.get() == nullptr)
+    {
+        return std::unexpected(std::string("out of memory"));
+    }
+    VARIANT argumentsVariant = emptyVariant();
+    if (!arguments.empty())
+    {
+        // NOLINTBEGIN(cppcoreguidelines-pro-type-union-access)
+        argumentsVariant.vt = VT_BSTR;
+        argumentsVariant.bstrVal = parameters.get(); // owned by parameters, freed after the call
+        // NOLINTEND(cppcoreguidelines-pro-type-union-access)
+    }
     const VARIANT directory = emptyVariant();
-    hr = shell->ShellExecute(file.get(), arguments, directory, operation, show);
+    hr = shell->ShellExecute(file.get(), argumentsVariant, directory, operation, show);
     if (FAILED(hr))
     {
         return std::unexpected(failure("IShellDispatch2::ShellExecute", hr));
     }
     return {};
+}
+// LCOV_EXCL_STOP
+
+} // namespace
+
+// LCOV_EXCL_START - each asks Explorer to start a program; no test may (#2039)
+std::expected<void, std::string> open(const std::wstring& target)
+{
+    return shellExecute(target, {});
+}
+
+std::expected<void, std::string> run(const std::wstring& file, const std::wstring& arguments)
+{
+    return shellExecute(file, arguments);
 }
 // LCOV_EXCL_STOP
 
