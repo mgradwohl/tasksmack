@@ -708,6 +708,41 @@ TEST_F(SystemdActionsFakeTest, AUnitWhoseStateCantBeReadDidntStart)
     EXPECT_EQ(result.message, "It didn't start (state unknown)");
 }
 
+// #3374: the stop side of the job wait, as the start side above is tested. The job ran and the unit is still active.
+TEST_F(SystemdActionsFakeTest, AStopWhoseUnitIsStillRunningSaysSo)
+{
+    serveJob("StopUnit", "active");
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    const std::stop_source stop;
+    const ServiceActionResult result = SystemdBus::stopUnit("cron.service", stop.get_token(), QUICK);
+    EXPECT_FALSE(result.ok);
+    EXPECT_EQ(result.message, "It didn't stop (active)");
+}
+
+// #3374: web.service's object answers no ActiveState once its stop job is done: not reported as stopped.
+TEST_F(SystemdActionsFakeTest, AUnitWhoseStateCantBeReadDidntStop)
+{
+    serveJob("StopUnit", "inactive"); // moves cron, not web
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    const std::stop_source stop;
+    const ServiceActionResult result = SystemdBus::stopUnit("web.service", stop.get_token(), QUICK);
+    EXPECT_FALSE(result.ok);
+    EXPECT_EQ(result.message, "It didn't stop (state unknown)");
+}
+
+// #3374: still deactivating, and its job still there, when the wait runs out.
+TEST_F(SystemdActionsFakeTest, AStopThatNeverGetsThereGivesUpAfterTheWait)
+{
+    m_Bus.properties()[JOB_PATH]["org.freedesktop.systemd1.Job"]["State"] = std::string("running");
+    serveJob("StopUnit", "deactivating");
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    const std::stop_source stop;
+    const ServiceActionResult result = SystemdBus::stopUnit(
+        "cron.service", stop.get_token(), {.timeout = std::chrono::milliseconds(150), .poll = std::chrono::milliseconds(10)});
+    EXPECT_FALSE(result.ok);
+    EXPECT_TRUE(result.message.starts_with("It didn't stop within")) << result.message;
+}
+
 TEST_F(SystemdActionsFakeTest, AStopRequestedWhileWaitingEndsTheWait)
 {
     // Still activating, its job still queued: a stop request (TaskSmack closing) ends the wait at the
@@ -1019,6 +1054,25 @@ TEST_F(SystemdActionsFakeTest, LinuxServiceActionsActThroughSystemdWhereItRuns)
     stopNow.request_stop();
     EXPECT_TRUE(actions.restart("cron.service", stopNow.get_token()).cancelled);
     EXPECT_EQ(calls().size(), expected.size());
+}
+
+// #3374: a user unit's switch with no user bus to reach says so, naming the user manager.
+TEST(SystemdActionsNoBusTest, WithoutAUserBusAUserUnitSaysItsManagerCantBeReached)
+{
+    const char* saved = std::getenv("DBUS_SESSION_BUS_ADDRESS"); // NOLINT(concurrency-mt-unsafe) - single-threaded test
+    const std::optional<std::string> savedAddress = saved != nullptr ? std::optional<std::string>(saved) : std::nullopt;
+    ASSERT_EQ(setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent/tasksmack-test-user-bus", 1), 0); // NOLINT(concurrency-mt-unsafe)
+    const ServiceActionResult result = SystemdBus::setUserUnitEnabled("syncd.service", true);
+    if (savedAddress.has_value())
+    {
+        setenv("DBUS_SESSION_BUS_ADDRESS", savedAddress->c_str(), 1); // NOLINT(concurrency-mt-unsafe)
+    }
+    else
+    {
+        unsetenv("DBUS_SESSION_BUS_ADDRESS"); // NOLINT(concurrency-mt-unsafe)
+    }
+    EXPECT_FALSE(result.ok);
+    EXPECT_TRUE(result.message.starts_with("Your systemd user manager couldn't be reached: ")) << result.message;
 }
 
 TEST(SystemdActionsNoBusTest, WithoutASystemBusEveryActionSaysSo)
