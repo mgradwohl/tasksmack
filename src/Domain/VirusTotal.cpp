@@ -113,12 +113,16 @@ std::optional<Verdict> readFileReport(std::string_view json)
     {
         constexpr std::array<std::string_view, 4> NAMES{"malicious", "suspicious", "undetected", "harmless"};
         const std::array<std::uint64_t*, 4> counts{&verdict.malicious, &verdict.suspicious, &verdict.undetected, &verdict.harmless};
-        const auto* const found = std::ranges::find(NAMES, stat);
-        if (found == NAMES.end())
+        // An index, not an iterator: std::array's iterator is a pointer in libc++ but a class in MSVC's library.
+        std::size_t index = 0;
+        while (index < NAMES.size() && NAMES[index] != stat)
+        {
+            ++index;
+        }
+        if (index == NAMES.size())
         {
             return Member::Skip;
         }
-        const auto index = static_cast<std::size_t>(found - NAMES.begin());
         if (const std::optional<std::uint64_t> value = reader.readUnsigned())
         {
             *counts[index] = *value;
