@@ -133,6 +133,11 @@ if(WIN32)
         # functions run, in TEMP; the smoke check itself launches TaskSmack, so it never runs here.
         add_test(NAME ReleaseSmokeCheckScript
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-release-smoke-check.ps1)
+        # release.yml's Windows upgrade check (#3757): which release tools/fetch-previous-windows-release.ps1
+        # upgrades from, its SHA256SUMS check, and how tools/windows-upgrade-check.ps1 judges the installed
+        # folder, the winget entry and config.toml. Only those functions run; nothing is downloaded or installed.
+        add_test(NAME WindowsUpgradeCheckScript
+            COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-windows-upgrade-check.ps1)
         # The PowerShell script tests take turns (#2054). Each starts pwsh, several compile C# with
         # Add-Type, and some start further pwsh or stub processes; run together under `ctest -j` on a
         # 4-core CI runner they slowed each other down many times over (CMakeCacheScript, 1.5-4.4 s
@@ -152,12 +157,12 @@ if(WIN32)
         set_tests_properties(ResizeCaptureScript EtwCaptureScript EtwAnalysisScript CMakeCacheScript BenchScript
             BenchAcrossLaunchesPs1Script CheckPrereqsScript SetupDevScript VerifyWindowsSignaturesScript
             BuildWindowsInstallerScript ResizePerfSummaryScript MeasureIdleScript WingetManifestScript
-            ClangTidyHeadersScript FormatSourcesScript ReleaseSmokeCheckScript PROPERTIES
+            ClangTidyHeadersScript FormatSourcesScript ReleaseSmokeCheckScript WindowsUpgradeCheckScript PROPERTIES
             RESOURCE_LOCK pwsh-script-tests
             LABELS pwsh-script)
         set_tests_properties(ResizeCaptureScript EtwAnalysisScript CMakeCacheScript CheckPrereqsScript SetupDevScript
             VerifyWindowsSignaturesScript BuildWindowsInstallerScript ResizePerfSummaryScript MeasureIdleScript
-            WingetManifestScript ClangTidyHeadersScript FormatSourcesScript ReleaseSmokeCheckScript
+            WingetManifestScript ClangTidyHeadersScript FormatSourcesScript ReleaseSmokeCheckScript WindowsUpgradeCheckScript
             PROPERTIES TIMEOUT 120)
         set_tests_properties(EtwCaptureScript BenchScript BenchAcrossLaunchesPs1Script PROPERTIES TIMEOUT 180)
     else()
@@ -166,8 +171,8 @@ if(WIN32)
                         "EtwAnalysisScript, CMakeCacheScript, BenchScript, BenchAcrossLaunchesPs1Script, "
                         "CheckPrereqsScript, SetupDevScript, VerifyWindowsSignaturesScript, "
                         "BuildWindowsInstallerScript, ResizePerfSummaryScript, MeasureIdleScript, "
-                        "WingetManifestScript, ClangTidyHeadersScript, FormatSourcesScript and "
-                        "ReleaseSmokeCheckScript tests "
+                        "WingetManifestScript, ClangTidyHeadersScript, FormatSourcesScript, "
+                        "ReleaseSmokeCheckScript and WindowsUpgradeCheckScript tests "
                         "are not registered. Install PowerShell 7 to run them.")
     endif()
     # The Authenticode gate on packaging TaskSmackHelper.exe (#2550): the build's own, unsigned

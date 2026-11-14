@@ -1912,9 +1912,9 @@ jobs:
     permissions:
       contents: read
       actions: read  # Required to download this run's windows-packages-<arch> and installer artifacts
-    # The .zip is portable, so there is no package to upgrade over v0.8.0's here, and v0.8.0 published
-    # no installer; an upgrade check for the installer (install the previous release's, then this one)
-    # can come once a release has shipped one (#2302).
+    # The .zip is portable, so there is no package to upgrade over v0.8.0's here. The installer's upgrade
+    # over this run's own is checked below; validate-windows-upgrade installs it over the last published
+    # release's (#3757).
     steps:
       # Only the signature and smoke checks' scripts, and the config.toml v0.8.0 saved, for the smoke
       # check's second launch (#2726). In its own folder, since a checkout cleans the folder it checks
@@ -2438,17 +2438,209 @@ jobs:
           }
           Write-Host "Uninstalled: $env:TASKSMACK_INSTALL_DIR, the Uninstall registry key and the Start menu entries are gone."
 
+  fetch-previous-windows-release:
+    name: Fetch the Previous Release's Windows Installers
+    # #3757: the installers validate-windows-upgrade installs this run's over. The published release with the
+    # highest vX.Y.Z below this build's version (never a downgrade), downloaded with gh release download and
+    # checked as the User Guide's "Verifying a Release" has users do: cosign verify-blob on SHA256SUMS.bundle,
+    # the certificate pinned to release.yml at that release's tag, then each installer against SHA256SUMS
+    # (tools/fetch-previous-windows-release.ps1). On Linux, where cosign-installer runs on both architectures'
+    # behalf (it has no Windows ARM64 build). found=false, with a notice, when there is no such release or it
+    # ships no Windows installer: validate-windows-upgrade is then skipped, and create-release accepts that.
+    needs: [validate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read  # gh release download (the releases are public)
+    outputs:
+      found: ${{ steps.fetch.outputs.found }}
+      tag: ${{ steps.fetch.outputs.tag }}
+    steps:
+      - name: Check out the version and the fetch script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: |
+            CMakeLists.txt
+            tools/fetch-previous-windows-release.ps1
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+
+      - name: Download and verify the previous release's Windows installers
+        id: fetch
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = (Select-String -LiteralPath CMakeLists.txt -Pattern '^project\(TaskSmack VERSION (\S+)').Matches[0].Groups[1].Value
+          & tools/fetch-previous-windows-release.ps1 -Version $version -OutDir previous
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload the previous release's Windows installers
+        if: steps.fetch.outputs.found == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: windows-previous-release
+          path: previous/
+          if-no-files-found: error
+          retention-days: 7
+
+  validate-windows-upgrade:
+    name: Validate the Upgrade over the Previous Windows Release (${{ matrix.arch }})
+    # #3757: the previous release's installer (fetch-previous-windows-release), then this run's over it, on a
+    # runner thrown away after the job, as validate-linux-upgrade does with v0.8.0's .deb.
+    # tools/windows-upgrade-check.ps1 has the checks: one Programs and Features entry with the new version, the
+    # files replaced and none stale, the user's config.toml kept, Start at sign-in still naming the installed
+    # exe, the upgraded exe started headless, and a clean uninstall. Runs when validate-windows-package would.
+    needs: [validate, build-windows, sign-windows, build-windows-installer, sign-windows-installer, fetch-previous-windows-release]
+    if: >-
+      ${{ !cancelled() && needs.build-windows.result == 'success' &&
+      needs.build-windows-installer.result == 'success' &&
+      (needs.sign-windows.result == 'success' ||
+      (needs.validate.outputs.signing != 'true' && needs.sign-windows.result == 'skipped')) &&
+      (needs.sign-windows-installer.result == 'success' ||
+      (needs.validate.outputs.signing != 'true' && needs.sign-windows-installer.result == 'skipped')) &&
+      needs.fetch-previous-windows-release.result == 'success' &&
+      needs.fetch-previous-windows-release.outputs.found == 'true' }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # package: CPack's system name in the package file names (cmake/Packaging.cmake).
+          - arch: x64
+            runner: windows-2025
+            package: win64
+          - arch: arm64
+            runner: windows-11-arm
+            package: windows-arm64
+    permissions:
+      contents: read
+      actions: read  # Required to download this run's artifacts
+    env:
+      PACKAGE: ${{ matrix.package }}
+      PREVIOUS_TAG: ${{ needs.fetch-previous-windows-release.outputs.tag }}
+    steps:
+      - name: Check out the upgrade and signature checks, the v0.8.0 config fixture and the winget manifest
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: repo
+          sparse-checkout: |
+            .github/actions/setup-mesa-llvmpipe/action.yml
+            cmake/VerifyWindowsSignatures.cmake
+            packaging/winget/TaskSmack.TaskSmack.installer.yaml
+            tests/App/fixtures/config-v0.8.0.toml
+            tools/verify-windows-signatures.ps1
+            tools/windows-upgrade-check.ps1
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Download the previous release's Windows installers
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: windows-previous-release
+          path: previous/
+
+      - name: Pick the previous installer
+        # The one for this architecture, checked against the Sigstore-verified SHA256SUMS again after the
+        # artifact's round trip. A previous release that ships the other architecture's only has nothing to
+        # upgrade from here, so this leg says so and skips the rest.
+        id: pick
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem -LiteralPath previous -File | Where-Object { $_.Name -cmatch "^TaskSmack-[^\\/]+-$([regex]::Escape($env:PACKAGE))\.exe$" })
+          if ($files.Count -eq 0) {
+            Write-Host "::notice::$env:PREVIOUS_TAG ships no $env:PACKAGE installer, so this leg has nothing to upgrade from: skipped."
+            "skip=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+            exit 0
+          }
+          if ($files.Count -ne 1) { Write-Error "Expected one $env:PACKAGE installer from $env:PREVIOUS_TAG, found $($files.Name -join ', ')."; exit 1 }
+          $name = $files[0].Name
+          $line = @(Get-Content -LiteralPath previous/SHA256SUMS | Where-Object { $_ -cmatch "^[0-9a-f]{64}  $([regex]::Escape($name))$" })
+          $actual = (Get-FileHash -LiteralPath $files[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($line.Count -ne 1 -or $line[0].Substring(0, 64) -ne $actual) { Write-Error "$name (SHA-256 $actual) doesn't match $env:PREVIOUS_TAG's SHA256SUMS."; exit 1 }
+          Write-Host "Previous installer: $name, SHA-256 $actual, as SHA256SUMS lists it."
+          "TASKSMACK_PREVIOUS_INSTALLER=$($files[0].FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "TASKSMACK_PREVIOUS_NAME=$name" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Verify the previous installer's Authenticode signature
+        # The User Guide's third check, through the .zip's gate (tools/verify-windows-signatures.ps1): every
+        # published installer is signed by WINDOWS_EXPECTED_SIGNER and timestamped, whatever this ref signs.
+        if: steps.pick.outputs.skip != 'true'
+        shell: pwsh
+        run: |
+          & repo/tools/verify-windows-signatures.ps1 -PackageRoot previous -Names $env:TASKSMACK_PREVIOUS_NAME `
+            -ExpectedSigner $env:WINDOWS_EXPECTED_SIGNER -VerifyScript repo/cmake/VerifyWindowsSignatures.cmake
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Download Windows packages
+        if: steps.pick.outputs.skip != 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: windows-packages-${{ matrix.arch }}
+          path: dist/
+
+      - name: Download the Windows installer
+        if: steps.pick.outputs.skip != 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: windows-installer-${{ matrix.arch }}
+          path: installer/
+
+      # The uninstaller the installer must install, as in validate-windows-package.
+      - name: Download the signed uninstaller
+        if: steps.pick.outputs.skip != 'true' && env.SIGNING_ENABLED == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: windows-signed-uninstaller-${{ matrix.arch }}
+          path: expected-uninstaller/
+
+      - name: Download the first pass's uninstaller
+        if: steps.pick.outputs.skip != 'true' && env.SIGNING_ENABLED != 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: windows-nsis-${{ matrix.arch }}
+          path: expected-uninstaller/
+
+      - name: Fetch Mesa llvmpipe
+        if: steps.pick.outputs.skip != 'true'
+        uses: ./repo/.github/actions/setup-mesa-llvmpipe
+
+      - name: Install this run's installer over the previous release's and check the upgrade and the uninstall
+        if: steps.pick.outputs.skip != 'true'
+        shell: pwsh
+        timeout-minutes: 20
+        run: |
+          $zips = @(Get-ChildItem dist/*.zip)
+          $installers = @(Get-ChildItem installer -File -Filter '*.exe')
+          if ($zips.Count -ne 1 -or $installers.Count -ne 1) { Write-Error "Expected one .zip and one installer, found $($zips.Count) and $($installers.Count)."; exit 1 }
+          Expand-Archive -LiteralPath $zips[0].FullName -DestinationPath extracted
+          $roots = @(Get-ChildItem -LiteralPath extracted -Directory)
+          if ($roots.Count -ne 1) { Write-Error "Expected one top-level folder in $($zips[0].Name), found $($roots.Count)."; exit 1 }
+          & repo/tools/windows-upgrade-check.ps1 -PreviousInstaller $env:TASKSMACK_PREVIOUS_INSTALLER -Installer $installers[0].FullName `
+            -PackageRoot $roots[0].FullName -ExpectedUninstaller expected-uninstaller/Uninstall.exe -MesaDllDir $env:MESA_DLL_DIR `
+            -Fixture repo/tests/App/fixtures/config-v0.8.0.toml -WingetManifest repo/packaging/winget/TaskSmack.TaskSmack.installer.yaml `
+            -Title "Windows upgrade over $env:PREVIOUS_TAG ($env:RUNNER_ARCH)"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
   create-release:
     name: Create GitHub Release
-    needs: [validate, build-linux, build-windows, sign-windows, build-windows-installer, sign-windows-installer, validate-linux-package, validate-linux-upgrade, validate-windows-package]
+    needs: [validate, build-linux, build-windows, sign-windows, build-windows-installer, sign-windows-installer, validate-linux-package, validate-linux-upgrade, validate-windows-package, fetch-previous-windows-release, validate-windows-upgrade]
     # Every job it needs must succeed, except sign-windows and sign-windows-installer, which are skipped
-    # while signing is off (SIGNING_ENABLED, only on a dry run). Without this `if:`, those skips would
-    # skip the release too.
+    # while signing is off (SIGNING_ENABLED, only on a dry run), and validate-windows-upgrade, which is skipped when
+    # fetch-previous-windows-release found no earlier release with a Windows installer (#3757). Without this
+    # `if:`, those skips would skip the release too.
     if: >-
       ${{ !cancelled() && needs.build-linux.result == 'success' && needs.build-windows.result == 'success' &&
       needs.build-windows-installer.result == 'success' &&
       needs.validate-linux-package.result == 'success' && needs.validate-linux-upgrade.result == 'success' &&
       needs.validate-windows-package.result == 'success' &&
+      needs.fetch-previous-windows-release.result == 'success' &&
+      (needs.validate-windows-upgrade.result == 'success' ||
+      (needs.fetch-previous-windows-release.outputs.found != 'true' && needs.validate-windows-upgrade.result == 'skipped')) &&
       (needs.sign-windows.result == 'success' ||
       (needs.validate.outputs.signing != 'true' && needs.sign-windows.result == 'skipped')) &&
       (needs.sign-windows-installer.result == 'success' ||

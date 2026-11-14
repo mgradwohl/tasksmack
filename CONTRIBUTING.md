@@ -3392,8 +3392,29 @@ and upgrade `tasksmack` in place. Every file the new `.deb` ships must be instal
 and man pages aside, which the image's dpkg doesn't unpack), the Administrator launcher and its polkit action checked by name, and no v0.8.0 file the new `.deb` dropped (v0.8.0's helper among them) may be left
 over. Last, it starts the upgraded `TaskSmack` with no `TASKSMACK_CONFIG_DIR`, so it finds v0.8.0's file
 itself. That run gets the same checks as the second smoke launch: a clean quit, no `[error]` line, and
-the fixture's settings kept. Windows has no upgrade check yet: the `.zip` is portable, and although every
-release since v0.9.1 publishes an installer, no job installs this run's installer over a published one.
+the fixture's settings kept.
+
+`validate-windows-upgrade` checks the Windows installer's upgrade over the last published release (#3757), on
+both architectures. `fetch-previous-windows-release` (Linux, where cosign runs) picks the published release
+with the highest `vX.Y.Z` below the version being built, so a patch on `release/X.Y` upgrades from that line
+and never downgrades, and downloads its installers, `SHA256SUMS` and `SHA256SUMS.bundle` with `gh release
+download`. It checks them as the User Guide's "Verifying a Release" does: `cosign verify-blob` with the
+certificate pinned to `release.yml` at that release's tag, then each installer against `SHA256SUMS`
+(`tools/fetch-previous-windows-release.ps1`). When there is no such release, or it ships no Windows installer,
+it writes a notice and the upgrade job is skipped, which `create-release` accepts. Each Windows leg checks
+the previous installer's Authenticode signature, then `tools/windows-upgrade-check.ps1` installs it with `/S`
+and records its version, install folder, Uninstall key and App Paths. It runs that version once from the
+v0.8.0 fixture `config.toml` in `%APPDATA%\TaskSmack`, turns Start at sign-in on for that copy (the HKCU Run
+value), and installs this run's installer over it with `/S`. Then there must be one Programs and Features
+entry, with the new version, whose key, DisplayName and Publisher match the winget manifest's
+`AppsAndFeaturesEntries`, and which the old uninstaller replaced. The folder must hold exactly the new
+`.zip`'s files plus the expected `Uninstall.exe`, so no stale file is left. `%APPDATA%\TaskSmack` must be
+unchanged, and the Run value and Start menu shortcut must name the installed exe. The upgraded
+`TaskSmack.exe` then starts headless from that config and must quit by itself with exit code 0 and the
+fixture's settings kept. Last, `Uninstall.exe /S` must remove the folder, the Uninstall key, the app's
+registry key, the Start menu entries and the Run value, and write the uninstall mark.
+`tools/test-windows-upgrade-check.ps1` (ctest `WindowsUpgradeCheckScript`) tests the release choice, the
+`SHA256SUMS` check and the installed-folder comparison without installing anything.
 
 Both jobs also check what the packages contain, since a bundled dependency's own `install()` rules
 can ship development files to users: the `.deb`'s listing (`dpkg -c`) may hold nothing outside
