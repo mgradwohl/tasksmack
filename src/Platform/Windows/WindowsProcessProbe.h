@@ -102,10 +102,11 @@ struct WindowsProcessProbeFunctions
         /// The machine Windows runs as (Windows::nativeMachine()), read once at construction, against which
         /// a process's architecture is emulated or not (#2394). Nullable: every process's is then named alone.
         std::uint16_t (*nativeMachine)() = nullptr;
-        /// The processes with a top-level window that has stopped answering (#3084), sorted and unique,
-        /// into its argument (WindowsProcessDetailReads::hungWindowProcesses()): once a sample. Nullable:
-        /// no process is ever Not responding.
-        void (*hungWindowProcesses)(std::vector<std::uint32_t>& pids) = nullptr;
+        /// The desktop's visible top-level windows, into its argument (WindowsProcessDetailReads::topLevelWindows()):
+        /// the one window walk a sample (#3705), from which the Not responding check (#3084) and the window
+        /// AppUserModelID lookup (#3457) both read. Nullable: no process is ever Not responding, and no window
+        /// gives an AppUserModelID.
+        void (*topLevelWindows)(std::vector<Windows::TopLevelWindow>& windows) = nullptr;
     } system;
 
     struct Token
@@ -143,9 +144,12 @@ struct WindowsProcessProbeFunctions
     {
         /// The package a process runs in, read once per process with its first handle.
         Windows::PackageIdentity (*packageIdentity)(HANDLE) = nullptr;
-        /// The AppUserModelIDs the top-level windows of the processes asked about set: one window walk for
-        /// all of them, made when an unpackaged process's heavy TTL has passed since it was last looked for.
-        void (*windowAppIds)(std::span<const std::uint32_t> pids, std::vector<Windows::WindowAppId>& found) = nullptr;
+        /// The AppUserModelIDs the processes asked about set on their top-level windows, from this sample's
+        /// windows (System::topLevelWindows; no walk of its own, #3705): asked when an unpackaged process's
+        /// heavy TTL has passed since it was last looked for.
+        void (*windowAppIds)(std::span<const Windows::TopLevelWindow> windows,
+                             std::span<const std::uint32_t> pids,
+                             std::vector<Windows::WindowAppId>& found) = nullptr;
         /// The Start menu's name for an AppUserModelID, asked once per ID.
         std::string (*appDisplayName)(const std::string& appUserModelId) = nullptr;
     };
@@ -199,12 +203,13 @@ const ProcessImage& image(const WindowsProcessProbeFunctions::Process& fns, HAND
 /// "App", "Background Process" or "Windows Process" (hQuery may be null: the USER objects aren't counted).
 [[nodiscard]] std::string_view
 processType(const WindowsProcessProbeFunctions::Process& fns, HANDLE hQuery, DWORD pid, std::string_view imagePath);
-/// The processes with a top-level window that has stopped answering its messages (#3084), sorted and
-/// unique, into @p pids: one EnumWindows pass over the desktop's top-level windows, IsHungAppWindow on
-/// each visible one, and a ghost window (DWM's "(Not Responding)" stand-in) followed back to the hung
-/// window it replaced. Every sample, not on a detail TTL: a hang is news the moment it starts. Its cost
-/// is the desktop's window count, not the process count.
-void hungWindowProcesses(std::vector<std::uint32_t>& pids);
+/// The desktop's visible top-level windows, into @p windows (cleared first): one EnumWindows pass, every
+/// sample (#3705), with each window's IsHungAppWindow and the process it shows as not responding (#3084), a ghost window (DWM's "(Not
+/// Responding)" stand-in) followed back to the hung window it replaced. Its cost is the desktop's window count, not the process count. A
+/// walk cut short (out of memory) leaves the list empty: nothing hung, no window IDs, for that sample.
+void topLevelWindows(std::vector<Windows::TopLevelWindow>& windows);
+/// The processes in @p windows shown as not responding, sorted and unique, into @p pids (cleared first).
+void hungWindowProcesses(std::span<const Windows::TopLevelWindow> windows, std::vector<std::uint32_t>& pids);
 } // namespace WindowsProcessDetailReads
 
 /// Windows implementation of IProcessProbe.
@@ -432,10 +437,11 @@ class WindowsProcessProbe : public IProcessProbe
     std::vector<ProcessorGroupLayout> m_ProcessorGroups;
     bool m_ActiveMasksRead = false; // The last readActiveProcessorMasks() succeeded
     std::chrono::steady_clock::time_point m_NextActiveMasksRead;
-    bool m_ThreadsMaySpanGroups = true;          // threadsMaySpanGroups() for this Windows build
-    std::vector<std::byte> m_SnapshotBuffer;     // Reused buffer for NtQuerySystemInformation snapshots
-    std::vector<std::uint32_t> m_HungWindowPids; // This sample's processes with a hung window (#3084), sorted; reused
-    AccountNameCache m_AccountNames;             // Owners' account names by SID, for the heavy reads (#2982)
+    bool m_ThreadsMaySpanGroups = true;             // threadsMaySpanGroups() for this Windows build
+    std::vector<std::byte> m_SnapshotBuffer;        // Reused buffer for NtQuerySystemInformation snapshots
+    std::vector<Windows::TopLevelWindow> m_Windows; // This sample's visible top-level windows (#3705); reused
+    std::vector<std::uint32_t> m_HungWindowPids;    // This sample's processes with a hung window (#3084), sorted; reused
+    AccountNameCache m_AccountNames;                // Owners' account names by SID, for the heavy reads (#2982)
     // The Start menu's names by AppUserModelID (#3457), empty for one it doesn't name; cleared when it grows
     // past a cap. m_AppNameLookupsLeft is this sample's budget of lookups not yet in it.
     std::unordered_map<std::string, std::string> m_AppNames;
