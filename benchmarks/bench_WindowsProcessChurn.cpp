@@ -32,6 +32,9 @@
 //    seams timed (plus the app names and the network detection) and construct_us the constructor's share.
 //    iterations:1 runs first in a benchmark process, with every per-process cache cold, as at launch;
 //    iterations:10 is ten more fresh probes in the same process.
+//  - SecondEnumerate/iterations:1 and /iterations:10: a new probe seeded (untimed), then its second enumerate(),
+//    the first to ask for app names (#3714). app_display_name_us is their time on the sampler's thread (none since
+//    #3718), app_names_off_thread_us their time on the app-name worker.
 //
 // The processes are started suspended (CREATE_SUSPENDED) and ended before they run, so the churn spends
 // no CPU of its own beyond the kernel's process creation and exit, which falls outside the timed
@@ -48,6 +51,7 @@
 #include <benchmark/benchmark.h>
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -523,6 +527,39 @@ HANDLE WINAPI timedOpenProcess(DWORD access, BOOL inherit, DWORD pid)
     return handle;
 }
 
+/// The app names (#3457), split by thread: on the sampler's thread (the benchmark's, a seam bucket like the
+/// others), or off it, on the app-name worker since #3718 (its own atomic, never mixed into the sample's seams).
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables) - the real call, set once before the probe is built
+std::string (*realAppDisplayName)(const std::string&) = nullptr;
+
+[[nodiscard]] std::thread::id& samplerThread()
+{
+    static std::thread::id thread;
+    return thread;
+}
+
+[[nodiscard]] std::atomic<std::int64_t>& offThreadAppNameTicks()
+{
+    static std::atomic<std::int64_t> ticks{0};
+    return ticks;
+}
+
+std::string timedAppDisplayName(const std::string& appUserModelId)
+{
+    const std::int64_t start = performanceCounter();
+    std::string name = realAppDisplayName(appUserModelId);
+    const std::int64_t spent = performanceCounter() - start;
+    if (std::this_thread::get_id() == samplerThread())
+    {
+        addSeamTicks(Seam::AppDisplayName, spent);
+    }
+    else
+    {
+        offThreadAppNameTicks() += spent;
+    }
+    return name;
+}
+
 /// fakeClockFunctions() with every seam Churn_Attribution and FirstEnumerate time routed through its bucket.
 [[nodiscard]] Platform::WindowsProcessProbeFunctions timedFunctions()
 {
@@ -553,7 +590,11 @@ HANDLE WINAPI timedOpenProcess(DWORD access, BOOL inherit, DWORD pid)
         realNtQueryInformationProcess = functions.process.ntQueryInformationProcess;
         functions.process.ntQueryInformationProcess = &timedNtQueryInformationProcess;
     }
-    timeSeam<Seam::AppDisplayName>(functions.app.appDisplayName);
+    if (functions.app.appDisplayName != nullptr)
+    {
+        realAppDisplayName = functions.app.appDisplayName;
+        functions.app.appDisplayName = &timedAppDisplayName;
+    }
     timeSeam<Seam::Network>(functions.network.loadTcpEStats);
     timeSeam<Seam::Network>(functions.network.getExtendedTcpTable);
     return functions;
@@ -613,6 +654,7 @@ BENCHMARK(BM_WindowsProcessProbe_Churn_Attribution)
 void BM_WindowsProcessProbe_FirstEnumerate(benchmark::State& state)
 {
     const HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    samplerThread() = std::this_thread::get_id();
     const auto functions = timedFunctions();
     seamTicks().fill(0);
     std::int64_t constructTicks = 0;
@@ -647,10 +689,64 @@ void BM_WindowsProcessProbe_FirstEnumerate(benchmark::State& state)
         CoUninitialize();
     }
 }
+/// The process sampler's second pass (#3718): a new probe built and seeded (untimed, as FirstEnumerate times
+/// it), then its second enumerate() timed. The first sample names no app (#3714), so this is the pass that asks
+/// for every packaged app's name, the shell's Apps folder loaded with the first. The seam counters are this
+/// pass's; app_display_name_us is the time the names took on this (the sampler's) thread, and
+/// app_names_off_thread_us what they took on the app-name worker, which nothing waits on.
+void BM_WindowsProcessProbe_SecondEnumerate(benchmark::State& state)
+{
+    const HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    samplerThread() = std::this_thread::get_id();
+    const auto functions = timedFunctions();
+    std::array<std::int64_t, SEAM_COUNT> timedSeams{};
+    std::int64_t passTicks = 0;
+    std::size_t processes = 0;
+    offThreadAppNameTicks() = 0;
+    for (auto _ : state)
+    {
+        state.PauseTiming();
+        auto probe = std::make_unique<Platform::WindowsProcessProbe>(functions);
+        (void) probe->enumerate();
+        const std::array<std::int64_t, SEAM_COUNT> before = seamTicks();
+        state.ResumeTiming();
+        const std::int64_t start = performanceCounter();
+        auto counters = probe->enumerate();
+        passTicks += performanceCounter() - start;
+        state.PauseTiming();
+        for (std::size_t seam = 0; seam < SEAM_COUNT; ++seam)
+        {
+            timedSeams[seam] += seamTicks()[seam] - before[seam];
+        }
+        processes = counters.size();
+        benchmark::DoNotOptimize(counters.data());
+        std::this_thread::sleep_for(std::chrono::milliseconds(500)); // The app-name worker's lookups, if any
+        probe.reset();
+        state.ResumeTiming();
+    }
+    std::int64_t attributed = 0;
+    for (std::size_t seam = 0; seam < SEAM_COUNT; ++seam)
+    {
+        attributed += timedSeams[seam];
+        state.counters[SEAM_NAMES[seam]] = benchmark::Counter(ticksToMicroseconds(timedSeams[seam]), benchmark::Counter::kAvgIterations);
+    }
+    state.counters["unattributed_us"] = benchmark::Counter(ticksToMicroseconds(passTicks - attributed), benchmark::Counter::kAvgIterations);
+    state.counters["app_names_off_thread_us"] =
+        benchmark::Counter(ticksToMicroseconds(offThreadAppNameTicks().load()), benchmark::Counter::kAvgIterations);
+    state.counters["processes"] = benchmark::Counter(static_cast<double>(processes));
+    if (SUCCEEDED(com))
+    {
+        CoUninitialize();
+    }
+}
+
 // The first pass in a benchmark process (every static cache cold, as at launch: the publisher cache is per process),
-// then ten more fresh probes in the same process.
+// then ten more fresh probes in the same process. The second-pass benchmarks run after them, with the shell's Apps
+// folder already loaded in the process by then on a build that names apps on the first pass (before #3714).
 BENCHMARK(BM_WindowsProcessProbe_FirstEnumerate)->Iterations(1)->Unit(benchmark::kMillisecond);
 BENCHMARK(BM_WindowsProcessProbe_FirstEnumerate)->Iterations(10)->Unit(benchmark::kMillisecond);
+BENCHMARK(BM_WindowsProcessProbe_SecondEnumerate)->Iterations(1)->Unit(benchmark::kMillisecond);
+BENCHMARK(BM_WindowsProcessProbe_SecondEnumerate)->Iterations(10)->Unit(benchmark::kMillisecond);
 
 /// The publisher's first read of an image (WindowsProcessDetailReads::publisher(): GetFileVersionInfo),
 /// which the probe makes on the sampler thread with a new process's first heavy read, once per path for
