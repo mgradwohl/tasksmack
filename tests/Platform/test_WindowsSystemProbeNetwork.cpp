@@ -1,5 +1,6 @@
 /// @file test_WindowsSystemProbeNetwork.cpp
-/// @brief WindowsSystemProbe's network read against a fake interface table (#1395): a failed GetIfTable2, the
+/// @brief WindowsSystemProbe's network read against a fake interface table (#1395): a failed listing, the
+/// list kept between samples and its rescan, with only the counted rows' counters read (#3713), the
 /// name fallbacks, unknown link speeds, and the removed-adapter filter (#1284) with its device-id cache --
 /// read once per interface, an empty read not retried every sample, and a LUID Windows gives to a new
 /// interface read afresh (#1369 review) -- and its device-presence cache (#2731): the PnP lookup made once
@@ -30,6 +31,7 @@
 #include <cstring>
 #include <limits>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -47,7 +49,11 @@ struct FakeNetwork
     DWORD tableStatus = NO_ERROR;
     bool nullTable = false;
     std::vector<MIB_IF_ROW2> rows;
+    int listings = 0;
     int tablesFreed = 0;
+    // GetIfEntry2 calls by LUID, and the LUIDs whose read fails although the list has them
+    std::map<std::uint64_t, int> entryReads;
+    std::set<std::uint64_t> entryFailures;
     // Device instance ids by the interface GUID's first field, and how often each was read
     std::map<unsigned long, std::wstring> ids;
     std::map<unsigned long, int> idReads;
@@ -78,9 +84,13 @@ std::chrono::steady_clock::time_point fakeNow() noexcept
 }
 
 constexpr std::chrono::seconds DEVICE_CACHE_TTL{Domain::Sampling::NETWORK_ADAPTER_DEVICE_CACHE_TTL_SECONDS};
+constexpr std::chrono::seconds RESCAN_INTERVAL{Domain::Sampling::NETWORK_INTERFACE_RESCAN_INTERVAL_SECONDS};
 
-DWORD WINAPI fakeGetIfTable2(MIB_IF_TABLE2** out)
+/// The list without statistics (#3713): every row, its counters zero, so a figure the probe reports
+/// can only have come from GetIfEntry2.
+DWORD WINAPI fakeGetIfTableWithoutStatistics(MIB_IF_TABLE2** out)
 {
+    ++fake().listings;
     if (fake().tableStatus != NO_ERROR || fake().nullTable)
     {
         *out = nullptr;
@@ -94,7 +104,26 @@ DWORD WINAPI fakeGetIfTable2(MIB_IF_TABLE2** out)
     {
         std::memcpy(fake().table.data() + offsetof(MIB_IF_TABLE2, Table), fake().rows.data(), count * sizeof(MIB_IF_ROW2));
     }
+    for (ULONG i = 0; i < table->NumEntries; ++i)
+    {
+        table->Table[i].InOctets = 0;
+        table->Table[i].OutOctets = 0;
+    }
     *out = table;
+    return NO_ERROR;
+}
+
+/// One row by its LUID, with its counters, as GetIfEntry2 gives it; ERROR_FILE_NOT_FOUND for one not there.
+DWORD WINAPI fakeGetIfEntry2(MIB_IF_ROW2* entry)
+{
+    const std::uint64_t luid = entry->InterfaceLuid.Value;
+    ++fake().entryReads[luid];
+    const auto found = std::ranges::find_if(fake().rows, [luid](const MIB_IF_ROW2& r) { return r.InterfaceLuid.Value == luid; });
+    if (found == fake().rows.end() || fake().entryFailures.contains(luid))
+    {
+        return ERROR_FILE_NOT_FOUND;
+    }
+    *entry = *found;
     return NO_ERROR;
 }
 
@@ -157,8 +186,9 @@ class WindowsSystemProbeNetworkTest : public ::testing::Test
     [[nodiscard]] static WindowsSystemProbe makeProbe()
     {
         WindowsSystemProbeFunctions fns = WindowsSystemProbe::systemFunctions();
-        fns.network.getIfTable2 = &fakeGetIfTable2;
+        fns.network.getIfTableWithoutStatistics = &fakeGetIfTableWithoutStatistics;
         fns.network.freeMibTable = &fakeFreeMibTable;
+        fns.network.getIfEntry2 = &fakeGetIfEntry2;
         fns.network.readAdapterDeviceInstanceId = &fakeReadAdapterDeviceInstanceId;
         fns.network.devicePresence = &fakeDevicePresence;
         fns.now = &fakeNow;
@@ -200,6 +230,7 @@ TEST_F(WindowsSystemProbeNetworkTest, FailedOrEmptyTableLeavesTheNetworkEmpty)
     counters = probe.read();
     EXPECT_TRUE(counters.networkInterfaces.empty());
     EXPECT_EQ(fake().tablesFreed, 1);
+    EXPECT_EQ(fake().listings, 3) << "a failed listing is tried again the next pass, not at the rescan";
 }
 
 TEST_F(WindowsSystemProbeNetworkTest, EveryTableIsFreedOnce)
@@ -208,7 +239,132 @@ TEST_F(WindowsSystemProbeNetworkTest, EveryTableIsFreedOnce)
     WindowsSystemProbe probe = makeProbe();
     (void) probe.read();
     (void) probe.read();
+    EXPECT_EQ(fake().tablesFreed, 1) << "one listing for both passes (#3713)";
+    fakeClock() += RESCAN_INTERVAL;
+    (void) probe.read();
     EXPECT_EQ(fake().tablesFreed, 2);
+}
+
+// #3713: GetIfTable2 asked every row for its counters, a context switch per NDIS filter row the probe
+// then skipped. The list now comes without them, and only the rows the probe counts are read.
+
+TEST_F(WindowsSystemProbeNetworkTest, OnlyCountedRowsHaveTheirCountersRead)
+{
+    MIB_IF_ROW2 filter = row(2, L"Ethernet-WFP Native MAC Layer LightWeight Filter-0000");
+    filter.InterfaceAndOperStatusFlags.FilterInterface = TRUE;
+    MIB_IF_ROW2 loopback = row(3, L"Loopback Pseudo-Interface 1");
+    loopback.Type = IF_TYPE_SOFTWARE_LOOPBACK;
+    MIB_IF_ROW2 other = row(4, L"Bluetooth Device");
+    other.Type = IF_TYPE_OTHER;
+    MIB_IF_ROW2 wifi = row(5, L"Wi-Fi");
+    wifi.Type = IF_TYPE_IEEE80211;
+    MIB_IF_ROW2 wifiFilter = row(6, L"Wi-Fi-Native WiFi Filter Driver-0000");
+    wifiFilter.Type = IF_TYPE_IEEE80211;
+    wifiFilter.InterfaceAndOperStatusFlags.FilterInterface = TRUE;
+    MIB_IF_ROW2 tunnel = row(7, L"Teredo");
+    tunnel.Type = IF_TYPE_TUNNEL;
+    tunnel.InterfaceAndOperStatusFlags.HardwareInterface = FALSE;
+    fake().rows = {row(1, L"Ethernet"), filter, loopback, other, wifi, wifiFilter, tunnel};
+
+    // What GetIfTable2's rows gave, filtered as before: isCountedNetworkRow() on each row, in table order
+    std::vector<std::wstring> expectedAliases;
+    std::set<std::uint64_t> counted;
+    for (const MIB_IF_ROW2& r : fake().rows)
+    {
+        if (isCountedNetworkRow(r.Type, r.InterfaceAndOperStatusFlags.FilterInterface != 0))
+        {
+            expectedAliases.emplace_back(static_cast<const wchar_t*>(r.Alias));
+            counted.insert(r.InterfaceLuid.Value);
+        }
+    }
+    ASSERT_EQ(expectedAliases, (std::vector<std::wstring>{L"Ethernet", L"Wi-Fi", L"Teredo"}));
+
+    WindowsSystemProbe probe = makeProbe();
+    const SystemCounters counters = probe.read();
+    EXPECT_EQ(names(counters), (std::vector<std::string>{"Ethernet", "Wi-Fi", "Teredo"}));
+    std::set<std::uint64_t> read;
+    for (const auto& [luid, reads] : fake().entryReads)
+    {
+        EXPECT_EQ(reads, 1) << luid;
+        read.insert(luid);
+    }
+    EXPECT_EQ(read, counted) << "no filter, loopback or other row is asked for its counters";
+
+    // The figures are GetIfEntry2's (the list's are zero), and the Total leaves the tunnel out as before
+    ASSERT_EQ(counters.networkInterfaces.size(), 3U);
+    EXPECT_EQ(counters.networkInterfaces[0].rxBytes, 1'000U);
+    EXPECT_EQ(counters.networkInterfaces[1].txBytes, 10'000U);
+    EXPECT_TRUE(counters.networkInterfaces[2].isVirtual);
+    EXPECT_EQ(counters.netRxBytes, 6'000U);
+    EXPECT_EQ(counters.netTxBytes, 12'000U);
+}
+
+TEST_F(WindowsSystemProbeNetworkTest, TheListIsKeptUntilTheRescanAndTheCountersReadEachPass)
+{
+    fake().rows = {row(1, L"Ethernet"), row(2, L"Wi-Fi")};
+    WindowsSystemProbe probe = makeProbe();
+    EXPECT_EQ(probe.read().netRxBytes, 3'000U);
+    EXPECT_EQ(fake().listings, 1);
+
+    fake().rows[0].InOctets += 500;
+    fakeClock() += RESCAN_INTERVAL - std::chrono::seconds{1};
+    EXPECT_EQ(probe.read().netRxBytes, 3'500U) << "the counters move without a listing";
+    EXPECT_EQ(fake().listings, 1);
+    EXPECT_EQ(fake().entryReads[1], 2);
+
+    fakeClock() += std::chrono::seconds{1};
+    (void) probe.read();
+    EXPECT_EQ(fake().listings, 2) << "listed again at the rescan";
+}
+
+TEST_F(WindowsSystemProbeNetworkTest, AnAddedInterfaceIsCountedFromTheRescan)
+{
+    fake().rows = {row(1, L"Ethernet")};
+    WindowsSystemProbe probe = makeProbe();
+    (void) probe.read();
+
+    fake().rows.push_back(row(3, L"Dock"));
+    EXPECT_EQ(names(probe.read()), (std::vector<std::string>{"Ethernet"})) << "not listed yet";
+    EXPECT_EQ(fake().entryReads.count(3), 0U);
+
+    fakeClock() += RESCAN_INTERVAL;
+    EXPECT_EQ(names(probe.read()), (std::vector<std::string>{"Ethernet", "Dock"}));
+}
+
+TEST_F(WindowsSystemProbeNetworkTest, AnInterfaceGoneIsDroppedInThePassItGoes)
+{
+    fake().rows = {row(1, L"Ethernet"), row(2, L"VPN"), row(3, L"Wi-Fi")};
+    WindowsSystemProbe probe = makeProbe();
+    EXPECT_EQ(probe.read().networkInterfaces.size(), 3U);
+
+    // Its GetIfEntry2 finds no such interface: listed again at once, with the counters read again
+    fake().rows.erase(fake().rows.begin() + 1);
+    const SystemCounters counters = probe.read();
+    EXPECT_EQ(names(counters), (std::vector<std::string>{"Ethernet", "Wi-Fi"}));
+    EXPECT_EQ(counters.netRxBytes, 4'000U);
+    EXPECT_EQ(fake().listings, 2);
+    EXPECT_EQ(fake().entryReads[2], 2) << "read last pass and found gone this one, then not listed";
+    EXPECT_EQ(fake().entryReads[1], 3) << "read again after the listing";
+
+    (void) probe.read();
+    EXPECT_EQ(fake().listings, 2) << "the new list stands";
+    EXPECT_EQ(fake().entryReads[2], 2);
+}
+
+TEST_F(WindowsSystemProbeNetworkTest, AnInterfaceWhoseReadFailsIsSkipped)
+{
+    fake().rows = {row(1, L"Ethernet"), row(2, L"Flaky")};
+    fake().entryFailures = {2};
+    WindowsSystemProbe probe = makeProbe();
+    EXPECT_EQ(names(probe.read()), (std::vector<std::string>{"Ethernet"})) << "listed, but its row can't be read";
+    EXPECT_EQ(fake().listings, 1) << "listed in this pass already: not again";
+
+    EXPECT_EQ(names(probe.read()), (std::vector<std::string>{"Ethernet"}));
+    EXPECT_EQ(fake().listings, 2) << "the next pass lists again, and still skips it";
+
+    fake().entryFailures.clear();
+    EXPECT_EQ(names(probe.read()), (std::vector<std::string>{"Ethernet", "Flaky"}));
+    EXPECT_EQ(fake().listings, 2);
 }
 
 TEST_F(WindowsSystemProbeNetworkTest, NameFallsBackFromAliasToDescriptionToIndex)
@@ -301,8 +457,10 @@ TEST_F(WindowsSystemProbeNetworkTest, DevicePresenceIsLookedUpAgainWhenAnInterfa
     }
     EXPECT_EQ(fake().presenceQueries, 1);
 
-    // A dock's adapter appears: a PnP event, after which the unplugged adapter is asked about again
+    // A dock's adapter appears: a PnP event, after which the unplugged adapter is asked about again,
+    // once the rescan lists it (#3713)
     fake().rows.push_back(row(3, L"Dock"));
+    fakeClock() += RESCAN_INTERVAL;
     EXPECT_EQ(probe.read().networkInterfaces.size(), 3U);
     EXPECT_EQ(fake().presenceQueries, 2);
     (void) probe.read();
@@ -436,7 +594,7 @@ TEST(WindowsSystemProbeNetworkReadersTest, RealAdapterIdsAreDeviceIds)
 {
     const WindowsSystemProbeFunctions::Network network = WindowsSystemProbe::systemFunctions().network;
     MIB_IF_TABLE2* table = nullptr;
-    ASSERT_EQ(network.getIfTable2(&table), static_cast<DWORD>(NO_ERROR));
+    ASSERT_EQ(network.getIfTableWithoutStatistics(&table), static_cast<DWORD>(NO_ERROR));
     ASSERT_NE(table, nullptr);
     ULONG i = 0;
     while (i < table->NumEntries)
@@ -451,6 +609,65 @@ TEST(WindowsSystemProbeNetworkReadersTest, RealAdapterIdsAreDeviceIds)
         ++i;
     }
     network.freeMibTable(table);
+}
+
+// #3713: the list without statistics has GetIfTable2's rows, with what the probe filters on unchanged,
+// so the same interfaces are counted; only the counters are left out.
+TEST(WindowsSystemProbeNetworkReadersTest, TheListWithoutStatisticsHasGetIfTable2sRows)
+{
+    const WindowsSystemProbeFunctions::Network network = WindowsSystemProbe::systemFunctions().network;
+    MIB_IF_TABLE2* listed = nullptr;
+    ASSERT_EQ(network.getIfTableWithoutStatistics(&listed), static_cast<DWORD>(NO_ERROR));
+    ASSERT_NE(listed, nullptr);
+    MIB_IF_TABLE2* full = nullptr;
+    ASSERT_EQ(GetIfTable2(&full), static_cast<DWORD>(NO_ERROR));
+    ASSERT_NE(full, nullptr);
+
+    struct Filtered
+    {
+        std::uint64_t luid = 0;
+        ULONG type = 0;
+        bool filter = false;
+        bool counted = false;
+        auto operator<=>(const Filtered&) const = default;
+    };
+    const auto filtered = [](const MIB_IF_TABLE2& table)
+    {
+        std::vector<Filtered> rows;
+        ULONG i = 0;
+        while (i < table.NumEntries)
+        {
+            const MIB_IF_ROW2& r = table.Table[i];
+            const bool filter = r.InterfaceAndOperStatusFlags.FilterInterface != 0;
+            rows.push_back(
+                {.luid = r.InterfaceLuid.Value, .type = r.Type, .filter = filter, .counted = isCountedNetworkRow(r.Type, filter)});
+            ++i;
+        }
+        std::ranges::sort(rows);
+        return rows;
+    };
+    // An interface could come or go between the two calls; on a runner none does
+    EXPECT_EQ(filtered(*listed), filtered(*full));
+
+    // And a counted row's GetIfEntry2 is the row GetIfTable2 gave it
+    ULONG i = 0;
+    while (i < full->NumEntries)
+    {
+        const MIB_IF_ROW2& r = full->Table[i];
+        if (isCountedNetworkRow(r.Type, r.InterfaceAndOperStatusFlags.FilterInterface != 0))
+        {
+            MIB_IF_ROW2 entry{}; // NOLINT(bugprone-invalid-enum-default-initialization) - zeroed, as GetIfEntry2 expects
+            entry.InterfaceLuid = r.InterfaceLuid;
+            ASSERT_EQ(network.getIfEntry2(&entry), static_cast<DWORD>(NO_ERROR));
+            EXPECT_EQ(entry.InterfaceIndex, r.InterfaceIndex);
+            EXPECT_EQ(entry.Type, r.Type);
+            EXPECT_EQ(std::wstring(static_cast<const wchar_t*>(entry.Alias)), std::wstring(static_cast<const wchar_t*>(r.Alias)));
+            EXPECT_GE(entry.InOctets, r.InOctets) << "the counters only go up";
+        }
+        ++i;
+    }
+    network.freeMibTable(listed);
+    FreeMibTable(full);
 }
 
 } // namespace Platform

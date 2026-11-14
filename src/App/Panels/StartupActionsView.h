@@ -46,6 +46,20 @@ inline constexpr float RESULT_SECONDS = 8.0F;
 inline constexpr std::string_view OTHER_ACCOUNT_REASON =
     "This TaskSmack runs as another account, whose entry this is, not yours. Change yours from the normal TaskSmack";
 
+/// Why an all-users entry can't be switched in such a TaskSmack where the switch is a per-user file (#3682, Linux's
+/// /etc/xdg/autostart entries, switched by a copy in ~/.config/autostart): the copy would be that account's.
+inline constexpr std::string_view OTHER_ACCOUNT_SWITCH_REASON =
+    "This TaskSmack runs as another account: switching this entry here would write that account's copy, not yours. "
+    "Change yours from the normal TaskSmack";
+
+/// Whether switching @p entry writes the running account's own setting, not the machine's (#3671, #3682): a per-user
+/// entry always, and an all-users one where its switch is a per-user file (caps.machineEntriesNeedElevation false, as
+/// Linux's XDG autostart). In a TaskSmack running as another account those are that account's, and never changed.
+[[nodiscard]] constexpr bool switchIsAccounts(const Platform::StartupEntry& entry, const Platform::StartupActionCapabilities& caps) noexcept
+{
+    return entry.scope == Platform::StartupScope::User || !caps.machineEntriesNeedElevation;
+}
+
 /// The Scope column's text for a per-user entry in a TaskSmack elevated as @p account (#3671): "admin (administrator)".
 [[nodiscard]] std::string otherAccountScopeLabel(std::string_view account);
 

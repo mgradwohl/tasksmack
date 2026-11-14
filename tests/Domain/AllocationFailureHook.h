@@ -47,6 +47,11 @@ void armAllocationFailure(std::int64_t count) noexcept;
 /// the call it armed reached the failing allocation.
 [[nodiscard]] bool allocationFailurePending() noexcept;
 
+/// How many allocations this thread has made through operator new since it started, so a test can
+/// show that building something allocates nothing (#843): read it before and after. Always 0 where the
+/// replacement is compiled out (TASKSMACK_NO_ALLOCATOR_HOOK), so such a test skips there.
+[[nodiscard]] std::uint64_t allocationsOnThisThread() noexcept;
+
 /// Makes the @p count-th allocation from now on this thread throw, for the guard's lifetime.
 class FailAllocationAfter
 {

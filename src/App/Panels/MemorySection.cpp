@@ -68,12 +68,12 @@ int formatRatioAxis(double value, char* buff, int size, void* /*userData*/)
 /// "2.9×"
 [[nodiscard]] std::string ratioText(double ratio)
 {
-    return std::format("{:.1f}\u00d7", ratio);
+    return UI::Format::Detail::formatShort("{:.1f}\u00d7", ratio); // short: the strip's value shows it every frame (#843)
 }
 
 } // namespace
 
-std::string commitStripValue(const Domain::SystemSnapshot& snap)
+UI::InlineText commitStripValue(const Domain::SystemSnapshot& snap)
 {
     if (!snap.hasCommitCharge || snap.commitLimitBytes == 0)
     {
@@ -82,7 +82,7 @@ std::string commitStripValue(const Domain::SystemSnapshot& snap)
     // Not clamped: Linux outside strict overcommit lets Committed_AS run past CommitLimit, and
     // reading over 100% is the truth there.
     const double percent = 100.0 * (static_cast<double>(snap.commitChargeBytes) / static_cast<double>(snap.commitLimitBytes));
-    return UI::Format::bytesUsedTotalPercentCompact(snap.commitChargeBytes, snap.commitLimitBytes, percent);
+    return UI::Format::bytesUsedTotalPercentCompactText(snap.commitChargeBytes, snap.commitLimitBytes, percent);
 }
 
 std::string commitStripTooltip(const Domain::SystemSnapshot& snap)
@@ -100,19 +100,20 @@ std::string commitStripTooltip(const Domain::SystemSnapshot& snap)
     return text;
 }
 
-std::string compressedStripValue(const Domain::SystemSnapshot& snap)
+UI::InlineText compressedStripValue(const Domain::SystemSnapshot& snap)
 {
     if (snap.compressionRatio <= 0.0)
     {
         // Windows (#3363): the store's size alone, as Task Manager's "In use (Compressed)"
-        return snap.hasMemoryCompression ? UI::Format::formatBytes(static_cast<double>(snap.memoryCompressionBytes)) : std::string{};
+        return snap.hasMemoryCompression ? UI::InlineText(UI::Format::formatBytes(static_cast<double>(snap.memoryCompressionBytes)))
+                                         : UI::InlineText{};
     }
     const std::uint64_t original = (snap.hasZram ? snap.zramOriginalBytes : 0) + (snap.hasZswap ? snap.zswapOriginalBytes : 0);
     const std::uint64_t compressed = (snap.hasZram ? snap.zramCompressedBytes : 0) + (snap.hasZswap ? snap.zswapCompressedBytes : 0);
-    return std::format("{} ({} in {})",
-                       ratioText(snap.compressionRatio),
-                       UI::Format::formatBytes(static_cast<double>(original)),
-                       UI::Format::formatBytes(static_cast<double>(compressed)));
+    return UI::InlineText::format("{} ({} in {})",
+                                  ratioText(snap.compressionRatio),
+                                  UI::Format::formatBytes(static_cast<double>(original)),
+                                  UI::Format::formatBytes(static_cast<double>(compressed)));
 }
 
 std::string compressedStripTooltip(const Domain::SystemSnapshot& snap, std::span<const float> ratioHistory)
@@ -403,7 +404,7 @@ void renderMemorySection(RenderContext& ctx, std::span<const double> timestamps,
         const auto ramTooltip = [&](const char* label, std::uint64_t bytes, double pct)
         {
             return snap.memoryTotalBytes > 0
-                     ? UI::Widgets::tooltipRowText(label, UI::Format::bytesUsedTotalPercentCompact(bytes, snap.memoryTotalBytes, pct))
+                     ? UI::Widgets::tooltipRowText(label, UI::Format::bytesUsedTotalPercentCompactText(bytes, snap.memoryTotalBytes, pct))
                      : UI::InlineText{};
         };
         if (!memData.empty())
@@ -433,37 +434,60 @@ void renderMemorySection(RenderContext& ctx, std::span<const double> timestamps,
     {
         extras.at(extraCount++) = UI::Widgets::ValueStripEntry{
             .label = PEAK_LABEL,
-            .value = UI::Format::formatPercent(peakMemPercent),
+            .value = UI::InlineText(UI::Format::formatPercent(peakMemPercent)),
             .color = theme.scheme().chartPeakLine,
         };
+    }
+    // The Commit and Compressed entries' hover texts are longer than any inline buffer, so they are
+    // built once per publication and kept, not every frame (#843): they read only the snapshot and the
+    // ratio history in the window, which change only with the data generation or the window's sample
+    // count. Generation 0 (not tracked) builds them every frame. UI thread only, like the charts' caches.
+    struct StripTooltips
+    {
+        std::uint64_t generation = 0;
+        std::uint64_t frameCacheGeneration = 0; // a new ImGui context starts afresh (#2163)
+        const Domain::SystemPublication* publication = nullptr;
+        std::size_t alignedCount = 0;
+        std::string commit;
+        std::string compressed;
+    };
+    static StripTooltips tooltips;
+    const std::uint64_t frameCacheGeneration = UI::Widgets::Detail::frameCacheGeneration();
+    if (ctx.chartDataGeneration == 0 || tooltips.generation != ctx.chartDataGeneration ||
+        tooltips.frameCacheGeneration != frameCacheGeneration || tooltips.publication != ctx.publication ||
+        tooltips.alignedCount != alignedCount)
+    {
+        const auto& ratioHist = ctx.publication->compressionRatioHistory;
+        tooltips.commit = commitStripTooltip(snap);
+        tooltips.compressed =
+            compressedStripTooltip(snap, UI::Widgets::tailAlignedSpan(ratioHist, std::min(ratioHist.size(), alignedCount)).values);
+        tooltips.generation = ctx.chartDataGeneration;
+        tooltips.frameCacheGeneration = frameCacheGeneration;
+        tooltips.publication = ctx.publication;
+        tooltips.alignedCount = alignedCount;
     }
     // Commit charge against the commit limit (#1627): how close the machine is to "out of memory"
     // while RAM may still be free. A reading only, not a series -- its swatch stays blank -- and only
     // where the probe supports it and read it this sample.
-    const std::string commitTooltip = commitStripTooltip(snap);
     if (snap.hasCommitCharge)
     {
         extras.at(extraCount++) = UI::Widgets::ValueStripEntry{
             .label = COMMIT_LABEL,
             .value = commitStripValue(snap),
             .color = ImVec4(0.0F, 0.0F, 0.0F, 0.0F),
-            .tooltip = commitTooltip.c_str(),
+            .tooltip = tooltips.commit.c_str(),
         };
     }
     // Compressed swap (#3087, Linux): zram and zswap's ratio and sizes, a reading like Commit, only
     // while something compressed is stored. Windows (#3363): the compression store's size, while
     // memory compression is on.
-    const std::string compressedValue = compressedStripValue(snap);
-    const auto& ratioHist = ctx.publication->compressionRatioHistory;
-    const std::string compressedTooltip =
-        compressedStripTooltip(snap, UI::Widgets::tailAlignedSpan(ratioHist, std::min(ratioHist.size(), alignedCount)).values);
-    if (!compressedValue.empty())
+    if (const UI::InlineText compressedValue = compressedStripValue(snap); !compressedValue.empty())
     {
         extras.at(extraCount++) = UI::Widgets::ValueStripEntry{
             .label = COMPRESSED_LABEL,
             .value = compressedValue,
             .color = drawRatio ? ratioColor : ImVec4(0.0F, 0.0F, 0.0F, 0.0F), // the ratio line's swatch when it is drawn
-            .tooltip = compressedTooltip.c_str(),
+            .tooltip = tooltips.compressed.c_str(),
         };
     }
     const std::span<const UI::Widgets::ValueStripEntry> stripExtras(extras.data(), extraCount);

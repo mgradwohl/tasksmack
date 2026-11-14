@@ -140,8 +140,8 @@ LIGHT=""
 for t in "${THEME_LIST[@]}"; do [[ "$t" == *light* || "$t" == latte ]] && { LIGHT="$t"; break; }; done
 
 # One shot: name theme [KEY=VALUE hooks...]; SEQUENCE=";frames=N;fps=F" is set by run_live,
-# FULL=1 gives the shot the 60 s history window and the 60 s wait, and SHOT_WINDOW=WxH a window other
-# than --window's.
+# FULL=1 gives the shot the 60 s history window and the 60 s wait, SHOT_WINDOW=WxH a window other
+# than --window's, and SHOT_TOML more config.toml lines (screenshots.ps1's -Toml).
 FAILED=0
 printf '%-30s %5s %8s %10s\n' name exit seconds bytes
 run_shot() {
@@ -167,6 +167,7 @@ width = $width
 height = $height
 [process_columns]
 command = false
+${SHOT_TOML:-}
 EOF
     local start rc=0 ms bytes=0
     start=$(date +%s%N)
@@ -215,6 +216,12 @@ for t in "$DARK" "$LIGHT"; do
     # By its id, SystemInfo, the more robust form: a tab's id never changes, its label may.
     run_shot "system-$t" "$t" TASKSMACK_TAB=SystemInfo
 done
+# The Processes table grouped (#3068), as screenshots.ps1 has them, and by user (#3377 PR 4): each signed-in
+# account's sessions under its header. Those rows name the machine's real signed-in accounts (logind), which the
+# --hostname namespace doesn't change: review the user shot for names before committing it.
+SHOT_TOML=$'[process_table]\ngroup_by = \'unit\'' run_shot "processes-grouped-unit-$DARK" "$DARK" TASKSMACK_TAB=Processes
+SHOT_TOML=$'[process_table]\ngroup_by = \'app\'' run_shot "processes-grouped-app-$DARK" "$DARK" TASKSMACK_TAB=Processes
+SHOT_TOML=$'[process_table]\ngroup_by = \'user\'' run_shot "processes-grouped-user-${LIGHT:-$DARK}" "${LIGHT:-$DARK}" TASKSMACK_TAB=Processes
 # The machine tab's sub-tabs (#2869), after the usual wait: the GPU and network charts need a few samples.
 for sub in cores gpu network; do
     run_shot "$sub-$DARK" "$DARK" TASKSMACK_TAB=overview TASKSMACK_MACHINE_TAB="$sub"

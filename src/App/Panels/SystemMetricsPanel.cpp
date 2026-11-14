@@ -398,12 +398,12 @@ void SystemMetricsPanel::adoptPublications()
     if (m_StorageModel && (!m_StoragePublication || m_StorageModel->publicationVersion() != m_StoragePublication->version))
     {
         m_StoragePublication = m_StorageModel->publication();
-        m_ChartDataGeneration = UI::Widgets::nextChartDataGeneration();
+        m_ChartGenerations.storageAdopted();
     }
     if (m_GPUModel && (!m_GPUPublication || m_GPUModel->publicationVersion() != m_GPUPublication->version))
     {
         m_GPUPublication = m_GPUModel->publication();
-        m_ChartDataGeneration = UI::Widgets::nextChartDataGeneration();
+        m_ChartGenerations.gpuAdopted();
     }
 }
 
@@ -412,7 +412,7 @@ void SystemMetricsPanel::adoptSystemPublication()
     // Held, not copied: the publication is immutable and shared with the model, so its snapshot and
     // timestamps are read in place (#1180) rather than copied into panel members on every adoption.
     m_SystemPublication = m_Model->publication();
-    m_ChartDataGeneration = UI::Widgets::nextChartDataGeneration();
+    m_ChartGenerations.systemAdopted();
 }
 
 const Domain::SystemSnapshot& SystemMetricsPanel::systemSnapshot() const
@@ -561,7 +561,7 @@ void SystemMetricsPanel::onUpdate(float deltaTime)
             m_ProcessThreadCountHistory = std::move(histories.threadCount);
             m_ProcessHandleCountHistory = std::move(histories.handleCount);
             m_ProcessCapabilities = histories.capabilities; // current, not the startup set (#1254)
-            m_ChartDataGeneration = UI::Widgets::nextChartDataGeneration();
+            m_ChartGenerations.processHistoriesAdopted();
         }
     }
 }
@@ -625,7 +625,7 @@ void SystemMetricsPanel::renderContent()
             // Build context for CpuCoresSection render function
             CpuCoresSection::RenderContext cpuCtx{
                 .publication = m_SystemPublication.get(),
-                .chartDataGeneration = m_ChartDataGeneration,
+                .chartDataGeneration = m_ChartGenerations.system(),
                 .maxHistorySeconds = m_MaxHistorySeconds,
                 .lastDeltaSeconds = m_LastDeltaSeconds,
                 .refreshInterval = m_RefreshInterval,
@@ -646,7 +646,7 @@ void SystemMetricsPanel::renderContent()
                 // Build context for GpuSection render function
                 GpuSection::RenderContext gpuCtx{
                     .publication = m_GPUPublication.get(),
-                    .chartDataGeneration = m_ChartDataGeneration,
+                    .chartDataGeneration = m_ChartGenerations.gpu(),
                     .maxHistorySeconds = m_MaxHistorySeconds,
                     .lastDeltaSeconds = m_LastDeltaSeconds,
                     .refreshInterval = m_RefreshInterval,
@@ -671,7 +671,7 @@ void SystemMetricsPanel::renderContent()
             {
                 GpuSection::RenderContext npuCtx{
                     .publication = m_GPUPublication.get(),
-                    .chartDataGeneration = m_ChartDataGeneration,
+                    .chartDataGeneration = m_ChartGenerations.gpu(),
                     .maxHistorySeconds = m_MaxHistorySeconds,
                     .lastDeltaSeconds = m_LastDeltaSeconds,
                     .refreshInterval = m_RefreshInterval,
@@ -697,7 +697,8 @@ void SystemMetricsPanel::renderContent()
             NetworkSection::RenderContext netCtx{
                 .systemPublication = m_SystemPublication.get(),
                 .storagePublication = m_StoragePublication.get(),
-                .chartDataGeneration = m_ChartDataGeneration,
+                .chartDataGeneration = m_ChartGenerations.system(),
+                .storageChartDataGeneration = m_ChartGenerations.storage(),
                 .hasNetworkCounters = m_Model != nullptr && m_Model->capabilities().hasNetworkCounters,
                 .maxHistorySeconds = m_MaxHistorySeconds,
                 .lastDeltaSeconds = m_LastDeltaSeconds,
@@ -870,11 +871,11 @@ void SystemMetricsPanel::renderOverview()
     const auto cpuPlot = [&]
     {
         // The Total line is drawn from the adopted publication, so its reduction is kept until
-        // m_ChartDataGeneration next changes (HistoryChartConfig::dataGeneration, #1139).
+        // the system publication's generation next changes (HistoryChartConfig::dataGeneration, #1139).
         const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
             UI::Widgets::withHeight(UI::Widgets::percentHistoryConfig("##OverviewCPUHistory", axisConfig.xMin, axisConfig.xMax),
                                     plotHeight),
-            m_ChartDataGeneration));
+            m_ChartGenerations.system()));
         if (chart.active())
         {
             UI::Widgets::drawCollectingHint(cpuData.size()); // The same "no data yet" state on every chart (#1013)
@@ -898,14 +899,14 @@ void SystemMetricsPanel::renderOverview()
                 // while User falls by as much leaves System's top flat, and would be dropped if the
                 // tops chose the points.
                 //
-                // The choice of points is kept until m_ChartDataGeneration changes (#1139), or the
+                // The choice of points is kept until the system publication's generation changes (#1139), or the
                 // budget does (a resize; it is part of the key): reducing the whole history and copying
                 // every band out of it each frame was most of this chart's cost at the largest history
                 // settings. Each frame only builds the kept points, at most LINE_PLOT_MAX_POINTS_DENSE
                 // of them.
                 const int pointBudget = UI::Widgets::currentPlotPointBudget();
                 const std::span<const UI::Widgets::ReducedPoint> points = m_CpuStackReduction.points(
-                    {.generation = m_ChartDataGeneration, .dataId = 0, .count = breakdownCount, .maxOut = pointBudget},
+                    {.generation = m_ChartGenerations.system(), .dataId = 0, .count = breakdownCount, .maxOut = pointBudget},
                     [&](std::vector<UI::Widgets::ReducedPoint>& out)
                     {
                         UI::Widgets::reduceAlignedPoints<float>(
@@ -1063,7 +1064,7 @@ void SystemMetricsPanel::renderOverview()
     {
         MemorySection::RenderContext memCtx{
             .publication = m_SystemPublication.get(),
-            .chartDataGeneration = m_ChartDataGeneration,
+            .chartDataGeneration = m_ChartGenerations.system(),
             .maxHistorySeconds = m_MaxHistorySeconds,
             .lastDeltaSeconds = m_LastDeltaSeconds,
             .refreshInterval = m_RefreshInterval,
@@ -1126,7 +1127,8 @@ void SystemMetricsPanel::renderOverview()
             const double powerAxisUpper = UI::Widgets::easedRateAxisUpperBound(
                 "##PowerBatteryHistory",
                 UI::Widgets::withCurrentValues(
-                    UI::Widgets::windowSeriesMax("##PowerBatteryHistory", m_ChartDataGeneration, powerTimeData, axis.xMin, powerHist),
+                    UI::Widgets::windowSeriesMax(
+                        "##PowerBatteryHistory", m_ChartGenerations.processHistories(), powerTimeData, axis.xMin, powerHist),
                     {UI::Widgets::currentIfAvailable(hasProcessPower, m_SmoothedPower.watts)}),
                 UI::Widgets::RATE_AXIS_MIN_SPAN_WATTS);
 
@@ -1169,7 +1171,7 @@ void SystemMetricsPanel::renderOverview()
                                               "##PowerBatteryHistory", axis.xMin, axis.xMax, formatAxisWatts, powerAxisUpper)
                                         : UI::Widgets::percentHistoryConfigWithHeadroom("##PowerBatteryHistory", axis.xMin, axis.xMax),
                         plotHeight),
-                    m_ChartDataGeneration));
+                    ChartSourceGenerations::combined(m_ChartGenerations.system(), m_ChartGenerations.processHistories())));
                 if (chart.active())
                 {
                     // Secondary Y-axis: Battery % (0-100), labelled like any second axis (#1206). Its
@@ -1355,19 +1357,21 @@ void SystemMetricsPanel::renderOverview()
         const double threadAxisUpper = UI::Widgets::easedRateAxisUpperBound(
             "##ResourcesHistory",
             UI::Widgets::withCurrentValues(
-                UI::Widgets::windowSeriesMax("##ResourcesHistory", m_ChartDataGeneration, timeData, axis.xMin, threadData),
+                UI::Widgets::windowSeriesMax("##ResourcesHistory", m_ChartGenerations.processHistories(), timeData, axis.xMin, threadData),
                 {m_SmoothedResources.threads}),
             UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT);
         const double faultAxisUpper = UI::Widgets::easedRateAxisUpperBound(
             "##ResourcesHistory/Y2",
             UI::Widgets::withCurrentValues(
-                UI::Widgets::windowSeriesMax("##ResourcesHistory/Y2", m_ChartDataGeneration, timeData, axis.xMin, faultData),
+                UI::Widgets::windowSeriesMax(
+                    "##ResourcesHistory/Y2", m_ChartGenerations.processHistories(), timeData, axis.xMin, faultData),
                 {m_SmoothedResources.pageFaults}),
             UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT);
         const double handleAxisUpper = UI::Widgets::easedRateAxisUpperBound(
             "##ResourcesHistory/Y3",
             UI::Widgets::withCurrentValues(
-                UI::Widgets::windowSeriesMax("##ResourcesHistory/Y3", m_ChartDataGeneration, timeData, axis.xMin, handleData),
+                UI::Widgets::windowSeriesMax(
+                    "##ResourcesHistory/Y3", m_ChartGenerations.processHistories(), timeData, axis.xMin, handleData),
                 {m_SmoothedResources.handles}),
             UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT);
 
@@ -1420,7 +1424,7 @@ void SystemMetricsPanel::renderOverview()
                 UI::Widgets::withHeight(UI::Widgets::rateHistoryConfigWithUpper(
                                             "##ResourcesHistory", axis.xMin, axis.xMax, formatAxisLocalized, threadAxisUpper),
                                         plotHeight),
-                m_ChartDataGeneration));
+                m_ChartGenerations.processHistories()));
             if (chart.active())
             {
                 UI::Widgets::setupSecondaryRateAxis(faultAxisUpper, formatAxisLocalized, theme.scheme().chartPageFaults);

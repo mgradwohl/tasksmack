@@ -115,6 +115,10 @@ struct SignatureFunctions
     /// when it is trusted; nullopt when no catalog holds it; a failure's HRESULT when the catalogs couldn't
     /// be searched.
     std::optional<TrustCheck> (*verifyCatalogSignature)(const std::string& path, void* file) = nullptr;
+    /// The publisher (CompanyName) in the file's version info, empty when it names none (#3703): read by the
+    /// signature worker with each check, so the process sampler never opens a new image for it. Nullable:
+    /// no publisher is read.
+    std::string (*readPublisher)(const std::string& path) = nullptr;
 };
 
 /// WinVerifyTrust results (HRESULTs) that the check tells apart.

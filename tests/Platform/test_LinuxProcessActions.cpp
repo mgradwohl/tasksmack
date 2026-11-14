@@ -42,6 +42,7 @@
 #include <map>
 #include <mutex>
 #include <optional>
+#include <sstream>
 #include <stop_token>
 #include <string>
 #include <string_view>
@@ -2777,6 +2778,82 @@ TEST(LinuxProcessActionsTest, ImageSha256IsTheDigestOfTheProcesssOwnExecutable)
     EXPECT_FALSE(actions.imageSha256({.pid = 0, .startTimeTicks = 0}, std::stop_token{}).has_value());
     ASSERT_FALSE(stopped.has_value());
     EXPECT_TRUE(stopped.error().contains("Stopped")) << stopped.error();
+}
+
+/// @p pid's identity as an action targets it: its PID and its start time from /proc/<pid>/stat; nullopt when unreadable.
+[[nodiscard]] std::optional<ProcessTarget> targetOf(pid_t pid)
+{
+    std::ifstream stat("/proc/" + std::to_string(pid) + "/stat");
+    const std::string line((std::istreambuf_iterator<char>(stat)), std::istreambuf_iterator<char>());
+    const std::optional<std::uint64_t> start = ProcParsing::parseStatStartTime(line);
+    if (!start.has_value())
+    {
+        return std::nullopt;
+    }
+    return ProcessTarget{.pid = static_cast<std::int32_t>(pid), .startTimeTicks = *start};
+}
+
+// #3723: as a standard user, another user's process (PID 1, root's) is refused as another user's, not called a kernel
+// thread: /proc/1/exe exists, and only following it is refused (EACCES).
+TEST(LinuxProcessActionsTest, ImageSha256OfAnotherUsersProcessSaysWhoseItIs)
+{
+    struct stat init{};
+    if (::geteuid() == 0 || ::stat("/proc/1", &init) != 0 || init.st_uid == ::geteuid())
+    {
+        GTEST_SKIP() << "needs PID 1 to be another user's, and not to run as root";
+    }
+    const std::optional<ProcessTarget> target = targetOf(1);
+    ASSERT_TRUE(target.has_value());
+    LinuxProcessActions actions;
+    const auto refused = actions.imageSha256(*target, std::stop_token{});
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error(), "Its executable can't be read: it belongs to another user");
+}
+
+// #3723: a kernel thread (PF_KTHREAD in its stat flags), which has no /proc/<pid>/exe, says so. There are none to
+// see inside some containers and WSL's PID namespace; CI's runners have kthreadd's.
+TEST(LinuxProcessActionsTest, ImageSha256OfAKernelThreadSaysItHasNoExecutable)
+{
+    constexpr std::uint64_t PF_KTHREAD = 0x00200000;
+    std::optional<ProcessTarget> kthread;
+    for (const auto& entry : std::filesystem::directory_iterator("/proc"))
+    {
+        const std::string name = entry.path().filename().string();
+        if (name.empty() || !std::ranges::all_of(name, [](char c) { return c >= '0' && c <= '9'; }))
+        {
+            continue;
+        }
+        std::ifstream stat(entry.path() / "stat");
+        const std::string line((std::istreambuf_iterator<char>(stat)), std::istreambuf_iterator<char>());
+        const std::size_t close = line.rfind(')');
+        if (close == std::string::npos)
+        {
+            continue;
+        }
+        // After "pid (comm) ": state, ppid, pgrp, session, tty_nr, tpgid, then flags.
+        std::istringstream rest(line.substr(close + 2));
+        std::string field;
+        for (int i = 0; i < 6 && rest >> field; ++i)
+        {
+        }
+        std::uint64_t flags = 0;
+        if (rest >> flags && (flags & PF_KTHREAD) != 0)
+        {
+            kthread = targetOf(static_cast<pid_t>(std::stoi(name)));
+            if (kthread.has_value())
+            {
+                break;
+            }
+        }
+    }
+    if (!kthread.has_value())
+    {
+        GTEST_SKIP() << "no kernel thread is visible here (a container or WSL's PID namespace)";
+    }
+    LinuxProcessActions actions;
+    const auto refused = actions.imageSha256(*kthread, std::stop_token{});
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error(), "It has no executable file (a kernel thread)");
 }
 
 TEST(LinuxProcessActionsTest, OpenFileLocationAsksTheFileManagerToShowTheExecutable)

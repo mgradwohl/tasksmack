@@ -41,7 +41,7 @@ struct UserSession
     bool remote = false;             ///< Opened from another machine (ssh, xrdp, Remote Desktop)
     bool idle = false;               ///< logind's IdleHint; on Windows, no input for a minute or more
     std::uint64_t idleSinceUsec = 0; ///< When it went idle (CLOCK_REALTIME µs); 0 when not idle
-    std::uint64_t logonUsec = 0;     ///< Windows: when its user signed in (CLOCK_REALTIME µs); 0 when not known
+    std::uint64_t logonUsec = 0;     ///< When its user signed in (CLOCK_REALTIME µs; logind's Timestamp on Linux); 0 when not known
     std::int32_t leaderPid = 0;      ///< The process that opened it (the display manager's helper, sshd's child)
     bool current = false;            ///< The session TaskSmack itself runs in
     /// Windows: why its user couldn't be read (WTSSessionInfo refused, #3076). The session is still listed, as

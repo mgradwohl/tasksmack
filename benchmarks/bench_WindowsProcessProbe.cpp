@@ -18,8 +18,9 @@
 //    is the default refresh interval (the light details read every sample, the heavy ones every
 //    fourth on a 16 GB+ machine), 60000 expires every TTL every call (light and heavy read for every
 //    process each sample). Each of these includes the Not responding window walk (#3084).
-//  - HungWindowScan: that walk alone (WindowsProcessDetailReads::hungWindowProcesses()), once a sample:
-//    EnumWindows, and IsHungAppWindow on each visible top-level window.
+//  - HungWindowScan: that walk alone (WindowsProcessDetailReads::topLevelWindows(), and the hung processes
+//    taken from it), once a sample: EnumWindows, and on each visible top-level window IsHungAppWindow, its
+//    process and its owner (#3705: the window AppID lookup reads the same walk).
 //  - Detail_<read>: each read of the heavy detail pass alone (WindowsProcessDetailReads, the probe's
 //    own functions, through its system seams), once over every process this user can open with
 //    PROCESS_QUERY_LIMITED_INFORMATION, with the handles opened once beforehand, so each benchmark
@@ -43,6 +44,7 @@
 
 #include "Platform/CpuAffinity.h"
 #include "Platform/Windows/WinString.h"
+#include "Platform/Windows/WindowsAppIdentity.h"
 #include "Platform/Windows/WindowsHandles.h"
 #include "Platform/Windows/WindowsNtQuery.h"
 #include "Platform/Windows/WindowsProcessProbe.h"
@@ -471,10 +473,12 @@ BOOL CALLBACK countWindow(HWND /*window*/, LPARAM count)
 /// on the visible ones. Its windows counter is the desktop's top-level window count, which it scales with.
 void BM_WindowsProcessProbe_HungWindowScan(benchmark::State& state)
 {
+    std::vector<Platform::Windows::TopLevelWindow> topLevel;
     std::vector<std::uint32_t> pids;
     for (auto _ : state)
     {
-        Platform::WindowsProcessDetailReads::hungWindowProcesses(pids);
+        Platform::WindowsProcessDetailReads::topLevelWindows(topLevel);
+        Platform::WindowsProcessDetailReads::hungWindowProcesses(topLevel, pids);
         benchmark::DoNotOptimize(pids.data());
     }
     std::size_t windows = 0;

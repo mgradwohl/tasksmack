@@ -1,7 +1,7 @@
 /// @file test_CommandOutput.cpp
 /// @brief A short command's output (#3425, for `crontab -l`): what it prints and its exit status, a program that
-/// isn't there, one that outlives the timeout (killed), one that closes its output and keeps running (killed at the
-/// timeout too), output past the byte limit, and an allocation failing part way (the child is still killed and reaped).
+/// isn't there, one that outlives the timeout (killed), a timeout already spent (#3374), one that closes its output and keeps running
+/// (killed at the timeout too), output past the byte limit, and an allocation failing part way (the child is still killed and reaped).
 
 #include "Domain/AllocationFailureHook.h"
 #include "Platform/Linux/CommandOutput.h"
@@ -53,6 +53,18 @@ TEST(CommandOutputTest, OneThatOutlivesTheTimeoutIsKilled)
     EXPECT_TRUE(run.timedOut);
     EXPECT_EQ(run.exitCode, -1);
     EXPECT_EQ(run.output, "started\n") << "what it printed before it was killed";
+}
+
+// #3374: a timeout already spent when the spawn returns: nothing is read, and the child is still killed and reaped.
+TEST(CommandOutputTest, ATimeoutAlreadySpentReadsNothingAndKillsTheChild)
+{
+    const auto began = std::chrono::steady_clock::now();
+    const CommandOutput run = runForOutput({"sh", "-c", "exec sleep 30"}, 0ms, 1024);
+    EXPECT_LT(std::chrono::steady_clock::now() - began, 10s) << "killed, not waited for";
+    EXPECT_TRUE(run.started);
+    EXPECT_TRUE(run.timedOut);
+    EXPECT_EQ(run.exitCode, -1);
+    EXPECT_TRUE(run.output.empty());
 }
 
 // #3441 review: a child that closes its output but keeps running used to reach a blocking waitpid() past the deadline.

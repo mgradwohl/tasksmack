@@ -584,10 +584,11 @@ constexpr ULONG PROCESS_INFO_COMMAND_LINE = 60;
     return result;
 }
 
-/// Fill @p image from the process's image path and its publisher, unless an earlier read already has
-/// (#2982): neither changes while the process runs. A failed path read (an empty path) leaves it
-/// unread, so the next heavy refresh tries again.
-const ProcessImage& readProcessImage(const ProcessFunctions& fns, HANDLE hProcess, ProcessImage& image)
+/// Fill @p image from the process's image path and, with @p readPublisher, its publisher, unless an earlier
+/// read already has (#2982): neither changes while the process runs. A failed path read (an empty path)
+/// leaves it unread, so the next heavy refresh tries again. The probe reads the publisher here only without a
+/// signature worker, which otherwise reads it off the sampler thread with the image's check (#3703).
+const ProcessImage& readProcessImage(const ProcessFunctions& fns, HANDLE hProcess, ProcessImage& image, bool readPublisher = true)
 {
     if (image.read)
     {
@@ -599,7 +600,10 @@ const ProcessImage& readProcessImage(const ProcessFunctions& fns, HANDLE hProces
         return image;
     }
     image.path = WinString::wideToUtf8(path);
-    image.publisher = getFilePublisher(path);
+    if (readPublisher)
+    {
+        image.publisher = getFilePublisher(path);
+    }
     image.read = true;
     return image;
 }
@@ -768,19 +772,21 @@ using HungWindowFromGhostFn = HWND(WINAPI*)(HWND);
     return fn;
 }
 
-/// EnumWindows' callback for hungWindowProcesses(): records the process of each visible top-level window
-/// that has stopped answering (IsHungAppWindow). Once Windows has hidden a hung window behind its ghost
-/// (the "(Not Responding)" stand-in DWM draws in its place, class "Ghost"), only the ghost is visible:
-/// the window it stands in for is the hung one.
-BOOL CALLBACK collectHungWindowProcess(HWND window, LPARAM param)
+/// topLevelWindows()' work for one window: a visible one is recorded with whether it answers and the process
+/// it shows as not responding. Once Windows has hidden a hung window behind its ghost
+/// (the "(Not Responding)" stand-in DWM draws in its place, class "Ghost"), only the ghost is visible: the
+/// window it stands in for is the hung one. Only what is on screen: a hidden window on a thread that doesn't
+/// pump messages (a service's, a background helper's) would otherwise read as hung, though no user is waiting
+/// on it. Its push can throw; guardedWindowCallback() keeps that inside the callback.
+void collectTopLevelWindow(HWND window, std::vector<Windows::TopLevelWindow>& windows)
 {
-    // Only what is on screen: a hidden window on a thread that doesn't pump messages (a service's, a
-    // background helper's) would otherwise read as hung, though no user is waiting on it.
     if (IsWindowVisible(window) == FALSE)
     {
-        return TRUE;
+        return;
     }
-    HWND hung = (IsHungAppWindow(window) != FALSE) ? window : nullptr;
+    Windows::TopLevelWindow found{.window = window};
+    found.hung = IsHungAppWindow(window) != FALSE;
+    HWND hung = found.hung ? window : nullptr;
     if (hung == nullptr)
     {
         constexpr int CLASS_CHARS = 8; // "Ghost" and its NUL, with room to tell a longer name apart
@@ -793,12 +799,12 @@ BOOL CALLBACK collectHungWindowProcess(HWND window, LPARAM param)
             hung = fromGhost(window);
         }
     }
-    DWORD pid = 0;
-    if (hung != nullptr && GetWindowThreadProcessId(hung, &pid) != 0 && pid != 0)
+    DWORD hungPid = 0;
+    if (hung != nullptr && GetWindowThreadProcessId(hung, &hungPid) != 0)
     {
-        reinterpret_cast<std::vector<std::uint32_t>*>(param)->push_back(pid); // NOLINT(performance-no-int-to-ptr) - EnumWindows' LPARAM
+        found.hungPid = hungPid;
     }
-    return TRUE;
+    windows.push_back(found);
 }
 
 /// Each thread's group affinity (GetThreadGroupAffinity), from the process's
@@ -917,11 +923,36 @@ std::string_view WindowsProcessDetailReads::processType(const WindowsProcessProb
     return classifyProcessType(fns, hQuery, pid, imagePath);
 }
 
-void WindowsProcessDetailReads::hungWindowProcesses(std::vector<std::uint32_t>& pids)
+void WindowsProcessDetailReads::topLevelWindows(std::vector<Windows::TopLevelWindow>& windows)
+{
+    windows.clear();
+    Windows::WindowVisitor visitor{
+        .visit =
+            [&windows](HWND window)
+        {
+            collectTopLevelWindow(window, windows);
+            return true; // Every window: the walk stops only if this throws
+        },
+        .failed = false,
+    };
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - EnumWindows' LPARAM
+    static_cast<void>(EnumWindows(&Windows::guardedWindowCallback, reinterpret_cast<LPARAM>(&visitor)));
+    if (visitor.failed)
+    {
+        windows.clear(); // Cut short (out of memory): nothing hung and no window IDs this sample, not a partial list
+    }
+}
+
+void WindowsProcessDetailReads::hungWindowProcesses(std::span<const Windows::TopLevelWindow> windows, std::vector<std::uint32_t>& pids)
 {
     pids.clear();
-    // The callback never stops the walk; a failure leaves what was collected, read as "none hung" for the rest.
-    static_cast<void>(EnumWindows(&collectHungWindowProcess, reinterpret_cast<LPARAM>(&pids)));
+    for (const Windows::TopLevelWindow& window : windows)
+    {
+        if (window.hungPid != 0)
+        {
+            pids.push_back(window.hungPid);
+        }
+    }
     std::ranges::sort(pids);
     const auto duplicates = std::ranges::unique(pids);
     pids.erase(duplicates.begin(), duplicates.end());
@@ -942,6 +973,25 @@ void enterBackgroundMode()
 
 } // namespace
 
+namespace
+{
+
+/// The signature worker's publisher read (#3703): getFilePublisher() of a UTF-8 path, on the worker's thread.
+std::string readImagePublisher(const std::string& path)
+{
+    return getFilePublisher(WinString::utf8ToWide(path));
+}
+
+/// The system's signature calls, with the publisher read alongside each check.
+WindowsSignature::SignatureFunctions signatureFunctionsWithPublisher()
+{
+    WindowsSignature::SignatureFunctions functions = Windows::systemSignatureFunctions();
+    functions.readPublisher = &readImagePublisher;
+    return functions;
+}
+
+} // namespace
+
 WindowsProcessProbeFunctions WindowsProcessProbe::systemFunctions()
 {
     return {
@@ -955,7 +1005,7 @@ WindowsProcessProbeFunctions WindowsProcessProbe::systemFunctions()
                 .windowsBuildNumber = &windowsBuildNumber,
                 .steadyNow = &steadyNow,
                 .nativeMachine = &Windows::nativeMachine,
-                .hungWindowProcesses = &WindowsProcessDetailReads::hungWindowProcesses,
+                .topLevelWindows = &WindowsProcessDetailReads::topLevelWindows,
             },
         .token =
             {
@@ -986,7 +1036,7 @@ WindowsProcessProbeFunctions WindowsProcessProbe::systemFunctions()
                 .appDisplayName = &Windows::appDisplayName,
             },
         .energyMeter = Windows::EnergyMeterFunctions{},
-        .signature = Windows::systemSignatureFunctions(),
+        .signature = signatureFunctionsWithPublisher(),
         .signatureWorker =
             {
                 .pause = std::chrono::milliseconds{Domain::Sampling::SIGNATURE_CHECK_PAUSE_MS},
@@ -1124,17 +1174,23 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
     // once so every process in this sample agrees with it.
     const bool perProcessNetworkCounters = m_HasNetworkCounters.load(std::memory_order_relaxed);
 
-    // Which processes' windows have stopped answering (#3084): one window walk for the whole sample,
-    // then a binary search per process, which an empty list (the usual case) answers at once.
-    m_HungWindowPids.clear();
-    if (m_Fns.system.hungWindowProcesses != nullptr)
+    // The sample's one window walk (#3705), which both readers below take from: which processes' windows have
+    // stopped answering (#3084), then a binary search per process, which an empty list (the usual case) answers
+    // at once; and the window AppUserModelIDs of the unpackaged processes due to be looked at (#3457).
+    m_Windows.clear();
+    if (m_Fns.system.topLevelWindows != nullptr)
     {
-        m_Fns.system.hungWindowProcesses(m_HungWindowPids);
+        m_Fns.system.topLevelWindows(m_Windows);
     }
+    WindowsProcessDetailReads::hungWindowProcesses(m_Windows, m_HungWindowPids);
 
     // The app each process belongs to (#3457): a few names a sample, and one window walk for the unpackaged
-    // processes last sample listed whose windows are due to be looked at for an AppUserModelID.
-    m_AppNameLookupsLeft = APP_NAME_LOOKUPS_PER_SAMPLE;
+    // processes last sample listed whose windows are due to be looked at for an AppUserModelID. None is named
+    // on the first sample (#3714): it is the process sampler's seed, which the Processes table's first rows
+    // wait on, and the first name asked of the shell's Apps folder loads it (about 100 ms, most of the seed).
+    // Those names come with the next sample, as a window's ID does.
+    const bool firstSample = m_DetailCacheGeneration == 1; // Counted at the top of this call
+    m_AppNameLookupsLeft = firstSample ? 0 : APP_NAME_LOOKUPS_PER_SAMPLE;
     lookForWindowAppIds(m_Fns.system.steadyNow());
 
     for (std::size_t offset = 0; (offset + sizeof(SystemProcessInfo)) <= snapshotBytes;)
@@ -1349,15 +1405,17 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid,
     const Windows::UniqueHandle hProcess(canCache ? m_Fns.process.openProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid) : nullptr);
     if (!hProcess.valid())
     {
-        // Can't access this process (protected/system). Push the due TTLs forward so we don't retry
-        // OpenProcess every sample; the bulk snapshot still provides fresh counters regardless.
-        if (canCache && plan.light)
+        // Can't access this process (protected, another user's, a service). A process's protection and
+        // security descriptor are set when it starts, so asking again next light TTL (every sample at the
+        // default interval) only repeats the refusal (#3704): both TTLs wait OPEN_REFUSED_RETRY_SECONDS,
+        // after which the open is tried again in case it was refused for a passing reason. The entry is
+        // keyed by {pid, start time}, so a reused PID is a new process, tried at once. The bulk snapshot
+        // still provides fresh counters regardless.
+        if (canCache)
         {
-            cache.nextLightRefresh = now + m_LightDetailTTL;
-        }
-        if (canCache && plan.heavy)
-        {
-            cache.nextHeavyRefresh = now + m_HeavyDetailTTL;
+            const auto retry = now + std::chrono::seconds{Domain::Sampling::OPEN_REFUSED_RETRY_SECONDS};
+            cache.nextLightRefresh = std::max(cache.nextLightRefresh, retry);
+            cache.nextHeavyRefresh = std::max(cache.nextHeavyRefresh, retry);
         }
         fallBackToName();
         return false;
@@ -1393,7 +1451,9 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid,
     {
         // Expensive data: owner and command line at a lower cadence. The image path and its publisher
         // never change for a process, so they are read once, on the first heavy read that succeeds (#2982).
-        const ProcessImage& image = readProcessImage(m_Fns.process, hProcess.get(), cache.image);
+        // The publisher is file I/O on a new image (tens of milliseconds while it is first scanned): the
+        // signature worker reads it with the check, and updateSignature() takes both (#3703).
+        const ProcessImage& image = readProcessImage(m_Fns.process, hProcess.get(), cache.image, m_Signatures == nullptr || !canCache);
         imagePathUtf8 = image.path;
         counters.publisher = image.publisher;
         if (canCache)
@@ -1488,11 +1548,13 @@ void WindowsProcessProbe::updateSignature(DetailCacheEntry& cache, ProcessCounte
             m_Signatures->request(cache.image.path);
             cache.signatureRequested = true;
         }
-        cache.signature = m_Signatures->find(cache.image.path); // nullopt until the worker has checked it
+        // nullopt until the worker has checked it; then the publisher it read with the check comes too (#3703)
+        cache.signature = m_Signatures->find(cache.image.path, &cache.image.publisher);
     }
     if (cache.signature.has_value())
     {
         counters.signature = *cache.signature;
+        counters.publisher = cache.image.publisher;
     }
 }
 
@@ -1565,7 +1627,7 @@ void WindowsProcessProbe::lookForWindowAppIds(std::chrono::steady_clock::time_po
     std::ranges::sort(m_WindowAppIdPids);
     const auto duplicates = std::ranges::unique(m_WindowAppIdPids);
     m_WindowAppIdPids.erase(duplicates.begin(), duplicates.end());
-    m_Fns.app.windowAppIds(m_WindowAppIdPids, m_WindowAppIds);
+    m_Fns.app.windowAppIds(m_Windows, m_WindowAppIdPids, m_WindowAppIds);
     for (auto& [key, entry] : m_DetailCache)
     {
         if (!due(entry))

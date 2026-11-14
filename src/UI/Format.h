@@ -2,6 +2,7 @@
 
 #include "Core/LocaleSetup.h"
 #include "Domain/Numeric.h"
+#include "UI/InlineText.h"
 
 #include <algorithm>
 #include <array>
@@ -1087,13 +1088,23 @@ template<std::integral T> [[nodiscard]] inline auto formatPercent(T percent) -> 
     return formatIntLocalized(percent) + '%';
 }
 
-/// "3.2 GiB / 16.0 GiB (20%)": used and total in the one unit the larger of them calls for.
-[[nodiscard]] inline auto bytesUsedTotalPercentCompact(std::uint64_t usedBytes, std::uint64_t totalBytes, double percent) -> std::string
+/// "3.2 GiB / 16.0 GiB (20%)": used and total in the one unit the larger of them calls for. Held in
+/// place: a value strip shows it every frame, and as a std::string it was longer than the small-string
+/// buffer, so it cost a heap allocation per frame (#843). Its parts are short, so building it allocates
+/// nothing.
+[[nodiscard]] inline auto bytesUsedTotalPercentCompactText(std::uint64_t usedBytes, std::uint64_t totalBytes, double percent) -> InlineText
 {
     const auto unit = unitForTotalBytes(std::max(usedBytes, totalBytes));
     const std::string usedStr = formatBytesWithUnit(static_cast<double>(usedBytes), unit);
     const std::string totalStr = formatBytesWithUnit(static_cast<double>(totalBytes), unit);
-    return std::format("{} / {} ({})", usedStr, totalStr, formatPercent(percent));
+    return InlineText::format("{} / {} ({})", usedStr, totalStr, formatPercent(percent));
+}
+
+/// bytesUsedTotalPercentCompactText() as a std::string, for text that is not rebuilt every frame (a
+/// hovered sample's tooltip row).
+[[nodiscard]] inline auto bytesUsedTotalPercentCompact(std::uint64_t usedBytes, std::uint64_t totalBytes, double percent) -> std::string
+{
+    return std::string(bytesUsedTotalPercentCompactText(usedBytes, totalBytes, percent).view());
 }
 
 /// Format power value with appropriate unit (W/mW/µW) based on magnitude, one decimal (#1202),
@@ -1134,7 +1145,8 @@ template<std::integral T> [[nodiscard]] inline auto formatPercent(T percent) -> 
         return "N/A";
     }
     const double rounded = roundHalfAwayFromZero(celsius, 0);
-    return std::format("{:.0f}°C", rounded == 0.0 ? 0.0 : rounded); // No "-0°C"
+    // formatShort(): a GPU's value strip formats it every frame (#843)
+    return Detail::formatShort("{:.0f}°C", rounded == 0.0 ? 0.0 : rounded); // No "-0°C"
 }
 
 /// "1850 MHz", whole megahertz rounded half away from zero, or "N/A" for NaN (no reading): a GPU
@@ -1146,7 +1158,8 @@ template<std::integral T> [[nodiscard]] inline auto formatPercent(T percent) -> 
         return "N/A";
     }
     const double rounded = roundHalfAwayFromZero(megahertz, 0);
-    return std::format("{:.0f} MHz", rounded == 0.0 ? 0.0 : rounded); // No "-0 MHz"
+    // formatShort(): a GPU's value strip formats it every frame (#843)
+    return Detail::formatShort("{:.0f} MHz", rounded == 0.0 ? 0.0 : rounded); // No "-0 MHz"
 }
 
 /// A link speed as NICs, switches and the OS describe it: a decimal bit rate, "100 Mbit/s",

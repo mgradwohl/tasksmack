@@ -1,4 +1,4 @@
-// The Processes table's Group: User, where the Users tab's sessions went (#3377): each signed-in account's
+// The Processes table's Group: User, with the signed-in sessions (#3377): each signed-in account's
 // sessions under its header, their status and sign-in time, and their Lock, Disconnect and Sign out. The
 // groups are built in UserGrouping (buildUserGroups()), from the sessions UserSessionsFeed publishes; this is
 // the panel's drawing of them, apart from ProcessesPanel.cpp, which draws every other row.

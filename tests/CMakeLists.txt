@@ -120,6 +120,11 @@ if(WIN32)
         # frame (minimized) is left out of the frame and loop figures, n/a when none drew one (#3210).
         add_test(NAME ResizePerfSummaryScript
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-resize-perf-summary.ps1)
+        # tools/idle-sample.ps1, measure-idle.ps1's wake-ups, thread modules, timer resolution, phases,
+        # dwm and machine load, and memory series (#3715): recorded figures, and one 3 s phase of a
+        # hidden, sleeping pwsh. TaskSmack is never launched.
+        add_test(NAME MeasureIdleScript
+            COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-measure-idle.ps1)
         # tools/winget-manifest.ps1 fills in packaging/winget/'s templates from a release's SHA256SUMS (#3486).
         # Fixture SHA256SUMS files; nothing is downloaded, and winget isn't needed.
         add_test(NAME WingetManifestScript
@@ -284,6 +289,14 @@ if(TASKSMACK_BASH)
     set_tests_properties(ResizePerfSummaryAwkScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}" TIMEOUT 60)
 endif()
 
+# tools/idle-sample.py, measure-idle.sh's per-phase /proc sampler: wake-ups, memory, the compositor and the
+# machine load under measure-idle.ps1's field names (#3729). Canned /proc text and a fake /proc tree; it reads
+# Linux's /proc layout and SC_CLK_TCK, so the test is Linux-only.
+if(NOT WIN32)
+    add_test(NAME IdleSampleScript COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_idle_sample.py)
+    set_tests_properties(IdleSampleScript PROPERTIES TIMEOUT 60)
+endif()
+
 # tools/docs-sri.py: the docs site's jsDelivr pins carry SRI hashes matching docs/cdn-integrity.json (#3167).
 # Pure Python and offline, so on every platform.
 add_test(NAME DocsSriScript COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_docs_sri.py)
@@ -402,10 +415,12 @@ add_test(NAME StartupWiringScript
 # the release.yml cases pwsh on PATH; each is skipped without.
 if(TASKSMACK_BASH)
     # setup-llvm's cache-key and install cases (#3635) run install-llvm.sh dozens of times and have their own
-    # entry (#3643): together with the rest they outran the 120 s timeout on the slow bash spawns of the
+    # entry (#3643), as do Heavy Checks' benchmark-gate cases (#3709), which run its steps' bash launches
+    # dozens of times: together with the rest they outran the 120 s timeout on the slow bash spawns of the
     # windows-11-arm runner. WorkflowRunStepsScript runs everything else.
     add_test(NAME WorkflowRunStepsScript
-        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_workflow_run_steps.py --skip-setup-llvm)
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_workflow_run_steps.py --skip-setup-llvm
+                --skip-benchmark-gate)
     set_tests_properties(WorkflowRunStepsScript PROPERTIES
         ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}"
         # The release.yml cases start pwsh (#2964), so it takes its turn with the pwsh script tests
@@ -416,6 +431,11 @@ if(TASKSMACK_BASH)
     add_test(NAME SetupLlvmInstallScript
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_workflow_run_steps.py --only-setup-llvm)
     set_tests_properties(SetupLlvmInstallScript PROPERTIES
+        ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}"
+        TIMEOUT 120)
+    add_test(NAME BenchmarkGateStepsScript
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_workflow_run_steps.py --only-benchmark-gate)
+    set_tests_properties(BenchmarkGateStepsScript PROPERTIES
         ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}"
         TIMEOUT 120)
 endif()
@@ -478,6 +498,7 @@ set(COMMON_TEST_SOURCES
     Core/test_WindowGeometry.cpp
     Core/test_WindowVisibility.cpp
     Core/test_FrameWake.cpp # the publication wake and a static frame's wait (#3156)
+    Core/test_IdleWaitTimer.cpp # the idle wait's high-resolution wake on Windows (#3712)
     Domain/test_History.cpp
     Domain/test_SharedHistory.cpp
     Domain/test_ProcessConnections.cpp
@@ -775,10 +796,13 @@ set(COMMON_TEST_SOURCES
     App/test_SyntheticScenario.cpp
     App/test_SystemSectionsRender.cpp
     App/test_GpuSectionRender.cpp
+    App/test_ChartSourceGenerations.cpp # one chart data generation per source (#843)
+    App/test_ValueStripText.cpp # the strips' texts, held in place (#843)
     App/test_SystemMetricsPanelRender.cpp
     App/test_ProcessDetailsPanelRender.cpp
     App/test_ProcessesPanelRender.cpp
     App/test_FindHandlesFormat.cpp # the Find handles order and status line (#3374)
+    App/test_FindHandlesDialogRender.cpp # the dialog's Stop and its administrator's search, headless (#3374)
     App/test_ServicesStartupPanelsRender.cpp
     App/test_WindowOverride.cpp
     Platform/test_SyntheticWorkload.cpp

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "App/Panel.h"
+#include "App/Panels/ChartSourceGenerations.h"
 #include "App/Panels/CpuDetailsBlock.h"
 #include "App/Panels/CpuDetailsText.h"
 #include "App/Panels/GpuSection.h"
@@ -247,10 +248,11 @@ class SystemMetricsPanel : public Panel
     std::shared_ptr<const Domain::SystemPublication> m_SystemPublication;
     std::shared_ptr<const Domain::StoragePublication> m_StoragePublication;
     std::shared_ptr<const Domain::GPUPublication> m_GPUPublication;
-    // Taken (UI::Widgets::nextChartDataGeneration()) whenever any history this panel charts changes --
-    // a system, storage or GPU publication adopted, or the process histories copied -- so the charts
-    // keep their reduced points until then (HistoryChartConfig::dataGeneration, #1139).
-    std::uint64_t m_ChartDataGeneration = 0;
+    // One generation per source the charts draw from -- the system, storage and GPU publications and
+    // the process histories -- each taken when that source is adopted, so a chart keeps its reduced
+    // points and window maxima until its own data changes (HistoryChartConfig::dataGeneration, #1139),
+    // not whenever another source publishes (#843).
+    ChartSourceGenerations m_ChartGenerations;
     std::uint64_t m_ProcessHistoryVersion = 0;
     // Shared views of the model's histories, not copies (#2156).
     Domain::HistoryView<double> m_ProcessHistoryTimestamps;

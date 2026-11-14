@@ -34,6 +34,16 @@ struct PackageIdentity
     std::string appUserModelId; ///< "Microsoft.WindowsTerminal_8wekyb3d8bbwe!App"; may be empty in a packaged process
 };
 
+/// A visible top-level window, as the probe's one window walk a sample found it (#3705), with what the Not
+/// responding check takes from it. The window AppUserModelID lookup reads the same list, asking each window's
+/// process and owner itself only on a sample that looks, so the walk every sample costs what it did alone.
+struct TopLevelWindow
+{
+    HWND window = nullptr;     // NOLINT(misc-include-cleaner) - HWND, from <windows.h>
+    std::uint32_t hungPid = 0; ///< The process it shows as not responding (a ghost's: the hung window's); 0 if none
+    bool hung = false;         ///< IsHungAppWindow on this window itself
+};
+
 /// The AppUserModelID a process's top-level window sets.
 struct WindowAppId
 {
@@ -56,11 +66,11 @@ BOOL CALLBACK guardedWindowCallback(HWND window, LPARAM param) noexcept; // NOLI
 /// The package @p process (opened with PROCESS_QUERY_LIMITED_INFORMATION) runs in.
 [[nodiscard]] PackageIdentity readPackageIdentity(HANDLE process); // NOLINT(misc-include-cleaner) - HANDLE
 
-/// For each process in @p pids (sorted), the explicit AppUserModelID of the first of its visible, unowned
-/// top-level windows that sets one, into @p found (cleared first; at most one per process, in no order).
-/// One EnumWindows pass over the desktop (guardedWindowCallback()); a hung window is skipped. A walk that fails
-/// part-way (the per-window work threw) finds nothing.
-void windowAppUserModelIds(std::span<const std::uint32_t> pids, std::vector<WindowAppId>& found);
+/// For each process in @p pids (sorted), the explicit AppUserModelID of the first of its unowned top-level
+/// windows in @p windows (this sample's walk, visible windows only; GetWindowThreadProcessId and the owner asked
+/// here) that sets one, into @p found (cleared
+/// first; at most one per process, in no order). A hung window is skipped. Walks nothing itself (#3705).
+void windowAppUserModelIds(std::span<const TopLevelWindow> windows, std::span<const std::uint32_t> pids, std::vector<WindowAppId>& found);
 
 /// The name the shell's Apps folder (shell:AppsFolder) shows for @p appUserModelId, empty when it has none
 /// or COM isn't initialised on the calling thread.

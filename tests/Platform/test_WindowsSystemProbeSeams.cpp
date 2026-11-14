@@ -1136,8 +1136,9 @@ TEST_F(WindowsSystemProbeSeamsTest, SystemFunctionsAreAllSet)
     EXPECT_NE(fns.nt.ntQuerySystemInformation, nullptr);
     EXPECT_NE(fns.memory.globalMemoryStatusEx, nullptr);
     EXPECT_NE(fns.memory.getPerformanceInfo, nullptr);
-    EXPECT_NE(fns.network.getIfTable2, nullptr);
+    EXPECT_NE(fns.network.getIfTableWithoutStatistics, nullptr);
     EXPECT_NE(fns.network.freeMibTable, nullptr);
+    EXPECT_NE(fns.network.getIfEntry2, nullptr);
     EXPECT_NE(fns.network.readAdapterDeviceInstanceId, nullptr);
     EXPECT_NE(fns.network.devicePresence, nullptr);
     EXPECT_NE(fns.numa.getNumaHighestNodeNumber, nullptr);

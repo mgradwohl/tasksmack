@@ -1,7 +1,7 @@
 #pragma once
 
 // Who a process or a session belongs to (#3377): the account matching the Processes table's Group: User
-// keys by (the Users tab's rows', #3076 and #3310, which the fold replaced), and the text a session is shown
+// keys by (#3076, #3310), and the text a session is shown
 // and asked about with. On Windows an account is its domain and user name, compared ignoring ASCII case as
 // Windows compares them, so PC\alice and CORP\alice are two accounts; on Linux, with no domain, it is the
 // user name.
@@ -83,7 +83,9 @@ inline constexpr std::string_view NO_MATCHING_PROCESSES = "No processes match th
 /// A group header's tooltip (#3377): "Expand" or "Collapse" (@p collapsed), and for a Group: User account
 /// with sessions that its Σ totals are of the processes TaskSmack can see, or for Not readable, why each
 /// session's user couldn't be read.
-[[nodiscard]] std::string groupHeaderTooltip(const ProcessGrouping::Group& group, bool collapsed);
+/// @p othersHidden: /proc is mounted with hidepid (Platform::MissingPrivilege::PROCESSES_HIDDEN), so another signed-in
+/// account's processes aren't listed: its header says so, rather than showing 0 as if it ran none (#3377 PR 4).
+[[nodiscard]] std::string groupHeaderTooltip(const ProcessGrouping::Group& group, bool collapsed, bool othersHidden);
 
 /// The session a Group: User header's menu acts on (#3377): the account's one sign-in session, readable;
 /// null with two or more (each has its own row's menu), or none.
@@ -94,7 +96,7 @@ inline constexpr std::string_view NO_MATCHING_PROCESSES = "No processes match th
 [[nodiscard]] std::string sessionRowName(const Platform::UserSession& session);
 
 /// When @p session was signed in to, as the Start time column writes a date and time; empty when the
-/// platform didn't say (Linux until #3377's PR 4).
+/// platform didn't say.
 [[nodiscard]] std::string sessionSignInTime(const Platform::UserSession& session);
 
 /// Where and how a session is: "seat0 · tty2 · Wayland", "pts/0 · from 10.0.0.9".

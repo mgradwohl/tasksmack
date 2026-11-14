@@ -180,7 +180,7 @@ std::vector<ProcessGrouping::Group> buildUserGroups(const std::vector<Domain::Pr
     // not accounts, so a process with no domain is as ambiguous with PC\alice's process filtered out as with
     // it shown. Short names count ignoring ASCII case, as Windows compares them, so neither the table's order
     // nor which spelling it meets first changes the answer. A signed-in account counts too, processes or not,
-    // as the Users tab's rows once did (#3310): a process with no domain joins the one account with its name.
+    // as the account matching always has (#3310): a process with no domain joins the one account with its name.
     std::unordered_set<std::string> accounts;                        // processAccountKey() of each with a domain
     std::map<std::string_view, std::size_t, NameLess> accountsNamed; // short name -> how many accounts have it
     std::map<std::string_view, std::string, NameLess> accountNamed;  // short name -> an account's key with it
@@ -440,9 +440,13 @@ std::string groupStatus(const ProcessGrouping::Group& group, std::uint64_t nowUs
     return group.sessions.empty() ? std::string{} : std::format("{} sessions", group.sessions.size());
 }
 
-std::string groupHeaderTooltip(const ProcessGrouping::Group& group, bool collapsed)
+std::string groupHeaderTooltip(const ProcessGrouping::Group& group, bool collapsed, bool othersHidden)
 {
     std::string tooltip = collapsed ? "Expand" : "Collapse";
+    if (othersHidden && !group.sessions.empty() && !group.current && !group.notReadable)
+    {
+        tooltip += std::format("\n{}'s processes aren't visible: /proc is mounted with hidepid", group.label);
+    }
     if (group.notReadable)
     {
         for (const Platform::UserSession& session : group.sessions)

@@ -3240,14 +3240,16 @@ enum class NowBarValues : std::uint8_t
 };
 
 /// A value strip entry for a series with no NowBar, e.g. the network totals drawn behind a selected
-/// interface. The label is a view, typically of a constant; `value` holds a short formatted rate or
-/// percent, which fits std::string's small-buffer storage, so building one allocates nothing.
+/// interface. The label is a view, typically of a constant; `value` is held in place, so building one
+/// allocates nothing (#843): it was a std::string, and a value longer than its small-string buffer,
+/// such as the Memory chart's "35.0 GiB / 70.0 GiB (50%)" commit charge, cost a heap allocation every
+/// frame. Build it with InlineText::format(), or from a formatter's short result.
 /// A reading the chart does not plot (the Memory chart's commit charge, #1627) gives a fully
 /// transparent `color`, so its swatch slot stays blank rather than keying a line that isn't there.
 struct ValueStripEntry
 {
     std::string_view label;
-    std::string value;
+    InlineText value;
     ImVec4 color;
     const char* tooltip = nullptr; ///< Hover text when not null; must outlive the strip call
 };
@@ -3455,11 +3457,11 @@ inline void renderNowBarValueStrip(std::span<const NowBar> bars,
         const SeriesLabelParts label = splitSecondaryAxisMark(entry.label);
         entries.push_back({
             .head = label.name,
-            .tail = entry.value,
+            .tail = entry.value.view(),
             .color = entry.color,
             .seriesLabel = entry.label,
             .compactHead = label.name,
-            .compactTail = entry.value,
+            .compactTail = entry.value.view(),
             .rightAxis = label.rightAxis,
             .tooltip = (entry.tooltip != nullptr) ? std::string_view(entry.tooltip) : std::string_view{},
             .side = SeriesLabelAlignment::labelSide(axes, label.rightAxis),

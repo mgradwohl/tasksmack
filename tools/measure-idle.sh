@@ -5,6 +5,7 @@
 #   ./tools/measure-idle.sh [--preset <preset>] [--skip-build] [--warmup <seconds>]
 #                           [--duration <seconds>] [--label <name>] [--setup-cmd <command>]
 #                           [--synthetic <spec>] [--window <WxH>[,maximized]] [--repeat <N>]
+#                           [--phases <spec>] [--memory-poll-seconds <n>] [--memory-csv <path>]
 #                           [--json <path>] [--fail-above <pct>]
 #
 # Each repetition launches TaskSmack with TASKSMACK_TRACE_RESIZE_PERF=1, waits for its main loop
@@ -85,6 +86,24 @@
 #                         measured scenario.window.
 #   --repeat <N>          Run the whole launch/warm-up/sample/close cycle N times (a fresh process
 #                         each time) and aggregate. Default: 1. Use 5 for a baseline or a gate.
+#   --phases <spec>       Sample these phases in order, one after another in each repetition:
+#                         <kind>:<seconds>, comma-separated, with kind one of visible, minimized
+#                         or restored, e.g. visible:120,minimized:60,restored:60 (as
+#                         measure-idle.ps1 -Phases reads it). Default: visible:<--duration>, and
+#                         --duration is ignored when this is given. The per-repetition figures,
+#                         the table, the aggregates and --fail-above describe the first phase;
+#                         every phase's own figures are in the JSON's phases array. A minimized
+#                         phase asks the window manager to minimize TaskSmack's X11 window
+#                         (xdotool windowminimize, else wmctrl), and a restored phase to activate
+#                         it again: requests to the window manager, not injected input. When it
+#                         ignores them (WSLg's does), or there is no X11 window to ask about (a
+#                         native Wayland window, or no xdotool/wmctrl), that phase is skipped and
+#                         the JSON says why. The first phase cannot be skipped.
+#   --memory-poll-seconds <n>
+#                         How often memory is read during a phase. Default: 5.
+#   --memory-csv <path>   Also write the memory series here, one row per reading: seconds since the
+#                         launch, phase, privateWorkingSetMB, workingSetMB, pssMB, fds, threads, rep.
+#                         For long memory runs (--phases visible:3600 --memory-poll-seconds 30).
 #   --json <path>         Write the results as JSON here. Default:
 #                         perf-data/idle-<label>-<timestamp>.json, beside the app logs.
 #   --fail-above <pct>    Exit with status 3 when the median app CPU across the repetitions is
@@ -94,7 +113,16 @@
 # Aggregates: mean; median (the mean of the two middle values for an even count); p95 by nearest
 # rank, so with fewer than 20 repetitions it is the largest value.
 #
-# The JSON (schema "tasksmack-idle/1") holds every repetition's figures and per-thread rows, the
+# Each phase is sampled by tools/idle-sample.py from /proc: each thread's CPU and wake-ups (context
+# switches), memory from smaps_rollup at each end and every --memory-poll-seconds, the compositor's
+# CPU and wake-ups (gnome-shell, kwin_wayland, Xorg and others, where this user can see them; never
+# under WSLg, whose compositor runs in the system distro), and how busy the rest of the machine was
+# (/proc/stat less TaskSmack and the compositor). Its fields carry measure-idle.ps1's names (schema
+# tasksmack-idle-windows/2), so one summary script reads both platforms' phases; timerResolutionMs
+# and a thread's module stay null, since Linux has no system-wide timer resolution and every thread
+# has a name.
+#
+# The JSON (schema "tasksmack-idle/2") holds every repetition's figures and per-thread rows, the
 # aggregates, and provenance: the measured binary's own commit, source state and build type (from
 # its ResizePerfAnchor log line), the checkout's git commit and dirty flag (tracked files only), the
 # preset and its CMAKE_BUILD_TYPE, the refresh interval (read from the app log, which logs the background
@@ -167,13 +195,20 @@ WINDOW_SPEC="${TASKSMACK_WINDOW:-}"
 REPEAT=1
 JSON_PATH=""
 FAIL_ABOVE=""
+PHASE_SPEC=""
+DURATION_GIVEN=0
+MEMORY_POLL_SECONDS=5
+MEMORY_CSV=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --preset)     [[ $# -ge 2 ]] || die "$1 requires a value"; PRESET="$2";           shift 2 ;;
         --skip-build) SKIP_BUILD=1; shift ;;
         --warmup)     [[ $# -ge 2 ]] || die "$1 requires a value"; WARMUP_SECONDS="$2";   shift 2 ;;
-        --duration)   [[ $# -ge 2 ]] || die "$1 requires a value"; DURATION_SECONDS="$2"; shift 2 ;;
+        --duration)   [[ $# -ge 2 ]] || die "$1 requires a value"; DURATION_SECONDS="$2"; DURATION_GIVEN=1; shift 2 ;;
+        --phases)     [[ $# -ge 2 ]] || die "$1 requires a value"; PHASE_SPEC="$2";       shift 2 ;;
+        --memory-poll-seconds) [[ $# -ge 2 ]] || die "$1 requires a value"; MEMORY_POLL_SECONDS="$2"; shift 2 ;;
+        --memory-csv) [[ $# -ge 2 ]] || die "$1 requires a value"; MEMORY_CSV="$2";       shift 2 ;;
         --label)      [[ $# -ge 2 ]] || die "$1 requires a value"; LABEL="$2";            shift 2 ;;
         --setup-cmd)  [[ $# -ge 2 ]] || die "$1 requires a value"; SETUP_CMD="$2";        shift 2 ;;
         --synthetic)  [[ $# -ge 2 ]] || die "$1 requires a value"; SYNTHETIC="$2";        shift 2 ;;
@@ -211,6 +246,22 @@ REPEAT=$((10#${REPEAT}))
 # The config's sampling values are read with tomllib (see config_sampling_int). Checked before any
 # measuring, so a missing interpreter fails fast instead of recording the defaults as provenance.
 PYTHON="$(find_python)" || die "Python 3.14+ is required (the project .venv or python3 on PATH); see CONTRIBUTING.md"
+IDLE_SAMPLE="${SCRIPT_DIR}/idle-sample.py"
+[[ "${MEMORY_POLL_SECONDS}" =~ ^[0-9]+$ ]] || die "--memory-poll-seconds must be a whole number of seconds"
+MEMORY_POLL_SECONDS=$((10#${MEMORY_POLL_SECONDS}))
+[[ "${MEMORY_POLL_SECONDS}" -ge 1 ]] || die "--memory-poll-seconds must be at least 1"
+# The phases, as "<kind> <seconds>" lines. The first one's length is the --duration the per-repetition
+# figures, table and aggregates describe.
+if [[ -n "${PHASE_SPEC}" ]]; then
+    [[ "${DURATION_GIVEN}" -eq 1 ]] && echo "WARNING: --duration is ignored: --phases gives each phase its length." >&2
+    PHASE_LINES="$("${PYTHON}" "${IDLE_SAMPLE}" phases "${PHASE_SPEC}")" || die "--phases: see above"
+else
+    PHASE_LINES="visible ${DURATION_SECONDS}"
+    PHASE_SPEC="visible:${DURATION_SECONDS}"
+fi
+mapfile -t PHASE_KINDS < <(awk '{ print $1 }' <<<"${PHASE_LINES}")
+mapfile -t PHASE_SECONDS < <(awk '{ print $2 }' <<<"${PHASE_LINES}")
+DURATION_SECONDS="${PHASE_SECONDS[0]}"
 # Letters, digits and = , . _ - only: it goes into the RESULT line as one key=value field.
 [[ -z "${SYNTHETIC}" || "${SYNTHETIC}" =~ ^[A-Za-z0-9=,._-]+$ ]] \
     || die "--synthetic may only contain letters, digits, '=', ',', '.', '_' and '-' (e.g. processes=5000,history=full)"
@@ -291,6 +342,9 @@ WORK_DIR="$(mktemp -d)"
 # summaries cpuStart cpuEnd traceStart traceEnd traceSpan appLog
 REPS_FILE="${WORK_DIR}/reps"
 : > "${REPS_FILE}"
+# The memory series' rows (tools/idle-sample.py's MEMORY_CSV_COLUMNS), every phase of every repetition.
+MEMORY_ROWS="${WORK_DIR}/memory-rows"
+: > "${MEMORY_ROWS}"
 
 MAIN_LOOP_TIMEOUT_SECONDS=30
 MAIN_LOOP_MARKER="Entering main loop" # Logged by Core::Application::run() at info level
@@ -319,6 +373,69 @@ window_geometry() {
     done
 }
 
+# TaskSmack's top-level X11 window id (found by _NET_WM_PID), or nothing (see window_geometry).
+window_id() {
+    [[ -n "${DISPLAY:-}" ]] && command -v xwininfo &>/dev/null && command -v xprop &>/dev/null || return 0
+    local id
+    for id in $(xwininfo -root -tree 2>/dev/null | awk '/"TaskSmack"/ { print $1 }'); do
+        if [[ "$(xprop -id "${id}" _NET_WM_PID 2>/dev/null | awk '{ print $NF }')" == "${APP_PID}" ]]; then
+            echo "${id}"
+            return 0
+        fi
+    done
+}
+# "true" when the window is minimized (ICCCM WM_STATE Iconic, or EWMH _NET_WM_STATE_HIDDEN), "false"
+# when it is not, nothing when there is no window to ask about.
+window_minimized() {
+    local id="$1"
+    [[ -n "${id}" ]] || return 0
+    local wm_state net_state
+    wm_state="$(xprop -id "${id}" WM_STATE 2>/dev/null || true)"
+    net_state="$(xprop -id "${id}" _NET_WM_STATE 2>/dev/null || true)"
+    if [[ "${wm_state}" == *"window state: Iconic"* || "${net_state}" == *_NET_WM_STATE_HIDDEN* ]]; then
+        echo true
+    else
+        echo false
+    fi
+}
+# Asks the window manager to minimize ($1 = minimized) or restore ($1 = restored) the window, and
+# waits up to 3 s for it to. Prints why when it can't, and returns non-zero.
+set_window_state() {
+    local kind="$1" id want i
+    id="$(window_id)"
+    if [[ -z "${id}" ]]; then
+        echo "no X11 window to ask the window manager about (native Wayland, no X display, or no xwininfo/xprop)"
+        return 1
+    fi
+    if [[ "${kind}" == minimized ]]; then
+        want=true
+        if command -v xdotool &>/dev/null; then
+            xdotool windowminimize "${id}" 2>/dev/null || true
+        elif command -v wmctrl &>/dev/null; then
+            wmctrl -i -r "${id}" -b add,hidden 2>/dev/null || true
+        else
+            echo "neither xdotool nor wmctrl is installed"
+            return 1
+        fi
+    else
+        want=false
+        if command -v xdotool &>/dev/null; then
+            xdotool windowactivate "${id}" 2>/dev/null || xdotool windowmap "${id}" 2>/dev/null || true
+        elif command -v wmctrl &>/dev/null; then
+            wmctrl -i -a "${id}" 2>/dev/null || true
+        else
+            echo "neither xdotool nor wmctrl is installed"
+            return 1
+        fi
+    fi
+    for ((i = 0; i < 12; i++)); do
+        [[ "$(window_minimized "${id}")" == "${want}" ]] && return 0
+        sleep 0.25
+    done
+    echo "the window manager did not ${kind%d} the window"
+    return 1
+}
+
 app_alive() { [[ -n "${APP_PID}" ]] && kill -0 "${APP_PID}" 2>/dev/null; }
 reap_app() {
     [[ -n "${APP_PID}" ]] || return 0
@@ -345,6 +462,7 @@ stop_app() {
     reap_app
 }
 cleanup() {
+    [[ -n "${PHASE_SAMPLER_PID}" ]] && kill "${PHASE_SAMPLER_PID}" 2>/dev/null
     stop_app
     rm -rf "${WORK_DIR}"
 }
@@ -395,6 +513,57 @@ describe_span() {
         "$(awk -v a="$1" -v b="$2" 'BEGIN { print b - a }')"
 }
 
+# Phases (--phases): each is sampled by tools/idle-sample.py, in the background so the first phase's
+# CPU sampler (pidstat or /proc, below) covers the same span. Its JSON goes to
+# ${WORK_DIR}/phase-<rep>-<n>.json.
+PHASE_SAMPLER_PID=""
+# $1 = repetition, $2 = phase number (from 1), $3 = the repetition's launch time (epoch seconds).
+start_phase_sampler() {
+    local i=$(($2 - 1)) minimized
+    minimized="$(window_minimized "$(window_id)")"
+    "${PYTHON}" "${IDLE_SAMPLE}" phase --pid "${APP_PID}" --kind "${PHASE_KINDS[i]}" --seconds "${PHASE_SECONDS[i]}" \
+        --memory-poll-seconds "${MEMORY_POLL_SECONDS}" --memory-rows "${MEMORY_ROWS}" --run-start "$3" --rep "$1" \
+        --mesa-regex "${MESA_THREAD_REGEX}" --minimized "${minimized}" \
+        > "${WORK_DIR}/phase-$1-$2.json" 2> "${WORK_DIR}/phase-$1-$2.err" &
+    PHASE_SAMPLER_PID=$!
+}
+# Waits for the phase's sampler, then adds the frame figures of the ResizePerf summaries logged after
+# line $3 (and up to line $4, else the log's end). $1 = repetition, $2 = phase number.
+finish_phase_sampler() {
+    local file="${WORK_DIR}/phase-$1-$2.json" rc=0 end_line figures
+    while kill -0 "${PHASE_SAMPLER_PID}" 2>/dev/null; do
+        check_alive "while sampling"
+        sleep 0.5
+    done
+    wait "${PHASE_SAMPLER_PID}" || rc=$?
+    PHASE_SAMPLER_PID=""
+    if [[ "${rc}" -ne 0 ]]; then
+        check_alive "while sampling"
+        die "tools/idle-sample.py failed (exit ${rc}): $(tail -n 3 "${WORK_DIR}/phase-$1-$2.err")"
+    fi
+    end_line="${4:-$(wc -l < "${APP_LOG}")}"
+    figures="$(sed -n "$(($3 + 1)),${end_line}p" "${APP_LOG}" | awk -f "${SCRIPT_DIR}/resize-perf-summary.awk")"
+    # shellcheck disable=SC2086 # seven whitespace-separated figures
+    "${PYTHON}" "${IDLE_SAMPLE}" set-frames "${file}" ${figures}
+}
+# A phase after the first: minimize or restore the window when it asks to, then sample it. A phase
+# the window manager won't take is skipped with a note. $1 = repetition, $2 = phase number, $3 = the
+# launch time.
+run_later_phase() {
+    local i=$(($2 - 1)) note start_line
+    local kind="${PHASE_KINDS[i]}" secs="${PHASE_SECONDS[i]}"
+    if [[ "${kind}" != visible ]] && ! note="$(set_window_state "${kind}")"; then
+        echo "WARNING: skipping the ${kind} phase: ${note}." >&2
+        "${PYTHON}" "${IDLE_SAMPLE}" skipped "${kind}" "${secs}" "${note}" > "${WORK_DIR}/phase-$1-$2.json"
+        return 0
+    fi
+    check_alive "before the ${kind} phase"
+    echo "Sampling the ${kind} phase (${2}/${#PHASE_KINDS[@]}) for ${secs}s..."
+    start_line="$(wc -l < "${APP_LOG}")"
+    start_phase_sampler "$1" "$2" "$3"
+    finish_phase_sampler "$1" "$2" "${start_line}"
+}
+
 # One launch/warm-up/sample/close cycle. $1 = repetition number. Appends a line to REPS_FILE and
 # writes the per-thread rows ("tid name cpu mesa") to ${WORK_DIR}/threads-<rep>.
 run_once() {
@@ -428,6 +597,8 @@ run_once() {
     local env_args=(-u LC_ALL)
     [[ -n "${CALLER_LC_ALL_SET}" ]] && app_env+=("LC_ALL=${CALLER_LC_ALL}")
     # env execs TaskSmack in place, so $! is TaskSmack's own PID.
+    local run_start
+    run_start="$(date +%s.%3N)"
     env "${env_args[@]}" "${app_env[@]}" "${BINARY}" > "${APP_LOG}" 2>&1 &
     APP_PID=$!
 
@@ -466,11 +637,16 @@ run_once() {
     fi
     check_alive "during the warm-up"
     window_geometry > "${WORK_DIR}/window-${rep}"
+    local phase_note
+    if [[ "${PHASE_KINDS[0]}" != visible ]] && ! phase_note="$(set_window_state "${PHASE_KINDS[0]}")"; then
+        die "The first phase (${PHASE_KINDS[0]}) cannot be skipped, and ${phase_note}."
+    fi
 
     # ResizePerf summaries logged after this line, while CPU is sampled, supply the frame figures.
     local log_start_line cpu_start
     log_start_line="$(wc -l < "${APP_LOG}")"
     cpu_start="$(date +%s.%3N)"
+    start_phase_sampler "${rep}" 1 "${run_start}"
 
     if [[ "${SAMPLER}" = "pidstat" ]]; then
         echo "Sampling per-thread CPU with pidstat for ${DURATION_SECONDS}s..."
@@ -505,6 +681,11 @@ run_once() {
     local log_end_line cpu_end
     log_end_line="$(wc -l < "${APP_LOG}")"
     cpu_end="$(date +%s.%3N)"
+    finish_phase_sampler "${rep}" 1 "${log_start_line}" "${log_end_line}"
+    local phase
+    for ((phase = 2; phase <= ${#PHASE_KINDS[@]}; phase++)); do
+        run_later_phase "${rep}" "${phase}" "${run_start}"
+    done
 
     echo "Closing TaskSmack..."
     stop_app
@@ -582,6 +763,11 @@ run_once() {
     printf '  %-28s %10s\n' "frame p95 / p99 / max (ms)" "${frame_p95} / ${frame_p99} / ${frame_max}"
     printf '  %-28s %10s\n' "loop p95 / p99 (ms)" "${loop_p95} / ${loop_p99}"
     printf '  %-28s %10s\n' "ResizePerf summaries" "${summaries}"
+    echo
+    local phase_file
+    for phase_file in "${WORK_DIR}/phase-${rep}-"*.json; do
+        "${PYTHON}" "${IDLE_SAMPLE}" describe "${phase_file}"
+    done
     echo
     echo "  CPU sample:             $(describe_span "${cpu_start}" "${cpu_end}")"
     echo "  Frame figures' span:    $(describe_span "${trace_start}" "${trace_end}")"
@@ -764,6 +950,15 @@ if [[ -n "${FAIL_ABOVE}" ]] && awk -v m="${APP_MEDIAN}" -v t="${FAIL_ABOVE}" 'BE
     FAILED=true
 fi
 
+# ---- Memory series ------------------------------------------------------------------------------
+MEMORY_CSV_PATH=""
+if [[ -n "${MEMORY_CSV}" ]]; then
+    mkdir -p "$(dirname "${MEMORY_CSV}")"
+    { "${PYTHON}" "${IDLE_SAMPLE}" csv-header; cat "${MEMORY_ROWS}"; } > "${MEMORY_CSV}"
+    MEMORY_CSV_PATH="$(cd "$(dirname "${MEMORY_CSV}")" && pwd)/$(basename "${MEMORY_CSV}")"
+    info "Memory series: ${MEMORY_CSV_PATH}"
+fi
+
 # ---- JSON ---------------------------------------------------------------------------------------
 # A JSON string literal (or null for an empty value).
 json_str() {
@@ -785,7 +980,7 @@ json_stats() { printf '{ "mean": %s, "median": %s, "p95": %s, "min": %s, "max": 
 
 {
     printf '{\n'
-    printf '  "schema": "tasksmack-idle/1",\n'
+    printf '  "schema": "tasksmack-idle/2",\n'
     printf '  "label": %s,\n' "$(json_str "${LABEL}")"
     printf '  "timestamp": %s,\n' "$(json_str "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
     printf '  "binary": { "commit": %s, "sourceState": %s, "buildType": %s },\n' \
@@ -817,6 +1012,8 @@ json_stats() { printf '{ "mean": %s, "median": %s, "p95": %s, "min": %s, "max": 
     printf '  },\n'
     printf '  "sampler": %s,\n' "$(json_str "${SAMPLER}")"
     printf '  "mesaThreadRegex": %s,\n' "$(json_str "${MESA_THREAD_REGEX}")"
+    printf '  "phaseSpec": %s, "memoryPollSeconds": %s, "memoryCsv": %s,\n' "$(json_str "${PHASE_SPEC}")" \
+        "${MEMORY_POLL_SECONDS}" "$(json_str "${MEMORY_CSV_PATH}")"
     printf '  "repetitions": [\n'
     REP_COUNT=0
     while read -r rep total app mesa fps fp95 fp99 fmax lp95 lp99 summaries cstart cend tstart tend tspan applog; do
@@ -828,6 +1025,14 @@ json_stats() { printf '{ "mean": %s, "median": %s, "p95": %s, "min": %s, "max": 
         printf '      "resizePerfSummaries": %s, "cpuStart": %s, "cpuEnd": %s, "traceStart": %s, "traceEnd": %s, "traceSpanSeconds": %s,\n' \
             "${summaries}" "${cstart}" "${cend}" "${tstart}" "${tend}" "${tspan}"
         printf '      "appLog": %s,\n' "$(json_str "${applog#"${REPO_ROOT}"/}")"
+        # Each phase's figures, measure-idle.ps1's fields (tools/idle-sample.py); the first is the one
+        # the figures above describe.
+        printf '      "phases": ['
+        for ((phase = 1; phase <= ${#PHASE_KINDS[@]}; phase++)); do
+            [[ "${phase}" -gt 1 ]] && printf ','
+            printf '\n        %s' "$(cat "${WORK_DIR}/phase-${rep}-${phase}.json")"
+        done
+        printf '\n      ],\n'
         printf '      "threads": ['
         first=1
         while read -r tid name cpu mesa_flag; do

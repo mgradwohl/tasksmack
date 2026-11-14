@@ -14,6 +14,7 @@
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Domain/AccountName.h"
+#include "Domain/CrashHistory.h"
 #include "Domain/Numeric.h"
 #include "Domain/ProcessServices.h"
 #include "Domain/ProcessSnapshot.h"
@@ -49,6 +50,7 @@
 #include "ProcessRowSelection.h"
 #include "ProcessSecurityView.h"
 #include "ProcessSmoothedUsage.h"
+#include "ProcessThreadsView.h"
 #include "ServicesView.h"
 #include "UI/ChartWidgets.h"
 #include "UI/EmptyState.h"
@@ -74,10 +76,57 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 
 namespace App
 {
+
+// ProcessDetailsPanel's section views and charts (#3717), in the order the class declared them; ProcessDetailsPanel
+// keeps them last, after the readers they read through.
+struct ProcessDetailsPanel::Views
+{
+    ProcessActionsView m_ActionsView;
+    ProcessPriorityView m_PriorityView;
+    ProcessEnvironmentView m_EnvironmentView;
+    ProcessConnectionsView m_ConnectionsView;
+    ProcessModulesView m_ModulesView;
+    ProcessMemoryMapView m_MemoryMapView;
+    ProcessThreadsView m_ThreadsView{static_cast<std::size_t>(std::thread::hardware_concurrency())};
+    ProcessSecurityView m_SecurityView;
+    ProcessOpenFilesView m_OpenFilesView;
+    ProcessCrashHistoryView m_CrashHistoryView;
+    ProcessDetailsCharts m_Charts;
+};
+
+ProcessDetailsPanel::~ProcessDetailsPanel() = default;
+ProcessDetailsPanel::ProcessDetailsPanel(ProcessDetailsPanel&&) noexcept = default;
+ProcessDetailsPanel& ProcessDetailsPanel::operator=(ProcessDetailsPanel&&) noexcept = default;
+
+void ProcessDetailsPanel::setCrashHistory(std::shared_ptr<Domain::CrashHistory> crashHistory) noexcept
+{
+    m_Views->m_CrashHistoryView.setHistory(std::move(crashHistory));
+}
+
+const ProcessModulesView& ProcessDetailsPanel::modulesViewForTesting() const noexcept
+{
+    return m_Views->m_ModulesView;
+}
+
+const ProcessMemoryMapView& ProcessDetailsPanel::memoryMapViewForTesting() const noexcept
+{
+    return m_Views->m_MemoryMapView;
+}
+
+ProcessActionsView& ProcessDetailsPanel::actionsViewForTesting() noexcept
+{
+    return m_Views->m_ActionsView;
+}
+
+ProcessPriorityView& ProcessDetailsPanel::priorityViewForTesting() noexcept
+{
+    return m_Views->m_PriorityView;
+}
 
 // Constructor (inside App namespace)
 ProcessDetailsPanel::ProcessDetailsPanel() : ProcessDetailsPanel(makeProcessDetailsReaders(Synthetic::activeScenario()))
@@ -139,7 +188,8 @@ ProcessDetailsPanel::ProcessDetailsPanel(std::unique_ptr<Platform::IProcessActio
       m_SecurityReader(std::move(securityReader)),
       m_HasSecurity(m_SecurityReader != nullptr && m_SecurityReader->hasSecurity()),
       m_OpenFilesReader(std::move(openFilesReader)),
-      m_HasOpenFiles(m_OpenFilesReader != nullptr && m_OpenFilesReader->hasOpenFiles())
+      m_HasOpenFiles(m_OpenFilesReader != nullptr && m_OpenFilesReader->hasOpenFiles()),
+      m_Views(std::make_unique<Views>())
 {}
 
 void ProcessDetailsPanel::updateWithSamples(std::span<const Domain::ProcessSample> samples, float deltaTime)
@@ -147,15 +197,15 @@ void ProcessDetailsPanel::updateWithSamples(std::span<const Domain::ProcessSampl
     m_LastDeltaSeconds = deltaTime;
 
     // Fade out action result message
-    m_ActionsView.tick(deltaTime);
+    m_Views->m_ActionsView.tick(deltaTime);
     // A priority change finished on its worker since the last frame: taken in here too, not only when the
     // Overview is drawn, so it holds the Processes table's priority controls no longer than it runs (#3467).
-    m_ActionsView.updateActionRun();
-    m_PriorityView.update();
+    m_Views->m_ActionsView.updateActionRun();
+    m_Views->m_PriorityView.update();
     publishPriorityChanges();
     // The Set affinity dialog's CPU layout (#3182): read once on its worker, started here, before any
     // selection, so the dialog normally finds it read. Never read on the UI thread.
-    m_ActionsView.updateAffinityLayout(m_ActionCapabilities.canSetAffinity ? m_ProcessActions.get() : nullptr);
+    m_Views->m_ActionsView.updateAffinityLayout(m_ActionCapabilities.canSetAffinity ? m_ProcessActions.get() : nullptr);
 
     // The Services section wants the service list kept current only while it was drawn open on the last
     // frame (#1880): not while collapsed, on another Details tab, or with this tab hidden.
@@ -233,43 +283,45 @@ void ProcessDetailsPanel::updateOnDemandReads(float deltaTime)
     // only when the section was drawn open last frame and a read is due (ProcessEnvironmentView::update()),
     // for the selected process alone, identified by PID and start time so a reused PID is not read.
     const bool canReadEnvironment = m_HasEnvironment && m_HasSnapshot && !m_ProcessExited;
-    static_cast<void>(m_EnvironmentView.update(canReadEnvironment ? m_EnvironmentReader.get() : nullptr, selectedTarget(), deltaTime));
+    static_cast<void>(
+        m_Views->m_EnvironmentView.update(canReadEnvironment ? m_EnvironmentReader.get() : nullptr, selectedTarget(), deltaTime));
 
     // The Connections section's on-demand read (#799), on the same terms.
     const bool canReadConnections = m_HasConnections && m_HasSnapshot && !m_ProcessExited;
-    static_cast<void>(m_ConnectionsView.update(canReadConnections ? m_ConnectionsReader.get() : nullptr, selectedTarget(), deltaTime));
+    static_cast<void>(
+        m_Views->m_ConnectionsView.update(canReadConnections ? m_ConnectionsReader.get() : nullptr, selectedTarget(), deltaTime));
 
     // The Modules section's on-demand read (#802), on the same terms.
     const bool canReadModules = m_HasModules && m_HasSnapshot && !m_ProcessExited;
-    static_cast<void>(m_ModulesView.update(canReadModules ? m_ModulesReader.get() : nullptr, selectedTarget(), deltaTime));
+    static_cast<void>(m_Views->m_ModulesView.update(canReadModules ? m_ModulesReader.get() : nullptr, selectedTarget(), deltaTime));
 
     // The Memory map section's on-demand read (#3089), on the same terms.
     const bool canReadMemoryMap = m_HasMemoryMap && m_HasSnapshot && !m_ProcessExited;
-    static_cast<void>(m_MemoryMapView.update(canReadMemoryMap ? m_MemoryMapReader.get() : nullptr, selectedTarget(), deltaTime));
+    static_cast<void>(m_Views->m_MemoryMapView.update(canReadMemoryMap ? m_MemoryMapReader.get() : nullptr, selectedTarget(), deltaTime));
 
     // The Threads section's on-demand read (#3069), on the same terms, at the Settings interval: its CPU %
     // is a live figure.
     const bool canReadThreads = m_HasThreads && m_HasSnapshot && !m_ProcessExited;
     // Its rows' Suspend, Resume and End (#3069): where the actions can (Windows), for a running process.
-    m_ThreadsView.setThreadActions(canReadThreads && m_ActionCapabilities.canActOnThreads, cachedSnapshot().name);
-    static_cast<void>(m_ThreadsView.update(
+    m_Views->m_ThreadsView.setThreadActions(canReadThreads && m_ActionCapabilities.canActOnThreads, cachedSnapshot().name);
+    static_cast<void>(m_Views->m_ThreadsView.update(
         canReadThreads ? m_ThreadsReader.get() : nullptr, selectedTarget(), deltaTime, static_cast<int>(m_RefreshInterval.count())));
 
     // The Security section's on-demand read (#1526), on the same terms.
     const bool canReadSecurity = m_HasSecurity && m_HasSnapshot && !m_ProcessExited;
-    static_cast<void>(m_SecurityView.update(canReadSecurity ? m_SecurityReader.get() : nullptr, selectedTarget(), deltaTime));
+    static_cast<void>(m_Views->m_SecurityView.update(canReadSecurity ? m_SecurityReader.get() : nullptr, selectedTarget(), deltaTime));
     // The Open files section's on-demand read (#183), on the same terms.
     const bool canReadOpenFiles = m_HasOpenFiles && m_HasSnapshot && !m_ProcessExited;
-    static_cast<void>(m_OpenFilesView.update(canReadOpenFiles ? m_OpenFilesReader.get() : nullptr, selectedTarget(), deltaTime));
+    static_cast<void>(m_Views->m_OpenFilesView.update(canReadOpenFiles ? m_OpenFilesReader.get() : nullptr, selectedTarget(), deltaTime));
 
     // The Priority card's I/O priority read (#2734): on its worker, started here and never from render(),
     // and only when the control was drawn last frame (ProcessIoPriorityView::updateRead()).
-    static_cast<void>(
-        m_PriorityView.updateReads(m_ActionCapabilities.canSetIoPriority ? m_ProcessActions.get() : nullptr, selectedTarget(), deltaTime));
+    static_cast<void>(m_Views->m_PriorityView.updateReads(
+        m_ActionCapabilities.canSetIoPriority ? m_ProcessActions.get() : nullptr, selectedTarget(), deltaTime));
 
     // The Recent crashes line's shared cache (#1675): read on a worker only while the line was drawn and
     // the cache is stale, whatever the selection; matching it to the process is done per read, not here.
-    static_cast<void>(m_CrashHistoryView.update(deltaTime));
+    static_cast<void>(m_Views->m_CrashHistoryView.update(deltaTime));
 }
 
 void ProcessDetailsPanel::recordHistoryPoint(const Domain::ProcessSnapshot& snapshot,
@@ -406,9 +458,10 @@ void ProcessDetailsPanel::renderContent()
     m_PriorityHeldElsewhere = m_PriorityChanges != nullptr
                                 ? m_PriorityChanges->holdReason(PriorityChangesInFlight::Panel::ProcessDetails, selectedTarget())
                                 : nullptr;
-    m_ActionsView.holdPriorityChanges(ProcessActionsBlock::actionsHoldReason(m_PriorityView.applying(), m_PriorityHeldElsewhere));
+    m_Views->m_ActionsView.holdPriorityChanges(
+        ProcessActionsBlock::actionsHoldReason(m_Views->m_PriorityView.applying(), m_PriorityHeldElsewhere));
     // Look up on VirusTotal (#3094): the key as Settings has it now, so a key set or cleared takes effect at once.
-    m_ActionsView.setVirusTotal({
+    m_Views->m_ActionsView.setVirusTotal({
         .client = m_LookupClient,
         .apiKey = UserConfig::get().settings().virusTotalApiKey,
         .userAgent = Domain::UpdateCheck::userAgent(tasksmack::Version::FULL),
@@ -425,9 +478,9 @@ void ProcessDetailsPanel::renderContent()
     // the dialogs are given no live target, so a confirm or the affinity dialog closes unconfirmed, while a dump in flight keeps its
     // progress and then shows its result.
     const Platform::ProcessTarget noTarget{.pid = -1, .startTimeTicks = 0};
-    m_ActionsView.renderConfirmation(m_ProcessActions.get(), showsRunningProcess() ? selectedTarget() : noTarget);
+    m_Views->m_ActionsView.renderConfirmation(m_ProcessActions.get(), showsRunningProcess() ? selectedTarget() : noTarget);
     // The Threads section's thread action confirm (#3069), on the same terms.
-    m_ThreadsView.renderConfirmation(m_ProcessActions.get(), showsRunningProcess() ? selectedTarget() : noTarget);
+    m_Views->m_ThreadsView.renderConfirmation(m_ProcessActions.get(), showsRunningProcess() ? selectedTarget() : noTarget);
     // A priority change asked about or started this frame holds the Processes table's controls from now (#3467).
     publishPriorityChanges();
 }
@@ -439,11 +492,11 @@ void ProcessDetailsPanel::publishPriorityChanges()
         return;
     }
     m_PublishedPriorityChanges.clear();
-    if (const std::optional<Platform::ProcessTarget> target = m_ActionsView.priorityChangeTarget(); target.has_value())
+    if (const std::optional<Platform::ProcessTarget> target = m_Views->m_ActionsView.priorityChangeTarget(); target.has_value())
     {
         m_PublishedPriorityChanges.push_back(*target);
     }
-    if (const std::optional<Platform::ProcessTarget> target = m_PriorityView.applyingTarget(); target.has_value())
+    if (const std::optional<Platform::ProcessTarget> target = m_Views->m_PriorityView.applyingTarget(); target.has_value())
     {
         m_PublishedPriorityChanges.push_back(*target);
     }
@@ -486,7 +539,7 @@ void ProcessDetailsPanel::renderPane(bool killRequested)
 
     // F9: the Actions block's Kill confirm for the process shown, its target captured now; the
     // Overview, which holds the block (#1493), is brought forward below.
-    if (killRequested && m_ActionsView.requestKillShortcut(m_ActionCapabilities, selectedTarget(), cachedSnapshot().name))
+    if (killRequested && m_Views->m_ActionsView.requestKillShortcut(m_ActionCapabilities, selectedTarget(), cachedSnapshot().name))
     {
         m_RequestedTab = SelectOverride::DetailsTab::Overview;
     }
@@ -533,27 +586,27 @@ void ProcessDetailsPanel::renderPane(bool killRequested)
                 };
                 // Collapsed by default, and hidden where the platform cannot read environments (#179)
                 openIfRequested(SelectOverride::DetailsSection::Environment, m_HasEnvironment);
-                m_EnvironmentView.render(m_HasEnvironment);
+                m_Views->m_EnvironmentView.render(m_HasEnvironment);
                 // Likewise collapsed by default, and hidden where the platform cannot list sockets (#799)
                 openIfRequested(SelectOverride::DetailsSection::Connections, m_HasConnections);
-                m_ConnectionsView.render(m_HasConnections);
+                m_Views->m_ConnectionsView.render(m_HasConnections);
                 // Likewise collapsed by default; hidden only in synthetic runs (#802)
                 openIfRequested(SelectOverride::DetailsSection::Modules, m_HasModules);
-                m_ModulesView.render(m_HasModules);
+                m_Views->m_ModulesView.render(m_HasModules);
                 // Likewise collapsed by default; hidden only in synthetic runs (#3089)
-                m_MemoryMapView.render(m_HasMemoryMap);
+                m_Views->m_MemoryMapView.render(m_HasMemoryMap);
                 // Likewise collapsed by default; hidden in synthetic runs (#3069)
-                m_ThreadsView.render(m_HasThreads);
+                m_Views->m_ThreadsView.render(m_HasThreads);
                 // Likewise collapsed by default; hidden only in synthetic runs (#1526)
                 openIfRequested(SelectOverride::DetailsSection::Security, m_HasSecurity);
-                m_SecurityView.render(m_HasSecurity);
+                m_Views->m_SecurityView.render(m_HasSecurity);
                 // Likewise collapsed by default; hidden only in synthetic runs (#183). Opened on request, its
                 // scan starts too, as its Scan button does: the section lists nothing until a scan.
                 openIfRequested(SelectOverride::DetailsSection::OpenFiles, m_HasOpenFiles);
-                m_OpenFilesView.render(m_HasOpenFiles);
+                m_Views->m_OpenFilesView.render(m_HasOpenFiles);
                 if (section == SelectOverride::DetailsSection::OpenFiles && m_HasOpenFiles)
                 {
-                    m_OpenFilesView.requestScan();
+                    m_Views->m_OpenFilesView.requestScan();
                 }
                 // Likewise collapsed by default; only for a process that runs a service (#1886)
                 openIfRequested(SelectOverride::DetailsSection::Services, !cachedSnapshot().services.empty());
@@ -565,7 +618,7 @@ void ProcessDetailsPanel::renderPane(bool killRequested)
                     m_SmoothedUsage.update(cachedSnapshot(), m_CachedRateReadings, m_LastDeltaSeconds, m_RefreshInterval);
                 }
                 // The CPU, Memory, Power and Resources charts are ProcessDetailsCharts' (#1179).
-                m_Charts.renderOverviewCharts(chartContext(), fill);
+                m_Views->m_Charts.renderOverviewCharts(chartContext(), fill);
             }
             ImGui::EndTabItem();
         }
@@ -575,7 +628,7 @@ void ProcessDetailsPanel::renderPane(bool killRequested)
         {
             {
                 const UI::Widgets::TabContentScope content("##GpuContent");
-                m_Charts.renderGpuTab(chartContext());
+                m_Views->m_Charts.renderGpuTab(chartContext());
             }
             ImGui::EndTabItem();
         }
@@ -586,7 +639,7 @@ void ProcessDetailsPanel::renderPane(bool killRequested)
         {
             {
                 const UI::Widgets::TabContentScope content("##NpuContent");
-                m_Charts.renderNpuTab(chartContext());
+                m_Views->m_Charts.renderNpuTab(chartContext());
             }
             ImGui::EndTabItem();
         }
@@ -597,7 +650,7 @@ void ProcessDetailsPanel::renderPane(bool killRequested)
         {
             {
                 const UI::Widgets::TabContentScope content("##NetworkContent");
-                m_Charts.renderNetworkTab(chartContext());
+                m_Views->m_Charts.renderNetworkTab(chartContext());
             }
             ImGui::EndTabItem();
         }
@@ -676,18 +729,18 @@ void ProcessDetailsPanel::setSelectedPid(std::int32_t pid, std::uint64_t startTi
     m_CachedSnapshot.reset();
     m_HasSnapshot = false;
     m_ProcessExited = false;
-    m_ActionsView.onSelectionChanged();
+    m_Views->m_ActionsView.onSelectionChanged();
     m_SmoothedUsage.reset();
     m_CachedRateReadings = {};
     m_PeakMemoryBytes = 0.0;
-    m_PriorityView.onSelectionChanged();    // Drops an edited priority, so it cannot reach the new process
-    m_EnvironmentView.onSelectionChanged(); // Drops the variables and every revealed value (#179)
-    m_ConnectionsView.onSelectionChanged(); // Drops the previous process's sockets (#799)
-    m_ModulesView.onSelectionChanged();     // Drops the previous process's modules (#802)
-    m_MemoryMapView.onSelectionChanged();   // And its memory map (#3089)
-    m_ThreadsView.onSelectionChanged();     // And its threads (#3069)
-    m_SecurityView.onSelectionChanged();    // Drops the previous process's security context (#1526)
-    m_OpenFilesView.onSelectionChanged();   // Drops the previous process's open files (#183)
+    m_Views->m_PriorityView.onSelectionChanged();    // Drops an edited priority, so it cannot reach the new process
+    m_Views->m_EnvironmentView.onSelectionChanged(); // Drops the variables and every revealed value (#179)
+    m_Views->m_ConnectionsView.onSelectionChanged(); // Drops the previous process's sockets (#799)
+    m_Views->m_ModulesView.onSelectionChanged();     // Drops the previous process's modules (#802)
+    m_Views->m_MemoryMapView.onSelectionChanged();   // And its memory map (#3089)
+    m_Views->m_ThreadsView.onSelectionChanged();     // And its threads (#3069)
+    m_Views->m_SecurityView.onSelectionChanged();    // Drops the previous process's security context (#1526)
+    m_Views->m_OpenFilesView.onSelectionChanged();   // Drops the previous process's open files (#183)
 
     if (pid != -1)
     {
@@ -704,7 +757,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     ImGui::TextWrapped("Command Line: %s", titleCommand);
     // Beside the command line, which names the executable, rather than as a row of the Identity card:
     // the card is full with a Publisher, and the line's value is wider than a card's (#1675).
-    m_CrashHistoryView.render(proc.name);
+    m_Views->m_CrashHistoryView.render(proc.name);
     ImGui::Spacing();
 
     const auto computeLabelColumnWidth = [] -> float
@@ -1042,8 +1095,8 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
             ImGui::SameLine();
         }
         const ProcessActionsBlock::Context actions{
-            .actionsView = &m_ActionsView,
-            .priorityView = &m_PriorityView,
+            .actionsView = &m_Views->m_ActionsView,
+            .priorityView = &m_Views->m_PriorityView,
             .actions = m_ProcessActions.get(),
             .capabilities = m_ActionCapabilities,
             .processName = &proc.name,

@@ -1,4 +1,4 @@
-// logind's sessions for the Users tab (#3076): ListSessions, then each session's properties. The actions
+// logind's sessions for Processes > Group: User (#3076, #3377): ListSessions, then each session's properties. The actions
 // (LockSession, TerminateSession) are in SystemdUnitActions.cpp, with the other calls that may prompt.
 
 #include "Platform/IUserSessions.h"
@@ -89,6 +89,12 @@ template<typename T> bool sessionTrivial(sd_bus* bus, const std::string& path, c
     if (sessionTrivial(bus, path, "Leader", 'u', leader))
     {
         session.leaderPid = static_cast<std::int32_t>(leader);
+    }
+    // When the session started (CLOCK_REALTIME µs): its user's sign-in, for the session row's time (#3377 PR 4).
+    std::uint64_t signedIn = 0;
+    if (sessionTrivial(bus, path, "Timestamp", 't', signedIn))
+    {
+        session.logonUsec = signedIn;
     }
     return session;
 }

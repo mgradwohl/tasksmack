@@ -3,6 +3,7 @@
 
 #include "Platform/Linux/DetachedSpawn.h"
 #include "Platform/Linux/SessionUser.h"
+#include "Platform/SessionAccount.h"
 
 #include <gtest/gtest.h>
 
@@ -128,6 +129,44 @@ TEST(SessionUserTest, TheInvokingUserIsSudosThenPkexecsAndOnlyForRoot)
     EXPECT_FALSE(invokingUser(0, env({}), lookup).has_value()) << "root's own session";
     EXPECT_FALSE(invokingUser(0, env({{"PKEXEC_UID", "0"}}), lookup).has_value());
     EXPECT_FALSE(invokingUser(0, env({{"PKEXEC_UID", "1234"}}), lookup).has_value()) << "no such user";
+}
+
+// #3682: an Administrator session started for a user runs as root, another account than that user's: its per-user
+// startup is root's. Root's own session, a user's own TaskSmack and an unknown user are the same account.
+TEST(SessionUserTest, AnAdministratorSessionStartedForAUserIsAnotherAccount)
+{
+    const auto lookup = [](uid_t uid) -> std::optional<Account>
+    {
+        if (uid == 0)
+        {
+            return Account{.gid = 0, .name = "root", .home = "/root", .shell = {}, .groups = {}};
+        }
+        return uid == 1000
+                 ? std::optional<Account>(Account{.gid = 1001, .name = "someone", .home = "/home/someone", .shell = {}, .groups = {}})
+                 : std::nullopt;
+    };
+    const auto env = [](const std::map<std::string, std::string>& variables)
+    {
+        return [variables](std::string_view name) -> std::optional<std::string>
+        {
+            const auto it = variables.find(std::string(name));
+            return it != variables.end() ? std::optional<std::string>(it->second) : std::nullopt;
+        };
+    };
+    const Platform::SessionAccount pkexec = sessionAccount(0, env({{"PKEXEC_UID", "1000"}}), lookup);
+    EXPECT_TRUE(pkexec.otherAccount);
+    EXPECT_EQ(pkexec.account, "root");
+    EXPECT_TRUE(sessionAccount(0, env({{"SUDO_UID", "1000"}}), lookup).otherAccount);
+    EXPECT_EQ(sessionAccount(0, env({}), lookup), Platform::SessionAccount{}) << "root's own session";
+    EXPECT_EQ(sessionAccount(1000, env({{"PKEXEC_UID", "1000"}}), lookup), Platform::SessionAccount{}) << "the user's own";
+    EXPECT_EQ(sessionAccount(0, env({{"PKEXEC_UID", "1234"}}), lookup), Platform::SessionAccount{}) << "no such user";
+
+    // A passwd database without root's entry still names it.
+    const auto noRoot = [&lookup](uid_t uid)
+    {
+        return uid == 0 ? std::nullopt : lookup(uid);
+    };
+    EXPECT_EQ(sessionAccount(0, env({{"PKEXEC_UID", "1000"}}), noRoot).account, "root");
 }
 
 TEST(SessionUserTest, ThisUsersProcessHasNoInvokingUserHome)

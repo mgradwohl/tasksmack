@@ -21,20 +21,9 @@
 #include "Platform/IProcessThreads.h"
 #include "Platform/ProcessTypes.h"
 #include "PriorityChangesInFlight.h"
-#include "ProcessActionsView.h"
-#include "ProcessConnectionsView.h"
-#include "ProcessCrashHistoryView.h"
-#include "ProcessDetailsCharts.h"
 #include "ProcessDetailsHistory.h"
 #include "ProcessDetailsPanel_HistoryHelpers.h"
-#include "ProcessEnvironmentView.h"
-#include "ProcessMemoryMapView.h"
-#include "ProcessModulesView.h"
-#include "ProcessOpenFilesView.h"
-#include "ProcessPriorityView.h"
-#include "ProcessSecurityView.h"
 #include "ProcessSmoothedUsage.h"
-#include "ProcessThreadsView.h"
 #include "UI/FillPlotLayout.h"
 
 #include <chrono>
@@ -64,6 +53,21 @@ struct ProcessDetailsReaders
     std::unique_ptr<Platform::IProcessThreadsReader> threads;     ///< #3069
     std::unique_ptr<Platform::IProcessMemoryMapReader> memoryMap; ///< #3089
 };
+
+// The section views and charts live in ProcessDetailsPanel.cpp (Views), so this header pulls none of their headers into
+// its includers: the shell's translation units each paid about 0.8 GB of compile memory for them (#3717).
+class ProcessActionsView;
+struct ProcessChartContext;
+class ProcessConnectionsView;
+class ProcessCrashHistoryView;
+class ProcessDetailsCharts;
+class ProcessEnvironmentView;
+class ProcessMemoryMapView;
+class ProcessModulesView;
+class ProcessOpenFilesView;
+class ProcessPriorityView;
+class ProcessSecurityView;
+class ProcessThreadsView;
 
 /// Panel displaying detailed information for a selected process.
 /// Includes resource usage, I/O stats, and process actions.
@@ -107,7 +111,7 @@ class ProcessDetailsPanel : public Panel
                         std::unique_ptr<Platform::IProcessSecurityReader> securityReader,
                         std::unique_ptr<Platform::IProcessOpenFilesReader> openFilesReader = nullptr);
 
-    ~ProcessDetailsPanel() override = default;
+    ~ProcessDetailsPanel() override;
 
     /// The Threads section's reader (#3069); null, the default, hides the section. Call before the first
     /// update; the default constructor sets the platform's.
@@ -130,8 +134,8 @@ class ProcessDetailsPanel : public Panel
 
     ProcessDetailsPanel(const ProcessDetailsPanel&) = delete;
     ProcessDetailsPanel& operator=(const ProcessDetailsPanel&) = delete;
-    ProcessDetailsPanel(ProcessDetailsPanel&&) noexcept = default;
-    ProcessDetailsPanel& operator=(ProcessDetailsPanel&&) noexcept = default;
+    ProcessDetailsPanel(ProcessDetailsPanel&&) noexcept;
+    ProcessDetailsPanel& operator=(ProcessDetailsPanel&&) noexcept;
 
     /// Update with the selected process's new samples. Call each frame with what
     /// Domain::ProcessModel::watchedSamplesSince(lastSampleVersion()) returned for the watched
@@ -196,10 +200,7 @@ class ProcessDetailsPanel : public Panel
 
     /// The shared crash cache the Overview's Recent crashes line reads (#1675), from the composition root
     /// (ShellLayer); null (the default) hides the line.
-    void setCrashHistory(std::shared_ptr<Domain::CrashHistory> crashHistory) noexcept
-    {
-        m_CrashHistoryView.setHistory(std::move(crashHistory));
-    }
+    void setCrashHistory(std::shared_ptr<Domain::CrashHistory> crashHistory) noexcept;
 
     /// The priority changes in flight the panel shares with the Processes table (#3467), from the composition
     /// root (ShellPanels), which keeps it alive longer than the panel: the panel publishes the process its
@@ -324,27 +325,15 @@ class ProcessDetailsPanel : public Panel
     }
 
     /// The Overview's Modules section, for tests: hasRead() once it was drawn open and its read taken in.
-    [[nodiscard]] const ProcessModulesView& modulesViewForTesting() const noexcept
-    {
-        return m_ModulesView;
-    }
+    [[nodiscard]] const ProcessModulesView& modulesViewForTesting() const noexcept;
 
     /// The Overview's Memory map section, for tests: hasRead() once it was drawn open and its read taken in.
-    [[nodiscard]] const ProcessMemoryMapView& memoryMapViewForTesting() const noexcept
-    {
-        return m_MemoryMapView;
-    }
+    [[nodiscard]] const ProcessMemoryMapView& memoryMapViewForTesting() const noexcept;
 
-    [[nodiscard]] ProcessActionsView& actionsViewForTesting() noexcept
-    {
-        return m_ActionsView;
-    }
+    [[nodiscard]] ProcessActionsView& actionsViewForTesting() noexcept;
 
     /// Test seam (#2407): the Priority card's view, with the I/O priority control's state.
-    [[nodiscard]] ProcessPriorityView& priorityViewForTesting() noexcept
-    {
-        return m_PriorityView;
-    }
+    [[nodiscard]] ProcessPriorityView& priorityViewForTesting() noexcept;
 
   private:
     /// The pane renderContent() draws before the dialogs: the empty or exited state, or the tabs. Takes
@@ -452,14 +441,12 @@ class ProcessDetailsPanel : public Panel
     // The Overview's Actions block (#1493): the buttons, confirm dialog and result line, and the
     // priority control beside them (#1179). Both act through m_ProcessActions, which the panel keeps
     // owning.
-    ProcessActionsView m_ActionsView;
     KeyboardShortcuts::FrameRequest m_KillShortcut; // F9, taken by renderContent() this frame
     // The tab to bring forward when the tabs are next drawn: the Overview when F9 asked for the Kill
     // confirm, which shows over the Actions block there; or the test hook's tab (#1559).
     std::optional<SelectOverride::DetailsTab> m_RequestedTab;
     // The Overview section to draw open when the Overview is next drawn (requestSection(), #2827).
     std::optional<SelectOverride::DetailsSection> m_RequestedSection;
-    ProcessPriorityView m_PriorityView;
     // Shared with the Processes table by ShellPanels (#3467), which outlives this panel; null on its own.
     PriorityChangesInFlight* m_PriorityChanges = nullptr;
     const char* m_PriorityHeldElsewhere = nullptr;                   // This frame's holdReason() for the shown process, or null
@@ -474,7 +461,6 @@ class ProcessDetailsPanel : public Panel
     // section is open: never from render(), and never for any process but the selected one.
     std::unique_ptr<Platform::IProcessEnvironmentReader> m_EnvironmentReader;
     bool m_HasEnvironment = false; // m_EnvironmentReader can read environments here (Linux)
-    ProcessEnvironmentView m_EnvironmentView;
 
     // The Overview's Connections section (#799), on the same terms as the Environment section: the
     // reader comes from the composition root and is called only from updateWithSamples(), through the
@@ -483,43 +469,41 @@ class ProcessDetailsPanel : public Panel
     // members are destroyed in reverse order, and the reader must outlive any read using it.
     std::unique_ptr<Platform::IProcessConnectionsReader> m_ConnectionsReader;
     bool m_HasConnections = false; // m_ConnectionsReader can list sockets here (Linux)
-    ProcessConnectionsView m_ConnectionsView;
 
     // The Overview's Modules section (#802), on the same terms as the Connections section, and for the
     // same reason its reader is declared before its view.
     std::unique_ptr<Platform::IProcessModulesReader> m_ModulesReader;
     bool m_HasModules = false; // m_ModulesReader can list modules here (Windows, Linux; not synthetic runs)
-    ProcessModulesView m_ModulesView;
     // The Overview's Memory map section (#3089), on the same terms, its reader declared before its view.
     std::unique_ptr<Platform::IProcessMemoryMapReader> m_MemoryMapReader;
     bool m_HasMemoryMap = false; // m_MemoryMapReader can read a memory map here (Linux, Windows; not synthetic runs)
-    ProcessMemoryMapView m_MemoryMapView;
     std::unique_ptr<Platform::IProcessThreadsReader> m_ThreadsReader; // the Threads section's (#3069)
     bool m_HasThreads = false; // m_ThreadsReader can list threads here (Linux, Windows; not synthetic runs)
-    ProcessThreadsView m_ThreadsView{static_cast<std::size_t>(std::thread::hardware_concurrency())};
 
     // The Overview's Security section (#1526), on the same terms, its reader declared before its view.
     std::unique_ptr<Platform::IProcessSecurityReader> m_SecurityReader;
     bool m_HasSecurity = false; // m_SecurityReader can read security contexts here (Linux; not Windows yet, not synthetic runs)
-    ProcessSecurityView m_SecurityView;
 
     // The Overview's Open files section (#183), on the same terms; its reader declared before its view.
     std::unique_ptr<Platform::IProcessOpenFilesReader> m_OpenFilesReader;
     bool m_HasOpenFiles = false; // m_OpenFilesReader can list open files here (Windows, Linux; not synthetic runs)
-    ProcessOpenFilesView m_OpenFilesView;
 
     // The Overview's Recent crashes line (#1675): the selected executable's crashes and hangs from the
     // shared Domain::CrashHistory, read on a worker at most once a refresh interval while the line is
     // drawn, never per frame or per selection change. Its destructor waits for a read in flight, which
     // holds its own reference to the history.
-    ProcessCrashHistoryView m_CrashHistoryView;
 
     // The smoothed NowBar values, eased toward each shown sample (#1179).
     Detail::ProcessSmoothedUsage m_SmoothedUsage;
 
     // The Overview's charts and the GPU, NPU and Network and I/O tabs (#1179, #1869). They read m_History,
     // m_SmoothedUsage and the snapshot through chartContext(), passed in each frame.
-    ProcessDetailsCharts m_Charts;
+
+    // The section views and the charts (#3717). Last, so they are destroyed first: each view's destructor waits for
+    // a read in flight, and the readers above must outlive it; the charts read m_History and m_SmoothedUsage only
+    // while drawn.
+    struct Views;
+    std::unique_ptr<Views> m_Views; // made by the constructor every other one delegates to
 };
 
 } // namespace App

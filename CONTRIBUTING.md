@@ -198,6 +198,11 @@ Example (Ubuntu/Debian):
 # clang-23 comes from apt.llvm.org, and Ubuntu 24.04's own cmake (3.28) is older than 3.29, so add
 # apt.llvm.org's and Kitware's repositories first (tools/setup-dev.sh does both)
 sudo apt install clang-23 clang-tidy-23 clang-format-23 lld-23 llvm-23 libc++-23-dev libc++abi-23-dev cmake ninja-build ccache
+# The compiler runtimes the coverage, PGO and sanitizer presets link (only a Recommends of clang-23)
+sudo apt install libclang-rt-23-dev
+# OpenGL, X11 and Wayland headers for SDL and the window (configure fails without OpenGL)
+sudo apt install libgl1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev \
+    libwayland-dev libxkbcommon-dev
 
 # Python 3.14 (Ubuntu 24.04's python3 is 3.12; tools/setup-dev.sh adds the deadsnakes PPA for it),
 # with GLAD's hash-locked dependencies in the project venv
@@ -217,6 +222,9 @@ python -m pip install --require-hashes -r requirements-glad.txt
 # pkg-config at configure time; without it those say they are unavailable.
 # -DTASKSMACK_WITH_SDBUS=OFF builds without it even when it is installed.
 sudo apt install libsystemd-dev pkg-config
+# Optional: libcurl, for the update check (Settings' Check for updates daily). Without it, or with
+# -DTASKSMACK_WITH_CURL=OFF, the app still builds and the update check isn't offered.
+sudo apt install libcurl4-openssl-dev
 # Required: libbpf, for the eBPF counter of each process's UDP bytes that TaskSmack loads as root (#3366). Configure fails
 # without it.
 sudo apt install libbpf-dev
@@ -308,6 +316,8 @@ The hooks (configured in `.pre-commit-config.yaml`) include:
 - **check-guidance-sync**: Fail when the AI-agent guidance drifts (`tools/check-guidance-sync.py`): the
   `.claude/skills/tasksmack-review/SKILL.md` body must match `.github/skills/code-review/SKILL.md`
   (frontmatter ignored), and `CLAUDE.md` must import [AGENTS.md](AGENTS.md) with an `@AGENTS.md` line
+- **check-docs-sri**: Fail when `docs/index.html`'s `integrity=` attributes or `docs/cdn-integrity.json` don't
+  match the pinned CDN files (`tools/docs-sri.py --check`, #3167)
 - **check-cache-prune-triggers**: Fail when a workflow that saves Actions caches (ccache, `actions/cache`, a
   repo cache action's `mode: save`, `setup-windows-llvm`, or a reusable workflow that does) is missing from
   `cache-prune.yml`'s `workflow_run` list (`tools/check-cache-prune-triggers.py`, #2410)
@@ -486,7 +496,7 @@ cmake --preset release -DTASKSMACK_MARCH=x86-64-v2  # Target SSE4.2/POPCNT CPUs
 
 | Preset (Linux) | Preset (Windows) | Description |
 |----------------|------------------|-------------|
-| `debug` | `win-debug` | Debug symbols, no optimization, security hardening |
+| `debug` | `win-debug` | Debug symbols, no optimization, `-ftrivial-auto-var-init=pattern`; the release hardening flags (stack protector, `_FORTIFY_SOURCE`) are Release/RelWithDebInfo only |
 | `relwithdebinfo` | `win-relwithdebinfo` | Debug symbols + optimization |
 | `release` | `win-release` | Optimized, no debug symbols |
 | `release-compatible` | `win-release-compatible` | Release build for older CPUs (x86-64-v2: SSE4.2/POPCNT CPUs) |
@@ -568,14 +578,14 @@ Integration tests live under `tests/Integration/` and are built into the main te
 
 In practice, `tests/Integration/` includes both cross-platform tests and Linux-only tests (e.g., tests that validate `/proc` parsing). Those Linux-only tests are excluded from Windows builds.
 
-To run only integration tests:
+To run only integration tests (CTest matches suite names, not the directory):
 
 ```bash
 # Linux
-ctest --preset debug -R Integration
+ctest --preset debug -R 'CrossLayerIntegration|LinuxRealProbes'
 
 # Windows
-ctest --preset win-debug -R Integration
+ctest --preset win-debug -R 'CrossLayerIntegration|WindowsRealProbes|WindowsGPUProbe'
 ```
 
 ### Property-based tests
@@ -896,9 +906,9 @@ column off, since command lines name the machine's users and paths), the startup
 section that pick the view, and `TASKSMACK_SCREENSHOT`, which writes the frame in-app and quits. The
 matrix is Overview in six themes (`windows-dark`, `ubuntu-light`, `dracula`, `nord-light`, `gruvbox`,
 `monochrome-light`), Processes and System Information in the first dark and the first light theme,
-the Processes table grouped by service and by user (`processes-grouped-unit`, `processes-grouped-user`,
-#3068; on Windows the unit shot shows the Services column, which is what has TaskSmack read the
-service list Unit groups by; Windows only so far), the machine tab's CPU Cores, GPU and Network and I/O sub-tabs (`cores`, `gpu`, `network`, selected by
+the Processes table grouped by service, by app and by user (`processes-grouped-unit`, `processes-grouped-app`,
+`processes-grouped-user`, #3068, #3377; on Windows the unit shot shows the Services column, which is what has TaskSmack read the
+service list Unit groups by), the machine tab's CPU Cores, GPU and Network and I/O sub-tabs (`cores`, `gpu`, `network`, selected by
 `TASKSMACK_MACHINE_TAB`, #2869), Process Details (overview, GPU, network, and the Overview with its
 Modules, Open files and Connections sections expanded by a one-step `TASKSMACK_DEMO` script:
 `details-modules`, `details-openfiles`, `details-connections`, and on Linux, the only platform that
@@ -1314,6 +1324,8 @@ ClusterFuzzLite continuously exercises these parsers with libFuzzer and AddressS
 | `fuzz_networkd_json` | systemd-networkd's link description: the JSON parser and the DHCPv4 lease read from it (`Platform/Linux/NetworkdLinkJson.h`) | `tests/fuzz/corpus/fuzz_networkd_json/` |
 | `fuzz_dns_message` | the DNS reply parser for the opt-in public IP lookup, the only parser fed bytes from the network (`Platform/DnsMessage.h`) | `tests/fuzz/corpus/fuzz_dns_message/` |
 | `fuzz_desktop_entry` | the `.desktop` entry parser and its `Exec` splitting (`Platform/Linux/DesktopEntryIcons.h`) | `tests/fuzz/corpus/fuzz_desktop_entry/` |
+| `fuzz_release_json` | the update check's GitHub releases JSON reader and version parser (`Domain/UpdateCheck.h`) | `tests/fuzz/corpus/fuzz_release_json/` |
+| `fuzz_virustotal_json` | the VirusTotal v3 file report reader (`Domain/VirusTotal.h`) | `tests/fuzz/corpus/fuzz_virustotal_json/` |
 | `fuzz_broker_protocol` | the Windows helper's request decoder, which reads what an unprivileged process sends (`Platform/BrokerProtocol.h`) | `tests/fuzz/corpus/fuzz_broker_protocol/` |
 
 Pull requests that change `tests/fuzz/**`, `.clusterfuzzlite/**`, the `cflite_*.yml` workflows,
@@ -1661,14 +1673,16 @@ test-only commit failed the gate. So the job logs the runner's CPU model (`lscpu
 uploads the run's manifest, and `check-benchmark-regression.py` prints each run's CPU (Google Benchmark's
 MHz and caches, plus the manifest's model) with a NOTE when the two runs' cache layouts differ. When flags
 still stand after the launches (or weren't re-measured: over budget, out of time), the job hands the names,
-its binary and its full run to `benchmark-second-runner` instead of failing. That job runs on a fresh
-runner, builds nothing, runs the flagged benchmarks alone in 5 launches of the same binary
-(`bench-across-launches.py combine --exclude-first`, so the first host's values aren't counted, while its
-full run supplies every other benchmark for coverage), and checks the median at the same thresholds and
-overrides. Its result is the gate's: one slow host can't fail it alone, and a real regression, slow on any
-host, still fails. A coverage loss alone has no names to hand over and fails the first job as before. To
-exercise the path, dispatch Heavy Checks with `second_runner_benchmarks` set to comma-separated benchmark
-names: on a run that flags nothing, they're handed over as if flagged.
+its binary, its full run and what its gate judged to `benchmark-second-runner` instead of failing. That job
+runs on a fresh runner, builds nothing, runs the flagged benchmarks alone in 5 launches of the same binary
+(`bench-across-launches.py combine --exclude-first`, so the first host's values aren't counted), and checks
+the median at the same thresholds and overrides. Every other benchmark comes from what the first runner's
+gate judged, for the same coverage: its medians across launches for the ones it re-measured, not its first
+launch's, so a benchmark its launches cleared isn't failed again on one launch (#3692). The full run is only
+for the plan's time estimate. Its result is the gate's: one slow host can't fail it alone, and a real
+regression, slow on any host, still fails. A coverage loss alone has no names to hand over and fails the first
+job as before. To exercise the path, dispatch Heavy Checks with `second_runner_benchmarks` set to
+comma-separated benchmark names: on a run that flags nothing, they're handed over as if flagged.
 
 On Windows, `bench.ps1 -Baseline <file>` does all of that itself (#3448): it checks the run at the
 checker's defaults plus any `-CheckArgs`, and when that flags regressions it runs the flagged benchmarks
@@ -2458,6 +2472,28 @@ single-instance lock would stop the new one at its "already running" box); close
 ./tools/measure-idle.sh --help
 ```
 
+Each run is sampled in phases (#3729), by `tools/idle-sample.py` from `/proc`, under the field names
+`measure-idle.ps1` uses (schema `tasksmack-idle-windows/2`, #3715), so one summary script reads
+both platforms' runs. A phase records each thread's wake-ups (context switches per second) beside
+its CPU, the UI thread's and the total; memory at each end and every `--memory-poll-seconds` (the
+resident set, its private part and PSS from `smaps_rollup`, plus file descriptors and threads); the
+compositor's CPU and wake-ups (gnome-shell, kwin_wayland, Xorg and others, where you can see them:
+never under WSLg, whose compositor runs in the system distro); and how busy the rest of the machine
+was. Linux has no system-wide timer resolution, so `timerResolutionMs` stays `null`. By default a
+run is one visible phase of `--duration` seconds. `--phases visible:120,minimized:60,restored:60`
+runs several in order: a minimized phase asks the window manager to minimize the window (`xdotool`
+or `wmctrl`, a request, not injected input) and a restored phase to bring it back. When the window
+manager ignores the request, as WSLg's does, or there is no X11 window (native Wayland), that phase
+is skipped and the JSON says why. The table, `RESULT` line, aggregates and `--fail-above` describe
+the first phase. `--memory-csv <path>` also writes the memory series, one row per reading.
+
+```bash
+# Minimize and restore phases, then an hour-long memory series.
+./tools/measure-idle.sh --skip-build --window 1600x900 --phases visible:120,minimized:60,restored:60
+./tools/measure-idle.sh --skip-build --phases visible:3600 --memory-poll-seconds 30 \
+    --memory-csv perf-data/memory.csv
+```
+
 On Windows, `tools/measure-idle.ps1` (#2492) takes one measurement of an existing build the same way:
 its own fresh `TASKSMACK_CONFIG_DIR`, `TASKSMACK_TRACE_RESIZE_PERF=1`, a warm-up, then per-thread
 CPU (from each thread's processor time), fps and frame times from the same `ResizePerf` summaries,
@@ -2468,8 +2504,31 @@ else the machine is doing, so compare runs taken back to back. `-RedirectAppData
 older than `TASKSMACK_CONFIG_DIR` (v0.8.0) without touching your own `%APPDATA%\TaskSmack`; give it
 a `config.toml` with `[window]` `width`/`height` there, since such a build ignores `-Window` too.
 
+It also records what each Windows performance run used to need a scratch harness for (#3715), none
+of it needing elevation:
+- **Wake-ups:** each thread's context switches per second, from a `SystemProcessInformation`
+  snapshot at each end of a phase. The process's total is in the JSON as `totalWakeupsPerSec`, and
+  the UI thread's as `uiThreadWakeupsPerSec`.
+- **Who owns an unnamed thread:** the module its Win32 start address is in
+  (`igxelpgicd64.dll+0x8da460`), as `module`.
+- **The system timer resolution** at every poll (`timerResolutionMs`), plus before launch and after
+  exit. A process that calls `timeBeginPeriod` changes it for the whole machine.
+- **dwm.exe** CPU and wake-ups, and the **machine load**: GetSystemTimes less TaskSmack and dwm, so
+  a disturbed run shows up.
+- **Phases:** `-Phases visible:120,minimized:60,restored:60` posts `SC_MINIMIZE` and then
+  `SC_RESTORE` to the app's own window, waits `-PhaseSettle` seconds, and reports each phase on
+  its own `PHASE` line and in the JSON's `phases`.
+- **A memory series:** `-MemoryCsv` writes private working set, private bytes, working set, handles
+  and threads every `-MemoryPollSeconds`, for long memory runs.
+
+The JSON is `tasksmack-idle-windows/2`. Version 1's fields are kept and describe the first phase,
+and the `RESULT` line keeps its keys, with the new ones after them. `tools/test-measure-idle.ps1`
+(CTest `MeasureIdleScript`) checks the arithmetic on recorded figures without launching TaskSmack.
+
 ```powershell
 pwsh tools/measure-idle.ps1 -Preset win-release -Window 1280x720 -Warmup 60 -Duration 300
+pwsh tools/measure-idle.ps1 -Window 1280x720 -Warmup 30 -Phases visible:120,minimized:60,restored:60
+pwsh tools/measure-idle.ps1 -Window 1280x720 -Phases visible:3600 -MemoryPollSeconds 30 -MemoryCsv perf-data\memory.csv
 Get-Help tools/measure-idle.ps1 -Full
 ```
 
@@ -2546,8 +2605,8 @@ Both targets are about 1.5× the measured median on a quiet machine, rounded up:
 9.02% → 14%. That leaves room for run-to-run noise (one default repetition read 15.0% against a
 median of 8.1%; the median over five absorbs a single outlier) while still catching a regression
 that adds a few percent of one core at idle. A median above the target is a regression to explain
-or fix. The targets cover **Linux/WSL app CPU only**; there is no Windows capture script yet, so Windows has
-no targets. Re-measure and revisit them when the renderer, the default
+or fix. The targets cover **Linux/WSL app CPU only**; `tools/measure-idle.ps1` takes Windows measurements but has no `--repeat` or `--fail-above` gate, so Windows has
+no targets yet. Re-measure and revisit them when the renderer, the default
 scenario or the sampling defaults change.
 
 Measure at the targets' window geometry. TaskSmack restores its saved size and maximized state, and
@@ -2656,13 +2715,13 @@ The scripts' banners say which kind each phase builds.
 1. **Build an instrumented binary** (`pgo-generate`/`win-pgo-generate` preset) with `-fprofile-instr-generate`
 2. **Run the training workloads** to collect branch-count data into `.profraw` files (one per process, `%p`):
    - the benchmark suite (`TaskSmackBenchmarks`), for the Domain and Platform hot paths;
-   - the **headless UI training driver** (`TaskSmackUiTraining`, #880), for the rendering paths: TaskSmack's real panels, every main tab, drawn by ImGui/ImPlot for a fixed number of frames with no window and no GPU, once on the real probes and once on the synthetic large-UI machine (#1413).
+   - the **headless UI training driver** (`TaskSmackUiTraining`, #880), for the rendering paths: TaskSmack's real panels, six of its main tabs (not Connections or Users), drawn by ImGui/ImPlot for a fixed number of frames with no window and no GPU, once on the real probes and once on the synthetic large-UI machine (#1413).
 3. **Merge** the `.profraw` files into a single `.profdata` with `llvm-profdata`
 4. **Build the optimized binary** (`pgo-use`/`win-pgo-use` preset) with `-fprofile-instr-use=<path>.profdata`
 
 ### The UI training workload
 
-`TaskSmackUiTraining` (`src/Training/`) builds the same six panels `ShellLayer` does, on the app's own object files (the `TaskSmackApp` object library, so its profile is for exactly the code `TaskSmack` links), and draws them in the same tab bar. It is a separate executable: the shipping app has no training switch. Each run:
+`TaskSmackUiTraining` (`src/Training/`) builds the same panels `ShellLayer` does and trains six of its tabs (not Connections or Users), on the app's own object files (the `TaskSmackApp` object library, so its profile is for exactly the code `TaskSmack` links), and draws them in the same tab bar. It is a separate executable: the shipping app has no training switch. Each run:
 
 - renders every workload below, in order, each for its share of the frames (default 1800 frames, paced at 60 fps: about 30 s per run, so about a minute for both probe sets);
 - starts from the default settings in a fresh temporary `TASKSMACK_CONFIG_DIR`, removed at exit, so it never reads or writes your `config.toml`;
@@ -2793,7 +2852,7 @@ For rendering, run the same UI scenario on both builds: the synthetic large-UI m
 ### Tips
 
 - **Re-profile after large refactors.** Stale profile data still improves performance, but fresh data gives the best results.
-- **Change the UI weights in one place.** `src/Training/UiTrainingPlan.h` holds the table above; its unit tests check the weights add up to 100 and that every main tab is trained.
+- **Change the UI weights in one place.** `src/Training/UiTrainingPlan.h` holds the table above; its unit tests check the weights add up to 100 and that every tab in the plan is trained.
 - **Keep the driver in step with the shell.** `TrainingShell` (`src/Training/UiTrainingDriver.cpp`) mirrors `ShellLayer`'s attach, update and tab rendering; a new main tab or a new per-frame shell step belongs in both.
 
 ## Packaging (CPack)
@@ -3028,6 +3087,8 @@ CI caches (#1406): ccache and the FetchContent source cache (`.github/actions/fe
 - **`pre-commit.yml`**: Runs the `pre-commit` framework (via Python) across all files to enforce syntax hygiene, formatting, and file-level rules configured in `.pre-commit-config.yaml` (pushes and PRs to `main` and `release/*`).
 - **`static-analysis.yml`**: Manual full `clang-tidy` run on Linux and on Windows, both blocking (manual dispatch only; `ci.yml`'s nightly schedule runs the full analysis on `main`).
 - **`heavy-checks.yml`**: Runs expensive verifications that shouldn't block PR feedback loops, such as generating Coverage reports (nightly, manual dispatch, and pushes to `main` that touch code the benchmarks measure -- `src/Domain`, `src/UI`, `src/Platform`, `ProcessDetailsHistory` -- or the benchmarks, their baseline and tools). The coverage jobs report **line** coverage from `coverage/coverage.lcov` against a floor: the Linux job fails below 95% (#1891), the Windows job warns below 85%; `codecov.yml`'s `auto` target is the per-change ratchet (#1543). A manual dispatch with `scope: benchmark` runs only the benchmark-regression job, and one with `scope: coverage` only the two coverage jobs (#3148). The Linux coverage job also runs `tools/check-prereqs.sh` on a fresh image.
+- **`devcontainer.yml`**: Builds the dev container's image (`.devcontainer/Dockerfile`, from `tools/setup-dev.sh`) and, inside it, runs `tools/check-prereqs.sh` and configures the debug preset, whenever the image's inputs change (#136).
+- **`renovate-docs-sri.yml`**: On Renovate's docs-site PRs, regenerates `docs/index.html`'s `integrity=` hashes and `docs/cdn-integrity.json` (`tools/docs-sri.py --update`) and pushes them back with `RENOVATE_TOKEN`, so CI runs on the fixed commit (#3661).
 
 ### Release & Operations
 - **`release.yml`**: Handles compiling production binaries, packaging them (Windows `.zip` and NSIS installer; Linux `.tar.gz` and `.deb`; x64 and ARM64), and publishing GitHub Releases (draft first, published last) on `v*.*.*` tags on `main` or on the `release/X.Y` branch the tag names; a `workflow_dispatch` run is a dry run by default (see [Cutting a Release](#cutting-a-release)).

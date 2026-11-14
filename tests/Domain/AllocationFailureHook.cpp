@@ -26,6 +26,10 @@ namespace
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables) - the allocator hook's per-thread switch
 thread_local std::int64_t t_AllocationsBeforeFailure = -1;
 
+/// Allocations this thread has made through the replaced operator new (allocationsOnThisThread()).
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables) - the allocator hook's per-thread count
+thread_local std::uint64_t t_AllocationCount = 0;
+
 #if !defined(TASKSMACK_NO_ALLOCATOR_HOOK)
 /// The test noted last, so a sweep that arms the hook thousands of times writes its name once.
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables) - the log's one-line-per-test memory
@@ -86,6 +90,11 @@ bool allocationFailurePending() noexcept
     return t_AllocationsBeforeFailure >= 0;
 }
 
+std::uint64_t allocationsOnThisThread() noexcept
+{
+    return t_AllocationCount;
+}
+
 } // namespace TestSupport
 
 #if !defined(TASKSMACK_NO_ALLOCATOR_HOOK)
@@ -98,6 +107,7 @@ bool allocationFailurePending() noexcept
 // NOLINTBEGIN(cppcoreguidelines-no-malloc,cppcoreguidelines-owning-memory,misc-new-delete-overloads,hicpp-no-malloc)
 void* operator new(std::size_t size)
 {
+    ++t_AllocationCount;
     if (t_AllocationsBeforeFailure == 0)
     {
         t_AllocationsBeforeFailure = -1; // one failure per arming

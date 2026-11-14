@@ -154,8 +154,9 @@ namespace Platform
 
 /// Whether TaskSmack runs elevated as another account than the session's signed-in user (#3671), for the per-user
 /// startup it then leaves alone: on Windows, TaskSmack's own token user against WTS's for the current session
-/// (Windows::readSessionAccount()); either unreadable, the same account. Never on Linux, whose Administrator
-/// session is started as one (#3580). Blocking (an account lookup): read once, on a worker
+/// (Windows::readSessionAccount()); either unreadable, the same account. On Linux, an Administrator session (#3580)
+/// started for a user, which runs as root (SessionUser::sessionAccount(), #3682). Blocking (an account lookup): read
+/// once, on a worker
 /// (App::SessionAccountCheck), never on the UI thread.
 [[nodiscard]] SessionAccount readSessionAccount();
 

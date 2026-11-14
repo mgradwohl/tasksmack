@@ -4115,7 +4115,7 @@ TEST_F(ProcessesPanelUserGroupsTest, AnAccountWithSessionsAndNoMatchingProcesses
     feed.stop();
 }
 
-// #3377 (PR 5): with the Users tab gone, the Processes panel owns the feed's life: it starts the feed at attach
+// #3377 (PR 5): the Processes panel owns the feed's life: it starts the feed at attach
 // (nothing read until the table is grouped by User), hands it each Settings interval, and stops it at detach,
 // joining its sampler thread and letting the sessions go.
 TEST_F(ProcessesPanelUserGroupsTest, ThePanelStartsTheFeedAtAttachHandsItTheIntervalAndStopsItAtDetach)

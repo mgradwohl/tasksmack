@@ -88,25 +88,6 @@ struct CoTaskMemDeleter
     }
 };
 
-/// windowAppUserModelIds()' work for one window: keeps each visible, unowned, answering top-level window of a
-/// process in @p pids (sorted). Its push can throw; guardedWindowCallback() keeps that inside the callback.
-void collectAppWindow(HWND window, std::span<const std::uint32_t> pids, std::vector<std::pair<std::uint32_t, HWND>>& windows)
-{
-    if (IsWindowVisible(window) == FALSE || GetWindow(window, GW_OWNER) != nullptr || IsHungAppWindow(window) != FALSE)
-    {
-        return;
-    }
-    DWORD pid = 0;
-    if (GetWindowThreadProcessId(window, &pid) == 0 || pid == 0)
-    {
-        return;
-    }
-    if (std::ranges::binary_search(pids, static_cast<std::uint32_t>(pid)))
-    {
-        windows.emplace_back(static_cast<std::uint32_t>(pid), window);
-    }
-}
-
 /// The explicit AppUserModelID @p window sets, empty when it sets none.
 [[nodiscard]] std::string windowAppUserModelId(HWND window)
 {
@@ -167,38 +148,29 @@ PackageIdentity readPackageIdentity(HANDLE process)
     return identity;
 }
 
-void windowAppUserModelIds(std::span<const std::uint32_t> pids, std::vector<WindowAppId>& found)
+void windowAppUserModelIds(std::span<const TopLevelWindow> windows, std::span<const std::uint32_t> pids, std::vector<WindowAppId>& found)
 {
     found.clear();
     if (pids.empty())
     {
         return;
     }
-    std::vector<std::pair<std::uint32_t, HWND>> windows;
-    WindowVisitor visitor{
-        .visit =
-            [pids, &windows](HWND window)
+    for (const TopLevelWindow& window : windows)
+    {
+        // An unowned, answering window of a process asked about (the walk kept the visible ones only).
+        DWORD pid = 0;
+        if (window.hung || GetWindowThreadProcessId(window.window, &pid) == 0 || pid == 0 ||
+            !std::ranges::binary_search(pids, static_cast<std::uint32_t>(pid)) || GetWindow(window.window, GW_OWNER) != nullptr)
         {
-            collectAppWindow(window, pids, windows);
-            return true; // Every window: the walk stops only if this throws
-        },
-        .failed = false,
-    };
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - EnumWindows' LPARAM
-    static_cast<void>(EnumWindows(&guardedWindowCallback, reinterpret_cast<LPARAM>(&visitor)));
-    if (visitor.failed)
-    {
-        return; // A walk cut short (out of memory) finds nothing; its processes are looked at again later
-    }
-    for (const auto& [pid, window] : windows)
-    {
-        if (std::ranges::find(found, pid, &WindowAppId::pid) != found.end())
+            continue;
+        }
+        if (std::ranges::find(found, static_cast<std::uint32_t>(pid), &WindowAppId::pid) != found.end())
         {
             continue; // Its first window that sets one already answered
         }
-        if (std::string id = windowAppUserModelId(window); !id.empty())
+        if (std::string id = windowAppUserModelId(window.window); !id.empty())
         {
-            found.push_back({.pid = pid, .appUserModelId = std::move(id)});
+            found.push_back({.pid = static_cast<std::uint32_t>(pid), .appUserModelId = std::move(id)});
         }
     }
 }

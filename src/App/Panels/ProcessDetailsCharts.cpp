@@ -399,7 +399,8 @@ memoryNowBars(const App::Detail::ProcessSmoothedUsage& smoothed, bool showShared
     memoryBars.push_back({
         .valueText = UI::Format::formatBytes(usedNow),
         .label = MEM_USED_LABEL,
-        .tooltipText = UI::InlineText::format("{}: {}", MEM_USED_LABEL, App::Detail::formatBytesWithRamShare(usedNow, percentPerByte)),
+        .tooltipText =
+            UI::InlineText::format("{}: {}", MEM_USED_LABEL, App::Detail::formatBytesWithRamShareText(usedNow, percentPerByte).view()),
         .value01 = UI::Widgets::normalizeToUnitInterval(usedNow, memAxisUpper),
         .color = theme.scheme().chartMemory,
     });
@@ -408,8 +409,8 @@ memoryNowBars(const App::Detail::ProcessSmoothedUsage& smoothed, bool showShared
         memoryBars.push_back({
             .valueText = UI::Format::formatBytes(sharedNow),
             .label = MEM_SHARED_LABEL,
-            .tooltipText =
-                UI::InlineText::format("{}: {}", MEM_SHARED_LABEL, App::Detail::formatBytesWithRamShare(sharedNow, percentPerByte)),
+            .tooltipText = UI::InlineText::format(
+                "{}: {}", MEM_SHARED_LABEL, App::Detail::formatBytesWithRamShareText(sharedNow, percentPerByte).view()),
             .value01 = UI::Widgets::normalizeToUnitInterval(sharedNow, memAxisUpper),
             .color = theme.scheme().chartMemoryShared,
             .stripTooltip = MEM_SHARED_TOOLTIP,
@@ -1071,7 +1072,7 @@ void ProcessDetailsCharts::renderMemoryUsageSection(const ProcessChartContext& c
     {
         memoryExtras.at(memoryExtraCount++) = UI::Widgets::ValueStripEntry{
             .label = MEM_PEAK_LABEL,
-            .value = UI::Format::formatBytes(ctx.peakMemoryBytes),
+            .value = UI::InlineText(UI::Format::formatBytes(ctx.peakMemoryBytes)),
             .color = theme.scheme().chartPeakLine,
         };
     }
@@ -1079,7 +1080,7 @@ void ProcessDetailsCharts::renderMemoryUsageSection(const ProcessChartContext& c
     {
         memoryExtras.at(memoryExtraCount++) = UI::Widgets::ValueStripEntry{
             .label = MEM_PERCENT_LABEL,
-            .value = UI::Format::percentOneDecimal(smoothed.residentBytes * smoothed.memoryPercentPerByte),
+            .value = UI::InlineText(UI::Format::percentOneDecimal(smoothed.residentBytes * smoothed.memoryPercentPerByte)),
             .color = ImVec4(0.0F, 0.0F, 0.0F, 0.0F),
             .tooltip = "Its resident memory as a share of the system's RAM, as the Processes table's Mem % column",
         };
@@ -1092,7 +1093,7 @@ void ProcessDetailsCharts::renderMemoryUsageSection(const ProcessChartContext& c
     {
         memoryExtras.at(memoryExtraCount++) = UI::Widgets::ValueStripEntry{
             .label = MEM_PRIVATE_LABEL,
-            .value = UI::Format::formatBytes(Domain::Numeric::toDouble(ctx.snapshot->privateBytes)),
+            .value = UI::InlineText(UI::Format::formatBytes(Domain::Numeric::toDouble(ctx.snapshot->privateBytes))),
             .color = theme.scheme().chartMemoryPrivate,
             .tooltip = "Memory no other process shares (RssAnon on Linux), as the Processes table's Private column",
         };
@@ -1101,7 +1102,7 @@ void ProcessDetailsCharts::renderMemoryUsageSection(const ProcessChartContext& c
     {
         memoryExtras.at(memoryExtraCount++) = UI::Widgets::ValueStripEntry{
             .label = MEM_SWAP_LABEL,
-            .value = UI::Format::formatBytes(Domain::Numeric::toDouble(ctx.snapshot->swapBytes)),
+            .value = UI::InlineText(UI::Format::formatBytes(Domain::Numeric::toDouble(ctx.snapshot->swapBytes))),
             .color = theme.scheme().chartMemorySwap,
             .tooltip = "How much of it is swapped out (VmSwap on Linux), as the Processes table's Swap column",
         };
@@ -1112,14 +1113,14 @@ void ProcessDetailsCharts::renderMemoryUsageSection(const ProcessChartContext& c
     {
         memoryExtras.at(memoryExtraCount++) = UI::Widgets::ValueStripEntry{
             .label = MEM_PSS_LABEL,
-            .value = UI::Format::formatBytes(Domain::Numeric::toDouble(ctx.snapshot->pssBytes)),
+            .value = UI::InlineText(UI::Format::formatBytes(Domain::Numeric::toDouble(ctx.snapshot->pssBytes))),
             .color = ImVec4(0.0F, 0.0F, 0.0F, 0.0F),
             .tooltip = "Proportional set size: its own pages plus its share of the pages it shares with other processes "
                        "(smaps_rollup Pss)",
         };
         memoryExtras.at(memoryExtraCount++) = UI::Widgets::ValueStripEntry{
             .label = MEM_USS_LABEL,
-            .value = UI::Format::formatBytes(Domain::Numeric::toDouble(ctx.snapshot->ussBytes)),
+            .value = UI::InlineText(UI::Format::formatBytes(Domain::Numeric::toDouble(ctx.snapshot->ussBytes))),
             .color = ImVec4(0.0F, 0.0F, 0.0F, 0.0F),
             .tooltip = "Unique set size: the memory freed if it exited, the pages no other process maps "
                        "(smaps_rollup Private_Clean + Private_Dirty)",
@@ -1234,7 +1235,8 @@ void ProcessDetailsCharts::renderThreadAndFaultHistory(const ProcessChartContext
         const std::array faultsTotal{
             UI::Widgets::ValueStripEntry{
                 .label = FAULTS_TOTAL_LABEL,
-                .value = UI::Format::formatIntLocalized(ctx.snapshot != nullptr ? ctx.snapshot->pageFaults : std::uint64_t{0}),
+                .value =
+                    UI::InlineText(UI::Format::formatIntLocalized(ctx.snapshot != nullptr ? ctx.snapshot->pageFaults : std::uint64_t{0})),
                 .color = ImVec4(0.0F, 0.0F, 0.0F, 0.0F),
                 .tooltip = "Page faults since the process started, as the Processes table's Page Faults column",
             },

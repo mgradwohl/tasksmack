@@ -381,6 +381,7 @@ readCpuDetails(const WindowsSystemProbeFunctions& fns, std::span<const std::size
 }
 
 // The network readers systemFunctions() hands out, defined with readNetworkCounters() below.
+DWORD WINAPI getIfTableWithoutStatistics(MIB_IF_TABLE2** table);
 [[nodiscard]] std::wstring readAdapterDeviceInstanceId(const GUID& interfaceGuid);
 [[nodiscard]] DevicePresence devicePresence(const std::wstring& deviceInstanceId);
 
@@ -578,8 +579,9 @@ WindowsSystemProbeFunctions WindowsSystemProbe::systemFunctions()
         GetModuleHandleW(L"kernel32.dll"), "GetNumaNodeProcessorMask2");
     fns.numa.getNumaNodeProcessorMaskEx = &GetNumaNodeProcessorMaskEx;
     fns.numa.getNumaAvailableMemoryNodeEx = &GetNumaAvailableMemoryNodeEx;
-    fns.network.getIfTable2 = &GetIfTable2;
+    fns.network.getIfTableWithoutStatistics = &getIfTableWithoutStatistics;
     fns.network.freeMibTable = &FreeMibTable;
+    fns.network.getIfEntry2 = &GetIfEntry2;
     fns.network.readAdapterDeviceInstanceId = &readAdapterDeviceInstanceId;
     fns.network.devicePresence = &devicePresence;
     fns.now = &std::chrono::steady_clock::now;
@@ -1080,7 +1082,7 @@ SystemCapabilities WindowsSystemProbe::capabilities() const
         .hasNumaNodes = m_HasNuma,             // GetNumaNodeProcessorMask2 and GetNumaAvailableMemoryNodeEx (#3088)
         .hasNumaNodeTotals = false,            // Windows reports each node's available memory, not its size
         .hasCpuFreq = true,                    // Current clock: rated base x % Processor Performance (#1184, #1530)
-        .hasNetworkCounters = true,            // Via GetIfTable2 (64-bit counters, Unicode names)
+        .hasNetworkCounters = true,            // Via GetIfEntry2 (64-bit counters, Unicode names)
         .hasVirtualizationInfo = true,         // Firmware/SLAT/hypervisor status (#809)
         .hasVirtualizationSecurityInfo = true, // VBS and memory integrity (#809)
     };
@@ -1112,6 +1114,26 @@ static_assert(NDIS_PHYSICAL_MEDIUM_NATIVE_802_11 == NdisPhysicalMediumNative802_
 
 namespace
 {
+// GetIfTable2Ex with its level as the integer it is. netioapi.h declares MibIfTableNormalWithoutStatistics
+// only from NTDDI_WIN10_RS2 on, above this build's NTDDI_VERSION, though TaskSmack needs Windows 10 1903,
+// and casting 2 to the SDK's two-value enum isn't a constant expression.
+using GetIfTable2ExFn = DWORD(WINAPI*)(ULONG, MIB_IF_TABLE2**);
+constexpr ULONG MIB_IF_TABLE_NORMAL_WITHOUT_STATISTICS = 2; // MibIfTableNormalWithoutStatistics
+
+// The interface list without the counters (#3713). GetIfTable2 is GetIfTable2Ex(MibIfTableNormal), whose
+// statistics request made a context switch per NDIS filter-module row (23 a call on a machine with 46
+// rows, 23 of them filters); this makes none. The rows, their LUIDs, types, flags and statuses are the
+// same. Without the export (not on a supported Windows), it's GetIfTable2.
+DWORD WINAPI getIfTableWithoutStatistics(MIB_IF_TABLE2** table)
+{
+    static const auto getIfTable2Ex = Windows::getProcAddress<GetIfTable2ExFn>(GetModuleHandleW(L"iphlpapi.dll"), "GetIfTable2Ex");
+    if (getIfTable2Ex == nullptr)
+    {
+        return GetIfTable2(table);
+    }
+    return getIfTable2Ex(MIB_IF_TABLE_NORMAL_WITHOUT_STATISTICS, table);
+}
+
 // The Network class's per-interface keys: <class>\{interface GUID}\Connection holds PnPInstanceId,
 // the device instance id of the adapter behind the interface (#1284).
 constexpr const wchar_t* NETWORK_CLASS_KEY = L"SYSTEM\\CurrentControlSet\\Control\\Network\\{4D36E972-E325-11CE-BFC1-08002BE10318}\\";
@@ -1164,6 +1186,8 @@ constexpr const wchar_t* PNP_INSTANCE_ID_VALUE = L"PnPInstanceId";
 // How long an empty device-id read waits before the registry is asked again (#1369 review), and how
 // long a device's presence is trusted with no change in the interface table (#2731): the backstop.
 constexpr std::chrono::seconds ADAPTER_DEVICE_CACHE_TTL{Domain::Sampling::NETWORK_ADAPTER_DEVICE_CACHE_TTL_SECONDS};
+// How often the interfaces are listed again, so an added one is found (#3713)
+constexpr std::chrono::seconds NETWORK_INTERFACE_RESCAN_INTERVAL{Domain::Sampling::NETWORK_INTERFACE_RESCAN_INTERVAL_SECONDS};
 } // namespace
 
 WindowsSystemProbe::AdapterDevice&
@@ -1211,21 +1235,20 @@ WindowsSystemProbe::adapterDevicePresence(std::uint64_t interfaceLuid, const GUI
     return entry.presence;
 }
 
-void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
+bool WindowsSystemProbe::listNetworkInterfaces(std::chrono::steady_clock::time_point now)
 {
-    // Use GetIfTable2 for 64-bit counters and proper Unicode interface names.
-    // GetIfTable2 allocates the buffer internally; we must free it with FreeMibTable.
-    // Available since Windows Vista/Server 2008.
+    // GetIfTable2Ex allocates the table; it is freed with FreeMibTable.
     MIB_IF_TABLE2* rawTable = nullptr;
-    const DWORD status = m_Fns.network.getIfTable2(&rawTable);
+    const DWORD status = m_Fns.network.getIfTableWithoutStatistics(&rawTable);
     if (status != NO_ERROR || rawTable == nullptr)
     {
-        spdlog::warn("GetIfTable2 failed: {}", status);
-        return;
+        spdlog::warn("GetIfTable2Ex failed: {}", status);
+        m_CountedInterfaces.clear();
+        m_InterfacesListed = false;
+        return false;
     }
-    // Owned from here, so an exception thrown while the rows are read (the device-id cache and
-    // registry lookups allocate) still frees it; the sampler catches and carries on, so a raw
-    // pointer leaked a table on every failed sample (#1369 review).
+    // Owned from here, so an exception thrown while the rows are read still frees it; the sampler
+    // catches and carries on, so a raw pointer leaked a table on every failed sample (#1369 review).
     const auto freeTable = [freeMibTable = m_Fns.network.freeMibTable](MIB_IF_TABLE2* t) noexcept
     {
         freeMibTable(t);
@@ -1235,10 +1258,18 @@ void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
     // An interface added or gone, or one whose status changed, is a PnP or link event after which a
     // down interface's device may be gone or back: every cached presence is looked up again (#2731).
     m_InterfaceKeysScratch.clear();
+    m_CountedInterfaces.clear();
     for (ULONG i = 0; i < table->NumEntries; ++i)
     {
         const MIB_IF_ROW2& row = table->Table[i];
-        m_InterfaceKeysScratch.push_back({.luid = row.InterfaceLuid.Value, .operStatus = static_cast<std::uint32_t>(row.OperStatus)});
+        const NetworkInterfaceKey key{.luid = row.InterfaceLuid.Value, .operStatus = static_cast<std::uint32_t>(row.OperStatus)};
+        m_InterfaceKeysScratch.push_back(key);
+        // Loopback, non-network types and NDIS filter-module rows are not interfaces of their own
+        // (#1030); see isCountedNetworkRow(). Their counters aren't read at all (#3713).
+        if (isCountedNetworkRow(row.Type, row.InterfaceAndOperStatusFlags.FilterInterface != 0))
+        {
+            m_CountedInterfaces.push_back(key);
+        }
     }
     if (networkInterfacesChanged(m_InterfaceKeysScratch, m_InterfaceKeys))
     {
@@ -1247,17 +1278,67 @@ void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
             device.presenceKnown = false;
         }
     }
-    const auto now = m_Fns.now();
+    m_InterfacesListedAt = now;
+    m_InterfacesListed = true;
+    return true;
+}
 
-    for (ULONG i = 0; i < table->NumEntries; ++i)
+bool WindowsSystemProbe::readCountedInterfaceRows()
+{
+    bool current = true;
+    m_InterfaceRows.resize(m_CountedInterfaces.size());
+    for (std::size_t i = 0; i < m_CountedInterfaces.size(); ++i)
     {
-        const MIB_IF_ROW2& row = table->Table[i];
-
-        // Loopback, non-network types and NDIS filter-module rows are not interfaces of their own
-        // (#1030); see isCountedNetworkRow().
-        if (!isCountedNetworkRow(row.Type, row.InterfaceAndOperStatusFlags.FilterInterface != 0))
+        // GetIfEntry2 finds the interface by its LUID and fills in the rest: the same row, at the same
+        // level (MibIfEntryNormal), as GetIfTable2 gave.
+        MIB_IF_ROW2& row = m_InterfaceRows[i];
+        row = MIB_IF_ROW2{}; // NOLINT(bugprone-invalid-enum-default-initialization) - zeroed, as GetIfEntry2 expects
+        row.InterfaceLuid.Value = m_CountedInterfaces[i].luid;
+        if (m_Fns.network.getIfEntry2(&row) != NO_ERROR)
         {
-            continue;
+            row.InterfaceLuid.Value = 0; // Gone since the listing (ERROR_FILE_NOT_FOUND), or unreadable
+            current = false;
+        }
+        else if (static_cast<std::uint32_t>(row.OperStatus) != m_CountedInterfaces[i].operStatus)
+        {
+            current = false;
+        }
+    }
+    return current;
+}
+
+void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
+{
+    // The interfaces are listed without their counters, and only the counted ones' rows are read
+    // (#3713): the counters GetIfTable2 asked for on every row cost a context switch per NDIS filter
+    // row, which the probe skips. Listing an added interface waits for the rescan, as a GPU's or a NUMA
+    // node's does; one gone or a changed status is seen in the pass it happens, which lists again.
+    const auto now = m_Fns.now();
+    bool listedThisPass = false;
+    if (!m_InterfacesListed || now - m_InterfacesListedAt >= NETWORK_INTERFACE_RESCAN_INTERVAL)
+    {
+        if (!listNetworkInterfaces(now))
+        {
+            return;
+        }
+        listedThisPass = true;
+    }
+    if (!readCountedInterfaceRows() && !listedThisPass)
+    {
+        if (!listNetworkInterfaces(now))
+        {
+            return;
+        }
+        // An interface that goes between this listing and its read is skipped this pass, and the next
+        // pass lists again.
+        (void) readCountedInterfaceRows();
+    }
+
+    for (const MIB_IF_ROW2& row : m_InterfaceRows)
+    {
+        if (row.InterfaceLuid.Value == 0)
+        {
+            continue; // Its read failed
         }
         // Adapters removed from the system stay listed; they carry nothing (#1284). A down row's
         // device is looked up: down alone doesn't mean removed.
