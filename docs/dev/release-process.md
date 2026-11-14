@@ -518,7 +518,7 @@ A patch happens only when a shipped bug warrants one.
 |---|---|
 | Maintainer | scope and late-feature calls; declares the freeze; approves the candidate; manual checks; cuts the release branch; pushes the tag; merges the CHANGELOG PRs; SmartScreen submission; announcement |
 | Windows lane | Windows code and its review sweep; CI and the release pipeline; dry runs; Windows validation; post-publish verification; Windows screenshots; performance baselines |
-| WSL lane | Linux code and its review sweep; the helper and broker; Linux packaging; Linux validation; the docs site; Linux screenshots |
+| WSL lane | Linux code and its review sweep; Linux packaging; Linux validation; the docs site; Linux screenshots |
 
 ## Why these steps
 

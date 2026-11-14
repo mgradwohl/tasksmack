@@ -105,6 +105,12 @@ it on. The only network requests it makes are the ones the user asks for:
   Nothing is downloaded or installed. The time of the last check, the latest version seen and a dismissed
   version are kept in `config.toml`.
 
+- **Look up on VirusTotal** (Processes row menu and Process Details' Actions; off until you enter your own
+  VirusTotal API key in Settings). Each lookup sends one HTTPS request to VirusTotal's API,
+  `GET https://www.virustotal.com/api/v3/files/<sha256>`, with your key: only the SHA-256 of the process's
+  executable. The file, its path, the command line and the process name are never sent. VirusTotal receives
+  the request's IP address, the hash and your key.
+
 - **Show public IP** (System tab, Network adapters section). Clicking it sends a DNS query for
   `myip.opendns.com` to OpenDNS's resolvers (208.67.222.222 over IPv4 and 2620:119:35::35 over IPv6), which
   answer with the address the query came from. Every **Refresh** of the System tab after that repeats the
