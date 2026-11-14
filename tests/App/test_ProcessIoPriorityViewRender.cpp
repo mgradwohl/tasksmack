@@ -1,9 +1,9 @@
 /// @file test_ProcessIoPriorityViewRender.cpp
 /// @brief The I/O priority control's real ImGui render, headless (#803), drawn as Process Details draws
-/// it: by ProcessPriorityView, under the nice control. It is hidden (and nothing is read) without the
-/// capability, as on Windows; it reads the shown process's I/O priority; Apply is disabled until an
-/// edit; a click on Apply sets the edit on the selected process once; an edit made for another process
-/// is dropped before it can be applied; and a failed apply shows the error line.
+/// it: by ProcessPriorityView::renderIoPriority(), after the nice control (its own card since #3741). It is hidden (and nothing is read)
+/// without the capability, as on Windows; it reads the shown process's I/O priority; Apply is disabled until an edit; a click on Apply sets
+/// the edit on the selected process once; an edit made for another process is dropped before it can be applied; and a failed apply shows
+/// the error line.
 
 #include "App/Panels/ProcessIoPriorityView.h"
 #include "App/Panels/ProcessPriorityView.h"
@@ -97,8 +97,9 @@ class ProcessIoPriorityViewRenderTest : public ::testing::Test
     }
 
     /// One frame of @p view as Process Details runs it (#2734): the update path's I/O priority read
-    /// first (waited for, so the tests are deterministic), then render(). A read starts on the frame
-    /// after the control is first drawn and is taken in the same frame.
+    /// first (waited for, so the tests are deterministic), then render() and renderIoPriority(), the
+    /// Priority card's and the I/O priority card's (#3741). A read starts on the frame after the control is
+    /// first drawn and is taken in the same frame.
     static void draw(ProcessPriorityView& view,
                      TestMocks::MockProcessActions& mock,
                      const Platform::ProcessActionCapabilities& capabilities,
@@ -111,6 +112,7 @@ class ProcessIoPriorityViewRenderTest : public ::testing::Test
             (void) view.updateReads(actions, target, 0.0F, /*wait=*/true);
         }
         view.render(&mock, capabilities, currentNice, target);
+        view.renderIoPriority(&mock, capabilities, currentNice, target);
     }
 
     static constexpr float FRAME_SECONDS = 1.0F / 60.0F;
@@ -175,7 +177,12 @@ TEST_F(ProcessIoPriorityViewRenderTest, TheFrameAfterTheControlShowsReadsAndShow
     TestMocks::MockProcessActions mock;
     mock.setIoPriorityReadResult(IDLE);
     ProcessPriorityView view;
-    runFrame([&] { view.render(&mock, NICE_AND_IO, NICE, TARGET_A); });
+    runFrame(
+        [&]
+        {
+            view.render(&mock, NICE_AND_IO, NICE, TARGET_A);
+            view.renderIoPriority(&mock, NICE_AND_IO, NICE, TARGET_A);
+        });
     EXPECT_EQ(mock.getIoPriorityCount(), 0); // render() alone reads nothing
     runFrame([&] { draw(view, mock, NICE_AND_IO, NICE, TARGET_A); });
     EXPECT_EQ(mock.getIoPriorityCount(), 1);

@@ -314,7 +314,7 @@ void ProcessDetailsPanel::updateOnDemandReads(float deltaTime)
     const bool canReadOpenFiles = m_HasOpenFiles && m_HasSnapshot && !m_ProcessExited;
     static_cast<void>(m_Views->m_OpenFilesView.update(canReadOpenFiles ? m_OpenFilesReader.get() : nullptr, selectedTarget(), deltaTime));
 
-    // The Priority card's I/O priority read (#2734): on its worker, started here and never from render(),
+    // The I/O priority card's read (#2734): on its worker, started here and never from render(),
     // and only when the control was drawn last frame (ProcessIoPriorityView::updateRead()).
     static_cast<void>(m_Views->m_PriorityView.updateReads(
         m_ActionCapabilities.canSetIoPriority ? m_ProcessActions.get() : nullptr, selectedTarget(), deltaTime));
@@ -1017,7 +1017,8 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
         });
     }
     // Identity and Runtime are cards with their header inside (#1537), both as tall as the taller of
-    // the two, so their edges line up -- or as tall as Actions or Priority beside them, if taller.
+    // the two, so their edges line up. The cards beside or below them are each as tall as their own
+    // content (#3741), so they never stretch these.
     const auto tallerRowCount = static_cast<float>(std::max(identityRows.count, runtimeRows.count));
     const float cardHeight = ProcessDetailsLayout::computeInfoCardHeight(tallerRowCount, rowHeight, ImGui::GetStyle().WindowPadding.y);
 
@@ -1038,41 +1039,23 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     const float leftWidth = blockWidthFor(identityRows.view());
     const float rightWidth = blockWidthFor(runtimeRows.view());
 
-    // Actions and Priority: what can be done to this process? Two cards, each as wide as its content:
-    // on this row to the right of Runtime when the pane has room for all four, otherwise wrapped to a
-    // row below (#1789). Every card on a row takes the tallest one's height (the Actions and Priority
-    // cards' as last drawn), so their edges line up.
+    // Actions, Priority and I/O priority: what can be done to this process? Each card as wide as its
+    // content, Priority and I/O priority one column: on this row to the right of Runtime when the pane
+    // has room for them all, otherwise wrapped to a row below (#1789, #3741).
     const bool hasControls = ProcessActionsBlock::hasAnyAction(m_ActionCapabilities);
     ProcessDetailsLayout::TopRowLayout controlsLayout{};
-    float topRowHeight = cardHeight;
-    float controlsHeight = 0.0F;
     if (hasControls)
     {
         const ProcessActionsBlock::Widths controlWidths = ProcessActionsBlock::measure(m_ActionCapabilities);
         controlsLayout = ProcessDetailsLayout::chooseTopRowLayout(
             contentWidth, leftWidth + spacing + rightWidth, spacing, controlWidths.actionsCard(), controlWidths.priorityCard());
-        // Only the heights of the cards drawn this frame count: a stale one must not stretch the row.
-        const float actionsHeight = controlsLayout.actionsWidth > 0.0F ? m_ActionsCardHeight : 0.0F;
-        const float priorityHeight = controlsLayout.priorityWidth > 0.0F ? m_PriorityCardHeight : 0.0F;
-        if (controlsLayout.besideInfo)
-        {
-            topRowHeight = ProcessDetailsLayout::computeRowCardHeight(cardHeight, actionsHeight, priorityHeight);
-            controlsHeight = topRowHeight;
-        }
-        else if (controlsLayout.priorityBesideActions)
-        {
-            // Wrapped side by side: a row of their own, its height the taller of theirs (0 before either
-            // has been drawn, so each fits its content).
-            controlsHeight = ProcessDetailsLayout::computeRowCardHeight(0.0F, actionsHeight, priorityHeight);
-        }
-        // Wrapped one under the other: each as tall as its content (controlsHeight 0).
     }
 
     // Identity section: Who is this process?
     (void) ProcessOverviewCard::render("BasicInfoLeft",
                                        ICON_FA_ID_CARD,
                                        "Identity",
-                                       ImVec2(leftWidth, topRowHeight),
+                                       ImVec2(leftWidth, cardHeight),
                                        ImGuiChildFlags_None,
                                        [&] { renderInfoTable("BasicInfoLeftTable", identityRows.view()); });
 
@@ -1082,12 +1065,13 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     (void) ProcessOverviewCard::render("BasicInfoRight",
                                        ICON_FA_CLOCK,
                                        "Runtime",
-                                       ImVec2(rightWidth, topRowHeight),
+                                       ImVec2(rightWidth, cardHeight),
                                        ImGuiChildFlags_None,
                                        [&] { renderInfoTable("BasicInfoRightTable", runtimeRows.view()); });
 
-    // The buttons, confirm dialog and result line are ProcessActionsView's, the priority rows
-    // ProcessPriorityView's (#1179); both act through m_ProcessActions, which the panel owns.
+    // The buttons, confirm dialog and result line are ProcessActionsView's, the priority and I/O
+    // priority controls ProcessPriorityView's (#1179); both act through m_ProcessActions, which the
+    // panel owns.
     if (hasControls)
     {
         if (controlsLayout.besideInfo)
@@ -1109,16 +1093,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
             // A priority change for this process running in the Processes table holds these controls (#3467).
             .priorityHeldElsewhere = m_PriorityHeldElsewhere,
         };
-        // Kept for the next frame's row height; a card scrolled out of view reports 0 and keeps its last.
-        const ProcessActionsBlock::Heights needed = ProcessActionsBlock::render(actions, controlsLayout, controlsHeight);
-        if (needed.actions > 0.0F)
-        {
-            m_ActionsCardHeight = needed.actions;
-        }
-        if (needed.priority > 0.0F)
-        {
-            m_PriorityCardHeight = needed.priority;
-        }
+        ProcessActionsBlock::render(actions, controlsLayout);
     }
 }
 

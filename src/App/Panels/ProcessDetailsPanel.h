@@ -451,10 +451,6 @@ class ProcessDetailsPanel : public Panel
     PriorityChangesInFlight* m_PriorityChanges = nullptr;
     const char* m_PriorityHeldElsewhere = nullptr;                   // This frame's holdReason() for the shown process, or null
     std::vector<Platform::ProcessTarget> m_PublishedPriorityChanges; // publishPriorityChanges()' buffer, reused
-    // The Actions and Priority cards' content heights as last drawn (0 until they have been): the row
-    // they are on takes the tallest card's height (ProcessDetailsLayout::computeRowCardHeight(), #1789).
-    float m_ActionsCardHeight = 0.0F;
-    float m_PriorityCardHeight = 0.0F;
 
     // The Overview's Environment section (#179). The reader is created by the composition root (the
     // default constructor) and called only from updateWithSamples(), through the view, while the

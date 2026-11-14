@@ -1,11 +1,12 @@
 #pragma once
 
-// The Overview's Actions and Priority cards (#1493, #1789): the process-control buttons
-// (ProcessActionsView) and their result line in the Actions card, and the priority rows
-// (ProcessPriorityView) in the Priority card, beside the Identity and Runtime cards where the pane
-// has room. They had a tab of their own before (#1493), then shared one Actions card that was too
-// tall for the Identity/Runtime row on Windows and so always wrapped below it (#1789). This only
-// places the two views; their behaviour -- the confirm dialog, the disabled states, the result and
+// The Overview's Actions, Priority and I/O priority cards (#1493, #1789, #3741): the process-control
+// buttons (ProcessActionsView) and their result line in the Actions card, the priority control
+// (ProcessPriorityView) in the Priority card, and the I/O priority control in a card of its own under it,
+// beside the Identity and Runtime cards where the pane has room. They had a tab of their own before
+// (#1493), then shared one Actions card that was too tall for the Identity/Runtime row on Windows and so
+// always wrapped below it (#1789); the I/O priority control was a row of the Priority card until #3741.
+// This only places the views; their behaviour -- the confirm dialog, the disabled states, the result and
 // error lines, Apply -- is theirs.
 //
 // Where the cards go is ProcessDetailsLayout::chooseTopRowLayout()'s decision, from the widths
@@ -46,7 +47,7 @@ namespace ProcessActionsBlock
 struct Widths
 {
     float buttons = 0.0F;  ///< The process-control buttons' row; 0 when the platform has none.
-    float priority = 0.0F; ///< The widest priority row; 0 when the platform can set neither priority.
+    float priority = 0.0F; ///< The widest Priority or I/O priority card row; 0 when the platform can set neither.
     float padding = 0.0F;  ///< A card's own horizontal padding, both sides together.
 
     /// The Actions card's width: its button row, padded; 0 when there are no buttons (no card).
@@ -55,9 +56,10 @@ struct Widths
         return buttons > 0.0F ? buttons + padding : 0.0F;
     }
 
-    /// The Priority card's width: its widest row, padded, in whole pixels up; 0 when there is no
-    /// priority (no card). ImGui truncates a window's size, which could leave the card a fraction short
-    /// of the row it was measured for, and the class slider then dropped its stop names (#1984).
+    /// The width of the Priority and I/O priority cards' column, both cards its width (#3741): their
+    /// widest row, padded, in whole pixels up; 0 when there is neither priority (no cards). ImGui
+    /// truncates a window's size, which could leave the card a fraction short of the row it was measured
+    /// for, and the class slider then dropped its stop names (#1984).
     [[nodiscard]] float priorityCard() const noexcept
     {
         return priority > 0.0F ? std::ceil(priority + padding) : 0.0F;
@@ -94,28 +96,19 @@ struct Context
     const char* priorityHeldElsewhere = nullptr;
 };
 
-/// What each card's content needs down, header and padding included, as render() drew it: for the
-/// next frame's computeRowCardHeight(). 0 for a card not drawn (absent, or scrolled out of view).
-struct Heights
-{
-    float actions = 0.0F;
-    float priority = 0.0F;
-};
-
 /// Draws the cards at the cursor, each a ProcessOverviewCard (#1537) as wide as @p layout says (a
 /// card of width 0 is not drawn): Actions -- the "Actions" header, the button row and the result
-/// line -- then Priority -- the "Priority" header and the priority row(s) -- to its right
-/// (layout.priorityBesideActions) or under it. The priority row has no label of its own unless the
-/// I/O priority row is under it to tell it from; otherwise the header is its label and shows the
-/// current priority on hover (#1874). Both cards are @p cardHeight tall when it is positive, so they
-/// share the edges of the row they are on, with their rows centred down the room under the header
-/// (#1874), and as tall as their content when it is 0. Text in
-/// them (the result and error lines) wraps at the card's edge rather than being clipped. The caller
-/// puts the cursor beside Runtime first (ImGui::SameLine()) when layout.besideInfo.
+/// line -- then, to its right (layout.priorityBesideActions) or under it, a column of Priority -- the
+/// "Priority" header and the priority slider, where the platform can set priority -- and I/O priority
+/// under it -- the "I/O priority" header and the I/O slider, where it can set that (#3741). Each header
+/// is its control's label and shows the current value on hover (#1874). Every card is exactly as tall
+/// as its content, growing while a result or error line shows (#3741), and that text wraps at the
+/// card's edge rather than being clipped. The caller puts the cursor beside Runtime first
+/// (ImGui::SameLine()) when layout.besideInfo.
 ///
 /// The confirm dialog is not drawn here, since a card, and all in it, is skipped while scrolled out
 /// of view. The caller submits it every frame with ProcessActionsView::renderConfirmation().
-[[nodiscard]] Heights render(const Context& context, const ProcessDetailsLayout::TopRowLayout& layout, float cardHeight);
+void render(const Context& context, const ProcessDetailsLayout::TopRowLayout& layout);
 
 } // namespace ProcessActionsBlock
 

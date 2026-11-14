@@ -1,10 +1,9 @@
 #pragma once
 
-// Process Details' priority control, under the buttons of the Overview's Actions block (#1179, slice 4;
-// #1493): the nice-value slider on Linux, the same slider with a stop per priority class on Windows
-// (#1204, #1538), the Apply
-// button, and the error line under it; and under those, the I/O priority control (#803; Windows, #3362,
-// ProcessIoPriorityView).
+// Process Details' priority control, the Overview's Priority card (#1179, slice 4; #1493): the nice-value
+// slider on Linux, the same slider with a stop per priority class on Windows (#1204, #1538), the Apply
+// button, and the error line under it. It also owns the I/O priority control (#803; Windows, #3362,
+// ProcessIoPriorityView), which renderIoPriority() draws in a card of its own under the Priority card (#3741).
 //
 // The view owns only its UI state. The IProcessActions it applies through stays owned by the panel (the
 // composition root's Platform::makeProcessActions() result) and is passed in each frame, with the
@@ -100,31 +99,31 @@ struct DiscretePick
 class ProcessPriorityView
 {
   public:
-    /// Draws the control when @p capabilities allow setting priority, and the I/O priority control under
-    /// it when they allow setting that (Linux), and nothing when they allow neither.
+    /// Draws the priority control when @p capabilities allow setting priority, and nothing otherwise; the
+    /// I/O priority control is renderIoPriority()'s, in a card of its own (#3741). Either way it takes in an
+    /// apply finished since the last frame, its own and the I/O priority control's (update()).
     /// @p currentNice is the process's nice value from its latest snapshot, or nullopt before the first
     /// snapshot (the control then shows 0 and Apply stays disabled). Apply also stays disabled while
     /// @p target's start time is unknown (0), which no platform will act on. An edit is made for @p target, and
-    /// Apply sets it on @p target through @p actions (null gives an "unavailable" error). @p schedPolicy, the
-    /// process's CPU policy, says which I/O class a class never set is served in (#3565).
+    /// Apply sets it on @p target through @p actions (null gives an "unavailable" error).
     void render(Platform::IProcessActions* actions,
                 const Platform::ProcessActionCapabilities& capabilities,
                 std::optional<std::int32_t> currentNice,
-                const Platform::ProcessTarget& target,
-                Platform::SchedPolicy schedPolicy = Platform::SchedPolicy::Unknown);
+                const Platform::ProcessTarget& target);
 
-    /// Whether render() labels its rows: only when it draws two, the priority and the I/O priority
-    /// (Linux), which the labels tell apart. With the priority row alone (Windows) the Priority card's
-    /// header is its label, and the caller puts setCurrentPriorityTooltip() on that header (#1874).
-    [[nodiscard]] static constexpr bool labelsRows(const Platform::ProcessActionCapabilities& capabilities) noexcept
-    {
-        return capabilities.canSetPriority && capabilities.canSetIoPriority;
-    }
+    /// Draws the I/O priority control (ProcessIoPriorityView::render()) when @p capabilities allow setting
+    /// I/O priority, and nothing otherwise: the I/O priority card's content, under its header (#3741).
+    /// @p currentNice and @p target as for render(); @p schedPolicy, the process's CPU policy, says which
+    /// I/O class a class never set is served in (#3565).
+    void renderIoPriority(Platform::IProcessActions* actions,
+                          const Platform::ProcessActionCapabilities& capabilities,
+                          std::optional<std::int32_t> currentNice,
+                          const Platform::ProcessTarget& target,
+                          Platform::SchedPolicy schedPolicy = Platform::SchedPolicy::Unknown);
 
     /// Gives the last item drawn the process's current priority as its tooltip: the priority class on
-    /// Windows, the nice value elsewhere (from @p currentNice, 0 before the first snapshot). It is the
-    /// "Priority" row label's tooltip, or the card header's when the rows are unlabelled (labelsRows()).
-    /// Needs an ImGui frame.
+    /// Windows, the nice value elsewhere (from @p currentNice, 0 before the first snapshot). The Priority
+    /// card's header takes it, since the header is the control's label (#1874). Needs an ImGui frame.
     static void setCurrentPriorityTooltip(std::optional<std::int32_t> currentNice);
 
     /// A different process was selected: drop the edit, its target and the error line, and the I/O
@@ -371,7 +370,7 @@ class ProcessPriorityView
         return m_Error;
     }
 
-    /// The I/O priority control drawn under the nice control where the platform can set it (#803).
+    /// The I/O priority control, drawn by renderIoPriority() where the platform can set it (#803).
     [[nodiscard]] ProcessIoPriorityView& ioPriorityView() noexcept
     {
         return m_IoPriorityView;
@@ -385,13 +384,10 @@ class ProcessPriorityView
     static constexpr Platform::ProcessTarget NO_TARGET{.pid = -1, .startTimeTicks = 0};
 
     /// Draws the priority slider (a stop per class on Windows); returns where it ends, for right-aligning Apply.
-    /// @p labelled draws the "Priority" row label, with its tooltip, above it (labelsRows()).
-    float renderSlider(std::optional<std::int32_t> currentNice, const Platform::ProcessTarget& target, bool labelled);
-    /// Draws the priority slider, its Apply button and its error line; @p labelled as for renderSlider().
-    void renderNiceControl(Platform::IProcessActions* actions,
-                           std::optional<std::int32_t> currentNice,
-                           const Platform::ProcessTarget& target,
-                           bool labelled);
+    float renderSlider(std::optional<std::int32_t> currentNice, const Platform::ProcessTarget& target);
+    /// Draws the priority slider, its Apply button and its error line.
+    void
+    renderNiceControl(Platform::IProcessActions* actions, std::optional<std::int32_t> currentNice, const Platform::ProcessTarget& target);
     void renderApplyButton(Platform::IProcessActions* actions,
                            std::optional<std::int32_t> currentNice,
                            const Platform::ProcessTarget& target,

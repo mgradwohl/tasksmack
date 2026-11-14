@@ -32,9 +32,9 @@ constexpr const char* RESET_LABEL = "Reset to default";
 
 } // namespace
 
-// Renders the I/O priority section under the nice control: the row label (the current value on its
-// tooltip), one slider through every class and level (#1540), "Reset to default" and Apply under it, and
-// the error lines. The caller has checked canSetIoPriority.
+// Renders the I/O priority card's rows, under its header (#3741): one slider through every class and level
+// (#1540), "Reset to default" and Apply under it, and the error lines. No row label: the card's header is
+// the control's label, with the current value on its tooltip. The caller has checked canSetIoPriority.
 void ProcessIoPriorityView::render(Platform::IProcessActions* actions,
                                    std::optional<std::int32_t> currentNice,
                                    const Platform::ProcessTarget& target,
@@ -58,13 +58,7 @@ void ProcessIoPriorityView::render(Platform::IProcessActions* actions,
     // Its own ID scope: the nice control above has an "Apply" button too.
     ImGui::PushID("io_priority");
 
-    const std::string currentDetail = m_Current.has_value() ? "current: " + Detail::describeIoPriority(*m_Current, currentNice, schedPolicy)
-                                                            : std::string("current: unknown");
-    ImGui::TextUnformatted("I/O priority");
-    if (ImGui::IsItemHovered())
-    {
-        ImGui::SetTooltip("%s", currentDetail.c_str());
-    }
+    const std::string currentDetail = currentText(currentNice, schedPolicy);
 
     // One slider for class and level, highest priority at the left like the nice slider. Without the
     // privilege Realtime needs it starts at Best-effort 0, and a process already in Realtime shows beyond

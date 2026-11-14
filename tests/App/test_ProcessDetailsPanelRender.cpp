@@ -1082,7 +1082,7 @@ TEST_F(ProcessDetailsPanelRenderTest, TheIoSliderGainsRealtimeOnceTheActionsCanS
     const ImGuiWindow* card = nullptr;
     for (const ImGuiWindow* window : ImGui::GetCurrentContext()->Windows)
     {
-        if ((window->Flags & ImGuiWindowFlags_ChildWindow) != 0 && std::string_view{window->Name}.contains("ProcessPriorityBlock_"))
+        if ((window->Flags & ImGuiWindowFlags_ChildWindow) != 0 && std::string_view{window->Name}.contains("ProcessIoPriorityBlock_"))
         {
             card = window;
         }
