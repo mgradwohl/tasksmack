@@ -1661,14 +1661,16 @@ test-only commit failed the gate. So the job logs the runner's CPU model (`lscpu
 uploads the run's manifest, and `check-benchmark-regression.py` prints each run's CPU (Google Benchmark's
 MHz and caches, plus the manifest's model) with a NOTE when the two runs' cache layouts differ. When flags
 still stand after the launches (or weren't re-measured: over budget, out of time), the job hands the names,
-its binary and its full run to `benchmark-second-runner` instead of failing. That job runs on a fresh
-runner, builds nothing, runs the flagged benchmarks alone in 5 launches of the same binary
-(`bench-across-launches.py combine --exclude-first`, so the first host's values aren't counted, while its
-full run supplies every other benchmark for coverage), and checks the median at the same thresholds and
-overrides. Its result is the gate's: one slow host can't fail it alone, and a real regression, slow on any
-host, still fails. A coverage loss alone has no names to hand over and fails the first job as before. To
-exercise the path, dispatch Heavy Checks with `second_runner_benchmarks` set to comma-separated benchmark
-names: on a run that flags nothing, they're handed over as if flagged.
+its binary, its full run and what its gate judged to `benchmark-second-runner` instead of failing. That job
+runs on a fresh runner, builds nothing, runs the flagged benchmarks alone in 5 launches of the same binary
+(`bench-across-launches.py combine --exclude-first`, so the first host's values aren't counted), and checks
+the median at the same thresholds and overrides. Every other benchmark comes from what the first runner's
+gate judged, for the same coverage: its medians across launches for the ones it re-measured, not its first
+launch's, so a benchmark its launches cleared isn't failed again on one launch (#3692). The full run is only
+for the plan's time estimate. Its result is the gate's: one slow host can't fail it alone, and a real
+regression, slow on any host, still fails. A coverage loss alone has no names to hand over and fails the first
+job as before. To exercise the path, dispatch Heavy Checks with `second_runner_benchmarks` set to
+comma-separated benchmark names: on a run that flags nothing, they're handed over as if flagged.
 
 On Windows, `bench.ps1 -Baseline <file>` does all of that itself (#3448): it checks the run at the
 checker's defaults plus any `-CheckArgs`, and when that flags regressions it runs the flagged benchmarks
